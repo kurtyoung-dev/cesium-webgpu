@@ -10,9 +10,16 @@
 > HEAD ≈ Batch 455. Where a claim could not be confirmed it is marked
 > `status: verify`.
 > **2026-07-02 refresh (post-campaign audit, Batches 482–506, HEAD
-> `62c5bab450`):** §6.1 bit table extended to 30 bits, §6.3.1 keySalt escape
-> hatch added, §11 (PP library interception) + §12 (voxel data path) added —
-> all claims in those sections re-verified against live code at that HEAD.
+> `62c5bab450`):** §11 (PP library interception) + §12 (voxel data path) added.
+> **2026-09-05 refresh (documentation wave D1, HEAD `b964e0da30`, Batch 1424):**
+> §1's Scene-boundary residue, §4a (the frame), §5's `previousViewProjection`
+> block, §5.5 (uniform buffers), §6.1–6.3 (the two-word define model), §6.5 (the
+> cache map) and §11.1 (post-process ordering) re-derived from engine source at
+> that HEAD. That pass **superseded** two claims the 2026-07-02 refresh had
+> certified — the "30 active bits" reading of §6.1 and the §6.3.1 framing of
+> `keySalt` as an escape hatch for high define bits — and reversed §11.1, which
+> had declared an ordering divergence that HEAD does not have. Treat any older
+> certification of those sections as void.
 
 # ARCHITECTURE — CesiumJS WebGPU Fork
 
@@ -53,13 +60,35 @@ the `GraphicsContext.ts` module docstring):
 
 ### Backend-agnostic Scene code (the central rule)
 
-Scene code interacts with `GraphicsContext` and **never** imports from
-`Renderer/WebGPU/` and **never** branches on `isWebGPU`. Verified at the
-2026-04-30 audit: `import "../Renderer/WebGPU/"` in `Source/Scene/*.js` had
-**zero hits**; `if (context.isWebGPU)` had ~15 transitional branches (all
-justifiable in-flight migrations). External/extension code *may* query
-`context.rendererType` / `context.isWebGPU` for introspection but should not
-branch rendering logic on it.
+Scene code reaches the backend through `GraphicsContext`. The rule is that it
+neither imports from `Renderer/WebGPU/` nor branches on `isWebGPU` — with a small,
+**enumerated and sanctioned** residue, not with none. Stating it as an absolute
+is what lets a reader treat any single counter-example as proof the rule is
+dead; here is the exact residue, re-measured at HEAD:
+
+- **Imports.** Non-recursive `Source/Scene/*.js` has **zero** imports from
+  `Renderer/WebGPU/`. (Four files mention the path in prose only —
+  `ClippingPolygonSdfPack.js:18`, `Moon.js:1005`, `SolarDiscModel.js:22`,
+  `StarField.js:30` — so a bare substring grep over that glob reports four
+  hits, none of them an import.) Recursively, `Source/Scene/**` has **exactly
+  one** import, and it is sanctioned:
+  `Scene/Model/MetadataWGSLPipelineStage.js:60` importing
+  `WebGPUModelMetadata.js`, recorded at
+  `ARCHITECTURE_REVIEW_2026-09-02.md:503`. It is the only one; a second is a
+  new violation, not a precedent.
+- **Branches.** `context.isWebGPU` is read in **four** control-flow branches
+  under `Source/Scene/**`: `GlobeSurfaceShaderSet.js:1138`,
+  `OceanSurfacePrimitive.js:384` and `:502`, and `ViewportQuad.js:144`. The
+  public getter (`Scene.js:2797`), the `SceneDebug.js:191` renderer label and
+  the `CesiumDebug.js` WebGPU-only guards are **not** branches. Older
+  "~15 transitional branches" counts swept `isWebGPUDrawCommand`, comments and
+  those non-branches into one substring total.
+
+External/extension code *may* query `context.rendererType` /
+`context.isWebGPU` for introspection but should not branch rendering logic on
+it. Inside the engine the convention since Batch 303 is to branch on a
+`context.supportsX` capability getter instead
+(`ARCHITECTURE_REVIEW_2026-09-02.md:504`).
 
 ### ContextFactory — entry point + auto-selection
 
@@ -298,6 +327,192 @@ without a `GPUDevice`).
 
 ---
 
+## 4a. The Frame — WebGPU pass order and dispatch sites
+
+Where a feature renderer runs is decided by the `Pass` slot its commands carry
+and by whether the WebGPU frustum loop has a leg for that slot. **A command
+binned in a slot with no leg is silently never drawn** — that is the failure
+mode `DEBUGGING_GUIDE.md`'s glTF-edge section records, and it is the
+completeness criterion a reviewer should apply to any new renderer.
+
+Every line below is anchored to the dispatch site it describes. The obvious
+source, `WebGPUSceneRenderer.ts:2-34`, is **stale on ordering and placement**;
+prefer these anchors or the code.
+
+### 4a.1 Top-level chain — `WebGPUSceneRenderer.executeCommands`
+
+`WebGPUSceneRenderer.ts:1817-1847`, in order:
+
+1. `opaqueFrustumNearOffset` resolved from the scene (`:1818-1819`, default
+   `0.9999`) — biases each non-nearest frustum's opaque near plane.
+2. `setupSceneFramebufferRenderPass(this, context, config)` (`:1822`) —
+   redirects rendering from the canvas swap chain to the scene framebuffer.
+3. `resetPerFrameState(this, context)` (`:1825`).
+4. `this._beginDepthPlanePass(config, numFrustums)` (`:1829`). Despite the
+   name this opens **no render pass**: it reserves exactly `numFrustums`
+   per-frustum uniform slices in the depth plane's allocator before any draw is
+   encoded (`:2612-2638`), and returns immediately when `useDepthPlane` is off.
+5. `executeFrustumLoop(this, config, opaqueFrustumNearOffset)` (`:1830`) —
+   §4a.2.
+6. `executePostFrustumChain(this, context, config, frustumCommandsList)`
+   (`:1843`), **skipped entirely when `config.deferComposite` is set**
+   (`:1840`). That is the first half of the Scene-2D infinite-scroll wrap: the
+   half only accumulates draws into the scene framebuffer, the pass it leaves
+   open is closed and reopened with `loadOp="load"` by the second half's
+   `setupSceneFramebufferRenderPass`, and the second half runs the chain once
+   over the fully accumulated framebuffer (`:1835-1839`).
+
+Two things a reader expects here and will not find:
+
+- **Clustered-lighting compute** is dispatched once per frame *before* the
+  chain above (`_dispatchClusteredLighting`, `:1796`).
+- **Shadow casting is not dispatched from the renderer at all** (`:1798-1815`).
+  `SceneRenderer.executeShadowMapCastCommands` is the canonical, backend-neutral
+  site and delegates to `context.executeShadowMapCastCommands` before
+  `executeCommands` is ever reached; re-dispatching here would collect no
+  casters and wipe the depth the canonical dispatch wrote.
+
+### 4a.2 The per-frustum leg — `WebGPUSceneRendererFrustumLoop.ts`
+
+The loop walks the frustum list **far to near** (`i === 0` is the farthest).
+Per iteration, in source order:
+
+| Step | Site | Notes |
+|---|---|---|
+| Per-frustum near/far + `_capturedFrustumRanges` | `:186-216` | SCENE2D uses the camera's full visible range; other modes apply the opaque near offset except on the nearest frustum |
+| Depth/stencil clear | `:226-229` | Skipped on all but the first iteration when `debugShowDepthAsColor` is on, so the overlay sees the whole far-to-near range |
+| **`Pass.ENVIRONMENT`** | `:232-245` | **Farthest frustum only** (`i === 0`) |
+| **`Pass.GLOBE`** | `:249` → `_executeGlobePass` (`WebGPUSceneRenderer.ts:2256-2324`) | |
+| Globe-depth copy | `:258-284` | Only when `useGlobeDepthFramebuffer`; ends the scene pass, copies depth, resumes the **scene** pass (not the canvas pass), and publishes `context._globeDepthTexture` / `_globeDepthView` |
+| **`Pass.TERRAIN_CLASSIFICATION`** | `:286-292` | |
+| Depth-plane render **inside the loop** | `:298-303` | Only under `clearGlobeDepth && !debugShowDepthAsColor`: clear depth/stencil, then `_renderDepthPlane(config, "scene")` when `useDepthPlane`. When `clearGlobeDepth` is false the depth plane instead runs once after the loop (§4a.4) |
+| **3D-tile chain** | `:317` → `execute3DTilePasses` | §4a.3. The callback passed at `:317-346` is the depth-update hook that fires between the main tile pass and classification, so classifiers sample tile-augmented depth; under invert classification it publishes the invert framebuffer's depth instead of scene depth |
+| **`Pass.VOXELS`** | `:355-376` | Sorted back-to-front, then dispatched. Deliberately **before `Pass.OPAQUE`** so volumetric media are ordered against opaque depth (stated reason at `:351-354`), mirroring WebGL's `performVoxelsPass` (`SceneRenderer.js:797`) ahead of `performPass(Pass.OPAQUE)` (`:799`) |
+| Point-cloud EDL preflight | `:388-402` | Bucket-local and fail-open: a pending or failed EDL resource leaves the original command enabled |
+| **`Pass.OPAQUE`** | `:405` → `_executeOpaquePass` | |
+| Per-frustum EDL composite | `:413-431` | |
+| Scene-depth repack | `:442-461` | After OPAQUE, so `pickPosition` / `pickFromRay` read the model rather than the globe behind it. Non-picking frames only |
+| **`Pass.CESIUM_3D_TILE_EDGES_DIRECT`** | `:469-475` | After OPAQUE, before GAUSSIAN_SPLATS, matching `performCesium3DTileEdgesDirectPass` (`SceneRenderer.js:802`). Single-target pipeline on the live scene pass — unlike the optionally MRT-redirected `CESIUM_3D_TILE_EDGES` |
+| **`Pass.GAUSSIAN_SPLATS`** | `:487-522` | Either staged onto `_deferredOITSplats` for the translucent pass (when the OIT deferral flag, OIT support, `useOIT`, non-picking and a first command with an `_oitPipeline` all hold) or sorted back-to-front and drawn inline |
+| Second frustum-uniform refresh | `:526-545` | Uses the exact near for translucent commands, avoiding blend artifacts |
+| Refraction-scene capture | `:554` | `KHR_materials_transmission` backdrop; a no-op unless `context._sceneHasTransmission` |
+| **`Pass.TRANSLUCENT`** | `:559` → `_executeTranslucentPass` | **The OIT composite lives here**, not in the post-frustum chain — see §4a.5 |
+| Translucent-tile-classification depth publication | `:572-636` | Packs post-translucent scene depth for classifiers; non-picking frames with 3D-tile classification commands only |
+| Per-frustum pick-depth copy | `:639-653` | `pickDepth.update(context, packedDepthTexture)` |
+
+After the loop, `finalizeWebGPUPointCloudEDLFrame` releases full-resolution EDL
+targets when EDL was toggled off or every candidate was culled (`:659-664`).
+
+### 4a.3 The 3D-tile sub-chain — `WebGPUSceneRenderer3DTilePasses.ts`
+
+`execute3DTilePasses` (`:196`) runs, in order:
+
+1. **`Pass.CESIUM_3D_TILE_EDGES`** (`:371` under the edge-MRT redirect, `:399`
+   as a plain pass on the scene framebuffer). Edges run **first**, because
+   later passes sample the edge textures. When the edge FBO is not allocated or
+   there are no edge commands, all three `context._edge*View` slots are nulled
+   so a previous frame's views cannot leak into the composite (`:405-412`).
+2. **`Pass.CESIUM_3D_TILE`** — `runSceneTileMain` (`:296-335`, dispatch at
+   `:313`), or redirected into `InvertClassification.classifiedTexture` when
+   the invert redirect is live (`:260-263`).
+3. The **`onAfterTileMainPass` hook**, fired only when the main tile bucket was
+   non-empty (`:620-622`, `:631-633`).
+4. **`Pass.CESIUM_3D_TILE_CLASSIFICATION`** and
+   **`Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW`** (`:233-236`, dispatched
+   at `:623-625` / `:634-636`). Under the invert redirect the order inverts:
+   IGNORE_SHOW runs inside the invert FBO with stencil writes (`:576`), then the
+   scene pass is resumed and CLASSIFICATION runs on scene color (`:606-607`).
+
+`Pass.CESIUM_3D_TILE_EDGES_DIRECT` is deliberately **not** run here; its site is
+the frustum loop, after OPAQUE (`:414-427`). That comment block is the authority
+for the *decision* but not for the *number*: five of its lines still call the
+pass "slot 12" (`:415`, `:417`, `:423`, `:425`, `:426`), a name it lost when
+`CESIUM_3D_TILE_PLANAR_FILL_ID` took slot 5. It is **slot 13** — see
+`Renderer/Pass.js:30` and §4a.5. The stale comments are tracked as an owed engine
+fix; read the block for its reasoning, not its slot number.
+
+### 4a.4 The post-frustum chain — `WebGPUSceneRendererPostFrustumChain.ts`
+
+`executePostFrustumChain` (`:73-218`), in order:
+
+1. `_executeOverlayPass` (`:80`) — **`Pass.OVERLAY`, once per frame, nearest
+   frustum only** (`WebGPUSceneRenderer.ts:2590-2606`).
+2. Depth plane, **only when `!config.clearGlobeDepth`** (`:83-85`) — the
+   complement of the in-loop site at `FrustumLoop:301`.
+3. MSAA depth resolve into the single-sample `r16float` target read by AO, DoF
+   and environmental effects (`:100-105`); inert for single-sample depth.
+4. `_executeGBufferProducer` (`:111`) — screen-space normal reconstruction;
+   returns immediately unless `frameState.useDeferredLighting`.
+5. `_runInvertClassificationComposite` (`:125`).
+6. `_runVelocityPass` (`:131`) — collects `cmd.velocityCommand` into the
+   `rg16float` motion target TAA reads; queues no work with no velocity commands.
+7. `_executeBoundingVolumeDebugPass` (`:136`) — opens no pass unless a command
+   carries `debugShowBoundingVolume`.
+8. `_ensureSceneColorResolved` (`:143`).
+9. `_runPostProcessing` (`:157`).
+10. Canvas snapshot copy (`:168-201`), only when
+    `hasEnvironmentalEffectDemand` reports a consumer.
+11. `_executeEnvironmentalEffects` (`:211`) — after post-processing, so its
+    canvas writes composite over the scene blit rather than being overwritten.
+12. `context._sceneHasTransmission = false` (`:217`).
+
+### 4a.5 The `Pass` table, re-derived from `Renderer/Pass.js:9-32`
+
+Fifteen slots, `0..14`, plus `NUMBER_OF_PASSES: 15`. Slot numbers below are the
+enum's, read at HEAD — do not trust any transcription of them elsewhere.
+
+| Slot | `Pass` constant | WebGPU frustum-loop leg |
+|---|---|---|
+| 0 | `ENVIRONMENT` | `FrustumLoop:232-245` — farthest frustum only |
+| 1 | `COMPUTE` | **None in the frustum loop.** `WebGPUComputeCommand.ts:142` stamps the slot; compute is dispatched outside `executeCommands` (WebGL's counterpart is `SceneRenderer.js:870-881`) |
+| 2 | `GLOBE` | `FrustumLoop:249` → `_executeGlobePass` |
+| 3 | `TERRAIN_CLASSIFICATION` | `FrustumLoop:286-292` |
+| 4 | `CESIUM_3D_TILE_EDGES` | `3DTilePasses:371` (edge MRT) / `:399` (scene FB) |
+| 5 | `CESIUM_3D_TILE_PLANAR_FILL_ID` | **None on WebGPU.** The only dispatcher is WebGL's `performPlanarFillIdPass` (`SceneRenderer.js:351-366`, called at `:718`). A command binned here does not draw on WebGPU |
+| 6 | `CESIUM_3D_TILE` | `3DTilePasses:313`, or the invert-FBO redirect |
+| 7 | `CESIUM_3D_TILE_CLASSIFICATION` | `3DTilePasses:607` / `:623-625` / `:634-636` |
+| 8 | `CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW` | `3DTilePasses:576` (invert FBO) / `:623-625` / `:634-636` |
+| 9 | `OPAQUE` | `FrustumLoop:405` |
+| 10 | `TRANSLUCENT` | `FrustumLoop:559` — OIT accumulate + composite, or sorted alpha |
+| 11 | `VOXELS` | `FrustumLoop:355-376` — **before** `OPAQUE` |
+| 12 | `GAUSSIAN_SPLATS` | `FrustumLoop:487-522` |
+| 13 | `CESIUM_3D_TILE_EDGES_DIRECT` | `FrustumLoop:469-475` — after `OPAQUE` |
+| 14 | `OVERLAY` | **No per-frustum leg by design** — once after the loop, nearest frustum only (`PostFrustumChain:80`) |
+
+**Relative to the OIT composite.** OIT accumulation and
+`_oit.executeComposite` both run inside the `Pass.TRANSLUCENT` leg
+(`WebGPUSceneRendererTranslucentPass.ts:280-296`): the accumulation pass ends,
+scene color is resolved, and the composite writes over it. So every slot below
+10 has already drawn when the composite runs; `CESIUM_3D_TILE_EDGES_DIRECT`
+(13) and `GAUSSIAN_SPLATS` (12) also precede it in the loop body despite their
+higher slot numbers, and only the post-frustum chain (§4a.4) runs after it.
+
+### 4a.6 The WebGL counterpart
+
+`Scene/SceneRenderer.js` `executeCommands` (`:410`) is the same spine with a
+different shape: a local `performPass(frustumCommands, passId)` (`:594`) plus
+named helpers. Call order inside its frustum loop:
+`performCesium3DTileEdgesPass` (`:679`, defined `:301`) → `performPlanarFillIdPass`
+(`:718`, defined `:351`) → `Pass.CESIUM_3D_TILE` and the classification passes
+(`:734-793`) → `performVoxelsPass` (`:797`, defined `:194`) →
+`performPass(Pass.OPAQUE)` (`:799`) → `performCesium3DTileEdgesDirectPass`
+(`:802`, defined `:393`) → `performGaussianSplatPass` (`:804`, defined `:208`) →
+`performTranslucentPass` (`:811`, defined `:241`) →
+`performTranslucent3DTilesClassification` (`:813`, defined `:270`) →
+per-frustum pick depth (`:815-823`). `executeComputeCommands` (`:870`) and
+`executeOverlayCommands` (`:883`) sit outside the loop, as on WebGPU. Some
+in-code comments in the WebGPU files cite older WebGL line numbers; the symbol
+names above are stable, the numbers are not.
+
+### 4a.7 `usePostProcess`
+
+`_runPostProcessing` (`PostFrustumChain:157`) is the only path by which WebGPU
+reaches the canvas, so `usePostProcess` must stay true on WebGPU. That rule and
+its consequences are already documented in `CLAUDE.md` (Playwright/browser
+testing) and `FEATURE_GUIDE_AND_DEMOS.md`; they are not restated here.
+
+---
+
 ## 5. RTE 64-Bit Precision — CRITICAL
 
 Every rendering path uses **RTE (Relative-To-Eye) emulated 64-bit precision** to
@@ -318,17 +533,44 @@ and the camera UBO struct at `chunks/structs/CameraUniforms.wgsl`. The RTE
 helpers are present across the basic shaders (`BasicColor.wgsl`,
 `BasicTextured.wgsl`) and CSM builtins (verified).
 
-### previousViewProjection (DP-H41) — motion-vector tail
+### previousViewProjection (DP-H41) — motion-vector field
 
-Every renderer's `CameraUniforms` struct carries
-`previousViewProjection: mat4x4<f32>` at the tail (DP-H41, originally Batch 27;
-rolled across classifiers + advanced renderers in **Batch 153**,
+`previousViewProjection: mat4x4<f32>` is DP-H41 (originally Batch 27; rolled
+across classifiers + advanced renderers in **Batch 153**,
 `b4a8ebaf6b "DP-H41 prevViewProjection across classifier + advanced renderers"`).
 The JS pack writes `UniformState.previousViewProjection` with a column-major
 identity fallback on the first frame. TAA, CSM, and motion-vector passes read it
-via `camera.previousViewProjection`. Confirmed present across many renderers
-(`WebGPUGlobeSurfaceCameraUB.ts`, `WebGPUCloudRenderer.ts`,
-`WebGPUGaussianSplatRenderer.ts`, classifiers, etc.).
+by name via `camera.previousViewProjection`.
+
+**The "at the tail of every `CameraUniforms`" rule is not what HEAD does, and its
+disposition is an open maintainer decision — do not follow it as an absolute.**
+Measured over `packages/engine/Source/Shaders/WebGPU/**` at HEAD (324 `.wgsl`
+files):
+
+- **85** files declare a `struct CameraUniforms`.
+- **72** of those declare `previousViewProjection`; **13** do not — including the
+  shared `chunks/structs/CameraUniforms.wgsl`, plus `BasicColor.wgsl`,
+  `BasicTextured.wgsl`, `FlexibleGeometry.wgsl`, `PBRMetallicRoughness.wgsl`,
+  `PhongLighting.wgsl` and the seven `Primitive/Polyline*` shaders.
+- Of the 72 that do declare it, **only 15 place it as the struct's final field**.
+  **57 carry it mid-struct** — so mid-struct is the majority practice, not an
+  exception. `Globe/GlobeTerrain.wgsl:105` is the flagship case: the field sits at
+  body line 57 of 242, with the whole atmosphere / cloud-shadow / celestial-water
+  tail declared after it.
+
+The rule as written is therefore load-bearing only in the sense that appending a
+field would force a mid-struct edit in the 15 files that do honour it. That cost
+is exactly what **`AR-D12` (`QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md:496`)**
+holds open, three ways: *stand*, *scope to velocity-emitting renderers*, or
+*change to "at a fixed offset"*. `AR-067`, `AR-092` and `AR-194` are waiting on
+it. `GlobeTerrain.wgsl:105` is recorded in that row as the existing precedent
+bearing on the third arm; the 57-of-72 measurement above is the wider version of
+the same evidence.
+
+`CLAUDE.md`'s WGSL/RTE section still states the tail rule as an absolute MUST.
+Until `AR-D12` is ruled, treat **this** section as the description of HEAD and
+`AR-D12` as the authority on where the rule is going. What is *not* in doubt is
+the discipline that actually prevents silent corruption — see §5.5.
 
 ### 5.1 CSM cascade VPs must be RTE-aware (cast AND receive)
 
@@ -417,26 +659,168 @@ audit + fix are unstarted. Until they land, Mars/Moon tilesets are at risk.
 
 ---
 
+## 5.5 Uniform buffers — the WGSL struct and its hand-written packer
+
+This is where a new renderer most often produces garbage instead of an error.
+There is **no schema generator**: a `CameraUniforms` struct is declared in WGSL,
+in one file, in one language, and a *separate* hand-written JS/TS packer walks a
+cursor through a `Float32Array` and has to land on exactly the same offsets. Get
+the two out of step and the shader reads a live-looking value from the wrong
+lane. Nothing throws.
+
+### The correspondence
+
+Take the globe as the worked example, because it is the one with the discipline
+written down:
+
+- **The struct** — `Shaders/WebGPU/Globe/GlobeTerrain.wgsl`, `struct CameraUniforms`
+  (242 body lines at HEAD).
+- **The declared size** — `WebGPUGlobeSurfaceTypes.ts:183`,
+  `export const CAMERA_UNIFORM_FLOATS = 244` (with `CAMERA_UNIFORM_BYTES` derived
+  on `:184`). The comment block immediately above it is a running offset ledger:
+  it names each tail block and its float offsets — `cloudShadowVP2` 212-227 and
+  `cloudShadowCascadeParams` 228-231 (`:170-175`), then `celestialControl`
+  232-235, `celestialMoonDirectionAndPhase` 236-239 and `celestialMoonControl`
+  240-243 (`:177-182`).
+- **The packer** — `WebGPUGlobeSurfaceCameraUB.ts`,
+  `createCameraUniformBuffer(...)`, which advances one `offset` cursor field by
+  field and finally hands the array to `writeUniformSlice` against the per-frame
+  ring allocator (module docstring, `:1-25`).
+
+Note that `CAMERA_UNIFORM_FLOATS` is **per renderer**, not global — three
+renderers declare their own, all `44`: `WebGPUComputeInstanceRenderer.ts:204`,
+`WebGPUFlowFieldRenderer.ts:64` and `WebGPUOceanRenderer.ts:76`. The name is
+shared; the value is not, and nothing links them.
+
+### The rule: append at the tail, bump the count
+
+**Add a new field at the end of the struct and at the end of the packer, then
+raise the float count by the new field's float width.** Every offset above is
+then unmoved, so every existing consumer is byte-identical. That is stated
+in-code at `WebGPUGlobeSurfaceTypes.ts:179-180` for the celestial-water block
+("Appended at the tail, so every offset above is unmoved"). The one sanctioned
+alternative is **reusing an existing pad word** in place — also offset-preserving,
+and taken deliberately at `WebGPUGlobeSurfaceCameraUB.ts:397-401` ("Reusing the
+pad rather than appending keeps `CAMERA_UNIFORM_FLOATS` and every tail offset
+unchanged"). What is never safe is inserting between two live fields.
+
+**Why a mid-struct insert fails silently:** the packer is a cursor, not a map. It
+does not address fields by name — it writes N floats, advances N, writes the
+next. Insert a field in the middle of the WGSL struct without inserting the
+matching write at the same point in the packer, and every field below the
+insertion point is read by the shader from the offset of its predecessor. There
+is no name-matching layer to notice, no size change to trip a bounds check
+(the buffer is still `CAMERA_UNIFORM_BYTES` long), and the values are plausible
+floats rather than zeros or NaNs. You get a wrong render, not a failure. The
+same happens in the other direction — a lane added to WGSL with no matching
+write leaves the tail reading whatever the previous frame's ring-allocator page
+left behind, which the packer's own comment (`WebGPUGlobeSurfaceCameraUB.ts:1126-1130`)
+calls out as "a live-looking value rather than a zero".
+
+### The one guard, and why you should copy it
+
+`WebGPUGlobeSurfaceCameraUB.ts:1131-1137` asserts the cursor landed exactly on
+the declared size:
+
+```ts
+//>>includeStart('debug', pragmas.debug);
+if (offset !== CAMERA_UNIFORM_FLOATS) {
+  console.error(
+    `[CesiumJS:webgpu] Terrain camera UB wrote ${offset} floats, but CameraUniforms declares ${CAMERA_UNIFORM_FLOATS}`,
+  );
+}
+//>>includeEnd('debug');
+```
+
+It is debug-only (pragma-stripped in production, per §9) and **globe-only** — it
+is the sole such assertion in the tree, against 85 files declaring a
+`CameraUniforms` struct. It is pinned by
+`Tools/visual-regression/celestial-water-globe-port.spec.mjs:481-498`, which
+reads the declared constant out of `WebGPUGlobeSurfaceTypes.ts` and requires the
+assertion's shape to still be present, with a 244→232 source mutant at `:2015`;
+`globe-contour-pixel-ratio-parity.spec.mjs` and
+`eclipse-globe-umbra-rte.spec.mjs` re-read the same constant.
+
+**Generalise it.** Any renderer that hand-packs a `CameraUniforms` (or any other
+struct) should declare its own float-count constant beside the struct and end its
+packer with the same debug-pragma cursor assertion. It costs nothing in
+production and it is the only thing between a mismatched write and a silent
+misrender. This is the single most transferable habit in the uniform path, and it
+is currently practised in one file out of 85.
+
+### Alignment, matrices, and the allocator — read these, do not re-derive them
+
+Do not reconstruct WGSL layout rules from memory; three LIVE documents already
+hold them and are the authorities:
+
+- **Scalar/vector alignment and write widths** (and the silent-miscompare symptom
+  this section describes) — the B205-N1 table at
+  [`DEV_NOTES_postprocess.md:553-563`](DEV_NOTES_postprocess.md). The trap worth
+  memorising from it: `vec3` is 16-byte aligned, so the shader reads it from a
+  16-byte slot even though it occupies 12 bytes in the pack.
+- **Matrix layout** — [`ARCHITECTURE_REVIEW_2026-09-02.md:203`](ARCHITECTURE_REVIEW_2026-09-02.md)
+  (finding `H18`). A `mat2x2<f32>` requires align 8 but is over-aligned to 16 by
+  the generic element-count classifier; a `mat3x3<f32>` is three 16-byte-strided
+  columns (48 bytes), not 36 contiguous. `Scene/MaterialUniformBuffer.js:60-119`
+  gets both wrong today.
+- **The per-frame ring allocator** the slices are written into —
+  [`RENDERER_LANDSCAPE_AUDIT_2026-09-02.md:908`](RENDERER_LANDSCAPE_AUDIT_2026-09-02.md)
+  (census `PC-20`): an N-page ring, 256-byte aligned, per-frame page advance,
+  overflow pages and a circuit breaker, flushed with one `queue.writeBuffer` per
+  dirty page before submit.
+
+**Forward note.** The reason all of the above is discipline rather than
+mechanism is that the schema generator is unbuilt: **`FAR-302` — "One uniform
+schema and host-shareable layout generator"**
+(`FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md:624-630`) would define one
+typed schema and emit the WGSL declaration, the CPU offsets/strides and the pack
+function from a single source, with mat2 alignment and mat3 column stride exact.
+It is size L, depends on `FAR-101`, covers audit finding `H18`, and — per
+`ARCHITECTURE_REVIEW_2026-09-02.md:203` — has **no row in any queue**. Until it
+lands, the cursor assertion above is the whole safety net.
+
+For where `previousViewProjection` sits in all this, and why "at the tail" is an
+open question rather than a rule, see §5's `previousViewProjection (DP-H41)`
+block and `AR-D12`.
+
+---
+
 ## 6. WGSL Shader Pipeline — Defines, Preprocessor, Module Cache
 
 Infrastructure landed Batches 22–27 and has been heavily extended since
 (Batches 162–164 widened shader-module-cache adoption; DP-H46b added a content
 salt). Do not bypass these when adding shader variants.
 
-### 6.1 `ShaderDefine` bitmask registry — `WebGPUShaderDefines.ts`
+### 6.1 The two-word define registry — `WebGPUShaderDefines.ts`
 
-Each entry is **one bit** of a Uint32. **Add-only — never reorder, renumber, or
-remove an entry**, even if its last consumer disappears: reordering silently
-aliases cached modules across rebuilds; removal breaks any pipeline still
-referencing the bit. Deprecated entries stay with a comment marker.
+Specialization axes are bits in **two** Uint32 words, `defines` (lo) and
+`definesHi` (hi), threaded together through the preprocessor and the module
+cache. Both registries are **add-only — never reorder, renumber, or remove an
+entry**, even if its last consumer disappears: reordering silently aliases
+cached modules across rebuilds; removal breaks any pipeline still referencing
+the bit. Deprecated entries stay with a comment marker.
 
-> **CLAUDE.md is stale here.** CLAUDE.md lists only the first 4 bits
-> (`GEODETIC_NORMAL … COMPRESSED_VERTICES`). The live registry has grown to
-> **30 active bits** (`1<<0` … `1<<29`, re-verified against `: 1 <<` in
-> `WebGPUShaderDefines.ts` at HEAD ≈ Batch 506, `62c5bab450`; the campaign
-> Batches 482–506 appended exactly 4 tail bits, `1<<26`–`1<<29`). **Six bits
-> (`1<<24` … `1<<29`) live above the module cache's 24-bit define window and
-> MUST be folded via `keySalt`** — see §6.3.1. Current bits:
+> **Start here if you are adding an axis: the lo word is FULL.** Bits 0-30 are
+> all claimed (31 entries, re-measured at HEAD against `: 1 <<` in
+> `WebGPUShaderDefines.ts`; the highest is `MODEL_METADATA_MAT_TRANSPORT: 1 << 30`
+> at `:863`), and **bit 31 is permanently reserved** — the collections'
+> `noDepthTest` pipeline-key fold (`pipelineKeyWithDepthFlag` in
+> `WebGPUCollectionRendererBase`) folds a flag into that position, and leaving
+> the bit unclaimed is what guarantees a folded key can never alias a real
+> define (`WebGPUShaderDefines.ts:22-30`, `:56-60`). **A new axis claims a bit in
+> `ShaderDefineHi` instead** — see §6.1.1.
+>
+> Two earlier statements in this section were wrong and have been removed. There
+> are not "30 active bits (`1<<0` … `1<<29`)" — there are 31, through `1<<30`.
+> And it was **never** true that "six bits (`1<<24` … `1<<29`) live above the
+> module cache's 24-bit define window and MUST be folded via `keySalt`": the
+> cache key retains the **complete** 32-bit lo mask (§6.3), so no define bit has
+> ever needed a salt. That false MUST contradicted both this document's own
+> §6.3.1 and the module docstring at `WebGPUShaderDefines.ts:16-18`, which says
+> `keySalt` "remains available only for sources whose WGSL text is generated
+> dynamically". Ignore any surviving copy of it.
+>
+> Lo-word bits at HEAD:
 >
 > | Bit | Name | Gates |
 > |---|---|---|
@@ -464,37 +848,94 @@ referencing the bit. Deprecated entries stay with a comment marker.
 > | `1<<21` | `METADATA_PICKING_ENABLED` | metadata pick path |
 > | `1<<22` | `POINT_CLOUD_EDL_DEPTH` | point-cloud EDL off-screen depth pipeline (only `WebGPUPointCloudEyeDomeLighting` ORs it in) |
 > | `1<<23` | `MODEL_HAS_WGSL_CUSTOM_SHADER` | model user customShader with native `wgslFragmentShaderText` (GLSL-only customShaders keep the warn + no-op path) |
-> | `1<<24` | `MODEL_HAS_WGSL_CUSTOM_VERTEX` | model user customShader native WGSL *vertex* body — **keySalt bit** (§6.3.1) |
-> | `1<<25` | `VOXEL_CUSTOM_SHADER_COLOR` | voxel default-shader parity color march (Batch 476; `//>>else` = historical raw-texel accumulation) — **keySalt bit** |
-> | `1<<26` | `MODEL_SPLIT_ENABLED` | model split-screen discard (B483) — **keySalt bit** |
-> | `1<<27` | `MODEL_HAS_COLOR` | `model.color` tint / blend-mode path (B484) — **keySalt bit** |
-> | `1<<28` | `MODEL_SILHOUETTE` | model silhouette stencil two-pass (B485; `ModelSilhouetteStage.wgsl`) — **keySalt bit** |
-> | `1<<29` | `VOXEL_USER_CUSTOM_SHADER` | user native-WGSL voxel customShader in the ray-march (B503; generated codegen chunk) — **keySalt bit** |
+> | `1<<24` | `MODEL_HAS_WGSL_CUSTOM_VERTEX` | model user customShader native WGSL *vertex* body |
+> | `1<<25` | `VOXEL_CUSTOM_SHADER_COLOR` | voxel default-shader parity color march (Batch 476; `//>>else` = historical raw-texel accumulation) |
+> | `1<<26` | `MODEL_SPLIT_ENABLED` | model split-screen discard (B483) |
+> | `1<<27` | `MODEL_HAS_COLOR` | `model.color` tint / blend-mode path (B484) |
+> | `1<<28` | `MODEL_SILHOUETTE` | model silhouette stencil two-pass (B485; `ModelSilhouetteStage.wgsl`) |
+> | `1<<29` | `VOXEL_USER_CUSTOM_SHADER` | user native-WGSL voxel customShader in the ray-march (B503; generated codegen chunk) |
+> | `1<<30` | `MODEL_METADATA_MAT_TRANSPORT` | matrix transport in the generated metadata chunk; consumed by `ModelPBRComplete.wgsl` (`:863`) |
+> | `1<<31` | — | **reserved, never claimable** (`pipelineKeyWithDepthFlag` fold) |
 >
-> The registry is contiguous through `1<<29` at HEAD (no gaps); the add-only rule
+> The lo registry is contiguous 0-30 with no gaps at HEAD. The add-only rule
 > still mandates that if a bit's last consumer disappears the slot is *retained*
-> as a gap rather than renumbered. `status: verify` the exact gate text for any
-> bit before relying on it — read the JSDoc in `WebGPUShaderDefines.ts`.
+> as a gap rather than renumbered. Read the JSDoc in `WebGPUShaderDefines.ts`
+> for the exact gate text of any bit before relying on it.
+
+#### 6.1.1 `ShaderDefineHi` — where a new axis goes
+
+Because the lo word is exhausted, **every new specialization axis claims a bit in
+the hi-word registry**, `ShaderDefineHi` (`WebGPUShaderDefines.ts:931`). Six
+entries at HEAD:
+
+| Hi bit | Name | Gates |
+|---|---|---|
+| 0 | `HI_WORD_PROBE` | permanently-reserved validation probe; consumed only by `WebGPUShaderDefinesSpec` / `WebGPUShaderPreprocessorHiSpec` / `WebGPUShaderModuleCacheSpec` to exercise the hi-word path end-to-end. No production renderer sets it |
+| 1 | `ENHANCED_OCEAN` | globe enhanced-ocean styling in `GlobeTerrain.wgsl`'s `computeEnhancedOcean`; clear (the default) matches WebGL |
+| 2 | `SPLAT_PACKED_WASM` | Gaussian-splat attribute-record layout — which record the vertex stage decodes from the `array<u32>` storage binding |
+| 3 | `SPLAT_SPHERICAL_HARMONICS` | Gaussian-splat view-dependent colour; the WGSL twin of GLSL's `HAS_SPHERICAL_HARMONICS` |
+| 4 | `CLOUD_MARCH_EMIT_RECONSTRUCTION` | cloud march becomes the producer of the reconstruction depth attachment |
+| 5 | `CLOUD_RECONSTRUCTION_CONSUME` | `CloudTemporalResolve.wgsl` consumes it — kept a separate axis on purpose so the producer can be A/B'd alone |
+
+Three properties of the hi word that will otherwise surprise you:
+
+- **Bits are claimed through `hiDefineBit(bitIndex)`, not a literal `1 << n`.**
+  It rejects anything outside `0..30` with a `RangeError` naming the reserved bit
+  (`:910-916`). Hi bit 31 is reserved for the same normalization reason as lo bit
+  31: keeping the sign bit of *both* words unclaimed means `mask | 0` /
+  `mask >>> 0` can never change which defines a mask names.
+- **The two masks are branded and not interchangeable.** `hiDefineBit` returns a
+  `ShaderDefineHiMask` (`:882-884`), and lo-word APIs take `ShaderDefineLoMask`,
+  so passing a hi bit where a lo mask is expected is a **compile error** rather
+  than a silent `defines & BIT === 0` that would quietly emit the `//>>else`
+  branch. That silent-wrong-shader failure is the exact mode the brands exist to
+  prevent — do not cast around them. **The protection runs one way only.** The
+  reverse mistake — a *lo*-word bit passed in a `definesHi` argument — cannot be
+  compile-checked, because lo bits are plain numbers and `ShaderDefineLoMask` is
+  a flavor every number satisfies. The source says so at
+  `WebGPUShaderDefines.ts:893-897`; the only mitigation is that hi-word
+  parameters are named `definesHi` everywhere, so the mistake is greppable in
+  review rather than caught by the compiler.
+- **Flag names must be unique across both tables.** A module-load assertion
+  (`:1123-1131`) throws if a name appears in both, because `//>>ifdef NAME`
+  would otherwise be ambiguous between a lo test and a hi test.
 
 `ShaderSourceId` (same file, same add-only rules) gives each source file a stable
-8-bit numeric identity. **Source ID 0 is reserved.** Live count at HEAD ≈
-Batch 506: **39 registrations** (contiguous `1…39`, highest
-`POINT_CLOUD_EDL_BLEND: 39`; the 482–506 campaign added zero new source IDs).
+8-bit numeric identity. **Source ID 0 is reserved.** Re-measured at HEAD:
+**42 registrations**, contiguous `1…42`, highest `EDGE_EMITTER: 42`. (An older
+reading of "39 registrations, highest `POINT_CLOUD_EDL_BLEND: 39`" is stale.)
 
-**Adding a new define bit:** (1) append the entry (never reorder); (2) document
-what it gates + which shaders consume it in the JSDoc; (3) add the
-`//>>ifdef FLAG_NAME` / `//>>else` / `//>>endif` block to each consuming shader,
-keeping `//>>else` as the historical path; (4) route module creation through
-`preprocess(code, defines)` / the module cache so directives resolve.
+**Adding a new specialization axis — the recipe at HEAD:**
+
+1. Append an entry to **`ShaderDefineHi`** via `hiDefineBit(n)` — the next free
+   index, never a reorder. (Only touch `ShaderDefine` if you are documenting an
+   existing lo bit; there is no free one.)
+2. Document in the JSDoc what it gates and which shaders consume it, including
+   what the `//>>else` branch does.
+3. Add the `//>>ifdef FLAG_NAME` / `//>>else` / `//>>endif` block to each
+   consuming shader, keeping `//>>else` as the historical path.
+4. Thread the mask through **both** call sites: `preprocess(source, defines,
+   definesHi)` and `getOrCreate(sourceId, source, defines, label, keySalt,
+   definesHi)`. Passing the hi mask in the `defines` position is a compile error,
+   and omitting it entirely resolves your `//>>ifdef` to the `//>>else` branch
+   with no diagnostic — that is the failure to watch for.
+5. *(Optional, defense in depth.)* Add a marker for the axis to the pipeline
+   descriptor's `name`. Not required for correctness — see §6.3.
 
 ### 6.2 `//>>ifdef` preprocessor — `WebGPUShaderPreprocessor.ts`
 
-A pure function `(source: string, defines: number) → string`. Directives
+A pure function of **three** arguments —
+`preprocess(source: string, defines: ShaderDefineLoMask, definesHi = 0): string`
+(`WebGPUShaderPreprocessor.ts:94-98`). Directives
 `//>>ifdef FLAG_NAME` / `//>>else` / `//>>endif` sit on their own lines; flag
-names must be `UPPERCASE_WITH_UNDERSCORES` and resolve to a `ShaderDefine` bit.
-Unknown flag names **throw at preprocess time with the source line number** —
-typos fail loudly. `defines=0` emits every block's `//>>else` branch and is
-byte-identical to a shader with no ifdef blocks (the safe migration default).
+names must be `UPPERCASE_WITH_UNDERSCORES` and resolve to a bit in **either**
+registry — a lo-word name tests `defines`, a hi-word name tests `definesHi`,
+and the module-load uniqueness assertion (§6.1.1) is what keeps that
+unambiguous. A flag registered in **neither** word **throws at preprocess time
+with the source line number**, as do unbalanced directives and a duplicate
+`//>>else` in one block — typos fail loudly. `defines=0, definesHi=0` emits
+every block's `//>>else` branch and is byte-identical to a shader with no ifdef
+blocks (the safe migration default).
 
 ### 6.3 Shader module cache — `WebGPUShaderModuleCache.ts`
 
@@ -503,16 +944,38 @@ Two-tier model:
 - **Tier 1 — module dedupe (this class).** One cache per `GPUDevice`, cleared on
   device loss. The common-path key is the exact safe integer
   `((defines >>> 0) * 0x100) + sourceId`: eight low bits identify the validated
-  source ID and all 32 high bits retain the complete define mask. The maximum
-  key is `2^40 - 1`, inside JavaScript's exact 53-bit integer range, so ordinary
-  lookups remain allocation-free numeric `Map` operations without high-define
-  aliasing.
+  source ID and all 32 high bits retain the complete lo-word define mask. The
+  maximum key is `2^40 - 1`, inside JavaScript's exact 53-bit integer range, so
+  ordinary lookups remain allocation-free numeric `Map` operations **without
+  high-define aliasing** — every lo bit, 0 through 31, participates in the key
+  directly.
+- **The hi word is a second map level, not part of that integer.** `_modules` is
+  the `definesHi === 0` level; a lazily-created `_modulesByHi` keyed on the hi
+  word holds everything else (`WebGPUShaderModuleCache.ts:180-190`). Keeping
+  hi=0 as its own field is what keeps the hot path at one integer compare plus a
+  single `Map.get`; hi-word variants cost two.
 - **Tier 2 — per-renderer pipeline cache** (`_pipelineCache` /
   `_wireframePipelineCache` / `_debugFragmentPipelineCache` on each renderer),
   keyed with the defines bitmask as a `|0xNN` suffix.
 
-Entry point: `getOrCreate(sourceId, source, defines, label, keySalt = 0)`. On a
-miss it `preprocess`es the source against the defines and compiles the module.
+Entry point (`WebGPUShaderModuleCache.ts:232-239`):
+
+```ts
+getOrCreate(
+  sourceId: number,
+  source: string,
+  defines: ShaderDefineLoMask,
+  label: string,
+  keySalt = 0,
+  definesHi: number = 0,
+): GPUShaderModule
+```
+
+On a miss it `preprocess`es the source against **both** masks and compiles the
+module. `defines` is typed `ShaderDefineLoMask`, so passing a branded
+`ShaderDefineHiMask` in that position is a compile error (§6.1.1). `sourceId`
+must be an integer in `0..255`; `definesHi` accepts only `0..0x7fffffff`,
+because hi bit 31 is reserved.
 
 **DP-H46b `keySalt` (Batch 455).** When a caller passes a non-zero `keySalt` (a
 per-source *content* fingerprint, e.g. the hash of a generated `struct Metadata`
@@ -522,15 +985,19 @@ don't alias one compiled module. `keySalt === 0` (the default) keeps the
 allocation-free numeric path. The map type is
 `Map<number | string, GPUShaderModule>`.
 (Shipped `3b146e42a8 "Batch 455: DP-H46b — per-model WGSL metadata codegen"`;
-consumed by `WebGPUModelPipelineCache.js`.)
+consumed by `WebGPUModelPipelineCache.ts`.)
 
-#### 6.3.1 `keySalt` is generated-source identity, not define overflow
+#### 6.3.1 `keySalt` is generated-source identity, never define overflow
 
-All 32 define bits participate directly in the numeric key, including bits
-24–31. Pass non-zero `keySalt` only when WGSL source text can change while
-`(sourceId, defines)` stays the same—for example model metadata or user
-custom-shader code generation. The salt is a stable content fingerprint; it
-must not substitute for declaring a real static variant bit.
+All 32 lo-word define bits participate directly in the numeric key, including
+bits 24-31, and the hi word is a separate map level. **No define bit has ever
+needed a `keySalt`.** Pass a non-zero salt only when the WGSL source *text* can
+change while `(sourceId, defines, definesHi)` stays the same — model metadata or
+user custom-shader code generation are the shipped cases — in which case the key
+becomes the string `"<numericKey>#<salt>"`. The salt is a stable content
+fingerprint; it must not substitute for declaring a real variant bit. This is
+what `WebGPUShaderDefines.ts:16-18` states, and it is the paragraph that any
+surviving "bits above 23 MUST be salted" claim contradicts.
 
 `getOrCreate` rejects source IDs outside `0..255` and define values outside the
 signed-or-unsigned Uint32 domain. Signed and unsigned representations of the
@@ -572,6 +1039,45 @@ supports a granular per-KHR-extension split without further refactoring; the
 tileset pre-warm hook is not yet wired). Treat the historical "3-bit key / at
 most 6 variants" framing as superseded. See `PHASE_8_SHADER_STRATEGY.md`
 "What actually shipped" for the full reconciliation with code line refs.
+
+### 6.5 The cache map — eleven caches, what each keys on, and how to read it
+
+A new renderer that allocates GPU objects per frame is the most common
+performance defect in this codebase — it is the shape Batch 717 root-caused, and
+the shape `DEBUGGING_GUIDE.md`'s bind-group-churn entry diagnoses *after* it
+ships. The prevention is knowing which cache already exists. Eleven do
+(`packages/engine/Source/Renderer/WebGPU/*Cache*.{ts,js}`); **never call
+`device.createRenderPipeline`, `createComputePipeline`, `createShaderModule` or
+`createBindGroup` directly on a hot path.**
+
+| Cache | Keyed on | Reach for it when | Read it with |
+|---|---|---|---|
+| `WebGPURenderPipelineCache` | `generateCacheKey`: shader-module identity (`sh:<vsId>.<vsEntry>/<fsId>.<fsEntry>` via a `WeakMap`) + `pl:` layout + `pr:` primitive + `dz:` depth/stencil + `mx:` multisample — every field forwarded to `createRenderPipeline` | any render pipeline, always | `CesiumDebug.cacheStats()` → the `renderPipeline` row (`hits`, `misses`, `hitRate`, `size`, `evicted`, and **`wrongModuleHits`, which must read 0** — a nonzero value is a key collision and `cacheStats()` logs a `console.error`) |
+| `WebGPUComputePipelineCache` | `(descriptor.name, layout signature, compute.entryPoint)` plus `compute.module` identity (`m:`) — a much narrower surface than render pipelines (no fragment targets, vertex layout, multisample or depth-stencil) | any compute dispatch | no CesiumDebug command; `getStats()` on `context._webgpuComputePipelineCache` |
+| `WebGPUShaderModuleCache` | `(sourceId, defines, definesHi, keySalt)` over a two-level map — see §6.3 | every `createShaderModule`; `prewarm()` at renderer init for hot variants | `CesiumDebug.context.getRendererStatistics().shaderModuleCache` (a per-device compile census; no command prints it) |
+| **`WebGPUBindGroupCache`** | composite identity of `layout` + each `entry.resource`, via a per-cache WeakMap identity map; bounded LRU with optional age eviction so identity churn cannot grow it unboundedly (Batch 293) | **any `createBindGroup` on a per-frame path** — this is the answer to "how do I avoid allocating a bind group every frame" | `CesiumDebug.cacheStats()` → the `bindGroups:<name>` rows. At HEAD the context publishes three: `bloom`, `ambientOcclusion`, `autoExposure` (`WebGPUContext.ts:7041-7047`). A near-zero hit rate means a key input is changing between lookups — usually a per-frame wrapper object used where a stable underlying resource was needed |
+| `WebGPUGlobeBindGroupCache` | per-group resource-identity tuples: group 0 = ring-page identity, group 1 = 16 imagery view ids, group 2 = waterMask/ocean/material ids; `EVICT_AFTER_FRAMES = 600` (`:107`) | globe tile commands — already wired; took steady-state tile bind-group creation from 68/frame to 0 (Batch 241) | `CesiumDebug.globeBindGroups()` (reads `globalThis.__webgpuGlobeBindGroupCache`), including a per-group `byGroup` breakdown |
+| `WebGPUModelPipelineCache` | glTF model pipeline variants: alpha mode (OPAQUE/MASK/BLEND) × cull mode × presentation format, over four consolidated bind-group layouts | glTF model rendering — already wired | no cache counters; the module's debug surface is model **pick** emission, at `getRendererStatistics().modelPick` |
+| `WebGPUResourceCacheRegistry` | not a lookup cache — a registry of `() => void` clear callbacks, each run in its own try/catch | **register your new cache's `clear()` here at context init** so device-loss recovery drops its stale GPU handles | none (dispatcher only; `clearAll()` on the recovery path) |
+| `WebGPUEffectsStateCache` | `(groupKey, uniformBits)` — slot reuse for bindings whose GPU resource tuple is stable while uniform bytes change with the camera; bounded at `maxGroups: 256`, old slots rewritten rather than minting camera-position keys | an effects binding whose resources are fixed but whose uniform payload moves every frame | **no `CesiumDebug` command, but the cache self-reports.** In a debug build `createEffectsBindGroup` calls `getDiagnostics(bytesPerSlot)` (`:172-188`) on a ~3 s throttle and logs `N groups / N slots, N hits / N misses (X% hit), N writes / N skipped` (`WebGPUEffectsBindGroup.js:1850-1872`, inside `//>>includeStart('debug')`, so it costs nothing in release). Watch that hit rate first. A per-device aggregator summing every context's cache also exists — `getEffectsCacheDiagnostics()` (`:2061-2095`, exported both ways) — but nothing calls it at HEAD, so the specs (`WebGPUEffectsStateCacheSpec.js`, `WebGPUEffectsDeviceCacheSpec.js`) are its only readers |
+| `WebGPUModelMetadataCache` | `WeakMap` by model → primitive → runtime node, plus a metadata revision; memoizes structural metadata packing **and** the generated WGSL together | model metadata codegen — source-generation work that must not run per frame | **no live surface** — `getWebGPUModelMetadataCacheDiagnostics()` (`:895`) is read only by `WebGPUModelMetadataCacheSpec.js` |
+| `WebGPUCloudShadowBindGroupCache` | four fixed cascade slots, each holding one exact resource tuple (layout, cloud UB, weather/shape/detail views, samplers, shadow UB + offset + size) | procedural-cloud shadow cascades (`WebGPUProceduralCloudRenderer.ts:765`) | none — a plain 4-slot array, no counters |
+| `WebGPUShadowCastBindGroupCache` | nested `WeakMap` layers — stable host → device → layout → each bound GPU resource — so a stable model primitive cannot retain obsolete tuples across device recovery; binding numbers use ordinary `Map`s because they are primitives | shadow-map and CSM cast bind groups (`WebGPUShadowMapRenderer.js:20`, `WebGPUCSMCastPass.ts:39`) | none |
+
+**Not in this map: `WebGPUShaderCache`.** The file exists, but the context's field
+is `private _webgpuShaderCache: WebGPUShaderCache | null = null`
+(`WebGPUContext.ts:673`) and is **never assigned** — the only other reference is
+the device-loss clear callback at `:7646`, which optional-chains through the
+permanent `null`. It is declared, never instantiated. Listing it would import a
+new staleness; its disposition is already recorded in `DEFERRED_WORK.md`. Use
+`WebGPUShaderModuleCache` instead.
+
+**Two habits worth taking from the table.** First, four of the eleven caches keep
+counters that nothing reads at runtime — if you add a cache, publish its stats
+through `getRendererStatistics()` so `CesiumDebug` can reach them, or the cache
+is unfalsifiable in the field. Second, every cache that holds GPU handles must
+register a clear callback with `WebGPUResourceCacheRegistry`, or device-loss
+recovery will hand it back stale handles.
 
 ---
 
@@ -870,26 +1376,46 @@ The pattern's pieces:
 This is the template for future library built-ins: pre-translated WGSL twin +
 registry row + per-frame uniform sync, never runtime GLSL translation.
 
-### 11.1 OPEN — pre-tonemap ordering divergence vs WebGL
+### 11.1 The shipped stage ordering (matches WebGL) — with one HDR caveat
 
-**Known caveat (confirmed OPEN at the 2026-07-02 campaign audit; not yet
-fixed).** WebGPU executes the intercepted library stages *and* user WGSL
-stages **before** tonemapping (`WebGPUPostProcessPipeline.ts` execute order:
-user stages ~1406 → library stages ~1425 → TAA → tonemap ~1503 → color
-grading → FXAA), whereas WebGL's `PostProcessStageCollection` runs added
-stages **after** the tonemapping stage (`PostProcessStageCollection.js`
-~745–758 sets the tonemapped SDR output as the added stages' input). Impact
-today is **HDR-only** — the SDR cross-backend probe passed at 9.85% — but
-under an HDR canvas the builtins receive unbounded linear input with no
-`hdrMode` compensation (ColorGrading and FXAA got exactly that compensation in
-B479; the library/user stages have not). The in-code comments at ~1403/1421
-claiming a "WebGL-matching insertion point", and the header docstring's stage
-order (~lines 39–42), are **inaccurate** and slated for correction with the
-fix. Note the contrast with TAA, whose pre-tonemap placement is *correct by
-design* (Batch 290 reconciliation — TAA does its own reversible
-tonemap-weighting); the library/user-stage placement has no such justification
-yet. Follow-up: hdrMode compensation or post-tonemap placement for
-library/user stages.
+`WebGPUPostProcessPipeline.execute()` runs, in source order:
+
+1. `_tonemapStage` (`:1746`)
+2. `_userStages` — `addUserStage(...)` WGSL stages (`:1764`)
+3. `_libraryStages` — the intercepted `PostProcessStageLibrary` twins (`:1782`)
+4. ColorGrading → custom stages → FXAA, as one single-pass chain
+   (`:1802-1830`), then the final identity blit to the canvas
+
+**This matches WebGL.** `Scene/PostProcessStageCollection.js:745-753` executes
+the tonemapping stage first and then seeds the added-stage chain from
+`getOutputTextureFromStage(tonemapping)` — so stages added through
+`scene.postProcessStages.add(...)` see tonemapped SDR output on both backends,
+ahead of FXAA.
+
+**Historical note — this section previously said the opposite.** It declared an
+OPEN "pre-tonemap ordering divergence", cited execute-order line numbers that no
+longer exist, and branded the in-code comments **inaccurate**. Re-verified at
+HEAD: the ordering above is what ships, and the impugned comments are **correct**
+— `WebGPUPostProcessPipeline.ts:1758-1763` (the 4.1 user-stage block) and
+`:1775-1781` (the 4.2 library block) each state the post-tonemap, pre-FXAA slot
+and name the WebGL insertion point they match, as does the module docstring at
+`:29-38`. Those docstrings are the most reliable layer in this corpus; treat a
+document that contradicts one as the stale party until proven otherwise.
+
+**The one caveat that survives, and it is not a divergence.** Under an **HDR
+canvas** the tonemap stage is bypassed, so the user and library stages receive
+linear HDR rather than SDR. That mode has **no WebGL counterpart** — WebGL never
+presents an HDR canvas — so it cannot diverge from WebGL; it is simply a WebGPU
+path in which an SDR-calibrated stage may misbehave on unbounded input.
+ColorGrading and FXAA handle this through the `hdrMode` uniform that
+`setHDROutputMode()` flips (`:1795-1801`); the user and library stages have no
+equivalent. The caveat is stated in the code itself at `:33-35`.
+
+TAA's pre-tonemap placement is separate and *correct by design* (Batch 290
+reconciliation — TAA does its own reversible tonemap-weighting), for the reason
+given in the docstring at `:18-28`: the inverse tonemap weight `c/(1-luma)` is
+well defined only for linear input, and resolving after the tonemap would also
+double-apply a tone curve and clamp highlights in the history buffer.
 
 ---
 

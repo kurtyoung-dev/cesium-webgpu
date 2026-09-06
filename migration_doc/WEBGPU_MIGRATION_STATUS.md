@@ -6,7 +6,7 @@
 
 **Prior Update:** May 13, 2026 (Session 65 Batches 37-43 — Camera/rasterization root causes fixed: VR2-3c disk-extent drift (Viewer.createAsync `display: none` → wrong frustum.aspectRatio), VR2-1 low-alt terrain load (`surfaceTile.center` → `mesh.center` parameter bug + fog night-dim WebGL parity), ground-atmosphere proper integration (FS viewDir bug, retired Batches 30-31 cap×scale workaround), Moon bundle MSAA bridge, Phase 4 atmospheric conditions closure with wind UBO scaffolding, Phase 6 `enableVolumetric` toggle wiring. Bloom / Particle System / 3D Tiles Photogrammetry / Bathymetry now within 1-5 % of WebGL pixel parity. 0 GPU validation errors across regression sweep.)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) -> [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)
-**Overall Progress:** ~93% of full WebGL **feature parity** — and this figure measures *feature presence/coverage* (how many of the ~290 inherited + fork-added features have a working WebGPU code path), NOT pixel-level *visual parity*. The two are distinct axes and should not be conflated: feature-coverage is ~93%, while pixel-level *visual* parity varies by subsystem — the globe surface + imagery render at parity, but the atmosphere/sky limb band and some model/primitive shading deltas remain open (tracked per-feature via the `Tools/visual-regression` probes + DEFERRED_WORK), so there is no single honest visual-parity percentage to quote. The older "~60%" figure (now only in `archive/MIGRATION_STATUS_ARCHIVE.md`) is a stale feature-coverage reading from an earlier session — superseded by this ~93%, not a competing visual-parity number. Held steady as the Batch 179-185 work closed two architectural roadblocks (BufferPolygon vector-tile render + flat textured-material GroundPrimitive classification) that had blocked the modern vector-tile and ground-classification paths. CSM Slice 1 (cascaded shadow maps) + TAA Slice 1 (temporal AA with RTE motion vectors) both shipped in Sessions 33-34 — globe terrain + phong primitives now sample cascaded shadows with RTE-precise cascade VPs and per-cascade slope-scaled depth bias, and TAA accumulates history via depth-based motion vectors that work correctly at orbital altitudes. CSM Slice 2a (cast-variant unlock, 2026-04-18) followed: all seven shadow cast variants now work under CSM, so models (skinned/instanced/static) and quantized-mesh terrain all cast cascaded shadows alongside RTE primitives. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, clipping; 48 feature renderers registered (`WebGPUFeatureRenderers.ts` has 48 `registerFeatureRenderer()` calls; `FeatureRendererKey.js` declares 49 numeric keys 0–48 + a `COUNT` sentinel); 13 of 13 render passes handled; 10+ Jasmine spec files; debug visualization stack complete. WebGPU shader module cache (`(sourceId, defines)` keyed), `//>>ifdef` preprocessor, and `ShaderDefine` bitmask registry now central infrastructure. Principal-engineer review remediation: ~95% of 2026-04-16 finding set addressed through Batch 27.
+**Overall Progress:** ~93% of full WebGL **feature parity** — and this figure measures *feature presence/coverage* (how many of the ~290 inherited + fork-added features have a working WebGPU code path), NOT pixel-level *visual parity*. The two are distinct axes and should not be conflated: feature-coverage is ~93%, while pixel-level *visual* parity varies by subsystem — the globe surface + imagery render at parity, but the atmosphere/sky limb band and some model/primitive shading deltas remain open (tracked per-feature via the `Tools/visual-regression` probes + DEFERRED_WORK), so there is no single honest visual-parity percentage to quote. The older "~60%" figure (now only in `archive/MIGRATION_STATUS_ARCHIVE.md`) is a stale feature-coverage reading from an earlier session — superseded by this ~93%, not a competing visual-parity number. Held steady as the Batch 179-185 work closed two architectural roadblocks (BufferPolygon vector-tile render + flat textured-material GroundPrimitive classification) that had blocked the modern vector-tile and ground-classification paths. CSM Slice 1 (cascaded shadow maps) + TAA Slice 1 (temporal AA with RTE motion vectors) both shipped in Sessions 33-34 — globe terrain + phong primitives now sample cascaded shadows with RTE-precise cascade VPs and per-cascade slope-scaled depth bias, and TAA accumulates history via depth-based motion vectors that work correctly at orbital altitudes. CSM Slice 2a (cast-variant unlock, 2026-04-18) followed: all seven shadow cast variants now work under CSM, so models (skinned/instanced/static) and quantized-mesh terrain all cast cascaded shadows alongside RTE primitives. Globe terrain renders in production with imagery, shadows, fog, atmosphere, ocean, day/night, clipping; 52 feature renderers registered (`WebGPUFeatureRenderers.ts` has 41 eager `registerFeatureRenderer()` calls plus 11 lazy `registerFeatureRendererLoader()` calls; `FeatureRendererKey.js` declares 54 numeric keys 0–53 + a `COUNT` sentinel, with `FOG` and `GROUND_ATMOSPHERE` deliberately unregistered); 14 of the 15 `Pass` slots have a WebGPU dispatch site (`CESIUM_3D_TILE_PLANAR_FILL_ID` does not — see §6); 10+ Jasmine spec files; debug visualization stack complete. WebGPU shader module cache (`(sourceId, defines)` keyed), `//>>ifdef` preprocessor, and `ShaderDefine` bitmask registry now central infrastructure. Principal-engineer review remediation: ~95% of 2026-04-16 finding set addressed through Batch 27.
 
 **Typing state (Session 30 end):** Renderer/WebGPU is at the principled typing floor — every remaining `any`/`unknown`/`object`/`Record<string, unknown>` is a documented intentional boundary. Full shared-type surface: `DebugStatsValue`, `PickTarget`/`PickKind`/`PickResult`, `Renderable`, `ViewportQuadCommandOptionsBase`, `SceneGlobalCache`, and 15 co-located `.d.ts` files for JS interop. BGL helper adoption: 86 of 88 call sites (46 files). Non-breaking discriminated picking API (`getPickResult(color) → { target, kind }`) lets consumers replace `instanceof` chains with exhaustive `switch (kind)`.
 
@@ -2823,23 +2823,40 @@ All WGSL shaders fall into three categories:
 
 ## 6. Render Pass Coverage
 
-All 13 CesiumJS render passes are handled in the WebGPU path. ENVIRONMENT runs before the WebGPU branch via `renderEnvironment()` in SceneRenderer.js; all other passes are in `WebGPUSceneRenderer.ts`.
+`Renderer/Pass.js:9-32` declares **15** pass slots (`0..14`) plus
+`NUMBER_OF_PASSES: 15`. **Fourteen of the fifteen have a WebGPU dispatch site;
+`CESIUM_3D_TILE_PLANAR_FILL_ID` (5) does not.** Earlier revisions of this table
+said "all 13 render passes", omitted slots 5 and 13 entirely, and therefore
+mis-numbered every slot from 5 upward — do not carry those numbers forward.
+Slot numbers below are the enum's, re-read at HEAD.
 
-| Pass | ID | Handler | Status |
+ENVIRONMENT does **not** run before the WebGPU branch: `SceneRenderer.js:431-433`
+calls `renderEnvironment()` only when `!scene._alternateSceneRenderer`, i.e. on
+WebGL. On WebGPU the environment commands are injected into the farthest
+frustum's ENVIRONMENT bucket and dispatched inside the WebGPU render pass. The
+dispatch sites also are not all in `WebGPUSceneRenderer.ts`: the per-frustum legs
+live in `WebGPUSceneRendererFrustumLoop.ts`, the tile sub-chain in
+`WebGPUSceneRenderer3DTilePasses.ts`, and OVERLAY in
+`WebGPUSceneRendererPostFrustumChain.ts`. See `ARCHITECTURE.md` §4a for the full
+ordering and the per-leg anchors.
+
+| Pass | ID | WebGPU dispatch site | Status |
 |------|----|---------|--------|
-| ENVIRONMENT | 0 | `renderEnvironment()` in SceneRenderer.js (before branch) + injected into farthest frustum (S8/S9) | ✅ |
-| COMPUTE | 1 | Handled by individual compute dispatches | ✅ |
-| GLOBE | 2 | `_executeGlobePass()` (with render bundle when ≥8 tiles) | ✅ |
-| TERRAIN_CLASSIFICATION | 3 | `_executePassCommands(Pass.TERRAIN_CLASSIFICATION)` | ✅ |
-| CESIUM_3D_TILE_EDGES | 4 | `_execute3DTilePasses()` (optional indirect-draw fast path S26) | ✅ |
-| CESIUM_3D_TILE | 5 | `_execute3DTilePasses()` | ✅ |
-| CESIUM_3D_TILE_CLASSIFICATION | 6 | `_execute3DTilePasses()` | ✅ |
-| CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW | 7 | `_execute3DTilePasses()` | ✅ |
-| OPAQUE | 8 | `_executeOpaquePass()` | ✅ |
-| TRANSLUCENT | 9 | `_executeTranslucentPass()` (OIT MRT path with auto-variant creation) | ✅ |
-| VOXELS | 10 | `_executePassCommands(Pass.VOXELS)` | ✅ |
-| GAUSSIAN_SPLATS | 11 | `_executePassCommands(Pass.GAUSSIAN_SPLATS)` | ✅ |
-| OVERLAY | 12 | `_executeOverlayPass()` | ✅ |
+| ENVIRONMENT | 0 | `FrustumLoop:232-245` — `_executePassCommands(Pass.ENVIRONMENT)`, farthest frustum only (`i === 0`); commands injected by `SceneRenderer.js:435+` | ✅ |
+| COMPUTE | 1 | Individual compute dispatches outside `executeCommands`; `WebGPUComputeCommand.ts:142` stamps the slot | ✅ |
+| GLOBE | 2 | `FrustumLoop:249` → `_executeGlobePass()` (render bundle when ≥8 tiles) | ✅ |
+| TERRAIN_CLASSIFICATION | 3 | `FrustumLoop:286-292` — `_executePassCommands(Pass.TERRAIN_CLASSIFICATION)` | ✅ |
+| CESIUM_3D_TILE_EDGES | 4 | `3DTilePasses:371` (edge-MRT redirect) / `:399` (scene framebuffer) | ✅ |
+| CESIUM_3D_TILE_PLANAR_FILL_ID | 5 | **None.** The only dispatcher is WebGL's `performPlanarFillIdPass` (`SceneRenderer.js:351-366`, called at `:718`); `ModelDrawCommand.js:952` still bins commands here, so on WebGPU they are silently never drawn | ❌ |
+| CESIUM_3D_TILE | 6 | `3DTilePasses:313` (`runSceneTileMain`), or the invert-classification redirect at `:260-263` | ✅ |
+| CESIUM_3D_TILE_CLASSIFICATION | 7 | `3DTilePasses:607` / `:623-625` / `:634-636` | ✅ |
+| CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW | 8 | `3DTilePasses:576` (invert FBO) / `:623-625` / `:634-636` | ✅ |
+| OPAQUE | 9 | `FrustumLoop:405` → `_executeOpaquePass()` | ✅ |
+| TRANSLUCENT | 10 | `FrustumLoop:559` → `_executeTranslucentPass()` (OIT MRT path; the OIT composite runs here, `TranslucentPass:280-296`) | ✅ |
+| VOXELS | 11 | `FrustumLoop:355-376` — back-to-front sort then `_executePassCommands(Pass.VOXELS)`; deliberately **before** OPAQUE | ✅ |
+| GAUSSIAN_SPLATS | 12 | `FrustumLoop:487-522` — staged onto `_deferredOITSplats` or sorted back-to-front and drawn inline | ✅ |
+| CESIUM_3D_TILE_EDGES_DIRECT | 13 | `FrustumLoop:469-475` — after OPAQUE, single-target pipeline on the live scene pass | ✅ |
+| OVERLAY | 14 | `PostFrustumChain:80` → `_executeOverlayPass()`, once per frame, nearest frustum only | ✅ |
 
 Additional WebGPU-specific passes:
 - **Pick pass** — `_executePickPass()` (GLOBE, 3D_TILE, OPAQUE, TRANSLUCENT)
@@ -2862,7 +2879,7 @@ Viewer.createAsync(container, { contextOptions: { renderer: 'webgpu' } })
   │   │   │   └─ new WebGPUContext(canvas, device, adapter)
   │   │   │       ├─ _initialize() — creates default texture, sampler, depth format
   │   │   │       ├─ _warmUpPipelines() — pre-compile globe + GPU culler
-  │   │   │       ├─ registerWebGPUFeatureRenderers(context) — 48 registerFeatureRenderer calls (9 lazy)
+  │   │   │       ├─ registerWebGPUFeatureRenderers(context) — 41 registerFeatureRenderer + 11 registerFeatureRendererLoader calls
   │   │   │       └─ Matrix4.setDepthRangeType('webgpu') — 0-1 NDC
   │   │   └─ new Scene(options) with _preInitializedContext
   │   └─ new CesiumWidget(container, { _preInitializedScene: scene })
@@ -3001,11 +3018,11 @@ Viewer.createAsync(container, { contextOptions: { renderer: 'webgpu' } })
 | CsmBuiltins.js entries | 97 (91 functions + 6 structs) |
 | WebGPU renderer files | 108+ |
 | WebGPU renderer LOC | ~47,000 |
-| Feature renderer keys | 50 (49 numeric keys 0–48 + COUNT sentinel; `FeatureRendererKey.js`) |
-| Feature renderers registered | 48 (`registerFeatureRenderer()` calls in `WebGPUFeatureRenderers.ts`) |
-| Lazy-loaded feature renderers | 9 (Gaussian splat, point cloud, point cloud EDL, voxel, SSR, weather particles, procedural clouds, NPR outlines, contact shadows) — subset of the 48, registered inside `registerFeatureRendererLoader` callbacks |
+| Feature renderer keys | 55 (54 numeric keys 0–53 + COUNT sentinel; `FeatureRendererKey.js`) |
+| Feature renderers registered | 52 of the 54 keys, in `WebGPUFeatureRenderers.ts`: 41 eager `registerFeatureRenderer()` calls + 11 lazy `registerFeatureRendererLoader()` calls. `FOG` (8) and `GROUND_ATMOSPHERE` (29) are deliberately unregistered — both carry an explanatory comment at the point they would sit (`:407`, `:802`) |
+| Lazy-loaded feature renderers | 11 (Gaussian splat, point cloud, point cloud EDL, voxel, SSR, NPR outlines, contact shadows, weather particles, procedural clouds, flow field, FFT ocean) — registered through `registerFeatureRendererLoader()`, a **separate** API from the 41 eager calls, not a subset of them |
 | Scene features with WebGPU | 30+ of 33+ (~92%) |
-| Rendering passes functional | 13 of 13 (100%) |
+| Rendering passes functional | 14 of the 15 `Pass` slots; `CESIUM_3D_TILE_PLANAR_FILL_ID` (5) has no WebGPU dispatch site (§6) |
 | Test pages | 29 |
 | Jasmine unit tests | 10 spec files (Buffer, DrawCommand, ImageUpload, PrimitiveIndexUtils, RingBufferAllocator, ShadowMapRenderer, SubgroupUtils, Texture, ContextFactory, GraphicsContext, NagaTranspiler) |
 | ES6 modernized files | ~499 (424 via codemod + ~75 prior manual) |
