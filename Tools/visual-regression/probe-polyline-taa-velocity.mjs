@@ -492,17 +492,27 @@ export const descriptor = {
       const emptyWebgl = await capture(page, outputDirectory, "webgl-empty");
 
       const gate = await collectGateErrors(page);
-      return {
-        animatedColor,
-        animatedDash,
-        webgpuLinePixels: countLinePixels(webgpuShot.decoded),
-        webglLinePixels: countLinePixels(webglShot.decoded),
-        emptyWebgpuLinePixels: countLinePixels(emptyWebgpu.decoded),
-        emptyWebglLinePixels: countLinePixels(emptyWebgl.decoded),
-        errors:
-          gate.errors.length + consoleErrors.length + (gate.deviceLost ? 1 : 0),
-        gateErrorsSample: gate.errors.slice(0, 6),
-      };
+      // ONE CELL PER RUN, WRAPPED IN AN ARRAY. The runtime collects each run
+      // with `cells.push(...(produced ?? []))` (`lib/probe-runtime.mjs`), so a
+      // bare object is not a cell — it is a value the spread cannot iterate,
+      // and the run dies inside the runtime carrying the runtime's line
+      // number and no mention of this probe. That is exactly what cost AR-752
+      // its Edge acceptance leg on 2026-09-05.
+      return [
+        {
+          animatedColor,
+          animatedDash,
+          webgpuLinePixels: countLinePixels(webgpuShot.decoded),
+          webglLinePixels: countLinePixels(webglShot.decoded),
+          emptyWebgpuLinePixels: countLinePixels(emptyWebgpu.decoded),
+          emptyWebglLinePixels: countLinePixels(emptyWebgl.decoded),
+          errors:
+            gate.errors.length +
+            consoleErrors.length +
+            (gate.deviceLost ? 1 : 0),
+          gateErrorsSample: gate.errors.slice(0, 6),
+        },
+      ];
     })();
     work.catch(() => {});
     let watchdogTimer;
@@ -529,10 +539,14 @@ export const descriptor = {
     return { base: context.origin, runs: cells };
   },
   verdicts(cells) {
-    // `cells` is the array of per-run results the runtime collected. The
-    // verdict reads the WORST run, so one lucky frame cannot carry it.
-    const runs = Array.isArray(cells) ? cells : [cells];
-    const perRun = runs.map((run) => verdictsFor(run));
+    // `cells` is the array of per-run results the runtime collected — it is
+    // built as `const cells = []` and only ever pushed into, so it is an array
+    // by construction and needs no `Array.isArray` coercion here. The coercion
+    // that used to sit on this line is what made the bare-object return above
+    // look survivable; the runtime spread had already thrown long before this
+    // function was reached. The verdict reads the WORST run, so one lucky run
+    // cannot carry it.
+    const perRun = cells.map((run) => verdictsFor(run));
     const ids = perRun[0].map((verdict) => verdict.id);
     return ids.map((id, index) => ({
       id,
@@ -542,7 +556,8 @@ export const descriptor = {
     }));
   },
   summary(receipt) {
-    const runs = Array.isArray(receipt.runs) ? receipt.runs : [receipt.runs];
+    // `receipt.runs` is the same array `receipt()` was handed; see `verdicts`.
+    const runs = receipt.runs;
     const lines = [
       "# Polyline TAA velocity emission (AR-752)",
       "",

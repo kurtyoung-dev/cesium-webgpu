@@ -15616,6 +15616,26 @@ command's existence, its two instance streams, its pipeline's entry points and `
 TAA-off and no-polyline controls; the four variants staying silent; the inertness mutant; and the
 probe's own half-float decode and verdict arithmetic, so the Edge leg cannot pass vacuously).
 It runs under `npm run test-engine-node`.
+`Tools/visual-regression/probe-descriptor-cells-contract.spec.mjs` (added in round 2, under
+`npm run test-visual-probe-contracts`) drives `runProbe` over the probe's REAL descriptor with a
+stub browser and asserts it can complete a `--runs 3` walk at all — see the Edge-leg status below.
+
+**Edge acceptance leg — ATTEMPTED 2026-09-05, NOT RUN (instrument defect), still OWED.**
+Éowyn Edge job 9 leg 4 ran `probe-polyline-taa-velocity.mjs --runs 3` against the served sync
+clone. The served-build preflight passed, all four captures were written, and the run then died
+inside the runtime on run 0 with `TypeError: Spread syntax requires ...iterable[Symbol.iterator]`
+— exit 2, no receipt, no verdicts. The probe's `cells()` returned the run's single cell as a bare
+object where `runProbe` collects `cells.push(...(produced ?? []))`, so **no measurement of clauses
+1-4 exists yet and nothing about the engine was learned or refuted.** Round 2 of lane Ulfang
+returns one cell per run in an array, removes the two `Array.isArray(cells) ? cells : [cells]`
+coercions that made the wrong shape look survivable (dead under the contract: the runtime builds
+`const cells = []` and only pushes into it), makes `runProbe` name the violating probe instead of
+raising an anonymous spread error, and adds the Node check above, whose mutant — the pre-fix
+return shape — reproduces exit 2 with no receipt. The instrument defect is written up in
+`WEBGPU_DEBUGGING_LOG.md` under "Lane Ulfang round 2". **The leg's bars are unchanged and the leg
+is still owed:** `node Tools/visual-regression/probe-polyline-taa-velocity.mjs --runs 3`, four
+verdicts on every run — velocity texels > 0, `PolylineDash` control 0, smear ratio in
+[0.75, 1.25], errors 0.
 
 **Residual, surfaced not papered over (Principle 9).** Velocity for the four material variants
 needs `vertexVelocityMain` / `fragmentVelocityMain` added to `PolylineArrow.wgsl`,

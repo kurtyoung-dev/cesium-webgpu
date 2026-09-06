@@ -794,7 +794,7 @@ export function isEntryPoint(moduleUrl, argv = process.argv) {
  * @param {string[]} [descriptor.servedArtifacts] Artifacts the preflight must match.
  * @param {string[]} [descriptor.launchArgs] Edge flags instead of {@link EDGE_LAUNCH_ARGS}; recorded in the runtime receipt.
  * @param {"probe-owned"|"runtime"} [descriptor.receiptEnvelope] Receipt shape.
- * @param {Function} descriptor.cells Called once per run; returns that run's cells.
+ * @param {Function} descriptor.cells Called once per run; returns an ARRAY of that run's cells (wrap a single cell as `[cell]`).
  * @param {Function} [descriptor.receipt] `(cells, context) => object` — the probe's fields.
  * @param {Function} [descriptor.verdicts] `(cells, context) => Array` — the probe's verdicts.
  * @param {Function} [descriptor.summary] `(receipt, runtimeReceipt) => string`.
@@ -892,6 +892,22 @@ export async function runProbe(descriptor, dependencies = {}) {
           repositoryRoot,
           captures,
         });
+        // A descriptor that returns its single cell as a bare object used to
+        // reach the spread below and die as "Spread syntax requires
+        // ...iterable[Symbol.iterator] to be a function" — an error carrying
+        // this module's line number, naming neither the probe nor the shape,
+        // raised after the Edge slot had been taken and the measurements made.
+        // That is how AR-752's acceptance leg was lost on 2026-09-05. The
+        // contract is checked here so the violation names itself.
+        if (
+          produced !== null &&
+          produced !== undefined &&
+          !Array.isArray(produced)
+        ) {
+          throw new TypeError(
+            `${descriptor.name}: descriptor.cells must return an array of cells, got ${Object.prototype.toString.call(produced)}; wrap a single cell as [cell]`,
+          );
+        }
         cells.push(...(produced ?? []));
       } finally {
         await browser.close();

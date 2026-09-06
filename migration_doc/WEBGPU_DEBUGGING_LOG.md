@@ -19898,3 +19898,85 @@ and would have refused on run 0, leg 0, measuring nothing; `probe-postprocess-re
 `Tools/visual-regression/display-conditions-globedepth-verdicts.spec.mjs` (new), `package.json`,
 `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`. No engine file is
 touched, so WebGL is byte-identical and no rebuild changes engine bytes.
+
+## Lane Ulfang round 2 (wave P0-2, 2026-09-05) — instrument defect: the velocity probe could not complete a run, so AR-752's Edge leg was NOT RUN
+
+**Bug number:** instrument defect on `AR-752` / `AR-M38`, found by Éowyn Edge job 9 leg 4.
+
+**Files affected:** `Tools/visual-regression/probe-polyline-taa-velocity.mjs` (the defect),
+`Tools/visual-regression/lib/probe-runtime.mjs` (the contract it violated, now checked),
+`Tools/visual-regression/probe-descriptor-cells-contract.spec.mjs` (new — the check that would
+have caught it).
+
+**Symptom.** `probe-polyline-taa-velocity.mjs --runs 3` exited 2 on run 0, argv-independent, with
+no receipt and no verdicts (`.../wave-p0-2-edge-2026-09-05-job9/leg4-ar752/polyvel-error.json`):
+
+```
+polyvel: TypeError: Spread syntax requires ...iterable[Symbol.iterator] to be a function
+    at runProbe (Tools/visual-regression/lib/probe-runtime.mjs:895:15)
+```
+
+The served-build preflight had already passed and all four captures had been written, so the
+measurement half of the run executed and then died on the way into the collector. Nothing about
+the engine was learned; `AR-752`'s acceptance leg and `AR-M38`'s GPU half remain owed.
+
+**Root cause.** The runtime collects one run with `cells.push(...(produced ?? []))`
+(`lib/probe-runtime.mjs`), and its descriptor contract says `cells` "returns that run's cells" —
+an array. The velocity descriptor returned the run's single cell as a bare object
+(`return { animatedColor, animatedDash, … }`), which the spread cannot iterate. The probe's own
+`verdicts` and `summary` each opened with `Array.isArray(cells) ? cells : [cells]`, which reads as
+coverage but is unreachable: the runtime throws long before either helper is called. Those
+coercions are what made the wrong return shape look survivable at review.
+
+**Fix applied.** Three parts.
+
+1. The descriptor returns `[{ … }]` — one cell per run, the shape every other migrated probe
+   returns (`probe-polyline-multimaterial.mjs` returns its `legs` array; the runtime spec's own
+   canonical fake returns `[{ run, value }]`).
+2. Both `Array.isArray` coercions are removed. They are dead under the contract: the runtime
+   builds `const cells = []` and only ever pushes into it, then hands that same array to `receipt`
+   and `verdicts`, and `receipt.runs` is that array.
+3. `runProbe` now checks the contract where it is relied on: a `cells()` result that is neither
+   nullish nor an array throws `"<probe>: descriptor.cells must return an array of cells …"`
+   instead of an anonymous spread `TypeError` carrying the runtime's line number. The next probe
+   to get this wrong is told which probe and which shape.
+
+**Why nothing caught it.** The lane had no browser, and no Node check executed `runProbe` with
+this descriptor. The two fleet-contract specs are source-text analyzers:
+`probe-fleet-contract.spec.mjs` asks whether a probe carries a watchdog and closes its browser in
+a `finally`; `runtime-residency-contract.spec.mjs` asks whether a `@runtime`-tagged probe
+re-implements a concern the runtime owns. Neither calls `cells()`, so **a green run of either
+would still have missed this** — and both are red at HEAD for unrelated reasons (`AR-893`:
+`probe-fleet-contract` C2/C5 over four watchdog-less probes; `runtime-residency-contract` D2/D4
+over `probe-pnts-model-attenuation.mjs`'s missing `@runtime` tag). The sibling behaviour spec
+`polyline-taa-velocity-emission.spec.mjs` pins the probe's exported `countNonZeroVelocityTexels`
+and `verdictsFor` arithmetic, but imports no descriptor and never runs one.
+
+**The check that closes it.** `probe-descriptor-cells-contract.spec.mjs` (new, on
+`npm run test-visual-probe-contracts`) drives `runProbe` over the REAL velocity descriptor with a
+stub browser: `launch` is the runtime's only seam onto Edge, so a page that answers the probe's
+`page.evaluate` calls by the source of the function it is handed, and returns PNGs the spec
+encodes, walks the whole chain the Edge leg walks — argv → preflight → slot → `cells` → `receipt`
+→ `verdicts` → `summary` → exit code — in milliseconds with no GPU. It asserts `--runs 3` produces
+three cells, four verdicts each carrying three per-run details, three summary rows, four PNGs, and
+that the served-build identity refusal still decides before any browser is claimed. The mutant is
+the pre-fix return shape restored in memory: the walk goes red at exit 2 with no receipt, which is
+exactly what leg 4 saw.
+
+**Fleet sweep.** `Array.isArray(cells) ? cells : [cells]` occurs in exactly one probe — this one —
+across the 15 probes that run on `lib/probe-runtime.mjs`'s `runProbe`, so no sibling carries the
+same defect. (`grep -l runProbe Tools/visual-regression/probe-*.mjs` returns 19 at HEAD, but three
+of those — `probe-gsplat-frame-variance.mjs`, `probe-moon-mip-motion-edge.mjs` and
+`probe-sky-aureole-anchor.mjs` — define their own local `runProbe` and never import the runtime,
+and `probe-runtime.spec.mjs` is a spec, not a probe.)
+
+**Edge leg, still owed (unchanged bars):**
+`node Tools/visual-regression/probe-polyline-taa-velocity.mjs --runs 3` — four verdicts on every
+run: velocity texels > 0 (pre-fix exactly 0), the `PolylineDash` control 0, smear ratio in
+[0.75, 1.25], errors 0.
+
+**Files modified:** `Tools/visual-regression/probe-polyline-taa-velocity.mjs`,
+`Tools/visual-regression/lib/probe-runtime.mjs`,
+`Tools/visual-regression/probe-descriptor-cells-contract.spec.mjs` (new), `package.json`,
+`migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`. No engine file is
+touched, so WebGL and WebGPU engine bytes are unchanged.
