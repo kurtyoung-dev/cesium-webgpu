@@ -1,611 +1,70 @@
-# Cline Rules for CesiumJS WebGPU Project
-
-## Core Principles
-
-### 1. **Preserve Existing Functionality**
-- WebGL rendering must continue to work correctly — **never break existing WebGL behavior**
-- Upstream WebGL files **may be modified** when it improves overall architecture (e.g., `Context.js` ES6 class conversion + `extends GraphicsContext`, `View.js` context support, `FrameState.js` graphicsContext alias) — the goal is preserving *functionality*, not preserving *code as-is*
-- All existing APIs must continue to work as expected
-- Maintain backward compatibility with existing CesiumJS applications
-- Ensure all existing tests continue to pass
-
-### 2. **Backend Agnosticism** (Three.js + PlayCanvas Hybrid)
-- Scene code must be **backend-agnostic** — it should NOT import from `Renderer/WebGPU/` or check `isWebGPU`
-- All backend-specific code lives in **Feature Renderers** accessed through `GraphicsContext`
-- `GraphicsContext` is an **abstract base class** (not just an interface) — both `Context.js` (WebGL) and `WebGPUContext.ts` extend it
-- Both renderers must implement the **same abstract API** — TypeScript enforces parity at compile time
-- The renderer layer is the **ONLY** system that needs to know the current backend
-- External/extension code CAN query context type via getters (`context.rendererType`, `context.isWebGPU`) but should NOT branch on it
-- WebGPU renderer must be optional and configurable via startup parameters
-- Use feature detection to gracefully fallback to WebGL when WebGPU is not available
-- When WebGPU is selected, show loading state during async initialization
-
-### 2a. **Multi-Context Support**
-- Every `GraphicsContext` instance has a **unique ID** (`context.id`) and its own `rendererType`
-- `ContextRegistry` (static on `GraphicsContext`) tracks ALL active contexts
-- Multiple contexts can run simultaneously — split-screen, multi-view, mixed backends
-- Each `View` can optionally have its own context; defaults to the Scene's context
-- For WebGPU multi-view: prefer **device sharing** (one `GPUDevice`, multiple canvases) to minimize GPU memory
-- For cross-backend multi-view: use **SharedArrayBuffer** pools for CPU-side data sharing
-- Error logs MUST include context ID: `[CesiumJS:webgpu:ctx-a3f7] Pipeline creation failed`
-
-### 2c. **View-Level Context Architecture**
-- `View` accepts an optional `options.graphicsContext` parameter in its constructor
-- `view.effectiveContext` resolves to the per-view override OR the Scene's default context
-- `view.graphicsContext` getter/setter allows runtime context reassignment
-- `scene.createView(camera, viewport, { graphicsContext })` is the factory method for additional views
-- When using multi-view with WebGPU, use `WebGPUDevicePool` to share a single `GPUDevice` across canvases
-- When using cross-backend multi-view, use `SharedResourcePool` for CPU-side data sharing
-- `OffscreenContextSupport` enables background rendering in a WebWorker (opt-in via `useOffscreenCanvas: true`)
-
-### 2d. **Context-Aware Logging**
-- All renderer error/warning/info messages MUST use `context.log(level, message)` instead of bare `console.*`
-- Log prefix format: `[CesiumJS:type:shortId]` — e.g., `[CesiumJS:webgpu:a3f7c2e1] Pipeline creation failed`
-- `GraphicsContext.log()` is a concrete method on the abstract base class — both backends inherit it
-- `ContextRegistry.dumpDiagnostics()` outputs a formatted summary of all active contexts
-- `ContextRegistry.getFormattedDiagnostics()` returns a loggable string for debug UIs
-
-### 2b. **WebGL2 Targeting**
-- Our fork targets **WebGL2 only** — we do NOT actively maintain WebGL1 fallback paths
-- CesiumJS upstream still has WebGL1 support (34+ branching points), but our focus is WebGL2 + WebGPU
-- The `requestWebgl1` option in Context.js remains for edge cases but is not our testing target
-- This reduces maintenance from 3 rendering paths (WebGL1 + WebGL2 + WebGPU) to 2 (WebGL2 + WebGPU)
-- When upstream officially drops WebGL1, our merge will be clean
-
-### 4. **WebGL/WebGPU Feature Parity** — CRITICAL
-When implementing new features, fixing tech debt, addressing upstream issues, or adding planned functionality for **either** backend, always check whether the same improvement should also be applied to the **other** backend.
-
-#### Parity Rules
-- **New renderer-agnostic features** (e.g., `sortKey` on commands, `Light` class hierarchies, new sorting APIs) MUST be implemented for **both** WebGL and WebGPU simultaneously. The JS/TS API layer should be shared; only shader code and GPU resource creation differ.
-- **New shader features** (e.g., multi-light support) need both a **WGSL implementation** (for WebGPU) AND a **GLSL implementation** (for WebGL) — unless the feature is architecturally impossible in WebGL (e.g., compute shaders, storage buffers).
-- **Scene-level wiring** (e.g., `scene.lights`, View.js sort steps, collection `renderOrder`) is backend-agnostic and benefits both paths — implement it once in shared code.
-- **When adding a property to `DrawCommand`**, also add it to `WebGPUDrawCommand` (and vice versa), including in the options interface, `clone()`, and any sorting/dispatch logic.
-- **When fixing an upstream issue** for WebGPU, check if the fix can also improve WebGL. Document any WebGL parity gaps in `migration_doc/UPSTREAM_ISSUES_AND_TECH_DEBT.md`.
-
-#### Parity Checklist (use before completing any feature/fix)
-1. ✅ Does the feature's **JS/TS API** work for both backends? (e.g., `Light.ts` is renderer-agnostic)
-2. ✅ Does the feature's **shader code** exist for both WGSL and GLSL? (If not, document as a parity gap)
-3. ✅ Is the feature's **scene wiring** backend-agnostic? (e.g., `scene.lights` works regardless of renderer)
-4. ✅ Are **command properties** (`sortKey`, etc.) on both `DrawCommand` and `WebGPUDrawCommand` with matching clone/options support?
-5. ✅ Is the parity status documented in `UPSTREAM_ISSUES_AND_TECH_DEBT.md`?
-
-#### What is NOT required for parity
-- WebGPU-only capabilities (compute shaders, render bundles, indirect drawing, storage buffers) — these have no WebGL equivalent
-- WebGL1-specific fallbacks — we target WebGL2 only
-- Performance infrastructure that is inherently GPU-API-specific (e.g., `WebGPURenderBundleManager`)
-
-### 3. **Configuration-Based Approach**
-- New renderer must be selectable via initialization parameters (e.g., `renderer: 'webgpu'` or `renderer: 'webgl'`)
-- Default behavior should maintain current WebGL renderer unless explicitly specified
-- Example: `new Cesium.Viewer('cesiumContainer', { renderer: 'webgpu' });`
-
-## Project-Specific Guidelines
-
-### Architecture
-- Create parallel rendering paths for WebGL and WebGPU
-- Use abstract interfaces/base classes where possible to share common logic
-- Maintain renderer abstraction layer to switch between implementations
-
-### Scene Logic Extractor Pattern — CRITICAL for Collections
-When adding WebGPU rendering paths to collection files (Billboard, Polyline, Point, etc.), 
-**shared scene-level logic MUST run BEFORE the `if (context.isWebGPU)` branch point.**
-
-#### What Goes BEFORE the Branch (Shared)
-- `removeEntities(this)` — entity cleanup
-- `if (!this.show) return` — visibility check
-- `updateMode(this, frameState)` — 2D/Columbus View mode handling
-- Billboard/entity load error handling
-- Texture atlas scheduling (`frameState.afterRender.push(...)`)
-- `_allReady` state tracking
-
-#### What Goes AFTER the Branch (Backend-Specific)
-- GPU buffer creation/update (vertex arrays, instance buffers)
-- Pipeline/shader program creation
-- Draw command emission
-- WebGL-specific capability checks (instancedArrays, etc.)
-
-```javascript
-// CORRECT Pattern:
-update(frameState) {
-  removeEntities(this);           // Shared
-  if (!this.show) return;          // Shared
-  updateMode(this, frameState);    // Shared — MUST be before branch
-  handleLoadErrors(this);          // Shared
-  scheduleAtlasUpdate(frameState); // Shared
-  
-  if (context.isWebGPU) {
-    drawWebGPU(this, frameState);  // GPU-only operations
-    return;
-  }
-  // ... WebGL-only GPU operations below ...
-}
-```
-
-### Strengthened GraphicsContext Interface
-`GraphicsContext.ts` is the **single source of truth** for shared context capabilities.
-Scene code should query capabilities through the context, never through backend-specific APIs.
-
-**Key shared properties (available on BOTH Context.js and WebGPUContext.ts):**
-- `context.isWebGPU` — boolean, false for WebGL, true for WebGPU
-- `context.uniformState` — per-frame camera/projection matrices
-- `context.cache` — general-purpose resource cache
-- `context.stencilBuffer` / `context.msaa` / `context.colorBufferFloat`
-- `context.defaultTexture` — 1x1 white placeholder
-- `context.instancedArrays` — instanced rendering support
-- `context.createPickId(object)` — factory for pick IDs
-
-### Abstract RenderCommand (Path B — Backend-Agnostic commandList)
-`RenderCommand.js` provides a backend-agnostic command abstraction.
-New scene features SHOULD use `RenderCommand` instead of importing
-backend-specific `DrawCommand` or `WebGPUDrawCommand` directly. This makes
-`commandList` truly backend-agnostic with zero wasted entries.
-
-**How it works:** Scene code pushes `RenderCommand` objects to `commandList`.
-At execution time, `RenderCommand.execute(context, passState)` detects the
-backend via `context.isWebGPU` and delegates to the appropriate native command.
-Native commands are cached with dirty-version tracking — zero per-frame rebuild overhead.
-
-**Path B vs Path A:**
-- **Path A (Current):** Both `DrawCommand` and `WebGPUDrawCommand` objects coexist in `commandList`.
-  The executor checks `isWebGPUDrawCommand` and dispatches. Simple, works, but has mixed command types.
-- **Path B (Recommended for new code):** Scene code pushes `RenderCommand` objects (our abstract wrapper).
-  The context's `getNativeCommand()` converts them at execution time. commandList becomes uniform.
-
-### Phase D: Feature Renderer Migration Pattern
-Scene files access WebGPU renderers via `context.getFeatureRenderer('name')` instead of
-importing from `Renderer/WebGPU/`. All registrations are centralized in `WebGPUFeatureRenderers.ts`,
-called automatically during `WebGPUContext._initialize()`.
-
-**Migration pattern for each scene file:**
-```javascript
-// BEFORE (imports WebGPU directly):
-import { updateWebGPUFoo } from '../Renderer/WebGPU/WebGPUFooRenderer.js';
-if (context.isWebGPU) { updateWebGPUFoo(this, frameState); return; }
-
-// AFTER (backend-agnostic, using FeatureRendererKey enum):
-import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
-const fr = context.getFeatureRenderer(FeatureRendererKey.FOO);
-if (fr) { fr.update(this, frameState); return; }
-// WebGL code follows as the default fallback
-```
-
-### FrameState Per-View Context (Option B)
-FrameState's `context` property is updated before each View's render pass to match
-the View's `effectiveContext`. This enables multi-view with different backends.
-Matches how CesiumJS already updates `frameState.camera` per view.
-
-### Enumerated Keys Over String Lookups — Performance Rule
-- **NEVER** use string literals for registry/table lookups when a finite set of keys is known at compile time
-- **ALWAYS** use `FeatureRendererKey` enum constants (from `Renderer/FeatureRendererKey.js`) for `context.getFeatureRenderer()` and `context.registerFeatureRenderer()` calls
-- Enum values are integers — `GraphicsContext` uses a pre-allocated array indexed by enum value for O(1) direct access (no hash computation)
-- Adding a new feature renderer requires: (1) add key to `FeatureRendererKey.js`, (2) increment `COUNT`, (3) register in `WebGPUFeatureRenderers.ts`
-- This pattern applies broadly: prefer `Object.freeze({...})` numeric enums over string-keyed Maps/objects whenever the key set is fixed
-
-```javascript
-// WRONG — string-based lookup (hash + compare):
-const fr = context.getFeatureRenderer("invertClassification");
-
-// CORRECT — enum-indexed array access (O(1)):
-import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
-const fr = context.getFeatureRenderer(FeatureRendererKey.INVERT_CLASSIFICATION);
-```
-
-### Performance
-- Identify performance-critical code paths for WebAssembly conversion
-- Profile before and after optimizations
-- Document performance improvements with benchmarks
-
-### Testing
-- All new WebGPU features require corresponding tests
-- Test both WebGPU and WebGL paths
-- Include feature detection and fallback tests
-- Run existing test suite to verify no regressions
-
-### Code Organization
-- Place WebGPU-specific code in dedicated modules/directories
-- Use clear naming conventions (e.g., `*WebGPU.js`, `*WebGL.js`)
-- Share common utilities when possible
-
-### File Size Decomposition Rule — CRITICAL
-- **Files over ~1000 lines SHOULD be decomposed** into smaller focused modules unless there is a compelling reason to keep them monolithic (e.g., a single cohesive class with no logical split points, or a performance-critical hot path where module boundaries add overhead)
-- When decomposing, extract **file-scoped helper functions** into `*Helpers.js` or domain-specific companion files (e.g., `Primitive.js` → `PrimitiveShaderHelpers.js` + `PrimitiveCommandHelpers.js` + `PrimitiveGeometryHelpers.js`)
-- The **main class stays in the original file** with the original name — companion files are imported by it
-- Each decomposed file should be **under 1000 lines** and have a **clear single responsibility**
-- **Do NOT decompose** performance-critical math classes (`Cartesian3`, `Matrix4`, etc.) where module boundary overhead matters
-- **Do NOT decompose** files that are purely data/enum definitions (e.g., `Pass.js`, `SortMode.js`)
-- When touching a file over 1000 lines for functional changes, **also decompose it** — leave it better than you found it
-- Document decompositions in `migration_doc/ES6_MODERNIZATION_BACKLOG.md` completed table
-
-### Monorepo Architecture — CRITICAL File Placement Rules
-CesiumJS uses an **npm workspaces monorepo**. The root `Source/` directory is a **build output** — NOT the source of truth.
-
-#### Canonical Source Locations
-| Content Type | Canonical Location (edit HERE) | Build Output (DO NOT edit) |
-|---|---|---|
-| Engine code (Renderer, Scene, Core) | `packages/engine/Source/` | `Source/` (auto-copied by build) |
-| WGSL shaders | `packages/engine/Source/Shaders/WebGPU/` | `Source/Shaders/WebGPU/` (auto-copied) |
-| GLSL shaders | `packages/engine/Source/Shaders/` | `Source/Shaders/` (auto-copied) |
-| Widget code (Viewer, etc.) | `packages/widgets/Source/` | `Source/Widgets/` (CSS/images only) |
-| Assets | `packages/engine/Source/Assets/` | `Source/Assets/` (auto-copied) |
-| ThirdParty | `packages/engine/Source/ThirdParty/` | `Source/ThirdParty/` (auto-copied) |
-| Test pages | `Apps/WebGPUTest/` | — (not copied) |
-
-#### Rules
-- **ALWAYS** create new files in `packages/engine/Source/` (or `packages/widgets/Source/` for widgets)
-- **NEVER** create new files directly in root `Source/` — they will be overwritten or orphaned
-- **NEVER** edit files in root `Source/` — edit the canonical version in `packages/`
-- Root `Source/Cesium.js` is a barrel re-export shim — it is auto-generated
-- Root `Source/Shaders/`, `Source/Assets/`, `Source/ThirdParty/`, `Source/Widgets/` are all in `.gitignore`
-- The build system (`scripts/build.js` → `copyEngineAssets()`) copies from `packages/engine/Source/` to `Source/`
-- If you see WGSL files only in `Source/Shaders/WebGPU/` but NOT in `packages/engine/Source/Shaders/WebGPU/`, they were created in the wrong place — move them to the canonical location
-
-#### Where Our WebGPU Code Lives
-```
-packages/engine/Source/Renderer/WebGPU/    ← WebGPU renderer (59+ .ts/.js files)
-packages/engine/Source/Shaders/WebGPU/     ← WGSL shaders (48+ .wgsl files)
-packages/engine/Source/Scene/              ← Modified scene files (Scene.js, Primitive.js, etc.)
-Apps/WebGPUTest/                           ← Test HTML pages (28+ files)
-migration_doc/                             ← Migration documentation
-```
-
-### 64-Bit Precision & RTE (Relative-To-Eye) — CRITICAL
-CesiumJS renders at planetary scale where float32 precision is insufficient. **ALL rendering paths MUST use RTE (Relative-To-Eye) emulated 64-bit precision.** Without this, geometry will exhibit severe jittering.
-
-#### How RTE Works
-1. **JS side**: `EncodedCartesian3` splits 64-bit positions into two 32-bit floats (high + low)
-2. **Vertex buffers**: Carry 6 floats per position — `[high.x, high.y, high.z, low.x, low.y, low.z]`
-3. **Uniform buffers**: Must include `encodedCameraPositionMCHigh/Low` (camera split the same way) and `mvpRelativeToEye` (modelViewProjection with translation column zeroed)
-4. **Shaders**: Use `translateRelativeToEye(posHigh, posLow, camHigh, camLow)` which computes `(posHigh - camHigh) + (posLow - camLow)` — this gives sub-meter precision in eye space
-
-#### Mandatory RTE Rules
-- **NEVER** use a single `position: vec3<f32>` in vertex buffers for WebGPU world-space geometry — always use `positionHigh: vec3<f32>` + `positionLow: vec3<f32>`
-- **NEVER** multiply `mvp * vec4(position, 1.0)` for world-space geometry — always use `mvpRelativeToEye * translateRelativeToEye(posHigh, posLow, camHigh, camLow)`
-- **NEVER** add posHigh + posLow directly (`posHigh + posLow` defeats the purpose of the split) — always subtract camera first: `(posHigh - camHigh) + (posLow - camLow)`
-- Uniform buffers must carry `encodedCameraHigh`, `encodedCameraLow`, and `mvpRelativeToEye` (not plain MVP)
-- `UniformState.js` already computes all RTE values — reuse them, don't recompute
-- `EncodedCartesian3.js` is renderer-agnostic — use it for both WebGL and WebGPU paths
-
-#### Where RTE is Implemented (Reference)
-- **WGSL function**: `Source/Shaders/WebGPU/chunks/functions/csm_translateRelativeToEye.wgsl`
-- **Camera RTE uniforms**: `Source/Shaders/WebGPU/chunks/structs/CameraUniforms.wgsl`
-- **All 20+ Primitive shaders**: `Source/Shaders/WebGPU/Primitive/*.wgsl` (use positionHigh/Low + RTE)
-- **Point primitives**: `Source/Shaders/WebGPU/Collections/PointPrimitive*.wgsl` (RTE subtraction)
-- **JS uniform wiring**: `WebGPUPrimitiveCommands.js`, `WebGPUPointPrimitiveRenderer.js`
-
-### WebAssembly (WASM) Strategy — Dual Toolchain (Rust + Emscripten)
-Our fork uses **both Rust and Emscripten** for WASM modules, choosing whichever is best for each task:
-
-**When to use Rust (wasm-pack):**
-- New performance-critical code we author (frustum culling, sorting, octree traversal)
-- Code that benefits from memory safety (SIMD array iteration, index arithmetic)
-- Modules that need TypeScript declarations (wasm-bindgen auto-generates `.d.ts`)
-- Small, self-contained modules with no external C/C++ dependencies
-
-**When to use C/C++ (Emscripten):**
-- Wrapping existing C/C++ libraries (Draco, KTX2, physics engines)
-- Porting game engine code originally written in C++ (e.g., Recast/Detour navmesh, Bullet physics)
-- When an established C/C++ implementation exists and rewriting in Rust adds no value
-
-**Existing WASM modules in CesiumJS:**
-| Module | Language | Purpose |
-|--------|----------|---------|
-| `draco_decoder.wasm` | C++ (Emscripten) | Draco mesh decompression |
-| `basis_transcoder.wasm` | C++ (Emscripten) | KTX2 texture transcoding |
-| `wasm_splats_bg.wasm` | Rust | Gaussian splat processing |
-| `zip-module.wasm` | Unknown | ZIP extraction |
-| `cesium_wasm_bg.wasm` | **Rust (NEW)** | SIMD frustum cull + radix sort + terrain + RTE + matrix + point cloud |
-
-**Our WASM modules (in `packages/wasm/`):**
-```
-packages/wasm/
-├── Cargo.toml              ← Rust project config
-├── .cargo/config.toml      ← Target-specific rustflags (SIMD, bulk-memory)
-├── README.md               ← Build instructions + API docs
-├── src/
-│   ├── lib.rs              ← Entry point, thread-safe arena allocator
-│   ├── frustum_cull.rs     ← f32x4 SIMD batch sphere-plane tests
-│   ├── radix_sort.rs       ← O(N) radix sort on packed 64-bit keys
-│   ├── heightmap_tessellator.rs  ← SIMD heightmap decode + ECEF
-│   ├── quantized_mesh.rs   ← Zigzag+delta decode + SIMD normalize
-│   ├── rte_encode.rs       ← Batch RTE f64→f32 high/low split
-│   ├── matrix_batch.rs     ← SIMD batch Matrix4 operations
-│   └── point_cloud.rs      ← SIMD distance, LOD, AABB-frustum
-└── pkg/                    ← Build output (wasm-pack)
-    ├── cesium_wasm_bg.wasm
-    ├── cesium_wasm.js
-    └── cesium_wasm.d.ts
-```
-
-**Build commands:**
-```bash
-npm run build-wasm          # Full release build → copy to engine ThirdParty/Workers/
-npm run build-wasm-debug    # Debug build (faster compile, bigger output)
-npm run build-wasm-check    # Verify Rust/wasm-pack toolchain without building
-npm run build-wasm-clean    # Remove pkg/ output and deployed files
-```
-
-**JS bridge pattern** — Every WASM module has a JS bridge with a complete fallback:
-```javascript
-// WasmCullBridge.js — loads WASM, falls back to JS if unavailable
-bridge.loadWasm().then(() => { /* WASM ready, or gracefully using JS */ });
-// Per-frame dispatch:
-if (this._wasmReady && count >= this.threshold) {
-  this._cullWasm(count);   // WASM SIMD path (~10x faster)
-} else {
-  this._cullJS(count);     // JS fallback (always works)
-}
-```
-
-**Decision criteria for WASM vs GPU compute:**
-| Task | Best approach | Why |
-|------|--------------|-----|
-| Frustum culling (<50K) | WASM SIMD | Low latency, no GPU roundtrip |
-| Frustum culling (>50K) | GPU compute | Massive parallelism |
-| Sort keys (<5K) | JS multi-level comparator | Zero overhead |
-| Sort keys (5K-50K) | WASM radix sort | O(N) vs O(N log N) |
-| Sort keys (>50K) | GPU compute | GPU-driven rendering |
-
-### WASM Feature Usage & Graceful Fallback — CRITICAL
-
-WASM is NOT a monolithic capability — it has **feature tiers** that vary by browser.
-Every WASM feature we use MUST have a graceful fallback for browsers that lack support.
-**Never assume a feature is available; always detect and degrade.**
-
-#### WASM Feature Tiers (as of 2026)
-
-| Feature | Chrome | Firefox | Safari | Our Usage | Fallback Strategy |
-|---------|--------|---------|--------|-----------|-------------------|
-| **Core WASM (MVP)** | 57+ | 52+ | 11+ | ✅ Baseline | — (universally supported) |
-| **Bulk memory** (`memory.copy`, `memory.fill`) | 75+ | 79+ | 15+ | ✅ Used in radix sort, arena | Rust compiler can polyfill via loops |
-| **SIMD128** (`v128`, `f32x4`, etc.) | 91+ | 89+ | 16.4+ | ✅ Frustum culling hot path | JS fallback in bridge (`_cullJS`) |
-| **Multi-value returns** | 85+ | 78+ | 15+ | ✅ Used by wasm-bindgen glue | wasm-bindgen handles fallback |
-| **Reference types** | 96+ | 79+ | 15+ | ⬜ Not yet used | N/A |
-| **Exception handling** | 95+ | 100+ | 15.2+ | ⬜ Not yet used | `panic = "abort"` in Cargo.toml |
-| **Threads** (atomics + SharedArrayBuffer) | 74+* | 79+ | 16.4+* | 🔧 Thread-safe Mutex in lib.rs | Single-threaded execution; JS fallback |
-| **Tail calls** | 112+ | 121+ | 17+ | ⬜ Not yet used | Normal call stack |
-| **Relaxed SIMD** | 114+ | ❌ | ❌ | ⬜ Not yet used | Standard SIMD128 fallback |
-| **GC (Garbage Collection)** | 119+ | 120+ | ❌ | ⬜ Not yet used | Manual memory management |
-| **Memory64** | Experimental | ❌ | ❌ | ⬜ Not yet used | 32-bit memory (4GB limit) |
-| **JSPI** (JS Promise Integration) | 123+† | ❌ | ❌ | ⬜ Not yet used | Callback-based async |
-
-*\* Threads require COOP/COEP HTTP headers. † JSPI is origin trial only.*
-
-#### WASM Threading Rules
-
-- **Threading IS allowed** in WASM modules — it is a real, shipping feature
-- **SharedArrayBuffer requires HTTP headers**: `Cross-Origin-Opener-Policy: same-origin` AND `Cross-Origin-Embedder-Policy: require-corp`
-- **Always provide a single-threaded fallback** — many deployments lack COOP/COEP headers
-- **Use `std::sync::Mutex`** (not `static mut`) in Rust for thread-safe shared state
-- **Detect threading support at runtime** before enabling:
-  ```javascript
-  const hasThreads = typeof SharedArrayBuffer !== "undefined"
-    && typeof Atomics !== "undefined"
-    && wasmModule.has_threads?.() === true;
-  ```
-- **Thread count should be configurable**: `navigator.hardwareConcurrency` as default, overridable
-- When threading is unavailable, the module runs single-threaded with Mutex overhead <1ns per lock
-
-#### WASM Mandatory Rules
-
-1. **Every WASM function MUST have a JS fallback** — the bridge pattern is non-negotiable
-2. **Feature detection before activation** — check `WebAssembly.validate()` with a SIMD test byte sequence before loading SIMD-enabled modules
-3. **Async loading only** — use `import()` + `init()` pattern; never block the main thread on WASM compilation
-4. **Threshold-gated activation** — WASM dispatch only when data count exceeds a configurable threshold (avoids overhead for small workloads)
-5. **Memory management** — use the arena allocator (`alloc_buffer/free_buffer`) for shared JS↔WASM memory; never let WASM allocate unbounded memory
-6. **Version checking** — bridge calls `wasm.version()` on load and logs a warning if the WASM binary version doesn't match the expected JS bridge version
-7. **Diagnostic logging** — every bridge has a `getDiagnostics()` method reporting WASM readiness, last operation stats, and whether WASM or JS fallback was used
-8. **No WASM in hot constructor paths** — WASM loading is async; never delay object construction waiting for WASM. Load opportunistically, use when ready.
-
-### Slang Shader Cross-Compilation (Optional)
-New WebGPU shaders can optionally be authored in [Slang](https://github.com/shader-slang/slang)
-(`.slang` files) and compiled to WGSL via `slangc`. This is **optional** — the project works
-without Slang installed, using pre-compiled `.wgsl` files in `Shaders/WebGPU/Generated/`.
-
-**When to use Slang:**
-- New feature shaders that may also need a GLSL equivalent
-- Prototyping (C-like syntax is faster to write)
-- Features where single-source maintenance reduces long-term cost
-
-**When NOT to use Slang:**
-- Performance-critical shaders requiring WebGPU-specific optimizations
-- Utility chunks that use the `#import` preprocessor
-- Existing hand-written WGSL shaders (don't rewrite)
-
-**Directory layout:**
-```
-packages/engine/Source/Shaders/Slang/         ← .slang source files
-packages/engine/Source/Shaders/WebGPU/Generated/ ← compiled .wgsl output
-```
-
-**Commands:**
-- `node scripts/compileSlang.js` — compile all .slang → .wgsl + .glsl (dual output)
-- `node scripts/compileSlang.js --targets wgsl` — WGSL only
-- `node scripts/compileSlang.js --watch` — auto-recompile on save
-- See `scripts/SLANG_GUIDE.md` for full documentation
-
-### Documentation
-- Document all new configuration options
-- Provide migration guide for users wanting to adopt WebGPU
-- Include WebGPU feature support matrix
-- Document WebAssembly optimizations
-
-## Development Workflow
-
-1. **Before Starting Any Task**
-   - Review these cline-rules
-   - Check that the approach maintains backward compatibility
-   - Verify new features are optional and configurable
-
-2. **During Development**
-   - Write tests alongside implementation
-   - Run existing tests frequently to catch regressions early
-   - Update documentation as you go
-
-3. **Before Completing Any Task**
-   - Verify all tests pass (both new and existing)
-   - Ensure WebGL renderer still works
-   - Confirm new features are opt-in only
-
-## Preferred Tech Stack
-
-### Technology Preferences
-- **WebGPU**: Always prefer WebGPU over WebGL for new rendering features when possible
-- **WebAssembly**: Use WebAssembly for performance-critical code paths (terrain processing, matrix operations, culling algorithms, etc.)
-  - Use **threading in WebAssembly** when it provides measurable performance benefits
-  - Profile before and after to validate performance gains
-- **TypeScript**: Prefer TypeScript over JavaScript for new code to improve type safety and maintainability
-- **RxJS**: Use RxJS for reactive programming patterns, event handling, and asynchronous operations where appropriate
-  - **Prefer RxJS over async/await**: For both production code and test pages, prefer RxJS observables over async/await promises
-  - Async/await tends to be more error-prone with complex asynchronous flows
-  - Only use async/await if performance is a critical concern and has been measured
-  - Use RxJS operators for composing asynchronous operations (e.g., `from()`, `switchMap()`, `mergeMap()`, `catchError()`)
-- **Service Workers**: Utilize service workers for:
-  - Asset caching and offline capabilities
-  - Background processing of large datasets
-  - Only implement if performance benefits are significant and measurable
-
-### Migration Strategy
-- Gradually migrate existing JavaScript code to TypeScript
-- Identify and convert performance bottlenecks to WebAssembly
-- Use RxJS for new event-driven features and data streams
-- Implement WebAssembly threading for parallel processing opportunities
-- Consider service workers for expensive operations that can be offloaded
-- Always profile and benchmark before adding complexity
-- Ensure all tech stack choices maintain backward compatibility
-
-## Tool Use Safety Rules
-
-### replace_in_file Best Practices
-- **NEVER** call `replace_in_file` without a non-empty `diff` parameter — this causes retries and wasted context
-- Keep each REPLACE block to **≤50 new lines** — larger additions risk tool failures
-- For **large additions (>50 lines)**, use `write_to_file` to rewrite the complete file instead
-- When making **multiple changes** to one file, use **separate small SEARCH/REPLACE blocks** in a single diff, not one giant block
-- Always **double-check** that the SEARCH content matches the file exactly before submitting
-- Prefer **multiple small tool calls** over one large tool call
-
-### Large Function Additions
-- When adding a new function **>50 lines** to an existing file, prefer `write_to_file` to rewrite the entire file
-- Alternatively, **break the function into helper functions** added one at a time via small `replace_in_file` calls
-- Each `replace_in_file` call should add **at most one focused piece** (~30-50 lines)
-
-### Task Granularity
-- Break implementation tasks so each step involves **≤50 lines of new code**
-- If a task says "add ~200 lines", split it into 4-5 sub-tasks of ~40-50 lines each
-- Each sub-task should be independently testable or at least independently saveable
-- Prefer creating **helper functions** that the main function calls, rather than one monolithic function
-
-## Upstream Sync Procedure (CesiumGS/cesium → cesium-webgpu)
-
-This fork tracks `https://github.com/CesiumGS/cesium` as `upstream`. Periodic syncs bring in new CesiumJS features while preserving our WebGPU additions.
-
-### Prerequisites
-- Remote `upstream` must point to `https://github.com/CesiumGS/cesium.git`
-- Remote `origin` must point to `https://github.com/kurtyoung-dev/cesium-webgpu.git`
-
-### Sync Steps
-1. **Create safety branch**: `git branch pre-upstream-merge main`
-2. **Fetch upstream**: `git fetch upstream main`
-3. **Check divergence**: `git rev-list --count main..upstream/main` (behind) and `git rev-list --count upstream/main..main` (ahead)
-4. **Merge**: `git merge upstream/main --no-edit`
-5. **Resolve conflicts** — Typical conflict files:
-   - `package.json` — Keep both our `@webgpu/types` and upstream new deps
-   - `PointPrimitiveCollection.js` — Keep our WebGPU import + rendering path + upstream changes
-   - `SkyBox.js` / panorama files — Accept upstream, then re-integrate WebGPU rendering path
-   - `scripts/build.js` — Keep our `wgslShaderFiles` constant + `wgslToJavaScript()` function + build call
-   - `Primitive.js`, `Scene.js`, `View.js` — Keep our WebGPU routing code + upstream changes
-6. **For conflict resolution of modified files**, prefer `git checkout --theirs` then manually re-add our WebGPU code (cleaner than editing conflict markers)
-7. **Commit with `--no-verify`** to bypass lint-staged on upstream's hundreds of files: `git commit --no-verify -m "Merge upstream/main ..."`
-8. **CRITICAL: Verify two-parent merge commit**: `git cat-file -p HEAD | findstr parent` must show TWO parents
-   - If only one parent (MERGE_HEAD lost during conflict resolution), fix with:
-     ```
-     git rev-parse "HEAD^{tree}"  → <tree-hash>
-     git commit-tree <tree-hash> -p <our-commit> -p <upstream-commit> -m "Merge message"
-     git reset --hard <new-commit-hash>
-     ```
-9. **Verify**: `git rev-list --count main..upstream/main` should be `0` (0 behind)
-10. **Push**: `git push origin main --force-with-lease`
-
-### Post-Sync Tasks
-- **Review CHANGES.md** for new upstream features that need WebGPU equivalents
-- **Check new Scene files** (`git diff --name-status <merge-base>..upstream/main -- "packages/engine/Source/Scene/"`) for new rendering features
-- **Check new Shaders** for GLSL files that need WGSL equivalents
-- **Run `npm install`** to get new upstream dependencies
-- **Update `migration_doc/WEBGPU_MIGRATION_STATUS.md`** with new features and their WebGPU status
-- **For any new rendering feature** from upstream, add WebGPU rendering path if logical (following separation of concerns)
-
-### What Gets Conflicted and Why
-Our WebGPU changes modify these upstream files:
-- **Scene files** (`Scene.js`, `Primitive.js`, `PointPrimitiveCollection.js`, `SkyBox.js`, `View.js`) — WebGPU routing `if (context.isWebGPU)` blocks
-- **Build system** (`scripts/build.js`, `gulpfile.js`) — WGSL shader compilation
-- **Package config** (`package.json`) — `@webgpu/types` dependency
-- **Widget files** (`Viewer.js`, `CesiumWidget.js`) — `createAsync()` and `LoadingOverlay`
-
-Our WebGPU-only files (in `Renderer/WebGPU/`, `Shaders/WebGPU/`, `Apps/WebGPUTest/`) never conflict because upstream doesn't touch them.
-
-### ES6+ / ES2022 Modernization — Incremental Upgrade Rule
-
-When working on **any file** in the codebase, check whether it uses **pre-ES6 patterns**. If it does, either:
-1. **Modernize it in-place** if the file is small or you're already making significant changes to it, OR
-2. **Add it to the modernization backlog** in `migration_doc/ES6_MODERNIZATION_BACKLOG.md`
-
-#### What Counts as "Pre-ES6" (Must Fix)
-- `var` declarations → convert to `const`/`let`
-- Prototype-based inheritance (`Foo.prototype.bar = function()`) → ES6 `class` syntax
-- `Object.defineProperties()` for getters/setters → ES6 `get`/`set` in class body
-- `require()` / `module.exports` → ES module `import`/`export` (in browser code)
-- String concatenation with `+` for multi-part strings → template literals
-- `arguments` object usage → rest parameters (`...args`)
-- `Function.prototype.apply/call` for spreading → spread syntax (`...arr`)
-- `for (var i = 0; ...)` loops over arrays → `for...of` or `.forEach()` (when perf is not critical)
-- Callback pyramids → Promises or async/await (or RxJS per tech stack preferences)
-- `typeof x !== "undefined"` checks → optional chaining (`x?.prop`) or nullish coalescing (`x ?? default`)
-
-#### What Counts as "Pre-ES2022" (Should Fix When Convenient)
-- Missing `#private` fields where `_underscore` convention is used (low priority — CesiumJS convention)
-- `Object.assign({}, defaults, options)` → structured clone or spread (`{ ...defaults, ...options }`)
-- `.indexOf(x) !== -1` → `.includes(x)`
-- `Array.prototype.flat`/`flatMap` not used where applicable
-- `Promise.allSettled` / `Promise.any` not used where they simplify logic
-- `at(-1)` not used for last-element access
-- `Object.hasOwn(obj, key)` not used instead of `obj.hasOwnProperty(key)`
-- `structuredClone()` not used where deep clone is needed
-- Missing `static` class fields where `Foo.CONSTANT = ...` is used after class definition
-
-#### Rules
-- **NEVER modernize a file you're not otherwise touching** — avoid drive-by refactors that bloat PRs
-- **ALWAYS modernize a file if you're making >10 lines of changes** to it — leave it better than you found it
-- **Prototype → class conversions** should follow upstream [#8359](https://github.com/CesiumGS/cesium/issues/8359) patterns and preserve all existing tests
-- **When adding to the backlog**, include: file path, which patterns need updating, estimated effort, and whether it blocks any WebGPU work
-- **Performance-critical math classes** (`Cartesian3`, `Matrix4`, `Quaternion`, etc.) — be cautious with class conversion; benchmark before and after. These classes use `result` parameters and scratch variables where ES6 patterns may add overhead.
-- **TypeScript files (.ts) are already ES2022+** — this rule primarily applies to `.js` files
-
-#### Comment Preservation Rules — CRITICAL
-When modernizing files (e.g., constructor → class, prototype → class methods):
-- **Preserve ALL existing JSDoc comments** — every `@type`, `@param`, `@returns`, `@see`, `@default`, `@example`, and prose description from the original must appear in the converted file
-- **Do NOT add new JSDoc comments** that didn't exist in the original — if the original `prototype.execute` had no JSDoc, the class method `execute()` should also have no JSDoc
-- **Do NOT add `@param` annotations to constructors** unless the original function-level JSDoc had `@param` tags — if the original was just `@private` + `@constructor`, the class should just have `@private`
-- **Remove only tags that are now incorrect** after the conversion:
-  - `@constructor` → remove (ES6 `class` makes this implicit)
-  - `@memberof Foo.prototype` → remove (properties/methods are visibly inside the class body)
-- **Move `@param` tags** from function-level JSDoc to the `constructor()` method's JSDoc when converting to class syntax (the class-level JSDoc gets `@alias` and `@private`, the constructor gets the `@param` tags)
-- **Keep `@alias ClassName`** on the class-level JSDoc — CesiumJS documentation tooling depends on it
-
-#### Comment Style Rules
-All comments — JSDoc and inline — must match the style of the upstream CesiumJS codebase:
-- **Write like a human engineer**, not a summarizer — be direct, specific, and concise
-- **Do NOT add boilerplate restating what the code obviously does** (e.g., "Executes the clear command" on a method called `execute` that calls `context.clear`)
-- **DO add comments that explain non-obvious WHY** — rationale, edge cases, performance notes, references to specs or issues
-- Study existing CesiumJS comments for tone: they're terse, technical, and explain the *why* not the *what*
-- Match the surrounding file's comment density — don't add comments to a file that has few, and don't strip comments from a file that has many
-
-#### Backlog File Format (`migration_doc/ES6_MODERNIZATION_BACKLOG.md`)
-```markdown
-| File | Patterns to Update | Effort | Blocks WebGPU? | Priority |
-|------|-------------------|--------|----------------|----------|
-| `Scene/Foo.js` | var→const, prototype→class, defineProperties→getters | 1-2 hrs | No | Low |
-```
-
-## Notes
-- This file will be updated as the project evolves
-- Consult team before adding major architectural rules
-- Keep rules focused and actionable
+# Cline Rules for CesiumJS WebGPU Project — SUPERSEDED POINTER
+
+**This file is no longer a rules authority. The rules live in `CLAUDE.md` at the
+repository root.**
+
+## What this file was
+
+From 2026-03 to 2026-09 this was the fork's rules file: Cline reads `.clinerules`
+automatically, so the project's architecture rules were written here first. Its
+last substantive commit was `b5b486a9a9` on **2026-03-31**. Everything the fork
+learned after that date — Principles 5 through 10, the WGSL define/preprocessor/
+module-cache contract, the pipeline-key aliasing fold, build variants, the
+Playwright verification rule, the proof bar and wave-end gate, GitHub quiet
+hours, branch transparency and evidence repatriation — was written into
+`CLAUDE.md` and never back-ported here. Following this file's frozen text would
+have produced work that fails review.
+
+## Where the rules are now
+
+`CLAUDE.md` (repository root) is the tracked rules authority. It was made a
+tracked file in the same batch that demoted this one, so a fresh clone now
+receives the live rules rather than only this frozen copy.
+
+- **Cline users:** `CLAUDE.md` is plain markdown in the same directory. Read it
+  in place of this file. If your setup can only auto-load `.clinerules`, load
+  `CLAUDE.md` manually at the start of a session — do not work from this file.
+- **Precedence** between the tracked governance documents is set by
+  `migration_doc/EXECUTOR_LANE_CHARTER_2026-08-14.md` §0.4, not here.
+- **Campaign status** is `migration_doc/CAMPAIGN_STATE.md` (R-2026-09-02-14).
+- **Agent-facing summary and routing:** `AGENTS.md`.
+
+## What happened to this file's content
+
+Every rule that was live only here was carried into the matching section of
+`CLAUDE.md` in the same batch — the view-level context architecture and
+context-registry diagnostics, the parity checklist and its non-goals, the scene
+logic extractor's shared/backend-specific split, the feature-renderer
+registration recipe, the capability-query rule, the RTE reuse rules, the monorepo
+build-output and recovery rules, the file-decomposition rules, the RxJS /
+service-worker / Slang preferences, the fuller ES6 pattern list and class-
+conversion JSDoc mechanics, the WASM toolchain and threading rules, and the
+upstream-sync prerequisites, two-parent recovery and post-sync tasks.
+
+Ruling D11 (2026-09-05) additionally carried §2d's `context.log()` rule into the
+Logging & Debug Pragmas section of `CLAUDE.md` as a **preference** rather than the
+MUST it was here: where a context is in hand, prefer `context.log(level, message)` so
+the context id reaches the message. `console.error` for a real error is unchanged.
+
+Rules that were **not** carried, and why:
+
+- **Cline tool-use safety rules** (`replace_in_file` / `write_to_file` sizing and
+  task granularity) — specific to Cline's tool surface, which other agents do not
+  have. Preserved in this file's git history.
+- **"Default to the WebGL renderer unless specified"** — no longer true. The
+  default is set per build variant by `setGlobalDefaultRenderer()` in
+  `RendererType.ts`; the dual build defaults to WebGPU-first.
+- **"Commit with `--no-verify`" in the sync procedure** — retracted; hooks are
+  not bypassed.
+- **"Show a loading state during async WebGPU initialization" / `LoadingOverlay`**
+  — the component no longer exists anywhere in the tree.
+- **"Document parity gaps in `UPSTREAM_ISSUES_AND_TECH_DEBT.md`"** — that file is
+  archived; gaps now go to `DEFERRED_WORK.md` and `FEATURE_INVENTORY.md` §C.
+- **Generic bullets** on documentation, development workflow, migration strategy
+  and testing — superseded by the proof bar (R-2026-08-29-1) and the wave-end
+  gate (R-2026-08-29-2) in `CLAUDE.md`.
+- **Transcribed inventories** (context capability lists, WASM module tables, RTE
+  reference paths, the WebGPU file-count block) — deliberately replaced by
+  pointers at the code. Absolute counts transcribed into prose are what the same
+  batch had to correct in `CLAUDE.md`; re-transcribing them here would recreate
+  the defect.

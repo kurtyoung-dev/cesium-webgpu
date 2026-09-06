@@ -10,8 +10,10 @@ document wins over this summary.
 
 ## Part one — fork rules that bind your code
 
-These are the rules a change is rejected for breaking. `.clinerules` carries the fuller
+These are the rules a change is rejected for breaking. `CLAUDE.md` carries the fuller
 architectural treatment of several of them; where it does, it agrees with what is here.
+(`.clinerules` used to hold that fuller treatment; as of 2026-09-05 its body is a pointer
+to `CLAUDE.md`, which is the tracked rules authority.)
 
 ### 1. 64-bit precision / RTE — all rendering paths
 

@@ -4,9 +4,8 @@
 # Used in the CLA checking GitHub workflow
 GoogleConfig.json
 
-# MCP server config and Claude Code
+# MCP server config
 .mcp.json
-CLAUDE.md
 /Cesium-*.zip
 /cesium-*.tgz
 /packages/**/*.tgz
