@@ -20712,3 +20712,88 @@ BGRA pick packing, each required to be DETECTED) and the new
 `vector-draping-pick-identity.spec.mjs` (the identity round trip through the real
 `GraphicsContext` pick registry), both under `npm run test-engine-node`. Edge acceptance is
 `probe-vector-draping.mjs` gate G and is OWED.
+
+## Lane Ulfast (sync-parity wave S1, 2026-09-06) — census `C-01`: the WebGPU globe had no polygon fill, and the claim path took ownership of a bake it dropped
+
+**Files:** `packages/engine/Source/Renderer/WebGPU/WebGPUVectorTileResources.ts`,
+`packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceLayouts.ts`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`,
+`Tools/visual-regression/vector-layer-draping.spec.mjs`,
+`Tools/visual-regression/probe-vector-draping.mjs`,
+`migration_doc/DEFERRED_WORK.md`, `migration_doc/FEATURE_INVENTORY.md`,
+`migration_doc/WEBGPU_DEBUGGING_LOG.md`.
+
+**Root cause, in two halves.** CesiumJS 1.144 added the polygon-fill half of draped vectors (1.145 only re-gated it):
+`VectorPipeline.packPolygonGrid` bakes a second grid whose per-cell edges are clipped to the cell so
+each cell's loops close, and `VectorCommon.glsl::vectorPolygonRender` casts an even-odd horizontal
+ray over them, gated on `HAS_VECTOR_POLYGONS` (`GlobeSurfaceShaderSet.js:334`, key bit 35). At Batch
+1443 a grep for `vectorPolygonRender`, `polygonEdge` or `HAS_VECTOR_POLYGONS` under
+`Shaders/WebGPU/` and `Renderer/WebGPU/` returned nothing, and `grep -n polygon` over
+`WebGPUVectorTileResources.ts` returned zero hits: the WGSL had no polygon path and the word layout
+had no polygon runs.
+
+The second half is what made it worse than an absence. `VectorProvider.requestTileData` bakes BOTH
+CPU families before any backend is offered the tile (`:361-381`) and then calls
+`VectorPipeline.packPrimitiveTextures` (`:383`), whose contract is explicit — a `true` return means
+"callers must not construct WebGL textures". `packVectorTileWords` returned `null` unless the three
+POLYLINE tables were present, and `prepareWebGPUVectorTileData` returned `true` anyway, with its own
+docstring calling that deliberate ("INCLUDING the 'nothing to drape' case"). So a polygons-only tile
+was claimed by WebGPU, dropped, and its WebGL texture fallback (`VectorProvider.js:390-397`)
+suppressed along with it. Bare terrain, no error, no fallback.
+
+**Fix.** The word layout gained the polygon family by APPEND — header words `[8..13]` and three runs
+after the primitives run, with `[0..7]` keeping their v1.144 indices — and each family carries its
+OWN grid dimensions, because the two `packGrid` passes size their grids from their own geometry
+counts and routinely disagree on one tile. `packVectorTileWords` now measures each family through
+one shared `measureFamilyRun` and writes each through one shared `writeFamilyRuns`, so a clamping
+fix cannot land on one family and miss the other; only a bake with neither family returns `null`.
+`GlobeTerrain.wgsl` gained the three GLSL functions as ports, composited BEFORE the polyline path at
+the fragment entry to match `GlobeFS.glsl:1333-1334` — a stroke crossing a fill must draw on top of
+it. `prepareWebGPUVectorTileData` now declines, with a permanent unwrapped `console.error`, any bake
+that declares a family (`hasPolylines` / `hasPolygons`) whose run it did not pack.
+
+**Two traps this lane hit, worth logging.**
+
+1. **`gridWidth === 0` was a whole-buffer verdict and is now a per-family one.** Three comments and
+   one docstring described the 32-byte placeholder as "the sentinel", which stops being true the
+   moment a polygons-only tile packs a real buffer whose polyline grid width is legitimately 0. Both
+   readers gate on their own family's word; the placeholder grew to the new header size and the
+   spec pins `VECTOR_TILE_PLACEHOLDER_BYTES === VECTOR_TILE_HEADER_WORDS * 4` so it cannot fall
+   behind a header word the shader reads.
+
+2. **The named Edge probe could not have run at HEAD.** `probe-vector-draping.mjs` calls
+   `scene.globe.vectorProvider.add(collection)`. `VectorProvider` has no `add` — it was removed in
+   `7ecc52b4b6`, and the surviving API is `markForFrame(collection, frameNumber, heightReference)`
+   called EVERY frame, with collections pruned the frame they are not marked. `Scene`'s
+   `markVectorCollections` (`Scene.js:6206`, reached from `updateVectorProvider` at `:4268`) does
+   that marking for every clamped collection in `scene.primitives`, and a clamped collection does
+   not draw its own geometry (`BufferPrimitiveCollection._isRendered:873` is false for a clamping
+   `heightReference`) — so `scene.primitives` plus `heightReference: CLAMP_TO_TERRAIN` IS the drape
+   opt-in, and the probe's original comment ("adding it to `scene.primitives` would render undraped
+   screen-space polylines") is the inverse of the current contract. TWO lanes of this wave converged
+   on the same finding; the repair that lands is the gate-G lane's, and this patch stacks on top of
+   it rather than carrying a second copy. The one consequence for gate H is that
+   `PrimitiveCollection.remove` DESTROYS what it removes under default ownership, so the mixed leg
+   runs ahead of the polyline teardown and each polygon leg builds a fresh collection.
+
+**Proof.** `Tools/visual-regression/vector-layer-draping.spec.mjs`, `npm run test-engine-node`, 58/58 after the 2026-09-11 rebase onto Batch 1462 (47 standalone against Batch 1443)
+green: a polygon oracle written from `VectorCommon.glsl`, a subject over the real packer with every
+header index read out of the shader source, real `packPolygonGrid` fixtures (overlapping translucent
+areas, one holed) and a mixed fixture. Mutations `M7p` (cell start off by one), `M8p` (indirection
+dropped), `M9p` (the packed polygon-edge run displaced by one word, header untouched) and `M10p` (a
+polygons-only bake packed as `null` and claimed) are each asserted DETECTED. Negative controls that
+were run, not assumed: `polygonEdgesBase + 1` in the packer turns A2/P2/P3/P5 red; `if (false &&
+polygons)` around the packer's polygon write turns P2/P3/P5 red; neutering the WGSL call site turns
+P6 red; and, because P6 pins `vectorPolygonRender`'s whole control-flow skeleton rather than one
+line, `return baseColor;` planted as the FIRST statement, the same planted as the SECOND, and
+`vectorCompositePolygonFill`'s `!inside || primitiveIndex < 0` guard weakened to `primitiveIndex <
+0` each turn P6 red — all three run, each with the source restored and md5-verified afterwards.
+
+**Edge leg (the seat runs it):** `npx gulp build`; `node server.js --port 8080 --serve-built`;
+`node Tools/visual-regression/probe-vector-draping.mjs`. Gate H is the new one; gate A hard-fails a
+silent WebGL fallback and so covers it.
+
+**Parity (Principle 5).** A WebGPU twin of shipped WebGL behaviour. No GLSL, Scene, `VectorPipeline`
+or `VectorProvider` line is modified, so WebGL is byte-identical by construction and nothing here
+belongs on it.

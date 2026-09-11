@@ -1,7 +1,7 @@
 /// <reference types="@webgpu/types" />
 /**
  * WebGPU realization of a terrain tile's
- * clamped vector-polyline lookup tables.
+ * clamped vector lookup tables — polylines and polygon fills.
  *
  * Upstream v1.144 (PR #13577) drapes `BufferPolylineCollection` geometry onto
  * terrain by baking, per surface tile, a grid-indexed segment lookup
@@ -12,9 +12,19 @@
  * texture sampling; it is WebGL2's only way to random-access a buffer from a
  * fragment shader.
  *
- * WebGPU has read-only storage buffers, so the WGSL twin
- * (`GlobeTerrain.wgsl::vectorPolylineRender`) reads ONE buffer instead of five
- * textures. That is a forced choice, not a stylistic one: the globe pipeline
+ * v1.144 added the polygon-fill half of the same feature (v1.145 only re-gated
+ * it behind `HAS_VECTOR_POLYGONS`): `packPolygonGrid`
+ * bakes a second, INDEPENDENTLY sized grid whose per-cell edges were clipped to
+ * the cell on the CPU, and `VectorCommon.glsl::vectorPolygonRender` casts an
+ * even-odd horizontal ray over them. Its three tables (edges, edge→primitive,
+ * grid header) are three more `sampler2D`s on WebGL and three more runs in the
+ * same storage buffer here. The two families share ONE primitive index space,
+ * so they share the single `primitives` run below.
+ *
+ * WebGPU has read-only storage buffers, so the WGSL twins
+ * (`GlobeTerrain.wgsl::vectorPolylineRender` / `::vectorPolygonRender`) read ONE
+ * buffer instead of eight textures. That is a forced choice, not a stylistic
+ * one: the globe pipeline
  * layout is budgeted at `GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES` (12) fragment
  * sampled textures besides the imagery slots, and on a default-limit adapter
  * (`maxSampledTexturesPerShaderStage` = 16, the WebGPU spec floor) the reduced
@@ -31,6 +41,9 @@
  *   [2] segmentCount     [3] primitiveCount
  *   [4] cellEndOffsetsBase           [5] segmentsBase
  *   [6] segmentPrimitiveIndicesBase  [7] primitivesBase
+ *   [8] polygonGridWidth             [9] polygonGridHeight
+ *  [10] polygonEdgeCount            [11] polygonCellEndOffsetsBase
+ *  [12] polygonEdgesBase            [13] polygonEdgePrimitiveIndicesBase
  *   cell end offsets  : gridWidth * gridHeight  u32
  *   segments          : segmentCount * 4        f32  (ax, ay, bx, by) tile UV
  *   segment→primitive : segmentCount            u32
@@ -38,6 +51,9 @@
  *                       +0 f32 signed lineWidth
  *                       +1 u32 RGBA8 material color, low byte first
  *                       +2 u32 RGBA8 pick color,     low byte first
+ *   polygon cell ends : polygonGridWidth * polygonGridHeight  u32
+ *   polygon edges     : polygonEdgeCount * 4    f32  (ax, ay, bx, by) tile UV
+ *   polygon edge→prim : polygonEdgeCount        u32
  * ```
  *
  * The pick word is what lets `scene.pick` return a draped primitive rather than
@@ -47,8 +63,18 @@
  * zero when the collection was built without `allowPicking`, which the shader
  * reads as "leave the surface's own answer alone".
  *
- * `gridWidth === 0` is the "nothing draped here" sentinel the shader gates on,
- * which is also what the 32-byte all-zero placeholder buffer reads as.
+ * Words `[0..7]` keep the indices and the meanings v1.144 gave them; the
+ * polygon family was APPENDED at `[8]` and its runs after the primitives run,
+ * so a reader written against the older header still resolves every polyline
+ * word it knew about.
+ *
+ * Each family carries its OWN grid dimensions because `packPolylineGrid` and
+ * `packPolygonGrid` size their grids from their own geometry counts and can
+ * disagree on the same tile. `gridWidth === 0` and `polygonGridWidth === 0` are
+ * the per-family "nothing draped here" sentinels the shader gates on, which is
+ * also what the all-zero placeholder buffer reads as on both. A polygons-only
+ * tile therefore has `gridWidth === 0` in a buffer that is NOT a placeholder —
+ * the sentinel is per family, never a whole-buffer verdict.
  *
  * @module WebGPUVectorTileResources
  */
@@ -62,8 +88,14 @@ export const VECTOR_TILE_CELL_END_BASE = 4;
 export const VECTOR_TILE_SEGMENTS_BASE = 5;
 export const VECTOR_TILE_SEGMENT_PRIMITIVE_BASE = 6;
 export const VECTOR_TILE_PRIMITIVES_BASE = 7;
+export const VECTOR_TILE_POLYGON_GRID_WIDTH = 8;
+export const VECTOR_TILE_POLYGON_GRID_HEIGHT = 9;
+export const VECTOR_TILE_POLYGON_EDGE_COUNT = 10;
+export const VECTOR_TILE_POLYGON_CELL_END_BASE = 11;
+export const VECTOR_TILE_POLYGON_EDGES_BASE = 12;
+export const VECTOR_TILE_POLYGON_EDGE_PRIMITIVE_BASE = 13;
 /** Number of header words preceding the first variable-length run. */
-export const VECTOR_TILE_HEADER_WORDS = 8;
+export const VECTOR_TILE_HEADER_WORDS = 14;
 /**
  * Words per record in the primitives run. Mirrored by
  * `VECTOR_PRIMITIVE_STRIDE` in `GlobeTerrain.wgsl`, which is what the shader
@@ -75,10 +107,11 @@ export const VECTOR_PRIMITIVE_STRIDE = 3;
 export const VECTOR_TILE_PLACEHOLDER_BYTES = VECTOR_TILE_HEADER_WORDS * 4;
 
 /**
- * The CPU-side stage-2 product of `VectorPipeline.packPolylineGrid`, plus the
- * per-primitive material bytes collected by `packPolylineSegments`. Declared
- * structurally: `VectorTileData` is a JSDoc typedef on an untyped JS module,
- * and this file must stay importable by a pure-Node spec.
+ * The CPU-side stage-2 product of `VectorPipeline.packPolylineGrid` and
+ * `packPolygonGrid`, plus the per-primitive material bytes collected by
+ * `packPolylineSegments` / `packPolygonRings`. Declared structurally:
+ * `VectorTileData` is a JSDoc typedef on an untyped JS module, and this file
+ * must stay importable by a pure-Node spec.
  */
 export interface VectorTileCpuData {
   /** Packed RGBA line segments (ax, ay, bx, by) in tile UV space, -1 filled. */
@@ -87,6 +120,24 @@ export interface VectorTileCpuData {
   polylineSegmentPrimitiveIndicesTexels?: Float32Array;
   /** `[gridWidth, gridHeight, ...per-cell end offsets]`. */
   polylineGridCellIndices?: Uint32Array;
+  /**
+   * Packed RGBA polygon ring edges (ax, ay, bx, by) in tile UV space, clipped
+   * per grid cell so each cell's edges close, -1 filled.
+   */
+  polygonEdgeTexels?: Float32Array;
+  /** Primitive index per packed polygon edge, -1 filled. */
+  polygonEdgePrimitiveIndicesTexels?: Float32Array;
+  /** `[gridWidth, gridHeight, ...per-cell end offsets]` for the polygon grid. */
+  polygonGridCellIndices?: Uint32Array;
+  /**
+   * Whether the stage-1 bake found polyline geometry on this tile. Set by
+   * `VectorProvider.requestTileData` from the collected geometry, so it is an
+   * INDEPENDENT statement of what the tile owes — the claim check below reads
+   * it against what was actually packed.
+   */
+  hasPolylines?: boolean;
+  /** Whether the stage-1 bake found polygon geometry on this tile. */
+  hasPolygons?: boolean;
   /**
    * Per-collection primitive widths, in collection order. Signed since
    * CesiumJS 1.145: a negative magnitude marks a width in meters on the
@@ -183,20 +234,35 @@ function concatNumbers(arrays: ArrayLike<number>[]): Float32Array {
 }
 
 /**
- * Pack a baked `VectorTileData` into the flat word array the WGSL reads.
- *
- * Returns `null` when the tile has nothing to drape (no grid, an empty grid,
- * or zero packed segments) — the caller then binds the placeholder buffer.
- * Pure: no device, no allocation beyond the returned array, deterministic for
- * a given input.
+ * One geometry family's stage-2 tables, measured. The polyline and polygon
+ * bakes have the SAME shape — a `[gridWidth, gridHeight, ...cell end offsets]`
+ * header, an RGBA f32 run of (ax, ay, bx, by) primitives-in-UV, and a parallel
+ * primitive-index run — so one measurement serves both.
  */
-export function packVectorTileWords(
-  data: VectorTileCpuData | null | undefined,
-): Uint32Array | null {
-  const grid = data?.polylineGridCellIndices;
-  const segmentTexels = data?.polylineSegmentTexels;
-  const segmentPrimitiveTexels = data?.polylineSegmentPrimitiveIndicesTexels;
-  if (!grid || !segmentTexels || !segmentPrimitiveTexels) {
+interface VectorFamilyRun {
+  readonly gridWidth: number;
+  readonly gridHeight: number;
+  readonly cellCount: number;
+  /** Entries the CPU grid actually packed, clamped to what the texels supply. */
+  readonly entryCount: number;
+  readonly grid: Uint32Array;
+  readonly geometryTexels: Float32Array;
+  readonly primitiveIndexTexels: Float32Array;
+}
+
+/**
+ * Measure one family's tables, or return `null` when it has nothing packable.
+ *
+ * `null` covers both "this bake has no such family" and "its grid is empty",
+ * which the caller must distinguish from "the family exists and was DROPPED" —
+ * see {@link claimCoversDeclaredFamilies}.
+ */
+function measureFamilyRun(
+  grid: Uint32Array | undefined,
+  geometryTexels: Float32Array | undefined,
+  primitiveIndexTexels: Float32Array | undefined,
+): VectorFamilyRun | null {
+  if (!grid || !geometryTexels || !primitiveIndexTexels) {
     return null;
   }
 
@@ -208,63 +274,145 @@ export function packVectorTileWords(
     return null;
   }
 
+  // The last cell's end offset IS the total packed (entry, cell) pair count.
+  // Clamp against what the texel arrays can actually supply so a truncated or
+  // stale bake can never make the shader walk past the run it was given.
+  const entryCount = Math.min(
+    grid[cellCount + 1] >>> 0,
+    geometryTexels.length >>> 2,
+    primitiveIndexTexels.length,
+  );
+  if (entryCount === 0) {
+    return null;
+  }
+
+  return {
+    gridWidth,
+    gridHeight,
+    cellCount,
+    entryCount,
+    grid,
+    geometryTexels,
+    primitiveIndexTexels,
+  };
+}
+
+/**
+ * Write one family's three runs at `cellEndBase`, and return the word index one
+ * past the last one written. Shared by both families so a fix to the clamping
+ * rules cannot land on one and miss the other.
+ */
+function writeFamilyRuns(
+  words: Uint32Array,
+  floats: Float32Array,
+  run: VectorFamilyRun,
+  primitiveCount: number,
+  cellEndBase: number,
+): number {
+  const geometryBase = cellEndBase + run.cellCount;
+  const primitiveIndexBase = geometryBase + run.entryCount * 4;
+
+  for (let i = 0; i < run.cellCount; i++) {
+    // Monotone-clamp each cell end into [0, entryCount] so the shader's
+    // `[start, end)` walk stays inside the run even if the bake and the texel
+    // arrays disagree.
+    words[cellEndBase + i] = Math.min(run.grid[i + 2] >>> 0, run.entryCount);
+  }
+
+  for (let i = 0; i < run.entryCount * 4; i++) {
+    floats[geometryBase + i] = run.geometryTexels[i];
+  }
+
+  for (let i = 0; i < run.entryCount; i++) {
+    const raw = run.primitiveIndexTexels[i];
+    // -1 is the fill value; anything out of range would read another
+    // primitive's material, so clamp instead of trusting the bake.
+    const index = Number.isFinite(raw) ? Math.trunc(raw) : 0;
+    words[primitiveIndexBase + i] = Math.min(
+      Math.max(index, 0),
+      primitiveCount - 1,
+    );
+  }
+
+  return primitiveIndexBase + run.entryCount;
+}
+
+/**
+ * Pack a baked `VectorTileData` into the flat word array the WGSL reads.
+ *
+ * Both geometry families are optional and independent: a polylines-only bake, a
+ * polygons-only bake and a mixed bake each produce a buffer carrying exactly
+ * the families the bake holds. Only a bake with NEITHER family — no grid, an
+ * empty grid, zero packed entries on both sides, or no primitives at all —
+ * returns `null`, and the caller then binds the placeholder buffer.
+ *
+ * Pure: no device, no allocation beyond the returned array, deterministic for
+ * a given input.
+ */
+export function packVectorTileWords(
+  data: VectorTileCpuData | null | undefined,
+): Uint32Array | null {
   const primitiveCount = Math.max(0, Math.trunc(data?.primitiveCount ?? 0));
   if (primitiveCount === 0) {
     return null;
   }
 
-  // The last cell's end offset IS the total packed (segment, cell) pair count.
-  // Clamp against what the texel arrays can actually supply so a truncated or
-  // stale bake can never make the shader walk past the run it was given.
-  const segmentCount = Math.min(
-    grid[cellCount + 1] >>> 0,
-    segmentTexels.length >>> 2,
-    segmentPrimitiveTexels.length,
+  const polylines = measureFamilyRun(
+    data?.polylineGridCellIndices,
+    data?.polylineSegmentTexels,
+    data?.polylineSegmentPrimitiveIndicesTexels,
   );
-  if (segmentCount === 0) {
+  const polygons = measureFamilyRun(
+    data?.polygonGridCellIndices,
+    data?.polygonEdgeTexels,
+    data?.polygonEdgePrimitiveIndicesTexels,
+  );
+  if (!polylines && !polygons) {
     return null;
   }
 
+  // Run bases are computed for BOTH families whether or not each is present.
+  // An absent family contributes zero words, so its bases coincide with the
+  // next run's start — in range, and never read, because its count header word
+  // is 0 and the shader gates on that first.
   const cellEndBase = VECTOR_TILE_HEADER_WORDS;
-  const segmentsBase = cellEndBase + cellCount;
+  const segmentCount = polylines?.entryCount ?? 0;
+  const segmentsBase = cellEndBase + (polylines?.cellCount ?? 0);
   const segmentPrimitiveBase = segmentsBase + segmentCount * 4;
   const primitivesBase = segmentPrimitiveBase + segmentCount;
-  const totalWords = primitivesBase + primitiveCount * VECTOR_PRIMITIVE_STRIDE;
+
+  const polygonEdgeCount = polygons?.entryCount ?? 0;
+  const polygonCellEndBase =
+    primitivesBase + primitiveCount * VECTOR_PRIMITIVE_STRIDE;
+  const polygonEdgesBase = polygonCellEndBase + (polygons?.cellCount ?? 0);
+  const polygonEdgePrimitiveBase = polygonEdgesBase + polygonEdgeCount * 4;
+  const totalWords = polygonEdgePrimitiveBase + polygonEdgeCount;
 
   const words = new Uint32Array(totalWords);
   const floats = new Float32Array(words.buffer);
 
-  words[VECTOR_TILE_GRID_WIDTH] = gridWidth;
-  words[VECTOR_TILE_GRID_HEIGHT] = gridHeight;
+  words[VECTOR_TILE_GRID_WIDTH] = polylines?.gridWidth ?? 0;
+  words[VECTOR_TILE_GRID_HEIGHT] = polylines?.gridHeight ?? 0;
   words[VECTOR_TILE_SEGMENT_COUNT] = segmentCount;
   words[VECTOR_TILE_PRIMITIVE_COUNT] = primitiveCount;
   words[VECTOR_TILE_CELL_END_BASE] = cellEndBase;
   words[VECTOR_TILE_SEGMENTS_BASE] = segmentsBase;
   words[VECTOR_TILE_SEGMENT_PRIMITIVE_BASE] = segmentPrimitiveBase;
   words[VECTOR_TILE_PRIMITIVES_BASE] = primitivesBase;
+  words[VECTOR_TILE_POLYGON_GRID_WIDTH] = polygons?.gridWidth ?? 0;
+  words[VECTOR_TILE_POLYGON_GRID_HEIGHT] = polygons?.gridHeight ?? 0;
+  words[VECTOR_TILE_POLYGON_EDGE_COUNT] = polygonEdgeCount;
+  words[VECTOR_TILE_POLYGON_CELL_END_BASE] = polygonCellEndBase;
+  words[VECTOR_TILE_POLYGON_EDGES_BASE] = polygonEdgesBase;
+  words[VECTOR_TILE_POLYGON_EDGE_PRIMITIVE_BASE] = polygonEdgePrimitiveBase;
 
-  for (let i = 0; i < cellCount; i++) {
-    // Monotone-clamp each cell end into [0, segmentCount] so the shader's
-    // `[start, end)` walk stays inside the segment run even if the bake and
-    // the texel arrays disagree.
-    words[cellEndBase + i] = Math.min(grid[i + 2] >>> 0, segmentCount);
+  if (polylines) {
+    writeFamilyRuns(words, floats, polylines, primitiveCount, cellEndBase);
   }
 
-  for (let i = 0; i < segmentCount * 4; i++) {
-    floats[segmentsBase + i] = segmentTexels[i];
-  }
-
-  for (let i = 0; i < segmentCount; i++) {
-    const raw = segmentPrimitiveTexels[i];
-    // -1 is the fill value; anything out of range would read another
-    // primitive's material, so clamp instead of trusting the bake.
-    const index = Number.isFinite(raw) ? Math.trunc(raw) : 0;
-    words[segmentPrimitiveBase + i] = Math.min(
-      Math.max(index, 0),
-      primitiveCount - 1,
-    );
-  }
-
+  // The primitive run is SHARED: `packPolygonCollectionData` appends its
+  // colours into the same collection-ordered arrays the polyline bake uses, so
+  // one record serves a segment and an edge that name the same index.
   const widthValues = concatNumbers(data?.widths ?? []);
   const colorBytes = concatByteArrays(data?.colors ?? []);
   // Concatenated in the SAME collection order as the colors above, which is
@@ -296,7 +444,78 @@ export function packVectorTileWords(
     words[p + 2] = (pr | (pg << 8) | (pb << 16) | (pa << 24)) >>> 0;
   }
 
+  if (polygons) {
+    writeFamilyRuns(
+      words,
+      floats,
+      polygons,
+      primitiveCount,
+      polygonCellEndBase,
+    );
+  }
+
   return words;
+}
+
+/**
+ * Whether a claim on this bake would realize every geometry family the bake
+ * DECLARES.
+ *
+ * `hasPolylines` / `hasPolygons` are set by `VectorProvider.requestTileData`
+ * from the stage-1 geometry, before any backend is offered the tile, so they
+ * are an independent statement of what the tile owes; `words` is what this
+ * module actually produced. A family that is owed but carries a zero count in
+ * the packed header was DROPPED, and claiming it would render bare terrain on
+ * WebGPU while also suppressing the WebGL texture fallback.
+ *
+ * A declared family whose own stage-2 grid packed nothing (every ring clipped
+ * away, say) is not a drop: the WebGL twin reads the same empty grid and paints
+ * nothing either. That case is admitted by measuring the CPU tables rather than
+ * by trusting the flag alone.
+ */
+function claimCoversDeclaredFamilies(
+  data: VectorTileCpuData,
+  words: Uint32Array | null,
+): boolean {
+  const covers = (
+    declared: boolean,
+    grid: Uint32Array | undefined,
+    geometryTexels: Float32Array | undefined,
+    primitiveIndexTexels: Float32Array | undefined,
+    packedCount: number,
+  ): boolean => {
+    if (!declared) {
+      return true;
+    }
+    if (!grid || !geometryTexels || !primitiveIndexTexels) {
+      // Declared by stage 1, but stage 2 left no tables at all. Nothing here
+      // can realize it, so the claim would be a silent drop.
+      return false;
+    }
+    if (measureFamilyRun(grid, geometryTexels, primitiveIndexTexels) === null) {
+      // Tables present, grid packed nothing. The WebGL twin reads the same
+      // empty grid and paints nothing, so an empty run is the honest answer.
+      return true;
+    }
+    return packedCount > 0;
+  };
+
+  return (
+    covers(
+      data.hasPolylines === true,
+      data.polylineGridCellIndices,
+      data.polylineSegmentTexels,
+      data.polylineSegmentPrimitiveIndicesTexels,
+      words === null ? 0 : words[VECTOR_TILE_SEGMENT_COUNT],
+    ) &&
+    covers(
+      data.hasPolygons === true,
+      data.polygonGridCellIndices,
+      data.polygonEdgeTexels,
+      data.polygonEdgePrimitiveIndicesTexels,
+      words === null ? 0 : words[VECTOR_TILE_POLYGON_EDGE_COUNT],
+    )
+  );
 }
 
 /**
@@ -310,10 +529,19 @@ export function packVectorTileWords(
  * the bake to whichever backend is active without importing this module or
  * testing `isWebGPU` (CLAUDE.md Principle 2).
  *
- * Returns `true` whenever the WebGPU backend has taken ownership — INCLUDING
+ * Returns `true` whenever the WebGPU backend has taken ownership — including
  * the "nothing to drape" case, where no buffer is created and the globe binds
- * its shared placeholder. Returning `false` would fall through to the WebGL
- * texture path and allocate five GL textures the WebGPU globe never reads.
+ * its shared placeholder. Returning `false` for that would fall through to the
+ * WebGL texture path and allocate GL textures the WebGPU globe never reads.
+ *
+ * It returns `false` for exactly one thing: a bake declaring a geometry family
+ * this module did not realize. A claim is a statement of complete ownership
+ * (`VectorPipeline.packPrimitiveTextures`: "callers must not construct WebGL
+ * textures"), so claiming a family that was dropped renders bare terrain AND
+ * suppresses the fallback that would have drawn it. Declining is loud —
+ * `VectorProvider` then builds the WebGL textures — and it cannot happen for
+ * any bake this packer understands, so the `console.error` beside it is a
+ * permanent sentinel for a packer/bake mismatch, not a live path.
  */
 export function prepareWebGPUVectorTileData(
   context: VectorTileDeviceContext | null | undefined,
@@ -339,6 +567,22 @@ export function prepareWebGPUVectorTileData(
   target.rendererResources = undefined;
 
   const words = packVectorTileWords(data);
+  if (!claimCoversDeclaredFamilies(data, words)) {
+    // A real bug producing broken output: the tile drapes on WebGL and shows
+    // bare terrain here. Never pragma-wrapped — this is the message that makes
+    // the drop reportable instead of invisible.
+    console.error(
+      "[CesiumJS:webgpu] Declining a draped-vector tile whose declared " +
+        "geometry families were not packed " +
+        `(hasPolylines=${data.hasPolylines === true}, ` +
+        `hasPolygons=${data.hasPolygons === true}, ` +
+        `segments=${words === null ? 0 : words[VECTOR_TILE_SEGMENT_COUNT]}, ` +
+        `polygonEdges=${words === null ? 0 : words[VECTOR_TILE_POLYGON_EDGE_COUNT]}); ` +
+        "falling back to the WebGL texture path.",
+    );
+    return false;
+  }
+
   let buffer: GPUBuffer | null = null;
   if (words) {
     buffer = device.createBuffer({

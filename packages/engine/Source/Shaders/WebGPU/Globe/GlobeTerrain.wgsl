@@ -570,12 +570,14 @@ struct TileUniforms {
 @group(2) @binding(9) var cloudShadowMap: texture_2d<f32>;
 @group(2) @binding(10) var cloudShadowSampler: sampler;
 
-// Draped vector-tile polylines: the WGSL twin of `VectorCommon.glsl`'s five
-// `u_vector*` sampler2D lookup tables. The GLSL side uses `texelFetch` purely
+// Draped vector-tile polylines and polygon fills: the WGSL twin of
+// `VectorCommon.glsl`'s eight `u_vector*` sampler2D lookup tables (five for the
+// polyline half and three for the polygon half, both shipped in v1.144 and
+// re-gated per family in v1.145). The GLSL side uses `texelFetch` purely
 // as WebGL2's stand-in for a buffer read — nearest sampling, integer
 // coordinates, power-of-two padding, no filtering — and WebGPU has real
 // read-only storage buffers, so the whole per-tile lookup set collapses into
-// one binding instead of five sampled textures. The collapse is forced, not
+// one binding instead of eight sampled textures. The collapse is forced, not
 // stylistic: group 2 already charges 5 of the 12 non-imagery fragment sampled
 // textures the globe layout is allowed
 // (`GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES`), and on a default-limit adapter
@@ -587,23 +589,32 @@ struct TileUniforms {
 //
 // Bound unconditionally, on the same discipline as the cloud shadow map above,
 // so the pipeline layout never forks per tile: tiles with no clamped vector
-// data bind a 32-byte all-zero placeholder whose `gridWidth` header word is 0,
-// and `vectorPolylineRender` returns the untouched base color after a single
-// u32 load. WebGL forks the shader instead (`#ifdef HAS_VECTOR_LAYER`,
-// shader-set flag bit `0x400000000`); a per-tile define here would fork every
-// globe pipeline variant, so the gate is a runtime header read.
+// data bind an all-zero header-sized placeholder whose two grid-width header
+// words are 0, and `vectorPolylineRender` / `vectorPolygonRender` each return
+// the untouched base color after a single u32 load. The two gates are
+// independent, so a tile carrying only one family pays one load for the other.
+// WebGL forks the shader instead (`#ifdef HAS_VECTOR_POLYLINES` /
+// `HAS_VECTOR_POLYGONS`, shader-set flag bits `0x400000000` and
+// `0x800000000`); a per-tile define here would fork every globe pipeline
+// variant, so the gate is a runtime header read.
 //
 // Word layout (see `WebGPUVectorTileResources.ts` — the packer and this reader
 // are a matched pair; neither may change alone):
 //   [0] gridWidth   [1] gridHeight   [2] segmentCount   [3] primitiveCount
 //   [4] cellEndOffsetsBase           [5] segmentsBase
 //   [6] segmentPrimitiveIndicesBase  [7] primitivesBase
+//   [8] polygonGridWidth             [9] polygonGridHeight
+//  [10] polygonEdgeCount            [11] polygonCellEndOffsetsBase
+//  [12] polygonEdgesBase            [13] polygonEdgePrimitiveIndicesBase
 //   cell end offsets : gridWidth*gridHeight u32
 //   segments         : segmentCount * 4 f32 (ax, ay, bx, by) in tile UV space
 //   segment→primitive: segmentCount u32
 //   primitives       : primitiveCount * VECTOR_PRIMITIVE_STRIDE words —
 //                      (+0 f32 signed lineWidth, +1 u32 packed RGBA8 material
 //                       color, +2 u32 packed RGBA8 pick color)
+//   polygon cell ends: polygonGridWidth*polygonGridHeight u32
+//   polygon edges    : polygonEdgeCount * 4 f32 (ax, ay, bx, by) in tile UV
+//   polygon edge→prim: polygonEdgeCount u32
 @group(2) @binding(11) var<storage, read> vectorTileData: array<u32>;
 
 // Effects bind group (group 3): shadow receive and clipping planes.
@@ -4018,7 +4029,8 @@ fn fragmentPickMain(input: VertexOutput) -> PickFragOutput {
   return out;
 }
 
-// Draped vector-tile polylines, the WGSL twin of VectorCommon.glsl.
+// Draped vector-tile polylines and polygon fills, the WGSL twin of
+// VectorCommon.glsl.
 
 // Header word indices into `vectorTileData`. Mirrored by
 // `VECTOR_TILE_HEADER_*` in `WebGPUVectorTileResources.ts`.
@@ -4030,6 +4042,15 @@ const VECTOR_TILE_CELL_END_BASE: u32 = 4u;
 const VECTOR_TILE_SEGMENTS_BASE: u32 = 5u;
 const VECTOR_TILE_SEGMENT_PRIMITIVE_BASE: u32 = 6u;
 const VECTOR_TILE_PRIMITIVES_BASE: u32 = 7u;
+// The polygon family's own header words. It carries its OWN grid dimensions:
+// `packPolylineGrid` and `packPolygonGrid` size their grids from their own
+// geometry counts and routinely disagree on the same tile.
+const VECTOR_TILE_POLYGON_GRID_WIDTH: u32 = 8u;
+const VECTOR_TILE_POLYGON_GRID_HEIGHT: u32 = 9u;
+const VECTOR_TILE_POLYGON_EDGE_COUNT: u32 = 10u;
+const VECTOR_TILE_POLYGON_CELL_END_BASE: u32 = 11u;
+const VECTOR_TILE_POLYGON_EDGES_BASE: u32 = 12u;
+const VECTOR_TILE_POLYGON_EDGE_PRIMITIVE_BASE: u32 = 13u;
 
 // Words per record in the primitives run. Mirrored by
 // `VECTOR_PRIMITIVE_STRIDE` in `WebGPUVectorTileResources.ts`, which is what
@@ -4337,7 +4358,7 @@ fn vectorPolylineRender(
 //
 // That per-tile opt-in survives here without a command-level test, because on
 // this backend the same fact is in the data: a tile with nothing draped binds
-// the 32-byte all-zero placeholder, `vectorPolylineRender` early-outs on its
+// the 56-byte all-zero placeholder, `vectorPolylineRender` early-outs on its
 // zero `gridWidth` after one u32 load, the index below is still -1, and the
 // pick pass writes exactly what it wrote before this function existed.
 //
@@ -4368,6 +4389,141 @@ fn vectorPickColorOver(surfacePickColor: vec4<f32>) -> vec4<f32> {
     return surfacePickColor;
   }
   return pickColor;
+}
+
+// True if a horizontal +x ray from p crosses the edge. The half-open interval
+// (> vs <=) counts a ray through a shared vertex exactly once.
+// Line-for-line port of `VectorCommon.glsl::vectorEdgeCrossesRay`.
+fn vectorEdgeCrossesRay(edge: vec4<f32>, p: vec2<f32>) -> bool {
+  if ((edge.y > p.y) == (edge.w > p.y)) {
+    return false;
+  }
+
+  let t = (p.y - edge.y) / (edge.w - edge.y);
+  let xIntersect = edge.x + t * (edge.z - edge.x);
+  return p.x < xIntersect;
+}
+
+// Composites a polygon's fill over baseColor when the pixel is inside it. A
+// negative index (empty cell or first iteration) or an outside pixel is a
+// no-op. Port of `VectorCommon.glsl::vectorCompositePolygonFill`; the primitive
+// index is signed for the same reason it is there — -1 is the "no group yet"
+// sentinel, and the buffer's own indices are unsigned.
+fn vectorCompositePolygonFill(
+  baseColor: vec4<f32>,
+  primitivesBase: u32,
+  primitiveIndex: i32,
+  inside: bool,
+) -> vec4<f32> {
+  if (!inside || primitiveIndex < 0) {
+    return baseColor;
+  }
+
+  let fillColor = vectorPrimitiveRecord(
+    primitivesBase,
+    u32(primitiveIndex),
+  ).color;
+  return fillColor * vec4<f32>(fillColor.aaa, 1.0)
+    + baseColor * (1.0 - fillColor.a);
+}
+
+// Drape vector polygon fills onto the terrain surface. The fragment's
+// tile UV picks a grid cell whose edges were clipped to the cell on the CPU,
+// forming closed loops, so an even-odd horizontal ray cast within the cell
+// decides coverage. Edges arrive grouped by primitive; each covering
+// primitive's fill color is alpha-composited in primitive order (no discard).
+//
+// Port of `VectorCommon.glsl::vectorPolygonRender`, with the same single
+// deliberate deviation the polyline twin carries: the three texelFetch tables
+// are three runs of one storage buffer. There is no Jacobian here — polygon
+// coverage is a pure inside/outside test with no width and no anti-aliasing —
+// so unlike its polyline sibling this function needs no derivative hoisting and
+// takes none.
+//
+// The loop bound is clamped against the header's own `polygonEdgeCount`: a
+// corrupt or stale offset must not turn a per-fragment loop unbounded.
+fn vectorPolygonRender(vectorUv: vec2<f32>, baseColor: vec4<f32>) -> vec4<f32> {
+  let gridWidth = vectorTileData[VECTOR_TILE_POLYGON_GRID_WIDTH];
+  let gridHeight = vectorTileData[VECTOR_TILE_POLYGON_GRID_HEIGHT];
+  // Placeholder buffer, a tile with no clamped polygons, or a polyline-only
+  // tile: one load, one compare, done. This is the default path on every globe
+  // fragment, and it is what makes a polyline-only tile byte-identical to what
+  // it rendered before this function existed.
+  if (gridWidth == 0u || gridHeight == 0u) {
+    return baseColor;
+  }
+
+  let edgeCount = vectorTileData[VECTOR_TILE_POLYGON_EDGE_COUNT];
+  let primitiveCount = vectorTileData[VECTOR_TILE_PRIMITIVE_COUNT];
+  if (edgeCount == 0u || primitiveCount == 0u) {
+    return baseColor;
+  }
+
+  let cellEndBase = vectorTileData[VECTOR_TILE_POLYGON_CELL_END_BASE];
+  let edgesBase = vectorTileData[VECTOR_TILE_POLYGON_EDGES_BASE];
+  let edgePrimitiveBase =
+    vectorTileData[VECTOR_TILE_POLYGON_EDGE_PRIMITIVE_BASE];
+  let primitivesBase = vectorTileData[VECTOR_TILE_PRIMITIVES_BASE];
+
+  // `i32(f32)` truncates toward zero, matching GLSL's `int(float)`.
+  let cellX = u32(clamp(i32(vectorUv.x * f32(gridWidth)), 0, i32(gridWidth) - 1));
+  let cellY = u32(clamp(i32(vectorUv.y * f32(gridHeight)), 0, i32(gridHeight) - 1));
+  let cellIndex = cellX + cellY * gridWidth;
+
+  // GLSL's `vectorCellRange` reads the packed header (gridW, gridH, end0, …)
+  // with a +2 / +1 bias; here the end-offset array is its own run, so cell i's
+  // end is `cellEnd[i]` and its start is `cellEnd[i - 1]` (0 for cell 0).
+  var indexEnd = vectorTileData[cellEndBase + cellIndex];
+  var indexStart = 0u;
+  if (cellIndex != 0u) {
+    indexStart = vectorTileData[cellEndBase + cellIndex - 1u];
+  }
+  indexEnd = min(indexEnd, edgeCount);
+  indexStart = min(indexStart, indexEnd);
+
+  var color = baseColor;
+  var currentPrimitive = -1;
+  var inside = false;
+
+  for (var i = indexStart; i < indexEnd; i = i + 1u) {
+    let e = edgesBase + i * 4u;
+    let edge = vec4<f32>(
+      bitcast<f32>(vectorTileData[e]),
+      bitcast<f32>(vectorTileData[e + 1u]),
+      bitcast<f32>(vectorTileData[e + 2u]),
+      bitcast<f32>(vectorTileData[e + 3u]),
+    );
+
+    let primitiveIndex = i32(min(
+      vectorTileData[edgePrimitiveBase + i],
+      primitiveCount - 1u,
+    ));
+
+    // A new primitive means the previous group is complete: composite it,
+    // then start counting the new one fresh.
+    if (primitiveIndex != currentPrimitive) {
+      color = vectorCompositePolygonFill(
+        color,
+        primitivesBase,
+        currentPrimitive,
+        inside,
+      );
+      currentPrimitive = primitiveIndex;
+      inside = false;
+    }
+
+    if (vectorEdgeCrossesRay(edge, vectorUv)) {
+      inside = !inside;
+    }
+  }
+
+  // The last primitive group has no trailing edge to trigger its composite.
+  return vectorCompositePolygonFill(
+    color,
+    primitivesBase,
+    currentPrimitive,
+    inside,
+  );
 }
 
 // GLOBE-UNDERGROUND-COLOR — port of GlobeFS.glsl `interpolateByDistance`
@@ -5950,20 +6106,26 @@ fn fragmentMain(
     alpha = blended.a;
   }
 
-  // Draped clamped vector polylines.
-  // Mirrors GlobeFS.glsl lines 1018-1020 (`#ifdef HAS_VECTOR_LAYER`):
-  // alpha-composite the tile's clamped vector polylines over the shaded
+  // Draped clamped vector polygons, then polylines.
+  // Mirrors GlobeFS.glsl's `#ifdef HAS_VECTOR_LAYER` block, which composites
+  // `vectorPolygonRender` and then `vectorPolylineRender` over the shaded
   // terrain, AFTER the underground tint and BEFORE the translucency alpha
-  // ramp — the ordering matters, because a draped line over a translucent
-  // globe must fade with the globe rather than punch through it.
-  // Unconditional call: `vectorPolylineRender` early-outs on the placeholder
-  // buffer's zero `gridWidth` header word, so the no-vector-data path costs
-  // one u32 load.
+  // ramp — the ordering matters twice over. Between the two families it is
+  // what puts a road's stroke ON TOP of the area fill it crosses rather than
+  // under it; against the globe it is because a draped vector over a
+  // translucent globe must fade with the globe rather than punch through it.
+  // Unconditional calls: each early-outs on its own zero grid-width header
+  // word (the placeholder buffer's, or a tile carrying only the other family),
+  // so the no-vector-data path costs one u32 load each.
+  let vectorPolygonComposited = vectorPolygonRender(
+    input.v_textureCoordinates.xy,
+    vec4<f32>(color, alpha),
+  );
   let vectorComposited = vectorPolylineRender(
     input.v_textureCoordinates.xy,
     vectorUV_dx,
     vectorUV_dy,
-    vec4<f32>(color, alpha),
+    vectorPolygonComposited,
   );
   color = vectorComposited.rgb;
   alpha = vectorComposited.a;

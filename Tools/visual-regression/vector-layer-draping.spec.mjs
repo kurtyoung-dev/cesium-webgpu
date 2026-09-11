@@ -1,5 +1,5 @@
 // vector-layer-draping.spec.mjs — C11-213 / UP144-VECTOR-LAYER-WGSL acceptance.
-// @purpose Acceptance for WebGPU vector-layer draping: GLSL-derived oracle vs real storage-buffer packer/WGSL indexing, six named mutations.
+// @purpose Acceptance for WebGPU vector-layer draping, polylines and polygon fills: GLSL-derived oracles vs real storage-buffer packer/WGSL indexing, ten named mutations.
 // @status ACTIVE
 //
 // Pure Node, real modules, no browser:
@@ -51,6 +51,19 @@
 //   M5  segment→primitive indirection dropped (segment index used as material)
 //   M6  a SINGULAR UV Jacobian inverted to the ZERO matrix instead of
 //       abandoning the fragment (NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS)
+//   M7  the singular-Jacobian guard restored to an exactly-zero-determinant
+//       test, which a near-singular edge-on skirt walks straight through
+//
+// The polygon family (v1.144, re-gated in v1.145; section P) carries four
+// more. They take a `p` suffix because `M7` above was already taken by the
+// time this brief was written, and renumbering a mutation whose id is cited
+// in the ledger would be worse than a suffix:
+//   M7p  the polygon grid's cell start read as `cellEnd[i]` (off-by-one)
+//   M8p  the polygon edge→primitive indirection dropped
+//   M9p  the LAYOUT mutation: the packed polygon-edge run displaced by ONE
+//        WORD with the header that points at it left untouched
+//   M10p the defect this section closed: a polygons-only bake packed as `null`
+//        and claimed by the backend anyway
 //
 // A mutation that the assertions still pass is a spec that proves nothing, so
 // each is asserted to FAIL.
@@ -164,6 +177,12 @@ const {
   VECTOR_TILE_SEGMENTS_BASE,
   VECTOR_TILE_SEGMENT_PRIMITIVE_BASE,
   VECTOR_TILE_PRIMITIVES_BASE,
+  VECTOR_TILE_POLYGON_GRID_WIDTH,
+  VECTOR_TILE_POLYGON_GRID_HEIGHT,
+  VECTOR_TILE_POLYGON_EDGE_COUNT,
+  VECTOR_TILE_POLYGON_CELL_END_BASE,
+  VECTOR_TILE_POLYGON_EDGES_BASE,
+  VECTOR_TILE_POLYGON_EDGE_PRIMITIVE_BASE,
   VECTOR_PRIMITIVE_STRIDE,
 } = await import(
   pathToFileURL(
@@ -195,7 +214,20 @@ const SHADER_HEADER = {
   segmentsBase: wgslHeaderIndex("VECTOR_TILE_SEGMENTS_BASE"),
   segmentPrimitiveBase: wgslHeaderIndex("VECTOR_TILE_SEGMENT_PRIMITIVE_BASE"),
   primitivesBase: wgslHeaderIndex("VECTOR_TILE_PRIMITIVES_BASE"),
+  polygonGridWidth: wgslHeaderIndex("VECTOR_TILE_POLYGON_GRID_WIDTH"),
+  polygonGridHeight: wgslHeaderIndex("VECTOR_TILE_POLYGON_GRID_HEIGHT"),
+  polygonEdgeCount: wgslHeaderIndex("VECTOR_TILE_POLYGON_EDGE_COUNT"),
+  polygonCellEndBase: wgslHeaderIndex("VECTOR_TILE_POLYGON_CELL_END_BASE"),
+  polygonEdgesBase: wgslHeaderIndex("VECTOR_TILE_POLYGON_EDGES_BASE"),
+  polygonEdgePrimitiveBase: wgslHeaderIndex(
+    "VECTOR_TILE_POLYGON_EDGE_PRIMITIVE_BASE",
+  ),
 };
+
+// The primitive record's stride, read out of the SHADER for the same reason:
+// three lanes share this run and the WGSL declaration is where a backend read
+// resolves it. `wgslHeaderIndex`'s pattern matches any module-level `u32` const.
+const SHADER_PRIMITIVE_STRIDE = wgslHeaderIndex("VECTOR_PRIMITIVE_STRIDE");
 
 // ═══════════════════════════════════════════════════════════════════════
 // The PRIMITIVES-RUN STRIDE, read out of the shader for the same reason the
@@ -1311,6 +1343,403 @@ function compareBackendsFromJacobian(baked, words, jacobian, mutate = {}) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// P. THE POLYGON FAMILY (CesiumJS 1.144, re-gated in 1.145).
+//
+// `VectorCommon.glsl` gained `vectorPolygonRender` alongside the polyline
+// twin: a second, INDEPENDENTLY SIZED grid whose per-cell edges were clipped
+// to the cell on the CPU so each cell's loops close, and an even-odd
+// horizontal ray cast over the cell's edges decides coverage. Edges arrive
+// GROUPED BY PRIMITIVE, and each group's fill composites when the group ends.
+// On WebGPU there was no polygon path at all: the packer returned `null`
+// unless the three POLYLINE tables were present, and the claim path returned
+// `true` anyway — so a polygons-only tile was taken over by WebGPU, dropped,
+// and the WebGL texture fallback suppressed along with it.
+//
+// Same construction as the polyline section above and for the same reason:
+//
+//   * ORACLE  — `glslVectorPolygonRender`, written from `VectorCommon.glsl`
+//     (`vectorEdgeCrossesRay`, `vectorCompositePolygonFill`,
+//     `vectorPolygonRender`) over the raw `VectorTileData` tables, including
+//     the power-of-two texel addressing `texelFetch` implies. It reads
+//     NEITHER the packer nor the WGSL, so agreement is evidence rather than
+//     tautology.
+//   * SUBJECT — `wgslVectorPolygonRender`, the WGSL's index arithmetic over
+//     the REAL packer's words, with every header index read out of the shader
+//     source (`SHADER_HEADER.polygon*`).
+//
+// There is no Jacobian on this path: polygon coverage is inside/outside with
+// no width and no anti-aliasing, so the whole `screenFromUv` apparatus the
+// polyline section needs has no analogue here.
+//
+// The ray test itself is shared between the two evaluators, on the same
+// footing as `glslOffsetToLine` above: both shaders declare it as a
+// line-for-line port. `POLYGON_RAY_TEST_MATCHES` closes the gap that sharing
+// opens by capturing the comparison out of each shader's own source, so a
+// divergence in the half-open interval cannot hide behind one JS function.
+// ═══════════════════════════════════════════════════════════════════════
+
+// `VectorCommon.glsl::vectorEdgeCrossesRay`. The half-open interval (`>` on
+// both endpoints, then `<` on the intersection) is what counts a ray through a
+// shared vertex exactly once; flipping either comparison double-counts and
+// inverts parity for every fragment on that scanline.
+function edgeCrossesRay(edge, p) {
+  if (edge[1] > p[1] === edge[3] > p[1]) {
+    return false;
+  }
+  const t = (p[1] - edge[1]) / (edge[3] - edge[1]);
+  const xIntersect = edge[0] + t * (edge[2] - edge[0]);
+  return p[0] < xIntersect;
+}
+
+// The same three comparisons, captured out of each shader. Sharing one JS ray
+// test above is only safe while the two sources agree on these.
+function shaderRayTest(source, label) {
+  const match = source.match(
+    /\(edge\.y > p\.y\) ==(=?) \(edge\.w > p\.y\)[\s\S]{0,240}?return p\.x (<) xIntersect;/,
+  );
+  assert.ok(match, `${label} declares no half-open ray test`);
+  return `endpoints:>,>|intersect:${match[2]}`;
+}
+const POLYGON_RAY_TEST_MATCHES =
+  shaderRayTest(glslCommon, "VectorCommon.glsl") ===
+  shaderRayTest(wgsl, "GlobeTerrain.wgsl");
+
+// `VectorCommon.glsl::vectorCompositePolygonFill` over the raw tables. A
+// negative index is the "no group yet" sentinel, and an outside pixel is a
+// no-op.
+function glslCompositePolygonFill(
+  baseColor,
+  primitiveIndex,
+  inside,
+  primitiveTextureWidth,
+  colorBytes,
+) {
+  if (!inside || primitiveIndex < 0) {
+    return baseColor;
+  }
+  const pt = texelIndex(primitiveIndex, primitiveTextureWidth);
+  return alphaComposite(
+    [
+      colorBytes[pt * 4] / 255,
+      colorBytes[pt * 4 + 1] / 255,
+      colorBytes[pt * 4 + 2] / 255,
+      colorBytes[pt * 4 + 3] / 255,
+    ],
+    baseColor,
+  );
+}
+
+/** `VectorCommon.glsl::vectorPolygonRender` over the raw VectorTileData. */
+function glslVectorPolygonRender(data, uv, baseColor) {
+  const grid = data.polygonGridCellIndices;
+  const gridWidth = grid[0];
+  const gridHeight = grid[1];
+  const cellX = Math.min(
+    gridWidth - 1,
+    Math.max(0, Math.trunc(uv[0] * gridWidth)),
+  );
+  const cellY = Math.min(
+    gridHeight - 1,
+    Math.max(0, Math.trunc(uv[1] * gridHeight)),
+  );
+  const cellIndex = cellX + cellY * gridWidth;
+
+  const indexEnd = grid[cellIndex + 2];
+  const indexStart = cellIndex === 0 ? 0 : grid[cellIndex + 1];
+
+  const edgeTextureWidth = data.polygonEdgeTextureWidth;
+  const [primitiveTextureWidth] = nextPowerOfTwoSize(data.primitiveCount);
+  const colorBytes = concatBytes(data.colors);
+
+  let color = baseColor;
+  let currentPrimitive = -1;
+  let inside = false;
+
+  for (let i = indexStart; i < indexEnd; i++) {
+    const et = texelIndex(i, edgeTextureWidth);
+    const edge = [
+      data.polygonEdgeTexels[et * 4],
+      data.polygonEdgeTexels[et * 4 + 1],
+      data.polygonEdgeTexels[et * 4 + 2],
+      data.polygonEdgeTexels[et * 4 + 3],
+    ];
+    // `int(texelFetch(...).r)` truncates toward zero; the -1 fill stays -1.
+    const primitiveIndex = Math.trunc(
+      data.polygonEdgePrimitiveIndicesTexels[et],
+    );
+
+    if (primitiveIndex !== currentPrimitive) {
+      color = glslCompositePolygonFill(
+        color,
+        currentPrimitive,
+        inside,
+        primitiveTextureWidth,
+        colorBytes,
+      );
+      currentPrimitive = primitiveIndex;
+      inside = false;
+    }
+
+    if (edgeCrossesRay(edge, uv)) {
+      inside = !inside;
+    }
+  }
+
+  // The last group has no trailing edge to trigger its composite.
+  return glslCompositePolygonFill(
+    color,
+    currentPrimitive,
+    inside,
+    primitiveTextureWidth,
+    colorBytes,
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SUBJECT — GlobeTerrain.wgsl::vectorPolygonRender over the packed words.
+// `mutate` lets a test re-introduce a specific defect in the reader.
+// ═══════════════════════════════════════════════════════════════════════
+
+// `GlobeTerrain.wgsl::vectorCompositePolygonFill`, reading the packed primitive
+// record through the shared stride the way `vectorPrimitiveRecord` does.
+function wgslCompositePolygonFill(
+  words,
+  baseColor,
+  primitivesBase,
+  primitiveIndex,
+  inside,
+) {
+  if (!inside || primitiveIndex < 0) {
+    return baseColor;
+  }
+  const p = primitivesBase + primitiveIndex * SHADER_PRIMITIVE_STRIDE;
+  const packed = words[p + 1] >>> 0;
+  // unpack4x8unorm: low byte first.
+  return alphaComposite(
+    [
+      (packed & 0xff) / 255,
+      ((packed >>> 8) & 0xff) / 255,
+      ((packed >>> 16) & 0xff) / 255,
+      ((packed >>> 24) & 0xff) / 255,
+    ],
+    baseColor,
+  );
+}
+
+function wgslVectorPolygonRender(words, uv, baseColor, mutate = {}) {
+  if (words === null) {
+    return baseColor;
+  }
+  const floats = new Float32Array(words.buffer, words.byteOffset, words.length);
+
+  const gridWidth = words[SHADER_HEADER.polygonGridWidth];
+  const gridHeight = words[SHADER_HEADER.polygonGridHeight];
+  if (gridWidth === 0 || gridHeight === 0) {
+    return baseColor;
+  }
+  const edgeCount = words[SHADER_HEADER.polygonEdgeCount];
+  const primitiveCount = words[SHADER_HEADER.primitiveCount];
+  if (edgeCount === 0 || primitiveCount === 0) {
+    return baseColor;
+  }
+
+  const cellEndBase = words[SHADER_HEADER.polygonCellEndBase];
+  const edgesBase = words[SHADER_HEADER.polygonEdgesBase];
+  const edgePrimitiveBase = words[SHADER_HEADER.polygonEdgePrimitiveBase];
+  const primitivesBase = words[SHADER_HEADER.primitivesBase];
+
+  const cellX = Math.min(
+    gridWidth - 1,
+    Math.max(0, Math.trunc(uv[0] * gridWidth)),
+  );
+  const cellY = Math.min(
+    gridHeight - 1,
+    Math.max(0, Math.trunc(uv[1] * gridHeight)),
+  );
+  const cellIndex = cellX + cellY * gridWidth;
+
+  let indexEnd = words[cellEndBase + cellIndex];
+  let indexStart = 0;
+  if (cellIndex !== 0) {
+    indexStart = mutate.cellStartOffByOne
+      ? words[cellEndBase + cellIndex]
+      : words[cellEndBase + cellIndex - 1];
+  }
+  indexEnd = Math.min(indexEnd, edgeCount);
+  indexStart = Math.min(indexStart, indexEnd);
+
+  let color = baseColor;
+  let currentPrimitive = -1;
+  let inside = false;
+
+  for (let i = indexStart; i < indexEnd; i++) {
+    const e = edgesBase + i * 4;
+    const edge = [floats[e], floats[e + 1], floats[e + 2], floats[e + 3]];
+    const primitiveIndex = mutate.dropIndirection
+      ? Math.min(i, primitiveCount - 1)
+      : Math.min(words[edgePrimitiveBase + i], primitiveCount - 1);
+
+    if (primitiveIndex !== currentPrimitive) {
+      color = wgslCompositePolygonFill(
+        words,
+        color,
+        primitivesBase,
+        currentPrimitive,
+        inside,
+      );
+      currentPrimitive = primitiveIndex;
+      inside = false;
+    }
+
+    if (edgeCrossesRay(edge, uv)) {
+      inside = !inside;
+    }
+  }
+
+  return wgslCompositePolygonFill(
+    words,
+    color,
+    primitivesBase,
+    currentPrimitive,
+    inside,
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Polygon fixtures — real bakes through `VectorPipeline.packPolygonGrid`.
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * A closed ring as `packPolygonRings` leaves it: a flat, tile-UV
+ * [x0, y0, x1, y1, …] loop with no repeated closing vertex.
+ */
+function ringPolygon(centreX, centreY, radiusX, radiusY, vertexCount, phase) {
+  const ring = new Float64Array(vertexCount * 2);
+  for (let i = 0; i < vertexCount; i++) {
+    const angle = phase + (2 * Math.PI * i) / vertexCount;
+    ring[i * 2] = centreX + radiusX * Math.cos(angle);
+    ring[i * 2 + 1] = centreY + radiusY * Math.sin(angle);
+  }
+  return ring;
+}
+
+/**
+ * Two OVERLAPPING translucent areas, the first carrying a hole.
+ *
+ * Overlap is what makes the group-composite order observable: in the shared
+ * region both fills apply, in primitive order, and a reader that composited
+ * once or in the other order lands on a different colour. The hole is what
+ * makes the even-odd parity observable: inside it the enclosing fill must NOT
+ * apply. Ring order matches `packPolygonRings` — outer, then that polygon's
+ * holes, then the next polygon — which is the grouping `packPolygonGrid`
+ * relies on.
+ *
+ * ~68 edges, so `packPolygonGrid` builds a MULTI-CELL grid (its target is 16
+ * per cell); a 1x1 grid would make the cell-offset arithmetic vacuous.
+ */
+function buildBakedPolygonTile() {
+  const result = {
+    show: true,
+    polygonRings: [
+      ringPolygon(0.36, 0.42, 0.26, 0.22, 28, 0.11),
+      ringPolygon(0.36, 0.42, 0.08, 0.07, 12, 0.31),
+      ringPolygon(0.64, 0.6, 0.24, 0.26, 28, 0.53),
+    ],
+    polygonRingPrimitiveIndices: [0, 0, 1],
+    primitiveCount: 2,
+    // Widths are unused by fills and `packPolygonCollectionData` zero-fills
+    // them; keeping that here means a packer that mixed the two runs up shows
+    // as a zero stroke rather than an accidental match.
+    widths: [new Float32Array([0, 0])],
+    // Asymmetric AND translucent: a channel-order flip moves the answer, and
+    // partial alpha makes the composite order matter in the overlap.
+    colors: [new Uint8Array([255, 32, 8, 200, 16, 200, 64, 140])],
+    minimumTileScreenPixels: 256.0,
+    metersPerUv: new Cartesian2(435000.0, 435000.0),
+  };
+  VectorPipeline.packPolygonGrid(result);
+  return result;
+}
+
+/** A bake carrying BOTH families, from the two single-family fixtures. */
+function buildBakedMixedTile() {
+  const polylines = buildBakedTile();
+  const polygons = buildBakedPolygonTile();
+
+  // One shared primitive index space, exactly as `VectorProvider` builds it:
+  // the polyline collection's primitives first, then the polygon collection's,
+  // with each family's indices already offset by the primitives ahead of it.
+  const polygonIndexOffset = polylines.primitiveCount;
+  const polygonEdgePrimitiveIndicesTexels = Float32Array.from(
+    polygons.polygonEdgePrimitiveIndicesTexels,
+    (index) => (index < 0 ? index : index + polygonIndexOffset),
+  );
+
+  return {
+    show: true,
+    hasPolylines: true,
+    hasPolygons: true,
+    primitiveCount: polylines.primitiveCount + polygons.primitiveCount,
+    widths: [...polylines.widths, ...polygons.widths],
+    colors: [...polylines.colors, ...polygons.colors],
+    polylineSegmentTexels: polylines.polylineSegmentTexels,
+    polylineSegmentTextureWidth: polylines.polylineSegmentTextureWidth,
+    polylineSegmentTextureHeight: polylines.polylineSegmentTextureHeight,
+    polylineSegmentPrimitiveIndicesTexels:
+      polylines.polylineSegmentPrimitiveIndicesTexels,
+    polylineGridCellIndices: polylines.polylineGridCellIndices,
+    polygonEdgeTexels: polygons.polygonEdgeTexels,
+    polygonEdgeTextureWidth: polygons.polygonEdgeTextureWidth,
+    polygonEdgeTextureHeight: polygons.polygonEdgeTextureHeight,
+    polygonEdgePrimitiveIndicesTexels,
+    polygonGridCellIndices: polygons.polygonGridCellIndices,
+  };
+}
+
+/**
+ * Oracle vs subject over the sample raster, for the polygon family.
+ * `options.words` substitutes a mutated buffer; `options.mutate` a defect in
+ * the reader; `options.identity` the pre-fix backend that drapes nothing.
+ */
+function comparePolygonBackends(baked, words, options = {}) {
+  const differences = [];
+  for (const uv of sampleRaster()) {
+    const expected = glslVectorPolygonRender(baked, uv, BASE);
+    const actual = options.identity
+      ? BASE
+      : wgslVectorPolygonRender(
+          options.words === undefined ? words : options.words,
+          uv,
+          BASE,
+          options.mutate ?? {},
+        );
+    for (let c = 0; c < 4; c++) {
+      if (Math.abs(expected[c] - actual[c]) > 1e-6) {
+        differences.push({ uv, channel: c, expected, actual });
+        break;
+      }
+    }
+  }
+  return differences;
+}
+
+/**
+ * Move the packed polygon-edge run one word later WITHOUT touching the header
+ * that points at it — the layout mutation the engine proof bar requires. This
+ * is a producer-side defect, not a reader-side one: the buffer is what a packer
+ * with an off-by-one run base would have written, and the UNMUTATED reader has
+ * to disagree with the oracle over it.
+ */
+function shiftPackedPolygonEdgeRun(words) {
+  const edgesBase = words[SHADER_HEADER.polygonEdgesBase];
+  const shifted = new Uint32Array(words.length + 1);
+  shifted.set(words.subarray(0, edgesBase), 0);
+  shifted[edgesBase] = 0;
+  shifted.set(words.subarray(edgesBase), edgesBase + 1);
+  return shifted;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // A. Packing contract
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1326,9 +1755,45 @@ test("A1 — the TS header constants and the WGSL header constants agree", () =>
     SHADER_HEADER.segmentPrimitiveBase,
   );
   assert.equal(VECTOR_TILE_PRIMITIVES_BASE, SHADER_HEADER.primitivesBase);
-  // Eight header words, and the placeholder is exactly that many.
-  assert.equal(VECTOR_TILE_HEADER_WORDS, 8);
-  assert.equal(VECTOR_TILE_PLACEHOLDER_BYTES, 32);
+  // The polygon family, APPENDED at [8].
+  assert.equal(VECTOR_TILE_POLYGON_GRID_WIDTH, SHADER_HEADER.polygonGridWidth);
+  assert.equal(
+    VECTOR_TILE_POLYGON_GRID_HEIGHT,
+    SHADER_HEADER.polygonGridHeight,
+  );
+  assert.equal(VECTOR_TILE_POLYGON_EDGE_COUNT, SHADER_HEADER.polygonEdgeCount);
+  assert.equal(
+    VECTOR_TILE_POLYGON_CELL_END_BASE,
+    SHADER_HEADER.polygonCellEndBase,
+  );
+  assert.equal(VECTOR_TILE_POLYGON_EDGES_BASE, SHADER_HEADER.polygonEdgesBase);
+  assert.equal(
+    VECTOR_TILE_POLYGON_EDGE_PRIMITIVE_BASE,
+    SHADER_HEADER.polygonEdgePrimitiveBase,
+  );
+  // Words [0..7] keep the indices v1.144 gave them — the "renumber nothing"
+  // half of the layout contract, which the polygon append had to honour.
+  assert.deepEqual(
+    [
+      VECTOR_TILE_GRID_WIDTH,
+      VECTOR_TILE_GRID_HEIGHT,
+      VECTOR_TILE_SEGMENT_COUNT,
+      VECTOR_TILE_PRIMITIVE_COUNT,
+      VECTOR_TILE_CELL_END_BASE,
+      VECTOR_TILE_SEGMENTS_BASE,
+      VECTOR_TILE_SEGMENT_PRIMITIVE_BASE,
+      VECTOR_TILE_PRIMITIVES_BASE,
+    ],
+    [0, 1, 2, 3, 4, 5, 6, 7],
+  );
+  // The primitive record's stride is a matched pair too.
+  assert.equal(VECTOR_PRIMITIVE_STRIDE, SHADER_PRIMITIVE_STRIDE);
+  // Both shaders' ray tests keep the same half-open interval, which is what
+  // makes one shared JS ray test in the evaluators above legitimate.
+  assert.ok(
+    POLYGON_RAY_TEST_MATCHES,
+    "the GLSL and WGSL polygon ray tests disagree on the half-open interval",
+  );
   // The primitives-run stride is one number, declared on both sides of the
   // matched pair. The behavioural leg is P2/M-p2 below; this is the cheap
   // read that names which side moved when they disagree.
@@ -1342,6 +1807,10 @@ test("A1 — the TS header constants and the WGSL header constants agree", () =>
     3,
     "signed width, material colour, pick colour",
   );
+  // Fourteen header words, and the placeholder is exactly that many.
+  assert.equal(VECTOR_TILE_HEADER_WORDS, 14);
+  assert.equal(VECTOR_TILE_PLACEHOLDER_BYTES, 56);
+  assert.equal(VECTOR_TILE_PLACEHOLDER_BYTES, VECTOR_TILE_HEADER_WORDS * 4);
 });
 
 test("A2 — every run the header points at is inside the packed array", () => {
@@ -1377,11 +1846,33 @@ test("A2 — every run the header points at is inside the packed array", () => {
     words[VECTOR_TILE_PRIMITIVES_BASE],
     words[VECTOR_TILE_SEGMENT_PRIMITIVE_BASE] + segmentCount,
   );
+  // A polylines-only bake carries the polygon header words as the per-family
+  // "nothing here" sentinel, and its runs end where the primitives run does.
+  assert.equal(words[VECTOR_TILE_POLYGON_GRID_WIDTH], 0);
+  assert.equal(words[VECTOR_TILE_POLYGON_GRID_HEIGHT], 0);
+  assert.equal(words[VECTOR_TILE_POLYGON_EDGE_COUNT], 0);
   assert.equal(
     words.length,
     words[VECTOR_TILE_PRIMITIVES_BASE] +
       primitiveCount * VECTOR_PRIMITIVE_STRIDE,
   );
+  // Every base word the shader may load is inside the buffer, even for an
+  // absent family — an out-of-range base would be a robustness read, not a
+  // sentinel.
+  for (const base of [
+    VECTOR_TILE_CELL_END_BASE,
+    VECTOR_TILE_SEGMENTS_BASE,
+    VECTOR_TILE_SEGMENT_PRIMITIVE_BASE,
+    VECTOR_TILE_PRIMITIVES_BASE,
+    VECTOR_TILE_POLYGON_CELL_END_BASE,
+    VECTOR_TILE_POLYGON_EDGES_BASE,
+    VECTOR_TILE_POLYGON_EDGE_PRIMITIVE_BASE,
+  ]) {
+    assert.ok(
+      words[base] >= VECTOR_TILE_HEADER_WORDS && words[base] <= words.length,
+      `header word ${base} points outside the packed array`,
+    );
+  }
 
   // Cell end offsets are monotone and never exceed segmentCount — the loop
   // bound the shader clamps against.
@@ -1427,6 +1918,26 @@ test("A3 — degenerate bakes pack to null so the shader gets the placeholder", 
     null,
     "zero packed segments must not produce a buffer",
   );
+  assert.equal(
+    packVectorTileWords({
+      polygonGridCellIndices: new Uint32Array([1, 1, 0]),
+      polygonEdgeTexels: new Float32Array(4),
+      polygonEdgePrimitiveIndicesTexels: new Float32Array(1),
+      primitiveCount: 1,
+      widths: [new Float32Array([0])],
+      colors: [new Uint8Array([1, 2, 3, 4])],
+    }),
+    null,
+    "zero packed polygon edges must not produce a buffer either",
+  );
+  assert.equal(
+    packVectorTileWords({
+      ...buildBakedPolygonTile(),
+      primitiveCount: 0,
+    }),
+    null,
+    "no primitives means no material to composite, on either family",
+  );
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1461,6 +1972,391 @@ test("B2 — the fixture actually exercises the line-hit path (the comparison is
     seenColors.size >= 2,
     "fixture must exercise more than one primitive's material",
   );
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// P. POLYGON FILLS — equivalence, the two families together, the claim path,
+// and the four polygon mutations.
+//
+// The mutation ids carry a `p` suffix: `M7` above is already taken (the
+// exactly-zero-determinant guard, added after the original M1-M6 set), and
+// renumbering a mutation whose name appears in the ledger would be worse than
+// a suffix.
+// ═══════════════════════════════════════════════════════════════════════
+
+test("P1 — the polygon fixture bakes a multi-cell grid with grouped edges", () => {
+  const baked = buildBakedPolygonTile();
+  const grid = baked.polygonGridCellIndices;
+  const gridWidth = grid[0];
+  const gridHeight = grid[1];
+  assert.ok(gridWidth > 1, "fixture must produce a multi-cell polygon grid");
+  const edgeCount = grid[gridWidth * gridHeight + 1];
+  assert.ok(edgeCount > 30, `only ${edgeCount} packed polygon edges`);
+
+  // Within every cell, edges are grouped by primitive: the group boundary is
+  // what triggers a composite, so an interleaved packing would make even-odd
+  // parity meaningless. This is a property of `packPolygonGrid`, measured
+  // rather than assumed — the WGSL's group loop depends on it.
+  for (let cell = 0; cell < gridWidth * gridHeight; cell++) {
+    const start = cell === 0 ? 0 : grid[cell + 1];
+    const end = grid[cell + 2];
+    const seen = new Set();
+    let current = -1;
+    for (let i = start; i < end; i++) {
+      const index = Math.trunc(baked.polygonEdgePrimitiveIndicesTexels[i]);
+      if (index !== current) {
+        assert.ok(
+          !seen.has(index),
+          `cell ${cell} revisits primitive ${index} after leaving it`,
+        );
+        seen.add(index);
+        current = index;
+      }
+    }
+  }
+});
+
+test("P2 — WGSL polygon reader over the packed buffer matches the GLSL reader over the raw tables", () => {
+  const baked = buildBakedPolygonTile();
+  const words = packVectorTileWords(baked);
+  assert.ok(words instanceof Uint32Array, "a polygons-only bake must pack");
+  const differences = comparePolygonBackends(baked, words);
+  assert.equal(
+    differences.length,
+    0,
+    `backends disagreed at ${differences.length} sample(s); first: ${JSON.stringify(differences[0])}`,
+  );
+});
+
+test("P3 — the polygon fixture exercises fill, hole and overlap (not vacuous)", () => {
+  const baked = buildBakedPolygonTile();
+  const words = packVectorTileWords(baked);
+  let painted = 0;
+  const seenColors = new Set();
+  for (const uv of sampleRaster()) {
+    const out = wgslVectorPolygonRender(words, uv, BASE);
+    if (out.some((v, i) => Math.abs(v - BASE[i]) > 1e-6)) {
+      painted++;
+      seenColors.add(out.map((v) => v.toFixed(4)).join(","));
+    }
+  }
+  assert.ok(painted > 40, `only ${painted} of 576 samples fell inside a fill`);
+  // One colour per primitive plus the overlap's composite of the two: a reader
+  // that composited only the first group, or only the last, sees two.
+  assert.ok(
+    seenColors.size >= 3,
+    `fixture produced ${seenColors.size} distinct fills; fill + fill + overlap needs 3`,
+  );
+
+  // The hole must NOT be filled: it is inside the outer ring, and even-odd
+  // parity is the only thing that can cancel it.
+  const holeSample = wgslVectorPolygonRender(words, [0.36, 0.42], BASE);
+  assert.deepEqual(
+    holeSample.map((v) => Number(v.toFixed(6))),
+    BASE.map((v) => Number(v.toFixed(6))),
+    "the polygon's hole was filled",
+  );
+});
+
+test("P4 — a polygons-only bake packs an empty polyline family, and vice versa", () => {
+  const polygons = packVectorTileWords(buildBakedPolygonTile());
+  assert.equal(polygons[VECTOR_TILE_GRID_WIDTH], 0);
+  assert.equal(polygons[VECTOR_TILE_SEGMENT_COUNT], 0);
+  assert.ok(polygons[VECTOR_TILE_POLYGON_EDGE_COUNT] > 0);
+  // The polyline reader must early-out on it rather than walk a run that is
+  // not there. `gridWidth === 0` is a PER-FAMILY sentinel now, not a verdict
+  // on the whole buffer.
+  for (const uv of sampleRaster()) {
+    assert.deepEqual(
+      wgslVectorPolylineRender(polygons, uv, SCREEN_FROM_UV, BASE),
+      BASE,
+    );
+  }
+
+  const polylines = packVectorTileWords(buildBakedTile());
+  assert.equal(polylines[VECTOR_TILE_POLYGON_GRID_WIDTH], 0);
+  assert.equal(polylines[VECTOR_TILE_POLYGON_EDGE_COUNT], 0);
+  for (const uv of sampleRaster()) {
+    assert.deepEqual(wgslVectorPolygonRender(polylines, uv, BASE), BASE);
+  }
+});
+
+test("P5 — a mixed bake carries both families, and neither disturbs the other", () => {
+  const mixed = buildBakedMixedTile();
+  const words = packVectorTileWords(mixed);
+  assert.ok(words[VECTOR_TILE_SEGMENT_COUNT] > 0);
+  assert.ok(words[VECTOR_TILE_POLYGON_EDGE_COUNT] > 0);
+
+  // Runs are laid out in order with no gaps and no overlap, so a reader that
+  // walked one run into the next would land on garbage rather than silence.
+  assert.equal(words[VECTOR_TILE_CELL_END_BASE], VECTOR_TILE_HEADER_WORDS);
+  assert.equal(
+    words[VECTOR_TILE_POLYGON_CELL_END_BASE],
+    words[VECTOR_TILE_PRIMITIVES_BASE] +
+      mixed.primitiveCount * VECTOR_PRIMITIVE_STRIDE,
+  );
+  assert.equal(
+    words[VECTOR_TILE_POLYGON_EDGES_BASE],
+    words[VECTOR_TILE_POLYGON_CELL_END_BASE] +
+      words[VECTOR_TILE_POLYGON_GRID_WIDTH] *
+        words[VECTOR_TILE_POLYGON_GRID_HEIGHT],
+  );
+  assert.equal(
+    words[VECTOR_TILE_POLYGON_EDGE_PRIMITIVE_BASE],
+    words[VECTOR_TILE_POLYGON_EDGES_BASE] +
+      words[VECTOR_TILE_POLYGON_EDGE_COUNT] * 4,
+  );
+  assert.equal(
+    words.length,
+    words[VECTOR_TILE_POLYGON_EDGE_PRIMITIVE_BASE] +
+      words[VECTOR_TILE_POLYGON_EDGE_COUNT],
+  );
+
+  // Each family reads the same as it did on its own: the polygon family's
+  // primitive indices are offset into the shared index space, so the oracle
+  // is run over the mixed bake's own tables.
+  const polygonDifferences = comparePolygonBackends(mixed, words);
+  assert.equal(
+    polygonDifferences.length,
+    0,
+    `polygon family disagreed in a mixed tile: ${JSON.stringify(polygonDifferences[0])}`,
+  );
+  const polylineDifferences = compareBackends(mixed, words);
+  assert.equal(
+    polylineDifferences.length,
+    0,
+    `polyline family disagreed in a mixed tile: ${JSON.stringify(polylineDifferences[0])}`,
+  );
+
+  // Adding polygons must not move ONE polyline pixel. Same tables, same
+  // answers, whether or not the buffer also carries a polygon family.
+  const polylineOnly = packVectorTileWords(buildBakedTile());
+  for (const uv of sampleRaster()) {
+    assert.deepEqual(
+      wgslVectorPolylineRender(words, uv, SCREEN_FROM_UV, BASE),
+      wgslVectorPolylineRender(polylineOnly, uv, SCREEN_FROM_UV, BASE),
+      `polyline output moved at ${uv} when polygons joined the tile`,
+    );
+  }
+});
+
+test("P6 — the two families composite in the order GlobeFS.glsl composites them", () => {
+  // Polygons first, then polylines: a stroke crossing a fill is drawn ON TOP
+  // of it. `GlobeFS.glsl` is the authority for the order and it is read here
+  // rather than restated, then the WGSL is required to match.
+  const glslPolygonAt = glslGlobe.indexOf("vectorPolygonRender(");
+  const glslPolylineAt = glslGlobe.indexOf("vectorPolylineRender(");
+  assert.ok(glslPolygonAt > 0 && glslPolylineAt > 0);
+  assert.ok(
+    glslPolygonAt < glslPolylineAt,
+    "GlobeFS.glsl no longer composites polygons before polylines",
+  );
+
+  // The WGSL's fragment entry does the same, and — the part a bare ordering
+  // check would miss — the polygon result is what the polyline call takes as
+  // its base colour, so the polygon composite cannot be a dead store.
+  const call = wgsl.match(
+    /let (\w+) = vectorPolygonRender\(\s*input\.v_textureCoordinates\.xy,\s*vec4<f32>\(color, alpha\),\s*\);\s*let (\w+) = vectorPolylineRender\(\s*input\.v_textureCoordinates\.xy,\s*vectorUV_dx,\s*vectorUV_dy,\s*(\w+),\s*\);/,
+  );
+  assert.ok(
+    call,
+    "GlobeTerrain.wgsl does not composite polygons then polylines at the fragment entry",
+  );
+  assert.equal(
+    call[3],
+    call[1],
+    "the polyline composite ignores the polygon composite's result",
+  );
+  // …and the polyline result is what reaches the shaded colour.
+  assert.ok(
+    new RegExp(`color = ${call[2]}\\.rgb;\\s*alpha = ${call[2]}\\.a;`).test(
+      wgsl,
+    ),
+    "the vector composite's result never reaches the fragment colour",
+  );
+
+  // …and the function itself is not inert. A `return baseColor;` planted
+  // ANYWHERE in the body leaves every call site and every ordering check above
+  // intact, and asserting only the FIRST statement catches only a mutation
+  // planted on that one line — so the body's whole control-flow skeleton is
+  // pinned here instead. (Node cannot execute WGSL; the behavioural acceptance
+  // for the WGSL half is `probe-vector-draping.mjs` gate H, on the same footing
+  // as the stroke-width section's gate B.)
+  const wgslFunctionBody = (name) => {
+    const start = wgsl.indexOf(`fn ${name}(`);
+    assert.ok(start > 0, `GlobeTerrain.wgsl declares no ${name}`);
+    const open = wgsl.indexOf("{", wgsl.indexOf(")", start));
+    let depth = 0;
+    let i = open;
+    for (; i < wgsl.length; i++) {
+      if (wgsl[i] === "{") {
+        depth++;
+      } else if (wgsl[i] === "}" && --depth === 0) {
+        break;
+      }
+    }
+    return wgsl.slice(open + 1, i).replace(/\/\/.*$/gm, "");
+  };
+
+  const polygonBody = wgslFunctionBody("vectorPolygonRender");
+  assert.equal(
+    (polygonBody.match(/\breturn\b/g) ?? []).length,
+    3,
+    "vectorPolygonRender no longer has exactly three returns (two guarded early-outs and the tail composite); an inert `return baseColor;` planted anywhere in the body is what this catches",
+  );
+  assert.match(
+    polygonBody,
+    /for \(var i = indexStart; i < indexEnd; i = i \+ 1u\) \{/,
+    "vectorPolygonRender no longer walks the cell's edge range",
+  );
+  assert.match(
+    polygonBody,
+    /if \(vectorEdgeCrossesRay\(edge, vectorUv\)\) \{\s*inside = !inside;/,
+    "vectorPolygonRender no longer toggles even-odd parity on a ray crossing",
+  );
+  assert.match(
+    polygonBody,
+    /if \(primitiveIndex != currentPrimitive\) \{/,
+    "vectorPolygonRender no longer closes a primitive group when the index changes",
+  );
+
+  // The composite's own guard. Dropping `!inside` fills every cell that holds
+  // any edge at all — a plausible-looking body that every assertion above
+  // survives.
+  assert.match(
+    wgslFunctionBody("vectorCompositePolygonFill"),
+    /if \(!inside \|\| primitiveIndex < 0\) \{\s*return baseColor;\s*\}/,
+    "vectorCompositePolygonFill no longer refuses an outside pixel or the -1 sentinel",
+  );
+});
+
+test("M7p — reading the polygon cell start as cellEnd[i] instead of cellEnd[i-1] is DETECTED", () => {
+  const baked = buildBakedPolygonTile();
+  const words = packVectorTileWords(baked);
+  const differences = comparePolygonBackends(baked, words, {
+    mutate: { cellStartOffByOne: true },
+  });
+  assert.ok(
+    differences.length > 0,
+    "an off-by-one polygon cell start produced identical output",
+  );
+});
+
+test("M8p — dropping the polygon edge→primitive indirection is DETECTED", () => {
+  const baked = buildBakedPolygonTile();
+  const words = packVectorTileWords(baked);
+  const differences = comparePolygonBackends(baked, words, {
+    mutate: { dropIndirection: true },
+  });
+  assert.ok(
+    differences.length > 0,
+    "using the edge index as the material index produced identical output",
+  );
+});
+
+test("M9p — shifting the packed polygon-edge run by ONE WORD is DETECTED", () => {
+  const baked = buildBakedPolygonTile();
+  const words = packVectorTileWords(baked);
+  const shifted = shiftPackedPolygonEdgeRun(words);
+  // Precondition: the mutation actually moved the run. A no-op mutation would
+  // make the assertion below vacuous.
+  assert.equal(shifted.length, words.length + 1);
+  assert.notDeepEqual(
+    Array.from(shifted.subarray(words[SHADER_HEADER.polygonEdgesBase])),
+    Array.from(words.subarray(words[SHADER_HEADER.polygonEdgesBase])),
+  );
+
+  const differences = comparePolygonBackends(baked, words, { words: shifted });
+  assert.ok(
+    differences.length > 0,
+    "a polygon-edge run displaced by one word produced identical output — the layout is not actually pinned",
+  );
+
+  // The same displacement applied to a MIXED tile must also break it: the
+  // polygon runs sit after the primitives run, so a shift there is exactly the
+  // class of defect an append-only layout change can introduce.
+  const mixed = buildBakedMixedTile();
+  const mixedWords = packVectorTileWords(mixed);
+  const mixedDifferences = comparePolygonBackends(mixed, mixedWords, {
+    words: shiftPackedPolygonEdgeRun(mixedWords),
+  });
+  assert.ok(mixedDifferences.length > 0);
+});
+
+test("M10p — a polygons-only bake dropped by the packer is DETECTED, and the claim path refuses it", () => {
+  const baked = buildBakedPolygonTile();
+
+  // (a) BEHAVIOUR. `null` is what the pre-fix packer returned for this bake —
+  // it required the three POLYLINE tables — and the shader then binds the
+  // placeholder and drapes nothing.
+  const dropped = comparePolygonBackends(baked, null, { words: null });
+  assert.ok(
+    dropped.length > 0,
+    "a polygons-only bake packed as null rendered the same as one packed correctly",
+  );
+  // Same statement from the other side: the pre-fix WebGPU had no polygon path
+  // at all, so every fragment came back untouched.
+  const inert = comparePolygonBackends(baked, null, { identity: true });
+  assert.ok(inert.length > 0);
+
+  // (b) CLAIM PATH. Claiming a bake means "callers must not construct WebGL
+  // textures" (`VectorPipeline.packPrimitiveTextures`), so a claim on a family
+  // that was not packed drops the tile on BOTH backends. The declared families
+  // come from `VectorProvider`'s stage-1 flags, independently of this packer.
+  const previousUsage = globalThis.GPUBufferUsage;
+  globalThis.GPUBufferUsage = { STORAGE: 1, COPY_DST: 2 };
+  const uploads = [];
+  const device = {
+    createBuffer: (descriptor) => ({ descriptor, destroy() {} }),
+    queue: {
+      writeBuffer(buffer, offset, words) {
+        uploads.push(new Uint32Array(words));
+      },
+    },
+  };
+  const errors = [];
+  const consoleError = console.error;
+  console.error = (message) => errors.push(String(message));
+  let claimed;
+  let refused;
+  try {
+    claimed = prepareWebGPUVectorTileData(
+      { device, resourceGeneration: 1 },
+      { ...baked, hasPolylines: false, hasPolygons: true },
+    );
+    // A bake that DECLARES polygons whose stage-2 grid never materialized.
+    // Nothing here can realize it, so the claim must be refused and the WebGL
+    // texture path left to run.
+    refused = prepareWebGPUVectorTileData(
+      { device, resourceGeneration: 1 },
+      { ...baked, hasPolygons: true, polygonGridCellIndices: undefined },
+    );
+  } finally {
+    console.error = consoleError;
+    globalThis.GPUBufferUsage = previousUsage;
+  }
+
+  assert.equal(
+    claimed,
+    true,
+    "a polygons-only bake that packs must be claimed",
+  );
+  assert.equal(uploads.length, 1, "the claim must upload exactly one buffer");
+  assert.ok(
+    uploads[0][VECTOR_TILE_POLYGON_EDGE_COUNT] > 0,
+    "the claimed buffer carries no polygon edges",
+  );
+  assert.equal(
+    refused,
+    false,
+    "a bake declaring an unpacked geometry family was claimed anyway",
+  );
+  assert.equal(
+    errors.length,
+    1,
+    "the refusal must reach the console — a silent decline is the defect",
+  );
+  assert.match(errors[0], /hasPolygons=true/);
 });
 
 // ═══════════════════════════════════════════════════════════════════════

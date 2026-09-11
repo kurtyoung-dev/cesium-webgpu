@@ -153,16 +153,17 @@ export function createBindGroupLayouts(host: LayoutsHost): void {
       // samples it only inside the `cloudShadowControl.x > 0.5` gate.
       texture(9, Stage.FRAGMENT),
       sampler(10, Stage.FRAGMENT),
-      // Draped vector-tile polyline lookup (binding 11). A read-only storage
-      // buffer rather than the five sampled textures WebGL's
-      // `VectorCommon.glsl` uses: group 2 already charges 5 of the 12
-      // non-imagery fragment sampled textures
+      // Draped vector-tile lookup (binding 11), polyline segments and polygon
+      // edges in one read-only storage buffer rather than the eight sampled
+      // textures WebGL's `VectorCommon.glsl` uses: group 2 already charges 5 of
+      // the 12 non-imagery fragment sampled textures
       // (`GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES`), and the reduced 4-slot
-      // imagery layout lands on exactly the 16-texture spec floor, so five
-      // more would break default-limit adapters outright. Storage buffers draw
-      // from a separate budget, so the texture accounting above is unchanged.
-      // Bound unconditionally — tiles with no clamped vector data get a
-      // 32-byte all-zero placeholder whose gridWidth header word is 0.
+      // imagery layout lands on exactly the 16-texture spec floor, so even the
+      // polyline half's five would break default-limit adapters outright.
+      // Storage buffers draw from a separate budget, so the texture accounting
+      // above is unchanged. Bound unconditionally — tiles with no clamped
+      // vector data get an all-zero header-sized placeholder whose per-family
+      // grid-width header words are both 0.
       //
       // This is the globe layout's only fragment-stage storage buffer. Current
       // WebGPU default limits guarantee 8 fragment storage buffers in core and

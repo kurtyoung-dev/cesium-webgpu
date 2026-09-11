@@ -2433,12 +2433,13 @@ export class WebGPUGlobeSurfaceRenderer {
     const cloudShadowView = this._cloudShadowView ?? this._placeholderView!;
     const cloudShadowSampler = this._cloudShadowSampler ?? this._sampler!;
 
-    // Binding 11 is the tile's draped vector-polyline lookup buffer, realized
-    // at bake time by `prepareWebGPUVectorTileData`. Tiles with no clamped
-    // vector geometry — the overwhelming majority — share one 32-byte all-zero
-    // placeholder whose `gridWidth` header word is 0, the shader's early-out
-    // sentinel, so the layout never forks and the cache key stays stable across
-    // a whole globe of vector-free tiles.
+    // Binding 11 is the tile's draped vector lookup buffer — polyline segments
+    // and polygon edges — realized at bake time by
+    // `prepareWebGPUVectorTileData`. Tiles with no clamped vector geometry —
+    // the overwhelming majority — share one all-zero header-sized placeholder
+    // whose per-family grid-width header words are both 0, the shader's
+    // early-out sentinels, so the layout never forks and the cache key stays
+    // stable across a whole globe of vector-free tiles.
     if (!this._placeholderVectorBuffer) {
       this._placeholderVectorBuffer = device.createBuffer({
         label: "Globe vector tile placeholder",

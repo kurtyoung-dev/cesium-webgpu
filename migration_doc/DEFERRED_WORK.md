@@ -14538,6 +14538,99 @@ storage-buffer layout learns the polygon tables and the WGSL twin gains the
 polygon distance test. Principle-5 gap, M-sized; the WebGL path is correct
 on both counts today. Owner: C11 W1 tail (vector lane).
 
+**IMPLEMENTED 2026-09-06, sync-parity wave S1 lane L1 (census `C-01`,
+`UPSTREAM-SYNC-1.145-07` item 7). Awaiting the Edge leg; not yet closed.**
+
+One correction to the filing above, re-derived at Batch 1443 `e95f39684b`.
+The filing's release attribution is RIGHT and stays: polygon draping on
+terrain is **1.144's** (upstream #13577, `CHANGES.md:79`) — `VectorCommon.glsl`
+already declared a fully implemented `vectorPolygonRender` at the 1.145 sync
+base `40341305f4` (line 174), added 2026-07-15 in `3ec39018a9`. What **1.145**
+did was RE-GATE it behind `HAS_VECTOR_POLYGONS` (`GlobeSurfaceShaderSet.js:334`,
+key bit 35 — the base file carries no `HAS_VECTOR_*` ifdef at all) and factor
+the inline cell-range read into the shared `vectorCellRange`. The WebGPU gap is
+therefore one release cycle OLDER than a 1.145 attribution implies. The real
+correction is the other one: the WGSL twin needs no "polygon distance test":
+polygon coverage is an even-odd horizontal ray cast over per-cell-clipped edge
+loops, with no width, no anti-aliasing and no Jacobian — which is why the
+polyline path's whole `screenFromUv` apparatus has no analogue on it.
+
+**What shipped.** The storage-buffer word layout gained the polygon family
+as an APPEND: header words `[8..13]` (`polygonGridWidth`,
+`polygonGridHeight`, `polygonEdgeCount`, and the three run bases) and three
+runs after the primitives run (polygon cell ends, polygon edges, polygon
+edge→primitive). Words `[0..7]` keep their v1.144 indices and meanings.
+Each family carries its OWN grid dimensions, because `packPolylineGrid` and
+`packPolygonGrid` size their grids from their own geometry counts and
+routinely disagree on one tile. `packVectorTileWords` is no longer
+polyline-gated: a polylines-only, a polygons-only and a mixed bake each pack
+the families they hold, and only a bake with neither returns `null`. The
+per-family `gridWidth === 0` sentinel is now exactly that — per family — so
+a polygons-only tile has `gridWidth === 0` in a buffer that is not a
+placeholder. `GlobeTerrain.wgsl` gained `vectorEdgeCrossesRay`,
+`vectorCompositePolygonFill` and `vectorPolygonRender` as ports of the GLSL,
+composited BEFORE the polyline path at the fragment entry, matching
+`GlobeFS.glsl`'s order, so a stroke crossing a fill draws on top of it. Both
+families now resolve a primitive's material through one named helper,
+`vectorPrimitiveRecord(primitivesBase, primitiveIndex)`, over a
+`VECTOR_PRIMITIVE_STRIDE` declared once in the WGSL and once in the TS.
+
+**The claim path is now honest.** `prepareWebGPUVectorTileData` returned
+`true` for a polygons-only bake it packed as `null`, and a claim means
+"callers must not construct WebGL textures"
+(`VectorPipeline.packPrimitiveTextures`), so that tile rendered bare terrain
+on WebGPU *and* had its WebGL texture fallback suppressed. It now declines —
+loudly, with a permanent unwrapped `console.error` — for any bake that
+declares a geometry family (`hasPolylines` / `hasPolygons`, set by
+`VectorProvider` from stage-1 geometry) whose run the packer did not
+produce. A declared family whose own stage-2 grid packed nothing is not a
+drop: the WebGL twin reads the same empty grid and paints nothing either.
+With the packer extended, the decline is unreachable for every bake this
+packer understands — it is a sentinel for a future packer/bake mismatch, in
+the sense of the "permanent sentinels" rule in `CLAUDE.md`.
+
+**Proof.** `Tools/visual-regression/vector-layer-draping.spec.mjs`
+(`npm run test-engine-node`) gained a polygon oracle written from
+`VectorCommon.glsl`, a subject reading the real packer and the WGSL index
+arithmetic with every header index read out of the shader source, fixtures
+baked through the real `VectorPipeline.packPolygonGrid` (overlapping
+translucent areas, one with a hole) and a mixed fixture — 10 new tests,
+58/58 green (47 of them this lane's and L4's at the 2026-09-11 rebase onto Batch 1462). Four polygon mutations are each asserted DETECTED: `M7p` the
+cell start read as `cellEnd[i]`, `M8p` the edge→primitive indirection
+dropped, `M9p` the packed polygon-edge run displaced by ONE WORD with the
+header untouched, `M10p` a polygons-only bake packed as `null` and claimed
+anyway. (The `p` suffix is because `M7` was already taken by the
+zero-determinant guard.) Demonstrated negative controls: the layout mutation
+applied to the packer source (`polygonEdgesBase + 1`) turns A2/P2/P3/P5 red;
+`if (false && polygons)` around the packer's polygon write turns P2/P3/P5
+red; neutering the WGSL call site turns P6 red; and P6 pins
+`vectorPolygonRender`'s whole control-flow SKELETON — its exact return
+count, its edge-range walk, its parity toggle, its group-close, and
+`vectorCompositePolygonFill`'s `!inside || primitiveIndex < 0` guard — so a
+`return baseColor;` planted ANYWHERE in the body (not only on the first
+line) turns it red, as does weakening that composite guard. All three were
+RUN against the shipped spec and all three go red.
+
+**Owed: the Edge leg.** `Tools/visual-regression/probe-vector-draping.mjs`
+gained gate H — a clamped `BufferPolygonCollection` area, painted-fill pixel
+count and bbox compared across backends at nadir and oblique, plus a mixed
+polyline+polygon frame requiring all three colour classes to survive. Gate A
+(a silent WebGL fallback HARD-FAILS) covers it. That probe could not have
+run at HEAD: it called `scene.globe.vectorProvider.add(collection)`, and
+`VectorProvider` has no `add` — collections are marked per frame by
+`Scene`'s `markVectorCollections` for every clamped collection in
+`scene.primitives`, and a clamped collection does not draw itself
+(`BufferPrimitiveCollection._isRendered`). That repair is the wave's gate-G
+lane's, which this patch stacks on top of. Row closes when the leg is run
+and green.
+
+**Parity (Principle 5).** This is a WebGPU twin of shipped WebGL behaviour;
+nothing here belongs on WebGL, whose polygon path is `VectorCommon.glsl`'s
+and is untouched. No GLSL, no Scene file and no `VectorPipeline`/
+`VectorProvider` line is modified, so the WebGL path is byte-identical by
+construction, and the spec's polyline legs (`B1`, `W1`-`W5`, `M1`-`M7`,
+`E1`-`E5`, `C0`-`C6`) still pass unchanged over it.
+
 ## MAINTAINER DIRECTIVE 2026-08-11 — two work packages (UX-01, DOC-01)
 
 **UX-01 — DEV-UI GATING + UPSTREAM-SHAPED START FLOW.** The CesiumViewer

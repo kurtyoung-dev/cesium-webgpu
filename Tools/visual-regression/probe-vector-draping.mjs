@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
- * C11-213 (`UP144-VECTOR-LAYER-WGSL`) — terrain-draped vector polylines,
- * browser acceptance probe.
- * @purpose C11-213 acceptance for terrain-draped vector polylines: backend/placement/material/Jacobian/cleanup gates with STRUCTURAL verdicts.
+ * C11-213 (`UP144-VECTOR-LAYER-WGSL`) — terrain-draped vector polylines and
+ * polygon fills, browser acceptance probe.
+ * @purpose C11-213 acceptance for terrain-draped vector polylines and polygon fills: backend/placement/material/Jacobian/polygon/cleanup gates with STRUCTURAL verdicts.
  * @status ACTIVE
  *
  * `vector-layer-draping.spec.mjs` (pure Node) proves the ARITHMETIC: the
  * `WebGPUVectorTileResources.packVectorTileWords` word layout agrees with
- * `GlobeTerrain.wgsl::vectorPolylineRender`, and five named mutations break it.
+ * `GlobeTerrain.wgsl::vectorPolylineRender` and `::vectorPolygonRender`, and
+ * ten named mutations break it.
  * What a CPU equivalence proof structurally cannot show is that the packed
  * buffer is BOUND, that the storage-buffer read reaches a real fragment, or
  * that the composite survives tile churn. Those are this probe's job.
@@ -62,10 +63,10 @@
  *                  panning tiles out of and back into view (that path is
  *                  `VectorPipeline.freeResources` → `rendererResources.destroy()`
  *                  racing the next submit).
- *   F NON-REGRESS  a vector-free globe is byte-identical before the collection
- *                  is added and after it is removed (the placeholder early-out
- *                  claims to be free), and — when a baseline recorded on a
- *                  pre-change build is present — identical to that too.
+ *   F NON-REGRESS  a vector-free globe is byte-identical before the collections
+ *                  are added and after they are removed (the placeholder
+ *                  early-out claims to be free), and — when a baseline recorded
+ *                  on a pre-change build is present — identical to that too.
  *   G PICK         the C-05 acceptance. `scene.pick` on the thick line returns
  *                  that line (primitive index 1) and on the thin one returns
  *                  index 0, on BOTH backends; a pick one full stroke width to
@@ -77,11 +78,22 @@
  *                  Asserting the INDEX is what makes a pick word read from the
  *                  wrong record fail: a shifted or mis-strided pick run answers
  *                  with the other primitive rather than with nothing.
+ *   H POLYGON      the polygon fills (v1.144, re-gated in v1.145). A pure-GREEN
+ *                  clamped `BufferPolygonCollection` area, wider than a tile at
+ *                  this level so it must survive
+ *                  per-tile clipping and the cell-grouped even-odd walk:
+ *                  painted-fill pixel COUNT and BBOX agree across backends at
+ *                  nadir AND oblique, and one MIXED frame carries the fill plus
+ *                  BOTH strokes — a fill composited over the lines instead of
+ *                  under them collapses the stroke classes.
  *
  * STRUCTURAL, never FAIL, when a leg cannot see its own subject: if the WebGL
- * reference lane itself draped nothing, gates B/C/D are measuring an empty
+ * reference lane itself draped nothing, gates B/C/D/H are measuring an empty
  * frame. Scoring that as FAIL files a phantom defect against WebGPU; scoring it
  * as PASS is a false green. It reports STRUCTURAL and says what is missing.
+ *
+ * Gate A covers H: a silent WebGL fallback HARD-FAILS the run before any
+ * cross-backend number below is read, the polygon leg's included.
  *
  * READINESS is binned `Pass.GLOBE` commands reaching `view.frustumCommandsList`
  * plus a WALL-CLOCK settle budget — never `tilesLoaded` alone and never a frame
@@ -150,6 +162,12 @@ const PREDICT = {
   minChangedPixels: 400,
   // Rows needed in each depth third before the Jacobian leg has an opinion.
   minJacobianRows: 8,
+  // Fraction of the polyline-only frame's stroke pixels that must survive when
+  // a fill is draped under them in the same frame. Not 1.0: the fill changes
+  // what the anti-aliased stroke edges blend against, so a few boundary pixels
+  // legitimately fall out of the stroke colour classes. A fill composited OVER
+  // the strokes (the wrong order) takes this to near zero.
+  mixedStrokeSurvivalMin: 0.6,
 };
 
 /**
@@ -316,6 +334,11 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
     let changed = 0;
     let red = 0;
     let blue = 0;
+    // The polygon leg's fill colour. Classified on the same dominant-channel
+    // rule as the two line colours, so a mixed frame reports all three classes
+    // from one pass and a fill that swallowed its strokes is visible as the
+    // line classes collapsing rather than as a single "changed" number moving.
+    let green = 0;
     let sumX = 0;
     let sumY = 0;
     let minX = width;
@@ -356,6 +379,9 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
           blue++;
           run++;
           if (run > best) best = run;
+        } else if (g > r + 30 && g > b + 30) {
+          green++;
+          run = 0;
         } else {
           run = 0;
         }
@@ -368,6 +394,7 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
       changed,
       red,
       blue,
+      green,
       centroid:
         changed > 0
           ? [sumX / changed, sumY / changed]
@@ -419,6 +446,55 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
       positions.push(p.x, p.y, p.z);
     }
     return new Float64Array(positions);
+  };
+
+  // ── The POLYGON leg's subject: one clamped filled AREA, pure GREEN so it
+  // classifies away from both line colours in `analyzeChanged`. It brackets
+  // both meridians and is deliberately WIDER than a tile at this level, so the
+  // fill has to survive per-tile clipping and the cell-grouped even-odd walk
+  // rather than landing inside one cell of one tile. Densified along each side
+  // for the same reason the meridians are: a four-vertex ring in geodetic
+  // degrees does not follow the ellipsoid between its corners.
+  const AREA_WEST = -105.6;
+  const AREA_EAST = -103.4;
+  const AREA_SOUTH = 36.6;
+  const AREA_NORTH = 40.4;
+  const clampedArea = () => {
+    const ring = [];
+    const push = (longitude, latitude) => {
+      const p = C.Cartesian3.fromDegrees(longitude, latitude, 0.0);
+      ring.push(p.x, p.y, p.z);
+    };
+    const steps = 24;
+    for (let i = 0; i < steps; i++) {
+      push(AREA_WEST + ((AREA_EAST - AREA_WEST) * i) / steps, AREA_SOUTH);
+    }
+    for (let i = 0; i < steps; i++) {
+      push(AREA_EAST, AREA_SOUTH + ((AREA_NORTH - AREA_SOUTH) * i) / steps);
+    }
+    for (let i = 0; i < steps; i++) {
+      push(AREA_EAST - ((AREA_EAST - AREA_WEST) * i) / steps, AREA_NORTH);
+    }
+    for (let i = 0; i < steps; i++) {
+      push(AREA_WEST, AREA_NORTH - ((AREA_NORTH - AREA_SOUTH) * i) / steps);
+    }
+    return new Float64Array(ring);
+  };
+  const makeAreaCollection = () => {
+    const areas = new C.BufferPolygonCollection({
+      primitiveCountMax: 4,
+      vertexCountMax: 512,
+      holeCountMax: 4,
+      triangleCountMax: 512,
+      heightReference: C.HeightReference.CLAMP_TO_TERRAIN,
+    });
+    areas.add({
+      positions: clampedArea(),
+      material: new C.BufferPolygonMaterial({
+        color: new C.Color(0.0, 1.0, 0.0, 1.0),
+      }),
+    });
+    return areas;
   };
 
   nadirView();
@@ -587,6 +663,27 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
   scene.globe.pickable = false;
   await settleMs(600);
 
+  // ── MIXED leg (gate H). Both families draped in ONE frame, which is the case
+  // the shared primitive index space and the composite order both bear on: the
+  // strokes must still be there ON TOP of the fill, so all three colour classes
+  // survive. A fill that swallowed its strokes shows up as the line classes
+  // collapsing, not as a changed-pixel total moving. It runs HERE, ahead of the
+  // polyline teardown, because `PrimitiveCollection.remove` DESTROYS what it
+  // removes under default ownership: the strokes can only be measured while the
+  // collection carrying them is still alive. The view is nadir on exit from the
+  // churn loop, so `freeB` is the matching vector-free reference — the same one
+  // `nadirMetrics` and `churnMetrics` use.
+  const mixedAreas = makeAreaCollection();
+  scene.primitives.add(mixedAreas);
+  await settleMs(3000);
+  const nadirMixed = captureNow();
+  const nadirMixedMetrics = analyzeChanged(nadirMixed.image, freeB.image);
+
+  // Provider first, then the scene: `VectorProvider.remove` needs a live object
+  // and `PrimitiveCollection.remove` destroys it.
+  scene.globe.vectorProvider.remove(mixedAreas);
+  scene.primitives.remove(mixedAreas);
+
   // ── Removal → the vector-free globe must come back byte-identical.
   // `VectorProvider#remove` drops the collection immediately and dirties its
   // region; the primitive removal that follows destroys the collection, and
@@ -597,6 +694,33 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
   await settleMs(3000);
   const freeC = captureNow();
   const removalChanged = changedPixelCount(freeA.image, freeC.image);
+
+  // ── POLYGON leg (gate H). The globe is vector-free again here, so `freeC`
+  // (nadir) and `obliqueFree` are the references the fill is measured against.
+  // Painted-fill pixel COUNT and BBOX are the two numbers compared across
+  // backends: a count alone cannot tell a correctly placed fill from one
+  // shifted by a cell, and a bbox alone cannot tell a solid fill from its
+  // outline. A FRESH collection — the mixed leg destroyed its own.
+  const areas = makeAreaCollection();
+  scene.primitives.add(areas);
+  await settleMs(3000);
+  const nadirPolygon = captureNow();
+  const nadirPolygonMetrics = analyzeChanged(nadirPolygon.image, freeC.image);
+
+  obliqueView();
+  await settleMs(3000);
+  const obliquePolygon = captureNow();
+  const obliquePolygonMetrics = analyzeChanged(
+    obliquePolygon.image,
+    obliqueFree.image,
+  );
+
+  nadirView();
+  scene.globe.vectorProvider.remove(areas);
+  scene.primitives.remove(areas);
+  await settleMs(3000);
+  const freeD = captureNow();
+  const polygonRemovalChanged = changedPixelCount(freeA.image, freeD.image);
 
   // ── Jacobian: perpendicular screen width of the thick line, near vs far.
   const jacobian = (() => {
@@ -654,6 +778,10 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
     [`${renderer}-oblique-vectorfree`]: obliqueFree.png,
     [`${renderer}-oblique-vector`]: obliqueOn.png,
     [`${renderer}-nadir-vectorfree-after-removal`]: freeC.png,
+    [`${renderer}-nadir-polygon`]: nadirPolygon.png,
+    [`${renderer}-oblique-polygon`]: obliquePolygon.png,
+    [`${renderer}-nadir-mixed`]: nadirMixed.png,
+    [`${renderer}-nadir-vectorfree-after-polygon-removal`]: freeD.png,
   };
 
   return {
@@ -665,6 +793,7 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
     determinismChanged,
     removalChanged,
     pick,
+    polygonRemovalChanged,
     churnCycles,
     churnStability,
     // `blueRowRun` is a per-row array only the Jacobian leg needs; it is
@@ -672,6 +801,9 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
     nadir: dropRowRuns(nadirMetrics),
     churn: dropRowRuns(churnMetrics),
     oblique: dropRowRuns(obliqueMetrics),
+    nadirPolygon: dropRowRuns(nadirPolygonMetrics),
+    obliquePolygon: dropRowRuns(obliquePolygonMetrics),
+    nadirMixed: dropRowRuns(nadirMixedMetrics),
     jacobian,
     hashes: {
       vectorFreeBefore: hashPixels(freeA.image.data),
@@ -938,9 +1070,18 @@ async function main() {
       `determinism control FAILED to resolve: re-capturing the SAME vector-free view changed ${webgl.determinismChanged} (webgl) / ${webgpu.determinismChanged} (webgpu) px, so "exactly 0" is not a measurable quantity in this scene`,
     );
   } else {
-    const removalOk = webgl.removalChanged === 0 && webgpu.removalChanged === 0;
+    // Both removals: `removalChanged` now covers the mixed leg's area
+    // collection as well as the polylines (both are gone by `freeC`), and
+    // `polygonRemovalChanged` covers the polygon leg's own. A family that
+    // leaked a bound buffer or a stale header word shows up here as a globe
+    // that never came back.
+    const removalOk =
+      webgl.removalChanged === 0 &&
+      webgpu.removalChanged === 0 &&
+      webgl.polygonRemovalChanged === 0 &&
+      webgpu.polygonRemovalChanged === 0;
     fNotes.push(
-      `predicted 0 changed px between the vector-free globe before add and after remove; measured ${webgl.removalChanged} (webgl) / ${webgpu.removalChanged} (webgpu)`,
+      `predicted 0 changed px between the vector-free globe before add and after remove; measured ${webgl.removalChanged} (webgl) / ${webgpu.removalChanged} (webgpu) after the polyline and mixed legs, ${webgl.polygonRemovalChanged} / ${webgpu.polygonRemovalChanged} after the polygon leg`,
     );
     let baselineOk = true;
     let baselineSeen = 0;
@@ -1053,6 +1194,95 @@ async function main() {
   }
   console.log(`[G PICK]       ${gDetail}  ${verdict(gateG)}`);
 
+  // ── Gate H — POLYGON FILLS. `vector-layer-draping.spec.mjs` proves the
+  // polygon word layout and the WGSL index arithmetic agree with
+  // `VectorCommon.glsl`; what a CPU equivalence proof cannot show is that a
+  // fill is BOUND, REACHED and PAINTED. Painted-fill pixel count and bbox on
+  // both backends, at nadir and oblique, plus one mixed frame.
+  //
+  // The reference here is the WebGL lane's own fill, so a WebGL lane that
+  // painted nothing reports STRUCTURAL — the same blind-leg discipline B/C/D
+  // use, for the same reason.
+  const polygonReferenceDrew =
+    webgl.nadirPolygon.green >= PREDICT.minChangedPixels;
+  let gateH = null;
+  let hDetail = `WebGL reference painted ${webgl.nadirPolygon.green} fill px (floor ${PREDICT.minChangedPixels}) — the polygon bake never reached the reference frame, so this leg measured an empty scene (instrument gap, NOT a product verdict)`;
+  if (polygonReferenceDrew) {
+    const legs = [
+      { name: "nadir", key: "nadirPolygon" },
+      { name: "oblique", key: "obliquePolygon" },
+    ].map(({ name, key }) => {
+      const a = webgl[key];
+      const b = webgpu[key];
+      const countRatio = b.green / Math.max(a.green, 1);
+      // `analyzeChanged` accumulates centroid and bbox over the CHANGED set,
+      // not the GREEN set; on these two polygon-only legs the fill is the only
+      // thing in the frame, so the two coincide. (The mixed frame's centroid is
+      // therefore not a fill centroid — which is why gate H never reads it.)
+      const dx = Math.abs(a.centroid[0] - b.centroid[0]);
+      const dy = Math.abs(a.centroid[1] - b.centroid[1]);
+      const bboxDelta =
+        a.bbox && b.bbox
+          ? Math.max(...a.bbox.map((v, i) => Math.abs(v - b.bbox[i])))
+          : Number.POSITIVE_INFINITY;
+      return {
+        name,
+        webglFill: a.green,
+        webgpuFill: b.green,
+        countRatio,
+        dx,
+        dy,
+        bboxDelta,
+        ok:
+          b.green >= PREDICT.minChangedPixels &&
+          countRatio >= PREDICT.countRatioBand[0] &&
+          countRatio <= PREDICT.countRatioBand[1] &&
+          dx <= PREDICT.centroidMaxDelta &&
+          dy <= PREDICT.centroidMaxDelta &&
+          bboxDelta <= PREDICT.bboxMaxDelta,
+      };
+    });
+
+    // Mixed frame: fill AND both strokes, on both backends. The stroke classes
+    // are compared against the polyline-only frame so a fill drawn OVER the
+    // lines (the wrong composite order) shows up as them collapsing.
+    const mixedRows = [webgl, webgpu].map((lane) => {
+      const strokeRatio =
+        (lane.nadirMixed.red + lane.nadirMixed.blue) /
+        Math.max(lane.nadir.red + lane.nadir.blue, 1);
+      return {
+        lane: lane.requested,
+        fill: lane.nadirMixed.green,
+        red: lane.nadirMixed.red,
+        blue: lane.nadirMixed.blue,
+        strokeRatio,
+        ok:
+          lane.nadirMixed.green >= PREDICT.minChangedPixels &&
+          lane.nadirMixed.red > 0 &&
+          lane.nadirMixed.blue > 0 &&
+          strokeRatio >= PREDICT.mixedStrokeSurvivalMin,
+      };
+    });
+
+    gateH = legs.every((leg) => leg.ok) && mixedRows.every((row) => row.ok);
+    hDetail =
+      `fill count ratio predicted ~1.0 in [${PREDICT.countRatioBand}], centroid <=${PREDICT.centroidMaxDelta}, bbox <=${PREDICT.bboxMaxDelta}; ` +
+      legs
+        .map(
+          (leg) =>
+            `${leg.name} webgl=${leg.webglFill} webgpu=${leg.webgpuFill} ratio=${leg.countRatio.toFixed(3)} centroid=${leg.dx.toFixed(1)}/${leg.dy.toFixed(1)} bbox=${leg.bboxDelta === Number.POSITIVE_INFINITY ? "n/a" : leg.bboxDelta}`,
+        )
+        .join("; ") +
+      `; mixed (fill + both strokes, stroke survival >=${PREDICT.mixedStrokeSurvivalMin}): ` +
+      mixedRows
+        .map(
+          (row) =>
+            `${row.lane} fill=${row.fill} red=${row.red} blue=${row.blue} strokes=${row.strokeRatio.toFixed(2)}`,
+        )
+        .join("; ");
+  }
+  console.log(`[H POLYGON]    ${hDetail}  ${verdict(gateH)}`);
+
   const manifestPath = path.join(OUT, "manifest.json");
   fs.writeFileSync(
     manifestPath,
@@ -1071,7 +1301,7 @@ async function main() {
   console.log(`\nmanifest: ${manifestPath}`);
   console.log(`PNGs: ${OUT}/*.png`);
 
-  const gates = [gateA, gateB, gateC, gateD, gateE, gateF, gateG];
+  const gates = [gateA, gateB, gateC, gateD, gateE, gateF, gateG, gateH];
   const failed = gates.some((gate) => gate === false);
   const structural = gates.some((gate) => gate === null);
   console.log(
