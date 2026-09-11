@@ -611,6 +611,8 @@ the full bar (behaviour spec + inertness mutant + separate review + the named Ed
 carry a spec only where there is logic worth pinning AND an npm runner home. Docs, comments and demo
 text carry review plus one capture where visual - no spec. A spec with no runner home is a review
 blocker. Where a probe can measure the feature directly, the probe is the acceptance.
+An optional second, adversarial Opus verifier (R-2026-09-11-1, `ORCHESTRATION_HANDBOOK.md` §7) may be added by the seat for
+batches flagged as important; it is briefed to refute the packet, and a REFUTED verdict returns the lane before landing.
 
 **Wave-end gate (R-2026-08-29-2):** every multi-batch wave closes with the variant smoke test, the
 Sandcastle2 sweep on both renderers and the visual-regression capture-and-diff (baselines refreshed

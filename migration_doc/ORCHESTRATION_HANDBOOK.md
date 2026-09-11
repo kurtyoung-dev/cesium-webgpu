@@ -323,6 +323,14 @@ paragraph governs.
   homes); and prefer probes that measure the feature over specs that certify the brief." Binding
   detail (the ENGINE/PARITY/SHADER vs TOOLS vs DOCS/COMMENTS/DEMO-TEXT split, and that a spec with
   no runner home is a review blocker) is in the ruling itself — do not re-derive it here.
+
+**Optional adversarial verifier (R-2026-09-11-1).** For a batch the maintainer or the seat flags as
+important, the seat may dispatch a second independent Opus agent after the station-3 review and
+before landing, briefed to refute the packet's claims (mechanisms re-derived from the code, mutants
+re-run on disk, Edge receipts re-read, a failing input attempted per acceptance clause). Its
+`_lane-out/VERIFY_<Name>.md` ends in `VERDICT: HOLDS` or `VERDICT: REFUTED (<claim>)`; REFUTED returns
+the lane to its worker. Not required for tools or docs batches or routine engine rounds.
+
 - **Wave-end gate** (R-2026-08-29-2, `MAINTAINER_RULINGS_2026-08-28.md:261`): "We should also have a
   general smoke test and a visual regression pass that we keep up to date. We don't need to run this
   with every change or batch but rather when we finish major waves that include multiple batches."
