@@ -15972,9 +15972,11 @@ instrument pre-judging it.
 
 **`AR-M30` is a separate row with separate ids.** The `surfacePosition` defined-rate for edge hits
 more than 2 px from the cursor is `AR-030`'s acceptance, not `AR-001`'s. The probe runs a
-wide-aperture (`--snap-width`, default 45) snap grid — 81 cursors on a 9 px pitch over a local
-`CesiumMilkTruck.glb` at 300 m — on both backends, keeps the edge hits whose `screenPosition` is more
-than 2 px from the cursor, and reports the defined-rate per backend. It asserts **sufficiency first**
+wide-aperture (`--snap-width`, default 45) snap over 81 cursors on concentric rings scaled to the
+subject's own measured projected radius — the subject being a local glTF that CARRIES
+`EXT_mesh_primitive_edge_visibility`, loaded in an edge-drawing `edgeDisplayMode`, because nothing
+else can set the snap payload's edge flag (round 2, below) — on both backends, keeps the edge hits
+whose `screenPosition` is more than 2 px from the cursor, and reports the defined-rate per backend. It asserts **sufficiency first**
 (at least 8 far edge hits per backend) so an unmeasurable rate can never publish as agreement, then
 `|webgpu − webgl| ≤ 0.05` — the bar `AR-030`'s acceptance column actually names. **This lane
 predicts nothing about the number:** `AR-030`'s own text RETRACTS the "today 0%" figure, and
@@ -16428,3 +16430,158 @@ same inconsistency: it is why the arrow's shaft reads 9 px where WebGL's reads 8
 at the ribbon's widest column the outline hue must BRACKET the core hue above and below, within a
 skew allowance. A count ratio cannot separate a two-sided outline from a one-sided one at twice the
 thickness, and the flood this probe first caught had an edge ratio of 4.250 with no core at all.
+
+## 2026-09-06 — AR-837 round 2: the matrix's first Edge run measured the difference AR-M01 needs, and found four defects in the instrument that void it — three fixed here, the fourth (cell E of the velocity probe) landed in Batch 1451 (lane Amdir, wave P0-2 follow-on; rebased onto Batch 1455)
+
+**Row.** `AR-837` (`QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md:233`). Tools class; no engine file is
+touched. This lane does not edit the queue.
+
+**What Éowyn measured.** Edge job 10
+(`Tools/visual-regression/output/wave-p0-2-edge-2026-09-06-job10/`, 2026-09-06 00:36-01:00 EDT):
+`ar837-before` on port 8095 serving `08cb6fd4b2` (Batch 1438, before the `AR-001` fix),
+`ar837-after` on port 8094 serving `e95f39684b` (Batch 1443), plus both cross-controls, plus the
+`AR-752` velocity leg at `--runs 3`. Both preflights green, served md5 == disk md5 on both ports,
+shader-identity exit 0. Every leg exited 1.
+
+**AR-M01's difference IS measured, and the expectation flag IS load-bearing.** `label` and `point`
+at `ddtd-infinity`, both log legs: BEFORE — WebGL visible and hit 5/5, WebGPU visible and MISS 0/5;
+AFTER — WebGPU HIT 5/5. All four cells pass under their own tree's `--expect` and go red under the
+other's (legs 3a/3b, which red exactly the six `ddtd-infinity` subject cells). Deterministic and
+identical across four runs. It is banked as evidence, not as a discharged acceptance, because the
+instrument's own controls were red in every run.
+
+**The four instrument defects, and what each was.** Three — (a), (b) and (c) — are fixed by this
+patch. The fourth, (e), was fixed by **Batch 1451** (lane Ulfang round 3) while this lane was in
+review; the seat had briefed it to both lanes by mistake. It is kept below for the measurement that
+found it, not as a claim on this patch. Full evidence, per-cell numbers and the source-level
+mechanisms are in `WEBGPU_DEBUGGING_LOG.md` under "Instrument 1443.2" (2026-09-06).
+
+- **(a) The billboard never rendered — HORIZON-CULLED, on both backends, on both trees.** 0 hue px
+  in all sixteen cell-measurements including the cells whose WebGL anchor requires VISIBLE.
+  Decoding the banked PNGs found 2 red pixels on the whole canvas (page chrome) and the billboard's
+  own projected centre uniformly the globe's grey. The occluder sphere is
+  `Ellipsoid.minimumRadius`; subjects at -60 km sit ~47.4 km inside it; a collection survives only
+  if ITS bounding sphere clears that. The billboard's single 32 px member bought ~16 km. The label
+  survived on its ~100 px background (~50 km), the point survived only because the CONTROL shares
+  its collection at +120 km, and the **WebGL polyline was culled too — 0 px in all four of its
+  cells**, while WebGPU drew it because its command carried no bounding volume before Batch 1447.
+  FIXED by an off-screen extent keeper in every collection, plus
+  `subjectRenderabilityChecks`, which asserts per subject per backend that the collection's draw
+  command reached execution — read directly from `scene.debugCommandFilter`, which both backends
+  consult only for commands that already passed frustum and occluder culling.
+- **(b) The control's WebGPU pick miss — ADJUDICATED as the instrument, with a named engine
+  mechanism.** The leading nulls fall on the FIRST pick sequence of EVERY leg and nowhere else; a
+  leg boundary is where `setDisableDepthTestDistance` mints a new `DISABLE_DEPTH_DISTANCE` pipeline
+  variant; pick pipelines cook through `createRenderPipelineAsync` and the pick draw is SKIPPED
+  meanwhile (`WebGPUPointPrimitiveRenderer.js:1468-1472`, same shape in the label and billboard
+  renderers); WebGL is synchronous. The control is always a leg's first measured pick, so it alone
+  paid the cook while every later sequence in the same leg read 5/5. FIXED by a discarded warm-up
+  per leg whose COST is published (`pickWarmup: {attempts, resolved, ids, budget}`) and whose
+  RESOLUTION is asserted — so a genuinely dead pick path still reds, and the cook latency stays
+  visible as numbers rather than being swallowed.
+- **(c) The AR-M30 snap leg measured nothing — and the cause is the SUBJECT, not the cursors.**
+  Zero `isEdge` results over 81 cursors on both backends and both trees. `isEdge` is not a property
+  of where the cursor sits: it is a fragment flag written only by a model's EDGE PASS
+  (`ModelFS.glsl:68`, set true only at `:202-203` inside `#ifdef HAS_EDGE_VISIBILITY` under
+  `u_isEdgePass`; packed at `PickingPipelineStage.js:43`; `SnapFramebuffer.js:56` is the ONLY place
+  it is ever derived). That stage exists only when `defined(primitive.edgeVisibility)`
+  (`ModelRuntimePrimitive.js:269,357-363`), populated only from the glTF primitive's
+  `EXT_mesh_primitive_edge_visibility` (`GltfLoader.js:1415-1418`). Job 10's subject,
+  `CesiumMilkTruck.glb`, carries NO extensions at all — `extensionsUsed` undefined, every primitive's
+  `extensions` null, the byte string `EXT_` absent from all 441,972 bytes — so no fragment in that
+  scene could set the flag at any aperture, pitch or cursor pattern. An earlier round-2 attempt
+  attributed the result to a 9x9 grid on a 9 px pitch "never leaving the truck's interior"; that
+  cause is REFUTED and the aperture argument was neither necessary to explain the zero nor
+  sufficient to fix it. Separately, the BEFORE tree's WebGL snap page rendered real terrain with the
+  model buried under it while `modelReady` and `projected` both reported true. FIXED by swapping the
+  subject to `Specs/Data/Models/glTF-2.0/EdgeVisibility/glTF-Binary/EdgeVisibility.glb` (8,144 B; the
+  extension is in `extensionsUsed` and on both primitives) loaded with
+  `edgeDisplayMode = SURFACES_AND_EDGES` — required for the WEBGPU half specifically, since WebGL's
+  snap pass pushes its edge snap command regardless of the mode (`ModelDrawCommand.js:250-258`)
+  while WebGPU gates its whole edge emitter, snap variant included, on
+  `edgeDisplayMode !== SURFACES_ONLY` (`WebGPUModelRenderer.ts:8514-8517`); by pinning
+  `EllipsoidTerrainProvider` + removing imagery and raising the model to 2500 m; by replacing the
+  grid with concentric rings scaled to the model's own measured projected radius (same 81-cursor
+  population) at a camera range DERIVED from its bounding sphere, so the projected radius is
+  `(H/2)/(tan(fovy/2) * rangeFactor)` for any asset rather than a constant tuned to one; and by
+  `snapLegStanding`, which separates edge-drawing mode / loaded / projected / IN FRAME into four
+  refusals — the last answered by a `pickAsync` at the model's own projected centre plus a floor on
+  its radius. Section N of the companion spec decodes whatever asset the shipped config names and
+  reds if it does not declare the extension; its negative control is job 10's own subject.
+- **(e) Cell E of `probe-polyline-taa-velocity.mjs` contradicted its docstring and had no verdict —
+  MEASURED HERE, FIXED BY BATCH 1451, NOT BY THIS PATCH.** The 440 px it measured against a stated
+  bar of 0 are the Cesium ion credit wordmark: decoding all four banked captures put exactly 440 cyan
+  pixels in x 9-141, y 453-472, byte-identical on both backends and in both scenes, while the line
+  lives at x 195-442, y 179-246. **Batch 1451** (lane Ulfang round 3) landed the fix first, and
+  corrected the CLAIM rather than the measurement: the docstring now states what the cell shows
+  (equality across the two backends, not a zero), records the 440 as a constant that sits in BOTH
+  terms of the smear ratio — pulling it toward 1 ((3948-440)/(3557-440) = 1.125 against the 1.110
+  reported) and so making that bar slightly permissive — and leaves cell E reported rather than
+  verdicted. That landing stands. This lane's round-2 alternative (a `CREDIT_BOX` exclusion, cells
+  C/D/E counted scene-only, two new verdicts and `*LinePixelsRaw`) is WITHDRAWN: the rebase onto
+  Batch 1455 dropped every velocity hunk, and this patch touches no velocity file.
+
+Defect (d) — the velocity probe's negative control passing vacuously off an unavailable readback —
+is NOT addressed here; it belongs to `AR-752`'s own lane.
+
+**NEW ROW FOR THE SEAT — WebGPU does not occlude behind terrain with `logarithmicDepthBuffer =
+false`.** Surfaced by this instrument, bit-identical on the pre- and post-`AR-001` trees, so it is
+NOT attributable to `AR-001` and is not fixed here (tools-class lane):
+
+| cell (`logarithmicDepthBuffer = false`, `disableDepthTestDistance = 0`) | WebGL | WebGPU |
+| --- | --- | --- |
+| `label/ddtd-zero/log-off` | occluded, 0 px, 0/5 | VISIBLE, 399 px, HIT 5/5 |
+| `point/ddtd-zero/log-off` | occluded, 0 px, 0/5 | indeterminate, 35 px, 0/5 |
+| `polyline/ddtd-zero/log-off` (held, `AR-D09`) | occluded, 0 px, 0/5 | VISIBLE, 294 px, HIT 5/5 |
+| `billboard/ddtd-zero/log-off` | occluded, 0 px, 0/5 | occluded, 0 px, 0/5 |
+
+The same four cells with log depth ON are correctly occluded on both backends. The `ddtd = 0` cells
+are now judged by `occlusionParityCellPass` — expectation-INDEPENDENT, WebGPU must match WebGL — so
+the row the seat mints can be measured by this instrument under either `--expect` value, and their
+claim text names the occlusion row instead of `AR-001`. `--expect` now governs the
+`ddtd = infinity` cells alone. Per-cell verdict ids are unchanged; only the question a `ddtd = 0` id
+answers has changed. (The billboard row's parity is the culled-both-ways artefact of defect (a); the
+extent keeper is what will make it a real measurement next run.)
+
+**Éowyn's commands are UNCHANGED.** Both legs run exactly as job 10 ran them:
+
+```
+node Tools/visual-regression/probe-pick-visibility-matrix.mjs --expect before --port 8095
+node Tools/visual-regression/probe-pick-visibility-matrix.mjs --expect after  --port 8094
+```
+
+**Expected outcome per cell group, next run.**
+
+| cell group | BEFORE (8095, `--expect before`) | AFTER (8094, `--expect after`) |
+| --- | --- | --- |
+| `subject-renderable-*` (16, new) | GREEN — the keepers clear the occluder for all four collections on both backends | GREEN |
+| `pick-warmup-*` (8, new) | GREEN, WebGL ~1 attempt, WebGPU several — the cost is published, not barred | GREEN |
+| `control-*` (8) | GREEN — measured warm | GREEN |
+| `billboard` + `label` + `point` at `ddtd-infinity` (6) | GREEN — the `AR-001` difference PRESENT, and now including the billboard | GREEN — no backend difference |
+| `billboard/ddtd-zero/*` (2) | GREEN — both backends occluded | GREEN |
+| `label` + `point` at `ddtd-zero/log-ON` (2) | GREEN — both occluded | GREEN |
+| `label` + `point` at `ddtd-zero/log-OFF` (2) | **RED — the new occlusion row, expectation-independent** | **RED, identically** |
+| `ar-m30-*` (3) | a real reading for the first time, or a refusal naming which of the three standing claims failed | same |
+| `gate-run0` | GREEN | GREEN |
+
+A leg is expected to exit 1 on the two occlusion cells alone until the seat's new row is fixed. That
+is the correct outcome: `AR-M01`'s six `ddtd-infinity` verdicts and the controls are what discharge
+`AR-001`'s acceptance, and they are now separable from the occlusion row by verdict id.
+
+**Deliberate deviations.** The billboard's non-rendering is fixed at the SCENE level (extent
+keepers) rather than by changing how the billboard is built, because the measurement says the
+collection's command was culled, not that the image failed to load: no console error was recorded on
+any page, and the label's background billboard — the same machinery, the same atlas path, the same
+`coarseDepthTestDistance = Infinity` — rendered in the same frame. The warm-up is bounded at 16
+discarded attempts and its cost is published rather than asserted, because a ceiling would be a bar
+this lane measured on one machine on one night.
+
+**Files modified:** `Tools/visual-regression/lib/pick-visibility-matrix-page.mjs`,
+`Tools/visual-regression/lib/pick-visibility-matrix-verdicts.mjs`,
+`Tools/visual-regression/probe-pick-visibility-matrix.mjs`,
+`Tools/visual-regression/pick-visibility-matrix-verdicts.spec.mjs`,
+`migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`,
+`migration_doc/DEBUGGING_GUIDE.md`. Seven files. No engine file; no queue edit; runner homes
+unchanged. Round 2 also changed `probe-polyline-taa-velocity.mjs`,
+`polyline-taa-velocity-emission.spec.mjs` and `probe-descriptor-cells-contract.spec.mjs` for
+defect (e); those three files are at HEAD here, byte-identical to Batch 1455.

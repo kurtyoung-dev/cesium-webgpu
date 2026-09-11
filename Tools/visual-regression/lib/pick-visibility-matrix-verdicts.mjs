@@ -37,6 +37,42 @@
 // Asserting it would file a verdict on an undecided question, and dropping it
 // would lose the measurement the ruling will want.
 //
+// THE `ddtd = 0` CELLS BECAME THEIR OWN ROW IN ROUND 2. Job 10 measured
+// `label`/`point`/`polyline` at `ddtd 0` with `logarithmicDepthBuffer = false`
+// VISIBLE and PICKABLE on WebGPU where WebGL occludes them, with BIT-IDENTICAL
+// numbers on the pre- and post-`AR-001` trees. A difference that is present on
+// both sides of a fix is not that fix's business, and judging it under
+// `--expect` lets `AR-001`'s expectation flag take the blame for it. So the
+// `ddtd = 0` cells are judged by `occlusionParityCellPass`, which is
+// EXPECTATION-INDEPENDENT: WebGPU must match WebGL's visibility AND pick, under
+// both log legs and under both expectations. `--expect` now governs the
+// `ddtd = infinity` cells alone — the ones `AR-837`'s acceptance column names.
+// The per-cell verdict ids are unchanged so job 10's receipts stay comparable;
+// what changed is which question a `ddtd = 0` id answers, and its claim says so.
+//
+// THE PICK WARM-UP IS MEASURED, NOT HIDDEN. WebGPU resolves a pick pipeline
+// through `createRenderPipelineAsync` and SKIPS the pick draw while the variant
+// cooks (`WebGPUPointPrimitiveRenderer.js:1468-1472`, and the same shape in the
+// label and billboard renderers), so the first pick sequence after a new define
+// variant reads an empty pick buffer. In job 10 that landed entirely on the
+// control, which is always a leg's first pick — 0/5, 1/5 or 2/5 on WebGPU in all
+// 16 measurements with the nulls on the earliest attempts, while every LATER
+// sequence in the same leg picked 5/5. The probe now spends discarded warm-up
+// picks first, and `pickWarmupChecks` asserts the warm-up RESOLVED on both
+// backends. The cost itself (`attempts`) is published rather than asserted: a
+// bar for it would be a number this lane never measured across machines, but a
+// warm-up that never resolves still turns the run red, so the control keeps the
+// load-bearing role `controlChecks` gives it.
+//
+// A SUBJECT THAT NEVER RENDERS IS A REFUSAL, NOT A CELL. Job 10's billboard
+// measured 0 hue pixels in all 16 cell-measurements on both backends and both
+// trees — including the cells where this probe's own WebGL anchor requires it
+// VISIBLE — because its collection's draw command was horizon-culled before it
+// could be measured (see `lib/pick-visibility-matrix-page.mjs`, "EXTENT
+// KEEPERS"). `subjectRenderabilityChecks` asserts the engine-visible
+// preconditions for a subject to be measurable at all, so the next such defect
+// surfaces as a named red instead of as a silent 0 that reads like occlusion.
+//
 // THE `AR-M30` CLAUSE IS A SEPARATE ROW. The `surfacePosition` defined-rate for
 // edge hits more than 2 px from the cursor is `AR-M30`, the acceptance for
 // `AR-030` — a different row from `AR-001`, and one whose queue text
@@ -76,6 +112,19 @@ export const OCCLUDED_PIXEL_CEILING = 4;
 
 /** `pickAsync` calls made per cell per backend. */
 export const PICK_ATTEMPTS = 5;
+
+/**
+ * Discarded `pickAsync` calls spent warming a leg's pick pipelines before the
+ * first MEASURED pick of that leg. Sized from job 10: WebGPU's leading nulls
+ * ran to 5 of 5 in the worst control measurement, so a budget that only just
+ * covered the observed worst case would be a bar tuned to one machine. This is
+ * a ceiling on how long the probe will wait, not a bar anything is judged
+ * against — `pickWarmupChecks` asserts only that the warm-up RESOLVED.
+ */
+export const PICK_WARMUP_ATTEMPTS = 16;
+
+/** The row the `ddtd = 0` occlusion-parity cells belong to, not `AR-001`. */
+export const OCCLUSION_PARITY_ROW = "AR-837/occlusion-parity";
 
 /**
  * A pick is a HIT at this share of attempts or better, and a MISS only at
@@ -211,34 +260,57 @@ export function beforeCellPass(cell) {
   const gl = cell.webgl ?? {};
   const gpu = cell.webgpu ?? {};
   /* expectation-assertions:before */
-  if (cell.ddtd === "infinity") {
-    // The defect must be PRESENT and must be a DIFFERENCE: a WebGPU miss is
-    // only evidence when WebGL, on the same scene, hits.
-    if (gl.pickClass !== "hit") {
-      return false;
-    }
-    if (gpu.pickClass !== "miss") {
-      return false;
-    }
-    // ... and it must be the PICK pass alone. The colour shaders already wrote
-    // `clipPos.z = 0.0` before Batch 1439 (verified at `08cb6fd4b2`), so a
-    // WebGPU cell that is also invisible is a different defect and must not be
-    // recorded as this one.
-    if (gpu.visibility !== "visible") {
-      return false;
-    }
-    return true;
+  if (cell.ddtd !== "infinity") {
+    // Round 2: the `ddtd = 0` cells are no longer judged by expectation. They
+    // are an occlusion-parity question with the same answer on both trees, and
+    // `occlusionParityCellPass` owns it.
+    return occlusionParityCellPass(cell);
   }
-  // The `disableDepthTestDistance = 0` control: nothing overrides depth, so
-  // both backends are occluded and unpickable on the pre-fix tree too.
-  if (gpu.visibility !== "occluded") {
+  // The defect must be PRESENT and must be a DIFFERENCE: a WebGPU miss is
+  // only evidence when WebGL, on the same scene, hits.
+  if (gl.pickClass !== "hit") {
     return false;
   }
   if (gpu.pickClass !== "miss") {
     return false;
   }
+  // ... and it must be the PICK pass alone. The colour shaders already wrote
+  // `clipPos.z = 0.0` before Batch 1439 (verified at `08cb6fd4b2`), so a
+  // WebGPU cell that is also invisible is a different defect and must not be
+  // recorded as this one.
+  if (gpu.visibility !== "visible") {
+    return false;
+  }
   return true;
   /* end-expectation-assertions:before */
+}
+
+/**
+ * Does this `disableDepthTestDistance = 0` cell show WebGPU agreeing with
+ * WebGL? Expectation-independent ON PURPOSE: job 10 measured the WebGPU
+ * non-logarithmic-depth cells VISIBLE and PICKABLE where WebGL occludes, with
+ * bit-identical numbers on the pre- and post-`AR-001` trees, so the question
+ * this answers belongs to its own row and must give the same answer under both
+ * `--expect` values.
+ *
+ * Each clause is its own `if` so a reviewer can make exactly one of them
+ * unreachable and watch the spec go red.
+ *
+ * @param {object} cell One measured cell at `ddtd = 0`.
+ * @returns {boolean} Whether WebGPU matched WebGL on this cell.
+ */
+export function occlusionParityCellPass(cell) {
+  const gl = cell.webgl ?? {};
+  const gpu = cell.webgpu ?? {};
+  /* occlusion-assertions:parity */
+  if (gpu.visibility !== gl.visibility) {
+    return false;
+  }
+  if (gpu.pickClass !== gl.pickClass) {
+    return false;
+  }
+  return true;
+  /* end-occlusion-assertions:parity */
 }
 
 /**
@@ -251,6 +323,9 @@ export function afterCellPass(cell) {
   const gl = cell.webgl ?? {};
   const gpu = cell.webgpu ?? {};
   /* expectation-assertions:after */
+  if (cell.ddtd !== "infinity") {
+    return occlusionParityCellPass(cell);
+  }
   if (gpu.visibility !== gl.visibility) {
     return false;
   }
@@ -325,6 +400,19 @@ export function itemChecks(item, cell, expectation) {
     pass: gpu.pickClass === "hit" || gpu.pickClass === "miss",
   });
 
+  if (cell.ddtd !== "infinity") {
+    // NOT an `AR-001` question and NOT governed by `--expect`: at
+    // `disableDepthTestDistance = 0` nothing overrides depth, so the only claim
+    // is that WebGPU occludes and picks exactly as WebGL does. Job 10 found it
+    // false with log depth OFF, identically on both trees.
+    checks.push({
+      item,
+      label: `${tag} ${OCCLUSION_PARITY_ROW} (NOT AR-001) — webgpu matches webgl at ddtd 0 (visible ${cell.webgl?.visibility ?? "absent"}/${gpu.visibility ?? "absent"}, pick ${cell.webgl?.pickClass ?? "absent"}/${gpu.pickClass ?? "absent"})`,
+      pass: occlusionParityCellPass(cell),
+    });
+    return checks;
+  }
+
   if (expectation === "before") {
     checks.push({
       item,
@@ -339,6 +427,30 @@ export function itemChecks(item, cell, expectation) {
     });
   }
   return checks;
+}
+
+/**
+ * The CLAIM text a cell verdict is PUBLISHED under.
+ *
+ * The check label built by `itemChecks` names the occlusion row, but check
+ * labels are folded away by `allChecksPass` and never reach `report.json`; the
+ * claim is what a reader of the receipt sees beside a red. So the row a
+ * `ddtd = 0` red belongs to has to be decided HERE too, or the two expected
+ * occlusion reds arrive tagged `AR-837/before` / `AR-837/after` — the two
+ * strings that attribute a red to `AR-001`.
+ *
+ * @param {object} cell The measured cell.
+ * @param {string} expectation `"before"` or `"after"`.
+ * @returns {string} The claim the verdict is published under.
+ */
+export function cellClaim(cell, expectation) {
+  const where = `${cell?.item} behind terrain at disableDepthTestDistance ${cell?.ddtd} with logarithmicDepthBuffer ${cell?.logDepth ? "on" : "off"}`;
+  /* occlusion-assertions:claim */
+  if (cell?.ddtd !== "infinity") {
+    return `${OCCLUSION_PARITY_ROW} (NOT AR-001) — ${where}`;
+  }
+  /* end-occlusion-assertions:claim */
+  return `AR-837/${expectation} — ${where}`;
 }
 
 /**
@@ -372,6 +484,133 @@ export function controlChecks(control) {
     });
   }
   return checks;
+}
+
+/**
+ * The pick warm-up. WebGPU cooks a pick pipeline through
+ * `createRenderPipelineAsync` and skips the pick draw while the variant is
+ * still materializing, so the FIRST pick sequence after a new define variant
+ * reads an empty pick buffer. The probe therefore spends discarded picks before
+ * a leg's first measured pick and records what they cost.
+ *
+ * What is asserted is that the warm-up RESOLVED — a pick path that never
+ * returns anything is still a red, which is what keeps `controlChecks`
+ * load-bearing. What is NOT asserted is the cost: `attempts` is published so
+ * the cook latency is visible with numbers, but a ceiling on it would be a bar
+ * measured on one machine on one night.
+ *
+ * @param {object} control One control record for a (renderer-pair, logDepth, ddtd) leg.
+ * @returns {Array<{id: string, label: string, pass: boolean}>} The checks.
+ */
+export function pickWarmupChecks(control) {
+  const slug = `log-${control.logDepth === true ? "on" : "off"}/ddtd-${control.ddtd}`;
+  const tag = `[warmup/${slug}]`;
+  const checks = [];
+  /* warmup-assertions:resolved */
+  for (const renderer of ["webgl", "webgpu"]) {
+    const warmup = (control[renderer] ?? {}).pickWarmup ?? {};
+    checks.push({
+      id: `pick-warmup-${slug}-${renderer}`,
+      label: `${tag} ${renderer} produced a pick before the leg was measured (resolved ${warmup.resolved === true}, after ${warmup.attempts ?? "n/a"} of ${warmup.budget ?? "n/a"} discarded attempts)`,
+      pass: warmup.resolved === true,
+    });
+  }
+  /* end-warmup-assertions:resolved */
+  return checks;
+}
+
+/**
+ * A subject that never reaches the screen cannot be measured, and its 0 hue
+ * pixels read exactly like occlusion. Job 10 spent four Edge runs on a
+ * billboard whose collection's draw command was culled before it could be
+ * drawn, and nothing in the instrument said so.
+ *
+ * These are engine-visible PRECONDITIONS, not behaviour: the item is still in
+ * its collection, it is shown, its image (where the type has one) is ready, and
+ * — the one that catches job 10 — its collection's draw command SURVIVED
+ * culling and reached execution. `commandExecuted` is observed through
+ * `scene.debugCommandFilter`, which both backends consult only for commands
+ * that already passed the frustum and occluder tests.
+ *
+ * @param {object} record One `{item, logDepth, webgl, webgpu}` renderability record.
+ * @returns {Array<{id: string, label: string, pass: boolean}>} The checks.
+ */
+export function subjectRenderabilityChecks(record) {
+  const slug = `${record.item}/log-${record.logDepth === true ? "on" : "off"}`;
+  const tag = `[renderable/${slug}]`;
+  const checks = [];
+  /* renderability-assertions:subject */
+  for (const renderer of ["webgl", "webgpu"]) {
+    const measured = record[renderer] ?? {};
+    checks.push({
+      id: `subject-renderable-${slug}-${renderer}`,
+      label: `${tag} ${renderer} subject is present, shown, image-ready and its collection's draw command reached execution (present ${measured.present === true}, show ${measured.show === true}, imageReady ${measured.imageReady ?? "n/a"}, commandExecuted ${measured.commandExecuted === true})`,
+      pass:
+        measured.present === true &&
+        measured.show === true &&
+        measured.imageReady !== false &&
+        measured.commandExecuted === true,
+    });
+  }
+  /* end-renderability-assertions:subject */
+  return checks;
+}
+
+/**
+ * Does a snap leg have standing to report a `surfacePosition` rate at all?
+ *
+ * FOUR claims, and job 10 showed the last three are genuinely different. The
+ * first is the lesson of job 10's snap leg as a whole: WebGPU gates its entire
+ * edge emitter, snap variant included, on
+ * `edgeDisplayMode !== SURFACES_ONLY` (`WebGPUModelRenderer.ts:8514-8517`), so
+ * a leg that could not resolve an edge-drawing mode would measure WebGL's edges
+ * against WebGPU's silence and publish it as an `AR-030` finding. Its BEFORE leg
+ * reported `modelReady` and `projected` both true on a WebGL page that had
+ * rendered imagery-covered real terrain with the model nowhere in it — job 10's
+ * subject sat at 100 m ellipsoidal height under ~1500 m of terrain at
+ * (-105, 40) — and returned 81/81 undefined. "Loaded" is not "in frame", and
+ * neither is "in frame" the same as "big enough for an aperture to straddle".
+ *
+ * Returns `null` when the leg may report, or the refusal the probe raises. The
+ * probe raises rather than publishing a red, because a leg with no subject has
+ * not measured `AR-030`'s gap in either direction.
+ *
+ * @param {object} measured One backend's raw snap measurement.
+ * @returns {{code: string, message: string}|null} The refusal, or null.
+ */
+export function snapLegStanding(measured) {
+  const leg = measured ?? {};
+  /* snap-standing-assertions:leg */
+  if (leg.edgeModeResolved !== true) {
+    return {
+      code: "snap-edge-mode-unresolved",
+      message:
+        "the AR-M30 leg could not put the model into an edge-drawing display mode, so no fragment in its scene can set the snap payload's edge flag on WebGPU and the leg has no standing to report a surfacePosition rate",
+    };
+  }
+  if (leg.modelReady !== true) {
+    return {
+      code: "snap-model-never-ready",
+      message:
+        "the AR-M30 leg's glTF model never reached ready; the leg saw no subject, so it has no standing to report a surfacePosition rate",
+    };
+  }
+  if (leg.projected !== true) {
+    return {
+      code: "snap-model-not-projected",
+      message:
+        "the AR-M30 leg could not project its model to window coordinates",
+    };
+  }
+  if (leg.inFrame !== true) {
+    return {
+      code: "snap-model-not-in-frame",
+      message:
+        "the AR-M30 leg's model did not render at its own projected centre, or projected smaller than the aperture floor; the leg has no silhouette to snap to and no standing to report a surfacePosition rate",
+    };
+  }
+  return null;
+  /* end-snap-standing-assertions:leg */
 }
 
 /**
@@ -424,12 +663,23 @@ export function surfacePositionChecks(snap) {
  * @param {Array<object>} options.cells Measured cells.
  * @param {Array<object>} options.controls Per-page control records.
  * @param {Array<object>} options.snap Snap leg records.
+ * @param {Array<object>} [options.renderability] Per-subject renderability records.
  * @param {string} options.expectation The named expectation.
  * @returns {Array<{label: string, pass: boolean}>} Every check.
  */
-export function buildChecks({ cells, controls, snap, expectation }) {
+export function buildChecks({
+  cells,
+  controls,
+  snap,
+  renderability,
+  expectation,
+}) {
   const checks = [];
+  for (const record of renderability ?? []) {
+    checks.push(...subjectRenderabilityChecks(record));
+  }
   for (const control of controls ?? []) {
+    checks.push(...pickWarmupChecks(control));
     checks.push(...controlChecks(control));
   }
   for (const cell of cells ?? []) {

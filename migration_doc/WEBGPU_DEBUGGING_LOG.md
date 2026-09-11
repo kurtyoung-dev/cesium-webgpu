@@ -20418,3 +20418,221 @@ the shared runtime's verdict table prints **FAIL** while the probe's summary pri
 **Fix applied.** In `gulpfile.js`, `tsc()` was modified to invoke the repository's installed TypeScript compiler binary directly via `node "${require.resolve("typescript/bin/tsc")}" --project ...`, bypassing `npm exec` package resolution and guaranteeing that the workspace's pinned compiler is always used across all platforms.
 
 **Fork deviation.** Upstream `488b114e16` carries the identical unpinned invocation at `gulpfile.js:253` and `:268`, so this is a deliberate fork-local change: expect it to conflict — or to be silently reverted by a `--theirs` resolution — at the next upstream sync, and re-apply it there. `node Tools/upstream-shape-guard.mjs --base=40341305f4` stays green (exit 0, 56 in-scope files).
+
+---
+
+## Instrument 1443.2 — the pick/visibility matrix's first Edge run found four defects in the instrument, and one of them was hiding a subject that never rendered (`AR-837`, lane Amdir round 2, rebased onto Batch 1455 — the fourth defect was fixed by Batch 1451, not here)
+
+**Files affected**
+
+- `Tools/visual-regression/lib/pick-visibility-matrix-page.mjs`
+- `Tools/visual-regression/lib/pick-visibility-matrix-verdicts.mjs`
+- `Tools/visual-regression/probe-pick-visibility-matrix.mjs`
+- `Tools/visual-regression/pick-visibility-matrix-verdicts.spec.mjs`
+
+No engine file is touched. WebGL and WebGPU engine bytes are unchanged. The velocity probe and its
+emission spec are NOT touched: root cause D below was fixed by Batch 1451 (lane Ulfang round 3), and
+this lane's competing change to those two files was dropped when this work was rebased onto Batch
+1455.
+
+**Where the evidence is.** Éowyn's Edge job 10
+(`Tools/visual-regression/output/wave-p0-2-edge-2026-09-06-job10/`, 2026-09-06 00:36-01:00 EDT) ran
+the instrument for the first time, on both trees plus both cross-controls, and on the tip for the
+`AR-752` velocity leg. `SUMMARY.md` records the outcome: the difference `AR-M01` is accepted on was
+measured cleanly and deterministically across four runs on the `label` and `point` cells at
+`ddtd-infinity` in both log legs, and the cross-controls exit 1 with exactly the six
+`ddtd-infinity` subject cells red — the expectation flag is load-bearing in both directions. But
+neither half of `AR-M01` formally passed, because four of the instrument's own parts were wrong.
+Three of the four are repaired below; the fourth (root cause D) is recorded for its measurement
+only — Batch 1451 repaired it first, and differently.
+
+### Root cause A — the billboard's collection was HORIZON-CULLED, and 0 px reads as "occluded"
+
+`billboard/ddtd-*/log-*` measured 0 hue pixels in all sixteen cell-measurements, on both backends
+and both trees, INCLUDING the cells where the probe's own WebGL anchor requires it VISIBLE.
+
+Decoding job 10's four final-state PNGs pixel by pixel (zlib inflate + PNG unfilter, no browser)
+found **2 red pixels on the entire 1024x768 canvas**, both at y 766-767 in page chrome, and the
+25x25 window at the billboard's own recorded projected centre (414.6, 319.9) uniformly `4,4,4` — the
+globe. Nothing was drawn.
+
+The cause is the scene, not the billboard. `View.createPotentiallyVisibleSet` tests every command
+against a horizon occluder whose sphere has radius `Ellipsoid.minimumRadius` (6356.75 km). The
+ellipsoid surface at lat 40 is ~6369.35 km, so the probe's subjects at `itemHeight = -60000` sit
+~47.4 km INSIDE that sphere, and a collection's command survives only if the COLLECTION's bounding
+sphere pokes back out. That radius is `pixelSize x <the collection's largest on-screen extent>`
+(`BillboardCollection.js:2263-2281`, `PointPrimitiveCollection.js:1357-1365`), about 500 m/px here:
+
+| collection | radius added | clears ~47.4 km | job 10 measured |
+| --- | --- | --- | --- |
+| billboard — one 32 px billboard | ~16 km | NO | 0 px, both backends, all 16 |
+| label — background billboard ~100 px | ~50 km | yes, barely | 247 px (GL) / 441 px (GPU) |
+| point — shares its collection with the CONTROL at +120 km | sphere spans +120..-60 km | yes | 441 px |
+| polyline — 0.7 deg span | ~30 km | NO | **WebGL 0 px in all four cells** |
+
+The polyline row is the corroboration and a second finding: job 10's WebGL polyline anchor was
+silently culled in every cell too, and the WebGPU polyline drew (294 px) only because its command
+carried no bounding volume before Batch 1447. Five independent cells agree with the mechanism.
+
+So the probe's subjects appeared or vanished according to which OTHER primitive happened to share
+their collection. The point cell was correct by accident.
+
+**Fix.** Every collection now carries one **extent keeper**: a member of the same type at the scene
+centre's longitude + 3.0 deg (the viewport's half-width at this camera is about 1.9 deg of longitude
+at the keepers' own height and about 2.7 deg at the surface — the margin comes from placing them at
+`controlHeight`, since at the subjects' -60 km it is about 3.1 deg — so it is
+off-screen with margin) and at `controlHeight` above the surface. It lifts every collection's
+bounding sphere clear of the occluder uniformly, it is never inside any sample window, and its id is
+distinct so a stray pick of one is a loud wrong-id result rather than a silent pass.
+
+**And the instrument now says so when it happens again.** `subjectRenderabilityChecks` asserts, per
+subject per backend per log-depth page, that the subject is present, shown, image-ready where the
+type has an image, and — the clause that catches this class — that its collection's draw command
+reached execution. That last fact is observed through `scene.debugCommandFilter`, which BOTH
+backends consult only for commands that already passed the frustum and occluder tests
+(`SceneRenderer.js:62`, `WebGPUSceneRenderer.ts:328`), so it is a direct reading of "was this
+culled", not an inference. Renderability is asserted for the HELD polyline too: `AR-D09` holds its
+`disableDepthTestDistance` BEHAVIOUR, not the question of whether it reached the screen.
+
+### Root cause B — the control's pick miss was the WebGPU pipeline cook, and the control was always first
+
+The unoccluded green control 120 km above the surface renders identically on both backends (441 px,
+every measurement) and WebGL picks it 5/5 in all sixteen control measurements. WebGPU picked it
+0/5, 1/5 or 2/5 in all sixteen, nulls on the earliest attempts, hits only on attempts 4-5 — and on
+the AFTER tree the same page picked the SUBJECTS 5/5 while the control read 0/5.
+
+**Adjudicated as the instrument, by measurement, with a named engine mechanism.** The receipts show
+the leading nulls on the FIRST pick sequence of EVERY leg and nowhere else: on the BEFORE tree at
+`ddtd-zero/log-off` the control read 1/5 with nulls on attempts 1-4 and then the label and polyline
+in the same leg read 5/5. A leg boundary is exactly where `setDisableDepthTestDistance` flips
+`ShaderDefine.DISABLE_DEPTH_DISTANCE`, minting a NEW pick-pipeline variant. Pick pipelines resolve
+through `createRenderPipelineAsync` (`WebGPURenderPipelineCache.ts:760`), and while a variant cooks
+the pick draw is SKIPPED — `WebGPUPointPrimitiveRenderer.js:1468-1472` ("Pick pipeline still
+materializing — skip this frame's pick draw"), with the same shape at `WebGPULabelRenderer.js:915`
+and in `WebGPUBillboardRenderer.js`. WebGL builds its shader programs synchronously and pays none of
+it. The control is always the first measured pick after a variant change, so it alone paid the cook
+and every later sequence in the same leg ran warm.
+
+**Fix, without papering over it.** Each leg now spends discarded warm-up picks at the control's
+window before anything is measured, and the cost is RECORDED — `pickWarmup: {attempts, resolved,
+ids, budget}` per backend per leg, published in the receipt and printed in the summary.
+`pickWarmupChecks` asserts only that the warm-up RESOLVED, so a genuinely dead pick path still turns
+the run red and the control keeps the load-bearing role the probe's docstring gives it; a ceiling on
+the cost would be a bar measured on one machine on one night. The numbers the next run publishes are
+what tell the seat whether the cook is bounded and per-variant (instrument) or unbounded
+(engine).
+
+### Root cause C — the `AR-M30` snap leg measured nothing, twice over
+
+`ar-m30-samples-webgl`, `ar-m30-samples-webgpu` and `ar-m30-parity` were red in all four matrix
+runs, and not because the rates differed: **zero `isEdge` results over 81 cursors on both backends
+and both trees**, even with the model centred and filling the frame.
+
+**The cause is the SUBJECT, not the cursor pattern — and this entry's first draft got it wrong.**
+That draft said the 9x9 grid on a 9 px pitch "never left the truck's interior". Re-derived at the
+code, `isEdge` is not a property of where the cursor sits at all. It is a fragment flag written only
+by a model's EDGE PASS: `ModelFS.glsl:68` declares `bool isEdge = false` and sets it true only at
+`:202-203`, inside `#ifdef HAS_EDGE_VISIBILITY` under `u_isEdgePass`; `PickingPipelineStage.js:43`
+packs it into the snap payload's edge lane and `SnapFramebuffer.js:56` is the ONLY place it is ever
+derived — there is no CPU-side edge synthesis anywhere in `Snapping.js`. The edge stage is added
+only when `defined(primitive.edgeVisibility)` (`ModelRuntimePrimitive.js:269,357-363`), which
+`GltfLoader.js:1415-1418` populates only from the glTF primitive's
+`EXT_mesh_primitive_edge_visibility`. Decoding job 10's subject settles it:
+`Apps/SampleData/models/CesiumMilkTruck/CesiumMilkTruck.glb` (441,972 bytes) has `extensionsUsed`
+undefined, `extensions` null on every one of its four primitives, and does not contain the byte
+string `EXT_` anywhere. No fragment in that scene could set the flag at any aperture, pitch or
+cursor pattern, so the aperture argument was neither necessary to explain the zero nor sufficient to
+fix it. Separately, on the BEFORE tree the WebGL snap page rendered a completely different scene
+from the WebGPU one (imagery-covered real terrain, no model: it sat at 100 m ellipsoidal height
+under ~1500 m of terrain at (-105, 40)) while `modelReady` and `projected` both reported true, and
+neither guard caught it.
+
+**Fix, five parts.** (1) The subject is now
+`Specs/Data/Models/glTF-2.0/EdgeVisibility/glTF-Binary/EdgeVisibility.glb` — 8,144 bytes, served off
+the repository root like every other `/Specs/Data/Models/...` asset the fleet loads, with
+`extensionsUsed: ["EXT_mesh_primitive_edge_visibility"]` and the extension on BOTH of its
+primitives. (2) It is loaded with `edgeDisplayMode = SURFACES_AND_EDGES`, which the WEBGPU half
+specifically needs: WebGL's snap pass pushes `_edgeSnapCommand` regardless of the display mode
+(`ModelDrawCommand.js:250-258` — "snapping works even when edges are visually suppressed"), while
+WebGPU's entire edge emitter, including the snap variant that sets the payload's edge bit
+(`WebGPUEdgeVisibilityEmitter.ts:352-366`, UP144-SNAP-WEBGPU-EDGES), sits inside a block gated on
+`edgeDisplayMode !== SURFACES_ONLY` (`WebGPUModelRenderer.ts:8514-8517`). At the default this leg
+would have read edges on one backend only and published a CONFIGURATION difference as an `AR-030`
+finding. (3) The page pins `EllipsoidTerrainProvider` and removes imagery exactly as the matrix page
+does, and the model sits at 2500 m, so no tile request can change the scene under the measurement.
+(4) The cursors are concentric RINGS at 0.45 / 0.7 / 0.95 / 1.2 of the model's own measured
+projected radius at 20 angular steps plus the centre — the same 81-cursor population — and the
+camera range is DERIVED from the model's bounding sphere (`rangeFactor` radii out) rather than
+tuned, which fixes that projected radius at `(H/2) / (tan(fovy/2) * rangeFactor)` ~ 148 px at
+1024x768 for any asset, so swapping the subject cannot silently mis-frame the leg again. (5)
+`snapLegStanding` separates FOUR claims — edge-drawing display mode, loaded, projected, IN FRAME —
+each with its own refusal code; "in frame" is answered by a `pickAsync` at the model's own projected
+centre (a rendering-derived answer, and one that needs no second pixel reader beside the canonical
+same-task block) plus a floor on the projected radius.
+
+**And the instrument now checks its own subject.** Section N of
+`pick-visibility-matrix-verdicts.spec.mjs` decodes the `.glb` the shipped config names, out of the
+bytes on disk, and reds unless a primitive declares the extension; N2 runs the same check over job
+10's own subject and requires it to FAIL, so the check discriminates rather than restating the
+configuration. Pointing `SNAP.modelUrl` back at `CesiumMilkTruck.glb` reds N1 — this section would
+have caught the defect.
+
+### Root cause D — cell E of the velocity probe contradicted its own docstring and carried no verdict (MEASURED HERE; FIXED BY BATCH 1451, NOT BY THIS PATCH)
+
+`probe-polyline-taa-velocity.mjs`'s header said the no-polyline control's line-pixel count "must stay
+0"; it measured 440 in all three runs on both backends, and no verdict was emitted for it at all.
+
+Decoding job 10's four `polyvel-*.png` captures: in ALL FOUR — both backends, the animated scene and
+the collection-free control — exactly 440 cyan pixels, all inside x 9-141, y 453-472, byte-identical.
+That is the Cesium ion credit wordmark. The line itself lives at x 195-442, y 179-246.
+
+**Fixed by Batch 1451, not here.** The seat briefed this defect to two lanes at once. Batch 1451
+(lane Ulfang round 3) landed first and corrected the CLAIM rather than the measurement: the probe's
+header now says what cell E shows — the two backends capture the collection-free scene identically —
+and records the 440 as the ion credit's constant, which does NOT cancel out of the smear ratio but
+sits in BOTH of its terms and so pulls the measured value toward 1
+((3948-440)/(3557-440) = 1.125 against the 1.110 the run reported), making the [0.75, 1.25] bar
+slightly permissive as stated. Cell E remains REPORTED, not verdicted.
+
+This lane's round-2 answer — a `CREDIT_BOX` derived from the same four captures (x < 176, within
+32 px of the bottom), a `countLinePixels(image, { excludeCredit })` option, cells C/D/E counted
+scene-only, two new verdicts (`no-polyline-control-empty`, `no-polyline-control-parity`) and
+`*LinePixelsRaw` in the receipt — is **WITHDRAWN**. It is recorded here because it is the second
+half of the same measurement and because the two answers are not equivalent: correcting the claim
+leaves the smear ratio measured on raw counts (the permissive form named above), while excluding the
+box would have moved cells C and D by a constant 440 and changed the numbers job 10 banked. If the
+seat later wants the scene-only form, this paragraph is the design and `amdir2.patch` in the frozen
+round-2 clone is the code; it is not in this patch.
+
+### The `ddtd = 0` cells are now their own row
+
+Job 10 also surfaced an ENGINE finding that is not `AR-001`'s: with `logarithmicDepthBuffer = false`
+at `ddtd 0`, WebGPU fails to occlude subjects 60 km behind terrain that WebGL occludes — `label`
+VISIBLE 399 px and HIT 5/5, `point` indeterminate at 35 px, `polyline` (held) VISIBLE 294 px and HIT
+5/5 — with BIT-IDENTICAL numbers on the pre- and post-`AR-001` trees, while the same cells with log
+depth ON are correctly occluded on both backends.
+
+A difference present on both sides of a fix must not be judged by that fix's expectation flag. The
+`ddtd = 0` cells are now decided by `occlusionParityCellPass`, which is expectation-INDEPENDENT
+(WebGPU must match WebGL's visibility and pick), and their claim text names the occlusion row rather
+than `AR-001`. `--expect` governs the `ddtd = infinity` cells alone — the ones `AR-837`'s acceptance
+column names. The per-cell verdict ids are unchanged, so job 10's receipts stay comparable; what
+changed is which question a `ddtd = 0` id answers. The engine defect itself is NOT fixed here: this
+lane is tools-class and the row is the seat's to mint.
+
+**Proof.** `pick-visibility-matrix-verdicts.spec.mjs` grew sections I (occlusion-parity row),
+J (pick warm-up), K (subject renderability), L (snap standing), N (the `AR-M30` subject must be ABLE
+to produce an edge hit — the `.glb` the shipped config names is decoded out of the bytes on disk and
+must declare `EXT_mesh_primitive_edge_visibility` on a primitive, with job 10's own subject as the
+discrimination control) and O (`descriptor.verdicts` EXECUTED, which no spec did before), plus
+section M's seven inertness mutants — one per new decision — that remove or make unreachable each
+one over the SHIPPED module text and require the discrimination to disappear with it. **60 tests**,
+homed in `npm run test-visual-probe-contracts`. (Round 2 also grew
+`polyline-taa-velocity-emission.spec.mjs` for cell E; that work is withdrawn — see root cause D.)
+
+**Files modified:** `Tools/visual-regression/lib/pick-visibility-matrix-page.mjs`,
+`Tools/visual-regression/lib/pick-visibility-matrix-verdicts.mjs`,
+`Tools/visual-regression/probe-pick-visibility-matrix.mjs`,
+`Tools/visual-regression/pick-visibility-matrix-verdicts.spec.mjs`,
+`migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`,
+`migration_doc/DEBUGGING_GUIDE.md`. Seven files.

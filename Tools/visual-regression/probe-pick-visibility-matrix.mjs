@@ -39,7 +39,10 @@
  *   POLYLINE   MAGENTA  (+0.25..+0.95, -0.3)   HELD on AR-D09 — see below
  *
  * and a fifth primitive, the CONTROL, sits 120 km ABOVE the surface at the
- * screen centre in GREEN with no `disableDepthTestDistance` at all.
+ * screen centre in GREEN with no `disableDepthTestDistance` at all. Each
+ * collection additionally carries one off-screen EXTENT KEEPER — see
+ * `lib/pick-visibility-matrix-page.mjs` for the job-10 measurement that made it
+ * necessary, and `subjectRenderabilityChecks` for what it now guarantees.
  *
  * WHY THE CONTROL IS LOAD-BEARING. The BEFORE leg's entire finding is a WebGPU
  * pick MISS. A miss and "this page never produced a pick" are the same
@@ -57,6 +60,13 @@
  * must pick; at `0` it must be occluded and must not. A scene that stopped
  * occluding would fail there instead of quietly passing everywhere.
  *
+ * As of round 2 the `ddtd = 0` cells are judged EXPECTATION-INDEPENDENTLY, as
+ * an occlusion-parity claim of their own. Job 10 found WebGPU failing to
+ * occlude subjects 60 km behind terrain with `logarithmicDepthBuffer = false`,
+ * with BIT-IDENTICAL numbers on the pre- and post-`AR-001` trees — a difference
+ * on both sides of the fix, which `--expect` must not be made to answer for.
+ * `--expect` therefore governs the `ddtd = infinity` cells alone.
+ *
  * THE HELD ITEM. `Polyline.disableDepthTestDistance` is fork-added and honoured
  * by WebGPU only; `AR-D09` has not ruled on whether it stays. The polyline cell
  * is measured and published in full and is never asserted — `itemChecks`
@@ -67,10 +77,15 @@
  * hits more than 2 px from the cursor is `AR-030`'s acceptance, not
  * `AR-001`'s, and `AR-030`'s own text RETRACTS the "today 0%" figure it used to
  * carry. So this probe predicts nothing about the rate: it runs a wide-aperture
- * snap grid over a local glTF model on both backends, requires enough far edge
- * hits for a rate to mean anything, and compares WebGPU's rate to WebGL's —
- * which is what `AR-030`'s acceptance column actually names. Its verdicts carry
- * their own `ar-m30` id so a red there is attributable to `AR-030` alone.
+ * snap over cursor rings scaled to a local glTF model's own MEASURED projected
+ * radius, on both backends, requires enough far edge hits for a rate to mean
+ * anything, and compares WebGPU's rate to WebGL's — which is what `AR-030`'s
+ * acceptance column actually names. Its verdicts carry their own `ar-m30` id so
+ * a red there is attributable to `AR-030` alone. The leg's subject MUST carry
+ * `EXT_mesh_primitive_edge_visibility` and MUST load with an `edgeDisplayMode`
+ * other than the `SURFACES_ONLY` default, or no fragment in the scene can set
+ * the snap payload's edge flag on both backends and the leg measures nothing —
+ * see `SNAP` for the mechanism and for job 10's evidence.
  *
  * Usage: node server.js --port 8094 --serve-built   (separate terminal, once)
  *        node Tools/visual-regression/probe-pick-visibility-matrix.mjs --expect after
@@ -96,14 +111,19 @@ import {
   LOG_DEPTH_LEGS,
   MIN_CURSOR_OFFSET_PIXELS,
   PICK_ATTEMPTS,
+  PICK_WARMUP_ATTEMPTS,
   allChecksPass,
+  cellClaim,
   cellKey,
   classifyPick,
   classifyVisibility,
   controlChecks,
   isHeldItem,
   itemChecks,
+  pickWarmupChecks,
   resolveExpectation,
+  snapLegStanding,
+  subjectRenderabilityChecks,
   summarizeCell,
   surfacePositionChecks,
 } from "./lib/pick-visibility-matrix-verdicts.mjs";
@@ -119,10 +139,15 @@ export {
   LOG_DEPTH_LEGS,
   allChecksPass,
   buildChecks,
+  cellClaim,
   classifyPick,
   classifyVisibility,
   itemChecks,
+  occlusionParityCellPass,
+  pickWarmupChecks,
   resolveExpectation,
+  snapLegStanding,
+  subjectRenderabilityChecks,
   surfacePositionChecks,
 } from "./lib/pick-visibility-matrix-verdicts.mjs";
 
@@ -139,25 +164,104 @@ const SCENE = Object.freeze({
   itemHeight: -60000.0,
   // 120 km above it: unoccluded from the same camera.
   controlHeight: 120000.0,
+  // The extent keepers' longitude offset from the scene centre. The viewport's
+  // half-width at this camera is about 1.9 deg of longitude AT THE KEEPERS' OWN
+  // HEIGHT and about 2.7 deg at the surface (Cesium's default 60 deg fov is the
+  // HORIZONTAL one at aspect > 1), so 3.0 deg is off-screen — but the margin
+  // comes from `controlHeight`: at the SUBJECTS' -60 km the half-width is about
+  // 3.1 deg, and a keeper placed down there at this offset would be on canvas.
+  // Being off-screen is what lets a keeper lift a collection's bounding sphere
+  // clear of the horizon occluder without appearing in any sample window. See
+  // `lib/pick-visibility-matrix-page.mjs`, "EXTENT KEEPERS".
+  keeperDLon: 3.0,
   sampleHalfWidth: 10,
   settleFrames: 140,
   legSettleFrames: 45,
+  pickWarmupAttempts: PICK_WARMUP_ATTEMPTS,
 });
 
-/** The `AR-M30` leg's scene and grid. */
-const SNAP = Object.freeze({
-  modelUrl: "/Apps/SampleData/models/CesiumMilkTruck/CesiumMilkTruck.glb",
+/**
+ * The `AR-M30` leg's scene and cursor rings.
+ *
+ * THE SUBJECT MUST CARRY `EXT_mesh_primitive_edge_visibility`. `isEdge` is not
+ * a property of where the cursor sits: it is a fragment flag that only a
+ * model's EDGE PASS writes. `ModelFS.glsl:68` declares `isEdge = false` and
+ * sets it true only at `:202-203`, inside `#ifdef HAS_EDGE_VISIBILITY` under
+ * `u_isEdgePass`; `PickingPipelineStage.js:43` packs it into the snap payload
+ * and `SnapFramebuffer.js:56` is the ONLY place it is ever derived. The edge
+ * stage exists only when `defined(primitive.edgeVisibility)`
+ * (`ModelRuntimePrimitive.js:269,357-363`), which is populated only from the
+ * glTF primitive's `EXT_mesh_primitive_edge_visibility`
+ * (`GltfLoader.js:1415-1418`). Job 10's subject was
+ * `Apps/SampleData/models/CesiumMilkTruck/CesiumMilkTruck.glb`, which has NO
+ * extensions at all — `extensionsUsed` undefined, every primitive's
+ * `extensions` null, and the byte string `EXT_` absent from all 441,972 bytes —
+ * so no fragment in that scene could set the flag at any aperture or cursor
+ * pattern, and its 81/81 zero-`isEdge` result was a property of the ASSET, not
+ * of the grid. `Specs/Data/Models/glTF-2.0/EdgeVisibility/glTF-Binary/
+ * EdgeVisibility.glb` (8,144 B) declares the extension in `extensionsUsed` and
+ * carries it on BOTH primitives; `server.js` serves the repository root, so it
+ * is offline and free. Section N of the companion spec decodes whatever asset
+ * this field names and refuses one without the extension.
+ *
+ * WHY `edgeDisplayMode` IS SET, AND WHICH BACKEND NEEDS IT. WebGL does not:
+ * its snap pass pushes `_edgeSnapCommand` REGARDLESS of the display mode
+ * (`ModelDrawCommand.js:250-258` — "snapping works even when edges are visually
+ * suppressed"), and `pushEdgeCommands` is called unconditionally
+ * (`ModelSceneGraph.js:1243-1245`). WebGPU does: its whole edge emitter,
+ * INCLUDING the snap variant, sits inside a block gated on
+ * `edgeDisplayMode !== SURFACES_ONLY` (`WebGPUModelRenderer.ts:8514-8517`, snap
+ * variant at `:8770+`). Left at the `SURFACES_ONLY` default (`Model.js:489`)
+ * this leg would read edge hits on WebGL and none on WebGPU, and publish a
+ * backend difference that is a CONFIGURATION artifact rather than `AR-030`'s.
+ */
+export const SNAP = Object.freeze({
+  modelUrl:
+    "/Specs/Data/Models/glTF-2.0/EdgeVisibility/glTF-Binary/EdgeVisibility.glb",
+  // The extension both halves of the leg depend on. Section N of the spec
+  // decodes `modelUrl` and requires this string in its `extensionsUsed`.
+  requiredExtension: "EXT_mesh_primitive_edge_visibility",
+  // Resolved in the page against `Cesium.EdgeDisplayMode`; a string because
+  // `cfg` crosses the `page.evaluate` boundary by structured clone.
+  edgeDisplayMode: "SURFACES_AND_EDGES",
+  // Numeric fallback for a bundle whose barrel does not re-export the enum —
+  // the two shipped edge probes drive this feature by number for the same
+  // reason. Section N of the spec pins these against `Scene/EdgeDisplayMode.js`
+  // itself, so this is a mirror with a guard rather than a second authority.
+  edgeModeValues: Object.freeze({
+    SURFACES_ONLY: 0,
+    SURFACES_AND_EDGES: 1,
+    EDGES_ONLY: 2,
+  }),
   lon: -105.0,
   lat: 40.0,
-  height: 100.0,
-  scale: 20.0,
+  // Job 10's BEFORE leg rendered real terrain on the WebGL page and buried its
+  // model: (-105, 40) carries ~1500 m of terrain, and the model sat at 100 m.
+  // The page now pins `EllipsoidTerrainProvider`, and this height keeps the
+  // model clear of any terrain a future scene change could reintroduce.
+  height: 2500.0,
+  scale: 10.0,
   readyFrames: 300,
   settleFrames: 90,
-  // 9x9 cursors on a 9 px pitch: +/-36 px, comfortably inside the truck's
-  // ~237 px on-screen length, which is where a WIDE aperture produces winning
-  // edge hits that are FAR from the cursor — the population `AR-M30` names.
-  gridSpan: 4,
-  gridStep: 9,
+  // The camera range is DERIVED from the model's own bounding-sphere radius
+  // rather than tuned per asset: at range `rangeFactor * r` the projected
+  // radius is `(H/2) / (tan(fovy/2) * rangeFactor)` — independent of `scale`
+  // and of the asset's units — which is 148 px at this probe's 1024x768 and
+  // Cesium's default 60 deg horizontal fov (fovy 46.8 deg at 4:3). Swapping the
+  // subject therefore cannot silently mis-frame the leg.
+  rangeFactor: 6.0,
+  // Cursors on concentric rings scaled to the MODEL'S OWN measured projected
+  // radius, from well inside the silhouette to just outside it, so a wide
+  // aperture straddles the outline whatever the model's screen size. 4 rings x
+  // 20 steps + the centre = 81 cursors, the same population job 10 reported.
+  ringFractions: Object.freeze([0.45, 0.7, 0.95, 1.2]),
+  ringSteps: 20,
+  // Below this projected radius the model is too small for an aperture to mean
+  // anything, and the leg refuses rather than reporting an empty rate. The
+  // derived range puts the measured radius at ~148 px, so this floor catches a
+  // mis-framing rather than trimming a healthy leg.
+  minScreenRadius: 60,
+  inFrameAttempts: 16,
   retries: 6,
 });
 
@@ -246,6 +350,10 @@ function classifyMeasurement(measurement) {
     pickHits: raw.pickHits ?? null,
     pickAttempts: raw.pickAttempts ?? null,
     pickIds: raw.pickIds ?? [],
+    // Present on the CONTROL only: the discarded picks spent cooking the leg's
+    // pick pipelines before anything was measured. Published, not asserted for
+    // cost; `pickWarmupChecks` asserts only that it resolved.
+    pickWarmup: raw.pickWarmup ?? null,
     visibility: classifyVisibility(raw.huePixels),
     pickClass: classifyPick(raw.pickHits, raw.pickAttempts),
   };
@@ -286,6 +394,7 @@ export const descriptor = {
     const work = (async () => {
       const cells = [];
       const controls = [];
+      const renderability = [];
       const snap = [];
       const gates = [];
 
@@ -319,6 +428,22 @@ export const descriptor = {
             deviceLost: result.deviceLost,
             consoleErrors: result.consoleErrors,
           });
+        }
+
+        // One renderability record per (item, log-depth page): the engine-visible
+        // preconditions for the subject to be measurable at all, on both
+        // backends. This is what job 10's billboard needed and did not have.
+        for (const item of ITEMS) {
+          const record = { run, item, logDepth };
+          for (const renderer of options.renderers) {
+            record[renderer] = perRenderer[renderer]?.renderability?.[item] ?? {
+              present: false,
+              show: false,
+              imageReady: null,
+              commandExecuted: false,
+            };
+          }
+          renderability.push(record);
         }
 
         for (const ddtd of DDTD_LEGS) {
@@ -356,18 +481,20 @@ export const descriptor = {
               minOffset: MIN_CURSOR_OFFSET_PIXELS,
             }),
         });
-        if (result.measured.modelReady !== true) {
+        // "Loaded", "projected" and "in frame, in front of the globe" are three
+        // different claims, and job 10 banked a leg where the first two were
+        // true and the third was false. `snapLegStanding` owns the decision so
+        // a browser-free spec can execute and mutate it.
+        const standing = snapLegStanding(result.measured);
+        if (standing !== null) {
           throw new ProbeRefusal(
-            "snap-model-never-ready",
-            `the AR-M30 leg's glTF model never reached ready on ${renderer}; the leg saw no subject, so it has no standing to report a surfacePosition rate`,
-            { renderer, modelUrl: SNAP.modelUrl },
-          );
-        }
-        if (result.measured.projected !== true) {
-          throw new ProbeRefusal(
-            "snap-model-not-projected",
-            `the AR-M30 leg could not project its model to window coordinates on ${renderer}`,
-            { renderer },
+            standing.code,
+            `${standing.message} (${renderer})`,
+            {
+              renderer,
+              modelUrl: SNAP.modelUrl,
+              framing: result.measured.framing ?? null,
+            },
           );
         }
         if (snap.length === 0) {
@@ -386,7 +513,18 @@ export const descriptor = {
         });
       }
 
-      return [{ kind: "run", run, expectation, cells, controls, snap, gates }];
+      return [
+        {
+          kind: "run",
+          run,
+          expectation,
+          cells,
+          controls,
+          renderability,
+          snap,
+          gates,
+        },
+      ];
     })();
     work.catch(() => {});
     let watchdogTimer;
@@ -414,6 +552,7 @@ export const descriptor = {
       run: entry.run,
       expectation: entry.expectation,
       controls: entry.controls,
+      renderability: entry.renderability,
       snap: entry.snap,
       gates: entry.gates,
       matrix: entry.cells.map((cell) => ({
@@ -435,7 +574,26 @@ export const descriptor = {
     const verdicts = [];
     for (const entry of cells) {
       const { run, expectation } = entry;
+      // A subject that never reaches the screen measures 0 hue pixels, which
+      // reads exactly like occlusion. These come FIRST so a run that lost a
+      // subject says so before it says anything about `AR-001`.
+      for (const record of entry.renderability ?? []) {
+        for (const check of subjectRenderabilityChecks(record)) {
+          verdicts.push({
+            id: `${check.id}-run${run}`,
+            claim: `AR-837 — ${check.label}`,
+            pass: check.pass,
+          });
+        }
+      }
       for (const control of entry.controls) {
+        for (const check of pickWarmupChecks(control)) {
+          verdicts.push({
+            id: `${check.id}-run${run}`,
+            claim: `AR-837 — ${check.label}`,
+            pass: check.pass,
+          });
+        }
         verdicts.push({
           id: `control-log-${control.logDepth ? "on" : "off"}-ddtd-${control.ddtd}-run${run}`,
           claim: `AR-837 — the unoccluded control renders and picks on both backends (log ${control.logDepth ? "on" : "off"}, ddtd ${control.ddtd}), so a subject miss is a measurement and not a dead pick path`,
@@ -449,7 +607,10 @@ export const descriptor = {
         }
         verdicts.push({
           id: `${cellKey(cell)}-run${run}`,
-          claim: `AR-837/${expectation} — ${cell.item} behind terrain at disableDepthTestDistance ${cell.ddtd} with logarithmicDepthBuffer ${cell.logDepth ? "on" : "off"}`,
+          // Not an interpolated string here: which ROW a cell verdict is filed
+          // under is a decision, and it lives in the import-free module the
+          // spec can mutate. See `cellClaim`.
+          claim: cellClaim(cell, expectation),
           pass: allChecksPass(itemChecks(cell.item, cell, expectation)),
         });
       }
@@ -497,9 +658,37 @@ export const descriptor = {
         );
       }
       lines.push("");
+      lines.push(
+        "| subject renderability | webgl | webgpu |",
+        "| --- | --- | --- |",
+      );
+      for (const record of entry.renderability ?? []) {
+        const show = (measured) =>
+          `present ${measured?.present === true}, show ${measured?.show === true}, imageReady ${measured?.imageReady ?? "n/a"}, command ${measured?.commandExecuted === true ? "EXECUTED" : "CULLED"}`;
+        lines.push(
+          `| ${record.item}/log-${record.logDepth ? "on" : "off"} | ${show(record.webgl)} | ${show(record.webgpu)} |`,
+        );
+      }
+      lines.push("");
+      lines.push(
+        "| pick warm-up (discarded, before the leg is measured) | webgl | webgpu |",
+        "| --- | --- | --- |",
+      );
+      for (const control of entry.controls) {
+        const show = (measured) => {
+          const warmup = measured?.pickWarmup;
+          return warmup
+            ? `${warmup.resolved ? "resolved" : "NEVER RESOLVED"} after ${warmup.attempts} of ${warmup.budget}`
+            : "n/a";
+        };
+        lines.push(
+          `| log-${control.logDepth ? "on" : "off"}/ddtd-${control.ddtd} | ${show(control.webgl)} | ${show(control.webgpu)} |`,
+        );
+      }
+      lines.push("");
       for (const leg of entry.snap) {
         lines.push(
-          `AR-M30 (aperture ${leg.snapWidth} px): webgl ${leg.webgl?.surfaceDefined ?? 0}/${leg.webgl?.farEdgeHits ?? 0}, webgpu ${leg.webgpu?.surfaceDefined ?? 0}/${leg.webgpu?.farEdgeHits ?? 0} defined for edge hits more than ${MIN_CURSOR_OFFSET_PIXELS} px from the cursor.`,
+          `AR-M30 (aperture ${leg.snapWidth} px, subject ${leg.webgl?.modelUrl ?? leg.webgpu?.modelUrl ?? "?"} at edgeDisplayMode ${leg.webgl?.edgeDisplayMode ?? leg.webgpu?.edgeDisplayMode ?? "?"}, cursors on rings scaled to its measured projected radius ${Math.round(leg.webgl?.framing?.screenRadius ?? 0)}/${Math.round(leg.webgpu?.framing?.screenRadius ?? 0)} px): webgl ${leg.webgl?.surfaceDefined ?? 0}/${leg.webgl?.farEdgeHits ?? 0} of ${leg.webgl?.edgeHits ?? 0} edge hits, webgpu ${leg.webgpu?.surfaceDefined ?? 0}/${leg.webgpu?.farEdgeHits ?? 0} of ${leg.webgpu?.edgeHits ?? 0}, defined for edge hits more than ${MIN_CURSOR_OFFSET_PIXELS} px from the cursor.`,
           "",
         );
       }
