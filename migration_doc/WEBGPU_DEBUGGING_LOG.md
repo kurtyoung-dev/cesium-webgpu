@@ -20179,3 +20179,73 @@ node Tools/visual-regression/probe-classification-frustum-slices.mjs --port 8094
 GREEN is **14/14 cells** on the calibrated bars, with the `overlay` column reporting whatever the
 un-fixed overlay defect emits — a non-zero overlay count is expected until that row lands and is
 not a failure of this one. The cell count is unchanged at 14 (7 scenes x 2 renderers).
+
+## Lane Ulfang round 3 (wave P0-2, 2026-09-06) — AR-752's Edge leg read flat zero, and the engine was right: the instrument measured a frame it had not stepped
+
+**Bug number:** instrument defect on `AR-752` / `AR-M38`, found by Éowyn Edge job 10 leg 4
+(defects (d) and (e) of that job's five).
+
+**Files affected:** `Tools/visual-regression/probe-polyline-taa-velocity.mjs` (the defect),
+`Tools/visual-regression/polyline-taa-velocity-emission.spec.mjs` (the checks that now hold it).
+**No engine file is touched.**
+
+**Symptom.** Three runs of `probe-polyline-taa-velocity.mjs --runs 3` on a tree carrying Batch
+1440's emission fix: `velocity-emitted` RED with `nonZero: 0` of 307,200 texels, and
+`negative-control-dash` GREEN off `unavailable: true, total: 0`. Emission had been proved in Node
+(`AR-M38`: six commands over one pipeline across six animated frames), so the commands existed and
+the GPU appeared to write nothing.
+
+**Root cause — read out of the receipt's own maximum.** `_runVelocityPass` clears the `rg16float`
+attachment to zero at the top of every pass, so an undrawn target reads EXACTLY zero. The receipt
+reported a maximum magnitude of 1.3328003749250113e-7 — `hypot(2 x 2^-24, 2^-24)`, one and two
+half-precision denormal ULPs. The shader had run and written. That number is the residual the FS
+leaves when both position streams carry the SAME world point: the current clip position goes
+through the RTE path and the previous one through a full mat4 multiply of `high + low` in f32, and
+those differ by 0.103-0.197 m across this scene's endpoints, which over the probe camera's
+1.732e6 m per NDC unit (a conservative floor) is 5.8e-8 to 1.1e-7 NDC per component. A stepped
+frame would have read ~1.6e-2 — 1.9e5 times larger, and THAT gap, not the matching digits, is what
+discriminates. So the measured frame had not moved.
+
+It had not moved because `Viewer` runs its own render loop: `useDefaultRenderLoop` defaults to
+`true` (`packages/engine/Source/Widget/CesiumWidget.js:657`) and `startRenderLoop` (`:48`) renders
+on every `requestAnimationFrame`. The probe stepped its polyline only before its own
+`scene.render()` calls and then awaited a rAF and a Playwright round-trip before encoding the
+readback — all of which the Viewer's loop filled with un-stepped renders. Zero velocity for an
+un-stepped frame is CORRECT engine behaviour.
+
+**Why the probe could not tell.** The only cell required to read non-zero was the one under test,
+so an all-zero read was unattributable; and the dash negative control scored a pass off a target
+that did not exist (a dash-only scene emits no velocity command at all, so
+`ensureVelocityTexture` is never reached and `_velocityTexture` stays undefined).
+
+**Fix (instrument only).** The probe disables the Viewer's render loop and refuses
+(`render-loop-not-owned`) if it is still running; it encodes the readback copy synchronously at the
+tail of the last stepped render; an animating `PointPrimitiveCollection` point — a different
+renderer over a different prev-stream mechanism — shares both velocity scenes as a positive control
+that MUST read non-zero; the dash control now requires its target present and the control non-zero
+before a zero on the dash line counts; and both are counted inside screen rectangles projected from
+the subjects themselves, so the control cannot carry the subject's verdict. The header's claim that
+the no-polyline control "must stay 0" against a shipped 440 (the ion credit wordmark, which clears
+the cyan test and sits in BOTH terms of the smear ratio, pulling it toward 1 rather than
+cancelling) is corrected to what the cell shows.
+
+**Proof.** `polyline-taa-velocity-emission.spec.mjs` grows to sixteen tests under
+`npm run test-engine-node`: A10 pins that the velocity command's two streams DIFFER across a
+stepped frame (slot 1 byte-identical to the previous frame's slot 0) and AGREE across an unstepped
+one; A11 drives `WebGPUSceneFramebuffer.ensureVelocityTexture` and requires the format the velocity
+pipeline declares to be the format the target is allocated in, with `COPY_SRC`; A12/A13/A14 pin the
+region arithmetic, that a live control cannot carry the subject's verdict, and that an unavailable
+read is carried as unavailable; A15 makes the previous-stream stash unreachable and requires both
+streams to become identical; A16 makes the dash cell's availability and control requirements inert
+and requires the vacuous green to come back.
+
+Group E of `probe-descriptor-cells-contract.spec.mjs` (under `npm run test-visual-probe-contracts`)
+drives `runProbe` over the REAL descriptor with a page whose Viewer still owns the render loop and
+requires a `render-loop-not-owned` REFUSAL, taken before any velocity target is read; its group-B
+fixture now carries the two regions and a dash frame whose control moves.
+
+**Files modified:** `Tools/visual-regression/probe-polyline-taa-velocity.mjs`,
+`Tools/visual-regression/polyline-taa-velocity-emission.spec.mjs`,
+`Tools/visual-regression/probe-descriptor-cells-contract.spec.mjs`,
+`migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`,
+`migration_doc/FEATURE_INVENTORY.md`.

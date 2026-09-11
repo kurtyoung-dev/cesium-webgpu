@@ -82,10 +82,30 @@ function framePng(litPixels) {
 }
 
 // 0x3c00 is the half-float 1.0; 0x0000 is +0. `countNonZeroVelocityTexels`
-// clears its 1e-4 floor on the first and never on the second, which is the
-// measurement cell and the negative control respectively.
-const MOVING_HALVES = Array.from({ length: 16 }, () => 0x3c00);
-const STILL_HALVES = Array.from({ length: 16 }, () => 0x0000);
+// clears its 1e-4 floor on the first and never on the second.
+//
+// The velocity target is 4x2 and is read in two rectangles: the SUBJECT's, at
+// x in [0, 1], and the POSITIVE CONTROL's, at x in [2, 3]. The Color frame
+// moves in both. The Dash frame moves only in the control's — which is the
+// shape the row accepts, and the one that distinguishes "the dash material
+// wrote nothing" from "the readback was blind".
+const VELOCITY_TARGET = { width: 4, height: 2 };
+const VELOCITY_REGIONS = {
+  line: { x0: 0, y0: 0, x1: 1, y1: 1 },
+  control: { x0: 2, y0: 0, x1: 3, y1: 1 },
+};
+const REGION_TEXELS = 4;
+const halvesWhere = (moving) => {
+  const halves = [];
+  for (let y = 0; y < VELOCITY_TARGET.height; y++) {
+    for (let x = 0; x < VELOCITY_TARGET.width; x++) {
+      halves.push(moving(x, y) ? 0x3c00 : 0x0000, 0x0000);
+    }
+  }
+  return halves;
+};
+const MOVING_HALVES = halvesWhere(() => true);
+const CONTROL_ONLY_HALVES = halvesWhere((x) => x >= 2);
 
 // ---------------------------------------------------------------------------
 // The stub browser. `launch` is the runtime's only seam onto Edge.
@@ -101,7 +121,7 @@ const STILL_HALVES = Array.from({ length: 16 }, () => 0x0000);
  * @param {{calls: string[]}} log Records what the probe asked the page to do.
  * @returns {object} The stub page.
  */
-function fakePage(log) {
+function fakePage(log, { renderLoopDisabled = true } = {}) {
   let materialType = null;
   let withPolyline = false;
   return {
@@ -123,14 +143,19 @@ function fakePage(log) {
         log.calls.push(`read:${materialType}`);
         return {
           available: true,
-          halves: materialType === "Color" ? MOVING_HALVES : STILL_HALVES,
-          width: 4,
-          height: 2,
+          halves:
+            materialType === "Color" ? MOVING_HALVES : CONTROL_ONLY_HALVES,
+          width: VELOCITY_TARGET.width,
+          height: VELOCITY_TARGET.height,
+          regions: VELOCITY_REGIONS,
         };
       }
       if (source.includes("__probeRender")) {
         log.calls.push("render");
-        return undefined;
+        // The probe requires its own render loop; a stub that did not answer
+        // this would be answering for a page whose frames the probe never
+        // stepped, which is the state the refusal exists to catch.
+        return { renderLoopDisabled, velocityCaptured: true };
       }
       if (source.includes("__armWebGPUDevice")) {
         log.calls.push("arm");
@@ -162,12 +187,12 @@ function fakePage(log) {
  * @param {{calls: string[], launches: number}} log
  * @returns {Function} A `launch` implementation for `runProbe`.
  */
-function fakeLaunch(log) {
+function fakeLaunch(log, pageOptions) {
   return async () => {
     log.launches += 1;
     return {
       async newPage() {
-        return fakePage(log);
+        return fakePage(log, pageOptions);
       },
       async close() {},
     };
@@ -214,7 +239,7 @@ async function importMutated(file, replacements) {
  * @param {object} [options] `{root, runs}`.
  * @returns {Promise<object>} `{code, out, log}`.
  */
-async function driveProbe(descriptor, { root, runs = 3 } = {}) {
+async function driveProbe(descriptor, { root, runs = 3, page } = {}) {
   const out = path.join(root, "out");
   const log = { calls: [], launches: 0 };
   const code = await runProbe(descriptor, {
@@ -228,7 +253,7 @@ async function driveProbe(descriptor, { root, runs = 3 } = {}) {
       "--no-serve-built",
     ],
     now: () => Date.UTC(2026, 8, 5, 23, 0, 0),
-    launch: fakeLaunch(log),
+    launch: fakeLaunch(log, page),
   });
   return { code, out, log };
 }
@@ -382,8 +407,23 @@ test("B. probe-polyline-taa-velocity completes a --runs 3 walk", async (t) => {
       assert.ok(Array.isArray(receipt.runs), "receipt.runs is an array");
       assert.equal(receipt.runs.length, 3);
       for (const run of receipt.runs) {
-        assert.equal(run.animatedColor.nonZero, MOVING_HALVES.length / 2);
-        assert.equal(run.animatedDash.nonZero, 0);
+        assert.equal(run.animatedColor.line.nonZero, REGION_TEXELS);
+        assert.equal(
+          run.animatedColor.control.nonZero,
+          REGION_TEXELS,
+          "the positive control moves in the Color scene too",
+        );
+        assert.equal(
+          run.animatedDash.line.nonZero,
+          0,
+          "the dash material writes no motion vectors",
+        );
+        assert.equal(
+          run.animatedDash.control.nonZero,
+          REGION_TEXELS,
+          "but its scene's target IS live, which is what makes that zero a " +
+            "measurement rather than an absence",
+        );
         assert.equal(run.webgpuLinePixels, LINE_PIXELS);
         assert.equal(run.webglLinePixels, LINE_PIXELS);
         assert.equal(run.emptyWebgpuLinePixels, 0);
@@ -417,7 +457,7 @@ test("B. probe-polyline-taa-velocity completes a --runs 3 walk", async (t) => {
       ]);
     });
 
-    await t.test("the four verdicts are published, one detail per run", () => {
+    await t.test("the five verdicts are published, one detail per run", () => {
       const runtime = JSON.parse(
         readFileSync(path.join(result.out, "polyvel-runtime.json"), "utf8"),
       );
@@ -425,6 +465,7 @@ test("B. probe-polyline-taa-velocity completes a --runs 3 walk", async (t) => {
         runtime.verdicts.map((verdict) => verdict.id),
         [
           "velocity-emitted",
+          "velocity-positive-control",
           "negative-control-dash",
           "ghost-smear-ratio",
           "gate-clean",
@@ -505,6 +546,53 @@ test("C. the served-build preflight refuses before any launch", async () => {
     assert.ok(
       !readdirSync(out).includes("polyvel-report.json"),
       "a run that did not measure writes no receipt",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// E. The probe refuses a page whose render loop it does not own.
+//
+//    Éowyn job 10 leg 4 read the velocity target flat zero on a tree that
+//    emitted velocity correctly, because `Viewer` renders on every rAF by
+//    default and the frame that reached the readback was one the probe had
+//    never stepped. A number taken from such a frame is not a measurement of
+//    anything the row names, so the probe must refuse rather than report it.
+// ---------------------------------------------------------------------------
+
+test("E. a page whose Viewer still owns the render loop is refused, not measured", async () => {
+  const root = makeTempRoot();
+  try {
+    const { code, out, log } = await driveProbe(velocityDescriptor, {
+      root,
+      runs: 3,
+      page: { renderLoopDisabled: false },
+    });
+    assert.equal(
+      code,
+      PROBE_EXIT_CODES.REFUSAL,
+      "an un-owned render loop is a refusal, not a red verdict — the run " +
+        "measured a frame it did not step",
+    );
+    assert.ok(
+      !readdirSync(out).includes("polyvel-report.json"),
+      "a refused run publishes no receipt",
+    );
+    const refusal = JSON.parse(
+      readFileSync(path.join(out, "polyvel-refusal.json"), "utf8"),
+    );
+    assert.equal(refusal.outcome, "refused");
+    assert.match(
+      JSON.stringify(refusal),
+      /render-loop-not-owned/,
+      "the refusal names the reason, so the next reader is not sent hunting",
+    );
+    assert.equal(
+      log.calls.filter((call) => call.startsWith("read:")).length,
+      0,
+      "and it refuses BEFORE reading a velocity target it cannot attribute",
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

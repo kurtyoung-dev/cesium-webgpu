@@ -24,9 +24,27 @@
  *     exactly 0; the acceptance is > 0.
  *
  *   CELL B (webgpu) — the NEGATIVE CONTROL: the same animation with a
- *     `PolylineDash` material, whose WGSL has no `vertexVelocityMain`. It must
- *     stay at 0. Without it, a probe that reported "> 0" could not distinguish
- *     "the gate now resolves the shader key" from "the gate was deleted".
+ *     `PolylineDash` material, whose WGSL has no `vertexVelocityMain`. Its
+ *     region must stay at 0 WITH THE TARGET PRESENT. Without it, a probe that
+ *     reported "> 0" could not distinguish "the gate now resolves the shader
+ *     key" from "the gate was deleted".
+ *
+ *   CELL P (webgpu) — the POSITIVE CONTROL, present in BOTH velocity scenes: an
+ *     animating `PointPrimitiveCollection` point parked to the left of the
+ *     line. Its velocity comes from a DIFFERENT renderer and a different
+ *     prev-stream mechanism (`WebGPUResidentInstanceBuffer`'s dirty-range prev
+ *     mirror, `WebGPUPointPrimitiveRenderer.js:1210`), so it answers the one
+ *     question cells A and B cannot ask of themselves: is this readback LIVE?
+ *     Its region MUST read non-zero. Until Batch 1448 the only cell required to
+ *     be non-zero was the one under test, so the dash control's green came off
+ *     a zero it never measured — `_velocityTexture` did not exist for a scene
+ *     whose only primitive emits no velocity command, and `unavailable: true`
+ *     scored as a pass. That is Éowyn's job-10 instrument defect (d).
+ *
+ *   REGIONS. Cells A, B and P are counted inside SCREEN RECTANGLES the page
+ *     derives from `scene.cartesianToCanvasCoordinates` of the subjects
+ *     themselves, not from an assumed field of view. Whole-frame counts cannot
+ *     separate the line from its own positive control.
  *
  *   CELL C (webgpu) and CELL D (webgl) — `linePixels`: the count of
  *     line-coloured pixels in the final frame of the SAME animated sequence.
@@ -37,9 +55,37 @@
  *     the count. Acceptance: `linePixels(C) / linePixels(D)` in [0.75, 1.25].
  *
  *   CELL E (both) — the no-polyline control: the same scene with the collection
- *     omitted, on both backends, whose line-pixel count must stay 0. It is the
- *     runtime form of the row's "scenes with no polyline capture identically"
- *     clause; the browser-free form is A5 of the emission spec.
+ *     omitted, on both backends. It is the runtime form of the row's "scenes
+ *     with no polyline capture identically" clause; the browser-free form is A5
+ *     of the emission spec. It is REPORTED, not verdicted, and it does NOT read
+ *     0: the Cesium ion credit wordmark clears `countLinePixels`' cyan test and
+ *     both backends measure ~440 px for it. That constant does NOT cancel out of
+ *     the smear ratio — it sits in BOTH terms, which pulls the measured ratio
+ *     toward 1 ((3948-440)/(3557-440) = 1.125 against the 1.110 reported), so
+ *     the [0.75, 1.25] bar is slightly permissive as stated. The docstring used
+ *     to claim "must stay 0" against a shipped measurement of 440, which is Éowyn's
+ *     job-10 instrument defect (e). The claim is corrected here rather than the
+ *     measurement: the cell's job is the identical-capture clause, and equality
+ *     across the backends is what it shows.
+ *
+ * WHY THE FIRST THREE EDGE RUNS READ FLAT ZERO (round 3, Batch 1448). The
+ * velocity target came back with `nonZero: 0` and a maximum magnitude of
+ * 1.3328e-7 — a REAL readback of a live target, not a blind one. That number is
+ * `hypot(2·2^-24, 2^-24)`, one and two half-precision denormal ULPs, and it is
+ * exactly the residual the velocity FS leaves when the previous and current
+ * position streams carry the SAME world positions: the current clip position
+ * goes through the RTE path and the previous one through a full mat4 multiply
+ * of `high + low` in f32, and those two spellings of one point differ by
+ * 0.10-0.16 m at this geometry, which is 6e-8 to 9e-8 NDC at the probe's camera.
+ * A stepped frame would have read ~1.6e-2. The frame that reached the readback
+ * had simply not moved: `Viewer` runs its own render loop
+ * (`CesiumWidget.js:657`, `useDefaultRenderLoop ?? true`, rendering on EVERY
+ * rAF), the probe stepped the polyline only before its own `scene.render()`
+ * calls, and the loop rendered further un-stepped frames between them and
+ * during the readback round-trip. An unmoved polyline writes zero BY DESIGN.
+ * The probe now owns the render loop outright and ENCODES the copy
+ * synchronously at the end of the last stepped frame, so the bytes belong to a
+ * frame the probe stepped.
  *
  * NOISE. `velocityNonZeroTexels` is a count over a deterministic animation with
  * a fixed camera and `shouldAnimate = false`, so it is stable run to run; the
@@ -137,6 +183,118 @@ export function countNonZeroVelocityTexels(
 }
 
 /**
+ * Counts velocity texels that clear the noise floor INSIDE one screen rectangle.
+ *
+ * Whole-frame counting cannot tell the polyline's motion vectors from those of
+ * the positive control that shares the frame with it, so every velocity cell is
+ * counted twice — once in the subject's rectangle and once in the control's.
+ * The rectangle is inclusive on both corners and clamped to the target; an
+ * absent or degenerate rectangle returns `invalid: true` rather than a zero
+ * that would read like a measurement.
+ *
+ * @param {number[]} halves Flat `[r0, g0, r1, g1, …]` half-float patterns.
+ * @param {number} width Target width in texels.
+ * @param {number} height Target height in texels.
+ * @param {{x0: number, y0: number, x1: number, y1: number}|null} region The rectangle.
+ * @param {number} [floor] Magnitude at or below which a texel counts as still.
+ * @returns {{nonZero: number, total: number, maxMagnitude: number, invalid?: boolean}} The counts.
+ */
+export function countNonZeroVelocityTexelsInRegion(
+  halves,
+  width,
+  height,
+  region,
+  floor = VELOCITY_NOISE_FLOOR,
+) {
+  if (
+    !region ||
+    !Number.isFinite(region.x0) ||
+    !Number.isFinite(region.y0) ||
+    !Number.isFinite(region.x1) ||
+    !Number.isFinite(region.y1) ||
+    !(width > 0) ||
+    !(height > 0)
+  ) {
+    return { nonZero: 0, total: 0, maxMagnitude: 0, invalid: true };
+  }
+  const x0 = Math.max(0, Math.min(width - 1, Math.floor(region.x0)));
+  const x1 = Math.max(0, Math.min(width - 1, Math.ceil(region.x1)));
+  const y0 = Math.max(0, Math.min(height - 1, Math.floor(region.y0)));
+  const y1 = Math.max(0, Math.min(height - 1, Math.ceil(region.y1)));
+  if (x1 < x0 || y1 < y0) {
+    return { nonZero: 0, total: 0, maxMagnitude: 0, invalid: true };
+  }
+  let nonZero = 0;
+  let maxMagnitude = 0;
+  let total = 0;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const index = (y * width + x) * 2;
+      if (index + 1 >= halves.length) {
+        continue;
+      }
+      const vx = decodeHalf(halves[index]);
+      const vy = decodeHalf(halves[index + 1]);
+      total += 1;
+      if (!Number.isFinite(vx) || !Number.isFinite(vy)) {
+        continue;
+      }
+      const magnitude = Math.hypot(vx, vy);
+      if (magnitude > maxMagnitude) {
+        maxMagnitude = magnitude;
+      }
+      if (magnitude > floor) {
+        nonZero += 1;
+      }
+    }
+  }
+  return { nonZero, total, maxMagnitude };
+}
+
+/**
+ * Reduces one page-side velocity read into the cell this probe verdicts on.
+ *
+ * An unavailable read is NOT flattened into zeros: `unavailable` is carried so
+ * the verdicts can refuse rather than score it, which is the whole of instrument
+ * defect (d).
+ *
+ * @param {{available: boolean, halves: number[], width: number, height: number, regions: object|null}} read The page-side read.
+ * @returns {object} `{unavailable}` or `{frame, line, control, width, height, regions}`.
+ */
+export function velocityCellFromRead(read) {
+  if (!read || read.available !== true) {
+    return {
+      unavailable: true,
+      frame: { nonZero: 0, total: 0, maxMagnitude: 0 },
+      line: { nonZero: 0, total: 0, maxMagnitude: 0, invalid: true },
+      control: { nonZero: 0, total: 0, maxMagnitude: 0, invalid: true },
+      regions: null,
+    };
+  }
+  const { halves, width, height } = read;
+  const regions = read.regions ?? null;
+  return {
+    unavailable: false,
+    frame: countNonZeroVelocityTexels(halves),
+    line: countNonZeroVelocityTexelsInRegion(
+      halves,
+      width,
+      height,
+      regions?.line ?? null,
+    ),
+    control: countNonZeroVelocityTexelsInRegion(
+      halves,
+      width,
+      height,
+      regions?.control ?? null,
+    ),
+    width,
+    height,
+    regions,
+  };
+}
+
+/**
  * Turns one run's cells into the probe's verdicts.
  *
  * Kept pure and exported so `polyline-taa-velocity-emission.spec.mjs` can pin
@@ -155,20 +313,55 @@ export function verdictsFor(cells) {
     errors,
   } = cells;
   const ratio = webglLinePixels > 0 ? webgpuLinePixels / webglLinePixels : null;
+  // A read that never happened must not score. Both velocity cells require
+  // their target to have EXISTED — `_velocityTexture` is allocated inside
+  // `_runVelocityPass` and nowhere else, so its absence means the pass did not
+  // run and the cell measured nothing.
+  const colourAvailable = animatedColor.unavailable !== true;
+  const dashAvailable = animatedDash.unavailable !== true;
   return [
     {
       id: "velocity-emitted",
       claim:
-        "AR-752 — an animating PolylineCollection under TAA writes non-zero motion vectors (pre-fix: exactly 0)",
-      pass: animatedColor.nonZero > 0,
-      detail: { nonZeroTexels: animatedColor.nonZero },
+        "AR-752 — an animating PolylineCollection under TAA writes non-zero motion vectors in its own screen region (pre-fix: exactly 0)",
+      pass: colourAvailable && animatedColor.line.nonZero > 0,
+      detail: {
+        nonZeroTexels: animatedColor.line.nonZero,
+        regionTexels: animatedColor.line.total,
+        maxMagnitude: animatedColor.line.maxMagnitude,
+        frameNonZeroTexels: animatedColor.frame.nonZero,
+        unavailable: animatedColor.unavailable === true,
+      },
+    },
+    {
+      id: "velocity-positive-control",
+      claim:
+        "the animating PointPrimitive sharing each scene writes non-zero motion vectors in ITS region, in both the Color and the Dash run — so an all-zero polyline read is attributable to the polyline and not to a blind readback",
+      pass:
+        colourAvailable &&
+        dashAvailable &&
+        animatedColor.control.nonZero > 0 &&
+        animatedDash.control.nonZero > 0,
+      detail: {
+        colorControlNonZeroTexels: animatedColor.control.nonZero,
+        dashControlNonZeroTexels: animatedDash.control.nonZero,
+        colorUnavailable: animatedColor.unavailable === true,
+        dashUnavailable: animatedDash.unavailable === true,
+      },
     },
     {
       id: "negative-control-dash",
       claim:
-        "a PolylineDash polyline, whose WGSL has no velocity entry points, still writes none",
-      pass: animatedDash.nonZero === 0,
-      detail: { nonZeroTexels: animatedDash.nonZero },
+        "a PolylineDash polyline, whose WGSL has no velocity entry points, still writes none in its region WITH the target present and the positive control non-zero",
+      pass:
+        dashAvailable &&
+        animatedDash.control.nonZero > 0 &&
+        animatedDash.line.nonZero === 0,
+      detail: {
+        nonZeroTexels: animatedDash.line.nonZero,
+        controlNonZeroTexels: animatedDash.control.nonZero,
+        unavailable: animatedDash.unavailable === true,
+      },
     },
     {
       id: "ghost-smear-ratio",
@@ -231,6 +424,14 @@ async function buildScene(page, { renderer, materialType, withPolyline }) {
         selectionIndicator: false,
         shouldAnimate: false,
       });
+      // OWN THE RENDER LOOP. `useDefaultRenderLoop` defaults to true
+      // (`CesiumWidget.js:657`) and `startRenderLoop` renders on EVERY rAF, so
+      // a probe that steps its subject only before its own `scene.render()`
+      // calls hands the readback whatever the loop drew afterwards — an
+      // un-stepped frame, whose velocity is zero by design. That is what made
+      // the first three Edge runs of this probe read flat zero. Every frame this
+      // probe measures must be a frame this probe stepped.
+      viewer.useDefaultRenderLoop = false;
       window.__probeViewer = viewer;
       window.viewer = viewer;
 
@@ -257,7 +458,28 @@ async function buildScene(page, { renderer, materialType, withPolyline }) {
         destination: C.Cartesian3.fromDegrees(0.0, 0.0, 3.0e6),
       });
 
+      // THE POSITIVE CONTROL. An animating point, parked well to the left of
+      // the line, whose velocity is produced by a DIFFERENT renderer and a
+      // different prev-stream mechanism than the polyline's
+      // (`WebGPUPointPrimitiveRenderer` over `WebGPUResidentInstanceBuffer`'s
+      // dirty-range prev mirror). It is what makes a zero on the polyline cell
+      // attributable: with the control non-zero in the same read, the readback
+      // and the velocity pass are demonstrably live. It is drawn RED so
+      // `countLinePixels`' cyan test never counts it into the smear ratio.
+      window.__probeControlPoints = undefined;
+      window.__probeControlPosition = undefined;
+      if (withPolyline) {
+        const points = scene.primitives.add(new C.PointPrimitiveCollection());
+        points.add({
+          position: C.Cartesian3.fromDegrees(-10.5, 0.0),
+          color: C.Color.RED.clone(),
+          pixelSize: 20.0,
+        });
+        window.__probeControlPoints = points;
+      }
+
       window.__probeCollection = undefined;
+      window.__probeLinePositions = undefined;
       if (withPolyline) {
         const collection = scene.primitives.add(new C.PolylineCollection());
         const material =
@@ -277,16 +499,72 @@ async function buildScene(page, { renderer, materialType, withPolyline }) {
         window.__probeCollection = collection;
       }
 
+      // Screen rectangles for the two subjects, derived from where THIS scene
+      // projects them rather than from an assumed field of view, and scaled from
+      // CSS canvas pixels into the velocity target's device pixels. The pads
+      // clear each subject's own footprint (line half-width 6 px, point radius
+      // 10 px) and still leave the two rectangles ~35 px apart at this camera.
+      window.__probeRegions = (texWidth, texHeight) => {
+        const canvas = scene.canvas;
+        const scaleX = texWidth / (canvas.clientWidth || texWidth);
+        const scaleY = texHeight / (canvas.clientHeight || texHeight);
+        const project = (cartesians, padPx) => {
+          if (!cartesians || cartesians.length === 0) {
+            return null;
+          }
+          let x0 = Infinity;
+          let y0 = Infinity;
+          let x1 = -Infinity;
+          let y1 = -Infinity;
+          for (const cartesian of cartesians) {
+            const canvasPosition =
+              scene.cartesianToCanvasCoordinates(cartesian);
+            if (!canvasPosition) {
+              return null;
+            }
+            x0 = Math.min(x0, canvasPosition.x);
+            x1 = Math.max(x1, canvasPosition.x);
+            y0 = Math.min(y0, canvasPosition.y);
+            y1 = Math.max(y1, canvasPosition.y);
+          }
+          return {
+            x0: (x0 - padPx) * scaleX,
+            y0: (y0 - padPx) * scaleY,
+            x1: (x1 + padPx) * scaleX,
+            y1: (y1 + padPx) * scaleY,
+          };
+        };
+        return {
+          line: project(window.__probeLinePositions, 12.0),
+          control: project(
+            window.__probeControlPosition
+              ? [window.__probeControlPosition]
+              : undefined,
+            18.0,
+          ),
+        };
+      };
+
       // Arm the WebGPU velocity readback path: the scene framebuffer allocates
       // the rg16float target with COPY_SRC, so the probe can copy it out
-      // without changing anything the renderer does.
-      window.__probeReadVelocity = async () => {
+      // without changing anything the renderer does. `_velocityTexture` is
+      // allocated inside `_runVelocityPass` and nowhere else, so its absence is
+      // itself the finding "no command in this scene carried a velocity
+      // command" — it is reported as unavailable, never flattened to a zero.
+      //
+      // The copy is ENCODED AND SUBMITTED SYNCHRONOUSLY, from the tail of the
+      // last stepped `scene.render()`, so the bytes belong to a frame the probe
+      // stepped. Encoding it from a later round-trip is what let an un-stepped
+      // frame supply the measurement.
+      window.__probeVelocityCapture = null;
+      window.__probeCaptureVelocity = () => {
         const alt = scene._alternateSceneRenderer;
         const framebuffer = alt?._sceneFramebuffer;
         const texture = framebuffer?._velocityTexture;
         const device = scene.context._device ?? scene.context.device;
         if (!texture || !device) {
-          return { available: false, halves: [], width: 0, height: 0 };
+          window.__probeVelocityCapture = { available: false };
+          return;
         }
         const width = texture.width;
         const height = texture.height;
@@ -303,6 +581,29 @@ async function buildScene(page, { renderer, materialType, withPolyline }) {
           { width, height, depthOrArrayLayers: 1 },
         );
         device.queue.submit([encoder.finish()]);
+        window.__probeVelocityCapture = {
+          available: true,
+          readback,
+          bytesPerRow,
+          width,
+          height,
+          regions: window.__probeRegions(width, height),
+        };
+      };
+
+      window.__probeReadVelocity = async () => {
+        const capture = window.__probeVelocityCapture;
+        if (!capture || capture.available !== true) {
+          return {
+            available: false,
+            halves: [],
+            width: 0,
+            height: 0,
+            regions: null,
+          };
+        }
+        window.__probeVelocityCapture = null;
+        const { readback, bytesPerRow, width, height, regions } = capture;
         await readback.mapAsync(GPUMapMode.READ);
         const view = new DataView(readback.getMappedRange());
         const halves = [];
@@ -315,24 +616,35 @@ async function buildScene(page, { renderer, materialType, withPolyline }) {
         }
         readback.unmap();
         readback.destroy();
-        return { available: true, halves, width, height };
+        return { available: true, halves, width, height, regions };
       };
 
       // Animate the far endpoint along the equator, one step per frame. The
       // near endpoint is fixed so the line sweeps rather than translates, which
-      // gives the velocity field a range of magnitudes instead of one.
+      // gives the velocity field a range of magnitudes instead of one. The
+      // control point steps with it, 0.05 deg of longitude per frame — 0.999 px,
+      // i.e. 3.1e-3 NDC against the 1e-4 noise floor, about 31x — staying left
+      // of the line for the whole sweep.
       window.__probeStep = (frame) => {
         const collection = window.__probeCollection;
-        if (!collection || collection.length === 0) {
-          return;
+        if (collection && collection.length > 0) {
+          const polyline = collection.get(0);
+          const positions = C.Cartesian3.fromDegreesArray([
+            -6.0,
+            0.0,
+            6.0,
+            -3.0 + frame * 0.25,
+          ]);
+          polyline.positions = positions;
+          window.__probeLinePositions = positions;
         }
-        const polyline = collection.get(0);
-        polyline.positions = C.Cartesian3.fromDegreesArray([
-          -6.0,
-          0.0,
-          6.0,
-          -3.0 + frame * 0.25,
-        ]);
+        const points = window.__probeControlPoints;
+        if (points && points.length > 0) {
+          const point = points.get(0);
+          const position = C.Cartesian3.fromDegrees(-10.5 + frame * 0.05, 0.0);
+          point.position = position;
+          window.__probeControlPosition = position;
+        }
       };
 
       window.__probeRender = async (frames, animated) => {
@@ -341,8 +653,17 @@ async function buildScene(page, { renderer, materialType, withPolyline }) {
             window.__probeStep(frame);
           }
           scene.render();
+          if (animated && frame === frames - 1) {
+            // Same synchronous turn as the render that produced them: no other
+            // frame can reach the velocity target before the copy is encoded.
+            window.__probeCaptureVelocity();
+          }
           await new Promise((resolve) => requestAnimationFrame(resolve));
         }
+        return {
+          renderLoopDisabled: viewer.useDefaultRenderLoop === false,
+          velocityCaptured: !!window.__probeVelocityCapture,
+        };
       };
 
       await new Promise((resolve) => setTimeout(resolve, 200));
@@ -420,40 +741,58 @@ export const descriptor = {
       await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
       await armWebGPUDevices(page);
 
+      // Every scene must be one the probe drove alone. A run in which the
+      // Viewer's own loop was still rendering measured frames the probe never
+      // stepped, and that is a refusal, not a number. It matters beyond the two
+      // velocity cells: the smear denominator is the LAST frame of an animated
+      // WebGL run, and free-running frames after the last step let TAA keep
+      // converging on the numerator's side of the same ratio.
+      const assertProbeOwnedTheLoop = (status, cell) => {
+        if (status?.renderLoopDisabled !== true) {
+          throw new ProbeRefusal(
+            "render-loop-not-owned",
+            `probe-polyline-taa-velocity cell ${cell}: the Viewer's default render loop was still running, so the velocity target holds a frame the probe did not step`,
+            { cell, status },
+          );
+        }
+      };
+
       // A — animating Color polyline on WebGPU: the measurement.
       await buildScene(page, {
         renderer: "webgpu",
         materialType: "Color",
         withPolyline: true,
       });
-      await page.evaluate(
-        (frames) => window.__probeRender(frames, true),
-        FRAMES,
+      assertProbeOwnedTheLoop(
+        await page.evaluate(
+          (frames) => window.__probeRender(frames, true),
+          FRAMES,
+        ),
+        "A",
       );
-      const animatedColorRead = await page.evaluate(() =>
-        window.__probeReadVelocity(),
+      const animatedColor = velocityCellFromRead(
+        await page.evaluate(() => window.__probeReadVelocity()),
       );
-      const animatedColor = animatedColorRead.available
-        ? countNonZeroVelocityTexels(animatedColorRead.halves)
-        : { nonZero: 0, total: 0, maxMagnitude: 0, unavailable: true };
       const webgpuShot = await capture(page, outputDirectory, "webgpu-color");
 
       // B — the negative control: PolylineDash has no velocity entry points.
+      // The positive control shares the scene, so the target EXISTS here and a
+      // zero on the dash line is a measured zero rather than an absent read.
       await buildScene(page, {
         renderer: "webgpu",
         materialType: "PolylineDash",
         withPolyline: true,
       });
-      await page.evaluate(
-        (frames) => window.__probeRender(frames, true),
-        FRAMES,
+      assertProbeOwnedTheLoop(
+        await page.evaluate(
+          (frames) => window.__probeRender(frames, true),
+          FRAMES,
+        ),
+        "B",
       );
-      const animatedDashRead = await page.evaluate(() =>
-        window.__probeReadVelocity(),
+      const animatedDash = velocityCellFromRead(
+        await page.evaluate(() => window.__probeReadVelocity()),
       );
-      const animatedDash = animatedDashRead.available
-        ? countNonZeroVelocityTexels(animatedDashRead.halves)
-        : { nonZero: 0, total: 0, maxMagnitude: 0, unavailable: true };
 
       // E1 — the no-polyline control on WebGPU.
       await buildScene(page, {
@@ -461,9 +800,12 @@ export const descriptor = {
         materialType: "Color",
         withPolyline: false,
       });
-      await page.evaluate(
-        (frames) => window.__probeRender(frames, false),
-        FRAMES,
+      assertProbeOwnedTheLoop(
+        await page.evaluate(
+          (frames) => window.__probeRender(frames, false),
+          FRAMES,
+        ),
+        "E1",
       );
       const emptyWebgpu = await capture(page, outputDirectory, "webgpu-empty");
 
@@ -473,9 +815,12 @@ export const descriptor = {
         materialType: "Color",
         withPolyline: true,
       });
-      await page.evaluate(
-        (frames) => window.__probeRender(frames, true),
-        FRAMES,
+      assertProbeOwnedTheLoop(
+        await page.evaluate(
+          (frames) => window.__probeRender(frames, true),
+          FRAMES,
+        ),
+        "D",
       );
       const webglShot = await capture(page, outputDirectory, "webgl-color");
 
@@ -485,9 +830,12 @@ export const descriptor = {
         materialType: "Color",
         withPolyline: false,
       });
-      await page.evaluate(
-        (frames) => window.__probeRender(frames, false),
-        FRAMES,
+      assertProbeOwnedTheLoop(
+        await page.evaluate(
+          (frames) => window.__probeRender(frames, false),
+          FRAMES,
+        ),
+        "E2",
       );
       const emptyWebgl = await capture(page, outputDirectory, "webgl-empty");
 
@@ -563,16 +911,20 @@ export const descriptor = {
       "",
       `Base: \`${receipt.base}\``,
       "",
-      "| run | velocity texels (Color) | velocity texels (Dash control) | webgpu line px | webgl line px | ratio | errors |",
-      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| run | Color line | Color control | Dash line | Dash control | webgpu line px | webgl line px | ratio | errors |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ];
     runs.forEach((run, index) => {
       const ratio =
         run.webglLinePixels > 0
           ? (run.webgpuLinePixels / run.webglLinePixels).toFixed(3)
           : "n/a";
+      const cell = (measurement) =>
+        measurement.unavailable === true ? "UNAVAILABLE" : undefined;
+      const colorUnavailable = cell(run.animatedColor);
+      const dashUnavailable = cell(run.animatedDash);
       lines.push(
-        `| ${index + 1} | ${run.animatedColor.nonZero} | ${run.animatedDash.nonZero} | ${run.webgpuLinePixels} | ${run.webglLinePixels} | ${ratio} | ${run.errors} |`,
+        `| ${index + 1} | ${colorUnavailable ?? run.animatedColor.line.nonZero} | ${colorUnavailable ?? run.animatedColor.control.nonZero} | ${dashUnavailable ?? run.animatedDash.line.nonZero} | ${dashUnavailable ?? run.animatedDash.control.nonZero} | ${run.webgpuLinePixels} | ${run.webglLinePixels} | ${ratio} | ${run.errors} |`,
       );
     });
     lines.push("");

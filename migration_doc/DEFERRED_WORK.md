@@ -15526,7 +15526,7 @@ re-settled after the resize"*.
 
 ---
 
-## 2026-09-05 — NEW-WEBGPU-POLYLINE-TAA-VELOCITY-GATE-NEVER-TRUE (lane Ulfang, row `AR-752`, wave P0-2) — **FIXED, awaiting the Edge acceptance leg**
+## 2026-09-05 — NEW-WEBGPU-POLYLINE-TAA-VELOCITY-GATE-NEVER-TRUE (lane Ulfang, row `AR-752`, wave P0-2) — **FIXED; the Edge leg RAN 2026-09-06 and read flat zero, which round 3 attributed to the INSTRUMENT, not the engine; the repaired leg is owed**
 
 `WebGPUPolylineRenderer.js`'s velocity gate compared the collection's PUBLIC `Material.type`
 against `"polylineColor"`:
@@ -15636,6 +15636,97 @@ return shape — reproduces exit 2 with no receipt. The instrument defect is wri
 is still owed:** `node Tools/visual-regression/probe-polyline-taa-velocity.mjs --runs 3`, four
 verdicts on every run — velocity texels > 0, `PolylineDash` control 0, smear ratio in
 [0.75, 1.25], errors 0.
+
+**Edge acceptance leg — RAN 2026-09-06 (Éowyn job 10 leg 4, three runs on `e95f39684b`), RED on
+the subject cell. Round 3 of lane Ulfang re-derived the cause by measurement and it is the
+INSTRUMENT: the engine emitted, drew, and correctly wrote ZERO for a polyline that had not moved.**
+
+| run | velocity texels (Color) | dash control | webgpu line px | webgl line px | ratio | errors |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1-3 | 0 of 307,200, max magnitude 1.3328e-7 | 0 (UNAVAILABLE) | 3948/3966 | 3557 | 1.110-1.115 | 0 |
+
+**The maximum magnitude is the whole finding.** `_runVelocityPass` clears the attachment to zero
+at the top of every pass, so a target that was never drawn into reads EXACTLY zero. It did not:
+1.3328003749250113e-7 is `hypot(2 x 2^-24, 2^-24)` — one and two half-precision denormal ULPs — so
+the polyline velocity fragment shader RAN and WROTE. And that value is not arbitrary. The FS
+computes `curNdc - prevNdc` where the current clip position comes from the RTE path
+(`camera.mvpRelativeToEye * translateRelativeToEye(high, low)`) and the previous one from a full
+mat4 multiply of `high + low` summed in f32. Those are two spellings of one world point, and with
+a static camera (`previousViewProjection == viewProjection`, by design — the probe fixes the camera
+so the only motion in the scene is the line's) their difference is pure float residual.
+Re-measured over the probe's own endpoints (`AR-M40`): the f32 `high + low` error is
+0.103 m at both equator endpoints and 0.159-0.197 m at the swept one across its range, and the
+probe's camera spans at least `3.0e6 * tan(30 deg) = 1.732e6` m per NDC unit (the conservative
+figure — the true camera-to-subject distance makes it ~1.78e6), giving 5.8e-8 to 1.1e-7 NDC per
+component: one to two denormal ULPs, whose hypotenuse quantises to 1.3328e-7. The digit match is
+corroboration, not a fingerprint — any sub-ULP residual lands on the same lattice. **The
+discriminating fact is the magnitude gap:** a stepped frame reads ~1.6e-2, 1.9e5 times larger. A frame in which the line HAD
+taken its 0.25-degree step would have moved its endpoint 27.8 km, i.e. NDC ~1.6e-2: five orders of
+magnitude larger. **The frame that reached the readback had not moved.**
+
+**Why it had not moved.** `Viewer` runs its own render loop — `useDefaultRenderLoop` defaults to
+`true` (`packages/engine/Source/Widget/CesiumWidget.js:657`) and `startRenderLoop` (`:48`) calls
+`widget.render()` on EVERY `requestAnimationFrame`. The probe never disabled it, stepped its
+polyline only immediately before its OWN `scene.render()` calls, and then `await`ed a rAF and a
+Playwright round-trip before encoding the readback copy — every one of which the Viewer's loop
+filled with an un-stepped render. TAA velocity for an un-stepped frame is zero, correctly.
+
+**What this REFUTES, each by measurement rather than by reading.** All five candidates the round-3
+brief listed:
+
+| candidate | verdict | evidence |
+| --- | --- | --- |
+| the previous-position stream is packed equal to the current one every frame | REFUTED as an engine defect | `AR-M39`: the real `updateWebGPUPolylines` over a recording device shows slot 1 equal to slot 0 only on frame 0 (no history, by design) and byte-identical to the PREVIOUS frame's slot 0 on every later stepped frame. It is equal only across an UNSTEPPED pair — which is correct. Pinned by A10. |
+| the velocity pipeline is bound to a target the probe does not read | REFUTED | `_velocityTexture` is allocated by `WebGPUSceneFramebuffer.ensureVelocityTexture` and by nothing else, called only from `_runVelocityPass`; the probe reads that field. Its very existence in the read proves the pass ran. A11 drives both ends and pins that the format the pipeline declares is the format the target is allocated in, with `COPY_SRC`. |
+| the velocity command is constructed but culled, sorted out, or executed before the target is bound | REFUTED | a cleared-and-undrawn `rg16float` target reads exact zero; the measured maximum is two denormal ULPs, so the command reached the pass and rasterised. |
+| `previousViewProjection` equals the current VP for a static camera while the shader derives velocity from the camera only | REFUTED | the velocity VS reads the previous POSITIONS at locations 7-10 (`PolylineCollection.wgsl:328-331`), not the camera alone; `previousViewProjection == viewProjection` under a fixed camera is the probe's intended control, and it is what makes the residual measurable in the first place. |
+| the animated positions are updated on the CPU without the renderer marking the previous stream dirty | REFUTED | same as row 1: `AR-M39` shows the stash tracking the animation exactly. |
+
+**The engine is unchanged by round 3, and that is the finding.** No WebGPU or WebGL source file is
+touched. Batch 1440's emission fix is live and reached the GPU; what was wrong was the frame the
+instrument chose to measure.
+
+**Instrument repair (round 3, this batch).** `probe-polyline-taa-velocity.mjs`:
+
+1. **The probe owns the render loop.** `viewer.useDefaultRenderLoop = false` before the first
+   render, and `__probeRender` reports it back; `cells()` raises `ProbeRefusal`
+   (`render-loop-not-owned`) rather than producing a number from frames the probe did not step.
+2. **The copy is encoded synchronously at the tail of the last stepped `scene.render()`**, in the
+   same turn, so the bytes belong to that frame by construction rather than by the absence of an
+   intervening render.
+3. **A positive control that MUST read non-zero** — Éowyn's instrument defect (d). An animating
+   `PointPrimitiveCollection` point shares both velocity scenes, produced by a DIFFERENT renderer
+   over a different prev-stream mechanism (`WebGPUPointPrimitiveRenderer.js:1210`
+   `mirrorPrev: taaEnabledThisFrame`, over `WebGPUResidentInstanceBuffer`'s dirty-range prev
+   mirror at `:353-386`). New verdict `velocity-positive-control` requires it non-zero in BOTH the
+   Color and the Dash run, so an all-zero polyline read is attributable to the polyline instead of
+   to a blind readback.
+4. **The dash control refuses instead of passing when the target is absent** — the other half of
+   defect (d). Its cell now requires the target to have existed AND the positive control to be
+   non-zero AND the dash line's own region to be zero. `unavailable` is carried through the
+   reduction rather than flattened into zeros.
+5. **Counts are region-restricted.** With two velocity producers in one frame a whole-frame count
+   could pass the subject's verdict off the control's texels, so both are counted inside screen
+   rectangles the page derives from `scene.cartesianToCanvasCoordinates` of the subjects
+   themselves. A13 constructs a frame where only the control moves and requires
+   `velocity-emitted` RED with `velocity-positive-control` GREEN.
+6. **Instrument defect (e) corrected in the docstring, not the measurement.** The header claimed the
+   no-polyline control's line-pixel count "must stay 0" while the shipped measurement is 440 on
+   both backends — the Cesium ion credit wordmark, which clears `countLinePixels`' cyan test. It
+   does NOT cancel in the smear ratio: the same constant sits in both terms, which pulls the
+   measured ratio toward 1 ((3948-440)/(3557-440) = 1.125 against the 1.110 the run reported), so
+   it makes that acceptance slightly more permissive and carries no verdict of its own; the claim
+   is now what the cell actually shows, which is equality across the backends.
+
+Cell ids are unchanged where their meaning is unchanged (`velocity-emitted`,
+`negative-control-dash`, `ghost-smear-ratio`, `gate-clean`); `velocity-positive-control` is new.
+
+**The leg, re-owed with its bars:**
+`node Tools/visual-regression/probe-polyline-taa-velocity.mjs --port 8094 --runs 3 --repository-root <served clone>`
+— on EVERY run: `velocity-emitted` non-zero in the Color line's region, `velocity-positive-control`
+non-zero in both runs, `negative-control-dash` zero in the dash line's region WITH its target
+present, `ghost-smear-ratio` in [0.75, 1.25], `gate-clean` errors 0. A `render-loop-not-owned`
+refusal is a refusal, not a red.
 
 **Residual, surfaced not papered over (Principle 9).** Velocity for the four material variants
 needs `vertexVelocityMain` / `fragmentVelocityMain` added to `PolylineArrow.wgsl`,
