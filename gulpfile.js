@@ -286,16 +286,16 @@ export async function buildTs() {
 }
 
 export async function tsc() {
+  const tscBin = require.resolve("typescript/bin/tsc");
   let workspaces;
   if (argv.workspace && !Array.isArray(argv.workspace)) {
     workspaces = [argv.workspace];
   } else if (argv.workspace) {
     workspaces = argv.workspace;
   } else {
-    execSync(
-      `npm exec --package=typescript --offline -- tsc --project tsconfig.json`,
-      { stdio: "inherit" },
-    );
+    execSync(`node "${tscBin}" --project tsconfig.json`, {
+      stdio: "inherit",
+    });
 
     workspaces = getWorkspaces(true);
   }
@@ -307,10 +307,9 @@ export async function tsc() {
 
     const tsconfigPath = `packages/${directory}/tsconfig.json`;
     if (existsSync(tsconfigPath)) {
-      execSync(
-        `npm exec --package=typescript --offline -- tsc --project ${tsconfigPath}`,
-        { stdio: "inherit" },
-      );
+      execSync(`node "${tscBin}" --project ${tsconfigPath}`, {
+        stdio: "inherit",
+      });
     }
   }
 }

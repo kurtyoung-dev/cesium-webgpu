@@ -1823,6 +1823,28 @@ see this card for tier, size, dependencies and acceptance.
 - **Acceptance:** align and pin the Sandcastle workspace's `@cesium/engine` dependency range to the local workspace version (e.g. `"workspace:*"` or exact matching version) to prevent dependency divergence.
 - **Binds:** SR-6. **Source:** `_lane-out/NEXT_RECORD_LANE.md` (2026-09-06).
 
+### `DX-70` — `gulpfile.js` ran `tsc` via unversioned `npm exec --package=typescript`, resolving shared npx cache instead of workspace pin
+
+- **Disposition:** CLOSED (Batch 1455, worker Saeros). Found by lane Uldor round 3 (2026-09-10;
+  `F:/Dev/GH/cesium-lane-uldor3-20260905/_lane-out/LANDING_PACKET_ULDOR3.md` §13, read-only citation).
+  `gulpfile.js:296` and `:311` ran `npm exec --package=typescript --offline -- tsc --project ...` with
+  an unversioned `--package=typescript` spec. When npm resolved the package, it consulted the shared
+  machine `_npx` cache (holding TypeScript 7.0.2) rather than the repository's pin (`package.json`
+  `"typescript": "^6.0.2"`, installed 6.0.3). Under 7.0.2 the build exited 1 with `TS2739` and `TS2502`
+  errors in `scripts/build.js`. Observed in lane Uldor's clone on 2026-09-10 (`_npx/9ca470fa61f45e06` =
+  bare-spec `typescript` 7.0.2); **not** reproducible in lane Saeros's clone the same day, where the
+  same unpinned command resolves the local 6.0.3 and exits 0, nested under `npx` as well. Which compiler
+  npm picks depends on the machine's `_npx` cache state — that nondeterminism in the build's
+  type-checker is the defect, independently of whether a given clone is currently hitting the bad leg.
+- **Tier / Size / Backends:** TIER-3 · XS · build/tooling. **Depends on:** none.
+  **Ruling touched:** none. **Gate:** `npx gulp build`, `node scripts/engineTypeCheck.mjs`.
+- **Acceptance:** `gulpfile.js` invokes the workspace's pinned compiler directly via
+  `node "${require.resolve("typescript/bin/tsc")}"`, eliminating unpinned package resolution.
+  `npx gulp build` and `node scripts/engineTypeCheck.mjs` exit 0 cleanly with the shared npx cache
+  untouched.
+- **Binds:** SR-3. **Source:** `F:/Dev/GH/cesium-lane-uldor3-20260905/_lane-out/LANDING_PACKET_ULDOR3.md` §13;
+  reproduced and resolved in lane Saeros.
+
 ### `Q-130-a` — `FrustumGeometry.js` misuses `defined(vertexFormat.normal)`/`.st` on always-defined booleans
 
 - **Disposition:** OPEN. Filed here as its own row for the first time — until now `Q-130-a` existed only

@@ -20406,3 +20406,15 @@ the shared runtime's verdict table prints **FAIL** while the probe's summary pri
 **Instrument.** `probe-polyline-multimaterial.mjs` now sets `useBrowserRecommendedResolution = false` before its render loop, making leg 2 a genuine 2048×1536 raster at pixel ratio 2, and gates the arrow's head **length in pixels** as a WebGPU/WebGL ratio — the one quantity a half-length but correctly-shaped head moves.
 
 **Not fixed, filed instead:** `Collections/PolylineOutline.wgsl:303-305`'s `1 - smoothstep(0.8, 1.0, abs(v_distFromCenter))` edge fade, shared with `PolylineCollection.wgsl:293`, `PolylineDash.wgsl:294` and `Classification/PolylineShadowVolume.wgsl:19`, has no WebGL counterpart and is what puts the outline edge ratio exactly on the band floor at 0.750 (corroborated by SOLID's 5,496/5,955 = 12/13). See `NEW-WEBGPU-COLLECTION-POLYLINE-EDGE-FADE-HAS-NO-WEBGL-TWIN` in `DEFERRED_WORK.md`.
+
+## Bug DX-70 — `npx gulp build` invoked `tsc` via unversioned `npm exec` package spec, resolving cached TypeScript 7.0.2 instead of repo pin 6.0.3
+
+**Files:** `gulpfile.js`.
+
+**Symptom.** Environment-dependent: `npx gulp build` **can exit** 1 (observed in lane Uldor's clone, 2026-09-10; not reproducible in lane Saeros's clone, where the unpinned spec resolves the workspace's 6.0.3 and the same command exits 0) during the TypeScript compilation phase (`await tsc()`) with three `TS2739`/`TS2502` type errors in `scripts/build.js` (`(233,9)` and `(596,9)` `Type '{}' is missing the following properties from type 'CesiumBundles': esm, iife, node`, and `(1075,45)` `'contents' is referenced directly or indirectly in its own type annotation`).
+
+**Root cause.** In `gulpfile.js` lines 296 and 311, the `tsc()` task executed `npm exec --package=typescript --offline -- tsc --project ...` with an unversioned `--package=typescript` spec. npm resolves the local install when it satisfies the spec and falls back to the machine `~/.npm/_npx` cache otherwise (which held TypeScript 7.0.2 in lane Uldor's clone) rather than deterministically invoking the repository's pinned compiler (`package.json` `"typescript": "^6.0.2"`, installed `node_modules/typescript` 6.0.3). Under TypeScript 7.0.2, valid TypeScript 6 codebase scripts in `scripts/build.js` failed type checking.
+
+**Fix applied.** In `gulpfile.js`, `tsc()` was modified to invoke the repository's installed TypeScript compiler binary directly via `node "${require.resolve("typescript/bin/tsc")}" --project ...`, bypassing `npm exec` package resolution and guaranteeing that the workspace's pinned compiler is always used across all platforms.
+
+**Fork deviation.** Upstream `488b114e16` carries the identical unpinned invocation at `gulpfile.js:253` and `:268`, so this is a deliberate fork-local change: expect it to conflict — or to be silently reverted by a `--theirs` resolution — at the next upstream sync, and re-apply it there. `node Tools/upstream-shape-guard.mjs --base=40341305f4` stays green (exit 0, 56 in-scope files).
