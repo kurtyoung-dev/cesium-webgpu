@@ -47,10 +47,17 @@
  *   glow     lit-pixel ratio AND the cross-line FWHM ratio: the taper is a
  *            profile, and a solid band of similar total area would pass a
  *            count-only check.
- *   arrow    lit-pixel ratio: the arrow head is a large fraction of the
- *            footprint, so collapsing to a plain line moves the count.
- *   outline  lit-pixel ratio on the CORE hue and the presence of the OUTLINE
- *            hue: a collapse to Color renders the core and no outline at all.
+ *   arrow    lit-pixel ratio AND the head's column-height profile: the head
+ *            is a triangle cut by two half-planes, so it fills about half its
+ *            own bounding box. A head that paints as a filled RECTANGLE has
+ *            the same bounding box, the same peak and a total only ~14% high —
+ *            comfortably inside a count band. Éowyn's job-11 leg 5 found
+ *            exactly that, which is why the head fill fraction and the head's
+ *            length in pixels are asserted here and not only the count.
+ *   outline  lit-pixel ratio on the CORE hue, the presence of the OUTLINE hue,
+ *            and the cross-section structure: the outline must BRACKET the
+ *            core above and below. A collapse to Color renders the core and no
+ *            outline at all, and a flood renders the outline and no core.
  *
  * Usage: node server.js --port 8094 --serve-built   (separate terminal, once)
  *        node Tools/visual-regression/probe-polyline-multimaterial.mjs
@@ -105,6 +112,19 @@ async function captureRender(page) {
   return page.evaluate(async () => {
     const C = await import("/Build/CesiumUnminified/index.js");
     const v = window.viewer;
+    // Make the DPR-2 leg a second RESOLUTION and not only a second
+    // `window.devicePixelRatio`. Cesium's default
+    // `useBrowserRecommendedResolution: true` pins the drawing buffer to CSS
+    // pixels AND pins `czm_pixelRatio` to 1, so every DPR-2 count used to be a
+    // near-duplicate of DPR 1 and no pixel-ratio term in any polyline shader
+    // was ever exercised. Turning it off makes the backing store
+    // `devicePixelRatio` times the CSS size, so leg 1 is unchanged (ratio 1)
+    // and leg 2 is genuinely 2x.
+    v.useBrowserRecommendedResolution = false;
+    // The flag only sets `_forceResize`; the backing store is reconfigured by
+    // `CesiumWidget.resize()`. Call it here so the leg does not depend on the
+    // default render loop having ticked before the first measurement.
+    v.cesiumWidget?.resize();
     v.scene.globe.show = false;
     v.scene.skyBox.show = false;
     v.scene.sun.show = false;
@@ -257,6 +277,149 @@ async function captureRender(page) {
       };
     }
 
+    /**
+     * Per-column lit-pixel heights for one hue.
+     *
+     * @param {Function} classify Hue predicate over a pixel offset.
+     * @returns {Int32Array} Height per column.
+     */
+    function columnHeights(classify) {
+      const heights = new Int32Array(w);
+      for (let x = 0; x < w; x++) {
+        let n = 0;
+        for (let y = 0; y < h; y++) {
+          if (classify((y * w + x) * 4)) {
+            n++;
+          }
+        }
+        heights[x] = n;
+      }
+      return heights;
+    }
+
+    /**
+     * The arrow's shape, not its area. `PolylineArrowMaterial.glsl` cuts the
+     * head with two half-planes that meet at the tip, so the head's column
+     * heights fall away linearly and it fills about half of its own bounding
+     * box. A head that renders at full area in the wrong shape — a filled
+     * rectangle — has the same bounding box, the same peak and nearly the same
+     * total, so only the profile separates them.
+     *
+     * @param {Function} classify The arrow hue predicate.
+     * @returns {object|null} Body height, head extent, and head fill fraction.
+     */
+    function arrowProfile(classify) {
+      const heights = columnHeights(classify);
+      let x0 = -1;
+      let x1 = -1;
+      for (let x = 0; x < w; x++) {
+        if (heights[x] > 0) {
+          if (x0 < 0) {
+            x0 = x;
+          }
+          x1 = x;
+        }
+      }
+      if (x0 < 0) {
+        return null;
+      }
+      // The shaft is the leading 80% of the span; its median height is robust
+      // against the antialiased first and last columns.
+      const bodyEnd = x0 + Math.floor((x1 - x0 + 1) * 0.8);
+      const samples = [];
+      for (let x = x0; x <= bodyEnd; x++) {
+        if (heights[x] > 0) {
+          samples.push(heights[x]);
+        }
+      }
+      samples.sort((a, b) => a - b);
+      const body = samples.length > 0 ? samples[samples.length >> 1] : 0;
+      // The head is the trailing run of columns that flare past the shaft,
+      // extended to the end of the line so the tip's taper is included.
+      const flare = body * 1.5;
+      let lastFlare = -1;
+      for (let x = x1; x >= x0; x--) {
+        if (heights[x] > flare) {
+          lastFlare = x;
+          break;
+        }
+      }
+      if (lastFlare < 0) {
+        return { body, headColumns: 0, headPeak: 0, headFill: null, head: [] };
+      }
+      let headStart = lastFlare;
+      while (headStart > x0 && heights[headStart - 1] > flare) {
+        headStart--;
+      }
+      const head = [];
+      let sum = 0;
+      let peak = 0;
+      for (let x = headStart; x <= x1; x++) {
+        head.push(heights[x]);
+        sum += heights[x];
+        if (heights[x] > peak) {
+          peak = heights[x];
+        }
+      }
+      return {
+        spanStart: x0,
+        spanEnd: x1,
+        body,
+        headStart,
+        headColumns: head.length,
+        headPeak: peak,
+        headFill:
+          peak > 0 && head.length > 0 ? sum / (peak * head.length) : null,
+        head,
+      };
+    }
+
+    /**
+     * The outline's vertical structure at its widest column: the outline hue
+     * must BRACKET the core hue above and below. A count ratio cannot tell a
+     * two-sided outline from a one-sided one, or from a flood.
+     *
+     * @param {Function} coreClassify The core hue predicate.
+     * @param {Function} edgeClassify The outline hue predicate.
+     * @returns {object|null} Column, core extent, and outline rows each side.
+     */
+    function outlineCrossSection(coreClassify, edgeClassify) {
+      const coreHeights = columnHeights(coreClassify);
+      let column = -1;
+      let best = 0;
+      for (let x = 0; x < w; x++) {
+        if (coreHeights[x] > best) {
+          best = coreHeights[x];
+          column = x;
+        }
+      }
+      if (column < 0) {
+        return null;
+      }
+      let coreMin = h;
+      let coreMax = -1;
+      for (let y = 0; y < h; y++) {
+        if (coreClassify((y * w + column) * 4)) {
+          if (y < coreMin) {
+            coreMin = y;
+          }
+          coreMax = y;
+        }
+      }
+      let edgeAbove = 0;
+      let edgeBelow = 0;
+      for (let y = 0; y < h; y++) {
+        if (edgeClassify((y * w + column) * 4)) {
+          if (y < coreMin) {
+            edgeAbove++;
+          } else if (y > coreMax) {
+            edgeBelow++;
+          }
+        }
+      }
+      return { column, coreRows: best, coreMin, coreMax, edgeAbove, edgeBelow };
+    }
+
     const out = {
       renderer: v.scene.context ? v.scene.context.rendererType : null,
       width: w,
@@ -266,6 +429,11 @@ async function captureRender(page) {
     for (const [key, classify] of Object.entries(hues)) {
       out[key] = measure(classify);
     }
+    out.arrowProfile = arrowProfile(hues.arrow);
+    out.outlineCrossSection = outlineCrossSection(
+      hues.outline,
+      hues.outlineEdge,
+    );
     return out;
   });
 }

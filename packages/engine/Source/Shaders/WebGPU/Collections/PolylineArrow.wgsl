@@ -20,14 +20,17 @@ struct CameraUniforms {
     viewportSize: vec2<f32>,
     // Renderer-wide log-depth parameters. `logDepthNearFar` carries the encode
     // frustum, while `logDepthFactor` occupies the scalar lane after
-    // `splitPosition`; `_padLog` preserves `previousViewProjection`'s 16-byte
+    // `splitPosition`; `pixelRatio` preserves `previousViewProjection`'s 16-byte
     // alignment. Packed unconditionally so every variant shares one uniform
     // buffer layout, though only LOG_DEPTH variants read them.
     logDepthNearFar: vec2<f32>,
     minimumDisableDepthTestDistance: f32,
     splitPosition: f32,
   logDepthFactor: f32,
-  _padLog: f32,
+  // `czm_pixelRatio`. Float slot 31 of the shared 192-byte polyline camera
+  // UBO, written by `WebGPUPolylineRenderer.js`; it was padding until the
+  // arrow head and the quad expansion needed it.
+  pixelRatio: f32,
         previousViewProjection: mat4x4<f32>,
 }
 
@@ -117,7 +120,11 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
 
   let lineWidth = input.startPosHighAndWidth.w;
-  let halfWidth = lineWidth * 0.5 + 0.5;
+  // `getPolylineWindowCoordinatesEC` offsets by `expandWidth * czm_pixelRatio`
+  // (PolylineCommon.glsl:166), so the quad is authored in CSS pixels and scaled
+  // to device pixels here. The factor is 1.0 whenever the drawing buffer tracks
+  // CSS pixels, which is every configuration this shader shipped under.
+  let halfWidth = (lineWidth * 0.5 + 0.5) * camera.pixelRatio;
 
   let sStart = input.startPosLow.w;
   let sEnd = input.endPosLow.w;
@@ -291,7 +298,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   let outsideColor = vec4<f32>(0.0, 0.0, 0.0, 0.0);
 
   // Arrow base position — use fwidth to scale with screen-space line length
-  let base = 1.0 - abs(fwidth(st.x)) * 10.0;
+  let base = 1.0 - abs(fwidth(st.x)) * 10.0 * camera.pixelRatio;
 
   let center = vec2<f32>(1.0, 0.5);
 
@@ -317,8 +324,18 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let d2 = abs(st.y - (0.5 + halfWidth));
     dist = min(d1, d2);
   } else {
+    // Conjunction, not disjunction: `PolylineArrowMaterial.glsl:46` reads
+    // `st.t < 0.5 - halfWidth && st.t > 0.5 + halfWidth`, which no `st.t`
+    // satisfies, so upstream's `d1` stays `czm_infinity` and `dist` is the
+    // distance to the two half-planes that cut the head. A disjunction here
+    // made `d1 = abs(st.x - base)` — ~0 at the head's start — for every row
+    // outside the body band, which collapsed `dist`, pinned `czm_antialias`
+    // at `midColor` and painted the head as a filled rectangle. Keep the
+    // condition unsatisfiable: it is upstream's shape, and `d1` is the
+    // separator distance for a body/head boundary that this branch never
+    // reaches.
     var d1 = 1e10;
-    if (st.y < 0.5 - halfWidth || st.y > 0.5 + halfWidth) {
+    if (st.y < 0.5 - halfWidth && st.y > 0.5 + halfWidth) {
       d1 = abs(st.x - base);
     }
     let d2 = abs(st.y - ptOnUpperLine);

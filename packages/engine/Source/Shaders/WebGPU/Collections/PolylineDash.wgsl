@@ -19,14 +19,17 @@ struct CameraUniforms {
     viewportSize: vec2<f32>,
     // Renderer-wide log-depth parameters. `logDepthNearFar` carries the encode
     // frustum, while `logDepthFactor` occupies the scalar lane after
-    // `splitPosition`; `_padLog` preserves `previousViewProjection`'s 16-byte
+    // `splitPosition`; `pixelRatio` preserves `previousViewProjection`'s 16-byte
     // alignment. Packed unconditionally so every variant shares one uniform
     // buffer layout, though only LOG_DEPTH variants read them.
     logDepthNearFar: vec2<f32>,
     minimumDisableDepthTestDistance: f32,
     splitPosition: f32,
   logDepthFactor: f32,
-  _padLog: f32,
+  // `czm_pixelRatio`. Float slot 31 of the shared 192-byte polyline camera
+  // UBO, written by `WebGPUPolylineRenderer.js`; it was padding until the quad
+  // expansion needed it.
+  pixelRatio: f32,
         previousViewProjection: mat4x4<f32>,
 }
 
@@ -115,7 +118,11 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
 
   let lineWidth = input.startPosHighAndWidth.w;
-  let halfWidth = lineWidth * 0.5 + 0.5;
+  // `getPolylineWindowCoordinatesEC` offsets by `expandWidth * czm_pixelRatio`
+  // (PolylineCommon.glsl:166), so the quad is authored in CSS pixels and scaled
+  // to device pixels here. The factor is 1.0 whenever the drawing buffer tracks
+  // CSS pixels, which is every configuration this shader shipped under.
+  let halfWidth = (lineWidth * 0.5 + 0.5) * camera.pixelRatio;
 
   let startRTE = translateRelativeToEye(
     input.startPosHighAndWidth.xyz, input.startPosLow.xyz,
@@ -265,7 +272,10 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   );
 
   // Compute position within the repeating dash cycle
-  let dashLen = max(material.dashLength, 1.0);
+  // `dashLength` is authored in CSS pixels and `PolylineDashMaterial.glsl`
+  // divides by `dashLength * czm_pixelRatio`; the fragment coordinate here
+  // is in device pixels, so the cycle takes the same factor.
+  let dashLen = max(material.dashLength * camera.pixelRatio, 1.0);
   let dashPosition = fract(rotatedPos.x / dashLen);
 
   // Look up the 16-bit bitmask pattern

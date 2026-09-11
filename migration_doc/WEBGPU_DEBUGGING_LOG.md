@@ -20380,3 +20380,29 @@ morph. That third case is correct behaviour and is a real measurement. Exiting t
 observation is the design choice that maximises the remaining budget. And in every non-green case
 the shared runtime's verdict table prints **FAIL** while the probe's summary prints **NOT RUN** —
 `classifyslices-summary.md` is the authority for which of (2) and (3) actually happened.
+
+## Bug 1449.1 — the WebGPU `PolylineArrow` head is a rectangle, and the GREEN lit-pixel gate passed it (wave P0-2 lane Uldor, round 3)
+
+**Files:** `packages/engine/Source/Shaders/WebGPU/Collections/PolylineArrow.wgsl`.
+
+**Symptom.** `probe-polyline-multimaterial.mjs` exited 0 with 40/40 checks PASS — arrow lit-pixel ratio 1.145 inside `[0.75, 1.25]` — while the banked PNGs showed WebGL drawing a tapering triangular arrow head and WebGPU drawing a filled rectangle of the same bounding height. Per-column lit heights over the last ten columns of the magenta row, decoded with the probe's own hue classifier at DPR 1: WebGL `25,22,20,17,15,13,10,7,5,3`, WebGPU `25,25,25,25,25,25,24,24,22,3`. Identical signature at DPR 2.
+
+**Root cause.** In `fragmentMain`'s separator-distance branch for the head (`st.x >= base`), the shader read `if (st.y < 0.5 - halfWidth || st.y > 0.5 + halfWidth) { d1 = abs(st.x - base); }`. `PolylineArrowMaterial.glsl:46` uses `&&` there, which no `st.t` satisfies, so upstream's `d1` stays `czm_infinity` and `dist = min(d2, d3)` is the true distance to the two half-planes that cut the head. With the disjunction, every row outside the 0.35–0.65 body band takes `d1 = abs(st.x - base)` — approximately 0 at the head's start — which collapses `dist`, pins `val1 = clamp(dist / 0.1, 0, 1)` near zero and makes `czm_antialias` return `midColor = (outsideColor + color) * 0.5`. Half-alpha magenta over the full quad height for the whole head is exactly a filled rectangle, and it clears the probe's `T = 30` classifier.
+
+**How it was established before the edit (Principle 10).** A Node model of both fragment shaders over the probe's own raster — 25 px quad, 452 columns derived from WebGL's own 3,754 lit px over an 8 px shaft, magenta over black, non-premultiplied src-over, the probe's `T = 30` — reproduced both measured signatures including the terminal 3, and reproduced WebGL's profile from the WGSL once the operator was flipped. It also **refuted** the leading hypothesis carried into the lane (that the Batch 1447 `czm_antialias` port mis-centres `val2 = clamp((dist - 0.5)/fuzz, 0, 1)`): that helper is byte-faithful to the builtin, and the model runs it on both legs.
+
+**Fix applied.** `||` → `&&`, matching the GLSL, with a comment recording that the condition is deliberately unsatisfiable so a later reader does not invert it again (Principle 7). WebGPU-side only.
+
+## Bug 1449.2 — every WebGPU collection polyline is sized in device pixels, and the probe's DPR-2 leg could not see it
+
+**Files:** `packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js`, `Shaders/WebGPU/Collections/{PolylineArrow,PolylineCollection,PolylineCollectionPick,PolylineDash,PolylineGlow,PolylineOutline}.wgsl`.
+
+**Symptom (latent).** None at defaults. WebGL scales the polyline quad expansion by `czm_pixelRatio` (`PolylineCommon.glsl:166`), the arrow head length by it (`PolylineArrowMaterial.glsl`) and the dash cycle by it (`PolylineDashMaterial.glsl`); the WebGPU collection path had no pixel ratio at all (`grep -c pixelRatio WebGPUPolylineRenderer.js` = 0). Cesium's default `useBrowserRecommendedResolution: true` pins `czm_pixelRatio` to 1.0, so the divergence is invisible — including to the probe's DPR-2 leg, which reported `window.devicePixelRatio === 2` while the canvas stayed 1024×768 and every count duplicated DPR 1.
+
+**Root cause.** The 192-byte polyline camera UBO had no pixel-ratio member; float slot 31 (byte 124) was written as a hard `0.0` and declared `_padLog` in all six shaders.
+
+**Fix applied.** Slot 31 now carries `uniformState.pixelRatio`, falling back to `frameState.pixelRatio` and then to **1.0 — never 0**, because the quad expansion multiplies by it and a zero deletes the render rather than degrading it. The six shaders declare `pixelRatio: f32` in that slot and multiply their half-width by it; the arrow also scales `base` and the dash its cycle. The pick shader takes the same factor so the pick quad keeps tracking the render quad. Every term multiplies by 1.0 at pixel ratio 1, so the DPR-1 leg is byte-identical to before the change.
+
+**Instrument.** `probe-polyline-multimaterial.mjs` now sets `useBrowserRecommendedResolution = false` before its render loop, making leg 2 a genuine 2048×1536 raster at pixel ratio 2, and gates the arrow's head **length in pixels** as a WebGPU/WebGL ratio — the one quantity a half-length but correctly-shaped head moves.
+
+**Not fixed, filed instead:** `Collections/PolylineOutline.wgsl:303-305`'s `1 - smoothstep(0.8, 1.0, abs(v_distFromCenter))` edge fade, shared with `PolylineCollection.wgsl:293`, `PolylineDash.wgsl:294` and `Classification/PolylineShadowVolume.wgsl:19`, has no WebGL counterpart and is what puts the outline edge ratio exactly on the band floor at 0.750 (corroborated by SOLID's 5,496/5,955 = 12/13). See `NEW-WEBGPU-COLLECTION-POLYLINE-EDGE-FADE-HAS-NO-WEBGL-TWIN` in `DEFERRED_WORK.md`.

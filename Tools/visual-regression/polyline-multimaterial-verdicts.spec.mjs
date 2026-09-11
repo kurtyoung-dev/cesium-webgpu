@@ -41,6 +41,7 @@ import {
   DEVICE_SCALE_FACTORS,
   GATED_MATERIALS,
   MATERIALS,
+  RATIO_BAND,
   allChecksPass,
   buildChecks,
   materialChecks,
@@ -73,6 +74,64 @@ function hue(colored, runs, coloredRows, fwhm) {
 }
 
 /**
+ * The arrow-head profile the probe reports, derived from a column-height list
+ * so a fixture cannot claim a fill fraction its own heights contradict.
+ *
+ * @param {Array<number>} head Per-column lit heights across the head.
+ * @param {number} body The shaft's height.
+ * @returns {object} The profile.
+ */
+function profile(head, body) {
+  const peak = head.length > 0 ? Math.max(...head) : 0;
+  const sum = head.reduce((a, b) => a + b, 0);
+  return {
+    spanStart: 100,
+    spanEnd: 100 + 451,
+    body,
+    headStart: 100 + 451 - head.length + 1,
+    headColumns: head.length,
+    headPeak: peak,
+    headFill: peak > 0 && head.length > 0 ? sum / (peak * head.length) : null,
+    head,
+  };
+}
+
+/**
+ * A correct head: two half-planes meeting at the tip, so the heights fall away
+ * linearly and the head fills about half its bounding box.
+ *
+ * @param {number} peak Height at the head's base.
+ * @param {number} columns Head length in pixels.
+ * @param {number} body Shaft height.
+ * @returns {object} The profile.
+ */
+function triangleHead(peak, columns, body) {
+  const head = [];
+  for (let i = 0; i < columns; i++) {
+    head.push(Math.max(1, Math.round(peak * (1 - i / columns))));
+  }
+  return profile(head, body);
+}
+
+/** The outline cross-section the probe reports at the ribbon's widest column.
+ *
+ * @param {number} core Core rows.
+ * @param {number} above Outline rows above the core.
+ * @param {number} below Outline rows below the core.
+ * @returns {object} The cross-section.
+ */
+function crossSection(core, above, below) {
+  return {
+    column: 512,
+    coreRows: core,
+    coreMin: 100 + above,
+    coreMax: 100 + above + core - 1,
+    edgeAbove: above,
+    edgeBelow: below,
+  };
+}
+
+/**
  * A backend's full measurement set at one device scale factor.
  *
  * @param {number} scale Area scale (1 at DPR 1, 4 at DPR 2).
@@ -87,6 +146,8 @@ function healthyCapture(scale, linear) {
     arrow: hue(9000 * scale, 26 * linear, 26 * linear, 24 * linear),
     outline: hue(3600 * scale, 10 * linear, 10 * linear, 10 * linear),
     outlineEdge: hue(4200 * scale, 32 * linear, 16 * linear, 6 * linear),
+    arrowProfile: triangleHead(25 * linear, 10 * linear, 9 * linear),
+    outlineCrossSection: crossSection(10 * linear, 3 * linear, 3 * linear),
   };
 }
 
@@ -141,17 +202,20 @@ function legsWithDefect(material) {
         );
         break;
       case "arrow":
-        // The head is gone; only the shaft's pixels remain.
+        // The head is gone; only the shaft's pixels remain, and with it no
+        // column flares past the shaft, so the profile reports no head.
         leg.webgpu.arrow = hue(
           Math.round(9000 * scale * 0.35),
           26 * linear,
           26 * linear,
           12 * linear,
         );
+        leg.webgpu.arrowProfile = profile([], 9 * linear);
         break;
       case "outline":
         // The core still draws; the outline colour is simply never emitted.
         leg.webgpu.outlineEdge = hue(0, 0, 0, 0);
+        leg.webgpu.outlineCrossSection = crossSection(10 * linear, 0, 0);
         break;
       default:
         throw new Error(`no defect fixture for "${material}"`);
@@ -390,4 +454,130 @@ test("D3: two materials at zero on both backends do not read as agreement", () =
     leg.webgpu.arrow = hue(0, 0, 0, 0);
   }
   assert.equal(allChecksPass(legs), false);
+});
+
+// ---------------------------------------------------------------------------
+// E. The count-gate blind spot Éowyn's job-11 leg 5 found, pinned.
+// ---------------------------------------------------------------------------
+
+/**
+ * The run that was GREEN. Éowyn's decoded per-column heights across the head,
+ * DPR 1, and the lit-pixel counts from the same leg: WebGL draws a triangle,
+ * WebGPU draws a filled rectangle of the same bounding height, and the count
+ * ratio is 1.145 — inside `RATIO_BAND` with room to spare.
+ *
+ * @returns {Array<object>} Legs carrying the recorded rectangle head.
+ */
+function legsWithRectangleHead() {
+  const legs = healthyLegs();
+  for (const leg of legs) {
+    const linear = leg.deviceScaleFactor;
+    const scale = linear;
+    leg.webgl.arrow = hue(3754 * scale, 26, 25 * linear, 25 * linear);
+    leg.webgpu.arrow = hue(4297 * scale, 26, 25 * linear, 25 * linear);
+    leg.webgl.arrowProfile = profile(
+      [25, 22, 20, 17, 15, 13, 10, 7, 5, 3].map((v) => v * linear),
+      8 * linear,
+    );
+    leg.webgpu.arrowProfile = profile(
+      [25, 25, 25, 25, 25, 25, 24, 24, 22, 3].map((v) => v * linear),
+      9 * linear,
+    );
+  }
+  return legs;
+}
+
+test("E1: the recorded run passes the COUNT band — that is the blind spot", () => {
+  const legs = legsWithRectangleHead();
+  for (const leg of legs) {
+    const ratio = leg.webgpu.arrow.colored / leg.webgl.arrow.colored;
+    assert.ok(
+      ratio > RATIO_BAND.low && ratio < RATIO_BAND.high,
+      `fixture no longer reproduces the blind spot: ratio ${ratio}`,
+    );
+  }
+});
+
+test("E2: a rectangular head is RED, and red on the arrow's own checks", () => {
+  const legs = legsWithRectangleHead();
+  assert.equal(
+    allChecksPass(legs),
+    false,
+    "the rectangle head passed every check — the profile gate is inert and job 11 would repeat",
+  );
+  const failing = buildChecks(legs).filter((c) => !c.pass);
+  assert.deepEqual(
+    failing.filter((c) => c.material !== "arrow").map((c) => c.label),
+    [],
+    "the rectangle tripped another material's checks",
+  );
+  for (const scale of DEVICE_SCALE_FACTORS) {
+    assert.ok(
+      failing.some((c) => c.label.includes(`dpr${scale}`)),
+      `no check fired in the dpr${scale} leg`,
+    );
+  }
+});
+
+test("E3: removing the arrow block FROM THE MODULE makes the rectangle pass", async () => {
+  const legs = legsWithRectangleHead();
+  assert.equal(allChecksPass(legs), false);
+  const mutant = await importSource(
+    removeMaterialAssertions(verdictsSource, "arrow"),
+  );
+  assert.equal(
+    mutant.allChecksPass(legs),
+    true,
+    "something outside the arrow block is carrying the shape gate",
+  );
+});
+
+test("E4: a head at the right SHAPE but half the length is caught", () => {
+  // `base = 1 - fwidth(st.s) * 10 * czm_pixelRatio`. Drop the pixel-ratio term
+  // and the head is a correct triangle of half the length at a drawing buffer
+  // that does not track CSS pixels — same fill fraction, same peak, and a
+  // lit-pixel ratio still inside the count band.
+  const legs = healthyLegs();
+  for (const leg of legs) {
+    const linear = leg.deviceScaleFactor;
+    leg.webgpu.arrowProfile = triangleHead(25 * linear, 5 * linear, 9 * linear);
+  }
+  const fills = legs.map((leg) => leg.webgpu.arrowProfile.headFill);
+  for (const fill of fills) {
+    assert.ok(fill > 0.35 && fill < 0.7, `fixture is not a triangle: ${fill}`);
+  }
+  assert.equal(
+    allChecksPass(legs),
+    false,
+    "a half-length head passed — the head-length gate is inert",
+  );
+});
+
+test("E5: an outline present on ONE side only is caught", () => {
+  // The edge count ratio cannot see this: half the outline at twice the
+  // thickness has the same area. The bracket check is what separates them.
+  const legs = healthyLegs();
+  for (const leg of legs) {
+    const linear = leg.deviceScaleFactor;
+    leg.webgpu.outlineCrossSection = crossSection(10 * linear, 6 * linear, 0);
+  }
+  assert.equal(
+    allChecksPass(legs),
+    false,
+    "a one-sided outline passed — the bracket gate is inert",
+  );
+});
+
+test("E6: the profile gate does not fire on a run that is genuinely at parity", () => {
+  // The complement of E2: the same recorded WebGL head on both backends.
+  const legs = legsWithRectangleHead();
+  for (const leg of legs) {
+    leg.webgpu.arrow = { ...leg.webgl.arrow };
+    leg.webgpu.arrowProfile = leg.webgl.arrowProfile;
+  }
+  assert.equal(
+    allChecksPass(legs),
+    true,
+    "the shape gate rejects a matching pair — its band is too tight to ship",
+  );
 });

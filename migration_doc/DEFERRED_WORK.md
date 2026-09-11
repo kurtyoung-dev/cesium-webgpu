@@ -16292,3 +16292,139 @@ console.warning: None of the supported sample types (Float|UnfilterableFloat) of
 **Parity note (Principle 5).** WebGL's equivalent is `DebugInspector.js`'s per-command shader clone (`:69-86`), which multiplies `out_FragColor.rgb` by a band-membership colour and works. This is WebGPU catching up, not a new capability.
 
 **Verification owed with the fix.** An Edge probe reading a non-black canvas with `debugShowFrustums` on, plus zero `DebugFrustumOverlay` messages in the gate. The AR-714/715/716 probe already reports the attributed count in its own column (`overlayErrors`), so that number reaching zero is the readiest available signal.
+
+## 2026-09-06 — the WebGPU arrow head is a rectangle, and the DPR-2 leg that should have caught the pixel-ratio gap was never a second resolution (wave P0-2 lane Uldor, round 3)
+
+### BUG-POLYLINE-ARROW-WEBGPU-HEAD-IS-A-RECTANGLE — the arrow head paints as a filled block instead of a triangle, and the lit-pixel gate passes it at ratio 1.145 (FIXED 2026-09-06, wave P0-2 lane Uldor, `AR-754`)
+
+**This is a NEW row, not the closure of an existing one.** Batch 1447's commit message named two
+arrow-parity residuals (a disjunction where the GLSL condition is unsatisfiable, and the missing
+pixel-ratio term in `base`) and bounded them at "≤ 6.7 %" and "about 3 %" — but it filed neither as
+a ledger row, so there is no N1/N2 entry to close. Both are settled here: the first as this row's
+root cause, the second as the row below.
+
+**How it was found.** Éowyn's job 11 leg 5
+(`Tools/visual-regression/output/wave-p0-2-edge-2026-09-06-job11/leg5-ar754/`) was **GREEN, 40/40**,
+with the arrow's lit-pixel ratio at **1.145** inside its `[0.75, 1.25]` band. Reading the banked PNGs
+with the probe's own hue classifier (Principle 8), the per-column lit heights across the last ten
+columns of the magenta row were:
+
+    webgl   25, 22, 20, 17, 15, 13, 10,  7,  5,  3     a tapering triangle
+    webgpu  25, 25, 25, 25, 25, 25, 24, 24, 22,  3     a filled rectangle
+
+Same start column, same bounding height, same bounding box, reproduced at both device scale factors.
+The block is *why* the count reads 1.145: a head at full area in the wrong shape moves the count by
+about a seventh, which no count band can separate from noise.
+
+**Root cause, re-derived by measurement before any edit.** `model-arrow.mjs` (banked with the lane's
+evidence) evaluates the GLSL and the shipped WGSL fragment math over the probe's own raster (width 24
+gives a 25 px quad; 452 columns derived from WebGL's 3,754 lit px over an 8 px shaft), magenta over
+black, the probe's own `T = 30` classifier, non-premultiplied src-over. It reproduces both signatures
+including the terminal 3, and the fixed variant reproduces WebGL's:
+
+    webgl   total 4114  body 9  head 25,23,19,17,15,13,9,7,5,3
+    webgpu  total 4204  body 9  head 25,25,25,25,25,25,25,25,23,3
+    fixed   total 4114  body 9  head 25,23,19,17,15,13,9,7,5,3
+
+`Collections/PolylineArrow.wgsl` used a disjunction where `PolylineArrowMaterial.glsl:46` uses a
+conjunction: `if (st.y < 0.5 - halfWidth || st.y > 0.5 + halfWidth) { d1 = abs(st.x - base); }`.
+
+In the head branch (`st.x >= base`) that disjunction is true for every row outside the 0.35-0.65 body
+band, so `d1 = abs(st.x - base)` — which is ~0 at the head's start. `dist = min(d1, d2, d3)` collapses
+to it, `val1 = clamp(dist / 0.1, 0, 1)` pins near 0, and `czm_antialias` returns
+`midColor = (outsideColor + color) * 0.5` — half-alpha magenta — across the **full quad height** for
+the whole head. Upstream's conjunction (`st.t < 0.35 && st.t > 0.65`) is unsatisfiable by
+construction, so `d1` stays `czm_infinity` and `dist` is the true distance to the two half-planes that
+cut the head. That is what draws the triangle. `Primitive/PolylineMatArrow.wgsl` already had the
+conjunction and is unaffected.
+
+**REFUTED by the same measurement.** Éowyn's flagged hypothesis — that Batch 1447's `czm_antialias`
+port mis-centres `val2 = clamp((dist - 0.5) / fuzz, 0, 1)` — is wrong. The WGSL helper is byte-faithful
+to `Shaders/Builtin/Functions/antialias.glsl` at fuzz 0.1, and the model runs that exact function on
+BOTH legs and still produces the rectangle from the disjunction alone. Also refuted as a *criterion*:
+round 2's "6.7 %" bound. The model puts the disjunction's count effect at **+90 px, +2.2 %** — the
+bound holds — but count was the wrong quantity. The defect was always a shape defect.
+
+**Fix.** One operator in `Collections/PolylineArrow.wgsl`, with a comment saying why the condition is
+deliberately unsatisfiable so a future reader does not "repair" it back (Principle 7).
+
+**Parity (Principle 5).** WebGPU-side only. `PolylineArrowMaterial.glsl` is the reference and does not
+move; no WebGL byte changes.
+
+**The gate that let it through, and its replacement.** The probe's own docstring already named this
+failure mode for glow — "a solid band of similar total area would pass a count-only check" — and
+justified leaving arrow count-only because "the arrow head is a large fraction of the footprint, so
+collapsing to a plain line moves the count". That holds for job 9's collapse to zero and fails for a
+head at full area in the wrong shape. `probe-polyline-multimaterial.mjs` now measures the arrow's
+per-column height profile and `lib/polyline-multimaterial-verdicts.mjs` gates on it: the head's fill
+fraction of its own bounding box (a triangle is ~0.5, a rectangle ~0.9) against
+`HEAD_FILL_BAND = [0.35, 0.7]` on both backends, the WebGPU/WebGL fill ratio, and the head's **length
+in pixels** as a ratio. Éowyn's recorded numbers are the spec's fixture: WebGL 0.548, WebGPU 0.892.
+
+### BUG-POLYLINE-COLLECTION-WEBGPU-IGNORES-PIXEL-RATIO — every WebGPU collection polyline is sized in device pixels while WebGL sizes in CSS pixels, and the probe's DPR-2 leg could never see it (FIXED 2026-09-06, wave P0-2 lane Uldor, `AR-754`)
+
+**Found by taking the instrument note seriously.** Éowyn's second observation was that the DPR-2 leg
+is not a second resolution: `deviceScaleFactor: 2` reaches the page but the Cesium canvas stays
+1024x768, so 20 of the 40 checks duplicate the other 20. The cause is Cesium's default
+`useBrowserRecommendedResolution: true`, and it pins **`czm_pixelRatio` to 1.0** as well as the
+backing store. Measuring what would happen if the leg became real found the reason the leg had to be
+fake:
+
+| term | WebGL | WebGPU at HEAD |
+| --- | --- | --- |
+| quad expansion | `expandWidth * czm_pixelRatio` (`PolylineCommon.glsl:166`) | `lineWidth * 0.5 + 0.5`, device pixels, no factor |
+| arrow head length | `1 - fwidth(st.s) * 10 * czm_pixelRatio` | `1 - fwidth(st.x) * 10` |
+| dash cycle | `dashLength * czm_pixelRatio` (`PolylineDashMaterial.glsl`) | `max(material.dashLength, 1.0)` |
+
+`grep -c pixelRatio packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js` returned **0**.
+So at any drawing buffer that does not track CSS pixels — `useBrowserRecommendedResolution: false`, a
+`resolutionScale` other than 1, a HiDPI display — every WebGPU collection polyline is half the width
+of WebGL's at DPR 2, the arrow head is half as long, and the dash cycle is half as long. The DPR-2 leg
+was not merely duplicate: it was a leg that would have failed the moment it became real.
+
+**Fix.** The shared 192-byte polyline camera UBO's trailing scalar (float slot 31, byte 124) was
+padding; it now carries `uniformState.pixelRatio`, written by `WebGPUPolylineRenderer.js` with a
+fallback of **1.0 and never 0** — a zero there does not degrade the render, it deletes it. The six
+collection polyline shaders declare it as `pixelRatio: f32` in place of `_padLog`, and each multiplies
+its expansion by it; `PolylineArrow.wgsl` also scales `base`, and `PolylineDash.wgsl` its cycle.
+`PolylineCollectionPick.wgsl` takes the same factor so the pick quad keeps tracking the render quad.
+**Every one of these terms multiplies by 1.0 at pixel ratio 1**, so the DPR-1 leg — the acceptance for
+the head-shape fix above — is byte-identical to before.
+
+**Parity (Principle 5).** WebGPU-side only; WebGL already scales by `czm_pixelRatio` at all three
+sites. One residual is deliberately NOT closed: WebGL's half-width is `(w + 0.5) * 0.5 * pixelRatio`
+and WebGPU's is `(w * 0.5 + 0.5) * pixelRatio`, a fixed 0.25 device-pixel difference per side that
+predates this row. Changing the `+ 0.5` convention would move every DPR-1 count and invalidate the
+comparability of this wave's legs, so it is left as-is and named here.
+
+**Instrument.** `probe-polyline-multimaterial.mjs` sets `useBrowserRecommendedResolution = false`
+before the render loop, so leg 1 is unchanged (ratio 1) and leg 2 is genuinely 2048x1536 at pixel
+ratio 2. The head-length ratio check is what makes the pixel-ratio fix falsifiable at that leg: a
+correct triangle of half the length has the same fill fraction, the same peak, and a lit-pixel ratio
+still inside the count band.
+
+### NEW-WEBGPU-COLLECTION-POLYLINE-EDGE-FADE-HAS-NO-WEBGL-TWIN — the outline edge ratio sits exactly on the band floor because WebGPU fades the outer fifth of every collection polyline (OPEN, diagnosed 2026-09-06, for the seat to queue)
+
+**Status: OPEN, diagnosis only — deliberately not fixed in this lane.** Éowyn asked whether the
+outline edge ratio of **0.750** is the fix's true value or the band's. It is **the fix's true value**,
+and the mechanism is named.
+
+`Collections/PolylineOutline.wgsl:303-305` multiplies the final alpha by
+`1 - smoothstep(0.8, 1.0, abs(v_distFromCenter))`. There is no counterpart in
+`PolylineOutlineMaterial.glsl` or in `PolylineFS.glsl`; it is a WebGPU house convention shared by
+`PolylineCollection.wgsl:293`, `PolylineDash.wgsl:294` and
+`Classification/PolylineShadowVolume.wgsl:19`. It fades the outer ~6 % of the half-width below the
+probe's `T = 30` blue classifier — about 1.0 px per column of a ~4.7 px blue band, i.e. the observed
+1,392 against 1,856. **Corroborated independently by SOLID**, which carries the same term and no
+material maths of its own: 5,496 / 5,955 = **0.923 = 12/13**, exactly one pixel of a 13 px ribbon.
+
+Not taken here because removing it is a family-wide behaviour change that would move the solid, dash
+and outline bars in the same run as the head-shape fix, destroying the comparability of the after-leg.
+It needs its own row, its own before and after legs, and a decision on whether WebGPU keeps a soft
+edge that WebGL does not have. **The arrow shader has no such term**, which is the other half of the
+same inconsistency: it is why the arrow's shaft reads 9 px where WebGL's reads 8.
+
+**Instrument added in the meantime.** The outline is now also gated on its cross-section *structure* —
+at the ribbon's widest column the outline hue must BRACKET the core hue above and below, within a
+skew allowance. A count ratio cannot separate a two-sided outline from a one-sided one at twice the
+thickness, and the flood this probe first caught had an edge ratio of 4.250 with no core at all.

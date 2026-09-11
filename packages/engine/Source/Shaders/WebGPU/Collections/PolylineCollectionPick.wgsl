@@ -27,14 +27,17 @@ struct CameraUniforms {
   viewportSize: vec2<f32>,
   // Renderer-wide log-depth parameters. `logDepthNearFar` carries the encode
   // frustum, while `logDepthFactor` occupies the scalar lane after
-  // `splitPosition`; `_padLog` preserves `previousViewProjection`'s 16-byte
+  // `splitPosition`; `pixelRatio` preserves `previousViewProjection`'s 16-byte
   // alignment. The pick and color paths use the same `packCameraUniforms`, so
   // every variant shares one populated layout, though only LOG_DEPTH reads it.
   logDepthNearFar: vec2<f32>,
   minimumDisableDepthTestDistance: f32,
   splitPosition: f32,
   logDepthFactor: f32,
-  _padLog: f32,
+  // `czm_pixelRatio`. Float slot 31 of the shared 192-byte polyline camera
+  // UBO, written by `WebGPUPolylineRenderer.js`; it was padding until the quad
+  // expansion needed it.
+  pixelRatio: f32,
       previousViewProjection: mat4x4<f32>,
 };
 
@@ -113,7 +116,13 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
 
   let lineWidth = input.startPosHighAndWidth.w;
-  let halfWidth = lineWidth * 0.5 + 1.0; // +1.0 for wider pick area
+  // `getPolylineWindowCoordinatesEC` offsets by `expandWidth * czm_pixelRatio`
+  // (PolylineCommon.glsl:166), so the quad is authored in CSS pixels and scaled
+  // to device pixels here. The factor is 1.0 whenever the drawing buffer tracks
+  // CSS pixels, which is every configuration this shader shipped under.
+  // The pick quad must track the render quad exactly, so it takes the same
+  // factor.
+  let halfWidth = (lineWidth * 0.5 + 1.0) * camera.pixelRatio; // +1.0 for wider pick area
 
   // Compute clip positions for start and end
   let startRTE = translateRelativeToEye(

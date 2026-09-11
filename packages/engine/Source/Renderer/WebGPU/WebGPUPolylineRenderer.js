@@ -144,7 +144,8 @@ function packNearFarScalar(out, offset, scalar, identity) {
 }
 
 // Camera UBO: mvpRTE(64) + camHigh(16) + camLow(16) + viewport(8) + pad(8)
-//   + minimumDisableDepthTestDistance(4) + splitPosition(4) + pad(8)
+//   + minimumDisableDepthTestDistance(4) + splitPosition(4)
+//   + logDepthFactor(4) + pixelRatio(4)
 //   + previousViewProjection(64)  = 192 bytes (48 floats).
 // previousViewProjection supports TAA and motion vectors at byte offsets
 // 128..191, or float slots 32..47.
@@ -1451,7 +1452,20 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
   uniformData[29] = splitFraction * drawingBufferWidth;
   // Log-depth factor at float slot 30.
   uniformData[30] = ldFactor;
-  uniformData[31] = 0.0;
+  // `czm_pixelRatio` at float slot 31, read by every collection polyline
+  // shader as `camera.pixelRatio`. WebGL scales the quad expansion by it
+  // (`PolylineCommon.glsl:166`) and the arrow and dash materials scale their
+  // head length and dash cycle by it, so the WebGPU path needs the same value
+  // to match at a drawing buffer that does not track CSS pixels. It is 1.0
+  // under `useBrowserRecommendedResolution`, which is the default; the
+  // fallback is 1.0 and never 0, because a zero would collapse every quad.
+  const pixelRatio =
+    typeof uniformState?.pixelRatio === "number" && uniformState.pixelRatio > 0
+      ? uniformState.pixelRatio
+      : typeof frameState?.pixelRatio === "number" && frameState.pixelRatio > 0
+        ? frameState.pixelRatio
+        : 1.0;
+  uniformData[31] = pixelRatio;
 
   // previousViewProjection occupies slots 32..47 (16 floats, 64 bytes).
   // `UniformState.update()` caches it before overwriting the

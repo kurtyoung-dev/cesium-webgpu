@@ -156,7 +156,7 @@ async function loadRenderer({ mutate, label } = {}) {
 // Records only what a device is asked to build. Nothing about the command is
 // supplied by the fixture.
 function recordingDevice() {
-  const record = { buffers: [], pipelines: [] };
+  const record = { buffers: [], pipelines: [], writes: [] };
   const device = {
     createBindGroupLayout: (d) => ({
       label: d.label,
@@ -177,7 +177,24 @@ function recordingDevice() {
     },
     createShaderModule: (d) => ({ label: d.label }),
     createTexture: () => ({ createView: () => ({}), destroy() {} }),
-    queue: { writeBuffer() {}, writeTexture() {} },
+    queue: {
+      // Snapshot every upload: the camera block is packed into ONE reused
+      // Float32Array, so a reference kept here would read the last frame's
+      // bytes for every frame.
+      writeBuffer(buffer, offset, data, dataOffset = 0, size) {
+        const bytes =
+          data instanceof ArrayBuffer ? data : (data.buffer ?? data);
+        const byteLength = size ?? bytes.byteLength - dataOffset;
+        record.writes.push({
+          label: buffer ? buffer.label : undefined,
+          offset,
+          floats: new Float32Array(
+            bytes.slice(dataOffset, dataOffset + byteLength),
+          ),
+        });
+      },
+      writeTexture() {},
+    },
   };
   return { device, record };
 }
@@ -238,7 +255,7 @@ function makeCollection(rows = ROWS) {
   };
 }
 
-function makeContext(device) {
+function makeContext(device, pixelRatio) {
   return {
     device,
     // A null central cache makes the pipeline resolve synchronously, so the
@@ -255,6 +272,9 @@ function makeContext(device) {
       projection: Matrix4.clone(Matrix4.IDENTITY),
       currentFrustum: { x: 1.0, y: 1.0e8 },
       previousViewProjection: Matrix4.clone(Matrix4.IDENTITY),
+      // Omitted entirely when the caller passes nothing, so the fallback path
+      // is exercised by absence rather than by a sentinel.
+      ...(pixelRatio === undefined ? {} : { pixelRatio }),
     },
   };
 }
@@ -307,9 +327,15 @@ function makeFrameState(context, frameNumber, mode = SCENE3D, passes) {
  * @returns {Promise<object>} `{ commands, collection, record }`
  */
 async function drive(namespace, options = {}) {
-  const { mode = SCENE3D, passes, frames = 3, rows = ROWS } = options;
+  const {
+    mode = SCENE3D,
+    passes,
+    frames = 3,
+    rows = ROWS,
+    pixelRatio,
+  } = options;
   const { device, record } = recordingDevice();
-  const context = makeContext(device);
+  const context = makeContext(device, pixelRatio);
   const collection = makeCollection(rows);
   let commands = [];
   for (let frame = 0; frame < frames; frame++) {
@@ -577,6 +603,176 @@ test("A6 INERTNESS MUTANT — with the volume computation unreachable, the comma
       "with the fix unreachable, every command is binned into every frustum — " +
         "the pre-fix behaviour that composited the translucent glow more than " +
         "once. A1 asserting 1 is therefore falsifiable.",
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// B. The pixel ratio the collection polyline shaders read as `camera.pixelRatio`.
+//
+// `PolylineCommon.glsl:166` offsets the WebGL quad by
+// `expandWidth * czm_pixelRatio`, and `PolylineArrowMaterial.glsl` /
+// `PolylineDashMaterial.glsl` scale the arrow head length and the dash cycle by
+// the same term. The WebGPU collection path had no pixel ratio at all, which is
+// invisible while `useBrowserRecommendedResolution` pins it to 1 — the reason
+// `probe-polyline-multimaterial.mjs`'s DPR-2 leg was a duplicate of its DPR-1
+// leg rather than a second resolution.
+//
+// WGSL cannot execute in Node, so what is asserted here is the pair of
+// observable facts that Node CAN settle: the byte offset the shaders declare
+// for `pixelRatio`, computed from the shipped WGSL by the uniform-address-space
+// layout rules, and the value the renderer actually uploads at that offset.
+// Neither is read from the other, so a struct reorder in either artifact
+// breaks the pair.
+// ---------------------------------------------------------------------------
+
+const WGSL_LAYOUT = {
+  f32: { align: 4, size: 4 },
+  "vec2<f32>": { align: 8, size: 8 },
+  "vec3<f32>": { align: 16, size: 12 },
+  "vec4<f32>": { align: 16, size: 16 },
+  "mat4x4<f32>": { align: 16, size: 64 },
+};
+
+const COLLECTION_POLYLINE_SHADERS = [
+  "PolylineArrow",
+  "PolylineCollection",
+  "PolylineCollectionPick",
+  "PolylineDash",
+  "PolylineGlow",
+  "PolylineOutline",
+];
+
+/**
+ * Byte offsets of `struct CameraUniforms`, by the WGSL uniform address space
+ * layout rules.
+ *
+ * @param {string} source WGSL source.
+ * @returns {{offsets: object, size: number}} Member offsets and struct size.
+ */
+function cameraStructLayout(source) {
+  const match = /struct CameraUniforms\s*\{([\s\S]*?)\n\}/.exec(source);
+  assert.ok(match, "no `struct CameraUniforms` in the shader");
+  const offsets = {};
+  let offset = 0;
+  // This repo checks out with `core.autocrlf=true`, so a WGSL line can end
+  // in a carriage return, which `.` does not match: a $-anchored comment
+  // strip would leave every comment line intact and every parse would fail.
+  for (const raw of match[1].split(/\r?\n/)) {
+    const line = raw.replace(/\/\/.*/, "").trim();
+    if (line === "") {
+      continue;
+    }
+    const member =
+      /^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z0-9_<>]+)\s*,?$/.exec(line);
+    assert.ok(member, `unparsed CameraUniforms member: ${line}`);
+    const type = WGSL_LAYOUT[member[2]];
+    assert.ok(type, `unknown WGSL type ${member[2]}`);
+    offset = Math.ceil(offset / type.align) * type.align;
+    offsets[member[1]] = offset;
+    offset += type.size;
+  }
+  return { offsets, size: Math.ceil(offset / 16) * 16 };
+}
+
+/**
+ * The camera-block uploads from one run.
+ *
+ * @param {object} record The recording device's log.
+ * @returns {Array<Float32Array>} One float view per camera upload.
+ */
+function cameraUploads(record) {
+  return record.writes
+    .filter((write) => write.floats.length === 48 && write.offset === 0)
+    .map((write) => write.floats);
+}
+
+test("B1 every collection polyline shader places `pixelRatio` at the same offset, in a 192-byte block", async () => {
+  const seen = new Map();
+  for (const name of COLLECTION_POLYLINE_SHADERS) {
+    const source = await readFile(
+      resolve(ENGINE_SOURCE, `Shaders/WebGPU/Collections/${name}.wgsl`),
+      "utf8",
+    );
+    const { offsets, size } = cameraStructLayout(source);
+    assert.equal(
+      size,
+      192,
+      `${name}: the camera block is ${size} bytes; the renderer uploads 192`,
+    );
+    assert.equal(
+      typeof offsets.pixelRatio,
+      "number",
+      `${name}: no \`pixelRatio\` member — the shader cannot scale to a drawing buffer that does not track CSS pixels`,
+    );
+    seen.set(name, offsets.pixelRatio);
+  }
+  const distinct = new Set(seen.values());
+  assert.equal(
+    distinct.size,
+    1,
+    `the six shaders share one uploaded block but disagree on where \`pixelRatio\` sits: ${JSON.stringify(Object.fromEntries(seen))}`,
+  );
+});
+
+test("B2 the renderer uploads the context's pixel ratio into the float slot the shaders read", async () => {
+  const source = await readFile(
+    resolve(ENGINE_SOURCE, "Shaders/WebGPU/Collections/PolylineArrow.wgsl"),
+    "utf8",
+  );
+  const slot = cameraStructLayout(source).offsets.pixelRatio / 4;
+  const namespace = await loadRenderer();
+  const { record } = await drive(namespace, { pixelRatio: 2.0 });
+  const uploads = cameraUploads(record);
+  assert.ok(uploads.length > 0, "no camera block was uploaded");
+  for (const floats of uploads) {
+    assert.equal(
+      floats[slot],
+      2.0,
+      `slot ${slot} carries ${floats[slot]}, not the context's pixel ratio; every quad, arrow head and dash cycle would be sized for the wrong buffer`,
+    );
+  }
+});
+
+test("B3 a context that reports no pixel ratio uploads 1.0, never 0", async () => {
+  // A zero here does not degrade the render, it deletes it: the quad expansion
+  // multiplies by this value.
+  const source = await readFile(
+    resolve(ENGINE_SOURCE, "Shaders/WebGPU/Collections/PolylineArrow.wgsl"),
+    "utf8",
+  );
+  const slot = cameraStructLayout(source).offsets.pixelRatio / 4;
+  const namespace = await loadRenderer();
+  const { record } = await drive(namespace);
+  const uploads = cameraUploads(record);
+  assert.ok(uploads.length > 0, "no camera block was uploaded");
+  for (const floats of uploads) {
+    assert.equal(floats[slot], 1.0);
+  }
+});
+
+test("B4 INERTNESS MUTANT — with the pixel-ratio lookup unreachable, the uploaded slot stops tracking the context", async () => {
+  const source = await readFile(
+    resolve(ENGINE_SOURCE, "Shaders/WebGPU/Collections/PolylineArrow.wgsl"),
+    "utf8",
+  );
+  const slot = cameraStructLayout(source).offsets.pixelRatio / 4;
+  const namespace = await loadRenderer({
+    label: "unreachable-pixel-ratio",
+    mutate: (text) =>
+      text.replace(
+        'typeof uniformState?.pixelRatio === "number" && uniformState.pixelRatio > 0',
+        'false && typeof uniformState?.pixelRatio === "number"',
+      ),
+  });
+  const { record } = await drive(namespace, { pixelRatio: 2.0 });
+  const uploads = cameraUploads(record);
+  assert.ok(uploads.length > 0, "the mutant must still reach the upload site");
+  for (const floats of uploads) {
+    assert.notEqual(
+      floats[slot],
+      2.0,
+      "the mutant still uploaded the context's ratio, so B2 is not falsifiable",
     );
   }
 });
