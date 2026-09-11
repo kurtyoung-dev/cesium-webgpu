@@ -39,6 +39,13 @@ import type {
 /** What the last successful pack did — bounds and no-data evidence for probes. */
 export type WeatherPackStats = Omit<WeatherPackResult, "bytes">;
 
+interface CachedWeatherSlice {
+  bytes: Uint8Array;
+  validTime: string | undefined;
+  presentWeather: WeatherPresentWeather | null;
+  packStats: WeatherPackStats;
+}
+
 const HOUR_MS = 3600000;
 
 export class WeatherProvider {
@@ -77,7 +84,7 @@ export class WeatherProvider {
   private _effectiveTime: Date | "latest" = "latest";
   // LRU cache of packed slices keyed by quantized-time. Scrubbing historical /
   // projected times reuses already-fetched+packed slices instead of re-fetching.
-  private readonly _cache = new Map<string, Uint8Array>();
+  private readonly _cache = new Map<string, CachedWeatherSlice>();
   private _cacheLimit = 8;
   private _cacheW = 0;
   private _cacheH = 0;
@@ -134,11 +141,12 @@ export class WeatherProvider {
    */
   setNoDataFill(fill: WeatherNoDataFill | undefined): void {
     this._noDataFill = fill;
-    this._packed = null;
+    this._clearActiveSlice();
     this._cache.clear();
     this._effectiveKey = null;
     this._invalidation++;
     this._version++;
+    this._refreshSlice();
   }
 
   /** The active no-data fill override, or undefined for the packer default. */
@@ -158,32 +166,34 @@ export class WeatherProvider {
   /** Swap the active source (runtime source-switch). Drops the cache. */
   setSource(source: WeatherSource | null): void {
     this._source = source;
-    this._packed = null;
-    this._presentWeather = null;
+    this._clearActiveSlice();
     this._lastError = null;
     this._cache.clear();
     this._effectiveKey = null;
     this._invalidation++;
     this._version++;
+    this._refreshSlice();
   }
 
   /** Change the request (time / region). Drops the cache. */
   setRequest(request: WeatherFieldRequest): void {
     this._request = request;
-    this._packed = null;
+    this._clearActiveSlice();
     this._cache.clear();
     this._effectiveKey = null;
     this._invalidation++;
     this._version++;
+    this._refreshSlice();
   }
 
   /** Force a re-fetch (e.g. a live-refresh tick). Drops the cache. */
   refresh(): void {
-    this._packed = null;
+    this._clearActiveSlice();
     this._cache.clear();
     this._effectiveKey = null;
     this._invalidation++;
     this._version++;
+    this._refreshSlice();
   }
 
   // ── Phase 2 time-model controls ──────────────────────────────────────────
@@ -204,7 +214,6 @@ export class WeatherProvider {
     if (this._timeMode === null) {
       this._timeMode = "historical";
     }
-    this._effectiveKey = null;
     this._refreshSlice();
   }
 
@@ -249,10 +258,11 @@ export class WeatherProvider {
       (this._cacheW !== 0 || this._cacheH !== 0)
     ) {
       this._cache.clear();
-      this._packed = null;
+      this._clearActiveSlice();
       this._effectiveKey = null;
       this._cacheW = texW;
       this._cacheH = texH;
+      this._invalidation++;
       this._refreshSlice();
     }
     if (this._packed) {
@@ -277,11 +287,10 @@ export class WeatherProvider {
     if (cached) {
       this._cache.delete(key);
       this._cache.set(key, cached); // LRU bump
-      this._packed = cached;
-      this._validTime = time instanceof Date ? time.toISOString() : undefined;
+      this._activateSlice(cached, time);
       this._version++;
     } else {
-      this._packed = null; // miss → getPackedTexture() kicks the fetch
+      this._clearActiveSlice(); // miss → getPackedTexture() kicks the fetch
     }
   }
 
@@ -335,36 +344,31 @@ export class WeatherProvider {
           ? undefined
           : { noDataFill: this._noDataFill },
       );
-      const packed = result.bytes;
-      this._packStats = {
-        observedTexels: result.observedTexels,
-        filledTexels: result.filledTexels,
-        registration: result.registration,
-        fillKind: result.fillKind,
-        global: result.global,
+      const slice: CachedWeatherSlice = {
+        bytes: result.bytes,
+        validTime: field.validTime,
+        presentWeather: extractPresentWeather(field),
+        packStats: {
+          observedTexels: result.observedTexels,
+          filledTexels: result.filledTexels,
+          registration: result.registration,
+          fillKind: result.fillKind,
+          global: result.global,
+        },
       };
-      const present = extractPresentWeather(field);
       if (!timed) {
-        this._packed = packed;
-        this._validTime = field.validTime;
-        this._presentWeather = present;
+        this._activateSlice(slice, "latest");
         this._version++;
       } else {
         if (key !== null) {
-          this._cache.set(key, packed);
+          this._cache.set(key, slice);
           this._evictLru();
           this._cacheW = texW;
           this._cacheH = texH;
         }
         // Activate only if this is still the live slice (the user may have scrubbed).
         if (key === this._effectiveKey) {
-          this._packed = packed;
-          this._presentWeather = present;
-          this._validTime =
-            field.validTime ??
-            (this._effectiveTime instanceof Date
-              ? this._effectiveTime.toISOString()
-              : undefined);
+          this._activateSlice(slice, this._effectiveTime);
           this._version++;
         }
       }
@@ -387,6 +391,25 @@ export class WeatherProvider {
       }
       this._cache.delete(oldest);
     }
+  }
+
+  private _clearActiveSlice(): void {
+    this._packed = null;
+    this._validTime = undefined;
+    this._presentWeather = null;
+    this._packStats = null;
+  }
+
+  private _activateSlice(
+    slice: CachedWeatherSlice,
+    fallbackTime: Date | "latest",
+  ): void {
+    this._packed = slice.bytes;
+    this._validTime =
+      slice.validTime ??
+      (fallbackTime instanceof Date ? fallbackTime.toISOString() : undefined);
+    this._presentWeather = slice.presentWeather;
+    this._packStats = slice.packStats;
   }
 }
 

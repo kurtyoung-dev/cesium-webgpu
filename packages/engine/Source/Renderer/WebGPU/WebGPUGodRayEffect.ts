@@ -38,8 +38,8 @@ import type { PostProcessEffect } from "./WebGPUPostProcessEffects.js";
 export interface GodRayConfig {
   /**
    * Sun position in normalized screen UV space (0..1, y DOWN). The caller
-   * updates this per frame via `setSunScreenUV(u, v)` — project the world-
-   * space sun position through the current `viewProjection` matrix and
+   * updates this per frame via `setSunScreenUV(u, v, usable)` — project the
+   * world-space sun position through the current `viewProjection` matrix and
    * convert NDC → UV. Values outside [0,1] are allowed for off-screen suns.
    */
   sunScreenU?: number;
@@ -60,6 +60,78 @@ export interface GodRayConfig {
    * contribute; anything closer occludes.
    */
   occlusionFarCutoff?: number;
+}
+
+type GodRayAppearanceConfig = Omit<GodRayConfig, "sunScreenU" | "sunScreenV">;
+
+const DEFAULT_APPEARANCE: Required<GodRayAppearanceConfig> = Object.freeze({
+  density: 0.96,
+  decay: 0.95,
+  weight: 0.5,
+  exposure: 0.15,
+  sampleCount: 64,
+  occlusionFarCutoff: 0.99,
+});
+const APPEARANCE_KEYS = Object.keys(DEFAULT_APPEARANCE) as Array<
+  keyof GodRayAppearanceConfig
+>;
+
+/**
+ * Byte ranges of the `GodRayUniforms` struct, and which setter owns each one.
+ *
+ * Every per-frame setter writes ONLY the bytes it owns, so two setters can
+ * never clobber each other's fields. The ranges below are the whole of that
+ * contract; `initialize()` is the only full-buffer write, and `resize()`
+ * re-enters it.
+ *
+ * A field that no setter's range covers reaches the GPU exactly once, at init,
+ * and then silently freezes — with nothing failing to compile and no WebGPU
+ * validation error, because the buffer is simply longer than the ranges
+ * written into it. `sunUnusable` is per-frame state, so it carries its own
+ * range rather than riding the `sunUV` range it sits 60 bytes away from.
+ *
+ * Bytes 48-64 (`params2`: sunRadiance.rgb + sunGlowRadius) and byte 64
+ * (`params3.x`: aspect) are RESERVED. They are shader-side fields whose config
+ * wiring is not in this batch; they are written at init from the placeholders
+ * below, and `aspect` is therefore already correct across a resize. Whoever
+ * wires them to `GodRayConfig` MUST also give them a per-frame range here, or
+ * they freeze in exactly the way this table exists to prevent.
+ */
+export const GOD_RAY_UNIFORM_RANGES = Object.freeze({
+  /** `params0.xy` — sun screen UV. Written by `setSunScreenUV`. */
+  sunUV: Object.freeze({ offset: 0, size: 8 }),
+  /** `params0.zw` + `params1` — appearance. Written by `updateConfig`. */
+  appearance: Object.freeze({ offset: 8, size: 24 }),
+  /** `frustum.xyz` — near, far, logActive. Written by `setFrustum`. */
+  frustum: Object.freeze({ offset: 32, size: 12 }),
+  /** `params3.y` — the sun-unusable flag. Written by `setSunScreenUV`. */
+  sunUnusable: Object.freeze({ offset: 68, size: 4 }),
+});
+
+/** Size of the packed struct, in bytes. Five `vec4<f32>`. */
+export const GOD_RAY_UNIFORM_BYTE_LENGTH = 80;
+
+// Placeholders for the reserved `params2` slots, matching the defaults the
+// shader's own struct documents, so a shader reading them before its config
+// wiring lands sees a sane emitter rather than black.
+const RESERVED_SUN_RADIANCE = Object.freeze([1.0, 1.0, 1.0]);
+const RESERVED_SUN_GLOW_RADIUS = 0.1;
+
+/**
+ * Value equality for one appearance field, rather than `!==`.
+ *
+ * `updateConfig` runs every frame and skips the GPU write when nothing
+ * changed. `!==` is an identity test for an array-valued field, so a caller
+ * passing a fresh literal each frame — the ordinary way to write
+ * `scene.godRayConfig` — would mark the snapshot changed every frame and
+ * defeat the skip entirely. For scalar fields this is `!==` with the same
+ * result.
+ */
+function appearanceValueEquals(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, i) => item === b[i]);
+  }
+  return a === b;
 }
 
 /**
@@ -126,33 +198,88 @@ export class GodRayEffect implements PostProcessEffect {
   // leaves the linear path untouched.
   private _logActive = 0.0;
 
+  // `params3.y`. 1 marks this frame's sun as one the shaft cannot be built
+  // from — behind the camera, non-finite, or grazing the camera plane. Set by
+  // `setSunScreenUV`, which owns its byte range; 0, the default, leaves the
+  // effect running.
+  private _sunUnusable = 0.0;
+
   private _config: Required<GodRayConfig>;
 
   constructor(config: GodRayConfig = {}) {
     this._config = {
       sunScreenU: config.sunScreenU ?? 0.5,
       sunScreenV: config.sunScreenV ?? 0.3,
-      density: config.density ?? 0.96,
-      decay: config.decay ?? 0.95,
-      weight: config.weight ?? 0.5,
-      exposure: config.exposure ?? 0.15,
-      sampleCount: config.sampleCount ?? 64,
-      occlusionFarCutoff: config.occlusionFarCutoff ?? 0.99,
+      ...DEFAULT_APPEARANCE,
     };
+    this.updateConfig(config);
+  }
+
+  // Configuration is a snapshot: removing an override restores its default.
+  // Projection and depth belong to the per-frame setters, not this snapshot.
+  updateConfig(config: GodRayAppearanceConfig = {}): void {
+    let changed = false;
+    for (const key of APPEARANCE_KEYS) {
+      const value = config[key] ?? DEFAULT_APPEARANCE[key];
+      if (!appearanceValueEquals(this._config[key], value)) {
+        this._config[key] = value;
+        changed = true;
+      }
+    }
+    if (changed && this._device && this._generateUniforms) {
+      const range = GOD_RAY_UNIFORM_RANGES.appearance;
+      const data = this._buildUniformData();
+      this._device.queue.writeBuffer(
+        this._generateUniforms,
+        range.offset,
+        data.buffer,
+        range.offset,
+        range.size,
+      );
+    }
   }
 
   /**
    * Update the sun's screen-space UV. Call each frame before the effect
-   * executes — cheap (one GPU buffer write). When the sun is off-screen,
-   * pass the UV even if outside [0,1]; the shader still produces a
-   * directional glow across the visible region.
+   * executes — cheap (two small GPU buffer writes). When the sun is
+   * off-screen but still in front of the camera, pass the UV even if outside
+   * [0,1]; the shader still produces a directional glow across the visible
+   * region.
+   *
+   * `usable` is the caller's single determination of whether this frame's sun
+   * is a sun the shaft can be built from. It is false when the sun is behind
+   * the camera, when its projection is not finite, and when it grazes the
+   * camera plane closely enough that the projected UV has stopped carrying
+   * per-pixel information. It reaches the shader as `params3.y`; the caller
+   * also uses it to decide whether the two passes run at all, so a false here
+   * normally means the effect is disabled for the frame.
    */
-  setSunScreenUV(u: number, v: number): void {
+  setSunScreenUV(u: number, v: number, usable: boolean = true): void {
     this._config.sunScreenU = u;
     this._config.sunScreenV = v;
+    this._sunUnusable = usable ? 0.0 : 1.0;
     if (this._device && this._generateUniforms) {
       const data = this._buildUniformData();
-      this._device.queue.writeBuffer(this._generateUniforms, 0, data);
+      // Two disjoint ranges, not one span. `sunUV` is `params0.xy` at bytes
+      // 0-8 and `sunUnusable` is `params3.y` at bytes 68-72; a single write
+      // covering both would also rewrite the appearance and frustum bytes
+      // this setter does not own.
+      const uvRange = GOD_RAY_UNIFORM_RANGES.sunUV;
+      this._device.queue.writeBuffer(
+        this._generateUniforms,
+        uvRange.offset,
+        data.buffer,
+        uvRange.offset,
+        uvRange.size,
+      );
+      const flagRange = GOD_RAY_UNIFORM_RANGES.sunUnusable;
+      this._device.queue.writeBuffer(
+        this._generateUniforms,
+        flagRange.offset,
+        data.buffer,
+        flagRange.offset,
+        flagRange.size,
+      );
     }
   }
 
@@ -182,8 +309,15 @@ export class GodRayEffect implements PostProcessEffect {
       this._logActive = logActive ? 1.0 : 0.0;
     }
     if (!this._device || !this._generateUniforms) return;
+    const range = GOD_RAY_UNIFORM_RANGES.frustum;
     const data = this._buildUniformData(near, far);
-    this._device.queue.writeBuffer(this._generateUniforms, 0, data);
+    this._device.queue.writeBuffer(
+      this._generateUniforms,
+      range.offset,
+      data.buffer,
+      range.offset,
+      range.size,
+    );
   }
 
   initialize(
@@ -369,9 +503,14 @@ export class GodRayEffect implements PostProcessEffect {
    * wide-open default is safe until `setFrustum()` is called.
    */
   private _buildUniformData(near?: number, far?: number): Float32Array {
-    // Must match the `GodRayUniforms` struct in GodRayGenerate.wgsl —
-    // three vec4s (12 floats / 48 bytes). No trailing pad needed; WebGPU
-    // pads the uniform buffer binding up to 256 bytes internally.
+    // Must match the `GodRayUniforms` struct in GodRayGenerate.wgsl — five
+    // vec4s (20 floats / 80 bytes). No trailing pad needed; WebGPU pads the
+    // uniform buffer binding up to 256 bytes internally. A binding larger
+    // than the struct a shader declares is legal, so the last two vec4s are
+    // inert for a shader that stops at `frustum`.
+    // Byte offsets are the contract in `GOD_RAY_UNIFORM_RANGES`; the setters
+    // slice this same array by those offsets, so the order here is
+    // load-bearing.
     return new Float32Array([
       // params0: sunUV.xy, density, decay
       this._config.sunScreenU,
@@ -387,6 +526,18 @@ export class GodRayEffect implements PostProcessEffect {
       near ?? 1.0,
       far ?? 1e8,
       this._logActive,
+      0.0,
+      // params2: sunRadiance.rgb, sunGlowRadius — RESERVED, init-only.
+      RESERVED_SUN_RADIANCE[0],
+      RESERVED_SUN_RADIANCE[1],
+      RESERVED_SUN_RADIANCE[2],
+      RESERVED_SUN_GLOW_RADIUS,
+      // params3: aspect, sunUnusable, _, _. `aspect` is init-only and stays
+      // correct because `resize()` re-enters `initialize()`; `sunUnusable` is
+      // per-frame and owns bytes 68-72.
+      this._height > 0 ? this._width / this._height : 1.0,
+      this._sunUnusable,
+      0.0,
       0.0,
     ]);
   }

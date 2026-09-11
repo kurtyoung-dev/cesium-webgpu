@@ -22,10 +22,28 @@
  */
 
 import type { WebGPUContext } from "./WebGPUContext.js";
+import FeatureRendererKey from "../FeatureRendererKey.js";
 import type { WebGPUPostProcessPipeline } from "./WebGPUPostProcessPipeline.js";
 import type { WebGPUSceneFramebuffer } from "./WebGPUSceneFramebuffer.js";
 import type { WebGPURenderFrameConfig } from "./WebGPUSceneRenderer.js";
 import { hasEnvironmentalEffectDemand } from "./WebGPUSceneRendererEnvironmentDemand.js";
+import {
+  invalidateCloudFrameMask,
+  reportCloudLifecycleError,
+} from "./WebGPUProceduralCloudRenderer.js";
+import {
+  beginResolvedCloudFrameAttempt,
+  finishResolvedCloudFrameAttempt,
+  isPreparedCloudFrameOutcome,
+  publishResolvedCloudFrameIbl,
+  resolveCloudFramePlan,
+  type CloudFrameNegativeReason,
+  type CloudFrameOutcomeNegativeReason,
+  type CloudFramePreparationOutcome,
+  type EnvironmentalCloudFrameOutcome,
+  type ProceduralCloudFrameRenderer,
+  type ResolvedCloudFramePlan,
+} from "./WebGPUSceneRendererEnvironmentalEffects.js";
 
 /** SceneRenderer surface the post-frustum chain reaches back to. */
 export interface PostFrustumChainHost {
@@ -44,7 +62,10 @@ export interface PostFrustumChainHost {
     config: WebGPURenderFrameConfig,
     passKind: "scene" | "pick",
   ): void;
-  _executeEnvironmentalEffects(config: WebGPURenderFrameConfig): void;
+  _executeEnvironmentalEffects(
+    config: WebGPURenderFrameConfig,
+    cloudFrame: EnvironmentalCloudFrameOutcome,
+  ): void;
   // Reconstructs screen-space normals after the scene pass closes and before
   // invert-classification compositing. It is a no-op unless
   // `frameState.useDeferredLighting` is true.
@@ -57,6 +78,47 @@ export interface PostFrustumChainHost {
   _runPostProcessing(config: WebGPURenderFrameConfig): void;
   // Resolves multisampled scene color only when a consumer needs it.
   _ensureSceneColorResolved(context: WebGPUContext): void;
+}
+
+function asCloudFramePreparationOutcome(
+  value: unknown,
+): CloudFramePreparationOutcome | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const outcome = value as Partial<CloudFramePreparationOutcome>;
+  if (
+    (outcome.kind !== "prepared" && outcome.kind !== "negative") ||
+    !outcome.plan
+  ) {
+    return null;
+  }
+  return outcome as CloudFramePreparationOutcome;
+}
+
+function finishCloudFrameAttempt(
+  attempt: unknown,
+  reason: CloudFrameNegativeReason,
+): CloudFramePreparationOutcome | null {
+  return asCloudFramePreparationOutcome(
+    finishResolvedCloudFrameAttempt(attempt, reason),
+  );
+}
+
+function createCloudFrameOutcome(
+  plan: ResolvedCloudFramePlan,
+  renderer: ProceduralCloudFrameRenderer | null,
+  preparation: CloudFramePreparationOutcome | null,
+  negativeReason: CloudFrameOutcomeNegativeReason | null,
+  displaySnapshotView: GPUTextureView | null = null,
+): EnvironmentalCloudFrameOutcome {
+  return Object.freeze({
+    plan,
+    renderer,
+    preparation,
+    negativeReason,
+    displaySnapshotView,
+  });
 }
 
 /**
@@ -142,77 +204,242 @@ export function executePostFrustumChain(
   // contents; omitting it would leave multisampled frames black.
   host._ensureSceneColorResolved(context);
 
-  // Post-processing performs tonemapping, FXAA, and the required scene-to-canvas blit.
-  //>>includeStart('debug', pragmas.debug);
-  if (!host._ppDebugLogged) {
-    host._ppDebugLogged = true;
-    console.log(
-      `[WebGPU:PostProcess] _runPostProcessing entering: ` +
-        `usePostProcess=${config.usePostProcess} ` +
-        `_postProcess=${!!host._postProcess} ` +
-        `sceneFramebuffer=${!!host._sceneFramebuffer}`,
-    );
-  }
-  //>>includeEnd('debug');
-  host._runPostProcessing(config);
+  // Clear publication before request resolution or a starting lazy lookup. A
+  // skipped, cold, failed, or culled attempt must never expose the prior mask.
+  const godRayEffect = host._postProcess?.godRayEffect;
+  godRayEffect?.setCloudTransmittanceView(null);
+  invalidateCloudFrameMask(context);
 
-  // Environmental effects need a display-space reflection source after
-  // tonemapping and FXAA. Snapshotting the canvas avoids reading and writing
-  // the same WebGPU texture in one render pass, without requiring a
-  // dual-buffered swap chain or another accumulation target. The full-screen
-  // copy is skipped unless an effect will consume it.
-  //
-  // Demand includes pending work from a user-owned volumetric
-  // `CloudCollection`, not only the managed default collection, matching the
-  // empty-frustum scheduler's non-consuming query.
-  const _anyEnvEffectEnabled = hasEnvironmentalEffectDemand(
-    config.scene,
-    context,
-  );
-  const _ppCtx = context as unknown as {
-    _currentTextureView?: GPUTextureView | null;
-    _currentCommandEncoder?: GPUCommandEncoder | null;
-    _postProcessSnapshotTexture?: GPUTexture | null;
-    _postProcessSnapshotWidth?: number;
-    _postProcessSnapshotHeight?: number;
-    getCurrentTexture?: () => GPUTexture | null;
-  };
-  const ppEncoder = _ppCtx._currentCommandEncoder;
-  const ppSnapshot = _ppCtx._postProcessSnapshotTexture;
-  if (_anyEnvEffectEnabled && ppEncoder && ppSnapshot) {
-    // Texture copies cannot be encoded while a render pass is active.
-    context.endCurrentRenderPass?.();
-    const canvasTex = (
-      context as unknown as {
-        _context?: { getCurrentTexture: () => GPUTexture };
+  const cloudAwareRequested =
+    godRayEffect?.enabled === true &&
+    (config.scene as unknown as { godRayCloudAware?: boolean })
+      .godRayCloudAware === true;
+  const cloudPlan = resolveCloudFramePlan(config, cloudAwareRequested);
+  let cloudAttempt: unknown = null;
+  let cloudAttemptFailed = false;
+  if (cloudPlan.active) {
+    try {
+      cloudAttempt = beginResolvedCloudFrameAttempt(config, cloudPlan);
+    } catch (error: unknown) {
+      cloudAttemptFailed = true;
+      reportCloudLifecycleError(
+        context,
+        "Procedural cloud attempt failed.",
+        error,
+      );
+    }
+  }
+  publishResolvedCloudFrameIbl(config, cloudPlan);
+
+  let cloudRenderer: ProceduralCloudFrameRenderer | null = null;
+  let cloudPreparation: CloudFramePreparationOutcome | null = null;
+  let cloudNegativeReason: CloudFrameOutcomeNegativeReason | null =
+    cloudPlan.active ? null : "inactive";
+
+  if (cloudAttemptFailed) {
+    cloudNegativeReason = "preparation-failed";
+  } else if (cloudPlan.active && !context.device) {
+    cloudNegativeReason = "missing-device";
+    cloudPreparation = finishCloudFrameAttempt(
+      cloudAttempt,
+      cloudNegativeReason,
+    );
+  } else if (cloudPlan.active && !context._currentCommandEncoder) {
+    cloudNegativeReason = "missing-encoder";
+    cloudPreparation = finishCloudFrameAttempt(
+      cloudAttempt,
+      cloudNegativeReason,
+    );
+  } else if (cloudPlan.active && !context._sceneColorView) {
+    cloudNegativeReason = "missing-raw-color";
+    cloudPreparation = finishCloudFrameAttempt(
+      cloudAttempt,
+      cloudNegativeReason,
+    );
+  } else if (cloudPlan.active && !context._depthStencilView) {
+    cloudNegativeReason = "missing-depth";
+    cloudPreparation = finishCloudFrameAttempt(
+      cloudAttempt,
+      cloudNegativeReason,
+    );
+  } else if (cloudPlan.active) {
+    const readiness = context.getFeatureRendererReadiness(
+      FeatureRendererKey.PROCEDURAL_CLOUDS,
+    );
+    if (readiness.kind === "ready") {
+      const renderer = readiness.renderer as ProceduralCloudFrameRenderer;
+      if (renderer.prepareCloudFrameAndEncodeMask) {
+        cloudRenderer = renderer;
+        try {
+          cloudPreparation = asCloudFramePreparationOutcome(
+            renderer.prepareCloudFrameAndEncodeMask(
+              context,
+              config.scene._frameState,
+              cloudAttempt,
+              context._sceneColorView,
+              context._depthStencilView,
+              cloudPlan.config!,
+              cloudPlan.captureRequested,
+            ),
+          );
+          if (cloudPreparation?.kind === "negative") {
+            cloudNegativeReason =
+              cloudPreparation.reason ?? "resource-not-ready";
+          } else if (cloudPreparation?.kind === "prepared") {
+            cloudNegativeReason = null;
+          } else {
+            cloudNegativeReason = "resource-not-ready";
+            cloudPreparation = finishCloudFrameAttempt(
+              cloudAttempt,
+              "resource-not-ready",
+            );
+          }
+        } catch (error: unknown) {
+          cloudNegativeReason = "preparation-failed";
+          reportCloudLifecycleError(
+            context,
+            "Procedural cloud preparation failed.",
+            error,
+          );
+          try {
+            cloudPreparation = finishCloudFrameAttempt(
+              cloudAttempt,
+              "resource-not-ready",
+            );
+          } catch (finalizationError: unknown) {
+            reportCloudLifecycleError(
+              context,
+              "Procedural cloud preparation finalization failed.",
+              finalizationError,
+            );
+          }
+        }
+      } else {
+        cloudNegativeReason = "feature-not-ready";
+        cloudPreparation = finishCloudFrameAttempt(
+          cloudAttempt,
+          cloudNegativeReason,
+        );
       }
-    )._context?.getCurrentTexture();
-    if (canvasTex) {
-      ppEncoder.copyTextureToTexture(
-        { texture: canvasTex },
-        { texture: ppSnapshot },
-        {
-          width: _ppCtx._postProcessSnapshotWidth!,
-          height: _ppCtx._postProcessSnapshotHeight!,
-          depthOrArrayLayers: 1,
-        },
+    } else {
+      cloudNegativeReason = "feature-not-ready";
+      cloudPreparation = finishCloudFrameAttempt(
+        cloudAttempt,
+        cloudNegativeReason,
       );
     }
   }
 
-  // Environmental effects run after post-processing so their canvas writes
-  // composite over, rather than get overwritten by, the scene-color blit.
-  // Effects that still sample `_sceneColorView` read raw HDR scene color while
-  // writing display-space output over the tonemapped canvas. This is suitable
-  // for the current edge, reflection-overlay, and cloud composites because
-  // their output colors are already display-space values. A reflection path
-  // that needs strict color-space consistency must instead sample the
-  // post-processed snapshot.
-  host._executeEnvironmentalEffects(config);
+  let cloudFrame = createCloudFrameOutcome(
+    cloudPlan,
+    cloudRenderer,
+    cloudPreparation,
+    cloudNegativeReason,
+  );
+  try {
+    if (cloudPlan.captureRequested && isPreparedCloudFrameOutcome(cloudFrame)) {
+      godRayEffect?.setCloudTransmittanceView(cloudPreparation!.maskView);
+    }
 
-  // The model renderer publishes transmission demand during scene update.
-  // Clear it only after all per-frustum captures have consumed it; clearing it
-  // at frame start would erase the current frame's signal. The next update
-  // then begins clean, and frames without transmissive models skip capture.
-  context._sceneHasTransmission = false;
+    // Post-processing performs tonemapping, FXAA, and the required
+    // scene-to-canvas blit.
+    //>>includeStart('debug', pragmas.debug);
+    if (!host._ppDebugLogged) {
+      host._ppDebugLogged = true;
+      console.log(
+        `[WebGPU:PostProcess] _runPostProcessing entering: ` +
+          `usePostProcess=${config.usePostProcess} ` +
+          `_postProcess=${!!host._postProcess} ` +
+          `sceneFramebuffer=${!!host._sceneFramebuffer}`,
+      );
+    }
+    //>>includeEnd('debug');
+    host._runPostProcessing(config);
+    if (cloudRenderer?.completePreparedCloudMask && cloudPreparation) {
+      cloudRenderer.completePreparedCloudMask(cloudPreparation);
+    }
+
+    // Full-screen environmental stages consume only a snapshot copied from
+    // this frame's post-processed canvas. A prepared cloud keeps demand alive
+    // after its user request has been consumed above.
+    const preparedLateVisibleCandidate =
+      isPreparedCloudFrameOutcome(cloudFrame);
+    const _anyEnvEffectEnabled =
+      hasEnvironmentalEffectDemand(config.scene, context) ||
+      preparedLateVisibleCandidate;
+    const _ppCtx = context as unknown as {
+      _currentCommandEncoder?: GPUCommandEncoder | null;
+      _postProcessSnapshotTexture?: GPUTexture | null;
+      _postProcessSnapshotView?: GPUTextureView | null;
+      _postProcessSnapshotWidth?: number;
+      _postProcessSnapshotHeight?: number;
+    };
+    const ppEncoder = _ppCtx._currentCommandEncoder;
+    const ppSnapshot = _ppCtx._postProcessSnapshotTexture;
+    let copiedSnapshotView: GPUTextureView | null = null;
+    if (
+      _anyEnvEffectEnabled &&
+      ppEncoder &&
+      ppSnapshot &&
+      _ppCtx._postProcessSnapshotView &&
+      (_ppCtx._postProcessSnapshotWidth ?? 0) > 0 &&
+      (_ppCtx._postProcessSnapshotHeight ?? 0) > 0
+    ) {
+      // Texture copies cannot be encoded while a render pass is active.
+      context.endCurrentRenderPass?.();
+      const canvasTex = (
+        context as unknown as {
+          _context?: { getCurrentTexture: () => GPUTexture };
+        }
+      )._context?.getCurrentTexture();
+      if (canvasTex) {
+        try {
+          ppEncoder.copyTextureToTexture(
+            { texture: canvasTex },
+            { texture: ppSnapshot },
+            {
+              width: _ppCtx._postProcessSnapshotWidth!,
+              height: _ppCtx._postProcessSnapshotHeight!,
+              depthOrArrayLayers: 1,
+            },
+          );
+          copiedSnapshotView = _ppCtx._postProcessSnapshotView;
+        } catch (error: unknown) {
+          reportCloudLifecycleError(
+            context,
+            "Environmental snapshot copy failed.",
+            error,
+          );
+        }
+      }
+    }
+
+    cloudFrame = createCloudFrameOutcome(
+      cloudPlan,
+      cloudRenderer,
+      cloudPreparation,
+      cloudNegativeReason,
+      copiedSnapshotView,
+    );
+
+    // Environmental effects run after post-processing so their canvas writes
+    // composite over, rather than get overwritten by, the scene-color blit.
+    host._executeEnvironmentalEffects(config, cloudFrame);
+  } finally {
+    if (cloudRenderer?.cancelPreparedCloudFrame && cloudPreparation) {
+      try {
+        cloudRenderer.cancelPreparedCloudFrame(cloudPreparation);
+      } catch (error: unknown) {
+        reportCloudLifecycleError(
+          context,
+          "Procedural cloud finalization failed.",
+          error,
+        );
+      }
+    }
+
+    // The model renderer publishes transmission demand during scene update.
+    // Clear it only after all per-frustum captures have consumed it.
+    context._sceneHasTransmission = false;
+  }
 }

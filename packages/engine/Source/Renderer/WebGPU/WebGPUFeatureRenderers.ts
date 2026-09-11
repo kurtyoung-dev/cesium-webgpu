@@ -876,6 +876,11 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
       const mod = await import("./WebGPUProceduralCloudRenderer.js");
       return {
         execute: mod.executeProceduralClouds,
+        prepareCloudFrameAndEncodeMask: mod.prepareCloudFrameAndEncodeMask,
+        isPreparedCloudFrame: mod.isPreparedCloudFrame,
+        completePreparedCloudMask: mod.completePreparedCloudMask,
+        executePreparedCloudFrame: mod.executePreparedCloudFrame,
+        cancelPreparedCloudFrame: mod.cancelPreparedCloudFrame,
         destroy: mod.destroyProceduralCloudResources,
       };
     },

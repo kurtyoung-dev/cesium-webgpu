@@ -170,6 +170,11 @@ export function mutateOrFail(original, rewrite, name) {
  *   rather than to the entry, as `{basename, mutate, label}`. Each carries the
  *   same did-it-change assertion, so a moved anchor fails loudly instead of
  *   producing a mutation test that passes vacuously.
+ * @param {Record<string, string>} [options.stubSources] Explicit ESM stub
+ *   sources keyed by an import specifier exactly as it occurs in the importer.
+ *   These take precedence over `real` and `realDir`, letting a focused spec
+ *   replace one dependency with bounded fake exports while keeping its caller
+ *   real.
  * @returns {Promise<Record<string, unknown>>} The module namespace.
  */
 export async function bundle({
@@ -181,7 +186,16 @@ export async function bundle({
   label,
   overrides = [],
   preseed = [],
+  stubSources = {},
 }) {
+  const namedStubSources = new Map(Object.entries(stubSources));
+  for (const [specifier, stubSource] of namedStubSources) {
+    assert.equal(
+      typeof stubSource,
+      "string",
+      `stub source for ${specifier} must be an ESM source string`,
+    );
+  }
   let text = source;
   if (mutate) {
     text = mutateOrFail(source, mutate, label);
@@ -211,6 +225,9 @@ export async function bundle({
           pluginBuild.onResolve({ filter: /.*/ }, (args) => {
             if (args.kind === "entry-point") {
               return undefined;
+            }
+            if (namedStubSources.has(args.path)) {
+              return { path: args.path, namespace: "stub" };
             }
             // Compared without the extension: TypeScript sources are
             // imported through their emitted `.js` specifier, so an
@@ -252,6 +269,10 @@ export async function bundle({
             };
           });
           pluginBuild.onLoad({ filter: /.*/, namespace: "stub" }, (args) => {
+            const namedStubSource = namedStubSources.get(args.path);
+            if (namedStubSource !== undefined) {
+              return { contents: namedStubSource, loader: "js" };
+            }
             const entry = importsBySpecifier.get(args.path) ?? {
               names: new Set(),
             };

@@ -17346,3 +17346,143 @@ lock computed for the previous manifest preserved the old nested `sharp` resolut
 reported 4 high. Recomputed from no lock at all it agrees with the real installed tree —
 nested copy deduped away, 3 high. Audit numbers from an incrementally updated lock are
 not trustworthy for an override change.
+
+## C13 cloud-lifecycle adoption — lane C2 (Harding), 2026-09-10
+
+These four entries are the recorded dispositions the adoption of the C13-46 cloud-frame lifecycle
+owed. Every line number below was re-read at the adopting tree on 2026-09-11 (lane C2 fix round,
+Borin). They were first filed as the authoring worktree's numbers, and four of them were wrong by
+exactly the 11 lines this lane's own `reportCloudLifecycleError` JSDoc added above them — a citation
+is a lead until someone opens the file at the tree it names.
+
+### NEW-WEBGPU-CLOUD-EXECUTE-ENTRY-POINT-CALLER-LESS — `executeProceduralClouds` is still the registered `execute` but nothing in the frame path calls it (RECORDED 2026-09-10, lane C2 / Harding — disposition **KEEP**)
+
+**What it is.** `packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts:5290`,
+exported, and registered as the `PROCEDURAL_CLOUDS` feature renderer's `execute` at
+`WebGPUFeatureRenderers.ts:878`. It is the pre-C13-46 single-call cloud pass: consume the config,
+march, composite, all inside the environmental-effects stage.
+
+**Why it is caller-less now.** C13-46 split that single call into an eight-function prepared-frame
+lifecycle so the transmittance mask can be encoded *before* post-processing and the god-ray generate
+pass can consume it in the same frame. The frame path now reaches the renderer through
+`getFeatureRendererReadiness(FeatureRendererKey.PROCEDURAL_CLOUDS)` in
+`WebGPUSceneRendererPostFrustumChain.ts:266` and calls `prepareCloudFrameAndEncodeMask` /
+`executePreparedCloudFrame`. `WebGPUSceneRendererEnvironmentalEffects.ts:329` calls
+`executePreparedCloudFrame`, never `.execute`. Measured at this tree: the only non-comment
+occurrences of `executeProceduralClouds` are its own definition and the registry line.
+
+**Disposition: KEEP.** Two reasons, both concrete rather than "leave it":
+
+1. It is the registry's `execute` slot. Removing the function means either removing that slot — a
+   `GraphicsContext` feature-renderer surface change that every `execute`-shaped caller and the
+   webgl-only variant's exemption reasoning would have to be re-checked against — or leaving the
+   slot bound to `undefined`, which turns a would-be call into a silent no-op instead of a loud one.
+2. Four probes document the frame's per-frame counter reset as living at the top of
+   `executeProceduralClouds` (`Tools/visual-regression/lib/cloud-refresh-skip.mjs:22,74,236`,
+   `probe-cloud-reconstruction-attachments.mjs:361`, `probe-cloud-reconstruction-consume.mjs:448`,
+   `cloud-refresh-skip.spec.mjs:145`). The reset itself moved — `resetCloudFrameCounters` is now
+   called from `beginCloudFrameAttempt` (`WebGPUProceduralCloudRenderer.ts:1140`) — so those probes'
+   *stated mechanism* is stale even though their measurements still hold. Removing the function
+   before those probe comments are reconciled would strand the only text that explains what they
+   measure.
+
+**The follow-up that discharges the KEEP:** a row that (a) reconciles those six probe/spec comments
+onto `beginCloudFrameAttempt`, and (b) then decides whether `execute` stays registered as a
+compatibility entry point or the slot is retired. Until that row runs, this stays. Filed for the
+seat to queue; not opened here because it is probe-comment work, not renderer work.
+
+### NEW-WEBGPU-CLOUD-TRANSMITTANCE-CAPTURE-ACCESSORS-CALLER-LESS — `setCloudTransmittanceCapture` and `getCloudTransmittanceView` have no production caller (RECORDED 2026-09-10, lane C2 / Harding — disposition **REMOVE-LATER**)
+
+**What they are.** `WebGPUProceduralCloudRenderer.ts:1565` and `:1586`. Before C13-46,
+`configureWebGPUPostProcessPipeline` set the capture flag and read back the view each frame, which
+is how the god-ray effect got a cloud mask — and why it got **last** frame's mask: the configure
+step runs before the cloud pass, which ran in the environmental stage after post-processing.
+
+**Why they are caller-less now.** C13-46 deleted that block from
+`WebGPUPostProcessStageCollection.ts` (the import is gone in the same change). Capture is now a
+per-frame *plan* field — `ResolvedCloudFramePlan.captureRequested`, set from
+`godRayEffect.enabled && scene.godRayCloudAware` in the post-frustum chain — and the mask reaches
+the effect by `godRayEffect.setCloudTransmittanceView(preparation.maskView)` at the point the mask
+is encoded, not by a later read-back accessor. Measured at this tree: no caller in
+`packages/`, `Apps/` or any probe. The only references are inside
+`Tools/visual-regression/webgpu-cloud-godray-current-mask-order.spec.mjs`, which imports both names
+so that its mutants can prove the *old* route is not the one being taken.
+
+**Disposition: REMOVE-LATER, not KEEP.** They are not scaffolding for unfinished work: the
+capability they served is finished and is served better by the plan field. Keeping them is a live
+hazard — a second, stale way to publish a mask alongside the authoritative one is exactly the shape
+that produced the one-frame-stale god ray in the first place. They stay in this batch only because
+removing an export in the same change that lands the lifecycle would fold a deletion into an
+adoption and cost the mask-order spec its negative control.
+
+**The row that removes them:** a follow-up that (a) rewrites the mask-order spec's two mutant
+imports to reference the lifecycle entry points instead, then (b) deletes both functions and their
+`CloudCache` capture flag if nothing else reads it. Filed for the seat to queue. **Do not convert
+this to a KEEP** on the strength of Principle 7 alone: Principle 7's own text warns that its
+illustrative anecdote inverted a remove-later disposition into a must-not-remove claim once already
+(2026-08-21), and this entry is the disposition of record for these two symbols.
+
+### NEW-WEBGPU-ENVIRONMENTAL-SNAPSHOT-NARROWING-REACHES-NON-CLOUD-STAGES — full-screen SSR, fog, NPR outlines and contact shadows are now skipped on a frame whose post-processed snapshot was not copied (RECORDED 2026-09-10, lane C2 / Harding — **reviewer sign-off item**)
+
+**The change.** `WebGPUSceneRendererEnvironmentalEffects.ts:276` (post-adoption) reads
+
+```ts
+const snapshotView = cloudFrame.displaySnapshotView ?? undefined;
+```
+
+where it previously read `context._postProcessSnapshotView ?? undefined`. The old value was a
+context field set when the snapshot texture is **allocated**; the new one is set by the post-frustum
+chain only after it has actually encoded `copyTextureToTexture` from **this frame's** post-processed
+canvas (`WebGPUSceneRendererPostFrustumChain.ts:408` region). Every full-screen stage hangs off the
+same `composition`, which is `null` without a snapshot, so the narrowing reaches clouds, NPR
+outlines, contact shadows, SSR and volumetric fog alike. Weather is unaffected: it samples no scene
+colour and still runs.
+
+**Two parts of the audit finding are REFUTED at this tree.**
+
+1. *"…dropping the old `snapshotView ?? context._sceneColorView ?? context.currentTextureView`
+   fallback"* — that fallback fed **only** the early-return guard. At the pre-change tree
+   `colorView` occurred at three lines (declaration, and the `if (!colorView || …) return;`), and
+   `beginEnvironmentalEffectsComposition` was already called with `snapshotView`, not `colorView`.
+   No stage has sampled `_sceneColorView` on this path since before the change.
+2. *"…and the early return"* — the guard is not weakened. `!colorView` was true only when snapshot,
+   `_sceneColorView` **and** `currentTextureView` were all absent; `currentTextureView` is
+   `outputView`, so `!colorView ⇒ !outputView`. Old `(!colorView || !depthView || !outputView)` and
+   new `(!depthView || !outputView)` are logically the same predicate.
+
+**What actually narrowed**, then, is the case where the copy could not be encoded or threw:
+`hasEnvironmentalEffectDemand` false while a stage is enabled, a missing encoder or snapshot
+texture, a zero-sized snapshot, a null canvas texture, or a throwing
+`copyTextureToTexture`. In those frames the stages previously composited whatever the snapshot
+texture happened to hold — an *older frame's* canvas, or uninitialised contents on the first frame
+— and now composite nothing. The first sub-case cannot arise for the non-cloud stages:
+`hasEnvironmentalEffectDemand` (`WebGPUSceneRendererEnvironmentDemand.ts`) is a strict superset of
+`fullscreenEffectDemand` for SSR, fog, NPR outlines and contact shadows.
+
+**Judgement, offered for sign-off rather than asserted:** skipping is the defensible outcome, because
+the alternative is not "the stage works" but "the stage composites a stale or uninitialised frame".
+It is nevertheless a behavioural narrowing of four non-cloud stages that arrived inside a cloud
+change, and it is **Hirgon's named sign-off item** for this lane.
+
+**Pinned by** `Tools/visual-regression/environmental-snapshot-gate.spec.mjs` — positive control, the
+narrowing stated stage by stage, weather still running, and an inertness control that restores the
+pre-change fallback and requires the narrowing assertion to go red.
+
+### NEW-WEBGPU-SKY-AND-CLOUD-WORLDRAY-CONVENTIONS-DIVERGED — two `SkyAtmosphere.wgsl` comments claimed a mirror of the cloud renderer's `getWorldRay` that a parity fix would act on and break (FIXED 2026-09-10, lane C2 / Harding)
+
+`SkyAtmosphere.wgsl:264` said its `getWorldRay` "Mirror[s] the cloud renderer's"; `:154` said the
+same of the uniforms feeding it. The audit named only `:264`; there were two.
+
+The two are now legitimately different, and the algebra is closed rather than asserted:
+
+- **Sky.** `vertexMainFullscreen` writes `output.position = vec4(tx*2-1, ty*2-1, 1, 1)` and
+  `output.uv = vec2(tx, ty)`. `uv` *is* NDC remapped to [0,1] with a bottom-left origin, so
+  `uv * 2 - 1` recovers exactly the NDC the vertex stage emitted. Correct as written.
+- **Clouds.** `ProceduralClouds.wgsl:402` writes `out.uv = vec2(x*0.5+0.5, 1 - (y*0.5+0.5))` — a
+  top-left-origin framebuffer uv — so recovering NDC requires `1 - uv.y*2`, which is exactly the
+  C13-43 repair. The pre-repair `uv * 2 - 1` was a genuine vertical flip of every primary cloud ray.
+
+Both comments now state which uv space each shader feeds and that unifying the two bodies inverts
+one shader's vertical ray direction. **Still owed:** a guard that fails if either body is edited to
+match the other. Filed as the next concrete step; not written here because the lane's timebox went
+to the mask-order and snapshot-gate proof bars.

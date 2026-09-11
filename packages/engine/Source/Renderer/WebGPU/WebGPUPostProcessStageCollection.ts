@@ -63,12 +63,6 @@ import {
 // Resolves the renderer-wide log-depth state threaded into depth-reading
 // post-process uniform buffers.
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
-// Request and read the procedural cloud renderer's screen-space
-// transmittance mask, which resolves cloud occlusion of the god-ray shaft.
-import {
-  setCloudTransmittanceCapture,
-  getCloudTransmittanceView,
-} from "./WebGPUProceduralCloudRenderer.js";
 // The shared cloud-shadow relative-to-eye frame owner.
 import {
   type CloudShadowFrame,
@@ -90,7 +84,9 @@ export interface PostProcessCache {
   // GodRay (volumetric light scattering) post-process. Activated by
   // `scene.godRayEnabled = true`, with an optional `scene.godRayConfig`; the
   // per-frame configure pass updates the sun screen UV from
-  // `scene.sun.position` projected through the view-projection.
+  // `scene.sun.position` projected through the view-projection. A frame whose
+  // sun is behind the camera, non-finite or grazing the camera plane skips
+  // both passes unless `scene.godRayBehindCamera` opts back in — default off.
   godRayEnabled: boolean;
   godRayInitialized: boolean;
   // Screen-space solar halo, driven by `scene.sunBloom`, which defaults true
@@ -1012,13 +1008,13 @@ function configureWebGPUPostProcessPipeline(
   // through `scene.godRayConfig`. Skipped when the scene has no sun
   // configured, because the effect needs the sun's screen-space position to
   // orient the radial blur.
+  const godRayConfig = (
+    scene as unknown as {
+      godRayConfig?: import("./WebGPUGodRayEffect.js").GodRayConfig;
+    }
+  )?.godRayConfig;
   if (cache.godRayEnabled && !pipeline.godRayEffect) {
-    const cfg = (
-      scene as unknown as {
-        godRayConfig?: import("./WebGPUGodRayEffect.js").GodRayConfig;
-      }
-    )?.godRayConfig;
-    pipeline.addGodRay(device, canvasFormat, cfg, useShaderF16);
+    pipeline.addGodRay(device, canvasFormat, godRayConfig, useShaderF16);
     cache.godRayInitialized = true;
   }
   // GodRay's enable rides `pipeline.godRayEffect.enabled` directly.
@@ -1027,52 +1023,24 @@ function configureWebGPUPostProcessPipeline(
   // name, so routing the god ray through it would be a silent no-op and a
   // second, misleading enable surface.
   if (cache.godRayEnabled && pipeline.godRayEffect) {
-    pipeline.godRayEffect.enabled = true;
-    updateGodRaySunUV(pipeline, scene);
+    pipeline.godRayEffect.updateConfig(godRayConfig);
+    // One determination, two consumers. `updateGodRaySunUV` publishes the
+    // boolean to the shader as `params3.y` and returns it here, where it also
+    // decides whether the two passes run.
+    //
+    // A sun the shaft cannot be built from normally skips both passes, which
+    // is the cheap path and keeps default parity. `scene.godRayBehindCamera`
+    // is the opt-in that keeps them running instead — additive WebGPU behind a
+    // toggle, default off — so that a shader arm for the behind-camera case
+    // has a live pass to run in. It is not a quality switch: with it off the
+    // frame is identical to one with no god ray at all.
+    const sunUsable = updateGodRaySunUV(pipeline, scene);
+    const behindCameraOptIn =
+      (scene as unknown as { godRayBehindCamera?: boolean })
+        ?.godRayBehindCamera === true;
+    pipeline.godRayEffect.enabled = sunUsable || behindCameraOptIn;
   } else if (pipeline.godRayEffect) {
     pipeline.godRayEffect.enabled = false;
-  }
-
-  // When the opt-in `scene.godRayCloudAware` flag is on and both god rays and
-  // procedural clouds are active, request the cloud renderer's screen-space
-  // transmittance mask and feed it to the god-ray generate pass, so dense
-  // clouds attenuate the shaft and crepuscular rays form through the gaps.
-  // The capture flag is honoured by the next cloud pass, while the view read
-  // here is the mask the cloud pass rendered this frame — null on the warmup
-  // frame or when culled, at which point the effect uses its white 1×1
-  // fallback. With the flag absent or clouds off, the capture is released and
-  // the view cleared, leaving depth-only god rays.
-  if (pipeline.godRayEffect) {
-    const sceneCtx = (scene as unknown as { context?: unknown })?.context;
-    // Cloud-unification epic slice 4A/4B — the volumetric-cloud gate reads the
-    // managed default cloud collection's exclusive `renderMode` (VOLUMETRIC === 1).
-    // The legacy `globe.showProceduralClouds` field was removed in 4B — the
-    // collection's `renderMode` is the single authority. Default (BILLBOARD) →
-    // false → the depth-only god rays stay byte-identical.
-    const godRayGlobe = (
-      scene as unknown as {
-        globe?: {
-          defaultCloudCollection?: { renderMode?: number };
-        };
-      }
-    )?.globe;
-    const cloudsActive = godRayGlobe?.defaultCloudCollection?.renderMode === 1; // CloudRenderMode.VOLUMETRIC
-    const cloudAwareRequested =
-      cache.godRayEnabled &&
-      (scene as unknown as { godRayCloudAware?: boolean })?.godRayCloudAware ===
-        true &&
-      cloudsActive;
-    if (sceneCtx) {
-      const ctx = sceneCtx as Parameters<
-        typeof setCloudTransmittanceCapture
-      >[0];
-      setCloudTransmittanceCapture(ctx, cloudAwareRequested);
-      pipeline.godRayEffect.setCloudTransmittanceView(
-        cloudAwareRequested ? getCloudTransmittanceView(ctx) : null,
-      );
-    } else if (!cloudAwareRequested) {
-      pipeline.godRayEffect.setCloudTransmittanceView(null);
-    }
   }
 
   // HeatShimmer lazy init, plus the per-frame clock, intensity and
@@ -1637,13 +1605,52 @@ function pushSunBloomFrameState(
 // primitive is configured — through the camera's view-projection matrix and
 // converting NDC to UV. Off-screen suns emit UVs outside [0, 1]; the GodRay
 // shader still produces a directional glow across the visible region.
+//
+// The returned boolean is the SINGLE determination of whether this frame's sun
+// is one the shaft can be built from. It reaches the shader as `params3.y` via
+// `setSunScreenUV`, and the caller uses the same boolean to decide whether the
+// two passes run at all. There is no second opinion anywhere.
 const _godRayScratchClip = new Float64Array(4);
+
+// The bound past which a projected sun UV has stopped being a screen position.
+//
+// The UV is packed into an f32 uniform and the generate pass forms
+// `sunUV - in.uv` with `in.uv` in [0, 1]. f32 has a 24-bit significand, so at
+// |sunUV| >= 2^24 the ULP is 2.0 and `in.uv` is absorbed entirely: every pixel
+// receives the identical march direction and the radial gather has no
+// convergence point left. Since `uv = ndc * 0.5 + 0.5`, that is |ndc| ~ 2^25.
+//
+// Expressed on `cw` — which is what actually grazes zero — `ndc = c / cw`
+// gives the epsilon `cw <= max(|cx|, |cy|) / 2^25`. It is derived, not chosen:
+// it comes from the f32 significand and the shader's own use of the value. It
+// is also scale-invariant, so it holds for a sun at 1.5e11 m and for a
+// unit-scale test projection alike, and it degenerates correctly — a sun
+// exactly on the view axis has cx = cy = 0, the epsilon is 0, and only the
+// genuine `cw <= 0` case is rejected.
+const SUN_NDC_F32_LIMIT = 2 ** 25;
+
+// Where the UV is parked when the projection produced no usable one at all —
+// no sun, no matrix, a non-finite coordinate. The shader returns before
+// reading `params0.xy` once `sunUnusable` is set, so the value is inert there;
+// parking it at the screen centre rather than leaving the previous frame's UV
+// resident means the buffer never carries a screen position from an older
+// camera, which is the stale-shaft defect the `cw <= 0` arm removed.
+const SUN_UV_UNRESOLVED = 0.5;
 function updateGodRaySunUV(
   pipeline: WebGPUPostProcessPipeline,
   scene?: CesiumScene,
-): void {
+): boolean {
   const fx = pipeline.godRayEffect;
-  if (!fx) return;
+  if (!fx) return false;
+  // Every rejection funnels through here so the shader's flag is published on
+  // the same call that publishes the UV — one setter, one authority. `u`/`v`
+  // carry the antisolar point when the sun is behind the camera, which is the
+  // convergence point an anticrepuscular mode wants, and the parked centre
+  // when the projection yielded nothing at all.
+  const unusable = (u: number, v: number): boolean => {
+    fx.setSunScreenUV(u, v, false);
+    return false;
+  };
   const us = (
     scene as unknown as {
       context?: { uniformState?: unknown };
@@ -1662,7 +1669,9 @@ function updateGodRaySunUV(
         currentFrustum?: { x: number; y: number };
       }
     | undefined;
-  if (!us || !us.viewProjection) return;
+  if (!us || !us.viewProjection) {
+    return unusable(SUN_UV_UNRESOLVED, SUN_UV_UNRESOLVED);
+  }
   const vp = us.viewProjection;
   // Use sun position when available; else extrapolate the sun direction
   // far enough to project off the camera (constant 1.5e8 km mirrors the
@@ -1679,19 +1688,50 @@ function updateGodRaySunUV(
     sy = us.sunDirectionWC.y * 1.5e11;
     sz = us.sunDirectionWC.z * 1.5e11;
   } else {
-    return;
+    return unusable(SUN_UV_UNRESOLVED, SUN_UV_UNRESOLVED);
+  }
+  if (!Number.isFinite(sx) || !Number.isFinite(sy) || !Number.isFinite(sz)) {
+    return unusable(SUN_UV_UNRESOLVED, SUN_UV_UNRESOLVED);
   }
   // viewProjection is column-major mat4; NDC = vp * [sx, sy, sz, 1].
   const cx = vp[0] * sx + vp[4] * sy + vp[8] * sz + vp[12];
   const cy = vp[1] * sx + vp[5] * sy + vp[9] * sz + vp[13];
   const cw = vp[3] * sx + vp[7] * sy + vp[11] * sz + vp[15];
-  if (cw === 0 || !isFinite(cw)) return;
+  if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(cw)) {
+    return unusable(SUN_UV_UNRESOLVED, SUN_UV_UNRESOLVED);
+  }
+  // A sun behind the camera (cw < 0) still projects: it lands on the antisolar
+  // point, which is where an anticrepuscular shaft would converge. A sun
+  // grazing the camera plane does not — see SUN_NDC_F32_LIMIT. Both are
+  // rejected here, but the behind-camera case is rejected WITH its UV, so a
+  // future antisolar mode has the convergence point it needs.
+  // The epsilon is on the MAGNITUDE of cw: a sun grazing the camera plane
+  // blows the NDC up the same way whether it grazes from in front or behind,
+  // and `cw === 0` lands here too because the epsilon is never negative.
+  const cwEpsilon = Math.max(Math.abs(cx), Math.abs(cy)) / SUN_NDC_F32_LIMIT;
+  if (Math.abs(cw) <= cwEpsilon) {
+    return unusable(SUN_UV_UNRESOLVED, SUN_UV_UNRESOLVED);
+  }
   const ndcX = cx / cw;
   const ndcY = cy / cw;
+  if (!Number.isFinite(ndcX) || !Number.isFinite(ndcY)) {
+    return unusable(SUN_UV_UNRESOLVED, SUN_UV_UNRESOLVED);
+  }
   // NDC [-1, 1] -> UV [0, 1]; flip Y so origin is top-left.
   const u = ndcX * 0.5 + 0.5;
   const v = -ndcY * 0.5 + 0.5;
-  fx.setSunScreenUV(u, v);
+  if (
+    !Number.isFinite(u) ||
+    !Number.isFinite(v) ||
+    !Number.isFinite(Math.fround(u)) ||
+    !Number.isFinite(Math.fround(v))
+  ) {
+    return unusable(SUN_UV_UNRESOLVED, SUN_UV_UNRESOLVED);
+  }
+  if (cw <= 0) {
+    return unusable(u, v);
+  }
+  fx.setSunScreenUV(u, v, true);
   // Pull the frustum span from the camera object, not from
   // `uniformState.currentFrustum`. The latter is mutated per frustum during
   // command execution, and by the time the configure pass runs it reflects
@@ -1724,6 +1764,7 @@ function updateGodRaySunUV(
   // Touch the scratch slot so esbuild can't tree-shake the alloc that
   // future versions may use for SIMD-aware projection.
   _godRayScratchClip[0] = cx;
+  return true;
 }
 
 /**

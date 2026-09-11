@@ -151,8 +151,10 @@ struct Uniforms {
   windDirectionAndSpeed: vec4<f32>,
   // Fullscreen-sky path (view-independent sky option). The shell-mesh path
   // ignores these; the fullscreen path reconstructs the per-pixel world ray
-  // from screen UV with them (mirrors the cloud renderer's getWorldRay). Packed
-  // at float offsets 68 (inverseProjection) and 84 (inverseView).
+  // from screen UV with them. That reconstruction is NOT interchangeable with
+  // the cloud renderer's `getWorldRay` — see the note on this file's own
+  // `getWorldRay` for why the two UV conventions differ. Packed at float
+  // offsets 68 (inverseProjection) and 84 (inverseView).
   inverseProjection: mat4x4<f32>,
   inverseView: mat4x4<f32>,
   // Optional atmosphere-physics gates. Zero selects the single-light
@@ -261,9 +263,21 @@ struct VertexOutput {
 };
 
 // Reconstruct the world-space view ray from screen UV (fullscreen sky path).
-// Mirror the cloud renderer's `getWorldRay` in `ProceduralClouds.wgsl`. NDC z=1
-// selects a far-plane point; clearing w before inverse view produces a
+// NDC z=1 selects a far-plane point; clearing w before inverse view produces a
 // direction.
+//
+// This is deliberately NOT the same mapping as the cloud renderer's
+// `getWorldRay` in `ProceduralClouds.wgsl`, and unifying them would break this
+// shader. The two shaders feed `getWorldRay` different uv spaces:
+//   * here, `vertexMainFullscreen` writes `output.uv = vec2(tx, ty)` next to
+//     `output.position = vec4(tx * 2 - 1, ty * 2 - 1, 1, 1)`, so uv is already
+//     NDC remapped to [0, 1] with a bottom-left origin, and `uv * 2 - 1`
+//     recovers the exact NDC the vertex stage emitted;
+//   * the cloud shader writes `out.uv = vec2(x * 0.5 + 0.5, 1 - (y * 0.5 +
+//     0.5))`, a top-left-origin framebuffer uv, so it must undo that flip with
+//     `1 - uv.y * 2` on the y component.
+// A "parity fix" that copies either body into the other inverts one shader's
+// vertical ray direction.
 fn getWorldRay(uv: vec2<f32>) -> vec3<f32> {
   let ndc = vec4<f32>(uv * 2.0 - 1.0, 1.0, 1.0);
   var viewDir = u.inverseProjection * ndc;

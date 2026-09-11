@@ -2088,15 +2088,15 @@ fn multiScatterLight(opticalDepth: f32, cosTheta: f32, powder: f32, octaves: i32
 
 // Reconstruct a world-space ray from UV
 fn getWorldRay(uv: vec2<f32>) -> vec3<f32> {
-  let ndc = vec4<f32>(uv * 2.0 - 1.0, 1.0, 1.0);
+  let ndc = vec4<f32>(vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0), 1.0, 1.0);
   var viewDir = cloud.inverseProjection * ndc;
   viewDir.w = 0.0;
   let worldDir = cloud.inverseView * viewDir;
   return normalize(worldDir.xyz);
 }
 
-// Reverse the renderer-wide logarithmic depth to a positive eye-space distance
-// along the view ray, in metres. Byte-compatible with
+// Reverse the renderer-wide logarithmic depth to a positive distance along the
+// camera's forward axis, in metres. Byte-compatible with
 // csm_reverseLogDepthToEyeDistance and
 // AerialPerspective.wgsl::logDepthToEyeDistance.
 fn logDepthToEyeDistance(logZ: f32, near: f32, far: f32) -> f32 {
@@ -2263,29 +2263,31 @@ fn marchDeck(
   var tEnd: f32;
 
   if (cameraAltitude < deckBottom) {
-    // Below clouds: start at inner sphere, end at outer
+    // Below clouds: cross the inner boundary before entering the cloud shell.
     tStart = max(tInner.y, 0.0);
     tEnd = tOuter.y;
   } else if (cameraAltitude > deckTop) {
-    // Above clouds: start at outer sphere front, end at inner
+    // A ray may cross the outer shell without reaching the inner boundary.
     tStart = max(tOuter.x, 0.0);
-    tEnd = tInner.x;
+    tEnd = select(tOuter.y, min(tOuter.y, tInner.x), tInner.x > tStart);
   } else {
-    // Inside cloud layer
+    // Stop at the first forward boundary, whether the ray points in or out.
     tStart = 0.0;
-    tEnd = tOuter.y;
+    tEnd = select(tOuter.y, min(tOuter.y, tInner.x), tInner.x > 0.0);
   }
 
   // Depth occlusion. Stop the march at opaque scene geometry — globe, terrain,
   // tiles — so clouds do not render through the Earth. `sceneDepth` is the
-  // renderer-wide log depth; reversing it gives an along-ray eye distance to
-  // clamp tEnd against. Sky pixels carry the cleared far depth, so tSceneHit is
-  // ≈ far, no clamp applies and the full sky shell still marches. If terrain
+  // renderer-wide log depth; convert its eye-axis distance to the normalized
+  // ray parameter before clamping tEnd. Sky pixels carry the cleared far depth,
+  // so no clamp applies and the full sky shell still marches. If terrain
   // sits in front of the whole layer, tEnd clamps below tStart and the early-out
   // below returns transparent. Nothing writes depth: clouds are a translucent
   // over-composite.
   if (sceneDepth < 0.999999) {
-    let tSceneHit = logDepthToEyeDistance(sceneDepth, cloud.nearPlane, cloud.farPlane);
+    let cameraForward = normalize(-cloud.inverseView[2].xyz);
+    let tSceneHit = logDepthToEyeDistance(sceneDepth, cloud.nearPlane, cloud.farPlane) /
+      max(dot(rayDir, cameraForward), 1e-6);
     tEnd = min(tEnd, tSceneHit);
   }
 

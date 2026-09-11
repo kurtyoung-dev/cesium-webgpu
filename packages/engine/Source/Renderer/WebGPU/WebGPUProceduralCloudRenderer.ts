@@ -238,6 +238,153 @@ export interface CloudUpscaleBindGroupEntry {
   bindGroup: GPUBindGroup;
 }
 
+const cloudAttemptBrand = Symbol("cloud-frame-attempt");
+const preparedCloudFrameBrand = Symbol("prepared-cloud-frame");
+const cloudMaskReceiptBrand = Symbol("cloud-mask-receipt");
+
+type CloudNegativeReason =
+  | "feature-not-ready"
+  | "missing-device"
+  | "missing-encoder"
+  | "missing-raw-color"
+  | "missing-depth"
+  | "culled"
+  | "resource-not-ready"
+  | "preparation-busy"
+  | "encoder-mismatch"
+  | "encoder-abandoned";
+
+interface CloudFrameAttempt {
+  readonly brand: typeof cloudAttemptBrand;
+  readonly plan: object;
+  readonly context: CesiumGraphicsContext;
+  readonly frameNumber: number;
+  readonly cpuStages: CloudCpuStageAccumulator;
+  readonly counters: CloudFrameCounters;
+  cache: CloudCache | null;
+  readonly busy: boolean;
+  lease: CloudPreparationLease | null;
+  totalGeneration: number;
+  totalPaused: boolean;
+  totalEnded: boolean;
+  outcomePublished: boolean;
+  finalized: boolean;
+  originalError: unknown;
+  negativeOutcome: NegativeCloudFrameOutcome | null;
+}
+
+interface CloudMaskResourceEpoch {
+  readonly generation: number;
+  readonly texture: GPUTexture;
+  readonly view: GPUTextureView;
+  readonly width: number;
+  readonly height: number;
+  readonly device: GPUDevice;
+  readonly resourceGeneration: number;
+  destroyAttempted: boolean;
+  terminal: boolean;
+}
+
+interface CloudPreparationLease {
+  readonly attempt: CloudFrameAttempt;
+  readonly context: CesiumGraphicsContext;
+  readonly device: GPUDevice;
+  readonly resourceGeneration: number;
+  readonly producerEncoder: GPUCommandEncoder;
+  readonly pendingEncoders: Set<GPUCommandEncoder>;
+  readonly submittedEncoders: Set<GPUCommandEncoder>;
+  readonly abandonedEncoders: Set<GPUCommandEncoder>;
+  readonly retiredMaskEpochs: Set<CloudMaskResourceEpoch>;
+  cache: CloudCache | null;
+  receipt: CloudMaskReceipt | null;
+  godRayFutureOpen: boolean;
+  lateVisibleFutureOpen: boolean;
+  usable: boolean;
+  terminal: boolean;
+}
+
+interface CloudMainUniformEpoch {
+  readonly serial: number;
+  readonly buffer: GPUBuffer;
+  readonly offset: 0;
+  readonly byteLength: number;
+  readonly frameNumber: number;
+  readonly device: GPUDevice;
+  readonly resourceGeneration: number;
+  readonly preparationLease: CloudPreparationLease;
+}
+
+interface CloudNonColorBindings {
+  readonly depth: GPUTextureView;
+  readonly mainSampler: GPUSampler;
+  readonly uniform: CloudMainUniformEpoch;
+  readonly weatherView: GPUTextureView;
+  readonly weatherSampler: GPUSampler;
+  readonly shapeView: GPUTextureView;
+  readonly detailView: GPUTextureView;
+  readonly noiseSampler: GPUSampler;
+  readonly skyView: GPUTextureView;
+  readonly multipleScatter: GPUTextureView;
+  readonly transmittance: GPUTextureView;
+  readonly lutSampler: GPUSampler;
+}
+
+interface PreparedCloudFrame {
+  readonly brand: typeof preparedCloudFrameBrand;
+  readonly plan: object;
+  readonly attempt: CloudFrameAttempt;
+  readonly lease: CloudPreparationLease;
+  readonly device: GPUDevice;
+  readonly resourceGeneration: number;
+  readonly width: number;
+  readonly height: number;
+  readonly uniformEpoch: CloudMainUniformEpoch;
+  readonly nonColorBindings: CloudNonColorBindings;
+  readonly earlyMaskGroup: GPUBindGroup;
+  readonly executeLate: (
+    colorView: GPUTextureView,
+    depthView: GPUTextureView,
+    outputView: GPUTextureView,
+    encoder: GPUCommandEncoder,
+  ) => boolean;
+}
+
+interface CloudMaskReceipt {
+  readonly brand: typeof cloudMaskReceiptBrand;
+  readonly prepared: PreparedCloudFrame;
+  readonly resource: CloudMaskResourceEpoch;
+  readonly producerEncoder: GPUCommandEncoder;
+}
+
+type PreparedCloudFrameOutcome = {
+  readonly kind: "prepared";
+  readonly plan: object;
+  readonly prepared: PreparedCloudFrame;
+  readonly receipt: CloudMaskReceipt | null;
+  readonly maskView: GPUTextureView | null;
+};
+
+type NegativeCloudFrameOutcome = {
+  readonly kind: "negative";
+  readonly plan: object;
+  readonly reason: CloudNegativeReason;
+  readonly maskView: null;
+  readonly attempt: CloudFrameAttempt | null;
+};
+
+type CloudFrameOutcome = PreparedCloudFrameOutcome | NegativeCloudFrameOutcome;
+
+const openCloudPreparationLeases = new WeakMap<
+  CesiumGraphicsContext,
+  CloudPreparationLease
+>();
+const openCloudFrameAttempts = new WeakMap<
+  CesiumGraphicsContext,
+  CloudFrameAttempt
+>();
+const cloudFrameAttempts = new WeakSet<CloudFrameAttempt>();
+const publishedCloudFrameOutcomes = new WeakSet<PreparedCloudFrameOutcome>();
+
 function matrix4IsFinite(matrix: ArrayLike<number> | undefined): boolean {
   if (!matrix || matrix.length < 16) {
     return false;
@@ -342,6 +489,8 @@ export interface CloudCache {
   bindGroupLayout: GPUBindGroupLayout | null;
   sampler: GPUSampler | null;
   uniformData: Float32Array;
+  uniformEpochSerial: number;
+  openPreparationLease: CloudPreparationLease | null;
   mainBindGroups: [
     CloudMainBindGroupEntry | null,
     CloudMainBindGroupEntry | null,
@@ -546,8 +695,8 @@ export interface CloudCache {
   // otherwise, so the composite pass is unchanged when nothing wants the mask.
   // With capture on, a dedicated full-resolution r8unorm target is rendered by
   // the `fragmentCloudMaskMain` entry point, holding transmittance Πᵢ(1-αᵢ),
-  // immediately after the composite pass and sharing its per-frame bind group
-  // and uniforms.
+  // before postprocessing. Its raw-color group and the later display-composite
+  // group share the exact non-color bindings and one uniform upload.
   maskCaptureEnabled: boolean;
   maskTexture: GPUTexture | null;
   maskView: GPUTextureView | null; // r8unorm, 1=clear 0=opaque cloud
@@ -556,6 +705,11 @@ export interface CloudCache {
   maskPipeline: GPURenderPipeline | null;
   maskShaderModule: GPUShaderModule | null;
   maskRenderedThisFrame: boolean;
+  maskGeneration: number;
+  maskResourceEpoch: CloudMaskResourceEpoch | null;
+  currentMaskReceipt: CloudMaskReceipt | null;
+  maskFrameNumber: number;
+  maskReceiptGeneration: number;
   // Reconstruction attachments: front and transmittance-weighted depth,
   // velocity, and the depth/coverage moment pair. `attachmentsEnabled` starts
   // false, so nothing here allocates and no pass is encoded until it is turned
@@ -677,10 +831,381 @@ function createCloudAttachmentUniformInputs(): MutableCloudAttachmentUniformInpu
   };
 }
 
+function cloudResourceGeneration(context: CesiumGraphicsContext): number {
+  return (
+    (
+      context as unknown as {
+        readonly resourceGeneration?: number;
+      }
+    ).resourceGeneration ?? 0
+  );
+}
+
+function currentCloudEncoder(
+  context: CesiumGraphicsContext,
+): GPUCommandEncoder | null {
+  return (
+    (
+      context as unknown as {
+        readonly _currentCommandEncoder?: GPUCommandEncoder | null;
+      }
+    )._currentCommandEncoder ?? null
+  );
+}
+
+/**
+ * Context-tagged error reporter for the whole WebGPU cloud-frame chain: this
+ * module, the post-frustum chain that brackets the frame, and the
+ * environmental-effects stage that composites its result. Principle 3 requires
+ * the context id to reach the message so a multi-context session can tell which
+ * context failed; `GraphicsContext.log` takes a string only, so the prefix is
+ * built here instead and the thrown value is passed through unstringified,
+ * keeping its stack — and, for a non-Error throw, its identity — inspectable in
+ * the console. Never pragma-wrapped: every caller is a real failure that
+ * produces broken output.
+ */
+export function reportCloudLifecycleError(
+  context: CesiumGraphicsContext,
+  message: string,
+  error: unknown,
+): void {
+  console.error(`[CesiumJS:webgpu:ctx-${context.id ?? "?"}] ${message}`, error);
+}
+
+function destroyCloudGpuResource(
+  context: CesiumGraphicsContext,
+  resource: { destroy(): void } | null | undefined,
+  label: string,
+): void {
+  if (!resource) {
+    return;
+  }
+  try {
+    resource.destroy();
+  } catch (error: unknown) {
+    reportCloudLifecycleError(context, `${label} destroy failed.`, error);
+  }
+}
+
+function negativeCloudFrameOutcome(
+  plan: object,
+  reason: CloudNegativeReason,
+  attempt: CloudFrameAttempt | null = null,
+): NegativeCloudFrameOutcome {
+  return Object.freeze({
+    kind: "negative",
+    plan,
+    reason,
+    maskView: null,
+    attempt,
+  });
+}
+
+function endCloudAttemptTotal(attempt: CloudFrameAttempt): void {
+  if (attempt.totalEnded) {
+    return;
+  }
+  attempt.totalEnded = true;
+  attempt.totalPaused = false;
+  try {
+    attempt.cpuStages.endStage(CloudCpuStage.TOTAL, attempt.totalGeneration);
+  } catch (error: unknown) {
+    reportCloudLifecycleError(
+      attempt.context,
+      "Cloud total timing settlement failed.",
+      error,
+    );
+  }
+}
+
+function retireCloudMaskEpoch(
+  lease: CloudPreparationLease,
+  epoch: CloudMaskResourceEpoch,
+): void {
+  if (epoch.destroyAttempted) {
+    lease.retiredMaskEpochs.delete(epoch);
+    return;
+  }
+  epoch.terminal = true;
+  epoch.destroyAttempted = true;
+  lease.retiredMaskEpochs.delete(epoch);
+  try {
+    epoch.texture.destroy();
+  } catch (error: unknown) {
+    reportCloudLifecycleError(
+      lease.context,
+      "Cloud mask retirement destroy failed.",
+      error,
+    );
+  }
+}
+
+function tryRetireCloudPreparation(lease: CloudPreparationLease): void {
+  if (
+    lease.terminal ||
+    lease.pendingEncoders.size !== 0 ||
+    lease.godRayFutureOpen ||
+    lease.lateVisibleFutureOpen
+  ) {
+    return;
+  }
+  lease.terminal = true;
+  const cache = lease.cache;
+  if (cache?.openPreparationLease === lease) {
+    cache.openPreparationLease = null;
+  }
+  if (openCloudPreparationLeases.get(lease.context) === lease) {
+    openCloudPreparationLeases.delete(lease.context);
+  }
+  if (openCloudFrameAttempts.get(lease.context) === lease.attempt) {
+    openCloudFrameAttempts.delete(lease.context);
+  }
+  for (const epoch of lease.retiredMaskEpochs) {
+    retireCloudMaskEpoch(lease, epoch);
+  }
+}
+
+function cancelCloudPreparationLease(lease: CloudPreparationLease): void {
+  lease.godRayFutureOpen = false;
+  lease.lateVisibleFutureOpen = false;
+  endCloudAttemptTotal(lease.attempt);
+  lease.attempt.finalized = true;
+  tryRetireCloudPreparation(lease);
+}
+
+function enrollCloudPreparationEncoder(
+  lease: CloudPreparationLease,
+  encoder: GPUCommandEncoder,
+): boolean {
+  if (
+    lease.terminal ||
+    !lease.usable ||
+    lease.pendingEncoders.has(encoder) ||
+    lease.submittedEncoders.has(encoder)
+  ) {
+    return lease.pendingEncoders.has(encoder);
+  }
+  const enqueue = lease.context.enqueueAfterCommandEncoderSubmit;
+  if (typeof enqueue !== "function") {
+    return false;
+  }
+  lease.pendingEncoders.add(encoder);
+  let accepted = false;
+  try {
+    accepted = enqueue.call(
+      lease.context,
+      encoder,
+      (submitted: boolean): void => {
+        try {
+          if (!lease.pendingEncoders.delete(encoder)) {
+            return;
+          }
+          if (submitted) {
+            lease.submittedEncoders.add(encoder);
+          } else {
+            lease.abandonedEncoders.add(encoder);
+            lease.usable = false;
+            lease.godRayFutureOpen = false;
+            lease.lateVisibleFutureOpen = false;
+            endCloudAttemptTotal(lease.attempt);
+          }
+          tryRetireCloudPreparation(lease);
+        } catch (error: unknown) {
+          reportCloudLifecycleError(
+            lease.context,
+            "Cloud encoder disposition settlement failed.",
+            error,
+          );
+          lease.pendingEncoders.delete(encoder);
+          lease.usable = false;
+          lease.godRayFutureOpen = false;
+          lease.lateVisibleFutureOpen = false;
+          try {
+            endCloudAttemptTotal(lease.attempt);
+            tryRetireCloudPreparation(lease);
+          } catch (settlementError: unknown) {
+            reportCloudLifecycleError(
+              lease.context,
+              "Cloud encoder fallback settlement failed.",
+              settlementError,
+            );
+          }
+        }
+      },
+    );
+  } catch (error: unknown) {
+    reportCloudLifecycleError(
+      lease.context,
+      "Cloud encoder enrollment failed.",
+      error,
+    );
+  }
+  if (!accepted) {
+    lease.pendingEncoders.delete(encoder);
+  }
+  return accepted;
+}
+
+function beginCloudPreparationLease(
+  context: CesiumGraphicsContext,
+  attempt: CloudFrameAttempt,
+  device: GPUDevice,
+  encoder: GPUCommandEncoder,
+): CloudPreparationLease | null {
+  if (
+    openCloudPreparationLeases.has(context) ||
+    context._cloudCache?.openPreparationLease
+  ) {
+    return null;
+  }
+  const lease = {} as CloudPreparationLease;
+  Object.assign(lease, {
+    attempt,
+    context,
+    device,
+    resourceGeneration: cloudResourceGeneration(context),
+    producerEncoder: encoder,
+    pendingEncoders: new Set<GPUCommandEncoder>(),
+    submittedEncoders: new Set<GPUCommandEncoder>(),
+    abandonedEncoders: new Set<GPUCommandEncoder>(),
+    retiredMaskEpochs: new Set<CloudMaskResourceEpoch>(),
+    cache: null,
+    receipt: null,
+    godRayFutureOpen: false,
+    lateVisibleFutureOpen: true,
+    usable: true,
+    terminal: false,
+  });
+  attempt.lease = lease;
+  openCloudPreparationLeases.set(context, lease);
+  if (!enrollCloudPreparationEncoder(lease, encoder)) {
+    openCloudPreparationLeases.delete(context);
+    lease.usable = false;
+    lease.lateVisibleFutureOpen = false;
+    lease.terminal = true;
+    return null;
+  }
+  return lease;
+}
+
+function verifyCloudMutationLease(
+  cache: Pick<CloudCache, "openPreparationLease">,
+  lease: CloudPreparationLease | undefined,
+): void {
+  const openLease = cache.openPreparationLease ?? null;
+  if (openLease !== null && openLease !== lease) {
+    throw new Error("Cloud GPU resources are held by another preparation.");
+  }
+  if (lease && (lease.terminal || !lease.usable)) {
+    throw new Error("Cloud preparation is no longer usable.");
+  }
+}
+
+export function invalidateCloudFrameMask(context: CesiumGraphicsContext): void {
+  const cache = context._cloudCache;
+  if (!cache) {
+    return;
+  }
+  cache.maskRenderedThisFrame = false;
+  cache.currentMaskReceipt = null;
+  cache.maskFrameNumber = -1;
+  cache.maskReceiptGeneration = 0;
+}
+
+export function beginCloudFrameAttempt(
+  context: CesiumGraphicsContext,
+  frameState: CesiumFrameState,
+  planIdentity: object,
+): unknown {
+  const existingCache = context._cloudCache;
+  const existingLease = existingCache?.openPreparationLease ?? null;
+  const busy =
+    openCloudPreparationLeases.has(context) ||
+    existingLease !== null ||
+    openCloudFrameAttempts.has(context);
+  let cache = existingCache ?? null;
+  let cpuStages: CloudCpuStageAccumulator;
+  let counters: CloudFrameCounters;
+  if (busy) {
+    cpuStages = new CloudCpuStageAccumulator();
+    if (existingCache?.cpuStages.snapshot().enabled === true) {
+      cpuStages.setEnabled(true);
+    }
+    counters = createCloudFrameCounters();
+  } else {
+    cache = existingCache ?? ensureCloudCache(context);
+    cpuStages = cache.cpuStages;
+    counters = cache.observability;
+  }
+  resetCloudFrameCounters(counters);
+  const attempt: CloudFrameAttempt = {
+    brand: cloudAttemptBrand,
+    plan: planIdentity,
+    context,
+    frameNumber: frameState.frameNumber,
+    cpuStages,
+    counters,
+    cache,
+    busy,
+    lease: null,
+    totalGeneration: cpuStages.beginStage(CloudCpuStage.TOTAL),
+    totalPaused: false,
+    totalEnded: false,
+    outcomePublished: false,
+    finalized: false,
+    originalError: undefined,
+    negativeOutcome: null,
+  };
+  cloudFrameAttempts.add(attempt);
+  if (!busy) {
+    openCloudFrameAttempts.set(context, attempt);
+  }
+  return attempt;
+}
+
+export function finishNegativeCloudFrameAttempt(
+  value: unknown,
+  reason: CloudNegativeReason,
+): CloudFrameOutcome {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !cloudFrameAttempts.has(value as CloudFrameAttempt)
+  ) {
+    return negativeCloudFrameOutcome(Object.freeze({}), reason);
+  }
+  const attempt = value as CloudFrameAttempt;
+  if (attempt.negativeOutcome) {
+    return attempt.negativeOutcome;
+  }
+  if (attempt.lease) {
+    cancelCloudPreparationLease(attempt.lease);
+  } else {
+    endCloudAttemptTotal(attempt);
+    attempt.finalized = true;
+  }
+  if (openCloudFrameAttempts.get(attempt.context) === attempt) {
+    openCloudFrameAttempts.delete(attempt.context);
+  }
+  const outcome = negativeCloudFrameOutcome(attempt.plan, reason, attempt);
+  attempt.negativeOutcome = outcome;
+  return outcome;
+}
+
 // Exported alongside the other cloud-cache helpers so the device-identity
 // contract can be exercised without standing up a device; the render paths
 // remain its only production callers.
-export function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
+export function ensureCloudCache(
+  context: CesiumGraphicsContext,
+  lease?: CloudPreparationLease,
+): CloudCache {
+  const openAttempt = openCloudFrameAttempts.get(context);
+  if (openAttempt && openAttempt.lease !== lease) {
+    if (context._cloudCache) {
+      return context._cloudCache;
+    }
+    throw new Error("Cloud cache creation is held by an open frame attempt.");
+  }
   // A recovered device reuses this context, so a surviving cache would pass a
   // presence-only check while every pipeline, sampler, texture and bind group
   // in it belongs to the device that was lost. Drop the whole cache in that
@@ -694,7 +1219,8 @@ export function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
     existing.device !== null &&
     shouldRebuildForDevice(existing as { device: GPUDevice }, liveDevice)
   ) {
-    destroyProceduralCloudResources(context);
+    verifyCloudMutationLease(existing, lease);
+    destroyProceduralCloudResources(context, lease);
   }
   if (!context._cloudCache) {
     context._cloudCache = {
@@ -704,6 +1230,8 @@ export function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       bindGroupLayout: null,
       sampler: null,
       uniformData: new Float32Array(CLOUD_UNIFORM_FLOATS),
+      uniformEpochSerial: 0,
+      openPreparationLease: null,
       mainBindGroups: [null, null],
       mainBindGroupNextSlot: 0,
       initialized: false,
@@ -809,6 +1337,11 @@ export function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       maskPipeline: null,
       maskShaderModule: null,
       maskRenderedThisFrame: false,
+      maskGeneration: 0,
+      maskResourceEpoch: null,
+      currentMaskReceipt: null,
+      maskFrameNumber: -1,
+      maskReceiptGeneration: 0,
       attachmentsEnabled: false,
       attachmentTextures: new Array<GPUTexture | null>(
         CLOUD_OWNED_ATTACHMENTS.length,
@@ -847,6 +1380,13 @@ export function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
   // still useful for the flag fields consumers set on it. Adopt the device as
   // soon as one exists so the identity check above has something to compare.
   const cache = context._cloudCache;
+  verifyCloudMutationLease(cache, lease);
+  if (lease) {
+    if (cache.openPreparationLease === null) {
+      cache.openPreparationLease = lease;
+    }
+    lease.cache = cache;
+  }
   if (cache.device === null && liveDevice !== null) {
     cache.device = liveDevice;
   }
@@ -864,28 +1404,41 @@ export function getOrCreateCloudMainBindGroup(
   detailView: GPUTextureView,
   noiseSampler: GPUSampler,
   lutViews: CloudLutViews,
+  lease?: CloudPreparationLease,
+  exactBindings?: CloudNonColorBindings,
 ): GPUBindGroup {
-  const mainSampler = cache.sampler!;
-  const weatherSampler = cache.weatherSampler!;
-  const lutSampler = cache.lutSampler!;
+  verifyCloudMutationLease(cache, lease);
+  const mainSampler = exactBindings?.mainSampler ?? cache.sampler!;
+  const weatherSampler = exactBindings?.weatherSampler ?? cache.weatherSampler!;
+  const lutSampler = exactBindings?.lutSampler ?? cache.lutSampler!;
   const layout = cache.bindGroupLayout!;
-  const uniformBuffer = cache.uniformBuffer!;
+  const uniformBuffer = exactBindings?.uniform.buffer ?? cache.uniformBuffer!;
+  const exactDepthView = exactBindings?.depth ?? depthView;
+  const exactWeatherView = exactBindings?.weatherView ?? weatherView;
+  const exactShapeView = exactBindings?.shapeView ?? shapeView;
+  const exactDetailView = exactBindings?.detailView ?? detailView;
+  const exactNoiseSampler = exactBindings?.noiseSampler ?? noiseSampler;
+  const exactSkyView = exactBindings?.skyView ?? lutViews.skyView;
+  const exactMultipleScatter =
+    exactBindings?.multipleScatter ?? lutViews.multipleScatter;
+  const exactTransmittance =
+    exactBindings?.transmittance ?? lutViews.transmittance;
   for (let i = 0; i < cache.mainBindGroups.length; i++) {
     const entry = cache.mainBindGroups[i];
     if (
       entry?.layout === layout &&
       entry.uniformBuffer === uniformBuffer &&
       entry.colorView === colorView &&
-      entry.depthView === depthView &&
+      entry.depthView === exactDepthView &&
       entry.mainSampler === mainSampler &&
-      entry.weatherView === weatherView &&
+      entry.weatherView === exactWeatherView &&
       entry.weatherSampler === weatherSampler &&
-      entry.shapeView === shapeView &&
-      entry.detailView === detailView &&
-      entry.noiseSampler === noiseSampler &&
-      entry.skyView === lutViews.skyView &&
-      entry.multipleScatterView === lutViews.multipleScatter &&
-      entry.transmittanceView === lutViews.transmittance &&
+      entry.shapeView === exactShapeView &&
+      entry.detailView === exactDetailView &&
+      entry.noiseSampler === exactNoiseSampler &&
+      entry.skyView === exactSkyView &&
+      entry.multipleScatterView === exactMultipleScatter &&
+      entry.transmittanceView === exactTransmittance &&
       entry.lutSampler === lutSampler
     ) {
       return entry.bindGroup;
@@ -896,17 +1449,17 @@ export function getOrCreateCloudMainBindGroup(
     layout,
     entries: [
       { binding: 0, resource: colorView },
-      { binding: 1, resource: depthView },
+      { binding: 1, resource: exactDepthView },
       { binding: 2, resource: mainSampler },
       { binding: 3, resource: { buffer: uniformBuffer } },
-      { binding: 4, resource: weatherView },
+      { binding: 4, resource: exactWeatherView },
       { binding: 5, resource: weatherSampler },
-      { binding: 6, resource: shapeView },
-      { binding: 7, resource: detailView },
-      { binding: 8, resource: noiseSampler },
-      { binding: 9, resource: lutViews.skyView },
-      { binding: 10, resource: lutViews.multipleScatter },
-      { binding: 11, resource: lutViews.transmittance },
+      { binding: 6, resource: exactShapeView },
+      { binding: 7, resource: exactDetailView },
+      { binding: 8, resource: exactNoiseSampler },
+      { binding: 9, resource: exactSkyView },
+      { binding: 10, resource: exactMultipleScatter },
+      { binding: 11, resource: exactTransmittance },
       { binding: 12, resource: lutSampler },
     ],
   });
@@ -915,16 +1468,16 @@ export function getOrCreateCloudMainBindGroup(
     layout,
     uniformBuffer,
     colorView,
-    depthView,
+    depthView: exactDepthView,
     mainSampler,
-    weatherView,
+    weatherView: exactWeatherView,
     weatherSampler,
-    shapeView,
-    detailView,
-    noiseSampler,
-    skyView: lutViews.skyView,
-    multipleScatterView: lutViews.multipleScatter,
-    transmittanceView: lutViews.transmittance,
+    shapeView: exactShapeView,
+    detailView: exactDetailView,
+    noiseSampler: exactNoiseSampler,
+    skyView: exactSkyView,
+    multipleScatterView: exactMultipleScatter,
+    transmittanceView: exactTransmittance,
     lutSampler,
     bindGroup,
   };
@@ -939,7 +1492,9 @@ export function getOrCreateCloudUpscaleBindGroup(
   upscaleSourceView: GPUTextureView,
   colorView: GPUTextureView,
   depthView: GPUTextureView,
+  lease?: CloudPreparationLease,
 ): GPUBindGroup {
+  verifyCloudMutationLease(cache, lease);
   const sampler = cache.upscaleSampler!;
   const layout = cache.upscaleBindGroupLayout!;
   const uniformBuffer = cache.upscaleUniformBuffer!;
@@ -988,8 +1543,11 @@ export function clearCloudCompositeBindGroupCaches(
     | "mainBindGroupNextSlot"
     | "upscaleBindGroups"
     | "upscaleBindGroupNextSlot"
+    | "openPreparationLease"
   >,
+  lease?: CloudPreparationLease,
 ): void {
+  verifyCloudMutationLease(cache, lease);
   cache.mainBindGroups = [null, null];
   cache.mainBindGroupNextSlot = 0;
   cache.upscaleBindGroups = [null, null];
@@ -1001,7 +1559,7 @@ export function clearCloudCompositeBindGroupCaches(
  * post-process god-ray pass turns this on when cloud-aware god rays are active
  * and procedural clouds are enabled; the cloud renderer then renders the
  * `fragmentCloudMaskMain` pass into a dedicated full-resolution r8unorm target
- * after the composite pass. While it is off, no mask pipeline or texture is
+ * before postprocessing. While it is off, no mask pipeline or texture is
  * allocated and the cloud render is unaffected.
  */
 export function setCloudTransmittanceCapture(
@@ -1029,8 +1587,19 @@ export function getCloudTransmittanceView(
   context: CesiumGraphicsContext,
 ): GPUTextureView | null {
   const cache = context._cloudCache;
-  if (!cache || !cache.maskRenderedThisFrame) return null;
-  return cache.maskView;
+  const receipt = cache?.currentMaskReceipt;
+  if (
+    !cache ||
+    !cache.maskRenderedThisFrame ||
+    !receipt ||
+    receipt.brand !== cloudMaskReceiptBrand ||
+    receipt.resource !== cache.maskResourceEpoch ||
+    receipt.resource.generation !== cache.maskReceiptGeneration ||
+    receipt.resource.view !== cache.maskView
+  ) {
+    return null;
+  }
+  return receipt.resource.view;
 }
 
 /**
@@ -1058,7 +1627,12 @@ export function setCloudReconstructionAttachments(
   cache.attachmentsEnabled = enabled;
   if (!enabled) {
     cache.reconstructionEnabled = false;
-    releaseCloudAttachmentResources(cache);
+    if (
+      cache.openPreparationLease === null &&
+      !openCloudFrameAttempts.has(context)
+    ) {
+      releaseCloudAttachmentResources(context, cache);
+    }
   }
 }
 
@@ -1221,7 +1795,18 @@ export function publishCloudIblCoverage(
   config: CloudVolumetricsConfig | undefined,
   frameState?: CesiumFrameState,
 ): void {
-  const cache = ensureCloudCache(context);
+  const existingCache = context._cloudCache;
+  // IBL publication is scalar-only. While a prepared frame owns the cache,
+  // keep that publication available without entering device replacement or
+  // any other GPU-resource mutator.
+  // A scalar publication must never create or rebuild GPU resources while an
+  // older attempt is open. Normally an attempt already owns a cache, but the
+  // cache-less recovery edge is intentionally inert instead of becoming an
+  // interlock bypass.
+  if (existingCache === undefined && openCloudFrameAttempts.has(context)) {
+    return;
+  }
+  const cache = existingCache ?? ensureCloudCache(context);
   const deckBottom = config?.cloudLayerBottom ?? 1500.0;
   const deckTop = config?.cloudLayerTop ?? 4000.0;
   const windX = config?.cloudWindDirection?.x ?? 0.7;
@@ -1437,7 +2022,9 @@ function ensureTemporalResources(
   cache: CloudCache,
   halfW: number,
   halfH: number,
+  lease: CloudPreparationLease,
 ): boolean {
+  verifyCloudMutationLease(cache, lease);
   // (Re)allocate the ping-pong history pair on first use or half-res resize.
   if (
     !cache.temporalHistory[0] ||
@@ -1618,7 +2205,9 @@ function ensureTemporalResources(
 function ensureCloudTemporalConsumeBindGroups(
   device: GPUDevice,
   cache: CloudCache,
+  lease: CloudPreparationLease,
 ): boolean {
+  verifyCloudMutationLease(cache, lease);
   const generation = cache.attachmentGeneration.generation;
   if (
     !cache.reconstructionEnabled ||
@@ -1676,9 +2265,18 @@ function ensureCloudTemporalConsumeBindGroups(
  * so they survive a resize; only a device teardown through
  * `destroyProceduralCloudResources` drops them.
  */
-function releaseCloudAttachmentResources(cache: CloudCache): void {
+function releaseCloudAttachmentResources(
+  context: CesiumGraphicsContext,
+  cache: CloudCache,
+  lease?: CloudPreparationLease,
+): void {
+  verifyCloudMutationLease(cache, lease);
   for (let i = 0; i < cache.attachmentTextures.length; i++) {
-    cache.attachmentTextures[i]?.destroy();
+    destroyCloudGpuResource(
+      context,
+      cache.attachmentTextures[i],
+      `Cloud reconstruction attachment ${i}`,
+    );
     cache.attachmentTextures[i] = null;
     cache.attachmentViews[i] = null;
   }
@@ -1730,7 +2328,9 @@ function ensureCloudAttachmentResources(
   width: number,
   height: number,
   sourceView: GPUTextureView,
+  lease: CloudPreparationLease,
 ): boolean {
+  verifyCloudMutationLease(cache, lease);
   const w = Math.max(1, Math.floor(width));
   const h = Math.max(1, Math.floor(height));
 
@@ -1921,7 +2521,9 @@ function ensureHalfResResources(
   fullHeight: number,
   scale: number,
   canvasFormat: GPUTextureFormat,
+  lease: CloudPreparationLease,
 ): boolean {
+  verifyCloudMutationLease(cache, lease);
   const halfW = Math.max(1, Math.floor(fullWidth * scale));
   const halfH = Math.max(1, Math.floor(fullHeight * scale));
 
@@ -2071,7 +2673,9 @@ function ensureWeatherView(
   enabled: boolean,
   providerBytes: Uint8Array | null,
   providerVersion: number,
+  lease: CloudPreparationLease,
 ): GPUTextureView {
+  verifyCloudMutationLease(cache, lease);
   if (!cache.weatherFallbackView) {
     const fb = device.createTexture({
       size: { width: 1, height: 1, depthOrArrayLayers: 1 },
@@ -2175,7 +2779,9 @@ function ensureCloudLutViews(
   context: CesiumGraphicsContext,
   cache: CloudCache,
   wantLut: boolean,
+  lease: CloudPreparationLease,
 ): CloudLutViews {
+  verifyCloudMutationLease(cache, lease);
   if (!cache.lutPlaceholderView) {
     // A 1×1 black rgba16float, which is eight zero bytes. Black means no
     // radiance, which is also the unbaked-LUT sentinel, so binding the
@@ -2251,11 +2857,13 @@ function ensureNoiseBaked(
   device: GPUDevice,
   cache: CloudCache,
   perlinWorley: boolean,
+  lease: CloudPreparationLease,
 ): {
   shapeView: GPUTextureView;
   detailView: GPUTextureView;
   sampler: GPUSampler;
 } {
+  verifyCloudMutationLease(cache, lease);
   if (!cache.noiseFallbackView) {
     const fb = device.createTexture({
       size: { width: 1, height: 1, depthOrArrayLayers: 1 },
@@ -2321,7 +2929,9 @@ function initializeCloudPipeline(
   device: GPUDevice,
   cache: CloudCache,
   canvasFormat: GPUTextureFormat,
+  lease: CloudPreparationLease,
 ): void {
+  verifyCloudMutationLease(cache, lease);
   if (cache.initialized) return;
 
   const shaderModule = device.createShaderModule({
@@ -2476,7 +3086,12 @@ function resolveCloudQuality(inputs: QualityResolverInputs): {
 // `WebGPUCloudShadowFrame.ts`, which computes the footprint centre as a WGS84
 // geodetic surface projection in f64 and emits the matrices relative to a
 // caller-supplied eye, so no planet-scale magnitude reaches an f32 matrix entry.
-function ensureShadowResources(device: GPUDevice, cache: CloudCache): boolean {
+function ensureShadowResources(
+  device: GPUDevice,
+  cache: CloudCache,
+  lease: CloudPreparationLease,
+): boolean {
+  verifyCloudMutationLease(cache, lease);
   // 1×1 r16float zero placeholder: optical depth 0 gives transmittance 1, which
   // is no shadow.
   if (!cache.shadowPlaceholderView) {
@@ -2641,20 +3256,70 @@ function timedCloudPass(
   return context.withRenderPassTimestamps?.(descriptor) ?? descriptor;
 }
 
-/**
- * Execute the procedural cloud rendering pass.
- * Called after globe rendering, before post-processing.
- */
-export function executeProceduralClouds(
+export function prepareCloudFrameAndEncodeMask(
   context: CesiumGraphicsContext,
   frameState: CesiumFrameState,
+  attemptValue: unknown,
   colorTextureView: GPUTextureView,
   depthTextureView: GPUTextureView,
-  outputView: GPUTextureView,
   config: CloudVolumetricsConfig,
-): boolean {
+  captureRequested: boolean,
+): CloudFrameOutcome {
+  if (
+    typeof attemptValue !== "object" ||
+    attemptValue === null ||
+    !cloudFrameAttempts.has(attemptValue as CloudFrameAttempt)
+  ) {
+    return negativeCloudFrameOutcome(Object.freeze({}), "resource-not-ready");
+  }
+  const attempt = attemptValue as CloudFrameAttempt;
+  const planIdentity = attempt.plan;
+  if (
+    attempt.context !== context ||
+    attempt.frameNumber !== frameState.frameNumber ||
+    attempt.finalized
+  ) {
+    return finishNegativeCloudFrameAttempt(attempt, "resource-not-ready");
+  }
+  if (attempt.busy) {
+    return finishNegativeCloudFrameAttempt(attempt, "preparation-busy");
+  }
   const device = context._device;
-  if (!device) return false;
+  if (!device) {
+    return finishNegativeCloudFrameAttempt(attempt, "missing-device");
+  }
+  const encoder = currentCloudEncoder(context);
+  if (!encoder) {
+    return finishNegativeCloudFrameAttempt(attempt, "missing-encoder");
+  }
+  const existingLease = context._cloudCache?.openPreparationLease ?? null;
+  if (openCloudPreparationLeases.has(context) || existingLease !== null) {
+    return finishNegativeCloudFrameAttempt(attempt, "preparation-busy");
+  }
+  const lease = beginCloudPreparationLease(context, attempt, device, encoder);
+  if (!lease) {
+    return finishNegativeCloudFrameAttempt(attempt, "encoder-mismatch");
+  }
+  // Do not let a contending attempt erase a still-live predecessor receipt.
+  // The cache is invalidated only after this attempt owns the preparation slot.
+  invalidateCloudFrameMask(context);
+
+  let cache: CloudCache;
+  try {
+    cache = ensureCloudCache(context, lease);
+    if (cache.cpuStages !== attempt.cpuStages) {
+      cache.cpuStages = attempt.cpuStages;
+    }
+    if (cache.observability !== attempt.counters) {
+      cache.observability = attempt.counters;
+    }
+    attempt.cache = cache;
+  } catch (error: unknown) {
+    attempt.originalError = error;
+    cancelCloudPreparationLease(lease);
+    throw error;
+  }
+  cache.maskCaptureEnabled = captureRequested;
 
   // Everything a consumer reads per frame is cleared up front, so a culled or
   // early-returned frame reports nothing rather than last frame's state: the
@@ -2666,1094 +3331,1031 @@ export function executeProceduralClouds(
   // and bumps the lifetime frame count; the very first execute has no cache yet
   // and is reset just below instead, and the two branches are exclusive so every
   // execute is counted once.
-  const existingCache = context._cloudCache;
-  if (existingCache) {
-    existingCache.maskRenderedThisFrame = false;
-    existingCache.attachmentRenderedThisFrame = false;
-    existingCache.reconstructionEmittedThisFrame = false;
-    existingCache.reconstructionConsumedThisFrame = false;
-    resetCloudFrameCounters(existingCache.observability);
-    existingCache.cpuStages.beginStage(CloudCpuStage.TOTAL);
+  cache.attachmentRenderedThisFrame = false;
+  cache.reconstructionEmittedThisFrame = false;
+  cache.reconstructionConsumedThisFrame = false;
+  if (!colorTextureView) {
+    return finishNegativeCloudFrameAttempt(attempt, "missing-raw-color");
+  }
+  if (!depthTextureView) {
+    return finishNegativeCloudFrameAttempt(attempt, "missing-depth");
   }
 
-  // Frustum cull. The cloud shell is a sphere at the planet origin with radius
-  // `planetRadius + cloudLayerTop`, so the full-screen raymarch can be skipped
-  // entirely when that sphere is outside the view frustum, for example with the
-  // globe panned off-screen in space. For a sphere centred at the world origin
-  // the signed distance to each frustum plane reduces to `plane.w`, since
-  // dot(normal, 0) is zero, so the shell is outside exactly when some plane has
-  // `w < -outerR`. That matches `BoundingSphere.intersectPlane`, which reports
-  // OUTSIDE when the distance to the plane is below `-radius`. The test changes
-  // nothing visually while any part of the shell is in view.
-  const planes = frameState.cullingVolume?.planes;
-  if (planes !== undefined && planes.length > 0) {
-    const outerR = 6378137.0 + (config.cloudLayerTop ?? 4000.0);
-    for (let p = 0; p < planes.length; p++) {
-      if (planes[p].w < -outerR) {
-        if (context._cloudCache) {
-          markCloudTemporalInactive(context._cloudCache);
-          context._cloudCache.observability.culledFrames++;
-          context._cloudCache.cpuStages.endStage(CloudCpuStage.TOTAL);
-        }
-        return false; // shell entirely outside the frustum — nothing to draw
-      }
-    }
-  }
-
-  const cache = ensureCloudCache(context);
-  if (existingCache === undefined) {
-    // First execute on this context: the counters were allocated a line ago.
-    resetCloudFrameCounters(cache.observability);
-    cache.cpuStages.beginStage(CloudCpuStage.TOTAL);
-  }
   const counters = cache.observability;
   const stages = cache.cpuStages;
-  stages.beginStage(CloudCpuStage.PACK);
-  initializeCloudPipeline(device, cache, context._canvasFormat || "bgra8unorm");
-
-  // Bake once and resolve the 3D noise views before packing, so the
-  // `qualityFlags` noise-source bit reflects the same frame's baked state rather
-  // than flipping a frame late. The bake's one-shot submit runs before this
-  // frame's cloud pass, so the textures are populated when sampled.
-  //
-  // A `cloudNoiseMorphology` of `"perlin-worley"` selects the Perlin-Worley
-  // shape variant, which is a separately baked texture; `"value"` or undefined
-  // keeps the value-FBM bake. The flag drives both the bake, which allocates the
-  // Perlin-Worley texture, and which shape view binds at 6.
-  const perlinWorley =
-    (config as unknown as { cloudNoiseMorphology?: string })
-      .cloudNoiseMorphology === "perlin-worley";
-  const noise = ensureNoiseBaked(device, cache, perlinWorley);
-
-  // Pack uniforms
-  const data = cache.uniformData;
-  const us = frameState.context?.uniformState ?? context.uniformState;
-  // Resolved once per pack so the direct term at float 27 and the ambient term
-  // at float 73 carry the same scalar by construction. Exactly 1.0 outside an
-  // enabled solar eclipse.
-  const eclipseCloudFactor = resolveEclipseCloudFactor(frameState);
-  let offset = 0;
-
-  // inverseProjection (mat4, 16 floats)
-  const invProj = us?.inverseProjection;
-  if (invProj) {
-    for (let i = 0; i < 16; i++) data[offset++] = invProj[i];
-  } else {
-    offset += 16;
-  }
-
-  // inverseView (mat4, 16 floats)
-  const invView = us?.inverseView;
-  if (invView) {
-    for (let i = 0; i < 16; i++) data[offset++] = invView[i];
-  } else {
-    offset += 16;
-  }
-
-  // cameraPosition (vec3 + time)
-  const camPos = frameState.camera?.positionWC;
-  data[offset++] = camPos?.x ?? 0;
-  data[offset++] = camPos?.y ?? 0;
-  data[offset++] = camPos?.z ?? 0;
-  // Cloud motion is bound to the scene clock: `time` in seconds comes from
-  // `frameState.time` rather than from `performance.now()`, so wind and
-  // advection scrub with the timeline, pause when `clock.shouldAnimate` is
-  // false, and scale with `clock.multiplier`. The day-seconds are computed in
-  // f64 and the first-frame epoch is subtracted before the f32 store, since raw
-  // day-seconds of around 1.9e14 leave no usable f32 precision.
-  const cloudTimeSeconds = resolveCloudTimeSeconds(cache, frameState);
-  data[offset++] = cloudTimeSeconds;
-  // Keep the environment-capture consumer synchronized even if its update is
-  // requested after this execute rather than through the normal publish call.
-  cache.iblTimeSeconds = cloudTimeSeconds;
-
-  // sunDirection (vec3 + intensity)
-  const sunDir = us?.sunDirectionWC ?? us?.sunDirectionEC;
-  data[offset++] = sunDir?.x ?? 0;
-  data[offset++] = sunDir?.y ?? 1;
-  data[offset++] = sunDir?.z ?? 0;
-  // The deck's direct term is `(msLight + silverLining) * sunIntensity` and this
-  // is its only scale, so the eclipse factor applies here. The source is
-  // `config.atmosphereLightIntensity`, the undimmed user field, not the
-  // per-frame `tileProvider.atmosphereLightIntensity` mirror that `Globe.js`
-  // dims for the ground atmosphere; without this multiply the deck stays at full
-  // midday brightness over a world already at the twilight floor. A factor of
-  // 1.0 is bit-exact, so a non-eclipse frame is unaffected.
-  data[offset++] = applyEclipseCloudDimming(
-    config.atmosphereLightIntensity ?? 10.0,
-    eclipseCloudFactor,
-  ); // sunIntensity
-
-  // Cloud layer params
-  data[offset++] = config.cloudLayerBottom ?? 1500.0;
-  data[offset++] = config.cloudLayerTop ?? 4000.0;
-  data[offset++] = WGS84_EQUATORIAL_RADIUS; // planetRadius
-  data[offset++] = config.cloudCoverage ?? 0.5;
-
-  // Quality parameters. The resolver reads the `config.cloudVolumetricQuality`
-  // preset string, the camera altitude, and the enable and disable altitudes
-  // from `AtmosphericConditions` for auto mode, and returns `config.cloudQuality`
-  // verbatim when that field has been set to a non-default value.
-  const atmoClouds = (
-    config as unknown as {
-      atmosphericConditions?: {
-        clouds?: {
-          volumetricEnableAltitude?: number;
-          volumetricDisableAltitude?: number;
-        };
-      };
+  let packStageOpen = false;
+  try {
+    // Frustum cull. The cloud shell is a sphere at the planet origin with radius
+    // `planetRadius + cloudLayerTop`, so the full-screen raymarch can be skipped
+    // entirely when that sphere is outside the view frustum, for example with the
+    // globe panned off-screen in space. For a sphere centred at the world origin
+    // the signed distance to each frustum plane reduces to `plane.w`, since
+    // dot(normal, 0) is zero, so the shell is outside exactly when some plane has
+    // `w < -outerR`. That matches `BoundingSphere.intersectPlane`, which reports
+    // OUTSIDE when the distance to the plane is below `-radius`. The test changes
+    // nothing visually while any part of the shell is in view.
+    const planes = frameState.cullingVolume?.planes;
+    if (planes !== undefined && planes.length > 0) {
+      const outerR = 6378137.0 + (config.cloudLayerTop ?? 4000.0);
+      for (let p = 0; p < planes.length; p++) {
+        if (planes[p].w < -outerR) {
+          markCloudTemporalInactive(cache);
+          cache.observability.culledFrames++;
+          return finishNegativeCloudFrameAttempt(attempt, "culled");
+        }
+      }
     }
-  ).atmosphericConditions?.clouds;
-  const globeForQuality = config as unknown as {
-    cloudVolumetricQuality?: string;
-    cloudQuality?: number;
-  };
-  const cameraHeightM = frameState.camera?.positionCartographic?.height ?? 0;
-  const qualityInputs = {
-    preset: globeForQuality.cloudVolumetricQuality,
-    rawCloudQuality: globeForQuality.cloudQuality,
-    cameraHeightMeters: cameraHeightM,
-    enableAltitudeMeters: atmoClouds?.volumetricEnableAltitude ?? 50_000,
-    disableAltitudeMeters: atmoClouds?.volumetricDisableAltitude ?? 100_000,
-  };
-  // Step counts stay on the quality resolver; the tier preset supplies the
-  // remaining dials, which reach the shader through the `qualityFlags` lane at
-  // float 74.
-  const qualityResolved = resolveCloudQuality(qualityInputs);
-  const cloudPreset = resolveCloudPreset(qualityInputs);
-  // Half-resolution gate. A tier that resolves `renderResScale` below 1 marches
-  // into a half-size target and bilaterally upscales; the cinematic tier and the
-  // `cloudQuality` escape hatch keep it at 1.0 and take the full-resolution
-  // composite straight to the canvas. `halfResActive` is additionally gated on
-  // the half-resolution resources actually allocating, so a target or pipeline
-  // that cannot be built falls back to full resolution rather than dropping the
-  // clouds.
-  const canvasW = context._canvas?.width ?? 1920;
-  const canvasH = context._canvas?.height ?? 1080;
-  let halfResActive =
-    cloudPreset.renderResScale < 1.0 && cloudPreset.renderResScale > 0.0;
-  if (halfResActive) {
-    const allocated = ensureHalfResResources(
+
+    stages.beginStage(CloudCpuStage.PACK);
+    packStageOpen = true;
+    initializeCloudPipeline(
       device,
       cache,
-      canvasW,
-      canvasH,
-      cloudPreset.renderResScale,
       context._canvasFormat || "bgra8unorm",
+      lease,
     );
-    if (!allocated) {
-      // The tier asked for the half-resolution path but the target or pipelines
-      // could not allocate, so the full-resolution composite runs instead and
-      // the clouds render degraded rather than absent. Reported unconditionally
-      // because it indicates a real allocation failure.
-      console.error(
-        `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud half-res target/pipeline allocation failed (${canvasW}x${canvasH} @${cloudPreset.renderResScale}); falling back to full-res.`,
-      );
-    }
-    halfResActive = allocated;
-  }
-  // Temporal gate. A tier with `temporalEnabled` layers reprojection and
-  // accumulation on top of the half-resolution march: the history accumulates
-  // the premultiplied half-resolution cloud, is reprojected through the previous
-  // relative-to-eye view-projection and the f64 camera delta, and is
-  // neighbourhood-clamped each frame. The cinematic tier and the `cloudQuality`
-  // escape hatch leave it false and allocate no history. The history is
-  // half-resolution, so temporal additionally requires `halfResActive`, and a
-  // history pair or resolve pipeline that cannot allocate falls back to plain
-  // half resolution with no accumulation.
-  const temporalFrustum = frameState.camera?.frustum;
-  const temporalProjectionOrthographic =
-    temporalFrustum instanceof OrthographicFrustum ||
-    temporalFrustum instanceof OrthographicOffCenterFrustum;
-  // The current color-only proxy assumes every ray begins at the camera.
-  // Orthographic reconstruction needs a per-pixel eye-relative origin, and
-  // morphing crosses incompatible projection regimes. Keep the live half-res
-  // march/upscale, but do not animate its temporal-only phase, allocate/execute
-  // history, or advertise QF_TEMPORAL until that geometry is representable.
-  const temporalReprojectionSupported =
-    !temporalProjectionOrthographic && frameState.mode !== SceneMode.MORPHING;
-  let temporalActive =
-    cloudPreset.temporalEnabled &&
-    halfResActive &&
-    temporalReprojectionSupported;
-  if (temporalActive) {
-    const tAllocated = ensureTemporalResources(
-      device,
-      cache,
-      cache.halfWidth,
-      cache.halfHeight,
-    );
-    if (!tAllocated) {
-      // The tier asked for temporal accumulation but the history or resolve
-      // pipeline could not allocate, so plain half resolution runs instead and
-      // the clouds still render. Reported unconditionally because it indicates a
-      // real allocation failure.
-      console.error(
-        `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud temporal history/pipeline allocation failed (${cache.halfWidth}x${cache.halfHeight}); falling back to half-res (no accumulation).`,
-      );
-    }
-    temporalActive = tAllocated;
-  }
-  if (!temporalActive) {
-    // A full-resolution/plain-half frame does not update the temporal history.
-    // Even an adjacent re-entry must therefore seed from the current march.
-    markCloudTemporalInactive(cache);
-  }
-  // Raymarch geometry and step budgets, recorded at the one point where the
-  // half-resolution gate, the temporal gate and the quality resolver have all
-  // settled, so nothing here is derived twice.
-  //
-  // The sample counts are bounded proxies — dispatched pixels times the resolved
-  // budgets — not true sample counts. A true count needs a shader-side atomic,
-  // and WGSL register allocation is static, so even a runtime-gated counter would
-  // cost occupancy on every frame.
-  counters.marchWidth = halfResActive ? cache.halfWidth : canvasW;
-  counters.marchHeight = halfResActive ? cache.halfHeight : canvasH;
-  counters.marchPixels = counters.marchWidth * counters.marchHeight;
-  counters.halfResActive = halfResActive ? 1 : 0;
-  counters.maxSteps = qualityResolved.maxSteps;
-  counters.lightSteps = qualityResolved.lightSteps;
-  counters.primarySampleBudget = counters.marchPixels * counters.maxSteps;
-  counters.lightSampleBudget =
-    counters.primarySampleBudget * counters.lightSteps;
-  counters.resolveWidth = temporalActive ? cache.temporalWidth : 0;
-  counters.resolveHeight = temporalActive ? cache.temporalHeight : 0;
-  counters.resolvePixels = counters.resolveWidth * counters.resolveHeight;
-  counters.upscalePixels = halfResActive ? canvasW * canvasH : 0;
-  // `attachmentsEnabled` is also writable from the debug surface without going
-  // through `setCloudReconstructionAttachments`, so a set switched off that way
-  // frees itself on the next execute rather than staying resident and continuing
-  // to report live bytes.
-  if (!cache.attachmentsEnabled && cache.attachmentGeneration.liveBytes > 0) {
-    releaseCloudAttachmentResources(cache);
-  }
-  // Consuming a set that is not being produced is the stale read the per-frame
-  // flag discipline exists to prevent, so clearing `attachmentsEnabled` directly
-  // also clears the dependent flag instead of leaving a half-armed variant.
-  if (!cache.attachmentsEnabled && cache.reconstructionEnabled) {
-    cache.reconstructionEnabled = false;
-  }
-  // A resident figure, published every execute rather than only on frames the
-  // producer ran: live bytes above 0 with `attachmentPixels` at 0 is the real
-  // state "allocated, but this frame produced none".
-  counters.attachmentLiveBytes = cache.attachmentGeneration.liveBytes;
-  // Resident as well: the requested state, published every execute so a frame
-  // that requested the variant but could not build it reads as requested with
-  // nothing emitted rather than as never having been asked for.
-  counters.reconstructionRequested = cache.reconstructionEnabled ? 1 : 0;
 
-  data[offset++] = qualityResolved.maxSteps;
-  data[offset++] = qualityResolved.lightSteps;
-  data[offset++] = config.cloudDensity ?? 0.3;
-  data[offset++] = 0.04; // absorptionCoeff
+    // Bake once and resolve the 3D noise views before packing, so the
+    // `qualityFlags` noise-source bit reflects the same frame's baked state rather
+    // than flipping a frame late. The bake's one-shot submit runs before this
+    // frame's cloud pass, so the textures are populated when sampled.
+    //
+    // A `cloudNoiseMorphology` of `"perlin-worley"` selects the Perlin-Worley
+    // shape variant, which is a separately baked texture; `"value"` or undefined
+    // keeps the value-FBM bake. The flag drives both the bake, which allocates the
+    // Perlin-Worley texture, and which shape view binds at 6.
+    const perlinWorley =
+      (config as unknown as { cloudNoiseMorphology?: string })
+        .cloudNoiseMorphology === "perlin-worley";
+    const noise = ensureNoiseBaked(device, cache, perlinWorley, lease);
 
-  // Wind
-  const windDir = config.cloudWindDirection;
-  const cloudWindX = windDir?.x ?? 0.7;
-  const cloudWindY = windDir?.y ?? 0.3;
-  const cloudWindSpeed = config.cloudWindSpeed ?? 15.0;
-  data[offset++] = cloudWindX;
-  data[offset++] = cloudWindY;
-  data[offset++] = cloudWindSpeed;
-  // Silver-lining intensity, live from `atmosphericConditions.clouds.silverLining`.
-  data[offset++] = config.cloudSilverLiningIntensity ?? 0.8; // silverLiningIntensity
+    // Pack uniforms
+    const data = cache.uniformData;
+    const us = frameState.context?.uniformState ?? context.uniformState;
+    // Resolved once per pack so the direct term at float 27 and the ambient term
+    // at float 73 carry the same scalar by construction. Exactly 1.0 outside an
+    // enabled solar eclipse.
+    const eclipseCloudFactor = resolveEclipseCloudFactor(frameState);
+    let offset = 0;
 
-  // cloudBaseColor (vec3 + pad)
-  data[offset++] = 0.65;
-  data[offset++] = 0.68;
-  data[offset++] = 0.72;
-  data[offset++] = 0;
-  // cloudTopColor (vec3 + pad)
-  data[offset++] = 0.95;
-  data[offset++] = 0.95;
-  data[offset++] = 0.97;
-  data[offset++] = 0;
-
-  // Resolution and WGS84 coordinate data. While half resolution is active this
-  // carries the half-resolution target size, so the shader's Bayer jitter step
-  // of 1/resolution is one half-resolution texel; the full-resolution path skips
-  // the jitter branch and keeps the canvas size.
-  data[offset++] = halfResActive ? cache.halfWidth : canvasW;
-  data[offset++] = halfResActive ? cache.halfHeight : canvasH;
-  // The aligned pads of the resolution row carry the WGS84 semi-minor axis and
-  // the f64 geodetic camera height, so neither needs its own row. The geodetic
-  // height is what stops a 20 km polar camera being classified as below the
-  // cloud deck.
-  data[offset++] = WGS84_POLAR_RADIUS;
-  data[offset++] = cameraHeightM;
-
-  // Weather-map seam lanes, floats 64-79. A `WeatherProvider` holding real data
-  // both supplies the texture and auto-enables the weather map, so observed
-  // cloud cover drives the deck without `cloudWeatherMap` being set explicitly.
-  // `getPackedTexture` returns null until the asynchronous fetch lands, and the
-  // procedural map is kept until then, which avoids an overcast-everywhere flash.
-  const weatherProvider = config.weatherProvider;
-  const providerBytes =
-    weatherProvider?.getPackedTexture(WEATHER_TEX_W, WEATHER_TEX_H) ?? null;
-  const providerVersion = weatherProvider?.version ?? -1;
-  const weatherEnabled =
-    config.cloudWeatherMap === true || providerBytes !== null;
-  data[offset++] = weatherEnabled ? 1.0 : 0.0; // 64 weatherMapEnabled
-  // 65 weatherStrength — the global cloudCoverage folded in as a per-cell
-  // multiplier (default coverage 0.5 → 1.0 neutral so the map's R drives directly).
-  data[offset++] = (config.cloudCoverage ?? 0.5) * 2.0;
-  // 66/67 — dual-lobe phase: back-scatter g and the forward/back blend, live
-  // from `atmosphericConditions.clouds.phaseBackG` and `.phaseBlend`.
-  data[offset++] = config.cloudPhaseBackG ?? -0.3; // 66 phaseG2
-  data[offset++] = config.cloudPhaseBlend ?? 0.7; // 67 phaseBlend
-  // 68-71 weatherTexBounds — global equirect (radians): minLon, minLat, lonRange, latRange.
-  data[offset++] = -Math.PI;
-  data[offset++] = -Math.PI / 2.0;
-  data[offset++] = 2.0 * Math.PI;
-  data[offset++] = Math.PI;
-  // 72 — forward-scatter g. The Henyey-Greenstein forward peak at g = 0.85 is
-  // about 1.8 times the peak at g = 0.8, which is what gives a strong silver
-  // lining toward the sun.
-  data[offset++] = config.cloudPhaseForwardG ?? 0.85; // 72 phaseG1 (config: .phaseForwardG)
-  // 73 — ambient intensity: the sky and ground fill on the shadow side, from
-  // `.ambientIntensity`. The eclipse factor applies here too. `skyAmbientColor`
-  // at 80-82 and `groundAmbientColor` at 84-86 are fixed constants that track no
-  // scene light on any path — the `ambientLutMode` route replaces only their hue
-  // and chroma and keeps their nominal brightness — so this scalar is the only
-  // lever the deck's ambient has. Dimming the direct term alone leaves a fully
-  // lit ambient deck glowing over a darkened world at totality.
-  data[offset++] = applyEclipseCloudDimming(
-    config.cloudAmbientIntensity ?? 1.5,
-    eclipseCloudFactor,
-  ); // 73 ambientIntensity
-  // 74 — the `qualityFlags` bitfield. Bit 0 selects the baked 3D-texture core,
-  // and it is set only when the tier asks for it and the bake succeeded; with no
-  // baked noise resident the bit stays clear and the shader marches live noise
-  // instead.
-  const noiseBakedBit =
-    cloudPreset.noiseSource === CloudNoiseSource.BAKED &&
-    cache.noiseBaked &&
-    cache.noise !== null
-      ? CLOUD_QF_NOISE_BAKED
-      : 0;
-  // Bit 1 marks the half-resolution path and is set only when that path is
-  // actually running, meaning the tier asked for it and the target and pipelines
-  // allocated. The shader keys its premultiplied-emit and jitter branch on this
-  // bit, and the full-resolution tiers leave it clear.
-  const halfResBit = halfResActive ? CLOUD_QF_HALF_RES : 0;
-  // Bit 2 marks active temporal accumulation. The march emits identically either
-  // way, since temporal adds a separate resolve pass rather than a march branch;
-  // the bit exists so the flags stay consistent with the tier presets and with
-  // what any reader of the field would expect.
-  const temporalBit = temporalActive ? CLOUD_QF_TEMPORAL : 0;
-  // Bit 3 carries the tier's jitter contract: the lower tiers animate the
-  // per-pixel interleaved-gradient-noise phase only while temporal accumulation
-  // is active, the cinematic tier gets deterministic frame-zero spatial noise,
-  // and the hand-tuned escape preset leaves jitter off and keeps exact midpoint
-  // sampling.
-  const jitterBit = cloudPreset.jitterEnabled ? CLOUD_QF_JITTER : 0;
-  // Bit 10 selects the cone-sampled light march, which the lower tiers use. The
-  // cinematic tier and the escape hatch leave it clear and take the straight
-  // light march.
-  const lightConeBit = cloudPreset.lightConeSampling ? CLOUD_QF_LIGHT_CONE : 0;
-  data[offset++] =
-    noiseBakedBit |
-    halfResBit |
-    temporalBit |
-    jitterBit |
-    lightConeBit |
-    ((Math.min(7, cloudPreset.multiScatterOctaves) & 7) <<
-      CLOUD_QF_OCTAVES_SHIFT); // 74 qualityFlags
-  // 75 — curl-warp amplitude. At 0 the shader's `curlAmplitude > 0.0` guard
-  // skips the baked-path detail-erosion warp entirely, and
-  // `config.cloudCurlAmplitude` is the only thing that raises it: the tier
-  // presets leave their own `curlAmplitude` at 0, so curl is a property of the
-  // configuration rather than of the tier. The warp perturbs only where the
-  // detail texture is sampled, and that erosion is subtractive, so it can carve
-  // wispier edges but never add density.
-  data[offset++] = config.cloudCurlAmplitude ?? 0.0; // 75 curlAmplitude
-  // 76 — the shared temporal phase. The low 4 bits carry the Bayer and cone
-  // 16-phase sequence and all 6 bits drive the animated interleaved-gradient
-  // noise. The full-resolution cinematic path stores zero so its spatial noise
-  // stays deterministic and cannot sparkle with no history to average it.
-  cache.frameCounter = (cache.frameCounter + 1) & 63;
-  data[offset++] = halfResActive ? cache.frameCounter : 0; // 76 frameCounter
-  // 77 — curl-noise swirl wavelength in noise space, read only while
-  // `curlAmplitude` is above 0. The default of 2.0 is about the base-shape
-  // feature scale.
-  data[offset++] = config.cloudCurlFrequency ?? 2.0; // 77 curlFrequency
-  // 78 — light-march step scale. The live-noise and cinematic paths march the
-  // full light ray; the lower baked tiers halve it for cheaper shadowing.
-  data[offset++] =
-    cloudPreset.noiseSource === CloudNoiseSource.LIVE || cloudPreset.tier >= 3
-      ? 1.0
-      : 0.5; // 78 lightSampleScale
-  // 79 — mean-preserving erosion floor, read on the baked path only. An explicit
-  // override wins; otherwise the tier decides, low tiers being fibrous at 0.10
-  // and the higher tiers puffy at 0.18.
-  data[offset++] =
-    config.cloudErosionStrength ?? (cloudPreset.tier <= 1 ? 0.1 : 0.18); // 79 erosionStrength
-  // 80-83 — sky ambient: blue, lighting cloud tops.
-  data[offset++] = 0.5; // 80
-  data[offset++] = 0.65; // 81
-  data[offset++] = 0.95; // 82
-  data[offset++] = 0; // 83 pad
-  // 84-87 — ground-bounce ambient: warm grey, lighting cloud bottoms.
-  data[offset++] = 0.35; // 84
-  data[offset++] = 0.34; // 85
-  data[offset++] = 0.3; // 86
-  data[offset++] = 0; // 87 pad
-  // 88-90 — time-of-day sun colour, keyed on the local sun elevation, that is
-  // `sunDir` dotted with local up at the camera, rather than on raw ECEF Y:
-  // warm orange near the horizon, neutral white by about 20 degrees up.
-  let sinElev = 0.5;
-  if (camPos && sunDir) {
-    const len = Math.hypot(camPos.x, camPos.y, camPos.z) || 1.0;
-    sinElev = Math.max(
-      0.0,
-      Math.min(
-        1.0,
-        (sunDir.x * camPos.x + sunDir.y * camPos.y + sunDir.z * camPos.z) / len,
-      ),
-    );
-  }
-  const e = Math.max(0.0, Math.min(1.0, sinElev / 0.35));
-  const todT = e * e * (3.0 - 2.0 * e); // smoothstep(0, 0.35, sinElev)
-  data[offset++] = 1.0 + (1.0 - 1.0) * todT; // 88 R (warm 1.0 -> noon 1.0)
-  data[offset++] = 0.55 + (1.0 - 0.55) * todT; // 89 G (warm 0.55 -> noon 1.0)
-  data[offset++] = 0.25 + (0.98 - 0.25) * todT; // 90 B (warm 0.25 -> noon 0.98)
-  // 91 — aerial-perspective strength, from `config.cloudAerialStrength`. At 1.0
-  // the horizon haze is applied in full at the 60 km scale the shader assumes;
-  // at 0 it is off.
-  data[offset++] = config.cloudAerialStrength ?? 1.0; // 91 aerialStrength
-  // 92-94 — horizon inscatter haze tint. Distant clouds blend toward this so
-  // they fade into the sky instead of popping. Keyed on the same local sun
-  // elevation (todT) as the sun color: warm orange-grey at the horizon (twilight
-  // band) -> desaturated sky-blue at day. This roughly tracks the rendered sky's
-  // horizon color so far clouds dissolve into it rather than a fixed blue.
-  //
-  // The tint is an addend rather than a scale: `ProceduralClouds.wgsl` computes
-  // `mix(toneMapped, cloud.aerialColor, aerial)`, so the `aerial` fraction of
-  // every deck pixel is this colour irrespective of the deck's own radiance. It
-  // models the skylight in-scattered between camera and cloud, and that
-  // inscatter dims with the sky it comes from, so the eclipse factor applies
-  // here too. Left undimmed, a distant deck keeps a full-brightness horizon tint
-  // at totality and the deck's measured brightness ratio is biased upward by
-  // `aerial * (1 - F) * A / H(1)`. A factor of 1.0 is bit-exact, so a
-  // non-eclipse frame is unaffected.
-  //
-  // Named rather than inlined so the dimming is greppable in a built bundle:
-  // every literal in this block is a float, and esbuild normalises those.
-  const dimAerialTint = (channel: number): number =>
-    applyEclipseCloudDimming(channel, eclipseCloudFactor);
-  data[offset++] = dimAerialTint(0.8 + (0.62 - 0.8) * todT); // 92 R (warm 0.80 -> day 0.62)
-  data[offset++] = dimAerialTint(0.62 + (0.72 - 0.62) * todT); // 93 G (warm 0.62 -> day 0.72)
-  data[offset++] = dimAerialTint(0.5 + (0.85 - 0.5) * todT); // 94 B (warm 0.50 -> day 0.85)
-  data[offset++] = 0; // 95 pad
-  // 96-100 — shape scale, exposure and the three multiple-scattering decay
-  // terms, all live dials whose defaults are the values the shader would
-  // otherwise hard-code.
-  const cloudPuffSize = config.cloudPuffSize ?? 0.45;
-  data[offset++] = cloudPuffSize; // 96 puffSize
-  cache.iblPuffSize = cloudPuffSize;
-  data[offset++] = config.cloudExposure ?? 0.22; // 97 exposure
-  data[offset++] = config.cloudMsDecayScatter ?? 0.5; // 98 msDecayA
-  data[offset++] = config.cloudMsDecayExtinction ?? 0.5; // 99 msDecayB
-  data[offset++] = config.cloudMsDecayPhase ?? 0.85; // 100 msDecayC
-  // 101-104 — the per-genus vertical-density profile. `config.cloudType` selects
-  // a {@link CloudTypeProfile}; cumulus resolves to the billowy shape at density
-  // scale 1.0, which is the shader's baseline gradient.
-  const profile = CloudTypeProfile.get(config.cloudType ?? CloudType.CUMULUS);
-  const cumulusProfile = CloudTypeProfile.get(CloudType.CUMULUS);
-  const cumulusBase = cumulusProfile.baseDensity; // 0.7
-  const cumulusExtinction = cumulusProfile.extinction; // 0.6
-  data[offset++] = profile.shape; // 101 profileShape (0 SLAB / 1 BILLOWY / 2 TOWER)
-  data[offset++] = cumulusBase > 0 ? profile.baseDensity / cumulusBase : 1.0; // 102 profileDensityScale (CUMULUS=1.0)
-  // 103 — per-genus optical extinction, normalised against cumulus at 0.6 so
-  // cumulus resolves to 1.0, mirroring how `profileDensityScale` at 102 is
-  // normalised. The shader multiplies `cloud.absorptionCoeff` by this, so thin
-  // genera such as cirrus at 0.167× absorb less and read wispier, while dense
-  // genera such as cumulonimbus at 1.583× absorb more and read as darker, more
-  // opaque cores.
-  data[offset++] =
-    cumulusExtinction > 0 ? profile.extinction / cumulusExtinction : 1.0; // 103 profileExtinction (CUMULUS=1.0)
-  data[offset++] =
-    profile.shape === CloudTypeProfile.CloudHeightGradientShape.TOWERING_ANVIL
-      ? 1.0
-      : 0.0; // 104 anvilBias
-  // 105/106 — camera near and far, so the shader can reverse the renderer-wide
-  // log depth for occlusion. Same source as AerialPerspective uses.
-  data[offset++] = frameState.camera?.frustum?.near ?? 1.0; // 105 nearPlane
-  data[offset++] = frameState.camera?.frustum?.far ?? 1e8; // 106 farPlane
-  // 107 — how strongly the weather map's green, blue and alpha channels, which
-  // carry genus, base altitude and density bias, modulate the cloud model. A
-  // neutral map cell of (0.5, 0, 0.5) in those channels is a no-op at any
-  // strength, so a red-only map behaves the same at every setting; 0 reduces the
-  // map to its red coverage channel.
-  data[offset++] = config.cloudWeatherChannelStrength ?? 1.0; // 107 weatherChannelStrength
-  // 108-111 — atmosphere-LUT coupling modes. Both default to the analytic path,
-  // a heuristic aerial term and a constant ambient, which the shader selects when
-  // these mode floats are 0. The `qualityFlags` bits 8 and 9 carry the same
-  // on/off state; the mode floats make it legible from the shader side.
-  // `atmosphereThickness` has to match the LUT bake, so the transmittance
-  // v-lookup lands on the right row.
-  const globeForLut = config as unknown as {
-    cloudAerialMode?: string;
-    cloudAmbientSource?: string;
-  };
-  const aerialLutOn = globeForLut.cloudAerialMode === "physical";
-  const ambientLutOn = globeForLut.cloudAmbientSource === "sky-lut";
-  data[offset++] = aerialLutOn ? 1.0 : 0.0; // 108 aerialLutMode
-  data[offset++] = ambientLutOn ? 1.0 : 0.0; // 109 ambientLutMode
-  data[offset++] = 111000.0; // 110 atmosphereThickness (matches the LUT bake)
-  data[offset++] = 0.0; // 111 pad
-
-  // 112-119 — the multi-deck shell march. With `multiDeck` at 0 the shader
-  // marches exactly one shell between `cloudLayerBottom` and `cloudLayerTop` and
-  // never reads the deck bounds. The bounds come from
-  // `CloudTypeProfile.CloudDeck.bounds`, the same table the per-genus deck
-  // assignment uses, so the two cannot disagree.
-  const multiDeckOn =
-    (config as unknown as { cloudMultiDeck?: boolean }).cloudMultiDeck === true;
-  const deckBounds = CloudTypeProfile.CloudDeck.bounds as number[][];
-  data[offset++] = multiDeckOn ? 1.0 : 0.0; // 112 multiDeck
-  data[offset++] = 0.0; // 113 pad
-  data[offset++] = deckBounds[0][0]; // 114 deckBoundsLow.x  (LOW bottom)
-  data[offset++] = deckBounds[0][1]; // 115 deckBoundsLow.y  (LOW top)
-  data[offset++] = deckBounds[1][0]; // 116 deckBoundsMid.x  (MID bottom)
-  data[offset++] = deckBounds[1][1]; // 117 deckBoundsMid.y  (MID top)
-  data[offset++] = deckBounds[2][0]; // 118 deckBoundsHigh.x (HIGH bottom)
-  data[offset++] = deckBounds[2][1]; // 119 deckBoundsHigh.y (HIGH top)
-
-  // 120-127 — the camera-relative high-precision march: the relative-to-eye
-  // high/low split of the same camera world position that feeds
-  // `cloud.cameraPosition`. All eight floats are written every frame, but the
-  // shader reads them only inside the CLOUD_QF_HIGH_PRECISION branch. The branch
-  // is on unless it is explicitly disabled, which returns the march to the
-  // direct shell-intersection form.
-  const highPrecisionOn =
-    (config as unknown as { cloudHighPrecision?: boolean })
-      .cloudHighPrecision !== false;
-  // Encode the camera world position into a high/low f32 pair so the shader can
-  // subtract the large high term before applying the small low refinement, which
-  // is what keeps the subtraction from cancelling into noise.
-  if (camPos !== undefined) {
-    const enc = EncodedCartesian3.fromCartesian(camPos, scratchEncodedCamera);
-    data[offset++] = enc.high.x; // 120 encodedCameraHigh.x
-    data[offset++] = enc.high.y; // 121 encodedCameraHigh.y
-    data[offset++] = enc.high.z; // 122 encodedCameraHigh.z
-    data[offset++] = 0.0; // 123 pad
-    data[offset++] = enc.low.x; // 124 encodedCameraLow.x
-    data[offset++] = enc.low.y; // 125 encodedCameraLow.y
-    data[offset++] = enc.low.z; // 126 encodedCameraLow.z
-    data[offset++] = 0.0; // 127 pad
-  } else {
-    // With no camera the split has nothing to encode; the branch that reads it
-    // cannot run either.
-    data[offset++] = 0.0; // 120
-    data[offset++] = 0.0; // 121
-    data[offset++] = 0.0; // 122
-    data[offset++] = 0.0; // 123 pad
-    data[offset++] = 0.0; // 124
-    data[offset++] = 0.0; // 125
-    data[offset++] = 0.0; // 126
-    data[offset++] = 0.0; // 127 pad
-  }
-
-  // 128-131 — mammatus, the pendulous pouches on a cloud's underside. At a
-  // strength of 0 the shader's `mammatusFactor()` returns 1.0 immediately and the
-  // remaining floats are never read past that guard.
-  const globeMamma = config as unknown as {
-    cloudMammatusStrength?: number;
-    cloudMammatusScale?: number;
-    cloudMammatusDepth?: number;
-  };
-  data[offset++] = globeMamma.cloudMammatusStrength ?? 0.0; // 128 mammatusStrength (0 = off)
-  data[offset++] = globeMamma.cloudMammatusScale ?? 1.0; // 129 mammatusScale (pouch size)
-  data[offset++] = globeMamma.cloudMammatusDepth ?? 0.25; // 130 mammatusDepth (underside band)
-  data[offset++] = 0.0; // 131 pad
-
-  // 132-135 — species and variety density shaping. At mode 0 the shader's
-  // `speciesFactor()` returns 1.0 immediately and the remaining floats are never
-  // read past that guard. `cloudSpecies` takes a genus-gated name, or
-  // `cloudSpeciesMode` the numeric equivalent: "lenticularis" is mode 1, and
-  // "fibratus" and "uncinus" are both mode 2, with uncinus adding the hook
-  // through its parameter.
-  const globeSpecies = config as unknown as {
-    cloudSpecies?: string;
-    cloudSpeciesMode?: number;
-    cloudSpeciesStrength?: number;
-    cloudSpeciesScale?: number;
-    cloudSpeciesParam?: number;
-  };
-  let speciesMode = globeSpecies.cloudSpeciesMode ?? 0.0;
-  let speciesParamDefault = 0.0;
-  const speciesName = globeSpecies.cloudSpecies;
-  if (typeof speciesName === "string") {
-    const n = speciesName.toLowerCase();
-    if (n === "lenticularis" || n === "lenticular") {
-      speciesMode = 1.0;
-    } else if (n === "fibratus") {
-      speciesMode = 2.0;
-      speciesParamDefault = 0.0; // straight filaments
-    } else if (n === "uncinus") {
-      speciesMode = 2.0;
-      speciesParamDefault = 1.0; // hooked fallstreaks
-    }
-  }
-  data[offset++] = speciesMode; // 132 speciesMode (0 = off)
-  data[offset++] = globeSpecies.cloudSpeciesStrength ?? 0.8; // 133 speciesStrength
-  data[offset++] = globeSpecies.cloudSpeciesScale ?? 1.0; // 134 speciesScale
-  data[offset++] = globeSpecies.cloudSpeciesParam ?? speciesParamDefault; // 135 speciesParam (uncinus hook)
-
-  // 136-139 — the supplementary features asperitas, fluctus, arcus and virga, as
-  // bounded density shaping. At mode 0 the shader's `featureFactor()` returns
-  // 1.0 immediately and the remaining floats are never read past that guard.
-  // `cloudFeature` takes a genus-gated name, or `cloudFeatureMode` the numeric
-  // equivalent: "asperitas" is 1, "fluctus" and "kelvin-helmholtz" are 2,
-  // "arcus" is 3, and "virga" and "praecipitatio" are both 4, praecipitatio
-  // differing only in its parameter, which gives denser, further-reaching
-  // streaks.
-  const globeFeature = config as unknown as {
-    cloudFeature?: string;
-    cloudFeatureMode?: number;
-    cloudFeatureStrength?: number;
-    cloudFeatureScale?: number;
-    cloudFeatureParam?: number;
-  };
-  let featureMode = globeFeature.cloudFeatureMode ?? 0.0;
-  let featureParamDefault = 0.0;
-  const featureName = globeFeature.cloudFeature;
-  if (typeof featureName === "string") {
-    const n = featureName.toLowerCase();
-    if (n === "asperitas") {
-      featureMode = 1.0;
-    } else if (
-      n === "fluctus" ||
-      n === "kelvin-helmholtz" ||
-      n === "kelvinhelmholtz"
-    ) {
-      featureMode = 2.0;
-      featureParamDefault = 0.6; // breaking-wave shear
-    } else if (n === "arcus") {
-      featureMode = 3.0;
-      featureParamDefault = 0.3; // shelf width
-    } else if (n === "virga") {
-      featureMode = 4.0;
-      featureParamDefault = 0.0; // wispy trails
-    } else if (n === "praecipitatio") {
-      featureMode = 4.0;
-      featureParamDefault = 1.0; // denser reaching streaks
-    }
-  }
-  data[offset++] = featureMode; // 136 featureMode (0 = off)
-  data[offset++] = globeFeature.cloudFeatureStrength ?? 0.8; // 137 featureStrength
-  data[offset++] = globeFeature.cloudFeatureScale ?? 1.0; // 138 featureScale
-  data[offset++] = globeFeature.cloudFeatureParam ?? featureParamDefault; // 139 featureParam
-
-  // 140-143 — noctilucent and nacreous iridescent shading. At mode 0 the
-  // shader's `specialShadeTint()` returns `vec3(1.0)` immediately, so the cloud
-  // colour is multiplied by exactly 1.0 and the remaining floats are never read
-  // past that guard. `cloudSpecial` takes a name, or `cloudSpecialShadeMode` the
-  // numeric equivalent: "noctilucent" and "nlc" are 1, and "nacreous",
-  // "polar-stratospheric" and "psc" are 2. This supplies only the shading; the
-  // high-altitude deck itself is placed through the multi-deck high bounds.
-  const globeSpecial = config as unknown as {
-    cloudSpecial?: string;
-    cloudSpecialShadeMode?: number;
-    cloudSpecialShadeStrength?: number;
-    cloudSpecialShadeScale?: number;
-    cloudSpecialShadeParam?: number;
-  };
-  let specialShadeMode = globeSpecial.cloudSpecialShadeMode ?? 0.0;
-  let specialParamDefault = 0.0;
-  const specialName = globeSpecial.cloudSpecial;
-  if (typeof specialName === "string") {
-    const n = specialName.toLowerCase();
-    if (n === "noctilucent" || n === "nlc") {
-      specialShadeMode = 1.0;
-    } else if (n === "nacreous" || n === "polar-stratospheric" || n === "psc") {
-      specialShadeMode = 2.0;
-      specialParamDefault = 0.5; // moderate spectral cycling
-    }
-  }
-  data[offset++] = specialShadeMode; // 140 specialShadeMode (0 = off)
-  data[offset++] = globeSpecial.cloudSpecialShadeStrength ?? 0.8; // 141 specialShadeStrength
-  data[offset++] = globeSpecial.cloudSpecialShadeScale ?? 1.0; // 142 specialShadeScale
-  data[offset++] = globeSpecial.cloudSpecialShadeParam ?? specialParamDefault; // 143 specialShadeParam
-
-  // 144-147 — two march dials that trade quality for cost at orbital distance,
-  // both no-ops at their defaults: `marchStepGrowth` at 1.0 fails the shader's
-  // `> 1.0` guard and every step stays the fine step, and `maxRayDistance` at 0
-  // fails its `> 0.0` guard and the ray end is untouched. `cloudMarchStepGrowth`
-  // is geometric growth per fine step, clamped to [1.0, 1.1] so near samples stay
-  // crisp while far shell samples coarsen; `cloudMaxRayDistance` is a distance
-  // in metres past which the view march stops, where clouds are sub-pixel
-  // anyway. The WebGL cloud path is a separate, simpler renderer and has no
-  // equivalent.
-  const globeLod = config as unknown as {
-    cloudMarchStepGrowth?: number;
-    cloudMaxRayDistance?: number;
-  };
-  const marchStepGrowth = Math.min(
-    1.1,
-    Math.max(1.0, globeLod.cloudMarchStepGrowth ?? 1.0),
-  );
-  const maxRayDistance = Math.max(0.0, globeLod.cloudMaxRayDistance ?? 0.0);
-  data[offset++] = marchStepGrowth; // 144 marchStepGrowth (1.0 = off)
-  data[offset++] = maxRayDistance; // 145 maxRayDistance (0 = off/infinite)
-  data[offset++] = 0.0; // 146 pad
-  data[offset++] = 0.0; // 147 pad
-
-  // 148-159 — f64 planet-domain origin phases, three vec4 rows. The march
-  // reconstructs density coordinates from these camera-origin phases plus its
-  // own small camera-relative sample offset. Wind advection is folded into the
-  // origin here in f64, so a long timeline scrub never constructs a
-  // planet-scale f32 displacement in the shader.
-  writeCloudDensityAdvectedOriginPhases(
-    data,
-    offset,
-    camPos?.x ?? 0.0,
-    camPos?.y ?? 0.0,
-    camPos?.z ?? 0.0,
-    cloudPuffSize,
-    cloudWindX,
-    cloudWindY,
-    cloudWindSpeed,
-    cloudTimeSeconds,
-  );
-  offset += CLOUD_DENSITY_ORIGIN_PHASE_FLOATS;
-
-  // 160-167 — the encoded canonical morphology origin, as high xyz plus pad and
-  // low xyz plus pad. The analytic species and feature terms work in an
-  // unrotated x/z wind plane, which this supplies without them having to consume
-  // the wrapped texture coordinates.
-  writeCloudMorphologyOriginHighLow(
-    data,
-    offset,
-    camPos?.x ?? 0.0,
-    camPos?.y ?? 0.0,
-    camPos?.z ?? 0.0,
-    cloudWindX,
-    cloudWindY,
-    cloudWindSpeed,
-    cloudTimeSeconds,
-  );
-  offset += CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS;
-
-  // 168-171 — per-genus morphology, carrying two {@link CloudTypeProfile} axes
-  // into the shader: the fibrous or puffy erosion style, which becomes an
-  // anisotropic wind-sheared filament carve so the cirrus family reads as ice
-  // streaks rather than faint cumulus lobes, and the per-genus
-  // Henyey-Greenstein `phaseG`, which becomes a forward-lobe offset because ice
-  // scatters far more forward-peaked than water.
-  //
-  // Both are derived from the profile table rather than from separate public
-  // dials, since `cloudType` is already the selector and the profile is what it
-  // selects. Cumulus, the default genus, is puffy with a fibre strength of
-  // exactly 0 and is its own phase reference, so both shader guards return their
-  // unmodified expressions for it.
-  const fibreMorphology = CloudTypeProfile.getFibreMorphology(
-    config.cloudType ?? CloudType.CUMULUS,
-  );
-  data[offset++] = fibreMorphology.strength; // 168 genusFibreStrength (0 = PUFFY/off)
-  data[offset++] = fibreMorphology.anisotropy; // 169 genusFibreAnisotropy (1 = isotropic)
-  data[offset++] = fibreMorphology.shear; // 170 genusFibreShear (0 = no fallstreak tilt)
-  data[offset++] = profile.phaseG - cumulusProfile.phaseG; // 171 genusPhaseDelta (CUMULUS = 0)
-
-  // Fold the two LUT-coupling bits into `qualityFlags` at slot 74, already
-  // packed above. Bits 8 and 9 are set only while the corresponding mode is on,
-  // so with both off the shader's gates stay closed.
-  if (aerialLutOn || ambientLutOn) {
-    let qf = data[74];
-    if (aerialLutOn) qf = qf | CLOUD_QF_AERIAL_LUT;
-    if (ambientLutOn) qf = qf | CLOUD_QF_AMBIENT_LUT;
-    data[74] = qf;
-  }
-  // Bit 11 selects the multi-deck march; clear, the shader takes the
-  // single-shell branch.
-  if (multiDeckOn) {
-    data[74] = data[74] | CLOUD_QF_MULTI_DECK;
-  }
-  // Bit 12 selects the high-precision march, which is on unless
-  // `cloudHighPrecision` is explicitly false; clear, the shell intersection is
-  // computed in single-part f32.
-  if (highPrecisionOn) {
-    data[74] = data[74] | CLOUD_QF_HIGH_PRECISION;
-  }
-  // Bit 13 selects the planet-scale density domain, and only a realized baked
-  // resource can supply it; the live-noise fallback keeps its own formula.
-  // Unlike the high-precision bit this one has no public override, so the only
-  // way to flip it in isolation is a diagnostic that writes slot 74 directly
-  // after upload.
-  if (noiseBakedBit !== 0) {
-    data[74] = data[74] | CLOUD_QF_PLANET_DENSITY;
-  }
-
-  device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
-
-  // Resolve the weather view: the procedural map when enabled, a 1×1 white
-  // fallback otherwise.
-  const weatherView = ensureWeatherView(
-    device,
-    cache,
-    weatherEnabled,
-    providerBytes,
-    providerVersion,
-  );
-  // `noise` (the 3D shape/detail views + sampler) was resolved up-front so the
-  // qualityFlags noiseSource bit reflects the same-frame baked state.
-
-  // Resolve the atmosphere-LUT views: the real textures when a mode is on and
-  // the LUTs are allocated, 1×1 black placeholders otherwise. They are bound
-  // unconditionally at 9, 10 and 11 so the bind-group layout never forks, and
-  // the shader gates the samples.
-  const lutViews = ensureCloudLutViews(
-    device,
-    context,
-    cache,
-    aerialLutOn || ambientLutOn,
-  );
-
-  const bindGroup = getOrCreateCloudMainBindGroup(
-    device,
-    cache,
-    colorTextureView,
-    depthTextureView,
-    weatherView,
-    noise.shapeView,
-    noise.detailView,
-    noise.sampler,
-    lutViews,
-  );
-
-  // Record into the main frame encoder so the composite lands over the
-  // post-process output; a separate encoder submits in its own order and the
-  // composite would be overwritten. The NPR and SSR passes bind their work the
-  // same way.
-  const mainEncoder = (
-    context as unknown as { _currentCommandEncoder?: GPUCommandEncoder }
-  )._currentCommandEncoder;
-  const useMain = !!mainEncoder;
-  const encoder =
-    mainEncoder ??
-    device.createCommandEncoder({ label: "ProceduralClouds (orphan)" });
-
-  // The sun-view Beer shadow map, opted into through `config.cloudCastShadows`.
-  // With it off, `shadowActive` stays false, the real map is never rendered, and
-  // consumers read the 1×1 placeholder at transmittance 1. With it on, the cloud
-  // optical depth is rasterized from the sun's orthographic view into
-  // `cache.shadowView` using the same `CloudUniforms`, weather and noise the
-  // visible march uses, so the cast shadow tracks the rendered field exactly.
-  // The sun-view projection is stashed on the cache for the consumers; the globe
-  // terrain reads the previous frame's, while aerial perspective and fog read
-  // this frame's.
-  cache.shadowActive = false;
-  cache.shadowCascadeActive = false;
-  // Publish the cast-shadow strength through the same cache seam
-  // `shadowAbsorption` travels through, and do it unconditionally so a frame
-  // that skips the shadow block cannot leave a stale value behind. It tracks the
-  // directional share of the surviving illumination, not the scene-light factor:
-  // scaling the strength by the scene factor gives shadowed ground
-  // `F * (1 - 0.65F)`, which peaks at F = 0.769 above its un-eclipsed value, so
-  // a shadowed patch would brighten as the eclipse deepened. See
-  // `Scene/EclipseCloudResponse.js` for the derivation. It is exactly 1.0
-  // outside an eclipse.
-  cache.shadowStrength = eclipseCloudDirectionalFraction(frameState);
-  stages.endStage(CloudCpuStage.PACK);
-  stages.beginStage(CloudCpuStage.SHADOW);
-  if (config.cloudCastShadows === true) {
-    const shadowOk = ensureShadowResources(device, cache);
-    if (!shadowOk) {
-      // Cast shadows are on but the map could not allocate, so the placeholder
-      // is used and nothing is shadowed. Reported unconditionally because it
-      // indicates a real allocation failure.
-      console.error(
-        `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud shadow map allocation failed; falling back to no-shadow placeholder.`,
-      );
+    // inverseProjection (mat4, 16 floats)
+    const invProj = us?.inverseProjection;
+    if (invProj) {
+      for (let i = 0; i < 16; i++) data[offset++] = invProj[i];
     } else {
-      // The footprint centre is the camera's WGS84 geodetic surface point. A
-      // radial projection onto a 6378137 m sphere instead lands up to about
-      // 21.4 km off in the radial direction at the poles, which at a low sun
-      // swings the whole ±60 km footprint tens of kilometres away from the
-      // ground the camera is looking at.
-      const cpx = camPos?.x ?? 0;
-      const cpy = camPos?.y ?? 0;
-      const cpz = camPos?.z ?? 0;
-      const sdx = sunDir?.x ?? 0;
-      const sdy = sunDir?.y ?? 1;
-      const sdz = sunDir?.z ?? 0;
-      const frameOk = computeCloudShadowFrame(
-        cache.shadowFrame,
-        cpx,
-        cpy,
-        cpz,
-        sdx,
-        sdy,
-        sdz,
-        CLOUD_SHADOW_FOOTPRINT_M,
-        WGS84_EQUATORIAL_RADIUS,
-        WGS84_POLAR_RADIUS,
+      offset += 16;
+    }
+
+    // inverseView (mat4, 16 floats)
+    const invView = us?.inverseView;
+    if (invView) {
+      for (let i = 0; i < 16; i++) data[offset++] = invView[i];
+    } else {
+      offset += 16;
+    }
+
+    // cameraPosition (vec3 + time)
+    const camPos = frameState.camera?.positionWC;
+    data[offset++] = camPos?.x ?? 0;
+    data[offset++] = camPos?.y ?? 0;
+    data[offset++] = camPos?.z ?? 0;
+    // Cloud motion is bound to the scene clock: `time` in seconds comes from
+    // `frameState.time` rather than from `performance.now()`, so wind and
+    // advection scrub with the timeline, pause when `clock.shouldAnimate` is
+    // false, and scale with `clock.multiplier`. The day-seconds are computed in
+    // f64 and the first-frame epoch is subtracted before the f32 store, since raw
+    // day-seconds of around 1.9e14 leave no usable f32 precision.
+    const cloudTimeSeconds = resolveCloudTimeSeconds(cache, frameState);
+    data[offset++] = cloudTimeSeconds;
+    // Keep the environment-capture consumer synchronized even if its update is
+    // requested after this execute rather than through the normal publish call.
+    cache.iblTimeSeconds = cloudTimeSeconds;
+
+    // sunDirection (vec3 + intensity)
+    const sunDir = us?.sunDirectionWC ?? us?.sunDirectionEC;
+    data[offset++] = sunDir?.x ?? 0;
+    data[offset++] = sunDir?.y ?? 1;
+    data[offset++] = sunDir?.z ?? 0;
+    // The deck's direct term is `(msLight + silverLining) * sunIntensity` and this
+    // is its only scale, so the eclipse factor applies here. The source is
+    // `config.atmosphereLightIntensity`, the undimmed user field, not the
+    // per-frame `tileProvider.atmosphereLightIntensity` mirror that `Globe.js`
+    // dims for the ground atmosphere; without this multiply the deck stays at full
+    // midday brightness over a world already at the twilight floor. A factor of
+    // 1.0 is bit-exact, so a non-eclipse frame is unaffected.
+    data[offset++] = applyEclipseCloudDimming(
+      config.atmosphereLightIntensity ?? 10.0,
+      eclipseCloudFactor,
+    ); // sunIntensity
+
+    // Cloud layer params
+    data[offset++] = config.cloudLayerBottom ?? 1500.0;
+    data[offset++] = config.cloudLayerTop ?? 4000.0;
+    data[offset++] = WGS84_EQUATORIAL_RADIUS; // planetRadius
+    data[offset++] = config.cloudCoverage ?? 0.5;
+
+    // Quality parameters. The resolver reads the `config.cloudVolumetricQuality`
+    // preset string, the camera altitude, and the enable and disable altitudes
+    // from `AtmosphericConditions` for auto mode, and returns `config.cloudQuality`
+    // verbatim when that field has been set to a non-default value.
+    const atmoClouds = (
+      config as unknown as {
+        atmosphericConditions?: {
+          clouds?: {
+            volumetricEnableAltitude?: number;
+            volumetricDisableAltitude?: number;
+          };
+        };
+      }
+    ).atmosphericConditions?.clouds;
+    const globeForQuality = config as unknown as {
+      cloudVolumetricQuality?: string;
+      cloudQuality?: number;
+    };
+    const cameraHeightM = frameState.camera?.positionCartographic?.height ?? 0;
+    const qualityInputs = {
+      preset: globeForQuality.cloudVolumetricQuality,
+      rawCloudQuality: globeForQuality.cloudQuality,
+      cameraHeightMeters: cameraHeightM,
+      enableAltitudeMeters: atmoClouds?.volumetricEnableAltitude ?? 50_000,
+      disableAltitudeMeters: atmoClouds?.volumetricDisableAltitude ?? 100_000,
+    };
+    // Step counts stay on the quality resolver; the tier preset supplies the
+    // remaining dials, which reach the shader through the `qualityFlags` lane at
+    // float 74.
+    const qualityResolved = resolveCloudQuality(qualityInputs);
+    const cloudPreset = resolveCloudPreset(qualityInputs);
+    // Half-resolution gate. A tier that resolves `renderResScale` below 1 marches
+    // into a half-size target and bilaterally upscales; the cinematic tier and the
+    // `cloudQuality` escape hatch keep it at 1.0 and take the full-resolution
+    // composite straight to the canvas. `halfResActive` is additionally gated on
+    // the half-resolution resources actually allocating, so a target or pipeline
+    // that cannot be built falls back to full resolution rather than dropping the
+    // clouds.
+    const canvasW = context._canvas?.width ?? 1920;
+    const canvasH = context._canvas?.height ?? 1080;
+    let halfResActive =
+      cloudPreset.renderResScale < 1.0 && cloudPreset.renderResScale > 0.0;
+    if (halfResActive) {
+      const allocated = ensureHalfResResources(
+        device,
+        cache,
+        canvasW,
+        canvasH,
+        cloudPreset.renderResScale,
+        context._canvasFormat || "bgra8unorm",
+        lease,
       );
-      if (!frameOk) {
-        // A degenerate camera or sun input would otherwise upload a meaningless
-        // projection that every consumer then samples.
+      if (!allocated) {
+        // The tier asked for the half-resolution path but the target or pipelines
+        // could not allocate, so the full-resolution composite runs instead and
+        // the clouds render degraded rather than absent. Reported unconditionally
+        // because it indicates a real allocation failure.
         console.error(
-          `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud shadow sun-view frame is degenerate; leaving the shadow map inert this frame.`,
+          `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud half-res target/pipeline allocation failed (${canvasW}x${canvasH} @${cloudPreset.renderResScale}); falling back to full-res.`,
         );
       }
-      // The absolute matrix stays published for the planar scene modes, whose
-      // globe fragments carry no ECEF camera-relative position.
-      writeCloudShadowViewProjection(
-        cache.shadowSunViewVP,
-        0,
-        cache.shadowFrame,
-      );
-      // `CloudShadowUniforms` holds the camera-relative inverse view-projection
-      // in floats 0-15, so the shadow fragment shader reconstructs a
-      // camera-relative column point and stays in the same relative-to-eye frame
-      // as the visible march, and the sun direction plus the light-step count in
-      // floats 16-19.
-      writeCloudShadowInverseViewProjectionRelativeToEye(
-        cache.shadowUniformData,
-        0,
-        cache.shadowFrame,
-        cpx,
-        cpy,
-        cpz,
-      );
-      cache.shadowUniformData[16] = sdx;
-      cache.shadowUniformData[17] = sdy;
-      cache.shadowUniformData[18] = sdz;
-      cache.shadowUniformData[19] = CLOUD_SHADOW_LIGHT_STEPS;
-      device.queue.writeBuffer(
-        cache.shadowUniformBuffer!,
-        0,
-        cache.shadowUniformData,
-      );
-      cache.shadowAbsorption = 0.04; // matches CloudUniforms.absorptionCoeff
-
-      const shadowBindGroup = getOrCreateCloudShadowBindGroup(
+      halfResActive = allocated;
+    }
+    // Temporal gate. A tier with `temporalEnabled` layers reprojection and
+    // accumulation on top of the half-resolution march: the history accumulates
+    // the premultiplied half-resolution cloud, is reprojected through the previous
+    // relative-to-eye view-projection and the f64 camera delta, and is
+    // neighbourhood-clamped each frame. The cinematic tier and the `cloudQuality`
+    // escape hatch leave it false and allocate no history. The history is
+    // half-resolution, so temporal additionally requires `halfResActive`, and a
+    // history pair or resolve pipeline that cannot allocate falls back to plain
+    // half resolution with no accumulation.
+    const temporalFrustum = frameState.camera?.frustum;
+    const temporalProjectionOrthographic =
+      temporalFrustum instanceof OrthographicFrustum ||
+      temporalFrustum instanceof OrthographicOffCenterFrustum;
+    // The current color-only proxy assumes every ray begins at the camera.
+    // Orthographic reconstruction needs a per-pixel eye-relative origin, and
+    // morphing crosses incompatible projection regimes. Keep the live half-res
+    // march/upscale, but do not animate its temporal-only phase, allocate/execute
+    // history, or advertise QF_TEMPORAL until that geometry is representable.
+    const temporalReprojectionSupported =
+      !temporalProjectionOrthographic && frameState.mode !== SceneMode.MORPHING;
+    let temporalActive =
+      cloudPreset.temporalEnabled &&
+      halfResActive &&
+      temporalReprojectionSupported;
+    if (temporalActive) {
+      const tAllocated = ensureTemporalResources(
         device,
-        cache.shadowBindGroups,
-        0,
-        cache.shadowBindGroupLayout!,
-        cache.uniformBuffer!,
-        weatherView,
-        cache.weatherSampler!,
-        noise.shapeView,
-        noise.detailView,
-        noise.sampler,
-        cache.shadowUniformBuffer!,
-        0,
-        CLOUD_SHADOW_UNIFORM_BYTES,
+        cache,
+        cache.halfWidth,
+        cache.halfHeight,
+        lease,
       );
-      const shadowPass = encoder.beginRenderPass(
-        timedCloudPass(context, {
-          label: "CloudShadow map pass",
-          colorAttachments: [
-            {
-              view: cache.shadowView!,
-              clearValue: { r: 0, g: 0, b: 0, a: 0 },
-              loadOp: "clear",
-              storeOp: "store",
-            },
-          ],
-        }),
-      );
-      shadowPass.setPipeline(cache.shadowPipeline!);
-      shadowPass.setBindGroup(0, shadowBindGroup);
-      shadowPass.draw(3);
-      shadowPass.end();
-      // A degenerate frame leaves the map inert rather than publishing an
-      // identity projection every consumer would then sample as a real shadow.
-      cache.shadowActive = frameOk;
-      // The single Beer shadow map is one pass, at this resolution.
-      counters.shadowPassCount++;
-      counters.shadowSize = cache.shadowSize;
+      if (!tAllocated) {
+        // The tier asked for temporal accumulation but the history or resolve
+        // pipeline could not allocate, so plain half resolution runs instead and
+        // the clouds still render. Reported unconditionally because it indicates a
+        // real allocation failure.
+        console.error(
+          `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud temporal history/pipeline allocation failed (${cache.halfWidth}x${cache.halfHeight}); falling back to half-res (no accumulation).`,
+        );
+      }
+      temporalActive = tAllocated;
+    }
+    if (!temporalActive) {
+      // A full-resolution/plain-half frame does not update the temporal history.
+      // Even an adjacent re-entry must therefore seed from the current march.
+      markCloudTemporalInactive(cache);
+    }
+    // Raymarch geometry and step budgets, recorded at the one point where the
+    // half-resolution gate, the temporal gate and the quality resolver have all
+    // settled, so nothing here is derived twice.
+    //
+    // The sample counts are bounded proxies — dispatched pixels times the resolved
+    // budgets — not true sample counts. A true count needs a shader-side atomic,
+    // and WGSL register allocation is static, so even a runtime-gated counter would
+    // cost occupancy on every frame.
+    counters.marchWidth = halfResActive ? cache.halfWidth : canvasW;
+    counters.marchHeight = halfResActive ? cache.halfHeight : canvasH;
+    counters.marchPixels = counters.marchWidth * counters.marchHeight;
+    counters.halfResActive = halfResActive ? 1 : 0;
+    counters.maxSteps = qualityResolved.maxSteps;
+    counters.lightSteps = qualityResolved.lightSteps;
+    counters.primarySampleBudget = counters.marchPixels * counters.maxSteps;
+    counters.lightSampleBudget =
+      counters.primarySampleBudget * counters.lightSteps;
+    counters.resolveWidth = temporalActive ? cache.temporalWidth : 0;
+    counters.resolveHeight = temporalActive ? cache.temporalHeight : 0;
+    counters.resolvePixels = counters.resolveWidth * counters.resolveHeight;
+    counters.upscalePixels = halfResActive ? canvasW * canvasH : 0;
+    // `attachmentsEnabled` is also writable from the debug surface without going
+    // through `setCloudReconstructionAttachments`, so a set switched off that way
+    // frees itself on the next execute rather than staying resident and continuing
+    // to report live bytes.
+    if (!cache.attachmentsEnabled && cache.attachmentGeneration.liveBytes > 0) {
+      releaseCloudAttachmentResources(context, cache, lease);
+    }
+    // Consuming a set that is not being produced is the stale read the per-frame
+    // flag discipline exists to prevent, so clearing `attachmentsEnabled` directly
+    // also clears the dependent flag instead of leaving a half-armed variant.
+    if (!cache.attachmentsEnabled && cache.reconstructionEnabled) {
+      cache.reconstructionEnabled = false;
+    }
+    // A resident figure, published every execute rather than only on frames the
+    // producer ran: live bytes above 0 with `attachmentPixels` at 0 is the real
+    // state "allocated, but this frame produced none".
+    counters.attachmentLiveBytes = cache.attachmentGeneration.liveBytes;
+    // Resident as well: the requested state, published every execute so a frame
+    // that requested the variant but could not build it reads as requested with
+    // nothing emitted rather than as never having been asked for.
+    counters.reconstructionRequested = cache.reconstructionEnabled ? 1 : 0;
 
-      // The opt-in three-cascade atlas, additive on top of the single map that
-      // aerial perspective and fog keep reading: three geometrically split
-      // cascades rendered into a stacked 512×1536 atlas the globe terrain
-      // samples. Each cascade reuses the single-map pipeline with its own
-      // footprint and march-step count, fed from a 256-aligned slice of the
-      // cascade uniform buffer.
-      if (config.cloudShadowCascades === true) {
-        const cascadeOk = ensureCascadeResources(device, cache);
-        if (!cascadeOk) {
-          // Cascades are on but the atlas could not allocate, so
-          // `shadowCascadeActive` stays false and the globe falls back to the
-          // single map. Reported unconditionally because it indicates a real
-          // allocation failure.
-          console.error(
-            `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud shadow cascade atlas allocation failed; falling back to single beer-shadow-map.`,
-          );
-        } else {
-          const cud = cache.shadowCascadeUniformData;
-          for (let ci = 0; ci < CLOUD_SHADOW_CASCADE_COUNT; ci++) {
-            const base = ci * CLOUD_SHADOW_CASCADE_STRIDE_FLOATS;
-            const fwd = cache.shadowCascadeVP.subarray(ci * 16, ci * 16 + 16);
-            // Reuse the shared invVP scratch region (cud[base..base+15]) as the
-            // per-cascade inverse VP the shadow FS reconstructs columns from.
-            const invVP = cud.subarray(base, base + 16);
-            // Each cascade is the same geodetic-centred sun frame at a tighter
-            // half-extent. The fragment shader reconstructs camera-relative
-            // columns from its own inverse view-projection, while the forward
-            // matrix stays absolute for the planar-mode consumer branch.
-            const cascadeFrame = cache.shadowCascadeFrames[ci];
-            computeCloudShadowFrame(
-              cascadeFrame,
+    data[offset++] = qualityResolved.maxSteps;
+    data[offset++] = qualityResolved.lightSteps;
+    data[offset++] = config.cloudDensity ?? 0.3;
+    data[offset++] = 0.04; // absorptionCoeff
+
+    // Wind
+    const windDir = config.cloudWindDirection;
+    const cloudWindX = windDir?.x ?? 0.7;
+    const cloudWindY = windDir?.y ?? 0.3;
+    const cloudWindSpeed = config.cloudWindSpeed ?? 15.0;
+    data[offset++] = cloudWindX;
+    data[offset++] = cloudWindY;
+    data[offset++] = cloudWindSpeed;
+    // Silver-lining intensity, live from `atmosphericConditions.clouds.silverLining`.
+    data[offset++] = config.cloudSilverLiningIntensity ?? 0.8; // silverLiningIntensity
+
+    // cloudBaseColor (vec3 + pad)
+    data[offset++] = 0.65;
+    data[offset++] = 0.68;
+    data[offset++] = 0.72;
+    data[offset++] = 0;
+    // cloudTopColor (vec3 + pad)
+    data[offset++] = 0.95;
+    data[offset++] = 0.95;
+    data[offset++] = 0.97;
+    data[offset++] = 0;
+
+    // Resolution and WGS84 coordinate data. While half resolution is active this
+    // carries the half-resolution target size, so the shader's Bayer jitter step
+    // of 1/resolution is one half-resolution texel; the full-resolution path skips
+    // the jitter branch and keeps the canvas size.
+    data[offset++] = halfResActive ? cache.halfWidth : canvasW;
+    data[offset++] = halfResActive ? cache.halfHeight : canvasH;
+    // The aligned pads of the resolution row carry the WGS84 semi-minor axis and
+    // the f64 geodetic camera height, so neither needs its own row. The geodetic
+    // height is what stops a 20 km polar camera being classified as below the
+    // cloud deck.
+    data[offset++] = WGS84_POLAR_RADIUS;
+    data[offset++] = cameraHeightM;
+
+    // Weather-map seam lanes, floats 64-79. A `WeatherProvider` holding real data
+    // both supplies the texture and auto-enables the weather map, so observed
+    // cloud cover drives the deck without `cloudWeatherMap` being set explicitly.
+    // `getPackedTexture` returns null until the asynchronous fetch lands, and the
+    // procedural map is kept until then, which avoids an overcast-everywhere flash.
+    const weatherProvider = config.weatherProvider;
+    const providerBytes =
+      weatherProvider?.getPackedTexture(WEATHER_TEX_W, WEATHER_TEX_H) ?? null;
+    const providerVersion = weatherProvider?.version ?? -1;
+    const weatherEnabled =
+      config.cloudWeatherMap === true || providerBytes !== null;
+    data[offset++] = weatherEnabled ? 1.0 : 0.0; // 64 weatherMapEnabled
+    // 65 weatherStrength — the global cloudCoverage folded in as a per-cell
+    // multiplier (default coverage 0.5 → 1.0 neutral so the map's R drives directly).
+    data[offset++] = (config.cloudCoverage ?? 0.5) * 2.0;
+    // 66/67 — dual-lobe phase: back-scatter g and the forward/back blend, live
+    // from `atmosphericConditions.clouds.phaseBackG` and `.phaseBlend`.
+    data[offset++] = config.cloudPhaseBackG ?? -0.3; // 66 phaseG2
+    data[offset++] = config.cloudPhaseBlend ?? 0.7; // 67 phaseBlend
+    // 68-71 weatherTexBounds — global equirect (radians): minLon, minLat, lonRange, latRange.
+    data[offset++] = -Math.PI;
+    data[offset++] = -Math.PI / 2.0;
+    data[offset++] = 2.0 * Math.PI;
+    data[offset++] = Math.PI;
+    // 72 — forward-scatter g. The Henyey-Greenstein forward peak at g = 0.85 is
+    // about 1.8 times the peak at g = 0.8, which is what gives a strong silver
+    // lining toward the sun.
+    data[offset++] = config.cloudPhaseForwardG ?? 0.85; // 72 phaseG1 (config: .phaseForwardG)
+    // 73 — ambient intensity: the sky and ground fill on the shadow side, from
+    // `.ambientIntensity`. The eclipse factor applies here too. `skyAmbientColor`
+    // at 80-82 and `groundAmbientColor` at 84-86 are fixed constants that track no
+    // scene light on any path — the `ambientLutMode` route replaces only their hue
+    // and chroma and keeps their nominal brightness — so this scalar is the only
+    // lever the deck's ambient has. Dimming the direct term alone leaves a fully
+    // lit ambient deck glowing over a darkened world at totality.
+    data[offset++] = applyEclipseCloudDimming(
+      config.cloudAmbientIntensity ?? 1.5,
+      eclipseCloudFactor,
+    ); // 73 ambientIntensity
+    // 74 — the `qualityFlags` bitfield. Bit 0 selects the baked 3D-texture core,
+    // and it is set only when the tier asks for it and the bake succeeded; with no
+    // baked noise resident the bit stays clear and the shader marches live noise
+    // instead.
+    const noiseBakedBit =
+      cloudPreset.noiseSource === CloudNoiseSource.BAKED &&
+      cache.noiseBaked &&
+      cache.noise !== null
+        ? CLOUD_QF_NOISE_BAKED
+        : 0;
+    // Bit 1 marks the half-resolution path and is set only when that path is
+    // actually running, meaning the tier asked for it and the target and pipelines
+    // allocated. The shader keys its premultiplied-emit and jitter branch on this
+    // bit, and the full-resolution tiers leave it clear.
+    const halfResBit = halfResActive ? CLOUD_QF_HALF_RES : 0;
+    // Bit 2 marks active temporal accumulation. The march emits identically either
+    // way, since temporal adds a separate resolve pass rather than a march branch;
+    // the bit exists so the flags stay consistent with the tier presets and with
+    // what any reader of the field would expect.
+    const temporalBit = temporalActive ? CLOUD_QF_TEMPORAL : 0;
+    // Bit 3 carries the tier's jitter contract: the lower tiers animate the
+    // per-pixel interleaved-gradient-noise phase only while temporal accumulation
+    // is active, the cinematic tier gets deterministic frame-zero spatial noise,
+    // and the hand-tuned escape preset leaves jitter off and keeps exact midpoint
+    // sampling.
+    const jitterBit = cloudPreset.jitterEnabled ? CLOUD_QF_JITTER : 0;
+    // Bit 10 selects the cone-sampled light march, which the lower tiers use. The
+    // cinematic tier and the escape hatch leave it clear and take the straight
+    // light march.
+    const lightConeBit = cloudPreset.lightConeSampling
+      ? CLOUD_QF_LIGHT_CONE
+      : 0;
+    data[offset++] =
+      noiseBakedBit |
+      halfResBit |
+      temporalBit |
+      jitterBit |
+      lightConeBit |
+      ((Math.min(7, cloudPreset.multiScatterOctaves) & 7) <<
+        CLOUD_QF_OCTAVES_SHIFT); // 74 qualityFlags
+    // 75 — curl-warp amplitude. At 0 the shader's `curlAmplitude > 0.0` guard
+    // skips the baked-path detail-erosion warp entirely, and
+    // `config.cloudCurlAmplitude` is the only thing that raises it: the tier
+    // presets leave their own `curlAmplitude` at 0, so curl is a property of the
+    // configuration rather than of the tier. The warp perturbs only where the
+    // detail texture is sampled, and that erosion is subtractive, so it can carve
+    // wispier edges but never add density.
+    data[offset++] = config.cloudCurlAmplitude ?? 0.0; // 75 curlAmplitude
+    // 76 — the shared temporal phase. The low 4 bits carry the Bayer and cone
+    // 16-phase sequence and all 6 bits drive the animated interleaved-gradient
+    // noise. The full-resolution cinematic path stores zero so its spatial noise
+    // stays deterministic and cannot sparkle with no history to average it.
+    cache.frameCounter = (cache.frameCounter + 1) & 63;
+    data[offset++] = halfResActive ? cache.frameCounter : 0; // 76 frameCounter
+    // 77 — curl-noise swirl wavelength in noise space, read only while
+    // `curlAmplitude` is above 0. The default of 2.0 is about the base-shape
+    // feature scale.
+    data[offset++] = config.cloudCurlFrequency ?? 2.0; // 77 curlFrequency
+    // 78 — light-march step scale. The live-noise and cinematic paths march the
+    // full light ray; the lower baked tiers halve it for cheaper shadowing.
+    data[offset++] =
+      cloudPreset.noiseSource === CloudNoiseSource.LIVE || cloudPreset.tier >= 3
+        ? 1.0
+        : 0.5; // 78 lightSampleScale
+    // 79 — mean-preserving erosion floor, read on the baked path only. An explicit
+    // override wins; otherwise the tier decides, low tiers being fibrous at 0.10
+    // and the higher tiers puffy at 0.18.
+    data[offset++] =
+      config.cloudErosionStrength ?? (cloudPreset.tier <= 1 ? 0.1 : 0.18); // 79 erosionStrength
+    // 80-83 — sky ambient: blue, lighting cloud tops.
+    data[offset++] = 0.5; // 80
+    data[offset++] = 0.65; // 81
+    data[offset++] = 0.95; // 82
+    data[offset++] = 0; // 83 pad
+    // 84-87 — ground-bounce ambient: warm grey, lighting cloud bottoms.
+    data[offset++] = 0.35; // 84
+    data[offset++] = 0.34; // 85
+    data[offset++] = 0.3; // 86
+    data[offset++] = 0; // 87 pad
+    // 88-90 — time-of-day sun colour, keyed on the local sun elevation, that is
+    // `sunDir` dotted with local up at the camera, rather than on raw ECEF Y:
+    // warm orange near the horizon, neutral white by about 20 degrees up.
+    let sinElev = 0.5;
+    if (camPos && sunDir) {
+      const len = Math.hypot(camPos.x, camPos.y, camPos.z) || 1.0;
+      sinElev = Math.max(
+        0.0,
+        Math.min(
+          1.0,
+          (sunDir.x * camPos.x + sunDir.y * camPos.y + sunDir.z * camPos.z) /
+            len,
+        ),
+      );
+    }
+    const e = Math.max(0.0, Math.min(1.0, sinElev / 0.35));
+    const todT = e * e * (3.0 - 2.0 * e); // smoothstep(0, 0.35, sinElev)
+    data[offset++] = 1.0 + (1.0 - 1.0) * todT; // 88 R (warm 1.0 -> noon 1.0)
+    data[offset++] = 0.55 + (1.0 - 0.55) * todT; // 89 G (warm 0.55 -> noon 1.0)
+    data[offset++] = 0.25 + (0.98 - 0.25) * todT; // 90 B (warm 0.25 -> noon 0.98)
+    // 91 — aerial-perspective strength, from `config.cloudAerialStrength`. At 1.0
+    // the horizon haze is applied in full at the 60 km scale the shader assumes;
+    // at 0 it is off.
+    data[offset++] = config.cloudAerialStrength ?? 1.0; // 91 aerialStrength
+    // 92-94 — horizon inscatter haze tint. Distant clouds blend toward this so
+    // they fade into the sky instead of popping. Keyed on the same local sun
+    // elevation (todT) as the sun color: warm orange-grey at the horizon (twilight
+    // band) -> desaturated sky-blue at day. This roughly tracks the rendered sky's
+    // horizon color so far clouds dissolve into it rather than a fixed blue.
+    //
+    // The tint is an addend rather than a scale: `ProceduralClouds.wgsl` computes
+    // `mix(toneMapped, cloud.aerialColor, aerial)`, so the `aerial` fraction of
+    // every deck pixel is this colour irrespective of the deck's own radiance. It
+    // models the skylight in-scattered between camera and cloud, and that
+    // inscatter dims with the sky it comes from, so the eclipse factor applies
+    // here too. Left undimmed, a distant deck keeps a full-brightness horizon tint
+    // at totality and the deck's measured brightness ratio is biased upward by
+    // `aerial * (1 - F) * A / H(1)`. A factor of 1.0 is bit-exact, so a
+    // non-eclipse frame is unaffected.
+    //
+    // Named rather than inlined so the dimming is greppable in a built bundle:
+    // every literal in this block is a float, and esbuild normalises those.
+    const dimAerialTint = (channel: number): number =>
+      applyEclipseCloudDimming(channel, eclipseCloudFactor);
+    data[offset++] = dimAerialTint(0.8 + (0.62 - 0.8) * todT); // 92 R (warm 0.80 -> day 0.62)
+    data[offset++] = dimAerialTint(0.62 + (0.72 - 0.62) * todT); // 93 G (warm 0.62 -> day 0.72)
+    data[offset++] = dimAerialTint(0.5 + (0.85 - 0.5) * todT); // 94 B (warm 0.50 -> day 0.85)
+    data[offset++] = 0; // 95 pad
+    // 96-100 — shape scale, exposure and the three multiple-scattering decay
+    // terms, all live dials whose defaults are the values the shader would
+    // otherwise hard-code.
+    const cloudPuffSize = config.cloudPuffSize ?? 0.45;
+    data[offset++] = cloudPuffSize; // 96 puffSize
+    cache.iblPuffSize = cloudPuffSize;
+    data[offset++] = config.cloudExposure ?? 0.22; // 97 exposure
+    data[offset++] = config.cloudMsDecayScatter ?? 0.5; // 98 msDecayA
+    data[offset++] = config.cloudMsDecayExtinction ?? 0.5; // 99 msDecayB
+    data[offset++] = config.cloudMsDecayPhase ?? 0.85; // 100 msDecayC
+    // 101-104 — the per-genus vertical-density profile. `config.cloudType` selects
+    // a {@link CloudTypeProfile}; cumulus resolves to the billowy shape at density
+    // scale 1.0, which is the shader's baseline gradient.
+    const profile = CloudTypeProfile.get(config.cloudType ?? CloudType.CUMULUS);
+    const cumulusProfile = CloudTypeProfile.get(CloudType.CUMULUS);
+    const cumulusBase = cumulusProfile.baseDensity; // 0.7
+    const cumulusExtinction = cumulusProfile.extinction; // 0.6
+    data[offset++] = profile.shape; // 101 profileShape (0 SLAB / 1 BILLOWY / 2 TOWER)
+    data[offset++] = cumulusBase > 0 ? profile.baseDensity / cumulusBase : 1.0; // 102 profileDensityScale (CUMULUS=1.0)
+    // 103 — per-genus optical extinction, normalised against cumulus at 0.6 so
+    // cumulus resolves to 1.0, mirroring how `profileDensityScale` at 102 is
+    // normalised. The shader multiplies `cloud.absorptionCoeff` by this, so thin
+    // genera such as cirrus at 0.167× absorb less and read wispier, while dense
+    // genera such as cumulonimbus at 1.583× absorb more and read as darker, more
+    // opaque cores.
+    data[offset++] =
+      cumulusExtinction > 0 ? profile.extinction / cumulusExtinction : 1.0; // 103 profileExtinction (CUMULUS=1.0)
+    data[offset++] =
+      profile.shape === CloudTypeProfile.CloudHeightGradientShape.TOWERING_ANVIL
+        ? 1.0
+        : 0.0; // 104 anvilBias
+    // 105/106 — camera near and far, so the shader can reverse the renderer-wide
+    // log depth for occlusion. Same source as AerialPerspective uses.
+    data[offset++] = frameState.camera?.frustum?.near ?? 1.0; // 105 nearPlane
+    data[offset++] = frameState.camera?.frustum?.far ?? 1e8; // 106 farPlane
+    // 107 — how strongly the weather map's green, blue and alpha channels, which
+    // carry genus, base altitude and density bias, modulate the cloud model. A
+    // neutral map cell of (0.5, 0, 0.5) in those channels is a no-op at any
+    // strength, so a red-only map behaves the same at every setting; 0 reduces the
+    // map to its red coverage channel.
+    data[offset++] = config.cloudWeatherChannelStrength ?? 1.0; // 107 weatherChannelStrength
+    // 108-111 — atmosphere-LUT coupling modes. Both default to the analytic path,
+    // a heuristic aerial term and a constant ambient, which the shader selects when
+    // these mode floats are 0. The `qualityFlags` bits 8 and 9 carry the same
+    // on/off state; the mode floats make it legible from the shader side.
+    // `atmosphereThickness` has to match the LUT bake, so the transmittance
+    // v-lookup lands on the right row.
+    const globeForLut = config as unknown as {
+      cloudAerialMode?: string;
+      cloudAmbientSource?: string;
+    };
+    const aerialLutOn = globeForLut.cloudAerialMode === "physical";
+    const ambientLutOn = globeForLut.cloudAmbientSource === "sky-lut";
+    data[offset++] = aerialLutOn ? 1.0 : 0.0; // 108 aerialLutMode
+    data[offset++] = ambientLutOn ? 1.0 : 0.0; // 109 ambientLutMode
+    data[offset++] = 111000.0; // 110 atmosphereThickness (matches the LUT bake)
+    data[offset++] = 0.0; // 111 pad
+
+    // 112-119 — the multi-deck shell march. With `multiDeck` at 0 the shader
+    // marches exactly one shell between `cloudLayerBottom` and `cloudLayerTop` and
+    // never reads the deck bounds. The bounds come from
+    // `CloudTypeProfile.CloudDeck.bounds`, the same table the per-genus deck
+    // assignment uses, so the two cannot disagree.
+    const multiDeckOn =
+      (config as unknown as { cloudMultiDeck?: boolean }).cloudMultiDeck ===
+      true;
+    const deckBounds = CloudTypeProfile.CloudDeck.bounds as number[][];
+    data[offset++] = multiDeckOn ? 1.0 : 0.0; // 112 multiDeck
+    data[offset++] = 0.0; // 113 pad
+    data[offset++] = deckBounds[0][0]; // 114 deckBoundsLow.x  (LOW bottom)
+    data[offset++] = deckBounds[0][1]; // 115 deckBoundsLow.y  (LOW top)
+    data[offset++] = deckBounds[1][0]; // 116 deckBoundsMid.x  (MID bottom)
+    data[offset++] = deckBounds[1][1]; // 117 deckBoundsMid.y  (MID top)
+    data[offset++] = deckBounds[2][0]; // 118 deckBoundsHigh.x (HIGH bottom)
+    data[offset++] = deckBounds[2][1]; // 119 deckBoundsHigh.y (HIGH top)
+
+    // 120-127 — the camera-relative high-precision march: the relative-to-eye
+    // high/low split of the same camera world position that feeds
+    // `cloud.cameraPosition`. All eight floats are written every frame, but the
+    // shader reads them only inside the CLOUD_QF_HIGH_PRECISION branch. The branch
+    // is on unless it is explicitly disabled, which returns the march to the
+    // direct shell-intersection form.
+    const highPrecisionOn =
+      (config as unknown as { cloudHighPrecision?: boolean })
+        .cloudHighPrecision !== false;
+    // Encode the camera world position into a high/low f32 pair so the shader can
+    // subtract the large high term before applying the small low refinement, which
+    // is what keeps the subtraction from cancelling into noise.
+    if (camPos !== undefined) {
+      const enc = EncodedCartesian3.fromCartesian(camPos, scratchEncodedCamera);
+      data[offset++] = enc.high.x; // 120 encodedCameraHigh.x
+      data[offset++] = enc.high.y; // 121 encodedCameraHigh.y
+      data[offset++] = enc.high.z; // 122 encodedCameraHigh.z
+      data[offset++] = 0.0; // 123 pad
+      data[offset++] = enc.low.x; // 124 encodedCameraLow.x
+      data[offset++] = enc.low.y; // 125 encodedCameraLow.y
+      data[offset++] = enc.low.z; // 126 encodedCameraLow.z
+      data[offset++] = 0.0; // 127 pad
+    } else {
+      // With no camera the split has nothing to encode; the branch that reads it
+      // cannot run either.
+      data[offset++] = 0.0; // 120
+      data[offset++] = 0.0; // 121
+      data[offset++] = 0.0; // 122
+      data[offset++] = 0.0; // 123 pad
+      data[offset++] = 0.0; // 124
+      data[offset++] = 0.0; // 125
+      data[offset++] = 0.0; // 126
+      data[offset++] = 0.0; // 127 pad
+    }
+
+    // 128-131 — mammatus, the pendulous pouches on a cloud's underside. At a
+    // strength of 0 the shader's `mammatusFactor()` returns 1.0 immediately and the
+    // remaining floats are never read past that guard.
+    const globeMamma = config as unknown as {
+      cloudMammatusStrength?: number;
+      cloudMammatusScale?: number;
+      cloudMammatusDepth?: number;
+    };
+    data[offset++] = globeMamma.cloudMammatusStrength ?? 0.0; // 128 mammatusStrength (0 = off)
+    data[offset++] = globeMamma.cloudMammatusScale ?? 1.0; // 129 mammatusScale (pouch size)
+    data[offset++] = globeMamma.cloudMammatusDepth ?? 0.25; // 130 mammatusDepth (underside band)
+    data[offset++] = 0.0; // 131 pad
+
+    // 132-135 — species and variety density shaping. At mode 0 the shader's
+    // `speciesFactor()` returns 1.0 immediately and the remaining floats are never
+    // read past that guard. `cloudSpecies` takes a genus-gated name, or
+    // `cloudSpeciesMode` the numeric equivalent: "lenticularis" is mode 1, and
+    // "fibratus" and "uncinus" are both mode 2, with uncinus adding the hook
+    // through its parameter.
+    const globeSpecies = config as unknown as {
+      cloudSpecies?: string;
+      cloudSpeciesMode?: number;
+      cloudSpeciesStrength?: number;
+      cloudSpeciesScale?: number;
+      cloudSpeciesParam?: number;
+    };
+    let speciesMode = globeSpecies.cloudSpeciesMode ?? 0.0;
+    let speciesParamDefault = 0.0;
+    const speciesName = globeSpecies.cloudSpecies;
+    if (typeof speciesName === "string") {
+      const n = speciesName.toLowerCase();
+      if (n === "lenticularis" || n === "lenticular") {
+        speciesMode = 1.0;
+      } else if (n === "fibratus") {
+        speciesMode = 2.0;
+        speciesParamDefault = 0.0; // straight filaments
+      } else if (n === "uncinus") {
+        speciesMode = 2.0;
+        speciesParamDefault = 1.0; // hooked fallstreaks
+      }
+    }
+    data[offset++] = speciesMode; // 132 speciesMode (0 = off)
+    data[offset++] = globeSpecies.cloudSpeciesStrength ?? 0.8; // 133 speciesStrength
+    data[offset++] = globeSpecies.cloudSpeciesScale ?? 1.0; // 134 speciesScale
+    data[offset++] = globeSpecies.cloudSpeciesParam ?? speciesParamDefault; // 135 speciesParam (uncinus hook)
+
+    // 136-139 — the supplementary features asperitas, fluctus, arcus and virga, as
+    // bounded density shaping. At mode 0 the shader's `featureFactor()` returns
+    // 1.0 immediately and the remaining floats are never read past that guard.
+    // `cloudFeature` takes a genus-gated name, or `cloudFeatureMode` the numeric
+    // equivalent: "asperitas" is 1, "fluctus" and "kelvin-helmholtz" are 2,
+    // "arcus" is 3, and "virga" and "praecipitatio" are both 4, praecipitatio
+    // differing only in its parameter, which gives denser, further-reaching
+    // streaks.
+    const globeFeature = config as unknown as {
+      cloudFeature?: string;
+      cloudFeatureMode?: number;
+      cloudFeatureStrength?: number;
+      cloudFeatureScale?: number;
+      cloudFeatureParam?: number;
+    };
+    let featureMode = globeFeature.cloudFeatureMode ?? 0.0;
+    let featureParamDefault = 0.0;
+    const featureName = globeFeature.cloudFeature;
+    if (typeof featureName === "string") {
+      const n = featureName.toLowerCase();
+      if (n === "asperitas") {
+        featureMode = 1.0;
+      } else if (
+        n === "fluctus" ||
+        n === "kelvin-helmholtz" ||
+        n === "kelvinhelmholtz"
+      ) {
+        featureMode = 2.0;
+        featureParamDefault = 0.6; // breaking-wave shear
+      } else if (n === "arcus") {
+        featureMode = 3.0;
+        featureParamDefault = 0.3; // shelf width
+      } else if (n === "virga") {
+        featureMode = 4.0;
+        featureParamDefault = 0.0; // wispy trails
+      } else if (n === "praecipitatio") {
+        featureMode = 4.0;
+        featureParamDefault = 1.0; // denser reaching streaks
+      }
+    }
+    data[offset++] = featureMode; // 136 featureMode (0 = off)
+    data[offset++] = globeFeature.cloudFeatureStrength ?? 0.8; // 137 featureStrength
+    data[offset++] = globeFeature.cloudFeatureScale ?? 1.0; // 138 featureScale
+    data[offset++] = globeFeature.cloudFeatureParam ?? featureParamDefault; // 139 featureParam
+
+    // 140-143 — noctilucent and nacreous iridescent shading. At mode 0 the
+    // shader's `specialShadeTint()` returns `vec3(1.0)` immediately, so the cloud
+    // colour is multiplied by exactly 1.0 and the remaining floats are never read
+    // past that guard. `cloudSpecial` takes a name, or `cloudSpecialShadeMode` the
+    // numeric equivalent: "noctilucent" and "nlc" are 1, and "nacreous",
+    // "polar-stratospheric" and "psc" are 2. This supplies only the shading; the
+    // high-altitude deck itself is placed through the multi-deck high bounds.
+    const globeSpecial = config as unknown as {
+      cloudSpecial?: string;
+      cloudSpecialShadeMode?: number;
+      cloudSpecialShadeStrength?: number;
+      cloudSpecialShadeScale?: number;
+      cloudSpecialShadeParam?: number;
+    };
+    let specialShadeMode = globeSpecial.cloudSpecialShadeMode ?? 0.0;
+    let specialParamDefault = 0.0;
+    const specialName = globeSpecial.cloudSpecial;
+    if (typeof specialName === "string") {
+      const n = specialName.toLowerCase();
+      if (n === "noctilucent" || n === "nlc") {
+        specialShadeMode = 1.0;
+      } else if (
+        n === "nacreous" ||
+        n === "polar-stratospheric" ||
+        n === "psc"
+      ) {
+        specialShadeMode = 2.0;
+        specialParamDefault = 0.5; // moderate spectral cycling
+      }
+    }
+    data[offset++] = specialShadeMode; // 140 specialShadeMode (0 = off)
+    data[offset++] = globeSpecial.cloudSpecialShadeStrength ?? 0.8; // 141 specialShadeStrength
+    data[offset++] = globeSpecial.cloudSpecialShadeScale ?? 1.0; // 142 specialShadeScale
+    data[offset++] = globeSpecial.cloudSpecialShadeParam ?? specialParamDefault; // 143 specialShadeParam
+
+    // 144-147 — two march dials that trade quality for cost at orbital distance,
+    // both no-ops at their defaults: `marchStepGrowth` at 1.0 fails the shader's
+    // `> 1.0` guard and every step stays the fine step, and `maxRayDistance` at 0
+    // fails its `> 0.0` guard and the ray end is untouched. `cloudMarchStepGrowth`
+    // is geometric growth per fine step, clamped to [1.0, 1.1] so near samples stay
+    // crisp while far shell samples coarsen; `cloudMaxRayDistance` is a distance
+    // in metres past which the view march stops, where clouds are sub-pixel
+    // anyway. The WebGL cloud path is a separate, simpler renderer and has no
+    // equivalent.
+    const globeLod = config as unknown as {
+      cloudMarchStepGrowth?: number;
+      cloudMaxRayDistance?: number;
+    };
+    const marchStepGrowth = Math.min(
+      1.1,
+      Math.max(1.0, globeLod.cloudMarchStepGrowth ?? 1.0),
+    );
+    const maxRayDistance = Math.max(0.0, globeLod.cloudMaxRayDistance ?? 0.0);
+    data[offset++] = marchStepGrowth; // 144 marchStepGrowth (1.0 = off)
+    data[offset++] = maxRayDistance; // 145 maxRayDistance (0 = off/infinite)
+    data[offset++] = 0.0; // 146 pad
+    data[offset++] = 0.0; // 147 pad
+
+    // 148-159 — f64 planet-domain origin phases, three vec4 rows. The march
+    // reconstructs density coordinates from these camera-origin phases plus its
+    // own small camera-relative sample offset. Wind advection is folded into the
+    // origin here in f64, so a long timeline scrub never constructs a
+    // planet-scale f32 displacement in the shader.
+    writeCloudDensityAdvectedOriginPhases(
+      data,
+      offset,
+      camPos?.x ?? 0.0,
+      camPos?.y ?? 0.0,
+      camPos?.z ?? 0.0,
+      cloudPuffSize,
+      cloudWindX,
+      cloudWindY,
+      cloudWindSpeed,
+      cloudTimeSeconds,
+    );
+    offset += CLOUD_DENSITY_ORIGIN_PHASE_FLOATS;
+
+    // 160-167 — the encoded canonical morphology origin, as high xyz plus pad and
+    // low xyz plus pad. The analytic species and feature terms work in an
+    // unrotated x/z wind plane, which this supplies without them having to consume
+    // the wrapped texture coordinates.
+    writeCloudMorphologyOriginHighLow(
+      data,
+      offset,
+      camPos?.x ?? 0.0,
+      camPos?.y ?? 0.0,
+      camPos?.z ?? 0.0,
+      cloudWindX,
+      cloudWindY,
+      cloudWindSpeed,
+      cloudTimeSeconds,
+    );
+    offset += CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS;
+
+    // 168-171 — per-genus morphology, carrying two {@link CloudTypeProfile} axes
+    // into the shader: the fibrous or puffy erosion style, which becomes an
+    // anisotropic wind-sheared filament carve so the cirrus family reads as ice
+    // streaks rather than faint cumulus lobes, and the per-genus
+    // Henyey-Greenstein `phaseG`, which becomes a forward-lobe offset because ice
+    // scatters far more forward-peaked than water.
+    //
+    // Both are derived from the profile table rather than from separate public
+    // dials, since `cloudType` is already the selector and the profile is what it
+    // selects. Cumulus, the default genus, is puffy with a fibre strength of
+    // exactly 0 and is its own phase reference, so both shader guards return their
+    // unmodified expressions for it.
+    const fibreMorphology = CloudTypeProfile.getFibreMorphology(
+      config.cloudType ?? CloudType.CUMULUS,
+    );
+    data[offset++] = fibreMorphology.strength; // 168 genusFibreStrength (0 = PUFFY/off)
+    data[offset++] = fibreMorphology.anisotropy; // 169 genusFibreAnisotropy (1 = isotropic)
+    data[offset++] = fibreMorphology.shear; // 170 genusFibreShear (0 = no fallstreak tilt)
+    data[offset++] = profile.phaseG - cumulusProfile.phaseG; // 171 genusPhaseDelta (CUMULUS = 0)
+
+    // Fold the two LUT-coupling bits into `qualityFlags` at slot 74, already
+    // packed above. Bits 8 and 9 are set only while the corresponding mode is on,
+    // so with both off the shader's gates stay closed.
+    if (aerialLutOn || ambientLutOn) {
+      let qf = data[74];
+      if (aerialLutOn) qf = qf | CLOUD_QF_AERIAL_LUT;
+      if (ambientLutOn) qf = qf | CLOUD_QF_AMBIENT_LUT;
+      data[74] = qf;
+    }
+    // Bit 11 selects the multi-deck march; clear, the shader takes the
+    // single-shell branch.
+    if (multiDeckOn) {
+      data[74] = data[74] | CLOUD_QF_MULTI_DECK;
+    }
+    // Bit 12 selects the high-precision march, which is on unless
+    // `cloudHighPrecision` is explicitly false; clear, the shell intersection is
+    // computed in single-part f32.
+    if (highPrecisionOn) {
+      data[74] = data[74] | CLOUD_QF_HIGH_PRECISION;
+    }
+    // Bit 13 selects the planet-scale density domain, and only a realized baked
+    // resource can supply it; the live-noise fallback keeps its own formula.
+    // Unlike the high-precision bit this one has no public override, so the only
+    // way to flip it in isolation is a diagnostic that writes slot 74 directly
+    // after upload.
+    if (noiseBakedBit !== 0) {
+      data[74] = data[74] | CLOUD_QF_PLANET_DENSITY;
+    }
+
+    // Resolve the weather view: the procedural map when enabled, a 1×1 white
+    // fallback otherwise.
+    const weatherView = ensureWeatherView(
+      device,
+      cache,
+      weatherEnabled,
+      providerBytes,
+      providerVersion,
+      lease,
+    );
+    // `noise` (the 3D shape/detail views + sampler) was resolved up-front so the
+    // qualityFlags noiseSource bit reflects the same-frame baked state.
+
+    // Resolve the atmosphere-LUT views: the real textures when a mode is on and
+    // the LUTs are allocated, 1×1 black placeholders otherwise. They are bound
+    // unconditionally at 9, 10 and 11 so the bind-group layout never forks, and
+    // the shader gates the samples.
+    const lutViews = ensureCloudLutViews(
+      device,
+      context,
+      cache,
+      aerialLutOn || ambientLutOn,
+      lease,
+    );
+
+    verifyCloudMutationLease(cache, lease);
+    device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
+    const uniformEpoch: CloudMainUniformEpoch = Object.freeze({
+      serial: ++cache.uniformEpochSerial,
+      buffer: cache.uniformBuffer!,
+      offset: 0 as const,
+      byteLength: CLOUD_UNIFORM_BYTES,
+      frameNumber: frameState.frameNumber,
+      device,
+      resourceGeneration: lease.resourceGeneration,
+      preparationLease: lease,
+    });
+    const nonColorBindings: CloudNonColorBindings = Object.freeze({
+      depth: depthTextureView,
+      mainSampler: cache.sampler!,
+      uniform: uniformEpoch,
+      weatherView,
+      weatherSampler: cache.weatherSampler!,
+      shapeView: noise.shapeView,
+      detailView: noise.detailView,
+      noiseSampler: noise.sampler,
+      skyView: lutViews.skyView,
+      multipleScatter: lutViews.multipleScatter,
+      transmittance: lutViews.transmittance,
+      lutSampler: cache.lutSampler!,
+    });
+
+    const earlyMaskGroup = getOrCreateCloudMainBindGroup(
+      device,
+      cache,
+      colorTextureView,
+      depthTextureView,
+      weatherView,
+      noise.shapeView,
+      noise.detailView,
+      noise.sampler,
+      lutViews,
+      lease,
+      nonColorBindings,
+    );
+
+    cache.shadowStrength = eclipseCloudDirectionalFraction(frameState);
+    stages.endStage(CloudCpuStage.PACK);
+    packStageOpen = false;
+
+    const executeLate = (
+      lateColorTextureView: GPUTextureView,
+      lateDepthTextureView: GPUTextureView,
+      outputView: GPUTextureView,
+      lateEncoder: GPUCommandEncoder,
+    ): boolean => {
+      const colorTextureView = lateColorTextureView;
+      const depthTextureView = lateDepthTextureView;
+      const encoder = lateEncoder;
+      const bindGroup = getOrCreateCloudMainBindGroup(
+        device,
+        cache,
+        colorTextureView,
+        depthTextureView,
+        nonColorBindings.weatherView,
+        nonColorBindings.shapeView,
+        nonColorBindings.detailView,
+        nonColorBindings.noiseSampler,
+        {
+          skyView: nonColorBindings.skyView,
+          multipleScatter: nonColorBindings.multipleScatter,
+          transmittance: nonColorBindings.transmittance,
+        },
+        lease,
+        nonColorBindings,
+      );
+      let shadowStageOpen = false;
+      let compositeStageOpen = false;
+      let temporalStageOpen = false;
+      try {
+        // The sun-view Beer shadow map, opted into through `config.cloudCastShadows`.
+        // With it off, `shadowActive` stays false, the real map is never rendered, and
+        // consumers read the 1×1 placeholder at transmittance 1. With it on, the cloud
+        // optical depth is rasterized from the sun's orthographic view into
+        // `cache.shadowView` using the same `CloudUniforms`, weather and noise the
+        // visible march uses, so the cast shadow tracks the rendered field exactly.
+        // The sun-view projection is stashed on the cache for the consumers; the globe
+        // terrain reads the previous frame's, while aerial perspective and fog read
+        // this frame's.
+        cache.shadowActive = false;
+        cache.shadowCascadeActive = false;
+        // Publish the cast-shadow strength through the same cache seam
+        // `shadowAbsorption` travels through, and do it unconditionally so a frame
+        // that skips the shadow block cannot leave a stale value behind. It tracks the
+        // directional share of the surviving illumination, not the scene-light factor:
+        // scaling the strength by the scene factor gives shadowed ground
+        // `F * (1 - 0.65F)`, which peaks at F = 0.769 above its un-eclipsed value, so
+        // a shadowed patch would brighten as the eclipse deepened. See
+        // `Scene/EclipseCloudResponse.js` for the derivation. It is exactly 1.0
+        // outside an eclipse.
+        stages.beginStage(CloudCpuStage.SHADOW);
+        shadowStageOpen = true;
+        if (config.cloudCastShadows === true) {
+          const shadowOk = ensureShadowResources(device, cache, lease);
+          if (!shadowOk) {
+            // Cast shadows are on but the map could not allocate, so the placeholder
+            // is used and nothing is shadowed. Reported unconditionally because it
+            // indicates a real allocation failure.
+            console.error(
+              `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud shadow map allocation failed; falling back to no-shadow placeholder.`,
+            );
+          } else {
+            // The footprint centre is the camera's WGS84 geodetic surface point. A
+            // radial projection onto a 6378137 m sphere instead lands up to about
+            // 21.4 km off in the radial direction at the poles, which at a low sun
+            // swings the whole ±60 km footprint tens of kilometres away from the
+            // ground the camera is looking at.
+            const cpx = camPos?.x ?? 0;
+            const cpy = camPos?.y ?? 0;
+            const cpz = camPos?.z ?? 0;
+            const sdx = sunDir?.x ?? 0;
+            const sdy = sunDir?.y ?? 1;
+            const sdz = sunDir?.z ?? 0;
+            const frameOk = computeCloudShadowFrame(
+              cache.shadowFrame,
               cpx,
               cpy,
               cpz,
               sdx,
               sdy,
               sdz,
-              CLOUD_SHADOW_CASCADE_FOOTPRINTS_M[ci],
+              CLOUD_SHADOW_FOOTPRINT_M,
               WGS84_EQUATORIAL_RADIUS,
               WGS84_POLAR_RADIUS,
             );
-            writeCloudShadowViewProjection(fwd, 0, cascadeFrame);
-            writeCloudShadowInverseViewProjectionRelativeToEye(
-              invVP,
+            if (!frameOk) {
+              // A degenerate camera or sun input would otherwise upload a meaningless
+              // projection that every consumer then samples.
+              console.error(
+                `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud shadow sun-view frame is degenerate; leaving the shadow map inert this frame.`,
+              );
+            }
+            // The absolute matrix stays published for the planar scene modes, whose
+            // globe fragments carry no ECEF camera-relative position.
+            writeCloudShadowViewProjection(
+              cache.shadowSunViewVP,
               0,
-              cascadeFrame,
+              cache.shadowFrame,
+            );
+            // `CloudShadowUniforms` holds the camera-relative inverse view-projection
+            // in floats 0-15, so the shadow fragment shader reconstructs a
+            // camera-relative column point and stays in the same relative-to-eye frame
+            // as the visible march, and the sun direction plus the light-step count in
+            // floats 16-19.
+            writeCloudShadowInverseViewProjectionRelativeToEye(
+              cache.shadowUniformData,
+              0,
+              cache.shadowFrame,
               cpx,
               cpy,
               cpz,
             );
-            cud[base + 16] = sdx;
-            cud[base + 17] = sdy;
-            cud[base + 18] = sdz;
-            cud[base + 19] = CLOUD_SHADOW_CASCADE_STEPS[ci];
-          }
-          device.queue.writeBuffer(cache.shadowCascadeUniformBuffer!, 0, cud);
-
-          const cascadePass = encoder.beginRenderPass(
-            timedCloudPass(context, {
-              label: "CloudShadow cascade atlas pass",
-              colorAttachments: [
-                {
-                  view: cache.shadowCascadeView!,
-                  clearValue: { r: 0, g: 0, b: 0, a: 0 },
-                  loadOp: "clear",
-                  storeOp: "store",
-                },
-              ],
-            }),
-          );
-          cascadePass.setPipeline(cache.shadowPipeline!);
-          for (let ci = 0; ci < CLOUD_SHADOW_CASCADE_COUNT; ci++) {
-            // Tile ci occupies rows [ci*512, (ci+1)*512) of the atlas; the
-            // full-screen triangle fills the viewport, so each tile gets a full
-            // [0,1] UV reconstruction against its own cascade inverse VP.
-            cascadePass.setViewport(
+            cache.shadowUniformData[16] = sdx;
+            cache.shadowUniformData[17] = sdy;
+            cache.shadowUniformData[18] = sdz;
+            cache.shadowUniformData[19] = CLOUD_SHADOW_LIGHT_STEPS;
+            device.queue.writeBuffer(
+              cache.shadowUniformBuffer!,
               0,
-              ci * CLOUD_SHADOW_SIZE,
-              CLOUD_SHADOW_SIZE,
-              CLOUD_SHADOW_SIZE,
-              0,
-              1,
+              cache.shadowUniformData,
             );
-            const cascadeBindGroup = getOrCreateCloudShadowBindGroup(
+            cache.shadowAbsorption = 0.04; // matches CloudUniforms.absorptionCoeff
+
+            const shadowBindGroup = getOrCreateCloudShadowBindGroup(
               device,
               cache.shadowBindGroups,
-              ci + 1,
+              0,
               cache.shadowBindGroupLayout!,
               cache.uniformBuffer!,
               weatherView,
@@ -3761,575 +4363,963 @@ export function executeProceduralClouds(
               noise.shapeView,
               noise.detailView,
               noise.sampler,
-              cache.shadowCascadeUniformBuffer!,
-              ci * CLOUD_SHADOW_CASCADE_STRIDE_BYTES,
+              cache.shadowUniformBuffer!,
+              0,
               CLOUD_SHADOW_UNIFORM_BYTES,
             );
-            cascadePass.setBindGroup(0, cascadeBindGroup);
-            cascadePass.draw(3);
+            const shadowPass = encoder.beginRenderPass(
+              timedCloudPass(context, {
+                label: "CloudShadow map pass",
+                colorAttachments: [
+                  {
+                    view: cache.shadowView!,
+                    clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                    loadOp: "clear",
+                    storeOp: "store",
+                  },
+                ],
+              }),
+            );
+            shadowPass.setPipeline(cache.shadowPipeline!);
+            shadowPass.setBindGroup(0, shadowBindGroup);
+            shadowPass.draw(3);
+            shadowPass.end();
+            // A degenerate frame leaves the map inert rather than publishing an
+            // identity projection every consumer would then sample as a real shadow.
+            cache.shadowActive = frameOk;
+            // The single Beer shadow map is one pass, at this resolution.
+            counters.shadowPassCount++;
+            counters.shadowSize = cache.shadowSize;
+
+            // The opt-in three-cascade atlas, additive on top of the single map that
+            // aerial perspective and fog keep reading: three geometrically split
+            // cascades rendered into a stacked 512×1536 atlas the globe terrain
+            // samples. Each cascade reuses the single-map pipeline with its own
+            // footprint and march-step count, fed from a 256-aligned slice of the
+            // cascade uniform buffer.
+            if (config.cloudShadowCascades === true) {
+              const cascadeOk = ensureCascadeResources(device, cache);
+              if (!cascadeOk) {
+                // Cascades are on but the atlas could not allocate, so
+                // `shadowCascadeActive` stays false and the globe falls back to the
+                // single map. Reported unconditionally because it indicates a real
+                // allocation failure.
+                console.error(
+                  `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud shadow cascade atlas allocation failed; falling back to single beer-shadow-map.`,
+                );
+              } else {
+                const cud = cache.shadowCascadeUniformData;
+                for (let ci = 0; ci < CLOUD_SHADOW_CASCADE_COUNT; ci++) {
+                  const base = ci * CLOUD_SHADOW_CASCADE_STRIDE_FLOATS;
+                  const fwd = cache.shadowCascadeVP.subarray(
+                    ci * 16,
+                    ci * 16 + 16,
+                  );
+                  // Reuse the shared invVP scratch region (cud[base..base+15]) as the
+                  // per-cascade inverse VP the shadow FS reconstructs columns from.
+                  const invVP = cud.subarray(base, base + 16);
+                  // Each cascade is the same geodetic-centred sun frame at a tighter
+                  // half-extent. The fragment shader reconstructs camera-relative
+                  // columns from its own inverse view-projection, while the forward
+                  // matrix stays absolute for the planar-mode consumer branch.
+                  const cascadeFrame = cache.shadowCascadeFrames[ci];
+                  computeCloudShadowFrame(
+                    cascadeFrame,
+                    cpx,
+                    cpy,
+                    cpz,
+                    sdx,
+                    sdy,
+                    sdz,
+                    CLOUD_SHADOW_CASCADE_FOOTPRINTS_M[ci],
+                    WGS84_EQUATORIAL_RADIUS,
+                    WGS84_POLAR_RADIUS,
+                  );
+                  writeCloudShadowViewProjection(fwd, 0, cascadeFrame);
+                  writeCloudShadowInverseViewProjectionRelativeToEye(
+                    invVP,
+                    0,
+                    cascadeFrame,
+                    cpx,
+                    cpy,
+                    cpz,
+                  );
+                  cud[base + 16] = sdx;
+                  cud[base + 17] = sdy;
+                  cud[base + 18] = sdz;
+                  cud[base + 19] = CLOUD_SHADOW_CASCADE_STEPS[ci];
+                }
+                device.queue.writeBuffer(
+                  cache.shadowCascadeUniformBuffer!,
+                  0,
+                  cud,
+                );
+
+                const cascadePass = encoder.beginRenderPass(
+                  timedCloudPass(context, {
+                    label: "CloudShadow cascade atlas pass",
+                    colorAttachments: [
+                      {
+                        view: cache.shadowCascadeView!,
+                        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                        loadOp: "clear",
+                        storeOp: "store",
+                      },
+                    ],
+                  }),
+                );
+                cascadePass.setPipeline(cache.shadowPipeline!);
+                for (let ci = 0; ci < CLOUD_SHADOW_CASCADE_COUNT; ci++) {
+                  // Tile ci occupies rows [ci*512, (ci+1)*512) of the atlas; the
+                  // full-screen triangle fills the viewport, so each tile gets a full
+                  // [0,1] UV reconstruction against its own cascade inverse VP.
+                  cascadePass.setViewport(
+                    0,
+                    ci * CLOUD_SHADOW_SIZE,
+                    CLOUD_SHADOW_SIZE,
+                    CLOUD_SHADOW_SIZE,
+                    0,
+                    1,
+                  );
+                  const cascadeBindGroup = getOrCreateCloudShadowBindGroup(
+                    device,
+                    cache.shadowBindGroups,
+                    ci + 1,
+                    cache.shadowBindGroupLayout!,
+                    cache.uniformBuffer!,
+                    weatherView,
+                    cache.weatherSampler!,
+                    noise.shapeView,
+                    noise.detailView,
+                    noise.sampler,
+                    cache.shadowCascadeUniformBuffer!,
+                    ci * CLOUD_SHADOW_CASCADE_STRIDE_BYTES,
+                    CLOUD_SHADOW_UNIFORM_BYTES,
+                  );
+                  cascadePass.setBindGroup(0, cascadeBindGroup);
+                  cascadePass.draw(3);
+                }
+                cascadePass.end();
+                cache.shadowCascadeActive = frameOk;
+                // The atlas is one render pass carrying `CLOUD_SHADOW_CASCADE_COUNT`
+                // viewport-scoped draws. Counting it as one pass and recording the
+                // tile count separately keeps `shadowPassCount` comparable with the
+                // profiler's pass ledger.
+                counters.shadowPassCount++;
+                counters.shadowCascadeSize = cache.shadowCascadeSize;
+                counters.shadowCascadeCount = CLOUD_SHADOW_CASCADE_COUNT;
+              }
+            }
           }
-          cascadePass.end();
-          cache.shadowCascadeActive = frameOk;
-          // The atlas is one render pass carrying `CLOUD_SHADOW_CASCADE_COUNT`
-          // viewport-scoped draws. Counting it as one pass and recording the
-          // tile count separately keeps `shadowPassCount` comparable with the
-          // profiler's pass ledger.
-          counters.shadowPassCount++;
-          counters.shadowCascadeSize = cache.shadowCascadeSize;
-          counters.shadowCascadeCount = CLOUD_SHADOW_CASCADE_COUNT;
+        }
+        stages.endStage(CloudCpuStage.SHADOW);
+        shadowStageOpen = false;
+        stages.beginStage(CloudCpuStage.COMPOSITE);
+        compositeStageOpen = true;
+
+        if (
+          halfResActive &&
+          cache.halfView &&
+          cache.halfPipeline &&
+          cache.upscalePipeline &&
+          cache.upscaleBindGroupLayout &&
+          cache.upscaleUniformBuffer &&
+          cache.upscaleSampler
+        ) {
+          // Attachment resources are resolved before the march: the transform check
+          // and the allocation sit above the raymarch because the emitting variant
+          // needs contract slot 1 to exist as a colour attachment of the march pass
+          // itself. With the attachment stage off, neither call runs.
+          const attachmentStageActive =
+            cache.attachmentsEnabled && !!cache.halfView;
+          let attachmentsReady = false;
+          if (attachmentStageActive) {
+            const attachmentTransformValid = resolveCloudInverseCurrentVpRte(
+              temporalReprojectionSupported,
+              us?.inverseProjection,
+              us?.inverseView,
+            );
+            attachmentsReady =
+              attachmentTransformValid &&
+              ensureCloudAttachmentResources(
+                device,
+                cache,
+                cache.halfWidth,
+                cache.halfHeight,
+                cache.halfView,
+                lease,
+              );
+          }
+          // The emitting march runs only when both halves of the handshake built. A
+          // half-applied variant — a march emitting into a target no producer reads,
+          // or a producer expecting a slot the march never wrote — is never encoded,
+          // and the frame falls back to the estimator path instead.
+          const emitReconstruction =
+            attachmentsReady && cloudReconstructionVariantReady(cache);
+
+          // Half-resolution path, first pass: raymarch into the half-size rgba16float
+          // target, cleared to transparent so non-cloud texels stay at 0, with the
+          // shader emitting premultiplied cloud colour and alpha. When emitting, the
+          // same pass also writes contract slot 1 from the march's own per-sample
+          // accumulation, so the depth is a by-product of one traversal rather than a
+          // second march.
+          const halfPass = encoder.beginRenderPass(
+            timedCloudPass(context, {
+              label: "ProceduralClouds half-res pass",
+              colorAttachments: emitReconstruction
+                ? [
+                    {
+                      view: cache.halfView,
+                      clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                      loadOp: "clear" as const,
+                      storeOp: "store" as const,
+                    },
+                    {
+                      view: cache.attachmentViews[
+                        CLOUD_MARCH_EMITTED_SLOT - 1
+                      ]!,
+                      // The contract's own sentinel: a texel the triangle somehow
+                      // misses must read "no cloud", never distance zero.
+                      clearValue:
+                        CLOUD_OWNED_ATTACHMENTS[CLOUD_MARCH_EMITTED_SLOT - 1]
+                          .clearValue,
+                      loadOp: "clear" as const,
+                      storeOp: "store" as const,
+                    },
+                  ]
+                : [
+                    {
+                      view: cache.halfView,
+                      clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                      loadOp: "clear" as const,
+                      storeOp: "store" as const,
+                    },
+                  ],
+            }),
+          );
+          halfPass.setPipeline(
+            emitReconstruction ? cache.halfEmitPipeline! : cache.halfPipeline,
+          );
+          halfPass.setBindGroup(0, bindGroup);
+          halfPass.draw(3); // full-screen triangle
+          halfPass.end();
+          cache.reconstructionEmittedThisFrame = emitReconstruction;
+
+          // The reconstruction attachment producer. It runs between the raymarch and
+          // the temporal resolve, so a consumer can read the set inside the resolve
+          // without anything being reordered, and it writes front and
+          // transmittance-weighted cloud depth, screen-space motion with its validity
+          // flag, and the depth/coverage moment pair.
+          //
+          // With `attachmentsEnabled` false this block does not run at all: no target
+          // is allocated and no pass is encoded. With it on but `reconstructionEnabled`
+          // clear, the producer writes and the counters report while the upscale still
+          // reads what it read before, which is the produced-but-unconsumed state.
+          // With both on, the march wrote slot 1 itself, this pass reads it and writes
+          // the remaining two, and the resolve below validates history against the set.
+          //
+          // A usable current inverse view-projection-relative-to-eye is required:
+          // without it the per-pixel ray direction is meaningless and every channel
+          // would be noise. Orthographic and morph frames therefore produce no
+          // attachments until reconstruction carries a per-pixel ray origin.
+          if (attachmentStageActive) {
+            if (attachmentsReady && cache.attachmentUniformBuffer) {
+              const attachmentCurrentCamera = us?.cameraPosition ?? camPos;
+              const attachmentPreviousCamera = us?.previousCameraPosition;
+              // Only the velocity channel needs history. Depth and moments are well
+              // defined on a frame that has none — first use, a reset, a teleport — so
+              // a missing previous transform marks velocity invalid rather than
+              // suppressing the whole set.
+              const attachmentReprojectionValid =
+                matrix4IsFinite(us?.previousViewProjectionRelativeToEye) &&
+                cloudCameraPairIsFinite(
+                  attachmentCurrentCamera,
+                  attachmentPreviousCamera,
+                );
+              const inputs =
+                cache.attachmentUniformInputs as MutableCloudAttachmentUniformInputs;
+              inputs.previousViewProjectionRelativeToEye =
+                attachmentReprojectionValid
+                  ? (us?.previousViewProjectionRelativeToEye ?? null)
+                  : null;
+              inputs.inverseCurrentViewProjectionRelativeToEye =
+                scratchInverseCurrentViewProjectionRelativeToEye;
+              // The same encoded high/low camera split the primary march packed into
+              // slots 120-127, so both derive the planet centre from one origin.
+              inputs.encodedCameraHighX = data[120];
+              inputs.encodedCameraHighY = data[121];
+              inputs.encodedCameraHighZ = data[122];
+              inputs.encodedCameraLowX = data[124];
+              inputs.encodedCameraLowY = data[125];
+              inputs.encodedCameraLowZ = data[126];
+              inputs.cameraGeodeticHeight =
+                frameState.camera?.positionCartographic?.height ?? 0.0;
+              // Both operands are JS numbers (f64); only the per-frame-small result
+              // is down-cast when the packer writes it.
+              inputs.cameraDeltaX = attachmentReprojectionValid
+                ? attachmentCurrentCamera!.x - attachmentPreviousCamera!.x
+                : 0.0;
+              inputs.cameraDeltaY = attachmentReprojectionValid
+                ? attachmentCurrentCamera!.y - attachmentPreviousCamera!.y
+                : 0.0;
+              inputs.cameraDeltaZ = attachmentReprojectionValid
+                ? attachmentCurrentCamera!.z - attachmentPreviousCamera!.z
+                : 0.0;
+              // Slot 145 is the resolved far cap (0 means "no cap"). Dividing the
+              // moment pair by zero would publish NaN, so an uncapped march
+              // normalizes by the planetary fallback instead.
+              inputs.depthNormalizationMeters =
+                data[145] > 0.0
+                  ? data[145]
+                  : CLOUD_ATTACHMENT_DEFAULT_DEPTH_NORMALIZATION_METERS;
+              inputs.width = cache.halfWidth;
+              inputs.height = cache.halfHeight;
+              inputs.reprojectionValid = attachmentReprojectionValid;
+              inputs.deckBottom = config.cloudLayerBottom ?? 1500.0;
+              inputs.deckTop = config.cloudLayerTop ?? 4000.0;
+              inputs.deckLowBottom = deckBounds[0][0];
+              inputs.deckLowTop = deckBounds[0][1];
+              inputs.deckMidBottom = deckBounds[1][0];
+              inputs.deckMidTop = deckBounds[1][1];
+              inputs.deckHighBottom = deckBounds[2][0];
+              inputs.deckHighTop = deckBounds[2][1];
+              inputs.multiDeck = multiDeckOn;
+              inputs.generation = cache.attachmentGeneration.generation;
+              packCloudAttachmentUniforms(cache.attachmentUniformData, inputs);
+              device.queue.writeBuffer(
+                cache.attachmentUniformBuffer,
+                0,
+                cache.attachmentUniformData,
+              );
+
+              // The emitting variant's target list starts at contract slot 2, because
+              // slot 1 was already written by the march this pass reads it from. Both
+              // lists come from the contract table, so the pipeline's formats and the
+              // attachment list cannot disagree.
+              //
+              // The pass label below is spelled out rather than routed through
+              // `CLOUD_ATTACHMENT_PASS_LABEL` because the observability check reads
+              // the encode sites as source text; the constant and the literal are
+              // pinned equal by `cloud-reconstruction-attachments.spec.mjs`.
+              const producedAttachments = emitReconstruction
+                ? CLOUD_EMITTED_ATTACHMENTS
+                : CLOUD_OWNED_ATTACHMENTS;
+              const producedViewOffset = emitReconstruction ? 1 : 0;
+              const attachmentPass = encoder.beginRenderPass(
+                timedCloudPass(context, {
+                  label: "CloudReconstructionAttachments pass",
+                  // Every target is cleared, so a texel the full-screen triangle
+                  // somehow misses reads as no cloud, no motion and no variance
+                  // rather than as the previous generation's contents.
+                  colorAttachments: producedAttachments.map((spec, index) => ({
+                    view: cache.attachmentViews[index + producedViewOffset]!,
+                    clearValue: spec.clearValue,
+                    loadOp: "clear" as const,
+                    storeOp: "store" as const,
+                  })),
+                }),
+              );
+              attachmentPass.setPipeline(
+                emitReconstruction
+                  ? cache.attachmentEmitPipeline!
+                  : cache.attachmentPipeline!,
+              );
+              attachmentPass.setBindGroup(
+                0,
+                emitReconstruction
+                  ? cache.attachmentEmitBindGroup!
+                  : cache.attachmentBindGroup!,
+              );
+              attachmentPass.draw(3); // full-screen triangle
+              attachmentPass.end();
+              cache.attachmentRenderedThisFrame = true;
+
+              counters.attachmentWidth = cache.halfWidth;
+              counters.attachmentHeight = cache.halfHeight;
+              counters.attachmentPixels = cache.halfWidth * cache.halfHeight;
+              // The contract set is always three targets; what changes with the
+              // variant is which pass wrote each one, not how many exist.
+              counters.attachmentCount = cache.attachmentViews.length;
+              counters.attachmentGeneration =
+                cache.attachmentGeneration.generation;
+              counters.reconstructionEmitted = emitReconstruction ? 1 : 0;
+              counters.reconstructionProducerTargets =
+                producedAttachments.length;
+            }
+          }
+
+          // The temporal resolve, between the raymarch and the upscale. It reprojects
+          // the previous accumulated history through the relative-to-eye
+          // `previousViewProjectionRelativeToEye`, clamps it to the axis-aligned
+          // bounding box of the current 3×3 freshly marched neighbourhood to reject
+          // ghosting, blends, and writes the new accumulated history. The upscale then
+          // reads that history instead of the raw half-resolution march. With temporal
+          // off the whole block is skipped.
+          let upscaleSourceView: GPUTextureView = cache.halfView;
+          if (
+            temporalActive &&
+            cache.temporalPipeline &&
+            cache.temporalBindGroupLayout &&
+            cache.temporalUniformBuffer &&
+            cache.temporalSampler &&
+            cache.temporalHistoryView[0] &&
+            cache.temporalHistoryView[1] &&
+            cache.temporalBindGroups[0] &&
+            cache.temporalBindGroups[1]
+          ) {
+            stages.beginStage(CloudCpuStage.TEMPORAL);
+            temporalStageOpen = true;
+            const readIdx = cache.temporalRead & 1;
+            const writeIdx = readIdx ^ 1;
+            const writeView = cache.temporalHistoryView[writeIdx]!;
+
+            // Compare against the last frame that actually wrote cloud history rather
+            // than against `UniformState`'s immediately preceding scene frame. That
+            // catches culling and disable gaps and tier re-entry, while leaving
+            // ordinary bounded camera motion accepted.
+            const previousVpRte = us?.previousViewProjectionRelativeToEye;
+            const inverseProjection = us?.inverseProjection;
+            const inverseView = us?.inverseView;
+            const currentCamera = us?.cameraPosition ?? camPos;
+            const previousCamera = us?.previousCameraPosition;
+            // The previous transform is checked here rather than inside the helper:
+            // the temporal resolve cannot run without it, while the attachment
+            // producer can, since its velocity channel carries its own validity flag.
+            const inverseCurrentVpRteValid =
+              matrix4IsFinite(previousVpRte) &&
+              resolveCloudInverseCurrentVpRte(
+                temporalReprojectionSupported,
+                inverseProjection,
+                inverseView,
+              );
+
+            // Written out rather than routed through `cloudCameraPairIsFinite` so
+            // TypeScript still narrows both operands for the delta below.
+            const transformsValid =
+              inverseCurrentVpRteValid &&
+              currentCamera !== undefined &&
+              previousCamera !== undefined &&
+              Number.isFinite(currentCamera.x) &&
+              Number.isFinite(currentCamera.y) &&
+              Number.isFinite(currentCamera.z) &&
+              Number.isFinite(previousCamera.x) &&
+              Number.isFinite(previousCamera.y) &&
+              Number.isFinite(previousCamera.z);
+            // Both operands are JS numbers (f64). Only the per-frame-small result is
+            // down-cast when written to the uniform buffer.
+            const cameraDeltaX = transformsValid
+              ? currentCamera.x - previousCamera.x
+              : 0.0;
+            const cameraDeltaY = transformsValid
+              ? currentCamera.y - previousCamera.y
+              : 0.0;
+            const cameraDeltaZ = transformsValid
+              ? currentCamera.z - previousCamera.z
+              : 0.0;
+            const layerBottom = config.cloudLayerBottom ?? 1500.0;
+            const layerTop = config.cloudLayerTop ?? 4000.0;
+            const historySample = cache.temporalHistorySample;
+            historySample.frameNumber = frameState.frameNumber;
+            historySample.temporalActive = true;
+            historySample.transformValid = transformsValid;
+            historySample.cameraX = currentCamera?.x ?? 0.0;
+            historySample.cameraY = currentCamera?.y ?? 0.0;
+            historySample.cameraZ = currentCamera?.z ?? 0.0;
+            historySample.sceneMode = frameState.mode;
+            historySample.morphing = frameState.mode === SceneMode.MORPHING;
+            historySample.projectionType = temporalProjectionOrthographic
+              ? 1
+              : 0;
+            historySample.deckBottom = layerBottom;
+            historySample.deckTop = layerTop;
+            historySample.multiDeck = multiDeckOn;
+
+            const temporalResetReasons =
+              classifyCloudTemporalHistoryReset(
+                cache.temporalHistoryState,
+                historySample,
+              ) | cache.temporalHistoryPendingResetReasons;
+            cache.temporalHistoryPendingResetReasons = 0;
+            // The per-frame history verdict, recorded on the same branches that
+            // maintain the lifetime totals so the two cannot disagree. `historyReset`
+            // follows `temporalHistoryResetCount` exactly and marks only the
+            // rejections that started a new generation, so a persistent reason such as
+            // an in-progress morph does not read as a fresh reset every frame.
+            counters.historyResetReasons = temporalResetReasons;
+            if (temporalResetReasons !== 0) {
+              cache.temporalFirstFrame = true;
+              counters.historyRejected = 1;
+              if (
+                cloudTemporalResetStartsGeneration(
+                  cache.temporalHistoryLatchedResetReasons,
+                  temporalResetReasons,
+                )
+              ) {
+                cache.temporalHistoryGeneration++;
+                cache.temporalHistoryResetCount++;
+                counters.historyReset = 1;
+              }
+              cache.temporalHistoryLatchedResetReasons |= temporalResetReasons;
+            } else if (!cache.temporalFirstFrame) {
+              cache.temporalHistoryAcceptedFrames++;
+              cache.temporalHistoryLatchedResetReasons = 0;
+              counters.historyAccepted = 1;
+            }
+            cache.temporalHistoryResetReasons = temporalResetReasons;
+
+            // Pack TemporalUniforms (60 floats — byte-locked to
+            // CloudTemporalResolve.wgsl). Clear first so a missing transform cannot
+            // reuse stale matrix values from an earlier valid frame.
+            const td = cache.temporalUniformData;
+            td.fill(0.0);
+            let to = 0;
+            // previousViewProjectionRelativeToEye (mat4, 16), column-major.
+            if (matrix4IsFinite(previousVpRte)) {
+              for (let i = 0; i < 16; i++) td[to++] = previousVpRte[i];
+            } else {
+              to += 16;
+            }
+            // inverseCurrentViewProjectionRelativeToEye (mat4, 16).
+            if (inverseCurrentVpRteValid) {
+              for (let i = 0; i < 16; i++) {
+                td[to++] = scratchInverseCurrentViewProjectionRelativeToEye[i];
+              }
+            } else {
+              to += 16;
+            }
+            // encodedCameraHighAndBlend (vec4). Reuse the primary march's exact
+            // high/low split so both paths share one camera origin.
+            td[to++] = data[120];
+            td[to++] = data[121];
+            td[to++] = data[122];
+            td[to++] = Math.max(
+              1 / 16,
+              Math.min(1, cloudPreset.temporalUpdateFraction || 1 / 8),
+            );
+            // encodedCameraLowAndHeight (vec4): low split + CPU-f64 WGS84 height.
+            td[to++] = data[124];
+            td[to++] = data[125];
+            td[to++] = data[126];
+            td[to++] = frameState.camera?.positionCartographic?.height ?? 0.0;
+            // cameraDeltaAndWidth (vec4).
+            td[to++] = cameraDeltaX;
+            td[to++] = cameraDeltaY;
+            td[to++] = cameraDeltaZ;
+            td[to++] = cache.halfWidth;
+            // primaryDeckAndResolutionY (vec4).
+            td[to++] = layerBottom;
+            td[to++] = layerTop;
+            td[to++] = cache.halfHeight;
+            td[to++] = 0.0;
+            // Low and middle multi-deck bounds.
+            td[to++] = deckBounds[0][0];
+            td[to++] = deckBounds[0][1];
+            td[to++] = deckBounds[1][0];
+            td[to++] = deckBounds[1][1];
+            // High bounds + topology/history-validity flags.
+            td[to++] = deckBounds[2][0];
+            td[to++] = deckBounds[2][1];
+            td[to++] = multiDeckOn ? 1.0 : 0.0;
+            td[to++] = cache.temporalFirstFrame ? 1.0 : 0.0;
+            // Probe-visible diagnostics (the shader does not branch on this row).
+            td[to++] = cache.temporalHistoryGeneration;
+            td[to++] = temporalResetReasons;
+            td[to++] = frameState.frameNumber;
+            td[to++] = 0.0;
+            device.queue.writeBuffer(cache.temporalUniformBuffer, 0, td);
+
+            // Consumption is gated on the attachments having been produced this frame
+            // through `attachmentRenderedThisFrame`, not merely on their being
+            // allocated. A frame whose producer was skipped — no usable inverse
+            // transform, or a culled march — would otherwise validate this frame's
+            // history against the previous frame's motion vectors.
+            const consumeReconstruction =
+              cache.reconstructionEnabled &&
+              cache.attachmentRenderedThisFrame &&
+              ensureCloudTemporalConsumeBindGroups(device, cache, lease);
+            const temporalBindGroup = consumeReconstruction
+              ? cache.temporalConsumeBindGroups[readIdx]!
+              : cache.temporalBindGroups[readIdx]!;
+            const temporalPass = encoder.beginRenderPass(
+              timedCloudPass(context, {
+                label: "CloudTemporalResolve pass",
+                colorAttachments: [
+                  {
+                    view: writeView,
+                    // No clear: the shader writes every texel (full-screen triangle).
+                    loadOp: "load",
+                    storeOp: "store",
+                  },
+                ],
+              }),
+            );
+            temporalPass.setPipeline(
+              consumeReconstruction
+                ? cache.temporalConsumePipeline!
+                : cache.temporalPipeline,
+            );
+            temporalPass.setBindGroup(0, temporalBindGroup);
+            temporalPass.draw(3);
+            temporalPass.end();
+            cache.reconstructionConsumedThisFrame = consumeReconstruction;
+            counters.reconstructionConsumed = consumeReconstruction ? 1 : 0;
+
+            // The upscale reads the freshly-written, accumulated history.
+            upscaleSourceView = writeView;
+            // Ping-pong the history: the next frame reads what this one wrote.
+            cache.temporalRead = writeIdx;
+            commitCloudTemporalHistoryState(
+              cache.temporalHistoryState,
+              historySample,
+              true,
+            );
+            cache.temporalFirstFrame = false;
+            stages.endStage(CloudCpuStage.TEMPORAL);
+            temporalStageOpen = false;
+          }
+
+          // Pass 2/3: depth-aware bilateral upscale + composite over the scene → canvas.
+          const ud = cache.upscaleUniformData;
+          ud[0] = canvasW; // fullResolution.x
+          ud[1] = canvasH; // fullResolution.y
+          ud[2] = 1.0 / Math.max(canvasW, 1); // invFullResolution.x
+          ud[3] = 1.0 / Math.max(canvasH, 1); // invFullResolution.y
+          ud[4] = cache.halfWidth; // halfResolution.x
+          ud[5] = cache.halfHeight; // halfResolution.y
+          ud[6] = 1.0 / Math.max(cache.halfWidth, 1); // invHalfResolution.x
+          ud[7] = 1.0 / Math.max(cache.halfHeight, 1); // invHalfResolution.y
+          ud[8] = CLOUD_UPSCALE_DEPTH_SIGMA; // depthSigma
+          ud[9] = 0;
+          ud[10] = 0;
+          ud[11] = 0;
+          device.queue.writeBuffer(cache.upscaleUniformBuffer, 0, ud);
+
+          const upscaleBindGroup = getOrCreateCloudUpscaleBindGroup(
+            device,
+            cache,
+            upscaleSourceView,
+            colorTextureView,
+            depthTextureView,
+            lease,
+          );
+          const upscalePass = encoder.beginRenderPass(
+            timedCloudPass(context, {
+              label: "CloudUpscale composite pass",
+              colorAttachments: [
+                {
+                  view: outputView,
+                  loadOp: "load",
+                  storeOp: "store",
+                },
+              ],
+            }),
+          );
+          upscalePass.setPipeline(cache.upscalePipeline);
+          upscalePass.setBindGroup(0, upscaleBindGroup);
+          upscalePass.draw(3);
+          upscalePass.end();
+        } else {
+          // Full-resolution path: march straight into the output view.
+          const pass = encoder.beginRenderPass(
+            timedCloudPass(context, {
+              label: "ProceduralClouds pass",
+              colorAttachments: [
+                {
+                  view: outputView,
+                  loadOp: "load",
+                  storeOp: "store",
+                },
+              ],
+            }),
+          );
+          pass.setPipeline(cache.pipeline!);
+          pass.setBindGroup(0, bindGroup);
+          pass.draw(3); // full-screen triangle
+          pass.end();
+        }
+
+        stages.endStage(CloudCpuStage.COMPOSITE);
+        compositeStageOpen = false;
+        return true;
+      } finally {
+        if (temporalStageOpen) {
+          stages.endStage(CloudCpuStage.TEMPORAL);
+        }
+        if (shadowStageOpen) {
+          stages.endStage(CloudCpuStage.SHADOW);
+        }
+        if (compositeStageOpen) {
+          stages.endStage(CloudCpuStage.COMPOSITE);
         }
       }
-    }
-  }
-  stages.endStage(CloudCpuStage.SHADOW);
-  stages.beginStage(CloudCpuStage.COMPOSITE);
+    };
 
-  if (
-    halfResActive &&
-    cache.halfView &&
-    cache.halfPipeline &&
-    cache.upscalePipeline &&
-    cache.upscaleBindGroupLayout &&
-    cache.upscaleUniformBuffer &&
-    cache.upscaleSampler
-  ) {
-    // Attachment resources are resolved before the march: the transform check
-    // and the allocation sit above the raymarch because the emitting variant
-    // needs contract slot 1 to exist as a colour attachment of the march pass
-    // itself. With the attachment stage off, neither call runs.
-    const attachmentStageActive = cache.attachmentsEnabled && !!cache.halfView;
-    let attachmentsReady = false;
-    if (attachmentStageActive) {
-      const attachmentTransformValid = resolveCloudInverseCurrentVpRte(
-        temporalReprojectionSupported,
-        us?.inverseProjection,
-        us?.inverseView,
+    const prepared: PreparedCloudFrame = Object.freeze({
+      brand: preparedCloudFrameBrand,
+      plan: planIdentity,
+      attempt: lease.attempt,
+      lease,
+      device,
+      resourceGeneration: lease.resourceGeneration,
+      width: canvasW,
+      height: canvasH,
+      uniformEpoch,
+      nonColorBindings,
+      earlyMaskGroup,
+      executeLate,
+    });
+
+    let receipt: CloudMaskReceipt | null = null;
+    if (captureRequested) {
+      const maskResource = ensureCloudMaskResources(
+        device,
+        cache,
+        canvasW,
+        canvasH,
+        lease,
       );
-      attachmentsReady =
-        attachmentTransformValid &&
-        ensureCloudAttachmentResources(
-          device,
-          cache,
-          cache.halfWidth,
-          cache.halfHeight,
-          cache.halfView,
-        );
-    }
-    // The emitting march runs only when both halves of the handshake built. A
-    // half-applied variant — a march emitting into a target no producer reads,
-    // or a producer expecting a slot the march never wrote — is never encoded,
-    // and the frame falls back to the estimator path instead.
-    const emitReconstruction =
-      attachmentsReady && cloudReconstructionVariantReady(cache);
-
-    // Half-resolution path, first pass: raymarch into the half-size rgba16float
-    // target, cleared to transparent so non-cloud texels stay at 0, with the
-    // shader emitting premultiplied cloud colour and alpha. When emitting, the
-    // same pass also writes contract slot 1 from the march's own per-sample
-    // accumulation, so the depth is a by-product of one traversal rather than a
-    // second march.
-    const halfPass = encoder.beginRenderPass(
-      timedCloudPass(context, {
-        label: "ProceduralClouds half-res pass",
-        colorAttachments: emitReconstruction
-          ? [
+      if (cache.maskPipeline && maskResource) {
+        if (currentCloudEncoder(context) !== encoder) {
+          return finishNegativeCloudFrameAttempt(attempt, "encoder-mismatch");
+        }
+        const maskPass = encoder.beginRenderPass(
+          timedCloudPass(context, {
+            label: "ProceduralClouds transmittance-mask pass",
+            colorAttachments: [
               {
-                view: cache.halfView,
-                clearValue: { r: 0, g: 0, b: 0, a: 0 },
-                loadOp: "clear" as const,
-                storeOp: "store" as const,
-              },
-              {
-                view: cache.attachmentViews[CLOUD_MARCH_EMITTED_SLOT - 1]!,
-                // The contract's own sentinel: a texel the triangle somehow
-                // misses must read "no cloud", never distance zero.
-                clearValue:
-                  CLOUD_OWNED_ATTACHMENTS[CLOUD_MARCH_EMITTED_SLOT - 1]
-                    .clearValue,
-                loadOp: "clear" as const,
-                storeOp: "store" as const,
-              },
-            ]
-          : [
-              {
-                view: cache.halfView,
-                clearValue: { r: 0, g: 0, b: 0, a: 0 },
-                loadOp: "clear" as const,
-                storeOp: "store" as const,
+                view: maskResource.view,
+                clearValue: { r: 1, g: 1, b: 1, a: 1 },
+                loadOp: "clear",
+                storeOp: "store",
               },
             ],
-      }),
-    );
-    halfPass.setPipeline(
-      emitReconstruction ? cache.halfEmitPipeline! : cache.halfPipeline,
-    );
-    halfPass.setBindGroup(0, bindGroup);
-    halfPass.draw(3); // full-screen triangle
-    halfPass.end();
-    cache.reconstructionEmittedThisFrame = emitReconstruction;
-
-    // The reconstruction attachment producer. It runs between the raymarch and
-    // the temporal resolve, so a consumer can read the set inside the resolve
-    // without anything being reordered, and it writes front and
-    // transmittance-weighted cloud depth, screen-space motion with its validity
-    // flag, and the depth/coverage moment pair.
-    //
-    // With `attachmentsEnabled` false this block does not run at all: no target
-    // is allocated and no pass is encoded. With it on but `reconstructionEnabled`
-    // clear, the producer writes and the counters report while the upscale still
-    // reads what it read before, which is the produced-but-unconsumed state.
-    // With both on, the march wrote slot 1 itself, this pass reads it and writes
-    // the remaining two, and the resolve below validates history against the set.
-    //
-    // A usable current inverse view-projection-relative-to-eye is required:
-    // without it the per-pixel ray direction is meaningless and every channel
-    // would be noise. Orthographic and morph frames therefore produce no
-    // attachments until reconstruction carries a per-pixel ray origin.
-    if (attachmentStageActive) {
-      if (attachmentsReady && cache.attachmentUniformBuffer) {
-        const attachmentCurrentCamera = us?.cameraPosition ?? camPos;
-        const attachmentPreviousCamera = us?.previousCameraPosition;
-        // Only the velocity channel needs history. Depth and moments are well
-        // defined on a frame that has none — first use, a reset, a teleport — so
-        // a missing previous transform marks velocity invalid rather than
-        // suppressing the whole set.
-        const attachmentReprojectionValid =
-          matrix4IsFinite(us?.previousViewProjectionRelativeToEye) &&
-          cloudCameraPairIsFinite(
-            attachmentCurrentCamera,
-            attachmentPreviousCamera,
-          );
-        const inputs =
-          cache.attachmentUniformInputs as MutableCloudAttachmentUniformInputs;
-        inputs.previousViewProjectionRelativeToEye = attachmentReprojectionValid
-          ? (us?.previousViewProjectionRelativeToEye ?? null)
-          : null;
-        inputs.inverseCurrentViewProjectionRelativeToEye =
-          scratchInverseCurrentViewProjectionRelativeToEye;
-        // The same encoded high/low camera split the primary march packed into
-        // slots 120-127, so both derive the planet centre from one origin.
-        inputs.encodedCameraHighX = data[120];
-        inputs.encodedCameraHighY = data[121];
-        inputs.encodedCameraHighZ = data[122];
-        inputs.encodedCameraLowX = data[124];
-        inputs.encodedCameraLowY = data[125];
-        inputs.encodedCameraLowZ = data[126];
-        inputs.cameraGeodeticHeight =
-          frameState.camera?.positionCartographic?.height ?? 0.0;
-        // Both operands are JS numbers (f64); only the per-frame-small result
-        // is down-cast when the packer writes it.
-        inputs.cameraDeltaX = attachmentReprojectionValid
-          ? attachmentCurrentCamera!.x - attachmentPreviousCamera!.x
-          : 0.0;
-        inputs.cameraDeltaY = attachmentReprojectionValid
-          ? attachmentCurrentCamera!.y - attachmentPreviousCamera!.y
-          : 0.0;
-        inputs.cameraDeltaZ = attachmentReprojectionValid
-          ? attachmentCurrentCamera!.z - attachmentPreviousCamera!.z
-          : 0.0;
-        // Slot 145 is the resolved far cap (0 means "no cap"). Dividing the
-        // moment pair by zero would publish NaN, so an uncapped march
-        // normalizes by the planetary fallback instead.
-        inputs.depthNormalizationMeters =
-          data[145] > 0.0
-            ? data[145]
-            : CLOUD_ATTACHMENT_DEFAULT_DEPTH_NORMALIZATION_METERS;
-        inputs.width = cache.halfWidth;
-        inputs.height = cache.halfHeight;
-        inputs.reprojectionValid = attachmentReprojectionValid;
-        inputs.deckBottom = config.cloudLayerBottom ?? 1500.0;
-        inputs.deckTop = config.cloudLayerTop ?? 4000.0;
-        inputs.deckLowBottom = deckBounds[0][0];
-        inputs.deckLowTop = deckBounds[0][1];
-        inputs.deckMidBottom = deckBounds[1][0];
-        inputs.deckMidTop = deckBounds[1][1];
-        inputs.deckHighBottom = deckBounds[2][0];
-        inputs.deckHighTop = deckBounds[2][1];
-        inputs.multiDeck = multiDeckOn;
-        inputs.generation = cache.attachmentGeneration.generation;
-        packCloudAttachmentUniforms(cache.attachmentUniformData, inputs);
-        device.queue.writeBuffer(
-          cache.attachmentUniformBuffer,
-          0,
-          cache.attachmentUniformData,
-        );
-
-        // The emitting variant's target list starts at contract slot 2, because
-        // slot 1 was already written by the march this pass reads it from. Both
-        // lists come from the contract table, so the pipeline's formats and the
-        // attachment list cannot disagree.
-        //
-        // The pass label below is spelled out rather than routed through
-        // `CLOUD_ATTACHMENT_PASS_LABEL` because the observability check reads
-        // the encode sites as source text; the constant and the literal are
-        // pinned equal by `cloud-reconstruction-attachments.spec.mjs`.
-        const producedAttachments = emitReconstruction
-          ? CLOUD_EMITTED_ATTACHMENTS
-          : CLOUD_OWNED_ATTACHMENTS;
-        const producedViewOffset = emitReconstruction ? 1 : 0;
-        const attachmentPass = encoder.beginRenderPass(
-          timedCloudPass(context, {
-            label: "CloudReconstructionAttachments pass",
-            // Every target is cleared, so a texel the full-screen triangle
-            // somehow misses reads as no cloud, no motion and no variance
-            // rather than as the previous generation's contents.
-            colorAttachments: producedAttachments.map((spec, index) => ({
-              view: cache.attachmentViews[index + producedViewOffset]!,
-              clearValue: spec.clearValue,
-              loadOp: "clear" as const,
-              storeOp: "store" as const,
-            })),
           }),
         );
-        attachmentPass.setPipeline(
-          emitReconstruction
-            ? cache.attachmentEmitPipeline!
-            : cache.attachmentPipeline!,
-        );
-        attachmentPass.setBindGroup(
-          0,
-          emitReconstruction
-            ? cache.attachmentEmitBindGroup!
-            : cache.attachmentBindGroup!,
-        );
-        attachmentPass.draw(3); // full-screen triangle
-        attachmentPass.end();
-        cache.attachmentRenderedThisFrame = true;
-
-        counters.attachmentWidth = cache.halfWidth;
-        counters.attachmentHeight = cache.halfHeight;
-        counters.attachmentPixels = cache.halfWidth * cache.halfHeight;
-        // The contract set is always three targets; what changes with the
-        // variant is which pass wrote each one, not how many exist.
-        counters.attachmentCount = cache.attachmentViews.length;
-        counters.attachmentGeneration = cache.attachmentGeneration.generation;
-        counters.reconstructionEmitted = emitReconstruction ? 1 : 0;
-        counters.reconstructionProducerTargets = producedAttachments.length;
+        maskPass.setPipeline(cache.maskPipeline);
+        maskPass.setBindGroup(0, earlyMaskGroup);
+        maskPass.draw(3);
+        maskPass.end();
+        receipt = Object.freeze({
+          brand: cloudMaskReceiptBrand,
+          prepared,
+          resource: maskResource,
+          producerEncoder: encoder,
+        });
+        lease.receipt = receipt;
+        lease.godRayFutureOpen = true;
+        cache.currentMaskReceipt = receipt;
+        cache.maskRenderedThisFrame = true;
+        cache.maskFrameNumber = frameState.frameNumber;
+        cache.maskReceiptGeneration = maskResource.generation;
       }
     }
 
-    // The temporal resolve, between the raymarch and the upscale. It reprojects
-    // the previous accumulated history through the relative-to-eye
-    // `previousViewProjectionRelativeToEye`, clamps it to the axis-aligned
-    // bounding box of the current 3×3 freshly marched neighbourhood to reject
-    // ghosting, blends, and writes the new accumulated history. The upscale then
-    // reads that history instead of the raw half-resolution march. With temporal
-    // off the whole block is skipped.
-    let upscaleSourceView: GPUTextureView = cache.halfView;
+    stages.pauseStage(CloudCpuStage.TOTAL, lease.attempt.totalGeneration);
+    lease.attempt.totalPaused = true;
+    const outcome: PreparedCloudFrameOutcome = Object.freeze({
+      kind: "prepared",
+      plan: planIdentity,
+      prepared,
+      receipt,
+      maskView: receipt?.resource.view ?? null,
+    });
+    publishedCloudFrameOutcomes.add(outcome);
+    lease.attempt.outcomePublished = true;
+    return outcome;
+  } catch (error: unknown) {
+    lease.attempt.originalError = error;
+    if (packStageOpen) {
+      stages.endStage(CloudCpuStage.PACK);
+    }
+    cancelCloudPreparationLease(lease);
+    throw error;
+  }
+}
+
+function asPublishedPreparedOutcome(
+  outcome: unknown,
+): PreparedCloudFrameOutcome | null {
+  if (
+    typeof outcome !== "object" ||
+    outcome === null ||
+    !publishedCloudFrameOutcomes.has(outcome as PreparedCloudFrameOutcome)
+  ) {
+    return null;
+  }
+  const preparedOutcome = outcome as PreparedCloudFrameOutcome;
+  const prepared = preparedOutcome.prepared;
+  if (
+    preparedOutcome.kind !== "prepared" ||
+    prepared.brand !== preparedCloudFrameBrand ||
+    prepared.attempt.brand !== cloudAttemptBrand ||
+    prepared.lease !== prepared.attempt.lease
+  ) {
+    return null;
+  }
+  return preparedOutcome;
+}
+
+export function isPreparedCloudFrame(
+  outcome: unknown,
+  planIdentity: object,
+): boolean {
+  const preparedOutcome = asPublishedPreparedOutcome(outcome);
+  if (!preparedOutcome || preparedOutcome.plan !== planIdentity) {
+    return false;
+  }
+  const prepared = preparedOutcome.prepared;
+  const lease = prepared.lease;
+  return (
+    prepared.plan === planIdentity &&
+    prepared.attempt.plan === planIdentity &&
+    prepared.device === lease.device &&
+    prepared.device === prepared.attempt.context._device &&
+    prepared.resourceGeneration === lease.resourceGeneration &&
+    prepared.resourceGeneration ===
+      cloudResourceGeneration(prepared.attempt.context) &&
+    lease.cache?.openPreparationLease === lease &&
+    openCloudPreparationLeases.get(prepared.attempt.context) === lease &&
+    lease.usable &&
+    !lease.terminal &&
+    lease.lateVisibleFutureOpen
+  );
+}
+
+export function completePreparedCloudMask(outcome: unknown): void {
+  const preparedOutcome = asPublishedPreparedOutcome(outcome);
+  if (!preparedOutcome) {
+    return;
+  }
+  const lease = preparedOutcome.prepared.lease;
+  lease.godRayFutureOpen = false;
+  try {
+    tryRetireCloudPreparation(lease);
+  } catch (error: unknown) {
+    reportCloudLifecycleError(
+      lease.context,
+      "Cloud mask future settlement failed.",
+      error,
+    );
+  }
+}
+
+export function executePreparedCloudFrame(
+  context: CesiumGraphicsContext,
+  frameState: CesiumFrameState,
+  colorTextureView: GPUTextureView,
+  depthTextureView: GPUTextureView,
+  outputView: GPUTextureView,
+  outcome: unknown,
+): boolean {
+  const preparedOutcome = asPublishedPreparedOutcome(outcome);
+  if (!preparedOutcome) {
+    return false;
+  }
+  const prepared = preparedOutcome.prepared;
+  const lease = prepared.lease;
+  let recorded = false;
+  try {
     if (
-      temporalActive &&
-      cache.temporalPipeline &&
-      cache.temporalBindGroupLayout &&
-      cache.temporalUniformBuffer &&
-      cache.temporalSampler &&
-      cache.temporalHistoryView[0] &&
-      cache.temporalHistoryView[1] &&
-      cache.temporalBindGroups[0] &&
-      cache.temporalBindGroups[1]
+      !isPreparedCloudFrame(preparedOutcome, preparedOutcome.plan) ||
+      context !== prepared.attempt.context ||
+      frameState.frameNumber !== prepared.attempt.frameNumber ||
+      depthTextureView !== prepared.nonColorBindings.depth ||
+      !colorTextureView ||
+      !outputView
     ) {
-      stages.beginStage(CloudCpuStage.TEMPORAL);
-      const readIdx = cache.temporalRead & 1;
-      const writeIdx = readIdx ^ 1;
-      const writeView = cache.temporalHistoryView[writeIdx]!;
-
-      // Compare against the last frame that actually wrote cloud history rather
-      // than against `UniformState`'s immediately preceding scene frame. That
-      // catches culling and disable gaps and tier re-entry, while leaving
-      // ordinary bounded camera motion accepted.
-      const previousVpRte = us?.previousViewProjectionRelativeToEye;
-      const inverseProjection = us?.inverseProjection;
-      const inverseView = us?.inverseView;
-      const currentCamera = us?.cameraPosition ?? camPos;
-      const previousCamera = us?.previousCameraPosition;
-      // The previous transform is checked here rather than inside the helper:
-      // the temporal resolve cannot run without it, while the attachment
-      // producer can, since its velocity channel carries its own validity flag.
-      const inverseCurrentVpRteValid =
-        matrix4IsFinite(previousVpRte) &&
-        resolveCloudInverseCurrentVpRte(
-          temporalReprojectionSupported,
-          inverseProjection,
-          inverseView,
-        );
-
-      // Written out rather than routed through `cloudCameraPairIsFinite` so
-      // TypeScript still narrows both operands for the delta below.
-      const transformsValid =
-        inverseCurrentVpRteValid &&
-        currentCamera !== undefined &&
-        previousCamera !== undefined &&
-        Number.isFinite(currentCamera.x) &&
-        Number.isFinite(currentCamera.y) &&
-        Number.isFinite(currentCamera.z) &&
-        Number.isFinite(previousCamera.x) &&
-        Number.isFinite(previousCamera.y) &&
-        Number.isFinite(previousCamera.z);
-      // Both operands are JS numbers (f64). Only the per-frame-small result is
-      // down-cast when written to the uniform buffer.
-      const cameraDeltaX = transformsValid
-        ? currentCamera.x - previousCamera.x
-        : 0.0;
-      const cameraDeltaY = transformsValid
-        ? currentCamera.y - previousCamera.y
-        : 0.0;
-      const cameraDeltaZ = transformsValid
-        ? currentCamera.z - previousCamera.z
-        : 0.0;
-      const layerBottom = config.cloudLayerBottom ?? 1500.0;
-      const layerTop = config.cloudLayerTop ?? 4000.0;
-      const historySample = cache.temporalHistorySample;
-      historySample.frameNumber = frameState.frameNumber;
-      historySample.temporalActive = true;
-      historySample.transformValid = transformsValid;
-      historySample.cameraX = currentCamera?.x ?? 0.0;
-      historySample.cameraY = currentCamera?.y ?? 0.0;
-      historySample.cameraZ = currentCamera?.z ?? 0.0;
-      historySample.sceneMode = frameState.mode;
-      historySample.morphing = frameState.mode === SceneMode.MORPHING;
-      historySample.projectionType = temporalProjectionOrthographic ? 1 : 0;
-      historySample.deckBottom = layerBottom;
-      historySample.deckTop = layerTop;
-      historySample.multiDeck = multiDeckOn;
-
-      const temporalResetReasons =
-        classifyCloudTemporalHistoryReset(
-          cache.temporalHistoryState,
-          historySample,
-        ) | cache.temporalHistoryPendingResetReasons;
-      cache.temporalHistoryPendingResetReasons = 0;
-      // The per-frame history verdict, recorded on the same branches that
-      // maintain the lifetime totals so the two cannot disagree. `historyReset`
-      // follows `temporalHistoryResetCount` exactly and marks only the
-      // rejections that started a new generation, so a persistent reason such as
-      // an in-progress morph does not read as a fresh reset every frame.
-      counters.historyResetReasons = temporalResetReasons;
-      if (temporalResetReasons !== 0) {
-        cache.temporalFirstFrame = true;
-        counters.historyRejected = 1;
-        if (
-          cloudTemporalResetStartsGeneration(
-            cache.temporalHistoryLatchedResetReasons,
-            temporalResetReasons,
-          )
-        ) {
-          cache.temporalHistoryGeneration++;
-          cache.temporalHistoryResetCount++;
-          counters.historyReset = 1;
-        }
-        cache.temporalHistoryLatchedResetReasons |= temporalResetReasons;
-      } else if (!cache.temporalFirstFrame) {
-        cache.temporalHistoryAcceptedFrames++;
-        cache.temporalHistoryLatchedResetReasons = 0;
-        counters.historyAccepted = 1;
-      }
-      cache.temporalHistoryResetReasons = temporalResetReasons;
-
-      // Pack TemporalUniforms (60 floats — byte-locked to
-      // CloudTemporalResolve.wgsl). Clear first so a missing transform cannot
-      // reuse stale matrix values from an earlier valid frame.
-      const td = cache.temporalUniformData;
-      td.fill(0.0);
-      let to = 0;
-      // previousViewProjectionRelativeToEye (mat4, 16), column-major.
-      if (matrix4IsFinite(previousVpRte)) {
-        for (let i = 0; i < 16; i++) td[to++] = previousVpRte[i];
-      } else {
-        to += 16;
-      }
-      // inverseCurrentViewProjectionRelativeToEye (mat4, 16).
-      if (inverseCurrentVpRteValid) {
-        for (let i = 0; i < 16; i++) {
-          td[to++] = scratchInverseCurrentViewProjectionRelativeToEye[i];
-        }
-      } else {
-        to += 16;
-      }
-      // encodedCameraHighAndBlend (vec4). Reuse the primary march's exact
-      // high/low split so both paths share one camera origin.
-      td[to++] = data[120];
-      td[to++] = data[121];
-      td[to++] = data[122];
-      td[to++] = Math.max(
-        1 / 16,
-        Math.min(1, cloudPreset.temporalUpdateFraction || 1 / 8),
-      );
-      // encodedCameraLowAndHeight (vec4): low split + CPU-f64 WGS84 height.
-      td[to++] = data[124];
-      td[to++] = data[125];
-      td[to++] = data[126];
-      td[to++] = frameState.camera?.positionCartographic?.height ?? 0.0;
-      // cameraDeltaAndWidth (vec4).
-      td[to++] = cameraDeltaX;
-      td[to++] = cameraDeltaY;
-      td[to++] = cameraDeltaZ;
-      td[to++] = cache.halfWidth;
-      // primaryDeckAndResolutionY (vec4).
-      td[to++] = layerBottom;
-      td[to++] = layerTop;
-      td[to++] = cache.halfHeight;
-      td[to++] = 0.0;
-      // Low and middle multi-deck bounds.
-      td[to++] = deckBounds[0][0];
-      td[to++] = deckBounds[0][1];
-      td[to++] = deckBounds[1][0];
-      td[to++] = deckBounds[1][1];
-      // High bounds + topology/history-validity flags.
-      td[to++] = deckBounds[2][0];
-      td[to++] = deckBounds[2][1];
-      td[to++] = multiDeckOn ? 1.0 : 0.0;
-      td[to++] = cache.temporalFirstFrame ? 1.0 : 0.0;
-      // Probe-visible diagnostics (the shader does not branch on this row).
-      td[to++] = cache.temporalHistoryGeneration;
-      td[to++] = temporalResetReasons;
-      td[to++] = frameState.frameNumber;
-      td[to++] = 0.0;
-      device.queue.writeBuffer(cache.temporalUniformBuffer, 0, td);
-
-      // Consumption is gated on the attachments having been produced this frame
-      // through `attachmentRenderedThisFrame`, not merely on their being
-      // allocated. A frame whose producer was skipped — no usable inverse
-      // transform, or a culled march — would otherwise validate this frame's
-      // history against the previous frame's motion vectors.
-      const consumeReconstruction =
-        cache.reconstructionEnabled &&
-        cache.attachmentRenderedThisFrame &&
-        ensureCloudTemporalConsumeBindGroups(device, cache);
-      const temporalBindGroup = consumeReconstruction
-        ? cache.temporalConsumeBindGroups[readIdx]!
-        : cache.temporalBindGroups[readIdx]!;
-      const temporalPass = encoder.beginRenderPass(
-        timedCloudPass(context, {
-          label: "CloudTemporalResolve pass",
-          colorAttachments: [
-            {
-              view: writeView,
-              // No clear: the shader writes every texel (full-screen triangle).
-              loadOp: "load",
-              storeOp: "store",
-            },
-          ],
-        }),
-      );
-      temporalPass.setPipeline(
-        consumeReconstruction
-          ? cache.temporalConsumePipeline!
-          : cache.temporalPipeline,
-      );
-      temporalPass.setBindGroup(0, temporalBindGroup);
-      temporalPass.draw(3);
-      temporalPass.end();
-      cache.reconstructionConsumedThisFrame = consumeReconstruction;
-      counters.reconstructionConsumed = consumeReconstruction ? 1 : 0;
-
-      // The upscale reads the freshly-written, accumulated history.
-      upscaleSourceView = writeView;
-      // Ping-pong the history: the next frame reads what this one wrote.
-      cache.temporalRead = writeIdx;
-      commitCloudTemporalHistoryState(
-        cache.temporalHistoryState,
-        historySample,
-        true,
-      );
-      cache.temporalFirstFrame = false;
-      stages.endStage(CloudCpuStage.TEMPORAL);
+      return false;
     }
-
-    // Pass 2/3: depth-aware bilateral upscale + composite over the scene → canvas.
-    const ud = cache.upscaleUniformData;
-    ud[0] = canvasW; // fullResolution.x
-    ud[1] = canvasH; // fullResolution.y
-    ud[2] = 1.0 / Math.max(canvasW, 1); // invFullResolution.x
-    ud[3] = 1.0 / Math.max(canvasH, 1); // invFullResolution.y
-    ud[4] = cache.halfWidth; // halfResolution.x
-    ud[5] = cache.halfHeight; // halfResolution.y
-    ud[6] = 1.0 / Math.max(cache.halfWidth, 1); // invHalfResolution.x
-    ud[7] = 1.0 / Math.max(cache.halfHeight, 1); // invHalfResolution.y
-    ud[8] = CLOUD_UPSCALE_DEPTH_SIGMA; // depthSigma
-    ud[9] = 0;
-    ud[10] = 0;
-    ud[11] = 0;
-    device.queue.writeBuffer(cache.upscaleUniformBuffer, 0, ud);
-
-    const upscaleBindGroup = getOrCreateCloudUpscaleBindGroup(
-      device,
-      cache,
-      upscaleSourceView,
+    const encoder = currentCloudEncoder(context);
+    if (!encoder) {
+      return false;
+    }
+    if (encoder !== lease.producerEncoder) {
+      if (
+        !lease.submittedEncoders.has(lease.producerEncoder) ||
+        lease.abandonedEncoders.has(lease.producerEncoder) ||
+        !enrollCloudPreparationEncoder(lease, encoder)
+      ) {
+        return false;
+      }
+    } else if (!lease.pendingEncoders.has(encoder)) {
+      return false;
+    }
+    verifyCloudMutationLease(prepared.lease.cache!, lease);
+    if (prepared.attempt.totalPaused) {
+      prepared.lease.cache!.cpuStages.resumeStage(
+        CloudCpuStage.TOTAL,
+        prepared.attempt.totalGeneration,
+      );
+      prepared.attempt.totalPaused = false;
+    }
+    recorded = prepared.executeLate(
       colorTextureView,
       depthTextureView,
+      outputView,
+      encoder,
     );
-    const upscalePass = encoder.beginRenderPass(
-      timedCloudPass(context, {
-        label: "CloudUpscale composite pass",
-        colorAttachments: [
-          {
-            view: outputView,
-            loadOp: "load",
-            storeOp: "store",
-          },
-        ],
-      }),
-    );
-    upscalePass.setPipeline(cache.upscalePipeline);
-    upscalePass.setBindGroup(0, upscaleBindGroup);
-    upscalePass.draw(3);
-    upscalePass.end();
-  } else {
-    // Full-resolution path: march straight into the output view.
-    const pass = encoder.beginRenderPass(
-      timedCloudPass(context, {
-        label: "ProceduralClouds pass",
-        colorAttachments: [
-          {
-            view: outputView,
-            loadOp: "load",
-            storeOp: "store",
-          },
-        ],
-      }),
-    );
-    pass.setPipeline(cache.pipeline!);
-    pass.setBindGroup(0, bindGroup);
-    pass.draw(3); // full-screen triangle
-    pass.end();
+    return recorded;
+  } finally {
+    lease.lateVisibleFutureOpen = false;
+    endCloudAttemptTotal(prepared.attempt);
+    tryRetireCloudPreparation(lease);
   }
+}
 
-  // The screen-space cloud transmittance mask, rendered only when a consumer has
-  // requested it. It reuses the main per-frame bind group, which has the layout
-  // and inputs it needs, with a dedicated r8unorm pipeline and target driven by
-  // the `fragmentCloudMaskMain` entry point, so the composite passes above are
-  // untouched.
-  if (cache.maskCaptureEnabled) {
-    ensureCloudMaskResources(device, cache, canvasW, canvasH);
-    if (cache.maskPipeline && cache.maskView) {
-      const maskPass = encoder.beginRenderPass(
-        timedCloudPass(context, {
-          label: "ProceduralClouds transmittance-mask pass",
-          colorAttachments: [
-            {
-              view: cache.maskView,
-              // Clear to 1.0 (fully transmissive) so any pixel the full-screen
-              // triangle somehow misses reads as clear sky.
-              clearValue: { r: 1, g: 1, b: 1, a: 1 },
-              loadOp: "clear",
-              storeOp: "store",
-            },
-          ],
-        }),
-      );
-      maskPass.setPipeline(cache.maskPipeline);
-      maskPass.setBindGroup(0, bindGroup);
-      maskPass.draw(3);
-      maskPass.end();
-      cache.maskRenderedThisFrame = true;
-    }
+export function cancelPreparedCloudFrame(outcome: unknown): void {
+  const preparedOutcome = asPublishedPreparedOutcome(outcome);
+  if (!preparedOutcome) {
+    return;
   }
+  try {
+    cancelCloudPreparationLease(preparedOutcome.prepared.lease);
+  } catch (error: unknown) {
+    reportCloudLifecycleError(
+      preparedOutcome.prepared.attempt.context,
+      "Cloud preparation cancellation failed.",
+      error,
+    );
+  }
+}
 
-  if (!useMain) {
-    device.queue.submit([encoder.finish()]);
+/**
+ * Execute the procedural cloud rendering pass through the split preparation
+ * and late-composite operations. Scene coordination uses those operations
+ * directly so postprocessing can consume the mask between them.
+ */
+export function executeProceduralClouds(
+  context: CesiumGraphicsContext,
+  frameState: CesiumFrameState,
+  colorTextureView: GPUTextureView,
+  depthTextureView: GPUTextureView,
+  outputView: GPUTextureView,
+  config: CloudVolumetricsConfig,
+): boolean {
+  const planIdentity = Object.freeze({ frameNumber: frameState.frameNumber });
+  const captureRequested = context._cloudCache?.maskCaptureEnabled === true;
+  const attempt = beginCloudFrameAttempt(context, frameState, planIdentity);
+  const outcome = prepareCloudFrameAndEncodeMask(
+    context,
+    frameState,
+    attempt,
+    colorTextureView,
+    depthTextureView,
+    config,
+    captureRequested,
+  );
+  try {
+    return executePreparedCloudFrame(
+      context,
+      frameState,
+      colorTextureView,
+      depthTextureView,
+      outputView,
+      outcome,
+    );
+  } finally {
+    completePreparedCloudMask(outcome);
+    cancelPreparedCloudFrame(outcome);
   }
-  stages.endStage(CloudCpuStage.COMPOSITE);
-  stages.endStage(CloudCpuStage.TOTAL);
-  return true;
 }
 
 /**
@@ -4343,21 +5333,58 @@ function ensureCloudMaskResources(
   cache: CloudCache,
   width: number,
   height: number,
-): void {
+  lease: CloudPreparationLease,
+): CloudMaskResourceEpoch | null {
+  verifyCloudMutationLease(cache, lease);
   const w = Math.max(1, Math.floor(width));
   const h = Math.max(1, Math.floor(height));
   if (!cache.maskTexture || cache.maskWidth !== w || cache.maskHeight !== h) {
-    cache.maskTexture?.destroy();
-    cache.maskTexture = device.createTexture({
-      label: "ProceduralClouds transmittance mask",
-      size: { width: w, height: h, depthOrArrayLayers: 1 },
-      format: "r8unorm",
-      usage:
-        GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    });
-    cache.maskView = cache.maskTexture.createView();
+    let texture: GPUTexture | null = null;
+    let view: GPUTextureView;
+    try {
+      texture = device.createTexture({
+        label: "ProceduralClouds transmittance mask",
+        size: { width: w, height: h, depthOrArrayLayers: 1 },
+        format: "r8unorm",
+        usage:
+          GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      view = texture.createView();
+    } catch (error: unknown) {
+      if (texture) {
+        try {
+          texture.destroy();
+        } catch (destroyError: unknown) {
+          reportCloudLifecycleError(
+            lease.context,
+            "Cloud mask allocation rollback destroy failed.",
+            destroyError,
+          );
+        }
+      }
+      throw error;
+    }
+    const oldEpoch = cache.maskResourceEpoch;
+    cache.maskGeneration++;
+    const nextEpoch: CloudMaskResourceEpoch = {
+      generation: cache.maskGeneration,
+      texture,
+      view,
+      width: w,
+      height: h,
+      device,
+      resourceGeneration: lease.resourceGeneration,
+      destroyAttempted: false,
+      terminal: false,
+    };
+    cache.maskTexture = texture;
+    cache.maskView = view;
     cache.maskWidth = w;
     cache.maskHeight = h;
+    cache.maskResourceEpoch = nextEpoch;
+    if (oldEpoch) {
+      lease.retiredMaskEpochs.add(oldEpoch);
+    }
   }
   if (!cache.maskPipeline && cache.maskShaderModule && cache.bindGroupLayout) {
     const layout = device.createPipelineLayout({
@@ -4376,41 +5403,68 @@ function ensureCloudMaskResources(
       primitive: { topology: "triangle-list" },
     });
   }
+  return cache.maskResourceEpoch;
 }
 
 export function destroyProceduralCloudResources(
   context: CesiumGraphicsContext,
+  lease?: CloudPreparationLease,
 ): void {
   const cache = context._cloudCache;
   if (cache) {
-    cache.uniformBuffer?.destroy();
+    const openAttempt = openCloudFrameAttempts.get(context);
+    if (openAttempt && openAttempt.lease !== lease) {
+      throw new Error("Cloud resources are held by an open frame attempt.");
+    }
+    verifyCloudMutationLease(cache, lease);
+    destroyCloudGpuResource(
+      context,
+      cache.uniformBuffer,
+      "Cloud uniform buffer",
+    );
     cache.pipeline = null;
     cache.uniformBuffer = null;
     cache.bindGroupLayout = null;
     cache.sampler = null;
     // Half-resolution target and upscale resources.
-    cache.halfTexture?.destroy();
+    destroyCloudGpuResource(context, cache.halfTexture, "Cloud half target");
     cache.halfTexture = null;
     cache.halfView = null;
     cache.halfWidth = 0;
     cache.halfHeight = 0;
     cache.halfPipeline = null;
-    cache.upscaleUniformBuffer?.destroy();
+    destroyCloudGpuResource(
+      context,
+      cache.upscaleUniformBuffer,
+      "Cloud upscale uniform buffer",
+    );
     cache.upscaleUniformBuffer = null;
     cache.upscalePipeline = null;
     cache.upscaleBindGroupLayout = null;
     cache.upscaleSampler = null;
-    clearCloudCompositeBindGroupCaches(cache);
+    clearCloudCompositeBindGroupCaches(cache, lease);
     // Temporal ping-pong history and resolve resources.
-    cache.temporalHistory[0]?.destroy();
-    cache.temporalHistory[1]?.destroy();
+    destroyCloudGpuResource(
+      context,
+      cache.temporalHistory[0],
+      "Cloud history 0",
+    );
+    destroyCloudGpuResource(
+      context,
+      cache.temporalHistory[1],
+      "Cloud history 1",
+    );
     cache.temporalHistory = [null, null];
     cache.temporalHistoryView = [null, null];
     cache.temporalWidth = 0;
     cache.temporalHeight = 0;
     cache.temporalRead = 0;
     cache.temporalFirstFrame = true;
-    cache.temporalUniformBuffer?.destroy();
+    destroyCloudGpuResource(
+      context,
+      cache.temporalUniformBuffer,
+      "Cloud temporal uniform buffer",
+    );
     cache.temporalUniformBuffer = null;
     cache.temporalPipeline = null;
     cache.temporalBindGroupLayout = null;
@@ -4427,35 +5481,59 @@ export function destroyProceduralCloudResources(
     cache.temporalHistoryAcceptedFrames = 0;
     // The LUT placeholder and its sampler. The real LUT textures are owned by
     // the performance manager, not by this cache.
-    cache.lutPlaceholderTexture?.destroy();
+    destroyCloudGpuResource(
+      context,
+      cache.lutPlaceholderTexture,
+      "Cloud LUT placeholder",
+    );
     cache.lutPlaceholderTexture = null;
     cache.lutPlaceholderView = null;
     cache.lutSampler = null;
     // Beer shadow map resources.
-    cache.shadowTexture?.destroy();
+    destroyCloudGpuResource(
+      context,
+      cache.shadowTexture,
+      "Cloud shadow texture",
+    );
     cache.shadowTexture = null;
     cache.shadowView = null;
-    cache.shadowPlaceholderTexture?.destroy();
+    destroyCloudGpuResource(
+      context,
+      cache.shadowPlaceholderTexture,
+      "Cloud shadow placeholder",
+    );
     cache.shadowPlaceholderTexture = null;
     cache.shadowPlaceholderView = null;
     cache.shadowSampler = null;
     cache.shadowPipeline = null;
     cache.shadowBindGroupLayout = null;
     cache.shadowBindGroups = createCloudShadowBindGroupCache();
-    cache.shadowUniformBuffer?.destroy();
+    destroyCloudGpuResource(
+      context,
+      cache.shadowUniformBuffer,
+      "Cloud shadow uniform buffer",
+    );
     cache.shadowUniformBuffer = null;
     cache.shadowSize = 0;
     cache.shadowActive = false;
     // Cascade atlas and its uniform buffer.
-    cache.shadowCascadeTexture?.destroy();
+    destroyCloudGpuResource(
+      context,
+      cache.shadowCascadeTexture,
+      "Cloud shadow cascade texture",
+    );
     cache.shadowCascadeTexture = null;
     cache.shadowCascadeView = null;
-    cache.shadowCascadeUniformBuffer?.destroy();
+    destroyCloudGpuResource(
+      context,
+      cache.shadowCascadeUniformBuffer,
+      "Cloud shadow cascade uniform buffer",
+    );
     cache.shadowCascadeUniformBuffer = null;
     cache.shadowCascadeActive = false;
     cache.shadowCascadeSize = 0;
     // Transmittance-mask target and pipeline.
-    cache.maskTexture?.destroy();
+    destroyCloudGpuResource(context, cache.maskTexture, "Cloud mask texture");
     cache.maskTexture = null;
     cache.maskView = null;
     cache.maskWidth = 0;
@@ -4467,10 +5545,14 @@ export function destroyProceduralCloudResources(
     // shared release, which keeps the generation counter monotonic so a retired
     // bind group's key can never be reused; the pipeline, layout and uniform
     // buffer are device-owned and only a teardown drops them.
-    releaseCloudAttachmentResources(cache);
+    releaseCloudAttachmentResources(context, cache, lease);
     cache.attachmentPipeline = null;
     cache.attachmentBindGroupLayout = null;
-    cache.attachmentUniformBuffer?.destroy();
+    destroyCloudGpuResource(
+      context,
+      cache.attachmentUniformBuffer,
+      "Cloud attachment uniform buffer",
+    );
     cache.attachmentUniformBuffer = null;
     // The variant pipelines and layouts are device-owned exactly as the base
     // ones are, so they are dropped here and only here. Destroying them on a

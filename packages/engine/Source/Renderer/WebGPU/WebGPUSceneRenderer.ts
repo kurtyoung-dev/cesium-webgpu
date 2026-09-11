@@ -78,7 +78,10 @@ import { WebGPUDebugFrustumOverlay } from "./WebGPUDebugFrustumOverlay.js";
 import { WebGPUBoundingVolumeDebugPass } from "./WebGPUBoundingVolumeDebugPass.js";
 import { configureWebGPUPostProcessPipeline } from "./WebGPUPostProcessStageCollection.js";
 import { executePickPass } from "./WebGPUSceneRendererPickPass.js";
-import { executeEnvironmentalEffects } from "./WebGPUSceneRendererEnvironmentalEffects.js";
+import {
+  executeEnvironmentalEffects,
+  type EnvironmentalCloudFrameOutcome,
+} from "./WebGPUSceneRendererEnvironmentalEffects.js";
 import { shouldExecuteWebGPUSceneFrame } from "./WebGPUSceneRendererEnvironmentDemand.js";
 import {
   dispatchClusteredLighting,
@@ -2686,10 +2689,13 @@ export class WebGPUSceneRenderer {
    * - Weather is in front (camera-relative particles)
    */
   // Public because the post-frustum chain delegates this pass through the renderer.
-  public _executeEnvironmentalEffects(config: WebGPURenderFrameConfig): void {
+  public _executeEnvironmentalEffects(
+    config: WebGPURenderFrameConfig,
+    cloudFrame: EnvironmentalCloudFrameOutcome,
+  ): void {
     // The implementation has no renderer state dependencies, so it remains a
     // free function behind this stable renderer entry point.
-    executeEnvironmentalEffects(config);
+    executeEnvironmentalEffects(config, cloudFrame);
   }
 
   /**

@@ -225,12 +225,14 @@ function parseExpression(tokens, start) {
     } else if (tok.kind === "id") {
       pos += 1;
       const name = tok.text;
-      if (peek()?.text === "<") {
+      if (
+        peek()?.text === "<" &&
+        tokens[pos + 1]?.kind === "id" &&
+        tokens[pos + 2]?.text === ">" &&
+        tokens[pos + 3]?.text === "("
+      ) {
         // A type-parameterised constructor such as `vec3<f32>(…)`.
-        while (peek() !== undefined && peek().text !== ">") {
-          pos += 1;
-        }
-        eat(">");
+        pos += 3;
       }
       if (peek()?.text === "(") {
         pos += 1;

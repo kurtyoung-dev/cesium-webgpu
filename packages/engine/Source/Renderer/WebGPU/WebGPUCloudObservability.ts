@@ -394,8 +394,8 @@ export function recordCloudPass(
  * Disabled by default, which is a correctness property rather than a
  * performance one: the instrumentation has to be removable without changing
  * the render result, and a `performance.now()` pair straddling the pack stage
- * is observable work on the shipped path. Enabled, each stage costs two clock
- * reads per frame.
+ * is observable work on the shipped path. Enabled, an ordinary stage costs two
+ * clock reads; a segmented stage reads once at each pause/resume boundary.
  *
  * Re-entrant begins are not merged: a second `beginStage` for a slot that is
  * already open overwrites the open timestamp and increments `reentries`, which
@@ -403,16 +403,24 @@ export function recordCloudPass(
  */
 export class CloudCpuStageAccumulator {
   private _enabled = false;
+  private readonly _now: () => number;
   private readonly _open: Float64Array;
+  private readonly _partial: Float64Array;
+  private readonly _state: Uint8Array;
   private readonly _last: Float64Array;
   private readonly _sum: Float64Array;
   private readonly _max: Float64Array;
   private readonly _count: Float64Array;
+  private _generation = 0;
   private _reentries = 0;
   private _unmatchedEnds = 0;
+  private _invalidTransitions = 0;
 
-  constructor() {
+  constructor(now: () => number = () => performance.now()) {
+    this._now = now;
     this._open = new Float64Array(CLOUD_CPU_STAGE_COUNT).fill(-1);
+    this._partial = new Float64Array(CLOUD_CPU_STAGE_COUNT);
+    this._state = new Uint8Array(CLOUD_CPU_STAGE_COUNT);
     this._last = new Float64Array(CLOUD_CPU_STAGE_COUNT);
     this._sum = new Float64Array(CLOUD_CPU_STAGE_COUNT);
     this._max = new Float64Array(CLOUD_CPU_STAGE_COUNT);
@@ -439,47 +447,94 @@ export class CloudCpuStageAccumulator {
 
   /** Clears every slot and the anomaly counters. */
   reset(): void {
+    this._generation++;
     this._open.fill(-1);
+    this._partial.fill(0);
+    this._state.fill(0);
     this._last.fill(0);
     this._sum.fill(0);
     this._max.fill(0);
     this._count.fill(0);
     this._reentries = 0;
     this._unmatchedEnds = 0;
+    this._invalidTransitions = 0;
   }
 
   /**
    * Opens a stage. Returns immediately on one boolean read when disabled.
    *
    * @param stage A {@link CloudCpuStage} slot index.
+   * @returns The timing generation, or -1 when timing is disabled.
    */
-  beginStage(stage: number): void {
+  beginStage(stage: number): number {
+    if (!this._enabled || stage < 0 || stage >= CLOUD_CPU_STAGE_COUNT) {
+      return -1;
+    }
+    if (this._state[stage] !== 0) {
+      this._reentries++;
+      if (this._state[stage] === 2) {
+        return this._generation;
+      }
+    }
+    this._open[stage] = this._now();
+    this._state[stage] = 1;
+    return this._generation;
+  }
+
+  // Pausing closes only the current clock segment. The logical sample remains
+  // unpublished until endStage folds every accumulated segment.
+  pauseStage(stage: number, generation: number = this._generation): void {
     if (!this._enabled || stage < 0 || stage >= CLOUD_CPU_STAGE_COUNT) {
       return;
     }
-    if (this._open[stage] >= 0) {
-      this._reentries++;
+    if (generation !== this._generation || this._state[stage] !== 1) {
+      this._invalidTransitions++;
+      return;
     }
-    this._open[stage] = performance.now();
+    this._partial[stage] += this._now() - this._open[stage];
+    this._open[stage] = -1;
+    this._state[stage] = 2;
+  }
+
+  // Resuming opens another clock segment within the same logical sample.
+  resumeStage(stage: number, generation: number = this._generation): void {
+    if (!this._enabled || stage < 0 || stage >= CLOUD_CPU_STAGE_COUNT) {
+      return;
+    }
+    if (generation !== this._generation || this._state[stage] !== 2) {
+      this._invalidTransitions++;
+      return;
+    }
+    this._open[stage] = this._now();
+    this._state[stage] = 1;
   }
 
   /**
-   * Closes a stage and folds its duration. An end with no matching begin is
-   * counted and discarded rather than folded as a bogus duration.
+   * Closes a stage and folds all of its open segments. An end with no matching
+   * begin is counted and discarded rather than folded as a bogus duration.
    *
    * @param stage A {@link CloudCpuStage} slot index.
    */
-  endStage(stage: number): void {
+  endStage(stage: number, generation: number = this._generation): void {
     if (!this._enabled || stage < 0 || stage >= CLOUD_CPU_STAGE_COUNT) {
       return;
     }
-    const openedAt = this._open[stage];
-    if (openedAt < 0) {
+    if (generation !== this._generation) {
+      this._invalidTransitions++;
+      return;
+    }
+    const state = this._state[stage];
+    if (state === 0) {
       this._unmatchedEnds++;
       return;
     }
-    const elapsed = performance.now() - openedAt;
+    let elapsed = this._partial[stage];
+    if (state === 1) {
+      elapsed += this._now() - this._open[stage];
+    }
     this._open[stage] = -1;
+    this._partial[stage] = 0;
+    this._state[stage] = 0;
     this._last[stage] = elapsed;
     this._sum[stage] += elapsed;
     this._count[stage]++;
@@ -498,12 +553,20 @@ export class CloudCpuStageAccumulator {
         avgMs: count > 0 ? this._sum[i] / count : 0,
         maxMs: this._max[i],
         samples: count,
+        state:
+          this._state[i] === 1
+            ? "open"
+            : this._state[i] === 2
+              ? "paused"
+              : "idle",
       };
     }
     return {
       enabled: this._enabled,
+      generation: this._generation,
       reentries: this._reentries,
       unmatchedEnds: this._unmatchedEnds,
+      invalidTransitions: this._invalidTransitions,
       stages,
     };
   }

@@ -31,7 +31,13 @@
  */
 
 import FeatureRendererKey from "../FeatureRendererKey.js";
-import { publishCloudIblCoverage } from "./WebGPUProceduralCloudRenderer.js";
+import type { VolumetricCloudRequest } from "../GraphicsContext.js";
+import {
+  beginCloudFrameAttempt,
+  finishNegativeCloudFrameAttempt,
+  publishCloudIblCoverage,
+  reportCloudLifecycleError,
+} from "./WebGPUProceduralCloudRenderer.js";
 import {
   beginEnvironmentalEffectsComposition,
   commitEnvironmentalFullscreenStage,
@@ -41,6 +47,158 @@ import {
   type EnvironmentalCompositionState,
 } from "./WebGPUEnvironmentalEffectsCompositor.js";
 import type { WebGPURenderFrameConfig } from "./WebGPUSceneRenderer.js";
+
+export interface ResolvedCloudFramePlan {
+  readonly frameNumber: number;
+  readonly request: VolumetricCloudRequest | null;
+  readonly config: CloudVolumetricsConfig | undefined;
+  readonly active: boolean;
+  readonly captureRequested: boolean;
+}
+
+export interface CloudFramePreparationOutcome {
+  readonly kind: "prepared" | "negative";
+  readonly plan: ResolvedCloudFramePlan;
+  readonly maskView: GPUTextureView | null;
+  readonly reason?: CloudFrameNegativeReason;
+}
+
+export type CloudFrameNegativeReason =
+  | "feature-not-ready"
+  | "missing-device"
+  | "missing-encoder"
+  | "missing-raw-color"
+  | "missing-depth"
+  | "culled"
+  | "resource-not-ready"
+  | "preparation-busy"
+  | "encoder-mismatch"
+  | "encoder-abandoned";
+
+export type CloudFrameOutcomeNegativeReason =
+  CloudFrameNegativeReason | "inactive" | "preparation-failed";
+
+export interface ProceduralCloudFrameRenderer {
+  prepareCloudFrameAndEncodeMask?(
+    context: WebGPURenderFrameConfig["context"],
+    frameState: CesiumFrameState,
+    attempt: unknown,
+    rawColorView: GPUTextureView,
+    depthView: GPUTextureView,
+    config: CloudVolumetricsConfig,
+    captureRequested: boolean,
+  ): unknown;
+  isPreparedCloudFrame?(
+    outcome: CloudFramePreparationOutcome,
+    plan: ResolvedCloudFramePlan,
+  ): boolean;
+  completePreparedCloudMask?(outcome: CloudFramePreparationOutcome): void;
+  executePreparedCloudFrame?(
+    context: WebGPURenderFrameConfig["context"],
+    frameState: CesiumFrameState,
+    displayColorView: GPUTextureView,
+    depthView: GPUTextureView,
+    outputView: GPUTextureView,
+    outcome: CloudFramePreparationOutcome,
+  ): boolean;
+  cancelPreparedCloudFrame?(outcome: CloudFramePreparationOutcome): void;
+}
+
+export interface EnvironmentalCloudFrameOutcome {
+  readonly plan: ResolvedCloudFramePlan;
+  readonly renderer: ProceduralCloudFrameRenderer | null;
+  readonly preparation: CloudFramePreparationOutcome | null;
+  readonly negativeReason: CloudFrameOutcomeNegativeReason | null;
+  readonly displaySnapshotView: GPUTextureView | null;
+}
+
+export function isPreparedCloudFrameOutcome(
+  outcome: EnvironmentalCloudFrameOutcome,
+): boolean {
+  return (
+    outcome.preparation !== null &&
+    outcome.renderer?.isPreparedCloudFrame?.(
+      outcome.preparation,
+      outcome.plan,
+    ) === true &&
+    typeof outcome.renderer?.executePreparedCloudFrame === "function"
+  );
+}
+
+export function resolveCloudFramePlan(
+  config: WebGPURenderFrameConfig,
+  captureRequested: boolean,
+): ResolvedCloudFramePlan {
+  const { scene, context } = config;
+  const frameState = scene._frameState;
+  const request = context.consumeVolumetricCloudRequest();
+  let chosenRequest: VolumetricCloudRequest | null = null;
+  let cloudConfig: CloudVolumetricsConfig | undefined;
+
+  if (request?.enabled === true) {
+    chosenRequest = request;
+    cloudConfig = request as unknown as CloudVolumetricsConfig;
+  } else {
+    const managed = (
+      scene.globe as unknown as {
+        defaultCloudCollection?: {
+          renderMode?: number;
+          volumetric?: { enabled?: boolean };
+          _resolveVolumetricConfig?: () => CloudVolumetricsConfig;
+        };
+      }
+    )?.defaultCloudCollection;
+    if (
+      managed?.renderMode === 1 &&
+      managed.volumetric?.enabled === true &&
+      managed._resolveVolumetricConfig
+    ) {
+      try {
+        cloudConfig = managed._resolveVolumetricConfig();
+      } catch (error: unknown) {
+        reportCloudLifecycleError(
+          context,
+          "Managed cloud configuration resolution failed.",
+          error,
+        );
+      }
+    }
+  }
+
+  const active = cloudConfig !== undefined;
+  return Object.freeze({
+    frameNumber: frameState.frameNumber,
+    request: chosenRequest,
+    config: cloudConfig,
+    active,
+    captureRequested: active && captureRequested,
+  });
+}
+
+export function beginResolvedCloudFrameAttempt(
+  config: WebGPURenderFrameConfig,
+  plan: ResolvedCloudFramePlan,
+): unknown {
+  return beginCloudFrameAttempt(config.context, config.scene._frameState, plan);
+}
+
+export function finishResolvedCloudFrameAttempt(
+  attempt: unknown,
+  reason: CloudFrameNegativeReason,
+): unknown {
+  return finishNegativeCloudFrameAttempt(attempt, reason);
+}
+
+export function publishResolvedCloudFrameIbl(
+  config: WebGPURenderFrameConfig,
+  plan: ResolvedCloudFramePlan,
+): void {
+  publishCloudIblCoverage(
+    config.context,
+    plan.active ? plan.config : undefined,
+    config.scene._frameState,
+  );
+}
 
 /**
  * Legacy flat `scene.weatherType` index → renderer particle-type string. Matches
@@ -105,81 +263,21 @@ function buildWeatherConfig(
  */
 export function executeEnvironmentalEffects(
   config: WebGPURenderFrameConfig,
+  cloudFrame: EnvironmentalCloudFrameOutcome,
 ): void {
   const { scene, context } = config;
-  const globe = scene.globe;
   const frameState = scene._frameState;
-
-  // Publish the effective cloud coverage the dynamic-env-map sky fill darkens
-  // and flattens its radiance toward. This runs before the view-availability
-  // early-return and the cloud-render gate so it tracks the globe's flags every
-  // frame, resetting to 0 when clouds or `cloudContributesIBL` are off.
-  // `publishCloudIblCoverage` takes a structural `CloudVolumetricsConfig` whose
-  // field names match `globe.cloud*`, so the globe passes through with no cast.
-  //
-  // The frame's volumetric cloud request is published by a volumetric
-  // `CloudCollection` (first one wins; see `CloudCollection.update` /
-  // `GraphicsContext#requestVolumetricClouds`). It is consumed here
-  // unconditionally, even when the request is then ignored, so a stale request
-  // never leaks into the next frame. When no collection publishes, `cloudConfig`
-  // stays `undefined` and `publishCloudIblCoverage` resets the IBL coverage to
-  // 0, giving a clear-sky env source.
-  const collectionRequest = context.consumeVolumetricCloudRequest();
-  let useCollectionDeck =
-    collectionRequest !== undefined && collectionRequest.enabled === true;
-  let cloudConfig: CloudVolumetricsConfig | undefined = useCollectionDeck
-    ? (collectionRequest as unknown as CloudVolumetricsConfig)
-    : undefined;
-
-  // When no user-added volumetric collection published a deck this frame, fall
-  // back to the Scene/Globe managed default cloud collection
-  // (`globe.defaultCloudCollection`). Its `.volumetric` config is the single
-  // source of truth for the `atmosphericConditions` cloud facade, the
-  // atmospheric-effects genus bias, and the weather ingest. It drives a deck
-  // only when its exclusive `renderMode` is volumetric (=== 1) and
-  // `volumetric.enabled` is set; otherwise no deck is active and `cloudConfig`
-  // stays `undefined`.
-  if (!useCollectionDeck) {
-    const managed = (
-      globe as unknown as {
-        defaultCloudCollection?: {
-          renderMode?: number;
-          volumetric?: { enabled?: boolean };
-          _resolveVolumetricConfig?: () => CloudVolumetricsConfig;
-        };
-      }
-    )?.defaultCloudCollection;
-    if (
-      managed?.renderMode === 1 && // CloudRenderMode.VOLUMETRIC
-      managed.volumetric?.enabled === true &&
-      managed._resolveVolumetricConfig
-    ) {
-      cloudConfig = managed._resolveVolumetricConfig();
-      useCollectionDeck = true;
-    }
-  }
-  publishCloudIblCoverage(context, cloudConfig, frameState);
 
   // Texture views needed by all environmental effects.
   //
-  // `colorView` — the source env effects sample for reflection, composite base
-  // and cloud blend — comes from the post-process snapshot, a
-  // copyTextureToTexture mirror of the canvas taken after post-process ran
-  // (PostFrustumChain), so env effects sample display-space, tonemapped, FXAA'd
-  // color, the same color the viewer sees. Sampling the raw HDR scene
-  // framebuffer instead produces colour-space-mismatched reflections and cloud
-  // composites. Falls back to the scene color view in early frames, before the
-  // snapshot is allocated.
-  const ctxAny = context as unknown as {
-    _postProcessSnapshotView?: GPUTextureView | null;
-  };
-  const snapshotView = ctxAny._postProcessSnapshotView ?? undefined;
-  const colorView: GPUTextureView | undefined =
-    snapshotView ?? context._sceneColorView ?? context.currentTextureView;
+  // The caller supplies this view only after copying the current post-processed
+  // canvas into it. A missing view disables full-screen environmental stages;
+  // they must not consume a previous frame's snapshot or raw scene color.
+  const snapshotView = cloudFrame.displaySnapshotView ?? undefined;
   const depthView: GPUTextureView | undefined = context._depthStencilView;
   const outputView: GPUTextureView | undefined = context.currentTextureView;
 
-  if (!colorView || !depthView || !outputView) {
+  if (!depthView || !outputView) {
     return;
   }
 
@@ -203,8 +301,9 @@ export function executeEnvironmentalEffects(
   const vf = ac?.volumetricFog;
   const groundFogActive = ac?.effects?.groundFog?.enabled === true;
   const fogActive = vf?.enabled === true || groundFogActive;
+  const preparedCloud = isPreparedCloudFrameOutcome(cloudFrame);
   const fullscreenEffectDemand =
-    useCollectionDeck ||
+    preparedCloud ||
     (sceneAny._enableNPROutlines === true && normalView !== null) ||
     (sceneAny._enableContactShadows === true && normalView !== null) ||
     scene._enableSSR === true ||
@@ -222,26 +321,25 @@ export function executeEnvironmentalEffects(
   // 1. Procedural clouds. Every full-screen stage consumes the previous graph
   // result and writes the opposite texture. A culled/not-ready stage returns
   // false and therefore does not advance the graph.
-  if (useCollectionDeck && composition) {
-    const cloudFR = context.getFeatureRenderer(
-      FeatureRendererKey.PROCEDURAL_CLOUDS,
-    );
-    if (cloudFR?.execute) {
+  if (preparedCloud && composition) {
+    const cloudFR = cloudFrame.renderer;
+    const preparation = cloudFrame.preparation;
+    if (cloudFR?.executePreparedCloudFrame && preparation) {
       try {
-        const recorded =
-          (cloudFR.execute as unknown as (...args: unknown[]) => unknown)(
-            context,
-            frameState,
-            composition.sourceView,
-            depthView,
-            composition.targetView,
-            cloudConfig,
-          ) === true;
+        const recorded = cloudFR.executePreparedCloudFrame(
+          context,
+          frameState,
+          composition.sourceView,
+          depthView,
+          composition.targetView,
+          preparation,
+        );
         commitEnvironmentalFullscreenStage(composition, recorded);
       } catch (e: unknown) {
-        context.log?.(
-          "warn",
-          `Procedural clouds failed: ${(e as Error).message}`,
+        reportCloudLifecycleError(
+          context,
+          "Procedural cloud composite failed.",
+          e,
         );
       }
     }
