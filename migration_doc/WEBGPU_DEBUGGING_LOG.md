@@ -20249,3 +20249,134 @@ fixture now carries the two regions and a dash frame whose control moves.
 `Tools/visual-regression/probe-descriptor-cells-contract.spec.mjs`,
 `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`,
 `migration_doc/FEATURE_INVENTORY.md`.
+
+## Lane Rian round 3 (wave P0-2, 2026-09-06) — the calibrated morph wait counted renders, so it cost no time at all
+
+**Bug:** the Edge acceptance of `AR-714` / `AR-715` / `AR-716` (instrument). Tools class, no engine
+change. Round 2 added the `sceneModeAsSpecified` clause and a "bounded wait for the mode itself";
+Éowyn's job 11 leg 2 then failed **only** that clause, on **both** renderers.
+
+**Files affected**
+
+- `Tools/visual-regression/probe-classification-frustum-slices.mjs`
+- `Tools/visual-regression/lib/classification-frustum-slices-verdicts.mjs`
+- `Tools/visual-regression/classification-bounding-volume-frustum-slices.spec.mjs`
+- `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`
+
+No engine file is touched, so WebGL is byte-identical and no rebuild changes engine bytes.
+
+**What the run showed.** `Tools/visual-regression/output/wave-p0-2-edge-2026-09-06-job11/leg2-ar714-round2/`,
+exit 1, **12/14**. Every engine bar of the three rows holds on both backends: `bounded` 14/14,
+`slices == expectedSlices` 14/14, `draws == expectedDraws` 14/14, gated `errors` **0** in 14/14. The
+two REDs are `groundprim-morph` on WebGL **and** WebGPU, each failing `sceneModeAsSpecified` alone,
+with `sceneMode` 2 (`SCENE2D`) against an expected 0 (`MORPHING`) and `morphReached: false`. A
+renderer-independent failure in a WebGPU parity gate is the probe's staging, not a backend.
+
+**Root cause — the bound had the wrong unit.** Round 2 replaced a fixed frame budget with a loop over
+`options.morphWaitFrames` iterations of `await frame(1)`, exiting when `scene.mode` became
+`SceneMode.MORPHING`. But `frame(n)` renders, decrements, and **resolves before it ever reaches
+`requestAnimationFrame` when `n === 1`** — the `if (left <= 0) { resolve(); return; }` exit sits
+above the `requestAnimationFrame(step)` call. So 240 iterations of `await frame(1)` are 240
+synchronous renders chained through the microtask queue inside a single task: **0 animation frames,
+~0 ms of wall time**. Re-derived rather than reasoned about — run over the probe's own `frame` shape
+in a standalone harness, 240 iterations give `renders=240 rafTicks=0 elapsedMs=0`, while 20
+iterations of `render + await rAF` give `rafTicks=20 elapsedMs=530`.
+
+What the wait had to outlast is measured in **real** time. `morphFrom2DTo3D` divides its duration by
+three (`Scene/SceneTransitioner.js:472`) and, for `duration > 0`, sets `scene._mode =
+SceneMode.SCENE2D` and flies the camera, entering `MORPHING` only in that flyTo's `complete`
+callback (`:529-546`).
+
+**And a real animation frame is NECESSARY, not merely sufficient — `Scene.render` does not advance
+that tween at all.** `_tweens.update()` is called from **`Scene.initializeFrame`** (`Scene/Scene.js:4447`,
+the call at `:4455`, and the file's only occurrence), not from `render(time)` (`:4495`); and
+`initializeFrame`'s only runtime caller is `CesiumWidget.prototype.render`
+(`Widget/CesiumWidget.js:1421-1429`), which `startRenderLoop` drives from `requestAnimationFrame`
+(`:48-89`) — the sole other caller anywhere in `packages/` or `Apps/` is the `Scene` constructor
+(`Scene.js:1606`). The flyTo's tween is in that same collection (`Camera.js:1884`
+`scene.tweens.add(...)` -> `Scene.js:2544`). So round 2 did not merely fail to accumulate enough wall
+time: **it never let the tween update once.** `scene.morphTo3D(2.0)` has a **0.667 s** SCENE2D prologue,
+and no number of `scene.render()` calls crosses it. The loop exhausted its 240 iterations, the mode was
+still SCENE2D, and both cells reported the mode they were actually in. The clause was right; the wait
+under it was not.
+
+The lesson is therefore **not** "bound the wait on wall time" alone — a `setTimeout` or a
+`performance.now()` deadline wrapped around `scene.render()` reproduces this bug exactly. It is **the
+wait must yield real animation frames**, which is what the fix implements.
+
+**Fix.** The wait now ticks the **real frame path** and a **real** animation frame —
+`scene.initializeFrame()` then `scene.render()` (the widget's own order) then
+`requestAnimationFrame` — is bounded on **wall time**, and exits on the transitioner's own
+observed state: `scene.mode === SceneMode.MORPHING` actually seen, not a count exhausted.
+Driving `initializeFrame` in the wait rather than leaning on the widget's loop means the wait
+advances the tween itself, so it does not silently regress if a future edit turns
+`useDefaultRenderLoop` off. `MORPH_WAIT_MS` is
+8000, about 12x the prologue, and `MORPH_WAIT_MAX_TICKS` (1200) is an independent ceiling so the loop
+terminates even if the clock it reads is throttled. **Both bounds are passed into the page through
+the options object**, not read from module scope: a `page.evaluate` body does not close over the
+module's constants, so a bound left behind there would be `undefined` in the browser and the loop it
+guards unbounded. Statically checked — the evaluate body references zero module-scope identifiers.
+
+**A cell whose morph is never observed is now REFUSED, not scored.** `morphReached` becomes
+`true | false | null` (`null` = this cell never staged a morph — the old field claimed `true` on the
+twelve cells that never attempt one: six scenes x two renderers, and the field is per cell, which
+leg 2's own `classifyslices-report.json` confirms at 12 of 14 rows carrying `morphReached: true`),
+and `evaluateCell` returns `{pass: false, notRun: true,
+notRunReason: "morph-never-observed"}` with the observed modes, the read mode and the elapsed wait in
+its claim. The probe reports `NOT RUN` as its own tier in the summary table and lists each refused
+cell beneath it. This is not bookkeeping: `sceneModeAsSpecified` compares **one sample taken at read
+time**, so a wait that blows its bound and then drifts into `MORPHING` during the settle satisfies
+every clause and reports a **PASS on staging that was never confirmed**. A refusal is never rounded
+up to a pass; it exits non-zero. **But it is not the fleet's whole-run refusal, and the receipts a leg
+banks do not agree on the word.** `PROBE_EXIT_CODES.REFUSAL` is **3**, reserved so an orchestrator
+scoring by exit status cannot read a refusal as either a pass or a measured red
+(`lib/probe-refusal.mjs:28-38`); a per-CELL NOT RUN instead takes `exitCodeForOutcome`'s `pass !== true`
+path and exits **FAILURE (1)**, by exit status indistinguishable from an engine red. That is the right
+call — the run still measured the other twelve cells, and a refusal must not mask a concurrent engine
+red among them — but it means the shared runtime's verdict table, which prints every `pass !== true`
+row as **FAIL** (`lib/probe-runtime.mjs:747`), and the probe's own `descriptor.summary`, which prints
+**NOT RUN**, land in the same output directory disagreeing about the same cell. **The probe's summary is
+the authority for the NOT RUN tier:** a refused morph cell is a staging miss to be re-run, not an engine
+red to be written up. Both halves are asserted, not just documented (test 26).
+
+**Verified.** `classification-bounding-volume-frustum-slices.spec.mjs` grows from 26 tests to **30**,
+still pure Node on `npm run test-engine-node`, **30/30 green**. Four are behavioural, not textual:
+leg 2's recorded cell is NOT RUN with its observed modes in the claim; a cell that DID observe
+`MORPHING` and then drifted out still fails `sceneModeAsSpecified` and only it; a cell with
+`morphReached === null` is unaffected, so the refusal cannot fire on the twelve cells that never
+morph; and the probe's own receipt publishes a refused cell as `NOT RUN` while a cell that observed
+the morph and drifted out still publishes as `FAIL`, with the run exiting FAILURE (1) rather than
+the fleet's refusal code 3. The inertness mutant is the fifth: it builds the cell the refusal
+exists for — the wait never
+observed `MORPHING`, but the read-time sample lands on it anyway — asserts the shipped module refuses
+it, then rewrites the `/* clause:morph-staging */` seam to `false && …` on a copy imported as a
+`data:` URL and asserts the mutant **passes** it. Separately, and as a transcript rather than a
+shipped test, the same mutation applied **on disk** to the shipped module takes the suite to
+**27/30, exit 1** (tests 23, 26 and 29 — the behaviour, the receipt and the mutant's own precondition),
+and the file was restored byte-identically (md5 unchanged) to 30/30.
+
+**Not fixed here, surfaced under Principle 9.** The globe settle immediately above the morph wait has
+the **same** defect: its `stable < 8` loop also polls once per `await frame(1)`, so
+`scene.globe.tilesLoaded` is sampled in a loop that yields no animation frame and admits no network
+macrotask, and the effective settle is the `await frame(20)` and `await frame(8)` on either side of
+it — about 0.43 s. It was left alone deliberately: changing it restages all 14 cells, including the
+12 that are currently green on the engine bars, and this lane has no browser to re-measure them.
+**For the seat to queue**, together with a fleet-wide sweep for `await frame(1)` used as a delay.
+
+**Edge command for the re-run.** `node server.js --port 8094 --serve-built` in one terminal, then
+`node Tools/visual-regression/probe-classification-frustum-slices.mjs --port 8094 --runs 1
+--serve-built --repository-root <served clone> --output <bank>/leg2-ar714-round3`. GREEN is **14/14
+cells** with **no cell NOT RUN**; the `overlay` column still reports whatever the un-fixed
+`NEW-WEBGPU-DEBUG-FRUSTUM-OVERLAY-DEPTH-SAMPLETYPE` defect emits, which is expected until that row
+lands and is not a failure of this one.
+
+**Three outcomes are possible for a morph cell, not two, and the two receipts word them
+differently.** (1) GREEN. (2) `NOT RUN` — the wait outlasted 8 s without seeing `MORPHING`, and the
+summary names the modes it did see: a staging finding, to be re-run, never written up as an engine
+red. (3) a measured `sceneModeAsSpecified` red — the wait DID observe `MORPHING`, but the post-wait
+path (`frame(8)`, then `readFootprint`'s `toDataURL` plus an `Image` decode, then `frame(2)`) ran
+past the ~1.333 s that remains after the prologue, so the read-time sample landed outside the
+morph. That third case is correct behaviour and is a real measurement. Exiting the wait on first
+observation is the design choice that maximises the remaining budget. And in every non-green case
+the shared runtime's verdict table prints **FAIL** while the probe's summary prints **NOT RUN** —
+`classifyslices-summary.md` is the authority for which of (2) and (3) actually happened.

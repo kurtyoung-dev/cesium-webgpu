@@ -75,6 +75,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  MORPH_STAGING_NOT_RUN,
   evaluateCell,
   expectedSliceCount,
   foldCommands,
@@ -1399,22 +1400,66 @@ test("the overlay's errors are attributed away from this row, not swallowed", ()
   );
 });
 
-test("leg 2's morph cells failed because they never reached MORPHING", () => {
-  // SceneMode.MORPHING is 0 and SceneMode.SCENE2D is 2; leg 2 recorded 2.
-  const recorded = {
-    outside: false,
-    errors: 0,
-    sceneMode: SceneMode.SCENE2D,
-    expectedSceneMode: SceneMode.MORPHING,
-    distinctCommands: 2,
-    boundedCommands: 2,
-    slices: 2,
-    expectedSlices: 2,
-    draws: 4,
-    expectedDraws: 4,
-  };
-  const verdict = evaluateCell(recorded);
+/**
+ * Job 11 leg 2's `groundprim-morph` cell, as recorded on BOTH renderers:
+ * every engine bar green, `sceneMode` SCENE2D (2) against an expected
+ * MORPHING (0), and a wait that never observed the transition.
+ *
+ * @param {object} overrides Fields to change.
+ * @returns {object} The cell.
+ */
+const leg2MorphCell = (overrides = {}) => ({
+  outside: false,
+  errors: 0,
+  sceneMode: SceneMode.SCENE2D,
+  expectedSceneMode: SceneMode.MORPHING,
+  morphReached: false,
+  morphModesObserved: [SceneMode.SCENE2D],
+  morphWaitElapsedMs: 0,
+  distinctCommands: 2,
+  boundedCommands: 2,
+  slices: 2,
+  expectedSlices: 2,
+  draws: 4,
+  expectedDraws: 4,
+  ...overrides,
+});
+
+test("leg 2's morph cells are NOT RUN, not an engine red: the wait never observed MORPHING", () => {
+  const verdict = evaluateCell(leg2MorphCell());
+  assert.equal(verdict.pass, false, "a refusal is never rounded up to a pass");
+  assert.equal(
+    verdict.notRun,
+    true,
+    "and it is not reported as a measured red",
+  );
+  assert.equal(verdict.notRunReason, MORPH_STAGING_NOT_RUN);
+  assert.match(
+    verdict.claim,
+    /modes observed: 2/,
+    "the claim carries the modes the cell did observe, so the leg can tell " +
+      "a staging miss from a backend defect",
+  );
+  assert.deepEqual(
+    verdict.clauses,
+    {},
+    "a cell that never reached the frame has no clause to have failed",
+  );
+});
+
+test("a morph cell that reached MORPHING and then drifted out fails the mode clause, and only it", () => {
+  // The wait DID observe the transition, so this is a measurement, not a
+  // refusal: the settle after it carried the frame past the transition edge.
+  const verdict = evaluateCell(
+    leg2MorphCell({
+      morphReached: true,
+      morphModesObserved: [SceneMode.SCENE2D, SceneMode.MORPHING],
+      morphWaitElapsedMs: 690,
+      sceneMode: SceneMode.SCENE3D,
+    }),
+  );
   assert.equal(verdict.pass, false);
+  assert.notEqual(verdict.notRun, true, "an observed morph is not a refusal");
   assert.equal(
     verdict.clauses.sceneModeAsSpecified,
     false,
@@ -1425,6 +1470,145 @@ test("leg 2's morph cells failed because they never reached MORPHING", () => {
       assert.equal(value, true, `${name} holds on the recorded numbers`);
     }
   }
+});
+
+test("the refusal is scoped to morph cells: a 3D cell carries no morph staging at all", () => {
+  const verdict = evaluateCell(
+    leg2MorphCell({
+      morphReached: null,
+      morphModesObserved: null,
+      morphWaitElapsedMs: null,
+      sceneMode: SceneMode.SCENE3D,
+      expectedSceneMode: SceneMode.SCENE3D,
+    }),
+  );
+  assert.equal(
+    verdict.pass,
+    true,
+    "`morphReached === null` is 'this cell never staged a morph', which must " +
+      "not refuse the twelve cells that never attempt one",
+  );
+  assert.notEqual(verdict.notRun, true);
+});
+
+test("a refused cell is published as NOT RUN by the probe's own summary, and still exits non-zero", async () => {
+  // The presentation half of the refusal, and the half a leg reader actually
+  // opens. Deciding `notRun` is worth nothing if the receipt renders it as an
+  // engine red — and the two receipts a leg banks do NOT agree: the shared
+  // runtime's verdict table prints every `pass !== true` row as FAIL
+  // (`lib/probe-runtime.mjs:747`), so the probe's own summary is the authority
+  // for the NOT RUN tier. A per-cell refusal also exits FAILURE (1), not
+  // `PROBE_EXIT_CODES.REFUSAL` (3), because the run did produce measurements
+  // and a refused cell must not mask a concurrent engine red. Both statements
+  // are asserted here so the docs that carry them cannot drift from the code.
+  const { descriptor } =
+    await import("./probe-classification-frustum-slices.mjs");
+  const { PROBE_EXIT_CODES, exitCodeForOutcome } =
+    await import("./lib/probe-refusal.mjs");
+
+  const score = (cell) => {
+    const verdict = evaluateCell(cell);
+    return {
+      frustums: 2,
+      ratio: null,
+      ratioStatus: "no-footprint",
+      overlayErrors: 0,
+      morphWaitTicks: null,
+      ...cell,
+      pass: verdict.pass,
+      claim: verdict.claim,
+      clauses: verdict.clauses,
+      notRun: verdict.notRun === true,
+      notRunReason: verdict.notRunReason ?? null,
+    };
+  };
+
+  const refused = score({
+    scene: "groundprim-morph",
+    renderer: "webgpu",
+    ...leg2MorphCell({ morphWaitElapsedMs: 8003, morphWaitTicks: 481 }),
+  });
+  const measuredRed = score({
+    scene: "groundprim-morph",
+    renderer: "webgl",
+    ...leg2MorphCell({
+      morphReached: true,
+      morphModesObserved: [SceneMode.SCENE2D, SceneMode.MORPHING],
+      morphWaitElapsedMs: 690,
+      morphWaitTicks: 42,
+      sceneMode: SceneMode.SCENE3D,
+    }),
+  });
+  const passing = score({
+    scene: "groundprim-3d",
+    renderer: "webgpu",
+    ...leg2MorphCell({
+      morphReached: null,
+      morphModesObserved: null,
+      morphWaitElapsedMs: null,
+      sceneMode: SceneMode.SCENE3D,
+      expectedSceneMode: SceneMode.SCENE3D,
+    }),
+  });
+
+  const cells = [refused, measuredRed, passing];
+  const summary = descriptor.summary(
+    descriptor.receipt(cells, { origin: "http://localhost:8094" }),
+  );
+
+  assert.match(
+    summary,
+    /Cells: 1\/3 passed, 1 NOT RUN\./,
+    "the refusal is counted in its own tier, not as a pass and not silently",
+  );
+  assert.match(
+    summary,
+    /^\| groundprim-morph \| webgpu \|.*\| NOT RUN \|$/m,
+    "the refused cell's row says NOT RUN",
+  );
+  assert.match(
+    summary,
+    /^\| groundprim-morph \| webgl \|.*\| FAIL \|$/m,
+    "a cell that DID observe the morph and then drifted is still a red",
+  );
+  assert.match(
+    summary,
+    /^\| groundprim-3d \| webgpu \|.*\| PASS \|$/m,
+    "and a cell that never staged a morph is unaffected",
+  );
+  assert.match(
+    summary,
+    /modes observed \[2\], waited 8003ms over 481 animation frames/,
+    "the refusal listing carries what the wait actually saw, so the next " +
+      "leg can tell a staging miss from a backend defect without the JSON",
+  );
+
+  const verdicts = descriptor.verdicts(cells);
+  assert.deepEqual(
+    verdicts.map((verdict) => verdict.id),
+    [
+      "groundprim-morph:webgpu",
+      "groundprim-morph:webgl",
+      "groundprim-3d:webgpu",
+    ],
+    "every cell id survives a refusal — the leg's cell set does not shrink",
+  );
+  assert.deepEqual(
+    verdicts.map((verdict) => verdict.pass),
+    [false, false, true],
+    "a refused cell is not a pass in the verdict list either",
+  );
+  assert.equal(
+    exitCodeForOutcome({ verdicts }),
+    PROBE_EXIT_CODES.FAILURE,
+    "a refused cell exits FAILURE, so it cannot be scored as OK",
+  );
+  assert.notEqual(
+    exitCodeForOutcome({ verdicts }),
+    PROBE_EXIT_CODES.REFUSAL,
+    "and it is NOT the fleet's whole-run refusal code 3: the run measured " +
+      "twelve other cells, and an engine red among them must still surface",
+  );
 });
 
 test("foldCommands folds per-command readings the way the clauses are stated over", () => {
@@ -1535,6 +1719,65 @@ test("inertness: an unreachable `bounded` clause passes a cell with no bounding 
     true,
     "with the clause unreachable the probe passes the very defect " +
       "AR-714/715/716 fixed — so the shipped clause is what carries the load",
+  );
+});
+
+/**
+ * The cell the morph refusal exists for: the wait never observed MORPHING, so
+ * the staging was never confirmed — but the settle that followed drifted INTO
+ * MORPHING, so the single read-time sample matches and every clause holds.
+ * Without the refusal this cell is a PASS on a morph that was never staged.
+ *
+ * @returns {object} The cell.
+ */
+const accidentallyMorphingCell = () => ({
+  outside: false,
+  errors: 0,
+  sceneMode: SceneMode.MORPHING,
+  expectedSceneMode: SceneMode.MORPHING,
+  morphReached: false,
+  morphModesObserved: [SceneMode.SCENE2D],
+  morphWaitElapsedMs: 8000,
+  distinctCommands: 2,
+  boundedCommands: 2,
+  slices: 1,
+  expectedSlices: 1,
+  draws: 2,
+  expectedDraws: 2,
+});
+
+test("inertness: an unreachable morph refusal passes a cell whose morph was never observed", async () => {
+  const shipped = await readLf(VERDICTS_PATH);
+  const refused = evaluateCell(accidentallyMorphingCell());
+  assert.equal(
+    refused.pass,
+    false,
+    "precondition: the shipped logic refuses a cell whose wait never saw " +
+      "MORPHING, even when the read-time mode happens to match",
+  );
+  assert.equal(refused.notRun, true, "precondition: and refuses it as NOT RUN");
+
+  const mutated = makeClauseInert(
+    shipped,
+    "morph-staging",
+    "cell.morphReached === false",
+    "\n  const morphNeverObserved = false && cell.morphReached === false;\n  ",
+  );
+  const mutant = await importSource(mutated);
+  const scored = mutant.evaluateCell(accidentallyMorphingCell());
+  assert.equal(
+    scored.pass,
+    true,
+    "with the refusal unreachable the probe PASSES a morph cell whose wait " +
+      "never observed the morph — the exact vacuous green the refusal exists " +
+      "to prevent, and what leg 2 would have reported had its settle drifted " +
+      "one frame further",
+  );
+  assert.notEqual(
+    scored.notRun,
+    true,
+    "and it reports it as a measurement, with no trace that the staging " +
+      "bound was blown",
   );
 });
 

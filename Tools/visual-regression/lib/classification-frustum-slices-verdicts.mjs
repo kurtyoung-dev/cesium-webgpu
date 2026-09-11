@@ -57,7 +57,20 @@
 //      backends. Added because leg 2's `groundprim-morph` cells reported
 //      `sceneMode == SceneMode.SCENE2D (2)`, not `MORPHING (0)`: `morphTo3D`
 //      spends its first third in a `camera.flyTo` that stays in SCENE2D
-//      (`Scene/SceneTransitioner.js:470-546`), and the probe read inside it.
+//      (`Scene/SceneTransitioner.js:472`, `:529-546`), and the probe read
+//      inside it. That clause scores the mode the cell READ. It is not by
+//      itself enough, because the read mode can be right by accident — see
+//      the refusal below.
+//   4a. THE MORPH REFUSAL. `sceneModeAsSpecified` compares one sample taken
+//      at read time. If the probe's wait never observed MORPHING, that sample
+//      is whatever the post-wait settle happened to drift into, and when it
+//      drifts INTO MORPHING every clause holds and the cell passes on staging
+//      that was never confirmed. So a morph cell whose wait did not observe
+//      the transition (`morphReached === false`) is NOT RUN: `pass` is false,
+//      `notRun` is true, and the modes it did observe travel in the claim.
+//      Job 11 leg 2's two RED cells are exactly this shape — the probe's
+//      morph wait counted renders, and `frame(1)` resolves without an
+//      animation frame, so it elapsed in ~0 ms against a 0.667 s prologue.
 //   5. `noGatingErrors` — errors NOT attributed to the tracked
 //      `WebGPUDebugFrustumOverlay` bind-group defect. BOTH backends. The
 //      attributed ones are counted and reported separately; they are not
@@ -103,6 +116,14 @@ export const OVERLAY_DEFECT_MARKER = "DebugFrustumOverlay";
 /** Where the attributed errors are owed, so a receipt reader can find the row. */
 export const OVERLAY_DEFECT_ROW =
   "NEW-WEBGPU-DEBUG-FRUSTUM-OVERLAY-DEPTH-SAMPLETYPE";
+
+/**
+ * The reason a morph cell is NOT RUN. A refusal is not a red: the cell
+ * measured nothing, so it has no standing to report either a pass or an
+ * engine defect (`lib/probe-refusal.mjs` states the same ordering for the
+ * runtime's own refusals).
+ */
+export const MORPH_STAGING_NOT_RUN = "morph-never-observed";
 
 /**
  * Splits gate + console messages into the ones this row answers for and the
@@ -226,14 +247,17 @@ export function evaluateRatio(cell) {
 /**
  * The cell's verdict. Pure over the cell record; every clause is named in the
  * result so a receipt reader sees which one failed rather than a bare false.
+ * A refused cell returns `notRun: true` with an empty clause set: it did not
+ * fail a bar, it never reached the frame a bar could be stated over.
  *
- * The two new gating clauses are delimited by marker pairs. Those markers are
- * the seam `classification-bounding-volume-frustum-slices.spec.mjs` cuts on to
- * make each clause INERT (`false && …`, evaluated but unreachable) rather than
+ * The gating clauses and the morph refusal are delimited by marker pairs.
+ * Those markers are the seam
+ * `classification-bounding-volume-frustum-slices.spec.mjs` cuts on to make
+ * each decision INERT (`false && …`, evaluated but unreachable) rather than
  * absent; they are load-bearing, not decoration.
  *
  * @param {object} cell The measured cell.
- * @returns {{pass: boolean, clauses: object, claim: string}} The verdict.
+ * @returns {{pass: boolean, clauses: object, claim: string, notRun?: boolean, notRunReason?: string}} The verdict.
  */
 export function evaluateCell(cell) {
   if (cell.outside === true) {
@@ -249,6 +273,25 @@ export function evaluateCell(cell) {
       pass: Object.values(cullClauses).every(Boolean),
       clauses: cullClauses,
       claim: "a classification primitive outside the view is not drawn",
+    };
+  }
+
+  /* clause:morph-staging */
+  // `true` only on a morph cell whose wait gave up without ever seeing
+  // MORPHING; `null` on the cells that never staged a morph at all.
+  const morphNeverObserved = cell.morphReached === false;
+  /* end-clause:morph-staging */
+  if (morphNeverObserved) {
+    const seen = cell.morphModesObserved ?? [];
+    return {
+      pass: false,
+      notRun: true,
+      notRunReason: MORPH_STAGING_NOT_RUN,
+      clauses: {},
+      claim:
+        "NOT RUN: the morph wait never observed SceneMode.MORPHING, so this " +
+        `cell measured no morph frame (modes observed: ${seen.length > 0 ? seen.join(",") : "none"}` +
+        `; mode read: ${cell.sceneMode}, waited ${Math.round(cell.morphWaitElapsedMs ?? 0)}ms)`,
     };
   }
 

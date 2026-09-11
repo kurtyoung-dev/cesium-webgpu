@@ -31,6 +31,10 @@
  *      SCENE2D straddle gives 2; no volume gives the whole band count.
  *   3. `draws` == the sum of those per-command expectations. GATED, both.
  *   4. `sceneMode` == the mode the scene claims to be measuring. GATED, both.
+ *      And, for a morph cell, the wait must have OBSERVED `MORPHING` — a cell
+ *      whose wait gave up is NOT RUN (refused with the modes it did see),
+ *      never a pass, because the read-time sample can land on the right mode
+ *      by accident after a wait that never confirmed it.
  *   5. `errors` — the ones NOT attributed to the tracked
  *      `WebGPUDebugFrustumOverlay` bind-group defect. GATED, both. The
  *      attributed ones are counted, reported in their own column and named in
@@ -98,6 +102,7 @@ import { ProbeRefusal, isEntryPoint, runProbe } from "./lib/probe-runtime.mjs";
 // spec can import it from either module.
 export {
   MIN_FOOTPRINT_PIXELS,
+  MORPH_STAGING_NOT_RUN,
   OVERLAY_DEFECT_MARKER,
   OVERLAY_DEFECT_ROW,
   SINGLE_BLEND_BAND,
@@ -113,10 +118,34 @@ const VIEWPORT = { width: 800, height: 600 };
 const WATCHDOG_BUDGET_MS = 8 * 60 * 1000;
 
 // `morphTo3D` divides its duration by three and spends the first third in a
-// `camera.flyTo` that is still SCENE2D (`Scene/SceneTransitioner.js:470-546`),
-// so a fixed frame budget reads the flyTo rather than the morph. Bounded wait
-// for the mode itself: four seconds at 60 Hz against a 0.67 s prologue.
-const MORPH_WAIT_FRAMES = 240;
+// `camera.flyTo` that is still SCENE2D (`Scene/SceneTransitioner.js:472`,
+// `:529-546`), so the wait must outlast a 0.667 s prologue measured on the REAL
+// clock.
+//
+// A real animation frame is NECESSARY here, not merely sufficient. The flyTo
+// tween is advanced by `_tweens.update()` inside `Scene.initializeFrame`
+// (`Scene/Scene.js:4447`, the call at `:4455`) — NOT inside `Scene.render`
+// (`:4495`), which never touches that collection — and `initializeFrame`'s only
+// runtime caller is `CesiumWidget.prototype.render`
+// (`Widget/CesiumWidget.js:1421-1429`), which `startRenderLoop` drives from
+// `requestAnimationFrame` (`:48-89`). So no number of `scene.render()` calls
+// advances a morph by itself: a wait that never yields an animation frame
+// leaves the tween frozen however long it spins.
+//
+// Round 2 bounded the wait at 240 iterations of `await frame(1)`, and `frame(1)`
+// resolves before it ever reaches `requestAnimationFrame` (see `frame` below),
+// so those iterations were 240 back-to-back synchronous renders inside a single
+// task — 0 animation frames and ~0 ms of wall time, i.e. a tween that was never
+// updated once. Job 11 leg 2 duly read `sceneMode` SCENE2D on BOTH renderers.
+// So the wait below drives the real frame path itself, yields a real animation
+// frame per tick, is bounded on wall time, and exits on the transitioner's own
+// observed state.
+const MORPH_WAIT_MS = 8000;
+// A second, independent bound, so the wait terminates even if the clock the
+// deadline reads is throttled: no rAF-driven wait can need more ticks than this
+// (8 s at 60 Hz is ~480). An unbounded loop in a browser probe is a
+// machine-safety hazard, not a style question.
+const MORPH_WAIT_MAX_TICKS = 1200;
 
 // The drape and the camera. A sub-degree footprint under a nadir camera, so
 // the classified region is a large, solid block of pixels at both alphas.
@@ -400,23 +429,64 @@ async function measure(page, spec) {
     }
     await frame(8);
 
-    let morphReached = true;
+    // The real frame path, then a REAL animation frame. `initializeFrame` is
+    // what advances the morph tween (`Scene/Scene.js:4447`, `_tweens.update()`
+    // at `:4455`); `render` does not. Driving both here in the widget's own
+    // order (`Widget/CesiumWidget.js:1421-1429`) means the wait advances the
+    // tween itself rather than depending on `useDefaultRenderLoop` still being
+    // on, and the `requestAnimationFrame` yield is what lets real wall time —
+    // the clock the tween is measured against — pass between samples.
+    // `frame(1)` does neither: it resolves inside the same task, which is why a
+    // 240-iteration `await frame(1)` bound cost ~0 ms of wall time in leg 2.
+    const tick = () =>
+      new Promise((resolve) => {
+        scene.initializeFrame();
+        scene.render();
+        requestAnimationFrame(resolve);
+      });
+
+    let morphStaging = null;
     if (options.mode === "morph") {
       scene.morphTo2D(0.0);
       await frame(6);
       scene.morphTo3D(2.0);
       // `morphFrom2DTo3D` divides the duration by three and flies the camera
       // in SCENE2D for the first third, setting MORPHING only in that flyTo's
-      // completion callback (`Scene/SceneTransitioner.js:470-546`). A fixed
-      // frame budget therefore reads a 2D frame — which is what leg 2 did,
-      // reporting `sceneMode` 2 on both renderers. Wait for the mode itself,
-      // with a bound.
-      morphReached = false;
-      for (let i = 0; i < options.morphWaitFrames && !morphReached; i++) {
-        await frame(1);
-        morphReached = scene.mode === C.SceneMode.MORPHING;
+      // completion callback (`Scene/SceneTransitioner.js:472`, `:529-546`).
+      // The flyTo advances on wall time, and only across animation frames, so
+      // the wait ticks real frames, is bounded on wall time and
+      // exits on the transitioner's OWN state — MORPHING actually observed —
+      // rather than on a render count. Every distinct mode seen on the way is
+      // kept, because a cell that never observes MORPHING is refused with the
+      // modes it did see rather than scored.
+      const modes = [];
+      const started = performance.now();
+      let observed = false;
+      let ticks = 0;
+      while (
+        !observed &&
+        ticks < options.morphWaitMaxTicks &&
+        performance.now() - started < options.morphWaitMs
+      ) {
+        await tick();
+        ticks += 1;
+        const mode = scene.mode;
+        // Transitions only, and a fixed ceiling: this list is a receipt field,
+        // not a trace.
+        if (modes[modes.length - 1] !== mode && modes.length < 16) {
+          modes.push(mode);
+        }
+        observed = mode === C.SceneMode.MORPHING;
       }
-      // Past the transition edge and far short of the remaining two thirds.
+      morphStaging = {
+        observed,
+        elapsedMs: performance.now() - started,
+        ticks,
+        modesObserved: modes,
+      };
+      // Past the transition edge and far short of the remaining two thirds:
+      // eight renders with seven animation frames between them is ~0.12 s of
+      // the 1.333 s that remains once MORPHING begins.
       await frame(8);
     }
 
@@ -507,7 +577,7 @@ async function measure(page, spec) {
     return {
       ...distribution,
       ...footprint,
-      morphReached,
+      morphStaging,
       sceneModeEnum: {
         MORPHING: C.SceneMode.MORPHING,
         COLUMBUS_VIEW: C.SceneMode.COLUMBUS_VIEW,
@@ -571,7 +641,11 @@ async function runCell(browser, origin, scene, renderer) {
     cullOffset: CULL_OFFSET_DEGREES,
     width: VIEWPORT.width,
     height: VIEWPORT.height,
-    morphWaitFrames: MORPH_WAIT_FRAMES,
+    morphWaitMs: MORPH_WAIT_MS,
+    // Both bounds cross into the page: a module-scope constant is not in scope
+    // inside `page.evaluate`, so a bound that is not passed is `undefined`
+    // there and the loop it guards is unbounded.
+    morphWaitMaxTicks: MORPH_WAIT_MAX_TICKS,
   };
 
   const translucent = await measure(page, { ...base, alpha: 0.5 });
@@ -605,7 +679,22 @@ async function runCell(browser, origin, scene, renderer) {
       scene.mode,
       translucent.sceneModeEnum,
     ),
-    morphReached: translucent.morphReached,
+    // `null` on a cell that never staged a morph — the round-2 field claimed
+    // `true` there, which read as "the morph was reached" on the twelve cells
+    // (six scenes x two renderers) that never attempted one; the field is per
+    // cell, not per scene. `false` is the refusal signal `evaluateCell` keys on.
+    morphReached: translucent.morphStaging
+      ? translucent.morphStaging.observed
+      : null,
+    morphWaitElapsedMs: translucent.morphStaging
+      ? translucent.morphStaging.elapsedMs
+      : null,
+    morphWaitTicks: translucent.morphStaging
+      ? translucent.morphStaging.ticks
+      : null,
+    morphModesObserved: translucent.morphStaging
+      ? translucent.morphStaging.modesObserved
+      : null,
     frustums: translucent.frustums,
     bands: translucent.bands,
     slices: folded.slices,
@@ -627,7 +716,26 @@ async function runCell(browser, origin, scene, renderer) {
   cell.pass = verdict.pass;
   cell.clauses = verdict.clauses;
   cell.claim = verdict.claim;
+  // A refused cell is neither a pass nor a measured red: it is carried with
+  // its id, its reason and the modes it observed, so the leg reads "this cell
+  // did not run" rather than "this backend is broken".
+  cell.notRun = verdict.notRun === true;
+  cell.notRunReason = verdict.notRunReason ?? null;
   return cell;
+}
+
+/**
+ * The status word a cell publishes: a refusal is reported as its own tier so a
+ * receipt reader does not read it as an engine red.
+ *
+ * @param {object} cell The scored cell.
+ * @returns {string} `PASS`, `NOT RUN` or `FAIL`.
+ */
+function cellStatus(cell) {
+  if (cell.pass === true) {
+    return "PASS";
+  }
+  return cell.notRun === true ? "NOT RUN" : "FAIL";
 }
 
 /** The descriptor the shared runtime executes. */
@@ -720,19 +828,37 @@ export const descriptor = {
         `${cell.draws}/${cell.expectedDraws} | ` +
         `${cell.frustums} | ` +
         `${cell.ratio === null ? cell.ratioStatus : cell.ratio.toFixed(3)} | ` +
-        `${cell.errors} | ${cell.overlayErrors} | ${cell.pass ? "PASS" : "FAIL"} |`,
+        `${cell.errors} | ${cell.overlayErrors} | ${cellStatus(cell)} |`,
     );
     const passed = receipt.cells.filter((cell) => cell.pass).length;
+    const refused = receipt.cells.filter((cell) => cell.notRun === true);
     return [
       "# Classification frustum slices (AR-714 / AR-715 / AR-716)",
       "",
       `Base: \`${receipt.base}\``,
       "",
-      `Cells: ${passed}/${receipt.cells.length} passed.`,
+      `Cells: ${passed}/${receipt.cells.length} passed` +
+        `${refused.length > 0 ? `, ${refused.length} NOT RUN` : ""}.`,
       "",
       "Gated: `bounded`, `slices`, `draws`, `mode`, `errors`. Reported only:",
       "`frustums` (a whole-frame property, not this primitive's) and `ratio`.",
       "",
+      ...(refused.length > 0
+        ? [
+            "NOT RUN is a refusal, not a red: the cell never reached the frame",
+            "its bars are stated over, so it reports neither a pass nor an",
+            "engine defect. Refused cells and the modes they did observe:",
+            "",
+            ...refused.map(
+              (cell) =>
+                `- \`${cell.scene}:${cell.renderer}\` — ${cell.notRunReason}; ` +
+                `modes observed ${JSON.stringify(cell.morphModesObserved)}, ` +
+                `waited ${Math.round(cell.morphWaitElapsedMs ?? 0)}ms over ` +
+                `${cell.morphWaitTicks} animation frames`,
+            ),
+            "",
+          ]
+        : []),
       "| scene | renderer | mode/exp | bounded/cmds | slices/exp | draws/exp | frustums | ratio | errors | overlay | |",
       "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
       ...rows,
