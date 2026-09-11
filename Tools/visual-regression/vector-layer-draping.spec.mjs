@@ -164,6 +164,7 @@ const {
   VECTOR_TILE_SEGMENTS_BASE,
   VECTOR_TILE_SEGMENT_PRIMITIVE_BASE,
   VECTOR_TILE_PRIMITIVES_BASE,
+  VECTOR_PRIMITIVE_STRIDE,
 } = await import(
   pathToFileURL(
     path.join(
@@ -195,6 +196,297 @@ const SHADER_HEADER = {
   segmentPrimitiveBase: wgslHeaderIndex("VECTOR_TILE_SEGMENT_PRIMITIVE_BASE"),
   primitivesBase: wgslHeaderIndex("VECTOR_TILE_PRIMITIVES_BASE"),
 };
+
+// ═══════════════════════════════════════════════════════════════════════
+// The PRIMITIVES-RUN STRIDE, read out of the shader for the same reason the
+// header indices are. The packer strides by the TS constant and the shader
+// reads by this one; they are a matched pair, and the subject evaluator below
+// deliberately takes THIS one so that leaving either side at the old value is
+// a behavioural failure rather than a missing assertion.
+// ═══════════════════════════════════════════════════════════════════════
+
+function wgslConstantU32(name) {
+  const match = wgsl.match(new RegExp(`const ${name}: u32 = ([0-9]+)u;`));
+  assert.ok(match, `GlobeTerrain.wgsl declares no ${name}`);
+  return Number(match[1]);
+}
+
+const WGSL_PRIMITIVE_STRIDE = wgslConstantU32("VECTOR_PRIMITIVE_STRIDE");
+
+// ═══════════════════════════════════════════════════════════════════════
+// The RECORD'S OWN ADDRESSING, read out of `vectorPrimitiveRecord`.
+//
+// The stride alone does not pin the layout: a record can be strided correctly
+// and still be read one primitive along, or its two colour words swapped. Both
+// of those are edits to three lines of the shader, and a model carrying its own
+// copy of the offsets would stay green through either. These three reads are
+// what make an on-disk shift of the pick run turn this file red.
+// ═══════════════════════════════════════════════════════════════════════
+
+const RECORD_BODY = wgslFunctionBody("vectorPrimitiveRecord");
+
+/**
+ * The primitive-index bias inside the record's base address. Canonically zero
+ * (`primitivesBase + primitiveIndex * VECTOR_PRIMITIVE_STRIDE`); a shader that
+ * reads `(primitiveIndex + 1)` records one primitive along, which is the layout
+ * mutation this spec has to detect.
+ */
+function wgslRecordIndexBias() {
+  const canonical =
+    /let p = primitivesBase \+ primitiveIndex \* VECTOR_PRIMITIVE_STRIDE;/;
+  if (canonical.test(RECORD_BODY)) {
+    return 0;
+  }
+  const shifted = RECORD_BODY.match(
+    /let p = primitivesBase \+ \(primitiveIndex \+ ([0-9]+)u\) \* VECTOR_PRIMITIVE_STRIDE;/,
+  );
+  assert.ok(
+    shifted,
+    "vectorPrimitiveRecord no longer addresses the run in a form this spec can read",
+  );
+  return Number(shifted[1]);
+}
+
+const WGSL_RECORD_INDEX_BIAS = wgslRecordIndexBias();
+
+/** The word offset a named field is read at, inside the record. */
+function wgslRecordWordOffset(field) {
+  const match = RECORD_BODY.match(
+    new RegExp(
+      `record\\.${field} = unpack4x8unorm\\(vectorTileData\\[p( \\+ ([0-9]+)u)?\\]\\);`,
+    ),
+  );
+  assert.ok(match, `vectorPrimitiveRecord no longer reads record.${field}`);
+  return Number(match[2] ?? 0);
+}
+
+const WGSL_COLOR_WORD_OFFSET = wgslRecordWordOffset("color");
+const WGSL_PICK_WORD_OFFSET = wgslRecordWordOffset("pickColor");
+
+// ═══════════════════════════════════════════════════════════════════════
+// PICK-COMPOSITE REACHABILITY, read out of the shader's own control flow.
+//
+// The pick path is three statements in three functions, and each of them can
+// be made INERT without disappearing. A model that assumed they run would stay
+// green while the shipped shader wrote `camera.pickColor` over every draped
+// line — which is the defect this whole section exists to keep out. So the
+// model asks the source whether each statement is REACHED, and an
+// `if (false && …)` guard moves the model, not just a string match.
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Body of one WGSL function, by brace matching, with line comments stripped.
+ * Throws when the function is gone, so a rename fails loudly.
+ */
+function wgslFunctionBody(name) {
+  const stripped = wgsl.replace(/\/\/[^\n]*/g, "");
+  const start = stripped.indexOf(`fn ${name}(`);
+  assert.notEqual(start, -1, `GlobeTerrain.wgsl has no fn ${name}`);
+  const open = stripped.indexOf("{", start);
+  assert.notEqual(open, -1, `fn ${name} has no body`);
+  let depth = 0;
+  for (let i = open; i < stripped.length; i++) {
+    if (stripped[i] === "{") {
+      depth++;
+    } else if (stripped[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        return stripped.slice(open + 1, i);
+      }
+    }
+  }
+  throw new Error(`fn ${name} has an unbalanced body`);
+}
+
+/**
+ * Constant-folds a WGSL condition to `true`, `false`, or `null` (not decidable
+ * without running the shader). Deliberately narrow: it folds only LITERAL
+ * shapes, and answers `null` for everything else, so an ordinary runtime guard
+ * is never mistaken for a dead one.
+ *
+ * LIMIT, stated, because `null` reads as LIVE at the call site: a guard on a
+ * named `const` flag, a relational fold (`1 > 2`), a disjunction
+ * (`false || false`), a non-numeric equality (`false == true`), or parens
+ * around a whole conjunction (`(false && true)`) all fold to `null` and so
+ * read as REACHED. Widening the literal set does not close the class — the
+ * shape real code disables with is a named flag, and that needs declaration
+ * resolution rather than folding. Gate `G PICK` on Edge covers the residue.
+ */
+function foldWgslCondition(condition) {
+  let text = condition.replace(/\s+/g, " ").trim();
+  // Normalise the literal-only spellings of a constant before folding, so a
+  // pair of parentheses, a negation, or a comparison of two numeric literals
+  // cannot smuggle an inert guard past this. Still deliberately narrow: only
+  // operands that contain NO identifier are rewritten, so an ordinary runtime
+  // guard is never mistaken for a dead one. Bounded at 8 passes.
+  for (let pass = 0; pass < 8; pass++) {
+    const previous = text;
+    text = text
+      .replace(/\(\s*(true|false)\s*\)/g, "$1")
+      .replace(/!\s*true\b/g, "false")
+      .replace(/!\s*false\b/g, "true")
+      .replace(/\b(\d+)\s*(==|!=)\s*(\d+)\b/g, (_all, a, op, b) =>
+        (op === "==") === (Number(a) === Number(b)) ? "true" : "false",
+      )
+      .trim();
+    if (text === previous) {
+      break;
+    }
+  }
+  if (/\|\|/.test(text)) {
+    return null;
+  }
+  if (
+    text === "false" ||
+    /^false\s*&&/.test(text) ||
+    /&&\s*false\b/.test(text)
+  ) {
+    return false;
+  }
+  if (text === "true") {
+    return true;
+  }
+  return null;
+}
+
+/**
+ * Whether `needle` is REACHED inside `body`, rather than merely present in it.
+ *
+ * Walks the body tracking brace depth and the `if` / `else` guard each block
+ * sits under; a block whose guard constant-folds to false is inert and so is
+ * everything inside it. Throws when the needle is absent, so deletion is a
+ * loud failure and inertness is a `false` — the two ways a statement stops
+ * running, both caught, neither silently.
+ *
+ * LIMIT, stated: it models `if`/`else` guards only. A statement made
+ * unreachable some other way (an early `return` above it, a loop bound that
+ * cannot be entered) reads as live here; the naga leg and the Edge probe are
+ * what cover those.
+ */
+function wgslStatementIsLive(body, needle) {
+  assert.ok(
+    body.includes(needle),
+    `GlobeTerrain.wgsl no longer contains the statement: ${needle}`,
+  );
+  const dead = [];
+  let pendingDead = null;
+  let lastClosedDead = null;
+  for (let i = 0; i < body.length; i++) {
+    if (body.startsWith(needle, i)) {
+      return !dead.some(Boolean);
+    }
+    const char = body[i];
+    if (char === "{") {
+      dead.push(pendingDead === true);
+      pendingDead = null;
+      continue;
+    }
+    if (char === "}") {
+      lastClosedDead = dead.pop() === true;
+      continue;
+    }
+    // `else` / `else if`: the previous block's guard decided this one's.
+    if (
+      body.startsWith("else", i) &&
+      !/[A-Za-z0-9_]/.test(body[i - 1] ?? " ") &&
+      !/[A-Za-z0-9_]/.test(body[i + 4] ?? " ")
+    ) {
+      pendingDead = lastClosedDead === false ? null : false;
+      i += 3;
+      continue;
+    }
+    if (
+      body.startsWith("if", i) &&
+      !/[A-Za-z0-9_]/.test(body[i - 1] ?? " ") &&
+      !/[A-Za-z0-9_]/.test(body[i + 2] ?? " ")
+    ) {
+      const open = body.indexOf("(", i);
+      assert.notEqual(open, -1, "an `if` with no condition");
+      let depth = 0;
+      let close = -1;
+      for (let j = open; j < body.length; j++) {
+        if (body[j] === "(") depth++;
+        else if (body[j] === ")") {
+          depth--;
+          if (depth === 0) {
+            close = j;
+            break;
+          }
+        }
+      }
+      assert.notEqual(close, -1, "an `if` with an unbalanced condition");
+      const folded = foldWgslCondition(body.slice(open + 1, close));
+      pendingDead = folded === false ? true : null;
+      i = close;
+      continue;
+    }
+  }
+  throw new Error(`unreachable: ${needle} was found but not walked to`);
+}
+
+const PICK_MAIN_BODY = wgslFunctionBody("fragmentPickMain");
+const PICK_OVER_BODY = wgslFunctionBody("vectorPickColorOver");
+const POLYLINE_RENDER_BODY = wgslFunctionBody("vectorPolylineRender");
+
+/** The pick entry point runs the drape search for its index side effect. */
+const WGSL_PICK_SEARCH_LIVE = wgslStatementIsLive(
+  PICK_MAIN_BODY,
+  "_ = vectorPolylineRender(",
+);
+/** …and writes the composite's answer rather than the globe's own colour. */
+const WGSL_PICK_COMPOSITE_LIVE = wgslStatementIsLive(
+  PICK_MAIN_BODY,
+  "out.color = vectorPickColorOver(camera.pickColor);",
+);
+/** The colour path publishes the nearest primitive the pick path reads. */
+const WGSL_PICK_INDEX_PUBLISHED = wgslStatementIsLive(
+  POLYLINE_RENDER_BODY,
+  "vectorPickPrimitiveIndex = i32(nearestPrimitiveIndex);",
+);
+// WHERE the shader publishes the index is as load-bearing as WHETHER it does.
+// Above the coverage early-out, every fragment on a vector-carrying tile
+// publishes `nearestPrimitiveIndex` — 0u for an empty cell — so the whole tile
+// picks the first primitive while the COLOR pass stays byte-identical.
+// `VectorCommon.glsl` publishes below its own early-out; parse the position
+// rather than assume it.
+const WGSL_PICK_PUBLISHED_BELOW_COVERAGE_EARLY_OUT = (() => {
+  const publishAt = POLYLINE_RENDER_BODY.indexOf(
+    "vectorPickPrimitiveIndex = i32(nearestPrimitiveIndex);",
+  );
+  const earlyOutAt = POLYLINE_RENDER_BODY.indexOf(
+    "if (nearestEdgeDistance > coverageRadius) {",
+  );
+  // `indexOf` answers -1, and -1 COMPARES as a number: an anchor that was
+  // reworded or reformatted would quietly decide this flag rather than fail.
+  // Both anchors must be present for the comparison to carry any meaning.
+  assert.notEqual(
+    publishAt,
+    -1,
+    "vectorPolylineRender no longer publishes the pick index",
+  );
+  assert.notEqual(
+    earlyOutAt,
+    -1,
+    "vectorPolylineRender's coverage early-out is no longer spelled " +
+      "`if (nearestEdgeDistance > coverageRadius) {` — re-derive this anchor",
+  );
+  return publishAt > earlyOutAt;
+})();
+/** The composite answers with the covering primitive's own pick colour. */
+const WGSL_PICK_RETURNS_PRIMITIVE_COLOR = wgslStatementIsLive(
+  PICK_OVER_BODY,
+  "return pickColor;",
+);
+/**
+ * A zero pick word leaves the surface's own answer standing. Anchored on the
+ * guard itself because both of this function's fallbacks return the same
+ * expression; removing or falsifying the guard changes this text, and
+ * `wgslStatementIsLive` throws on a needle that is no longer there.
+ */
+const WGSL_PICK_ZERO_FALLS_BACK = wgslStatementIsLive(
+  PICK_OVER_BODY,
+  "if (all(pickColor == vec4<f32>(0.0)))",
+);
 
 // ═══════════════════════════════════════════════════════════════════════
 // The coverage radius — a value the two backends deliver by DIFFERENT
@@ -561,6 +853,7 @@ function glslVectorPolylineRender(
   screenFromUv,
   baseColor,
   coverageRadius = DEFAULT_COVERAGE_RADIUS,
+  pickOut = null,
 ) {
   const grid = data.polylineGridCellIndices;
   const gridWidth = grid[0];
@@ -588,6 +881,11 @@ function glslVectorPolylineRender(
   // vertex, and compositing each in turn darkens the joints.
   let nearestEdgeDistance = 1.0e30;
   let nearestTexel = -1;
+  // `VectorCommon.glsl` keeps the primitive INDEX in `vectorPickPrimitiveIndex`
+  // and re-addresses the pick texture with it; the texel above is the same
+  // index through `vectorIndexToUv`, since the pick texture is sized from the
+  // same primitive count.
+  let nearestPrimitive = -1;
 
   for (let i = indexStart; i < indexEnd; i++) {
     const st = texelIndex(i, segmentTextureWidth);
@@ -610,6 +908,7 @@ function glslVectorPolylineRender(
     if (!GLSL_SELECTS_NEAREST || edgeDistance < nearestEdgeDistance) {
       nearestEdgeDistance = edgeDistance;
       nearestTexel = pt;
+      nearestPrimitive = primitiveIndex;
     }
 
     // Saturated — no further segment can raise coverage.
@@ -627,6 +926,13 @@ function glslVectorPolylineRender(
       ? 1 - smoothstep(-coverageRadius, coverageRadius, nearestEdgeDistance)
       : 1;
 
+  // `VectorCommon.glsl` line 226: the pick index is published HERE, after the
+  // coverage early-outs, so a fragment the stroke does not reach leaves the
+  // -1 that `vectorPickColorOver` reads as "no vector over this fragment".
+  if (pickOut !== null) {
+    pickOut.primitiveIndex = nearestPrimitive;
+  }
+
   return alphaComposite(
     [
       colorBytes[nearestTexel * 4] / 255,
@@ -643,6 +949,31 @@ function glslVectorPolylineRender(
 // `mutate` lets a test re-introduce a specific defect in the reader.
 // ═══════════════════════════════════════════════════════════════════════
 
+/**
+ * `GlobeTerrain.wgsl::vectorPrimitiveRecord` — the ONE place the shader
+ * addresses the primitives run, modelled the same way: one stride, applied
+ * once. `mutate.strideTwo` restores the pre-pick stride in the READER only,
+ * which is what a WGSL constant left at 2 while the packer moved to 3 does.
+ * `mutate.pickRunShifted` reads the pick word of the NEXT primitive, the
+ * layout mutation the proof bar asks for.
+ */
+function wgslPrimitiveRecord(words, floats, primitivesBase, index, mutate) {
+  const stride = mutate.strideTwo ? 2 : WGSL_PRIMITIVE_STRIDE;
+  // Both biases come from the shader: `WGSL_RECORD_INDEX_BIAS` from the
+  // record's base address, `mutate.pickRunShifted` from a test that wants the
+  // same defect without editing the file.
+  const bias = WGSL_RECORD_INDEX_BIAS + (mutate.pickRunShifted ? 1 : 0);
+  const p = primitivesBase + (index + bias) * stride;
+  return {
+    signedWidth: floats[p],
+    color: (words[p + WGSL_COLOR_WORD_OFFSET] ?? 0) >>> 0,
+    pickColor:
+      stride > WGSL_PICK_WORD_OFFSET
+        ? (words[p + WGSL_PICK_WORD_OFFSET] ?? 0) >>> 0
+        : 0,
+  };
+}
+
 function wgslVectorPolylineRender(
   words,
   uv,
@@ -650,6 +981,7 @@ function wgslVectorPolylineRender(
   baseColor,
   mutate = {},
   coverageRadius = DEFAULT_COVERAGE_RADIUS,
+  pickOut = null,
 ) {
   if (words === null) {
     return baseColor;
@@ -714,8 +1046,13 @@ function wgslVectorPolylineRender(
     const primitiveIndex = mutate.dropIndirection
       ? Math.min(i, primitiveCount - 1)
       : Math.min(words[segmentPrimitiveBase + i], primitiveCount - 1);
-    const p = primitivesBase + primitiveIndex * 2;
-    const lineWidth = floats[p];
+    const lineWidth = wgslPrimitiveRecord(
+      words,
+      floats,
+      primitivesBase,
+      primitiveIndex,
+      mutate,
+    ).signedWidth;
     const halfWidth = mutate.fullWidth
       ? Math.abs(lineWidth)
       : Math.abs(lineWidth) * WGSL_HALF_WIDTH_FACTOR;
@@ -735,6 +1072,16 @@ function wgslVectorPolylineRender(
     }
   }
 
+  // The shader's publish sits BELOW its own coverage early-out. When it does
+  // not, an uncovered fragment publishes `nearestPrimitiveIndex` anyway — 0 for
+  // an empty cell — and the whole tile answers with the first primitive while
+  // the colour it returns is unchanged. Model whichever position the source has.
+  if (pickOut !== null && !WGSL_PICK_PUBLISHED_BELOW_COVERAGE_EARLY_OUT) {
+    pickOut.primitiveIndex = WGSL_PICK_INDEX_PUBLISHED
+      ? nearestPrimitiveIndex
+      : -1;
+  }
+
   if (nearestEdgeDistance > radius) {
     return baseColor;
   }
@@ -742,8 +1089,23 @@ function wgslVectorPolylineRender(
   const coverage =
     radius > 0 ? 1 - smoothstep(-radius, radius, nearestEdgeDistance) : 1;
 
-  const p = primitivesBase + nearestPrimitiveIndex * 2;
-  const packed = words[p + 1] >>> 0;
+  // `vectorPickPrimitiveIndex = i32(nearestPrimitiveIndex)` — modelled HERE,
+  // below the coverage early-out, only while the shader publishes it here too;
+  // the site above carries the other position. WHETHER it publishes at all is
+  // still `WGSL_PICK_INDEX_PUBLISHED`, and the GLSL publishes at this point.
+  if (pickOut !== null && WGSL_PICK_PUBLISHED_BELOW_COVERAGE_EARLY_OUT) {
+    pickOut.primitiveIndex = WGSL_PICK_INDEX_PUBLISHED
+      ? nearestPrimitiveIndex
+      : -1;
+  }
+
+  const packed = wgslPrimitiveRecord(
+    words,
+    floats,
+    primitivesBase,
+    nearestPrimitiveIndex,
+    mutate,
+  ).color;
   // unpack4x8unorm: low byte first.
   return alphaComposite(
     [
@@ -790,6 +1152,15 @@ function buildBakedTile() {
     colors: [
       new Uint8Array([255, 32, 8, 255, 16, 200, 64, 128, 4, 8, 250, 200]),
     ],
+    // Pick ids the way `VectorPipeline._writePickColor` writes them:
+    // `Color.fromRgba(key)` little-endian, so alpha is the key's HIGH BYTE and
+    // payload, never an opacity. The three keys are 0x01020304, 0x00000101 and
+    // 0x01000000 — the last a multiple of 2^24, whose RGB is all zero, so a
+    // reader that dropped alpha would resolve it to "nothing picked" while the
+    // pick word itself is non-zero. All three are distinct and non-zero, which
+    // is what makes a shifted or mis-strided read observable rather than a
+    // coincidence.
+    pickColors: [new Uint8Array([4, 3, 2, 1, 1, 1, 0, 0, 0, 0, 0, 1])],
     // `packPolylineGrid` pads each segment's cell footprint by its half-width
     // converted to tile UV, and 1.145 made that conversion read these two
     // fields off the tile data (`_halfWidthToTileUv`). Without them the padding
@@ -958,6 +1329,19 @@ test("A1 — the TS header constants and the WGSL header constants agree", () =>
   // Eight header words, and the placeholder is exactly that many.
   assert.equal(VECTOR_TILE_HEADER_WORDS, 8);
   assert.equal(VECTOR_TILE_PLACEHOLDER_BYTES, 32);
+  // The primitives-run stride is one number, declared on both sides of the
+  // matched pair. The behavioural leg is P2/M-p2 below; this is the cheap
+  // read that names which side moved when they disagree.
+  assert.equal(
+    VECTOR_PRIMITIVE_STRIDE,
+    WGSL_PRIMITIVE_STRIDE,
+    "the TS packer and the WGSL reader stride the primitives run differently",
+  );
+  assert.equal(
+    VECTOR_PRIMITIVE_STRIDE,
+    3,
+    "signed width, material colour, pick colour",
+  );
 });
 
 test("A2 — every run the header points at is inside the packed array", () => {
@@ -995,7 +1379,8 @@ test("A2 — every run the header points at is inside the packed array", () => {
   );
   assert.equal(
     words.length,
-    words[VECTOR_TILE_PRIMITIVES_BASE] + primitiveCount * 2,
+    words[VECTOR_TILE_PRIMITIVES_BASE] +
+      primitiveCount * VECTOR_PRIMITIVE_STRIDE,
   );
 
   // Cell end offsets are monotone and never exceed segmentCount — the loop
@@ -1483,6 +1868,414 @@ test("M5 — dropping the segment→primitive indirection is DETECTED", () => {
     differences.length > 0,
     "a segment must resolve its material through the packed primitive index",
   );
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// P. THE PICK COMPOSITE.
+//
+// `scene.pick` over a draped line returns the line on WebGL and the globe (or
+// nothing) on WebGPU, because `fragmentPickMain` wrote `camera.pickColor`
+// unconditionally and the primitives run had no pick word to write instead.
+// The fix is one word per primitive plus a composite, and this group is the
+// equivalence proof over both.
+//
+// The ORACLE is `VectorCommon.glsl::vectorPickColorOver` over the raw
+// `pickColors` tables, addressed the way `texelFetch` addresses the pick
+// texture. The SUBJECT is `GlobeTerrain.wgsl::vectorPickColorOver` over the
+// REAL packer's words, strided by the constant read out of the shader and
+// gated on whether each of its three statements is REACHED. Both are handed
+// the same surface pick colour, so what is compared is the composite itself
+// and not the two backends' different ideas of what the surface answers with
+// (that difference is deliberate, and P4 is where it is asserted).
+// ═══════════════════════════════════════════════════════════════════════
+
+// A surface pick colour that is none of the fixture's three pick colours and
+// is not zero, so "the surface answered" and "a primitive answered" can never
+// be confused for one another.
+const SURFACE_PICK = [0.9, 0.1, 0.2, 1.0];
+
+/** `VectorCommon.glsl::vectorPickColorOver` over the raw tables. */
+function glslVectorPickColorOver(
+  data,
+  uv,
+  screenFromUv,
+  surfacePick,
+  coverageRadius = DEFAULT_COVERAGE_RADIUS,
+) {
+  const pick = { primitiveIndex: -1 };
+  glslVectorPolylineRender(
+    data,
+    uv,
+    screenFromUv,
+    [0, 0, 0, 0],
+    coverageRadius,
+    pick,
+  );
+  if (pick.primitiveIndex < 0) {
+    return surfacePick;
+  }
+  const [primitiveTextureWidth] = nextPowerOfTwoSize(data.primitiveCount);
+  const texel = texelIndex(pick.primitiveIndex, primitiveTextureWidth);
+  const bytes = concatBytes(data.pickColors ?? []);
+  return [
+    (bytes[texel * 4] ?? 0) / 255,
+    (bytes[texel * 4 + 1] ?? 0) / 255,
+    (bytes[texel * 4 + 2] ?? 0) / 255,
+    (bytes[texel * 4 + 3] ?? 0) / 255,
+  ];
+}
+
+/**
+ * `GlobeTerrain.wgsl::vectorPickColorOver` over the packed words.
+ *
+ * Every statement the shader needs to reach for this to do anything is a
+ * liveness flag, so an `if (false && …)` mutant collapses this to "the surface
+ * answered" — which is precisely the pre-fix behaviour, and precisely what the
+ * comparison against the GLSL oracle then fails on.
+ */
+function wgslVectorPickColorOver(
+  words,
+  uv,
+  screenFromUv,
+  surfacePick,
+  mutate = {},
+  coverageRadius = DEFAULT_COVERAGE_RADIUS,
+) {
+  if (words === null) {
+    // A tile with nothing draped binds the all-zero placeholder; the search
+    // early-outs on its zero gridWidth and the globe's own colour stands.
+    return surfacePick;
+  }
+  if (!WGSL_PICK_SEARCH_LIVE || !WGSL_PICK_COMPOSITE_LIVE) {
+    return surfacePick;
+  }
+  const pick = { primitiveIndex: -1 };
+  wgslVectorPolylineRender(
+    words,
+    uv,
+    screenFromUv,
+    [0, 0, 0, 0],
+    mutate,
+    coverageRadius,
+    pick,
+  );
+  if (pick.primitiveIndex < 0) {
+    return surfacePick;
+  }
+  const floats = new Float32Array(words.buffer, words.byteOffset, words.length);
+  const packed = wgslPrimitiveRecord(
+    words,
+    floats,
+    words[SHADER_HEADER.primitivesBase],
+    pick.primitiveIndex,
+    mutate,
+  ).pickColor;
+  if (WGSL_PICK_ZERO_FALLS_BACK && packed === 0) {
+    return surfacePick;
+  }
+  if (!WGSL_PICK_RETURNS_PRIMITIVE_COLOR) {
+    return surfacePick;
+  }
+  // unpack4x8unorm: low byte first, alpha included as payload.
+  return [
+    (packed & 0xff) / 255,
+    ((packed >>> 8) & 0xff) / 255,
+    ((packed >>> 16) & 0xff) / 255,
+    ((packed >>> 24) & 0xff) / 255,
+  ];
+}
+
+function compareBackendsPick(baked, words, options = {}) {
+  const radius = options.coverageRadius ?? DEFAULT_COVERAGE_RADIUS;
+  const differences = [];
+  for (const uv of sampleRaster()) {
+    const expected = glslVectorPickColorOver(
+      baked,
+      uv,
+      SCREEN_FROM_UV,
+      SURFACE_PICK,
+      radius,
+    );
+    const actual = options.identity
+      ? SURFACE_PICK
+      : wgslVectorPickColorOver(
+          options.words ?? words,
+          uv,
+          SCREEN_FROM_UV,
+          SURFACE_PICK,
+          options.mutate ?? {},
+          radius,
+        );
+    for (let c = 0; c < 4; c++) {
+      if (Math.abs(expected[c] - actual[c]) > 1e-6) {
+        differences.push({ uv, channel: c, expected, actual });
+        break;
+      }
+    }
+  }
+  return differences;
+}
+
+test("P0 — every statement the pick composite needs is REACHED, not merely present", () => {
+  // Read separately from the model so a red here names WHICH statement went
+  // inert, instead of leaving that to be inferred from a raster diff.
+  assert.ok(
+    WGSL_PICK_SEARCH_LIVE,
+    "fragmentPickMain no longer runs the drape search",
+  );
+  assert.ok(
+    WGSL_PICK_COMPOSITE_LIVE,
+    "fragmentPickMain no longer writes the composite's answer",
+  );
+  assert.ok(
+    WGSL_PICK_INDEX_PUBLISHED,
+    "vectorPolylineRender no longer publishes the nearest primitive",
+  );
+  assert.ok(
+    WGSL_PICK_RETURNS_PRIMITIVE_COLOR,
+    "vectorPickColorOver no longer answers with the primitive's pick colour",
+  );
+  // The globe's own answer is what a fragment with no vector over it keeps,
+  // and it must be the backend's `camera.pickColor` — the tail
+  // `Globe.beginFrame` zeroes unless `globe.pickable`. A composite that
+  // hard-coded a colour here would take that decision away from the globe.
+  assert.match(
+    wgsl,
+    /out\.color = vectorPickColorOver\(camera\.pickColor\);/,
+    "the pick entry must hand the composite the globe's own pick colour",
+  );
+});
+
+test("P1 — the WGSL pick composite matches the GLSL pick composite across the raster", () => {
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  const differences = compareBackendsPick(baked, words);
+  assert.equal(
+    differences.length,
+    0,
+    `pick composites disagreed at ${differences.length} sample(s); first: ${JSON.stringify(differences[0])}`,
+  );
+});
+
+test("P2 — the comparison is not vacuous: several primitives actually answer", () => {
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  let answered = 0;
+  const seen = new Set();
+  for (const uv of sampleRaster()) {
+    const out = wgslVectorPickColorOver(
+      words,
+      uv,
+      SCREEN_FROM_UV,
+      SURFACE_PICK,
+    );
+    if (out.some((v, i) => Math.abs(v - SURFACE_PICK[i]) > 1e-6)) {
+      answered++;
+      seen.add(out.map((v) => v.toFixed(4)).join(","));
+    }
+  }
+  assert.ok(answered > 20, `only ${answered} of 576 samples picked a vector`);
+  assert.ok(
+    seen.size >= 2,
+    "the fixture must return more than one primitive's pick colour",
+  );
+});
+
+test("M-p0 — a pick pass that still writes only the globe's colour is DETECTED", () => {
+  // The pre-fix behaviour, as behaviour: `fragmentPickMain` answers with
+  // `camera.pickColor` everywhere. This is the shape the inertness mutant
+  // (`if (false && …)` around the composite) collapses the shader to.
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  const differences = compareBackendsPick(baked, words, { identity: true });
+  assert.ok(
+    differences.length > 0,
+    "a globe that never composites a draped pick colour must NOT compare equal to WebGL",
+  );
+});
+
+test("M-p1 — shifting the pick run by one primitive is DETECTED", () => {
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  const differences = compareBackendsPick(baked, words, {
+    mutate: { pickRunShifted: true },
+  });
+  assert.ok(
+    differences.length > 0,
+    "the pick word's offset inside the primitive record must be load-bearing",
+  );
+});
+
+test("M-p2 — a stride left at 2 on the reader side is DETECTED", () => {
+  // The packer strides by the TS constant; the reader strides by the WGSL
+  // one. This is the two of them disagreeing — which is what leaving either
+  // declaration behind produces, and why the pair cannot be pinned by an
+  // equality assertion alone.
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  const differences = compareBackendsPick(baked, words, {
+    mutate: { strideTwo: true },
+  });
+  assert.ok(
+    differences.length > 0,
+    "reading the primitives run at the pre-pick stride must be caught",
+  );
+  // The colour composite goes wrong too — a mis-strided run mis-addresses
+  // every word in it, not only the one that was added.
+  const colorDifferences = compareBackends(baked, words, {
+    mutate: { strideTwo: true },
+  });
+  assert.ok(
+    colorDifferences.length > 0,
+    "a mis-strided primitives run must break the colour composite as well",
+  );
+});
+
+test("M-p3 — a BGRA pick-colour packing is DETECTED", () => {
+  // `unpack4x8unorm` is low-byte-first, and a pick colour is a packed KEY:
+  // a reversed byte order does not merely tint the answer, it resolves to a
+  // different object or to none. Mirrors M3 for the material colour.
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  const mutated = Uint32Array.from(words);
+  const primitivesBase = mutated[VECTOR_TILE_PRIMITIVES_BASE];
+  const primitiveCount = mutated[VECTOR_TILE_PRIMITIVE_COUNT];
+  for (let i = 0; i < primitiveCount; i++) {
+    const p = primitivesBase + i * VECTOR_PRIMITIVE_STRIDE + 2;
+    const packed = mutated[p] >>> 0;
+    const r = packed & 0xff;
+    const g = (packed >>> 8) & 0xff;
+    const b = (packed >>> 16) & 0xff;
+    const a = (packed >>> 24) & 0xff;
+    mutated[p] = (b | (g << 8) | (r << 16) | (a << 24)) >>> 0;
+  }
+  const differences = compareBackendsPick(baked, words, { words: mutated });
+  assert.ok(
+    differences.length > 0,
+    "pick-channel order drift between packer and unpack4x8unorm must be caught",
+  );
+});
+
+test("M-p4 — publishing the pick index ABOVE the coverage early-out is DETECTED", () => {
+  // Colour-invisible: every uncovered fragment on a vector-carrying tile would
+  // answer `scene.pick` with primitive 0 while the rendered image is unchanged.
+  assert.ok(
+    WGSL_PICK_PUBLISHED_BELOW_COVERAGE_EARLY_OUT,
+    "vectorPolylineRender publishes the pick index above its coverage early-out",
+  );
+  // The GLSL oracle makes the same ordering, so this is parity, not a rule
+  // invented here.
+  assert.ok(
+    glslCommon.indexOf("vectorPickPrimitiveIndex = nearestPrimitiveIndex;") >
+      glslCommon.indexOf("if (nearestEdgeDistance > vectorCoverageRadius)"),
+    "the GLSL oracle no longer publishes below its own coverage early-out",
+  );
+});
+
+test("P3 — a tile with nothing draped answers exactly as it did before the pick word existed", () => {
+  // The per-tile opt-in, as behaviour. A tile with no vector data packs to
+  // null and binds the shared placeholder, so the pick pass writes the globe's
+  // own colour and nothing else — byte-identical to the unconditional
+  // `out.color = camera.pickColor` this replaced.
+  const empty = packVectorTileWords({});
+  assert.equal(empty, null, "an empty bake must still pack to the placeholder");
+  for (const uv of sampleRaster()) {
+    const out = wgslVectorPickColorOver(
+      empty,
+      uv,
+      SCREEN_FROM_UV,
+      SURFACE_PICK,
+    );
+    assert.deepEqual(out, SURFACE_PICK);
+  }
+  // And inside a vector-carrying tile, a fragment the stroke does not reach
+  // gets the same answer. The colour assertion below is what proves the sample
+  // really is off every stroke, rather than assuming it.
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  const missed = [0.999, 0.001];
+  const color = wgslVectorPolylineRender(
+    words,
+    missed,
+    SCREEN_FROM_UV,
+    BASE,
+    {},
+  );
+  assert.deepEqual(color, BASE, "the sample must be off every stroke");
+  assert.deepEqual(
+    wgslVectorPickColorOver(words, missed, SCREEN_FROM_UV, SURFACE_PICK),
+    SURFACE_PICK,
+    "a fragment with no vector over it must keep the globe's own pick colour",
+  );
+});
+
+test("P4 — a primitive with no pick id leaves the globe's own answer standing", () => {
+  // The one place the two backends deliberately differ, and the reason.
+  //
+  // `VectorPipeline._writePickColor` writes `Color.fromRgba(0)` — four zero
+  // bytes — for a collection built without `allowPicking`, and for one frame
+  // after a bake that ran before `BufferPrimitiveCollection._updatePickIds`
+  // did. WebGL composites those zeros verbatim, but it can afford to: the
+  // surface colour it composites them over is the literal `vec4(0.0)` that
+  // `GlobeSurfaceTileProviderRendering` writes into `command.pickId`, so both
+  // answers are "nothing" and the difference is unobservable.
+  //
+  // This backend hands the composite `camera.pickColor`, which is the globe's
+  // own id when `globe.pickable` is set. Compositing a zero over that would
+  // punch a hole in the globe's answer that nothing asked for, so a zero pick
+  // word is read as "this primitive did not opt in" instead. The backends can
+  // only disagree here when `globe.pickable` is true — a fork-only flag the
+  // WebGL globe path has never honored ("Currently honored by the WebGPU
+  // backend only", Globe.js).
+  const baked = buildBakedTile();
+  baked.pickColors = [new Uint8Array(baked.primitiveCount * 4)];
+  const words = packVectorTileWords(baked);
+  let covered = 0;
+  for (const uv of sampleRaster()) {
+    const color = wgslVectorPolylineRender(words, uv, SCREEN_FROM_UV, BASE, {});
+    if (color.every((v, i) => Math.abs(v - BASE[i]) <= 1e-6)) {
+      continue;
+    }
+    covered++;
+    assert.deepEqual(
+      wgslVectorPickColorOver(words, uv, SCREEN_FROM_UV, SURFACE_PICK),
+      SURFACE_PICK,
+      `a drawn but unpickable primitive answered at ${JSON.stringify(uv)}`,
+    );
+  }
+  assert.ok(covered > 20, `only ${covered} samples were actually draped`);
+  // A bake old enough to carry no pickColors at all packs the same zeros.
+  delete baked.pickColors;
+  const wordsWithoutPickRun = packVectorTileWords(baked);
+  const primitivesBase = wordsWithoutPickRun[VECTOR_TILE_PRIMITIVES_BASE];
+  for (let i = 0; i < baked.primitiveCount; i++) {
+    assert.equal(
+      wordsWithoutPickRun[primitivesBase + i * VECTOR_PRIMITIVE_STRIDE + 2],
+      0,
+      "a bake without pick colours must pack a zero pick word, not garbage",
+    );
+  }
+});
+
+test("P5 — the pick word carries all four bytes of the id, alpha included", () => {
+  // The pick colour is a packed uint32 KEY (`GraphicsContext#createPickId` →
+  // `Color.fromRgba`), so alpha is the key's high byte. The fixture's third id
+  // is 0x01000000, whose r, g and b are all zero: a packer that treated alpha
+  // as an opacity — forcing it to 255, or dropping it — would turn that id
+  // into a different one, and a reader that ignored it would resolve it to
+  // "nothing picked". The identity round trip through the real registry is
+  // `vector-draping-pick-identity.spec.mjs`; this is the packing half.
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  const primitivesBase = words[VECTOR_TILE_PRIMITIVES_BASE];
+  const expected = [0x01020304, 0x00000101, 0x01000000];
+  for (let i = 0; i < expected.length; i++) {
+    assert.equal(
+      words[primitivesBase + i * VECTOR_PRIMITIVE_STRIDE + 2] >>> 0,
+      expected[i] >>> 0,
+      `primitive ${i}'s pick word lost bits`,
+    );
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -2341,8 +3134,9 @@ test("D7 — GlobeTerrain.wgsl still passes naga validation with the vector path
       path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
     ),
   });
-  // naga enforces WGSL's uniformity rules, so this is what proves the hoisted
-  // derivatives are actually legal rather than merely plausible.
+  // D7 checks parse and resolution including `fragmentPickMain`; uniformity,
+  // Tint and pipeline creation are first proven on Edge, so gate G remains the
+  // first live check.
   assert.doesNotThrow(() => naga.validate_wgsl(expandDefines(wgsl, [])));
   assert.doesNotThrow(() =>
     naga.validate_wgsl(expandDefines(wgsl, ["GLOBE_IMAGERY_REDUCED"])),

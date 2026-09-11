@@ -12,11 +12,25 @@
  * buffer is BOUND, that the storage-buffer read reaches a real fragment, or
  * that the composite survives tile churn. Those are this probe's job.
  *
- * Vehicle: `scene.globe.vectorProvider` (the accessor is `Globe#vectorProvider`
- * → `Core/VectorProvider.js`; `GlobeSurfaceTileProvider.initialize` bakes one
- * `VectorTileData` per RENDERED tile, so a collection handed to the provider
- * drapes without ever entering `scene.primitives`). Two
- * `BufferPolylineCollection` primitives with deliberately asymmetric materials:
+ * Vehicle: `scene.primitives`, with a CLAMPING height reference. `Scene`'s
+ * `markVectorCollections` walks that subtree every frame and calls
+ * `vectorProvider.markForFrame` for each drapeable collection it finds, and
+ * `GlobeSurfaceTileProvider.initialize` then bakes one `VectorTileData` per
+ * RENDERED tile. That mark is PER-FRAME, not a registration: `_beginFrame`
+ * prunes every collection that was not marked again in the new frame
+ * (`Core/VectorProvider.js:242-256`), so the collection has to stay in
+ * `scene.primitives` for the whole run and a one-shot registration at setup
+ * could never have kept a drape alive. A clamped collection never draws itself
+ * (`BufferPrimitiveCollection#_isRendered` is false for a clamp), so the frames
+ * below still measure only the drape.
+ *
+ * (Until this batch these lanes called `scene.globe.vectorProvider.add(...)`,
+ * the pre-1.145 API. The CesiumJS 1.145 sync replaced it with `markForFrame`
+ * and there is no `add` on `VectorProvider` any more, so every lane threw and
+ * every gate here was unrunnable. Fixed with gate G, below.)
+ *
+ * Two `BufferPolylineCollection` primitives, `allowPicking: true`, with
+ * deliberately asymmetric materials:
  *
  *     primitive 0 — pure RED,  width  4 px, meridian lon -105.0
  *     primitive 1 — pure BLUE, width 16 px, meridian lon -104.0
@@ -52,6 +66,17 @@
  *                  is added and after it is removed (the placeholder early-out
  *                  claims to be free), and — when a baseline recorded on a
  *                  pre-change build is present — identical to that too.
+ *   G PICK         the C-05 acceptance. `scene.pick` on the thick line returns
+ *                  that line (primitive index 1) and on the thin one returns
+ *                  index 0, on BOTH backends; a pick one full stroke width to
+ *                  the side returns nothing on the default globe. With
+ *                  `globe.pickable` set — honored by WebGPU only — the same
+ *                  off-line point returns the Globe and the on-line point still
+ *                  returns the line, so the draped composite is an addition to
+ *                  the globe's own answer rather than a replacement for it.
+ *                  Asserting the INDEX is what makes a pick word read from the
+ *                  wrong record fail: a shifted or mis-strided pick run answers
+ *                  with the other primitive rather than with nothing.
  *
  * STRUCTURAL, never FAIL, when a leg cannot see its own subject: if the WebGL
  * reference lane itself draped nothing, gates B/C/D are measuring an empty
@@ -364,6 +389,10 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
   const LON_BLUE = -104.0;
   const LAT_SOUTH = 36.0;
   const LAT_NORTH = 41.0;
+  // Mid-line, well inside both meridians, and a lateral offset of one full
+  // stroke width of the THICK line — twice its 8 px half-extent.
+  const PICK_LAT = 38.5;
+  const PICK_OFFSET_PX = 16;
   const nadirView = () =>
     scene.camera.setView({
       destination: C.Cartesian3.fromDegrees(-104.5, 38.5, 700_000.0),
@@ -413,12 +442,29 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
   const freeB = captureNow();
   const determinismChanged = changedPixelCount(freeA.image, freeB.image);
 
-  // ── Drape. The collection is handed ONLY to the vector provider; adding it
-  // to `scene.primitives` would render undraped screen-space polylines and the
-  // probe would be measuring the wrong subject entirely.
+  // ── Drape. The collection goes into `scene.primitives` with a CLAMPING
+  // height reference, which is the only vehicle there is: `Scene`'s
+  // `markVectorCollections` walks that subtree each frame and calls
+  // `vectorProvider.markForFrame` for every drapeable collection it finds
+  // (`BufferPrimitiveCollection#heightReference`: "Draping requires that the
+  // collection has been added to Scene#primitives"). A clamped collection does
+  // not draw itself — `_isRendered` is false for a clamp — so what the frames
+  // below measure is still only the drape.
+  //
+  // This probe used to call `scene.globe.vectorProvider.add(collection)`, which
+  // was the API before the CesiumJS 1.145 sync replaced it with `markForFrame`.
+  // There is no `add` on `VectorProvider` at HEAD, so that line threw and every
+  // gate in this file has been unrunnable since the sync landed.
+  //
+  // `allowPicking` is what makes the pick leg have a subject:
+  // `BufferPrimitiveCollection#update` allocates a pick id per primitive only
+  // when it is set, and `VectorPipeline._writePickColor` bakes those ids into
+  // the per-primitive pick colours both backends composite in the pick pass.
   const collection = new C.BufferPolylineCollection({
     primitiveCountMax: 8,
     vertexCountMax: 1024,
+    allowPicking: true,
+    heightReference: C.HeightReference.CLAMP_TO_GROUND,
   });
   collection.add({
     positions: meridian(LON_RED),
@@ -434,7 +480,7 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
       width: 16,
     }),
   });
-  scene.globe.vectorProvider.add(collection);
+  scene.primitives.add(collection);
 
   await settleMs(3000);
   const nadirOn = captureNow();
@@ -466,8 +512,88 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
     nadirOnAfterChurn.image,
   );
 
+  // ── Pick (gate G). `scene.pick` at a canvas point ON the thick line's
+  // centreline, and at one a full stroke width to the side of it. The blue
+  // line is 16 px wide, so its half-extent is 8 px and a 16 px lateral offset
+  // is unambiguously off it while still being on the same tiles.
+  //
+  // Measured at the nadir view, where a meridian runs vertically down the
+  // screen, so a lateral offset is a pure +x step in canvas space.
+  nadirView();
+  await settleMs(1500);
+  renderNow();
+
+  const classifyPick = (picked) => {
+    if (picked === undefined || picked === null) return "none";
+    if (picked.collection === collection) return `vector:${picked.index}`;
+    if (picked.primitive === scene.globe || picked.id === scene.globe) {
+      return "globe";
+    }
+    return "other";
+  };
+  const pickAt = (longitude, offsetPixels) => {
+    const carto = C.Cartesian3.fromDegrees(longitude, PICK_LAT, 0.0);
+    const screen = scene.cartesianToCanvasCoordinates(carto);
+    if (!screen || !Number.isFinite(screen.x) || !Number.isFinite(screen.y)) {
+      return { resolved: false, why: `no canvas coordinate at ${longitude}` };
+    }
+    const point = new C.Cartesian2(
+      Math.round(screen.x + offsetPixels),
+      Math.round(screen.y),
+    );
+    if (
+      point.x < 0 ||
+      point.y < 0 ||
+      point.x >= canvas.clientWidth ||
+      point.y >= canvas.clientHeight
+    ) {
+      return {
+        resolved: false,
+        why: `pick point (${point.x}, ${point.y}) is off-canvas`,
+      };
+    }
+    let picked;
+    try {
+      picked = scene.pick(point);
+    } catch (error) {
+      return { resolved: false, why: `scene.pick threw: ${error.message}` };
+    }
+    return {
+      resolved: true,
+      x: point.x,
+      y: point.y,
+      what: classifyPick(picked),
+    };
+  };
+
+  // `globe.pickable` is false by default on both backends, which is the state
+  // every app starts in: a pick that misses the line must NOT come back as the
+  // draped primitive, and on the default globe it comes back as nothing.
+  const pick = {
+    globePickableDefault: scene.globe.pickable === true,
+    onThickLine: pickAt(LON_BLUE, 0),
+    offThickLine: pickAt(LON_BLUE, PICK_OFFSET_PX),
+    onThinLine: pickAt(LON_RED, 0),
+  };
+  // With the globe opted in, the same off-line point must answer "globe" —
+  // the draped composite must not have taken that answer away from it. The
+  // flag is honored by the WebGPU backend only (`Globe#pickable`), so the
+  // WebGL lane records what it says without being gated on it.
+  scene.globe.pickable = true;
+  await settleMs(600);
+  renderNow();
+  pick.onThickLinePickableGlobe = pickAt(LON_BLUE, 0);
+  pick.offThickLinePickableGlobe = pickAt(LON_BLUE, PICK_OFFSET_PX);
+  scene.globe.pickable = false;
+  await settleMs(600);
+
   // ── Removal → the vector-free globe must come back byte-identical.
+  // `VectorProvider#remove` drops the collection immediately and dirties its
+  // region; the primitive removal that follows destroys the collection, and
+  // the provider must not be holding a destroyed collection when it next
+  // reads a bounding volume.
   scene.globe.vectorProvider.remove(collection);
+  scene.primitives.remove(collection);
   await settleMs(3000);
   const freeC = captureNow();
   const removalChanged = changedPixelCount(freeA.image, freeC.image);
@@ -538,6 +664,7 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
     canvasSize: { width: canvas.width, height: canvas.height },
     determinismChanged,
     removalChanged,
+    pick,
     churnCycles,
     churnStability,
     // `blueRowRun` is a per-row array only the Jacobian leg needs; it is
@@ -845,6 +972,87 @@ async function main() {
   }
   console.log(`[F NON-REGRESS] ${fNotes.join("; ")}  ${verdict(gateF)}`);
 
+  // ── Gate G — draped-vector PICK, the C-05 acceptance.
+  //
+  // `scene.pick` over a draped line must return the LINE on both backends, and
+  // a pick one stroke width to the side of it must not. On the default globe
+  // (`globe.pickable` false, matching WebGL, where the globe has never had a
+  // pick id) the off-line answer is "nothing"; with the globe opted in it is
+  // the Globe, which the draped composite must not have taken away. That
+  // second leg is scored on WebGPU only — `Globe#pickable` is honored by this
+  // backend alone — and merely reported for WebGL.
+  //
+  // The primitives are added red-then-blue, so the thick blue line is index 1
+  // and the thin red one is index 0. Asserting the INDEX, not just "something
+  // was picked", is what makes a pick word read from the wrong record fail
+  // here: a shifted or mis-strided pick run answers with the other primitive.
+  let gateG = null;
+  let gDetail;
+  const pickLegs = [webgl, webgpu].map((lane) => ({
+    lane: lane.requested,
+    pick: lane.pick,
+  }));
+  const unresolved = pickLegs.filter(
+    (row) =>
+      !row.pick ||
+      !row.pick.onThickLine?.resolved ||
+      !row.pick.offThickLine?.resolved ||
+      !row.pick.onThinLine?.resolved,
+  );
+  if (!referenceDrew) {
+    gDetail = blindWhy;
+  } else if (unresolved.length > 0) {
+    gDetail =
+      `unresolved — ` +
+      unresolved
+        .map(
+          (row) =>
+            `${row.lane}: ${
+              row.pick?.onThickLine?.why ??
+              row.pick?.offThickLine?.why ??
+              row.pick?.onThinLine?.why ??
+              "no pick record"
+            }`,
+        )
+        .join("; ");
+  } else {
+    const rows = pickLegs.map((row) => {
+      const pick = row.pick;
+      const thickOk = pick.onThickLine.what === "vector:1";
+      const thinOk = pick.onThinLine.what === "vector:0";
+      const offOk = !pick.offThickLine.what.startsWith("vector:");
+      // On the default globe both backends must answer "nothing" off the line.
+      const offIsNothing = pick.offThickLine.what === "none";
+      // Opted in, the WebGPU globe must answer for itself; WebGL ignores the
+      // flag, so its value is reported and not gated.
+      const pickableOk =
+        row.lane !== "webgpu" ||
+        (pick.offThickLinePickableGlobe?.what === "globe" &&
+          pick.onThickLinePickableGlobe?.what === "vector:1");
+      return {
+        lane: row.lane,
+        thick: pick.onThickLine.what,
+        thin: pick.onThinLine.what,
+        off: pick.offThickLine.what,
+        offPickable: pick.offThickLinePickableGlobe?.what ?? "n/a",
+        thickPickable: pick.onThickLinePickableGlobe?.what ?? "n/a",
+        ok: thickOk && thinOk && offOk && offIsNothing && pickableOk,
+      };
+    });
+    gateG = rows.every((row) => row.ok);
+    gDetail =
+      `predicted on-thick=vector:1 on-thin=vector:0 off(+${16}px)=none, ` +
+      `and on webgpu with globe.pickable: off=globe on-thick=vector:1; measured ` +
+      rows
+        .map(
+          (row) =>
+            `${row.lane} thick=${row.thick} thin=${row.thin} off=${row.off} ` +
+            `[pickable: off=${row.offPickable} thick=${row.thickPickable}]`,
+        )
+        .join("; ");
+  }
+  console.log(`[G PICK]       ${gDetail}  ${verdict(gateG)}`);
+
   const manifestPath = path.join(OUT, "manifest.json");
   fs.writeFileSync(
     manifestPath,
@@ -863,7 +1071,7 @@ async function main() {
   console.log(`\nmanifest: ${manifestPath}`);
   console.log(`PNGs: ${OUT}/*.png`);
 
-  const gates = [gateA, gateB, gateC, gateD, gateE, gateF];
+  const gates = [gateA, gateB, gateC, gateD, gateE, gateF, gateG];
   const failed = gates.some((gate) => gate === false);
   const structural = gates.some((gate) => gate === null);
   console.log(

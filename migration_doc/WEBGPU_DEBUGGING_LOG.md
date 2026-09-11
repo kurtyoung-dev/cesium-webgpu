@@ -20636,3 +20636,79 @@ homed in `npm run test-visual-probe-contracts`. (Round 2 also grew
 `Tools/visual-regression/pick-visibility-matrix-verdicts.spec.mjs`,
 `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`,
 `migration_doc/DEBUGGING_GUIDE.md`. Seven files.
+
+## Lane Magor (wave S1, 2026-09-06) — C-05: draped vectors were invisible to `scene.pick` on WebGPU, and the probe that should have caught it could not run
+
+**Bug (Session S1.C-05).** `scene.pick` over a terrain-draped `BufferPolyline` returned the polyline
+on WebGL and the globe — or, on a default globe, nothing at all — on WebGPU. Hover highlight,
+click-select and `drillPick` through draped vectors were WebGL-only.
+
+**Files affected.** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUVectorTileResources.ts`.
+
+**Root cause.** Two halves of one omission, neither of them a regression.
+
+1. `fragmentPickMain` wrote `out.color = camera.pickColor;` unconditionally. There was no composite
+   step at all — the WGSL had no twin of `VectorCommon.glsl::vectorPickColorOver`, and no twin of the
+   `int vectorPickPrimitiveIndex = -1` global that feeds it.
+2. The storage buffer had nothing to composite. `packVectorTileWords` packed the primitives run as
+   `primitiveCount * 2` words — signed width, material colour — and ignored the bake's `pickColors`
+   entirely. Those pick colours have been produced on the CPU since 1.145
+   (`VectorPipeline._writePickColor`, `Core/VectorPipeline.js:895`, called at `:200` and `:430`,
+   concatenated per collection at `:292`/`:525`) and realized on WebGL as `pickColorTexture` at
+   `:719-730`. WebGPU paid for them and read none of them.
+
+**Fix.** The primitives run went 2 → 3 words with the pick colour last, low-byte-first (the order
+`unpack4x8unorm` returns as `r`), packed from the existing `pickColors` run. `VECTOR_PRIMITIVE_STRIDE`
+is declared once per side and every shader-side read of the run goes through one
+`vectorPrimitiveRecord` helper. `vectorPolylineRender` publishes the nearest primitive into a
+`var<private> vectorPickPrimitiveIndex` at exactly the point the GLSL publishes its own, and a new
+`vectorPickColorOver(surfacePickColor)` reads it. `fragmentPickMain` runs the drape search for that
+side effect — the twin of WebGL running its whole colour FS in the pick variant and then evaluating
+`command.pickId` — and writes `vectorPickColorOver(camera.pickColor)`.
+
+A zero pick word leaves the surface's own colour standing rather than compositing zeros over it. That
+is the one deliberate divergence from the GLSL and it is only observable when `globe.pickable` is set,
+a fork-only flag WebGL has never honored; the reason is that `camera.pickColor` is the globe's own id
+there, and a primitive with no pick id has not asked to shadow it.
+
+**Two things the diagnosis had to correct before the fix could be trusted.**
+
+**(a) The pick-entry docstring described a dispatch gate that does not exist.** `GlobeTerrain.wgsl`
+lines 3948-3962 said "The globe pick command is dispatched only when `globe.pickable` is set — the
+globe stays out of the pick pass otherwise". It does not: `addWebGPUDrawCommandsForTile` attaches the
+pick command whenever `cmdDesc.pickPipeline && (passes.pick || passes.pickVoxel)`
+(`GlobeSurfaceTileProviderRendering.js:1591-1594`), `updateWebGPUForPick` rebuilds every selected
+tile unconditionally (`:2709-2738`), and `selectPickPipeline` builds the pipeline for every
+non-subsequent pass. `globe.pickable` selects the VALUE in the camera UB's pick-colour tail — zero
+when false (`Globe.js:1484-1501`, `WebGPUGlobeSurfaceCameraUB.ts:777-806`). The conclusion the
+comment drew (pick over the globe is opt-in, `scene.pick` undefined by default) is right; only its
+mechanism was wrong. It mattered: because the globe pick pass already runs over every vector-carrying
+tile, the whole fix lands in the shader and no command-layer change is needed. The docstring is
+corrected in the same batch.
+
+**(b) `probe-vector-draping.mjs` had been dead since the 1.145 sync.** It drove the drape with
+`scene.globe.vectorProvider.add(collection)`. `VectorProvider.add` does not exist at HEAD — upstream
+`7ecc52b4b6` (landed Batch 1408) replaced it with `markForFrame`, which `Scene.js`'s
+`markVectorCollections` calls for drapeable collections found in `scene._primitives`, and
+`BufferPrimitiveCollection#heightReference` says so directly: "Draping requires that the collection
+has been added to Scene#primitives". Every lane of the probe threw on that line, so gates A-F have
+scored nothing since the sync — the probe exits 2 rather than passing falsely, but an unrunnable
+acceptance is still an acceptance nobody has. Repaired here (the collection goes into
+`scene.primitives` with `HeightReference.CLAMP_TO_GROUND` and `allowPicking: true`) because gate G
+had to be built on it.
+
+**A vehicle trap worth logging.** The draped path and the pick-id path meet in one place: pick ids
+are allocated by `BufferPrimitiveCollection#update`, which is reached only through `scene.primitives`.
+A collection handed to the vector provider by any other route drapes but never gets pick ids, so its
+pick colours bake as four zero bytes and every pick over it comes back as the globe. That is also why
+`_updatePickIds` is deliberately not gated on the dirty count (`BufferPrimitiveCollection.js:855-858`)
+— the surface may bake and mark the collection clean before it runs, and the pick-id write dirties
+the collection again so the next frame re-bakes with real ids.
+
+**Proof.** `vector-layer-draping.spec.mjs` group P (GLSL↔WGSL pick equivalence over a real bake, with
+M-p0 pre-fix behaviour / M-p1 pick run shifted one primitive / M-p2 reader stride left at 2 / M-p3
+BGRA pick packing, each required to be DETECTED) and the new
+`vector-draping-pick-identity.spec.mjs` (the identity round trip through the real
+`GraphicsContext` pick registry), both under `npm run test-engine-node`. Edge acceptance is
+`probe-vector-draping.mjs` gate G and is OWED.

@@ -34,8 +34,18 @@
  *   cell end offsets  : gridWidth * gridHeight  u32
  *   segments          : segmentCount * 4        f32  (ax, ay, bx, by) tile UV
  *   segment→primitive : segmentCount            u32
- *   primitives        : primitiveCount * 2      (f32 lineWidth, u32 RGBA8)
+ *   primitives        : primitiveCount * VECTOR_PRIMITIVE_STRIDE
+ *                       +0 f32 signed lineWidth
+ *                       +1 u32 RGBA8 material color, low byte first
+ *                       +2 u32 RGBA8 pick color,     low byte first
  * ```
+ *
+ * The pick word is what lets `scene.pick` return a draped primitive rather than
+ * the globe: `GlobeTerrain.wgsl::vectorPickColorOver` composites it over
+ * `camera.pickColor` in the pick pass, the way `VectorCommon.glsl`'s function
+ * of the same name composites `u_vectorPickColorTexture` over WebGL's. It is
+ * zero when the collection was built without `allowPicking`, which the shader
+ * reads as "leave the surface's own answer alone".
  *
  * `gridWidth === 0` is the "nothing draped here" sentinel the shader gates on,
  * which is also what the 32-byte all-zero placeholder buffer reads as.
@@ -54,6 +64,13 @@ export const VECTOR_TILE_SEGMENT_PRIMITIVE_BASE = 6;
 export const VECTOR_TILE_PRIMITIVES_BASE = 7;
 /** Number of header words preceding the first variable-length run. */
 export const VECTOR_TILE_HEADER_WORDS = 8;
+/**
+ * Words per record in the primitives run. Mirrored by
+ * `VECTOR_PRIMITIVE_STRIDE` in `GlobeTerrain.wgsl`, which is what the shader
+ * strides by; the two are a matched pair and neither may change alone.
+ * Declared once here and used everywhere this module addresses the run.
+ */
+export const VECTOR_PRIMITIVE_STRIDE = 3;
 /** Size of the shared all-zero "no vector data" buffer, in bytes. */
 export const VECTOR_TILE_PLACEHOLDER_BYTES = VECTOR_TILE_HEADER_WORDS * 4;
 
@@ -81,6 +98,13 @@ export interface VectorTileCpuData {
   widths?: ArrayLike<number>[];
   /** Per-collection primitive RGBA bytes, in collection order. */
   colors?: Uint8Array[];
+  /**
+   * Per-collection primitive pick-color RGBA bytes, in collection order —
+   * `VectorPipeline._writePickColor` writing each primitive's registered pick
+   * id. All zero for a collection built without `allowPicking`, and absent
+   * entirely on a bake old enough to predate the field, which packs as zero.
+   */
+  pickColors?: Uint8Array[];
   /** Total primitive count across every contributing collection. */
   primitiveCount?: number;
 }
@@ -205,7 +229,7 @@ export function packVectorTileWords(
   const segmentsBase = cellEndBase + cellCount;
   const segmentPrimitiveBase = segmentsBase + segmentCount * 4;
   const primitivesBase = segmentPrimitiveBase + segmentCount;
-  const totalWords = primitivesBase + primitiveCount * 2;
+  const totalWords = primitivesBase + primitiveCount * VECTOR_PRIMITIVE_STRIDE;
 
   const words = new Uint32Array(totalWords);
   const floats = new Float32Array(words.buffer);
@@ -243,8 +267,13 @@ export function packVectorTileWords(
 
   const widthValues = concatNumbers(data?.widths ?? []);
   const colorBytes = concatByteArrays(data?.colors ?? []);
+  // Concatenated in the SAME collection order as the colors above, which is
+  // the order `VectorPipeline.packPolylineSegments` assigned primitive indices
+  // in. A bake predating the field concatenates to an empty run and every pick
+  // word packs zero, which the shader reads as "no pick data here".
+  const pickColorBytes = concatByteArrays(data?.pickColors ?? []);
   for (let i = 0; i < primitiveCount; i++) {
-    const p = primitivesBase + i * 2;
+    const p = primitivesBase + i * VECTOR_PRIMITIVE_STRIDE;
     // The width crosses by VALUE, whatever element type the bake used.
     // Routing a 1.145 Float32Array through a byte buffer would truncate a
     // fractional width, wrap one above 255, and turn a negative (meters)
@@ -256,6 +285,15 @@ export function packVectorTileWords(
     const a = colorBytes[i * 4 + 3] ?? 0;
     // Low byte first — the order `unpack4x8unorm` returns as (r, g, b, a).
     words[p + 1] = (r | (g << 8) | (b << 16) | (a << 24)) >>> 0;
+    // The pick color is a packed pick-ID KEY, not an opacity: all four bytes
+    // are payload, alpha included, and dropping any of them would alias two
+    // ids onto one object (the 32-bit key contract `GraphicsContext`'s
+    // `_pickColorToKey` decodes on the way back).
+    const pr = pickColorBytes[i * 4] ?? 0;
+    const pg = pickColorBytes[i * 4 + 1] ?? 0;
+    const pb = pickColorBytes[i * 4 + 2] ?? 0;
+    const pa = pickColorBytes[i * 4 + 3] ?? 0;
+    words[p + 2] = (pr | (pg << 8) | (pb << 16) | (pa << 24)) >>> 0;
   }
 
   return words;

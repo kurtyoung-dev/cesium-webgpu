@@ -601,7 +601,9 @@ struct TileUniforms {
 //   cell end offsets : gridWidth*gridHeight u32
 //   segments         : segmentCount * 4 f32 (ax, ay, bx, by) in tile UV space
 //   segment→primitive: segmentCount u32
-//   primitives       : primitiveCount * (f32 lineWidth, u32 packed RGBA8)
+//   primitives       : primitiveCount * VECTOR_PRIMITIVE_STRIDE words —
+//                      (+0 f32 signed lineWidth, +1 u32 packed RGBA8 material
+//                       color, +2 u32 packed RGBA8 pick color)
 @group(2) @binding(11) var<storage, read> vectorTileData: array<u32>;
 
 // Effects bind group (group 3): shadow receive and clipping planes.
@@ -3949,17 +3951,37 @@ fn makeFragOutput(color: vec4<f32>, normalEC: vec3<f32>) -> FragOutput {
 // @location(0) output matching a bare vec4 return. There is no near-discard,
 // because the color sibling has none.
 //
-// The globe pick command is dispatched only when `globe.pickable` is set — the
-// globe stays out of the pick pass otherwise, see
-// `GlobeSurfaceTileProviderRendering.updateWebGPUForPick` — so `scene.pick`
-// stays undefined over the globe by default, matching WebGL, and returns the
-// Globe only when the app opts in. `scene.pickPosition` reads the main-pass
-// globe-depth texture rather than this framebuffer, so it works over terrain
-// either way.
+// Pick over the globe is opt-in, and `globe.pickable` is the switch — but not
+// by keeping the globe out of the pick pass. The command is attached for every
+// selected tile whenever a pick pass is running
+// (`GlobeSurfaceTileProviderRendering.addWebGPUDrawCommandsForTile`, gated on
+// `cmdDesc.pickPipeline` and the pass, with no `pickable` test;
+// `updateWebGPUForPick` rebuilds them unconditionally and says why: terrain
+// classification picking needs the depth). What `globe.pickable` selects is the
+// VALUE of the tail this entry point reads: `Globe.beginFrame` mirrors the
+// globe's registered pick-ID color onto the tile provider only when the flag is
+// set, and `WebGPUGlobeSurfaceCameraUB` packs (0,0,0,0) otherwise. A zero pick
+// color resolves to no object, so `scene.pick` stays undefined over the globe by
+// default, matching WebGL, and returns the Globe only when the app opts in —
+// while the draw still contributes depth either way. `scene.pickPosition` reads
+// the main-pass globe-depth texture rather than this framebuffer, so it works
+// over terrain regardless.
+//
+// (This paragraph used to say the command was dispatched only when `pickable`
+// was set. It never was; the conclusion was right and the mechanism was not.
+// The difference is load-bearing for the draped-vector composite below, which
+// needs the pick pass to reach vector-carrying tiles that the globe itself is
+// not answering for.)
 //
 // The cartographic-limit and clipping-plane discards that `fragmentMain`
 // applies are not mirrored here: an unclipped globe picks correctly, and pick
 // over a clipped or limited globe is unimplemented.
+//
+// Draped vector polylines DO get their own pick color here, over the globe's,
+// through `vectorPickColorOver` — the twin of the `command.pickId` WebGL sets
+// per vector-carrying tile. That is an addition to the opt-in above rather than
+// a change to it: the vector answers only where a vector is actually draped and
+// carries a pick id, and every other fragment still writes `camera.pickColor`.
 struct PickFragOutput {
   @location(0) color: vec4<f32>,
   //>>ifdef LOG_DEPTH
@@ -3970,7 +3992,26 @@ struct PickFragOutput {
 @fragment
 fn fragmentPickMain(input: VertexOutput) -> PickFragOutput {
   var out: PickFragOutput;
-  out.color = camera.pickColor;
+  // Screen-space Jacobian of the raw, unclamped tile UV, taken HERE at
+  // fragment entry for the same reason `fragmentMain` hoists its own: WGSL
+  // forbids a derivative builtin under non-uniform control flow and the vector
+  // path is gated on a storage-buffer read, which is non-uniform by definition.
+  let vectorUV_dx = dpdx(input.v_textureCoordinates.xy);
+  let vectorUV_dy = dpdy(input.v_textureCoordinates.xy);
+  // Run the drape search for its effect on `vectorPickPrimitiveIndex`; the
+  // composited color is discarded. This is not an extra pass bolted onto pick —
+  // it is what WebGL already does, where the pick variant of the globe shader
+  // runs the WHOLE color fragment shader (`czm_non_pick_main`) and then
+  // evaluates `command.pickId`, which is how the GLSL global this reads gets
+  // set over there too. A tile with nothing draped early-outs on the
+  // placeholder buffer's zero `gridWidth` after one u32 load.
+  _ = vectorPolylineRender(
+    input.v_textureCoordinates.xy,
+    vectorUV_dx,
+    vectorUV_dy,
+    vec4<f32>(0.0),
+  );
+  out.color = vectorPickColorOver(camera.pickColor);
   //>>ifdef LOG_DEPTH
   out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepth.z);
   //>>endif
@@ -3989,6 +4030,53 @@ const VECTOR_TILE_CELL_END_BASE: u32 = 4u;
 const VECTOR_TILE_SEGMENTS_BASE: u32 = 5u;
 const VECTOR_TILE_SEGMENT_PRIMITIVE_BASE: u32 = 6u;
 const VECTOR_TILE_PRIMITIVES_BASE: u32 = 7u;
+
+// Words per record in the primitives run. Mirrored by
+// `VECTOR_PRIMITIVE_STRIDE` in `WebGPUVectorTileResources.ts`, which is what
+// the packer strides by; the two are a matched pair and neither may change
+// alone. Declared once here and read through `vectorPrimitiveRecord` below, so
+// the stride appears in exactly one expression on this side.
+const VECTOR_PRIMITIVE_STRIDE: u32 = 3u;
+
+// One primitive's material and identity, as the primitives run stores it.
+struct VectorPrimitiveRecord {
+  // Magnitude is the FULL stroke width; a negative marks a width in ground
+  // meters rather than screen pixels (`VectorPipeline.packPolylineCollectionData`).
+  signedWidth: f32,
+  color: vec4<f32>,
+  // Zero when the tile has no pick data for this primitive — see
+  // `vectorPickColorOver`.
+  pickColor: vec4<f32>,
+}
+
+// Read one primitive record. Every consumer of the primitives run goes through
+// here, which is what keeps the stride and the word order in one place.
+//
+// `unpack4x8unorm` yields (r, g, b, a) from the low byte upward, which is the
+// order the packer writes both color words in.
+fn vectorPrimitiveRecord(
+  primitivesBase: u32,
+  primitiveIndex: u32,
+) -> VectorPrimitiveRecord {
+  let p = primitivesBase + primitiveIndex * VECTOR_PRIMITIVE_STRIDE;
+  var record: VectorPrimitiveRecord;
+  record.signedWidth = bitcast<f32>(vectorTileData[p]);
+  record.color = unpack4x8unorm(vectorTileData[p + 1u]);
+  if (VECTOR_PRIMITIVE_STRIDE >= 3u) {
+    record.pickColor = unpack4x8unorm(vectorTileData[p + 2u]);
+  } else {
+    record.pickColor = vec4<f32>(0.0);
+  }
+  return record;
+}
+
+// Primitive index of the topmost vector draped over this fragment, or -1 for
+// none. The twin of the `int vectorPickPrimitiveIndex = -1` global
+// `VectorCommon.glsl` declares at its top: `vectorPolylineRender` writes it
+// where the GLSL writes its own, and `vectorPickColorOver` reads it. A
+// `var<private>` is instantiated and re-initialized per invocation, so each
+// fragment starts at -1 exactly as the GLSL global does.
+var<private> vectorPickPrimitiveIndex: i32 = -1;
 
 // UV-space offset from the closest point on the segment to p.
 // Line-for-line port of `VectorCommon.glsl::vectorOffsetToLine`.
@@ -4184,14 +4272,16 @@ fn vectorPolylineRender(
       vectorTileData[segmentPrimitiveBase + i],
       primitiveCount - 1u,
     );
-    let p = primitivesBase + primitiveIndex * 2u;
     // The width crosses as a signed VALUE, matching the R32F width texture
     // `VectorCommon.glsl` reads: the magnitude is the FULL stroke width, so
     // the distance test is against half of it, and a negative marks a width in
     // ground meters. Only the pixel branch exists here — the meters branch is
     // still a WebGPU gap — so `abs` keeps a meters width finite and positive
     // instead of letting the sign through as an enormous stroke.
-    let lineWidth = bitcast<f32>(vectorTileData[p]);
+    let lineWidth = vectorPrimitiveRecord(
+      primitivesBase,
+      primitiveIndex,
+    ).signedWidth;
     let halfWidth = abs(lineWidth) * 0.5;
 
     let offsetUv = vectorOffsetToLine(vectorUv, segment);
@@ -4223,14 +4313,61 @@ fn vectorPolylineRender(
     coverage = 1.0 - smoothstep(-coverageRadius, coverageRadius, nearestEdgeDistance);
   }
 
+  // The nearest draped primitive is also what the pick pass answers with, so
+  // publish it here — the same statement, at the same point in the composite,
+  // that `VectorCommon.glsl::vectorPolylineRender` makes just before it reads
+  // the color texture.
+  vectorPickPrimitiveIndex = i32(nearestPrimitiveIndex);
+
   // Alpha-composite vector over terrain.
-  // `unpack4x8unorm` yields (r, g, b, a) from the low byte upward, which
-  // is the order the packer writes.
-  let p = primitivesBase + nearestPrimitiveIndex * 2u;
-  var vectorColor = unpack4x8unorm(vectorTileData[p + 1u]);
+  var vectorColor = vectorPrimitiveRecord(
+    primitivesBase,
+    nearestPrimitiveIndex,
+  ).color;
   vectorColor.a = vectorColor.a * coverage;
   return vectorColor * vec4<f32>(vectorColor.aaa, 1.0)
     + baseColor * (1.0 - vectorColor.a);
+}
+
+// Pick color of the vector draped over this fragment, or the surface's own
+// where none is. The WGSL twin of `VectorCommon.glsl::vectorPickColorOver`,
+// which `GlobeSurfaceTileProviderRendering.js` installs on the WebGL globe as
+// `command.pickId = "vectorPickColorOver(vec4(0.0))"`, per tile, for exactly
+// the tiles whose `vectorData.show` is set.
+//
+// That per-tile opt-in survives here without a command-level test, because on
+// this backend the same fact is in the data: a tile with nothing draped binds
+// the 32-byte all-zero placeholder, `vectorPolylineRender` early-outs on its
+// zero `gridWidth` after one u32 load, the index below is still -1, and the
+// pick pass writes exactly what it wrote before this function existed.
+//
+// The surface color passed in is this backend's `camera.pickColor` rather than
+// WebGL's literal `vec4(0.0)`. `globe.pickable` decides whether the globe
+// answers for itself — `Globe.beginFrame` packs a zero tail when it is false,
+// which is the default — and a draped line is not a reason to take that
+// decision away from it.
+//
+// A zero pick word is the CPU bake's "this primitive has no pick id":
+// `VectorPipeline._writePickColor` writes `Color.fromRgba(0)` when the
+// collection was constructed without `allowPicking`, and the same zeros are
+// what a tile baked before `BufferPrimitiveCollection._updatePickIds` first ran
+// carries until the pick-id write dirties the collection and it re-bakes. In
+// neither case has anything asked to shadow the globe's own answer, so the
+// surface color stands. The backends can differ on that only when
+// `globe.pickable` is true, which the WebGL globe path has never honored.
+fn vectorPickColorOver(surfacePickColor: vec4<f32>) -> vec4<f32> {
+  if (vectorPickPrimitiveIndex < 0) {
+    return surfacePickColor;
+  }
+  let primitivesBase = vectorTileData[VECTOR_TILE_PRIMITIVES_BASE];
+  let pickColor = vectorPrimitiveRecord(
+    primitivesBase,
+    u32(vectorPickPrimitiveIndex),
+  ).pickColor;
+  if (all(pickColor == vec4<f32>(0.0))) {
+    return surfacePickColor;
+  }
+  return pickColor;
 }
 
 // GLOBE-UNDERGROUND-COLOR — port of GlobeFS.glsl `interpolateByDistance`
