@@ -7,7 +7,6 @@ import {
   chmod,
   link,
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
   rm,
@@ -15,11 +14,11 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, dirname, join, posix } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import sharp from "sharp";
+import { mkLaneTmp } from "../lib/lane-tmp.mjs";
 import {
   C12_33_CERTIFICATION_SCHEMA,
   C12_33_COUNTERBALANCED_CONTROL_ORDER,
@@ -1151,7 +1150,7 @@ test("polluted raw frames route structurally before their framing misses", () =>
 });
 
 test("publication loader verifies manifest sidecar and every report/PNG byte", async (t) => {
-  const workspace = await mkdtemp(join(tmpdir(), "c12-33-publication-"));
+  const workspace = mkLaneTmp("c12-33-publication-");
   const root = join(workspace, "evidence");
   await mkdir(root);
   t.after(() => rm(workspace, { recursive: true, force: true }));
@@ -1354,7 +1353,7 @@ test("publication loader verifies manifest sidecar and every report/PNG byte", a
 });
 
 test("published bytes are real PNGs and decoded primitives defeat coordinated report forgery", async (t) => {
-  const workspace = await mkdtemp(join(tmpdir(), "c12-33-pixel-binding-"));
+  const workspace = mkLaneTmp("c12-33-pixel-binding-");
   t.after(() => rm(workspace, { recursive: true, force: true }));
 
   const nonPngRoot = join(workspace, "non-png-library");
@@ -1434,7 +1433,7 @@ test(
   "path-backed certification reloads, refolds, topology-checks, and atomically commits PASS",
   { timeout: 900_000 },
   async (t) => {
-    const workspace = await mkdtemp(join(tmpdir(), "c12-33-path-pass-"));
+    const workspace = mkLaneTmp("c12-33-path-pass-");
     const evidenceRoot = join(workspace, "evidence-library");
     const outputDirectory = join(workspace, "certification-output");
     await mkdir(evidenceRoot);

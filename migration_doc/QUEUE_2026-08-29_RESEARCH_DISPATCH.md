@@ -1845,6 +1845,55 @@ see this card for tier, size, dependencies and acceptance.
 - **Binds:** SR-3. **Source:** `F:/Dev/GH/cesium-lane-uldor3-20260905/_lane-out/LANDING_PACKET_ULDOR3.md` §13;
   reproduced and resolved in lane Saeros.
 
+### `DX-71` — the mkdtemp callers `lane-tmp` did not reach: cleanup outside a `finally`, and two unconditional leaks
+
+- **Disposition:** OPEN. Filed by lane Meriadoc (2026-09-11) alongside `Tools/lib/lane-tmp.mjs` and
+  `Tools/temp-hygiene.mjs`. Measured with `_lane-out/mkdtemp-census.mjs` in that lane (the instrument reads
+  HEAD with `--head` so before and after come from the same code): at `5ffb7fd704` the repository had **203
+  mkdtemp call sites — 136 with a `finally`/`after` removal, 61 with the removal written outside one, 6 with
+  no removal at all**. The lane migrated 13 call sites to `Tools/lib/lane-tmp.mjs`, leaving **134 with a
+  `finally`/`after` removal, 57 LOOSE and 2 NONE**. This row is the remainder.
+- **What is left, and why each was left.**
+  1. **57 `LOOSE` call sites** — the directory *is* removed, but after the assertions rather than from a
+     `finally`, so a failing assertion skips the removal. Concentrated in
+     `moon-globe-depth-routing.spec.mjs` (13), `c12-31-aureole-gate.spec.mjs` (9),
+     `c12-29-s5-svs-footprint-gate.spec.mjs` (6), `c11-146-route-evidence.spec.mjs` (4),
+     `eclipse-cloud-response-gate.spec.mjs` (3). Each is a per-test restructure, not a one-line swap.
+  2. **`packages/sandcastle/Specs/sandcastleTemplate.spec.mjs:137`** — a genuine unconditional leak:
+     `runEmbedded` allocates `sandcastle-template-*` per case and nothing ever removes it. The fix is a
+     ~25-line reindent of `runEmbedded` into `withLaneTmp` plus a cross-package import
+     (`../../../Tools/lib/lane-tmp.mjs`, precedented by `packages/engine/Specs/**`) and a
+     `npm run test-sandcastle` re-run, so it is over the one-line bar the lane was working to.
+  3. **`Tools/verify-landing-compliance.mjs` + `.spec.mjs`** — the producers of `verify-landing-history-*`
+     (5 survivors) and `landing-history-*` (12). **Deliberately untouched:** at the time of the lane the seat
+     held ~941 uncommitted lines in exactly those two files, and one defect gets one owner. Their allocation
+     lines are unchanged one-liners of the same shape the lane applied elsewhere.
+  4. **`Tools/generate-tooling-catalog-launcher.cjs` (15 survivors) and `Tools/generate-tooling-catalog.mjs`
+     (19)** — the catalog trust boundary. The lane migrated both, measured the consequence, and **reverted**.
+     Two structural facts make this its own reviewed batch rather than a hygiene-lane one-liner. (a) The
+     launcher binds its OWN worktree bytes against the blob in the git INDEX
+     (`generate-tooling-catalog-launcher.cjs:205-214`, `bindLauncher`), so an uncommitted edit to it is
+     STRUCTURAL: with the edit in the worktree `node Tools/generate-tooling-catalog-launcher.cjs --check`
+     answers `STRUCTURAL — … startup bytes do not match the candidate-index trust boundary` and
+     `generate-tooling-catalog.spec.mjs` goes **40 pass / 20 fail**. A lane physically cannot verify a launcher
+     edit before it is committed. (b) `generate-tooling-catalog.mjs` importing `./lib/lane-tmp.mjs` would, once
+     committed, trip `validateModuleGraph`'s undeclared-dependency refusal (`:262-266`) unless
+     `Tools/lib/lane-tmp.mjs` is also added to `MODULE_GRAPH` (`:28-31`) — i.e. admitted to the materialized,
+     provenance-bound module graph. That is a deliberate widening of the declared trust boundary and wants its
+     own review. The work, when someone takes it: add the path to `MODULE_GRAPH`, allocate the launcher's
+     private root under `<tmpdir>/cesium-lane/<lane>` in built-ins only, swap
+     `generate-tooling-catalog.mjs:577` for `mkLaneTmp`, commit, then run the spec.
+- **Not ours, recorded so nobody hunts it again.** The 302 `.tmp??????` directories at the Temp root are the
+  Rust `tempfile` crate's default `Builder` shape (prefix `.tmp`, six random characters), created in pairs
+  within ~60 s of each VS Code extension-host start — no `mkdtemp` caller in this repository, in `scripts/`,
+  in any `Specs/` or in `node_modules/` uses a `.tmp` prefix. Same for `cesium-process-supervisor-w*-evidence-`
+  (25), `beleg-followup-` (2), `dx14-staged-` (6), `meneldor-stage-` (6) and `theodred-idx-` (1): no tracked
+  producer exists in the tree; they came from prior lanes' scratchpad scripts and the Rust supervisor
+  prototype. `Tools/temp-hygiene.mjs` classifies and age-gates all of them; there is nothing to fix in-repo.
+- **Tier / Size / Backends:** TIER-3 · S (1 and 2 together) · tooling only. **Depends on:**
+  `Tools/lib/lane-tmp.mjs` landing first. **Ruling touched:** none.
+  **Gate:** `npm run test-tools-lib`, plus the owning runner for each spec touched
+  (`npm run test-sandcastle` for item 2).
 ### `Q-130-a` — `FrustumGeometry.js` misuses `defined(vertexFormat.normal)`/`.st` on always-defined booleans
 
 - **Disposition:** OPEN. Filed here as its own row for the first time — until now `Q-130-a` existed only

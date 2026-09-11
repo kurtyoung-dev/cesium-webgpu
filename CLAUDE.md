@@ -659,6 +659,15 @@ Certification-grade artifacts additionally bank in
 `f:/Dev/GH/cesium-webgpu-visual-evidence` (immutable) as before. Evidence
 that dies with a clone reset is a handoff defect.
 
+The counterpart rule is that everything NOT repatriated is swept: agents and
+sub-agents clean up after themselves once a task is completely finished and
+pushed - the lane temp root, downloaded bundles, runner profiles and mutant
+copies - and the seat runs `node Tools/temp-hygiene.mjs --plan` / `--execute`
+after a push. Scratch space is taken through `Tools/lib/lane-tmp.mjs` so a
+killed run leaves one sweepable root rather than a sandbox at the Temp root.
+The rule, the measurement behind it and the two-phase sweep procedure are
+[`migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md` §8i](migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md).
+
 ---
 
 ## Upstream Sync Procedure

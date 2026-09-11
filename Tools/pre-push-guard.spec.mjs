@@ -36,6 +36,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { isQuietHours } from "./landing-rules.mjs";
+import { mkLaneTmp } from "./lib/lane-tmp.mjs";
 import {
   parseAdvertisedRefs,
   parsePushRequests,
@@ -155,7 +156,7 @@ function applyDriverMutations(source, mutations) {
  */
 function makeSandbox(t, options = {}) {
   const tempRoot = fs.realpathSync(os.tmpdir());
-  const allocated = fs.mkdtempSync(path.join(tempRoot, "landing-hook-"));
+  const allocated = mkLaneTmp("landing-hook-");
   let cleaned = false;
   const cleanup = () => {
     if (cleaned || !fs.existsSync(allocated)) {

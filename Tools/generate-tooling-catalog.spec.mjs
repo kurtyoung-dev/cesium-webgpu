@@ -26,7 +26,6 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
-  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -65,6 +64,7 @@ import {
   withFrozenCandidateIndex,
   writeCatalogIfUnchanged,
 } from "./generate-tooling-catalog.mjs";
+import { mkLaneTmp } from "./lib/lane-tmp.mjs";
 
 const ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const CATALOG = path.join(ROOT, "migration_doc", "TOOLING_CATALOG.md");
@@ -120,7 +120,7 @@ function readFrozenToolingCensus(root, fixturePath) {
 }
 
 function createCandidateSandbox() {
-  const root = mkdtempSync(path.join(tmpdir(), "catalog-index-mutant-"));
+  const root = mkLaneTmp("catalog-index-mutant-");
   const gitDir = path.join(root, "git");
   const sourceSnapshot = spawnSync("git", ["ls-files", "--stage", "-z"], {
     cwd: ROOT,
@@ -1520,7 +1520,7 @@ test(
   "A1m2: a true sparse index is expanded privately and remains byte-identical",
   { timeout: 120_000 },
   () => {
-    const root = mkdtempSync(path.join(tmpdir(), "catalog-sparse-index-"));
+    const root = mkLaneTmp("catalog-sparse-index-");
     const clone = path.join(root, "repo");
     const cleanEnv = { ...process.env };
     for (const name of [

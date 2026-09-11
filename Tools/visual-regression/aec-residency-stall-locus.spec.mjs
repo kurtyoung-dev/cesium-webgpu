@@ -39,11 +39,12 @@
 // Run: node --test Tools/visual-regression/aec-residency-stall-locus.spec.mjs
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { withLaneTmp } from "../lib/lane-tmp.mjs";
 
 import {
   STALL_LOCUS_THRESHOLDS,
@@ -355,10 +356,14 @@ test("C3 the banked WebGL legs are not dominated by a discrete wait", (t) => {
 async function importMutated(rewrite, label) {
   const source = readFileSync(MODULE_PATH, "utf8").split("\r\n").join("\n");
   const mutated = mutateOrFail(source, rewrite, label);
-  const scratch = mkdtempSync(join(tmpdir(), "turin-stall-locus-"));
-  const path = join(scratch, "aec-residency-stall-locus.mjs");
-  writeFileSync(path, mutated, "utf8");
-  return import(pathToFileURL(path).href);
+  // The mutant is fully evaluated by the time `import()` resolves, so the
+  // scratch copy goes immediately — 45 of these outlived their run at the Temp
+  // root before the cleanup moved into a `finally` (Tools/lib/lane-tmp.mjs).
+  return withLaneTmp("turin-stall-locus-", (scratch) => {
+    const path = join(scratch, "aec-residency-stall-locus.mjs");
+    writeFileSync(path, mutated, "utf8");
+    return import(pathToFileURL(path).href);
+  });
 }
 
 test("D1 a poll-axis test that can never fire loses B2", async () => {

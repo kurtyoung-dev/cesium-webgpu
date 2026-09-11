@@ -61,3 +61,22 @@ Tracked as of this batch; the pyramid's worker rules and naming live in `WORKER_
 - Overriding a wrong number in the brief with the verified one and saying so in the packet.
 - Staying inside the no-git-write rule: five for five so far. An Opus reviewer stands behind every
   Gemini batch; write for that reviewer.
+
+## 9. Clean up after yourself [HARD RULE]
+
+- **Take scratch space through `Tools/lib/lane-tmp.mjs`, never `mkdtempSync(os.tmpdir())` directly.**
+  `withLaneTmp(prefix, fn)` puts the directory under `<tmpdir>/cesium-lane/<lane>` and removes it in a
+  `finally` — on return, on throw, and on rejection. Cleanup written after the assertions is not
+  cleanup: a failing assertion skips it, which is how ~2,000 sandboxes reached the Temp root by
+  2026-09-11.
+- **Before you return, remove everything you created outside your clone and its `_lane-out/`** — your
+  lane temp root, downloaded bundles, runner profiles you started, mutant copies, bundle dumps — and
+  say in your reply what you removed. Anything of value goes to `_lane-out/`,
+  `Tools/visual-regression/output/` or the worker archive first; those three are the only durable
+  places.
+- **Check the Temp ROOT, not just your lane's namespace.** Anything you ran before migrating it, and
+  any backup you wrote straight to `%TEMP%`, lands at the root where your namespace check will not see
+  it. Never put a backup in `%TEMP%` — `_lane-out/` is the place for one.
+- **Never sweep the Temp root yourself.** `Tools/temp-hygiene.mjs` is the seat's, run after a push,
+  and it deletes things — which puts it under §2. You may run `--plan` (read-only) and report what it
+  says; you may not run `--execute`.

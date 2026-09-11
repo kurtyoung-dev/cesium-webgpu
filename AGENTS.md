@@ -130,6 +130,15 @@ Always create new files under `packages/*/Source/`.
 - **Execution preference: node commands first.** Always prefer `node` / `npx` over platform shells
   (PowerShell, cmd, bash builtins) for script execution, tool verification, and diagnostics. Fall
   back to shells only when native shell wrapping is strictly unavoidable.
+- **Clean up after yourself before you return.** Take scratch space through
+  `Tools/lib/lane-tmp.mjs` (`withLaneTmp` removes the directory in a `finally` — on return, on
+  throw, and on rejection) rather than `mkdtempSync(os.tmpdir())`, and remove everything you
+  created outside your clone and its `_lane-out/` — lane temp root, downloaded bundles, runner
+  profiles, mutant copies — saying in your reply what you removed. Check the Temp ROOT, not just your
+  lane's namespace, and never write a backup straight to `%TEMP%` — `_lane-out/` is for that.
+  Repatriate anything of value first; the durable places are `_lane-out/`,
+  `Tools/visual-regression/output/` and the worker archive. Rule and measurement:
+  [`migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md` §8i](migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md).
 
 ### 8. Operating notes for Codex — observed on this fork, 2026-09-06 → 09-10
 

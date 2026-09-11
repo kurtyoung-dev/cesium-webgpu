@@ -754,3 +754,60 @@ hashes of the files a lane is expected to touch, so a mid-wave loss — a killed
 duplicate, a clone reset — is recoverable from the wave's own record rather than from whatever the
 lane happened to bank for itself. Wave P0-2's recovery worked because one worker was disciplined;
 the wave-level manifest is what makes it not depend on that.
+
+### 8i. Temp hygiene and closeout (maintainer directive, 2026-09-11)
+
+**Agents and sub-agents clean up after themselves once a task is completely finished and pushed.**
+The measurement that produced this rule: `%LOCALAPPDATA%\Temp` reached **13.1 GB across 59,142 files
+and 5,306 top-level entries**, of which roughly 2,000 top-level entries were mkdtemp sandboxes left
+behind by this repository's own specs — `helm-aec-residency-e2-*` 108, `turin-stall-locus-*` 45,
+`catalog-index-mutant-*` 43, `helm-trace-*` 31, and a long tail — alongside 215 `karma-*` and 171
+`playwright_chromiumdev_profile-*` directories from killed runners and ~775 MB of served-bundle
+copies curled straight to the Temp root. None of it was anybody's deliberate output. All of it
+survived because nothing owned its removal.
+
+**One temp root per lane.** A spec, probe or tool that needs scratch space takes it through
+`Tools/lib/lane-tmp.mjs`: `withLaneTmp(prefix, fn)` creates the directory under
+`<tmpdir>/cesium-lane/<lane>` and removes it in a `finally` — on a normal return, on a throw, and on
+a rejected promise — and `mkLaneTmp(prefix)` is the allocation-only form for callers that already own
+a deterministic `finally` or `t.after`. The lane name comes from `CESIUM_LANE`, so a lane's scratch is
+identifiable and sweepable on its own. Cleanup written *after* the assertions is not cleanup: a
+failing assertion skips it — the cause for 184 of the 296 survivors traced to a named producer here.
+The other 112 had a `finally` or a `t.after` that a killed run, a test timeout or a Windows `EBUSY`
+never reached, which is why the second half of the fix is allocating somewhere a sweep can finish the
+job.
+
+**Before a worker, reviewer or executor RETURNS, it removes everything it created outside its clone
+and its `_lane-out/`.** Its lane temp root, downloaded bundles, Playwright and Karma profiles it
+started, mutant copies, served-bundle dumps. The return message says what it removed. A lane that
+leaves scratch behind has not finished; the seat should treat it the way it treats an unharvested
+clone.
+
+**The closeout check is over the Temp ROOT, not just the lane's own namespace.** The lane that wrote
+this rule failed it: `<tmpdir>/cesium-lane/<lane>` was empty at return time and four entries it had
+created sat at the Temp root anyway — three sandboxes from running a spec **before** migrating it,
+and a mutant-restore backup copied straight to `%TEMP%`. Its reviewer found them. List the root and
+compare against the lane's own window (`birthtime >= dispatch`), do not just check the namespace, and
+never use `%TEMP%` directly as a scratch location for a backup — that is what `_lane-out/` is for.
+
+**After a landing is PUSHED the seat sweeps.** `node Tools/temp-hygiene.mjs --plan --out <plan.json>`
+classifies the Temp root into an explicit positive delete list and prints what it would remove;
+`--bank-evidence <archiveDir> --plan <plan.json>` zips every PNG-bearing `visual-regression/output`
+tree inside that list into the worker archive and REFUSES when the PNG count in the zip differs from
+disk; `--execute --plan <plan.json>` then deletes exactly that list, re-checking the protect set, the
+temp containment, the plan's own age horizon and a live-lock probe on every path, and unlinking every
+junction inside a target before recursing. The plan is written to disk to be read before it is used —
+the positive-list rule (seat memory `feedback_destructive_scripts_positive_list.md`, 2026-09-11), not
+a regex deciding what to delete at delete time.
+
+**The durable places are only three.** The clone's `_lane-out/`, the main repo's gitignored
+`Tools/visual-regression/output/`, and `cesium-webgpu-worker-archive`. Anything of value in a lane's
+temp space is repatriated to one of those before the lane returns (§"Evidence Repatriation" in
+`CLAUDE.md`); anything not repatriated is assumed disposable and will be swept.
+
+**Killed runs are the residual, and the sweep is their backstop — not the habit.** A Karma or
+Playwright run that is interrupted leaves a profile directory no `finally` will ever reach, and
+foreign tools leave their own (the `.tmp??????` directories at the Temp root are the Rust `tempfile`
+crate's default shape, created in pairs at VS Code extension-host startup — not ours, and not
+fixable here). Those are what the age-gated sweep is for. They are not a licence to skip the
+`finally`.

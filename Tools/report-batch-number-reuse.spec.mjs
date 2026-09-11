@@ -25,6 +25,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { mkLaneTmp } from "./lib/lane-tmp.mjs";
+
 import {
   buildReport,
   formatReport,
@@ -72,7 +74,7 @@ function isPathInsideOrEqual(parent, child) {
  */
 function makeTempRepo(t) {
   const tempRoot = fs.realpathSync(os.tmpdir());
-  const allocated = fs.mkdtempSync(path.join(tempRoot, "batch-reuse-spec-"));
+  const allocated = mkLaneTmp("batch-reuse-spec-");
   const dir = fs.realpathSync(allocated);
   assert.ok(
     isPathInsideOrEqual(tempRoot, dir),

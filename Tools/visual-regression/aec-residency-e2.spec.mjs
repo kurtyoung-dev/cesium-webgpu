@@ -30,16 +30,12 @@
 // Run: node --test Tools/visual-regression/aec-residency-e2.spec.mjs
 
 import assert from "node:assert/strict";
-import {
-  copyFileSync,
-  mkdtempSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { withLaneTmp } from "../lib/lane-tmp.mjs";
 
 import {
   E2_CONTROLS,
@@ -859,11 +855,15 @@ test("H1: an E-2 receipt is classified by the stall-locus analyzer unchanged", (
 async function importMutated(rewrite, label) {
   const source = readFileSync(MODULE_PATH, "utf8").split("\r\n").join("\n");
   const mutated = mutateOrFail(source, rewrite, label);
-  const scratch = mkdtempSync(join(tmpdir(), "helm-aec-residency-e2-"));
-  copyFileSync(SIBLING_PATH, join(scratch, "aec-residency-stall-locus.mjs"));
-  const path = join(scratch, "aec-residency-e2.mjs");
-  writeFileSync(path, mutated, "utf8");
-  return import(pathToFileURL(path).href);
+  // The mutant is fully evaluated by the time `import()` resolves, so the
+  // scratch copy goes immediately — 108 of these outlived their run at the
+  // Temp root before the cleanup moved into a `finally` (Tools/lib/lane-tmp.mjs).
+  return withLaneTmp("helm-aec-residency-e2-", (scratch) => {
+    copyFileSync(SIBLING_PATH, join(scratch, "aec-residency-stall-locus.mjs"));
+    const path = join(scratch, "aec-residency-e2.mjs");
+    writeFileSync(path, mutated, "utf8");
+    return import(pathToFileURL(path).href);
+  });
 }
 
 test("G1 MUTATION: an unreachable residual check accepts disagreeing clocks", async () => {
@@ -1115,40 +1115,40 @@ test("D9: the summary names the window each census column answers for", () => {
 
 // ── K. a large trace is refused, not swallowed ──────────────────────────────
 
-test("D10: a trace larger than the cap is refused by name and never parsed", () => {
-  const directory = mkdtempSync(join(tmpdir(), "helm-trace-"));
-  const filePath = join(directory, "trace.json");
-  const body = JSON.stringify([{ name: "x", ph: "X", ts: 0, dur: 1 }]);
-  writeFileSync(filePath, body);
+test("D10: a trace larger than the cap is refused by name and never parsed", () =>
+  withLaneTmp("helm-trace-", (directory) => {
+    const filePath = join(directory, "trace.json");
+    const body = JSON.stringify([{ name: "x", ph: "X", ts: 0, dur: 1 }]);
+    writeFileSync(filePath, body);
 
-  const refused = readTraceEvents(filePath, { capBytes: body.length - 1 });
-  assert.equal(refused.traceEvents.length, 0);
-  assert.match(refused.error, /^trace-too-large-to-read: /);
-  assert.ok(
-    refused.error.includes(String(body.length)),
-    "the refusal must say how large the trace was",
-  );
+    const refused = readTraceEvents(filePath, { capBytes: body.length - 1 });
+    assert.equal(refused.traceEvents.length, 0);
+    assert.match(refused.error, /^trace-too-large-to-read: /);
+    assert.ok(
+      refused.error.includes(String(body.length)),
+      "the refusal must say how large the trace was",
+    );
 
-  // The same file under a cap that admits it parses, so the refusal above is
-  // the size gate and not a parse failure wearing its name.
-  const admitted = readTraceEvents(filePath, { capBytes: body.length });
-  assert.equal(admitted.error, null);
-  assert.equal(admitted.traceEvents.length, 1);
-});
+    // The same file under a cap that admits it parses, so the refusal above is
+    // the size gate and not a parse failure wearing its name.
+    const admitted = readTraceEvents(filePath, { capBytes: body.length });
+    assert.equal(admitted.error, null);
+    assert.equal(admitted.traceEvents.length, 1);
+  }));
 
-test("D11: an unreadable trace is reported rather than thrown", () => {
-  const directory = mkdtempSync(join(tmpdir(), "helm-trace-"));
-  const missing = readTraceEvents(join(directory, "absent.json"));
-  assert.equal(missing.traceEvents.length, 0);
-  assert.match(missing.error, /^trace-parse-failed: /);
+test("D11: an unreadable trace is reported rather than thrown", () =>
+  withLaneTmp("helm-trace-", (directory) => {
+    const missing = readTraceEvents(join(directory, "absent.json"));
+    assert.equal(missing.traceEvents.length, 0);
+    assert.match(missing.error, /^trace-parse-failed: /);
 
-  const filePath = join(directory, "not-a-trace.json");
-  writeFileSync(filePath, JSON.stringify({ notEvents: true }));
-  assert.equal(
-    readTraceEvents(filePath).error,
-    "trace-file-has-no-events-array",
-  );
-});
+    const filePath = join(directory, "not-a-trace.json");
+    writeFileSync(filePath, JSON.stringify({ notEvents: true }));
+    assert.equal(
+      readTraceEvents(filePath).error,
+      "trace-file-has-no-events-array",
+    );
+  }));
 
 test("D12: a leg that fails leaves every leg before it in the caller's hands", async () => {
   const legs = [];

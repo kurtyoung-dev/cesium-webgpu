@@ -20797,3 +20797,103 @@ silent WebGL fallback and so covers it.
 **Parity (Principle 5).** A WebGPU twin of shipped WebGL behaviour. No GLSL, Scene, `VectorPipeline`
 or `VectorProvider` line is modified, so WebGL is byte-identical by construction and nothing here
 belongs on it.
+---
+
+## Lane Meriadoc (2026-09-11) — the Temp root reached 13.1 GB, and ~2,000 of its 5,306 top-level entries were this repository's own spec sandboxes
+
+**Files.** `Tools/lib/lane-tmp.mjs` (new), `Tools/lib/lane-tmp.spec.mjs` (new), `Tools/temp-hygiene.mjs`
+(new), `Tools/temp-hygiene.spec.mjs` (new); migrated callers in
+`Tools/visual-regression/aec-residency-e2.spec.mjs`,
+`Tools/visual-regression/aec-residency-stall-locus.spec.mjs`,
+`Tools/visual-regression/moon-mip-motion-certification.spec.mjs`,
+`Tools/generate-tooling-catalog.spec.mjs`, `Tools/verify-clone-drained.spec.mjs`,
+`Tools/verify-orientation-mirror.spec.mjs`,
+`Tools/pre-push-guard.spec.mjs`, `Tools/report-batch-number-reuse.spec.mjs`; rules in
+`migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md` §8i, `CLAUDE.md`, `GEMINI.md` §9, `AGENTS.md` §7;
+row `DX-71`.
+
+**Measurement.** `%LOCALAPPDATA%\Temp`: **13.1 GB / 59,142 files / 5,306 top-level entries**. 10.9 GB of
+that was the seat's own Claude session (6.2 GB agent transcripts, 4.7 GB scratchpad). At the Temp ROOT the
+repository's own spec sandboxes dominated the entry count: `helm-aec-residency-e*-` 108,
+`turin-stall-locus-` 45, `catalog-index-mutant-` 43, `helm-trace-` 31, `tooling-catalog-index-` 19,
+`tooling-catalog-launcher-` 15, `landing-history-` 12, `c12-33-path-pass-` 5 (each ~15 MB, ~1,100 PNG
+fixture copies), `verify-landing-history-` 5, `landing-hook-` 3, `catalog-sparse-index-` 3,
+`verify-clone-drained-` 3, `orientation-mirror-` 2, `c12-33-publication-` 2 — plus 215 `karma-*` and 171
+`playwright_chromiumdev_profile-*` from killed runners and ~775 MB of served-bundle copies written
+straight to the Temp root.
+
+**Root cause — three of them, and only one is a missing `finally`.**
+
+1. **No cleanup at all.** `importMutated` in both AEC residency specs wrote a mutant copy of the module
+   under test into `mkdtempSync(join(tmpdir(), …))` and returned the imported namespace; nothing removed
+   the directory, so every mutation test leaked one. Those four call sites alone account for the
+   108 + 45 + 31 = **184 largest-count shapes**. A census of the whole tree (`--head` against
+   `5ffb7fd704`) put the repository at 203 mkdtemp call sites: 136 with a `finally`/`after` removal, 61
+   with the removal written outside one, 6 with none.
+2. **Cleanup that exists but cannot run.** `catalog-index-mutant-` (43), `tooling-catalog-index-` (19),
+   `tooling-catalog-launcher-` (15), `verify-clone-drained-` (3), `orientation-mirror-` (2),
+   `landing-hook-` (3) and the `c12-33-*` workspaces all **do** remove their directory from a `finally` or
+   a `t.after`. They survived anyway, because those specs drive `git` and Playwright subprocesses and are
+   killed, time out (the `c12-33-path-pass-` test carries a 900 s budget), or hit a Windows `EBUSY` from a
+   `rmSync` with no `maxRetries`. A `finally` is not reachable from a killed process. That is why the fix
+   is not only to add cleanup: it is also to allocate somewhere a sweep can finish the job.
+3. **Not ours.** The 302 `.tmp??????` directories are the Rust `tempfile` crate's default `Builder` shape
+   (prefix `.tmp`, six random characters), created in pairs within ~60 s of each VS Code extension-host
+   start — every `.tmp*` survivor at the root pairs with an `exthost-*.cpuprofile` write, and one pair
+   sits beside `vscode-inno-updater-*.log`. No `mkdtemp` caller in `Tools/`, `scripts/`, any `Specs/` or
+   `node_modules/` uses a `.tmp` prefix. `cesium-process-supervisor-w*-evidence-`, `beleg-followup-`,
+   `dx14-staged-`, `meneldor-stage-` and `theodred-idx-` have no tracked producer either: they came from
+   prior lanes' scratchpad scripts and the Rust supervisor prototype, neither of which is in the tree.
+
+**Fix.** `Tools/lib/lane-tmp.mjs` is the one way to take scratch space: `withLaneTmp(prefix, fn)` creates
+the directory under `<tmpdir>/cesium-lane/<lane>` and removes it in a `finally` — on return, on throw and
+on a rejected promise — and `mkLaneTmp(prefix)` is the allocation-only form for callers that already own a
+deterministic removal. Both address the two causes at once: the removal becomes unconditional, and what a
+kill does leave behind is one per-lane root instead of a thousand unrelated sandboxes to classify by name.
+Every path the module will delete is asserted strictly under `os.tmpdir()` **and** strictly under the
+`cesium-lane` namespace first, and a symlink or junction is unlinked rather than recursed into.
+`Tools/temp-hygiene.mjs` is the backstop for killed runs and foreign tools: `--plan` writes an explicit
+positive delete list to disk (age gates 1 day for a name-classified entry, 3 days for a loose file or an
+empty directory, 30 days for anything unrecognised; the running Claude session is never descended into),
+`--bank-evidence` zips every `visual-regression/output` tree inside that list and REFUSES when the PNG
+count in the zip differs from disk, and `--execute` deletes exactly that list after re-checking the
+protect set, the temp containment, the plan's own age horizon and a live-lock probe on every path.
+
+**Proof.** `npm run test-tools-lib` 84/84 with both new specs in its list. `lane-tmp.spec.mjs` 19 tests:
+placement under the lane root, removal on success / throw / rejection / deep tree, refusal outside tmpdir
+and outside the namespace, a junction inside a lane directory unlinked with the linked tree surviving, the
+sweep's age gate. Its inertness mutant — `if (false
+&& …)` on `withLaneTmp`'s `finally` body, applied to the real module — takes the spec to 4 fail / 15 pass
+(B1, B2, B5 and the mutant's own guard), and the module was restored and re-run green.
+`temp-hygiene.spec.mjs` 17 tests over a fake Temp root allocated by `lane-tmp` itself (destructive tests
+only under `os.tmpdir()`): classification by age gate and name class, lane roots swept whole, the running
+session never entered, the plan-only default deleting nothing, every protect entry covering its whole
+subtree, and eight execute-time refusals — protected path, outside-temp path, a plan root that is not the
+system temp directory (including one whose path string is merely prefix-adjacent to it), a target that
+changed since the plan was written, a plan with no usable age horizon, a target inside the running
+session, a target something still holds open (and a read-only one that is NOT a lock), unbanked evidence.
+Nine inertness mutants run against the real modules, zero survivors, the runner failing on any survivor
+(`_lane-out/MUTANT_EVIDENCE_MERIADOC.txt`): with
+`isProtected` returning `false` the protect tests go red; with the link-unlink step unreachable the
+junction test is unchanged **on this host**, because `fs.rmSync(recursive)` was measured not to traverse a
+Windows junction under Node 22 — that is recorded by the spec as a diagnostic rather than asserted as a
+proof it did not get, and the unlink stays as defence in depth.
+
+**A migration that was measured and then reverted, because the measurement said so.** The catalog trust
+boundary — `Tools/generate-tooling-catalog-launcher.cjs` (`tooling-catalog-launcher-`, 15 survivors) and
+`Tools/generate-tooling-catalog.mjs` (`tooling-catalog-index-`, 19) — was migrated, tested, and put back.
+The launcher compares its OWN worktree bytes to the blob in the git INDEX (`:205-214`, `bindLauncher`), so
+an uncommitted edit to it is STRUCTURAL by construction: with the edit present,
+`node Tools/generate-tooling-catalog-launcher.cjs --check` answers `STRUCTURAL — … startup bytes do not
+match the candidate-index trust boundary` and `generate-tooling-catalog.spec.mjs` runs **40 pass / 20 fail**.
+No lane can verify a launcher edit before that edit is committed. Separately, `generate-tooling-catalog.mjs`
+importing `./lib/lane-tmp.mjs` would trip `validateModuleGraph`'s undeclared-dependency refusal (`:262-266`)
+once committed, unless `Tools/lib/lane-tmp.mjs` is admitted to `MODULE_GRAPH` (`:28-31`) — a deliberate
+widening of the materialized, provenance-bound graph. Both facts were read out of the launcher source and
+confirmed by running it; neither was inferred from the spec's failure count alone. The pair is item 4 of
+`DX-71`.
+
+**What is left** is `DX-71`: 57 call sites whose removal sits outside a `finally`, one genuine leak in
+`packages/sandcastle/Specs/sandcastleTemplate.spec.mjs`, the catalog trust boundary above, and
+`Tools/verify-landing-compliance.{mjs,spec.mjs}`, left alone because the seat held ~941 uncommitted lines
+in those two files while this lane ran.

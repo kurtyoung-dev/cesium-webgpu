@@ -24,15 +24,15 @@ import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { mkLaneTmp } from "./lib/lane-tmp.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TOOL = process.env.ORIENTATION_MIRROR_TOOL
@@ -106,7 +106,7 @@ function createFixture(
 function withFixture(options, callback) {
   let root = null;
   try {
-    root = mkdtempSync(path.join(tmpdir(), "orientation-mirror-"));
+    root = mkLaneTmp("orientation-mirror-");
     options.afterRootCreated?.(root);
     const fixture = createFixture(root, options);
     return callback(fixture);

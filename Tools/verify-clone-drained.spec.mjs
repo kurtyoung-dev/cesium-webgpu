@@ -27,16 +27,15 @@ import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { mkLaneTmp } from "./lib/lane-tmp.mjs";
 import { parsePurposeHeader } from "./lib/purpose-header.mjs";
 import { S5_STATUS_EXIT_CODES } from "./visual-regression/lib/verdict-exit-gate.mjs";
 
@@ -134,7 +133,7 @@ function withFixtureEnvironment(fixture, callback) {
 function withTempFixture(callback) {
   let root = null;
   try {
-    root = mkdtempSync(path.join(tmpdir(), FIXTURE_PREFIX));
+    root = mkLaneTmp(FIXTURE_PREFIX);
     const fixture = {
       globalConfig: path.join(root, "empty-global.gitconfig"),
       hooks: path.join(root, "empty-hooks"),

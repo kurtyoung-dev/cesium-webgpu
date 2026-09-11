@@ -58,3 +58,12 @@ Tools/visual-regression/lib/probe-edge-slot.mjs text eol=lf
 Tools/visual-regression/lib/probe-refusal.mjs text eol=lf
 Tools/visual-regression/probe-runtime.spec.mjs text eol=lf
 Tools/visual-regression/probe-globe-cold-start-readiness.mjs text eol=lf
+
+# --- Per-lane temp helper --------------------------------------------------------
+# Same mechanism again: `lane-tmp.spec.mjs`'s inertness mutant anchors on the
+# literal text of `withLaneTmp`'s `finally` body, which spans three lines. A CRLF
+# checkout matches that anchor zero times and the mutant stops being able to prove
+# the cleanup is live. The spec also normalizes what it reads, as above -- this
+# block is the fix and that is its belt.
+Tools/lib/lane-tmp.mjs text eol=lf
+Tools/lib/lane-tmp.spec.mjs text eol=lf
