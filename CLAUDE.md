@@ -232,7 +232,7 @@ ALL rendering paths MUST use RTE emulated 64-bit precision:
 - Uniform buffers must carry `encodedCameraHigh`, `encodedCameraLow`, and `mvpRelativeToEye`
 - `UniformState.js` already computes every RTE value — reuse them, do not recompute
 - `EncodedCartesian3.js` is renderer-agnostic — use it on both the WebGL and WebGPU paths
-- Every renderer's `CameraUniforms` struct MUST carry `previousViewProjection: mat4x4<f32>` at the tail (DP-H41, Batch 27). JS pack writes `UniformState.previousViewProjection` with column-major identity fallback on the first frame. TAA / CSM / motion-vector passes read it via `camera.previousViewProjection`.
+- Every renderer's `CameraUniforms` struct MUST carry `previousViewProjection: mat4x4<f32>` at the tail (DP-H41, Batch 27). JS pack writes `UniformState.previousViewProjection` with column-major identity fallback on the first frame. TAA / CSM / motion-vector passes read it via `camera.previousViewProjection`. Measured 2026-09-06: 57 of 72 shaders declare it mid-struct; bringing them to the rule is the AR-D12 enforcement lane (ruling D4, 2026-09-05).
 
 ---
 
@@ -240,33 +240,35 @@ ALL rendering paths MUST use RTE emulated 64-bit precision:
 
 Infrastructure landed in Batches 22-27. Do not bypass these when adding shader variants.
 
-### `ShaderDefine` bitmask registry (`WebGPUShaderDefines.ts`)
+### `ShaderDefine` & `ShaderDefineHi` bitmask registry (`WebGPUShaderDefines.ts`)
 
-- Each entry is one bit of a Uint32. The registry currently occupies bits 0-30; `WebGPUShaderDefines.ts` is the authoritative name/bit table.
+- **Two-word define space:** The lo-word `ShaderDefine` registry occupies bits 0-30 (`ShaderDefineLoMask`); bit 31 is reserved for collections' `noDepthTest` pipeline-key fold (`pipelineKeyWithDepthFlag`). New specialization axes claim bits in `ShaderDefineHi` via `hiDefineBit(n)` producing `ShaderDefineHiMask` (bits 0-30; bit 31 reserved).
+- Branded types `ShaderDefineLoMask` and `ShaderDefineHiMask` prevent accidental cross-assignment at compile time.
 - **Add-only. Never reorder, renumber, or remove** an entry even if its last consumer disappears. Reordering silently aliases cached modules; removal breaks any pipeline still referencing the bit. Deprecated entries stay with a comment marker.
 - `ShaderSourceId` registry follows the same rules. Source ID 0 is reserved.
 
 ### `//>>ifdef` preprocessor (`WebGPUShaderPreprocessor.ts`)
 
-- Directives: `//>>ifdef FLAG_NAME` / `//>>else` / `//>>endif` on their own lines. Flag names must match the UPPERCASE_WITH_UNDERSCORES pattern and resolve to a `ShaderDefine` bit.
+- Directives: `//>>ifdef FLAG_NAME` / `//>>else` / `//>>endif` on their own lines. Flag names must match the UPPERCASE_WITH_UNDERSCORES pattern and resolve to a `ShaderDefine` or `ShaderDefineHi` bit.
 - Unknown flag names throw at preprocess time with the source line number — typos fail loudly, not silently.
-- The preprocessor is a pure function over `(source: string, defines: number) → string`. Same input always produces same output; callers cache results in `WebGPUShaderModuleCache`.
-- `defines=0` emits the `//>>else` branch of every block and is byte-identical to shaders without ifdef blocks. Safe default for migration.
+- The preprocessor is a pure function over `(source: string, defines?: ShaderDefineLoMask | number, definesHi?: ShaderDefineHiMask | number) → string`. Same input always produces same output; callers cache results in `WebGPUShaderModuleCache`.
+- `defines=0, definesHi=0` emits the `//>>else` branch of every block and is byte-identical to shaders without ifdef blocks. Safe default for migration.
 
 ### Shader module cache (`WebGPUShaderModuleCache.ts`)
 
-- Tier 1 — per-`GPUDevice` dedupe keyed by the exact safe integer `((defines >>> 0) * 0x100) + sourceId`. This retains the complete 32-bit define mask while reserving eight low bits for the validated source ID; JavaScript represents every resulting 40-bit key exactly. One cache per device; cleared on device loss.
-- `getOrCreate(sourceId, source, defines, label)` is the entry point. Call `prewarm(sourceId, source, defineSets, labelPrefix)` at renderer init for known-hot variants.
-- A non-zero `keySalt` is only for generated WGSL whose source text adds an identity dimension beyond `(sourceId, defines)`; it is not required merely because a define uses bit 24 or above.
+- Tier 1 — per-`GPUDevice` dedupe keyed by the exact safe integer `((defines >>> 0) * 0x100) + sourceId`. This retains the complete 32-bit lo define mask while reserving eight low bits for the validated source ID; JavaScript represents every resulting 40-bit key exactly. One cache per device; cleared on device loss.
+- Hi-word widening uses a two-level `(definesHi → loKey)` map. For `definesHi === 0` (the common path), lookup stays on the single 40-bit numeric key; for `definesHi !== 0`, a lazily-created outer `Map` keyed by `definesHi` selects the inner map, remaining numeric and allocation-free.
+- `getOrCreate(sourceId, source, defines, label, keySalt?, definesHi?)` is the entry point. Call `prewarm(sourceId, source, defineSets, labelPrefix)` at renderer init for known-hot variants.
+- A non-zero `keySalt` is only for generated WGSL whose source text adds an identity dimension beyond `(sourceId, defines, definesHi)` (e.g., dynamic metadata chunks); it is not an overflow escape hatch.
 - Labels should include the define bitmask hex for devtools readability (`prewarm` does this automatically).
 
 ### Adding a new define bit
 
-1. Add the entry to `ShaderDefine` (do not reorder existing ones).
+1. Check capacity: if lo-word bits 0-30 are full, add the entry to `ShaderDefineHi` using `hiDefineBit(n)` (bits 0-30, bit 31 reserved). Otherwise add to `ShaderDefine`. Do not reorder existing ones.
 2. Document what it gates + which shaders consume it in the JSDoc block.
 3. For each consuming shader: add the `//>>ifdef FLAG_NAME` / `//>>else` / `//>>endif` block; keep the `//>>else` branch as the historical code path.
-4. Route the shader-module creation through `preprocess(code, defines)` (or the module cache) so the directives resolve.
-5. _(Optional — defense in depth, no longer required for correctness.)_ Add a marker for the axis to the pipeline descriptor's `name`, or stamp the whole mask (`defines=0x${defines.toString(16)}`). See the next section for why this was demoted.
+4. Route the shader-module creation through `preprocess(code, defines, definesHi)` (or `moduleCache.getOrCreate(sourceId, source, defines, label, 0, definesHi)`) so the directives resolve.
+5. _(Optional — defense in depth, no longer required for correctness.)_ Add a marker for the axis to the pipeline descriptor's `name`, or stamp the mask. See the next section for why this was demoted.
 
 ### Pipeline-key aliasing is handled STRUCTURALLY — per-axis markers are defense-in-depth
 
@@ -585,6 +587,22 @@ review", never "correct".
 Subagent dispatch mechanics, the worker rules and the full evidence live in
 [migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md](migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md)
 §8a–§8c. This principle is the part that applies whether or not a subagent is involved.
+
+### 11. File Editing Discipline: Never Rewrite Files > 100 Lines — CRITICAL
+
+- **NEVER rewrite or overwrite an existing file longer than 100 lines** when the goal is to insert new code, add documentation, or modify existing functionality.
+- **ALWAYS use targeted chunk editing (`replace_file_content`)** or surgical insertion. Never replace the entire file content with `write_to_file(Overwrite=true)`.
+- Full file rewrites on files > 100 lines are strictly prohibited to prevent accidental code omissions, large diff bloat, context exhaustion, and regression risks.
+
+Entered on 2026-09-10 by maintainer decision (mirrored in `GEMINI.md`).
+
+### 12. Command Execution Preference: Node Commands First — CRITICAL
+
+- **ALWAYS prefer `node` / `npx` commands first** for scripts, evaluation, inspection, and tooling (`node script.mjs`, `node -e "..."`, `npx ...`).
+- **NEVER use PowerShell (`pwsh`), cmd, or shell builtins unless strictly required** (e.g. for environment variables or platform operations where Node is not viable).
+- Ensures deterministic cross-platform execution without shell quoting, escaping, or expansion discrepancies across Windows and POSIX systems.
+
+Entered on 2026-09-10 by maintainer decision (mirrored in `GEMINI.md`).
 
 ---
 

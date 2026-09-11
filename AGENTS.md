@@ -123,6 +123,13 @@ Always create new files under `packages/*/Source/`.
   not observed.
 - If you cite `file:line`, read those lines first. An audit finding or a queue row is a lead,
   not a premise; findings age and code moves.
+- **Never rewrite files > 100 lines for code insertions/updates.** If the goal is to insert new
+  code, append documentation, or modify existing logic, **ALWAYS** use targeted chunk replacements
+  (`replace_file_content`). Never attempt a full-file rewrite (`write_to_file` with overwrite) on
+  files longer than 100 lines.
+- **Execution preference: node commands first.** Always prefer `node` / `npx` over platform shells
+  (PowerShell, cmd, bash builtins) for script execution, tool verification, and diagnostics. Fall
+  back to shells only when native shell wrapping is strictly unavoidable.
 
 ---
 
