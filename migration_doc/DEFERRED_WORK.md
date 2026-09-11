@@ -34,6 +34,221 @@ to enumerate entry IDs; then (c) grep each candidate id across `migration_doc/**
 for a closure stamp. **If you build a generated index, generate it — do not
 hand-maintain it.**
 
+## New findings — Campaign 13 wave A, lane C1 (Horn), 2026-09-10
+
+Context: maintainer ruling M6 (2026-09-10) authorised four repairs to the C13-42
+capture apparatus. Executing them required re-deriving why six 2026-09-09 runs
+produced no verdicts. The response cap was **not** the reason. Four separate
+blockers were measured, and the cap is the least binding of them.
+
+### NEW-C13-42-APPARATUS-CANNOT-RUN-AT-HEAD
+
+**Status:** OPEN — blocks every C13-42 browser leg. Recorded 2026-09-10 at
+`693ec11706` (Batch 1455).
+
+`probe-c13-42-reported-demos.mjs` destructures `scope` from the object
+`descriptor.cells(context)` receives, then calls `scope.run(...)` at 17 sites and
+`scope.checkpoint()` at 2. At HEAD, `runProbe`
+(`Tools/visual-regression/lib/probe-runtime.mjs:804`) passes
+`{ browser, run, options, origin, outputDirectory, repositoryRoot, captures }`
+and nothing else. There is no `scope`; `withProbeLifecycle` appears nowhere in
+the tree; `probe-edge-slot.mjs` exports no `withEdgeSlot`; and **zero** probes at
+HEAD reference `scope.run`. The probe throws on its first scope call, long before
+any response cap can bind.
+
+The six banked 2026-09-09 runs were executed against an unlanded +1,078-line
+`probe-runtime.mjs` rewrite plus an 859-line `lib/probe-lifecycle.mjs`, both
+still untracked in Astra's workspace; the banked error stacks name
+`.../lib/probe-lifecycle.mjs:849` and `.../lib/probe-runtime.mjs:1761` directly.
+That rewrite makes `descriptor.workBudgetMs` **required**, so it is a fleet-wide
+breaking change, and this wave's brief carves it out as its own later lane.
+
+**Consequence:** raising the response cap cannot unblock a run on its own. The
+runtime adoption is the real critical path for any C13-42 capture.
+
+### NEW-C13-42-RECEIPT-VALIDATION-DEADLOCK
+
+**Status:** FIXED 2026-09-10 (lane C1). Independent of any capture.
+
+`validateReceipt` required `ray.status === "STRUCTURAL"` literally, and compared
+`receipt.thresholds` to `CHARACTERIZATION_THRESHOLDS` by **identity**, while
+`foldReceipt` refused to publish a certification PASS *because* the status was
+STRUCTURAL and *because* the thresholds were the null sentinel. The two halves
+pinned each other: no capture, however good, could ever fold to PASS.
+
+The identity comparison carried a second latent defect. It reads correctly only
+while the sentinel is `null`. A receipt is JSON; the day M6's freeze landed, a
+round-tripped copy of a non-null threshold object could never be `===` the
+module's object, and **every** receipt would have failed validation with
+"characterization thresholds must remain null".
+
+Both are now expressed against the contract's current disposition — structural
+equality for thresholds, `CONTROLLED_RAY_FIXTURE_OBLIGATION.status` for the
+obligation — so releasing either does not invalidate receipts.
+
+**Fix round 2026-09-11 (lane C1, worker Farin).** Breaking the deadlock also
+removed the only thing gating the provider half: before the obligation was split
+in two, one obligation being STRUCTURAL blocked a PASS in `foldReceipt`; after the
+split, `CONTROLLED_RAY_PROVIDER_OBLIGATION` was published and read by nobody.
+Nothing was released on the day — the disposition is `calibration`, which refuses
+everything — but the moment the thresholds froze, a certification PASS would have
+become reachable with provider, scene and browser integration unimplemented.
+Maintainer ruling **R-2026-09-11-3** (M6(b)) requires
+`providerIntegration.implemented === true` for a PASS, and the enforcement point is
+restored in `foldReceipt`, placed **before** the disposition branch so its refusal
+is attributable rather than shadowed. It reads the fixture's own `implemented`
+flag, so implementing the integration releases it without a second edit.
+
+### NEW-C13-42-CONTROLLED-RAY-REASON-WAS-STALE
+
+**Status:** FIXED 2026-09-10 (lane C1), M6 part 2.
+
+`CONTROLLED_RAY_FIXTURE_OBLIGATION` was hard-coded `status: "STRUCTURAL"` with
+the reason "controlled ray emitter, projected shaft direction, occluder, camera,
+and image masks are not frozen". All five are in fact deep-frozen by
+`lib/c13-42-godray-fixture.mjs`, and `deriveFixtureMasks` derives the masks
+deterministically from them. The reason was stale, not unmet.
+
+What is genuinely unmet is a **different** thing that reason never named: the
+fixture's own `providerIntegration.implemented` is `false` ("provider, scene, and
+browser integration are not implemented"). Releasing the geometry must not
+release that, so it is carried separately as
+`CONTROLLED_RAY_PROVIDER_OBLIGATION` and remains STRUCTURAL.
+
+The obligation is now **derived** from the fixture rather than asserted about it,
+which is what stops it going stale in either direction: unfreeze any member, or
+make the march ignore its sample count, and it returns to STRUCTURAL on its own.
+
+### NEW-C13-42-TRACEF32RAY-BAKED-ITS-SAMPLE-COUNT
+
+**Status:** FIXED 2026-09-10 (lane C1).
+
+The C1-to-C3 fixture interface requires `traceF32Ray` to be "parameterised by
+sample count" and states that "`config.sampleCount` is an input, never baked into
+any other constant". The shipped module took no such parameter:
+`traceF32RayPrepared` read `config.sampleCount` from the frozen fixture, so every
+trace ran at N = 64 and C13-45's count-invariance behaviour could not be
+exercised against the fixture at all. `sampleCount` is now an input on
+`traceF32Ray`, `traceF32RayPrepared` and `deriveFixtureMasks`, defaulting to the
+frozen value so existing behaviour is unchanged.
+
+### NEW-C13-42-SERVED-RESPONSE-DEDUP (filed, NOT implemented)
+
+**Status:** OPEN — filed behind the cap raise by M6 part 4.
+
+`appendC13_42ServedResponse` adds a url to `seenUrls` **only** when it also
+pushes the response. Once `responses` reaches the cap, `seenUrls` stops growing,
+so every repeat fetch of an over-cap url is counted again by `responseOverflow`.
+Every observed overflow figure is therefore an **upper bound** on the distinct
+over-cap urls rather than a measurement of them, and the observed values (125,
+58, 12) cannot be compared with one another.
+
+That is why the cap raise came first and the repair second: the evidence needed
+to size the repair is exactly the evidence the defect corrupts. The derived
+budget deliberately carries the resulting slack; the repair should let it shrink.
+
+**Scope of the repair:** add the url to `seenUrls` unconditionally, count
+distinct over-cap urls rather than events, and re-derive the budget from the
+corrected counts. **Lands in:** `probe-c13-42-reported-demos.mjs`, behind the
+runtime adoption above. **Evidence:** `_lane-out/EVIDENCE_HORN_2026-09-09_RUNS.md`.
+
+### NEW-C13-42-REPORTED-ONLY-SCOPING-LEAVES-THE-OFFLINE-LEG-REFUSING
+
+**Status:** CLOSED by maintainer ruling **R-2026-09-11-2** (M6(a)), 2026-09-11. The
+derived bound applies to the OFFLINE leg as well as the reported subjects, so
+`C13_42_SERVED_RESPONSE_BUDGET.offline` is `deriveServedResponseBudget()` (231) and
+`servedResponseBudgetFor` keys on the subject's leg. The cost: the per-subject sum
+now coincides with the global work-budget form (7 x 231 x perResponseMs). The levers
+that shrink it again are `NEW-C13-42-SERVED-RESPONSE-DEDUP`, which should lower the
+derived 231, and the calibration run, which replaces the derived value with a
+measured one. The evidence that forced the ruling follows.
+
+M6 scoped the raise to the reported-demo subjects. The banked evidence points the
+other way: the worst **attributable** overflow is the OFFLINE subject
+`O-above-deck` at 58 (three runs), while the reported subject `R-atmospheric`
+overflowed by only 12. The 125 datum carries no `provisionalCell` and comes from
+an earlier probe revision, so it cannot be attributed to either leg.
+
+A raise scoped strictly to the reported subjects therefore does not produce a
+complete receipt — `validateReceipt` requires all seven core subjects, and a full
+run still refuses on `O-above-deck`. The mechanism shipped here is per-subject,
+so granting the offline subjects the same derived bound is a one-line data change
+in `C13_42_SERVED_RESPONSE_BUDGET`.
+
+### NEW-C13-42-CLOUD-READINESS-BLOCKS-THE-BASELINE-LEG
+
+**Status:** OPEN — a product/engine condition, not an instrument bound.
+
+The sixth 2026-09-09 run (`c13-20260909-baseline-01`) did **not** refuse on the
+cap. It ERRORED (exit 2): "procedural cloud renderer did not initialize after 180
+moving frames (executeCalls=0)", with `halfWidth`, `halfHeight`, `temporalWidth`
+and `temporalHeight` all `0` and `temporalPipelineReady` false, while
+`initialized` and `pipelineReady` were both true. Zero-sized half-resolution and
+temporal targets with no execute calls is a renderer condition; no cap raise
+addresses it.
+
+This contradicts the widely-repeated summary that all six runs refused with
+`c13-42-served-closure-over-cap`. Five did; the sixth never reached the cap.
+
+### NEW-C13-42-THRESHOLD-KEYS-NAMED-PATHS-NO-RECEIPT-CARRIES
+
+**Status:** FIXED 2026-09-11 (lane C1 fix round, worker Farin) for the reachable
+metrics. **The god-ray GEOMETRY half remains OPEN** — see below.
+
+`CHARACTERIZATION_THRESHOLD_DERIVATION.keys` named four receipt paths —
+`metrics.support.fraction`, `metrics.radial.contrast`, `metrics.delta.fraction`
+and `metrics.repeatOff.meanAbsoluteDelta` — that **no produced receipt has ever
+carried**, so `deriveCharacterizationThresholds` refused every real calibration and
+the Edge calibration leg carried an unsatisfiable bar. The key table had been
+written from a notion of the receipt rather than from `computeC13_42CellMetrics`;
+`meanAbsoluteDelta` does not occur anywhere in the C13-42 chain.
+
+The produced shape, re-derived by **executing** the producer over the input the
+probe builds: the `R-god-rays` cell carries
+`metrics.toggle.{offOn,frames,repeatOff,repeatOn}`, each an `imageDeltaMetrics`
+record (`changedFraction`, `meanAbsRgbDelta`, ...), with `metrics.cloud === null`;
+every other cell carries `metrics.cloud.{cloud,offOn,frames,repeat}` with the
+repeat delta at `repeat.residual.*` and no `metrics.toggle`. The keys are now
+`godRayToggleChangedFraction`, `godRayToggleMeanAbsRgbDelta`,
+`cloudToggleChangedFraction` and `repeatOffDrift`, the last naming **two candidate
+paths** because the same quantity lives at a different path in each cell shape. A
+positive derivation test — absent before, which is why the defect survived every
+existing threshold test — builds its receipts from the real producer, so a renamed
+producer field now turns the suite red.
+
+**Still OPEN: the god-ray geometry metrics are unreachable from the probe.**
+`analyzeGodRayImages` produces `shaftSupportFraction`,
+`radialFalloffLinearLuminancePerPixel`, `radialAlignmentAngleErrorRadians` and
+`angularWidthRadians`, but `computeC13_42CellMetrics` calls it **only** when the
+caller supplies `masks` or `emitter`, and `probe-c13-42-reported-demos.mjs`
+supplies neither. `metrics.godRay` is therefore `null` on every cell the probe
+produces and **no god-ray geometry threshold can be frozen today** — simply
+repointing the keys at `metrics.godRay.*` would have left the derivation refusing
+every real receipt, the same defect one path deeper. The missing piece is wiring
+the fixture's `deriveFixtureMasks`, its projected emitter and
+`expectedDirectionRadians` into the probe's cell construction. Blocks the geometry
+half of the threshold freeze; does not block the calibration leg, which now derives
+from the reachable toggle metrics.
+
+### NEW-C13-42-ZERO-MARGIN-THRESHOLD-ON-A-DEGENERATE-CALIBRATION
+
+**Status:** FIXED 2026-09-11 (lane C1 fix round, worker Farin).
+
+`deriveCharacterizationThresholds` widened each bound by the observed spread alone.
+When the calibration runs agree exactly the spread is `0`, so the frozen bar equals
+the observed extreme — a lower bound the next run fails on any downward flicker, an
+upper bound it fails on any upward one. Three agreeing runs do not show the true
+variation is zero, only that it is below what three samples resolve.
+
+The margin is now `max(spread, METRIC_QUANTUM)` with `METRIC_QUANTUM = 1e-6`,
+**derived rather than chosen**: every field the keys read is published by
+`imageDeltaMetrics` through `toFixed(6)`, so 1e-6 is the smallest difference a
+receipt can express, and a margin below one representable step is indistinguishable
+from no margin. The derivation additionally returns a per-key record
+(`sampleCount`, `lowest`, `highest`, `spread`, `margin`, `marginSource`,
+`degenerate`, `threshold`) so a degenerate key is **reported** to the freeze lane
+rather than quietly frozen.
+
 ## New findings — wave P0-2, lane Aerin, 2026-09-05
 
 ### NEW-CORE-RESOURCE-CROSS-ORIGIN-DERIVATION
