@@ -220,6 +220,18 @@ Dispatched the same day: sync-parity wave **S1** (lead Hundar) and `AR-837` (lan
 Earwen). Row-level detail lives in `QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md`'s own rows, not here;
 the wave's process findings are `DX-61`–`DX-64` plus extensions to `DX-58` and doc-audit `G-31`.
 
+**Return and campaign state, 2026-09-10 (Batches 1449–1453 pushed).** The seat returned from pause
+with Batches 1449–1453 landed and pushed to origin. Uncommitted seat work was relocated to
+`F:/Dev/GH/cesium-astra-20260910` (seat worktree restored to clean Batch 1450, R3). Maintainer
+rulings R-2026-09-10-1 through R-2026-09-10-8 established: D4 `previousViewProjection` tail rule
+enforced universally (`AR-D12` DECIDED, `AR-067`/`AR-194` unblocked); D5 `RenderCommand` adoption
+confirmed; Gemini 3.8 Flash High joins as tier-3 worker under `GEMINI.md` with Opus review and no git
+writes (R4); governance updates adopted with the 34-doc archive sweep held (R5); the `Globe.js`
+volumetric cloud default-on hunk held (R6); and 65 landed worker clones harvested to archive and
+deleted (R7). In-flight lanes at the return: sync-parity wave **S1** (lead Hundar), **Uldor round 3**
+(arrow-head profile parity repair, status landing), and **Amdir round 3** (matrix pick/visibility
+instrument revision).
+
 ### Upstream sync — CesiumJS 1.145 (not a numbered campaign)
 
 **LANDED.** The fork is synced to CesiumJS 1.145 at merge commit `33398505e6`, **Batch 1408**

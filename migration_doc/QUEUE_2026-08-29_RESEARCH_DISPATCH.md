@@ -1788,6 +1788,41 @@ see this card for tier, size, dependencies and acceptance.
   `packages/engine/Source/Renderer/FeatureRendererKey.js` and
   `packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts`.
 
+### `DX-65` — fleet-contract specs are source-text analyzers that never call `cells()`
+
+- **Disposition:** OPEN. Filed from wave P0-2 round 2 (Ulfang, Batch 1445). `probe-fleet-contract.spec.mjs` and `runtime-residency-contract.spec.mjs` analyze probe and spec source text via AST and regular expressions but never instantiate or invoke a probe descriptor's `cells()` method. A probe whose descriptor exports malformed or non-contract `cells()` (or throws at invocation) passes the entire fleet-contract suite green without detection. Linked to architecture queue row `AR-893`.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · tooling (spec contract). **Depends on:** none. **Gate:** `npm run test-visual-probe-contracts`.
+- **Acceptance:** `probe-descriptor-cells-contract.spec.mjs` or an extension to the fleet-contract runner exercises `cells()` over real descriptors (or via a stub browser environment); a descriptor with a broken or non-conforming `cells()` return fails the suite.
+- **Binds:** SR-6. **Source:** `LANDING_PACKET_ULFANG2.md` §5; `Batch 1445`.
+
+### `DX-66` — probe runtime `captures` ledger is never fed by probes' own `capture()` calls
+
+- **Disposition:** OPEN. Filed from wave P0-2 Edge job 9 leg 4 (Ulfang). When an Edge visual regression probe invokes its own internal `capture()` methods directly rather than delegating capture sequencing to the harness wrapper, the runtime's recorded `captures` summary ledger is not updated. In job 9 leg 4, the run receipt reported `captures: []` adjacent to four successfully written on-disk PNG artifacts.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · tooling (probe runtime). **Depends on:** none. **Gate:** `Tools/visual-regression/lib/probe-runtime.mjs`.
+- **Acceptance:** `probe-runtime.mjs` hooks or records direct `capture()` invocations into the run summary ledger, or standardizes capture logging across all probe lifecycle methods, ensuring `captures` reflects actual output files written.
+- **Binds:** SR-6. **Source:** `_lane-out/NEXT_RECORD_LANE.md` (Batch 1445); `wave-p0-2-edge-2026-09-05-job9` leg 4 receipt.
+
+### `DX-67` — `WAVE_RULES.md` cited by worker lanes but untracked and absent at the seat
+
+- **Disposition:** OPEN. Filed from wave P0-2 review analysis (Nellas, Batch 1444). Multiple worker lane briefs and packets cite `WAVE_RULES.md` as an authoritative governance reference, but the file is untracked and does not exist at the repository seat.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · docs / governance. **Depends on:** none. **Gate:** tree-wide file presence check.
+- **Acceptance:** either track `WAVE_RULES.md` at root/governance docs or remove citations across lane templates and briefs, consolidating worker rules into `WORKER_ISOLATION_AND_BRANCH_HANDOFF.md` §8h as established in Batch 1444.
+- **Binds:** SR-3, SR-6. **Source:** `_lane-out/NEXT_RECORD_LANE.md`; `Batch 1444`.
+
+### `DX-68` — bare `npm install` in a served clone installs registry `@cesium/engine` under `packages/node_modules` shadowing workspace
+
+- **Disposition:** OPEN. Filed from seat incident (2026-09-06, Batch 1447). Running a bare `npm install` inside a clone installs the public registry package `@cesium/engine` (e.g. 26.3.0) into `packages/node_modules`, which shadows the monorepo's local workspace engine package for the widgets bundle. The build subsequently fails (`gulp build` red) until the rogue `packages/node_modules` directory is manually purged.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · tooling / build hygiene. **Depends on:** none. **Gate:** `npx gulp build`.
+- **Acceptance:** the monorepo build or package config prevents accidental nested installations of `@cesium/engine` under `packages/node_modules`, or `Tools/verify-build-variants.mjs` / build scripts refuse to run if `packages/node_modules` exists.
+- **Binds:** SR-6. **Source:** `_lane-out/NEXT_RECORD_LANE.md` (2026-09-06).
+
+### `DX-69` — sandcastle workspace dependency range on `@cesium/engine` does not match the fork
+
+- **Disposition:** OPEN. Filed from seat incident (2026-09-06). The Sandcastle workspace package configuration defines a dependency range on `@cesium/engine` that does not match the local fork version. When npm resolves dependencies, this mismatch risks pulling registry packages instead of resolving the local workspace package.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · tooling / workspace configuration. **Depends on:** none. **Gate:** `npm ls --workspaces`.
+- **Acceptance:** align and pin the Sandcastle workspace's `@cesium/engine` dependency range to the local workspace version (e.g. `"workspace:*"` or exact matching version) to prevent dependency divergence.
+- **Binds:** SR-6. **Source:** `_lane-out/NEXT_RECORD_LANE.md` (2026-09-06).
+
 ### `Q-130-a` — `FrustumGeometry.js` misuses `defined(vertexFormat.normal)`/`.st` on always-defined booleans
 
 - **Disposition:** OPEN. Filed here as its own row for the first time — until now `Q-130-a` existed only

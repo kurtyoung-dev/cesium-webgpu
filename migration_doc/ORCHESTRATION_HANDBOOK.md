@@ -66,6 +66,18 @@ Dispatch plans (e.g. `CLOSEOUT_PLAN_2026-08-07.md`) are grouping only — same r
   file copies, never `git checkout --`.
 - Workers NEVER launch Edge or any browser. All browser lanes run on the orchestrator's machine
   lane, ONE Edge instance at a time, with 5-minute watchdogs.
+- **Gemini tier-3 workers and seat worktree isolation (maintainer rulings R4/R3, 2026-09-10).**
+  Gemini 3.8 Flash High operates as a tier-3 worker for documentation, ledger accounting, and
+  bounded tasks. Mechanism: the seat or a lane lead invokes it strictly through an external CLI
+  wrapper (`agy`), never as an autonomous orchestrator or background `Agent`; its binding rules
+  are defined in `GEMINI.md`; it is forbidden all git write commands (no commit, push, checkout,
+  reset, restore, stash, clean, branch, or rebase); and every deliverable undergoes mandatory
+  independent station-3 review by an Opus reviewer before landing. Furthermore, **no agent ever
+  works in the seat worktree**: following the 2026-09-08 incident where Astra's in-seat worktree
+  edits led to index corruption, uncommitted churn, and a forced relocation
+  (`F:/Dev/GH/cesium-astra-20260910`), all workers must operate strictly within dedicated, isolated
+  worker clones (`F:/Dev/GH/cesium-lane-<name>`). The root seat repository remains strictly
+  read-only for dispatched workers.
 - Workers report state only from their own tree; a refuter must state when its counter-evidence
   disproves a _narrower_ claim than the one filed.
 - **Evidence capture and exit codes.** Capture command output under the worker's own `_lane-out/`,

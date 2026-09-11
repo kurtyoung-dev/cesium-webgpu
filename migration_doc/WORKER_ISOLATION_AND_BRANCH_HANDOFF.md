@@ -680,6 +680,18 @@ authoritative registry of used names lives in the seat's memory file
 `feedback_tolkien_worker_names.md` and is checked before every dispatch; when a pool runs dry
 it is extended from the same legendarium, never from another author.
 
+**Gemini tier-3 worker role and seat worktree prohibition (maintainer rulings R4/R3, 2026-09-10).**
+Gemini 3.8 Flash High joins the worker pool under the naming convention as a tier-3 worker (e.g.,
+Salgant) dedicated to documentation, ledger accounting, and bounded tasks. Mechanism: the seat or a
+lead runs it via a CLI wrapper (`agy`), never as an autonomous orchestrator or background `Agent`;
+its operations obey `GEMINI.md`; it performs zero git writes (no commit, push, checkout, stash,
+reset, clean, or branch operations; only read-only git and `git add -N` for patch production); and
+its deliverables undergo mandatory independent Opus station-3 review. In addition, **no agent ever
+works directly in the seat worktree**: the 2026-09-08 index corruption and uncommitted churn from
+Astra's in-seat work necessitated a full workspace transplant to `F:/Dev/GH/cesium-astra-20260910` and
+seat restoration to clean Batch 1450. Dispatched agents must work exclusively in isolated, per-worker
+clones (`F:/Dev/GH/cesium-lane-<name>`); the root seat worktree is strictly protected and read-only.
+
 ### 8f. Proof bar by change class, and the wave-end gate (maintainer rulings R-2026-08-29-1/2)
 
 Engine, parity and shader rows keep the full bar: behaviour spec, inertness mutant, separate
