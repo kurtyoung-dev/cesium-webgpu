@@ -62,6 +62,7 @@
   "devDependencies": {
     "@ast-grep/cli": "^0.45.1",
     "@cesium/eslint-config": "^14.0.0",
+    "@jsdoc/salty": "0.2.12",
     "@playwright/test": "^1.62.1",
     "@types/express": "^5.0.6",
     "@webgpu/types": "0.1.69",
@@ -88,7 +89,7 @@
     "husky": "^9.0.7",
     "istanbul-lib-instrument": "^6.0.0",
     "jasmine-core": "^5.9.0",
-    "jsdoc": "^3.6.7",
+    "jsdoc": "4.0.5",
     "karma": "^6.3.20",
     "karma-chrome-launcher": "^3.1.0",
     "karma-coverage": "^2.0.3",
@@ -110,8 +111,8 @@
     "prettier": "3.9.6",
     "prismjs": "^1.28.0",
     "rimraf": "^6.0.1",
-    "sharp": "^0.34.5",
-    "tsd-jsdoc": "^2.5.0",
+    "sharp": "^0.35.3",
+    "tsd-jsdoc": "file:Tools/tsd-jsdoc-compat/tsd-jsdoc-2.5.0-cesium.1.tgz",
     "typescript": "^6.0.2",
     "typescript-eslint": "^8.68.0",
     "yargs": "^18.1.0"
@@ -166,7 +167,8 @@
     "test-sandcastle": "node --test \"packages/sandcastle/Specs/*.spec.mjs\" Tools/visual-regression/sandcastle2-renderer-gate.spec.mjs Tools/visual-regression/sandcastle2-pinned-demos.spec.mjs Tools/visual-regression/earth-at-night-demo-clock.spec.mjs Tools/visual-regression/earth-at-night-gallery-manifest.spec.mjs Tools/visual-regression/earth-at-night-toolbar-collapsed.spec.mjs Tools/visual-regression/sandcastle2-origin-rewrite.spec.mjs Tools/visual-regression/earth-at-night-star-controls.spec.mjs",
     "test-landing-rules": "node --test Tools/upstream-shape-guard.spec.mjs Tools/landing-rules.spec.mjs Tools/pre-push-guard.spec.mjs Tools/verify-landing-compliance.spec.mjs Tools/provision-worker-clone-junctions.spec.mjs Tools/verify-worker-handoff.spec.mjs Tools/spec-runner-census.spec.mjs Tools/wave-end-gate.spec.mjs Tools/report-batch-number-reuse.spec.mjs Tools/provision-worker-clone-codex-trust.spec.mjs Tools/verify-readme-index.spec.mjs Tools/verify-doc-citations.spec.mjs",
     "test-tooling-catalog": "node --test Tools/inject-purpose-headers.spec.mjs Tools/generate-tooling-catalog.spec.mjs Tools/visual-regression/purpose-header-contract.spec.mjs",
-    "test-tools-lib": "node --test Tools/lib/png-rgba.spec.mjs Tools/lib/png-decode.spec.mjs Tools/lib/attach-page-diagnostics.spec.mjs Tools/lib/bounded-command.spec.mjs Tools/lib/lane-tmp.spec.mjs Tools/temp-hygiene.spec.mjs",
+    "test-tools-lib": "node --test Tools/lib/png-rgba.spec.mjs Tools/lib/png-decode.spec.mjs Tools/lib/attach-page-diagnostics.spec.mjs Tools/lib/bounded-command.spec.mjs Tools/lib/lane-tmp.spec.mjs Tools/temp-hygiene.spec.mjs Tools/lib/sharp-runtime-smoke.spec.mjs",
+    "test-docs-compat": "node --test Tools/lib/compare-declarations.spec.mjs Tools/lib/compare-doc-anchors.spec.mjs Tools/jsdoc/cesium_template/sortDoclets.spec.mjs",
     "generate-tooling-catalog": "node Tools/generate-tooling-catalog-launcher.cjs",
     "verify-tooling-catalog": "node Tools/generate-tooling-catalog-launcher.cjs --check",
     "tsc": "gulp tsc",
@@ -217,10 +219,11 @@
   ],
   "overrides": {
     "protobufjs": "^8.8.0",
-    "@huggingface/transformers": {
+    "@huggingface/transformers@4.2.0": {
       "onnxruntime-web": {
         "protobufjs": "^7.6.4"
-      }
+      },
+      "sharp": "0.35.4"
     },
     "allotment": {
       "use-resize-observer": {

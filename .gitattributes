@@ -67,3 +67,18 @@ Tools/visual-regression/probe-globe-cold-start-readiness.mjs text eol=lf
 # block is the fix and that is its belt.
 Tools/lib/lane-tmp.mjs text eol=lf
 Tools/lib/lane-tmp.spec.mjs text eol=lf
+# --- Local tsd-jsdoc compatibility package (R-2026-09-08-2) ---------------------
+# Same mechanism as the two blocks above. Every member listed in this package's
+# `files` field is packed into `tsd-jsdoc-2.5.0-cesium.1.tgz`, and
+# `Tools/tsd-jsdoc-compat/pack-compat.mjs` re-packs twice and refuses the result
+# unless the archive bytes match the committed tarball exactly. Under
+# `* text=auto` with `core.autocrlf=true` -- this repository's normal Windows
+# configuration -- the upstream LF payload would be checked out CRLF, every packed
+# member's SHA-256 would change, and the recipe would fail with "Existing
+# repository tarball differs" on a clean clone. `-text` disables EOL conversion in
+# both directions, which is what a byte-pinned artifact needs; `eol=lf` only
+# normalizes on the way in and can be defeated by an editor writing CRLF.
+# Verified on 2026-09-10: with this block, `node Tools/tsd-jsdoc-compat/pack-compat.mjs`
+# reproduces sha256 eca49c14483e4334bf409a7f4aacb2f2c642b885cef8691d936f12c1455d0c19
+# (22,439 bytes, 25 members) from two independent packs.
+Tools/tsd-jsdoc-compat/** -text

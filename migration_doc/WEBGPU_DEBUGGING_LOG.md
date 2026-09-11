@@ -20974,3 +20974,103 @@ layout mutation (the `TileUniforms` float offset shifted by one, and separately 
 moved ahead of `vectorCoverageRadius`). The layout half is derived, not restated: the spec walks
 the WGSL struct under the uniform address-space rules and reproduces every offset the file already
 documents (0, 384, 492) before asserting the new one.
+
+## Bug 1456.1 — two Sharp versions cannot share one Node process on Windows, and the override everyone feared is the fix (Campaign 13 wave A, lane D1)
+
+**Files:** `package.json` (`overrides`), `Tools/lib/sharp-runtime-smoke.spec.mjs`.
+
+**Symptom.** With the root `sharp` devDependency at 0.35.4 and the copy
+`@huggingface/transformers@4.2.0` resolves at 0.34.5 — the tree a plain
+`sharp: ^0.35.3` bump produces, because transformers declares `sharp: ^0.34.5` —
+any pipeline built from the **second** Sharp loaded into a process dies:
+
+```
+GLib-GObject-CRITICAL: value "32" of type 'gint' is invalid or out of range
+for property 'space' of type 'VipsInterpretation'
+-> colourspace: parameter space not set
+```
+
+Measured in this lane's clone against the un-overridden tree: root 0.35.4 first
+succeeds (`4x2x3 OK`), transformers-resolved 0.34.5 second fails. Each version
+alone succeeds. The reverse load order succeeds. Only newer-then-older fails.
+
+**Root cause.** Sharp bundles its own libvips (0.35.4 ships libvips 8.18.6; 0.34.5
+ships 8.17.3). The first copy loaded registers the libvips GObject property types
+for the whole process. The second copy then looks up `VipsInterpretation` in a type
+table that is not its own, and its enum ordinals no longer line up — hence a `gint`
+value of 32 that is out of range for the *other* build's enumeration. This is a
+process-global conflict, not a Sharp API misuse.
+
+**Fix applied.** The version-scoped override
+`"@huggingface/transformers@4.2.0": { … "sharp": "0.35.4" }` retargets the nested
+edge, npm dedupes to the single root copy, and `@huggingface/transformers`
+resolves the same installed Sharp the root does. The nested directory is gone from
+the installed tree and from a freshly computed lock, and `npm audit` drops from 4
+high to 3 (the vanished node was exactly that nested 0.34.5).
+
+**Premise reversed (Principle 10).** RR-2026-09-08-1 filed the Windows ordering
+failure as the risk that could make the override *unusable*, and maintainer option
+M1(b) pre-authorised landing without the clause. The measurement says the opposite:
+the failure is what you get **without** the override. M1(b) was not needed.
+
+**Caveat worth keeping.** `npm ls` reports the deduped `sharp@0.35.4` as `invalid`
+for the transformers edge (0.35.4 does not satisfy `^0.34.5`) and exits 1. Nothing
+in CI runs `npm ls`, but a future lane that adds it will see this.
+
+**Instrument.** `Tools/lib/sharp-runtime-smoke.spec.mjs`, reachable from
+`npm run test-tools-lib`. It loads every resolution context in one process, requires
+one libvips across them, and asserts the full pixel oracle per context. Its negative
+control is the same pipeline run against a tree without the override, which fails on
+the nested context.
+
+## Bug 1456.2 — both installed Sharp versions run `removeAlpha` before `ensureAlpha`, whatever order you chain them in
+
+**Files:** `Tools/lib/sharp-runtime-smoke.spec.mjs`.
+
+**Symptom.** A single pipeline written as
+`.resize().extract().ensureAlpha().composite([rgba]).removeAlpha().png()` emits a
+**four**-channel PNG. The smoke required three, so it read as an ordinary `FAIL 1`.
+
+**Root cause.** libvips reorders the two channel operations; the JavaScript chaining
+order does not survive into the executed pipeline. Diagnosed on 2026-09-08 against
+0.34.5/0.35.4 and **re-measured here on 0.35.4**: single pipeline `4x2x4`,
+second-instance form `4x2x3`. Not fixed upstream by the version bump.
+
+**Fix applied.** The alpha-bearing work finishes and encodes to PNG; a **second**
+Sharp instance then drops the alpha from the completed PNG. The spec also asserts
+that the first instance is still RGBA, so a future Sharp that fixes the ordering
+makes the workaround visibly stale rather than silently redundant (Principle 7).
+
+## Bug 1456.3 — the JSDoc 4 migration silently reorders 123 documentation pages, and `types.txt` with them
+
+**Files:** `Tools/jsdoc/cesium_template/publish.js`,
+`Tools/jsdoc/cesium_template/sortDoclets.js`.
+
+**Symptom.** Replacing `taffydb` with `@jsdoc/salty` (required by JSDoc 4.0.5)
+produced documentation whose rendered member *multiset* was unchanged on every page
+but whose *sequence* differed on 123 of 823 pages, and whose
+`Build/Documentation/types.txt` carried the same 4,056 keys in a different order
+with 76 associated arrays reordered.
+
+**Root cause.** `publish.js` called `data.sort("longname, version, since")`. Salty's
+sorter is deliberately an ordinary case-sensitive relational comparison; TaffyDB's
+split each value into numeric and lowercased text tokens, so `A2` sorted before
+`A10` and `Cartesian3.packedLength` before `Cartesian3.UNIT_X`. Salty inverts both.
+
+**Fix applied.** `sortDoclets.js` reimplements the TaffyDB token comparator (its BSD
+notice retained), sorts the doclet array stably, and `publish.js` rebuilds the Salty
+database from it. Measured against the JSDoc 3.6.11 baseline capture: sequence
+differences fall from **123 pages to 0**, multiset differences stay at 0, and
+`types.txt` becomes **byte-identical**. The 123 is the pre-repair negative control.
+
+**Still open.** A freshly generated documentation set in this clone renders bare
+`CR` where the retained 2026-09-08 captures render bare `LF` inside multi-line
+descriptions (15,565 bare-CR characters across 620 pages, against 7,977 across 187),
+with identical byte lengths and identical `CRLF` counts. On
+`IntersectionTests.html` that `CR` falls inside an inline link tag that spans a
+source line break, and link resolution leaves the tag unrendered: **2 unresolved
+inline link tags in the fresh build, 0 in both retained captures.** Sources and the
+whole JSDoc toolchain are identical between the two installs, so this is neither
+source drift nor a floating dependency. Recorded in `DEFERRED_WORK.md` under the
+2026-09-10 dependency-block section; it needs a baseline regenerated in the same
+clone before the comparison can be scored.

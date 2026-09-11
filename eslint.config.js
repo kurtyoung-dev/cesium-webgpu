@@ -37,8 +37,14 @@ export default [
       //   lint-staged.config.js).
       // - jsdoc template static/: bundled third-party browser scripts
       //   (prism.js, the html5 shiv) shipped with the doc theme.
+      // - tsd-jsdoc-compat/dist: the upstream tsd-jsdoc@2.5.0 compiled payload,
+      //   retained byte for byte. Those bytes are what make the local tarball
+      //   reproducible (`Tools/tsd-jsdoc-compat/pack-compat.mjs` packs twice and
+      //   requires identical archives), so reformatting one would break the
+      //   packed artifact's identity and its provenance claim.
       "Tools/shader-pipeline/naga-wasm-tools/",
       "Tools/jsdoc/cesium_template/static/",
+      "Tools/tsd-jsdoc-compat/dist/",
       // wasm-bindgen build outputs + local scratch — git-ignored, but
       // present in local working trees. CI never sees these; ignoring
       // them keeps local `npm run eslint` equivalent to the CI run.

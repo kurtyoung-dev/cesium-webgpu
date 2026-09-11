@@ -16942,3 +16942,192 @@ home), `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`
 tracked `Tools/` files and the census reads `git ls-files`. It cannot be regenerated from the worker
 clone, where both files are untracked and an intent-to-add index makes the generator read them as
 empty.
+
+## 2026-09-10 — the dependency block lands (M1 + M8), and three of its premises are REFUTED (Campaign 13 wave A, lane D1, worker Dernhelm)
+
+The maintainer ruled (M1, M8, 2026-09-10) that the JSDoc-4 bridge, the Sharp
+compatibility update, the repository-local `tsd-jsdoc` tarball and the Sandcastle
+dependency reconciliation land as ONE reviewed batch. They did. What follows is the
+mechanism record and, more importantly, the three premises the lane could not confirm.
+
+### NEW-DEPENDENCY-JSDOC4-BRIDGE — `jsdoc` 4.0.5 + `@jsdoc/salty` 0.2.12 + a repository-local `tsd-jsdoc` (LANDED 2026-09-10, R-2026-09-08-2)
+
+`Tools/jsdoc/cesium_template/publish.js` took TaffyDB's `taffy` from the unmaintained
+`taffydb` package and called `data.sort("longname, version, since")`. JSDoc 4 replaces
+TaffyDB with `@jsdoc/salty`, whose sorter is deliberately different: ordinary
+case-sensitive relational comparison, where TaffyDB split each value into numeric and
+lowercased text tokens. Swapping the package alone therefore reordered rendered members
+on **123 of 823** documentation pages, and reordered 76 arrays plus the JSON property
+order of `Build/Documentation/types.txt`.
+
+`Tools/jsdoc/cesium_template/sortDoclets.js` restores the legacy order at the one
+ordering boundary in the template, and `publish.js` rebuilds the Salty database from the
+sorted array. Measured against the JSDoc 3.6.11 baseline capture:
+
+| build | pages whose rendered member-id **multiset** differs | pages whose **sequence** differs | `types.txt` |
+| --- | --- | --- | --- |
+| JSDoc 4.0.5, no ordering adapter | 0 | **123** | differs (4,056 keys, reordered) |
+| JSDoc 4.0.5 + `sortDoclets` | 0 | **0** | **byte-identical** (4,056 keys) |
+
+The 123 is the figure an independent reviewer measured in the 2026-09-08 wave,
+reproduced here from the retained captures; it is the negative control for the adapter.
+
+`tsd-jsdoc` is a repository-local, byte-reproducible tarball (`Tools/tsd-jsdoc-compat/`)
+derived from the published `tsd-jsdoc@2.5.0`, packed twice by
+`Tools/tsd-jsdoc-compat/pack-compat.mjs` and accepted only on identical bytes. Its
+run-directory constraint was generalised: the file as inherited pinned a single
+2026-09-08 lane `tmp` path, which would have made the recipe unrunnable for every reader
+of the landed package.
+
+### NEW-DEPENDENCY-SHARP-TWO-LIBVIPS-IN-ONE-PROCESS — two Sharp versions cannot coexist in one Node process on Windows (FIXED 2026-09-10 by the version-scoped override)
+
+With the root `sharp` at 0.35.4 and the `@huggingface/transformers` nested copy at
+0.34.5 — the tree a plain `sharp: ^0.35.3` bump produces, because transformers declares
+`sharp: ^0.34.5` — loading the root copy first and the nested copy second in one process
+fails:
+
+```
+GLib-GObject-CRITICAL: value "32" of type 'gint' is invalid or out of range
+for property 'space' of type 'VipsInterpretation'
+-> colourspace: parameter space not set
+```
+
+Each version in isolation passes; the reverse load order passes; only newer-then-older
+fails. The second libvips inherits the first one's already-registered GObject type table
+and its enum ordinals no longer line up. The
+`"@huggingface/transformers@4.2.0": { "sharp": "0.35.4" }` override collapses both
+resolution contexts onto one installed copy, and the defect disappears.
+
+This reverses the standing reading. RR-2026-09-08-1 filed the Windows ordering failure
+as the risk that might make the override unusable, and maintainer option M1(b)
+pre-authorised dropping the clause. Measured in lane, the override is not the risk — it
+is the **repair**, and M1(b) was not needed.
+
+`Tools/lib/sharp-runtime-smoke.spec.mjs` is that override's canary: it exercises every
+resolution context in one process and requires one libvips. It also keeps the second
+RR-2026-09-08-1 finding alive — **both** installed Sharp versions execute `removeAlpha`
+before `ensureAlpha` regardless of JavaScript chaining order, so the alpha is dropped
+from the completed PNG in a second Sharp instance. Re-measured on 0.35.4: a single
+pipeline carrying both flags still yields 4x2x**4**; the second-instance form yields
+4x2x**3**.
+
+### REFUTED — `package-lock.json` is not merely gitignored; this repository makes npm refuse to write one at all
+
+The lane was briefed to land a lock-only reconciliation and to prove it with `npm ci`
+from the landed lock in a fresh clone. That acceptance cannot be met, and not because of
+a policy this fork chose casually:
+
+- `.gitignore:45` — `package-lock.json`
+- `.npmrc:1` — `package-lock=false` (tracked; upstream commit `a8cacae67b`, "Prevent npm
+  from creating package-lock.json")
+
+A plain `npm install` in a clean clone therefore writes **no lock file**, and `npm ci` —
+which requires one — can never run here. Every `.github/workflows/*.yml` install step is
+`npm install`, never `npm ci`. There is no "reconciled lock" to land; what is landable
+and reproducible is the **manifest**.
+
+**Ruled (R-2026-09-11-4, 2026-09-11): the M1 acceptance is re-specified LOCK-FREE, and
+`.npmrc` stands.** The tracked `package-lock=false` is upstream policy and is not
+reversed; nothing in this batch un-ignores the lock, and no lockfile is committed. The
+acceptance is now: resolve the landed manifest into a **temporary** lock outside the
+repository (`npm install --package-lock-only --package-lock=true`), compare that
+resolution against the ranges the manifests declare, and add the tarball and Sandcastle2
+proofs this lane already banked.
+
+Measured 2026-09-11 (lane D1 fix round), sandbox under the OS temp directory and removed
+afterwards — the repository never held a lock file:
+
+| leg | manifest resolved | result |
+| --- | --- | --- |
+| acceptance | landed | `npm install --package-lock-only` **exit 0**; 1,175 lock entries; 122 declared ranges checked, **0 unsatisfied, 0 unresolvable**; all 10 targeted assertions PASS — `jsdoc` 4.0.5, `@jsdoc/salty` 0.2.12, `taffydb` absent, exactly one `sharp` resolution context, `tsd-jsdoc` resolved from the in-repo tarball, `@huggingface/transformers` 4.2.0 |
+| control — HEAD manifest | pre-batch | **exit 1**, 4 of the same 10 assertions RED (`jsdoc` 3.6.11, no `@jsdoc/salty`, `taffydb` present, `tsd-jsdoc` from the registry). The acceptance can fail |
+| control — override clause deleted | landed minus `"sharp": "0.35.4"` | **exit 1**, 1,200 entries, the resolution splits into **two** `sharp` contexts (`node_modules/sharp` plus `node_modules/@huggingface/transformers/node_modules/sharp`). The override clause is load-bearing, measured from a fresh resolution rather than from a retained lock |
+
+The transcripts, the three temporary locks and the reproducer script are banked with the
+lane packet rather than in the tree, since nothing here is a tracked artefact. Whether to
+reverse `.npmrc` and `.gitignore` is a separate question this ruling declines, so
+dependency reproducibility in this repository is manifest-level **by design**, not by
+omission.
+
+The briefed `karma > body-parser > qs` override was **dropped** under the same ruling: two
+independent measurements (worker and reviewer, from the retained locks) and a third from
+the fresh resolution above agree that `karma`'s `body-parser@1.20.8` wants `qs ~6.16.0`
+and is served by the hoisted root `qs@6.16.0` with or without the clause, and that `qs`
+appears in no advisory before or after. The clause changed nothing, so it is not carried.
+
+### REFUTED — `@vitejs/plugin-react` was never missing from the Sandcastle manifest
+
+The M8 finding records that the Sandcastle rebuild "stopped on a missing
+`@vitejs/plugin-react`". `packages/sandcastle/package.json` already declares
+`"@vitejs/plugin-react": "^6.1.1"` in `devDependencies`, at HEAD and at every commit in
+the window. The package was missing from the **installed tree**, not from the manifest.
+A plain `npm install` in this lane's clone installed `@vitejs/plugin-react@6.1.1` into
+`packages/sandcastle/node_modules` with no manifest change at all, and
+`npm run build-sandcastle` then completed in 8.77 min, exit 0, with embeddings — no
+`--no-embeddings`. M8 needed an install, not an edit.
+
+The sandcastle workspace also declares **no** `@cesium/engine` dependency, so there is
+no range there to align to the fork; the root manifest and `packages/widgets/package.json`
+both carry `^26.3.0` and `packages/engine/package.json` is version `26.3.0`. Already
+aligned.
+
+### PARTIAL — the fresh-versus-retained documentation comparison cannot reach "zero other deltas" against the 2026-09-08 baseline, and the reason is the source checkout's line endings
+
+`Tools/lib/compare-doc-anchors.mjs` (the RR-2026-09-08-2 successor comparator)
+reproduces the 2026-09-08 diagnosis exactly on the retained captures: 698 footer-only,
+and the nine enumerated anchor corrections found where they are enumerated. Against a
+**freshly generated** candidate it does not reach PASS, and the residue is not the bridge:
+
+| residue class | pages | cause |
+| --- | --- | --- |
+| bare CR where the baseline capture has bare LF inside multi-line descriptions | 432 | capture-environment difference; identical byte lengths, identical CRLF counts. Present in a control build using the pre-repair template, so **not** caused by the ordering adapter |
+| CRLF-vs-LF line terminators in template static assets and two pages | 5 | same class |
+| `Globe.html` source-line anchors shifted by 2 | 1 | the retained baseline was generated from a worktree whose `Scene/Globe.js` carried uncommitted edits (+122 bytes, +3 lines against HEAD) |
+| `IntersectionTests.html` | 1 | the bare CR lands inside an inline link tag that spans a source line break, so link resolution leaves the tag unresolved — **2 unresolved inline link tags in the fresh build, 0 in both retained captures** |
+
+Source files and the whole JSDoc toolchain (`jsdoc`, `@jsdoc/salty`, `markdown-it`,
+`linkify-it`, `marked`, `catharsis`, `entities`, `mdurl`, `uc.micro`, `underscore`,
+`requizzle`, `js2xmlparser`, `bluebird`) are identical between the two installs, so the
+difference is neither source drift nor a floating dependency.
+
+**Root cause, established 2026-09-11 by the lane's reviewer and re-derived independently
+in the fix round, and accepted PARTIAL under ruling R-2026-09-11-4.** The inline-tag
+extractor `jsdoc/lib/jsdoc/tag/inline.js` is **byte-identical between jsdoc 3.6.11 and
+4.0.5** — 4,987 bytes, sha256 `ce778e5c928471223ae84b0263902b686a7bc41a093fdc8bbed5801879f079fc`,
+read from both published tarballs — and the regex it builds for every inline tag is
+
+    new RegExp(`${prefix}\\{@${tagName}\\s+((?:.|\n)+?)\\}${suffix}`, 'i');
+
+JavaScript's `.` excludes `\r` and `(?:.|\n)` does not add it back, so a `{@link …}`
+body carrying a CR can never match and the tag is emitted literally. Both residue classes
+— the 432 bare-CR pages and the 2 unresolved `{@link}` tags — are therefore a
+**capture-environment artefact of a CRLF source checkout**, reproduced from two fixtures
+that differ only in line endings, and **pre-existing under jsdoc 3**: the bridge
+introduced neither. `prod.yml:91` builds the documentation on `ubuntu-latest` (an LF
+checkout), so published output is unaffected.
+
+**Status: PARTIAL with nothing unexplained.** What stays open is only the Windows-local
+symptom — on a CRLF checkout, 2 `{@link}` tags in `IntersectionTests.html` render as
+literal text. The line-ending-matched rebuild that would close the comparison to a
+byte-level PASS is **optional** under the ruling: regenerate the candidate from an LF
+checkout (at the seat, or with `core.autocrlf=false`) if that PASS is ever wanted. Read
+"PARTIAL" here as *measured and attributed*, not as *unexplained*.
+
+### Residual security findings — recorded, not waived
+
+`npm audit` over the two manifests, each from a lock computed for that manifest alone:
+
+| manifest | total | high | moderate | advisories |
+| --- | --- | --- | --- | --- |
+| HEAD (`jsdoc ^3.6.7`, `sharp ^0.34.5`, `tsd-jsdoc ^2.5.0`) | 9 | 8 | 1 | `jsdoc`, `taffydb`, `markdown-it`, `linkify-it`, `sharp`, `tsd-jsdoc`, plus the ONNX chain |
+| landed | 3 | 3 | 0 | `@huggingface/transformers` to `onnxruntime-node` to `adm-zip` only |
+
+The three that remain are the ONNX/Adm-Zip chain R-2026-09-08-2 leaves unchanged. They
+are recorded here, not waived; the only offered fix is a semver-major downgrade of
+`@huggingface/transformers` to 3.8.1.
+
+A measurement caveat worth keeping: `npm install --package-lock-only` run **on top of** a
+lock computed for the previous manifest preserved the old nested `sharp` resolution and
+reported 4 high. Recomputed from no lock at all it agrees with the real installed tree —
+nested copy deduped away, 3 high. Audit numbers from an incrementally updated lock are
+not trustworthy for an override change.

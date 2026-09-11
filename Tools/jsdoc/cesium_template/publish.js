@@ -4,8 +4,9 @@
 var fs = require("jsdoc/fs");
 var helper = require("jsdoc/util/templateHelper");
 var path = require("jsdoc/path");
-var taffy = require("taffydb").taffy;
+var taffy = require("@jsdoc/salty").taffy;
 var template = require("jsdoc/template");
+var sortDoclets = require("./sortDoclets");
 
 var htmlsafe = helper.htmlsafe;
 var linkto = helper.linkto;
@@ -285,7 +286,15 @@ exports.publish = function (taffyData, opts, tutorials) {
   helper.setTutorials(tutorials);
 
   data = helper.prune(data);
-  data.sort("longname, version, since");
+  // Salty's sorter deliberately differs from TaffyDB's: it compares strings
+  // case-sensitively and lexically, so `Cartesian3.UNIT_X` sorts before
+  // `Cartesian3.packedLength` and `A10` before `A2`. TaffyDB split each value
+  // into numeric and lowercased text tokens. Sorting the doclets through the
+  // TaffyDB-equivalent comparator and rebuilding the database keeps the member
+  // order the published documentation has always had.
+  var doclets = data().get();
+  sortDoclets(doclets);
+  data = taffy(doclets);
   helper.addEventListeners(data);
 
   var sourceFiles = {};
