@@ -2,7 +2,7 @@
 /**
  * C11-213 (`UP144-VECTOR-LAYER-WGSL`) — terrain-draped vector polylines and
  * polygon fills, browser acceptance probe.
- * @purpose C11-213 acceptance for terrain-draped vector polylines and polygon fills: backend/placement/material/Jacobian/polygon/cleanup gates with STRUCTURAL verdicts.
+ * @purpose C11-213 acceptance for terrain-draped vector polylines and polygon fills: backend/placement/material/Jacobian/polygon/cleanup gates with STRUCTURAL verdicts, plus an unscored ground-metre width octave capture (C-03).
  * @status ACTIVE
  *
  * `vector-layer-draping.spec.mjs` (pure Node) proves the ARITHMETIC: the
@@ -86,6 +86,25 @@
  *                  nadir AND oblique, and one MIXED frame carries the fill plus
  *                  BOTH strokes — a fill composited over the lines instead of
  *                  under them collapses the stroke classes.
+ *   I METRES       ground-metre widths (census C-03, `-07` items 16+17). Its
+ *                  own phase after F, with a metres collection and a pixels
+ *                  collection draped in ONE frame at two nadir eye heights an
+ *                  octave apart (175 km / 350 km). The metres stroke's median
+ *                  screen run must HALVE across the octave on both backends
+ *                  and the pixels stroke must not move. The pre-fix WebGPU
+ *                  symptom is a distinct number, not a missing one: a metres
+ *                  ratio of ~1.0 means the width took the PIXEL arm.
+ *                  NOT SCORED — captured and reported, but excluded from the
+ *                  `gates` array. This is ONE octave against C-03's >= 3, and
+ *                  at 175/350 km a 60 m stroke is 0.304/0.152 px against a
+ *                  0.5 px AA radius, so the halo sets the measured run on both
+ *                  legs and the ratio lands on the ~1.0 that this gate reads
+ *                  as "pixel arm" — i.e. a scored gate I would FAIL a CORRECT
+ *                  build. Closing it is a re-parameterisation of this gate's
+ *                  GEOMETRY (nearer eye heights need line longitudes closer
+ *                  than the 1 deg the A-F meridians use), not of its two
+ *                  setView calls, and must be validated by running the probe
+ *                  once `-07` item 8 lands.
  *
  * STRUCTURAL, never FAIL, when a leg cannot see its own subject: if the WebGL
  * reference lane itself draped nothing, gates B/C/D/H are measuring an empty
@@ -99,6 +118,15 @@
  * plus a WALL-CLOCK settle budget — never `tilesLoaded` alone and never a frame
  * count. A cold globe pipeline variant has measured ~2674 ms to compile, which
  * a 60-frame budget silently under-runs.
+ *
+ * KNOWN BLOCKER at Batch 1443 (`-07` item 8, NOT this file's row to fix):
+ * gates A-F drape via `scene.globe.vectorProvider.add(collection)`, and
+ * `VectorProvider` has no `add()` — its API is `markForFrame` + `remove`, and
+ * `Scene.markVectorCollections` is what marks a `scene.primitives` member whose
+ * `heightReference` is a clamp. Running this file at HEAD therefore dies with
+ * "vectorProvider.add is not a function" before it reaches gate I. Gate I's own
+ * phase uses the correct vehicle; the A-F phase is left as-is so item 8's
+ * re-vehicle lands in one place instead of two.
  *
  * Usage:
  *   node Tools/visual-regression/probe-vector-draping.mjs
@@ -168,6 +196,29 @@ const PREDICT = {
   // legitimately fall out of the stroke colour classes. A fill composited OVER
   // the strokes (the wrong order) takes this to near zero.
   mixedStrokeSurvivalMin: 0.6,
+  // ── Gate I, ground-metre widths (census C-03 / `-07` items 16+17).
+  // Doubling the eye height halves a GROUND-metre stroke's screen width and
+  // leaves a PIXEL stroke alone. Band, not a point: the stroke is measured as
+  // an integer run of changed pixels, so a ~19 px near stroke quantizes to
+  // roughly +/-10% at the far leg, and the two altitudes see different terrain
+  // LOD. A ratio of 1 (no altitude tracking at all) is the pre-fix symptom and
+  // sits far outside the band; so does 0.5 (an inverted conversion).
+  metersOctaveRatio: 2.0,
+  metersOctaveBand: [1.6, 2.5],
+  pixelsOctaveRatio: 1.0,
+  pixelsOctaveBand: [0.8, 1.25],
+  // Rows the metres/pixels legs need before either has an opinion.
+  minOctaveRows: 12,
+  // Authored widths for gate I: 60 m of road and 8 px of line.
+  // KNOWN SHORTFALL, derived not assumed: at the 175 km near view a 60 m
+  // ground stroke is 60 / (2 * 175000 * tan(fovy/2) / 768) = 0.30 px, and
+  // 0.15 px at 350 km, so `minOctaveRows` reports STRUCTURAL rather than a
+  // ratio. (An earlier draft of this comment claimed ~19 px; 19 px is the
+  // NON-draped probe's 6 km leg at pixelRatio 2, not this one's.) Closing it
+  // needs this gate's own nearer eye heights AND its own line longitudes,
+  // which is the gate-I octave debt recorded in the landing packet.
+  metersWidth: 60.0,
+  pixelsWidth: 8.0,
 };
 
 /**
@@ -766,6 +817,154 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
     };
   })();
 
+  // ── Gate I — GROUND-METRE widths across one octave of eye height.
+  //
+  // Its own phase, after the gate A-F collection has been removed and the
+  // globe has come back to its vector-free frame, so nothing above is
+  // perturbed. Two fresh collections, one per unit kind, drawn in the SAME
+  // frame — which is also `-07` item 17's mixed-units leg: a tile carrying
+  // both kinds must draw both correctly at once.
+  //
+  //   RED  = 60 m of road   (widthUnits "meters")  -> must HALVE per octave
+  //   BLUE = 8 px of line   (widthUnits "pixels")  -> must NOT move
+  //
+  // Measured as the MEDIAN per-row run of each colour class. Median, not mean:
+  // the runs are integer pixel counts and the top and bottom rows of a
+  // meridian are clipped by the viewport, which drags a mean but not a median.
+  const medianRowRun = (onFrame, offFrame, wantRed) => {
+    const { width, height, data } = onFrame;
+    const off = offFrame.data;
+    const runs = [];
+    for (let y = 0; y < height; y++) {
+      let run = 0;
+      let best = 0;
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        const delta =
+          Math.abs(data[i] - off[i]) +
+          Math.abs(data[i + 1] - off[i + 1]) +
+          Math.abs(data[i + 2] - off[i + 2]);
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const isWanted =
+          delta !== 0 &&
+          (wantRed ? r > b + 30 && r > g + 30 : b > r + 30 && b > g + 30);
+        if (isWanted) {
+          run++;
+          if (run > best) best = run;
+        } else {
+          run = 0;
+        }
+      }
+      if (best > 0) runs.push(best);
+    }
+    runs.sort((a, b) => a - b);
+    return {
+      rows: runs.length,
+      median: runs.length === 0 ? 0 : runs[Math.floor(runs.length / 2)],
+    };
+  };
+
+  const octaveNearView = () =>
+    scene.camera.setView({
+      destination: C.Cartesian3.fromDegrees(-104.5, 38.5, 175_000.0),
+      orientation: { heading: 0, pitch: C.Math.toRadians(-90), roll: 0 },
+    });
+  const octaveFarView = () =>
+    scene.camera.setView({
+      destination: C.Cartesian3.fromDegrees(-104.5, 38.5, 350_000.0),
+      orientation: { heading: 0, pitch: C.Math.toRadians(-90), roll: 0 },
+    });
+
+  const metresCollection = new C.BufferPolylineCollection({
+    primitiveCountMax: 4,
+    vertexCountMax: 1024,
+    widthUnits: "meters",
+    heightReference: C.HeightReference.CLAMP_TO_GROUND,
+  });
+  metresCollection.add({
+    positions: meridian(LON_RED),
+    material: new C.BufferPolylineMaterial({
+      color: new C.Color(1.0, 0.0, 0.0, 1.0),
+      width: predict.metersWidth,
+    }),
+  });
+  const pixelsCollection = new C.BufferPolylineCollection({
+    primitiveCountMax: 4,
+    vertexCountMax: 1024,
+    heightReference: C.HeightReference.CLAMP_TO_GROUND,
+  });
+  pixelsCollection.add({
+    positions: meridian(LON_BLUE),
+    material: new C.BufferPolylineMaterial({
+      color: new C.Color(0.0, 0.0, 1.0, 1.0),
+      width: predict.pixelsWidth,
+    }),
+  });
+
+  // VEHICLE. `VectorProvider` has no `add()` at Batch 1443 — its API is
+  // `markForFrame(collection, frameNumber, heightReference)` and `remove()`,
+  // and marking must happen EVERY frame or the collection is pruned on the
+  // next one (`VectorProvider._beginFrame`). The production path that does
+  // that marking is `Scene`: `markVectorCollections` (Scene.js:6206) walks
+  // `scene.primitives` and marks every supported collection whose
+  // `heightReference` is a clamp. A clamped `BufferPrimitiveCollection` does
+  // NOT also draw itself as screen-space geometry
+  // (`BufferPrimitiveCollection.js:865-877`), so this is the drape, not a
+  // second undraped copy.
+  //
+  // Gates A-F above still call `scene.globe.vectorProvider.add(...)`, which
+  // throws `add is not a function` at HEAD — that is `-07` item 8's re-vehicle
+  // row, not this one's, so it is left alone rather than silently repaired
+  // here. Until item 8 lands this file cannot reach gate I.
+  // `heightReference` is constructor-only (a getter with no setter), so the
+  // two collections above declare it; draping is then just membership in
+  // `scene.primitives`.
+  const drape = (collection) => scene.primitives.add(collection);
+  const undrape = (collection) => scene.primitives.remove(collection);
+
+  octaveNearView();
+  await settleMs(2500);
+  const octaveNearFree = captureNow();
+  drape(metresCollection);
+  drape(pixelsCollection);
+  await settleMs(3000);
+  const octaveNearOn = captureNow();
+
+  octaveFarView();
+  await settleMs(2500);
+  const octaveFarOn = captureNow();
+  undrape(metresCollection);
+  undrape(pixelsCollection);
+  await settleMs(2500);
+  const octaveFarFree = captureNow();
+  drape(metresCollection);
+  drape(pixelsCollection);
+  await settleMs(2500);
+  // Re-capture the far ON frame against its OWN off frame: the two altitudes
+  // carry different terrain and imagery LOD, so a near-altitude reference
+  // would classify LOD churn as vector pixels.
+  const octaveFarOn2 = captureNow();
+
+  const octave = {
+    near: {
+      metres: medianRowRun(octaveNearOn.image, octaveNearFree.image, true),
+      pixels: medianRowRun(octaveNearOn.image, octaveNearFree.image, false),
+    },
+    far: {
+      metres: medianRowRun(octaveFarOn2.image, octaveFarFree.image, true),
+      pixels: medianRowRun(octaveFarOn2.image, octaveFarFree.image, false),
+    },
+    // Frame-to-frame stability of the far capture, so a moving LOD is visible
+    // as an instrument note rather than scored as a product ratio.
+    farStability: changedPixelCount(octaveFarOn.image, octaveFarOn2.image),
+  };
+  undrape(metresCollection);
+  undrape(pixelsCollection);
+  nadirView();
+  await settleMs(1200);
+
   const dropRowRuns = (metrics) => {
     const { blueRowRun: _rows, ...rest } = metrics;
     return rest;
@@ -782,6 +981,8 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
     [`${renderer}-oblique-polygon`]: obliquePolygon.png,
     [`${renderer}-nadir-mixed`]: nadirMixed.png,
     [`${renderer}-nadir-vectorfree-after-polygon-removal`]: freeD.png,
+    [`${renderer}-octave-near-units`]: octaveNearOn.png,
+    [`${renderer}-octave-far-units`]: octaveFarOn2.png,
   };
 
   return {
@@ -805,6 +1006,7 @@ const RUN_LANE = async ({ renderer, view, useWorldTerrain, predict }) => {
     obliquePolygon: dropRowRuns(obliquePolygonMetrics),
     nadirMixed: dropRowRuns(nadirMixedMetrics),
     jacobian,
+    octave,
     hashes: {
       vectorFreeBefore: hashPixels(freeA.image.data),
       vectorFreeAfterRemoval: hashPixels(freeC.image.data),
@@ -1282,6 +1484,103 @@ async function main() {
         .join("; ");
   }
   console.log(`[H POLYGON]    ${hDetail}  ${verdict(gateH)}`);
+  // ── Gate I — ground-metre widths across one octave of eye height, and the
+  // mixed-units frame (`-07` items 16 + 17, census C-03).
+  //
+  // This is the numeric acceptance the row owns: doubling the eye height must
+  // halve the metres stroke and leave the pixels stroke alone, ON BOTH
+  // BACKENDS. Before the fix the WebGPU metres stroke took the pixel arm, so
+  // its ratio was ~1.0 — the pre-fix symptom is a distinct number, not a
+  // missing one, which is what makes this leg diagnostic rather than a
+  // presence check.
+  //
+  // STRUCTURAL rather than FAIL when a lane's own stroke is too thin to
+  // measure: scoring an unmeasurable stroke as a product FAIL files a phantom
+  // defect, and scoring it as a PASS is a false green.
+  let gateI = null;
+  let iDetail = blindWhy;
+  if (referenceDrew) {
+    const rows = [webgl, webgpu].map((lane) => {
+      const o = lane.octave;
+      const thin =
+        !o ||
+        o.near.metres.rows < PREDICT.minOctaveRows ||
+        o.far.metres.rows < PREDICT.minOctaveRows ||
+        o.near.pixels.rows < PREDICT.minOctaveRows ||
+        o.far.pixels.rows < PREDICT.minOctaveRows ||
+        o.near.metres.median <= 0 ||
+        o.far.metres.median <= 0 ||
+        o.near.pixels.median <= 0 ||
+        o.far.pixels.median <= 0;
+      if (thin) {
+        return {
+          lane: lane.requested,
+          resolved: false,
+          why: o
+            ? `rows ${o.near.metres.rows}/${o.far.metres.rows} (metres) ` +
+              `${o.near.pixels.rows}/${o.far.pixels.rows} (pixels), ` +
+              `medians ${o.near.metres.median}/${o.far.metres.median} and ` +
+              `${o.near.pixels.median}/${o.far.pixels.median}`
+            : "no octave record",
+        };
+      }
+      const metresRatio = o.near.metres.median / o.far.metres.median;
+      const pixelsRatio = o.near.pixels.median / o.far.pixels.median;
+      return {
+        lane: lane.requested,
+        resolved: true,
+        metresRatio,
+        pixelsRatio,
+        near: `${o.near.metres.median}/${o.near.pixels.median}`,
+        far: `${o.far.metres.median}/${o.far.pixels.median}`,
+        farStability: o.farStability,
+        ok:
+          metresRatio >= PREDICT.metersOctaveBand[0] &&
+          metresRatio <= PREDICT.metersOctaveBand[1] &&
+          pixelsRatio >= PREDICT.pixelsOctaveBand[0] &&
+          pixelsRatio <= PREDICT.pixelsOctaveBand[1],
+      };
+    });
+    if (rows.some((row) => !row.resolved)) {
+      iDetail = `unresolved — ${rows
+        .map((row) => `${row.lane}: ${row.resolved ? "ok" : row.why}`)
+        .join("; ")}`;
+    } else {
+      gateI = rows.every((row) => row.ok);
+      iDetail =
+        `near/far median stroke run, metres predicted ` +
+        `${PREDICT.metersOctaveRatio.toFixed(1)} in [${PREDICT.metersOctaveBand}] ` +
+        `and pixels ${PREDICT.pixelsOctaveRatio.toFixed(1)} in [${PREDICT.pixelsOctaveBand}] ` +
+        `(pre-fix WebGPU metres ratio was ~1.0 — the pixel arm); ` +
+        rows
+          .map(
+            (row) =>
+              `${row.lane} near=${row.near} far=${row.far} ` +
+              `metres=${row.metresRatio.toFixed(2)} pixels=${row.pixelsRatio.toFixed(2)} ` +
+              `farStability=${row.farStability}px`,
+          )
+          .join("; ");
+    }
+  }
+  // SCAFFOLDING, NOT SCORED. A 60 m ground stroke is 0.304 px at 175 km and
+  // 0.152 px at 350 km (2*h*tan(fovy/2)/768; fovy = 46.83 deg at 1024x768),
+  // while the draped arm ramps coverage as 1 - smoothstep(-R, R, edgeDistance)
+  // with R = vectorCoverageRadius = 0.5 px. The AA halo, not the authored
+  // width, therefore sets the rendered run on BOTH legs: each quantizes to a
+  // 1 px median and the ratio lands on ~1.00 — the exact value this gate's
+  // docblock defines as "the width took the PIXEL arm". Scoring it would
+  // report a phantom C-03 regression against a CORRECT build. The `thin`
+  // guard cannot catch that: it keys on ROW COUNT, and the 36-41 deg meridian
+  // overflows the viewport at both altitudes, supplying ~768 and ~665 rows
+  // against a threshold of 12. Closing this needs the gate's own nearer eye
+  // heights AND its own line longitudes (at the ~13.3 km that makes the
+  // stroke 4 px the viewport spans ~15.4 km, while LON_RED/LON_BLUE are
+  // 1 deg / ~87 km apart), and must be validated by running the probe once
+  // `-07` item 8 restores the gate A-F vehicle. The octave record still
+  // reaches manifest.json meanwhile.
+  console.log(
+    `[I METRES]     ${iDetail}  ${verdict(gateI)}  (SCAFFOLDING — not scored)`,
+  );
 
   const manifestPath = path.join(OUT, "manifest.json");
   fs.writeFileSync(
@@ -1301,6 +1600,9 @@ async function main() {
   console.log(`\nmanifest: ${manifestPath}`);
   console.log(`PNGs: ${OUT}/*.png`);
 
+  // Gate I is CAPTURED AND REPORTED but NOT SCORED — see the note at its
+  // console line. Its two eye heights make its own subject unmeasurable, and a
+  // scored run would emit a phantom C-03 FAIL against a correct build.
   const gates = [gateA, gateB, gateC, gateD, gateE, gateF, gateG, gateH];
   const failed = gates.some((gate) => gate === false);
   const structural = gates.some((gate) => gate === null);

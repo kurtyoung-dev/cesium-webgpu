@@ -520,6 +520,27 @@ struct TileUniforms {
   // would go stale, while this buffer is rewritten every frame from the same
   // `vectorProvider.antialias` WebGL reads.
   vectorCoverageRadius: f32,
+  // Ground size, in meters, of this tile's UV domain, along each UV axis —
+  // the uniform twin of `VectorCommon.glsl`'s `u_vectorMetersPerUv`, packed
+  // from the same `VectorTileData.metersPerUv` the WebGL uniform map reads
+  // (`GlobeSurfaceTileProviderRendering.js`). `vectorPolylineRender` needs it
+  // to measure a GROUND-METRE stroke width, which is what a negative packed
+  // width marks.
+  //
+  // WGSL gives a `vec2<f32>` an 8-byte alignment, so it starts at float 494
+  // rather than 493 — float 493 stays the padding word it already was, and
+  // the struct's total size is unchanged at 496 floats. `TILE_UNIFORM_FLOATS`
+  // and `VECTOR_METERS_PER_UV_OFFSET` in `WebGPUGlobeSurfaceTypes.ts` are the
+  // CPU half of that pair; `vector-layer-draping.spec.mjs` derives this
+  // member's offset from THIS struct text and fails if the two drift.
+  //
+  // All-zero on a tile with no baked vector data. That is unreachable from
+  // the metres branch (the storage buffer is then the all-zero placeholder
+  // and `vectorPolylineRender` returns at the `gridWidth == 0u` gate), but
+  // the branch still tests it: a zero here would drive `pixelsPerMeter` to
+  // infinity and paint the whole tile, and degrading to the pixel branch is
+  // the survivable failure.
+  vectorMetersPerUv: vec2<f32>,
 };
 
 @group(0) @binding(1) var<uniform> tile: TileUniforms;
@@ -4258,6 +4279,42 @@ fn vectorPolylineRender(
   }
   let screenFromUv = vectorInverse2x2(uvJacobian, uvJacobianDet);
 
+  // GROUND-METRE widths. `VectorCommon.glsl:141-147`:
+  //
+  //   mat2 metersFromUv = mat2(u_vectorMetersPerUv.x, 0.0, 0.0, u_vectorMetersPerUv.y);
+  //   float pixelsPerMeter = 1.0 / max(length(metersFromUv * dFdx(vectorUv)),
+  //                                    length(metersFromUv * dFdy(vectorUv)));
+  //
+  // `metersFromUv` is diagonal, so the product is a componentwise scale and no
+  // matrix is needed here. The derivatives are the SAME `uvDx`/`uvDy` the
+  // caller already hoisted to fragment entry, so unlike the GLSL this needs no
+  // "computed unconditionally to stay in uniform control flow" note — there is
+  // no derivative builtin left in this function to keep uniform.
+  //
+  // WebGL selects the three arms with `VECTOR_WIDTH_IN_METERS` /
+  // `VECTOR_WIDTH_MIXED_UNITS` (shader-set flag bits derived from
+  // `vectorData.hasMeterWidths` / `hasPixelWidths`). This backend runs the
+  // MIXED arm unconditionally instead, per primitive, on the sign that is
+  // already in the packed width: a pixels-only tile has no negative width and
+  // therefore takes the pixel arm on every primitive, byte-identically to
+  // before, and a metres-only tile takes the metres arm on every primitive.
+  // One runtime branch covers all three GLSL arms and forks no pipeline
+  // variant, which is the same reasoning `vectorCoverageRadius` is a uniform
+  // for rather than a define.
+  let metersPerUv = tile.vectorMetersPerUv;
+  let metersDx = length(metersPerUv * uvDx);
+  let metersDy = length(metersPerUv * uvDy);
+  let metersPerPixel = max(metersDx, metersDy);
+  // The GLSL divides by that maximum with no guard, because its metres arm is
+  // compiled out unless the tile actually baked a metres width — and a tile
+  // that did always carries a positive `metersPerUv`. Here the arm is always
+  // present, so state the precondition: an unwritten (all-zero) uniform would
+  // make `pixelsPerMeter` infinite and flood the tile with the first segment's
+  // colour. Falling back to the pixel arm is the survivable failure, and it is
+  // unreachable in every configuration that can produce a negative width.
+  let metersUsable = metersPerPixel > 0.0;
+  let pixelsPerMeter = 1.0 / metersPerPixel;
+
   // `i32(f32)` truncates toward zero, matching GLSL's `int(float)`.
   let cellX = u32(clamp(i32(vectorUv.x * f32(gridWidth)), 0, i32(gridWidth) - 1));
   let cellY = u32(clamp(i32(vectorUv.y * f32(gridHeight)), 0, i32(gridHeight) - 1));
@@ -4296,9 +4353,8 @@ fn vectorPolylineRender(
     // The width crosses as a signed VALUE, matching the R32F width texture
     // `VectorCommon.glsl` reads: the magnitude is the FULL stroke width, so
     // the distance test is against half of it, and a negative marks a width in
-    // ground meters. Only the pixel branch exists here — the meters branch is
-    // still a WebGPU gap — so `abs` keeps a meters width finite and positive
-    // instead of letting the sign through as an enormous stroke.
+    // ground meters (`VectorPipeline.packPolylineCollectionData` negates when
+    // `collection.widthUnits === "meters"`).
     let lineWidth = vectorPrimitiveRecord(
       primitivesBase,
       primitiveIndex,
@@ -4306,7 +4362,15 @@ fn vectorPolylineRender(
     let halfWidth = abs(lineWidth) * 0.5;
 
     let offsetUv = vectorOffsetToLine(vectorUv, segment);
-    let edgeDistance = length(screenFromUv * offsetUv) - halfWidth;
+    // The two arms of `VectorCommon.glsl:192-198`. Both end in PIXELS: the
+    // metres arm measures the offset and the half-width on the ground and then
+    // converts the whole signed distance with `pixelsPerMeter`, so the coverage
+    // ramp below is one unit system whatever a width was authored in.
+    var edgeDistance = length(screenFromUv * offsetUv) - halfWidth;
+    if (lineWidth < 0.0 && metersUsable) {
+      edgeDistance =
+        (length(metersPerUv * offsetUv) - halfWidth) * pixelsPerMeter;
+    }
 
     if (edgeDistance < nearestEdgeDistance) {
       nearestEdgeDistance = edgeDistance;

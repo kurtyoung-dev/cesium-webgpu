@@ -271,9 +271,22 @@ export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 //                WebGL selects it with the `VECTOR_ANTIALIAS` shader-set flag;
 //                this backend gates the whole vector path at runtime, so a
 //                define here would fork every globe pipeline variant.
-//   493 - 495  padding — WGSL rounds the struct up to the 16-byte alignment
-//                of its widest member, so these three floats exist whether or
-//                not anything is written to them.
+//   493        padding — the vec2 below has an 8-byte alignment, so WGSL
+//                rounds past this float rather than starting on it.
+//   494 - 495  vectorMetersPerUv (vec2) — ground size of the tile's UV domain
+//                in meters along each UV axis, the uniform twin of
+//                `VectorCommon.glsl`'s `u_vectorMetersPerUv`. Packed from the
+//                same `VectorTileData.metersPerUv` (`VectorProvider`'s
+//                `computeMetersPerUv`) that the WebGL uniform map reads, so
+//                the two backends measure a ground-metre stroke against the
+//                same tile metric. All-zero on a tile with no baked vector
+//                data, which the shader's metres arm treats as "no usable
+//                metric" and falls back to the pixel arm.
+//                WebGL selects its metres arm with the shader-set flags
+//                `VECTOR_WIDTH_IN_METERS` / `VECTOR_WIDTH_MIXED_UNITS`; this
+//                backend branches per primitive on the packed width's SIGN,
+//                for the same reason `vectorCoverageRadius` is a uniform —
+//                a define here would fork every globe pipeline variant.
 //
 // Total = 496 floats = 1984 bytes. Well under WebGPU's
 // `maxUniformBufferBindingSize` floor (16 KiB).
@@ -324,6 +337,18 @@ export const LOCALIZED_TRANSLUCENCY_RECT_OFFSET = 480;
 export const OCEAN_WAVE_PHASE_A_OFFSET = 484; // octave1.xy, octave2.xy
 export const OCEAN_WAVE_PHASE_B_OFFSET = 488; // octave3.xy, spanNorm.xy
 export const VECTOR_COVERAGE_RADIUS_OFFSET = 492;
+/**
+ * Ground size of the tile's UV domain, in meters, along each UV axis — the
+ * uniform twin of `VectorCommon.glsl`'s `u_vectorMetersPerUv`, packed from the
+ * same `VectorTileData.metersPerUv` the WebGL uniform map reads.
+ *
+ * 494, not 493: the WGSL member is a `vec2<f32>`, whose 8-byte alignment
+ * rounds the offset after the f32 at 492 up to the next even float. Float 493
+ * stays the padding word it already was, and `TILE_UNIFORM_FLOATS` is
+ * unchanged at 496 — the struct had three declared pad floats and this
+ * consumes two of them.
+ */
+export const VECTOR_METERS_PER_UV_OFFSET = 494;
 
 /**
  * Coverage radius matching `VectorCommon.glsl`'s `#ifdef VECTOR_ANTIALIAS`

@@ -14595,7 +14595,7 @@ the sense of the "permanent sentinels" rule in `CLAUDE.md`.
 arithmetic with every header index read out of the shader source, fixtures
 baked through the real `VectorPipeline.packPolygonGrid` (overlapping
 translucent areas, one with a hole) and a mixed fixture — 10 new tests,
-58/58 green (47 of them this lane's and L4's at the 2026-09-11 rebase onto Batch 1462). Four polygon mutations are each asserted DETECTED: `M7p` the
+68/68 green (47 of them L1's and L4's at the 2026-09-11 rebase onto Batch 1462; L2's ten land on top at Batch 1463). Four polygon mutations are each asserted DETECTED: `M7p` the
 cell start read as `cellEnd[i]`, `M8p` the edge→primitive indirection
 dropped, `M9p` the packed polygon-edge run displaced by ONE WORD with the
 header untouched, `M10p` a polygons-only bake packed as `null` and claimed
@@ -16817,3 +16817,128 @@ HELD. `pickTranslucentDepth` is item 20 and held for its measurement.
 **For the seat.** `migration_doc/TOOLING_CATALOG.md` is generated from `git ls-files`, so the new
 spec cannot be catalogued from an untracked tree — run `npm run generate-tooling-catalog` in the
 landing commit. This lane does not edit the queue row.
+
+## 2026-09-06 — NEW-WEBGPU-BUFFERPOLYLINE-WIDTHUNITS-METERS and the draped metres arm (lane Ulwarth, wave S1 L2, census C-03 + C-04, `UPSTREAM-SYNC-1.145-07` items 16, 17, 18) — **FIXED, awaiting the Edge acceptance leg**
+
+CesiumJS 1.145 gave polylines a ground-metre width on two independent code paths, and WebGPU
+implemented neither. On both, an 8 m road was drawn 8 px wide at every altitude — orders of
+magnitude wrong at most camera distances, and wrong in the direction that makes a road vanish when
+you zoom in and swallow a city when you zoom out.
+
+**Both halves are one sign convention.** `VectorPipeline.packPolylineCollectionData:191` (draped)
+and `renderBufferPolylineCollection.js:225` (non-draped) both NEGATE the width when
+`collection.widthUnits === "meters"`; the magnitude is the full stroke width and the sign is the
+unit tag. Signing the attribute without the shader branch does not render "the wrong width" — it
+extrudes by a NEGATIVE half-width and inverts every miter. That is why the two halves are one
+patch, and why each half alone is required to turn a spec red.
+
+### The draped half (C-03, items 16 + 17)
+
+The sign was ALREADY in the packed word: `WebGPUVectorTileResources.packVectorTileWords` carries
+widths by value, and `GlobeTerrain.wgsl` said so in a comment that also recorded the gap — "Only
+the pixel branch exists here — the meters branch is still a WebGPU gap" — so `abs()` swallowed the
+sign. What was missing was the branch and its input.
+
+`VectorCommon.glsl:140-148, 190-199` is the specification: a diagonal `metersFromUv` built from
+`u_vectorMetersPerUv`, a `pixelsPerMeter` reciprocal of the coarser ground-projected screen
+derivative, and a three-way MIXED / METERS / pixels selection made with shader-set flag bits.
+
+- `TileUniforms` gains `vectorMetersPerUv: vec2<f32>` at float **494**
+  (`VECTOR_METERS_PER_UV_OFFSET`). Not 493, the next free pad float: a `vec2<f32>` is 8-byte
+  aligned, so WGSL rounds past it. `TILE_UNIFORM_FLOATS` is UNCHANGED at 496 — the struct already
+  declared three pad floats and this consumes two. `WebGPUGlobeSurfaceTileUB` writes both components
+  from the tile's own `VectorTileData.metersPerUv`, the same object and field
+  `GlobeSurfaceTileProviderRendering.js:2480` copies into WebGL's `u_vectorMetersPerUv`.
+- The WGSL runs the MIXED arm UNCONDITIONALLY, per primitive, on the packed sign. That is a
+  superset of all three GLSL arms — a pixels-only tile has no negative width and takes the pixel arm
+  on every primitive, byte-identically to before — and it forks no pipeline variant, which is the
+  same trade `vectorCoverageRadius` already makes (`WebGPUGlobeSurfaceTypes.ts`: "a define here
+  would fork every globe pipeline variant"). Item 17 (mixed units) therefore needs no second
+  mechanism; it is the same branch, and `F6` measures it against each GLSL arm in turn.
+- One deliberate divergence, stated: the GLSL compiles its metres arm out unless the tile baked a
+  metres width, so it can divide by the ground metric with no guard. Here the arm is always present,
+  so an all-zero uniform would drive `pixelsPerMeter` to infinity and flood the tile with the
+  nearest segment's colour. `metersUsable` falls back to the pixel arm instead. It is unreachable in
+  any configuration that can produce a negative width, and `F7` pins the survivable failure anyway.
+
+### The non-draped half (C-04, item 18) — untracked anywhere before this row
+
+`grep -rn widthUnits packages/engine/Source/Renderer/WebGPU packages/engine/Source/Shaders/WebGPU`
+returned **0** at Batch 1443. `WebGPUBufferPolylineRenderer.ts` now packs `signedWidth` (hoisted
+once per update from `collection.widthUnits`, mirroring the WebGL hoist at
+`renderBufferPolylineCollection.js:174`), and `BufferPolylineMaterial.wgsl` transliterates
+`BufferPolylineMaterialVS.glsl:48-52`.
+
+**The pixel ratio appears twice and cancels, which is the load-bearing detail.** On WebGL,
+`getPolylineWindowCoordinatesEC` multiplies the half-width by `czm_pixelRatio` when it offsets in
+window coordinates (`PolylineCommon.glsl:166`), so the GLSL's `width` is in CSS pixels, and
+`czm_metersPerPixel(positionEC)` returns metres per CSS pixel. The device-pixel offset for a metres
+line is therefore `metres / (2 x metresPerDevicePixel)` — the ratio cancels exactly. This shader
+extrudes in FRAMEBUFFER pixels, which is why its pixels path already multiplied by
+`params.pixelRatio`; passing `params.pixelRatio` into `csm_metersPerPixel` and multiplying by it
+again reproduces that cancellation, so a metres line matches WebGL on a HiDPI display and not only
+at `pixelRatio == 1`. `B4` is that clause.
+
+### REFUTED: `csm_metersPerPixel` existed but was not a twin, and had no callers
+
+The brief and the census both record the builtin as available. It was — with **zero consumers
+repo-wide** — and it was not faithful to `Builtin/Functions/metersPerPixel.glsl`: it measured
+`length(positionEC.xyz)` (radial distance) where the GLSL measures `-positionEC.z` (eye-space
+depth), and returned `max(mpp, mpp * pixelRatio)` where the GLSL multiplies unconditionally. The
+radial form agrees with the GLSL only on the view axis and over-reports elsewhere, drawing a metres
+line too THIN toward the screen edges. Corrected here, as its first consumer; `A1`/`A2` pin it
+against the GLSL, and `A2` is off-axis on purpose because no on-axis fixture can separate the two
+definitions. Two approximations remain and are now stated in the chunk: an off-centre frustum
+(`projection[1][1]` is `near/top` only for a symmetric one) and no 2D/orthographic arm.
+
+### Shared-file contract
+
+`VECTOR_PRIMITIVE_STRIDE` is now declared once in `GlobeTerrain.wgsl` and once in
+`WebGPUVectorTileResources.ts`, and every read of the primitives run goes through one named WGSL
+helper, `vectorPrimitiveRecord(primitivesBase, primitiveIndex) -> VectorPrimitiveRecord`, whose
+`pickColor` is `vec4<f32>(0.0)` while the stride is 2. The draped-vector pick lane raises the stride
+to 3 and fills that field; no other reader changes. `F3` requires the two declarations to agree and
+requires no reader to index the run with a literal.
+
+**Parity (Principle 5).** WebGPU-only. The GLSL, `PolylineCommon.glsl`, `VectorCommon.glsl` and
+every WebGL packer are untouched — `M5` asserts it — because the metres behaviour is already
+correct on WebGL; this row closes the WebGPU side of it.
+
+**Node acceptance.** `npm run test-engine-node`: `vector-layer-draping.spec.mjs` 58 -> **68** after the
+2026-09-11 rebase onto Batch 1463 (37 -> 47 standalone against Batch 1443) and
+the new `buffer-polyline-meters-width.spec.mjs` **14**. Twelve source mutants, each required to turn
+its spec red: five on the non-draped half (inert `if (false && ...)`, unsigned packer, INVERTED
+packer sign, the radial-distance chunk, an unregistered chunk import) and seven on the draped half
+(inert arm, inverted sign test, the `TileUniforms` float offset shifted by one, the WGSL member
+moved ahead of `vectorCoverageRadius`, a stride drift, an unwritten metres uniform, and the
+zero-metric guard removed).
+
+**Edge leg (the seat runs it).** `npx gulp build`; `node server.js --port 8094 --serve-built`; then
+`node Tools/visual-regression/probe-buffer-polyline-meters-width.mjs --port 8094 --renderer webgl,webgpu --runs 2`
+(non-draped, C-04) and `node Tools/visual-regression/probe-vector-draping.mjs` gate I (draped,
+C-03; CAPTURED BUT NOT SCORED). **The draped leg is BLOCKED on `-07` item 8**: `probe-vector-draping.mjs` drapes via
+`scene.globe.vectorProvider.add(collection)` and `VectorProvider` has no `add()` — its API is
+`markForFrame` + `remove`, and `Scene.markVectorCollections` (`Scene.js:6206`) is what marks a
+`scene.primitives` member whose `heightReference` is a clamp. Gate I's own phase uses that correct
+vehicle; the A-F phase is left alone so item 8's re-vehicle lands in one place.
+
+**Files modified:** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`,
+`packages/engine/Source/Shaders/WebGPU/Collections/BufferPolylineMaterial.wgsl`,
+`packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_metersPerPixel.wgsl`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUVectorTileResources.ts`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUBufferPolylineRenderer.ts`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUBufferPrimitiveRenderer.ts`,
+`Tools/visual-regression/vector-layer-draping.spec.mjs`,
+`Tools/visual-regression/buffer-polyline-meters-width.spec.mjs` (new),
+`Tools/visual-regression/probe-vector-draping.mjs`,
+`Tools/visual-regression/probe-buffer-polyline-meters-width.mjs` (new), `package.json` (runner
+home), `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`,
+`migration_doc/FEATURE_INVENTORY.md`.
+
+**For the seat.** `migration_doc/TOOLING_CATALOG.md` needs regenerating
+(`node Tools/generate-tooling-catalog-launcher.cjs`) in the same commit as this patch: it adds two
+tracked `Tools/` files and the census reads `git ls-files`. It cannot be regenerated from the worker
+clone, where both files are untracked and an intent-to-add index makes the generator read them as
+empty.

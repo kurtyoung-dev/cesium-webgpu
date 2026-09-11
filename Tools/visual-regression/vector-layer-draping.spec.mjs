@@ -184,6 +184,10 @@ const {
   VECTOR_TILE_POLYGON_EDGES_BASE,
   VECTOR_TILE_POLYGON_EDGE_PRIMITIVE_BASE,
   VECTOR_PRIMITIVE_STRIDE,
+  // A real function over real inputs, for the ground-metre section (F) below:
+  // it is what stands between an unwritten uniform and an infinite
+  // pixels-per-metre scale in the shader.
+  vectorTileMetersPerUv,
 } = await import(
   pathToFileURL(
     path.join(
@@ -2645,9 +2649,17 @@ test("W4b — both shaders halve the authored width, and both keep the nearest e
   );
   assert.match(
     wgsl,
-    /let edgeDistance = length\(screenFromUv \* offsetUv\) - halfWidth;/,
+    /var edgeDistance = length\(screenFromUv \* offsetUv\) - halfWidth;/,
     "the edge distance must be measured against the half width itself — a factor " +
       "reintroduced here is invisible to the captured half-width above",
+  );
+  // `var`, not `let`, since the ground-metre arm (section F) reassigns it. The
+  // PIXEL arm is still the initializer and still the default: a tile whose
+  // widths are all positive never reaches the metres branch, so the pixel
+  // behaviour every test above pins is the same expression it always was.
+  assert.ok(
+    !/let edgeDistance =/u.test(wgsl),
+    "a second, shadowing edge-distance binding would split the pixel arm in two",
   );
 });
 
@@ -2727,7 +2739,7 @@ test("M3 — a BGRA colour packing is DETECTED", () => {
   const primitivesBase = mutated[VECTOR_TILE_PRIMITIVES_BASE];
   const primitiveCount = mutated[VECTOR_TILE_PRIMITIVE_COUNT];
   for (let i = 0; i < primitiveCount; i++) {
-    const p = primitivesBase + i * 2 + 1;
+    const p = primitivesBase + i * SHADER_PRIMITIVE_STRIDE + 1;
     const packed = mutated[p] >>> 0;
     const r = packed & 0xff;
     const g = (packed >>> 8) & 0xff;
@@ -4067,3 +4079,706 @@ function expandDefines(source, defines) {
   }
   return out.join("\n");
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// F. GROUND-METRE widths — census C-03, `-07` items 16 (metres) + 17 (mixed).
+//
+// `BufferPolylineCollection.widthUnits === "meters"` makes
+// `VectorPipeline.packPolylineCollectionData` NEGATE the width it bakes, and
+// `VectorCommon.glsl` reads that sign to measure the stroke on the GROUND
+// instead of on the screen:
+//
+//     mat2 metersFromUv = mat2(u_vectorMetersPerUv.x, 0.0, 0.0, u_vectorMetersPerUv.y);
+//     float pixelsPerMeter = 1.0 / max(length(metersFromUv * dFdx(vectorUv)),
+//                                      length(metersFromUv * dFdy(vectorUv)));
+//     edgeDistance = (length(metersFromUv * offsetToLine) - halfWidth) * pixelsPerMeter;
+//
+// The sign was ALREADY in the packed word before this lane — the packer
+// carries widths by value and `GlobeTerrain.wgsl` said so in a comment — but
+// only the pixel arm existed, so `abs()` swallowed the sign and an 8 m road
+// drew 8 px wide at every altitude.
+//
+// WebGL forks the shader three ways on `VECTOR_WIDTH_IN_METERS` /
+// `VECTOR_WIDTH_MIXED_UNITS` (`GlobeSurfaceShaderSet.js`, derived from
+// `vectorData.hasMeterWidths` / `hasPixelWidths`). WebGPU runs the MIXED arm
+// unconditionally, per primitive, on the sign — which is a SUPERSET of all
+// three GLSL arms and forks no pipeline variant, the same trade
+// `vectorCoverageRadius` already makes. F6 is what makes "superset" a measured
+// claim rather than an assertion: the mixed fixture is compared against each
+// of the GLSL's three compile-time arms in turn.
+// ═══════════════════════════════════════════════════════════════════════
+
+const VECTOR_METERS_PER_UV_OFFSET = globeTypesConstant(
+  "VECTOR_METERS_PER_UV_OFFSET",
+);
+
+// ── The tile-uniform layout, DERIVED from the WGSL struct ──────────────
+//
+// The packer writes floats at hard-coded indices; the shader reads named
+// struct members. Nothing but this derivation connects the two, and WGSL's
+// uniform address space is where they can silently disagree: `vec2<f32>` has
+// an 8-byte alignment, so `vectorMetersPerUv` lands at float 494 and NOT at
+// 493, the next free pad word — the offset a reader counting floats would
+// naturally pick. Restating 494 here would prove nothing; computing it from
+// the struct text proves the pair.
+//
+// Layout rules (WGSL §"Structure Member Layout", uniform address space):
+// scalars (4,4); vec2 (8,8); vec3 (16,12); vec4 (16,16); matCxR align/size
+// from its column vector; a uniform array's element stride and a uniform
+// struct's alignment both round up to 16.
+
+function wgslStructBody(source, name) {
+  const opener = `\nstruct ${name} {\n`;
+  const start = source.indexOf(opener);
+  if (start < 0) {
+    return null;
+  }
+  const bodyStart = start + opener.length;
+  const end = source.indexOf("\n};", bodyStart);
+  return end < 0 ? null : source.slice(bodyStart, end);
+}
+
+function wgslStructMembers(body) {
+  const out = [];
+  for (const raw of body.split("\n")) {
+    const line = raw.replace(/\/\/.*$/u, "").trim();
+    const match = line.match(/^([A-Za-z_]\w*)\s*:\s*(.+?),$/u);
+    if (match) {
+      out.push({ name: match[1], type: match[2].trim() });
+    }
+  }
+  return out;
+}
+
+const roundUpTo = (multiple, value) => Math.ceil(value / multiple) * multiple;
+
+function wgslTypeLayout(type, source) {
+  if (type === "f32" || type === "i32" || type === "u32") {
+    return { align: 4, size: 4 };
+  }
+  let match = type.match(/^vec([234])<[fiu]32>$/u);
+  if (match) {
+    const components = Number(match[1]);
+    if (components === 2) {
+      return { align: 8, size: 8 };
+    }
+    if (components === 3) {
+      return { align: 16, size: 12 };
+    }
+    return { align: 16, size: 16 };
+  }
+  match = type.match(/^mat([234])x([234])<f32>$/u);
+  if (match) {
+    const columns = Number(match[1]);
+    const column = wgslTypeLayout(`vec${match[2]}<f32>`, source);
+    return {
+      align: column.align,
+      size: columns * roundUpTo(column.align, column.size),
+    };
+  }
+  match = type.match(/^array<\s*(.+?)\s*,\s*(\d+)\s*>$/u);
+  if (match) {
+    const element = wgslTypeLayout(match[1], source);
+    const stride = roundUpTo(16, roundUpTo(element.align, element.size));
+    return {
+      align: roundUpTo(16, element.align),
+      size: Number(match[2]) * stride,
+    };
+  }
+  const body = wgslStructBody(source, type);
+  assert.ok(body, `GlobeTerrain.wgsl declares no type ${type}`);
+  const nested = wgslStructLayout(body, source);
+  return { align: nested.align, size: nested.size };
+}
+
+function wgslStructLayout(body, source) {
+  let offset = 0;
+  let align = 0;
+  const offsets = {};
+  for (const member of wgslStructMembers(body)) {
+    const layout = wgslTypeLayout(member.type, source);
+    offset = roundUpTo(layout.align, offset);
+    offsets[member.name] = offset;
+    offset += layout.size;
+    align = Math.max(align, layout.align);
+  }
+  align = roundUpTo(16, align);
+  return { offsets, align, size: roundUpTo(align, offset) };
+}
+
+// The struct walker is line-oriented, and this repo checks out with
+// `core.autocrlf=true`, so normalize once here rather than teaching every
+// anchor about `\r`.
+const wgslLines = wgsl.replace(/\r\n/gu, "\n");
+
+const TILE_UNIFORM_BODY = wgslStructBody(wgslLines, "TileUniforms");
+assert.ok(TILE_UNIFORM_BODY, "GlobeTerrain.wgsl declares no TileUniforms");
+const TILE_UNIFORM_LAYOUT = wgslStructLayout(TILE_UNIFORM_BODY, wgslLines);
+const tileFloatOffset = (member) => {
+  const byteOffset = TILE_UNIFORM_LAYOUT.offsets[member];
+  assert.ok(
+    byteOffset !== undefined,
+    `TileUniforms declares no member ${member}`,
+  );
+  return byteOffset / 4;
+};
+
+// ── Switches DERIVED from the two shaders, driving the models below ────
+//
+// Same discipline as `WGSL_READS_COVERAGE_UNIFORM` above: each switch is read
+// out of the real source and then feeds a MODEL whose output is compared
+// across backends, so an arm that is present-but-inert fails as behaviour.
+// Each is anchored on the ASSIGNMENT rather than on a token, because both
+// shaders quote the other's expressions in their comments.
+
+const WGSL_METERS_ARM_PATTERN =
+  /if \(lineWidth < 0\.0 && metersUsable\) \{\s*\n\s*edgeDistance =\s*\n?\s*\(length\(metersPerUv \* offsetUv\) - halfWidth\) \* pixelsPerMeter;/u;
+const WGSL_HAS_METERS_ARM = WGSL_METERS_ARM_PATTERN.test(wgsl);
+const WGSL_READS_METERS_UNIFORM =
+  /let metersPerUv = tile\.vectorMetersPerUv;/u.test(wgsl);
+const WGSL_METERS_METRIC =
+  /let metersPerPixel = max\(metersDx, metersDy\);/u.test(wgsl) &&
+  /let metersDx = length\(metersPerUv \* uvDx\);/u.test(wgsl) &&
+  /let metersDy = length\(metersPerUv \* uvDy\);/u.test(wgsl) &&
+  /let pixelsPerMeter = 1\.0 \/ metersPerPixel;/u.test(wgsl);
+const WGSL_GUARDS_ZERO_METRIC =
+  /let metersUsable = metersPerPixel > 0\.0;/u.test(wgsl);
+
+const GLSL_HAS_METERS_ARM =
+  /float edgeDistance = \(length\(metersFromUv \* offsetToLine\) - halfWidth\) \* pixelsPerMeter;/u.test(
+    glslCommon,
+  );
+const GLSL_HAS_MIXED_ARM =
+  /float edgeDistance = width < 0\.0\s*\n\s*\? \(length\(metersFromUv \* offsetToLine\) - halfWidth\) \* pixelsPerMeter\s*\n\s*: length\(screenFromUv \* offsetToLine\) - halfWidth;/u.test(
+    glslCommon,
+  );
+const GLSL_PIXELS_PER_METER =
+  /float pixelsPerMeter = 1\.0 \/ max\(\s*\n\s*length\(metersFromUv \* dFdx\(vectorUv\)\),\s*\n\s*length\(metersFromUv \* dFdy\(vectorUv\)\)\);/u.test(
+    glslCommon,
+  );
+
+// ── Shared metres arithmetic (identical in both languages, so one copy) ─
+const scaleByMetersPerUv = (metersPerUv, v) => [
+  metersPerUv[0] * v[0],
+  metersPerUv[1] * v[1],
+];
+const length2 = (v) => Math.hypot(v[0], v[1]);
+
+/**
+ * `VectorCommon.glsl`'s `pixelsPerMeter`: the reciprocal of the coarser of the
+ * two screen axes measured on the ground. Both shaders compute it identically;
+ * `metersFromUv` is diagonal, so the mat2 product is a componentwise scale.
+ */
+function pixelsPerMeterOf(metersPerUv, uvDx, uvDy) {
+  return (
+    1.0 /
+    Math.max(
+      length2(scaleByMetersPerUv(metersPerUv, uvDx)),
+      length2(scaleByMetersPerUv(metersPerUv, uvDy)),
+    )
+  );
+}
+
+/**
+ * `VectorCommon.glsl`'s edge distance, in PIXELS. `arm` is the compile-time
+ * selection the fork's `GlobeSurfaceShaderSet` makes from the bake:
+ * `hasMeterWidths && hasPixelWidths` → "mixed", `hasMeterWidths` → "meters",
+ * neither → "pixels".
+ */
+function glslEdgeDistance(signedWidth, offsetUv, frame, arm) {
+  const halfWidth = Math.abs(signedWidth) * GLSL_HALF_WIDTH_FACTOR;
+  const pixelDistance =
+    length2(applyScreenFromUv(frame.screenFromUv, offsetUv)) - halfWidth;
+  const usesMeters =
+    (arm === "meters" && GLSL_HAS_METERS_ARM) ||
+    (arm === "mixed" && GLSL_HAS_MIXED_ARM && signedWidth < 0.0);
+  if (!usesMeters) {
+    return pixelDistance;
+  }
+  return (
+    (length2(scaleByMetersPerUv(frame.metersPerUv, offsetUv)) - halfWidth) *
+    (GLSL_PIXELS_PER_METER
+      ? pixelsPerMeterOf(frame.metersPerUv, frame.uvDx, frame.uvDy)
+      : 1.0)
+  );
+}
+
+/**
+ * `GlobeTerrain.wgsl::vectorPolylineRender`'s edge distance, in PIXELS. One
+ * runtime arm covering all three of the GLSL's compile-time ones.
+ */
+function wgslEdgeDistance(signedWidth, offsetUv, frame, mutate = {}) {
+  const halfWidth = Math.abs(signedWidth) * WGSL_HALF_WIDTH_FACTOR;
+  const pixelDistance =
+    length2(applyScreenFromUv(frame.screenFromUv, offsetUv)) - halfWidth;
+  const metersPerUv = mutate.metersPerUv ?? frame.metersPerUv;
+  const metersPerPixel = Math.max(
+    length2(scaleByMetersPerUv(metersPerUv, frame.uvDx)),
+    length2(scaleByMetersPerUv(metersPerUv, frame.uvDy)),
+  );
+  const metersUsable = WGSL_GUARDS_ZERO_METRIC ? metersPerPixel > 0.0 : true;
+  const armLive =
+    WGSL_HAS_METERS_ARM &&
+    WGSL_READS_METERS_UNIFORM &&
+    WGSL_METERS_METRIC &&
+    !mutate.dropMetersArm;
+  if (!armLive || signedWidth >= 0.0 || !metersUsable) {
+    return pixelDistance;
+  }
+  return (
+    (length2(scaleByMetersPerUv(metersPerUv, offsetUv)) - halfWidth) *
+    (1.0 / metersPerPixel)
+  );
+}
+
+/**
+ * The stroke's half-width ON SCREEN, in pixels: the perpendicular offset at
+ * which the edge distance crosses zero, converted back to pixels through the
+ * SAME `screenFromUv` the coverage ramp uses. This is the quantity the Edge
+ * probe measures, and the quantity the acceptance is stated in.
+ *
+ * Found by bisection over the UV offset rather than solved analytically, so
+ * the evaluators above stay the only description of the arithmetic.
+ */
+function strokeHalfWidthPixels(edgeDistanceFn, signedWidth, frame) {
+  const along = (t) => [t, 0];
+  let low = 0;
+  let high = 1e-3;
+  for (
+    let i = 0;
+    i < 200 && edgeDistanceFn(signedWidth, along(high), frame) < 0;
+    i++
+  ) {
+    high *= 2;
+  }
+  for (let i = 0; i < 200; i++) {
+    const mid = (low + high) * 0.5;
+    if (edgeDistanceFn(signedWidth, along(mid), frame) < 0) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+  return length2(
+    applyScreenFromUv(frame.screenFromUv, along((low + high) * 0.5)),
+  );
+}
+
+/**
+ * `previousViewProjection`'s float offset inside `GlobeTerrain.wgsl`'s
+ * `CameraUniforms` at Batch 1443. Pinned so a later member inserted AHEAD of it
+ * fails F1 (see D4 there). Not the tail: `celestialMoonControl` has followed it
+ * since Batch 1271.
+ */
+const PREVIOUS_VIEW_PROJECTION_FLOAT_OFFSET = 100;
+
+/**
+ * A mid-latitude level-16 geographic tile's ground size, from
+ * `VectorProvider.computeMetersPerUv` — `(rect.width·R·cos(lat), rect.height·R)`
+ * with `rect.width = rect.height = π/2^16` and `lat = 40°`. Deliberately
+ * ANISOTROPIC (the x axis shortens with the cosine), which is the case
+ * `metersFromUv`'s two separate components exist for; an isotropic fixture
+ * would let a single-component metric pass.
+ *
+ * A level-6 tile — `buildBakedTile`'s 435 km, right for its padding fixture —
+ * puts ~483 ground metres under every screen pixel, so an 8 m road there is
+ * 0.017 px wide and the acceptance would be measuring rounding. The row's
+ * user-visible subject is a ROAD, and roads are drawn at road LOD.
+ */
+const ACCEPTANCE_METERS_PER_UV = [234.14, 305.65];
+// 8 m of road and 8 px of road: the census's own example, and two widths a
+// probe can tell apart on screen.
+const METRES_WIDTH = -8.0;
+const PIXELS_WIDTH = 8.0;
+
+/**
+ * One camera altitude, as the shaders see it: the forward UV Jacobian scaled
+ * by `octaves` doublings. Pulling the camera back doubles the UV each pixel
+ * covers, which is exactly this scale — and it is the only thing that changes
+ * between the two legs of the acceptance.
+ */
+function frameAtOctave(octaves, metersPerUv = ACCEPTANCE_METERS_PER_UV) {
+  const scale = 2 ** octaves;
+  const uvDx = [
+    INTERIOR_JACOBIAN.uvDx[0] * scale,
+    INTERIOR_JACOBIAN.uvDx[1] * scale,
+  ];
+  const uvDy = [
+    INTERIOR_JACOBIAN.uvDy[0] * scale,
+    INTERIOR_JACOBIAN.uvDy[1] * scale,
+  ];
+  return {
+    uvDx,
+    uvDy,
+    metersPerUv,
+    screenFromUv: glslScreenFromUv(uvDx, uvDy),
+  };
+}
+
+test("F1 — the float offsets the packer writes ARE the WGSL struct's own offsets", () => {
+  // Self-check first: a layout model that cannot reproduce the offsets the
+  // struct already shipped with is not evidence about the new one.
+  assert.equal(
+    tileFloatOffset("layers"),
+    0,
+    "the derivation must reproduce the imagery run's offset",
+  );
+  assert.equal(
+    tileFloatOffset("dayNightAlpha"),
+    globeTypesConstant("DAY_NIGHT_ALPHA_OFFSET"),
+    "the derivation must reproduce DAY_NIGHT_ALPHA_OFFSET",
+  );
+  assert.equal(
+    tileFloatOffset("vectorCoverageRadius"),
+    VECTOR_COVERAGE_RADIUS_OFFSET,
+    "the derivation must reproduce the coverage radius' offset",
+  );
+
+  // The new pair.
+  assert.equal(
+    tileFloatOffset("vectorMetersPerUv"),
+    VECTOR_METERS_PER_UV_OFFSET,
+    "WebGPUGlobeSurfaceTypes.ts and GlobeTerrain.wgsl disagree about where " +
+      "the metres-per-UV pair lives; the shader would read padding",
+  );
+  // 494 and not 493: a `vec2<f32>` is 8-byte aligned, so the first free pad
+  // float after the coverage radius is NOT where the member starts.
+  assert.equal(
+    VECTOR_METERS_PER_UV_OFFSET,
+    VECTOR_COVERAGE_RADIUS_OFFSET + 2,
+    "the vec2's alignment must leave float 493 as padding",
+  );
+  assert.equal(
+    TILE_UNIFORM_LAYOUT.size / 4,
+    TILE_UNIFORM_FLOATS,
+    "TILE_UNIFORM_FLOATS must equal the struct the shader declares",
+  );
+  assert.ok(
+    VECTOR_METERS_PER_UV_OFFSET + 2 <= TILE_UNIFORM_FLOATS,
+    "both components must lie inside the buffer",
+  );
+
+  // Maintainer binding D4, checked in the form the code can actually satisfy.
+  //
+  // CLAUDE.md states the rule as "previousViewProjection at the TAIL of every
+  // CameraUniforms struct". In THIS shader it is not the tail and has not been
+  // since Batch 1271 (2026-08-29) appended `celestialMoonControl` after it —
+  // measured, not assumed: the member sits at float 100 of a 244-float struct.
+  // So the checkable content of D4 here is that the member is PRESENT and has
+  // NOT MOVED: a lane that inserts a new member ahead of it silently shifts
+  // every motion-vector read, which is the failure the rule exists to prevent.
+  // Appending after it, as Batch 1271 did and as this lane does not do at all,
+  // shifts nothing.
+  const cameraBody = wgslStructBody(wgslLines, "CameraUniforms");
+  assert.ok(cameraBody, "GlobeTerrain.wgsl declares no CameraUniforms");
+  const cameraLayout = wgslStructLayout(cameraBody, wgslLines);
+  assert.equal(
+    cameraLayout.offsets.previousViewProjection / 4,
+    PREVIOUS_VIEW_PROJECTION_FLOAT_OFFSET,
+    "D4: previousViewProjection has MOVED inside CameraUniforms — every " +
+      "motion-vector, TAA and CSM read of it now lands on another member",
+  );
+});
+
+test("F2 — the packer takes both components from the tile's own baked vector data", () => {
+  // Real function, real inputs. It is what stands between an unwritten uniform
+  // and an infinite pixels-per-metre scale.
+  assert.equal(vectorTileMetersPerUv(undefined), undefined);
+  assert.equal(vectorTileMetersPerUv({}), undefined);
+  assert.equal(
+    vectorTileMetersPerUv({ metersPerUv: { x: 0, y: 435000 } }),
+    undefined,
+    "a zero axis must be rejected, not divided by",
+  );
+  assert.equal(
+    vectorTileMetersPerUv({ metersPerUv: { x: -1, y: 435000 } }),
+    undefined,
+  );
+  assert.equal(
+    vectorTileMetersPerUv({ metersPerUv: { x: Number.NaN, y: 1 } }),
+    undefined,
+  );
+  assert.deepEqual(vectorTileMetersPerUv({ metersPerUv: { x: 12, y: 34 } }), {
+    x: 12,
+    y: 34,
+  });
+
+  // …and a REAL bake supplies a usable pair, so the guard is not rejecting
+  // every real tile.
+  const baked = buildBakedTile();
+  assert.deepEqual(vectorTileMetersPerUv(baked), {
+    x: baked.metersPerUv.x,
+    y: baked.metersPerUv.y,
+  });
+
+  const tileUbSource = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts",
+    ),
+    "utf8",
+  );
+  assert.match(
+    tileUbSource,
+    /data\[VECTOR_METERS_PER_UV_OFFSET\] = metersPerUv\.x;/u,
+    "the packer must write the x component at the declared offset",
+  );
+  assert.match(
+    tileUbSource,
+    /data\[VECTOR_METERS_PER_UV_OFFSET \+ 1\] = metersPerUv\.y;/u,
+    "…and y at the next float",
+  );
+  assert.match(
+    tileUbSource,
+    /vectorTileMetersPerUv\(surfaceTile\.vectorData\)/u,
+    "…from the tile's own vector data, the same object WebGL reads",
+  );
+  // The WebGL uniform map must still read the same field, or the two backends
+  // are measuring different tiles.
+  const tileRendering = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js",
+    ),
+    "utf8",
+  );
+  assert.match(
+    tileRendering,
+    /vectorData\.metersPerUv,\s*\n\s*uniformMapProperties\.vectorMetersPerUv,/u,
+    "GlobeSurfaceTileProviderRendering must still feed u_vectorMetersPerUv " +
+      "from VectorTileData.metersPerUv",
+  );
+});
+
+test("F3 — one primitive stride, declared on both sides of the pair", () => {
+  assert.equal(
+    SHADER_PRIMITIVE_STRIDE,
+    VECTOR_PRIMITIVE_STRIDE,
+    "GlobeTerrain.wgsl and WebGPUVectorTileResources.ts must agree on the " +
+      "words per primitive record",
+  );
+  assert.match(
+    wgsl,
+    /fn vectorPrimitiveRecord\(\s*primitivesBase: u32,\s*primitiveIndex: u32,?\s*\) -> VectorPrimitiveRecord/u,
+    "every consumer of the primitives run must go through the shared helper",
+  );
+  assert.ok(
+    !/primitivesBase \+ \w+ \* 2u/u.test(wgsl),
+    "no reader may still index the primitives run with a literal stride",
+  );
+});
+
+test("F4 — the metres arm agrees with the GLSL metres arm across four octaves", () => {
+  assert.ok(
+    GLSL_HAS_METERS_ARM,
+    "VectorCommon.glsl no longer has a metres arm",
+  );
+  assert.ok(GLSL_PIXELS_PER_METER, "…or no longer computes pixelsPerMeter");
+  for (let octave = 0; octave <= 4; octave++) {
+    const frame = frameAtOctave(octave);
+    for (const du of [1e-6, 1e-5, 1e-4, 1e-3, 5e-3, 2e-2]) {
+      const offset = [du, 0];
+      const expected = glslEdgeDistance(METRES_WIDTH, offset, frame, "meters");
+      const actual = wgslEdgeDistance(METRES_WIDTH, offset, frame);
+      assert.ok(
+        Math.abs(expected - actual) <= 1e-9 * Math.max(1, Math.abs(expected)),
+        `octave ${octave}, du ${du}: GLSL ${expected} vs WGSL ${actual}`,
+      );
+    }
+  }
+});
+
+test("F5 — a metres stroke HALVES per octave and a pixels stroke does NOT, on both backends", () => {
+  // The census C-03 acceptance, over its own bar of >= 3 octaves. Measured
+  // here as the stroke's on-screen half-width in pixels.
+  const legs = [];
+  for (let octave = 0; octave <= 4; octave++) {
+    const frame = frameAtOctave(octave);
+    legs.push({
+      octave,
+      metresGlsl: strokeHalfWidthPixels(
+        (w, o, f) => glslEdgeDistance(w, o, f, "meters"),
+        METRES_WIDTH,
+        frame,
+      ),
+      metresWgsl: strokeHalfWidthPixels(wgslEdgeDistance, METRES_WIDTH, frame),
+      pixelsGlsl: strokeHalfWidthPixels(
+        (w, o, f) => glslEdgeDistance(w, o, f, "pixels"),
+        PIXELS_WIDTH,
+        frame,
+      ),
+      pixelsWgsl: strokeHalfWidthPixels(wgslEdgeDistance, PIXELS_WIDTH, frame),
+    });
+  }
+
+  assert.ok(
+    legs[0].metresWgsl > 1.0,
+    `the near metres stroke must be measurable, got ${legs[0].metresWgsl}`,
+  );
+  for (let i = 1; i < legs.length; i++) {
+    const ratio = legs[i - 1].metresWgsl / legs[i].metresWgsl;
+    assert.ok(
+      Math.abs(ratio - 2.0) < 1e-3,
+      `octave ${legs[i].octave}: a ground-metre stroke must halve, ratio ${ratio}`,
+    );
+    assert.ok(
+      Math.abs(legs[i].pixelsWgsl - legs[0].pixelsWgsl) < 1e-6,
+      `octave ${legs[i].octave}: a pixel stroke must not move, ` +
+        `${legs[0].pixelsWgsl} → ${legs[i].pixelsWgsl}`,
+    );
+  }
+  // Same law on WebGL, and the two backends agree leg for leg — the ratio
+  // alone would be satisfied by a stroke that halved from the wrong start.
+  for (const leg of legs) {
+    assert.ok(
+      Math.abs(leg.metresGlsl - leg.metresWgsl) <= 1e-6 * leg.metresGlsl,
+      `octave ${leg.octave}: WebGL ${leg.metresGlsl} vs WebGPU ${leg.metresWgsl}`,
+    );
+    assert.ok(
+      Math.abs(leg.pixelsGlsl - leg.pixelsWgsl) <= 1e-6 * leg.pixelsGlsl,
+      `octave ${leg.octave} (pixels): WebGL ${leg.pixelsGlsl} vs WebGPU ${leg.pixelsWgsl}`,
+    );
+  }
+  // The gap the row is filed against, stated as a number. Before this lane a
+  // metres width took the PIXEL arm, so it drew at `legs[n].pixelsWgsl` at
+  // every altitude. The ratio between the two families must therefore grow by
+  // exactly one doubling per octave — four octaves, 16x — and that divergence
+  // IS the bug's magnitude.
+  const ratioAt = (i) => legs[i].pixelsWgsl / legs[i].metresWgsl;
+  assert.ok(
+    Math.abs(ratioAt(4) / ratioAt(0) - 16.0) < 1e-3,
+    `the two families must diverge by one doubling per octave, got ` +
+      `${ratioAt(0)} → ${ratioAt(4)}`,
+  );
+  assert.ok(
+    ratioAt(4) > 4,
+    "…and be plainly far apart by the top octave, not merely different",
+  );
+});
+
+test("F6 — one tile carrying BOTH unit kinds draws both correctly in one frame", () => {
+  // `-07` item 17. WebGPU has no mixed-units define: the runtime sign test is
+  // the mixed arm, and this is the check that it is a superset rather than a
+  // different behaviour.
+  assert.ok(GLSL_HAS_MIXED_ARM, "VectorCommon.glsl no longer has a mixed arm");
+  for (let octave = 0; octave <= 3; octave++) {
+    const frame = frameAtOctave(octave);
+    for (const du of [1e-5, 1e-4, 1e-3, 1e-2]) {
+      const offset = [du, 0];
+      for (const width of [METRES_WIDTH, PIXELS_WIDTH, -21.0, 4.5]) {
+        const expected = glslEdgeDistance(width, offset, frame, "mixed");
+        const actual = wgslEdgeDistance(width, offset, frame);
+        assert.ok(
+          Math.abs(expected - actual) <= 1e-9 * Math.max(1, Math.abs(expected)),
+          `mixed octave ${octave}, width ${width}, du ${du}: ` +
+            `GLSL ${expected} vs WGSL ${actual}`,
+        );
+      }
+    }
+  }
+  // And the pixels-only arm is unchanged, which is what "byte-identical for a
+  // tile with no metres width" means operationally.
+  for (const du of [1e-5, 1e-3, 1e-2]) {
+    const frame = frameAtOctave(2);
+    assert.equal(
+      wgslEdgeDistance(PIXELS_WIDTH, [du, 0], frame),
+      glslEdgeDistance(PIXELS_WIDTH, [du, 0], frame, "pixels"),
+    );
+  }
+});
+
+test("F7 — an unwritten metres-per-UV uniform degrades to the pixel arm, not to a flood", () => {
+  // The one deliberate divergence from the GLSL, which compiles its metres arm
+  // out unless the tile baked a metres width. Here the arm is always present,
+  // so an all-zero uniform would make pixelsPerMeter infinite and paint every
+  // fragment with the first segment's colour. Unreachable in a shipping
+  // configuration (a negative width implies a bake, which implies the uniform)
+  // — assert the survivable failure anyway.
+  assert.ok(
+    WGSL_GUARDS_ZERO_METRIC,
+    "GlobeTerrain.wgsl must gate the metres arm on a usable metric",
+  );
+  const frame = frameAtOctave(0);
+  const flooded = wgslEdgeDistance(METRES_WIDTH, [1e-2, 0], frame, {
+    metersPerUv: [0, 0],
+  });
+  assert.ok(
+    Number.isFinite(flooded),
+    `a zero metric must not produce ${flooded}`,
+  );
+  assert.equal(
+    flooded,
+    glslEdgeDistance(Math.abs(METRES_WIDTH), [1e-2, 0], frame, "pixels"),
+    "…it must fall back to the pixel arm's answer for the same magnitude",
+  );
+});
+
+test("M8 — dropping the metres arm restores the reported bug and is DETECTED", () => {
+  const frame0 = frameAtOctave(0);
+  const frame3 = frameAtOctave(3);
+  const near = strokeHalfWidthPixels(
+    (w, o, f) => wgslEdgeDistance(w, o, f, { dropMetersArm: true }),
+    METRES_WIDTH,
+    frame0,
+  );
+  const far = strokeHalfWidthPixels(
+    (w, o, f) => wgslEdgeDistance(w, o, f, { dropMetersArm: true }),
+    METRES_WIDTH,
+    frame3,
+  );
+  assert.ok(
+    Math.abs(near - far) < 1e-6,
+    "without the arm the stroke stops tracking altitude — the reported bug",
+  );
+  const expected = strokeHalfWidthPixels(
+    (w, o, f) => glslEdgeDistance(w, o, f, "meters"),
+    METRES_WIDTH,
+    frame3,
+  );
+  assert.ok(
+    Math.abs(expected - far) > 1e-3 * expected,
+    "…and it must not compare equal to WebGL",
+  );
+});
+
+test("M9 — making the metres arm INERT (`if (false && …)`) is DETECTED", () => {
+  // Absence is the easy mutation; this is the one that survives a grep for the
+  // arm's text. The switch the model is derived from is anchored on the whole
+  // `if (…) { edgeDistance = … }` shape, so an inert guard misses it and the
+  // model falls back to pixels — which M8 has just shown fails F4/F5.
+  const inert = wgsl.replace(
+    "if (lineWidth < 0.0 && metersUsable) {",
+    "if (false && lineWidth < 0.0 && metersUsable) {",
+  );
+  assert.notEqual(inert, wgsl, "the inertness mutant must apply");
+  assert.ok(
+    !WGSL_METERS_ARM_PATTERN.test(inert),
+    "an inert arm must not satisfy the switch — otherwise this section " +
+      "certifies text shape rather than behaviour",
+  );
+  // The same mutation applied to the model reproduces M8's failure exactly.
+  const frame = frameAtOctave(2);
+  assert.equal(
+    wgslEdgeDistance(METRES_WIDTH, [1e-3, 0], frame, { dropMetersArm: true }),
+    glslEdgeDistance(Math.abs(METRES_WIDTH), [1e-3, 0], frame, "pixels"),
+  );
+  assert.notEqual(
+    wgslEdgeDistance(METRES_WIDTH, [1e-3, 0], frame),
+    wgslEdgeDistance(METRES_WIDTH, [1e-3, 0], frame, { dropMetersArm: true }),
+  );
+});
+
+test("M10 — inverting the sign test is DETECTED", () => {
+  // The sign is the whole convention: read it backwards and a pixels width
+  // takes the metres arm. A model driven by a switch that only asked "is there
+  // an arm?" would miss this, which is why the pattern captures the test.
+  const inverted = wgsl.replace(
+    "if (lineWidth < 0.0 && metersUsable) {",
+    "if (lineWidth > 0.0 && metersUsable) {",
+  );
+  assert.notEqual(inverted, wgsl, "the sign mutant must apply");
+  assert.ok(
+    !WGSL_METERS_ARM_PATTERN.test(inverted),
+    "an inverted sign test must not satisfy the arm switch",
+  );
+});

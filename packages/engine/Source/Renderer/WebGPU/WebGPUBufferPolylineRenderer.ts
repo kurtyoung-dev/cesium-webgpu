@@ -409,6 +409,13 @@ function repackPolylineDirty(
   // positions. Apply it to every raw position read (current + prev/next
   // adjacency) before the scene-mode reproject and the RTE encode.
   const normDivisor = bufferPositionNormalizeDivisor(collection);
+  // A negative packed width marks ground metres (converted to device pixels
+  // by BufferPolylineMaterial.wgsl's csm_metersPerPixel branch); `widthUnits`
+  // is fixed at collection construction (no setter — BufferPolylineCollection
+  // .js has no `set widthUnits`), so this is derived once per update and
+  // hoisted out of the per-primitive loop below, mirroring the WebGL
+  // reference's hoist at renderBufferPolylineCollection.js:174.
+  const widthInMeters = collection.widthUnits === "meters";
   for (let i = dirtyOffset; i < dirtyOffset + dirtyCount; i++) {
     collection.get(i, scratchPolyline);
     if (!scratchPolyline._dirty && !force) {
@@ -441,7 +448,15 @@ function repackPolylineDirty(
     const colorAlpha = scratchPolylineMat.color.alpha;
     Color.fromRgba(scratchPolyline._pickId, scratchColor);
     const show = scratchPolyline.show;
-    const width = scratchPolylineMat.width;
+    // A negative magnitude is the ground-metres convention BufferPolylineMaterial
+    // .wgsl's sign test reads (csm_metersPerPixel converts it to device pixels
+    // at each vertex's depth); a positive one stays a CSS-pixel width, which
+    // that shader scales to device pixels by `params.pixelRatio` as before.
+    // Mirrors renderBufferPolylineCollection.js:225's `signedWidth`. The CPU
+    // sign and the shader branch are one convention — both must land together.
+    const signedWidth = widthInMeters
+      ? -scratchPolylineMat.width
+      : scratchPolylineMat.width;
 
     let vOffset = scratchPolyline.vertexOffset * 2;
     let iOffset = (scratchPolyline.vertexOffset - i) * 6;
@@ -563,7 +578,7 @@ function repackPolylineDirty(
         const directionFrac = k === 0 ? 0.25 : 0.75; // -1 / +1 after sign(fract-0.5)
         cache.showColorWidthAndTexCoordArr[v5] = show ? 1 : 0;
         cache.showColorWidthAndTexCoordArr[v5 + 1] = encodedColor;
-        cache.showColorWidthAndTexCoordArr[v5 + 2] = width;
+        cache.showColorWidthAndTexCoordArr[v5 + 2] = signedWidth;
         cache.showColorWidthAndTexCoordArr[v5 + 3] = texCoordS + directionFrac;
         // alpha shares the loc7 interleaved buffer (offset 16 = 5th float).
         cache.showColorWidthAndTexCoordArr[v5 + 4] = colorAlpha;

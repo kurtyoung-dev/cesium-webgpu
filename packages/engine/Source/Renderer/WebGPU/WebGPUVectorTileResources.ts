@@ -185,6 +185,56 @@ interface VectorTileDeviceContext {
   readonly resourceGeneration?: number;
 }
 
+/**
+ * The one other field a WebGPU consumer needs off a baked `VectorTileData`:
+ * the ground size of the tile's UV domain, which `VectorProvider` computes per
+ * tile and the WebGL uniform map copies into `u_vectorMetersPerUv`. Declared
+ * structurally for the same reason the CPU-data shape above is.
+ */
+interface VectorTileMetersPerUvSource {
+  readonly metersPerUv?: { readonly x?: unknown; readonly y?: unknown };
+}
+
+/**
+ * Ground metres per unit of tile UV along each UV axis, or `undefined` when the
+ * tile has no baked vector data or the bake predates
+ * `VectorProvider.computeMetersPerUv`.
+ *
+ * Both components must be finite AND positive to be usable: the shader divides
+ * by the larger of the two ground-projected screen derivatives, so a zero or
+ * negative metric would produce an infinite or sign-flipped pixels-per-metre
+ * scale and flood the tile with the nearest segment's colour. Rejecting here
+ * means the shader's own `metersUsable` guard never has to fire in a shipping
+ * configuration.
+ *
+ * Lives in this leaf rather than beside its only caller
+ * (`WebGPUGlobeSurfaceTileUB`) so a pure-Node spec can exercise it: the tile-UB
+ * module reaches `WebGPUGlobeSurfaceTypes.ts`, whose `const enum` Node's
+ * strip-only TypeScript loader refuses. Same reasoning as `WebGPUGlobeTunables`.
+ */
+export function vectorTileMetersPerUv(
+  vectorData: object | undefined | null,
+): { x: number; y: number } | undefined {
+  const metersPerUv = (vectorData as VectorTileMetersPerUvSource | null)
+    ?.metersPerUv;
+  if (!metersPerUv) {
+    return undefined;
+  }
+  const x = metersPerUv.x;
+  const y = metersPerUv.y;
+  if (
+    typeof x !== "number" ||
+    typeof y !== "number" ||
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    x <= 0 ||
+    y <= 0
+  ) {
+    return undefined;
+  }
+  return { x, y };
+}
+
 /** `VectorTileData` with the optional backend slot this module writes. */
 interface VectorTileDataWithResources extends VectorTileCpuData {
   rendererResources?: VectorTileRendererResources | undefined;

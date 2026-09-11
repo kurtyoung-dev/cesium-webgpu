@@ -74,9 +74,15 @@ import {
   VECTOR_COVERAGE_RADIUS_OFFSET,
   VECTOR_COVERAGE_RADIUS_ANTIALIASED,
   VECTOR_COVERAGE_RADIUS_HARD,
+  VECTOR_METERS_PER_UV_OFFSET,
   MAX_IMAGERY_LAYERS,
   resolveImageryLayerValue,
 } from "./WebGPUGlobeSurfaceTypes.js";
+// The metres-per-UV read is a pure predicate over the backend-neutral bake, so
+// it lives beside the rest of the vector-tile CPU contract rather than here —
+// which also lets a pure-Node spec exercise it without dragging this module's
+// `const enum` imports along.
+import { vectorTileMetersPerUv } from "./WebGPUVectorTileResources.js";
 // The enable/unset encoding for the night and ocean tunable slots lives in its
 // own leaf so the CPU packer, the WGSL getters and the Node spec that
 // cross-checks them all read one contract.
@@ -1022,6 +1028,19 @@ export function createTileUniformBuffer(
     tileProvider?.vectorProvider?.antialias === false
       ? VECTOR_COVERAGE_RADIUS_HARD
       : VECTOR_COVERAGE_RADIUS_ANTIALIASED;
+
+  // Ground metres per unit of tile UV, the input a GROUND-METRE stroke width
+  // is measured against. Read from the tile's own baked `VectorTileData`, the
+  // same object and the same field WebGL copies into `u_vectorMetersPerUv`
+  // (`GlobeSurfaceTileProviderRendering.js`), so the backends cannot disagree
+  // about the tile metric. `data` was zero-filled at entry, so a tile with no
+  // vector data leaves this at (0, 0) — which the shader reads as "no usable
+  // metric" and answers with the pixel arm rather than an infinite scale.
+  const metersPerUv = vectorTileMetersPerUv(surfaceTile.vectorData);
+  if (metersPerUv !== undefined) {
+    data[VECTOR_METERS_PER_UV_OFFSET] = metersPerUv.x;
+    data[VECTOR_METERS_PER_UV_OFFSET + 1] = metersPerUv.y;
+  }
 
   return writeUniformSlice(
     device,

@@ -20777,7 +20777,7 @@ that declares a family (`hasPolylines` / `hasPolygons`) whose run it did not pac
    `PrimitiveCollection.remove` DESTROYS what it removes under default ownership, so the mixed leg
    runs ahead of the polyline teardown and each polygon leg builds a fresh collection.
 
-**Proof.** `Tools/visual-regression/vector-layer-draping.spec.mjs`, `npm run test-engine-node`, 58/58 after the 2026-09-11 rebase onto Batch 1462 (47 standalone against Batch 1443)
+**Proof.** `Tools/visual-regression/vector-layer-draping.spec.mjs`, `npm run test-engine-node`, 68/68 after the 2026-09-11 rebase onto Batch 1463 (47 standalone against Batch 1443)
 green: a polygon oracle written from `VectorCommon.glsl`, a subject over the real packer with every
 header index read out of the shader source, real `packPolygonGrid` fixtures (overlapping translucent
 areas, one holed) and a mixed fixture. Mutations `M7p` (cell start off by one), `M8p` (indirection
@@ -20897,3 +20897,80 @@ confirmed by running it; neither was inferred from the spec's failure count alon
 `packages/sandcastle/Specs/sandcastleTemplate.spec.mjs`, the catalog trust boundary above, and
 `Tools/verify-landing-compliance.{mjs,spec.mjs}`, left alone because the seat held ~941 uncommitted lines
 in those two files while this lane ran.
+
+
+## Lane Ulwarth (wave S1 L2, 2026-09-06) — census C-03 + C-04: a metres-wide polyline drew as a pixels-wide one on WebGPU, on BOTH paths
+
+**Bug numbers.** `NEW-WEBGPU-BUFFERPOLYLINE-WIDTHUNITS-METERS` (non-draped, previously untracked
+anywhere) and the draped metres arm under `UP144-VECTOR-LAYER-WGSL`.
+`UPSTREAM-SYNC-1.145-07` items 16, 17, 18.
+
+**Files affected.** `Shaders/WebGPU/Globe/GlobeTerrain.wgsl`,
+`Shaders/WebGPU/Collections/BufferPolylineMaterial.wgsl`,
+`Shaders/WebGPU/chunks/functions/csm_metersPerPixel.wgsl`,
+`Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts`, `Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts`,
+`Renderer/WebGPU/WebGPUVectorTileResources.ts`, `Renderer/WebGPU/WebGPUBufferPolylineRenderer.ts`,
+`Renderer/WebGPU/WebGPUBufferPrimitiveRenderer.ts`.
+
+**Symptom.** `widthUnits: "meters"` is supposed to draw a constant GROUND width, so a road narrows
+as you climb. On WebGPU an 8 m road drew 8 px wide at every altitude, on the draped globe path and
+on the non-draped `BufferPolylineCollection` path alike. At orbital distance the error is orders of
+magnitude: `F5` measures the two families diverging by exactly one doubling per octave, so four
+octaves up the pre-fix stroke was ~16x too wide.
+
+**Root cause — one sign convention, two missing halves.** Upstream carries the unit in the width's
+SIGN: the magnitude is the full stroke width, a negative marks ground metres
+(`VectorPipeline.js:191` draped, `renderBufferPolylineCollection.js:225` non-draped). On the draped
+path the sign already reached the GPU — `packVectorTileWords` carries widths by value, and the
+shader's own comment named the gap — but only the pixel arm existed, so `abs()` discarded it. On
+the non-draped path neither half existed: the renderer wrote the width unsigned and the shader had
+no sign test.
+
+**The trap this bug is worth logging for.** The two halves cannot land separately, and the failure
+mode of landing one is not "the wrong width". A negative width with no sign test flows into
+`miterLen = (width * 0.5) / cosHalfAngle` and extrudes by a NEGATIVE half-width, so every miter
+offset flips and the ribbon turns inside out. `M2` in `buffer-polyline-meters-width.spec.mjs` is
+that clause: it asserts the modelled half-width goes NEGATIVE, not merely that it differs.
+
+**Fix.**
+
+1. `TileUniforms.vectorMetersPerUv: vec2<f32>` at float 494, written from the tile's own
+   `VectorTileData.metersPerUv` — the same field the WebGL uniform map reads. 494 and not 493: a
+   `vec2<f32>` is 8-byte aligned and rounds past the first free pad float. `TILE_UNIFORM_FLOATS`
+   stays 496.
+2. `vectorPolylineRender` computes `pixelsPerMeter` from the already-hoisted `uvDx`/`uvDy` and
+   selects the arm per primitive on the packed sign — one runtime branch covering all three of the
+   GLSL's compile-time arms, forking no pipeline variant.
+3. `WebGPUBufferPolylineRenderer` packs the signed width; `BufferPolylineMaterial.wgsl`
+   transliterates the GLSL's `abs()` + `if (signedWidth < 0.0) width /= max(metersPerPixel, eps)`.
+4. `csm_metersPerPixel` corrected to its GLSL twin (see below) and registered in
+   `BUFFER_WGSL_CHUNKS` — an unresolved bare `#import` is silently STRIPPED by
+   `resolveBufferImports` with only a debug-stripped warning, so registration is load-bearing and
+   `R3` asserts it.
+
+**A second trap: an orphan chunk that was not the twin it was named for.**
+`csm_metersPerPixel.wgsl` had shipped for months with ZERO consumers repo-wide, and it did not
+match `Builtin/Functions/metersPerPixel.glsl`: it used `length(positionEC.xyz)` where the GLSL uses
+`-positionEC.z`, and `max(mpp, mpp * pixelRatio)` where the GLSL multiplies unconditionally. The
+radial form agrees with the GLSL only on the view axis — an on-axis test cannot see the defect,
+which is why `A2` in the new spec is deliberately off-axis. A chunk with no callers is not
+evidence that its arithmetic is right; it is evidence that nothing has checked it.
+
+**A third trap, for whoever runs the Edge legs.** `probe-vector-draping.mjs` cannot run at Batch
+1443: it drapes with `scene.globe.vectorProvider.add(collection)` and `VectorProvider` has no
+`add()`. The API is `markForFrame(collection, frameNumber, heightReference)` plus `remove()`, and
+marking must happen EVERY frame — the production path that does it is `Scene.markVectorCollections`
+(`Scene.js:6206`), which walks `scene.primitives` and marks every supported collection whose
+`heightReference` is a clamp. A clamped `BufferPrimitiveCollection` does not also draw itself as
+screen-space geometry (`BufferPrimitiveCollection.js:865-877`), so `scene.primitives` membership IS
+the drape. This is `-07` item 8's re-vehicle row; the new gate I uses the correct vehicle and the
+A-F phase is deliberately left alone so the repair lands in one place.
+
+**Verification.** `npm run test-engine-node` 297/297 after the rebase (238/238 against Batch 1443), with `vector-layer-draping.spec.mjs` 58 -> 68 after the 2026-09-11 rebase onto Batch
+1463 (37 -> 47 standalone against Batch 1443)
+and `buffer-polyline-meters-width.spec.mjs` 14 new. Twelve source mutants each required to turn
+their spec red, including the two inertness mutants (`if (false && ...)` on each half) and the
+layout mutation (the `TileUniforms` float offset shifted by one, and separately the WGSL member
+moved ahead of `vectorCoverageRadius`). The layout half is derived, not restated: the spec walks
+the WGSL struct under the uniform address-space rules and reproduces every offset the file already
+documents (0, 384, 492) before asserting the new one.

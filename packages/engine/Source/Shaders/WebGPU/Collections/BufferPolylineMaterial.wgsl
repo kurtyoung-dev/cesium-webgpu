@@ -11,6 +11,7 @@
 #import csm_vertexLogDepth;
 #import csm_writeLogDepth;
 #import csm_decodeRGB8;
+#import csm_metersPerPixel;
 
 // ── Uniform buffer ──────────────────────────────────────────────────────────
 struct BufferPolylineUniforms {
@@ -67,7 +68,6 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
   // alpha=1). Matches WebGL's `v_color.a *= alpha` (show is applied via the
   // degenerate-position hide below, not an alpha multiply).
   color.a = input.alpha;
-  let width = input.showColorWidthAndTexCoord.z * params.pixelRatio;
   let texCoordPacked = input.showColorWidthAndTexCoord.w;
 
   // Unpack texCoord: integer part = s coordinate, fractional part encodes direction
@@ -91,6 +91,44 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
   let posEC = (camera.modelViewRelativeToEye * pCurr).xyz;
   let prevEC = (camera.modelViewRelativeToEye * pPrev).xyz;
   let nextEC = (camera.modelViewRelativeToEye * pNext).xyz;
+
+  // A negative packed magnitude marks a width in ground METRES rather than
+  // CSS pixels — BufferPolylineCollection's `widthUnits`, fixed at
+  // construction (no setter). Convention set by the CPU/GLSL oracles this
+  // transliterates: renderBufferPolylineCollection.js:174/225 packs the sign,
+  // BufferPolylineMaterialVS.glsl:46-52 reads it. abs() recovers the
+  // magnitude; the sign decides whether it still needs the metres->pixels
+  // conversion below.
+  let signedWidth = input.showColorWidthAndTexCoord.z;
+  var widthCss = abs(signedWidth);
+  if (signedWidth < 0.0) {
+    // csm_metersPerPixel needs eye-space position at THIS vertex's depth
+    // (metres-per-pixel varies with distance to camera) — the reason this
+    // unpack waits for posEC instead of running with the rest of the
+    // attribute unpack above, where `width` used to be computed.
+    // 1.0e-7 is czm_epsilon7 (GLSL names the constant; this shader has no
+    // constants chunk, so the literal is commented instead of left bare).
+    widthCss = widthCss / max(
+      csm_metersPerPixel(vec4<f32>(posEC, 1.0), params.pixelRatio,
+                         params.viewport, camera.projectionMatrix),
+      1.0e-7);
+  }
+  // This shader extrudes in FRAMEBUFFER (device) pixels — params.viewport.zw
+  // is context.drawingBufferWidth/Height, not CSS pixels — which is why the
+  // pre-existing pixels path already multiplied by params.pixelRatio (kept
+  // below as the last step, unchanged). For the metres path the ratio
+  // appears TWICE and still cancels correctly: on WebGL,
+  // getPolylineWindowCoordinatesEC multiplies the half-width by
+  // czm_pixelRatio when it offsets in window coordinates
+  // (PolylineCommon.glsl:166), so GLSL's `width` is in CSS pixels, while
+  // czm_metersPerPixel(positionEC) returns metres per CSS pixel (metres per
+  // device pixel * czm_pixelRatio). So WebGL's device-pixel offset for a
+  // metres line works out to metres / (2 * metresPerDevicePixel) — the ratio
+  // cancels exactly. Passing params.pixelRatio into csm_metersPerPixel above
+  // and then multiplying by it again here reproduces that same
+  // cancellation, so a metres-wide line matches WebGL on a HiDPI display and
+  // not only at pixelRatio == 1.
+  let width = widthCss * params.pixelRatio;
 
   // Project to clip space
   let clipPos = camera.projectionMatrix * vec4<f32>(posEC, 1.0);

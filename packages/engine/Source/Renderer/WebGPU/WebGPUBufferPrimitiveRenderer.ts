@@ -56,6 +56,7 @@ import csm_translateRelativeToEyeChunk from "../../Shaders/WebGPU/chunks/functio
 import csm_decodeRGB8Chunk from "../../Shaders/WebGPU/chunks/functions/csm_decodeRGB8.js";
 import csm_vertexLogDepthChunk from "../../Shaders/WebGPU/chunks/functions/csm_vertexLogDepth.js";
 import csm_writeLogDepthChunk from "../../Shaders/WebGPU/chunks/functions/csm_writeLogDepth.js";
+import csm_metersPerPixelChunk from "../../Shaders/WebGPU/chunks/functions/csm_metersPerPixel.js";
 import { preprocess } from "./WebGPUShaderPreprocessor.js";
 import { packCameraLogDepthLanes } from "./WebGPULogDepth.js";
 
@@ -78,6 +79,7 @@ const BUFFER_WGSL_CHUNKS: Record<string, string> = {
   csm_vertexLogDepth: csm_vertexLogDepthChunk,
   csm_writeLogDepth: csm_writeLogDepthChunk,
   csm_decodeRGB8: csm_decodeRGB8Chunk,
+  csm_metersPerPixel: csm_metersPerPixelChunk,
 };
 const _warnedUnknownImports = new Set<string>();
 
@@ -141,6 +143,13 @@ export interface BufferPrimitiveCollection {
   // (blend off, depth write on) + routes the command to Pass.OPAQUE. Mirrors
   // `collection._blendOption` read by the WebGL paths.
   _blendOption?: number;
+  // Polyline-only: "pixels" (default) or "meters". Fixed at construction (no
+  // setter on BufferPolylineCollection), so renderers may read it once per
+  // update rather than watch for a change. Selects the signed-width
+  // convention shared by the CPU pack (WebGPUBufferPolylineRenderer.ts) and
+  // BufferPolylineMaterial.wgsl's sign test: a negative packed magnitude
+  // means "this is a width in ground metres, not device pixels".
+  widthUnits?: "pixels" | "meters";
   // Flat interleaved [x,y,z,...] position store. DOUBLE (Float64Array) by
   // default; FLOAT (Float32Array) when the collection opts into low-precision
   // positions. For points, position index i maps to _positionView[i*3..i*3+2]
