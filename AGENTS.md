@@ -131,6 +131,53 @@ Always create new files under `packages/*/Source/`.
   (PowerShell, cmd, bash builtins) for script execution, tool verification, and diagnostics. Fall
   back to shells only when native shell wrapping is strictly unavoidable.
 
+### 8. Operating notes for Codex — observed on this fork, 2026-09-06 → 09-10
+
+These are normative, drawn from the seat's return audit of the September 6–9 sessions
+(`migration_doc/audits/` and the seat record). They bind Codex sessions (Astra) in addition to §7.
+
+#### Guards — what went wrong and the rule that prevents it
+
+1. **Never work in the seat worktree.** `F:/Dev/GH/cesium-webgpu` is the landing seat; every agent,
+   Codex included, works in an assigned clone (`F:/Dev/GH/cesium-astra-<yyyymmdd>` or a lane clone)
+   whose `_lane-out/` holds its outputs. Three days of engine, tooling and archive work accumulated
+   as uncommitted state in the seat and survived a `.git/index` truncation only by luck. A clone's
+   loss costs a re-clone; the seat's loss costs the trunk.
+2. **Every reviewed unit becomes a patch the same day.** Work is handed to the seat as
+   `_lane-out/<name>.patch` (`git diff HEAD --binary --no-renames`) plus a packet, per unit, not as a
+   dirty tree with a narrative. Uncommitted work older than one session is a handoff defect, not a
+   checkpoint.
+3. **Governance files need a lease and a ruling.** `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, the queue
+   decision rows and `MAINTAINER_RULINGS_*.md` are edited only when the seat has leased the edit,
+   and a rule is never softened to "an open ruling" without first checking the rulings record
+   (the queue's `AR-D*` rows and every `MAINTAINER_RULINGS_*.md`, tracked or handed over). Numbered
+   principles are appended, never inserted mid-list; a duplicate heading number is a review blocker.
+4. **A spec without an npm runner home is a review blocker** (R-2026-08-29-1), including in your
+   own landings: add the spec to the right `test-*` script in the same batch.
+5. **An instrument that refuses every run is a ruling request, not a work queue.** When an
+   apparatus cannot produce a verdict under its current constraint (a response cap, a missing
+   fixture), file the ruling request in the same session and keep measuring by source review in
+   parallel — the two product defects this wave found came from reading code, not from the capture
+   apparatus that consumed most of the effort.
+6. **No dependency mutation outside an owned clone**, and none in a served or shared clone. A bare
+   `npm install` in the served clone put a registry `@cesium/engine` under `packages/node_modules`
+   and broke the widgets bundle. Every install command is captured with its exit code, and the
+   lock, manifest and installed tree are reconciled in one reviewed batch.
+7. **Archival and doc moves are maintainer-held** (hold of 2026-06-30) until lifted in writing;
+   moving files without the hold lifted leaves the tree half-landed and the index guard red.
+
+#### Keep doing — what was right and is now expected
+
+- Records that are literal and checkable: byte counts and SHA-256s that verify (every one the
+  audit tested) and paths that resolve (ten of eleven named artifacts at the stated path). Keep
+  hashing what you hand over.
+- Ruling requests instead of assumptions; red evidence kept red and named as red; the same
+  reviewer-independence you applied to your own dependency work.
+- Recovery discipline: dry run, approval, byte-verified backups, a packet — the index recovery is
+  the model for any repair of shared state.
+- Source review first. Lead with reading the shader and the renderer; build apparatus to confirm
+  what the reading predicts, not to discover it.
+
 ---
 
 ## Part two — where governed questions are answered
