@@ -44,6 +44,26 @@
 // is written under the receipt's name at all: the absence IS the signal, and a
 // hollow success-shaped document in its place is the failure being prevented.
 //
+// THE LIFECYCLE IS OPT-IN, AND THE OPT-IN IS ONE FIELD (C13-42a). A descriptor
+// that declares `workBudgetMs` — a function returning the positive
+// safe-integer milliseconds ITS work needs per run — is run inside
+// `withProbeLifecycle`: its `cells` is additionally handed a `scope`, every
+// `scope.run` it starts is tracked to a settled outcome, the browser is not
+// closed until that work drains, the Edge slot's ownership is re-asserted
+// around each run, and the whole run carries a derived orderly deadline with a
+// hard-stop grace behind it. A descriptor that declares NO `workBudgetMs`
+// takes the path this runtime has always taken — `acquireEdgeSlot`, one
+// browser per run in a `try/finally`, `cells` called with no `scope` — and its
+// behaviour is unchanged by the adoption.
+//
+// The staging is deliberate. The version this was adopted from made
+// `workBudgetMs` REQUIRED, which is a fleet-wide breaking change: at the time
+// of adoption 21 probes on this runtime declared none, so every one of them
+// would have died at `deriveLifecycleDeadline` before reaching a browser.
+// Migrating them is `C13-42a-2`, one family at a time, each with its own
+// measured budget — not a flag day. Until a probe is migrated, the absence of
+// the field IS the declaration that it wants the old shape.
+//
 // THREE FILES, NOT ONE. The exit-code table and the refusal error live in
 // `probe-refusal.mjs`; the single-Edge-slot lock lives in `probe-edge-slot.mjs`.
 // Both are re-exported here, so a probe imports one module and a reviewer reads
@@ -84,7 +104,15 @@ import {
   EDGE_SLOT_STALE_AFTER_MS,
   acquireEdgeSlot,
   decideEdgeSlot,
+  withEdgeSlot,
 } from "./probe-edge-slot.mjs";
+import {
+  appendLifecycleDiagnostics,
+  failureState,
+  probeRefusalRecord,
+  projectLifecycleFailures,
+} from "./probe-lifecycle-diagnostics.mjs";
+import { runDescriptorUnderLifecycle } from "./probe-lifecycle-run.mjs";
 import {
   PROBE_EXIT_CODES,
   ProbeRefusal,
@@ -113,6 +141,7 @@ export {
   exitCodeForOutcome,
   refusedDecision,
   throwForDecision,
+  withEdgeSlot,
 };
 
 // ---------------------------------------------------------------------------
@@ -794,11 +823,14 @@ export function isEntryPoint(moduleUrl, argv = process.argv) {
  * @param {string[]} [descriptor.servedArtifacts] Artifacts the preflight must match.
  * @param {string[]} [descriptor.launchArgs] Edge flags instead of {@link EDGE_LAUNCH_ARGS}; recorded in the runtime receipt.
  * @param {"probe-owned"|"runtime"} [descriptor.receiptEnvelope] Receipt shape.
+ * @param {Function} [descriptor.workBudgetMs] `(options) => number` — the positive safe-integer milliseconds THIS probe's work needs per run. Declaring it is the opt-in to the lifecycle: `cells` is then additionally handed `scope`, and the run carries a derived orderly deadline. Omitting it keeps the pre-adoption behaviour exactly.
  * @param {Function} descriptor.cells Called once per run; returns an ARRAY of that run's cells (wrap a single cell as `[cell]`).
  * @param {Function} [descriptor.receipt] `(cells, context) => object` — the probe's fields.
  * @param {Function} [descriptor.verdicts] `(cells, context) => Array` — the probe's verdicts.
  * @param {Function} [descriptor.summary] `(receipt, runtimeReceipt) => string`.
  * @param {object} [dependencies] Injection seams for tests.
+ * @param {Function} [dependencies.lifecycle] Lifecycle implementation; lifecycle path only.
+ * @param {object} [dependencies.lifecycleDependencies] Lifecycle timer/exit/slot seams; lifecycle path only.
  * @returns {Promise<number>} The exit code.
  */
 export async function runProbe(descriptor, dependencies = {}) {
@@ -810,12 +842,35 @@ export async function runProbe(descriptor, dependencies = {}) {
     launch = launchEdge,
     writeFile = (file, body) => fs.writeFileSync(file, body),
     repositoryRoot: repositoryRootOverride,
+    lifecycle,
+    lifecycleDependencies,
   } = dependencies;
+
+  // The whole staging turns on this one predicate. A descriptor that declares
+  // the field with a BAD value — zero, a float, a string, a function returning
+  // one of those — reaches `deriveLifecycleDeadline` and is told so, rather
+  // than falling silently back onto the pre-adoption path and running with no
+  // deadline at all.
+  //
+  // An explicit `workBudgetMs: undefined` reads as ABSENT here, which is the
+  // idiomatic JS reading (`??`, default parameters and `JSON.stringify` all
+  // agree) and is deliberate rather than overlooked. `Object.hasOwn` would
+  // catch that case and introduce its mirror image: a key arriving from a
+  // prototype or from a spread whose config omitted the budget would be forced
+  // onto the lifecycle and killed, which is a loud failure for a probe that did
+  // nothing wrong. Neither reading is obviously right and no descriptor in the
+  // tree exhibits either shape, so the choice is recorded rather than made
+  // twice — `C13-42a-3` in `DEFERRED_WORK.md`, to be settled by whoever
+  // migrates the eighteen legacy probes and actually sees which shape occurs.
+  const lifecycleAdopted = descriptor.workBudgetMs !== undefined;
+  const lifecycleState = { slot: null, verdicts: [] };
+  let lifecycleFailures = Object.freeze([]);
 
   let refusal = null;
   let errored = false;
   let errorText = null;
   let slot = null;
+  let releasableSlot = null;
   const captures = [];
   let options;
   let repositoryRoot;
@@ -849,81 +904,133 @@ export async function runProbe(descriptor, dependencies = {}) {
     );
     origin = `http://localhost:${options.port}`;
 
-    if (options.servedBuild) {
-      preflight = await preflightImpl({
-        origin,
-        repositoryRoot,
-        artifacts: [
-          ...(descriptor.servedArtifacts ?? REQUIRED_SERVED_ARTIFACTS),
-        ],
-      });
-    }
-    throwForDecision(
-      decideServedBuildRefusal(preflight, {
-        requiredArtifacts:
-          descriptor.servedArtifacts ?? REQUIRED_SERVED_ARTIFACTS,
-        waived: !options.servedBuild,
-      }),
-      "the served bytes are not the bytes on disk; rebuild, or restart the server with --serve-built",
-    );
-
-    slot = acquireEdgeSlot({
-      lockPath: path.join(repositoryRoot, DEFAULT_EDGE_SLOT_LOCK_PATH),
-      owner: descriptor.name,
-      now: now(),
-    });
-
-    for (let run = 0; run < options.runs; run++) {
-      // One browser PER RUN. A repeat that reuses the previous browser inherits
-      // its warm shader cache, which is exactly the confound every cold-start
-      // and first-frame measurement in this fork exists to avoid.
-      const browser = await launch({
-        headed: options.headed,
-        launchArgs,
-        chromium,
-      });
-      try {
-        const produced = await descriptor.cells({
-          browser,
-          run,
-          options,
+    // Shared by both paths so the served-build assertion cannot drift between
+    // them: the lifecycle runs it inside its first tracked operation, the
+    // pre-adoption path runs it inline, and it is the same code either way.
+    const runServedBuildPreflight = async () => {
+      if (options.servedBuild) {
+        preflight = await preflightImpl({
           origin,
-          outputDirectory,
           repositoryRoot,
-          captures,
+          artifacts: [
+            ...(descriptor.servedArtifacts ?? REQUIRED_SERVED_ARTIFACTS),
+          ],
         });
-        // A descriptor that returns its single cell as a bare object used to
-        // reach the spread below and die as "Spread syntax requires
-        // ...iterable[Symbol.iterator] to be a function" — an error carrying
-        // this module's line number, naming neither the probe nor the shape,
-        // raised after the Edge slot had been taken and the measurements made.
-        // That is how AR-752's acceptance leg was lost on 2026-09-05. The
-        // contract is checked here so the violation names itself.
-        if (
-          produced !== null &&
-          produced !== undefined &&
-          !Array.isArray(produced)
-        ) {
-          throw new TypeError(
-            `${descriptor.name}: descriptor.cells must return an array of cells, got ${Object.prototype.toString.call(produced)}; wrap a single cell as [cell]`,
-          );
-        }
-        cells.push(...(produced ?? []));
-      } finally {
-        await browser.close();
       }
-    }
+      throwForDecision(
+        decideServedBuildRefusal(preflight, {
+          requiredArtifacts:
+            descriptor.servedArtifacts ?? REQUIRED_SERVED_ARTIFACTS,
+          waived: !options.servedBuild,
+        }),
+        "the served bytes are not the bytes on disk; rebuild, or restart the server with --serve-built",
+      );
+    };
 
-    verdicts = descriptor.verdicts
-      ? (descriptor.verdicts(cells, { options, origin, outputDirectory }) ?? [])
-      : [];
+    if (lifecycleAdopted) {
+      await runDescriptorUnderLifecycle({
+        descriptor,
+        options,
+        origin,
+        outputDirectory,
+        repositoryRoot,
+        captures,
+        cells,
+        launchArgs,
+        edgeSlotLockPath: path.join(
+          repositoryRoot,
+          DEFAULT_EDGE_SLOT_LOCK_PATH,
+        ),
+        preflight: runServedBuildPreflight,
+        launch,
+        chromium,
+        ...(lifecycle === undefined ? {} : { lifecycle }),
+        lifecycleDependencies,
+        state: lifecycleState,
+      });
+    } else {
+      await runServedBuildPreflight();
+
+      releasableSlot = acquireEdgeSlot({
+        lockPath: path.join(repositoryRoot, DEFAULT_EDGE_SLOT_LOCK_PATH),
+        owner: descriptor.name,
+        now: now(),
+      });
+      slot = releasableSlot;
+
+      for (let run = 0; run < options.runs; run++) {
+        // One browser PER RUN. A repeat that reuses the previous browser
+        // inherits its warm shader cache, which is exactly the confound every
+        // cold-start and first-frame measurement in this fork exists to avoid.
+        const browser = await launch({
+          headed: options.headed,
+          launchArgs,
+          chromium,
+        });
+        try {
+          const produced = await descriptor.cells({
+            browser,
+            run,
+            options,
+            origin,
+            outputDirectory,
+            repositoryRoot,
+            captures,
+          });
+          // A descriptor that returns its single cell as a bare object used to
+          // reach the spread below and die as "Spread syntax requires
+          // ...iterable[Symbol.iterator] to be a function" — an error carrying
+          // this module's line number, naming neither the probe nor the shape,
+          // raised after the Edge slot had been taken and the measurements
+          // made. That is how AR-752's acceptance leg was lost on 2026-09-05.
+          // The contract is checked here so the violation names itself.
+          if (
+            produced !== null &&
+            produced !== undefined &&
+            !Array.isArray(produced)
+          ) {
+            throw new TypeError(
+              `${descriptor.name}: descriptor.cells must return an array of cells, got ${Object.prototype.toString.call(produced)}; wrap a single cell as [cell]`,
+            );
+          }
+          cells.push(...(produced ?? []));
+        } finally {
+          await browser.close();
+        }
+      }
+
+      verdicts = descriptor.verdicts
+        ? (descriptor.verdicts(cells, { options, origin, outputDirectory }) ??
+          [])
+        : [];
+    }
   } catch (error) {
-    if (error instanceof ProbeRefusal) {
+    // The pre-adoption path catches what the descriptor threw, one call away,
+    // and `String(error?.stack ?? error)` is the right description of it. A
+    // lifecycle rejects with an AGGREGATE of everything the run accumulated,
+    // and stringifying that reports the aggregate's own one-line message while
+    // discarding the occurrences — so the lifecycle path projects them instead.
+    const lifecycleRefusal = lifecycleAdopted
+      ? probeRefusalRecord(error)
+      : null;
+    if (lifecycleRefusal !== null) {
+      refusal = lifecycleRefusal;
+    } else if (!lifecycleAdopted && error instanceof ProbeRefusal) {
       refusal = {
         reason: error.reason,
         message: error.message,
         details: error.details,
       };
+    } else if (lifecycleAdopted) {
+      errored = true;
+      refusal = null;
+      lifecycleFailures = projectLifecycleFailures(error);
+      errorText = appendLifecycleDiagnostics(
+        failureState(error, "probe runtime").description,
+        error,
+        lifecycleFailures,
+      );
+      process.stderr.write(`${descriptor.name}: ${errorText}\n`);
     } else {
       errored = true;
       refusal = null;
@@ -931,9 +1038,17 @@ export async function runProbe(descriptor, dependencies = {}) {
       process.stderr.write(`${descriptor.name}: ${errorText}\n`);
     }
   } finally {
-    if (slot) {
-      slot.release();
+    // Only the pre-adoption path releases here. On the lifecycle path the slot
+    // is owned by `scope.withEdgeSlot`, which has already released it and
+    // published whether the release actually settled.
+    if (releasableSlot) {
+      releasableSlot.release();
     }
+  }
+
+  if (lifecycleAdopted) {
+    slot = lifecycleState.slot;
+    verdicts = lifecycleState.verdicts;
   }
 
   const exitCode = exitCodeForOutcome({ refusal, errored, verdicts });
@@ -1012,12 +1127,17 @@ export async function runProbe(descriptor, dependencies = {}) {
       outputDirectory,
       `${descriptor.name}-${INCIDENT_ARTIFACT_SUFFIX[outcome]}.json`,
     );
-    writeFile(
-      incidentPath,
-      normalizeJson(
-        buildIncidentRecord({ outcome, runtimeReceipt, error: errorText }),
-      ),
-    );
+    const incidentRecord = buildIncidentRecord({
+      outcome,
+      runtimeReceipt,
+      error: errorText,
+    });
+    // Only present when a lifecycle actually accumulated occurrences, so a
+    // pre-adoption probe's incident record keeps exactly the fields it had.
+    if (lifecycleFailures.length > 0) {
+      incidentRecord.lifecycleFailures = lifecycleFailures;
+    }
+    writeFile(incidentPath, normalizeJson(incidentRecord));
   }
 
   if (refusal) {

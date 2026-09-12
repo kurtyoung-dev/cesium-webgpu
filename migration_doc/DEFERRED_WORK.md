@@ -48,10 +48,54 @@ clean (246/246 after Batch 1467). These are the verified pre-existing-red baseli
 independent derivations; older "147/151" and "84/85" figures in prior briefs/audits are wrong on
 count, set, and attribution.
 
+**And these ones went stale in turn, which is the point (re-measured 2026-09-12, lane C13-42a).**
+`test-visual-probe-contracts` is **278/278 at Batch 1474** — the 246 above was right at Batch 1467
+and was then carried into a brief by citation rather than re-run. `test-visual-regression-node` is
+unchanged at 217/221 with the same four names. A count in this file is a MEASUREMENT WITH A DATE,
+not a constant: re-run `npm run test-visual-probe-contracts` before quoting one.
+
 ### NEW-C13-42-APPARATUS-CANNOT-RUN-AT-HEAD (C13-42a — CRITICAL PATH)
 
-**Status:** OPEN — **CRITICAL PATH**. Blocks every C13-42 browser leg, and therefore C13-43/44/45's
-acceptance. Recorded 2026-09-10 at `693ec11706` (Batch 1455).
+**Status:** SHIPPED 2026-09-12 (lane C13-42a, worker Minardil). The runtime, the lifecycle and the
+probe are tracked, the seventeen `scope.run` sites and two `scope.checkpoint` sites resolve, and
+both cap call sites read the landed per-subject apparatus. **The residual is the Edge leg**, which
+is a capture, not a code gap: the C13-42 calibration runs still have to be executed by an Edge
+executor. Legacy-probe migration is split out below as `C13-42a-2`, and four small review residuals as `C13-42a-3`. Recorded 2026-09-10 at
+`693ec11706` (Batch 1455); the diagnosis below is retained because it is what the fix was built
+from.
+
+**What shipped.**
+
+- `Tools/visual-regression/lib/probe-lifecycle.mjs` (adopted), plus
+  `lib/probe-work-registry.mjs`, `lib/probe-lifecycle-diagnostics.mjs` and
+  `lib/probe-lifecycle-run.mjs` — the runtime rewrite's machinery, extracted into modules so
+  `probe-runtime.mjs` grows by a hundred lines (1,034 → 1,154) instead of reaching the 1,910 the
+  source rewrite had.
+- `lib/probe-runtime.mjs` branches on ONE predicate:
+  `const lifecycleAdopted = descriptor.workBudgetMs !== undefined;`. A declaring descriptor gets
+  the lifecycle, a `scope`, and a derived orderly deadline; a non-declaring one takes the
+  pre-adoption path unchanged. **`test-visual-probe-contracts` was 278/278 before the runtime edit
+  and 278/278 after it**, and the fleet/residency runner's only observable change across the whole
+  lane is its probe count (663 → 664 scanned, 17 → 18 tag-resident).
+- `lib/probe-edge-slot.mjs` gains an ADDITIVE `withEdgeSlot` lease adapter over the existing
+  exclusive-create lock file. **Astra's slot rewrite was NOT adopted**: it replaces the lock file
+  with a loopback listener on `127.0.0.1:19143`, which would change the machine-wide mechanism the
+  wave-end gate and every other Edge job coordinate through. The C13-42 probe uses only
+  `scope.run` and `scope.checkpoint`, so nothing in this lane needed it.
+- `probe-c13-42-reported-demos.mjs` and `lib/c13-42-reproduction-harness.mjs` are tracked for the
+  first time (they were Astra-workspace files; `git log --all` on those paths was empty).
+- Pinned by `Tools/visual-regression/probe-runtime-lifecycle-adoption.spec.mjs`, 46 tests, homed in
+  `test-visual-probe-contracts` (278 → 324). It carries eight inertness mutants — the opt-in
+  predicate, the orderly stop, the per-subject response bound, `checkpoint`, the pair of
+  slot-ownership guards, the registry drain and the hard-stop grace — each of which changes an
+  observable outcome. Groups E and F exist because review and adversarial verification each found
+  the first draft certifying the switch rather than the machine behind it.
+
+**Correction to the count below.** The measured number of probes on this runtime that declare no
+`workBudgetMs` is **18**, not 21: 19 files import `runProbe` from the shared runtime, and exactly
+one (the C13-42 probe) declares a budget. The 21 came from Gamling F5 against an earlier tree.
+
+---
 
 `probe-c13-42-reported-demos.mjs` destructures `scope` from the object
 `descriptor.cells(context)` receives, then calls `scope.run(...)` at 17 sites and
@@ -77,6 +121,208 @@ cap raise remains inert until `C13-42a` wires two call sites (`appendC13_42Serve
 taking its cap from `servedResponseBudgetFor(subject)`, and `workBudgetMs` response
 term from `servedResponseBudgetMs(RESPONSE_BODY_BUDGET_MS)`). Runtime adoption
 `C13-42a` is the real critical path for any C13-42 capture.
+
+**Both cap sites are now wired (2026-09-12).** Site 1 is the `page.on("response")` listener's
+retention bound: `appendC13_42ServedResponse(responses, seenUrls, response, origins, cap)` takes
+the bound as an argument, the cell reads it once as `servedResponseBudgetFor(subject)`, and the
+over-cap refusal's reason now comes from `assessC13_42ServedResponseBudget` so it names the
+subject's own budget and leg. Site 2 is the work budget's response term, now
+`servedResponseBudgetMs(RESPONSE_BODY_BUDGET_MS, schedule.coreSubjects)` — a per-subject sum
+instead of `MAX_SERVED_RESPONSES × cellCount × RESPONSE_BODY_BUDGET_MS`. The module constant
+`MAX_SERVED_RESPONSES = 48` is GONE from the probe (a spec asserts its absence outside comments),
+because a surviving second cap is a cap a raise would not reach. Measured effect: the per-repeat
+work budget rises from 14,970,000 ms to 53,400,000 ms, the difference being exactly
+`servedResponseBudgetMs(30_000)` = 48,510,000 minus the retired `7 × 48 × 30_000` = 10,080,000.
+
+### NEW-C13-42-LEGACY-PROBES-NOT-ON-THE-LIFECYCLE (C13-42a-2)
+
+**Status:** OPEN — follow-up to `C13-42a`, deliberately not done in that lane. Recorded 2026-09-12.
+
+Eighteen probes import `runProbe` from `Tools/visual-regression/lib/probe-runtime.mjs` and declare
+no `workBudgetMs`, so they keep the pre-adoption path: no `scope`, no tracked work registry, no
+derived deadline, and therefore no bound on a wedged run beyond whatever watchdog the probe rolled
+itself. That is the staging working as intended — adopting the runtime as it was written would have
+killed all eighteen on their first call to `deriveLifecycleDeadline` — but it is not the end state.
+
+```text
+probe-ar002-per-tile-credits          probe-oit-model-reachable
+probe-ar757-derived-origin            probe-oit-primitive-reachable
+probe-buffer-polyline-meters-width    probe-pick-visibility-matrix
+probe-classification-frustum-slices   probe-pnts-model-attenuation
+probe-display-conditions-globedepth   probe-polyline-multimaterial
+probe-eye-cartographic-frame          probe-polyline-taa-velocity
+probe-feature-id-texture              probe-postprocess-resize-survival
+probe-globe-cold-start-readiness      probe-primitive-texture-bindgroup
+probe-globe-elevation-band-material   probe-oit-collection-reachable
+```
+
+**How to do it, and how NOT to.** One family at a time (the three OIT reachability probes together,
+the two polyline probes together, and so on), each with a **measured** budget rather than a guessed
+one: run the probe, read `<name>-runtime.json`, and size `workBudgetMs` from what the run actually
+took plus margin. A budget invented at the desk either strangles an honest probe or is so loose it
+bounds nothing, and both failures look identical in a green suite. Do not do it as one flag day: the
+whole point of the opt-in is that the fleet stays runnable while the migration proceeds.
+
+**What each family gains:** work started inside `cells` and not awaited is tracked to a settled
+outcome, so the run cannot report complete while it is live and its failure reaches the incident
+record instead of becoming an unhandled rejection, whenever an incident is written at all (several
+paths write none — item 6 of `C13-42a-3` lists them); a hang is stopped at a deadline derived from the
+probe's own declared work instead of running until someone notices; and a run stopped at that
+deadline leaves an `<name>-error.json` naming the obligation it missed.
+
+**What each family does NOT gain, so nobody migrates expecting it.** The browser's close is started
+*concurrently with* that drain, not after it, so unawaited work that still needs its page will lose
+it — await your `scope.run` calls. And a run that misses the second, hard-stop grace exits 2 from
+inside the lifecycle with no artifact at all. Both are `C13-42a-3`.
+
+### NEW-C13-42A-RESIDUALS (C13-42a-3)
+
+**Status:** OPEN — eight residuals from `C13-42a`, surfaced by review (Calimehtar) and by four
+rounds of adversarial verification (Ciryaher), 2026-09-12, and each deliberately NOT fixed in that
+lane. Recorded 2026-09-12. **None is a regression** — items 5-7 are inherited verbatim from the
+runtime the lane adopted, and every one of the seven sits in machinery the lane added rather than in
+any path a legacy probe takes.
+
+1. **`descriptor.workBudgetMs !== undefined` vs `Object.hasOwn` — a genuine fork in the road, not a
+   defect with a known fix.** The predicate treats an explicit `workBudgetMs: undefined` as NOT
+   declared, so such a descriptor takes the pre-adoption path with no deadline. `Object.hasOwn`
+   would catch that — and introduce its mirror image: a key arriving from a prototype or from a
+   spread whose config omitted the budget would be forced onto the lifecycle and **killed** at
+   `deriveLifecycleDeadline`, a loud failure for a probe that did nothing wrong. Verified latent:
+   exactly one descriptor in the tree mentions `workBudgetMs`, every probe descriptor is a plain
+   object literal, and no `Object.create` or partial spread builds one. **Do not present `hasOwn` as
+   the fix.** Settle it during `C13-42a-2`, when eighteen `workBudgetMs` declarations get written and
+   there is real evidence about which shape actually occurs.
+2. **`makeDescriptorScope`'s `checkpoint` forwarding is unpinned.** Replacing
+   `checkpoint: slotScope.checkpoint` with a no-op leaves the spec green: `E7` observes cancellation
+   through `scope.run`, which calls `checkpoint()` itself, so the forwarded member — the one the
+   C13-42 probe calls at its two sites — is never the thing under test. Impact if it broke: the probe
+   checkpoints later than intended and fails at its next `scope.run` instead. A degradation, not a
+   break. Needs a behavioural assertion driven through `descriptorScope.checkpoint` itself, never an
+   identity check against `slotScope.checkpoint`.
+3. **The PRE-run `assertHeld()` bracket is unobservable at `runs: 1`.** Nothing can steal the slot
+   between `acquireEdgeSlot` and the first launch, so removing that bracket changes no outcome; only
+   `runs >= 2` makes it meaningful, and the C13-42 probe refuses `--runs 2` outright
+   (`c13-42-single-repeat-contract`). Pin it when a multi-repeat probe joins the lifecycle.
+4. **`releaseOutcome.succeeded` can report `true` over a lock still on disk.** `acquireEdgeSlot`'s
+   `release()` deliberately swallows `fs.rmSync` errors ("reported by the next acquisition's
+   staleness check"), so if the file cannot be removed — antivirus, a held handle on Windows —
+   `withEdgeSlot` computes `succeeded = stillOurs = true`. **Inherited from HEAD and no worse than
+   HEAD**; the takeover case is reported correctly and only "ours but undeletable" is silent. The
+   adapter's docstring promising that `releaseOutcome` "lets the lifecycle prove the slot was
+   actually given back" is one notch stronger than what it can prove. Fix: have `withEdgeSlot`
+   re-check `fs.existsSync(lockPath)` after `release()` and derive `succeeded` from that.
+5. **`closeBrowserAfter` does not hold the browser open for the drain** (adversarial verifier
+   Ciryaher, 2026-09-12). It starts `browser.close()` in the same tick it starts awaiting the work
+   registry and `Promise.all`s the three, so unawaited `scope.run` work is drained CONCURRENTLY with
+   teardown and loses its page. Reproduced: `cells returned` → `browser.close` → `late work
+   finished; browser open = false`. Inherited verbatim from the runtime this was adopted from, and
+   the current shape is defensible — a close that waits on a hung readback holds the single Edge
+   slot for the whole close deadline — but it is not what the phrase "drained before the browser is
+   closed" promised, and that phrase has been removed from five documents. **What survives is the
+   real guarantee:** the run cannot report complete until every attempt settles, and a failing
+   attempt turns the run into an incident wherever an incident is written at all — item 6 lists the
+   paths that write none. The C13-42 probe awaits all seventeen of its sites (fourteen `await` at the site; three — 842, 934, 1098 — are `return scope.run(...)` inside async functions whose callers await at 1263, 1269 and 1322, so no promise is dropped), so it
+   is unaffected. To close this, the close must await the registry under its own bound — and the
+   bound is the point, or a hung readback becomes a wedged teardown. **Whoever does it must INVERT
+   spec F4**, which asserts the present ordering deliberately. Measured: the await-then-close shape
+   reds F4 *alone* — F1, F2, F3, F5 and F6 stay green — so F4 going red is the signal that the fix
+   landed, not a regression.
+6. **THE LIST OF PATHS THAT WRITE NO INCIDENT — the one place it lives, and it is expected to grow.**
+   Every prose guarantee in this lane now states a CONDITION ("whenever an INCIDENT is written at
+   all" — "report" is strictly stronger and is the wrong word here, because a measured run writes a
+   `-report.json`; item 8 orphans work without report while a report is written) and points here
+   rather than enumerating, because five rounds of adversarial verification (Ciryaher, 2026-09-12)
+   falsified five successive enumerations, each by a path the author had not walked. **Add to this
+   list; do not copy it.** Four are known:
+
+   a. **The hard stop.** The orderly deadline produces `<name>-error.json`; the hard-stop grace
+      behind it calls `process.exit(2)` from inside the lifecycle, so `runProbe` never returns and
+      nothing is written — one stderr line, `"<probe>: lifecycle did not reach quiescence before
+      hard-stop grace"`, is the entire record. A hung `browser.close()` alone reaches it. Measured:
+      close at 3 s → receipt; at 12 s → incident naming the close DEADLINE (the `close observation`
+      label belongs to the different path, where work fails during the close); never → nothing.
+      Pinned by spec **F5**, which must be updated when this is fixed.
+   b. **An argv error.** `parseProbeArgs` throws before `outputDirectory` is resolved, so the
+      incident branch's `else if (outputDirectory)` guard is false and nothing lands. This is
+      divergence **D4** — Astra's `parseProbeArgsWithState` exists precisely to fix it and was not
+      adopted here because it changes behaviour for every probe.
+   c. **`fs.mkdirSync` throwing** — e.g. a FILE sitting at the output directory path (`EEXIST`).
+   d. **`writeFile` throwing** — e.g. a read-only or full disk (`EROFS`, `ENOSPC`).
+
+   **(c) and (d) are worse than (a) and (b)**: they happen AFTER the `try/catch/finally`, so
+   `runProbe` **throws instead of returning an exit code**, and a probe's
+   `process.exitCode = await runProbe(...)` takes an unhandled rejection instead of a code. Neither
+   is exotic for an unattended tranche — a stale file at the output path, a full disk.
+
+   **Why no test caught any of this:** every one of the six false sentences was consistent with F5,
+   and nothing in the spec touches argv, `mkdir` or `writeFile` on the incident path. Catching this
+   class mechanically needs an assertion over the BRANCH CONDITION — "an incident is written iff
+   `outputDirectory` resolved and both writes succeeded" — not over the happy path. That assertion
+   is the first thing to write when this row is taken.
+
+   **The fix:** the hard stop should write a minimal incident before `exit()`; the argv path needs
+   D4 or an equivalent; and the two write paths need the incident write itself wrapped so a failure
+   to record is reported rather than thrown. **Whoever does (a) must update spec F5**, which
+   currently asserts zero artifacts on that path.
+
+7. **A `ProbeRefusal` raised from inside `cells` exits 2, not 3, when any lifecycle failure
+   co-occurs** (Ciryaher, 2026-09-12). `withProbeLifecycle` rethrows the raw error only when
+   `lifecycleFailures` is empty; otherwise it aggregates, and `probeRefusalRecord` does not dig into
+   an aggregate — so the run is scored ERRORED and writes `-error.json` instead of `-refusal.json`.
+   `edge-slot-busy` has an explicit guard for exactly this shape; a probe's OWN refusal has none.
+   **Does not bite C13-42**, whose refusals fire inside `workBudgetMs`, before the lifecycle is
+   entered — but it will bite the first migrated probe that refuses mid-`cells`, and refusing
+   mid-`cells` is the normal shape for a probe that discovers its subject is unmeasurable. A
+   refusal scored as an error is the exit-code confusion `PROBE_EXIT_CODES` exists to prevent.
+
+8. **A MALFORMED `scope.run` THIRD ARGUMENT DROPS THE WORK AND THE RUN REPORTS SUCCESS** — the only
+   item in this row that is a runtime hole rather than a description (adversarial verifier Ciryaher,
+   2026-09-12, fifth round; reproduced independently before filing). **This is the highest-priority
+   item here**, because it is a FALSE SUCCESS, and "a run that did not measure writes no receipt" is
+   the sentence `probe-runtime.mjs`'s own header opens with.
+
+   ```js
+   scope.run("readback", async () => "value", { abort: "not-a-function" })
+   ```
+
+   | variant | exit | artifacts | work named anywhere? |
+   | --- | --- | --- | --- |
+   | control — the work rejects | 2 | `-error.json` | yes |
+   | `start` is not a function | 2 | `-error.json` | yes |
+   | **`abort` is not a function** | **0** | `-report.json` + `-runtime.json` + `-summary.md` | **no — nothing, anywhere** |
+   | **the third argument is `null`** | **0** | same three | **no — nothing, anywhere** |
+
+   **TWO DIFFERENT LINES REACH IT, which is why this row is titled "third argument" and not
+   "`abort`".** `operationOptions = {}` defaults only for `undefined`, so a `null` third argument
+   throws at the `operationOptions.abort` PROPERTY ACCESS, before the guard described below ever
+   runs — same exit 0, same three artifacts, same silence. A fixer who hardens only the `abort`
+   guard has closed one of the two. Both candidate repairs below close both, because they act on
+   the record's terminal state rather than on the argument.
+
+   **Mechanism, and the asymmetry is exact.** `makeScope.run` is `async`, so its two argument guards
+   produce a REJECTED PROMISE rather than a synchronous throw. `registerObservedRun`'s `try/catch`
+   around `slotScope.run(...)` therefore never sees it; the rejection lands in the `wrapperOutcome`
+   handler, which calls `record.finishNotStarted(failure)` — settling the record `not-started` — and
+   `closeBrowserAfter` collects only `workOutcomes.filter((o) => o.status === "rejected")`. **A
+   `not-started` record is invisible to it even when it carries a failure reason.** The `start` case
+   survives only by accident: `registerObservedRun` passes its OWN wrapper as `start`, so the guard
+   never sees the bad value, which then fails INSIDE the work where `record.reject` sets status
+   `rejected`. **A failure inside the work is reported; a failure of the registration is not.**
+
+   **Not reachable by C13-42** — none of its seventeen sites passes `operationOptions` — but
+   `DEBUGGING_GUIDE.md` teaches the three-argument form, and `C13-42a-2` is about to hand eighteen
+   probes to authors writing it for the first time. A typo in the third argument is a green run.
+
+   **Two candidate fixes**, narrow and wide: treat a `not-started` record that carries a failure
+   reason as reportable; or have `closeBrowserAfter` filter on "carries a failure" rather than on
+   `status`. The wide one is likelier correct — `status` is the wrong predicate for the question
+   "did anything go wrong" — but it changes behaviour inherited byte-identically from the adopted
+   runtime, which is why this lane filed it rather than fixing it at the end of a fifth review round.
+
+   **Pinned, not merely filed.** Spec group **G** asserts the present behaviour as a characterization
+   — including the exit-0-with-receipt — so the hole is visible in a green suite instead of silent.
+   **Whoever fixes this must invert group G**; G going red is the signal the fix landed.
 
 ### NEW-C13-42-RECEIPT-VALIDATION-DEADLOCK
 

@@ -143,6 +143,22 @@ export function acquireEdgeSlot({
     pid,
     acquiredAt: now,
     reclaimed,
+    token,
+    /**
+     * Whether the lock on disk still carries THIS acquisition's token. A slot
+     * reclaimed as stale by a later job leaves the file present and readable,
+     * so presence alone cannot answer the question a run must answer before it
+     * measures: am I still the job that holds the GPU?
+     *
+     * @returns {boolean} Whether the lock is still ours.
+     */
+    heldByUs() {
+      try {
+        return JSON.parse(fs.readFileSync(lockPath, "utf8"))?.token === token;
+      } catch {
+        return false;
+      }
+    },
     release() {
       // Only remove a lock that is still ours. A slot reclaimed out from under
       // this run (a stale-lock takeover by a later job) must not be deleted
@@ -163,4 +179,220 @@ export function acquireEdgeSlot({
       }
     },
   };
+}
+
+/**
+ * How long a release may take before the lifecycle treats the slot as stuck.
+ * The lock is a file, so a release is an `unlink`; the budget exists because
+ * `withProbeLifecycle` sizes its hard-stop grace from it and a grace derived
+ * from nothing is a grace nobody can reason about.
+ */
+export const EDGE_SLOT_CLOSE_TIMEOUT_MS = 5000;
+
+/**
+ * Hold the single Edge slot for the duration of `callback`, exposing the lease
+ * observations `withProbeLifecycle` needs.
+ *
+ * WHY THIS WRAPPER EXISTS RATHER THAN A SECOND SLOT MECHANISM. The lifecycle
+ * this fork adopted (C13-42a) was written against a slot that coordinates
+ * through a loopback listener, whose lease naturally publishes "the listener
+ * closed" and "the release settled". This fork's slot is the exclusive-create
+ * lock file every other Edge job on the machine already takes, including the
+ * wave-end gate, so replacing the mechanism would silently stop those jobs
+ * excluding each other. The lock file therefore stays, and this wrapper
+ * supplies the same three observations over it — with one honest difference in
+ * WHEN they fire, stated here rather than glossed:
+ *
+ * - `assertHeld()` re-reads the lock and compares the acquisition token, so a
+ *   run whose slot was reclaimed as stale finds out instead of measuring on a
+ *   GPU it shares.
+ * - `loss` is a NON-rejecting promise that settles when ownership is observed
+ *   lost, so a caller may race it against work and still drain that work.
+ *   **A file lock cannot PUSH.** A listener emits `close`/`error` the moment it
+ *   stops holding the port; a lock file just sits there with someone else's
+ *   token in it. So `loss` here settles at the points where ownership is
+ *   actually LOOKED AT — each `assertHeld()`, and the release — not at the
+ *   instant of the theft. A run that is stolen mid-`cells` learns about it at
+ *   its next bracket, which is before it can report, and that is the property
+ *   that matters; a caller that never checks would learn at the release.
+ *   Polling was considered and rejected: it would add a timer to every probe
+ *   to shorten a detection window nothing reads inside.
+ * - `whenClosed` / `releaseOutcome` settle when the release is attempted, which
+ *   is what lets the lifecycle prove the slot was actually given back rather
+ *   than assuming it.
+ *
+ * @template T
+ * @param {object} options Inputs.
+ * @param {string} options.owner Label recorded in the lock.
+ * @param {string} options.lockPath Absolute path to the lock file.
+ * @param {number} [options.now] Acquisition time, for receipts.
+ * @param {number} [options.pid] The acquiring pid.
+ * @param {number} [options.staleAfterMs] Age past which a lock is abandoned.
+ * @param {(pid: number) => boolean} [options.isProcessAlive] Liveness probe.
+ * @param {(observation: object) => void} [options.onLeaseObservation] Receives `{ whenClosed, releaseOutcome }` synchronously once the slot is held.
+ * @param {(slot: Readonly<object>) => Promise<T>|T} callback Work that owns the slot.
+ * @returns {Promise<T>} The callback result, after the slot is released.
+ */
+export async function withEdgeSlot(
+  {
+    owner,
+    lockPath,
+    now = Date.now(),
+    pid,
+    staleAfterMs,
+    isProcessAlive,
+    onLeaseObservation,
+  },
+  callback,
+) {
+  if (typeof callback !== "function") {
+    throw new TypeError("withEdgeSlot callback must be a function");
+  }
+  if (typeof lockPath !== "string" || lockPath.length === 0) {
+    throw new TypeError(
+      "withEdgeSlot requires the Edge-slot lockPath; a path-addressed slot cannot infer one",
+    );
+  }
+  // A refusal here (`edge-slot-busy`) propagates unchanged: it is a governance
+  // decision taken before any browser exists, and wrapping it would turn an
+  // exit-3 refusal into an exit-2 error.
+  const held = acquireEdgeSlot({
+    lockPath,
+    owner,
+    now,
+    ...(pid === undefined ? {} : { pid }),
+    ...(staleAfterMs === undefined ? {} : { staleAfterMs }),
+    ...(isProcessAlive === undefined ? {} : { isProcessAlive }),
+  });
+
+  let loss;
+  let resolveLoss;
+  const lossSignal = new Promise((resolve) => {
+    resolveLoss = resolve;
+  });
+  const reportLoss = (error) => {
+    if (loss !== undefined) {
+      return;
+    }
+    loss = error;
+    resolveLoss(error);
+  };
+
+  let closing = false;
+  let resolveWhenClosed;
+  const whenClosed = new Promise((resolve) => {
+    resolveWhenClosed = resolve;
+  });
+  let settleReleaseOutcome;
+  const releaseOutcome = new Promise((resolve) => {
+    settleReleaseOutcome = (record) => resolve(Object.freeze(record));
+  });
+  const observation = Object.freeze({ whenClosed, releaseOutcome });
+
+  const assertHeld = () => {
+    if (loss !== undefined) {
+      throw loss;
+    }
+    if (closing || !held.heldByUs()) {
+      const error = new Error(
+        `the Edge slot (${lockPath}) is no longer held by ${owner}`,
+      );
+      reportLoss(error);
+      throw error;
+    }
+  };
+
+  const slot = Object.freeze({
+    lockPath: held.lockPath,
+    owner: held.owner,
+    acquiredAt: held.acquiredAt,
+    reclaimed: held.reclaimed,
+    assertHeld,
+    loss: lossSignal,
+    whenClosed,
+    releaseOutcome,
+  });
+
+  let hookFailed = false;
+  let hookError;
+  if (onLeaseObservation !== undefined) {
+    try {
+      // Synchronous, so the lifecycle captures the observation before the
+      // callback can assert ownership or start work against it.
+      onLeaseObservation(observation);
+    } catch (error) {
+      hookFailed = true;
+      hookError = error;
+    }
+  }
+
+  let value;
+  let callbackFailed = false;
+  let callbackError;
+  if (hookFailed) {
+    callbackFailed = true;
+    callbackError = hookError;
+  } else {
+    try {
+      assertHeld();
+      value = await callback(slot);
+    } catch (error) {
+      callbackFailed = true;
+      callbackError = error;
+    }
+  }
+
+  closing = true;
+  const releaseRecord = {
+    attempted: true,
+    occurred: false,
+    succeeded: false,
+    rawCause: undefined,
+  };
+  let releaseFailed = false;
+  let releaseError;
+  try {
+    const stillOurs = held.heldByUs();
+    held.release();
+    releaseRecord.occurred = true;
+    // A slot already taken from us was never ours to give back; the release is
+    // a no-op by design, and reporting it as success would hide the takeover.
+    releaseRecord.succeeded = stillOurs;
+    if (!stillOurs) {
+      releaseRecord.rawCause = new Error(
+        `the Edge slot (${lockPath}) had already been reclaimed from ${owner}`,
+      );
+      reportLoss(releaseRecord.rawCause);
+    }
+  } catch (error) {
+    releaseRecord.occurred = true;
+    releaseRecord.rawCause = error;
+    releaseFailed = true;
+    releaseError = error;
+    reportLoss(error);
+  }
+  settleReleaseOutcome(releaseRecord);
+  resolveWhenClosed();
+
+  const failures = [];
+  if (callbackFailed) {
+    failures.push(callbackError);
+  }
+  // A slot lost mid-run fails the job even when the callback returned: the
+  // measurement it returned was taken on a GPU another job had already been
+  // handed. De-duplicated by identity, because `assertHeld` reports the loss
+  // and then throws the same error.
+  if (loss !== undefined && !failures.includes(loss)) {
+    failures.push(loss);
+  }
+  if (releaseFailed && !failures.includes(releaseError)) {
+    failures.push(releaseError);
+  }
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "the Edge-slot lifecycle failed");
+  }
+  return value;
 }

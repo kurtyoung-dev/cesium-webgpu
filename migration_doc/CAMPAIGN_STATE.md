@@ -85,9 +85,13 @@ instrument/harness work under an Opus lead with separate Opus review; engine-sem
 stay Opus-authored.
 
 **Wave A (2026-09-11):** D1 (Batch 1466), C1 (Batch 1467), C2 (Batch 1468), and C3 (Batch 1471)
-LANDED. Within the C13-42 capture apparatus, **critical path:** `C13-42a` (adopt Astra's probe runtime and
-lifecycle); the cap raise is inert as a consequence until C13-42a wires its two call sites; the Edge
-job's leg 1 is blocked until then; `CHARACTERIZATION_THRESHOLDS` still null.
+LANDED. `C13-42a` (adopt Astra's probe runtime and lifecycle) LANDED 2026-09-12 as a staged
+opt-in — a probe declares `workBudgetMs` to get the lifecycle, and the 18 that declare none keep
+their pre-adoption behaviour (`C13-42a-2` migrates them). **The capture apparatus now executes:**
+the probe is tracked, its seventeen `scope.run` sites resolve, and the Batch-1467 cap raise is live
+at both call sites. **Critical path is now the Edge leg** — the C13-42 calibration captures, which
+need an Edge executor and the built tree served on a governed port; `CHARACTERIZATION_THRESHOLDS`
+stays null until they run, so a first complete run is CALIBRATION, not acceptance.
 
 ### C14 — Dynamic ocean & wind
 
