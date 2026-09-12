@@ -22,7 +22,7 @@ import HeightReference, { isHeightReferenceClamp } from "./HeightReference.js";
 /** @import BufferPrimitive from "./BufferPrimitive.js"; */
 /** @import BufferPrimitiveMaterial from "./BufferPrimitiveMaterial.js"; */
 /** @import PickId from "../Renderer/PickId.js"; */
-/** @import { PickTarget } from "../Renderer/GraphicsContext.js"; */
+/** @import { FeatureRenderer, PickTarget } from "../Renderer/GraphicsContext.js"; */
 
 /**
  * @typedef {object} BufferPrimitiveOptions
@@ -96,6 +96,20 @@ class BufferPrimitiveCollection {
    * @ignore
    */
   _renderContext = null;
+
+  /**
+   * Backend feature renderer last used to render this collection, captured
+   * so `destroy()` can release its backend cache (mirrors the
+   * `_outlineFeatureRenderer` pattern `BufferPolygonCollection` uses for its
+   * nested outline collection, and the same-named field on the other
+   * collection classes across `Scene/`, e.g. `BillboardCollection`). Left
+   * `undefined` when no subclass `update()` has resolved a feature renderer
+   * yet (WebGL, or before the first render).
+   *
+   * @type {FeatureRenderer|undefined}
+   * @ignore
+   */
+  _featureRenderer = undefined;
 
   /**
    * @param {BufferPrimitiveCollectionOptions} [options]
@@ -377,6 +391,20 @@ class BufferPrimitiveCollection {
       for (const pickId of contextPickIds) {
         pickId.destroy();
       }
+    }
+
+    // Release the backend feature renderer's cache for this collection
+    // BEFORE the WebGL-only teardown below (C-16): on WebGPU, `_renderContext`
+    // stays null (subclass update() delegates to the FR instead), so without
+    // this call destroy() released nothing and every grow-by-clone-then-
+    // destroy cycle (the idiom `fromCollection`/`_cloneFiltered` support)
+    // leaked that collection's WebGPU buffers until context loss.
+    if (
+      defined(this._featureRenderer) &&
+      defined(this._featureRenderer.destroy)
+    ) {
+      this._featureRenderer.destroy(this);
+      this._featureRenderer = undefined;
     }
 
     if (defined(this._renderContext)) {

@@ -2133,10 +2133,12 @@ fn selectUV(input: FragmentInput, slotBit: u32) -> vec2<f32> {
 // inside the kept region) so the caller can render an edge band when
 // `clippingEdgeWidth > 0`.
 // Polygon SDF clipping for models. Mirrors
-// `Shaders/Model/ModelClippingPolygonsStageVS.glsl` for region selection and
-// `Shaders/Builtin/Functions/clipPolygons.glsl` for atlas sampling, folded into
-// one fragment function because the WebGPU model path has no separate clipping
-// vertex pass.
+// `Shaders/Model/ModelClippingPolygonsStageVS.glsl` (still live) for region
+// selection and `Shaders/Builtin/Functions/clipPolygons.glsl` (deleted
+// upstream in 1.145, along with the WebGL SDF-clipping algorithm it
+// implemented — cited below for historical provenance only, C-18 / `-07`
+// item 11) for atlas sampling, folded into one fragment function because the
+// WebGPU model path has no separate clipping vertex pass.
 //
 // The input is a WORLD-space position, in metres from the Earth's centre. It is
 // converted to approximate spherical (lat, lon) with the same

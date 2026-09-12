@@ -1392,7 +1392,14 @@ class GlobeSurfaceTileProvider {
     this._tileProvider = this._tileProvider && this._tileProvider.destroy();
     this._clippingPlanes =
       this._clippingPlanes && this._clippingPlanes.destroy();
-    this._clippingPolygons = undefined;
+    // Route through setOwner (the same call the `clippingPolygons` setter
+    // uses at :599) rather than dropping the reference directly. Upstream
+    // 1.145 deprecated ClippingPolygonCollection.destroy() because the
+    // collection no longer holds its own GPU resources, but on this fork a
+    // backend feature renderer can still hold some (the WebGPU SDF atlas plus
+    // its positions/extents textures) and setOwner is what releases those
+    // (C-15).
+    ClippingPolygonCollection.setOwner(undefined, this, "_clippingPolygons");
     this._removeLayerAddedListener =
       this._removeLayerAddedListener && this._removeLayerAddedListener();
     this._removeLayerRemovedListener =

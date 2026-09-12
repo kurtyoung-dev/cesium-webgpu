@@ -169,7 +169,11 @@ import WebGPUEffectsStateCache from "./WebGPUEffectsStateCache.js";
 // the model fragment shader can sample `clippingPolygonTex` at the atlas slot
 // belonging to the fragment's containing extent. A whole-globe lon/lat mapping
 // instead produces garbage SDF samples for any polygon small relative to the
-// globe, which is most of them.
+// globe, which is most of them. The `czm_clipPolygons`/`czm_clipPolygons.glsl`
+// citations below name the upstream GLSL builtin this layout matches;
+// upstream 1.145 deleted that builtin along with the WebGL SDF-clipping
+// algorithm it served — cited here for historical provenance only (C-18,
+// `-07` item 11).
 //   offset 336 — `clippingPolygonControl: vec4<f32>` —
 //     x = extentsCount (number of merged-extent groups in the SDF atlas;
 //         polygons with overlapping spherical bounding rectangles get

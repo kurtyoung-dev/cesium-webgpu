@@ -13,6 +13,32 @@
 //
 // Usage in fragment shader:
 //   if (csm_clipByPolygons(geographicCoord)) { discard; }
+//
+// DISPOSITION (2026-09-06): KEEP, pending the clipping-algorithm-divergence
+// epic that this stub's follow-up work belongs to (currently blocked on the
+// polygon-tables prerequisite landing elsewhere). Zero callers repo-wide,
+// re-verified as of this date. This is a knowingly-wrong stub: the UV
+// mapping below (lines that build `u`/`v` from `geoCoord`) is a naive
+// normalized lon/lat — the LIVE production clip paths
+// (`GlobeTerrain.wgsl`'s `globeClipByPolygon`, `ModelPBRComplete.wgsl`'s
+// `modelClipByPolygon`) instead use the per-extent atlas-slot mapping with
+// `czm_fastApproximateAtan2`, and this stub was never updated to match. Its
+// most recent maintenance repaired an implicit-derivative texture-sampling
+// hazard in place rather than removing the file, so the standing disposition
+// is keep-and-fix, not delete; no removal date has ever been set anywhere in
+// the fork's records.
+//
+// AUTHORITY. The governing disposition row is `UP-1` in the upstream-absorb
+// table of the 2026-09-02 architecture review, which names this file
+// explicitly and dispositions the whole clipping-polygon cluster ABSORB/DEBT
+// and unowned. `UP-1`, not any worker-branch record, is what KEEP rests on;
+// re-derive from that row, never from an illustrative anecdote in a
+// governance document.
+//
+// Re-evaluate once the blocking prerequisite lands, alongside `UP-1`: either
+// rewrite the atlas mapping to match and wire this in as the shared WGSL twin
+// (retiring the duplicated inline logic in `GlobeTerrain.wgsl` and
+// `ModelPBRComplete.wgsl`), or remove it then. Do not delete in this patch.
 
 /**
  * Returns true if the fragment should be discarded based on polygon SDF clipping.

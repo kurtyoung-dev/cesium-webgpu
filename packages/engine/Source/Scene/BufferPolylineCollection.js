@@ -186,6 +186,9 @@ class BufferPolylineCollection extends BufferPrimitiveCollection {
         FeatureRendererKey.BUFFER_POLYLINE_COLLECTION,
       );
       if (fr) {
+        // Cached so destroy() (BufferPrimitiveCollection, C-16) can release
+        // this collection's WebGPU buffers.
+        this._featureRenderer = fr;
         fr.update(this, frameState);
         return;
       }

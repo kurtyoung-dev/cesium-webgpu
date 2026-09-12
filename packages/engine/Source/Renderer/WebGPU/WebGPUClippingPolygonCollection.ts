@@ -15,7 +15,11 @@
  * individual-extent pixels + one pixel per vertex. Raw geodetic `(lon, lat)`
  * pairs omit those headers and are incompatible with the SDF compute shader,
  * which is a port of `PolygonSignedDistanceFS.glsl`; using that layout
- * produces unusable SDF data and prevents clipping from activating.
+ * produces unusable SDF data and prevents clipping from activating. Upstream
+ * 1.145 deleted `PolygonSignedDistanceFS.glsl` along with the WebGL
+ * SDF-clipping algorithm it implemented (C-18, `-07` item 11) — both
+ * citations of it in this file (here and in `computePolygonSDF` below) name
+ * this compute pass's historical origin, not a live GLSL sibling to consult.
  *
  * Consumers: `WebGPUEffectsBindGroup.createEffectsBindGroup` binds
  * `cache.signedDistanceTextureView` + `cache.sdfSampler` at effects bindings
@@ -23,6 +27,12 @@
  * `clippingPolygonControl` / `clippingPolygonExtents` UBO fields consumed by
  * `modelClipByPolygon` (ModelPBRComplete.wgsl) and `globeClipByPolygon`
  * (GlobeTerrain.wgsl).
+ *
+ * Rebake gating (C-17, `-07` item 24): "contents changed" is read from the
+ * collection's own `_revision` counter, not re-derived from vertex/polygon
+ * counts. A count comparison aliases on an equal-count edit (remove one
+ * polygon, add another with the same vertex count) and would keep clipping
+ * against the removed polygon while the CPU-side pack has already moved on.
  *
  * @module WebGPUClippingPolygonCollection
  */
@@ -42,6 +52,15 @@ interface ClippingPolygonCollectionLike {
   length: number;
   /** Private field: reading the public getter emits a 1.145 deprecation warning. */
   _quality?: number;
+  /**
+   * Monotonic revision counter, incremented by `ClippingPolygonCollection` in
+   * add/remove/removeAll. This is the real content-change signal (C-17 /
+   * `-07` item 24) — a vertex/polygon *count* comparison aliases on an
+   * equal-count edit (one polygon removed, another with the same vertex
+   * count added), which previously left this cache serving a rebake baked
+   * from the removed polygon's contents.
+   */
+  _revision?: number;
   get(index: number): { length: number };
   _float32View?: Float32Array;
   _extentsFloat32View?: Float32Array;
@@ -54,11 +73,11 @@ interface ClippingPolygonCache {
   signedDistanceTexture: GPUTexture | null;
   signedDistanceTextureView: GPUTextureView | null;
   sdfSampler: GPUSampler | null;
-  // Change detection mirrors the WebGL heuristic: repack when the
-  // total number of positions or the polygon count changes; per-vertex
-  // edits with a constant count are not tracked, same as WebGL).
-  lastTotalPositions: number;
-  lastLength: number;
+  // Change detection keys off the collection's own revision counter (C-17),
+  // not a vertex/polygon count: a same-count polygon swap (remove one, add
+  // another with an equal vertex count) must still rebake, and a count
+  // comparison cannot see it because neither total changes.
+  lastRevision: number;
 }
 
 /**
@@ -77,11 +96,6 @@ function updateWebGPUClippingPolygons(
     return;
   }
 
-  let totalPositions = 0;
-  for (let i = 0; i < collection.length; i++) {
-    totalPositions += collection.get(i).length;
-  }
-
   if (!collection._webgpuCache) {
     collection._webgpuCache = {
       positionsTexture: null,
@@ -89,17 +103,18 @@ function updateWebGPUClippingPolygons(
       signedDistanceTexture: null,
       signedDistanceTextureView: null,
       sdfSampler: null,
-      lastTotalPositions: -1,
-      lastLength: -1,
+      lastRevision: -1,
     };
   }
 
   const cache = collection._webgpuCache;
-  if (
-    cache.lastTotalPositions === totalPositions &&
-    cache.lastLength === collection.length &&
-    cache.signedDistanceTexture !== null
-  ) {
+  // `_revision` is optional in the interface only to keep the interface
+  // structurally minimal for tests; the real ClippingPolygonCollection
+  // always sets it (constructor-initialized to 0, incremented on every
+  // add/remove/removeAll), so the `?? 0` fallback is defense-in-depth, not
+  // the expected path.
+  const revision = collection._revision ?? 0;
+  if (cache.lastRevision === revision && cache.signedDistanceTexture !== null) {
     return;
   }
 
@@ -195,8 +210,7 @@ function updateWebGPUClippingPolygons(
     context.webgpuComputePipelineCache ?? null,
   );
 
-  cache.lastTotalPositions = totalPositions;
-  cache.lastLength = collection.length;
+  cache.lastRevision = revision;
 }
 
 // ---- SDF compute pipeline ----

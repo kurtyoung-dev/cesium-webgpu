@@ -386,6 +386,11 @@ class BufferPolygonCollection extends BufferPrimitiveCollection {
         FeatureRendererKey.BUFFER_POLYGON_COLLECTION,
       );
       if (fr) {
+        // Cached so destroy() (BufferPrimitiveCollection, C-16) can release
+        // this collection's WebGPU buffers. Distinct from
+        // `_outlineFeatureRenderer`, which tracks the nested outline
+        // collection's own FR.
+        this._featureRenderer = fr;
         fr.update(this, frameState);
         return;
       }

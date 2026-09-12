@@ -21341,3 +21341,155 @@ The energy law was cut against Batch 1455 and landed on Batch 1468, after lane C
 **A trap worth recording.** The first cut of that assertion went red against correct code. `bodyAfter(effectTs, "updateConfig(config: GodRayAppearanceConfig = {}): void")` matches braces from the START of the marker, so it locked onto the `{}` of the default parameter and returned an empty body — which reads exactly like a setter that writes nothing. Brace-matching anchored on a method declaration must start past the signature, or a default parameter of `{}` silently answers the question being asked.
 
 **Two TypeScript hazards the tuple introduced.** `Object.freeze({ ..., sunRadiance: [1, 1, 1] })` infers `number[]` and is rejected against the readonly triple, because `freeze` infers from its argument before a binding annotation applies — the type argument belongs on the call. And once the appearance snapshot holds two different value types, `this._config[key] = value` over a UNION key is `not assignable to never`; a generic helper, where the key is one type parameter, checks.
+
+## Lane Hathol pass A (sync-parity wave S1, lane L5, 2026-09-06) — C-13 / C-15 / C-16: an ungated clipping texture bake and two feature-renderer teardown leaks
+
+**Files affected:** `Scene/ClippingPolygonCollection.js`, `Scene/GlobeSurfaceTileProvider.js`,
+`Scene/BufferPrimitiveCollection.js`, `Scene/BufferPointCollection.js`,
+`Scene/BufferPolylineCollection.js`, `Scene/BufferPolygonCollection.js`.
+
+**Root cause (C-13).** `ClippingPolygonCollection.requestRectangleData` (`:473-504`) called
+`VectorPipeline.packPolygonTextures(context, vectorTileData)` unconditionally — no backend claim,
+unlike the sibling `VectorProvider.requestDataForRectangle` (`Core/VectorProvider.js:383`), which
+asks the active backend first via `VectorPipeline.packPrimitiveTextures`. Reached once per clipped
+globe tile (`GlobeSurfaceTileProvider.js:841`, inside the shared `endUpdate` render loop) and once
+per clipped model (`Model.js:2680`) — the per-tile globe reach is the census's correction to `-07`
+item 3, which named only the model path; verified true at this lane's HEAD. WebGPU's clipping
+algorithm is the unrelated SDF-atlas path (`WebGPUClippingPolygonCollection.ts`), so the three
+`Texture` objects this bake built on WebGPU were pure waste — VRAM, upload and CPU pack cost with no
+visual effect.
+
+**Root cause (C-15).** `GlobeSurfaceTileProvider.destroy()` (`:1391-1396`) did
+`this._clippingPolygons = undefined;` instead of calling `ClippingPolygonCollection.setOwner(undefined,
+this, "_clippingPolygons")` — the same call the `clippingPolygons` setter already uses (`:599`). Only
+`setOwner` reaches `releaseFeatureRendererResources` (`ClippingPolygonCollection.js:765-770`), which
+destroys the WebGPU SDF-atlas textures a feature renderer attached to the collection. Every
+globe/viewer destroyed against a surviving device leaked those resources.
+
+**Root cause (C-16).** `BufferPrimitiveCollection.destroy()` (`:373-388`) destroyed
+`_customPickObjects`, pick ids, and `_renderContext` (WebGL only) — no feature-renderer release. Its
+three subclasses' `update()` methods each resolve a real, correctly-implemented feature renderer
+(`WebGPUFeatureRenderers.ts:311-328` registers `{update, destroy}` for all three of
+BUFFER_POINT_COLLECTION / BUFFER_POLYLINE_COLLECTION / BUFFER_POLYGON_COLLECTION) but never cached
+the resolved reference anywhere `destroy()` could find it — the exact convention fifteen OTHER
+collection classes in `Scene/` already follow (`this._featureRenderer = fr;` in `update()`, released
+in `destroy()`). `destroyWebGPUBufferPolylineCollection` (`WebGPUBufferPolylineRenderer.ts:849-869`)
+was complete and correct, just unreachable dead code. Independently counted (not assumed):
+`PolylineCache` (`:79-123`) declares 10 `GPUBuffer` fields plus 1 inherited from `SharedCache`
+(`WebGPUBufferPrimitiveRenderer.ts:178-179`) = **11 real buffers per collection**, confirming the
+census's "≈11" figure exactly.
+
+**Fix applied.**
+
+1. `requestRectangleData` calls `VectorPipeline.prepareRendererResources(context, vectorTileData)`
+   before `packPolygonTextures` and returns early on a claim — the CPU tables computed earlier in the
+   same call are untouched, only the unconsumed `Texture` realization is skipped.
+2. `GlobeSurfaceTileProvider.destroy()` now calls
+   `ClippingPolygonCollection.setOwner(undefined, this, "_clippingPolygons")`.
+3. `BufferPrimitiveCollection` gained a `_featureRenderer` field and a release call in `destroy()`
+   (`if (defined(this._featureRenderer) && defined(this._featureRenderer.destroy)) {
+   this._featureRenderer.destroy(this); this._featureRenderer = undefined; }`) before the WebGL
+   teardown; each subclass's `update()` now caches `this._featureRenderer = fr;` where it already
+   resolves the renderer for its own dispatch.
+
+**Verification.** Three new pure-Node specs (`test-engine-node`), each with a hand-applied
+`if (false && …)` inertness mutant confirmed to turn the spec red, then reverted:
+
+- `Tools/visual-regression/clipping-polygon-texture-backend-claim.spec.mjs` — a real WebGL2 `gl`
+  stub lets `Texture#sizeInBytes` report real byte counts; asserts 3 textures / >0 bytes on the WebGL
+  leg (unchanged) and 0 textures / 0 bytes on the WebGPU leg (the fix), plus that the CPU tables
+  survive the WebGPU claim.
+- `Tools/visual-regression/globe-surface-tile-provider-clipping-teardown.spec.mjs` — a real
+  `GlobeSurfaceTileProvider` + `ClippingPolygonCollection` with a fake feature renderer standing in
+  for a backend's cached resources; asserts `destroy(collection)` is invoked and the cache slot is
+  cleared, with no `GraphicsContext`/device object created anywhere ("context still alive").
+- `Tools/visual-regression/buffer-primitive-collection-feature-renderer-teardown.spec.mjs` — real
+  Buffer{Point,Polyline,Polygon}Collection instances, a fake feature renderer whose `update`/`destroy`
+  grow/shrink a shared counter; asserts the count returns to baseline after grow-then-destroy for all
+  three collection types.
+
+`npm run test-engine-node`: 333/333 pass after the rebase onto Batch 1470 (225/225 against Batch 1443, up from ~213 before). Full detail, multi-metric numbers and the
+per-spec green/red table are in `migration_doc/DEFERRED_WORK.md`'s matching 2026-09-06 entry.
+
+**Edge leg:** none offered — all three fixes are cost/leak/allocation-count only, with no pixel
+output; the allocation-count claim is fully observable via a real `Texture#sizeInBytes` getter in
+the Node spec, so a live device adds no information for C-13. C-16's "≈11 buffers" figure is
+confirmed by direct `GPUBuffer`-field count in the real TypeScript interfaces rather than by a live
+`GPUDevice` measurement; a runtime confirmation would need `CesiumDebug`/`cacheStats()`-style
+instrumentation for `BufferPolylineCollection`, which does not exist today — flagged, not built,
+in this lane.
+
+**Files modified:** `packages/engine/Source/Scene/ClippingPolygonCollection.js`,
+`packages/engine/Source/Scene/GlobeSurfaceTileProvider.js`,
+`packages/engine/Source/Scene/BufferPrimitiveCollection.js`,
+`packages/engine/Source/Scene/BufferPointCollection.js`,
+`packages/engine/Source/Scene/BufferPolylineCollection.js`,
+`packages/engine/Source/Scene/BufferPolygonCollection.js`,
+`Tools/visual-regression/clipping-polygon-texture-backend-claim.spec.mjs` (new),
+`Tools/visual-regression/globe-surface-tile-provider-clipping-teardown.spec.mjs` (new),
+`Tools/visual-regression/buffer-primitive-collection-feature-renderer-teardown.spec.mjs` (new),
+`package.json`, `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`.
+
+## Lane Hathol pass B (sync-parity wave S1, lane L5, 2026-09-06) — C-17: a WebGPU rebake cache aliased on an equal-count polygon swap; C-18: provenance sweep widened from 4/7 to 19 hits, two orphan chunks dispositioned
+
+**C-17 root cause.** `ClippingPolygonCollection.update()` (`:367-402`) clears `_dirty` inside `update` and
+unconditionally calls `featureRenderer.update(this, frameState)` — no changed-signal reaches the feature
+renderer at all. `WebGPUClippingPolygonCollection.ts`'s `updateWebGPUClippingPolygons` compensated with a
+count comparison (`collection.length` + summed vertex count vs. the previous bake's recorded totals), which
+aliases on an equal-count edit: remove one polygon, add another with the same outer-ring vertex count, and
+neither total changes, so the SDF atlas is never rebuilt even though the polygon set changed completely.
+WebGL has no equivalent cache (1.145 deleted the WebGL SDF producer outright), so only WebGPU went stale.
+
+**Premise REFUTED.** `ARCHITECTURE_REVIEW_2026-09-02.md:789` (`H-P11`) claimed WebGL performs "the
+identical count-only check" at `ClippingPolygonCollection.js:300-307` and closed C-17's predecessor as
+"not a WebGPU parity gap — do not re-file." At this clone's HEAD those lines are `contains()`'s body plus
+`remove()`'s JSDoc — no such check exists, and the class's own deprecation comments confirm WebGL's whole
+SDF path was deleted in 1.145. `H-P11`'s premise was pre-merge and is now factually wrong, not merely
+stale; the row is annotated in place and this entry is the re-file.
+
+**Fix.** `ClippingPolygonCollection` gained a monotonic `_revision` counter, incremented alongside `_dirty`
+in `add`/`remove`/`removeAll`. `updateWebGPUClippingPolygons` now gates its rebake on
+`cache.lastRevision === (collection._revision ?? 0)`, replacing the count comparison outright (revision
+strictly dominates it as a signal).
+
+**Verification.** `Tools/visual-regression/clipping-polygon-rebake-revision-signal.spec.mjs` (new; runner:
+`node --test Tools/visual-regression/clipping-polygon-rebake-revision-signal.spec.mjs`, also
+`npm run test-engine-node`), driving the REAL `ClippingPolygonCollection.update(frameState)` end to end
+with the REAL `updateWebGPUClippingPolygons` registered as the feature renderer (only the `GPUDevice` is a
+counting-spy fake). 5/5 pass, exit 0: baseline rebake, no-rebake-when-unchanged, the equal-count swap
+(proving `length` and vertex-count totals are BOTH unchanged by the swap yet a rebake still happens), a
+real count-change regression check, and a direct pin of `_revision`'s increment contract.
+**Inertness mutant:** `if (false && cache.lastRevision === revision && cache.signedDistanceTexture !== null)`
+— makes every call look like a fresh bake; the "nothing changed does not rebake" test goes red
+(`9 !== 3`, exit 1), i.e. the always-fires failure mode the census warned about. Reverted; green again
+(5/5, exit 0). `npm run test-engine-node`: 333/333 pass after the rebase onto Batch 1470 (230/230 against Batch 1443, up from 225 after pass A's three files).
+
+**C-18.** The census's widened grep was re-run fresh via `git grep` (tracked files only) and found **19**
+hits across 6 files — GlobeTerrain.wgsl (5) and WebGPUEffectsBindGroup.js (2) as the brief's own "seven"
+already had, PLUS WebGPUClippingPolygonCollection.ts (2), PolygonSignedDistance.wgsl (2),
+ModelPBRComplete.wgsl (5, the model-side twin of the GlobeTerrain.wgsl block the brief's recount missed
+wholesale), and csm_unpackClippingExtents.wgsl (3, two of which are the chunk's own self-declared name, not
+provenance citations). Verified the three named GLSL files are genuinely absent repo-wide. Added one
+clarifying "deleted upstream in 1.145" note per file/block (not 17 repeated sentences) so every citation
+now says plainly the original is gone; GlobeTerrain.wgsl's edit is comment-lines-only. The two orphan
+chunks (`csm_clipByPolygons.wgsl`, `csm_unpackClippingExtents.wgsl`, zero callers, re-verified) each got a
+dated KEEP-pending-C-07 disposition derived from `migration_doc/branches/aegnor--q130-phase-a-source-fleet-cleanliness.md`
+(the ledger's most recent maintenance on `csm_clipByPolygons.wgsl` — repaired, not removed) rather than
+reconstructed from CLAUDE.md's Principle-7 anecdote, which describes a different file's history. Not
+deleted in this patch. Full detail (per-file hit table, the false-positive analysis, and the disposition
+text) is in `migration_doc/DEFERRED_WORK.md`'s matching 2026-09-06 entry.
+
+**Edge leg:** none — C-17's signal is fully Node-observable (texture/dispatch call counts); C-18 is
+comment-only with no runtime effect on either backend.
+
+**Files modified:** `packages/engine/Source/Scene/ClippingPolygonCollection.js`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUClippingPolygonCollection.ts`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js`,
+`packages/engine/Source/Shaders/WebGPU/Compute/PolygonSignedDistance.wgsl`,
+`packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl` (comment lines only),
+`packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl`,
+`packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_clipByPolygons.wgsl`,
+`packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_unpackClippingExtents.wgsl`,
+`Tools/visual-regression/clipping-polygon-rebake-revision-signal.spec.mjs` (new), `package.json`,
+`migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`,
+`migration_doc/ARCHITECTURE_REVIEW_2026-09-02.md` (`H-P11` row corrected in place).

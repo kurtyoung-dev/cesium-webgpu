@@ -103,6 +103,14 @@ class ClippingPolygonCollection {
     // Marks the packed vector data as stale.
     this._dirty = false;
 
+    // Monotonic revision counter, incremented in add/remove/removeAll
+    // alongside `_dirty`. The WebGPU CLIPPING_POLYGONS feature renderer keys
+    // its rebake decision off this counter instead of vertex/polygon counts,
+    // which alias on an equal-count edit (remove one polygon, add another
+    // with the same vertex count) and leave WebGPU clipping against the
+    // removed polygon while WebGL re-clips normally (C-17 / `-07` item 24).
+    this._revision = 0;
+
     // For now: this is a write-through mirror of the polygons array. In upcoming work,
     // this will be the source of truth. To maintain backwards compatibility, though, we will still
     // have to wrap BufferPolygons in ClippingPolygons for the public API.
@@ -261,6 +269,7 @@ class ClippingPolygonCollection {
     );
 
     this._dirty = true;
+    this._revision++;
     this.polygonAdded.raiseEvent(polygon, newPlaneIndex);
     return polygon;
   }
@@ -332,6 +341,7 @@ class ClippingPolygonCollection {
     hideBufferPolygon(this, entry);
 
     this._dirty = true;
+    this._revision++;
     this.polygonRemoved.raiseEvent(entry.clippingPolygon, index);
     return true;
   }
@@ -351,6 +361,7 @@ class ClippingPolygonCollection {
       this.polygonRemoved.raiseEvent(entry.clippingPolygon, i);
     }
     this._dirty = true;
+    this._revision++;
     this._polygons = [];
   }
 
@@ -498,6 +509,20 @@ class ClippingPolygonCollection {
     }
 
     VectorPipeline.packPolygonGrid(vectorTileData);
+
+    // The active backend gets first refusal, exactly like
+    // VectorProvider.requestDataForRectangle (Core/VectorProvider.js). WebGPU
+    // has no consumer for these polygon-edge/grid CPU tables yet (its clipping
+    // path still runs the SDF atlas algorithm — see census C-07), so
+    // packVectorTileWords declines a polygon-only bake and this claim costs
+    // nothing beyond a small bookkeeping object; WebGL has no GLOBE_SURFACE
+    // preparation hook and falls through unchanged. Either way the CPU tables
+    // above (polygonRings/polygonEdgeTexels/polygonGridCellIndices) stay on
+    // vectorTileData for a future WGSL twin to read — only the unconsumed GL
+    // Texture realization below is what gets skipped (C-13).
+    if (VectorPipeline.prepareRendererResources(context, vectorTileData)) {
+      return vectorTileData;
+    }
 
     VectorPipeline.packPolygonTextures(context, vectorTileData);
 

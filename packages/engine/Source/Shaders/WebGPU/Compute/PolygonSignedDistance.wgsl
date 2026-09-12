@@ -12,6 +12,11 @@
  * PolygonSignedDistanceFS.glsl — early-out for empty regions, per-polygon
  * bounding box reject with 5% padding, sorted-polygon early break,
  * vertex caching to halve texture reads per edge iteration.
+ *
+ * Provenance note (C-18, `-07` item 11): upstream 1.145 deleted
+ * PolygonSignedDistanceFS.glsl along with the WebGL SDF-clipping algorithm
+ * it implemented. Both citations above name it as this compute shader's
+ * historical origin, not a live GLSL file to consult.
  */
 
 struct PolygonParams {

@@ -666,6 +666,23 @@ fn csm_translucentPhong(
 `,
 
   // ─── Unpack clipping extents ───
+  // C-18 / `-07` item 11 — provenance sweep: `czm_unpackClippingExtents` is one
+  // of the GLSL builtins upstream 1.145 DELETED along with the plane-based
+  // WebGL clipping path. The "Port of czm_unpackClippingExtents" line inside the
+  // template below (and the three `csm_unpackClippingExtents` identifiers around
+  // it) name this chunk's historical origin, not a live GLSL sibling to consult.
+  // The template text is deliberately left byte-identical so this comment cannot
+  // change what the generator would emit.
+  //
+  // HAZARD, not fixed here: the loop at the bottom of this file calls
+  // `writeFileSync(path, content)` unconditionally for every entry in this table
+  // — there is no existence check. Re-running this script would overwrite
+  // `packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_unpackClippingExtents.wgsl`
+  // with the template below, DESTROYING the KEEP disposition block recorded in
+  // that file on 2026-09-06. Three chunks in this table have already diverged
+  // from their templates (`csm_readDepth`, `csm_unpackClippingExtents`,
+  // `csm_vertexLogDepth`); see rows `FU-HATHOL-1` and `FU-HATHOL-2` in
+  // `DEFERRED_WORK.md` before re-running this script.
   csm_unpackClippingExtents: `/**
  * Unpacks clipping plane extents from a packed texture. Port of czm_unpackClippingExtents.
  * @chunk functions/csm_unpackClippingExtents

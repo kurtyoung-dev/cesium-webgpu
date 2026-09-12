@@ -3708,7 +3708,11 @@ fn globeClipByPlanes(positionMC: vec3<f32>) -> bool {
 // `modelClipByPolygon` in ModelPBRComplete.wgsl, which in turn folds the WebGL
 // pipeline's `GlobeVS.glsl` ENABLE_CLIPPING_POLYGONS region selection (via
 // `czm_approximateSphericalCoordinates`) and `Builtin/Functions/clipPolygons.glsl`
-// atlas sampling into a single fragment function.
+// atlas sampling into a single fragment function. Upstream 1.145 deleted
+// `clipPolygons.glsl` (and `PolygonSignedDistanceFS.glsl`, `czm_clipPolygons`'s
+// other GLSL home below) along with the WebGL SDF-clipping algorithm they
+// implemented — this comment block cites them for historical provenance of
+// the WebGPU-only port, not as live files to consult (C-18, `-07` item 11).
 //
 // The input frame is load-bearing: it is the fragment's full ECEF world-space
 // position (`v_positionMC`, which the vertex stage assigns from `position3DWC`,
