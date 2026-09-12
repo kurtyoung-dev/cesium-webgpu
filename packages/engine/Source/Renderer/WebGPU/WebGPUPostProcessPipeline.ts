@@ -1314,9 +1314,12 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * Add the GodRay effect: a radial blur toward the sun, then a composite.
+   * Add the GodRay effect: a chord march toward the sun, then a composite.
    * Two passes, a half-resolution ray generate followed by a full-resolution
-   * composite. The caller feeds the per-frame sun screen UV through
+   * composite. The generate pass measures how much of each pixel's chord to
+   * the sun is unobstructed and modulates an isolated sun emitter by it; it
+   * does not read the scene colour. The caller feeds the per-frame sun
+   * screen UV through
    * `pipeline.godRayEffect.setSunScreenUV(u, v)`, which the
    * `WebGPUPostProcessStageCollection` configure path does when the scene has
    * a sun configured. A depth texture is required: the generate pass uses
@@ -1573,8 +1576,14 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       );
     }
 
-    // 2.5 GodRays, placed after Bloom so bright shaft pixels participate in
-    // the bloom. Needs depth to gate the radial blur on sky versus geometry.
+    // 2.5 GodRays, AFTER Bloom — so the shaft does NOT participate in the
+    // bloom. (This comment used to claim the opposite of the order it sits in.)
+    // The pass is still before Tonemapping, so the buffer it adds into is
+    // pre-tonemap scene colour, which is the space `GodRayConfig.sunRadiance`
+    // is expressed in. Whether the shaft SHOULD bloom, and which colour space
+    // the emitter belongs in, is a reviewed ordering contract that has not been
+    // written yet, and it is tracked in the ledger. Do not reorder here.
+    // Needs depth to gate the chord march on sky versus geometry.
     if (this._godRayEffect?.enabled && depth) {
       currentView = this._godRayEffect.execute(
         encoder,

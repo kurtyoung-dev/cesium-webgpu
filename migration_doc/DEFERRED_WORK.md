@@ -17672,3 +17672,239 @@ tail to `ModelPBRComplete.wgsl`'s `CameraUniforms`; `writeEyeCartographicTail` i
 `(data, offset, uniformState)`, so it is reusable there unchanged. The `-07` row's acceptance should
 also record that a chunk under `Shaders/WebGPU/chunks/functions/` must be registered in
 `WGSLBuiltins.ts` to be reachable at all.
+
+## God-ray energy law — C13-45, lane C3 (Eothain), 2026-09-10
+
+The shipped law, the four rows it leaves open, and the WebGL position. The
+mechanism record is here; the row's status lives in the campaign queue.
+
+### NEW-WEBGPU-GODRAY-EMITTER-WAS-THE-SKY — the generate pass used the sampled scene colour as its emitter (FIXED 2026-09-10, rendered-pixel acceptance OWED)
+
+**Root cause.** `GodRayGenerate.wgsl` sampled `sceneColorTex` along the chord to
+the sun and accumulated `sceneColor * weight * decay^i`, so the shaft was a
+scaled copy of whatever the chord crossed. The GPU Gems 3 formulation it cites
+assumes the source buffer is a bright-pass in which only the light is non-black;
+the caller feeds the full scene colour. With a bright sky the effect therefore
+brightened the sky by a fixed multiple of the sky's own colour — washout by
+construction, and with no radial falloff, because every clear-sky pixel got the
+same multiple regardless of its distance from the sun.
+
+**Fix.** The generate pass no longer reads the scene colour at all. It measures
+how much of the chord is unobstructed and modulates an isolated emitter:
+
+    ray           = sunRadiance * gain * glow(|pixel - sun|) * transmittance
+    transmittance = sum(visibility_i * A(t_i)) / sum(A(t_i))
+    A(t)          = decay ^ (GODRAY_REFERENCE_SAMPLES * t)
+    gain          = weight * exposure / (1 - decay)
+    glow(d, r)    = 1 / (1 + (d / r)^2)
+
+`visibility` is the existing depth sky-gate times the existing cloud
+transmittance mask, unchanged. `sceneColorTex` stays DECLARED and stays in the
+bind-group layout — the explicit pipeline layout still provides it, and the
+planned sun-tint follow-up wants it — but nothing samples it.
+
+**Second behaviour change, spec'd separately: count invariance.** The
+predecessor's `sum(decay^i)` was unnormalised, so the same input was 0.8398x the
+sky colour at 16 samples and 1.4979x at 128 — a 1.784x spread set by the loop
+trip count, and a chord falloff SHAPE that also moved with it (`decay^16` = 0.44
+of the weight survived the full chord at 16 samples, `decay^128` = 0.0014 at
+128). The new fraction divides by the same quadrature that weights it, so it is
+in [0, 1] at any sample count and is exactly 1 for a clear chord; the exponent is
+pinned to the shipped default sample count so the default configuration keeps its
+shape. Sampling moved from the right endpoint to the midpoint so the quadrature
+nodes and their weights line up.
+
+**Derived tolerances, not fitted.** Clear chord: bounded by f32 sequential-sum
+roundoff alone, `2 * gamma_128 + u` = 1.53e-5, because the midpoint error is
+identically zero when numerator and denominator integrate the same function. A
+smooth partial occlusion: the midpoint rule's own `h^2/24 * f''` bound, 2.04e-2
+at 16 samples, against a measured 4.48e-4 that falls by 4x per doubling. A
+hard-edged occluder keeps a genuine first-order residual — one sample's weight at
+each transition — and that is exactly what makes the sample count a quality
+control rather than a brightness control.
+
+**Amplitude.** `gain` is the predecessor's own supremum, 1.5 at the shipped
+defaults, so the peak shaft amplitude for a unit-radiance sun is unchanged in
+magnitude. What changed is that it no longer multiplies the sky and no longer
+moves with the sample count. **Read that sentence with the scoping under
+`NEW-WEBGPU-GODRAY-EMITTER-UNCALIBRATED` below**: 1.5 is the supremum only at
+the shipped `decay`, the predecessor's sum is a partial sum at finite N, and
+the ratio diverges to 16.12x at `GODRAY_MAX_DECAY`. It is a statement about the
+coefficient, not about apparent brightness.
+
+**What is NOT claimed.** No capture has measured any of this. The effect
+allocates its targets in the caller-supplied format and each stage can clamp or
+round, so none of the multipliers above is an assertion about stored pixels or
+displayed brightness, and no washout attribution is made from them.
+
+**Proof.** `Tools/visual-regression/godray-energy-law.spec.mjs`, 39/39, runner
+home `npm run test-engine-node` (297/297 -> 336/336 at Batch 1468, no new red).
+It executes the six law functions out of the shipped WGSL rather than
+transcribing them, checks the 128-sample quadrature against a closed-form
+integral derived by calculus, and carries an inertness mutant that leaves the
+normalisation compiled and live but unreachable. The spec does NOT execute the
+march loop — the evaluator reads no loops — so the loop's own shape is the named
+Edge leg's to measure.
+
+### NEW-WEBGPU-GODRAY-NO-WEBGL-TWIN — god rays exist on one backend only (OPEN, parity gap, stated 2026-09-10)
+
+Every god-ray source in the tree is WebGPU. `PostProcessStageLibrary.js` has no
+light-scattering stage and no `.glsl` file in `packages/` mentions god rays, sun
+shafts, light shafts, crepuscular rays or volumetric light scattering.
+Principle 5's "WebGPU-only capability" carve-out does not cover this: it is for
+capabilities WebGL lacks, and a depth-gated screen-space radial march is well
+inside WebGL2. **A GLSL twin is owed.** The gap predates this rework and is the
+same size after it. It is now cheaper to close: the law is six small pure
+functions and the spec already executes them out of the source, so a GLSL twin
+can be held to the same numbers by the same reader. Full inventory row in
+`FEATURE_INVENTORY.md` section C.7.
+
+### NEW-WEBGPU-GODRAY-PASS-ORDER-CONTRACT — ordering and emitter colour space are undecided (OPEN, 2026-09-10)
+
+`WebGPUPostProcessPipeline.execute` runs GodRay at step 2.5, after Bloom and
+before Tonemapping. Its step comment claimed the shaft participated in the bloom,
+contradicting the order it sits in. **The comment is corrected; no pass moved.**
+The generate shader's own claim that the caller feeds "post-tonemap scene color
+(or the bloom bright-pass output)" was false on both counts and is also
+corrected. Open, and deliberately not decided in this lane: whether the shaft
+should bloom, and whether the emitter should be specified in a physical unit and
+converted rather than in the pre-tonemap buffer's units.
+
+### NEW-WEBGPU-GODRAY-EMITTER-UNCALIBRATED — the two new defaults have never seen a frame (OPEN, 2026-09-10)
+
+`sunRadiance` defaults to unit white, which is the choice that keeps the peak
+amplitude at the predecessor's supremum; `sunGlowRadius` defaults to 0.1 UV,
+which is the reach the Mitchell march had with a bright-pass source at the
+shipped `density` 0.96. Both are documented derivations of a design choice, not
+measurements. Calibration is the Edge leg's job. The follow-up worth having is
+feeding the atmosphere-attenuated sun colour through `sunRadiance` so the shaft
+reddens at sunset; the effect has no `UniformState` seam for that today.
+
+**The amplitude match is at the SHIPPED DEFAULTS ONLY, and the divergence is
+unbounded in `decay`.** `gain = weight * exposure / (1 - decay)` is the
+predecessor's SUPREMUM — the limit its unnormalised `sum(decay^i)` only
+approaches when `N (1 - decay) >> 1` — so the two agree at `decay = 0.95` and
+part company as `decay` rises: predecessor at 64 samples 1.4437 against 1.5000
+(1.04x) at 0.95, 3.5580 against 7.5000 (2.11x) at 0.99, and 4.6519 against
+75.000 (**16.12x**) at `GODRAY_MAX_DECAY = 0.999`. `decay` is a public
+`GodRayConfig` knob, so that 16x is reachable, though no caller sets it today.
+Separately, the coefficient now multiplies a DIFFERENT quantity: the old peak
+was `1.4437 x C_sky` and the new one is `1.5 x sunRadiance`, equal only at
+`C_sky = 0.9625`, so near the sun the added radiance changes by `1 / C_sky` and
+a pre-tonemap sky below unity means BRIGHTER, not equal. The probe's G6 ceiling
+(`Tools/visual-regression/lib/godray-near-ceiling.mjs`) is the bar that can
+fail on it; until that leg runs, "peak amplitude unchanged in magnitude" is a
+statement about the coefficient and must not be read as one about apparent
+brightness.
+
+### NEW-WEBGPU-GODRAY-BEHIND-CAMERA-CALLER — the shader receptor has a caller (SHIPPED 2026-09-11, ruling R-2026-09-11-5)
+
+Filed OPEN on 2026-09-10 because the receptor and the caller sat in two
+concurrent lanes: this lane supplied the `params3.y` arm, and
+`WebGPUPostProcessStageCollection.ts` was inside C2's edit set. Both halves are
+now in the tree, so the row is closed rather than inherited — it was stale on
+arrival under every option the ruling considered.
+
+**Caller.** `updateGodRaySunUV` (`WebGPUPostProcessStageCollection.ts`) makes ONE
+determination per frame — false for a non-finite projection, for `cw <= 0`, and
+for a sun grazing the camera plane closely enough that the f32 UV has stopped
+carrying per-pixel information — and publishes that single boolean to BOTH
+consumers: the pass skip, as `enabled = usable || scene.godRayBehindCamera`, and
+the shader, as `setSunScreenUV(u, v, usable)` → `params3.y`. There is no second
+opinion anywhere: the effect stores what it is handed
+(`_sunUnusable = usable ? 0.0 : 1.0`) and does not re-derive it, which is what
+keeps the pass skip and the shader arm from ever disagreeing about the same
+frame.
+
+**Consumer.** `GodRayGenerate.wgsl:247` and `GodRayGenerate_f16.wgsl:145` return
+black on `params3.y >= 0.5`, before any march. The flag reaches the GPU every
+frame through its own disjoint write range (bytes 68-72) rather than once at
+`initialize()`, and the emitter it would otherwise modulate (`params2`, bytes
+48-64) has a per-frame range of its own for the same reason.
+
+**Default behaviour is unchanged.** `scene.godRayBehindCamera` defaults false, so
+an unusable sun skips both passes and the frame is identical to one with no god
+ray at all. The shader arm is what an opt-in caller gets — and it is what the
+anticrepuscular work below needs somewhere to run.
+
+Pinned by `godray-energy-law.spec.mjs` C4 — the flag's byte range is declared
+AND written by a per-frame setter, and the flag is taken verbatim from the
+caller's boolean — and on the caller's side by
+`godray-sun-usability-uniform-ranges.spec.mjs`.
+
+### NEW-WEBGPU-GODRAY-ANTICREPUSCULAR-VISUAL — a sun behind the camera draws nothing, and the physics says it should draw something faint (OPEN, 2026-09-11)
+
+**What is true today.** With the sun behind the camera both passes are skipped
+and the frame carries no shaft. That is deliberate — it is parity with WebGL, it
+is the cheap path, and it is the right default. Setting
+`scene.godRayBehindCamera = true` keeps the passes live, and the shader then
+returns black. So the opt-in currently buys a live pass with nothing in it. That
+is the seat this row is filed against, not a defect in it.
+
+**What is missing.** Real skies do show rays with the sun behind the viewer:
+anticrepuscular rays, converging at the antisolar point, far fainter than
+crepuscular rays because atmospheric scattering is strongly forward-peaked. The
+geometry is already correct and costs nothing — a sun at eye-space
+`(ex, ey, ez)` with `ez > 0` projects to the same NDC as the antisolar point
+`(-ex, -ey, -ez)` in front of the camera, so the UV the caller already publishes
+for a behind-camera sun IS the antisolar convergence point. What is missing is
+the radiometry.
+
+**Why this became expressible only in this batch.** The predecessor's emitter was
+the sampled scene colour, so a behind-camera arm could only ever have added a
+scaled copy of the sky — the washout defect pointed the other way. The energy law
+replaced that with an isolated emitter (`sunRadiance` × a screen-space glow
+profile), and an isolated emitter can be given a different, much smaller radiance
+without touching the forward case at all.
+
+**The work.**
+
+- A second radiance for the antisolar arm — a fraction of `sunRadiance`, derived
+  from the phase function's antisolar-to-solar ratio and then calibrated against
+  a capture, not chosen by eye. The magnitude is the whole question: too bright
+  and it is the washout defect again under a new name.
+- The glow profile re-centred on the antisolar point, with its own radius. The
+  antisolar glow is broad and diffuse, not a disc, so `sunGlowRadius` is the
+  wrong parameter to reuse.
+- Its own probe. Neither the energy-law probe (sun in frame) nor any scene in
+  the capture fleet puts the sun behind the camera, so nothing currently
+  exercises this path: a saved view with the sun behind, WebGL vs WebGPU, and a
+  measured near-antisolar delta.
+- A decision on the switch: whether the arm rides `scene.godRayBehindCamera` or
+  gets its own flag. The former keeps one knob; the latter separates *keep the
+  passes alive* from *draw the antisolar shaft*, which are not the same request.
+
+**What must not change.** The forward case stays byte-identical with the flag
+clear, and the antisolar radiance must not be reachable from `sunRadiance` alone
+— a caller raising `sunRadiance` for a bright sun must not thereby light up the
+anticrepuscular arm.
+
+### NEW-WEBGPU-GODRAY-UNIFORM-WRITE-ORDER — `setSunScreenUV` resets near/far to a sentinel (RESOLVED 2026-09-11 by the disjoint ranges)
+
+As filed: `_buildUniformData(near?, far?)` falls back to `(1, 1e8)` when the
+caller omits the pair, and `setSunScreenUV` omits it — so calling it after
+`setFrustum` silently dropped the real frustum. Latent only because the configure
+pass happened to call them in the safe order. The fix was deferred to stay off a
+file lane C2 was editing.
+
+**Lane C2's change resolved it** — Harding's disjoint uniform write ranges,
+landed as Batch 1468. `setSunScreenUV` still builds the whole array with the
+sentinel near/far, but it now writes only the bytes it owns — 0-8 and 68-72 — so
+the sentinel never reaches the frustum's bytes 32-44 and the call order stops
+mattering. The array is a staging buffer the setters slice, not a thing that is
+uploaded whole. Verified at the rebase tip rather than assumed:
+`GOD_RAY_UNIFORM_RANGES.frustum` is named only by `setFrustum`, and
+`godray-energy-law.spec.mjs` C4 asserts the ranges do not overlap.
+
+### NEW-WEBGPU-GODRAY-F16-DISPOSITION — the half-precision twin, restated without a claim (2026-09-10)
+
+The predecessor clamped each source sample to 65000 and accumulated the sum in
+f16; a per-sample bound does not bound a sum. That was recorded as an open lead
+and it stays one: `useShaderF16` reachability is not established, no capture on
+that path exists, and **no overflow was ever observed**. Under the new law the
+march accumulates two scalars bounded by the sample count rather than a colour,
+both kept in f32, and only the final per-channel product narrows — so the
+unbounded-sum shape is gone as a property of the new arithmetic, which is not
+evidence about the old one. The controlled ray fixture's explicit refusal to
+model f16 amplitude still stands and should not be lifted on the strength of
+this change.

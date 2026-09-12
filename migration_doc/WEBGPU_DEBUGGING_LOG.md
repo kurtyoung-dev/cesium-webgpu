@@ -21254,3 +21254,90 @@ frozen total. A lane that appends to this buffer next will find the same four si
 `Tools/visual-regression/probe-eye-cartographic-frame.mjs` (new),
 `Tools/visual-regression/{globe-contour-pixel-ratio-parity,eclipse-globe-umbra-rte,celestial-water-globe-port}.spec.mjs`,
 `package.json`, `migration_doc/{DEFERRED_WORK,DEBUGGING_GUIDE,FEATURE_INVENTORY}.md`.
+
+## Lane Eothain (Campaign 13 wave A, 2026-09-10) — the god rays were a scaled copy of the sky, and the sample count was the brightness knob
+
+**Files:** `packages/engine/Source/Shaders/WebGPU/PostProcess/GodRayGenerate.wgsl`, `GodRayGenerate_f16.wgsl`, `packages/engine/Source/Renderer/WebGPU/WebGPUGodRayEffect.ts`, `packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts` (comments only).
+
+**Symptom.** Reported as washout: with god rays on, a bright sky loses contrast across the whole frame rather than gaining shafts near the sun.
+
+**Root cause, two of them.** The generate pass sampled `sceneColorTex` along the chord to the sun and accumulated `sceneColor * weight * decay^i`, so the output was an additive multiple of the **sky's own colour**. The GPU Gems 3 formulation it cites gets its radial falloff for free only because the source is assumed to be a bright-pass in which everything but the light is black; fed the full scene colour, every clear-sky pixel receives the same multiple no matter how far it is from the sun, and there is no falloff at all. Second, the sum was unnormalised, so that multiple was set by the loop trip count.
+
+**Re-derived before touching anything (Principle 10).** Both generate shaders hash to the bytes the source-notes audit read — `GodRayGenerate.wgsl` SHA-256 `8672355…14822`, `GodRayGenerate_f16.wgsl` `0a0c9d5…0a8a0` — so the audit's reading is the reading at HEAD. Direct arithmetic over the loop shape at lines 132-151 with the shipped defaults (decay 0.95, weight 0.5, exposure 0.15) reproduces the four banked multipliers to 3.5e-11: 0.8398099970 at 16 samples, 1.2094327733 at 32, 1.4437137912 at 64, 1.4978879085 at 128, with supremum exactly 1.5. **CONFIRMED**, not adjusted. A 1.784x brightness spread across the specified sweep, 44% of the 128-sample value.
+
+**Fix.** The generate pass no longer reads the scene colour. It measures the unobstructed fraction of the chord and modulates an isolated emitter:
+`ray = sunRadiance * gain * glow(|pixel - sun|) * transmittance`, with
+`transmittance = sum(visibility_i * A(t_i)) / sum(A(t_i))`,
+`A(t) = decay ^ (GODRAY_REFERENCE_SAMPLES * t)`,
+`gain = weight * exposure / (1 - decay)` and
+`glow(d, r) = 1 / (1 + (d/r)^2)`.
+Dividing by the same quadrature that weights the numerator is the whole of the energy law: the fraction is in [0, 1] at any sample count and exactly 1 for a clear chord, so the sample count becomes a quality control. The attenuation exponent is pinned to the shipped default sample count so the default configuration keeps its chord shape, and sampling moved from the right endpoint to the midpoint so the nodes and their weights line up. `gain` is the predecessor's own supremum, 1.5 at the defaults, so the peak amplitude keeps its magnitude while no longer scaling with the sky. `sceneColorTex` stays declared and stays in the bind-group layout; nothing samples it.
+
+**Proof.** `Tools/visual-regression/godray-energy-law.spec.mjs`, **39/39** under `npm run test-engine-node` (**297/297 → 336/336**, measured at Batch 1468). It PARSES the six law functions out of the shipped WGSL and EVALUATES them, so it cannot certify a transcription; it checks the 128-sample quadrature against a closed-form integral derived by calculus rather than against a recorded value; and it carries an inertness mutant that leaves the normalisation compiled and live but unreachable. Applied to the file on disk, that mutant makes the clear chord read 4.68 at 16 samples and 37.53 at 128 — an 8x spread — and breaks the energy bound at 7.02 against a ceiling of 1.5; the file was restored and re-hashed to `cbe14c480738a06d52dccad37347093a` at that round. **Counts corrected 2026-09-11 (EL-3, Arveleg):** this entry first recorded 28/28 under 245/245 → 273/273, which were the spec census and the suite baseline of the 2026-09-10 fix round against Batch 1455; Gror added eleven tests and the suite has since gained two specs, so the shipped artifact is **39/39** under **336/336**. The mutant multipliers and the `cbe14c48…` hash above are that round's own measurements and are left as recorded rather than restated — the spec's md5 at Batch 1468 is `c5340bd69abc7c4aa31e8bf0b333472f`. The “six law functions” count was re-measured, not assumed: `LAW_FUNCTIONS` still holds exactly six.
+
+**What is NOT established, deliberately.** The spec does not execute the march loop — the evaluator reads no loops — so the loop's own shape needs the browser leg. Nothing here draws a pixel, and the effect allocates its targets in the caller-supplied format, so no claim is made about stored pixels or displayed brightness and no washout attribution is drawn from the multipliers. `useShaderF16` reachability is still not established and **no f16 overflow was observed**; the new law's accumulators are bounded by the sample count and kept in f32, which is a property of the new arithmetic and not evidence about the old.
+
+**Corrected, not moved.** The pipeline's step-2.5 comment claimed the shaft participated in the bloom while sitting after the bloom pass, and the generate shader claimed the caller feeds post-tonemap colour when the pass runs before tonemapping. Both comments now say what the code does. Neither pass was reordered; the ordering and colour-space contract is filed in `DEFERRED_WORK.md`.
+
+**Parity.** There is no WebGL god-ray path — no light-scattering stage in `PostProcessStageLibrary.js`, no `.glsl` file in `packages/` mentioning god rays, sun shafts or light scattering. Principle 5's WebGPU-only carve-out does not cover a depth-gated screen-space march, so a GLSL twin is owed; the gap is recorded in `FEATURE_INVENTORY.md` section C.7 and in the ledger.
+
+**Fix round (Gror, 2026-09-11), from Widfara's review.** Two behaviour changes and four record
+corrections, all inside this lane's own files.
+
+- **The lower decay clamp did the opposite of what its comment said (W4).** `GODRAY_MIN_DECAY` was
+  `0.0001`, and the first quadrature node's weight is `decay ^ (GODRAY_REFERENCE_SAMPLES * 0.5 / N)` —
+  `decay ^ 32` at the smallest sample count the shader permits. `0.0001 ^ 32 = 1e-128` is zero in f32,
+  so **every** weight underflowed, `weightSum` was 0, `godRayTransmittance` returned 0 and the shaft
+  went black. It failed safe and no caller reaches it, but "keeps `pow` away from zero" was false.
+  The floor is now `0.07`, derived: `decay ^ 32 >= 2^-126` (the smallest NORMAL f32 — subnormals are
+  flush-to-zero on much hardware) requires `decay >= 2^(-126/32) = 0.06527`, and 0.07 clears it by
+  9.4x. Both generate shaders carry it; the `GodRayConfig.decay` doc now names the clamped range.
+  Specced as B9 (driven from a caller request of 0, which is what exercises the clamp) and mutated
+  two ways on disk: the pre-fix `0.0001` and the floor left compiled, referenced and unreachable
+  behind a constant-false guard. Both make B9 red with the measured error
+  `decay=0 N=1: the first node's weight 0 is not a normal f32`, and both are ALL VALID under naga, so
+  the red is a wrong answer rather than a broken shader.
+- **The named Edge leg had no ceiling on near-sun amplitude (W7, the one required fix).** G3 is a
+  floor and G2's ceiling covers only the FAR band, so a blown-out shaft passed every bar — and by W6
+  a near-sun brightening by `1 / C_sky` is the most likely thing this law can do. The new G6 bar is
+  `nearDelta <= NEAR_CEILING_FRACTION x (1 - off.near)`, a fraction of the capture's OWN measured
+  headroom. `NEAR_CEILING_FRACTION = 0.75762` is derived, not chosen: the probe's NEAR region is the
+  glow's own unit-radius disc, whose unclipped area mean is exactly `ln 2`; a peak overshooting the
+  display white point by `alpha` clips exactly the inner `alpha - 1` of the disc AREA (exact under any
+  monotone tone map), which integrates to `M(alpha) = (alpha-1) + alpha (ln2 - ln alpha)`, with
+  `M(1) = ln2` at "just touches white" and `M(2) = 1` at "white plateau". The one judgement is
+  `alpha <= 1.1` — a 10% overshoot, i.e. at most the inner 10% of the disc clipped. The receipt now
+  carries `offNear`, `on64Near`, the headroom, the clipped fractions (any-channel and all-channel,
+  OFF and ON), the ceiling and the implied overshoot, so the first capture replaces that judgement
+  with a measurement. A new `S4` requires the leg's bar set BY NAME, so a bar that is written but
+  never pushed fails instead of quietly shortening the list.
+- **Record corrections.** Three comments in `WebGPUGodRayEffect.ts` still called the pass a radial
+  blur of the scene colour (W15 named two; the third, at the texture declarations, is the same
+  defect). `B8` asserted `GODRAY_REFERENCE_SAMPLES === GodRayConfig.sampleCount`'s default, which is
+  the coupling this lane removed — it now pins the frozen 64 against the literal and leaves the
+  default free (W5). `B3`'s "not monotone in N" is replaced by the positive form: the spread is
+  inside the derived quadrature band, and that band is strictly tighter than the 1.784x it replaces.
+  `C2`/`C3`/`C4` matched source text with embedded line breaks, so a prettier reflow could turn them
+  red or green without changing anything they are about; they now match whitespace-collapsed text
+  (W16, demonstrated: all three old patterns miss after a pure reflow, all three new ones hold).
+- **The ledger's amplitude claim is now scoped.** `NEW-WEBGPU-GODRAY-EMITTER-UNCALIBRATED` records
+  that `gain` is the predecessor's SUPREMUM, so the match holds at the shipped `decay = 0.95` and
+  diverges to **16.12x** at `GODRAY_MAX_DECAY = 0.999`, and that the coefficient multiplies
+  `sunRadiance` where it used to multiply `C_sky`.
+
+Spec: 28 → **39 tests**, exit 0. The permanent mutant group is now F0-F15, with two controls
+(F7 comment-only on the WGSL, F14 comment-only on the ceiling) that must NOT flip.
+
+## Lane Eothain, rebase round (Tauriel, 2026-09-11) — the receptor got its caller, and the emitter nearly froze on the way
+
+**Files:** `packages/engine/Source/Renderer/WebGPU/WebGPUGodRayEffect.ts`, `Tools/visual-regression/godray-energy-law.spec.mjs`.
+
+The energy law was cut against Batch 1455 and landed on Batch 1468, after lane C2 (Harding) had rewritten the same effect file. Three of this lane's changes turned out to be **already in the tree** in C2's spelling and were verified rather than re-implemented: the exported `GOD_RAY_UNIFORM_RANGES` table with `sunUnusable` at bytes 68-72, the element-wise `appearanceValueEquals` compare (a reference compare on an array-valued field would write the uniform every frame), and the grazing-`cw` guard. Re-implementing any of them would have put one fix in two lanes.
+
+**The defect this round nearly shipped.** C2 narrowed every per-frame setter to the byte range it owns, which is what stops two setters clobbering each other — and makes a field that NO range covers freeze silently at its init value. `sunRadiance` and `sunGlowRadius` live in `params2` at bytes 48-64; `updateConfig` writes bytes 8-32. Adding the two fields to `DEFAULT_APPEARANCE` puts them in `APPEARANCE_KEYS`, so `updateConfig` marks the snapshot changed, builds the array, writes 8-32 — and the emitter never moves. Nothing fails to compile. No WebGPU validation error fires. Every other test in the spec passes, because the packer does carry the values and the shader does read the slots. The fix is the pairing: the two defaults and a `emitter` range covering 48-64 land together, and `updateConfig` writes both of its ranges, which cannot be one 8-64 span because bytes 32-48 in between belong to `setFrustum`.
+
+**Instrument.** Spec `C4` now parses the range table out of the shipped source and asserts, for both `params3.y` and `params2`, that exactly one declared range covers the field AND that a per-frame setter names that range — a range declared but written by nobody is exactly as dead as no range. It also asserts the table is a partition inside the 80-byte struct, and that the effect takes the usability flag verbatim from the caller (`_sunUnusable = usable ? 0.0 : 1.0`) rather than forming a second opinion. Five mutants in a sandbox copy each turn it red on the right message — emitter range unwritten, range sized to zero bytes, range overlapped onto the frustum, `sunUnusable` range unwritten, and the effect re-deriving usability from `Number.isFinite` — while a comment-only control stays green. Test census unchanged at 39.
+
+**A trap worth recording.** The first cut of that assertion went red against correct code. `bodyAfter(effectTs, "updateConfig(config: GodRayAppearanceConfig = {}): void")` matches braces from the START of the marker, so it locked onto the `{}` of the default parameter and returned an empty body — which reads exactly like a setter that writes nothing. Brace-matching anchored on a method declaration must start past the signature, or a default parameter of `{}` silently answers the question being asked.
+
+**Two TypeScript hazards the tuple introduced.** `Object.freeze({ ..., sunRadiance: [1, 1, 1] })` infers `number[]` and is rejected against the readonly triple, because `freeze` infers from its argument before a binding annotation applies — the type argument belongs on the call. And once the appearance snapshot holds two different value types, `this._config[key] = value` over a UNION key is `not assignable to never`; a generic helper, where the key is one type parameter, checks.

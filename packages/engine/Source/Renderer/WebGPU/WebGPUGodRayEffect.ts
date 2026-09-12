@@ -4,7 +4,11 @@
  *
  * References:
  *   - Kenny Mitchell, "Volumetric Light Scattering as a Post-Process"
- *     (GPU Gems 3) — the radial-blur formulation the generate pass uses.
+ *     (GPU Gems 3) — the radial march the generate pass inherits its
+ *     `density`/`decay`/`weight`/`exposure` controls from. The pass is NOT a
+ *     radial blur of the scene colour: it marches the pixel→sun chord to
+ *     measure VISIBILITY and modulates an isolated sun emitter with it. See
+ *     `GodRayGenerate.wgsl` for the law.
  *   - Shota Matsuda, Takram — `three-geospatial` (MIT),
  *     https://github.com/takram-design-engineering/three-geospatial — for
  *     resolving cloud occlusion of the shaft from the cloud march's own
@@ -35,6 +39,9 @@ import {
 } from "./WebGPUPostProcessEffects.js";
 import type { PostProcessEffect } from "./WebGPUPostProcessEffects.js";
 
+/** Linear RGB radiance of the isolated sun emitter, in the scene buffer's units. */
+export type GodRaySunRadiance = readonly [number, number, number];
+
 export interface GodRayConfig {
   /**
    * Sun position in normalized screen UV space (0..1, y DOWN). The caller
@@ -44,16 +51,47 @@ export interface GodRayConfig {
    */
   sunScreenU?: number;
   sunScreenV?: number;
-  /** Step-size multiplier along the pixel→sun ray. Default 0.96. */
+  /** Fraction of the pixel→sun chord the march covers. Default 0.96. */
   density?: number;
-  /** Per-sample decay factor (0..1). Default 0.95. */
+  /**
+   * Chord falloff control, clamped by the shader to [0.07, 0.999]. Default
+   * 0.95. The lower clamp is what keeps the chord quadrature from underflowing
+   * to zero in f32 at small sample counts — see `GodRayGenerate.wgsl`. Under
+   * the energy law it sets
+   * the attenuation profile along the chord — `decay ^ (64 * t)` at path
+   * fraction `t` — and, through `weight * exposure / (1 - decay)`, the peak
+   * amplitude. It no longer multiplies per SAMPLE, so the profile it describes
+   * is the same at every `sampleCount`.
+   */
   decay?: number;
-  /** Per-sample brightness weight. Default 0.5. */
+  /** Scattering strength. Default 0.5. */
   weight?: number;
-  /** Final output gain. Default 0.15. Tune with the sun disk's HDR level. */
+  /** Final output gain. Default 0.15. */
   exposure?: number;
-  /** Number of radial samples toward the sun (1..128). Default 64. */
+  /**
+   * Radial samples along the chord (1..128). Default 64. This is a QUALITY
+   * control: it changes how finely the occlusion along the chord is resolved,
+   * not how bright the shaft is. Before the energy law it was a brightness
+   * control — the same uniform input was 1.784x brighter at 128 samples than
+   * at 16.
+   */
   sampleCount?: number;
+  /**
+   * Linear RGB radiance of the sun emitter, in the same units as the scene
+   * colour buffer the composite adds into — which at this point in the chain
+   * is pre-tonemap. Default `[1, 1, 1]`. This is the ONLY source of the
+   * shaft's colour; the scene colour along the chord is not read. Calibrating
+   * it against a real scene belongs to a capture, not to this default.
+   */
+  sunRadiance?: GodRaySunRadiance;
+  /**
+   * Screen-space radius, in UV, of the sun's glow profile `1 / (1 + (d/r)^2)`.
+   * Default 0.1 — the reach the Mitchell march had with a bright-pass source
+   * and the shipped `density` (`r_sun / (1 - density)` is about 0.10 UV for a
+   * 0.53-degree sun under a 60-degree vertical field of view). Larger values
+   * spread the shaft further from the sun.
+   */
+  sunGlowRadius?: number;
   /**
    * Depth fraction above which a sample is considered "sky" and its color
    * leaks through to the ray. Default 0.99 — sample depths > far*0.99
@@ -64,13 +102,19 @@ export interface GodRayConfig {
 
 type GodRayAppearanceConfig = Omit<GodRayConfig, "sunScreenU" | "sunScreenV">;
 
-const DEFAULT_APPEARANCE: Required<GodRayAppearanceConfig> = Object.freeze({
+// The type argument is on the `freeze` call rather than on the binding:
+// `Object.freeze` infers its return from the object literal BEFORE a binding
+// annotation can apply, so an annotated binding would see `sunRadiance` as
+// `number[]` and reject it against the readonly triple.
+const DEFAULT_APPEARANCE = Object.freeze<Required<GodRayAppearanceConfig>>({
   density: 0.96,
   decay: 0.95,
   weight: 0.5,
   exposure: 0.15,
   sampleCount: 64,
   occlusionFarCutoff: 0.99,
+  sunRadiance: [1, 1, 1],
+  sunGlowRadius: 0.1,
 });
 const APPEARANCE_KEYS = Object.keys(DEFAULT_APPEARANCE) as Array<
   keyof GodRayAppearanceConfig
@@ -90,18 +134,29 @@ const APPEARANCE_KEYS = Object.keys(DEFAULT_APPEARANCE) as Array<
  * written into it. `sunUnusable` is per-frame state, so it carries its own
  * range rather than riding the `sunUV` range it sits 60 bytes away from.
  *
- * Bytes 48-64 (`params2`: sunRadiance.rgb + sunGlowRadius) and byte 64
- * (`params3.x`: aspect) are RESERVED. They are shader-side fields whose config
- * wiring is not in this batch; they are written at init from the placeholders
- * below, and `aspect` is therefore already correct across a resize. Whoever
- * wires them to `GodRayConfig` MUST also give them a per-frame range here, or
- * they freeze in exactly the way this table exists to prevent.
+ * Bytes 48-64 (`params2`: sunRadiance.rgb + sunGlowRadius) carry the emitter,
+ * which is appearance state and therefore per-frame: it is the `emitter` range
+ * below, and `updateConfig` writes it alongside `appearance` because the two
+ * halves of the appearance snapshot are not contiguous. They must stay two
+ * ranges rather than one 8-64 span, because bytes 32-48 in between belong to
+ * `setFrustum`.
+ *
+ * Byte 64 (`params3.x`: aspect) is the one field with no per-frame range. It
+ * is a pure function of the viewport, and the only thing that changes the
+ * viewport is `resize()`, which re-enters `initialize()` — the full-buffer
+ * write. Anything that becomes settable WITHOUT a resize must gain a range
+ * here, or it freezes in exactly the way this table exists to prevent.
  */
 export const GOD_RAY_UNIFORM_RANGES = Object.freeze({
   /** `params0.xy` — sun screen UV. Written by `setSunScreenUV`. */
   sunUV: Object.freeze({ offset: 0, size: 8 }),
   /** `params0.zw` + `params1` — appearance. Written by `updateConfig`. */
   appearance: Object.freeze({ offset: 8, size: 24 }),
+  /**
+   * `params2` — sunRadiance.rgb + sunGlowRadius, the emitter half of the
+   * appearance snapshot. Also written by `updateConfig`.
+   */
+  emitter: Object.freeze({ offset: 48, size: 16 }),
   /** `frustum.xyz` — near, far, logActive. Written by `setFrustum`. */
   frustum: Object.freeze({ offset: 32, size: 12 }),
   /** `params3.y` — the sun-unusable flag. Written by `setSunScreenUV`. */
@@ -111,11 +166,25 @@ export const GOD_RAY_UNIFORM_RANGES = Object.freeze({
 /** Size of the packed struct, in bytes. Five `vec4<f32>`. */
 export const GOD_RAY_UNIFORM_BYTE_LENGTH = 80;
 
-// Placeholders for the reserved `params2` slots, matching the defaults the
-// shader's own struct documents, so a shader reading them before its config
-// wiring lands sees a sane emitter rather than black.
-const RESERVED_SUN_RADIANCE = Object.freeze([1.0, 1.0, 1.0]);
-const RESERVED_SUN_GLOW_RADIUS = 0.1;
+/**
+ * Write one appearance field, keeping the key and the value type tied.
+ *
+ * `APPEARANCE_KEYS` is a union, and since the snapshot gained an array-valued
+ * field the slot type and the value type are both unions — which TypeScript
+ * cannot prove agree at a bare `this._config[key] = value`. Inside a generic
+ * the key is a single type parameter, so the same assignment checks.
+ *
+ * @param {object} target The snapshot to write into.
+ * @param {string} key The appearance key.
+ * @param {*} value Its new value.
+ */
+function assignAppearance<K extends keyof GodRayAppearanceConfig>(
+  target: Required<GodRayConfig>,
+  key: K,
+  value: Required<GodRayConfig>[K],
+): void {
+  target[key] = value;
+}
 
 /**
  * Value equality for one appearance field, rather than `!==`.
@@ -138,14 +207,26 @@ function appearanceValueEquals(a: unknown, b: unknown): boolean {
  * Screen-space "god rays" (volumetric light scattering post-process).
  *
  * Two-pass:
- *   1. `GodRayGenerate` radial-blurs the scene color toward a caller-
- *      provided sun screen UV, gated by scene depth (only "sky" samples
- *      contribute so geometry cleanly blocks the shaft).
+ *   1. `GodRayGenerate` marches from each pixel toward a caller-provided sun
+ *      screen UV and measures what fraction of that chord is unobstructed,
+ *      from scene depth and the cloud transmittance mask. That fraction
+ *      modulates an ISOLATED sun emitter (`sunRadiance` x a screen-space glow
+ *      profile). The scene colour along the chord is never read, so the sky's
+ *      brightness cannot leak into the shaft.
  *   2. `GodRayComposite` additively blends the ray buffer onto the
  *      original scene color and returns the composited view.
  *
- * Insert after the opaque scene pass but before bloom if you want the
- * shaft to bloom; after bloom if you want crisp rays.
+ * The energy law: the chord fraction is a ratio of two quadratures of the same
+ * attenuation profile, so it is in [0, 1] at any `sampleCount` and the added
+ * radiance is bounded by `sunRadiance * weight * exposure / (1 - decay)` —
+ * 1.5 x `sunRadiance` at the shipped defaults, which is the limit the
+ * predecessor's unnormalised sum converged to. See `GodRayGenerate.wgsl` for
+ * the derivation.
+ *
+ * Placement in `WebGPUPostProcessPipeline.execute` is step 2.5: after Bloom,
+ * before Tonemapping. Rays therefore do NOT participate in the bloom, and the
+ * buffer the composite adds into is pre-tonemap (HDR when HDR is on), so
+ * `sunRadiance` is a radiance in that buffer's units.
  *
  * @example
  *   const godrays = new GodRayEffect({ exposure: 0.2 });
@@ -166,8 +247,8 @@ export class GodRayEffect implements PostProcessEffect {
   private _height = 0;
   private _format: GPUTextureFormat = "bgra8unorm";
 
-  // Intermediate textures — half-res for the generate pass (cheap radial
-  // blur) then full-res for the composite that writes the final result.
+  // Intermediate textures — half-res for the generate pass (the chord march)
+  // then full-res for the composite that writes the final result.
   private _rayTex: GPUTexture | null = null;
   private _rayView: GPUTextureView | null = null;
   private _outputTex: GPUTexture | null = null;
@@ -222,20 +303,29 @@ export class GodRayEffect implements PostProcessEffect {
     for (const key of APPEARANCE_KEYS) {
       const value = config[key] ?? DEFAULT_APPEARANCE[key];
       if (!appearanceValueEquals(this._config[key], value)) {
-        this._config[key] = value;
+        assignAppearance(this._config, key, value);
         changed = true;
       }
     }
     if (changed && this._device && this._generateUniforms) {
-      const range = GOD_RAY_UNIFORM_RANGES.appearance;
       const data = this._buildUniformData();
-      this._device.queue.writeBuffer(
-        this._generateUniforms,
-        range.offset,
-        data.buffer,
-        range.offset,
-        range.size,
-      );
+      // The appearance snapshot is NOT contiguous: density/decay/weight/
+      // exposure/sampleCount/occlusionFarCutoff sit at bytes 8-32, and the
+      // emitter (sunRadiance.rgb + sunGlowRadius) at 48-64. Bytes 32-48 in
+      // between are `setFrustum`'s, so one span across both would clobber the
+      // frustum every time a config knob moved. Two disjoint writes instead.
+      for (const range of [
+        GOD_RAY_UNIFORM_RANGES.appearance,
+        GOD_RAY_UNIFORM_RANGES.emitter,
+      ]) {
+        this._device.queue.writeBuffer(
+          this._generateUniforms,
+          range.offset,
+          data.buffer,
+          range.offset,
+          range.size,
+        );
+      }
     }
   }
 
@@ -331,8 +421,9 @@ export class GodRayEffect implements PostProcessEffect {
     this._height = height;
     this._format = format;
 
-    // Half-res ray buffer for perf — radial blur at full-res is needlessly
-    // expensive and the artefacts are invisible after the composite blur.
+    // Half-res ray buffer for perf — the chord march is a per-pixel loop over
+    // `sampleCount` depth taps, so full-res costs four times as much to
+    // resolve a shaft whose own radial profile is smooth at this scale.
     const hw = Math.max(1, Math.floor(width / 2));
     const hh = Math.max(1, Math.floor(height / 2));
 
@@ -505,12 +596,16 @@ export class GodRayEffect implements PostProcessEffect {
   private _buildUniformData(near?: number, far?: number): Float32Array {
     // Must match the `GodRayUniforms` struct in GodRayGenerate.wgsl — five
     // vec4s (20 floats / 80 bytes). No trailing pad needed; WebGPU pads the
-    // uniform buffer binding up to 256 bytes internally. A binding larger
-    // than the struct a shader declares is legal, so the last two vec4s are
-    // inert for a shader that stops at `frustum`.
+    // uniform buffer binding up to 256 bytes internally.
     // Byte offsets are the contract in `GOD_RAY_UNIFORM_RANGES`; the setters
     // slice this same array by those offsets, so the order here is
     // load-bearing.
+    const radiance = this._config.sunRadiance;
+    // The glow is a circle in SCREEN space, so the UV offset is stretched by
+    // the viewport aspect before its length is taken. Before `initialize()`
+    // there is no viewport; 1 leaves the offset untouched.
+    const aspect =
+      this._width > 0 && this._height > 0 ? this._width / this._height : 1.0;
     return new Float32Array([
       // params0: sunUV.xy, density, decay
       this._config.sunScreenU,
@@ -527,15 +622,16 @@ export class GodRayEffect implements PostProcessEffect {
       far ?? 1e8,
       this._logActive,
       0.0,
-      // params2: sunRadiance.rgb, sunGlowRadius — RESERVED, init-only.
-      RESERVED_SUN_RADIANCE[0],
-      RESERVED_SUN_RADIANCE[1],
-      RESERVED_SUN_RADIANCE[2],
-      RESERVED_SUN_GLOW_RADIUS,
+      // params2: sunRadiance.rgb, sunGlowRadius — appearance state, written
+      // per-frame through the `emitter` range at bytes 48-64.
+      radiance[0],
+      radiance[1],
+      radiance[2],
+      this._config.sunGlowRadius,
       // params3: aspect, sunUnusable, _, _. `aspect` is init-only and stays
       // correct because `resize()` re-enters `initialize()`; `sunUnusable` is
       // per-frame and owns bytes 68-72.
-      this._height > 0 ? this._width / this._height : 1.0,
+      aspect,
       this._sunUnusable,
       0.0,
       0.0,
