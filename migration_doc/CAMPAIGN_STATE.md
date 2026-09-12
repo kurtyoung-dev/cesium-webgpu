@@ -84,6 +84,11 @@ without replacing, the 2026-07-24 Option-B ruling — Codex Sol may build bounde
 instrument/harness work under an Opus lead with separate Opus review; engine-semantic changes
 stay Opus-authored.
 
+**Wave A (2026-09-11):** D1 (Batch 1466), C1 (Batch 1467), C2 (Batch 1468), and C3 (Batch 1471)
+LANDED. Within the C13-42 capture apparatus, **critical path:** `C13-42a` (adopt Astra's probe runtime and
+lifecycle); the cap raise is inert as a consequence until C13-42a wires its two call sites; the Edge
+job's leg 1 is blocked until then; `CHARACTERIZATION_THRESHOLDS` still null.
+
 ### C14 — Dynamic ocean & wind
 
 **Not launched.** Ratified identity, ratified plan (`OCEAN_DYNAMICS_PLAN_2026-07-24.md`).
@@ -219,6 +224,11 @@ on WebGL, minted as `AR-896`, with the 18 held WebGPU polyline sites landing aft
 Dispatched the same day: sync-parity wave **S1** (lead Hundar) and `AR-837` (lane Amdir, reviewer
 Earwen). Row-level detail lives in `QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md`'s own rows, not here;
 the wave's process findings are `DX-61`–`DX-64` plus extensions to `DX-58` and doc-audit `G-31`.
+Wave P0-2 engine rows are all MET (Éowyn job 12, 2026-09-10). The wave-end gate (Éowyn job 13,
+`R-2026-08-29-2`) is INCOMPLETE: preflight PASS on `6483bc70bb`, variant smoke GREEN, Sandcastle2
+leg NOT RUN (segment 1 reached 306/343 at settle 25000 with one external-CORS failure before the seat
+stopped it for the machine restart; capture-and-diff and the settle control not started) — job 13b
+owed.
 
 **Return and campaign state, 2026-09-10 (Batches 1449–1453 pushed).** The seat returned from pause
 with Batches 1449–1453 landed and pushed to origin. Uncommitted seat work was relocated to
@@ -256,6 +266,10 @@ parents), and CLAUDE.md's sync-procedure `--theirs` default was **wrong for 13 o
 `.js` files**, which the fork had converted to ES6 classes while upstream is still prototype-based
 (plan §3) — worked around in this merge by the new `PORT-INTO-CLASS` class and guarded going forward
 by the ES6-shape guard (`-08`, landed); **amending the procedure itself is still open as `AR-D23`.**
+
+**Wave S1 (sync parity, UPSTREAM-SYNC-1.145-07): CLOSED.** All five lanes LANDED: L4 (Batch 1462),
+L1 (Batch 1463), L2 (Batch 1465), L3 (Batch 1470), and L5 (Batch 1472). S1 is CLOSED except the Edge
+legs (Éowyn job 15) which remain owed.
 
 **2026-09-05 — Batches 1405–1429 re-landed under new hashes (redate, not a content change).** The
 pre-push hook refuses an in-window commit date, so after the quiet-hours window the maintainer chose

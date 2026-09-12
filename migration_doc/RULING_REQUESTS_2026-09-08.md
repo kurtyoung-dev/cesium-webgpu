@@ -62,3 +62,17 @@ Evidence under `tmp/astra-dependency-implementation-20260908/_lane-out/`:
 Authority is charter §1.1. This request does not pause the campaign, authorize a
 comparator mutation, or block the separately approved ordering repair and
 source-only downstream readiness work.
+
+## RR-2026-09-11-A — Tracked waiver mechanism for authorized quiet-hours lifts
+
+**Pending; not an approval.** On 2026-09-11 the maintainer verbally lifted GitHub quiet hours
+for the afternoon following the machine restart. The pre-push hook (`.husky/pre-push`,
+enforcing R-2026-08-14-4 via `Tools/landing-rules.mjs`) has no override flag or waiver path;
+it rejected in-window commit timestamps unconditionally, forcing Batch 1464 (`765feaba0a`) to
+be re-dated and pushed at 19:09 EDT after the window elapsed. Request a tracked, auditable
+waiver mechanism (e.g., a signed maintainer waiver token or scoped command flag with explicit
+expiry and reason) so that an authorized verbal lift can be executed without subverting the
+landing rules or requiring commit re-dating.
+
+Authority is charter §1.1. This request does not alter quiet-hours policy or authorize
+unilateral hook bypasses.

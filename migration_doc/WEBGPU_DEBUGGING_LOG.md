@@ -21493,3 +21493,15 @@ comment-only with no runtime effect on either backend.
 `Tools/visual-regression/clipping-polygon-rebake-revision-signal.spec.mjs` (new), `package.json`,
 `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`,
 `migration_doc/ARCHITECTURE_REVIEW_2026-09-02.md` (`H-P11` row corrected in place).
+
+## Incidents 2026-09-10/11 — Cleanup script clone deletion via keep-regex, and shared-root temp directory removal
+
+**Incident 1: Keep-regex clone deletion (Thursday 2026-09-10 ~23:40 EDT).**
+- **Mechanism:** A keep-regex deletion script ran after a failed edit and removed in-flight clones (all five active Campaign 13 wave A worker clones).
+- **Recovery:** Restored from the 23:35 EDT harvest; verified file-by-file against each lane's own freeze (Dernhelm 68 exact / 14 CRLF-only / 0 content-diff; Horn 9/4/0; Harding 18/7/1 with normalized mixed line endings and byte-identical diff hunks; Eothain 26/0/0). Zero content lost. Positive-list scripts since.
+- **Rule:** Destructive cleanup scripts must take an explicit positive delete list generated via a read-only planning pass (`--plan`) rather than executing negative/keep-regex matching at delete time (`Tools/temp-hygiene.mjs`, WORKER_ISOLATION §8i).
+
+**Incident 2: Shared-root `<tmpdir>/cesium-lane` removal (Friday 2026-09-11, C2 confirm round).**
+- **Mechanism:** A C2 confirm reviewer's cleanup targeted the shared `<tmpdir>/cesium-lane` root instead of its own directory.
+- **Consequence:** Disclosed; nothing lost because concurrent agents held the directory open (`borthand2`, `radagast2`, `seat` intact).
+- **Rule:** Cleanup names the lane's own directory (`<tmpdir>/cesium-lane/<lane>`, never the namespace root; WORKER_ISOLATION §8i). `Tools/lib/lane-tmp.mjs:101-115` (Batch 1464) explicitly refuses the namespace root (asserted in `Tools/lib/lane-tmp.spec.mjs:222-234` test C4).

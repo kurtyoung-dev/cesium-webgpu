@@ -192,7 +192,7 @@ certification.
 | `DX-27` | Guard repair rows: Fëanor (accept `HEAD`/OID local refs, restore the deletion's old tip, 49/49, then the shallow-history hardening) and Idril (four fail-closed assertions) | SONNET-BOUNDED | S + S | QUEUED (R-2026-09-02-10; drafts banked at `cesium-webgpu-worker-archive/guard-drafts-2026-09-01/`) | Batch 1354 | DX |
 | `DX-28` | Lunar-bake and staged-Git-read primitive families | research | — | HELD (research-only until exact contracts, leases, runner homes and acceptance matrices are preregistered) | — | DX |
 | `DX-29` | Screenshot/artifact-writer consolidation and the Batch-66 final/end-of-session runner family | research | — | HELD (provenance review; runner names encode evidence cutoffs) | — | DX |
-| `DX-30` | `.prettierignore` opens with `*`, so a Prettier check on a scratch path passes vacuously; verify the premise, then make scratch-path checks explicit in the landing runbook | SONNET-BOUNDED | XS | QUEUED (premise VERIFIED 2026-09-04, folded `DX-41`: `npx prettier --check 'migration_doc/**/*.md'` matches zero files and prints "All matched files use Prettier code style!", EXIT=0; `npx prettier --check --ignore-path /dev/null migration_doc/README.md` reports real style issues, EXIT=1 — confirming `migration_doc/` is silently ignored; the runbook clause remains QUEUED) | — | DX |
+| `DX-30` | `.prettierignore` opens with `*`, so a Prettier check on a scratch path passes vacuously; verify the premise, then make scratch-path checks explicit in the landing runbook | SONNET-BOUNDED | XS | QUEUED (premise VERIFIED 2026-09-04, folded `DX-41`: `npx prettier --check 'migration_doc/**/*.md'` matches zero files and prints "All matched files use Prettier code style!", EXIT=0; `npx prettier --check --ignore-path /dev/null migration_doc/README.md` reports real style issues, EXIT=1 — confirming `migration_doc/` is silently ignored; the runbook clause remains QUEUED; amended 2026-09-11, folded `DX-75`: wave A C3 11-file patch verified prettier matched only 5 files while reporting clean pass over all eleven; markdownlint-cli2 also skips `migration_doc/`; formatting/whitespace gate proposal remains QUEUED) | — | DX |
 | `DX-31` | Decompose `Tools/visual-regression/lib/probe-runtime.mjs` (994 lines after DX-01 round 3) and `probe-runtime.spec.mjs` (1,547 lines) into focused modules and spec files under the same runner home, behaviour byte-identical | SONNET-BOUNDED | S | QUEUED (flagged by lane Amras, packet §10.8; the ~1,000-line rule; lands after `DX-01`) | `DX-01` | DX |
 | `DX-32` | Three pre-existing spec defects surfaced by Turin and Eomund: `Tools/spec-runner-census.spec.mjs:192` mutation anchor drifted (mutant vacuous); `Tools/generate-tooling-catalog.spec.mjs` failed with a run-to-run-unstable failure set and a not-ok count that disagreed with its summary; `Tools/pre-push-guard.spec.mjs` read the real wall clock and failed inside quiet hours | SONNET-BOUNDED | S | LANDED (Batch 1396; Hallas, reviewer Leod: census mutant re-anchored, catalog spec deterministic, guard clock injectable through a fifth argv entry that git's two-argument hook contract never supplies) | — | DX |
 | `DX-33` | Three WebGPU cache specs under packages/engine/Specs/Renderer/WebGPU have no runner home (Helm packet §3.2); home them in `test-model-webgpu` and confirm the family count | SONNET-BOUNDED | XS | LANDED (Batch 1395; Targon, reviewer Aldor; test-model-webgpu lists them explicitly) | — | DX |
@@ -1902,6 +1902,63 @@ see this card for tier, size, dependencies and acceptance.
 - **Acceptance (met):** a drift report distinguishes UNSTAGED (the working tree already carries this run's output — `git add migration_doc/TOOLING_CATALOG.md`) from unregenerated (regenerate, **then** stage), the `--check` verdict stays index-only, and the spec's census-currency precondition names staging.
 - **Residue, OPEN for the maintainer (not the known regen-script defect):** `npm run generate-tooling-catalog` still leaves the gate red by construction, and a lane that delivers a **patch** has no COMMIT to make — but it can stage into its own index, and staging is what the gate reads, so a patch lane CAN green this gate in its clone by `git add`-ing the candidate first (measured 2026-09-11: the same patch goes 94/11 unstaged-catalog and 104/1 staged). What a lane cannot do is green it without touching an index at all; `A1i2` covers that case by staging into a private sandbox index instead. Whether the npm script should stage the catalog it just wrote, or `--check` should grow an explicit worktree mode for pre-landing use, is a maintainer call; this row records that the choice is unmade. `DX-71` item 4 is the independently measured sibling of this residue: lane Meriadoc migrated the launcher and the generator to `lane-tmp`, measured **40 pass / 20 fail** with the launcher edit uncommitted, and reverted — "a lane physically cannot verify a launcher edit before it is committed". The two rows describe the same boundary from opposite sides, and neither proposes moving it.
 - **Binds:** none. **Source:** seat logs `verify-tooling-catalog.log` / `test-tooling-catalog.log` (2026-09-10) and `F:/Dev/GH/cesium-lane-radagast2-20260911/_lane-out/LANDING_PACKET_RADAGAST2.md` (lane Radagast round 2, 2026-09-11).
+
+### `DX-73` — `provision-worker-clone.mjs` copies seat's governance docs causing false modified status in older clones
+
+- **Disposition:** OPEN. Filed from wave A findings (Ceorl F3, Gamling F8, Widfara; `LANDING_PACKET_ELDARION.md:143`, seat facts at `migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md` §8h). `Tools/provision-worker-clone.mjs` lines ~77–90 copies the seat's `AGENTS.md` and `migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md` into newly provisioned worker clones so workers read current rules. However, when the clone commit is older than the seat, these two files show as MODIFIED in `git status`, and any bare `git diff HEAD` export carries them into the worker patch. The seat had to restore them by hand in `ulwarth2`.
+- **Tier / Size / Backends:** TIER-3 · XS · tooling. **Depends on:** none. **Ruling touched:** none. **Gate:** none.
+- **Acceptance:** provisioner copies governance rules as overlay files (e.g. `<name>.SEAT.md`) that local instructions reference, or the export helper script explicitly excludes them unless deliberately modified by the lane.
+- **Binds:** none. **Source:** `F:/Dev/GH/cesium-lane-eldarion-20260910/_lane-out/LANDING_PACKET_ELDARION.md:143`, seat facts at `migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md` §8h.
+
+### `DX-74` — Stale-count guard over `migration_doc/` spec/suite figures
+
+- **Disposition:** OPEN. Filed from wave A C3 landing findings (Eldarion §E15, Arveleg EL-3; `PROGRESS_ELDARION.md:601`). One wrong suite count (`28/28 (245/245 -> 273/273)`) survived across three separate files through two fix rounds because each audit finding named only one file and the worker's search was scoped to that single file. A mechanical guard scanning `migration_doc/` for spec/suite figure discrepancies against actual runner totals would catch this drift repo-wide.
+- **Tier / Size / Backends:** TIER-3 · XS · tooling. **Depends on:** none. **Ruling touched:** none. **Gate:** new verification script or lint step.
+- **Acceptance:** a verification script (e.g. `Tools/verify-ledger-counts.mjs`) checks quoted test counts in `migration_doc/` against live test totals or flags unanchored historical figures.
+- **Binds:** none. **Source:** `F:/Dev/GH/cesium-lane-eldarion-20260910/_lane-out/PROGRESS_ELDARION.md:601`, wave A C3 landing findings.
+
+### `DX-75` — `migration_doc/` formatting and content validation gate
+
+- **Disposition:** FOLDED into `DX-30` (duplicates `DX-30`/`DX-41` premise; amended into `DX-30` with wave A C3 findings; see `F:/Dev/GH/cesium-lane-eldarion-20260910/_lane-out/PROGRESS_ELDARION.md:601`).
+
+### `DX-76` — Worker cleanup commands must target own lane directory, never the namespace root
+
+- **Disposition:** CLOSED (module refusal shipped in Batch 1464; worker rule updated in §8i). Filed from the 2026-09-11 temp cleanup incident (a C2 confirm reviewer's cleanup targeted the shared `<tmpdir>/cesium-lane` root; `PROGRESS_ELDARION.md:523`). The module guard already shipped in Batch 1464: `Tools/lib/lane-tmp.mjs:101-115` explicitly refuses the namespace root, asserted by `Tools/lib/lane-tmp.spec.mjs:222-234` (test C4). What remained was the worker isolation rule in `WORKER_ISOLATION_AND_BRANCH_HANDOFF.md` §8i ("a worker's cleanup step names its own lane directory only, never the namespace root"), which is now added.
+- **Tier / Size / Backends:** TIER-3 · XS · tooling / process. **Depends on:** `Tools/lib/lane-tmp.mjs` (Batch 1464). **Ruling touched:** none. **Gate:** `test-tools-lib`.
+- **Acceptance:** `Tools/lib/lane-tmp.mjs:101-115` refuses deletion/allocation at `<tmpdir>/cesium-lane` (covered by `lane-tmp.spec.mjs:222-234` test C4); worker isolation rule §8i updated.
+- **Binds:** none. **Source:** `Tools/lib/lane-tmp.mjs:101-115`, `Tools/lib/lane-tmp.spec.mjs:222-234`, `F:/Dev/GH/cesium-lane-eldarion-20260910/_lane-out/PROGRESS_ELDARION.md:523`, `migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md` §8i.
+
+### `DX-77` — Install-changing batches must gate their runners in a clean clone
+
+- **Disposition:** OPEN. Filed from wave A lane D1 landing (Ceorl F2, Nain N9, Batch 1466; `PROGRESS_ELDARION.md:504-507`, seat measurement 2026-09-11). Nested `@huggingface/transformers/node_modules/sharp` 0.34.5 survived `npm install` because a gitignored `package-lock.json` dated 2026-09-08 and the hidden `node_modules/.package-lock.json` steered npm despite `.npmrc` `package-lock=false`, causing `Tools/lib/sharp-runtime-smoke.spec.mjs` to fail (91 pass / 5 fail). Deleting both lockfiles and the nested copy before reinstalling resolved the collision (96/96 pass). Install-changing batches must gate their runners in a clean clone, and the seat deletes any `package-lock.json` before reinstalling.
+- **Tier / Size / Backends:** TIER-3 · XS · tooling / process. **Depends on:** none. **Ruling touched:** none. **Gate:** runner gate in clean clone.
+- **Acceptance:** landing procedure rules that when a batch modifies `package.json` dependencies or overrides, the candidate runner gate is verified in a clean, isolated clone, and the seat deletes any `package-lock.json` before reinstalling.
+- **Binds:** none. **Source:** Ceorl F2 prediction (`F:/Dev/GH/cesium-lane-eldarion-20260910/_lane-out/PROGRESS_ELDARION.md:504-507`), seat measurement post-Batch 1466 (seat, 2026-09-11).
+
+### `DX-78` — `globe-contour-pixel-ratio-parity.spec.mjs` allocates into uncreated directory and lacks runner home
+
+- **Disposition:** OPEN. Filed from wave S1 lane L3 rebase findings (Thrain / Dunhere; `PROGRESS_THRAIN.md:290, 374-379, 703-705`). `Tools/visual-regression/globe-contour-pixel-ratio-parity.spec.mjs` mkdtemps into a gitignored directory that it never creates, passing only after another runner creates that directory as a side effect. Additionally, it has no runner home script in `package.json`.
+- **Tier / Size / Backends:** TIER-3 · XS · tooling. **Depends on:** none. **Ruling touched:** none. **Gate:** `test-visual-regression-node` or dedicated script.
+- **Acceptance:** spec migrates to `Tools/lib/lane-tmp.mjs` for scratch allocation per §8i, ensures directories are created before use, and is assigned an explicit runner home in `package.json`.
+- **Binds:** none. **Source:** `PROGRESS_THRAIN.md:290, 374-379, 703-705` (wave S1 L3 rebase), seat briefing (seat, 2026-09-11).
+
+### `DX-79` — S1 packets' TypeScript-pin proposal superseded by Batch 1458
+
+- **Disposition:** CLOSED (superseded by Batch 1458 `a28198769e` / `DX-70`; `gulpfile.js:289` already uses `require.resolve("typescript/bin/tsc")`; see `PROGRESS_THRAIN.md:246, 381, 705`).
+
+### `DX-80` — `pack-compat.mjs` has no runner home or CI gate
+
+- **Disposition:** OPEN. Filed from wave A lane D1 review (Nain N9, Batch 1466; `PROGRESS_ELDARION.md:486`, Batch 1466 commit message). `Tools/tsd-jsdoc-compat/pack-compat.mjs` packs the vendored typings compatibility tarball. It has no runner home script in `package.json` and appears in no CI workflow. Consequently, if the packed tarball or packing script becomes corrupted (such as by line-ending conversions on Windows), no automated gate turns red to detect it.
+- **Tier / Size / Backends:** TIER-3 · XS · tooling. **Depends on:** none. **Ruling touched:** none. **Gate:** `npm run test-tools-lib` or `npm run test-docs-compat`.
+- **Acceptance:** add a verification test/runner home that executes `pack-compat.mjs` (or verifies tarball integrity against unpack) so corruptions turn CI red.
+- **Binds:** none. **Source:** `F:/Dev/GH/cesium-lane-eldarion-20260910/_lane-out/PROGRESS_ELDARION.md:486`, Batch 1466 commit `284e181506`.
+
+### `DX-81` — `c13-42-godray-fixture.spec.mjs` costs 115–136 s due to four full-frame analytic mask derivations
+
+- **Disposition:** OPEN. Filed from wave A lane C1 findings (Horn row 6, Gamling §3; `cesium-webgpu-worker-archive/lanes-2026-09-11/cesium-lane-horn-20260910/_lane-out/PACKET_HORN.md:239`, `REVIEW_GAMLING.md:217`). `Tools/visual-regression/c13-42-godray-fixture.spec.mjs` execution takes 115–136 s (Gamling measured 115.6 s, Horn 136 s), with ~107 s spent deriving four full-frame analytic masks.
+- **Tier / Size / Backends:** TIER-3 · XS · tooling / spec perf. **Depends on:** none. **Ruling touched:** none. **Gate:** `test-visual-probe-contracts`.
+- **Acceptance:** decimate the evaluation grid for the topology assertions while retaining one full-frame control test, reducing execution time to a bound its owner sets from a measured run.
+- **Binds:** none. **Source:** `cesium-webgpu-worker-archive/lanes-2026-09-11/cesium-lane-horn-20260910/_lane-out/PACKET_HORN.md:239`, `REVIEW_GAMLING.md:217`.
 
 ### `Q-130-a` — `FrustumGeometry.js` misuses `defined(vertexFormat.normal)`/`.st` on always-defined booleans
 

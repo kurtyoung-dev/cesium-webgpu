@@ -755,6 +755,11 @@ duplicate, a clone reset — is recoverable from the wave's own record rather th
 lane happened to bank for itself. Wave P0-2's recovery worked because one worker was disciplined;
 the wave-level manifest is what makes it not depend on that.
 
+**A census-changing batch regenerates `TOOLING_CATALOG.md` in the same commit and its gate runs with the candidate STAGED (Batch 1469).**
+Because `verify-tooling-catalog` certifies the candidate index, a worktree regeneration leaves the gate red until staged (`git add migration_doc/TOOLING_CATALOG.md`).
+
+**Archive discoverability for prior reviews.** Prior rebase reviews live in `cesium-webgpu-worker-archive/lanes-<date>/<clone>/_lane-out/` (Erkenbrand called them "unrecoverable"; they were not).
+
 ### 8i. Temp hygiene and closeout (maintainer directive, 2026-09-11)
 
 **Agents and sub-agents clean up after themselves once a task is completely finished and pushed.**
@@ -782,6 +787,10 @@ and its `_lane-out/`.** Its lane temp root, downloaded bundles, Playwright and K
 started, mutant copies, served-bundle dumps. The return message says what it removed. A lane that
 leaves scratch behind has not finished; the seat should treat it the way it treats an unharvested
 clone.
+
+**A worker's cleanup step names its own lane directory only, never the namespace root.**
+Cleanup must name `<tmpdir>/cesium-lane/<lane>`, never the shared `<tmpdir>/cesium-lane` parent
+(a C2 confirm reviewer's cleanup incident; concurrent agents' open handles held the parent non-empty by luck).
 
 **The closeout check is over the Temp ROOT, not just the lane's own namespace.** The lane that wrote
 this rule failed it: `<tmpdir>/cesium-lane/<lane>` was empty at return time and four entries it had

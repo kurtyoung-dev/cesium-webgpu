@@ -41,10 +41,17 @@ capture apparatus. Executing them required re-deriving why six 2026-09-09 runs
 produced no verdicts. The response cap was **not** the reason. Four separate
 blockers were measured, and the cap is the least binding of them.
 
-### NEW-C13-42-APPARATUS-CANNOT-RUN-AT-HEAD
+**Corrected baselines (2026-09-11):** `test-visual-regression-node` is 217/221 (failures C2, C5,
+D2, D4; C2 names four offenders: `probe-aec-perf`, `probe-aec-residency-e1`,
+`probe-ao-runtime-config`, `probe-q141-pick-readback`) and `test-visual-probe-contracts` is 227/227
+clean (246/246 after Batch 1467). These are the verified pre-existing-red baselines across five
+independent derivations; older "147/151" and "84/85" figures in prior briefs/audits are wrong on
+count, set, and attribution.
 
-**Status:** OPEN — blocks every C13-42 browser leg. Recorded 2026-09-10 at
-`693ec11706` (Batch 1455).
+### NEW-C13-42-APPARATUS-CANNOT-RUN-AT-HEAD (C13-42a — CRITICAL PATH)
+
+**Status:** OPEN — **CRITICAL PATH**. Blocks every C13-42 browser leg, and therefore C13-43/44/45's
+acceptance. Recorded 2026-09-10 at `693ec11706` (Batch 1455).
 
 `probe-c13-42-reported-demos.mjs` destructures `scope` from the object
 `descriptor.cells(context)` receives, then calls `scope.run(...)` at 17 sites and
@@ -61,10 +68,15 @@ The six banked 2026-09-09 runs were executed against an unlanded +1,078-line
 still untracked in Astra's workspace; the banked error stacks name
 `.../lib/probe-lifecycle.mjs:849` and `.../lib/probe-runtime.mjs:1761` directly.
 That rewrite makes `descriptor.workBudgetMs` **required**, so it is a fleet-wide
-breaking change, and this wave's brief carves it out as its own later lane.
+breaking change (breaks 21 existing probes, 0 of which declare `workBudgetMs` —
+Gamling F5 recommends staging optional-with-default), and this wave's brief carves
+it out as its own later lane.
 
 **Consequence:** raising the response cap cannot unblock a run on its own. The
-runtime adoption is the real critical path for any C13-42 capture.
+cap raise remains inert until `C13-42a` wires two call sites (`appendC13_42ServedResponse`
+taking its cap from `servedResponseBudgetFor(subject)`, and `workBudgetMs` response
+term from `servedResponseBudgetMs(RESPONSE_BODY_BUDGET_MS)`). Runtime adoption
+`C13-42a` is the real critical path for any C13-42 capture.
 
 ### NEW-C13-42-RECEIPT-VALIDATION-DEADLOCK
 
@@ -132,7 +144,7 @@ exercised against the fixture at all. `sampleCount` is now an input on
 `traceF32Ray`, `traceF32RayPrepared` and `deriveFixtureMasks`, defaulting to the
 frozen value so existing behaviour is unchanged.
 
-### NEW-C13-42-SERVED-RESPONSE-DEDUP (filed, NOT implemented)
+### NEW-C13-42-SERVED-RESPONSE-DEDUP (C13-42b, filed, NOT implemented)
 
 **Status:** OPEN — filed behind the cap raise by M6 part 4.
 
@@ -150,9 +162,9 @@ budget deliberately carries the resulting slack; the repair should let it shrink
 **Scope of the repair:** add the url to `seenUrls` unconditionally, count
 distinct over-cap urls rather than events, and re-derive the budget from the
 corrected counts. **Lands in:** `probe-c13-42-reported-demos.mjs`, behind the
-runtime adoption above. **Evidence:** `_lane-out/EVIDENCE_HORN_2026-09-09_RUNS.md`.
+runtime adoption above. **Evidence:** `cesium-webgpu-worker-archive/lanes-2026-09-11/cesium-lane-horn-20260910/_lane-out/EVIDENCE_HORN_2026-09-09_RUNS.md`.
 
-### NEW-C13-42-REPORTED-ONLY-SCOPING-LEAVES-THE-OFFLINE-LEG-REFUSING
+### NEW-C13-42-REPORTED-ONLY-SCOPING-LEAVES-THE-OFFLINE-LEG-REFUSING (C13-42c)
 
 **Status:** CLOSED by maintainer ruling **R-2026-09-11-2** (M6(a)), 2026-09-11. The
 derived bound applies to the OFFLINE leg as well as the reported subjects, so
@@ -175,7 +187,7 @@ run still refuses on `O-above-deck`. The mechanism shipped here is per-subject,
 so granting the offline subjects the same derived bound is a one-line data change
 in `C13_42_SERVED_RESPONSE_BUDGET`.
 
-### NEW-C13-42-CLOUD-READINESS-BLOCKS-THE-BASELINE-LEG
+### NEW-C13-42-CLOUD-READINESS-BLOCKS-THE-BASELINE-LEG (C13-42d)
 
 **Status:** OPEN — a product/engine condition, not an instrument bound.
 
@@ -190,10 +202,18 @@ addresses it.
 This contradicts the widely-repeated summary that all six runs refused with
 `c13-42-served-closure-over-cap`. Five did; the sixth never reached the cap.
 
-### NEW-C13-42-THRESHOLD-KEYS-NAMED-PATHS-NO-RECEIPT-CARRIES
+### NEW-C13-42-TERRAIN-FREE-VARIANT-FOR-ATMOSPHERIC-CONDITIONS (C13-42e)
 
-**Status:** FIXED 2026-09-11 (lane C1 fix round, worker Farin) for the reachable
-metrics. **The god-ray GEOMETRY half remains OPEN** — see below.
+**Status:** OPEN (Horn proposed row 5, 2026-09-10).
+
+`packages/sandcastle/gallery/atmospheric-conditions/main.js:30` calls
+`Cesium.Terrain.fromWorldTerrain()`, which requires an ion token. If confirmed to render an
+entirely black globe without a valid token, add a terrain-free capture variant for `R-atmospheric`
+rather than capturing an unmeasurable scene that measures nothing (Principle 9).
+
+### NEW-C13-42-THRESHOLD-KEYS-NAMED-PATHS-NO-RECEIPT-CARRIES (C13-42f)
+
+**Status:** PARTIAL / OPEN (lane C1 fix round, worker Farin, 2026-09-11).
 
 `CHARACTERIZATION_THRESHOLD_DERIVATION.keys` named four receipt paths —
 `metrics.support.fraction`, `metrics.radial.contrast`, `metrics.delta.fraction`
@@ -229,6 +249,33 @@ the fixture's `deriveFixtureMasks`, its projected emitter and
 `expectedDirectionRadians` into the probe's cell construction. Blocks the geometry
 half of the threshold freeze; does not block the calibration leg, which now derives
 from the reachable toggle metrics.
+
+**Widen per Dis (confirm round, lane C1, 2026-09-11):** `cloudToggleChangedFraction` still cannot
+resolve on a probe-produced receipt because `composeCloudMetrics` requires
+`Number.isInteger(image.channels)` and the probe's `decodePng` returns `{width, height, data}` with
+no `channels` field (one layer below where Farin looked). Consequences: Edge Leg 2's third bar
+remains unsatisfiable and Leg 1's `exitCode == 0` bar is unreachable (six of seven cells fold FAIL).
+Widen this row to supply `channels` from `decodePng` or relax `composeCloudMetrics`.
+
+### NEW-C13-42-FIXTURE-SPEC-COSTS-136S-DECIMATE-GRID (Horn proposed row 6, C13-42g / DX-81)
+
+**Status:** OPEN (Horn proposed row 6; Gamling measured 115.6 s, Horn 136 s).
+
+`Tools/visual-regression/c13-42-godray-fixture.spec.mjs` runs 10 tests and takes 115–136 s
+(Gamling: 115.6 s, Horn: 136 s), of which ~107 s is four full-frame analytic mask
+derivations. Decimate the evaluation grid for the topology assertions while keeping one
+full-frame control test, reducing spec runtime without sacrificing contract coverage.
+Tracked also in research dispatch as `DX-81`.
+
+### NEW-C13-45-EDGE-LEG-INHERITS-C13-42A-BLOCKER (Horn proposed row 7)
+
+**Status:** OPEN (Horn proposed row 7).
+
+`UNIFORM_SKY_CONTROL` and the `sampleCount` parameter are landed and specified, and the
+four banked multipliers are reproduced within a derived f32 bound; Eothain's
+count-invariance law is specifiable offline today. However, C13-45's Edge browser
+certification leg inherits `C13-42a`'s blocker (the probe runtime and lifecycle rewrite
+where `descriptor.workBudgetMs` is required).
 
 ### NEW-C13-42-ZERO-MARGIN-THRESHOLD-ON-A-DEGENERATE-CALIBRATION
 
@@ -17677,6 +17724,9 @@ also record that a chunk under `Shaders/WebGPU/chunks/functions/` must be regist
 
 The shipped law, the four rows it leaves open, and the WebGL position. The
 mechanism record is here; the row's status lives in the campaign queue.
+Eothain's count-invariance law is specifiable offline today; its Edge browser
+certification leg inherits `C13-42a`'s blocker (`NEW-C13-45-EDGE-LEG-INHERITS-C13-42A-BLOCKER`,
+Horn proposed row 7).
 
 ### NEW-WEBGPU-GODRAY-EMITTER-WAS-THE-SKY — the generate pass used the sampled scene colour as its emitter (FIXED 2026-09-10, rendered-pixel acceptance OWED)
 
