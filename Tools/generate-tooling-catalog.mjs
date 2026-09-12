@@ -28,6 +28,18 @@
 // or only the git freshness column, so a reader can tell a real drift from a
 // batch that touched a probe without regenerating.
 //
+// WHAT `--check` READS, AND WHY A REGENERATION ALONE DOES NOT CLEAR IT. The
+// check reads the committed catalog from the candidate INDEX, never from the
+// working tree, so unrelated dirty work cannot certify a census that is about
+// to be committed without it. The write path is the mirror image: it reads and
+// rewrites the working-tree file. A regeneration therefore cannot move
+// `--check` until the result is staged — `verify` → `generate` → `verify` reds
+// twice, and the second red means "stage it", not "the regeneration failed".
+// On 2026-09-10 that cost a seat a whole diagnosis (the eight A1* spec reds of
+// that evening were the same unstaged census reported through the spec's
+// precondition), so the drift report now names WHICH of the two states it is
+// in instead of printing one remedy for both.
+//
 // A header the parser can SEE but cannot READ is a different case, and it is
 // a refusal rather than a row: an unterminated block comment, a duplicated
 // tag, or a `@status` outside the known vocabulary exits 3 (STRUCTURAL) with
@@ -1908,6 +1920,39 @@ function requiredCandidatePathReasons(root = ROOT) {
 }
 
 /**
+ * Whether the working tree's catalog already carries THIS run's census.
+ *
+ * Diagnostics only: the verdict stays index-only, because the index is what a
+ * commit will publish and a dirty worktree must never be able to certify it.
+ * What this predicate buys is the difference between the two drifts that look
+ * identical in the report — "nobody has regenerated" and "somebody regenerated
+ * but has not staged it" — whose remedies are different commands. Reading the
+ * worktree here cannot change exit 1; it only decides which remedy is printed.
+ *
+ * The census is re-rendered with the WORKING TREE file's own line endings
+ * rather than compared against the region rendered for the index copy: on
+ * Windows a checkout is CRLF and its index blob is LF, so a byte comparison
+ * across that boundary would call every worktree stale and print the wrong
+ * remedy every time. This asks the question the write path asks — would a
+ * regeneration change this file? — which is what "already regenerated" means.
+ *
+ * @param {{rows: object[]}} census Census this run derived from the candidate index.
+ * @returns {boolean|null} Whether they match, or null when the worktree copy is unreadable or marker-less.
+ */
+function worktreeCarriesRegeneratedCensus(census) {
+  let text;
+  try {
+    text = readFileSync(CATALOG, "utf8");
+  } catch {
+    return null;
+  }
+  const worktree = splitCatalog(text);
+  return worktree === null
+    ? null
+    : worktree.region === renderCensus(census, worktree.eol);
+}
+
+/**
  * Run the catalog operation against one immutable private index snapshot.
  *
  * @param {boolean} check Whether to compare without writing.
@@ -2082,9 +2127,28 @@ function mainFrozen(check, toStdout, subject) {
     for (const line of drift.lines) {
       console.error(`  ${line}`);
     }
-    console.error(
-      "  Regenerate with `node Tools/generate-tooling-catalog-launcher.cjs` and commit the result.",
-    );
+    if (worktreeCarriesRegeneratedCensus(census) === true) {
+      console.error(
+        `  The drift is UNSTAGED, not unregenerated: the working tree's ${CATALOG_REL}`,
+      );
+      console.error(
+        "  already matches this run's output. `--check` certifies the candidate index, so stage",
+      );
+      console.error(
+        `  it (\`git add ${CATALOG_REL}\`) or commit it and re-run; regenerating again cannot`,
+      );
+      console.error("  clear this report.");
+    } else {
+      console.error(
+        "  Regenerate with `node Tools/generate-tooling-catalog-launcher.cjs`, then STAGE the",
+      );
+      console.error(
+        `  result (\`git add ${CATALOG_REL}\`) before re-running: \`--check\` reads the candidate`,
+      );
+      console.error(
+        "  index, so an unstaged regeneration still reports this same drift.",
+      );
+    }
     return 1;
   }
 

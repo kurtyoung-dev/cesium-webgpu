@@ -278,6 +278,11 @@ function runCandidate(sandbox, args = ["--check"], extraEnv = {}) {
  * failure is never mistaken for one of those defects; the check itself
  * (status 0 and the exact "census is current" text) is unchanged.
  *
+ * It names STAGING as well as regeneration because the check reads the
+ * candidate index: on 2026-09-10 eight of these preconditions failed against a
+ * working tree that already held the regenerated catalog, and the message sent
+ * the reader back to a regeneration that could not change the outcome.
+ *
  * @param {{status: number|null, stdout: string, stderr: string}} result Spawned `--check` result.
  * @param {string} [context] Extra context to lead the failure message with.
  */
@@ -288,8 +293,10 @@ function assertCensusCurrent(result, context = "") {
     0,
     `${prefix}census-currency precondition failed — if this is a DRIFTED ` +
       `report, migration_doc/TOOLING_CATALOG.md itself is stale relative to ` +
-      `the tree and needs regenerating (\`node ${LAUNCHER_REL}\`, then ` +
-      `commit), independently of what this test exercises:\n${result.stderr}`,
+      `the tree and needs regenerating (\`node ${LAUNCHER_REL}\`) AND ` +
+      `staging (\`git add migration_doc/TOOLING_CATALOG.md\`), independently ` +
+      `of what this test exercises — the report below says which of the two ` +
+      `is missing:\n${result.stderr}`,
   );
   assert.match(result.stdout, /census is current/u);
 }
@@ -1069,8 +1076,57 @@ test("A1f: HTML harnesses are scanned as inbound-reference sources", () => {
   assert.equal(isReferenceSourcePath("Tools/example/image.png"), false);
 });
 
+/**
+ * Name the one condition that reds the binding assertion below on a tree that
+ * is otherwise sound: a working-tree edit to the runtime that is not staged.
+ *
+ * The assertion is CORRECT to fail then — what it asserts is that the code
+ * executing is the code the index will publish, and an unstaged edit means the
+ * two genuinely differ. What was missing is the sentence saying so, because a
+ * bare byte mismatch reads as a trust-boundary defect rather than as the
+ * reader's own uncommitted work. Line endings are normalized because a Windows
+ * checkout is CRLF against an LF index blob, exactly as the bootstrap does.
+ *
+ * @returns {string|undefined} Failure context, undefined when the runtime is already staged.
+ */
+function unstagedRuntimeEditContext() {
+  const bindings = [
+    "Tools/generate-tooling-catalog.mjs",
+    "Tools/lib/purpose-header.mjs",
+  ];
+  const staged = readTrackedFiles(bindings);
+  const normalize = (text) => text.replace(/\r\n/gu, "\n");
+  const edited = bindings.filter((rel) => {
+    let worktree;
+    try {
+      worktree = readFileSync(path.join(ROOT, ...rel.split("/")), "utf8");
+    } catch {
+      return false;
+    }
+    const indexed = staged.get(rel);
+    return indexed !== undefined && normalize(worktree) !== normalize(indexed);
+  });
+  if (edited.length === 0) {
+    // Not the empty string: an empty message would REPLACE assert's own diff.
+    return undefined;
+  }
+  return (
+    `the executing runtime is not the candidate-index runtime because ` +
+    `${edited.join(", ")} ${edited.length === 1 ? "is" : "are"} edited in the ` +
+    `working tree and NOT staged. This assertion is the trust boundary and is ` +
+    `right to fail: the launcher materializes what it runs from the index, so ` +
+    `an unstaged edit is not the code under test. Stage it (\`git add ` +
+    `${edited.join(" ")}\`) or run this spec from a clean tree; A1i2 proves ` +
+    `the same bytes bind cleanly once they are in an index.`
+  );
+}
+
 test("A1g: executing generator and parser are bound to candidate-index blobs", () => {
-  assert.deepEqual(runtimeCandidateBindingReasons(), []);
+  assert.deepEqual(
+    runtimeCandidateBindingReasons(),
+    [],
+    unstagedRuntimeEditContext(),
+  );
   const forged = runtimeCandidateBindingReasons(
     ["Tools/generate-tooling-catalog.mjs"],
     ROOT,
@@ -1160,7 +1216,14 @@ test("A1g2: raw launcher bytes defeat clean-filter trust laundering", () => {
 
 test(
   "A1g3: replacing a loaded generator cannot erase its initialization identity",
-  { timeout: 30_000 },
+  // 120 s, not 30 s — the bound other heavy launcher-spawning tests in this
+  // file already carry. This one materializes a runtime worktree and spawns the
+  // launcher, and it measured 21.8 s and 25.3 s on an IDLE four-core Windows
+  // box: under a quarter of headroom. On 2026-09-10 it took 41.98 s on a busy
+  // one and failed as `testTimeoutFailure`, which was then read as part of a
+  // census-currency defect it has nothing to do with. The bound exists to catch
+  // a hang; sizing it to an idle machine only manufactures load-dependent reds.
+  { timeout: 120_000 },
   async () => {
     const sandbox = createCandidateSandbox();
     const snapshotParent = path.join(sandbox.root, "runtime-snapshots");
@@ -1330,6 +1393,91 @@ test("A1i: candidate catalog and trust-boundary identity control the verdict", (
     (source) => `${source}\n// stale candidate parser\n`,
   );
   assertCensusCurrent(staleParser);
+});
+
+/**
+ * Stage the working tree's generator into a sandbox's private candidate index.
+ *
+ * The launcher materializes the implementation it runs from the candidate
+ * INDEX, so an edit that is only in the working tree is not the code under
+ * test — a spec that skipped this would certify whatever the repository index
+ * happened to hold and would pass identically with the edit reverted. Staging
+ * the working copy into the sandbox index is also the only way to exercise a
+ * generator change from a patch-producing lane, which has no commit to make.
+ *
+ * @param {{env: object, root: string}} sandbox Candidate sandbox.
+ */
+function stageWorkingTreeGenerator(sandbox) {
+  updateCandidatePath(
+    sandbox,
+    "Tools/generate-tooling-catalog.mjs",
+    readFileSync(GENERATOR, "utf8"),
+  );
+}
+
+test("A1i2: a drift report says whether the census is unregenerated or merely unstaged", () => {
+  // Leg 1 — the state a `generate` run leaves behind before `git add`: the
+  // candidate index still holds the old catalog while the working tree holds
+  // this run's output. `--check` reads the index, so it must still red — but a
+  // reader who has just regenerated has to be told to STAGE, not to regenerate
+  // again, which is the remedy that cannot work.
+  const unstaged = createCandidateSandbox();
+  try {
+    stageWorkingTreeGenerator(unstaged);
+    const committed = readTrackedFiles([
+      "migration_doc/TOOLING_CATALOG.md",
+    ]).get("migration_doc/TOOLING_CATALOG.md");
+    const stale = committed.replace("Columns: file", "Columns: stale file");
+    assert.notEqual(stale, committed);
+    updateCandidatePath(unstaged, "migration_doc/TOOLING_CATALOG.md", stale);
+
+    const result = runCandidate(unstaged);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /DRIFTED/u);
+    // This leg stales only the candidate INDEX, and the child runs against the
+    // repository's own working tree, so it presumes that tree's catalog is
+    // current. Say so: otherwise the one state the fix is about — a stale
+    // working-tree catalog — would red this leg opaquely.
+    assert.match(
+      result.stderr,
+      /UNSTAGED, not unregenerated/u,
+      "this leg requires the repository's WORKING-TREE " +
+        "migration_doc/TOOLING_CATALOG.md to be current; if it is itself stale " +
+        `the tool is RIGHT to print the regenerate remedy. Run \`node ${LAUNCHER_REL}\` ` +
+        "and re-run this spec",
+    );
+    assert.match(result.stderr, /git add migration_doc\/TOOLING_CATALOG\.md/u);
+    assert.doesNotMatch(result.stderr, /Regenerate with/u);
+  } finally {
+    rmSync(unstaged.root, { recursive: true, force: true });
+  }
+
+  // Leg 2 — negative control: a census subject that exists in the candidate
+  // index and in NO catalog, committed or working-tree. Here the regeneration
+  // genuinely has not been run, and the report must ask for one.
+  const unregenerated = createCandidateSandbox();
+  const fixturePath = "Tools/tooling-catalog-unstaged-control-fixture.mjs";
+  try {
+    stageWorkingTreeGenerator(unregenerated);
+    const oid = writeCandidateBlob(
+      unregenerated,
+      "// @purpose Exercises the unregenerated leg of the drift remedy.\n" +
+        "// @status ACTIVE\n",
+    );
+    updateCandidateEntry(unregenerated, fixturePath, "100644", oid);
+
+    const result = runCandidate(unregenerated);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /DRIFTED/u);
+    assert.ok(
+      result.stderr.includes(`+ ${fixturePath}`),
+      `the added census row is not reported:\n${result.stderr}`,
+    );
+    assert.match(result.stderr, /Regenerate with/u);
+    assert.doesNotMatch(result.stderr, /UNSTAGED, not unregenerated/u);
+  } finally {
+    rmSync(unregenerated.root, { recursive: true, force: true });
+  }
 });
 
 test("A1j: the private candidate snapshot restores environment and cleans up", () => {
@@ -1572,13 +1720,36 @@ test(
       );
       assert.equal(sparseBefore.status, 0, sparseBefore.stderr);
       assert.match(sparseBefore.stdout, /^040000 [0-9a-f]{40,64} 0\t.+\/$/mu);
-      for (const pathname of [
+      // The fixture is the CANDIDATE expressed as a sparse index, so it must
+      // carry everything this working tree changes — not a fixed five. The
+      // census counts inbound references out of `migration_doc` prose as well
+      // as code, so a documentation-only edit that names a tool moves that
+      // tool's Refs cell; with only the five below installed, the catalog in
+      // the fixture is the candidate's while the census around it is HEAD's,
+      // and the positive control asserts a census the candidate never had.
+      // Measured 2026-09-11: a debugging-log entry naming two probes reds this
+      // test with `rows changed 2` on exactly those two Refs cells, and every
+      // batch that adds a census file would red it the same way.
+      const candidatePaths = new Set([
         LAUNCHER_REL,
         "Tools/generate-tooling-catalog.mjs",
         "Tools/generate-tooling-catalog.spec.mjs",
         "migration_doc/TOOLING_CATALOG.md",
         "package.json",
-      ]) {
+      ]);
+      const candidateChanges = spawnSync(
+        "git",
+        ["diff", "--name-only", "HEAD"],
+        { cwd: ROOT, env: cleanEnv, encoding: "utf8" },
+      );
+      assert.equal(candidateChanges.status, 0, candidateChanges.stderr);
+      for (const rel of candidateChanges.stdout.split(/\r?\n/u)) {
+        // A deleted path has no blob to install; the fixture keeps HEAD's.
+        if (rel !== "" && existsSync(path.join(ROOT, ...rel.split("/")))) {
+          candidatePaths.add(rel);
+        }
+      }
+      for (const pathname of candidatePaths) {
         const hash = spawnSync(
           "git",
           [
