@@ -161,10 +161,27 @@ function CloudVolumetrics(options) {
    */
   this.cloudQuality = options.cloudQuality ?? 64;
 
+  // corrected 2026-09-12, C13-N34: "ultra" was documented here as though it
+  // worked. It is honoured by neither resolver — `resolveTier`
+  // (WebGPUCloudTierPresets) and `resolveCloudQuality`
+  // (WebGPUProceduralCloudRenderer) fall anything that is not low/medium/high
+  // through to the "auto" altitude bands. It is marked reserved rather than
+  // deleted, because the fork is funding it: deleting the string would satisfy
+  // the literal wording of C13-N12's acceptance ("no longer documents an
+  // unimplemented value") while leaving its deliverable unbuilt.
+  // THIS EDIT DISCHARGES NEITHER C13-N12 NOR C13-N41 — it corrects a false
+  // claim and nothing more.
   /**
    * Volumetric cloud quality preset. One of <code>"auto"</code>,
-   * <code>"low"</code>, <code>"medium"</code>, <code>"high"</code>,
-   * <code>"ultra"</code>. WebGPU only.
+   * <code>"low"</code>, <code>"medium"</code> or <code>"high"</code>.
+   *
+   * <code>"ultra"</code> is accepted but reserved — no resolver honours it yet,
+   * so today it falls through to the automatic altitude bands — with row
+   * <code>C13-N12</code> (the S4 rung, WebGPU-only by design) and
+   * <code>C13-N41</code> (the public two-axis quality surface) owning the work
+   * that makes it real.
+   *
+   * WebGPU only.
    * @type {string}
    * @default "auto"
    */
@@ -191,9 +208,16 @@ function CloudVolumetrics(options) {
    */
   this.cloudAerialMode = options.cloudAerialMode ?? "heuristic";
 
+  // corrected 2026-09-12, C13-N34: the alternative was documented as "sky",
+  // which no consumer has ever read. The renderer's only test is
+  // `cloudAmbientSource === "sky-lut"` (`ambientLutOn`, uniform float 109), the
+  // spelling ProceduralClouds.wgsl also names. The dead spelling is recorded
+  // here rather than silently swapped, because a caller may have set "sky" and
+  // seen nothing happen.
   /**
-   * Cloud shadow-side ambient source: <code>"constant"</code> or
-   * <code>"sky"</code>. WebGPU only.
+   * Cloud shadow-side ambient source: <code>"constant"</code>, a fixed ambient
+   * term, or <code>"sky-lut"</code>, which samples the baked sky-ambient LUT.
+   * WebGPU only.
    * @type {string}
    * @default "constant"
    */
@@ -218,7 +242,15 @@ function CloudVolumetrics(options) {
   this.cloudCurlAmplitude = options.cloudCurlAmplitude;
   /** Curl-noise swirl wavelength. WebGPU only. @type {number|undefined} */
   this.cloudCurlFrequency = options.cloudCurlFrequency;
-  /** Baked cloud-shape noise morphology. WebGPU only. @type {number|undefined} */
+  // corrected 2026-09-12, C13-N34: the @type read {number|undefined}; the value
+  // is a string the renderer compares (`=== "perlin-worley"`), and
+  // cesium-js-types.d.ts already declared `cloudNoiseMorphology?: string`.
+  /**
+   * Baked cloud-shape noise morphology. <code>"perlin-worley"</code> selects the
+   * separately baked Perlin-Worley shape texture; any other value, including
+   * <code>undefined</code>, keeps the value-FBM bake. WebGPU only.
+   * @type {string|undefined}
+   */
   this.cloudNoiseMorphology = options.cloudNoiseMorphology;
   /** Baked puff size. WebGPU only. @type {number|undefined} */
   this.cloudPuffSize = options.cloudPuffSize;
@@ -265,10 +297,14 @@ function CloudVolumetrics(options) {
 
   // ── Exotic E1: species / varieties (uniform slots 132-135) ──
 
+  // corrected 2026-09-12, C13-N34: the "e.g." list omitted the "lenticular"
+  // alias the renderer honours. The list is now exhaustive — every name here is
+  // one the species resolver tests, and it tests no others.
   /**
-   * Species name (e.g. <code>"lenticularis"</code>, <code>"fibratus"</code>,
-   * <code>"uncinus"</code>) selecting a density-shaping mode. Previously a
-   * cast-only globe field. WebGPU only.
+   * Species name selecting a density-shaping mode: <code>"lenticularis"</code>
+   * (alias <code>"lenticular"</code>), <code>"fibratus"</code> or
+   * <code>"uncinus"</code>. Case-insensitive. Previously a cast-only globe
+   * field. WebGPU only.
    * @type {string|undefined}
    */
   this.cloudSpecies = options.cloudSpecies;
@@ -283,10 +319,16 @@ function CloudVolumetrics(options) {
 
   // ── Exotic E2 remaining: supplementary features (uniform slots 136-139) ──
 
+  // corrected 2026-09-12, C13-N34: the "e.g." list omitted three names the
+  // feature resolver honours — the "kelvin-helmholtz"/"kelvinhelmholtz" aliases
+  // of fluctus, and "praecipitatio", which shares virga's mode with a denser
+  // parameter. The list is now exhaustive.
   /**
-   * Feature name (e.g. <code>"asperitas"</code>, <code>"fluctus"</code>,
-   * <code>"arcus"</code>, <code>"virga"</code>) selecting a density-shaping
-   * mode. WebGPU only.
+   * Feature name selecting a density-shaping mode: <code>"asperitas"</code>,
+   * <code>"fluctus"</code> (aliases <code>"kelvin-helmholtz"</code> and
+   * <code>"kelvinhelmholtz"</code>), <code>"arcus"</code>,
+   * <code>"virga"</code> or <code>"praecipitatio"</code>. Case-insensitive.
+   * WebGPU only.
    * @type {string|undefined}
    */
   this.cloudFeature = options.cloudFeature;
@@ -301,12 +343,28 @@ function CloudVolumetrics(options) {
 
   // ── Exotic E3: special luminous forms (iridescent color tint) ──
 
+  // corrected 2026-09-12, C13-N34: the form names were prose examples, not the
+  // set the renderer tests, and the numeric `cloudSpecialShadeMode` companion
+  // the packer reads was undeclared while its Strength/Scale/Param siblings
+  // were declared. Both are now stated.
   /**
-   * Special "shining" high-altitude cloud form (e.g. noctilucent, nacreous).
+   * Special "shining" high-altitude cloud form, as an iridescent shading tint:
+   * <code>"noctilucent"</code> (alias <code>"nlc"</code>) or
+   * <code>"nacreous"</code> (aliases <code>"polar-stratospheric"</code> and
+   * <code>"psc"</code>). Case-insensitive. This supplies only the shading; the
+   * high-altitude deck itself is placed through the multi-deck high bounds.
    * WebGPU only.
    * @type {string|undefined}
    */
   this.cloudSpecial = options.cloudSpecial;
+  /**
+   * Numeric special-shade mode (0 = off, 1 = noctilucent, 2 = nacreous), the
+   * equivalent of naming the form through {@link CloudVolumetrics#cloudSpecial}.
+   * A recognized name overrides it; an unrecognized one leaves it standing.
+   * WebGPU only.
+   * @type {number|undefined}
+   */
+  this.cloudSpecialShadeMode = options.cloudSpecialShadeMode;
   /** Iridescent tint blend depth. WebGPU only. @type {number|undefined} */
   this.cloudSpecialShadeStrength = options.cloudSpecialShadeStrength;
   /** Iridescence scale. WebGPU only. @type {number|undefined} */

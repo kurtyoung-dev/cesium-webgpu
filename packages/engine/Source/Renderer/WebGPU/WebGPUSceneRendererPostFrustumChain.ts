@@ -210,10 +210,13 @@ export function executePostFrustumChain(
   godRayEffect?.setCloudTransmittanceView(null);
   invalidateCloudFrameMask(context);
 
+  // `scene.godRayCloudAware` is the application-set opt-in for cloud-aware god
+  // rays (SHIPPED, FEATURE_INVENTORY §B); the engine deliberately writes it
+  // nowhere. It is declared on `CesiumScene` (cesium-js-types.d.ts) so this
+  // read is typed rather than an `as unknown as {…}` expando. Unset, the
+  // expression is false and the cloud mask is never requested.
   const cloudAwareRequested =
-    godRayEffect?.enabled === true &&
-    (config.scene as unknown as { godRayCloudAware?: boolean })
-      .godRayCloudAware === true;
+    godRayEffect?.enabled === true && config.scene.godRayCloudAware === true;
   const cloudPlan = resolveCloudFramePlan(config, cloudAwareRequested);
   let cloudAttempt: unknown = null;
   let cloudAttemptFailed = false;

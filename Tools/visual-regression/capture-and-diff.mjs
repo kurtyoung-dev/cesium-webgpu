@@ -43,7 +43,7 @@
 import { promises as fs } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   errorGateInit,
   armWebGPUDevices,
@@ -74,7 +74,7 @@ const OUTPUT_DIR = path.join(__dirname, "output");
 const REPOSITORY_ROOT = path.resolve(__dirname, "../..");
 const VIEWPORT = Object.freeze({ width: 1600, height: 800 });
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = {
     update: false,
     scene: null,
@@ -84,6 +84,9 @@ function parseArgs(argv) {
     confirmBaselinePromotion: false,
     updateRationale: null,
     reviewedBy: null,
+    // Additive, default-off. Absent, every downstream decision is byte-for-byte
+    // what it was before this flag existed.
+    servedBase: null,
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -92,6 +95,10 @@ function parseArgs(argv) {
     else if (a === "--scene") args.scene = argv[++i];
     else if (a === "--threshold") args.threshold = Number(argv[++i]);
     else if (a === "--browser") args.browser = argv[++i];
+    // `?? ""` rather than a bare `argv[++i]`: a value-less `--served-base` must
+    // become a LOUD refusal downstream, not a silent fall-back to the origin
+    // scenes.json hard-codes — which is the port this override exists to escape.
+    else if (a === "--served-base") args.servedBase = argv[++i] ?? "";
     else if (a === "--confirm-baseline-promotion") {
       args.confirmBaselinePromotion = true;
     } else if (a === "--update-rationale") {
@@ -101,6 +108,98 @@ function parseArgs(argv) {
     }
   }
   return args;
+}
+
+/**
+ * The URL this run actually navigates.
+ *
+ * `scenes.json` hard-codes its `baseUrl` origin, which is what made this runner
+ * unbindable by any orchestrator that forbids that port. `--served-base`
+ * replaces the ORIGIN only — the path, query and hash the scene config declares
+ * are preserved verbatim, because they name the page under test, not the server.
+ *
+ * @param {string} configuredBaseUrl The `baseUrl` from scenes.json.
+ * @param {string|null} servedBase The `--served-base` override, or null.
+ * @returns {{url: string, origin: string|null, error: string|null}} Resolution.
+ */
+export function resolveBaseUrl(configuredBaseUrl, servedBase = null) {
+  const overrideRequested = servedBase !== null && servedBase !== undefined;
+  if (!overrideRequested) {
+    return { url: configuredBaseUrl, origin: null, error: null };
+  }
+  let override;
+  try {
+    override = new URL(servedBase);
+  } catch {
+    return {
+      url: configuredBaseUrl,
+      origin: null,
+      error: `--served-base must be an absolute http(s) origin; got ${servedBase}`,
+    };
+  }
+  if (override.protocol !== "http:" && override.protocol !== "https:") {
+    return {
+      url: configuredBaseUrl,
+      origin: null,
+      error: `--served-base must be http or https; got ${override.protocol}`,
+    };
+  }
+  let configured;
+  try {
+    configured = new URL(configuredBaseUrl);
+  } catch {
+    return {
+      url: configuredBaseUrl,
+      origin: null,
+      error: `scenes.json baseUrl is not an absolute URL; got ${configuredBaseUrl}`,
+    };
+  }
+  const rewritten = new URL(configured.href);
+  rewritten.protocol = override.protocol;
+  rewritten.host = override.host;
+  return { url: rewritten.href, origin: override.origin, error: null };
+}
+
+const WAVE_END_COMMIT_PATTERN = /^[0-9a-f]{40}$/i;
+
+/**
+ * Source provenance for this run.
+ *
+ * When an orchestrator has already resolved the worktree identity and handed it
+ * down (`WAVE_END_SOURCE_COMMIT` / `_DIRTY` / `_IDENTITY`), that tuple is the
+ * subject of record and this runner does not re-derive it: shelling out to Git
+ * from inside the child would measure the tree at a different instant than the
+ * tuple the receipt is bound to.
+ *
+ * A baseline PROMOTION is the exception, and deliberately so. Promotion proves
+ * source stability by measuring the worktree twice and comparing, so a constant
+ * handed in from outside would make the second measurement vacuous. With a
+ * promotion requested this function always measures Git, exactly as before.
+ *
+ * The returned `git` object keeps exactly the shape `getGitMetadata` has always
+ * returned, so `report.candidate` is unchanged and `schemaVersion` need not move.
+ *
+ * @param {object} options Resolution inputs.
+ * @returns {{git: {sourceCommit: string, sourceDirty: boolean}, provenance: string}} The tuple.
+ */
+export function resolveSourceProvenance({
+  env = process.env,
+  promotionRequested = false,
+  readGitMetadata = getGitMetadata,
+} = {}) {
+  const commit = env.WAVE_END_SOURCE_COMMIT;
+  const dirty = env.WAVE_END_SOURCE_DIRTY;
+  const rootProvenanceUsable =
+    !promotionRequested &&
+    WAVE_END_COMMIT_PATTERN.test(commit ?? "") &&
+    (dirty === "true" || dirty === "false");
+  if (rootProvenanceUsable) {
+    return {
+      git: { sourceCommit: commit, sourceDirty: dirty === "true" },
+      provenance: "wave-end-gate-env",
+    };
+  }
+  return { git: readGitMetadata(), provenance: "git" };
 }
 
 async function loadPlaywright() {
@@ -648,6 +747,17 @@ async function main() {
   }
 
   const cfg = JSON.parse(await fs.readFile(SCENES_PATH, "utf8"));
+  const resolvedBase = resolveBaseUrl(cfg.baseUrl, args.servedBase);
+  if (resolvedBase.error !== null) {
+    console.error(`[visual-regression] ${resolvedBase.error}`);
+    process.exit(2);
+  }
+  if (resolvedBase.origin !== null) {
+    console.log(
+      `[visual-regression] served-base override: ${cfg.baseUrl} -> ${resolvedBase.url}`,
+    );
+    cfg.baseUrl = resolvedBase.url;
+  }
   const scenes = args.scene
     ? cfg.scenes.filter((s) => s.name === args.scene)
     : cfg.scenes;
@@ -679,7 +789,15 @@ async function main() {
   await ensureDir(BASELINE_DIR);
   await ensureDir(OUTPUT_DIR);
   const baselineManifest = await loadBaselineManifest();
-  const git = getGitMetadata();
+  const sourceProvenance = resolveSourceProvenance({
+    promotionRequested: promotionRequest.requested,
+  });
+  const git = sourceProvenance.git;
+  if (sourceProvenance.provenance !== "git") {
+    console.log(
+      `[visual-regression] source provenance: ${sourceProvenance.provenance} (${git.sourceCommit}, dirty=${git.sourceDirty})`,
+    );
+  }
   if (promotionRequest.requested && git.sourceDirty) {
     console.error(
       "[visual-regression] baseline promotion denied: candidate Git worktree is dirty",
@@ -1126,7 +1244,15 @@ async function main() {
   process.exit(runStatus === GateStatus.PASS ? 0 : 1);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(99);
-});
+// Run only as a CLI. Importing this module (a node:test spec reaching for
+// parseArgs / resolveBaseUrl / resolveSourceProvenance) must not launch a
+// browser; invoking it by path behaves exactly as it always has.
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(99);
+  });
+}

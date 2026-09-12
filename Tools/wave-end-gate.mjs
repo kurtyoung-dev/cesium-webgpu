@@ -1,6 +1,26 @@
 #!/usr/bin/env node
-// @purpose Q-152 — close a multi-batch wave with served-build preflights, smoke/sweep/visual gates, and banked receipts. FAIL-CLOSED at HEAD: every step is bindable:false, so every invocation refuses pre-spawn with exit 3 and zero children spawned (decidePreSpawnBindability); Q-152 is open with zero receipts produced by this runner — use the manual three-step per R-2026-09-02-3 instead.
+// @purpose Q-152 — close a multi-batch wave with served-build preflights, smoke/sweep/visual gates, and banked receipts. The verdict is ROOT-BOUND: no child emits a typed receipt, so the root derives one per step from its own run id, time window, root-supplied source tuple, preflighted served subject, fixed-report freshness snapshot, and the step's own declared exit-code map (`binding`, echoed in the receipt). Bindability is a function of the arguments — `--update-baselines` still refuses pre-spawn with exit 3 and zero children spawned, naming every blocker and its remediation.
 // @status ACTIVE
+//
+// WHY THE ROOT BINDS. The gate used to demand a capability from each child that
+// no child has: a self-emitted typed result carrying run id, source, served
+// subject and a proven-quiescent process tree. Every step was therefore
+// `bindable: false` and every invocation refused before spawning anything, so
+// the runner produced zero receipts. But the root already owns every binding
+// field except the verdict — it minted the run id, it holds the time window, it
+// was handed the source tuple, it preflighted the served subject, and it
+// snapshots each fixed report before and after the run. Only the verdict was
+// missing, and the objection to using the child's exit code was that a RAW exit
+// is not a verdict. That objection is answered by DECLARING the mapping: each
+// step carries `binding.exitCodeStatus`, visible in the plan, echoed in the
+// receipt, and auditable. An undeclared exit code is still refused
+// (EXIT_CODE_UNDECLARED) rather than guessed.
+//
+// WHAT THE ROOT STILL CANNOT PROVE. Descendant process-tree quiescence. A
+// child's self-claim of it is unverifiable by the root, so the claim is not a
+// gate input; the root records its own `directChildCloseObserved` observation
+// and NAMES the limitation in every receipt. A run that neither proves
+// quiescence nor names the limitation is refused.
 
 import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
@@ -42,6 +62,7 @@ export const REFUSAL_REASONS = Object.freeze({
   DRY_RUN_NON_EXECUTION: "DRY_RUN_NON_EXECUTION",
   CAPTURE_AND_DIFF_UNBINDABLE: "CAPTURE_AND_DIFF_UNBINDABLE",
   DESCENDANT_QUIESCENCE_UNPROVEN: "DESCENDANT_QUIESCENCE_UNPROVEN",
+  EXIT_CODE_UNDECLARED: "EXIT_CODE_UNDECLARED",
 });
 
 export const ERROR_REASONS = Object.freeze({
@@ -70,6 +91,72 @@ export const CHILD_HARD_STOP_GRACE_MS = 2_000;
 export const STEP_RESULT_SCHEMA_VERSION = 1;
 const DESCENDANT_QUIESCENCE_LIMITATION =
   "Direct-child close does not prove descendant process-tree quiescence.";
+
+/** The one `boundBy` value the root mints for itself. */
+export const ROOT_BINDING = "root-binding";
+
+/** Blocker codes a pre-spawn-unbindable step may carry. */
+export const BINDING_BLOCKERS = Object.freeze({
+  SERVED_ORIGIN_UNAVAILABLE: "SERVED_ORIGIN_UNAVAILABLE",
+  BASELINE_PROMOTION_UNBINDABLE: "BASELINE_PROMOTION_UNBINDABLE",
+});
+
+/**
+ * The exit-code map every canonical child shares. Each child exits 0 when it
+ * saw its subject and the subject met the bar, 1 when it saw its subject and
+ * the subject missed it, and 2 when it could not see its subject at all
+ * (Playwright absent, an argument it refused, an origin-rewrite refusal).
+ * Every other code is undeclared and is refused rather than mapped.
+ */
+const CANONICAL_EXIT_CODE_STATUS = Object.freeze({
+  0: "PASS",
+  1: "FAIL",
+  2: "STRUCTURAL",
+});
+
+function bindingFor(step, exitCodeMeaning) {
+  return {
+    boundBy: ROOT_BINDING,
+    fields: {
+      runId: "root:runChildProcess.runId",
+      timeWindow: "root:runChildProcess.startedEpochMs..finishedEpochMs",
+      source: "root:--source-commit/--source-dirty/--source-identity",
+      servedSubject: "root:served-build-preflight(disk md5 === served md5)",
+      freshness: step.resultReportPath
+        ? `root:readResultReportSnapshot(${step.resultReportPath}) before and after the run`
+        : "root:runChildProcess direct-child close (no fixed report declared)",
+      status: "root:binding.exitCodeStatus over the observed raw exit",
+      quiescence: "root:runChildProcess.cleanup.directChildCloseObserved",
+    },
+    exitCodeStatus: { ...CANONICAL_EXIT_CODE_STATUS },
+    exitCodeMeaning,
+    limitations: [DESCENDANT_QUIESCENCE_LIMITATION],
+  };
+}
+
+/**
+ * Whether the root derives this step's verdict itself. The single predicate the
+ * whole root-binding path routes through, so an inertness mutant has one place
+ * to reach.
+ *
+ * @param {object} step A planned step.
+ * @returns {boolean} True when the step carries a root binding.
+ */
+export function isRootBoundStep(step) {
+  return step?.binding?.boundBy === ROOT_BINDING;
+}
+
+function boundBindability(reason) {
+  return {
+    bindable: true,
+    phase: "post-spawn",
+    boundBy: ROOT_BINDING,
+    reason,
+    blockers: [],
+    remediation: null,
+    limitations: [DESCENDANT_QUIESCENCE_LIMITATION],
+  };
+}
 
 export function makeRefusal(name, message) {
   return Object.freeze({
@@ -353,6 +440,65 @@ function formatNodeCommand(file, args) {
   return ["node", file, ...args].map(quoteCommandArgument).join(" ");
 }
 
+/**
+ * The served origin the root is willing to hand a child, or null when the
+ * arguments do not yield one. A forbidden port is not merely refused later by
+ * `decideArgumentRefusal` — it never becomes a served origin here either, so a
+ * plan built directly from hostile arguments cannot claim bindability.
+ *
+ * @param {object} args Parsed arguments.
+ * @returns {string|null} The served origin, or null.
+ */
+export function resolveServedOrigin(args) {
+  if (!isValidPort(args?.port) || args.port === 8080 || args.port === 8081) {
+    return null;
+  }
+  return `http://localhost:${args.port}`;
+}
+
+/**
+ * Every reason the visual-regression child cannot be bound under these
+ * arguments. Empty means bindable. Each blocker names what that child must
+ * gain, so a refusal tells the next engineer what to build.
+ *
+ * @param {object} args Parsed arguments.
+ * @returns {Array<object>} Blocker records.
+ */
+export function visualRegressionBlockers(args) {
+  const blockers = [];
+  if (resolveServedOrigin(args) === null) {
+    blockers.push({
+      code: BINDING_BLOCKERS.SERVED_ORIGIN_UNAVAILABLE,
+      reason:
+        "scenes.json hard-codes its baseUrl on forbidden port 8080 and these arguments yield no served origin for the root to override it with.",
+      remediation:
+        "Invoke the gate with a --port that is a valid, non-forbidden port so the root can pass --served-base <origin> to Tools/visual-regression/capture-and-diff.mjs.",
+    });
+  }
+  if (args?.updateBaselines === true) {
+    blockers.push({
+      code: BINDING_BLOCKERS.BASELINE_PROMOTION_UNBINDABLE,
+      reason:
+        "--update-baselines makes the child re-measure the worktree mid-run to prove promotion-source stability, and a root-supplied constant provenance tuple cannot stand in for that second measurement without making the stability proof vacuous.",
+      remediation:
+        "Give Tools/visual-regression/capture-and-diff.mjs a promotion-stability proof the root can bind — a re-measured worktree identity carried in a typed result — or promote baselines in their own separately reviewed commit outside this gate.",
+    });
+  }
+  return blockers;
+}
+
+function unbindableBindability(phase, blockers) {
+  return {
+    bindable: false,
+    phase,
+    boundBy: null,
+    reason: blockers.map((blocker) => blocker.reason).join(" "),
+    blockers: blockers.map((blocker) => ({ ...blocker })),
+    remediation: blockers.map((blocker) => blocker.remediation).join(" "),
+    limitations: [DESCENDANT_QUIESCENCE_LIMITATION],
+  };
+}
+
 export function buildStepPlan(args) {
   const servedBase = `http://localhost:${args.port}`;
   const sandcastleBase = `http://localhost:${args.bucketPort}`;
@@ -363,12 +509,17 @@ export function buildStepPlan(args) {
       args: ["--url", servedBase],
       env: {},
       resultReportPath: null,
-      bindability: {
-        bindable: false,
-        phase: "post-spawn",
-        reason:
-          "The child emits no canonical typed current-run receipt with source, served-subject, and freshness binding; raw exit 0/1 is not a verdict.",
-      },
+      bindability: boundBindability(
+        "The root binds this step itself: run id, time window, root-supplied source tuple, preflighted served subject, and the declared exit-code map below. The child is not asked for a typed receipt it cannot emit.",
+      ),
+      binding: bindingFor(
+        { resultReportPath: null },
+        {
+          0: "every variant loaded, rendered a frame, and logged no console error",
+          1: "at least one variant failed its smoke assertions",
+          2: "the smoke test could not see its subject (Playwright absent, unknown argument, or no variant matched)",
+        },
+      ),
     },
   ];
 
@@ -383,37 +534,60 @@ export function buildStepPlan(args) {
           PROBE_SANDCASTLE_BASE: sandcastleBase,
         },
         resultReportPath: `Tools/visual-regression/output/sandcastle2-sweep/report-${renderer}.json`,
-        bindability: {
-          bindable: false,
-          phase: "post-spawn",
-          reason:
-            "The fixed report lacks a canonical typed status, root-supplied source identity, served-subject identity, and current-run freshness binding; raw exit 0/1/2 is not a verdict.",
-        },
+        bindability: boundBindability(
+          "The root binds this step itself: the fixed report's before/after snapshot proves current-run freshness, the root supplies source and served subject, and the declared exit-code map below supplies the verdict. The report's own contents are evidence, not the verdict.",
+        ),
+        binding: bindingFor(
+          {
+            resultReportPath: `Tools/visual-regression/output/sandcastle2-sweep/report-${renderer}.json`,
+          },
+          {
+            0: "every swept demo started on the requested renderer and rendered frames",
+            1: "at least one swept demo failed, timed out, or the renderer was not sweepable",
+            2: "the sweep refused its own results because the origin-rewrite guard fired, so it was not measuring the server it was asked to measure",
+          },
+        ),
       });
     }
   }
 
+  const servedOrigin = resolveServedOrigin(args);
+  const visualBlockers = visualRegressionBlockers(args);
   definitions.push({
     name: "visual-regression",
     file: "Tools/visual-regression/capture-and-diff.mjs",
-    args: args.updateBaselines
-      ? [
-          "--update",
-          "--confirm-baseline-promotion",
-          "--update-rationale",
-          args.reason,
-          "--reviewed-by",
-          `wave-end-gate:${args.wave}`,
-        ]
-      : [],
+    args: [
+      ...(servedOrigin === null ? [] : ["--served-base", servedOrigin]),
+      ...(args.updateBaselines
+        ? [
+            "--update",
+            "--confirm-baseline-promotion",
+            "--update-rationale",
+            args.reason,
+            "--reviewed-by",
+            `wave-end-gate:${args.wave}`,
+          ]
+        : []),
+    ],
     env: {},
     resultReportPath: "Tools/visual-regression/output/report.json",
-    bindability: {
-      bindable: false,
-      phase: "pre-spawn",
-      reason:
-        "The child reads scenes.json on forbidden port 8080, exposes no served-origin CLI or canonical typed current-run receipt, and invokes Git internally.",
-    },
+    bindability:
+      visualBlockers.length > 0
+        ? unbindableBindability("pre-spawn", visualBlockers)
+        : {
+            ...boundBindability(
+              "The root passes --served-base <origin> for the origin scenes.json hard-codes, exports WAVE_END_SOURCE_* so the child prefers root provenance over its own Git shell-out, snapshots output/report.json for current-run freshness, and reads the verdict off the declared exit-code map below.",
+            ),
+            phase: "pre-spawn",
+          },
+    binding: bindingFor(
+      { resultReportPath: "Tools/visual-regression/output/report.json" },
+      {
+        0: "all three visual gates certified every scene and the WebGPU error gate was clean",
+        1: "a visual gate or the WebGPU error gate failed, or baseline provenance was missing, stale, or unreviewed",
+        2: "the runner could not see its subject (Playwright absent, a refused argument, or a denied promotion request)",
+      },
+    ),
   });
 
   return Object.freeze(
@@ -422,7 +596,26 @@ export function buildStepPlan(args) {
         ...definition,
         args: Object.freeze([...definition.args]),
         env: Object.freeze({ ...definition.env }),
-        bindability: Object.freeze({ ...definition.bindability }),
+        bindability: Object.freeze({
+          ...definition.bindability,
+          blockers: Object.freeze(
+            definition.bindability.blockers.map((blocker) =>
+              Object.freeze({ ...blocker }),
+            ),
+          ),
+          limitations: Object.freeze([...definition.bindability.limitations]),
+        }),
+        binding: Object.freeze({
+          ...definition.binding,
+          fields: Object.freeze({ ...definition.binding.fields }),
+          exitCodeStatus: Object.freeze({
+            ...definition.binding.exitCodeStatus,
+          }),
+          exitCodeMeaning: Object.freeze({
+            ...definition.binding.exitCodeMeaning,
+          }),
+          limitations: Object.freeze([...definition.binding.limitations]),
+        }),
         command: formatNodeCommand(definition.file, definition.args),
       }),
     ),
@@ -470,11 +663,13 @@ export function buildReceipt({
       command: step.command,
       resultReportPath: step.resultReportPath,
       bindability: { ...step.bindability },
+      binding: step.binding ?? null,
     })),
     steps: steps.map((step) => ({
       name: step.name,
       command: step.command,
       bindability: { ...step.bindability },
+      binding: step.binding ?? null,
       raw: {
         ...step.raw,
         cleanup: { ...step.raw.cleanup },
@@ -733,19 +928,57 @@ export async function statStepPlanPaths(
   return null;
 }
 
-export function decidePreSpawnBindability(plan) {
-  const blocked = plan.find(
-    (step) =>
+/**
+ * Every blocker on every pre-spawn-unbindable step, flattened. Naming only the
+ * first blocker turns a fail-closed gate into a dead one: the next engineer
+ * fixes what the message named, re-runs, and is refused again for a reason the
+ * gate knew about all along.
+ *
+ * @param {Array<object>} plan The canonical step plan.
+ * @returns {Array<object>} One record per blocker, tagged with its step.
+ */
+export function collectPreSpawnBlockers(plan) {
+  const records = [];
+  for (const step of plan) {
+    if (
       step?.bindability?.phase === "pre-spawn" &&
-      step.bindability.bindable !== true,
-  );
-  if (!blocked) {
+      step.bindability.bindable !== true
+    ) {
+      const blockers =
+        Array.isArray(step.bindability.blockers) &&
+        step.bindability.blockers.length > 0
+          ? step.bindability.blockers
+          : [
+              {
+                code: "UNSPECIFIED",
+                reason: step.bindability.reason,
+                remediation: step.bindability.remediation ?? "unspecified",
+              },
+            ];
+      for (const blocker of blockers) {
+        records.push({ step: step.name, ...blocker });
+      }
+    }
+  }
+  return records;
+}
+
+export function decidePreSpawnBindability(plan) {
+  const blockers = collectPreSpawnBlockers(plan);
+  if (blockers.length === 0) {
     return null;
   }
 
+  const steps = [...new Set(blockers.map((blocker) => blocker.step))];
+  const detail = blockers
+    .map(
+      (blocker) =>
+        `${blocker.step} [${blocker.code}]: ${blocker.reason} REMEDIATION: ${blocker.remediation}`,
+    )
+    .join(" | ");
   return makeRefusal(
     REFUSAL_REASONS.CAPTURE_AND_DIFF_UNBINDABLE,
-    `No child spawned because the whole plan is blocked by ${blocked.name}: ${blocked.bindability.reason}`,
+    `No child spawned because ${blockers.length} pre-spawn blocker(s) remain across ${steps.length} step(s) (${steps.join(", ")}): ${detail}`,
   );
 }
 
@@ -932,9 +1165,33 @@ export function buildServedSubject(args, preflightRecords) {
   };
 }
 
+/**
+ * Whether a resolved object is an ATTEMPTED wave-end typed step contract, as
+ * opposed to a child's own fixed report. `stepName` is the discriminator: it is
+ * unique to this gate's contract and appears in none of the canonical children's
+ * reports. An attempted contract is validated strictly and fails closed; a plain
+ * child report falls through to the root binding, which uses it as freshness
+ * evidence rather than as a verdict.
+ *
+ * @param {unknown} value A resolved child result.
+ * @returns {boolean} True when the value claims to be a typed step contract.
+ */
+export function isAttemptedChildStepContract(value) {
+  try {
+    return (
+      value !== null &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      Object.hasOwn(value, "stepName")
+    );
+  } catch {
+    return false;
+  }
+}
+
 function normalizeTypedStepResultUnsafe(
   result,
-  { step, raw, source, servedSubject },
+  { step, raw, source, servedSubject, rootBound = false },
 ) {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     return normalizedProblem(
@@ -1005,17 +1262,38 @@ function normalizeTypedStepResultUnsafe(
     );
   }
 
-  if (result.quiescence?.descendantProcessTreeProven !== true) {
+  // Quiescence is a ROOT observation, not a child claim. The root cannot verify
+  // a child's assertion that its descendant process tree went quiet, so the
+  // claim alone certifies nothing; what the root can insist on is that it saw
+  // the direct child close, and that whatever was not proven is NAMED. A run
+  // that neither proves quiescence nor records the limitation is refused — the
+  // downgrade must never be silent.
+  const quiescence = result.quiescence;
+  const namesLimitation =
+    typeof quiescence?.limitation === "string" &&
+    quiescence.limitation.length > 0;
+  if (
+    quiescence === null ||
+    typeof quiescence !== "object" ||
+    Array.isArray(quiescence) ||
+    raw.quiescence?.directChildCloseObserved !== true ||
+    (quiescence.descendantProcessTreeProven !== true && !namesLimitation)
+  ) {
     return normalizedProblem(
       makeRefusal(
         REFUSAL_REASONS.DESCENDANT_QUIESCENCE_UNPROVEN,
-        `${step.name} did not prove descendant process-tree quiescence.`,
+        `${step.name} neither proved descendant process-tree quiescence nor named the limitation, or the root never observed the direct child close.`,
       ),
       result,
     );
   }
 
-  if (raw.exitCode !== result.exitCode) {
+  // A child-emitted verdict must match the exit code the root actually saw. A
+  // ROOT-BOUND result is the translation itself — the step's declared map turns
+  // raw exit 2 into STRUCTURAL (exit 3) on purpose — so the equality is asserted
+  // only for results the child offered. `rootBound` comes from the call site,
+  // never off the result, so a child cannot set a field to skip this check.
+  if (!rootBound && raw.exitCode !== result.exitCode) {
     return normalizedProblem(
       makeRefusal(
         REFUSAL_REASONS.CHILD_CONTRACT_MALFORMED,
@@ -1035,6 +1313,87 @@ function normalizeTypedStepResultUnsafe(
         ? null
         : `${step.name} reported ${result.status} [${result.reason}].`),
     typedResult: result,
+  };
+}
+
+/**
+ * The canonical typed result the ROOT derives for a step whose child emits
+ * none. Every field names its source: the run id and time window are the root's
+ * own, the source tuple was handed to the root on the command line, the served
+ * subject was proven by the root's preflight, the freshness evidence is the
+ * root's own before/after snapshot of the child's fixed report, and the status
+ * comes from the step's DECLARED exit-code map rather than from a raw exit read
+ * as though it were a verdict. An exit code the map does not declare is refused.
+ *
+ * @param {object} step The planned step, carrying its `binding` declaration.
+ * @param {object} context Root observations for this run.
+ * @returns {{typedResult?: object, problem?: object}} The derived result.
+ */
+export function deriveRootBoundTypedResult(
+  step,
+  { raw, source, servedSubject, reportSnapshot = null },
+) {
+  const binding = step?.binding;
+  if (!isRootBoundStep(step)) {
+    return {
+      problem: makeRefusal(
+        REFUSAL_REASONS.CHILD_CONTRACT_ABSENT,
+        `${step?.name} declares no root binding and produced no typed current-run result.`,
+      ),
+    };
+  }
+
+  // A step that DECLARES a fixed report must be bound to a current-run digest of
+  // it. Without one the verdict would rest on the exit code alone, which is the
+  // very thing the declared map is meant to be an improvement over.
+  if (step.resultReportPath && typeof reportSnapshot?.sha256 !== "string") {
+    return {
+      problem: makeRefusal(
+        REFUSAL_REASONS.CHILD_CONTRACT_ABSENT,
+        `${step.name} declares ${step.resultReportPath} but the root holds no current-run digest of it.`,
+      ),
+    };
+  }
+
+  const status = binding.exitCodeStatus?.[String(raw.exitCode)];
+  if (!S5_FINAL_STATUSES.includes(status)) {
+    return {
+      problem: makeRefusal(
+        REFUSAL_REASONS.EXIT_CODE_UNDECLARED,
+        `${step.name} exited ${String(raw.exitCode)}, which its declared exit-code map does not cover.`,
+      ),
+    };
+  }
+
+  const meaning =
+    binding.exitCodeMeaning?.[String(raw.exitCode)] ?? "undeclared meaning";
+  return {
+    typedResult: {
+      schemaVersion: STEP_RESULT_SCHEMA_VERSION,
+      stepName: step.name,
+      runId: raw.runId,
+      startedAt: raw.startedAt,
+      finishedAt: raw.finishedAt,
+      source,
+      servedSubject,
+      status,
+      exitCode: exitCodeForS5Status(status),
+      reason: status === "PASS" ? null : `ROOT_BOUND_EXIT_${raw.exitCode}`,
+      message: `${step.name} exited ${raw.exitCode}: ${meaning}. Bound by ${ROOT_BINDING}.`,
+      boundBy: ROOT_BINDING,
+      binding: {
+        ...binding.fields,
+        declaredExitCodeStatus: { ...binding.exitCodeStatus },
+        observedExitCode: raw.exitCode,
+      },
+      evidence: {
+        resultReportPath: step.resultReportPath,
+        resultReportSha256: reportSnapshot?.sha256 ?? null,
+        resultReportMtimeMs: reportSnapshot?.mtimeMs ?? null,
+      },
+      quiescence: { ...raw.quiescence },
+      limitations: [...(binding.limitations ?? [])],
+    },
   };
 }
 
@@ -1097,6 +1456,13 @@ export async function resolveCurrentStepResult(
   snapshotDependencies = {},
 ) {
   if (!step.resultReportPath) {
+    // A root-bound step with no fixed report has nothing to read: its freshness
+    // evidence is the root's own direct-child close, so the resolver yields no
+    // result and the caller derives one. A step that is NOT root-bound still
+    // owes a typed receipt and is refused for its absence.
+    if (isRootBoundStep(step)) {
+      return { result: null, snapshot: priorSnapshot };
+    }
     return {
       problem: makeRefusal(
         REFUSAL_REASONS.CHILD_CONTRACT_ABSENT,
@@ -1173,6 +1539,7 @@ function nonExecutionStepReceipt(step, problem) {
     name: step.name,
     command: step.command,
     bindability: { ...step.bindability },
+    binding: step.binding ?? null,
     raw: {
       runId: null,
       spawned: false,
@@ -1236,6 +1603,7 @@ export async function executeStep(
         name: step.name,
         command: step.command,
         bindability: { ...step.bindability },
+        binding: step.binding ?? null,
         raw,
         normalized: normalizedProblem(rawProblem),
       },
@@ -1269,19 +1637,44 @@ export async function executeStep(
     Object.hasOwn(resolution, "result")
       ? resolution.result
       : resolution;
-  const normalized = resolution?.problem
-    ? normalizedProblem(resolution.problem)
-    : normalizeTypedStepResult(resolvedResult, {
-        step,
-        raw,
-        source,
-        servedSubject,
-      });
+
+  let normalized;
+  if (resolution?.problem) {
+    normalized = normalizedProblem(resolution.problem);
+  } else if (
+    !isAttemptedChildStepContract(resolvedResult) &&
+    isRootBoundStep(step)
+  ) {
+    const derived = deriveRootBoundTypedResult(step, {
+      raw,
+      source,
+      servedSubject,
+      reportSnapshot: resolution?.snapshot ?? null,
+    });
+    normalized = derived.problem
+      ? normalizedProblem(derived.problem)
+      : normalizeTypedStepResult(derived.typedResult, {
+          step,
+          raw,
+          source,
+          servedSubject,
+          rootBound: true,
+        });
+  } else {
+    normalized = normalizeTypedStepResult(resolvedResult, {
+      step,
+      raw,
+      source,
+      servedSubject,
+    });
+  }
+
   return {
     receipt: {
       name: step.name,
       command: step.command,
       bindability: { ...step.bindability },
+      binding: step.binding ?? null,
       raw,
       normalized,
     },
@@ -1395,13 +1788,46 @@ export function buildMarkdownSummary(receipt, { dryRun = false } = {}) {
     "",
     "## Plan",
     "",
-    "| Step | Command | Bindable now | Phase | Reason |",
-    "| --- | --- | --- | --- | --- |",
+    "| Step | Command | Bindable now | Phase | Bound by | Declared exit map | Reason |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
   );
   for (const step of receipt.plan) {
+    const exitMap = step.binding?.exitCodeStatus
+      ? Object.entries(step.binding.exitCodeStatus)
+          .map(([code, status]) => `${code}=${status}`)
+          .join(", ")
+      : "none";
     lines.push(
-      `| ${markdownCell(step.name)} | \`${markdownCell(step.command)}\` | ${step.bindability.bindable ? "yes" : "no"} | ${markdownCell(step.bindability.phase)} | ${markdownCell(step.bindability.reason)} |`,
+      `| ${markdownCell(step.name)} | \`${markdownCell(step.command)}\` | ${step.bindability.bindable ? "yes" : "no"} | ${markdownCell(step.bindability.phase)} | ${markdownCell(step.bindability.boundBy ?? "nothing")} | ${markdownCell(exitMap)} | ${markdownCell(step.bindability.reason)} |`,
     );
+  }
+
+  const blockers = collectPreSpawnBlockers(receipt.plan);
+  if (blockers.length > 0) {
+    lines.push(
+      "",
+      "## Pre-spawn blockers",
+      "",
+      "| Step | Code | Reason | Remediation |",
+      "| --- | --- | --- | --- |",
+    );
+    for (const blocker of blockers) {
+      lines.push(
+        `| ${markdownCell(blocker.step)} | ${markdownCell(blocker.code)} | ${markdownCell(blocker.reason)} | ${markdownCell(blocker.remediation)} |`,
+      );
+    }
+  }
+
+  const limitations = [
+    ...new Set(
+      receipt.plan.flatMap((step) => step.bindability.limitations ?? []),
+    ),
+  ];
+  if (limitations.length > 0) {
+    lines.push("", "## Limitations this receipt does NOT prove", "");
+    for (const limitation of limitations) {
+      lines.push(`- ${limitation}`);
+    }
   }
 
   lines.push("", "## Steps", "");
@@ -1409,12 +1835,12 @@ export function buildMarkdownSummary(receipt, { dryRun = false } = {}) {
     lines.push("No child steps were executed.");
   } else {
     lines.push(
-      "| Step | Spawned | Raw exit | Signal | Error | Timeout | Cleanup closed | Descendant quiescence | Normalized |",
-      "| --- | --- | ---: | --- | --- | --- | --- | --- | --- |",
+      "| Step | Spawned | Raw exit | Signal | Error | Timeout | Cleanup closed | Descendant quiescence | Verdict bound by | Normalized |",
+      "| --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- |",
     );
     for (const step of receipt.steps) {
       lines.push(
-        `| ${markdownCell(step.name)} | ${step.raw.spawned ? "yes" : "no"} | ${markdownCell(step.raw.exitCode)} | ${markdownCell(step.raw.signal)} | ${markdownCell(step.raw.error)} | ${step.raw.timedOut ? "yes" : "no"} | ${step.raw.cleanup.directChildCloseObserved ? "yes" : "no"} | ${step.raw.quiescence.descendantProcessTreeProven ? "proven" : "unproven"} | ${markdownCell(step.normalized.status)} (${markdownCell(step.normalized.reason ?? "typed")}) |`,
+        `| ${markdownCell(step.name)} | ${step.raw.spawned ? "yes" : "no"} | ${markdownCell(step.raw.exitCode)} | ${markdownCell(step.raw.signal)} | ${markdownCell(step.raw.error)} | ${step.raw.timedOut ? "yes" : "no"} | ${step.raw.cleanup.directChildCloseObserved ? "yes" : "no"} | ${step.raw.quiescence.descendantProcessTreeProven ? "proven" : `unproven (${step.raw.quiescence.limitation})`} | ${markdownCell(step.normalized.typedResult?.boundBy ?? "child")} | ${markdownCell(step.normalized.status)} (${markdownCell(step.normalized.reason ?? "typed")}) |`,
       );
     }
   }
@@ -1644,6 +2070,8 @@ function isExecutionResultContract(execution, plan) {
         step.command !== planned.command ||
         JSON.stringify(step.bindability) !==
           JSON.stringify(planned.bindability) ||
+        JSON.stringify(step.binding ?? null) !==
+          JSON.stringify(planned.binding ?? null) ||
         !isRawStepReceiptContract(step.raw) ||
         !isNormalizedStepReceiptContract(step.normalized)
       ) {

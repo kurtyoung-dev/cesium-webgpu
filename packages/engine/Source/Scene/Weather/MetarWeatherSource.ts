@@ -24,10 +24,19 @@
  * map by default. An SKC, CLR, NSC or NCD station still produces an observed
  * coverage of exactly `0`, because an observed clear sky is data.
  *
- * The live fetch, from the aviationweather.gov text feed, is optional and
- * network-gated: a `MetarWeatherSource` can be constructed either from a
- * provided observation array, which is the offline path, or from a fetch URL
- * serving raw METAR text, one report per line.
+ * The live fetch is optional and network-gated: a `MetarWeatherSource` can be
+ * constructed either from a provided observation array, which is the offline
+ * path, or from a fetch URL. That URL must serve JSON shaped
+ * `{ stations: MetarStation[] }` — `_loadStations` sends
+ * `Accept: application/json, text/plain`, calls `res.json()` and reads
+ * `data.stations`. Each entry carries its own `lon`/`lat` plus either its raw
+ * METAR report text or pre-parsed channel values.
+ *
+ * Consuming a bare raw-text feed, one report per line, is a deferred
+ * follow-up, not a supported path: text feeds identify a station by ICAO id
+ * only, so they need a station-coordinate join this module does not carry.
+ * (corrected 2026-09-12, C13-N34 — this paragraph described that unbuilt
+ * raw-text path as the live one.)
  *
  * @module Scene/Weather/MetarWeatherSource
  */
@@ -70,7 +79,11 @@ export interface MetarStation {
 export interface MetarWeatherSourceOptions {
   /** Static obs (the offline path; takes precedence over `url`). */
   stations?: MetarStation[];
-  /** URL serving raw METAR text, one report per line (the live, network path). */
+  /**
+   * URL serving JSON shaped `{ stations: MetarStation[] }` (the live, network
+   * path). Corrected 2026-09-12, C13-N34: this said "raw METAR text, one report
+   * per line", which `_loadStations` has never parsed.
+   */
   url?: string;
   /** Optional same-origin proxy prefix for CORS on the live path. */
   proxy?: string;

@@ -5,19 +5,25 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  BINDING_BLOCKERS,
   CHILD_HARD_STOP_GRACE_MS,
   CHILD_TERMINATE_GRACE_MS,
   CHILD_WATCHDOG_MS,
   ERROR_REASONS,
   EXIT_CODES,
   REFUSAL_REASONS,
+  ROOT_BINDING,
   STEP_RESULT_SCHEMA_VERSION,
+  buildMarkdownSummary,
   buildReceipt,
   buildServedSubject,
   buildStepPlan,
   classifyRawChildProblem,
+  collectPreSpawnBlockers,
   decideArgumentRefusal,
+  decidePreSpawnBindability,
   decidePreflightRefusal,
+  deriveRootBoundTypedResult,
   executeStep,
   executeStepPlan,
   foldStatuses,
@@ -26,6 +32,7 @@ import {
   normalizeTypedStepResult,
   parseArgs,
   resolveCurrentStepResult,
+  resolveServedOrigin,
   runChildProcess,
   sourceFromArgs,
   statStepPlanPaths,
@@ -51,6 +58,21 @@ function validArgv(extra = []) {
     SOURCE_IDENTITY,
     ...extra,
   ];
+}
+
+// The one canonical invocation that is still pre-spawn-unbindable. Baseline
+// promotion makes the child re-measure the worktree mid-run to prove source
+// stability, which a constant root-supplied provenance tuple cannot stand in
+// for — so the barrier still has a live path through main() and the tests that
+// pin it use this argv rather than the ordinary one.
+const BASELINE_REASON = "Reviewed renderer correction";
+function unbindableArgv(extra = []) {
+  return validArgv([
+    "--update-baselines",
+    "--reason",
+    BASELINE_REASON,
+    ...extra,
+  ]);
 }
 
 function makePreflightRecords(args) {
@@ -118,6 +140,7 @@ function makeErrorStepReceipt(step, raw = makeRaw({ error: "spawn fault" })) {
     name: step.name,
     command: step.command,
     bindability: step.bindability,
+    binding: step.binding,
     raw,
     normalized: {
       status: "ERROR",
@@ -161,6 +184,27 @@ function makeTypedResult({
   };
 }
 
+// A root-bound step that declares a fixed report must still be bound to a
+// current-run digest of it — the verdict may not rest on the exit code alone.
+// This is what a child that rewrote its report, but emitted no typed receipt,
+// looks like to the root.
+function freshResolution({ step, raw, priorSnapshot }) {
+  if (!step.resultReportPath) {
+    return { result: null, snapshot: priorSnapshot };
+  }
+  return {
+    result: null,
+    snapshot: {
+      exists: true,
+      bytes: null,
+      mtimeMs: raw.startedEpochMs,
+      sha256: createHash("sha256")
+        .update(`${step.name}:${raw.runId}`)
+        .digest("hex"),
+    },
+  };
+}
+
 function makeMainDependencies(args, overrides = {}) {
   const receipts = [];
   const dependencies = {
@@ -187,6 +231,48 @@ function makeMainDependencies(args, overrides = {}) {
     ...overrides,
   };
   return { dependencies, receipts };
+}
+
+async function importProductionMutant(target, replacement, label) {
+  const sourceText = await readFile(
+    new URL("./wave-end-gate.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.equal(
+    sourceText.split(target).length - 1,
+    1,
+    `${label} mutation must have exactly one target`,
+  );
+  const verdictUrl = new URL(
+    "./visual-regression/lib/verdict-exit-gate.mjs",
+    import.meta.url,
+  ).href;
+  const mutant = sourceText
+    .replace(target, replacement)
+    .replace(/^#![^\r\n]*(?:\r?\n)?/, "")
+    .replace(
+      'from "./visual-regression/lib/verdict-exit-gate.mjs";',
+      `from ${JSON.stringify(verdictUrl)};`,
+    );
+  return import(
+    `data:text/javascript;base64,${Buffer.from(mutant).toString("base64")}`
+  );
+}
+
+let rootBindingMutantPromise;
+
+// Makes the root-binding path UNREACHABLE without deleting it: every call site
+// routes through isRootBoundStep, so `false &&` in its body leaves the
+// derivation, the declared maps and the plan text exactly where they are and
+// simply stops them from being reached. A spec that survives this is asserting
+// text, not behaviour.
+function importRootBindingMutant() {
+  rootBindingMutantPromise ??= importProductionMutant(
+    "return step?.binding?.boundBy === ROOT_BINDING;",
+    "return false && step?.binding?.boundBy === ROOT_BINDING;",
+    "root-binding predicate",
+  );
+  return rootBindingMutantPromise;
 }
 
 let barrierMutantPromise;
@@ -246,7 +332,7 @@ test("step plan preserves the required order and commands", () => {
       "node Tools/visual-regression/sandcastle-smoke.mjs --sandcastle2 --renderer=webgpu",
       "node Tools/visual-regression/sandcastle-smoke.mjs --sandcastle2 --renderer=webgl",
       "node Tools/visual-regression/sandcastle-smoke.mjs --sandcastle2 --renderer=webgpu",
-      "node Tools/visual-regression/capture-and-diff.mjs",
+      "node Tools/visual-regression/capture-and-diff.mjs --served-base http://localhost:8094",
     ],
   );
   assert.deepEqual(plan[1].env, {
@@ -259,12 +345,110 @@ test("step plan preserves the required order and commands", () => {
   );
   assert.equal(new Set(plan.map((step) => step.name)).size, plan.length);
   assert.equal(plan.at(-1).bindability.phase, "pre-spawn");
-  assert.match(plan.at(-1).bindability.reason, /forbidden port 8080/);
   assert.equal(Object.isFrozen(plan), true);
   assert.equal(
     plan.every((step) => Object.isFrozen(step)),
     true,
   );
+});
+
+// REPLACES the former `assert.match(plan.at(-1).bindability.reason,
+// /forbidden port 8080/)`, which pinned a constant refusal. Bindability is now a
+// function of the arguments, so the stronger claim is that EVERY step declares a
+// complete, auditable binding when it is bindable, and that the one invocation
+// that is still blocked says so with a named blocker AND a remediation.
+test("every planned step declares the binding its verdict is derived from", () => {
+  const plan = buildStepPlan(parseArgs(validArgv()));
+
+  for (const step of plan) {
+    assert.equal(step.bindability.bindable, true, step.name);
+    assert.equal(step.bindability.boundBy, ROOT_BINDING, step.name);
+    assert.deepEqual(step.bindability.blockers, [], step.name);
+    assert.equal(step.binding.boundBy, ROOT_BINDING, step.name);
+    // The declared map is the answer to "raw exit 0/1 is not a verdict": the
+    // mapping is data on the step, readable in the plan and in the receipt.
+    assert.deepEqual(step.binding.exitCodeStatus, {
+      0: "PASS",
+      1: "FAIL",
+      2: "STRUCTURAL",
+    });
+    for (const code of ["0", "1", "2"]) {
+      assert.equal(typeof step.binding.exitCodeMeaning[code], "string");
+      assert.ok(step.binding.exitCodeMeaning[code].length > 0);
+    }
+    // Every binding field names where the root got it.
+    for (const field of Object.values(step.binding.fields)) {
+      assert.match(
+        field,
+        /^root:/,
+        `${step.name} field must name a root source`,
+      );
+    }
+    // What was NOT proven is named, on every step, always.
+    assert.deepEqual(step.binding.limitations, [
+      "Direct-child close does not prove descendant process-tree quiescence.",
+    ]);
+  }
+
+  assert.equal(collectPreSpawnBlockers(plan).length, 0);
+  assert.equal(decidePreSpawnBindability(plan), null);
+
+  const promotionPlan = buildStepPlan(parseArgs(unbindableArgv()));
+  const promotionStep = promotionPlan.at(-1);
+  assert.equal(promotionStep.bindability.bindable, false);
+  assert.equal(promotionStep.bindability.phase, "pre-spawn");
+  assert.equal(promotionStep.bindability.boundBy, null);
+  assert.deepEqual(
+    promotionStep.bindability.blockers.map((blocker) => blocker.code),
+    [BINDING_BLOCKERS.BASELINE_PROMOTION_UNBINDABLE],
+  );
+  assert.match(promotionStep.bindability.remediation, /capture-and-diff\.mjs/);
+});
+
+test("a pre-spawn refusal names every blocker and what each child must gain", () => {
+  // Two independent blockers on one step: an unusable served origin and the
+  // promotion re-measurement. Naming only the first is what turns a fail-closed
+  // gate into a dead one.
+  const args = {
+    ...parseArgs(unbindableArgv()),
+    port: 8080,
+  };
+  const plan = buildStepPlan(args);
+  const blockers = collectPreSpawnBlockers(plan);
+
+  assert.deepEqual(
+    blockers.map((blocker) => blocker.code),
+    [
+      BINDING_BLOCKERS.SERVED_ORIGIN_UNAVAILABLE,
+      BINDING_BLOCKERS.BASELINE_PROMOTION_UNBINDABLE,
+    ],
+  );
+  assert.equal(
+    blockers.every((blocker) => blocker.step === "visual-regression"),
+    true,
+  );
+  for (const blocker of blockers) {
+    assert.ok(blocker.remediation.length > 0);
+  }
+
+  // With no served origin to hand down, the gate does not pretend otherwise:
+  // the child is invoked without --served-base.
+  assert.equal(plan.at(-1).args.includes("--served-base"), false);
+
+  const refusal = decidePreSpawnBindability(plan);
+  assert.equal(refusal.status, "STRUCTURAL");
+  assert.equal(refusal.name, REFUSAL_REASONS.CAPTURE_AND_DIFF_UNBINDABLE);
+  for (const blocker of blockers) {
+    assert.ok(
+      refusal.message.includes(blocker.code),
+      `refusal must name ${blocker.code}`,
+    );
+    assert.ok(
+      refusal.message.includes(blocker.remediation),
+      `refusal must carry the remediation for ${blocker.code}`,
+    );
+  }
+  assert.match(refusal.message, /2 pre-spawn blocker\(s\)/);
 });
 
 test("exact-plan validation fails closed for incomplete, duplicate, altered, and unreadable plans", () => {
@@ -352,7 +536,8 @@ test("all unique planned files are statted before execution", async () => {
 });
 
 test("main discards a mutable validated plan before stat and barrier receipt", async () => {
-  const args = parseArgs(validArgv());
+  const argv = unbindableArgv();
+  const args = parseArgs(argv);
   const canonicalNames = buildStepPlan(args).map((step) => step.name);
   const injected = buildStepPlan(args).map((step) => ({
     ...step,
@@ -377,7 +562,7 @@ test("main discards a mutable validated plan before stat and barrier receipt", a
     },
   });
 
-  const exitCode = await main(validArgv(), dependencies);
+  const exitCode = await main(argv, dependencies);
   assert.equal(exitCode, EXIT_CODES.STRUCTURAL);
   assert.deepEqual(events, ["stat"]);
   assert.equal(executeCalls, 0);
@@ -394,8 +579,13 @@ test("main discards a mutable validated plan before stat and barrier receipt", a
   assert.equal(receipts[0].steps[0].raw.spawned, false);
 });
 
-test("capture-and-diff bindability blocks the whole canonical plan before spawn", async () => {
-  const args = parseArgs(validArgv());
+// INVERTED from "the whole canonical plan is blocked": the ordinary invocation
+// is no longer blocked, so this now pins the barrier on the invocation that IS
+// still unbindable — baseline promotion — and additionally requires the banked
+// receipt to carry the blocker's remediation, which the old assertion did not.
+test("a pre-spawn blocker still blocks the whole plan before spawn", async () => {
+  const argv = unbindableArgv();
+  const args = parseArgs(argv);
   const canonicalPlan = buildStepPlan(args);
   let spawnCalls = 0;
   const { dependencies, receipts } = makeMainDependencies(args, {
@@ -410,13 +600,26 @@ test("capture-and-diff bindability blocks the whole canonical plan before spawn"
     },
   });
 
-  const exitCode = await main(validArgv(), dependencies);
+  const exitCode = await main(argv, dependencies);
   assert.equal(exitCode, EXIT_CODES.STRUCTURAL);
   assert.equal(spawnCalls, 0);
   assert.equal(receipts.length, 1);
   assert.equal(
     receipts[0].problem.reason,
     REFUSAL_REASONS.CAPTURE_AND_DIFF_UNBINDABLE,
+  );
+  assert.match(
+    receipts[0].problem.message,
+    /BASELINE_PROMOTION_UNBINDABLE.*REMEDIATION: /s,
+  );
+  // The banked summary is what a reader actually sees, so the blocker and its
+  // remediation have to survive into it, not just into the JSON.
+  const summary = buildMarkdownSummary(receipts[0]);
+  assert.match(summary, /## Pre-spawn blockers/);
+  assert.match(summary, /BASELINE_PROMOTION_UNBINDABLE/);
+  assert.match(
+    summary,
+    /## Limitations this receipt does NOT prove[\s\S]*descendant process-tree quiescence/,
   );
   assert.equal(receipts[0].steps.length, canonicalPlan.length);
   assert.deepEqual(
@@ -442,7 +645,8 @@ test("capture-and-diff bindability blocks the whole canonical plan before spawn"
 });
 
 test("main-level bindability makes an injected all-PASS executor inert", async () => {
-  const args = parseArgs(validArgv());
+  const argv = unbindableArgv();
+  const args = parseArgs(argv);
   const canonicalPlan = buildStepPlan(args);
   let executorCalls = 0;
   let childCalls = 0;
@@ -487,7 +691,7 @@ test("main-level bindability makes an injected all-PASS executor inert", async (
     },
   });
 
-  const exitCode = await main(validArgv(), dependencies);
+  const exitCode = await main(argv, dependencies);
   assert.equal(exitCode, EXIT_CODES.STRUCTURAL);
   assert.equal(executorCalls, 0);
   assert.equal(childCalls, 0);
@@ -591,7 +795,37 @@ test("baseline-update plan forwards the reviewed rationale", () => {
 
   assert.equal(
     visualStep.command,
-    'node Tools/visual-regression/capture-and-diff.mjs --update --confirm-baseline-promotion --update-rationale "WebGPU lighting correction" --reviewed-by wave-end-gate:wave-1',
+    'node Tools/visual-regression/capture-and-diff.mjs --served-base http://localhost:8094 --update --confirm-baseline-promotion --update-rationale "WebGPU lighting correction" --reviewed-by wave-end-gate:wave-1',
+  );
+});
+
+test("the served origin the root hands down is the preflighted one, or none", () => {
+  assert.equal(
+    resolveServedOrigin(parseArgs(validArgv())),
+    "http://localhost:8094",
+  );
+  // A forbidden or unusable port never becomes a served origin, so a plan built
+  // straight from hostile arguments cannot claim bindability behind
+  // decideArgumentRefusal's back.
+  for (const port of [8080, 8081, 0, 70000, Number.NaN]) {
+    assert.equal(
+      resolveServedOrigin({ ...parseArgs(validArgv()), port }),
+      null,
+      `port ${port}`,
+    );
+  }
+
+  // The origin handed to the child is the same origin the served-build
+  // preflight proves disk md5 === served md5 for.
+  const args = parseArgs(validArgv());
+  const servedSubject = buildServedSubject(args, makePreflightRecords(args));
+  const plan = buildStepPlan(args);
+  const servedBaseIndex = plan.at(-1).args.indexOf("--served-base");
+  assert.notEqual(servedBaseIndex, -1);
+  assert.equal(plan.at(-1).args[servedBaseIndex + 1], servedSubject.base);
+  assert.equal(
+    servedSubject.artifacts[0].origin,
+    plan.at(-1).args[servedBaseIndex + 1],
   );
 });
 
@@ -732,14 +966,18 @@ test("receipt shape contains every required field", () => {
   assert.equal(receipt.exitCode, EXIT_CODES.PASS);
 });
 
-test("raw canonical exits without a typed current-run result are STRUCTURAL", async () => {
+// INVERTED from "raw canonical exits without a typed current-run result are
+// STRUCTURAL". The root now derives the result, so the stronger claim is that
+// the verdict follows the step's DECLARED map exactly — and that an exit the map
+// does not declare is still refused rather than guessed.
+test("a child that emits no typed result gets the verdict its declared map assigns", async () => {
   const args = parseArgs(validArgv());
   const source = sourceFromArgs(args);
   const servedSubject = buildServedSubject(args, makePreflightRecords(args));
   const step = buildStepPlan(args)[0];
 
-  for (const exitCode of Object.values(EXIT_CODES)) {
-    const executed = await executeStep(
+  const runStep = async (exitCode) =>
+    executeStep(
       step,
       {
         projectRoot: "X:/isolated",
@@ -752,12 +990,253 @@ test("raw canonical exits without a typed current-run result are STRUCTURAL", as
         resolveStepResult: async () => ({ result: null, snapshot: null }),
       },
     );
-    assert.equal(executed.receipt.normalized.status, "STRUCTURAL");
+
+  for (const [exitCode, status] of [
+    [0, "PASS"],
+    [1, "FAIL"],
+    [2, "STRUCTURAL"],
+  ]) {
+    const executed = await runStep(exitCode);
     assert.equal(
-      executed.receipt.normalized.reason,
-      REFUSAL_REASONS.CHILD_CONTRACT_ABSENT,
+      executed.receipt.normalized.status,
+      status,
+      `exit ${exitCode}`,
+    );
+    assert.equal(executed.receipt.normalized.exitCode, EXIT_CODES[status]);
+    assert.equal(executed.receipt.normalized.typedResult.boundBy, ROOT_BINDING);
+    // The message quotes the declared meaning, so the receipt explains the
+    // verdict rather than just asserting it.
+    assert.ok(
+      executed.receipt.normalized.typedResult.message.includes(
+        step.binding.exitCodeMeaning[String(exitCode)],
+      ),
+    );
+    // The root's own observations, not the child's claims.
+    assert.equal(
+      executed.receipt.normalized.typedResult.runId,
+      makeRaw().runId,
+    );
+    assert.deepEqual(executed.receipt.normalized.typedResult.source, source);
+    assert.deepEqual(
+      executed.receipt.normalized.typedResult.servedSubject,
+      servedSubject,
     );
   }
+
+  // Exit 3 is a real S5 code that classifyRawChildProblem lets through, and no
+  // canonical child declares it. An undeclared code is refused, not mapped.
+  const undeclared = await runStep(3);
+  assert.equal(undeclared.receipt.normalized.status, "STRUCTURAL");
+  assert.equal(
+    undeclared.receipt.normalized.reason,
+    REFUSAL_REASONS.EXIT_CODE_UNDECLARED,
+  );
+});
+
+test("root binding fails closed when a root-owned binding field does not hold", () => {
+  const args = parseArgs(validArgv());
+  const source = sourceFromArgs(args);
+  const servedSubject = buildServedSubject(args, makePreflightRecords(args));
+  const step = buildStepPlan(args)[0];
+  const raw = makeRaw();
+  const derived = deriveRootBoundTypedResult(step, {
+    raw,
+    source,
+    servedSubject,
+  }).typedResult;
+
+  assert.equal(
+    normalizeTypedStepResult(derived, {
+      step,
+      raw,
+      source,
+      servedSubject,
+      rootBound: true,
+    }).status,
+    "PASS",
+  );
+
+  const cases = [
+    [
+      { ...derived, runId: "some-other-run" },
+      REFUSAL_REASONS.CHILD_RECEIPT_STALE,
+    ],
+    [
+      { ...derived, finishedAt: "2026-08-29T10:00:01.001Z" },
+      REFUSAL_REASONS.CHILD_RECEIPT_STALE,
+    ],
+    [
+      { ...derived, startedAt: "2026-08-29T09:59:59.999Z" },
+      REFUSAL_REASONS.CHILD_RECEIPT_STALE,
+    ],
+    [
+      { ...derived, source: { ...source, commit: "c".repeat(40) } },
+      REFUSAL_REASONS.PROVENANCE_MISMATCH,
+    ],
+    [
+      {
+        ...derived,
+        servedSubject: { ...servedSubject, base: "http://localhost:9000" },
+      },
+      REFUSAL_REASONS.SERVED_SUBJECT_MISMATCH,
+    ],
+  ];
+
+  for (const [result, expectedReason] of cases) {
+    const normalized = normalizeTypedStepResult(result, {
+      step,
+      raw,
+      source,
+      servedSubject,
+      rootBound: true,
+    });
+    assert.equal(normalized.status, "STRUCTURAL");
+    assert.equal(normalized.reason, expectedReason);
+  }
+
+  // Quiescence is a root observation. A run where the root never saw the direct
+  // child close cannot be bound, however the result describes itself.
+  const unobserved = makeRaw({
+    quiescence: {
+      directChildCloseObserved: false,
+      descendantProcessTreeProven: false,
+      limitation:
+        "Direct-child close does not prove descendant process-tree quiescence.",
+    },
+  });
+  const unobservedNormalized = normalizeTypedStepResult(
+    deriveRootBoundTypedResult(step, {
+      raw: unobserved,
+      source,
+      servedSubject,
+    }).typedResult,
+    {
+      step,
+      raw: unobserved,
+      source,
+      servedSubject,
+      rootBound: true,
+    },
+  );
+  assert.equal(unobservedNormalized.status, "STRUCTURAL");
+  assert.equal(
+    unobservedNormalized.reason,
+    REFUSAL_REASONS.DESCENDANT_QUIESCENCE_UNPROVEN,
+  );
+
+  // A silent downgrade is refused: unproven AND unnamed is not acceptable.
+  const silent = {
+    ...derived,
+    quiescence: { descendantProcessTreeProven: false },
+  };
+  const silentNormalized = normalizeTypedStepResult(silent, {
+    step,
+    raw,
+    source,
+    servedSubject,
+    rootBound: true,
+  });
+  assert.equal(silentNormalized.status, "STRUCTURAL");
+  assert.equal(
+    silentNormalized.reason,
+    REFUSAL_REASONS.DESCENDANT_QUIESCENCE_UNPROVEN,
+  );
+
+  // A step that DECLARES a fixed report may not certify on its exit code
+  // alone: without a current-run digest of that report there is no evidence the
+  // child produced anything this run.
+  const reportStep = buildStepPlan(args)[1];
+  assert.equal(reportStep.resultReportPath.length > 0, true);
+  const undigested = deriveRootBoundTypedResult(reportStep, {
+    raw,
+    source,
+    servedSubject,
+    reportSnapshot: { exists: false, bytes: null, mtimeMs: null, sha256: null },
+  });
+  assert.equal(undigested.typedResult, undefined);
+  assert.equal(undigested.problem.status, "STRUCTURAL");
+  assert.equal(undigested.problem.name, REFUSAL_REASONS.CHILD_CONTRACT_ABSENT);
+  assert.match(undigested.problem.message, /no current-run digest/);
+
+  // What the derived result DOES carry is the limitation, named.
+  assert.equal(derived.quiescence.descendantProcessTreeProven, false);
+  assert.deepEqual(derived.limitations, [
+    "Direct-child close does not prove descendant process-tree quiescence.",
+  ]);
+});
+
+test("a stale fixed report still fails a root-bound step closed", async () => {
+  const args = parseArgs(validArgv());
+  const source = sourceFromArgs(args);
+  const servedSubject = buildServedSubject(args, makePreflightRecords(args));
+  const step = buildStepPlan(args)[1];
+  const raw = makeRaw();
+  const bytes = Buffer.from('{"sweep":"report"}');
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+
+  // Byte-identical to the snapshot taken before the run: the child exited 0 but
+  // did not rewrite its report, so there is no evidence it ran this time.
+  const stale = await executeStep(
+    step,
+    {
+      projectRoot: "X:/isolated",
+      source,
+      servedSubject,
+      priorSnapshot: {
+        exists: true,
+        bytes,
+        mtimeMs: raw.startedEpochMs - 1,
+        sha256,
+      },
+    },
+    {
+      runChild: async () => raw,
+      resolveStepResult: (context) =>
+        resolveCurrentStepResult(context, {
+          readFile: async () => bytes,
+          statPath: async () => ({ mtimeMs: raw.startedEpochMs }),
+        }),
+    },
+  );
+  assert.equal(stale.receipt.normalized.status, "STRUCTURAL");
+  assert.equal(
+    stale.receipt.normalized.reason,
+    REFUSAL_REASONS.CHILD_RECEIPT_STALE,
+  );
+
+  // A freshly rewritten report binds, and its digest is banked as the evidence.
+  const freshBytes = Buffer.from('{"sweep":"report","run":2}');
+  const fresh = await executeStep(
+    step,
+    {
+      projectRoot: "X:/isolated",
+      source,
+      servedSubject,
+      priorSnapshot: {
+        exists: true,
+        bytes,
+        mtimeMs: raw.startedEpochMs - 1,
+        sha256,
+      },
+    },
+    {
+      runChild: async () => raw,
+      resolveStepResult: (context) =>
+        resolveCurrentStepResult(context, {
+          readFile: async () => freshBytes,
+          statPath: async () => ({ mtimeMs: raw.startedEpochMs }),
+        }),
+    },
+  );
+  assert.equal(fresh.receipt.normalized.status, "PASS");
+  assert.equal(
+    fresh.receipt.normalized.typedResult.evidence.resultReportSha256,
+    createHash("sha256").update(freshBytes).digest("hex"),
+  );
+  assert.equal(
+    fresh.receipt.normalized.typedResult.evidence.resultReportPath,
+    step.resultReportPath,
+  );
 });
 
 test("a separate injected typed-result resolver can normalize all canonical statuses", async () => {
@@ -787,7 +1266,39 @@ test("a separate injected typed-result resolver can normalize all canonical stat
     assert.equal(executed.receipt.normalized.status, status);
     assert.equal(executed.receipt.normalized.exitCode, exitCode);
   }
-  assert.equal(step.bindability.bindable, false);
+  // INVERTED from `assert.equal(step.bindability.bindable, false)`. The
+  // stronger claim: the step is bound, it says by what, and a child that DOES
+  // offer its own typed receipt is still validated strictly rather than being
+  // quietly replaced by the root's derivation.
+  assert.equal(step.bindability.bindable, true);
+  assert.equal(step.bindability.boundBy, ROOT_BINDING);
+  const hostile = await executeStep(
+    step,
+    {
+      projectRoot: "X:/isolated",
+      source,
+      servedSubject,
+      priorSnapshot: null,
+    },
+    {
+      runChild: async () => makeRaw({ exitCode: 1 }),
+      // A child result that claims to be a typed contract but is bound to
+      // another run must fail closed — the root binding is not a way around the
+      // child contract, only a substitute when there is no child contract.
+      resolveStepResult: async (context) => ({
+        result: {
+          ...makeTypedResult({ ...context, status: "PASS" }),
+          runId: "some-other-run",
+        },
+        snapshot: null,
+      }),
+    },
+  );
+  assert.equal(hostile.receipt.normalized.status, "STRUCTURAL");
+  assert.equal(
+    hostile.receipt.normalized.reason,
+    REFUSAL_REASONS.CHILD_RECEIPT_STALE,
+  );
 });
 
 test("runtime child witnesses normalize as ERROR", () => {
@@ -1201,7 +1712,8 @@ test("barrier mutant rejects skipped or incomplete injected execution receipts",
 
 test("executed production-source mutant proves the pre-spawn barrier is load-bearing", async () => {
   const mutatedModule = await importBarrierMutant();
-  const args = parseArgs(validArgv());
+  const argv = unbindableArgv();
+  const args = parseArgs(argv);
 
   const makeAdapterDependencies = (counter) => ({
     snapshotDependencies: {
@@ -1226,7 +1738,7 @@ test("executed production-source mutant proves the pre-spawn barrier is load-bea
   const currentHarness = makeMainDependencies(args, {
     executionDependencies: makeAdapterDependencies(currentCounter),
   });
-  const currentExit = await main(validArgv(), currentHarness.dependencies);
+  const currentExit = await main(argv, currentHarness.dependencies);
   assert.equal(currentExit, EXIT_CODES.STRUCTURAL);
   assert.equal(currentCounter.value, 0);
 
@@ -1234,11 +1746,146 @@ test("executed production-source mutant proves the pre-spawn barrier is load-bea
   const mutantHarness = makeMainDependencies(args, {
     executionDependencies: makeAdapterDependencies(mutantCounter),
   });
-  const mutantExit = await mutatedModule.main(
-    validArgv(),
-    mutantHarness.dependencies,
-  );
+  const mutantExit = await mutatedModule.main(argv, mutantHarness.dependencies);
   assert.equal(mutantExit, EXIT_CODES.PASS);
   assert.equal(mutantCounter.value, buildStepPlan(args).length);
   assert.equal(mutantHarness.receipts[0].verdict, "PASS");
+});
+
+// The row's acceptance, minus the browser: the gate must be able to REACH a
+// non-refused receipt with a named exit code that folds from the step statuses.
+// Children are injected; nothing is spawned and no browser is launched.
+test("a bindable plan banks a non-refused receipt whose exit code folds from its steps", async () => {
+  const args = parseArgs(validArgv());
+
+  const runWithExits = async (exitsByStepName) => {
+    const spawned = [];
+    const { dependencies, receipts } = makeMainDependencies(args, {
+      executionDependencies: {
+        snapshotDependencies: {
+          readFile: async () => {
+            const error = new Error("no prior fixed report");
+            error.code = "ENOENT";
+            throw error;
+          },
+          statPath: async () => ({ mtimeMs: 0 }),
+        },
+        runChild: async (step) => {
+          spawned.push(step.name);
+          return makeRaw({
+            runId: `bound-run-${spawned.length}`,
+            exitCode: exitsByStepName[step.name] ?? 0,
+          });
+        },
+        // Every canonical child emits no typed result and no fresh fixed
+        // report, which is exactly the situation the root binding exists for.
+        resolveStepResult: async (context) => freshResolution(context),
+      },
+    });
+    const exitCode = await main(validArgv(), dependencies);
+    return { exitCode, receipt: receipts[0], spawned };
+  };
+
+  const passing = await runWithExits({});
+  assert.equal(passing.exitCode, EXIT_CODES.PASS);
+  assert.ok(
+    Object.values(EXIT_CODES).includes(passing.exitCode),
+    "the exit code must be one of the named EXIT_CODES",
+  );
+  assert.equal(passing.receipt.problem, null);
+  assert.equal(passing.receipt.verdict, "PASS");
+  assert.deepEqual(
+    passing.spawned,
+    buildStepPlan(args).map((step) => step.name),
+  );
+  assert.equal(
+    passing.receipt.steps.every(
+      (step) =>
+        step.normalized.status === "PASS" &&
+        step.normalized.typedResult.boundBy === ROOT_BINDING,
+    ),
+    true,
+  );
+  // The receipt names what it did not prove rather than omitting it.
+  assert.equal(
+    passing.receipt.steps.every(
+      (step) =>
+        step.raw.quiescence.descendantProcessTreeProven === false &&
+        step.raw.quiescence.limitation ===
+          "Direct-child close does not prove descendant process-tree quiescence." &&
+        step.normalized.typedResult.limitations.includes(
+          "Direct-child close does not prove descendant process-tree quiescence.",
+        ),
+    ),
+    true,
+  );
+  assert.match(
+    buildMarkdownSummary(passing.receipt),
+    /## Limitations this receipt does NOT prove[\s\S]*descendant process-tree quiescence/,
+  );
+
+  // A FAIL-shaped run folds to FAIL, and it is a verdict, not a refusal: the
+  // steps still executed and the receipt still has standing.
+  const failing = await runWithExits({ "sandcastle2-sweep-webgpu-run-1": 1 });
+  assert.equal(failing.exitCode, EXIT_CODES.FAIL);
+  assert.equal(failing.receipt.verdict, "FAIL");
+  assert.equal(failing.receipt.problem, null);
+  assert.equal(
+    failing.receipt.steps.find(
+      (step) => step.name === "sandcastle2-sweep-webgpu-run-1",
+    ).normalized.status,
+    "FAIL",
+  );
+  assert.equal(
+    failing.receipt.steps.find((step) => step.name === "variant-smoke-test")
+      .normalized.status,
+    "PASS",
+  );
+});
+
+test("executed production-source mutant proves the root binding is load-bearing", async () => {
+  const mutated = await importRootBindingMutant();
+  const args = parseArgs(validArgv());
+
+  const makeHarness = (module) => {
+    const spawned = [];
+    const { dependencies, receipts } = makeMainDependencies(args, {
+      executionDependencies: {
+        snapshotDependencies: {
+          readFile: async () => {
+            const error = new Error("no prior fixed report");
+            error.code = "ENOENT";
+            throw error;
+          },
+          statPath: async () => ({ mtimeMs: 0 }),
+        },
+        runChild: async (step) => {
+          spawned.push(step.name);
+          return makeRaw({
+            runId: `mutant-run-${spawned.length}`,
+            exitCode: 0,
+          });
+        },
+        resolveStepResult: async (context) => freshResolution(context),
+      },
+    });
+    return { module, dependencies, receipts, spawned };
+  };
+
+  const live = makeHarness(main);
+  assert.equal(await main(validArgv(), live.dependencies), EXIT_CODES.PASS);
+  assert.equal(live.receipts[0].verdict, "PASS");
+
+  // With the binding unreachable, the identical run cannot certify: the child
+  // offered no typed contract and nothing is left to derive one from.
+  const inert = makeHarness(mutated.main);
+  assert.equal(
+    await mutated.main(validArgv(), inert.dependencies),
+    EXIT_CODES.STRUCTURAL,
+  );
+  assert.equal(
+    inert.receipts[0].problem.reason,
+    REFUSAL_REASONS.CHILD_CONTRACT_ABSENT,
+  );
+  assert.equal(inert.receipts[0].verdict, "STRUCTURAL");
 });

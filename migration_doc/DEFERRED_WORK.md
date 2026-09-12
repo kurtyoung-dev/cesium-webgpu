@@ -1438,11 +1438,25 @@ is answerable from the counters without further instrumentation.
 
 ### C13-N32 — File C13-42..49 in the tracked ID table <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
 
-**Status:** OPEN (Wave W1, Priority P0).
+**Status:** **RESOLVED 2026-09-12 at Batch 1476** (`bab1ff6e21`). Confirmed at the tree by lane L8
+(Eönwë) on the same day: the nine-row programme — `C13-42`, `C13-43`, `C13-44`, `C13-45`, `C13-46`,
+`C13-47`, `C13-48`, `C13-49` and `C13-49-slice` — is in `QUEUE_2026-07-23_CAMPAIGN13.md` §1, add-only,
+each row carrying its `<!-- source: CAMPAIGN_13_V2 §3 WS-* -->` provenance comment. D14 is honoured:
+`C13-47`/`C13-48`/`C13-49` read `superseded by C13 v2 §5 (D14 default)` in the `Pri` cell, and the
+untracked P0 promotions are **not** ratified.
+
+**Evidence (re-measured 2026-09-12; basis corrected in the fix round):** `grep -c "C13-4[4-9]"` on the
+tracked queue returns **10 at Batch 1476** — the state this row was filed against, i.e. *before this row's own text entered the file* — and **12 at this batch's tree**, the two extra hits being this row's §1 preamble paragraph and its own §9 ledger row. The filed row measured **0**. Both figures satisfy the acceptance (`> 0`); the basis is stated because a self-referential count is not reproducible without it. Nine ID-table rows present. D14's "enter at their
+**tracked** priorities" is discharged by the §1 preamble's dated statement that **no tracked priority
+exists** for `C13-47`/`C13-48`/`C13-49` anywhere in `migration_doc`, so there is no value to enter —
+independently confirmed by `git grep "C13-4[789]" -- migration_doc`, whose only hits outside the queue
+and the v2 plan are `MAINTAINER_RULINGS_2026-09-12.md:125`/`:133` (the ruling itself) and an unrelated
+`C13-49-slice` dependency reference. The `Pri`/`Class` `—` cells are explained in place by that
+preamble rather than left bare. **Second pass, same day (seat direction, Durin/L1 measurement):** Batch 1476 filed the eight `C13-4x` rows and `C13-49-slice` but **not** the nine `C13-42*` sub-rows the `C13-42a` lane minted — so ids that are live in the record, `C13-42a` and `C13-42f` among them, had **no** entry in the add-only backbone even though `C13-N01` and `C13-N47` already name them as hard dependencies. **Found present:** `C13-42` only. **Added:** `C13-42a`, `C13-42a-2`, `C13-42a-3`, `C13-42b`, `C13-42d`, `C13-42f` (from `CAMPAIGN_13_V2` §3 WS-A, carrying that file's Effort and Wave) and `C13-42c`, `C13-42e`, `C13-42g` (`DEFERRED_WORK.md`-only, no §3 row, so Effort/Wave read `—` for the orchestrator to stamp). Nine rows, add-only, each sourced in an HTML comment; the §1 preamble carries a dated paragraph explaining the split.
 
 **Delivers:** **Default taken 2026-09-12 (D14):** "file C13-47/48/49, priorities stamped 'superseded by C13 v2 §5'" — the rows enter the add-only table at their **tracked** priorities with the stamp, and the untracked P0 promotions are **not** ratified. The nine-row programme enters `QUEUE_2026-07-23_CAMPAIGN13.md` §1 (add-only)
 
-**Acceptance:** `grep -c "C13-4[4-9]"` on the tracked queue returns > 0; **measured today it returns 0**. The definitions live only in an untracked lane output
+**Acceptance:** `grep -c "C13-4[4-9]"` on the tracked queue returns > 0; ~~**measured today it returns 0**~~ **MET — 10 at Batch 1476, 12 at this batch's tree (the count matches this row's own text; see Evidence), 2026-09-12**. ~~The definitions live only in an untracked lane output~~ *(the definitions are tracked as of Batch 1476)*
 
 **Dependencies:** —
 
@@ -1502,11 +1516,31 @@ is answerable from the counters without further instrumentation.
 
 ### C13-N36 — Disambiguate `CLOUD-LOW-COVERAGE-CUTOFF` <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
 
-**Status:** OPEN (Wave W1, Priority P0).
+**Status:** **RESOLVED 2026-09-12** (lane L8, Eönwë; Wave W1). The visible-march arm is now
+`CLOUD-LOW-COVERAGE-CUTOFF-VISIBLE-MARCH` and the fog cheap-path arm
+`CLOUD-LOW-COVERAGE-CUTOFF-FOG-CHEAP-PATH`, with a dated disambiguation router under this
+file's `## 2026-08-01 — volumetric cloud low-coverage cutoff` heading. The bare id is kept as
+a historical alias and is a **prefix of both** new ids, so every existing reference still
+resolves and **nothing was moved or repointed** (`R-2026-09-12-10`). Mirrored into
+`QUEUE_2026-07-23_CAMPAIGN13.md` §1 and §9.
 
-**Delivers:** Two byte-identical headings (visible-march arm RESOLVED Batch 798 at `DEFERRED_WORK.md:13088`; fog cheap-path arm acceptance-owed at `:13149`) get distinct ids
+**Evidence:** `grep -n "^### CLOUD-LOW-COVERAGE-CUTOFF" migration_doc/DEFERRED_WORK.md` returns
+two headings with distinct ids; `grep -c` on each new id returns a single arm's hits; the first
+bare-alias hit inside the `## 2026-08-01` section is the router, not either arm.
 
-**Acceptance:** A bare grep no longer returns the wrong one first
+**Delivers:** ~~Two byte-identical headings~~ Two headings sharing one id (visible-march arm
+RESOLVED Batch 798; fog cheap-path arm acceptance-owed) get distinct ids
+
+*[premise corrected 2026-09-12 at the tree, Principle 10 — TWO errors in the filed row.*
+*(a) The headings were no longer byte-identical: subtitles had already been added on 2026-08-07,*
+*so what actually collided was the **id**. The row's deliverable is unaffected — a subtitle is*
+*not an id — but a worker briefed on "byte-identical headings" would have found the premise false*
+*and stalled. (b) The cited lines `:13088` / `:13149` were stale by ~1,400 lines; the headings*
+*were at `:14501` and `:14578` when this lane opened them.]*
+
+**Acceptance:** A bare grep no longer returns the wrong one first — **MET**, and met in the only
+way it can be: there is no single "right one", so the first hit inside the section is now a
+**router** naming both arms, and each arm has an id that greps to exactly one item.
 
 **Dependencies:** —
 
@@ -1515,6 +1549,144 @@ is answerable from the counters without further instrumentation.
 **Owner wave:** Wave W1 (WS-H)
 
 **Parity:** n/a (WS-H, docs/tooling row)
+
+### C13-N34-GODRAY-CLOUD-AWARE-SCENE-PROPERTY — declare `scene.godRayCloudAware` publicly <!-- filed 2026-09-12 by C13-N34, lane L8 -->
+
+**Status:** OPEN. Filed 2026-09-12 by `C13-N34` under Principle 9 — the row surfaced this and did
+not route around it.
+
+**Premise (measured 2026-09-12).** `FEATURE_INVENTORY.md:791` advertises **`scene.godRayCloudAware`**
+as a SHIPPED §B feature, "opt-in, default off", adopted 2026-09-10 and pinned by
+`webgpu-cloud-godray-current-mask-order.spec.mjs`. The engine writes it nowhere **by design** — the
+producer is the application. `C13-N34` declared it on the WebGPU-side ambient `CesiumScene`
+(`Renderer/WebGPU/cesium-js-types.d.ts`) so the read at `WebGPUSceneRendererPostFrustumChain.ts:215`
+is typed instead of an `as unknown as {…}` structural cast.
+
+**What is still owed.** An ambient `.d.ts` is an internal typing, not a public API declaration. A
+user-facing opt-in that the inventory advertises by name should carry a real `@property` on
+`Scene.js` with its JSDoc, so it appears in the generated docs and in the published type
+definitions. `Scene.js` was outside `C13-N34`'s file list and is not this lane's to take.
+
+**Acceptance:** `scene.godRayCloudAware` documented on `Scene` with its default and its WebGPU-only
+scope; the generated type definitions carry it; behaviour byte-identical (absent still evaluates
+`false`).
+
+**Dependencies:** `C13-N34`
+
+**Size:** S
+
+**Owner wave:** unassigned — the orchestrator's to stamp
+
+**Parity:** WebGPU (the consumer is the WebGPU god-ray chain)
+
+### DX-WAVE-END-GATE-DECOMPOSITION — `wave-end-gate.mjs` is 2,364 lines and was functionally touched <!-- filed 2026-09-12 by lane L8 fix round, Ilmarë F3 -->
+
+**Status:** OPEN. Filed 2026-09-12 in the `C13-N48` fix round, on the reviewer's F3. **This is a debt
+note the lane is recording against itself**, not a defect found in someone else's code.
+
+**The rule, and how this batch stands against it.** `CLAUDE.md` "File Size & Code Organization":
+files over ~1,000 lines should be decomposed, and *"when touching a file over 1,000 lines for
+functional changes, decompose it too — leave it better than you found it."* `C13-N48` made a
+substantial functional change and **did not** decompose:
+
+| file | at Batch 1476 | after `C13-N48` | rule |
+| --- | --- | --- | --- |
+| `Tools/wave-end-gate.mjs` | 1,936 | **2,364** | 2.4x |
+| `Tools/wave-end-gate.spec.mjs` | 1,244 | **1,891** | 1.9x |
+| `Tools/visual-regression/capture-and-diff.mjs` | 1,132 | 1,258 | 1.3x (additive, default-off only) |
+
+**Why it was deferred rather than done.** The row's whole risk was inverting six assertions that pinned
+a fail-closed gate; moving that code between files in the same batch would have made the inertness
+mutant and the six inversions unreviewable as a diff — the reviewer could not have told a relocation
+from a behaviour change. Decomposition and semantic inversion in one batch is the shape that hides
+regressions, and the queue's own one-concern-per-landing rule points the same way.
+
+**The seam, which is clean and already factored.** `C13-N48` grouped the new code so the split is
+mechanical: `ROOT_BINDING`, `BINDING_BLOCKERS`, `CANONICAL_EXIT_CODE_STATUS`, `bindingFor`,
+`isRootBoundStep`, `boundBindability`, `unbindableBindability`, `resolveServedOrigin`,
+`visualRegressionBlockers`, `collectPreSpawnBlockers` and `deriveRootBoundTypedResult` are one
+cohesive unit — **`wave-end-gate-binding.mjs`**. The receipt/summary half (`buildReceipt`,
+`buildMarkdownSummary`, `writeReceiptFiles`) is a second — **`wave-end-gate-receipt.mjs`**. The main
+class and CLI stay in `wave-end-gate.mjs` under its own name, per the house rule.
+
+**Acceptance:** both new modules under 1,000 lines with a single stated responsibility each; `wave-end-gate.mjs`
+under 1,000; **the spec suite byte-identical in behaviour** — 36/36 before and after, and the
+`isRootBoundStep` inertness mutant still RED at 31/36 (repatriated harness:
+`_lane-out/EONWE_C13-N48_mutant-recheck.mjs`); recorded in `ES6_MODERNIZATION_STATUS.md` as the tracker
+requires. The spec file should be split along the same seam in the same batch.
+
+**Dependencies:** `C13-N48` (landed)
+
+**Size:** M
+
+**Owner wave:** unassigned — the orchestrator's to stamp
+
+**Parity:** n/a (tooling)
+
+### C13-N48-BASELINE-PROMOTION-BINDABILITY — `--update-baselines` cannot be root-bound <!-- filed 2026-09-12 by C13-N48, lane L8 -->
+
+**Status:** OPEN. Filed 2026-09-12 by `C13-N48` under Principle 9. **This is the one case where
+`Tools/wave-end-gate.mjs` still refuses pre-spawn with exit 3, and it refuses deliberately.**
+
+**Premise (measured 2026-09-12).** `C13-N48` made the gate derive each step's verdict itself, so the
+ordinary invocation now reaches a non-refused receipt. `--update-baselines` cannot follow, because
+baseline promotion proves source stability by measuring the worktree **twice** and comparing —
+`capture-and-diff.mjs:1156-1157` (`const promotionGit = getGitMetadata();` then
+`validatePromotionSourceStability(git, promotionGit)`). Root-supplied provenance is a constant, and
+substituting a constant for the first measurement would make the comparison vacuous. Rather than
+weaken a promotion safeguard, the gate carries the blocker `BASELINE_PROMOTION_UNBINDABLE` with its
+remediation text and refuses.
+
+**Acceptance:** either (a) `capture-and-diff.mjs` emits a typed result carrying its **own**
+re-measured worktree identity, which the root can validate without replacing either measurement; or
+(b) a ruling that baseline promotion stays a separately reviewed step outside the wave-end gate, in
+which case this row closes as WONTFIX and the refusal text becomes the documentation. **Do not close
+it by removing the second measurement.**
+
+**Dependencies:** `C13-N48`
+
+**Size:** M
+
+**Owner wave:** unassigned — the orchestrator's to stamp
+
+**Parity:** n/a (tooling)
+
+### GODRAY-SUN-USABILITY-RANGE-CONTRACT-RED — a homed cloud spec is RED on main <!-- filed 2026-09-12 by lane L8 -->
+
+**Status:** OPEN — **failing on `main` now**, not a new regression. Found by lane L8 on 2026-09-12
+while running `test-cloud-c13` for `C13-N34`, then **reproduced on the seat's own tree at Batch 1477
+with no lane changes applied**, so it is neither this lane's nor an artifact of an unbuilt clone.
+
+**Symptom.** `node --test Tools/visual-regression/godray-sun-usability-uniform-ranges.spec.mjs`
+fails three assertions against `WebGPUGodRayEffect.ts`:
+
+1. `B4: every per-frame write lands inside a range its own setter declares` —
+   **`updateConfig wrote 48..64, outside every range it owns`**. A real contract violation: the
+   effect writes uniform slots no declared setter range covers.
+2. `C2: an array-valued appearance field is compared by value, not by identity` and
+3. `C3: a genuinely different array is still a change` — both fail with
+   *"the array-valued appearance key mutation changed nothing — its anchor text has moved, so this
+   mutation test would pass vacuously and the result it exists to falsify would be unfalsifiable"*.
+
+**Why this matters more than three red lines.** (2) and (3) are the **vacuous-mutation-group** class
+this fork has been bitten by before (see `C13-16`, whose five-entry mutation group was satisfied by
+its own baseline residual). Here the spec **detected its own vacuity and failed loudly**, which is
+the behaviour we want — but it means the mutation group has been certifying nothing since the anchor
+moved, and `test-cloud-c13` has been red at HEAD with nobody's row owning it. A homed suite that is
+red on main cannot fail for a new reason, so it is currently a gate that cannot gate.
+
+**Acceptance:** the B4 range violation is either fixed or its range declared, with a stated reason;
+the moved anchors are re-pinned so the two mutation tests discriminate again (re-anchor the mutation,
+never relax the assertion); `npm run test-cloud-c13` is green on a built tree apart from the
+generated-shader class.
+
+**Dependencies:** — (needs an owner; the god-ray family is `C13-45`/`C13-N55`)
+
+**Size:** S–M
+
+**Owner wave:** unassigned — the orchestrator's to stamp
+
+**Parity:** WebGPU
 
 ### C13-N37 — `iblRevision` epsilon debounce <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
 
@@ -1662,11 +1834,59 @@ is answerable from the counters without further instrumentation.
 
 ### C13-N46 — Re-write Gates C/D and EXIT against the v2 bars <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
 
-**Status:** OPEN (Wave W1, Priority P0).
+**Status:** **RESOLVED 2026-09-12** (Batch 1476 filed the §1 row cells; lane L8 / Eönwë completed the
+§7 gate table, added the §7.1 enumeration, and corrected four defects in the §1 `C13-EXIT` cell the
+same day).
+
+**What Batch 1476 landed:** the §1 ID-table cells for `C13-GATE-C` (names the rung cost table),
+`C13-GATE-D` (deps `C13-N22`/`N23`/`N24`/`N27`) and `C13-EXIT` (a first three-column enumeration).
+
+**What was still short, and is now done.** The §1 ID table carries *dependencies*; **§7 "Gates and
+acceptance" carries the evidence a gate-runner actually reads**, and §7 had not been amended at all —
+so `C13-GATE-C`'s required evidence still did not name the rung cost table, `C13-GATE-D`'s still
+required tile seams/gutters from the descoped `C13-14`, and `C13-EXIT`'s carried no per-renderer
+enumeration. All three §7 rows are now amended in place (dated, struck rather than deleted), and the
+enumeration lives in a new **`QUEUE_2026-07-23_CAMPAIGN13.md` §7.1**, which `C13-EXIT` points to.
+
+**Four defects corrected in the §1 `C13-EXIT` enumeration** (re-derived at
+`CAMPAIGN_13_V2_CLOUD_QUALITY_2026-09-12.md` §1.3, §1.4 and §2.4 — Principle 10; each would have left
+a gate falsely declarable or permanently undeclarable):
+
+1. **`O9` was listed as a WebGPU gate.** §2.4 records the S3/S4 millisecond figures as *hypotheses to
+   be refuted by `C13-N06`*, and states that **no row's acceptance may cite them until the measurement
+   lands**. Gating on them is the exact shape `RULING-2026-08-06 R3` forbids. `O9` is **calibration**
+   on every renderer until `C13-N43` pins each rung to its own backend's history, after which it gates
+   as a per-backend **regression** bar and is never equated across backends (§1.4).
+2. **`O1` was calibration on WebGPU but a gate on both WebGL columns.** Its target reads **derive**
+   with `C13-N47` as the owning row; that is a property of the bar, not of a backend. `O1` is
+   calibration in all three columns until `C13-N47` lands a threshold.
+3. **`A2` was recorded as wholly calibration on WebGPU, then re-registered as a gate on WebGL by the
+   blanket `A1–A9`.** §1.3 splits it: the absolute `g ∈ [0.75, 0.95]` band is `[unverified]` and
+   **must not be pre-registered until re-sourced**, while the **≥ 0.05 per-genus separation clause is a
+   property of our own output and can be gated today** — and it is the clause `C13-N21` is built to
+   satisfy. Both halves are now enumerated separately.
+4. **`A7` and `I2` were listed unconditionally for WebGL after Wave 7.** §1.4 makes both conditional
+   on `C13-N51`'s noise-source ruling, and says plainly that if the live path misses them the answer
+   is the CPU bake, **not a dropped bar**. They are now "conditional gates" with that text. The
+   "never on WebGL: any bar whose acceptance names S4" exclusion was also absent and is now present.
+
+**Evidence:** `QUEUE_2026-07-23_CAMPAIGN13.md` §7 rows `C13-GATE-C` / `C13-GATE-D` / `C13-EXIT`;
+new §7.1 with three renderer columns, a gate-vs-calibration definition, the three always-calibration
+bars with their owning rows and what would promote each, and a "how to declare `C13-EXIT`" clause.
+Docs/ledger class: review, no spec; `prettier` is not claimed for `migration_doc`. Nothing under
+`migration_doc/archive/` touched; nothing moved; no link repointed (`R-2026-09-12-10`).
 
 **Delivers:** **RULED `R-2026-09-12-3` (D17), Wave 1:** "gates rewritten now as a wave-1 ledger row (C13-N46): GATE-D deps -> C13-N22/N23/N24/N27; GATE-C names the rung cost table; EXIT enumerates gate bars vs calibration bars per renderer." **Per renderer** now means three columns, not two: WebGPU, WebGL-after-Wave-4 (shell bars), WebGL-after-Wave-7 (full bars) — see §1.4. `C13-GATE-D` (`:154`) deps move off the descoped `C13-14` onto `C13-N22/N23/N24/N27`; `C13-GATE-C` (`:153`) names the rung cost table as its measured-performance evidence; `C13-EXIT` (`:155`) enumerates which of O1–O9 / H1–H3 / A1–A9 / G1–G3 / I1–I3 / P1–P5 / L1–L2 / T1 are **gates** and which are **calibration**, **per renderer**
 
-**Acceptance:** The campaign can close. **As written in the draft it could complete every row and still not close**: GATE-D's deps are `C13-14..20` and `C13-14` is descoped, GATE-C's deps scatter across Waves 3 and 6 with `C13-41` in an untouched lane, and none of the new bars appears in any gate
+*[premise note 2026-09-12, Principle 10: the `:153`/`:154`/`:155` line citations were stale and, more
+importantly, pointed at only one of **three** sites the gates occupy. Verified at the tree: `:153`–`:155`
+is the pre-1476 §1 position; after the v2 landing the §1 rows are `:161`–`:163`, the §7 evidence rows
+are `:716`–`:718`, and the §9 ledger status rows are `:856`–`:858`. All three were amended — a row
+citation that names only §1 leaves the gate-runner reading unamended evidence.]*
+
+**Acceptance:** The campaign can close — **MET**: every gate now names evidence that exists, every
+bar is assigned to gate-or-calibration in all three renderer columns, and each calibration bar names
+the row that would promote it.
 
 **Dependencies:** —
 
@@ -14641,7 +14861,23 @@ down.
 
 ## 2026-08-01 — volumetric cloud low-coverage cutoff (tour calibration finding)
 
-### CLOUD-LOW-COVERAGE-CUTOFF — coverage <= ~0.40 renders zero cloud
+**`CLOUD-LOW-COVERAGE-CUTOFF` — DISAMBIGUATION ROUTER (added 2026-09-12, `C13-N36`).**
+The bare id `CLOUD-LOW-COVERAGE-CUTOFF` names **two** items and always did. It is
+retained as a historical alias so every existing reference keeps resolving — nothing
+is moved and no link is repointed (`R-2026-09-12-10`) — but it is **no longer a usable
+id**, and no new reference should use it. The two arms now carry distinct ids, and
+because each contains the bare string as a prefix, a grep for the alias still reaches
+both:
+
+| id | arm | status |
+| --- | --- | --- |
+| `CLOUD-LOW-COVERAGE-CUTOFF-VISIBLE-MARCH` | the visible march — coverage ≤ ~0.40 rendered zero cloud | **RESOLVED** 2026-08-01, Batch 798 (`c5bd07bf1f`) |
+| `CLOUD-LOW-COVERAGE-CUTOFF-FOG-CHEAP-PATH` | the fog cheap path — `Compute/VolumetricFog.wgsl::sampleCloudShadow`'s distributional mismatch | **IMPLEMENTED** 2026-08-06, Edge acceptance owed |
+
+Any edit that marks either arm resolved must name that arm's own id. Grep for the arm
+you mean, not for the alias.
+
+### CLOUD-LOW-COVERAGE-CUTOFF-VISIBLE-MARCH — coverage <= ~0.40 renders zero cloud
 
 **Status:** RESOLVED 2026-08-01 at **Batch 798** (`c5bd07bf1f`, "fix
 CLOUD-LOW-COVERAGE-CUTOFF - fair-weather skies render (probe-verified)").
@@ -14668,14 +14904,19 @@ Original filing retained below.)*
 > PASSES its restored 0.02 floor, and `cloud-coverage-response.spec` is 11/11. The
 > **Acceptance** clause at the foot of this entry is therefore discharged, not owed.
 >
-> ⚠ **ID COLLISION — read this before editing either entry.** The section
-> immediately below carries the **identical `### CLOUD-LOW-COVERAGE-CUTOFF`
-> heading** for a *different* subject (the fog cheap-path arm, IMPLEMENTED
-> 2026-08-06). A grep for the ID returns this entry first. They are two distinct
-> items sharing one ID; disambiguate by subtitle — **"coverage <= ~0.40 renders
-> zero cloud"** (this one, the visible march, RESOLVED at Batch 798) versus
-> **"fog cheap-path arm"** (below). Any future "mark CLOUD-LOW-COVERAGE-CUTOFF
-> resolved" edit must say which. Disambiguation owed to C13-N36 (Wave 1).
+> ⚠ **ID COLLISION — RESOLVED 2026-09-12 by `C13-N36`.** This entry's id is now
+> `CLOUD-LOW-COVERAGE-CUTOFF-VISIBLE-MARCH`; the fog cheap-path arm below is
+> `CLOUD-LOW-COVERAGE-CUTOFF-FOG-CHEAP-PATH`. See the router under this section's
+> `## 2026-08-01` heading. The bare `CLOUD-LOW-COVERAGE-CUTOFF` survives as a
+> historical alias only — every reference that used it still resolves, because both
+> ids contain it as a prefix.
+>
+> *[corrected 2026-09-12, `C13-N36`: this paragraph read "The section immediately
+> below carries the **identical `### CLOUD-LOW-COVERAGE-CUTOFF` heading**" and
+> instructed readers to "disambiguate by subtitle". Both statements had gone stale.
+> The two headings stopped being byte-identical when the subtitles were added — the
+> shared thing was the **id**, not the heading — and subtitles are not an id, which
+> is why `C13-N36` was filed. The original notice is superseded here, not moved.]*
 >
 > **Downstream note:** the `C13-01` row in `QUEUE_2026-07-23_CAMPAIGN13.md` still
 > lists this as one of "TWO REAL GAPS pinned by knownGapId ceiling gates". The
@@ -14702,12 +14943,23 @@ with visually scattered (not overcast) puffs at 0.35 on both the sweep anchor
 and the plains fixture, the plains ceiling gate fails, and its floor gate
 (0.02) is restored and passes.
 
-### CLOUD-LOW-COVERAGE-CUTOFF — fog cheap-path arm
+### CLOUD-LOW-COVERAGE-CUTOFF-FOG-CHEAP-PATH — fog cheap-path arm
 
-> ⚠ **ID COLLISION (noted 2026-08-07):** this heading is byte-identical to the one
-> ~20 lines above, which covers a **different** subject — the visible-march
-> low-coverage cutoff, RESOLVED at Batch 798. Disambiguate by subtitle. This entry
-> is the **fog cheap-path arm** only. Disambiguation owed to C13-N36 (Wave 1).
+> ⚠ **ID COLLISION (noted 2026-08-07) — RESOLVED 2026-09-12 by `C13-N36`.** This
+> entry is the **fog cheap-path arm** only, and its id is now
+> `CLOUD-LOW-COVERAGE-CUTOFF-FOG-CHEAP-PATH`. The visible-march arm above — a
+> *different* item, RESOLVED at Batch 798 — is
+> `CLOUD-LOW-COVERAGE-CUTOFF-VISIBLE-MARCH`. See the router under this section's
+> `## 2026-08-01` heading.
+>
+> *[corrected 2026-09-12, `C13-N36`: this notice read "this heading is byte-identical
+> to the one ~20 lines above". Neither half held by the time it was read — the
+> headings carried distinct subtitles, and the other heading is **61 lines above
+> this one at Batch 1476** (`:14501` against `:14562`), 66 at this batch's tree,
+> which inserted the router between them — not ~20. What actually collided was
+> the **id**, which is what this row fixed. *(Fix round: this read "77", which was
+> a transient mid-edit distance reproducing at neither tree. A line distance is
+> fragile by nature and is not what disambiguates these entries — the ids are.)*]*
 
 **Status:** IMPLEMENTED 2026-08-06, Edge acceptance owed. This is the arm the
 2026-08-02 Codex handoff (§5 item 3) left open as "fog cheap-path coverage
