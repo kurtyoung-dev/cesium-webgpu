@@ -56,7 +56,7 @@ not a constant: re-run `npm run test-visual-probe-contracts` before quoting one.
 
 ### NEW-C13-42-APPARATUS-CANNOT-RUN-AT-HEAD (C13-42a — CRITICAL PATH)
 
-**Status:** SHIPPED 2026-09-12 (lane C13-42a, worker Minardil). The runtime, the lifecycle and the
+**Status:** SHIPPED 2026-09-12 (lane C13-42a, worker Minardil) — patch `4b5e96d3f1c322cd62ea2e78b92a2f06`, 15 files, contracts 324/324, fleet 217/221 unchanged; opt-in adoption; two cap sites live; `MAX_SERVED_RESPONSES` retired. The runtime, the lifecycle and the
 probe are tracked, the seventeen `scope.run` sites and two `scope.checkpoint` sites resolve, and
 both cap call sites read the landed per-subject apparatus. **The residual is the Edge leg**, which
 is a capture, not a code gap: the C13-42 calibration runs still have to be executed by an Edge
@@ -136,7 +136,7 @@ work budget rises from 14,970,000 ms to 53,400,000 ms, the difference being exac
 
 ### NEW-C13-42-LEGACY-PROBES-NOT-ON-THE-LIFECYCLE (C13-42a-2)
 
-**Status:** OPEN — follow-up to `C13-42a`, deliberately not done in that lane. Recorded 2026-09-12.
+**Status:** OPEN — 18 legacy probes (not 21); sequenced after `C13-42a-3` item 8 (Wave 2) per seat sequencing of 2026-09-12. Follow-up to `C13-42a`, deliberately not done in that lane. Recorded 2026-09-12.
 
 Eighteen probes import `runProbe` from `Tools/visual-regression/lib/probe-runtime.mjs` and declare
 no `workBudgetMs`, so they keep the pre-adoption path: no `scope`, no tracked work registry, no
@@ -177,7 +177,7 @@ inside the lifecycle with no artifact at all. Both are `C13-42a-3`.
 
 ### NEW-C13-42A-RESIDUALS (C13-42a-3)
 
-**Status:** OPEN — eight residuals from `C13-42a`, surfaced by review (Calimehtar) and by four
+**Status:** OPEN — Item 8 is promoted to first across the whole apparatus programme (Wave 1, sequenced before `C13-42a-2` and `C13-N01` stage 2); note that fixing it requires inverting spec group G. Eight residuals from `C13-42a`, surfaced by review (Calimehtar) and by four
 rounds of adversarial verification (Ciryaher), 2026-09-12, and each deliberately NOT fixed in that
 lane. Recorded 2026-09-12. **None is a regression** — items 5-7 are inherited verbatim from the
 runtime the lane adopted, and every one of the seven sits in machinery the lane added rather than in
@@ -392,7 +392,7 @@ frozen value so existing behaviour is unchanged.
 
 ### NEW-C13-42-SERVED-RESPONSE-DEDUP (C13-42b, filed, NOT implemented)
 
-**Status:** OPEN — filed behind the cap raise by M6 part 4.
+**Status:** OPEN — dependency on `C13-42a` discharged (`C13-42a` landed 2026-09-12); filed behind the cap raise by M6 part 4 (Wave 1).
 
 `appendC13_42ServedResponse` adds a url to `seenUrls` **only** when it also
 pushes the response. Once `responses` reaches the cap, `seenUrls` stops growing,
@@ -435,15 +435,15 @@ in `C13_42_SERVED_RESPONSE_BUDGET`.
 
 ### NEW-C13-42-CLOUD-READINESS-BLOCKS-THE-BASELINE-LEG (C13-42d)
 
-**Status:** OPEN — a product/engine condition, not an instrument bound.
+**Status:** OPEN — gated behind `C13-N08a` (Wave 2); symptom narrowed to `executeCalls = 0` only (the zero-sized half-resolution/temporal targets are the expected tier-3 configuration and appear in a successful run). An engine row opens only if the symptom survives the repaired harness (default taken on D12).
 
 The sixth 2026-09-09 run (`c13-20260909-baseline-01`) did **not** refuse on the
 cap. It ERRORED (exit 2): "procedural cloud renderer did not initialize after 180
 moving frames (executeCalls=0)", with `halfWidth`, `halfHeight`, `temporalWidth`
 and `temporalHeight` all `0` and `temporalPipelineReady` false, while
-`initialized` and `pipelineReady` were both true. Zero-sized half-resolution and
-temporal targets with no execute calls is a renderer condition; no cap raise
-addresses it.
+`initialized` and `pipelineReady` were both true — the expected tier-3
+configuration, which also appears in a successful run; the surviving symptom is
+`executeCalls = 0` alone.
 
 This contradicts the widely-repeated summary that all six runs refused with
 `c13-42-served-closure-over-cap`. Five did; the sixth never reached the cap.
@@ -459,7 +459,7 @@ rather than capturing an unmeasurable scene that measures nothing (Principle 9).
 
 ### NEW-C13-42-THRESHOLD-KEYS-NAMED-PATHS-NO-RECEIPT-CARRIES (C13-42f)
 
-**Status:** PARTIAL / OPEN (lane C1 fix round, worker Farin, 2026-09-11).
+**Status:** PARTIAL / OPEN (lane C1 fix round, worker Farin, 2026-09-11; dependency on `C13-42a` discharged with landing of 2026-09-12; Wave 2).
 
 `CHARACTERIZATION_THRESHOLD_DERIVATION.keys` named four receipt paths —
 `metrics.support.fraction`, `metrics.radial.contrast`, `metrics.delta.fraction`
@@ -515,13 +515,12 @@ Tracked also in research dispatch as `DX-81`.
 
 ### NEW-C13-45-EDGE-LEG-INHERITS-C13-42A-BLOCKER (Horn proposed row 7)
 
-**Status:** OPEN (Horn proposed row 7).
+**Status:** OPEN — blocker discharged by the `C13-42a` landing (2026-09-12); the Edge certification leg is now queued behind the `C13-41` slot instead (`R-2026-09-12-7`).
 
 `UNIFORM_SKY_CONTROL` and the `sampleCount` parameter are landed and specified, and the
 four banked multipliers are reproduced within a derived f32 bound; Eothain's
-count-invariance law is specifiable offline today. However, C13-45's Edge browser
-certification leg inherits `C13-42a`'s blocker (the probe runtime and lifecycle rewrite
-where `descriptor.workBudgetMs` is required).
+count-invariance law is specifiable offline today. The `C13-42a` probe runtime blocker is
+discharged by its 2026-09-12 landing; the Edge browser certification leg waits for the single Edge slot behind `C13-41` (`R-2026-09-12-7`).
 
 ### NEW-C13-42-ZERO-MARGIN-THRESHOLD-ON-A-DEGENERATE-CALIBRATION
 
@@ -541,6 +540,1174 @@ from no margin. The derivation additionally returns a per-key record
 (`sampleCount`, `lowest`, `highest`, `spread`, `margin`, `marginSource`,
 `degenerate`, `threshold`) so a degenerate key is **reported** to the freeze lane
 rather than quietly frozen.
+
+### C13-14 — Globe-quadtree weather tile schema (DESCOPED) <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+
+**Status:** DESCOPED under R-2026-09-12-2 (D4). A re-sequencing under RULING-2026-08-06 R2, not a re-scope. Deferred behind the first measured resolution ceiling (~4096×2048), measured by C13-N06/C13-N04. C13-15/16/17/20 re-pointed off C13-14 onto C13-N22/N23/N27/N38.
+
+**Delivers:** **RULED `R-2026-09-12-2` (D4):** "C13-15/16/17/20 re-pointed onto C13-N22/N23/N27/N38; the C13-14 weather quadtree deferred behind the first measured resolution ceiling (~4096x2048). Ruled as a re-sequencing under RULING-2026-08-06 R2, not a re-scope." The deferral is now **conditional on a measurement**: the first measured resolution ceiling, ~4096×2048. `C13-N06`/`C13-N04` are what measure it. `C13-N22` is lifted out and lands first; C13-14 retains the streamed / LOD / gutter / atlas case for sub-10 km fields, deferred behind the **first measured resolution ceiling**
+
+**Acceptance:** A tiled field shows no seam and no LOD pop
+
+**Dependencies:** C13-N22..N24
+
+**Size:** XL
+
+**Owner wave:** Wave W3 (WS-E)
+
+**Parity:** both
+
+### C13-43 — End-to-end planetary shell, altitude and RTE regression repair <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+
+**Status:** OPEN (priority P0 stamped superseded by C13 v2 §5 per D14).
+
+**Delivers:** End-to-end planetary shell, altitude and RTE regression repair across all viewpoints.
+
+**Acceptance:** Verification of planetary shell, altitude scaling and 64-bit RTE emulated precision.
+
+**Dependencies:** `C13-42`; reuse `C13-03..06`
+
+**Size:** L
+
+**Owner wave:** Wave WR (WS-B)
+
+**Parity:** both
+
+### C13-44 — Non-repeating density and cloud morphology across viewpoints (Kill the stipple) <!-- source: CAMPAIGN_13_V2 §3 WS-G -->
+
+**Status:** OPEN (priority P0 stamped superseded by C13 v2 §5 per D14; M2 precondition).
+
+**Delivers:** The dither/lattice visible in the banked `output/c13-20260909-above-deck-pw-progress-03/O-above-deck-on-2-run0.png`
+
+**Acceptance:** A ≥1280×720 non-refused before/after pair; **T1** p95 ghost ≤ 2 px **on both the pan and the 100 m/s forward legs**. Root-cause candidate: tier 3 sets `jitterEnabled: true` with `temporalEnabled: false` and `renderResScale: 1.0` (`WebGPUCloudTierPresets.ts:138-156`), so the per-pixel IGN phase (`ProceduralClouds.wgsl:371-386`) reaches the composite with no temporal resolve, no bilateral upscale and no other denoise. The S3 change in §2.2 is the fix shape
+
+**Dependencies:** C13-N03 (flight fixtures), C13-13
+
+**Size:** M
+
+**Owner wave:** Wave W6 (WS-G)
+
+**Parity:** WebGPU
+
+### C13-46 — Shared cloud architecture and incremental migration <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+
+**Status:** OPEN (priority P0 stamped superseded by C13 v2 §5 per D14).
+
+**Delivers:** Shared cloud architecture, multi-pass coordination and incremental migration path.
+
+**Acceptance:** Architecture validation across shared passes and regression verification.
+
+**Dependencies:** Design parallel to `C13-42`; reuse `C13-09`, `C13-14..20/24`
+
+**Size:** XL
+
+**Owner wave:** Wave WR (WS-H)
+
+**Parity:** both
+
+### C13-47 — Integrated cloud/god-ray and cinematic-default acceptance <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+
+**Status:** OPEN (priority P1 stamped superseded by C13 v2 §5 per D14).
+
+**Delivers:** Integrated cloud/god-ray and cinematic-default acceptance testing suite.
+
+**Acceptance:** Full geographic and cinematic default validation across cloud and god-ray passes.
+
+**Dependencies:** `C13-42..46`, `C13-GATE-D` for full geographic claim
+
+**Size:** L
+
+**Owner wave:** Wave Continuous (WS-H)
+
+**Parity:** both
+
+### C13-48 — ERA NetCDF 2D and 3D wind-field ingestion and visualization <!-- source: CAMPAIGN_13_V2 §3 WS-F -->
+
+**Status:** OPEN (priority P1 stamped superseded by C13 v2 §5 per D14).
+
+**Delivers:** The real-data wind path, sharing one normalised vector/time/vertical interface with C13-49
+
+**Acceptance:** Traps named in the row: ERA5 `w` is **Pa/s, not m/s**; meteorological wind-*from* is not motion direction; "stacked horizontal layers alone are not certified 3D flow"
+
+**Dependencies:** C13-N26
+
+**Size:** XL
+
+**Owner wave:** Wave W5 (WS-F)
+
+**Parity:** both
+
+### C13-49 — Procedural trade winds, geographic weather and cloud fallback with GIS provenance <!-- source: CAMPAIGN_13_V2 §3 WS-F -->
+
+**Status:** OPEN (priority P1 stamped superseded by C13 v2 §5 per D14).
+
+**Delivers:** The offline, deterministic, globe-continuous seasonal baseline with planetary circulation
+
+**Acceptance:** Determinism contract: fields depend on geographic identity, physical time, model revision and seed — "not camera position, frame rate or mutable global randomness" (`C13_PROCEDURAL_WEATHER_FALLBACK_2026-09-08.md:103-107`). A synthetic-as-observed mutant must fail (`C13-N45` is its surface)
+
+**Dependencies:** C13-49-slice, C13-N27, C13-18
+
+**Size:** XL
+
+**Owner wave:** Wave W5 (WS-F)
+
+**Parity:** both
+
+### C13-49-slice — Default-field circulation <!-- source: CAMPAIGN_13_V2 §3 WS-F -->
+
+**Status:** OPEN (Wave 2, promoted out of the XL).
+
+**Delivers:** Replace `buildProceduralWeatherMap` (`ProceduralWeatherMap.ts:52-71`) with a latitude-banded, seasonally-phased, **time-parameterised** procedural field, under the determinism contract. Today it is two 5-octave fBM stacks with **no meteorological latitude structure**, constant G/B/A, uploaded once under the `-1` version sentinel so it never evolves (§0.12)
+
+**Acceptance:** **P5** — ITCZ band, subtropical clear belts and a mid-latitude storm track each detectable in a zonal-mean coverage profile, **with no provider attached**; the field varies with physical time. *[added 2026-09-12: goal 3 was undelivered for the default (no-provider) user for the whole campaign and was second on the cut line]*
+
+**Dependencies:** C13-N22
+
+**Size:** M
+
+**Owner wave:** Wave W2 (WS-F)
+
+**Parity:** both
+
+### C13-N01 — Govern the cloud probe fleet <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** **RULED `R-2026-09-12-1` (D1): two lanes, `C13-N01` STAGED** — "detector + census in wave 1; routing in wave 2 after C13-42a lands". `C13-42a` **landed 2026-09-12**, so Stage 2's dependency is discharged and the routing may open at Wave 2 against the landed descriptor shape — but see `C13-42a-3` item 8: routing 18 probes onto a runtime that can silently drop work and report success banks 18 untrustworthy results, so **item 8 is sequenced ahead of the routing too**. **Stage 1 (Wave 1): detector + census only** — add runtime-governance detectors to `probe-fleet-contract.spec.mjs` and emit a census; **no routing, no allowlist rewrite**. **Stage 2 (Wave 2, after C13-42a): routing** through `runProbe` + `probe-edge-slot.mjs` + served-build preflight, in family batches, each with its own allowlist generation
+
+**Acceptance:** Stage 1: the census reports 60/60 hard-defaulting to `PROBE_BASE \|\|` and 0/60 referencing the three governance modules. Stage 2: that count falls per family batch
+
+**Dependencies:** Stage 2 deps **C13-42a**
+
+**Size:** L *[corrected 2026-09-12 from M — the allowlist is flat, frozen and shrink-only with 43 cloud/god-ray probes pinned on watchdog-only reasons, and routing means converting 26,959 lines across 60 probes; §0.7]*
+
+**Owner wave:** Wave W1 (WS-A)
+
+**Parity:** n/a
+
+### C13-N02 — Runner homes for the homeless cloud specs <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** Every `cloud-*.spec.mjs` reachable from an npm script
+
+**Acceptance:** `node Tools/spec-runner-census.mjs` reports 0 homeless cloud specs. **Measured: 32 on disk, 7 homed, 25 homeless** *[corrected from "35 / 4 / 31" — §0.8]*. Under `R-2026-08-29-1` a spec with no runner home is a review blocker
+
+**Dependencies:** —
+
+**Size:** S
+
+**Owner wave:** Wave W1 (WS-A)
+
+**Parity:** n/a
+
+### C13-N03 — Orbital / night / terminator / inside / flight / geographic fixtures <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** ≥ 8 orbital-band stations (3 orbital: nadir, limb, terminator-crossing; 2 night; 1 dawn; 2 inside-cloud-at-dusk) **plus 3 in-atmosphere stations (cruise above a deck at 10 km, between two decks, and a 100 m/s forward traverse with declared duration and sample cadence) plus 1 crosswind station plus the 8 geographic stations queue §8 requires**
+
+**Acceptance:** Extends `cloud-tour-sequences.spec.mjs`; each fixture carries `minChangedFraction` with a prose `why`. **Measured today: 2 orbital, 0 night, 0 terminator, 0 flight across 34 stations, all 12 fixtures daytime.** O2, G3, **T1's forward leg**, **A9** and the whole P-band are unmeasurable until this lands *[added: the draft's eight fixtures were all static viewpoints, none in the 2–20 km band, while T1 requires a 100 m/s forward run and A9 requires configured wind — the flight-sim bar would have been measured only from stationary cameras, the regime that hides reprojection and advection defects]*
+
+**Dependencies:** C13-N01
+
+**Size:** L
+
+**Owner wave:** Wave W1 (WS-A)
+
+**Parity:** fixtures backend-neutral
+
+### C13-N04 — Spectral + fractal analyzer <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** **Default taken 2026-09-12 (D11):** "gate the spectrum and fractal bars, calibrate IoU" — so **O5 is a gate on both backends** and **O1 (IoU) is calibration**, which also settles what `C13-N05` can and cannot block. `lib/cloud-spectrum.mjs`: radially averaged power spectrum with slope fit, and area–perimeter fractal dimension
+
+**Acceptance:** **O5.** Validate on synthetic fields of known slope before pointing it at a render
+
+**Dependencies:** C13-N01
+
+**Size:** S
+
+**Owner wave:** Wave W1 (WS-A)
+
+**Parity:** both
+
+### C13-N04b — Orbital ladder probe <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** `probe-cloud-orbital-ladder.mjs`: altitude-sweep captures at each decade 20 km → 20,000 km computing **O3** (aerial-cap fraction), **O4** (limb 2-px step), **O6** (decade alpha retention + 10 s zoom RMS ΔL) and **O7** (limb sample spacing, derivable from uniforms)
+
+**Acceptance:** The instrument exists **before** the rows it judges. *[added 2026-09-12: in the draft the orbital primary goal's instrument was a deliverable **inside** the Wave-4 row it was to judge, while Wave-1 `C13-N20` already claimed "O3 = 0" and Wave-3 `C13-N14` claimed "O6, H1, H2" with no probe named — and §9 downgraded N20's proof to "one orbital capture pair", a picture rather than the statistic]*
+
+**Dependencies:** C13-N01
+
+**Size:** M
+
+**Owner wave:** Wave W1 (WS-A)
+
+**Parity:** both
+
+### C13-N05 — Ground-truth referee <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+
+**Status:** OPEN (Wave W2, Priority P1).
+
+**Delivers:** **RULED `R-2026-09-12-6` (D10):** "fetch at probe time, bank derived metrics only, small pinned fixture set for offline reproducibility; WMO Atlas photos and flight-sim screenshots excluded; ESDIS/NOAA acknowledgements in the manifest." The Wave-1 launch-seal blocker is therefore **discharged**; what remains owed before sizing is the **GMGSI header read** alone. `lib/cloud-groundtruth.mjs` + `probe-cloud-groundtruth.mjs`: fetch NOAA GMGSI hourly global composite or NASA GIBS `GOES-East_ABI_GeoColor` for the render's UTC, reproject, compute mask IoU and coverage correlation over the lit disc
+
+**Acceptance:** **O1.** The first external referee in the cloud estate
+
+**Dependencies:** C13-N03; **decision D10 must be ruled in the Wave-1 launch seal** *[corrected: the draft put an unruled licensing decision in a Wave-2 row's deps with no ruling checkpoint scheduled]*; **and the GMGSI header read** (§4.1 `[unverified]`)
+
+**Size:** L
+
+**Owner wave:** Wave W2 (WS-A)
+
+**Parity:** both backends captured
+
+### C13-N06 — Per-rung cost table <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** **Extend** `probe-cloud-perf.mjs` (ACTIVE, pair-ID A/B) and `probe-cloud-reconstruction-consume.mjs` (union fold already applied) into `probe-cloud-tier-cost.mjs`. **Pass 1 (Wave 1): the three tiers that exist** — {S1,S2,S3} × {1080p, 4K}, p50+p95 + call/allocation/peak-VRAM counts. **Pass 2 (after C13-13 and C13-29): the full S×L grid**
+
+**Acceptance:** Banked manifest; §2.2 targets become bars **or are revised on the measurement**. Union via `summarizeCloudGpuCoverage`; interleaved bundle-swap from `probe-cloud-lod-hoist-perf.mjs:22-46`; `SR-9`. **Pass 1 discharges half the M2 hold** *[corrected: the draft's acceptance was "{Shell,S1..S4} × {L0..L3}" in Wave 1 — unsatisfiable, since Shell is Wave 4, S4 Wave 6 and L3 needs Waves 3–4 — and §9 silently narrowed the same row. "First cloud frame-cost measurement in the project's history" removed, §0.9]*
+
+**Dependencies:** C13-N01
+
+**Size:** M
+
+**Owner wave:** Wave W1 (WS-A)
+
+**Parity:** WebGL arm for Shell only (pass 2)
+
+### C13-N07a — Cloud scenes in the standing image gate, WebGPU-only <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** 2 scenes (`cloud-orbital-disc`, `cloud-ground-overcast`) in `Tools/visual-regression/scenes.json` with WebGPU baselines
+
+**Acceptance:** `capture-and-diff.mjs` covers clouds **before** the nine engine landings of Waves 1 and 3, not after. Measured today: 10 scenes, none cloud; perf gate `grep -ci cloud` → 0
+
+**Dependencies:** C13-N01
+
+**Size:** S
+
+**Owner wave:** Wave W1 (WS-A)
+
+**Parity:** WebGPU baseline
+
+### C13-N07b — Cross-backend cloud scene <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+
+**Status:** OPEN (Wave W4, Priority P2).
+
+**Delivers:** `cloud-orbital-disc` gains a WebGL arm
+
+**Acceptance:** Both backends agree on **pattern**
+
+**Dependencies:** C13-29, **C13-N15c**
+
+**Size:** S
+
+**Owner wave:** Wave W4 (WS-A)
+
+**Parity:** both
+
+### C13-N08a — Harness readiness repair <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** Land Astra's `lib/cloud-probe-harness.mjs` readiness slice: count `executePreparedCloudFrame` (`WebGPUProceduralCloudRenderer.ts:5206`), the entry `WebGPUSceneRendererEnvironmentalEffects.ts:327-329` actually calls, not only `featureRenderer.execute` (`lib/cloud-probe-harness.mjs:195-202`, error at `:244`)
+
+**Acceptance:** A readiness spec that distinguishes "pipeline built" from "work recorded", and re-runs `baseline-01` to a verdict. **Must precede any `C13-42d` engine diagnosis** — §0.11(b)
+
+**Dependencies:** —
+
+**Size:** S
+
+**Owner wave:** Wave W1 (WS-A)
+
+**Parity:** n/a
+
+### C13-N08b — Recover the remaining unlanded cloud regression specs <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+
+**Status:** OPEN (Wave W2, Priority P1).
+
+**Delivers:** `cloud-primary-shell.spec.mjs` (+934), `cloud-probe-harness.spec.mjs` (+923), `cloud-observability-counters.spec.mjs` (+125)
+
+**Acceptance:** Green at HEAD, red under each inverse mutant. `cloud-primary-shell.spec.mjs` is cheapest: three PREREPAIR REDs pinning three WGSL repairs that already shipped in Batch 1468
+
+**Dependencies:** C13-N02, C13-N08a
+
+**Size:** M
+
+**Owner wave:** Wave W2 (WS-A)
+
+**Parity:** n/a
+
+### C13-N09 — HDR pre-tonemap capture rule <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** The harness captures linear pre-tonemap values and masks the sun disc for every photometric bar
+
+**Acceptance:** A spec asserting the photometric path does not read post-Reinhard pixels (`ProceduralClouds.wgsl:2645-2646`)
+
+**Dependencies:** C13-N01
+
+**Size:** S
+
+**Owner wave:** Wave W1 (WS-A)
+
+**Parity:** n/a
+
+### C13-N10 — One quality resolver <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** **Default taken 2026-09-12 (D7):** "CLOUD_TIER_PRESETS canonical, resolveCloudQuality literals deleted" — the spec-that-pins-two-sources-equal option is **rejected**, because it preserves the trap. Collapse `resolveCloudQuality` (`:3051-3077`) into `CLOUD_TIER_PRESETS`; `primarySteps` / `lightSteps` / `lightSampleScale` become the live source; one spelling of the altitude bands; correct the two contradicting docstrings
+
+**Acceptance:** `cloud-tier-single-source.spec.mjs`: **mutating a preset's `primarySteps` must change uniform slot 12; today it provably does not.** Inertness mutant `if (false && …)` must stop the propagation. Byte-identical at every current default
+
+**Dependencies:** —
+
+**Size:** S
+
+**Owner wave:** Wave W1 (WS-B)
+
+**Parity:** resolver backend-neutral
+
+### C13-N11 — Wire the inert preset fields <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** `powderStrength`, `isotropicFloor`, `ambientFloor` reach the shader; the literal `0.5` at `ProceduralClouds.wgsl:2537` becomes the preset value; `lightSampleScale` loses its second source at `:3750-3753`; `CLOUD_QF_PROFILE_ON` gains a producer+consumer or is marked deprecated in place (add-only)
+
+**Acceptance:** Byte-identical at tier defaults equal to the current hard-coded values; **A4** moves where `powderStrength` differs. *[corrected 2026-09-12: this row edits `ProceduralClouds.wgsl`, which §9 assigns to lane L4 — the draft briefed it to L3, a one-defect-one-owner violation]*
+
+**Dependencies:** C13-N10
+
+**Size:** S
+
+**Owner wave:** Wave W1 (WS-B)
+
+**Parity:** WebGPU
+
+### C13-N12 — Implement the `"ultra"` rung (S4) <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+
+**Status:** OPEN (Wave W6, Priority P2).
+
+**Delivers:** Tier-4 preset + resolver entry + the documented string honoured
+
+**Acceptance:** `CloudVolumetrics.js:164-171` no longer documents an unimplemented value; cost bar from `C13-N06` pass 2
+
+**Dependencies:** C13-10, C13-11 p2, C13-12, C13-13, C13-N41
+
+**Size:** M
+
+**Owner wave:** Wave W6 (WS-B)
+
+**Parity:** WebGPU-only by design
+
+### C13-N13 — Metre-floored, interval-aware march step <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+
+**Status:** OPEN (Wave W3, Priority P1).
+
+**Delivers:** `fineStep` gains a metre floor and ceiling derived from deck thickness and chord; `cloudMarchStepGrowth` and `cloudMaxRayDistance` (both no-ops at defaults) become rung-driven
+
+**Acceptance:** **O7 ≤ 2 km** via `C13-N04b`; the inside-deck horizontal chord case; cost delta from `C13-N06`
+
+**Dependencies:** C13-N10
+
+**Size:** M [+D]
+
+**Owner wave:** Wave W3 (WS-B)
+
+**Parity:** WebGPU
+
+### C13-N14 — Rung blending and hysteresis <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+
+**Status:** OPEN (Wave W3, Priority P1).
+
+**Delivers:** `"auto"` becomes the blend `AtmosphericConditions.js:1126-1131` already documents; a rung change joins the eleven temporal reset reasons
+
+**Acceptance:** **O6, H1, H2** — scored by `C13-N04b`, which now predates this row
+
+**Dependencies:** C13-13, C13-N04b
+
+**Size:** S
+
+**Owner wave:** Wave W3 (WS-B)
+
+**Parity:** both
+
+### NEW-CLOUD-WEBGL-RENDERER-AND-SCENE-WIRING (C13-N15a) <!-- source: CAMPAIGN_13_V2 §3 WS-C -->
+
+**Status:** OPEN (Wave W4, Priority P2).
+
+**Delivers:** A WebGL cloud renderer class and its Scene wiring — `ls packages/engine/Source/Renderer \| grep -i cloud` returns **nothing** today — plus **the composite-point decision**: the WebGL frame has no equivalent of `WebGPUSceneRendererEnvironmentalEffects.ts`, where the march composites in display space after post-processing (`CLOUD_UNIFICATION_DESIGN.md:20-26`). The decision is recorded as a design note because **`C13-N31`'s I3 hangs off it**
+
+**Acceptance:** A WebGL smoke asserting the pass runs, composites at the decided point, and is byte-identical to today when `enabled === false`; the composite point written down with the I3 consequence stated
+
+**Dependencies:** C13-24
+
+**Size:** L
+
+**Owner wave:** Wave W4 (WS-C)
+
+**Parity:** WebGL
+
+### NEW-CLOUD-WEBGL-WEATHER-UPLOAD-PATH (C13-N15b) <!-- source: CAMPAIGN_13_V2 §3 WS-C -->
+
+**Status:** OPEN (Wave W4, Priority P2).
+
+**Delivers:** The WebGL twin of the weather texture off **the same `WeatherTexPacker` bytes** — `grep -rln "WeatherTexPacker\|packWeatherField" packages/engine/Source` returns only `Scene/Weather/*` plus the **WGSL** module, so **no WebGL weather texture, sampler or uniform exists anywhere**. Three slices via `packages/engine/Source/Renderer/Texture3D.js` or three 2D textures — the row decides and records why
+
+**Acceptance:** A Node spec asserting the WebGL upload consumes **byte-identical** packer output to the WebGPU upload; `weather-map-seam.spec.mjs`'s periodic-U + polar low-pass contract green on the WebGL sampler path **at 1440×721**
+
+**Dependencies:** C13-N15a, C13-N22, C13-N23
+
+**Size:** M
+
+**Owner wave:** Wave W4 (WS-C)
+
+**Parity:** WebGL
+
+### NEW-CLOUD-WEBGL-SHELL-SHADER (C13-N15c) <!-- source: CAMPAIGN_13_V2 §3 WS-C -->
+
+**Status:** OPEN (Wave W4, Priority P2).
+
+**Delivers:** The GLSL twin of `C13-29`: one full-screen analytic pass over the coverage field — Beer transmittance, dual-lobe phase, terminator-gated sun, sky ambient, planetary aerial, 2 regime-modulated octaves — including **3 analytic shells over the 3 slices** (the surviving clause of D19, so **H3** is reachable)
+
+**Acceptance:** **O1, O3, O4, O5, O6 (shell form), H1, H3** on WebGL; the `cloud-shell-orbital` cross-backend gate in `capture-and-diff.mjs` at the **pre-registered suite-default 2 %** ceiling (§1.4), where a FAIL is a finding and not a threshold to widen
+
+**Dependencies:** C13-29, C13-N15b, C13-N54
+
+**Size:** M
+
+**Owner wave:** Wave W4 (WS-C)
+
+**Parity:** **both**
+
+### NEW-CLOUD-WEBGL-DEGRADATION-CONTRACT (C13-N15d) <!-- source: CAMPAIGN_13_V2 §3 WS-C -->
+
+**Status:** OPEN (Wave W4, Priority P2).
+
+**Delivers:** The explicit documented degradation contract `QUEUE_2026-07-23_CAMPAIGN13.md:344-347` requires, **and** the corrections it forces: `CloudCollection.js:87` ("WebGPU only; documented no-op on WebGL") and `:590-605`'s silent billboard fallback stop being true rung by rung, and **S4 `ultra` clamping to S3 on WebGL must be documented, not silent**
+
+**Acceptance:** One spec asserting each documented capability string resolves to the behaviour the contract names **on each backend**, with an inertness mutant per pair
+
+**Dependencies:** C13-N15c
+
+**Size:** S
+
+**Owner wave:** Wave W4 (WS-C)
+
+**Parity:** both
+
+### C13-N16 — Shell ↔ march blend <!-- source: CAMPAIGN_13_V2 §3 WS-C -->
+
+**Status:** OPEN (Wave W4, Priority P2).
+
+**Delivers:** A cross-fade over ~30–80 km rather than a hard switch; the blend band renders both
+
+**Acceptance:** **O6, H1, H2** on a continuous 20 km → 20,000 km zoom
+
+**Dependencies:** C13-29, C13-N14
+
+**Size:** M
+
+**Owner wave:** Wave W4 (WS-C)
+
+**Parity:** shell half in GLSL at Wave 4; the **blend** is only measurable on WebGL after `C13-N52` (Wave 7), so the WebGL arm of O6 stays in its shell-only form until then
+
+### C13-N17 — GLSL cloud shadow on terrain — analytic arm <!-- source: CAMPAIGN_13_V2 §3 WS-C -->
+
+**Status:** OPEN (Wave W4, Priority P2).
+
+**Delivers:** The WebGL twin of the ground-shadow consumer, shell-derived analytic optical depth only
+
+**Acceptance:** `grep cloudShadow` over all `.glsl` returns **0 hits** today
+
+**Dependencies:** C13-22, C13-N15c
+
+**Size:** M
+
+**Owner wave:** Wave W4 (WS-C)
+
+**Parity:** both
+
+### NEW-CLOUD-WEBGL-SHADOW-BEER-MAP-AND-CASCADES (C13-N17b) <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+
+**Status:** OPEN (Wave W7, Priority P2).
+
+**Delivers:** The rest of the cloud shadow on terrain beyond `C13-N17`'s shell-derived analytic term: the ±60 km beer map (`CLOUD_SHADOW_FOOTPRINT_M = 60000.0`, `ProceduralClouds.wgsl:1940`) and its 3 cascades at `/9`, `/3`, `×1` (`:1957-1960`), plus the planet tier `C13-22` adds
+
+**Acceptance:** **O8 ≥ 0.8** of the lit disc shadowable on WebGL; the existing 82°N shadow-band bar `off.mean − on.mean > 0.5` green on the **WebGL** arm
+
+**Dependencies:** C13-N17, C13-22, C13-N52
+
+**Size:** M
+
+**Owner wave:** Wave W7 (WS-C2)
+
+**Parity:** WebGL
+
+### C13-N18 — Planetary terminator and Earth shadow <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+
+**Status:** OPEN (Wave W3, Priority P1).
+
+**Delivers:** Per-sample sun visibility: intersect the light ray with the WGS84 ellipsoid, penumbra softening over the solar angular diameter; night-side clouds go to ambient-only; feeds both the direct term and the shadow pass, and both the shell and the march
+
+**Acceptance:** **O2 ≤ 0.05** via `probe-cloud-terminator.mjs` over a 24-frame sun sweep at orbital altitude. Inertness mutant: `if (false && …)` on the visibility test must return the ratio to ~1.0. Plus a CPU-twin `cloud-terminator.spec.mjs` (analytic shadow-cone geometry, no GPU)
+
+**Dependencies:** C13-N03, C13-N09
+
+**Size:** M [+D]
+
+**Owner wave:** Wave W3 (WS-D)
+
+**Parity:** **required on both** (Shell path)
+
+### C13-N19 — Per-sample sun colour and elevation <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+
+**Status:** OPEN (Wave W3, Priority P1).
+
+**Delivers:** Replace the once-per-frame camera-keyed ramp (`:3772-3783`, slots written `:3786-3788`) with a per-sample evaluation through the already-bound `cloudTransmittanceLut` (`ProceduralClouds.wgsl:281-284`)
+
+**Acceptance:** **O2** secondary: Δu′v′ across the disc ≥ 0.03 at a terminator-crossing camera; **G3** at ground
+
+**Dependencies:** C13-N18
+
+**Size:** M
+
+**Owner wave:** Wave W3 (WS-D)
+
+**Parity:** both
+
+### C13-N20 — Planetary aerial perspective <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** Replace `clamp(midDist/60000, 0, 0.85)` (`:2658`) with a range-correct path-length model at orbital scale; promote `cloudAerialMode:"physical"` (the LUT path exists at `:2672-2716`) to the L2+ default above the blend altitude
+
+**Acceptance:** **O3 = 0** saturated pixels **measured by `C13-N04b`, not by an eyeballed capture pair**; contrast monotone with distance
+
+**Dependencies:** C13-N09, C13-N04b
+
+**Size:** M
+
+**Owner wave:** Wave W1 (WS-D)
+
+**Parity:** both (the Shell needs an aerial term)
+
+### C13-N21 — Per-genus phase reaches the image <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** Call `cloudPhase()` (`:1778`, **zero call sites**) or fold `genusPhaseDelta` (slot 171) into `multiScatterLight`'s `phaseG1`
+
+**Acceptance:** **A2's ≥0.05 per-genus separation clause** between cirrus (`phaseG 0.9`) and cumulus (`0.78`); today they are identical. *(The absolute g∈[0.75,0.95] band is `[unverified]` pending re-sourcing — §1.3 A2 — and must not be pre-registered until then.)* One call site
+
+**Dependencies:** C13-N09
+
+**Size:** S
+
+**Owner wave:** Wave W1 (WS-D)
+
+**Parity:** WebGPU
+
+### C13-N22 — Native-resolution weather texture <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** **Default taken 2026-09-12 (D5):** "weather texture 1440x721 now (M, seam spec updated in the same batch)" — the M sizing and the same-batch seam-spec edit are both part of the decision, not an implementation detail. `WEATHER_TEX_W/H` 256×128 → **1440×721** at `WebGPUProceduralCloudRenderer.ts:204-205`; `EdrWeatherSource.ts:46` 96×48 → native; **`weather-map-seam.spec.mjs:66-68`'s own `TEX_W`/`TEX_H` mirror in the same batch** (its comment says it must match); **`WeatherTexPacker.ts:336` and `:492`'s `texW = 256` parameter defaults**; the doc headers at `WeatherTexPacker.ts:5` and `ProceduralWeatherMap.ts:15`; and the polar low-pass width at 721 rows
+
+**Acceptance:** **156.4 → 27.8 km/texel, a 5.6× linear gain**, against a 6.4 km full-disc screen pixel. Measured by `C13-N04` spectrum and `C13-N05` IoU; the seam spec's periodic-U + polar low-pass contract stays green **at the new size**
+
+**Dependencies:** C13-N01
+
+**Size:** M *[corrected 2026-09-12 from S / "two constants plus one source default" — §0.14. The 5.6× arithmetic is undisputed; the sizing was]*
+
+**Owner wave:** Wave W1 (WS-E)
+
+**Parity:** field backend-neutral
+
+### C13-N23 — Three weather array slices <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+
+**Status:** OPEN (Wave W2, Priority P1).
+
+**Delivers:** `depthOrArrayLayers: 1 → 3` (`:2704`); index by deck instead of the constant layer 0 (`:1272`, `:1357`, `:1429`)
+
+**Acceptance:** **H3** low and high decks decorrelated (correlation ≤ 0.5). The view is *already* `"2d-array"` (`:2712`), the WGSL binding *already* `texture_2d_array` (`:262`), and the shader's own comment at `:259-261` says depth 1 exists "so per-deck layers can be added later" — **this row is the producer that scaffolding waited for** (Principle 7). ~12.5 MB rgba8
+
+**Dependencies:** C13-N22
+
+**Size:** M
+
+**Owner wave:** Wave W2 (WS-E)
+
+**Parity:** field backend-neutral
+
+### C13-N24 — GFS GRIB2 weather source <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+
+**Status:** OPEN (Wave W2, Priority P1).
+
+**Delivers:** **RULED `R-2026-09-12-5` (D6):** "GFS primary + GMGSI imagery referee + ECMWF as a second provider behind the same interface; the four remaining GRIB2 template checks (MCDC/HCDC/PRES/TMP) are a wave-1 launch-seal task before sizing C13-N24." **ECMWF is now a funded second provider, not an alternative** — `C13-20`'s multi-source composition and `C13-N44`'s degradation ladder are what make "behind the same interface" real, and `C13-N45` is what makes the source visible to the user. The L sizing stands only after the four checks return. `GfsGrib2WeatherSource` on the existing `WeatherSource` interface: fetch `.idx`, HTTP-range-get ~10.9 MB of cloud records, decode
+
+**Acceptance:** Offline fixture spec + a live smoke. GFS carries `LCDC`/`MCDC`/`HCDC` **and** per-layer `PRES` cloud bottom/top **and** `TMP` cloud top. **[PARTLY RESOLVED 2026-09-12 — measured, not cited.]** Two real GFS 0.25° cloud records banked in this session (`lcdc.grib2`, 756,598 B, discipline 0 / category 6 / parameter 3; and a second category-6 record, 731,729 B) were parsed section by section: **both carry Section 5 data-representation template 5.3**, with `numPoints = 1,038,240` — which is exactly **1440 × 721**, independently confirming the native-grid figure in §1.2. So **no JPEG2000 and no WASM decoder for these records**. Two caveats survive: **(i)** `MCDC`, `HCDC`, the per-layer `PRES` cloud bottom/top and `TMP` cloud top were **not** in the banked pair and are still owed the same one-line check before this row is sized; **(ii)** template 5.3 is **not** merely bit-unpack + prefix sum as the draft said — it carries group splitting with per-group reference values, group widths and group lengths before the spatial-difference recursion, so size the decoder for complex packing, not for simple packing. *Check recipe, for the remaining records:* read octets 10-11 of Section 5 (walk sections from offset 16 by their 4-byte length), or `wgrib2 -packing`.
+
+**Dependencies:** C13-N23
+
+**Size:** L
+
+**Owner wave:** Wave W2 (WS-E)
+
+**Parity:** source layer backend-neutral
+
+### C13-N25 — Data-driven deck bounds <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+
+**Status:** OPEN (Wave W2, Priority P1).
+
+**Delivers:** Replace the scalar `cloudLayerBottom = 1500` (`CloudVolumetrics.js:67`) / `cloudLayerTop = 4000` (`:74`) with per-deck heights converted from `PRES:{low,mid,high} cloud {bottom,top} level`
+
+**Acceptance:** **A8** WMO étage conformance 100 %. **Premise corrected:** `WeatherField.baseMeters` is **not** unread — it is produced, packed into channel B (`WeatherTexPacker.ts:345`, `:439`) and consumed (`ProceduralClouds.wgsl:1226-1249`), but can only lift the base **within** the deck the constants already chose. This row replaces the deck-bounds constants whose lift-within-deck consumer already exists *[corrected 2026-09-12, §0.13]*
+
+**Dependencies:** C13-N23, C13-N24
+
+**Size:** M
+
+**Owner wave:** Wave W2 (WS-E)
+
+**Parity:** both
+
+### C13-N26 — Wind as a separate typed resource <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+
+**Status:** OPEN (Wave W5, Priority P2).
+
+**Delivers:** A wind field carried alongside, not inside, the coverage RGBA
+
+**Acceptance:** Pre-refuted alternative on the record: "Existing cloud RGBA channels are occupied by coverage, type, base and density. Wind requires a **separate typed resource**" (`C13_PROCEDURAL_WEATHER_FALLBACK_2026-09-08.md:38-41`)
+
+**Dependencies:** C13-18
+
+**Size:** M
+
+**Owner wave:** Wave W5 (WS-E)
+
+**Parity:** both
+
+### C13-N27 — Regime classifier → weather channel <!-- source: CAMPAIGN_13_V2 §3 WS-F -->
+
+**Status:** OPEN (Wave W5, Priority P2).
+
+**Delivers:** A per-texel classifier emitting a regime id. Ship 3 first: closed-cell Sc, open-cell Cu, cirrus. **Includes an explicit channel-budget deliverable**: channel G is **not** free scaffolding — it is actively consumed as a continuous genus shape bias (`ProceduralClouds.wgsl:1226-1249`) and actively produced by `MetarWeatherSource` from okta/CB-TCU genus mapping. A discrete regime id and a continuous genus bias cannot share one byte, so this row must deliver **either a fifth channel / second texture for regime, or a documented bit-split of G with both decoders updated**
+
+**Acceptance:** **P3** per-regime morphology (cell diameter 10–40 km, ring-vs-plate polarity, anisotropy along the wind) via `probe-cloud-regimes.mjs`; **O5** spectrum and **O1** IoU both improve vs the noise control; **plus a regression assertion that a METAR-fixture render is byte-identical in genus behaviour before and after**. *[added 2026-09-12: the draft called G "labelled scaffolding by the packer" and wrote a regime id into it, over two live producers and a live consumer]*
+
+**Dependencies:** C13-N23, C13-N24, C13-N38
+
+**Size:** L
+
+**Owner wave:** Wave W5 (WS-F)
+
+**Parity:** classifier neutral; consumption per-backend
+
+### C13-N27b — Secondary regimes <!-- source: CAMPAIGN_13_V2 §3 WS-F -->
+
+**Status:** OPEN (Wave W5, Priority P2).
+
+**Delivers:** Cloud streets, orographic (barrage/foehn/lee-wave), fog/stratus, and the marine-Sc LTS response
+
+**Acceptance:** **P4**, each clause separately. *[added 2026-09-12: §4.2 routed these four to C13-N27 whose acceptance measured only three regimes — the table implied coverage no statistic backed]*
+
+**Dependencies:** C13-N27
+
+**Size:** M
+
+**Owner wave:** Wave W5 (WS-F)
+
+**Parity:** both
+
+### C13-N28 — Cyclone, front and dry-slot synthesis <!-- source: CAMPAIGN_13_V2 §3 WS-F -->
+
+**Status:** OPEN (Wave W5, Priority P2).
+
+**Delivers:** Comma head + tail + **carved dry slot**; TC eye / CDO / outflow canopy; **frontal bands with the four-étage vertical ladder**
+
+**Acceptance:** **P2** (eye punched as a warm hole in a cold ring; dry slot survives filtering) **and P1** (band ≥1000 km at ≥3:1 anisotropy; the cirrus→cirrostratus→altostratus→nimbostratus sequence present in one column at three cross-front sample lines; cold-front leading edge ≥2× sharper than trailing) via `probe-cloud-named-features.mjs`. **Zero grep hits for `front\|cyclone\|jet stream\|pressure system` anywhere in `packages/engine/Source` today.** *[added 2026-09-12: fronts are named verbatim in maintainer goal 3 and the draft's acceptance measured only the TC eye and the dry slot — the ladder clause is what distinguishes a front from a 2D smear, and it is why C13-N23 and C13-N38 are hard dependencies]*
+
+**Dependencies:** C13-N27, C13-N38, C13-N23, C13-N24
+
+**Size:** L
+
+**Owner wave:** Wave W5 (WS-F)
+
+**Parity:** both
+
+### C13-N29 — Diurnal phase <!-- source: CAMPAIGN_13_V2 §3 WS-F -->
+
+**Status:** OPEN (Wave W5, Priority P2).
+
+**Delivers:** Land / ocean split — late-afternoon convective max over land, 0300–0600 LT over ocean
+
+**Acceptance:** `probe-cloud-diurnal.mjs`: 24 frames of a rotating globe; phase must differ by surface type
+
+**Dependencies:** C13-N24
+
+**Size:** M
+
+**Owner wave:** Wave W5 (WS-F)
+
+**Parity:** both
+
+### C13-N30 — Close-range detail injection <!-- source: CAMPAIGN_13_V2 §3 WS-G -->
+
+**Status:** OPEN (Wave W6, Priority P2).
+
+**Delivers:** A third octave / procedural high-frequency term near the camera, below the ~21 m density floor, gated on ray footprint
+
+**Acceptance:** **A7** slope ∈ [−2.5,−1.5], compactness ≥ 2.0; **I2** ≤ 5 m within 200 m. The mip clamp only goes coarser (`:585-594`)
+
+**Dependencies:** C13-N13
+
+**Size:** M
+
+**Owner wave:** Wave W6 (WS-G)
+
+**Parity:** WebGPU
+
+### C13-N31 — Inside-cloud response <!-- source: CAMPAIGN_13_V2 §3 WS-G -->
+
+**Status:** OPEN (Wave W6, Priority P2).
+
+**Delivers:** Near-plane fade, in-cloud extinction of the scene, interval-aware step floor for horizontal in-deck rays
+
+**Acceptance:** **I1, I3.** Constrained: the raymarch must run in the env-effects phase because it samples display-space colour+depth (`CLOUD_UNIFICATION_DESIGN.md:20-26`), so I3 needs a pre-pass extinction term or an explicit exception
+
+**Dependencies:** C13-N13, C13-N03
+
+**Size:** L
+
+**Owner wave:** Wave W6 (WS-G)
+
+**Parity:** WebGPU
+
+### C13-N32 — File C13-42..49 in the tracked ID table <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** **Default taken 2026-09-12 (D14):** "file C13-47/48/49, priorities stamped 'superseded by C13 v2 §5'" — the rows enter the add-only table at their **tracked** priorities with the stamp, and the untracked P0 promotions are **not** ratified. The nine-row programme enters `QUEUE_2026-07-23_CAMPAIGN13.md` §1 (add-only)
+
+**Acceptance:** `grep -c "C13-4[4-9]"` on the tracked queue returns > 0; **measured today it returns 0**. The definitions live only in an untracked lane output
+
+**Dependencies:** —
+
+**Size:** S
+
+**Owner wave:** Wave W1 (WS-H)
+
+**Parity:** n/a (WS-H, docs/tooling row)
+
+### C13-N33 — Re-stamp superseded cloud docs in place <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+
+**Status:** OPEN (Wave W2, Priority P1).
+
+**Delivers:** **RULED `R-2026-09-12-10` (D13), Wave 2:** "in-place corrections of factually false sentences are permitted (dated), no file moved or repointed; C13-N33 may proceed in wave 2." The row is therefore **no longer held**: it corrects the sentences §6 lists, each edit **dated**, and moves and repoints nothing. Correct the sentences §6 shows to be false, **moving no file** — the archive sweep is HELD (user, 2026-06-30)
+
+**Acceptance:** One reviewed batch; no file moved, no link repointed. **Scope question — D13**
+
+**Dependencies:** —
+
+**Size:** S
+
+**Owner wave:** Wave W2 (WS-H)
+
+**Parity:** n/a (WS-H, docs/tooling row)
+
+### C13-N34 — API / JSDoc defect sweep <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** `cloudAmbientSource` `"sky"` vs `"sky-lut"` (`CloudVolumetrics.js:194-195` vs `:3869`); declare `cloudSpecialShadeMode`; correct `cloudNoiseMorphology`'s `@type {number}`; declare or fold `godRayCloudAware` (`WebGPUSceneRendererPostFrustumChain.ts:215-216`); fix `MetarWeatherSource`'s `url` doc (`:29-31` promises raw METAR text, `_loadStations` does `res.json()` at `:286-287`)
+
+**Acceptance:** One spec asserting each documented enum value is reachable, with an inertness mutant per pair
+
+**Dependencies:** —
+
+**Size:** S
+
+**Owner wave:** Wave W1 (WS-H)
+
+**Parity:** n/a (WS-H, docs/tooling row)
+
+### C13-N35 — Decompose the two oversize cloud files <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+
+**Status:** OPEN (Wave Continuous, Priority P1).
+
+**Delivers:** `ProceduralClouds.wgsl` **3,157** and `WebGPUProceduralCloudRenderer.ts` **5,570** — 3.2× and 5.6× the rule
+
+**Acceptance:** Recorded in `ES6_MODERNIZATION_STATUS.md`; byte-identical render before/after
+
+**Dependencies:** —
+
+**Size:** L
+
+**Owner wave:** Wave Continuous (WS-H)
+
+**Parity:** n/a (WS-H, docs/tooling row)
+
+### C13-N36 — Disambiguate `CLOUD-LOW-COVERAGE-CUTOFF` <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** Two byte-identical headings (visible-march arm RESOLVED Batch 798 at `DEFERRED_WORK.md:13088`; fog cheap-path arm acceptance-owed at `:13149`) get distinct ids
+
+**Acceptance:** A bare grep no longer returns the wrong one first
+
+**Dependencies:** —
+
+**Size:** S
+
+**Owner wave:** Wave W1 (WS-H)
+
+**Parity:** n/a (WS-H, docs/tooling row)
+
+### C13-N37 — `iblRevision` epsilon debounce <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+
+**Status:** OPEN (Wave W2, Priority P1).
+
+**Delivers:** `publishCloudIblCoverage` bumps `iblRevision` on any exact float change with no epsilon debounce, so once weather animates coverage it triggers a full cube fill + prefilter + SH **every frame**
+
+**Acceptance:** A sub-epsilon coverage delta does not bump the revision. **Must land before `C13-19`**
+
+**Dependencies:** C13-N23
+
+**Size:** S
+
+**Owner wave:** Wave W2 (WS-H)
+
+**Parity:** n/a (WS-H, docs/tooling row)
+
+### C13-N38 — Per-texel genus profile <!-- source: CAMPAIGN_13_V2 §3 WS-F -->
+
+**Status:** OPEN (Wave W3, Priority P1).
+
+**Delivers:** Widen the genus decode so **extinction, phase-G, erosion style, fibre morphology and deck assignment are per-texel**, not collection-level. Today `ProceduralClouds.wgsl:1240-1248` gives only `perGenusShape = mix(cloud.profileShape, genusTarget, clamp(abs(gDev),0,1))` with the file's own comment "a best-effort shape bias, not a full per-pixel genus profile", and everything else comes from one `cloudType`. Carries an **explicit uniform/bind-group budget** (`CLOUD_UNIFORM_FLOATS` is 172 and append-only, §0.2)
+
+**Acceptance:** Two adjacent texels with different genus ids produce **measurably different extinction AND phase in one frame**, with an inertness mutant restoring the collection-level value. *[added 2026-09-12: the draft recorded this as §8 Unknown #12 and said "C13-N27 and C13-23 must widen that decode" — but neither row's deliverable or acceptance stated it, and §8 conceded the uniform cost "is not established". P1(b), A8 and C13-16's mixtures are all unbuildable without it]*
+
+**Dependencies:** C13-N23
+
+**Size:** L [+D]
+
+**Owner wave:** Wave W3 (WS-F)
+
+**Parity:** WebGPU
+
+### C13-N39 — Photometric conformance suite <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+
+**Status:** OPEN (Wave W6, Priority P2).
+
+**Delivers:** Owns **A3** (Beer–Lambert R² ≥ 0.95, recovered σ ±10 %), **A6** (cloud-top self-shadow σ/μ ≥ 0.12, gradient-vs-sun \|r\| ≥ 0.5, rotates with sun azimuth) and **G1** (zenith sky-cover ±0.05; no >10 % step within 5° of horizon)
+
+**Acceptance:** Each bar green with an inertness mutant; A3/A6 ride `C13-21`'s energy work, G1's first clause rides `C13-N27`'s coverage response. *[added 2026-09-12: A3, A6 and G1 were stated as bars in the draft and appeared in **no** row's acceptance column]*
+
+**Dependencies:** C13-21, C13-N27, C13-N09
+
+**Size:** M
+
+**Owner wave:** Wave W6 (WS-D)
+
+**Parity:** WebGPU
+
+### C13-N40 — Peer head-to-head instrument <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+
+**Status:** OPEN (Wave W2, Priority P1).
+
+**Delivers:** **RULED `R-2026-09-12-12` (D20): FUND**, Wave 2, L — "'above Takram' becomes a per-statistic dated claim; T1 (forward-run ghosting) is the head-to-head bar." Goal 2 therefore **has** an acceptance, and any competitive sentence in the record must carry the statistic, the date and the machine. Stand up the (MIT-licensed, therefore redistributable) peer's published cloud scenes locally at matched resolution, camera and sun; capture the same statistic set the A-bars use (edge/interior ratio, fitted g, detail spectrum slope, **ghost width on the same 100 m/s traverse**) plus frame time **on this machine**; bank a side-by-side
+
+**Acceptance:** "Above Takram" becomes a **per-statistic claim with a date and a machine**, not a README quotation. **T1 is the sharpest target** — their README names ghosting/smearing and disocclusion errors as unfixed. *[added 2026-09-12: goal 2 had **zero acceptance** anywhere in the draft, which conceded twice that it "is not measurable today" and filed nothing to make it measurable]*
+
+**Dependencies:** C13-N03, C13-N09, C13-N06
+
+**Size:** L
+
+**Owner wave:** Wave W2 (WS-H)
+
+**Parity:** n/a (WS-H, docs/tooling row)
+
+### C13-N41 — Public two-axis quality surface <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+
+**Status:** OPEN (Wave W3, Priority P1).
+
+**Delivers:** A documented `cloudLightingQuality` (or an options object carrying both axes) on `CloudVolumetrics`; the `"shell"` and `"ultra"` strings honoured; JSDoc + `CHANGES.md`; `packages/sandcastle/gallery/cloud-parameters` exposing S and L as separate controls with each rung's measured cost shown
+
+**Acceptance:** Every documented enum value is reachable **and changes the image**, with the inertness-mutant shape of `C13-N34`. *[added 2026-09-12: "users can scale functionality down" had no public API, no docs and no demo surface anywhere in the draft — `CloudVolumetrics.js:162`/`:171` are the only quality dials]*
+
+**Dependencies:** C13-13, C13-N06
+
+**Size:** M
+
+**Owner wave:** Wave W3 (WS-B)
+
+**Parity:** surface backend-neutral
+
+### C13-N42 — Frame-budget-aware rung selection <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+
+**Status:** OPEN (Wave W3, Priority P1).
+
+**Delivers:** Measured cloud-pass time from `C13-N06`'s instrumentation feeding a hysteretic downgrade; **default off** (`SR-1`)
+
+**Acceptance:** **Ruled verbatim:** "acceptance = a synthetic 2x cost inflation causes exactly one rung drop and no oscillation over 600 frames". The row's docs must also state that with the controller off — the default — scaling is manual + altitude-only
+
+**Dependencies:** C13-N06, C13-N14
+
+**Size:** M
+
+**Owner wave:** Wave W3 (WS-B)
+
+**Parity:** WebGPU first; the selector is backend-neutral once `C13-N15a` gives WebGL a cost signal
+
+### C13-N43 — Cloud lane in the perf regression gate <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+
+**Status:** OPEN (Wave W2, Priority P1).
+
+**Delivers:** Pin each rung's p50/p95 at 1080p and 4K plus peak VRAM with a stated noise band, in `c11-170-perf-regression-gate.spec.mjs` (today `grep -ci cloud` → **0**); the wave gate re-runs it per wave
+
+**Acceptance:** A rung regression **can fail**. Waves 3–6 add per-sample sun visibility, per-sample LUT sun colour, a 3× weather texture, planet-scale shadows, a third octave and Ultra — every one a cost with no failing bar in the draft
+
+**Dependencies:** C13-N06 pass 1
+
+**Size:** S
+
+**Owner wave:** Wave W2 (WS-H)
+
+**Parity:** n/a (WS-H, docs/tooling row)
+
+### C13-N44 — Provider degradation ladder <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+
+**Status:** OPEN (Wave W4, Priority P2).
+
+**Delivers:** Engine-driven tick, bounded retry, stale-slice-with-provenance, timeout → procedural fallback **byte-continuous with the no-provider render** (`WeatherFieldGrid.ts:45-72` states the intent), and a slice cache with a stated byte ceiling for the ~10.9 MB/step range reads
+
+**Acceptance:** With the network refused, the render is **byte-identical** to the no-provider render and no console error is emitted; with a mid-fetch abort, the previous slice survives. *[added 2026-09-12: nothing in the engine calls `provider.tick()`, and no row in the draft covered fetch failure, timeout, partial slice, stale-slice policy or a cache; `WEATHER_RECREATION_ROADMAP.md:128-133` designed the ladder and none of it exists]*
+
+**Dependencies:** C13-24, C13-N24
+
+**Size:** M
+
+**Owner wave:** Wave W4 (WS-E)
+
+**Parity:** both
+
+### C13-N45 — Weather provenance surface <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+
+**Status:** OPEN (Wave W2, Priority P1).
+
+**Delivers:** `scene.weather.provenance` carrying source id, `validTime`, attribution and a synthetic/observed flag per sampled region; consumers for `WeatherField.attribution`/`source`/`validTime` (`WeatherTypes.ts:118-122`), which have none today
+
+**Acceptance:** A spec asserting a procedurally-filled texel reports `synthetic` and an observed one reports the source string. **This is the row the honesty contract's "a synthetic-as-observed mutant must fail" actually needs.** *[added 2026-09-12: §4.3 quoted that contract as binding and no row implemented or measured it; D10 covers evidence licensing only, not runtime provenance]*
+
+**Dependencies:** C13-24
+
+**Size:** S
+
+**Owner wave:** Wave W2 (WS-E)
+
+**Parity:** both
+
+### C13-N46 — Re-write Gates C/D and EXIT against the v2 bars <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** **RULED `R-2026-09-12-3` (D17), Wave 1:** "gates rewritten now as a wave-1 ledger row (C13-N46): GATE-D deps -> C13-N22/N23/N24/N27; GATE-C names the rung cost table; EXIT enumerates gate bars vs calibration bars per renderer." **Per renderer** now means three columns, not two: WebGPU, WebGL-after-Wave-4 (shell bars), WebGL-after-Wave-7 (full bars) — see §1.4. `C13-GATE-D` (`:154`) deps move off the descoped `C13-14` onto `C13-N22/N23/N24/N27`; `C13-GATE-C` (`:153`) names the rung cost table as its measured-performance evidence; `C13-EXIT` (`:155`) enumerates which of O1–O9 / H1–H3 / A1–A9 / G1–G3 / I1–I3 / P1–P5 / L1–L2 / T1 are **gates** and which are **calibration**, **per renderer**
+
+**Acceptance:** The campaign can close. **As written in the draft it could complete every row and still not close**: GATE-D's deps are `C13-14..20` and `C13-14` is descoped, GATE-C's deps scatter across Waves 3 and 6 with `C13-41` in an untouched lane, and none of the new bars appears in any gate
+
+**Dependencies:** —
+
+**Size:** M
+
+**Owner wave:** Wave W1 (WS-H)
+
+**Parity:** n/a (WS-H, docs/tooling row)
+
+### C13-N47 — Derive and land the characterization thresholds <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+
+**Status:** OPEN (Wave Continuous, Priority P1).
+
+**Delivers:** Run the calibration campaign and write real values into `CHARACTERIZATION_THRESHOLDS` (`lib/c13-42-reproduction-contract.mjs:202`, today `null`)
+
+**Acceptance:** `characterizationDisposition()` returns `"acceptance"`, not `"calibration"`; **plus an `R-2026-08-06 R3` compliance statement showing each derived bar can still fail**. *[added 2026-09-12: several bars defer to "derive from ≥3 calibration runs" and no row ran the calibration or wrote the thresholds — the campaign would measure everything and gate nothing]*
+
+**Dependencies:** ≥3 green calibration runs from `C13-42a`+`C13-42f`, or from `C13-N04b` for the O-bars
+
+**Size:** M
+
+**Owner wave:** Wave Continuous (WS-A)
+
+**Parity:** n/a
+
+### C13-N48 — Wave-end gate bindability (Q-152) <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+
+**Status:** OPEN (Wave W1, Priority P0).
+
+**Delivers:** Make `Tools/wave-end-gate.mjs` produce a bankable receipt with a named exit code. At HEAD **every step is `bindable:false`; every invocation refuses pre-spawn with exit 3, zero children spawned** (`wave-end-gate.mjs:2`; `buildStepPlan` `:359-398`)
+
+**Acceptance:** One non-refused receipt banked. **Until it lands, every wave exit uses the manual three-step per `R-2026-09-02-3`**. *[added 2026-09-12: the draft made a runner that has never produced a receipt the exit condition of all six waves and deferred fixing it to "whatever refuses next"]*
+
+**Dependencies:** —
+
+**Size:** M
+
+**Owner wave:** Wave W1 (WS-A)
+
+**Parity:** n/a
+
+### C13-N49 — Cloud-related lighting of the scene <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+
+**Status:** OPEN (Wave W6, Priority P2).
+
+**Delivers:** Make cloud→IBL and cloud→reflections measurable: **L1 overcast response** and **L2 reflection consistency**. Includes repointing the dead `globe.showProceduralClouds` reference at `WebGPUDynamicEnvironmentMapManager.ts:2423`
+
+**Acceptance:** L1 and L2 green with inertness mutants; the `cloudsInReflections` / `cloudContributesIBL` defaults are a separate maintainer question, not silently flipped (`SR-1`). *[added 2026-09-12: goal 1 names "cloud-related lighting" and no bar in the draft scored IBL, reflections or overcast ambient — the campaign would have shipped clouds that light nothing]*
+
+**Dependencies:** C13-N37, C13-22
+
+**Size:** M
+
+**Owner wave:** Wave W6 (WS-D)
+
+**Parity:** WebGPU
+
+### C13-N50 — Lifecycle proof for the widened weather resource <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+
+**Status:** OPEN (Wave W2, Priority P1).
+
+**Delivers:** Queue §8 lifecycle dimension for the 3-slice texture and any forked bind-group layout: context destroy, **device loss**, **two simultaneous contexts**, cache pressure/eviction
+
+**Acceptance:** Each survives with no leak and no stale binding. §8 Unknown "the caches *should* absorb it" is an inference, not a measurement. *[added 2026-09-12: the draft named this risk and filed nothing]*
+
+**Dependencies:** C13-N23
+
+**Size:** S
+
+**Owner wave:** Wave W2 (WS-E)
+
+**Parity:** both
+
+### NEW-CLOUD-WEBGL-DENSITY-DOMAIN-AND-NOISE (C13-N51) <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+
+**Status:** OPEN (Wave W7, Priority P2).
+
+**Delivers:** `CloudDensityDomain.wgsl` (**199** lines) → its GLSL twin; **and the noise-source decision measured rather than assumed**: first the **live** `fbmNoise` / `worleyF1` path (which needs no bake — `WebGPUCloudNoiseResources.ts:15-19`), then, only if the live path misses **A7** or **I2**, a **CPU/Worker bake** of the 128³ shape and 32³ detail volumes uploaded through `Renderer/Texture3D.js`. The compute bake itself stays WebGPU-only (§1.4)
+
+**Acceptance:** The CPU twin in `cloud-march-transfer.spec.mjs` predicts the **GLSL** integrated image to the same tolerance it predicts the WGSL one; a Node spec asserting the two density functions agree at a fixed sample set within a stated epsilon; **and an explicit written verdict on A7/I2** — reached or not — so the fallback choice is a measurement, not a preference
+
+**Dependencies:** C13-N15b, C13-N54
+
+**Size:** L
+
+**Owner wave:** Wave W7 (WS-C2)
+
+**Parity:** WebGL
+
+### NEW-CLOUD-WEBGL-MARCH-TWIN (C13-N52) <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+
+**Status:** OPEN (Wave W7, Priority P2).
+
+**Delivers:** `ProceduralClouds.wgsl` (**3,157** lines) → `ProceduralCloudsFS.glsl` plus `#include` chunks: the march, cone and straight light march, MS octaves, phase, powder, terminator, per-sample sun colour, planetary aerial, shadow sampling, genus decode. **Variant mapping, measured (§0.16):** the WGSL carries **exactly one** `//>>ifdef` axis — `CLOUD_MARCH_EMIT_RECONSTRUCTION`, 13 directive lines all of one flag, registered `hiDefineBit(4)` at `WebGPUShaderDefines.ts:1090` — so the twin needs **one** GLSL `#ifdef` of the same name through `ShaderSource`'s `defines`. GLSL ES 3.00 has a native preprocessor; the fork's `//>>ifdef` convention exists only because **WGSL** has none, so the mapping is one-for-one and the `//>>else` branch becomes `#else`. **There are no f16 arithmetic variants to map** — `grep "enable f16"` over the cloud shaders returns 0; the `f16` tokens at `:3059`, `:3152`, `:3154` are comments about clamping for an f16 **render target**, and the `_f16.wgsl` twins in the tree are post-process modules (the god-ray pair is the only one in scope, `C13-N55`)
+
+**Acceptance:** The **full** A/G/I/T bar list at rungs **S1–S3** on WebGL, through the same probes, with the same inertness mutants; `C13-N54` green in all three layers; the per-rung `capture-and-diff` gates of `C13-N57` at their **derived** ceilings. **Decomposition is mandatory, not optional:** the source is 3.2× the ~1,000-line rule and the twin will be too, so `C13-N35`'s decomposition fires on both sides in this row
+
+**Dependencies:** C13-N51, C13-N53, C13-N54, **and the WGSL march quiescent** (i.e. Wave 6 closed)
+
+**Size:** XL [+D]
+
+**Owner wave:** Wave W7 (WS-C2)
+
+**Parity:** WebGL
+
+### NEW-CLOUD-WEBGL-RECONSTRUCTION-TWIN (C13-N53) <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+
+**Status:** OPEN (Wave W7, Priority P2).
+
+**Delivers:** `CloudReconstructionAttachments.wgsl` (**441**; MRT via WebGL2 `drawBuffers` on the existing multi-attachment `Framebuffer`), `CloudTemporalResolve.wgsl` (**415**), `CloudUpscale.wgsl` (**133**)
+
+**Acceptance:** **T1** on WebGL on **both** the 20°/s pan and the 100 m/s forward legs; the attachment set and the history-reset policy asserted equal to the WebGPU path (the eleven reset reasons at `WebGPUCloudTemporalHistory.ts:16-29` are the list both sides must agree on)
+
+**Dependencies:** C13-N15a, C13-12
+
+**Size:** L
+
+**Owner wave:** Wave W7 (WS-C2)
+
+**Parity:** WebGL
+
+### NEW-CLOUD-WGSL-GLSL-TWIN-DRIFT-GUARD (C13-N54) <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+
+**Status:** OPEN (Wave W4/W7, Priority P1).
+
+**Delivers:** The answer to §8 risk 17. Three layers, modelled on the fork's **own** twin practice (§0.19): **(1) provenance** — every ported GLSL function carries a comment naming its WGSL source and line span, in the shape `GlobeTerrain.wgsl:4214` already uses ("Line-for-line port of `VectorCommon.glsl::vectorOffsetToLine`"), machine-checked for existence and resolvability; **(2) a CPU reference model both sides must match** — extend `cloud-march-transfer.spec.mjs`, so drift is caught by **behaviour**, not by text; **(3) a structural fold** in the spirit of the pipeline-key module fold — a generated manifest of `(function name → normalised body hash)` for both files, so editing one side alone fails a Node spec **by name**. Layer (1) and the manifest scaffold land in **Wave 4** with `C13-N15c` (the shell twin is the first twin); layers (2)-(3) complete in Wave 7
+
+**Acceptance:** The guard **fails when one side of a twin is edited alone**, proven by a deliberate inertness mutant on each layer: delete the GLSL edit; break the reference model; skip the manifest regeneration. Runner home `test-visual-regression-node`. **Precedent and its gap, stated:** `eye-cartographic-uniforms.spec.mjs` already asserts the `csm_eyeToCartographicDelta` twins "do not drift" (`WGSLBuiltins.ts:411-415`, Batch 1470), but the **file-scale** `VectorCommon.glsl` ↔ `GlobeTerrain.wgsl` twin has provenance comments and **no drift spec** — closing that asymmetry before a 3,157-line twin exists is this row's whole point
+
+**Dependencies:** C13-N15c
+
+**Size:** M
+
+**Owner wave:** Wave W4/W7 (WS-C2)
+
+**Parity:** n/a
+
+### NEW-GODRAY-WEBGL-STACK (C13-N55) <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+
+**Status:** OPEN (Wave W7, Priority P2).
+
+**Delivers:** The WebGL twin of `GodRayGenerate.wgsl` (**303**) + `GodRayComposite.wgsl` (**35**) as a **`PostProcessStageComposite`** under `PostProcessStageLibrary` — the framework already hosts `createDepthOfFieldStage` (`:141`), `createBloomStage` (`:388`) and `createLensFlareStage` (`:810`) — reading **`czm_globeDepthTexture`** for occlusion, which is already a live automatic uniform on the GLSL side. **One authority, per `R-2026-09-11-5`:** `updateGodRaySunUV`'s single sun-usability determination is **hoisted into a backend-neutral module** and published to **both** backends' pass skip (`enabled = usable \|\| scene.godRayBehindCamera`, default false) **and** shader receptor; it is **not** re-implemented on the WebGL side. The disjoint per-frame uniform-range discipline (`GOD_RAY_UNIFORM_RANGES`) has **no** WebGL analogue — GLSL sets uniforms by name — so the WebGL arm inherits the **determination** and not the **ranges**, stated here so nobody ports byte offsets that cannot exist
+
+**Acceptance:** `probe-godray-energy-law.mjs` **G1/G3/G4/G6** on WebGL (G2 stays calibration); `godray-sun-usability-uniform-ranges.spec.mjs` extended with a **backend-neutral determination group**, its existing 19 tests and 5 inertness mutants still green; an inertness mutant on the hoisted determination must make the two backends' pass skip **stop agreeing** — which is the only assertion that proves there is one authority and not two
+
+**Dependencies:** C13-45, C13-N15a
+
+**Size:** L
+
+**Owner wave:** Wave W7 (WS-C2)
+
+**Parity:** **both**
+
+### NEW-CLOUD-WEBGL-LIGHTING-CONSUMERS (C13-N56) <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+
+**Status:** OPEN (Wave W7, Priority P2).
+
+**Delivers:** cloud→IBL, cloud→volumetric fog and cloud→aerial-perspective consumers on WebGL — the three couplings v2's §1.4 listed as WebGPU-only and that "full parity" implies but `R-2026-09-12-8` does not name
+
+**Acceptance:** **L1** (overcast response) and **L2** (reflection consistency) green on the WebGL arm, with the same inertness mutants `C13-N49` uses. **If the maintainer trims full parity back to "march + god rays" as literally ruled, this is the row to cut**, and §1.4's capability table reverts one line
+
+**Dependencies:** C13-N49, C13-N52
+
+**Size:** L
+
+**Owner wave:** Wave W7 (WS-C2)
+
+**Parity:** WebGL
+
+### NEW-CLOUD-CROSS-BACKEND-PARITY-ACCEPTANCE (C13-N57) <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+
+**Status:** OPEN (Wave W7, Priority P2).
+
+**Delivers:** The instrument `R-2026-09-12-8` implies and v2 had nowhere to put: per-rung `capture-and-diff.mjs` split-screen scenes — `cloud-shell-orbital`, `cloud-march-s1`, `cloud-march-s3`, `cloud-godray-ground` — each with a **pre-registered** cross-backend mismatch ceiling and a **written rationale** in `scenes.json` (`:88` and `:126` are the format precedent; the suite default is 2 % at `capture-and-diff.mjs:81`), **plus the count-invariance and energy bars run on both arms**
+
+**Acceptance:** Each rung's gate PASSes at its pre-registered ceiling, **or** the ceiling is revised **in its own reviewed commit** with the measurement that forced it (baseline refreshes are deliberate and separately reviewed, `R-2026-08-29-2`). The march ceilings are **derived** under `C13-N47`'s ≥3-run discipline and each derivation must state what value would have failed (`RULING-2026-08-06 R3`). `O5`, the coverage count-invariance bar and `godray-energy-law` green on **both** arms
+
+**Dependencies:** C13-N15c, C13-N52, C13-N55
+
+**Size:** M
+
+**Owner wave:** Wave W7 (WS-C2)
+
+**Parity:** **both**
 
 ## New findings — wave P0-2, lane Aerin, 2026-09-05
 
@@ -4068,7 +5235,7 @@ own overhead evidence - a ledger that perturbs the thing it certifies is the
 
 **LIVE GATE EVIDENCE 2026-08-07 (Edge sweep, `probe-cloud-genus-morphology.mjs`, tip `1c3778072d`):** gates D and E now FAIL exactly along the transfer model's predicted dilution plateau — measured elongations CIRRUS 1.18 / CIRROSTRATUS 0.98 / CIRROCUMULUS 0.90 (ordering directionally CORRECT; the second step misses the x1.1 bar at x1.089) and the wind-rotation argmax moved 60 deg against a [60,120] window (the boundary). Both failures are marginal in precisely the way the Batch-857 model explains. This is the pending maintainer ruling made visible in a live gate, not a new regression; do NOT fix by widening either bar.
 
-**Status:** OPEN - needs a DECISION, not a threshold edit. Found by the first
+**Status:** OPEN — default taken on D8 (2026-09-12): provisional (b), accept ~1.2:1 with re-derived failable gates C/D/E; the RULING-2026-08-06 R3 failability proof is owed; the re-derivation happens in Wave 5, after C13-N27+C13-N38 change the input distribution. Re-pointed off C13-14 onto C13-N22/N23/N27/N38 per R-2026-09-12-2 (D4). Found by the first
 successful run of `probe-cloud-genus-morphology.mjs --phase=direction`
 (Batch 842). This is real product data, not instrument noise: the uniforms phase
 PASSED exactly the same session (packed slots 168-171 read `[0,1,0,0]` at the
@@ -13365,7 +14532,7 @@ Original filing retained below.)*
 > items sharing one ID; disambiguate by subtitle — **"coverage <= ~0.40 renders
 > zero cloud"** (this one, the visible march, RESOLVED at Batch 798) versus
 > **"fog cheap-path arm"** (below). Any future "mark CLOUD-LOW-COVERAGE-CUTOFF
-> resolved" edit must say which.
+> resolved" edit must say which. Disambiguation owed to C13-N36 (Wave 1).
 >
 > **Downstream note:** the `C13-01` row in `QUEUE_2026-07-23_CAMPAIGN13.md` still
 > lists this as one of "TWO REAL GAPS pinned by knownGapId ceiling gates". The
@@ -13397,7 +14564,7 @@ and the plains fixture, the plains ceiling gate fails, and its floor gate
 > ⚠ **ID COLLISION (noted 2026-08-07):** this heading is byte-identical to the one
 > ~20 lines above, which covers a **different** subject — the visible-march
 > low-coverage cutoff, RESOLVED at Batch 798. Disambiguate by subtitle. This entry
-> is the **fog cheap-path arm** only.
+> is the **fog cheap-path arm** only. Disambiguation owed to C13-N36 (Wave 1).
 
 **Status:** IMPLEMENTED 2026-08-06, Edge acceptance owed. This is the arm the
 2026-08-02 Codex handoff (§5 item 3) left open as "fog cheap-path coverage

@@ -74,24 +74,41 @@ not installed as a bundled asset. Gates M-06..M-10 close under that ruling.
 
 ### C13 — Planetary volumetric clouds, RTE, weather realism
 
-**Launched / executing** since 2026-07-23 (`QUEUE_2026-07-23_CAMPAIGN13.md`). Gate B (planetary
-correctness) CLOSED 2026-08-07 (Batch 866). Gates A, C, D remain open (`DEFERRED_WORK.md`
-"RULING-2026-08-06", ruling R2). **Critical path:** `C13-41` (C12-29 S3's canonical owner) —
-REOPENED by `R-2026-08-14-1`; its restored exit condition is the SOL-4 banked refresh cost plus
-the 1.0496 `shadowContrastInvariant` mechanism (queue row `C13-41`). This is also C14's
-transitive blocker (see C14 below). Execution stays orchestrator-only: `R-2026-08-24-3` narrows,
-without replacing, the 2026-07-24 Option-B ruling — Codex Sol may build bounded C13
-instrument/harness work under an Opus lead with separate Opus review; engine-semantic changes
-stay Opus-authored.
+**Launched / executing** since 2026-07-23 (`QUEUE_2026-07-23_CAMPAIGN13.md`); Gate B (planetary
+correctness) CLOSED 2026-08-07 (Batch 866); Gates A, C, D open (`DEFERRED_WORK.md`
+"RULING-2026-08-06", ruling R2).
+
+**v2.1 plan ratified 2026-09-12** — see
+[`CAMPAIGN_13_V2_CLOUD_QUALITY_2026-09-12.md`](CAMPAIGN_13_V2_CLOUD_QUALITY_2026-09-12.md); **twenty
+decisions all ruled** (`R-2026-09-12-1`…`-12` plus eight defaults); **seven waves**, ≈92 rows.
+
+**Critical path, corrected:** `C13-41` (C12-29 S3's canonical owner), reopened by `R-2026-08-14-1` —
+its restored exit condition is the SOL-4 banked refresh cost plus the 1.0496
+`shadowContrastInvariant` mechanism (queue row `C13-41`) — **and now first in the Edge queue**
+under `R-2026-09-12-7`: the exposure-sweep discriminator (`R-2026-09-02-5`) takes the single Edge
+slot after the P0-2 gate and **all cloud work is pure-Node until it returns**. Still C14's
+transitive blocker (see C14 below).
 
 **Wave A (2026-09-11):** D1 (Batch 1466), C1 (Batch 1467), C2 (Batch 1468), and C3 (Batch 1471)
-LANDED. `C13-42a` (adopt Astra's probe runtime and lifecycle) LANDED 2026-09-12 as a staged
-opt-in — a probe declares `workBudgetMs` to get the lifecycle, and the 18 that declare none keep
-their pre-adoption behaviour (`C13-42a-2` migrates them). **The capture apparatus now executes:**
-the probe is tracked, its seventeen `scope.run` sites resolve, and the Batch-1467 cap raise is live
-at both call sites. **Critical path is now the Edge leg** — the C13-42 calibration captures, which
-need an Edge executor and the built tree served on a governed port; `CHARACTERIZATION_THRESHOLDS`
-stays null until they run, so a first complete run is CALIBRATION, not acceptance.
+LANDED — **unchanged**.
+
+**`C13-42a` LANDED 2026-09-12** (lane Minardil / reviewer Calimehtar / verifier HOLDS; patch
+`4b5e96d3f1c322cd62ea2e78b92a2f06`, 15 files) as a staged **opt-in** adoption — a probe declares
+`workBudgetMs` to get the lifecycle, and the **18** that declare none keep their pre-adoption
+behaviour (`C13-42a-2` migrates them). The two cap sites are wired and `MAX_SERVED_RESPONSES`
+is retired; the Edge job's leg 1 is now blocked on the **`C13-41` slot**, not on `C13-42a`.
+`CHARACTERIZATION_THRESHOLDS` is **still null** until calibration captures run, so a first complete run
+is CALIBRATION, not acceptance.
+
+**Follow-ups and their order:** `C13-42a-3` **item 8 before** `C13-42a-2` (seat sequencing,
+2026-09-12).
+
+**`AR-D13` answered** as full WebGL parity (`R-2026-09-12-8`); the WebGL workstream is
+`C13-N15a`–`C13-N15d` (Wave 4) and WS-C2 (Wave 7).
+
+**Authorship unchanged** — `R-2026-08-24-3` narrows without replacing the 2026-07-24 Option-B ruling:
+Codex Sol may build bounded C13 instrument/harness work under an Opus lead with separate Opus review;
+engine-semantic changes stay Opus-authored.
 
 ### C14 — Dynamic ocean & wind
 

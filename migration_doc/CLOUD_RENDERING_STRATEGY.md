@@ -5,9 +5,9 @@ Companion to [CAMPAIGN3_PROGRESS.md](CAMPAIGN3_PROGRESS.md) (batch tracker) and
 axis). This doc owns the cloud-*rendering-technique* axis: quality tiers, the
 noise representation, and the "match-baseline-by-default, opt-in-better" model.
 
-**Status: 2026-06-25 — research in flight (3 background agents).** Campaign 3 is
-paused at the architectural fork below; the agnostic perf batch (W6) continues in
-the main loop while research returns.
+**Status (historical, superseded): the research concluded and executed.** Campaign 3
+closed and was succeeded by Campaign 13 (launched 2026-07-23,
+`QUEUE_2026-07-23_CAMPAIGN13.md`; v2 plan `CAMPAIGN_13_V2_CLOUD_QUALITY_2026-09-12.md`). <!-- corrected 2026-09-12, R-2026-09-12-10: this line originally read "Status: 2026-06-25 — research in flight (3 background agents). Campaign 3 is paused at the architectural fork below; the agnostic perf batch (W6) continues in the main loop while research returns." That was stale. -->
 
 ---
 

@@ -101,6 +101,14 @@ rendered parser lane.
 This table is the campaign backbone and is authored before wave prose. IDs are add-only: never
 renumber, reuse, or mint a `C13-*` identifier elsewhere without adding it here first.
 
+`Pri` and `Class` read `—` (unassigned) for every row filed by the 2026-09-12 v2 landing
+(`C13-42`–`C13-49`, `C13-49-slice`, `C13-N01`–`C13-N57`): the v2 plan's §3 tables carry no
+`Pri` or `Class` column, so sequencing for these rows is set by the `Wave` column (the plan's
+wave order) until the maintainer stamps values. `C13-47`/`C13-48`/`C13-49` additionally read
+`superseded by C13 v2 §5 (D14 default)` in the `Pri` cell — `D14` directed them to enter at
+their tracked priorities, but no tracked priority exists anywhere in `migration_doc` for these
+three, so there is no value to enter.
+
 | ID | Canonical task | Pri | Class | Effort | Wave | Hard dependencies |
 | --- | --- | --- | --- | --- | --- | --- |
 | `C13-00` | Launch seal, audit-truth capture, and C11 cloud transfer | R0 | docs/gate | S | W0 | maintainer authority |
@@ -150,9 +158,83 @@ renumber, reuse, or mint a `C13-*` identifier elsewhere without adding it here f
 | `CLOUD-LOW-COVERAGE-CUTOFF` **(fog cheap-path arm)** | Fog cheap-path cloud-shadow coverage gate — route `Compute/VolumetricFog.wgsl::sampleCloudShadow`'s raw `1.0 - coverage` threshold onto the shared coverage response without making the sparse end worse. ⚠ **KNOWN ID COLLISION — this row is the FOG CHEAP-PATH ARM ONLY.** `DEFERRED_WORK.md` carries a **byte-identical** `### CLOUD-LOW-COVERAGE-CUTOFF` heading for a *different* item, the **visible-march arm** ("coverage <= ~0.40 renders zero cloud"), which was RESOLVED at Batch 798 (`c5bd07bf1f`); a grep for the bare ID returns that one first. Always disambiguate by subtitle, and any future "mark `CLOUD-LOW-COVERAGE-CUTOFF` resolved" edit must say which arm. *(Row added 2026-08-07, close-out docs reconciliation: §9 already carried a status row for this arm while §1 — the add-only backbone — did not, so the ID had status without an entry. Pri/Wave assigned by this pass and are the orchestrator's to ratify.)* | P2 | correctness/quality | S | W2 | 2026-08-02 Codex handoff §5 item 3; `DEFERRED_WORK.md` "fog cheap-path arm" entry |
 | `C13-GATE-A` | Launch and evidence-truth gate | R0 | gate | S | W0 | `C13-01`, `C13-02`, `C13-35` |
 | `C13-GATE-B` | Planetary correctness gate | R0 | gate | M | W1 | `C13-03..08` |
-| `C13-GATE-C` | Temporal reconstruction and measured-performance gate | R0 | gate | M | W2 | `C13-09..13`, `C13-36..41` |
-| `C13-GATE-D` | Regional weather realism gate | R0 | gate | M | W3 | `C13-14..20` |
-| `C13-EXIT` | Feature-preserving cloud certification | R0 | gate | L | EXIT | Gates A-D, selected W4/W5 owners |
+| `C13-GATE-C` | Temporal reconstruction and measured-performance gate <!-- amended 2026-09-12, R-2026-09-12-3, C13-N46 --> — names rung cost table (C13-N06/C13-N43: p50/p95 GPU union at 1080p and 4K, call, allocation and peak-VRAM counts per rung) as measured-performance evidence | R0 | gate | M | W2 | `C13-09..13`, `C13-36..41`, `C13-N06`, `C13-N43` |
+| `C13-GATE-D` | Regional weather realism gate <!-- amended 2026-09-12, R-2026-09-12-3, C13-N46 --> — deps moved off descoped C13-14 onto regional field and regime rows | R0 | gate | M | W3 | `C13-N22`, `C13-N23`, `C13-N24`, `C13-N27` |
+| `C13-EXIT` | Feature-preserving cloud certification <!-- amended 2026-09-12, R-2026-09-12-3, C13-N46 --> — three renderer columns (WebGPU; WebGL after Wave 4; WebGL after Wave 7) enumerating gates vs calibration bars under R-2026-09-12-3 / C13-N46: WebGPU Gates (O2–O9, H1–H3, A1, A3–A9, G1–G3, I1–I3, P1–P5, L1–L2, T1), Calibration (O1, A2 unverified); WebGL after Wave 4 (shell bars: O1, O3, O4, O5, O6-shell, H1, H3); WebGL after Wave 7 (full march bars S1–S3: O1–O8, H1–H3, A1–A9, G1–G3, I1–I3, P1–P5, L1–L2, T1; O9 measured independently per backend) | R0 | gate | L | EXIT | Gates A-D, selected W4-W7 owners |
+| `C13-42` | Current-demo reproduction and source-to-frame provenance | — | — | L | WR | Reuse `C13-01`, `C13-02`; verified capture runner | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-43` | End-to-end planetary shell, altitude and RTE regression repair | — | — | L | WR | `C13-42`; reuse `C13-03..06` | <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+| `C13-44` | Non-repeating density and cloud morphology across viewpoints | — | — | L | W6 | `C13-42`; extend `C13-36/37` acceptance | <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+| `C13-45` | God-ray emitter, occlusion, scale, energy and live configuration | — | — | L | W6 | `C13-42`; coordinate `C13-06/09/22` | <!-- source: CAMPAIGN_13_V2 §3 WS-G -->
+| `C13-46` | Shared cloud architecture and incremental migration | — | — | XL | WR | Design parallel to `C13-42`; reuse `C13-09`, `C13-14..20/24` | <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+| `C13-47` | Integrated cloud/god-ray and cinematic-default acceptance | superseded by C13 v2 §5 (D14 default) | — | L | Continuous | `C13-42..46`, `C13-GATE-D` for full geographic claim | <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+| `C13-48` | ERA NetCDF 2D and 3D wind-field ingestion and visualization | superseded by C13 v2 §5 (D14 default) | — | XL | W5 | Dataset/decoder/vertical fixture review; reuse C6 flow-field, `C13-14/18/19/20/24` | <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+| `C13-49` | Procedural trade winds, geographic weather and cloud fallback with GIS provenance | superseded by C13 v2 §5 (D14 default) | — | XL | W5 | Shared `C13-14..20/24/46` contracts and `C13-48` vector/time/vertical seam | <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+| `C13-49-slice` | Default-field circulation — zonal-mean coverage profile showing ITCZ, subtropical clear belts, mid-latitude storm track | — | — | M | W2 | `C13-N27` | <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+| `C13-N01` | Govern the cloud probe fleet | — | — | L | W1 | Stage 2 deps `C13-42a` | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N02` | Runner homes for the homeless cloud specs | — | — | S | W1 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N03` | Orbital / night / terminator / inside / flight / geographic fixtures | — | — | L | W1 | C13-N01 | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N04` | Spectral + fractal analyzer | — | — | S | W1 | C13-N01 | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N04b` | Orbital ladder probe | — | — | M | W1 | C13-N01 | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N05` | Ground-truth referee | — | — | L | W2 | `C13-N03`, D10 ruling (`R-2026-09-12-6`), GMGSI header read | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N06` | Per-rung cost table | — | — | M | W1 | C13-N01 | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N07a` | Cloud scenes in the standing image gate, WebGPU-only | — | — | S | W1 | C13-N01 | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N07b` | Cross-backend cloud scene | — | — | S | W4 | C13-29, C13-N15c | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N08a` | Harness readiness repair | — | — | S | W1 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N08b` | Recover the remaining unlanded cloud regression specs | — | — | M | W2 | C13-N02, C13-N08a | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N09` | HDR pre-tonemap capture rule | — | — | S | W1 | C13-N01 | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N10` | One quality resolver | — | — | S | W1 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+| `C13-N11` | Wire the inert preset fields | — | — | S | W1 | C13-N10 | <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+| `C13-N12` | Implement the `"ultra"` rung (S4) | — | — | M | W6 | C13-10, C13-11 p2, C13-12, C13-13, C13-N41 | <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+| `C13-N13` | Metre-floored, interval-aware march step | — | — | M | W3 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+| `C13-N14` | Rung blending and hysteresis | — | — | S | W3 | C13-13, C13-N04b | <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+| `C13-N15a` | WebGL cloud renderer + Scene wiring + composite point | — | — | L | W4 | C13-24 | <!-- source: CAMPAIGN_13_V2 §3 WS-C -->
+| `C13-N15b` | WebGL weather-texture upload path | — | — | M | W4 | C13-N15a, C13-N22, C13-N23 | <!-- source: CAMPAIGN_13_V2 §3 WS-C -->
+| `C13-N15c` | GLSL analytic shell shader — the cheap rung on both backends | — | — | M | W4 | C13-29, C13-N15b, C13-N54 | <!-- source: CAMPAIGN_13_V2 §3 WS-C -->
+| `C13-N15d` | Degradation + capability contract | — | — | S | W4 | C13-N15c | <!-- source: CAMPAIGN_13_V2 §3 WS-C -->
+| `C13-N16` | Shell ↔ march blend | — | — | M | W4 | C13-29, C13-N14 | <!-- source: CAMPAIGN_13_V2 §3 WS-C -->
+| `C13-N17` | GLSL cloud shadow on terrain — analytic arm | — | — | M | W4 | C13-22, C13-N15c | <!-- source: CAMPAIGN_13_V2 §3 WS-C -->
+| `C13-N17b` | GLSL beer map + cascades | — | — | M | W7 | C13-N17, C13-22, C13-N52 | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+| `C13-N18` | Planetary terminator and Earth shadow | — | — | M | W3 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+| `C13-N19` | Per-sample sun colour and elevation | — | — | M | W3 | C13-N18 | <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+| `C13-N20` | Planetary aerial perspective | — | — | M | W1 | C13-N09, C13-N04b | <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+| `C13-N21` | Per-genus phase reaches the image | — | — | S | W1 | C13-N09 | <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+| `C13-N22` | Native-resolution weather texture | — | — | M | W1 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+| `C13-N23` | Three weather array slices | — | — | M | W2 | C13-N22 | <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+| `C13-N24` | GFS GRIB2 weather source | — | — | L | W2 | C13-N23 | <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+| `C13-N25` | Data-driven deck bounds | — | — | M | W2 | C13-N23, C13-N24 | <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+| `C13-N26` | Wind as a separate typed resource | — | — | M | W5 | C13-18 | <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+| `C13-N27` | Regime classifier → weather channel | — | — | L | W5 | C13-N23, C13-N24, C13-N38 | <!-- source: CAMPAIGN_13_V2 §3 WS-F -->
+| `C13-N27b` | Secondary regimes | — | — | M | W5 | C13-N27 | <!-- source: CAMPAIGN_13_V2 §3 WS-F -->
+| `C13-N28` | Cyclone, front and dry-slot synthesis | — | — | L | W5 | C13-N27, C13-N38, C13-N23, C13-N24 | <!-- source: CAMPAIGN_13_V2 §3 WS-F -->
+| `C13-N29` | Diurnal phase | — | — | M | W5 | C13-N24 | <!-- source: CAMPAIGN_13_V2 §3 WS-F -->
+| `C13-N30` | Close-range detail injection | — | — | M | W6 | C13-N13 | <!-- source: CAMPAIGN_13_V2 §3 WS-G -->
+| `C13-N31` | Inside-cloud response | — | — | L | W6 | C13-N13, C13-N03 | <!-- source: CAMPAIGN_13_V2 §3 WS-G -->
+| `C13-N32` | File C13-42..49 in the tracked ID table | — | — | S | W1 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+| `C13-N33` | Re-stamp superseded cloud docs in place | — | — | S | W2 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+| `C13-N34` | API / JSDoc defect sweep | — | — | S | W1 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+| `C13-N35` | Decompose the two oversize cloud files | — | — | L | Continuous | — | <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+| `C13-N36` | Disambiguate `CLOUD-LOW-COVERAGE-CUTOFF` | — | — | S | W1 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+| `C13-N37` | `iblRevision` epsilon debounce | — | — | S | W2 | C13-N23 | <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+| `C13-N38` | Per-texel genus profile | — | — | L | W3 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-F -->
+| `C13-N39` | Photometric conformance suite | — | — | M | W6 | C13-21, C13-N27, C13-N09 | <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+| `C13-N40` | Peer head-to-head instrument | — | — | L | W2 | C13-N03, C13-N09, C13-N06 | <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+| `C13-N41` | Public two-axis quality surface | — | — | M | W3 | C13-13, C13-N06 | <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+| `C13-N42` | Frame-budget-aware rung selection | — | — | M | W3 | C13-N06, C13-N14 | <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
+| `C13-N43` | Cloud lane in the perf regression gate | — | — | S | W2 | C13-N06 pass 1 | <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+| `C13-N44` | Provider degradation ladder | — | — | M | W4 | C13-24, C13-N24 | <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+| `C13-N45` | Weather provenance surface | — | — | S | W2 | C13-24 | <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+| `C13-N46` | Re-write Gates C/D and EXIT against the v2 bars | — | — | M | W1 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
+| `C13-N47` | Derive and land the characterization thresholds | — | — | M | Continuous | ≥3 green calibration runs from `C13-42a`+`C13-42f`, or from `C13-N04b` for the O-bars | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N48` | Wave-end gate bindability (Q-152) | — | — | M | W1 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N49` | Cloud-related lighting of the scene | — | — | M | W6 | C13-N37, C13-22 | <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+| `C13-N50` | Lifecycle proof for the widened weather resource | — | — | S | W2 | C13-N23 | <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
+| `C13-N51` | GLSL density domain + the noise-source ruling | — | — | L | W7 | C13-N15b, C13-N54 | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+| `C13-N52` | GLSL volumetric march twin | — | — | XL | W7 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+| `C13-N53` | GLSL reconstruction stack twin | — | — | L | W7 | C13-N15a, C13-12 | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+| `C13-N54` | WGSL↔GLSL twin-drift guard | — | — | M | W4/W7 | C13-N15c | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+| `C13-N55` | GLSL god-ray stack | — | — | L | W7 | C13-45, C13-N15a | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+| `C13-N56` | WebGL cloud→lighting consumers | — | — | L | W7 | C13-N49, C13-N52 | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+| `C13-N57` | Cross-backend parity acceptance | — | — | M | W7 | C13-N15c, C13-N52, C13-N55 | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
 
 ---
 

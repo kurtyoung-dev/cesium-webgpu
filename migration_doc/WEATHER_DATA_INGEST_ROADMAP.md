@@ -23,8 +23,8 @@ PNG read), `probe-weather-wcs.mjs` (east overcast → west clear). **Phase 3 is 
 offline; the only network-gated residual is the live endpoint confirm (collection ids +
 CORS) per source.** P4 (binary GRIB2/NetCDF behind WASM) remains the deferred high-fidelity
 tier. Follow-up (Principle 9): `profileExtinction`
-(slot 103) still scaffolding — G biases shape/density but not yet per-position optical
-extinction. **Live EDR (the real feed) is wired (`EdrWeatherSource`) but the LIVE call +
+(slot 103) is consumed by `effectiveAbsorption()` (`ProceduralClouds.wgsl:2037-2040`) — it
+is live, not scaffolding. <!-- corrected 2026-09-12, R-2026-09-12-10: this sentence originally read "`profileExtinction` (slot 103) still scaffolding — G biases shape/density but not yet per-position optical extinction." That was stale. --> **Live EDR (the real feed) is wired (`EdrWeatherSource`) but the LIVE call +
 CORS + the guessed collection id `automated_gfs` still need confirming in a networked
 browser** — the dev sandbox has no outbound network to external hosts (CLI `curl` →
 `http=000`, browser `fetch` → timeout); the mock harness now covers everything except that
@@ -60,9 +60,12 @@ caveats from the review are folded in below — read them before committing to "
 - `WebGPUProceduralCloudRenderer.ts`: `WEATHER_TEX_W/H = 256/128`, `rgba8unorm`,
   equirectangular geographic, row 0 = north pole. `buildProceduralWeatherMap` (~L140-158)
   currently writes **R = coverage·255, G = 128, B = 0, A = 128**.
-- `ProceduralClouds.wgsl`: the shader samples **only `wsample.r`** — in BOTH `cloudDensity`
-  and the skip-oracle `cloudBaseDensity` (`effectiveCoverage = wsample.r * weatherStrength`).
-  **G/B/A are forward scaffolding the shader does not yet read.**
+- `ProceduralClouds.wgsl`: the shader reads **all four channels**, at three sites
+  (`ProceduralClouds.wgsl:1265-1277`, `:1350-1362`, `:1422-1431`), decoded by
+  `decodeWeatherChannels` (`:1226-1249`). **B is live** (`baseMeters`, produced at
+  `WeatherTexPacker.ts:345`/`:439`, consumed at `ProceduralClouds.wgsl:1226-1249`).
+  **G is live too, with two producers**, which is why `C13-N27`'s regime id needs its own
+  channel or a documented bit-split. <!-- corrected 2026-09-12, R-2026-09-12-10: this bullet originally read "the shader samples only `wsample.r` — in BOTH `cloudDensity` and the skip-oracle `cloudBaseDensity` (`effectiveCoverage = wsample.r * weatherStrength`). G/B/A are forward scaffolding the shader does not yet read." That inverted a fact. -->
 - `weatherTexBounds` (uniform floats 68-71) = `(-π, -π/2, 2π, π)`; `weatherMapEnabled` = float 64;
   `worldToWeatherUV` maps lon/lat → uv.
 
