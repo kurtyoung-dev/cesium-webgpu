@@ -7,9 +7,49 @@
  * Cloud volumetric configuration moved off `Globe` during cloud unification.
  * Probes must configure `globe.defaultCloudCollection.volumetric` directly and
  * verify that every requested value survived the round trip.
+ *
+ * TWO PATHS, TWO OWNERS (Campaign 13 v2, Wave 1). This module carries two
+ * independent concerns and they are maintained by different lanes, so the split
+ * is written down rather than discovered in a merge:
+ *
+ *   - READINESS — `awaitProceduralReady` and `proceduralRealization`: does the
+ *     renderer exist, is its pipeline built, did it record work. Owned by lane
+ *     L1 (`C13-N08a`), which is repairing what "recorded work" counts.
+ *   - CAPTURE — `photometricContext` and the constants it publishes: what a
+ *     photometric measurement needs from the page in order to be a measurement
+ *     of radiance rather than of the tonemapper. Owned by lane L6 (`C13-N09`).
+ *
+ * Neither path calls the other. A change to one that needs the other is a
+ * message between the lanes, not an edit across the line.
+ *
+ * WHY THE CAPTURE PATH GATHERS RATHER THAN COMPUTES. The arithmetic of the HDR
+ * rule lives in `lib/cloud-photometry.mjs`, on the Node side, where it is unit
+ * testable and shared. What is only knowable INSIDE the page is the exposure
+ * the march actually used and where the sun disc landed on the canvas — so that
+ * is all this path returns. Duplicating the inverse-Reinhard here would create
+ * a second copy that drifts, and the injected-function constraint means it
+ * could never import the first.
  */
 export function installCloudProbeHarness() {
   const root = globalThis;
+
+  // These live INSIDE the function on purpose. `page.addInitScript` serializes
+  // this function's source and nothing else, so a module-scope constant would
+  // arrive in the page as a ReferenceError at first call — which is exactly the
+  // failure the "deliberately self-contained" note above is warning about.
+  // `cloud-photometry-rule.spec.mjs` pins the slot equal to the Node-side
+  // constant by OBSERVING what `photometricContext()` reports, since the two
+  // copies cannot be linked.
+
+  /** Reinhard exposure slot: `ProceduralClouds.wgsl:106`, packed at
+   * `WebGPUProceduralCloudRenderer.ts:3823`. */
+  const EXPOSURE_UNIFORM_SLOT = 97;
+
+  /** Geometric angular radius of the solar disc from Earth, ~0.267 deg. */
+  const SUN_ANGULAR_RADIUS_RADIANS = 0.004652;
+
+  /** @see photometricContext — why the default mask is wider than the disc. */
+  const DEFAULT_SUN_DISC_RADIUS_SCALE = 3;
 
   const valuesEqual = (actual, expected) => {
     if (
@@ -342,6 +382,154 @@ export function installCloudProbeHarness() {
           });
         }
       }
+    },
+
+    /**
+     * C13-N09 — everything a photometric bar needs from the page, and nothing
+     * it can compute on the Node side.
+     *
+     * §1.3 of the Campaign 13 v2 plan makes one rule binding on every
+     * photometric statistic: measure linear PRE-tonemap values, with the sun
+     * disc masked. The march tone-maps at `ProceduralClouds.wgsl:2645-2646`
+     * (`exposed = weightedColor * cloud.exposure; toneMapped = exposed /
+     * (exposed + 1)`), so a ratio taken off the canvas bytes is a ratio of that
+     * curve, not of the clouds.
+     *
+     * Inverting it needs the exposure the march ACTUALLY used — not the
+     * packer's 0.22 fallback, and not a constant transcribed into a probe. That
+     * is uniform slot 97 (`ProceduralClouds.wgsl:106`;
+     * `WebGPUProceduralCloudRenderer.ts:3823`), reachable only here.
+     *
+     * Masking the sun needs the disc's position in CANVAS pixels, which is a
+     * projection of `uniformState.sunPositionWC` through this frame's camera —
+     * also reachable only here.
+     *
+     * Anything this cannot establish is returned as `null` with a `reasons`
+     * entry. A caller must treat a null exposure as a refusal: measuring
+     * against a guessed exposure produces a number whose scale is a guess, and
+     * `photometricStats` in `lib/cloud-photometry.mjs` throws rather than
+     * default it.
+     *
+     * @param {object} [options]
+     * @param {number} [options.sunDiscRadiusScale] Multiple of the sun's
+     *   geometric angular radius to mask. Default 3: the disc itself subtends
+     *   ~0.267 deg, but bloom, the aureole and the glow pass spread far beyond
+     *   it, and a mask that only covers the geometry leaves the brightest
+     *   pixels in the ROI — which is the whole failure the rule exists to stop.
+     * @returns {object}
+     */
+    photometricContext(options = {}) {
+      const viewer = root.viewer;
+      const scene = viewer?.scene;
+      const context = scene?.context;
+      const canvas = scene?.canvas;
+      const reasons = [];
+
+      const cache = context?._cloudCache;
+      const uniforms = cache?.uniformData;
+      const rawExposure = uniforms?.[EXPOSURE_UNIFORM_SLOT];
+      const exposure =
+        typeof rawExposure === "number" &&
+        Number.isFinite(rawExposure) &&
+        rawExposure > 0
+          ? rawExposure
+          : null;
+      if (exposure === null) {
+        reasons.push(
+          `cloud exposure unavailable at uniform slot ${EXPOSURE_UNIFORM_SLOT} ` +
+            `(read ${String(rawExposure)}); the renderer cache may not have ` +
+            "packed a frame yet",
+        );
+      }
+
+      const width = canvas?.width ?? null;
+      const height = canvas?.height ?? null;
+      if (!(width > 0 && height > 0)) {
+        reasons.push("canvas has no positive drawing-buffer size");
+      }
+
+      // Sun disc, projected. `worldToWindowCoordinates` returns CSS pixels
+      // while the capture is in drawing-buffer pixels, so the result is scaled
+      // by the same ratio the canvas itself carries. Skipping that scale is how
+      // a mask ends up half the size of the disc on a HiDPI capture.
+      let sunDisc = null;
+      const Cesium = root.Cesium;
+      const sunWC = context?.uniformState?.sunPositionWC;
+      const fovy = scene?.camera?.frustum?.fovy;
+      if (!Cesium?.SceneTransforms?.worldToWindowCoordinates) {
+        reasons.push(
+          "Cesium.SceneTransforms.worldToWindowCoordinates unavailable",
+        );
+      } else if (!sunWC) {
+        reasons.push("uniformState.sunPositionWC unavailable");
+      } else if (!(
+        typeof fovy === "number" &&
+        Number.isFinite(fovy) &&
+        fovy > 0
+      )) {
+        reasons.push(
+          `camera.frustum.fovy unavailable (${String(fovy)}); an orthographic ` +
+            "or infinite frustum has no single pixels-per-radian scale",
+        );
+      } else {
+        const windowPosition = Cesium.SceneTransforms.worldToWindowCoordinates(
+          scene,
+          sunWC,
+        );
+        if (!windowPosition) {
+          // Behind the camera or off-screen: nothing to mask, and that is a
+          // fact about the frame rather than a failure of the context.
+          sunDisc = {
+            visible: false,
+            reason: "sun not projected onto the canvas",
+          };
+        } else {
+          const cssWidth = canvas.clientWidth || width;
+          const cssHeight = canvas.clientHeight || height;
+          const scaleX = width / cssWidth;
+          const scaleY = height / cssHeight;
+          const scale =
+            typeof options.sunDiscRadiusScale === "number" &&
+            Number.isFinite(options.sunDiscRadiusScale) &&
+            options.sunDiscRadiusScale > 0
+              ? options.sunDiscRadiusScale
+              : DEFAULT_SUN_DISC_RADIUS_SCALE;
+          // Pixels per radian at the optical axis: half the drawing-buffer
+          // height spans tan(fovy/2) in world units at unit depth.
+          const pixelsPerRadian = height / 2 / Math.tan(fovy / 2);
+          sunDisc = {
+            visible: true,
+            x: windowPosition.x * scaleX,
+            y: windowPosition.y * scaleY,
+            radiusPixels: SUN_ANGULAR_RADIUS_RADIANS * pixelsPerRadian * scale,
+            radiusScale: scale,
+            angularRadiusRadians: SUN_ANGULAR_RADIUS_RADIANS,
+            devicePixelScale: { x: scaleX, y: scaleY },
+          };
+        }
+      }
+
+      return {
+        ok: reasons.length === 0,
+        reasons,
+        exposure,
+        exposureSlot: EXPOSURE_UNIFORM_SLOT,
+        width,
+        height,
+        sunDisc,
+        // The capture's encoding is a premise about the presentation format,
+        // not a preference. `bgra8unorm` (and every non-`-srgb` format) means
+        // the byte IS the shader's output, so the decode is the identity.
+        transfer:
+          typeof context?._presentationFormat === "string" &&
+          context._presentationFormat.endsWith("-srgb")
+            ? "srgb"
+            : "identity",
+        presentationFormat: context?._presentationFormat ?? null,
+        rendererType: String(
+          context?.rendererType ?? (context?.isWebGPU ? "webgpu" : "webgl"),
+        ).toLowerCase(),
+      };
     },
 
     proceduralRealization,

@@ -172,16 +172,16 @@ three, so there is no value to enter.
 | `C13-49-slice` | Default-field circulation — zonal-mean coverage profile showing ITCZ, subtropical clear belts, mid-latitude storm track | — | — | M | W2 | `C13-N27` | <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
 | `C13-N01` | Govern the cloud probe fleet | — | — | L | W1 | Stage 2 deps `C13-42a` | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
 | `C13-N02` | Runner homes for the homeless cloud specs | — | — | S | W1 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
-| `C13-N03` | Orbital / night / terminator / inside / flight / geographic fixtures | — | — | L | W1 | C13-N01 | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
-| `C13-N04` | Spectral + fractal analyzer | — | — | S | W1 | C13-N01 | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
-| `C13-N04b` | Orbital ladder probe | — | — | M | W1 | C13-N01 | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N03` | Orbital / night / terminator / inside / flight / geographic fixtures | — | — | L | W1 | C13-N01 | **LANDED 2026-09-12 (lane Yavanna). `cloud-tour-sequences.spec.mjs` 51 -> 60 tests, exit 0, now homed in `test-visual-regression-node`. Census corrected: 32 stations, not 34. Night/dawn/dusk gate floors marked UNCALIBRATED pending an Edge run.** <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N04` | Spectral + fractal analyzer | — | — | S | W1 | C13-N01 | **LANDED 2026-09-12 (lane Yavanna). `cloud-spectrum.spec.mjs` 9/9; slope recovered to 0.18 worst case on synthetic fields of known slope, discriminating at 0.25 — inside O5's ±0.3 band.** <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N04b` | Orbital ladder probe | — | — | M | W1 | C13-N01 | **LANDED IN PART 2026-09-12 (lane Yavanna) — source + descriptor contract only; the probe has never run and its first Edge leg is owed. `cloud-orbital-ladder-contract.spec.mjs` 16/16.** <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
 | `C13-N05` | Ground-truth referee | — | — | L | W2 | `C13-N03`, D10 ruling (`R-2026-09-12-6`), GMGSI header read | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
 | `C13-N06` | Per-rung cost table | — | — | M | W1 | C13-N01 | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
-| `C13-N07a` | Cloud scenes in the standing image gate, WebGPU-only | — | — | S | W1 | C13-N01 | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N07a` | Cloud scenes in the standing image gate, WebGPU-only | — | — | S | W1 | C13-N01 | **ENTRIES + SPEC + RECIPE FROZEN 2026-09-12 (lane Yavanna); LANDING WITH EDGE LEG 1. The two `scenes.json` entries are HELD (seat ruling): entries without baselines make `capture-and-diff.mjs` exit 1 by construction, and a red guard gets a repair, not an annotation. Entries + derivation + executor recipe are tracked at `Tools/visual-regression/scenes-cloud-pending.json`; the setup file and `cloud-scenes-contract.spec.mjs` (8/8) land now so the rule exists before the entries do.** <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
 | `C13-N07b` | Cross-backend cloud scene | — | — | S | W4 | C13-29, C13-N15c | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
 | `C13-N08a` | Harness readiness repair | — | — | S | W1 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
 | `C13-N08b` | Recover the remaining unlanded cloud regression specs | — | — | M | W2 | C13-N02, C13-N08a | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
-| `C13-N09` | HDR pre-tonemap capture rule | — | — | S | W1 | C13-N01 | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
+| `C13-N09` | HDR pre-tonemap capture rule | — | — | S | W1 | C13-N01 | **LANDED 2026-09-12 (lane Yavanna). `cloud-photometry-rule.spec.mjs` 15/15; the Reinhard operator is pinned at its shader lines.** <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
 | `C13-N10` | One quality resolver | — | — | S | W1 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
 | `C13-N11` | Wire the inert preset fields | — | — | S | W1 | C13-N10 | <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
 | `C13-N12` | Implement the `"ultra"` rung (S4) | — | — | M | W6 | C13-10, C13-11 p2, C13-12, C13-13, C13-N41 | <!-- source: CAMPAIGN_13_V2 §3 WS-B -->

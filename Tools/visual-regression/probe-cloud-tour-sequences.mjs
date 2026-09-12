@@ -713,12 +713,21 @@ const PHASE = async (input) => {
       volumetric: state.volumetric,
     });
   }
-  if (input.station && ["hold", "teleport", "return"].includes(phase.action)) {
+  if (
+    input.station &&
+    ["hold", "teleport", "return", "traverse"].includes(phase.action)
+  ) {
     state.setView(input.station);
     // An absolute pose also re-anchors the pan heading. A `return` phase is
     // therefore exact regardless of what the preceding pan did, which is what
     // makes the ghost oracle's "same pose" claim true rather than approximate.
     state.panHeading = input.station.heading;
+  }
+  if (phase.action === "traverse" && input.station) {
+    // Mutable running position for the forward-flight loop below. Seeded from
+    // the resolved starting station so `traverse` reads exactly like `pan`:
+    // authored relative to where the phase begins, not to a hardcoded pose.
+    state.traverseView = { ...input.station };
   }
 
   if (phase.action === "resize") {
@@ -744,6 +753,19 @@ const PHASE = async (input) => {
   if (!Number.isFinite(state.panHeading)) {
     state.panHeading = input.panFrom?.heading ?? 0;
   }
+  // The traverse's OWN declared cadence, not the tour-wide captureStride:
+  // C13-N03 requires the sample cadence to be a fact the sequence declares
+  // (traverse.sampleCadenceSeconds) and the probe to honor, not a coincidence
+  // of the generic stride.
+  const traverseFramesPerSample =
+    phase.action === "traverse"
+      ? Math.max(
+          1,
+          Math.round(
+            phase.traverse.sampleCadenceSeconds / (state.stepSeconds || 1),
+          ),
+        )
+      : null;
 
   for (let frame = 0; frame < phase.frames; frame++) {
     if (phase.action === "pan") {
@@ -753,10 +775,47 @@ const PHASE = async (input) => {
       // where it started.
       state.panHeading += phase.pan.headingDeltaDegrees;
       state.setView({ ...input.panFrom, heading: state.panHeading });
+    } else if (phase.action === "traverse") {
+      // Forward Euler step along the LOCAL east-north-up tangent plane at the
+      // current position, then re-derive lon/lat from the stepped world
+      // position. Recomputing the ENU frame from the updated position each
+      // frame (rather than a single frame computed once) is what keeps a
+      // multi-frame traverse tracking an actual geodesic instead of drifting
+      // off a flat-earth chord.
+      const { C } = state;
+      const distance =
+        phase.traverse.speedMetresPerSecond * (state.stepSeconds || 0);
+      const headingRad = C.Math.toRadians(state.traverseView.heading);
+      const origin = C.Cartesian3.fromDegrees(
+        state.traverseView.lon,
+        state.traverseView.lat,
+        state.traverseView.height,
+      );
+      const enu = C.Transforms.eastNorthUpToFixedFrame(origin);
+      const localOffset = new C.Cartesian3(
+        Math.sin(headingRad) * distance,
+        Math.cos(headingRad) * distance,
+        0,
+      );
+      const stepped = C.Matrix4.multiplyByPoint(
+        enu,
+        localOffset,
+        new C.Cartesian3(),
+      );
+      const carto = C.Cartographic.fromCartesian(stepped, C.Ellipsoid.WGS84);
+      state.traverseView = {
+        ...state.traverseView,
+        lon: C.Math.toDegrees(carto.longitude),
+        lat: C.Math.toDegrees(carto.latitude),
+      };
+      state.setView(state.traverseView);
     }
     const captureThisFrame =
-      phase.capture === true &&
-      (frame % input.captureStride === 0 || frame === phase.frames - 1);
+      phase.action === "traverse"
+        ? phase.capture === true &&
+          (frame % traverseFramesPerSample === 0 || frame === phase.frames - 1)
+        : phase.capture === true &&
+          (frame % input.captureStride === 0 || frame === phase.frames - 1);
     if (captureThisFrame) {
       // The snapshot is fused to its render inside `grabNow`; the PNG encode
       // cost is why this frame is excluded from the CPU distribution.

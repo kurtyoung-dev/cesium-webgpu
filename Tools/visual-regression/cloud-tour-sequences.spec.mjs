@@ -60,12 +60,17 @@ import {
 import {
   CLOUD_TOUR_FIXTURES,
   CLOUD_TOUR_SEQUENCES,
+  GEOGRAPHY_TAGS,
+  IN_ATMOSPHERE_TAGS,
+  ORBITAL_KINDS,
   PHASE_ACTIONS,
+  REQUIRED_GEOGRAPHY_CASES,
   SEQUENCE_KINDS,
   STATION_REGIMES,
   fixtureById,
   fixtureClockIso,
   fixtureReplaySubset,
+  illuminationBand,
   replayKeyFor,
   sequenceById,
   sequenceFrameBudget,
@@ -174,25 +179,126 @@ test("fixtures answer the C13-01 row's coverage words", () => {
   assert.equal(coverage.hasNegativeControl, true);
 });
 
+// ── 1a. C13-N03: illumination band, orbital sub-kind, in-atmosphere and
+//        geography coverage — computed from the table, not asserted in prose.
+
+test("fixtures answer the C13-N03 illumination-band coverage words", () => {
+  const coverage = summarizeFixtureCoverage();
+
+  // "night (2); dawn (1); dusk inside-cloud (2)"
+  assert.deepEqual([...coverage.illuminationBands].sort(), [
+    "dawn",
+    "day",
+    "dusk",
+    "night",
+  ]);
+  assert.ok(
+    coverage.illuminationStationCounts.night >= 2,
+    `night stations: ${coverage.illuminationStationCounts.night}`,
+  );
+  assert.ok(
+    coverage.illuminationStationCounts.dawn >= 1,
+    `dawn stations: ${coverage.illuminationStationCounts.dawn}`,
+  );
+  assert.ok(
+    coverage.duskInsideDeckStationCount >= 2,
+    `dusk inside-deck stations: ${coverage.duskInsideDeckStationCount}`,
+  );
+
+  // The band is DERIVED from localSolarHour, never hand-authored, so every
+  // fixture's own clock agrees with the band its stations were counted under.
+  for (const fixture of CLOUD_TOUR_FIXTURES) {
+    const band = illuminationBand(fixture.localSolarHour);
+    assert.ok(
+      ["night", "dawn", "day", "dusk"].includes(band),
+      `${fixture.id}: ${band}`,
+    );
+  }
+});
+
+test("illuminationBand buckets the clock the way the row's words expect", () => {
+  assert.equal(illuminationBand(0), "night");
+  assert.equal(illuminationBand(4.9), "night");
+  assert.equal(illuminationBand(5), "dawn");
+  assert.equal(illuminationBand(6.99), "dawn");
+  assert.equal(illuminationBand(7), "day");
+  assert.equal(illuminationBand(12), "day");
+  assert.equal(illuminationBand(16.99), "day");
+  assert.equal(illuminationBand(17), "dusk");
+  assert.equal(illuminationBand(18.99), "dusk");
+  assert.equal(illuminationBand(19), "night");
+  assert.equal(illuminationBand(23.99), "night");
+});
+
+test("fixtures answer the C13-N03 orbital, in-atmosphere and crosswind coverage words", () => {
+  const coverage = summarizeFixtureCoverage();
+
+  // "3 orbital: nadir, limb, terminator-crossing"
+  assert.deepEqual(
+    [...coverage.orbitalKinds].sort(),
+    [...ORBITAL_KINDS].sort(),
+  );
+
+  // "3 in-atmosphere stations: cruise above a deck at 10 km, between two
+  //  decks, and a 100 m/s forward traverse"
+  assert.deepEqual(
+    [...coverage.inAtmosphereTags].sort(),
+    [...IN_ATMOSPHERE_TAGS].sort(),
+  );
+
+  // "1 crosswind station"
+  assert.ok(coverage.crosswindStationCount >= 1);
+
+  // Every orbital-regime station with an orbitalKind is actually orbital —
+  // validateFixture already enforces this; re-assert it here so a change to
+  // the enforcement does not silently stop being exercised by this table.
+  for (const fixture of CLOUD_TOUR_FIXTURES) {
+    for (const station of fixture.stations) {
+      if (station.orbitalKind) {
+        assert.equal(station.regime, "orbital", `${fixture.id}/${station.id}`);
+      }
+    }
+  }
+});
+
+test("fixtures answer the C13-N03 geography coverage words verbatim from the queue", () => {
+  const coverage = summarizeFixtureCoverage();
+  // "antimeridian east/west crossing; north pole; south pole; equatorial
+  //  maritime; tropical land; mid-latitude continental; arid; polar" — 8
+  // required cases, the first bundling two directions into one.
+  assert.equal(REQUIRED_GEOGRAPHY_CASES.length, 8);
+  for (const geoCase of REQUIRED_GEOGRAPHY_CASES) {
+    for (const tag of geoCase.requires) {
+      assert.ok(
+        coverage.geographyTags.includes(tag),
+        `geography case ${geoCase.id} missing tag ${tag}`,
+      );
+      assert.ok(GEOGRAPHY_TAGS.includes(tag), `unregistered tag ${tag}`);
+    }
+  }
+});
+
 test("sequences answer the row's wind/time, teleport and history-reset words", () => {
   const kinds = new Set(CLOUD_TOUR_SEQUENCES.map((sequence) => sequence.kind));
   for (const kind of SEQUENCE_KINDS) {
     assert.ok(kinds.has(kind), `no sequence of kind ${kind}`);
   }
 
-  // The wind/time evidence is a three-lane SET; a single wind lane cannot
-  // separate advection from the sun moving.
+  // The wind/time evidence is a three-lane SET at minimum; a single wind lane
+  // cannot separate advection from the sun moving. C13-N03 adds a 4th
+  // (crosswind) lane on the SAME fixture to keep A9's perpendicular-advection
+  // case inside the wind-time family rather than inventing a new kind for it.
   const windLanes = CLOUD_TOUR_SEQUENCES.filter(
     (sequence) => sequence.kind === "wind-time",
   );
-  assert.equal(windLanes.length, 3);
+  assert.equal(windLanes.length, 4);
   assert.equal(new Set(windLanes.map((lane) => lane.fixtureId)).size, 1);
   const signature = windLanes
     .map(
       (lane) => `${lane.clock.stepSeconds}/${lane.volumetric.cloudWindSpeed}`,
     )
     .sort();
-  assert.deepEqual(signature, ["0/0", "60/0", "60/15"]);
+  assert.deepEqual(signature, ["0/0", "60/0", "60/15", "60/20"]);
 
   // Teleport and reset sequences must run where a history exists.
   for (const sequence of CLOUD_TOUR_SEQUENCES) {
@@ -278,6 +384,171 @@ test("validateFixtureSet rejects an undeclared same-genus duplicate", () => {
   assert.ok(
     failures.some((failure) => /share an identical volumetric/.test(failure)),
     failures.join("\n"),
+  );
+});
+
+test("validateFixture rejects an unregistered geography/orbitalKind/inAtmosphere tag", () => {
+  const fixture = fixtureById("sahara-clear-sky");
+  const geoTypo = {
+    ...fixture,
+    stations: fixture.stations.map((station, index) =>
+      index === 0 ? { ...station, geography: "arrid-typo" } : station,
+    ),
+  };
+  assert.ok(
+    validateFixture(geoTypo).some((failure) =>
+      /unknown geography tag/.test(failure),
+    ),
+  );
+
+  const orbital = fixtureById("itcz-cumulonimbus-westpacific");
+  const orbitalKindOnGround = {
+    ...orbital,
+    stations: orbital.stations.map((station) =>
+      station.id === "ground-lookup"
+        ? { ...station, orbitalKind: "nadir" }
+        : station,
+    ),
+  };
+  assert.ok(
+    validateFixture(orbitalKindOnGround).some((failure) =>
+      /orbitalKind is only meaningful on an orbital-regime station/.test(
+        failure,
+      ),
+    ),
+  );
+  const badOrbitalKind = {
+    ...orbital,
+    stations: orbital.stations.map((station) =>
+      station.id === "orbit" ? { ...station, orbitalKind: "flyby" } : station,
+    ),
+  };
+  assert.ok(
+    validateFixture(badOrbitalKind).some((failure) =>
+      /unknown orbitalKind/.test(failure),
+    ),
+  );
+});
+
+test("validateFixtureSet rejects the table when a required coverage case is removed", () => {
+  // Mutation-style check without leaving a mutant in the tree: strip the
+  // terminator-crossing station out of a CLONE of the table and confirm the
+  // orbital-sub-kind coverage check actually fires — proving the check is not
+  // vacuously green regardless of content.
+  const dawnFixture = fixtureById("pacificnw-dawn-valley-stratus");
+  const withoutTerminator = {
+    ...dawnFixture,
+    stations: dawnFixture.stations.filter(
+      (station) => station.orbitalKind !== "terminator-crossing",
+    ),
+  };
+  const mutatedTable = CLOUD_TOUR_FIXTURES.map((fixture) =>
+    fixture.id === dawnFixture.id ? withoutTerminator : fixture,
+  );
+  const failures = validateFixtureSet(mutatedTable);
+  assert.ok(
+    failures.some((failure) =>
+      /no orbital station tagged orbitalKind 'terminator-crossing'/.test(
+        failure,
+      ),
+    ),
+    failures.join("\n"),
+  );
+  // The real table (not the clone) still validates clean.
+  assert.deepEqual(validateFixtureSet(), []);
+});
+
+test("validateSequence rejects a malformed traverse phase", () => {
+  const sequence = sequenceById("traverse-forward-100ms");
+  const zeroSpeed = {
+    ...sequence,
+    phases: sequence.phases.map((phase) =>
+      phase.action === "traverse"
+        ? { ...phase, traverse: { ...phase.traverse, speedMetresPerSecond: 0 } }
+        : phase,
+    ),
+  };
+  assert.ok(
+    validateSequence(zeroSpeed).some((failure) =>
+      /positive finite speedMetresPerSecond/.test(failure),
+    ),
+  );
+
+  const wrongDuration = {
+    ...sequence,
+    phases: sequence.phases.map((phase) =>
+      phase.action === "traverse"
+        ? { ...phase, traverse: { ...phase.traverse, durationSeconds: 999 } }
+        : phase,
+    ),
+  };
+  assert.ok(
+    validateSequence(wrongDuration).some((failure) =>
+      /disagrees with frames/.test(failure),
+    ),
+  );
+
+  const badCadence = {
+    ...sequence,
+    phases: sequence.phases.map((phase) =>
+      phase.action === "traverse"
+        ? {
+            ...phase,
+            traverse: { ...phase.traverse, sampleCadenceSeconds: 7 },
+          }
+        : phase,
+    ),
+  };
+  assert.ok(
+    validateSequence(badCadence).some((failure) =>
+      /does not divide the phase's/.test(failure),
+    ),
+  );
+
+  const pinnedClock = {
+    ...sequence,
+    clock: { ...sequence.clock, stepSeconds: 0 },
+  };
+  assert.ok(
+    validateSequence(pinnedClock).some((failure) =>
+      /needs the sequence clock to advance/.test(failure),
+    ),
+  );
+
+  // The real sequence is unaffected by any of the clones above.
+  assert.deepEqual(validateSequence(sequence), []);
+});
+
+test("validateSequence rejects a crosswind station whose wind is not perpendicular", () => {
+  const sequence = sequenceById("wind-time-crosswind");
+  // Sanity: the real sequence is genuinely perpendicular (heading 0 vs an
+  // eastward {x:1,y:0} wind is exactly 90 degrees).
+  assert.deepEqual(validateSequence(sequence), []);
+
+  // Mutate the wind to blow the SAME direction the camera faces (north,
+  // {x:0,y:1}) — parallel, not perpendicular — and require the check to
+  // fire. This is the RED half of the mutant evidence for this validator.
+  const parallelWind = {
+    ...sequence,
+    volumetric: { ...sequence.volumetric, cloudWindDirection: { x: 0, y: 1 } },
+  };
+  const failures = validateSequence(parallelWind);
+  assert.ok(
+    failures.some((failure) =>
+      /not within|degrees from perpendicular/.test(failure),
+    ),
+    failures.join("\n"),
+  );
+
+  // No declared wind direction at all is also rejected, not silently skipped.
+  const noWind = {
+    ...sequence,
+    volumetric: { ...sequence.volumetric, cloudWindDirection: undefined },
+  };
+  assert.ok(
+    validateSequence(noWind).some((failure) =>
+      /declares no cloudWindDirection/.test(failure),
+    ),
   );
 });
 
@@ -1278,6 +1549,18 @@ test("the probe implements every action the sequence table can name", () => {
       `sequence uses unregistered action ${action}`,
     );
   }
+});
+
+test("the probe's traverse action is a real runtime branch, not just a mention", () => {
+  // The generic action-coverage test above only requires the literal
+  // `"traverse"` to appear SOMEWHERE in the source, which a comment would
+  // satisfy. This asserts it survives comment-stripping as executable code
+  // that actually moves the camera and respects the declared sample cadence.
+  assert.match(probeCode, /phase\.action === "traverse"/);
+  assert.match(probeCode, /traverseFramesPerSample/);
+  assert.match(probeCode, /speedMetresPerSecond/);
+  assert.match(probeCode, /eastNorthUpToFixedFrame/);
+  assert.match(probeCode, /Cartographic\.fromCartesian/);
 });
 
 test("the probe consumes the shared tables instead of redefining them", () => {

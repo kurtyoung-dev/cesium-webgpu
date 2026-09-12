@@ -1,0 +1,111 @@
+{
+  "$comment": "TRACKED HELD-OUT ENTRIES — C13-N07a. These two scenes.json entries are held out of Tools/visual-regression/scenes.json by the seat ruling of 2026-09-12 and land TOGETHER with their WebGPU baselines, in one reviewed commit, run by the Edge executor holding Edge leg 1 (R-2026-08-29-2). THE EXECUTOR DELETES THIS FILE in that same commit. It is tracked rather than left in the lane working directory because cloud-scenes-contract.spec.mjs READS it: the rule that a loosened crossBackend ceiling must name the row removing it has to apply to these entries before they land, and a spec pointing at an untracked path fails on main. Do not paste the entries into scenes.json without the baselines: see whyHeld.",
+  "row": "C13-N07a",
+  "lane": "L6 / Yavanna",
+  "frozenAt": "2026-09-12",
+  "whyHeld": [
+    "A scene with no reviewed baseline evaluates NON_CERTIFYING with reason HISTORICAL_BASELINE_MISSING (Tools/visual-regression/lib/visual-gate-policy.mjs, evaluatePixelGate's !reference branch).",
+    "capture-and-diff.mjs exits 0 only when every scene's summary status is PASS (its final process.exit line), so a scene without baselines makes the whole standing image gate exit 1.",
+    "Edge leg 1 sits behind two other Edge jobs, so landing the entries alone would leave a standing red for as long as that queue takes. A red guard gets a repair, never an annotation — hence the hold."
+  ],
+  "crossBackendNeutralization": {
+    "value": 1,
+    "appliesTo": [
+      "cloud-orbital-disc",
+      "cloud-ground-overcast"
+    ],
+    "derivation": [
+      "Baseline promotion is refused while ANY scene's crossBackend gate is not PASS (capture-and-diff.mjs, the promotionBlockers block that collects crossBackendFailures).",
+      "Volumetric clouds are WebGPU-only: CloudCollection.js:87 documents VOLUMETRIC as 'WebGPU only; documented no-op on WebGL', and :590-605 silently falls back to billboards.",
+      "So the WebGL arm of these scenes renders a materially different picture BY DESIGN, and at the suite-default 2% ceiling (capture-and-diff.mjs's threshold default) these WebGPU baselines could never be promoted at all.",
+      "The ceiling is therefore neutralized to 1 for these two scenes only. That is 'disabled by construction', not a measured number, and it is said so in each entry's rationale."
+    ],
+    "removedBy": [
+      "C13-N07b — gives cloud-orbital-disc a WebGL arm, at which point its ceiling returns to the suite default.",
+      "C13-N15c — lands the GLSL analytic shell, which is what makes a cross-backend cloud comparison meaningful at all."
+    ],
+    "enforcedBy": "Tools/visual-regression/cloud-scenes-contract.spec.mjs — any scene loosening crossBackend above the suite default must name a C13-N row in its crossBackend expectedMismatch rationale. The rule LANDS NOW, ahead of the entries, and it reads this file as well as scenes.json."
+  },
+  "edgeLeg1Recipe": {
+    "preconditions": [
+      "Dev server serving the built bundle; if --serve-built is in play, assert served md5 == on-disk md5 for Build/** before the first capture.",
+      "Edge (Chromium), never Firefox.",
+      "Tools/visual-regression/scenes/cloud-scene-setup.js is already on main (it landed inert with this batch); no engine change is required."
+    ],
+    "step1_insertEntries": "Append the two objects in this file's scenes array to Tools/visual-regression/scenes.json scenes array, verbatim, and DELETE this file in the same commit. cloud-scenes-contract.spec.mjs asserts exactly this handover: while this file exists the entries must NOT be in scenes.json, and no NEW scene may enter scenes.json without both baseline PNGs.",
+    "step2_promote": [
+      "--scene is SINGLE-VALUED (capture-and-diff.mjs's parseArgs does args.scene = argv[++i]), so a repeated flag silently keeps only the last name and banks ONE baseline while appearing to bank two. Run it once per scene:",
+      "node Tools/visual-regression/capture-and-diff.mjs --scene cloud-orbital-disc --update --confirm-baseline-promotion --update-rationale \"C13-N07a: first WebGPU cloud baselines\" --reviewed-by \"<executor>\"",
+      "node Tools/visual-regression/capture-and-diff.mjs --scene cloud-ground-overcast --update --confirm-baseline-promotion --update-rationale \"C13-N07a: first WebGPU cloud baselines\" --reviewed-by \"<executor>\""
+    ],
+    "step3_certify": [
+      "node Tools/visual-regression/capture-and-diff.mjs --scene cloud-orbital-disc",
+      "node Tools/visual-regression/capture-and-diff.mjs --scene cloud-ground-overcast",
+      "Then the full sweep, which must now exit 0: node Tools/visual-regression/capture-and-diff.mjs"
+    ],
+    "step4_reviewThePngs": [
+      "cloud-orbital-disc.webgpu.png — a filled, terminator-free lit disc with visible cloud STRUCTURE, not a flat featureless disc and not punched through to black.",
+      "cloud-ground-overcast.webgpu.png — a dense low deck filling most of the frame from near ground. An empty frame would still cross-backend-PASS under the neutralized ceiling and would prove nothing; this check is what stops that.",
+      "Both *.webgl.png — a near-black isolated frame (globe hidden, no volumetric cloud on WebGL by design). Anything else means isolation leaked from an earlier scene in the sweep.",
+      "Re-run node --test Tools/visual-regression/cloud-scenes-contract.spec.mjs after any hand edit made during review."
+    ],
+    "step5_bank": "Repatriate the promoted PNGs and output/report.json under Tools/visual-regression/output/ per the evidence-repatriation rule before the executor's clone is retired."
+  },
+  "scenes": [
+    {
+      "name": "cloud-orbital-disc",
+      "description": "C13-N07a — WebGPU volumetric-cloud orbital scene, the campaign's PRIMARY goal band: a 1.2e7 m orbital camera over a HIDDEN globe (scenes/cloud-scene-setup.js hides terrain/imagery/atmosphere so the frame is dominated by the cloud shell under test, not by noise from subsystems already covered by globe-default/globe-horizon/wgs84-*). Clock pinned to 2026-06-21T12:00:00Z — local solar noon at the equator (lon 0, lat 0) — for a terminator-free lit disc; CUMULUS genus at 0.85 coverage. `camera` is null here and the pose lives in the setup file's SCENE_CONFIGS table instead of here, because the pose's longitude is the same value the pinned clock's local-solar-hour derivation is anchored to (see the setup file's header arithmetic) — splitting them across two files would let someone edit one without the other and silently break the stated 'local solar noon' framing with nothing to catch it. EXPECTED MISMATCH: see below — this is the first WebGPU capture of this scene, and the crossBackend gate's threshold is deliberately overridden (not measured) because the WebGL arm renders no volumetric cloud at all by documented design.",
+      "setupFile": "scenes/cloud-scene-setup.js",
+      "setupParams": {
+        "sceneName": "cloud-orbital-disc"
+      },
+      "camera": null,
+      "thresholds": {
+        "crossBackend": 1
+      },
+      "expectedMismatch": [
+        {
+          "gate": "historicalWebgpu",
+          "expect": "UNMEASURED",
+          "trackedBy": "C13-N07a",
+          "rationale": "First-ever WebGPU capture of this scene; there is no prior measurement in this metric to predict against. The Edge baseline recipe in scenes/cloud-scene-setup.js establishes it; replace UNMEASURED with the measured prediction once a baseline exists and a second run has confirmed it holds."
+        },
+        {
+          "gate": "crossBackend",
+          "expect": "PASS",
+          "trackedBy": "C13-N07b",
+          "rationale": "thresholds.crossBackend is overridden to 1 (100%) — disabling, not tuning: CloudCollection.js:87 documents VOLUMETRIC as WebGPU-only, and :590-605 makes WebGL fall back to rendering nothing extra for it, so with the globe hidden (scenes/cloud-scene-setup.js) the WebGL arm is a near-black frame while WebGPU renders the full lit cloud disc. A pixel ceiling between two deliberately different pictures is not a measurement, and leaving the suite-default 2% ceiling would make this scene's WebGPU baseline permanently unpromotable (capture-and-diff.mjs:1041-1076 blocks --confirm-baseline-promotion on any scene whose crossBackend gate is not PASS), which would keep the standing gate red forever and destroy its ability to report a real regression instead. PASS at threshold 1 is therefore guaranteed by construction, not measured — a placeholder pending a real WebGL arm. C13-N07b gives cloud-orbital-disc a WebGL arm directly; C13-N15c (the GLSL analytic shell shader, landing on both backends) would also let this override be tightened to a real measured ceiling. Remove this override, at the latest, when either row lands."
+        }
+      ]
+    },
+    {
+      "name": "cloud-ground-overcast",
+      "description": "C13-N07a — WebGPU volumetric-cloud ground scene: a near-surface camera (50 m) over a HIDDEN globe, pitched up ~25 deg into a low, high-coverage STRATUS deck (cloudLayerBottom 300 m / cloudLayerTop 1200 m, coverage 0.97) — the camera sits below the deck's inner boundary, i.e. genuinely 'under' it. Clock pinned to 2026-06-21T21:40:00Z — local solar 15:00 at lon -100 (mid-afternoon daylight; overcast lighting is diffuse so the exact hour matters less than for cloud-orbital-disc, but it is still a stated, reproducible instant rather than an unstated one). `camera` is null for the same reason as cloud-orbital-disc: the pose's longitude and the pinned clock's local-solar-hour derivation are coupled and are kept in one place (scenes/cloud-scene-setup.js's SCENE_CONFIGS) so they cannot drift apart silently. EXPECTED MISMATCH: see below — first WebGPU capture, and the crossBackend threshold is overridden for the same documented WebGL-no-op reason as cloud-orbital-disc.",
+      "setupFile": "scenes/cloud-scene-setup.js",
+      "setupParams": {
+        "sceneName": "cloud-ground-overcast"
+      },
+      "camera": null,
+      "thresholds": {
+        "crossBackend": 1
+      },
+      "expectedMismatch": [
+        {
+          "gate": "historicalWebgpu",
+          "expect": "UNMEASURED",
+          "trackedBy": "C13-N07a",
+          "rationale": "First-ever WebGPU capture of this scene; there is no prior measurement in this metric to predict against. See cloud-orbital-disc's identical rationale; the same first-run logic applies here."
+        },
+        {
+          "gate": "crossBackend",
+          "expect": "PASS",
+          "trackedBy": "C13-N15c",
+          "rationale": "thresholds.crossBackend is overridden to 1 (100%) for the same documented reason as cloud-orbital-disc: CloudCollection.js:87 and :590-605 make VOLUMETRIC a no-op on WebGL, and with the globe hidden the WebGL arm is a near-black frame against WebGPU's full overcast deck. Unlike cloud-orbital-disc this scene has no scene-specific WebGL-arm row filed, so the row that removes the override here is C13-N15c (the GLSL analytic shell shader, both backends) — once it lands, replace this override with a measured ceiling. PASS at threshold 1 is guaranteed by construction, not measured."
+        }
+      ]
+    }
+  ],
+  "trackedAt": "Tools/visual-regression/scenes-cloud-pending.json",
+  "readBy": "Tools/visual-regression/cloud-scenes-contract.spec.mjs",
+  "deleteWhen": "the same commit that moves scenes[] into Tools/visual-regression/scenes.json and banks the baselines"
+}

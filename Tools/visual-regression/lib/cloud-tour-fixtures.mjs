@@ -72,6 +72,7 @@ export const PHASE_ACTIONS = Object.freeze([
   "enable-clouds",
   "set-deck",
   "resize",
+  "traverse",
 ]);
 
 /** Sequence kinds. */
@@ -80,6 +81,89 @@ export const SEQUENCE_KINDS = Object.freeze([
   "teleport",
   "history-reset",
   "temporal-ghost",
+  "traverse",
+]);
+
+/**
+ * Illumination band from a fixture's local solar hour. A simple hour bucket
+ * (not a per-latitude sun-elevation model — the polar fixtures already handle
+ * latitude/season explicitly via their own `dateIso` and rationale) used only
+ * to make "does the table cover night/dawn/day/dusk" a computed fact instead
+ * of an asserted one.
+ *
+ * @param {number} localSolarHour
+ * @returns {"night"|"dawn"|"day"|"dusk"}
+ */
+export function illuminationBand(localSolarHour) {
+  const h = localSolarHour;
+  if (h >= 5 && h < 7) {
+    return "dawn";
+  }
+  if (h >= 7 && h < 17) {
+    return "day";
+  }
+  if (h >= 17 && h < 19) {
+    return "dusk";
+  }
+  return "night";
+}
+
+/** Geography tags a station may declare (`station.geography`). */
+export const GEOGRAPHY_TAGS = Object.freeze([
+  "antimeridian-east",
+  "antimeridian-west",
+  "north-pole",
+  "south-pole",
+  "polar",
+  "equatorial-maritime",
+  "tropical-land",
+  "mid-latitude-continental",
+  "arid",
+]);
+
+/**
+ * The 8 geography cases `QUEUE_2026-07-23_CAMPAIGN13.md` §8 names verbatim:
+ * "antimeridian east/west crossing; north pole; south pole; equatorial
+ * maritime; tropical land; mid-latitude continental; arid; polar". The first
+ * case bundles two directions into one required case, hence `requires` being
+ * an array — the case is only satisfied when EVERY tag it lists is present
+ * somewhere in the table, not just one of them.
+ */
+export const REQUIRED_GEOGRAPHY_CASES = Object.freeze([
+  Object.freeze({
+    id: "antimeridian-crossing",
+    requires: Object.freeze(["antimeridian-east", "antimeridian-west"]),
+  }),
+  Object.freeze({ id: "north-pole", requires: Object.freeze(["north-pole"]) }),
+  Object.freeze({ id: "south-pole", requires: Object.freeze(["south-pole"]) }),
+  Object.freeze({
+    id: "equatorial-maritime",
+    requires: Object.freeze(["equatorial-maritime"]),
+  }),
+  Object.freeze({
+    id: "tropical-land",
+    requires: Object.freeze(["tropical-land"]),
+  }),
+  Object.freeze({
+    id: "mid-latitude-continental",
+    requires: Object.freeze(["mid-latitude-continental"]),
+  }),
+  Object.freeze({ id: "arid", requires: Object.freeze(["arid"]) }),
+  Object.freeze({ id: "polar", requires: Object.freeze(["polar"]) }),
+]);
+
+/** Orbital station sub-kinds (`station.orbitalKind`, orbital regime only). */
+export const ORBITAL_KINDS = Object.freeze([
+  "nadir",
+  "limb",
+  "terminator-crossing",
+]);
+
+/** In-atmosphere station tags (`station.inAtmosphere`). */
+export const IN_ATMOSPHERE_TAGS = Object.freeze([
+  "cruise-above-deck-10km",
+  "between-decks-approx",
+  "forward-traverse-100ms",
 ]);
 
 const GENUS_NAME_BY_VALUE = Object.freeze(
@@ -285,6 +369,7 @@ const FIXTURES = [
         height: 800,
         heading: 0,
         pitch: 10,
+        geography: "mid-latitude-continental",
       },
       {
         id: "in-deck",
@@ -312,6 +397,21 @@ const FIXTURES = [
         height: 18000000,
         heading: 0,
         pitch: -90,
+        orbitalKind: "nadir",
+      },
+      // Perpendicular-wind vantage for A9 (measured-vs-configured advection):
+      // heading 0 (due north) against an eastward wind is a clean 90-degree
+      // cross, so lateral drift is what the frame shows instead of motion
+      // foreshortened toward/away from the camera.
+      {
+        id: "crosswind-view",
+        regime: "above-deck",
+        lon: -95.0,
+        lat: 39.0,
+        height: 9000,
+        heading: 0,
+        pitch: -25,
+        crosswind: true,
       },
     ],
   },
@@ -407,6 +507,7 @@ const FIXTURES = [
         height: 400,
         heading: 0,
         pitch: 25,
+        geography: "equatorial-maritime",
       },
       {
         id: "in-deck",
@@ -434,6 +535,23 @@ const FIXTURES = [
         height: 12000000,
         heading: 0,
         pitch: -90,
+        orbitalKind: "nadir",
+      },
+      // LIMB framing at a lower orbital altitude than the nadir station: at
+      // h=2,000,000 m over WGS84 R=6,378,137 m, the true-horizon dip below the
+      // local horizontal is arccos(R/(R+h)) = arccos(6378137/8378137)
+      // = arccos(0.76128) = 40.43 degrees. Pitching the camera to exactly that
+      // dip centers the day-side limb (the curved edge of the disc) in frame
+      // instead of the fully-centered disc a nadir pitch (-90) produces.
+      {
+        id: "limb-view",
+        regime: "orbital",
+        lon: 150.0,
+        lat: 5.0,
+        height: 2000000,
+        heading: 0,
+        pitch: -40.43,
+        orbitalKind: "limb",
       },
     ],
   },
@@ -491,6 +609,32 @@ const FIXTURES = [
         height: 5000,
         heading: 270,
         pitch: -25,
+      },
+      // Real-world anchor for the cruise station: transpacific flights out of
+      // South America commonly overfly this exact persistent stratocumulus
+      // deck at jet cruise altitude, well above its 1400 m top.
+      {
+        id: "cruise-10km",
+        regime: "above-deck",
+        lon: -80.0,
+        lat: -20.0,
+        height: 10000,
+        heading: 270,
+        pitch: -8,
+        inAtmosphere: "cruise-above-deck-10km",
+      },
+      // Start of the 100 m/s forward traverse (T1's forward leg) — see the
+      // "traverse-forward-100ms" sequence, which moves this pose forward at a
+      // fixed ground speed rather than treating it as a static vantage.
+      {
+        id: "traverse-start",
+        regime: "above-deck",
+        lon: -80.0,
+        lat: -20.0,
+        height: 9000,
+        heading: 270,
+        pitch: -3,
+        inAtmosphere: "forward-traverse-100ms",
       },
     ],
   },
@@ -598,6 +742,40 @@ const FIXTURES = [
         heading: 90,
         pitch: -25,
       },
+      // Monsoon nimbostratus genuinely spans both the Bay and the adjacent
+      // Indian/Bangladeshi land mass during the season this fixture models;
+      // moving the ground view inland (West Bengal, ~87.5E/23.5N) keeps the
+      // SAME weather system while answering the "tropical land" geography
+      // case, instead of relaunching a whole new fixture for it.
+      {
+        id: "tropical-land-view",
+        regime: "ground",
+        lon: 87.5,
+        lat: 23.5,
+        height: 300,
+        heading: 90,
+        pitch: 20,
+        geography: "tropical-land",
+      },
+      // "Between two decks" approximation — see the "deck-transit-between-decks"
+      // sequence. CloudVolumetrics models exactly one deck at a time
+      // (packages/engine/Source/Scene/CloudVolumetrics.js has a single
+      // cloudLayerBottom/cloudLayerTop pair), so there is no way to render two
+      // concurrent layers. This station sits above the fixture's DEFAULT deck
+      // (top 6000 m); the companion sequence then set-decks to a second,
+      // higher deck (9000-11000 m) so the SAME fixed altitude is demonstrably
+      // above one deck and below the other across two phases, one deck
+      // rendered at a time.
+      {
+        id: "between-decks",
+        regime: "above-deck",
+        lon: 88.0,
+        lat: 18.0,
+        height: 8000,
+        heading: 90,
+        pitch: -15,
+        inAtmosphere: "between-decks-approx",
+      },
     ],
   },
   {
@@ -646,6 +824,9 @@ const FIXTURES = [
         height: 20000,
         heading: 0,
         pitch: -30,
+        // General high-latitude case, distinct from the true pole approach
+        // below — 82N is "polar" without claiming to BE the pole.
+        geography: "polar",
       },
       {
         id: "pole-approach",
@@ -655,6 +836,7 @@ const FIXTURES = [
         height: 20000,
         heading: 0,
         pitch: -30,
+        geography: "north-pole",
       },
     ],
   },
@@ -706,6 +888,7 @@ const FIXTURES = [
         height: 20000,
         heading: 180,
         pitch: -30,
+        geography: "south-pole",
       },
     ],
   },
@@ -796,6 +979,7 @@ const FIXTURES = [
         height: 600,
         heading: 0,
         pitch: 20,
+        geography: "arid",
       },
       {
         id: "above-deck",
@@ -855,6 +1039,7 @@ const FIXTURES = [
         height: 9000,
         heading: 90,
         pitch: -5,
+        geography: "antimeridian-east",
       },
     ],
   },
@@ -907,6 +1092,189 @@ const FIXTURES = [
         height: 9000,
         heading: 270,
         pitch: -5,
+        geography: "antimeridian-west",
+      },
+    ],
+  },
+  {
+    id: "californian-nocturnal-stratus",
+    gate: {
+      minChangedFraction: 0.001,
+      why:
+        "UNCALIBRATED pending an Edge run (this worker has no browser). Set " +
+        "below the cirrus floor (0.002, previously the lowest-illumination " +
+        "case) because night removes the direct solar term entirely and only " +
+        "moon/ambient light remains, which this table cannot bound without " +
+        "actually rendering a frame. Revisit exactly as " +
+        "southern-ocean-stratocumulus-open's floor was revised 0.03->0.012 " +
+        "after its first real run: tighten if the first run measures higher, " +
+        "lower it further if it measures lower.",
+    },
+    climate: "coastal-marine-nocturnal",
+    region: "eastern-pacific-california-coast",
+    cloudType: CloudType.STRATUS,
+    formation: "nocturnal-marine-layer",
+    rationale:
+      "NIGHT coverage (O2/dusk-dawn band gap): a coastal marine stratus deck " +
+      "is driven by the subsidence inversion over cold upwelled water, not by " +
+      "solar heating, so it persists — often thickens — after dark. Two " +
+      "stations at deep night (01:30 local) give the row's required 2 " +
+      "night-band stations without inventing a scene the real atmosphere " +
+      "would not produce at that hour.",
+    anchor: { lon: -123.5, lat: 37.0 },
+    localSolarHour: 1.5,
+    volumetric: {
+      cloudType: CloudType.STRATUS,
+      cloudCoverage: 0.85,
+      cloudDensity: 0.5,
+      cloudLayerBottom: 200,
+      cloudLayerTop: 900,
+      cloudWindSpeed: 0,
+      cloudWeatherMap: false,
+      cloudVolumetricQuality: "high",
+    },
+    stations: [
+      {
+        id: "ground-lookup",
+        regime: "ground",
+        lon: -123.5,
+        lat: 37.0,
+        height: 100,
+        heading: 270,
+        pitch: 10,
+      },
+      {
+        id: "above-deck",
+        regime: "above-deck",
+        lon: -123.5,
+        lat: 37.0,
+        height: 6000,
+        heading: 270,
+        pitch: -25,
+      },
+    ],
+  },
+  {
+    id: "pacificnw-dawn-valley-stratus",
+    gate: {
+      minChangedFraction: 0.015,
+      why:
+        "UNCALIBRATED pending an Edge run. Set above the night floor " +
+        "(0.001) because the sun is AT the horizon rather than well below it " +
+        "— direct light exists, just at grazing incidence — but below the " +
+        "arctic/antarctic daytime stratus floor (0.02) because a 0-degree sun " +
+        "elevation is dimmer than the polar-day stations' higher sun angle. " +
+        "Revisit after the first real run the same way every other floor in " +
+        "this table has been.",
+    },
+    climate: "temperate-continental-dawn-fog",
+    region: "pacific-northwest-willamette-valley",
+    cloudType: CloudType.STRATUS,
+    formation: "valley-radiation-fog-dawn",
+    rationale:
+      "DAWN coverage (O2/G3's 0-degree-sun-elevation case) plus the " +
+      "TERMINATOR-CROSSING orbital station. Radiation fog forms on calm, " +
+      "clear nights via surface radiative cooling — most reliable in winter " +
+      "but not exclusive to it, so a June dawn occurrence in a still inland " +
+      "valley is physically plausible. localSolarHour 6.0 puts the anchor " +
+      "AT the terminator by construction (utcIsoForLocalSolarHour(lon, 6)), " +
+      "which is what the orbital station below needs to see both hemispheres " +
+      "in one frame.",
+    anchor: { lon: -123.0, lat: 44.5 },
+    localSolarHour: 6.0,
+    volumetric: {
+      cloudType: CloudType.STRATUS,
+      cloudCoverage: 0.8,
+      cloudDensity: 0.45,
+      cloudLayerBottom: 50,
+      cloudLayerTop: 400,
+      cloudWindSpeed: 0,
+      cloudWeatherMap: false,
+      cloudVolumetricQuality: "high",
+    },
+    stations: [
+      {
+        id: "dawn-valley-view",
+        regime: "above-deck",
+        lon: -123.0,
+        lat: 44.5,
+        height: 3000,
+        heading: 90,
+        pitch: -20,
+      },
+      // Orbital nadir AT the terminator. The anchor's localSolarHour (6.0)
+      // means the sub-satellite point sits ON the day/night boundary. At
+      // h=10,000,000 m the visible-disc angular radius is
+      // arcsin(R/(R+h)) = arcsin(6378137/16378137) = arcsin(0.38940) = 22.92
+      // degrees (45.8 degrees across), and because the sub-satellite point
+      // IS the terminator, that great circle runs through the center of the
+      // disc — a nadir pitch therefore shows day on one side and night on
+      // the other in the SAME frame, which is what O2's night-side/day-side
+      // luminance-band comparison needs.
+      {
+        id: "terminator-crossing-orbit",
+        regime: "orbital",
+        lon: -123.0,
+        lat: 44.5,
+        height: 10000000,
+        heading: 0,
+        pitch: -90,
+        orbitalKind: "terminator-crossing",
+      },
+    ],
+  },
+  {
+    id: "benguela-dusk-stratocumulus",
+    gate: {
+      minChangedFraction: 0.01,
+      why:
+        "UNCALIBRATED pending an Edge run. Civil twilight (sun ~2 degrees " +
+        "below the horizon) still carries measurable skylight, so the floor " +
+        "sits above the deep-night floor (0.001) but below the daytime " +
+        "closed-cell floor (0.08) for the same formation family — dusk " +
+        "illumination is a fraction of full day, not its equal.",
+    },
+    climate: "subtropical-marine-eastern-boundary",
+    region: "namibian-coast-benguela",
+    cloudType: CloudType.STRATOCUMULUS,
+    formation: "dusk-closed-cell-sheet",
+    rationale:
+      "DUSK-INSIDE-CLOUD coverage (O2/G3's civil-twilight case): the " +
+      "Benguela deck is the Southern Hemisphere twin of the Peru closed-cell " +
+      "sheet already in this table, at 18:45 local — just past sunset. Both " +
+      "stations sit inside the deck (the row's explicit 'dusk INSIDE-CLOUD' " +
+      "wording) looking in different directions, so one frames the " +
+      "low-sun/afterglow side and the other frames away from it.",
+    anchor: { lon: 12.0, lat: -23.0 },
+    localSolarHour: 18.75,
+    volumetric: {
+      cloudType: CloudType.STRATOCUMULUS,
+      cloudCoverage: 0.85,
+      cloudDensity: 0.75,
+      cloudLayerBottom: 500,
+      cloudLayerTop: 1300,
+      cloudWindSpeed: 0,
+      cloudWeatherMap: false,
+      cloudVolumetricQuality: "high",
+    },
+    stations: [
+      {
+        id: "inside-deck-sunsetward",
+        regime: "inside-deck",
+        lon: 12.0,
+        lat: -23.0,
+        height: 900,
+        heading: 270,
+        pitch: 0,
+      },
+      {
+        id: "inside-deck-zenith",
+        regime: "inside-deck",
+        lon: 12.0,
+        lat: -23.0,
+        height: 900,
+        heading: 0,
+        pitch: 30,
       },
     ],
   },
@@ -1272,6 +1640,153 @@ const SEQUENCES = [
       },
     ],
   },
+
+  // ── crosswind: A9 measured-vs-configured advection, not foreshortened ──
+  {
+    id: "wind-time-crosswind",
+    kind: "wind-time",
+    fixtureId: "plains-fairweather-cumulus",
+    description:
+      "clock ADVANCES 60 s/frame, wind 20 m/s PERPENDICULAR to the view — " +
+      "lateral advection, not foreshortened toward/away from the camera",
+    rationale:
+      "A9 needs configured wind to be visible AS drift, which a wind blowing " +
+      "toward or away from the camera does not provide (it foreshortens to " +
+      "near-zero apparent motion). The crosswind-view station faces due " +
+      "north (heading 0) while this lane's wind blows due east " +
+      "({x:1,y:0}) — an exact 90-degree cross — so any measured " +
+      "frame-to-frame delta here is lateral advection the eye can actually " +
+      "see, distinguishable from the radial wind-time-advection lane.",
+    clock: { stepSeconds: 60, warmFrames: 24, measureFrames: 48 },
+    volumetric: {
+      cloudWindSpeed: 20,
+      cloudWindDirection: { x: 1, y: 0 },
+      cloudVolumetricQuality: "high",
+    },
+    gpuPasses: FULLRES_PASSES,
+    expect: { framewiseMotion: "advecting" },
+    phases: [
+      {
+        id: "hold",
+        action: "hold",
+        stationId: "crosswind-view",
+        frames: 48,
+        capture: true,
+        expectResetBits: 0,
+        resetAssertFromFrame: 4,
+      },
+    ],
+  },
+
+  // ── in-atmosphere: between two decks (single-deck-at-a-time approx) ────
+  {
+    id: "deck-transit-between-decks",
+    kind: "history-reset",
+    fixtureId: "bengal-monsoon-nimbostratus",
+    description:
+      "hold above the DEFAULT (low) deck, set-deck to a HIGH deck at the " +
+      "same altitude, hold, restore the low deck — the same fixed vantage " +
+      "reads as above-one-deck and then below-the-other across phases",
+    rationale:
+      "CloudVolumetrics (packages/engine/Source/Scene/CloudVolumetrics.js) " +
+      "models exactly one cloudLayerBottom/Top pair, so a literal 'flying " +
+      "between two simultaneous decks' frame cannot be rendered. This " +
+      "sequence is the honest approximation named in the C13-N03 brief: the " +
+      "camera stays fixed at 8000 m (above the fixture's default 700-6000 m " +
+      "deck) while set-deck swaps in a second, higher 9000-11000 m deck — at " +
+      "that point the SAME altitude is below the newly active deck, which is " +
+      "the between-decks relationship the WS-A workstream asks for, proven " +
+      "one active layer at a time rather than asserted in prose.",
+    clock: { stepSeconds: 0, warmFrames: 24, measureFrames: 0 },
+    volumetric: { cloudVolumetricQuality: TEMPORAL_TIER, cloudWindSpeed: 0 },
+    gpuPasses: TEMPORAL_PASSES,
+    phases: [
+      {
+        id: "above-low-deck",
+        action: "hold",
+        stationId: "between-decks",
+        frames: 24,
+        capture: true,
+        expectResetBits: 0,
+        resetAssertFromFrame: 4,
+      },
+      {
+        id: "raise-second-deck",
+        action: "set-deck",
+        deck: { bottom: 9000, top: 11000 },
+        frames: 1,
+        capture: true,
+        expectResetBits: DECK_BOUNDS_BIT,
+      },
+      {
+        id: "between-the-decks",
+        action: "hold",
+        frames: 16,
+        capture: true,
+        expectResetBits: 0,
+        resetAssertFromFrame: 4,
+      },
+      {
+        id: "restore-low-deck",
+        action: "set-deck",
+        deck: { bottom: 700, top: 6000 },
+        frames: 1,
+        capture: true,
+        expectResetBits: DECK_BOUNDS_BIT,
+      },
+      {
+        id: "settle-after-restore",
+        action: "hold",
+        frames: 16,
+        capture: false,
+        expectResetBits: 0,
+        resetAssertFromFrame: 4,
+      },
+    ],
+  },
+
+  // ── in-atmosphere: 100 m/s forward traverse (T1's forward leg) ─────────
+  {
+    id: "traverse-forward-100ms",
+    kind: "traverse",
+    fixtureId: "sepacific-stratocumulus-closed",
+    description:
+      "converge, then fly forward at 100 m/s for 60 s (6 km), sampling every " +
+      "5 s — a sustained cruise leg, not an instantaneous teleport",
+    rationale:
+      "T1's forward leg needs continuous in-atmosphere motion distinct from " +
+      "a teleport's discontinuity or a pan's fixed-position rotation. The " +
+      "traverse phase advances the camera's geodetic position each frame by " +
+      "speedMetresPerSecond * clock.stepSeconds along its heading (270, " +
+      "matching the fixture's westbound stations) while altitude, heading " +
+      "and pitch stay level, over a DECLARED duration and sample cadence so " +
+      "the run is exactly reproducible rather than wall-clock-timed.",
+    clock: { stepSeconds: 1, warmFrames: 24, measureFrames: 0 },
+    volumetric: { cloudVolumetricQuality: "high", cloudWindSpeed: 0 },
+    gpuPasses: FULLRES_PASSES,
+    phases: [
+      {
+        id: "converge",
+        action: "hold",
+        stationId: "traverse-start",
+        frames: 24,
+        capture: true,
+        expectResetBits: 0,
+        resetAssertFromFrame: 4,
+      },
+      {
+        id: "forward-run",
+        action: "traverse",
+        traverse: {
+          speedMetresPerSecond: 100,
+          durationSeconds: 60,
+          sampleCadenceSeconds: 5,
+        },
+        frames: 60,
+        capture: true,
+      },
+    ],
+  },
 ];
 
 /** The sequence table, frozen. */
@@ -1460,6 +1975,42 @@ export function validateFixture(fixture) {
         );
       }
     }
+    // Optional coverage tags: validated so a typo silently stops counting
+    // toward the coverage it was meant to prove, instead of failing loudly.
+    if (
+      station.geography !== undefined &&
+      !GEOGRAPHY_TAGS.includes(station.geography)
+    ) {
+      failures.push(
+        `${label}: unknown geography tag ${String(station.geography)}`,
+      );
+    }
+    if (station.orbitalKind !== undefined) {
+      if (station.regime !== "orbital") {
+        failures.push(
+          `${label}: orbitalKind is only meaningful on an orbital-regime station`,
+        );
+      }
+      if (!ORBITAL_KINDS.includes(station.orbitalKind)) {
+        failures.push(
+          `${label}: unknown orbitalKind ${String(station.orbitalKind)}`,
+        );
+      }
+    }
+    if (
+      station.inAtmosphere !== undefined &&
+      !IN_ATMOSPHERE_TAGS.includes(station.inAtmosphere)
+    ) {
+      failures.push(
+        `${label}: unknown inAtmosphere tag ${String(station.inAtmosphere)}`,
+      );
+    }
+    if (
+      station.crosswind !== undefined &&
+      typeof station.crosswind !== "boolean"
+    ) {
+      failures.push(`${label}: crosswind must be boolean when present`);
+    }
   }
   return failures;
 }
@@ -1594,6 +2145,71 @@ export function validateFixtureSet(fixtures = CLOUD_TOUR_FIXTURES) {
       "no fixture provides an altitude transition (a station pair whose heights differ by 10x)",
     );
   }
+
+  // Illumination bands (C13-N03/WS-A): day was the only band before this row
+  // — night, dawn and dusk must all be represented, with the row's explicit
+  // per-band station counts, computed from localSolarHour rather than a
+  // hand-authored tag so a fixture cannot claim a band its own clock disagrees
+  // with.
+  for (const band of ["day", "night", "dawn", "dusk"]) {
+    if (!coverage.illuminationBands.includes(band)) {
+      failures.push(
+        `no fixture sits in the ${band} illumination band (by localSolarHour)`,
+      );
+    }
+  }
+  if (coverage.illuminationStationCounts.night < 2) {
+    failures.push(
+      `only ${coverage.illuminationStationCounts.night} night-band stations (row requires at least 2)`,
+    );
+  }
+  if (coverage.illuminationStationCounts.dawn < 1) {
+    failures.push(
+      `only ${coverage.illuminationStationCounts.dawn} dawn-band stations (row requires at least 1)`,
+    );
+  }
+  if (coverage.duskInsideDeckStationCount < 2) {
+    failures.push(
+      `only ${coverage.duskInsideDeckStationCount} dusk inside-deck stations (row requires at least 2)`,
+    );
+  }
+
+  // Orbital sub-kinds: nadir, limb, terminator-crossing.
+  for (const kind of ORBITAL_KINDS) {
+    if (!coverage.orbitalKinds.includes(kind)) {
+      failures.push(`no orbital station tagged orbitalKind '${kind}'`);
+    }
+  }
+
+  // In-atmosphere stations: cruise above a deck, between two decks
+  // (single-deck-at-a-time approximation), forward traverse.
+  for (const tag of IN_ATMOSPHERE_TAGS) {
+    if (!coverage.inAtmosphereTags.includes(tag)) {
+      failures.push(`no station tagged inAtmosphere '${tag}'`);
+    }
+  }
+
+  if (coverage.crosswindStationCount < 1) {
+    failures.push(
+      "no station tagged crosswind:true — A9 needs a vantage where configured " +
+        "wind is perpendicular to the view, not foreshortened toward/away " +
+        "from the camera",
+    );
+  }
+
+  // The 8 geography cases the queue's verification matrix (§8) names
+  // verbatim. The antimeridian case bundles two directions into one required
+  // case; both tags must be present for it to count as satisfied.
+  for (const geoCase of REQUIRED_GEOGRAPHY_CASES) {
+    const missing = geoCase.requires.filter(
+      (tag) => !coverage.geographyTags.includes(tag),
+    );
+    if (missing.length > 0) {
+      failures.push(
+        `geography case '${geoCase.id}' missing tag(s): ${missing.join(", ")}`,
+      );
+    }
+  }
   return failures;
 }
 
@@ -1613,6 +2229,13 @@ export function summarizeFixtureCoverage(fixtures = CLOUD_TOUR_FIXTURES) {
   const poles = new Set();
   let hasNegativeControl = false;
   let hasAltitudeTransition = false;
+  const geographyTags = new Set();
+  const illuminationBands = new Set();
+  const illuminationStationCounts = { night: 0, dawn: 0, day: 0, dusk: 0 };
+  let duskInsideDeckStationCount = 0;
+  const orbitalKinds = new Set();
+  const inAtmosphereTags = new Set();
+  let crosswindStationCount = 0;
 
   for (const fixture of fixtures) {
     climates.add(fixture.climate);
@@ -1626,6 +2249,8 @@ export function summarizeFixtureCoverage(fixtures = CLOUD_TOUR_FIXTURES) {
     if (fixture.negativeControl === true) {
       hasNegativeControl = true;
     }
+    const band = illuminationBand(fixture.localSolarHour);
+    illuminationBands.add(band);
     const heights = [];
     for (const station of fixture.stations ?? []) {
       regimes.add(station.regime);
@@ -1635,6 +2260,23 @@ export function summarizeFixtureCoverage(fixtures = CLOUD_TOUR_FIXTURES) {
       }
       if (station.lat <= -80) {
         poles.add("south");
+      }
+      if (station.geography) {
+        geographyTags.add(station.geography);
+      }
+      if (station.orbitalKind) {
+        orbitalKinds.add(station.orbitalKind);
+      }
+      if (station.inAtmosphere) {
+        inAtmosphereTags.add(station.inAtmosphere);
+      }
+      if (station.crosswind === true) {
+        crosswindStationCount++;
+      }
+      illuminationStationCounts[band] =
+        (illuminationStationCounts[band] ?? 0) + 1;
+      if (band === "dusk" && station.regime === "inside-deck") {
+        duskInsideDeckStationCount++;
       }
     }
     if (heights.length > 1) {
@@ -1664,6 +2306,13 @@ export function summarizeFixtureCoverage(fixtures = CLOUD_TOUR_FIXTURES) {
     poles: [...poles].sort(),
     hasNegativeControl,
     hasAltitudeTransition,
+    geographyTags: [...geographyTags].sort(),
+    illuminationBands: [...illuminationBands].sort(),
+    illuminationStationCounts,
+    duskInsideDeckStationCount,
+    orbitalKinds: [...orbitalKinds].sort(),
+    inAtmosphereTags: [...inAtmosphereTags].sort(),
+    crosswindStationCount,
   };
 }
 
@@ -1793,6 +2442,66 @@ export function validateSequence(sequence, fixtures = CLOUD_TOUR_FIXTURES) {
         );
       }
     }
+    if (phase.action === "traverse") {
+      const trav = phase.traverse ?? {};
+      const stepSeconds = sequence?.clock?.stepSeconds;
+      if (!(
+        isFiniteNumber(trav.speedMetresPerSecond) &&
+        trav.speedMetresPerSecond > 0
+      )) {
+        failures.push(
+          `${label}: traverse requires a positive finite speedMetresPerSecond`,
+        );
+      }
+      if (!(isFiniteNumber(trav.durationSeconds) && trav.durationSeconds > 0)) {
+        failures.push(
+          `${label}: traverse requires a positive finite durationSeconds`,
+        );
+      }
+      if (!(
+        isFiniteNumber(trav.sampleCadenceSeconds) &&
+        trav.sampleCadenceSeconds > 0
+      )) {
+        failures.push(
+          `${label}: traverse requires a positive finite sampleCadenceSeconds`,
+        );
+      }
+      if (!(isFiniteNumber(stepSeconds) && stepSeconds > 0)) {
+        failures.push(
+          `${label}: traverse needs the sequence clock to advance ` +
+            "(clock.stepSeconds > 0) — a pinned clock cannot express a " +
+            "declared real-world duration",
+        );
+      } else {
+        if (
+          isFiniteNumber(trav.durationSeconds) &&
+          Number.isInteger(phase.frames) &&
+          Math.abs(trav.durationSeconds - phase.frames * stepSeconds) > 1e-9
+        ) {
+          failures.push(
+            `${label}: durationSeconds ${trav.durationSeconds} disagrees with ` +
+              `frames(${phase.frames}) * clock.stepSeconds(${stepSeconds})`,
+          );
+        }
+        if (isFiniteNumber(trav.sampleCadenceSeconds)) {
+          const framesPerSample = trav.sampleCadenceSeconds / stepSeconds;
+          if (!Number.isInteger(framesPerSample) || framesPerSample < 1) {
+            failures.push(
+              `${label}: sampleCadenceSeconds ${trav.sampleCadenceSeconds} must be ` +
+                `a positive integer multiple of clock.stepSeconds ${stepSeconds}`,
+            );
+          } else if (
+            Number.isInteger(phase.frames) &&
+            phase.frames % framesPerSample !== 0
+          ) {
+            failures.push(
+              `${label}: the sample cadence (every ${framesPerSample} frames) does ` +
+                `not divide the phase's ${phase.frames} frames`,
+            );
+          }
+        }
+      }
+    }
     for (const key of ["expectResetBits", "forbidResetBits"]) {
       if (phase[key] !== undefined && !Number.isInteger(phase[key])) {
         failures.push(`${label}: ${key} must be an integer bitmask`);
@@ -1847,6 +2556,49 @@ export function validateSequence(sequence, fixtures = CLOUD_TOUR_FIXTURES) {
       failures.push(`${label}: expectResetBits and forbidResetBits overlap`);
     }
   }
+
+  // A9: a crosswind station is only evidence if the configured wind is
+  // actually perpendicular to the view. A wind that blows toward/away from
+  // the camera foreshortens to near-zero apparent motion and proves nothing,
+  // so a sequence that targets a `crosswind:true` station must declare a
+  // `cloudWindDirection` within 15 degrees of perpendicular to that station's
+  // heading (x=east, y=north, matching the existing wind-time lanes).
+  for (const phase of phases) {
+    const stationId = phase.stationId ?? phase.station?.id;
+    if (typeof stationId !== "string") {
+      continue;
+    }
+    const station =
+      (fixture?.stations ?? []).find((entry) => entry.id === stationId) ??
+      (phase.station?.id === stationId ? phase.station : undefined);
+    if (station?.crosswind !== true) {
+      continue;
+    }
+    const dir = sequence?.volumetric?.cloudWindDirection;
+    if (!(isFiniteNumber(dir?.x) && isFiniteNumber(dir?.y))) {
+      failures.push(
+        `${id}: targets crosswind station ${stationId} but declares no cloudWindDirection`,
+      );
+      continue;
+    }
+    const windHeadingDeg = (Math.atan2(dir.x, dir.y) * 180) / Math.PI;
+    let delta = (station.heading - windHeadingDeg) % 360;
+    if (delta < 0) {
+      delta += 360;
+    }
+    const distFromPerpendicular = Math.min(
+      Math.abs(delta - 90),
+      Math.abs(delta - 270),
+    );
+    if (distFromPerpendicular > 15) {
+      failures.push(
+        `${id}: crosswind station ${stationId} is ${distFromPerpendicular.toFixed(1)} ` +
+          "degrees from perpendicular to the configured wind direction — the " +
+          "advection would foreshorten instead of reading as lateral drift",
+      );
+    }
+  }
+
   need(
     capturedPhases > 0,
     "no phase captures a frame — the sequence produces no pixels",
@@ -1957,9 +2709,14 @@ export default {
   STATION_REGIMES,
   PHASE_ACTIONS,
   SEQUENCE_KINDS,
+  GEOGRAPHY_TAGS,
+  REQUIRED_GEOGRAPHY_CASES,
+  ORBITAL_KINDS,
+  IN_ATMOSPHERE_TAGS,
   CLOUD_TOUR_FIXTURES,
   CLOUD_TOUR_SEQUENCES,
   genusName,
+  illuminationBand,
   utcIsoForLocalSolarHour,
   stableStringify,
   replayKeyFor,
