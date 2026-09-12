@@ -158,6 +158,16 @@ interface CesiumEllipsoid {
 }
 
 /**
+ * Column-major 9-element matrix — structurally compatible with the real
+ * `Matrix3` class (`Core/Matrix3.js:62`, numeric-indexed 0..8 slots assigned
+ * in the constructor). Index = column × 3 + row, the same convention
+ * `Matrix4` uses. No `length`: `Matrix3` instances do not carry one.
+ */
+interface CesiumMatrix3 {
+  [index: number]: number;
+}
+
+/**
  * Column-major 16-element matrix — structurally compatible with the real
  * `Matrix4` class (plain ES6 class with numeric-indexed 0..15 slots).
  * NOTE: Matrix4 is NOT a Float64Array subclass; using an interface (not
@@ -624,6 +634,24 @@ interface CesiumUniformState {
   readonly lightColor: CesiumCartesian3;
   readonly lightColorHdr: CesiumCartesian3;
   readonly eyeHeight: number;
+  /**
+   * `czm_eyeCartographic` — geodetic longitude (x) and latitude (y) in
+   * radians and height (z) in metres of the eye. Only refreshed when the
+   * camera has a cartographic position, in which case `.z` IS `eyeHeight`
+   * (`UniformStateComputations.js:87-105`); stale otherwise.
+   */
+  readonly eyeCartographic: CesiumCartesian3;
+  /**
+   * `czm_eyeEllipsoidCurvature` — (prime-vertical, meridional) curvature of
+   * the ellipsoid below the eye. Skipped entirely when the ellipsoid is not
+   * one of revolution (`UniformStateComputations.js:157-170`).
+   */
+  readonly eyeEllipsoidCurvature: CesiumCartesian2;
+  /**
+   * `czm_eyeToEnu` — rotation from eye coordinates to the east-north-up frame
+   * under the camera (`UniformStateComputations.js:155`).
+   */
+  readonly eyeToEnu: CesiumMatrix3;
   readonly fogDensity: number | undefined;
   readonly fogVisualDensityScalar: number | undefined;
   readonly fogMinimumBrightness: number | undefined;

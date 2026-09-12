@@ -470,7 +470,11 @@ test("B1 the WGSL struct declares the tail the packer writes", () => {
   const fields = [...tail.matchAll(/^\s*([A-Za-z0-9_]+)\s*:\s*([^,]+),/gm)].map(
     (m) => [m[1], m[2].trim()],
   );
-  assert.deepEqual(fields, [
+  // The three lanes must be contiguous and in the packer's order. They were
+  // the struct's last members when this row landed; the eye cartographic tail
+  // has since been APPENDED after them, which moves none of their offsets, so
+  // this reads the first three rather than the whole remainder.
+  assert.deepEqual(fields.slice(0, 3), [
     ["celestialControl", "vec4<f32>"],
     ["celestialMoonDirectionAndPhase", "vec4<f32>"],
     ["celestialMoonControl", "vec4<f32>"],
@@ -480,12 +484,22 @@ test("B1 the WGSL struct declares the tail the packer writes", () => {
 test("B2 the declared float count matches the packer's cursor", () => {
   const declared = /export const CAMERA_UNIFORM_FLOATS = (\d+);/.exec(typesTs);
   assert.ok(declared !== null, "the float count must be declared");
+  const width = /export const CELESTIAL_WATER_FLOATS = (\d+);/.exec(cameraUbTs);
+  const eyeWidth = /export const EYE_CARTOGRAPHIC_FLOATS = (\d+);/.exec(
+    cameraUbTs,
+  );
+  assert.ok(
+    eyeWidth !== null,
+    "the eye cartographic tail width must be declared",
+  );
+  // A tail appended AFTER this row's own moves none of its offsets, so the law
+  // is "the 232 floats that preceded this row, plus its own width, plus every
+  // width appended since" — not a frozen total.
   assert.equal(
     Number(declared[1]),
-    244,
-    "232 pre-existing floats plus the three celestial vec4 lanes",
+    232 + Number(width[1]) + Number(eyeWidth[1]),
+    "232 pre-existing floats, the three celestial vec4 lanes, and the eye cartographic tail appended after them",
   );
-  const width = /export const CELESTIAL_WATER_FLOATS = (\d+);/.exec(cameraUbTs);
   assert.ok(
     width !== null,
     "the tail width must be declared beside the writer",
@@ -1948,10 +1962,13 @@ function verdict(override) {
     }
     const declared = /export const CAMERA_UNIFORM_FLOATS = (\d+);/.exec(types);
     const width = /export const CELESTIAL_WATER_FLOATS = (\d+);/.exec(ub);
-    if (declared === null || width === null) {
+    // Tails appended after this row's own move none of its offsets, so the law
+    // is "232 before it, its own width, and whatever has been appended since".
+    const eyeWidth = /export const EYE_CARTOGRAPHIC_FLOATS = (\d+);/.exec(ub);
+    if (declared === null || width === null || eyeWidth === null) {
       return false;
     }
-    if (Number(declared[1]) !== 232 + Number(width[1])) {
+    if (Number(declared[1]) !== 232 + Number(width[1]) + Number(eyeWidth[1])) {
       return false;
     }
     return /surfaceShaderSetOptions\.applyCelestialWater =\s*celestialTail\.enable > 0\.0 && showReflectiveOcean;/.test(
@@ -2102,7 +2119,7 @@ test("G11 UNREACHABLE — the WebGL define emitted without its water", () => {
 test("G12 WIDTH — the declared float count left behind the tail", () => {
   withMutation(
     TYPES_PATH,
-    "export const CAMERA_UNIFORM_FLOATS = 244;",
+    "export const CAMERA_UNIFORM_FLOATS = 264;",
     "export const CAMERA_UNIFORM_FLOATS = 232;",
     false,
   );

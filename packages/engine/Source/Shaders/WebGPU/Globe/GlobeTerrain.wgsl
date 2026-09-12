@@ -287,6 +287,23 @@ struct CameraUniforms {
   celestialControl: vec4<f32>,
   celestialMoonDirectionAndPhase: vec4<f32>,
   celestialMoonControl: vec4<f32>,
+  // Eye cartographic frame — the WGSL twins of `czm_eyeCartographic`,
+  // `czm_eyeToEnu` and `czm_eyeEllipsoidCurvature`, the three inputs
+  // `csm_eyeToCartographicDelta` reads. Packed at the tail by
+  // `WebGPUGlobeSurfaceCameraUB.writeEyeCartographicTail` (floats 244-263),
+  // so every offset above — `previousViewProjection` at 100-115 included —
+  // is unmoved.
+  //
+  // `eyeToEnu` is a `mat3x3<f32>`: WGSL lays that out as THREE vec4 columns,
+  // twelve floats with a padding lane after every third, where GLSL's `mat3`
+  // is nine tight ones. The packer writes three values and a zero per column
+  // to match. Zero when the camera has no cartographic position, which a
+  // consumer detects as a zero-determinant rotation.
+  eyeCartographic: vec3<f32>,
+  _padEyeCartographic: f32,
+  eyeToEnu: mat3x3<f32>,
+  eyeEllipsoidCurvature: vec2<f32>,
+  _padEyeCurvature: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -1112,6 +1129,75 @@ fn czm_getDefaultMaterial(input: czm_MaterialInput) -> czm_Material {
 // reference width on a ratio-2 display.
 fn czm_pixelRatio() -> f32 {
   return camera.pixelRatio;
+}
+
+// The WGSL twin of upstream 1.145's `czm_eyeToCartographicDelta`
+// (`Shaders/Builtin/Functions/eyeToCartographicDelta.glsl`), statement for
+// statement — geodetic (dLon, dLat, dHeight) from the camera to a point in eye
+// coordinates. Absolute world positions are too large to convert to
+// cartographic at 32 bits; this works entirely in small deltas, projected onto
+// the ellipsoid's equatorial and meridional planes, so it gets MORE precise as
+// one zooms in. Longitude is exact for an ellipsoid of revolution; latitude is
+// first-order, the meridian being an ellipse rather than a circle.
+//
+// This is the inline canonical copy — the same arrangement the log-depth
+// helpers use above, because this module is compiled as one string and does
+// not run the `#import` preprocessor. The library copy, for shaders that do,
+// is `chunks/functions/csm_eyeToCartographicDelta.wgsl`, registered in
+// `WGSLBuiltins.ts`; `eye-cartographic-uniforms.spec.mjs` holds all three
+// texts to the same arithmetic.
+//
+// The three inputs come from the camera UB tail (floats 244-263), packed by
+// `WebGPUGlobeSurfaceCameraUB.writeEyeCartographicTail` from `UniformState`'s
+// own `eyeToEnu` / `eyeCartographic` / `eyeEllipsoidCurvature` — never
+// recomputed here. `camera.eyeToEnu` is a `mat3x3<f32>`: three vec4 columns,
+// not GLSL `mat3`'s nine tight floats. Zero when the camera has no
+// cartographic position, which makes the rotation singular rather than stale.
+fn csm_eyeToCartographicDelta(
+  positionEC: vec3<f32>,
+  eyeToEnu: mat3x3<f32>,
+  eyeCartographic: vec3<f32>,
+  eyeEllipsoidCurvature: vec2<f32>
+) -> vec3<f32> {
+  let cameraToVertex = eyeToEnu * positionEC;
+
+  let cosLatitude = cos(eyeCartographic.y);
+  let sinLatitude = sin(eyeCartographic.y);
+
+  let primeVerticalRadius = 1.0 / eyeEllipsoidCurvature.x;
+  let cameraEquatorialPos = vec2<f32>((primeVerticalRadius + eyeCartographic.z) * cosLatitude, 0.0);
+  let vertexEquatorialPos = cameraEquatorialPos + vec2<f32>(-cameraToVertex.y * sinLatitude + cameraToVertex.z * cosLatitude, cameraToVertex.x);
+  let deltaLongitude = atan2(vertexEquatorialPos.y, vertexEquatorialPos.x);
+
+  let sinHalfLongitude = sin(deltaLongitude * 0.5);
+  let dx = length(vertexEquatorialPos) * 2.0 * sinHalfLongitude * sinHalfLongitude;
+  let meridionalOffset = vec3<f32>(
+    0.0,
+    cameraToVertex.y - dx * sinLatitude,
+    cameraToVertex.z + dx * cosLatitude
+  );
+
+  let meridionalRadius = 1.0 / eyeEllipsoidCurvature.y;
+  let cameraMeridionalPos = vec2<f32>(meridionalRadius + eyeCartographic.z, 0.0);
+  let vertMeridionalPos = cameraMeridionalPos + vec2<f32>(meridionalOffset.z, meridionalOffset.y);
+  let deltaLatitude = atan2(vertMeridionalPos.y, vertMeridionalPos.x);
+
+  let sinHalfLatitude = sin(deltaLatitude * 0.5);
+  let dz = length(vertMeridionalPos) * 2.0 * sinHalfLatitude * sinHalfLatitude;
+  let deltaHeight = meridionalOffset.z + dz;
+
+  return vec3<f32>(deltaLongitude, deltaLatitude, deltaHeight);
+}
+
+// The globe's binding of the above. A caller that has the fragment's eye-space
+// position needs only that: the camera frame comes off the UB.
+fn globe_eyeToCartographicDelta(positionEC: vec3<f32>) -> vec3<f32> {
+  return csm_eyeToCartographicDelta(
+    positionEC,
+    camera.eyeToEnu,
+    camera.eyeCartographic,
+    camera.eyeEllipsoidCurvature
+  );
 }
 
 // Vector form of gamma-correct on a single vec3.
@@ -4781,6 +4867,62 @@ fn fragmentMain(
       return makeFragOutput(vec4<f32>(lod, lod, lod, 1.0), normalEC);
     }
     return makeFragOutput(vec4<f32>(1.0, 0.0, 1.0, 1.0), normalEC);
+  }
+  // Eye cartographic frame certificate. Trigger via [27.5e9, 28.5e9]
+  // (`CesiumDebug.globeFragmentDebug('eye-carto-frame')`).
+  //
+  // The three uniforms this reads are packed by the live camera-UB packer at
+  // floats 244-263 and are otherwise consumed only by callers that do not
+  // exist yet (the model clipping and model vector-lookup twins). This mode is
+  // what makes the packing checkable in a real frame rather than only in Node:
+  // it certifies the frame as it ARRIVES ON THE GPU, which is the half a
+  // CPU-side spec cannot see.
+  //
+  // PASS is pure green. Each failure mode paints its own channel:
+  //   R — how far `camera.eyeToEnu`'s columns are from orthonormal, ×1e4.
+  //       A packer that wrote the mat3x3 as nine tight floats (GLSL `mat3`'s
+  //       layout) instead of three vec4 columns lands column 1 inside column
+  //       0's padding lane; the result is not a rotation and this saturates.
+  //   B — |det - 1|, ×1e4. Separates a mirrored or scaled basis from a
+  //       merely non-orthogonal one.
+  //   magenta (R and B both saturated) — the tail is all zeros: never
+  //       written, or the camera has no cartographic position and the packer
+  //       zeroed it. A zero matrix gives BOTH |dot(c,c) - 1| = 1 AND
+  //       |det - 1| = 1, so red and blue saturate together. The delta then
+  //       divides by a zero curvature and returns NaN, not zero — a consumer
+  //       must test determinant(eyeToEnu) != 0 BEFORE calling it.
+  //   black — the basis IS a rotation but the delta failed anyway (non-zero
+  //       selfResidual, or a non-finite fragment delta): suspect
+  //       eyeEllipsoidCurvature, not the mat3x3 packing.
+  // The delta function is evaluated on this fragment's real eye-space
+  // position, not only on the origin, so the call cannot be folded away.
+  if (tile.time > 27.5e9 && tile.time < 28.5e9) {
+    let enu = camera.eyeToEnu;
+    let c0 = enu[0];
+    let c1 = enu[1];
+    let c2 = enu[2];
+    let orthoResidual =
+      max(max(abs(dot(c0, c0) - 1.0), abs(dot(c1, c1) - 1.0)),
+      max(max(abs(dot(c2, c2) - 1.0), abs(dot(c0, c1))),
+          max(abs(dot(c0, c2)), abs(dot(c1, c2)))));
+    let detError = abs(determinant(enu) - 1.0);
+    // The delta from the camera to the camera is exactly zero for any frame
+    // the packer wrote correctly — an end-to-end round trip through both
+    // curvature reciprocals and the eye height.
+    let selfDelta = globe_eyeToCartographicDelta(vec3<f32>(0.0, 0.0, 0.0));
+    let selfResidual = abs(selfDelta.x) + abs(selfDelta.y) + abs(selfDelta.z);
+    // And on this fragment, where the answer is not known in closed form but
+    // must still be a finite longitude.
+    let fragDelta = globe_eyeToCartographicDelta(input.v_positionEC);
+    let piF: f32 = 3.14159265358979;
+    let fragFinite = fragDelta.x == fragDelta.x && abs(fragDelta.x) <= piF;
+    let ok = orthoResidual < 1.0e-4 && detError < 1.0e-4 &&
+             selfResidual < 1.0e-4 && fragFinite;
+    return makeFragOutput(vec4<f32>(
+      clamp(orthoResidual * 1.0e4, 0.0, 1.0),
+      select(0.0, 1.0, ok),
+      clamp(detError * 1.0e4, 0.0, 1.0),
+      1.0), normalEC);
   }
   // Direct imagery sample for layer 1.
   if (tile.time > 4.5e9 && tile.time < 5.5e9) {

@@ -81,10 +81,99 @@ const rtc2D = { x: 0, y: 0, z: 0 } as { x: number; y: number; z: number };
 export const CELESTIAL_WATER_FLOATS = 12;
 
 /**
+ * Width of the eye-cartographic tail, in floats: `eyeCartographic` (vec3) and
+ * its alignment lane, `eyeToEnu` (mat3x3, which WGSL lays out as three vec4
+ * columns — twelve floats, not nine), then `eyeEllipsoidCurvature` (vec2) and
+ * the struct's 16-byte round-up.
+ *
+ * @private
+ */
+export const EYE_CARTOGRAPHIC_FLOATS = 20;
+
+/**
+ * Packs `UniformState`'s eye cartographic frame into the camera UB tail:
+ * the WGSL twins of `czm_eyeCartographic`, `czm_eyeToEnu` and
+ * `czm_eyeEllipsoidCurvature`, the three inputs
+ * `csm_eyeToCartographicDelta` reads.
+ *
+ * `UniformState` already derives every one of these in `setCamera`
+ * (`UniformStateComputations.js:98-169`) — none of it is recomputed here, per
+ * CLAUDE.md's RTE rule.
+ *
+ * Two shapes matter and neither is visible from the call site:
+ *
+ *   - **`mat3x3<f32>` is three vec4 columns.** Cesium's `Matrix3` is nine
+ *     tight column-major floats (index = column × 3 + row), so each column is
+ *     written as three values plus one zero. Packing the nine tightly would
+ *     put column 1's first element in column 0's padding lane, and the shader
+ *     would read a rotation that is not a rotation without a single
+ *     validation error.
+ *   - **`_eyeCartographic` is only refreshed when the camera HAS a
+ *     cartographic position.** `setCamera`'s else-branch
+ *     (`UniformStateComputations.js:86-96`) sets `_eyeHeight` to
+ *     `-maximumRadius` and leaves `_eyeCartographic` holding the previous
+ *     frame's value, and `_eyeToEnu` / `_eyeEllipsoidCurvature` are skipped
+ *     entirely when `surfacePosition` is undefined or the ellipsoid is not
+ *     one of revolution. Rather than ship a stale frame, the tail is zeroed
+ *     whenever `eyeHeight` disagrees with `eyeCartographic.z`: a zero
+ *     rotation has determinant 0, which any consumer can test, where a stale
+ *     one looks live.
+ *
+ * @private
+ */
+export function writeEyeCartographicTail(
+  data: Float32Array,
+  offset: number,
+  uniformState: CesiumUniformState,
+): void {
+  const carto = uniformState.eyeCartographic;
+  const curvature = uniformState.eyeEllipsoidCurvature;
+  const enu = uniformState.eyeToEnu;
+
+  // `_eyeCartographic.z` IS `positionCartographic.height`, the same number
+  // `_eyeHeight` is assigned one statement earlier, so this holds bit-exactly
+  // on every camera that has a cartographic position and only there.
+  const live =
+    carto !== undefined &&
+    curvature !== undefined &&
+    enu !== undefined &&
+    carto.z === uniformState.eyeHeight;
+
+  if (!live) {
+    for (let i = 0; i < EYE_CARTOGRAPHIC_FLOATS; i++) {
+      data[offset + i] = 0.0;
+    }
+    return;
+  }
+
+  data[offset] = carto.x;
+  data[offset + 1] = carto.y;
+  data[offset + 2] = carto.z;
+  data[offset + 3] = 0.0;
+
+  const m = m4Values(enu);
+  for (let column = 0; column < 3; column++) {
+    const base = offset + 4 + column * 4;
+    data[base] = m[column * 3];
+    data[base + 1] = m[column * 3 + 1];
+    data[base + 2] = m[column * 3 + 2];
+    // The vec4 column's fourth lane. WGSL never reads it; leaving it
+    // uninitialized would ship whatever the ring allocator's previous tenant
+    // left there.
+    data[base + 3] = 0.0;
+  }
+
+  data[offset + 16] = curvature.x;
+  data[offset + 17] = curvature.y;
+  data[offset + 18] = 0.0;
+  data[offset + 19] = 0.0;
+}
+
+/**
  * The renderer surface the camera-UB packer reaches into.
  *
  *   - `_cameraUniformData`: the reusable Float32Array scratch buffer
- *     sized to `CAMERA_UNIFORM_FLOATS` (244 floats). Filled in by the
+ *     sized to `CAMERA_UNIFORM_FLOATS` (264 floats). Filled in by the
  *     packer and uploaded via `writeUniformSlice`.
  *   - `_cameraMvpScratch`: Float64Array of length 16 used to compute
  *     `projection × modifiedModelView` for the 2D/CV/Morphing path.
@@ -1122,6 +1211,12 @@ export function createCameraUniformBuffer(
   // same stale-Moon bearing, and two copies of that would drift.
   writeCelestialWaterTail(data, offset, tileProvider, uniformState, frameState);
   offset += CELESTIAL_WATER_FLOATS;
+
+  // Eye cartographic frame (244-263) — czm_eyeCartographic / czm_eyeToEnu /
+  // czm_eyeEllipsoidCurvature, the three inputs of
+  // `csm_eyeToCartographicDelta`. Appended, so no offset above moved.
+  writeEyeCartographicTail(data, offset, uniformState);
+  offset += EYE_CARTOGRAPHIC_FLOATS;
 
   // The packer walks one cursor through a struct declared in a different file
   // and a different language. A lane added to the WGSL struct without a

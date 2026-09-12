@@ -199,6 +199,14 @@ export const GLOBE_FRAGMENT_DEBUG_MODES: ReadonlyArray<GlobeFragmentDebugMode> =
       description:
         "Skip the near-ground fog mix (the atmosphere branch below-surface scenes actually take).",
     },
+    // Back to a visualization mode: this one short-circuits fragmentMain and
+    // returns a pass/fail certificate rather than skipping a shading term.
+    {
+      name: "eye-carto-frame",
+      sentinel: 28.0e9,
+      description:
+        "Certificate for the eye cartographic frame (czm_eyeCartographic / czm_eyeToEnu / czm_eyeEllipsoidCurvature — camera UB floats 244-263). PURE GREEN = the ENU basis reached the GPU orthonormal with det 1 and csm_eyeToCartographicDelta round-trips the camera to zero. RED = the mat3x3 was packed as nine tight floats rather than three vec4 columns, or is otherwise not a rotation. BLUE = |det - 1|. MAGENTA = the tail is all zeros (never written, or the camera has no cartographic position and the packer zeroed it) - a zero matrix saturates red and blue together, and the delta returns NaN. BLACK = the basis is a valid rotation but the delta still failed; suspect eyeEllipsoidCurvature.",
+    },
   ];
 
 const _MODE_BY_NAME: ReadonlyMap<string, GlobeFragmentDebugMode> = new Map(

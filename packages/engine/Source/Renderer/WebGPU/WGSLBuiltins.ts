@@ -397,6 +397,61 @@ fn csm_readDepth(
 }
 `;
 
+// functions/csm_eyeToCartographicDelta — the WGSL twin of upstream's
+// `czm_eyeToCartographicDelta` (`Builtin/Functions/eyeToCartographicDelta.glsl`,
+// 1.145). Geodetic (dLon, dLat, dHeight) from the camera to a point in eye
+// coordinates, derived from small deltas so it stays precise at f32.
+//
+// The three values the GLSL reads as automatic uniforms are parameters here:
+// WGSL has no automatic-uniform injection, and any shader whose camera UB
+// carries them can call this. `GlobeTerrain.wgsl` is the first such caller.
+//
+// `eyeToEnu` is a `mat3x3<f32>` — three vec4 columns in the uniform address
+// space, NOT the nine tight floats GLSL's `mat3` uses. The CPU packer owns
+// that padding; see `WebGPUGlobeSurfaceCameraUB.writeEyeCartographicTail`.
+//
+// Kept byte-identical (modulo the doc header) to
+// `Shaders/WebGPU/chunks/functions/csm_eyeToCartographicDelta.wgsl`, per this
+// module's sync rule. `Tools/visual-regression/eye-cartographic-uniforms.spec.mjs`
+// asserts the two do not drift.
+const csm_eyeToCartographicDelta = `
+fn csm_eyeToCartographicDelta(
+  positionEC: vec3<f32>,
+  eyeToEnu: mat3x3<f32>,
+  eyeCartographic: vec3<f32>,
+  eyeEllipsoidCurvature: vec2<f32>
+) -> vec3<f32> {
+  let cameraToVertex = eyeToEnu * positionEC;
+
+  let cosLatitude = cos(eyeCartographic.y);
+  let sinLatitude = sin(eyeCartographic.y);
+
+  let primeVerticalRadius = 1.0 / eyeEllipsoidCurvature.x;
+  let cameraEquatorialPos = vec2<f32>((primeVerticalRadius + eyeCartographic.z) * cosLatitude, 0.0);
+  let vertexEquatorialPos = cameraEquatorialPos + vec2<f32>(-cameraToVertex.y * sinLatitude + cameraToVertex.z * cosLatitude, cameraToVertex.x);
+  let deltaLongitude = atan2(vertexEquatorialPos.y, vertexEquatorialPos.x);
+
+  let sinHalfLongitude = sin(deltaLongitude * 0.5);
+  let dx = length(vertexEquatorialPos) * 2.0 * sinHalfLongitude * sinHalfLongitude;
+  let meridionalOffset = vec3<f32>(
+    0.0,
+    cameraToVertex.y - dx * sinLatitude,
+    cameraToVertex.z + dx * cosLatitude
+  );
+
+  let meridionalRadius = 1.0 / eyeEllipsoidCurvature.y;
+  let cameraMeridionalPos = vec2<f32>(meridionalRadius + eyeCartographic.z, 0.0);
+  let vertMeridionalPos = cameraMeridionalPos + vec2<f32>(meridionalOffset.z, meridionalOffset.y);
+  let deltaLatitude = atan2(vertMeridionalPos.y, vertMeridionalPos.x);
+
+  let sinHalfLatitude = sin(deltaLatitude * 0.5);
+  let dz = length(vertMeridionalPos) * 2.0 * sinHalfLatitude * sinHalfLatitude;
+  let deltaHeight = meridionalOffset.z + dz;
+
+  return vec3<f32>(deltaLongitude, deltaLatitude, deltaHeight);
+}
+`;
+
 const csm_getNormalFromMap = `
 fn csm_getNormalFromMap(
     normalSample: vec3<f32>,
@@ -474,6 +529,10 @@ export function createDefaultWGSLLibrary(): WGSLShaderLibrary {
   library.registerCode("functions/csm_writeLogDepth", csm_writeLogDepth);
   library.registerCode("functions/csm_reverseLogDepth", csm_reverseLogDepth);
   library.registerCode("functions/csm_readDepth", csm_readDepth);
+  library.registerCode(
+    "functions/csm_eyeToCartographicDelta",
+    csm_eyeToCartographicDelta,
+  );
 
   return library;
 }
@@ -505,6 +564,7 @@ export const WGSLBuiltinChunks = {
   WRITE_LOG_DEPTH: "functions/csm_writeLogDepth",
   REVERSE_LOG_DEPTH: "functions/csm_reverseLogDepth",
   READ_DEPTH: "functions/csm_readDepth",
+  EYE_TO_CARTOGRAPHIC_DELTA: "functions/csm_eyeToCartographicDelta",
 } as const;
 
 export default createDefaultWGSLLibrary;

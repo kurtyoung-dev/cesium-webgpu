@@ -511,10 +511,26 @@ test("the camera struct carries the ratio in the slot the packer writes", async 
 });
 
 test("the lane was carved out of padding, not appended", () => {
+  // This used to read the buffer's total float count (244). That number was
+  // never this lane's invariant — the celestial tail set it, and the eye
+  // cartographic tail later moved it to 264 by APPENDING, which moves no
+  // offset above it. What this lane needs pinned is that its ratio still sits
+  // in the padding slot that followed `center3DLow`, ahead of every tail, so
+  // that no future append can reach it.
+  const placed = layout(structFields(read(TERRAIN_FILE), "CameraUniforms"));
+  const floatOffset = (name) => {
+    const field = placed.find((entry) => entry.name === name);
+    assert.ok(field, `CameraUniforms has no field ${name}`);
+    return field.offset / 4;
+  };
   assert.equal(
-    cameraUniformFloats(read(TYPES_FILE)),
-    244,
-    "growing the globe camera buffer moves every tail offset other gates pin",
+    floatOffset("pixelRatio"),
+    floatOffset("center3DLow") + 3,
+    "the ratio must stay in center3DLow's alignment lane, not move to a tail",
+  );
+  assert.ok(
+    floatOffset("pixelRatio") < cameraUniformFloats(read(TYPES_FILE)) - 20,
+    "and it must stay ahead of the appended tails",
   );
 });
 

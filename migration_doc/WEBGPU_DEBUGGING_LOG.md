@@ -21156,3 +21156,101 @@ All seven now route through `reportCloudLifecycleError`, which the cloud rendere
 **Two mechanics worth keeping.** (a) The launcher materializes the implementation it runs from the candidate **index**, so an unstaged generator edit is not the code under test — `A1i2` stages the working-tree generator into its own sandbox index (`stageWorkingTreeGenerator`), so the test exercises the source under review no matter what the repository index holds. A patch-producing lane has the same problem one level up and the same two answers: stage the candidate into the REAL index (`git add`, no commit needed — the launcher materializes from `git ls-files --stage`), or, where it must not touch that index, stage into a private one the way this test does. (b) On Windows the checkout is CRLF and its index blob is LF, so any byte comparison across that boundary calls every working tree stale; the predicate re-renders instead of comparing across it.
 
 **Files modified:** `Tools/generate-tooling-catalog.mjs`, `Tools/generate-tooling-catalog.spec.mjs`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`, `migration_doc/QUEUE_2026-08-29_RESEARCH_DISPATCH.md`. Four files.
+
+---
+
+## 2026-09-05 — Wave S1 lane Borthand: the eye cartographic frame reaches WGSL (`C-20` / `C-21` / `C-22`, `-07` item 14)
+
+**Not a bug fix — a missing-functionality lane.** Recorded here for the two traps it walked into, both
+of which will catch the next lane that adds a WGSL uniform or a WGSL chunk.
+
+**Trap 1 — `WebGPUAutoUniforms.js` is a registry nothing imports.** It carries `csm_eyeHeight`
+(`:332`) and reads like the obvious place to add `csm_eyeCartographic`. A repo-wide grep over
+`packages/`, `Apps/`, `Tools/`, `scripts/` and `specs/`, excluding the file itself, returns **no
+matches** (exit 1). Its own only import, `WGSLShaderBuilder.js`, has exactly one importer:
+`WebGPUAutoUniforms.js`. The pair is a closed loop with no entry point. **An entry added there writes
+no bytes into any buffer and no test that greps the registry can tell you so.** The uniform has to go
+into a real UB packer, and the acceptance has to name that packer.
+
+**Trap 2 — `WGSLBuiltins.ts` is a registry nothing instantiates.** Its own header calls it the
+authoritative source and the `.wgsl` files "reference copies". Measured at HEAD it registers **21**
+chunks (5 structs + 16 `functions/`) against **98** files in `chunks/functions/` and 105 under
+`chunks/` overall — so the ratio is 16 of 98, not the "20 of 90+" first recorded. **The count,
+however, understates the trap.** `createDefaultWGSLLibrary()` has exactly one caller in
+`packages/engine/Source/`: `WebGPUShaderCache.ts:99`, in that class's constructor.
+`new WebGPUShaderCache(` appears nowhere in `Source/` outside a JSDoc example
+(`WebGPUShaderCache.ts:58`), and `WebGPUContext.ts:673` declares
+`private _webgpuShaderCache: WebGPUShaderCache | null = null` whose only other reference engine-wide
+is an optional-chained `?.clear()` teardown hook at `WebGPUContext.ts:7646` — **the field is never
+assigned.** The library is therefore never constructed in a running engine, and registering a chunk in
+`WGSLBuiltins.ts` is **neither necessary nor sufficient** for that chunk to reach a shader —
+**including this lane's own registration, which is dormant.**
+
+A chunk becomes live only via (1) a **per-renderer chunk map** — `BUFFER_WGSL_CHUNKS`
+(`WebGPUBufferPrimitiveRenderer.ts:75-81`) is a local `Record` consumed by that renderer's own
+`#import` resolver at `:563`, independent of the dormant library, and the ground-polyline,
+ground-primitive, primitive-shader and Vector3DTile renderers repeat the pattern — or (2) **direct
+inlining** into a large shader. This lane rides mechanism (2). `csm_metersPerPixel`, which the 1.145
+census cites as an existing builtin a future lane can call, is absent from `BUFFER_WGSL_CHUNKS` (five
+entries: `CameraUniforms`, `csm_translateRelativeToEye`, `csm_vertexLogDepth`, `csm_writeLogDepth`,
+`csm_decodeRGB8`) and has zero call sites in any `.wgsl` or `Renderer/WebGPU/` file — true as a file,
+false as an available call, so **that lane must map or inline it, not merely `#import` it.**
+
+This lane therefore ships the chunk in three places and pins all three to the same arithmetic in the
+spec: the reference copy, the `WGSLBuiltins.ts` registration (belt-and-braces, inert today, correct
+if the library is ever wired up), and the inline copy in `GlobeTerrain.wgsl` — which is compiled as
+one string and never runs the `#import` preprocessor, the same arrangement the log-depth helpers
+there already use, and **the only one of the three that actually delivers the function.**
+
+**The layout hazard, and how it was proven rather than asserted.** WGSL lays `mat3x3<f32>` out as
+three vec4 columns — 48 bytes with a padding lane after every third float — where GLSL's `mat3` is
+nine tight ones. Cesium's `Matrix3` is nine tight column-major floats (index = column × 3 + row), so
+the obvious loop is wrong and fails silently: column 1's first element lands in column 0's padding
+lane and the shader reads a matrix that is not a rotation, with no validation error anywhere. Three
+independent confirmations are now in the tree: the spec's derived layout, **naga's own
+`minBindingSize` for the binding (1056 bytes = 264 floats)** read off the real preprocessed shader,
+and a mutation (`column * 4` → `column * 3`) that destroys orthonormality and turns the spec red. The
+GPU-side confirmation is the `eye-carto-frame` debug mode, which paints red when the basis it loads
+is not orthonormal.
+
+**A stale-frame hazard the census did not name.** `UniformStateComputations.setCamera` has two
+branches. With a `camera.positionCartographic` it assigns `_eyeHeight` and `_eyeCartographic.z` from
+the same number one statement apart, so the census's `_eyeCartographic.z === _eyeHeight` invariant is
+exact — verified bit-for-bit over 63 (height, latitude) pairs. Without one (`:85-96`) it sets
+`_eyeHeight = -ellipsoid.maximumRadius` and **leaves `_eyeCartographic` holding the previous frame's
+value**; `_eyeToEnu` and `_eyeEllipsoidCurvature` are skipped entirely when `surfacePosition` is
+undefined, and the curvature also when the ellipsoid is not one of revolution
+(`UniformStateComputations.js:157-165` returns before the assignment at `:167`). Shipping that frame
+would put a live-looking stale rotation on the GPU. The packer instead **zeroes the whole tail when
+`eyeCartographic.z !== eyeHeight`**, so a consumer sees a zero-determinant matrix — a state it can
+test for — rather than a plausible wrong one. **The guard does not cover the non-revolution case:**
+there the cartographic and the ENU basis are both fresh, so `carto.z === eyeHeight` passes and a stale
+or zero curvature is packed anyway. That is not a fork regression — the GLSL builtin's docstring
+states "This assumes an ellipsoid of revolution" and WebGL's `czm_eyeEllipsoidCurvature` is stale in
+exactly the same case — so it is parity-preserving and out of scope here.
+
+**A doc premise corrected.** CLAUDE.md and maintainer binding D4 both say
+`previousViewProjection` sits at the tail of every `CameraUniforms`. At HEAD it sits at floats 100-115
+of the globe camera UB with 128 floats after it, and the shared `chunks/structs/CameraUniforms.wgsl`
+has no such member at all. The statement is historical (DP-H41, Batch 27). What it is protecting —
+the packer and the struct agreeing on where that matrix lives — is now pinned by a spec with a
+relocation mutant, and the new tail was **appended**, which is the convention
+`WebGPUGlobeSurfaceTypes.ts` has documented for every prior growth and which moves no existing offset.
+
+**Three width gates had to be told the difference between a law and a number.**
+`celestial-water-globe-port.spec.mjs`, `eclipse-globe-umbra-rte.spec.mjs` and
+`globe-contour-pixel-ratio-parity.spec.mjs` each pinned `CAMERA_UNIFORM_FLOATS` at 244 — one as a
+literal, one as `232 + CELESTIAL_WATER_FLOATS`, one as a mutation-source string, and one
+(`celestial` B1) by asserting its three lanes were the struct's LAST members. Each was expressing
+"nothing moved MY offsets", which an append does not violate; each now says that instead of naming a
+frozen total. A lane that appends to this buffer next will find the same four sites.
+
+**Files modified:** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts`,
+`WebGPUGlobeSurfaceTypes.ts`, `WebGPUGlobeFragmentDebug.ts`, `WGSLBuiltins.ts`,
+`cesium-js-types.d.ts`, `packages/engine/Source/Renderer/UniformState.d.ts`,
+`packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`,
+`packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_eyeToCartographicDelta.wgsl` (new),
+`Tools/visual-regression/eye-cartographic-uniforms.spec.mjs` (new),
+`Tools/visual-regression/probe-eye-cartographic-frame.mjs` (new),
+`Tools/visual-regression/{globe-contour-pixel-ratio-parity,eclipse-globe-umbra-rte,celestial-water-globe-port}.spec.mjs`,
+`package.json`, `migration_doc/{DEFERRED_WORK,DEBUGGING_GUIDE,FEATURE_INVENTORY}.md`.

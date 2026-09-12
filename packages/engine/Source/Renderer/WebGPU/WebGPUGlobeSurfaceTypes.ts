@@ -180,7 +180,28 @@ export interface GlobePipelineEntry {
 // offset above is unmoved. All-zero unless `Globe.oceanCelestialReflection`
 // is set, which keeps the shader's `celestialControl.x > 0.0` gate closed and
 // both ocean branches on the Phong lobe they have always drawn.
-export const CAMERA_UNIFORM_FLOATS = 244;
+//
+// Eye cartographic frame — the WGSL twins of the `czm_eyeCartographic`,
+// `czm_eyeToEnu` and `czm_eyeEllipsoidCurvature` automatic uniforms that
+// upstream 1.145 added for `czm_eyeToCartographicDelta`:
+//   eyeCartographic (vec3, offsets 244-246) — (longitude, latitude) in
+//     radians and height in metres of the eye, from
+//     `UniformState.eyeCartographic`. Only meaningful in SCENE3D.
+//   _padEyeCartographic (f32, offset 247) — the vec3's alignment lane.
+//   eyeToEnu (mat3x3<f32>, offsets 248-259) — the eye → east-north-up
+//     rotation. WGSL lays a `mat3x3<f32>` out as THREE vec4 columns, not the
+//     nine tight floats GLSL's `mat3` uses, so the packer writes three values
+//     and one zero per column and lanes 251, 255 and 259 are padding. A tight
+//     nine-float pack puts column 1 inside column 0's padding lane and
+//     misreads with no diagnostic.
+//   eyeEllipsoidCurvature (vec2, offsets 260-261) — (prime-vertical,
+//     meridional) curvature of the ellipsoid below the eye: the reciprocals
+//     of the two radii `czm_eyeToCartographicDelta` divides by.
+//   _padEyeCurvature (vec2, offsets 262-263) — the struct's 16-byte round-up.
+// Appended at the tail, so every offset above — `previousViewProjection` at
+// 100-115 included — is unmoved. Written every frame from the live
+// `UniformState`; see `writeEyeCartographicTail`.
+export const CAMERA_UNIFORM_FLOATS = 264;
 export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms layout.

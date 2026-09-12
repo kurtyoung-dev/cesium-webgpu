@@ -17486,3 +17486,189 @@ Both comments now state which uv space each shader feeds and that unifying the t
 one shader's vertical ray direction. **Still owed:** a guard that fails if either body is edited to
 match the other. Filed as the next concrete step; not written here because the lane's timebox went
 to the mask-order and snapshot-gate proof bars.
+
+## 2026-09-05 — UPSTREAM-SYNC-1.145 `czm_eyeCartographic` / `czm_eyeToEnu` / `czm_eyeEllipsoidCurvature` and `czm_eyeToCartographicDelta` reach WGSL (lane Borthand, wave S1, census `C-20` / `C-21` / `C-22`, `-07` item 14) — **DELIVERED, awaiting the Edge acceptance leg**
+
+**What 1.145 added and the fork did not.** Upstream introduced `czm_eyeCartographic` (FLOAT_VEC3),
+`czm_eyeToEnu` (FLOAT_MAT3) and the `czm_eyeToCartographicDelta` builtin
+(`Shaders/Builtin/Functions/eyeToCartographicDelta.glsl`, 74 lines), consumed by
+`ModelClippingPolygonsStageVS.glsl:18` and `ModelVectorLookupStageVS.glsl:13`. `UniformState`
+derives all three values plus the pre-existing `czm_eyeEllipsoidCurvature`
+(`UniformStateComputations.js:98-169`, getters `UniformState.js:595`, `:607`, `:614`), on both
+backends, every frame — and no WGSL shader could read any of them.
+
+**The trap this row exists to avoid, CONFIRMED.** The natural home,
+`Renderer/WebGPU/WebGPUAutoUniforms.js`, already carries `csm_eyeHeight` (`:332`) and has **zero code
+importers anywhere in the repo** — re-verified by grep over `packages/`, `Apps/`, `Tools/`,
+`scripts/` and `specs/` excluding the file itself (exit 1, no matches); the only import relationship
+runs the other way, to `WGSLShaderBuilder.js`, whose sole importer is `WebGPUAutoUniforms.js` in turn.
+An entry there writes no bytes into any buffer. **A second instance of the same trap was found in this
+lane and is recorded here because nothing else names it — and the mechanism is worse than the count.**
+Measured at HEAD: `Shaders/WebGPU/chunks/functions/` holds **98** `.wgsl` files (105 counting the seven
+under `chunks/structs/`), and `createDefaultWGSLLibrary()` registers **21** chunks — 5 structs and
+**16** `functions/`. So the ratio is 16 of 98, not "20 of 90+". But the count is not the finding:
+**`WGSLBuiltins.ts`'s library is never instantiated at runtime.** `createDefaultWGSLLibrary()` has
+exactly one caller in `packages/engine/Source/` — `WebGPUShaderCache.ts:99`, inside that class's
+constructor. `new WebGPUShaderCache(` appears nowhere in `Source/` except a JSDoc example at
+`WebGPUShaderCache.ts:58`. And `WebGPUContext.ts:673` declares
+`private _webgpuShaderCache: WebGPUShaderCache | null = null` whose **only** other reference in the
+entire engine is an optional-chained `?.clear()` teardown hook at `WebGPUContext.ts:7646` — **the
+field is never assigned, so it is `null` for the life of the context.** Registration in
+`WGSLBuiltins.ts` is therefore neither necessary nor sufficient for a chunk to reach a shader, and
+**this lane's own registration is itself dormant** — the delivery rides entirely on the inline copy in
+`GlobeTerrain.wgsl`. The module header calling itself "the authoritative source" is a stale premise.
+
+**What actually makes a chunk live** — two mechanisms, both verified: (1) a **per-renderer chunk map**,
+of which `BUFFER_WGSL_CHUNKS` (`WebGPUBufferPrimitiveRenderer.ts:75-81`) is the template — a local
+`Record` consumed by that renderer's own `#import` resolver at `:563`, independent of the dormant
+library, with the same pattern in the ground-polyline, ground-primitive, primitive-shader and
+Vector3DTile renderers; and (2) **direct inlining** into a large shader, which is what
+`GlobeTerrain.wgsl` does and what delivers this lane.
+
+**For L2 (census `C-04`):** `BUFFER_WGSL_CHUNKS` has exactly five entries — `CameraUniforms`,
+`csm_translateRelativeToEye`, `csm_vertexLogDepth`, `csm_writeLogDepth`, `csm_decodeRGB8` — and
+`csm_metersPerPixel` is **not** among them; it has zero call sites in any `.wgsl` or
+`Renderer/WebGPU/` file (the only greps that hit are the generated `.js` twin and `CsmBuiltins.js`,
+both build artifacts). `C-04`'s "the builtin already exists" is true as a *file* and false as an
+*available call*: **L2 must add `csm_metersPerPixel` to that map, or inline it — an `#import` alone
+resolves to nothing.**
+
+**What landed.** The three values are packed at the **tail of the globe camera UB**, floats 244-263,
+by `WebGPUGlobeSurfaceCameraUB.writeEyeCartographicTail` — a packer that runs unconditionally, per
+tile, per frame, in the shipped globe pipeline. `CAMERA_UNIFORM_FLOATS` 244 → 264 (1056 bytes; naga
+independently reports `minBindingSize: 1056` for the binding). `GlobeTerrain.wgsl`'s `CameraUniforms`
+gains `eyeCartographic: vec3<f32>` + pad, `eyeToEnu: mat3x3<f32>`, `eyeEllipsoidCurvature: vec2<f32>`
++ pad, and the module gains `csm_eyeToCartographicDelta` plus its globe binding
+`globe_eyeToCartographicDelta`. The chunk ships in **three** places, held to the same arithmetic by
+the spec: the reference copy at `chunks/functions/csm_eyeToCartographicDelta.wgsl`, the registered
+copy in `WGSLBuiltins.ts` (so a `#import`ing shader can reach it), and the inline copy in
+`GlobeTerrain.wgsl` (which is compiled as one string and does not run the import preprocessor — the
+same arrangement the log-depth helpers already use there).
+
+**The live consumer, and the honest limit of it.** `CesiumDebug.globeFragmentDebug('eye-carto-frame')`
+(sentinel 28.0e9) short-circuits `fragmentMain` and returns a certificate: **pure green** when the ENU
+basis arrived orthonormal with determinant 1 to 1e-4 and `csm_eyeToCartographicDelta` round-trips the
+camera to zero, **red** carrying the orthonormality residual and **blue** carrying `|det - 1|`. The
+delta is also evaluated on the fragment's own `v_positionEC`, so the call cannot be folded away. The
+branch is compiled into the shipped module (one uniform compare per pixel, the cost every mode in
+that registry carries); its **activation writer is pragma-stripped in release builds**, so the read is
+reachable in a development build and not in a release one. **No production-visible consumer was
+available to this lane**: every consumer these uniforms exist for — the model clipping-polygon
+precision law (item 2's model leg) and the model vector-lookup UV (item 13) — is HELD. Inventing a
+visible one would have been the decoration the brief warns against. The values are in place for both.
+
+**REFUTED premises, with the evidence.**
+
+1. **`_eyeCartographic.z === _eyeHeight` "holds exactly" is CONDITIONAL, not unconditional.** It holds
+   bit-for-bit (`Object.is`) over 63 (height, latitude) pairs from -400 m to 1e7 m — both are assigned
+   from the same `positionCartographic.height` one statement apart
+   (`UniformStateComputations.js:87` and `:99-104`). On the OTHER branch (`:85-96`, no
+   `camera.positionCartographic`) `_eyeHeight` becomes `-ellipsoid.maximumRadius` while
+   `_eyeCartographic` is **not touched at all** and keeps the previous frame's value — measured:
+   `eyeHeight = -6378137`, `eyeCartographic.z = 5000`, stale-equal-to-previous `true`. `_eyeToEnu` and
+   `_eyeEllipsoidCurvature` are likewise skipped when `surfacePosition` is undefined, and the
+   curvature additionally when the ellipsoid is not one of revolution (`:157-165` returns before the
+   assignment at `:167`). **The packer therefore zeroes the whole tail whenever
+   `eyeCartographic.z !== eyeHeight`**, which a consumer detects as a zero-determinant rotation rather
+   than reading a live-looking stale frame. **One staleness mode that guard does NOT catch:** on a
+   non-revolution ellipsoid the cartographic and the ENU basis are both fresh, so
+   `carto.z === eyeHeight` passes and the tail is packed with a stale or zero
+   `_eyeEllipsoidCurvature`. This is **not** a fork regression — the GLSL builtin's own docstring
+   states "This assumes an ellipsoid of revolution", and WebGL's `czm_eyeEllipsoidCurvature` is stale
+   in exactly the same case — so it is parity-preserving, pre-existing, and out of scope for this row.
+2. **D4's "`previousViewProjection` at the TAIL of every `CameraUniforms`" is not the shape at HEAD.**
+   In the globe camera UB it sits at floats 100-115 with **128 floats of tail after it** (atmosphere,
+   lighting, logDepth, pickColor, cloud shadow + cascades, underground, translucency, HDR, celestial
+   water), and the shared `chunks/structs/CameraUniforms.wgsl` (368 bytes) has no such member at all.
+   The claim is historical (DP-H41, Batch 27). Its **operative** content — that the packer and the
+   struct agree about where that matrix lives — is what this lane honoured: the tail was **appended**,
+   which is `WebGPUGlobeSurfaceTypes.ts`'s own documented convention for every previous growth
+   ("Appended at the tail, so every offset above is unmoved"), so `previousViewProjection` did not
+   move, and a spec now pins it at float 100 in both the struct and the packer with a mutation that
+   relocates it and goes red. Relocating it to the true tail, as a literal reading would require,
+   would have moved 128 floats of other lanes' offsets for no benefit — the exact silent regression D4
+   is written to prevent.
+   **Escalated to the maintainer under open ruling `AR-D12` — this row asks for that rule to be
+   restated, it does not restate it.** Measured in this tree: `previousViewProjection` sits at
+   `GlobeTerrain.wgsl:105` (struct-line 58), floats **100-115**, with **148 floats after it** once this
+   lane's 20-float tail is appended (128 at HEAD), inside a struct of **264 floats / 1056 B** — so D4's
+   literal "at the tail" wording is **false at HEAD**, and this is the fourth independent derivation of
+   that fact; CLAUDE.md's own 64-bit-precision section already records that 57 of 72 shaders place the
+   member mid-struct. This lane complied with the **operative** constraint and claimed nothing beyond
+   it: nothing was inserted ahead of that matrix, it does not move, and the new tail was appended at
+   byte **976**, 16-aligned — the lane did **not** relocate `previousViewProjection` to the literal
+   tail. What this row asks for is a maintainer restatement of D4 in the terms `AR-D12` already parks
+   (tail placement versus a fixed offset); until that resolves, nothing written here is a licence to
+   place the member anywhere new.
+3. **`CzmBuiltins.js:82,:230` is not a tracked file.** It is generated by `scripts/build.js:1104` and
+   absent from an unbuilt tree; every `Shaders/Builtin/Functions/*.glsl` is registered automatically.
+   The citation is sound in substance, wrong in provenance.
+4. **The census's third correction (the builtin needs `czm_eyeEllipsoidCurvature` as a third input) is
+   CONFIRMED** — `eyeToCartographicDelta.glsl:31` and `:61` divide by both of its components.
+5. **The mat3x3 padding correction is CONFIRMED and now proven twice**: by this lane's derived layout
+   and, independently, by naga's own `minBindingSize` for the binding.
+
+**Numbers measured.** ENU rotation from `UniformState`, before packing: worst orthonormality residual
+and worst `|det - 1|` both **4.44e-16** over 63 frames (the census carried 8.9e-16 from Tar-Falassion;
+same neighbourhood, two ulp of 1.0 rather than four — the spec's f64 bar is 1e-15, which brackets
+both). After the f32 pack and a read-back through the WGSL three-vec4-column layout: **5.23e-8**, bar
+1e-6. The delta twin against the GLSL original, evaluated statement by statement in float32 over 567
+(altitude, latitude, offset) combinations including the grazing horizon: **bit-identical, every
+component, every case**. Against a float64 evaluation of the same source: the height drifts at most
+**3.79 ulp** of the meridional frame's own magnitude and the angles at most **13.18 × 2^-23** radians
+(bars 16 each) — the worst case being the tangent point of a 10,000 km camera, where the true answer
+is a 1.9e-9 m cancellation out of a 15,085 km baseline and f32's ulp at that magnitude is ~1 m. Near
+the camera (offsets ≤ 10 km) the relative error is **1.52e-6**, which is the "more precise as you zoom
+in" property the formulation exists for.
+
+**Spec.** `Tools/visual-regression/eye-cartographic-uniforms.spec.mjs`, runner home
+`npm run test-engine-node` — 19 tests. It lifts `writeEyeCartographicTail`'s real body out of the
+TypeScript and EXECUTES it against a real `UniformState` driven through the real `setCamera`
+(the module's import graph reaches a TypeScript enum, which Node's strip-only mode refuses, so the
+same lifting device `globe-contour-pixel-ratio-parity.spec.mjs` uses on the same file is used here);
+derives the WGSL layout from the shader source under the uniform-address-space rules and cross-checks
+it against naga's own `minBindingSize`; and parses and evaluates the GLSL builtin and all three WGSL
+copies through one evaluator. **Mutants, each of which must go red:** (a) the tight nine-float
+`mat3` pack (`column * 4` → `column * 3`) destroys orthonormality; (b) relocating
+`previousViewProjection` moves it off float 100; (c) `if (false && …)` on the tail's first write
+leaves the slot zero, and neutering the column loop leaves a zero-determinant rotation — the mutant an
+inert registry entry **cannot** fail, which is the whole point of the row.
+
+**Edge leg (Éowyn).** `npx gulp build`, then `node server.js --port 8094 --serve-built`, then
+`node Tools/visual-regression/probe-eye-cartographic-frame.mjs --port 8094 --renderer webgpu`.
+Four scenes — nadir at 2 km, 500 km and 10,000 km, plus a grazing near-horizon view from 1,000 km at
+66.5°N. Each requires at least 20,000 certificate-green globe fragments, **zero** red or blue
+fragments, `eyeCartographic.z === eyeHeight` in the live frame, and agreement to 1e-9 between
+`scene.context.uniformState`'s three values and an independent in-page re-derivation through
+`Transforms.eastNorthUpToFixedFrame` and `Ellipsoid.getLocalCurvature`. The probe **refuses**
+`--renderer webgl` rather than producing a cell that measures nothing. **It needs a build that keeps
+the debug pragmas** (`Build/CesiumUnminified` does; a release build does not — the mode's writer is
+stripped and every scene would come back all-black).
+
+**Parity (Principle 5).** WebGPU-only, and correctly so: WebGL has carried all three automatic
+uniforms and the builtin since the 1.145 merge landed them, so there is nothing to add there. This
+row closes the WGSL side of that parity gap. No GLSL file is modified, and the only shared-code change
+is three additive `.d.ts` members, so WebGL is byte-identical by construction.
+
+**Files modified:** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts`,
+`WebGPUGlobeSurfaceTypes.ts`, `WebGPUGlobeFragmentDebug.ts`, `WGSLBuiltins.ts`,
+`cesium-js-types.d.ts`, `packages/engine/Source/Renderer/UniformState.d.ts`,
+`packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`,
+`packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_eyeToCartographicDelta.wgsl` (new),
+`Tools/visual-regression/eye-cartographic-uniforms.spec.mjs` (new),
+`Tools/visual-regression/probe-eye-cartographic-frame.mjs` (new), `package.json` (runner home),
+`Tools/visual-regression/globe-contour-pixel-ratio-parity.spec.mjs`,
+`Tools/visual-regression/eclipse-globe-umbra-rte.spec.mjs`,
+`Tools/visual-regression/celestial-water-globe-port.spec.mjs` (three gates that pinned the camera
+UB's width at 244 — each updated to the law it was expressing rather than to the frozen number),
+`migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`,
+`migration_doc/DEBUGGING_GUIDE.md`, `migration_doc/FEATURE_INVENTORY.md`.
+
+**For the seat.** Items 2 and 13 are unblocked on their uniform prerequisite but not on their packer:
+both consume the values **model-side**, and the model camera UB is exactly full at 320 bytes
+(`WebGPUModelCameraArena.ts:123`; `previousViewProjection` at floats 60-75, `hdrControl` filling
+76-79). Whichever lane takes them will have to grow `MODEL_CAMERA_UNIFORM_BYTES` and add the same
+tail to `ModelPBRComplete.wgsl`'s `CameraUniforms`; `writeEyeCartographicTail` is exported and takes
+`(data, offset, uniformState)`, so it is reusable there unchanged. The `-07` row's acceptance should
+also record that a chunk under `Shaders/WebGPU/chunks/functions/` must be registered in
+`WGSLBuiltins.ts` to be reachable at all.

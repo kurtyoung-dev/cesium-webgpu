@@ -68,6 +68,25 @@ declare class UniformState {
   readonly lightColorHdr: Cartesian3;
 
   readonly eyeHeight: number;
+  /**
+   * `czm_eyeCartographic` — the eye's geodetic longitude (x) and latitude (y)
+   * in radians and height (z) in metres. `.z` IS `eyeHeight`, assigned from
+   * the same `positionCartographic.height`, on the branch where the camera has
+   * a cartographic position; on the other branch this keeps the previous
+   * frame's value while `eyeHeight` becomes `-ellipsoid.maximumRadius`.
+   */
+  readonly eyeCartographic: Cartesian3;
+  /**
+   * `czm_eyeEllipsoidCurvature` — (prime-vertical, meridional) curvature of
+   * the ellipsoid below the camera. Not refreshed for an ellipsoid that is not
+   * one of revolution.
+   */
+  readonly eyeEllipsoidCurvature: Cartesian2;
+  /**
+   * `czm_eyeToEnu` — rotation from eye coordinates to the east-north-up frame
+   * centred on the ellipsoid below the camera.
+   */
+  readonly eyeToEnu: CesiumMatrix3;
   readonly fogDensity: number | undefined;
   readonly fogVisualDensityScalar: number | undefined;
   readonly fogMinimumBrightness: number | undefined;
