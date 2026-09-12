@@ -2,6 +2,7 @@
 //
 // @purpose Measures whether a PNTS tileset's rendered point footprint responds to pointCloudShading.maximumAttenuation on each backend, at three camera distances, and banks the disabled-shading capture hashes so a before/after pair can be compared byte-for-byte.
 // @status ACTIVE
+// @runtime lib/probe-runtime.mjs
 //
 // ── WHAT IT ANSWERS ─────────────────────────────────────────────────────────
 //

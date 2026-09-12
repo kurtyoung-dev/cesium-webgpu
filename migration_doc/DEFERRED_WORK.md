@@ -758,11 +758,17 @@ rather than quietly frozen.
 
 ### C13-N01 — Govern the cloud probe fleet <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
 
-**Status:** OPEN (Wave W1, Priority P0).
+**Status:** **STAGE 1 COMPLETE — 2026-09-12, lane L2 (Telchar), batch pending.** STAGE 2 (routing) remains OPEN (Wave W2, Priority P0), still sequenced behind `C13-42a-3` item 8.
 
 **Delivers:** **RULED `R-2026-09-12-1` (D1): two lanes, `C13-N01` STAGED** — "detector + census in wave 1; routing in wave 2 after C13-42a lands". `C13-42a` **landed 2026-09-12**, so Stage 2's dependency is discharged and the routing may open at Wave 2 against the landed descriptor shape — but see `C13-42a-3` item 8: routing 18 probes onto a runtime that can silently drop work and report success banks 18 untrustworthy results, so **item 8 is sequenced ahead of the routing too**. **Stage 1 (Wave 1): detector + census only** — add runtime-governance detectors to `probe-fleet-contract.spec.mjs` and emit a census; **no routing, no allowlist rewrite**. **Stage 2 (Wave 2, after C13-42a): routing** through `runProbe` + `probe-edge-slot.mjs` + served-build preflight, in family batches, each with its own allowlist generation
 
 **Acceptance:** Stage 1: the census reports 60/60 hard-defaulting to `PROBE_BASE \|\|` and 0/60 referencing the three governance modules. Stage 2: that count falls per family batch
+
+**Stage 1 evidence (2026-09-12, measured at `bab1ff6e21`):** detectors in the new `Tools/visual-regression/lib/probe-runtime-governance.mjs`; census and ratchet in `Tools/visual-regression/probe-fleet-contract.spec.mjs` section H (H1-H7, two inertness mutants), runner home `npm run test-visual-regression-node` — 228/228, exit 0. **The plan's bar is confirmed exactly: the cloud/god-ray family is 60 probes, 60/60 resolve an origin from an environment variable with a hard-coded fallback, and 0/60 import any of `probe-runtime.mjs`, `probe-edge-slot.mjs` or `served-build-preflight.mjs`.** Fleet-wide: 664 probes, 420 hard-defaulting, 23 governed (19 runtime, 0 edge-slot, 4 served-build-preflight). No allowlist entry was added and no probe was routed, per the ruling's stage split.
+
+**One measured correction to the bar's own method.** The census statement `grep -l 'runProbe|probe-edge-slot|served-build-preflight'` returns **26** adopters fleet-wide, not 23: `probe-gsplat-frame-variance.mjs`, `probe-moon-mip-motion-edge.mjs` and `probe-sky-aureole-anchor.mjs` each DEFINE a local function called `runProbe` and import nothing. The shipped detector keys on the import, not the name, and H2 pins all three. The cloud/god-ray figure is unaffected (0 either way).
+
+**Known limitation, recorded rather than papered over.** The origin detector reads `process.env.<NAME> || "http…"` / `?? "http…"`. A probe that hard-codes its origin with **no** environment read at all — `probe-ao-runtime-config.mjs:111`, `const BASE = "http://localhost:8080";` — is a strictly worse instance of the same defect and is NOT counted. Widening the detector to that shape is stage-2 work, and the count will rise when it lands.
 
 **Dependencies:** Stage 2 deps **C13-42a**
 
@@ -774,11 +780,15 @@ rather than quietly frozen.
 
 ### C13-N02 — Runner homes for the homeless cloud specs <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
 
-**Status:** OPEN (Wave W1, Priority P0).
+**Status:** **COMPLETE — 2026-09-12, lane L2 (Telchar), batch pending.**
 
 **Delivers:** Every `cloud-*.spec.mjs` reachable from an npm script
 
 **Acceptance:** `node Tools/spec-runner-census.mjs` reports 0 homeless cloud specs. **Measured: 32 on disk, 7 homed, 25 homeless** *[corrected from "35 / 4 / 31" — §0.8]*. Under `R-2026-08-29-1` a spec with no runner home is a review blocker
+
+**Evidence (2026-09-12):** the measured premise held exactly — 32 cloud/god-ray specs on disk, 7 homed, 25 homeless. **All 25 were executed individually before being homed, and 7 of them are RED at HEAD**, so homing all 25 into `test-cloud-c13` would have turned a green runner red. Per the seat's ruling the 18 green ones go to `test-cloud-c13` (16 by this lane; `cloud-probe-harness.spec.mjs` by L1 with `C13-N08a`, `cloud-tour-sequences.spec.mjs` by L6 with `C13-N03`) and the 7 red ones to a new `test-cloud-c13-quarantine` script, deliberately wired into no aggregate and into no wave-end gate. `node Tools/spec-runner-census.mjs` now reports **0 homeless cloud specs, 7 quarantined, 2 homed by other lanes** — never a bare 0: `Tools/spec-runner-census.mjs` gained a `*-quarantine` suffix convention and a `quarantined` count so a parked red spec cannot be laundered into a clean total, with its own inertness mutant in `Tools/spec-runner-census.spec.mjs` (`npm run test-landing-rules`, 344/344).
+
+**The 7 quarantined specs and why:** `cloud-coverage-response`, `cloud-ibl-revision`, `cloud-march-emission`, `cloud-observability-counters`, `cloud-reconstruction-attachments`, `cloud-shadow-rte`, `eclipse-cloud-ibl-response`. Triaged in full (15 failing assertions): **15 drift, 0 regression** — see `C13-N08b`.
 
 **Dependencies:** —
 
@@ -958,11 +968,17 @@ is answerable from the counters without further instrumentation.
 
 ### C13-N08b — Recover the remaining unlanded cloud regression specs <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
 
-**Status:** OPEN (Wave W2, Priority P1).
+**Status:** OPEN (Wave W2, Priority P1) — **RE-SCOPED 2026-09-12 by the seat on lane L2's measurement.**
 
 **Delivers:** `cloud-primary-shell.spec.mjs` (+934), `cloud-probe-harness.spec.mjs` (+923), `cloud-observability-counters.spec.mjs` (+125)
 
 **Acceptance:** Green at HEAD, red under each inverse mutant. `cloud-primary-shell.spec.mjs` is cheapest: three PREREPAIR REDs pinning three WGSL repairs that already shipped in Batch 1468
+
+**Re-scope (2026-09-12).** The row's premise is corrected: the three specs it calls unlanded — `cloud-primary-shell.spec.mjs`, `cloud-probe-harness.spec.mjs`, `cloud-observability-counters.spec.mjs` — are all **tracked at HEAD** `bab1ff6e21`. The first two are GREEN; only `cloud-observability-counters.spec.mjs` is red. The real work is the seven quarantined anchor specs `C13-N02` parked: **repair the 7 quarantined anchor specs, one batch; each leaves quarantine by moving its script-line entry from `test-cloud-c13-quarantine` to `test-cloud-c13` in a reviewed commit.**
+
+**Triage banked 2026-09-12 (lane L2, worker Frór, read-only):** 15 failing assertions across the 7 files — **15 A-drift, 0 B-regression**. Every behaviour the assertions name was located in the code at HEAD at a cited `file:line`; **no live product defect**. 13 of the 15 were broken by a single commit, `b7d7d1f5e9` (Batch 1468, 2026-09-11), which split `executePreparedCloudFrame` out of `WebGPUProceduralCloudRenderer.ts` and re-indented, re-wrapped and renamed around it — each stale anchor was verified present in `b7d7d1f5e9^` and absent at HEAD. The two exceptions are older: `cloud-coverage-response` red since Batch 1108 (2026-08-21) and `cloud-ibl-revision` since 2026-08-12.
+
+**Two of the fifteen are not repairs and must not be treated as such.** `cloud-reconstruction-attachments.spec.mjs` F1a/F1b are the `C13-39` SHA-256 pins on `ProceduralClouds.wgsl`; they fired **correctly** on a deliberate, compiler-visible march change (Y-flip, shell interval, ray-unit clamp) that Batch 1468 landed without re-freezing. Re-freezing is a decision for the march row's owner, not a spec repair. Likewise `cloud-shadow-rte.spec.mjs`'s mask assertion: prepare and execute now legitimately get different bind groups, so a naive rename would re-pin a claim that is false by design — the surviving property is the shared `uniformEpoch`.
 
 **Dependencies:** C13-N02, C13-N08a
 

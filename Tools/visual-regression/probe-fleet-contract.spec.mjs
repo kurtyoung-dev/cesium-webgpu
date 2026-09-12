@@ -60,6 +60,10 @@ import { PROBE_CONTRACT_ALLOWLIST } from "./lib/probe-fleet-contract-allowlist.m
 import { PROHIBITED_READER_ALLOWLIST } from "./lib/prohibited-reader-allowlist.mjs";
 import { analyzePageScopeClosures } from "./lib/page-scope-closure.mjs";
 import { analyzeProhibitedReader } from "./lib/prohibited-reader-rule.mjs";
+import {
+  analyzeRuntimeGovernance,
+  censusRuntimeGovernance,
+} from "./lib/probe-runtime-governance.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -798,7 +802,13 @@ test("C8 MUTATION control: stripping a compliant probe's watchdog is detected", 
   });
   assert.ok(donor, "no compliant probe left to mutate");
   const src = readProbe(donor).replaceAll("\r\n", "\n");
-  const mutated = src.replace(/setTimeout\(/, "queueMicrotask(");
+  // Replace EVERY `setTimeout`, for the reason C9 gives about `finally`: a
+  // donor whose FIRST timer is a yield-shaped `setTimeout(resolve, 0)` — which
+  // `hasWatchdog` correctly refuses to count (A5b) — has its harmless timer
+  // mutated and its real watchdog left standing, and the control then passes
+  // while asserting nothing. That is the shape this whole file exists to
+  // prevent, and it went unnoticed until a donor with that ordering appeared.
+  const mutated = src.replaceAll(/setTimeout\(/g, "queueMicrotask(");
   assert.notEqual(mutated, src, `${donor}: mutation did not apply`);
   const a = analyzeProbeSource(mutated);
   assert.equal(
@@ -1563,4 +1573,411 @@ test("G6 MUTATION control: a prefilter that skips everything collapses the canar
     0,
   );
   assert.ok(real > 0, "the real analyzer found no call sites in the fixtures");
+});
+
+// ---------------------------------------------------------------------------
+// H. The runtime-governance census (C13-N01 stage 1)
+//
+// WHAT IS COUNTED, AND WHY IT IS A CENSUS AND NOT A VIOLATION CLASS.
+// `lib/probe-runtime.mjs` owns the parts of a probe run that must be identical
+// everywhere — the Edge slot, the served-build preflight, the origin guard, the
+// refusal path. Its own header names the cost of each copy that escaped it, and
+// the one this census reads is the origin guard: a probe that resolves its base
+// URL as `process.env.PROBE_BASE || "http://localhost:8080"` does not refuse
+// when the variable is unset, it measures whatever is already listening on that
+// port. Sixty of the sixty `probe-cloud-*` / `probe-godray-*` probes do exactly
+// that and none of them imports any of the three governance modules.
+//
+// Making that an ENFORCED violation was considered and rejected. The
+// fleet-contract allowlist is flat, frozen and shrink-only, and 43 of those 60
+// probes are already pinned in it on watchdog-only reasons — a new violation
+// class would either turn sixty files red in one batch or require rewriting 43
+// pinned reason strings, neither of which is the work. So this section counts,
+// and pins the DIRECTION of the count. The routing that moves it is C13-N01
+// stage 2.
+//
+// THE RATCHET IS THEREFORE CHEAP AND STILL REAL. The family's hard-default
+// count may only fall and its adoption count may only rise, against a dated
+// snapshot taken at Batch 1476. Today both sit exactly on the snapshot, so the
+// section is green with no allowlist entry anywhere; what it refuses is a NEW
+// cloud probe that ships the ungoverned origin, which is the shape the stage-2
+// routing would otherwise be chasing for the rest of the campaign.
+//
+// WHY THE DETECTOR IS NOT A GREP, WITH THE MEASUREMENT THAT SETTLED IT.
+// `grep -l 'runProbe|probe-edge-slot|served-build-preflight'` over the fleet
+// returns 26 files; the detector returns 23. The three it drops —
+// `probe-gsplat-frame-variance.mjs`, `probe-moon-mip-motion-edge.mjs`,
+// `probe-sky-aureole-anchor.mjs` — each DEFINE A LOCAL FUNCTION of their own
+// called `runProbe` and import nothing. A name-shaped detector reads a
+// homonym as adoption and reports a fleet three files healthier than it is,
+// which is the instrument-that-cannot-fail failure this file exists to avoid.
+// H2 pins that case as a fixture.
+// ---------------------------------------------------------------------------
+
+/** The cloud/god-ray family the C13-N01 bar is stated over. */
+const governanceFamilyFiles = probeFiles.filter((name) =>
+  /^probe-(cloud|godray)-/.test(name),
+);
+
+/**
+ * The census as measured at Batch 1476 (bab1ff6e21), 2026-09-12.
+ *
+ * `familyHardDefaulting` may only fall and `familyAdopting` may only rise.
+ * `fleetHardDefaultingFloor` is the canary, not a ratchet: it is far below the
+ * measured 420 and exists so that a detector which stops recognising the
+ * construct collapses loudly instead of reporting a repaired fleet.
+ */
+const GOVERNANCE_SNAPSHOT = Object.freeze({
+  measured: "2026-09-12",
+  family: 60,
+  familyHardDefaulting: 60,
+  familyAdopting: 0,
+  fleetHardDefaultingFloor: 300,
+});
+
+/** Fixtures for the detectors' own self-test, as text — no filesystem. */
+const GOVERNANCE_FIXTURES = {
+  hardDefaultOr: {
+    origins: ["http://localhost:8080"],
+    governed: [],
+    source: [
+      'const BASE = process.env.PROBE_BASE || "http://localhost:8080";',
+      "export default BASE;",
+      "",
+    ].join("\n"),
+  },
+  hardDefaultNullish: {
+    origins: ["http://localhost:8080"],
+    governed: [],
+    source: [
+      'const BASE = process.env.PROBE_BASE ?? "http://localhost:8080";',
+      "export default BASE;",
+      "",
+    ].join("\n"),
+  },
+  // The construct is the FALLBACK, not the environment read. A probe that reads
+  // the variable and lets an unset value reach the runtime's refusal is the
+  // repaired shape, and must not be counted as a finding.
+  envWithoutFallback: {
+    origins: [],
+    governed: [],
+    source: [
+      "const BASE = process.env.PROBE_BASE;",
+      "export default BASE;",
+      "",
+    ].join("\n"),
+  },
+  // A non-origin fallback is a different construct with a different cost: a tag,
+  // a directory name or a count that defaults is not a silent measurement of a
+  // stranger's server.
+  nonOriginFallback: {
+    origins: [],
+    governed: [],
+    source: [
+      'const TAG = process.env.TAG || "adaptive";',
+      "export default TAG;",
+      "",
+    ].join("\n"),
+  },
+  governedStatic: {
+    origins: [],
+    governed: ["runtime"],
+    source: [
+      'import { runProbe } from "./lib/probe-runtime.mjs";',
+      "process.exitCode = await runProbe({});",
+      "",
+    ].join("\n"),
+  },
+  governedDynamic: {
+    origins: [],
+    governed: ["served-build-preflight"],
+    source: [
+      'const mod = await import("./lib/served-build-preflight.mjs");',
+      "export default mod;",
+      "",
+    ].join("\n"),
+  },
+  // The measured case from the fleet: a probe that DEFINES its own `runProbe`
+  // and imports nothing. Three real files have this shape.
+  localHomonym: {
+    origins: [],
+    governed: [],
+    source: [
+      "async function runProbe(options) {",
+      "  return options;",
+      "}",
+      "await runProbe({});",
+      "",
+    ].join("\n"),
+  },
+  // `lib/` also holds `runtime-residency-contract.mjs`. A detector matching the
+  // substring "runtime" reads this as adoption.
+  nearMissModule: {
+    origins: [],
+    governed: [],
+    source: [
+      'import { residency } from "./lib/runtime-residency-contract.mjs";',
+      "export default residency;",
+      "",
+    ].join("\n"),
+  },
+  // Every probe's usage comment spells the environment variable and the port,
+  // and probes ship page scripts as embedded text. Neither is the construct.
+  proseAndText: {
+    origins: [],
+    governed: [],
+    source: [
+      "// Usage: PROBE_BASE=http://localhost:8080 node probe-x.mjs",
+      '// Migrate this probe onto runProbe from "./lib/probe-runtime.mjs".',
+      '/* const BASE = process.env.PROBE_BASE || "http://localhost:8080"; */',
+      'const SETUP = `const BASE = process.env.PROBE_BASE || "http://localhost:8080";`;',
+      'const SPEC = "./lib/probe-runtime.mjs";',
+      "export default [SETUP, SPEC];",
+      "",
+    ].join("\n"),
+  },
+};
+
+test("H1: the detectors read every governance shape and no prose shape", () => {
+  for (const [name, fixture] of Object.entries(GOVERNANCE_FIXTURES)) {
+    const analysis = analyzeRuntimeGovernance(fixture.source);
+    assert.deepEqual(
+      analysis.hardDefaultedOrigins.map((site) => site.origin),
+      fixture.origins,
+      `${name}: hard-defaulted origins`,
+    );
+    assert.deepEqual(
+      analysis.governedBy,
+      fixture.governed,
+      `${name}: governance imports`,
+    );
+  }
+});
+
+test("H2: a locally defined runProbe is NOT adoption, in a fixture and in the fleet", () => {
+  assert.equal(
+    analyzeRuntimeGovernance(GOVERNANCE_FIXTURES.localHomonym.source)
+      .adoptsGovernance,
+    false,
+  );
+  // The fleet leg. These three files each define their own `runProbe`; a
+  // name-shaped detector counts them and reports 26 adopters instead of 23.
+  const homonyms = [
+    "probe-gsplat-frame-variance.mjs",
+    "probe-moon-mip-motion-edge.mjs",
+    "probe-sky-aureole-anchor.mjs",
+  ].filter((name) => probeFiles.includes(name));
+  assert.equal(homonyms.length, 3, "the homonym fixture set left the fleet");
+  for (const name of homonyms) {
+    const source = readProbe(name);
+    assert.match(
+      blankNonCode(source),
+      /function runProbe\b/,
+      `${name}: no longer defines its own runProbe`,
+    );
+    assert.equal(
+      analyzeRuntimeGovernance(source).adoptsGovernance,
+      false,
+      `${name}: a local homonym was counted as adoption`,
+    );
+  }
+});
+
+test("H3: a finding names the variable, the operator, the origin and the line", () => {
+  const [site] = analyzeRuntimeGovernance(
+    GOVERNANCE_FIXTURES.hardDefaultOr.source,
+  ).hardDefaultedOrigins;
+  assert.equal(site.env, "PROBE_BASE");
+  assert.equal(site.operator, "||");
+  assert.equal(site.origin, "http://localhost:8080");
+  assert.equal(site.line, 1);
+  const [entry] = analyzeRuntimeGovernance(
+    GOVERNANCE_FIXTURES.governedStatic.source,
+  ).governanceImports;
+  assert.equal(entry.module, "runtime");
+  assert.equal(entry.specifier, "./lib/probe-runtime.mjs");
+  assert.equal(entry.line, 1);
+});
+
+test("H4: the cloud/god-ray family census sits on or inside its snapshot", () => {
+  const census = censusRuntimeGovernance(
+    governanceFamilyFiles.map((name) => ({
+      name,
+      analysis: analyzeRuntimeGovernance(readProbe(name)),
+    })),
+  );
+
+  // The population canary. A family that shrank below the snapshot means files
+  // were renamed out of the glob, and every count below would then be measuring
+  // a different fleet than the one the snapshot was taken over.
+  assert.ok(
+    census.analyzed >= GOVERNANCE_SNAPSHOT.family,
+    `the cloud/god-ray family fell from ${GOVERNANCE_SNAPSHOT.family} to ${census.analyzed} probes`,
+  );
+
+  assert.ok(
+    census.hardDefaulting <= GOVERNANCE_SNAPSHOT.familyHardDefaulting,
+    `${census.hardDefaulting} cloud/god-ray probes resolve an origin from a hard-coded
+fallback, up from ${GOVERNANCE_SNAPSHOT.familyHardDefaulting} at the snapshot. A probe that spells
+\`process.env.PROBE_BASE || "http://localhost:8080"\` does not refuse when the
+variable is unset — it measures whatever is already listening on that port.
+Hand the origin to the runtime (lib/probe-runtime.mjs) instead.
+Files:\n  ${census.hardDefaultingFiles.join("\n  ")}`,
+  );
+
+  assert.ok(
+    census.adopting >= GOVERNANCE_SNAPSHOT.familyAdopting,
+    `cloud/god-ray governance adoption fell from ${GOVERNANCE_SNAPSHOT.familyAdopting} to ${census.adopting}`,
+  );
+});
+
+test("H5: the fleet-wide census is emitted and its detector is demonstrably alive", () => {
+  const census = censusRuntimeGovernance(
+    probeFiles.map((name) => ({
+      name,
+      analysis: analyzeRuntimeGovernance(readProbe(name)),
+    })),
+  );
+
+  assert.equal(
+    census.analyzed,
+    probeFiles.length,
+    "the census skipped part of the fleet",
+  );
+
+  // The canary, in G4's shape: a detector that stopped recognising the
+  // construct reports a repaired fleet, and the count collapses before the file
+  // list does.
+  assert.ok(
+    census.hardDefaulting > GOVERNANCE_SNAPSHOT.fleetHardDefaultingFloor,
+    `only ${census.hardDefaulting} of ${census.analyzed} probes were read as hard-defaulting their origin — the detector stopped recognising the construct`,
+  );
+
+  // The census is the deliverable, so it is printed rather than only asserted.
+  // A count nobody can read is a count nobody acts on.
+  const family = censusRuntimeGovernance(
+    governanceFamilyFiles.map((name) => ({
+      name,
+      analysis: analyzeRuntimeGovernance(readProbe(name)),
+    })),
+  );
+  console.log(
+    `[runtime-governance census] fleet ${census.hardDefaulting}/${census.analyzed} hard-defaulted origin, ${census.adopting}/${census.analyzed} governed ${JSON.stringify(census.byModule)}; cloud+godray ${family.hardDefaulting}/${family.analyzed} hard-defaulted origin, ${family.adopting}/${family.analyzed} governed`,
+  );
+});
+
+/**
+ * Import a mutated copy of the governance detectors.
+ *
+ * The module imports its scanner from `./probe-fleet-contract.mjs` by relative
+ * specifier, and a `data:` URL module has no base to resolve one against, so
+ * the specifier is rewritten to the absolute URL this spec resolves it to. That
+ * rewrite is not part of the mutation — it is what makes the mutant loadable.
+ *
+ * @param {(source: string) => string} mutate The mutation to apply.
+ * @returns {Promise<object>} The mutated module.
+ */
+async function importMutatedGovernance(mutate) {
+  const source = readFileSync(
+    join(HERE, "lib", "probe-runtime-governance.mjs"),
+    "utf8",
+  ).replaceAll("\r\n", "\n");
+  const relative = 'from "./probe-fleet-contract.mjs";';
+  assert.equal(source.split(relative).length - 1, 1);
+  const loadable = source.replace(
+    relative,
+    `from ${JSON.stringify(
+      new URL("./lib/probe-fleet-contract.mjs", import.meta.url).href,
+    )};`,
+  );
+  const mutated = mutate(loadable);
+  assert.notEqual(mutated, loadable, "the mutation did not apply");
+  return import(
+    `data:text/javascript;base64,${Buffer.from(mutated).toString("base64")}`
+  );
+}
+
+test("H6 MUTATION control: an inert origin finding turns H1 and H4 blind", async () => {
+  // Unreachable, not deleted: deletion is the easy mutation and a count-shaped
+  // assertion survives it as readily as a text-shaped one.
+  const guard =
+    "    if (content === undefined || !ORIGIN_LITERAL.test(content)) {";
+  const mutant = await importMutatedGovernance((source) => {
+    assert.equal(source.split(guard).length - 1, 1);
+    return source.replace(
+      guard,
+      "    if (true || content === undefined || !ORIGIN_LITERAL.test(content)) {",
+    );
+  });
+
+  let silenced = 0;
+  for (const [name, fixture] of Object.entries(GOVERNANCE_FIXTURES)) {
+    if (fixture.origins.length === 0) {
+      continue;
+    }
+    silenced += 1;
+    assert.deepEqual(
+      mutant.analyzeRuntimeGovernance(fixture.source).hardDefaultedOrigins,
+      [],
+      `${name}: the inert mutant still reported a hard-defaulted origin`,
+    );
+    assert.equal(
+      analyzeRuntimeGovernance(fixture.source).hardDefaultedOrigins.length,
+      fixture.origins.length,
+      `${name}: the real detector stopped reporting its origin`,
+    );
+  }
+  assert.equal(silenced, 2, "the positive origin fixture set changed size");
+
+  // And the fleet leg goes to zero, which is what H4's ratchet and H5's canary
+  // are there to notice.
+  const mutantCensus = mutant.censusRuntimeGovernance(
+    governanceFamilyFiles.map((name) => ({
+      name,
+      analysis: mutant.analyzeRuntimeGovernance(readProbe(name)),
+    })),
+  );
+  assert.equal(mutantCensus.hardDefaulting, 0);
+  assert.equal(mutantCensus.analyzed, governanceFamilyFiles.length);
+});
+
+test("H7 MUTATION control: an inert governance match reports an ungoverned fleet", async () => {
+  const guard = "      if (module === undefined) {";
+  const mutant = await importMutatedGovernance((source) => {
+    assert.equal(source.split(guard).length - 1, 1);
+    return source.replace(guard, "      if (true || module === undefined) {");
+  });
+
+  for (const [name, fixture] of Object.entries(GOVERNANCE_FIXTURES)) {
+    if (fixture.governed.length === 0) {
+      continue;
+    }
+    assert.deepEqual(
+      mutant.analyzeRuntimeGovernance(fixture.source).governedBy,
+      [],
+      `${name}: the inert mutant still reported an import`,
+    );
+    assert.deepEqual(
+      analyzeRuntimeGovernance(fixture.source).governedBy,
+      fixture.governed,
+      `${name}: the real detector stopped reporting its import`,
+    );
+  }
+
+  // The fleet leg: 23 adopters become 0, so an adoption ratchet that only ever
+  // read this mutant would certify a fleet that had never been migrated.
+  const real = censusRuntimeGovernance(
+    probeFiles.map((name) => ({
+      name,
+      analysis: analyzeRuntimeGovernance(readProbe(name)),
+    })),
+  );
+  const mutated = mutant.censusRuntimeGovernance(
+    probeFiles.map((name) => ({
+      name,
+      analysis: mutant.analyzeRuntimeGovernance(readProbe(name)),
+    })),
+  );
+  assert.ok(real.adopting > 0, "the real fleet has no governance adopters");
+  assert.equal(mutated.adopting, 0);
 });

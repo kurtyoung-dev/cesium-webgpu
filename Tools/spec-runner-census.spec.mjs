@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { parseNodeTestCommand, runCensus } from "./spec-runner-census.mjs";
+import {
+  formatCensus,
+  isQuarantineRunner,
+  parseNodeTestCommand,
+  runCensus,
+} from "./spec-runner-census.mjs";
 
 const packageJson = {
   scripts: {
@@ -64,6 +69,7 @@ test("spec-runner census resolves explicit paths, globs, and orphans", async (t)
   assert.deepEqual(result.summary, {
     totalSpecs: 3,
     homed: 2,
+    quarantined: 0,
     orphaned: 1,
   });
   assert.equal(result.exitCode, 0);
@@ -162,6 +168,7 @@ test("spec-runner census recognizes only portable direct AND-list homes", async 
   assert.deepEqual(result.summary, {
     totalSpecs: 5,
     homed: 4,
+    quarantined: 0,
     orphaned: 1,
   });
   assert.equal(result.exitCode, 0);
@@ -275,6 +282,7 @@ test("spec-runner census confines portable selectors", async (t) => {
   assert.deepEqual(result.summary, {
     totalSpecs: 1,
     homed: 1,
+    quarantined: 0,
     orphaned: 0,
   });
 
@@ -356,6 +364,7 @@ test("strict census returns zero when every spec is homed", async (t) => {
   assert.deepEqual(result.summary, {
     totalSpecs: 1,
     homed: 1,
+    quarantined: 0,
     orphaned: 0,
   });
   assert.equal(result.exitCode, 0);
@@ -394,4 +403,158 @@ test("spec-runner census does not execute opaque npm prechecks", async () => {
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
+});
+
+test("isQuarantineRunner recognizes the suffix convention, not one fixed name", () => {
+  assert.equal(isQuarantineRunner("test-cloud-c13-quarantine"), true);
+  assert.equal(isQuarantineRunner("test-anything-else-quarantine"), true);
+  assert.equal(isQuarantineRunner("test-cloud"), false);
+  assert.equal(isQuarantineRunner("quarantine"), false);
+  assert.equal(isQuarantineRunner(undefined), false);
+});
+
+// A runner named to match the seat's real quarantine plus a second, ordinary
+// runner - three specs cover the three homing shapes a census row can take:
+// quarantine-only, quarantine-AND-normal, and normal-only. Only the first is
+// "quarantined": the whole risk here is that a quarantine home silently reads
+// as "healthy", so anything with an ordinary home besides must not be flagged.
+const quarantinePackageJson = {
+  scripts: {
+    "test-cloud-c13-quarantine":
+      "node --test Tools/cloud-red.spec.mjs Tools/cloud-both.spec.mjs",
+    "test-cloud":
+      "node --test Tools/cloud-both.spec.mjs Tools/cloud-normal.spec.mjs",
+  },
+};
+
+const quarantineFiles = [
+  "Tools/cloud-red.spec.mjs",
+  "Tools/cloud-both.spec.mjs",
+  "Tools/cloud-normal.spec.mjs",
+];
+
+test("a spec homed only by a quarantine runner is homed AND quarantined, never orphaned", () => {
+  const result = runCensus({
+    packageJson: quarantinePackageJson,
+    files: quarantineFiles,
+  });
+
+  const quarantineOnly = findSpec(result, "Tools/cloud-red.spec.mjs");
+  assert.deepEqual(quarantineOnly.runners, ["test-cloud-c13-quarantine"]);
+  assert.equal(quarantineOnly.quarantined, true);
+
+  assert.deepEqual(result.summary, {
+    totalSpecs: 3,
+    homed: 3,
+    quarantined: 1,
+    orphaned: 0,
+  });
+});
+
+test("a spec homed by BOTH a quarantine runner and a normal one is not quarantined", () => {
+  const result = runCensus({
+    packageJson: quarantinePackageJson,
+    files: quarantineFiles,
+  });
+
+  const both = findSpec(result, "Tools/cloud-both.spec.mjs");
+  assert.deepEqual(both.runners, ["test-cloud", "test-cloud-c13-quarantine"]);
+  assert.equal(both.quarantined, false);
+});
+
+test("a spec homed only by a normal runner is not quarantined", () => {
+  const result = runCensus({
+    packageJson: quarantinePackageJson,
+    files: quarantineFiles,
+  });
+
+  const normalOnly = findSpec(result, "Tools/cloud-normal.spec.mjs");
+  assert.deepEqual(normalOnly.runners, ["test-cloud"]);
+  assert.equal(normalOnly.quarantined, false);
+});
+
+test("formatCensus names the quarantine count and marks quarantined rows when non-zero", () => {
+  const result = runCensus({
+    packageJson: quarantinePackageJson,
+    files: quarantineFiles,
+  });
+  const formatted = formatCensus(result);
+
+  assert.match(
+    formatted,
+    /Summary: total specs 3, homed 3 \(1 quarantined\), orphaned 0/u,
+  );
+
+  const redRow = formatted
+    .split("\n")
+    .find((line) => line.startsWith("Tools/cloud-red.spec.mjs"));
+  assert.ok(redRow, "expected a table row for the quarantine-only spec");
+  assert.match(redRow, /quarantine\s*$/u);
+
+  const normalRow = formatted
+    .split("\n")
+    .find((line) => line.startsWith("Tools/cloud-normal.spec.mjs"));
+  assert.ok(normalRow, "expected a table row for the normal-only spec");
+  assert.doesNotMatch(normalRow, /quarantine\s*$/u);
+});
+
+test("formatCensus is byte-identical to today's format when nothing is quarantined", () => {
+  const soloPackageJson = {
+    scripts: {
+      "test-solo": "node --test Tools/solo.spec.mjs",
+    },
+  };
+  const result = runCensus({
+    packageJson: soloPackageJson,
+    files: ["Tools/solo.spec.mjs"],
+  });
+
+  assert.equal(result.summary.quarantined, 0);
+
+  const specWidth = "Tools/solo.spec.mjs".length;
+  const runnerWidth = "RUNNER SCRIPT(S)".length;
+  const expected =
+    `${"SPEC FILE".padEnd(specWidth)}  ${"RUNNER SCRIPT(S)".padEnd(runnerWidth)}\n` +
+    `${"-".repeat(specWidth)}  ${"-".repeat(runnerWidth)}\n` +
+    `${"Tools/solo.spec.mjs".padEnd(specWidth)}  ${"test-solo".padEnd(runnerWidth)}\n` +
+    "\n" +
+    "Summary: total specs 1, homed 1, orphaned 0\n" +
+    "\n" +
+    "Proposed homes for orphans:\n" +
+    "- (none)\n";
+
+  assert.equal(formatCensus(result), expected);
+});
+
+test("quarantine classification is unreachable under an inertness mutant, and the fixture proves it isn't just broken", async (t) => {
+  const mutantModule = await importMutatedCensus(
+    t,
+    'return typeof name === "string" && name.endsWith("-quarantine");',
+    "return false;",
+  );
+
+  const mutantResult = mutantModule.runCensus({
+    packageJson: quarantinePackageJson,
+    files: quarantineFiles,
+  });
+  // Under the mutant, isQuarantineRunner never fires, so nothing is ever
+  // "every runner is a quarantine runner" and the count collapses to 0.
+  assert.equal(mutantResult.summary.quarantined, 0);
+  assert.equal(
+    findSpec(mutantResult, "Tools/cloud-red.spec.mjs").quarantined,
+    false,
+  );
+
+  // The other half of inertness: prove the fixture and the real module still
+  // detect the same case, so the mutant result above is a real behavior
+  // change and not an artifact of a fixture that never exercised the code.
+  const realResult = runCensus({
+    packageJson: quarantinePackageJson,
+    files: quarantineFiles,
+  });
+  assert.equal(realResult.summary.quarantined, 1);
+  assert.equal(
+    findSpec(realResult, "Tools/cloud-red.spec.mjs").quarantined,
+    true,
+  );
 });

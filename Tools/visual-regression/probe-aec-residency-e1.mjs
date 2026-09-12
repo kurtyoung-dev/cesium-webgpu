@@ -982,10 +982,25 @@ function isMainModule() {
   );
 }
 
+const WATCHDOG_MS = 900_000;
+
 if (isMainModule()) {
+  // The same terminating timer `probe-aec-residency-e2.mjs` carries, and for
+  // the same reason: a residency run that never settles would otherwise hold
+  // the Edge slot until someone noticed.
+  const watchdog = setTimeout(() => {
+    console.error(
+      `[probe-aec-residency-e1] WATCHDOG: no result after ${WATCHDOG_MS} ms; ending the run`,
+    );
+    process.exit(EXIT_CODES.ERROR);
+  }, WATCHDOG_MS);
   main()
-    .then((code) => process.exit(code))
+    .then((code) => {
+      clearTimeout(watchdog);
+      process.exit(code);
+    })
     .catch((error) => {
+      clearTimeout(watchdog);
       if (error instanceof E1RefusalError) {
         console.error(`REFUSED (${error.reason}): ${error.message}`);
         console.error(JSON.stringify(error.details ?? null, null, 2));

@@ -216,99 +216,101 @@ async function captureFrames(renderer) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({
-    viewport: { width: 1280, height: 720 },
-  });
-  const messages = [];
-  page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) =>
-    messages.push({ t: "pageerror", text: e.message }),
-  );
-
-  await page.goto(
-    `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&${VIEW}`,
-    { waitUntil: "networkidle" },
-  );
-  await page.waitForFunction(() => !!window.viewer);
-  // Stop the clock and pin it to the fixed daylight instant, so the sun sits in
-  // one place for every capture on both backends. Request-render mode goes off
-  // in the same step and for the same reason the clock is pinned: a scene in
-  // that mode renders only when something asks it to, a pinned clock removes
-  // the simulation-time change that would otherwise ask, and assigning a
-  // post-process uniform does not ask — so every capture after a write would
-  // otherwise be the frame from before it. The viewer app turns the mode ON by
-  // default (`Apps/CesiumViewer/CesiumViewerStartupOptions.js`).
-  await page.evaluate(async (clockUTC) => {
-    const C = await import("/Build/CesiumUnminified/index.js");
-    const viewer = window.viewer;
-    viewer.scene.requestRenderMode = false;
-    viewer.clock.shouldAnimate = false;
-    viewer.clock.currentTime = C.JulianDate.fromIso8601(clockUTC);
-  }, CLOCK_UTC);
-  await settle(page, 240);
-
-  const canvas = page.locator("canvas").first();
-  const shot = async (name) => {
-    const file = path.join(
-      OUT_DIR,
-      `probe-ao-runtime-config-${renderer}-${name}.png`,
+  try {
+    const page = await browser.newPage({
+      viewport: { width: 1280, height: 720 },
+    });
+    const messages = [];
+    page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
+    page.on("pageerror", (e) =>
+      messages.push({ t: "pageerror", text: e.message }),
     );
-    await canvas.screenshot({ path: file });
-    return file;
-  };
-  const applyAndSettle = async (uniforms) => {
-    await page.evaluate((values) => {
-      Object.assign(
-        window.viewer.scene.postProcessStages.ambientOcclusion.uniforms,
-        values,
+
+    await page.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&${VIEW}`,
+      { waitUntil: "networkidle" },
+    );
+    await page.waitForFunction(() => !!window.viewer);
+    // Stop the clock and pin it to the fixed daylight instant, so the sun sits in
+    // one place for every capture on both backends. Request-render mode goes off
+    // in the same step and for the same reason the clock is pinned: a scene in
+    // that mode renders only when something asks it to, a pinned clock removes
+    // the simulation-time change that would otherwise ask, and assigning a
+    // post-process uniform does not ask — so every capture after a write would
+    // otherwise be the frame from before it. The viewer app turns the mode ON by
+    // default (`Apps/CesiumViewer/CesiumViewerStartupOptions.js`).
+    await page.evaluate(async (clockUTC) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const viewer = window.viewer;
+      viewer.scene.requestRenderMode = false;
+      viewer.clock.shouldAnimate = false;
+      viewer.clock.currentTime = C.JulianDate.fromIso8601(clockUTC);
+    }, CLOCK_UTC);
+    await settle(page, 240);
+
+    const canvas = page.locator("canvas").first();
+    const shot = async (name) => {
+      const file = path.join(
+        OUT_DIR,
+        `probe-ao-runtime-config-${renderer}-${name}.png`,
       );
-    }, uniforms);
+      await canvas.screenshot({ path: file });
+      return file;
+    };
+    const applyAndSettle = async (uniforms) => {
+      await page.evaluate((values) => {
+        Object.assign(
+          window.viewer.scene.postProcessStages.ambientOcclusion.uniforms,
+          values,
+        );
+      }, uniforms);
+      await settle(page, 120);
+      await page.waitForTimeout(1000);
+    };
+
+    const applied = await page.evaluate((uniforms) => {
+      const ao = window.viewer.scene.postProcessStages.ambientOcclusion;
+      ao.enabled = true;
+      Object.assign(ao.uniforms, uniforms);
+      return { enabled: ao.enabled };
+    }, FIRST_ENABLE);
     await settle(page, 120);
     await page.waitForTimeout(1000);
-  };
+    const before = await shot("before");
 
-  const applied = await page.evaluate((uniforms) => {
-    const ao = window.viewer.scene.postProcessStages.ambientOcclusion;
-    ao.enabled = true;
-    Object.assign(ao.uniforms, uniforms);
-    return { enabled: ao.enabled };
-  }, FIRST_ENABLE);
-  await settle(page, 120);
-  await page.waitForTimeout(1000);
-  const before = await shot("before");
+    // The numeric write: the five generation parameters, rewritten well after
+    // the first enabled frame.
+    await applyAndSettle(RUNTIME_WRITE);
+    const numeric = await shot("numeric");
 
-  // The numeric write: the five generation parameters, rewritten well after
-  // the first enabled frame.
-  await applyAndSettle(RUNTIME_WRITE);
-  const numeric = await shot("numeric");
+    // Liveness: same post-process settings, different camera. Taken BEFORE the
+    // ambientOcclusionOnly write, so neither frame of the pair can be the
+    // constant canvas that a saturated occlusion term paints under that flag,
+    // and after `numeric`, so no camera restore is needed.
+    await page.evaluate((meters) => {
+      window.viewer.camera.moveBackward(meters);
+    }, LIVENESS_MOVE_METERS);
+    await settle(page, 120);
+    await page.waitForTimeout(1000);
+    const moved = await shot("moved");
 
-  // Liveness: same post-process settings, different camera. Taken BEFORE the
-  // ambientOcclusionOnly write, so neither frame of the pair can be the
-  // constant canvas that a saturated occlusion term paints under that flag,
-  // and after `numeric`, so no camera restore is needed.
-  await page.evaluate((meters) => {
-    window.viewer.camera.moveBackward(meters);
-  }, LIVENESS_MOVE_METERS);
-  await settle(page, 120);
-  await page.waitForTimeout(1000);
-  const moved = await shot("moved");
+    // The write the gate rests on, applied alone and at the camera `moved` was
+    // taken from, so the diff against it attributes the change to the flag and
+    // to nothing else.
+    await applyAndSettle(AO_ONLY_WRITE);
+    const aoOnly = await shot("aoonly");
 
-  // The write the gate rests on, applied alone and at the camera `moved` was
-  // taken from, so the diff against it attributes the change to the flag and
-  // to nothing else.
-  await applyAndSettle(AO_ONLY_WRITE);
-  const aoOnly = await shot("aoonly");
-
-  await browser.close();
-
-  return {
-    before,
-    numeric,
-    aoOnly,
-    moved,
-    applied,
-    errors: messages.filter((m) => m.t === "error" || m.t === "pageerror"),
-  };
+    return {
+      before,
+      numeric,
+      aoOnly,
+      moved,
+      applied,
+      errors: messages.filter((m) => m.t === "error" || m.t === "pageerror"),
+    };
+  } finally {
+    await browser.close();
+  }
 }
 
 /**
@@ -321,55 +323,58 @@ async function captureFrames(renderer) {
  */
 async function diffPngs(a, b) {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
-  const page = await browser.newPage();
-  await page.setContent("<html><body></body></html>");
-  const result = await page.evaluate(
-    async ({ ba, bb }) => {
-      const decode = async (base64) => {
-        const image = new Image();
-        image.src = `data:image/png;base64,${base64}`;
-        await image.decode();
-        const canvas = document.createElement("canvas");
-        canvas.width = image.naturalWidth;
-        canvas.height = image.naturalHeight;
-        const context = canvas.getContext("2d");
-        context.drawImage(image, 0, 0);
-        return {
-          w: canvas.width,
-          h: canvas.height,
-          data: context.getImageData(0, 0, canvas.width, canvas.height).data,
+  try {
+    const page = await browser.newPage();
+    await page.setContent("<html><body></body></html>");
+    const result = await page.evaluate(
+      async ({ ba, bb }) => {
+        const decode = async (base64) => {
+          const image = new Image();
+          image.src = `data:image/png;base64,${base64}`;
+          await image.decode();
+          const canvas = document.createElement("canvas");
+          canvas.width = image.naturalWidth;
+          canvas.height = image.naturalHeight;
+          const context = canvas.getContext("2d");
+          context.drawImage(image, 0, 0);
+          return {
+            w: canvas.width,
+            h: canvas.height,
+            data: context.getImageData(0, 0, canvas.width, canvas.height).data,
+          };
         };
-      };
-      const first = await decode(ba);
-      const second = await decode(bb);
-      if (first.w !== second.w || first.h !== second.h) {
-        return { error: "size mismatch" };
-      }
-      const total = first.w * first.h;
-      let mismatch = 0;
-      let sum = 0;
-      for (let i = 0; i < first.data.length; i += 4) {
-        const d =
-          Math.abs(first.data[i] - second.data[i]) +
-          Math.abs(first.data[i + 1] - second.data[i + 1]) +
-          Math.abs(first.data[i + 2] - second.data[i + 2]);
-        sum += d;
-        if (d > 30) mismatch++;
-      }
-      return {
-        totalPx: total,
-        mismatchPx: mismatch,
-        mismatchPct: Number(((100 * mismatch) / total).toFixed(3)),
-        meanDelta: Number((sum / total).toFixed(3)),
-      };
-    },
-    {
-      ba: fs.readFileSync(a).toString("base64"),
-      bb: fs.readFileSync(b).toString("base64"),
-    },
-  );
-  await browser.close();
-  return result;
+        const first = await decode(ba);
+        const second = await decode(bb);
+        if (first.w !== second.w || first.h !== second.h) {
+          return { error: "size mismatch" };
+        }
+        const total = first.w * first.h;
+        let mismatch = 0;
+        let sum = 0;
+        for (let i = 0; i < first.data.length; i += 4) {
+          const d =
+            Math.abs(first.data[i] - second.data[i]) +
+            Math.abs(first.data[i + 1] - second.data[i + 1]) +
+            Math.abs(first.data[i + 2] - second.data[i + 2]);
+          sum += d;
+          if (d > 30) mismatch++;
+        }
+        return {
+          totalPx: total,
+          mismatchPx: mismatch,
+          mismatchPct: Number(((100 * mismatch) / total).toFixed(3)),
+          meanDelta: Number((sum / total).toFixed(3)),
+        };
+      },
+      {
+        ba: fs.readFileSync(a).toString("base64"),
+        bb: fs.readFileSync(b).toString("base64"),
+      },
+    );
+    return result;
+  } finally {
+    await browser.close();
+  }
 }
 
 const RENDERERS = ["webgl", "webgpu"];
@@ -385,169 +390,187 @@ const CLAUSE_PAIRS = {
   aoOnly: ["moved", "aoOnly"],
 };
 
-(async () => {
-  if (!fs.existsSync(OUT_DIR)) {
-    fs.mkdirSync(OUT_DIR, { recursive: true });
-  }
-  const report = {};
-  for (const renderer of RENDERERS) {
-    console.log(`[probe-ao-runtime-config] ${renderer}`);
-    const frames = await captureFrames(renderer);
-    for (const name of CAPTURES) {
-      console.log(`  ${name}: ${frames[name]}`);
-    }
-    if (frames.errors.length) {
-      console.log(`  ${frames.errors.length} console errors:`);
-      frames.errors
-        .slice(0, 3)
-        .forEach((e) => console.log(`    ${e.t}: ${e.text}`));
-    }
-    report[renderer] = {};
-    for (const clause of CLAUSES) {
-      const [first, second] = CLAUSE_PAIRS[clause];
-      report[renderer][clause] = await diffPngs(frames[first], frames[second]);
-    }
-    for (const clause of CLAUSES) {
-      console.log(`  ${clause}: ${JSON.stringify(report[renderer][clause])}`);
-    }
-  }
+const WATCHDOG_MS = 600_000;
 
-  const failures = [];
-  const status = {};
-  for (const renderer of RENDERERS) {
-    status[renderer] = {};
-  }
-  const pct = (renderer, clause) =>
-    report[renderer]?.[clause]?.mismatchPct ?? 0;
-  for (const renderer of RENDERERS) {
-    for (const clause of CLAUSES) {
-      const error = report[renderer]?.[clause]?.error;
-      if (error) {
-        failures.push(`${renderer} ${clause} diff failed: ${error}`);
+// The load-bearing half of the probe contract: without it a page that never
+// settles holds the single Edge slot until someone notices.
+const watchdog = setTimeout(() => {
+  console.error(
+    `[probe-ao-runtime-config] WATCHDOG: no result after ${WATCHDOG_MS} ms; ending the run`,
+  );
+  process.exit(1);
+}, WATCHDOG_MS);
+
+(async () => {
+  try {
+    if (!fs.existsSync(OUT_DIR)) {
+      fs.mkdirSync(OUT_DIR, { recursive: true });
+    }
+    const report = {};
+    for (const renderer of RENDERERS) {
+      console.log(`[probe-ao-runtime-config] ${renderer}`);
+      const frames = await captureFrames(renderer);
+      for (const name of CAPTURES) {
+        console.log(`  ${name}: ${frames[name]}`);
+      }
+      if (frames.errors.length) {
+        console.log(`  ${frames.errors.length} console errors:`);
+        frames.errors
+          .slice(0, 3)
+          .forEach((e) => console.log(`    ${e.t}: ${e.text}`));
+      }
+      report[renderer] = {};
+      for (const clause of CLAUSES) {
+        const [first, second] = CLAUSE_PAIRS[clause];
+        report[renderer][clause] = await diffPngs(
+          frames[first],
+          frames[second],
+        );
+      }
+      for (const clause of CLAUSES) {
+        console.log(`  ${clause}: ${JSON.stringify(report[renderer][clause])}`);
       }
     }
-  }
 
-  // CAPTURE LIVENESS — scored on both backends, and read first: every later
-  // clause on a backend is void without it.
-  const livenessDead = [];
-  for (const renderer of RENDERERS) {
-    const value = pct(renderer, "liveness");
-    if (value < WHOLE_FRAME_MIN_MISMATCH_PCT) {
-      livenessDead.push(renderer);
-      status[renderer].liveness = "FAIL";
-      failures.push(
-        `${renderer} capture liveness is ${value}%, under the ` +
-          `${WHOLE_FRAME_MIN_MISMATCH_PCT}% floor — a ${LIVENESS_MOVE_METERS} m ` +
-          `camera move did not change the captured canvas, so nothing else ` +
-          `measured on this backend is readable`,
-      );
-    } else {
-      status[renderer].liveness = "PASS";
+    const failures = [];
+    const status = {};
+    for (const renderer of RENDERERS) {
+      status[renderer] = {};
     }
-  }
+    const pct = (renderer, clause) =>
+      report[renderer]?.[clause]?.mismatchPct ?? 0;
+    for (const renderer of RENDERERS) {
+      for (const clause of CLAUSES) {
+        const error = report[renderer]?.[clause]?.error;
+        if (error) {
+          failures.push(`${renderer} ${clause} diff failed: ${error}`);
+        }
+      }
+    }
 
-  // AO RUNTIME REACH — the clause this probe exists for, scored on both
-  // backends wherever the capture is live.
-  for (const renderer of RENDERERS) {
-    if (livenessDead.includes(renderer)) {
-      status[renderer].aoOnly = "UNREADABLE";
-      continue;
-    }
-    const value = pct(renderer, "aoOnly");
-    if (value < WHOLE_FRAME_MIN_MISMATCH_PCT) {
-      status[renderer].aoOnly = "FAIL";
-      failures.push(
-        `${renderer} ambientOcclusionOnly written after the first enabled ` +
-          `frame moved ${value}%, under the ${WHOLE_FRAME_MIN_MISMATCH_PCT}% ` +
-          `floor — the modulate pass returns the occlusion term in place of ` +
-          `the scene when it is set, so a frame with depth in it must change; ` +
-          `the runtime write is not reaching the pass, or the pass is not ` +
-          `reaching the canvas`,
-      );
-    } else {
-      status[renderer].aoOnly = "PASS";
-    }
-  }
-
-  // NUMERIC LEG — WebGL is the control that the chosen delta is visible at
-  // all. When it is under its floor, or when a backend's capture is not live,
-  // the number is reported UNREADABLE and not scored, because a saturated
-  // occlusion term produces the same zero as a dropped write.
-  const webglNumeric = pct("webgl", "numeric");
-  const webgpuNumeric = pct("webgpu", "numeric");
-  if (livenessDead.includes("webgl")) {
-    status.webgl.numeric = "UNREADABLE";
-    status.webgpu.numeric = "UNREADABLE";
-  } else if (webglNumeric < WEBGL_MIN_MISMATCH_PCT) {
-    status.webgl.numeric = "FAIL";
-    status.webgpu.numeric = "UNREADABLE";
-    failures.push(
-      `numeric control too weak: WebGL before/after is ${webglNumeric}%, ` +
-        `under the ${WEBGL_MIN_MISMATCH_PCT}% floor — the uniform delta is ` +
-        `not visible in this frame (probe defect, not a WebGPU result)`,
-    );
-  } else {
-    status.webgl.numeric = "PASS";
-    if (livenessDead.includes("webgpu")) {
-      status.webgpu.numeric = "UNREADABLE";
-    } else {
-      const webgpuFloor = Number(
-        (webglNumeric * WEBGPU_MIN_FRACTION_OF_WEBGL).toFixed(3),
-      );
-      if (webgpuNumeric < webgpuFloor) {
-        status.webgpu.numeric = "FAIL";
-        // Which of the two candidate causes this is, settled from this run's
-        // own measurement rather than assumed: a write that demonstrably
-        // reaches the canvas cannot also be a dropped write.
-        const cause =
-          status.webgpu.aoOnly === "PASS"
-            ? `a runtime write does reach the pass on this backend (AO ` +
-              `runtime reach ${pct("webgpu", "aoOnly")}%), so this zero is ` +
-              `the occlusion term saturating at this view scale — the HBAO ` +
-              `shader marches in pixels and falls off in metres off one ` +
-              `lengthCap — and not a propagation failure`
-            : `either the generation uniforms are not reaching the shader, ` +
-              `or the occlusion term is saturated at this view scale and no ` +
-              `configuration would change the frame`;
+    // CAPTURE LIVENESS — scored on both backends, and read first: every later
+    // clause on a backend is void without it.
+    const livenessDead = [];
+    for (const renderer of RENDERERS) {
+      const value = pct(renderer, "liveness");
+      if (value < WHOLE_FRAME_MIN_MISMATCH_PCT) {
+        livenessDead.push(renderer);
+        status[renderer].liveness = "FAIL";
         failures.push(
-          `WebGPU numeric before/after is ${webgpuNumeric}%, under ` +
-            `${webgpuFloor}% (${WEBGPU_MIN_FRACTION_OF_WEBGL} of the ` +
-            `control) — ${cause}`,
+          `${renderer} capture liveness is ${value}%, under the ` +
+            `${WHOLE_FRAME_MIN_MISMATCH_PCT}% floor — a ${LIVENESS_MOVE_METERS} m ` +
+            `camera move did not change the captured canvas, so nothing else ` +
+            `measured on this backend is readable`,
         );
       } else {
-        status.webgpu.numeric = "PASS";
+        status[renderer].liveness = "PASS";
       }
     }
-  }
 
-  // VERDICT — printed on every run, pass or fail. The exit code alone cannot
-  // say which clause moved, and the numeric row is expected to be red on
-  // today's engine, so the runtime-propagation question is answered by the AO
-  // RUNTIME REACH row and by nothing else here.
-  const row = (label, clause) =>
-    `  ${label.padEnd(17)} webgl ${status.webgl[clause]} ` +
-    `${pct("webgl", clause)}% / webgpu ${status.webgpu[clause]} ` +
-    `${pct("webgpu", clause)}%`;
-  console.log(`[probe-ao-runtime-config] VERDICT`);
-  console.log(row("capture liveness", "liveness"));
-  console.log(row("AO runtime reach", "aoOnly"));
-  console.log(row("numeric response", "numeric"));
-  console.log(
-    `  a runtime ambientOcclusionOnly write reaches the canvas: webgl ` +
-      `${status.webgl.aoOnly}, webgpu ${status.webgpu.aoOnly} — that is the ` +
-      `runtime-propagation result; the numeric row is a separate parity gap`,
-  );
+    // AO RUNTIME REACH — the clause this probe exists for, scored on both
+    // backends wherever the capture is live.
+    for (const renderer of RENDERERS) {
+      if (livenessDead.includes(renderer)) {
+        status[renderer].aoOnly = "UNREADABLE";
+        continue;
+      }
+      const value = pct(renderer, "aoOnly");
+      if (value < WHOLE_FRAME_MIN_MISMATCH_PCT) {
+        status[renderer].aoOnly = "FAIL";
+        failures.push(
+          `${renderer} ambientOcclusionOnly written after the first enabled ` +
+            `frame moved ${value}%, under the ${WHOLE_FRAME_MIN_MISMATCH_PCT}% ` +
+            `floor — the modulate pass returns the occlusion term in place of ` +
+            `the scene when it is set, so a frame with depth in it must change; ` +
+            `the runtime write is not reaching the pass, or the pass is not ` +
+            `reaching the canvas`,
+        );
+      } else {
+        status[renderer].aoOnly = "PASS";
+      }
+    }
 
-  if (failures.length) {
-    failures.forEach((reason) =>
-      console.error(`[probe-ao-runtime-config] FAIL: ${reason}`),
+    // NUMERIC LEG — WebGL is the control that the chosen delta is visible at
+    // all. When it is under its floor, or when a backend's capture is not live,
+    // the number is reported UNREADABLE and not scored, because a saturated
+    // occlusion term produces the same zero as a dropped write.
+    const webglNumeric = pct("webgl", "numeric");
+    const webgpuNumeric = pct("webgpu", "numeric");
+    if (livenessDead.includes("webgl")) {
+      status.webgl.numeric = "UNREADABLE";
+      status.webgpu.numeric = "UNREADABLE";
+    } else if (webglNumeric < WEBGL_MIN_MISMATCH_PCT) {
+      status.webgl.numeric = "FAIL";
+      status.webgpu.numeric = "UNREADABLE";
+      failures.push(
+        `numeric control too weak: WebGL before/after is ${webglNumeric}%, ` +
+          `under the ${WEBGL_MIN_MISMATCH_PCT}% floor — the uniform delta is ` +
+          `not visible in this frame (probe defect, not a WebGPU result)`,
+      );
+    } else {
+      status.webgl.numeric = "PASS";
+      if (livenessDead.includes("webgpu")) {
+        status.webgpu.numeric = "UNREADABLE";
+      } else {
+        const webgpuFloor = Number(
+          (webglNumeric * WEBGPU_MIN_FRACTION_OF_WEBGL).toFixed(3),
+        );
+        if (webgpuNumeric < webgpuFloor) {
+          status.webgpu.numeric = "FAIL";
+          // Which of the two candidate causes this is, settled from this run's
+          // own measurement rather than assumed: a write that demonstrably
+          // reaches the canvas cannot also be a dropped write.
+          const cause =
+            status.webgpu.aoOnly === "PASS"
+              ? `a runtime write does reach the pass on this backend (AO ` +
+                `runtime reach ${pct("webgpu", "aoOnly")}%), so this zero is ` +
+                `the occlusion term saturating at this view scale — the HBAO ` +
+                `shader marches in pixels and falls off in metres off one ` +
+                `lengthCap — and not a propagation failure`
+              : `either the generation uniforms are not reaching the shader, ` +
+                `or the occlusion term is saturated at this view scale and no ` +
+                `configuration would change the frame`;
+          failures.push(
+            `WebGPU numeric before/after is ${webgpuNumeric}%, under ` +
+              `${webgpuFloor}% (${WEBGPU_MIN_FRACTION_OF_WEBGL} of the ` +
+              `control) — ${cause}`,
+          );
+        } else {
+          status.webgpu.numeric = "PASS";
+        }
+      }
+    }
+
+    // VERDICT — printed on every run, pass or fail. The exit code alone cannot
+    // say which clause moved, and the numeric row is expected to be red on
+    // today's engine, so the runtime-propagation question is answered by the AO
+    // RUNTIME REACH row and by nothing else here.
+    const row = (label, clause) =>
+      `  ${label.padEnd(17)} webgl ${status.webgl[clause]} ` +
+      `${pct("webgl", clause)}% / webgpu ${status.webgpu[clause]} ` +
+      `${pct("webgpu", clause)}%`;
+    console.log(`[probe-ao-runtime-config] VERDICT`);
+    console.log(row("capture liveness", "liveness"));
+    console.log(row("AO runtime reach", "aoOnly"));
+    console.log(row("numeric response", "numeric"));
+    console.log(
+      `  a runtime ambientOcclusionOnly write reaches the canvas: webgl ` +
+        `${status.webgl.aoOnly}, webgpu ${status.webgpu.aoOnly} — that is the ` +
+        `runtime-propagation result; the numeric row is a separate parity gap`,
     );
-    process.exitCode = 1;
-    return;
+
+    if (failures.length) {
+      failures.forEach((reason) =>
+        console.error(`[probe-ao-runtime-config] FAIL: ${reason}`),
+      );
+      process.exitCode = 1;
+      return;
+    }
+    console.log(
+      `[probe-ao-runtime-config] PASS: both backends' captures are live and ` +
+        `both take a runtime ambientOcclusionOnly write to the canvas.`,
+    );
+  } finally {
+    clearTimeout(watchdog);
   }
-  console.log(
-    `[probe-ao-runtime-config] PASS: both backends' captures are live and ` +
-      `both take a runtime ambientOcclusionOnly write to the canvas.`,
-  );
 })();

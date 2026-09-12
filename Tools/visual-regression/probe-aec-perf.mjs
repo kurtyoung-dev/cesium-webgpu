@@ -1932,12 +1932,25 @@ function isMainModule() {
   return pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
 }
 
+const WATCHDOG_MS = 900_000;
+
 if (isMainModule()) {
+  // The load-bearing half of the probe contract: a run that hangs — a trace
+  // stream that never reaches eof, a page that never reports ready — ends here
+  // instead of occupying the single Edge slot indefinitely.
+  const watchdog = setTimeout(() => {
+    console.error(
+      `[probe-aec-perf] WATCHDOG: no result after ${WATCHDOG_MS} ms; ending the run`,
+    );
+    process.exit(EXIT_CODES.ERROR);
+  }, WATCHDOG_MS);
   main()
     .then((exitCode) => {
+      clearTimeout(watchdog);
       process.exitCode = exitCode;
     })
     .catch((error) => {
+      clearTimeout(watchdog);
       const refusal =
         error instanceof RefusalError ||
         error?.name === "OriginRewriteRefusal" ||

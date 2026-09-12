@@ -65,6 +65,10 @@ const DEFAULTS = Object.freeze({
   loadDeadlineMs: 120_000,
 });
 
+// A 90 s settle deadline on each of two renderer legs, plus launch and
+// capture overhead. Past this the run is hung, not slow.
+const WATCHDOG_MS = 600_000;
+
 const HARNESS_PATH = "/q141-pick-readback-harness.html";
 const HARNESS_HTML = `<!doctype html>
 <html><head><meta charset="utf-8">
@@ -496,5 +500,18 @@ if (
   process.argv[1] &&
   fileURLToPath(import.meta.url) === path.resolve(process.argv[1])
 ) {
-  await main();
+  // A pick that never returns leaves the page waiting forever, and the run
+  // holds the single Edge slot with it. The timer is the only thing that ends
+  // that, so it is set before the browser legs and cleared once they settle.
+  const watchdog = setTimeout(() => {
+    console.error(
+      `[probe-q141-pick-readback] WATCHDOG: no result after ${WATCHDOG_MS} ms; ending the run`,
+    );
+    process.exit(1);
+  }, WATCHDOG_MS);
+  try {
+    await main();
+  } finally {
+    clearTimeout(watchdog);
+  }
 }

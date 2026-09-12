@@ -101,6 +101,16 @@ export function globMatches(glob, candidate) {
   return globToRegExp(glob).test(normalizeSlashes(candidate));
 }
 
+// Quarantine is a NAMING convention on the runner script, not a fixed list of
+// script names: any runner whose name ends in "-quarantine" is a parking home
+// that deliberately sits outside every aggregate. Keeping this as a suffix
+// predicate (rather than hard-coding e.g. "test-cloud-c13-quarantine") means a
+// second quarantine lane is recognized automatically instead of silently
+// falling through as an ordinary, all-clear "homed" runner.
+export function isQuarantineRunner(name) {
+  return typeof name === "string" && name.endsWith("-quarantine");
+}
+
 function tokenizeCommand(command) {
   const tokens = [];
   let value = "";
@@ -536,16 +546,29 @@ export function runCensus({
       .map((runner) => runner.name)
       .sort();
 
-    return { file, runners };
+    // Quarantined means EVERY home is a quarantine runner. A spec homed by a
+    // quarantine runner AND a normal one is genuinely homed, not quarantined
+    // - only the "quarantine is its sole shelter" case is the laundering risk
+    // this field exists to catch. An orphan (runners.length === 0) is never
+    // quarantined either: "quarantined" is strictly a subset of "homed".
+    const quarantined =
+      runners.length > 0 && runners.every((name) => isQuarantineRunner(name));
+
+    return { file, runners, quarantined };
   });
 
   const orphanFiles = specs
     .filter((spec) => spec.runners.length === 0)
     .map((spec) => spec.file);
+  const quarantinedCount = specs.filter((spec) => spec.quarantined).length;
 
   const summary = {
     totalSpecs: specs.length,
     homed: specs.length - orphanFiles.length,
+    // Subset of `homed` (see the per-spec comment above) - does not change
+    // the homed/orphaned arithmetic, so `homed + orphaned === totalSpecs`
+    // still holds exactly as before this field existed.
+    quarantined: quarantinedCount,
     orphaned: orphanFiles.length,
   };
 
@@ -563,9 +586,17 @@ export function runCensus({
 export function formatCensus(result) {
   const specHeading = "SPEC FILE";
   const runnerHeading = "RUNNER SCRIPT(S)";
+  const quarantineHeading = "QUARANTINE";
+  // The seat's whole point: "0 quarantined" must be indistinguishable from
+  // "no quarantine feature" in the byte stream, but any non-zero count must
+  // be impossible to miss - never a bare, laundered "orphaned 0". So the
+  // extra column and summary clause exist ONLY when there is something to
+  // report; at zero this function reproduces today's exact output.
+  const hasQuarantine = result.summary.quarantined > 0;
   const renderedRows = result.specs.map((spec) => ({
     file: spec.file,
     runners: spec.runners.length > 0 ? spec.runners.join(", ") : "NONE",
+    quarantine: spec.quarantined ? "quarantine" : "",
   }));
 
   const specWidth = Math.max(
@@ -576,16 +607,40 @@ export function formatCensus(result) {
     runnerHeading.length,
     ...renderedRows.map((row) => row.runners.length),
   );
+  const quarantineWidth = Math.max(
+    quarantineHeading.length,
+    ...renderedRows.map((row) => row.quarantine.length),
+  );
+
+  const headerCells = [
+    specHeading.padEnd(specWidth),
+    runnerHeading.padEnd(runnerWidth),
+  ];
+  const separatorCells = ["-".repeat(specWidth), "-".repeat(runnerWidth)];
+  if (hasQuarantine) {
+    headerCells.push(quarantineHeading.padEnd(quarantineWidth));
+    separatorCells.push("-".repeat(quarantineWidth));
+  }
+
+  const summaryQuarantineClause = hasQuarantine
+    ? ` (${result.summary.quarantined} quarantined)`
+    : "";
 
   const lines = [
-    `${specHeading.padEnd(specWidth)}  ${runnerHeading.padEnd(runnerWidth)}`,
-    `${"-".repeat(specWidth)}  ${"-".repeat(runnerWidth)}`,
-    ...renderedRows.map(
-      (row) =>
-        `${row.file.padEnd(specWidth)}  ${row.runners.padEnd(runnerWidth)}`,
-    ),
+    headerCells.join("  "),
+    separatorCells.join("  "),
+    ...renderedRows.map((row) => {
+      const cells = [
+        row.file.padEnd(specWidth),
+        row.runners.padEnd(runnerWidth),
+      ];
+      if (hasQuarantine) {
+        cells.push(row.quarantine.padEnd(quarantineWidth));
+      }
+      return cells.join("  ");
+    }),
     "",
-    `Summary: total specs ${result.summary.totalSpecs}, homed ${result.summary.homed}, orphaned ${result.summary.orphaned}`,
+    `Summary: total specs ${result.summary.totalSpecs}, homed ${result.summary.homed}${summaryQuarantineClause}, orphaned ${result.summary.orphaned}`,
     "",
     "Proposed homes for orphans:",
   ];

@@ -931,7 +931,7 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
   "probe-sandcastle2-ports.mjs":
     "no watchdog — added 2026-07-11, pre-dates the spec",
   "probe-sandcastle2-webgpu-start.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-06, pre-dates the spec",
+    "no watchdog — added 2026-07-06, pre-dates the spec; close clause corrected 2026-09-12, repaired in Batch 1307",
   "probe-saved-view.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-16, pre-dates the spec",
   "probe-scene-capture-cardinal.mjs":
