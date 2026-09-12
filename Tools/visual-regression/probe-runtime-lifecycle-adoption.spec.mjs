@@ -39,11 +39,15 @@
 //      said work is "drained before the browser is closed", which is the
 //      opposite of what the code does. The limits are asserted, not just the
 //      guarantees, so the corrected prose cannot quietly rot back;
-//   G. a CHARACTERIZATION of one hole the lane did NOT fix — a malformed
-//      `operationOptions` drops the work and the run reports SUCCESS. Group G
-//      asserts behaviour the lane does not want, so the hole is visible in a
-//      green suite rather than silent. Found in the fifth adversarial round;
-//      filed as `C13-42a-3` item 8. INVERT GROUP G when item 8 is fixed.
+//   G. a malformed third argument to `scope.run` is REPORTED — the work it
+//      drops costs the run its receipt instead of being published over. The
+//      hole (the run exited 0 over work that never ran) was found in the
+//      fifth adversarial round and filed as `C13-42a-3` item 8; group G
+//      characterized it until the item was closed on 2026-09-12, and was
+//      inverted then, as its header required;
+//   H. the descriptor scope's `checkpoint` is the LIFECYCLE's checkpoint and
+//      not a look-alike — the member a probe calls to abandon its own work
+//      early really does observe cancellation.
 //
 // MUTANTS. Every group that claims something is live re-imports the module
 // through a source mutation that makes the mechanism UNREACHABLE while leaving
@@ -82,7 +86,10 @@ import {
   RUN_SETTLEMENT_MARGIN_MS,
   runDescriptorUnderLifecycle,
 } from "./lib/probe-lifecycle-run.mjs";
-import { makeWorkRegistry } from "./lib/probe-work-registry.mjs";
+import {
+  closeBrowserAfter,
+  makeWorkRegistry,
+} from "./lib/probe-work-registry.mjs";
 import { PROBE_EXIT_CODES, runProbe } from "./lib/probe-runtime.mjs";
 import {
   appendC13_42ServedResponse,
@@ -94,6 +101,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const RUNTIME_PATH = path.join(HERE, "lib", "probe-runtime.mjs");
 const LIFECYCLE_PATH = path.join(HERE, "lib", "probe-lifecycle.mjs");
 const LIFECYCLE_RUN_PATH = path.join(HERE, "lib", "probe-lifecycle-run.mjs");
+const WORK_REGISTRY_PATH = path.join(HERE, "lib", "probe-work-registry.mjs");
 const SLOT_PATH = path.join(HERE, "lib", "probe-edge-slot.mjs");
 const C13_42_PROBE_PATH = path.join(HERE, "probe-c13-42-reported-demos.mjs");
 const SLOT_LOCK_RELATIVE = path.join(
@@ -842,8 +850,8 @@ test("D. the response cap comes from the landed apparatus", async (t) => {
     async () => {
       const mutated = await importMutated(C13_42_PROBE_PATH, [
         [
-          "if (responses.length >= cap) return url;",
-          "if (false && responses.length >= cap) return url;",
+          "const overflowing = responses.length >= cap;",
+          "const overflowing = false && responses.length >= cap;",
         ],
       ]);
       const cap = servedResponseBudgetFor(subjects[0]);
@@ -881,6 +889,77 @@ test("D. the response cap comes from the landed apparatus", async (t) => {
       "a surviving module constant is a second cap that a raise would not reach",
     );
   });
+
+  // C13-42b. The bound is enforced correctly; what was wrong is the COUNT the
+  // enforcement reports. `seenUrls` was written only on the retaining path, so
+  // a url seen twice past the bound was reported twice, and the banked figures
+  // (125, 58, 12 on 2026-09-09) are sighting counts standing in for distinct
+  // urls. The pair below pins the corrected polarity and proves the hoist is
+  // what produces it.
+  const driveOverflow = (append, cap, sightings) => {
+    const origins = new Set(["http://localhost:8094"]);
+    const url = (index) =>
+      `http://localhost:8094/Build/CesiumUnminified/chunk-${index}.js`;
+    const responses = [];
+    const seen = new Set();
+    for (let index = 0; index < cap; index++) {
+      append(responses, seen, { url: () => url(index) }, origins, cap);
+    }
+    const reported = [];
+    for (let sighting = 0; sighting < sightings; sighting++) {
+      const overflow = append(
+        responses,
+        seen,
+        { url: () => url(cap) },
+        origins,
+        cap,
+      );
+      if (overflow !== null) {
+        reported.push(overflow);
+      }
+    }
+    return { reported, retained: responses.length, expected: url(cap) };
+  };
+
+  await t.test(
+    "C13-42b: one url past the bound is reported once however often it is seen",
+    () => {
+      // Playwright emits one `response` event per response, and a page that
+      // re-requests an asset — a redirect chain, a revalidation, a second
+      // navigation — emits the same url again. Past the bound that is ONE
+      // distinct overflowing url, however many sightings it makes.
+      const cap = servedResponseBudgetFor(subjects[0]);
+      const run = driveOverflow(appendC13_42ServedResponse, cap, 5);
+      assert.deepEqual(
+        run.reported,
+        [run.expected],
+        "five sightings of one url past the bound are one overflowing url",
+      );
+      assert.equal(run.retained, cap, "and none of the sightings is retained");
+    },
+  );
+
+  await t.test(
+    "INERTNESS: recorded only on retention, the same url is reported five times",
+    async () => {
+      // The fix is the hoist. Putting the record back after the cap return
+      // makes it unreachable for an overflowing url, which is this defect's
+      // inertness form — the assertion above must not survive it.
+      const mutated = await importMutated(C13_42_PROBE_PATH, [
+        [
+          "const overflowing = responses.length >= cap;\n  seenUrls.add(url);\n  if (overflowing) return url;",
+          "const overflowing = responses.length >= cap;\n  if (overflowing) return url;\n  seenUrls.add(url);",
+        ],
+      ]);
+      const cap = servedResponseBudgetFor(subjects[0]);
+      const run = driveOverflow(mutated.appendC13_42ServedResponse, cap, 5);
+      assert.equal(
+        run.reported.length,
+        5,
+        "the mutant must report every sighting — otherwise the live assertion proves nothing",
+      );
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1525,37 +1604,52 @@ test("F. the work registry's real guarantee, and its real limit", async (t) => {
 });
 
 // ---------------------------------------------------------------------------
-// G. CHARACTERIZATION of a known hole — a dropped registration reports success
+// G. A dropped registration is reported, not published over
 // ---------------------------------------------------------------------------
 //
-// WHAT THIS GROUP IS, AND WHY IT PASSES. Everything above asserts behaviour the
-// lane wants. This group asserts behaviour the lane does NOT want and did not
-// fix: a malformed `operationOptions` argument to `scope.run` settles the
-// attempt `not-started`, `closeBrowserAfter` filters on `status === "rejected"`
-// and cannot see it, and the run writes a full receipt and exits 0 over work
-// that never ran. Found by adversarial verification (Ciryaher, 2026-09-12,
-// fifth round) and filed as `C13-42a-3` item 8.
+// WHAT THIS GROUP PINS. A malformed third argument to `scope.run` — a
+// non-function `abort`, or a `null` where the options object belongs — rejects
+// inside `slotScope.run` before the work is ever entered. The registry records
+// that rejection on a record that settles `not-started`, and the close-time
+// drain must COLLECT it: the run costs itself its receipt rather than
+// publishing a clean measurement over work that never ran.
 //
-// It is pinned rather than merely filed because a silent false-success is
-// exactly what `probe-runtime.mjs`'s header opens by forbidding, and a hole
-// nothing asserts is a hole a green suite hides. The asymmetry test below is
-// the diagnosis, not decoration: a bad `start` IS reported, because the guard
-// never sees it and the bad value fails inside the work instead.
+// WHAT IT WAS UNTIL 2026-09-12, KEPT BECAUSE THE DIAGNOSIS IS THE CONTRACT.
+// `closeBrowserAfter` collected `workOutcomes.filter(o => o.status ===
+// "rejected")`, which cannot see a `not-started` record EVEN WHEN IT CARRIES A
+// FAILURE REASON, so both triggers exited 0 with a full receipt over work that
+// never ran. Found by adversarial verification (Ciryaher, 2026-09-12, fifth
+// round), filed as `C13-42a-3` item 8, and pinned here as a CHARACTERIZATION —
+// the group asserted the defect, so a green suite could not hide it — under a
+// header requiring whoever fixed the item to INVERT the group. Item 8 was
+// closed the same day (`carriedFailure` in `probe-work-registry.mjs`: collect
+// on "carries a failure", not on status) and the group was inverted, as that
+// header promised. The history stays because the next reader of the drain
+// needs to know which predicate it is not allowed to drift back to.
 //
-// **WHOEVER FIXES ITEM 8 MUST INVERT THIS GROUP.** G going red is the signal
-// the fix landed, not a regression — the same contract F4 and F5 carry.
+// THE TWO TRIGGERS STAY SEPARATE SUB-TESTS. They reach the same terminal state
+// by different lines — the `abort` guard, and the property access one line
+// above it that a `null` dies on — so a fix that closed only one of them would
+// pass a merged test.
 
-test("G. characterization: a dropped registration is not reported", async (t) => {
+test("G. a dropped registration is reported", async (t) => {
   /**
    * Run one declaring descriptor whose `cells` makes a single `scope.run` call.
    *
    * @param {string} root Repository root for the run.
    * @param {string} name Probe name.
    * @param {Function} call Receives the scope; makes the call under test.
+   * @param {object} [options] Options.
+   * @param {Function} [options.runProbeImpl] Runtime under test.
    * @returns {Promise<object>} Exit code, artifacts, and whether the label appears in any of them.
    */
-  const runOneCall = async (root, name, call) => {
-    const exitCode = await runProbe(
+  const runOneCall = async (
+    root,
+    name,
+    call,
+    { runProbeImpl = runProbe } = {},
+  ) => {
+    const exitCode = await runProbeImpl(
       {
         name,
         workBudgetMs: () => 30_000,
@@ -1602,7 +1696,7 @@ test("G. characterization: a dropped registration is not reported", async (t) =>
   );
 
   await t.test(
-    "THE HOLE: a non-function `abort` drops the work and the run reports success",
+    "THE CONTRACT: a non-function `abort` costs the run its receipt",
     () =>
       withLaneTmp("adoption-g-abort-", async (root) => {
         const result = await runOneCall(root, "g-abort", (scope) =>
@@ -1610,107 +1704,395 @@ test("G. characterization: a dropped registration is not reported", async (t) =>
             abort: "not-a-function",
           }),
         );
-        // Asserting the DEFECT. See the group header and `C13-42a-3` item 8.
-        assert.equal(
-          result.exitCode,
-          PROBE_EXIT_CODES.OK,
-          "characterization: today this exits 0 — invert this when item 8 is fixed",
-        );
-        assert.deepEqual(result.files, [
-          "g-abort-report.json",
-          "g-abort-runtime.json",
-          "g-abort-summary.md",
-        ]);
+        assert.equal(result.exitCode, PROBE_EXIT_CODES.ERROR);
+        assert.deepEqual(result.files, ["g-abort-error.json"]);
+        // Measured, not assumed. The label reaches the incident on THIS
+        // trigger only because the guard's own TypeError message opens with it
+        // ("readback abort must be a function"). What the incident records is
+        // the raw error, not the `<label> wrapper` the drain collected — see
+        // the `null` trigger below, where the same assertion is false.
         assert.equal(
           result.named,
-          false,
-          "characterization: the dropped work is named in no artifact at all",
+          true,
+          "the dropped work must be identifiable in the incident",
         );
       }),
   );
 
   await t.test(
-    "THE HOLE, second trigger: a `null` third argument does the same by a different line",
+    "THE CONTRACT, second trigger: a `null` third argument is reported too",
     () =>
       withLaneTmp("adoption-g-null-", async (root) => {
         // `operationOptions = {}` defaults only for `undefined`, so `null`
         // throws at the property access BEFORE the guard the first trigger
-        // hits. Same symptom, different line — which is why item 8 is titled
-        // "third argument" and why hardening only the `abort` guard would
-        // close one of the two.
+        // hits. Same terminal state, different line — which is why item 8 is
+        // titled "third argument", why hardening only the `abort` guard would
+        // have closed one of the two, and why the fix went into the DRAIN,
+        // where both converge, rather than into either guard.
         const result = await runOneCall(root, "g-null", (scope) =>
           scope.run("readback", async () => "value", null),
         );
-        assert.equal(result.exitCode, PROBE_EXIT_CODES.OK);
-        assert.deepEqual(result.files, [
-          "g-null-report.json",
-          "g-null-runtime.json",
-          "g-null-summary.md",
-        ]);
-        assert.equal(result.named, false);
+        assert.equal(result.exitCode, PROBE_EXIT_CODES.ERROR);
+        assert.deepEqual(result.files, ["g-null-error.json"]);
+        // A RESIDUAL, MEASURED AND ASSERTED RATHER THAN GLOSSED: the run is
+        // reported, but the dropped work is named NOWHERE in it. The incident
+        // carries the raw error, which on this trigger is Cannot read
+        // properties of null (reading abort) — thrown by the property access,
+        // carrying no label. The failure the drain collected does carry
+        // `readback wrapper`, but nothing projects that label into an artifact
+        // here. Closing that is a change to what the incident record projects,
+        // not to the drain, so it is asserted as it is rather than wished
+        // otherwise.
+        assert.equal(
+          result.named,
+          false,
+          "measured residual: on this trigger the label reaches no artifact",
+        );
       }),
   );
 
   await t.test(
-    "the MECHANISM, not just the symptom: a not-started record carrying a failure is not surfaced",
-    () => {
-      // Symptom-only characterization would survive a mechanism change that
-      // kept the exit code. This reaches the registry directly and pins WHY:
-      // the record settles `not-started` while carrying a failure reason, and
-      // `closeBrowserAfter` filters on `status === "rejected"`, so it cannot
-      // see it. Adversarial verification asked for this anchor by name.
-      const registry = makeWorkRegistry();
-      const record = registry.enroll("readback");
-      record.attachWrapper();
-      const settled = record.finishNotStarted({
-        occurred: true,
-        occurrence: 1,
-        label: "readback registration",
-        raw: new Error("abort must be a function"),
-      });
-      assert.equal(settled, true);
+    "the MECHANISM, not just the symptom: the drain collects on the failure, not on the status",
+    async () => {
+      // A symptom-only assertion would survive a mechanism change that kept
+      // the exit code, and a spec that re-implements the predicate inline
+      // proves nothing about the one that shipped. So this drives the SHIPPED
+      // `closeBrowserAfter` over a registry built by hand, with a fulfilled
+      // attempt and a browser that closes cleanly, leaving what the drain
+      // collects as the only thing under test.
+      const drain = async (reason) => {
+        const registry = makeWorkRegistry();
+        const record = registry.enroll("readback");
+        record.attachWrapper();
+        assert.equal(record.finishNotStarted(reason), true);
+        assert.equal(
+          record.terminal.status,
+          "not-started",
+          "the terminal state the old status filter could not see",
+        );
+        try {
+          await closeBrowserAfter(
+            Promise.resolve(Object.freeze({ status: "fulfilled" })),
+            registry.settleAndSeal(),
+            fakeBrowser(),
+          );
+          return "collected nothing";
+        } catch (error) {
+          return `surfaced: ${error.message}`;
+        }
+      };
+
       assert.equal(
-        record.terminal.status,
-        "not-started",
-        "the terminal state that `closeBrowserAfter`'s status filter cannot see",
+        await drain({
+          occurred: true,
+          occurrence: 1,
+          label: "readback wrapper",
+          raw: new TypeError("readback abort must be a function"),
+        }),
+        "surfaced: readback abort must be a function",
+        "a not-started record CARRYING a failure must reach the drain",
       );
-      assert.ok(
-        record.terminal.reason?.occurred,
-        "and it carries a failure reason, which is what makes the silence a defect rather than a design",
-      );
-      // The filter itself, quoted from `closeBrowserAfter`. Invert this with
-      // item 8: the fix is to collect on "carries a failure", not on status.
+      // The other half of the predicate, and the reason it is not simply
+      // "status !== fulfilled": `probe-lifecycle-run.mjs` settles the ordinary
+      // not-started records with a plain STRING reason, on every healthy run.
+      // Were those collected too, every green run in this file would fail.
       assert.equal(
-        [record.terminal].filter((outcome) => outcome.status === "rejected")
-          .length,
-        0,
-        "characterization: today the drain collects nothing for this record",
+        await drain("resource use was not started"),
+        "collected nothing",
+        "an ordinary not-started record must stay silent",
       );
     },
   );
 
-  await t.test("the asymmetry is in the registration, not in the work", () =>
-    withLaneTmp("adoption-g-asym-", async (root) => {
-      const start = await runOneCall(root, "g-asym-start", (scope) =>
-        scope.run("readback", "not-a-function"),
+  await t.test(
+    "BOTH HALVES: the attempt outcome reads the same predicate as the work outcomes",
+    async () => {
+      // Review finding F5. `closeBrowserAfter` has two collectors, and until
+      // this sub-test existed only one of them had been moved off the status
+      // test item 8 removed. The attempt is registered through the same
+      // `registerObservedRun`, so its pre-start-cancellation path settles it
+      // `not-started` carrying a real `sourceFailure` too.
+      //
+      // WHAT IS OBSERVABLE, and it is not 'one more failure is reported'. The
+      // attempt's failure is the run's PRIMARY — `probe-lifecycle-run.mjs`
+      // rethrows it as `runFailure` — so the drain's job is to recognise it
+      // and NOT re-throw it as a secondary. A primary the filter cannot see is
+      // a primary reported twice, which is the one thing this module's header
+      // says the two-promises-per-attempt design exists to prevent.
+      const drainWithAttempt = async (
+        attemptOutcome,
+        workReason,
+        drainImpl,
+      ) => {
+        const registry = makeWorkRegistry();
+        const record = registry.enroll("readback");
+        record.attachWrapper();
+        record.finishNotStarted(workReason);
+        try {
+          await drainImpl(
+            Promise.resolve(attemptOutcome),
+            registry.settleAndSeal(),
+            fakeBrowser(),
+          );
+          return "collected nothing";
+        } catch (error) {
+          return `surfaced: ${error.message}`;
+        }
+      };
+      // ONE occurrence, reaching the drain through BOTH halves — the shape the
+      // propagated-failure path produces.
+      const shared = Object.freeze({
+        occurred: true,
+        occurrence: 1,
+        label: "attempt wrapper",
+        raw: new TypeError("abort must be a function"),
+      });
+      const notStartedAttempt = Object.freeze({
+        status: "not-started",
+        reason: shared,
+      });
+
+      assert.equal(
+        await drainWithAttempt(notStartedAttempt, shared, closeBrowserAfter),
+        "collected nothing",
+        "a not-started attempt carrying a failure IS the primary, and a primary is not re-thrown as a secondary",
       );
-      const abort = await runOneCall(root, "g-asym-abort", (scope) =>
-        scope.run("readback", async () => "value", {
-          abort: "not-a-function",
-        }),
+      // The healthy shape stays untouched: an ordinary not-started attempt
+      // carries a plain string, is no primary, and must not swallow real work
+      // failures behind it.
+      assert.equal(
+        await drainWithAttempt(
+          Object.freeze({
+            status: "not-started",
+            reason: "resource use was not started",
+          }),
+          Object.freeze({
+            occurred: true,
+            occurrence: 2,
+            label: "readback wrapper",
+            raw: new Error("readback failed"),
+          }),
+          closeBrowserAfter,
+        ),
+        "surfaced: readback failed",
+        "an ordinary not-started attempt must not be mistaken for a primary",
       );
-      // Same class of caller error, opposite outcomes. That contrast IS the
-      // diagnosis: `registerObservedRun` passes its own wrapper as `start`,
-      // so a bad `start` fails inside the work where `record.reject` sets
-      // status `rejected`; a bad `abort` fails in the registration, settles
-      // `not-started`, and `closeBrowserAfter`'s status filter cannot see it.
-      assert.notEqual(
-        start.exitCode,
-        abort.exitCode,
-        "if these ever agree, item 8 has been fixed or has regressed further — read the row",
+
+      // INERTNESS: put the attempt half back on the status test. One level —
+      // this sub-test calls `closeBrowserAfter` directly.
+      const mutated = await importMutated(WORK_REGISTRY_PATH, [
+        [
+          "const attemptFailure = carriedFailure(attemptOutcome);",
+          'const attemptFailure = attemptOutcome.status === "rejected" ? attemptOutcome.failure : undefined;',
+        ],
+      ]);
+      assert.equal(
+        await drainWithAttempt(
+          notStartedAttempt,
+          shared,
+          mutated.closeBrowserAfter,
+        ),
+        "surfaced: abort must be a function",
+        "the status-only mutant must re-throw the primary — otherwise the assertion above proves nothing",
       );
-      assert.equal(start.exitCode, PROBE_EXIT_CODES.ERROR);
-      assert.equal(abort.exitCode, PROBE_EXIT_CODES.OK);
-    }),
+    },
+  );
+
+  await t.test(
+    "INERTNESS: with the drain's failure collection unreachable, the run reports success again",
+    () =>
+      withLaneTmp("adoption-g-inert-", async (root) => {
+        // Three levels, for the same reason the F1 mutant needs two: the
+        // runtime imports the lifecycle body, which imports the registry. The
+        // mutation leaves the shipped predicate's text in place and makes its
+        // `not-started` half unreachable, which is precisely the pre-fix
+        // behaviour — so if this went green, the sub-tests above would be
+        // passing for some other reason than the fix.
+        const inertRegistry = mutatedSourceUrl(WORK_REGISTRY_PATH, [
+          [
+            'outcome.status === "rejected" ? outcome.failure : outcome.reason;',
+            'outcome.status === "rejected" ? outcome.failure : false && outcome.reason;',
+          ],
+        ]);
+        const inertRun = mutatedSourceUrl(LIFECYCLE_RUN_PATH, [
+          [
+            `from "${moduleBaseUrl(LIFECYCLE_RUN_PATH)}probe-work-registry.mjs"`,
+            `from "${inertRegistry}"`,
+          ],
+        ]);
+        const mutated = await importMutated(RUNTIME_PATH, [
+          [
+            `from "${moduleBaseUrl(RUNTIME_PATH)}probe-lifecycle-run.mjs"`,
+            `from "${inertRun}"`,
+          ],
+        ]);
+        const result = await runOneCall(
+          root,
+          "g-inert",
+          (scope) =>
+            scope.run("readback", async () => "value", {
+              abort: "not-a-function",
+            }),
+          { runProbeImpl: mutated.runProbe },
+        );
+        assert.equal(
+          result.exitCode,
+          PROBE_EXIT_CODES.OK,
+          "the mutant must let the dropped work go unnoticed — otherwise the contract above proves nothing",
+        );
+        assert.deepEqual(result.files, [
+          "g-inert-report.json",
+          "g-inert-runtime.json",
+          "g-inert-summary.md",
+        ]);
+      }),
+  );
+
+  await t.test(
+    "the registration and the work now converge on the same outcome",
+    () =>
+      withLaneTmp("adoption-g-converge-", async (root) => {
+        const start = await runOneCall(root, "g-converge-start", (scope) =>
+          scope.run("readback", "not-a-function"),
+        );
+        const abort = await runOneCall(root, "g-converge-abort", (scope) =>
+          scope.run("readback", async () => "value", {
+            abort: "not-a-function",
+          }),
+        );
+        // Two caller errors of the same class that used to have OPPOSITE
+        // outcomes, and that contrast was the diagnosis: a bad `start` fails
+        // inside the work, where `record.reject` sets status `rejected`; a bad
+        // `abort` fails in the registration, settles `not-started`, and the
+        // old status filter could not see it. Agreement is the correct outcome
+        // now precisely because the drain no longer asks which of the two
+        // terminal states a record reached — only whether it carries a
+        // failure. If these ever diverge again, the drain has regressed to a
+        // status test.
+        assert.equal(
+          start.exitCode,
+          abort.exitCode,
+          "the drain must not care which terminal state carried the failure",
+        );
+        assert.equal(start.exitCode, PROBE_EXIT_CODES.ERROR);
+        assert.equal(abort.exitCode, PROBE_EXIT_CODES.ERROR);
+      }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// H. The descriptor scope's `checkpoint` is the lifecycle's, not a look-alike
+// ---------------------------------------------------------------------------
+//
+// `makeDescriptorScope` forwards `checkpoint` to the probe, and that member is
+// how a probe abandons its own work the moment the run is no longer wanted. A
+// forwarding replaced by a no-op would satisfy every shape check — the member
+// exists, it is a function, it returns undefined while the run is healthy — and
+// would silently let a cancelled run keep working. An identity assertion would
+// not help: it pins which object a property points at, which is not the thing
+// that has to be true. So the forwarding is pinned through the BEHAVIOUR it
+// must produce, from inside `cells`: the same call returns while the lifecycle
+// is ACTIVE and throws once the orderly deadline has moved it to draining.
+
+test("H. the descriptor scope forwards the live checkpoint", async (t) => {
+  /**
+   * Call `scope.checkpoint` from inside `cells` twice — once while the run is
+   * healthy, once after the orderly deadline has fired — and report what each
+   * call did.
+   *
+   * @param {string} root Repository root for the run.
+   * @param {object} [options] Options.
+   * @param {Function} [options.runProbeImpl] Runtime under test.
+   * @returns {Promise<string[]>} The two observations, in order.
+   */
+  const observeCheckpoint = async (root, { runProbeImpl = runProbe } = {}) => {
+    let release;
+    const observations = [];
+    const observe = (scope) => {
+      try {
+        scope.checkpoint();
+        return "returned";
+      } catch (error) {
+        return `threw: ${error.message}`;
+      }
+    };
+    const descriptor = {
+      name: "checkpoint-forwarding",
+      workBudgetMs: () => 5_000,
+      async cells(context) {
+        observations.push(observe(context.scope));
+        // Work only the orderly stop can end. Awaiting it is what puts the
+        // second observation after cancellation without the test having to
+        // time anything: the stop aborts the operation, the await settles, and
+        // only then is `checkpoint` called again.
+        await context.scope
+          .run("work", () => new Promise((resolve) => (release = resolve)), {
+            abort: () => release?.(undefined),
+          })
+          .then(
+            () => undefined,
+            () => undefined,
+          );
+        observations.push(observe(context.scope));
+        return [{ ok: true }];
+      },
+      receipt: (cells) => ({ cells }),
+    };
+    const deadlineMs = deriveLifecycleDeadline(
+      { runs: 1, timeoutMs: 120_000 },
+      descriptor,
+    );
+    await runProbeImpl(descriptor, {
+      argv: ["--no-serve-built", "--repository-root", root],
+      launch: async () => fakeBrowser(),
+      lifecycleDependencies: {
+        // Only the orderly timer is shortened, as in group B.
+        setTimeout(callback, delay) {
+          return setTimeout(callback, delay === deadlineMs ? 0 : delay);
+        },
+        clearTimeout,
+        exit: () => {},
+        writeDiagnostic: () => {},
+      },
+    });
+    return observations;
+  };
+
+  await t.test(
+    "THE CONTRACT: the forwarded checkpoint returns while ACTIVE and throws once the run is cancelled",
+    () =>
+      withLaneTmp("adoption-h-checkpoint-", async (root) => {
+        assert.deepEqual(await observeCheckpoint(root), [
+          "returned",
+          "threw: probe lifecycle is draining",
+        ]);
+      }),
+  );
+
+  await t.test(
+    "INERTNESS: with the forwarding replaced by a no-op, the cancelled run never notices",
+    () =>
+      withLaneTmp("adoption-h-checkpoint-inert-", async (root) => {
+        const inertRegistry = mutatedSourceUrl(WORK_REGISTRY_PATH, [
+          ["checkpoint: slotScope.checkpoint,", "checkpoint: () => {},"],
+        ]);
+        const inertRun = mutatedSourceUrl(LIFECYCLE_RUN_PATH, [
+          [
+            `from "${moduleBaseUrl(LIFECYCLE_RUN_PATH)}probe-work-registry.mjs"`,
+            `from "${inertRegistry}"`,
+          ],
+        ]);
+        const mutated = await importMutated(RUNTIME_PATH, [
+          [
+            `from "${moduleBaseUrl(RUNTIME_PATH)}probe-lifecycle-run.mjs"`,
+            `from "${inertRun}"`,
+          ],
+        ]);
+        assert.deepEqual(
+          await observeCheckpoint(root, { runProbeImpl: mutated.runProbe }),
+          ["returned", "returned"],
+          "the no-op mutant must swallow the cancellation — otherwise the contract above proves nothing",
+        );
+      }),
   );
 });

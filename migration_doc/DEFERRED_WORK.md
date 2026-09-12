@@ -177,7 +177,77 @@ inside the lifecycle with no artifact at all. Both are `C13-42a-3`.
 
 ### NEW-C13-42A-RESIDUALS (C13-42a-3)
 
-**Status:** OPEN — Item 8 is promoted to first across the whole apparatus programme (Wave 1, sequenced before `C13-42a-2` and `C13-N01` stage 2); note that fixing it requires inverting spec group G. Eight residuals from `C13-42a`, surfaced by review (Calimehtar) and by four
+**Status:** **Item 8 CLOSED 2026-09-12** (lane L1 / Durin, worker Frerin, Wave 1);
+the other seven residuals remain OPEN and are unchanged by it. `C13-42a-2` and
+`C13-N01` stage 2 are unblocked: the runtime they would migrate eighteen probes
+onto no longer drops work silently.
+
+**Item 8, what shipped.** `Tools/visual-regression/lib/probe-work-registry.mjs`:
+a new `carriedFailure(outcome)` predicate, and `closeBrowserAfter` collects on it
+instead of on `status === "rejected"` — which is the fix the characterization
+group named in its own comment ("collect on carries a failure, not on status").
+A record settles `not-started` while carrying a real failure whenever a malformed
+third argument to `scope.run` rejects inside `slotScope.run` before the work is
+entered; the old status filter could not see it, so the run published a clean
+receipt over work that never ran. **Both known triggers — a non-function `abort`,
+and a `null` third argument that dies one line earlier at the property access —
+converge on that one terminal state, so a single predicate closes both;** that is
+why the fix went into the drain rather than into either guard. The discriminator
+is `occurred === true`, the stamp `sourceFailure` puts on a real occurrence, so
+the predicate agrees with `appendOnce` by construction, leaves the ORDINARY
+not-started records (plain-string reasons, `probe-lifecycle-run.mjs:238`, `:265`)
+silent on every healthy run, and guarantees the numeric `occurrence` the caller
+orders by. `finishNotStarted`, the terminal statuses and the `secondaries` filter
+are untouched.
+
+**Spec group G is INVERTED**, as its own header required, and retitled
+*"G. a dropped registration is reported"*. Both triggers stay separate sub-tests
+because they reach the state by different lines. The mechanism sub-test drives
+the SHIPPED `closeBrowserAfter` over a hand-built registry rather than
+re-implementing the predicate inline, and asserts both halves: a failure-carrying
+not-started record surfaces, a plain-string one does not. The ex-asymmetry
+sub-test is now a convergence assertion. A new **group H** discharges residual
+item 2 (M3): `makeDescriptorScope`'s `checkpoint` forwarding is pinned through
+the BEHAVIOUR it must produce — called from inside `cells`, it returns while the
+lifecycle is ACTIVE and throws `probe lifecycle is draining` after the orderly
+stop — with a no-op mutant, and with no identity assertion anywhere, because an
+identity check pins which object a property points at rather than the thing that
+has to be true.
+
+**Evidence.** `probe-runtime-lifecycle-adoption.spec.mjs` under
+`test-visual-probe-contracts`: **53/53**, exit 0. Inertness, measured by the lane
+lead against the SOURCE rather than the spec's own module-graph mutant: the
+`not-started` half of `carriedFailure` made unreachable takes the file to **46
+pass / 7 fail**, and every contract sub-test of group G falls.
+*[both figures corrected 2026-09-12 from “52/52” and “46 pass / 6 fail”, review
+finding F7: they were measured before the F5 sub-test was added to group G, which
+adds one passing test and one more that falls under this mutant.]*
+
+**Both of the drain's collectors read the predicate** *[added 2026-09-12, review
+finding F5]*. `closeBrowserAfter` collects the descriptor's work outcomes AND the
+run ATTEMPT. The first pass moved only the work half, which left the file stating
+one rule and applying two — and the attempt reaches `not-started`-carrying-a-failure
+by the same route, because it is registered through the same `registerObservedRun`.
+The attempt half now reads `carriedFailure` as well, and the `secondaries` filter
+reads the same value. **The observable consequence is not "one more failure is
+reported"** — the attempt's failure is the run's PRIMARY (`probe-lifecycle-run.mjs`
+rethrows it as `runFailure`), so the drain's job is to recognise it and NOT re-throw
+it as a secondary; a primary the filter cannot see is a primary reported twice.
+Pinned by a behavioural sub-test in group G driving the shipped `closeBrowserAfter`,
+with a status-only inertness mutant in the same sub-test.
+
+**Residual FILED, not fixed, measured on the way (new).** On the `null` trigger
+the run is reported but the dropped work's label reaches NO artifact. The
+incident record writes the raw error, which there is
+`Cannot read properties of null (reading 'abort')` and carries no label; the
+failure the drain collected does carry `readback wrapper`, but nothing projects
+that label into an artifact. The `abort` trigger only looks correct because its
+guard's own TypeError message happens to open with the label. **The incident
+record does not project the collected failure's label** — a candidate row of its
+own, in the projection, not in the drain. Spec group G asserts the residual as
+it is rather than wishing it otherwise.
+
+Eight residuals from `C13-42a`, surfaced by review (Calimehtar) and by four
 rounds of adversarial verification (Ciryaher), 2026-09-12, and each deliberately NOT fixed in that
 lane. Recorded 2026-09-12. **None is a regression** — items 5-7 are inherited verbatim from the
 runtime the lane adopted, and every one of the seven sits in machinery the lane added rather than in
@@ -390,9 +460,26 @@ exercised against the fixture at all. `sampleCount` is now an input on
 `traceF32Ray`, `traceF32RayPrepared` and `deriveFixtureMasks`, defaulting to the
 frozen value so existing behaviour is unchanged.
 
-### NEW-C13-42-SERVED-RESPONSE-DEDUP (C13-42b, filed, NOT implemented)
+### NEW-C13-42-SERVED-RESPONSE-DEDUP (C13-42b, IMPLEMENTED 2026-09-12)
 
-**Status:** OPEN — dependency on `C13-42a` discharged (`C13-42a` landed 2026-09-12); filed behind the cap raise by M6 part 4 (Wave 1).
+**Status:** DONE 2026-09-12 (lane L1 / Durin, Wave W1). The id string is unchanged;
+only the parenthetical moved, so the two references to it elsewhere still resolve.
+
+**Fix.** `Tools/visual-regression/probe-c13-42-reported-demos.mjs`,
+`appendC13_42ServedResponse`: the `seenUrls.add(url)` is hoisted above the cap
+return, so `seenUrls` means "urls this listener has SEEN" rather than "urls it
+retained", and a repeat sighting of an over-cap url returns `null` instead of being
+counted again. Safe because `responses` never shrinks: a url first seen at the bound
+could not have become retainable on a later sighting. The figures banked on
+2026-09-09 (125, 58, 12) remain sighting counts and stay upper bounds — this repairs
+the instrument, it does not retroactively repair that evidence.
+
+**Evidence.** `probe-runtime-lifecycle-adoption.spec.mjs` group D, two new sub-tests
+under `test-visual-probe-contracts`: five sightings of one over-cap url report one
+url and retain none; the inertness mutant puts the record back below the cap return
+and the same drive reports all five. Group D's pre-existing bound mutant was
+re-anchored to the new spelling in the same edit and still proves the bound itself is
+live.
 
 `appendC13_42ServedResponse` adds a url to `seenUrls` **only** when it also
 pushes the response. Once `responses` reaches the cap, `seenUrls` stops growing,
@@ -815,7 +902,47 @@ rather than quietly frozen.
 
 ### C13-N08a — Harness readiness repair <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
 
-**Status:** OPEN (Wave W1, Priority P0).
+**Status:** DONE in the tree 2026-09-12 (lane L1 / Durin, Wave W1) — the Node half.
+The `baseline-01` re-run is OWED and cannot be run in this lane: another lane holds
+the Edge slot, so no browser, build or dev server was taken. Recipe below.
+
+**What changed (2026-09-12).** `Tools/visual-regression/lib/cloud-probe-harness.mjs`,
+`awaitProceduralReady`. It wrapped `featureRenderer.execute` and nothing else, and
+since Batch 1468 split the composite the live scene path takes
+`executePreparedCloudFrame` instead — so the counter followed an entry the
+composition bypasses and readiness burned its 180 frames reporting `executeCalls=0`
+over a renderer that was rendering. The helper now instruments three entries on the
+SAME feature-renderer object the composition resolves (verified: both
+`getFeatureRendererAsync` and `getFeatureRendererReadiness` return
+`this._featureRenderers[key]`, `GraphicsContext.ts:2092-2131`) and keeps four
+counters — `prepareCalls`, `preparedFrameCalls`, `legacyExecuteCalls`, and
+`recordedFrames`, the last counting only calls that returned `true`, which is the
+renderer's own word that it wrote the output view. Readiness now gates on
+`initialized && pipelineReady && recordedFrames > 0`: **a built pipeline is not a
+written frame**, which is the distinction the acceptance asks for. `executeCalls`
+keeps its published meaning (composite-entry invocations) so the 14 probes that gate
+on `readiness.executeCalls > 0` keep reading what their authors meant. The timeout
+error names every rung, because "executeCalls=0" alone is what sent the 2026-09-09
+triage after a resource-allocation bug that did not exist.
+
+**Evidence.** `Tools/visual-regression/cloud-probe-harness.spec.mjs` — **seven**
+readiness tests *[corrected 2026-09-12 from "six", review finding F2: the
+void-returning-wrapper test was added after the paragraph was written]*,
+behavioural, driven through `awaitProceduralReady` against fake renderers of
+each shape; homed under `test-visual-probe-contracts` (it had no runner home at all
+before, seat ruling of 2026-09-12). Inertness mutant: `const preparedInstrumented =
+instrument(` → `= false && instrument(`, which leaves the wrapper instrumentation
+live and makes only the repair unreachable; under it the split-entry scenario times
+out at `preparedFrameCalls:0` and the live assertions go red.
+
+**Owed — the `baseline-01` re-run, for whoever next holds the slot.** Serve the built
+bundle, run `node Tools/visual-regression/probe-c13-42-reported-demos.mjs` (it calls
+`awaitProceduralReady` at `:1125`) and read `readiness` in the artifact. Three
+outcomes, three different rows: `recordedFrames > 0` closes `C13-42d` as an
+instrument defect; `preparedFrameCalls > 0` with `recordedFrames = 0` opens a
+narrowed engine row on why `executePreparedCloudFrame` returns false; `prepareCalls
+= 0` says the composition never reached the renderer and is a third row again. D12
+is answerable from the counters without further instrumentation.
 
 **Delivers:** Land Astra's `lib/cloud-probe-harness.mjs` readiness slice: count `executePreparedCloudFrame` (`WebGPUProceduralCloudRenderer.ts:5206`), the entry `WebGPUSceneRendererEnvironmentalEffects.ts:327-329` actually calls, not only `featureRenderer.execute` (`lib/cloud-probe-harness.mjs:195-202`, error at `:244`)
 

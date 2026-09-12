@@ -691,11 +691,12 @@ function relevantServedUrl(url, origins) {
  * constant every subject shares.
  *
  * @param {Array<object>} responses Retained responses.
- * @param {Set<string>} seenUrls Urls already retained.
+ * @param {Set<string>} seenUrls Urls this listener has already seen.
  * @param {object} response The Playwright response.
  * @param {Set<string>} origins Origins whose responses are relevant.
  * @param {number} cap This subject's response bound.
- * @returns {string|null} The overflowing url, or `null` when retained or irrelevant.
+ * @returns {string|null} The overflowing url the FIRST time it is seen, or
+ * `null` when retained, irrelevant, or already seen (C13-42b).
  */
 export function appendC13_42ServedResponse(
   responses,
@@ -711,8 +712,16 @@ export function appendC13_42ServedResponse(
   }
   const url = response.url();
   if (!relevantServedUrl(url, origins) || seenUrls.has(url)) return null;
-  if (responses.length >= cap) return url;
+  // C13-42b. `seenUrls` is the set of urls this listener has SEEN, not the set
+  // it retained. Recording the url only on the retaining path let a second
+  // sighting of the same url past the bound be reported as overflow again, so
+  // every banked overflow figure (125, 58, 12 on 2026-09-09) counts sightings
+  // and is an upper bound on distinct overflowing urls. Hoisting the record is
+  // safe because `responses` never shrinks: a url seen at the bound could never
+  // have become retainable on a later sighting.
+  const overflowing = responses.length >= cap;
   seenUrls.add(url);
+  if (overflowing) return url;
   responses.push(response);
   return null;
 }

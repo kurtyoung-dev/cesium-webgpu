@@ -37,9 +37,10 @@
 // complete while the work is live, and the work's failure reaches the INCIDENT
 // record whenever an incident is written at all" — not "the page survives until
 // the work is done". Say INCIDENT, never "report": a measured run writes
-// `-report.json`, and item 8 below orphans work without report while a report
-// is written. See `C13-42a-3` item 6 for the paths that write no incident and
-// spec F5 for the pin on the best-known of them.
+// `-report.json`, and the distinction is what item 8 below turned on until it
+// was closed on 2026-09-12 — it orphaned work while a report was written. See
+// `C13-42a-3` item 6 for the paths that write no incident and spec F5 for the
+// pin on the best-known of them.
 //
 // That is inherited verbatim from the runtime this was adopted from, and it is
 // arguably the right default — a close that waits on a hung readback holds the
@@ -55,12 +56,31 @@
 // cancellation is one such case, not the only one — and keeping them separate
 // is what lets a failure be reported once rather than twice.
 //
-// A KNOWN HOLE IN THIS, filed as `C13-42a-3` item 8 and pinned by spec group G.
-// `closeBrowserAfter` collects `workOutcomes.filter(o => o.status ===
-// "rejected")`, so a `not-started` record is invisible to it EVEN WHEN IT
-// CARRIES A FAILURE REASON. A malformed `operationOptions.abort` reaches
-// exactly that state and the run reports a clean measurement over work that
-// never ran. Do not read the filter as "every failure is collected here".
+// WHAT THE DRAIN COLLECTS (2026-09-12 — `C13-42a-3` item 8 is CLOSED here).
+// `closeBrowserAfter` collects on "carries a failure", not on status: every
+// settled work outcome holding a `sourceFailure` occurrence reaches the
+// incident record, whether it settled `rejected` or `not-started`. Until
+// this date it filtered on `status === "rejected"`, so a `not-started`
+// record was invisible to it EVEN WHEN IT CARRIED A FAILURE REASON — a
+// malformed third argument to `scope.run` reaches exactly that state, and
+// the run published a clean measurement over work that never ran. The two
+// known triggers (a non-function `abort`; a `null` third argument, which
+// throws one line earlier) converge on that ONE terminal state, which is
+// why a single predicate closes both rather than each guard being hardened
+// separately. `not-started` still does not imply failure — the ordinary
+// ones carry a plain string reason and stay silent. Group G of
+// `Tools/visual-regression/probe-runtime-lifecycle-adoption.spec.mjs` pins
+// both halves.
+//
+// BOTH COLLECTORS READ IT (corrected 2026-09-12, review finding F5). The
+// drain has two: the descriptor's work outcomes, and the RUN ATTEMPT. The
+// attempt is registered through the same `registerObservedRun`, whose
+// pre-start-cancellation path settles it `not-started` carrying a real
+// `sourceFailure`, so a rule the attempt half did not follow would have left
+// the file stating one predicate and applying two. It also has a consequence
+// beyond tidiness: the attempt's failure is the run's PRIMARY, excluded from
+// `secondaries` so it is reported once rather than twice, and a primary the
+// filter cannot recognise is a primary re-thrown as a secondary.
 //
 // Adopted (C13-42a) from the unlanded runtime rewrite that produced the
 // 2026-09-09 C13-42 runs; extracted to its own file here so the runtime stays
@@ -323,6 +343,23 @@ function makeDescriptorScope(slotScope, workRegistry) {
   });
 }
 
+// The failure a settled work outcome carries, or `undefined` when it carries
+// none. Collecting on THIS rather than on `status` is what closes
+// `C13-42a-3` item 8: a record can settle `not-started` and still carry a
+// real failure, because a malformed third argument to `scope.run` rejects
+// inside `slotScope.run` before the work is ever entered, and
+// `registerObservedRun` records that rejection through `finishNotStarted`.
+// `occurred` is the stamp `sourceFailure` puts on a real occurrence, so this
+// agrees by construction with `appendOnce`, which already ignores anything
+// without it; it is also what keeps the ORDINARY not-started reasons, which
+// are plain strings (`probe-lifecycle-run.mjs`), from failing every healthy
+// run, and it guarantees the numeric `occurrence` the caller orders by.
+function carriedFailure(outcome) {
+  const carried =
+    outcome.status === "rejected" ? outcome.failure : outcome.reason;
+  return carried?.occurred === true ? carried : undefined;
+}
+
 async function closeBrowserAfter(
   attemptOutcomePromise,
   workOutcomesPromise,
@@ -341,14 +378,19 @@ async function closeBrowserAfter(
   ]);
   const failures = [];
   const seen = new Set();
-  if (attemptOutcome.status === "rejected") {
-    appendOnce(failures, seen, attemptOutcome.failure);
+  // Same predicate on both halves — see the header. `carriedFailure` reads a
+  // `rejected` outcome's `failure` and any other outcome's `reason`, so this
+  // is unchanged for every attempt that rejects.
+  const attemptFailure = carriedFailure(attemptOutcome);
+  if (attemptFailure !== undefined) {
+    appendOnce(failures, seen, attemptFailure);
   }
-  const rejectedWork = workOutcomes
-    .filter((outcome) => outcome.status === "rejected")
-    .map((outcome) => outcome.failure)
+  // "Carries a failure", not `status === "rejected"` — see `carriedFailure`.
+  const failedWork = workOutcomes
+    .map(carriedFailure)
+    .filter((failure) => failure !== undefined)
     .sort((left, right) => left.occurrence - right.occurrence);
-  for (const failure of rejectedWork) {
+  for (const failure of failedWork) {
     appendOnce(failures, seen, failure);
   }
 
@@ -359,8 +401,8 @@ async function closeBrowserAfter(
 
   const secondaries = failures.filter(
     (entry) =>
-      attemptOutcome.status !== "rejected" ||
-      entry.occurrence !== attemptOutcome.failure.occurrence,
+      attemptFailure === undefined ||
+      entry.occurrence !== attemptFailure.occurrence,
   );
   if (secondaries.length === 1) {
     throw secondaries[0].raw;

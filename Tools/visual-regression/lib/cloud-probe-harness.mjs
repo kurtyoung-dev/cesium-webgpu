@@ -139,9 +139,11 @@ export function installCloudProbeHarness() {
 
     /**
      * Await the lazy procedural-cloud feature renderer and prove that it has
-     * executed far enough to initialize its renderer cache. A fixed number of
-     * rAF warm-up frames is not a readiness contract: on a cold chunk load the
-     * Scene legitimately skips the effect while the feature renderer is absent.
+     * executed far enough to RECORD a frame. A fixed number of rAF warm-up
+     * frames is not a readiness contract: on a cold chunk load the Scene
+     * legitimately skips the effect while the feature renderer is absent.
+     * Neither is `pipelineReady` — a compiled pipeline is not a written pixel,
+     * and the returned counters keep the two apart (C13-N08a).
      */
     async awaitProceduralReady(options = {}) {
       const viewer = root.viewer;
@@ -190,25 +192,94 @@ export function installCloudProbeHarness() {
               up: cloneCartesian(camera.upWC ?? camera.up),
             }
           : undefined;
-      let executeCalls = 0;
-      let executeInstrumented = false;
-      const originalExecute = featureRenderer.execute;
-      if (typeof originalExecute === "function") {
-        try {
-          featureRenderer.execute = function (...args) {
-            executeCalls++;
-            return Reflect.apply(originalExecute, this, args);
-          };
-          executeInstrumented = featureRenderer.execute !== originalExecute;
-        } catch {
-          // Report the exact readiness-contract failure below.
+      // WHICH ENTRY IS THE WORK (C13-N08a). Batch 1468 split the composite
+      // into `prepareCloudFrameAndEncodeMask` + `executePreparedCloudFrame`,
+      // and the live composition takes the split entry — see
+      // `WebGPUSceneRendererEnvironmentalEffects.ts:327-329`. `execute`
+      // (`executeProceduralClouds`) survives as a convenience wrapper that no
+      // scene path calls, so instrumenting it ALONE counted an entry the
+      // composition bypasses: readiness timed out at `executeCalls=0` over a
+      // renderer that was in fact rendering, and that is the whole of the
+      // `C13-42d` symptom at HEAD. Both entries are counted. They cannot
+      // double-count: `executeProceduralClouds` calls the module-level
+      // `executePreparedCloudFrame` directly, never this object's property.
+      const counters = {
+        prepareCalls: 0,
+        legacyExecuteCalls: 0,
+        preparedFrameCalls: 0,
+        recordedFrames: 0,
+      };
+      const restores = [];
+      const instrument = (method, observe) => {
+        const original = featureRenderer[method];
+        if (typeof original !== "function") {
+          return false;
         }
-      }
-      if (!executeInstrumented) {
+        try {
+          featureRenderer[method] = function (...args) {
+            const returned = Reflect.apply(original, this, args);
+            observe(returned);
+            return returned;
+          };
+        } catch {
+          // A frozen renderer lands on the readiness-contract error below.
+          return false;
+        }
+        if (featureRenderer[method] === original) {
+          return false;
+        }
+        restores.push(() => {
+          featureRenderer[method] = original;
+        });
+        return true;
+      };
+
+      // PIPELINE BUILT IS NOT WORK RECORDED. `pipelineReady` says the renderer
+      // compiled its pipeline; `recordedFrames` says a composite entry returned
+      // `true`, which is the renderer's own word that it wrote the output view.
+      // A renderer that reports ready while recording nothing is exactly what
+      // `C13-42d` reported, and only the second counter can tell them apart.
+      // `prepareCalls` is the rung between: it says the composition reached the
+      // renderer at all, so a zero here and a zero there mean different bugs.
+      instrument("prepareCloudFrameAndEncodeMask", () => {
+        counters.prepareCalls++;
+      });
+      const recordReturn = (key, recorded) => (returned) => {
+        counters[key]++;
+        if (recorded(returned)) {
+          counters.recordedFrames++;
+        }
+      };
+      // The two entries are read ASYMMETRICALLY, and deliberately.
+      // `executePreparedCloudFrame` has returned `boolean` since it existed,
+      // so `true` is a positive statement that the frame was recorded and
+      // anything else is not. `executeProceduralClouds` was declared `void`
+      // when it was written and only later came to forward the split entry's
+      // boolean, so `undefined` off that entry carries NO information —
+      // requiring `=== true` there would make readiness permanently
+      // unreachable for a probe on the wrapper path, which is a worse failure
+      // than the false pass it would prevent. Only an explicit `false` is
+      // treated as `did not record`.
+      const preparedInstrumented = instrument(
+        "executePreparedCloudFrame",
+        recordReturn("preparedFrameCalls", (returned) => returned === true),
+      );
+      const legacyInstrumented = instrument(
+        "execute",
+        recordReturn("legacyExecuteCalls", (returned) => returned !== false),
+      );
+      if (!preparedInstrumented && !legacyInstrumented) {
+        // Hand the renderer back before refusing: `prepareCloudFrameAndEncodeMask`
+        // may already carry a wrapper, and this exit is outside the `finally`.
+        for (const restore of restores) {
+          restore();
+        }
         throw new Error(
-          "cloud probe could not instrument the procedural renderer execute path",
+          "cloud probe could not instrument either procedural composite entry (executePreparedCloudFrame, execute)",
         );
       }
+      const executeCallCount = () =>
+        counters.preparedFrameCalls + counters.legacyExecuteCalls;
 
       try {
         for (let frame = 0; frame < maxFrames; frame++) {
@@ -227,27 +298,35 @@ export function installCloudProbeHarness() {
           if (
             realization.initialized &&
             realization.pipelineReady &&
-            executeCalls > 0
+            counters.recordedFrames > 0
           ) {
             return {
               ok: true,
               featureRendererKey,
               waitedFrames: frame + 1,
-              executeCalls,
+              // `executeCalls` keeps its published meaning — how many times a
+              // composite entry was invoked — so the probes that gate on
+              // `readiness.executeCalls > 0` keep reading what they meant.
+              executeCalls: executeCallCount(),
+              ...counters,
               cameraDriven: typeof camera?.rotateRight === "function",
               ...realization,
             };
           }
         }
 
+        // Name every rung. "executeCalls=0" alone sent the 2026-09-09 triage
+        // at a resource-allocation bug that did not exist; the counters say
+        // whether the composition never arrived, arrived and prepared nothing,
+        // or prepared and recorded nothing — three different defects.
         throw new Error(
-          `procedural cloud renderer did not initialize after ${maxFrames} moving frames (executeCalls=${executeCalls}): ${JSON.stringify(
-            proceduralRealization(),
-          )}`,
+          `procedural cloud renderer recorded no frame in ${maxFrames} moving frames (executeCalls=${executeCallCount()}, counters=${JSON.stringify(
+            counters,
+          )}): ${JSON.stringify(proceduralRealization())}`,
         );
       } finally {
-        if (executeInstrumented) {
-          featureRenderer.execute = originalExecute;
+        for (const restore of restores) {
+          restore();
         }
         if (
           cameraState?.destination &&
