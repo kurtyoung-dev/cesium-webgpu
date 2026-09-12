@@ -6,7 +6,7 @@ R-1 (D1) capture spine: TWO lanes; C13-N01 STAGED (detector + census in wave 1; 
 
 Basis: `CAMPAIGN_13_V2_DECISIONS_2026-09-12.md` D1 (capture-spine strategy), derived from C13 plan §0.7, §3 `C13-N01`, §5.2, §5.3 Waves 1–2, and §9 L2.
 
-Executed: Batch NNNN (2026-09-12).
+Executed: Batch 1476 (2026-09-12).
 
 Authority: charter §1.1.
 
@@ -16,7 +16,7 @@ R-2 (D4) re-sequencing: C13-15/16/17/20 re-pointed onto C13-N22/N23/N27/N38; the
 
 Basis: `CAMPAIGN_13_V2_DECISIONS_2026-09-12.md` D4 (re-point `C13-15/16/17/20` off the XL `C13-14`), derived from C13 plan §3 WS-E, WS-F, and §6.
 
-Executed: Batch NNNN (2026-09-12).
+Executed: Batch 1476 (2026-09-12).
 
 Authority: charter §1.1.
 
@@ -26,7 +26,7 @@ R-3 (D17) gates rewritten now as a wave-1 ledger row (C13-N46): GATE-D deps -> C
 
 Basis: `CAMPAIGN_13_V2_DECISIONS_2026-09-12.md` D17 (re-write Gates C/D and EXIT against the v2 bars), derived from C13 plan §3 WS-H `C13-N46`, §5.3 Wave 1 lane β, and §9 L8.
 
-Executed: Batch NNNN (2026-09-12).
+Executed: Batch 1476 (2026-09-12).
 
 Authority: charter §1.1.
 
@@ -36,7 +36,7 @@ R-4 (D16) Edge-leg ordering: the named Edge leg runs BEFORE the landing for ever
 
 Basis: `CAMPAIGN_13_V2_DECISIONS_2026-09-12.md` D16 (Edge-leg ordering vs landing), derived from C13 plan §5.2, §5.3, §5.5, and §9.
 
-Executed: Batch NNNN (2026-09-12).
+Executed: Batch 1476 (2026-09-12).
 
 Authority: charter §1.1.
 
@@ -46,7 +46,7 @@ R-5 (D6) default weather source: GFS primary + GMGSI imagery referee + ECMWF as 
 
 Basis: `CAMPAIGN_13_V2_DECISIONS_2026-09-12.md` D6 (default data source), derived from C13 plan §3 `C13-N24`, §4.1, §5.3, and §9.
 
-Executed: Batch NNNN (2026-09-12).
+Executed: Batch 1476 (2026-09-12).
 
 Authority: charter §1.1.
 
@@ -56,7 +56,7 @@ R-6 (D10) ground-truth imagery: fetch at probe time, bank derived metrics only, 
 
 Basis: `CAMPAIGN_13_V2_DECISIONS_2026-09-12.md` D10 (ground-truth evidence licensing), derived from C13 plan §3 `C13-N05`, §4.1, §4.2, and §9.
 
-Executed: Batch NNNN (2026-09-12).
+Executed: Batch 1476 (2026-09-12).
 
 Authority: charter §1.1.
 
@@ -66,7 +66,7 @@ R-7 (D9) the single Edge slot: the C13-41 exposure-sweep discriminator (R-2026-0
 
 Basis: `CAMPAIGN_13_V2_DECISIONS_2026-09-12.md` D9 (cloud quality vs `C13-41` for the single Edge slot), derived from C13 plan §5.2, §5.3, §5.5, §6, and §9.
 
-Executed: Batch NNNN (2026-09-12).
+Executed: Batch 1476 (2026-09-12).
 
 Authority: charter §1.1.
 
@@ -86,7 +86,7 @@ R-9 (D2) Globe.js cloud default: keep HELD (R-2026-09-10-6); REVISIT at wave 4 w
 
 Basis: `CAMPAIGN_13_V2_DECISIONS_2026-09-12.md` D2 (the M2 `Globe.js` default, held under `R-2026-09-10-6`), derived from C13 plan §5.3 Wave 4, and §5.5.
 
-Executed: Batch NNNN (2026-09-12).
+Executed: Batch 1476 (2026-09-12).
 
 Authority: charter §1.1.
 
@@ -96,7 +96,7 @@ R-10 (D13) archive hold scope: in-place corrections of factually false sentences
 
 Basis: `CAMPAIGN_13_V2_DECISIONS_2026-09-12.md` D13 (scope of the archive hold for `C13-N33` doc re-stamping), derived from C13 plan §3 `C13-N33`, §5.3 Wave 2, §5.5, and §6.
 
-Executed: Batch NNNN (2026-09-12).
+Executed: Batch 1476 (2026-09-12).
 
 Authority: charter §1.1.
 
@@ -106,7 +106,7 @@ R-11 (D18) adaptive quality controller C13-N42: BUILD, default off, wave 3; acce
 
 Basis: `CAMPAIGN_13_V2_DECISIONS_2026-09-12.md` D18 (adaptive quality controller), derived from C13 plan §2.5, §3 WS-B `C13-N42`, and §5.3 Wave 3.
 
-Executed: Batch NNNN (2026-09-12).
+Executed: Batch 1476 (2026-09-12).
 
 Authority: charter §1.1.
 
@@ -116,7 +116,7 @@ R-12 (D20) peer head-to-head instrument C13-N40: FUND (wave 2, L); "above Takram
 
 Basis: `CAMPAIGN_13_V2_DECISIONS_2026-09-12.md` D20 (peer head-to-head instrument), derived from C13 plan §3 WS-H `C13-N40`, §4.4, §5.3 Wave 2, §5.4, and §8 risk 16.
 
-Executed: Batch NNNN (2026-09-12).
+Executed: Batch 1476 (2026-09-12).
 
 Authority: charter §1.1.
 
