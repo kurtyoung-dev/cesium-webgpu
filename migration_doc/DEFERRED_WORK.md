@@ -2373,6 +2373,33 @@ matches the measurement.
 **Source:** `cesium-webgpu-worker-archive/lanes-2026-09-12/cesium-lane-telchar-20260912/_lane-out/LANDING_PACKET_TELCHAR.md:146`,
 `:152-156`, `:195-198`; Batch 1479 `beb08423b3` (2026-09-12 15:08:27 -0400).
 
+## New findings — the Campaign 13 v2 solo-roster re-cut, 2026-09-13 (`R-2026-09-13-8`)
+
+*Filed 2026-09-13 by the re-cut assembler lane (Everard) at `0e4b898129` (Batch 1486). **No row's status changes here.** This entry records the classification so a reader of the ledger can see which C13 rows are dispatchable to a solo worker today and which are waiting on the seat; the full table, its criteria, its cross-row problems and its sequencing are [`CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md`](CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md) **§9** — the section the re-cut brief called "§7", appended as §9 because §7 and §8 were already in use.*
+
+**The ruling.** `R-2026-09-13-8` re-cuts the solo roster to **two** workers. **Astra** runs alone as its own worker, reviewer and tester in a freshly provisioned named clone — never the seat — and may take everything fully defined: tools, docs, fixtures **and** engine/shader rows, running the full proof bar itself, including the named Edge leg under the machine's Edge-slot lock. Excluded from Astra only: files a live seat lane holds, rows whose design shape is undecided, and seat-only mechanics (landing, rulings). **Gemini** takes the bounded remainder — docs and mechanical work under thirty minutes, every value specified, no build, no browser. **"Sonnet" is not a solo worker**; `R-HANDOFF-3`, `-7` and `-10` are superseded, and `-2`, `-4` and `-9` lose their Sonnet cells. The seat still reviews at landing.
+
+**The counts**, measured over all four group passes at `0e4b898129` and reconciled by the critic pass, whose `finalTable` is authoritative:
+
+| Figure | Value |
+| --- | --- |
+| Rows classified | **156** distinct ids (166 group entries; 10 duplicate ids collapsed) |
+| ASTRA-SOLO | **19** |
+| GEMINI-SOLO | **2** (`DX-83`, `C13-N59` — 45 minutes together) |
+| NOT-SOLO | **135** |
+| …of which blocked on a seat act | **111** |
+| Added to the dispatchable set since Batch 1482 | **9** (none removed) |
+
+**The nine rows added** are `C13-N07a`, `C13-42f`, `C13-42g`, `DX-89`, `DX-90`, `DX-91`, `DX-95`, `DX-WAVE-END-GATE-DECOMPOSITION` and `NEW-C13-42A-3-ITEM-6-BRANCH-ASSERTION` — seven freed by the Batch 1485 (`b466e7ca80`) and 1486 (`0e4b898129`) landings and by the Edge slot falling free, two by the ruling itself. `DX-83` and `DX-84` are **restored** to the set: their demotions measured pinned counts at HEAD for rows `R-HANDOFF-5` pins to `9f3723b0b3`. `DX-84` is therefore **SOLO-NOW (Astra)**, not SOLO-AFTER-TEMPLATE — and the tool it ships stays **report-only**, no kill flag, no `taskkill`, no `process.kill`, which `R-HANDOFF-10`'s correction leaves untouched.
+
+**Three cross-row findings a reader of this ledger needs**, because each invalidates work silently rather than loudly:
+
+1. **`F:/Dev/GH/cesium-astra-20260910` must never be re-used as Astra's clone.** Measured: 252 dirty paths at HEAD `9fb5e65622` (Batch 1450, 36 batches behind), among them `Tools/visual-regression/lib/probe-edge-slot.mjs` — the lock the ruling itself names — and `migration_doc/QUEUE_2026-08-29_RESEARCH_DISPATCH.md`, which is `DX-83`'s only owned file. A fresh clone per lane, provisioner exit 0, base stated in the dispatch message and in every packet.
+2. **The Edge-slot lock is per repository root, not per machine.** `Tools/visual-regression/lib/probe-edge-slot.mjs:33-34` makes the lock path relative and `lib/probe-runtime.mjs:940`/`:955` join it to the caller's own `repositoryRoot`, so a lock taken in a clone excludes nothing in the seat tree or in another clone. The protocol that makes the ruling's premise hold — take the **seat tree's** lock file explicitly for the whole leg, release by token in a `finally`, and run only one browser job on the machine at a time — is [`SOLO_WORKER_HANDOFF_2026-09-13.md`](SOLO_WORKER_HANDOFF_2026-09-13.md) §8. It also corrects the foreign-server census: **three** node servers holding six ports (PID 6904 `:8080`/`:8082`, PID 17856 `:8094`, PID 18208 `:8095`/`:8083`), not two.
+3. **Six rows cite files the frozen lanes hold but edit none of them.** L3 Ulmo, L4 Manwë and L5 Ossë stay frozen for an unknown time; both refuters grepped all three lane diffs for every pinned symbol in this roster and found none. The cost is a **re-derivation of line numbers** in the lane's own clone at the dispatch base, not rework — and no solo row may append to `package.json:207` or `:209` while those lanes hold them.
+
+**Source:** `critic.json` and the eleven group inputs of the `c13v2-solo-recut` workflow (critic Estella, assembler Everard), banked with this batch's lane packet.
+
 ## New findings — wave P0-2, lane Aerin, 2026-09-05
 
 ### NEW-CORE-RESOURCE-CROSS-ORIGIN-DERIVATION
