@@ -826,6 +826,22 @@ rather than quietly frozen.
 
 **Known limitation, recorded rather than papered over.** The origin detector reads `process.env.<NAME> || "http…"` / `?? "http…"`. A probe that hard-codes its origin with **no** environment read at all — `probe-ao-runtime-config.mjs:111`, `const BASE = "http://localhost:8080";` — is a strictly worse instance of the same defect and is NOT counted. Widening the detector to that shape is stage-2 work, and the count will rise when it lands.
 
+**Stage 2 evidence — FAMILY BATCH 1, 2026-09-13, lane W2-T2 (Huan), measured at `ea651de6d8`:** eight probes routed onto `runProbe`; **the family census falls 60 -> 52 hard-defaulting and rises 1 -> 9 adopting, over a family of 61.**
+
+*The stage-1 bar's own numbers are REFUTED at this tree, in the direction of the work already done:* the family is **61** probes and **1** of them (`probe-cloud-orbital-ladder.mjs`, Batch 1480) already imported the runtime, so "60 probes, 60/60 hard-defaulting, 0/60 governed" was true when it was measured on 2026-09-12 and was already stale on 2026-09-13. `GOVERNANCE_SNAPSHOT` moves to the measured 61 / 52 / 9.
+
+**Selection rule for batch 1 (the brief's cap is eight; the cohort is ten).** Batch 1 is the *Weather-Inspector demo-boot cohort*: every family probe that boots `/Apps/Sandcastle/gallery/WebGPU%20Weather%20Inspector.html` through the same `SANDCASTLE_STUB`/`BOOT` pair, captures `.cesium-widget canvas` into `output/` under `const OUT = "Tools/visual-regression/output"`, publishes **no JSON receipt at all**, and ends `process.exitCode = pass ? 0 : 1`. Ten files share that shape exactly; batch 1 takes the eight smallest by source size and leaves `probe-cloud-special.mjs` (340 lines) and `probe-cloud-features.mjs` (347) as batch 2's first two. Routed: `cloud-diagonal`, `cloud-dials`, `cloud-exotic-flags`, `cloud-extinction`, `cloud-genus`, `cloud-mammatus`, `cloud-species`, `cloud-stbn-lod`. **The other 52 are untouched and stay for later batches.**
+
+**What each routed probe now does differently.** Origin from the runtime (`--port`, governed, 8080 refused) instead of `process.env.PROBE_BASE || "http://localhost:8080"`; served-build preflight narrowed to the two bundles this legacy gallery page actually loads (`Build/CesiumUnminified/Cesium.js` through the page's own script tag, `Build/CesiumUnminified/index.js` through its boot helper) rather than the runtime default's Sandcastle2 bucket bundle, which the page never touches; the Edge slot taken by the runtime; **the lifecycle adopted** (`workBudgetMs` declared per probe, arithmetic in each file from that probe's own settles) so a hung page meets a derived orderly deadline and a hard stop — which is what makes deleting the eight "no watchdog" allowlist rows honest rather than merely mechanical. `receiptEnvelope: "runtime"` for all eight: none of them banked a JSON receipt before the migration, so no downstream reader keys off a field set that must stay byte-comparable. **Every capture keeps its pre-routing file name**, pinned by the spec.
+
+**Behaviour change, deliberate and recorded:** a demo that fails to boot was `process.exitCode = 1` (a red measurement) and is now a `ProbeRefusal` (exit 3, no receipt written over the banked one, an incident file beside it). An orchestrator scoring by exit status could previously not tell "the gate ran and failed" from "the page never booted".
+
+**Detector widening (the stage-1 known limitation, closed).** `hardCodedOrigins` in `lib/probe-runtime-governance.mjs` now reads the no-env-read form the stage-1 row named (`probe-ao-runtime-config.mjs:111`, `const BASE = "http://localhost:8080";` — verified at the tree, the line is exactly that). It counts only **local** origins: a constant naming a remote asset host is a data source, not an ungoverned measurement target. Measured effect: **+172 fleet probes, +0 cloud/god-ray probes**, so the fleet census rises 421 -> 585 (413 fallback form + 172 bare constant) while the family ratchet keeps reading the same population it always read.
+
+**Proof.** `Tools/visual-regression/cloud-demo-probe-routing.spec.mjs` (new, homed in `npm run test-visual-regression-node`) drives **all eight real descriptors** through `runProbe` against a stub browser — argv, preflight, slot, cells, receipt, verdicts, summary, exit code — and asserts the capture names, the runtime-supplied origin, the boot refusal and the verdict-to-exit binding, with two mutation controls: a probe that re-hard-codes `http://localhost:8080` in its navigation, and an inert verdict evaluation that turns the failing fixture green. Section H of `probe-fleet-contract.spec.mjs` gains H8-H11: the moved snapshot still REFUSES the pre-batch census (61/60/1), the eight are governed and off the allowlist, and two more mutants (inert hard-coded detector, inert ratchet comparison). Runners: `npm run test-visual-regression-node` **364/364, exit 0** (was 345 before this lane's 19 added tests); `node Tools/spec-runner-census.mjs` exit 0 with the new spec homed.
+
+**OWED — the equivalence leg is an Edge measurement and is NOT claimed.** "A routed probe's verdicts are byte-identical to its pre-routing run on the same served tree" needs a served build and the Edge slot, which an Edge job held for this lane's whole life. The executable recipe is `_lane-out/EDGE_RECIPE_HUAN.md`: serve one built clone, run each probe's `git show ea651de6d8:<path>` copy, then the routed file, and compare the verdict booleans. Until that runs, the eight probes are *routed and unexecuted on Edge*.
+
 **Dependencies:** Stage 2 deps **C13-42a**
 
 **Size:** L *[corrected 2026-09-12 from M — the allowlist is flat, frozen and shrink-only with 43 cloud/god-ray probes pinned on watchdog-only reasons, and routing means converting 26,959 lines across 60 probes; §0.7]*
@@ -833,6 +849,31 @@ rather than quietly frozen.
 **Owner wave:** Wave W1 (WS-A)
 
 **Parity:** n/a
+
+### DX-96 — `runProbe` crashes instead of refusing when argv parsing fails <!-- source: C13-N01 stage 2 batch 1, lane W2-T2 (Huan), 2026-09-13 -->
+
+**Status:** OPEN — filed, not fixed. `lib/probe-runtime.mjs` is DX-01's file, not this lane's.
+
+**Measured 2026-09-13 at `ea651de6d8`, with a two-line descriptor and no probe of this lane involved:**
+
+```
+runProbe({name:'x',cells:async()=>[],verdicts:()=>[]}, {argv:['--port','8080']})
+  -> TypeError: Cannot read properties of null (reading 'servedBuild')
+runProbe(same, {argv:['--nope']})
+  -> same TypeError
+```
+
+**Root cause.** `parseProbeArgs` raises the port-8080 `ProbeRefusal` (and a `TypeError` for a bad flag) **before `options` is assigned** (`lib/probe-runtime.mjs:888`). The catch records the refusal, and then `buildRuntimeReceipt` reads `options.servedBuild` off the `null` the runtime passed for it (`:665`) — outside the try — so `runProbe` REJECTS instead of returning `PROBE_EXIT_CODES.REFUSAL` (3) or `ERROR` (2). A probe whose entry point is `process.exitCode = await runProbe(descriptor)` therefore leaves on an unhandled rejection.
+
+**Why it matters here.** Port 8080 is the exact case the origin-governance work exists to make loud: the runtime's own refusal reason is `port-8080-forbidden`, and today that refusal is delivered as a null-property crash. The fix is one guard at `:665` (or assigning `options` before the refusal can be raised) plus a spec leg over `parseProbeArgs` failure; both belong to whoever owns the runtime.
+
+**Recorded in the batch's own spec** rather than papered over: `cloud-demo-probe-routing.spec.mjs` B2 asserts what must hold either way — no browser launched, no page opened, no receipt written — and accepts refusal-or-rejection deliberately, so fixing the defect does not turn the spec red.
+
+### DX-97 — `probe-cloud-extinction`'s "default deck not blown out" clause reads the CUMULUS capture <!-- source: C13-N01 stage 2 batch 1, lane W2-T2 (Huan), 2026-09-13 -->
+
+**Status:** OPEN — filed, not fixed. Surfaced by the routing (the clause became visible when the inline `checks` array was extracted into a named pure function); changing what a probe measures is not a routing lane's business.
+
+The clause's claim text says *default deck not blown-out white* and its boolean reads `cu.m.cloudMeanL` — the **cumulus** capture's mean luminance — not `mDef.cloudMeanL`. Pre-existing since the probe was written (the routed file preserves it verbatim, `probe-cloud-extinction.mjs` `evaluateExtinction`, clause `default-deck-not-blown-out`, and the pre-routing source has the same pairing). Either the claim or the reading is wrong; deciding which is a cloud-measurement question for the C13 cloud lanes, and the answer changes what the probe reports.
 
 ### C13-N02 — Runner homes for the homeless cloud specs <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
 

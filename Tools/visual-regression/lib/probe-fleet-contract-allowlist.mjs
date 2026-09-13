@@ -246,18 +246,8 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-06-25, pre-dates the spec",
   "probe-cloud-depth-occlusion.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-26, pre-dates the spec",
-  "probe-cloud-diagonal.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-26, pre-dates the spec",
-  "probe-cloud-dials.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-26, pre-dates the spec",
-  "probe-cloud-exotic-flags.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
-  "probe-cloud-extinction.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-30, pre-dates the spec",
   "probe-cloud-features.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
-  "probe-cloud-genus.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-26, pre-dates the spec",
   "probe-cloud-godray.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
   "probe-cloud-halfres-parity.mjs":
@@ -274,8 +264,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
   "probe-cloud-lut-parity.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
-  "probe-cloud-mammatus.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
   "probe-cloud-morphology.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
   "probe-cloud-noisebake.mjs":
@@ -298,10 +286,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
   "probe-cloud-special.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
-  "probe-cloud-species.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
-  "probe-cloud-stbn-lod.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-10, pre-dates the spec",
   "probe-cloud-temporal.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
   "probe-cloud-tier-resolver.mjs":

@@ -63,6 +63,7 @@ import { analyzeProhibitedReader } from "./lib/prohibited-reader-rule.mjs";
 import {
   analyzeRuntimeGovernance,
   censusRuntimeGovernance,
+  governanceRatchetFindings,
 } from "./lib/probe-runtime-governance.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -1576,7 +1577,7 @@ test("G6 MUTATION control: a prefilter that skips everything collapses the canar
 });
 
 // ---------------------------------------------------------------------------
-// H. The runtime-governance census (C13-N01 stage 1)
+// H. The runtime-governance census (C13-N01 stages 1 and 2)
 //
 // WHAT IS COUNTED, AND WHY IT IS A CENSUS AND NOT A VIOLATION CLASS.
 // `lib/probe-runtime.mjs` owns the parts of a probe run that must be identical
@@ -1585,16 +1586,29 @@ test("G6 MUTATION control: a prefilter that skips everything collapses the canar
 // the one this census reads is the origin guard: a probe that resolves its base
 // URL as `process.env.PROBE_BASE || "http://localhost:8080"` does not refuse
 // when the variable is unset, it measures whatever is already listening on that
-// port. Sixty of the sixty `probe-cloud-*` / `probe-godray-*` probes do exactly
-// that and none of them imports any of the three governance modules.
+// port. Since the stage-2 widening the bare `const BASE =
+// "http://localhost:8080"` counts too — the same silent measurement with one
+// fewer moving part, because there is not even a variable to set.
+//
+// STAGE 2 HAS STARTED, SO THESE NUMBERS MOVE. At stage 1 (Batch 1476) the
+// family was sixty probes, sixty of them ungoverned and none importing a
+// governance module. Family batch 1 (2026-09-13) routed eight of them onto
+// `runProbe`, and `probe-cloud-orbital-ladder.mjs` had already landed governed
+// after the stage-1 snapshot was taken — so the family is 61 probes, 52
+// ungoverned, 9 governed, and the snapshot below moved with them. What the
+// ratchet refuses is a REGRESSION from there; H8 demonstrates that the moved
+// snapshot still refuses the census it was moved from, which is the property a
+// snapshot that only ever follows the measurement quietly loses.
 //
 // Making that an ENFORCED violation was considered and rejected. The
 // fleet-contract allowlist is flat, frozen and shrink-only, and 43 of those 60
-// probes are already pinned in it on watchdog-only reasons — a new violation
-// class would either turn sixty files red in one batch or require rewriting 43
-// pinned reason strings, neither of which is the work. So this section counts,
-// and pins the DIRECTION of the count. The routing that moves it is C13-N01
-// stage 2.
+// probes were pinned in it on watchdog-only reasons — a new violation class
+// would either turn sixty files red in one batch or require rewriting 43 pinned
+// reason strings, neither of which is the work. So this section counts, and
+// pins the DIRECTION of the count. The routing that moves it is C13-N01 stage
+// 2, one family batch at a time; batch 1 took eight of those 43 rows OUT of the
+// allowlist, because a routed probe launches no browser of its own and the
+// analyzer then reports no violation for it to be exempt from.
 //
 // THE RATCHET IS THEREFORE CHEAP AND STILL REAL. The family's hard-default
 // count may only fall and its adoption count may only rise, against a dated
@@ -1620,19 +1634,63 @@ const governanceFamilyFiles = probeFiles.filter((name) =>
 );
 
 /**
- * The census as measured at Batch 1476 (bab1ff6e21), 2026-09-12.
+ * The census as measured at `ea651de6d8` on 2026-09-13, after C13-N01 stage 2
+ * family batch 1 routed eight probes onto the runtime.
  *
- * `familyHardDefaulting` may only fall and `familyAdopting` may only rise.
+ * `familyHardDefaulting` may only fall and `familyAdopting` may only rise. The
+ * stage-1 snapshot (2026-09-12, Batch 1476) read family 60 / 60 / 0; the family
+ * is 61 because `probe-cloud-orbital-ladder.mjs` landed governed after that
+ * measurement, and the other two numbers moved because this batch routed
+ * `cloud-diagonal`, `cloud-dials`, `cloud-exotic-flags`, `cloud-extinction`,
+ * `cloud-genus`, `cloud-mammatus`, `cloud-species` and `cloud-stbn-lod`.
+ *
  * `fleetHardDefaultingFloor` is the canary, not a ratchet: it is far below the
- * measured 420 and exists so that a detector which stops recognising the
- * construct collapses loudly instead of reporting a repaired fleet.
+ * measured 585 (413 by the fallback form, 172 by the bare constant the stage-2
+ * widening added) and exists so that a detector which stops recognising EITHER
+ * construct collapses loudly instead of reporting a repaired fleet. It stays at
+ * 300 rather than rising with the widening: the two halves are 413 and 172, so
+ * a detector that lost either one alone still crosses it.
  */
 const GOVERNANCE_SNAPSHOT = Object.freeze({
-  measured: "2026-09-12",
-  family: 60,
-  familyHardDefaulting: 60,
-  familyAdopting: 0,
+  measured: "2026-09-13",
+  family: 61,
+  familyHardDefaulting: 52,
+  familyAdopting: 9,
   fleetHardDefaultingFloor: 300,
+});
+
+/**
+ * The eight probes family batch 1 routed, by file name.
+ *
+ * Named rather than derived: a list derived from "whatever is governed today"
+ * would agree with any tree, including one where a later batch silently
+ * un-routed one of them.
+ */
+const BATCH_1_ROUTED = Object.freeze([
+  "probe-cloud-diagonal.mjs",
+  "probe-cloud-dials.mjs",
+  "probe-cloud-exotic-flags.mjs",
+  "probe-cloud-extinction.mjs",
+  "probe-cloud-genus.mjs",
+  "probe-cloud-mammatus.mjs",
+  "probe-cloud-species.mjs",
+  "probe-cloud-stbn-lod.mjs",
+]);
+
+/**
+ * The family census as this batch FOUND it, at `ea651de6d8` before any file was
+ * edited: 61 probes, 60 resolving an ungoverned origin, one governed
+ * (`probe-cloud-orbital-ladder.mjs`).
+ *
+ * It is kept so H8 can run the live ratchet over it. A snapshot that only ever
+ * follows the measurement is not a ratchet, and the only way to show this one is
+ * not that is to feed it the state it was moved from.
+ */
+const PRE_BATCH_1_CENSUS = Object.freeze({
+  analyzed: 61,
+  hardDefaulting: 60,
+  adopting: 1,
+  hardDefaultingFiles: [],
 });
 
 /** Fixtures for the detectors' own self-test, as text — no filesystem. */
@@ -1676,6 +1734,59 @@ const GOVERNANCE_FIXTURES = {
     source: [
       'const TAG = process.env.TAG || "adaptive";',
       "export default TAG;",
+      "",
+    ].join("\n"),
+  },
+  // The stage-2 construct: an origin bound to a declared constant with no
+  // environment read at all. `probe-ao-runtime-config.mjs:111` is the measured
+  // instance the C13-N01 stage-1 row named as the gap.
+  hardCodedBare: {
+    origins: [],
+    coded: ["http://localhost:8080"],
+    governed: [],
+    source: [
+      'const BASE = "http://localhost:8080";',
+      "export default BASE;",
+      "",
+    ].join("\n"),
+  },
+  // A path on the same host counts: the probe still lands on whatever is
+  // listening there.
+  hardCodedWithPath: {
+    origins: [],
+    coded: [
+      "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu",
+    ],
+    governed: [],
+    source: [
+      'const URL = "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";',
+      "export default URL;",
+      "",
+    ].join("\n"),
+  },
+  // A REMOTE host in a constant is a data source, not an ungoverned measurement
+  // target. Counting it would add 172 files' worth of asset URLs to a census
+  // whose whole value is that every member is actionable.
+  remoteConstant: {
+    origins: [],
+    coded: [],
+    governed: [],
+    source: [
+      'const TILES = "https://assets.example.com/1/tileset.json";',
+      "export default TILES;",
+      "",
+    ].join("\n"),
+  },
+  // A resolved origin is a template hole, not a literal: a probe that builds
+  // `http://localhost:${options.port}` has been handed its port and is not the
+  // construct.
+  templatedPort: {
+    origins: [],
+    coded: [],
+    governed: [],
+    source: [
+      "const origin = `http://localhost:${options.port}`;",
+      "export default origin;",
       "",
     ].join("\n"),
   },
@@ -1747,6 +1858,19 @@ test("H1: the detectors read every governance shape and no prose shape", () => {
       `${name}: hard-defaulted origins`,
     );
     assert.deepEqual(
+      analysis.hardCodedOrigins.map((site) => site.origin),
+      fixture.coded ?? [],
+      `${name}: hard-CODED origins`,
+    );
+    // The union is what the census counts, so it is asserted rather than
+    // inferred: a detector that finds the site and a fold that drops it are the
+    // same wrong number.
+    assert.equal(
+      analysis.hardDefaultsOrigin,
+      fixture.origins.length + (fixture.coded ?? []).length > 0,
+      `${name}: ungoverned-origin fold`,
+    );
+    assert.deepEqual(
       analysis.governedBy,
       fixture.governed,
       `${name}: governance imports`,
@@ -1807,27 +1931,157 @@ test("H4: the cloud/god-ray family census sits on or inside its snapshot", () =>
     })),
   );
 
-  // The population canary. A family that shrank below the snapshot means files
-  // were renamed out of the glob, and every count below would then be measuring
-  // a different fleet than the one the snapshot was taken over.
-  assert.ok(
-    census.analyzed >= GOVERNANCE_SNAPSHOT.family,
-    `the cloud/god-ray family fell from ${GOVERNANCE_SNAPSHOT.family} to ${census.analyzed} probes`,
+  // The rule itself lives in `lib/probe-runtime-governance.mjs` so that H8 can
+  // run the SAME rule over the pre-batch census. Two copies — one asserted
+  // here, one demonstrated there — would drift the moment either was edited.
+  const findings = governanceRatchetFindings(census, GOVERNANCE_SNAPSHOT);
+  assert.deepEqual(
+    findings.map((finding) => finding.id),
+    [],
+    findings.map((finding) => finding.message).join("\n\n"),
   );
 
+  // The per-construct split has to cover the union it was folded from; a file
+  // exhibiting both constructs is one ungoverned file with two sites, so the
+  // split's sum is greater than or equal to the union, never less.
   assert.ok(
-    census.hardDefaulting <= GOVERNANCE_SNAPSHOT.familyHardDefaulting,
-    `${census.hardDefaulting} cloud/god-ray probes resolve an origin from a hard-coded
-fallback, up from ${GOVERNANCE_SNAPSHOT.familyHardDefaulting} at the snapshot. A probe that spells
-\`process.env.PROBE_BASE || "http://localhost:8080"\` does not refuse when the
-variable is unset — it measures whatever is already listening on that port.
-Hand the origin to the runtime (lib/probe-runtime.mjs) instead.
-Files:\n  ${census.hardDefaultingFiles.join("\n  ")}`,
+    census.byConstruct.envFallback + census.byConstruct.hardCoded >=
+      census.hardDefaulting,
+    "the per-construct split does not cover the union it was folded from",
   );
+});
 
+test("H8: the moved snapshot still refuses the census it was moved from", () => {
+  // The ratchet's whole value is that it cannot be satisfied by re-measuring.
+  // Family batch 1 moved `familyHardDefaulting` 60 -> 52, and a tree that had
+  // not been routed would report 60 against the new snapshot — which is a
+  // finding, not a pass.
+  const findings = governanceRatchetFindings(
+    PRE_BATCH_1_CENSUS,
+    GOVERNANCE_SNAPSHOT,
+  );
+  assert.deepEqual(
+    findings.map((finding) => finding.id),
+    ["hard-defaulting-rose", "adoption-fell"],
+    "the pre-batch census no longer trips the ratchet it was snapshotted past",
+  );
+  // And the same census is accepted by the snapshot it WAS taken under, so the
+  // refusal above is the snapshot moving, not the rule being unsatisfiable.
+  assert.deepEqual(
+    governanceRatchetFindings(PRE_BATCH_1_CENSUS, {
+      family: 60,
+      familyHardDefaulting: 60,
+      familyAdopting: 0,
+    }),
+    [],
+  );
+});
+
+test("H9: every probe family batch 1 routed is governed and off the allowlist", () => {
+  for (const name of BATCH_1_ROUTED) {
+    assert.ok(probeFiles.includes(name), `${name} left the fleet`);
+    const analysis = analyzeRuntimeGovernance(readProbe(name));
+    assert.equal(
+      analysis.hardDefaultsOrigin,
+      false,
+      `${name}: still resolves an origin nobody governs`,
+    );
+    assert.deepEqual(
+      analysis.governedBy,
+      ["runtime"],
+      `${name}: does not import the probe runtime`,
+    );
+    // The allowlist is shrink-only and the spec asserts every row still
+    // violates (C3), so a routed probe MUST have left it in the same change.
+    // Asserting it here names the batch that is responsible.
+    assert.equal(
+      Object.hasOwn(PROBE_CONTRACT_ALLOWLIST, name),
+      false,
+      `${name}: routed but still pinned in the fleet-contract allowlist`,
+    );
+    // And it is genuinely compliant rather than merely unlisted.
+    assert.deepEqual(analyses.get(name).violations, [], `${name}: violations`);
+  }
+});
+
+test("H10 MUTATION control: an inert hard-CODED finding turns H1 and the fleet split blind", async () => {
+  // Unreachable, not deleted — and a DIFFERENT guard from H6's, so the two
+  // mutants cannot pass for each other.
+  const guard =
+    "    if (content === undefined || !LOCAL_ORIGIN_LITERAL.test(content)) {";
+  const mutant = await importMutatedGovernance((source) => {
+    assert.equal(source.split(guard).length - 1, 1);
+    return source.replace(
+      guard,
+      "    if (true || content === undefined || !LOCAL_ORIGIN_LITERAL.test(content)) {",
+    );
+  });
+
+  let silenced = 0;
+  for (const [name, fixture] of Object.entries(GOVERNANCE_FIXTURES)) {
+    if ((fixture.coded ?? []).length === 0) {
+      continue;
+    }
+    silenced += 1;
+    assert.deepEqual(
+      mutant.analyzeRuntimeGovernance(fixture.source).hardCodedOrigins,
+      [],
+      `${name}: the inert mutant still reported a hard-coded origin`,
+    );
+    assert.equal(
+      analyzeRuntimeGovernance(fixture.source).hardCodedOrigins.length,
+      fixture.coded.length,
+      `${name}: the real detector stopped reporting its origin`,
+    );
+  }
+  assert.equal(silenced, 2, "the positive hard-coded fixture set changed size");
+
+  // The fleet leg: the widening's whole contribution disappears, and the census
+  // reports a fleet 172 files healthier than it is.
+  const entries = probeFiles.map((name) => ({ name, source: readProbe(name) }));
+  const real = censusRuntimeGovernance(
+    entries.map(({ name, source }) => ({
+      name,
+      analysis: analyzeRuntimeGovernance(source),
+    })),
+  );
+  const mutated = mutant.censusRuntimeGovernance(
+    entries.map(({ name, source }) => ({
+      name,
+      analysis: mutant.analyzeRuntimeGovernance(source),
+    })),
+  );
   assert.ok(
-    census.adopting >= GOVERNANCE_SNAPSHOT.familyAdopting,
-    `cloud/god-ray governance adoption fell from ${GOVERNANCE_SNAPSHOT.familyAdopting} to ${census.adopting}`,
+    real.byConstruct.hardCoded > 0,
+    "the widening found nothing at all",
+  );
+  assert.equal(mutated.byConstruct.hardCoded, 0);
+  assert.ok(mutated.hardDefaulting < real.hardDefaulting);
+});
+
+test("H11 MUTATION control: an inert ratchet comparison accepts the census it must refuse", async () => {
+  const guard =
+    "  if (!(census.hardDefaulting <= snapshot.familyHardDefaulting)) {";
+  const mutant = await importMutatedGovernance((source) => {
+    assert.equal(source.split(guard).length - 1, 1);
+    return source.replace(
+      guard,
+      "  if (false && !(census.hardDefaulting <= snapshot.familyHardDefaulting)) {",
+    );
+  });
+
+  assert.deepEqual(
+    mutant
+      .governanceRatchetFindings(PRE_BATCH_1_CENSUS, GOVERNANCE_SNAPSHOT)
+      .map((finding) => finding.id),
+    ["adoption-fell"],
+    "the inert mutant still refused the pre-batch hard-default count",
+  );
+  assert.ok(
+    governanceRatchetFindings(PRE_BATCH_1_CENSUS, GOVERNANCE_SNAPSHOT).some(
+      (finding) => finding.id === "hard-defaulting-rose",
+    ),
+    "the real ratchet stopped refusing the pre-batch hard-default count",
   );
 });
 

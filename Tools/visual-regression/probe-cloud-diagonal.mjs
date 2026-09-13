@@ -3,6 +3,7 @@
  * Cloud-coverage DIAGONAL probe. WebGPU-only.
  * @purpose Regression for the fullscreen-triangle fix: an overcast deck must fill the top-right quadrant (old triangle rasterized only half the screen)
  * @status ACTIVE
+ * @runtime lib/probe-runtime.mjs
  *
  * The procedural-cloud fullscreen pass used a NON-oversized triangle (verts at
  * three NDC corners), so it rasterized only the lower-left half of the screen
@@ -18,21 +19,40 @@
  * the BOTTOM-LEFT quadrant, ~0 in the TOP-RIGHT. The fix makes the overcast deck
  * present in the TOP-RIGHT quadrant too.
  *
- * Usage: PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-cloud-diagonal.mjs
+ * Usage: node Tools/visual-regression/probe-cloud-diagonal.mjs --port 8094
+ *
+ * The origin comes from the runtime (`--port`, governed, never 8080) and the
+ * served-build preflight runs before Edge is launched, so a run against a tree
+ * whose served bytes are not the bytes on disk refuses instead of measuring.
  */
-import { chromium } from "playwright";
 import {
   errorGateInit,
   armWebGPUDevices,
   collectGateErrors,
   attachConsoleErrorGate,
 } from "../lib/webgpu-error-gate.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const W = 1024,
   H = 768;
-const OUT = "Tools/visual-regression/output";
 const DEMO = "/Apps/Sandcastle/gallery/WebGPU%20Weather%20Inspector.html";
+
+/**
+ * Page boot: Playwright's 30 s `goto` default plus this probe's own 60 s wait
+ * for `window.viewer`.
+ */
+const BOOT_BUDGET_MS = 90_000;
+/** Settle after boot, before the preset is applied. */
+const SETTLE_AFTER_BOOT_MS = 9000;
+/** Settle after the OVC St preset, so the 8/8 deck is fully built. */
+const SETTLE_AFTER_PRESET_MS = 7000;
+/** One element capture plus the in-page quadrant decode. */
+const READBACK_BUDGET_MS = 30_000;
 
 const SANDCASTLE_STUB = () => {
   window.Sandcastle = {
@@ -133,105 +153,195 @@ function quadrantDeck(page, dataUrl) {
   }, dataUrl);
 }
 
-async function run() {
-  const fs = await import("fs");
-  fs.mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch({
-    channel: "msedge",
-    headless: true,
-    args: ["--enable-unsafe-webgpu"],
-  });
-  const page = await browser.newPage({ viewport: { width: W, height: H } });
-  const consoleErrors = attachConsoleErrorGate(page);
-  await page.addInitScript(errorGateInit);
-  await page.addInitScript(SANDCASTLE_STUB);
-  await page.goto(`${BASE}${DEMO}`, { waitUntil: "domcontentloaded" });
-  await page.addStyleTag({
-    content:
-      "#cesiumContainer{position:absolute;top:0;left:0;width:100%;height:100%;}#loadingOverlay{display:none;}",
-  });
-
-  const boot = await page.evaluate(BOOT);
-  if (!boot.ok) {
-    console.log("BOOT FAILED:", boot.err);
-    await browser.close();
-    process.exitCode = 1;
-    return;
-  }
-  await page.waitForFunction(
-    () => !!(window.viewer && window.viewer.scene),
-    null,
-    {
-      timeout: 60000,
-    },
-  );
-  await armWebGPUDevices(page);
-
-  const canvas = await page.$(".cesium-widget canvas");
-  const shot = async (name) => {
-    await canvas.screenshot({ path: `${OUT}/${name}.png` });
-    return (
-      "data:image/png;base64," +
-      fs.readFileSync(`${OUT}/${name}.png`).toString("base64")
+/**
+ * The quadrant clauses, over one run's cells.
+ *
+ * Pure and exported so the routing spec can put a quadrant table on either
+ * side of every bar without a browser. The diagonal bug's signature is a
+ * left-right asymmetry, so three of the five clauses are stated over a
+ * difference rather than over an absolute the demo's own lighting could move.
+ *
+ * @param {Array<object>} cells The run's cells.
+ * @returns {Array<object>} Verdicts in the runtime's shape.
+ */
+export function evaluateDiagonal(cells) {
+  const verdicts = [];
+  for (const cell of cells) {
+    const q = cell.quadrants;
+    const lrBottom = Math.abs(q.botLeft.deck - q.botRight.deck);
+    const lrTop = Math.abs(q.topLeft.deck - q.topRight.deck);
+    const suffix = `run${cell.run}`;
+    verdicts.push(
+      {
+        id: `bottom-right-deck/${suffix}`,
+        claim: `bottom-RIGHT now has the deck (was ~0 with the diagonal) (${q.botRight.deck}% > 50)`,
+        pass: q.botRight.deck > 50,
+        detail: { deck: q.botRight.deck },
+      },
+      {
+        id: `bottom-left-deck/${suffix}`,
+        claim: `bottom-LEFT has the deck (${q.botLeft.deck}% > 50)`,
+        pass: q.botLeft.deck > 50,
+        detail: { deck: q.botLeft.deck },
+      },
+      {
+        id: `bottom-symmetry/${suffix}`,
+        claim: `deck is left-right symmetric in the bottom (|${q.botLeft.deck}-${q.botRight.deck}| = ${lrBottom.toFixed(1)} < 15) -> no TL->BR diagonal`,
+        pass: lrBottom < 15,
+        detail: { delta: +lrBottom.toFixed(1), tolerance: 15 },
+      },
+      {
+        id: `top-symmetry/${suffix}`,
+        claim: `top is left-right symmetric (|${q.topLeft.deck}-${q.topRight.deck}| = ${lrTop.toFixed(1)} < 15) -> no diagonal`,
+        pass: lrTop < 15,
+        detail: { delta: +lrTop.toFixed(1), tolerance: 15 },
+      },
+      {
+        id: `device-errors/${suffix}`,
+        claim: `no NEW device errors (${cell.deviceErrors.length})`,
+        pass: cell.deviceErrors.length === 0,
+        detail: { errors: cell.deviceErrors.slice(0, 5) },
+      },
     );
-  };
-
-  await page.waitForTimeout(9000);
-  // OVC St = full 8/8 overcast: a deck that should fill the entire sky.
-  await page.evaluate(CLICK, { id: "wi-preset-OVCst" });
-  await page.waitForTimeout(7000);
-  const du = await shot("cloud-diagonal-ovc");
-  const q = await quadrantDeck(page, du);
-
-  const gate = await collectGateErrors(page);
-  const newErrs = (gate.errors || [])
-    .concat(consoleErrors)
-    .filter(
-      (e) =>
-        !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon|bucket\.css|Sandcastle-header|load-cesium-es6/i.test(
-          e,
-        ),
-    );
-
-  console.log("quadrant deck%:", JSON.stringify(q, null, 0));
-
-  // The diagonal bug rasterized only the lower-LEFT half: the deck filled the
-  // bottom-LEFT but the bottom-RIGHT was empty (the corner-to-corner cut). The
-  // fix (oversized triangle) makes the deck LEFT-RIGHT SYMMETRIC. The deck
-  // legitimately thins toward the zenith (thin deck, short straight-up path), so
-  // the TOP being lighter is expected — the regression signature is the
-  // bottom-half asymmetry, not zenith fill.
-  const lrBottom = Math.abs(q.botLeft.deck - q.botRight.deck);
-  const lrTop = Math.abs(q.topLeft.deck - q.topRight.deck);
-  const checks = [
-    [
-      `bottom-RIGHT now has the deck (was ~0 with the diagonal) (${q.botRight.deck}% > 50)`,
-      q.botRight.deck > 50,
-    ],
-    [`bottom-LEFT has the deck (${q.botLeft.deck}% > 50)`, q.botLeft.deck > 50],
-    [
-      `deck is left-right symmetric in the bottom (|${q.botLeft.deck}-${q.botRight.deck}| = ${lrBottom.toFixed(1)} < 15) -> no TL->BR diagonal`,
-      lrBottom < 15,
-    ],
-    [
-      `top is left-right symmetric (|${q.topLeft.deck}-${q.topRight.deck}| = ${lrTop.toFixed(1)} < 15) -> no diagonal`,
-      lrTop < 15,
-    ],
-    [`no NEW device errors (${newErrs.length})`, newErrs.length === 0],
-  ];
-  console.log("\n=== ANALYSIS ===");
-  let pass = true;
-  for (const [n, ok] of checks) {
-    console.log(`  [${ok ? "PASS" : "FAIL"}] ${n}`);
-    if (!ok) {
-      pass = false;
-    }
   }
-  if (newErrs.length) {
-    console.log("  errors:", newErrs.slice(0, 5));
-  }
-  console.log(`\nRESULT: ${pass ? "GREEN" : "RED"}`);
-  await browser.close();
-  process.exitCode = pass ? 0 : 1;
+  return verdicts;
 }
-run();
+
+/**
+ * The console report, unchanged in shape from the pre-runtime probe.
+ *
+ * @param {object} receipt The probe receipt.
+ * @returns {void}
+ */
+function printReport(receipt) {
+  for (const cell of receipt.cells) {
+    console.log("quadrant deck%:", JSON.stringify(cell.quadrants, null, 0));
+  }
+  console.log("\n=== ANALYSIS ===");
+  for (const verdict of receipt.verdicts) {
+    console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
+  }
+  const errors = receipt.cells.flatMap((cell) => cell.deviceErrors);
+  if (errors.length > 0) {
+    console.log("  errors:", errors.slice(0, 5));
+  }
+  console.log(
+    `\nRESULT: ${receipt.verdicts.every((v) => v.pass === true) ? "GREEN" : "RED"}`,
+  );
+}
+
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "cloud-diagonal",
+  title:
+    "Cloud coverage diagonal — the overcast deck must fill the top-right quadrant",
+  // The empty subdirectory keeps the capture exactly where the pre-routing
+  // probe wrote it: `output/cloud-diagonal-ovc.png`, not a new folder beneath it.
+  outputSubdirectory: "",
+  // This probe banked no JSON receipt before the migration, so no downstream
+  // reader keys off a field set that has to survive byte-comparable: the
+  // single-document runtime envelope is the honest shape for it.
+  receiptEnvelope: "runtime",
+  // The demo page loads `Cesium.js` through its own script tag and its boot
+  // helper imports `index.js`; the default list's Sandcastle2 bucket bundle is
+  // a file this legacy gallery page never touches, so naming it would refuse
+  // runs over an artifact the measurement does not read.
+  servedArtifacts: [
+    "Build/CesiumUnminified/Cesium.js",
+    "Build/CesiumUnminified/index.js",
+  ],
+  // The budget THIS probe's work needs per run, so the lifecycle's orderly
+  // deadline is derived from it rather than from a global cap: boot, the two
+  // settles the measurement is defined over, and the capture plus decode.
+  workBudgetMs: () =>
+    BOOT_BUDGET_MS +
+    SETTLE_AFTER_BOOT_MS +
+    SETTLE_AFTER_PRESET_MS +
+    READBACK_BUDGET_MS,
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    if (!options.renderers.includes("webgpu")) {
+      throw new ProbeRefusal(
+        "renderer-unavailable",
+        "the procedural cloud deck is WebGPU-only, so a diagonal measured on " +
+          `${options.renderers.join(",")} would read an empty sky`,
+        { renderers: options.renderers },
+      );
+    }
+
+    const page = await browser.newPage({ viewport: { width: W, height: H } });
+    const consoleErrors = attachConsoleErrorGate(page);
+    await page.addInitScript(errorGateInit);
+    await page.addInitScript(SANDCASTLE_STUB);
+    await page.goto(`${origin}${DEMO}`, { waitUntil: "domcontentloaded" });
+    await page.addStyleTag({
+      content:
+        "#cesiumContainer{position:absolute;top:0;left:0;width:100%;height:100%;}#loadingOverlay{display:none;}",
+    });
+
+    const boot = await page.evaluate(BOOT);
+    if (!boot.ok) {
+      // A demo that did not boot is not a red measurement, it is no
+      // measurement: the runtime refuses (exit 3) rather than scoring it 1.
+      throw new ProbeRefusal(
+        "demo-boot-failed",
+        `the Weather Inspector demo did not boot: ${boot.err}`,
+        { demo: DEMO, error: boot.err },
+      );
+    }
+    await page.waitForFunction(
+      () => !!(window.viewer && window.viewer.scene),
+      null,
+      {
+        timeout: 60000,
+      },
+    );
+    await armWebGPUDevices(page);
+
+    await page.waitForTimeout(SETTLE_AFTER_BOOT_MS);
+    // OVC St = full 8/8 overcast: a deck that should fill the entire sky.
+    await page.evaluate(CLICK, { id: "wi-preset-OVCst" });
+    await page.waitForTimeout(SETTLE_AFTER_PRESET_MS);
+
+    const capture = await captureElement({
+      page,
+      selector: ".cesium-widget canvas",
+      name: "cloud-diagonal-ovc",
+      outputDirectory,
+      captures,
+    });
+    const quadrants = await quadrantDeck(
+      page,
+      `data:image/png;base64,${capture.buffer.toString("base64")}`,
+    );
+
+    const gate = await collectGateErrors(page);
+    const deviceErrors = (gate.errors || [])
+      .concat(consoleErrors)
+      .filter(
+        (e) =>
+          !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon|bucket\.css|Sandcastle-header|load-cesium-es6/i.test(
+            e,
+          ),
+      );
+
+    return [{ run, capture: capture.name, quadrants, deviceErrors }];
+  },
+  verdicts(cells) {
+    return evaluateDiagonal(cells);
+  },
+  receipt(cells, context) {
+    const receipt = {
+      demo: DEMO,
+      cells,
+      verdicts: context.verdicts,
+    };
+    if (cells.length > 0) {
+      printReport(receipt);
+    }
+    return receipt;
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}
