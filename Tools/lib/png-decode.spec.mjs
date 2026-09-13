@@ -33,15 +33,18 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { deflateSync as zlibDeflate } from "node:zlib";
 
 import sharp from "sharp";
 
 import { encodeRgbaPng, pngChunk } from "./png-rgba.mjs";
 import { decodePng, diffPixels, frameStats, readPng } from "./png-decode.mjs";
+import { analyzeCloudImages } from "../visual-regression/lib/cloud-image-analysis.mjs";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -405,4 +408,167 @@ test("E4: decodePng rejects an unsupported colour type", () => {
     () => decodePng(buildHeaderOnlyPng({ colorType: 3 })),
     /unsupported colour type 3/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// G. Published `channels` / `sourceChannels` / `colorType` fields (this
+// batch's decodePng/readPng shape change). `channels` always describes the
+// tightly-packed RGBA buffer this module returns — it is 4 even for a colour
+// type 2 (RGB) source, whose own channel count is published separately as
+// `sourceChannels`; `colorType` is the raw IHDR byte. This group pins the
+// behaviour real consumers depend on
+// (`Tools/visual-regression/lib/cloud-image-analysis.mjs`'s `assertImage`,
+// `Tools/visual-regression/lib/c13-42-reproduction-contract.mjs`'s
+// `imageShape`, both of which validate
+// `data.length === width * height * channels`), not just the field values in
+// isolation, and closes with an inertness mutant proving the assertions
+// actually exercise the published field rather than passing regardless.
+// ---------------------------------------------------------------------------
+
+function rgbRows(width, height, seed) {
+  return Array.from({ length: height }, (_, y) => {
+    const row = new Uint8Array(width * 3);
+    for (let x = 0; x < width; x++) {
+      const o = x * 3;
+      row[o] = (x * 29 + y * 41 + seed) % 256;
+      row[o + 1] = (x * 53 + y * 11 + seed * 3) % 256;
+      row[o + 2] = (x * 7 + y * 71 + seed * 5) % 256;
+    }
+    return row;
+  });
+}
+
+function buildRgbPng(width, height, seed) {
+  return buildPng({
+    width,
+    height,
+    colorType: 2,
+    channels: 3,
+    rawRows: rgbRows(width, height, seed),
+    filterPerRow: new Array(height).fill(0),
+  });
+}
+
+for (const fixture of FIXTURES) {
+  test(`G1: decodePng(encodeRgbaPng(${fixture.name})) publishes channels=4, sourceChannels=4, colorType=6`, () => {
+    const png = Buffer.from(
+      encodeRgbaPng(fixture.pixels, fixture.width, fixture.height),
+    );
+    const decoded = decodePng(png);
+    assert.equal(decoded.channels, 4);
+    assert.equal(decoded.sourceChannels, 4);
+    assert.equal(decoded.colorType, 6);
+    assert.equal(
+      decoded.data.length,
+      decoded.width * decoded.height * decoded.channels,
+    );
+  });
+}
+
+test("G2: decodePng(colour type 2 RGB) publishes channels=4 (not the file's 3), sourceChannels=3, colorType=2", () => {
+  const width = 5;
+  const height = 4;
+  const png = buildRgbPng(width, height, 3);
+  const decoded = decodePng(png);
+  // If `channels` published the FILE's own count (3) here instead of the
+  // returned buffer's layout (4), every consumer that validates
+  // `data.length === width * height * channels` (assertImage, imageShape)
+  // would reject this exact decoded image — the defect this field exists
+  // to prevent.
+  assert.equal(decoded.channels, 4);
+  assert.equal(decoded.sourceChannels, 3);
+  assert.equal(decoded.colorType, 2);
+  assert.equal(
+    decoded.data.length,
+    decoded.width * decoded.height * decoded.channels,
+  );
+});
+
+test("G3: analyzeCloudImages accepts a decoded RGB pair and a decoded RGBA pair without throwing", () => {
+  const width = 24;
+  const height = 24;
+
+  const rgbOn = decodePng(buildRgbPng(width, height, 11));
+  const rgbOff = decodePng(buildRgbPng(width, height, 97));
+  assert.doesNotThrow(() => analyzeCloudImages(rgbOn, rgbOff));
+
+  const rgbaOn = decodePng(
+    Buffer.from(
+      encodeRgbaPng(seededNoise(width, height, 0x1234), width, height),
+    ),
+  );
+  const rgbaOff = decodePng(
+    Buffer.from(
+      encodeRgbaPng(seededNoise(width, height, 0x5678), width, height),
+    ),
+  );
+  assert.doesNotThrow(() => analyzeCloudImages(rgbaOn, rgbaOff));
+});
+
+test("G4: readPng publishes channels/sourceChannels/colorType for a file written to disk", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "png-decode-spec-g4-"));
+  const filePath = path.join(dir, "fixture.png");
+  try {
+    const pixels = gradient(6, 4);
+    writeFileSync(filePath, encodeRgbaPng(pixels, 6, 4));
+    const decoded = readPng(filePath);
+    assert.equal(decoded.channels, 4);
+    assert.equal(decoded.sourceChannels, 4);
+    assert.equal(decoded.colorType, 6);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("G5: INERTNESS MUTANT — unpublishing `channels` makes the analyzeCloudImages consumer check reject the same image", async () => {
+  const originalPath = fileURLToPath(
+    new URL("./png-decode.mjs", import.meta.url),
+  );
+  const source = await readFile(originalPath, "utf8");
+  const target = "channels: 4,";
+  const occurrences = source.split(target).length - 1;
+  assert.equal(
+    occurrences,
+    1,
+    "expected exactly one `channels: 4,` return-object literal to mutate — decodePng's shape changed since this test was written",
+  );
+  const mutated = source.replace(target, "channels: undefined,");
+
+  const mutantDir = mkdtempSync(path.join(tmpdir(), "png-decode-mutant-"));
+  try {
+    const mutantPath = path.join(mutantDir, "png-decode.mutant.mjs");
+    writeFileSync(mutantPath, mutated, "utf8");
+    const mutantUrl = `${pathToFileURL(mutantPath).href}?bust=${Date.now()}-${Math.random()}`;
+    const { decodePng: mutantDecodePng } = await import(mutantUrl);
+
+    const width = 8;
+    const height = 8;
+    const onImage = mutantDecodePng(
+      Buffer.from(
+        encodeRgbaPng(seededNoise(width, height, 0xabc), width, height),
+      ),
+    );
+    const offImage = mutantDecodePng(
+      Buffer.from(
+        encodeRgbaPng(seededNoise(width, height, 0xdef), width, height),
+      ),
+    );
+
+    // Sanity: the mutation reached the returned object and nothing else
+    // moved — every symbol and call site is untouched, the buffer itself is
+    // still correctly shaped; only the published `channels` VALUE is inert.
+    assert.equal(onImage.channels, undefined);
+    assert.equal(onImage.data.length, width * height * 4);
+
+    // G3 proved the real decodePng's output for this exact shape is
+    // accepted. Under the mutant the identical consumer check must now
+    // reject it — if it still passed, this test would not be testing
+    // anything.
+    assert.throws(
+      () => analyzeCloudImages(onImage, offImage),
+      /is not a valid decoded RGB\/RGBA image/,
+    );
+  } finally {
+    rmSync(mutantDir, { recursive: true, force: true });
+  }
 });

@@ -21,6 +21,11 @@ import {
 import { installCloudProbeHarness } from "./lib/cloud-probe-harness.mjs";
 import { fixtureById } from "./lib/cloud-tour-fixtures.mjs";
 import {
+  deriveGodRayCaptureMasks,
+  expectedShaftDirectionRadians,
+  projectedEmitterPixels,
+} from "./lib/c13-42-godray-fixture.mjs";
+import {
   CHARACTERIZATION_THRESHOLDS,
   C13_42_CONTRACT_VERSION,
   CONTROLLED_RAY_FIXTURE_OBLIGATION,
@@ -1101,6 +1106,123 @@ async function inspectCaptureEnvironment(frame, subjectId, phase, scope) {
   return observed;
 }
 
+/**
+ * Read the god-ray effect's own emitter state out of the running page.
+ *
+ * `WebGPUGodRayEffect` is where the projected sun lands: `setSunScreenUV`
+ * writes `_config.sunScreenU` / `_config.sunScreenV` and records the caller's
+ * usable determination in `_sunUnusable` (0 usable, 1 not). Those three values
+ * ARE the shaft's geometry — there is nothing else on the page that says where
+ * the shaft starts — so they are what the capture-side masks are derived from.
+ *
+ * Returns `null` when the effect is absent rather than throwing: a subject
+ * without a god-ray effect simply publishes no god-ray geometry, which is the
+ * state every cell was in before C13-42f.
+ */
+async function readGodRayEmitter(frame, subjectId, phase, scope) {
+  return await scope.run(
+    `god-ray emitter ${subjectId} ${phase}`,
+    async (signal) => {
+      if (signal.aborted) throw signal.reason;
+      return await frame.evaluate(() => {
+        const viewer = globalThis.__cloudProbe.resolveViewer();
+        const effect =
+          viewer?.scene?._alternateSceneRenderer?.postProcessPipeline
+            ?.godRayEffect;
+        if (!effect) return null;
+        const scalar = (value) =>
+          typeof value === "number" && Number.isFinite(value) ? value : null;
+        const config = effect._config;
+        return {
+          enabled: effect.enabled === true,
+          sunScreenU: scalar(config?.sunScreenU),
+          sunScreenV: scalar(config?.sunScreenV),
+          sunUnusable: scalar(effect._sunUnusable),
+        };
+      });
+    },
+  );
+}
+
+/**
+ * Turn one emitter reading plus the capture it belongs to into the three
+ * inputs `analyzeGodRayImages` requires — `masks`, `emitter`,
+ * `expectedDirectionRadians` — or into a stated reason why it cannot.
+ *
+ * The all-or-nothing shape is deliberate. `computeC13_42CellMetrics` calls
+ * `analyzeGodRayImages` as soon as EITHER `masks` or `emitter` is present, and
+ * that function returns `{ok: false}` when the masks are short or the expected
+ * direction is missing — which would push `metrics.ok` false and turn a cell
+ * that merely had no geometry into a FAILING cell. So a cell either carries all
+ * three and is measured, or carries none and stays exactly as it was before
+ * this wiring landed, with `godRayGeometry.reason` saying why.
+ */
+export function buildGodRayGeometry(readings, image) {
+  const record = {
+    readings,
+    resolvable: false,
+    reason: null,
+    emitter: null,
+    expectedDirectionRadians: null,
+    directionConditioning: null,
+    maskProvenance: null,
+  };
+  const reading = readings.find((entry) => entry !== null) ?? null;
+  if (reading === null) {
+    record.reason =
+      "the page published no god-ray effect to read an emitter from";
+    return { record, inputs: null };
+  }
+  if (
+    !Number.isFinite(reading.sunScreenU) ||
+    !Number.isFinite(reading.sunScreenV) ||
+    !Number.isFinite(reading.sunUnusable)
+  ) {
+    record.reason =
+      "the god-ray effect published no finite sun screen position or usability";
+    return { record, inputs: null };
+  }
+  const emitter = projectedEmitterPixels({
+    sunScreenU: reading.sunScreenU,
+    sunScreenV: reading.sunScreenV,
+    width: image.width,
+    height: image.height,
+  });
+  const derived = deriveGodRayCaptureMasks({
+    width: image.width,
+    height: image.height,
+    emitter,
+    sunUsable: reading.sunUnusable < 0.5,
+  });
+  const direction = expectedShaftDirectionRadians({
+    width: image.width,
+    height: image.height,
+    emitter,
+    valid: derived.masks.valid,
+  });
+  record.emitter = {
+    x: emitter.x,
+    y: emitter.y,
+    insideFrame: emitter.insideFrame,
+  };
+  record.maskProvenance = derived.provenance;
+  record.directionConditioning = direction.conditioning;
+  if (!direction.resolvable) {
+    record.reason = direction.reason;
+    return { record, inputs: null };
+  }
+  record.resolvable = true;
+  record.expectedDirectionRadians = direction.radians;
+  return {
+    record,
+    inputs: {
+      masks: derived.masks,
+      emitter: { x: emitter.x, y: emitter.y },
+      expectedDirectionRadians: direction.radians,
+    },
+  };
+}
+
 function primeCloudRenderer(frame, subject, controls, scope) {
   if (subject.id === "R-god-rays") return null;
   const enabled = controls[0];
@@ -1298,6 +1420,11 @@ async function runSubject({
       );
     });
     const phaseCaptures = [];
+    // One reading per ON phase, in bracket order. The first is what the cell's
+    // geometry is derived from, because `analyzeGodRayImages` measures the
+    // FIRST ON capture; the rest are kept so a drift in the projected sun
+    // between the two ON phases stays visible in the receipt.
+    const godRayEmitterReadings = [];
     let finish;
     let bracketFailed = false;
     let bracketFailure;
@@ -1382,6 +1509,11 @@ async function runSubject({
           sha256: capture.sha256 ?? sha256(capture.buffer),
           image,
         });
+        if (subject.id === "R-god-rays" && phase === "on") {
+          godRayEmitterReadings.push(
+            await readGodRayEmitter(frame, subject.id, phase, scope),
+          );
+        }
       }
     } catch (error) {
       bracketFailed = true;
@@ -1487,6 +1619,10 @@ async function runSubject({
       (entry, index) =>
         entry.phase === "OFF" && index > phaseCaptures.indexOf(firstOn),
     );
+    const godRayGeometry =
+      subject.id === "R-god-rays"
+        ? buildGodRayGeometry(godRayEmitterReadings, firstOn.image)
+        : null;
     const metrics = computeC13_42CellMetrics({
       kind: subject.id === "R-god-rays" ? "godRay" : "cloud",
       offImage: firstOff.image,
@@ -1494,6 +1630,7 @@ async function runSubject({
       repeatOffImage: repeatOff?.image,
       repeatOnImage: onCaptures[1]?.image,
       frames: phaseCaptures.map((entry) => entry.image.data),
+      ...(godRayGeometry?.inputs ?? {}),
     });
     const transitionReasons = phaseCaptures.flatMap(
       (entry) => entry.transition.reasons ?? [],
@@ -1524,6 +1661,12 @@ async function runSubject({
       preState: begun.entryState,
       postState: finish,
       metrics,
+      // Null on every cell that is not the god-ray subject. On that subject it
+      // is the audit trail for `metrics.godRay`: the raw emitter readings, the
+      // projected emitter in pixels, the expected shaft direction and its
+      // conditioning, and the mask provenance — including which masks are
+      // structurally empty because nothing on the page identifies them.
+      godRayGeometry: godRayGeometry?.record ?? null,
       pngSha256: firstOn.sha256,
       captures: phaseCaptures.map(
         ({

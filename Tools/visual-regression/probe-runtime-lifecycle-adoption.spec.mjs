@@ -21,7 +21,7 @@
 //      the orderly deadline by name in its incident file — with a same-shaped
 //      probe that finishes inside the budget as the negative control;
 //   C. the C13-42 probe's scope members are a subset of what the runtime hands
-//      out, its seventeen `scope.run` sites and two `scope.checkpoint` sites are
+//      out, its eighteen `scope.run` sites and two `scope.checkpoint` sites are
 //      all still there, and it reaches its own refusal tree in a Node dry run
 //      with `launch` wired to throw;
 //   D. both response-cap sites read the landed per-subject apparatus rather than
@@ -629,10 +629,17 @@ test("C. the C13-42 probe resolves against the runtime", async (t) => {
     .readFileSync(C13_42_PROBE_PATH, "utf8")
     .replace(/\r\n/g, "\n");
 
+  // Eighteen since C13-42f (2026-09-13): the probe reads the god-ray effect's
+  // own projected sun out of the page after each ON capture, and that read goes
+  // through the runtime's scope like every other page interaction instead of
+  // running outside the lifecycle's budget and abort signal. This is a census —
+  // it moves when a site is legitimately added — and the next subtest ("every
+  // scope member the probe uses is a member the runtime hands out") is what
+  // makes the addition mean something.
   await t.test(
-    "the seventeen scope.run sites and two checkpoints are present",
+    "the eighteen scope.run sites and two checkpoints are present",
     () => {
-      assert.equal(source.split("scope.run(").length - 1, 17);
+      assert.equal(source.split("scope.run(").length - 1, 18);
       assert.equal(source.split("scope.checkpoint(").length - 1, 2);
       assert.ok(
         c13_42Descriptor.workBudgetMs === c13_42WorkBudgetMs,

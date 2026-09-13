@@ -590,6 +590,62 @@ no `channels` field (one layer below where Farin looked). Consequences: Edge Leg
 remains unsatisfiable and Leg 1's `exitCode == 0` bar is unreachable (six of seven cells fold FAIL).
 Widen this row to supply `channels` from `decodePng` or relax `composeCloudMetrics`.
 
+**Both halves discharged in Node — 2026-09-13 (Wave 2 lane W2-T1, Curumo). Row stays OPEN on its Edge acceptance.**
+
+Dis's widen was right about the mechanism and one off on the arithmetic. `assertImage`
+(`Tools/visual-regression/lib/cloud-image-analysis.mjs:31-44`) requires
+`Number.isInteger(image.channels)` and `data.length === width * height * channels`;
+`decodePng` published neither field, so `analyzeCloudImages` threw
+`"onImage is not a valid decoded RGB/RGBA image"`, `composeCloudMetrics` caught it and
+returned `{ok: false}`, and `metrics.cloud.offOn` never existed. Measured before/after over a
+synthetic pair: `deriveCharacterizationThresholds` returns
+`calibration receipts carry no samples for cloudToggleChangedFraction` before and all four
+keys after. The count is **seven of eight** cells, not six of seven —
+`initialCoreSubjects().length === 8` (one `kind: "godRay"`, seven `kind: "cloud"`).
+
+`Tools/lib/png-decode.mjs` now publishes `channels` (always `4` — the layout of the RGBA
+buffer it returns, NOT the file's own count, which would make every colour-type-2 image fail
+the very check the field exists for), plus `sourceChannels` (3 or 4) and `colorType`.
+
+The god-ray half is wired, and the row's own prescription is **REFUTED at the tree**:
+`deriveFixtureMasks` cannot be the source. It throws on any backing other than 512×512, and it
+publishes `fullSupport`/`fullZero`/`fullExcluded`/`fullDeficit`, not the six masks
+`analyzeGodRayImages` names (`valid`, `emitter`, `occluder`, `ground`, `behindCamera`,
+`border`, each `onImage.width * onImage.height` long). Banked C13-42 captures are 1600×800 in
+four of the six 2026-09-09 runs and 571×383 in a fifth, with no PNG from the sixth — none of
+them 512×512. And `expectedDirectionRadians` had no **producer**: the name already existed as
+`analyzeGodRayImages`'s consumed input (`c13-42-reproduction-contract.mjs:1443`) and was named
+in the gap note at `:241`, but nothing under `Tools/` computed a value for it (corrected
+2026-09-13 from review finding F2, Baran; the lane's first wording said the name existed
+nowhere, which is false). So `c13-42-godray-fixture.mjs` gained a capture-side sibling —
+`projectedEmitterPixels`
+(UV→pixels on the shader's own top-left convention, `GodRayGenerate.wgsl:148`),
+`deriveGodRayCaptureMasks` and `expectedShaftDirectionRadians` (the uniform-energy circular
+mean over the valid region: the SAME estimator `analyzeGodRayImages` applies to the measured
+energy, so the two are comparable, with a structural refusal when the resultant is exactly
+zero rather than a meaningless `atan2(0, 0)`) — and `probe-c13-42-reported-demos.mjs` reads
+`sunScreenU`/`sunScreenV`/`_sunUnusable` off `WebGPUGodRayEffect` through `scope.run` after
+each ON capture and passes all three inputs, or none. All-or-nothing is deliberate:
+`computeC13_42CellMetrics` calls `analyzeGodRayImages` as soon as EITHER `masks` or `emitter`
+is present, and a partial supply returns `{ok: false}`, which would turn a cell that merely
+lacked geometry into a FAILING one.
+
+**Still open, and now named per cell rather than in prose:** `leakageEnergy.ground` and
+`leakageEnergy.occluder` are structurally zero, because nothing the page publishes identifies
+those regions per pixel. `deriveGodRayCaptureMasks` fills them with zeros only when the caller
+supplies nothing and lists them in `provenance.structurallyEmpty`, which the probe carries to
+the receipt as `cells[id=R-god-rays].godRayGeometry.maskProvenance.structurallyEmpty`, so a
+zero can never be read as a measurement. Supplying real ground/occluder masks — a per-pixel
+scene-region readout from the page — is the next concrete step for those two figures, and the
+geometry thresholds must not be frozen against them until it lands.
+
+**OWED to Edge (not claimed):** the row's acceptance bar, `metrics.godRay ≠ null` and
+`cloudToggleChangedFraction` resolving on ≥ 1 cell, is a measurement on a served tree. No
+C13-42 run has ever produced a cell: all six banked 2026-09-09 receipts under
+`Tools/visual-regression/output/c13-2026*/` carry `verdicts: []` and no `cells`, five refusing
+at `c13-42-served-closure-over-cap` and one erroring. `_lane-out/EDGE_RECIPE_CURUMO.md` is the
+executable recipe.
+
 ### NEW-C13-42-FIXTURE-SPEC-COSTS-136S-DECIMATE-GRID (Horn proposed row 6, C13-42g / DX-81)
 
 **Status:** OPEN (Horn proposed row 6; Gamling measured 115.6 s, Horn 136 s).

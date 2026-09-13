@@ -900,3 +900,310 @@ export function deriveFixtureMasks({
     providerIntegration: C13_42_GODRAY_FIXTURE.providerIntegration,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Capture-side geometry (C13-42f).
+//
+// `deriveFixtureMasks` above is the ANALYTIC fixture: it refuses any backing
+// buffer that is not 512 by 512 (`backingWidth !== BACKING_WIDTH` throws), it
+// marches its own synthetic emitter/occluder boxes, and it publishes
+// `fullSupport` / `fullZero` / `fullExcluded` / `fullDeficit`. None of that is
+// what `analyzeGodRayImages` consumes: that function requires six masks named
+// `valid`, `emitter`, `occluder`, `ground`, `behindCamera` and `border`, each
+// exactly `onImage.width * onImage.height` long
+// (`c13-42-reproduction-contract.mjs:1416-1426`), and the C13-42 probe's
+// captures are the browser's own canvas — 1600 by 800 in four of the six banked
+// 2026-09-09 runs, 571 by 383 in a fifth, and no PNG at all from the sixth;
+// none of them 512 by 512. So the fixture's masks cannot be handed to the
+// probe's cell construction: wrong vocabulary, wrong resolution, wrong scene.
+//
+// These functions are the capture-side counterpart. They derive the six masks
+// `analyzeGodRayImages` actually asks for from the only god-ray geometry the
+// running page publishes — the effect's realized `sunScreenU` / `sunScreenV`
+// and its sun-usable determination — plus the capture's own dimensions.
+// ---------------------------------------------------------------------------
+
+/**
+ * The outermost texel ring of a capture. A linear sampler at the outermost
+ * texel centre has its neighbour taps clamped (`axisTaps` above clamps to
+ * `[0, size - 1]`), so the value there is not a pure function of the scene.
+ * That is a property of the sampler, not a tuned margin, which is why it is 1
+ * and not a number someone picked.
+ */
+export const CAPTURE_BORDER_TEXELS = 1;
+
+/**
+ * Convert the god-ray effect's screen UV to capture pixel coordinates.
+ *
+ * The convention is the shader's, read at the source rather than assumed:
+ * `GodRayGenerate.wgsl:148` builds the fullscreen-triangle varying as
+ * `out.uv = vec2<f32>((x + 1.0) * 0.5, (1.0 - y) * 0.5)` with `y` in NDC, so
+ * `uv.y == 0` is the TOP of the frame. A PNG's rows run top-down too, and
+ * `analyzeGodRayImages` indexes pixels as `y = floor(index / width)`, so
+ * `y = v * height` needs no flip.
+ *
+ * The sun may legitimately project outside `[0,1]` — `setSunScreenUV`'s own
+ * documentation says an off-screen but in-front sun still drives a directional
+ * glow — so a UV outside the frame is reported, not refused.
+ *
+ * @param {{sunScreenU: number, sunScreenV: number, width: number, height: number}} input
+ * @returns {{x: number, y: number, insideFrame: boolean}} Pixel-space emitter.
+ */
+export function projectedEmitterPixels({
+  sunScreenU,
+  sunScreenV,
+  width,
+  height,
+} = {}) {
+  finiteNumber(sunScreenU, "sunScreenU");
+  finiteNumber(sunScreenV, "sunScreenV");
+  positiveInteger(width, "width");
+  positiveInteger(height, "height");
+  const x = sunScreenU * width;
+  const y = sunScreenV * height;
+  return deepFreeze({
+    x,
+    y,
+    insideFrame: x >= 0 && x <= width && y >= 0 && y <= height,
+  });
+}
+
+function validateCaptureMask(mask, name, pixels) {
+  if (mask === null || mask === undefined) return null;
+  if (typeof mask.length !== "number" || mask.length !== pixels) {
+    throw new RangeError(`${name} must cover exactly ${pixels} pixels`);
+  }
+  const copy = new Uint8Array(pixels);
+  for (let index = 0; index < pixels; index += 1) {
+    copy[index] = mask[index] ? 1 : 0;
+  }
+  return copy;
+}
+
+/**
+ * Build the six masks `analyzeGodRayImages` requires, at capture resolution.
+ *
+ * What each mask means here, and where its content comes from:
+ *
+ * - `border` — the outermost `borderTexels` ring (see `CAPTURE_BORDER_TEXELS`).
+ * - `valid` — EVERY captured pixel, border included. `analyzeGodRayImages`
+ *   skips a pixel outside `valid` before it attributes any leakage
+ *   (`if (!maskAt(masks.valid, …)) continue;`), so a `valid` that excluded the
+ *   border ring would make `leakageEnergy.border` structurally zero — the one
+ *   figure the border mask exists to produce. Nothing on a capture is
+ *   unmeasurable; the ring is MARKED by `border`, not removed from the metric.
+ * - `emitter` — the texels the shaft origin itself reads: the projected
+ *   emitter's own bilinear sampler footprint, via `linearSamplerFootprint`, so
+ *   the mask is the sampler's, not a disc of chosen radius. Empty when the sun
+ *   projects outside the frame, which is a legal state.
+ * - `behindCamera` — whole-frame. When the caller's sun-usable determination is
+ *   false (`WebGPUGodRayEffect.setSunScreenUV`'s `usable`, false when the sun is
+ *   behind the camera, non-finite, or grazing), NO pixel of the frame carries a
+ *   sun-derived shaft, so the mask is all ones and every positive delta is
+ *   attributed to that.
+ * - `ground`, `occluder` — NOT derivable from a capture plus a sun UV. They are
+ *   scene-geometry regions, and nothing the page publishes today identifies
+ *   them per pixel. They are filled with zeros ONLY when the caller supplies
+ *   nothing, and every such mask is named in `provenance.structurallyEmpty` so
+ *   a receipt can never be read as "occluder leakage measured zero" when the
+ *   truth is "no occluder region was identified". This is the named gap
+ *   (Principle 9), not a silent one: supplying real masks here is the next
+ *   concrete step for occluder/ground leakage, and until it lands those two
+ *   leakage figures are structurally zero and must not be thresholded.
+ *
+ * @param {object} input
+ * @param {number} input.width Capture width in pixels.
+ * @param {number} input.height Capture height in pixels.
+ * @param {{x: number, y: number}} input.emitter Projected emitter, pixel space.
+ * @param {boolean} input.sunUsable The caller's sun-usable determination.
+ * @param {number} [input.borderTexels] Ring width; defaults to the sampler's 1.
+ * @param {ArrayLike<number>} [input.groundMask] Per-pixel ground region, if known.
+ * @param {ArrayLike<number>} [input.occluderMask] Per-pixel occluder region, if known.
+ * @returns {object} `{width, height, pixels, masks, provenance}`.
+ */
+export function deriveGodRayCaptureMasks({
+  width,
+  height,
+  emitter,
+  sunUsable = true,
+  borderTexels = CAPTURE_BORDER_TEXELS,
+  groundMask = null,
+  occluderMask = null,
+} = {}) {
+  positiveInteger(width, "width");
+  positiveInteger(height, "height");
+  if (!Number.isInteger(borderTexels) || borderTexels < 0) {
+    throw new RangeError("borderTexels must be a nonnegative integer");
+  }
+  if (2 * borderTexels >= Math.min(width, height)) {
+    throw new RangeError("borderTexels would leave no valid region");
+  }
+  if (typeof sunUsable !== "boolean") {
+    throw new TypeError("sunUsable must be a boolean determination");
+  }
+  const point = point2([emitter?.x, emitter?.y], "emitter");
+  const pixels = width * height;
+  const valid = new Uint8Array(pixels);
+  const border = new Uint8Array(pixels);
+  const emitterMask = new Uint8Array(pixels);
+  const behindCamera = new Uint8Array(pixels);
+  if (!sunUsable) behindCamera.fill(1);
+  valid.fill(1);
+  let borderPixels = 0;
+  for (let y = 0; y < height; y += 1) {
+    const edgeRow = y < borderTexels || y >= height - borderTexels;
+    for (let x = 0; x < width; x += 1) {
+      const edge = edgeRow || x < borderTexels || x >= width - borderTexels;
+      if (edge) {
+        border[y * width + x] = 1;
+        borderPixels += 1;
+      }
+    }
+  }
+  let emitterTexels = 0;
+  const emitterInsideFrame =
+    point[0] >= 0 && point[0] <= width && point[1] >= 0 && point[1] <= height;
+  if (emitterInsideFrame) {
+    const footprint = linearSamplerFootprint(
+      [point[0] / width, point[1] / height],
+      width,
+      height,
+    );
+    for (const tap of footprint.texels) {
+      const offset = tap.y * width + tap.x;
+      if (emitterMask[offset] === 0) {
+        emitterMask[offset] = 1;
+        emitterTexels += 1;
+      }
+    }
+  }
+  const ground = validateCaptureMask(groundMask, "groundMask", pixels);
+  const occluder = validateCaptureMask(occluderMask, "occluderMask", pixels);
+  const structurallyEmpty = [];
+  if (ground === null) structurallyEmpty.push("ground");
+  if (occluder === null) structurallyEmpty.push("occluder");
+  return {
+    width,
+    height,
+    pixels,
+    masks: {
+      valid,
+      emitter: emitterMask,
+      occluder: occluder ?? new Uint8Array(pixels),
+      ground: ground ?? new Uint8Array(pixels),
+      behindCamera,
+      border,
+    },
+    provenance: deepFreeze({
+      borderTexels,
+      borderPixels,
+      borderSource:
+        "the outermost texel ring, where the linear sampler's neighbour taps are clamped",
+      validPixels: pixels,
+      validSource:
+        "every captured pixel; the border ring is marked, not excluded, so its leakage stays measurable",
+      emitterTexels,
+      emitterInsideFrame,
+      emitterSource: "the projected emitter's bilinear sampler footprint",
+      sunUsable,
+      behindCameraSource: sunUsable
+        ? "the caller reported a usable sun, so no pixel is attributed to a behind-camera sun"
+        : "the caller reported an unusable sun, so the whole frame is attributed to it",
+      structurallyEmpty,
+      structurallyEmptyReason:
+        structurallyEmpty.length === 0
+          ? null
+          : "no per-pixel scene-geometry region is published by the page, so these leakage figures are structurally zero and must not be thresholded",
+    }),
+  };
+}
+
+/**
+ * The shaft direction `analyzeGodRayImages` should be measured against.
+ *
+ * That function reduces the positive OFF-to-ON delta to an energy-weighted
+ * circular mean of `atan2(y - emitter.y, x - emitter.x)` over the valid region,
+ * then reports `angularDistance(meanAngle, expectedDirectionRadians)`. The
+ * expectation must therefore be the SAME estimator evaluated on the same
+ * geometry with the energy held uniform: where the circular mean would sit if
+ * the shaft energy were spread evenly over every valid pixel. Anything else
+ * compares two different estimators and calls the difference an error.
+ *
+ * Nothing here is tuned. The only refusal is structural: when the resultant
+ * vector is exactly zero the mean bearing does not exist (`Math.atan2(0, 0)`
+ * returns a finite 0 that means nothing), so the direction is reported as
+ * unresolvable and the caller must supply no god-ray geometry at all rather
+ * than publish a number with no content.
+ *
+ * `conditioning` is the resultant length in `[0, 1]`: 1 when every valid pixel
+ * lies on one bearing from the emitter, approaching 0 as the valid region
+ * surrounds the emitter symmetrically and the mean stops carrying direction. No
+ * floor is imposed on it here — like every other C13-42 threshold it is OWED to
+ * the first calibration runs (`CHARACTERIZATION_THRESHOLD_DERIVATION`), so it is
+ * published for that derivation instead of being invented now.
+ *
+ * @param {object} input
+ * @param {number} input.width Capture width in pixels.
+ * @param {number} input.height Capture height in pixels.
+ * @param {{x: number, y: number}} input.emitter Projected emitter, pixel space.
+ * @param {ArrayLike<number>} [input.valid] Valid mask; defaults to every pixel.
+ * @returns {{resolvable: boolean, radians: number|null, conditioning: number,
+ *   validPixels: number, reason: string|null}} The expectation.
+ */
+export function expectedShaftDirectionRadians({
+  width,
+  height,
+  emitter,
+  valid = null,
+} = {}) {
+  positiveInteger(width, "width");
+  positiveInteger(height, "height");
+  const point = point2([emitter?.x, emitter?.y], "emitter");
+  const pixels = width * height;
+  if (valid !== null && valid.length !== pixels) {
+    throw new RangeError(`valid must cover exactly ${pixels} pixels`);
+  }
+  let sumCos = 0;
+  let sumSin = 0;
+  let validPixels = 0;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = y * width + x;
+      if (valid !== null && !valid[offset]) continue;
+      const dx = x - point[0];
+      const dy = y - point[1];
+      if (dx === 0 && dy === 0) continue;
+      const inverseRadius = 1 / Math.hypot(dx, dy);
+      sumCos += dx * inverseRadius;
+      sumSin += dy * inverseRadius;
+      validPixels += 1;
+    }
+  }
+  if (validPixels === 0) {
+    return deepFreeze({
+      resolvable: false,
+      radians: null,
+      conditioning: 0,
+      validPixels: 0,
+      reason: "the valid region carries no pixel away from the emitter",
+    });
+  }
+  const resultant = Math.hypot(sumCos, sumSin);
+  if (resultant === 0) {
+    return deepFreeze({
+      resolvable: false,
+      radians: null,
+      conditioning: 0,
+      validPixels,
+      reason:
+        "the valid region surrounds the emitter symmetrically, so no mean bearing exists",
+    });
+  }
+  return deepFreeze({
+    resolvable: true,
+    radians: Math.atan2(sumSin, sumCos),
+    conditioning: resultant / validPixels,
+    validPixels,
+    reason: null,
+  });
+}

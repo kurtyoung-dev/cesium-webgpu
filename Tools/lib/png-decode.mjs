@@ -33,9 +33,29 @@ function crcCheckSkip() {
  * Decode an 8-bit, non-interlaced PNG (colour type 2 RGB or 6 RGBA) to a
  * tightly packed RGBA buffer.
  *
+ * `channels` describes THE BUFFER THIS FUNCTION RETURNS, not the file: `data`
+ * is always tightly packed RGBA, so `channels` is always 4 even for a colour
+ * type 2 (RGB) file, whose own channel count is published separately as
+ * `sourceChannels`. That distinction is load-bearing, not cosmetic. Consumers
+ * validate an image by `data.length === width * height * channels`
+ * (`Tools/visual-regression/lib/cloud-image-analysis.mjs:33-44`,
+ * `Tools/visual-regression/lib/c13-42-reproduction-contract.mjs:1335-1348`), so
+ * publishing the FILE's 3 here would make every decoded RGB image fail that
+ * check — the opposite of the reason `channels` is published at all.
+ *
+ * Before this field existed, `assertImage` in `cloud-image-analysis.mjs`
+ * required an integer `channels` and threw "… is not a valid decoded RGB/RGBA
+ * image" for every image `decodePng` produced; `composeCloudMetrics` caught
+ * that and returned `{ok: false}`, which is why the C13-42 probe's cloud cells
+ * could not produce `metrics.cloud.offOn.changedFraction` at all (C13-42f).
+ *
  * @param {Buffer} buffer Complete PNG file bytes.
- * @returns {{width: number, height: number, data: Buffer}} Decoded image;
- *   `data` is `width * height * 4` bytes, RGB inputs get alpha 255.
+ * @returns {{width: number, height: number, channels: number,
+ *   sourceChannels: number, colorType: number, data: Buffer}} Decoded image;
+ *   `data` is `width * height * 4` bytes, RGB inputs get alpha 255. `channels`
+ *   is 4 — the layout of `data`. `sourceChannels` is 3 for colour type 2 and 4
+ *   for colour type 6, and `colorType` is the IHDR byte, so a consumer that
+ *   needs to know whether the file carried real alpha can still tell.
  */
 export function decodePng(buffer) {
   crcCheckSkip();
@@ -114,14 +134,22 @@ export function decodePng(buffer) {
     }
     previous = line;
   }
-  return { width, height, data: out };
+  return {
+    width,
+    height,
+    channels: 4,
+    sourceChannels: channels,
+    colorType,
+    data: out,
+  };
 }
 
 /**
  * Read and decode a PNG file from disk.
  *
  * @param {string} filePath Path to a PNG file.
- * @returns {{width: number, height: number, data: Buffer}} Decoded image.
+ * @returns {{width: number, height: number, channels: number,
+ *   sourceChannels: number, colorType: number, data: Buffer}} Decoded image.
  */
 export function readPng(filePath) {
   return decodePng(fs.readFileSync(filePath));

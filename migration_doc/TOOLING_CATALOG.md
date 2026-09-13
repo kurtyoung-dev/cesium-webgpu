@@ -353,9 +353,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | compare-doc-anchors.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 1 | — |
 | lane-tmp.mjs | lib | ACTIVE | 2026-09-11 | 17 | The one way a spec, probe or tool takes scratch space: a single per-lane root under os.tmpdir() with removal in `finally`, so a throwing or killed run leaves one sweepable root instead of loose mkdtemp sandboxes at the Temp root. |
 | lane-tmp.spec.mjs | spec | ACTIVE | 2026-09-11 | 4 | Behaviour coverage for Tools/lib/lane-tmp.mjs — the directory is created under the lane root, removed on success AND on throw AND on rejection, refused outside tmpdir, and an inert `finally` is caught by the mutant. |
-| png-decode.mjs | lib | ACTIVE | 2026-09-02 | 9 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
-| png-decode.spec.mjs | spec | ACTIVE | 2026-09-02 | 2 | Round-trip, filter-coverage and error-path coverage for Tools/lib/png-decode.mjs. |
-| png-rgba.mjs | lib | ACTIVE | 2026-09-02 | 9 | CRC32 + PNG chunk + zero-dependency RGBA PNG encoder shared across the probe fleet, replacing near-duplicate hand-rolled copies one consumer at a time. |
+| png-decode.mjs | lib | ACTIVE | 2026-09-02 | 12 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
+| png-decode.spec.mjs | spec | ACTIVE | 2026-09-02 | 3 | Round-trip, filter-coverage and error-path coverage for Tools/lib/png-decode.mjs. |
+| png-rgba.mjs | lib | ACTIVE | 2026-09-02 | 10 | CRC32 + PNG chunk + zero-dependency RGBA PNG encoder shared across the probe fleet, replacing near-duplicate hand-rolled copies one consumer at a time. |
 | png-rgba.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Golden-byte and CRC32-vector coverage for Tools/lib/png-rgba.mjs. |
 | purpose-header.mjs | lib | ACTIVE | 2026-09-02 | 14 | The one shared @purpose/@status header grammar (parse, locate, byte-exact splice, violations) used by the codemod, the catalog generator and the fleet-contract analyzer. |
 | sharp-runtime-smoke.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 5 | — |
@@ -464,7 +464,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c12-29-s5-terrain-selection-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Certifies the S5 terrain-selection evidence gate: v4-v9 schema migrations, page-diagnostic validation, canonical capture checks, exit-code fold. |
 | c12-31-aureole-gate.spec.mjs | spec | ACTIVE | 2026-09-02 | 5 | node:test half of the C12-31 L1-L4 sky-aureole certification triple (probe-sky-aureole-anchor + gate lib + spec). |
 | c13-42-characterization-contract.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Pins the C13-42 characterization contract: the released controlled-ray obligation, the calibration-not-acceptance disposition, and the per-subject served-response budget. |
-| c13-42-godray-fixture.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 3 | — |
+| c13-42-godray-fixture.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 4 | — |
 | canvas-black-narrow.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Narrows the black-canvas bug by rendering three paths (default PP chain, depth overlay, frustum tint) and reporting which yields non-black pixels. |
 | canvas-black-readback.mjs | other | INVESTIGATION | 2026-08-16 | 4 | Reads back the sceneFramebuffer color texture via copyTextureToBuffer/mapAsync to prove whether the globe pass wrote any color, ignoring the PP chain. |
 | canvas-black-trace.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Renders 60 WebGPU frames capturing all [WebGPU:] console output to pin whether globe commands submit and pass validation (black-canvas bug). |
@@ -595,7 +595,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | globe-shaderset-flag-injectivity.spec.mjs | spec | ACTIVE | — | 3 | Pins that the WebGL globe shader key is injective: no two globe configurations that compile to different #define sets are ever served the same cached ShaderProgram. |
 | globe-surface-tile-provider-clipping-teardown.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that GlobeSurfaceTileProvider.destroy() routes its clipping-polygon teardown through ClippingPolygonCollection.setOwner so a backend feature renderer's cached GPU resources are released, with the context itself untouched. |
 | globe-use-log-depth.spec.mjs | spec | ACTIVE | 2026-08-16 | 8 | Pins that the globe resolves the shared isWebGPULogDepthActive gate so orthographic modes never mix log and hyperbolic encodings in one depth buffer. |
-| godray-energy-law.spec.mjs | spec | ACTIVE | 2026-09-11 | 5 | Executes the god-ray energy law straight out of GodRayGenerate.wgsl, pins count invariance and the energy bound against derived tolerances, records the emitter data dependency, and carries the inertness mutants that make those verdicts able to fail. |
+| godray-energy-law.spec.mjs | spec | ACTIVE | 2026-09-11 | 6 | Executes the god-ray energy law straight out of GodRayGenerate.wgsl, pins count invariance and the energy bound against derived tolerances, records the emitter data dependency, and carries the inertness mutants that make those verdicts able to fail. |
 | godray-sun-usability-uniform-ranges.spec.mjs | spec | ACTIVE | 2026-09-11 | 7 | Pins the god-ray sun-usability determination and the disjoint uniform write ranges it publishes through, including that some setter covers the sunUnusable byte range. |
 | gpu-timestamp-readback-ring-depth.spec.mjs | spec | ACTIVE | 2026-08-25 | 0 | Pins the GPU timestamp profiler's readback-ring depth behaviour: a workload at the measured worst-case latency retains every sample at a sufficient depth, and a ring that saturates at any depth still reports the loss instead of averaging past it. |
 | gpu-timestamp-unique-sample-accounting.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Pins the GPU timestamp profiler's union-fold frame coverage (overlap surfaced, never double-counted) and its no-silent-loss attempt ledger. |
@@ -769,7 +769,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-c12-29-s5-replacement-device.mjs | probe | ACTIVE | 2026-08-29 | 11 | Genuine device-loss recovery certification via Chromium GPU-process termination (never destroy()); 'destroyed' losses archived STRUCTURAL not recovery |
 | probe-c12-29-s5-svs-footprint.mjs | probe | ACTIVE | 2026-08-16 | 6 | Absolute NASA-SVS 5073 eclipse geospatial-footprint acceptance over the vendored four-row fixture + local QuantizedMesh, serial WebGL/WebGPU |
 | probe-c12-29-s5-terrain-selection.mjs | probe | ACTIVE | 2026-08-16 | 5 | Real-terrain/selection acceptance: fill-to-real transitions, x2 radius law, async picking, env-map capture over local QuantizedMesh, both backends |
-| probe-c13-42-reported-demos.mjs | probe | INVESTIGATION | 2026-09-12 | 5 | Reproduces the three reported cloud and GodRay demos plus four offline cloud stations with real UI brackets and byte-bound identities. |
+| probe-c13-42-reported-demos.mjs | probe | INVESTIGATION | 2026-09-12 | 7 | Reproduces the three reported cloud and GodRay demos plus four offline cloud stations with real UI brackets and byte-bound identities. |
 | probe-c9-14-ground-atmo-stage.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | Before/after self-diff captures (ground/horizon/orbit) proving the globe ground-atmosphere Nishita march runs in exactly one shader stage |
 | probe-camera-construct.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Patches the Camera constructor to log aspectRatio/drawingBuffer/fov/position at construction per renderer — startup camera-state diagnostic |
 | probe-camera-issue.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | One-off diagnostic for WebGPU Sandcastle demos ignoring camera setView/flyTo, using a forced-renderer Viewer shim per demo |
@@ -1520,8 +1520,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c12-29-s5-terrain-selection-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 4 | Frozen inputs, exact terrain-radius arithmetic, evidence-shape checks and verdict folding for S5's first final-certification shard (v10 schema). |
 | c12-31-aureole-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 3 | Gate-predicate library for the C12-31 sky-aureole certification lane, pairing probe-sky-aureole-anchor with its spec. |
 | c13-41-deckfree-control.mjs | lib | ACTIVE | 2026-08-29 | 4 | State-isolated ABBA session plan plus pinned lighting/fade constants for C13-41's deck-free eclipse control lane. |
-| c13-42-godray-fixture.mjs | lib | NO @purpose HEADER | 2026-09-11 | 6 | — |
-| c13-42-reproduction-contract.mjs | lib | NO @purpose HEADER | 2026-09-11 | 9 | — |
+| c13-42-godray-fixture.mjs | lib | NO @purpose HEADER | 2026-09-11 | 7 | — |
+| c13-42-reproduction-contract.mjs | lib | NO @purpose HEADER | 2026-09-11 | 13 | — |
 | c13-42-reproduction-harness.mjs | lib | NO @purpose HEADER | 2026-09-12 | 4 | — |
 | celestial-capture-harness.mjs | lib | ACTIVE | 2026-08-21 | 8 | Shared Playwright/page half of the celestial fleet: one pinned-clock settle recipe, warm-up-then-same-task capture, lane driver, PNG writer. |
 | celestial-g1-gate.mjs | gate-lib | ACTIVE | 2026-08-25 | 10 | Pure verdict logic for the C12 G1 gate after six recorded repairs: per-backend non-vacuity, doubly-blind certifying mode voids the lane as STRUCTURAL. |
@@ -1533,7 +1533,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | classification-frustum-slices-verdicts.mjs | lib | ACTIVE | 2026-09-10 | 4 | The pass/fail logic of probe-classification-frustum-slices.mjs, pure over measurements and free of imports, so a browser-free spec can execute it against the recorded numbers and against its own mutation. |
 | cloud-coverage-response-model.mjs | lib | ACTIVE | 2026-08-16 | 3 | f32 CPU twin of the cloud coverage->density response (gate, BILLOWY gradient, Worley erosion, Beer-Lambert), importing the shipped response curve. |
 | cloud-genus-morphology-model.mjs | lib | ACTIVE | 2026-08-16 | 7 | f32 CPU twin of C13-16 per-genus cloud morphology (wind frame, fallstreak shear, fibre carve); genus rows imported from CloudTypeProfile.js. |
-| cloud-image-analysis.mjs | lib | ACTIVE | 2026-08-16 | 7 | Pure image analysis for C13 cloud probes: background subtraction, silhouette removal, morphology summary, directional autocorrelation of density. |
+| cloud-image-analysis.mjs | lib | ACTIVE | 2026-08-16 | 11 | Pure image analysis for C13 cloud probes: background subtraction, silhouette removal, morphology summary, directional autocorrelation of density. |
 | cloud-march-transfer-model.mjs | lib | ACTIVE | 2026-08-21 | 4 | Node reconstruction of the camera-to-pixel cloud march (shell geometry, live density chain, saturating transfer) predicting the probe's estimator. |
 | cloud-orbital-ladder-model.mjs | lib | ACTIVE | 2026-09-12 | 3 | O3 aerial-cap fraction, O4 limb step, O6 decade retention and zoom flicker, O7 limb sample spacing — computed from uniforms and pixels, with each bar's basis stated. |
 | cloud-perf-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | One-function pass policy for the fixed-scene cloud perf probe: a requested pair ID must never silently degrade to a single-artifact success. |
@@ -1720,7 +1720,7 @@ Every census file whose own header reads `INVESTIGATION` or `ARCHIVED-CANDIDATE`
 | <a id="ap-tools-visual-regression-probe-c-r9-webgl-vs-webgpu-mjs"></a>[#](#ap-tools-visual-regression-probe-c-r9-webgl-vs-webgpu-mjs) | Tools/visual-regression/probe-c-r9-webgl-vs-webgpu.mjs | INVESTIGATION | 6 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-c10-02-style-economics-mjs"></a>[#](#ap-tools-visual-regression-probe-c10-02-style-economics-mjs) | Tools/visual-regression/probe-c10-02-style-economics.mjs | INVESTIGATION | 4 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-c10-11-ddtd-hitrate-mjs"></a>[#](#ap-tools-visual-regression-probe-c10-11-ddtd-hitrate-mjs) | Tools/visual-regression/probe-c10-11-ddtd-hitrate.mjs | INVESTIGATION | 6 | 0 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-c13-42-reported-demos-mjs"></a>[#](#ap-tools-visual-regression-probe-c13-42-reported-demos-mjs) | Tools/visual-regression/probe-c13-42-reported-demos.mjs | INVESTIGATION | 5 | 0 | no | REPOINT-FIRST |
+| <a id="ap-tools-visual-regression-probe-c13-42-reported-demos-mjs"></a>[#](#ap-tools-visual-regression-probe-c13-42-reported-demos-mjs) | Tools/visual-regression/probe-c13-42-reported-demos.mjs | INVESTIGATION | 7 | 0 | no | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-c9-14-ground-atmo-stage-mjs"></a>[#](#ap-tools-visual-regression-probe-c9-14-ground-atmo-stage-mjs) | Tools/visual-regression/probe-c9-14-ground-atmo-stage.mjs | INVESTIGATION | 2 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-camera-construct-mjs"></a>[#](#ap-tools-visual-regression-probe-camera-construct-mjs) | Tools/visual-regression/probe-camera-construct.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-camera-issue-mjs"></a>[#](#ap-tools-visual-regression-probe-camera-issue-mjs) | Tools/visual-regression/probe-camera-issue.mjs | INVESTIGATION | 0 | 0 | yes | ALLOWLIST-EDIT-THEN-MOVE |

@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
+import { decodePng } from "../lib/png-decode.mjs";
+import { encodeRgbaPng } from "../lib/png-rgba.mjs";
 import {
   C13_42_GODRAY_FIXTURE,
+  CAPTURE_BORDER_TEXELS,
   classifyLinearDepth,
   classifyProjectedHullSample,
   convexHullFromProjectedCorners,
@@ -11,11 +18,16 @@ import {
   createFixtureCamera,
   createFixtureSunPosition,
   deriveFixtureMasks,
+  deriveGodRayCaptureMasks,
+  expectedShaftDirectionRadians,
   linearSamplerFootprint,
   projectWorld,
+  projectedEmitterPixels,
   refuseF16Amplitude,
   traceF32Ray,
 } from "./lib/c13-42-godray-fixture.mjs";
+import { computeC13_42CellMetrics } from "./lib/c13-42-reproduction-contract.mjs";
+import { buildGodRayGeometry } from "./probe-c13-42-reported-demos.mjs";
 
 const generateUrl = new URL(
   "../../packages/engine/Source/Shaders/WebGPU/PostProcess/GodRayGenerate.wgsl",
@@ -134,6 +146,27 @@ function nextDown(value) {
   return bits.getFloat64(0);
 }
 
+// REPAIRED 2026-09-13 (C13-42f, lane Curumo). This test was RED at
+// `ea651de6d8` and had been since Batch 1471 (`3a9d6b80f0`) rewrote the god-ray
+// march: 10 of its 18 assertions no longer matched the shipped shader, and
+// Node stops a test at its first failure, so the other nine had not been
+// evaluated against the current sources at all. Six of the ten asserted
+// behaviour Batch 1471 REMOVED ON PURPOSE and they are deleted rather than
+// re-anchored — `textureSampleLevel(sceneColorTex, …)` (the march no longer
+// reads scene colour; `GodRayGenerate.wgsl:3-6`, `:55-62`), the
+// `illumination + sample * (weight * illumDecay)` accumulation and the
+// per-step `illumDecay * decay` (replaced by `godRayAccumulate` over
+// normalized `visibleSum`/`weightSum` and a sample-count-invariant
+// `attenStep`, `:26-53`), and the f16 `vec3<f16>` accumulator with its
+// `f16(weight * illumDecay)` cast (the f16 variant now marches in f32 and
+// narrows only the final combine, `GodRayGenerate_f16.wgsl:6-23`). The law
+// those six used to approximate is pinned properly — by parsing and EVALUATING
+// the shader, with inertness mutants — in
+// `Tools/visual-regression/godray-energy-law.spec.mjs` (`npm run
+// test-engine-node`), which is where it belongs. What survives here is what
+// this test's own name claims and that spec does not cover: the f32 step size,
+// the depth gate, the sample-then-step order, and the composite's additive
+// topology.
 test("production GodRay WGSL keeps f32 step, depth-gate, and additive topology", async () => {
   const [generate, generateF16, composite, compositeF16] = await Promise.all([
     readFile(generateUrl, "utf8"),
@@ -143,10 +176,15 @@ test("production GodRay WGSL keeps f32 step, depth-gate, and additive topology",
   ]);
 
   for (const source of [generate, generateF16]) {
+    // `density * invN`, where `invN = 1.0 / f32(sampleCount)`, is arithmetically
+    // the `density / f32(sampleCount)` this assertion was written against; the
+    // reciprocal is named because Batch 1471 reuses it twice more (the midpoint
+    // offset and the attenuation-ratio evaluation).
+    assert.equal(count(source, /let invN = 1\.0 \/ n;/gu), 1);
     assert.equal(
       count(
         source,
-        /let deltaUV = \(sunUV - in\.uv\) \* \(density \/ f32\(sampleCount\)\);/gu,
+        /let deltaUV = \(sunUV - in\.uv\) \* \(density \* invN\);/gu,
       ),
       1,
     );
@@ -158,20 +196,17 @@ test("production GodRay WGSL keeps f32 step, depth-gate, and additive topology",
       ),
       1,
     );
-    assert.equal(count(source, /textureSampleLevel\(\s*sceneColorTex,/gu), 1);
+    // Sample, THEN step: the depth read must use the step's own position, not
+    // its successor's. The predecessor of this assertion required the opposite
+    // order, matching the pre-1471 march that sampled at `(i + 1) / n` while
+    // weighting by index; `GodRayGenerate.wgsl:257-262` records why that was
+    // wrong and why the midpoint scheme replaced it.
     assert.equal(
-      source.indexOf("stepUV = stepUV + deltaUV;") <
-        source.indexOf("sceneDepthTex, texSampler, stepUV"),
+      source.indexOf("sceneDepthTex, texSampler, stepUV") <
+        source.indexOf("stepUV = stepUV + deltaUV;"),
       true,
     );
   }
-  assert.match(
-    generate,
-    /illumination = illumination \+ sample \* \(weight \* illumDecay\);/u,
-  );
-  assert.match(generate, /illumDecay = illumDecay \* decay;/u);
-  assert.match(generateF16, /var illumination: vec3<f16>/u);
-  assert.match(generateF16, /f16\(weight \* illumDecay\)/u);
   for (const source of [composite, compositeF16]) {
     assert.equal(
       count(source, /textureSample\(godrayTex, texSampler, in\.uv\)/gu),
@@ -557,4 +592,547 @@ test("f16 amplitude remains an explicit refusal", () => {
   assert.throws(() =>
     deriveFixtureMasks({ ...defaultMaskInput(), amplitudeFormat: "f16" }),
   );
+});
+
+// ---------------------------------------------------------------------------
+// C13-42f — capture-side geometry: making `metrics.godRay` resolvable.
+//
+// `analyzeGodRayImages` produces the god-ray GEOMETRY metrics only when the
+// caller supplies six masks at capture resolution, a projected emitter in
+// pixels, and an expected shaft direction. The C13-42 probe supplied none of
+// them, so `metrics.godRay` was `null` on every cell it has ever produced and
+// four of the contract's own metric fields could not be derived from any
+// receipt. These tests run the derivation over a SYNTHETIC capture whose
+// geometry is known by construction — a PNG this file encodes, with a shaft
+// drawn at a chosen bearing from a chosen emitter — so the verdicts are
+// checkable without a browser.
+//
+// Not covered here, and OWED to the Edge leg: that the probe's own cell
+// construction reaches these functions on a real page. That is a live
+// `page.evaluate` against `WebGPUGodRayEffect`, and no Node spec can stand in
+// for it. `_lane-out/EDGE_RECIPE_CURUMO.md` is the measurement.
+// ---------------------------------------------------------------------------
+
+const CAPTURE = Object.freeze({ width: 64, height: 48 });
+const SYNTHETIC_SUN = Object.freeze({ u: 0.8, v: 0.2 });
+
+function flatCapture(value, width = CAPTURE.width, height = CAPTURE.height) {
+  const pixels = new Uint8Array(width * height * 4);
+  for (let index = 0; index < width * height; index += 1) {
+    pixels[index * 4] = value;
+    pixels[index * 4 + 1] = value;
+    pixels[index * 4 + 2] = value;
+    pixels[index * 4 + 3] = 255;
+  }
+  return pixels;
+}
+
+/**
+ * Brighten every pixel whose bearing from `emitter` is within `halfAngle` of
+ * `direction`. That is a shaft with a KNOWN mean bearing, which is the only
+ * property these tests read out of it.
+ */
+function wedgeCapture(base, emitter, direction, halfAngle, gain) {
+  const pixels = base.slice();
+  for (let y = 0; y < CAPTURE.height; y += 1) {
+    for (let x = 0; x < CAPTURE.width; x += 1) {
+      const bearing = Math.atan2(y - emitter.y, x - emitter.x);
+      const offset = bearing - direction;
+      const separation = Math.abs(
+        Math.atan2(Math.sin(offset), Math.cos(offset)),
+      );
+      if (separation > halfAngle) continue;
+      const o = (y * CAPTURE.width + x) * 4;
+      pixels[o] = Math.min(255, pixels[o] + gain);
+      pixels[o + 1] = Math.min(255, pixels[o + 1] + gain);
+      pixels[o + 2] = Math.min(255, pixels[o + 2] + gain);
+    }
+  }
+  return pixels;
+}
+
+function decodedCapture(pixels) {
+  return decodePng(
+    Buffer.from(encodeRgbaPng(pixels, CAPTURE.width, CAPTURE.height)),
+  );
+}
+
+function syntheticGeometry(
+  fixtureModule = {
+    projectedEmitterPixels,
+    deriveGodRayCaptureMasks,
+    expectedShaftDirectionRadians,
+  },
+) {
+  const emitter = fixtureModule.projectedEmitterPixels({
+    sunScreenU: SYNTHETIC_SUN.u,
+    sunScreenV: SYNTHETIC_SUN.v,
+    width: CAPTURE.width,
+    height: CAPTURE.height,
+  });
+  const derived = fixtureModule.deriveGodRayCaptureMasks({
+    width: CAPTURE.width,
+    height: CAPTURE.height,
+    emitter,
+    sunUsable: true,
+  });
+  const direction = fixtureModule.expectedShaftDirectionRadians({
+    width: CAPTURE.width,
+    height: CAPTURE.height,
+    emitter,
+    valid: derived.masks.valid,
+  });
+  return { emitter, derived, direction };
+}
+
+function godRayMetricsFor(pixels, geometry) {
+  const offImage = decodedCapture(flatCapture(30));
+  const onImage = decodedCapture(pixels);
+  return computeC13_42CellMetrics({
+    kind: "godRay",
+    offImage,
+    onImage,
+    repeatOffImage: offImage,
+    repeatOnImage: onImage,
+    frames: [offImage.data, onImage.data, offImage.data, onImage.data],
+    ...(geometry === null
+      ? {}
+      : {
+          masks: geometry.derived.masks,
+          emitter: { x: geometry.emitter.x, y: geometry.emitter.y },
+          expectedDirectionRadians: geometry.direction.radians,
+        }),
+  });
+}
+
+test("capture masks cover the capture, mark the border, and name what nothing publishes", () => {
+  const emitter = projectedEmitterPixels({
+    sunScreenU: SYNTHETIC_SUN.u,
+    sunScreenV: SYNTHETIC_SUN.v,
+    width: CAPTURE.width,
+    height: CAPTURE.height,
+  });
+  assert.equal(emitter.x, SYNTHETIC_SUN.u * CAPTURE.width);
+  assert.equal(emitter.y, SYNTHETIC_SUN.v * CAPTURE.height);
+  assert.equal(emitter.insideFrame, true);
+
+  const derived = deriveGodRayCaptureMasks({
+    width: CAPTURE.width,
+    height: CAPTURE.height,
+    emitter,
+    sunUsable: true,
+  });
+  const pixels = CAPTURE.width * CAPTURE.height;
+  for (const name of [
+    "valid",
+    "emitter",
+    "occluder",
+    "ground",
+    "behindCamera",
+    "border",
+  ]) {
+    assert.equal(derived.masks[name].length, pixels, `${name} mask length`);
+  }
+  // Every captured pixel is measurable; the ring is marked, not removed, or
+  // `leakageEnergy.border` could never be anything but zero.
+  assert.equal(
+    derived.masks.valid.reduce((total, value) => total + value, 0),
+    pixels,
+  );
+  const ring =
+    pixels -
+    (CAPTURE.width - 2 * CAPTURE_BORDER_TEXELS) *
+      (CAPTURE.height - 2 * CAPTURE_BORDER_TEXELS);
+  assert.equal(
+    derived.masks.border.reduce((total, value) => total + value, 0),
+    ring,
+  );
+  assert.equal(derived.provenance.borderPixels, ring);
+  // A usable sun attributes nothing to a behind-camera sun.
+  assert.equal(
+    derived.masks.behindCamera.reduce((total, value) => total + value, 0),
+    0,
+  );
+  // The emitter mask is the sampler's footprint, so at most the four texels a
+  // bilinear tap reads.
+  assert.equal(derived.provenance.emitterTexels > 0, true);
+  assert.equal(derived.provenance.emitterTexels <= 4, true);
+  // The gap is NAMED, not silent.
+  assert.deepEqual(derived.provenance.structurallyEmpty, [
+    "ground",
+    "occluder",
+  ]);
+  assert.equal(typeof derived.provenance.structurallyEmptyReason, "string");
+  assert.equal(
+    derived.masks.ground.reduce((total, value) => total + value, 0),
+    0,
+  );
+
+  const unusable = deriveGodRayCaptureMasks({
+    width: CAPTURE.width,
+    height: CAPTURE.height,
+    emitter,
+    sunUsable: false,
+  });
+  assert.equal(
+    unusable.masks.behindCamera.reduce((total, value) => total + value, 0),
+    pixels,
+  );
+
+  // A sun that projects off-screen is a legal state, not a refusal.
+  const offscreen = deriveGodRayCaptureMasks({
+    width: CAPTURE.width,
+    height: CAPTURE.height,
+    emitter: projectedEmitterPixels({
+      sunScreenU: 1.6,
+      sunScreenV: -0.3,
+      width: CAPTURE.width,
+      height: CAPTURE.height,
+    }),
+    sunUsable: true,
+  });
+  assert.equal(offscreen.provenance.emitterInsideFrame, false);
+  assert.equal(offscreen.provenance.emitterTexels, 0);
+
+  // A supplied mask of the wrong size is refused rather than padded.
+  assert.throws(
+    () =>
+      deriveGodRayCaptureMasks({
+        width: CAPTURE.width,
+        height: CAPTURE.height,
+        emitter,
+        sunUsable: true,
+        groundMask: new Uint8Array(pixels - 1),
+      }),
+    /groundMask must cover exactly/u,
+  );
+  // A supplied mask IS used, and stops being named as structurally empty.
+  const supplied = new Uint8Array(pixels);
+  supplied[0] = 1;
+  const withGround = deriveGodRayCaptureMasks({
+    width: CAPTURE.width,
+    height: CAPTURE.height,
+    emitter,
+    sunUsable: true,
+    groundMask: supplied,
+  });
+  assert.equal(withGround.masks.ground[0], 1);
+  assert.deepEqual(withGround.provenance.structurallyEmpty, ["occluder"]);
+});
+
+test("the expected shaft direction is a circular mean that refuses when none exists", () => {
+  const corner = projectedEmitterPixels({
+    sunScreenU: SYNTHETIC_SUN.u,
+    sunScreenV: SYNTHETIC_SUN.v,
+    width: CAPTURE.width,
+    height: CAPTURE.height,
+  });
+  const centre = projectedEmitterPixels({
+    sunScreenU: 0.5,
+    sunScreenV: 0.5,
+    width: CAPTURE.width,
+    height: CAPTURE.height,
+  });
+  const cornerDirection = expectedShaftDirectionRadians({
+    width: CAPTURE.width,
+    height: CAPTURE.height,
+    emitter: corner,
+  });
+  const centreDirection = expectedShaftDirectionRadians({
+    width: CAPTURE.width,
+    height: CAPTURE.height,
+    emitter: centre,
+  });
+  assert.equal(cornerDirection.resolvable, true);
+  assert.equal(Number.isFinite(cornerDirection.radians), true);
+  assert.equal(
+    cornerDirection.validPixels,
+    CAPTURE.width * CAPTURE.height,
+    "with no valid mask every pixel away from the emitter is counted",
+  );
+  // ORIENTATION, pinned against geometry this file computes without the
+  // estimator. Over a rectangle the uniform circular mean sits close to the
+  // plain bearing from the emitter to the frame's centroid — 2.4635 rad
+  // against 2.4981 rad for this emitter — so a closed-form bearing is a valid
+  // independent check of the sign, which magnitude-only assertions are not.
+  // Review finding F1 (Baran, 2026-09-13): a y-mirror of the accumulation
+  // (`sumSin -= dy * inverseRadius`) left the whole suite at 16/16, because the
+  // synthetic shaft is drawn along the module's OWN published direction and
+  // follows any transformation of it. The mirrored value is -2.4635 rad, an
+  // angular distance of ~1.32 rad from the bearing below, which this catches.
+  const centroidBearing = Math.atan2(
+    CAPTURE.height / 2 - corner.y,
+    CAPTURE.width / 2 - corner.x,
+  );
+  const orientationError = Math.abs(
+    Math.atan2(
+      Math.sin(cornerDirection.radians - centroidBearing),
+      Math.cos(cornerDirection.radians - centroidBearing),
+    ),
+  );
+  assert.equal(
+    orientationError < 0.1,
+    true,
+    `the expectation must point where the geometry does: ${cornerDirection.radians} vs ${centroidBearing}`,
+  );
+  // An emitter near a corner points into the frame; one at the centre is
+  // surrounded, so its mean carries far less direction. The assertion is the
+  // ORDERING, which follows from the geometry, not a recorded magnitude.
+  assert.equal(
+    centreDirection.conditioning < cornerDirection.conditioning,
+    true,
+  );
+
+  // Two valid pixels on exactly opposite bearings cancel exactly: there is no
+  // mean bearing, and the function says so instead of returning atan2(0, 0).
+  const width = 5;
+  const height = 5;
+  const valid = new Uint8Array(width * height);
+  valid[2 * width + 0] = 1;
+  valid[2 * width + 4] = 1;
+  const cancelled = expectedShaftDirectionRadians({
+    width,
+    height,
+    emitter: { x: 2, y: 2 },
+    valid,
+  });
+  assert.equal(cancelled.resolvable, false);
+  assert.equal(cancelled.radians, null);
+  assert.match(cancelled.reason, /symmetrically/u);
+
+  // A valid region holding only the emitter's own pixel has nothing to bear on.
+  const alone = new Uint8Array(width * height);
+  alone[2 * width + 2] = 1;
+  const empty = expectedShaftDirectionRadians({
+    width,
+    height,
+    emitter: { x: 2, y: 2 },
+    valid: alone,
+  });
+  assert.equal(empty.resolvable, false);
+  assert.equal(empty.validPixels, 0);
+});
+
+test("a synthetic capture makes metrics.godRay resolvable and discriminates shaft direction", () => {
+  const geometry = syntheticGeometry();
+  assert.equal(geometry.direction.resolvable, true);
+
+  // The before-state, pinned: the same capture with no geometry supplied
+  // produces a PASSING cell whose god-ray metrics are simply absent. That is
+  // what every C13-42 cell did before this wiring, and it is why the four
+  // geometry threshold keys could not be derived from any receipt.
+  const bare = godRayMetricsFor(
+    wedgeCapture(
+      flatCapture(30),
+      geometry.emitter,
+      geometry.direction.radians,
+      0.3,
+      120,
+    ),
+    null,
+  );
+  assert.equal(bare.godRay, null);
+  assert.equal(bare.ok, true);
+
+  const aligned = godRayMetricsFor(
+    wedgeCapture(
+      flatCapture(30),
+      geometry.emitter,
+      geometry.direction.radians,
+      0.3,
+      120,
+    ),
+    geometry,
+  );
+  assert.notEqual(aligned.godRay, null);
+  assert.equal(aligned.godRay.ok, true);
+  assert.equal(aligned.ok, true);
+  assert.equal(aligned.godRay.shaftSupportFraction > 0, true);
+  assert.equal(Number.isFinite(aligned.godRay.angularWidthRadians), true);
+  // A shaft drawn along the expectation is aligned with it.
+  assert.equal(aligned.godRay.radialAlignmentAngleErrorRadians < 0.1, true);
+  // The border ring is inside `valid`, so energy that reaches the frame edge is
+  // attributed instead of silently dropped.
+  assert.equal(aligned.godRay.leakageEnergy.border > 0, true);
+
+  const opposed = godRayMetricsFor(
+    wedgeCapture(
+      flatCapture(30),
+      geometry.emitter,
+      geometry.direction.radians + Math.PI,
+      0.3,
+      120,
+    ),
+    geometry,
+  );
+  assert.notEqual(opposed.godRay, null);
+  assert.equal(opposed.godRay.ok, true);
+  // The same apparatus, a shaft pointing the other way: the error is half a
+  // turn. A metric that could not tell these apart would be worthless.
+  assert.equal(opposed.godRay.radialAlignmentAngleErrorRadians > 3, true);
+});
+
+test("the probe's geometry builder publishes all three inputs or none", () => {
+  const onImage = decodedCapture(flatCapture(40));
+  const usable = buildGodRayGeometry(
+    [
+      {
+        enabled: true,
+        sunScreenU: SYNTHETIC_SUN.u,
+        sunScreenV: SYNTHETIC_SUN.v,
+        sunUnusable: 0,
+      },
+    ],
+    onImage,
+  );
+  assert.deepEqual(Object.keys(usable.inputs).sort(), [
+    "emitter",
+    "expectedDirectionRadians",
+    "masks",
+  ]);
+  assert.equal(usable.record.resolvable, true);
+  assert.equal(Number.isFinite(usable.record.expectedDirectionRadians), true);
+  assert.equal(Number.isFinite(usable.record.directionConditioning), true);
+  assert.deepEqual(usable.record.maskProvenance.structurallyEmpty, [
+    "ground",
+    "occluder",
+  ]);
+
+  // No effect on the page: no inputs, a stated reason, and a cell that keeps
+  // the metrics it already had rather than acquiring a failing one.
+  const absent = buildGodRayGeometry([null], onImage);
+  assert.equal(absent.inputs, null);
+  assert.equal(absent.record.resolvable, false);
+  assert.match(absent.record.reason, /no god-ray effect/u);
+
+  const nonFinite = buildGodRayGeometry(
+    [{ enabled: true, sunScreenU: null, sunScreenV: 0.2, sunUnusable: 0 }],
+    onImage,
+  );
+  assert.equal(nonFinite.inputs, null);
+  assert.match(nonFinite.record.reason, /no finite sun screen position/u);
+
+  // An unusable sun still measures — it attributes the whole frame to the
+  // behind-camera mask, which is a verdict, not an absence.
+  const unusable = buildGodRayGeometry(
+    [
+      {
+        enabled: true,
+        sunScreenU: SYNTHETIC_SUN.u,
+        sunScreenV: SYNTHETIC_SUN.v,
+        sunUnusable: 1,
+      },
+    ],
+    onImage,
+  );
+  assert.equal(unusable.record.resolvable, true);
+  assert.equal(unusable.record.maskProvenance.sunUsable, false);
+  assert.equal(
+    unusable.inputs.masks.behindCamera.reduce(
+      (total, value) => total + value,
+      0,
+    ),
+    CAPTURE.width * CAPTURE.height,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Inertness mutants. Each leaves every symbol, export and call site in place
+// and changes only what the function PUBLISHES, then requires the verdict above
+// to flip. A mutant that the suite survives means the assertion was not reading
+// the thing it claims to read.
+// ---------------------------------------------------------------------------
+
+const FIXTURE_URL = new URL("./lib/c13-42-godray-fixture.mjs", import.meta.url);
+
+async function importMutatedFixture(from, to) {
+  // `* text=auto` with `core.autocrlf=true` means the working-tree copy may
+  // arrive with either ending, so anchors are matched against a normalized
+  // copy rather than against a bare "\n".
+  const source = (await readFile(FIXTURE_URL, "utf8")).replace(/\r\n/gu, "\n");
+  const occurrences = source.split(from).length - 1;
+  assert.equal(occurrences, 1, `mutation anchor is not unique: ${from}`);
+  const directory = mkdtempSync(path.join(tmpdir(), "c13-42f-mutant-"));
+  const file = path.join(directory, "mutant.mjs");
+  writeFileSync(file, source.replace(from, to));
+  try {
+    return await import(pathToFileURL(file).href);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test("MUTANT: a shaft direction turned half a turn fails the alignment verdict", async () => {
+  const mutated = await importMutatedFixture(
+    "    radians: Math.atan2(sumSin, sumCos),",
+    "    radians: Math.atan2(sumSin, sumCos) + Math.PI,",
+  );
+  const geometry = syntheticGeometry(mutated);
+  assert.equal(geometry.direction.resolvable, true);
+  const aligned = godRayMetricsFor(
+    wedgeCapture(
+      flatCapture(30),
+      geometry.emitter,
+      // The shaft is still drawn where the UNMUTATED expectation points, so
+      // only the published expectation moved.
+      expectedShaftDirectionRadians({
+        width: CAPTURE.width,
+        height: CAPTURE.height,
+        emitter: geometry.emitter,
+        valid: geometry.derived.masks.valid,
+      }).radians,
+      0.3,
+      120,
+    ),
+    geometry,
+  );
+  assert.notEqual(aligned.godRay, null);
+  assert.equal(
+    aligned.godRay.radialAlignmentAngleErrorRadians < 0.1,
+    false,
+    "the live verdict must not survive a half-turn expectation",
+  );
+});
+
+test("MUTANT: masks that do not cover the capture fail the god-ray verdict", async () => {
+  const mutated = await importMutatedFixture(
+    "    masks: {\n      valid,",
+    "    masks: {\n      valid: valid.subarray(0, pixels - 1),",
+  );
+  // Only the MASKS come from the mutant. The emitter and the expected
+  // direction come from the live module, so the single thing this mutant
+  // changes is whether the masks cover the capture.
+  const live = syntheticGeometry();
+  const geometry = {
+    emitter: live.emitter,
+    direction: live.direction,
+    derived: mutated.deriveGodRayCaptureMasks({
+      width: CAPTURE.width,
+      height: CAPTURE.height,
+      emitter: live.emitter,
+      sunUsable: true,
+    }),
+  };
+  assert.equal(
+    geometry.derived.masks.valid.length,
+    CAPTURE.width * CAPTURE.height - 1,
+    "the mutant must actually shorten the mask",
+  );
+  const aligned = godRayMetricsFor(
+    wedgeCapture(
+      flatCapture(30),
+      geometry.emitter,
+      geometry.direction.radians,
+      0.3,
+      120,
+    ),
+    geometry,
+  );
+  assert.notEqual(aligned.godRay, null);
+  assert.equal(
+    aligned.godRay.ok,
+    false,
+    "a short mask must not be accepted as coverage",
+  );
+  assert.match(aligned.godRay.reason, /valid mask/u);
 });

@@ -231,16 +231,28 @@ const METRIC_QUANTUM = 1e-6;
  * a different path in the two cell shapes, and the first path that resolves on
  * a given cell is the one used.
  *
- * NAMED GAP, not a silent omission (Principle 9). The god-ray GEOMETRY metrics
- * — `shaftSupportFraction`, `radialFalloffLinearLuminancePerPixel`,
+ * NAMED GAP, narrowed 2026-09-13 (C13-42f). The god-ray GEOMETRY metrics —
+ * `shaftSupportFraction`, `radialFalloffLinearLuminancePerPixel`,
  * `radialAlignmentAngleErrorRadians`, `angularWidthRadians` — are produced by
  * `analyzeGodRayImages`, which `computeC13_42CellMetrics` calls only when the
- * caller supplies `masks` or `emitter`. The probe supplies NEITHER, so
- * `metrics.godRay` is `null` on every cell it produces and no threshold can be
- * derived from those fields today. Wiring the fixture's `deriveFixtureMasks`,
- * projected emitter and `expectedDirectionRadians` into the probe is the
- * missing piece; until it lands the geometry thresholds cannot be frozen, and
- * the keys below are the reachable characterization.
+ * caller supplies `masks` or `emitter`. The probe now supplies all three inputs
+ * for the `R-god-rays` cell — capture-resolution masks, the projected emitter
+ * in pixels, and an expected shaft direction, built by
+ * `c13-42-godray-fixture.mjs`'s `deriveGodRayCaptureMasks`,
+ * `projectedEmitterPixels` and `expectedShaftDirectionRadians` from the
+ * effect's own `sunScreenU` / `sunScreenV` and sun-usable state — so
+ * `metrics.godRay` is a measurement rather than `null` whenever that geometry
+ * resolves. It is NOT `deriveFixtureMasks` that does this: that function is the
+ * 512-by-512 analytic fixture and refuses any other backing size, while the
+ * probe's captures are the page's own canvas.
+ *
+ * What is still owed: no capture has yet succeeded, so the geometry keys are
+ * still not derivable FROM A RECEIPT, and `leakageEnergy.ground` /
+ * `leakageEnergy.occluder` stay structurally zero until something on the page
+ * identifies those regions per pixel — each cell's
+ * `godRayGeometry.maskProvenance.structurallyEmpty` names them so a zero is
+ * never read as a measurement. The keys below remain the reachable
+ * characterization.
  */
 export const CHARACTERIZATION_THRESHOLD_DERIVATION = Object.freeze({
   method:
