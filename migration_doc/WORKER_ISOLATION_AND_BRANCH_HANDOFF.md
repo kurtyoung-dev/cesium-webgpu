@@ -820,3 +820,50 @@ foreign tools leave their own (the `.tmp??????` directories at the Temp root are
 crate's default shape, created in pairs at VS Code extension-host startup — not ours, and not
 fixable here). Those are what the age-gated sweep is for. They are not a licence to skip the
 `finally`.
+
+### 8j. Seat and lead lessons from the Campaign 13 v2 Wave-1 landings (2026-09-12/13)
+
+Four process defects the wave paid for, recorded here because each cost a round and none is
+specific to the rows that hit it. Entered 2026-09-13 by the record lane; the seat rulings they
+encode are indexed in `MAINTAINER_RULINGS_2026-09-12.md`'s dated seat-rulings note, and three of
+them are put to the maintainer as `RR-2026-09-13-A`…`-C`.
+
+**A lead never sweeps a live worker's temp root.** A Wave-1 lead swept a tier-3's temp root
+mid-run, on the strength of an artifact existing at the destination — the same shape as the
+2026-09-11 incident that produced §8i's positive-list rule, at a smaller scale. The evidence
+survived by sequencing luck. **The worker sweeps its own root at its own end** (§8i); a lead that
+believes a worker is finished asks the worker, and harvests before it removes anything. Owned and
+disclosed by the lead, which is why it is here rather than lost.
+
+**A seat gate never runs a suite that reads a held file.** A landing was refused by its own wrapper
+because the wrapper required `npm run test-landing-rules`, which at the seat reads the
+maintainer's HELD, never-staged `Tools/verify-landing-compliance.mjs` and its spec (448 insertions
+of uncommitted work) and fails three tests **whose names do not exist at HEAD**. The same class had
+already appeared as the 2026-09-11 catalog-suite red. **A lane's gate is the lane's own spec
+commands**; for a suite that reads held work, the reviewers' clean-clone runs are the evidence. The
+landing wrapper now accepts `;`-separated commands or the literal `none`. → `RR-2026-09-13-C`.
+
+**An anchor-based splice asserts its anchor is unique, or scoped to a section.** A lane spliced
+three status rows into a queue using `findIndex` on a row anchor that matches **both** the §1 ID
+table and the §9 status ledger; the rows landed in §1, duplicating ids that already existed there,
+and the packet reported the ID table untouched. **The verification was `--stat`, which counts
+insertions and cannot see placement.** Two rules follow: an anchor-based splice **asserts the
+anchor occurs exactly once** (or restricts its search to a section's line range) before writing,
+and an insertion is verified by **reading the neighbourhood of the inserted text**, never by a
+diffstat. A reviewer caught it; it was re-landed as one zero-deletion hunk in §9.
+
+**The union set at landing includes the campaign queue's §9 status ledger.** Three lanes appended
+add-only rows to `QUEUE_2026-07-23_CAMPAIGN13.md` §9 in one wave, and the first union resolver
+covered `package.json` and the §1 ID table but not §9 — so a three-way apply conflicted add/add and
+needed a hand resolution mid-landing. Any file where **more than one lane appends rows** belongs in
+the resolver's per-key union set: today that is `package.json`'s script block, the queue's §1 table,
+the queue's **§9 ledger**, and `DEFERRED_WORK.md`'s row sections.
+
+**And one that is not a defect but a cost worth pricing:** an Edge-leg recipe in this wave took
+**five verifier rounds** to become executable, each round finding a step that required judgement
+the recipe did not supply — a wrong preset index, a precondition that could read a correct result
+as a failure, an apply step that silently captured the BEFORE bundle as the AFTER, and a conflict
+check that grepped two directories and could not see six of the patch's fifteen files. **Write Edge
+legs as executable scripts from the start** — two trees, md5 pairs on both, `git ls-files -u` empty
+as the conflict assertion (never a grep for markers), every command written in full — and make
+"the recipe is executable without judgement" a review checklist item in its own right.

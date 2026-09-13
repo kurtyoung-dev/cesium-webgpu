@@ -87,7 +87,17 @@ its restored exit condition is the SOL-4 banked refresh cost plus the 1.0496
 `shadowContrastInvariant` mechanism (queue row `C13-41`) — **and now first in the Edge queue**
 under `R-2026-09-12-7`: the exposure-sweep discriminator (`R-2026-09-02-5`) takes the single Edge
 slot after the P0-2 gate and **all cloud work is pure-Node until it returns**. Still C14's
-transitive blocker (see C14 below).
+transitive blocker (see C14 below). **The discriminator has returned once already** (added
+2026-09-13): it ran as Éowyn job 2 leg 7 on **2026-09-03** at tree `fbea2028cc` and came back
+**exit 1, GATE FAIL** — the CO-22 sweep was measured and **its direction matched while its level did
+not** (measured above 1 at every exposure, the residue model below 1), `shadowContrastInvariant`
+read 1.0341 against the band [0.97, 1.03], the deck-free control lane was BLIND (9 predicates
+unscored) and `refreshCostMeasured` was FALSE. **A re-run on `ea651de6d8` is in flight** (executor
+Bandobras, job 13c leg (e), banking to
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-13/`), and **the maintainer's
+re-decision under `R-2026-09-02-5` is OWED** — requested as `RR-2026-09-13-E`. Numbers and bank
+paths: the `C13-41` row's execution stamp in
+[`QUEUE_2026-07-23_CAMPAIGN13.md`](QUEUE_2026-07-23_CAMPAIGN13.md).
 
 **Wave A (2026-09-11):** D1 (Batch 1466), C1 (Batch 1467), C2 (Batch 1468), and C3 (Batch 1471)
 LANDED — **unchanged**.
@@ -101,7 +111,46 @@ is retired; the Edge job's leg 1 is now blocked on the **`C13-41` slot**, not on
 is CALIBRATION, not acceptance.
 
 **Follow-ups and their order:** `C13-42a-3` **item 8 before** `C13-42a-2` (seat sequencing,
-2026-09-12).
+2026-09-12). *[corrected 2026-09-13: item 8 is no longer pending — it **CLOSED 2026-09-12 in Batch
+1478** (`e69d3e4fc7`, lane L1 / Durin), so `C13-42a-2` and `C13-N01` stage 2 are unblocked. The
+other seven `C13-42a-3` residuals remain OPEN. Ledger:
+`DEFERRED_WORK.md:178-181`, `### NEW-C13-42A-RESIDUALS (C13-42a-3)`.]*
+
+**Wave 1 of C13 v2 — the four Node-only lanes LANDED, 2026-09-12** (added 2026-09-13; this file was
+last amended at Batch 1476 and did not carry them). Batch numbers, hashes and times are the git
+commit dates:
+
+| Batch | Hash | Committed (EDT) | Lane | Rows |
+| --- | --- | --- | --- | --- |
+| **1478** | `e69d3e4fc7` | 2026-09-12 14:09:11 | **L1** Durin | `C13-N08a`, `C13-42b`, `C13-42a-3` item 8 |
+| **1479** | `beb08423b3` | 2026-09-12 15:08:27 | **L2** Telchar | `C13-N01` stage 1, `C13-N02`, the fleet-contract remediation |
+| **1480** | `39283ec388` | 2026-09-12 15:16:28 | **L6** Yavanna | `C13-N09`, `C13-N04`, `C13-N03`, `C13-N04b` in part, `C13-N07a` held |
+| **1481** | `9f3723b0b3` | 2026-09-12 15:30:28 | **L8** Eönwë | `C13-N32`, `C13-N36`, `C13-N46`, `C13-N34`, `C13-N48` |
+
+**Still in flight, Node-only, frozen and reviewed but NOT landed:** **L3** (Ulmo — `C13-N10`,
+`C13-N11` uniform plumbing, `C13-N20` predicate), **L4** (Manwë — `C13-N11` WGSL half, `C13-N20`,
+`C13-N21`) and **L5** (Ossë — `C13-N22`). Each owes its named Edge leg **before** landing under
+`R-2026-09-12-4`, and the landing order is HARD: **L3 → L4** (L4's WGSL reads uniform slots L3's
+packer writes) and L5 after L3. **L7** (`C13-N06` pass 1) has not been dispatched: it *is* a
+measurement, so it waits for the slot outright.
+
+**Edge leg 1 is OWED** and is the wave's first browser debt: the two cloud scenes' WebGPU baselines
+from `Tools/visual-regression/scenes-cloud-pending.json` (tracked in Batch 1480, deliberately not
+in `scenes.json`), `C13-N04b`'s first ladder run, one run of each of the four probes lane L2
+repaired so their new watchdog bounds are calibrated rather than read off source, and the
+`test-cloud-c13` mask-order rerun after a build (`C13-N58`).
+
+**Wave-1 exit stays the manual three-step** permitted by `R-2026-09-02-3`: Batch 1481 made
+`Tools/wave-end-gate.mjs` able to *reach* a receipt, but the first real receipt needs the browser
+and is owed, so `C13-N48` is DONE-pending-first-receipt and no wave closes on the runner yet.
+
+**Solo-row classification, Batch 1482** (`77789c120b`, 2026-09-13 12:53:15 EDT) — the companion
+[`CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md`](CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md) and the handoff
+page [`SOLO_WORKER_HANDOFF_2026-09-13.md`](SOLO_WORKER_HANDOFF_2026-09-13.md) classify every C13 v2
+row for solo dispatch (**11 SOLO-NOW, 3 SOLO-AFTER-TEMPLATE** — one of which, `DX-84`, is already
+specified in full, giving **12 dispatchable rows** — and **110 NOT-SOLO**) under seat rulings
+`R-HANDOFF-1`…`-11`. **Classification only:** it launches nothing, rules nothing and changes no
+row's disposition; the row-level authority stays the campaign queue.
 
 **`AR-D13` answered** as full WebGL parity (`R-2026-09-12-8`); the WebGL workstream is
 `C13-N15a`–`C13-N15d` (Wave 4) and WS-C2 (Wave 7).
@@ -249,7 +298,61 @@ Wave P0-2 engine rows are all MET (Éowyn job 12, 2026-09-10). The wave-end gate
 `R-2026-08-29-2`) is INCOMPLETE: preflight PASS on `6483bc70bb`, variant smoke GREEN, Sandcastle2
 leg NOT RUN (segment 1 reached 306/343 at settle 25000 with one external-CORS failure before the seat
 stopped it for the machine restart; capture-and-diff and the settle control not started) — job 13b
-owed.
+owed. *[updated 2026-09-13: **job 13b RAN** 2026-09-11 22:13 → 2026-09-12 12:10 EDT on the Batch
+1472 tree `5be896fe3a` and **STOPPED ON A RED**. Evidence:
+`Tools/visual-regression/output/wave-end/wave-p0-2-2026-09-11/` (`README.md` +
+`BISECT_sample-height.md`, gitignored, seat tree). Preflight PASS (disk md5
+`7879c86c208f7330980d4d9f24c08b95` reproduced on :8080/:8082/:8094; all four variant bundles
+present; typings served 200; `verify-built-shader-identity` exit 0). **(a) variant smoke GREEN**
+(exit 0, all three variants, 0 console errors each). **(b) Sandcastle2 sweep RED (engine)** at a
+disclosed `SANDCASTLE_SETTLE_MS=25000` — so its counts are NOT comparable to the 2026-09-04
+baseline's 8000 — **WebGL 343/343 attempted with 4 failures** (3 external-CORS, 1 engine:
+`webgpu-async-resource-monitor`, the one id `AR-888` had already classified NOT-harness);
+**WebGPU 271/343 attempted, 4 failures all external-network, ZERO GPU-validation errors**, with all
+three 2026-09-04 WebGPU validation faults (`elevation-band-material`, `frustum-dev`,
+`display-conditions-dev`) and all three 2026-09-04 WebGL `rendererGate` demos now certifying; 72
+WebGPU demos unrun because the blocking defect is demo 100 of half 2. **(c) capture-and-diff and
+(b3) the settle control NOT RUN**; no baseline was refreshed and `--update` was never passed.
+**Blocking RED: `sample-height-from-3d-tiles`, WebGPU.** A bisect was attempted and **abandoned on
+measurement** — the failure presented as probabilistic and the known-BAD tip itself passed 1 of 3,
+so seven earlier verdicts are retracted and bisection cannot discriminate a rate at honest cost.
+**Root cause then proven directly by an instrumented engine lane** (Oromë, resumed as Azaghâl): on
+WebGPU the `*MostDetailed` height queries route through the offscreen ray render, whose `PickDepth`
+never receives a depth texture, so `getDepth` returns `undefined` for every point and
+`clampToHeightMostDetailed` writes `undefined` per upstream's contract until `Cartesian3.pack`
+throws — i.e. **the demo never worked on WebGPU and the observed "rate" was harness timing**, which
+also retires the 2026-09-04 both-renderers certification of that demo. A second serialization cause
+was measured (WebGPU bakes the projection into `mvpRelativeToEye` before any frustum slice exists,
+and the orthographic pick camera makes the RGBA8 `czm_packDepth` a 30.15 m quantum). **The fix LANDED and was PUSHED as Batch 1483**
+(`ea651de6d8`, 2026-09-13 13:28:13 −0400, 20 paths) — leads Oromë (root cause, checkpointed
+before the 2026-09-12 machine reset) and Azaghâl (the fix), tier-3 Castamir. Reviewer Rorimac
+returned LAND-WITH-FIXES and the adversarial verifier **Fortinbras HOLDS**: **27 WebGPU runs on the fixed tree with zero failures** against the
+known-broken control's 0/5 at the same settle, accuracy re-measured at **mean 0.0025 m / max
+0.0056 m over 30 points** versus WebGL (from 2103 m mean before), served md5 asserted equal to disk
+md5 on every leg. Evidence:
+`Tools/visual-regression/output/sample-height-webgpu/verify-fortinbras/` (gitignored, seat tree)
+and `VERIFY_FORTINBRAS.md` in the lane's `_lane-out/`. **That verification also produced a gate
+finding that is not about this defect at all** and is filed as `DX-95`: at
+`SANDCASTLE_SETTLE_MS=8000` the **known-broken control tree scored a vacuous PASS** on this demo,
+because a per-demo PASS in the Sandcastle sweep is the absence of a console error rather than
+positive evidence that the demo reached its certified state. Until that is repaired, a PASS taken
+at a short settle is not evidence the demo works.]*
+
+**Wave P0-2, continued — the fleet-contract guard earned its keep on this very batch** (added
+2026-09-13): Batch 1483's **first landing
+attempt was REFUSED at the seat's `probe-fleet-contract` C2 gate**, because the lane's new probe
+shipped without a watchdog and without a `finally`-scoped close — the same contract lane L2
+repaired in Batch 1479 after it had been red for nine days. It was fixed, re-frozen and landed.
+A guard that is repaired rather than annotated stops the next instance; this is the first measured
+instance of that, and it is the argument behind `RR-2026-09-13-B`.
+
+**Wave P0-2 — order from here** (added 2026-09-13; the fix is landed, the legs are not): **Batch 1483 discharged the engine
+defect**, and the remaining P0-2 close inputs are the wave-end gate's **WebGPU leg (job 13c,
+executor Bandobras, running on a fresh built clone of `ea651de6d8`)** — the leg-(b) remainder
+including the 72 previously-unrun demos and the czml transient-CDN re-run — plus legs **(c)**
+capture-and-diff and **(b3)** the settle control on that same tree → **P0-2 closes** → and only then does `C13-41`'s exposure-sweep discriminator take the single Edge slot
+under `R-2026-09-12-7`, with all cloud work staying pure-Node until it returns — which is why C13
+Wave 1's L3/L4/L5 Edge legs and Edge leg 1 are queued behind it. **P0-2 stays OPEN.**
 
 **Return and campaign state, 2026-09-10 (Batches 1449–1453 pushed).** The seat returned from pause
 with Batches 1449–1453 landed and pushed to origin. Uncommitted seat work was relocated to

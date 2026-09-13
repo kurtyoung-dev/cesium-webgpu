@@ -758,7 +758,7 @@ rather than quietly frozen.
 
 ### C13-N01 — Govern the cloud probe fleet <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
 
-**Status:** **STAGE 1 COMPLETE — 2026-09-12, lane L2 (Telchar), batch pending.** STAGE 2 (routing) remains OPEN (Wave W2, Priority P0), still sequenced behind `C13-42a-3` item 8.
+**Status:** **STAGE 1 COMPLETE — Batch 1479 (`beb08423b3`), 2026-09-12, lane L2 (Telchar)** *[batch stamped 2026-09-13 by the record lane]*. STAGE 2 (routing) remains OPEN (Wave W2, Priority P0) — ~~still sequenced behind `C13-42a-3` item 8~~ *[corrected 2026-09-13: item 8 **CLOSED** in Batch 1478 (`e69d3e4fc7`), so stage 2's sequencing dependency is discharged and it is now gated only by its own wave]*.
 
 **Delivers:** **RULED `R-2026-09-12-1` (D1): two lanes, `C13-N01` STAGED** — "detector + census in wave 1; routing in wave 2 after C13-42a lands". `C13-42a` **landed 2026-09-12**, so Stage 2's dependency is discharged and the routing may open at Wave 2 against the landed descriptor shape — but see `C13-42a-3` item 8: routing 18 probes onto a runtime that can silently drop work and report success banks 18 untrustworthy results, so **item 8 is sequenced ahead of the routing too**. **Stage 1 (Wave 1): detector + census only** — add runtime-governance detectors to `probe-fleet-contract.spec.mjs` and emit a census; **no routing, no allowlist rewrite**. **Stage 2 (Wave 2, after C13-42a): routing** through `runProbe` + `probe-edge-slot.mjs` + served-build preflight, in family batches, each with its own allowlist generation
 
@@ -2110,7 +2110,7 @@ the row that would promote it.
 
 ### DX-82 — The provisioner leaves a clone's tracked governance files modified <!-- source: CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md §3.8; DX id allocated 2026-09-12 after the then-highest DX-81 -->
 
-**Status:** OPEN. Filed in `QUEUE_2026-07-23_CAMPAIGN13.md` §1 and mirrored here; a `### DX-82` section in `QUEUE_2026-08-29_RESEARCH_DISPATCH.md` is **owed by the seat**, because that file is the DX queue's own home and this pass did not edit it.
+**Status:** OPEN. Filed in `QUEUE_2026-07-23_CAMPAIGN13.md` §1 and mirrored here; a `### DX-82` section in `QUEUE_2026-08-29_RESEARCH_DISPATCH.md` is **owed by the seat**, because that file is the DX queue's own home and this pass did not edit it. *[discharged 2026-09-13 by the record lane: `### `DX-82`` now exists in that queue. The row itself stays OPEN — only the missing section is closed. See also `DX-85`, which REFUTES a second, separately-reported defect in the same tool.]*
 
 **Delivers:** `Tools/provision-worker-clone.mjs` stops leaving a fresh worker clone dirty. **All four** `PROVISION` destinations are tracked — `CLAUDE.md` since Batch 1434 (`33416b6036`), `AGENTS.md` since Batch 1058 (`54ead62ee5`) — so copying the seat's worktree copy over one leaves `git status` reporting ` M` while `git diff --numstat` prints nothing at all: the seat's copy is LF where a Windows checkout is CRLF. Measured across four live lane clones for `migration_doc/MAINTAINER_RULINGS_2026-08-17.md`; every lane packet that wave had to list the path as an exclusion and the seat restored it by hand. A new exported `restoreUnchangedProvisionedFile()` tests `git diff --quiet -- <dest>` and restores the checked-out form when the copy delivered nothing, or returns a NOTE the caller declares when the seat genuinely carries content git does not. Three measured docstring corrections come with it: the file says `CLAUDE.md` is gitignored in three places, and it is not.
 
@@ -2126,7 +2126,7 @@ the row that would promote it.
 
 ### DX-83 — Three `PROGRESS_THRAIN.md` citations name a path no reader can open <!-- source: CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md §3.9; DX id allocated 2026-09-12 -->
 
-**Status:** OPEN. Mirrored here; a `### DX-83` section in `QUEUE_2026-08-29_RESEARCH_DISPATCH.md` is **owed by the seat**.
+**Status:** OPEN. Mirrored here; a `### DX-83` section in `QUEUE_2026-08-29_RESEARCH_DISPATCH.md` is **owed by the seat**. *[discharged 2026-09-13 by the record lane: the section exists. The row stays OPEN — the three citations themselves are unchanged, and repairing them is still the deliverable.]*
 
 **Delivers:** The three bare `PROGRESS_THRAIN.md:…` citations in `QUEUE_2026-08-29_RESEARCH_DISPATCH.md` (`:1940`, `:1943` inside `DX-78`; `:1947` inside `DX-79`) grow the archive prefix `cesium-webgpu-worker-archive/lanes-2026-09-11/cesium-lane-hundar-20260905/_lane-out/`, so a reader can open what the ledger cites. `git ls-files | grep -i THRAIN` returns nothing — the file is not in the repository and never was — and the archived copy is 706 lines / 53,408 bytes with every cited line on the topic its citation claims. The bare, drive-letter-free form matches the two neighbouring lane-archive citations fifteen lines below (`:1958`, `:1961`) and `DEFERRED_WORK.md:498`.
 
@@ -2142,7 +2142,7 @@ the row that would promote it.
 
 ### DX-84 — No preflight reports parent-dead browser process trees before a sweep <!-- source: CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md §3.12; DX id allocated 2026-09-12 -->
 
-**Status:** OPEN. Mirrored here; a `### DX-84` section in `QUEUE_2026-08-29_RESEARCH_DISPATCH.md` is **owed by the seat**.
+**Status:** OPEN. Mirrored here; a `### DX-84` section in `QUEUE_2026-08-29_RESEARCH_DISPATCH.md` is **owed by the seat**. *[discharged 2026-09-13 by the record lane: the section exists and records the demotion to SOLO-AFTER-TEMPLATE under `R-HANDOFF-10`. The row stays OPEN. Its runner-side counterpart — a runner that takes its browser down with it, so there is less to report — is filed separately as `DX-88`.]*
 
 **Delivers:** `Tools/lib/browser-orphan-preflight.mjs` — a report-only preflight naming the `msedge`/`chrome`/`chromium`/`firefox`/`webkit`/`playwright` processes whose launcher has already exited, their transitive descendant trees, the memory each tree holds, and the machine's free memory, so a sweep operator can see that confound before trusting a timing or flake number. **It never kills**: no kill flag, no `taskkill`, no `process.kill`; ending someone else's process is a human call and belongs to a separate, maintainer-approved row. `git grep -l -i "freemem\|ParentProcessId\|tasklist" -- Tools` returns zero files, so nothing like it exists. It shells PowerShell once for `Get-CimInstance Win32_Process` because a parent pid is not reachable from node alone on Windows — the "strictly required" exception in `CLAUDE.md` Principle 12 — and reads free/total from `os.freemem()`/`os.totalmem()`, which are **not** the same definition as `Win32_OperatingSystem FreePhysicalMemory` (2.06 GiB vs 4.01 GB at the same moment) and must not be mixed.
 
@@ -2157,6 +2157,124 @@ the row that would promote it.
 **Parity:** n/a — a tooling row.
 
 **Landing hazard, named not solved:** `test-sandcastle` sits at `package.json:167`, three lines above `test-tools-lib` at `:170`, and a live lane clone carries an uncommitted edit to `:167` — a default 3-line-context hunk for `:170` spans `:167-:173` and carries that line as context, so the two patches cannot both be applied blind. The seat sequences the landings.
+
+## New findings — Campaign 13 v2 Wave 1, recorded 2026-09-13 by the record lane
+
+Three residuals the wave measured and did **not** fix, each reported by the lane that found it
+under one-defect-one-owner and filed here so the finding has an identity. Nothing in this section changes
+a landed row's status. **Two further wave-1 residuals are deliberately NOT re-filed here because
+they already have owners:** the **seven quarantined cloud specs** are `C13-N08b`'s re-scoped
+programme (this file, `### C13-N08b`, re-scope block of 2026-09-12, with Frór's 15-drift/0-regression
+triage), and the **24 mask-order assertions unblocked by code but never measured** are `C13-N58`
+(this file, `### C13-N58`, filed by Batch 1482) whose precondition is `DX-89`, the build-dependency
+preflight. Citing, not duplicating, is the point.
+
+### NEW-PROBE-CLOUD-DENSITY-DOMAIN-CARRIES-C13-N08A-DEFECT-IN-ITS-OWN-COPY
+
+**Status:** OPEN, reported 2026-09-12 by lane L1 (Durin) and **re-derived at the tree 2026-09-13**
+at Batch 1482 (`77789c120b`) by the record lane. Not L1's file, so not repaired in Batch 1478.
+
+**The defect.** `Tools/visual-regression/probe-cloud-density-domain.mjs` carries its **own private
+copy** of the readiness instrument `C13-N08a` repaired. After readiness it installs an override on
+`featureRenderer.execute` (`:396` takes `originalExecute`, `:405` installs the wrapper) and counts
+`override.executeCalls` (`:400`, incremented at `:409`). **The live composition does not call
+`.execute`** — since Batch 1468 split the composite, the scene path takes
+`executePreparedCloudFrame` — so that counter is **structurally 0**, and every lane gated on it is
+measuring nothing: `:539` (`callsBefore`), `:551`, `:593`, `:978` (`evidence.executeCalls > 0`)
+and `:1004`. Worse, `:392` **refuses outright** (`throw new Error("procedural cloud feature renderer
+is unavailable")`) when `.execute` is missing, so removing the vestigial entry would break the probe
+rather than fix it.
+
+**Why it is one file and not a family.** Durin grepped the fleet: the other `.execute =` wrappers
+(`probe-depth-plane-*`, `probe-sky-aureole-anchor`) wrap **different objects** and are unaffected.
+This is the only sibling.
+
+**Acceptance when someone takes it:** the probe reads readiness through
+`lib/cloud-probe-harness.mjs`'s repaired `awaitProceduralReady` (which instruments three entries on
+the same feature-renderer object the composition resolves and gates on `recordedFrames > 0`) instead
+of its private counter; the five gated lanes assert on a counter that can be non-zero; the `:392`
+refusal no longer requires `.execute`; and an inertness mutant that neuters the new readiness path
+turns the probe's own verdict red. **One-file repair now that the harness shows the shape.**
+
+**Adjacent and separately owned, named so it is not lost:** `probe-cloud-density-domain.mjs:990`
+pins `uniformFloatCount === 168` against a live 172 — stale since Batch 743 — and is being fixed as
+the **sixth mirror** in lane L3's frozen (not yet landed) batch. `probe-cloud-genus-morphology.mjs:121-122`
+states the readiness contract in prose as `initialized && pipelineReady && executeCalls > 0`, now
+stale (it is `recordedFrames > 0`): one line, in a probe L1 did not own.
+
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-09-12/cesium-lane-durin-20260912/_lane-out/LANDING_PACKET_DURIN.md:451-460`
+(§8 "Found, named, NOT fixed"); line numbers re-read in this lane at Batch 1482.
+
+### NEW-PROBE-INCIDENT-RECORD-DOES-NOT-PROJECT-THE-COLLECTED-FAILURE-LABEL
+
+**Status:** OPEN, surfaced 2026-09-12 by lane L1 (Durin, worker Frerin) as a **premise that
+disagreed with the brief and was asserted rather than wished away** — Principle 10 working as
+intended. It is a row in the **projection**, not in the drain, and is unaffected by the drain fix
+Batch 1478 landed.
+
+**The defect.** When `scope.run` is called with a malformed third argument the work is dropped, and
+`C13-42a-3` item 8 (Batch 1478) made the run fail loudly instead of reporting success. But **the
+label of the dropped work reaches no artifact on one of the two triggers.** The lead's brief
+expected the `named` flag to flip true on both; measured, it flips only for the `abort` trigger,
+and only incidentally — that guard's own `TypeError` message happens to open with the label. The
+`null` trigger's raw error is `Cannot read properties of null (reading 'abort')`, which carries no
+label at all. The drain **does** collect a failure carrying `readback wrapper`; nothing projects
+that label into the written incident.
+
+**Pinned, not glossed.** `Tools/visual-regression/probe-runtime-lifecycle-adoption.spec.mjs:1746-1750`
+asserts `result.named === false` (`result.named` itself on `:1747`) with the measurement in its own
+comment (`:1737-1745`) — "measured residual: on this trigger the label reaches no artifact". **Closing this
+row inverts that assertion**, which is the signal that the fix landed rather than a regression.
+
+**Acceptance when someone takes it:** the incident writer projects the drain's collected failure
+label into `<name>-error.json` on **both** triggers; the spec's `named` assertion inverts to `true`
+for the `null` trigger and stays `true` for `abort`; an inertness mutant that stops the projection
+turns it red again.
+
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-09-12/cesium-lane-durin-20260912/_lane-out/LANDING_PACKET_DURIN.md:284-295`;
+spec lines re-read in this lane at Batch 1482.
+
+### NEW-FLEET-CONTRACT-C2-WATCHDOG-BOUNDS-ARE-READ-OFF-SOURCE-NOT-MEASURED
+
+**Status:** OPEN — **one Edge run of each of four probes is owed**, and it is not a gate on any
+landed row. Batch 1479 (`beb08423b3`) repaired the C2 arm of
+`Tools/visual-regression/probe-fleet-contract.spec.mjs` — red on main for roughly nine days — by
+giving four non-compliant probes a watchdog, and one of them a `finally`-scoped close.
+
+**What was verified and what was not.** `node --check` passes on each of the four,
+`analyzeProbeSource` reports no violations, and prettier is clean. **The four probes were NOT
+executed after the edit**, because they launch Edge and the slot was held. The bounds were
+therefore **sized from timeouts read in each probe's source**, not from a measured run:
+`probe-aec-perf` **900 s** (180 s settle + 120 s trace drain + two 60 s page waits, two legs);
+`probe-aec-residency-e1` **900 s** (its sibling `e2` sizes the same work at
+`legCount × (settle + 240 s)` with a 150 s page timeout); `probe-q141-pick-readback` **600 s**
+(90 s settle × two renderer legs); `probe-ao-runtime-config` **600 s** (two browser legs of
+one-second settles). The pattern was copied from the compliant `probe-aec-residency-e2.mjs:896-921`
+— a terminating timer cleared on both settle paths.
+
+**Acceptance:** one Edge run of each of `probe-aec-perf.mjs`, `probe-aec-residency-e1.mjs`,
+`probe-q141-pick-readback.mjs` and `probe-ao-runtime-config.mjs`, each confirming a normal run
+settles **well inside** its bound, and for the last one that the `finally`-scoped closes still free
+**both** browsers; the measured wall time is written back beside each bound so the next reader sees
+a measurement rather than an estimate. Until then the bounds are honest guesses that happen to be
+generous, which is the safe direction but not a calibration. Queued as part of **Edge leg 1**
+(`CAMPAIGN_STATE.md`, C13 block).
+
+**The guard caught a real violation four days later, which is the argument for repairing rather
+than annotating it:** Batch 1483's **first landing attempt was refused at the seat's C2 gate**
+because the P0-2 fix lane's new probe shipped without a watchdog and without a `finally`-scoped
+close. It was fixed and re-frozen before landing (`ea651de6d8`, 2026-09-13 13:28:13 −0400). Had
+the nine-day red still been annotated as "same four" rather than repaired in Batch 1479, that
+violation would have landed inside the noise.
+
+**One repair that was deliberately NOT a deletion, recorded because it reads like one:** the C5
+shrink-only ratchet row for `probe-sandcastle2-webgpu-start.mjs` was told to be deleted and was
+**corrected instead** — `analyzeProbeSource` still reports `["no watchdog"]` for that probe, so
+deleting the allowlist row would have turned C2 red with a fifth offender. The reason text now
+matches the measurement.
+
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-09-12/cesium-lane-telchar-20260912/_lane-out/LANDING_PACKET_TELCHAR.md:146`,
+`:152-156`, `:195-198`; Batch 1479 `beb08423b3` (2026-09-12 15:08:27 -0400).
 
 ## New findings — wave P0-2, lane Aerin, 2026-09-05
 

@@ -21595,3 +21595,49 @@ comment-only with no runtime effect on either backend.
 - **Mechanism:** A C2 confirm reviewer's cleanup targeted the shared `<tmpdir>/cesium-lane` root instead of its own directory.
 - **Consequence:** Disclosed; nothing lost because concurrent agents held the directory open (`borthand2`, `radagast2`, `seat` intact).
 - **Rule:** Cleanup names the lane's own directory (`<tmpdir>/cesium-lane/<lane>`, never the namespace root; WORKER_ISOLATION §8i). `Tools/lib/lane-tmp.mjs:101-115` (Batch 1464) explicitly refuses the namespace root (asserted in `Tools/lib/lane-tmp.spec.mjs:222-234` test C4).
+
+## Addendum to `NEW-PICK-RAY-ASYNC` (Batch 1483) — what the FALSE TRAIL cost, and the gate defect the verification exposed (recorded 2026-09-13 by the record lane)
+
+**This is an addendum, not a second entry.** The bug, its two root causes, the fix and the measured
+result are recorded in full by the lane that fixed them: **`## Batch 1482-Bug-1 — NEW-PICK-RAY-ASYNC (MostDetailed)`**, near the top of this file, landed in **Batch 1483** (`ea651de6d8`, 2026-09-13
+13:28:13 −0400). Read that entry for the mechanism. Three things happened *around* the diagnosis
+that belong in the chronology and are not in it.
+
+**1. A bisect was opened, run, and abandoned on measurement — and seven of its verdicts are VOID.**
+The failure presented as probabilistic (WebGPU 6 of 7 runs failing, WebGL 1 of 8), so the seat
+opened a bisect on 2026-09-12. It was stopped by ruling: the known-BAD tip itself passed on the
+third WebGPU attempt, so two-pole certification failed, and bisection cannot discriminate a *rate*
+at honest cost (~10 runs per commit, ~10 h) — at best it would date a rate change, not find a
+defect. **Seven earlier verdicts were separately VOIDED** because the bisect clone failed the demo
+on **WebGL** too: Sandcastle2 had been built once at the tip and `gulp buildTs` was never run, so
+the editor typings 404'd on the served origin. The corrected method the seat then ruled — WebGL
+control green twice plus two-pole certification before any verdict — is what showed the bisect
+could not work at all. Evidence:
+`Tools/visual-regression/output/wave-end/wave-p0-2-2026-09-11/BISECT_sample-height.md` §1–§6
+(gitignored, seat tree).
+
+**2. The typings 404 is the 2026-09-03 Sandcastle2 blocker wearing a different face**, and it never
+announces itself: a missing `packages/engine/index.d.ts` presents as a hang, or a `rendererGate`
+FAIL, or a pass-with-one-404 — never as "typings missing" — and it is not reproducible in a direct
+page load. **Batch 1483 fixed this in the same commit** (`Tools/visual-regression/sandcastle-smoke.mjs`
+gains a typings preflight; `sandcastle2-typings-preflight.spec.mjs` 9/9 in its landing gate), which
+is why `DX-87` in `QUEUE_2026-08-29_RESEARCH_DISPATCH.md` is recorded there as owned and
+discharged by that batch rather than left open.
+
+**3. The adversarial verification exposed a gate defect that is not about this bug at all.** At
+`SANDCASTLE_SETTLE_MS=8000` the **known-BROKEN control tree scored a PASS** on this demo
+(recorded as "1 vacuous PASS @frameNumber 14, 2 HANG"), because a per-demo PASS in the Sandcastle
+sweep means "no console error was seen", not "the demo reached the state it is being certified
+for" — the throw simply had not happened yet inside the window. The fixed tree passed 3/3 at the
+same settle and the control scored 0/5 at settle 25000. Filed as **`DX-95`**. A gate a broken tree
+can pass voids every count taken under it, which is the same mechanism as the seven void verdicts
+above. Evidence: `Tools/visual-regression/output/sample-height-webgpu/verify-fortinbras/README.md`
+(the `runs/` leg table).
+
+**Lesson, stated because two separate sessions reached the same wrong conclusion from it:** a
+failure whose *rate* varies is not thereby a *probabilistic* defect. Here the mechanism was
+deterministic and total — 30 of 30 points undefined, every run — and the rate belonged to the
+harness deciding when to look. **Instrument the mechanism before bisecting the symptom.**
+
+**Still owed for P0-2 to close:** the wave-end gate's WebGPU leg plus legs (c) and (b3), re-run on
+the fixed tree (job 13c, executor Bandobras, on a fresh built clone of `ea651de6d8`).

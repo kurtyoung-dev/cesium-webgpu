@@ -287,14 +287,14 @@ Three rows, after the seat's 2026-09-13 adjudication. Two are established by thi
 
 | Row | Failing item |
 | --- | --- |
-| `C13-N08a` | done (lane-complete this wave; not on main — `cloud-probe-harness.mjs` last changed at Batch 1052 `c572d6aa41`), and S4 fails regardless because L1 Durin owns the harness. |
+| `C13-N08a` | done ~~(lane-complete this wave; not on main — `cloud-probe-harness.mjs` last changed at Batch 1052 `c572d6aa41`)~~ <!-- corrected 2026-09-13, R-2026-09-12-10 --> *[corrected 2026-09-13: it **is** on main — `C13-N08a` landed in **Batch 1478** (`e69d3e4fc7`, 2026-09-12 14:09:11 EDT), and `Tools/visual-regression/lib/cloud-probe-harness.mjs` was last changed by **Batch 1480** (`39283ec388`). The sentence was true when drafted and false by the time this file landed in Batch 1482.]*, and S4 fails regardless because L1 Durin owns the harness. |
 | `C13-42a` | done — landed 2026-09-12 as Batch 1475 (`a5975c5bfe`), patch `4b5e96d3f1c322cd62ea2e78b92a2f06`, 15 files. |
 | `C13-42a-3` | item 8 done this wave; residual items 1-4 fail S4 (L1 owns the probe runtime) and S2 (inverting a green spec group over lifecycle semantics is judgement, not a command with an expected output). |
 | `C13-42a-2` | S3 — budgets must come from each probe's own `<name>-runtime.json` and only 19 such files exist covering ~10 of the 18 names — plus S4 (L1) and S6. → §4. |
 | `C13-N01` | stage 1 done this wave; stage 2 fails S4 (L2 owns fleet governance), S7 (L: 26,959 lines across 60 probes) and S3 (43 pinned allowlist reason strings to rewrite with no text given). → §4. |
 | `C13-N02` | done (L2); the measured acceptance is now **24 homeless of 32 on disk**, not the plan's 25, because `cloud-probe-harness.spec.mjs` became homed at `package.json:205`. |
 | `C13-N03` | done (L6 Yavanna); S4 would fail anyway since L6 owns the fixtures. |
-| `C13-N04` | done (lane-complete; `lib/cloud-spectrum.mjs` does not exist on main at HEAD), owned by L6. |
+| `C13-N04` | done ~~(lane-complete; `lib/cloud-spectrum.mjs` does not exist on main at HEAD)~~ <!-- corrected 2026-09-13, R-2026-09-12-10 --> *[corrected 2026-09-13: `Tools/visual-regression/lib/cloud-spectrum.mjs` **is tracked on main**, added by **Batch 1480** (`39283ec388`, 2026-09-12 15:16:28 EDT). True when drafted, false at this file's own landing.]*, owned by L6. |
 | `C13-N04b` | source done in part (`probe-cloud-orbital-ladder.mjs` absent from main); the remaining first ladder run fails S4 (L6) and S6 (needs the Edge slot, which `R-2026-09-12-7` gives to `C13-41` first). |
 | `C13-N05` | S3 — the GMGSI header read is still an OWED seal item and the row cannot be sized — plus S6 (network fetch at probe time) and S7 (L). |
 | `C13-N06` | S4 (L7 Tulkas owns cost), S6 (the Edge measurement is the deliverable) and S2 (the row is "measure, then revise the targets" by construction). |
