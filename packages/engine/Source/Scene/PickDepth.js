@@ -116,6 +116,11 @@ class PickDepth {
     this._asyncDepthTexture = undefined;
     this._depthStagingBuffer = null;
     this._pendingReadback = false;
+    // Tail of the queue `readDepthAsync` serializes on. The synchronous
+    // `getDepth` arms readbacks fire-and-forget and DROPS overlapping ones, so
+    // a caller that needs the value at its OWN coordinate has to wait its turn
+    // rather than race for the single cache slot.
+    this._readbackQueue = Promise.resolve();
   }
 
   get framebuffer() {
@@ -238,6 +243,60 @@ class PickDepth {
    * @private
    */
   async _readDepthAsync(context, x, y) {
+    // Avoid overlapping readbacks — return last known value. Callers that can
+    // await their OWN coordinate use `readDepthAsync` instead, which queues
+    // rather than dropping.
+    if (this._pendingReadback) {
+      return this._lastDepthValue;
+    }
+    return this._performDepthReadback(context, x, y);
+  }
+
+  /**
+   * Read the depth at a coordinate and resolve with THAT coordinate's value.
+   *
+   * {@link PickDepth#getDepth} cannot await: it arms a readback, answers from
+   * the bounded cache, and drops any arm that overlaps one already in flight.
+   * That is right for the synchronous consumers (pickPosition, camera
+   * zoom-to-cursor) and wrong for a caller that must have an answer for the
+   * pixel it asked about — the asynchronous `*MostDetailed` height queries,
+   * which issue one query per sampled point. Those callers queue here: each
+   * request runs after the previous one settles, so every point gets a readback
+   * at its own pixel instead of racing the others for the single cache slot.
+   *
+   * The resolved value is also written to the cache keyed to this coordinate,
+   * so a synchronous reconstruction at that pixel immediately afterwards serves
+   * it rather than reading cold.
+   *
+   * @param {object} context The graphics context.
+   * @param {number} x The x-coordinate at which to read the depth.
+   * @param {number} y The y-coordinate at which to read the depth.
+   * @returns {Promise<number|undefined>} The depth, or undefined when this
+   *   context has no packed depth texture or the readback failed.
+   * @private
+   */
+  readDepthAsync(context, x, y) {
+    const run = () => this._performDepthReadback(context, x, y);
+    const queued = this._readbackQueue.then(run, run);
+    // The queue tail must never carry a rejection: one failed readback would
+    // otherwise wedge every later caller.
+    this._readbackQueue = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
+  }
+
+  /**
+   * The copy + map that both readback entry points share.
+   *
+   * @param {object} context The graphics context.
+   * @param {number} x The x-coordinate at which to read the depth.
+   * @param {number} y The y-coordinate at which to read the depth.
+   * @returns {Promise<number|undefined>} The depth read, or undefined.
+   * @private
+   */
+  async _performDepthReadback(context, x, y) {
     const packedTexture = this._asyncDepthTexture;
     if (!defined(packedTexture)) {
       return undefined;
@@ -246,11 +305,6 @@ class PickDepth {
     const device = context._device;
     if (!device) {
       return undefined;
-    }
-
-    // Avoid overlapping readbacks — return last known value
-    if (this._pendingReadback) {
-      return this._lastDepthValue;
     }
 
     // Clamp coordinates to texture bounds. Callers pass bottom-left-origin
@@ -299,8 +353,21 @@ class PickDepth {
       device.queue.submit([encoder.finish()]);
 
       await stagingBuffer.mapAsync(GPUMapMode.READ, 0, 4);
-      const data = new Uint8Array(stagingBuffer.getMappedRange(0, 4));
-      const depth = unpackDepthFromRGBA(data[0], data[1], data[2]);
+      const range = stagingBuffer.getMappedRange(0, 4);
+      // Two publication formats reach this readback, and the texture says
+      // which. The RGBA8 pack is what every slice-reconstructed consumer gets;
+      // `r32float` is the verbatim depth the offscreen ray pick publishes,
+      // because it reconstructs against the camera frustum where the pack's 24
+      // bits would be a 30 m quantum. Reading the format is what keeps the two
+      // from being silently swapped: an RGBA8 texture decoded as a float, or a
+      // float texture decoded as four bytes, both produce a plausible number.
+      const depth =
+        packedTexture.format === "r32float"
+          ? new Float32Array(range)[0]
+          : (() => {
+              const data = new Uint8Array(range);
+              return unpackDepthFromRGBA(data[0], data[1], data[2]);
+            })();
       stagingBuffer.unmap();
       stagingBuffer.destroy();
 

@@ -24,6 +24,48 @@
 
 ---
 
+## Batch 1482-Bug-1 — `NEW-PICK-RAY-ASYNC` (MostDetailed): the offscreen ray render published no readable depth at all, and once it did, the recovery inverted a frustum the render had never used (2026-09-13)
+
+**Bug:** `sample-height-from-3d-tiles` on WebGPU either threw `DeveloperError` out of `Cartesian3.pack` (an `undefined` position reaching the demo's polyline) or never settled (classified HANG by the wave-end sweep). WebGL passed. Rate on the served Batch-1472 tree, 10 runs per renderer at settle 25000: **WebGPU 10/10 FAIL** (3 "Rendering has stopped", 7 HANG), WebGL 1/10 (that one an external `huggingface.co` 429, not this defect).
+
+**Files:** `packages/engine/Source/Renderer/WebGPU/WebGPUPickFramebuffer.ts`, `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPickPass.ts`, `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts`, `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts`, `packages/engine/Source/Renderer/GraphicsContext.ts`, `packages/engine/Source/Scene/PickDepth.js`, `packages/engine/Source/Scene/PickingRayHelpers.js`.
+
+**Root cause — two faults in series, both measured.**
+
+*Fault 1 — nothing published.* `Scene.sampleHeightMostDetailed` / `clampToHeightMostDetailed` recover each point from a 1x1 offscreen ray render's depth (`PickingRayHelpers.getRayIntersection`). That render is a PICK pass, and `WebGPUSceneRendererFrustumLoop.ts:640` publishes packed pick depth only when `!picking`, so the offscreen view's `PickDepth` was never handed a texture. All 30 of the demo's `getDepth` calls on the unmodified tree read identically:
+
+    30x { index: 0, offscreenView: true, hasFramebuffer: false,
+          hasAsyncTexture: false, updateCount: 0, cacheStamp: -1, depth: undefined }
+    clamp: settled after 7015 ms, undefinedCount 30/30
+
+`hasAsyncTexture: false` + `updateCount: 0` is `PickDepth.update()` never having run. `Picking.clampToHeightMostDetailed` then writes each unresolved entry back as `undefined` (upstream's documented contract) and the demo's polyline dies in `Cartesian3.pack`. `PolylineGeometry.pack` is the victim, never the cause.
+
+*Why a deterministic mechanism read as probabilistic.* Every WebGPU run lost every point; what varied was whether the demo threw before the gate read. The instrumented run rendered **21 frames in 60 s** (WebGL 275-1036) — 30 synchronous offscreen renders monopolise the main thread — and a 20 s in-page read of that run timed out, which is the sweep's HANG face. A run whose Ion tileset loads slower has not thrown yet when the gate reads, and scores PASS. The 2026-09-04 wave-end bank (`Tools/visual-regression/output/wave-end/2026-09-04/b-sandcastle2/webgpu-stdout.log:294`) records this demo PASSING on WebGPU at **frameNumber 23** (WebGL 96), and a later tip pole recorded a PASS at frameNumber 38. Both are the low-frame, not-yet-thrown shape: **that "certification" was never a working run.** The harness accepted it because it scores the demo's SYMPTOM (did it throw?) rather than the API's result, so a run that adds no entities at all throws nothing and reports green.
+
+*Fault 2 — the wrong frustum, exposed once Fault 1 was fixed.* With a depth published and the readback serialized, all 30 points resolved but to wrong positions: 6 points ~13 m high, 24 points ~3 km out. The `[WebGPU:RayPick]` instrument showed every point reading `depth ~ 1.8e-5` and reconstructing to `distance ~ near` of its slice. Two readings settle why:
+
+- Only **2 distinct depth values** appeared across 30 points whose true distances span ~20 m; they differ by exactly `1/16581375`, one unit of the RGBA8 pack's blue byte.
+- The page-side census of `UniformState.updateFrustum` during the pick render recorded three calls: `(0.1, 5e8)`, `(0.1, 5e8)`, then the slice `(8986.75, 9110.80)` — and the projection depth row that was actually rasterised, `p10 = -2.0000000004e-9, p14 = -2.0000000004e-10`, inverts to `near 0.1 / far 5e8`, i.e. the CAMERA's frustum, not the slice's.
+
+The per-slice near/far that `WebGPUSceneRendererPickPass.ts:574` installs reaches `UniformState` but not the draws: WebGPU bakes `uniformState.projection` into each command's `mvpRelativeToEye` in `WebGPUModelRenderer.packCameraUniforms`, called from `updateWebGPUModel` during `updateAndRenderPrimitives` (`Scene/ViewportExecutor.js:433`) — **before** `createPotentiallyVisibleSet` (`:436`), so before any slice exists. The later `_updateFrustumUniforms` mutates state whose read already happened. WebGL has no such gap: `czm_projection` resolves per draw (`AutomaticUniforms.js:510-515`), so its depth IS slice-relative, which is why the same recovery code is correct there and wrong here.
+
+`Picking.pickPositionWorldCoordinates:740-747` already documents this convention for the main view and reconstructs against the camera frustum — buying precision across that range with LOGARITHMIC depth. The offscreen ray camera is ORTHOGRAPHIC, so `frameState.useLogDepth` is false and its depth is LINEAR over `Picking`'s fixed 0.1-to-5e8 offscreen frustum. Through a 24-bit RGBA8 pack that is a **30.15 m quantum** — which is exactly why 30 points collapsed onto 2 values.
+
+**Fix.**
+
+1. The pick pass publishes the offscreen ray depth per frustum slice, gated on `context.offscreenRayDepthRequested`, which the picking code raises only around an offscreen ray render (so an ordinary `scene.pick` encodes nothing extra) and lowers in a `finally`. The pass also STORES its depth when that flag is set; an ordinary pick still discards.
+2. The publication is `r32float`, copied verbatim by a new `WebGPUGlobeDepth.executeCopyDepthToViewFloat` + `DEPTH_COPY_FLOAT_WGSL`, instead of the 24-bit RGBA8 pack. `PickDepth._performDepthReadback` decodes by the published texture's `format`, so the two publications cannot be silently swapped.
+3. `PickingRayHelpers.recoverRayPositionAsync` inverts the **encode frustum** (the offscreen camera's own near/far), not the slice band, matching the convention `pickPositionWorldCoordinates` states. The synchronous WebGL recovery keeps inverting the slice, because that is what WebGL rasterises.
+4. `PickDepth.readDepthAsync` is a queued, awaitable readback, and the `*MostDetailed` chain is serialized per `Picking` (`_offscreenRayPickChain`): a batch of 30 queries resolves in one microtask drain, so without serialization every render ran before the first readback landed and all 30 points read the LAST render's depth. That measured as 30 nearly identical heights, 24 m from WebGL's, on terrain whose real relief is 20 m.
+
+**Result.** WebGPU agrees with WebGL to **mean 0.002 m / max 0.006 m** over all 30 points (was mean 2103 m / max 9019 m), the published depth reads 31 distinct values instead of 2, and the demo renders 998-1009 frames where it rendered 21.
+
+**Parity.** `Picking.js` is untouched. The shared file `PickingRayHelpers.js` gains an asynchronous sibling path entered only where `!context.supportsSynchronousReadback`; every synchronous call site keeps its exact previous shape and call order. The WebGL leg of the acceptance run confirms it unchanged. The synchronous `Scene.sampleHeight` / `clampToHeight` still take `Picking._reconstructHeightSurfaceWebGPU` (Batch 284) and are not on this path.
+
+**Not fixed, now tracked.** That WebGPU's per-slice projection never reaches any draw is general, not specific to picking — see `NEW-WEBGPU-PER-SLICE-PROJECTION-INERT` in `DEFERRED_WORK.md`.
+
+---
+
 ## Batch 878-Bug-1 — `NEW-WEBGPU-SPLAT-SNAPSHOT-READINESS-GL-PREDICATE`: the shared splat state machine used "does the WebGL texture exist?" as its readiness test, so the native branch — which creates no texture by design — stalled permanently one step before the sort (2026-08-07)
 
 **Bug:** `C15-G2` (Batch 878) moved the Gaussian-splat data pipeline above the

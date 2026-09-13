@@ -765,6 +765,16 @@ export class WebGPUPickFramebuffer {
   private _classificationDepthView: GPUTextureView | null = null;
   private _classificationDepthPlaceholderTexture: GPUTexture | null = null;
   private _classificationDepthPlaceholderView: GPUTextureView | null = null;
+  // One depth target per frustum slice of an offscreen ray pick. Slices
+  // clear depth between them, so a single shared target would hold only the
+  // last (nearest) slice and a hit in a farther slice would be invisible to the
+  // readback — the same per-slice shape the WebGL path gets from its per-slice
+  // `PickDepth.executeCopyDepth`. Allocated only when an offscreen ray pick
+  // asks for it.
+  private _offscreenRayDepthTargets: ({
+    texture: GPUTexture;
+    view: GPUTextureView;
+  } | null)[] = [];
   private _depthStagingBuffer: GPUBuffer | null = null;
   private _depthStagingBufferDevice: GPUDevice | null = null;
 
@@ -1005,6 +1015,7 @@ export class WebGPUPickFramebuffer {
           ? VOXEL_CENTER_PIXEL_CLEAR_VALUE
           : undefined,
       ensureClassificationDepth: this._ensureClassificationDepthTarget,
+      ensureOffscreenRayDepth: this._ensureOffscreenRayDepthTarget,
     } as CesiumOpaqueFramebuffer;
 
     this._passState.viewport.width = width;
@@ -2109,6 +2120,60 @@ export class WebGPUPickFramebuffer {
   };
 
   /**
+   * Packed-depth target for one frustum slice of an offscreen ray pick.
+   *
+   * The `*MostDetailed` height queries render the scene into a 1x1 offscreen
+   * view along the query ray and recover the hit distance from that render's
+   * depth. Nothing else publishes a readable depth during a pick pass, so this
+   * is that publication: the pick pass packs the slice's depth into the target
+   * returned here, hands the texture to the offscreen view's `PickDepth`, and
+   * the query reads it back asynchronously after the frame is submitted.
+   *
+   * One target per slice, because slices clear depth between them. Targets are
+   * pick-framebuffer sized (1x1 for a ray pick) and are allocated only for the
+   * slices an offscreen ray pick actually renders.
+   *
+   * @param frustumIndex Frustum slice index.
+   * @returns The target, or null when no attachment is currently allocated.
+   */
+  private readonly _ensureOffscreenRayDepthTarget = (
+    frustumIndex: number,
+  ): { texture: GPUTexture; view: GPUTextureView } | null => {
+    const device = this._device;
+    if (
+      !device ||
+      device !== this._attachmentDevice ||
+      this._width <= 0 ||
+      this._height <= 0 ||
+      frustumIndex < 0
+    ) {
+      return null;
+    }
+    const existing = this._offscreenRayDepthTargets[frustumIndex];
+    if (existing) {
+      return existing;
+    }
+    const texture = device.createTexture({
+      label: `Pick offscreen ray depth texture ${frustumIndex}`,
+      size: [this._width, this._height],
+      // `r32float`, not the RGBA8 pack every other depth publication uses.
+      // Those are reconstructed against a narrow frustum slice, where 24 bits
+      // is micrometres; this one is reconstructed against the ray camera's
+      // whole 0.1-to-5e8 frustum, where 24 bits is a 30 m quantum. See
+      // `DEPTH_COPY_FLOAT_WGSL` in `WebGPUGlobeDepth`.
+      format: "r32float",
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT |
+        GPUTextureUsage.TEXTURE_BINDING |
+        // The readback copies this texture into a staging buffer.
+        GPUTextureUsage.COPY_SRC,
+    });
+    const target = { texture: texture, view: texture.createView() };
+    this._offscreenRayDepthTargets[frustumIndex] = target;
+    return target;
+  };
+
+  /**
    * The unified, source-agnostic per-fragment feature-ID texture — the pick
    * pass's color target, into which every source rasterizes its 32-bit
    * object/feature ID. `null` until the first `begin()` allocates it.
@@ -2232,6 +2297,13 @@ export class WebGPUPickFramebuffer {
       this._classificationDepthPlaceholderTexture.destroy();
       this._classificationDepthPlaceholderTexture = null;
     }
+    // A readback still mapping one of these resolves to `undefined` through
+    // its own catch; the caller then reports no position rather than a stale
+    // one, which is the same answer a cold query gives.
+    for (const target of this._offscreenRayDepthTargets) {
+      target?.texture.destroy();
+    }
+    this._offscreenRayDepthTargets.length = 0;
     this._readableDepthView = null;
     this._classificationDepthView = null;
     this._classificationDepthPlaceholderView = null;

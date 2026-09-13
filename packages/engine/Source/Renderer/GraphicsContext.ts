@@ -734,6 +734,9 @@ export abstract class GraphicsContext {
   protected _graphicsCapabilities: GraphicsCapabilitiesRecord =
     GraphicsCapabilities.EMPTY;
 
+  /** Backing field for {@link GraphicsContext#offscreenRayDepthRequested}. */
+  protected _offscreenRayDepthRequested: boolean = false;
+
   // ═══════════════════════════════════════════════════════════
   // STATIC: CONTEXT REGISTRY (singleton)
   // ═══════════════════════════════════════════════════════════
@@ -1020,29 +1023,42 @@ export abstract class GraphicsContext {
    *
    * `Scene.sampleHeightMostDetailed` and `Scene.clampToHeightMostDetailed`
    * render the scene into an offscreen view aimed along an arbitrary ray and
-   * recover a world position from that view's depth. That offscreen render is a
-   * pick pass, and the globe-depth framebuffer is off for pick passes — so on a
-   * backend whose only packed pick-depth producer is that framebuffer, the
-   * offscreen view's `PickDepth` is never handed a depth texture and its depth
-   * query returns `undefined`. The queries still resolve; they just write
-   * `undefined` into every element of the caller's array, which is a silent
-   * wrong answer rather than a failure the caller can detect.
+   * recover a world position from that view's depth. `true` means this context
+   * publishes a depth for that render which the picking code can read back, so
+   * those queries return real positions. `false` means the producer does not
+   * exist and every element of the caller's array comes back `undefined` — a
+   * silent wrong answer rather than a failure the caller can detect.
    *
-   * `true` means the offscreen ray render yields a depth the picking code can
-   * read back, so those queries return real answers. `false` means the producer
-   * does not exist on this backend.
+   * This is deliberately a different axis from `supportsSynchronousReadback`:
+   * a context may publish the depth and still be unable to read it back WITHIN
+   * the call. Where readback is asynchronous the `*MostDetailed` queries await
+   * it (they return promises); the SYNCHRONOUS `Scene.pickFromRay` cannot, so
+   * its arbitrary-ray `position` stays unavailable there, and the synchronous
+   * `Scene.sampleHeight` / `Scene.clampToHeight` keep reusing the main scene's
+   * already-rendered depth.
    *
-   * This is deliberately a different axis from `supportsSynchronousReadback`.
-   * The SYNCHRONOUS `Scene.sampleHeight` / `Scene.clampToHeight` do work on
-   * backends without synchronous readback — they reuse the main scene's
-   * already-rendered depth instead of an offscreen ray render — so
-   * `Scene.sampleHeightSupported` / `Scene.clampToHeightSupported` must keep
-   * reporting `true` there.
-   *
-   * Default `true` (WebGL); WebGPU overrides to `false`.
+   * Default `true`; a backend without the producer overrides to `false`.
    */
   get supportsOffscreenRayDepthReadback(): boolean {
     return true;
+  }
+
+  /**
+   * Whether an offscreen ray pick is in flight and needs this frame's pick
+   * depth published for readback.
+   *
+   * Backends whose pick pass does not otherwise produce a readable depth use
+   * this to pay for that publication ONLY while a `*MostDetailed` height query
+   * is rendering — an ordinary `scene.pick` sets nothing and costs nothing.
+   * Scene code sets it through the context rather than branching on the
+   * backend; a context with no use for it simply ignores the value.
+   */
+  get offscreenRayDepthRequested(): boolean {
+    return this._offscreenRayDepthRequested;
+  }
+
+  set offscreenRayDepthRequested(value: boolean) {
+    this._offscreenRayDepthRequested = value === true;
   }
 
   /**

@@ -1852,9 +1852,10 @@ class Scene {
    * one-frame-stale (the first query at a new location returns
    * <code>undefined</code> and converges in 1-2 frames) and only resolves for
    * positions currently visible in the view. The asynchronous
-   * {@link Scene#sampleHeightMostDetailed} variant relies on offscreen depth
-   * and is unsupported on asynchronous-readback backends. For CPU terrain-only
-   * sampling that is independent of GPU readback, use
+   * {@link Scene#sampleHeightMostDetailed} variant relies instead on depth
+   * recovered from an offscreen ray render, which not every backend publishes;
+   * {@link Scene#sampleHeightMostDetailedSupported} reports that separately.
+   * For CPU terrain-only sampling that is independent of GPU readback, use
    * {@link sampleTerrainMostDetailed}.
    *
    * @type {boolean}
@@ -1879,9 +1880,10 @@ class Scene {
    * one-frame-stale (the first query at a new location returns
    * <code>undefined</code> and converges in 1-2 frames) and only resolves for
    * positions currently visible in the view. The asynchronous
-   * {@link Scene#clampToHeightMostDetailed} variant relies on offscreen depth
-   * and is unsupported on asynchronous-readback backends. For CPU terrain-only
-   * sampling that is independent of GPU readback, use
+   * {@link Scene#clampToHeightMostDetailed} variant relies instead on depth
+   * recovered from an offscreen ray render, which not every backend publishes;
+   * {@link Scene#clampToHeightMostDetailedSupported} reports that separately.
+   * For CPU terrain-only sampling that is independent of GPU readback, use
    * {@link sampleTerrainMostDetailed}.
    *
    * @type {boolean}

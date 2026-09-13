@@ -1908,21 +1908,30 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * WebGPU has no offscreen ray-depth producer. The offscreen render that the
-   * `*MostDetailed` height queries drive is a pick pass, and the globe-depth
-   * framebuffer — the only packed pick-depth source here — is off for pick
-   * passes, so the offscreen view's `PickDepth` never receives a depth texture
-   * and its query returns `undefined`. Overrides the base `true` so callers can
-   * test `Scene.sampleHeightMostDetailedSupported` /
-   * `Scene.clampToHeightMostDetailedSupported` up front instead of discovering
-   * the gap as an array full of `undefined`.
+   * WebGPU publishes an offscreen ray-pick depth on demand. Stated explicitly
+   * rather than inherited, because this exact getter read `false` for the
+   * renderer's whole history and a reader needs to see where that changed.
    *
-   * The synchronous `Scene.sampleHeight` / `Scene.clampToHeight` are
-   * unaffected — they reuse the main scene depth and stay supported here — so
-   * this stays separate from `supportsSynchronousReadback`.
+   * The offscreen render the `*MostDetailed` height queries drive is a pick
+   * pass, and the globe-depth framebuffer — the only packed pick-depth source
+   * that runs unconditionally — is off for pick passes. Until Batch 1482 the
+   * offscreen view's `PickDepth` therefore never received a depth texture and
+   * every sampled point came back `undefined`. The pick pass now stores its
+   * depth per frustum slice and copies it, verbatim, into a
+   * pick-framebuffer-owned `r32float` target that it hands to that `PickDepth`
+   * — but ONLY while `context.offscreenRayDepthRequested` is set, so an
+   * ordinary `scene.pick` still pays nothing. Verbatim rather than through the
+   * usual RGBA8 pack because this depth is reconstructed against the ray
+   * camera's whole frustum, where 24 bits is a 30 m quantum; see
+   * `PickingRayHelpers.recoverRayPositionAsync`.
+   *
+   * What remains genuinely missing here is the SYNCHRONOUS recovery: the
+   * readback is asynchronous, so `Scene.pickFromRay` over an arbitrary ray
+   * still returns its hit object with `position` undefined. That gap is the
+   * `supportsSynchronousReadback` axis, not this one.
    */
   override get supportsOffscreenRayDepthReadback(): boolean {
-    return false;
+    return true;
   }
 
   /**

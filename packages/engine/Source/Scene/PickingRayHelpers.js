@@ -171,6 +171,146 @@ function isExcluded(object, objectsToExclude) {
 
 // ---- Ray intersection ----
 
+/**
+ * Recover the hit distance from the offscreen render's depth, synchronously.
+ *
+ * Runs INSIDE the offscreen render's try block, while `scene.view` is still the
+ * offscreen view, because `picking.getPickDepth` resolves against the current
+ * view and `readPixels` reads the framebuffer this pass just wrote.
+ *
+ * @private
+ */
+function recoverRayPositionSync(picking, scene, ray, view) {
+  const { context } = scene;
+  if (!context.depthTexture) {
+    return undefined;
+  }
+  const { frustumCommandsList } = view;
+  const numFrustums = frustumCommandsList.length;
+  for (let i = 0; i < numFrustums; ++i) {
+    const pickDepth = picking.getPickDepth(scene, i);
+    const depth = pickDepth.getDepth(context, 0, 0);
+    if (!defined(depth)) {
+      continue;
+    }
+    if (depth > 0.0 && depth < 1.0) {
+      const renderedFrustum = frustumCommandsList[i];
+      const near =
+        renderedFrustum.near * (i !== 0 ? scene.opaqueFrustumNearOffset : 1.0);
+      const far = renderedFrustum.far;
+      const distance = near + depth * (far - near);
+      return Ray.getPoint(ray, distance);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The same recovery for a backend whose readback cannot complete inside the
+ * call: await one readback per frustum slice and take the nearest hit.
+ *
+ * Runs AFTER the offscreen render's `context.endFrame()`, so the copy the pick
+ * pass encoded has been submitted. Reads the offscreen view's `PickDepth`
+ * instances directly rather than through `picking.getPickDepth`, because
+ * `scene.view` is the default view again by now — and reads only instances the
+ * producer actually populated, so a slice that published nothing answers
+ * "no hit" instead of a stale one.
+ *
+ * ## Which frustum the depth is encoded against
+ *
+ * The synchronous path above inverts each slice's own near/far, because that
+ * is what WebGL rasterised with: `czm_projection` resolves per draw, so the
+ * per-slice projection `Scene.executeCommands` installs reaches the shader.
+ *
+ * This path inverts the CAMERA's frustum instead. On an asynchronous-readback
+ * backend the projection is baked into each command's `mvpRelativeToEye` while
+ * primitives are updated — before the potentially-visible set exists, so before
+ * any slice does — and the per-slice update that follows changes `UniformState`
+ * without changing the bytes the draw already owns. Every slice therefore
+ * rasterises in the camera's frustum. `Picking.pickPositionWorldCoordinates`
+ * states the same rule for the main view and reconstructs the same way.
+ *
+ * The offscreen camera is orthographic, so `frameState.useLogDepth` is false
+ * and that encoding is linear across the camera's whole range: with `Picking`'s
+ * 0.1-to-5e8 offscreen frustum, one part in 2^24 is 30 m, which is why the
+ * producer publishes the depth verbatim in `r32float` rather than through the
+ * 24-bit RGBA8 pack the slice-reconstructed consumers share.
+ *
+ * @private
+ */
+async function recoverRayPositionAsync(picking, scene, ray) {
+  const { context } = scene;
+  if (!context.depthTexture) {
+    return undefined;
+  }
+  const view = picking._pickOffscreenView;
+  const frustum = view.camera.frustum;
+  const near = frustum.near;
+  const far = frustum.far;
+  if (!defined(near) || !defined(far) || !(far > near)) {
+    return undefined;
+  }
+  const numFrustums = view.frustumCommandsList.length;
+  let nearestDistance;
+  for (let i = 0; i < numFrustums; ++i) {
+    const pickDepth = view.pickDepths[i];
+    if (!defined(pickDepth) || typeof pickDepth.readDepthAsync !== "function") {
+      continue;
+    }
+    const depth = await pickDepth.readDepthAsync(context, 0, 0);
+    if (!defined(depth)) {
+      continue;
+    }
+    if (depth > 0.0 && depth < 1.0) {
+      const distance = near + depth * (far - near);
+      //>>includeStart('debug', pragmas.debug);
+      // The numbers that decide the answer, including the slice bounds this
+      // depth is NOT encoded against: a distance that lands outside them is
+      // the signature of the two frames having diverged again.
+      const slice = view.frustumCommandsList[i];
+      console.log(
+        `[WebGPU:RayPick] slice ${i} depth ${depth.toExponential(6)} encode ` +
+          `${near.toFixed(2)}..${far.toFixed(2)} distance ${distance.toFixed(3)} ` +
+          `sliceBand ${slice?.near?.toFixed(2)}..${slice?.far?.toFixed(2)}`,
+      );
+      //>>includeEnd('debug');
+      // Slices are ordered near to far, so the first hit is normally the
+      // nearest; keep the minimum anyway, so a slice that publishes an
+      // out-of-order depth cannot make the answer farther than a hit already
+      // found rather than merely wrong.
+      if (!defined(nearestDistance) || distance < nearestDistance) {
+        nearestDistance = distance;
+      }
+    }
+  }
+  if (!defined(nearestDistance)) {
+    return undefined;
+  }
+  return Ray.getPoint(ray, nearestDistance);
+}
+
+/**
+ * Assemble the pick record from what the render and the depth recovery found.
+ * @private
+ */
+function assembleRayIntersection(
+  object,
+  position,
+  objectsToExclude,
+  requirePosition,
+) {
+  if (!defined(object) && !defined(position)) {
+    return undefined;
+  }
+  return {
+    object: object,
+    position: position,
+    exclude:
+      (!defined(position) && requirePosition) ||
+      isExcluded(object, objectsToExclude),
+  };
+}
+
 function getRayIntersection(
   picking,
   scene,
@@ -180,32 +320,65 @@ function getRayIntersection(
   requirePosition,
   mostDetailed,
 ) {
-  const { context, frameState } = scene;
-  const uniformState = context.uniformState;
+  const { context } = scene;
 
-  // The synchronous depth-readback block below cannot recover a position on
-  // contexts without synchronous readback: the offscreen ray-pick PickDepth
-  // instances never receive update(), and the shared globe-depth texture is
-  // encoded against the main camera frustum. As a result, getDepth returns a
-  // cold or stale value and `position` stays undefined.
-  //
-  // sampleHeight and clampToHeight avoid this code on WebGPU by reusing the
-  // main scene depth. pickFromRay over an arbitrary ray still needs an
-  // offscreen ray render with per-view asynchronous depth packing, which is not
-  // yet built; it returns the object hit but a `position` of undefined. Surface
-  // that scope limit once rather than failing silently.
+  // The synchronous depth-readback below cannot recover a position on a
+  // context without synchronous readback: the packed depth the offscreen
+  // render publishes is read back through `mapAsync`, which cannot complete
+  // inside this call. `sampleHeight` / `clampToHeight` avoid this code there by
+  // reusing the main scene depth, and their *MostDetailed variants take the
+  // asynchronous form of this function (they return promises and can wait).
+  // `pickFromRay` over an arbitrary ray is synchronous and has neither escape:
+  // it returns the object hit but a `position` of undefined. Surface that scope
+  // limit once rather than failing silently.
   if (!context.supportsSynchronousReadback) {
     oneTimeWarning(
       "WebGPU.pickFromRay.noPosition",
       "Scene.pickFromRay returns a hit object but no `position` on WebGPU: " +
-        "the offscreen arbitrary-ray depth path is not implemented for " +
-        "asynchronous-readback backends. Scene.sampleHeight and " +
-        "Scene.clampToHeight reuse the main scene depth, but the " +
-        "*MostDetailed picking variants are also unsupported on " +
-        "asynchronous-readback backends. For CPU terrain-only height queries, " +
-        "use sampleTerrainMostDetailed.",
+        "recovering it needs the offscreen ray depth, whose readback is " +
+        "asynchronous, and this call cannot wait. Scene.sampleHeight, " +
+        "Scene.clampToHeight and the *MostDetailed height queries are " +
+        "unaffected. For CPU terrain-only height queries, use " +
+        "sampleTerrainMostDetailed.",
     );
   }
+
+  const rendered = renderOffscreenRayPick(
+    picking,
+    scene,
+    ray,
+    width,
+    mostDetailed,
+    recoverRayPositionSync,
+  );
+  return assembleRayIntersection(
+    rendered.object,
+    rendered.position,
+    objectsToExclude,
+    requirePosition,
+  );
+}
+
+/**
+ * Render the scene into the offscreen ray view and report what it hit.
+ *
+ * `recoverPosition` is invoked inside the render's try block, before the view
+ * and frame state are restored, so a synchronous depth recovery observes the
+ * same state it always did. A caller that recovers depth asynchronously omits
+ * it and reads the published depth after this returns.
+ *
+ * @private
+ */
+function renderOffscreenRayPick(
+  picking,
+  scene,
+  ray,
+  width,
+  mostDetailed,
+  recoverPosition,
+) {
+  const { context, frameState } = scene;
+  const uniformState = context.uniformState;
 
   const view = picking._pickOffscreenView;
   scene.view = view;
@@ -246,40 +419,12 @@ function getRayIntersection(
     scene.updateAndExecuteCommands(passState, scratchColorZero);
     scene.resolveFramebuffers(passState);
 
-    let position;
     const object = view.pickFramebuffer.end(drawingBufferRectangle, 1)[0];
+    const position = defined(recoverPosition)
+      ? recoverPosition(picking, scene, ray, view)
+      : undefined;
 
-    if (scene.context.depthTexture) {
-      const { frustumCommandsList } = view;
-      const numFrustums = frustumCommandsList.length;
-      for (let i = 0; i < numFrustums; ++i) {
-        const pickDepth = picking.getPickDepth(scene, i);
-        const depth = pickDepth.getDepth(context, 0, 0);
-        if (!defined(depth)) {
-          continue;
-        }
-        if (depth > 0.0 && depth < 1.0) {
-          const renderedFrustum = frustumCommandsList[i];
-          const near =
-            renderedFrustum.near *
-            (i !== 0 ? scene.opaqueFrustumNearOffset : 1.0);
-          const far = renderedFrustum.far;
-          const distance = near + depth * (far - near);
-          position = Ray.getPoint(ray, distance);
-          break;
-        }
-      }
-    }
-
-    if (defined(object) || defined(position)) {
-      result = {
-        object: object,
-        position: position,
-        exclude:
-          (!defined(position) && requirePosition) ||
-          isExcluded(object, objectsToExclude),
-      };
-    }
+    result = { object: object, position: position };
   } catch (error) {
     hadPrimaryError = true;
     primaryError = error;
@@ -315,6 +460,94 @@ function getRayIntersection(
     throw cleanupError;
   }
   return result;
+}
+
+/**
+ * The asynchronous form of {@link getRayIntersection}, for a backend whose
+ * offscreen ray depth can only be read back after the frame is submitted.
+ *
+ * `context.offscreenRayDepthRequested` is raised only around this render, so
+ * the pick pass publishes a readable depth for THIS query and an ordinary
+ * `scene.pick` still encodes nothing extra. It is lowered in a `finally`: a
+ * render that throws must not leave every later pick paying for a publication
+ * nobody reads.
+ *
+ * SERIALIZED against every other offscreen ray pick on this `Picking`. The one
+ * offscreen view, its frustum slices and its published depth targets are shared
+ * state: a batch of thirty height queries resolves its callbacks in a single
+ * microtask drain, so without this every render would run before the first
+ * readback landed and all thirty points would read the LAST render's depth
+ * against the LAST render's slice bounds. That measured as thirty nearly
+ * identical heights, 24 m from WebGL's, on a surface whose real relief is 20 m.
+ *
+ * @private
+ */
+function getRayIntersectionAsync(
+  picking,
+  scene,
+  ray,
+  objectsToExclude,
+  width,
+  requirePosition,
+  mostDetailed,
+) {
+  const run = () =>
+    executeRayIntersectionAsync(
+      picking,
+      scene,
+      ray,
+      objectsToExclude,
+      width,
+      requirePosition,
+      mostDetailed,
+    );
+  const previous = picking._offscreenRayPickChain ?? Promise.resolve();
+  const queued = previous.then(run, run);
+  // The chain tail must never carry a rejection, or one failed pick would
+  // reject every later one.
+  picking._offscreenRayPickChain = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  return queued;
+}
+
+/**
+ * One offscreen ray pick: render, then await this render's own depth.
+ * @private
+ */
+async function executeRayIntersectionAsync(
+  picking,
+  scene,
+  ray,
+  objectsToExclude,
+  width,
+  requirePosition,
+  mostDetailed,
+) {
+  const { context } = scene;
+  let rendered;
+  context.offscreenRayDepthRequested = true;
+  try {
+    rendered = renderOffscreenRayPick(
+      picking,
+      scene,
+      ray,
+      width,
+      mostDetailed,
+      undefined,
+    );
+  } finally {
+    context.offscreenRayDepthRequested = false;
+  }
+
+  const position = await recoverRayPositionAsync(picking, scene, ray);
+  return assembleRayIntersection(
+    rendered.object,
+    position,
+    objectsToExclude,
+    requirePosition,
+  );
 }
 
 // ---- Drill pick from ray ----
@@ -425,6 +658,66 @@ function drillPickLoop(pickCallback, limit) {
   return results;
 }
 
+/**
+ * {@link drillPickLoop} for a pick callback that returns a promise.
+ *
+ * Identical rules — the same `addDrillPickedResults`, the same hide-and-repick
+ * iteration, the same restoration of every `show` it touched — awaiting each
+ * iteration instead of calling it synchronously. Kept as a sibling rather than
+ * folded into `drillPickLoop` so the synchronous loop every existing caller
+ * uses keeps its exact shape.
+ *
+ * @private
+ */
+async function drillPickLoopAsync(pickCallback, limit) {
+  const results = [];
+  const pickedPrimitives = [];
+  const pickedAttributes = [];
+  const pickedFeatures = [];
+  if (!defined(limit)) {
+    limit = Number.MAX_VALUE;
+  }
+
+  try {
+    let pickedResults = await pickCallback(limit);
+    while (defined(pickedResults) && pickedResults.length > 0) {
+      const complete = addDrillPickedResults(
+        pickedResults,
+        limit,
+        results,
+        pickedPrimitives,
+        pickedAttributes,
+        pickedFeatures,
+      );
+      if (complete) {
+        break;
+      }
+      pickedResults = await pickCallback(limit - results.length);
+    }
+  } finally {
+    // A rejected pick must not leave primitives hidden for the rest of the
+    // session; the synchronous loop cannot throw between its hide and its
+    // restore, but an awaited one can be rejected at any iteration.
+    for (let i = 0; i < pickedPrimitives.length; ++i) {
+      pickedPrimitives[i].show = true;
+    }
+
+    for (let i = 0; i < pickedAttributes.length; ++i) {
+      const attributes = pickedAttributes[i];
+      attributes.show = ShowGeometryInstanceAttribute.toValue(
+        true,
+        attributes.show,
+      );
+    }
+
+    for (let i = 0; i < pickedFeatures.length; ++i) {
+      pickedFeatures[i].show = true;
+    }
+  }
+
+  return results;
+}
+
 function drillPickFromRayHelper(
   picking,
   scene,
@@ -450,6 +743,35 @@ function drillPickFromRayHelper(
   return drillPickLoop(pickCallback, limit);
 }
 
+/**
+ * {@link drillPickFromRayHelper} over the asynchronous ray intersection.
+ * @private
+ */
+function drillPickFromRayAsyncHelper(
+  picking,
+  scene,
+  ray,
+  limit,
+  objectsToExclude,
+  width,
+  requirePosition,
+  mostDetailed,
+) {
+  const pickCallback = async function () {
+    const pickResult = await getRayIntersectionAsync(
+      picking,
+      scene,
+      ray,
+      objectsToExclude,
+      width,
+      requirePosition,
+      mostDetailed,
+    );
+    return pickResult ? [pickResult] : undefined;
+  };
+  return drillPickLoopAsync(pickCallback, limit);
+}
+
 function pickFromRay(
   picking,
   scene,
@@ -472,6 +794,37 @@ function pickFromRay(
   if (results.length > 0) {
     return results[0];
   }
+}
+
+/**
+ * {@link pickFromRay} for a backend whose offscreen ray depth is read back
+ * asynchronously. Only the promise-returning `*MostDetailed` height queries
+ * reach this — the synchronous `Scene.pickFromRay` cannot wait.
+ * @private
+ */
+async function pickFromRayAsync(
+  picking,
+  scene,
+  ray,
+  objectsToExclude,
+  width,
+  requirePosition,
+  mostDetailed,
+) {
+  const results = await drillPickFromRayAsyncHelper(
+    picking,
+    scene,
+    ray,
+    1,
+    objectsToExclude,
+    width,
+    requirePosition,
+    mostDetailed,
+  );
+  if (results.length > 0) {
+    return results[0];
+  }
+  return undefined;
 }
 
 // ---- Promise deferral ----
@@ -550,6 +903,26 @@ function sampleHeightMostDetailed(
     objectsToExclude,
     width,
     function () {
+      // Where the offscreen ray depth can only be read back after the frame is
+      // submitted, take the asynchronous chain: this query returns a promise,
+      // so unlike the synchronous `Scene.sampleHeight` it can wait. A
+      // synchronous pick here returns `undefined` for every point in the batch,
+      // which the caller then writes into its own array as a hole.
+      if (!scene.context.supportsSynchronousReadback) {
+        return pickFromRayAsync(
+          picking,
+          scene,
+          ray,
+          objectsToExclude,
+          width,
+          true,
+          true,
+        ).then(function (pickResult) {
+          return defined(pickResult)
+            ? getHeightFromCartesian(scene, pickResult.position)
+            : undefined;
+        });
+      }
       const pickResult = pickFromRay(
         picking,
         scene,
@@ -581,6 +954,27 @@ function clampToHeightMostDetailed(
     objectsToExclude,
     width,
     function () {
+      // See the note in sampleHeightMostDetailed: a synchronous pick recovers
+      // no depth where the readback is asynchronous, and the caller's
+      // documented contract then replaces each of its own Cartesians with a
+      // hole.
+      if (!scene.context.supportsSynchronousReadback) {
+        return pickFromRayAsync(
+          picking,
+          scene,
+          ray,
+          objectsToExclude,
+          width,
+          true,
+          true,
+        ).then(function (pickResult) {
+          // A fresh instance, never a caller-owned object — the batch around
+          // this one is still in flight.
+          return defined(pickResult)
+            ? Cartesian3.clone(pickResult.position)
+            : undefined;
+        });
+      }
       const pickResult = pickFromRay(
         picking,
         scene,

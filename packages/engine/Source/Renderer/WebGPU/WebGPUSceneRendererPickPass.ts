@@ -56,6 +56,17 @@ export interface PickPassHost {
       depthTexture: GPUTexture,
       scissor?: { x: number; y: number; width: number; height: number },
     ): void;
+    /**
+     * Copy a depth attachment into an `r32float` view with no re-encoding, for
+     * a consumer that reconstructs against the camera frustum rather than a
+     * slice. Returns whether the copy was recorded.
+     */
+    executeCopyDepthToViewFloat?(
+      encoder: GPUCommandEncoder,
+      destinationView: GPUTextureView,
+      depthTexture: GPUTexture,
+      scissor?: { x: number; y: number; width: number; height: number },
+    ): boolean;
   } | null;
   /**
    * Apply the given near/far to the camera frustum and refresh the
@@ -172,6 +183,11 @@ type WebGPUPickFBOShape = CesiumOpaqueFramebuffer & {
   // Optional pass-domain clear; ordinary object/metadata picking defaults 0.
   pickClearValue?: GPUColor;
   ensureClassificationDepth?: () => {
+    texture: GPUTexture;
+    view: GPUTextureView;
+  } | null;
+  // Per-frustum packed-depth target for an offscreen ray pick's readback.
+  ensureOffscreenRayDepth?: (frustumIndex: number) => {
     texture: GPUTexture;
     view: GPUTextureView;
   } | null;
@@ -576,6 +592,14 @@ export function executePickPass(
       const tileCheckpoint =
         tileClassificationCount > 0 && classificationTarget !== null;
       const clearGlobeDepth = config.clearGlobeDepth === true;
+      // An offscreen ray pick reads this slice's depth after the pass ends, so
+      // the pass must STORE it. Without this the attachment is discarded and
+      // the pack below reads the packer's no-surface sentinel for every point —
+      // which is exactly what the first build of this producer measured.
+      const storeDepthForRayPick =
+        context.offscreenRayDepthRequested === true &&
+        host._globeDepth !== null &&
+        pickFBO.depthTexture !== undefined;
       let pickRenderPass: GPURenderPassEncoder | null = beginPickRenderPass(
         context,
         encoder,
@@ -587,7 +611,11 @@ export function executePickPass(
         "clear",
         // In snap mode the payload phase LOADS this depth, so it must survive
         // the end of the occluder phase.
-        terrainCheckpoint || clearGlobeDepth || tileCheckpoint || snapMode,
+        terrainCheckpoint ||
+          clearGlobeDepth ||
+          tileCheckpoint ||
+          snapMode ||
+          storeDepthForRayPick,
       );
       const execute = (passIndex: number): void => {
         executePickBatch(
@@ -658,7 +686,10 @@ export function executePickPass(
         if (terrainCheckpoint) {
           packDepthAndReopen(
             `Pick terrain classification frustum ${i}`,
-            clearGlobeDepth || tileCheckpoint || snapMode,
+            clearGlobeDepth ||
+              tileCheckpoint ||
+              snapMode ||
+              storeDepthForRayPick,
           );
           execute(Pass.TERRAIN_CLASSIFICATION);
         }
@@ -668,7 +699,7 @@ export function executePickPass(
             `Pick post-globe depth-clear frustum ${i}`,
             "clear",
             "load",
-            tileCheckpoint || snapMode,
+            tileCheckpoint || snapMode || storeDepthForRayPick,
           );
           if (PICK_DEPTH_PLANE_ENABLED && config.useDepthPlane) {
             host._renderDepthPlane(config, "pick");
@@ -679,7 +710,7 @@ export function executePickPass(
         if (tileCheckpoint) {
           packDepthAndReopen(
             `Pick 3D-tile classification frustum ${i}`,
-            snapMode,
+            snapMode || storeDepthForRayPick,
           );
           execute(Pass.CESIUM_3D_TILE_CLASSIFICATION);
         }
@@ -748,6 +779,60 @@ export function executePickPass(
         // A thrown command must not leave the command encoder with an open
         // render pass; otherwise endFrame cannot finish or submit it.
         endPickRenderPass(context, pickRenderPass);
+      }
+
+      // Offscreen ray-pick depth. `Scene.sampleHeightMostDetailed` /
+      // `clampToHeightMostDetailed` recover the hit distance from THIS render's
+      // depth, and nothing else publishes a readable one during a pick pass —
+      // the globe-depth framebuffer is off here, which is why every sampled
+      // point read `undefined` on this backend before Batch 1482. Copy the
+      // slice's depth VERBATIM into a pick-framebuffer-owned `r32float` target
+      // and hand that texture to the offscreen view's `PickDepth`; the query
+      // reads it back asynchronously once the frame is submitted.
+      //
+      // Verbatim, not the RGBA8 `czm_packDepth` layout the other publications
+      // use, because of what this depth is encoded against. The per-slice
+      // near/far applied at `_updateFrustumUniforms` above reaches
+      // `uniformState`, but NOT the draws: WebGPU bakes `uniformState.projection`
+      // into each command's `mvpRelativeToEye` during `updateAndRenderPrimitives`,
+      // which runs before the potentially-visible set and therefore before this
+      // loop exists. So every slice rasterises in the CAMERA's frustum — the
+      // convention `Picking.pickPositionWorldCoordinates` already documents for
+      // this backend. For the main view that range is survivable because the
+      // depth is logarithmic; the offscreen ray camera is orthographic, so its
+      // depth is LINEAR over near 0.1 to far 5e8 and a 24-bit pack would quantise
+      // the answer to 30 m.
+      //
+      // Keyed by `index`, the frustumCommandsList index the reader loops over —
+      // not the far-to-near counter `i`. Gated on the request the picking code
+      // raises only while an offscreen ray pick is rendering, so an ordinary
+      // `scene.pick` encodes nothing extra.
+      if (
+        context.offscreenRayDepthRequested === true &&
+        host._globeDepth &&
+        pickFBO.depthTexture &&
+        scene._picking?.getPickDepth
+      ) {
+        const rayDepthTarget = pickFBO.ensureOffscreenRayDepth?.(index) ?? null;
+        const copied =
+          rayDepthTarget !== null &&
+          host._globeDepth.executeCopyDepthToViewFloat?.(
+            encoder,
+            rayDepthTarget.view,
+            pickFBO.depthTexture,
+            pickDynamicState.scissor,
+          ) === true;
+        // Publish only what was actually written. Handing over a target the
+        // copy declined would answer every later query with this texture's
+        // clear value, which is a wrong position rather than an absent one.
+        if (rayDepthTarget && copied) {
+          scene._picking
+            .getPickDepth(scene, index)
+            ?.update?.(
+              context as unknown as CesiumGraphicsContext,
+              rayDepthTarget.texture as unknown as CesiumOpaqueTexture,
+            );
+        }
       }
 
       // The occluder phase stored this slice's depth. Load that depth in the

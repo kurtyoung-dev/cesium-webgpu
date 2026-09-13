@@ -91,6 +91,7 @@ import {
   computeSandcastle2Origins,
   createGuardedPage,
 } from "./lib/sandcastle2-origin-rewrite.mjs";
+import { checkSandcastle2Typings } from "./lib/sandcastle2-typings-preflight.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUTPUT_DIR = path.join(__dirname, "output", "sandcastle-smoke");
@@ -624,6 +625,19 @@ async function runSandcastle2Sweep(argv) {
   let ids = options.ids ?? enumerateGalleryIds(GALLERY_DIR);
   if (options.limit > 0) {
     ids = ids.slice(0, options.limit);
+  }
+
+  // Typings preflight. `gulp buildTs` output is what Monaco is pointed at, and
+  // a tree missing it fails the sweep three different ways across attempts —
+  // none of which says "typings missing" (see the lib's header for the bisect
+  // lane that paid for this). Refuse before spending browser time.
+  if (!options.dryRun) {
+    const typings = await checkSandcastle2Typings({ base: BASE });
+    if (!typings.ok) {
+      console.log(`REFUSED: ${typings.reason}`);
+      return 1;
+    }
+    console.log(`sandcastle2 preflight: ${typings.reason}`);
   }
 
   if (options.dryRun) {

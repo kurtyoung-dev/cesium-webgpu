@@ -78,6 +78,60 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
+// Full-precision variant of the pack above, for the offscreen ray pick.
+//
+// The RGBA8 pack truncates the depth to 24 bits. That is invisible for its
+// original consumers, which reconstruct against a frustum SLICE: a 124 m band
+// quantised to 24 bits resolves to 7 micrometres. The offscreen ray pick has
+// no such luxury. WebGPU bakes `uniformState.projection` into each command's
+// `mvpRelativeToEye` at command-update time (`WebGPUModelRenderer`'s
+// `packCameraUniforms`), before any per-slice `_updateFrustumUniforms` runs,
+// so its depth is encoded against the ray camera's WHOLE frustum. `Picking`'s
+// offscreen camera spans near 0.1 to far 5e8, and the main view buys precision
+// over a range like that with logarithmic depth, which an ORTHOGRAPHIC ray
+// camera cannot use (`frameState.useLogDepth` is false for it). 24 bits over
+// 5e8 m is a 30.15 m quantum, coarser than the terrain being sampled.
+//
+// So this variant publishes the depth the attachment actually holds, with no
+// re-encoding. `r32float` is core-renderable; it needs no blending or
+// filtering here, only `copyTextureToBuffer`.
+const DEPTH_COPY_FLOAT_WGSL = /* wgsl */ `
+@group(0) @binding(0) var depthTex: texture_depth_2d;
+@group(0) @binding(1) var depthSampler: sampler;
+
+struct VertexOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  var positions = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+  var uvs = array<vec2<f32>, 3>(
+    vec2<f32>(0.0, 1.0),
+    vec2<f32>(2.0, 1.0),
+    vec2<f32>(0.0, -1.0)
+  );
+  var out: VertexOutput;
+  out.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+  out.uv = uvs[vertexIndex];
+  return out;
+}
+
+@fragment
+fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
+  // Raw, unquantised. The cleared/far depth 1.0 travels through unchanged and
+  // the reader rejects it as "no surface", so this needs no sentinel of its
+  // own, unlike the RGBA8 pack, whose floor-based encoding had to map 1.0 to
+  // zero to keep WebGL's fract-based "unpack == 0.0" contract.
+  return vec4<f32>(textureSample(depthTex, depthSampler, in.uv), 0.0, 0.0, 1.0);
+}
+`;
+
 // MSAA variant. WGSL's `textureSample` cannot read a
 // `texture_depth_multisampled_2d`, and MSAA depth targets cannot be resolved
 // via a render-pass `resolveTarget` (the platform only resolves color
@@ -161,6 +215,7 @@ export class WebGPUGlobeDepth {
 
   // Depth copy pipeline resources (single-sample path)
   private _depthCopyPipeline: GPURenderPipeline | null = null;
+  private _depthCopyFloatPipeline: GPURenderPipeline | null = null;
   private _depthCopyBindGroupLayout: GPUBindGroupLayout | null = null;
   private _depthCopyBindGroup: GPUBindGroup | null = null;
   private _depthCopySampler: GPUSampler | null = null;
@@ -288,6 +343,7 @@ export class WebGPUGlobeDepth {
       // Pipelines, layouts, and samplers are device-owned. Device recovery may
       // reuse this JS renderer instance, so force a rebuild on the new device.
       this._depthCopyPipeline = null;
+      this._depthCopyFloatPipeline = null;
       this._depthCopyBindGroupLayout = null;
       this._depthCopySampler = null;
       this._depthCopyMSAAPipeline = null;
@@ -470,6 +526,127 @@ export class WebGPUGlobeDepth {
       pass.draw(3);
     }
     pass.end();
+  }
+
+  /**
+   * Copy a depth attachment into an `r32float` view WITHOUT re-encoding it.
+   *
+   * {@link WebGPUGlobeDepth#executeCopyDepthToView} packs the same depth into
+   * RGBA8, which costs 24 bits of a value its consumers then reconstruct
+   * against a narrow frustum slice. The offscreen ray pick reconstructs
+   * against the ray camera's whole frustum instead (see `DEPTH_COPY_FLOAT_WGSL`
+   * for why), where 24 bits is a 30 m quantum, so it takes the depth verbatim.
+   *
+   * Single-sample only: the pick framebuffer's depth attachment is created
+   * without `sampleCount`, and a multisampled source is reported rather than
+   * silently resolved to sample 0, which would be a different measurement than
+   * the caller asked for.
+   *
+   * @param encoder Frame command encoder to record into.
+   * @param destinationView An `r32float` render-attachment view.
+   * @param depthTexture The depth attachment to read.
+   * @param scissor Optional scissor limiting the copy.
+   * @returns `true` when the copy was recorded.
+   */
+  executeCopyDepthToViewFloat(
+    encoder: GPUCommandEncoder,
+    destinationView: GPUTextureView | null,
+    depthTexture: GPUTexture | null,
+    scissor?: { x: number; y: number; width: number; height: number },
+  ): boolean {
+    const device = this._device;
+    // Permanent null-target guard at a render-pass boundary: a missing source
+    // or destination here means the ray pick publishes nothing and every
+    // sampled height comes back undefined, which is broken output, not a
+    // diagnostic.
+    if (!device || !destinationView || !depthTexture) {
+      console.error(
+        "[CesiumJS:webgpu] Offscreen ray depth copy skipped: " +
+          `device=${!!device} destination=${!!destinationView} source=${!!depthTexture}`,
+      );
+      return false;
+    }
+    if (depthTexture.sampleCount > 1) {
+      console.error(
+        "[CesiumJS:webgpu] Offscreen ray depth copy skipped: the pick depth " +
+          `attachment is multisampled (sampleCount ${depthTexture.sampleCount}); ` +
+          "the full-precision copy reads single-sample depth only.",
+      );
+      return false;
+    }
+    this._createDepthCopyFloatPipeline(device);
+    const useMSAA = this._updateDepthCopyBindGroup(depthTexture);
+    const bindGroup = this._depthCopyBindGroup;
+    const pipeline = this._depthCopyFloatPipeline;
+    if (useMSAA || !bindGroup || !pipeline) {
+      console.error(
+        "[CesiumJS:webgpu] Offscreen ray depth copy skipped: no single-sample " +
+          "depth-copy resources.",
+      );
+      return false;
+    }
+    const pass = encoder.beginRenderPass({
+      label: "Offscreen ray pick depth copy pass",
+      colorAttachments: [
+        {
+          view: destinationView,
+          // Cleared to the far plane so a scissored-out or undrawn texel reads
+          // as "no surface" under the reader's `depth >= 1.0` rejection,
+          // rather than as a hit at the near plane.
+          clearValue: { r: 1, g: 0, b: 0, a: 1 },
+          loadOp: "clear",
+          storeOp: "store",
+        },
+      ],
+    });
+    if (scissor && scissor.width > 0 && scissor.height > 0) {
+      pass.setScissorRect(scissor.x, scissor.y, scissor.width, scissor.height);
+    }
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    if (!scissor || (scissor.width > 0 && scissor.height > 0)) {
+      pass.draw(3);
+    }
+    pass.end();
+    return true;
+  }
+
+  /**
+   * Create the full-precision depth copy pipeline. It shares the single-sample
+   * bind-group layout and sampler with the packed copy above, so it also
+   * shares that path's bind group; only the fragment output format and the
+   * shader differ.
+   */
+  private _createDepthCopyFloatPipeline(device: GPUDevice): void {
+    if (this._depthCopyFloatPipeline) {
+      return;
+    }
+    // The shared single-sample layout and sampler are built by the packed
+    // pipeline's constructor; build it first if nothing has needed it yet.
+    this._createDepthCopyPipeline(device);
+    if (!this._depthCopyBindGroupLayout) {
+      return;
+    }
+
+    const shaderModule = device.createShaderModule({
+      label: "GlobeDepth-DepthCopyFloat-Shader",
+      code: DEPTH_COPY_FLOAT_WGSL,
+    });
+
+    this._depthCopyFloatPipeline = device.createRenderPipeline({
+      label: "GlobeDepth-DepthCopyFloat-Pipeline",
+      layout: device.createPipelineLayout({
+        label: "GlobeDepth-DepthCopyFloat-PipelineLayout",
+        bindGroupLayouts: [this._depthCopyBindGroupLayout],
+      }),
+      vertex: { module: shaderModule, entryPoint: "vertexMain" },
+      fragment: {
+        module: shaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: "r32float" }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
   }
 
   /**
@@ -693,6 +870,7 @@ export class WebGPUGlobeDepth {
     if (this._isDestroyed) return;
     this._destroyTargets();
     this._depthCopyPipeline = null;
+    this._depthCopyFloatPipeline = null;
     this._depthCopyBindGroupLayout = null;
     this._depthCopySampler = null;
     this._depthCopyMSAAPipeline = null;
