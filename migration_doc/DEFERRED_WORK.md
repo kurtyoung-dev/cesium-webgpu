@@ -2072,6 +2072,92 @@ the row that would promote it.
 
 **Parity:** **both**
 
+### C13-N58 — Mask-order and cloud-primary-ray measured in an owned clone <!-- source: CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md §3.6; id allocated 2026-09-12 after the then-highest C13-N57 -->
+
+**Status:** OPEN. Priority `—` (no tracked priority exists; the Batch-1476 convention). Mirrored from `QUEUE_2026-07-23_CAMPAIGN13.md` §1 in the same batch that filed the id.
+
+**Delivers:** Two exit codes and two logs that convert Frór's mask-order caveat — "the 24 mask-order assertions are unblocked by code, NOT measured" — from argued to measured, produced by an agent other than the one that wrote the triage. The recipe is smaller than the caveat assumed and the correction is part of the deliverable: `webgpu-cloud-godray-current-mask-order.spec.mjs` reads twelve tracked `.ts`/`.js` sources (`:37-51`) and needs **no build at all**; only `cloud-primary-ray.spec.mjs` has a build dependency, and it is the single gitignored file `packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.js` (`packages/engine/.gitignore:5`), copied in and proved fresh by a byte-identity check against its `.wgsl` before the spec runs.
+
+**Acceptance:** `node --test …/webgpu-cloud-godray-current-mask-order.spec.mjs` → 24/24/0 exit 0 with no preparation of any kind; the shader-identity check → `identical: true 145686 145686`; `node --test …/cloud-primary-ray.spec.mjs` → 5/5/0 exit 0; and `git status --porcelain` byte-identical before and after, the copied artefact appearing in neither. **Not** `npm run test-cloud-c13`, which carries three unrelated pre-existing reds.
+
+**Dependencies:** `C13-N08b` (sibling of the seven spec repairs; no code dependency)
+
+**Size:** S
+
+**Owner wave:** Wave W1 (WS-A)
+
+**Parity:** n/a — a measurement row; no renderer behaviour changes on either backend.
+
+**Open, unadjudicated:** the 2026-09-13 critic pass reports this row **DISCHARGED by execution at the seat** (24/24, 5/5, and `npm run test-cloud-c13` 540/537/3 with the three failures belonging to `godray-sun-usability-uniform-ranges.spec.mjs`). The seat decides between dispatching the row and banking those receipts.
+
+### C13-N59 — Bank the wave-1 launch-seal report as tracked evidence <!-- source: CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md §3.10; id allocated 2026-09-12 -->
+
+**Status:** OPEN. Priority `—` (no tracked priority exists; the Batch-1476 convention).
+
+**Delivers:** `migration_doc/CAMPAIGN_13_V2_WAVE1_SEAL_2026-09-12.md`, a copy of the lane-archive report `cesium-webgpu-worker-archive/lanes-2026-09-12/seal-tilion/WAVE1_SEAL_Tilion.md` (md5 `6e629719d73c5ebdca4852d7722a5727`, 398 lines, zero inline markdown links) with exactly two edits — a three-line provenance blockquote after the heading and a re-titled evidence section whose listing is stated not to resolve as repository paths — plus one add-only `README.md` index row. It puts the four remaining GFS GRIB2 data-representation-template reads, the NOAA GMGSI header / grid-geometry / projection / cadence-and-latency reads and the Kokhanovsky `0.8843` search result on the tracked record instead of in a worker archive. The measurement artefacts stay in the archive; this row banks the report.
+
+**Acceptance:** a reconstruct-and-compare check rebuilding the expected file from the archive source plus the two authorised edits reports `IDENTICAL: true` at 404 lines; `git diff --stat -- migration_doc/README.md` is exactly `1 file changed, 1 insertion(+)`; `verify-readme-index` exits 0 with `violations: 0` at 326 tracked / 303 linked after `git add -N`; `verify-no-doc-shred` exits 0 at 228 files clean; and `verify-doc-citations` stays at its unchanged pre-existing `51 dead / 241 advisory`.
+
+**Dependencies:** none
+
+**Size:** S
+
+**Owner wave:** Wave W1 (WS-A)
+
+**Parity:** n/a — a documentation row.
+
+**Owed to a follow-on row, deliberately not done here:** banking the report makes four sentences stale in `CAMPAIGN_13_V2_CLOUD_QUALITY_2026-09-12.md` — `:130` (the `0.8843` `[unverified]` block), `:314` (`C13-N05`), `:393` (`C13-N24`) and `:920` (the §9 "Seal task 3 … OWED" row). Which markers flip, and how, is a judgement this row does not carry.
+
+### DX-82 — The provisioner leaves a clone's tracked governance files modified <!-- source: CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md §3.8; DX id allocated 2026-09-12 after the then-highest DX-81 -->
+
+**Status:** OPEN. Filed in `QUEUE_2026-07-23_CAMPAIGN13.md` §1 and mirrored here; a `### DX-82` section in `QUEUE_2026-08-29_RESEARCH_DISPATCH.md` is **owed by the seat**, because that file is the DX queue's own home and this pass did not edit it.
+
+**Delivers:** `Tools/provision-worker-clone.mjs` stops leaving a fresh worker clone dirty. **All four** `PROVISION` destinations are tracked — `CLAUDE.md` since Batch 1434 (`33416b6036`), `AGENTS.md` since Batch 1058 (`54ead62ee5`) — so copying the seat's worktree copy over one leaves `git status` reporting ` M` while `git diff --numstat` prints nothing at all: the seat's copy is LF where a Windows checkout is CRLF. Measured across four live lane clones for `migration_doc/MAINTAINER_RULINGS_2026-08-17.md`; every lane packet that wave had to list the path as an exclusion and the seat restored it by hand. A new exported `restoreUnchangedProvisionedFile()` tests `git diff --quiet -- <dest>` and restores the checked-out form when the copy delivered nothing, or returns a NOTE the caller declares when the seat genuinely carries content git does not. Three measured docstring corrections come with it: the file says `CLAUDE.md` is gitignored in three places, and it is not.
+
+**Acceptance:** `Tools/provision-worker-clone-junctions.spec.mjs` goes 3/3 → 6/6 with three injected-`execFileSync` tests (identical → restored with a recorded `checkout`; differing → stays modified, no checkout; untracked → left as copied); `grep -ic "gitignored (.gitignore:6)"` → 0; the not-a-git-clone path still exits 2; `node --check` clean; prettier and eslint exit 0; `git diff --numstat` names exactly the two owned files.
+
+**Dependencies:** none
+
+**Size:** M
+
+**Owner wave:** — (tooling; no wave assigned)
+
+**Parity:** n/a — a tooling row.
+
+### DX-83 — Three `PROGRESS_THRAIN.md` citations name a path no reader can open <!-- source: CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md §3.9; DX id allocated 2026-09-12 -->
+
+**Status:** OPEN. Mirrored here; a `### DX-83` section in `QUEUE_2026-08-29_RESEARCH_DISPATCH.md` is **owed by the seat**.
+
+**Delivers:** The three bare `PROGRESS_THRAIN.md:…` citations in `QUEUE_2026-08-29_RESEARCH_DISPATCH.md` (`:1940`, `:1943` inside `DX-78`; `:1947` inside `DX-79`) grow the archive prefix `cesium-webgpu-worker-archive/lanes-2026-09-11/cesium-lane-hundar-20260905/_lane-out/`, so a reader can open what the ledger cites. `git ls-files | grep -i THRAIN` returns nothing — the file is not in the repository and never was — and the archived copy is 706 lines / 53,408 bytes with every cited line on the topic its citation claims. The bare, drive-letter-free form matches the two neighbouring lane-archive citations fifteen lines below (`:1958`, `:1961`) and `DEFERRED_WORK.md:498`.
+
+**Acceptance:** `grep -c "PROGRESS_THRAIN"` stays 3 and all three now carry the archive prefix; no added line introduces a drive letter, and the file's 19 pre-existing `F:/Dev/GH` paths are untouched; `git diff --numstat` is one path at 3 insertions / 3 deletions; `verify-doc-citations` stays at its unchanged `51 dead / 241 advisory`; `verify-readme-index` and `verify-no-doc-shred` exit 0.
+
+**Dependencies:** none
+
+**Size:** S
+
+**Owner wave:** — (documentation; no wave assigned)
+
+**Parity:** n/a — a documentation row.
+
+### DX-84 — No preflight reports parent-dead browser process trees before a sweep <!-- source: CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md §3.12; DX id allocated 2026-09-12 -->
+
+**Status:** OPEN. Mirrored here; a `### DX-84` section in `QUEUE_2026-08-29_RESEARCH_DISPATCH.md` is **owed by the seat**.
+
+**Delivers:** `Tools/lib/browser-orphan-preflight.mjs` — a report-only preflight naming the `msedge`/`chrome`/`chromium`/`firefox`/`webkit`/`playwright` processes whose launcher has already exited, their transitive descendant trees, the memory each tree holds, and the machine's free memory, so a sweep operator can see that confound before trusting a timing or flake number. **It never kills**: no kill flag, no `taskkill`, no `process.kill`; ending someone else's process is a human call and belongs to a separate, maintainer-approved row. `git grep -l -i "freemem\|ParentProcessId\|tasklist" -- Tools` returns zero files, so nothing like it exists. It shells PowerShell once for `Get-CimInstance Win32_Process` because a parent pid is not reachable from node alone on Windows — the "strictly required" exception in `CLAUDE.md` Principle 12 — and reads free/total from `os.freemem()`/`os.totalmem()`, which are **not** the same definition as `Win32_OperatingSystem FreePhysicalMemory` (2.06 GiB vs 4.01 GB at the same moment) and must not be mixed.
+
+**Acceptance:** a 12-test `node --test` spec that never spawns PowerShell, over a pinned nine-row fixture (two roots, bytes-descending, a live-parent browser and a parent-dead non-browser both correctly excluded, both parser throws pinned by message) with an inertness mutant that makes the root test unreachable and returns zero roots; `npm run test-tools-lib` 96/96 → 108/108 via a single add-only append to `package.json:170`; exit codes 0 PASS / 1 FAIL / 2 ERROR per the frozen table at `Tools/visual-regression/lib/verdict-exit-gate.mjs:29-34`; and one live run whose every line matches its pinned regex.
+
+**Dependencies:** none
+
+**Size:** M
+
+**Owner wave:** — (tooling; no wave assigned)
+
+**Parity:** n/a — a tooling row.
+
+**Landing hazard, named not solved:** `test-sandcastle` sits at `package.json:167`, three lines above `test-tools-lib` at `:170`, and a live lane clone carries an uncommitted edit to `:167` — a default 3-line-context hunk for `:170` spans `:167-:173` and carries that line as context, so the two patches cannot both be applied blind. The seat sequences the landings.
+
 ## New findings — wave P0-2, lane Aerin, 2026-09-05
 
 ### NEW-CORE-RESOURCE-CROSS-ORIGIN-DERIVATION
