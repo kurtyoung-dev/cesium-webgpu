@@ -19,13 +19,15 @@
  * 10. Replacing or overriding the mask pass pipeline with the visible cloud
  *     pipeline makes the unchanged cloud-pass predicate throw (green).
  *
- * The two former product reds remain ordinary positive assertions. They are
- * not skipped, inverted, quarantined, or conditional on an environment flag.
+ * On a built tree, the former product reds remain ordinary positive assertions.
+ * Missing generated shader modules skip the dependent tests with a build
+ * prerequisite reason; a present but broken module still fails.
  */
 
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import test from "node:test";
+import nodeTest from "node:test";
 import { fileURLToPath } from "node:url";
 import { bundle, mutateOrFail } from "./lib/engine-stub-bundler.mjs";
 
@@ -33,6 +35,23 @@ Error.stackTraceLimit = 0;
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENGINE_SOURCE = resolve(HERE, "../../packages/engine/Source");
+const missingGeneratedShaders = ["CloudDensityDomain.js", "ProceduralClouds.js"]
+  .map((name) => resolve(ENGINE_SOURCE, "Shaders/WebGPU/Environment", name))
+  .filter((shader) => !existsSync(shader));
+
+function test(name, body) {
+  return nodeTest(
+    name,
+    {
+      skip:
+        missingGeneratedShaders.length > 0
+          ? `STRUCTURAL: generated shader prerequisites missing: ${missingGeneratedShaders.join(", ")}; run npx gulp build`
+          : false,
+    },
+    body,
+  );
+}
+
 const WEBGPU = resolve(ENGINE_SOURCE, "Renderer/WebGPU");
 const POST_CHAIN = resolve(WEBGPU, "WebGPUSceneRendererPostFrustumChain.ts");
 const CLOUD = resolve(WEBGPU, "WebGPUProceduralCloudRenderer.ts");

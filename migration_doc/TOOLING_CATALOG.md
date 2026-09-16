@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1309 |
-| ACTIVE | 1069 |
+| Files in census | 1317 |
+| ACTIVE | 1077 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 44 |
-| Classes | probe 676, spec 356, lib 119, other 113, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
+| Classes | probe 676, spec 361, lib 120, other 115, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
 
-### Tools/ (59)
+### Tools/ (62)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -289,6 +289,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | wasm-encode-benchmark.mjs | other | ACTIVE | 2026-09-01 | 9 | Node CPU micro-benchmark of the WASM batch_rte_encode kernel vs the scalar JS fround twin, with byte-identity and fallback trip-wire asserts. |
 | wasm-subrange-encode-check.mjs | other | ACTIVE | 2026-09-01 | 7 | Standalone Node check that WasmRTEBridge.batchEncodeRange's WASM and JS paths are byte-identical, placement exact, outside bytes preserved. |
 | wasm-subrange-loader.mjs | other | ACTIVE | 2026-09-01 | 4 | ESM resolve hook redirecting WasmRTEBridge's build-layout wasm-glue specifier to the on-disk glue, plus the file-URL fetch shim and the glue/wasm path helpers, so the wasm Node checks and the benchmark run the real bridge. |
+| wave-end-gate-binding.mjs | other | ACTIVE | — | 6 | Validates wave-end arguments, planned child bindings and served-build preconditions. |
+| wave-end-gate-contracts.spec.mjs | spec | ACTIVE | — | 1 | Verifies wave-end binding and receipt contracts independently of process execution. |
+| wave-end-gate-receipt.mjs | other | ACTIVE | — | 5 | Normalizes wave-end child results and constructs durable receipts and summaries. |
 | wave-end-gate.mjs | other | ACTIVE | 2026-09-12 | 23 | Q-152 — close a multi-batch wave with served-build preflights, smoke/sweep/visual gates, and banked receipts. The verdict is ROOT-BOUND: no child emits a typed receipt, so the root derives one per step from its own run id, time window, root-supplied source tuple, preflighted served subject, fixed-report freshness snapshot, and the step's own declared exit-code map (`binding`, echoed in the receipt). Bindability is a function of the arguments — `--update-baselines` still refuses pre-spawn with exit 3 and zero children spawned, naming every blocker and its remediation. |
 | wave-end-gate.spec.mjs | spec | NO @purpose HEADER | 2026-09-12 | 15 | — |
 
@@ -339,7 +342,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | sortDoclets.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 1 | — |
 
-### Tools/lib/ (17)
+### Tools/lib/ (19)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -347,11 +350,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | attach-page-diagnostics.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Behaviour spec for attachPageDiagnostics — separation, detach |
 | bounded-command.mjs | lib | NO @purpose HEADER | 2026-09-06 | 5 | — |
 | bounded-command.spec.mjs | spec | NO @purpose HEADER | 2026-09-06 | 2 | — |
+| browser-orphan-preflight.mjs | lib | ACTIVE | — | 4 | Lists parent-dead msedge/chrome/chromium/firefox/webkit/playwright roots, their descendant trees, each tree's memory and the machine's free memory. Reports only; it never kills a process. |
+| browser-orphan-preflight.spec.mjs | spec | ACTIVE | — | 2 | Verifies parent-dead browser classification and memory totals without reading live processes. |
 | compare-declarations.mjs | lib | NO @purpose HEADER | 2026-09-11 | 1 | — |
 | compare-declarations.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 1 | — |
 | compare-doc-anchors.mjs | lib | NO @purpose HEADER | 2026-09-11 | 3 | — |
 | compare-doc-anchors.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 1 | — |
-| lane-tmp.mjs | lib | ACTIVE | 2026-09-11 | 17 | The one way a spec, probe or tool takes scratch space: a single per-lane root under os.tmpdir() with removal in `finally`, so a throwing or killed run leaves one sweepable root instead of loose mkdtemp sandboxes at the Temp root. |
+| lane-tmp.mjs | lib | ACTIVE | 2026-09-11 | 20 | The one way a spec, probe or tool takes scratch space: a single per-lane root under os.tmpdir() with removal in `finally`, so a throwing or killed run leaves one sweepable root instead of loose mkdtemp sandboxes at the Temp root. |
 | lane-tmp.spec.mjs | spec | ACTIVE | 2026-09-11 | 4 | Behaviour coverage for Tools/lib/lane-tmp.mjs — the directory is created under the lane root, removed on success AND on throw AND on rejection, refused outside tmpdir, and an inert `finally` is caught by the mutant. |
 | png-decode.mjs | lib | ACTIVE | 2026-09-13 | 14 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
 | png-decode.spec.mjs | spec | ACTIVE | 2026-09-13 | 4 | Round-trip, filter-coverage and error-path coverage for Tools/lib/png-decode.mjs. |
@@ -416,7 +421,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1035)
+### Tools/visual-regression/ (1038)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -597,7 +602,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | globe-surface-tile-provider-clipping-teardown.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that GlobeSurfaceTileProvider.destroy() routes its clipping-polygon teardown through ClippingPolygonCollection.setOwner so a backend feature renderer's cached GPU resources are released, with the context itself untouched. |
 | globe-use-log-depth.spec.mjs | spec | ACTIVE | 2026-08-16 | 8 | Pins that the globe resolves the shared isWebGPULogDepthActive gate so orthographic modes never mix log and hyperbolic encodings in one depth buffer. |
 | godray-energy-law.spec.mjs | spec | ACTIVE | 2026-09-11 | 6 | Executes the god-ray energy law straight out of GodRayGenerate.wgsl, pins count invariance and the energy bound against derived tolerances, records the emitter data dependency, and carries the inertness mutants that make those verdicts able to fail. |
-| godray-sun-usability-uniform-ranges.spec.mjs | spec | ACTIVE | 2026-09-11 | 7 | Pins the god-ray sun-usability determination and the disjoint uniform write ranges it publishes through, including that some setter covers the sunUnusable byte range. |
+| godray-sun-usability-uniform-ranges.spec.mjs | spec | ACTIVE | 2026-09-16 | 7 | Pins the god-ray sun-usability determination and the disjoint uniform write ranges it publishes through, including that some setter covers the sunUnusable byte range. |
 | gpu-timestamp-readback-ring-depth.spec.mjs | spec | ACTIVE | 2026-08-25 | 0 | Pins the GPU timestamp profiler's readback-ring depth behaviour: a workload at the measured worst-case latency retains every sample at a sufficient depth, and a ring that saturates at any depth still reports the loss instead of averaging past it. |
 | gpu-timestamp-unique-sample-accounting.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Pins the GPU timestamp profiler's union-fold frame coverage (overlap surfaced, never double-counted) and its no-silent-loss attempt ledger. |
 | gpucull-blackframe-isolation-arm-expectations.spec.mjs | spec | ACTIVE | 2026-09-03 | 2 | Pins the REAL `WebGPUSceneRenderer#_maybeGPUCullTranslucent`'s raw inclusive count-vs-threshold boundary decision against `lib/gpucull-blackframe-isolation-gate.mjs`'s ARMS table, pins that the margin-adjusted `expectDispatch` the gate module derives cannot regress to a false STRUCTURAL refusal on the boundary arm (C6), and that `judgeIsolationResults` reports the documented exit-code verdict. |
@@ -1356,7 +1361,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | runtime-residency-contract.spec.mjs | spec | ACTIVE | 2026-09-03 | 9 | Contract spec for DX-02: a probe that declares @runtime residency on lib/probe-runtime.mjs must not re-implement the four concerns that module already owns. |
 | sandcastle-batch-66-end-of-session-runner.mjs | other | INVESTIGATION | 2026-08-16 | 2 | End-of-session rerun of the Batch-66 Sandcastle sweep (direct scene.pick, pointer-error filtering) writing per-demo screenshots + report. |
 | sandcastle-batch-66-final-runner.mjs | other | INVESTIGATION | 2026-08-16 | 10 | Post-F1/F2/F3 rerun of the Batch-66 WebGPU Sandcastle sweep: every 'WebGPU *.html' demo headless, known artifacts filtered, JSON report. |
-| sandcastle-smoke.mjs | other | ACTIVE | 2026-09-13 | 24 | Standing Sandcastle CI blind-spot smoke: three local-resource WebGPU gallery demos gated on non-black, non-uniform, real device, zero errors. |
+| sandcastle-demo-verdict.spec.mjs | spec | ACTIVE | — | 1 | Prevents quiet settle windows from being reported as completed demos. |
+| sandcastle-demo-watchdog.spec.mjs | spec | ACTIVE | — | 1 | Proves that one wedged Sandcastle demo cannot stall a sweep leg. |
+| sandcastle-smoke.mjs | other | ACTIVE | 2026-09-13 | 27 | Standing Sandcastle CI blind-spot smoke: three local-resource WebGPU gallery demos gated on non-black, non-uniform, real device, zero errors. |
+| sandcastle-split-report.spec.mjs | spec | ACTIVE | — | 1 | Verifies that separate Sandcastle sweep legs retain their own report files. |
 | sandcastle2-origin-rewrite.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Proves the persistent, continuous origin guard (not a one-shot check): a fake-page unit proof of a later redirect being caught, a real-browser proof through the WIRED integration path (openSandcastle2Url, opened via createGuardedPage), the app's own redirect to a dead baked origin producing a captured connection-error request failure followed by an ORIGIN_MISMATCH refusal on the resulting error page (B(c)) — distinct from a directly-dead requested url, which fails as a plain connection error (B(c-direct)) — an in-flight navigation refusing page.close() with NAVIGATION_UNVERIFIED, a fire-and-forget navigation still refusing at page-close via a subprocess with an explicit close-time sentinel, and the comparison mutant killing leg (b). |
 | sandcastle2-pinned-demos.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Contract spec for the pinned-demo census: exact derived count against the real gallery, per-kind classification correctness, and the naive-scan defect the census fixes. |
 | sandcastle2-renderer-gate.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Contract spec for the Sandcastle2 backend sweep helpers: id enumeration against the real gallery, URL construction, and the requested-vs-actual renderer predicate. |
@@ -1582,7 +1590,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-lifecycle-diagnostics.mjs | lib | ACTIVE | 2026-09-12 | 4 | Bounded, hostile-value-safe description of a probe failure: what the rejected value was, which lifecycle occurrences contributed, and whether a refusal is hiding inside an aggregate. |
 | probe-lifecycle-run.mjs | lib | ACTIVE | 2026-09-12 | 8 | Derives a probe's orderly deadline from its declared work budget and drives preflight, Edge slot, per-run browser and descriptor cells inside one bounded lifecycle. |
 | probe-lifecycle.mjs | lib | ACTIVE | 2026-09-12 | 8 | Coordinates a probe deadline, tracked browser resources, and the Edge lease so a probe cannot report completion while owned work remains live. |
-| probe-refusal.mjs | lib | ACTIVE | 2026-09-02 | 10 | Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns. |
+| probe-refusal.mjs | lib | ACTIVE | 2026-09-02 | 11 | Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns. |
 | probe-runtime-governance.mjs | lib | ACTIVE | 2026-09-13 | 5 | C13-N01 stage 1 detectors: read whether a probe resolves its origin from a hard-coded fallback and whether it routes through the three governance modules, and census the fleet from those two facts. |
 | probe-runtime.mjs | lib | ACTIVE | 2026-09-12 | 55 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
 | probe-work-registry.mjs | lib | ACTIVE | 2026-09-12 | 6 | Tracks every `scope.run` a descriptor starts as an attempt with a settled outcome, so a run cannot be reported complete while work it started is still live, and such work's failure reaches the incident record whenever an incident is written at all; the browser's close is NOT deferred for it — see the header. |
@@ -1595,9 +1603,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | runtime-residency-allowlist.mjs | lib | ACTIVE | 2026-09-03 | 2 | Frozen, shrink-only allowlist of runtime-resident probes still carrying an anti-re-accretion violation, mirroring lib/prohibited-reader-allowlist.mjs's ratchet shape. |
 | runtime-residency-contract.mjs | lib | ACTIVE | 2026-09-03 | 5 | Detects a probe that declares @runtime residency on lib/probe-runtime.mjs yet still hand-rolls one of the four concerns that module already owns. |
 | same-task-capture.mjs | lib | ACTIVE | 2026-08-16 | 55 | Canonical capture primitives that keep render+readback in one task (WebGL clears, WebGPU invalidates after present), plus embed-drift validators. |
-| sandcastle2-origin-rewrite.mjs | lib | ACTIVE | 2026-08-29 | 14 | Reusable Playwright helper for every opener of the built Sandcastle2 app: rewrites the build-time-baked outer/inner origin strings the app's own responses carry, and attaches a persistent per-navigation guard (main frame + bucket/run frame) that throws a named, distinguishable refusal the instant any navigation lands off the requested origin — checked synchronously at every guard call AND automatically at page close, so a caller that never awaits a navigation call is still refused. |
+| sandcastle2-origin-rewrite.mjs | lib | ACTIVE | 2026-08-29 | 17 | Reusable Playwright helper for every opener of the built Sandcastle2 app: rewrites the build-time-baked outer/inner origin strings the app's own responses carry, and attaches a persistent per-navigation guard (main frame + bucket/run frame) that throws a named, distinguishable refusal the instant any navigation lands off the requested origin — checked synchronously at every guard call AND automatically at page close, so a caller that never awaits a navigation call is still refused. |
 | sandcastle2-pinned-demos.mjs | lib | ACTIVE | 2026-08-29 | 1 | Derive, comment-aware, which gallery demos construct their Viewer/CesiumWidget with an explicit contextOptions.renderer, and classify HOW (Q-133). |
-| sandcastle2-renderer-gate.mjs | gate-lib | ACTIVE | 2026-08-29 | 13 | Pure helpers for the Sandcastle2 backend sweep: gallery id enumeration, URL construction, and the "the demo really ran the requested renderer" predicate. |
+| sandcastle2-renderer-gate.mjs | gate-lib | ACTIVE | 2026-08-29 | 14 | Pure helpers for the Sandcastle2 backend sweep: gallery id enumeration, URL construction, and the "the demo really ran the requested renderer" predicate. |
 | sandcastle2-typings-preflight.mjs | lib | ACTIVE | 2026-09-13 | 2 | Turn the absence of `packages/{engine,widgets}/index.d.ts` into one loud refusal instead of the intermittent, non-localised failures it otherwise wears. |
 | served-build-preflight.mjs | lib | ACTIVE | 2026-08-29 | 15 | Q-98 — fetch one or more served build artifacts and compare each to |
 | settle-attribution.mjs | lib | ACTIVE | 2026-08-16 | 6 | First-complete-frame metric plus the rule that stable-time credit requires a main-thread long-task reduction (GPU-bound settles book none). |

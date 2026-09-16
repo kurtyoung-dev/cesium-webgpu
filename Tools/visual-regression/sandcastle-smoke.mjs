@@ -67,6 +67,7 @@
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import {
@@ -376,6 +377,7 @@ function parseSweepArgs(argv) {
     ids: null,
     limit: 0,
     captureAll: false,
+    legLabel: null,
     dryRun: false,
   };
   for (const arg of argv) {
@@ -393,6 +395,8 @@ function parseSweepArgs(argv) {
         .split(",")
         .map((id) => id.trim())
         .filter(Boolean);
+    } else if (arg.startsWith("--leg-label=")) {
+      options.legLabel = arg.slice("--leg-label=".length);
     } else if (arg.startsWith("--limit=")) {
       options.limit = parseInt(arg.slice("--limit=".length), 10) || 0;
     }
@@ -409,10 +413,134 @@ function parseSweepArgs(argv) {
 // a duck-typed `.evaluate()`, so keeping it there is what lets a unit test hand
 // it a frame that never answers and prove the sweep still terminates.
 
+const DEMO_TIMEOUT_MS =
+  Number(process.env.SANDCASTLE2_DEMO_TIMEOUT_MS) || 120000;
+
+async function withDemoDeadline(run, progress, timeoutMs, cleanupMs = 2000) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("The per-demo deadline must be a positive finite duration");
+  }
+  const expired = Symbol("demo deadline");
+  let timer;
+  try {
+    const work = Promise.resolve()
+      .then(run)
+      .catch(async (error) => {
+        try {
+          await progress.close?.();
+        } catch (closeError) {
+          if (
+            !(error instanceof OriginRewriteRefusal) &&
+            closeError instanceof OriginRewriteRefusal
+          )
+            throw closeError;
+        }
+        throw error;
+      });
+    const value = await Promise.race([
+      work,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(expired), timeoutMs);
+      }),
+    ]);
+    if (value !== expired) {
+      return value;
+    }
+    progress.expired = true;
+    let cleanupTimer;
+    try {
+      // Closing the guarded page preserves origin refusals during cancellation.
+      const closed = await Promise.race([
+        Promise.resolve().then(() => progress.close?.()),
+        new Promise((resolve) => {
+          cleanupTimer = setTimeout(() => resolve(expired), cleanupMs);
+        }),
+      ]);
+      if (closed === expired) {
+        throw new OriginRewriteRefusal(
+          "DEMO_CLEANUP_TIMEOUT",
+          "The timed-out demo could not close under its origin guard",
+        );
+      }
+    } finally {
+      clearTimeout(cleanupTimer);
+    }
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function runSweepDemo(browser, id, options) {
+  const progress = { lastFrameNumber: null, expired: false };
+  const result = await withDemoDeadline(
+    () => runSweepDemoBody(browser, id, options, progress),
+    progress,
+    DEMO_TIMEOUT_MS,
+  );
+  if (result !== null) {
+    return result;
+  }
+  return {
+    id,
+    url: buildSandcastle2Url({
+      base: BASE,
+      id,
+      renderer: options.renderer,
+      standalone: options.standalone,
+    }),
+    outcome: "TIMEOUT",
+    ok: false,
+    timedOut: true,
+    expectNoViewer: isNoViewerId(id),
+    rendererGate: null,
+    frameGate: null,
+    errors: [
+      `FAILED-TIMEOUT: demo=${id}; bound=${DEMO_TIMEOUT_MS}ms; lastFrameNumber=${progress.lastFrameNumber ?? "unobserved"}`,
+    ],
+    suppressedCount: 0,
+    pngPath: null,
+  };
+}
+
+// Demos opt in by resolving this predicate after their own completion condition.
+async function readDemoReadinessInPage() {
+  const ready = globalThis.__sandcastleSmokeReady;
+  return typeof ready === "function" && (await ready()) === true;
+}
+
+function classifySweepResult(result, ready) {
+  if (result.timedOut) return "TIMEOUT";
+  if (
+    result.errors.length > 0 ||
+    result.rendererGate?.ok !== true ||
+    result.frameGate?.ok !== true
+  ) {
+    return "FAIL";
+  }
+  return ready === true ? "PASS" : "INCONCLUSIVE";
+}
+
+async function runSweepDemoBody(browser, id, options, progress) {
   const context = await browser.newContext({
-    viewport: { width: 1024, height: 768 },
+    viewport: { width: 2600, height: 1000 },
   });
+  let page;
+  let closing;
+  progress.close = () => {
+    closing ??= (async () => {
+      try {
+        await page?.close();
+      } finally {
+        await context.close().catch(() => {});
+      }
+    })();
+    return closing;
+  };
+  if (progress.expired) {
+    await progress.close();
+    return null;
+  }
   // createGuardedPage (not a bare context.newPage()) is what makes the
   // origin guard fail CLOSED for this function: even though every call
   // below IS awaited, the wrapped close() below is the backstop that turns
@@ -424,10 +552,32 @@ async function runSweepDemo(browser, id, options) {
     bucketPort: new URL(SANDCASTLE2_BUCKET_BASE).port,
     hostname: new URL(BASE).hostname,
   });
-  const page = await createGuardedPage(context, origins, {
+  page = await createGuardedPage(context, origins, {
     label: `sandcastle2 sweep (${id}, ${options.renderer})`,
   });
+  if (progress.expired) {
+    await progress.close();
+    return null;
+  }
   page.setDefaultTimeout(NAV_TIMEOUT_MS);
+  await context.exposeBinding("__sandcastleSmokeFrame", (_source, number) => {
+    if (Number.isFinite(number)) {
+      progress.lastFrameNumber = Math.max(
+        progress.lastFrameNumber ?? 0,
+        number,
+      );
+    }
+  });
+  await page.addInitScript(() => {
+    setInterval(() => {
+      for (const instance of globalThis.__sandcastleInstances ?? []) {
+        const frame = instance?.scene?.frameState?.frameNumber;
+        if (Number.isFinite(frame)) {
+          globalThis.__sandcastleSmokeFrame(frame).catch(() => {});
+        }
+      }
+    }, 250);
+  });
 
   const errors = [];
   const suppressed = [];
@@ -525,6 +675,13 @@ async function runSweepDemo(browser, id, options) {
         `probe: the demo frame did not answer within ${EVALUATE_TIMEOUT_MS}ms`,
       );
     } else {
+      for (const number of state.frameNumbers) {
+        if (Number.isFinite(number))
+          progress.lastFrameNumber = Math.max(
+            progress.lastFrameNumber ?? 0,
+            number,
+          );
+      }
       result.rendererGate = evaluateRendererGate({
         contexts: state.contexts,
         requested: options.renderer,
@@ -536,6 +693,16 @@ async function runSweepDemo(browser, id, options) {
       result.frameGate = evaluateFrameGate(state.frameNumbers, {
         expectNoViewer,
       });
+    }
+
+    const ready = await evaluateWithDeadline(
+      frame,
+      readDemoReadinessInPage,
+      EVALUATE_TIMEOUT_MS,
+    );
+    if (ready === EVALUATE_TIMEOUT) {
+      result.timedOut = true;
+      result.errors.push("probe: the demo readiness predicate did not answer");
     }
 
     if (options.captureAll || result.rendererGate?.ok === false) {
@@ -563,13 +730,15 @@ async function runSweepDemo(browser, id, options) {
     }
     result.errors = [...fatal];
     result.suppressedCount = suppressed.length;
-    result.ok =
-      result.errors.length === 0 &&
-      result.rendererGate?.ok === true &&
-      result.frameGate?.ok === true;
-    // TIMEOUT is reported apart from FAIL: a wedged demo is an unfinished
-    // measurement, not a verdict about which backend it ran.
-    result.outcome = result.ok ? "PASS" : result.timedOut ? "TIMEOUT" : "FAIL";
+    const verdict = classifySweepResult(result, ready);
+    if (verdict === "INCONCLUSIVE") {
+      result.errors.push(
+        "INCONCLUSIVE: the demo did not declare __sandcastleSmokeReady() returning true after its completion condition",
+      );
+    }
+    result.ok = verdict === "PASS";
+    // Keep the consumer schema stable while withholding an unproven pass.
+    result.outcome = verdict === "INCONCLUSIVE" ? "FAIL" : verdict;
   } catch (err) {
     // An origin mismatch (the page or the bucket frame settled somewhere
     // other than requested) is not a per-demo finding — it means this run is
@@ -599,18 +768,40 @@ async function runSweepDemo(browser, id, options) {
     // exactly like `createGuardedPage`'s own "refusal beats cleanup error"
     // rule one level up.
     try {
-      await page.close();
+      await progress.close();
     } catch (closeErr) {
       if (!structuralRefusal && closeErr instanceof OriginRewriteRefusal) {
         structuralRefusal = closeErr;
       }
     }
-    await context.close().catch(() => {});
   }
   if (structuralRefusal) {
     throw structuralRefusal;
   }
   return result;
+}
+
+async function writeSweepReport(directory, options, ids, report) {
+  const split =
+    options.legLabel !== null || options.ids !== null || options.limit > 0;
+  let suffix = "";
+  if (split) {
+    const label =
+      options.legLabel ?? `${ids[0] ?? "empty"}--${ids.at(-1) ?? "empty"}`;
+    const safeLabel =
+      label.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 96) || "leg";
+    const digest = createHash("sha256")
+      .update(JSON.stringify(ids))
+      .digest("hex")
+      .slice(0, 12);
+    suffix = `-${safeLabel}-${digest}`;
+  }
+  const reportPath = path.join(
+    directory,
+    `report-${options.renderer}${options.standalone ? "-standalone" : ""}${suffix}.json`,
+  );
+  await fs.writeFile(reportPath, JSON.stringify(report, null, 2));
+  return reportPath;
 }
 
 async function runSandcastle2Sweep(argv) {
@@ -713,25 +904,14 @@ async function runSandcastle2Sweep(argv) {
   }
 
   await browser.close();
-  const reportPath = path.join(
-    SWEEP_OUTPUT_DIR,
-    `report-${options.renderer}${options.standalone ? "-standalone" : ""}.json`,
-  );
   const passed = ids.length - failures.length - timeouts.length;
-  await fs.writeFile(
-    reportPath,
-    JSON.stringify(
-      {
-        renderer: options.renderer,
-        total: ids.length,
-        passed,
-        failures,
-        timeouts,
-      },
-      null,
-      2,
-    ),
-  );
+  const reportPath = await writeSweepReport(SWEEP_OUTPUT_DIR, options, ids, {
+    renderer: options.renderer,
+    total: ids.length,
+    passed,
+    failures,
+    timeouts,
+  });
   const clean = failures.length === 0 && timeouts.length === 0;
   console.log(
     `\n${clean ? "PASS" : "FAIL"}: sandcastle2 sweep (${passed}/${ids.length} demos on ${options.renderer}, ${failures.length} failed, ${timeouts.length} timed out)`,

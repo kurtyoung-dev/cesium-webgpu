@@ -6,6 +6,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { execFileSync as realExecFileSync } from "node:child_process";
+import { withLaneTmp } from "./lib/lane-tmp.mjs";
 function loadProvisionNodeModulesJunctions() {
   const scriptPath = fileURLToPath(
     new URL("./provision-worker-clone.mjs", import.meta.url),
@@ -286,3 +287,100 @@ test(`real fs: @scope workspace member resolves into the clone, not the source r
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+function loadRestoreUnchangedProvisionedFile(mutate = (source) => source) {
+  const source = fs.readFileSync(
+    new URL("./provision-worker-clone.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf(
+    "export function restoreUnchangedProvisionedFile",
+  );
+  const end = source.indexOf("\nexport function provisionNodeModulesJunctions");
+  assert.ok(start >= 0 && end > start);
+  const declaration = mutate(source.slice(start, end).replace(/^export /u, ""));
+  return vm.runInNewContext(`${declaration}\nrestoreUnchangedProvisionedFile;`);
+}
+
+function recordingGit({ tracked, identical }) {
+  const calls = [];
+  const run = (command, args, options) => {
+    assert.equal(command, "git");
+    assert.deepEqual([...args.slice(0, 2)], ["-C", "fixture-clone"]);
+    assert.equal(options.stdio, "ignore");
+    calls.push([...args.slice(2)]);
+    if (args[2] === "ls-files" && !tracked) throw new Error("untracked");
+    if (args[2] === "diff" && !identical) throw new Error("changed");
+  };
+  return { calls, run };
+}
+
+test("identical tracked provisioned content is restored to checkout form", () => {
+  const assertRestored = (restore) => {
+    const git = recordingGit({ tracked: true, identical: true });
+    const result = restore({
+      clonePath: "fixture-clone",
+      dest: "AGENTS.md",
+      execFileSync: git.run,
+    });
+    assert.equal(result.restored, true);
+    assert.match(result.note, /worktree restored/);
+    assert.deepEqual(git.calls.at(-1), ["checkout", "--", "AGENTS.md"]);
+  };
+  assertRestored(loadRestoreUnchangedProvisionedFile());
+  const inert = loadRestoreUnchangedProvisionedFile((source) => {
+    const anchor = '  run("git", ["-C", clonePath, "checkout", "--", dest], {';
+    assert.equal(source.split(anchor).length - 1, 1);
+    return source.replace(anchor, "  if (false) " + anchor.trimStart());
+  });
+  assert.throws(() => assertRestored(inert), assert.AssertionError);
+});
+
+test("different tracked provisioned content remains modified with a note", () => {
+  const git = recordingGit({ tracked: true, identical: false });
+  const result = loadRestoreUnchangedProvisionedFile()({
+    clonePath: "fixture-clone",
+    dest: "AGENTS.md",
+    execFileSync: git.run,
+  });
+  assert.equal(result.restored, false);
+  assert.match(result.note, /^NOTE: AGENTS\.md differs/);
+  assert.equal(
+    git.calls.some((call) => call[0] === "checkout"),
+    false,
+  );
+});
+
+test("untracked provisioned content is left exactly as copied", () => {
+  const git = recordingGit({ tracked: false, identical: false });
+  const result = loadRestoreUnchangedProvisionedFile()({
+    clonePath: "fixture-clone",
+    dest: "AGENTS.md",
+    execFileSync: git.run,
+  });
+  assert.equal(result.restored, false);
+  assert.match(result.note, /untracked in the clone/);
+  assert.deepEqual(git.calls, [
+    ["ls-files", "--error-unmatch", "--", "AGENTS.md"],
+  ]);
+});
+
+test("a missing clone reports the clone-then-provision recipe and exits 2", () =>
+  withLaneTmp("provision-missing-clone-", (root) => {
+    const script = fileURLToPath(
+      new URL("./provision-worker-clone.mjs", import.meta.url),
+    );
+    const missing = path.join(root, "not-created");
+    let failure;
+    try {
+      realExecFileSync(process.execPath, [script, missing], {
+        encoding: "utf8",
+      });
+    } catch (error) {
+      failure = error;
+    }
+    assert.equal(failure?.status, 2);
+    assert.match(failure.stderr, /not a git clone:/);
+    assert.match(failure.stderr, /git clone --no-hardlinks/);
+    assert.match(failure.stderr, /then.*provision-worker-clone\.mjs/);
+  }));

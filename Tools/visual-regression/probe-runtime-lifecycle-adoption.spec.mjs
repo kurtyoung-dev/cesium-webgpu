@@ -1640,6 +1640,125 @@ test("F. the work registry's real guarantee, and its real limit", async (t) => {
 // pass a merged test.
 
 test("G. a dropped registration is reported", async (t) => {
+  await t.test(
+    "incident publication follows output resolution and both filesystem operations",
+    async () => {
+      const { ProbeRefusal } = await import("./lib/probe-refusal.mjs");
+      const assertPublication = async (
+        runProbeImpl,
+        { resolved, mkdirOk, writeOk, refused = false },
+      ) =>
+        withLaneTmp("adoption-g-publication-", async (root) => {
+          const output = path.join(
+            root,
+            "Tools",
+            "visual-regression",
+            "output",
+            "incident-output",
+          );
+          fs.mkdirSync(path.dirname(output), { recursive: true });
+          if (!mkdirOk) fs.writeFileSync(output, "directory obstruction");
+          const incident = path.join(
+            output,
+            `g-publication-${refused ? "refusal" : "error"}.json`,
+          );
+          let writeAttempts = 0;
+          let thrown;
+          let exitCode;
+          try {
+            exitCode = await runProbeImpl(
+              {
+                name: "g-publication",
+                // Fail output-path resolution after argv parsed, so the
+                // publication branch remains reachable with valid options.
+                outputSubdirectory: resolved ? "incident-output" : 42,
+                cells: () => assert.fail("preflight must end the run"),
+                receipt: () =>
+                  assert.fail("an incident must not build a receipt"),
+              },
+              {
+                argv: ["--repository-root", root],
+                preflight: async () => {
+                  if (refused) {
+                    throw new ProbeRefusal(
+                      "fixture-refusal",
+                      "fixture failure",
+                    );
+                  }
+                  throw new Error("fixture failure");
+                },
+                launch: () => assert.fail("no browser is needed"),
+                writeFile(file, body) {
+                  writeAttempts++;
+                  if (!writeOk) throw new Error("injected write failure");
+                  fs.writeFileSync(file, body);
+                },
+              },
+            );
+          } catch (error) {
+            thrown = error;
+          }
+          assert.equal(
+            fs.existsSync(incident),
+            resolved && mkdirOk && writeOk,
+            "an incident exists iff output resolved and mkdir/write succeeded",
+          );
+          assert.equal(writeAttempts, Number(resolved && mkdirOk));
+          assert.equal(Boolean(thrown), resolved && (!mkdirOk || !writeOk));
+          if (!thrown) {
+            assert.equal(
+              exitCode,
+              resolved && refused
+                ? PROBE_EXIT_CODES.REFUSAL
+                : PROBE_EXIT_CODES.ERROR,
+            );
+          }
+          if (fs.existsSync(incident)) {
+            assert.match(fs.readFileSync(incident, "utf8"), /fixture failure/);
+          }
+        });
+
+      for (const refused of [false, true]) {
+        for (const resolved of [false, true]) {
+          for (const mkdirOk of [false, true]) {
+            for (const writeOk of [false, true]) {
+              await assertPublication(runProbe, {
+                resolved,
+                mkdirOk,
+                writeOk,
+                refused,
+              });
+            }
+          }
+        }
+      }
+      for (const replacement of [
+        [
+          "} else if (outputDirectory) {",
+          "} else if (false && outputDirectory) {",
+        ],
+        [
+          "    fs.mkdirSync(outputDirectory, { recursive: true });\n    incidentPath = path.join(",
+          "    if (false) fs.mkdirSync(outputDirectory, { recursive: true });\n    incidentPath = path.join(",
+        ],
+        [
+          "    writeFile(incidentPath, normalizeJson(incidentRecord));",
+          "    if (false) writeFile(incidentPath, normalizeJson(incidentRecord));",
+        ],
+      ]) {
+        const inert = await importMutated(RUNTIME_PATH, [replacement]);
+        await assert.rejects(
+          assertPublication(inert.runProbe, {
+            resolved: true,
+            mkdirOk: true,
+            writeOk: true,
+          }),
+          /an incident exists iff/,
+        );
+      }
+    },
+  );
+
   /**
    * Run one declaring descriptor whose `cells` makes a single `scope.run` call.
    *

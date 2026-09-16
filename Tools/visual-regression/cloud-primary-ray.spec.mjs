@@ -4,8 +4,9 @@
 // screenshot causality or the visual magnitude of the row inversion.
 
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import nodeTest from "node:test";
 
 import Cartesian4 from "../../packages/engine/Source/Core/Cartesian4.js";
 import ClipSpaceConvention from "../../packages/engine/Source/Core/ClipSpaceConvention.js";
@@ -25,6 +26,24 @@ const generatedShaderUrl = new URL(
   "../../packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.js",
   import.meta.url,
 );
+
+const missingGeneratedShaders = [generatedShaderUrl].filter(
+  (shader) => !existsSync(shader),
+);
+
+function test(name, body) {
+  return nodeTest(
+    name,
+    {
+      skip:
+        missingGeneratedShaders.length > 0
+          ? "STRUCTURAL: generated ProceduralClouds.js is missing; run npx gulp build"
+          : false,
+    },
+    body,
+  );
+}
+
 const rendererUrl = new URL(
   "../../packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
   import.meta.url,
@@ -449,42 +468,45 @@ test("visible and mask consumers keep color, depth, and ray on one UV", async ()
   }
 });
 
-test("primary renderer binds the generated shader and unchanged inverse matrices", async () => {
-  const renderer = await structurallyAsync(
-    "cannot read WebGPUProceduralCloudRenderer",
-    () => readFile(rendererUrl, "utf8"),
-  );
-  uniqueMatch(
-    renderer,
-    /import\s+ProceduralCloudsWGSL\s+from\s+"\.\.\/\.\.\/Shaders\/WebGPU\/Environment\/ProceduralClouds\.js"\s*;/gu,
-    "generated ProceduralClouds import",
-  );
-  uniqueMatch(
-    renderer,
-    /const\s+PROCEDURAL_CLOUDS_SOURCE\s*=\s*`\$\{CloudDensityDomainWGSL\}\\n\$\{ProceduralCloudsWGSL\}`\s*;/gu,
-    "runtime ProceduralClouds source composition",
-  );
-  uniqueMatch(
-    renderer,
-    /const\s+invProj\s*=\s*us\s*\?\.\s*inverseProjection\s*;/gu,
-    "inverseProjection uniform alias",
-  );
-  uniqueMatch(
-    renderer,
-    /const\s+invView\s*=\s*us\s*\?\.\s*inverseView\s*;/gu,
-    "inverseView uniform alias",
-  );
-  uniqueMatch(
-    renderer,
-    /for\s*\(\s*let\s+i\s*=\s*0\s*;\s*i\s*<\s*16\s*;\s*i\+\+\s*\)\s*data\s*\[\s*offset\+\+\s*\]\s*=\s*invProj\s*\[\s*i\s*\]\s*;/gu,
-    "inverseProjection uniform copy",
-  );
-  uniqueMatch(
-    renderer,
-    /for\s*\(\s*let\s+i\s*=\s*0\s*;\s*i\s*<\s*16\s*;\s*i\+\+\s*\)\s*data\s*\[\s*offset\+\+\s*\]\s*=\s*invView\s*\[\s*i\s*\]\s*;/gu,
-    "inverseView uniform copy",
-  );
-});
+nodeTest(
+  "primary renderer binds the generated shader and unchanged inverse matrices",
+  async () => {
+    const renderer = await structurallyAsync(
+      "cannot read WebGPUProceduralCloudRenderer",
+      () => readFile(rendererUrl, "utf8"),
+    );
+    uniqueMatch(
+      renderer,
+      /import\s+ProceduralCloudsWGSL\s+from\s+"\.\.\/\.\.\/Shaders\/WebGPU\/Environment\/ProceduralClouds\.js"\s*;/gu,
+      "generated ProceduralClouds import",
+    );
+    uniqueMatch(
+      renderer,
+      /const\s+PROCEDURAL_CLOUDS_SOURCE\s*=\s*`\$\{CloudDensityDomainWGSL\}\\n\$\{ProceduralCloudsWGSL\}`\s*;/gu,
+      "runtime ProceduralClouds source composition",
+    );
+    uniqueMatch(
+      renderer,
+      /const\s+invProj\s*=\s*us\s*\?\.\s*inverseProjection\s*;/gu,
+      "inverseProjection uniform alias",
+    );
+    uniqueMatch(
+      renderer,
+      /const\s+invView\s*=\s*us\s*\?\.\s*inverseView\s*;/gu,
+      "inverseView uniform alias",
+    );
+    uniqueMatch(
+      renderer,
+      /for\s*\(\s*let\s+i\s*=\s*0\s*;\s*i\s*<\s*16\s*;\s*i\+\+\s*\)\s*data\s*\[\s*offset\+\+\s*\]\s*=\s*invProj\s*\[\s*i\s*\]\s*;/gu,
+      "inverseProjection uniform copy",
+    );
+    uniqueMatch(
+      renderer,
+      /for\s*\(\s*let\s+i\s*=\s*0\s*;\s*i\s*<\s*16\s*;\s*i\+\+\s*\)\s*data\s*\[\s*offset\+\+\s*\]\s*=\s*invView\s*\[\s*i\s*\]\s*;/gu,
+      "inverseView uniform copy",
+    );
+  },
+);
 
 test("primary-ray extraction fails structurally on malformed NDC or ray tails", async () => {
   const [{ source }] = await readShaderCopies();

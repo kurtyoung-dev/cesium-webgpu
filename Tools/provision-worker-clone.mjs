@@ -9,8 +9,10 @@
  * its clone. It was right, and every cause was an orchestrator provisioning
  * failure:
  *
- *   1. CLAUDE.md is GITIGNORED (.gitignore:6). It can never reach a clone from
- *      git. This one is permanent and is the reason this script exists.
+ *   1. Governance the seat has edited but not yet committed cannot reach a
+ *      clone from git. (CLAUDE.md was gitignored when this script was written;
+ *      it has been tracked since Batch 1434, so the copy is now about uncommitted
+ *      drift rather than about reachability — corrected 2026-09-13.)
  *   2. Governance authored but not yet committed is absent from clones made
  *      before it lands. This one cures itself at landing, but silently produces
  *      an under-briefed worker in the meantime.
@@ -71,13 +73,13 @@ const PROVISION = [
     src: "CLAUDE.md",
     dest: "CLAUDE.md",
     required: true,
-    why: "gitignored (.gitignore:6) — permanently unreachable from git",
+    why: "tracked since Batch 1434 (33416b6036), but the seat edits it constantly — a clone made before an edit lands is briefed from stale rules",
   },
   {
     src: "AGENTS.md",
     dest: "AGENTS.md",
     required: true,
-    why: "the router itself; untracked until it lands",
+    why: "the router itself; tracked since Batch 1058 (54ead62ee5), but a clone made before a router change lands routes to the old authorities",
   },
   {
     src: "migration_doc/MAINTAINER_RULINGS_2026-08-17.md",
@@ -138,7 +140,9 @@ if (!clonePath) {
 const UNTRUST_ONLY = CODEX_UNTRUST && !CODEX_TRUST;
 if (!UNTRUST_ONLY) {
   if (!fs.existsSync(path.join(clonePath, ".git"))) {
-    process.stderr.write(`not a git clone: ${clonePath}\n`);
+    process.stderr.write(
+      `not a git clone: ${clonePath}; first git clone --no-hardlinks <source> <clone>, then node Tools/provision-worker-clone.mjs <clone>\n`,
+    );
     process.exit(2);
   }
   // A linked worktree's .git is a FILE pointing into the orchestrator's .git, which
@@ -249,9 +253,15 @@ if (!VERIFY_ONLY) {
     }
     fs.mkdirSync(path.dirname(to), { recursive: true });
     fs.copyFileSync(from, to);
+    const restore = restoreUnchangedProvisionedFile({
+      clonePath,
+      dest: entry.dest,
+    });
+    notes.push(restore.note);
     provisioned.push({
       path: entry.dest,
-      objectId: gitObjectId(to),
+      // The destination may now hold checkout bytes; stamp the seat's input.
+      objectId: gitObjectId(from),
       why: entry.why,
     });
   }
@@ -600,6 +610,49 @@ export function codexTrustRemove({
   lines.splice(headerIdx, 2);
   atomicWriteFile(configPath, lines.join(eol), fsOps);
   return { changed: true, key, headerLine };
+}
+
+/**
+ * Restore checkout formatting when provisioning copies no tracked content change.
+ * Every PROVISION destination is tracked. Copying an LF seat file over a CRLF
+ * checkout can leave status dirty even when git diff reports identical content
+ * (observed for MAINTAINER_RULINGS_2026-08-17.md in four clones on 2026-09-12).
+ * git diff --quiet decides whether the copy delivered a change. An identical
+ * copy is restored to its checkout form; differing seat content stays modified
+ * and is reported to the caller for exclusion from the worker patch.
+ */
+export function restoreUnchangedProvisionedFile({
+  clonePath,
+  dest,
+  execFileSync: run = execFileSync,
+}) {
+  try {
+    run("git", ["-C", clonePath, "ls-files", "--error-unmatch", "--", dest], {
+      stdio: "ignore",
+    });
+  } catch {
+    return {
+      restored: false,
+      note: `${dest} provisioned (untracked in the clone)`,
+    };
+  }
+  try {
+    run("git", ["-C", clonePath, "diff", "--quiet", "--", dest], {
+      stdio: "ignore",
+    });
+  } catch {
+    return {
+      restored: false,
+      note: `NOTE: ${dest} differs from the clone's tracked copy and stays modified — exclude it from this lane's patch`,
+    };
+  }
+  run("git", ["-C", clonePath, "checkout", "--", dest], {
+    stdio: "ignore",
+  });
+  return {
+    restored: true,
+    note: `${dest} provisioned (identical to the clone's tracked copy; worktree restored)`,
+  };
 }
 
 export function provisionNodeModulesJunctions({
