@@ -24,8 +24,9 @@
 // something the code's shape makes evident; B2 measures it.
 //
 // Group E is the inertness control. Each mutant makes one change unreachable
-// (`if (false && …)`, or the pre-change expression restored) and requires the
-// assertion that covers it to go red, so no test here can pass over dead code.
+// (`if (false && …)`, or the pre-change expression restored), or a declared range
+// re-aimed at bytes its setter does not own, and requires the assertion that
+// covers it to go red, so no test here can pass over dead code.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -111,7 +112,7 @@ function perFrameSetters(mod) {
     {
       name: "updateConfig",
       drive: (fx) => fx.updateConfig({ density: 0.111 }),
-      owns: [ranges.appearance],
+      owns: [ranges.appearance, ranges.emitter],
     },
     {
       name: "setFrustum",
@@ -388,25 +389,10 @@ test("C1: re-applying an unchanged appearance writes nothing", () => {
   assert.equal(device.writes.length, 0, "the change test must skip the write");
 });
 
-test("C2: an array-valued appearance field is compared by value, not by identity", async () => {
-  // `sunRadiance` is the array-valued field the shader side is adding. It does
-  // not exist yet, so the behaviour is exercised by giving the real snapshot an
-  // array-valued key and driving the real `updateConfig`: a caller handing it
-  // an equal but freshly built array must not be treated as a change. Without
-  // this, `scene.godRayConfig`'s ordinary object-literal form would force a
-  // uniform write on every frame — the write the change test exists to avoid.
-  const withArrayKey = await bundle({
-    path: effectPath,
-    source: effectSource,
-    real: ["WebGPUPostProcessEffects"],
-    label: "array-valued appearance key",
-    mutate: (source) =>
-      source.replace(
-        "  occlusionFarCutoff: 0.99,\n});",
-        "  occlusionFarCutoff: 0.99,\n  sunRadiance: [1, 1, 1],\n});",
-      ),
-  });
-  const { fx, device } = initializedEffect(withArrayKey);
+test("C2: an array-valued appearance field is compared by value, not by identity", () => {
+  // `scene.godRayConfig` rebuilds this triple in an object literal each frame.
+  // Comparing identities would force a uniform write on every frame.
+  const { fx, device } = initializedEffect(effectModule);
   fx.updateConfig({ sunRadiance: [0.9, 0.8, 0.7] });
   device.writes.length = 0;
   fx.updateConfig({ sunRadiance: [0.9, 0.8, 0.7] });
@@ -417,19 +403,8 @@ test("C2: an array-valued appearance field is compared by value, not by identity
   );
 });
 
-test("C3: a genuinely different array is still a change", async () => {
-  const withArrayKey = await bundle({
-    path: effectPath,
-    source: effectSource,
-    real: ["WebGPUPostProcessEffects"],
-    label: "array-valued appearance key",
-    mutate: (source) =>
-      source.replace(
-        "  occlusionFarCutoff: 0.99,\n});",
-        "  occlusionFarCutoff: 0.99,\n  sunRadiance: [1, 1, 1],\n});",
-      ),
-  });
-  const { fx, device } = initializedEffect(withArrayKey);
+test("C3: a genuinely different array is still a change", () => {
+  const { fx, device } = initializedEffect(effectModule);
   fx.updateConfig({ sunRadiance: [0.9, 0.8, 0.7] });
   device.writes.length = 0;
   fx.updateConfig({ sunRadiance: [0.9, 0.8, 0.6] });
@@ -547,15 +522,10 @@ test("E5: with the value compare reverted to identity, C2 fails", async () => {
     real: ["WebGPUPostProcessEffects"],
     label: "identity appearance compare",
     mutate: (source) =>
-      source
-        .replace(
-          "  occlusionFarCutoff: 0.99,\n});",
-          "  occlusionFarCutoff: 0.99,\n  sunRadiance: [1, 1, 1],\n});",
-        )
-        .replace(
-          "if (!appearanceValueEquals(this._config[key], value)) {",
-          "if (this._config[key] !== value) {",
-        ),
+      source.replace(
+        "if (!appearanceValueEquals(this._config[key], value)) {",
+        "if (this._config[key] !== value) {",
+      ),
   });
   const { fx, device } = initializedEffect(mod);
   fx.updateConfig({ sunRadiance: [0.9, 0.8, 0.7] });
@@ -564,5 +534,46 @@ test("E5: with the value compare reverted to identity, C2 fails", async () => {
   assert.ok(
     device.writes.length > 0,
     "an identity compare writes every frame, which is what C2 pins",
+  );
+});
+
+test("E6: with updateConfig's second write re-aimed across the frustum, B4 fails", async () => {
+  function inside(write, range) {
+    return (
+      write.offset >= range.offset &&
+      write.offset + write.size <= range.offset + range.size
+    );
+  }
+
+  function unownedUnder(mod) {
+    const setter = perFrameSetters(mod).find(
+      (entry) => entry.name === "updateConfig",
+    );
+    const { fx, device } = initializedEffect(mod);
+    setter.drive(fx);
+    return device.writes.filter(
+      (write) => !setter.owns.some((range) => inside(write, range)),
+    ).length;
+  }
+
+  const mod = await bundle({
+    path: effectPath,
+    source: effectSource,
+    real: ["WebGPUPostProcessEffects"],
+    label: "emitter write spans the frustum",
+    mutate: (source) =>
+      source.replace(
+        "        GOD_RAY_UNIFORM_RANGES.emitter,",
+        "        { offset: 8, size: 56 },",
+      ),
+  });
+  assert.equal(
+    unownedUnder(effectModule),
+    0,
+    "the shipped effect writes only ranges updateConfig declares",
+  );
+  assert.ok(
+    unownedUnder(mod) > 0,
+    "a write outside every declared range is exactly what B4 must catch",
   );
 });
