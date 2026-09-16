@@ -852,7 +852,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-cloud-tier-resolver.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Stash-based byte-identity guard for the V1 CloudTierPreset scaffold (unread qualityFlags lane must not move pixels). |
 | probe-cloud-tod.mjs | probe | ACTIVE | 2026-08-16 | 3 | Time-of-day cloud sun-color acceptance: dawn/dusk decks warm (R/B >= 1.15), noon neutral, via manual scene.render(jd) sun control. |
 | probe-cloud-tour-sequences.mjs | probe | ACTIVE | 2026-09-12 | 2 | C13-01 evidence tail: fixture camera tours (OFF/ON cloud deltas per station) plus temporal-reset sequences with CPU/GPU metrics. |
-| probe-cloud-tour.mjs | probe | ACTIVE | 2026-08-16 | 16 | Data-driven camera-tour harness capturing both cloud systems across type/location/angle/time scenes; procedural WebGPU, billboard both. |
+| probe-cloud-tour.mjs | probe | ACTIVE | 2026-08-16 | 17 | Data-driven camera-tour harness capturing both cloud systems across type/location/angle/time scenes; procedural WebGPU, billboard both. |
 | probe-cloud-u1-scaffold.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | U1 slice acceptance: CloudVolumetrics/CloudRenderMode API scaffold exists and, unused, leaves BILLBOARD renders byte-identical. |
 | probe-cloud-u2-config.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | U2 slice byte-identity: config-indirection refactor must render identical ON-cloud hashes vs a HEAD-reverted build. |
 | probe-cloud-u2-perf.mjs | probe | ACTIVE | 2026-08-21 | 6 | C13-16 U2 cross-bundle GPU-timestamp no-regression gate: interleaved bundle-swap A/B per cloud pass with drift sentinels. |

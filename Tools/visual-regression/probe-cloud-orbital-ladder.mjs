@@ -107,12 +107,122 @@ const LADDER_VOLUMETRIC = Object.freeze({
 const LADDER_CLOCK_ISO = "2026-06-21T18:20:00Z";
 const LADDER_ANCHOR = Object.freeze({ lon: -95, lat: 20 });
 
+/**
+ * The engine module the served page loads for itself.
+ *
+ * THE PAGE PUBLISHES A VIEWER, NOT A NAMESPACE. `Apps/CesiumViewer/
+ * CesiumViewer.js` is an ES module that imports named symbols from this URL and
+ * assigns `window.viewer` (`:301`, `:366`, `:372`) and `window.CesiumDebug` —
+ * it never assigns `window.Cesium`. The only page in the fork that does is
+ * Sandcastle2's own bundle (`Apps/Sandcastle2/assets/SettingsProvider-*.js:20`),
+ * and this ladder does not load it. So the namespace is something the PROBE
+ * installs, exactly as `probe-cloud-tour.mjs:170` does, and not something the
+ * page owes it.
+ *
+ * Importing the absolute URL that the page's own relative import resolves to
+ * returns the module instance ALREADY in the page's registry — one engine, one
+ * `Scene` class, and no load to wait for, because the viewer exists by the time
+ * this runs.
+ */
+const CESIUM_MODULE_URL = "/Build/CesiumUnminified/index.js";
+
 // ---------------------------------------------------------------------------
 // Page-side functions. Each is recognisable by a unique marker in its source so
 // a stubbed page can dispatch on it; `probe-descriptor-cells-contract.spec.mjs`
 // established that convention and `cloud-orbital-ladder-contract.spec.mjs`
 // relies on it.
 // ---------------------------------------------------------------------------
+
+/**
+ * Install the engine namespace on the page as `Cesium`, and report what was
+ * done rather than leaving the caller to infer it.
+ *
+ * WHY THIS EXISTS. The three page functions below — and `photometricContext()`
+ * in `lib/cloud-probe-harness.mjs:456`, which `reduceRung` requires at every
+ * rung — all read the namespace off the page global. On the CesiumViewer page
+ * that global is undefined, so the FIRST of those reads died as `TypeError:
+ * Cannot read properties of undefined (reading 'JulianDate')`: an exit-2 crash
+ * naming a property instead of the missing namespace, raised after the Edge
+ * slot had been taken. That is how C13-N04b's first ever leg was lost on
+ * 2026-09-16 — receipts at `output/wave-end/c13v2-wave1-engine-legs-2026-09-16/
+ * L3/part-b/cloud-orbital-ladder-error-{BEFORE,AFTER}.json`.
+ *
+ * It RETURNS a verdict instead of throwing, because a throw inside
+ * `page.evaluate` reaches the Node side as an opaque browser error — the shape
+ * this is fixing, not one to reproduce.
+ *
+ * Unlike the functions below it, this one is exercised in Node by
+ * `cloud-orbital-ladder-contract.spec.mjs` (a `data:` module stands in for the
+ * engine), so it sits outside the c8-ignore block that covers the rest.
+ */
+async function pageInstallCesiumNamespace(moduleUrl) {
+  // __ladderInstallNamespace
+  const root = globalThis;
+  // EVERY name the ladder reads off the namespace, not just the first one.
+  // `JulianDate` is the scene build (:126); `Cartesian3` and `Math` are every
+  // rung's `setView` and the zoom leg (:149, :205); `SceneTransforms` is the
+  // harness's sun-disc mask (`lib/cloud-probe-harness.mjs:456`), which
+  // `reduceRung` requires at every rung. Guarding a subset is how a namespace
+  // gets ACCEPTED here and then dies one evaluate later with the very
+  // "Cannot read properties of undefined" shape this function exists to
+  // eliminate — Melilot's F-1, pinned by `B9` in the contract spec.
+  const required = ["JulianDate", "Cartesian3", "Math", "SceneTransforms"];
+  const missingFrom = (candidate) =>
+    candidate ? required.filter((name) => !candidate[name]) : required;
+  if (missingFrom(root.Cesium).length === 0) {
+    return { ok: true, source: "page", moduleUrl };
+  }
+  let namespace;
+  try {
+    namespace = await import(moduleUrl);
+  } catch (error) {
+    return {
+      ok: false,
+      source: "import-failed",
+      moduleUrl,
+      reason: String((error && error.message) || error),
+    };
+  }
+  const missing = missingFrom(namespace);
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      source: "module-incomplete",
+      moduleUrl,
+      // Name what is absent: a refusal that says only "incomplete" sends the
+      // next reader back to an Edge slot to find out which half failed.
+      reason: `${moduleUrl} loaded but exposes no ${missing.join(", ")}`,
+    };
+  }
+  root.Cesium = namespace;
+  return { ok: true, source: "module", moduleUrl };
+}
+
+/**
+ * Acquire the page's engine namespace, or refuse by name.
+ *
+ * Exported for `cloud-orbital-ladder-contract.spec.mjs`: the behaviour worth
+ * pinning is that a page WITHOUT the namespace produces this named refusal
+ * (exit 3 — the probe declined to measure) rather than a property-access crash
+ * (exit 2 — the probe broke) one or more evaluates later.
+ */
+export async function acquireCesiumNamespace(
+  page,
+  moduleUrl = CESIUM_MODULE_URL,
+) {
+  const outcome = await page.evaluate(pageInstallCesiumNamespace, moduleUrl);
+  if (outcome?.ok !== true) {
+    throw new ProbeRefusal(
+      "cesium-namespace-unavailable",
+      `the ladder could not obtain the engine namespace from ${moduleUrl}: ` +
+        `${outcome?.reason ?? "the page returned no verdict"}. Every rung reads ` +
+        "JulianDate, Cartesian3 and SceneTransforms off the page global, so " +
+        "there is nothing to measure without it.",
+      { moduleUrl, outcome: outcome ?? null },
+    );
+  }
+  return outcome;
+}
 
 /* c8 ignore start — page-context functions; exercised on Edge, not in Node */
 
@@ -625,6 +735,17 @@ export const descriptor = {
   title:
     "Cloud orbital ladder — O3/O4/O6/O7 at each decade 20 km to 20,000 km (C13-N04b)",
   outputSubdirectory: "",
+  // The default list names `Cesium.js` and the engine build, but NOT
+  // `Build/CesiumUnminified/index.js` — which is both what the CesiumViewer
+  // page imports and what `CESIUM_MODULE_URL` pulls into the page. An
+  // unlisted artifact is an unchecked one: the served bytes this ladder
+  // actually measures could differ from the tree on disk and the assertion
+  // would still report "enforced" (Melilot's F-2).
+  servedArtifacts: [
+    "Build/CesiumUnminified/Cesium.js",
+    "Build/CesiumUnminified/index.js",
+    "packages/engine/Build/Unminified/index.js",
+  ],
   receiptEnvelope: "probe-owned",
   // No `workBudgetMs`: declaring it adopts the lifecycle path, and
   // `C13-42a-3` item 8 records a hole in that path where a malformed
@@ -681,6 +802,9 @@ export const descriptor = {
         },
       );
       await page.waitForFunction(() => !!window.viewer, { timeout: 120000 });
+      // The page publishes a viewer, not a namespace — see CESIUM_MODULE_URL.
+      // This one step is what C13-N04b's first Edge leg was missing.
+      await acquireCesiumNamespace(page);
       // Arm BEFORE the first cloud frame: a validation error raised while the
       // march is compiling its first pipeline is exactly the fault this ladder
       // would otherwise report as a dark rung.

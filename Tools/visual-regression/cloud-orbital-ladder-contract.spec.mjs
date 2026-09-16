@@ -52,7 +52,10 @@ import {
 } from "./lib/cloud-orbital-ladder-model.mjs";
 import { forwardReinhard } from "./lib/cloud-photometry.mjs";
 import { PROBE_EXIT_CODES, runProbe } from "./lib/probe-runtime.mjs";
-import { descriptor as ladderDescriptor } from "./probe-cloud-orbital-ladder.mjs";
+import {
+  acquireCesiumNamespace,
+  descriptor as ladderDescriptor,
+} from "./probe-cloud-orbital-ladder.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PROBE_PATH = path.join(HERE, "probe-cloud-orbital-ladder.mjs");
@@ -400,7 +403,22 @@ function framePng(radiance, alpha = 200) {
  * in the function it was handed. Dispatch order matters: the harness installer
  * arrives through `addInitScript`, not `evaluate`, so it needs no branch.
  */
-function fakePage(log, { exposure = STUB_EXPOSURE, sunVisible = true } = {}) {
+function fakePage(
+  log,
+  {
+    exposure = STUB_EXPOSURE,
+    sunVisible = true,
+    // What the page reports when the probe asks it for the engine namespace.
+    // The default is the served CesiumViewer page AFTER the installer has run;
+    // B7 overrides it with the answer a page gives when the module cannot be
+    // reached at all.
+    namespace = {
+      ok: true,
+      source: "module",
+      moduleUrl: "/Build/CesiumUnminified/index.js",
+    },
+  } = {},
+) {
   let rung = 0;
   return {
     on() {},
@@ -409,6 +427,10 @@ function fakePage(log, { exposure = STUB_EXPOSURE, sunVisible = true } = {}) {
     async waitForFunction() {},
     async evaluate(fn, arg) {
       const source = String(fn);
+      if (source.includes("__ladderInstallNamespace")) {
+        log.calls.push("namespace");
+        return namespace;
+      }
       if (source.includes("__ladderBuildScene")) {
         log.calls.push("build");
         return {
@@ -677,6 +699,256 @@ test("B4. O4 is reported as not-evaluable at the rung with no limb in frame", as
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// B6-B8. Page acquisition — the harness fault that cost the probe its first leg
+//
+// On 2026-09-16 the ladder's first ever Edge run exited 2 on both served trees
+// with "TypeError: Cannot read properties of undefined (reading 'JulianDate')".
+// The served Apps/CesiumViewer page publishes `window.viewer` and never
+// `window.Cesium`, so every page function that reads the namespace off the
+// global — and `photometricContext()`'s sun-disc projection with it — had
+// nothing to read. These legs pin the repair from both ends: that the probe
+// ASKS the page for the namespace before anything needs it, and that a page
+// which cannot supply one produces a NAMED REFUSAL rather than a crash.
+// ---------------------------------------------------------------------------
+
+test("B6. the namespace is acquired once, before the first read of it", async () => {
+  const { code, root, log } = await driveLadder();
+  try {
+    assert.ok(
+      code !== PROBE_EXIT_CODES.ERROR,
+      "the ladder must not die on page acquisition",
+    );
+    assert.equal(
+      log.calls.filter((call) => call === "namespace").length,
+      1,
+      "the namespace is installed once per page, not once per rung",
+    );
+    // Order is the whole point: the scene build reads `JulianDate` and every
+    // rung reads `SceneTransforms`, so an install that happens after either is
+    // the same defect with a later stack trace.
+    assert.ok(
+      log.calls.indexOf("namespace") < log.calls.indexOf("build"),
+      `namespace acquired after the scene build: ${log.calls.join(",")}`,
+    );
+    assert.ok(
+      log.calls.indexOf("namespace") <
+        log.calls.indexOf(`rung:${ALTITUDE_LADDER_METRES[0]}`),
+      "namespace acquired after the first rung was measured",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("B7. a page with no engine namespace refuses by name instead of crashing", async () => {
+  const { code, root, out, log } = await driveLadder({
+    page: {
+      namespace: {
+        ok: false,
+        source: "import-failed",
+        moduleUrl: "/Build/CesiumUnminified/index.js",
+        reason: "Failed to fetch dynamically imported module",
+      },
+    },
+  });
+  try {
+    // THE BEHAVIOUR, NOT THE SHAPE. Exit 3 is "the probe declined to measure";
+    // exit 2 is "the probe broke". The pre-fix run exited 2, so asserting 3
+    // here is asserting that the diagnosis reaches the orchestrator.
+    assert.equal(
+      code,
+      PROBE_EXIT_CODES.REFUSAL,
+      "a page that cannot supply the namespace must refuse, not error",
+    );
+    assert.notEqual(code, PROBE_EXIT_CODES.ERROR);
+    const text = readFileSync(
+      path.join(out, "cloud-orbital-ladder-refusal.json"),
+      "utf8",
+    );
+    assert.match(text, /cesium-namespace-unavailable/);
+    // The refusal carries what the page said, so the next reader does not have
+    // to spend an Edge slot finding out which half failed.
+    assert.match(text, /Failed to fetch dynamically imported module/);
+    assert.match(text, /import-failed/);
+    // And it refused BEFORE building a scene it cannot measure.
+    assert.equal(
+      log.calls.includes("build"),
+      false,
+      "the ladder built a scene after failing to acquire the namespace",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/** A page whose `evaluate` really runs the function it is handed. */
+function executingPage(log) {
+  return {
+    async evaluate(fn, arg) {
+      log.calls.push("evaluate");
+      return fn(arg);
+    },
+  };
+}
+
+/** A `data:` module standing in for `/Build/CesiumUnminified/index.js`. */
+function moduleUrlFor(sourceText) {
+  const base64 = Buffer.from(sourceText, "utf8").toString("base64");
+  return `data:text/javascript;base64,${base64}`;
+}
+
+test("B8. the real page function installs the namespace, or names what failed", async (t) => {
+  // This leg executes the PAGE function itself — the stub page CALLS it rather
+  // than matching its marker — so what is checked is the code that runs on
+  // Edge, with a `data:` module in place of the engine bundle.
+  const had = Object.hasOwn(globalThis, "Cesium");
+  const previous = globalThis.Cesium;
+  t.after(() => {
+    if (had) {
+      globalThis.Cesium = previous;
+    } else {
+      delete globalThis.Cesium;
+    }
+  });
+  delete globalThis.Cesium;
+
+  const log = { calls: [] };
+
+  // (a) A page WITHOUT the namespace gets one, and it is the module's.
+  const complete = moduleUrlFor(
+    [
+      "export const JulianDate = { tag: 'complete' };",
+      "export const Cartesian3 = {};",
+      "export const Math = {};",
+      "export const SceneTransforms = {};",
+    ].join("\n"),
+  );
+  const installed = await acquireCesiumNamespace(executingPage(log), complete);
+  assert.equal(installed.ok, true);
+  assert.equal(installed.source, "module");
+  assert.equal(
+    globalThis.Cesium?.JulianDate?.tag,
+    "complete",
+    "the page global still has no engine namespace after acquisition",
+  );
+  assert.notEqual(
+    globalThis.Cesium?.SceneTransforms,
+    undefined,
+    "SceneTransforms is what photometricContext() projects the sun with",
+  );
+
+  // (b) A second call is a no-op: what the page already has is kept, and no
+  // second engine is pulled in behind it.
+  const again = await acquireCesiumNamespace(
+    executingPage(log),
+    moduleUrlFor(
+      [
+        "export const JulianDate = { tag: 'other' };",
+        "export const Cartesian3 = {};",
+        "export const Math = {};",
+        "export const SceneTransforms = {};",
+      ].join("\n"),
+    ),
+  );
+  assert.equal(again.source, "page");
+  assert.equal(globalThis.Cesium.JulianDate.tag, "complete");
+
+  // (c) A module that loads but is not the engine is refused by name, rather
+  // than accepted and failed three rungs later.
+  delete globalThis.Cesium;
+  await assert.rejects(
+    () =>
+      acquireCesiumNamespace(
+        executingPage(log),
+        moduleUrlFor("export const JulianDate = {};"),
+      ),
+    (error) => {
+      assert.equal(error.name, "ProbeRefusal");
+      assert.equal(error.reason, "cesium-namespace-unavailable");
+      assert.equal(error.exitCode, PROBE_EXIT_CODES.REFUSAL);
+      assert.equal(error.details.outcome.source, "module-incomplete");
+      assert.match(error.message, /SceneTransforms/);
+      return true;
+    },
+    "a partial namespace must refuse rather than install",
+  );
+  assert.equal(
+    globalThis.Cesium,
+    undefined,
+    "a refused acquisition must not leave a partial namespace behind",
+  );
+
+  // (d) A URL that cannot be imported at all — the served-page case — arrives
+  // as a refusal, not as a TypeError raised by whoever reads the global next.
+  await assert.rejects(
+    () =>
+      acquireCesiumNamespace(
+        executingPage(log),
+        "data:text/javascript;base64,%%%not-base64%%%",
+      ),
+    (error) => {
+      assert.equal(error.reason, "cesium-namespace-unavailable");
+      assert.equal(error.details.outcome.source, "import-failed");
+      return true;
+    },
+  );
+});
+
+test("B9. a namespace missing Cartesian3 or Math is refused, not accepted", async (t) => {
+  // MELILOT'S MUTANT, PINNED (review of 0e91da49, finding F-1). The first cut
+  // of `complete()` guarded only `JulianDate` and `SceneTransforms` — the two
+  // names that happen to be read FIRST. A namespace carrying those two but no
+  // `Cartesian3` was therefore ACCEPTED, and then `pageMeasureRung`
+  // (`Cesium.Cartesian3.fromDegrees`, `Cesium.Math.PI_OVER_TWO`, :149) died one
+  // evaluate later with the exact "Cannot read properties of undefined" exit-2
+  // shape this patch exists to eliminate. The guard must cover every name the
+  // page functions read, and the refusal must say which one is missing.
+  const had = Object.hasOwn(globalThis, "Cesium");
+  const previous = globalThis.Cesium;
+  t.after(() => {
+    if (had) {
+      globalThis.Cesium = previous;
+    } else {
+      delete globalThis.Cesium;
+    }
+  });
+  delete globalThis.Cesium;
+
+  const log = { calls: [] };
+  const exports = {
+    JulianDate: "export const JulianDate = {};",
+    Cartesian3: "export const Cartesian3 = {};",
+    Math: "export const Math = {};",
+    SceneTransforms: "export const SceneTransforms = {};",
+  };
+  for (const missing of Object.keys(exports)) {
+    const sourceText = Object.entries(exports)
+      .filter(([name]) => name !== missing)
+      .map(([, text]) => text)
+      .join("\n");
+    await assert.rejects(
+      () =>
+        acquireCesiumNamespace(executingPage(log), moduleUrlFor(sourceText)),
+      (error) => {
+        assert.equal(error.reason, "cesium-namespace-unavailable");
+        assert.equal(error.exitCode, PROBE_EXIT_CODES.REFUSAL);
+        assert.equal(error.details.outcome.source, "module-incomplete");
+        // The refusal names the symbol that is absent, so the reader is not
+        // sent back to an Edge slot to find out which half failed.
+        assert.match(error.details.outcome.reason, new RegExp(missing));
+        return true;
+      },
+      `a namespace without ${missing} must refuse`,
+    );
+    assert.equal(
+      globalThis.Cesium,
+      undefined,
+      `${missing}: a refused acquisition left a namespace on the page`,
+    );
   }
 });
 
