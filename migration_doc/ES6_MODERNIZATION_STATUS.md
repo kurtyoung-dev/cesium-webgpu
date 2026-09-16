@@ -168,3 +168,17 @@ The TypeScript story is bifurcated: the **WebGPU renderer is ~87% TS**, while **
 - **Blanket `=== undefined` → `defined()`** — both are accepted in the codebase; not worth churn.
 - **Bulk `Object.defineProperties` conversion** outside of files you're already editing — high churn, large review surface, no functional gain.
 - **Bulk JS→TS conversion of Core/Scene/DataSources** — strategic, multi-day per subsystem; only undertake `Scene.js`/`FrameState`-class conversion if deeper WebGPU type-narrowing demands it.
+
+---
+
+## 7. Decomposition log
+
+CLAUDE.md's file-size rule ("files over ~1,000 lines SHOULD be decomposed … when
+touching a file over 1000 lines for functional changes, decompose it too") asks
+for its records here. Add-only, newest last. A row names what moved, where it
+went, the line delta, and the functional change that occasioned it — never a
+decomposition performed for its own sake, which the incremental rule forbids.
+
+| Date | File (before → after) | Slice extracted | Went to | Occasioned by |
+|---|---|---|---|---|
+| 2026-09-12 | `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts` 5,570 → 5,534 | The cloud quality resolver/preset seam: the duplicate `resolveCloudQuality` and its `QualityResolverInputs`, the config→inputs gather, the `qualityFlags` bit assembly, and the `lightSampleScale` / `erosionStrength` / tier-lighting derivations | `Renderer/WebGPU/WebGPUCloudTierPresets.ts` 234 → 469 (`buildCloudQualityInputs`, `shouldDefaultPhysicalAerial`, `buildCloudQualityBlock`) | `C13-N10` — one quality resolver. The renderer held a second copy of the tier table and of the `"auto"` altitude bands, and it was the copy that reached the uniforms; the preset table was inert. Both files stay under 1,000 lines; the renderer's main class stays in place. Node-assertable by construction, which is what `cloud-tier-single-source.spec.mjs` needs |

@@ -48,10 +48,18 @@ const helperPath = path.join(
   root,
   "packages/engine/Source/Renderer/WebGPU/WebGPUCloudTemporalHistory.ts",
 );
+// C13-N10 (2026-09-12) moved the `qualityFlags` assembly here from the
+// renderer, so the tier table is the single producer of every preset-derived
+// uniform. The QF_TEMPORAL assertion below follows it.
+const tierPresetsPath = path.join(
+  root,
+  "packages/engine/Source/Renderer/WebGPU/WebGPUCloudTierPresets.ts",
+);
 
 const rendererSource = fs.readFileSync(rendererPath, "utf8");
 const shaderSource = fs.readFileSync(shaderPath, "utf8");
 const helperSource = fs.readFileSync(helperPath, "utf8");
+const tierPresetsSource = fs.readFileSync(tierPresetsPath, "utf8");
 
 function addF32(left, right) {
   return Math.fround(Math.fround(left) + Math.fround(right));
@@ -634,10 +642,19 @@ test("renderer consumes the C13-05 classifier and its own prior RTE camera state
     /let temporalActive\s*=\s*cloudPreset\.temporalEnabled\s*&&\s*halfResActive\s*&&\s*temporalReprojectionSupported;/,
     "unsupported projections must not allocate/execute temporal history",
   );
+  // The bit itself is assembled in the preset module since C13-N10; the
+  // renderer's obligation is to hand it this frame's REAL `temporalActive`,
+  // which is the value the gate above narrowed. Both halves are pinned, so the
+  // path from "projection unsupported" to "QF_TEMPORAL clear" stays complete.
+  assert.match(
+    tierPresetsSource,
+    /runtime\.temporalActive \? CLOUD_QF_TEMPORAL : 0/,
+    "unsupported projections must not animate the temporal-only ray phase",
+  );
   assert.match(
     rendererSource,
-    /temporalActive \? CLOUD_QF_TEMPORAL : 0/,
-    "unsupported projections must not animate the temporal-only ray phase",
+    /buildCloudQualityBlock\(cloudPreset, \{[\s\S]*?temporalActive,/,
+    "the renderer must hand the gated temporalActive to the quality block",
   );
   assert.match(
     temporalTransformBlock,

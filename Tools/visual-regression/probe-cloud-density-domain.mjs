@@ -987,7 +987,17 @@ async function main() {
           evidence.realization?.temporalHeight === 0 &&
           expectedLaneFlags(lane, evidence.realization) &&
           expectedOverrideFlags(lane, evidence.lastOverrideRecord) &&
-          evidence.uniformFloatCount === 168 &&
+          // `uniformFloatCount` is the LIVE `cache.uniformData.length` (:554),
+          // so this literal mirrors the renderer's module-private
+          // `CLOUD_UNIFORM_FLOATS` and must move with it. It cannot import the
+          // constant — the renderer does not export it, and the value is read
+          // in-page regardless.
+          // [2026-09-13, C13-N10: 168 -> 176. This pin was ALREADY two
+          // generations stale before this lane touched it: it has read 168
+          // since Batch 743 (C13-37) against a live 172, so the probe could not
+          // report valid at HEAD. C13-N10 appends the tier-lighting row at
+          // 172-175, taking the count to 176 = 148 + 20 + 4 + 4.]
+          evidence.uniformFloatCount === 176 &&
           evidence.noiseResources?.noiseBaked === true &&
           hasCompleteMipChain(
             evidence.noiseResources?.shapeRes,

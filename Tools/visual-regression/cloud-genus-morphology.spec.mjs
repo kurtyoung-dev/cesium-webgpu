@@ -137,12 +137,16 @@ test("the per-genus morphology row is appended at 168-171, offsets frozen", () =
   // The renderer's float count grows by exactly one 16-byte row, expressed as an
   // addition rather than a rewritten literal so the growth stays auditable.
   assert.match(rendererSource, /const CLOUD_GENUS_MORPHOLOGY_FLOATS = 4;/);
+  // C13-N10 (2026-09-12) appended a SECOND 16-byte row, the tier lighting row at
+  // 172-175, by the same add-only rule: another named term in the sum, never a
+  // rewritten literal. This row's 168-171 offsets are unaffected, which is what
+  // the rest of this test checks.
   assert.match(
     rendererSource,
-    /const CLOUD_UNIFORM_FLOATS =\s*148 \+ CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS \+ CLOUD_GENUS_MORPHOLOGY_FLOATS;/,
+    /const CLOUD_UNIFORM_FLOATS =\s*148 \+\s*CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS \+\s*CLOUD_GENUS_MORPHOLOGY_FLOATS \+\s*CLOUD_TIER_LIGHTING_FLOATS;/,
   );
-  // 148 + 20 + 4 = 172 floats = 688 bytes = 43 whole 16-byte rows.
-  assert.equal((148 + 20 + 4) % 4, 0);
+  // 148 + 20 + 4 + 4 = 176 floats = 704 bytes = 44 whole 16-byte rows.
+  assert.equal((148 + 20 + 4 + 4) % 4, 0);
 
   // The four writes are consecutive and in slot order.
   const writes = rendererSource.slice(

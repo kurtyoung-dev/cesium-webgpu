@@ -227,7 +227,7 @@
 "packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts"	"no-duplicate-imports"	2
 "packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts"	"no-useless-assignment"	2
 "packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveIndexUtils.ts"	"@typescript-eslint/no-unused-vars"	1
-"packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts"	"curly"	12
+"packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts"	"curly"	10
 "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts"	"no-duplicate-imports"	5
 "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts"	"no-use-before-define"	6
 "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts"	"no-useless-assignment"	1

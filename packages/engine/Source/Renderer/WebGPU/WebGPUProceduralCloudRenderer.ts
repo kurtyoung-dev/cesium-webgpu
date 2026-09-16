@@ -61,20 +61,26 @@ import {
   resetCloudFrameCounters,
 } from "./WebGPUCloudObservability.js";
 import type { CloudFrameCounters } from "./WebGPUCloudObservability.js";
+// The quality resolver and every preset-derived uniform it produces. This file
+// holds no second copy of the tier table, the altitude bands or the
+// `qualityFlags` assembly: `C13-N10` collapsed the renderer's own
+// `resolveCloudQuality` into the preset module, which is now the only producer.
 import {
+  buildCloudQualityBlock,
+  buildCloudQualityInputs,
   resolveCloudPreset,
-  CloudNoiseSource,
-  CLOUD_QF_OCTAVES_SHIFT,
+  shouldDefaultPhysicalAerial,
+  // Bit 0 is assembled in the preset module; the renderer reads it back to gate
+  // bit 13, which requires a realized baked resource.
   CLOUD_QF_NOISE_BAKED,
-  CLOUD_QF_HALF_RES,
-  CLOUD_QF_TEMPORAL,
-  CLOUD_QF_JITTER,
   CLOUD_QF_AERIAL_LUT,
   CLOUD_QF_AMBIENT_LUT,
-  CLOUD_QF_LIGHT_CONE,
   CLOUD_QF_MULTI_DECK,
   CLOUD_QF_HIGH_PRECISION,
   CLOUD_QF_PLANET_DENSITY,
+  // Inline `type` rather than a second `import type` line: the file is already
+  // at its `no-duplicate-imports` seatbelt budget of five value/type pairs.
+  type CloudQualityConfigLike,
 } from "./WebGPUCloudTierPresets.js";
 import {
   CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS,
@@ -178,8 +184,19 @@ import {
 // renamed or repurposed in place but never moved, and new fields extend the
 // tail. The trailing terms name the two blocks that already do so.
 const CLOUD_GENUS_MORPHOLOGY_FLOATS = 4;
+// C13-N11's tier lighting row, appended at the tail: floats 172-174 carry
+// `powderStrength`, `isotropicFloor` and `ambientFloor` from the resolved
+// preset, and 175 pads the 16-byte row. The three fields existed in
+// `WebGPUCloudTierPresets.ts` with no uniform slot at all, which is why they
+// were inert. The WGSL consumer is C13-N11's own (lane L4) and lands after this
+// batch; until it does the shader simply never reads the tail, which is why
+// adding the row is byte-identical.
+const CLOUD_TIER_LIGHTING_FLOATS = 4;
 const CLOUD_UNIFORM_FLOATS =
-  148 + CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS + CLOUD_GENUS_MORPHOLOGY_FLOATS;
+  148 +
+  CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS +
+  CLOUD_GENUS_MORPHOLOGY_FLOATS +
+  CLOUD_TIER_LIGHTING_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${ProceduralCloudsWGSL}`;
 // High-word define masks for the emitting march and the consuming resolve.
@@ -2695,7 +2712,10 @@ function ensureWeatherView(
   if (!enabled) {
     return cache.weatherFallbackView;
   }
-  // Allocate the 256x128 weather texture once.
+  // Allocate the WEATHER_TEX_W x WEATHER_TEX_H weather texture once. [2026-09-12,
+  // corrected for C13-N22 (lane Ossë): this comment said "256x128", which is the
+  // value of those constants today and stops being true the moment that row
+  // raises them to the native GMGSI grid. Name the constants, not a number.]
   if (!cache.weatherTexture) {
     const tex = device.createTexture({
       size: {
@@ -3019,62 +3039,14 @@ function initializeCloudPipeline(
   cache.initialized = true;
 }
 
-/**
- * Inputs to the quality-dial resolver, which maps the
- * `clouds.volumetricQuality` preset string to a `(maxSteps, lightSteps)` pair.
- *
- * Preset table:
- *   low    — (24, 3)  mobile and power-saving
- *   medium — (48, 4)  default desktop
- *   high   — (96, 8)  cinematic
- *   auto   — altitude-driven
- *
- * In auto mode an altitude at or below `enableAltitude` resolves to high, an
- * altitude at or above `disableAltitude` resolves to low, and anything between
- * resolves to medium. The transition is a single step rather than a per-pixel
- * blend, and hysteresis is applied by the caller through the stickiness of the
- * globe fields, because changing the sample count every frame shimmers at the
- * transition.
- *
- * A `cloudQuality` set to anything other than the default of 64 is returned
- * verbatim and the preset is ignored, so hand-tuned step counts are not
- * overridden by the preset enum.
- */
-interface QualityResolverInputs {
-  preset: string | undefined;
-  rawCloudQuality: number | undefined;
-  cameraHeightMeters: number;
-  enableAltitudeMeters: number;
-  disableAltitudeMeters: number;
-}
-
-function resolveCloudQuality(inputs: QualityResolverInputs): {
-  maxSteps: number;
-  lightSteps: number;
-} {
-  // A hand-set step count overrides the preset.
-  const raw = inputs.rawCloudQuality;
-  if (typeof raw === "number" && raw !== 64) {
-    // Light steps scale with sqrt(maxSteps / 64) so a custom value gets a
-    // sensible light-march count without a second knob.
-    const lightSteps = Math.max(2, Math.round(6 * Math.sqrt(raw / 64)));
-    return { maxSteps: raw, lightSteps };
-  }
-  let preset = inputs.preset ?? "auto";
-  if (preset !== "low" && preset !== "medium" && preset !== "high") {
-    // Auto + unknown strings → altitude-driven resolution.
-    if (inputs.cameraHeightMeters >= inputs.disableAltitudeMeters) {
-      preset = "low";
-    } else if (inputs.cameraHeightMeters <= inputs.enableAltitudeMeters) {
-      preset = "high";
-    } else {
-      preset = "medium";
-    }
-  }
-  if (preset === "low") return { maxSteps: 24, lightSteps: 3 };
-  if (preset === "high") return { maxSteps: 96, lightSteps: 8 };
-  return { maxSteps: 48, lightSteps: 4 };
-}
+// The quality-dial resolver that used to live here — its own copy of the
+// `(24,3)/(48,4)/(96,8)` table and its own copy of the `"auto"` altitude bands —
+// was deleted by `C13-N10`. `WebGPUCloudTierPresets.ts` is the single source:
+// `resolveTier` spells the bands once and `CLOUD_TIER_PRESETS` spells the step
+// counts once, so an edit to the tier table now reaches uniform floats 44 and
+// 45. The step counts, the band comparisons and the `6 * sqrt(raw / 64)`
+// escape-hatch arithmetic all carried across unchanged, so the collapse is
+// byte-identical at every input.
 
 // Allocates or reallocates the shadow map, its pipeline, uniform buffer and
 // placeholder, building the dedicated shadow bind-group layout with only the
@@ -3458,32 +3430,16 @@ export function prepareCloudFrameAndEncodeMask(
     // preset string, the camera altitude, and the enable and disable altitudes
     // from `AtmosphericConditions` for auto mode, and returns `config.cloudQuality`
     // verbatim when that field has been set to a non-default value.
-    const atmoClouds = (
-      config as unknown as {
-        atmosphericConditions?: {
-          clouds?: {
-            volumetricEnableAltitude?: number;
-            volumetricDisableAltitude?: number;
-          };
-        };
-      }
-    ).atmosphericConditions?.clouds;
-    const globeForQuality = config as unknown as {
-      cloudVolumetricQuality?: string;
-      cloudQuality?: number;
-    };
+    const cloudConfig = config as unknown as CloudQualityConfigLike;
     const cameraHeightM = frameState.camera?.positionCartographic?.height ?? 0;
-    const qualityInputs = {
-      preset: globeForQuality.cloudVolumetricQuality,
-      rawCloudQuality: globeForQuality.cloudQuality,
-      cameraHeightMeters: cameraHeightM,
-      enableAltitudeMeters: atmoClouds?.volumetricEnableAltitude ?? 50_000,
-      disableAltitudeMeters: atmoClouds?.volumetricDisableAltitude ?? 100_000,
-    };
-    // Step counts stay on the quality resolver; the tier preset supplies the
-    // remaining dials, which reach the shader through the `qualityFlags` lane at
-    // float 74.
-    const qualityResolved = resolveCloudQuality(qualityInputs);
+    const qualityInputs = buildCloudQualityInputs(cloudConfig, cameraHeightM);
+    // One resolver. The preset supplies the step counts at floats 44 and 45, the
+    // `qualityFlags` bitfield at 74, the light-sample scale at 78, the erosion
+    // floor at 79 and the tier lighting row at 172-174 — all of them through the
+    // one block built below, so no preset field is re-derived at a packing site.
+    // The flag bits that depend on whether this frame's resources allocated are
+    // supplied as runtime facts, and the two LUT-coupling bits are folded into
+    // float 74 further down, where their modes are known.
     const cloudPreset = resolveCloudPreset(qualityInputs);
     // Half-resolution gate. A tier that resolves `renderResScale` below 1 marches
     // into a half-size target and bilaterally upscales; the cinematic tier and the
@@ -3565,6 +3521,17 @@ export function prepareCloudFrameAndEncodeMask(
       // Even an adjacent re-entry must therefore seed from the current march.
       markCloudTemporalInactive(cache);
     }
+    // Every preset-derived uniform, built once, at the one point where both
+    // resource gates have settled. `bakedNoiseResident` is the bake's real
+    // outcome rather than the tier's request: a tier that asked for baked noise
+    // but whose volumes are not resident must not advertise bit 0, or the shader
+    // samples textures that were never filled.
+    const qualityBlock = buildCloudQualityBlock(cloudPreset, {
+      bakedNoiseResident: cache.noiseBaked && cache.noise !== null,
+      halfResActive,
+      temporalActive,
+      erosionStrengthOverride: config.cloudErosionStrength,
+    });
     // Raymarch geometry and step budgets, recorded at the one point where the
     // half-resolution gate, the temporal gate and the quality resolver have all
     // settled, so nothing here is derived twice.
@@ -3577,8 +3544,8 @@ export function prepareCloudFrameAndEncodeMask(
     counters.marchHeight = halfResActive ? cache.halfHeight : canvasH;
     counters.marchPixels = counters.marchWidth * counters.marchHeight;
     counters.halfResActive = halfResActive ? 1 : 0;
-    counters.maxSteps = qualityResolved.maxSteps;
-    counters.lightSteps = qualityResolved.lightSteps;
+    counters.maxSteps = qualityBlock.maxSteps;
+    counters.lightSteps = qualityBlock.lightSteps;
     counters.primarySampleBudget = counters.marchPixels * counters.maxSteps;
     counters.lightSampleBudget =
       counters.primarySampleBudget * counters.lightSteps;
@@ -3608,8 +3575,8 @@ export function prepareCloudFrameAndEncodeMask(
     // nothing emitted rather than as never having been asked for.
     counters.reconstructionRequested = cache.reconstructionEnabled ? 1 : 0;
 
-    data[offset++] = qualityResolved.maxSteps;
-    data[offset++] = qualityResolved.lightSteps;
+    data[offset++] = qualityBlock.maxSteps; // 44 maxSteps
+    data[offset++] = qualityBlock.lightSteps; // 45 lightSteps
     data[offset++] = config.cloudDensity ?? 0.3;
     data[offset++] = 0.04; // absorptionCoeff
 
@@ -3687,46 +3654,11 @@ export function prepareCloudFrameAndEncodeMask(
       config.cloudAmbientIntensity ?? 1.5,
       eclipseCloudFactor,
     ); // 73 ambientIntensity
-    // 74 — the `qualityFlags` bitfield. Bit 0 selects the baked 3D-texture core,
-    // and it is set only when the tier asks for it and the bake succeeded; with no
-    // baked noise resident the bit stays clear and the shader marches live noise
-    // instead.
-    const noiseBakedBit =
-      cloudPreset.noiseSource === CloudNoiseSource.BAKED &&
-      cache.noiseBaked &&
-      cache.noise !== null
-        ? CLOUD_QF_NOISE_BAKED
-        : 0;
-    // Bit 1 marks the half-resolution path and is set only when that path is
-    // actually running, meaning the tier asked for it and the target and pipelines
-    // allocated. The shader keys its premultiplied-emit and jitter branch on this
-    // bit, and the full-resolution tiers leave it clear.
-    const halfResBit = halfResActive ? CLOUD_QF_HALF_RES : 0;
-    // Bit 2 marks active temporal accumulation. The march emits identically either
-    // way, since temporal adds a separate resolve pass rather than a march branch;
-    // the bit exists so the flags stay consistent with the tier presets and with
-    // what any reader of the field would expect.
-    const temporalBit = temporalActive ? CLOUD_QF_TEMPORAL : 0;
-    // Bit 3 carries the tier's jitter contract: the lower tiers animate the
-    // per-pixel interleaved-gradient-noise phase only while temporal accumulation
-    // is active, the cinematic tier gets deterministic frame-zero spatial noise,
-    // and the hand-tuned escape preset leaves jitter off and keeps exact midpoint
-    // sampling.
-    const jitterBit = cloudPreset.jitterEnabled ? CLOUD_QF_JITTER : 0;
-    // Bit 10 selects the cone-sampled light march, which the lower tiers use. The
-    // cinematic tier and the escape hatch leave it clear and take the straight
-    // light march.
-    const lightConeBit = cloudPreset.lightConeSampling
-      ? CLOUD_QF_LIGHT_CONE
-      : 0;
-    data[offset++] =
-      noiseBakedBit |
-      halfResBit |
-      temporalBit |
-      jitterBit |
-      lightConeBit |
-      ((Math.min(7, cloudPreset.multiScatterOctaves) & 7) <<
-        CLOUD_QF_OCTAVES_SHIFT); // 74 qualityFlags
+    // 74 — the `qualityFlags` bitfield. Bits 0, 1, 2, 3 and 10 and the
+    // multi-scatter octave field are assembled by `buildCloudQualityBlock`,
+    // which documents each one; bits 8, 9 and 11 are folded in further down,
+    // where their modes are resolved.
+    data[offset++] = qualityBlock.qualityFlags; // 74 qualityFlags
     // 75 — curl-warp amplitude. At 0 the shader's `curlAmplitude > 0.0` guard
     // skips the baked-path detail-erosion warp entirely, and
     // `config.cloudCurlAmplitude` is the only thing that raises it: the tier
@@ -3746,16 +3678,16 @@ export function prepareCloudFrameAndEncodeMask(
     // feature scale.
     data[offset++] = config.cloudCurlFrequency ?? 2.0; // 77 curlFrequency
     // 78 — light-march step scale. The live-noise and cinematic paths march the
-    // full light ray; the lower baked tiers halve it for cheaper shadowing.
-    data[offset++] =
-      cloudPreset.noiseSource === CloudNoiseSource.LIVE || cloudPreset.tier >= 3
-        ? 1.0
-        : 0.5; // 78 lightSampleScale
+    // full light ray; the lower baked tiers halve it for cheaper shadowing. This
+    // slot had a SECOND source of truth — a `noiseSource === LIVE || tier >= 3`
+    // test that re-derived what `CloudTierPreset.lightSampleScale` already
+    // states — until `C13-N10` deleted it. The preset's own values reproduce the
+    // deleted expression exactly at every tier and at the escape hatch.
+    data[offset++] = qualityBlock.lightSampleScale; // 78 lightSampleScale
     // 79 — mean-preserving erosion floor, read on the baked path only. An explicit
     // override wins; otherwise the tier decides, low tiers being fibrous at 0.10
     // and the higher tiers puffy at 0.18.
-    data[offset++] =
-      config.cloudErosionStrength ?? (cloudPreset.tier <= 1 ? 0.1 : 0.18); // 79 erosionStrength
+    data[offset++] = qualityBlock.erosionStrength; // 79 erosionStrength
     // 80-83 — sky ambient: blue, lighting cloud tops.
     data[offset++] = 0.5; // 80
     data[offset++] = 0.65; // 81
@@ -3865,7 +3797,18 @@ export function prepareCloudFrameAndEncodeMask(
       cloudAerialMode?: string;
       cloudAmbientSource?: string;
     };
-    const aerialLutOn = globeForLut.cloudAerialMode === "physical";
+    // C13-N20's promotion clause. An explicit `cloudAerialMode` always wins, in
+    // both directions: `"physical"` turns the LUT path on wherever the user asks
+    // for it, and any other explicit string keeps the analytic term even above
+    // the band edge. Only an UNSET dial consults the default, which is
+    // `shouldDefaultPhysicalAerial` — above the band edge the heuristic term
+    // saturates its `clamp(midDist / 60000, 0, 0.85)` for every pixel, so the
+    // LUT path is the correct default there. This is the one visible change in
+    // this batch; read that predicate for why it keys on altitude alone.
+    const aerialLutOn =
+      globeForLut.cloudAerialMode === undefined
+        ? shouldDefaultPhysicalAerial(qualityInputs)
+        : globeForLut.cloudAerialMode === "physical";
     const ambientLutOn = globeForLut.cloudAmbientSource === "sky-lut";
     data[offset++] = aerialLutOn ? 1.0 : 0.0; // 108 aerialLutMode
     data[offset++] = ambientLutOn ? 1.0 : 0.0; // 109 ambientLutMode
@@ -4130,6 +4073,21 @@ export function prepareCloudFrameAndEncodeMask(
     data[offset++] = fibreMorphology.shear; // 170 genusFibreShear (0 = no fallstreak tilt)
     data[offset++] = profile.phaseG - cumulusProfile.phaseG; // 171 genusPhaseDelta (CUMULUS = 0)
 
+    // 172-175 — the tier lighting row, appended by `C13-N10` so that
+    // `powderStrength`, `isotropicFloor` and `ambientFloor` have a uniform slot
+    // at all. They were declared on `CloudTierPreset`, carried per-tier values,
+    // and reached nothing: that is the whole of why the tier table's lighting
+    // half was inert. The shader consumer is `C13-N11`'s (lane L4), which
+    // appends four floats to the tail of `CloudUniforms` and replaces the
+    // hard-coded `powder = 0.5` literal at `ProceduralClouds.wgsl:2537`. These
+    // slot numbers are the contract with that change. Until it lands the shader
+    // struct is shorter than the buffer, which WebGPU permits and which is why
+    // adding the row moves no pixel.
+    data[offset++] = qualityBlock.powderStrength; // 172 tierPowderStrength
+    data[offset++] = qualityBlock.isotropicFloor; // 173 tierIsotropicFloor
+    data[offset++] = qualityBlock.ambientFloor; // 174 tierAmbientFloor
+    data[offset++] = 0.0; // 175 pad
+
     // Fold the two LUT-coupling bits into `qualityFlags` at slot 74, already
     // packed above. Bits 8 and 9 are set only while the corresponding mode is on,
     // so with both off the shader's gates stay closed.
@@ -4155,7 +4113,13 @@ export function prepareCloudFrameAndEncodeMask(
     // Unlike the high-precision bit this one has no public override, so the only
     // way to flip it in isolation is a diagnostic that writes slot 74 directly
     // after upload.
-    if (noiseBakedBit !== 0) {
+    //
+    // The condition is bit 0 of the block's own flags, which carries exactly the
+    // fact the deleted local `noiseBakedBit` carried — the tier asked for baked
+    // noise AND the bake is resident — read back from the single producer rather
+    // than re-derived at this site. Reading it off the flags also makes the
+    // dependency between bits 0 and 13 explicit: 13 is never set without 0.
+    if ((qualityBlock.qualityFlags & CLOUD_QF_NOISE_BAKED) !== 0) {
       data[74] = data[74] | CLOUD_QF_PLANET_DENSITY;
     }
 

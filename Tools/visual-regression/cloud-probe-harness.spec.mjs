@@ -218,8 +218,11 @@ async function driveReadiness({
 }) {
   // Matches the in-flight CloudUniforms layout: CLOUD_UNIFORM_FLOATS = 148 + 20
   // (CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS) + 4 (C13-16 CLOUD_GENUS_MORPHOLOGY_FLOATS)
-  // = 172 floats.
-  const uniformData = new Float32Array(172);
+  // + 4 (C13-N10 CLOUD_TIER_LIGHTING_FLOATS, the 172-175 tier lighting row)
+  // = 176 floats. [2026-09-12, C13-N10: 172 -> 176. A fixture shorter than the
+  // layout it claims to match is a latent out-of-range read the day this
+  // harness grows a tail-slot assertion, so it grows with the renderer.]
+  const uniformData = new Float32Array(176);
   uniformData[44] = 128;
   uniformData[45] = 8;
   uniformData[74] = 0;

@@ -517,11 +517,12 @@ test("visible and shadow WGSL both use the same oblate shell intersections", () 
 test("renderer preserves the WGS84 rows and appends the C13-37 phase layout", () => {
   const renderer = fs.readFileSync(rendererPath, "utf8");
 
-  // C13-16 appended one 16-byte per-genus morphology row at the tail. The WGS84
-  // rows this test guards keep their offsets; only the total grows.
+  // C13-16 appended one 16-byte per-genus morphology row at the tail, and
+  // C13-N10 (2026-09-12) appended a second, the tier lighting row at 172-175.
+  // The WGS84 rows this test guards keep their offsets; only the total grows.
   assert.match(
     renderer,
-    /const CLOUD_UNIFORM_FLOATS =\s*148 \+ CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS \+ CLOUD_GENUS_MORPHOLOGY_FLOATS;/,
+    /const CLOUD_UNIFORM_FLOATS =\s*148 \+\s*CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS \+\s*CLOUD_GENUS_MORPHOLOGY_FLOATS \+\s*CLOUD_TIER_LIGHTING_FLOATS;/,
   );
   assert.match(
     renderer,

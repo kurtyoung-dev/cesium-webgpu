@@ -1103,11 +1103,19 @@ is answerable from the counters without further instrumentation.
 
 ### C13-N10 — One quality resolver <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
 
-**Status:** OPEN (Wave W1, Priority P0).
+**Status:** FROZEN 2026-09-13, lane Ulmo (L3) — **Edge leg 2 owed before landing** (Wave W1, Priority P0). *[The work and every re-derivation below are dated 2026-09-12; a machine outage that night interrupted the lane mid-ledger and the freeze completed on the 13th. Nothing was lost — the clone was untouched — and the interruption is recorded in the landing packet.]*
 
 **Delivers:** **Default taken 2026-09-12 (D7):** "CLOUD_TIER_PRESETS canonical, resolveCloudQuality literals deleted" — the spec-that-pins-two-sources-equal option is **rejected**, because it preserves the trap. Collapse `resolveCloudQuality` (`:3051-3077`) into `CLOUD_TIER_PRESETS`; `primarySteps` / `lightSteps` / `lightSampleScale` become the live source; one spelling of the altitude bands; correct the two contradicting docstrings
 
 **Acceptance:** `cloud-tier-single-source.spec.mjs`: **mutating a preset's `primarySteps` must change uniform slot 12; today it provably does not.** Inertness mutant `if (false && …)` must stop the propagation. Byte-identical at every current default
+
+**Evidence (2026-09-12, lane Ulmo):** `resolveCloudQuality` and `QualityResolverInputs` deleted from `WebGPUProceduralCloudRenderer.ts`; `WebGPUCloudTierPresets.ts` is the only producer of the step counts, the `"auto"` altitude bands, `qualityFlags`, `lightSampleScale` and `erosionStrength`, through the new `buildCloudQualityInputs` / `buildCloudQualityBlock` seam (the row's decomposition slice: renderer 5,570 → 5,534, presets 234 → 469, logged in `ES6_MODERNIZATION_STATUS.md` §7). Four docstrings corrected, not two — the plan named the module and table headers at `WebGPUCloudTierPresets.ts:13-16` and `:76-79`; `resolveTier`'s "mirrors resolveCloudQuality" at `:165-166` and `resolveCloudPreset`'s at `:177` said the same thing and are corrected in place.
+
+*[corrected 2026-09-12 by lane Ulmo, re-derived at the tree under Principle 10 — **the acceptance line above says "uniform slot 12" and the plan says slots 12 and 13 (§0.1, §3, §9). The float indices are 44 and 45.** The cited `file:line` sites are exact; only the slot numbers are wrong. Derived by walking the packer from `offset = 0` — `inverseProjection` 0-15, `inverseView` 16-31, camera+time 32-35, sun+intensity 36-39, the four layer floats 40-43 — and corroborated twice: the WGSL `CloudUniforms` member order in `ProceduralClouds.wgsl`, and `Tools/visual-regression/cloud-probe-harness.spec.mjs:223-224`, which seeds `uniformData[44] = 128; uniformData[45] = 8`. The spec and the Edge leg use 44/45.]*
+
+**Also landed here, by seat ruling 2026-09-12 (one owner per file), because both live in files this lane owns:** (a) `C13-N11`'s uniform plumbing — `CLOUD_UNIFORM_FLOATS` 172 → 176 via an append-only `CLOUD_TIER_LIGHTING_FLOATS = 4`, packing `powderStrength` / `isotropicFloor` / `ambientFloor` at floats 172-174 with 175 as pad. Those three preset fields had no uniform slot at all, which is the whole reason they were inert. The WGSL consumer stays with `C13-N11` (lane L4) and lands after; until it does the struct is shorter than the buffer, which WebGPU permits, so the row is byte-identical. (b) `C13-N20`'s promotion clause — see that row.
+
+**Not byte-identical, deliberately:** the one behavioural change in this row is `C13-N20`'s aerial promotion (below). Everything else is byte-identical at every input, proven by sweeping the deleted implementation against the live one.
 
 **Dependencies:** —
 
@@ -1119,11 +1127,18 @@ is answerable from the counters without further instrumentation.
 
 ### C13-N11 — Wire the inert preset fields <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
 
-**Status:** OPEN (Wave W1, Priority P0).
+**Status:** PARTIAL — the CPU half is FROZEN 2026-09-13 by lane Ulmo (L3); the WGSL half remains OPEN for lane L4 (Wave W1, Priority P0).
 
 **Delivers:** `powderStrength`, `isotropicFloor`, `ambientFloor` reach the shader; the literal `0.5` at `ProceduralClouds.wgsl:2537` becomes the preset value; `lightSampleScale` loses its second source at `:3750-3753`; `CLOUD_QF_PROFILE_ON` gains a producer+consumer or is marked deprecated in place (add-only)
 
 **Acceptance:** Byte-identical at tier defaults equal to the current hard-coded values; **A4** moves where `powderStrength` differs. *[corrected 2026-09-12: this row edits `ProceduralClouds.wgsl`, which §9 assigns to lane L4 — the draft briefed it to L3, a one-defect-one-owner violation]*
+
+**Split 2026-09-12 by seat ruling (one owner per file).** The clauses that live in `WebGPUProceduralCloudRenderer.ts` / `WebGPUCloudTierPresets.ts` landed with `C13-N10` in lane Ulmo's batch, because that lane owns those files this wave:
+
+- **The uniform plumbing.** `CLOUD_UNIFORM_FLOATS` 172 → 176 via an append-only `CLOUD_TIER_LIGHTING_FLOATS = 4`; floats **172 `powderStrength`, 173 `isotropicFloor`, 174 `ambientFloor`, 175 pad**, packed immediately after slot 171. Those three fields previously had no uniform slot at all — that, not a missing shader read, is why they were inert. **These slot numbers are the contract with the WGSL half**: lane L4 appends four floats to the tail of `CloudUniforms` and replaces the `0.5` literal at `:2537` with float 172.
+- **The `lightSampleScale` second source** at `:3748-3753` is gone — the packed float 78 is now `CloudTierPreset.lightSampleScale`. The deleted `noiseSource === LIVE || tier >= 3 ? 1.0 : 0.5` expression reproduces the preset's own values exactly at all four tiers and at the escape hatch, so this clause is byte-identical.
+
+**Still open for lane L4:** the WGSL struct members and their reads; `CLOUD_QF_PROFILE_ON`'s producer+consumer or its in-place deprecation.
 
 **Dependencies:** C13-N10
 
@@ -1132,6 +1147,32 @@ is answerable from the counters without further instrumentation.
 **Owner wave:** Wave W1 (WS-B)
 
 **Parity:** WebGPU
+
+### C13-N11-TUNE — Tune the tier-lighting dials per tier <!-- added 2026-09-13 by C13-N10 (lane Ulmo), per seat ruling on Manwë's freeze -->
+
+**Status:** OPEN (Priority P1). **Blocked on:** `C13-N11`'s shader consumer landing, and an Edge slot.
+
+**Why it exists.** `C13-N10` gave `powderStrength`, `isotropicFloor` and `ambientFloor` uniform slots (floats 172-174) and `C13-N11` gives them a shader reader. The moment both land, values that had been free for years become load-bearing — and the values the table carried were aspirational, written while nothing read them:
+
+| field | tier 0 | tier 1 | tier 2 | tier 3 | escape hatch | shader's pre-wiring behaviour |
+|---|---|---|---|---|---|---|
+| `powderStrength` | 0 | 0 | 0.4 | 0.7 | 0 | the hard-coded literal **0.5** at `ProceduralClouds.wgsl:2537` |
+| `isotropicFloor` | 0 | 0 | 0.02 | 0.04 | 0 | no floor — **0** |
+| `ambientFloor` | 0 | 0 | 0.05 | 0.08 | 0 | no floor — **0** |
+
+Shipping that table as the live source would have retuned the image inside a plumbing batch, and **none of the five values is 0.5**: tiers 0 and 1 would have deleted the powder term outright (lane Manwë measured a 99.52 % delta), and tier 2's `isotropicFloor` of 0.02 was measured inert — it bit 0 of 324 stations. So `C13-N10` pinned all five presets to powder **0.5** / floors **0**, the pre-wiring behaviour exactly, each with a dated comment at the site. Manwë guards both floors, so 0 is byte-identical by construction.
+
+**Delivers:** a per-tier tuning of the three dials, chosen against measurements rather than intuition, replacing the pinned constants. The table above records the values originally intended, as a starting point and not as an answer — 0.02 is already known to be below the threshold where it changes anything.
+
+**Acceptance:** per-tier Edge captures showing each dial's effect at the tier that sets it, and a measurement that each chosen value is non-inert (the 0.02 finding is the standing example of what to rule out). A tuning that cannot be shown to change the image at its own tier is not a tuning.
+
+**Dependencies:** C13-N11 (shader consumer), Edge leg.
+
+**Size:** S
+
+**Owner wave:** W2 or later — deliberately NOT Wave 1; it needs the slot `C13-N10` and `C13-N11` were frozen behind.
+
+**Parity:** WebGPU (the GLSL twin inherits whatever this settles).
 
 ### C13-N12 — Implement the `"ultra"` rung (S4) <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
 
@@ -1327,11 +1368,13 @@ is answerable from the counters without further instrumentation.
 
 ### C13-N20 — Planetary aerial perspective <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
 
-**Status:** OPEN (Wave W1, Priority P0).
+**Status:** OPEN (Wave W1, Priority P0) — **the promotion clause only is FROZEN 2026-09-13, lane Ulmo (L3)**, with Edge leg 2 owed before landing. The range-correct path-length model in `ProceduralClouds.wgsl:2658` stays with lane L4.
 
 **Delivers:** Replace `clamp(midDist/60000, 0, 0.85)` (`:2658`) with a range-correct path-length model at orbital scale; promote `cloudAerialMode:"physical"` (the LUT path exists at `:2672-2716`) to the L2+ default above the blend altitude
 
 **Acceptance:** **O3 = 0** saturated pixels **measured by `C13-N04b`, not by an eyeballed capture pair**; contrast monotone with distance
+
+**Promotion clause, 2026-09-12 (lane Ulmo, by seat ruling — the wiring lives in `WebGPUProceduralCloudRenderer.ts`, which lane L3 owns this wave):** `shouldDefaultPhysicalAerial` in `WebGPUCloudTierPresets.ts` is the whole predicate, and it keys on **altitude alone** — `cameraHeightMeters >= disableAltitudeMeters`, the same band edge `resolveTier` uses. An explicit `cloudAerialMode` still wins in both directions; only an unset dial consults the default. *[corrected 2026-09-12, same day: the ruling first said "at tier ≥ 2". Lane Ulmo showed at the tree that the two conditions are mutually exclusive under the default `"auto"` dial — `resolveTier` maps "at or above the disable altitude" to tier **1** — so the clause would have been unreachable exactly where the row wants it, and the pairing inverts the plan's own §2.3 ("a camera at 300 km should run S1/L3 — cheap pixels, correct physics"). The seat corrected the ruling to drop the tier test. "L2+" in the row text is the **lighting** axis, which has no referent until `C13-13`; the predicate is where `C13-13` maps it onto L.]* **This is a visible default change, not a byte-identical one, and that is the row's intent** — above the band edge `CLOUD_QF_AERIAL_LUT` (bit 8) and uniform float 108 now turn on for a frame that asked for no mode. Edge leg 2 therefore carries an orbital before/after capture pair plus the O3 measurement from `probe-cloud-orbital-ladder.mjs`, whose first run is owed on the same leg.
 
 **Dependencies:** C13-N09, C13-N04b
 

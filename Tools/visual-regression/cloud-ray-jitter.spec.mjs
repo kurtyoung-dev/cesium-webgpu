@@ -138,25 +138,36 @@ test("tier intent and renderer wiring carry QF_JITTER without changing the escap
     "the explicit cloudQuality escape must preserve the legacy midpoint",
   );
 
+  // C13-N10 (2026-09-12) moved the `qualityFlags` assembly out of the renderer
+  // into `buildCloudQualityBlock` in the preset module, so the tier table is the
+  // single producer of every preset-derived uniform. The three assertions below
+  // are unchanged in intent — the tier's `jitterEnabled`, and nothing else, must
+  // reach bit 3 of uniform float 74 — and now read the file the producer lives
+  // in; the renderer's half of the path is pinned by the fourth.
   assert.match(
-    renderer,
+    tiers,
     /CLOUD_QF_JITTER/,
-    "the renderer must import the tier jitter flag",
+    "the preset module must define the tier jitter flag",
   );
   assert.match(
-    renderer,
-    /const\s+jitterBit\s*=\s*cloudPreset\.jitterEnabled\s*\?\s*CLOUD_QF_JITTER\s*:\s*0/,
-    "the renderer must derive QF_JITTER solely from the resolved preset",
+    tiers,
+    /const\s+jitterBit\s*=\s*preset\.jitterEnabled\s*\?\s*CLOUD_QF_JITTER\s*:\s*0/,
+    "QF_JITTER must be derived solely from the resolved preset",
   );
   const qualityFlagPack = sourceSection(
-    renderer,
+    tiers,
     "const noiseBakedBit",
-    "// 75",
+    "lightSampleScale: preset",
   );
   assert.match(
     qualityFlagPack,
     /\|\s*jitterBit/,
     "uniform slot 74 must include jitterBit",
+  );
+  assert.match(
+    renderer,
+    /data\[offset\+\+\] = qualityBlock\.qualityFlags; \/\/ 74 qualityFlags/,
+    "the renderer must pack the block's flags into uniform float 74",
   );
 });
 
