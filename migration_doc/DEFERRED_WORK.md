@@ -2445,6 +2445,76 @@ matches the measurement.
 
 **Source:** `critic.json` and the eleven group inputs of the `c13v2-solo-recut` workflow (critic Estella, assembler Everard), banked with this batch's lane packet.
 
+## Record round 5 — 2026-09-13 to 2026-09-16, recorded by lane Lobelia
+
+*Seven dated entries. **No row's status changes here** except where an entry says so and names the ruling that changed it. Every figure is copied from the named source; nothing is remembered.*
+
+### 2026-09-13 — job 13c stopped mid-leg, and P0-2 is NOT CLOSED
+
+**Status:** OPEN. The P0-2 gate's closing job (13c, executor Bandobras, on `cesium-lane-bandobras-20260913` @ `ea651de6d8`) was stopped at the 16:05 EDT wind-down and **did not finish**.
+
+**What ran and what did not.** Preflight PASS (`Cesium.js` md5 `ea4d26a1f266d76da0cbfc7d4d0617d9`, disk == `:8096` == `:8097`; variants `c01cd858` / `215f2fea` / `d067729a`). Leg **(a)** variant smoke **GREEN**. The `sample-height-from-3d-tiles` spot-check at settle 25000 measured **WebGPU 3/3 PASS and WebGL 3/3 PASS** — **the P0-2 red is cleared on the fixed tree**, which is the one positive result to carry forward. Leg **(b)**: segment `webgl-h1` complete with one expected external CORS failure; `webgl-h2` killed at **~241/686** overall; neither WebGPU half started. Legs **(c)**, **(b3)** and **(e)** **NOT RUN**.
+
+**Therefore P0-2 is NOT CLOSED**, and the three-part close ordered by `R-2026-09-13-4` has not been executed: the local branch `backup-inwindow-1405-1429-20260905` still exists and the served sync clone `cesium-lane-sync-1145-20260904` @ `5be896fe3a` has not been retired. Receipts: `Tools/visual-regression/output/wave-end/wave-p0-2-2026-09-13/{preflight,a-variant-smoke,b0-sampleheight-spotcheck,b-sandcastle2,b3-settle-control,c-capture-diff}`. The clone is kept on disk for the resumption (built tree), to be harvested and deleted when job 13c finishes.
+
+**Source:** `STOP_CHECKPOINT_2026-09-13.md` §0, §4 and §5.
+
+### 2026-09-13 — the `C13-41` discriminator re-run was NOT run, so `R-2026-09-13-1`'s conditional has not fired
+
+**Status:** OPEN. Leg **(e)** of job 13c was the `C13-41` / `C12-29` S3 exposure-sweep discriminator re-run on `ea651de6d8`. It never ran (entry above). `R-2026-09-13-1` makes the S3 re-decision **conditional on that re-run** — red again on `shadowContrastInvariant` outside **[0.97, 1.03]**, or a still-BLIND deck-free control lane, executes Option C of `R-2026-08-10-1`; green continues S3 — so **neither arm has fired** and `RR-2026-09-13-E` stays open.
+
+**The one sweep that does exist** is the 2026-09-03 run at tree `fbea2028cc` (Éowyn job 2 leg 7): **exit 1, GATE FAIL**, `shadowContrastInvariant` **1.0341** against the band, the CO-22 sweep's **direction matched while its level did not**, the deck-free control lane **BLIND** (9 predicates unscored), `refreshCostMeasured` **FALSE**. `CAMPAIGN_STATE.md`'s "a re-run … is in flight" sentence is corrected in place, dated, by this record round.
+
+**Source:** `STOP_CHECKPOINT_2026-09-13.md` §5; `rulings-2026-09-13-maintainer.md` ruling 1; `CAMPAIGN_STATE.md` C13 block.
+
+### DX-85 — the provisioner exit code is STATE-DEPENDENT: two lanes measured 2, four measured 0, and the discrepancy is unresolved
+
+**Status:** OPEN, and **both readings are recorded because neither reproduces the other.** `DX-85` entered the record as "REFUTED at the tree 2026-09-13 — `provision-worker-clone.mjs` does **not** exit 0 on a missing path", filed after **Tolman and Celebrían each measured exit 2** (2/2). On the same day **Huan measured exit 0** by file redirect on a virgin clone, **Bereg reproduced that 0** while reviewing him, and **Everard's assembler lane also reported exit 0**; the seat's brief for this record round adds **Isembard (2026-09-16) measuring 0**. **This record lane provisioned its own fresh clone on 2026-09-16 and measured `PROVISION_EXIT=0`** (`node Tools/provision-worker-clone.mjs F:/Dev/GH/cesium-lane-lobelia-20260916` from the seat; output `worker clone: READY`, four governance files provisioned, footprint 1.9 GB).
+
+**What this means.** Six independent measurements of the same tool on the same tree split **2 × exit 2 / 4 × exit 0**, so the exit code is **state-dependent on something none of the six controlled for** — a candidate is whether the invocation is piped (an exit status read off a pipeline rather than the process), which is the mechanism `DX-85`'s own title already names. **Do not close `DX-85` on either reading.**
+
+**Acceptance when someone takes it:** a spec that runs the provisioner against a missing path and against a virgin clone, **both piped and unpiped**, and pins the exit code in each of the four cells; an inertness mutant that makes the refusal silent turns it red. Until then, any brief quoting "the provisioner exits N" names its own measurement conditions.
+
+**Source:** `next-record-lane.md` entries of 2026-09-13 15:28 EDT (Huan) and 15:59 EDT (Bereg, finding F2); `STOP_CHECKPOINT_2026-09-13.md` §4 item 3; `QUEUE_2026-08-29_RESEARCH_DISPATCH.md` `### DX-85`; this lane's own provisioning run, 2026-09-16.
+
+### NEW-QUEUE-SECTION-9-ADD-ADD-NEEDS-A-UNION-RESOLVER — the third landing in one week to conflict there
+
+**Status:** OPEN. **Measured three times:** lane L8 (Eönwë), then lane W2-T2 (Huan)'s stage-2 batch, then lane W2-T1 (Curumo) at the Batch 1485 landing, where the three-way apply **conflicted in `QUEUE_2026-07-23_CAMPAIGN13.md` §9** — *ours* was Batch 1484's thirteen re-stamped and new rows, *theirs* was the stale `C13-N32`/`C13-N36`/`C13-N46` rows plus the one new `C13-42f` row. It was resolved by hand with a single-purpose script (`scratchpad/resolve-queue-curumo.mjs`: ours in full plus the one new row, refusing any other shape), staged, and the landing resumed.
+
+**The mechanism, stated so it is not re-diagnosed:** a lane based **before** a record round conflicts in §9 **whenever the record re-stamps rows** — the record's edits and the lane's appended rows are an add/add on the same table. It is not a merge accident; it is structural, and it recurs once per record round per in-flight lane.
+
+**Acceptance when someone takes it:** the union set of `land-w1.sh` gains a **`queue §9: ours + theirs`-new-rows-only resolver** generalising `resolve-queue-eonwe.mjs` and `resolve-queue-curumo.mjs` (`scratchpad/resolve-queue-union.mjs --base <laneBase>` is the shape the seat sketched); a spec drives it over a fixture pair with the real conflict shape and asserts the union, with an inertness mutant that drops a new row and turns it red. **It belongs in the DX queue as a row** — filing it there is owed.
+
+**Source:** `next-record-lane.md` entry of 2026-09-13 15:37 EDT; `STOP_CHECKPOINT_2026-09-13.md` §4 item 3.
+
+### 2026-09-16 — `C13-N08b-A3`: the row's acceptance clause and its prescribed edits are mutually exclusive; the patch is sound
+
+**Status:** ADJUDICATED, `R-2026-09-16-10` (second of three adjudications). The `C13-N08b-A3` row's acceptance **(6)** requires `git diff -U0 | grep -c '^-.*",$'` to measure **0**; applied to the lane's patch it measures **4**. **All four removed lines are old mutation input/replacement strings the same row orders replaced**; none is an assertion label. The row's edits and its own guard therefore cannot both be satisfied.
+
+**The disposition is to correct the row, not the patch.** `cloud-march-emission.spec.mjs` measures **32/29/3 → 32/32/0** and `pinWithMutant(` is **6 before and after**. The correction lands with the packet in Batch 1488 (2026-09-16).
+
+**Source:** `ASTRA_WORK_AUDIT_2026-09-16.md` §1.2 (`ARIEN_A3`) and §7 D10.
+
+### 2026-09-16 — the god-ray uniform-ranges record anchors, re-derived
+
+**Status:** RECORDED. The `ANARION_GODRAY_RANGES` unit's row cites `DEFERRED_WORK.md:2033` and `:1660-1664`; both are stale. **Re-derived at seat HEAD `c325f858c3` and confirmed in this lane:** the record belongs at **`DEFERRED_WORK.md:2130`** (the GLSL god-ray twin's `Delivers` / `Acceptance` block) and **`:1757-1761`** (the `godray-sun-usability-uniform-ranges.spec.mjs` symptom block, whose first item is the `B4: every per-frame write lands inside a range its own setter declares` failure — `updateConfig wrote 48..64, outside every range it owns` — and the "A real contract violation" sentence the unit corrects in place, dated). `:2033` is a blank line and `:1660-1664` is an unrelated ambient-`.d.ts` passage.
+
+**Two further corrections ride with the same unit:** `TOOLING_CATALOG.md` needs **no** 19 → 20 / 5 → 6 edit, because that column is a **Refs** count; and the row's predicted "583 lines / md5 `d0de939e…`" is superseded by the measured **579 lines / `067e2fb5…`**. The in-place sentence correction itself lands in Batch 1489 (2026-09-16); this entry records the anchors.
+
+**Source:** `ASTRA_WORK_AUDIT_2026-09-16.md` §1.3 (`ANARION_GODRAY_RANGES`) and §8 B2; line numbers re-read in this lane 2026-09-16.
+
+### NEW-CLOUD-STACK-IS-WGSL-ONLY — 73 paths and ~4,241 WGSL lines of cloud work with no GLSL twin, recorded under R-2026-09-12-8
+
+**Status:** OPEN — **a recorded parity gap, not a rejection.** `R-2026-09-12-8` rules WebGL parity **FULL** for the cloud work, including the GLSL march twin and a GLSL god-ray stack, and treats a gap as something to record rather than a blocker.
+
+**Measured across all 43 freezes of the solo cumulative cloud preview (`cesium-astra-20260914`):** **zero `.glsl` files** and **zero files under `packages/engine/Source/Renderer/` outside `WebGPU/`**. The gap is **73 paths and ≈4,241 WGSL lines**. Two units — `MARCH_GRID` and `INTERLEAVED_CLOUD` — are large enough that a WebGL twin is **a project, not a port**.
+
+**It was recorded nowhere until this entry.** `DEFERRED_WORK.md` and `FEATURE_INVENTORY.md` are **byte-identical to HEAD** in that clone, the packet-verbatim route was not used, and three of the new public dials (`cloudPlanetaryLighting`, `cloudLayers`, `cloudSunIntensity`) are documented **without** the "WebGPU only." note their siblings carry — so the API does not record the gap either. The author states the same thing in their own words: *"WebGL volumetric parity and full default-on quality/performance are not demonstrated."*
+
+**Acceptance when the WebGL workstream reaches it:** the gap is discharged by `C13-N15a`–`C13-N15d` (Wave 4) and WS-C2 (Wave 7), not by this entry; until then every cloud unit that lands WGSL-only cites this entry, and the five new public dials carry the "WebGPU only." sentence. The companion inventory row is `FEATURE_INVENTORY.md` §C.
+
+**Source:** `ASTRA_WORK_AUDIT_2026-09-16.md` §0 item 9, §2.3 X5 and §2.4 (open issue 8, quoted).
+
 ## New findings — wave P0-2, lane Aerin, 2026-09-05
 
 ### NEW-CORE-RESOURCE-CROSS-ORIGIN-DERIVATION

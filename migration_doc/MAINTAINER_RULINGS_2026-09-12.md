@@ -220,3 +220,11 @@ runs a suite that reads a held file; `RR-2026-09-13-D` is the landing-gate corol
 13. **`R-HANDOFF-1` … `R-HANDOFF-11`** (2026-09-13) adjudicate the solo-row set and are **not
     restated here** — they live in `SOLO_WORKER_HANDOFF_2026-09-13.md` §2.3, which is their
     authority, and landed in Batch 1482.
+
+**Continued 2026-09-16 (record round 5).** The rulings taken at the sittings of **2026-09-13**
+(`R-2026-09-13-1` … `-8`) and **2026-09-16** (`R-2026-09-16-1` … `-12`) are **not** restated here;
+they live in [`MAINTAINER_RULINGS_2026-09-13.md`](MAINTAINER_RULINGS_2026-09-13.md) and
+[`MAINTAINER_RULINGS_2026-09-16.md`](MAINTAINER_RULINGS_2026-09-16.md), which are their authority.
+Two of them reach back into this file: `R-2026-09-13-6` **amends the tail of `R-2026-09-12-7`**
+(Edge order becomes engine legs first), and `R-2026-09-16-4` acts on the `C13-N20` promotion clause
+recorded as item 8 of the standing list above.

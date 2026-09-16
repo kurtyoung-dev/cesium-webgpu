@@ -867,3 +867,38 @@ check that grepped two directories and could not see six of the patch's fifteen 
 legs as executable scripts from the start** — two trees, md5 pairs on both, `git ls-files -u` empty
 as the conflict assertion (never a grep for markers), every command written in full — and make
 "the recipe is executable without judgement" a review checklist item in its own right.
+
+### 8k. Two seat lessons from the 2026-09-13 wind-down (added 2026-09-16 by record round 5)
+
+Both were paid for in one afternoon, both are mechanism rather than judgement, and neither is
+specific to the work that hit it.
+
+**A workflow resume replays only byte-identical prompts — so a pipeline does not resume; extract
+the journal and continue with plain agents.** The `c13v2-solo-recut` workflow (run
+`wf_80f7d1f6-cb0`) completed Read / Classify / Refute for four groups, journalling **twelve agent
+results**, and was then stopped. The resume attempt **re-ran the stages instead of replaying them**.
+The reason is structural: a pipeline stage's prompt **embeds the prior stage's results**, so the
+prompt a resume constructs is never byte-identical to the one the cache is keyed on, and the cache
+never hits. Nothing is wrong with the cache; the pipeline shape defeats it. **The recovery that
+worked** — and it is the one to reach for directly — was to read the twelve cached results out of
+the journal (`scratchpad/recut/*.json`) and finish the run as **standalone agents on those results**:
+a critic, then an assembler in its own clone, then a reviewer. The work landed the same afternoon
+as Batch 1487. Cost of the failed resume: one stopped run plus the re-dispatch. **Rule:** treat a
+stopped multi-stage workflow as a **journal to harvest**, not a job to resume, and never re-dispatch
+a stage whose inputs you already hold.
+
+**A process-kill loop filters by process NAME, never by a command-line substring the loop itself
+contains.** During the wind-down the seat ran a `wmic` kill loop whose predicate was
+`CommandLine like '%<pattern>%'`. The loop's **own** shell process carries that query text on its
+command line, so the predicate matched the loop, and the loop **killed itself** after its first
+real target — leaving the rest of the tree alive and the operator believing the sweep had run.
+This is the same failure shape as a `grep` that matches its own `grep`, promoted to something that
+terminates processes. **Rule:** select by executable name (`node.exe`, `msedge.exe`) in PowerShell,
+or by PID captured beforehand; if a command-line predicate is genuinely required, **exclude the
+current process and its ancestors explicitly**, and assert the survivor count afterwards rather
+than trusting the loop's exit. Related but distinct from §8i's positive-list rule — that one is
+about *what* a destructive script may touch, this one is about a predicate that silently includes
+the script.
+
+**Source:** `next-record-lane.md` entries of 2026-09-13 16:05 EDT ("SEAT LESSON") and
+`STOP_CHECKPOINT_2026-09-13.md` §7.

@@ -98,6 +98,14 @@ Bandobras, job 13c leg (e), banking to
 re-decision under `R-2026-09-02-5` is OWED** — requested as `RR-2026-09-13-E`. Numbers and bank
 paths: the `C13-41` row's execution stamp in
 [`QUEUE_2026-07-23_CAMPAIGN13.md`](QUEUE_2026-07-23_CAMPAIGN13.md).
+<!-- corrected 2026-09-16, R-2026-09-12-10 -->
+*[corrected 2026-09-16, record round 5. The sentence above reads "**A re-run on `ea651de6d8` is in
+flight** (executor Bandobras, job 13c leg (e), …)". **That re-run never happened.** Job 13c stopped
+mid-leg (b) at the 2026-09-13 16:05 EDT wind-down; legs (c), (b3) and (e) were never run
+(`STOP_CHECKPOINT_2026-09-13.md` §5). The maintainer has since ruled the re-decision **conditional on
+that re-run** — `R-2026-09-13-1` — so neither arm of the conditional has fired and `RR-2026-09-13-E`
+is still open. The `C13-41` row and the whole conditional are unchanged in substance; only the
+"in flight" claim is retired.]*
 
 **Wave A (2026-09-11):** D1 (Batch 1466), C1 (Batch 1467), C2 (Batch 1468), and C3 (Batch 1471)
 LANDED — **unchanged**.
@@ -151,6 +159,69 @@ row for solo dispatch (**11 SOLO-NOW, 3 SOLO-AFTER-TEMPLATE** — one of which, 
 specified in full, giving **12 dispatchable rows** — and **110 NOT-SOLO**) under seat rulings
 `R-HANDOFF-1`…`-11`. **Classification only:** it launches nothing, rules nothing and changes no
 row's disposition; the row-level authority stays the campaign queue.
+<!-- corrected 2026-09-16, R-2026-09-12-10 -->
+*[corrected 2026-09-16, record round 5. The counts in the paragraph above — "**11 SOLO-NOW, 3
+SOLO-AFTER-TEMPLATE** … giving **12 dispatchable rows** — and **110 NOT-SOLO**" under
+"`R-HANDOFF-1`…`-11`" — were **superseded the same afternoon** by the roster re-cut of Batch 1487
+under `R-2026-09-13-8`: **156** distinct rows, **19 ASTRA-SOLO**, **2 GEMINI-SOLO**, **135
+NOT-SOLO** of which **111** wait on a seat act, under `R-HANDOFF-12`, which supersedes
+`R-HANDOFF-3`, `-7` and `-10`. The "classification only" sentence still holds.]*
+
+**Batches 1485–1487 landed 2026-09-13** (added 2026-09-16 by record round 5; times are the git
+commit dates). All three are Node-only and none is an engine landing:
+
+| Batch | Hash | Committed (EDT) | Lane | What |
+| --- | --- | --- | --- | --- |
+| **1485** | `b466e7ca80` | 2026-09-13 15:41:45 | Curumo (reviewer Baran) | `C13-42f` Node half — the C13-42 god-ray metrics become computable from a capture; Edge acceptance still OWED |
+| **1486** | `0e4b898129` | 2026-09-13 16:04:28 | Huan (reviewer Bereg) | `C13-N01` **stage 2, family batch 1** — the first eight cloud probes routed through the probe runtime; equivalence leg OWED |
+| **1487** | `c325f858c3` | 2026-09-13 17:19:36 | Everard (critic Estella, reviewer Fastolph) | the **solo-roster re-cut** under `R-2026-09-13-8` |
+
+**The 2026-09-16 audit and the direction it produced.** `ASTRA_WORK_AUDIT_2026-09-16.md` — landing
+as a tracked `migration_doc/` document in Batch 1492 (2026-09-16), with its own README index
+row — (synthesiser Hildigrim, from nine independent read-only audits, base `c325f858c3`) measured the
+solo programme's output: **17 assigned-row packets across three clones** (Aldarion 8, Anarion 3,
+Arien 6) plus four measurement/record units, and separately a **43-unit cumulative volumetric-cloud
+preview** in a fourth clone. Its verdicts: **16 of the 17 packets land**, all Node-only and
+tools-class, with **17/17 freeze md5s matching line 1 of their FREEZE file**; **`C13-N07a`'s partial
+does not** and returns to a BLOCKED row (`R-2026-09-16-12`); and **the cloud stack is not landable
+in any slice** — its head unit is RETURN by its own author, the dependency graph is one linear
+chain, and 12 of the 43 units carry a RETURN. The stack's engineering is largely sound (RTE clean;
+`ShaderDefine`/`ShaderDefineHi`/`ShaderSourceId` untouched; no TypeScript `any`; no
+`Scene → Renderer/WebGPU` import; `tsc --noEmit` 0 errors over 2,258 files); **the deficits are in
+the guards and the record**, and three of them need a seat act rather than a rework — 22 of Astra's
+76 dirty paths are held by the three frozen lanes, `package.json:207`/`:209` were appended in-tree,
+and the C16 cleanlist ratchet goes **18 REGRESSED / 6 files → 60 / 13** against a `main` that is
+**already red** on that gate and on six `new-cap` eslint errors.
+
+**The ruled direction is `R-2026-09-16-1`, Option A: the three frozen lanes land first, then Astra's
+cloud stack rebases onto the result in a fresh clone.** Measured both ways: the three lane patches
+stack on seat HEAD with **4 failed hunks, all `package.json` + `QUEUE`** — both already the seat's
+union step — against **29 of 111 hunks rejecting** in the other direction; **16 of 26** union paths
+resolve to "keep Astra's file"; and **six of the lanes' own acceptance specs are red inside Astra's
+tree**. Eleven consequences of that direction were ruled in the same sitting
+([`MAINTAINER_RULINGS_2026-09-16.md`](MAINTAINER_RULINGS_2026-09-16.md), `R-2026-09-16-2`…`-12`),
+including one prerequisite that must land **before** Manwë's leg 3b runs (`R-2026-09-16-4`).
+
+**Edge legs, under `R-2026-09-13-6` (engine legs first, amending `R-2026-09-12-7`'s tail):** **L3
+Ulmo's Edge leg 2 started 2026-09-16 and is IN PROGRESS** — no receipt exists under
+`Tools/visual-regression/output/wave-end/` at the time this was written, so no result is claimed
+here. L4 Manwë's legs 3a/3b/3c and L5 Ossë's leg 4 follow, then L6's leg 1 captures its baselines on
+the landed engine. **Edge leg 1 remains owed** (paragraph above), and two further browser debts were
+added by the 2026-09-13 landings: `C13-42f`'s acceptance and `C13-N01` stage 2's equivalence leg.
+
+**P0-2 is still OPEN.** Job 13c stopped mid-leg (b) on 2026-09-13: leg (a) variant smoke GREEN, the
+`sample-height-from-3d-tiles` spot-check at settle 25000 **WebGPU 3/3 PASS and WebGL 3/3 PASS on the
+fixed tree** — the P0-2 red is cleared on that tree — but the Sandcastle2 sweep's `webgl-h2` segment
+was killed at ~241/686 and legs (c), (b3) and (e) never ran
+(`STOP_CHECKPOINT_2026-09-13.md` §5; receipts under
+`Tools/visual-regression/output/wave-end/wave-p0-2-2026-09-13/`). Because the close is a three-part
+act (`R-2026-09-13-4`), the local branch `backup-inwindow-1405-1429-20260905` and the served sync
+clone `cesium-lane-sync-1145-20260904` @ `5be896fe3a` both still stand.
+
+**The solo programme's status as of 2026-09-16:** Astra's 16 landable packets land tonight under
+`R-2026-09-16-10`; **the cloud stack is held for the rebase** behind the three lanes; and Gemini's
+audit doc is held behind nine corrections (`R-2026-09-16-11`), with its `_lane-out/` archived to
+`cesium-webgpu-worker-archive/lanes-2026-09-16/` rather than tracked.
 
 **`AR-D13` answered** as full WebGL parity (`R-2026-09-12-8`); the WebGL workstream is
 `C13-N15a`–`C13-N15d` (Wave 4) and WS-C2 (Wave 7).
