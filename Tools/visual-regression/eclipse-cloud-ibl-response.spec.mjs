@@ -489,8 +489,8 @@ test("D1 cloud DIRECT and AMBIENT light both carry the factor, resolved once", (
     /data\[offset\+\+\] = applyEclipseCloudDimming\(\n\s*config\.atmosphereLightIntensity \?\? 10\.0,\n\s*eclipseCloudFactor,\n\s*\); \/\/ sunIntensity/,
     (s) =>
       s.replace(
-        "config.atmosphereLightIntensity ?? 10.0,\n    eclipseCloudFactor,",
-        "config.atmosphereLightIntensity ?? 10.0,\n    1.0,",
+        /(config\.atmosphereLightIntensity \?\? 10\.0,\s*)eclipseCloudFactor,/,
+        "$11.0,",
       ),
     "sunIntensity (direct term) is dimmed",
   );
@@ -499,8 +499,8 @@ test("D1 cloud DIRECT and AMBIENT light both carry the factor, resolved once", (
     /data\[offset\+\+\] = applyEclipseCloudDimming\(\n\s*config\.cloudAmbientIntensity \?\? 1\.5,\n\s*eclipseCloudFactor,\n\s*\); \/\/ 73 ambientIntensity/,
     (s) =>
       s.replace(
-        "config.cloudAmbientIntensity ?? 1.5,\n    eclipseCloudFactor,",
-        "config.cloudAmbientIntensity ?? 1.5,\n    1.0,",
+        /(config\.cloudAmbientIntensity \?\? 1\.5,\s*)eclipseCloudFactor,/,
+        "$11.0,",
       ),
     "ambientIntensity is dimmed too",
   );

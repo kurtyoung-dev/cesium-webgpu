@@ -536,30 +536,36 @@ test("D2 pass accounting rides the ONE timing seam, so it cannot drift from the 
 test("D3 the per-frame counters are reset up front and the cull path is counted", () => {
   pinWithMutant(
     cloudRenderer,
-    /resetCloudFrameCounters\(existingCache\.observability\);/,
-    (s) =>
-      s.replace(
-        "resetCloudFrameCounters(existingCache.observability);",
-        "/* no reset */",
-      ),
-    "the execute resets the counters before doing anything else",
+    /resetCloudFrameCounters\(counters\);/,
+    (s) => s.replace("resetCloudFrameCounters(counters);", "/* no reset */"),
+    "the execute resets the counters once the cache record is adopted",
   );
   pinWithMutant(
     cloudRenderer,
-    /context\._cloudCache\.observability\.culledFrames\+\+;/,
+    /cache\.observability\.culledFrames\+\+;/,
     (s) =>
-      s.replace(
-        "context._cloudCache.observability.culledFrames++;",
-        "/* cull uncounted */",
-      ),
+      s.replace("cache.observability.culledFrames++;", "/* cull uncounted */"),
     "the frustum-cull early return is counted as a cull",
   );
-  // The first execute has no cache yet; its counters are reset after the cache
-  // is created, so `frames` counts every execute exactly once.
-  assert.match(
-    cloudRenderer,
-    /if \(existingCache === undefined\) \{\n\s*\/\/ First execute on this context[\s\S]*?resetCloudFrameCounters\(cache\.observability\);/,
+  // The first execute adopts its cache record before resetting it once.
+  // Follow the create/adopt/reset order inside the attempt boundary.
+  // What a re-entrant busy attempt counts is deliberately not pinned here.
+  // C13-RED-3 owns that separate lifetime-frame accounting question.
+  const attemptStart = cloudRenderer.indexOf(
+    "export function beginCloudFrameAttempt(",
   );
+  const attempt = cloudRenderer.slice(
+    attemptStart,
+    cloudRenderer.indexOf("\n}", attemptStart),
+  );
+  const createIndex = attempt.indexOf(
+    "cache = existingCache ?? ensureCloudCache(context);",
+  );
+  const adoptIndex = attempt.indexOf("counters = cache.observability;");
+  const resetIndex = attempt.indexOf("resetCloudFrameCounters(counters);");
+  assert.ok(createIndex >= 0, "the attempt creates or reuses the cache");
+  assert.ok(adoptIndex > createIndex, "the attempt adopts the cache counters");
+  assert.ok(resetIndex > adoptIndex, "the adopted counters are reset once");
 });
 
 test("D4 the cloud GPU measure is a UNION fold, not a sum of pass durations", () => {
@@ -701,8 +707,8 @@ test("D9 the temporal verdict is recorded on the same branches as the lifetime t
     /cache\.temporalHistoryResetCount\+\+;\n\s*counters\.historyReset = 1;/,
     (s) =>
       s.replace(
-        "        cache.temporalHistoryResetCount++;\n          counters.historyReset = 1;",
-        "        cache.temporalHistoryResetCount++;",
+        /(cache\.temporalHistoryResetCount\+\+;\s*)counters\.historyReset = 1;/,
+        "$1",
       ),
     "historyReset marks only generation-starting rejections",
   );

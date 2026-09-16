@@ -634,10 +634,10 @@ test("E1 the stage is DEFAULT OFF in the source, so the shipped path pays nothin
   //   nothing allocates and no pass is encoded.
   pinWithMutant(
     cloudRenderer,
-    /const attachmentStageActive = cache\.attachmentsEnabled && !!cache\.halfView;/,
+    /const attachmentStageActive =\s*cache\.attachmentsEnabled && !!cache\.halfView;/,
     (s) =>
       s.replace(
-        "const attachmentStageActive = cache.attachmentsEnabled && !!cache.halfView;",
+        /const attachmentStageActive =\s*cache\.attachmentsEnabled && !!cache\.halfView;/,
         "const attachmentStageActive = !!cache.halfView;",
       ),
     "the attachment stage is gated on the opt-in flag",
@@ -771,10 +771,10 @@ test("E5 the generation is committed only AFTER every owned texture exists", () 
 test("E6 the set frees itself on teardown AND when the flag is cleared", () => {
   pinWithMutant(
     cloudRenderer,
-    /if \(!cache\.attachmentsEnabled && cache\.attachmentGeneration\.liveBytes > 0\) \{\n\s*releaseCloudAttachmentResources\(cache\);/,
+    /if \(!cache\.attachmentsEnabled && cache\.attachmentGeneration\.liveBytes > 0\) \{\s*releaseCloudAttachmentResources\([^)]*\);/,
     (s) =>
       s.replace(
-        "  if (!cache.attachmentsEnabled && cache.attachmentGeneration.liveBytes > 0) {\n    releaseCloudAttachmentResources(cache);\n  }\n",
+        /if \(!cache\.attachmentsEnabled && cache\.attachmentGeneration\.liveBytes > 0\) \{\s*releaseCloudAttachmentResources\([^)]*\);\s*\}\s*/,
         "",
       ),
     "a disabled set releases itself on the next execute",
@@ -782,16 +782,23 @@ test("E6 the set frees itself on teardown AND when the flag is cleared", () => {
   const destroy = cloudRenderer.slice(
     cloudRenderer.indexOf("export function destroyProceduralCloudResources("),
   );
-  assert.match(destroy, /releaseCloudAttachmentResources\(cache\);/);
+  assert.match(
+    destroy,
+    /releaseCloudAttachmentResources\(context, cache, lease\);/,
+  );
   assert.match(destroy, /cache\.attachmentPipeline = null;/);
-  assert.match(destroy, /cache\.attachmentUniformBuffer\?\.destroy\(\);/);
+  assert.match(
+    destroy,
+    /destroyCloudGpuResource\(\s*context,\s*cache\.attachmentUniformBuffer,\s*"Cloud attachment uniform buffer",\s*\);/,
+  );
+  assert.match(destroy, /cache\.attachmentUniformBuffer = null;/);
 });
 
 test("E7 a culled frame cannot hand a consumer a stale attachment set", () => {
   pinWithMutant(
     cloudRenderer,
-    /existingCache\.attachmentRenderedThisFrame = false;/,
-    (s) => s.replace("existingCache.attachmentRenderedThisFrame = false;", ""),
+    /cache\.attachmentRenderedThisFrame = false;/,
+    (s) => s.replaceAll("cache.attachmentRenderedThisFrame = false;", ""),
     "the per-frame produced flag is reset up front",
   );
   assert.match(
@@ -802,10 +809,16 @@ test("E7 a culled frame cannot hand a consumer a stale attachment set", () => {
 });
 
 test("E8 the counters record what the pass ACTUALLY used", () => {
-  const block = cloudRenderer.slice(
-    cloudRenderer.indexOf("attachmentPass.end();"),
-    cloudRenderer.indexOf("attachmentPass.end();") + 900,
+  const attachmentPassEnd = cloudRenderer.indexOf("attachmentPass.end();");
+  assert.notEqual(attachmentPassEnd, -1, "the attachment pass must end");
+  // The old 900-character window held a 692-character block at this base.
+  // Anchor its end so rewrapping cannot silently move counters outside it.
+  const countersBlockEnd = cloudRenderer.indexOf(
+    "counters.reconstructionProducerTargets",
+    attachmentPassEnd,
   );
+  assert.notEqual(countersBlockEnd, -1, "the producer counter block must end");
+  const block = cloudRenderer.slice(attachmentPassEnd, countersBlockEnd);
   assert.match(block, /counters\.attachmentWidth = cache\.halfWidth;/);
   assert.match(block, /counters\.attachmentHeight = cache\.halfHeight;/);
   assert.match(
@@ -814,7 +827,7 @@ test("E8 the counters record what the pass ACTUALLY used", () => {
   );
   assert.match(
     block,
-    /counters\.attachmentGeneration = cache\.attachmentGeneration\.generation;/,
+    /counters\.attachmentGeneration =\s*cache\.attachmentGeneration\.generation;/,
   );
   // liveBytes is RESIDENT, so it is published every execute rather than only
   // on frames the producer ran.

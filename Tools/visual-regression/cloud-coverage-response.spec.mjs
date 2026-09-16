@@ -141,11 +141,22 @@ test("the WGSL response and its CPU twin are one definition", () => {
 });
 
 test("every coverage gate in the engine routes through the shared response", () => {
-  const gates = [...cloudSource.matchAll(/smoothstep\(\s*1\.0 - ([^,]+),/g)];
+  const gates = [
+    ...cloudSource.matchAll(/let coverageThreshold = 1\.0 - ([^;]+);/g),
+  ];
   assert.equal(gates.length, 3, "the visible march has three density gates");
   for (const [, argument] of gates) {
     assert.match(argument, /^cloudEffectiveCoverage\(effectiveCoverage\)$/);
   }
+
+  // The hoisted local must still be what the density gate consumes, or the
+  // response curve is computed and thrown away.
+  assert.equal(
+    (cloudSource.match(/smoothstep\(coverageThreshold, 1\.0, density\)/g) || [])
+      .length,
+    3,
+    "each hoisted threshold must feed its own density gate",
+  );
 
   const iblGates = [...iblSource.matchAll(/smoothstep\(1\.0 - ([^,]+),/g)];
   assert.equal(iblGates.length, 1);
@@ -153,7 +164,10 @@ test("every coverage gate in the engine routes through the shared response", () 
 
   // A raw `1.0 - coverage` threshold anywhere in the cloud density path is the
   // defect returning.
-  assert.doesNotMatch(cloudSource, /smoothstep\(1\.0 - effectiveCoverage/);
+  assert.doesNotMatch(
+    cloudSource,
+    /let coverageThreshold = 1\.0 - effectiveCoverage;/,
+  );
   assert.doesNotMatch(iblSource, /smoothstep\(1\.0 - coverage/);
 });
 

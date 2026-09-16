@@ -67,23 +67,31 @@ test("the environment-map cache edge-triggers fills from cloud revisions", () =>
     /const cloudRevisionChanged\s*=\s*\(wantMarch\s*\|\|\s*cache\.lastUsedCloudMarch\)\s*&&\s*liveCloudRevision\s*!==\s*cache\.lastCloudRevision;/,
   );
 
-  // C11-193 (Batch 782) hoisted the dirty predicate into `refreshRequested` so
-  // the context-owned bounded drain can see the same condition the refresh body
-  // used to be inlined under. The block asserted below therefore spans the
-  // predicate AND the granted branch; the ordering contracts are unchanged.
-  const fillBlock = sourceSection(
+  // 3ebd7e193e moved the refresh predicate into a named function.
+  // b20234a16b added the shared scheduler's deferred commit path.
+  // The former single inline block therefore no longer exists.
+  // Follow the predicate, granted fill, and commit separately.
+  // Both commit routes must follow all three fill stages.
+  // The commit must consume the revision carried by its own state.
+  const predicate = sourceSection(
     manager,
-    "const refreshRequested =\n    cache.needsUpdate ||",
-    "// Expose cubemap + prefiltered IBL views for shader consumption.",
+    "function isDynamicEnvironmentMapRefreshRequested(",
+    "\n}",
   );
-  assert.match(fillBlock, /\|\|\s*cloudRevisionChanged\s*\|\|/);
+  assert.match(predicate, /\|\|\s*state\.cloudRevisionChanged\s*\|\|/);
 
-  const fillIndex = fillBlock.indexOf("runProceduralSkyFill(");
-  const prefilterIndex = fillBlock.indexOf("runIBLPrefilter(");
-  const projectionIndex = fillBlock.indexOf("runSphericalHarmonicProjection(");
-  const revisionCommitIndex = fillBlock.indexOf(
-    "cache.lastCloudRevision = liveCloudRevision;",
+  const granted = sourceSection(
+    manager,
+    "const refreshGranted =",
+    "\n  if (cache.pendingRefresh === null && !cache.needsUpdate) {",
   );
+  const fillIndex = granted.indexOf("runProceduralSkyFill(");
+  const prefilterIndex = granted.indexOf("runIBLPrefilter(");
+  const projectionIndex = granted.indexOf("runSphericalHarmonicProjection(");
+  const deferredCommitIndex = granted.indexOf(
+    "pendingRefresh.commitState = commitState;",
+  );
+  const directCommitIndex = granted.indexOf("commitDynamicEnvironmentRefresh(");
   assert.ok(fillIndex >= 0, "sky fill must run on the refresh path");
   assert.ok(
     prefilterIndex > fillIndex,
@@ -94,8 +102,22 @@ test("the environment-map cache edge-triggers fills from cloud revisions", () =>
     "SH projection must follow the IBL prefilter",
   );
   assert.ok(
-    revisionCommitIndex > projectionIndex,
-    "the consumed revision must be committed only after the complete fill",
+    deferredCommitIndex > projectionIndex,
+    "the deferred revision commit must follow the complete fill",
+  );
+  assert.ok(
+    directCommitIndex > projectionIndex,
+    "the direct revision commit must follow the complete fill",
+  );
+
+  const commit = sourceSection(
+    manager,
+    "function commitDynamicEnvironmentRefresh(",
+    "\n}",
+  );
+  assert.ok(
+    commit.includes("cache.lastCloudRevision = state.cloudRevision;"),
+    "the consumed revision must come from the commit state",
   );
 });
 

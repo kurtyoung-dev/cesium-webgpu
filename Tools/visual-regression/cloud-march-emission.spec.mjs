@@ -963,7 +963,7 @@ test("E1 both opt-ins are DEFAULT OFF, and reconstruction implies the attachment
     /if \(!cache\.attachmentsEnabled && cache\.reconstructionEnabled\) \{\n\s*cache\.reconstructionEnabled = false;/,
     (s) =>
       s.replace(
-        "  if (!cache.attachmentsEnabled && cache.reconstructionEnabled) {\n    cache.reconstructionEnabled = false;\n  }\n",
+        /if \(!cache\.attachmentsEnabled && cache\.reconstructionEnabled\) \{\s*cache\.reconstructionEnabled = false;\s*\}\s*/,
         "",
       ),
     "a directly-cleared attachment flag disarms the variant on the next execute",
@@ -978,7 +978,7 @@ test("E2 the emitting march writes the DEPTH slot with the contract's own clear 
   assert.ok(marchBlock.length > 0);
   assert.match(
     marchBlock,
-    /view: cache\.attachmentViews\[CLOUD_MARCH_EMITTED_SLOT - 1\]!,/,
+    /view: cache\.attachmentViews\[\s*CLOUD_MARCH_EMITTED_SLOT - 1\s*\]!,/,
   );
   assert.match(
     marchBlock,
@@ -1040,21 +1040,21 @@ test("E4 a frame that did not PRODUCE the set cannot CONSUME it", () => {
   // failure C13-09's per-frame flag exists to make impossible.
   pinWithMutant(
     cloudRenderer,
-    /const consumeReconstruction =\n\s*cache\.reconstructionEnabled &&\n\s*cache\.attachmentRenderedThisFrame &&\n\s*ensureCloudTemporalConsumeBindGroups\(device, cache\);/,
+    /const consumeReconstruction =\n\s*cache\.reconstructionEnabled &&\n\s*cache\.attachmentRenderedThisFrame &&\n\s*ensureCloudTemporalConsumeBindGroups\(device, cache[^)]*\);/,
     (s) =>
       s.replace(
-        "        cache.reconstructionEnabled &&\n        cache.attachmentRenderedThisFrame &&\n",
-        "        cache.reconstructionEnabled &&\n",
+        /(cache\.reconstructionEnabled &&\s*)cache\.attachmentRenderedThisFrame &&\s*/,
+        "$1",
       ),
     "the consuming resolve is gated on the set having been produced this frame",
   );
   // And a culled frame resets both verdicts up front.
   pinWithMutant(
     cloudRenderer,
-    /existingCache\.reconstructionEmittedThisFrame = false;\n\s*existingCache\.reconstructionConsumedThisFrame = false;/,
+    /cache\.reconstructionEmittedThisFrame = false;\n\s*cache\.reconstructionConsumedThisFrame = false;/,
     (s) =>
       s.replace(
-        "    existingCache.reconstructionEmittedThisFrame = false;\n    existingCache.reconstructionConsumedThisFrame = false;\n",
+        /cache\.reconstructionEmittedThisFrame = false;\s*cache\.reconstructionConsumedThisFrame = false;\s*/g,
         "",
       ),
     "a culled frame must not report that the march emitted",
