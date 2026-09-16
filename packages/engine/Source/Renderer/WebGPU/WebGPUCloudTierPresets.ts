@@ -251,8 +251,12 @@ export const CLOUD_QF_TEMPORAL = 1 << 2;
 export const CLOUD_QF_JITTER = 1 << 3; // per-pixel ray sample phase
 export const CLOUD_QF_OCTAVES_SHIFT = 4; // bits 4-6
 export const CLOUD_QF_PROFILE_ON = 1 << 7;
-// Atmosphere-LUT coupling. Set by the renderer only when the matching
-// globe.cloud* mode is opted into; the default render leaves them clear.
+// Atmosphere-LUT coupling. Bit 9 is set only when `cloudAmbientSource` is
+// opted into, and the default render leaves it clear. Bit 8 is no longer that
+// shape: since `C13-N20` / `R-2026-09-16-4` the renderer also sets it for an
+// UNSET `cloudAerialMode` — undeclared, or the public `"auto"` default — once
+// `shouldDefaultPhysicalAerial` fires, which is at or above the band edge. A
+// default render above that edge therefore carries bit 8, by intent.
 export const CLOUD_QF_AERIAL_LUT = 1 << 8; // physical aerial: sky-view + transmittance
 export const CLOUD_QF_AMBIENT_LUT = 1 << 9; // sky-LUT cloud ambient
 // Set by the renderer only when the resolved tier's `lightConeSampling` is
@@ -332,8 +336,11 @@ export function buildCloudQualityInputs(
 
 /**
  * Whether the physical aerial LUT path is the DEFAULT for this frame, absent an
- * explicit `cloudAerialMode`. `C13-N20`'s promotion clause: the heuristic aerial
- * term is `clamp(midDist / 60000, 0, 0.85)`, and above the band edge every pixel
+ * explicit `cloudAerialMode` — the dial either undeclared or left at the public
+ * `"auto"` default, which are one state (R-2026-09-16-4).
+ *
+ * `C13-N20`'s promotion clause: the heuristic aerial term is
+ * `clamp(midDist / 60000, 0, 0.85)`, and above the band edge every pixel
  * is far past 60 km, so the heuristic is pinned at its 0.85 cap for the whole
  * frame — a flat haze wash instead of a range-correct path length. The sky-view
  * and transmittance LUTs give the correct term there, so they are the default.

@@ -200,13 +200,34 @@ function CloudVolumetrics(options) {
 
   // ── Aerial / ambient modes ──
 
+  // corrected 2026-09-16, C13-N20 (ruling R-2026-09-16-4): this defaulted to
+  // "heuristic", and `CloudCollection._resolveVolumetricConfig` spreads this
+  // instance verbatim, so the dial reached the renderer as a string on every
+  // frame. The renderer's promotion clause consults its altitude default only
+  // when the dial is UNSET, so the clause was unreachable through the public
+  // API — dead for every caller, and a false premise for any measurement taken
+  // "with the promotion active". The unset state is now spelled "auto", the
+  // same sentinel `cloudVolumetricQuality` above already uses for "the renderer
+  // decides", which keeps the state nameable, settable back and typed {string}.
+  // `undefined` still resolves identically, for a duck-typed config that
+  // declares no dial at all.
   /**
-   * Aerial-perspective mode for distant clouds: <code>"heuristic"</code> or
-   * <code>"physical"</code>. WebGPU only.
+   * Aerial-perspective mode for distant clouds. One of <code>"auto"</code>,
+   * which lets the renderer pick per frame, <code>"heuristic"</code>, the
+   * analytic distance term, or <code>"physical"</code>, which samples the baked
+   * sky-view and transmittance LUTs.
+   *
+   * Under <code>"auto"</code> the renderer resolves to <code>"physical"</code>
+   * at or above the volumetric disable altitude, where the analytic term is
+   * pinned at its cap for every pixel and reads as a flat haze wash, and to
+   * <code>"heuristic"</code> below it (<code>C13-N20</code>). An explicit value
+   * wins in both directions.
+   *
+   * WebGPU only.
    * @type {string}
-   * @default "heuristic"
+   * @default "auto"
    */
-  this.cloudAerialMode = options.cloudAerialMode ?? "heuristic";
+  this.cloudAerialMode = options.cloudAerialMode ?? "auto";
 
   // corrected 2026-09-12, C13-N34: the alternative was documented as "sky",
   // which no consumer has ever read. The renderer's only test is

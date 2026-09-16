@@ -492,12 +492,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | classification-bounding-volume-frustum-slices.spec.mjs | spec | ACTIVE | 2026-09-10 | 4 | Drives the real View.createPotentiallyVisibleSet, the real Scene.isVisible and the real GroundPolylinePrimitive queue path over the real WebGPU classification bounding-volume selection, and requires the slice count, the frustum-list length, the per-frame classification draw count and the blend fold they imply to match the single-draw values on every scene mode. |
 | clipping-polygon-rebake-revision-signal.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that the WebGPU CLIPPING_POLYGONS feature renderer rebakes on every real content change of ClippingPolygonCollection — including an equal-count polygon swap that a vertex/polygon COUNT comparison cannot see — and does not rebake when nothing changed. |
 | clipping-polygon-texture-backend-claim.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that ClippingPolygonCollection.requestRectangleData asks the active backend before building WebGL clipping textures, so WebGPU builds zero Texture objects while the CPU edge/grid tables still reach a future WGSL twin. |
-| cloud-api-enum-reachability.spec.mjs | spec | NO @purpose HEADER | 2026-09-12 | 4 | — |
+| cloud-api-enum-reachability.spec.mjs | spec | NO @purpose HEADER | 2026-09-12 | 5 | — |
 | cloud-coverage-response.spec.mjs | spec | ACTIVE | 2026-09-16 | 9 | Pins the CLOUD-LOW-COVERAGE-CUTOFF fix: baked base-field support, monotone coverage response on the CPU twin, exact high-anchor preservation. |
 | cloud-demo-probe-routing.spec.mjs | spec | ACTIVE | 2026-09-13 | 4 | Drives the eight routed Weather-Inspector cloud probes through runProbe against a stub browser, so the routing is known to reach a receipt, take its origin from the runtime and refuse port 8080 before an Edge slot is spent on it. |
 | cloud-density-domain.spec.mjs | spec | ACTIVE | 2026-08-21 | 6 | Pins the cloud density-domain layout: noise origin/phase/rotation float offsets shared between WebGPUCloudDensityDomain.ts and the WGSL, via exports. |
 | cloud-density-lod.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Pins LOD agreement across CloudDensityDomain.wgsl, ProceduralClouds.wgsl and ProceduralSkyCubemap.wgsl via direct source reads. |
-| cloud-genus-morphology.spec.mjs | spec | ACTIVE | 2026-08-21 | 9 | C13-16 cirrus row: add-only uniform layout, exact CUMULUS byte-neutrality, structural fibre anisotropy/shear metrics, mutation-rejected predicates. |
+| cloud-genus-morphology.spec.mjs | spec | ACTIVE | 2026-09-16 | 9 | C13-16 cirrus row: add-only uniform layout, exact CUMULUS byte-neutrality, structural fibre anisotropy/shear metrics, mutation-rejected predicates. |
 | cloud-ibl-revision.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | Source-anchored guard that WebGPUDynamicEnvironmentMapManager and the procedural cloud renderer keep the IBL revision handshake wired (CRLF-safe). |
 | cloud-image-analysis.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | node:test guard for lib/cloud-image-analysis.mjs: analyze/compare/periodicity-factorial classification on deterministic synthetic noise images. |
 | cloud-march-emission.spec.mjs | spec | ACTIVE | 2026-09-16 | 7 | C13-10: march-emitted reconstruction depth behind one compile-time bit, four sibling pipelines compile verbatim, CPU-twin cross-validation, mutants. |
@@ -508,18 +508,18 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-orbital-ladder-contract.spec.mjs | spec | ACTIVE | 2026-09-12 | 6 | Unit-checks the orbital ladder's four statistics against geometry the plan states independently, then drives the REAL descriptor through runProbe with a stubbed browser so the instrument is known to reach a verdict before an Edge slot is spent on it. |
 | cloud-photometry-rule.spec.mjs | spec | ACTIVE | 2026-09-12 | 6 | Asserts the photometric path measures linear PRE-Reinhard radiance with the sun disc masked, that measuring after the tonemapper gives a different answer, and that the harness capture path supplies the live exposure rather than a default. |
 | cloud-primary-ray.spec.mjs | spec | ACTIVE | 2026-09-16 | 5 | Validates that primary procedural-cloud rays preserve framebuffer UV row order through inverse projection. |
-| cloud-primary-shell.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Validates CloudVolumetrics WGS84 shell ray-root math at orbital heights with f32-conditioning-aware tolerances (nadir / near-horizon / grazing). |
-| cloud-probe-harness.spec.mjs | spec | ACTIVE | 2026-09-12 | 11 | Guards lib/cloud-probe-harness.mjs + cloud-perf-evidence pass resolution: config round-trip through the collection contract across six cloud probes. |
-| cloud-ray-jitter.spec.mjs | spec | ACTIVE | 2026-08-21 | 5 | Pins the cloud ray-jitter contract across ProceduralClouds.wgsl, CloudDensityDomain.wgsl, the renderer and tier presets via source reads. |
+| cloud-primary-shell.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | Validates CloudVolumetrics WGS84 shell ray-root math at orbital heights with f32-conditioning-aware tolerances (nadir / near-horizon / grazing). |
+| cloud-probe-harness.spec.mjs | spec | ACTIVE | 2026-09-16 | 11 | Guards lib/cloud-probe-harness.mjs + cloud-perf-evidence pass resolution: config round-trip through the collection contract across six cloud probes. |
+| cloud-ray-jitter.spec.mjs | spec | ACTIVE | 2026-09-16 | 5 | Pins the cloud ray-jitter contract across ProceduralClouds.wgsl, CloudDensityDomain.wgsl, the renderer and tier presets via source reads. |
 | cloud-reconstruction-attachments.spec.mjs | spec | ACTIVE | 2026-09-16 | 11 | C13-09: attachment table add-only, march shader content-hash pin enforcing the C13-39 static-register constraint, stage default-OFF byte/cost neutral. |
 | cloud-reconstruction-consume-probe.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Pins the C13-10 Edge consume-probe's own instrument properties: real interleave schedule, null-not-zero pass timing, the 3-vs-2 producer-target move. |
 | cloud-refresh-skip.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Pins the repair of the requestRenderMode frozen-frame defect that made both cloud-reconstruction probes count render calls as frames; mutant-checked. |
 | cloud-scenes-contract.spec.mjs | spec | ACTIVE | 2026-09-12 | 8 | Checked contract for the two cloud scenes added to scenes.json: existence, setupFile resolution, threshold-override honesty, expectedMismatch legality, and — the highest-value assertion — that the setup file never sets an unknown CloudVolumetrics property. |
 | cloud-shadow-rte.spec.mjs | spec | ACTIVE | 2026-08-16 | 7 | C13-06 cloud shadow/mask/env-capture/atmosphere RTE contract: f64 frame-owner math, f32 WGS84-vs-spherical oracle, source ownership, naga validation. |
 | cloud-spectrum.spec.mjs | spec | ACTIVE | 2026-09-12 | 6 | node:test guard for lib/cloud-spectrum.mjs (C13-N04, O5 Structure): |
-| cloud-temporal-rte.spec.mjs | spec | ACTIVE | 2026-08-21 | 5 | Pins WebGPUCloudTemporalHistory reset classification (teleport, morph, deck bounds, scene mode...) and commit semantics vs the engine module. |
+| cloud-temporal-rte.spec.mjs | spec | ACTIVE | 2026-09-16 | 5 | Pins WebGPUCloudTemporalHistory reset classification (teleport, morph, deck bounds, scene mode...) and commit semantics vs the engine module. |
 | cloud-temporal-source-view.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins that both cloud temporal bind-group pairs rebuild when the half-res target is replaced at an unchanged size, and that the check is live rather than inert. |
-| cloud-tier-single-source.spec.mjs | spec | ACTIVE | — | 8 | Executes the real preset→uniform seam from Node to prove a tier-table edit reaches the packed float, derives each float's flat index by walking the renderer's packer and cross-checking it against the WGSL struct, and pins every current default byte-identical to the deleted second resolver. |
+| cloud-tier-single-source.spec.mjs | spec | ACTIVE | 2026-09-16 | 8 | Executes the real preset→uniform seam from Node to prove a tier-table edit reaches the packed float, derives each float's flat index by walking the renderer's packer and cross-checking it against the WGSL struct, and pins every current default byte-identical to the deleted second resolver. |
 | cloud-tour-sequences.spec.mjs | spec | ACTIVE | 2026-09-12 | 11 | C13-01 tour contract: fixture/sequence coverage per the queue row, pinned derived clocks, engine-export constants, probe capture discipline. |
 | cloud-u2-perf-evidence.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Guards lib/cloud-u2-perf-evidence.mjs manifest assessment for C13-16 U2 perf evidence (no-regression / unchanged pass expectations, lane shapes). |
 | clustered-light-upload-invalidation.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 1 | — |
@@ -807,7 +807,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-cloud-clockbind.mjs | probe | ACTIVE | 2026-08-16 | 3 | Proves cloud advection is scene-clock-bound: identical frames at a frozen clock across wall time, different frames for clock times 3 h apart |
 | probe-cloud-cone-parity.mjs | probe | INVESTIGATION | 2026-08-29 | 3 | B436 zero-drift landing gate: one deterministic cinematic-tier capture, byte-compared across pre/post-436 builds via git stash — EXEMPLAR: retained live as the technique reference (M5) |
 | probe-cloud-config.mjs | probe | ACTIVE | 2026-08-16 | 2 | Weather-config foundation gate: cloud appearance dials are live without rebuild and unset defaults reproduce the pre-config frame |
-| probe-cloud-density-domain.mjs | probe | ACTIVE | 2026-08-16 | 10 | C13-37 baked-density periodicity oracle: same-build legacy/new density-domain x baked/live x midpoint/IGN factorial, failing closed on encoder timing |
+| probe-cloud-density-domain.mjs | probe | ACTIVE | 2026-09-16 | 10 | C13-37 baked-density periodicity oracle: same-build legacy/new density-domain x baked/live x midpoint/IGN factorial, failing closed on encoder timing |
 | probe-cloud-depth-occlusion.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | B409 A/B (stash pair) showing the cloud raymarch clamps at scene depth so far-side clouds no longer bleed through the globe disc |
 | probe-cloud-diagonal.mjs | probe | ACTIVE | 2026-09-13 | 4 | Regression for the fullscreen-triangle fix: an overcast deck must fill the top-right quadrant (old triangle rasterized only half the screen) |
 | probe-cloud-dials.mjs | probe | ACTIVE | 2026-09-13 | 3 | B407 struct-growth dials gate: puffSize/exposure/msDecay wired end-to-end, defaults byte-identical, reset returns to the default render |
@@ -825,8 +825,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-cloud-ibl.mjs | probe | ACTIVE | 2026-08-16 | 1 | B441 cloud-aware IBL gate: overcast dims + flattens model ambient; coverage without the cloudContributesIBL opt-in leaves IBL identical to clear |
 | probe-cloud-lighting.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | V5 per-octave phase-folding acceptance: A/B vs stash-reverted pre-V5 build with W1/W2 floor gates (tonal range, lifted shadow floor, modest delta) |
 | probe-cloud-lod-hoist-perf.mjs | probe | ACTIVE | 2026-08-16 | 7 | C13-39 GPU-timestamp A/B lanes for the density-LOD/domain hoist; codifies the repo's mandatory interleaved bundle-swap GPU-timing protocol |
-| probe-cloud-lut-flagon.mjs | probe | ACTIVE | 2026-08-16 | 4 | B434 flag-on gate: physical aerial mode fogs distant clouds toward the real sky (sun-azimuth-tracking hue) and sky-lut ambient warms sunset undersides |
-| probe-cloud-lut-parity.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | B434 zero-drift gate: default heuristic-aerial + constant-ambient path byte-identical across modified vs stash-reverted builds |
+| probe-cloud-lut-flagon.mjs | probe | ACTIVE | 2026-08-16 | 5 | B434 flag-on gate: physical aerial mode fogs distant clouds toward the real sky (sun-azimuth-tracking hue) and sky-lut ambient warms sunset undersides |
+| probe-cloud-lut-parity.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | B434 zero-drift gate: default heuristic-aerial + constant-ambient path byte-identical across modified vs stash-reverted builds |
 | probe-cloud-mammatus.mjs | probe | ACTIVE | 2026-09-13 | 4 | B555 mammatus gate: underside pouch carve visibly thins the deck, OFF byte-identical under a frozen clock, strength=0 restores the baseline |
 | probe-cloud-morphology.mjs | probe | ACTIVE | 2026-08-16 | 1 | B439 morphology modes: curl erosion and perlin-worley cores A/B'd against an in-run default baseline, plus a stash-pair parity mode for default flags |
 | probe-cloud-noisebake.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | V2 inert-bake gate: 3D noise baked + bound with the shader not sampling it — byte-identical to the pre-V2 stash build, bake ran, zero device errors |
@@ -1663,10 +1663,10 @@ Every census file whose own header reads `INVESTIGATION` or `ARCHIVED-CANDIDATE`
 | Disposition | Files |
 |---|---|
 | Candidates in plan | 196 |
-| ALLOWLIST-EDIT-THEN-MOVE | 38 |
+| ALLOWLIST-EDIT-THEN-MOVE | 37 |
 | ALREADY-ARCHIVED | 24 |
 | MOVE | 13 |
-| REPOINT-FIRST | 121 |
+| REPOINT-FIRST | 122 |
 
 | Row | Path | Status | Live refs | Archived refs | Allowlist row | Disposition |
 |---|---|---|---|---|---|---|
@@ -1747,7 +1747,7 @@ Every census file whose own header reads `INVESTIGATION` or `ARCHIVED-CANDIDATE`
 | <a id="ap-tools-visual-regression-probe-cloud-depth-occlusion-mjs"></a>[#](#ap-tools-visual-regression-probe-cloud-depth-occlusion-mjs) | Tools/visual-regression/probe-cloud-depth-occlusion.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-cloud-halfres-parity-mjs"></a>[#](#ap-tools-visual-regression-probe-cloud-halfres-parity-mjs) | Tools/visual-regression/probe-cloud-halfres-parity.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-cloud-lighting-mjs"></a>[#](#ap-tools-visual-regression-probe-cloud-lighting-mjs) | Tools/visual-regression/probe-cloud-lighting.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-cloud-lut-parity-mjs"></a>[#](#ap-tools-visual-regression-probe-cloud-lut-parity-mjs) | Tools/visual-regression/probe-cloud-lut-parity.mjs | INVESTIGATION | 0 | 0 | yes | ALLOWLIST-EDIT-THEN-MOVE |
+| <a id="ap-tools-visual-regression-probe-cloud-lut-parity-mjs"></a>[#](#ap-tools-visual-regression-probe-cloud-lut-parity-mjs) | Tools/visual-regression/probe-cloud-lut-parity.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-cloud-noisebake-mjs"></a>[#](#ap-tools-visual-regression-probe-cloud-noisebake-mjs) | Tools/visual-regression/probe-cloud-noisebake.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-cloud-noisecore-mjs"></a>[#](#ap-tools-visual-regression-probe-cloud-noisecore-mjs) | Tools/visual-regression/probe-cloud-noisecore.mjs | INVESTIGATION | 1 | 1 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-cloud-remap-mjs"></a>[#](#ap-tools-visual-regression-probe-cloud-remap-mjs) | Tools/visual-regression/probe-cloud-remap.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |

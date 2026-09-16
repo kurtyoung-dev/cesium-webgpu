@@ -3787,9 +3787,12 @@ export function prepareCloudFrameAndEncodeMask(
     // strength, so a red-only map behaves the same at every setting; 0 reduces the
     // map to its red coverage channel.
     data[offset++] = config.cloudWeatherChannelStrength ?? 1.0; // 107 weatherChannelStrength
-    // 108-111 — atmosphere-LUT coupling modes. Both default to the analytic path,
-    // a heuristic aerial term and a constant ambient, which the shader selects when
-    // these mode floats are 0. The `qualityFlags` bits 8 and 9 carry the same
+    // 108-111 — atmosphere-LUT coupling modes. The ambient mode defaults to the
+    // analytic path, a constant ambient, which the shader selects when the mode
+    // float is 0. The aerial mode did too until `C13-N20` / `R-2026-09-16-4`:
+    // it now defaults to the analytic heuristic term BELOW the band edge and to
+    // the physical LUT path at or above it, so an unset dial writes 108 = 1
+    // there. The `qualityFlags` bits 8 and 9 carry the same
     // on/off state; the mode floats make it legible from the shader side.
     // `atmosphereThickness` has to match the LUT bake, so the transmittance
     // v-lookup lands on the right row.
@@ -3805,10 +3808,22 @@ export function prepareCloudFrameAndEncodeMask(
     // saturates its `clamp(midDist / 60000, 0, 0.85)` for every pixel, so the
     // LUT path is the correct default there. This is the one visible change in
     // this batch; read that predicate for why it keys on altitude alone.
+    //
+    // "Unset" is TWO spellings, not one (R-2026-09-16-4). A duck-typed config
+    // may simply declare no dial, and the public `CloudVolumetrics` dial spells
+    // the same state `"auto"` — it is spread onto the config verbatim, so
+    // without the second arm the clause above would be unreachable through the
+    // public API. Each of the enum's three values is named here, at the one
+    // place the decision is made, so `"heuristic"` is honoured deliberately
+    // rather than as the residue of "not physical"; an unrecognised string
+    // still falls to the analytic term, as it always has.
     const aerialLutOn =
-      globeForLut.cloudAerialMode === undefined
-        ? shouldDefaultPhysicalAerial(qualityInputs)
-        : globeForLut.cloudAerialMode === "physical";
+      globeForLut.cloudAerialMode === "heuristic"
+        ? false
+        : globeForLut.cloudAerialMode === undefined ||
+            globeForLut.cloudAerialMode === "auto"
+          ? shouldDefaultPhysicalAerial(qualityInputs)
+          : globeForLut.cloudAerialMode === "physical";
     const ambientLutOn = globeForLut.cloudAmbientSource === "sky-lut";
     data[offset++] = aerialLutOn ? 1.0 : 0.0; // 108 aerialLutMode
     data[offset++] = ambientLutOn ? 1.0 : 0.0; // 109 ambientLutMode

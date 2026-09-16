@@ -55,16 +55,25 @@
 //     `cloudAerialMode` wins in both directions, only an unset dial consults
 //     the predicate, and the predicate's threshold is `disableAltitudeMeters`
 //     inclusive — pinned with a NON-default band edge so it is the threshold
-//     that is asserted and not the number 100000.
+//     that is asserted and not the number 100000. "Unset" is two spellings: a
+//     config that declares no dial, and the public `"auto"` default.
 //  6. THE ONE DELIBERATE NON-IDENTITY. Item 3's sweep has exactly one
 //     exception: with `cloudAerialMode` unset and the predicate firing, float
 //     108 and bit 8 of float 74 now turn on where HEAD left them clear. The
 //     exception set is derived from the live predicate rather than restated, so
 //     the assertion holds whichever form that predicate takes — and it must be
 //     non-empty, so it cannot pass vacuously.
-//  7. INERTNESS MUTANTS. Five, each making a fix unreachable in a COPY of the
+//  7. INERTNESS MUTANTS. Seven, each making a fix unreachable in a COPY of the
 //     engine module under `os.tmpdir()`, then asserting the property the real
 //     module satisfies goes red on the copy.
+//  8. THE PROMOTION IS REACHABLE (`R-2026-09-16-4`). Item 5 proves the clause
+//     fires for an unset dial; this proves a dial can BE unset through the
+//     public API. The real `CloudVolumetrics` object is driven into the
+//     renderer's own expression above and below the band edge, and the OUTPUT
+//     asserted is uniform float 108. Before this, `CloudVolumetrics` defaulted
+//     the dial to a string and `CloudCollection` — the only producer of a cloud
+//     config in the tree — spread it verbatim, so item 5's property was true of
+//     code no caller could reach.
 //
 // Run: node --test Tools/visual-regression/cloud-tier-single-source.spec.mjs
 
@@ -465,17 +474,19 @@ const cloudStruct = layout(parseStruct(wgslSource, "CloudUniforms"));
 /**
  * The right-hand side of a single `const <name> = …;` in the renderer.
  *
- * @param {string} source Renderer source.
  * @param {string} name Identifier.
+ * @param {string} [code] Comment-stripped renderer source; defaults to the real
+ *   one. A mutant copy is passed here so the mutated expression is extracted
+ *   exactly the way the live one is.
  * @returns {string}
  */
-function assignmentRhs(name) {
+function assignmentRhs(name, code = rendererCode) {
   const key = `const ${name} =`;
-  const at = rendererCode.indexOf(key);
+  const at = code.indexOf(key);
   assert.ok(at >= 0, `\`const ${name} =\` moved or changed shape`);
-  const semi = rendererCode.indexOf(";", at);
+  const semi = code.indexOf(";", at);
   assert.ok(semi > at, `\`const ${name}\` has no terminator`);
-  return rendererCode.slice(at + key.length, semi).trim();
+  return code.slice(at + key.length, semi).trim();
 }
 
 const aerialLutOnRhs = assignmentRhs("aerialLutOn");
@@ -806,7 +817,18 @@ const RUNTIME_FACTS = [
   { bakedNoiseResident: true, halfResActive: true, temporalActive: true },
 ];
 
-const AERIAL_MODES = [undefined, "physical", "heuristic", "", "PHYSICAL"];
+// `"auto"` sits with `undefined` rather than with the explicit values: it is
+// the PUBLIC spelling of unset (`CloudVolumetrics`'s shipped default,
+// R-2026-09-16-4), and the renderer reads the two as one state. Section 7
+// pins that; the deviation sweep below admits both.
+const AERIAL_MODES = [
+  undefined,
+  "auto",
+  "physical",
+  "heuristic",
+  "",
+  "PHYSICAL",
+];
 
 /**
  * Every (dial, band, height, rawQuality) point, as the duck-typed config the
@@ -1221,6 +1243,8 @@ test("an explicit cloudAerialMode wins in both directions", () => {
       true,
       `${point.label}: an explicit "physical" must turn the LUT path on anywhere`,
     );
+    // `"auto"` is deliberately absent: it is the unset spelling, not an
+    // explicit choice, and the test below is the one that owns it.
     for (const explicit of ["heuristic", "", "PHYSICAL"]) {
       assert.equal(
         evaluateAerialLutOn(explicit, point.inputs, point.preset),
@@ -1257,10 +1281,14 @@ test("only an unset dial consults the altitude predicate", () => {
         `${point.label}: an explicit "${explicit}" still consulted the predicate`,
       );
     }
-    const unsetAlways = fn({}, point.inputs, point.preset, always);
-    const unsetNever = fn({}, point.inputs, point.preset, never);
-    assert.equal(unsetAlways, true);
-    assert.equal(unsetNever, false);
+    // Unset has TWO spellings — a config that declares no dial at all, and the
+    // public `"auto"` default (R-2026-09-16-4). Both must consult the
+    // predicate, or the default reaches nothing.
+    for (const unset of [{}, { cloudAerialMode: "auto" }]) {
+      const label = `${point.label}: ${JSON.stringify(unset)}`;
+      assert.equal(fn(unset, point.inputs, point.preset, always), true, label);
+      assert.equal(fn(unset, point.inputs, point.preset, never), false, label);
+    }
   }
 });
 
@@ -1306,10 +1334,9 @@ test("the aerial default is the ONLY deviation from HEAD, and it is real", () =>
         continue;
       }
       deviations++;
-      assert.equal(
-        mode,
-        undefined,
-        `${point.label}: an EXPLICIT "${mode}" diverged from HEAD — only an unset dial may`,
+      assert.ok(
+        mode === undefined || mode === "auto",
+        `${point.label}: an EXPLICIT "${mode}" diverged from HEAD — only an unset dial may, and unset is spelled either way (R-2026-09-16-4)`,
       );
       assert.equal(
         liveOn,
@@ -1780,4 +1807,268 @@ test("MUTANT f: un-pinning any tier-lighting site goes red", async () => {
       },
     );
   }
+});
+
+// ── 7. The promotion is reachable through the public API ───────────────────
+//
+// R-2026-09-16-4. Section 6 proves the clause fires for an UNSET dial. It could
+// not fire at all: `CloudVolumetrics` defaulted `cloudAerialMode` to a string,
+// `CloudCollection._resolveVolumetricConfig` spreads that object verbatim, and
+// the collection is the tree's only producer of a volumetric-cloud request — so
+// the renderer saw a string on every frame and the unset arm was dead code.
+// These tests drive the REAL public object into the renderer's own expression
+// text, so they go red if the shipped default stops reaching the clause for any
+// reason, including one nobody anticipated here.
+//
+// Bit 8 is not re-asserted: section 6 already pins it to `aerialLutOn`. What is
+// asserted here is the other spelling, uniform float 108, through the packer's
+// own expression.
+
+const CLOUD_VOLUMETRICS_JS = "packages/engine/Source/Scene/CloudVolumetrics.js";
+const CLOUD_COLLECTION_JS = "packages/engine/Source/Scene/CloudCollection.js";
+
+const CloudVolumetrics = (
+  await import(pathToFileURL(path.join(root, CLOUD_VOLUMETRICS_JS)).href)
+).default;
+
+// eslint-disable-next-line no-new-func -- the packer's own float expression, executed as written
+const aerialModeFloat = new Function(
+  "aerialLutOn",
+  `return (${AERIAL_MODE_EXPRESSION});`,
+);
+
+/** What a collection publishes to the renderer, built the way the collection builds it. */
+const publishedConfig = (overrides) => ({ ...new CloudVolumetrics(overrides) });
+
+/** Comfortably above every band edge in the sweep, and a plausible orbital view. */
+const ORBITAL_HEIGHT_M = 250_000;
+/** Comfortably below every band edge in the sweep. */
+const LOW_HEIGHT_M = 5_000;
+
+/**
+ * Resolve a published config at a height, then evaluate the renderer's real
+ * `aerialLutOn` expression against it.
+ *
+ * @param {object} config The published config.
+ * @param {number} height Camera height in metres.
+ * @returns {{on:boolean,fires:boolean}} The flag, and whether the predicate fired.
+ */
+function aerialAt(config, height) {
+  const inputs = live.buildCloudQualityInputs(config, height);
+  const preset = live.resolveCloudPreset(inputs);
+  return {
+    on: evaluateAerialLutOn(config.cloudAerialMode, inputs, preset),
+    fires: live.shouldDefaultPhysicalAerial(inputs, preset),
+  };
+}
+
+test("a collection left at its defaults reaches the promotion above the band edge", () => {
+  const config = publishedConfig();
+  const { on, fires } = aerialAt(config, ORBITAL_HEIGHT_M);
+  assert.equal(
+    fires,
+    true,
+    "the altitude predicate does not fire at the height this test uses — re-derive the height, the assertion below would pass vacuously",
+  );
+  assert.equal(
+    on,
+    true,
+    `the shipped default ${JSON.stringify(config.cloudAerialMode)} never reaches C13-N20's promotion clause: the row's visible change cannot happen through the public API`,
+  );
+  assert.equal(
+    aerialModeFloat(on),
+    1.0,
+    "uniform float 108 (aerialLutMode) stays off for a default collection above the band edge",
+  );
+});
+
+test("the same defaults keep the analytic term below the band edge", () => {
+  const config = publishedConfig();
+  const { on, fires } = aerialAt(config, LOW_HEIGHT_M);
+  assert.equal(fires, false, "the predicate fired below the band edge");
+  assert.equal(
+    on,
+    false,
+    "the default promoted the LUT path below the band edge — that is a blanket promotion, not C13-N20's",
+  );
+  assert.equal(aerialModeFloat(on), 0.0);
+});
+
+test("the shipped default behaves exactly like a config that declares no dial", () => {
+  // The two spellings of unset must be ONE state everywhere, not merely at the
+  // two heights above. This is what makes the public default the thing section
+  // 6's sweep already reasons about.
+  const dial = new CloudVolumetrics().cloudAerialMode;
+  assert.notEqual(
+    dial,
+    undefined,
+    "the public dial is unset-by-undefined again; this spec's premise (a named default) needs re-deriving",
+  );
+  for (const point of SWEEP) {
+    assert.equal(
+      evaluateAerialLutOn(dial, point.inputs, point.preset),
+      evaluateAerialLutOn(undefined, point.inputs, point.preset),
+      `${point.label}: the public default ${JSON.stringify(dial)} and an undeclared dial disagree`,
+    );
+  }
+});
+
+test("an explicit dial still wins over the default, in both directions", () => {
+  assert.equal(
+    aerialAt(
+      publishedConfig({ cloudAerialMode: "heuristic" }),
+      ORBITAL_HEIGHT_M,
+    ).on,
+    false,
+    'an explicit "heuristic" was overridden by the promotion above the band edge',
+  );
+  assert.equal(
+    aerialAt(publishedConfig({ cloudAerialMode: "physical" }), LOW_HEIGHT_M).on,
+    true,
+    'an explicit "physical" was not honoured below the band edge',
+  );
+  assert.equal(
+    new CloudVolumetrics({ cloudAerialMode: "heuristic" }).cloudAerialMode,
+    "heuristic",
+    "the constructor stopped honouring an explicit dial",
+  );
+});
+
+test("the collection publishes the dial verbatim, so the twin above is the real path", () => {
+  // The tests above build the published config themselves. That twin is only
+  // honest while the collection really does spread the volumetrics object
+  // without touching this dial, which is what this pins.
+  const source = read(CLOUD_COLLECTION_JS);
+  const at = source.indexOf("_resolveVolumetricConfig() {");
+  assert.ok(at > 0, "_resolveVolumetricConfig moved or was renamed");
+  const body = source.slice(at, source.indexOf("\n  }", at));
+  assert.match(
+    body,
+    /\.\.\.this\.volumetric,/,
+    "the collection no longer spreads the volumetrics object; the twin in this section is stale",
+  );
+  assert.equal(
+    /cloudAerialMode/.test(body),
+    false,
+    "the collection now rewrites cloudAerialMode on its way out; the twin in this section is stale",
+  );
+});
+
+/**
+ * Copy `CloudVolumetrics.js` and the two modules it imports into a fresh
+ * directory under `os.tmpdir()`, mutate the first, and import it. The siblings
+ * are copied unmodified, so the mutant is the shipped module with one line
+ * changed and nothing else, and the frozen tree is never mutated in place.
+ *
+ * @param {(source: string) => string} mutate Source transform.
+ * @param {(CloudVolumetrics: Function) => void|Promise<void>} check Assertions.
+ */
+async function withApiMutant(mutate, check) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud-api-mutant-"));
+  assert.ok(
+    path.resolve(dir).startsWith(path.resolve(os.tmpdir()) + path.sep),
+    `the mutant sandbox ${dir} escaped os.tmpdir()`,
+  );
+  try {
+    fs.mkdirSync(path.join(dir, "Scene"));
+    fs.mkdirSync(path.join(dir, "Core"));
+    for (const [from, to] of [
+      ["packages/engine/Source/Scene/CloudType.js", "Scene/CloudType.js"],
+      ["packages/engine/Source/Core/Frozen.js", "Core/Frozen.js"],
+    ]) {
+      fs.copyFileSync(path.join(root, from), path.join(dir, to));
+    }
+    const source = read(CLOUD_VOLUMETRICS_JS);
+    const mutated = mutate(source);
+    assert.notEqual(mutated, source, "the mutation did not apply");
+    const file = path.join(dir, "Scene", "CloudVolumetrics.js");
+    fs.writeFileSync(file, mutated);
+    await check((await import(pathToFileURL(file).href)).default);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('MUTANT f: restoring the `?? "heuristic"` default makes the promotion dead again', async () => {
+  await withApiMutant(
+    (source) =>
+      replaceOnce(
+        source,
+        'options.cloudAerialMode ?? "auto"',
+        'options.cloudAerialMode ?? "heuristic"',
+      ),
+    (Mutant) => {
+      const config = { ...new Mutant() };
+      assert.equal(
+        config.cloudAerialMode,
+        "heuristic",
+        "mutant f did not change the default",
+      );
+      const inputs = live.buildCloudQualityInputs(config, ORBITAL_HEIGHT_M);
+      const preset = live.resolveCloudPreset(inputs);
+      assert.equal(
+        live.shouldDefaultPhysicalAerial(inputs, preset),
+        true,
+        "the predicate stopped firing under the mutant, so it would prove nothing",
+      );
+      const on = evaluateAerialLutOn(config.cloudAerialMode, inputs, preset);
+      assert.equal(
+        on,
+        false,
+        "mutant f did not make the promotion unreachable: section 7 would pass over the very defect it exists for",
+      );
+      assert.equal(aerialModeFloat(on), 0.0);
+    },
+  );
+});
+
+test('MUTANT g: making the renderer\'s `"auto"` arm inert kills it from the other end', () => {
+  // The fix has two halves — a public default that spells "unset", and a
+  // renderer that recognises that spelling — and either half alone is inert.
+  // This mutant leaves the public dial alone and makes the renderer stop
+  // reading it. The OUTPUT must go back to HEAD's.
+  const mutantRhs = assignmentRhs(
+    "aerialLutOn",
+    stripComments(
+      replaceOnce(
+        rendererSource,
+        'globeForLut.cloudAerialMode === "auto"',
+        'false && globeForLut.cloudAerialMode === "auto"',
+      ),
+      { keepStrings: true },
+    ),
+  );
+  assert.notEqual(
+    mutantRhs,
+    aerialLutOnRhs,
+    "mutant g did not reach the expression",
+  );
+  // eslint-disable-next-line no-new-func -- same contract as aerialLutOnFn: the mutated expression, executed as written
+  const mutantFn = new Function(
+    "globeForLut",
+    "qualityInputs",
+    "cloudPreset",
+    "shouldDefaultPhysicalAerial",
+    `return (${mutantRhs});`,
+  );
+  const config = publishedConfig();
+  const inputs = live.buildCloudQualityInputs(config, ORBITAL_HEIGHT_M);
+  const preset = live.resolveCloudPreset(inputs);
+  const on = mutantFn(
+    { cloudAerialMode: config.cloudAerialMode },
+    inputs,
+    preset,
+    live.shouldDefaultPhysicalAerial,
+  );
+  assert.equal(on, false, "mutant g did not make the auto arm inert");
+  assert.equal(
+    aerialModeFloat(on),
+    0.0,
+    "the mutated OUTPUT is unchanged, so section 7 is not load-bearing",
+  );
+  assert.equal(
+    mutantFn({}, inputs, preset, live.shouldDefaultPhysicalAerial),
+    true,
+    "mutant g also broke the undeclared-dial arm, so it is not the narrow mutation this test claims",
+  );
 });
