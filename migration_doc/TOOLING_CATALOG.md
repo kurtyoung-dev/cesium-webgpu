@@ -257,8 +257,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | pre-push-guard.mjs | other | ACTIVE | 2026-09-03 | 21 | Git-aware driver behind .husky/pre-push: enforces batch-prefix/body/trailer/quiet-hours on every outgoing agent commit, and refuses deletion or non-fast-forward rewrite of main; fail-closed, no bypass flag reachable from a real push (a 5th argv slot lets a direct invocation pin the quiet-hours clock for tests; git's two-argument hook contract keeps it unreachable from `.husky/pre-push`). |
 | pre-push-guard.spec.mjs | spec | ACTIVE | 2026-09-11 | 7 | Hostile-input, multi-ref, protected-ref, and destructive-fixture contract for the real pre-push driver and hook. |
 | provision-worker-clone-codex-trust.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Behavioural spec for the --codex-trust / --codex-untrust line-based |
-| provision-worker-clone-junctions.spec.mjs | spec | NO @purpose HEADER | 2026-09-04 | 4 | — |
-| provision-worker-clone.mjs | other | ACTIVE | 2026-09-04 | 10 | Provision a worker clone with the governance git cannot deliver, create the local main ref the handoff diff needs, and REFUSE if any routed authority is unreachable. |
+| provision-worker-clone-junctions.spec.mjs | spec | NO @purpose HEADER | 2026-09-16 | 4 | — |
+| provision-worker-clone.mjs | other | ACTIVE | 2026-09-16 | 10 | Provision a worker clone with the governance git cannot deliver, create the local main ref the handoff diff needs, and REFUSE if any routed authority is unreachable. |
 | report-batch-number-reuse.mjs | other | ACTIVE | 2026-09-02 | 3 | Reports every `Batch NNNN:` commit subject that reuses a number already used by a different commit, across full reachable git history. |
 | report-batch-number-reuse.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Behaviour spec for report-batch-number-reuse.mjs, run against a real temporary git repository. |
 | run-far200-shadow-self-test.mjs | runner | ACTIVE | 2026-08-16 | 2 | Thin bootstrap: esbuild-bundles Tools/far200-shadow-self-test.ts and executes it via a data: URL import. |
@@ -289,11 +289,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | wasm-encode-benchmark.mjs | other | ACTIVE | 2026-09-01 | 9 | Node CPU micro-benchmark of the WASM batch_rte_encode kernel vs the scalar JS fround twin, with byte-identity and fallback trip-wire asserts. |
 | wasm-subrange-encode-check.mjs | other | ACTIVE | 2026-09-01 | 7 | Standalone Node check that WasmRTEBridge.batchEncodeRange's WASM and JS paths are byte-identical, placement exact, outside bytes preserved. |
 | wasm-subrange-loader.mjs | other | ACTIVE | 2026-09-01 | 4 | ESM resolve hook redirecting WasmRTEBridge's build-layout wasm-glue specifier to the on-disk glue, plus the file-URL fetch shim and the glue/wasm path helpers, so the wasm Node checks and the benchmark run the real bridge. |
-| wave-end-gate-binding.mjs | other | ACTIVE | — | 6 | Validates wave-end arguments, planned child bindings and served-build preconditions. |
-| wave-end-gate-contracts.spec.mjs | spec | ACTIVE | — | 1 | Verifies wave-end binding and receipt contracts independently of process execution. |
-| wave-end-gate-receipt.mjs | other | ACTIVE | — | 5 | Normalizes wave-end child results and constructs durable receipts and summaries. |
-| wave-end-gate.mjs | other | ACTIVE | 2026-09-12 | 23 | Q-152 — close a multi-batch wave with served-build preflights, smoke/sweep/visual gates, and banked receipts. The verdict is ROOT-BOUND: no child emits a typed receipt, so the root derives one per step from its own run id, time window, root-supplied source tuple, preflighted served subject, fixed-report freshness snapshot, and the step's own declared exit-code map (`binding`, echoed in the receipt). Bindability is a function of the arguments — `--update-baselines` still refuses pre-spawn with exit 3 and zero children spawned, naming every blocker and its remediation. |
-| wave-end-gate.spec.mjs | spec | NO @purpose HEADER | 2026-09-12 | 15 | — |
+| wave-end-gate-binding.mjs | other | ACTIVE | 2026-09-16 | 6 | Validates wave-end arguments, planned child bindings and served-build preconditions. |
+| wave-end-gate-contracts.spec.mjs | spec | ACTIVE | 2026-09-16 | 1 | Verifies wave-end binding and receipt contracts independently of process execution. |
+| wave-end-gate-receipt.mjs | other | ACTIVE | 2026-09-16 | 5 | Normalizes wave-end child results and constructs durable receipts and summaries. |
+| wave-end-gate.mjs | other | ACTIVE | 2026-09-16 | 23 | Q-152 — close a multi-batch wave with served-build preflights, smoke/sweep/visual gates, and banked receipts. The verdict is ROOT-BOUND: no child emits a typed receipt, so the root derives one per step from its own run id, time window, root-supplied source tuple, preflighted served subject, fixed-report freshness snapshot, and the step's own declared exit-code map (`binding`, echoed in the receipt). Bindability is a function of the arguments — `--update-baselines` still refuses pre-spawn with exit 3 and zero children spawned, naming every blocker and its remediation. |
+| wave-end-gate.spec.mjs | spec | NO @purpose HEADER | 2026-09-16 | 15 | — |
 
 ### Tools/archive/ (7)
 
@@ -350,8 +350,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | attach-page-diagnostics.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Behaviour spec for attachPageDiagnostics — separation, detach |
 | bounded-command.mjs | lib | NO @purpose HEADER | 2026-09-06 | 5 | — |
 | bounded-command.spec.mjs | spec | NO @purpose HEADER | 2026-09-06 | 2 | — |
-| browser-orphan-preflight.mjs | lib | ACTIVE | — | 4 | Lists parent-dead msedge/chrome/chromium/firefox/webkit/playwright roots, their descendant trees, each tree's memory and the machine's free memory. Reports only; it never kills a process. |
-| browser-orphan-preflight.spec.mjs | spec | ACTIVE | — | 2 | Verifies parent-dead browser classification and memory totals without reading live processes. |
+| browser-orphan-preflight.mjs | lib | ACTIVE | 2026-09-16 | 4 | Lists parent-dead msedge/chrome/chromium/firefox/webkit/playwright roots, their descendant trees, each tree's memory and the machine's free memory. Reports only; it never kills a process. |
+| browser-orphan-preflight.spec.mjs | spec | ACTIVE | 2026-09-16 | 2 | Verifies parent-dead browser classification and memory totals without reading live processes. |
 | compare-declarations.mjs | lib | NO @purpose HEADER | 2026-09-11 | 1 | — |
 | compare-declarations.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 1 | — |
 | compare-doc-anchors.mjs | lib | NO @purpose HEADER | 2026-09-11 | 3 | — |
@@ -507,7 +507,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-observability-counters.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | C13-02 Gate-A: cloud GPU total is a union not a sum, Sky Fill excluded, per-frame counters reset, pass counts tied to encode sites. |
 | cloud-orbital-ladder-contract.spec.mjs | spec | ACTIVE | 2026-09-12 | 6 | Unit-checks the orbital ladder's four statistics against geometry the plan states independently, then drives the REAL descriptor through runProbe with a stubbed browser so the instrument is known to reach a verdict before an Edge slot is spent on it. |
 | cloud-photometry-rule.spec.mjs | spec | ACTIVE | 2026-09-12 | 6 | Asserts the photometric path measures linear PRE-Reinhard radiance with the sun disc masked, that measuring after the tonemapper gives a different answer, and that the harness capture path supplies the live exposure rather than a default. |
-| cloud-primary-ray.spec.mjs | spec | ACTIVE | 2026-09-11 | 4 | Validates that primary procedural-cloud rays preserve framebuffer UV row order through inverse projection. |
+| cloud-primary-ray.spec.mjs | spec | ACTIVE | 2026-09-16 | 4 | Validates that primary procedural-cloud rays preserve framebuffer UV row order through inverse projection. |
 | cloud-primary-shell.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Validates CloudVolumetrics WGS84 shell ray-root math at orbital heights with f32-conditioning-aware tolerances (nadir / near-horizon / grazing). |
 | cloud-probe-harness.spec.mjs | spec | ACTIVE | 2026-09-12 | 10 | Guards lib/cloud-probe-harness.mjs + cloud-perf-evidence pass resolution: config round-trip through the collection contract across six cloud probes. |
 | cloud-ray-jitter.spec.mjs | spec | ACTIVE | 2026-08-21 | 4 | Pins the cloud ray-jitter contract across ProceduralClouds.wgsl, CloudDensityDomain.wgsl, the renderer and tier presets via source reads. |
@@ -1220,7 +1220,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-request-render-asymmetry.mjs | probe | INVESTIGATION | 2026-08-25 | 4 | Hypothesis probe: does WebGPU's pendingForegroundCount fail to drain under requestRenderMode (fake FPS deficit); plus honest rrm=false lane |
 | probe-resident-instance-prev-mirror.mjs | probe | ACTIVE | 2026-08-16 | 3 | Contract gate: WebGPUResidentInstanceBuffer.sync() prev-mirror semantics (rebuild copy, slot-aligned old-value write, flush, settled zero) |
 | probe-river-water-intensity.mjs | probe | ACTIVE | 2026-08-16 | 3 | Acceptance/regression: inland river/lake water luminance on WebGPU within ~10% of WebGL via a water-selective blue-pixel metric, day view |
-| probe-runtime-lifecycle-adoption.spec.mjs | spec | NO @purpose HEADER | 2026-09-13 | 7 | — |
+| probe-runtime-lifecycle-adoption.spec.mjs | spec | NO @purpose HEADER | 2026-09-16 | 7 | — |
 | probe-runtime.spec.mjs | spec | NO @purpose HEADER | 2026-09-02 | 5 | — |
 | probe-sample-height-webgpu.mjs | probe | ACTIVE | 2026-09-13 | 3 | Score `Scene.clampToHeightMostDetailed` by what it RETURNS, not by whether the demo happened to throw, and report the rate over N runs per renderer. |
 | probe-sampled-position-kernel.mjs | probe | ACTIVE | 2026-08-16 | 5 | Gate: SampledPositionKernel interpolates GPU-resident keyframed positions on BOTH backends, matching pure-JS and SampledPositionProperty refs |
@@ -1361,10 +1361,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | runtime-residency-contract.spec.mjs | spec | ACTIVE | 2026-09-03 | 9 | Contract spec for DX-02: a probe that declares @runtime residency on lib/probe-runtime.mjs must not re-implement the four concerns that module already owns. |
 | sandcastle-batch-66-end-of-session-runner.mjs | other | INVESTIGATION | 2026-08-16 | 2 | End-of-session rerun of the Batch-66 Sandcastle sweep (direct scene.pick, pointer-error filtering) writing per-demo screenshots + report. |
 | sandcastle-batch-66-final-runner.mjs | other | INVESTIGATION | 2026-08-16 | 10 | Post-F1/F2/F3 rerun of the Batch-66 WebGPU Sandcastle sweep: every 'WebGPU *.html' demo headless, known artifacts filtered, JSON report. |
-| sandcastle-demo-verdict.spec.mjs | spec | ACTIVE | — | 1 | Prevents quiet settle windows from being reported as completed demos. |
-| sandcastle-demo-watchdog.spec.mjs | spec | ACTIVE | — | 1 | Proves that one wedged Sandcastle demo cannot stall a sweep leg. |
-| sandcastle-smoke.mjs | other | ACTIVE | 2026-09-13 | 27 | Standing Sandcastle CI blind-spot smoke: three local-resource WebGPU gallery demos gated on non-black, non-uniform, real device, zero errors. |
-| sandcastle-split-report.spec.mjs | spec | ACTIVE | — | 1 | Verifies that separate Sandcastle sweep legs retain their own report files. |
+| sandcastle-demo-verdict.spec.mjs | spec | ACTIVE | 2026-09-16 | 1 | Prevents quiet settle windows from being reported as completed demos. |
+| sandcastle-demo-watchdog.spec.mjs | spec | ACTIVE | 2026-09-16 | 1 | Proves that one wedged Sandcastle demo cannot stall a sweep leg. |
+| sandcastle-smoke.mjs | other | ACTIVE | 2026-09-16 | 27 | Standing Sandcastle CI blind-spot smoke: three local-resource WebGPU gallery demos gated on non-black, non-uniform, real device, zero errors. |
+| sandcastle-split-report.spec.mjs | spec | ACTIVE | 2026-09-16 | 1 | Verifies that separate Sandcastle sweep legs retain their own report files. |
 | sandcastle2-origin-rewrite.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Proves the persistent, continuous origin guard (not a one-shot check): a fake-page unit proof of a later redirect being caught, a real-browser proof through the WIRED integration path (openSandcastle2Url, opened via createGuardedPage), the app's own redirect to a dead baked origin producing a captured connection-error request failure followed by an ORIGIN_MISMATCH refusal on the resulting error page (B(c)) — distinct from a directly-dead requested url, which fails as a plain connection error (B(c-direct)) — an in-flight navigation refusing page.close() with NAVIGATION_UNVERIFIED, a fire-and-forget navigation still refusing at page-close via a subprocess with an explicit close-time sentinel, and the comparison mutant killing leg (b). |
 | sandcastle2-pinned-demos.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Contract spec for the pinned-demo census: exact derived count against the real gallery, per-kind classification correctness, and the naive-scan defect the census fixes. |
 | sandcastle2-renderer-gate.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Contract spec for the Sandcastle2 backend sweep helpers: id enumeration against the real gallery, URL construction, and the requested-vs-actual renderer predicate. |
@@ -1443,7 +1443,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-blend-table-parity.spec.mjs | spec | ACTIVE | 2026-08-29 | 3 | Runs the real lifted WebGPU blend translation from RenderStateToPipelineVariant.ts over every named Scene/BlendingState.js state and compares it against an independently written WebGL-enum-to-GPU oracle, so a blend factor or equation that translates differently on WebGPU than the WebGL state declares fails here. |
 | webgpu-classification-instance-color.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Drives the real WebGPU ground-primitive colour packer over a real BatchTable and a real ColorGeometryInstanceAttribute, and requires the four uniform floats the classification fragment shader returns to quantize to the instance colour rather than to the uniform's untouched fallback. |
 | webgpu-cloud-frame-error-context.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Pins that cloud-frame failures in the post-frustum chain and the environmental stage are reported through the context-carrying reporter, so a multi-context session can tell which context failed. |
-| webgpu-cloud-godray-current-mask-order.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 5 | — |
+| webgpu-cloud-godray-current-mask-order.spec.mjs | spec | NO @purpose HEADER | 2026-09-16 | 5 | — |
 | webgpu-cloud-shadow-bind-group-cache.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Drives the real WebGPUCloudShadowBindGroupCache on a fake device: per-slot dedupe, descriptor identity, invalidation on resource change. |
 | webgpu-clustered-zero-light-dispatch.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Proves settled zero-light frames avoid redundant params writes and compute passes. |
 | webgpu-dynamic-environment-recovery.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Source-anchored pins that dynamic environment-map caches are owned by one device generation and recover across manager/capture/Scene wiring. |

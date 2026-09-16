@@ -72,6 +72,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { withLaneTmp } from "../lib/lane-tmp.mjs";
 import {
+  buildC13_42Schedule,
   initialCoreSubjects,
   servedResponseBudgetFor,
   servedResponseBudgetMs,
@@ -91,6 +92,7 @@ import {
   makeWorkRegistry,
 } from "./lib/probe-work-registry.mjs";
 import { PROBE_EXIT_CODES, runProbe } from "./lib/probe-runtime.mjs";
+import { ProbeRefusal } from "./lib/probe-refusal.mjs";
 import {
   appendC13_42ServedResponse,
   descriptor as c13_42Descriptor,
@@ -2221,4 +2223,67 @@ test("H. the descriptor scope forwards the live checkpoint", async (t) => {
         );
       }),
   );
+});
+
+test("I C13-42 runs the complete schedule and bounds progress selection", async () => {
+  const source = c13_42Descriptor.cells.toString();
+  const start = source.indexOf("const scheduledSubjects =");
+  const end = source.indexOf("const endSnapshot =", start);
+  assert.ok(start >= 0 && end > start);
+  // Execute the production selector and its consumer loop. Only the per-subject
+  // capture is replaced; the schedule, refusal, filtering, and iteration stay real.
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const compile = (body) =>
+    new AsyncFunction(
+      "options",
+      "buildC13_42Schedule",
+      "ProbeRefusal",
+      "scope",
+      "runSubject",
+      "const browser = null, run = 0, origin = null, outputDirectory = null, " +
+        "captures = [], repositoryRoot = null, evidenceClosure = {};\n" +
+        body +
+        "\nreturn cells;",
+    );
+  const body = source.slice(start, end);
+  const invoke = async (execute, options = {}) => {
+    const reached = [];
+    let checkpoints = 0;
+    const cells = await execute(
+      options,
+      buildC13_42Schedule,
+      ProbeRefusal,
+      { checkpoint: () => checkpoints++ },
+      async ({ subject }) => {
+        reached.push(subject.id);
+        return subject.id;
+      },
+    );
+    assert.deepEqual(cells, reached);
+    assert.equal(checkpoints, reached.length);
+    return cells;
+  };
+  const execute = compile(body);
+  const expected = initialCoreSubjects().map(({ id }) => id);
+  assert.equal(expected.length, 8);
+  assert.deepEqual(await invoke(execute), expected);
+  assert.deepEqual(
+    await invoke(execute, { progressSubject: expected.at(-1) }),
+    [expected.at(-1)],
+  );
+  const rejectsUnknown = (candidate) =>
+    assert.rejects(
+      () => invoke(candidate, { progressSubject: "unknown-subject" }),
+      { reason: "c13-42-progress-subject" },
+    );
+  await rejectsUnknown(execute);
+
+  const unchecked = body.replace(
+    /if\s*\(\s*subjects\.length !==/,
+    "if (false && subjects.length !==",
+  );
+  assert.notEqual(unchecked, body);
+  await assert.rejects(() => rejectsUnknown(compile(unchecked)), {
+    code: "ERR_ASSERTION",
+  });
 });

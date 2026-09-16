@@ -1852,7 +1852,10 @@ export const descriptor = {
           (subject) => subject.id === options.progressSubject,
         )
       : scheduledSubjects;
-    if (subjects.length !== (options.progressSubject ? 1 : 7)) {
+    if (
+      subjects.length !==
+      (options.progressSubject ? 1 : scheduledSubjects.length)
+    ) {
       throw new ProbeRefusal(
         "c13-42-progress-subject",
         "the requested progress subject is not in the frozen C13-42 schedule",
