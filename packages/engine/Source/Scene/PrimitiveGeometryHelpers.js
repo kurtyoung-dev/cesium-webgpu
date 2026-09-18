@@ -224,7 +224,8 @@ function cloneAttribute(attribute) {
   if (Array.isArray(attribute.values)) {
     clonedValues = attribute.values.slice(0);
   } else {
-    clonedValues = new attribute.values.constructor(attribute.values);
+    const Ctor = attribute.values.constructor;
+    clonedValues = new Ctor(attribute.values);
   }
   return new GeometryAttribute({
     componentDatatype: attribute.componentDatatype,
@@ -249,7 +250,8 @@ function cloneGeometry(geometry) {
     if (Array.isArray(sourceValues)) {
       indices = sourceValues.slice(0);
     } else {
-      indices = new sourceValues.constructor(sourceValues);
+      const Ctor = sourceValues.constructor;
+      indices = new Ctor(sourceValues);
     }
   }
 

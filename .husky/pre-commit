@@ -9,10 +9,18 @@ node_modules/.bin/lint-staged || exit 1
 # Step 2: type-check the root project. Its tsconfig `include` is `scripts/*.js`
 # with `checkJs` off, so this covers the build scripts that opt in via
 # `// @ts-check` — NOT the engine sources. Uses --noEmit so no output files are
-# generated. This replaces the per-file tsc that was in
-# engine/lint-staged.config.js (which caused timeouts on large changesets
-# because tsc ignores file arguments and always checks the whole project
-# anyway).
+# generated. tsc lives here rather than as a per-file lint-staged task because
+# it ignores file arguments and always checks the whole project anyway, so a
+# per-file form ran a full type-check once per staged file and timed out on
+# large changesets.
+#
+# There is deliberately no per-package lint-staged config. lint-staged resolves
+# the NEAREST config for each staged file and matches globs relative to THAT
+# config's directory, so a `packages/engine/lint-staged.config.js` — even a bare
+# re-export of the root — makes the root's path-anchored globs
+# (`packages/*/Source/**`) evaluate against `Source/**` and match nothing. Every
+# engine source file then skips those tasks while the hook still reports green.
+# Keep the root config the only one.
 npx tsc --noEmit || exit 1
 
 # Step 3: type-check the engine project — the sources this fork actually

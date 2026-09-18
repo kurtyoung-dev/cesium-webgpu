@@ -221,6 +221,7 @@
     "packages/sandcastle"
   ],
   "overrides": {
+    "eslint": "10.10.0",
     "protobufjs": "^8.8.0",
     "@huggingface/transformers@4.2.0": {
       "onnxruntime-web": {

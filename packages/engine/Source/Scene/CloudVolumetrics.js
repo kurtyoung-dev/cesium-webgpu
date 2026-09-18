@@ -161,25 +161,20 @@ function CloudVolumetrics(options) {
    */
   this.cloudQuality = options.cloudQuality ?? 64;
 
-  // corrected 2026-09-12, C13-N34: "ultra" was documented here as though it
-  // worked. It is honoured by neither resolver — `resolveTier`
+  // "ultra" is honoured by neither resolver: `resolveTier`
   // (WebGPUCloudTierPresets) and `resolveCloudQuality`
   // (WebGPUProceduralCloudRenderer) fall anything that is not low/medium/high
-  // through to the "auto" altitude bands. It is marked reserved rather than
-  // deleted, because the fork is funding it: deleting the string would satisfy
-  // the literal wording of C13-N12's acceptance ("no longer documents an
-  // unimplemented value") while leaving its deliverable unbuilt.
-  // THIS EDIT DISCHARGES NEITHER C13-N12 NOR C13-N41 — it corrects a false
-  // claim and nothing more.
+  // through to the "auto" altitude bands. It stays documented as reserved
+  // rather than deleted, because the rung it names is funded work — dropping
+  // the string would make this doc comment honest without building anything.
   /**
    * Volumetric cloud quality preset. One of <code>"auto"</code>,
    * <code>"low"</code>, <code>"medium"</code> or <code>"high"</code>.
    *
    * <code>"ultra"</code> is accepted but reserved — no resolver honours it yet,
-   * so today it falls through to the automatic altitude bands — with row
-   * <code>C13-N12</code> (the S4 rung, WebGPU-only by design) and
-   * <code>C13-N41</code> (the public two-axis quality surface) owning the work
-   * that makes it real.
+   * so today it falls through to the automatic altitude bands. Implementing
+   * that rung, and the public two-axis quality surface it belongs to, is
+   * tracked work.
    *
    * WebGPU only.
    * @type {string}
@@ -200,17 +195,16 @@ function CloudVolumetrics(options) {
 
   // ── Aerial / ambient modes ──
 
-  // corrected 2026-09-16, C13-N20 (ruling R-2026-09-16-4): this defaulted to
-  // "heuristic", and `CloudCollection._resolveVolumetricConfig` spreads this
-  // instance verbatim, so the dial reached the renderer as a string on every
-  // frame. The renderer's promotion clause consults its altitude default only
-  // when the dial is UNSET, so the clause was unreachable through the public
-  // API — dead for every caller, and a false premise for any measurement taken
-  // "with the promotion active". The unset state is now spelled "auto", the
-  // same sentinel `cloudVolumetricQuality` above already uses for "the renderer
-  // decides", which keeps the state nameable, settable back and typed {string}.
-  // `undefined` still resolves identically, for a duck-typed config that
-  // declares no dial at all.
+  // The default MUST stay the unset sentinel "auto", never a concrete mode.
+  // `CloudCollection._resolveVolumetricConfig` spreads this instance verbatim,
+  // so a concrete default would reach the renderer as a string on every frame,
+  // and the renderer's promotion clause consults its altitude default only when
+  // the dial is UNSET — the clause would then be unreachable through the public
+  // API, dead for every caller, and a false premise for any measurement taken
+  // "with the promotion active". "auto" is the same sentinel
+  // `cloudVolumetricQuality` above uses for "the renderer decides", which keeps
+  // the state nameable, settable back and typed {string}. `undefined` resolves
+  // identically, for a duck-typed config that declares no dial at all.
   /**
    * Aerial-perspective mode for distant clouds. One of <code>"auto"</code>,
    * which lets the renderer pick per frame, <code>"heuristic"</code>, the
@@ -220,8 +214,8 @@ function CloudVolumetrics(options) {
    * Under <code>"auto"</code> the renderer resolves to <code>"physical"</code>
    * at or above the volumetric disable altitude, where the analytic term is
    * pinned at its cap for every pixel and reads as a flat haze wash, and to
-   * <code>"heuristic"</code> below it (<code>C13-N20</code>). An explicit value
-   * wins in both directions.
+   * <code>"heuristic"</code> below it. An explicit value wins in both
+   * directions.
    *
    * WebGPU only.
    * @type {string}
@@ -229,12 +223,11 @@ function CloudVolumetrics(options) {
    */
   this.cloudAerialMode = options.cloudAerialMode ?? "auto";
 
-  // corrected 2026-09-12, C13-N34: the alternative was documented as "sky",
-  // which no consumer has ever read. The renderer's only test is
-  // `cloudAmbientSource === "sky-lut"` (`ambientLutOn`, uniform float 109), the
-  // spelling ProceduralClouds.wgsl also names. The dead spelling is recorded
-  // here rather than silently swapped, because a caller may have set "sky" and
-  // seen nothing happen.
+  // The only spelling any consumer reads is "sky-lut": the renderer's one test
+  // is `cloudAmbientSource === "sky-lut"` (`ambientLutOn`, uniform float 109),
+  // the spelling ProceduralClouds.wgsl also names. "sky" is a dead spelling and
+  // is named here rather than passed over in silence, because a caller may have
+  // set it and seen nothing happen.
   /**
    * Cloud shadow-side ambient source: <code>"constant"</code>, a fixed ambient
    * term, or <code>"sky-lut"</code>, which samples the baked sky-ambient LUT.
@@ -263,9 +256,8 @@ function CloudVolumetrics(options) {
   this.cloudCurlAmplitude = options.cloudCurlAmplitude;
   /** Curl-noise swirl wavelength. WebGPU only. @type {number|undefined} */
   this.cloudCurlFrequency = options.cloudCurlFrequency;
-  // corrected 2026-09-12, C13-N34: the @type read {number|undefined}; the value
-  // is a string the renderer compares (`=== "perlin-worley"`), and
-  // cesium-js-types.d.ts already declared `cloudNoiseMorphology?: string`.
+  // A string, not a number: the renderer compares it (`=== "perlin-worley"`),
+  // and cesium-js-types.d.ts declares `cloudNoiseMorphology?: string`.
   /**
    * Baked cloud-shape noise morphology. <code>"perlin-worley"</code> selects the
    * separately baked Perlin-Worley shape texture; any other value, including
@@ -318,9 +310,9 @@ function CloudVolumetrics(options) {
 
   // ── Exotic E1: species / varieties (uniform slots 132-135) ──
 
-  // corrected 2026-09-12, C13-N34: the "e.g." list omitted the "lenticular"
-  // alias the renderer honours. The list is now exhaustive — every name here is
-  // one the species resolver tests, and it tests no others.
+  // The list below is EXHAUSTIVE, the "lenticular" alias included: every name
+  // is one the species resolver tests, and it tests no others. Keep it that way
+  // rather than letting it decay into an "e.g." sample.
   /**
    * Species name selecting a density-shaping mode: <code>"lenticularis"</code>
    * (alias <code>"lenticular"</code>), <code>"fibratus"</code> or
@@ -340,10 +332,10 @@ function CloudVolumetrics(options) {
 
   // ── Exotic E2 remaining: supplementary features (uniform slots 136-139) ──
 
-  // corrected 2026-09-12, C13-N34: the "e.g." list omitted three names the
-  // feature resolver honours — the "kelvin-helmholtz"/"kelvinhelmholtz" aliases
-  // of fluctus, and "praecipitatio", which shares virga's mode with a denser
-  // parameter. The list is now exhaustive.
+  // The list below is EXHAUSTIVE: every name is one the feature resolver tests,
+  // the "kelvin-helmholtz"/"kelvinhelmholtz" aliases of fluctus included, and
+  // "praecipitatio", which shares virga's mode with a denser parameter. Keep it
+  // exhaustive rather than letting it decay into an "e.g." sample.
   /**
    * Feature name selecting a density-shaping mode: <code>"asperitas"</code>,
    * <code>"fluctus"</code> (aliases <code>"kelvin-helmholtz"</code> and
@@ -364,10 +356,10 @@ function CloudVolumetrics(options) {
 
   // ── Exotic E3: special luminous forms (iridescent color tint) ──
 
-  // corrected 2026-09-12, C13-N34: the form names were prose examples, not the
-  // set the renderer tests, and the numeric `cloudSpecialShadeMode` companion
-  // the packer reads was undeclared while its Strength/Scale/Param siblings
-  // were declared. Both are now stated.
+  // The form names below are the set the renderer tests, not prose examples.
+  // The numeric `cloudSpecialShadeMode` companion the packer reads is declared
+  // alongside its Strength/Scale/Param siblings, so no member of the group is
+  // invisible to a reader of this file.
   /**
    * Special "shining" high-altitude cloud form, as an iridescent shading tint:
    * <code>"noctilucent"</code> (alias <code>"nlc"</code>) or

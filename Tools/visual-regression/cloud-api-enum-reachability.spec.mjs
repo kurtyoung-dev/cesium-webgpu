@@ -75,8 +75,10 @@ const LEDGER_DIR = path.resolve(HERE, "..", "..", "migration_doc");
  * A campaign row id: two or more all-caps/digit segments joined by hyphens
  * (`C13-N12`, `DP-H41`, `NEW-WEBGPU-…`). Deliberately strict about case so
  * ordinary hyphenated prose ("WebGPU-only", "sky-lut") cannot pass as one.
+ * Applied to the owners declared in `RESERVED_OWNERS`, so a typo there fails
+ * on shape before it fails on absence from the ledger.
  */
-const ROW_ID = /\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+\b/g;
+const ROW_ID = /^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$/;
 
 /**
  * A derived carrier (`const n = specialName.toLowerCase()`) stays valid for this
@@ -309,20 +311,35 @@ function docSentences(blockText) {
 }
 
 /**
+ * Who owns honouring each reserved value, keyed `dial:"value"`.
+ *
+ * This table lives here, not in the engine JSDoc that declares the reservation.
+ * The fork comment standard forbids campaign row ids in comments under the
+ * packages' Source trees (the marker guard rejects them), so a reservation can
+ * say THAT it is reserved and why, but cannot name its owner. Reading it out
+ * of engine prose would make this spec and the marker guard demand opposite
+ * things of the same sentence. Every entry is still checked against the ledger
+ * by `ledgerMentions`, so an owner that is deleted from `migration_doc/*.md`
+ * still fails — the check moved, it did not weaken.
+ */
+const RESERVED_OWNERS = new Map([
+  ['cloudVolumetricQuality:"ultra"', ["C13-N12", "C13-N41"]],
+]);
+
+/**
  * Values the JSDoc declares RESERVED — documented, accepted, not yet honoured —
- * mapped to the row ids named in the same sentence. An empty row list is kept
+ * mapped to the row ids that own honouring them. An empty row list is kept
  * (not dropped) so the caller can fail it as an unowned reservation rather than
  * as a plain unreachable value.
  */
-function reservedValues(blockText) {
+function reservedValues(prop, blockText) {
   const out = new Map();
   for (const sentence of docSentences(blockText)) {
     if (!/\breserved\b/i.test(sentence)) {
       continue;
     }
-    const rows = [...sentence.matchAll(ROW_ID)].map((m) => m[0]);
     for (const m of sentence.matchAll(/<code>"([^"]*)"<\/code>/g)) {
-      out.set(m[1], rows);
+      out.set(m[1], RESERVED_OWNERS.get(`${prop}:"${m[1]}"`) ?? []);
     }
   }
   return out;
@@ -357,7 +374,7 @@ test("every documented cloud-dial value is one a consumer tests, and every teste
     const consumed = consumedValues(dial.prop);
     const documented = new Set(dial.documented);
     const tested = new Set(consumed.keys());
-    const reserved = reservedValues(dial.doc);
+    const reserved = reservedValues(dial.prop, dial.doc);
     for (const value of tested) {
       if (!documented.has(value)) {
         problems.push(
@@ -377,13 +394,13 @@ test("every documented cloud-dial value is one a consumer tests, and every teste
       const rows = reserved.get(value);
       if (rows === undefined) {
         problems.push(
-          `${dial.prop}: "${value}" is documented at CloudVolumetrics.js:${dial.line} but no consumer ever tests or defaults it — setting it does nothing. Correct the doc, or declare it reserved in the same JSDoc and name the row that owns honouring it.`,
+          `${dial.prop}: "${value}" is documented at CloudVolumetrics.js:${dial.line} but no consumer ever tests or defaults it — setting it does nothing. Correct the doc, or declare it reserved in the same JSDoc and add its owning row to RESERVED_OWNERS in this spec. Do NOT name the row in the JSDoc: the fork comment standard bans row ids under the packages' Source trees.`,
         );
         continue;
       }
       if (rows.length === 0) {
         problems.push(
-          `${dial.prop}: "${value}" is marked reserved at CloudVolumetrics.js:${dial.line} but names no owning row id — a reservation with no owner is just an unreachable value`,
+          `${dial.prop}: "${value}" is marked reserved at CloudVolumetrics.js:${dial.line} but has no entry in RESERVED_OWNERS in this spec — a reservation with no owner is just an unreachable value`,
         );
         continue;
       }
@@ -413,9 +430,13 @@ test("the reserved-value exemption is live, and today it has exactly one member"
   // to delete the reservation from the JSDoc, not to relax this assertion.
   const found = [];
   for (const dial of stringDials()) {
-    for (const [value, rows] of reservedValues(dial.doc)) {
+    for (const [value, rows] of reservedValues(dial.prop, dial.doc)) {
       found.push(`${dial.prop}:"${value}" -> ${rows.join(",")}`);
       for (const row of rows) {
+        assert.ok(
+          ROW_ID.test(row),
+          `${dial.prop}:"${value}" reserves against ${row}, which is not shaped like a campaign row id`,
+        );
         assert.ok(
           ledgerMentions(row),
           `${dial.prop}:"${value}" reserves against ${row}, which is in no migration_doc/*.md`,

@@ -53,6 +53,8 @@
 "Apps/Sandcastle/gallery/WebGPU Weather Particles.html"	"no-undef"	2
 "Apps/Sandcastle/gallery/WebGPU Weather Particles.html"	"strict"	2
 "packages/engine/Source/Core/Check.d.ts"	"@typescript-eslint/no-unsafe-function-type"	1
+"packages/engine/Source/Core/PixelFormat.js"	"new-cap"	1
+"packages/engine/Source/Core/clone.js"	"new-cap"	1
 "packages/engine/Source/Renderer/ContextFactory.ts"	"@typescript-eslint/no-unused-vars"	1
 "packages/engine/Source/Renderer/GraphicsContext.ts"	"@typescript-eslint/no-unused-vars"	12
 "packages/engine/Source/Renderer/GraphicsContext.ts"	"curly"	1
@@ -293,6 +295,7 @@
 "packages/engine/Source/Scene/AtmosphericEffects.ts"	"no-use-before-define"	7
 "packages/engine/Source/Scene/FrameState.d.ts"	"@typescript-eslint/no-unsafe-declaration-merging"	2
 "packages/engine/Source/Scene/HdrDisplayCapability.ts"	"@typescript-eslint/no-unused-vars"	5
+"packages/engine/Source/Scene/Vector3DTilePrimitive.js"	"new-cap"	2
 "packages/engine/Source/Scene/WaterClassificationProvider.ts"	"curly"	16
 "packages/engine/Source/Scene/Weather/MetarWeatherSource.ts"	"@typescript-eslint/no-unused-vars"	1
 "packages/engine/Source/Scene/Weather/MetarWeatherSource.ts"	"no-useless-assignment"	1

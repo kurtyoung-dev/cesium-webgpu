@@ -11,10 +11,10 @@
  * instead. Tiers 1 to 3 are opt-in volumetric — low, high and cinematic.
  *
  * `primarySteps` and `lightSteps` are the LIVE source of the packed step counts
- * (uniform floats 44 and 45), not a mirror of anything. `C13-N10` deleted the
- * renderer's second resolver, whose duplicated `(24,3)/(48,4)/(96,8)` literals
- * and duplicated altitude bands meant that editing this table moved no pixel.
- * The values carried across unchanged, so the collapse is byte-identical; the
+ * (uniform floats 44 and 45), not a mirror of anything. The renderer holds no
+ * second resolver of its own, so editing a row here is what moves the image —
+ * keep it that way: a duplicated `(24,3)/(48,4)/(96,8)` ladder or a duplicated
+ * set of altitude bands elsewhere would silently make this table inert. The
  * higher step counts the research suggests are adopted one feature at a time,
  * each behind its own comparison.
  *
@@ -81,20 +81,19 @@ export interface CloudQualityInputs {
 }
 
 /**
- * Tier table, the single source of truth — and, since `C13-N10`, the only
- * source: `primarySteps`, `lightSteps` and `lightSampleScale` are read straight
- * into the packed uniforms, so editing a row here moves the image. The lighting
- * fields `powderStrength`, `isotropicFloor` and `ambientFloor` reach uniform
- * floats 172-174; their shader consumer lands with `C13-N11`, so until then they
- * are carried but unread.
+ * Tier table, and the only source: `primarySteps`, `lightSteps` and
+ * `lightSampleScale` are read straight into the packed uniforms, so editing a
+ * row here moves the image. The lighting fields `powderStrength`,
+ * `isotropicFloor` and `ambientFloor` reach uniform floats 172-174; they are
+ * carried but unread until the shader's lighting consumer lands.
  *
  * Those three are deliberately IDENTICAL on every tier — powder 0.5, both floors
- * 0 — which is the shader's pre-wiring behaviour exactly. They previously carried
- * aspirational per-tier values (powder 0/0/0.4/0.7, floors up to 0.04 and 0.08)
- * that were safe only while nothing read them. Wiring them and keeping those
- * values would retune the image inside a plumbing batch, and the tier-0 and
- * tier-1 zeros would delete the powder term outright. Per-tier tuning is its own
- * row with an Edge capture; see `DEFERRED_WORK.md` under `C13-N11`.
+ * 0 — which is the shader's pre-wiring behaviour exactly. Aspirational per-tier
+ * values (powder 0/0/0.4/0.7, floors up to 0.04 and 0.08) are safe only while
+ * nothing reads them: adopting them at the moment the consumer lands would
+ * retune the image inside a plumbing change, and the tier-0 and tier-1 zeros
+ * would delete the powder term outright. Per-tier tuning is its own tracked
+ * follow-up, gated on a capture.
  */
 export const CLOUD_TIER_PRESETS: CloudTierPreset[] = [
   // Tier 0, baseline: the cloud pass does not run. Present for completeness.
@@ -110,10 +109,10 @@ export const CLOUD_TIER_PRESETS: CloudTierPreset[] = [
     lightSampleScale: 1.0,
     lightConeSampling: false,
     multiScatterOctaves: 0,
-    // [2026-09-13, C13-N10] Pinned to the pre-wiring literal; per-tier tuning is
-    // a follow-up row with an Edge capture. C13-N11 makes these three floats LIVE
-    // for the first time, so any value other than the shader's old hard-coded
-    // powder 0.5 / zero floors would retune the image inside a plumbing batch.
+    // Pinned to the pre-wiring literal until the per-tier values are tuned
+    // against a capture. The shader reads these three floats for the first time
+    // once its lighting consumer lands, so any value other than the old
+    // hard-coded powder 0.5 / zero floors would retune the image here.
     powderStrength: 0.5,
     isotropicFloor: 0,
     ambientFloor: 0,
@@ -132,10 +131,10 @@ export const CLOUD_TIER_PRESETS: CloudTierPreset[] = [
     lightSampleScale: 0.5,
     lightConeSampling: true,
     multiScatterOctaves: 2,
-    // [2026-09-13, C13-N10] Pinned to the pre-wiring literal; per-tier tuning is
-    // a follow-up row with an Edge capture. C13-N11 makes these three floats LIVE
-    // for the first time, so any value other than the shader's old hard-coded
-    // powder 0.5 / zero floors would retune the image inside a plumbing batch.
+    // Pinned to the pre-wiring literal until the per-tier values are tuned
+    // against a capture. The shader reads these three floats for the first time
+    // once its lighting consumer lands, so any value other than the old
+    // hard-coded powder 0.5 / zero floors would retune the image here.
     powderStrength: 0.5,
     isotropicFloor: 0,
     ambientFloor: 0,
@@ -154,10 +153,10 @@ export const CLOUD_TIER_PRESETS: CloudTierPreset[] = [
     lightSampleScale: 0.5,
     lightConeSampling: true,
     multiScatterOctaves: 3,
-    // [2026-09-13, C13-N10] Pinned to the pre-wiring literal; per-tier tuning is
-    // a follow-up row with an Edge capture. C13-N11 makes these three floats LIVE
-    // for the first time, so any value other than the shader's old hard-coded
-    // powder 0.5 / zero floors would retune the image inside a plumbing batch.
+    // Pinned to the pre-wiring literal until the per-tier values are tuned
+    // against a capture. The shader reads these three floats for the first time
+    // once its lighting consumer lands, so any value other than the old
+    // hard-coded powder 0.5 / zero floors would retune the image here.
     powderStrength: 0.5,
     isotropicFloor: 0,
     ambientFloor: 0,
@@ -178,10 +177,10 @@ export const CLOUD_TIER_PRESETS: CloudTierPreset[] = [
     // Cinematic keeps the straight N-step light march for full quality.
     lightConeSampling: false,
     multiScatterOctaves: 3,
-    // [2026-09-13, C13-N10] Pinned to the pre-wiring literal; per-tier tuning is
-    // a follow-up row with an Edge capture. C13-N11 makes these three floats LIVE
-    // for the first time, so any value other than the shader's old hard-coded
-    // powder 0.5 / zero floors would retune the image inside a plumbing batch.
+    // Pinned to the pre-wiring literal until the per-tier values are tuned
+    // against a capture. The shader reads these three floats for the first time
+    // once its lighting consumer lands, so any value other than the old
+    // hard-coded powder 0.5 / zero floors would retune the image here.
     powderStrength: 0.5,
     isotropicFloor: 0,
     ambientFloor: 0,
@@ -230,10 +229,10 @@ export function resolveCloudPreset(
       // The escape hatch keeps the straight light march.
       lightConeSampling: false,
       multiScatterOctaves: 3,
-      // [2026-09-13, C13-N10] Pinned to the pre-wiring literal; per-tier tuning is
-      // a follow-up row with an Edge capture. C13-N11 makes these three floats LIVE
-      // for the first time, so any value other than the shader's old hard-coded
-      // powder 0.5 / zero floors would retune the image inside a plumbing batch.
+      // Pinned to the pre-wiring literal until the per-tier values are tuned
+      // against a capture. The shader reads these three floats for the first time
+      // once its lighting consumer lands, so any value other than the old
+      // hard-coded powder 0.5 / zero floors would retune the image here.
       powderStrength: 0.5,
       isotropicFloor: 0,
       ambientFloor: 0,
@@ -252,11 +251,11 @@ export const CLOUD_QF_JITTER = 1 << 3; // per-pixel ray sample phase
 export const CLOUD_QF_OCTAVES_SHIFT = 4; // bits 4-6
 export const CLOUD_QF_PROFILE_ON = 1 << 7;
 // Atmosphere-LUT coupling. Bit 9 is set only when `cloudAmbientSource` is
-// opted into, and the default render leaves it clear. Bit 8 is no longer that
-// shape: since `C13-N20` / `R-2026-09-16-4` the renderer also sets it for an
-// UNSET `cloudAerialMode` — undeclared, or the public `"auto"` default — once
-// `shouldDefaultPhysicalAerial` fires, which is at or above the band edge. A
-// default render above that edge therefore carries bit 8, by intent.
+// opted into, and the default render leaves it clear. Bit 8 is not that shape:
+// the renderer also sets it for an UNSET `cloudAerialMode` — undeclared, or the
+// public `"auto"` default — once `shouldDefaultPhysicalAerial` fires, which is
+// at or above the band edge. A default render above that edge therefore carries
+// bit 8, by intent.
 export const CLOUD_QF_AERIAL_LUT = 1 << 8; // physical aerial: sky-view + transmittance
 export const CLOUD_QF_AMBIENT_LUT = 1 << 9; // sky-LUT cloud ambient
 // Set by the renderer only when the resolved tier's `lightConeSampling` is
@@ -278,9 +277,9 @@ export const CLOUD_QF_PLANET_DENSITY = 1 << 13;
 
 // ── The derived quality block ───────────────────────────────────────────────
 //
-// Everything below was lifted out of `WebGPUProceduralCloudRenderer.ts` by
-// `C13-N10` (that file is 5,570 lines; the house rule asks for a decomposition
-// slice whenever such a file is functionally touched). It is the whole
+// Everything below lives here rather than in `WebGPUProceduralCloudRenderer.ts`
+// (that file is over 5,000 lines; the house rule asks for a decomposition slice
+// whenever such a file is functionally touched). It is the whole
 // preset → packed-uniform seam: pure, device-free, and therefore assertable
 // from Node. The renderer keeps the packing loop and writes these values into
 // the `CloudUniforms` floats named in each field's doc comment.
@@ -337,9 +336,9 @@ export function buildCloudQualityInputs(
 /**
  * Whether the physical aerial LUT path is the DEFAULT for this frame, absent an
  * explicit `cloudAerialMode` — the dial either undeclared or left at the public
- * `"auto"` default, which are one state (R-2026-09-16-4).
+ * `"auto"` default, which are one state.
  *
- * `C13-N20`'s promotion clause: the heuristic aerial term is
+ * Why the promotion exists: the heuristic aerial term is
  * `clamp(midDist / 60000, 0, 0.85)`, and above the band edge every pixel
  * is far past 60 km, so the heuristic is pinned at its 0.85 cap for the whole
  * frame — a flat haze wash instead of a range-correct path length. The sky-view
@@ -353,12 +352,11 @@ export function buildCloudQualityInputs(
  * plan's §2.3 asks for — a camera at 300 km should run cheap pixels with correct
  * physics, not the reverse — and under `"auto"` it was unreachable, because the
  * auto bands map "at or above the disable altitude" to tier 1. Lighting fidelity
- * is the L axis, which does not exist yet; when `C13-13` lands the S×L ladder it
- * maps this predicate onto L, and this is the one function it has to change.
+ * is the L axis, which does not exist yet; whoever lands the S×L ladder maps this
+ * predicate onto L, and this is the one function they have to change.
  *
- * This is the one part of `C13-N10` that is NOT byte-identical: above the band
- * edge, an `"auto"` frame that asked for no mode now takes the LUT path. That
- * visible change is the row's intent.
+ * This predicate is deliberately VISIBLE above the band edge: an `"auto"` frame
+ * that asked for no mode takes the LUT path rather than the heuristic one.
  *
  * @param inputs The resolver inputs for this frame.
  * @returns {boolean} True when the physical path is the default.
@@ -402,11 +400,11 @@ export interface CloudQualityBlock {
   lightSampleScale: number;
   /** Uniform float 79 — mean-preserving erosion floor. */
   erosionStrength: number;
-  /** Uniform float 172 — multi-scatter powder term (`C13-N11` consumer owed). */
+  /** Uniform float 172 — multi-scatter powder term; shader consumer owed. */
   powderStrength: number;
-  /** Uniform float 173 — isotropic scattering floor (`C13-N11` consumer owed). */
+  /** Uniform float 173 — isotropic scattering floor; shader consumer owed. */
   isotropicFloor: number;
-  /** Uniform float 174 — ambient floor (`C13-N11` consumer owed). */
+  /** Uniform float 174 — ambient floor; shader consumer owed. */
   ambientFloor: number;
 }
 

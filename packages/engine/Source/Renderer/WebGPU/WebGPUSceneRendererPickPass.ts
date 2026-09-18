@@ -784,8 +784,8 @@ export function executePickPass(
       // Offscreen ray-pick depth. `Scene.sampleHeightMostDetailed` /
       // `clampToHeightMostDetailed` recover the hit distance from THIS render's
       // depth, and nothing else publishes a readable one during a pick pass —
-      // the globe-depth framebuffer is off here, which is why every sampled
-      // point read `undefined` on this backend before Batch 1482. Copy the
+      // the globe-depth framebuffer is off here, so without this copy every
+      // sampled point reads `undefined` on this backend. Copy the
       // slice's depth VERBATIM into a pick-framebuffer-owned `r32float` target
       // and hand that texture to the offscreen view's `PickDepth`; the query
       // reads it back asynchronously once the frame is submitted.

@@ -1166,13 +1166,11 @@ interface CesiumScene {
    * and the frame is unchanged.
    *
    * The producer is the application: no engine code writes this by design, the
-   * way an opt-in is meant to work. `FEATURE_INVENTORY.md` §B advertises the
-   * name `scene.godRayCloudAware` as SHIPPED (adopted 2026-09-10, wave A lane
-   * C2), and `webgpu-cloud-godray-current-mask-order.spec.mjs` pins the
+   * way an opt-in is meant to work. `scene.godRayCloudAware` is a published
+   * name, and `webgpu-cloud-godray-current-mask-order.spec.mjs` pins the
    * ordering. Declared here — rather than reached through a local structural
    * cast — so the chain's read is typed. A public `@property` on `Scene.js`,
-   * which is what a user-facing opt-in really wants, is still owed
-   * (C13-N34 follow-up).
+   * which is what a user-facing opt-in really wants, is still owed.
    */
   godRayCloudAware?: boolean;
   /**

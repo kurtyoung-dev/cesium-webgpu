@@ -63,8 +63,8 @@ import {
 import type { CloudFrameCounters } from "./WebGPUCloudObservability.js";
 // The quality resolver and every preset-derived uniform it produces. This file
 // holds no second copy of the tier table, the altitude bands or the
-// `qualityFlags` assembly: `C13-N10` collapsed the renderer's own
-// `resolveCloudQuality` into the preset module, which is now the only producer.
+// `qualityFlags` assembly: the preset module is their only producer, and a
+// local `resolveCloudQuality` here would make that module's table inert.
 import {
   buildCloudQualityBlock,
   buildCloudQualityInputs,
@@ -184,13 +184,13 @@ import {
 // renamed or repurposed in place but never moved, and new fields extend the
 // tail. The trailing terms name the two blocks that already do so.
 const CLOUD_GENUS_MORPHOLOGY_FLOATS = 4;
-// C13-N11's tier lighting row, appended at the tail: floats 172-174 carry
+// The tier lighting row, appended at the tail: floats 172-174 carry
 // `powderStrength`, `isotropicFloor` and `ambientFloor` from the resolved
-// preset, and 175 pads the 16-byte row. The three fields existed in
-// `WebGPUCloudTierPresets.ts` with no uniform slot at all, which is why they
-// were inert. The WGSL consumer is C13-N11's own (lane L4) and lands after this
-// batch; until it does the shader simply never reads the tail, which is why
-// adding the row is byte-identical.
+// preset, and 175 pads the 16-byte row. Those three fields live in
+// `WebGPUCloudTierPresets.ts` and had no uniform slot at all, which is why they
+// were inert. The WGSL consumer is owed; until it lands the shader simply never
+// reads the tail, so the shorter struct over the longer buffer — which WebGPU
+// permits — leaves the image unchanged.
 const CLOUD_TIER_LIGHTING_FLOATS = 4;
 const CLOUD_UNIFORM_FLOATS =
   148 +
@@ -2712,10 +2712,10 @@ function ensureWeatherView(
   if (!enabled) {
     return cache.weatherFallbackView;
   }
-  // Allocate the WEATHER_TEX_W x WEATHER_TEX_H weather texture once. [2026-09-12,
-  // corrected for C13-N22 (lane Ossë): this comment said "256x128", which is the
-  // value of those constants today and stops being true the moment that row
-  // raises them to the native GMGSI grid. Name the constants, not a number.]
+  // Allocate the WEATHER_TEX_W x WEATHER_TEX_H weather texture once. Name the
+  // constants here, never their current numeric values: the grid is expected to
+  // rise to the native GMGSI resolution, and a spelled-out size would silently
+  // become a lie on that day.
   if (!cache.weatherTexture) {
     const tex = device.createTexture({
       size: {
@@ -3039,14 +3039,12 @@ function initializeCloudPipeline(
   cache.initialized = true;
 }
 
-// The quality-dial resolver that used to live here — its own copy of the
-// `(24,3)/(48,4)/(96,8)` table and its own copy of the `"auto"` altitude bands —
-// was deleted by `C13-N10`. `WebGPUCloudTierPresets.ts` is the single source:
-// `resolveTier` spells the bands once and `CLOUD_TIER_PRESETS` spells the step
-// counts once, so an edit to the tier table now reaches uniform floats 44 and
-// 45. The step counts, the band comparisons and the `6 * sqrt(raw / 64)`
-// escape-hatch arithmetic all carried across unchanged, so the collapse is
-// byte-identical at every input.
+// The quality-dial resolver does NOT live here. `WebGPUCloudTierPresets.ts` is
+// the single source: `resolveTier` spells the `"auto"` altitude bands once and
+// `CLOUD_TIER_PRESETS` spells the `(24,3)/(48,4)/(96,8)` step counts once, so an
+// edit to the tier table reaches uniform floats 44 and 45. The step counts, the
+// band comparisons and the `6 * sqrt(raw / 64)` escape-hatch arithmetic all
+// belong to that module; a second copy here would make the table inert.
 
 // Allocates or reallocates the shadow map, its pipeline, uniform buffer and
 // placeholder, building the dedicated shadow bind-group layout with only the
@@ -3679,10 +3677,10 @@ export function prepareCloudFrameAndEncodeMask(
     data[offset++] = config.cloudCurlFrequency ?? 2.0; // 77 curlFrequency
     // 78 — light-march step scale. The live-noise and cinematic paths march the
     // full light ray; the lower baked tiers halve it for cheaper shadowing. This
-    // slot had a SECOND source of truth — a `noiseSource === LIVE || tier >= 3`
-    // test that re-derived what `CloudTierPreset.lightSampleScale` already
-    // states — until `C13-N10` deleted it. The preset's own values reproduce the
-    // deleted expression exactly at every tier and at the escape hatch.
+    // slot must have exactly ONE source: `CloudTierPreset.lightSampleScale`. A
+    // local `noiseSource === LIVE || tier >= 3` test would re-derive what the
+    // preset already states, and the preset's values reproduce that expression
+    // exactly at every tier and at the escape hatch.
     data[offset++] = qualityBlock.lightSampleScale; // 78 lightSampleScale
     // 79 — mean-preserving erosion floor, read on the baked path only. An explicit
     // override wins; otherwise the tier decides, low tiers being fibrous at 0.10
@@ -3789,10 +3787,10 @@ export function prepareCloudFrameAndEncodeMask(
     data[offset++] = config.cloudWeatherChannelStrength ?? 1.0; // 107 weatherChannelStrength
     // 108-111 — atmosphere-LUT coupling modes. The ambient mode defaults to the
     // analytic path, a constant ambient, which the shader selects when the mode
-    // float is 0. The aerial mode did too until `C13-N20` / `R-2026-09-16-4`:
-    // it now defaults to the analytic heuristic term BELOW the band edge and to
-    // the physical LUT path at or above it, so an unset dial writes 108 = 1
-    // there. The `qualityFlags` bits 8 and 9 carry the same
+    // float is 0. The aerial mode does NOT: it defaults to the analytic
+    // heuristic term BELOW the band edge and to the physical LUT path at or
+    // above it, so an unset dial writes 108 = 1 there. The `qualityFlags` bits
+    // 8 and 9 carry the same
     // on/off state; the mode floats make it legible from the shader side.
     // `atmosphereThickness` has to match the LUT bake, so the transmittance
     // v-lookup lands on the right row.
@@ -3800,16 +3798,16 @@ export function prepareCloudFrameAndEncodeMask(
       cloudAerialMode?: string;
       cloudAmbientSource?: string;
     };
-    // C13-N20's promotion clause. An explicit `cloudAerialMode` always wins, in
+    // The promotion clause. An explicit `cloudAerialMode` always wins, in
     // both directions: `"physical"` turns the LUT path on wherever the user asks
     // for it, and any other explicit string keeps the analytic term even above
     // the band edge. Only an UNSET dial consults the default, which is
     // `shouldDefaultPhysicalAerial` — above the band edge the heuristic term
     // saturates its `clamp(midDist / 60000, 0, 0.85)` for every pixel, so the
-    // LUT path is the correct default there. This is the one visible change in
-    // this batch; read that predicate for why it keys on altitude alone.
+    // LUT path is the correct default there; read that predicate for why it
+    // keys on altitude alone.
     //
-    // "Unset" is TWO spellings, not one (R-2026-09-16-4). A duck-typed config
+    // "Unset" is TWO spellings, not one. A duck-typed config
     // may simply declare no dial, and the public `CloudVolumetrics` dial spells
     // the same state `"auto"` — it is spread onto the config verbatim, so
     // without the second arm the clause above would be unreachable through the
@@ -4088,16 +4086,15 @@ export function prepareCloudFrameAndEncodeMask(
     data[offset++] = fibreMorphology.shear; // 170 genusFibreShear (0 = no fallstreak tilt)
     data[offset++] = profile.phaseG - cumulusProfile.phaseG; // 171 genusPhaseDelta (CUMULUS = 0)
 
-    // 172-175 — the tier lighting row, appended by `C13-N10` so that
-    // `powderStrength`, `isotropicFloor` and `ambientFloor` have a uniform slot
-    // at all. They were declared on `CloudTierPreset`, carried per-tier values,
-    // and reached nothing: that is the whole of why the tier table's lighting
-    // half was inert. The shader consumer is `C13-N11`'s (lane L4), which
-    // appends four floats to the tail of `CloudUniforms` and replaces the
-    // hard-coded `powder = 0.5` literal at `ProceduralClouds.wgsl:2537`. These
-    // slot numbers are the contract with that change. Until it lands the shader
-    // struct is shorter than the buffer, which WebGPU permits and which is why
-    // adding the row moves no pixel.
+    // 172-175 — the tier lighting row, which is what gives `powderStrength`,
+    // `isotropicFloor` and `ambientFloor` a uniform slot at all. They are
+    // declared on `CloudTierPreset` and carry per-tier values, so without this
+    // row they reach nothing and the tier table's lighting half is inert. The
+    // shader consumer is still owed: it appends four floats to the tail of
+    // `CloudUniforms` and replaces the hard-coded `powder = 0.5` literal in
+    // `ProceduralClouds.wgsl`. These slot numbers are the contract with that
+    // change. Until it lands the shader struct is shorter than the buffer,
+    // which WebGPU permits and which is why the row moves no pixel.
     data[offset++] = qualityBlock.powderStrength; // 172 tierPowderStrength
     data[offset++] = qualityBlock.isotropicFloor; // 173 tierIsotropicFloor
     data[offset++] = qualityBlock.ambientFloor; // 174 tierAmbientFloor

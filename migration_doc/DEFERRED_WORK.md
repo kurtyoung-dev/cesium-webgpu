@@ -21002,3 +21002,106 @@ engine, and they bind any later leg that reuses it:
 - **A first-capture-arm confound.** The first arm can capture a black globe before the scene settles,
   which reads as a large false regression if the arm is unguarded. Guard the first capture, or discard
   it, before comparing arms.
+
+### Lane W0-CIGREEN (Bolger) — main's three red CI gates, 2026-09-17 (Batch NNNN, number stamped by the seat)
+
+**`C16-12` clean-list ratchet: 53 REGRESSED → 0, 8 files** *(2026-09-17)*. `comment-marker-guard
+--verify-cleanlist` went from **53 REGRESSED in 8 files** at `91a7a8c9ff` to **0**, with the
+grandfather ledger untouched at **15 rows / 55 GRANDFATHERED findings** and no clean-list edit.
+Census `234 → 181` occurrences, `90 → 83` flagged files (−53 / −7; `WebGPUContext.ts` keeps its 3
+grandfathered markers, so 7 of the 8 files reach zero and the eighth reaches its floor). Per file:
+`WebGPUCloudTierPresets.ts` 23, `CloudVolumetrics.js` 13, `WebGPUProceduralCloudRenderer.ts` 10,
+`cesium-js-types.d.ts` 2, `MetarWeatherSource.ts` 2, `WebGPUContext.ts` 1,
+`WebGPUSceneRendererPickPass.ts` 1, `WebGPUSceneRendererPostFrustumChain.ts` 1. Technical content of
+every comment kept; only provenance removed. `comment-only-diff --base HEAD` reports the eight comment
+files **comment-only, 0 violations**. **Astra's rebased cloud tree still owes its own regressions** —
+`R-2026-09-16-8`'s fold now covers only what that tree adds on top of this.
+
+**`C16-00` — the pre-commit hook never ran the comment guard on engine sources** *(2026-09-17, root
+cause found and fixed)*. `packages/engine/lint-staged.config.js` (a pure `{...rootConfig}` re-export)
+made lint-staged resolve the NEAREST config for every file under `packages/engine/`, and lint-staged
+matches globs relative to THAT config's directory — so the root guard glob
+`packages/*/Source/**/*.{js,mjs,cjs,ts,tsx,wgsl,glsl}` was evaluated against `Source/…` and matched
+nothing. Measured at `91a7a8c9ff`: `npx lint-staged --diff="5823b7df83..b003a56de8" --no-stash`
+reports `packages/engine/lint-staged.config.js — 2 files`, `packages/*/Source/**/… — 0 files`, exit 0.
+After deleting the nested config the same command reports the guard glob at **2 files**, and against
+those two files' HEAD content it exits **1 with the guard's 33 errors**. That is how Batches 1493/1494
+landed 37 markers through a green hook. **The hook has been blind to engine sources since Batch 960
+wired it.** Extension-only globs (`*.md`, `*.{js,ts,…}`) survive the relocation, which is why the hole
+was invisible. Pinned by a new subtest in `Tools/c16/comment-marker-guard.spec.mjs`, "no per-package
+lint-staged config shadows the root one" (inertness-checked: restoring the nested file fails it).
+
+**Correction to the reproduction recipe as briefed:** `npx lint-staged --diff=… --no-stash` is NOT
+side-effect-free. It runs `prettier --write` and then an "Applying modifications from tasks" step that
+**stages the touched files into the index**. It wrote no content here (the files were already
+formatted — working-tree diff md5 identical before and after), but a caller must `git reset` afterwards
+or it will leave a non-empty index, which the landing runbook forbids.
+
+**`new-cap`: the two fork sites fixed, the four upstream sites exempted** *(2026-09-17,
+`R-2026-09-16-9`)*. `npm run eslint` went from **6 problems (6 errors)** to **0**. Fork side:
+`Scene/PrimitiveGeometryHelpers.js:227,252` (added by `febe065f36`) hoist the constructor into a
+PascalCase local. Upstream side, NOT edited — three rows added to `eslint.seatbelt.tsv` in its existing
+sort order:
+
+| file:line (fork) | rule | count | blame | upstream/main equivalent |
+| :-- | :-- | :-- | :-- | :-- |
+| `packages/engine/Source/Core/PixelFormat.js:479` | `new-cap` | 1 | `85c78edf31c`, Matthew Amato, 2020-05-26 | same file, **same line 479**, byte-identical |
+| `packages/engine/Source/Core/clone.js:17` | `new-cap` | 1 | `8143df4436b`, Gabby Getz, 2022-01-21 | same file, **same line 17**, byte-identical |
+| `packages/engine/Source/Scene/Vector3DTilePrimitive.js:810,830` | `new-cap` | 2 | `8143df4436b`, Gabby Getz, 2022-01-21 | same file, lines **519** and **539** (fork added ~291 lines above), byte-identical |
+
+Verified against `upstream/main` at `73c2eeec0c` (2026-09-03). **Retire these three seatbelt rows at
+the next upstream sync if upstream fixes them.** `SEATBELT_FROZEN=1 npx eslint <the four files>` exits
+0 with 0 errors and 4 informational seatbelt warnings (`npm run eslint` passes `--quiet`, so CI sees 0).
+
+**The root `package.json` `overrides` entry `"eslint": "10.10.0"` added here BINDS ONLY ON THE NEXT
+`npm install`** *(2026-09-17)*. npm applies `overrides` during dependency resolution, so adding the key
+does not change an already-installed tree, and no install was run in the lane that added it. Until an
+install resolves the lockfile the effective version is whatever is already on disk — 10.10.0 at the
+time of writing, which is why the `lint` gate is green either way. The `devDependencies` range
+`^10.9.1` was deliberately left alone: it is upstream-identical.
+
+**`R-2026-09-17-8` as executed** *(2026-09-17)*: the two fork-side `new-cap` sites are hoisted to a
+PascalCase local and the four upstream sites take `eslint-seatbelt` rows; the record's D8 row of Batch
+1497 describes `.slice()` + `eslint-disable`, which was not the shape taken.
+
+**UPSTREAM-ISSUE 2026-09-17 — to file at `CesiumGS/cesium` (exact text):**
+
+> **`new-cap` fails on four `new x.constructor(...)` call sites under eslint 10.10.0**
+>
+> `npm run eslint` reports four `new-cap` errors ("A constructor name should not start with a
+> lowercase letter") on code that is unchanged on `main`:
+>
+> - `packages/engine/Source/Core/PixelFormat.js:479` — `return new constructor(size);`
+> - `packages/engine/Source/Core/clone.js:17` — `const result = new object.constructor();`
+> - `packages/engine/Source/Scene/Vector3DTilePrimitive.js:519` — `const subarray = new indices.constructor(`
+> - `packages/engine/Source/Scene/Vector3DTilePrimitive.js:539` — `const newIndices = new indices.constructor(indices.length);`
+>
+> Rule: `new-cap` (core). eslint version resolved in `node_modules`: **10.10.0**. The declared range in
+> `package.json` is `eslint: "^10.9.1"`, so a fresh `npm install` picks up 10.10.0 and the lint job goes
+> red without any source change. `main` carries the identical code at the lines above and the identical
+> `^10.9.1` range.
+>
+> All four are the legitimate `new obj.constructor(...)` idiom — cloning a value by its own
+> constructor, typically a TypedArray — where the lowercase name is a property access, not a
+> constructor identifier the author chose. Suggested fixes, in order of preference: relax `new-cap`'s
+> `properties` option for this pattern, or hoist to a PascalCase local
+> (`const Ctor = obj.constructor; new Ctor(...)`).
+
+**Banking note for `C13-N12`** *(2026-09-17)*: that row's **Acceptance** clause cites
+`CloudVolumetrics.js:164-171`, which this batch rewrites and shortens — re-derive the line numbers
+before using it. Two facts that lived only in the deleted comment are banked here: (a) `"ultra"` is
+documented as **reserved rather than deleted** deliberately, because deleting the string would satisfy
+the acceptance clause's literal wording ("no longer documents an unimplemented value") while leaving
+the S4 rung unbuilt — do not close the row that way; (b) `"ultra"` is honoured by neither
+`resolveTier` nor `resolveCloudQuality`, both of which fall anything outside low/medium/high through to
+the `"auto"` altitude bands.
+
+**Instrument change, `cloud-api-enum-reachability.spec.mjs`** *(2026-09-17)*: that spec parsed the
+owning row ids for a reserved dial value **out of the engine JSDoc** — which the fork comment standard
+forbids under the packages' Source trees, so the spec and the marker guard demanded opposite things of
+one sentence, and removing the markers turned two green subtests red. The ownership table moved into
+the spec as `RESERVED_OWNERS` (`cloudVolumetricQuality:"ultra" → C13-N12, C13-N41`); the reservation
+itself is still read from the engine comment, and every owner is still checked against
+`migration_doc/*.md` by `ledgerMentions`, plus a new row-id shape check. Three mutants confirm it is
+load-bearing: removing the reservation marker from engine prose fails 2 subtests; an owner absent from
+the ledger fails 2; a mis-shaped owner fails 1.

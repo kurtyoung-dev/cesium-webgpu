@@ -690,6 +690,43 @@ test("lint-staged routes engine and widgets source through the guard", async () 
   );
 });
 
+test("no per-package lint-staged config shadows the root one", () => {
+  // The test above proves the root glob NAMES engine and widgets source. This
+  // one proves the glob is REACHED, which is a separate property and the one
+  // that failed silently.
+  //
+  // lint-staged resolves the NEAREST config for each staged file and matches
+  // globs relative to THAT config's directory. A `packages/engine/
+  // lint-staged.config.js` — even a bare `{...rootConfig}` re-export that looks
+  // like it changes nothing — therefore makes the root's path-anchored
+  // `packages/*/Source/**` glob evaluate against `Source/**` for every engine
+  // file, where it matches nothing. The guard task is then reported as
+  // "0 files" and skipped, and the hook still exits 0: engine sources commit
+  // without ever being scanned, which is the hole this asserts is closed.
+  //
+  // Extension-only globs (`*.md`, `*.{js,ts,…}`) survive the relocation, so the
+  // symptom is invisible unless a path-anchored task is what you are watching.
+  const packagesDir = path.join(ROOT, "packages");
+  const shadowing = [];
+  for (const entry of fs.readdirSync(packagesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    for (const file of fs.readdirSync(path.join(packagesDir, entry.name))) {
+      if (/^lint-staged\.config\./.test(file)) {
+        shadowing.push(`packages/${entry.name}/${file}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    shadowing,
+    [],
+    `these configs shadow the root lint-staged config and silence its ` +
+      `path-anchored globs for their whole subtree: ${shadowing.join(", ")}. ` +
+      `Delete them — the root config already governs every package.`,
+  );
+});
+
 test("lint-staged's markdownlint exemptions mirror .markdownlintignore", async () => {
   // markdownlint-cli does not apply its ignore file to explicitly-named paths,
   // and lint-staged always names paths explicitly. When the two disagree the

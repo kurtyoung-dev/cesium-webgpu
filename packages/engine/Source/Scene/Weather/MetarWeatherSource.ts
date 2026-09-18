@@ -35,8 +35,6 @@
  * Consuming a bare raw-text feed, one report per line, is a deferred
  * follow-up, not a supported path: text feeds identify a station by ICAO id
  * only, so they need a station-coordinate join this module does not carry.
- * (corrected 2026-09-12, C13-N34 — this paragraph described that unbuilt
- * raw-text path as the live one.)
  *
  * @module Scene/Weather/MetarWeatherSource
  */
@@ -81,8 +79,7 @@ export interface MetarWeatherSourceOptions {
   stations?: MetarStation[];
   /**
    * URL serving JSON shaped `{ stations: MetarStation[] }` (the live, network
-   * path). Corrected 2026-09-12, C13-N34: this said "raw METAR text, one report
-   * per line", which `_loadStations` has never parsed.
+   * path). JSON, not raw METAR text: `_loadStations` parses no text feed.
    */
   url?: string;
   /** Optional same-origin proxy prefix for CORS on the live path. */

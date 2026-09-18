@@ -21641,3 +21641,78 @@ harness deciding when to look. **Instrument the mechanism before bisecting the s
 
 **Still owed for P0-2 to close:** the wave-end gate's WebGPU leg plus legs (c) and (b3), re-run on
 the fixed tree (job 13c, executor Bandobras, on a fresh built clone of `ea651de6d8`).
+
+---
+
+## Lane W0-CIGREEN (Bolger, 2026-09-17) — the pre-commit comment guard never ran on engine sources: a per-package lint-staged config silently reduced its glob to zero files
+
+**Bug:** the `guards` CI step (`.github/workflows/dev.yml:79`, `npm run lint-comment-markers`) was RED
+at `91a7a8c9ff` with **53 clean-list regressions in 8 files**, 37 of them added by Batches 1493 and
+1494. Both batches passed their pre-commit hook. The hook runs the same guard, on the same clean list,
+through `lint-staged` — so the question was not why CI failed but why the hook had not.
+
+**Root cause:** `packages/engine/lint-staged.config.js`, a file dated 2026-04-14 whose entire body is
+
+```js
+import baseConfig from "../../lint-staged.config.js";
+export default { ...baseConfig };
+```
+
+plus a comment about a `tsc` task that had already been moved to `.husky/pre-commit`. It looks inert —
+it re-exports the root config unchanged — but lint-staged resolves the **nearest** config for each
+staged file and matches each glob **relative to that config's own directory**. For every file under
+`packages/engine/`, the root guard entry
+
+```
+packages/*/Source/**/*.{js,mjs,cjs,ts,tsx,wgsl,glsl}
+```
+
+was therefore evaluated against paths like `Source/Renderer/WebGPU/WebGPUCloudTierPresets.ts` and
+matched **nothing**. lint-staged printed `packages/*/Source/**/… — 0 files`, skipped the task, and
+exited 0.
+
+The failure is invisible for two reasons. The task is reported as skipped-because-empty, which is
+indistinguishable from "no engine files in this commit". And the config's other two entries are
+**extension-only** globs (`*.{js,cjs,mjs,ts,tsx,css,html}`, `*.md`) which survive the relocation
+intact — eslint and prettier kept running on exactly the files you would expect, so the hook looked
+healthy. Only a path-anchored glob is affected, and the guard is the only path-anchored task there is.
+
+**Measurement** (both legs run in a clone at `91a7a8c9ff`, over the Batch 1493→1494 range, which is
+the range that introduced the markers):
+
+| | `packages/engine/lint-staged.config.js — n files` | guard glob | exit |
+| :-- | :-- | :-- | :-- |
+| before the fix | 2 files | **0 files** (skipped) | 0 |
+| after the fix | *(config gone)* | **2 files**, guard runs | 0 — those two files are clean in this batch |
+| after the fix, files reverted to HEAD | *(config gone)* | **2 files**, guard runs | **1, with 33 errors** |
+
+The third row is the load-bearing one: it is the commit that Batch 1493 would have been refused.
+
+**Fix:** delete `packages/engine/lint-staged.config.js`. Nothing imports it (`grep -rn
+"lint-staged.config"` finds only its own first line); it is a pure spread of the root config, so it
+contributes no task the root does not; and its one piece of unique prose is a note about why `tsc` is
+not a per-file task, which `.husky/pre-commit` step 2 already carries in more detail. The alternative —
+making the glob location-agnostic (`**/Source/**`) — was rejected because it leaves the nested config in
+place, so the next path-anchored task added to the root config falls into the same trap. Deleting
+removes the trap class rather than this one instance.
+
+`.husky/pre-commit` step 2's comment was rewritten in the same change: it referenced the deleted file
+by name, and it now states the rule positively ("there is deliberately no per-package lint-staged
+config") with the mechanism, so the file is not recreated by someone reading only that hook.
+
+**Pinned by:** a new subtest in `Tools/c16/comment-marker-guard.spec.mjs`, *"no per-package lint-staged
+config shadows the root one"*, which walks `packages/*` for any `lint-staged.config.*`. It sits directly
+after the existing *"lint-staged routes engine and widgets source through the guard"* test, because the
+two assert different properties: the older one proves the glob **names** the right files, the new one
+proves the glob is **reached**. Inertness-checked — recreating the nested file turns it red.
+
+**How long it was blind:** since Batch 960 wired the guard into lint-staged. Every engine-source commit
+between then and this batch bypassed the comment guard at commit time; only CI saw them.
+
+**Files modified:** `packages/engine/lint-staged.config.js` (deleted), `.husky/pre-commit`,
+`Tools/c16/comment-marker-guard.spec.mjs`.
+
+**Aside, recorded because it cost a reset:** `npx lint-staged --diff=<range> --no-stash` is not a
+read-only probe. It runs `prettier --write` and then an "Applying modifications from tasks" step that
+**stages the files it touched**. It changed no content here (the working-tree diff md5 was identical
+before and after), but it left two files in the index. Follow any such reproduction with `git reset`.

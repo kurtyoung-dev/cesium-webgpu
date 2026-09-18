@@ -211,8 +211,8 @@ export function executePostFrustumChain(
   invalidateCloudFrameMask(context);
 
   // `scene.godRayCloudAware` is the application-set opt-in for cloud-aware god
-  // rays (SHIPPED, FEATURE_INVENTORY §B); the engine deliberately writes it
-  // nowhere. It is declared on `CesiumScene` (cesium-js-types.d.ts) so this
+  // rays; the engine deliberately writes it nowhere — the application is its
+  // only producer. It is declared on `CesiumScene` (cesium-js-types.d.ts) so this
   // read is typed rather than an `as unknown as {…}` expando. Unset, the
   // expression is false and the cloud mask is never requested.
   const cloudAwareRequested =

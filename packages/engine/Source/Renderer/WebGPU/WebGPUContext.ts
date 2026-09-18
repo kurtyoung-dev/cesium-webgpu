@@ -1914,10 +1914,10 @@ export class WebGPUContext extends GraphicsContext {
    *
    * The offscreen render the `*MostDetailed` height queries drive is a pick
    * pass, and the globe-depth framebuffer — the only packed pick-depth source
-   * that runs unconditionally — is off for pick passes. Until Batch 1482 the
-   * offscreen view's `PickDepth` therefore never received a depth texture and
-   * every sampled point came back `undefined`. The pick pass now stores its
-   * depth per frustum slice and copies it, verbatim, into a
+   * that runs unconditionally — is off for pick passes, so without the path
+   * below the offscreen view's `PickDepth` receives no depth texture at all and
+   * every sampled point comes back `undefined`. The pick pass therefore stores
+   * its depth per frustum slice and copies it, verbatim, into a
    * pick-framebuffer-owned `r32float` target that it hands to that `PickDepth`
    * — but ONLY while `context.offscreenRayDepthRequested` is set, so an
    * ordinary `scene.pick` still pays nothing. Verbatim rather than through the
