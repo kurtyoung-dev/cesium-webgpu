@@ -301,6 +301,20 @@ WebGPU files, spec-home assignment, anti-re-accretion tooling, and this doc-trut
 (branch and sibling-repo salvage) are DONE (Batches 1362/1363/1365) and are the current authority
 for branch/worktree/sibling-repo state — see §3a below, which this wave's audit superseded.
 
+### Gemini-audit fix plan — waves 0-6 (not a numbered campaign)
+
+**Launched 2026-09-17.** The verified result of the external (Gemini) codebase audit is
+[`GEMINI_AUDIT_VERIFICATION_2026-09-17.md`](GEMINI_AUDIT_VERIFICATION_2026-09-17.md); its rulings are
+[`MAINTAINER_RULINGS_2026-09-17.md`](MAINTAINER_RULINGS_2026-09-17.md) (`R-2026-09-17-1` … `-8`), and its
+rows are the dated 2026-09-17 section of [`DEFERRED_WORK.md`](DEFERRED_WORK.md) — 3 P0, 24 P1 and 136 P2
+as thirteen class tables. **Critical path:** W0 (both red CI gates, one lane) → W1 (this record) → W2 (the
+five one-line engine lanes, unblocked by `R-2026-09-17-4`) → W3, of which only the previous-frame RTE lane
+needs the Edge slot and therefore queues behind the L4/L5 cloud legs (`R-2026-09-17-5`); W5 (instrument
+scope, `C16-21`) is the highest leverage per line and needs no slot. **Holds:** `D7` (DrawCommand parity),
+`D10` (the AR-090 chunk stack) and `D4` (a targeted second pass over the coverage gaps) are open and are
+prompted by the seat before their waves. **Standing constraint for any reader of the archived corpus:** the
+do-not-execute list in the rulings file binds, and the corpus itself is untracked and is not a premise.
+
 ### Research dispatch queue — design-model perf, Earth-at-Night, meshlets
 
 [`QUEUE_2026-08-29_RESEARCH_DISPATCH.md`](QUEUE_2026-08-29_RESEARCH_DISPATCH.md) is a **dispatch

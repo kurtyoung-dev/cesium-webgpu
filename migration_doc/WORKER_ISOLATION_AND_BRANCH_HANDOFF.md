@@ -868,7 +868,7 @@ legs as executable scripts from the start** — two trees, md5 pairs on both, `g
 as the conflict assertion (never a grep for markers), every command written in full — and make
 "the recipe is executable without judgement" a review checklist item in its own right.
 
-### 8k. Two seat lessons from the 2026-09-13 wind-down (added 2026-09-16 by record round 5)
+### 8k. Seat lessons from the 2026-09-13 wind-down (added 2026-09-16 by record round 5; a third lesson added 2026-09-17 by record round 6)
 
 Both were paid for in one afternoon, both are mechanism rather than judgement, and neither is
 specific to the work that hit it.
@@ -902,3 +902,26 @@ the script.
 
 **Source:** `next-record-lane.md` entries of 2026-09-13 16:05 EDT ("SEAT LESSON") and
 `STOP_CHECKPOINT_2026-09-13.md` §7.
+
+
+**Added 2026-09-17 (record round 6) — a lane deleted the SHARED temp root instead of its own directory.**
+On 2026-09-16 a Tools lane finished its work correctly, then ran its cleanup as a recursive removal of
+`$TEMP/cesium-lane` — **the parent**, not its own lane directory under it. Seven lanes' scratch went with
+it, 163 files, including another lane's job-driver scripts, which had to be re-created before that job
+could resume. Nothing durable was lost: the reviewer verified 14 clones intact, every `_lane-out` triple
+matching, the frozen leg trees clean and the banked evidence untouched — **because none of those live
+under the temp root**. That is the only reason this was an inconvenience rather than an incident.
+
+Two things make it worth a rule rather than a note. The lane self-reported it, unprompted, in the same
+reply as its result and with a path manifest — which is the behaviour to keep. And the instruction it was
+following said "remove your temp directory", which is ambiguous exactly where it matters.
+
+**Rule:** a brief states the removable path **verbatim and in full** — `remove EXACTLY
+<os.tmpdir()>/cesium-lane/<lane-name>, never the parent` — and a lane removes that path and no ancestor
+of it. A shared parent under a temp root is shared state: treat it the way §8i treats any destructive
+sweep, with a positive list, and never as scratch belonging to whoever happens to be holding it. The
+brief template now carries the sentence verbatim.
+
+**Source:** the 2026-09-16 lane report and its review, banked at
+`cesium-webgpu-worker-archive/lanes-2026-09-16/cesium-lane-marigold-20260916/_lane-out/`; landed with
+Batch 1496, whose commit message records the incident.

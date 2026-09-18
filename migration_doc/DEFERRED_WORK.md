@@ -7380,7 +7380,7 @@ Filed after the WebGPU-vs-WebGL ~50%-FPS investigation (Batch 717 root-cause + f
 
 - **S5-3-WORKER-RENDERER-OFFSCREENCANVAS-PRODUCTIZATION — OPEN.** The only shipped mechanism that raises the **main-thread** CPU ceiling rather than shaving work under it. Previously tracked ONLY as `C11-SEED-24`. **Effort:** L–XL.
 
-- **S5-2-WASM-CONSUME-OR-RETIRE — OPEN.** **5 of 7 WASM bridges are dead** (built and shipped, no production consumer). Either wire the consumers or retire the bridges; carrying dead bridges costs build time, bundle size, and maintenance while returning nothing. Previously tracked ONLY as `C11-SEED-25`. Per the WASM strategy rules every bridge needs a JS fallback + `destroy()`/`free_buffer()`/version-check/SIMD detection, so retirement is the cheaper path for any bridge without a credible consumer. **Effort:** M.
+- **S5-2-WASM-CONSUME-OR-RETIRE — OPEN.** **5 of 7 WASM bridges are dead** (built and shipped, no production consumer). Either wire the consumers or retire the bridges; carrying dead bridges costs build time, bundle size, and maintenance while returning nothing. Previously tracked ONLY as `C11-SEED-25`. Per the WASM strategy rules every bridge needs a JS fallback + `destroy()`/`free_buffer()`/version-check/SIMD detection, so retirement is the cheaper path for any bridge without a credible consumer. **Effort:** M. **Attached 2026-09-17 (Gemini-audit verification, record round 6):** two alignment defects inside the bridges this row gates now have measured evidence — `globe-terrain-02` (an odd vertex count makes the input byte count ≡ 2 mod 4) and `globe-terrain-03` (a 65×65 16-bit heightmap is 8,450 bytes, likewise ≡ 2 mod 4). In both, the output view's offset is unaligned, `Float32Array` rejects it, the `catch` logs and the decode silently falls back to JS. **They attach here rather than opening rows, because fixing alignment before this row is ruled is work on provisional code** — both bridges come from one commit and both still have zero consumers, which is this row's own premise. If the ruling is "consume", the pad-and-grow fix rides with the wiring; if "retire", it never needs writing. Note for whoever writes it: the audit's own proposed arithmetic overruns the arena by up to three bytes, because it never grows the total allocation. See `GEMINI_AUDIT_VERIFICATION_2026-09-17.md` §d.
 
 **⚠ STALE-SNAPSHOT WARNING on the perf backlog.** `PERF_ARCH_DEEP_DIVE_2026-07-16.md` (69 code-anchored findings) is the most complete perf register, but treat it as a **historical snapshot, not current truth**: several findings have landed (S3-1→B698, S1-2→B695, S8-1/2/3→B702/704), its line anchors have drifted, and — decisively — **it does not contain the actual root cause of the reported deficit**, because its benchmark route never bound an `oceanNormalMap`. Re-verify any finding against HEAD before scoping it.
 
@@ -7664,7 +7664,7 @@ Source of record: [audits/2026-06-11_ULTRA_REVIEW.md](audits/2026-06-11_ULTRA_RE
 - **NEW-MODEL3DTILECONTENT-DOUBLE-CONVERSION** — ✅ RECONCILED (doc-only, 2026-07-05). `Model3DTileContent` was class-converted on both fork and upstream (`0f9f794b52 "Types: Convert Cesium3DTileContent to ES6 classes"`) — a structural double-conversion with no clean `--ours`/`--theirs`. The v1.142 merge (2026-06-17) resolved it exactly per the anticipated strategy: **take upstream's class body wholesale** (richer `@import`/`@implements` typing) and re-graft fork deltas — here there was **no fork delta to re-graft**, upstream additionally adopted `model.edgeDisplayMode = tileset.edgeDisplayMode` per-frame (see `UPSTREAM_MERGE_2026-06_CHANGELOG.md` per-file entry + the new "Double-conversion merge hotspots" section, which generalizes this reconcile strategy for the NEXT upstream sync across all convergent class conversions — the sibling `*3DTileContent` classes, `Cesium3DTilePointFeature`, `QuadtreeTile`, and the Core math classes). No code change at HEAD; verified class-form at HEAD (Batch 554).
 - **NEW-FORK-MODERNIZATION-REVERT** — ⛔ DECLINED (owner decision 2026-06-11; see FORK_DRIFT_ANALYSIS). The review recommended reverting ~15 cosmetic ES6 conversions to cut merge surface. Modernization is product direction and merge-cost is not a goal, so the conversions STAY. Kept here as "considered, declined" so the call is visible. (The regressions the conversion pass introduced are fixed forward via NEW-FORK-MODERNIZATION-REGRESSIONS, not by reverting.)
 - **NEW-VOXELELLIPSOIDSHAPE-UPSTREAM-COLLISION** — VoxelEllipsoidShape class rewrite frozen behind an upstream UV-uniform rewrite. Revert to upstream form; upstream replaced the longitude/latitude UV uniforms with scale/translate the fork must adopt anyway.
-- **NEW-CAMERA-JSDOC-RESTORE** — ✅ RESOLVED (Batch 299). Restored the public-API JSDoc lost in the ES6 modernization of `Camera.js` + `ScreenSpaceCameraController.js`, sourced verbatim from merge-base `0becdbfc17` and re-indented onto our class-method form. `Camera.js`: the 5 lost `@example` blocks (`setView` — incl. its fuller `@param` orientation prose, `lookAt`, `lookAtTransform`, `pickEllipsoid`, `flyTo`) + 37 public-method docblocks that had been reduced to terse one-liners or stripped entirely (`worldToCamera*`/`cameraToWorld*`, `move`/`moveForward`…`zoomOut` incl. their `@see` cross-refs, `getMagnitude`, `getRectangleCameraCoordinates`, `getPickRay`, `distanceToBoundingSphere`, `getPixelSize`, `cancelFlight`, `completeFlight`, `viewBoundingSphere`, `flyToBoundingSphere`, `computeViewRectangle`, `switchTo{Perspective,Orthographic}Frustum`). `@example` count 1→6 (matches base), docblocks 57→63. `ScreenSpaceCameraController.js`: restored `maximumTiltAngle` prose+`@example` and the `isDestroyed`/`destroy` docblocks. JSDoc-only (zero runtime change); tsc clean; `gulp test --includeName Camera` 349/349, SSCC + ShadowMap specs green. The sg-scan lint that would catch future loss is deferred (`NEW-SG-SCAN-ADOPT`).
+- **NEW-CAMERA-JSDOC-RESTORE** — ✅ RESOLVED (Batch 299). Restored the public-API JSDoc lost in the ES6 modernization of `Camera.js` + `ScreenSpaceCameraController.js`, sourced verbatim from merge-base `0becdbfc17` and re-indented onto our class-method form. `Camera.js`: the 5 lost `@example` blocks (`setView` — incl. its fuller `@param` orientation prose, `lookAt`, `lookAtTransform`, `pickEllipsoid`, `flyTo`) + 37 public-method docblocks that had been reduced to terse one-liners or stripped entirely (`worldToCamera*`/`cameraToWorld*`, `move`/`moveForward`…`zoomOut` incl. their `@see` cross-refs, `getMagnitude`, `getRectangleCameraCoordinates`, `getPickRay`, `distanceToBoundingSphere`, `getPixelSize`, `cancelFlight`, `completeFlight`, `viewBoundingSphere`, `flyToBoundingSphere`, `computeViewRectangle`, `switchTo{Perspective,Orthographic}Frustum`). `@example` count 1→6 (matches base), docblocks 57→63. `ScreenSpaceCameraController.js`: restored `maximumTiltAngle` prose+`@example` and the `isDestroyed`/`destroy` docblocks. JSDoc-only (zero runtime change); tsc clean; `gulp test --includeName Camera` 349/349, SSCC + ShadowMap specs green. The sg-scan lint that would catch future loss is deferred (`NEW-SG-SCAN-ADOPT`). **Closure note amended 2026-09-17 (Gemini-audit verification, record round 6): this row closed NARROWER than the sentence above reads.** For `ScreenSpaceCameraController.js` the Batch-299 restore covered `maximumTiltAngle` plus `isDestroyed`/`destroy` — **three members**. Re-read at `91a7a8c9ff`: from `ScreenSpaceCameraController.js:153` onward, 15 public properties keep only `@type` and `@default` with no description (`:153-157`, `enableInputs`, is the first) and 9 public members have no docblock at all — **24 of 27 are still stripped**. Because the published typings are generated from these blocks, the residue is a **typings** regression, not a comment row, and it violates "Preserve ALL existing JSDoc comments when modernizing files". The work is `webgpu-scene-fr-03`: restore verbatim from the merge base exactly as Batch 299 did for `Camera.js`; effort S, class docs, and restoring upstream text **reduces** conflict surface. Attached here rather than opened as a new row, per this row's own scope. This entry joins `H-R9` in the "closed narrower than its closure sentence" class named in `GEMINI_AUDIT_VERIFICATION_2026-09-17.md` §b.2.
 - **NEW-WEBGL-REPROJECT-BASELINE** — WebGL imagery reprojection forked to per-fragment Mercator; add a regression baseline. The 64-row-grid -> 4-vertex-quad change forks WebGL pixel output; add a visual-regression tolerance baseline asserting it matches upstream.
 - **NEW-UPSTREAM-GROUNDPRIM-SHOWSUPDATED-13366** — ✅ SHIPPED (Batch 299). Ported upstream #13366 into both `StaticGroundGeometryPerMaterialBatch.js` + `StaticGroundPolylinePerMaterialBatch.js`: `Batch.remove()` now calls `this.showsUpdated.remove(id)` alongside `this.subscriptions.remove(id)`. Bug verified present in both files first (neither cleared `showsUpdated`). Without it, an entity whose show changed (queued in `showsUpdated`) and was then removed before the next `update()` left a stale entry → "Cannot read properties of undefined (reading 'id')" on the next update. Evidence: new spec "clears showsUpdated when an updater is removed" in `StaticGroundGeometryPerMaterialBatchSpec` (drives show-change→remove→render, asserts no throw; 9/9 batch specs pass) + `upstream-regression-check.mjs` [6] (source-text guard on both files, 2 checks).
 - **NEW-UPSTREAM-EDGE-DEGENERATE-13421** — ✅ SHIPPED (Batch 299). Ported upstream #13421's degenerate-triangle guard into `EdgeVisibilityPipelineStage.js`'s CPU face-normal loop. Bug verified present first: our `Cartesian3.normalize` throws `DeveloperError("normalized result is not a number")` (Cartesian3.js:419) on a zero-length cross product, so a 3D tile containing a zero-area triangle with edge-visibility data crashed at load. Fix matches upstream: compute `crossMagnitudeSquared = Cartesian3.magnitudeSquared(scratchCross)`, and if `=== 0.0 || !Number.isFinite(...)` register the triangle's edges (adjacency stays correct) and `continue` past the normal; otherwise normalize via `multiplyByScalar(1/sqrt(magSq))`. Evidence: new spec "does not throw on degenerate (zero-area) triangles" in `EdgeVisibilityPipelineStageDecodingSpec` (primitive with two coincident vertices; 17/17 edge specs pass) + `upstream-regression-check.mjs` [7] (2 source-text guards).
@@ -20603,3 +20603,402 @@ review against **HEAD's exact line** (`this._clippingPolygons = undefined;`), wh
 so this is **not a regression** and is out of C-15's scope. It is recorded here because this lane's patch is
 the first to route that teardown through `setOwner`, which is where a one-line `collection._owner =
 undefined;` fix would go. Per lead ruling H-11: **no code changed for this row in this wave.**
+
+
+## 2026-09-17 — the Gemini-audit survivors enter the ledger (record round 6, wave 1)
+
+The external (Gemini) codebase audit was verified at `91a7a8c9ff`: sixteen domain passes, sixteen
+refutation passes applied, a synthesis, an adversarial critic and a finalisation. The tracked result is
+[`GEMINI_AUDIT_VERIFICATION_2026-09-17.md`](GEMINI_AUDIT_VERIFICATION_2026-09-17.md); the rulings taken
+on it are [`MAINTAINER_RULINGS_2026-09-17.md`](MAINTAINER_RULINGS_2026-09-17.md). The sixteen domain
+files and their refutations are banked at `cesium-webgpu-worker-archive/audit-gemini-2026-09-17/` and
+resolve by the `<domain>-NN` ids used below.
+
+**Read these rows, not the corpus.** The corpus is untracked, 43% of its proposed remedies are wrong or
+absent, and six of them are on a binding do-not-execute list in the rulings file. Where a row below and
+a domain file disagree, **this row wins** — the failure modes and fix shapes here are the
+refuter-corrected ones.
+
+Three P0 rows, twenty-four P1 rows and thirteen P2 class tables follow. The 172 P3 rows are comment,
+JSDoc and naming rows; they belong to the C16 instruments and specifically to `C16-21`
+(`QUEUE_2026-08-10_CAMPAIGN16.md`), not to a lane.
+
+### P0 — three rows
+
+**`P0-1-ESLINT-NEW-CAP-GATE-RED` (= `core-01` + `renderer-infra-21` + `tiles-models-02`) — OPEN, wave 0.**
+`npm run eslint` exits 1 with six `new-cap` errors, and it is the first lint step of both
+`.github/workflows/dev.yml:23` and `.github/workflows/prod.yml:28`, so **both** workflows are red on
+every push. Sites re-read at `91a7a8c9ff`: `packages/engine/Source/Scene/PrimitiveGeometryHelpers.js:227`
+and `:252` (fork-authored, `new attribute.values.constructor(...)` / `new sourceValues.constructor(...)`);
+`packages/engine/Source/Core/clone.js:17`, `packages/engine/Source/Core/PixelFormat.js:479`,
+`packages/engine/Source/Scene/Vector3DTilePrimitive.js:810` and `:830` (upstream-verbatim).
+Fix shape: `.slice()` at the two fork sites; a scoped `eslint-disable` and **no content change** at the
+four upstream-verbatim sites, plus a root `package.json` `overrides` pin at the installed lint version
+per `R-2026-09-17-8`. Authorship MIXED. Tracked: `R-2026-09-16-9`, "Executed: pending"; re-ruled and
+extended by `R-2026-09-17-8`. Effort S · class build · sync exposure **none** — upstream carries the
+identical code, the identical rule and the identical `^10.9.1` range, so an `overrides` pin avoids a
+first-time divergence in `package.json` and the upstream issue is the maintainer's to file. Acceptance:
+exit 0.
+
+**`P0-2-C16-CLEANLIST-53-REGRESSIONS` (= `methodology-01` + `atmo-clouds-weather-01`) — OPEN, wave 0.**
+**Re-measured in this lane at `91a7a8c9ff`:** `node Tools/c16/comment-marker-guard.mjs --verify-cleanlist`
+exits 1 with **53 REGRESSED findings in 8 clean-listed files** — 23 in
+`packages/engine/Source/Renderer/WebGPU/WebGPUCloudTierPresets.ts`, 13 in
+`packages/engine/Source/Scene/CloudVolumetrics.js`, 10 in
+`packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`, 2 each in
+`Renderer/WebGPU/cesium-js-types.d.ts` and `Scene/Weather/MetarWeatherSource.ts`, and 1 each in
+`Renderer/WebGPU/WebGPUContext.ts`, `WebGPUSceneRendererPickPass.ts` and
+`WebGPUSceneRendererPostFrustumChain.ts`. The gate is `dev.yml:79`; `dev.yml:83` fails with it.
+**Scope correction:** `prod.yml` carries **no** comment-marker step and **no** C16 step (0 matches at
+`91a7a8c9ff`), so this P0's blast radius is `dev.yml` alone.
+**The prerequisite is answerable without touching a held file.** Traced at the tip from unheld
+artifacts only: `.husky/pre-commit:7` runs lint-staged and checks its status; `lint-staged.config.js:91-98`
+applies the guard to `packages/*/Source/**/*.{js,mjs,cjs,ts,tsx,wgsl,glsl}`, which covers all eight
+files; `Tools/c16/comment-marker-guard.mjs:267-283` (`classifyFindings`) makes a finding in a
+clean-listed file an ERROR unless the exact file-and-rule pair is grandfathered;
+`Tools/c16/comment-marker-cleanlist.txt:53` has carried `WebGPUCloudTierPresets.ts` since Batch 986 with
+no grandfather row. So the guard, the clean list and the hook glob are all correct, and the open question
+is **which bypass occurred** — `--no-verify` (precedent recorded at `Tools/landing-rules.mjs:7`), a clone
+whose hooks were never installed, or a commit path that does not run the hook. Only if the answer is a
+missing assertion in `Tools/verify-landing-compliance.mjs` does the fix land in a held file, and then it
+is a maintainer item, not a lane's.
+Fix shape, in this order: record the bypass; bank the rationale per `R-2026-09-16-8`; sanitise the eight
+files; add the `dev.yml` step for the already-existing `verify-comment-cleanlist` script
+(`package.json:154` — the script exists, only the workflow step is missing). Authorship FORK (33 markers
+from Batch 1493, 2 from Batch 1494, both 2026-09-16). Tracked: `R-2026-09-16-8` scoped 18 regressions in
+6 files; **`R-2026-09-17-3` moves the owner to wave 0** and records the true figure. Effort S–M · class
+docs · sync exposure none, all eight files fork-only. Sequencing: the three cloud files holding 46 of
+the 53 are the files L4/L5 will edit.
+
+**`P0-3-DO-NOT-EXECUTE-GLOBE-TERRAINPROVIDER-DESTROY` (= `methodology-02`) — a stop, not work.**
+Gemini's `BUG-02` proposes calling `this._terrainProvider.destroy()` in
+`packages/engine/Source/Scene/GlobeSurfaceTileProvider.js:1391-1394`. `TerrainProvider`,
+`CesiumTerrainProvider` and `EllipsoidTerrainProvider` define no such method, so the remedy is a
+`TypeError` on every `Globe.destroy()`. **On the binding do-not-execute list** of
+`MAINTAINER_RULINGS_2026-09-17.md`. Authorship UPSTREAM (the code is upstream-verbatim; the HEAD blame is
+the fork's prototype-to-class conversion). Effort S · class docs.
+The residue is real, small and separate — nothing releases `_terrainProvider` on teardown, here or
+upstream — and is carried at P2 as `globe-terrain-01`, beginning with `this._terrainProvider = undefined;`
+plus an upstream issue.
+
+### P1 — fork-authored (five)
+
+**`renderer-infra-01` — mapped-buffer readbacks are not exception-safe. ATTACHES TO `H-R9`, wave 3.**
+`packages/engine/Source/Renderer/WebGPU/WebGPUEntityClusterDispatcher.ts:361-377`: three **persistent**
+readback buffers are mapped in one `Promise.all`, then decoded through three
+`new Uint32Array(getMappedRange(...)).slice()` copies **before any `unmap()`**, and the three `unmap()`
+calls follow with no `try`/`finally`. A throw in any decode leaves all three mapped for the renderer's
+lifetime, every later `copyBufferToBuffer` fails validation, and GPU entity clustering degrades to the
+CPU path permanently with a per-frame retry. Same shape at
+`WebGPUComputeInstanceRenderer.ts:1427-1436`.
+**Scope corrected to two files, not eight sites:** `WebGPUGPUCuller.ts` and
+`WebGPUHiZOcclusionDispatcher.ts` already chain a `catch` that unmaps; four other cited sites map
+transient per-call buffers (one leaked buffer, no wedge); `BufferMapper` has no consumer. The "destroy a
+buffer while in flight" reproduction is blocked by an in-flight early return; the surviving non-teardown
+trigger is an allocation failure inside the three `slice()` copies — see `G-06` in the report, and do not
+over-claim urgency.
+Fix shape: one `mapAndRead(buffer, range, fn)` helper that unmaps per buffer in `finally`.
+**Tracked, not new — attach to `H-R9` (`ARCHITECTURE_REVIEW_2026-09-02.md:991`), RESOLVED at Batch 213
+for `WebGPUGPUCuller.ts` alone**; do not open a new row. Authorship FORK. Effort M · class engine ·
+acceptance: a stub buffer whose decoder throws must still end unmapped — **no device needed, so this
+lane does not take the Edge slot** (`R-2026-09-17-4`).
+
+**`renderer-infra-06` — `DrawCommand` ↔ `WebGPUDrawCommand` parity. DECISION-GATED on D7, wave 4.**
+`orientedBoundingBox`, `snapId`, `pickMetadataAllowed` and `pickedMetadataInfo` exist on the upstream
+command and are absent from the WebGPU twin. **No reachable failure:**
+`packages/engine/Source/Scene/Scene.js:3596-3601` returns early on `command.isWebGPUDrawCommand === true`
+before every reader. A literal violation of the parity rule with no symptom. The four properties are
+upstream-authored; the gap is fork-side. Fix shape: **not a patch** — an exemption table naming the
+WebGPU substitute per property, a guard that reads that table from source, and an amendment to the
+upstream-sync post-merge checklist (the rule's text covers "when adding a property to `DrawCommand`" and
+does not cover a property arriving through an upstream sync). Partly pre-ruled: `DEFERRED_WORK.md:7590`
+(`NEW-CAPABILITY-GETTER-CODIFY`, residual 2) already rules the `isWebGPUDrawCommand` checks
+non-violations — "a COMMAND property, not a context branch". Half the exemption text is already written
+in `WebGPUSnapFramebuffer.ts`. Authorship MIXED. Effort S · class engine.
+
+**`P1-RTE-PREVIOUS-FRAME-VELOCITY` (= `shaders-04` + `atmo-clouds-weather-02` + `webgpu-scene-fr-01`) —
+ATTACHES TO `C9-25` / `FAR-306` → `AR-049`, wave 3.**
+**Seven sites in six shader files plus one renderer, each re-read at `91a7a8c9ff`:**
+`packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl:1038-1040`;
+`Shaders/WebGPU/Collections/BillboardCollection.wgsl:750-751`;
+`Shaders/WebGPU/Collections/BillboardCollectionSDF.wgsl:617-618`;
+`Shaders/WebGPU/Collections/PointPrimitiveColor.wgsl:424-425`;
+`Shaders/WebGPU/Collections/PolylineCollection.wgsl:373-376`;
+`Shaders/WebGPU/Compute/ComputeInstanceRender.wgsl:269-270`; and
+`Renderer/WebGPU/WebGPUCloudRenderer.ts:464-467`. Five of the seven read literally
+`vec4<f32>(prevPosHigh + prevPosLow, 1.0)` followed by `camera.previousViewProjection * prevWorldPos`.
+The current-frame clip position is exact via RTE; the previous-frame one sums high and low in f32 and
+multiplies a full-magnitude world-space matrix. Reconstruction floor about 0.25 m per component near
+R = 6378137 (f32 ulp 0.50 m), before the matrix's own cancellation. Not P0 because
+`Scene.js:1324` defaults `taaEnabled` to false.
+Fix shape (**`gemini_fix_correct` settled at `partly`** — three verifiers gave three values and the
+refutation pass overturned the rejection): the direction is right and the scope is understated. No
+camera-uniform struct on any of the six paths carries a previous RTE matrix or an encoded previous
+camera, so **six renderers must add and pack uniform lanes** under the `previousViewProjection` tail
+rule. **Two in-tree precedents, both re-read:** `WebGPUPointCloudRenderer.ts:327` declares
+`previousMvpRelativeToEye`, `:339` declares `previousEncodedCameraHigh`, and `:510-514` computes the
+previous position relative to the previous encoded camera before multiplying; and for the cloud site,
+`Shaders/WebGPU/Environment/CloudTemporalResolve.wgsl:45` declares
+`previousViewProjectionRelativeToEye`, consumed at `:363-365`.
+**Tracked since 2026-07-15, naming all six shader sites: `C9-25-PREVIOUS-FRAME-RTE` / `FAR-306`
+(`QUEUE_2026-07-15_CAMPAIGN9.md:244`) → `AR-049` (`QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md:195`, P1, fix
+unowned) → `AR-092`.** The audit contributes nothing new. Authorship FORK. Effort **L** — the only L in
+the surviving set · class shader · full proof bar plus a **named Edge leg**; acceptance is a measurement
+(static scene, static camera ⇒ velocity ≈ 0) plus a fly-to motion-vector capture, **not** a rule citation.
+
+**`webgpu-scene-fr-03` — public JSDoc stripped from `ScreenSpaceCameraController.js`. ATTACHES TO
+`NEW-CAMERA-JSDOC-RESTORE`, wave 2 or 5.**
+From `packages/engine/Source/Scene/ScreenSpaceCameraController.js:153` onward, public properties keep
+only `@type` and `@default` with no description — `:153-157` is the first, `enableInputs` — and nine
+public members have no docblock at all. Because the published typings are generated from these blocks,
+this is a **typings** regression, not a comment row, and it violates "Preserve ALL existing JSDoc
+comments when modernizing files". Authorship FORK, blame `5230b95e8a5` (2026-06-12).
+**Tracked but mis-scoped: `NEW-CAMERA-JSDOC-RESTORE` (`DEFERRED_WORK.md:7667`) is RESOLVED at Batch 299,
+and its own closure sentence covers, for this file, only `maximumTiltAngle` plus `isDestroyed`/`destroy`
+— three members of twenty-seven.** Fix shape: restore verbatim from the merge base exactly as Batch 299
+did for `Camera.js`, and amend that row's closure note. Effort S · class docs · sync exposure:
+restoring upstream text **reduces** conflict surface. Caveat `G-12`: the generated
+`packages/engine/index.d.ts` is build output and absent from a fresh clone, so the dropped-member list
+could not be re-read in this lane; the source-side loss was verified directly.
+
+**`methodology-13` — the audit cites unlanded work as the tip. BLOCKED: the file is held.**
+One row's line numbers exist only in the maintainer's uncommitted working copy of
+`Tools/verify-landing-compliance.mjs` (4,548 lines) and not at HEAD (4,127), so part of the audit ran
+against a dirty tree while its header claims HEAD. **Settled against a sibling domain:** at HEAD both
+sites named by the underlying temp-directory claim already clean up on every path the claim names — one
+removes the directory in its own `catch` while its sole caller removes it in a `finally`, and the other
+removes it in its `catch` and registers an idempotent `process.once("exit", …)`. **Therefore the P1 is
+the citation defect only**, and the code residue is a **P3** naming nit (directories created at the temp
+root rather than under a per-lane subdirectory), not the P2 originally carried. Authorship FORK. Effort
+S · class docs. Nothing here is briefable until the file is released.
+
+### P1 — upstream-authored (eight)
+
+Each carries the D1 question — is the fix one hunk in a file the fork already diverges in? — now ruled by
+`R-2026-09-17-1`: **severity first, divergence as the tiebreak; all six new defects are filed upstream
+regardless.**
+
+**`core-02` — the event-raising flag latches on a throwing listener. Wave 2.**
+`packages/engine/Source/Core/Event.js:121-151`: `raiseEvent()` sets `_invokingListeners = true` at `:122`,
+iterates the listeners with **no `try`**, clears the flag at `:134`, and only then drains the pending add
+and remove maps. **Corrected failure mode** — subscribers are *not* silently dropped, because the next
+completing raise drains both maps. The real harm is worse: while the flag is latched,
+`removeEventListener` parks the listener in `_toRemove`, returns `true` and decrements `_listenerCount`
+**while the listener stays in `_listeners` and keeps firing**, so a listener that throws on every raise
+cannot be unsubscribed; and `Scene.js:6777-6789` (`tryAndCatchError`) swallows the throw, so the
+application runs on latched with nothing reaching the user.
+Fix shape: **one private flush — flag reset plus both drains and both clears — called from `finally`.**
+The minimal variant (reset the flag only) leaves `_toAdd` populated with the flag cleared, so a re-add
+drifts `numberOfListeners` permanently high. Blame `39f5341e64e` (2026-04-13, the fork's ES6 conversion
+re-authored the lines); the logic is byte-identical to upstream. Effort S · class engine · **already
+diverges, 275 lines — zero marginal sync exposure.** Acceptance seams are missing: `EventSpec.js` has no
+throwing-listener case and **there is no `EventHelperSpec.js` anywhere in the repository** — write both.
+
+**`datasources-02` — `Property.equals` calls `equals` without checking it exists. Wave 2.**
+`packages/engine/Source/DataSources/Property.js:73-74` is
+`return left === right || (defined(left) && left.equals(right));`. Two `TimeIntervalCollectionProperty`
+instances with identical boundaries and primitive data therefore throw a `TypeError` from the per-frame
+material-batching path; reproduced under Node against the fork's own modules, directly and through a
+material property's `equals`, with CZML reachability in `CzmlDataSource.js`. Fix shape:
+`typeof left.equals === "function" ? left.equals(right) : left === right`. The same guard **shape** is
+already upstream-verbatim two files away —
+`packages/engine/Source/DataSources/TimeIntervalCollectionProperty.js:66` reads
+`if (defined(value) && typeof value.clone === "function")`, on `clone` rather than on `equals`. Blame
+`2fd0e8f7e42`, lineage 2013. Effort S · class engine · **byte-identical with upstream**, so under
+`R-2026-09-17-1` it is fixed in fork on severity and filed upstream, with the hunk recorded in the sync
+plan's census. Acceptance: `Specs/DataSources/PropertySpec.js`, which **does not exist** — write it first.
+
+**`datasources-15` — the GeoJSON CRS-name table has no prototype guard. CLOSE AS A DUPLICATE OF `AR-016`.**
+`packages/engine/Source/DataSources/GeoJsonDataSource.js:1011` indexes a plain object with a
+document-supplied string. **`AR-016` (`QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md:110`) rates the same
+defect P0, sizes it XS, has its acceptance already written and couples it to two other rows. Do not open
+a lane; the attachment is recorded on `AR-016` itself.**
+
+**`globe-terrain-04` — `new Array(-1)` in URL zero-padding. Wave 2.**
+`packages/engine/Source/Scene/UrlTemplateImageryProvider.js:643` tests `value.length >= paddingTemplateWidth`
+where `value` is a **number**, so `value.length` is `undefined`, the ternary always takes the padding
+branch, and `new Array(paddingTemplateWidth - value.toString().length + 1)` at `:645-647` reaches `-1`
+and throws a `RangeError` as soon as the number carries two more digits than the template's width
+(width+1 digits is safe, width+2 throws). The abort is a **per-frame render abort** caught by
+`Scene.tryAndCatchError`, not a one-shot provider abort. Fix shape:
+`String(value).padStart(paddingTemplateWidth, "0")`. Effort S · class engine · **already diverges
+(206+/257−)** · a clean upstream PR candidate.
+
+**`globe-terrain-05` — a rejected availability promise is cached for the layer's life. Wave 2.**
+`packages/engine/Source/Core/CesiumTerrainProvider.js:1343-1344` stores the request promise in
+`layer.availabilityPromiseCache` and then registers `requestPromise.then(deleteFromCache)` —
+`onFulfilled` only. One transient 404, 500 or abort therefore leaves the **rejected** promise in the
+cache for the layer's lifetime, and terrain under that availability tile never refines again for the
+session. Fix shape: `.finally(deleteFromCache).catch(() => {})`. Effort S · class engine · **already
+diverges (292+/333−)** · a clean upstream PR candidate.
+
+**`widgets-10` — three inspector mixins leak a live panel into the caller's page. UPGRADED P2 → P1.
+Wave 2.**
+`packages/widgets/Source/Viewer/viewerCesiumInspectorMixin.js:29`,
+`viewerCesium3DTilesInspectorMixin.js:23` and `viewerVoxelInspectorMixin.js:23` each append a panel to
+`viewer.container` and never wrap `viewer.destroy`; `Viewer.destroy()` removes only its own element, so
+after teardown the user is left with a **dead inspector panel in their own page**, bindings still
+applied, on **every** extend-then-destroy. **The only deterministic user-visible symptom in the corpus.**
+Fix shape: mirror the existing precedent at `viewerDragDropMixin.js:217-220`, which wraps
+`viewer.destroy` with `wrapFunction` for exactly this reason — three calls. Effort M · class engine ·
+**byte-identical with upstream for all three**, so under `R-2026-09-17-1` it is fixed in fork on severity
+and filed upstream. Do **not** brief `widgets-15` / `widgets-17` as assertion-failure defects — see the
+test-hygiene class below.
+
+**`workers-wasm-01` (with `build-thirdparty-01`) — release workers ship debug code. Wave 2.**
+`scripts/build.js:703` opens the IIFE worker branch; `:751` assigns the worker plugin list and `:752-754`
+pushes `stripPragmaPlugin` **inside that branch**; the `else` at `:755` builds every ESM worker bundle
+without it. So every `Build/<variant>/Workers/*.js` ships with all `Check` / `DeveloperError` blocks
+live, including the Scene that the renderer worker instantiates and the fork's own WebGPU
+`//>>includeStart('debug')` diagnostics. **Blast radius: 146 of 230 worker entry files.** Fix shape:
+hoist the `removePragmas → stripPragmaPlugin` push above the `if (options.iife)` split. **The spec must
+grep the assert text, not the pragma marker**, because minification removes the markers. Effort S · class
+build · **already diverges.** Acceptance home: `packages/engine/Specs/Workers/`, which does not exist —
+create it with its first spec.
+
+**`workers-wasm-02` (absorbing `core-04`) — a failed worker never settles. ATTACHES TO
+`1390-10 [shaderasync]`, wave 2.**
+`packages/engine/Source/Core/TaskProcessor.js:357-360` subscribes only to `message`; the removal at `:342`
+is likewise message-only. A 404, a CSP block or a top-level throw fires the `error` event, nothing
+rejects, `_activeTasks` is never decremented, and after `maximumActiveTasks` such events terrain and
+geometry loading **stop silently**. The same defect is in `initWebAssemblyModule`, whose cached
+never-settling promise stalls every Draco, KTX2 and splat load with neither a ready nor an error flag.
+Fix shape: a per-task `error` / `messageerror` listener rejecting with a `RuntimeError` carrying the
+event's message and filename, removed alongside the message listener at `:342`.
+**Tracked, unowned — attach to `ARCHITECTURE_REVIEW_2026-09-02.md:594`, row `1390-10 [shaderasync]`,
+which names the missing listeners, the 404, the `maximumActiveTasks` cap and the silent stop in those
+words.** Do not open a new row. Effort M · class engine · **already diverges, 272 lines.**
+
+### P1 — process and record (eleven; all `methodology`, docs class, effort S, wave 1)
+
+Eleven findings about the audit rather than about the code. They are rows because a future reader must
+not re-read the archived corpus as authoritative; each is discharged by
+`GEMINI_AUDIT_VERIFICATION_2026-09-17.md` §b and §c and needs no further lane.
+
+| id | what it records |
+| --- | --- |
+| `methodology-03` | an invented code-freeze doctrine deleted seven real defects from the roadmap |
+| `methodology-04` | that doctrine was not applied to eight equally-upstream rows; one cited file has **no upstream counterpart at all**, so its merge-churn refutation is void. **`G-03`: this row carries no blame sha — copy the per-row table from the archived domain file when the lane is cut** |
+| `methodology-05` | **every** UPSTREAM/FORK verdict in 3 MB is asserted with zero git operations — the defect that propagated furthest, and the reason `R-2026-09-17-1` makes the axis a measurement |
+| `methodology-06` | the arbiter published seven rows its own refuter had marked REFUTED, and rewrote that refuter's census |
+| `methodology-07` | one fleet's adversarial pass survives only as a truncated read-transcript, leaving 668 findings unadjudicated (`G-08`) |
+| `methodology-08` | no finding row carries a disposition, so the audit's own 1,576/934 split is unexecutable for any individual row |
+| `methodology-09` | the arithmetic: corrected scope ≈ 3,011 rows, **2,339 (77.7%) with no verdict**, one fleet's 283 findings excluded |
+| `methodology-10` | "40 Critical P0 Defects" is 33 rows, **zero of which meet this fork's P0 bar on merit** |
+| `methodology-11` | "100% COMPLETE" against **2,304 of 3,585 tracked files (64%) never named**, including five of the fork's largest WebGPU renderers (~19K lines) — `G-10` |
+| `methodology-14` | **settled against its sibling:** `Scene.render()` opens with a recursion sentinel and runs every phase under `tryAndCatchError`, so the stated stranding does not occur on the default configuration (`Scene.js:590` defaults `rethrowRenderErrors` to false) and the prescribed latch would duplicate an existing guard. Surviving residue is **P3**: two fork-added calls are unwrapped inside the credit window. **Do not adopt the second half** — moving the after-render functions into a `finally` runs them on the no-render path and reorders them against post-render, changing request-render-mode semantics |
+| `methodology-18` | **zero of the nine corrections required by `R-2026-09-16-11` had been applied as of 2026-09-17**; `R-2026-09-17-2` keeps that ruling |
+
+### P2 — 136 rows, as thirteen class tables
+
+Not individual rows. Each class is a shard a future lane can be cut from; the per-row evidence is in the
+archived domain files, which resolve by id. Wave 6 sequences them: specs first (they are the acceptance
+for several fixes), then leaks, tooling contracts, the scheduler lane, demos, perf.
+
+| class | n | ids worth cutting first, with the corrected failure mode |
+| --- | --- | --- |
+| test gap — no spec exists | 12 | `datasources-18` `Specs/DataSources/PropertySpec.js` does not exist and is the acceptance for two P1s and two P2s · `workers-wasm-13` `packages/engine/Specs/Workers/` does not exist at all, and **both** worker P1s belong there · `tiles-models-12` a 1,200-line batch-table spec is `xdescribe`d |
+| leak (engine) | 8 | `globe-terrain-19` an imagery layer's `destroy()` never cancels its reprojections · `webgpu-scene-fr-06` a failed pick-depth readback leaks its staging buffer · `widgets-04` the animation widget inserts a `<style>` node and never removes it — **no refcounting needed**, each instance inserts its own, so a stored handle plus `remove()` is correct: **S, not M** |
+| test hygiene / isolation | 11 | `widgets-16` an inner `const` shadows the suite variable so `afterEach` sees `undefined` — **four** green-path leaks, one-character edits · `core-23` six suites mutate global state and restore on the last line of the `it` body · `datasources-22` a clock uninstalled only inside a `.then`. **Cross-cutting correction: `stopSpecOnExpectationFailure` is `false` repository-wide, so these are throw-path defects, not assertion-failure defects. This also corrects `webgpu-scene-fr-12`, whose stated failure mode carries the refuted premise — do not brief `widgets-15` / `widgets-17` / `webgpu-scene-fr-12` as written** |
+| tooling contract — exit codes, temp, scope | 11 | `tools-probes-02` with `-01`, `-09`, `-10` as **one lane**: give the wave-end child protocol an ERROR tier (3 is free) and derive the child map from `S5_STATUS_EXIT_CODES` — closes three rows and makes the do-not-execute `BUG-14` unnecessary rather than merely harmful · `tools-probes-04` re-scope the probe-fleet contract from filename prefix to behaviour (44 escapees, 37 with no watchdog) · `tools-probes-06` a temp-allocation source-anchor spec (75 raw temp-dir sites in 37 files against 5 lane-temp adopters) |
+| perf / allocation | 9 | `workers-wasm-08` three decoders never populate `transferableObjects` · `datasources-01` a helper passes the undefined value to `clone()` · `core-27` a `Cartesian3` allocated per triangle in normal computation |
+| robustness / untrusted input | 6 | `datasources-13` a bare `hasOwnProperty` call on parsed CZML and GeoJSON · `datasources-14` a KML data name written into a plain object without `__proto__` sanitising · `workers-wasm-16` typed-array views taken from arbitrary byte offsets in KTX2 transcode |
+| renderer lifecycle / validation | 7 | `renderer-infra-04` `WebGPUContext.destroy()` omits both pipeline caches — **a POOLED device is released, not destroyed, so the retained pipelines are live GPU objects under the fork's multi-view model**; the lane must account for the pooled-release path · `renderer-infra-03` the performance manager calls a mapper method that **does not exist**, hidden by a structural interface (the A11 mechanism) · `collections-primitives-05` indirect-dispatch sentinels whose branch has no producer |
+| scheduler / frame loop | 2 | **`camera-scene-loop-08` — `JobScheduler.resetBudgets()` never clears `_executedThisFrame`.** Re-verified at `91a7a8c9ff`: `packages/engine/Source/Scene/JobScheduler.js:114-125` touches only the budget fields and the total, `:132` reads the array, `:185` writes it, nothing resets it — so from frame 2 the documented guaranteed-progress allowance is inoperative. Ceiling: one extra texture job and one buffer job on an exhausted frame, because **`JobType.PROGRAM` has zero producers** — the identifier appears exactly twice in the engine, both at `JobScheduler.js:83-84` allocating its own budget. **The fix is not safe as written:** `disableThisFrame()` (`:109-112`) enforces "no jobs this frame" only through the `:134` gate, and pick passes never call `resetBudgets`, so resetting the array alone lets a synchronous upload run inside a pick. Reset in `resetBudgets` **and** set a flag in `disableThisFrame`. All four existing multi-frame specs pass either way, so the lane must add a frame-boundary case, which doubles as its inertness mutant. Bundle with the clamped-arc-cosine sweep; scope the pan guard to the exact-degeneracy case or drop it |
+| shader correctness / duplication | 8 | `shaders-08` the window-coordinate helper has **three** defects — halved x/y scale, a z re-biased although WebGPU NDC z is already in [0,1], and `w` destroyed (the GLSL twins keep the clip `w`); zero callers, latent · `shaders-13` the metres-per-pixel helper drops the 2D and orthographic branches and **has a live consumer**, so it must not ride on the AR-090 ruling · `shaders-17` 41 non-chunk orphan `.wgsl` files whose live twins are template literals, with in-tree comments citing them as authority |
+| build / packaging | 6 | `build-thirdparty-04` the engine package's `files` array omits `index-wgsl.js` although the published ESM entry deep-imports it eight times · `build-thirdparty-20` with `workers-wasm-21` a WASM culling artifact with zero callers, 30.6 KB in every build and in the tarball · `build-thirdparty-13` the Slang compiler stamps a timestamp into every generated shader |
+| demo / sandcastle | 8 | `sandcastle-05` internal campaign markers in the **rendered UI text** of a public gallery demo · `sandcastle-02` **two** edge demos load from `../../../Specs/Data/` (the third is a caught fallback); the deployed symptom is a silently blank globe · `sandcastle-04` **nine** fork-owned sites read the `@private` `scene.context` — five of the fourteen cited sit in upstream-verbatim files, where an edit buys only divergence · `sandcastle-09` a `.catch` handler calls a method on an undefined `this`. Census caveat `G-01`: roughly ten claims have no row-to-item map |
+| instrument scope | 5 | `webgpu-scene-fr-20` clean-listed files carry banned markers **inside WGSL template literals the guard cannot see** · `build-thirdparty-18` `lint-debug-pragmas` scans 278 of about 1,508 engine files · `webgpu-scene-fr-21` a live `GPUBindGroupLayout` label carrying an internal batch number ships to devtools. **All five fold into `C16-21`** |
+| WASM alignment | 2 | `globe-terrain-02` (an odd vertex count gives an input byte count ≡ 2 mod 4) and `globe-terrain-03` (a 65×65 16-bit heightmap is 8,450 bytes, likewise ≡ 2 mod 4): the output view's offset is unaligned, `Float32Array` rejects it, the `catch` logs and the decode silently falls back to JS. Both bridges come from one commit, both have **zero consumers**, and both are gated behind `S5-2-WASM-CONSUME-OR-RETIRE` (`DEFERRED_WORK.md:7383`, OPEN), so fixing alignment first is work on provisional code. **The audit's arithmetic overruns the arena by up to three bytes** because it never grows the total allocation; the correct shape pads and grows. **Attach to `S5-2`, do not open rows** |
+| remainder | 41 | `core-06` a query-parameter lookup throws when a key is `hasOwnProperty` · `core-18`, `-19`, `-20` three specs that assert nothing · `collections-primitives-08` hoist a stage removal above the feature-renderer early return and delete the 12-line WebGPU mirror — **S, not M** |
+
+**Settled and moved out of the P2 backlog.** The urijs row becomes **P3 with no security action** — the
+range admits only the last version that package ever published, the installed version is that version,
+and the manifest records it; it is on the do-not-execute list so it is never presented as a CVE fix. An
+RTE row against `WebGPUEllipsoidPrimitiveRenderer.ts:435` is **withdrawn**: two domains reached opposite
+verdicts on the same line and **both agree the code is correct** — the vertex stage does RTE in model
+space and the unit cube is exact in f32 — so the residue is that the exemption is written nowhere, which
+is already `AR-092`'s acceptance text. Fold it there. The landing-verifier temp residue becomes **P3**.
+**Authorship settled:** `packages/engine/Specs/Scene/Model/loadTilesetWithImagery.js` is **UPSTREAM** —
+blame `de9b586e53c` (2025-07-18), the file exists upstream and the numstat against upstream is empty; the
+domain that called it FORK is wrong.
+
+### Attachments recorded elsewhere in this batch
+
+Six survivors attach to existing rows rather than opening new ones, and each carries a dated line on the
+row it attaches to: `datasources-15` → `AR-016`; `P1-RTE` → `C9-25` / `FAR-306` → `AR-049`, with the
+ellipsoid unit-cube exemption folded into `AR-092`; `webgpu-scene-fr-03` → `NEW-CAMERA-JSDOC-RESTORE`'s
+closure note; `globe-terrain-02` / `-03` → `S5-2-WASM-CONSUME-OR-RETIRE`; `renderer-infra-01` → `H-R9`;
+`workers-wasm-02` → `1390-10 [shaderasync]`.
+
+---
+
+## 2026-09-17 — record round 6: items owed from the 2026-09-16 night close
+
+Five items were owed to this record round from the 2026-09-16 landings (Batches 1488-1496) and the
+reviews behind them. They are recorded here as dated lines rather than as new campaign rows.
+
+### The orbital-ladder follow-ups — three rows filed by the Batch 1496 review, none blocking
+
+Batch 1496 repaired `probe-cloud-orbital-ladder.mjs` (it now imports the built engine module instead of
+reading a page global the viewer never publishes, and refuses by name at exit 3) and banked the ladder's
+first receipt. Its reviewer filed three follow-ups, all small, all Tools class, none blocking that
+landing:
+
+- **`R-a` — strip the viewer chrome from the ladder capture, and re-bank in the same batch.** Apply the
+  existing widget-stripping source after the page load and before the first rung, assert no leftovers,
+  and **re-bank the receipt in the same batch**: every image-derived number moves, so the old and new
+  runs must not be compared across that boundary. The cost is the re-bank, not the edit. Batch 1496's
+  own message files this rather than fixing it, precisely because doing it there would have moved every
+  number in the first receipt.
+- **`R-b` — concentric ray-march ringing at 2,000 km and above.** Visible in the 2,000 km and 20,000 km
+  captures and consistent with the primary step count under-sampling the long-range march. **Confirm it
+  is already tracked under the O7 / step-count work before treating it as new** — the reviewer's reading
+  is that it corroborates O7's RED rather than adding a defect.
+- **`R-c` — pin the ladder's served-artifact list with a deep-equality leg**, following the existing
+  pattern in the cloud-demo routing spec, so that line is mutation-covered rather than receipt-covered.
+  Fold in the cosmetic residue: the namespace-unavailable message enumerates three symbols and omits a
+  fourth, although the dynamic reason already names whichever symbols are actually absent. Small.
+
+### The C16 clean-list fold has a new owner
+
+`R-2026-09-16-8` placed the comment-marker clean-list fold on Astra's cloud landing. **`R-2026-09-17-3`
+moves it to wave 0 (W0-CIGREEN)**, and Astra's rebased tree owes only the regressions it adds itself.
+The measured figure also moved: 18 regressions in 6 files when that ruling was taken, **53 in 8** at
+`91a7a8c9ff`. See `P0-2-C16-CLEANLIST-53-REGRESSIONS` above.
+
+### Five reviewer items left to the seat at the solo re-cut (Batch 1487)
+
+The solo re-cut's reviewer raised fourteen items; nine were taken in the lane's fix round and **`F10` to
+`F14` were left to the seat**. Recorded here so they are not lost:
+
+- **`F10` (medium)** — the `package.json` append instructions are not uniform across the frozen lanes'
+  rows: one says "contended, seat unions" while others say "one add-only append". The line-level
+  narrowing is reasoned, but a stranger should be told once, uniformly: **write every intended script
+  line verbatim into the packet; the seat unions.**
+- **`F11` (minor)** — a handoff heading still says "the three workers" while its own preamble says there
+  are two.
+- **`F12` (minor)** — the batch placeholder appears **twice**, in the companion and in the handoff rule;
+  stamping by grep across the whole patch catches both, a named-file pass misses the second.
+- **`F13` (minor)** — the provisioner leaves one rulings file stat-dirty with a **zero-byte** diff
+  (a line-ending artifact). Land by explicit pathspec, never `git commit -a`.
+- **`F14` (minor)** — the handoff's Edge-slot step hand-rolls a `try`/`finally` where the existing
+  slot helper already releases by token in its own `finally`; naming it makes the step shorter and
+  harder to get wrong.
+
+### The L3 Edge leg's findings (2026-09-16), recorded as instrument facts
+
+The L3 cloud lane's second Edge leg produced three findings that are about the apparatus rather than the
+engine, and they bind any later leg that reuses it:
+
+- **Probe nondeterminism at the temporal tiers.** The low and medium tiers were **not evaluable**: the
+  same-build controls measured a non-zero difference, so the half-resolution and temporal paths are
+  nondeterministic across runs at those tiers. The high and unset arms were byte-identical. This is a
+  probe limitation, newly characterised — a tier-comparison leg must either pin the temporal state or
+  restrict itself to the deterministic arms.
+- **The two-tree recipe's clone step loses an uncommitted patch.** Cloning the "after" tree drops
+  working-tree changes; the executor had to re-apply them. Any two-tree recipe must copy or re-apply the
+  patch explicitly rather than assume the clone carries it.
+- **A first-capture-arm confound.** The first arm can capture a black globe before the scene settles,
+  which reads as a large false regression if the arm is unguarded. Guard the first capture, or discard
+  it, before comparing arms.

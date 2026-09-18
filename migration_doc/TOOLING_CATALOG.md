@@ -250,7 +250,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | inject-purpose-headers.mjs | other | ACTIVE | 2026-08-16 | 4 | Idempotent codemod injecting @purpose/@status headers into the tooling .mjs fleet from the library-audit rows. |
 | inject-purpose-headers.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Self-test for the @purpose header codemod: mapping, placement, byte-exactness, idempotence and the dry-run report. |
 | karma-default-browsers.spec.mjs | spec | NO @purpose HEADER | 2026-08-21 | 0 | — |
-| landing-rules.mjs | other | ACTIVE | 2026-09-01 | 25 | Pure landing predicates for commit discipline, push-wide Batch uniqueness, and protected remote-ref updates. |
+| landing-rules.mjs | other | ACTIVE | 2026-09-01 | 27 | Pure landing predicates for commit discipline, push-wide Batch uniqueness, and protected remote-ref updates. |
 | landing-rules.spec.mjs | spec | ACTIVE | 2026-09-01 | 8 | Hermetic control-and-mutant contract for commit, push-wide Batch, and protected-ref landing predicates. |
 | lint-debug-pragmas.mjs | other | ACTIVE | 2026-08-28 | 16 | Lints Renderer/WebGPU for console.log/warn/debug/info calls not wrapped in //>>includeStart('debug') pragmas; console.error exempt by policy. |
 | lint-debug-pragmas.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Proves debug-console calls stay removable unless a narrowly marked warning must remain visible. |
@@ -275,7 +275,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | verify-clone-drained.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Prove with real throwaway Git repositories that every required clone-drain check both runs and controls the aggregate verdict. |
 | verify-doc-citations.mjs | other | ACTIVE | 2026-09-05 | 4 | Asserts every relative markdown link and every #L line anchor in the tracked LIVE migration_doc set resolves as written, that the anchored range exists, and that a range still contains the symbol its sentence names. |
 | verify-doc-citations.spec.mjs | spec | ACTIVE | 2026-09-05 | 1 | Pins verify-doc-citations.mjs against fixture trees: clean passes, a mutated link fails and is named, an out-of-bounds anchor fails, a .js→.ts rename fails, the P-14 false-positive shape stays green, and an inertness mutant of the resolution fold makes the core assertion fail. |
-| verify-landing-compliance.mjs | other | ACTIVE | 2026-08-28 | 28 | After-the-fact detector that re-runs the landing rules + C16 marker gate over a landed commit range, making any --no-verify hook bypass visible. |
+| verify-landing-compliance.mjs | other | ACTIVE | 2026-08-28 | 30 | After-the-fact detector that re-runs the landing rules + C16 marker gate over a landed commit range, making any --no-verify hook bypass visible. |
 | verify-landing-compliance.spec.mjs | spec | ACTIVE | 2026-08-28 | 6 | Contract for the bypass detector against immutable history: known-bad C12-37 landing must red, known-good B1041-1043 landing must pass. |
 | verify-no-doc-shred.mjs | other | ACTIVE | 2026-08-28 | 4 | Fails when any migration_doc markdown file contains a long run of single-character lines - the signature of a splice-spread-over-string edit defect that has landed shredded ledger sections three times. |
 | verify-orientation-mirror.mjs | other | ACTIVE | 2026-08-28 | 2 | Fail closed when a status asserted by a reader-facing orientation document disagrees with, or cannot be resolved against, its campaign queue authority. |
@@ -318,7 +318,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| comment-marker-guard.mjs | other | ACTIVE | 2026-08-21 | 22 | C16 lint guard scanning engine/widgets Source for banned tracker-marker vocabulary, with a clean-list ratchet; lint-staged + one-shot modes. |
+| comment-marker-guard.mjs | other | ACTIVE | 2026-08-21 | 24 | C16 lint guard scanning engine/widgets Source for banned tracker-marker vocabulary, with a clean-list ratchet; lint-staged + one-shot modes. |
 | comment-marker-guard.spec.mjs | spec | ACTIVE | 2026-09-03 | 4 | node:test contract for the C16 marker guard: rules still match (self-test vs broken rule), scope does not overreach, ratchet honest both ways. |
 | comment-only-diff.mjs | other | ACTIVE | 2026-08-16 | 6 | Binding gate of every C16 rewrite batch: strips comments from both sides of a diff to a canonical form and requires the remaining code identical. |
 | comment-only-diff.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Mutant suite for the comment-only-diff gate: every rejected mutant is paired with the nearest legitimate edit that must be accepted. |
@@ -505,7 +505,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-morphology-composition.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | C13-16 U2 candidate contract: genus-conditioned variance budget + fibre carve before erosion; WGSL wiring invariants and carve-after-erosion mutants. |
 | cloud-noise-mipmaps.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Pins WebGPUCloudNoiseResources + CloudNoiseMipmap.wgsl mip-chain agreement, with a loud guard on the halve-to-1 loop's integer precondition. |
 | cloud-observability-counters.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | C13-02 Gate-A: cloud GPU total is a union not a sum, Sky Fill excluded, per-frame counters reset, pass counts tied to encode sites. |
-| cloud-orbital-ladder-contract.spec.mjs | spec | ACTIVE | 2026-09-12 | 6 | Unit-checks the orbital ladder's four statistics against geometry the plan states independently, then drives the REAL descriptor through runProbe with a stubbed browser so the instrument is known to reach a verdict before an Edge slot is spent on it. |
+| cloud-orbital-ladder-contract.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | Unit-checks the orbital ladder's four statistics against geometry the plan states independently, then drives the REAL descriptor through runProbe with a stubbed browser so the instrument is known to reach a verdict before an Edge slot is spent on it. |
 | cloud-photometry-rule.spec.mjs | spec | ACTIVE | 2026-09-12 | 6 | Asserts the photometric path measures linear PRE-Reinhard radiance with the sun disc masked, that measuring after the tonemapper gives a different answer, and that the harness capture path supplies the live exposure rather than a default. |
 | cloud-primary-ray.spec.mjs | spec | ACTIVE | 2026-09-16 | 5 | Validates that primary procedural-cloud rays preserve framebuffer UV row order through inverse projection. |
 | cloud-primary-shell.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | Validates CloudVolumetrics WGS84 shell ray-root math at orbital heights with f32-conditioning-aware tolerances (nadir / near-horizon / grazing). |
@@ -831,7 +831,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-cloud-morphology.mjs | probe | ACTIVE | 2026-08-16 | 1 | B439 morphology modes: curl erosion and perlin-worley cores A/B'd against an in-run default baseline, plus a stash-pair parity mode for default flags |
 | probe-cloud-noisebake.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | V2 inert-bake gate: 3D noise baked + bound with the shader not sampling it — byte-identical to the pre-V2 stash build, bake ran, zero device errors |
 | probe-cloud-noisecore.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | V3 keystone A/B vs the pre-V3 live-noise build: baked clouds render, sane cell count, faster frame, W1/W2 lighting survives on the baked path |
-| probe-cloud-orbital-ladder.mjs | probe | ACTIVE | 2026-09-12 | 8 | Capture the cloud disc at each decade from 20 km to 20,000 km and compute O3, O4, O6 and O7, so the orbital rows are graded on statistics rather than on a capture pair. |
+| probe-cloud-orbital-ladder.mjs | probe | ACTIVE | 2026-09-16 | 8 | Capture the cloud disc at each decade from 20 km to 20,000 km and compute O3, O4, O6 and O7, so the orbital rows are graded on statistics rather than on a capture pair. |
 | probe-cloud-perf.mjs | probe | ACTIVE | 2026-08-16 | 15 | W5 adaptive-march A/B with pair-ID provenance: image within ~2% of the fixed march and a faster GPU-synced frame from empty-space skipping |
 | probe-cloud-phase.mjs | probe | ACTIVE | 2026-08-16 | 3 | W1 dual-lobe Henyey-Greenstein gate: toward-sun silver-lining rim energy >= 1.25x the away-sun heading; single-run PASS bars |
 | probe-cloud-planetary.mjs | probe | ACTIVE | 2026-08-16 | 7 | C13 planetary oracle: clouds-OFF/ON raw-canvas delta at every checkpoint along connected routes crossing the antimeridian, poles and altitude bands |
