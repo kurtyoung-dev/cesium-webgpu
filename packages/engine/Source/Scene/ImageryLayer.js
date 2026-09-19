@@ -336,6 +336,10 @@ class ImageryLayer {
    * @see ImageryLayer#isDestroyed
    */
   destroy() {
+    // A command still queued holds an imagery reference that only its
+    // postExecute/canceled hook releases, and neither hook runs once the layer
+    // is gone.
+    this.cancelReprojections();
     return destroyObject(this);
   }
 

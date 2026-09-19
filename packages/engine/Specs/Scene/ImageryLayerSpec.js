@@ -451,6 +451,35 @@ describe(
       });
     });
 
+    it("destroying the layer cancels its queued reprojections", async function () {
+      const provider = await createWebMercatorProvider();
+      const layer = new ImageryLayer(provider);
+
+      const imagery = new Imagery(layer, 0, 0, 0);
+      imagery.addReference();
+      layer._requestImagery(imagery);
+      RequestScheduler.update();
+
+      await pollToPromise(function () {
+        return imagery.state === ImageryState.RECEIVED;
+      });
+      layer._createTexture(scene.context, imagery);
+      await pollToPromise(function () {
+        return imagery.state === ImageryState.TEXTURE_LOADED;
+      });
+
+      const referencesBeforeQueueing = imagery.referenceCount;
+      layer._reprojectTexture(scene.frameState, imagery);
+      expect(layer._reprojectComputeCommands.length).toEqual(1);
+      expect(imagery.referenceCount).toEqual(referencesBeforeQueueing + 1);
+
+      layer.destroy();
+
+      expect(layer._reprojectComputeCommands.length).toEqual(0);
+      expect(imagery.referenceCount).toEqual(referencesBeforeQueueing);
+      expect(imagery.state).toEqual(ImageryState.TEXTURE_LOADED);
+    });
+
     it("basic properties work as expected", async function () {
       const provider = await SingleTileImageryProvider.fromUrl(
         "Data/Images/Red16x16.png",

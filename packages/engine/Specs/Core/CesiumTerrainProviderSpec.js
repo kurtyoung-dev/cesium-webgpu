@@ -339,6 +339,48 @@ describe("Core/CesiumTerrainProvider", function () {
     ).toEqual(expected);
   });
 
+  it("re-requests an availability tile whose earlier request was rejected", async function () {
+    let fetchCount = 0;
+    const layer = {
+      availabilityLevels: 10,
+      availability: { isTileAvailable: () => true },
+      availabilityTilesLoaded: { isTileAvailable: () => false },
+      availabilityPromiseCache: {},
+      tileUrlTemplates: ["{z}/{x}/{y}.terrain"],
+      version: "1.0.0",
+      resource: {
+        getDerivedResource: () => ({
+          fetchArrayBuffer: () => {
+            ++fetchCount;
+            return Promise.reject(new RuntimeError("503"));
+          },
+        }),
+      },
+    };
+
+    // The first layer has no availabilityLevels, so checkLayer returns for it
+    // immediately and the layered branch under test is the second one.
+    const provider = Object.create(CesiumTerrainProvider.prototype);
+    provider._availability = {
+      isTileAvailable: () => false,
+      _maximumLevel: 20,
+    };
+    provider._hasMetadata = true;
+    provider._layers = [{}, layer];
+    provider._scheme = "tms";
+    provider._tilingScheme = new GeographicTilingScheme();
+    provider._requestVertexNormals = false;
+    provider._requestWaterMask = false;
+    provider._requestMetadata = false;
+
+    await provider.loadTileDataAvailability(5, 6, 12).catch(function () {});
+    expect(fetchCount).toBe(1);
+    expect(Object.keys(layer.availabilityPromiseCache)).toEqual([]);
+
+    await provider.loadTileDataAvailability(5, 6, 12).catch(function () {});
+    expect(fetchCount).toBe(2);
+  });
+
   describe("requestTileGeometry", function () {
     async function requestTileGeometry(provider, ...requestTileArgs) {
       let promise;

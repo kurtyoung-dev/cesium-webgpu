@@ -639,12 +639,7 @@ function padWithZerosIfNecessary(imageryProvider, key, value) {
     if (typeof paddingTemplate === "string") {
       const paddingTemplateWidth = paddingTemplate.length;
       if (paddingTemplateWidth > 1) {
-        value =
-          value.length >= paddingTemplateWidth
-            ? value
-            : new Array(
-                paddingTemplateWidth - value.toString().length + 1,
-              ).join("0") + value;
+        value = String(value).padStart(paddingTemplateWidth, "0");
       }
     }
   }

@@ -21815,3 +21815,75 @@ original `TypeError`.
 `packages/engine/Specs/DataSources/PropertySpec.js` (new),
 `Tools/visual-regression/datasources-property-contract.spec.mjs` (new), `package.json` (runner line),
 `migration_doc/DEFERRED_WORK.md`.
+
+## Bug 1497.1 — a zero-padded tile coordinate wider than its padding template threw `RangeError` every frame (Gemini-audit wave 2, lane W2-C / Bracegirdle, 2026-09-17)
+
+**File:** `packages/engine/Source/Scene/UrlTemplateImageryProvider.js`.
+
+**Symptom.** With `urlSchemeZeroPadding` configured, tiles past a certain level never appear and the
+console repeats `[tryAndCatchError] ❌ ERROR CAUGHT:` with a `RangeError: Invalid array length` stack,
+once per frame, indefinitely.
+
+**Root cause.** `padWithZerosIfNecessary` is reached only from `xTag`/`yTag`/`zTag`/`reverseXTag`/
+`reverseYTag`/`reverseZTag`, all of which pass a **number**. `value.length` on a number is `undefined`,
+`undefined >= paddingTemplateWidth` is always false, so the pad branch ran unconditionally whenever the
+template was wider than one character — including when the value was already wider than the template.
+`new Array(paddingTemplateWidth - value.toString().length + 1)` is then negative and throws. Width + 1
+digits is safe (the argument is 0); width + 2 digits throws. With the common `"0000"` template that is
+any x/y past five digits, roughly level 17.
+
+**Why it repeats rather than failing once.** `requestImage` is not `async` and evaluates
+`buildImageResource(...)` in its argument list, so the throw escapes synchronously into
+`ImageryLayerHelpers.doRequest`, which has no `try`/`catch` — only a `.catch` on the returned promise. It
+reaches `Scene.tryAndCatchError`, which logs and swallows it (`rethrowRenderErrors` defaults false). Every
+frame that tries those tiles aborts the rest of its update pass.
+
+**Fix applied.** `value = String(value).padStart(paddingTemplateWidth, "0")`. `padStart` returns the
+string unchanged when it is already at least the requested width, so every input that did not previously
+throw produces the same URL.
+
+**Authorship.** UPSTREAM — `2fd0e8f7e42` (Matthew Amato, 2020-04-16) over logic from 2015; identical at
+`upstream/main:683-703`. Fixed in-fork per R-2026-09-17-1 because the file already diverges 206+/257−.
+
+**Instrument.** `Tools/visual-regression/globe-terrain-provider-contract.spec.mjs`, first test: it
+replaces `ImageryProvider.loadImage` with a recorder and asserts the URL the real template code produced —
+`.../4/07/0.png` for a narrow value, `.../10/1000/0.png` for a value two digits wider than the template,
+`.../7/123/0.png` for the widest value that never threw. Restoring the original ternary turns it red with
+the `RangeError` raised in `padWithZerosIfNecessary`. Karma: `Specs/Scene/UrlTemplateImageryProviderSpec.js`,
+"evaluation of schema zero padding for a coordinate wider than its template".
+
+## Bug 1497.2 — one transient availability failure permanently stopped layered terrain from refining (Gemini-audit wave 2, lane W2-C / Bracegirdle, 2026-09-17)
+
+**File:** `packages/engine/Source/Core/CesiumTerrainProvider.js`.
+
+**Symptom.** On cutout / layered terrain, a single 404, 5xx or aborted availability request leaves every
+tile under that availability tile stuck at its current level for the rest of the session. Nothing retries,
+and a console warning about an unhandled promise rejection accompanies it.
+
+**Root cause.** `checkLayer` caches the in-flight availability request as
+`layer.availabilityPromiseCache[cacheKey] = requestPromise` and evicts it with
+`requestPromise.then(deleteFromCache)` — `onFulfilled` only. On rejection the entry survives, and the next
+`checkLayer` for the same availability tile finds it (`:1325`) and returns
+`{result: true, promise: requestPromise}` **without issuing a request**. `requestTileGeometry` chains that
+settled-rejected promise (`:571-573`), so every later geometry request under that tile rejects
+immediately, and nothing sets `availabilityTilesLoaded` on failure. Separately, the promise derived from
+`.then(deleteFromCache)` had no rejection handler, which is the unhandled rejection.
+
+**Fix applied.** `requestPromise.finally(deleteFromCache).catch(function () {});` — `finally` evicts on
+both outcomes and the trailing `catch` settles the derived promise. The caller still receives
+`requestPromise` itself, so error propagation to `requestTileGeometry` is unchanged. Gemini's proposed bare
+`.finally()` fixes the eviction half only; it is incomplete rather than wrong, because HEAD already leaked
+the same unhandled rejection.
+
+**Reach.** The `!topLayer` branch only — `i === 0` is the top layer at both call sites (`:636`, `:668`), so
+single-layer Cesium World Terrain never enters it.
+
+**Authorship.** UPSTREAM — `2fd0e8f7e42`, identical at `upstream/main:1385`. Fixed in-fork per
+R-2026-09-17-1 because the file already diverges 292+/333−.
+
+**Instrument.** `Tools/visual-regression/globe-terrain-provider-contract.spec.mjs`, second test: it drives
+the real `loadTileDataAvailability` over a recorder `Resource` whose `fetchArrayBuffer` always rejects, and
+asserts the cache is empty after the first failure, that the second call raises the fetch count to 2, and
+that no unhandled rejection was recorded. Restoring `.then(deleteFromCache)` turns it red on the cache
+assertion (`['10-1-1']` survives). Karma: `Specs/Core/CesiumTerrainProviderSpec.js`, "re-requests an
+availability tile whose earlier request was rejected".

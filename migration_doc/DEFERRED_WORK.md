@@ -21264,3 +21264,64 @@ the karma suite `Specs/DataSources/PropertySpec.js` + `ImageMaterialPropertySpec
   vestigial second-level dedup and a few extra closures in `EventHelper._removalFunctions` — no
   assertable output, therefore no behaviour spec and no inertness mutant are possible, so the item is
   below the proof bar as briefed. No code changed for this row.
+
+---
+
+## 2026-09-17 — Gemini-audit fix plan, wave 2, lane W2-C-GLOBE-TERRAIN (Bracegirdle), base `91a7a8c9ff`
+
+Three upstream-authored provider defects, fixed in-fork per **R-2026-09-17-1** (all three files already
+diverge from `upstream/main`, so the hunks are ours to carry) and filed upstream per the same ruling. Each
+is pinned by `Tools/visual-regression/globe-terrain-provider-contract.spec.mjs` (node, in
+`test-visual-regression-node`) and by a case added to the file's own karma suite. Evidence:
+`V-globe-terrain-Falco.md` GT-04/GT-05/GT-19, `R-globe-terrain-Wilcome.md`, `FINAL-Whitfoot.md` §c/§d.
+
+- **`globe-terrain-04`** — `packages/engine/Source/Scene/UrlTemplateImageryProvider.js:642-648` →
+  `:642`. `padWithZerosIfNecessary` is only ever called with numbers, so `value.length` is `undefined`,
+  `undefined >= paddingTemplateWidth` is always false, and the pad branch runs unconditionally; a
+  coordinate two or more digits wider than the template makes `new Array(width - digits + 1)` negative and
+  throws `RangeError: Invalid array length`. Replaced the ternary with
+  `String(value).padStart(paddingTemplateWidth, "0")`, which is byte-identical on every input that did not
+  throw. Authorship **UPSTREAM** (`git blame` → `2fd0e8f7e42` Matthew Amato 2020-04-16 "Format all code
+  with prettier" over Kevin Ring's 2015 logic; `jjspace` "run prettier v3" reflowed it). Divergence at the
+  time of the fix: 206+/257−. In-fork per R-2026-09-17-1; **upstream issue to file:** "`UrlTemplateImagery-
+  Provider` throws `RangeError` for zero-padded tile coordinates wider than the padding template. At
+  `upstream/main:683-703`, `padWithZerosIfNecessary` tests `value.length` on a number. With
+  `urlSchemeZeroPadding: {'{x}': '00'}` and `x = 1000`, `new Array(2 - 4 + 1)` throws inside
+  `buildImageResource`, which `requestImage` evaluates synchronously — the throw escapes into the render
+  loop. `String(value).padStart(paddingTemplateWidth, '0')` is behaviour-identical for every input that
+  does not currently throw."
+- **`globe-terrain-05`** — `packages/engine/Source/Core/CesiumTerrainProvider.js:1344`.
+  `requestPromise.then(deleteFromCache)` registers only `onFulfilled`, so a rejected availability request
+  stays in `layer.availabilityPromiseCache[cacheKey]` for the layer's life; `checkLayer` (`:1325`) then
+  returns that settled-rejected promise to every later caller without re-requesting, and terrain under
+  that availability tile never refines again. The derived promise also had no rejection handler. Now
+  `requestPromise.finally(deleteFromCache).catch(function () {})` — Gemini's bare `.finally()` fixes the
+  eviction but leaves the unhandled rejection, so it is *incomplete*, not wrong (Wilcome's correction to
+  Falco). Reach is the `!topLayer` branch, i.e. layered / cutout terrain. Authorship **UPSTREAM**
+  (`2fd0e8f7e42`, identical at `upstream/main:1385`). Divergence: 292+/333−. In-fork per R-2026-09-17-1;
+  **upstream issue to file:** "One transient failure permanently disables terrain refinement under a
+  layered-terrain availability tile. `CesiumTerrainProvider.js:1385` caches the availability request and
+  evicts it with `requestPromise.then(deleteFromCache)`, which never runs on rejection. A 404/5xx/abort
+  leaves the rejected promise in `layer.availabilityPromiseCache`, and `checkLayer` returns it unmodified
+  from then on. `requestPromise.finally(deleteFromCache).catch(() => {})` evicts on both outcomes and also
+  settles the derived promise, which is currently an unhandled rejection."
+- **`globe-terrain-19`** — `packages/engine/Source/Scene/ImageryLayer.js:338`. `destroy()` was
+  `return destroyObject(this);` and never called `cancelReprojections()` (`:728`), which is reached only
+  from `QuadtreePrimitive.js:352` → `GlobeSurfaceTileProvider.js:922` → `ImageryLayerCollection.js:481`,
+  i.e. from `invalidateAllTiles`, never from teardown. A `ComputeCommand` still in
+  `_reprojectComputeCommands` holds the `imagery.addReference()` taken at `:678` whose matching
+  `releaseReference()` lives only in its `postExecute`/`canceled` hooks, and after
+  `ImageryLayerCollection.remove` neither hook ever runs — the `Imagery` and its texture are never
+  released. `destroy()` now calls `this.cancelReprojections()` first. Bounded to the reprojections queued
+  in the frame of removal. Authorship: the **semantics are UPSTREAM** (`upstream/main:646-648` is the same
+  two-line body and upstream's `cancelReprojections` at `:1438` has the same single caller chain); the
+  fork's line blame is `febe065f369` KurtTrottr 2026-03-29, which is the ES6-class conversion, not the
+  defect. In-fork per R-2026-09-17-1; **upstream issue to file:** "`ImageryLayer.destroy()` leaks the
+  imagery references held by queued reprojection commands. `ImageryLayer.prototype.destroy`
+  (`upstream/main:646-648`) does not call `cancelReprojections` (`:1438`), whose only caller chain starts
+  at `QuadtreePrimitive`'s `invalidateAllTiles`. Removing a layer while a reprojection is queued leaves a
+  `ComputeCommand` whose `postExecute`/`canceled` hooks — the only places that release the
+  `addReference()` taken when the command was built — are never invoked."
+
+**Not touched by this lane:** `globe-terrain-01` (`GlobeSurfaceTileProvider.js:1392`) is on the
+do-not-execute list and remains a separate P2.

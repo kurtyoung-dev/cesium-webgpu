@@ -222,11 +222,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1320 |
-| ACTIVE | 1080 |
+| Files in census | 1321 |
+| ACTIVE | 1081 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 44 |
-| Classes | probe 676, spec 364, lib 120, other 115, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
+| Classes | probe 676, spec 365, lib 120, other 115, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
 
 ### Tools/ (62)
 
@@ -421,7 +421,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1041)
+### Tools/visual-regression/ (1042)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -532,7 +532,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cpu-primitive-breakdown-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Policy guard for probe-c11-169-primitive-breakdown: first-red policy, detail controls, instrumentation evaluation and capture normalization vs source. |
 | cpu-scene-phase-integration.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | Pins the CPU scene-phase list agreement across Scene.js, ViewportExecutor.js and WebGPUSceneRenderer.ts (vm-executed source integration check). |
 | cross-backend-sandcastle-runner.mjs | other | ACTIVE | 2026-08-16 | 13 | Runs every Sandcastle demo under WebGL then WebGPU via a Viewer shim injecting contextOptions.renderer, pixel-diffs the pair, writes per-demo reports. |
-| datasources-property-contract.spec.mjs | spec | ACTIVE | — | 3 | Pins the observable contract of the DataSources property helpers: comparison of properties whose interval data has no equals method, reuse of the caller's destination in getValueOrClonedDefault, and the isConstant terms the PathMode.PORTIONS branch reads. |
+| datasources-property-contract.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Pins the observable contract of the DataSources property helpers: comparison of properties whose interval data has no equals method, reuse of the caller's destination in getValueOrClonedDefault, and the isConstant terms the PathMode.PORTIONS branch reads. |
 | daynight-terminator-law.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | CLT-B1 Node half: transcribed laws vs shaders, calibration inversion, ramp classifier, structural exit codes — all mutant-rejected. |
 | debug-ground-polyline-color.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Instruments the GroundPolyline renderer cache to find why per-instance color didn't reach the FS (dim-rectangle diagnosis, 2026-04-30). |
 | device-identity-recovery.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Guards the device-loss recovery seams landed with the invalidation-bus predicate: the allocation-epoch resets and the dispatcher device-identity guards that stop consumers reusing work recorded against a dead device. |
@@ -603,6 +603,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | globe-pipeline-readiness.spec.mjs | spec | ACTIVE | 2026-08-29 | 4 | Scoring tests plus engine mechanism pins for probe-globe-pipeline-readiness; a pin failure means the traced path changed, not the instrument. |
 | globe-shaderset-flag-injectivity.spec.mjs | spec | ACTIVE | — | 3 | Pins that the WebGL globe shader key is injective: no two globe configurations that compile to different #define sets are ever served the same cached ShaderProgram. |
 | globe-surface-tile-provider-clipping-teardown.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that GlobeSurfaceTileProvider.destroy() routes its clipping-polygon teardown through ClippingPolygonCollection.setOwner so a backend feature renderer's cached GPU resources are released, with the context itself untouched. |
+| globe-terrain-provider-contract.spec.mjs | spec | ACTIVE | — | 3 | Pins three provider-chain behaviours in Node: zero-padded tile URLs never throw, a rejected availability request is evicted and re-issued, and destroying an imagery layer releases its queued reprojection references. |
 | globe-use-log-depth.spec.mjs | spec | ACTIVE | 2026-08-16 | 8 | Pins that the globe resolves the shared isWebGPULogDepthActive gate so orthographic modes never mix log and hyperbolic encodings in one depth buffer. |
 | godray-energy-law.spec.mjs | spec | ACTIVE | 2026-09-11 | 6 | Executes the god-ray energy law straight out of GodRayGenerate.wgsl, pins count invariance and the energy bound against derived tolerances, records the emitter data dependency, and carries the inertness mutants that make those verdicts able to fail. |
 | godray-sun-usability-uniform-ranges.spec.mjs | spec | ACTIVE | 2026-09-16 | 8 | Pins the god-ray sun-usability determination and the disjoint uniform write ranges it publishes through, including that some setter covers the sunUnusable byte range. |
@@ -1562,7 +1563,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-02 | 16 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 5 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
 | engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 29 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
-| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 38 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
+| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 39 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | globe-camera-track.mjs | lib | ACTIVE | 2026-08-16 | 13 | Shared orbit-to-ground camera route (plain serializable waypoints) used by both the visual parity probe and the performance campaign. |
 | globe-pipeline-readiness.mjs | lib | ACTIVE | 2026-08-29 | 5 | Pure scoring for the pipeline-readiness probe: snapshot summary, coverage-divergence scoring, non-vacuity; keys decoded via canonical parser. |

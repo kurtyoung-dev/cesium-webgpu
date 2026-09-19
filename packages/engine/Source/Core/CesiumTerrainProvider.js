@@ -1341,7 +1341,12 @@ function checkLayer(provider, x, y, level, layer, topLayer) {
           );
           if (defined(requestPromise)) {
             layer.availabilityPromiseCache[cacheKey] = requestPromise;
-            requestPromise.then(deleteFromCache);
+            // Evict on rejection too: a cached rejected promise is handed to
+            // every later caller without re-requesting, so one transient failure
+            // would leave this availability tile unrefinable for the layer's
+            // life. The trailing catch settles the derived promise the eviction
+            // creates; callers still receive requestPromise itself.
+            requestPromise.finally(deleteFromCache).catch(function () {});
           }
         }
       }

@@ -315,6 +315,34 @@ describe("Scene/UrlTemplateImageryProvider", function () {
     });
   });
 
+  it("evaluation of schema zero padding for a coordinate wider than its template", function () {
+    const provider = new UrlTemplateImageryProvider({
+      url: "made/up/tms/server/{z}/{x}/{y}.PNG",
+      urlSchemeZeroPadding: {
+        "{x}": "00",
+      },
+      tilingScheme: new GeographicTilingScheme(),
+    });
+
+    spyOn(Resource._Implementations, "createImage").and.callFake(
+      function (request, crossOrigin, deferred) {
+        expect(request.url).toEqual("made/up/tms/server/10/1000/0.PNG");
+
+        // Just return any old image.
+        Resource._DefaultImplementations.createImage(
+          new Request({ url: "Data/Images/Red16x16.png" }),
+          crossOrigin,
+          deferred,
+        );
+      },
+    );
+
+    return provider.requestImage(1000, 0, 10).then(function (image) {
+      expect(Resource._Implementations.createImage).toHaveBeenCalled();
+      expect(image).toBeImageOrImageBitmap();
+    });
+  });
+
   it("evaluates pattern northDegrees", function () {
     const provider = new UrlTemplateImageryProvider({
       url: "{northDegrees}",
