@@ -76,6 +76,7 @@ describe(
           type: ModelType.TILE_GLTF,
         },
         runtimeNode: {
+          _runtimeSkin: {},
           computedJointMatrices: mockJointMatrices,
         },
       };
@@ -123,7 +124,9 @@ describe(
 
     it("processes skin with many joints", function () {
       const jointCount = 19; // Counted from model
-      const mockJointMatrices = new Array(jointCount);
+      const mockJointMatrices = Array.from({ length: jointCount }, function () {
+        return Matrix4.clone(Matrix4.IDENTITY);
+      });
       const renderResources = {
         attributes: [],
         shaderBuilder: new ShaderBuilder(),
@@ -132,6 +135,7 @@ describe(
           type: ModelType.TILE_GLTF,
         },
         runtimeNode: {
+          _runtimeSkin: {},
           computedJointMatrices: mockJointMatrices,
         },
       };
@@ -174,6 +178,167 @@ describe(
         const uniformMap = renderResources.uniformMap;
         expect(uniformMap.u_jointMatrices()).toBe(
           runtimeNode.computedJointMatrices,
+        );
+      });
+    });
+
+    function expectNoSkinningDeclared(shaderBuilder) {
+      ShaderBuilderTester.expectHasVertexDefines(shaderBuilder, []);
+      ShaderBuilderTester.expectHasVertexUniforms(shaderBuilder, []);
+      ShaderBuilderTester.expectHasVertexFunctionIds(shaderBuilder, []);
+      ShaderBuilderTester.expectVertexLinesEqual(shaderBuilder, []);
+    }
+
+    it("drops skinning when the node's runtime skin has not resolved", function () {
+      const renderResources = {
+        attributes: [],
+        shaderBuilder: new ShaderBuilder(),
+        attributeIndex: 1,
+        model: {
+          type: ModelType.TILE_GLTF,
+        },
+        // A runtime node carries no runtime skin until the scene graph assigns
+        // one, so the extractor has nothing to report for this node.
+        runtimeNode: {
+          computedJointMatrices: [Matrix4.clone(Matrix4.IDENTITY)],
+        },
+      };
+
+      return loadGltf(simpleSkinUrl).then(function (gltfLoader) {
+        const components = gltfLoader.components;
+        const primitive = components.nodes[0].primitives[0];
+
+        SkinningPipelineStage.process(renderResources, primitive);
+
+        expectNoSkinningDeclared(renderResources.shaderBuilder);
+        expect(renderResources.uniformMap).toBeUndefined();
+      });
+    });
+
+    it("drops skinning when the skin has no joints", function () {
+      const renderResources = {
+        attributes: [],
+        shaderBuilder: new ShaderBuilder(),
+        attributeIndex: 1,
+        model: {
+          type: ModelType.TILE_GLTF,
+        },
+        runtimeNode: {
+          _runtimeSkin: {},
+          computedJointMatrices: [],
+        },
+      };
+
+      return loadGltf(simpleSkinUrl).then(function (gltfLoader) {
+        const components = gltfLoader.components;
+        const primitive = components.nodes[0].primitives[0];
+
+        SkinningPipelineStage.process(renderResources, primitive);
+
+        expectNoSkinningDeclared(renderResources.shaderBuilder);
+        expect(renderResources.uniformMap).toBeUndefined();
+      });
+    });
+
+    it("does not read the joint matrices while configuring the pipeline", function () {
+      // The WebGL uniform system packs the matrices per frame, so the stage
+      // reads the array reference and the joint count only.
+      let matrixReads = 0;
+      const mockJointMatrices = new Proxy(
+        [Matrix4.clone(Matrix4.IDENTITY), Matrix4.clone(Matrix4.IDENTITY)],
+        {
+          get: function (target, property, receiver) {
+            if (typeof property === "string" && /^\d+$/.test(property)) {
+              ++matrixReads;
+            }
+            return Reflect.get(target, property, receiver);
+          },
+        },
+      );
+      const renderResources = {
+        attributes: [],
+        shaderBuilder: new ShaderBuilder(),
+        attributeIndex: 1,
+        model: {
+          type: ModelType.TILE_GLTF,
+        },
+        runtimeNode: {
+          _runtimeSkin: {},
+          computedJointMatrices: mockJointMatrices,
+        },
+      };
+
+      return loadGltf(simpleSkinUrl).then(function (gltfLoader) {
+        const components = gltfLoader.components;
+        const primitive = components.nodes[0].primitives[0];
+
+        SkinningPipelineStage.process(renderResources, primitive);
+
+        ShaderBuilderTester.expectHasVertexUniforms(
+          renderResources.shaderBuilder,
+          ["uniform mat4 u_jointMatrices[2];"],
+        );
+        expect(matrixReads).toBe(0);
+        expect(renderResources.uniformMap.u_jointMatrices()).toBe(
+          mockJointMatrices,
+        );
+      });
+    });
+
+    it("builds the next node's skinning after dropping a node with no joint matrices", function () {
+      // One uncaught stage loop in ModelSceneGraph configures every primitive
+      // of the model, so a node the stage cannot skin must not cost the
+      // following node its declarations.
+      const droppedResources = {
+        attributes: [],
+        shaderBuilder: new ShaderBuilder(),
+        attributeIndex: 1,
+        model: {
+          type: ModelType.TILE_GLTF,
+        },
+        runtimeNode: {
+          _runtimeSkin: {},
+          computedJointMatrices: [],
+        },
+      };
+      const mockJointMatrices = [
+        Matrix4.clone(Matrix4.IDENTITY),
+        Matrix4.clone(Matrix4.IDENTITY),
+      ];
+      const skinnedResources = {
+        attributes: [],
+        shaderBuilder: new ShaderBuilder(),
+        attributeIndex: 1,
+        model: {
+          type: ModelType.TILE_GLTF,
+        },
+        runtimeNode: {
+          _runtimeSkin: {},
+          computedJointMatrices: mockJointMatrices,
+        },
+      };
+
+      return loadGltf(simpleSkinUrl).then(function (gltfLoader) {
+        const components = gltfLoader.components;
+        const primitive = components.nodes[0].primitives[0];
+
+        SkinningPipelineStage.process(droppedResources, primitive);
+        SkinningPipelineStage.process(skinnedResources, primitive);
+
+        expectNoSkinningDeclared(droppedResources.shaderBuilder);
+
+        const shaderBuilder = skinnedResources.shaderBuilder;
+        ShaderBuilderTester.expectHasVertexDefines(shaderBuilder, [
+          "HAS_SKINNING",
+        ]);
+        ShaderBuilderTester.expectHasVertexFunctionIds(shaderBuilder, [
+          SkinningPipelineStage.FUNCTION_ID_GET_SKINNING_MATRIX,
+        ]);
+        ShaderBuilderTester.expectHasVertexUniforms(shaderBuilder, [
+          "uniform mat4 u_jointMatrices[2];",
+        ]);
+        expect(skinnedResources.uniformMap.u_jointMatrices()).toBe(
+          mockJointMatrices,
         );
       });
     });

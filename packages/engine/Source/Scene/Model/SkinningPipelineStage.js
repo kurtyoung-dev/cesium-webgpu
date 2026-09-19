@@ -1,4 +1,5 @@
 import combine from "../../Core/combine.js";
+import defined from "../../Core/defined.js";
 import ShaderDestination from "../../Renderer/ShaderDestination.js";
 import SkinningStageVS from "../../Shaders/Model/SkinningStageVS.js";
 import VertexAttributeSemantic from "../VertexAttributeSemantic.js";
@@ -12,9 +13,10 @@ import { extractSkinData } from "./ModelSkinData.js";
  * use ModelSkinData as the single extraction layer for joint matrices:
  *
  * - **WebGL (this stage):** Uses `extractSkinData()` for initial validation
- *   and `skinData.jointMatrices` (Matrix4[] reference) for the uniform function.
- *   The WebGL uniform system (`UniformArrayMat4`) handles per-frame packing
- *   and dirty-checking of individual matrices.
+ *   and `skinData.jointMatrices` (Matrix4[] reference) for the uniform function,
+ *   without the packed Float32Array. The WebGL uniform system
+ *   (`UniformArrayMat4`) handles per-frame packing and dirty-checking of
+ *   individual matrices.
  *
  * - **WebGPU (WebGPUModelRenderer.js):** Uses `extractSkinData()` for initial
  *   packing into Float32Array and `updatePackedJointMatrices()` for per-frame
@@ -53,17 +55,28 @@ const SkinningPipelineStage = {
  * @private
  */
 SkinningPipelineStage.process = function (renderResources, primitive) {
-  const shaderBuilder = renderResources.shaderBuilder;
-
-  shaderBuilder.addDefine("HAS_SKINNING", undefined, ShaderDestination.VERTEX);
-  addGetSkinningMatrixFunction(shaderBuilder, primitive);
-
   const runtimeNode = renderResources.runtimeNode;
 
   // Use the shared ModelSkinData extractor for validation and data access.
   // This is the same extractor that WebGPU uses in WebGPUModelRenderer.js,
-  // ensuring both backends share the skin data extraction layer.
-  const skinData = extractSkinData(runtimeNode);
+  // ensuring both backends share the skin data extraction layer. Only the
+  // joint count and the live Matrix4[] reference are read here, so the packed
+  // Float32Array the GPU-upload path needs is not requested.
+  const skinData = extractSkinData(runtimeNode, false);
+
+  // The stage is scheduled whenever the node declares a skin, which is not the
+  // same condition as the node having joint matrices to declare: the runtime
+  // skin may not have resolved, or the skin may carry no joints. Declaring
+  // nothing leaves the primitive unskinned instead of aborting draw-command
+  // construction for the whole model.
+  if (!defined(skinData)) {
+    return;
+  }
+
+  const shaderBuilder = renderResources.shaderBuilder;
+
+  shaderBuilder.addDefine("HAS_SKINNING", undefined, ShaderDestination.VERTEX);
+  addGetSkinningMatrixFunction(shaderBuilder, primitive);
 
   // skinData.jointCount provides the validated joint count
   // skinData.jointMatrices is a live reference to runtimeNode.computedJointMatrices

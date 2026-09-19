@@ -23,9 +23,13 @@ import Matrix4 from "../../Core/Matrix4.js";
  * Extracts skinning data from a ModelRuntimeNode.
  *
  * @param {ModelRuntimeNode} runtimeNode - The runtime node to extract skin data from.
+ * @param {boolean} [packJointMatrices=true] - Whether to pack the joint matrices into a
+ *        flat Float32Array. A caller that reads only <code>jointCount</code> and the
+ *        <code>jointMatrices</code> reference passes false, and
+ *        <code>packedJointMatrices</code> is then undefined.
  * @returns {ModelSkinDataResult|null} Skinning data descriptor, or null if the node has no skin.
  */
-function extractSkinData(runtimeNode) {
+function extractSkinData(runtimeNode, packJointMatrices) {
   if (!defined(runtimeNode)) {
     return null;
   }
@@ -42,12 +46,17 @@ function extractSkinData(runtimeNode) {
 
   const jointCount = jointMatrices.length;
 
-  // Pack joint matrices into a flat Float32Array (16 floats per mat4)
+  // Pack joint matrices into a flat Float32Array (16 floats per mat4). Only a
+  // caller that uploads the flat copy to the GPU needs it; packing for a caller
+  // that reads the Matrix4[] reference fills an array nothing ever reads.
   const packedSize = jointCount * 16;
-  const packedMatrices = new Float32Array(packedSize);
+  let packedMatrices;
+  if (packJointMatrices !== false) {
+    packedMatrices = new Float32Array(packedSize);
 
-  for (let i = 0; i < jointCount; i++) {
-    Matrix4.pack(jointMatrices[i], packedMatrices, i * 16);
+    for (let i = 0; i < jointCount; i++) {
+      Matrix4.pack(jointMatrices[i], packedMatrices, i * 16);
+    }
   }
 
   return {
@@ -62,8 +71,9 @@ function extractSkinData(runtimeNode) {
      */
     jointCount: jointCount,
     /**
-     * Flat array of mat4 values (16 floats per joint)
-     * @type {Float32Array}
+     * Flat array of mat4 values (16 floats per joint), undefined when the
+     * caller did not ask for the joint matrices to be packed
+     * @type {Float32Array|undefined}
      */
     packedJointMatrices: packedMatrices,
     /**
