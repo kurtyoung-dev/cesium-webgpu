@@ -23414,3 +23414,124 @@ green**, because sixty other failures remain in each job under other lanes of th
   `getImageCacheKey`'s at `ResourceCacheKeySpec.js:1072` and `:1075`. A seventh `getTextureCacheKey`
   case with a non-default target set would pin the per-context behaviour the segment exists for; it
   is outside this lane's permitted edit (the six strings) and is filed here rather than routed around.
+
+---
+
+## 2026-09-19 — `NEW-SHADER-GENERATOR-UPSTREAM-CONTRACT-PARITY` CLOSED: the GLSL generators stop at the closing brace again, and `addLines` validates its argument (CI lane L7 / Pervinca)
+
+Row `NEW-SHADER-GENERATOR-UPSTREAM-CONTRACT-PARITY` — carried as item 33 in
+`QUEUE_2026-07-15_CAMPAIGN8.md`, item 66 in `QUEUE_2026-07-15_CAMPAIGN9.md`, `C11-138` in
+`QUEUE_2026-07-18_CAMPAIGN11.md` (an exit-gate owner, NOT STARTED at the C11 closure audit), and
+A.6 in `campaign11_planning/guides/G9-test-infra-build.md` — had never been worked. It is closed
+here, in its ledger-stated scope and no wider.
+
+**What was wrong, at source.** `packages/engine/Source/Renderer/ShaderStruct.js` ended
+`generateGlslLines()` with `lines.push("")` after `lines.push("};")`, and
+`packages/engine/Source/Renderer/ShaderFunction.js` did the same after `lines.push("}")`, so every
+generated struct and every generated function carried a terminal empty element. `ShaderBuilder`
+joins those arrays with `"\n"` before handing one string to `ShaderSource`
+(`Renderer/ShaderBuilder.js:466-493`), so the element is one blank line in every shader the model,
+voxel and Gaussian-splat pipelines build. Separately, `ShaderFunction.addLines` validated nothing:
+`addLines()` with no argument returned normally and appended the GLSL line `"    undefined"` to the
+body; `addLines(100)` appended `"    100"`. Both measured in bare Node before the fix.
+
+**Authorship — one commit, three divergences.** `git log -L` on both lines lands on `febe065f36`,
+2026-03-29, "3/29-Material&Decompose-Updates" ("Major ES6/ES2022 file updates"). That single hunk
+converted both files from prototype to ES6 class, rewrote upstream's one-expression
+`[].concat(…)` return as a sequence of `lines.push(…)` calls and added the trailing `push("")` to
+each, **deleted** `addLines`' debug-pragma type check, and **added** an empty-body
+`DeveloperError` throw to `ShaderFunction.generateGlslLines`. The added throw was removed later as
+the BUG-F2 closure (recorded above under "BUG-F2 — ShaderBuilder crash on BENTLEY edge asset",
+FIXED 2026-04-25, Batch 66) because
+`MetadataPipelineStage` registers `initializeMetadata` / `setMetadataVaryings` unconditionally and
+every metadata-free model reaches the empty-body path. The other two divergences were never
+revisited. There is no comment, in either file or in any batch header, that justifies the trailing
+element: it is a conversion artefact, which is exactly how the row already described it
+("conversion-only terminal empty-line sentinels").
+
+**What upstream has at the same anchors** (`git show upstream/main:<path>`):
+`ShaderStruct.prototype.generateGlslLines` returns ``[].concat(`struct ${this.name}`, "{", fields,
+"};")`` and nothing after; `ShaderFunction.prototype.generateGlslLines` returns
+`[].concat(this.signature, "{", this.body, "}")`; `ShaderFunction.prototype.addLines` opens with
+`//>>includeStart('debug', pragmas.debug);` and the check
+`typeof lines !== "string" && !Array.isArray(lines)` throwing
+`` `Expected lines to be a string or an array of strings, actual value was ${lines}` ``. Upstream
+has **no** empty-body guard in `generateGlslLines` — it never had one — so BUG-F2's removal was a
+return to upstream, not a divergence from it.
+
+**Principle 7 — what depends on the trailing element.** Nothing. `ShaderStruct` and
+`ShaderFunction` are imported by exactly one module in the whole engine,
+`Renderer/ShaderBuilder.js:8-9`. Its `generateStructLines` (`:512-540`) and `generateFunctionLines`
+(`:555-583`) only `addAllToArray` the returned lines; no caller indexes the array or reads its last
+element; and the join is the plain `"\n"` at `:466-493`. The WebGPU side does not consume either
+class — `Renderer/WebGPU/WGSLShaderBuilder.js` is an independent builder that imports neither, and
+`Renderer/WebGPU/WebGPUShaderTranslator.ts` is a registry for a pluggable GLSL→WGSL translator fed
+by the WebGL-compatibility stub, not by `ShaderBuilder`. The whole observable effect of the removal
+is that the emitted GLSL loses one blank line after each `};` and each `}`.
+
+**Fix.** The two `lines.push("")` calls are gone; `addLines` carries upstream's check verbatim
+inside the debug pragma, with the `DeveloperError` import restored. The ES6 class shape is kept
+(the fork's `verify-es6-shape` guard depends on it), and the `float _empty;` filler and the
+empty-body lift are untouched — the emitted GLSL for an empty struct and for an empty function
+body is unchanged apart from the blank line.
+
+**Deliberately NOT done.** The empty-body `DeveloperError` was **not** re-added to
+`generateGlslLines`; the new spec pins `new ShaderFunction("void noop()").generateGlslLines()` as
+`["void noop()", "{", "}"]` so a future re-add fails in Node rather than at render time. The two
+upstream comments the conversion dropped inside `addLines` ("Indent the body of the function by 4
+spaces", "Single string case") were not restored: they restate the code, which the fork's comment
+standard bars. `ShaderBuilder.js` was not touched.
+
+**Proved in Node** (`packages/engine/Specs/Renderer/ShaderGeneratorUpstreamContractSpec.mjs`, new,
+homed in `npm run test-engine-node`): 8 tests, 8 pass, under a second. It asserts the exact line
+arrays for a populated and an empty struct, a populated and an empty-bodied function, the assembled
+GLSL with no blank line, and — for `undefined`, `null`, `100`, `{}` and `true` — that `addLines`
+raises `DeveloperError` with upstream's message **and leaves `body` empty**, never
+`"    undefined"`. Section C builds its mutants under the OS temp directory and asserts those same
+assertions go RED against them: C1 and C2 the two trailing elements, C3 the unreachable guard, and
+C4 those first two again against a forced-CRLF read of the source, which is what keeps Section C
+from going vacuous on a Windows checkout (see the note in `WEBGPU_DEBUGGING_LOG.md`).
+
+Externally, seven mutants were applied to the working tree and the spec run verbatim: restoring the
+struct's `push("")` → 4 pass / 4 fail; restoring the function's → 4 / 4; `if (false && …)` over the
+guard → 6 / 2 with `Missing expected exception: addLines(undefined) must raise DeveloperError`;
+and, from the lane's review, the trailing element re-added at the RETURN
+(`return lines.concat("")`, a shape the anchored rewrite cannot produce) → 4 / 4, the guard weakened
+to `lines === undefined` → 6 / 2, and an ORDERING mutant that still throws but only after
+`body.push` → 7 / 1, killed by `body` deep-equal `[]` rather than by "it threw". Removing the
+spec's own EOL normalisation → 7 / 1, C4 red. Every file was restored and md5-verified against its
+pre-mutant hash (`c19dbefc3b4affb8909a5c617d89ef43`, `7160fac9a417a7fb11dbe4791fde9166`).
+
+**CI acceptance, and what this batch does NOT do.** On the next `dev` run, `release tests (chrome)`
+loses `Renderer/ShaderStruct` ×2, `Renderer/ShaderFunction` ×1 and `Renderer/ShaderBuilder` ×5, and
+`coverage (firefox)` loses those eight plus `Renderer/ShaderFunction :: addLines throws without
+lines` and `:: addLines throws for invalid lines` — ten, because `Specs/addDefaultMatchers.js:97`
+returns the pass-always matcher at `:148-157` when `debug` is false, so the `--release` job cannot
+see a `toThrowDeveloperError` expectation fail at all. **Neither job goes green on this batch.**
+Both still abort at `Scene/VoxelCell` until the `maximum3DTextureSize` lane lands, and once it does,
+the ~4,200-spec tail that has not executed since 2026-07-16 reports its own failures for the first
+time. This batch removes eight (ten) named failures; it does not make a job pass.
+
+**Premise correction to A.6 in `campaign11_planning/guides/G9-test-infra-build.md`.** That guide
+attributes the five `Renderer/ShaderBuilder` failures to the missing `addLines` validation. They are
+not caused by it: `ShaderBuilder.addFunctionLines` carries its own copy of the identical debug guard
+(`Renderer/ShaderBuilder.js:240-247`), so no `ShaderBuilder` caller ever reached the unvalidated
+`addLines`. All five are whole-shader string compares whose only difference is the blank line, so
+the split is eight failures from the trailing element and two, debug-only, from the validation — not
+"ShaderBuilder 5 / ShaderFunction 3 / ShaderStruct 2" split by cause. The older register's
+"ShaderFunction 3" is a build-mode artefact of the same matcher no-op, not a third generator defect.
+
+**Edge leg owed.** This edits text that ends up in compiled GLSL, so a capture against the banked
+baseline is the acceptance, plus the `Renderer/Shader*` karma suites in both release and debug. The
+captured scene has to be one whose draw commands actually come out of
+`ShaderBuilder.buildShaderProgram`, and that method has exactly three callers —
+`Scene/Model/ModelDrawCommands.js:82`, `Scene/buildVoxelDrawCommands.js:81-84` and
+`Scene/GaussianSplatPrimitive.js:2425`. Of the ten scenes in
+`Tools/visual-regression/scenes.json` that is **`voxel-box-procedural`** and
+**`gsplat-sh-unit-cube`**, on their WebGL leg. `globe-default` is the control, not the acceptance:
+the globe never builds a `ShaderBuilder` program at all. `pointcloud-timedynamic-edl` is a second
+control — it is on the dedicated `Scene/PointCloud.js` path, which hands a hand-assembled
+`ShaderSource` to `ShaderProgram.fromCache` (`Scene/PointCloud.js:1516`) and never reaches either
+generator. Every WebGPU leg is a control for the same reason: the WebGPU side assembles its shaders
+in `Renderer/WebGPU/WGSLShaderBuilder.js`, which imports neither `ShaderStruct` nor
+`ShaderFunction`. Recorded in the lane's landing packet; not run in-lane (lanes run no browser).

@@ -63,7 +63,6 @@ class ShaderStruct {
       }
     }
     lines.push("};");
-    lines.push("");
     return lines;
   }
 }

@@ -22586,3 +22586,59 @@ divergence, pinned by "the node-smoke-test matrix reports every Node version in 
 
 **Files modified:** `package.json` (two script entries), `Tools/ci-guards.spec.mjs` (twelve added
 cases), `.github/workflows/dev.yml` (one matrix line).
+
+## Bug shader-gen-01 — an ES6 conversion dropped `addLines`' argument check, so a bad argument became the GLSL line `"    undefined"` (CI lane L7 / Pervinca, 2026-09-19)
+
+**Files:** `packages/engine/Source/Renderer/ShaderFunction.js`,
+`packages/engine/Source/Renderer/ShaderStruct.js`.
+
+**Symptom, as the suite reported it.** Eight specs fail in `release tests (chrome)` and ten in
+`coverage (firefox)`: `Renderer/ShaderStruct` ×2, `Renderer/ShaderFunction` ×1 and
+`Renderer/ShaderBuilder` ×5 in both, and in firefox additionally
+`Renderer/ShaderFunction :: addLines throws without lines` and `:: addLines throws for invalid
+lines`. The first group reads, verbatim,
+`Expected [ 'struct Nothing', '{', '    float _empty;', '};', '' ] to equal [ 'struct Nothing', '{', '    float _empty;', '};' ]`.
+The extra two are invisible under `--release` because `Specs/addDefaultMatchers.js:97` returns the
+pass-always matcher at `:148-157` when `debug` is false, so `toThrowDeveloperError` cannot fail
+there.
+
+**Root cause.** Both defects entered in one commit, `febe065f36` (2026-03-29,
+"3/29-Material&Decompose-Updates", "Major ES6/ES2022 file updates"), which converted the two
+classes from prototype to ES6 class. Upstream returns the lines as one expression —
+`` [].concat(`struct ${this.name}`, "{", fields, "};") `` and
+`[].concat(this.signature, "{", this.body, "}")`. The conversion rewrote each as a sequence of
+`lines.push(…)` calls and appended a `lines.push("")` that upstream has no counterpart for, and in
+the same hunk deleted the debug-pragma type check at the head of `addLines`. Nothing anywhere
+justifies the trailing element; no consumer reads it. `ShaderStruct` and `ShaderFunction` are
+imported by one module only (`Renderer/ShaderBuilder.js:8-9`), which concatenates the returned
+lines and joins them with `"\n"` (`:466-493`), so the element's entire effect is a blank line after
+each `};` and each `}` in every shader the model, voxel and Gaussian-splat pipelines build.
+
+The lost check was the sharper half. `addLines()` with no argument returned normally and pushed
+`"    undefined"` into the function body; `addLines(100)` pushed `"    100"`. Both were measured in
+bare Node against the pre-fix source, so a caller that passed the wrong thing shipped an
+uncompilable line into the generated GLSL instead of failing at the call.
+
+**Fix.** Both `lines.push("")` calls removed; `addLines` carries upstream's check verbatim inside
+`//>>includeStart('debug', pragmas.debug);` with the `DeveloperError` import restored. The ES6 class
+shape stays. The empty-body lift that closed BUG-F2 is untouched and is now pinned by a spec, so a
+future attempt to reinstate a guard there fails in Node instead of at render time on every
+metadata-free model.
+
+**Pinned by** `packages/engine/Specs/Renderer/ShaderGeneratorUpstreamContractSpec.mjs`
+(`npm run test-engine-node`): the exact line arrays for four generator cases, the assembled GLSL
+with no blank line, and `addLines` raising `DeveloperError` **while leaving the body empty** for
+five bad argument shapes. Its Section C builds three mutants under the OS temp directory —
+each trailing `push("")` restored, and the guard made unreachable with `if (false && …)` — and
+asserts the same assertions go RED against them.
+
+**One note on Section C itself, from the lane's review (Pharazon).** Its mutation anchors are
+written with `"\n"`, and this repository checks out CRLF on Windows (`.gitattributes` `* text=auto`
+with `core.autocrlf=true`), so on a fresh Windows clone the anchor guard fired instead of the
+mutant and the two multi-line mutants proved nothing — measured on the reviewer's clone at
+7 tests / 5 pass / 2 fail, and reproduced here by converting the two generator files to CRLF in
+place. `withMutant` now normalises the source it reads, and C4 forces the CRLF form back through
+that same read on every checkout, so removing the normalisation reddens a test on an LF tree as
+well (measured: C4 fails with "the struct trailing-line mutation anchor has moved"). Mutant
+identity belongs to the source text, not to the checkout's line endings — the rule
+`Tools/visual-regression/capture-source-eol-identity.spec.mjs` already states for built output.
