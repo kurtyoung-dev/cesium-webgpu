@@ -21105,3 +21105,69 @@ itself is still read from the engine comment, and every owner is still checked a
 `migration_doc/*.md` by `ledgerMentions`, plus a new row-id shape check. Three mutants confirm it is
 load-bearing: removing the reservation marker from engine prose fails 2 subtests; an owner absent from
 the ledger fails 2; a mis-shaped owner fails 1.
+
+## 2026-09-17 — `Core/Event.js` latched on a throwing listener; `EventHelper`'s remover spliced at -1 (Gemini-audit wave 2, lane W2-A-CORE-EVENT / Ferny) — **BOTH FIXED in the filing patch**
+
+Both rows were verified at HEAD `91a7a8c9ff` by the seat's read-only workflow (verifier
+`V-core-Cotman.md` items core-02 / core-03, refuter `R-core-Sancho.md`, adjudicated in
+`FINAL-Whitfoot.md` §c) and re-derived in-lane against the tree, by execution, before any edit. Per
+`R-2026-09-17-1` the fix lands in-fork because both files already diverge from upstream — measured
+here with `git diff --numstat upstream/main HEAD`: `Event.js` 125+/128- and `EventHelper.js` 42+/40-
+(the brief's "255" and the refuter's "275" for `Event.js` are both restatements of an older count;
+the tree reads 253 changed lines) — AND the upstream issue text is recorded below for filing.
+
+**`core-02` — `packages/engine/Source/Core/Event.js:121-141` (was `:121-151`): `raiseEvent` set
+`_invokingListeners = true` with no `try/finally`.** Authorship MIXED: blame `39f5341e64e`
+(KurtTrottr, 2026-04-13, the ES6 class conversion re-authored every line), logic byte-identical to
+`upstream/main:packages/engine/Source/Core/Event.js:168-198`. Reproduced in-lane against the
+unmodified module: a listener that throws leaves the flag latched; `removeEventListener` then takes
+the `_invokingListeners` branch (`:182`), parks the listener in `_toRemove`, returns `true` and
+decrements `_listenerCount` **while the listener stays in `_listeners` and fires again on the next
+raise** — measured `removeEventListener -> true`, `numberOfListeners -> 1`, `_listeners.size -> 2`,
+the removed listener invoked a second time. `Scene.js` `tryAndCatchError` swallows the throw, so the
+application runs on latched. What changed: the listener loop is wrapped in `try`, and one private
+module-level `flushPendingChanges(event)` (`Event.js:153-171`) — flag reset, `_toAdd` drain +
+`clear()`, `_toRemove` drain + `clear()`, in upstream's order — is called from `finally`. The
+minimal "reset the flag in `finally`" variant was rejected and is pinned RED by the spec: it leaves
+`_toAdd` populated with the flag cleared, so a re-add of the same listener+scope drifts
+`numberOfListeners` permanently high.
+
+**`core-03` — `packages/engine/Source/Core/EventHelper.js:51-61` (the remover returned by `add`;
+the defect was the single line `:54`): `splice(indexOf(fn), 1)` with no `-1` guard.** Authorship
+MIXED: blame `39f5341e64e` (KurtTrottr, 2026-04-13), logic identical to
+`upstream/main:packages/engine/Source/Core/EventHelper.js:51-53`. The verifier's stated consequence
+is corrected here, as the refuter established and this lane confirmed by execution: `_removalFunctions`
+holds the raw `Event` removers, not the wrappers, so the errant `splice` drops a **bookkeeping
+entry** — nothing is unsubscribed early; instead that registration escapes the later `removeAll()`
+and the listener keeps firing after its owner is torn down. The post-`removeAll()` call is inert on
+its own (`splice(-1, 1)` on an empty array deletes nothing); the live triggers are a wrapper called
+twice while another registration exists, and a wrapper captured before a `removeAll()` that is
+called after the helper is re-populated. Both were measured leaking one listener at HEAD and read 0
+after the fix. What changed: `const index = removalFunctions.indexOf(removalFunction);` and
+`if (index !== -1) { removalFunctions.splice(index, 1); }`.
+
+**Acceptance.** `Tools/visual-regression/core-event-lifecycle.spec.mjs` (node:test, imports the two
+Core modules directly, no build) — 6/6, homed in `npm run test-visual-regression-node` by one
+add-only path on that runner's line. Karma leg: three throwing-listener cases added to
+`packages/engine/Specs/Core/EventSpec.js` (which had none) and a new
+`packages/engine/Specs/Core/EventHelperSpec.js` (the class had **zero** direct coverage anywhere in
+the repo); the spec bundle is glob-generated, so no list file needs editing, but the bundle must be
+rebuilt before karma or the freshness sentinel refuses. Inertness mutants (temp copies, verbatim runs
+in the landing packet): restoring the original `raiseEvent` → 3 RED; making the flush call inert →
+4 RED; the flag-only `finally` variant → 2 RED; restoring the unguarded `splice` → 2 RED.
+
+**Upstream issue to file** (`R-2026-09-17-1`), one paragraph, both defects:
+`Event.prototype.raiseEvent` (`packages/engine/Source/Core/Event.js:168-198` on `main`) sets
+`this._invokingListeners = true` and clears it only after the listener loop returns normally. A
+listener that throws therefore leaves the event permanently "invoking": from then on
+`removeEventListener` parks the listener in `_toRemove`, returns `true` and decrements
+`_listenerCount` while the listener remains in `_listeners` and keeps being invoked, so a listener
+that throws on every raise can never be unsubscribed, and `_toAdd`/`_toRemove` are never drained
+again. Wrapping the loop in `try` and moving the flag reset and both drains into a `finally` fixes
+it without changing the drain order. Separately, the remover returned by `EventHelper.prototype.add`
+(`packages/engine/Source/Core/EventHelper.js:51-53` on `main`) calls
+`removalFunctions.splice(removalFunctions.indexOf(removalFunction), 1)` without checking for `-1`;
+calling that remover a second time (or after a `removeAll()` that the helper has since been
+re-populated past) splices at `-1` and removes the **last** registration instead, so that
+registration escapes the helper's own `removeAll()` and its listener outlives the owner that
+registered it. Guarding with `if (index !== -1)` fixes it.

@@ -121,33 +121,23 @@ class Event {
   raiseEvent() {
     this._invokingListeners = true;
 
-    for (const [listener, scopes] of this._listeners.entries()) {
-      if (!defined(listener)) {
-        continue;
-      }
+    // A listener that throws must not leave the event invoking: while that flag
+    // is set, removeEventListener only parks the listener in _toRemove, so an
+    // unsubscribed listener would keep firing and a deferred addition would
+    // never arrive. The flush runs on the throwing exit as well as the normal one.
+    try {
+      for (const [listener, scopes] of this._listeners.entries()) {
+        if (!defined(listener)) {
+          continue;
+        }
 
-      for (const scope of scopes) {
-        listener.apply(scope, arguments);
+        for (const scope of scopes) {
+          listener.apply(scope, arguments);
+        }
       }
+    } finally {
+      flushPendingChanges(this);
     }
-
-    this._invokingListeners = false;
-
-    // Actually add items marked for addition
-    for (const [listener, scopes] of this._toAdd.entries()) {
-      for (const scope of scopes) {
-        addEventListener(this, this._listeners, listener, scope);
-      }
-    }
-    this._toAdd.clear();
-
-    // Actually remove items marked for removal
-    for (const [listener, scopes] of this._toRemove.entries()) {
-      for (const scope of scopes) {
-        removeEventListener(this, this._listeners, listener, scope);
-      }
-    }
-    this._toRemove.clear();
   }
 
   /**
@@ -158,6 +148,26 @@ class Event {
   get numberOfListeners() {
     return this._listenerCount;
   }
+}
+
+function flushPendingChanges(event) {
+  event._invokingListeners = false;
+
+  // Actually add items marked for addition
+  for (const [listener, scopes] of event._toAdd.entries()) {
+    for (const scope of scopes) {
+      addEventListener(event, event._listeners, listener, scope);
+    }
+  }
+  event._toAdd.clear();
+
+  // Actually remove items marked for removal
+  for (const [listener, scopes] of event._toRemove.entries()) {
+    for (const scope of scopes) {
+      removeEventListener(event, event._listeners, listener, scope);
+    }
+  }
+  event._toRemove.clear();
 }
 
 function addEventListener(event, listenerMap, listener, scope) {

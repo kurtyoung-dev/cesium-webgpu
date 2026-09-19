@@ -222,11 +222,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1318 |
-| ACTIVE | 1078 |
+| Files in census | 1319 |
+| ACTIVE | 1079 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 44 |
-| Classes | probe 676, spec 362, lib 120, other 115, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
+| Classes | probe 676, spec 363, lib 120, other 115, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
 
 ### Tools/ (62)
 
@@ -319,7 +319,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | comment-marker-guard.mjs | other | ACTIVE | 2026-08-21 | 24 | C16 lint guard scanning engine/widgets Source for banned tracker-marker vocabulary, with a clean-list ratchet; lint-staged + one-shot modes. |
-| comment-marker-guard.spec.mjs | spec | ACTIVE | 2026-09-03 | 6 | node:test contract for the C16 marker guard: rules still match (self-test vs broken rule), scope does not overreach, ratchet honest both ways. |
+| comment-marker-guard.spec.mjs | spec | ACTIVE | 2026-09-17 | 6 | node:test contract for the C16 marker guard: rules still match (self-test vs broken rule), scope does not overreach, ratchet honest both ways. |
 | comment-only-diff.mjs | other | ACTIVE | 2026-08-16 | 6 | Binding gate of every C16 rewrite batch: strips comments from both sides of a diff to a canonical form and requires the remaining code identical. |
 | comment-only-diff.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Mutant suite for the comment-only-diff gate: every rejected mutant is paired with the nearest legitimate edit that must be accepted. |
 | spec-anchor-sweep.mjs | other | ACTIVE | 2026-08-20 | 3 | Reports grammar, comment-only, and containment-locator anchors from spec literals against explicitly supplied source files. |
@@ -421,7 +421,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1039)
+### Tools/visual-regression/ (1040)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -492,7 +492,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | classification-bounding-volume-frustum-slices.spec.mjs | spec | ACTIVE | 2026-09-10 | 4 | Drives the real View.createPotentiallyVisibleSet, the real Scene.isVisible and the real GroundPolylinePrimitive queue path over the real WebGPU classification bounding-volume selection, and requires the slice count, the frustum-list length, the per-frame classification draw count and the blend fold they imply to match the single-draw values on every scene mode. |
 | clipping-polygon-rebake-revision-signal.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that the WebGPU CLIPPING_POLYGONS feature renderer rebakes on every real content change of ClippingPolygonCollection — including an equal-count polygon swap that a vertex/polygon COUNT comparison cannot see — and does not rebake when nothing changed. |
 | clipping-polygon-texture-backend-claim.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that ClippingPolygonCollection.requestRectangleData asks the active backend before building WebGL clipping textures, so WebGPU builds zero Texture objects while the CPU edge/grid tables still reach a future WGSL twin. |
-| cloud-api-enum-reachability.spec.mjs | spec | NO @purpose HEADER | 2026-09-12 | 5 | — |
+| cloud-api-enum-reachability.spec.mjs | spec | NO @purpose HEADER | 2026-09-17 | 5 | — |
 | cloud-coverage-response.spec.mjs | spec | ACTIVE | 2026-09-16 | 9 | Pins the CLOUD-LOW-COVERAGE-CUTOFF fix: baked base-field support, monotone coverage response on the CPU twin, exact high-anchor preservation. |
 | cloud-demo-probe-routing.spec.mjs | spec | ACTIVE | 2026-09-13 | 5 | Drives the eight routed Weather-Inspector cloud probes through runProbe against a stub browser, so the routing is known to reach a receipt, take its origin from the runtime and refuse port 8080 before an Edge slot is spent on it. |
 | cloud-density-domain.spec.mjs | spec | ACTIVE | 2026-08-21 | 6 | Pins the cloud density-domain layout: noise origin/phase/rotation float offsets shared between WebGPUCloudDensityDomain.ts and the WGSL, via exports. |
@@ -526,6 +526,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | collection-depth-override-law.spec.mjs | spec | ACTIVE | 2026-09-05 | 6 | Executes the real DISABLE_DEPTH_DISTANCE blocks of the WebGPU collection shaders and of BillboardCollectionVS.glsl over a clip-space grid, and requires one fragment outcome from both backends. |
 | collection-pass-routing.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Guards which Pass bin WebGPU collection renderers put COLOR commands in and that PICK commands are emitted — pins the B914 enum-branch inversion fix. |
 | collection-pickid-shape.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Guards that WebGPU collection renderers register WebGL-shaped pick-id wrappers ({primitive, collection, id}), not bare primitives; CO-16 census guard. |
+| core-event-lifecycle.spec.mjs | spec | ACTIVE | — | 3 | Asserts Event survives a throwing listener and EventHelper's remover never orphans another registration, through the engine's own Core modules. |
 | coveragejson-antimeridian.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | C13-08: CoverageJSON cyclic-longitude unwrap through WeatherFieldGrid + WeatherTexPacker so antimeridian-crossing CRS84 axes parse right. |
 | cpu-frame-accounting.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Deterministic-clock tests of WebGPUCpuPassProfiler whole-scene phase accounting (CPU_SCENE_PHASE_NAMES coverage, no wall-clock leakage). |
 | cpu-primitive-breakdown-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Policy guard for probe-c11-169-primitive-breakdown: first-red policy, detail controls, instrumentation evaluation and capture normalization vs source. |

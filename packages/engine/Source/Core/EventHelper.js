@@ -51,7 +51,13 @@ class EventHelper {
     return function () {
       removalFunction();
       const removalFunctions = that._removalFunctions;
-      removalFunctions.splice(removalFunctions.indexOf(removalFunction), 1);
+      const index = removalFunctions.indexOf(removalFunction);
+      // A wrapper called twice finds no entry the second time, and an
+      // unguarded splice at -1 would drop the last registration instead,
+      // leaving that listener behind when removeAll runs.
+      if (index !== -1) {
+        removalFunctions.splice(index, 1);
+      }
     };
   }
 

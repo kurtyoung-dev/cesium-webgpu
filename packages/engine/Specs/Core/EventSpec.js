@@ -223,6 +223,117 @@ describe("Core/Event", function () {
     expect(spyListener).not.toHaveBeenCalled();
   });
 
+  it("a listener that threw can be unsubscribed and stops firing", function () {
+    let throwingCalls = 0;
+    const throwing = function () {
+      throwingCalls++;
+      throw new Error("listener failure");
+    };
+
+    event.addEventListener(throwing);
+    event.addEventListener(spyListener);
+
+    expect(function () {
+      event.raiseEvent();
+    }).toThrowError("listener failure");
+    expect(throwingCalls).toEqual(1);
+
+    expect(event.removeEventListener(throwing)).toEqual(true);
+    expect(event.numberOfListeners).toEqual(1);
+
+    event.raiseEvent();
+    expect(throwingCalls).toEqual(1);
+    expect(spyListener).toHaveBeenCalled();
+  });
+
+  it("a listener added during a throwing raise fires on the next raise", function () {
+    let queued = false;
+    let throwsLeft = 1;
+
+    const adder = function () {
+      if (!queued) {
+        queued = true;
+        event.addEventListener(spyListener);
+      }
+    };
+
+    const throwing = function () {
+      if (throwsLeft-- > 0) {
+        throw new Error("listener failure");
+      }
+    };
+
+    event.addEventListener(adder);
+    event.addEventListener(throwing);
+
+    expect(function () {
+      event.raiseEvent();
+    }).toThrowError("listener failure");
+    expect(spyListener).not.toHaveBeenCalled();
+
+    event.raiseEvent();
+    expect(spyListener.calls.count()).toEqual(1);
+  });
+
+  it("numberOfListeners matches the listeners a raise invokes after a throw and a re-add", function () {
+    const invoked = [];
+    let queued = false;
+    let throwsLeft = 1;
+
+    const deferred = function () {
+      invoked.push("deferred");
+    };
+
+    const adder = function () {
+      invoked.push("adder");
+      if (!queued) {
+        queued = true;
+        event.addEventListener(deferred);
+      }
+    };
+
+    const throwing = function () {
+      invoked.push("throwing");
+      if (throwsLeft-- > 0) {
+        throw new Error("listener failure");
+      }
+    };
+
+    event.addEventListener(adder);
+    event.addEventListener(throwing);
+
+    expect(function () {
+      event.raiseEvent();
+    }).toThrowError("listener failure");
+
+    // The caller re-registers the listener it queued during the throwing raise.
+    event.addEventListener(deferred);
+
+    invoked.length = 0;
+    event.raiseEvent();
+    expect(invoked.sort()).toEqual(["adder", "deferred", "throwing"]);
+    expect(event.numberOfListeners).toEqual(invoked.length);
+  });
+
+  it("a listener added during a raise does not fire in that same raise", function () {
+    let queued = false;
+    const adder = function () {
+      if (!queued) {
+        queued = true;
+        event.addEventListener(spyListener);
+      }
+    };
+
+    event.addEventListener(adder);
+    event.addEventListener(function () {});
+
+    event.raiseEvent();
+    expect(spyListener).not.toHaveBeenCalled();
+
+    event.raiseEvent();
+    expect(spyListener.calls.count()).toEqual(1);
+  });
+
   it("addEventListener throws with undefined listener", function () {
     expect(function () {
       event.addEventListener(undefined);

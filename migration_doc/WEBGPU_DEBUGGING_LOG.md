@@ -21716,3 +21716,33 @@ between then and this batch bypassed the comment guard at commit time; only CI s
 read-only probe. It runs `prettier --write` and then an "Applying modifications from tasks" step that
 **stages the files it touched**. It changed no content here (the working-tree diff md5 was identical
 before and after), but it left two files in the index. Follow any such reproduction with `git reset`.
+
+## Bug W2-A.1 — a throwing listener latched `Event`, and the unsubscribe that should have stopped it returned `true` and did nothing (lane Ferny, Gemini-audit wave 2, 2026-09-17)
+
+**Files:** `packages/engine/Source/Core/Event.js` (fix), `packages/engine/Source/Core/EventHelper.js`
+(the adjacent `core-03` guard), `packages/engine/Specs/Core/EventSpec.js`,
+`packages/engine/Specs/Core/EventHelperSpec.js` (new),
+`Tools/visual-regression/core-event-lifecycle.spec.mjs` (new), `package.json` (runner home).
+
+**Root cause.** `raiseEvent` set `this._invokingListeners = true`, ran the listener loop, and cleared
+the flag plus drained `_toAdd`/`_toRemove` only on the normal exit. Any listener that threw skipped
+all of it. The flag is the switch `removeEventListener` reads (`Event.js:182`): while it is set, a
+removal is deferred into `_toRemove` — and `_toRemove` is drained only by a raise that completes. So
+after one throwing raise the event is latched, and the caller's remedy silently fails: measured
+against the unmodified module, `removeEventListener` returned `true` and `numberOfListeners` fell to
+`1` while `_listeners.size` stayed `2` and the removed listener was invoked again on the next raise.
+Nothing surfaces: `Scene.js` `tryAndCatchError` catches the listener's throw, raises `_renderError`
+and returns, so the application keeps rendering with that event stuck.
+
+**Fix.** Wrap the listener loop in `try` and call one private `flushPendingChanges(event)` from
+`finally` — flag reset, then the `_toAdd` drain and `clear()`, then the `_toRemove` drain and
+`clear()`, in the order the normal exit already used. The happy path is unchanged (the existing
+`EventSpec` add/remove-from-callback cases were re-run as a Node port and hold). The narrower
+"reset the flag in `finally`" shape was rejected: it clears the flag while `_toAdd` still holds a
+deferred registration, so a re-add of the same listener+scope increments `_listenerCount` a second
+time and `numberOfListeners` stays permanently one too high — the spec asserts against that variant
+as well as against the original.
+
+**Detection.** Both defects were found by reading, not by a failing test: `EventSpec.js` had no
+throwing-listener case and `EventHelper` had no spec at all. Both gaps are now closed, and the
+Node-level acceptance runs without a build.
