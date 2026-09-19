@@ -73,6 +73,17 @@
 //   node Tools/visual-regression/probe-buffer-polyline-meters-width.mjs \
 //     --renderer webgl,webgpu --runs 2
 //
+// `--scene-mode 3d|2d|cv-ortho` selects the projection under test. The octave
+// law is the same in all three: a 2D camera's orthographic extents and a
+// Columbus-View orthographic frustum's width are both tied to the eye height by
+// `Camera._adjustOrthographicFrustum`, so doubling the height doubles the
+// metres-per-pixel and halves a metres stroke, exactly as the perspective
+// camera does. What differs is which arm of `csm_metersPerPixel` runs: the two
+// orthographic modes are the GLSL's `czm_sceneMode2D || czm_orthographicIn3D`
+// arm, and a chunk carrying only the perspective arm answers those cameras with
+// the perspective formula, which multiplies the pixel size by the eye depth and
+// leaves the stroke far too thin to measure — clause 0, STRUCTURAL, not FAIL.
+//
 // Exit codes are the shared runtime's.
 
 import {
@@ -91,6 +102,9 @@ export const FAR_HEIGHT_METRES = 12000.0;
 /** Authored widths. 60 m is ~19 px at the near height on this viewport. */
 export const METRES_WIDTH = 60.0;
 export const PIXELS_WIDTH = 8.0;
+
+/** The projections the probe can put the same measurement under. */
+export const SCENE_MODES = Object.freeze(["3d", "2d", "cv-ortho"]);
 
 /**
  * Gate bands. A metres stroke must halve across the octave; a pixel stroke must
@@ -208,6 +222,7 @@ const RUN_LANE = async ({
   farHeight,
   metresWidth,
   pixelsWidth,
+  sceneMode,
 }) => {
   const C = (window.Cesium =
     window.Cesium || (await import("/Build/CesiumUnminified/index.js")));
@@ -228,6 +243,15 @@ const RUN_LANE = async ({
   scene.moon.show = false;
   scene.backgroundColor = C.Color.BLACK;
   scene.fog.enabled = false;
+
+  // The projection under test. `scene.mode = …` is an instantaneous morph, so
+  // the camera set below lands in the target mode rather than mid-morph.
+  if (sceneMode === "2d") {
+    scene.mode = C.SceneMode.SCENE2D;
+  } else if (sceneMode === "cv-ortho") {
+    scene.mode = C.SceneMode.COLUMBUS_VIEW;
+    scene.camera.switchToOrthographicFrustum();
+  }
 
   const scratch = document.createElement("canvas");
   const scratchContext = scratch.getContext("2d", {
@@ -385,6 +409,7 @@ const RUN_LANE = async ({
  * @param {string} options.origin The served origin.
  * @param {string} options.renderer The backend.
  * @param {number} options.run The repeat index.
+ * @param {string} options.sceneMode One of {@link SCENE_MODES}.
  * @param {string} options.outputDirectory Where captures are written.
  * @param {Array<object>} options.captures Runtime capture sink.
  * @returns {Promise<object>} The cell.
@@ -394,6 +419,7 @@ async function runCell({
   origin,
   renderer,
   run,
+  sceneMode,
   outputDirectory,
   captures,
 }) {
@@ -417,6 +443,7 @@ async function runCell({
     const measured = await page.evaluate(RUN_LANE, {
       metresWidth: METRES_WIDTH,
       pixelsWidth: PIXELS_WIDTH,
+      sceneMode,
     });
 
     // A silent WebGL fallback must HARD-REFUSE: a probe that scores a WebGL
@@ -462,6 +489,7 @@ async function runCell({
     return {
       renderer,
       run,
+      sceneMode,
       ...measured,
       near,
       far,
@@ -480,7 +508,10 @@ async function runCell({
  * @returns {void}
  */
 function printReport(receipt) {
-  console.log("\n── BufferPolylineCollection widthUnits:'meters' (C-04) ──");
+  const mode = receipt.cells?.[0]?.sceneMode ?? "3d";
+  console.log(
+    `\n── BufferPolylineCollection widthUnits:'meters' (C-04) — scene mode ${mode} ──`,
+  );
   for (const verdict of receipt.verdicts) {
     const state =
       verdict.pass === true
@@ -521,9 +552,21 @@ export const descriptor = {
         kind: "non-negative-number",
         default: DEFAULT_BANDS.metresOctave[1],
       },
+      {
+        flag: "--scene-mode",
+        key: "sceneMode",
+        kind: "string",
+        default: "3d",
+      },
     ],
   },
   async cells({ browser, origin, run, options, outputDirectory, captures }) {
+    const sceneMode = options.sceneMode ?? "3d";
+    if (!SCENE_MODES.includes(sceneMode)) {
+      throw new ProbeRefusal(
+        `--scene-mode must be one of ${SCENE_MODES.join(", ")}, got ${sceneMode}`,
+      );
+    }
     const produced = [];
     for (const renderer of options.renderers) {
       produced.push(
@@ -532,6 +575,7 @@ export const descriptor = {
           origin,
           renderer,
           run,
+          sceneMode,
           outputDirectory,
           captures,
         }),
@@ -558,6 +602,7 @@ export const descriptor = {
       farHeightMetres: FAR_HEIGHT_METRES,
       metresWidth: METRES_WIDTH,
       pixelsWidth: PIXELS_WIDTH,
+      sceneMode: context.options?.sceneMode ?? "3d",
       cellOrder: cells.map((c) => `${c.renderer}/run${c.run}`),
       verdicts: context.verdicts,
       cells,

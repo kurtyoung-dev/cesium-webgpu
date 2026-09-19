@@ -222,11 +222,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1327 |
-| ACTIVE | 1087 |
+| Files in census | 1328 |
+| ACTIVE | 1088 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 44 |
-| Classes | probe 676, spec 371, lib 120, other 115, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
+| Classes | probe 676, spec 372, lib 120, other 115, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
 
 ### Tools/ (62)
 
@@ -421,7 +421,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1047)
+### Tools/visual-regression/ (1048)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -743,7 +743,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-buffer-logdepth-zfight.mjs | probe | ACTIVE | 2026-08-16 | 6 | Acceptance that the Buffer* family writes log depth: coverage tracked against a co-located log-depth billboard reference at far nadir. |
 | probe-buffer-point-single.mjs | probe | ACTIVE | 2026-08-16 | 4 | Regression gate for the WebGL single-vertex BufferPoint path (count==1 sub-data update): lone point renders, moves, zero errors. |
 | probe-buffer-point-update.mjs | probe | ACTIVE | 2026-08-16 | 5 | Acceptance for the upstream #13465 fix: setPosition after first render re-encodes and moves the point on BOTH backends within 2 frames. |
-| probe-buffer-polyline-meters-width.mjs | probe | ACTIVE | 2026-09-11 | 3 | Measures whether a NON-draped BufferPolylineCollection with widthUnits:"meters" keeps a constant GROUND width on WebGPU: two collections, two camera distances one octave apart, stroke-width ratio per backend. |
+| probe-buffer-polyline-meters-width.mjs | probe | ACTIVE | 2026-09-11 | 4 | Measures whether a NON-draped BufferPolylineCollection with widthUnits:"meters" keeps a constant GROUND width on WebGPU: two collections, two camera distances one octave apart, stroke-width ratio per backend. |
 | probe-buffercoll-encode-benchmark.mjs | probe | ACTIVE | 2026-08-16 | 9 | Repack+upload benchmark of BufferPointCollection position encode (batch vs forced-scalar) at 10k/50k/100k, both backends, visual check. |
 | probe-buffercoll-wasm-encode.mjs | probe | ACTIVE | 2026-08-16 | 5 | Parity acceptance that the WASM/batch fround RTE encode renders pixel-identical to scalar EncodedCartesian3, plus threshold routing checks. |
 | probe-bufferpoint-positiondatatype.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | Gap-documentation gate: detectUnsupportedPositionEncoding flags integer/normalized BufferPoint layouts and warns once instead of mis-encoding. |
@@ -1418,7 +1418,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | validate-f16-wgsl.mjs | other | ACTIVE | 2026-08-16 | 5 | Naga-WASM compile gate for every PostProcess *_f16.wgsl variant; exit 1 on rejection. For machines whose GPU lacks shader-f16. |
 | validate-sgp4.mjs | other | ACTIVE | 2026-08-16 | 5 | Dev gate proving the JS FP64 SGP4 reference matches python-sgp4 2.25 vectors to <1 m before the GPU kernel is judged against it. |
 | vector-draping-pick-identity.spec.mjs | spec | ACTIVE | 2026-09-10 | 5 | C-05: pins that the pick colour a draped BufferPolyline is baked |
-| vector-layer-draping.spec.mjs | spec | ACTIVE | 2026-09-11 | 15 | Acceptance for WebGPU vector-layer draping, polylines and polygon fills: GLSL-derived oracles vs real storage-buffer packer/WGSL indexing, ten named mutations. |
+| vector-layer-draping.spec.mjs | spec | ACTIVE | 2026-09-11 | 16 | Acceptance for WebGPU vector-layer draping, polylines and polygon fills: GLSL-derived oracles vs real storage-buffer packer/WGSL indexing, ten named mutations. |
 | verify-b3dm-render.mjs | other | ACTIVE | 2026-08-16 | 7 | WebGL-vs-WebGPU screenshot smoke that the canonical BatchedWithBatchTable b3dm tileset renders; closed the bind-group consolidation loop. |
 | verify-batches-106-109.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Batch-scoped verification of velocity pass, refraction capture, point-light shadows and the HDR-toggle gate; PNG-size + console smoke. |
 | verify-classification-fr.mjs | other | ACTIVE | 2026-08-16 | 3 | Smoke that DepthPlane/GroundPolyline/ClassificationPrimitive/Vector3DTile FR families construct, render and stay error-free on WebGPU. |
@@ -1456,7 +1456,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-dynamic-environment-recovery.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Source-anchored pins that dynamic environment-map caches are owned by one device generation and recover across manager/capture/Scene wiring. |
 | webgpu-frame-accounting-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Guard for the frame-breakdown probe's accounting: phase names match the engine profiler, coverage/overlap validity, request-render suppression. |
 | webgpu-ibl-sh-signal.spec.mjs | spec | ACTIVE | 2026-08-24 | 2 | Keep the packed model IBL flag aligned with the spherical-harmonics buffer selected for binding. |
-| webgpu-mapped-buffer-lifecycle.spec.mjs | spec | ACTIVE | — | 3 | Drives the real WebGPU readback, staging-cache, performance-manager, context-teardown and compute-validation paths under fake GPU objects, and asserts the values they produce rather than the shape of their source. |
+| webgpu-mapped-buffer-lifecycle.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Drives the real WebGPU readback, staging-cache, performance-manager, context-teardown and compute-validation paths under fake GPU objects, and asserts the values they produce rather than the shape of their source. |
 | webgpu-pick-center-identity.spec.mjs | spec | ACTIVE | 2026-08-21 | 7 | Fake-device coverage of WebGPUPickFramebuffer/PickPass readback identity: map/unmap lifecycle, per-identity pixel decode, voxel pick pins. |
 | webgpu-pick-emission-counters.spec.mjs | spec | ACTIVE | 2026-09-02 | 8 | Pins the four pragma-stripped counters (ready-gate skips, pick |
 | webgpu-pick-id-32-bit.spec.mjs | spec | ACTIVE | 2026-09-05 | 5 | AR-751: pins that PickId's WebGPU encoding, GraphicsContext's |
@@ -1471,6 +1471,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-sun-bloom-mirror.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Guard that both backends draw ONE sun glow: WebGPU tuning derived from SolarDiscModel not copied, shared constants, one flag, WebGL untouched. |
 | webgpu-voxel-resource-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Drives real WebGPUVoxelResourceLifecycle exports (retain/release, atlas slot publish/retire/LRU, async-failure capture) plus structural pins. |
 | wgsl-mini-eval.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Verifies restricted WGSL expression parsing distinguishes scalar comparisons from generic constructor calls. |
+| wgsl-window-coordinates.spec.mjs | spec | ACTIVE | — | 3 | Runs csm_eyeToWindowCoordinates, csm_modelToWindowCoordinates and csm_metersPerPixel through the WGSL evaluator and asserts their outputs against a CPU port of the GLSL twins, in WebGPU's NDC convention, for perspective, 2D orthographic and Columbus-View orthographic frustums. |
 | widgets-teardown-contract.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Pins that the three inspector mixins remove and destroy the panel they append to the caller's container, that FullscreenButtonViewModel unsubscribes from the document it subscribed to, that Geocoder removes every listener its constructor added, and that Animation removes the <style> node it inserted. |
 
 ### Tools/visual-regression/archive/ (16)
@@ -1568,7 +1569,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-02 | 16 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 5 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
 | engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 30 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
-| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 40 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
+| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 41 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | globe-camera-track.mjs | lib | ACTIVE | 2026-08-16 | 13 | Shared orbit-to-ground camera route (plain serializable waypoints) used by both the visual parity probe and the performance campaign. |
 | globe-pipeline-readiness.mjs | lib | ACTIVE | 2026-08-29 | 5 | Pure scoring for the pipeline-readiness probe: snapshot summary, coverage-divergence scoring, non-vacuity; keys decoded via canonical parser. |
@@ -1634,7 +1635,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | weather-regional-tail-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Fixture and pass/fail policy for the C13-08 rendered antimeridian weather-tail probe, mutation-tested against its two target regressions. |
 | webgpu-model-preparation-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Accumulates and validates WebGPU model preparation/demand counters as measurement-window evidence for performance workloads. |
 | wgsl-derivative-uniformity.mjs | lib | ACTIVE | 2026-09-01 | 7 | Reports implicit-derivative calls reached through non-uniform control flow without requiring a browser, GPU, or WGSL compiler. |
-| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-11 | 18 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
+| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-11 | 20 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
 | wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 11 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
 ### scripts/ (3)

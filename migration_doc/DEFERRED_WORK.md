@@ -21758,3 +21758,68 @@ made. The four transient-buffer `mapAsync` sites (`WebGPUCSMRenderer.ts:996`/`:1
 `WebGPUFeatureIdTexture.ts`, `WebGPUTextureUtilities.ts`, `WebGPUContext.ts:4105-4120`) leak one
 buffer on a throw and wedge nothing; they are outside this lane's two-file scope and are left for
 whoever adopts `mapAndRead` more widely.
+
+**`shaders-08` — the WGSL window-coordinate helpers now match their GLSL twins** *(2026-09-18, lane
+W3-C-SHADER-LATENTS, Mugwort)*: `Shaders/WebGPU/chunks/functions/csm_eyeToWindowCoordinates.wgsl:15`
+and `csm_modelToWindowCoordinates.wgsl:15-20` fed `Matrix4.computeViewportTransformation`'s matrix an
+NDC pre-biased to `[0,1]`, although that matrix already maps `[-1,1]` to pixels — halving the x/y
+scale and putting the origin `1.5 * halfWidth` from the viewport's left edge (measured: window x
+`768` where the twin gives `512`). Two further divergences the Gemini item did not name and the
+refuter did: the matrix's `[-1,1] -> [0,1]` depth remap was applied to a z **already** in `[0,1]`
+under WebGPU's NDC convention (`0.5 z + 0.5`), and the whole matrix product was returned, so `w` was
+`1.0` for every input where the GLSL twins assign only `q.xyz` and return the clip `w`. All three are
+fixed together: raw NDC into the matrix, `ndc.z` passed through as the window depth, `clip.w`
+returned. **Authorship FORK** (fork-only chunks; the GLSL twins are upstream and untouched).
+**Latent** — zero callers repo-wide, confirmed at HEAD: the only reference to either symbol is the
+auto-generated, untracked chunk registry (see the AR-090 note below). Acceptance is Node-provable:
+`Tools/visual-regression/wgsl-window-coordinates.spec.mjs` `W1`/`W2` compare all four lanes against a
+CPU port of the twins fed the same camera, and `W3`/`W4` are mutation images of the two removed
+defects.
+
+**`shaders-13` — the metres-per-pixel helper regains the 2D / orthographic arm its live consumer
+needs** *(2026-09-18, lane W3-C-SHADER-LATENTS, Mugwort)*:
+`Shaders/WebGPU/chunks/functions/csm_metersPerPixel.wgsl` carried only the perspective arm of
+`Builtin/Functions/metersPerPixel.glsl`, and the chunk's own docstring said so and asked for a caller
+before the 2D arm was added. That caller exists — `Collections/BufferPolylineMaterial.wgsl` imports
+the chunk at `:14` and divides a `widthUnits:"meters"` width by it at `:112`, reached through
+`BUFFER_WGSL_CHUNKS` in `Renderer/WebGPU/WebGPUBufferPrimitiveRenderer.ts:82` — and
+`WebGPUBufferPolylineRenderer` renders in every scene mode. The GLSL's `czm_sceneMode2D ||
+czm_orthographicIn3D` predicate is "the active frustum's projection is orthographic" for every
+frustum the camera itself produces — `UniformState.updateCamera` sets `_orthographicIn3D` from
+`camera.frustum instanceof OrthographicFrustum`, and 2D always uses an orthographic frustum — and
+that is readable from the projection matrix the chunk already takes. **The two are not identical, and
+the divergence is stated rather than glossed:** an `OrthographicOffCenterFrustum` assigned DIRECTLY to
+`camera.frustum` is not an `instanceof OrthographicFrustum`, so outside 2D the GLSL leaves
+`czm_orthographicIn3D` at `0.0` and takes its PERSPECTIVE arm for a projection that is orthographic,
+where this chunk takes the orthographic one. No engine path assigns such a frustum —
+`Camera.switchToOrthographicFrustum` installs the `OrthographicFrustum` wrapper — so nothing shipped
+reaches the difference; where an application reaches it by setting the off-centre frustum itself, the
+WGSL answer is the correct one and the GLSL twin is the wrong one. The matrix test:
+`Matrix4.computeOrthographicOffCenter` writes `1.0` into `[3][3]` and
+`2/(right-left)` / `2/(top-bottom)` into `[0][0]` / `[1][1]`, while the perspective builder writes
+`0.0` into `[3][3]`, under **both** clip-space depth conventions (only the z row differs). **No
+uniform lane was added and no CPU mirror changed** — the alternative, plumbing `czm_frustumPlanes` /
+`czm_sceneMode` into `BufferPolylineUniforms`, would have touched the UBO layout and its packer for a
+value already present. The perspective arm is byte-unchanged and pinned by `M2`. **Authorship FORK.**
+The two remaining documented divergences from the GLSL (an off-centre frustum approximated by
+`1/projection[1][1]`, and the perspective arm returning `pixelHeight` rather than
+`max(pixelWidth, pixelHeight)`) are unchanged and restated in the chunk.
+
+**Banking note for `AR-090` (the WGSL chunk stack) — reachability of the three chunks this lane
+touched, no disposition implied** *(2026-09-18, lane W3-C-SHADER-LATENTS, Mugwort)*: measured at HEAD
+`1a2baeaa4a`. (a) `csm_eyeToWindowCoordinates.wgsl` and `csm_modelToWindowCoordinates.wgsl` have
+**zero** consumers: no `#import`, no template-literal twin, and no `.ts`/`.js` reference anywhere
+under `packages/engine/Source` — `AutomaticUniforms.js:113,133` mention only the GLSL names in JSDoc.
+The registry the earlier audit cited, `chunks/CsmBuiltins.js`, **is not a tracked file**: it is build
+output regenerated by `scripts/build.js:1256` / `scripts/generateWgslJs.js:59` and is absent from a
+fresh clone, so the chunks' sole "reference" is a generated index that nothing imports. The `.wgsl`
+files are therefore authoritative for themselves, and the fix went to them. (b) `csm_metersPerPixel`
+is the opposite case: live, through the hand-written `BUFFER_WGSL_CHUNKS` table, with no
+template-literal twin of the same function — so the chunk file is authoritative there too, and no
+second copy needed the same edit. (c) **Surfaced, not fixed (Principle 9):**
+`Renderer/WebGPU/WebGPUGroundPolylineRenderer.js:374` and
+`WebGPUVector3DTileClampedPolylinesRenderer.js:189` each declare their own template-literal
+`fn metersPerPixel(positionEC: vec3<f32>) -> f32`, described in their own comments as perspective
+approximations of `czm_metersPerPixel`. They are separate functions with separate consumers, they
+carry the same missing orthographic arm, and they were left alone by this lane because changing them
+changes live 3D rendering on two other renderers. Whoever rules `AR-090` inherits them.

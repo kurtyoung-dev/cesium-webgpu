@@ -22054,3 +22054,45 @@ first mapped range is 62 bytes, so the site's own `new Float32Array(mapped)` thr
 runs. Three mutants: moving the `unmap()` out of the `finally` reddens A2; restoring the original
 tail-unmap block in the dispatcher reddens B2; restoring it in the compute-instance renderer reddens
 B3. All three were run and each went RED on exactly one subtest.
+
+## Lane W3-C-SHADER-LATENTS (Mugwort, 2026-09-18) — `shaders-13`: a `widthUnits:"meters"` buffer polyline is drawn thousands of times too thin in 2D, because the metres-per-pixel chunk has no orthographic arm
+
+**Bug:** Gemini-audit item `shaders-13` (verified `V-shaders-Hobson`, upheld `R-shaders-Nali`).
+
+**Files affected:** `packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_metersPerPixel.wgsl`
+(the defect); `packages/engine/Source/Shaders/WebGPU/Collections/BufferPolylineMaterial.wgsl:14, :112`
+(the consumer); `packages/engine/Source/Renderer/WebGPU/WebGPUBufferPrimitiveRenderer.ts:82` (the
+chunk table that makes the import resolve).
+
+**Symptom.** A `BufferPolylineCollection` with `widthUnits: "meters"` renders at the correct ground
+width in 3D and collapses to a sub-pixel hairline in SCENE2D, and in 3D or Columbus View whenever the
+camera frustum is orthographic. The pixels path is unaffected; only the metres path divides by
+`csm_metersPerPixel`.
+
+**Root cause.** `Builtin/Functions/metersPerPixel.glsl:26-41` has two arms. The orthographic arm —
+`czm_sceneMode == czm_sceneMode2D || czm_orthographicIn3D == 1.0` — returns the frustum extent over
+the viewport extent and has **no depth term**. The WGSL chunk had only the perspective arm, so an
+orthographic camera was answered with `2 * (-positionEC.z) * (1/projection[1][1]) / viewport.w`. For
+an orthographic matrix `1/projection[1][1]` is `(top-bottom)/2`, so the answer comes out scaled by
+the eye-space depth, which for a 2D camera is the camera height. Measured on the spec's fixture
+(1024x768, pixel ratio 2, 6 km 2D camera): metres-per-pixel `93750` where the twin gives `15.625` — a
+factor of **6000**, exactly the eye height — and the drawn stroke for a 60 m road falls from `7.68`
+device pixels to `0.0013`. The Columbus-View orthographic fixture at 9 km gives a factor of `9000`.
+
+**Fix.** Add the GLSL's orthographic arm as a guarded early return, discriminated from the projection
+matrix rather than from a new uniform: `Matrix4.computeOrthographicOffCenter` writes `1.0` into
+`[3][3]` and `2/(right-left)` / `2/(top-bottom)` into `[0][0]` / `[1][1]`, the perspective builder
+writes `0.0` into `[3][3]`, and both hold under either clip-space depth convention because the WebGPU
+convention rewrites only the z row. The arm reproduces the GLSL's `max(pixelWidth, pixelHeight)`. The
+perspective arm is left byte-identical, so 3D rendering does not move.
+
+**Why it was not caught.** `buffer-polyline-meters-width.spec.mjs` and
+`probe-buffer-polyline-meters-width.mjs` both exercise a `PerspectiveFrustum` only — the arm that was
+correct. The probe now takes `--scene-mode 3d|2d|cv-ortho` so the same octave law can be measured
+under the other projection.
+
+**Files modified:** `packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_metersPerPixel.wgsl`,
+`Tools/visual-regression/wgsl-window-coordinates.spec.mjs` (new),
+`Tools/visual-regression/lib/wgsl-mini-eval.mjs`,
+`Tools/visual-regression/probe-buffer-polyline-meters-width.mjs`, `package.json` (runner home),
+`migration_doc/DEFERRED_WORK.md`.

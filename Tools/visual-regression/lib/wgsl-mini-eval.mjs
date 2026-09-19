@@ -14,8 +14,8 @@
 // that ships.
 //
 // FAIL CLOSED. Anything outside the supported subset throws. A shader that
-// grows a loop, a switch, a matrix or a texture fetch makes its spec fail
-// loudly instead of silently skipping the part it cannot read — the failure
+// grows a loop, a switch, a matrix product or a texture fetch makes its spec
+// fail loudly instead of silently skipping the part it cannot read — the failure
 // mode that matters, because a quietly narrowed evaluator is indistinguishable
 // from a passing test.
 //
@@ -25,10 +25,12 @@
 //
 // Supported: `let` / `var` bindings, guarded early `return`s, a final
 // `return`, unary minus, `+ - * /`, comparisons, `&&`, `||`, the conditional
-// operator `c ? a : b`, member access, `vec2<f32>` and `vec3<f32>`
-// construction, and the builtins listed in `BUILTINS`. A `vec2` is a 3-vector
-// with a zero third component, so `length` and the component-wise operators
-// read it correctly.
+// operator `c ? a : b`, member access, `vec2<f32>`, `vec3<f32>` and
+// `vec4<f32>` construction, `m[column][row]` subscripting of a `mat4` or a
+// vector, `matrix * vec4`, and the builtins listed in `BUILTINS`. A `vec2` is
+// a 3-vector with a zero third component, so `length` and the component-wise
+// operators read it correctly. A `vec4` is its own shape: mixing one with a
+// 3-vector throws rather than dropping the `w` lane.
 //
 // WHY THE CONDITIONAL OPERATOR IS HERE. A shader inertness image works by
 // putting the pre-fix text back on a copy of the source and re-running the same
@@ -68,6 +70,8 @@ const PUNCT = [
   ".",
   ":",
   "?",
+  "[",
+  "]",
 ];
 
 /**
@@ -134,6 +138,73 @@ const isVec = (v) => typeof v === "object" && v !== null && "x" in v;
 const vec = (x, y, z) => ({ x, y, z });
 
 /**
+ * A 4-vector. Distinct from `vec` so nothing that already reads a 3-vector
+ * changes shape: `isVec4` is what selects the 4-lane paths, and a `vec4` that
+ * reached 3-lane arithmetic would silently lose its `w`, which is the defect
+ * class this evaluator exists to catch.
+ *
+ * The swizzles are real properties because member access is a plain
+ * `obj[name]` lookup.
+ *
+ * @param {number} x Component.
+ * @param {number} y Component.
+ * @param {number} z Component.
+ * @param {number} w Component.
+ * @returns {object} The 4-vector.
+ */
+const vec4 = (x, y, z, w) => ({
+  x,
+  y,
+  z,
+  w,
+  get xy() {
+    return vec(x, y, 0);
+  },
+  get xyz() {
+    return vec(x, y, z);
+  },
+});
+
+const isVec4 = (v) => isVec(v) && "w" in v;
+
+/**
+ * A 4x4 matrix in WGSL/`Matrix4` column-major order, so `m[column][row]`
+ * indexes it the way both the shader and `Core/Matrix4.js` do.
+ *
+ * @param {number[]} columnMajor Sixteen elements.
+ * @returns {object} The matrix.
+ */
+const mat4 = (columnMajor) => {
+  if (!Array.isArray(columnMajor) || columnMajor.length !== 16) {
+    throw new Error("mat4 takes sixteen column-major elements");
+  }
+  return { __mat4: columnMajor.slice() };
+};
+
+const isMat4 = (v) =>
+  typeof v === "object" && v !== null && Array.isArray(v.__mat4);
+
+/**
+ * `matrix * vector` in the WGSL sense: columns scaled by the vector's
+ * components and summed.
+ *
+ * @param {object} m The matrix.
+ * @param {object} v A 4-vector.
+ * @returns {object} The transformed 4-vector.
+ */
+function mat4TimesVec4(m, v) {
+  const e = m.__mat4;
+  const out = [0, 0, 0, 0];
+  const components = [v.x, v.y, v.z, v.w];
+  for (let column = 0; column < 4; column += 1) {
+    for (let row = 0; row < 4; row += 1) {
+      out[row] += e[column * 4 + row] * components[column];
+    }
+  }
+  return vec4(out[0], out[1], out[2], out[3]);
+}
+
+/**
  * Component-wise binary arithmetic over scalars and 3-vectors.
  *
  * @param {string} op One of `+ - * /`.
@@ -150,6 +221,30 @@ function arith(op, a, b) {
   }[op];
   if (f === undefined) {
     throw new Error(`unsupported operator ${op}`);
+  }
+  if (isMat4(a) || isMat4(b)) {
+    // Only `matrix * vector` is in the subset. Anything else — a matrix
+    // product, a matrix sum — throws rather than being approximated.
+    if (op !== "*" || !isMat4(a) || !isVec4(b)) {
+      throw new Error("only matrix * vec4 is supported");
+    }
+    return mat4TimesVec4(a, b);
+  }
+  if (isVec4(a) || isVec4(b)) {
+    // A 3-vector meeting a 4-vector has no defined lane mapping, so it throws
+    // instead of being padded with a lane the shader never wrote.
+    const promote = (v) => {
+      if (isVec4(v)) {
+        return v;
+      }
+      if (isVec(v)) {
+        throw new Error("mixed vec3 and vec4 operands");
+      }
+      return vec4(v, v, v, v);
+    };
+    const av = promote(a);
+    const bv = promote(b);
+    return vec4(f(av.x, bv.x), f(av.y, bv.y), f(av.z, bv.z), f(av.w, bv.w));
   }
   if (isVec(a) || isVec(b)) {
     const av = isVec(a) ? a : vec(a, a, a);
@@ -255,14 +350,27 @@ function parseExpression(tokens, start) {
     } else {
       throw new Error(`unexpected token ${tok.text}`);
     }
-    while (peek()?.text === ".") {
-      pos += 1;
-      const member = peek();
-      if (member?.kind !== "id") {
-        throw new Error("expected a member name");
+    // Member access and subscripting chain freely: `projection[1][1]`,
+    // `camera.projection[3][3]`, `clip.xyz`.
+    for (;;) {
+      if (peek()?.text === ".") {
+        pos += 1;
+        const member = peek();
+        if (member?.kind !== "id") {
+          throw new Error("expected a member name");
+        }
+        pos += 1;
+        node = { type: "member", object: node, name: member.text };
+        continue;
       }
-      pos += 1;
-      node = { type: "member", object: node, name: member.text };
+      if (peek()?.text === "[") {
+        pos += 1;
+        const subscript = ternary();
+        eat("]");
+        node = { type: "index", object: node, subscript };
+        continue;
+      }
+      break;
     }
     return node;
   }
@@ -326,6 +434,15 @@ function evaluate(node, env) {
       return isVec(v) ? vec(-v.x, -v.y, -v.z) : -v;
     }
     case "ref": {
+      // The boolean literals, so an `if (false && …)` inertness mutant reads as
+      // a MEASURED value rather than as a parser error — the distinction the
+      // conditional operator was added for.
+      if (node.name === "true") {
+        return true;
+      }
+      if (node.name === "false") {
+        return false;
+      }
       if (!(node.name in env)) {
         throw new Error(`unbound identifier ${node.name}`);
       }
@@ -337,6 +454,27 @@ function evaluate(node, env) {
         throw new Error(`no member ${node.name}`);
       }
       return obj[node.name];
+    }
+    case "index": {
+      const obj = evaluate(node.object, env);
+      const at = evaluate(node.subscript, env);
+      if (!Number.isInteger(at) || at < 0 || at > 3) {
+        throw new Error(`subscript ${at} out of range`);
+      }
+      if (isMat4(obj)) {
+        const e = obj.__mat4;
+        return vec4(e[at * 4], e[at * 4 + 1], e[at * 4 + 2], e[at * 4 + 3]);
+      }
+      if (isVec4(obj)) {
+        return [obj.x, obj.y, obj.z, obj.w][at];
+      }
+      if (isVec(obj)) {
+        if (at > 2) {
+          throw new Error(`subscript ${at} out of range for a vec3`);
+        }
+        return [obj.x, obj.y, obj.z][at];
+      }
+      throw new Error("only a matrix or a vector can be subscripted");
     }
     case "cond": {
       const test = evaluate(node.test, env);
@@ -357,6 +495,27 @@ function evaluate(node, env) {
         return args.length === 1
           ? vec(args[0], args[0], args[0])
           : vec(args[0], args[1], args[2]);
+      }
+      if (node.name === "vec4") {
+        // WGSL's flattening constructor: the arguments' components in order
+        // must come to exactly four lanes, or it throws rather than padding.
+        const lanes = [];
+        for (const a of args) {
+          if (isVec4(a)) {
+            lanes.push(a.x, a.y, a.z, a.w);
+          } else if (isVec(a)) {
+            lanes.push(a.x, a.y, a.z);
+          } else {
+            lanes.push(a);
+          }
+        }
+        if (lanes.length === 1) {
+          return vec4(lanes[0], lanes[0], lanes[0], lanes[0]);
+        }
+        if (lanes.length !== 4) {
+          throw new Error(`vec4 given ${lanes.length} components`);
+        }
+        return vec4(lanes[0], lanes[1], lanes[2], lanes[3]);
       }
       const fn = env.__functions?.[node.name] ?? BUILTINS[node.name];
       if (fn === undefined) {
@@ -559,10 +718,14 @@ export {
   compileFunction,
   evaluate,
   extractFunction,
+  isMat4,
   isVec,
+  isVec4,
+  mat4,
   parseExpression,
   readConstants,
   stripComments,
   tokenize,
   vec,
+  vec4,
 };
