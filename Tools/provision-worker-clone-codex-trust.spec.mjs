@@ -77,6 +77,86 @@ function makeFixtureDir() {
   return dir;
 }
 
+// The key Codex writes for a project is path.resolve(clonePath) with every
+// forward slash turned into a backslash, lower-cased (toCodexTrustKey in
+// Tools/provision-worker-clone.mjs). path.resolve applies the HOST platform's
+// rule for what counts as absolute, so a drive-letter path is absolute only on
+// Windows: on POSIX it is relative, resolve prefixes the process cwd, and no
+// hand-written expectation can match. Every clonePath the tests below pass
+// therefore comes from this platform-keyed vocabulary, and both branches are
+// written out BY HAND from the contract above — deriving a key here by calling
+// toCodexTrustKey, or by re-implementing it, would turn this file into a
+// mirror of the code it exists to check. None of these paths is ever created:
+// the helpers only resolve the string, and the sole file they open is the
+// in-tmpdir config fixture.
+const CODEX_PATH_VOCABULARY = {
+  // Absolute by drive letter. These are the shapes the real config holds.
+  win32: {
+    trusted: [
+      {
+        clonePath: "F:/Dev/GH/Quest-League-LLM-Claude-BE",
+        key: "f:\\dev\\gh\\quest-league-llm-claude-be",
+      },
+      {
+        clonePath: "F:/Dev/GH/Quest-League-LLM-Claude-PWA",
+        key: "f:\\dev\\gh\\quest-league-llm-claude-pwa",
+      },
+      {
+        clonePath: "F:/Dev/GH/shared-types",
+        key: "f:\\dev\\gh\\shared-types",
+      },
+      {
+        clonePath: "F:/Dev/GH/cesium-webgpu",
+        key: "f:\\dev\\gh\\cesium-webgpu",
+      },
+    ],
+    newClone: {
+      clonePath: "F:/Dev/GH/Cesium-Lane-Test-Newclone-99990101",
+      key: "f:\\dev\\gh\\cesium-lane-test-newclone-99990101",
+    },
+    neverTrusted: "F:/Dev/GH/never-trusted-clone",
+    apostrophe: "F:/Dev/GH/cesium-lane-o'brien-20260902",
+  },
+  // Absolute by leading slash, under the same names, so the two branches
+  // differ by exactly the drive-letter segment and can be read against each
+  // other. Mixed case is deliberate on both: it is what proves the key is
+  // lower-cased rather than copied.
+  posix: {
+    trusted: [
+      {
+        clonePath: "/Dev/GH/Quest-League-LLM-Claude-BE",
+        key: "\\dev\\gh\\quest-league-llm-claude-be",
+      },
+      {
+        clonePath: "/Dev/GH/Quest-League-LLM-Claude-PWA",
+        key: "\\dev\\gh\\quest-league-llm-claude-pwa",
+      },
+      {
+        clonePath: "/Dev/GH/shared-types",
+        key: "\\dev\\gh\\shared-types",
+      },
+      {
+        clonePath: "/Dev/GH/cesium-webgpu",
+        key: "\\dev\\gh\\cesium-webgpu",
+      },
+    ],
+    newClone: {
+      clonePath: "/Dev/GH/Cesium-Lane-Test-Newclone-99990101",
+      key: "\\dev\\gh\\cesium-lane-test-newclone-99990101",
+    },
+    neverTrusted: "/Dev/GH/never-trusted-clone",
+    apostrophe: "/Dev/GH/cesium-lane-o'brien-20260902",
+  },
+};
+const CODEX_PATHS =
+  process.platform === "win32"
+    ? CODEX_PATH_VOCABULARY.win32
+    : CODEX_PATH_VOCABULARY.posix;
+
+// Index 2 of the trusted set: the entry the mid-block remove, the
+// hand-edited refusal and both remove-side mutants target.
+const SHARED_TYPES_PATH = CODEX_PATHS.trusted[2].clonePath;
+
 // Representative of the real ~/.codex/config.toml shape (a leading comment
 // block, four `[projects.'<path>']` tables — the narrowed 2026-09-02 trust
 // set — then non-project tables). Not a copy of the real file: the lane rule
@@ -87,16 +167,16 @@ const FIXTURE_LINES = [
   "# Tools/provision-worker-clone.mjs --codex-trust, and lose it at retirement",
   "# via --codex-untrust.",
   "",
-  "[projects.'f:\\dev\\gh\\quest-league-llm-claude-be']",
+  `[projects.'${CODEX_PATHS.trusted[0].key}']`,
   'trust_level = "trusted"',
   "",
-  "[projects.'f:\\dev\\gh\\quest-league-llm-claude-pwa']",
+  `[projects.'${CODEX_PATHS.trusted[1].key}']`,
   'trust_level = "trusted"',
   "",
-  "[projects.'f:\\dev\\gh\\shared-types']",
+  `[projects.'${CODEX_PATHS.trusted[2].key}']`,
   'trust_level = "trusted"',
   "",
-  "[projects.'f:\\dev\\gh\\cesium-webgpu']",
+  `[projects.'${CODEX_PATHS.trusted[3].key}']`,
   'trust_level = "trusted"',
   "",
   "[plugins.example-plugin]",
@@ -113,8 +193,8 @@ const FIXTURE = FIXTURE_LINES.join("\n");
 // ever exercised detectEol against one. Same content, CRLF joins.
 const CRLF_FIXTURE = FIXTURE_LINES.join("\r\n");
 
-const NEW_CLONE_PATH = "F:/Dev/GH/Cesium-Lane-Test-Newclone-99990101";
-const NEW_KEY = "f:\\dev\\gh\\cesium-lane-test-newclone-99990101";
+const NEW_CLONE_PATH = CODEX_PATHS.newClone.clonePath;
+const NEW_KEY = CODEX_PATHS.newClone.key;
 
 // Manually authored expected result — independent of the algorithm under
 // test — for "add lands at the end of the projects block, before [plugins.]".
@@ -130,6 +210,36 @@ function writeFixture(dir) {
   fs.writeFileSync(configPath, FIXTURE, "utf8");
   return configPath;
 }
+
+// A clonePath can also be RELATIVE — nothing in the tool requires the caller
+// to have absolutised one — and that is the third of toCodexTrustKey no case
+// above reaches: path.resolve roots it at the process cwd, so the clone is
+// trusted at <cwd>/<name> and never at the bare name. No expectation for it
+// can be a literal, because the cwd is whatever machine runs the suite, so
+// the contract is stated as the two halves that ARE hand-writable: the key
+// carries the path's own tail, lower-cased and backslash-separated, behind a
+// separator that proves something precedes it; and it is not that tail alone.
+// Mixed case in the input is what keeps the lower-casing observable here too.
+// Added 2026-09-19 for reviewer Holman's surviving mutant: replacing
+// path.resolve with path.normalize passed every other subtest in this file on
+// both platforms, because none of them ever passes a relative clonePath.
+const RELATIVE_CLONE_PATH = "Lane-Relative/Codex-Trust-Probe";
+const RELATIVE_KEY_TAIL = "\\lane-relative\\codex-trust-probe";
+const RELATIVE_KEY_IF_NOT_ABSOLUTISED = "lane-relative\\codex-trust-probe";
+
+test("a relative clone path is keyed at its cwd-rooted absolute path, not at the bare name", () => {
+  const helpers = loadCodexTrustHelpers();
+  const key = helpers.toCodexTrustKey(RELATIVE_CLONE_PATH);
+  assert.ok(
+    key.endsWith(RELATIVE_KEY_TAIL),
+    `key must end with ${JSON.stringify(RELATIVE_KEY_TAIL)}, got ${JSON.stringify(key)}`,
+  );
+  assert.notEqual(
+    key,
+    RELATIVE_KEY_IF_NOT_ABSOLUTISED,
+    "a relative clone path must be made absolute, not merely separator-normalised",
+  );
+});
 
 test("add creates exactly the two lines at the end of the projects block, before [plugins.]", () => {
   const helpers = loadCodexTrustHelpers();
@@ -208,7 +318,7 @@ test("untrust removes an existing mid-block entry without disturbing its neighbo
     const configPath = writeFixture(dir);
     const result = helpers.codexTrustRemove({
       configPath,
-      clonePath: "F:/Dev/GH/shared-types",
+      clonePath: SHARED_TYPES_PATH,
       nodeEnv: "test",
     });
     assert.equal(result.changed, true);
@@ -231,7 +341,7 @@ test("untrust of a missing path is a no-op", () => {
     const before = fs.readFileSync(configPath, "utf8");
     const result = helpers.codexTrustRemove({
       configPath,
-      clonePath: "F:/Dev/GH/never-trusted-clone",
+      clonePath: CODEX_PATHS.neverTrusted,
       nodeEnv: "test",
     });
     assert.equal(result.changed, false);
@@ -267,7 +377,7 @@ test("codexTrustAdd refuses a clone path containing an apostrophe, before any re
     () =>
       helpers.codexTrustAdd({
         configPath: path.join(os.tmpdir(), "irrelevant-config.toml"),
-        clonePath: "F:/Dev/GH/cesium-lane-o'brien-20260902",
+        clonePath: CODEX_PATHS.apostrophe,
         nodeEnv: "test",
         fs: untouchableFs,
       }),
@@ -296,7 +406,7 @@ test("codexTrustRemove also refuses a clone path containing an apostrophe, befor
     () =>
       helpers.codexTrustRemove({
         configPath: path.join(os.tmpdir(), "irrelevant-config.toml"),
-        clonePath: "F:/Dev/GH/cesium-lane-o'brien-20260902",
+        clonePath: CODEX_PATHS.apostrophe,
         nodeEnv: "test",
         fs: untouchableFs,
       }),
@@ -480,7 +590,7 @@ test('untrust refuses to remove a header whose next line is not exactly trust_le
       () =>
         helpers.codexTrustRemove({
           configPath,
-          clonePath: "F:/Dev/GH/shared-types",
+          clonePath: SHARED_TYPES_PATH,
           nodeEnv: "test",
         }),
       /refusing to remove/u,
@@ -512,7 +622,7 @@ test(`kills inertness mutant: ${EOL_INERTNESS_MUTANT}`, () => {
     fs.writeFileSync(configPath, CRLF_FIXTURE, "utf8");
     const result = real.codexTrustRemove({
       configPath,
-      clonePath: "F:/Dev/GH/shared-types",
+      clonePath: SHARED_TYPES_PATH,
       nodeEnv: "test",
     });
     assert.equal(
@@ -530,7 +640,7 @@ test(`kills inertness mutant: ${EOL_INERTNESS_MUTANT}`, () => {
     fs.writeFileSync(configPath, CRLF_FIXTURE, "utf8");
     const result = mutant.codexTrustRemove({
       configPath,
-      clonePath: "F:/Dev/GH/shared-types",
+      clonePath: SHARED_TYPES_PATH,
       nodeEnv: "test",
     });
     // Forcing LF makes `content.split(eol)` split a CRLF file on bare "\n",
@@ -576,7 +686,7 @@ test(`kills inertness mutant: ${REFUSAL_INERTNESS_MUTANT}`, () => {
       () =>
         real.codexTrustRemove({
           configPath,
-          clonePath: "F:/Dev/GH/shared-types",
+          clonePath: SHARED_TYPES_PATH,
           nodeEnv: "test",
         }),
       /refusing to remove/u,
@@ -589,7 +699,7 @@ test(`kills inertness mutant: ${REFUSAL_INERTNESS_MUTANT}`, () => {
     );
     const mutantResult = mutant.codexTrustRemove({
       configPath,
-      clonePath: "F:/Dev/GH/shared-types",
+      clonePath: SHARED_TYPES_PATH,
       nodeEnv: "test",
     });
     assert.equal(
