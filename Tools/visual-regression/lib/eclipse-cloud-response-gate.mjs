@@ -1602,6 +1602,25 @@ export const ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES = Object.freeze([
   // against a PREVIOUS run — a cross-run input has no place in a gate. The
   // fifth run's `cloudAerialStrength = 0` leg makes it a single-run number.
   "deckTonemapEntryWithinDesignEnvelopeReportedOnly",
+  // CO-17. Whether the deck pure ratio's propagated 8-bit interval overlaps
+  // `deckPureDeckRatio` at all — the same exact propagation the decrement lane
+  // is GATED on, read here for the deck. It exists because the band is
+  // narrower than the interval: `deckPureDeckRatio`'s half-width is 0.010
+  // while one full display code on each of the leg's two band-mean
+  // differences propagates to a half-width of 0.0178 on the ratio, so a
+  // reading can miss the band by less than the instrument can resolve, and
+  // the point test alone does not say when that has happened.
+  //
+  // IT IS NOT THE ACCEPTANCE. `deckPureRatioInBand` keeps the point test and
+  // keeps its place in `ECLIPSE_CLOUD_GATE_PREDICATES`; this name is reported
+  // beside it so the resolution question is visible without changing what the
+  // gate admits. Re-scoring an acceptance predicate as an interval AFTER it
+  // has failed changes the verdict on a banked run, which is a maintainer
+  // decision rather than an instrument repair. What would promote this name
+  // into the gate list — and retire the point test with it — is a ruling that
+  // the deck band's acceptance may be interval-scored; the 2026-09-19 exchange
+  // that authorised this reported-only reading expressly declined to take it.
+  "deckPureRatioIntervalOverlapsBandReportedOnly",
   // CO-19. THE INSTRUMENT TELL, and it is reported-only on purpose. The fourth
   // run's `offNoCloud` read bit-identical 0.2750603921572111 at ALL FOUR rungs,
   // across instants 54 minutes apart, while `offNoShadow` at the same instants
@@ -3845,6 +3864,31 @@ export function judgeEclipseCloudResponse(run) {
     aerialZero?.offContribution,
   );
   v.deckPureRatioInBand = inBand(v.deckPureRatio, B.deckPureDeckRatio);
+  // THE ACCEPTANCE IS THE POINT TEST ABOVE. What follows is the same 8-bit
+  // propagation `evaluateShadowDecrementModel` gates on, computed for the
+  // deck's own two-mean difference and REPORTED ONLY. Both contributions are
+  // `clouds - bare`, a difference of two 8-bit display band means, so each is
+  // bounded by one full code — the convention stated above
+  // `evaluateShadowDecrementModel`. Carrying it through the ratio shows a
+  // reader of the JSON how much of `deckPureDeckRatio` this instrument can
+  // actually resolve, which is information the point test alone does not carry
+  // and which nothing in the fold consumes.
+  const deckPureRatioInterval = boundedPositiveRatioInterval(
+    aerialZero?.onContribution,
+    aerialZero?.offContribution,
+    BAND_MEAN_QUANTIZATION_HALF_STEP * 2,
+    BAND_MEAN_QUANTIZATION_HALF_STEP * 2,
+  );
+  v.deckPureRatioQuantization = {
+    bandMeanHalfStep: BAND_MEAN_QUANTIZATION_HALF_STEP,
+    twoMeanDifferenceError: BAND_MEAN_QUANTIZATION_HALF_STEP * 2,
+    observedInterval: deckPureRatioInterval,
+    bandInterval: { lo: B.deckPureDeckRatio.lo, hi: B.deckPureDeckRatio.hi },
+  };
+  v.deckPureRatioIntervalOverlapsBandReportedOnly = intervalsOverlap(
+    deckPureRatioInterval,
+    B.deckPureDeckRatio,
+  );
   v.deckAerialShareSingleRun = fitDeckAerialShareFromPureDeck(
     deepest?.published?.factor,
     v.deckRatioAtDeepest,

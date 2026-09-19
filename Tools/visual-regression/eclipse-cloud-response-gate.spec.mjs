@@ -1397,7 +1397,15 @@ test("D2 PASS is the fold of the predicate LIST, with no second conjunction", ()
   // supersedes the fog-off leg the C13-41 mechanism pass had proposed (that
   // leg cannot run on lane B, which pins fog off — see M10). Also a
   // hypothesis reading, so it must never gate either.
-  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 8);
+  // 8 -> 9: `deckPureRatioIntervalOverlapsBandReportedOnly`, the pure-deck
+  // leg's own 8-bit propagation read against the unchanged band. It is the
+  // decrement lane's exact interval arithmetic applied to a measurement of the
+  // same shape, and it is reported-only because promoting it would replace
+  // `deckPureRatioInBand`'s point test — i.e. would re-score an acceptance
+  // predicate after it had failed, which is a maintainer decision. Group L's
+  // L9-L12 pin that it is produced, that it still refuses both rival deck
+  // readings, and that it cannot reach the exit code.
+  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 9);
   assert.equal(ECLIPSE_CLOUD_PARITY_PREDICATES.length, 2);
   // Nothing is scored without a declared blindness domain — an unmapped
   // predicate would be silently unquarantinable.
@@ -6163,6 +6171,221 @@ test("L8 both CO-19 subjects fail while the restored raw invariant stays operati
       settleDeckFreeTwins(run);
     },
     ["deckFreeGroundDimsByFactor", "shadowContrastInvariant"],
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE PURE-DECK LEG'S OWN 8-BIT RESOLUTION — REPORTED, NEVER GATING
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `deckPureRatio` is a ratio of two `clouds - bare` differences, i.e. of two
+// differences of 8-bit display band means, which is the exact shape the
+// decrement lane propagates an interval through and GATES on. The deck lane
+// does not gate on it and must not start: re-scoring an acceptance predicate
+// after it has failed changes the verdict on a banked run. So the interval is
+// computed and REPORTED beside the unchanged point test, and these cases pin
+// both halves of that — the reading is produced, and it cannot reach the exit
+// code.
+//
+// The two measurements below are the ones two banked Edge runs actually
+// returned at the deepest rung's `deckAerialZero` leg, transcribed from the
+// receipts rather than recomputed, so the fold is exercised on real inputs:
+//
+//   2026-09-19 (ea651de6d8)  offContribution 0.36345834684040734
+//                            onContribution  0.23471747849311878  rho 0.645789
+//   2026-09-03 (fbea2028cc)  offContribution 0.4930911969439258
+//                            onContribution  0.31354816565509647  rho 0.635883
+//
+// Every expected interval endpoint below is hand-authored from
+// `[(N - 1/255)/(D + 1/255), (N + 1/255)/(D - 1/255)]` rather than read back
+// out of the function that produces it.
+
+/** The deepest rung's tint-free leg, set to one run's measured band means. */
+const withPureDeckLeg = (offContribution, onContribution) => {
+  const run = clone(passingRun());
+  const deepest = run.cloudLanes.rungs[run.cloudLanes.rungs.length - 1];
+  deepest.deckAerialZero.offContribution = offContribution;
+  deepest.deckAerialZero.onContribution = onContribution;
+  return judgeEclipseCloudResponse(run);
+};
+
+test("L9 the interval is reported for both banked runs and neither run's acceptance moves", () => {
+  const fresh = withPureDeckLeg(0.36345834684040734, 0.23471747849311878);
+  const banked = withPureDeckLeg(0.4930911969439258, 0.31354816565509647);
+
+  // The 2026-09-19 reading misses the band by 7.89e-4 and the gate still says
+  // so, in the exit code as well as the predicate.
+  assert.ok(Math.abs(fresh.deckPureRatio - 0.6457892095024083) < 1e-15);
+  assert.equal(fresh.deckPureRatioInBand, false);
+  assert.deepEqual(fresh.failedPredicates, ["deckPureRatioInBand"]);
+  assert.equal(fresh.exitCode, ECLIPSE_CLOUD_EXIT.FAIL);
+  assert.equal(fresh.PASS, false);
+
+  // The 2026-09-03 reading is inside it and the gate still says that too.
+  assert.ok(Math.abs(banked.deckPureRatio - 0.6358827081043045) < 1e-15);
+  assert.equal(banked.deckPureRatioInBand, true);
+  assert.deepEqual(banked.failedPredicates, []);
+  assert.equal(banked.exitCode, ECLIPSE_CLOUD_EXIT.PASS);
+
+  // Both readings' propagated intervals overlap the band — which is the
+  // information the point test cannot carry, and is why it is reported.
+  for (const verdict of [fresh, banked]) {
+    assert.equal(verdict.deckPureRatioIntervalOverlapsBandReportedOnly, true);
+    assert.ok(
+      !verdict.gatePredicates.includes(
+        "deckPureRatioIntervalOverlapsBandReportedOnly",
+      ),
+      "the interval reading must never be a gate",
+    );
+    assert.ok(
+      verdict.reportedOnlyPredicates.includes(
+        "deckPureRatioIntervalOverlapsBandReportedOnly",
+      ),
+    );
+    assert.ok(
+      !verdict.failedPredicates.includes(
+        "deckPureRatioIntervalOverlapsBandReportedOnly",
+      ),
+    );
+  }
+
+  // The banked run's own interval, hand-authored the same way.
+  assert.ok(
+    Math.abs(
+      banked.deckPureRatioQuantization.observedInterval.lo - 0.6229751396258243,
+    ) < 1e-12,
+  );
+  assert.ok(
+    Math.abs(
+      banked.deckPureRatioQuantization.observedInterval.hi - 0.6489972310324142,
+    ) < 1e-12,
+  );
+});
+
+test("L10 the interval reading still REFUSES both rival deck readings the band excludes", () => {
+  // Same denominator the 2026-09-19 run measured, so these are the intervals
+  // THIS instrument would return for a linear deck and for the third pass's
+  // e = 7.70 — not idealised ones.
+  const D = 0.36345834684040734;
+  const F = predictFactor(SWEEP_PEAK_OBSCURATION);
+  const b = ECLIPSE_CLOUD_BANDS.deckPureDeckRatio;
+
+  const linear = withPureDeckLeg(D, deckDisplayedRatio(F, 0, 0) * D);
+  assert.equal(linear.deckPureRatioInBand, false);
+  assert.equal(
+    linear.deckPureRatioIntervalOverlapsBandReportedOnly,
+    false,
+    "a linear deck must stay refused once the interval is carried through",
+  );
+  const linearInterval = linear.deckPureRatioQuantization.observedInterval;
+  assert.ok(Math.abs(linearInterval.lo - 0.4485987023777681) < 1e-12);
+  assert.ok(Math.abs(linearInterval.hi - 0.4801992482426259) < 1e-12);
+  assert.ok(
+    Math.abs(b.lo - linearInterval.hi - 0.1448007517573741) < 1e-12,
+    "the whole interval sits 0.1448 below the band's floor",
+  );
+
+  const thirdPass = withPureDeckLeg(D, deckDisplayedRatio(F, 7.7, 0) * D);
+  assert.equal(thirdPass.deckPureRatioInBand, false);
+  assert.equal(
+    thirdPass.deckPureRatioIntervalOverlapsBandReportedOnly,
+    false,
+    "e = 7.70 must stay refused once the interval is carried through",
+  );
+  const thirdInterval = thirdPass.deckPureRatioQuantization.observedInterval;
+  assert.ok(Math.abs(thirdInterval.lo - 0.862781536287224) < 1e-12);
+  assert.ok(Math.abs(thirdInterval.hi - 0.903417299164156) < 1e-12);
+  assert.ok(
+    Math.abs(thirdInterval.lo - b.hi - 0.21778153628722396) < 1e-12,
+    "the whole interval sits 0.2178 above the band's ceiling",
+  );
+
+  // The discrimination does not depend on which F is taken. Repeated at the
+  // factor the two runs PUBLISHED at the deepest rung (identical in both),
+  // which is the analytic value at their realized obscuration 0.90001828
+  // rather than at exactly 0.9.
+  const publishedFactor = 0.46420022839842723;
+  for (const e of [0, 7.7]) {
+    const rival = withPureDeckLeg(
+      D,
+      deckDisplayedRatio(publishedFactor, e, 0) * D,
+    );
+    assert.equal(rival.deckPureRatioIntervalOverlapsBandReportedOnly, false);
+  }
+});
+
+test("L11 the reported interval is the exact 8-bit propagation, and it is WIDER than the band", () => {
+  const fresh = withPureDeckLeg(0.36345834684040734, 0.23471747849311878);
+  const q = fresh.deckPureRatioQuantization;
+
+  // The shape is the decrement lane's, so a reader who knows one knows both.
+  assert.equal(q.bandMeanHalfStep, 0.00196078431372549);
+  assert.equal(q.twoMeanDifferenceError, 0.00392156862745098);
+  assert.equal(q.twoMeanDifferenceError, q.bandMeanHalfStep * 2);
+  assert.ok(Math.abs(q.twoMeanDifferenceError - 1 / 255) < 1e-18);
+
+  // Hand-authored from (N -/+ 1/255) over (D +/- 1/255).
+  assert.ok(Math.abs(q.observedInterval.lo - 0.6282213592753136) < 1e-12);
+  assert.ok(Math.abs(q.observedInterval.hi - 0.6637402946833496) < 1e-12);
+
+  // Reported against the band it is compared to, with the band unmoved.
+  assert.equal(q.bandInterval.lo, ECLIPSE_CLOUD_BANDS.deckPureDeckRatio.lo);
+  assert.equal(q.bandInterval.hi, ECLIPSE_CLOUD_BANDS.deckPureDeckRatio.hi);
+
+  // THE REASON THIS READING EXISTS: one display code on each of the leg's two
+  // band-mean differences propagates to a half-width of 0.01776 on the ratio,
+  // while the band's own half-width is 0.010. The band is 0.56x the width of
+  // what the instrument resolves, so a 7.89e-4 miss is 4.4% of the resolution.
+  const instrumentHalfWidth =
+    (q.observedInterval.hi - q.observedInterval.lo) / 2;
+  const bandHalfWidth =
+    (ECLIPSE_CLOUD_BANDS.deckPureDeckRatio.hi -
+      ECLIPSE_CLOUD_BANDS.deckPureDeckRatio.lo) /
+    2;
+  assert.ok(Math.abs(instrumentHalfWidth - 0.017759467704017984) < 1e-12);
+  assert.ok(Math.abs(bandHalfWidth - 0.01) < 1e-15);
+  assert.ok(instrumentHalfWidth > bandHalfWidth);
+  const miss = fresh.deckPureRatio - ECLIPSE_CLOUD_BANDS.deckPureDeckRatio.hi;
+  assert.ok(Math.abs(miss - 0.0007892095024082391) < 1e-15);
+  assert.ok(miss / instrumentHalfWidth < 0.05);
+});
+
+test("L12 MUTANT TARGET — the interval reading cannot reach the exit code", () => {
+  // A leg whose denominator is BELOW one display code: the bare point test
+  // computes 0.64 from two numbers that are entirely quantization, and accepts
+  // it; the propagated interval is undefined for such a reading and the
+  // reported-only name says so. This is the one state where the two readings
+  // DISAGREE, so it is the state that proves which of them the gate obeys.
+  const verdict = withPureDeckLeg(0.002, 0.00128);
+  assert.ok(Math.abs(verdict.deckPureRatio - 0.64) < 1e-12);
+
+  // The ACCEPTANCE is the point test, and the run passes on it.
+  assert.equal(verdict.deckPureRatioInBand, true);
+  assert.deepEqual(verdict.failedPredicates, []);
+  assert.deepEqual(verdict.structuralReasons, []);
+  assert.equal(verdict.PASS, true);
+  assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.PASS);
+
+  // The interval reading disagrees, in the open, and changes nothing.
+  assert.equal(verdict.deckPureRatioQuantization.observedInterval, null);
+  assert.equal(verdict.deckPureRatioIntervalOverlapsBandReportedOnly, false);
+
+  // It is absent from the gate list and from the blindness map, so it cannot
+  // be folded into `failedPredicates` or quarantined into `unscoredPredicates`
+  // by any lane going blind.
+  assert.ok(
+    !ECLIPSE_CLOUD_GATE_PREDICATES.includes(
+      "deckPureRatioIntervalOverlapsBandReportedOnly",
+    ),
+  );
+  assert.equal(
+    ECLIPSE_CLOUD_PREDICATE_LANES.deckPureRatioIntervalOverlapsBandReportedOnly,
+    undefined,
+  );
+  assert.ok(
+    !verdict.unscoredPredicates.includes(
+      "deckPureRatioIntervalOverlapsBandReportedOnly",
+    ),
   );
 });
 
