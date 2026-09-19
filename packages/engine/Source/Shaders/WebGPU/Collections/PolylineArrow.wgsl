@@ -27,10 +27,19 @@ struct CameraUniforms {
     minimumDisableDepthTestDistance: f32,
     splitPosition: f32,
   logDepthFactor: f32,
-  // `czm_pixelRatio`. Float slot 31 of the shared 192-byte polyline camera
+  // `czm_pixelRatio`. Float slot 31 of the shared 288-byte polyline camera
   // UBO, written by `WebGPUPolylineRenderer.js`; it was padding until the
   // arrow head and the quad expansion needed it.
   pixelRatio: f32,
+  // Previous-frame twins of `mvpRelativeToEye` and the encoded camera split.
+  // This shader reads neither, but the block it binds is packed by the same
+  // camera packer as its colour sibling, so the declaration has to describe
+  // the same bytes or every field after this point names the wrong ones.
+  previousMvpRelativeToEye: mat4x4<f32>,
+  previousEncodedCameraHigh: vec3<f32>,
+  _pad2: f32,
+  previousEncodedCameraLow: vec3<f32>,
+  _pad3: f32,
         previousViewProjection: mat4x4<f32>,
 }
 

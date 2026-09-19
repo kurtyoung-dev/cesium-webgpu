@@ -1220,9 +1220,11 @@ interface CustomShaderResourcesLike {
 
 // Camera uniform buffer: mat4(mvpRTE) + mat4(mvRTE) + mat4(normal) +
 //   vec3+pad(camHighMC) + vec3+pad(camLowMC) + vec3+pad(camWC) +
-//   mat4(previousViewProjection)  = 320 bytes.
-// `previousViewProjection` sits at the tail for TAA / motion-vector
-// reprojection; 16-byte alignment is preserved (20 vec4s).
+//   mat4(previousMvpRTE) + vec3+pad(prevCamHighMC) + vec3+pad(prevCamLowMC) +
+//   mat4(previousViewProjection) + vec4(hdrControl)  = 416 bytes.
+// The previous-frame matrix and camera split sit immediately before
+// `previousViewProjection`, which keeps its tail position for TAA /
+// motion-vector reprojection; 16-byte alignment is preserved (26 vec4s).
 // The width also drives the layout's `minBindingSize`, so it lives with the
 // arena that owns the layout and is re-exported here for the existing call
 // sites.
@@ -1388,6 +1390,13 @@ const scratchNormal = new Matrix4();
 const scratchInverseModel = new Matrix4();
 const scratchCameraMC = new Cartesian3();
 const scratchEncodedCamera = new EncodedCartesian3();
+// Previous-frame twins of the four above, for the previous relative-to-eye
+// matrix and the previous model-space encoded eye.
+const scratchPrevModelRTE = new Matrix4();
+const scratchPrevMVPRTE = new Matrix4();
+const scratchPrevInverseModel = new Matrix4();
+const scratchPrevCameraMC = new Cartesian3();
+const scratchPrevEncodedCamera = new EncodedCartesian3();
 const scratchShadowModelLinear = new Matrix4();
 // Scratch for the accurate-2D 3D normal matrix override (see
 // overrideProject2DNormalMatrix).
@@ -1413,6 +1422,9 @@ const scratchProject2DNodeWorld = new Matrix4();
 // WebGL `ModelDrawCommand.updateModelMatrix2D` / `derive2DCommand`). Only
 // touched when `idlDuplicateActive` is armed.
 const scratchIdl2DModelMatrix = new Matrix4();
+// The previous frame's node matrix under the same y-shift, so the duplicate's
+// previous-frame camera pair mirrors the pair packed from the current shift.
+const scratchPrevIdl2DModelMatrix = new Matrix4();
 
 // Union the per-primitive accurate 2D bounding spheres (computed by
 // SceneMode2DPipelineStage into `runtimePrimitive.boundingSphere2D`) into a
@@ -1729,6 +1741,7 @@ function packCameraUniforms(
   data: Float32Array,
   frameState: CesiumFrameState,
   modelMatrix: Matrix4,
+  previousModelMatrix: Matrix4,
 ) {
   const uniformState = frameState.context.uniformState;
 
@@ -1792,14 +1805,20 @@ function packCameraUniforms(
   // lanes; only the LOG_DEPTH module variant reads them.
   packCameraLogDepthLanes(data, 0, uniformState);
 
-  // previousViewProjection at offset 60..75 (16 floats).
-  // `UniformState.update()` clones the current viewProjection into
-  // `_previousViewProjection` before overwriting it with the new camera
-  // state, so on frame N this slot holds frame N-1's viewProjection.
-  // TAA / motion-vector shaders consume it via `camera.previousViewProjection`.
-  const prevVP = uniformState.previousViewProjection;
-  if (prevVP) {
-    Matrix4.pack(prevVP, data, 60);
+  // previousMvpRelativeToEye at offset 60..75 (16 floats): the previous
+  // frame's exact twin of `mvpRTE` above. `previousViewProjectionRelativeToEye`
+  // is already `previousProjection × (previousView with its translation column
+  // zeroed)`, so composing the model transform with its own translation zeroed
+  // reproduces `projection × (view × model, translation zeroed)` for the
+  // previous frame in one multiply.
+  const prevVPRTE = uniformState.previousViewProjectionRelativeToEye;
+  if (prevVPRTE) {
+    Matrix4.clone(previousModelMatrix, scratchPrevModelRTE);
+    scratchPrevModelRTE[12] = 0.0;
+    scratchPrevModelRTE[13] = 0.0;
+    scratchPrevModelRTE[14] = 0.0;
+    Matrix4.multiply(prevVPRTE, scratchPrevModelRTE, scratchPrevMVPRTE);
+    Matrix4.pack(scratchPrevMVPRTE, data, 60);
   } else {
     // Column-major identity fallback (frame 0).
     data[60] = 1;
@@ -1820,13 +1839,75 @@ function packCameraUniforms(
     data[75] = 1;
   }
 
-  // HDR gate at float 76 (camera.hdrControl.x), packed into trailing padding
-  // of the 320-byte camera UB. Mirrors WebGL's `#ifdef HDR` in
+  // Previous model-space encoded eye at floats 76..78 and 80..82. It must be
+  // the camera of the same frame as the matrix above, because the exactness of
+  // the previous-frame expression rests on `t_V = -R_V · cameraPositionWC`
+  // holding for that one frame; `UniformState` records the pair together.
+  const prevEyeWC = uniformState.previousCameraPosition;
+  if (prevEyeWC) {
+    Matrix4.inverse(previousModelMatrix, scratchPrevInverseModel);
+    Matrix4.multiplyByPoint(
+      scratchPrevInverseModel,
+      prevEyeWC,
+      scratchPrevCameraMC,
+    );
+    EncodedCartesian3.fromCartesian(
+      scratchPrevCameraMC,
+      scratchPrevEncodedCamera,
+    );
+    data[76] = scratchPrevEncodedCamera.high.x;
+    data[77] = scratchPrevEncodedCamera.high.y;
+    data[78] = scratchPrevEncodedCamera.high.z;
+    data[80] = scratchPrevEncodedCamera.low.x;
+    data[81] = scratchPrevEncodedCamera.low.y;
+    data[82] = scratchPrevEncodedCamera.low.z;
+  } else {
+    data[76] = 0.0;
+    data[77] = 0.0;
+    data[78] = 0.0;
+    data[80] = 0.0;
+    data[81] = 0.0;
+    data[82] = 0.0;
+  }
+  data[79] = 0.0;
+  data[83] = 0.0;
+
+  // previousViewProjection at offset 84..99 (16 floats).
+  // `UniformState.update()` clones the current viewProjection into
+  // `_previousViewProjection` before overwriting it with the new camera
+  // state, so on frame N this slot holds frame N-1's viewProjection. Every
+  // camera uniform block carries it; the model velocity stage reprojects
+  // through the relative-to-eye pair above instead.
+  const prevVP = uniformState.previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, data, 84);
+  } else {
+    // Column-major identity fallback (frame 0).
+    data[84] = 1;
+    data[85] = 0;
+    data[86] = 0;
+    data[87] = 0;
+    data[88] = 0;
+    data[89] = 1;
+    data[90] = 0;
+    data[91] = 0;
+    data[92] = 0;
+    data[93] = 0;
+    data[94] = 1;
+    data[95] = 0;
+    data[96] = 0;
+    data[97] = 0;
+    data[98] = 0;
+    data[99] = 1;
+  }
+
+  // HDR gate at float 100 (camera.hdrControl.x), the camera UB's last lane.
+  // Mirrors WebGL's `#ifdef HDR` in
   // LightingStageFS: when `scene.highDynamicRange` is on
   // (`frameState.useHDR`) the model shader's `tonemapAndGamma` skips the
   // inline tonemap and gamma encode so the post-process Tonemap stage does it
   // once. Zero on the default SDR path, which leaves that path byte-identical.
-  data[76] = frameState.useHDR === true ? 1.0 : 0.0;
+  data[100] = frameState.useHDR === true ? 1.0 : 0.0;
 }
 
 // Overrides the normal matrix (slots 32-47) with the 3D normal matrix for the
@@ -1971,7 +2052,18 @@ function getOrCreateModelCaptureCommands(
         return commands;
       }
     }
-    packCameraUniforms(captureCameraData, frameState, rec.nodeModelMatrix);
+    // A capture record snapshots exactly one matrix, so the previous-frame
+    // argument is that same matrix: the record carries no earlier transform to
+    // reach. The previous-frame camera the pack reads belongs to the on-screen
+    // view rather than to this cube face — the same mismatch the
+    // `previousViewProjection` lane has always carried here — and the capture
+    // pass has no velocity attachment to read any of it.
+    packCameraUniforms(
+      captureCameraData,
+      frameState,
+      rec.nodeModelMatrix,
+      rec.nodeModelMatrix,
+    );
     const cameraBinding = acquireModelCameraBinding(
       device,
       frameState,
@@ -2349,9 +2441,10 @@ function packMaterialUniforms(
   // the prev-frame matrix when one is provided; otherwise mirror the
   // current matrix so a model in its first rendered frame produces
   // zero velocity (no spurious motion blur on initial display). The
-  // WGSL VS reads this through `material.previousModelMatrix` and
-  // multiplies by `camera.previousViewProjection` for the prev clip
-  // pos.
+  // velocity stage no longer reads it — the previous model transform
+  // reaches the shader folded into the camera block's previous
+  // relative-to-eye pair — but the lane stays packed so a stage that
+  // wants the previous model transform alone has it.
   if (previousModelMatrix) {
     Matrix4.pack(previousModelMatrix, data, 156);
   } else {
@@ -6278,6 +6371,44 @@ function updateWebGPUModel(
     // (`cache` for identity nodes, `cache.nodes[nodeIdx]` otherwise) and only
     // when `idlDuplicateActive` — off-IDL, 3D and CV never allocate or write
     // anything here.
+
+    // Resolve the per-node previous-frame nodeModelMatrix for the
+    // velocity pack. The model-level `cache.prevModelMatrix` is correct
+    // for static articulations, which are set once and then locked, but
+    // produces ghosting under TAA when articulation animations mutate
+    // `runtimeNode.transform` per frame. Satellite solar-panel deploy
+    // animations, robot-arm articulations and AGI_articulations rigs
+    // whose nodes animate while TAA is on all hit this path.
+    //
+    // For identity-transform nodes the per-node `nodeModelMatrix` equals
+    // the model-level `modelMatrix`, so `cache.prevModelMatrix` is also
+    // the correct prev; falling back to it costs no per-node storage in
+    // the common single-node or static-articulation case.
+    //
+    // For non-identity nodes, read the per-node slot. First frame
+    // (`prevNodeModelMatrix === null`) initializes from this frame's
+    // `nodeModelMatrix` so velocity is exactly zero, which is what "no
+    // history yet" means and matches TAA's first-frame fallback.
+    let prevNodeModelMatrixForPack = nodeModelMatrix;
+    if (!pipelineWarmupOnly) {
+      const nodeCacheForPrev = cache.nodes[nodeIdx];
+      if (transformIsIdentity || !defined(nodeCacheForPrev)) {
+        prevNodeModelMatrixForPack = resolvePreviousMatrixForFrame(
+          cache,
+          "prevModelMatrix",
+          modelMatrix,
+          resetTemporalHistory,
+        );
+      } else {
+        prevNodeModelMatrixForPack = resolvePreviousMatrixForFrame(
+          nodeCacheForPrev,
+          "prevNodeModelMatrix",
+          nodeModelMatrix,
+          resetTemporalHistory,
+        );
+      }
+    }
+
     let nodeIdlCameraBG: GPUBindGroup | null = null;
     let nodeIdlCameraOffsets: number[] | null = null;
     let nodeIdlModelMatrix2D = null;
@@ -6292,7 +6423,21 @@ function updateWebGPUModel(
       if (defined(preparationWork)) {
         preparationWork.cameraPacks++;
       }
-      packCameraUniforms(idlHost.cameraData2DIdl, frameState, idlMat);
+      // The duplicate's previous-frame matrix is the previous node matrix put
+      // through the same y-shift, off its own sign, so the previous camera
+      // pair is the exact mirror of the pair packed from `idlMat`.
+      const prevIdlMat = Matrix4.clone(
+        prevNodeModelMatrixForPack,
+        scratchPrevIdl2DModelMatrix,
+      );
+      prevIdlMat[13] -=
+        Math.sign(prevNodeModelMatrixForPack[13]) * idlShiftAmount2D;
+      packCameraUniforms(
+        idlHost.cameraData2DIdl,
+        frameState,
+        idlMat,
+        prevIdlMat,
+      );
       if (defined(preparationWork)) {
         preparationWork.cameraWrites++;
       }
@@ -6351,43 +6496,6 @@ function updateWebGPUModel(
           Math.sign(nodeModelMatrix[13]) * idlShiftAmount2D;
         nodeIdlModelMatrix2D = idlHost.idlModelMatrix2D;
         nodeIdlBoundingSphere2D = idlHost.idlBoundingSphere2D;
-      }
-    }
-
-    // Resolve the per-node previous-frame nodeModelMatrix for the
-    // velocity pack. The model-level `cache.prevModelMatrix` is correct
-    // for static articulations, which are set once and then locked, but
-    // produces ghosting under TAA when articulation animations mutate
-    // `runtimeNode.transform` per frame. Satellite solar-panel deploy
-    // animations, robot-arm articulations and AGI_articulations rigs
-    // whose nodes animate while TAA is on all hit this path.
-    //
-    // For identity-transform nodes the per-node `nodeModelMatrix` equals
-    // the model-level `modelMatrix`, so `cache.prevModelMatrix` is also
-    // the correct prev; falling back to it costs no per-node storage in
-    // the common single-node or static-articulation case.
-    //
-    // For non-identity nodes, read the per-node slot. First frame
-    // (`prevNodeModelMatrix === null`) initializes from this frame's
-    // `nodeModelMatrix` so velocity is exactly zero, which is what "no
-    // history yet" means and matches TAA's first-frame fallback.
-    let prevNodeModelMatrixForPack = nodeModelMatrix;
-    if (!pipelineWarmupOnly) {
-      const nodeCacheForPrev = cache.nodes[nodeIdx];
-      if (transformIsIdentity || !defined(nodeCacheForPrev)) {
-        prevNodeModelMatrixForPack = resolvePreviousMatrixForFrame(
-          cache,
-          "prevModelMatrix",
-          modelMatrix,
-          resetTemporalHistory,
-        );
-      } else {
-        prevNodeModelMatrixForPack = resolvePreviousMatrixForFrame(
-          nodeCacheForPrev,
-          "prevNodeModelMatrix",
-          nodeModelMatrix,
-          resetTemporalHistory,
-        );
       }
     }
 
@@ -7256,7 +7364,16 @@ function updateWebGPUModel(
             if (defined(preparationWork)) {
               preparationWork.cameraPacks++;
             }
-            packCameraUniforms(cache.cameraData, frameState, modelMatrix);
+            // `prevNodeModelMatrixForPack` resolves to the model-level
+            // `cache.prevModelMatrix` on this branch, which is the previous
+            // frame's twin of the `modelMatrix` packed alongside it, so the
+            // previous camera pair mirrors the current one exactly.
+            packCameraUniforms(
+              cache.cameraData,
+              frameState,
+              modelMatrix,
+              prevNodeModelMatrixForPack,
+            );
             if (projectTo2DActive) {
               // Restore the 3D-frame normal matrix so diffuse lighting keeps
               // the model's world orientation (translate(reference) has none).
@@ -7299,7 +7416,16 @@ function updateWebGPUModel(
           if (defined(preparationWork)) {
             preparationWork.cameraPacks++;
           }
-          packCameraUniforms(nc.cameraData, frameState, nodeModelMatrix);
+          // `prevNodeModelMatrixForPack` resolves to this node's own
+          // `prevNodeModelMatrix` on this branch, the previous frame's twin of
+          // the `nodeModelMatrix` packed alongside it, so an articulation that
+          // moved between frames keeps its model-motion half of the velocity.
+          packCameraUniforms(
+            nc.cameraData,
+            frameState,
+            nodeModelMatrix,
+            prevNodeModelMatrixForPack,
+          );
           if (defined(preparationWork)) {
             preparationWork.cameraWrites++;
           }
@@ -8036,7 +8162,7 @@ function updateWebGPUModel(
             cache.effectsBG,
           ],
           // Motion vectors are derived from the same camera block, including
-          // its `previousViewProjection` tail, so they bind the same slice.
+          // its previous relative-to-eye pair, so they bind the same slice.
           bindGroupDynamicOffsets: webgpuCmdArgs.bindGroupDynamicOffsets,
           vertexBuffers: vertexBuffers,
           indexBuffer: primCache.indexBuffer || undefined,

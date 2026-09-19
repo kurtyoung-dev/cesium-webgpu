@@ -222,11 +222,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1328 |
-| ACTIVE | 1088 |
+| Files in census | 1332 |
+| ACTIVE | 1091 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 44 |
-| Classes | probe 676, spec 372, lib 120, other 115, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
+| NO @status HEADER | 1 |
+| Classes | probe 676, spec 376, lib 120, other 115, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
 
 ### Tools/ (62)
 
@@ -421,7 +422,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1048)
+### Tools/visual-regression/ (1052)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -493,7 +494,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | clipping-polygon-rebake-revision-signal.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that the WebGPU CLIPPING_POLYGONS feature renderer rebakes on every real content change of ClippingPolygonCollection — including an equal-count polygon swap that a vertex/polygon COUNT comparison cannot see — and does not rebake when nothing changed. |
 | clipping-polygon-texture-backend-claim.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that ClippingPolygonCollection.requestRectangleData asks the active backend before building WebGL clipping textures, so WebGPU builds zero Texture objects while the CPU edge/grid tables still reach a future WGSL twin. |
 | cloud-aerial-path-length.spec.mjs | spec | ACTIVE | 2026-09-18 | 7 | C13-N20: executes cloudAirColumnMeters/cloudAerialFraction straight out of ProceduralClouds.wgsl; pins the legacy calibration point, the orbital non-saturation that bar O3 is about, monotonicity, the near-horizontal guard, the reach-the-image assertion on the composited output, and six mutants. |
-| cloud-api-enum-reachability.spec.mjs | spec | NO @purpose HEADER | 2026-09-17 | 5 | — |
+| cloud-api-enum-reachability.spec.mjs | spec | NO @purpose HEADER | 2026-09-17 | 6 | — |
 | cloud-coverage-response.spec.mjs | spec | ACTIVE | 2026-09-16 | 9 | Pins the CLOUD-LOW-COVERAGE-CUTOFF fix: baked base-field support, monotone coverage response on the CPU twin, exact high-anchor preservation. |
 | cloud-demo-probe-routing.spec.mjs | spec | ACTIVE | 2026-09-13 | 5 | Drives the eight routed Weather-Inspector cloud probes through runProbe against a stub browser, so the routing is known to reach a receipt, take its origin from the runtime and refuse port 8080 before an Edge slot is spent on it. |
 | cloud-density-domain.spec.mjs | spec | ACTIVE | 2026-08-21 | 6 | Pins the cloud density-domain layout: noise origin/phase/rotation float offsets shared between WebGPUCloudDensityDomain.ts and the WGSL, via exports. |
@@ -521,13 +522,15 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-temporal-rte.spec.mjs | spec | ACTIVE | 2026-09-16 | 5 | Pins WebGPUCloudTemporalHistory reset classification (teleport, morph, deck bounds, scene mode...) and commit semantics vs the engine module. |
 | cloud-temporal-source-view.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins that both cloud temporal bind-group pairs rebuild when the half-res target is replaced at an unchanged size, and that the check is live rather than inert. |
 | cloud-tier-lighting-dials.spec.mjs | spec | ACTIVE | 2026-09-18 | 5 | C13-N11: pins the 172-175 tail slots and the 176-float block, the conditional powder byte-identity at 0.5, the guarded floors' neutrality at 0, each dial's authority and direction, the byte-identity equivalence (identical IFF powder 0.5 and both floors 0) with the per-tier delta reported, the consumer-side parse that makes a neutered powder use observable, and QF_PROFILE_ON deprecated in place. |
-| cloud-tier-single-source.spec.mjs | spec | ACTIVE | 2026-09-18 | 8 | Executes the real preset→uniform seam from Node to prove a tier-table edit reaches the packed float, derives each float's flat index by walking the renderer's packer and cross-checking it against the WGSL struct, and pins every current default byte-identical to the deleted second resolver. |
+| cloud-tier-single-source.spec.mjs | spec | ACTIVE | 2026-09-18 | 9 | Executes the real preset→uniform seam from Node to prove a tier-table edit reaches the packed float, derives each float's flat index by walking the renderer's packer and cross-checking it against the WGSL struct, and pins every current default byte-identical to the deleted second resolver. |
 | cloud-tour-sequences.spec.mjs | spec | ACTIVE | 2026-09-12 | 11 | C13-01 tour contract: fixture/sequence coverage per the queue row, pinned derived clocks, engine-export constants, probe capture discipline. |
 | cloud-u2-perf-evidence.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Guards lib/cloud-u2-perf-evidence.mjs manifest assessment for C13-16 U2 perf evidence (no-regression / unchanged pass expectations, lane shapes). |
 | clustered-light-upload-invalidation.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 1 | — |
 | collection-depth-override-law.spec.mjs | spec | ACTIVE | 2026-09-05 | 6 | Executes the real DISABLE_DEPTH_DISTANCE blocks of the WebGPU collection shaders and of BillboardCollectionVS.glsl over a clip-space grid, and requires one fragment outcome from both backends. |
 | collection-pass-routing.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Guards which Pass bin WebGPU collection renderers put COLOR commands in and that PICK commands are emitted — pins the B914 enum-branch inversion fix. |
 | collection-pickid-shape.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Guards that WebGPU collection renderers register WebGL-shaped pick-id wrappers ({primitive, collection, id}), not bare primitives; CO-16 census guard. |
+| collection-previous-frame-rte.spec.mjs | spec | ACTIVE | — | 2 | Pins that every collection velocity stage reconstructs the previous clip position relative to the previous eye, that the packer writes the pair UniformState records, and that a still primitive under a reset previous frame emits exactly zero velocity. |
+| compute-cloud-previous-frame-rte.spec.mjs | spec | NO @status HEADER | — | 2 | Executes the real camera packers of the compute-instance and cloud-collection WebGPU renderers from Node to prove their previous-frame lanes carry a relative-to-eye pair taken from UniformState, and cross-checks every float offset against the renderers' own WGSL struct text and size constants. |
 | core-event-lifecycle.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Asserts Event survives a throwing listener and EventHelper's remover never orphans another registration, through the engine's own Core modules. |
 | coveragejson-antimeridian.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | C13-08: CoverageJSON cyclic-longitude unwrap through WeatherFieldGrid + WeatherTexPacker so antimeridian-crossing CRS84 axes parse right. |
 | cpu-frame-accounting.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Deterministic-clock tests of WebGPUCpuPassProfiler whole-scene phase accounting (CPU_SCENE_PHASE_NAMES coverage, no wall-clock leakage). |
@@ -629,12 +632,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | material-appearance-blend-parity.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Constructs real MaterialAppearance instances over real Materials, reads the render state the WebGL command path would carry, and runs the lifted WebGPU blend derivation and scene-framebuffer target builder against those same render states, so an appearance that blends on one backend and writes opaque on the other fails here. |
 | material-texture-late-adoption.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that the WebGPU primitive material path re-binds its texture after `Material.update` drains a late image into `_imageSources`, for the main and depth-fail slots, and proves the check is live rather than inert. |
 | model-3d-tile-state-packet.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral tests for Model3DTileStatePacket: immutable packet reuse when broad tileset state is unchanged, refresh on real change. |
-| model-camera-arena.spec.mjs | spec | ACTIVE | 2026-08-29 | 3 | Bundles the real WebGPUModelCameraArena and pins offset alignment, per-frame reset, view isolation, plus call-site routing source checks. |
+| model-camera-arena.spec.mjs | spec | ACTIVE | 2026-08-29 | 5 | Bundles the real WebGPUModelCameraArena and pins offset alignment, per-frame reset, view isolation, plus call-site routing source checks. |
 | model-device-recovery.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Device/resource-generation recovery contracts for native Models across renderer, pipeline cache, device resources and stub texture sources. |
 | model-lazy-pick-demand.spec.mjs | spec | ACTIVE | 2026-08-28 | 4 | Contracts for lazy realization of native Model pick resources across renderer, feature-id, Model, feature table and batch texture sources. |
 | model-light-arena.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Light-slice sibling of the camera-arena spec: pack-once-per-model-per-view light block, removal from per-primitive group-1, WGSL binding move. |
 | model-metadata-variant-key.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that two metadata (or customShader) classes at one material identity build distinct model pipeline keys, that the fold is byte-identical when no generated chunk applies, and that the fold is live rather than inert. |
 | model-native-pipeline-stage-tax.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Asserts which model pipeline stages are skipped when the native WebGPU renderer owns a primitive, pinning the stage-tax reduction. |
+| model-previous-frame-rte.spec.mjs | spec | ACTIVE | — | 2 | Executes the model camera packer and the model vertex stage's velocity block out of their own shipped source, and requires the previous-frame clip position to be the current-frame expression with previous-frame operands. |
 | model-primitive-topology-sandcastle.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Pins that the KHR primitive-restart Sandcastle demo survives the live WebGPU Viewer transform and remains valid module syntax. |
 | model-primitive-topology.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Contract for glTF mode to WebGPU topology+stripIndexFormat mapping: atomic pair, LINE_LOOP/FAN expansion on real assets, restart legality. |
 | moon-albedo-asset.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Pins the bundled lunar albedo asset bytes, equirect orientation landmarks, both-backend flipY upload convention and LICENSE provenance. |
@@ -675,6 +679,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | polyline-command-bounding-volume.spec.mjs | spec | ACTIVE | 2026-09-10 | 3 | Pins that every WebGPU polyline colour and pick command declares a per-group bounding volume tight enough to bin into ONE frustum, positioned in world space, instead of the volume-less command that bins into every frustum. |
 | polyline-multimaterial-verdicts.spec.mjs | spec | ACTIVE | 2026-09-10 | 5 | Executes probe-polyline-multimaterial's shipped decision functions against the recorded pre-fix numbers for each of the four materials, and proves that removing any ONE material's assertions makes the probe pass a scene that is visibly wrong for that material. |
 | polyline-taa-velocity-emission.spec.mjs | spec | ACTIVE | 2026-09-10 | 5 | Pins that an animating PolylineCollection with TAA on attaches a velocity draw command on the base-colour shader path, emits none when TAA is off or the material has no velocity entry points, and none at all with no polylines. |
+| previous-frame-rte-reconstruction.spec.mjs | spec | ACTIVE | — | 3 | Executes each velocity stage's previous- and current-frame position reconstruction straight out of the shipped WGSL, in f32, and measures the two properties that make a still primitive emit no velocity: the two reconstructions agree bit for bit on a history-reset frame, and the previous one is eye-relative rather than a full-magnitude world position. |
 | primitive-bindgroup-layout-arity-guard.spec.mjs | spec | ACTIVE | 2026-09-04 | 4 | Requires every createBindGroup in WebGPUPrimitiveCommands.ts to supply one entry per entry of the bind-group layout it names, and refuses to pass over a call site it cannot resolve. |
 | primitive-material-modulo-parity.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Evaluates the modulo expressions parsed out of the three static checker and dash WGSL shaders in f32 against a floored reference that is itself cross-checked against a shipped WGSL artifact, scores the colour decision each one drives, anchors the GLSL side to the real material sources, and proves the instrument red under an absence and an inertness mutant at every site. |
 | primitive-texture-bindgroup-entries.spec.mjs | spec | ACTIVE | 2026-09-04 | 4 | Pins that the non-material textured primitive path supplies one bind-group entry per "Texture BGL" layout entry, samples an opaque-white placeholder, and never selects a lit shader for a flat appearance. |
@@ -743,7 +748,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-buffer-logdepth-zfight.mjs | probe | ACTIVE | 2026-08-16 | 6 | Acceptance that the Buffer* family writes log depth: coverage tracked against a co-located log-depth billboard reference at far nadir. |
 | probe-buffer-point-single.mjs | probe | ACTIVE | 2026-08-16 | 4 | Regression gate for the WebGL single-vertex BufferPoint path (count==1 sub-data update): lone point renders, moves, zero errors. |
 | probe-buffer-point-update.mjs | probe | ACTIVE | 2026-08-16 | 5 | Acceptance for the upstream #13465 fix: setPosition after first render re-encodes and moves the point on BOTH backends within 2 frames. |
-| probe-buffer-polyline-meters-width.mjs | probe | ACTIVE | 2026-09-11 | 4 | Measures whether a NON-draped BufferPolylineCollection with widthUnits:"meters" keeps a constant GROUND width on WebGPU: two collections, two camera distances one octave apart, stroke-width ratio per backend. |
+| probe-buffer-polyline-meters-width.mjs | probe | ACTIVE | 2026-09-18 | 4 | Measures whether a NON-draped BufferPolylineCollection with widthUnits:"meters" keeps a constant GROUND width on WebGPU: two collections, two camera distances one octave apart, stroke-width ratio per backend. |
 | probe-buffercoll-encode-benchmark.mjs | probe | ACTIVE | 2026-08-16 | 9 | Repack+upload benchmark of BufferPointCollection position encode (batch vs forced-scalar) at 10k/50k/100k, both backends, visual check. |
 | probe-buffercoll-wasm-encode.mjs | probe | ACTIVE | 2026-08-16 | 5 | Parity acceptance that the WASM/batch fround RTE encode renders pixel-identical to scalar EncodedCartesian3, plus threshold routing checks. |
 | probe-bufferpoint-positiondatatype.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | Gap-documentation gate: detectUnsupportedPositionEncoding flags integer/normalized BufferPoint layouts and warns once instead of mis-encoding. |
@@ -1471,7 +1476,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-sun-bloom-mirror.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Guard that both backends draw ONE sun glow: WebGPU tuning derived from SolarDiscModel not copied, shared constants, one flag, WebGL untouched. |
 | webgpu-voxel-resource-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Drives real WebGPUVoxelResourceLifecycle exports (retain/release, atlas slot publish/retire/LRU, async-failure capture) plus structural pins. |
 | wgsl-mini-eval.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Verifies restricted WGSL expression parsing distinguishes scalar comparisons from generic constructor calls. |
-| wgsl-window-coordinates.spec.mjs | spec | ACTIVE | — | 3 | Runs csm_eyeToWindowCoordinates, csm_modelToWindowCoordinates and csm_metersPerPixel through the WGSL evaluator and asserts their outputs against a CPU port of the GLSL twins, in WebGPU's NDC convention, for perspective, 2D orthographic and Columbus-View orthographic frustums. |
+| wgsl-window-coordinates.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Runs csm_eyeToWindowCoordinates, csm_modelToWindowCoordinates and csm_metersPerPixel through the WGSL evaluator and asserts their outputs against a CPU port of the GLSL twins, in WebGPU's NDC convention, for perspective, 2D orthographic and Columbus-View orthographic frustums. |
 | widgets-teardown-contract.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Pins that the three inspector mixins remove and destroy the panel they append to the caller's container, that FullscreenButtonViewModel unsubscribes from the document it subscribed to, that Geocoder removes every listener its constructor added, and that Animation removes the <style> node it inserted. |
 
 ### Tools/visual-regression/archive/ (16)
@@ -1635,7 +1640,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | weather-regional-tail-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Fixture and pass/fail policy for the C13-08 rendered antimeridian weather-tail probe, mutation-tested against its two target regressions. |
 | webgpu-model-preparation-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Accumulates and validates WebGPU model preparation/demand counters as measurement-window evidence for performance workloads. |
 | wgsl-derivative-uniformity.mjs | lib | ACTIVE | 2026-09-01 | 7 | Reports implicit-derivative calls reached through non-uniform control flow without requiring a browser, GPU, or WGSL compiler. |
-| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-11 | 20 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
+| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-18 | 21 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
 | wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 11 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
 ### scripts/ (3)

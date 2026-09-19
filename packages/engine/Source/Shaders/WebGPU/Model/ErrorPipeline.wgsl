@@ -28,7 +28,18 @@ struct CameraUniforms {
   logDepthNear: f32,
   cameraPositionWC: vec3<f32>,
   logDepthFar: f32,
+  // Previous-frame twins of `mvpRelativeToEye` and of the model-space encoded
+  // camera above. This shader reads none of them; they are declared so the
+  // names after this point describe the bytes the bound block actually holds.
+  previousMvpRelativeToEye: mat4x4<f32>,
+  previousEncodedCameraPositionMCHigh: vec3<f32>,
+  _pad0: f32,
+  previousEncodedCameraPositionMCLow: vec3<f32>,
+  _pad1: f32,
   previousViewProjection: mat4x4<f32>,
+  // The block's last lane. Declared, unread here, so "byte-locked" is true of
+  // the whole block rather than of its first two thirds.
+  hdrControl: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;

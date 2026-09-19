@@ -970,7 +970,7 @@ describe the old surface at the time; they do not revive it.
 - packages/wasm-naga/ — Rust source + vendored WASM runtime for Naga shader translator (EXPERIMENTAL)
 - 64-bit RTE precision infrastructure — `EncodedCartesian3.d.ts` + WGSL `(positionHigh, positionLow)` vertex format + `mvpRelativeToEye` UBO field (SHIPPED)
 - WebGPURTEAssertions.ts — runtime guards enforcing no `mvp * vec4(position, 1.0)` slips in (SHIPPED)
-- previousViewProjection UBO field on every renderer's CameraUniforms struct (DP-H41) (SHIPPED)
+- previousViewProjection UBO field on every renderer's CameraUniforms struct (DP-H41) — and, since 2026-09-18, a `previousMvpRelativeToEye` plus previous encoded-camera split beside it on the six velocity-emitting renderers (billboard, label, point, polyline, compute-instance, cloud collection) and the model, so a velocity stage reprojects relative to the previous eye instead of reconstructing an absolute f32 world position; `previousViewProjection` itself is retained and packed but no velocity stage reads it (SHIPPED)
 - Define-bitmask preprocessor — `(sourceId, defines)` Uint32 cache key (SHIPPED)
 - GPU render bundle wiring — opt-in via WebGPURenderBundleManager (3 active sites: globe terrain, environment, volumetric fog) (SHIPPED)
 - Compute-driven LOD via WebGPUDecoupledScan — deterministic point-cloud visible-set extraction (SHIPPED)

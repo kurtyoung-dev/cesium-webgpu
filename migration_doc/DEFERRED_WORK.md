@@ -20831,6 +20831,73 @@ unowned) → `AR-092`.** The audit contributes nothing new. Authorship FORK. Eff
 the surviving set · class shader · full proof bar plus a **named Edge leg**; acceptance is a measurement
 (static scene, static camera ⇒ velocity ≈ 0) plus a fly-to motion-vector capture, **not** a rule citation.
 
+**`P1-RTE-PREVIOUS-FRAME-VELOCITY` — FIXED 2026-09-18, wave 3 lane Heathertoes (tier-3 Appledore /
+Thistlewool / Mugwort, by shader family).** All seven sites now compute the previous-frame position
+with the current frame's own expression and previous-frame operands, against a previous
+relative-to-eye matrix and a previous encoded camera split added to each renderer's camera uniform
+block. Both values come from the pair `UniformState` already carries —
+`previousViewProjectionRelativeToEye` (`Renderer/UniformState.js:504`) and `previousCameraPosition`
+(`:478`), read together from the View-owned temporal record — composed with the model matrix on the
+CPU in f64. Nothing was added to `UniformState`; `previousViewProjection` stays declared and stays
+packed at each block's tail under the camera-uniform layout rule, unread by any velocity stage.
+
+Camera-block sizes, before → after, with the new lanes inserted immediately before
+`previousViewProjection` so it keeps its position relative to the end of the struct:
+`WebGPUBillboardRenderer.js` 256 → **352** B (new lanes at floats 48-71, previous-VP at 72-87);
+`WebGPULabelRenderer.js` 256 → **352** B (same layout);
+`WebGPUPointPrimitiveRenderer.js` struct 192 → **288** B and its over-allocated 256 B constant now
+equals the struct (new lanes 28-51, previous-VP 52-67, `logDepth` 68-71);
+`WebGPUPolylineRenderer.js` 192 → **288** B (new lanes 32-55, previous-VP 56-71);
+`WebGPUComputeInstanceRenderer.ts` 176 → **272** B (new lanes 28-51, previous-VP 52-67);
+`WebGPUCloudRenderer.ts` 192 → **288** B (new lanes 28-51, previous-VP 52-67, `logDepth` 68-71);
+`WebGPUModelRenderer.ts` / `WebGPUModelCameraArena.ts` 320 → **416** B (new lanes 60-83,
+previous-VP 84-99, `hdrControl` 100-103) — the model arena's per-slice footprint is UNCHANGED,
+because 320 and 416 both round to the same 512 B under its 256 B dynamic-offset alignment.
+
+**Measured, by executing the shipped WGSL through `Tools/visual-regression/lib/wgsl-mini-eval.mjs`
+in f32** (the evaluator gained an optional `__round` hook for this; unbound it changes nothing for
+its twelve existing consumers). Over five Earth-scale positions — equator, mid-latitude, pole,
+antimeridian, southern negative-coordinate — the previous-frame reconstruction's worst error against
+the position its own high/low split encodes falls from **0.1875 m** to **1.77e-3 m**, and that
+residual is the split's own, shared bit for bit with the current frame. Through the real view and
+projection matrices at 1024x768 and a 60 degree field of view, with the subject OFF-AXIS, the
+spurious velocity of a primitive that never moved falls from **3.060e-3 NDC (1.567 px) at 100 m /
+2.066e-3 at 150 m / 1.031e-3 at 300 m / 3.081e-4 at 1 km / 3.076e-5 at 10 km** to **exactly zero at
+every range** — bitwise, because both arms then multiply the same matrix by bitwise-equal operands on
+a reset frame. Past about 3 km the pre-fix defect sits under the 1.0e-4 NDC velocity noise floor,
+which is why it survived: at the ranges most captures use it is unmeasurable. How much of the loss
+reaches the screen is basis-dependent — the same fixture CENTRED reads 4.377e-5 / 3.238e-5 /
+1.353e-5 NDC at 100 / 150 / 300 m, another basis reads 3.3e-3 — so the acceptance leg uses the
+off-axis station, which is reliably above the floor on both.
+
+Two effects found while fixing it, neither previously recorded. First, `UniformState.update`
+(`:897-906`) resets the previous camera record to the current one on incompatible history — teleport,
+morph, scene-mode, projection change — and its own comment promises "zero motion on
+teleport/morph/projection resets to every previous-VP UBO consumer". That promise could not be kept
+before this change: with the two frames reconstructed by different arithmetic they disagree even when
+the matrices are identical, so the reset frame emitted noise rather than zero. It is now exactly zero,
+bitwise, and that is the condition both the Node measurement and the Edge leg key on. Second,
+`PointPrimitivePick.wgsl` reads `camera.logDepth` out of the SAME buffer the colour packer fills, so
+the point struct's growth had to be mirrored there or the pick shader would have read the previous
+camera's high split as its log-depth near plane; seven more sibling structs over the billboard,
+polyline and model blocks were declaring fewer bytes than the buffer they bind and are corrected in
+the same change — including `Shaders/WebGPU/Model/ErrorPipeline.wgsl`, whose "byte-locked to
+ModelPBRComplete" header had become false and which had never declared the block's trailing
+`hdrControl` lane at all. An independent layout census over all fifteen `CameraUniforms` structs that
+bind one of the seven grown blocks confirms every one now matches the block it binds.
+
+Specs: `previous-frame-rte-reconstruction.spec.mjs` (the cross-family law and both measurements),
+`collection-previous-frame-rte.spec.mjs`, `model-previous-frame-rte.spec.mjs`,
+`compute-cloud-previous-frame-rte.spec.mjs` — 60 tests, runner `npm run test-previous-frame-rte`.
+`polyline-command-bounding-volume.spec.mjs` stopped restating the camera block's size and now reads
+it from the renderer, which is what let it catch the six stale sibling structs.
+**Still open on this row's parent chain:** the Edge leg (the recipe is in the lane's landing packet),
+and two renderers carrying the identical reconstruction that no family owned, both re-read at the
+lane's base — `WebGPUGaussianSplatRenderer.ts:940` (`u.prevViewProjection * (u.modelMatrix *
+prevModelPos)`) and `WebGPUGroundPolylineRenderer.js:1157` (`u.prevViewProjection *
+vec4<f32>(worldPos, 1.0)`). They are the remainder of the
+class, not of the seven sites.
+
 **`webgpu-scene-fr-03` — public JSDoc stripped from `ScreenSpaceCameraController.js`. ATTACHES TO
 `NEW-CAMERA-JSDOC-RESTORE`, wave 2 or 5.**
 From `packages/engine/Source/Scene/ScreenSpaceCameraController.js:153` onward, public properties keep

@@ -18,13 +18,22 @@ struct CameraUniforms {
     _pad0: f32,
     encodedCameraPositionMCLow: vec3<f32>,      // bytes 96-107 (+4 pad)
     _pad1: f32,
+    // Previous-frame twins of `mvpRelativeToEye` and the encoded camera split.
+    // This shader reads neither, but the block it binds is packed by the same
+    // camera packer as its colour sibling, so the declaration has to describe
+    // the same bytes or every field after this point names the wrong ones.
+    previousMvpRelativeToEye: mat4x4<f32>,
+    previousEncodedCameraPositionMCHigh: vec3<f32>,
+    _pad2: f32,
+    previousEncodedCameraPositionMCLow: vec3<f32>,
+    _pad3: f32,
     // Previous frame's viewProjection for
     // TAA / motion-vector reprojection. Sourced from
     // `UniformState._previousViewProjection` (f32 mat4).
     previousViewProjection: mat4x4<f32>,
     // The pick pipeline reuses the
     // color camera UB (`cache.uniformBuffer`, sized for the color struct's
-    // logDepth tail), so floats 44-47 already carry (near, far, factor,
+    // logDepth tail), so floats 68-71 already carry (near, far, factor,
     // reserved). Struct tail add-only; only the `//>>ifdef LOG_DEPTH` pick
     // module reads it. Mirrors PointPrimitiveColor.wgsl.
     logDepth: vec4<f32>,

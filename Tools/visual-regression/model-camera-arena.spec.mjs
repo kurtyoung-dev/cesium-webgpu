@@ -270,8 +270,9 @@ function acquire(arena, device, allocator, data, label = "cam", light) {
 
 test("the camera block width matches the RTE CameraUniforms doctrine", () => {
   // mat4 mvpRTE + mat4 mvRTE + mat4 normal + 3 padded vec3 + mat4
-  // previousViewProjection (DP-H41 tail) = 320 bytes.
-  assert.equal(MODEL_CAMERA_UNIFORM_BYTES, 320);
+  // previousMvpRTE + 2 padded vec3 + mat4 previousViewProjection (DP-H41
+  // tail) + vec4 hdrControl = 416 bytes.
+  assert.equal(MODEL_CAMERA_UNIFORM_BYTES, 416);
   assert.equal(MODEL_CAMERA_UNIFORM_BYTES % 16, 0);
   // The layout binds the full struct, so the struct must fit an aligned slot.
   assert.ok(
@@ -505,7 +506,7 @@ test("no allocator degrades to a private buffer bound at offset 0", () => {
   // camera.
   assert.equal(device.created.buffers.length, 2);
   assert.equal(device.created.buffers[0].descriptor.size, 864);
-  assert.equal(device.created.buffers[1].descriptor.size, 320);
+  assert.equal(device.created.buffers[1].descriptor.size, 416);
   assert.equal(device.created.writes.length, 2);
   // Dynamic offset 0 is always alignment-legal, so the degraded path is still
   // valid against the `hasDynamicOffset` layout.
@@ -1071,8 +1072,10 @@ test("the persistent per-model / per-node camera buffers are gone", () => {
   }
   // The CPU staging arrays are retained: the shadow-cast UB reads the packed
   // model-space RTE eye back out of them.
-  assert.match(rendererSource, /packCameraUniforms\(cache\.cameraData,/);
-  assert.match(rendererSource, /packCameraUniforms\(nc\.cameraData,/);
+  // Prettier wraps a four-argument call, so the staging array may sit on
+  // its own line.
+  assert.match(rendererSource, /packCameraUniforms\(\s*cache\.cameraData,/);
+  assert.match(rendererSource, /packCameraUniforms\(\s*nc\.cameraData,/);
 });
 
 test("the camera binding is update-scoped, never memoized on a cache", () => {

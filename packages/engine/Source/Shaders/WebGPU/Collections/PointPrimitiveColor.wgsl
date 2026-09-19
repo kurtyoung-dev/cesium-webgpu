@@ -22,12 +22,21 @@ struct CameraUniforms {
     _pad0: f32,
     encodedCameraPositionMCLow: vec3<f32>,     // bytes 96-107 (+4 pad)
     _pad1: f32,
+    // Previous-frame twins of `mvpRelativeToEye` and the encoded camera
+    // split. The velocity stage builds the previous clip position with the
+    // same relative-to-eye expression as the current one, so neither frame
+    // sums a high/low pair into an absolute world position in f32.
+    previousMvpRelativeToEye: mat4x4<f32>,
+    previousEncodedCameraPositionMCHigh: vec3<f32>,
+    _pad2: f32,
+    previousEncodedCameraPositionMCLow: vec3<f32>,
+    _pad3: f32,
     // Previous frame's viewProjection for
     // TAA / motion-vector reprojection. Sourced from
     // `UniformState._previousViewProjection` (f32 mat4).
     previousViewProjection: mat4x4<f32>,
     // Renderer-wide log depth: (near, far,
-    // oneOverLog2FarDepthFromNearPlusOne, reserved) at floats 44-47.
+    // oneOverLog2FarDepthFromNearPlusOne, reserved) at floats 68-71.
     // Packed unconditionally by packUniforms; only the `//>>ifdef
     // LOG_DEPTH` blocks read it. See WebGPULogDepth.ts.
     logDepth: vec4<f32>,
@@ -88,6 +97,23 @@ fn translateRelativeToEye(
         highDiff = vec3<f32>(0.0, 0.0, 0.0);
     }
     let lowDiff = posLow - camera.encodedCameraPositionMCLow;
+    return vec4<f32>(highDiff + lowDiff, 1.0);
+}
+
+// The previous-frame twin of the helper above, against the previous camera
+// split. It is a deliberate copy rather than a shared parameterized helper:
+// the two frames must stay arithmetically symmetric, guard included, and this
+// file duplicates every helper it uses because WGSL modules share nothing.
+fn translateRelativeToEyePrevious(
+    posHigh: vec3<f32>,
+    posLow: vec3<f32>,
+) -> vec4<f32> {
+    var highDiff = posHigh - camera.previousEncodedCameraPositionMCHigh;
+    // NaN guard for devices where identical subtraction produces NaN (iOS)
+    if (length(highDiff) == 0.0) {
+        highDiff = vec3<f32>(0.0, 0.0, 0.0);
+    }
+    let lowDiff = posLow - camera.previousEncodedCameraPositionMCLow;
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
@@ -418,11 +444,13 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
   let eyeRelativePos = translateRelativeToEye(posHigh, posLow);
   let currentCenterClip = camera.mvpRelativeToEye * eyeRelativePos;
 
-  // Previous-frame center clip via full mat4.
+  // Previous-frame center clip against the previous eye. Each half is
+  // differenced before the two are summed, so the planet-scale magnitudes
+  // cancel and only the small residuals are added.
   let prevPosHigh = input.prevPosHighAndSize.xyz;
   let prevPosLow = input.prevPosLowAndOutline.xyz;
-  let prevWorldPos = vec4<f32>(prevPosHigh + prevPosLow, 1.0);
-  let prevCenterClip = camera.previousViewProjection * prevWorldPos;
+  let prevEyeRelativePos = translateRelativeToEyePrevious(prevPosHigh, prevPosLow);
+  let prevCenterClip = camera.previousMvpRelativeToEye * prevEyeRelativePos;
 
   // Rasterize the point quad at the CURRENT-frame position so the
   // velocity texture covers the same pixels the color pass touched.

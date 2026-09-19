@@ -42,6 +42,15 @@ struct CameraUniforms {
   splitPosition: f32,
   logDepthFactor: f32,
   _padLog: f32,
+  // Previous-frame twins of `mvpRelativeToEye` and the encoded camera split.
+  // The velocity stage builds the previous clip position with the same
+  // relative-to-eye expression as the current one, so neither frame sums a
+  // high/low pair into an absolute world position in f32.
+  previousMvpRelativeToEye: mat4x4<f32>,
+  previousEncodedCameraHigh: vec3<f32>,
+  _pad2: f32,
+  previousEncodedCameraLow: vec3<f32>,
+  _pad3: f32,
       previousViewProjection: mat4x4<f32>,
 };
 
@@ -610,12 +619,16 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
     posHigh, posLow, camera.encodedCameraHigh, camera.encodedCameraLow);
   let currentCenterClip = camera.mvpRelativeToEye * vec4<f32>(positionRTE, 1.0);
 
-  // Previous-frame center clip via full mat4 (precision loss at
-  // planet scale acceptable for NDC delta magnitudes).
+  // Previous-frame center clip against the previous eye. Each half is
+  // differenced before the two are summed, so the planet-scale magnitudes
+  // cancel and only the small residuals are added.
   let prevPosHigh = input.prevPosHighAndScale.xyz;
   let prevPosLow = input.prevPosLowAndRotation.xyz;
-  let prevWorldPos = vec4<f32>(prevPosHigh + prevPosLow, 1.0);
-  let prevCenterClip = camera.previousViewProjection * prevWorldPos;
+  let prevPositionRTE = translateRelativeToEye(
+    prevPosHigh, prevPosLow,
+    camera.previousEncodedCameraHigh, camera.previousEncodedCameraLow);
+  let prevCenterClip =
+    camera.previousMvpRelativeToEye * vec4<f32>(prevPositionRTE, 1.0);
 
   // Rasterize the glyph quad at the CURRENT-frame position so the
   // velocity texture covers the same pixels the color pass touched.

@@ -46,6 +46,15 @@ struct CameraUniforms {
   // unchanged.
   logDepthFactor: f32,
   _padLog: f32,
+  // Previous-frame twins of `mvpRelativeToEye` and the encoded camera split.
+  // This shader reads neither, but the block it binds is packed by the same
+  // camera packer as its colour sibling, so the declaration has to describe
+  // the same bytes or every field after this point names the wrong ones.
+  previousMvpRelativeToEye: mat4x4<f32>,
+  previousEncodedCameraHigh: vec3<f32>,
+  _pad3: f32,
+  previousEncodedCameraLow: vec3<f32>,
+  _pad4: f32,
       previousViewProjection: mat4x4<f32>,
 };
 

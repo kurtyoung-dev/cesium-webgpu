@@ -21,7 +21,11 @@
 //
 // PRECISION. Evaluation is f64 where the GPU is f32. Callers must assert
 // properties that hold with room to spare rather than bit-level equality with
-// a device.
+// a device. A caller whose law IS the rounding binds `__round` in the globals
+// object — `Math.fround` is the f32 case — and every literal, arithmetic
+// result, negation and builtin return then lands on the nearest representable
+// value, as it does in the pipeline. Unbound, the hook costs one property read
+// and changes nothing.
 //
 // Supported: `let` / `var` bindings, guarded early `return`s, a final
 // `return`, unary minus, `+ - * /`, comparisons, `&&`, `||`, the conditional
@@ -280,6 +284,33 @@ const BUILTINS = {
 };
 
 /**
+ * Apply the environment's optional per-operation rounding hook.
+ *
+ * Evaluation is f64 by default, which is the right default for a law whose
+ * subject is a ratio or a threshold. It is the WRONG default for a law whose
+ * subject IS the rounding: a shader that reconstructs a planet-scale position
+ * by summing a high/low split loses half a metre to the f32 quantum, and an
+ * f64 reader reproduces that sum exactly and reports no error at all. Binding
+ * `__round` to `Math.fround` lands every intermediate on the nearest f32, which
+ * is what the GPU pipeline does, so the reader measures the quantisation
+ * instead of erasing it. With no hook bound nothing changes for any caller.
+ *
+ * @param {number|object|boolean} value The value an operation produced.
+ * @param {object} env Name to value bindings, possibly carrying `__round`.
+ * @returns {number|object|boolean} The value, rounded when the hook is bound.
+ */
+function quantize(value, env) {
+  const round = env.__round;
+  if (typeof round !== "function") {
+    return value;
+  }
+  if (isVec(value)) {
+    return vec(round(value.x), round(value.y), round(value.z));
+  }
+  return typeof value === "number" ? round(value) : value;
+}
+
+/**
  * Recursive-descent expression parser over the token list.
  *
  * @param {Array<{kind: string, text: string}>} tokens Tokens.
@@ -428,10 +459,10 @@ function parseExpression(tokens, start) {
 function evaluate(node, env) {
   switch (node.type) {
     case "num":
-      return node.value;
+      return quantize(node.value, env);
     case "neg": {
       const v = evaluate(node.operand, env);
-      return isVec(v) ? vec(-v.x, -v.y, -v.z) : -v;
+      return quantize(isVec(v) ? vec(-v.x, -v.y, -v.z) : -v, env);
     }
     case "ref": {
       // The boolean literals, so an `if (false && …)` inertness mutant reads as
@@ -521,7 +552,7 @@ function evaluate(node, env) {
       if (fn === undefined) {
         throw new Error(`unsupported call ${node.name}`);
       }
-      return fn(...args);
+      return quantize(fn(...args), env);
     }
     case "bin": {
       const a = evaluate(node.left, env);
@@ -544,7 +575,7 @@ function evaluate(node, env) {
         case "||":
           return Boolean(a) || Boolean(b);
         default:
-          return arith(node.op, a, b);
+          return quantize(arith(node.op, a, b), env);
       }
     }
     default:

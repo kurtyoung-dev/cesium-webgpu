@@ -3,7 +3,7 @@
  * Group-0 view dynamic-offset arena for the WebGPU model path.
  *
  * Group 0 carries the two blocks that are a property of the (model, view) pair
- * rather than of any primitive: the 320-byte relative-to-eye camera block at
+ * rather than of any primitive: the 416-byte relative-to-eye camera block at
  * binding 0, and the 864-byte punctual/IBL/ambient light block at binding 1.
  * Both are camera-relative — the camera block carries the encoded eye, and the
  * light block's punctual positions, reflection-proxy centre and eye-to-world
@@ -56,10 +56,11 @@
  *
  * ## Relative-to-eye law
  *
- * The arena moves bytes, never meaning. The 320-byte block it carries is
+ * The arena moves bytes, never meaning. The 416-byte block it carries is
  * whatever `packCameraUniforms` produced: `mvpRelativeToEye`, the model-space
- * encoded camera high/low pair, and the `previousViewProjection` tail every
- * `CameraUniforms` struct must carry. The 864-byte light block is whatever
+ * encoded camera high/low pair, their previous-frame twins, and the
+ * `previousViewProjection` tail every `CameraUniforms` struct must carry. The
+ * 864-byte light block is whatever
  * `packLightUniforms` produced, including the camera-relative punctual
  * positions that pair with that same encoded eye. The arena never inspects,
  * reorders, or defaults any of it.
@@ -120,7 +121,7 @@ const BufferUsage: { readonly UNIFORM: number; readonly COPY_DST: number } =
  * with the `Camera` struct in the model WGSL and with `packCameraUniforms`
  * in `WebGPUModelRenderer.ts`, which is the only writer.
  */
-export const MODEL_CAMERA_UNIFORM_BYTES = 320;
+export const MODEL_CAMERA_UNIFORM_BYTES = 416;
 
 /**
  * Byte width of the model group-0 light uniform block (binding 1). Must stay

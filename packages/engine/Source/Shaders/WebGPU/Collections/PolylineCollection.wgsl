@@ -28,9 +28,9 @@ struct CameraUniforms {
   viewportSize: vec2<f32>,
   // Renderer-wide log-depth parameters. `logDepthNearFar` carries the encode
   // frustum, while `logDepthFactor` occupies the scalar lane after
-  // `splitPosition`; `pixelRatio` preserves `previousViewProjection`'s 16-byte
-  // alignment. Packed unconditionally so every variant shares one uniform
-  // buffer layout, though only LOG_DEPTH variants read them.
+  // `splitPosition`; `pixelRatio` fills the scalar lane that keeps the
+  // following mat4 16-byte aligned. Packed unconditionally so every variant
+  // shares one uniform buffer layout, though only LOG_DEPTH variants read them.
   logDepthNearFar: vec2<f32>,
   // Frame-wide fallback threshold in meters, squared in the shader.
   minimumDisableDepthTestDistance: f32,
@@ -38,10 +38,19 @@ struct CameraUniforms {
   // (`frameState.splitPosition * drawingBufferWidth`).
   splitPosition: f32,
   logDepthFactor: f32,
-  // `czm_pixelRatio`. Float slot 31 of the shared 192-byte polyline camera
+  // `czm_pixelRatio`. Float slot 31 of the shared 288-byte polyline camera
   // UBO, written by `WebGPUPolylineRenderer.js`; it was padding until the quad
   // expansion needed it.
   pixelRatio: f32,
+  // Previous-frame twins of `mvpRelativeToEye` and the encoded camera split.
+  // The velocity stage builds the previous clip endpoints with the same
+  // relative-to-eye expression as the current ones, so neither frame sums a
+  // high/low pair into an absolute world position in f32.
+  previousMvpRelativeToEye: mat4x4<f32>,
+  previousEncodedCameraHigh: vec3<f32>,
+  _pad2: f32,
+  previousEncodedCameraLow: vec3<f32>,
+  _pad3: f32,
       previousViewProjection: mat4x4<f32>,
 };
 
@@ -367,19 +376,21 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
   let curClipStart = camera.mvpRelativeToEye * vec4<f32>(startRTE, 1.0);
   let curClipEnd = camera.mvpRelativeToEye * vec4<f32>(endRTE, 1.0);
 
-  // Previous-frame clip endpoints — full mat4 multiply of unencoded
-  // world position (precision loss at planet scale acceptable for
-  // NDC delta magnitudes; matches the Model + Billboard patterns).
-  let prevStartWorld = vec4<f32>(
-    input.prevStartPosHighAndWidth.xyz + input.prevStartPosLow.xyz,
-    1.0,
+  // Previous-frame clip endpoints against the previous eye. Each half is
+  // differenced before the two are summed, so the planet-scale magnitudes
+  // cancel and only the small residuals are added.
+  let prevStartRTE = translateRelativeToEye(
+    input.prevStartPosHighAndWidth.xyz, input.prevStartPosLow.xyz,
+    camera.previousEncodedCameraHigh, camera.previousEncodedCameraLow,
   );
-  let prevEndWorld = vec4<f32>(
-    input.prevEndPosHighAndMiter.xyz + input.prevEndPosLow.xyz,
-    1.0,
+  let prevEndRTE = translateRelativeToEye(
+    input.prevEndPosHighAndMiter.xyz, input.prevEndPosLow.xyz,
+    camera.previousEncodedCameraHigh, camera.previousEncodedCameraLow,
   );
-  let prevClipStart = camera.previousViewProjection * prevStartWorld;
-  let prevClipEnd = camera.previousViewProjection * prevEndWorld;
+  let prevClipStart =
+    camera.previousMvpRelativeToEye * vec4<f32>(prevStartRTE, 1.0);
+  let prevClipEnd =
+    camera.previousMvpRelativeToEye * vec4<f32>(prevEndRTE, 1.0);
 
   // Rasterize the segment quad at the CURRENT-frame position so the
   // velocity texture covers the same pixels the color pass touched.

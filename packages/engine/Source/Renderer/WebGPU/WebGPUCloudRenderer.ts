@@ -105,6 +105,11 @@ interface CloudCache extends CollectionRenderCache {
   prevBufferRevision: number | undefined;
 }
 
+// CameraUniforms float count: mat4 + 2×(vec3+f32) + vec2 + 2×f32, then the
+// previous-frame RTE pair (mat4 + 2×(vec3+pad)), then the previous
+// world-space view projection mat4 and the log-depth vec4 = 288 bytes.
+const CLOUD_CAMERA_UNIFORM_FLOATS = 72;
+
 const CLOUD_WGSL = /* wgsl */ `
 struct CameraUniforms {
   modelViewProjectionRTE: mat4x4<f32>,
@@ -119,12 +124,22 @@ struct CameraUniforms {
   viewportSize: vec2<f32>,
   time: f32,
   _pad2: f32,
-  // Batch 170 - DP-H41 prev viewProjection at the tail. CloudCollection
-  // positions are in world space (no modelMatrix), so the velocity VS
-  // can apply prevVP directly to the prev instance position.
+  // Previous-frame counterparts of modelViewProjectionRTE and the encoded
+  // camera split. Cloud positions are world space, so the previous matrix is
+  // the previous projection times the previous view with its translation
+  // column zeroed, and the split is the camera of that same previous frame.
+  // The velocity VS reprojects through this pair, so no absolute world
+  // position is formed in f32.
+  previousModelViewProjectionRTE: mat4x4<f32>,
+  previousEncodedCameraHigh: vec3<f32>,
+  _pad3: f32,
+  previousEncodedCameraLow: vec3<f32>,
+  _pad4: f32,
+  // Previous frame's world-space view-projection matrix, retained at the end
+  // of the previous-frame block.
   prevViewProjection: mat4x4<f32>,
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — (near, far,
-  // oneOverLog2FarDepthFromNearPlusOne, reserved) at floats 44-47. Packed
+  // Renderer-wide log depth — (near, far,
+  // oneOverLog2FarDepthFromNearPlusOne, reserved) at floats 68-71. Packed
   // unconditionally; only the LOG_DEPTH ifdef blocks read it.
   logDepth: vec4<f32>,
 };
@@ -426,12 +441,12 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   return out;
 }
 
-// Batch 170 - B.10 NEW-ADVANCED-MOTION-VECTORS velocity emission for
-// animated cloud collections. Mirrors PointCloud's pattern: rasterize
-// the cloud quad at the CURRENT-frame position so the velocity texture
-// covers the same pixels the color pass touched, then emit per-fragment
-// (currNdc - prevNdc). Cloud positions are world-space (no modelMatrix),
-// so the prev clip computation is just prevVP × prevWorldPos.
+// Velocity emission for animated cloud collections. Mirrors PointCloud's
+// pattern: rasterize the cloud quad at the CURRENT-frame position so the
+// velocity texture covers the same pixels the color pass touched, then emit
+// per-fragment (currNdc - prevNdc). Both endpoints are computed relative to
+// their own frame's camera, so a static cloud under a static camera emits
+// exactly zero.
 struct VelocityVertexInput {
   @location(0) quadPos: vec2<f32>,
   @location(1) positionHigh: vec3<f32>,
@@ -460,11 +475,13 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
   let posRTE = (input.positionHigh - camera.encodedCameraHigh)
              + (input.positionLow - camera.encodedCameraLow);
   let currCenterClip = camera.modelViewProjectionRTE * vec4<f32>(posRTE, 1.0);
-  // Previous-frame center clip via full prev VP × world position.
-  let prevWorldPos = vec4<f32>(
-    input.prevPositionHigh + input.prevPositionLow, 1.0,
-  );
-  let prevCenterClip = camera.prevViewProjection * prevWorldPos;
+  // Previous-frame center clip: the current-frame expression with
+  // previous-frame operands. Each high term cancels against the previous
+  // camera high before the two small residuals are summed.
+  let prevPosRTE = (input.prevPositionHigh - camera.previousEncodedCameraHigh)
+                 + (input.prevPositionLow - camera.previousEncodedCameraLow);
+  let prevCenterClip =
+    camera.previousModelViewProjectionRTE * vec4<f32>(prevPosRTE, 1.0);
   // Rasterize quad at the current center. Meters-based sizing — must
   // match vertexMain exactly so velocity covers the same fragments
   // (NEW-CLOUD-SCALE-METERS, Batch 253; *0.5 half-extent NEW-WEBGPU-CLOUD-
@@ -961,7 +978,7 @@ function _updateWebGPUCloudCollectionInner(
       "CloudCollection",
     );
     cache.uniformBuffer = device.createBuffer({
-      size: 256,
+      size: CLOUD_CAMERA_UNIFORM_FLOATS * 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     const noise = createNoiseTexture(device);
@@ -1214,32 +1231,50 @@ function _updateWebGPUCloudCollectionInner(
     data[26] = frameState.frameNumber * 0.016; // approximate time for animation
     data[27] = 0;
 
-    // Previous view-projection at floats 28 to 43. `UniformState` assigns
-    // `_previousViewProjection` from `viewProjection` at the end of
+    // Previous-frame RTE pair at floats 28 to 51.
+    // `previousViewProjectionRelativeToEye` is the previous projection times
+    // the previous view with its translation column zeroed — the same product
+    // packed at floats 0 to 15 above — and the split below encodes the camera
+    // of that same previous frame, so the high terms cancel exactly in the
+    // shader. The first frame falls through to identity and a zero split.
+    const prevVPRTE = (us as { previousViewProjectionRelativeToEye?: Matrix4 })
+      .previousViewProjectionRelativeToEye;
+    if (prevVPRTE) {
+      Matrix4.pack(prevVPRTE, data, 28);
+    } else {
+      data.fill(0, 28, 44);
+      data[28] = 1;
+      data[33] = 1;
+      data[38] = 1;
+      data[43] = 1;
+    }
+    data.fill(0, 44, 52);
+    const prevCam = (us as { previousCameraPosition?: Cartesian3 })
+      .previousCameraPosition;
+    if (prevCam) {
+      EncodedCartesian3.fromCartesian(prevCam, scratchEncoded);
+      data[44] = scratchEncoded.high.x;
+      data[45] = scratchEncoded.high.y;
+      data[46] = scratchEncoded.high.z;
+      data[48] = scratchEncoded.low.x;
+      data[49] = scratchEncoded.low.y;
+      data[50] = scratchEncoded.low.z;
+    }
+    // Previous world-space view-projection at floats 52 to 67. `UniformState`
+    // assigns `_previousViewProjection` from `viewProjection` at the end of
     // `update()`, after returning the prior frame's value, so on frame N this
     // slot holds frame N-1's matrix. The first frame falls through to
     // identity.
     const prevVP = (us as { previousViewProjection?: Matrix4 })
       .previousViewProjection;
     if (prevVP) {
-      Matrix4.pack(prevVP, data, 28);
+      Matrix4.pack(prevVP, data, 52);
     } else {
-      data[28] = 1;
-      data[29] = 0;
-      data[30] = 0;
-      data[31] = 0;
-      data[32] = 0;
-      data[33] = 1;
-      data[34] = 0;
-      data[35] = 0;
-      data[36] = 0;
-      data[37] = 0;
-      data[38] = 1;
-      data[39] = 0;
-      data[40] = 0;
-      data[41] = 0;
-      data[42] = 0;
-      data[43] = 1;
+      data.fill(0, 52, 68);
+      data[52] = 1;
+      data[57] = 1;
+      data[62] = 1;
+      data[67] = 1;
     }
     // Renderer-wide log depth — (near, far, factor) from the same encode
     // frustum every producer packs (uniformState.currentFrustum at
@@ -1258,13 +1293,13 @@ function _updateWebGPUCloudCollectionInner(
       const log2Far = Math.log2(ldFar - ldNear + 1.0);
       ldFactor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
     }
-    data[44] = ldNear;
-    data[45] = ldFar;
-    data[46] = ldFactor;
-    data[47] = 0.0;
+    data[68] = ldNear;
+    data[69] = ldFar;
+    data[70] = ldFactor;
+    data[71] = 0.0;
   };
 
-  const data = new Float32Array(48);
+  const data = new Float32Array(CLOUD_CAMERA_UNIFORM_FLOATS);
   packCloud(data);
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
@@ -1279,7 +1314,7 @@ function _updateWebGPUCloudCollectionInner(
   }
   cache.cameraUB.bindUniformState(us);
   const cloudCameraResolver = cache.cameraUB.makeResolver({
-    bufferSize: 192, // 48 floats packed; buffer aligned to 256 by helper
+    bufferSize: CLOUD_CAMERA_UNIFORM_FLOATS * 4,
     bindGroupLayout: cache.bindGroupLayout!,
     pack: packCloud,
     extraEntries: [

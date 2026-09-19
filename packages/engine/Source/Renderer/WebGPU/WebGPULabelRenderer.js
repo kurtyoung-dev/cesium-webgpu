@@ -78,7 +78,7 @@ const SDF_EDGE = 1.0 - SDFSettings.CUTOFF; // 0.75
 const FLOATS_PER_SDF_INSTANCE = 52;
 const BYTES_PER_SDF_INSTANCE = FLOATS_PER_SDF_INSTANCE * 4;
 const VERTICES_PER_QUAD = 6;
-const UNIFORM_BUFFER_SIZE = 256;
+const UNIFORM_BUFFER_SIZE = 352;
 
 /**
  * See WebGPUBillboardRenderer for the full rationale. Mirrors WebGL's
@@ -128,6 +128,10 @@ const scratchEncodedCamera = new EncodedCartesian3();
 const scratchInverseModel = new Matrix4();
 const scratchCameraMC = new Cartesian3();
 const scratchEncodedPos = new EncodedCartesian3();
+const scratchPrevModelRTE = new Matrix4();
+const scratchPrevMVPRTE = new Matrix4();
+const scratchPrevCameraMC = new Cartesian3();
+const scratchPrevEncodedCamera = new EncodedCartesian3();
 // Per-glyph normalized atlas sub-rect; see the matching scratch and rationale
 // in WebGPUBillboardRenderer.js. Each glyph is
 // a small image packed into a larger SDF atlas, so the full-`(0,0,1,1)`
@@ -557,29 +561,62 @@ function packUniforms(uniformData, frameState, modelMatrix, labelCollection) {
   uniformData[46] = ldFactor;
   uniformData[47] = 0.0;
 
-  // previousViewProjection at slots 48..63 (16 floats,
-  // 64 bytes). Fits in the existing 256-byte buffer — no resize.
-  // `UniformState.update()` caches last frame's viewProjection for TAA.
+  // Previous-frame twin of `mvpRelativeToEye` at slots 48..63.
+  // `previousViewProjectionRelativeToEye` is already the previous projection
+  // times the previous view with its translation column zeroed, so composing
+  // it with the model matrix (translation zeroed too) is the whole model step.
+  const prevVPRTE = uniformState.previousViewProjectionRelativeToEye;
+  if (prevVPRTE) {
+    Matrix4.clone(modelMatrix, scratchPrevModelRTE);
+    scratchPrevModelRTE[12] = 0.0;
+    scratchPrevModelRTE[13] = 0.0;
+    scratchPrevModelRTE[14] = 0.0;
+    Matrix4.multiply(prevVPRTE, scratchPrevModelRTE, scratchPrevMVPRTE);
+    Matrix4.pack(scratchPrevMVPRTE, uniformData, 48);
+  } else {
+    Matrix4.pack(Matrix4.IDENTITY, uniformData, 48);
+  }
+
+  // Previous encoded camera split at slots 64..66 and 68..70. It has to be the
+  // camera of the SAME frame as the matrix above and be encoded in the frame
+  // the previous positions are in, so it reuses `scratchInverseModel`.
+  const prevCameraPositionWC = uniformState.previousCameraPosition;
+  if (prevCameraPositionWC) {
+    Matrix4.multiplyByPoint(
+      scratchInverseModel,
+      prevCameraPositionWC,
+      scratchPrevCameraMC,
+    );
+    EncodedCartesian3.fromCartesian(
+      scratchPrevCameraMC,
+      scratchPrevEncodedCamera,
+    );
+    uniformData[64] = scratchPrevEncodedCamera.high.x;
+    uniformData[65] = scratchPrevEncodedCamera.high.y;
+    uniformData[66] = scratchPrevEncodedCamera.high.z;
+    uniformData[68] = scratchPrevEncodedCamera.low.x;
+    uniformData[69] = scratchPrevEncodedCamera.low.y;
+    uniformData[70] = scratchPrevEncodedCamera.low.z;
+  } else {
+    uniformData[64] = 0.0;
+    uniformData[65] = 0.0;
+    uniformData[66] = 0.0;
+    uniformData[68] = 0.0;
+    uniformData[69] = 0.0;
+    uniformData[70] = 0.0;
+  }
+  uniformData[67] = 0.0;
+  uniformData[71] = 0.0;
+
+  // previousViewProjection at slots 72..87 (16 floats, 64 bytes).
+  // `UniformState.update()` caches last frame's viewProjection. It is kept at
+  // the struct tail for the camera-uniform layout rule; the velocity stage
+  // reads the relative-to-eye pair above instead.
   const prevVP = uniformState.previousViewProjection;
   if (prevVP) {
-    Matrix4.pack(prevVP, uniformData, 48);
+    Matrix4.pack(prevVP, uniformData, 72);
   } else {
-    uniformData[48] = 1;
-    uniformData[49] = 0;
-    uniformData[50] = 0;
-    uniformData[51] = 0;
-    uniformData[52] = 0;
-    uniformData[53] = 1;
-    uniformData[54] = 0;
-    uniformData[55] = 0;
-    uniformData[56] = 0;
-    uniformData[57] = 0;
-    uniformData[58] = 1;
-    uniformData[59] = 0;
-    uniformData[60] = 0;
-    uniformData[61] = 0;
-    uniformData[62] = 0;
-    uniformData[63] = 1;
+    Matrix4.pack(Matrix4.IDENTITY, uniformData, 72);
   }
 }
 

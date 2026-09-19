@@ -13,7 +13,9 @@
 // pattern), then projected with `mvpRelativeToEye`. Never materializes an
 // absolute world-space position in f32.
 //
-// `previousViewProjection` occupies the CameraUniforms tail. For TAA motion
+// The previous-frame RTE pair and `previousViewProjection` occupy the
+// CameraUniforms tail; velocity reprojects through that pair, so neither the
+// current nor the previous position is formed in absolute f32. For TAA motion
 // vectors, the renderer ping-pongs two instance-record buffers: the kernel
 // writes the current buffer each frame and last frame's output buffer binds as
 // `prevInstances` at @binding(3). Only the velocity entry points reference
@@ -42,8 +44,16 @@ struct CameraUniforms {
   logDepthFactor: f32,
   encodedCameraLow: vec3<f32>,           // bytes 96-107 (+4 pad)
   _pad1: f32,
-  // Previous frame's view-projection matrix occupies the layout tail.
-  previousViewProjection: mat4x4<f32>,   // bytes 112-175
+  // Previous-frame counterparts of `mvpRelativeToEye` and the encoded camera
+  // split. The velocity stage reprojects through this pair, so the previous
+  // position is never materialized as an absolute world position in f32.
+  previousMvpRelativeToEye: mat4x4<f32>, // bytes 112-175
+  previousEncodedCameraHigh: vec3<f32>,  // bytes 176-187 (+4 pad)
+  _pad2: f32,
+  previousEncodedCameraLow: vec3<f32>,   // bytes 192-203 (+4 pad)
+  _pad3: f32,
+  // Previous frame's world-space view-projection matrix occupies the tail.
+  previousViewProjection: mat4x4<f32>,   // bytes 208-271
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -261,13 +271,17 @@ fn vertexVelocityMain(
   let currentCenterClip =
     camera.mvpRelativeToEye * vec4<f32>(highDiff + lowDiff, 1.0);
 
-  // Previous-frame center clip via the full previous viewProjection.
-  // high + low reconstructs the absolute position because
-  // previousViewProjection is a plain world-space matrix, not RTE — the
-  // f32 precision loss only perturbs the velocity vector, never the
-  // rasterized position (PointPrimitiveColor.wgsl velocity precedent).
-  let prevWorld = vec4<f32>(prev.positionHigh + prev.positionLow, 1.0);
-  let prevCenterClip = camera.previousViewProjection * prevWorld;
+  // Previous-frame center clip: the current-frame expression with
+  // previous-frame operands. Each high term cancels against the previous
+  // camera high before the two small residuals are summed, so the previous
+  // position never exists as an absolute f32 world coordinate.
+  var prevHighDiff = prev.positionHigh - camera.previousEncodedCameraHigh;
+  if (length(prevHighDiff) == 0.0) {
+    prevHighDiff = vec3<f32>(0.0, 0.0, 0.0);
+  }
+  let prevLowDiff = prev.positionLow - camera.previousEncodedCameraLow;
+  let prevCenterClip =
+    camera.previousMvpRelativeToEye * vec4<f32>(prevHighDiff + prevLowDiff, 1.0);
 
   // Rasterize at the current-frame position so the velocity texture
   // covers the same pixels the color pass touched (same quad expansion

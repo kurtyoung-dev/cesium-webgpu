@@ -146,11 +146,12 @@ function packNearFarScalar(out, offset, scalar, identity) {
 // Camera UBO: mvpRTE(64) + camHigh(16) + camLow(16) + viewport(8) + pad(8)
 //   + minimumDisableDepthTestDistance(4) + splitPosition(4)
 //   + logDepthFactor(4) + pixelRatio(4)
-//   + previousViewProjection(64)  = 192 bytes (48 floats).
-// previousViewProjection supports TAA and motion vectors at byte offsets
-// 128..191, or float slots 32..47.
-const CAMERA_BUFFER_SIZE = 192;
-const CAMERA_FLOATS = CAMERA_BUFFER_SIZE / 4; // 48
+//   + previousMvpRTE(64) + previousCamHigh(16) + previousCamLow(16)
+//   + previousViewProjection(64)  = 288 bytes (72 floats).
+// The previous-frame RTE pair feeds velocity reprojection at float slots
+// 32..55; previousViewProjection follows it at float slots 56..71.
+const CAMERA_BUFFER_SIZE = 288;
+const CAMERA_FLOATS = CAMERA_BUFFER_SIZE / 4; // 72
 
 // Placeholder material UBO (16 bytes minimum for WebGPU)
 const PLACEHOLDER_MATERIAL_BYTES = 16;
@@ -163,6 +164,10 @@ const scratchMVPRTE = new Matrix4();
 const scratchEncodedCamera = new EncodedCartesian3();
 const scratchEncodedStart = new EncodedCartesian3();
 const scratchEncodedEnd = new EncodedCartesian3();
+const scratchPrevModelRTE = new Matrix4();
+const scratchPrevMVPRTE = new Matrix4();
+const scratchPrevCameraMC = new Cartesian3();
+const scratchPrevEncodedCamera = new EncodedCartesian3();
 
 // Scratch space for each mode-projected endpoint and for a world-frame copy
 // after the collection model matrix is applied. Non-3D projection starts from
@@ -1467,30 +1472,63 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
         : 1.0;
   uniformData[31] = pixelRatio;
 
-  // previousViewProjection occupies slots 32..47 (16 floats, 64 bytes).
-  // `UniformState.update()` caches it before overwriting the
-  // current-frame state, so on frame N this slot holds frame N-1's VP.
-  // TAA / motion-vector shaders read it via `camera.previousViewProjection`.
+  // Previous-frame twin of `mvpRelativeToEye` at slots 32..47.
+  // `previousViewProjectionRelativeToEye` is already the previous projection
+  // times the previous view with its translation column zeroed, so composing
+  // it with the model matrix (translation zeroed too) is the whole model step.
+  const prevVPRTE = uniformState.previousViewProjectionRelativeToEye;
+  if (prevVPRTE) {
+    Matrix4.clone(modelMatrix, scratchPrevModelRTE);
+    scratchPrevModelRTE[12] = 0.0;
+    scratchPrevModelRTE[13] = 0.0;
+    scratchPrevModelRTE[14] = 0.0;
+    Matrix4.multiply(prevVPRTE, scratchPrevModelRTE, scratchPrevMVPRTE);
+    Matrix4.pack(scratchPrevMVPRTE, uniformData, 32);
+  } else {
+    Matrix4.pack(Matrix4.IDENTITY, uniformData, 32);
+  }
+
+  // Previous encoded camera split at slots 48..50 and 52..54, in the same
+  // frame as the segment endpoints. It has to be the camera of the SAME frame
+  // as the matrix above, so it reuses `scratchInverseModel`.
+  const prevCameraPositionWC = uniformState.previousCameraPosition;
+  if (prevCameraPositionWC) {
+    Matrix4.multiplyByPoint(
+      scratchInverseModel,
+      prevCameraPositionWC,
+      scratchPrevCameraMC,
+    );
+    EncodedCartesian3.fromCartesian(
+      scratchPrevCameraMC,
+      scratchPrevEncodedCamera,
+    );
+    uniformData[48] = scratchPrevEncodedCamera.high.x;
+    uniformData[49] = scratchPrevEncodedCamera.high.y;
+    uniformData[50] = scratchPrevEncodedCamera.high.z;
+    uniformData[52] = scratchPrevEncodedCamera.low.x;
+    uniformData[53] = scratchPrevEncodedCamera.low.y;
+    uniformData[54] = scratchPrevEncodedCamera.low.z;
+  } else {
+    uniformData[48] = 0.0;
+    uniformData[49] = 0.0;
+    uniformData[50] = 0.0;
+    uniformData[52] = 0.0;
+    uniformData[53] = 0.0;
+    uniformData[54] = 0.0;
+  }
+  uniformData[51] = 0.0;
+  uniformData[55] = 0.0;
+
+  // previousViewProjection occupies slots 56..71 (16 floats, 64 bytes).
+  // `UniformState.update()` caches it before overwriting the current-frame
+  // state, so on frame N this slot holds frame N-1's VP. It is kept at the
+  // struct tail for the camera-uniform layout rule; the velocity stage reads
+  // the relative-to-eye pair above instead.
   const prevVP = uniformState.previousViewProjection;
   if (prevVP) {
-    Matrix4.pack(prevVP, uniformData, 32);
+    Matrix4.pack(prevVP, uniformData, 56);
   } else {
-    uniformData[32] = 1;
-    uniformData[33] = 0;
-    uniformData[34] = 0;
-    uniformData[35] = 0;
-    uniformData[36] = 0;
-    uniformData[37] = 1;
-    uniformData[38] = 0;
-    uniformData[39] = 0;
-    uniformData[40] = 0;
-    uniformData[41] = 0;
-    uniformData[42] = 1;
-    uniformData[43] = 0;
-    uniformData[44] = 0;
-    uniformData[45] = 0;
-    uniformData[46] = 0;
-    uniformData[47] = 1;
+    Matrix4.pack(Matrix4.IDENTITY, uniformData, 56);
   }
 }
 

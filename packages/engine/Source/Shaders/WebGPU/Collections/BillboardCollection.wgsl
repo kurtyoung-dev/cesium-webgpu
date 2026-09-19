@@ -62,9 +62,9 @@ struct CameraUniforms {
   // in the same coordinate space as `position.xy` / `gl_FragCoord.x`.
   splitPosition: f32,
   // Log-depth factor (oneOverLog2FarDepthFromNearPlusOne) at float 46 +
-  // reserved float 47 — these bytes were implicit padding before
-  // `previousViewProjection`'s 16-byte alignment, so the struct size and
-  // every existing offset are unchanged.
+  // reserved float 47 — these bytes are the scalar lanes that keep the
+  // following mat4 16-byte aligned, so filling them leaves every earlier
+  // offset unchanged.
   logDepthFactor: f32,
   // Holds `czm_gamma` (`scene.gamma`, default 2.2) while
   // `scene.highDynamicRange` is enabled and zero otherwise. It occupies float
@@ -72,6 +72,15 @@ struct CameraUniforms {
   // WebGL's `#ifdef HDR` sRGB-to-linear decode only when this value exceeds
   // 0.5, leaving the default SDR path unchanged.
   hdrGamma: f32,
+  // Previous-frame twins of `mvpRelativeToEye` and the encoded camera split.
+  // The velocity stage builds the previous clip position with the same
+  // relative-to-eye expression as the current one, so neither frame sums a
+  // high/low pair into an absolute world position in f32.
+  previousMvpRelativeToEye: mat4x4<f32>,
+  previousEncodedCameraHigh: vec3<f32>,
+  _pad2: f32,
+  previousEncodedCameraLow: vec3<f32>,
+  _pad3: f32,
       previousViewProjection: mat4x4<f32>,
 };
 
@@ -741,14 +750,16 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
     posHigh, posLow, camera.encodedCameraHigh, camera.encodedCameraLow);
   let currentCenterClip = camera.mvpRelativeToEye * vec4<f32>(positionRTE, 1.0);
 
-  // Previous-frame center clip — full-mat4 multiply of the world-space
-  // position. Precision loss at planet scale is acceptable here because
-  // the resulting NDC delta is small and TAA's velocity scale tolerates
-  // it. (Model uses the same pattern at ModelPBRComplete.wgsl:769-770.)
+  // Previous-frame center clip against the previous eye. Each half is
+  // differenced before the two are summed, so the planet-scale magnitudes
+  // cancel and only the small residuals are added.
   let prevPosHigh = input.prevPosHighAndScale.xyz;
   let prevPosLow = input.prevPosLowAndRotation.xyz;
-  let prevWorldPos = vec4<f32>(prevPosHigh + prevPosLow, 1.0);
-  let prevCenterClip = camera.previousViewProjection * prevWorldPos;
+  let prevPositionRTE = translateRelativeToEye(
+    prevPosHigh, prevPosLow,
+    camera.previousEncodedCameraHigh, camera.previousEncodedCameraLow);
+  let prevCenterClip =
+    camera.previousMvpRelativeToEye * vec4<f32>(prevPositionRTE, 1.0);
 
   // Rasterize the quad at the CURRENT-frame position so the velocity
   // texture covers the same pixels the color pass touched. (Sampling

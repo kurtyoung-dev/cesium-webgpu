@@ -71,6 +71,7 @@
 // Runner home: `npm run test-engine-node`.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
@@ -89,6 +90,22 @@ const ENTRY = resolve(
   ENGINE_SOURCE,
   "Renderer/WebGPU/WebGPUPolylineRenderer.js",
 );
+
+// The polyline camera block's size, read from the renderer rather than
+// restated. Two literal copies of it lived below, and both went stale the
+// first time the block grew — which is the mirror-drift failure this spec
+// exists to catch everywhere else.
+const CAMERA_BUFFER_SIZE = (() => {
+  const source = readFileSync(ENTRY, "utf8");
+  const match = /\bconst\s+CAMERA_BUFFER_SIZE\s*=\s*(\d+)\s*;/.exec(source);
+  if (match === null) {
+    throw new Error(
+      "WebGPUPolylineRenderer.js no longer declares CAMERA_BUFFER_SIZE; the camera-block assertions below have lost their subject",
+    );
+  }
+  return Number(match[1]);
+})();
+const CAMERA_BUFFER_FLOATS = CAMERA_BUFFER_SIZE / 4;
 
 // Kept real, each for a reason a Proxy would break:
 //   `Core/`            — the packers and the volume builder write into
@@ -683,11 +700,14 @@ function cameraStructLayout(source) {
  */
 function cameraUploads(record) {
   return record.writes
-    .filter((write) => write.floats.length === 48 && write.offset === 0)
+    .filter(
+      (write) =>
+        write.floats.length === CAMERA_BUFFER_FLOATS && write.offset === 0,
+    )
     .map((write) => write.floats);
 }
 
-test("B1 every collection polyline shader places `pixelRatio` at the same offset, in a 192-byte block", async () => {
+test("B1 every collection polyline shader places `pixelRatio` at the same offset, in a block the renderer's own size constant describes", async () => {
   const seen = new Map();
   for (const name of COLLECTION_POLYLINE_SHADERS) {
     const source = await readFile(
@@ -697,8 +717,8 @@ test("B1 every collection polyline shader places `pixelRatio` at the same offset
     const { offsets, size } = cameraStructLayout(source);
     assert.equal(
       size,
-      192,
-      `${name}: the camera block is ${size} bytes; the renderer uploads 192`,
+      CAMERA_BUFFER_SIZE,
+      `${name}: the camera block is ${size} bytes; the renderer uploads ${CAMERA_BUFFER_SIZE}`,
     );
     assert.equal(
       typeof offsets.pixelRatio,

@@ -500,7 +500,12 @@ test("the shipped clean list and grandfather ratchets are current", async () => 
     "an empty clean list makes --verify-cleanlist prove nothing",
   );
   assert.match(result.output, /15 grandfather rows/);
-  assert.match(result.output, /GRANDFATHERED 55 current findings/);
+  // The grandfathered count is a ratchet that may only fall. It drops when a
+  // batch rewrites a comment that happens to carry one of the exact file/rule
+  // pairs, which is the intended direction — and is why this stays an equality
+  // rather than an upper bound: a rewrite that cleans two pairs has to say so
+  // here, and one that puts a marker back cannot slip past a `>=`.
+  assert.match(result.output, /GRANDFATHERED 53 current findings/);
 
   const grandfatherRows = await readGrandfatherList();
   assert.equal(grandfatherRows.length, 15);

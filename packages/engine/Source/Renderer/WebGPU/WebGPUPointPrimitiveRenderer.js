@@ -83,8 +83,8 @@ const FLOATS_PER_INSTANCE = 28;
 const BYTES_PER_INSTANCE = FLOATS_PER_INSTANCE * 4;
 /** Vertices per quad: 6 (2 triangles, no index buffer needed) */
 const VERTICES_PER_QUAD = 6;
-/** Uniform buffer size (256-byte aligned) */
-const UNIFORM_BUFFER_SIZE = 256;
+/** Uniform buffer size in bytes: 72 floats, 16-byte aligned */
+const UNIFORM_BUFFER_SIZE = 288;
 
 // Scratch variables
 const scratchModelView = new Matrix4();
@@ -94,6 +94,10 @@ const scratchInverseModel = new Matrix4();
 const scratchCameraPositionMC = new Cartesian3();
 const scratchEncodedCamera = new EncodedCartesian3();
 const scratchEncodedPosition = new EncodedCartesian3();
+const scratchPrevModelRTE = new Matrix4();
+const scratchPrevMVPRTE = new Matrix4();
+const scratchPrevCameraPositionMC = new Cartesian3();
+const scratchPrevEncodedCamera = new EncodedCartesian3();
 
 // =========================================================================
 // Instance Data Building
@@ -785,8 +789,9 @@ function computePointDefinesForFrame(collection, frameState) {
 /**
  * Packs RTE uniform data into a Float32Array.
  *
- * Layout (28 active floats, 256-byte buffer) — matches the unified
- * CameraUniforms struct in PointPrimitiveColor.wgsl / PointPrimitivePick.wgsl:
+ * Layout (72 floats, 288-byte buffer) — matches the CameraUniforms struct in
+ * PointPrimitiveColor.wgsl. PointPrimitivePick.wgsl binds the same buffer and
+ * declares the same leading fields:
  *   [0-15]  mvpRelativeToEye (mat4x4) — MVP with translation zeroed
  *   [16-17] viewportSize (vec2)
  *   [18]    splitPosition (f32, framebuffer pixels)
@@ -795,8 +800,15 @@ function computePointDefinesForFrame(collection, frameState) {
  *   [23]    _pad0 (f32)
  *   [24-26] encodedCameraPositionMCLow (vec3)
  *   [27]    _pad1 (f32)
+ *   [28-43] previousMvpRelativeToEye (mat4x4)
+ *   [44-46] previousEncodedCameraPositionMCHigh (vec3)
+ *   [47]    _pad2 (f32)
+ *   [48-50] previousEncodedCameraPositionMCLow (vec3)
+ *   [51]    _pad3 (f32)
+ *   [52-67] previousViewProjection (mat4x4)
+ *   [68-71] logDepth (vec4)
  *
- * @param {Float32Array} uniformData - Target array (at least 28 floats)
+ * @param {Float32Array} uniformData - Target array (at least 72 floats)
  * @param {object} frameState - CesiumJS frame state
  * @param {Matrix4} modelMatrix - Collection's model matrix
  * @private
@@ -871,36 +883,69 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   uniformData[26] = camLow.z;
   uniformData[27] = 0.0; // _pad2
 
-  // previousViewProjection occupies slots 28..43 (16 floats,
-  // 64 bytes). Fits in the existing 256-byte buffer — no resize needed.
-  // `UniformState.update()` caches last frame's viewProjection for TAA /
-  // motion-vector reprojection before overwriting the current frame's state.
+  // Previous-frame twin of `mvpRelativeToEye` at slots 28..43.
+  // `previousViewProjectionRelativeToEye` is already the previous projection
+  // times the previous view with its translation column zeroed, so composing
+  // it with the model matrix (translation zeroed too) is the whole model step.
+  const prevVPRTE = uniformState.previousViewProjectionRelativeToEye;
+  if (prevVPRTE) {
+    Matrix4.clone(modelMatrix, scratchPrevModelRTE);
+    scratchPrevModelRTE[12] = 0.0;
+    scratchPrevModelRTE[13] = 0.0;
+    scratchPrevModelRTE[14] = 0.0;
+    Matrix4.multiply(prevVPRTE, scratchPrevModelRTE, scratchPrevMVPRTE);
+    Matrix4.pack(scratchPrevMVPRTE, uniformData, 28);
+  } else {
+    Matrix4.pack(Matrix4.IDENTITY, uniformData, 28);
+  }
+
+  // Previous encoded camera split at slots 44..46 and 48..50, in model
+  // coordinates like the current one. It has to be the camera of the SAME
+  // frame as the matrix above, so it reuses `scratchInverseModel`.
+  const prevCameraPositionWC = uniformState.previousCameraPosition;
+  if (prevCameraPositionWC) {
+    Matrix4.multiplyByPoint(
+      scratchInverseModel,
+      prevCameraPositionWC,
+      scratchPrevCameraPositionMC,
+    );
+    EncodedCartesian3.fromCartesian(
+      scratchPrevCameraPositionMC,
+      scratchPrevEncodedCamera,
+    );
+    uniformData[44] = scratchPrevEncodedCamera.high.x;
+    uniformData[45] = scratchPrevEncodedCamera.high.y;
+    uniformData[46] = scratchPrevEncodedCamera.high.z;
+    uniformData[48] = scratchPrevEncodedCamera.low.x;
+    uniformData[49] = scratchPrevEncodedCamera.low.y;
+    uniformData[50] = scratchPrevEncodedCamera.low.z;
+  } else {
+    uniformData[44] = 0.0;
+    uniformData[45] = 0.0;
+    uniformData[46] = 0.0;
+    uniformData[48] = 0.0;
+    uniformData[49] = 0.0;
+    uniformData[50] = 0.0;
+  }
+  uniformData[47] = 0.0;
+  uniformData[51] = 0.0;
+
+  // previousViewProjection occupies slots 52..67 (16 floats, 64 bytes).
+  // `UniformState.update()` caches last frame's viewProjection before
+  // overwriting the current frame's state. It is kept ahead of the log-depth
+  // tail for the camera-uniform layout rule; the velocity stage reads the
+  // relative-to-eye pair above instead.
   const prevVP = uniformState.previousViewProjection;
   if (prevVP) {
-    Matrix4.pack(prevVP, uniformData, 28);
+    Matrix4.pack(prevVP, uniformData, 52);
   } else {
-    uniformData[28] = 1;
-    uniformData[29] = 0;
-    uniformData[30] = 0;
-    uniformData[31] = 0;
-    uniformData[32] = 0;
-    uniformData[33] = 1;
-    uniformData[34] = 0;
-    uniformData[35] = 0;
-    uniformData[36] = 0;
-    uniformData[37] = 0;
-    uniformData[38] = 1;
-    uniformData[39] = 0;
-    uniformData[40] = 0;
-    uniformData[41] = 0;
-    uniformData[42] = 0;
-    uniformData[43] = 1;
+    Matrix4.pack(Matrix4.IDENTITY, uniformData, 52);
   }
 
   // Renderer-wide logDepth vec4
-  // (near, far, factor, reserved) at floats 44-47 (struct tail; the GPU
-  // buffer is 256 bytes so no resize). Same encode frustum every producer
-  // packs; unconditional — only the LOG_DEPTH shader variant reads it.
+  // (near, far, factor, reserved) at floats 68-71 (struct tail). Same encode
+  // frustum every producer packs; unconditional — only the LOG_DEPTH shader
+  // variant reads it.
   //
   // The log-depth encode frustum must be the full camera frustum, not the per-slice
   // `currentFrustum`. The globe bakes its log-depth uniform ONCE at scene
@@ -933,22 +978,22 @@ function packUniforms(uniformData, frameState, modelMatrix) {
     const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
     ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
   }
-  uniformData[44] = ldNear;
-  uniformData[45] = ldFar;
-  uniformData[46] = ldFactor;
+  uniformData[68] = ldNear;
+  uniformData[69] = ldFar;
+  uniformData[70] = ldFactor;
   //>>includeStart('debug', pragmas.debug);
   // Publish the pair baked by this producer. Points use the stashed
   // full-frustum pair rather than the live per-slice pair, so exposing it
   // permits a direct comparison with producers that use the other policy.
   recordLogDepthEncoder(uniformState, "collection", ldNear, ldFar, ldFactor);
   //>>includeEnd('debug');
-  // The HDR gamma value occupies float 47 (`camera.logDepth.w`).
+  // The HDR gamma value occupies float 71 (`camera.logDepth.w`).
   // Carries czm_gamma (uniformState.gamma, default 2.2) when
   // `scene.highDynamicRange` is on (`frameState.useHDR`), else 0. The fragment
   // shader mirrors WebGL PointPrimitiveCollectionFS.glsl's `#ifdef HDR`
   // czm_gammaCorrect sRGB→linear decode when this is > 0.5. Zero on the default
   // SDR path → byte-identical.
-  uniformData[47] =
+  uniformData[71] =
     frameState?.useHDR === true
       ? typeof uniformState?.gamma === "number"
         ? uniformState.gamma
@@ -1414,7 +1459,7 @@ function _pushPickCommand(
   // hyperbolic. The `defines` bit is
   // carried into the descriptor name (+ `[ld]`) so the pipeline cache rebuilds on
   // a flip. The pick reuses the color camera UB, which already packs the log
-  // lanes (floats 44-47).
+  // lanes (floats 68-71).
   const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
   const pickDefines =
     ((cache.currentDefines ?? 0) & ~ShaderDefine.LOG_DEPTH) |

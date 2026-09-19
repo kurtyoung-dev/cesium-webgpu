@@ -201,8 +201,10 @@ function resetPickPipeline(cache: ComputeInstanceCache): void {
 // f32+12 pad = 64 bytes. This must match `CsmInstanceRecord` and
 // `InstanceRecord` in the two WGSL files.
 const INSTANCE_RECORD_BYTES = 64;
-// CameraUniforms: mat4 + vec2 + pads + 2×(vec3+pad) + mat4 = 176 bytes.
-const CAMERA_UNIFORM_FLOATS = 44;
+// CameraUniforms: mat4 + vec2 + pads + 2×(vec3+pad), then the previous-frame
+// RTE pair (mat4 + 2×(vec3+pad)), then the previous world-space view
+// projection mat4 at the tail = 272 bytes.
+const CAMERA_UNIFORM_FLOATS = 68;
 const COMPUTE_WORKGROUP_SIZE = 64;
 // Per-instance pick color: one vec4<f32> (RGBA in [0,1]) = 16 bytes. The
 // pick id rides RGB (little-endian); alpha is unused (forced to 1.0 in the
@@ -793,7 +795,7 @@ function initializeComputeInstanceResources(
   cache.quadVertexBuffer = createQuadVB(device);
   cache.cameraUniformBuffer = device.createBuffer({
     label: "ComputeInstance camera UB",
-    size: 256,
+    size: CAMERA_UNIFORM_FLOATS * 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -1109,18 +1111,46 @@ function updateWebGPUComputeInstanceCollection(
   data[25] = scratchEncoded.low.y;
   data[26] = scratchEncoded.low.z;
   data[27] = 0;
-  // The previous view-projection matrix occupies tail floats 28-43; use
-  // identity until history exists.
-  const prevVP = (us as { previousViewProjection?: Matrix4 })
-    .previousViewProjection;
-  if (prevVP) {
-    Matrix4.pack(prevVP, data, 28);
+  // Previous-frame RTE pair at floats 28-51. The matrix is the previous
+  // projection times the previous view with its translation column zeroed —
+  // the same product the current frame packs above — and the encoded split is
+  // the camera of that same previous frame, so the high terms cancel exactly
+  // in the shader. Identity plus a zero split until history exists.
+  const prevVPRTE = (us as { previousViewProjectionRelativeToEye?: Matrix4 })
+    .previousViewProjectionRelativeToEye;
+  if (prevVPRTE) {
+    Matrix4.pack(prevVPRTE, data, 28);
   } else {
     data.fill(0, 28, 44);
     data[28] = 1;
     data[33] = 1;
     data[38] = 1;
     data[43] = 1;
+  }
+  data.fill(0, 44, 52);
+  const prevCam = (us as { previousCameraPosition?: Cartesian3 })
+    .previousCameraPosition;
+  if (prevCam) {
+    EncodedCartesian3.fromCartesian(prevCam, scratchEncoded);
+    data[44] = scratchEncoded.high.x;
+    data[45] = scratchEncoded.high.y;
+    data[46] = scratchEncoded.high.z;
+    data[48] = scratchEncoded.low.x;
+    data[49] = scratchEncoded.low.y;
+    data[50] = scratchEncoded.low.z;
+  }
+  // The previous world-space view-projection matrix occupies tail floats
+  // 52-67; use identity until history exists.
+  const prevVP = (us as { previousViewProjection?: Matrix4 })
+    .previousViewProjection;
+  if (prevVP) {
+    Matrix4.pack(prevVP, data, 52);
+  } else {
+    data.fill(0, 52, 68);
+    data[52] = 1;
+    data[57] = 1;
+    data[62] = 1;
+    data[67] = 1;
   }
   device.queue.writeBuffer(cache.cameraUniformBuffer!, 0, data);
 

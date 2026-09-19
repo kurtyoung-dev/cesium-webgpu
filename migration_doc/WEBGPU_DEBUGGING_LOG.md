@@ -22096,3 +22096,104 @@ under the other projection.
 `Tools/visual-regression/lib/wgsl-mini-eval.mjs`,
 `Tools/visual-regression/probe-buffer-polyline-meters-width.mjs`, `package.json` (runner home),
 `migration_doc/DEFERRED_WORK.md`.
+
+## Lane Heathertoes (Gemini-audit fix wave 3, 2026-09-18) — the previous-frame position in every velocity pass was reconstructed in single-precision world space, so a still primitive emitted velocity
+
+**Sites.** Seven, in six WGSL files and one renderer whose shader is a template literal:
+`Shaders/WebGPU/Model/ModelPBRComplete.wgsl`, `Collections/BillboardCollection.wgsl`,
+`Collections/BillboardCollectionSDF.wgsl`, `Collections/PointPrimitiveColor.wgsl`,
+`Collections/PolylineCollection.wgsl` (two endpoints), `Compute/ComputeInstanceRender.wgsl`, and
+`Renderer/WebGPU/WebGPUCloudRenderer.ts`.
+
+**Mechanism.** Each velocity vertex stage computed the CURRENT clip position relative to the eye —
+differencing the position's high/low split against the encoded camera split and multiplying a
+translation-free matrix — and the PREVIOUS one by summing `high + low` into a full-magnitude f32
+world position and multiplying the full-magnitude world-space `previousViewProjection`. The velocity
+target carries `curNdc - prevNdc`, so the two routes' disagreement lands entirely in the motion
+vector of a primitive that never moved.
+
+Two errors compound, and the second is much the larger:
+
+1. The reconstruction. `f32(high + low)` at Earth radius rounds at half an ulp of 6.4e6. Measured by
+   executing the shipped text through the WGSL mini evaluator in f32 over five Earth-scale positions
+   (equator, mid-latitude, pole, antimeridian, southern negative-coordinate): **0.1875 m** worst
+   case, at the pole; 0.1211 m at mid-latitude; exactly 0 where the low lane happens to be
+   representable. The eye-relative form's residual over the same set is **1.77e-3 m**, and that
+   residual is the split's own, shared bit for bit with the current frame.
+2. The multiply. `VP_world * p` in f32, with `|p| ~ 6.4e6`, cancels the view translation against the
+   position at a magnitude where f32 has no bits left for the difference. How much of that loss
+   reaches the screen depends on where the camera's world translation lands in the view basis and on
+   the subject's own device coordinates — measured on one basis the centred station reads 3.2e-5 NDC
+   at 150 m and on another 3.3e-3, so it is fixture-dependent rather than a law. The off-axis station
+   is the one reliably above the velocity noise floor, and it is what the acceptance leg uses.
+
+**Measured cost on a still primitive**, off-axis at about 60% of the way to the screen edge,
+1024x768, 60 degree vertical field of view, the real projection and view matrices, every operation
+rounded to f32:
+
+| camera distance | before, off-axis | before, centred | after |
+| :-- | --: | --: | --: |
+| 100 m | 3.060e-3 NDC (1.567 px) | 4.377e-5 NDC | **exactly 0** |
+| 150 m | 2.066e-3 NDC (1.057 px) | 3.238e-5 NDC | **exactly 0** |
+| 300 m | 1.031e-3 NDC (0.528 px) | 1.353e-5 NDC | **exactly 0** |
+| 1 km | 3.081e-4 NDC (0.158 px) | 6.000e-6 NDC | **exactly 0** |
+| 10 km | 3.076e-5 NDC (0.016 px) | 1.381e-7 NDC | **exactly 0** |
+
+against a velocity noise floor of 1.0e-4 NDC. Past about 3 km the defect is under the floor, which is
+why it survived: at the ranges most captures use it is unmeasurable, and three sites carried an
+inline comment saying the loss was acceptable for exactly that reason.
+
+**Why it was worse than a bias.** `UniformState.update` resets the previous camera record to the
+current one whenever the active View's temporal history is incompatible — first frame, teleport,
+morph, scene-mode or projection change (`Renderer/UniformState.js:897-906`), whose own comment
+promises "zero motion on teleport/morph/projection resets" to every previous-VP UBO consumer. That
+promise could not be kept: with the previous position reconstructed by a different arithmetic route
+than the current one, the two disagree even when the matrices are identical. The reset frame emitted
+noise rather than zero. It is now exactly zero, bitwise, which is what both the Node measurement and
+the Edge leg key on.
+
+**Fix.** Each velocity stage now computes the previous-frame position with the current frame's own
+expression and previous-frame operands, against a previous relative-to-eye matrix and a previous
+encoded camera split added to each renderer's camera uniform block. Both values come from the pair
+`UniformState` already carries — `previousViewProjectionRelativeToEye` and `previousCameraPosition`,
+read together from the View-owned temporal record — composed with the model matrix on the CPU in f64.
+`previousViewProjection` stays declared and stays packed: the camera-uniform layout rule requires it,
+and it is scaffolding rather than dead code.
+
+The composition is exact rather than approximate: `previousViewProjectionRelativeToEye` is
+`P_prev x [R_Vprev | 0]`, and `[R_Vprev | 0] x [R_M | 0]` is `[R_Vprev R_M | 0]`, which is exactly
+`(V_prev x M)` with its translation column zeroed; the camera subtraction cancels exactly because a
+view matrix satisfies `t_V = -R_V * cameraPositionWC` for the camera of its own frame. For the model
+the previous matrix is the previous-frame twin of whichever matrix the current pack receives —
+model-level or node-composed, resolved on the same discriminant — never the current one, which would
+have zeroed the model-motion half of the velocity and turned a precision fix into a feature
+regression.
+
+**Two things the fix had to repair that were not part of the defect.**
+
+`PointPrimitivePick.wgsl` reads `camera.logDepth` out of the SAME buffer the colour packer fills
+(`WebGPUPointPrimitiveRenderer.js` creates one `cache.uniformBuffer` and binds it to both pipelines),
+and that field sat immediately after `previousViewProjection`. Growing the colour struct without
+mirroring the pick one would have fed the previous camera's high split to the pick shader as its
+log-depth near plane and factor. Six further sibling structs over the billboard and polyline blocks —
+`BillboardCollectionPick`, `PolylineCollectionPick`, `PolylineArrow`, `PolylineDash`, `PolylineGlow`,
+`PolylineOutline` and `Model/ErrorPipeline.wgsl` — declared fewer bytes than the buffer they bind; none reads the aliased field, so
+they were not a runtime defect, but a member name that lies about its bytes is the trap this fix
+exists to remove. All seven are corrected.
+
+`polyline-command-bounding-volume.spec.mjs` restated the camera block's size as a literal in two
+places and went red. It now reads `CAMERA_BUFFER_SIZE` from the renderer, so the mirror cannot go
+stale again — and in that form it is what proves the six sibling structs agree with the block they
+bind.
+
+**Pinned by:** `Tools/visual-regression/previous-frame-rte-reconstruction.spec.mjs` (the cross-family
+law and both measurements, executed out of the shipped WGSL), plus a per-family packer spec for each
+of the three families — 60 tests under `npm run test-previous-frame-rte`. The mini evaluator gained an
+optional `__round` hook so a spec can measure f32 quantisation instead of erasing it in f64; unbound,
+it changes nothing for its twelve existing consumers.
+
+**Files modified:** the seven sites' files; `WebGPUBillboardRenderer.js`, `WebGPULabelRenderer.js`,
+`WebGPUPointPrimitiveRenderer.js`, `WebGPUPolylineRenderer.js`, `WebGPUComputeInstanceRenderer.ts`,
+`WebGPUModelRenderer.ts`, `WebGPUModelCameraArena.ts`; the seven sibling structs; and, on the tools
+side, `lib/wgsl-mini-eval.mjs`, `model-camera-arena.spec.mjs`, `probe-orbital-1m.mjs`,
+`polyline-command-bounding-volume.spec.mjs`, the four new specs and one `package.json` runner line.

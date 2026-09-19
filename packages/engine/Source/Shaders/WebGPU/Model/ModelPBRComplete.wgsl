@@ -89,12 +89,21 @@ struct CameraUniforms {
   logDepthNear: f32,
   cameraPositionWC: vec3<f32>,
   logDepthFar: f32,
+  // Previous-frame twins of `mvpRelativeToEye` and of the model-space encoded
+  // camera above, at floats 60-83. The velocity stage differences a
+  // previous-frame position against this camera split in the split domain and
+  // multiplies the result by this matrix, so the previous clip position comes
+  // from the same expression as the current one and no absolute planet-scale
+  // position is ever summed in f32.
+  previousMvpRelativeToEye: mat4x4<f32>,
+  previousEncodedCameraPositionMCHigh: vec3<f32>,
+  _pad0: f32,
+  previousEncodedCameraPositionMCLow: vec3<f32>,
+  _pad1: f32,
     previousViewProjection: mat4x4<f32>,
-  // Q13-PLAIN-HDR-GAMMA-CORE — HDR gate at floats 76-79. These bytes were
-  // already allocated as trailing padding in the 320-byte camera UB
+  // HDR gate at floats 100-103, the camera UB's last lane
   // (CAMERA_UNIFORM_SIZE; the struct declared through previousViewProjection
-  // is only 304 bytes), so this appends WITHOUT growing the buffer and stays
-  // zero (identity) on the default SDR path. x = 1.0 when
+  // is 400 bytes). Stays zero (identity) on the default SDR path. x = 1.0 when
   // `scene.highDynamicRange` is on (`frameState.useHDR`), mirroring WebGL's
   // single `HDR` define so `tonemapAndGamma` skips the inline tonemap + gamma
   // encode and hands linear radiance to the post-process Tonemap stage.
@@ -237,14 +246,14 @@ struct MaterialUniforms {
   // attenuationColor lives in the second vec4 of this slot.
   volumeFactors0: vec4<f32>,
   volumeFactors1: vec4<f32>,
-  // The previous frame's model matrix, for per-model motion vectors.
+  // The previous frame's model matrix, in the same per-primitive slot as
+  // `modelMatrix` above.
   //
-  // Reprojecting from depth and `previousViewProjection` alone treats animated,
-  // skinned and instanced geometry as static, which ghosts their motion. With
-  // the previous frame's modelMatrix per primitive the vertex shader can
-  // reconstruct the previous clip-space position as
-  // `previousViewProjection * previousModelMatrix * positionMC`, which the
-  // fragment shader converts to screen-space velocity.
+  // The vertex stage no longer reads it: the previous model transform now
+  // reaches the shader folded into `camera.previousMvpRelativeToEye` and the
+  // previous encoded camera split, which keeps the previous-frame position out
+  // of full-magnitude f32. The lane is still packed, so a stage that needs the
+  // previous model transform on its own has it without a layout change.
   //
   // The velocity output at `@location(1)` is gated behind `motionFlags.x > 0.5`
   // and is off by default; enabling it requires the second colour attachment on
@@ -447,9 +456,9 @@ struct LightUniforms {
 // Joint matrices for skinning (bind group 3, only used when FLAG_HAS_SKINNING is set)
 @group(2) @binding(0) var<storage, read> jointMatrices: array<mat4x4<f32>>;
 // Previous-frame joint matrices for TAA velocity. The vertex shader re-runs
-// skinning against these to produce `prevPositionMC`; without them
-// `worldPosPrevious = previousModelMatrix * currentSkinnedPositionMC` yields a
-// phantom velocity that ghosts across animated characters.
+// skinning against these to produce `prevPositionMC`; reprojecting the
+// current-frame skinned position instead yields a phantom velocity that ghosts
+// across animated characters.
 @group(2) @binding(4) var<storage, read> previousJointMatrices: array<mat4x4<f32>>;
 
 // Morph targets (bind group 4, only used when FLAG_HAS_MORPH_TARGETS is set)
@@ -1016,30 +1025,34 @@ struct VertexOutput {
                        + w.w * previousJointMatrices[j.w];
     prevPositionMC = (prevSkinMatrix * vec4<f32>(prevPositionMC, 1.0)).xyz;
   }
+  // The previous-frame instance transform is decomposed exactly as the
+  // current-frame one is: only the linear part multiplies the local position,
+  // and the large per-instance translation stays a high/low pair for the
+  // camera subtract below.
+  var prevInstTransHigh = vec3<f32>(0.0);
+  var prevInstTransLow = vec3<f32>(0.0);
   if (hasFlag(material.materialFlags, FLAG_HAS_INSTANCING)) {
-    // Reconstruct the full previous-frame model-space position from the split
-    // struct. This path multiplies by `previousModelMatrix` at full magnitude
-    // below rather than relative to the eye, so the translation is recombined
-    // as a full f32 position here. The residual metre of precision loss does
-    // not matter for motion vectors, and under static instancing the previous
-    // buffer aliases the current one, so instancing contributes no velocity at
-    // all.
     let prevInst = previousInstanceTransforms[input.instanceIndex];
     let prevLinear3 = mat3x3<f32>(
       prevInst.linear[0].xyz, prevInst.linear[1].xyz, prevInst.linear[2].xyz);
-    prevPositionMC = prevLinear3 * prevPositionMC
-                   + prevInst.translationHigh.xyz + prevInst.translationLow.xyz;
+    prevPositionMC = prevLinear3 * prevPositionMC;
+    prevInstTransHigh = prevInst.translationHigh.xyz;
+    prevInstTransLow = prevInst.translationLow.xyz;
   }
 
-  // Previous- and current-frame world positions feed the fragment shader's
-  // reprojection. Both take the unencoded-position-times-matrix path; the
-  // relative-to-eye form is a current-frame optimization the previous-frame
-  // multiply does not share.
+  // Full-magnitude current world position. Unread by the stages below, which
+  // all work relative to the eye.
   let worldPosCurrent = material.modelMatrix * vec4<f32>(positionMC, 1.0);
-  let worldPosPrevious =
-    material.previousModelMatrix * vec4<f32>(prevPositionMC, 1.0);
+
+  // Previous- and current-frame clip positions feed the fragment shader's
+  // reprojection. Both run the same relative-to-eye expression with their own
+  // frame's operands, so geometry that did not move under a camera that did
+  // not move yields identical positions and therefore no velocity.
+  let prevRte = (prevInstTransHigh - camera.previousEncodedCameraPositionMCHigh)
+              + (prevInstTransLow - camera.previousEncodedCameraPositionMCLow)
+              + prevPositionMC;
   output.previousClipPos =
-    camera.previousViewProjection * worldPosPrevious;
+    camera.previousMvpRelativeToEye * vec4<f32>(prevRte, 1.0);
   output.currentClipPosForVelocity =
     camera.mvpRelativeToEye * vec4<f32>(rte, 1.0);
 

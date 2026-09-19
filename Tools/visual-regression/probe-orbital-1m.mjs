@@ -348,15 +348,15 @@ const out = await page.evaluate(
       .filter((m) => m.type === "error")
       .map((m) => `${m.lineNum}:${m.linePos} ${m.message}`);
 
-    // Camera UB: 256 bytes (matches the renderer's allocation). Build an MVP
+    // Camera UB: 272 bytes (matches the renderer's allocation). Build an MVP
     // that frames the shell: camera at (3.5e7, 0, 0) looking at the origin.
     // mvpRelativeToEye = projection * (view with translation column zeroed).
     const camUB = device.createBuffer({
       label: "1M camera UB",
-      size: 256,
+      size: 272,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    const camData = new Float32Array(64);
+    const camData = new Float32Array(68);
     // ── Minimal column-major mat4 math (mirrors what UniformState packs) ──
     function perspective(fovy, aspect, near, far) {
       const f = 1.0 / Math.tan(fovy / 2);
@@ -459,11 +459,18 @@ const out = await page.evaluate(
     camData[24] = lx;
     camData[25] = ly;
     camData[26] = lz;
-    // previousViewProjection (28..43) — identity (unused without TAA).
+    // previousMvpRelativeToEye (28..43) — identity, and the previous encoded
+    // camera split (44..50, pads at 47/51) — zero. Both are unused without TAA,
+    // but the struct is what fixes the minimum binding size.
     camData[28] = 1;
     camData[33] = 1;
     camData[38] = 1;
     camData[43] = 1;
+    // previousViewProjection (52..67) — identity (unused without TAA).
+    camData[52] = 1;
+    camData[57] = 1;
+    camData[62] = 1;
+    camData[67] = 1;
     device.queue.writeBuffer(camUB, 0, camData);
 
     // [-1,1] quad VB (6 verts), matches the renderer.
