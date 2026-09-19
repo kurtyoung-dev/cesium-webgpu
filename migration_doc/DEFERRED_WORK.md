@@ -23368,3 +23368,49 @@ every Node version in one run"*, which asserts the multi-version matrix is still
   what the shape was for; extracting it is a one-file move the day something else needs it.
 - **No karma, no build, no browser, no `npm pack`.** Nothing here needs one: both fixes are decided by
   manifest text and by `node --test`.
+
+## 2026-09-19 — lane CI-L3 (Isembard): two stale karma pins re-pinned, and the JS↔GLSL pass-constant guard that does not exist
+
+`packages/engine/Specs/Renderer/PassSpec.js` pinned the pre-`CESIUM_3D_TILE_PLANAR_FILL_ID`
+numbering and `packages/engine/Specs/Scene/ResourceCacheKeySpec.js` carried six texture-key
+expectations written before the fork's `-targets-<ktx2TranscodeTargetKey>` segment landed. Both
+are fork-authored spec files; `Pass.js` and `ResourceCacheKey.js` were correct and were not
+touched. Seven named specs fail in both karma jobs at `0f0fa444e8`; this lane removes those seven
+and nothing else — **it does not by itself turn `release tests (chrome)` or `coverage (firefox)`
+green**, because sixty other failures remain in each job under other lanes of the same plan.
+
+- **DX row, open — a real JS↔GLSL pass-constant parity guard is MISSING.** `PassSpec.js`'s header
+  claimed it existed so a renumber could not "silently break … a hardcoded shader constant". It
+  cannot: a karma spec reads no `.glsl` source, and two constants were in fact left behind. The
+  claim is now narrowed to what the spec does check (the JS enum's values, contiguity and
+  frozenness). The guard that would have caught the drift is a pure-Node parser over `Pass.js` plus
+  `Shaders/Builtin/Constants/pass*.glsl` with a home in `npm run test-build-infra`; it is lane
+  CI-L11's deliverable and was deliberately **not** built here (Principle 9: named, not routed
+  around).
+- **Handed to CI-L11 / maintainer question Q5, confirmed not assumed.** Measured at `0f0fa444e8`
+  against the imported `Pass.js`, mapping each file to the `{@link Pass#NAME}` it declares:
+  thirteen of the sixteen `czm_pass*` constants agree with the member they name, two disagree, and
+  one names a member that no longer exists (the third bullet). The two disagreements are
+  `passCesium3DTileEdgesDirect.glsl:9` = `12.0` against `Pass.CESIUM_3D_TILE_EDGES_DIRECT`
+  = `13` (so it aliases `czm_passGaussianSplats = 12.0`), and `passOverlay.glsl:9` = `13.0` against
+  `Pass.OVERLAY` = `14`. Root cause, re-derived: upstream PR #13192 (`eeabf3a341`) authored both of
+  those constants correctly, and PR #13178 (`2aa87f5c0e`, content `1c72b330f4`) branched before it,
+  so its `+1` shift of the whole tail updated nine `pass*.glsl` files and never saw those two. The
+  fork inherited the combined state at the v1.144 merge `65a194d24e`; `Pass.js` and all sixteen
+  `.glsl` files are byte-identical to `upstream/main`, so the divergence is upstream's, not ours.
+- **A third anomaly of a different class, also upstream's.**
+  `passClassification.glsl` declares `{@link Pass#CLASSIFICATION}`, which no longer exists in
+  `Pass.js`. Its value has been shifted along with the rest of the tail: #13178 moved it `7.0` ->
+  `8.0`, so it still aliases the slot it always did (`CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW`,
+  slot 7 before that PR and slot 8 after it); #13192 never touched it, having inserted above it.
+  So it is a stale doc link, not a value disagreement — but a name-mapped parity guard will still
+  trip over it, and whoever builds the guard must decide whether it is an exempt legacy alias or a
+  rename to finish.
+- **Coverage row, open — `getTextureCacheKey`'s transcode-target segment is pinned as a string,
+  not as a variable.** All six repaired expectations construct a `SupportedImageFormats` with no
+  `ktx2TranscodeTargets`, so all six read `ktx2-0`; freezing the segment to that literal in
+  `ResourceCacheKey.js:613` leaves every one of them green (measured 2026-09-19 — the reviewer's
+  mutant D, re-run by the lane). The only non-zero target keys pinned anywhere are
+  `getImageCacheKey`'s at `ResourceCacheKeySpec.js:1072` and `:1075`. A seventh `getTextureCacheKey`
+  case with a non-default target set would pin the per-context behaviour the segment exists for; it
+  is outside this lane's permitted edit (the six strings) and is filed here rather than routed around.

@@ -1153,7 +1153,7 @@ describe("ResourceCacheKey", function () {
     });
 
     expect(cacheKey).toBe(
-      "texture:https://example.com/resources/image.png-sampler-10497-10497-9729-9729-context-01234",
+      "texture:https://example.com/resources/image.png-targets-ktx2-0-sampler-10497-10497-9729-9729-context-01234",
     );
   });
 
@@ -1171,7 +1171,7 @@ describe("ResourceCacheKey", function () {
     });
 
     expect(cacheKey).toBe(
-      "texture:https://example.com/resources/external.bin-range-0-100-sampler-33071-33648-9984-9728-context-01234",
+      "texture:https://example.com/resources/external.bin-range-0-100-targets-ktx2-0-sampler-33071-33648-9984-9728-context-01234",
     );
   });
 
@@ -1191,7 +1191,7 @@ describe("ResourceCacheKey", function () {
     });
 
     expect(cacheKey).toBe(
-      "texture:https://example.com/resources/image.webp-sampler-10497-10497-9729-9729-context-01234",
+      "texture:https://example.com/resources/image.webp-targets-ktx2-0-sampler-10497-10497-9729-9729-context-01234",
     );
   });
 
@@ -1209,7 +1209,7 @@ describe("ResourceCacheKey", function () {
     });
 
     expect(cacheKey).toBe(
-      "texture:https://example.com/resources/image.png-sampler-10497-10497-9729-9729-context-01234",
+      "texture:https://example.com/resources/image.png-targets-ktx2-0-sampler-10497-10497-9729-9729-context-01234",
     );
   });
 
@@ -1229,7 +1229,7 @@ describe("ResourceCacheKey", function () {
     });
 
     expect(cacheKey).toBe(
-      "texture:https://example.com/resources/image.ktx2-sampler-10497-10497-9729-9729-context-01234",
+      "texture:https://example.com/resources/image.ktx2-targets-ktx2-0-sampler-10497-10497-9729-9729-context-01234",
     );
   });
 
@@ -1247,7 +1247,7 @@ describe("ResourceCacheKey", function () {
     });
 
     expect(cacheKey).toBe(
-      "texture:https://example.com/resources/image.png-sampler-10497-10497-9729-9729-context-01234",
+      "texture:https://example.com/resources/image.png-targets-ktx2-0-sampler-10497-10497-9729-9729-context-01234",
     );
   });
 
