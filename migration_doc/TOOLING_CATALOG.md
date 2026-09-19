@@ -315,8 +315,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | empty-module-stub.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Prove the single-backend build stub answers instanceof without throwing, keeps throwing on real use, and binds every named export of a stubbed module. |
-| wgsl-chunk-resolution.spec.mjs | spec | ACTIVE | — | 1 | Prove the minify transform cannot change which csm_* calls a WGSL module leaves undeclared after the engine's real chunk splice, so a shipped shader never calls a function nothing defines. |
-| wgsl-comment-strip.spec.mjs | spec | ACTIVE | 2026-09-01 | 3 | Prove the minify-time WGSL comment strip preserves every //>> directive byte-exact, leaves unminified modules untouched, and is wired into the build. |
+| wgsl-chunk-resolution.spec.mjs | spec | ACTIVE | 2026-09-19 | 1 | Prove the minify transform cannot change which csm_* calls a WGSL module leaves undeclared after the engine's real chunk splice, so a shipped shader never calls a function nothing defines. |
+| wgsl-comment-strip.spec.mjs | spec | ACTIVE | 2026-09-19 | 3 | Prove the minify-time WGSL comment strip preserves every //>> directive byte-exact, leaves unminified modules untouched, and is wired into the build. |
 
 ### Tools/c16/ (10)
 
@@ -1419,7 +1419,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | space-weather-state-packet.spec.mjs | spec | ACTIVE | 2026-09-18 | 4 | Output contract for the backend-neutral space-weather packet: preset values, timeline determinism, zero-cost OFF, per-field authority, flare/geomagnetic independence, validation rejections, staleness. |
 | spec-cesium-viewer-dev-ui.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | CesiumViewer start contract: dev chrome built only under devUi (absent, not hidden), bare URL resolves WebGPU non-strict, fleet URLs stable. |
 | spec-cesium-viewer-loading-parity.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Loading-presentation parity: the async WebGPU viewer path adds no chrome of its own; the page indicator hides at first rendered frame on both. |
-| spec-offline-isolation.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | C11-134: pins the external-URL classifier (fail-closed) and the online-lane quarantine so network suites skip with a reason offline. |
+| spec-offline-isolation.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | C11-134: pins the external-URL classifier (fail-closed) and the online-lane quarantine so network suites skip with a reason offline. |
 | splat-pipeline-request-guard.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Prove stale Gaussian-splat pipeline promises cannot publish after resource invalidation. |
 | star-catalog-depth.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | C12-09 acceptance for the deepened BrightStarCatalog: count/magnitude bands, MAG_CUTOFF = faintest row, no duplicates, sha256 provenance. |
 | star-point-census-live.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Standing discriminator: the star point census was mis-calibrated for live frames (strict local-max tie at the NDC-origin pixel corner). |

@@ -200,6 +200,14 @@ describe("Scene/BingMapsImageryProvider", function () {
   });
 
   it("fromUrl throws if key is not provided", async function () {
+    // The argument check is compiled out of release builds, so the call
+    // runs for real and reaches the transport. Intercept it there: the
+    // offline lane records anything that leaves the karma origin, and the
+    // debug build throws before the spy is consulted.
+    spyOn(Resource.prototype, "fetchJson").and.rejectWith(
+      new RuntimeError("offline"),
+    );
+
     await expectAsync(
       BingMapsImageryProvider.fromUrl("http://fake.fake.invalid/"),
     ).toBeRejectedWithDeveloperError(

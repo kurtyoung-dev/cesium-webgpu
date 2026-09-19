@@ -15,10 +15,14 @@
  *      declared with {@link describeRequiresNetwork}. In the offline lane they
  *      are skipped with a recorded reason ("requires network"), which is a
  *      truthful skip, not a silent pass. Coverage is quarantined, never deleted.
- *   2. A FETCH GUARD. In the offline lane any request to a host other than the
- *      Karma origin fails loudly and is recorded, so a newly-added network
- *      dependency fails the day it lands instead of silently degrading the
- *      suite months later.
+ *   2. A TRANSPORT GUARD over `fetch` and `XMLHttpRequest.prototype.open`,
+ *      and over nothing else. A request either of those makes to a host other
+ *      than the Karma origin fails loudly and is recorded, so a newly-added
+ *      network dependency fails the day it lands instead of silently degrading
+ *      the suite months later. Transports the guard does not wrap are outside
+ *      the ledger and must not be read as absent: `new Image()`, JSONP
+ *      `<script>` injection, `WebSocket`, `EventSource`,
+ *      `navigator.sendBeacon` and worker `importScripts` are invisible to it.
  */
 
 /** Reason recorded against every suite the offline lane skips. */
@@ -444,8 +448,10 @@ export function installOfflineNetworkRunAssertion(env, options = {}) {
       .join("; ");
     throw new Error(
       `[offline lane] ${summary.blockedRequestCount} blocked request(s) remained in the ` +
-        `end-of-run ledger: ${refused}. A request-time error was caught, but the ` +
-        `offline run is fail-closed; mock the transport or use describeRequiresNetwork().`,
+        `end-of-run ledger: ${refused}. Each was refused at the transport ` +
+        `boundary; the offline run is fail-closed, so a refusal the subject ` +
+        `caught still fails the run. Mock the transport or use ` +
+        `describeRequiresNetwork().`,
     );
   });
 }

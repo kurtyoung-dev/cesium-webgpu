@@ -23,10 +23,11 @@
 // Run: node --test Tools/visual-regression/spec-offline-isolation.spec.mjs
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFile, readdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   BLOCKED_REQUESTS_KEY,
@@ -234,6 +235,36 @@ function auditLiveServiceSpecInventory(
 }
 
 const OFFLINE_ESCAPE_REPAIR_ANCHORS = new Map([
+  // The debug-only argument checks these five specs assert on are compiled out
+  // of release builds, so each subject runs for real and reaches the transport.
+  // The reviewed repair is a transport spy installed as the spec's first
+  // statement; without it the run ends in the offline lane's root assertion
+  // with the spec itself still reported as PASSING.
+  [
+    "packages/engine/Specs/Core/IonSnapServiceSpec.js",
+    [
+      /it\("throws without assetId"[\s\S]*?spyOn\(Resource\.prototype, "fetchJson"\)\.and\.rejectWith\(/,
+      /it\("throws without required options"[\s\S]*?spyOn\(Resource\.prototype, "post"\)\.and\.rejectWith\(/,
+    ],
+  ],
+  [
+    "packages/engine/Specs/Core/CesiumTerrainProviderSpec.js",
+    [
+      /it\("fromIonAssetId throws without assetId"[\s\S]*?spyOn\(Resource\.prototype, "fetchJson"\)\.and\.rejectWith\(/,
+    ],
+  ],
+  [
+    "packages/engine/Specs/Scene/Cesium3DTilesetSpec.js",
+    [
+      /it\("fromIonAssetId throws without assetId"[\s\S]*?spyOn\(Resource\.prototype, "fetchJson"\)\.and\.rejectWith\(/,
+    ],
+  ],
+  [
+    "packages/engine/Specs/Scene/Google2DImageryProviderSpec.js",
+    [
+      /it\("fromIonAssetId throws if assetId is not provided"[\s\S]*?spyOn\(Resource\.prototype, "fetchJson"\)\.and\.rejectWith\(/,
+    ],
+  ],
   [
     "packages/engine/Specs/Widget/CesiumWidgetSpec.js",
     [
@@ -272,6 +303,10 @@ const OFFLINE_ESCAPE_REPAIR_ANCHORS = new Map([
     "packages/engine/Specs/Scene/BingMapsImageryProviderSpec.js",
     [
       /it\("fromUrl throws if request fails"[\s\S]*?Resource\._Implementations\.loadWithXhr = function[\s\S]*?deferred\.reject\(\)/,
+      // Release strips the debug-only argument check, so this factory runs
+      // for real and reaches the metadata request unless the transport is
+      // intercepted first.
+      /it\("fromUrl throws if key is not provided"[\s\S]*?spyOn\(Resource\.prototype, "fetchJson"\)\.and\.rejectWith\(/,
     ],
   ],
   [
@@ -1051,4 +1086,352 @@ describe("Core/adversarial", function () {
       return true;
     },
   );
+});
+
+// ───────────────── the release flavour's own ledger, executed ─────────────────
+
+// The five specs pinned above pass in BOTH build flavours, so no spec-level
+// assertion can tell a repaired one from a leaking one. The falsifier is the
+// ledger count, and reaching it needs the RELEASE bundle's semantics: those
+// argument checks live inside `//>>includeStart('debug', pragmas.debug)` and are
+// compiled out. This probe runs the real engine entry points in a child process
+// with the real strip transform (`scripts/build.js`'s `constructRegex`) applied by a
+// module-load hook and the real offline guard installed, with no browser and no
+// build. It then repeats the same subjects with the transport intercepted the
+// way the repaired specs intercept it. Leg one is the inertness control: it is
+// what those specs do if their spy is made unreachable.
+//
+// `Cesium3DTilesetSpec`'s subject is deliberately absent. `Cesium3DTileset.js`
+// imports generated GLSL shader modules that exist only after a build, so it
+// cannot load from an unbuilt tree; its entry point is the same two lines as
+// `CesiumTerrainProvider.fromIonAssetId` and its repair is pinned by the source
+// anchor above.
+const RELEASE_LEDGER_PROBE = `
+import { readFileSync } from "node:fs";
+import { register } from "node:module";
+import { fileURLToPath } from "node:url";
+import { compileFunction } from "node:vm";
+
+const REPO = process.env.CESIUM_REPO_URL;
+const REPO_DIR = fileURLToPath(REPO + "/");
+const hookSource = [
+  'import { readFile } from "node:fs/promises";',
+  'import { fileURLToPath } from "node:url";',
+  'import { constructRegex } from "' + REPO + '/scripts/build.js";',
+  'const RE = constructRegex("debug", false);',
+  "export async function load(url, context, nextLoad) {",
+  '  if (url.startsWith("file:") && url.includes("/packages/engine/Source/") && url.endsWith(".js")) {',
+  '    const source = await readFile(fileURLToPath(url), "utf8");',
+  '    return { format: "module", shortCircuit: true,',
+  '      source: source.replace(new RegExp(RE.source, RE.flags), "") };',
+  "  }",
+  "  return nextLoad(url, context);",
+  "}",
+].join(String.fromCharCode(10));
+register("data:text/javascript," + encodeURIComponent(hookSource));
+
+const ORIGIN = "http://localhost:9876";
+const BASE = ORIGIN + "/context.html";
+globalThis.document = {
+  location: { protocol: "http:", href: BASE },
+  createElement() {
+    let value = "";
+    return {
+      set href(next) {
+        value = new URL(next, BASE).href;
+      },
+      get href() {
+        return value;
+      },
+      setAttribute(name, next) {
+        if (name === "href") {
+          this.href = next;
+        }
+      },
+    };
+  },
+};
+globalThis.XMLHttpRequest = class {
+  open() {}
+  send() {}
+  setRequestHeader() {}
+  abort() {}
+  getAllResponseHeaders() {
+    return "";
+  }
+};
+
+const policy = await import(REPO + "/Specs/networkPolicy.js");
+policy.setOfflineLane(true);
+globalThis[policy.BLOCKED_REQUESTS_KEY] = [];
+policy.installOfflineNetworkGuard({ origin: ORIGIN, scope: globalThis });
+
+const load = async (relative) =>
+  (await import(REPO + "/packages/engine/Source/" + relative)).default;
+const Bing = await load("Scene/BingMapsImageryProvider.js");
+const IonSnapService = await load("Core/IonSnapService.js");
+const CesiumTerrainProvider = await load("Core/CesiumTerrainProvider.js");
+const Google2D = await load("Scene/Google2DImageryProvider.js");
+const IonImageryProvider = await load("Scene/IonImageryProvider.js");
+const Resource = await load("Core/Resource.js");
+const RuntimeError = await load("Core/RuntimeError.js");
+const Matrix4 = await load("Core/Matrix4.js");
+const Cartesian3 = await load("Core/Cartesian3.js");
+
+const LF = String.fromCharCode(10);
+const CRLF = String.fromCharCode(13) + LF;
+
+// Lifts the PRELUDE a spec file actually runs - everything from the start of
+// the it() body to its first blank line - and hands it back as source. Nothing
+// here presumes the prelude is a spy: a prelude made unreachable still lifts,
+// still runs, and still installs nothing, which is what makes this a falsifier
+// rather than a text match.
+function liftPrelude(relative, head) {
+  const source = readFileSync(REPO_DIR + relative, "utf8")
+    .split(CRLF)
+    .join(LF);
+  const start = source.indexOf(head);
+  if (start < 0) {
+    throw new Error("spec body not found in " + relative + ": " + head);
+  }
+  if (source.indexOf(head, start + 1) >= 0) {
+    throw new Error("spec body is not unique in " + relative + ": " + head);
+  }
+  const bodyStart = start + head.length;
+  const blankAt = source.indexOf(LF + LF, bodyStart);
+  let firstStatement = Infinity;
+  for (const token of ["await ", "const "]) {
+    const at = source.indexOf(token, bodyStart);
+    if (at >= 0 && at < firstStatement) {
+      firstStatement = at;
+    }
+  }
+  if (blankAt < 0 || blankAt > firstStatement) {
+    return "";
+  }
+  return source.slice(bodyStart, blankAt);
+}
+
+// A jasmine-shaped spyOn, so a lifted prelude runs unmodified.
+function makeSpyOn(restores) {
+  return function spyOn(target, method) {
+    const original = target[method];
+    restores.push(() => {
+      target[method] = original;
+    });
+    const spy = function () {
+      return spy.plan.apply(this, arguments);
+    };
+    spy.plan = () => undefined;
+    spy.and = {
+      rejectWith(value) {
+        spy.plan = () => Promise.reject(value);
+        return spy.and;
+      },
+      returnValue(value) {
+        spy.plan = () => value;
+        return spy.and;
+      },
+      callFake(fake) {
+        spy.plan = fake;
+        return spy.and;
+      },
+    };
+    target[method] = spy;
+    return spy;
+  };
+}
+
+const testPoint = Cartesian3.fromDegrees(151.092843, -33.8143919, 56.281);
+const camera = () => ({
+  viewMatrix: Matrix4.clone(Matrix4.IDENTITY),
+  frustum: { projectionMatrix: Matrix4.clone(Matrix4.IDENTITY) },
+});
+const view = () => ({ camera: camera(), canvasWidth: 800, canvasHeight: 600 });
+const snapper = () =>
+  new IonSnapService({
+    assetId: 123456,
+    resource: new Resource({ url: "https://example.com/assets/123456/" }),
+    ecefTransform: Matrix4.clone(Matrix4.IDENTITY),
+  });
+
+const SUBJECTS = [
+  {
+    spec: "Scene/BingMapsImageryProvider fromUrl throws if key is not provided",
+    file: "packages/engine/Specs/Scene/BingMapsImageryProviderSpec.js",
+    head: 'it("fromUrl throws if key is not provided", async function () {',
+    invoke: () => [Bing.fromUrl("http://fake.fake.invalid/")],
+  },
+  {
+    spec: "Core/IonSnapService fromAssetId throws without assetId",
+    file: "packages/engine/Specs/Core/IonSnapServiceSpec.js",
+    head: 'it("throws without assetId", async function () {',
+    invoke: () => [IonSnapService.fromAssetId()],
+  },
+  {
+    spec: "Core/IonSnapService snap throws without required options",
+    file: "packages/engine/Specs/Core/IonSnapServiceSpec.js",
+    head: 'it("throws without required options", async function () {',
+    invoke: () => {
+      const service = snapper();
+      return [
+        service.snap(),
+        service.snap({ elementId: "0x1", ...view() }),
+        service.snap({ testPoint, ...view() }),
+        service.snap({ elementId: "0x1", testPoint }),
+        service.snap({ elementId: "0x1", testPoint, camera: camera() }),
+        service.snap({
+          elementId: "0x1",
+          testPoint,
+          camera: camera(),
+          canvasWidth: 800,
+        }),
+      ];
+    },
+  },
+  {
+    spec: "Core/CesiumTerrainProvider fromIonAssetId throws without assetId",
+    file: "packages/engine/Specs/Core/CesiumTerrainProviderSpec.js",
+    head: 'it("fromIonAssetId throws without assetId", async function () {',
+    invoke: () => [CesiumTerrainProvider.fromIonAssetId()],
+  },
+  {
+    spec: "Scene/Google2DImageryProvider fromIonAssetId throws if assetId is not provided",
+    file: "packages/engine/Specs/Scene/Google2DImageryProviderSpec.js",
+    head: 'it("fromIonAssetId throws if assetId is not provided", async function () {',
+    invoke: () => [Google2D.fromIonAssetId()],
+  },
+  {
+    // Negative control: no prelude is lifted for it and none is expected.
+    spec: "Scene/IonImageryProvider fromAssetId throws without assetId",
+    file: null,
+    head: null,
+    invoke: () => [IonImageryProvider.fromAssetId()],
+  },
+];
+
+const preludes = SUBJECTS.map((subject) =>
+  subject.file === null ? "" : liftPrelude(subject.file, subject.head),
+);
+
+async function runLeg(runPreludes) {
+  globalThis[policy.BLOCKED_REQUESTS_KEY] = [];
+  Bing._metadataCache = {};
+  IonImageryProvider._endpointCache = {};
+  for (let i = 0; i < SUBJECTS.length; i++) {
+    const subject = SUBJECTS[i];
+    globalThis[policy.CURRENT_JASMINE_SPEC_KEY] = subject.spec;
+    const restores = [];
+    if (runPreludes && preludes[i] !== "") {
+      compileFunction(preludes[i], ["spyOn", "Resource", "RuntimeError"])(
+        makeSpyOn(restores),
+        Resource,
+        RuntimeError,
+      );
+    }
+    let pending = [];
+    try {
+      pending = subject.invoke();
+    } catch {
+      // A synchronous throw is the debug shape; release reaches further.
+    }
+    await Promise.allSettled(pending);
+    for (const restore of restores) {
+      restore();
+    }
+  }
+  globalThis[policy.CURRENT_JASMINE_SPEC_KEY] = undefined;
+  const summary = policy.createNetworkLaneRunSummary(globalThis);
+  return {
+    blockedRequestCount: summary.blockedRequestCount,
+    rows: summary.blockedRequests.map((row) => ({
+      count: row.count,
+      api: row.api,
+      url: row.url,
+      spec: row.spec,
+    })),
+  };
+}
+
+const unrepaired = await runLeg(false);
+const repaired = await runLeg(true);
+process.stdout.write(
+  JSON.stringify({
+    unrepaired,
+    repaired,
+    preludeLengths: preludes.map((prelude) => prelude.length),
+  }),
+);
+`;
+
+test("release strips the argument checks, so a transport spy is what keeps the ledger empty", () => {
+  const output = execFileSync(
+    process.execPath,
+    ["--input-type=module", "-e", RELEASE_LEDGER_PROBE],
+    {
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+      env: { ...process.env, CESIUM_REPO_URL: pathToFileURL(repoRoot).href },
+    },
+  );
+  const { unrepaired, repaired } = JSON.parse(output);
+
+  // Leg one — the repair made unreachable. Every row here was reported by the
+  // hosted release-tests job from a spec that PASSED (run 35449879930).
+  assert.deepEqual(unrepaired.rows, [
+    {
+      count: 1,
+      api: "xhr",
+      url: "http://fake.fake.invalid/REST/v1/Imagery/Metadata/Aerial?incl=ImageryProviders&key=[REDACTED]&uriScheme=http",
+      spec: "Scene/BingMapsImageryProvider fromUrl throws if key is not provided",
+    },
+    {
+      count: 1,
+      api: "xhr",
+      url: "https://api.cesium.com/assets/undefined/ecef?access_token=[REDACTED]",
+      spec: "Core/IonSnapService fromAssetId throws without assetId",
+    },
+    {
+      count: 1,
+      api: "xhr",
+      url: "https://api.cesium.com/v1/assets/undefined/endpoint?access_token=[REDACTED]",
+      spec: "Core/CesiumTerrainProvider fromIonAssetId throws without assetId",
+    },
+    {
+      count: 1,
+      api: "xhr",
+      url: "https://api.cesium.com/v1/assets/undefined/endpoint?access_token=[REDACTED]&options={%22mapType%22%3A%22satellite%22%2C%22overlay%22%3Afalse}",
+      spec: "Scene/Google2DImageryProvider fromIonAssetId throws if assetId is not provided",
+    },
+    {
+      count: 2,
+      api: "xhr",
+      url: "https://example.com/assets/123456/elements/0x1/snap",
+      spec: "Core/IonSnapService snap throws without required options",
+    },
+    {
+      count: 1,
+      api: "xhr",
+      url: "https://example.com/assets/123456/elements/undefined/snap",
+      spec: "Core/IonSnapService snap throws without required options",
+    },
+  ]);
+  assert.equal(unrepaired.blockedRequestCount, 7);
+
+  // Leg two — the repair. The acceptance is an empty ledger, not a spy that was
+  // called: a spy assertion proves only that a spy was installed.
+  assert.deepEqual(repaired.rows, []);
+  assert.equal(repaired.blockedRequestCount, 0);
+
+  // In-tree negative control. IonImageryProvider.fromAssetId stringifies the
+  // assetId for its endpoint cache key before it builds the request, so it
+  // throws first and never reaches the transport. The probe never intercepts
+  // it, and it must appear in NEITHER ledger: which of these entry points leaks
+  // is an implementation accident, not a spec-authoring discipline.
+  for (const leg of [unrepaired, repaired]) {
+    assert.equal(
+      leg.rows.some((row) => row.spec.startsWith("Scene/IonImageryProvider")),
+      false,
+    );
+  }
 });
