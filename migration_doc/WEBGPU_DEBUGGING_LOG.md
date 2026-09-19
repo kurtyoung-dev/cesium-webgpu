@@ -22389,3 +22389,98 @@ asserted unchanged; and ten refusals by exact message, including the two illegal
 that used to return a value. Two further mutants, both from the verifier, are answered by the case
 `fix-B` added: making the constructor's matrix guard unreachable, and dropping `quantize` from the
 constructor's return, each survived every case in the first draft and now red the spec.
+
+---
+
+## `DUP-SCRIPT-KEY` — `npm run test-s5` ran one spec of ten, because two clean additions of one key left `JSON.parse` to pick the winner (2026-09-19)
+
+**Bug:** at `4a1a85b3a1` the root manifest carried `"test-s5"` twice — line 211 naming the eight
+bounded C12-29 S5 gate specs plus `s5-runner-home.spec.mjs`, line 214 naming
+`c12-31-aureole-gate.spec.mjs`. `npm run test-s5` measured on that manifest: **29 tests, 29 pass**
+— the aureole gate alone. The nine specs on line 211 ran nowhere. Measured on the same manifest,
+`node --test Tools/visual-regression/s5-runner-home.spec.mjs` was **4 of 6**, failing "the S5 gate
+roster is ten specs and none of them is an orphan" and "each S5 spec is reachable from the family
+runner or its quarantine".
+
+**Files:** `package.json` (`scripts.test-s5`; and `scripts.test-build-infra`, add-only),
+`Tools/lib/json-duplicate-keys.mjs` (new), `Tools/package-manifest-duplicate-keys.spec.mjs` (new).
+
+**Root cause — two correct edits composing into a silent loss.** Batch 1519 (`df92ce5d5b`, lane
+S5-RUNNERS) ADDED a `test-s5` key. Batch 1521 (`4a1a85b3a1`, lane C12-31) ADDED a `test-s5` key
+from a patch cut against a base that had no such key. Neither patch *modified* the other's line, so
+there was no overlapping hunk: `git apply --3way` had nothing to report and took both additions.
+The result is valid JSON. `JSON.parse` then applies the rule the specification gives it and keeps
+the LAST duplicate, discarding the first without a warning, an error, or any residue. Every reader
+downstream — npm, `Tools/spec-runner-census.mjs`, the family gate itself — is handed an object in
+which line 211 never existed.
+
+**Why no gate saw it.** Three layers each had a reason to be silent, and they lined up:
+
+1. *The merge layer* resolves textual conflicts. Two ADDs of one key are not a textual conflict.
+2. *The parse layer* is every gate in the toolchain, and each one starts with `JSON.parse`. By the
+   time a gate holds an object the duplicate is gone; nothing in the toolchain read the manifest as
+   text, so nothing could see the first key at all.
+3. *The gate that existed for precisely this failure* — `s5-runner-home.spec.mjs`, whose job is to
+   catch an unhomed S5 spec — was red in the tree and unreachable at landing, because the runner it
+   is homed in **was the shadowed key**. Under `R-2026-09-13-2`(D), which runs the runners a
+   batch's files are homed in, Batch 1521 ran `test-s5` and `test-s5` ran the aureole spec.
+
+Both lanes flagged the collision in their packets. The seat's resolver acts on textual conflicts.
+
+**Fix.** One `test-s5` key, whose list is Batch 1519's nine specs with
+`Tools/visual-regression/c12-31-aureole-gate.spec.mjs` appended; the second key line is removed and
+no other byte of the manifest changes. Verified token by token against
+`git show df92ce5d5b:package.json`. `npm run test-s5`: 29/29 → **383 tests / 378 pass / 0 fail / 5
+build-bound skips**, which accounts exactly (Floi's nine specs run 354 — her 347 plus the seven
+`c12-29-s5-multiview-gate.spec.mjs` gained in Batch 1520 — and the aureole spec 29).
+`s5-runner-home.spec.mjs` goes 4/6 → 6/6 with no edit to the spec: its roster pin counts
+`c12-29-s5-*.spec.mjs` files on disk, not tokens in the runner, so the aureole spec never
+threatened it.
+
+**The two guards.** The seat's landing wrapper now refuses a commit whose manifest carries a
+duplicate key — that covers landings through the wrapper. The tracked half lives here:
+`Tools/lib/json-duplicate-keys.mjs` reads a JSON document as text and answers *which keys repeat,
+and where*, tracking keys per open object so the same key in two sibling objects is not a finding,
+consuming string bodies as opaque units so a value's quotes, commas and braces never reach the
+scanner, decoding escapes so `"test-s5"` collides with `"test-s5"` the way `JSON.parse`
+collides them, and ending the scan on an unterminated string instead of spinning on it.
+`Tools/package-manifest-duplicate-keys.spec.mjs` homes it in `test-build-infra`, which
+`.github/workflows/dev.yml:87` runs in the `guards` job, so CI sees this class on any branch and
+any clone — including a landing the wrapper never touched.
+
+**Pinned by** thirteen cases in the new spec, all reading the tokenizer's OUTPUT, none grepping its
+source: the real root manifest and all three workspace manifests carry no duplicate at any depth;
+the shipped shape (two `test-s5` keys with another key between them) is reported as
+`scripts.test-s5` at lines 3 and 5, with `JSON.parse` shown discarding the first; **the real
+245-line manifest with a second `test-s5` seeded after the quarantine line** is reported with the
+line numbers computed from the file itself; sibling objects sharing a key are not a finding; a key
+spelled inside a string VALUE is not a key, and the braces in that value do not open a container
+(a real repeat after it still reports at the ROOT path); an escaped quote does not split a key; a
+unicode-escaped spelling collides with the plain one; array elements are tracked one object at a
+time (`workspaces[1].name`); CRLF reports the lines an editor shows; a BOM does not shift line 1;
+an unterminated 200 KB string returns in 29 ms with the duplicate it had already seen; a
+parsed value passed instead of text throws rather than answering an empty list; and a document
+with three repeats across two objects returns **all three**, in the order the scan meets them.
+
+**Inertness mutants**, each a temp copy of the tokenizer beside an unmodified copy of the spec,
+each changing the OUTPUT rather than deleting code:
+
+- keys tracked file-wide instead of per open object → 4 RED, including "the same key in two sibling
+  objects is correct JSON, not a finding" and the real-manifest case;
+- the scan never descends past the outermost object → 3 RED, including "the real manifest with a
+  second runner key seeded into it is reported";
+- a value's string body no longer consumed as an opaque unit (string-awareness removed for values,
+  so its quotes, commas and braces reach the scanner) → exactly 1 RED, "a key spelled inside a
+  string value is not a key";
+- the scan returns after the FIRST repeat it finds → exactly 1 RED, "every repeat is reported, not
+  just the first one found". That mutant SURVIVED the first freeze: the module promises one entry
+  per repeat and the failure renderer maps over the whole return value, but no case put two repeats
+  in one document, so a reader that stopped at the first would still red the gate while hiding the
+  second key — a manifest carrying two shadowed keys would take two fix rounds to clear. The case
+  that closes it came from the review; two further review mutants, `expectKey` never cleared after a
+  key and the key recorded before it is compared, were already RED at 2 and 12 cases.
+
+And the fix's own mutant: the spec run against the base manifest, both `test-s5` keys present,
+fails with the message the guard is for —
+`package.json: "scripts.test-s5" is set on line 211 and set again on line 214; JSON.parse keeps line 214 and discards line 211`.
+Had this guard been in `test-build-infra`, Batch 1521 could not have landed.

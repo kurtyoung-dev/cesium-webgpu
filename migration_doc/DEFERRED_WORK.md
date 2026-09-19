@@ -23053,3 +23053,70 @@ certification is read as a WebGPU result.
 
 **Not changed in the filing batch**, on purpose: narrowing or re-deriving a certification arm is a
 gate-policy act.
+
+## 2026-09-19 — lane DUP-SCRIPT-KEY (Sakalthor): two lanes each ADDED `scripts.test-s5`, the merge was textually clean, and `JSON.parse` discarded the first one
+
+Base `4a1a85b3a1`. Tools/DX class: review plus the runners this batch's files are homed in. No Edge
+leg is owed and none is claimed — every assertion below is Node-provable and was proved in Node.
+
+- **`dup-script-key-01`** · `package.json` `scripts.test-s5` (lines 211 and 214 at the base) ·
+  FORK · DONE at 2026-09-19. Batch 1519 (`df92ce5d5b`, lane S5-RUNNERS / Floi) added a `test-s5`
+  key naming the eight bounded S5 gate specs plus `s5-runner-home.spec.mjs`. Batch 1521
+  (`4a1a85b3a1`, lane C12-31 / Gimilzor) added a **second** `test-s5` key naming
+  `c12-31-aureole-gate.spec.mjs`, from a patch cut against a base that had no such key. Neither
+  patch deleted the other's line, so the three-way apply saw two disjoint ADDs and took both
+  without a conflict to report. `JSON.parse` keeps the LAST of two identical keys and says nothing,
+  so from that commit `npm run test-s5` ran **one** spec instead of ten — measured on the base
+  manifest at 29 tests, all of them the aureole gate's. The repair is one key whose list is Batch
+  1519's nine specs with the aureole spec appended; verified token by token against
+  `git show df92ce5d5b:package.json` (identical string plus the one appended path), and no other
+  byte of the manifest changes. `npm run test-s5`: 29 tests / 29 pass on the base → **383 tests /
+  378 pass / 0 fail / 5 build-bound skips**. The 383 accounts exactly: Floi's nine specs now run
+  354 (her 347 plus the seven `c12-29-s5-multiview-gate.spec.mjs` gained in Batch 1520) and the
+  aureole spec 29.
+- **`dup-script-key-01a`** · `Tools/visual-regression/s5-runner-home.spec.mjs` · FORK · **NOT
+  CHANGED, deliberately.** That spec was RED at the base, 4 of 6, and nothing ran it at landing
+  because its own runner home was the shadowed key — the gate for an unhomed S5 spec was itself
+  unreachable. The brief anticipated that its roster pin might have to be widened to admit the
+  aureole spec. Re-derived from the file rather than from the brief: the pin at `:106` counts
+  `c12-29-s5-*.spec.mjs` files **on disk**, not tokens in the runner, and `c12-31-aureole-gate`
+  does not match that pattern; `:143` already lists the aureole spec among the co-homed C12 specs
+  and asserts only that it is homed and not quarantined, which a second non-quarantine home
+  satisfies. The pin needed no edit and got none. 4/6 → **6/6** on the repaired manifest alone.
+- **`dup-script-key-02`** · `Tools/lib/json-duplicate-keys.mjs` (new),
+  `Tools/package-manifest-duplicate-keys.spec.mjs` (new), `package.json`
+  `scripts.test-build-infra` (one add-only path) · FORK · DONE at 2026-09-19. The class needs a
+  reader that sees a JSON document as TEXT, because every existing gate reads a PARSED manifest and
+  by then the evidence is gone. `findDuplicateKeys(text)` tracks keys per open object (the same key
+  in two sibling objects is correct JSON and is not reported), consumes a string's body as an
+  opaque unit so a value's quotes, commas and braces never reach the scanner, decodes escapes so
+  `"test-s5"` and `"test-s5"` compare equal the way `JSON.parse` compares them, walks arrays
+  by index, tolerates CRLF and a BOM, and terminates on an unterminated string rather than spinning
+  on it. It is not a validator: the caller's own `JSON.parse` remains the authority on
+  wellformedness. The spec asserts the product first — the root manifest and all three workspace
+  manifests repeat no key at any depth — then the reader, over twelve cases. Homed in
+  `test-build-infra`, which `.github/workflows/dev.yml:87` runs in the `guards` job: **160 tests /
+  159 pass / 1 skip → 173 / 172 / 1 skip, 0 fail.**
+- **`DX-DUPLICATE-KEY-GUARD-COVERS-PACKAGE-MANIFESTS-ONLY`** — OPEN (DX row). The tracked guard
+  scans the root manifest and `packages/*/package.json`, discovered rather than listed. Other
+  tracked JSON documents — `tsconfig.json`, `.prettierrc`, the workflow-adjacent JSON — are not
+  scanned, and the same last-key-wins loss is available in any of them. The tokenizer is
+  document-agnostic, so widening is a list change in the spec, not new logic. Not taken here
+  because a guard that reds on a JSONC file with comments would be a worse gate than none; the
+  widening wants a decision about which of those files are strict JSON.
+
+### The same mechanism Merimac filed the day before, one class harder
+
+`2026-09-18 — lane WGSL-EVAL-MERGE (Merimac)` above records two lanes of one wave editing one
+shared non-ledger file, hunks disjoint, clean textual merge, each lane green on the runner IT ran,
+consumers red at the tip. This is that mechanism with the volume up: here the merge is not only
+textually clean but produces a **syntactically valid document**, and the loss is a whole key rather
+than a changed behaviour. Merimac's **PROPOSED — the wave rule** (before a wave lands, diff its
+lanes pairwise for shared non-ledger files and run every consumer on the COMBINED tree) would have
+caught this one, because `package.json` was shared by both lanes. It was proposed on 2026-09-18 and
+this collision landed on 2026-09-19. Both lanes flagged the collision in their packets; the seat's
+resolver acts on textual conflicts, and there was none.
+
+The two guards now standing are complementary and neither replaces the other: the seat's landing
+wrapper refuses a commit whose manifest carries a duplicate key, and **this** one is tracked, so CI
+sees the class on any branch and any clone, including one the wrapper never touched.
