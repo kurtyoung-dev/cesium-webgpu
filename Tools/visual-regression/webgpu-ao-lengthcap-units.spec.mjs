@@ -63,6 +63,7 @@ import {
   stripComments,
   tokenize,
   vec,
+  vec2,
 } from "./lib/wgsl-mini-eval.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -297,8 +298,8 @@ function resolveInFragment(prepared, config, name) {
   // Module-scope constants the fragment reads, from the same text.
   Object.assign(env, readConstants(prepared));
   env.uniforms = uniforms;
-  env.screenCoord = vec(config.screenX, config.screenY, 0);
-  env.randomVal = vec(config.randomX, config.randomY, 0);
+  env.screenCoord = vec2(config.screenX, config.screenY);
+  env.randomVal = vec2(config.randomX, config.randomY);
   env.s = config.step;
   env.d = config.direction;
   // Supplied, not read: both are `var` bindings whose value depends on a
@@ -361,8 +362,8 @@ function measure(prepared, config) {
     uniforms,
     depth: config.depth,
   });
-  const originX = reconstruct(vec(config.screenX, config.screenY, 0)).x;
-  const nextX = reconstruct(vec(config.screenX + 1, config.screenY, 0)).x;
+  const originX = reconstruct(vec2(config.screenX, config.screenY)).x;
+  const nextX = reconstruct(vec2(config.screenX + 1, config.screenY)).x;
   const metersPerPixel = nextX - originX;
 
   const at = (step) => resolveInFragment(prepared, { ...config, step }, "dist");
@@ -719,9 +720,8 @@ function guardTripped(prepared, cfg) {
   }
   const left = evaluate(comparison.left, env);
   const right = evaluate(comparison.right, env);
-  // Both operands are vec2. The shared evaluator carries every vector as three
-  // components with a zero filler, and that filler is not a value the shader
-  // has: dividing it out of the viewport expression yields NaN. Fold the two
+  // Both operands are vec2, and the component-wise `clamp` supplied above
+  // answers with the evaluator's three-component representation. Fold the two
   // components WGSL actually compares.
   return left.x !== right.x || left.y !== right.y;
 }

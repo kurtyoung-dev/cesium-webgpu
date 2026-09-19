@@ -22272,3 +22272,120 @@ the finished spec — including the fix itself reverted to the Batch-1498 manife
 `if (false && …)` on the selector branch, the reference substitution made inert, the `"*"` early-out
 made unreachable, and the whole rule returning nothing — and every one of them fails at least one
 case.
+
+## Bug tools-eval-01 — a built-in `vec4` constructor outranked the caller's own, and counted a 2-vector as three lanes (lane WGSL-EVAL-MERGE / Merimac, 2026-09-18)
+
+**File:** `Tools/visual-regression/lib/wgsl-mini-eval.mjs`. Introduced by Batch 1507
+(`75a4e32a08`, lane Mugwort); surfaced at tip `5d6be1f686` by `npm run test-cloud-c13`, 626 of 629.
+
+**Symptom.** Three tests red across two specs, both consumers of the shared evaluator:
+`cloud-primary-ray.spec.mjs` "primary cloud rays preserve framebuffer top-centre-bottom order" and
+"in-memory NDC correction passes and its inertness mutant fails", both with
+`STRUCTURAL: cannot evaluate getWorldRay NDC expression: vec4 given 5 components`; and
+`wgsl-mini-eval.spec.mjs` "vec2, vec3, and injected vec4 f32 constructors remain calls", whose
+`deepStrictEqual` against `{ x, y, z, w }` saw two extra own enumerable keys, `xy` and `xyz`.
+
+**Root cause, established by construction rather than by reading the diff.** Four evaluator variants
+were run against the two specs, everything else at the tip:
+
+| evaluator | cloud-primary-ray 1 | cloud-primary-ray 2 | mini-eval "injected vec4" |
+| --- | --- | --- | --- |
+| pre-wave `1a2baeaa4a` (blob `6321db36e0`) | pass | pass | pass |
+| pre-wave + 1507 only (blob `ea6dd87be4`) | **RED** | **RED** | **RED** |
+| pre-wave + 1508's hunks only (constructed) | pass | pass | pass |
+| both, i.e. HEAD (blob `df3d1de0d1`) | **RED** | **RED** | **RED** |
+
+So this was **not** an interaction: Batch 1507 alone breaks all three, and Batch 1508
+(`5fa97a5773`, lane Heathertoes) is innocent of them. What the two batches share is the reason
+nobody saw it — 1507's lane ran `test-visual-regression-node`, which did not contain either
+consumer spec, and `test-cloud-c13`, which contains both, last ran before 1507 landed.
+
+**Mechanism.** 1507 added a built-in `vec4` to the `"call"` case of `evaluate`, ABOVE the
+`env.__functions?.[name] ?? BUILTINS[name]` lookup. Two consequences, from one placement:
+
+1. The injected constructor stopped being reached. `cloud-primary-ray.spec.mjs:291` binds
+   `__functions: { vec4: vec4Adapter }` to get a real `Cartesian4` out of the shader expression, and
+   `wgsl-mini-eval.spec.mjs` binds a counting `vec4` and asserts it was called exactly once. Neither
+   ran again.
+2. The built-in's flattening loop had two shapes only — a 4-vector contributes four lanes, any other
+   vector contributes three. But this evaluator REPRESENTS a 2-vector as a 3-vector with a zero third
+   component (its own header says so), so `vec4<f32>(uv * 2.0 - 1.0, 1.0, 1.0)` — the shipped
+   `getWorldRay` NDC expression, `uv` a `vec2<f32>` — counted 3 + 1 + 1 = five lanes and threw. A
+   constructor that counts lanes was added on top of a representation that did not carry arity.
+
+1508's `quantize` carried the same class of defect latently: it tested `isVec(value)`, true for a
+4-vector, and rebuilt it as `vec(x, y, z)`, so with `__round` bound a `matrix * vec4` product lost
+its `w`. No consumer met that combination — the one `__round` consumer wanted the xyz part — so it
+was invisible, and it is fixed here with the rest.
+
+**Fix — one rule, not three.** Every vector value now carries a LANE COUNT (`laneCount`), and
+construction, arithmetic, subscripting and the rounding hook all read it and nothing else. A 2-vector
+keeps its 3-component representation, so `length` and the component-wise operators need no special
+case, but its arity is two, carried on a NON-ENUMERABLE `__lanes` property so no caller's deep
+comparison can see it. `constructVector` is one function for `vec2`, `vec3` and `vec4`: flatten the
+arguments' lanes in order, splat a lone scalar, otherwise demand exactly the constructor's own arity
+and throw naming the constructor and the count. Arithmetic between two vectors of different arities
+throws instead of widening; a scalar splats to the vector's arity, so a 2-vector through arithmetic
+stays two lanes. A 4-vector's `xy`/`xyz` swizzles became non-enumerable views, and `.xy` is a real
+2-vector. And the call rule is the one that already governed builtins, extended to constructors: **a
+callable the caller bound in `__functions` always wins.**
+
+One consumer had to move with it. `webgpu-ao-lengthcap-units.spec.mjs` bound `screenCoord` and
+`randomVal` — both `vec2<f32>` in `AmbientOcclusionGenerate.wgsl` — as 3-vectors, which the evaluator
+previously could not see; with real arity that is a `mixed vec3 and vec2 operands` throw. They are
+now bound as `vec2`, and the spec's own comment about the zero filler turning the viewport expression
+into `NaN` describes exactly the gap this fix closes. All 21 of its measurements are unchanged.
+
+**Files modified:** `Tools/visual-regression/lib/wgsl-mini-eval.mjs`,
+`Tools/visual-regression/wgsl-mini-eval.spec.mjs`,
+`Tools/visual-regression/webgpu-ao-lengthcap-units.spec.mjs`, `package.json` (one runner line).
+
+**Pinned by:** seven new cases in `wgsl-mini-eval.spec.mjs` that exercise the arities and the
+injection in single expressions — `vec4(vec2, f32, f32)`, `vec4(vec2, vec2)`, `vec4(vec3, f32)`,
+`vec4(f32 x4)`, the splats, nested constructors, `vec3(vec2, f32)`, the injected constructor at all
+three arities, mixed-arity arithmetic, subscript range by arity, the swizzles, and the rounding hook
+over a `matrix * vec4` product. Six inertness mutants on temp copies, each red in the lane it breaks:
+restoring the three-lane expansion reproduces `vec4 given 5 components, needs 4`; making the arity
+check unreachable gives `Missing expected exception`; making the injection precedence unreachable
+reds the two injection tests; restoring the 3-vector rebuild in the hook reds the hook test; removing
+the mixed-arity refusal reds the arithmetic test; making the swizzles enumerable reds four.
+
+### Round 2 — where the "one rule" stopped, and what the review round found (bug `tools-eval-03`)
+
+The first draft of the fix above claimed one rule for every vector in the evaluator. It was not
+true of the module's own `BUILTINS`, and the adversarial verifier measured it rather than reading
+it. `length`, `dot` and `normalize` still read three fixed components, so `length` of a 4-vector
+answered 3.741657 for 5.477226 and `dot` answered 14 for 30 — the same `w` loss the rounding hook
+had just been fixed for, in three sibling functions in the same file. Every scalar builtin handed a
+vector answered `NaN`, and `max` threw `unsupported operator max` because its only vector path ran
+through an operator table holding `+ - * /`.
+
+Two of those interacted with what the draft ADDED, in opposite directions:
+
+- `normalize(vec2<f32>(…))` answered a 2-vector with a 3-vector. Harmless while a `vec2` and a
+  `vec3` were the same shape; once mixing arities threw, `normalize(vec2<f32>(1.0, 0.0)) *
+  vec2<f32>(2.0, 3.0)` — which evaluates at the pre-wave base `1a2baeaa4a` and at the tip
+  `5d6be1f686`, and which is the shape of shipped text at
+  `Shaders/WebGPU/Ocean/OceanInitialSpectrum.wgsl:45` — threw `mixed vec3 and vec2 operands`. A
+  refusal of legal WGSL, and a regression against both the base and the tip.
+- The same 3-lane answer let `vec3<f32>(normalize(vec2<f32>(3.0, 4.0)))`, which WGSL rejects,
+  return `{0.6, 0.8, 0}` — the constructor counting the 2-vector's zero filler as a lane, which is
+  the very mechanism this bug report names. On that path the draft made the failure quieter, not
+  louder.
+
+**Fix.** The builtins join the rule rather than the claim being narrowed. `componentWise(name, fn)`
+lifts each scalar builtin over the lanes it is handed, by `arith`'s rule so the two agree: a scalar
+argument splats to the vector arguments' arity, two vector arguments of different arities throw
+`mixed vecN and vecM operands`, a matrix throws `${name} cannot be applied to a matrix`. `dot`,
+`length` and `normalize` read `laneValues`, and `vectorLanes` refuses an argument with no lanes at
+all rather than reading components that are not there. `max` over vectors now works instead of
+throwing about an operator. One deliberate divergence from WGSL, recorded in `DEFERRED_WORK.md`
+under `tools-eval-03`: the scalar overload of `length` throws `length takes a vector`.
+
+**Pinned by** four more cases in `wgsl-mini-eval.spec.mjs` — the 4-vector truth values through
+`length`/`dot`/`normalize` at all three arities; the three `normalize(vec2)` combinations that must
+keep evaluating; eight component-wise results including both `max` forms, with the scalar paths
+asserted unchanged; and ten refusals by exact message, including the two illegal-WGSL constructions
+that used to return a value. Two further mutants, both from the verifier, are answered by the case
+`fix-B` added: making the constructor's matrix guard unreachable, and dropping `quantize` from the
+constructor's return, each survived every case in the first draft and now red the spec.

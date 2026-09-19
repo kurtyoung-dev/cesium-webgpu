@@ -31,10 +31,28 @@
 // `return`, unary minus, `+ - * /`, comparisons, `&&`, `||`, the conditional
 // operator `c ? a : b`, member access, `vec2<f32>`, `vec3<f32>` and
 // `vec4<f32>` construction, `m[column][row]` subscripting of a `mat4` or a
-// vector, `matrix * vec4`, and the builtins listed in `BUILTINS`. A `vec2` is
-// a 3-vector with a zero third component, so `length` and the component-wise
-// operators read it correctly. A `vec4` is its own shape: mixing one with a
-// 3-vector throws rather than dropping the `w` lane.
+// vector, `matrix * vec4`, and the builtins listed in `BUILTINS`.
+//
+// ONE RULE FOR VECTORS. Every vector value carries a LANE COUNT, and every
+// rule that reads a vector — construction, arithmetic, subscripting, the
+// rounding hook, the builtins — reads that count and nothing else. A scalar
+// builtin is lifted component-wise over the lanes it is handed, and the three
+// whose subject is a vector (`dot`, `length`, `normalize`) read the lanes
+// their argument has rather than three fixed components. A constructor flattens
+// its arguments' lanes in order and demands exactly its own arity, as WGSL
+// does, so `vec4(vec2, f32, f32)` is four lanes while `vec4(vec3, f32, f32)`
+// throws naming the constructor and the count it got. Arithmetic between two
+// vectors of different arities throws rather than inventing a lane. A `vec2`
+// is still REPRESENTED as a 3-vector with a zero third component so `length`
+// and the component-wise operators need no special case, but its lane count is
+// two — the distinction a constructor must see and a representation alone
+// cannot carry.
+//
+// ONE RULE FOR CALLS. A callable the caller bound in `__functions` always
+// wins — over a vector constructor exactly as over a builtin. Callers inject
+// `vec4` to get their own 4-vector type out of a shader expression, and a
+// built-in constructor that silently outranked the injection would hand them
+// a value of the wrong type from an expression they thought they controlled.
 //
 // WHY THE CONDITIONAL OPERATOR IS HERE. A shader inertness image works by
 // putting the pre-fix text back on a copy of the source and re-running the same
@@ -141,6 +159,71 @@ function stripComments(src) {
 const isVec = (v) => typeof v === "object" && v !== null && "x" in v;
 const vec = (x, y, z) => ({ x, y, z });
 
+// The lane count is carried out of band, so a vector's ENUMERABLE shape is
+// unchanged and a caller that deep-compares a result sees no extra key. Only a
+// 2-vector needs the marker: a 3-vector and a 4-vector are told apart by
+// whether they carry `w`.
+const LANES = "__lanes";
+
+/**
+ * A 2-vector: represented as a 3-vector with a zero third component so
+ * `length` and the component-wise operators read it with no special case, and
+ * tagged with its real arity so a constructor counts two lanes, not three.
+ *
+ * @param {number} x Component.
+ * @param {number} y Component.
+ * @returns {object} The 2-vector.
+ */
+const vec2 = (x, y) => Object.defineProperty(vec(x, y, 0), LANES, { value: 2 });
+
+/**
+ * How many lanes a vector value carries.
+ *
+ * Every vector rule in this module asks here and nowhere else, which is what
+ * keeps the rules consistent with one another. A value the caller built by
+ * hand is read by the components it actually has, so `{ x, y }` is two lanes.
+ *
+ * @param {object} v A vector value.
+ * @returns {number} Two, three or four.
+ */
+function laneCount(v) {
+  const declared = v[LANES];
+  if (typeof declared === "number") {
+    return declared;
+  }
+  if ("w" in v) {
+    return 4;
+  }
+  return "z" in v ? 3 : 2;
+}
+
+/**
+ * A vector's lanes in order, with no lane it does not have.
+ *
+ * @param {object} v A vector value.
+ * @returns {number[]} The components.
+ */
+function laneValues(v) {
+  return [v.x, v.y, v.z, v.w].slice(0, laneCount(v));
+}
+
+/**
+ * Build a vector of a given arity from its lanes.
+ *
+ * @param {number} size Two, three or four.
+ * @param {number[]} lanes Exactly `size` components.
+ * @returns {object} The vector.
+ */
+function makeVector(size, lanes) {
+  if (size === 4) {
+    return vec4(lanes[0], lanes[1], lanes[2], lanes[3]);
+  }
+  if (size === 3) {
+    return vec(lanes[0], lanes[1], lanes[2]);
+  }
+  return vec2(lanes[0], lanes[1]);
+}
+
 /**
  * A 4-vector. Distinct from `vec` so nothing that already reads a 3-vector
  * changes shape: `isVec4` is what selects the 4-lane paths, and a `vec4` that
@@ -148,7 +231,9 @@ const vec = (x, y, z) => ({ x, y, z });
  * class this evaluator exists to catch.
  *
  * The swizzles are real properties because member access is a plain
- * `obj[name]` lookup.
+ * `obj[name]` lookup, but NON-ENUMERABLE ones: a swizzle is a view of the
+ * four lanes, not a fifth and a sixth component, and a caller that
+ * deep-compares a result against `{ x, y, z, w }` must not see them.
  *
  * @param {number} x Component.
  * @param {number} y Component.
@@ -156,20 +241,20 @@ const vec = (x, y, z) => ({ x, y, z });
  * @param {number} w Component.
  * @returns {object} The 4-vector.
  */
-const vec4 = (x, y, z, w) => ({
-  x,
-  y,
-  z,
-  w,
-  get xy() {
-    return vec(x, y, 0);
-  },
-  get xyz() {
-    return vec(x, y, z);
-  },
-});
+const vec4 = (x, y, z, w) =>
+  Object.defineProperties(
+    { x, y, z, w },
+    {
+      xy: {
+        get: () => vec2(x, y),
+      },
+      xyz: {
+        get: () => vec(x, y, z),
+      },
+    },
+  );
 
-const isVec4 = (v) => isVec(v) && "w" in v;
+const isVec4 = (v) => isVec(v) && laneCount(v) === 4;
 
 /**
  * A 4x4 matrix in WGSL/`Matrix4` column-major order, so `m[column][row]`
@@ -208,8 +293,46 @@ function mat4TimesVec4(m, v) {
   return vec4(out[0], out[1], out[2], out[3]);
 }
 
+const VECTOR_ARITY = { vec2: 2, vec3: 3, vec4: 4 };
+
 /**
- * Component-wise binary arithmetic over scalars and 3-vectors.
+ * WGSL's vector constructor, for every arity, as one rule: flatten the
+ * arguments' lanes in order and demand exactly the constructor's own arity.
+ *
+ * A single scalar splats, as it does in WGSL. Anything else that does not come
+ * to the right number of lanes throws NAMING the constructor and the count it
+ * was given, because the two ways to get this wrong — feeding a 3-vector where
+ * a 2-vector was meant, and feeding one lane too few — are indistinguishable
+ * from the resulting value alone.
+ *
+ * @param {string} name The constructor's WGSL name, for the message.
+ * @param {number} size Two, three or four.
+ * @param {Array<number|object>} args The evaluated arguments.
+ * @returns {object} The vector.
+ */
+function constructVector(name, size, args) {
+  const lanes = [];
+  for (const a of args) {
+    if (isMat4(a)) {
+      throw new Error(`${name} cannot be built from a matrix`);
+    }
+    if (isVec(a)) {
+      lanes.push(...laneValues(a));
+    } else {
+      lanes.push(a);
+    }
+  }
+  if (lanes.length === 1) {
+    return makeVector(size, new Array(size).fill(lanes[0]));
+  }
+  if (lanes.length !== size) {
+    throw new Error(`${name} given ${lanes.length} components, needs ${size}`);
+  }
+  return makeVector(size, lanes);
+}
+
+/**
+ * Component-wise binary arithmetic over scalars and vectors of any arity.
  *
  * @param {string} op One of `+ - * /`.
  * @param {number|object} a Left operand.
@@ -234,47 +357,129 @@ function arith(op, a, b) {
     }
     return mat4TimesVec4(a, b);
   }
-  if (isVec4(a) || isVec4(b)) {
-    // A 3-vector meeting a 4-vector has no defined lane mapping, so it throws
-    // instead of being padded with a lane the shader never wrote.
-    const promote = (v) => {
-      if (isVec4(v)) {
-        return v;
-      }
-      if (isVec(v)) {
-        throw new Error("mixed vec3 and vec4 operands");
-      }
-      return vec4(v, v, v, v);
-    };
-    const av = promote(a);
-    const bv = promote(b);
-    return vec4(f(av.x, bv.x), f(av.y, bv.y), f(av.z, bv.z), f(av.w, bv.w));
-  }
   if (isVec(a) || isVec(b)) {
-    const av = isVec(a) ? a : vec(a, a, a);
-    const bv = isVec(b) ? b : vec(b, b, b);
-    return vec(f(av.x, bv.x), f(av.y, bv.y), f(av.z, bv.z));
+    // Two vectors of different arities have no defined lane mapping, so they
+    // throw instead of one being padded with a lane the shader never wrote. A
+    // scalar splats to whatever arity the vector operand carries.
+    if (isVec(a) && isVec(b) && laneCount(a) !== laneCount(b)) {
+      throw new Error(
+        `mixed vec${laneCount(a)} and vec${laneCount(b)} operands`,
+      );
+    }
+    const size = laneCount(isVec(a) ? a : b);
+    const left = isVec(a) ? laneValues(a) : new Array(size).fill(a);
+    const right = isVec(b) ? laneValues(b) : new Array(size).fill(b);
+    return makeVector(
+      size,
+      left.map((component, lane) => f(component, right[lane])),
+    );
   }
   return f(a, b);
 }
 
+/**
+ * Lift a scalar builtin to the component-wise form WGSL and GLSL both give it.
+ *
+ * The rule is `arith`'s, so the two agree with each other: a scalar argument
+ * splats to the vector arguments' arity, two vector arguments of different
+ * arities throw rather than one being padded with a lane the shader never
+ * wrote, and the result carries the arity it was handed. Before this a vector
+ * reaching a scalar builtin read components that are not there and answered
+ * `NaN` — a silent number, which is the failure mode this module exists to
+ * refuse.
+ *
+ * @param {string} name The builtin's WGSL name, for the message.
+ * @param {Function} scalar The scalar implementation, applied per lane.
+ * @returns {Function} The component-wise builtin.
+ */
+function componentWise(name, scalar) {
+  return (...args) => {
+    if (args.some(isMat4)) {
+      throw new Error(`${name} cannot be applied to a matrix`);
+    }
+    const vectors = args.filter(isVec);
+    if (vectors.length === 0) {
+      return scalar(...args);
+    }
+    const size = laneCount(vectors[0]);
+    for (const other of vectors) {
+      if (laneCount(other) !== size) {
+        throw new Error(`mixed vec${size} and vec${laneCount(other)} operands`);
+      }
+    }
+    const lanes = args.map((a) =>
+      isVec(a) ? laneValues(a) : new Array(size).fill(a),
+    );
+    return makeVector(
+      size,
+      Array.from({ length: size }, (ignored, lane) =>
+        scalar(...lanes.map((argument) => argument[lane])),
+      ),
+    );
+  };
+}
+
+/**
+ * A vector argument's lanes, for a builtin whose subject IS a vector.
+ *
+ * WGSL gives `length` a scalar overload that no consumer of this module uses,
+ * so a scalar — or a matrix, or anything else carrying no components —
+ * reaching one of these is a shader the evaluator has outgrown. It throws
+ * naming the builtin rather than reading lanes that are not there and
+ * answering `NaN`.
+ *
+ * @param {string} name The builtin's WGSL name, for the message.
+ * @param {object} v The argument.
+ * @returns {number[]} Its lanes.
+ */
+function vectorLanes(name, v) {
+  if (!isVec(v)) {
+    throw new Error(`${name} takes a vector`);
+  }
+  return laneValues(v);
+}
+
 const BUILTINS = {
-  max: (a, b) => (isVec(a) || isVec(b) ? arith("max", a, b) : Math.max(a, b)),
-  min: (a, b) => Math.min(a, b),
-  abs: (a) => Math.abs(a),
-  sqrt: (a) => Math.sqrt(a),
-  log2: (a) => Math.log2(a),
-  pow: (a, b) => Math.pow(a, b),
-  clamp: (v, lo, hi) => Math.min(Math.max(v, lo), hi),
-  smoothstep: (edge0, edge1, x) => {
+  // Every builtin that can be handed a vector reads its lane count, exactly as
+  // construction, arithmetic, subscripting and the rounding hook do. The
+  // scalar ones are lifted component-wise, which is what both shading
+  // languages do with them; the three whose subject is a vector read their
+  // lanes below.
+  max: componentWise("max", Math.max),
+  min: componentWise("min", Math.min),
+  abs: componentWise("abs", Math.abs),
+  sqrt: componentWise("sqrt", Math.sqrt),
+  log2: componentWise("log2", Math.log2),
+  pow: componentWise("pow", Math.pow),
+  clamp: componentWise("clamp", (v, lo, hi) => Math.min(Math.max(v, lo), hi)),
+  smoothstep: componentWise("smoothstep", (edge0, edge1, x) => {
     const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
     return t * t * (3 - 2 * t);
+  }),
+  // The vector-reading builtins obey the one rule too: they read the lane
+  // count, not three fixed components. Before this, `length` and `dot` dropped
+  // a 4-vector's `w` silently — the same lane loss `quantize` was fixed for —
+  // and `normalize` answered a 2-vector with a 3-vector, so its result could
+  // neither be constructed from nor combined with the vector it came from.
+  dot: (a, b) => {
+    const left = vectorLanes("dot", a);
+    const right = vectorLanes("dot", b);
+    if (left.length !== right.length) {
+      throw new Error(
+        `mixed vec${left.length} and vec${right.length} operands`,
+      );
+    }
+    return left.reduce((sum, c, lane) => sum + c * right[lane], 0);
   },
-  dot: (a, b) => a.x * b.x + a.y * b.y + a.z * b.z,
-  length: (a) => Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z),
+  length: (a) =>
+    Math.sqrt(vectorLanes("length", a).reduce((s, c) => s + c * c, 0)),
   normalize: (a) => {
-    const l = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
-    return vec(a.x / l, a.y / l, a.z / l);
+    const lanes = vectorLanes("normalize", a);
+    const l = Math.sqrt(lanes.reduce((s, c) => s + c * c, 0));
+    return makeVector(
+      lanes.length,
+      lanes.map((c) => c / l),
+    );
   },
   // WGSL argument order: the FALSE value first, then the true value, then the
   // condition. The GLSL twin of the same law is written `c ? a : b`, which the
@@ -305,7 +510,7 @@ function quantize(value, env) {
     return value;
   }
   if (isVec(value)) {
-    return vec(round(value.x), round(value.y), round(value.z));
+    return makeVector(laneCount(value), laneValues(value).map(round));
   }
   return typeof value === "number" ? round(value) : value;
 }
@@ -496,14 +701,14 @@ function evaluate(node, env) {
         const e = obj.__mat4;
         return vec4(e[at * 4], e[at * 4 + 1], e[at * 4 + 2], e[at * 4 + 3]);
       }
-      if (isVec4(obj)) {
-        return [obj.x, obj.y, obj.z, obj.w][at];
-      }
       if (isVec(obj)) {
-        if (at > 2) {
-          throw new Error(`subscript ${at} out of range for a vec3`);
+        const lanes = laneValues(obj);
+        if (at >= lanes.length) {
+          throw new Error(
+            `subscript ${at} out of range for a vec${lanes.length}`,
+          );
         }
-        return [obj.x, obj.y, obj.z][at];
+        return lanes[at];
       }
       throw new Error("only a matrix or a vector can be subscripted");
     }
@@ -515,40 +720,19 @@ function evaluate(node, env) {
     }
     case "call": {
       const args = node.args.map((a) => evaluate(a, env));
-      if (node.name === "vec2") {
-        // A 2-vector is a 3-vector with a zero third component, so `length`
-        // and the component-wise operators read it with no special case.
-        return args.length === 1
-          ? vec(args[0], args[0], 0)
-          : vec(args[0], args[1], 0);
+      // A callable the caller bound outranks everything this module supplies,
+      // so a spec that injects `vec4` to get its own 4-vector type out of a
+      // shader expression keeps getting it. Only when nothing is bound under
+      // the name does the built-in constructor run.
+      const injected = env.__functions?.[node.name];
+      if (injected !== undefined) {
+        return quantize(injected(...args), env);
       }
-      if (node.name === "vec3") {
-        return args.length === 1
-          ? vec(args[0], args[0], args[0])
-          : vec(args[0], args[1], args[2]);
+      const size = VECTOR_ARITY[node.name];
+      if (size !== undefined) {
+        return quantize(constructVector(node.name, size, args), env);
       }
-      if (node.name === "vec4") {
-        // WGSL's flattening constructor: the arguments' components in order
-        // must come to exactly four lanes, or it throws rather than padding.
-        const lanes = [];
-        for (const a of args) {
-          if (isVec4(a)) {
-            lanes.push(a.x, a.y, a.z, a.w);
-          } else if (isVec(a)) {
-            lanes.push(a.x, a.y, a.z);
-          } else {
-            lanes.push(a);
-          }
-        }
-        if (lanes.length === 1) {
-          return vec4(lanes[0], lanes[0], lanes[0], lanes[0]);
-        }
-        if (lanes.length !== 4) {
-          throw new Error(`vec4 given ${lanes.length} components`);
-        }
-        return vec4(lanes[0], lanes[1], lanes[2], lanes[3]);
-      }
-      const fn = env.__functions?.[node.name] ?? BUILTINS[node.name];
+      const fn = BUILTINS[node.name];
       if (fn === undefined) {
         throw new Error(`unsupported call ${node.name}`);
       }
@@ -752,11 +936,14 @@ export {
   isMat4,
   isVec,
   isVec4,
+  laneCount,
+  laneValues,
   mat4,
   parseExpression,
   readConstants,
   stripComments,
   tokenize,
   vec,
+  vec2,
   vec4,
 };
