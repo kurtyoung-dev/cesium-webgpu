@@ -613,6 +613,22 @@ always-on per-frame GPU→CPU readback exists beyond the known set.** The proble
 - **Fix:** return buffers to the caches after unmap (or retire the class after a Principle-7
   check); fix the PerformanceManager arg shape; make `mappedAtCreation`+data write or throw.
   **Owner:** NEW (adjacent FAR-200).
+- **RULED AND PARTLY DISCHARGED 2026-09-18** (lane W3-A-MAPPED-BUFFERS / Goatleaf, base
+  `1a2baeaa4a`; ledger entry in `DEFERRED_WORK.md` under that lane's heading). The repair-or-retire
+  choice this row leaves open is settled **WIRE**, for the reason the row itself gives: the
+  `ARCHITECTURE_REVIEW_2026-09-02.md` RETIRE ruling (`H-R6` / `L-R1` / `L-P1`, `:511` / `:988` /
+  `:1010`) covers `WebGPUShaderCache` and names neither this class nor its context field, so under
+  Principle 7 there is no retire disposition to re-derive and the scaffolding stays. The class now
+  has a production consumer: `mapAndRead` is homed in `WebGPUBufferMapper.ts` and imported by
+  `WebGPUEntityClusterDispatcher.ts` and `WebGPUComputeInstanceRenderer.ts`. Closed here: the
+  never-repopulated caches (`_recycle` pushes in a `finally` and evicts past `_maxCachedBuffers`
+  there rather than only in `advanceFrame`, and `StagingEntry.mode` stops a `MAP_READ` entry
+  reaching a write caller) and the PerformanceManager argument shape (`:697` / `:718` now call
+  `uploadViaStagingBuffer(…, { destOffset })` and `readbackBuffer(…, { srcOffset })`; the second
+  method it used to call, `readbackViaStagingBuffer`, has never existed). **Still open under this
+  row:** the private mid-frame submit per transfer, and `WebGPUBuffer.ts:146`
+  `if (defined(options.data) && !options.mappedAtCreation)`, which silently drops data supplied
+  alongside `mappedAtCreation: true`.
 
 ### S6-5 (NEW · scale-dependent · LOW-MED) — EntityCluster GPU grid pays CPU-zero-fill buffer clears, a private mid-frame submit, and a double-copy 3-buffer readback per clustering dispatch
 - **Location:** `WebGPUEntityClusterDispatcher.ts:280-299` (writeBuffer of zeroed CPU arrays as

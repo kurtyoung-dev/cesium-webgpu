@@ -640,8 +640,9 @@ class WebGPUComputeEngine {
    * @private
    */
   private _validateWorkgroups(command: WebGPUComputeCommand): void {
-    if (!command.workgroupCountX) return;
-
+    // Every axis is checked. An explicit zero on one axis says the dispatch is
+    // empty, not that the other two are within the device's limit, and the
+    // `?? 1` defaults below already stand in for an absent count.
     const maxPerDim =
       this._device.limits.maxComputeWorkgroupsPerDimension ?? 65535;
 

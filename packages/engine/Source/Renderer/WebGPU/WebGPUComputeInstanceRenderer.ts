@@ -80,6 +80,7 @@ import {
   storageBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { mapAndRead } from "./WebGPUBufferMapper.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
@@ -1424,15 +1425,19 @@ async function _readInstancePositionAsync(
       return;
     }
 
-    await staging.mapAsync(GPUMapMode.READ, 0, INSTANCE_RECORD_BYTES);
-    const f = new Float32Array(
-      staging.getMappedRange(0, INSTANCE_RECORD_BYTES),
+    // `staging` is cached on the collection and reused by every later pick, so
+    // it has to unmap even when the decode throws: a buffer left mapped fails
+    // the next frame's copy into it and disables instance pick positions for
+    // the life of the collection.
+    const { px, py, pz } = await mapAndRead(
+      staging,
+      { offset: 0, size: INSTANCE_RECORD_BYTES },
+      (mapped) => {
+        const f = new Float32Array(mapped);
+        // positionHigh = f[0..2], positionLow = f[4..6] (vec3 padded to 16 bytes).
+        return { px: f[0] + f[4], py: f[1] + f[5], pz: f[2] + f[6] };
+      },
     );
-    // positionHigh = f[0..2], positionLow = f[4..6] (vec3 padded to 16 bytes).
-    const px = f[0] + f[4];
-    const py = f[1] + f[5];
-    const pz = f[2] + f[6];
-    staging.unmap();
 
     if (isFinite(px) && isFinite(py) && isFinite(pz)) {
       if (!cache.posCacheValue) {

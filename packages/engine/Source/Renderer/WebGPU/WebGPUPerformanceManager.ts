@@ -48,6 +48,10 @@ import {
 } from "./WebGPUAtmosphereLUT.js";
 import type { AtmosphereLUTResources } from "./WebGPUAtmosphereLUT.js";
 import type {
+  ReadbackOptions,
+  StagingUploadOptions,
+} from "./WebGPUBufferMapper.js";
+import type {
   AsyncResourceTelemetry,
   AsyncResourceTelemetrySnapshot,
 } from "./AsyncResourceTelemetry.js";
@@ -120,7 +124,25 @@ interface PerformanceManagerContext {
       passName: string,
     ): GPUComputePassTimestampWrites | undefined;
   } | null;
+  /**
+   * The mapper's transfer surface. `uploadViaStagingBuffer` and
+   * `readbackBuffer` are the two `WebGPUBufferMapper` implements, and their
+   * signatures here must stay identical to the class's own or a call
+   * typechecks against a shape no object provides. The batching members
+   * below them are forward-looking slots with no implementation: a caller
+   * that reaches one gets a TypeError.
+   */
   bufferMapper: {
+    uploadViaStagingBuffer(
+      buffer: GPUBuffer,
+      data: ArrayBuffer | ArrayBufferView,
+      options?: StagingUploadOptions,
+    ): Promise<void>;
+    readbackBuffer(
+      buffer: GPUBuffer,
+      byteLength: number,
+      options?: ReadbackOptions,
+    ): Promise<Uint8Array>;
     scheduleUpload(
       buffer: GPUBuffer,
       offset: number,
@@ -132,11 +154,6 @@ interface PerformanceManagerContext {
       size: number,
     ): Promise<ArrayBuffer>;
     flush(): Promise<void>;
-    uploadViaStagingBuffer(
-      buffer: GPUBuffer,
-      data: ArrayBufferView,
-      offset: number,
-    ): Promise<void>;
     readbackViaStagingBuffer(
       buffer: GPUBuffer,
       size: number,
@@ -694,7 +711,9 @@ export class WebGPUPerformanceManager {
     }
     const mapper = this._context.bufferMapper;
     if (mapper) {
-      await mapper.uploadViaStagingBuffer(targetBuffer, data, offset);
+      await mapper.uploadViaStagingBuffer(targetBuffer, data, {
+        destOffset: offset,
+      });
     } else {
       this._context.device?.queue.writeBuffer(targetBuffer, offset, data);
     }
@@ -715,7 +734,7 @@ export class WebGPUPerformanceManager {
   ): Promise<Uint8Array | null> {
     const mapper = this._context.bufferMapper;
     if (mapper) {
-      return mapper.readbackViaStagingBuffer(sourceBuffer, size, offset);
+      return mapper.readbackBuffer(sourceBuffer, size, { srcOffset: offset });
     }
     return null;
   }

@@ -22013,3 +22013,44 @@ byte-identical to `upstream/main` before this change);
 temp copy of all three mixins, the Node contract goes RED on output, not on absence —
 `nothing the Viewer or the mixin added is left in the caller's container / expected: 0 / actual: 1`
 for each of the three.
+
+## Bug renderer-infra-01 — a readback buffer left mapped by a throwing decode disables its feature for the life of the context (wave 3, lane W3-A-MAPPED-BUFFERS / Goatleaf, 2026-09-18)
+
+**Files affected:** `packages/engine/Source/Renderer/WebGPU/WebGPUBufferMapper.ts` (the helper's new
+home), `packages/engine/Source/Renderer/WebGPU/WebGPUEntityClusterDispatcher.ts:361-377`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUComputeInstanceRenderer.ts:1427-1436`.
+
+**Root cause.** Both sites decoded a mapped range and only then called `unmap()`, with the `unmap()`
+outside any `try`/`finally`. WebGPU rejects `copyBufferToBuffer` into a mapped buffer, so for a buffer
+that is created once and reused every frame the cost of one throw between the map and the unmap is not
+one frame of data — it is the feature. The cluster dispatcher wedges three persistent buffers at once
+and re-arms every frame from its `finally`, logging a `console.error` each time while GPU entity
+clustering falls to the CPU path and never returns.
+
+Two premises from the audit did **not** reproduce and are recorded so they are not re-derived. (a) The
+stated trigger, "destroy a readback buffer while a readback is in flight", is blocked by the code:
+`computeGrid` returns early on `_readbackInFlight` at `:254-256` *before* `_ensureResources`, and
+`_destroyResources` nulls `_resources` outright, so a teardown leaves nothing reusable to wedge. The
+surviving non-teardown trigger is an allocation failure inside the three `new Uint32Array(...).slice()`
+copies, or any rejection that settles one map while its siblings resolve. (b) The "eight sites"
+framing overcounts: `WebGPUGPUCuller.ts:467-499` and `WebGPUHiZOcclusionDispatcher.ts:915-933` already
+chain `.catch(() => { try { buf.unmap(); } catch {} })`, four further cited sites map transient
+per-call buffers, and `WebGPUBufferMapper` had no production consumer at all. Two files, not eight.
+
+**Fix applied.** One `mapAndRead(buffer, range, decode)` in `WebGPUBufferMapper.ts`: map, decode inside
+`try`, `unmap()` in `finally` inside its own `try`/`catch` for the destroyed-buffer case. Because each
+buffer owns its own unmap, composing three of them under one `Promise.all` is correct on a partial
+settle — `Promise.all` rejects on the first rejection while the siblings keep running and release
+themselves. The idiom was already in the tree at `WebGPUAutoExposure.ts:391-403`; this extracts it
+rather than inventing it.
+
+**How it is pinned.** `Tools/visual-regression/webgpu-mapped-buffer-lifecycle.spec.mjs` groups A and B.
+The fake `GPUBuffer` enforces the two rules the real API enforces — a mapped buffer cannot be mapped
+again, and cannot receive a copy — so the assertion is the consequence (the buffer still takes a copy,
+the next dispatch still produces a grid) rather than the presence of a keyword. **Both call sites are
+covered, because a helper that is correct in isolation says nothing about a site that does not use it:**
+B1/B2 drive `computeGrid`, and B3 drives `getWebGPUInstanceWorldPosition` over a staging buffer whose
+first mapped range is 62 bytes, so the site's own `new Float32Array(mapped)` throws where the decode
+runs. Three mutants: moving the `unmap()` out of the `finally` reddens A2; restoring the original
+tail-unmap block in the dispatcher reddens B2; restoring it in the compute-instance renderer reddens
+B3. All three were run and each went RED on exactly one subtest.

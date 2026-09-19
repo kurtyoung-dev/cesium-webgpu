@@ -118,7 +118,7 @@
 "packages/engine/Source/Renderer/WebGPU/WebGPUClusteredLightingDispatcher.ts"	"prefer-const"	1
 "packages/engine/Source/Renderer/WebGPU/WebGPUColdOpticsEffect.ts"	"curly"	8
 "packages/engine/Source/Renderer/WebGPU/WebGPUColdOpticsEffect.ts"	"no-duplicate-imports"	1
-"packages/engine/Source/Renderer/WebGPU/WebGPUComputeEngine.ts"	"curly"	4
+"packages/engine/Source/Renderer/WebGPU/WebGPUComputeEngine.ts"	"curly"	3
 "packages/engine/Source/Renderer/WebGPU/WebGPUComputeInstanceRenderer.ts"	"@typescript-eslint/no-unused-vars"	2
 "packages/engine/Source/Renderer/WebGPU/WebGPUContactShadowsEffect.ts"	"curly"	6
 "packages/engine/Source/Renderer/WebGPU/WebGPUContactShadowsEffect.ts"	"no-useless-assignment"	1

@@ -21677,3 +21677,84 @@ matching assertion RED on OUTPUT.
 this lane — the five rows above are point fixes. What this batch adds toward it is a measurable
 Node-side contract for four of the widgets and the three mixins, which a later lane can extend
 widget by widget rather than re-deriving the harness.
+
+### Lane W3-A-MAPPED-BUFFERS (Goatleaf) — mapped-buffer lifetime and four renderer-infrastructure omissions, 2026-09-18 (Batch NNNN, number stamped by the seat)
+
+Base `1a2baeaa4a`. Every cited line re-read in the lane's own clone before it was changed; where the
+report and the tree disagreed, the tree is what the entries below record. Node acceptance:
+`Tools/visual-regression/webgpu-mapped-buffer-lifecycle.spec.mjs`, 16 subtests, added to
+`test-visual-regression-node` (368 → 384 passing, 0 failing). Seven inertness mutants — one per item,
+plus one per call site of `renderer-infra-01` — each RED on its own subtest and green elsewhere.
+
+**`renderer-infra-01` — mapped-buffer readbacks are exception-safe through one helper. CITES `H-R9`
+(`ARCHITECTURE_REVIEW_2026-09-02.md:991`); no new row opened** *(2026-09-18, FIXED)*. New
+`mapAndRead(buffer, range, decode)` in
+`packages/engine/Source/Renderer/WebGPU/WebGPUBufferMapper.ts` maps, decodes inside a `try`, and
+unmaps in a `finally` whose `unmap()` is itself guarded. Two call sites routed through it:
+`WebGPUEntityClusterDispatcher.ts:361-377` (three persistent buffers, now one `mapAndRead` each under
+the same `Promise.all`, so a partial settle releases the siblings that did map) and
+`WebGPUComputeInstanceRenderer.ts:1427-1436` (the collection's cached pick-position staging buffer).
+Scope held at two files as the refuter corrected it: `WebGPUGPUCuller.ts:467-499` and
+`WebGPUHiZOcclusionDispatcher.ts:915-933` were re-read and already chain an unmapping `catch`, so
+neither was touched. The idiom copied is `WebGPUAutoExposure.ts:391-403`. Authorship FORK; sync
+exposure none. Acceptance is the consequence, not the keyword: a fake `GPUBuffer` that refuses a
+second map and refuses a copy while mapped, asserting that after a throwing decode the buffer accepts
+a copy and the next dispatch produces a grid again.
+
+**`renderer-infra-02` — the mapper is WIRED, not retired** *(2026-09-18, decision + FIXED)*. The
+ledger row that owns this is **`S6-4` in `PERF_ARCH_DEEP_DIVE_2026-07-16.md:604`**, whose own fix text
+is "return buffers to the caches after unmap (**or** retire the class after a Principle-7 check)" and
+which records that the class "is the API future streaming work will adopt". The
+`ARCHITECTURE_REVIEW_2026-09-02.md` RETIRE ruling at `:511` / `:988` / `:1010` covers
+`WebGPUShaderCache` (`H-R6` / `L-R1` / `L-P1`) and names neither `WebGPUBufferMapper` nor its context
+field — checked line by line. With no RETIRE disposition on record and a live consumer now homed in
+the module, Principle 7 says the scaffolding stays. Wired: `mapAndRead` lives here and both engine
+readback sites import it; `readbackBuffer` routes its own map/decode through it;
+`_recycle(buffer, size, mode)` returns a finished transfer buffer to its cache in a `finally` and
+evicts past `_maxCachedBuffers` there rather than only in `advanceFrame`, so the cache is bounded for
+a caller that never advances a frame; `StagingEntry` now records `mode` and `_getStagingBuffer`
+matches on it, so a `MAP_READ|COPY_DST` entry can never be handed to a write caller — the distinction
+Gemini's proposed fix dropped. `_getReadbackBuffer` delegates to `_getStagingBuffer(size, READ)`
+instead of carrying a second copy of the usage table. Authorship FORK. `S6-4` is **partly** discharged:
+its recycle half and its PerformanceManager-argument half close here, its third half does **not** —
+`WebGPUBuffer.ts:146` still reads `if (defined(options.data) && !options.mappedAtCreation)`, so a
+caller passing both `data` and `mappedAtCreation: true` has its data silently dropped. Re-read at
+`1a2baeaa4a` and left open under `S6-4`; no item in this lane's brief covers it.
+
+**`renderer-infra-03` — the performance manager calls methods that exist** *(2026-09-18, FIXED)*.
+`WebGPUPerformanceManager.ts:718` called `mapper.readbackViaStagingBuffer(...)`, which
+`WebGPUBufferMapper` does not implement, and `:697` passed a numeric `offset` where the third
+parameter is `StagingUploadOptions`, so the destination offset silently became 0. Both now call the
+real API (`readbackBuffer(buffer, size, { srcOffset })`, `uploadViaStagingBuffer(buffer, data,
+{ destOffset })`). The structural `PerformanceManagerContext.bufferMapper` interface was **not
+trimmed** (CLAUDE.md: never trim WIP-module interfaces): `scheduleUpload`, `scheduleReadback`, `flush`
+and `readbackViaStagingBuffer` stay as forward-looking slots with a comment saying so; the two
+implemented members were added with the class's own signatures, imported as types from the mapper so
+the two cannot drift again. This is `A11` in the report — the `as unknown as` at the construction
+site (`WebGPUContext.ts:6504`) is why `tsc` could not see the call; that cast is untouched and still
+carries its own rationale. Authorship FORK.
+
+**`renderer-infra-04` — `WebGPUContext.destroy()` releases both pipeline caches** *(2026-09-18,
+FIXED)*. `destroy()` cleared seven caches and never mentioned `_webgpuPipelineCache` /
+`_webgpuComputePipelineCache` (`:676`, `:683`). Both are now detached and destroyed in the
+"Clear caches that reference device-owned handles" block, using the file's own
+`const x = this._x; this._x = null; continueFinalCleanupAfter(() => x?.destroy())` idiom. The premise
+the refuter corrected is the one recorded here: at `:5550-5560` a **pooled** device is released rather
+than destroyed, so under the fork's own multi-view device sharing the retained pipelines are live GPU
+objects, not merely JS wrappers. Authorship FORK.
+
+**`renderer-infra-05` — every workgroup axis is validated** *(2026-09-18, FIXED)*.
+`WebGPUComputeEngine.ts:643` returned early on `!command.workgroupCountX`, so an oversized Y or Z
+reached `dispatchWorkgroups` and surfaced as a browser validation message instead of the engine's
+named `RuntimeError`. The early return is gone; the body's existing `?? 1` defaults already stood in
+for an absent count, which is why it was redundant as well as wrong. Trigger stays narrow — the
+command constructor defaults X to 1, so only an explicit `0` reached it. Authorship FORK.
+
+**Not done here, and why.** `renderer-infra-04b` (device invalidation "drops the cache without
+`destroy()`") was re-read at `WebGPUContext.ts:7656-7658`: the registry already calls `clear()` and
+the slot handler then nulls the object, and `destroy()` on these classes is `clear()` plus a
+`pendingPipelines.clear()` that cancels nothing — so the change alters nothing observable and was not
+made. The four transient-buffer `mapAsync` sites (`WebGPUCSMRenderer.ts:996`/`:1043`,
+`WebGPUFeatureIdTexture.ts`, `WebGPUTextureUtilities.ts`, `WebGPUContext.ts:4105-4120`) leak one
+buffer on a throw and wedge nothing; they are outside this lane's two-file scope and are left for
+whoever adopts `mapAndRead` more widely.

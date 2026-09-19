@@ -41,6 +41,7 @@ import {
   storageBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { mapAndRead } from "./WebGPUBufferMapper.js";
 import { getAvailableFrameCommandEncoder } from "./WebGPUFrameCommandEncoder.js";
 
 import EntityClusterGridGPUSource from "../../Shaders/WebGPU/Compute/EntityClusterGridGPU.js";
@@ -358,23 +359,29 @@ class WebGPUEntityClusterDispatcher {
       if (frameSubmission && !(await frameSubmission)) {
         return null;
       }
-      await Promise.all([
-        r.cellCountsReadback.mapAsync(GPUMapMode.READ, 0, cellCount * 4),
-        r.cellRepReadback.mapAsync(GPUMapMode.READ, 0, cellCount * 4),
-        r.pointCellIdReadback.mapAsync(GPUMapMode.READ, 0, pointCount * 4),
+      // The three readback buffers are persistent, so each one unmaps itself
+      // even when a sibling's map or decode fails: a buffer left mapped would
+      // reject every later copy into it and strand GPU clustering on the CPU
+      // fallback for the rest of this context's life.
+      const decodeU32 = (mapped: ArrayBuffer) =>
+        new Uint32Array(mapped).slice();
+      const [cellCounts, cellRep, pointCellId] = await Promise.all([
+        mapAndRead(
+          r.cellCountsReadback,
+          { offset: 0, size: cellCount * 4 },
+          decodeU32,
+        ),
+        mapAndRead(
+          r.cellRepReadback,
+          { offset: 0, size: cellCount * 4 },
+          decodeU32,
+        ),
+        mapAndRead(
+          r.pointCellIdReadback,
+          { offset: 0, size: pointCount * 4 },
+          decodeU32,
+        ),
       ]);
-      const cellCounts = new Uint32Array(
-        r.cellCountsReadback.getMappedRange(0, cellCount * 4),
-      ).slice();
-      const cellRep = new Uint32Array(
-        r.cellRepReadback.getMappedRange(0, cellCount * 4),
-      ).slice();
-      const pointCellId = new Uint32Array(
-        r.pointCellIdReadback.getMappedRange(0, pointCount * 4),
-      ).slice();
-      r.cellCountsReadback.unmap();
-      r.cellRepReadback.unmap();
-      r.pointCellIdReadback.unmap();
       return {
         gridCols,
         gridRows,

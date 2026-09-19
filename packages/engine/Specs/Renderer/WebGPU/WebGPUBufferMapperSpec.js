@@ -37,9 +37,12 @@ if (typeof globalThis.GPUMapMode === "undefined") {
 //     device.createBuffer call), including the size-match predicate
 //     `entry.size >= size && entry.size <= size * 2`
 //
-// SKIPPED (device-bound — require a real GPUDevice/queue):
-// uploadViaStagingBuffer, readbackBuffer, readbackTyped, and the
-// create-NEW branch of _getStagingBuffer / _getReadbackBuffer.
+// The transfer paths themselves (uploadViaStagingBuffer / readbackBuffer /
+// readbackTyped) are exercised against a fake device + fake buffers in the
+// last describe block. That block is what fills the caches through the code
+// that really fills them: a reuse test on a hand-seeded cache passes whether
+// or not anything ever puts a buffer back, so on its own it cannot tell a
+// working pool from a pool that only ever leaks.
 
 // A stub device — never invoked by any path exercised here.
 function makeMapper() {
@@ -54,9 +57,79 @@ function fakeBuffer(tag) {
 }
 
 // Seed a staging/readback cache array with an entry matching the private
-// StagingEntry shape { buffer, size, lastUsed }.
-function makeEntry(buffer, size) {
-  return { buffer: buffer, size: size, lastUsed: 0 };
+// StagingEntry shape { buffer, size, mode, lastUsed }. The mode has to match
+// the requesting caller's: a MAP_WRITE|COPY_SRC buffer cannot serve a
+// readback, and a MAP_READ|COPY_DST one cannot be written by an upload.
+function makeEntry(buffer, size, mode) {
+  return {
+    buffer: buffer,
+    size: size,
+    mode: mode ?? GPUMapMode.WRITE,
+    lastUsed: 0,
+  };
+}
+
+// A GPUBuffer stand-in for the transfer paths below. It enforces the rule the
+// real API enforces — a mapped buffer cannot be mapped again — so a mapping
+// the mapper failed to release surfaces as a failure rather than as a pass.
+function makeDeviceBuffer(descriptor) {
+  const bytes = new Uint8Array(descriptor.size);
+  const buffer = {
+    label: descriptor.label,
+    size: descriptor.size,
+    usage: descriptor.usage,
+    bytes: bytes,
+    mapped: false,
+    destroyed: false,
+  };
+  buffer.mapAsync = function () {
+    if (buffer.mapped) {
+      return Promise.reject(new Error(`already mapped: ${buffer.label}`));
+    }
+    buffer.mapped = true;
+    return Promise.resolve();
+  };
+  buffer.getMappedRange = function (offset, size) {
+    const start = offset ?? 0;
+    const end = start + (size ?? bytes.length - start);
+    return bytes.slice(start, end).buffer;
+  };
+  buffer.unmap = function () {
+    buffer.mapped = false;
+  };
+  buffer.destroy = function () {
+    buffer.destroyed = true;
+  };
+  return buffer;
+}
+
+// A GPUDevice stand-in that records the buffers it creates and the copies it
+// is asked to encode, so a test can tell an allocation from a cache hit.
+function makeDevice() {
+  const device = { buffers: [], copies: [] };
+  device.createBuffer = function (descriptor) {
+    const buffer = makeDeviceBuffer(descriptor);
+    device.buffers.push(buffer);
+    return buffer;
+  };
+  device.createCommandEncoder = function () {
+    return {
+      copyBufferToBuffer: function (src, srcOffset, dst, dstOffset, length) {
+        device.copies.push({
+          src: src,
+          srcOffset: srcOffset,
+          dst: dst,
+          dstOffset: dstOffset,
+          length: length,
+        });
+      },
+      finish: function () {
+        return {};
+      },
+    };
+  };
+  device.queue = { submit: function () {}, writeBuffer: function () {} };
+  return device;
 }
 
 describe("Renderer/WebGPU/WebGPUBufferMapper", function () {
@@ -250,7 +323,7 @@ describe("Renderer/WebGPU/WebGPUBufferMapper", function () {
     it("returns a cached readback buffer of sufficient size", function () {
       const mapper = makeMapper();
       const cached = fakeBuffer("reuse-rb");
-      mapper._readbackCache = [makeEntry(cached, 512)];
+      mapper._readbackCache = [makeEntry(cached, 512, GPUMapMode.READ)];
       // 512 >= 512 && 512 <= 1024 → reuse.
       const got = mapper._getReadbackBuffer(512);
       expect(got).toBe(cached);
@@ -261,9 +334,85 @@ describe("Renderer/WebGPU/WebGPUBufferMapper", function () {
       const mapper = makeMapper();
       // 512 > 200 * 2 (400) → predicate fails → device-bound create →
       // throws on the stub device.
-      mapper._readbackCache = [makeEntry(fakeBuffer("big-rb"), 512)];
+      mapper._readbackCache = [
+        makeEntry(fakeBuffer("big-rb"), 512, GPUMapMode.READ),
+      ];
       expect(() => mapper._getReadbackBuffer(200)).toThrow();
       expect(mapper._readbackCache.length).toBe(1);
+    });
+  });
+
+  describe("the transfer paths fill and reuse the caches", function () {
+    it("returns a finished readback buffer to the cache", async function () {
+      const device = makeDevice();
+      const mapper = new WebGPUBufferMapper(/** @type {any} */ (device));
+      const source = makeDeviceBuffer({ size: 64, label: "source" });
+
+      const result = await mapper.readbackBuffer(
+        /** @type {any} */ (source),
+        16,
+      );
+      expect(result.length).toBe(16);
+      expect(mapper._readbackCache.length).toBe(1);
+      expect(mapper.getStats().readbackCount).toBe(1);
+    });
+
+    it("reuses the recycled readback buffer instead of allocating", async function () {
+      const device = makeDevice();
+      const mapper = new WebGPUBufferMapper(/** @type {any} */ (device));
+      const source = makeDeviceBuffer({ size: 64, label: "source" });
+
+      await mapper.readbackBuffer(/** @type {any} */ (source), 16);
+      const allocated = device.buffers.length;
+      await mapper.readbackBuffer(/** @type {any} */ (source), 16);
+      expect(device.buffers.length).toBe(allocated);
+    });
+
+    it("never hands a readback buffer to an upload", async function () {
+      const device = makeDevice();
+      const mapper = new WebGPUBufferMapper(/** @type {any} */ (device));
+      const source = makeDeviceBuffer({ size: 64, label: "source" });
+      const destination = makeDeviceBuffer({ size: 64, label: "destination" });
+
+      await mapper.readbackBuffer(/** @type {any} */ (source), 16);
+      const readbackBuffers = device.buffers.slice();
+      await mapper.uploadViaStagingBuffer(
+        /** @type {any} */ (destination),
+        new Uint8Array(16),
+        { destOffset: 8 },
+      );
+
+      const copy = device.copies[device.copies.length - 1];
+      expect(readbackBuffers.indexOf(copy.src)).toBe(-1);
+      expect(copy.dstOffset).toBe(8);
+    });
+
+    it("leaves the readback buffer unmapped and re-mappable after a transfer", async function () {
+      const device = makeDevice();
+      const mapper = new WebGPUBufferMapper(/** @type {any} */ (device));
+      const source = makeDeviceBuffer({ size: 64, label: "source" });
+
+      await mapper.readbackBuffer(/** @type {any} */ (source), 16);
+      const readback = mapper._readbackCache[0].buffer;
+      expect(readback.mapped).toBe(false);
+
+      // A buffer left mapped rejects its next map, so a second readback that
+      // succeeds is the proof the first one released its mapping.
+      const again = await mapper.readbackBuffer(
+        /** @type {any} */ (source),
+        16,
+      );
+      expect(again.length).toBe(16);
+    });
+
+    it("destroys recycled buffers when the mapper is destroyed", async function () {
+      const device = makeDevice();
+      const mapper = new WebGPUBufferMapper(/** @type {any} */ (device));
+      const source = makeDeviceBuffer({ size: 64, label: "source" });
+
+      await mapper.readbackBuffer(/** @type {any} */ (source), 16);
+      mapper.destroy();
+      expect(device.buffers.every((buffer) => buffer.destroyed)).toBe(true);
     });
   });
 });

@@ -22,6 +22,62 @@
  */
 
 /**
+ * The byte range of a buffer to map for reading.
+ */
+export interface MappedReadRange {
+  /** Byte offset of the range (default: 0) */
+  offset?: number;
+  /** Byte length of the range; omitted means to the end of the buffer */
+  size?: number;
+}
+
+/**
+ * Map a buffer for reading, hand the mapped range to `decode`, and unmap
+ * before returning or rethrowing.
+ *
+ * A readback buffer that outlives one call must be unmapped on the throwing
+ * path too: while it stays mapped every later `copyBufferToBuffer` into it
+ * fails validation, so one failed decode disables the reading feature for the
+ * rest of the context's life rather than for one frame.
+ *
+ * Each buffer owns its own unmap, so several of these composed under
+ * `Promise.all` remain correct when one `mapAsync` rejects while the others
+ * resolve: the rejection reaches the caller and the buffers that did map are
+ * still released.
+ *
+ * @param buffer - Buffer to map; requires MAP_READ usage
+ * @param range - Byte range to map
+ * @param decode - Reads the mapped range; its return value is the result
+ * @returns Whatever `decode` returned
+ */
+export async function mapAndRead<T>(
+  buffer: GPUBuffer,
+  range: MappedReadRange,
+  decode: (mapped: ArrayBuffer) => T,
+): Promise<T> {
+  const offset = range.offset ?? 0;
+  const size = range.size;
+  if (size === undefined) {
+    await buffer.mapAsync(GPUMapMode.READ, offset);
+  } else {
+    await buffer.mapAsync(GPUMapMode.READ, offset, size);
+  }
+  try {
+    return decode(
+      size === undefined
+        ? buffer.getMappedRange(offset)
+        : buffer.getMappedRange(offset, size),
+    );
+  } finally {
+    try {
+      buffer.unmap();
+    } catch {
+      /* destroyed, or the mapping was already released */
+    }
+  }
+}
+
+/**
  * Upload options for staging buffer transfers.
  */
 export interface StagingUploadOptions {
@@ -63,6 +119,12 @@ export interface BufferMapperStats {
 interface StagingEntry {
   buffer: GPUBuffer;
   size: number;
+  /**
+   * The map mode the buffer was created for. A buffer is usable only in the
+   * direction its usage flags allow, so a recycled entry may only be handed
+   * back to a caller asking for the same mode.
+   */
+  mode: GPUMapModeFlags;
   lastUsed: number;
 }
 
@@ -123,40 +185,62 @@ export class WebGPUBufferMapper {
     // Get or create staging buffer
     const staging = this._getStagingBuffer(alignedSize, GPUMapMode.WRITE);
 
-    // Map and write. Guard against destruction during the await (viewer
-    // teardown / device-loss race): calling getMappedRange on a destroyed
-    // staging buffer throws, and leaving it in the mapped-pending state
-    // permanently wedges the buffer pool entry.
-    await staging.mapAsync(GPUMapMode.WRITE);
-    if (this._isDestroyed) {
-      try {
-        staging.unmap();
-      } catch {
-        /* already unmapped or destroyed */
+    try {
+      // Map and write. Guard against destruction during the await (viewer
+      // teardown / device-loss race): calling getMappedRange on a destroyed
+      // staging buffer throws, and leaving it in the mapped-pending state
+      // permanently wedges the buffer pool entry.
+      await staging.mapAsync(GPUMapMode.WRITE);
+      if (this._isDestroyed) {
+        try {
+          staging.unmap();
+        } catch {
+          /* already unmapped or destroyed */
+        }
+        return;
       }
-      return;
-    }
-    const mappedRange = new Uint8Array(staging.getMappedRange(0, alignedSize));
 
-    if (data instanceof ArrayBuffer) {
-      mappedRange.set(new Uint8Array(data));
-    } else {
-      mappedRange.set(
-        new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+      try {
+        const mappedRange = new Uint8Array(
+          staging.getMappedRange(0, alignedSize),
+        );
+
+        if (data instanceof ArrayBuffer) {
+          mappedRange.set(new Uint8Array(data));
+        } else {
+          mappedRange.set(
+            new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+          );
+        }
+      } finally {
+        try {
+          staging.unmap();
+        } catch {
+          /* already unmapped or destroyed */
+        }
+      }
+
+      // Copy staging → dest
+      const encoder = this._device.createCommandEncoder({
+        label: options.label ?? "Staging Upload",
+      });
+      encoder.copyBufferToBuffer(
+        staging,
+        0,
+        destBuffer,
+        destOffset,
+        alignedSize,
       );
+      this._device.queue.submit([encoder.finish()]);
+
+      this._uploadCount++;
+      this._totalBytesUploaded += byteLength;
+    } finally {
+      // The copy is already recorded and submitted, so the queue holds its own
+      // reference: a later `mapAsync` on this buffer waits for that work
+      // rather than racing it.
+      this._recycle(staging, alignedSize, GPUMapMode.WRITE);
     }
-
-    staging.unmap();
-
-    // Copy staging → dest
-    const encoder = this._device.createCommandEncoder({
-      label: options.label ?? "Staging Upload",
-    });
-    encoder.copyBufferToBuffer(staging, 0, destBuffer, destOffset, alignedSize);
-    this._device.queue.submit([encoder.finish()]);
-
-    this._uploadCount++;
-    this._totalBytesUploaded += byteLength;
   }
 
   /**
@@ -181,32 +265,44 @@ export class WebGPUBufferMapper {
     // Create readback buffer
     const readback = this._getReadbackBuffer(alignedSize);
 
-    // Copy src → readback
-    const encoder = this._device.createCommandEncoder({
-      label: options.label ?? "Buffer Readback",
-    });
-    encoder.copyBufferToBuffer(srcBuffer, srcOffset, readback, 0, alignedSize);
-    this._device.queue.submit([encoder.finish()]);
+    try {
+      // Copy src → readback
+      const encoder = this._device.createCommandEncoder({
+        label: options.label ?? "Buffer Readback",
+      });
+      encoder.copyBufferToBuffer(
+        srcBuffer,
+        srcOffset,
+        readback,
+        0,
+        alignedSize,
+      );
+      this._device.queue.submit([encoder.finish()]);
 
-    // Map and read. Same destroyed-guard pattern as the upload path above.
-    await readback.mapAsync(GPUMapMode.READ);
-    if (this._isDestroyed) {
-      try {
-        readback.unmap();
-      } catch {
-        /* already unmapped or destroyed */
+      const result = await mapAndRead(
+        readback,
+        { offset: 0, size: alignedSize },
+        (mapped) => {
+          const out = new Uint8Array(byteLength);
+          out.set(new Uint8Array(mapped, 0, byteLength));
+          return out;
+        },
+      );
+
+      // Destruction during the await (viewer teardown / device-loss race)
+      // makes the decoded bytes meaningless; report the same empty result the
+      // caller would have received had the readback never been issued.
+      if (this._isDestroyed) {
+        return new Uint8Array(byteLength);
       }
-      return new Uint8Array(byteLength);
+
+      this._readbackCount++;
+      this._totalBytesReadback += byteLength;
+
+      return result;
+    } finally {
+      this._recycle(readback, alignedSize, GPUMapMode.READ);
     }
-    const mappedData = new Uint8Array(readback.getMappedRange(0, alignedSize));
-    const result = new Uint8Array(byteLength);
-    result.set(mappedData.subarray(0, byteLength));
-    readback.unmap();
-
-    this._readbackCount++;
-    this._totalBytesReadback += byteLength;
-
-    return result;
   }
 
   /**
@@ -233,11 +329,13 @@ export class WebGPUBufferMapper {
    * @private
    */
   private _getStagingBuffer(size: number, mode: GPUMapModeFlags): GPUBuffer {
-    // Try to find a cached buffer of sufficient size
-    for (let i = 0; i < this._stagingCache.length; i++) {
-      const entry = this._stagingCache[i];
-      if (entry.size >= size && entry.size <= size * 2) {
-        this._stagingCache.splice(i, 1);
+    // Try to find a cached buffer of sufficient size. The mode must match: a
+    // MAP_WRITE|COPY_SRC buffer cannot serve a readback, and vice versa.
+    const cache = this._cacheFor(mode);
+    for (let i = 0; i < cache.length; i++) {
+      const entry = cache[i];
+      if (entry.mode === mode && entry.size >= size && entry.size <= size * 2) {
+        cache.splice(i, 1);
         entry.lastUsed = this._frameCount;
         return entry.buffer;
       }
@@ -261,19 +359,40 @@ export class WebGPUBufferMapper {
    * @private
    */
   private _getReadbackBuffer(size: number): GPUBuffer {
-    for (let i = 0; i < this._readbackCache.length; i++) {
-      const entry = this._readbackCache[i];
-      if (entry.size >= size && entry.size <= size * 2) {
-        this._readbackCache.splice(i, 1);
-        return entry.buffer;
-      }
-    }
+    return this._getStagingBuffer(size, GPUMapMode.READ);
+  }
 
-    return this._device.createBuffer({
-      size,
-      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-      label: `Readback Buffer (${size} bytes)`,
-    });
+  /**
+   * The cache that owns buffers created for `mode`.
+   * @private
+   */
+  private _cacheFor(mode: GPUMapModeFlags): StagingEntry[] {
+    return mode === GPUMapMode.WRITE ? this._stagingCache : this._readbackCache;
+  }
+
+  /**
+   * Return a finished transfer buffer to its cache so the next transfer of
+   * the same size and direction reuses it. Without this the caches are only
+   * ever drained, and every transfer allocates a buffer nothing destroys.
+   *
+   * Eviction happens here rather than only in `advanceFrame`, so the cache
+   * stays bounded for a caller that never advances a frame.
+   * @private
+   */
+  private _recycle(
+    buffer: GPUBuffer,
+    size: number,
+    mode: GPUMapModeFlags,
+  ): void {
+    if (this._isDestroyed) {
+      buffer.destroy();
+      return;
+    }
+    const cache = this._cacheFor(mode);
+    cache.push({ buffer, size, mode, lastUsed: this._frameCount });
+    while (cache.length > this._maxCachedBuffers) {
+      cache.shift()!.buffer.destroy();
+    }
   }
 
   /**

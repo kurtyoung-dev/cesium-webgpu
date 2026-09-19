@@ -5495,6 +5495,17 @@ export class WebGPUContext extends GraphicsContext {
     continueFinalCleanupAfter(() => this._bindGroupLayoutCache.clear());
     continueFinalCleanupAfter(() => this._bindGroupCache.clear());
 
+    // The pipeline caches are the two largest handle maps this context owns.
+    // A pooled GPUDevice is released rather than destroyed below, so their
+    // pipelines stay live GPU objects for as long as anything retains this
+    // context; detach both before releasing the device lease.
+    const pipelineCache = this._webgpuPipelineCache;
+    this._webgpuPipelineCache = null;
+    continueFinalCleanupAfter(() => pipelineCache?.destroy());
+    const computePipelineCache = this._webgpuComputePipelineCache;
+    this._webgpuComputePipelineCache = null;
+    continueFinalCleanupAfter(() => computePipelineCache?.destroy());
+
     // Drop device-invalidation subscribers so their closures release
     // immediately even if a long-lived holder keeps this Context
     // reference alive, rather than relying on GC.
