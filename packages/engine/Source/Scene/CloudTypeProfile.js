@@ -8,8 +8,10 @@ import CloudType from "./CloudType.js";
  * parameter set. Each profile carries the five axes that distinguish the genera
  * for a volumetric raymarcher: altitude {@link CloudDeck}, vertical-extent
  * {@link CloudHeightGradientShape}, base density, optical extinction, the
- * Henyey-Greenstein anisotropy `phaseG` (≈0.9 for ice / ≈0.75 for water), and an
- * {@link CloudErosionStyle} (fibrous ice vs puffy water).
+ * Henyey-Greenstein anisotropy `phaseG` (≈0.86 for liquid water / ≈0.75 for
+ * ice — see "THE `phaseG` COLUMN" below for the sources, and for the inversion
+ * this sentence used to carry), and an {@link CloudErosionStyle} (fibrous ice
+ * vs puffy water).
  *
  * This table is JS-authoritative; the WebGPU renderer uploads it as a small
  * uniform array / data texture and the WGSL shader selects a profile per
@@ -74,6 +76,59 @@ function profile(deck, shape, baseDensity, extinction, phaseG, erosion) {
 }
 
 /**
+ * THE `phaseG` COLUMN — sourced, and corrected.
+ *
+ * This table shipped with ice and water INVERTED: the cirrus family carried
+ * 0.88–0.9 and the water genera 0.76–0.78, and the module docstring stated that
+ * intent explicitly. Both are backwards. The inversion was invisible for as
+ * long as it survived because the shader function that reads the per-genus
+ * offset had no call site; the values are corrected here by the same change
+ * that first carries this column to the image.
+ *
+ * LIQUID WATER, visible wavelengths. Spherical droplets are strongly
+ * forward-peaked. Kokhanovsky, "Optical properties of terrestrial clouds",
+ * Earth-Science Reviews 64 (2004) 189–241, §3.1.4 p. 205, gives the
+ * geometrical-optics limit g₀ ≈ 0.8843 at n = 1.333 (Eq. 3.32) and the size law
+ * Eq. (3.35) `g = g₀ − C·x_ef^(−2/3)`, C ≈ 0.5, with `x_ef = 2π·a_ef/λ`.
+ * Evaluated at λ = 0.55 µm:
+ *
+ *     a_ef µm │  4     5     6     8    10    12    15    20    30    → ∞
+ *     g       │ .845  .851  .854  .860  .863  .866  .868  .871  .874  .8843
+ *
+ * Mie tabulations agree: g = 0.852 at 472 nm and 0.842 at 682 nm (Stephens
+ * 1979 / Lobanova et al. 2010, reproduced in PMC6242289 Table 5). So a
+ * physically-sized water cloud sits in **[0.84, 0.885]**, and 0.8843 is a
+ * ceiling rather than a droplet value — it is the limit as the particle grows
+ * without bound, which is why quoting it as "the" water constant overstates
+ * forward scattering by 0.01–0.04 at realistic effective radii.
+ *
+ * ICE / CIRRUS, visible wavelengths. Non-spherical crystals are markedly less
+ * forward-peaked. "Low and consistent asymmetry parameters in Arctic and
+ * mid-latitude cirrus", Atmos. Chem. Phys. 26, 2465 (2026): campaign-wide
+ * median g = 0.738, typical published range 0.73–0.79, per-size medians from
+ * 0.777 (sub-30 µm, mid-latitude) down to 0.719/0.713 at 175 µm, observed
+ * spread 0.65–0.79. MODIS Collection 6 uses a fixed 0.75. So ice sits in
+ * **[0.70, 0.80]** — BELOW every liquid value, not above.
+ *
+ * PER-GENUS ASSIGNMENT. Each liquid genus is placed by its characteristic
+ * effective radius through the Eq. (3.35) row above; each ice genus by crystal
+ * size within the cirrus range. Altostratus and altocumulus are mixed-phase and
+ * sit BETWEEN the two bands — altostratus lower because it is the more
+ * ice-bearing of the pair. The renderer packs only the DIFFERENCE from CUMULUS
+ * (`WebGPUProceduralCloudRenderer.ts`, slot 171 `genusPhaseDelta`), so the
+ * absolute level is set by the tunable `phaseG1` uniform and only the ordering
+ * and the spacing of this column reach the image. CUMULUS at 0.854 is within a
+ * rounding of that uniform's 0.85 default, which is what keeps the default
+ * genus byte-neutral.
+ *
+ * Cross-phase separation, cirrus 0.74 against cumulus 0.854, is 0.114 — over
+ * bar A2's ≥ 0.05 per-genus clause with room. A2's ABSOLUTE band `g ∈ [0.75,
+ * 0.95]` is NOT adopted here and must not be: its upper half is physically
+ * unreachable for water and its lower bound excludes real cirrus. The two
+ * sourced bands above are what a gate should use.
+ */
+
+/**
  * Profile table indexed by {@link CloudType} (CUMULUS=0 .. CUMULONIMBUS=10).
  * @type {Array<object>}
  * @constant
@@ -84,7 +139,7 @@ CloudTypeProfile.PROFILES[CloudType.CUMULUS] = profile(
   BILLOWY,
   0.7,
   0.6,
-  0.78,
+  0.854, // liquid, a_ef ~6 um (continental cumulus); the phaseG1 reference
   PUFFY,
 );
 CloudTypeProfile.PROFILES[CloudType.CIRRUS] = profile(
@@ -92,7 +147,7 @@ CloudTypeProfile.PROFILES[CloudType.CIRRUS] = profile(
   SLAB,
   0.15,
   0.1,
-  0.9,
+  0.74, // ice; ACP 26/2465/2026 campaign median 0.738
   FIBROUS,
 );
 CloudTypeProfile.PROFILES[CloudType.CIRROSTRATUS] = profile(
@@ -100,7 +155,7 @@ CloudTypeProfile.PROFILES[CloudType.CIRROSTRATUS] = profile(
   SLAB,
   0.2,
   0.15,
-  0.9,
+  0.75, // ice; MODIS Collection 6 fixed ice asymmetry
   FIBROUS,
 );
 CloudTypeProfile.PROFILES[CloudType.CIRROCUMULUS] = profile(
@@ -108,7 +163,7 @@ CloudTypeProfile.PROFILES[CloudType.CIRROCUMULUS] = profile(
   BILLOWY,
   0.2,
   0.15,
-  0.88,
+  0.77, // ice, smallest crystals; ACP sub-30 um mid-latitude median 0.777
   FIBROUS,
 );
 CloudTypeProfile.PROFILES[CloudType.ALTOSTRATUS] = profile(
@@ -116,7 +171,7 @@ CloudTypeProfile.PROFILES[CloudType.ALTOSTRATUS] = profile(
   SLAB,
   0.5,
   0.45,
-  0.8,
+  0.81, // mixed phase, the more ice-bearing of the pair
   PUFFY,
 );
 CloudTypeProfile.PROFILES[CloudType.ALTOCUMULUS] = profile(
@@ -124,7 +179,7 @@ CloudTypeProfile.PROFILES[CloudType.ALTOCUMULUS] = profile(
   BILLOWY,
   0.45,
   0.4,
-  0.79,
+  0.83, // mixed phase, liquid-dominated
   PUFFY,
 );
 CloudTypeProfile.PROFILES[CloudType.NIMBOSTRATUS] = profile(
@@ -132,7 +187,7 @@ CloudTypeProfile.PROFILES[CloudType.NIMBOSTRATUS] = profile(
   SLAB,
   0.95,
   0.9,
-  0.76,
+  0.866, // liquid, a_ef ~12 um (thick precipitating deck)
   PUFFY,
 );
 CloudTypeProfile.PROFILES[CloudType.STRATUS] = profile(
@@ -140,7 +195,7 @@ CloudTypeProfile.PROFILES[CloudType.STRATUS] = profile(
   SLAB,
   0.6,
   0.55,
-  0.76,
+  0.86, // liquid, a_ef ~8 um
   PUFFY,
 );
 CloudTypeProfile.PROFILES[CloudType.STRATOCUMULUS] = profile(
@@ -148,7 +203,7 @@ CloudTypeProfile.PROFILES[CloudType.STRATOCUMULUS] = profile(
   BILLOWY,
   0.65,
   0.55,
-  0.77,
+  0.863, // liquid, a_ef ~10 um (marine Sc)
   PUFFY,
 );
 CloudTypeProfile.PROFILES[CloudType.CUMULUS_CONGESTUS] = profile(
@@ -156,7 +211,7 @@ CloudTypeProfile.PROFILES[CloudType.CUMULUS_CONGESTUS] = profile(
   TOWER,
   0.85,
   0.75,
-  0.78,
+  0.866, // liquid, a_ef ~12 um
   PUFFY,
 );
 CloudTypeProfile.PROFILES[CloudType.CUMULONIMBUS] = profile(
@@ -164,7 +219,7 @@ CloudTypeProfile.PROFILES[CloudType.CUMULONIMBUS] = profile(
   TOWER,
   1.0,
   0.95,
-  0.78,
+  0.871, // liquid, a_ef ~20 um (the optically dominant tower)
   PUFFY,
 );
 

@@ -904,16 +904,23 @@ const PACKED_FIELDS = {
   qualityFlags: ["qualityBlock.qualityFlags", "qualityFlags"],
   lightSampleScale: ["qualityBlock.lightSampleScale", "lightSampleScale"],
   erosionStrength: ["qualityBlock.erosionStrength", "erosionStrength"],
+  // The tier lighting row, floats 172-174. It had a packer and no WGSL member
+  // while C13-N11's shader half was outstanding; now that the struct declares
+  // the three, they are checked by the same packer-against-offset comparison
+  // as every field above.
+  powderStrength: ["qualityBlock.powderStrength", "powderStrength"],
+  isotropicFloor: ["qualityBlock.isotropicFloor", "isotropicFloor"],
+  ambientFloor: ["qualityBlock.ambientFloor", "ambientFloor"],
 };
 
 const AERIAL_MODE_EXPRESSION = "aerialLutOn ? 1.0 : 0.0";
 
-/** The tier lighting row, which has no WGSL member yet. */
-const TIER_LIGHTING_FIELDS = {
-  powderStrength: "qualityBlock.powderStrength",
-  isotropicFloor: "qualityBlock.isotropicFloor",
-  ambientFloor: "qualityBlock.ambientFloor",
-};
+/** The tier lighting row's fields, in slot order. */
+const TIER_LIGHTING_MEMBERS = [
+  "powderStrength",
+  "isotropicFloor",
+  "ambientFloor",
+];
 
 test("each preset-derived pack index equals its WGSL CloudUniforms offset", () => {
   for (const [field, [expression, member]] of Object.entries(PACKED_FIELDS)) {
@@ -951,31 +958,36 @@ test("the layout model applies the vec3 alignment rule (negative control)", () =
   assert.equal(size, 48, "the struct rounds up to its strictest alignment");
 });
 
-test("the tier lighting row is written but has no shader consumer yet (C13-N11)", () => {
-  // Recorded explicitly rather than skipped: `powderStrength`,
-  // `isotropicFloor` and `ambientFloor` now have uniform slots and the packer
-  // fills them, but the WGSL struct still ends before them. WebGPU permits a
-  // shader struct shorter than the bound buffer, which is exactly why appending
-  // the row is byte-identical — and why the row is INERT until C13-N11's
-  // shader change lands. When it does, this test flips from "pending" to the
-  // same offset comparison the fields above get.
+test("the tier lighting row has its shader consumer and closes the block (C13-N11)", () => {
+  // This test was written as a pending one: `powderStrength`, `isotropicFloor`
+  // and `ambientFloor` had uniform slots and a packer that filled them while
+  // the WGSL struct still ended before them, so the row was inert. WebGPU
+  // permits a shader struct shorter than the bound buffer, which is exactly why
+  // appending the row was byte-identical. C13-N11's shader half has landed, so
+  // the three are now members, the offset comparison above covers them, and
+  // what is left to check here is the shape of the row itself.
   const structFloats = cloudStruct.size / 4;
   const bufferFloats = evalConstant("CLOUD_UNIFORM_FLOATS");
-  assert.ok(
-    bufferFloats > structFloats,
-    "the tier lighting row has gained a WGSL consumer — move these three fields into PACKED_FIELDS",
+  assert.equal(
+    bufferFloats,
+    structFloats,
+    "the shader struct and the uniform buffer no longer describe the same block",
   );
-  const indices = Object.entries(TIER_LIGHTING_FIELDS).map(([field, expr]) => {
-    const index = packedIndexOf(expr);
-    assert.ok(
-      index >= structFloats,
-      `${field} at float ${index} is inside the shader struct but is not a member of it`,
+  const indices = TIER_LIGHTING_MEMBERS.map((field) => {
+    const index = packedIndexOf(PACKED_FIELDS[field][0]);
+    assert.equal(
+      index,
+      cloudStruct.offsets[field] / 4,
+      `${field} is packed into a float the shader does not read it from`,
     );
     return index;
   });
   // Contiguous, and followed by the pad that completes the 16-byte row.
-  assert.deepEqual(indices, [structFloats, structFloats + 1, structFloats + 2]);
-  assert.equal(bufferFloats, structFloats + 4);
+  assert.deepEqual(indices, [
+    bufferFloats - 4,
+    bufferFloats - 3,
+    bufferFloats - 2,
+  ]);
 });
 
 test("every CLOUD_QF_* bit matches its WGSL twin", () => {

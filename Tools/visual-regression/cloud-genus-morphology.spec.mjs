@@ -555,7 +555,25 @@ test("each FIBROUS genus renders a measurably different grain", () => {
   assert.ok(measured[2] < 3, `cirrocumulus elongation ${measured[2]}`);
 });
 
-// ── 6. Per-genus phase — ice scatters more forward than water ─────────────
+// ── 6. Per-genus phase — LIQUID scatters more forward than ice ────────────
+//
+// INVERTED 2026-09-12 (C13-N21), and the inversion is the point. This group
+// asserted the opposite — "every ice genus must out-forward every water genus"
+// — because `CloudTypeProfile.js` shipped with ice at 0.88-0.9 against water at
+// 0.76-0.78 and this spec was written from the table rather than from the
+// physics. Spherical water droplets are the forward-peaked scatterers
+// (g = 0.845-0.874 over a_ef 4-30 um at 550 nm, ceiling g0 = 0.8843 at
+// n = 1.333 — Kokhanovsky, Earth-Science Reviews 64 (2004) 189-241, §3.1.4
+// p. 205, Eqs. 3.32/3.35); non-spherical ice crystals are markedly less so
+// (median 0.738, range 0.73-0.79 — Atmos. Chem. Phys. 26, 2465, 2026; MODIS
+// Collection 6 fixes 0.75). The table now carries the sourced ordering and this
+// group carries the sourced bands, with the derivation in the table's own
+// docstring rather than restated here.
+//
+// A spec written from the same source as the thing it checks inherits that
+// source's errors — Principle 10. That is exactly what happened here, and the
+// defect survived only because the shader function reading this column had no
+// call site until C13-N21 gave it one.
 
 test("the phase delta is exactly the profile difference for every genus", () => {
   const cumulusG = CloudTypeProfile.get(CloudType.CUMULUS).phaseG;
@@ -567,21 +585,73 @@ test("the phase delta is exactly the profile difference for every genus", () => 
   }
 });
 
-test("ice genera get a more forward-peaked lobe than water genera, bounded", () => {
+/** Mixed-phase genera: neither band applies, and they sit between the two. */
+const MIXED_PHASE_GENERA = [CloudType.ALTOSTRATUS, CloudType.ALTOCUMULUS];
+/** Sourced visible-wavelength asymmetry bands. See CloudTypeProfile.js. */
+const LIQUID_G_BAND = [0.84, 0.885];
+const ICE_G_BAND = [0.7, 0.8];
+
+test("the table's phaseG column sits inside the sourced per-phase bands", () => {
+  // The absolute column, before the renderer turns it into a delta. This is the
+  // assertion that catches a re-inversion, because it is stated against the
+  // literature rather than against the table's own ordering.
+  const g = (genus) => CloudTypeProfile.get(genus).phaseG;
+  for (const genus of ALL_GENERA) {
+    if (MIXED_PHASE_GENERA.includes(genus)) {
+      assert.ok(
+        g(genus) > ICE_G_BAND[1] && g(genus) < LIQUID_G_BAND[0],
+        `mixed-phase genus ${genus} must sit between the bands, got ${g(genus)}`,
+      );
+      continue;
+    }
+    const band =
+      CloudTypeProfile.get(genus).erosion === FIBROUS
+        ? ICE_G_BAND
+        : LIQUID_G_BAND;
+    assert.ok(
+      g(genus) >= band[0] && g(genus) <= band[1],
+      `genus ${genus} phaseG ${g(genus)} outside [${band.join(", ")}]`,
+    );
+  }
+});
+
+test("liquid genera get a more forward-peaked lobe than ice genera, bounded", () => {
   const forwardFor = (genus) =>
     genusForwardG(DEFAULT_PHASE_G1, genusPhaseDeltaFor(genus));
   const iceGenera = ALL_GENERA.filter(
     (genus) => CloudTypeProfile.get(genus).erosion === FIBROUS,
   );
-  const waterGenera = ALL_GENERA.filter(
-    (genus) => CloudTypeProfile.get(genus).erosion === PUFFY,
+  const liquidGenera = ALL_GENERA.filter(
+    (genus) =>
+      CloudTypeProfile.get(genus).erosion === PUFFY &&
+      !MIXED_PHASE_GENERA.includes(genus),
   );
-  const minIce = Math.min(...iceGenera.map(forwardFor));
-  const maxWater = Math.max(...waterGenera.map(forwardFor));
+  const maxIce = Math.max(...iceGenera.map(forwardFor));
+  const minLiquid = Math.min(...liquidGenera.map(forwardFor));
   assert.ok(
-    minIce > maxWater,
-    `every ice genus must out-forward every water genus ` +
-      `(ice min ${minIce}, water max ${maxWater})`,
+    minLiquid > maxIce,
+    `every liquid genus must out-forward every ice genus ` +
+      `(liquid min ${minLiquid}, ice max ${maxIce})`,
+  );
+  // The mixed-phase pair must not cross either band's population.
+  for (const genus of MIXED_PHASE_GENERA) {
+    assert.ok(
+      forwardFor(genus) > maxIce && forwardFor(genus) < minLiquid,
+      `mixed-phase genus ${genus} at ${forwardFor(genus)} is not between ` +
+        `ice max ${maxIce} and liquid min ${minLiquid}`,
+    );
+  }
+
+  // Bar A2's per-genus separation clause, scoped to a CROSS-PHASE pair. It
+  // cannot be stated over an arbitrary pair: the whole liquid band is ~0.045
+  // wide, narrower than the 0.05 the bar asks for, so demanding it between two
+  // liquid genera would demand a separation the physics does not supply.
+  const cirrus = forwardFor(CloudType.CIRRUS);
+  const cumulus = forwardFor(CloudType.CUMULUS);
+  assert.ok(
+    cumulus - cirrus >= 0.05,
+    `A2 cross-phase separation is ${cumulus - cirrus} (cumulus ${cumulus}, ` +
+      `cirrus ${cirrus}), under the 0.05 clause`,
   );
 
   // The clamp keeps the HG denominator away from its singularity at g = 1.
@@ -592,6 +662,41 @@ test("ice genera get a more forward-peaked lobe than water genera, bounded", () 
   }
   assert.equal(genusForwardG(DEFAULT_PHASE_G1, 5.0), GENUS_PHASE_G_LIMIT);
   assert.equal(genusForwardG(DEFAULT_PHASE_G1, -5.0), -GENUS_PHASE_G_LIMIT);
+});
+
+test("the per-genus forward lobe reaches the image through multiScatterLight", () => {
+  // C13-N21's actual deliverable. `cloudPhase` still has no call site — it is
+  // scaffolding for the dual-lobe route and stays — so the ONE site that
+  // carries slot 171 into a rendered pixel is the forward lobe inside
+  // `multiScatterLight`, whose returned value already carries the phase. If
+  // this reverts to `cloud.phaseG1`, every genus scatters identically again and
+  // the whole row is inert with no other symptom.
+  const ms = functionSource(cloudShaderSource, "multiScatterLight");
+  assert.match(
+    ms,
+    /let forwardG = genusForwardG\(\);/,
+    "multiScatterLight must resolve the per-genus forward lobe",
+  );
+  assert.match(
+    ms,
+    /hgPhase\(cosTheta, forwardG \* ecc\)/,
+    "the forward lobe must be the per-genus g, not the raw phaseG1 uniform",
+  );
+  assert.doesNotMatch(
+    ms,
+    /hgPhase\(cosTheta, cloud\.phaseG1 \* ecc\)/,
+    "the pre-C13-N21 forward lobe must not survive",
+  );
+
+  // MUTATION: put the pre-row expression back and the assertions above must
+  // stop holding. A grep that passes against both texts is not a check.
+  const inert = ms.replace(
+    /hgPhase\(cosTheta, forwardG \* ecc\)/,
+    "hgPhase(cosTheta, cloud.phaseG1 * ecc)",
+  );
+  assert.notEqual(inert, ms, "the mutation pattern matched nothing");
+  assert.doesNotMatch(inert, /hgPhase\(cosTheta, forwardG \* ecc\)/);
+  assert.match(inert, /hgPhase\(cosTheta, cloud\.phaseG1 \* ecc\)/);
 });
 
 test("the erosion height weight blends toward uniform with the fibre strength", () => {

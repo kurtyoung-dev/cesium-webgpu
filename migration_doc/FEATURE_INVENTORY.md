@@ -656,9 +656,65 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
   anisotropy + fallstreak-lag metrics with a mutation group that rejects a flattened row).
   **IMPLEMENTED — Edge acceptance owed.** Per-REGION genus/deck MIXTURES, the rest of the `C13-16`
   row, stay blocked on `C13-14`/`C13-15`. ([Campaign 13](QUEUE_2026-07-23_CAMPAIGN13.md))
+  **CORRECTED IN PLACE 2026-09-12 (`C13-N21`, lane Manwë) — the phase half of this entry never
+  reached a pixel, and its values were backwards.** "`profile.phaseG - CUMULUS.phaseG` offsets the HG
+  forward lobe" was true of the UNIFORM and false of the IMAGE: `genusForwardG` had zero call sites,
+  so every genus scattered identically. `multiScatterLight` now resolves it once and uses it in the
+  forward lobe — one call site, still byte-neutral at the default CUMULUS genus. Separately, the
+  `phaseG` column shipped with ice and water INVERTED (ice 0.88–0.9 against water 0.76–0.78), and
+  this spec CERTIFIED the inversion because both were written from the same table. Liquid droplets
+  are the forward-peaked scatterers: liquid **0.84–0.885** (Kokhanovsky, Earth-Science Reviews 64
+  (2004) 189–241, §3.1.4 p. 205, Eq. 3.35 over a_ef 4–30 µm at 550 nm), ice **0.70–0.80** (Atmos.
+  Chem. Phys. 26, 2465, 2026; MODIS C6 fixes 0.75). All eleven values are corrected with the
+  derivation in the table's own docstring; the spec group is inverted and now asserts the sourced
+  BANDS rather than the table's own ordering, and is **23 tests**, not 21. The defect was invisible
+  for as long as it survived precisely because the reader did not exist — which is why shipping a
+  dial and wiring it are one row, not two. **Edge leg owed: the 13-step sun sweep.**
+- Planetary aerial perspective on the volumetric deck (`C13-N20`, lane Manwë) — **IMPLEMENTED
+  2026-09-12, Edge leg owed; the promotion clause is lane L3's.** The march hazed distant cloud with
+  `clamp(midDist / 60000.0 * aerialStrength, 0.0, 0.85)` — haze as a linear function of RANGE against
+  a 60 km horizon scale. From any orbital camera `midDist` is hundreds of kilometres for EVERY pixel,
+  so the whole disc clamped to the cap and bar O3 read 1.0 by construction. It is now a Beer law over
+  the AIR COLUMN on the camera-to-midpoint path: exponential density, plane-parallel altitude rate at
+  the cloud, closed form `rho0 · (H/mu) · (1 − exp(−L·mu/H))` in metres of sea-level-equivalent air,
+  with a series limit at `mu → 0` and a sea-level bound on descending paths so a long downward path
+  cannot overflow `exp` into a NaN. The extinction is DERIVED — `ln(1/(1−0.85))/60000` — so the one
+  point the old ramp was calibrated at is preserved to 1e-6 and the near-field ground look carries
+  over; the 0.85 cap is KEPT so "pixels at the cap" stays falsifiable (`RULING-2026-08-06 R3`).
+  Measured by executing the shipped WGSL through `lib/wgsl-mini-eval.mjs`: nadir haze **0.1767**
+  against the legacy **0.85** at 200 / 2,000 / 20,000 km, altitude-independent above the atmosphere —
+  the signature of a column model. **Bar O3 restated 2026-09-13 by seat ruling as "0 saturated pixels
+  outside the limb annulus O4 owns" — the original wording was unreachable by ANY physical model**; a 89°-view-zenith ray crosses ~336 km of sea-level-equivalent air and is
+  genuinely opaque, so what a correct model delivers is the collapse of the saturated set from the
+  whole disc to a limb annulus past **84.12° view-zenith**, the annulus O4 already owns — and that
+  onset is altitude-invariant, which is the signature of a column model. The annulus measures 1.05 %
+  of the disc under an equal-sine measure and 15.2 % → 1.1 % across the decades under a rectilinear
+  one; a bare percentage is not quotable without its projection. Guarded by
+  `Tools/visual-regression/cloud-aerial-path-length.spec.mjs` (18 tests, four mutants).
+- Tier lighting dials reach the shader (`C13-N11`, lane Manwë, WGSL half) — **WGSL HALF IMPLEMENTED
+  2026-09-12; TS half with lane L3; Edge leg owed.** `powderStrength`, `isotropicFloor` and
+  `ambientFloor` existed only inside `WebGPUCloudTierPresets.ts` with no uniform slot to travel in,
+  so the tier table's whole lighting column was decorative and the march hard-coded `powder = 0.5`.
+  `CloudUniforms` gains an append-only tail block — **172 `powderStrength`, 173 `isotropicFloor`,
+  174 `ambientFloor`, 175 pad** — and the march reads all three: powder at its one `multiScatterLight`
+  call site, an isotropic floor on the per-octave phase, and a per-channel ambient floor. Both floors
+  sit behind an explicit `> 0.0` guard, so the 0 every tier carries today is byte-identical BY
+  CONSTRUCTION rather than by arithmetic luck; powder is byte-identical exactly where a preset
+  carries 0.5. **Surfaced, measured, and ruled 2026-09-13: the presets carried `powderStrength`
+  0 / 0 / 0.4 / 0.7 and none was 0.5**, so wiring moved the image at every tier and removed the powder
+  term outright at tiers 0–1 — 99.52 % max relative delta over 324 stations. L3 pins all four presets
+  to 0.5 and both floors to 0, so the wiring lands byte-identical everywhere and the tuning becomes a
+  follow-up row with an Edge capture. A shader-side "0 means 0.5" default would re-create the second source
+  of truth this row and `C13-N10` exist to delete, so it was not done. `CLOUD_QF_PROFILE_ON` (bit 7,
+  no producer and no consumer) is marked **deprecated in place and kept** — the define space is
+  add-only and a reclaimed bit silently aliases every cached pipeline and module keyed on the mask;
+  `C13-N38` owns its disposition.
 - WebGPUProceduralCloudRenderer current Campaign-13 reconciliation — `CloudUniforms` is now **172
   floats** (`CLOUD_UNIFORM_FLOATS`, add-only layout; 168 through C13-37, +4 for the C13-16 per-genus
-  morphology row). Batch 433 establishes that a temporal
+  morphology row) *[2026-09-12, `C13-N11`: extending to **176** — +4 for the tier lighting dials at
+  172–175. The WGSL struct half is frozen in lane Manwë's batch and the `CLOUD_UNIFORM_FLOATS` half
+  in lane L3's; the two are one memory image, and the SLOT numbers are the contract between them.
+  Re-measure here once both have landed rather than trusting either figure alone.]*. Batch 433 establishes that a temporal
   reprojection/accumulation implementation exists; `C13-05` has since corrected the bounded
   color-history proxy to use previous view-projection-relative-to-eye state, a CPU-`f64` camera delta,
   camera-relative expanded-WGS84 deck intersection, and coarse allocation-free reset/generation

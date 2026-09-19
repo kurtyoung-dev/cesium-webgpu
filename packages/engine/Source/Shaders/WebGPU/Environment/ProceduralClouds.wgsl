@@ -250,6 +250,36 @@ struct CloudUniforms {
   genusFibreAnisotropy: f32,     // 169 — filament length:width aspect along the wind (>= 1)
   genusFibreShear: f32,          // 170 — fallstreak along-wind lag per unit shell height
   genusPhaseDelta: f32,          // 171 — per-genus HG forward-lobe g offset vs CUMULUS (0 neutral)
+  // Tier lighting dials, 172-175. These are the three
+  // `CloudTierPreset` fields that previously existed only inside
+  // WebGPUCloudTierPresets.ts with nothing reading them: the shader hard-coded
+  // `powder = 0.5` at the one multiScatterLight call site and had no isotropic
+  // or ambient floor at all, so the tier table's lighting column was
+  // decorative. The SLOT NUMBERS are the contract between this struct and the
+  // renderer's packing site — a decomposition may move either line, but a slot
+  // may only be renamed or repurposed in place, never moved.
+  //
+  // THE THREE DO NOT SHARE A NEUTRAL VALUE, which is the one thing to know
+  // before assuming a preset change here is inert:
+  //
+  //   * `isotropicFloor` and `ambientFloor` are neutral at 0, applied behind an
+  //     explicit `> 0.0` guard — the same idiom `genusForwardG` uses at its
+  //     delta-0 early return — so 0 keeps the historical expression bit-for-bit
+  //     BY CONSTRUCTION, not by arithmetic luck.
+  //   * `powderStrength` is neutral at 0.5, because 0.5 is the literal it
+  //     replaced. A preset carrying anything else moves the image.
+  //
+  // The tier table is the authority on which values ship and is deliberately not
+  // restated here — a value copied into a comment in another file is a second
+  // source of truth, and the quality path keeps exactly one.
+  // For the same reason there is no shader-side "0 means use 0.5" fallback: if a
+  // tier should render the historical powder signature, the tier says 0.5.
+  // The shipped presets carry the neutral values above, so the three dials are
+  // inert until a tier deliberately moves one.
+  powderStrength: f32,           // 172 — `powder` argument of multiScatterLight (neutral: 0.5)
+  isotropicFloor: f32,           // 173 — lower bound on the per-octave phase (neutral: 0)
+  ambientFloor: f32,             // 174 — per-channel lower bound on the ambient fill (neutral: 0)
+  _padQ: f32,                    // 175
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -321,7 +351,14 @@ const QF_HALF_RES: u32 = 2u;        // bit 1
 const QF_TEMPORAL: u32 = 4u;        // bit 2
 const QF_JITTER: u32 = 8u;          // bit 3
 const QF_OCTAVES_SHIFT: u32 = 4u;   // bits 4-6
-const QF_PROFILE_ON: u32 = 128u;    // bit 7
+// DEPRECATED IN PLACE. Bit 7 has neither a producer nor a
+// consumer: `CLOUD_QF_PROFILE_ON` is declared at WebGPUCloudTierPresets.ts:214
+// and never OR-ed into slot 74, and nothing here reads QF_PROFILE_ON. It is
+// kept, not deleted — the define space is add-only and a reordered or reclaimed
+// bit silently aliases every cached pipeline and module keyed on the mask. The
+// per-texel genus profile it was reserved for is not implemented; until both
+// halves of it exist, bit 7 stays reserved. Do not reuse bit 7.
+const QF_PROFILE_ON: u32 = 128u;    // bit 7 — deprecated in place, no producer/consumer
 // Atmosphere-LUT coupling. The JS renderer sets these only when the
 // corresponding mode flag is 'physical' or 'sky-lut'; the shader additionally
 // gates each on a non-zero LUT radiance, so an unbaked LUT falls back to the
@@ -929,9 +966,22 @@ fn genusErosionHeightWeight(h: f32) -> f32 {
 
 // Per-genus Henyey-Greenstein forward-lobe eccentricity.
 //
-// Ice crystals — hexagonal plates and columns — scatter far more forward-peaked
-// than liquid droplets: CloudTypeProfile gives the cirrus family g ~ 0.88-0.9
-// against ~0.76-0.78 for the water genera. The delta is added to the tunable
+// Liquid droplets scatter MORE forward-peaked than ice crystals, not less.
+// Spherical droplets in the geometrical-optics regime run g = 0.845-0.874 over
+// effective radii 4-30 um at 550 nm, approaching g0 = 0.8843 at n = 1.333
+// (Kokhanovsky, "Optical properties of terrestrial clouds", Earth-Science
+// Reviews 64 (2004) 189-241, section 3.1.4 p. 205, Eq. 3.32 and the size law
+// Eq. 3.35 g = g0 - C*x_ef^(-2/3), C ~ 0.5). Non-spherical ice crystals are
+// markedly less forward-peaked: in-situ cirrus medians run 0.73-0.79 with a
+// campaign median of 0.738 (Atmos. Chem. Phys. 26, 2465, 2026) and MODIS
+// Collection 6 uses a fixed 0.75.
+//
+// CloudTypeProfile carried this backwards — ice at 0.88-0.9
+// against water at 0.76-0.78 — and the inversion was invisible because this
+// function had no reader. The table now carries the sourced ordering; see
+// Scene/CloudTypeProfile.js for the per-genus derivation.
+//
+// The delta is added to the tunable
 // `phaseG1` rather than replacing it, so the sun-colour and dual-lobe
 // calibration carried by that uniform survives, and the sum is clamped short of
 // 1 because the HG denominator `(1 + g^2 - 2g)^1.5` collapses there and the
@@ -2065,6 +2115,17 @@ fn multiScatterLight(opticalDepth: f32, cosTheta: f32, powder: f32, octaves: i32
   let n = max(octaves, 1);
   // Per-genus extinction scale; CUMULUS is 1.0 and a zero is guarded to 1.0.
   let absorb = effectiveAbsorption();
+  // Per-genus forward-lobe eccentricity. This is the ONE site that
+  // carries slot 171 into the image: `cloudPhase` has no call site and the
+  // march's radiance comes entirely from this function, whose returned value
+  // already carries the phase. Folding the delta in here rather than calling
+  // cloudPhase() additionally is what keeps the phase applied exactly once.
+  //
+  // It is loop-invariant, so it resolves before the octave loop. At the default
+  // CUMULUS genus `genusPhaseDelta` is exactly 0 and `genusForwardG` early-
+  // returns `cloud.phaseG1`, which makes the expression below byte-identical to
+  // the `cloud.phaseG1 * ecc` it replaces.
+  let forwardG = genusForwardG();
   var luminance: f32 = 0.0;
   var total: f32 = 0.0;
   var scat: f32 = 1.0;
@@ -2074,9 +2135,21 @@ fn multiScatterLight(opticalDepth: f32, cosTheta: f32, powder: f32, octaves: i32
     let beer = exp(-opticalDepth * absorb * ext);
     let powderEffect = 1.0 - exp(-opticalDepth * absorb * 2.0 * ext);
     let bp = mix(beer, beer * powderEffect, powder);
-    let ph = mix(hgPhase(cosTheta, cloud.phaseG2 * ecc),
-                 hgPhase(cosTheta, cloud.phaseG1 * ecc),
+    var ph = mix(hgPhase(cosTheta, cloud.phaseG2 * ecc),
+                 hgPhase(cosTheta, forwardG * ecc),
                  cloud.phaseBlend);
+    // Isotropic floor, slot 173. A Henyey-Greenstein lobe at g = 0.85
+    // collapses to 0.00349 at exact backscatter, a factor of 23 below the
+    // isotropic 1/(4*PI) = 0.0796, so the anti-sun side of every octave is driven
+    // to near black by the phase alone, whatever light actually reaches it.
+    // The floor is the per-tier "multiple scattering never leaves a direction
+    // unlit" term, in the same units as the phase it bounds. Guarded so that a
+    // preset carrying 0 keeps the historical expression bit-for-bit; any
+    // non-zero value moves the image, which is the wiring working rather than a
+    // regression.
+    if (cloud.isotropicFloor > 0.0) {
+      ph = max(ph, cloud.isotropicFloor);
+    }
     luminance += scat * bp * ph;
     total += scat;
     scat = scat * a;
@@ -2169,6 +2242,101 @@ fn cloudSampleTransmittance(altitude: f32, cosZenith: f32) -> vec3<f32> {
 // the physical and sky-LUT branches fall back to the constant path.
 fn cloudLutLuminance(c: vec3<f32>) -> f32 {
   return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+// ── Aerial perspective: how much air actually lies on the path ───────────────
+//
+// The term this replaces was `clamp(midDist / 60000.0 * aerialStrength, 0, 0.85)`
+// — haze as a linear function of RANGE, keyed to a 60 km horizon scale, capped
+// at 0.85. It is defensible from the ground, where 60 km of horizontal path does
+// carry roughly a horizon's worth of air; it is wrong everywhere else, and from
+// orbit it is wrong in the worst possible way. midDist for an orbital camera is
+// hundreds of kilometres for EVERY pixel, so every cloud pixel saturates the cap
+// and the whole disc is rendered as maximally hazed flat tint. That is bar O3
+// ("fraction of cloud pixels at the aerial cap, 0 at h >= 200 km") reading 1.0
+// by construction.
+//
+// The physical quantity is not range, it is the AIR COLUMN on the path: the
+// integral of air density between the camera and the cloud. An orbital ray
+// crosses a few scale heights of atmosphere and then hundreds of kilometres of
+// vacuum, so its column is small and bounded no matter how long the ray is,
+// which is why the Earth's cloud deck looks crisp from orbit and hazy from a
+// mountain top.
+//
+// Air density is exponential in altitude, rho(h) = exp(-h/H), H ~ 8.5 km for the
+// lower atmosphere. Parameterise the path by s from the cloud toward the camera,
+// take the plane-parallel altitude rate mu = dot(dirTowardCamera, up) at the
+// cloud, and the column has a closed form:
+//
+//   column(L) = rho0 * (H/mu) * (1 - exp(-L*mu/H))        (mu != 0)
+//   column(L) = rho0 * L                                  (mu == 0, horizontal)
+//
+// in metres of sea-level-equivalent air. It is correct in every regime this
+// renderer has: it tends to rho0 * H/mu as L -> infinity (the orbital case, a
+// bounded column), it reduces to rho0 * L for a horizontal path (which is what
+// the 60 km heuristic was calibrating against), and for mu < 0 — a camera below
+// the deck looking up — it grows into the denser air below, which is correct.
+// L*mu is the endpoint altitude difference, so the exponent is bounded by
+// (h_camera - h_cloud)/H and cannot overflow f32 in either direction.
+//
+// Not modelled, deliberately and stated rather than hidden: ray curvature
+// relative to the ellipsoid. The true altitude profile along a chord is convex
+// in s, so for a near-limb ray the plane-parallel line underestimates the
+// column and the limb is rendered slightly clearer than truth. The error is zero
+// at nadir, grows toward the limb, and is bounded by the geometry; the analytic
+// shell is where the limb chord gets its exact treatment. Under-hazing
+// cannot re-saturate the cap, so it cannot mask an O3 failure.
+const CLOUD_AIR_SCALE_HEIGHT_M: f32 = 8500.0;
+// Broadband haze extinction per metre of sea-level-equivalent air. Chosen so the
+// legacy calibration point is preserved exactly: a horizontal sea-level path of
+// 60 km, which is where the old term first reached its cap, still returns the
+// cap. ln(1/(1-0.85)) / 60000 = 3.16187e-5, a meteorological range of ~124 km —
+// inside the observed range for a clear-to-lightly-hazy lower atmosphere, and
+// above the ~1.2e-5 pure-Rayleigh floor at 550 nm, which is the right side to
+// err on for a term whose job is atmospheric obscuration rather than molecular
+// scattering alone.
+const CLOUD_AERIAL_EXTINCTION_PER_M: f32 = 3.1618666e-5;
+// The cap is KEPT, and kept at its historical value, so bar O3 stays falsifiable:
+// a path model that saturates is still detectable as "pixels at the cap". A
+// Beer law with no cap would make O3 trivially 0 and the gate unable to fail,
+// which is the one shape a gate must never take.
+const CLOUD_AERIAL_MAX: f32 = 0.85;
+
+// Sea-level-equivalent air column, in metres, along a straight path of length
+// `pathLength` starting at altitude `startAltitude` with altitude rate `mu`
+// (the cosine between the direction of travel and local up).
+fn cloudAirColumnMeters(startAltitude: f32, mu: f32, pathLength: f32) -> f32 {
+  let h0 = max(startAltitude, 0.0);
+  let rho0 = exp(-h0 / CLOUD_AIR_SCALE_HEIGHT_M);
+  // A DESCENDING path (mu < 0) is bounded where it reaches sea level: no view
+  // ray continues below the surface. Without the bound the closed form's
+  // `exp(-x)` grows without limit along such a path and overflows f32, which
+  // then reaches the caller as a NaN haze fraction. At mu >= 0 the path is
+  // unbounded and the closed form converges on its own.
+  let base = max(pathLength, 0.0);
+  let usable = select(base, min(base, h0 / max(-mu, 1e-6)), mu < 0.0);
+  let x = usable * mu / CLOUD_AIR_SCALE_HEIGHT_M;
+  // Near-horizontal paths: (1 - exp(-x))/x -> 1 - x/2 as x -> 0. Taking the
+  // closed form there divides two quantities that both go to zero.
+  if (abs(x) < 1e-3) {
+    return rho0 * usable * (1.0 - 0.5 * x);
+  }
+  return rho0 * (CLOUD_AIR_SCALE_HEIGHT_M / mu) * (1.0 - exp(-x));
+}
+
+// Fraction of the cloud color replaced by the aerial term, in [0, CLOUD_AERIAL_MAX].
+fn cloudAerialFraction(
+  cloudAltitude: f32,
+  towardCamera: vec3<f32>,
+  upAtCloud: vec3<f32>,
+  pathLength: f32,
+  strength: f32,
+) -> f32 {
+  let column = cloudAirColumnMeters(
+    cloudAltitude, dot(towardCamera, upAtCloud), max(pathLength, 0.0)
+  );
+  let opticalDepth = column * CLOUD_AERIAL_EXTINCTION_PER_M * max(strength, 0.0);
+  return clamp(1.0 - exp(-opticalDepth), 0.0, CLOUD_AERIAL_MAX);
 }
 
 // Per-deck march result. `hazed` is the LDR tone-mapped and aerial-hazed cloud
@@ -2534,7 +2702,16 @@ fn marchDeck(
         densityCoordinates,
         morphologyCoordinate,
       );
-      let msLight = multiScatterLight(lightOpticalDepth, cosTheta, 0.5, msOctaves);
+      // `powder` is the resolved tier's `powderStrength`, slot 172.
+      // It was the literal 0.5 here while `CloudTierPreset.powderStrength`
+      // existed with no reader, which made the tier table's lighting column
+      // decorative and pinned every tier to one powder signature. A preset
+      // carrying 0.5 reproduces this line exactly; any other value moves the
+      // image. The slot declaration at 172 carries why the neutral value is left
+      // to the preset table rather than defaulted here.
+      let msLight = multiScatterLight(
+        lightOpticalDepth, cosTheta, cloud.powderStrength, msOctaves
+      );
 
       // Silver lining: enhanced scattering at cloud edges
       let silverLining = cloud.silverLiningIntensity
@@ -2603,8 +2780,19 @@ fn marchDeck(
           groundAmbColor = (groundHDR / groundLum) * cloudLutLuminance(cloud.groundAmbientColor);
         }
       }
-      let ambient = mix(groundAmbColor, skyAmbColor, heightFraction)
+      var ambient = mix(groundAmbColor, skyAmbColor, heightFraction)
                   * cloud.ambientIntensity;
+      // Ambient floor, slot 174. Both ambient sources can reach zero —
+      // the constant path when `ambientIntensity` is dialled down, and the
+      // `QF_AMBIENT_LUT` path wherever the sky-view LUT is dark — and a cloud
+      // lit by neither sun nor ambient composites as a black hole in the sky
+      // rather than as an unlit cloud. This is the per-tier lower bound on that
+      // fill, per channel so it cannot tint. Guarded so that a preset carrying 0
+      // keeps the historical expression bit-for-bit; any non-zero value moves the
+      // image, which is the wiring working rather than a regression.
+      if (cloud.ambientFloor > 0.0) {
+        ambient = max(ambient, vec3<f32>(cloud.ambientFloor));
+      }
 
       // Tint the direct-sun term by the time-of-day sun color, warm near the
       // horizon and neutral at noon; the ambient keeps its own sky and ground
@@ -2652,10 +2840,27 @@ fn marchDeck(
   // layer tStart collapses to ~0 for every pixel, so keying on it hazes by view
   // angle rather than by true range. Both operands are LDR — the post-tonemap
   // color against the packed horizon tint — so the lerp stays in display space.
-  // 60 km is roughly the horizon haze scale; the 0.85 cap keeps the densest near
-  // clouds from fully dissolving.
+  //
+  // The haze FRACTION is the air column on the camera-to-midpoint path, not the
+  // range: see cloudAirColumnMeters above for the model, the calibration and the
+  // one approximation it makes. It replaced `midDist / 60000` here, which
+  // saturated the cap for every pixel of an orbital frame.
   let midDist = tStart + 0.5 * (tEnd - tStart);
-  let aerial = clamp(midDist / 60000.0 * cloud.aerialStrength, 0.0, 0.85);
+  let midPos = rayOrigin + rayDir * midDist;
+  let midUp = normalize(midPos);
+  // The midpoint lies inside the marched shell by construction, so the deck
+  // midpoint is its altitude to within half the deck thickness — a fraction of
+  // a scale height, and far cheaper than a second ellipsoid solve on the default
+  // path. The LUT branch below still resolves the exact midpoint altitude,
+  // because its transmittance lookup is a per-altitude table rather than a
+  // smooth exponential.
+  let aerial = cloudAerialFraction(
+    deckBottom + 0.5 * (deckTop - deckBottom),
+    -rayDir,
+    midUp,
+    midDist,
+    cloud.aerialStrength,
+  );
   // Heuristic haze, the path taken when `aerialLutMode` is 'heuristic'.
   var hazed = mix(toneMapped, cloud.aerialColor, aerial);
 
@@ -2670,8 +2875,9 @@ fn marchDeck(
   //     deck dissolves into the true sky color.
   // Falls back to the heuristic `hazed` when the sky-view LUT reads ~0.
   if ((u32(cloud.qualityFlags) & QF_AERIAL_LUT) != 0u) {
-    let midPos = rayOrigin + rayDir * midDist;
-    let midUp = normalize(midPos);
+    // `midPos` and `midUp` are resolved once above, for the path-length model
+    // the heuristic now shares with this branch; this block used to recompute
+    // both.
     let inscatterHDR = cloudSampleSkyViewLut(midUp, rayDir, sunDir);
     if (cloudLutLuminance(inscatterHDR) > 1e-5) {
       // Resolve the midpoint against the same oblate boundaries as the march. Keep
