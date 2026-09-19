@@ -18,10 +18,58 @@ Basis: `RULING_REQUESTS_2026-09-08.md` `RR-2026-09-13-E`, raised against `R-2026
 `R-2026-08-10-1`; the 2026-09-03 sweep it re-decides is stamped in `QUEUE_2026-07-23_CAMPAIGN13.md`
 §9 row `C13-41` and summarised in `CAMPAIGN_STATE.md`'s C13 block.
 
-Executed: **NOT EXECUTED.** Leg (e) never ran — job 13c stopped mid-leg (b) at the 16:05 EDT
+Executed: ~~**NOT EXECUTED.** Leg (e) never ran — job 13c stopped mid-leg (b) at the 16:05 EDT
 wind-down (`STOP_CHECKPOINT_2026-09-13.md` §5), so neither arm of the conditional has fired and the
-S3 re-decision is still owed. The ruling stands as written and applies to the first re-run that
-completes.
+S3 re-decision is still owed.~~ **The ruling stands as written and applies to the first re-run that
+completes.** *(That last sentence is deliberately **not** struck: it is what licenses reading
+Filibert's 2026-09-19 run below as the completing re-run, although this ruling's own text names
+"Bandobras's leg (e)". The substitution is recorded in the `RR-2026-09-13-E` append.)*
+
+**EXECUTED 2026-09-19 — the re-run WAS TAKEN. Neither red trigger fired; the run is nonetheless
+GATE FAIL, exit 1.** On the close-out plan's mechanical gloss of this ruling
+([`C12_CLOSEOUT_PLAN_2026-09-19.md`](C12_CLOSEOUT_PLAN_2026-09-19.md) §6) that is the **GREEN** arm;
+on this ruling's own unglossed word *"green"* a still-failing gate is arguable, and **that tension
+is left for the maintainer rather than resolved by a lane.** *(Recorded by the batch that carries
+this line; the struck text above is kept because it was
+true until that run.)* Leg (e) ran on **2026-09-19** on **`ea651de6d8`** — the tree this ruling
+names, fixed for the run by `R-2026-09-19-3` — with Edge executor **Filibert** on a fresh clone,
+carrying the Batch 1518 (`3e6feaae24`) deck-free control repair as its only **instrument** overlay
+and asserting
+served-bundle byte-identity as `R-2026-09-19-1` requires (`Build/CesiumUnminified/Cesium.js` md5
+`3873edb82e25a724e00800ecfb99c811`, disk == served, re-checked after the apply). It ran the banked
+sweep's command, **port aside** (`PROBE_BASE` `:8094` banked against `:8098` fresh).
+
+**Neither red trigger fired.** Trigger 1: `verdicts.shadowContrastInvariant` **true**,
+`shadowContrastRatioAtDeepest` **0.9893862265081094**, inside **[0.97, 1.03]** — where the banked
+sweep read `false` at **1.0341102079879674**. Trigger 2: the deck-free control lane **scored** —
+`verdicts.deckFreeControlStateIsolated` **true**, no deck-free structural reason, no deck-free blind
+lane. The close-out plan's mechanical definition of this ruling's arms
+([`C12_CLOSEOUT_PLAN_2026-09-19.md`](C12_CLOSEOUT_PLAN_2026-09-19.md) §6) is *"Green: trigger 1
+false **and** trigger 2 absent"*, so **the seat reads this as the GREEN arm — "if it turns green, S3
+continues"**.
+
+**Option C of `R-2026-08-10-1` is therefore NOT EXECUTED.** S3/S4 are not re-filed, C12 is **not**
+closed, C14 is **not** unblocked, and the `R4` aurora hold is **not** released by this. Whether to
+exercise Option C anyway is the **maintainer's** decision, and no lane makes it.
+
+**And the run as a whole is GATE FAIL, exit 1** — stated here every time the contrast predicate is
+called green. It fails on `deckPureRatioInBand`, which this ruling names in neither trigger:
+`deckPureRatio` **0.6457892095024083** against the band **0.625–0.645**, over the upper edge by
+**0.0008**. So S3 continues carrying two named items — **beside the three the close-out plan's §6b
+step 3 already owed** (the mechanism investigation of the contrast reading, band tightening off
+`DERIVED`, and independent review of the reading), so five in all: **(i)** that deck-ratio red, and
+**(ii)**
+`refreshCostMeasured` — one of `R-2026-08-14-1`'s two restored exit conditions — still **unscored**,
+blinded by the run's one structural reason, *"the pre-segment GPU readback drain did not close
+(timedOut=true, undrained=1)"*, which is the close-out plan's row **`S3-N2-REFRESHCOST`** and is
+independent of everything the deck-free repair touched. **Why either figure moved between the banked
+tree and this one has not been measured, and is not explained here.**
+
+**"No further round-trip; both sweeps go into the record either way"** is what this batch does: the
+two are tabulated side by side in the `RR-2026-09-13-E` append in
+[`RULING_REQUESTS_2026-09-08.md`](RULING_REQUESTS_2026-09-08.md), and
+[`DEFERRED_WORK.md`](DEFERRED_WORK.md) carries the dated continuation. Receipt:
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-19/` (gitignored, seat tree).
 
 Authority: charter §1.1.
 

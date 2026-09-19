@@ -97,18 +97,54 @@ mentioned and I confirmed every one of them in the queue's own §0 and ASKS line
 `directionalLightEvidenceMatches` at `:366-370`); esbuild emits `function DirectionalLight2(` —
 `grep -c` over `Build/CesiumUnminified/Cesium.js` returns **1** at HEAD and `function SunLight2(`
 returns **0**, which is why the sibling restore check works and review never caught it
-**[Lily-reverified 2026-09-19]**. The instrument is **byte-identical between `ea651de6d8` and HEAD**:
-`git diff ea651de6d8..245cdc7e9d` over `probe-eclipse-cloud-response.mjs` and the five consumed libs
-is **empty** **[Lily-reverified 2026-09-19]**. So *any* run of the unrepaired instrument, on either
-tree, fires `R-2026-09-13-1`'s second red trigger with certainty. **v1 planned to spend the Edge night
+**[Lily-reverified 2026-09-19]**. ~~The instrument is **byte-identical between `ea651de6d8` and
+HEAD**: `git diff ea651de6d8..245cdc7e9d` over `probe-eclipse-cloud-response.mjs` and the five
+consumed libs is **empty** **[Lily-reverified 2026-09-19]**.~~ **CORRECTED 2026-09-19** by the batch
+that carries this line, on the adversarial critic **Bingo**'s finding: that sentence is **true at
+`245cdc7e9d`** (Batch 1514 — re-derived here, the diff is empty) and **false at the tip this batch
+is based on**, `30d1ceb60f` (Batch 1527). `git diff --numstat ea651de6d8 30d1ceb60f` over the probe
+and the six libraries in its transitive import closure reports `lib/build-source-identity.mjs` **47 / 0** (Batch 1519 `df92ce5d5b`, pure additions) and
+`lib/c13-41-deckfree-control.mjs` **14 / 1** (Batch 1518 `3e6feaae24`, the deck-free repair). The
+leg (e) receipt names both and applied only the second. So *any* run of the unrepaired instrument,
+on either tree, fires `R-2026-09-13-1`'s second red trigger with certainty — **that conclusion is
+untouched**: the only drifted file that bears on it is the repair itself, and this sentence is about
+the *unrepaired* instrument. **v1 planned to spend the Edge night
 obtaining that foregone conclusion. v2 does not** (Noakes N-01, accepted).
 
-**And the first trigger has already fired, on a completed sweep at the ruling's own tree.** The
+~~**And the first trigger has already fired, on a completed sweep at the ruling's own tree.** The
 2026-09-03 banked report reads `verdicts.shadowContrastInvariant: false`,
 `verdicts.shadowContrastRatioAtDeepest: 1.0341102079879674`, nine `unscoredPredicates` and the 16
 constructor-name structural reasons **[Lily-reverified 2026-09-19]**. With a byte-identical instrument
 on a byte-identical engine, a literal re-run is a **repeat measurement**, not a new one. That is the
-real question for the maintainer (Q1 below), and it is sharper than anything v1 put.
+real question for the maintainer (Q1 below), and it is sharper than anything v1 put.~~
+
+**CORRECTED 2026-09-19** by the batch that carries this line — struck above, restated here, nothing
+deleted. **The report's VALUES are right; the run's TREE is not.** That sweep ran on
+**`fbea2028cc`** (Batch 1403), **not** on the `ea651de6d8` (Batch 1483) `R-2026-09-13-1` names.
+Its own receipt says so —
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-02b/README.txt`, line 6:
+*"Clone commit   fbea2028cc (== origin/main, Batch 1403); worktree clean"* — and the two commits are
+**443 commits** apart (`git merge-base --is-ancestor fbea2028cc ea651de6d8` succeeds). The
+**engine** is not identical:
+`packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts` alone differs by **2,742
+insertions / 1,660 deletions**, and the report pins that same file as `engineSource3` at
+`byteLength` **198654** where the 2026-09-19 run's report reads **237065**. **And the instrument is
+not identical either.** That half of the claim was asserted, wrongly, by the first draft of this
+very correction, and the same adversarial critic caught it on a second pass: `git diff --numstat
+fbea2028cc ea651de6d8` over the probe and the **six** libraries in its transitive import closure
+(the five it imports directly, plus `lib/same-task-capture.mjs` reached through
+`lib/weather-probe-pinning.mjs`) reports
+`Tools/visual-regression/lib/cloud-probe-harness.mjs` at **289 insertions / 22 deletions** — Batch
+1478 (`e69d3e4fc7`), which changed what `awaitProceduralReady` counts as recorded work, and Batch
+1480 (`39283ec388`), which added the pre-tonemap capture path. Those are the *when* and the *what*
+of a measurement. The probe itself and the other five libraries are byte-identical. So the sentence
+"at the ruling's own tree" is false, "on a byte-identical engine" is false, **and "with a
+byte-identical instrument" — the form the claim takes in `R-2026-09-19-2`'s question text and in §4
+Q1 below — is false as well. The substitution rests on no measured identity at all.** This
+correction binds every occurrence of all three claims in this document, including the one in §6
+corrected in place below and the Q1 text §4 carries.
+Found by the adversarial critic **Bingo** (Opus) under `R-2026-09-11-1`, while judging the close
+patch that rested on this paragraph — before it landed.
 
 **The S5 matrix is not "run six probes", and it is not what v1 said either.** Noakes N-02 is correct
 and I re-read every artifact myself: `output/edge-tranche3e-e-2026-08-29/j1-dense-cost/` holds a
@@ -587,12 +623,22 @@ epochs…"*, or `deckFreeControlStateIsolated` present in `unscoredPredicates`. 
 Green: trigger 1 false **and** trigger 2 absent. Exit contract: `0 PASS / 1 gate FAIL / 2 HARNESS /
 3 STRUCTURAL`.
 
-**Which arm the evidence already on disk points at.** The 2026-09-03 banked sweep on `ea651de6d8`
+~~**Which arm the evidence already on disk points at.** The 2026-09-03 banked sweep on `ea651de6d8`
 reads trigger 1 **fired** (`shadowContrastInvariant: false`, ratio `1.0341102079879674`) and trigger 2
 **fired** (16 constructor-name structural reasons; `deckFreeControlStateIsolated` among nine
 `unscoredPredicates`) **[Lily-reverified 2026-09-19]**. Under Q1 reading (ii), ARM RED is already
 determined; under reading (i) it must be re-observed. Trigger 2's firing is an instrument artefact
-(R2) and steps 1-2 dispose of it; trigger 1's is not (R1).
+(R2) and steps 1-2 dispose of it; trigger 1's is not (R1).~~
+
+**CORRECTED 2026-09-19** by the batch that carries this line — struck above, restated here, nothing
+deleted. **That sweep ran on `fbea2028cc` (Batch 1403), not on `ea651de6d8`** (its own receipt's
+"Clone commit" line; see the dated correction before §1). Its values are quoted correctly and the
+two triggers did fire **on that tree**. **But the question this paragraph asks has since been
+answered by measurement rather than by inference:** leg (e) was taken on **2026-09-19** on
+`ea651de6d8` itself, and **neither trigger fired** —
+`shadowContrastInvariant` **true** at **0.9893862265081094**, `deckFreeControlStateIsolated`
+**true**. See the dated section **"Leg (e) result, 2026-09-19"** at the end of this document. The
+run is nonetheless **GATE FAIL, exit 1**, on `deckPureRatioInBand`.
 
 ### 6a. ARM RED — Option C fires
 
@@ -764,3 +810,144 @@ re-parsed the certification independently and confirms the key set has no `runId
 ceiling arithmetic; the observation that five of six S5 gate libs hash gitignored build output; the
 `C12-38b` sun-disc discriminator being a *different* discriminator from C13-41's; and the unrecorded
 fork on resuming job 13c in-clone versus on the tip.
+
+---
+
+## Leg (e) result, 2026-09-19 — §6a does not run; on §6's own mechanical reading, §6b ARM GREEN applies
+
+_Appended by the batch that carries this line. **Nothing above is rewritten by this section** except
+the two dated strike-and-restate corrections already marked in place. This section records a
+measurement and says which of this plan's own steps it overtakes; it takes no decision._
+
+**The run.** Leg (e) of job 13c — this plan's §6 discriminator — was taken on **2026-09-19**, Edge
+executor **Filibert**, on a fresh clone at **`ea651de6d8`** per `R-2026-09-19-3`, carrying **only**
+the Batch 1518 (`3e6feaae24`) deck-free control repair as an **instrument** overlay per
+`R-2026-09-19-1`, with served-bundle byte-identity asserted before and after the apply
+(`Build/CesiumUnminified/Cesium.js` md5 `3873edb82e25a724e00800ecfb99c811`, disk == served). It ran
+the banked sweep's command, **port aside** — `PROBE_BASE` `:8094` banked against `:8098` fresh; the
+rest of the invocation is character-for-character the same. Wall **3 m 53 s**, against the banked
+sweep's **4 m 51 s** (22:42:57 → 22:47:48 EDT). Receipt (gitignored, seat tree):
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-19/`.
+
+**Two provenance facts the receipt records, repeated here rather than summarised away.** The clone's
+`git status --porcelain` after the apply had **two** lines, not one: the repair, and
+`migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md` (105 / 0), which the provisioner itself
+reports as modified and which the receipt names as "not part of the instrument" — which is why the
+overlay is called an *instrument* overlay above. And `npx gulp prepare` was **not** run, so
+`ThirdParty/draco_decoder.wasm` was missing in the clone; the receipt records that "as a provenance
+fact". **Whether either bears on the figures read below has not been measured**, and neither is
+offered as an explanation of them; they are stated so no reader is told the run carried one overlay
+when its own receipt records two.
+
+**Read against §6's own mechanical definition.**
+
+| §6 trigger | Definition | Measured 2026-09-19 |
+|---|---|---|
+| Red 1 | `verdicts.shadowContrastInvariant === false` | `true` — `shadowContrastRatioAtDeepest` **0.9893862265081094**, inside [0.97, 1.03]. **Did not fire.** |
+| Red 2 | the deck-free structural reason, or `deckFreeControlStateIsolated` in `unscoredPredicates` | `deckFreeControlStateIsolated` **true**; no deck-free structural reason; no deck-free blind lane. **Did not fire.** |
+
+§6's green condition is *"trigger 1 false **and** trigger 2 absent"*. **Both hold, so this is ARM
+GREEN.** §6a — ARM RED, Option C fires — **does not run**, and everything whose execution this plan
+routes through "the Option C close batch" is not reached: `R-2026-09-19-2`, `-4`, `-5`, `-6`, `-11`
+and `-12` stay NOT EXECUTED, and the STATUS block's closing clause, *"§6a's arm has not fired"*, is
+**still true**.
+
+**And the outcome shape the maintainer has already ruled on.** `R-2026-09-19-2`, as adopted, answers
+a *"third outcome"* in the same breath: *"a run with `shadowContrastInvariant` in band, the control
+lane scored, and the WebGPU refresh-cost drain failing again calls `markBlind("refresh-cost")` and
+exits **3 STRUCTURAL** — neither red trigger, not a PASS … **Recommend: neither** — bank it, re-run
+once after `S3-N2-REFRESHCOST` lands; a second structural result fires Option C on the ground that
+the instrument cannot answer at honest cost."* **This run matches all three of that sentence's named
+characteristics** — contrast in band, the control lane scored, and the same readback-drain reason
+blinding `refreshCostMeasured`. It differs only in **exiting 1 rather than the 3** the clause
+predicts, because `deckPureRatioInBand` went red instead and the gate's exit fold
+(`eclipseCloudExitCode` in
+[`Tools/visual-regression/lib/eclipse-cloud-response-gate.mjs`](../Tools/visual-regression/lib/eclipse-cloud-response-gate.mjs))
+ranks a non-empty `failedPredicates` above a non-empty `structuralReasons` — absent that one red the
+run would have exited exactly the **3 STRUCTURAL** the clause describes. The clause's own
+disposition is therefore scoped to exit 2 or 3 and **does not bind on its own terms**; but whether
+this run is the §6 **GREEN** arm (*"S3 continues"*) or the adopted **"neither"** outcome (*"bank it,
+re-run once after `S3-N2-REFRESHCOST` lands"*) is **not a lane's reading to take**, and the
+difference is real work: the "neither" reading owes a re-run this section does not schedule. **Both
+readings go to the maintainer.** What this batch records is the §6 mechanical reading, labelled as
+that reading everywhere it appears; it decides nothing between them.
+
+**Against the reading pre-registered before the run.** The seat's dispatch brief for leg (e) — the
+seat's untracked scratchpad, quoted here for what it fixed *in advance*, not cited as authority —
+named four cases: `shadowContrastInvariant` false → **ARM RED** whatever the exit code; **exit 0 →
+ARM GREEN**, "S3 continues"; the contrast predicate true or unscored **with exit 3** → **neither**
+arm; exit 2 twice → harness defect. The actual outcome — contrast **true**, **exit 1** on a third
+predicate — is **not one of the four**, and the pre-registered green arm was keyed to **exit 0**,
+which this run is not. The GREEN reading recorded here is therefore taken from §6's mechanical
+definition **after** the result, not from the list written before it. That is said plainly rather
+than left for a reader to notice.
+
+**The run is GATE FAIL, exit 1** — stated here every time the contrast predicate is called green.
+`failedPredicates` is `["deckPureRatioInBand"]`: `deckPureRatio` **0.6457892095024083** against the
+band **0.625–0.645**, over the upper edge by **0.0008**. `unscoredPredicates` is
+`["refreshCostMeasured"]`, with exactly one structural reason — *"fresh refresh-cost measurement is
+ineligible: webgpu: pair 0 eclipse: the pre-segment GPU readback drain did not close
+(timedOut=true, undrained=1)"* — which is this plan's row **`S3-N2-REFRESHCOST`**.
+`parityFailed` is `[]`. `exposureSweepRisesWithExposure` reads `false`, but it is a **reported-only**
+predicate and gates nothing — read from the gate library's own reported-only set, not inferred.
+
+**One thing about the sweep leg that is recorded rather than explained.** All four sweep rungs
+(0.5, 1.0, 2.0, 4.0) returned a **bit-identical** `exposureSweepMeasured` —
+`[0.9893862265081094 × 4]` — and that value **is** `shadowContrastRatioAtDeepest`, against a
+`exposureSweepPredicted` series `[0.5651, 0.6341, 0.7222, 0.8124]` that does rise. `offNoShadowSeries`
+is likewise four copies of `0.7843137254896411`, at `offNoShadowSpread` **0**. The banked sweep was
+neither degenerate nor equal to its own ratio: `[1.0706, 1.0997, 1.1212, 1.1348]` against ratio
+`1.0341102079879674`, `offNoShadowSpread` `0.0182`. The predicate gates nothing, but the gate
+library's own comment calls it *"The CORRECTED deciding measurement"* for this row's mechanism
+question, and a leg that returns one number four times is not evidence about exposure. **Nobody has
+measured why. It is named here so it is not read as a passing leg**, and because it sits beside the
+contrast reading this section calls green.
+
+**§6b step by step — what it required, and what this batch has and has not done.**
+
+1. *Bank the receipt and append to `RR-2026-09-13-E`.* **DONE** by this batch: the receipt is banked
+   at the path above — `…-2026-09-19/`, **not** the `…-2026-09-13/` path this step named, because
+   the run is Filibert's of 2026-09-19 and not the job-13c leg the step anticipated — and both
+   sweeps are tabulated side by side in the `RR-2026-09-13-E` append in
+   [`RULING_REQUESTS_2026-09-08.md`](RULING_REQUESTS_2026-09-08.md).
+2. *Record that the green arm fired, with the measured ratio, and whether trigger 2 scored **because
+   of** the step-1 repair.* **DONE, and the qualification is the honest half.** The deck-free lane
+   scored **with the Batch 1518 repair applied**; the run never exercised the unrepaired predicate,
+   so this is a green trigger 2 **obtained by repairing the instrument**, which §6b step 2 says is a
+   different fact from one obtained without — recorded as such here. Trigger 1's green, by contrast,
+   is not attributable to the repair: the repair is confined to the Node-side deck-free scoring
+   module and leaves the served bundle byte-identical.
+3. *S3 still owes four things.* **All four stay open and none is taken here:**
+   `refreshCostMeasured` TRUE (blocked by `S3-N2-REFRESHCOST`, unchanged by this run and re-measured
+   blind by it); the mechanism investigation of the contrast reading (`R-2026-08-14-1`'s other
+   restored exit condition); band tightening against observed margins, flipping `status` off
+   `DERIVED` — **with that row's own warning attached, that widening a band to make a run pass is
+   the failure mode every `why` string in the gate module exists to make visible**; and independent
+   review of the reading. **A fifth item now sits beside them, which §6b did not anticipate:** the
+   `deckPureRatioInBand` red at 0.6457892095024083.
+4. *Only then may `owners["C13-41"].state` move `reopened` → `closed`.* **NOT DONE and not
+   permitted yet.** `FINDING_DISPOSITIONS_2026-08-13.json` is untouched by this batch; `C13-41`
+   stays `reopened`.
+5. *And C12 is still not closed.* **Correct, and it is not closed.** Every item in §2 Phase B except
+   S3 survives ARM GREEN untouched, and so does every item in R10's list.
+
+**Against §6b's stated ACCEPTANCE.** Its three clauses read: `shadowContrastInvariant` true — **met**;
+`deckFreeControlStateIsolated` scored true — **met**; `unscoredPredicates` empty **or** containing
+only predicates named in a recorded disposition — **met on the second limb only**, since the single
+entry `refreshCostMeasured` is the predicate §6b step 3 itself names and homes on
+`S3-N2-REFRESHCOST`. **The acceptance does not mention the gate's overall verdict, and the gate's
+overall verdict is FAIL.** That is recorded plainly rather than folded into the acceptance's
+silence. Its closing requirement — that the owed items each become an open row with an owner rather
+than a sentence in a summary — is **not discharged by this batch**.
+
+**Two things this section deliberately does not do.** It does not explain **why** either the contrast
+ratio or the deck ratio moved between `fbea2028cc` and `ea651de6d8`; nobody has measured that, and a
+separate investigation owns it. And it makes **no claim about what the tip would read** —
+`R-2026-09-19-3` keeps a tip reading a later, separate job with its own `C13-N20` deck
+pre-registration.
+
+**And the decision that is not a lane's to take.** `R-2026-09-19-2` was adopted on a basis this
+document supplied and that was found false before execution (the two dated corrections above).
+**Whether to exercise Option C anyway is the maintainer's call**, and it is put back to them in the
+dated annotation on `R-2026-09-19-2` in
+[`MAINTAINER_RULINGS_2026-09-19.md`](MAINTAINER_RULINGS_2026-09-19.md).

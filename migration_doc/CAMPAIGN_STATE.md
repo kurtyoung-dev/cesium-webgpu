@@ -72,6 +72,29 @@ by any bundled variant, so G3's red is by construction; the 4096-px skybox tier 
 opt-in externally-fetched asset via the resolution-policy seam, gated on a licence determination,
 not installed as a bundled asset. Gates M-06..M-10 close under that ruling.
 
+*[**Status added 2026-09-19** by the batch that carries this line. **C12 is OPEN.** The `C13-41`
+exposure-sweep discriminator — leg (e), the re-run `R-2026-09-13-1` makes the S3 re-decision
+conditional on — **was taken on 2026-09-19**, on the ruling's own tree `ea651de6d8` (Edge executor
+Filibert; `R-2026-09-19-3`; the Batch 1518 deck-free repair as its only **instrument** overlay,
+served-bundle
+byte-identity asserted under `R-2026-09-19-1`). **Neither red trigger fired:**
+`shadowContrastInvariant` is **true** at `shadowContrastRatioAtDeepest` **0.9893862265081094**,
+inside **[0.97, 1.03]**, and the deck-free control lane **scored** —
+`deckFreeControlStateIsolated` **true**, no deck-free structural reason. By the close-out plan's own
+mechanical definition (*"Green: trigger 1 false **and** trigger 2 absent"*,
+[`C12_CLOSEOUT_PLAN_2026-09-19.md`](C12_CLOSEOUT_PLAN_2026-09-19.md) §6) that is the ruling's
+**GREEN** arm — *"S3 continues"*. **The gate as a whole is still FAIL, exit 1**, on
+`deckPureRatioInBand` (`deckPureRatio` 0.6457892095024083 against the band 0.625–0.645), a
+predicate the ruling names in neither trigger. **Option C of `R-2026-08-10-1` has NOT fired:** S3/S4
+are not re-filed, **C12 is not closed**, **C14 stays blocked on C12**, and **nothing about the `R4`
+aurora hold changes here** (`C15-01`/`C15-02` and `C15-05`/`C15-06` remain released by
+`R-2026-09-17-9` and `R-2026-09-18-1`, untouched). Whether to exercise Option C anyway is the
+**maintainer's** decision and no lane makes it. Why either figure moved between the banked tree and
+this one has not been measured and is not explained here. Receipt:
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-19/` (gitignored, seat tree); both
+sweeps side by side in `RR-2026-09-13-E`
+([`RULING_REQUESTS_2026-09-08.md`](RULING_REQUESTS_2026-09-08.md)).]*
+
 ### C13 — Planetary volumetric clouds, RTE, weather realism
 
 **Launched / executing** since 2026-07-23 (`QUEUE_2026-07-23_CAMPAIGN13.md`); Gate B (planetary
@@ -106,6 +129,25 @@ mid-leg (b) at the 2026-09-13 16:05 EDT wind-down; legs (c), (b3) and (e) were n
 that re-run** — `R-2026-09-13-1` — so neither arm of the conditional has fired and `RR-2026-09-13-E`
 is still open. The `C13-41` row and the whole conditional are unchanged in substance; only the
 "in flight" claim is retired.]*
+
+*[**Status added 2026-09-19** by the batch that carries this line, superseding the "in flight" /
+"never happened" pair above **as to fact only**. **Leg (e) WAS taken on 2026-09-19** — Edge executor
+**Filibert**, fresh clone at **`ea651de6d8`** under `R-2026-09-19-3`, the Batch 1518 (`3e6feaae24`)
+deck-free control repair as its only **instrument** overlay under `R-2026-09-19-1`, served bundle md5
+`3873edb82e25a724e00800ecfb99c811` disk == served, banked to
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-19/` (gitignored, seat tree) — not to
+the `…-2026-09-13/` path the retired sentence named, and not by Bandobras. **Neither of
+`R-2026-09-13-1`'s red triggers fired:** `shadowContrastInvariant` **true** at **0.9893862265081094**
+(band [0.97, 1.03]; the banked 2026-09-03 sweep read **false** at **1.0341102079879674**), and the
+deck-free control lane **scored** — `deckFreeControlStateIsolated` **true**, the nine unscored
+predicates of the banked run down to **one**. On the close-out plan's own mechanical reading that is
+the ruling's **GREEN** arm: **S3 continues**. **The run is still GATE FAIL, exit 1**, on
+`deckPureRatioInBand` — `deckPureRatio` **0.6457892095024083** against the band **0.625–0.645** —
+and `refreshCostMeasured` is still **unscored**, blinded by the readback-drain structural reason
+(row `S3-N2-REFRESHCOST`). So `C13-41` **stays OPEN** and stays `reopened` in the machine-readable
+ledger; **Option C has not fired and C12 is not closed**; `RR-2026-09-13-E` now carries both sweeps
+side by side. Why the numbers moved between the two trees has not been measured and is not explained
+here.]*
 
 **Wave A (2026-09-11):** D1 (Batch 1466), C1 (Batch 1467), C2 (Batch 1468), and C3 (Batch 1471)
 LANDED — **unchanged**.
@@ -507,7 +549,17 @@ and L5 Edge legs all **ran ahead of the discriminator** on 2026-09-16, -17 and -
 have taken the slot since 2026-09-16 **without P0-2 closing**. What survives above is the
 description of what P0-2 still owes — legs (b)-remainder, (c) and (b3) — and that **P0-2 stays
 OPEN**; what does not survive is the claim that anything queues behind it. The written ordering of
-the contended slot is §2b of [`C12_CLOSEOUT_PLAN_2026-09-19.md`](C12_CLOSEOUT_PLAN_2026-09-19.md).]*
+the contended slot is §2b of [`C12_CLOSEOUT_PLAN_2026-09-19.md`](C12_CLOSEOUT_PLAN_2026-09-19.md).
+
+**Extended 2026-09-19 by the batch that carries this line — and the correction above is now
+demonstrated rather than argued: leg (e) WAS taken, and it took the slot on its own merits.** The
+`C13-41` exposure-sweep discriminator ran on **2026-09-19** (Edge executor Filibert) on a fresh
+clone at `ea651de6d8` per `R-2026-09-19-3`, with the Batch 1518 deck-free control repair as its only
+overlay and served-bundle byte-identity asserted per `R-2026-09-19-1`. **P0-2 did not close first.**
+It is **still OPEN** and still owes legs (b)-remainder, (c) and (b3) — so the discriminator did not
+queue behind it, exactly as this correction said it need not. What the run measured, and what it
+does and does not decide, is the dated status line in this file's C12 and C13 blocks; the receipt is
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-19/` (gitignored, seat tree).]*
 
 **Return and campaign state, 2026-09-10 (Batches 1449–1453 pushed).** The seat returned from pause
 with Batches 1449–1453 landed and pushed to origin. Uncommitted seat work was relocated to

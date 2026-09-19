@@ -243,3 +243,61 @@ and summarised in `CAMPAIGN_STATE.md`'s C13 critical-path paragraph.
 
 Authority is charter §1.1. This request changes no row's status, pauses no lane, and does not
 pre-empt the in-flight re-run.
+
+### Appended 2026-09-19 — leg (e) was taken, and **both sweeps are now in the record**
+
+_Appended by the batch that carries this line, at the append point this request reserves above:
+"**Its numbers do not exist yet and are deliberately not written here; the seat will append them to
+this request when the leg returns.**" The leg has returned. Two facts in that reserving sentence are
+corrected here rather than edited away: the executor was **Filibert**, not Bandobras — job 13c
+stopped mid-leg (b) on 2026-09-13 and its own leg (e) never ran — and the bank is
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-19/`, not the `…-2026-09-13/` path
+named above. Both receipts are gitignored and live in the seat tree._
+
+**The two sweeps, side by side. Every figure is quoted from the two runs' own report JSONs.**
+
+| | **Banked sweep** | **Leg (e) re-run** |
+|---|---|---|
+| Date | 2026-09-03, 22:42:57 → 22:47:48 EDT (wall **4 m 51 s**) | 2026-09-19, 10:59:27 → 11:03:20 EDT (wall **3 m 53 s**) |
+| Tree | **`fbea2028cc`** (Batch 1403) — its own receipt's "Clone commit" line | **`ea651de6d8`** (Batch 1483), the tree `R-2026-09-13-1` names, fixed for this run by `R-2026-09-19-3` |
+| Instrument | as at `fbea2028cc` — **not** the same instrument as the column to the right: over the probe and the six libraries in its transitive import closure, `lib/cloud-probe-harness.mjs` differs by **289 / 22** (Batches 1478 `e69d3e4fc7` and 1480 `39283ec388`); the probe and the other five libraries are byte-identical | as at `ea651de6d8` **plus one hunk** — the deck-free control repair of Batch 1518 (`3e6feaae24`), permitted by `R-2026-09-19-1`. Clone overlay in the instrument sense only: the receipt also records a provisioner-modified doc path and that `gulp prepare` was not run |
+| Served bundle | md5 `a039143c1c8f7e8f8bdafb5a8b2defb2`, disk == served | md5 `3873edb82e25a724e00800ecfb99c811`, disk == served, re-checked **after** the repair was applied |
+| Executor · runId | Éowyn job 2 leg 7 · `d1470ec7-a426-4a1c-87e0-7def7500f2b2` | Filibert · `7241daf6-7040-4922-b9ec-b820cab9cb25` |
+| Exit | **1 — GATE FAIL** | **1 — GATE FAIL** |
+| **Red trigger 1** — `shadowContrastInvariant` | **FIRED**: `false`, `shadowContrastRatioAtDeepest` **1.0341102079879674**, outside [0.97, 1.03] | **DID NOT FIRE**: `true`, `shadowContrastRatioAtDeepest` **0.9893862265081094**, inside the band |
+| **Red trigger 2** — deck-free control BLIND | **FIRED**: `deckFreeControlStateIsolated` among nine `unscoredPredicates`; **one** structural reason enumerating **16** per-rung constructor-name read-backs (of the **two** reasons in the row below) | **DID NOT FIRE**: `deckFreeControlStateIsolated` **true**; no deck-free structural reason and no deck-free blind lane |
+| `failedPredicates` | `["shadowContrastInvariant"]` | `["deckPureRatioInBand"]` — `deckPureRatio` **0.6457892095024083** against the band **0.625–0.645** |
+| `unscoredPredicates` | nine | **one**: `["refreshCostMeasured"]` |
+| `structuralReasons` | two | **one**: *"fresh refresh-cost measurement is ineligible: webgpu: pair 0 eclipse: the pre-segment GPU readback drain did not close (timedOut=true, undrained=1)"* |
+| `parityFailed` | `[]` | `[]` |
+| `exposureSweepRisesWithExposure` (**reported-only**; gates nothing) | `true`; measured [1.0706, 1.0997, 1.1212, 1.1348] — four distinct values, none equal to the ratio above | `false`; measured [0.9893862265081094 × 4] against predicted [0.5651, 0.6341, 0.7222, 0.8124] — **bit-identical at all four rungs, and equal to `shadowContrastRatioAtDeepest` itself**; `offNoShadowSpread` likewise `0` against the banked `0.0182`. Recorded, not explained |
+
+**What this settles.** **Neither of `R-2026-09-13-1`'s two red triggers fired on the ruling's own
+tree.** By the close-out plan's own mechanical reading —
+[`C12_CLOSEOUT_PLAN_2026-09-19.md`](C12_CLOSEOUT_PLAN_2026-09-19.md) §6, *"Green: trigger 1 false
+**and** trigger 2 absent"* — that is the ruling's **GREEN** arm, *"S3 continues"*. **Option C of
+`R-2026-08-10-1` has NOT fired**, so none of option (b) above has been taken: C12 is **not**
+closed, C14 is **not** unblocked, and the `R4` aurora hold is untouched by this (`C15-01`/`C15-02`
+and `C15-05`/`C15-06` stay released by `R-2026-09-17-9` and `R-2026-09-18-1`, neither of which
+this append touches).
+
+**What it does not settle — and the run is GATE FAIL, exit 1.** It fails on `deckPureRatioInBand`,
+a predicate this ruling names in neither trigger, over the band's upper edge by **0.0008**; and
+`refreshCostMeasured` — one of `R-2026-08-14-1`'s two restored exit conditions — is still
+**unscored**, blinded by the same readback-drain structural reason the banked run carried verbatim
+(the close-out plan's row `S3-N2-REFRESHCOST`). The green arm continues S3; it does not discharge
+it. **Why either figure moved between the two trees has not been measured by anyone, and this
+append deliberately does not explain it.**
+
+**The request itself.** `RR-2026-09-13-E` asked for a re-decision between (a) continue S3 and (b)
+Option C. The measurement points at (a) on the ruling's own mechanics. **Whether to exercise Option
+C anyway is the maintainer's decision, and no lane makes it** — see the dated annotation on
+`R-2026-09-19-2` in [`MAINTAINER_RULINGS_2026-09-19.md`](MAINTAINER_RULINGS_2026-09-19.md), which
+records that the basis that ruling was adopted on was found false before it was executed.
+
+Receipt for the re-run: `Tools/visual-regression/output/eclipse-cloud-response-2026-09-19/`
+(`README.txt`, `preflight.txt`, `comparison-banked-vs-fresh.txt`, `facts-extract.txt`,
+`probe-output/eclipse-cloud-response-report.json`), gitignored, in the seat tree.
+
+Authority is charter §1.1. This append records two measurements; it changes no row's status, widens
+no band, and closes nothing.

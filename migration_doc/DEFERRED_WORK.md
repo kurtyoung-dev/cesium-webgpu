@@ -2631,6 +2631,24 @@ matches the measurement.
 
 **Source:** `STOP_CHECKPOINT_2026-09-13.md` §5; `rulings-2026-09-13-maintainer.md` ruling 1; `CAMPAIGN_STATE.md` C13 block.
 
+**Continuation, 2026-09-19 — the re-run has now been taken, and NEITHER red trigger fired.** *(Added
+by the
+batch that carries this line. The entry above stands as written; it was true until 2026-09-19.)*
+Leg (e) ran on **2026-09-19**: Edge executor **Filibert**, fresh clone at **`ea651de6d8`** under
+`R-2026-09-19-3`, the Batch 1518 (`3e6feaae24`) deck-free control repair as its only **instrument**
+overlay under
+`R-2026-09-19-1`, served bundle md5 `3873edb82e25a724e00800ecfb99c811` disk == served, banked to
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-19/`. **Neither red trigger fired:**
+`shadowContrastInvariant` **true** at **0.9893862265081094** inside [0.97, 1.03], and
+`deckFreeControlStateIsolated` **true** with no deck-free structural reason. On the close-out plan's
+own mechanical reading that is `R-2026-09-13-1`'s **GREEN** arm — **S3 continues** — so **Option C
+of `R-2026-08-10-1` has NOT fired**: C12 is not closed, C14 is not unblocked, the `R4` aurora hold
+is untouched, and this row's status is unchanged in substance. **The run is still GATE FAIL, exit
+1**, on `deckPureRatioInBand` (`deckPureRatio` **0.6457892095024083** against **0.625–0.645**), with
+`refreshCostMeasured` still unscored behind the readback-drain structural reason. `RR-2026-09-13-E`
+now carries both sweeps side by side and is **answered by measurement**, not closed by a lane —
+whether to exercise Option C anyway is the maintainer's call.
+
 ### DX-85 — the provisioner exit code is STATE-DEPENDENT: two lanes measured 2, four measured 0, and the discrepancy is unresolved
 
 **Status:** OPEN, and **both readings are recorded because neither reproduces the other.** `DX-85` entered the record as "REFUTED at the tree 2026-09-13 — `provision-worker-clone.mjs` does **not** exit 0 on a missing path", filed after **Tolman and Celebrían each measured exit 2** (2/2). On the same day **Huan measured exit 0** by file redirect on a virgin clone, **Bereg reproduced that 0** while reviewing him, and **Everard's assembler lane also reported exit 0**; the seat's brief for this record round adds **Isembard (2026-09-16) measuring 0**. **This record lane provisioned its own fresh clone on 2026-09-16 and measured `PROVISION_EXIT=0`** (`node Tools/provision-worker-clone.mjs F:/Dev/GH/cesium-lane-lobelia-20260916` from the seat; output `worker clone: READY`, four governance files provisioned, footprint 1.9 GB).
@@ -23758,3 +23776,104 @@ protected only by happening to be prettier-clean today:
   occurrences with opposite resolutions is what makes this a class worth a standing rule rather than two
   point fixes, and the rule has to name which resolution applies when: producer output that a spec asserts
   cannot adopt the formatter's opinion, so it is ignored; an emitter with no such contract can be made stable.
+
+## 2026-09-19 — a ruling was adopted on a premise that was false, an adversarial verifier caught it before it landed, and the confirming run came back the other way
+
+**Status:** RECORDED. This section changes no row's status and closes nothing. It exists because the
+sequence it describes is the exact failure mode Principle 10 names, and it nearly reached `main`.
+
+**The premise.** `R-2026-09-19-2` (adopted 2026-09-19,
+[`MAINTAINER_RULINGS_2026-09-19.md`](MAINTAINER_RULINGS_2026-09-19.md)) treats
+`R-2026-09-13-1`'s condition — a re-run of the `C13-41` exposure-sweep discriminator on
+`ea651de6d8` — as **already satisfied** by the banked 2026-09-03 sweep. Its recorded basis, supplied
+verbatim by [`C12_CLOSEOUT_PLAN_2026-09-19.md`](C12_CLOSEOUT_PLAN_2026-09-19.md), is that the sweep
+ran *"on a completed sweep at the ruling's own tree"* with *"a byte-identical instrument on a
+byte-identical engine"*, so a literal re-run would be *"a repeat measurement"*. Under that reading
+red trigger 1 was already fired and Option C of `R-2026-08-10-1` would close Campaign 12.
+
+**The premise was false, and in more than one way.** The banked sweep's own receipt —
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-02b/README.txt`, line 6 — reads
+`Clone commit   fbea2028cc (== origin/main, Batch 1403)`. `fbea2028cc` is an **ancestor** of
+`ea651de6d8`, **443 commits** earlier (Batch 1403 against Batch 1483). **The instrument is not
+identical between the two trees either** — a fact this section's own first draft got wrong, and the
+same adversarial pass caught: of the probe and the six libraries in its transitive import closure,
+`Tools/visual-regression/lib/cloud-probe-harness.mjs` differs by **289 insertions / 22 deletions**
+(Batch 1478 `e69d3e4fc7`, which changed what `awaitProceduralReady` counts as recorded work, and
+Batch 1480 `39283ec388`, which added the pre-tonemap capture path); the probe itself and the other
+five libraries are byte-identical, and the 2026-09-19 run carries that drift plus the Batch 1518
+repair. The **engine** is not identical either:
+`packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts` alone differs by **2,742
+insertions / 1,660 deletions**, and the two runs' reports pin that file independently at `byteLength`
+**198654** (banked) against **237065** (2026-09-19). The plan's *values* were right; its *tree* was
+wrong, and **all three** claims the substitution rested on — "the ruling's own tree", "a
+byte-identical engine", "a byte-identical instrument" — were untrue.
+
+**How it was caught.** By the **adversarial critic Bingo** (Opus), briefed under `R-2026-09-11-1` to
+refute the close packet rather than to approve it, while judging the Campaign 12 close patch. It was
+caught **before the close landed**; nothing was pushed on the false premise. What can be stated as
+fact, rather than inferred about three other agents' reading, is this: **no tracked document in the
+chain quotes the receipt's `Clone commit` line** — `git grep "Clone commit" -- migration_doc/` at
+`30d1ceb60f` returns nothing — so the tree was carried from summary to summary and never re-read
+from the artefact until the adversarial pass.
+
+**What the seat did, and what the run returned.** The seat did not execute `R-2026-09-19-2`. It took
+the confirming run that ruling itself calls optional, under `R-2026-09-19-3` (tree `ea651de6d8`) and
+`R-2026-09-19-1` (repaired gate library, served-bundle byte-identity asserted): Edge executor
+**Filibert**, fresh clone, only the Batch 1518 (`3e6feaae24`) deck-free repair as the **instrument**
+overlay (the clone's post-apply `git status` carried a second, provisioner-modified doc path the
+receipt names and excludes from the instrument, and `gulp prepare` was not run — both recorded
+there), served
+`Build/CesiumUnminified/Cesium.js` md5 `3873edb82e25a724e00800ecfb99c811` == disk, the banked
+sweep's command port aside (`:8094` → `:8098`), 2026-09-19, wall 3 m 53 s against the banked sweep's
+4 m 51 s, runId
+`7241daf6-7040-4922-b9ec-b820cab9cb25`. **Result: `status` "FAIL", `exitCode` 1, `incomplete`
+false.** `verdicts.shadowContrastInvariant` **true**, `shadowContrastRatioAtDeepest`
+**0.9893862265081094** against the band **[0.97, 1.03]** — where the banked sweep read **false** at
+**1.0341102079879674**. `verdicts.deckFreeControlStateIsolated` **true**.
+`failedPredicates` `["deckPureRatioInBand"]`, `deckPureRatio` **0.6457892095024083** against the
+band **0.625–0.645**. `unscoredPredicates` `["refreshCostMeasured"]`, one structural reason:
+*"fresh refresh-cost measurement is ineligible: webgpu: pair 0 eclipse: the pre-segment GPU readback
+drain did not close (timedOut=true, undrained=1)"*. `parityFailed` `[]`.
+`exposureSweepRisesWithExposure` **false** — a reported-only predicate that gates nothing, though
+all four of its rungs returned the **same** number, `0.9893862265081094`, which is
+`shadowContrastRatioAtDeepest` itself, where the banked run's four rungs differed from each other
+and from its own ratio. Nobody has measured why; it is recorded, not explained.
+**So neither of `R-2026-09-13-1`'s red triggers fired on the ruling's own tree**, which on the
+close-out plan's own mechanical definition is that ruling's **GREEN** arm, *"S3 continues"* —
+**while the gate as a whole is FAIL, exit 1**, on a predicate the ruling names in neither trigger.
+**Option C has not fired; Campaign 12 is not closed; C14 is still blocked on C12; the `R4` aurora
+hold is unchanged.** Whether to exercise Option C anyway is the maintainer's decision, and it is put
+back to them on `R-2026-09-19-2`. Receipt:
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-19/` (gitignored, seat tree). **Why
+either figure moved between the two trees has not been measured by anyone and is deliberately not
+explained here — a separate investigation owns that question.**
+
+**The process lesson, in one paragraph.** The plan carried a `[Lily-reverified 2026-09-19]` tag on
+the very sentence that was wrong, and the tag was honest: what was re-verified was the report's
+**values** — `shadowContrastInvariant: false`, the ratio, the nine unscored predicates — every one of
+which is still correct. What was never verified was the **run's tree**, because nobody opened the
+receipt README sitting beside the report in the same folder; the tree was inherited from an earlier
+summary and propagated, unchallenged, into a plan, into a ruling adopted verbatim from that plan,
+and into a close patch and its ordinary review. **A freshness tag scopes to what was actually
+re-read, and provenance is not a value in the artefact you are quoting — it is a separate file you
+have to open.** When a document asserts that two measurements are interchangeable, the claim to
+re-derive is the identity of what produced them, not the agreement of what they produced; and the
+only check in the three-tier bar that catches this class is the third, independent re-derivation of
+the premises, which here took the shape of an adversarial verifier reading the receipt instead of
+the summary.
+
+**And the correction itself repeated the mistake once, which is the sharper half of the lesson.**
+Its first draft asserted that the *instrument* was byte-identical between the two trees — taking a
+proof that had been derived for a **different pair of commits** (`ea651de6d8` against the seat tip,
+in the leg (e) receipt) and re-pointing it at the pair under discussion, without re-deriving it.
+Exactly the propagation the paragraph above describes, inside the document written to stop it. The
+same adversarial pass caught it, and the sentence is corrected above rather than removed. **A
+correction is a premise-bearing document like any other:** re-derive every leg of the claim you are
+correcting, including the leg you are about to leave standing, and treat a proof's *operands* as
+part of the proof.
+
+**Proposed rows, neither taken here:** (1) a probe-receipt convention that puts the run's tree hash
+into the **report JSON** itself, beside `provenance.start.localIdentity`, so a quoted value carries
+its own provenance and a plan cannot separate them; (2) a brief-time rule that any claim of the form
+"same tree" / "byte-identical engine" names the receipt line it was read from, the way this section
+does.

@@ -65,6 +65,20 @@ Executed: **NOT YET.** Executed by the deck-free repair lane (`S3-N1-DECKFREE`) 
 overlay confined to the Node-side gate library, and by any re-issued Edge brief for leg (e)
 asserting the served-bundle md5 in its preflight and quoting it in the receipt.
 
+*[**Execution re-judged 2026-09-19**, after leg (e) was taken — by the batch that carries this
+line, a note, not a rewrite. **EXECUTED.** Both halves of the "Executed by" clause above have now
+happened: the deck-free repair landed as **Batch 1518 (`3e6feaae24`)** with its overlay confined to
+the Node-side gate library `Tools/visual-regression/lib/c13-41-deckfree-control.mjs`, and the leg
+(e) run of **2026-09-19** applied exactly that one hunk onto `ea651de6d8`, asserted the
+served-bundle byte-identity in its preflight and quoted it in its receipt —
+`Build/CesiumUnminified/Cesium.js` md5 **`3873edb82e25a724e00800ecfb99c811`**, disk == served,
+re-checked **after** the apply (receipt `Tools/visual-regression/output/eclipse-cloud-response-2026-09-19/README.txt`,
+"PROOF 3"). The repair did what this ruling funded it to do:
+`verdicts.deckFreeControlStateIsolated` scored **true** and no deck-free structural reason was
+emitted, so red trigger 2 did not fire on an esbuild rename. The md5 in this ruling's question text
+(`ea4d26a1f266d76da0cbfc7d4d0617d9`) is the Bandobras clone's bundle and is unrelated to the
+`3873edb8…` measured by the run that actually executed this ruling.]*
+
 Authority: charter §1.1.
 
 ---
@@ -100,6 +114,97 @@ Executed: **NOT YET.** Executed by the Option C close batch (plan §6a), taken a
 re-score `S3-N1b-RESCORE` has disposed of trigger 2 on the same banked evidence. The optional
 ~45-minute confirming run under reading (i) is not a precondition of it.
 
+*[**Dated annotation, 2026-09-19, by the batch that carries this line. This is a note on the
+record, not a rewrite: the ruling's text above stands exactly as the maintainer adopted it, and no
+lane may supersede a ruling.** What is recorded here is that **the basis this recommendation was
+adopted on was found FALSE before the ruling was executed**, and that the seat therefore did not
+execute it.
+
+**The two sentences that carry the basis**, both from the plan this ruling adopts verbatim,
+[`C12_CLOSEOUT_PLAN_2026-09-19.md`](C12_CLOSEOUT_PLAN_2026-09-19.md):
+
+> **And the first trigger has already fired, on a completed sweep at the ruling's own tree.**
+
+and, in the same paragraph of that plan:
+
+> With a byte-identical instrument on a byte-identical engine, a literal re-run is a **repeat
+> measurement**, not a new one.
+
+and, in the plan's §6, *"The 2026-09-03 banked sweep on `ea651de6d8` reads trigger 1 **fired** …"*.
+This ruling's own question text repeats the claim as *"the sweep it re-decides **did** run, on the
+same tree, with a byte-identical instrument"*.
+
+**The line that refutes them** is in the banked sweep's own receipt,
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-02b/README.txt`:
+
+> `Clone commit   fbea2028cc (== origin/main, Batch 1403); worktree clean`
+
+`fbea2028cc` is an **ancestor** of `ea651de6d8` (`git merge-base --is-ancestor` succeeds), **443
+commits** earlier — Batch 1403 against Batch 1483. The **engine** is not identical:
+`git diff --stat fbea2028cc ea651de6d8 --
+packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts` reports **2,742 insertions
+/ 1,660 deletions** in that one file, and the two runs' own reports pin it independently — the
+banked report's `provenance.start.localIdentity.engineSource3` reads `byteLength` **198654** /
+sha256 `b69cf19a…`, the 2026-09-19 run's reads **237065** / `d16ae42d…`. **Nor is the instrument
+identical** — a correction inside this correction: the first draft of this annotation asserted that
+it was, re-pointing a proof derived for a *different* pair of commits, and the same adversarial
+critic caught it on a second pass. `git diff --numstat fbea2028cc ea651de6d8` over the probe and the
+**six** libraries in its transitive import closure (the five it imports directly, plus
+`lib/same-task-capture.mjs`) reports `Tools/visual-regression/lib/cloud-probe-harness.mjs` at **289
+insertions / 22 deletions** — Batch 1478 (`e69d3e4fc7`), which changed what `awaitProceduralReady`
+counts as recorded work, and Batch 1480 (`39283ec388`), which added the pre-tonemap capture path;
+the probe itself and the other five libraries are byte-identical. So "the ruling's own tree" is
+wrong, "a byte-identical engine" is wrong, **and this ruling's own question text — *"on the same
+tree, with a byte-identical instrument"* — is wrong on its instrument half as well. The substitution
+this ruling rests on rests on no measured identity at all.**
+
+**Who found it and when.** The adversarial critic **Bingo** (Opus), judging the close patch under
+`R-2026-09-11-1`, before anything landed. The close was not landed.
+
+**What the seat did instead.** It took the confirming run this ruling itself calls optional
+("**with (i) as a cheap confirmation afterwards if wanted**"), under `R-2026-09-19-3` (tree
+`ea651de6d8`) and `R-2026-09-19-1` (repaired gate library, byte-identity asserted). **Neither of
+`R-2026-09-13-1`'s red triggers fired**: `shadowContrastInvariant` **true** at
+`shadowContrastRatioAtDeepest` **0.9893862265081094**, and `deckFreeControlStateIsolated` **true**.
+The run is nonetheless **GATE FAIL, exit 1**, on `deckPureRatioInBand` — a predicate
+`R-2026-09-13-1` names in neither trigger. Numbers and receipt: the `RR-2026-09-13-E` append in
+[`RULING_REQUESTS_2026-09-08.md`](RULING_REQUESTS_2026-09-08.md).
+
+**This ruling's own text already names the shape the run returned, and its answer for that shape
+is not "green".** The recommendation adopted above answers a *"third outcome"* in the same
+breath: *"a run with `shadowContrastInvariant` in band, the control lane scored, and the WebGPU
+refresh-cost drain failing again calls `markBlind("refresh-cost")` and exits **3 STRUCTURAL** —
+neither red trigger, not a PASS"*, and for an exit 2 or exit 3 it rules *"neither — bank it,
+re-run once after `S3-N2-REFRESHCOST` lands; a second structural result fires Option C on the
+ground that the instrument cannot answer at honest cost."* **The 2026-09-19 run met all three of
+that sentence's named conditions** — contrast in band, the control lane scored, and the same
+readback-drain reason blinding `refreshCostMeasured`. **What it did not match is the exit code:**
+the clause predicts **3 STRUCTURAL**; the run exited **1**, because a fourth predicate the clause
+does not contemplate, `deckPureRatioInBand`, went red, and the gate's exit fold
+(`eclipseCloudExitCode` in [`Tools/visual-regression/lib/eclipse-cloud-response-gate.mjs`](../Tools/visual-regression/lib/eclipse-cloud-response-gate.mjs))
+ranks a non-empty `failedPredicates` above a non-empty `structuralReasons` — absent that one red the
+run would have exited exactly the **3 STRUCTURAL** this clause describes. So that clause's
+disposition — *neither arm; bank it and re-run once `S3-N2-REFRESHCOST` lands* — is scoped to exit
+2 or 3 and **does not bind on its own terms**. It is recorded here for three reasons: it is the
+nearest adopted text to what was actually measured; its *"neither red trigger, not a PASS"* agrees
+with every fact recorded above while pointedly not calling such a run green; and **no adopted text
+anywhere names this exact combination** — contrast in band, control lane scored, refresh-cost lane
+blind, and a fourth gate predicate red. Whether to read the 2026-09-19 run as that third outcome,
+and to take the re-run the clause prescribes, is part of the same maintainer decision put back
+below.
+
+**Executed status of this ruling: NOT EXECUTED.** Its "Executed by" clause names *the Option C close
+batch*, and **Option C has not fired**: on the plan's own mechanical reading (§6, *"Green: trigger 1
+false **and** trigger 2 absent"*) the measurement is the **GREEN** arm of `R-2026-09-13-1` — while
+the run itself is **GATE FAIL, exit 1** — so C12
+is **not** closed, C14 is **not** unblocked and the `R4` aurora hold is **not** lifted by this.
+
+**The question goes back to the maintainer.** This ruling adopted reading (ii) on a stated basis
+that turned out not to hold, and the measurement the basis said would be a "repeat" returned the
+opposite result on both trigger predicates. **Whether to exercise Option C anyway — on the banked
+sweep, on judgement, or not at all — is the maintainer's call, and no lane makes it.** Nothing here
+marks this ruling superseded; it is annotated, and it stands until the maintainer speaks.]*
+
 Authority: charter §1.1.
 
 ---
@@ -127,6 +232,18 @@ pre-registration was derived.
 Executed: **NOT YET.** Executed by whichever run of leg (e) is taken, on `ea651de6d8`; and the tip
 reading, when it is wanted, is a **separate, later job** with its own `C13-N20` deck
 pre-registration.
+
+*[**Execution re-judged 2026-09-19** by the batch that carries this line — a note, not a
+rewrite. **EXECUTED, in its first half.** Leg (e) was taken on **2026-09-19** and it ran on
+**`ea651de6d8`**, exactly as this ruling fixes: fresh clone, `git checkout ea651de6d8`, worktree
+clean **at checkout** (`git status --porcelain`: 0 lines), the Batch 1518 deck-free repair as the
+only **instrument** overlay — after provisioning the clone's status carried a second, doc-only
+modified path the receipt names and excludes from the instrument. Receipt:
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-19/README.txt` ("PROVENANCE" /
+"INSTRUMENT"). **The second half is untouched and stays owed:** a tip reading is still a *separate,
+later job* with its own `C13-N20` deck pre-registration, and **this batch makes no claim about what
+the tip would read.** That caution is now load-bearing rather than theoretical — the deck predicate
+`deckPureRatioInBand` is what the 2026-09-19 run fails on, at the ruling's own tree.]*
 
 Authority: charter §1.1.
 
@@ -169,6 +286,17 @@ Executed: **NOT YET.** Executed by the Option C close batch (plan §6a), whose a
 `CAMPAIGN_STATE.md`'s C12 block reads CLOSED with a dated ruling id **and carries risk R10's list in
 full**.
 
+*[**Execution re-judged 2026-09-19** by the batch that carries this line — a note, not a
+rewrite. **NOT EXECUTED — conditional on Option C, which has not fired.** This ruling's "Executed
+by" clause is the Option C close batch, and leg (e), taken 2026-09-19 on `ea651de6d8`, fired
+**neither** of `R-2026-09-13-1`'s red triggers. C12's block therefore does **not** read CLOSED, S5
+does **not** leave the gate, and none of the carried-forward list in this ruling's recommendation
+has been written anywhere as a close. The reading itself — that Option C would inherit Option A's
+narrowed gate — is unaffected and stands for whenever Option C is exercised. *(One piece of the
+adopted text is carried out here independently of any close: the S5 honest table's 15 → 18
+correction, landed in [`QUEUE_2026-07-19_CAMPAIGN12.md`](QUEUE_2026-07-19_CAMPAIGN12.md) as a dated
+drift fix that changes no status — S5 stays UNMET **and in the gate**.)*]*
+
 Authority: charter §1.1.
 
 ---
@@ -198,6 +326,15 @@ out from under the hold** by `R-2026-09-18-1`
 ([`MAINTAINER_RULINGS_2026-09-18.md`](MAINTAINER_RULINGS_2026-09-18.md)) and are not waiting on this
 ruling.
 
+*[**Execution re-judged 2026-09-19** by the batch that carries this line — a note, not a
+rewrite. **NOT EXECUTED — conditional on Option C, which has not fired.** Leg (e) fired neither red
+trigger of `R-2026-09-13-1`, so the close this ruling's execution clause depends on has not
+happened: **no `HELD (R4)` cell has been rewritten**, in
+[`QUEUE_2026-08-02_CAMPAIGN15.md`](QUEUE_2026-08-02_CAMPAIGN15.md) or anywhere else, and
+[`CAMPAIGN_STATE.md`](CAMPAIGN_STATE.md) §C15 is untouched. `C15-01`/`C15-02` and
+`C15-05`/`C15-06` remain released by their own rulings (`R-2026-09-17-9` and
+`R-2026-09-18-1`), which this batch does not touch either.]*
+
 Authority: charter §1.1.
 
 ---
@@ -220,6 +357,12 @@ directive of its own, as C16 and C18 both were.
 Executed: **NOT YET.** Executed by the Option C close batch, whose acceptance includes
 `CAMPAIGN_STATE.md`'s C14 block reading **UNBLOCKED / NOT LAUNCHED** and `git grep -n "sole
 remaining bar is"` returning nothing pointing at C12.
+
+*[**Execution re-judged 2026-09-19** by the batch that carries this line — a note, not a
+rewrite. **NOT EXECUTED — conditional on Option C, which has not fired.** C14 is **still blocked on
+C12 completion**, which is still C14's sole remaining bar under `RULING-2026-08-06` R1, and
+`CAMPAIGN_STATE.md`'s C14 block is unchanged. The ruling's content — unblock, do not launch — is
+unaffected and applies whenever the close is taken.]*
 
 Authority: charter §1.1.
 
@@ -254,6 +397,12 @@ Executed: **NOT YET, and blocked on its own rider.** Executed by a small Node la
 schema with `runId`, re-banks the existing artefact without a re-run, and re-stamps the custody
 hash in the same act — **after** the rider is answered in writing.
 
+*[**Execution re-judged 2026-09-19** by the batch that carries this line — a note, not a
+rewrite. **Unchanged: NOT YET, and still blocked on its own rider.** This ruling is independent of
+Option C, so leg (e) neither advanced nor retarded it; the rider — why eighteen `NON_CERTIFYING /
+exit 3 / eligible false` publications fold into a `PASS / 0 / true` certification — has no written
+answer, and no banking route is built in this batch.]*
+
 Authority: charter §1.1.
 
 ---
@@ -278,6 +427,11 @@ recommendation settles **what** clears the debt and **who** clears it; it does n
 sitting. The debt stays open until the maintainer reads the three findings against the named samples
 and signs, with the signature bound to the attestation's sha256.
 
+*[**Execution re-judged 2026-09-19** by the batch that carries this line — a note, not a
+rewrite. **Unchanged: NOT EXECUTABLE BY ANY LANE.** Leg (e) touches nothing here. The countersign
+debt stays open until the maintainer reads the three findings against samples 00/06/12 on WebGL and
+06 on WebGPU and signs, with the signature bound to the attestation's sha256.]*
+
 Authority: charter §1.1.
 
 ---
@@ -301,6 +455,10 @@ the feature from its absence, which is exactly why a probe cannot stand in for t
 Executed: **NOT EXECUTABLE BY ANY LANE — this is the maintainer's own list.** Accepting the
 recommendation fixes the protocol of the sitting; the sitting itself has not been taken, and no
 probe may be written to manufacture a number in its place (`R-2026-09-17-10`).
+
+*[**Execution re-judged 2026-09-19** by the batch that carries this line — a note, not a
+rewrite. **Unchanged: NOT EXECUTABLE BY ANY LANE.** Leg (e) touches nothing here, and no probe has
+been written to stand in for the sitting.]*
 
 Authority: charter §1.1.
 
@@ -331,6 +489,13 @@ maintainer's to state. **The anti-stashing clause binds every lane immediately:*
 acceptance may be met by stashing the held files to produce an empty porcelain, and a clean-tree
 reading is taken in a throwaway clone instead.
 
+*[**Execution re-judged 2026-09-19** by the batch that carries this line — a note, not a
+rewrite. **Unchanged: NOT EXECUTABLE BY ANY LANE.** The fetch path is still unbuilt and the twelve
+4096 JPEGs plus the two modified held files are still live and uncommitted in the seat working tree.
+**The anti-stashing clause was honoured:** this batch stashed nothing, took no clean-tree reading,
+and did not touch `SkyBoxResolutionPolicy.ts`, `skybox-resolution-policy.spec.mjs` or any
+`tycho2t5_80_*4096*` asset.]*
+
 Authority: charter §1.1.
 
 ---
@@ -353,6 +518,12 @@ relabelling, which risk R10 forbids.
 
 Executed: **NOT YET.** Executed by the Option C close batch, which files `C12-38` as a C17 /
 follow-up row carrying those measured numbers.
+
+*[**Execution re-judged 2026-09-19** by the batch that carries this line — a note, not a
+rewrite. **NOT EXECUTED — conditional on Option C, which has not fired.** This ruling's own
+execution clause names the Option C close batch as what files `C12-38` as a C17 / follow-up row
+with its measured red visible; no such filing exists, here or elsewhere. The in/out call itself —
+**OUT** — is unaffected and stands.]*
 
 Authority: charter §1.1.
 
@@ -377,6 +548,12 @@ a diagnostic that says **why** the star-pixel leg is unreachable in terms of a m
 Executed: **NOT YET.** Executed by the Option C close batch naming `C12-36`'s star-pixel leg as a
 follow-up row outside the gate, and by the `C12-36` diagnostic row itself when it is taken.
 
+*[**Execution re-judged 2026-09-19** by the batch that carries this line — a note, not a
+rewrite. **NOT EXECUTED — conditional on Option C, which has not fired.** This ruling's execution
+clause names the Option C close batch as what names `C12-36`'s star-pixel leg a follow-up outside
+the gate, and separately the `C12-36` diagnostic row when it is taken; neither has happened. The
+call itself — IN as a named follow-up, OUT of the gate — is unaffected and stands.]*
+
 Authority: charter §1.1.
 
 ---
@@ -398,6 +575,16 @@ Basis: the plan's Q12 — the cell names its own gate, and that gate is a green 
 Executed: **NOT YET.** Executed by a dated line in the `C12-13` cell retiring the banner and naming
 the Node spec as EXIT-4's gate, together with the confirmation that `LICENSE.md`'s third-party
 attributions are current with live URLs.
+
+*[**Execution re-judged 2026-09-19** by the batch that carries this line — a note, not a
+rewrite. **PARTLY EXECUTED, by this batch, and independently of Option C.** The first half is done:
+the `C12-13` cell in [`QUEUE_2026-07-19_CAMPAIGN12.md`](QUEUE_2026-07-19_CAMPAIGN12.md) now carries
+a dated line retiring the "EDGE ACCEPTANCE OWED" banner and naming the Node spec
+`solar-glare-star-washout.spec.mjs` (41/41 as of 2026-08-28) as EXIT-4's gate, with the old banner
+struck rather than deleted. **The second half is still OWED:** the confirmation that `LICENSE.md`'s
+third-party attributions are current **with live URLs** needs network access no lane in this batch
+had, and it is recorded as owed in the cell itself. Retiring the banner answers EXIT-4's Edge
+question only; C12 remains OPEN.]*
 
 Authority: charter §1.1.
 
@@ -433,6 +620,19 @@ discriminator brief itself is re-issued with its ORDER clause struck when that E
 dispatched, and `R-2026-09-13-1`'s own "Executed" line is flipped by the Option C close batch, not
 by this one.
 
+*[**Execution re-judged 2026-09-19** by the batch that carries this line — a note, not a
+rewrite. **Still PARTLY, and one part is now demonstrated rather than argued.** The slot half is
+settled in fact: `C13-41`'s discriminator **took the Edge slot on 2026-09-19 while P0-2 was, and
+remains, OPEN** — legs (b)-remainder, (c) and (b3) are still unrun — so nothing queued behind P0-2
+after all. The dated correction in [`CAMPAIGN_STATE.md`](CAMPAIGN_STATE.md) is **extended** by this
+batch to say that leg (e) was taken, not duplicated. **Two parts are still not done as this ruling
+describes them.** The re-issue of the discriminator brief with its ORDER clause struck lives in the
+seat's untracked scratchpad and is not asserted here. And `R-2026-09-13-1`'s "Executed" line **is**
+updated by this batch — but to record that the re-run was taken and fired **neither** red trigger,
+which the close-out plan's mechanical reading calls that ruling's GREEN arm while the gate itself
+stays **FAIL, exit 1** on a third predicate. That is **not** the flip to Option C that this ruling
+anticipated the close batch making.]*
+
 Authority: charter §1.1.
 
 ---
@@ -461,5 +661,14 @@ Executed: **NOT YET, and now optional.** `R-2026-09-19-4` adopts Q3(a), which ta
 gate — so the S5 Edge session, and this re-run inside it, can be scheduled at leisure. When it is
 taken, it is executed by the `S5-ROSTER` row recording the reopen consequence **before** the session
 brief is written, and by that brief carrying it.
+
+*[**Execution re-judged 2026-09-19** by the batch that carries this line — a note, not a
+rewrite. **NOT EXECUTED, and its "now optional" clause has not taken effect.** That clause reasons
+from `R-2026-09-19-4` taking S5 out of the gate; `R-2026-09-19-4`'s execution is conditional on the
+Option C close batch, and **Option C has not fired**, so S5 is still **in** C12's gate and the
+terrain-selection re-run is still a live prerequisite rather than a leisurely one. What this batch
+does record, in the S5 honest table itself, is the reopen consequence: the three ownerless lanes are
+named as ownerless, and a red terrain-selection re-run would reopen `C12-29-S5-TERRAIN-SELECTION`'s
+`closed` entry. `S5-ROSTER` still owes the written statement before any session brief.]*
 
 Authority: charter §1.1.
