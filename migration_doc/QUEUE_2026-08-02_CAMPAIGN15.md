@@ -385,7 +385,7 @@ not externally trained scenes.
 |---|---|---:|---|---|
 | `C15-00` | Correct campaign identity; verify science, live schemas, lifecycle, and data-use constraints; freeze this queue | P0 | **COMPLETE — 2026-08-02 (documentation/research only); live-feed claims MEASURED 2026-08-06 under ruling R4, §2 corrected, exit gate now genuinely met (see §2a)** | — |
 | `C15-01` | Backend-neutral aurora/space-weather state packet and deterministic manual driver | P0 | **FROZEN v2 2026-09-18 (lane Stoor); station-3 verdict LAND-WITH-FIXES applied, awaiting landing.** Dispatched under the release it carries: **RELEASED from the R4 hold by `R-2026-09-17-9` (2026-09-17)** — pure-Node lane; C12 is NOT closed and the release is a named narrow override, not Option C. See the §4 row note. | `C15-00` |
-| `C15-02` | WMM2025 geomagnetic coordinates and synthetic activity-dependent oval | P0 | PENDING — **RELEASED from the R4 hold by `R-2026-09-17-9` (2026-09-17), pending dispatch.** Pure-Node lane. | `C15-01` |
+| `C15-02` | WMM2025 geomagnetic coordinates and synthetic activity-dependent oval | P0 | **IMPLEMENTED 2026-09-18 (lane Bucca) — frozen for review, not landed; station-3 verdict LAND-WITH-FIXES applied (v2).** Released from the R4 hold by `R-2026-09-17-9` (2026-09-17), the narrow override covering this row and `C15-01` only; pure-Node lane. Modules + specs + mutants recorded in `DEFERRED_WORK.md` under `EPIC-AURORA-SPACE-WEATHER` | `C15-01` |
 | `C15-03` | Shared layered density/emission kernel, local-night gate, and RTE shell contract | P0 | PENDING — **HELD (R4)**; released by a later one-line ruling once the contact sheet exists (`R-2026-09-17-9`) | `C15-02` |
 | `C15-04` | WebGL + WebGPU shell renderers, visibility demand, and feature-preserving performance tiers | P0 | PENDING — **HELD (R4)** | `C15-03` |
 | `C15-05` | OVATION + planetary-Kp asynchronous ingest and source-authority policy | P1 | PENDING — **HELD (R4)**; schemas now measured, §2a grid ordering is the spec | `C15-01`, `C15-02` |
@@ -486,6 +486,28 @@ explicit and replaceable rather than hidden in shader constants.
 Exit: CPU reference vectors and mutation tests distinguish geomagnetic from
 geographic latitude, geocentric from geodetic pole values, north from south,
 and quiet from storm geometry. There is no full-IGRF requirement for v1.
+
+**IMPLEMENTED 2026-09-18 (lane Bucca) — frozen for review, not landed.**
+`packages/engine/Source/Scene/SpaceWeather/GeomagneticFrame.ts` and
+`AuroralOvalModel.ts`, in the folder `C15-01` publishes. The exit gate's four
+discriminations are asserted on OUTPUT numbers, in
+`Tools/visual-regression/aurora-geomagnetic-oval.spec.mjs` (22 tests, homed in
+`test-visual-regression-node`) and in the karma-leg pair
+`packages/engine/Specs/Scene/GeomagneticFrameSpec.js` /
+`AuroralOvalModelSpec.js`: geomagnetic against geographic latitude (a site at
+the pole reads 90 deg while its geographic latitude reads 80.85 deg; the
+geographic north pole reads 80.79 deg); geocentric against geodetic (80.79 deg
+geocentric is read back off the ellipsoid as 80.850609 deg geodetic, the stated
+0.06 deg apart); north against south (exact mirrors in geomagnetic latitude,
+18.3 deg apart in geographic latitude on the dipole meridian); and quiet against
+storm (the quiet oval is poleward at every one of 96 magnetic local times and at
+every 0.1 step of activity). Seven inertness mutants on temp copies — the lane's four (the geodetic figure
+used as geocentric, the tilt dropped, the hemispheres mirrored wrongly,
+activity made inert) and station 3's three (a noon phase origin, transposed
+`atan2` arguments, a reversed field subtraction) — each turn named tests red. The epoch is carried
+as replaceable data (`epoch`, `validYears`, `isWithinValidity`), not a hidden
+constant. No IGRF, as the row allows. The karma leg has not run in this lane
+(no browser, no build); it runs in the wave's Edge validation job.
 
 ### C15-03 — Shared layered emission kernel
 

@@ -276,6 +276,15 @@ STRUCTURAL/exit 3, two WebGPU reds filed as follow-on rows `C15-G7a`/`C15-G7b` (
 frame-variance mechanism) is **CLOSED as NOT REPRODUCED** (`R-2026-08-24-5`) — its harness stays
 armed and unblocks G8's tower leg.
 
+**Aurora row `C15-02` IMPLEMENTED 2026-09-18 (lane Bucca) — frozen for review, not
+landed.** `R-2026-09-17-9` released `C15-01` and `C15-02` from the `R4` hold as a narrow
+override; the remaining aurora rows `C15-03..08` stay held. `C15-02` delivers the
+centred-dipole geomagnetic frame and the synthetic activity-dependent oval as pure CPU
+Scene modules under `packages/engine/Source/Scene/SpaceWeather/`, with the row's four exit
+discriminations asserted on output numbers and four inertness mutants red. The karma leg is
+owed to the wave's Edge validation job; nothing renders an aurora until `C15-03`/`C15-04`.
+Detail lives in the row and in `DEFERRED_WORK.md` under `EPIC-AURORA-SPACE-WEATHER`.
+
 ### C16 — Comment remediation & attribution
 
 **Launched** by maintainer directive 2026-08-10 (`QUEUE_2026-08-10_CAMPAIGN16.md`). Audit
