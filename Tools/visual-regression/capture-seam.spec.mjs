@@ -1256,12 +1256,19 @@ test("I. a cell that is never ready REFUSES the run; it never becomes an UNMEASU
 });
 
 test("I. every registry rig declares a SETTLE, not a readiness predicate — the census behind the default", () => {
-  // The premise correction the Edge leg produced: the 39 rigs' `readiness`
-  // fields are settle declarations (`settleFrames` / `settleMs`), and not one
+  // The premise correction the Edge leg produced: every rig's `readiness`
+  // field is a settle declaration (`settleFrames` / `settleMs`), and not one
   // of them is a gate a scene can be waited ON. So the poll's predicates come
   // from this module, the settle keeps coming from the rig, and NO rig file
   // needed changing — a 30-frame settle is a correct settle, and was never
   // the reason the WebGPU cells refused.
+  //
+  // The census read 39 / 36 / 3 when it was taken (Batch 1517). It reads
+  // 41 / 38 / 3 since the orbital full-disc pair joined the registry, both
+  // declaring a 60-frame settle — which is the census's claim holding rather
+  // than failing: a rig added later still declares a settle and still declares
+  // no predicate. The absolute is asserted anyway, because a census that stops
+  // counting stops being a census.
   const kinds = new Map();
   for (const rig of REGISTRY_RIGS) {
     assert.ok(
@@ -1276,13 +1283,13 @@ test("I. every registry rig declares a SETTLE, not a readiness predicate — the
       `${rig.id} declares readiness predicates, which the census says none do`,
     );
   }
-  assert.equal(REGISTRY_RIGS.length, 39);
+  assert.equal(REGISTRY_RIGS.length, 41);
   assert.deepEqual([...kinds.entries()].sort(), [
-    ["settleFrames", 36],
+    ["settleFrames", 38],
     ["settleMs", 3],
   ]);
 
-  // And the seed rig the Edge recipe names is one of the 36.
+  // And the seed rig the Edge recipe names is one of the settle-frame rigs.
   const seed = rigById(REGISTRY_RIGS, "globe-default");
   assert.deepEqual(seed.readiness, { kind: "settleFrames", frames: 30 });
 });

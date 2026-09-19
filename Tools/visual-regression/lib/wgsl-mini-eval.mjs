@@ -450,6 +450,13 @@ const BUILTINS = {
   abs: componentWise("abs", Math.abs),
   sqrt: componentWise("sqrt", Math.sqrt),
   log2: componentWise("log2", Math.log2),
+  // `exp2`, `ceil` and `floor` are the three the sampling laws need and the
+  // three this table shipped without: with `exp2` missing, the renderer's own
+  // `logDepthToEyeDistance` parsed and then threw, so no depth inverse and no
+  // step law in this engine could be EXECUTED out of its own source.
+  exp2: componentWise("exp2", (v) => 2 ** v),
+  ceil: componentWise("ceil", Math.ceil),
+  floor: componentWise("floor", Math.floor),
   pow: componentWise("pow", Math.pow),
   clamp: componentWise("clamp", (v, lo, hi) => Math.min(Math.max(v, lo), hi)),
   smoothstep: componentWise("smoothstep", (edge0, edge1, x) => {
@@ -486,6 +493,30 @@ const BUILTINS = {
   // parser lowers to the same node, so one reader executes both spellings.
   select: (falseValue, trueValue, condition) =>
     condition ? trueValue : falseValue,
+  // THE SCALAR CONVERSIONS ARE NOT LIFTED, DELIBERATELY. `f32(v)` and `i32(v)`
+  // are type constructors, and WGSL has no vector overload of either — the
+  // vector spelling is `vec3<f32>(…)`, which the constructor path above
+  // already handles. Lifting them component-wise would accept source the
+  // compiler rejects, which is the quietly-widened-reader failure this module
+  // exists to refuse, so they throw on a vector instead.
+  //
+  // `f32` is the identity on the VALUE and defers to the environment's
+  // rounding hook exactly as every other builtin does: with no `__round`
+  // bound, evaluation stays f64 and `f32(x)` is a no-op; with `Math.fround`
+  // bound, it lands on the nearest f32, which is what the conversion means on
+  // a device. `i32` truncates toward zero, as WGSL's does.
+  f32: (value) => {
+    if (isVec(value) || isMat4(value)) {
+      throw new Error("f32 takes a scalar; the vector spelling is vec<N><f32>");
+    }
+    return Number(value);
+  },
+  i32: (value) => {
+    if (isVec(value) || isMat4(value)) {
+      throw new Error("i32 takes a scalar; the vector spelling is vec<N><i32>");
+    }
+    return Math.trunc(value);
+  },
 };
 
 /**

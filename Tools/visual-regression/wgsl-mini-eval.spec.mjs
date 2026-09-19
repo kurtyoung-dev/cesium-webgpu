@@ -2,13 +2,18 @@
 // @status ACTIVE
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
+  compileFunction,
   evaluate,
   laneCount,
   mat4,
   parseExpression,
+  stripComments,
   tokenize,
   vec,
   vec2,
@@ -540,4 +545,183 @@ test("a builtin refuses what it cannot read a lane count from", () => {
       source,
     );
   }
+});
+
+test("ceil, floor and exp2 obey the same lane rule as every other scalar builtin", () => {
+  const environment = {
+    two: vec2(1.2, -1.2),
+    three: vec(1.5, -1.5, 2.0),
+    four: vec4(0.1, 1.9, -0.1, -1.9),
+  };
+
+  for (const [source, expected, lanes] of [
+    ["ceil(two)", { x: 2.0, y: -1.0, z: 0.0 }, 2],
+    ["floor(two)", { x: 1.0, y: -2.0, z: 0.0 }, 2],
+    ["ceil(three)", { x: 2.0, y: -1.0, z: 2.0 }, 3],
+    ["floor(three)", { x: 1.0, y: -2.0, z: 2.0 }, 3],
+    ["ceil(four)", { x: 1.0, y: 2.0, z: -0.0, w: -1.0 }, 4],
+    ["floor(four)", { x: 0.0, y: 1.0, z: -1.0, w: -2.0 }, 4],
+    ["exp2(three)", { x: 2 ** 1.5, y: 2 ** -1.5, z: 4.0 }, 3],
+  ]) {
+    const actual = evaluateComplete(source, environment);
+    assert.deepEqual(actual, expected, source);
+    assert.equal(laneCount(actual), lanes, `${source} lane count`);
+  }
+
+  // The scalar path, and the identities a sampling law leans on.
+  assert.equal(evaluateComplete("ceil(3.2)", environment), 4);
+  assert.equal(evaluateComplete("floor(3.8)", environment), 3);
+  assert.equal(evaluateComplete("ceil(-3.2)", environment), -3);
+  assert.equal(evaluateComplete("floor(-3.2)", environment), -4);
+  assert.equal(evaluateComplete("exp2(10.0)", environment), 1024);
+  assert.ok(
+    Math.abs(evaluateComplete("exp2(log2(7.0))", environment) - 7) < 1e-12,
+  );
+  assert.throws(
+    () => evaluateComplete("ceil(m)", { m: mat4(new Array(16).fill(1)) }),
+    (error) => error.message === "ceil cannot be applied to a matrix",
+  );
+
+  // Bound to f32 rounding, `exp2` lands on the nearest representable value
+  // rather than on the f64 one — the property a quantisation law needs.
+  const rounded = evaluateComplete("exp2(x)", { x: 0.1, __round: Math.fround });
+  assert.equal(rounded, Math.fround(2 ** Math.fround(0.1)));
+  assert.notEqual(rounded, 2 ** 0.1);
+});
+
+test("f32 and i32 convert a scalar and refuse a vector", () => {
+  assert.equal(evaluateComplete("f32(3)", {}), 3);
+  assert.equal(evaluateComplete("f32(n)", { n: 1234567 }), 1234567);
+  // THE DOCUMENTED IDENTITY, AND A MUTANT SURVIVED WITHOUT IT. With no
+  // `__round` bound, evaluation stays f64 and `f32(x)` is a NO-OP — an `f32`
+  // that applied `Math.fround` unconditionally passed every case above,
+  // because none of them evaluated it on a value `fround` moves. With the hook
+  // bound, and only then, it rounds. (Sigismond, H6.)
+  assert.equal(evaluateComplete("f32(0.1)", {}), 0.1);
+  assert.equal(
+    evaluateComplete("f32(x)", { x: 0.1, __round: Math.fround }),
+    Math.fround(0.1),
+  );
+  assert.notEqual(Math.fround(0.1), 0.1);
+  assert.equal(evaluateComplete("i32(3.9)", {}), 3);
+  assert.equal(evaluateComplete("i32(-3.9)", {}), -3);
+  assert.equal(evaluateComplete("i32(0.0)", {}), 0);
+  // `f32(i32(x))` is the round trip a step count takes in the shipped march.
+  assert.equal(evaluateComplete("f32(i32(96.7))", {}), 96);
+  // A vector conversion is not WGSL and is refused rather than quietly lifted.
+  for (const source of ["f32(v)", "i32(v)"]) {
+    assert.throws(
+      () => evaluateComplete(source, { v: vec(1.0, 2.0, 3.0) }),
+      /takes a scalar/,
+      source,
+    );
+  }
+  // An injected callable still outranks the builtin, as it does for every
+  // other name in the table.
+  assert.equal(
+    evaluateComplete("f32(2.0)", { __functions: { f32: () => 41 } }),
+    41,
+  );
+});
+
+test("the shipped log-depth inverse now EXECUTES out of its own source", () => {
+  // Before `exp2` existed in the table this function parsed and then threw
+  // `unsupported call exp2`, so every depth figure in this campaign was a
+  // transcription of the shader rather than a reading of it.
+  const source = stripComments(
+    readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "..",
+        "packages",
+        "engine",
+        "Source",
+        "Shaders",
+        "WebGPU",
+        "Environment",
+        "ProceduralClouds.wgsl",
+      ),
+      "utf8",
+    ),
+  );
+  const logDepthToEyeDistance = compileFunction(
+    source,
+    "logDepthToEyeDistance",
+    {},
+  );
+
+  // The documented inverse: `exp2(logZ * log2(far - near + 1)) - 1 + near`.
+  for (const [logZ, near, far] of [
+    [0.5, 1, 1e8],
+    [1.0, 1, 1e8],
+    [0.25, 10, 5e8],
+  ]) {
+    const expected = 2 ** (logZ * Math.log2(far - near + 1)) - 1 + near;
+    const actual = logDepthToEyeDistance(logZ, near, far);
+    assert.ok(
+      Math.abs(actual - expected) <= Math.abs(expected) * 1e-12,
+      `logDepthToEyeDistance(${logZ}, ${near}, ${far}) = ${actual}, expected ${expected}`,
+    );
+  }
+  // logZ 0 is the near plane and logZ 1 is the far plane.
+  assert.ok(Math.abs(logDepthToEyeDistance(0, 1, 1e8) - 1) < 1e-9);
+  assert.ok(Math.abs(logDepthToEyeDistance(1, 1, 1e8) - 1e8) < 1e-3);
+});
+
+test("MUTATION control: with the three new entries unreachable the shader function throws again", async () => {
+  // Unreachable, not deleted: the entries stay in the table under names no
+  // call site can resolve. That is what "unreachable" means for an object
+  // literal, and it reproduces exactly the state the table shipped in.
+  const original = readFileSync(
+    path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "lib",
+      "wgsl-mini-eval.mjs",
+    ),
+    "utf8",
+  ).replaceAll("\r\n", "\n");
+  let mutated = original;
+  for (const name of ["exp2", "ceil", "floor"]) {
+    const entry = `  ${name}: componentWise("${name}"`;
+    assert.equal(mutated.split(entry).length - 1, 1, `${name} entry`);
+    mutated = mutated.replace(
+      entry,
+      `  ${name}Unreachable: componentWise("${name}"`,
+    );
+  }
+  assert.notEqual(mutated, original, "the mutation did not apply");
+  const mutant = await import(
+    `data:text/javascript;base64,${Buffer.from(mutated).toString("base64")}`
+  );
+  // The harness really loaded the mutant and not the module this file imported.
+  assert.notEqual(mutant.compileFunction, compileFunction);
+
+  const source = stripComments(
+    readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "..",
+        "packages",
+        "engine",
+        "Source",
+        "Shaders",
+        "WebGPU",
+        "Environment",
+        "ProceduralClouds.wgsl",
+      ),
+      "utf8",
+    ),
+  );
+  const inert = mutant.compileFunction(source, "logDepthToEyeDistance", {});
+  assert.throws(
+    () => inert(0.5, 1, 1e8),
+    /unsupported call exp2/,
+    "the inert table still evaluated the shader's depth inverse",
+  );
+  // And the real one, on the same source, still answers.
+  assert.ok(
+    compileFunction(source, "logDepthToEyeDistance", {})(0.5, 1, 1e8) > 0,
+  );
 });

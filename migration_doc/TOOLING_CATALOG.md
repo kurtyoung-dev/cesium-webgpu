@@ -222,12 +222,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1401 |
-| ACTIVE | 1160 |
+| Files in census | 1407 |
+| ACTIVE | 1166 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 44 |
 | NO @status HEADER | 1 |
-| Classes | probe 676, spec 388, other 155, lib 135, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
+| Classes | probe 677, spec 389, other 157, lib 137, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
 
 ### Tools/ (64)
 
@@ -369,7 +369,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | png-rgba.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Golden-byte and CRC32-vector coverage for Tools/lib/png-rgba.mjs. |
 | purpose-header.mjs | lib | ACTIVE | 2026-09-02 | 18 | The one shared @purpose/@status header grammar (parse, locate, byte-exact splice, violations) used by the codemod, the catalog generator and the fleet-contract analyzer. |
 | sharp-runtime-smoke.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 5 | — |
-| webgpu-error-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 176 | Shared Playwright gate catching unscoped WebGPU validation/OOM errors (onuncapturederror) and device loss, plus a console-error listener. |
+| webgpu-error-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 177 | Shared Playwright gate catching unscoped WebGPU validation/OOM errors (onuncapturederror) and device loss, plus a console-error listener. |
 
 ### Tools/moon-albedo-bake/ (4)
 
@@ -426,7 +426,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1063)
+### Tools/visual-regression/ (1065)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -437,7 +437,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | analyze-cross-backend-report.mjs | other | ACTIVE | 2026-08-16 | 4 | Post-processes the cross-backend sandcastle sweep's report.json into pass/fail/diff buckets and issue categories for a PR-ready summary. |
 | assess-c11-146-route.mjs | other | ACTIVE | 2026-08-16 | 5 | C11-146 route wrapper: fingerprints local+served inputs around the clean moving-altitude run, assesses the artifact, preserves first red. |
 | attachment-demand-registry.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Pure-Node spec of computeAttachmentDemand (esbuild-transpiled TS): full 2^6 reader matrix + conservative-force + observe-only contracts. |
-| aurora-geomagnetic-oval.spec.mjs | spec | ACTIVE | 2026-09-18 | 4 | Asserts the centred-dipole frame and the synthetic oval against CPU reference vectors — the pole to its published figures, geomagnetic against geographic latitude, geocentric against geodetic, north against south, and quiet against storm geometry. |
+| aurora-geomagnetic-oval.spec.mjs | spec | ACTIVE | 2026-09-18 | 5 | Asserts the centred-dipole frame and the synthetic oval against CPU reference vectors — the pole to its published figures, geomagnetic against geographic latitude, geocentric against geodetic, north against south, and quiet against storm geometry. |
 | backend-isolation-lane-contract.spec.mjs | spec | ACTIVE | 2026-08-20 | 0 | Pin the backend-isolation split lane to the page's explicit launch and readiness contract. |
 | buffer-polyline-meters-width.spec.mjs | spec | ACTIVE | 2026-09-11 | 5 | Acceptance for BufferPolylineCollection widthUnits:"meters" on WebGPU: the packer's sign and the WGSL branch pinned as ONE convention against the GLSL oracle. |
 | buffer-primitive-collection-feature-renderer-teardown.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that BufferPrimitiveCollection.destroy() releases the backend feature renderer's cached resources for the collection, so a grow-then-destroy cycle returns the collection's WebGPU resource count to baseline instead of leaking it. |
@@ -513,7 +513,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-morphology-composition.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | C13-16 U2 candidate contract: genus-conditioned variance budget + fibre carve before erosion; WGSL wiring invariants and carve-after-erosion mutants. |
 | cloud-noise-mipmaps.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Pins WebGPUCloudNoiseResources + CloudNoiseMipmap.wgsl mip-chain agreement, with a loud guard on the halve-to-1 loop's integer precondition. |
 | cloud-observability-counters.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | C13-02 Gate-A: cloud GPU total is a union not a sum, Sky Fill excluded, per-frame counters reset, pass counts tied to encode sites. |
-| cloud-orbital-ladder-contract.spec.mjs | spec | ACTIVE | 2026-09-16 | 7 | Unit-checks the orbital ladder's four statistics against geometry the plan states independently, then drives the REAL descriptor through runProbe with a stubbed browser so the instrument is known to reach a verdict before an Edge slot is spent on it. |
+| cloud-orbital-ladder-contract.spec.mjs | spec | ACTIVE | 2026-09-16 | 8 | Unit-checks the orbital ladder's four statistics against geometry the plan states independently, then drives the REAL descriptor through runProbe with a stubbed browser so the instrument is known to reach a verdict before an Edge slot is spent on it. |
 | cloud-photometry-rule.spec.mjs | spec | ACTIVE | 2026-09-12 | 7 | Asserts the photometric path measures linear PRE-Reinhard radiance with the sun disc masked, that measuring after the tonemapper gives a different answer, and that the harness capture path supplies the live exposure rather than a default. |
 | cloud-primary-ray.spec.mjs | spec | ACTIVE | 2026-09-16 | 5 | Validates that primary procedural-cloud rays preserve framebuffer UV row order through inverse projection. |
 | cloud-primary-shell.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | Validates CloudVolumetrics WGS84 shell ray-root math at orbital heights with f32-conditioning-aware tolerances (nadir / near-horizon / grazing). |
@@ -850,6 +850,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-cloud-lut-flagon.mjs | probe | ACTIVE | 2026-08-16 | 5 | B434 flag-on gate: physical aerial mode fogs distant clouds toward the real sky (sun-azimuth-tracking hue) and sky-lut ambient warms sunset undersides |
 | probe-cloud-lut-parity.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | B434 zero-drift gate: default heuristic-aerial + constant-ambient path byte-identical across modified vs stash-reverted builds |
 | probe-cloud-mammatus.mjs | probe | ACTIVE | 2026-09-13 | 4 | B555 mammatus gate: underside pouch carve visibly thins the deck, OFF byte-identical under a frozen clock, strength=0 restores the baseline |
+| probe-cloud-march-mechanism.mjs | probe | ACTIVE | — | 2 | Drive one orbital recipe camera through the mechanism arm table - one dial per arm off a restored baseline, a clouds-ON and a clouds-OFF frame each - recording the frustum, the depth format, the tier realization and the weather counters, so the concentric-band family in orbital cloud views is attributed by experiment rather than by inference. |
 | probe-cloud-morphology.mjs | probe | ACTIVE | 2026-08-16 | 1 | B439 morphology modes: curl erosion and perlin-worley cores A/B'd against an in-run default baseline, plus a stash-pair parity mode for default flags |
 | probe-cloud-noisebake.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | V2 inert-bake gate: 3D noise baked + bound with the shader not sampling it — byte-identical to the pre-V2 stash build, bake ran, zero device errors |
 | probe-cloud-noisecore.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | V3 keystone A/B vs the pre-V3 live-noise build: baked clouds render, sane cell count, faster frame, W1/W2 lighting survives on the baked path |
@@ -1375,6 +1376,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | q130-wgsl-derivative-uniformity.spec.mjs | spec | ACTIVE | 2026-09-01 | 13 | Guards the WGSL rule that made frustum-dev's phongTextured shader module invalid: no implicit-derivative sampling after a conditional return in a fragment entry point. |
 | q131-edge-pipeline-matches-pass.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Guards the edge-emitter invariant that broke styled-gltf-lines-dev and multifrustum-snapping-dev: the pipeline a tile-edges command binds must declare the colour targets of the pass it executes in. |
 | q132-custom-primitive-and-light-layout.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Reproduces and guards the two defects that stopped rendering in the Sandcastle2 sweep: Scene.updateHeight calling a tileset-only lifecycle method on every primitive, and the WebGL scene-light uniform being declared shorter than LightCollection.pack writes. |
+| radial-banding.spec.mjs | spec | ACTIVE | — | 4 | Drives lib/metrics/radial-banding.mjs over synthetic fields whose answer is known by construction and over the checked-in reduction of a banked orbital capture, asserting returned numbers rather than the shape of the code that produced them. |
 | refresh-cost-multi-metric.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Independent behavioural + canonicity coverage of Q-80's deltaOrNull/sumLegMultiMetric/available-guard formulas, which live inside a page.evaluate callback and cannot be imported. |
 | rescore-sun-disc-dawn.mjs | other | ACTIVE | 2026-09-02 | 1 | Re-score an already-acquired sun-disc-dawn artifact against a FAIL bar derived from that same artifact's own WebGL leg, never from WebGPU. |
 | rig-registry.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Drives the real rig-registry.mjs over the real rigs/ directory: every rig validates, ids are unique, tags are in vocabulary, replayKeyFor is stable and sensitive, and generateScenesJson reproduces scenes.json byte-for-byte. |
@@ -1541,7 +1543,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | fixture-receipt-input.mjs | fixture | ACTIVE | 2026-09-19 | 2 | The one fixed `buildReceipt` input shared by the golden-comparison |
 
-### Tools/visual-regression/lib/ (130)
+### Tools/visual-regression/lib/ (131)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1573,7 +1575,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c13-41-deckfree-control.mjs | lib | ACTIVE | 2026-09-19 | 7 | State-isolated ABBA session plan plus pinned lighting/fade constants for C13-41's deck-free eclipse control lane. |
 | c13-42-godray-fixture.mjs | lib | NO @purpose HEADER | 2026-09-13 | 8 | — |
 | c13-42-reproduction-contract.mjs | lib | NO @purpose HEADER | 2026-09-13 | 13 | — |
-| c13-42-reproduction-harness.mjs | lib | NO @purpose HEADER | 2026-09-12 | 4 | — |
+| c13-42-reproduction-harness.mjs | lib | NO @purpose HEADER | 2026-09-12 | 6 | — |
 | capture.mjs | lib | ACTIVE | 2026-09-19 | 8 | Captures one or more rigs over BEFORE and AFTER origins on both renderers in a single browser run, emitting the capture manifest, the diff heat-maps, the metric strip and the receipt. |
 | celestial-capture-harness.mjs | lib | ACTIVE | 2026-08-21 | 9 | Shared Playwright/page half of the celestial fleet: one pinned-clock settle recipe, warm-up-then-same-task capture, lane driver, PNG writer. |
 | celestial-g1-gate.mjs | gate-lib | ACTIVE | 2026-08-25 | 10 | Pure verdict logic for the C12 G1 gate after six recorded repairs: per-backend non-vacuity, doubly-blind certifying mode voids the lane as STRUCTURAL. |
@@ -1586,11 +1588,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-coverage-response-model.mjs | lib | ACTIVE | 2026-08-16 | 3 | f32 CPU twin of the cloud coverage->density response (gate, BILLOWY gradient, Worley erosion, Beer-Lambert), importing the shipped response curve. |
 | cloud-genus-morphology-model.mjs | lib | ACTIVE | 2026-08-16 | 7 | f32 CPU twin of C13-16 per-genus cloud morphology (wind frame, fallstreak shear, fibre carve); genus rows imported from CloudTypeProfile.js. |
 | cloud-image-analysis.mjs | lib | ACTIVE | 2026-08-16 | 11 | Pure image analysis for C13 cloud probes: background subtraction, silhouette removal, morphology summary, directional autocorrelation of density. |
+| cloud-march-mechanism.mjs | lib | ACTIVE | — | 2 | The arm table and pure reductions behind probe-cloud-march-mechanism.mjs: one dial per arm at one camera, and the frustum-far sweep's predicted-versus-measured period test with its stop condition. |
 | cloud-march-transfer-model.mjs | lib | ACTIVE | 2026-08-21 | 4 | Node reconstruction of the camera-to-pixel cloud march (shell geometry, live density chain, saturating transfer) predicting the probe's estimator. |
 | cloud-orbital-ladder-model.mjs | lib | ACTIVE | 2026-09-18 | 12 | O3 aerial-cap fraction, O4 limb step, O6 decade retention and zoom flicker, O7 limb sample spacing — computed from uniforms and pixels, with each bar's basis stated. |
 | cloud-perf-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | One-function pass policy for the fixed-scene cloud perf probe: a requested pair ID must never silently degrade to a single-artifact success. |
 | cloud-photometry.mjs | lib | ACTIVE | 2026-09-18 | 12 | Recover linear pre-Reinhard cloud radiance from an 8-bit capture, mask the sun disc, and refuse where the recovery is not defined. |
-| cloud-probe-harness.mjs | lib | ACTIVE | 2026-09-12 | 41 | Self-contained browser-side helper (addInitScript) configuring defaultCloudCollection.volumetric and verifying every value round-tripped. |
+| cloud-probe-harness.mjs | lib | ACTIVE | 2026-09-12 | 44 | Self-contained browser-side helper (addInitScript) configuring defaultCloudCollection.volumetric and verifying every value round-tripped. |
 | cloud-reconstruction-consume.mjs | lib | ACTIVE | 2026-08-16 | 3 | Browser-free half of the C13-10 acceptance: interleaved A/B schedule builder, null-not-zero pass-timing reads, and the FAIL-outranks-STRUCTURAL fold. |
 | cloud-refresh-skip.mjs | lib | ACTIVE | 2026-08-16 | 6 | Shared enforceable home for the requestRenderMode refresh-skip defect that froze cloud snapshots and made three probe windows lie on one day. |
 | cloud-spectrum.mjs | lib | ACTIVE | 2026-09-18 | 13 | Radially averaged power-spectrum slope fit and area-perimeter fractal |
@@ -1638,7 +1641,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-lifecycle.mjs | lib | ACTIVE | 2026-09-12 | 9 | Coordinates a probe deadline, tracked browser resources, and the Edge lease so a probe cannot report completion while owned work remains live. |
 | probe-refusal.mjs | lib | ACTIVE | 2026-09-02 | 13 | Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns. |
 | probe-runtime-governance.mjs | lib | ACTIVE | 2026-09-13 | 6 | C13-N01 stage 1 detectors: read whether a probe resolves its origin from a hard-coded fallback and whether it routes through the three governance modules, and census the fleet from those two facts. |
-| probe-runtime.mjs | lib | ACTIVE | 2026-09-12 | 59 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
+| probe-runtime.mjs | lib | ACTIVE | 2026-09-12 | 60 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
 | probe-work-registry.mjs | lib | ACTIVE | 2026-09-12 | 6 | Tracks every `scope.run` a descriptor starts as an attempt with a settled outcome, so a run cannot be reported complete while work it started is still live, and such work's failure reaches the incident record whenever an incident is written at all; the browser's close is NOT deferred for it — see the header. |
 | prohibited-reader-allowlist.mjs | lib | ACTIVE | 2026-08-21 | 6 | Pin the measured visual-regression sources that still use the prohibited live-canvas reader. |
 | prohibited-reader-rule.mjs | lib | ACTIVE | 2026-08-20 | 8 | Detect drawImage calls that copy a live scene canvas into a scratch context. |
@@ -1660,7 +1663,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | shader-block-interpreter.mjs | lib | ACTIVE | 2026-09-05 | 2 | Parses and evaluates the restricted statement grammar the collection shaders' DISABLE_DEPTH_DISTANCE blocks are written in, so a spec can run the real shader control flow browser-free. |
 | solar-bloom-glow.mjs | lib | ACTIVE | 2026-08-16 | 6 | Forward model of the sun bloom's additive glow-on-disc so differential disc measurements carry the non-cancelling bloom term correctly. |
 | star-contribution-census.mjs | lib | ACTIVE | 2026-08-29 | 3 | One home for the positional star-reachability control: luma planes, the absolute-frame census and the stars-on-minus-off difference census. |
-| strip-viewer-widgets.mjs | lib | NO @purpose HEADER | 2026-09-02 | 5 | — |
+| strip-viewer-widgets.mjs | lib | NO @purpose HEADER | 2026-09-02 | 6 | — |
 | sun-disc-dawn-gate.mjs | gate-lib | ACTIVE | 2026-09-03 | 5 | Gate-predicate library for the sun-disc dawn sweep, scoring disc-centre vs disc-annulus luminance and chroma per backend with WebGL as the parity control. |
 | sun-radiance-delta.mjs | lib | ACTIVE | 2026-08-16 | 4 | Two-radiance sun-disc measurement model discriminating multiplicative gain vs additive pedestal via a parameter-free ratio statistic. |
 | tidal-harmonics-model.mjs | lib | ACTIVE | 2026-08-16 | 1 | Published NOAA/Schureman constituent speeds, Doodson fundamental rates and physics-free signal helpers anchoring the tidal-harmonics spec. |
@@ -1676,19 +1679,20 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-18 | 21 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
 | wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 11 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
-### Tools/visual-regression/lib/metrics/ (7)
+### Tools/visual-regression/lib/metrics/ (8)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | connected-components.mjs | lib | ACTIVE | 2026-09-18 | 3 | Label 4- or 8-connected foreground regions in a field and report per-component area, bbox, centroid and intensity, so structure survives where a band mean cannot see it. |
-| luminance.mjs | lib | ACTIVE | 2026-09-18 | 4 | Rec. 709 luminance, the march's Reinhard operator in both directions, and the display-space mean the photometric rule exists to forbid. |
-| masks.mjs | lib | ACTIVE | 2026-09-18 | 5 | Region-of-interest geometry for photometric statistics: the circular sun-disc mask every ROI must exclude, and a rectangle clamped to the image. |
-| region-means.mjs | lib | ACTIVE | 2026-09-18 | 2 | Whole-image means over a cloud mask: captured alpha with its coverage fraction, and the fraction of cloud pixels whose colour has collapsed onto the aerial tint. |
+| luminance.mjs | lib | ACTIVE | 2026-09-18 | 6 | Rec. 709 luminance, the march's Reinhard operator in both directions, and the display-space mean the photometric rule exists to forbid. |
+| masks.mjs | lib | ACTIVE | 2026-09-18 | 7 | Region-of-interest geometry for photometric statistics: the circular sun-disc mask every ROI must exclude, and a rectangle clamped to the image. |
+| radial-banding.mjs | lib | ACTIVE | — | 3 | Concentric-banding statistics over a disc capture — onset ladder in ln(eye-axis depth) and in cos(incidence), duty cycle per annulus, and the presence/darkness terms a banding number must be read beside. |
+| region-means.mjs | lib | ACTIVE | 2026-09-18 | 3 | Whole-image means over a cloud mask: captured alpha with its coverage fraction, and the fraction of cloud pixels whose colour has collapsed onto the aerial tint. |
 | saturation.mjs | lib | ACTIVE | 2026-09-18 | 3 | Per-ROI photometric statistics in linear pre-Reinhard radiance, with saturated and sun-disc pixels excluded and counted, plus the ratio the bars are made of. |
-| spectral-slope.mjs | lib | ACTIVE | 2026-09-18 | 4 | Radially averaged power-spectrum slope fit and area-perimeter fractal dimension for scalar fields, with a seeded synthetic fBm generator for validating them against a known answer. |
+| spectral-slope.mjs | lib | ACTIVE | 2026-09-18 | 5 | Radially averaged power-spectrum slope fit and area-perimeter fractal dimension for scalar fields, with a seeded synthetic fBm generator for validating them against a known answer. |
 | structure-similarity.mjs | lib | ACTIVE | 2026-09-18 | 3 | Compute windowed SSIM between two scalar fields (and an RGBA-reducing wrapper) so structural change is measurable where a mean or a band mean is blind to it. |
 
-### Tools/visual-regression/rigs/ (39)
+### Tools/visual-regression/rigs/ (41)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1714,6 +1718,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | itcz-cumulonimbus-westpacific.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "itcz-cumulonimbus-westpacific" (tropical-deep-convection/towering-anvil), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | mid-distance-12mm.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "mid-distance-12mm" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
 | northatlantic-cirrus-fibratus.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "northatlantic-cirrus-fibratus" (midlatitude-jetstream/fibratus-filaments), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| orbital-fulldisc-6608km-imagery.mjs | other | ACTIVE | — | 1 | Rig record: the L5 orbital full-disc camera with imagery on and the globe left alone, the framing control for every figure measured over a deliberately blacked-out globe. |
+| orbital-fulldisc-6608km.mjs | other | ACTIVE | — | 2 | Rig record reproducing the L5 orbital full-disc recipe exactly - nadir on the sub-solar point at a disc-fitting altitude, 2048 square, disc 2000 px across, weather map off, tier 3. |
 | orbital-ladder-20000km.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the C13-N04b orbital ladder rung at 20000 km (lib/cloud-orbital-ladder-model.mjs ALTITUDE_LADDER_METRES). |
 | orbital-ladder-2000km.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the C13-N04b orbital ladder rung at 2000 km (lib/cloud-orbital-ladder-model.mjs ALTITUDE_LADDER_METRES). |
 | orbital-ladder-200km.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the C13-N04b orbital ladder rung at 200 km (lib/cloud-orbital-ladder-model.mjs ALTITUDE_LADDER_METRES). |

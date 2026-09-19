@@ -165,6 +165,237 @@ export function evaluateO7({
   };
 }
 
+/**
+ * The march's deck-crossing length for one ray, from the shipped shell solve.
+ *
+ * `marchDeck` intersects the ray with both shells and takes, for a camera
+ * ABOVE the deck, `tStart = max(tOuter.x, 0)` and
+ * `tEnd = tInner.x > tStart ? min(tOuter.y, tInner.x) : tOuter.y`
+ * (`ProceduralClouds.wgsl:2438-2441`). So a ray that reaches the inner shell
+ * crosses the deck once; a ray that misses it runs the whole outer chord. The
+ * two cases meet continuously at the inner shell's tangent, which is what
+ * makes the resulting spacing field continuous in screen radius.
+ *
+ * TWO DELIBERATE SIMPLIFICATIONS, BOTH STATED RATHER THAN HIDDEN. The shader's
+ * shells are WGS84 oblate (`cloudShellAxes`); these are spheres of
+ * `planetRadiusMetres`, as `limbChordMetres` above already is. And the
+ * occlusion clamp at `:2455-2459` is not applied — inside the silhouette the
+ * inner shell is always hit before the globe is, so the clamp does not bind
+ * there, and outside it there is no globe to hit.
+ *
+ * @param {number} sineTheta `sin` of the ray's angle off the camera's forward axis.
+ * @param {object} shells `{cameraDistance, inner, outer}` radii from the centre.
+ * @returns {number|null} Metres through the deck, or null when the ray misses.
+ */
+function deckSpanMetres(sineTheta, { cameraDistance, inner, outer }) {
+  const perpendicular = cameraDistance * sineTheta;
+  const cosine = Math.sqrt(Math.max(0, 1 - sineTheta * sineTheta));
+  const outerHalfChordSq = outer * outer - perpendicular * perpendicular;
+  if (outerHalfChordSq <= 0) {
+    return null;
+  }
+  const outerHalfChord = Math.sqrt(outerHalfChordSq);
+  const tOuterNear = cameraDistance * cosine - outerHalfChord;
+  const tOuterFar = cameraDistance * cosine + outerHalfChord;
+  const innerHalfChordSq = inner * inner - perpendicular * perpendicular;
+  if (innerHalfChordSq > 0) {
+    const tInnerNear = cameraDistance * cosine - Math.sqrt(innerHalfChordSq);
+    return Math.min(tOuterFar, tInnerNear) - tOuterNear;
+  }
+  // Past the inner shell's tangent there is no second boundary to stop at, so
+  // the ray runs the whole outer chord. Every ray inside the silhouette takes
+  // the branch above; this one is the crescent outside it.
+  return tOuterFar - tOuterNear;
+}
+
+/**
+ * O7 as a DISTRIBUTION over the disc, not as one ray.
+ *
+ * WHY THIS EXISTS BESIDE `evaluateO7` RATHER THAN INSTEAD OF IT. `evaluateO7`
+ * divides ONE chord by the step count. That number is exact and it is the
+ * plan's stated baseline, but it describes a single grazing ray — at an
+ * orbital camera it is a ray in a sub-pixel crescent outside the silhouette,
+ * and it says nothing about the million rays inside it. A bar met or missed on
+ * one ray can be moved by writing a number into a uniform. This function
+ * integrates the SAME shipped step law over the whole disc, area-weighted, and
+ * reports where the spacing actually lands.
+ *
+ * WHAT IT STILL CANNOT DO, STATED HERE AND IN THE PACKET: it reads no pixels.
+ * It is strictly stronger than `chord / steps` — it cannot be satisfied by one
+ * ray — and strictly weaker than an image. A row whose acceptance is only this
+ * number has an acceptance a uniform write can satisfy.
+ *
+ * `limbTangent` is the tangent-ray figure on the chord the march ACTUALLY
+ * spans, deck bottom to deck top. `limbTangentGroundToTop` carries
+ * `evaluateO7`'s own default — a ground-to-deck-top chord 26.5 % longer, which
+ * is the figure the plan's O7 row quotes. They are different rays, and the row
+ * has to say which one its bar is scored on.
+ *
+ * `fractionOverBar` IS A FRACTION OF THE DISC AS STATED, NOT OF THE RENDERED
+ * CLOUD. The integration runs to `discRadiusPixels`, which is the PLANET's
+ * silhouette; the cloud shells stand above it, so their own silhouettes sit a
+ * fraction of a pixel further out — at the banked orbital camera the inner
+ * shell's tangent is r = 1000.296 px and the outer shell's r = 1000.706 px
+ * against a stated 1,000. Rendered cloud pixels therefore exist in a 0.41 px
+ * annulus this integration never samples. Both of those rays are below the 2 km
+ * bar at 96 steps, so the banked conclusion is unaffected; the distinction
+ * matters at any camera where the annulus is wide. (Sigismond, H7.)
+ *
+ * A DEGENERATE CAMERA REFUSES RATHER THAN RETURNING A NUMBER. If fewer than
+ * `minimumUsableFraction` of the sampled rays reach the deck at all, the stated
+ * disc does not describe the planet the shells belong to, and the quantiles
+ * would be computed over whichever handful of rays happened to land — a
+ * `focalPixels` of 1 returned `samples: 1` and a finite `max` before this guard
+ * existed. At any real camera every ray inside the silhouette crosses the outer
+ * shell, so the default is not a tolerance the honest case lives within.
+ *
+ * @param {object} options
+ * @param {number} options.primarySteps Live step count (uniform slot 44).
+ * @param {number} options.deckTopMetres Deck top above the surface.
+ * @param {number} options.deckBottomMetres Deck bottom above the surface.
+ * @param {number} options.altitudeMetres Camera altitude above the surface.
+ * @param {number} options.focalPixels Capture's focal length in pixels.
+ * @param {number} options.discRadiusPixels Silhouette radius in the capture.
+ * @param {number} [options.planetRadiusMetres] Sphere radius for the shells.
+ * @param {number} [options.targetMetres] The O7 bar.
+ * @param {number} [options.samples] Radial samples across the disc.
+ * @param {number} [options.minimumUsableFraction] Fraction of the sampled rays
+ *   that must reach the deck before a distribution is returned; default 0.5.
+ * @returns {object} The distribution.
+ */
+export function evaluateO7Field({
+  primarySteps,
+  deckTopMetres,
+  deckBottomMetres,
+  altitudeMetres,
+  focalPixels,
+  discRadiusPixels,
+  planetRadiusMetres = WGS84_EQUATORIAL_RADIUS_METRES,
+  targetMetres = ORBITAL_BARS.O7.targetMetres,
+  samples = 2048,
+  minimumUsableFraction = 0.5,
+}) {
+  finite(primarySteps, "primarySteps");
+  finite(deckTopMetres, "deckTopMetres");
+  finite(deckBottomMetres, "deckBottomMetres");
+  finite(altitudeMetres, "altitudeMetres");
+  finite(focalPixels, "focalPixels");
+  finite(discRadiusPixels, "discRadiusPixels");
+  finite(planetRadiusMetres, "planetRadiusMetres");
+  if (!(primarySteps >= 1)) {
+    throw new RangeError(`primarySteps must be >= 1, received ${primarySteps}`);
+  }
+  if (!(discRadiusPixels > 0)) {
+    throw new RangeError(
+      `discRadiusPixels must be positive, received ${discRadiusPixels}`,
+    );
+  }
+  if (!(focalPixels > 0)) {
+    throw new RangeError(
+      `focalPixels must be positive, received ${focalPixels}`,
+    );
+  }
+  if (!(altitudeMetres > deckTopMetres)) {
+    throw new RangeError(
+      `evaluateO7Field integrates a disc seen from outside the deck; altitude ${altitudeMetres} is not above deck top ${deckTopMetres}`,
+    );
+  }
+  if (!Number.isInteger(samples) || samples < 2) {
+    throw new RangeError(
+      `samples must be an integer >= 2, received ${samples}`,
+    );
+  }
+
+  const shells = {
+    cameraDistance: planetRadiusMetres + altitudeMetres,
+    inner: planetRadiusMetres + deckBottomMetres,
+    outer: planetRadiusMetres + deckTopMetres,
+  };
+
+  // Area-weighted over the disc: each radial sample stands for an annulus, so
+  // its weight is proportional to its radius. A uniform weighting would report
+  // the sub-satellite point as though it covered as much of the image as the
+  // limb does.
+  const entries = [];
+  let totalWeight = 0;
+  let overBarWeight = 0;
+  if (samples > 1) {
+    for (let index = 0; index < samples; index++) {
+      const radiusPixels = (discRadiusPixels * (index + 0.5)) / samples;
+      const sineTheta = Math.sin(Math.atan(radiusPixels / focalPixels));
+      const span = deckSpanMetres(sineTheta, shells);
+      if (span === null || !(span > 0)) {
+        continue;
+      }
+      entries.push({ spacing: span / primarySteps, weight: radiusPixels });
+      totalWeight += radiusPixels;
+      if (span / primarySteps > targetMetres) {
+        overBarWeight += radiusPixels;
+      }
+    }
+  }
+  if (entries.length === 0 || totalWeight === 0) {
+    throw new RangeError(
+      "evaluateO7Field: no ray in the disc reached the cloud deck; check the camera and the deck",
+    );
+  }
+  // A handful of surviving rays is not a distribution over the disc. See the
+  // degenerate-camera paragraph above: the guard is on the USABLE FRACTION,
+  // because `entries.length === 0` alone lets `focalPixels: 1` return a
+  // confident-looking `max` computed from one ray out of 2,048.
+  if (entries.length < minimumUsableFraction * samples) {
+    throw new RangeError(
+      `evaluateO7Field: only ${entries.length} of ${samples} sampled rays reached the deck ` +
+        `(${((entries.length / samples) * 100).toFixed(1)} %, below the ${(minimumUsableFraction * 100).toFixed(0)} % ` +
+        "this refuses under); the stated disc does not describe the planet these shells sit on",
+    );
+  }
+  entries.sort((left, right) => left.spacing - right.spacing);
+  const quantile = (fraction) => {
+    let seen = 0;
+    for (const entry of entries) {
+      seen += entry.weight;
+      if (seen >= fraction * totalWeight) {
+        return entry.spacing;
+      }
+    }
+    return entries[entries.length - 1].spacing;
+  };
+
+  const tangentChordMetres = limbChordMetres({
+    deckTopMetres,
+    deckBottomMetres,
+    planetRadiusMetres,
+  });
+  const groundToTopChordMetres = limbChordMetres({
+    deckTopMetres,
+    deckBottomMetres: 0,
+    planetRadiusMetres,
+  });
+
+  return {
+    bar: "O7",
+    kind: "derived-per-ray",
+    primarySteps,
+    samples: entries.length,
+    min: entries[0].spacing,
+    p50: quantile(0.5),
+    p95: quantile(0.95),
+    p99: quantile(0.99),
+    max: entries[entries.length - 1].spacing,
+    fractionOverBar: overBarWeight / totalWeight,
+    targetMetres,
+    // The march's own chord: deck bottom to deck top.
+    limbTangent: tangentChordMetres / primarySteps,
+    limbTangentChordMetres: tangentChordMetres,
+    // `evaluateO7`'s default chord: ground to deck top. 26.5 % longer, and the
+    // figure the plan's O7 row quotes. Labelled, never folded into the bar.
+    limbTangentGroundToTop: groundToTopChordMetres / primarySteps,
+    limbTangentGroundToTopChordMetres: groundToTopChordMetres,
+    pass: entries[entries.length - 1].spacing <= targetMetres,
+  };
+}
+
 // ── O3 — aerial-cap saturation ──────────────────────────────────────────────
 
 /**
