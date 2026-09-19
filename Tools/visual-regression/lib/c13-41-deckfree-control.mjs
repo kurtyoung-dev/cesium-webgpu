@@ -344,8 +344,21 @@ const colorsMatch = (value) =>
   value.length === DECK_FREE_LIGHT_COLOR.length &&
   value.every((channel, index) => channel === DECK_FREE_LIGHT_COLOR[index]);
 
+// A constructor's `name` is a bundler artefact: the served engine is an esbuild
+// bundle that renames colliding declarations, so the emitted class is read back
+// as `DirectionalLight2` while `SunLight` keeps its source spelling, and a
+// fully-minified or anonymous-class emit can make it `""`. Keying the control's
+// identity on that spelling made the lane report a structural miss for a light
+// that is in every measurable respect the right one. Identity therefore rests
+// entirely on what the read-back proves the light IS - the two mutually
+// exclusive instanceof brands, its intensity, its colour and its direction. The
+// recorded name is provenance and decides nothing: a read-back that observed no
+// light carries `isDirectionalLight: false` and `isSunLight: false`
+// (`probe-eclipse-cloud-response.mjs` `readSide(null)`), which the brand
+// conjuncts below already refuse, so no separate name-presence test can refuse
+// anything they do not - it can only refuse a right light whose class the
+// bundler left unnamed.
 const lightSideMatches = (side, kind, direction) =>
-  side?.constructorName === kind &&
   side?.isSunLight === (kind === "SunLight") &&
   side?.isDirectionalLight === (kind === "DirectionalLight") &&
   side?.intensity ===

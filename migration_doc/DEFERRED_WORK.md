@@ -22709,3 +22709,113 @@ page-wide guard made inert).
   bypasses `collectContactSheets` can bank `sheetId: "FAILED-globe"` through a known field. The
   documented path validates; this is one line for the wiring brief of item (7) above, so the
   validator is not skipped when the wave-end-gate caller lands.
+
+## 2026-09-19 — lane S3-DECKFREE (Ferdibrand): C13-41's deck-free control could not recognise its own light, because the bundler had renamed it
+
+### `C13-41-DECKFREE-CONTROL-IDENTIFIES-ITS-LIGHT-BY-A-BUNDLER-ARTEFACT` — FIXED in this filing patch
+
+`Tools/visual-regression/lib/c13-41-deckfree-control.mjs:347-348`. `lightSideMatches` opened with
+`side?.constructorName === kind`, `kind` being the literal `"DirectionalLight"` or `"SunLight"`, and
+is consumed by `directionalLightEvidenceMatches` (`:366-370` before this repair, `:379-383` after
+it) for every rung of every session. The probe fills that field from the page as
+`light?.constructor?.name` (`probe-eclipse-cloud-response.mjs:1604-1606`), and the page serves an
+esbuild bundle, which renames
+a declaration whose name collides across modules. The engine's directional light is emitted as
+`DirectionalLight2`; `SunLight` keeps its source spelling, which is why the sibling restore check
+kept passing and the failure looked one-sided and product-shaped.
+
+**Consequence, measured rather than argued.** The banked 2026-09-03 sweep
+(`output/eclipse-cloud-response-2026-09-02b/probe-output/eclipse-cloud-response-report.json`,
+run `d1470ec7-a426-4a1c-87e0-7def7500f2b2`, md5 `1e49092ae6f9a3066e12efbad70d9c3d`) carries exactly
+sixteen isolation reasons — one per `{off-a, on-a, on-b, off-b} x rung {0..3}` — all of them the
+same *"custom-light read-back is not the exact diagnostic DirectionalLight"*, while the same
+read-backs carry `isDirectionalLight: true`, `isSunLight: false`, `intensity: 1`, colour `[1,1,1,1]`
+and the exact independently reconstructed direction. The control was measuring the right light and
+reporting the wrong answer.
+
+**The fix.** Identity now rests on what the read-back proves the light IS: the two mutually
+exclusive `instanceof` brands the probe already records, plus intensity, colour and direction. The
+recorded constructor name decides nothing at all and is kept only as provenance: a read-back that
+observed no light carries `isDirectionalLight: false` and `isSunLight: false` (the probe's
+`readSide(null)`), which the brand conjuncts already refuse, so a separate name-presence test can
+refuse nothing they do not — it can only refuse a RIGHT light whose class the bundler left
+anonymous (`constructor.name === ""`). That is not a hypothetical: re-folding the same banked
+sessions with every directional read-back renamed to `""`, the shipped predicate refuses with
+sixteen reasons, a brands-plus-non-empty-name predicate refuses with the *same* sixteen, and a
+brands-only predicate accepts with none — so a name-presence test would have swapped one
+dependence on the bundler for another. The probe and the served engine are untouched, so a
+measurement taken on the engine a ruling names stays a measurement on that engine.
+
+**How the gate keeps its teeth.** `eclipse-cloud-response-gate.spec.mjs` grew one behaviour case
+(`K11b`) that drives the real `foldDeckFreeControlSessions` and reads its output: the bundle's
+`DirectionalLight2`, the source's `DirectionalLight` and an anonymously bundled `""` all score
+`stateIsolated true` with an empty reason list, and a non-directional light, a name that merely
+starts with the right prefix on an object without the brand, the read-back shape the probe emits
+when no light was observed at all, a wrong intensity, a wrong colour, a wrong direction, an absent
+light, and a SunLight side whose brand is wrong are each refused on their own. Ten inertness
+mutants turn it red: restoring the original name equality; re-introducing a non-empty-name
+conjunct; making each of the sun brand, the directional brand, the intensity, the colour and the
+direction conjuncts unreachable; making the predicate as a whole unreachable in either polarity;
+and widening the direction tolerance from `1e-10` to `1e-1`. One mutant survives, and is recorded
+rather than hidden: a `constructorName !== null` conjunct is behaviour-inert, because every
+read-back carrying a null name also carries both brands false, which the brand conjuncts refuse on
+their own. No spec can kill an inert conjunct; that is what inert means.
+
+**What this does NOT say.** It says nothing about `shadowContrastInvariant`, which the same banked
+run scores `false` at `1.0341102079879674` against `[0.97, 1.03]` and which this change does not
+touch. It also does not release `refreshCostMeasured`: that predicate is blinded by a second,
+independent structural reason in the same run — *"webgpu: pair 0 eclipse: the pre-segment GPU
+readback drain did not close (timedOut=true, undrained=1)"* — and sits in the `refresh-cost` domain,
+which never passes through `deck-free`.
+
+### The re-score of the banked sweep, and why it was possible without a browser
+
+`foldDeckFreeControlSessions` (`:444` after this repair, `:431` before it) is an exported pure
+function, and the banked report carries its exact input:
+`webgpuCloudLanes.deckFreeControl.sessions` (4 elements) alongside the block's own
+`factorTolerance 1e-9`, `scheduleObscurationTolerance 0.00025`, `diagnosticPixelTolerance 0.008`
+(= `captureDelta 0.004` x 2), the four-rung ladder and the diagnostic site. Re-judging the banked
+lanes unchanged through `judgeEclipseCloudResponse` reproduces all 103 published verdict keys, both
+structural reasons, the unscored list and the failed list exactly — so the re-score reaches the
+predicate rather than a reconstruction of it. With the repaired predicate on that same input the
+control scores `stateIsolated true` with zero residual reasons and eight of the nine previously
+unscored predicates score, all `true`: `shadowGroundIsBright`, `shadowGroundNotOccluded`,
+`shadowDecrementMatchesGroundDim`, `shadowDecrementRejectsAlternativeDesign`,
+`deckFreeControlStateIsolated`, `deckFreeGroundIsLit`, `deckFreeGroundCapturesSettled`,
+`deckFreeGroundDimsByFactor`. The run's whole remaining red is then one structural reason (the
+refresh-cost drain) and one failed predicate (`shadowContrastInvariant`).
+
+The receipt, its five controls and the reproduction command are banked with the lane's close-out
+folder, not in the repository: the harness reads a gitignored output tree, so no runner could
+depend on it. Three of those controls are refusals the repaired predicate must still produce (a
+wrong light, a light whose read-back was removed, a right-prefix name on an object with no brand);
+the other two are the two ends of the bundler rule, measured on the banked sessions rather than on
+fixtures — an anonymously bundled `""` light is ACCEPTED, and the exact object `readSide(null)`
+emits is REFUSED.
+
+### The general lesson, for any gate that reads a bundle
+
+A `constructor.name` observed through a served bundle is a property of the bundler, not of the
+object. Where an instrument must identify a class across that boundary, it identifies it by a brand
+the class carries — an `instanceof` result, an explicit flag — and treats the name as provenance.
+The failure mode this instance shows is the expensive one: the gate's own spec was green throughout,
+because it SYNTHESISED the field it was checking (`constructorName: kind`, `spec:506`) instead of
+observing what a bundle emits, so the spec certified the brief rather than the behaviour. The
+second-order version of the same mistake is worth naming too: the first repair replaced the name
+EQUALITY with a name-PRESENCE test, which is still a property of the bundler, and it took an
+adversarial re-derivation to show that the presence test could refuse nothing the brands did not
+already refuse while refusing one right light they accepted.
+
+### `DX-TOOLS-GATES-IDENTIFY-A-SERVED-CLASS-BY-ITS-CONSTRUCTOR-NAME` — OPEN (DX row)
+
+Two other instruments identify a served-engine class by `constructor.name` today, and go blind the
+same way the first time the bundler renames what they name:
+`Tools/visual-regression/lib/pick-visibility-matrix-page.mjs:121`
+(`collectionNames.includes(p.constructor.name)`) and
+`Tools/visual-regression/probe-bulk-vs-legacy-perf.mjs:109`
+(`x.constructor.name === "BulkPointVisualizer"`). Neither belongs to this lane: each needs brand
+evidence added on the PAGE side, which means editing a probe, and the deck-free lane is forbidden
+from touching the probe that a ruling's measurement rests on. A third item belongs beside them —
+the spec helper `deckFreeLightReadback` (`spec:506`) synthesises the very field it is meant to
+observe; repairing it flips the polarity of about a dozen existing `K11` cases, so it belongs in a
+lane that owns them.

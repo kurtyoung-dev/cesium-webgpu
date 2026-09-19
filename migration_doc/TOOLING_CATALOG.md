@@ -290,10 +290,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | wasm-encode-benchmark.mjs | other | ACTIVE | 2026-09-01 | 9 | Node CPU micro-benchmark of the WASM batch_rte_encode kernel vs the scalar JS fround twin, with byte-identity and fallback trip-wire asserts. |
 | wasm-subrange-encode-check.mjs | other | ACTIVE | 2026-09-01 | 7 | Standalone Node check that WasmRTEBridge.batchEncodeRange's WASM and JS paths are byte-identical, placement exact, outside bytes preserved. |
 | wasm-subrange-loader.mjs | other | ACTIVE | 2026-09-01 | 4 | ESM resolve hook redirecting WasmRTEBridge's build-layout wasm-glue specifier to the on-disk glue, plus the file-URL fetch shim and the glue/wasm path helpers, so the wasm Node checks and the benchmark run the real bridge. |
-| wave-end-contact-sheet-index.spec.mjs | spec | ACTIVE | — | 6 | Behaviour spec for the DX-106 contact-sheet banking additions on |
+| wave-end-contact-sheet-index.spec.mjs | spec | ACTIVE | 2026-09-19 | 6 | Behaviour spec for the DX-106 contact-sheet banking additions on |
 | wave-end-gate-binding.mjs | other | ACTIVE | 2026-09-16 | 9 | Validates wave-end arguments, planned child bindings and served-build preconditions. |
 | wave-end-gate-contracts.spec.mjs | spec | ACTIVE | 2026-09-16 | 3 | Verifies wave-end binding and receipt contracts independently of process execution. |
-| wave-end-gate-receipt.mjs | other | ACTIVE | 2026-09-16 | 11 | Normalizes wave-end child results and constructs durable receipts and summaries. |
+| wave-end-gate-receipt.mjs | other | ACTIVE | 2026-09-19 | 11 | Normalizes wave-end child results and constructs durable receipts and summaries. |
 | wave-end-gate.mjs | other | ACTIVE | 2026-09-16 | 25 | Q-152 — close a multi-batch wave with served-build preflights, smoke/sweep/visual gates, and banked receipts. The verdict is ROOT-BOUND: no child emits a typed receipt, so the root derives one per step from its own run id, time window, root-supplied source tuple, preflighted served subject, fixed-report freshness snapshot, and the step's own declared exit-code map (`binding`, echoed in the receipt). Bindability is a function of the arguments — `--update-baselines` still refuses pre-spawn with exit 3 and zero children spawned, naming every blocker and its remediation. |
 | wave-end-gate.spec.mjs | spec | NO @purpose HEADER | 2026-09-16 | 19 | — |
 
@@ -481,7 +481,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | capture-and-diff.mjs | runner | ACTIVE | 2026-09-12 | 76 | Primary VR runner: drives the split-screen page over scenes.json, captures WebGL+WebGPU canvases, evaluates 3 gates vs reviewed historical baselines. |
 | capture-and-diff.policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | node:test guard for lib/visual-gate-policy.mjs: pixel-gate evaluation, scene thresholds/expectations, manifest and baseline-promotion validation. |
 | capture-and-diff.served-binding.spec.mjs | spec | ACTIVE | 2026-09-12 | 2 | node:test guard for capture-and-diff.mjs's root-binding seams: the additive --served-base origin override, the WAVE_END_SOURCE_* provenance preference and its baseline-promotion carve-out, and the CLI entry guard whose failure mode is a silent clean exit. |
-| capture-seam.spec.mjs | spec | ACTIVE | — | 5 | Pin DX-104's capture seam: origins are required and never defaulted, a rig's declared origin is re-based onto the caller's, exactly one browser is opened and closed even on the throw path, and the manifest carries no verdict. |
+| capture-seam.spec.mjs | spec | ACTIVE | 2026-09-19 | 5 | Pin DX-104's capture seam: origins are required and never defaulted, a rig's declared origin is re-based onto the caller's, exactly one browser is opened and closed even on the throw path, and the manifest carries no verdict. |
 | capture-source-eol-identity.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Materializes the real capture library as both a CRLF and an LF checkout, imports each, and evaluates whether the published sampler and runtime-attestor digests and the analyzer's verdict on the real probe source are the same from either, with an absence and an inertness mutant required to break all three signals. |
 | celestial-capture-harness.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Mutation-checked guard for lib/celestial-capture-harness.mjs, including its shared frozen-PNG acquisition path. |
 | celestial-g1-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Browser-free mutant-battery guard of the G1 celestial gate predicates (star modulation, sky floor, sprite deltas, cubemap certifying mode). |
@@ -535,8 +535,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | collection-pickid-shape.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Guards that WebGPU collection renderers register WebGL-shaped pick-id wrappers ({primitive, collection, id}), not bare primitives; CO-16 census guard. |
 | collection-previous-frame-rte.spec.mjs | spec | ACTIVE | 2026-09-18 | 2 | Pins that every collection velocity stage reconstructs the previous clip position relative to the previous eye, that the packer writes the pair UniformState records, and that a still primitive under a reset previous frame emits exactly zero velocity. |
 | compute-cloud-previous-frame-rte.spec.mjs | spec | NO @status HEADER | 2026-09-18 | 2 | Executes the real camera packers of the compute-instance and cloud-collection WebGPU renderers from Node to prove their previous-frame lanes carry a relative-to-eye pair taken from UniformState, and cross-checks every float offset against the renderers' own WGSL struct text and size constants. |
-| contact-sheet.mjs | other | ACTIVE | — | 5 | Thin CLI shell that reads a capture manifest, builds the pure contact-sheet page model, writes the self-contained sheet directory, and exits independently of any mismatch value. |
-| contact-sheet.spec.mjs | spec | ACTIVE | — | 4 | Drive the real sheetModel/renderSheetHtml/sheetIndexEntry and runContactSheet against fixtures, asserting the manifest-validity, no-verdict-token and exit-code-independence output contracts DX-105 owns. |
+| contact-sheet.mjs | other | ACTIVE | 2026-09-19 | 5 | Thin CLI shell that reads a capture manifest, builds the pure contact-sheet page model, writes the self-contained sheet directory, and exits independently of any mismatch value. |
+| contact-sheet.spec.mjs | spec | ACTIVE | 2026-09-19 | 4 | Drive the real sheetModel/renderSheetHtml/sheetIndexEntry and runContactSheet against fixtures, asserting the manifest-validity, no-verdict-token and exit-code-independence output contracts DX-105 owns. |
 | core-event-lifecycle.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Asserts Event survives a throwing listener and EventHelper's remover never orphans another registration, through the engine's own Core modules. |
 | coveragejson-antimeridian.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | C13-08: CoverageJSON cyclic-longitude unwrap through WeatherFieldGrid + WeatherTexPacker so antimeridian-crossing CRS84 axes parse right. |
 | cpu-frame-accounting.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Deterministic-clock tests of WebGPUCpuPassProfiler whole-scene phase accounting (CPU_SCENE_PHASE_NAMES coverage, no wall-clock leakage). |
@@ -764,7 +764,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-bufferpolygon-2dcv.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | Pre-fix baseline recorder: captures the expected-LARGE 2D/CV diff for BufferPolygon (wandering points) as the before-image for the fix. |
 | probe-bufferpolygon-outline.mjs | probe | ACTIVE | 2026-08-16 | 3 | Acceptance for BufferPolygon outlineColor/outlineWidth: red stroke on both rings, width-0 renders nothing, OFF-gate byte-identical. |
 | probe-bufferpolygon-vector-tile.mjs | probe | ACTIVE | 2026-08-16 | 9 | Verifies the us-states vector tileset renders through the BufferPolygon WGSL path on both backends: 52 features, matching geometry bytes. |
-| probe-bulk-vs-legacy-perf.mjs | probe | ACTIVE | 2026-08-16 | 3 | Benchmark settling bulk static-lane vs legacy per-frame visualizer: setup and steady per-frame cost per entity count, point path isolated. |
+| probe-bulk-vs-legacy-perf.mjs | probe | ACTIVE | 2026-08-16 | 4 | Benchmark settling bulk static-lane vs legacy per-frame visualizer: setup and steady per-frame cost per entity count, point path isolated. |
 | probe-bundle-content.mjs | probe | ACTIVE | 2026-08-16 | 3 | Hooks GPURenderBundleEncoder + pipeline creation to dump what draw state the globe tile render bundle records (targets, blend, depth). |
 | probe-c-r9-diagnose.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | C-R9 bisect: baseline vs debugSkipDepthPlane vs windowed Turbo depth overlay to test whether the depth plane occluded the b3dm buildings. |
 | probe-c-r9-webgl-vs-webgpu.mjs | probe | INVESTIGATION | 2026-08-16 | 7 | C-R9 control: same-view WebGL-vs-WebGPU b3dm render with explicit ellipsoid terrain, ruling out legitimate terrain occlusion first. |
@@ -959,7 +959,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-draw-calls.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Instruments GPURenderPassEncoder to count real GPU draw calls vs silent no-ops — early 'are commands reaching the encoder?' bisection. |
 | probe-draw-pipeline-labels.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Hooks setPipeline + draw to record which labeled pipelines actually draw during the scene FB pass. |
 | probe-dusk-terminator.mjs | probe | ACTIVE | 2026-08-16 | 6 | Day/night terminator regression: pinned equinox clock, lit-vs-unlit hemisphere luminance ratio validates lightDirectionEC + nightAmbient floor. |
-| probe-eclipse-cloud-response.mjs | probe | ACTIVE | 2026-09-03 | 21 | C13-41 Edge acceptance: eclipse-driven cloud radiance ratio, shadow contrast, IBL bucket-fill count, and submitted-refresh cost. |
+| probe-eclipse-cloud-response.mjs | probe | ACTIVE | 2026-09-03 | 22 | C13-41 Edge acceptance: eclipse-driven cloud radiance ratio, shadow contrast, IBL bucket-fill count, and submitted-refresh cost. |
 | probe-eclipse-globe-shadow.mjs | probe | ACTIVE | 2026-08-16 | 7 | C12-29 S5 browser proof: lunar shadow evaluated per globe fragment — visible/local during the 2024-04-08 eclipse, inert a day later, both backends. |
 | probe-eclipse-scene-dimming.mjs | probe | ACTIVE | 2026-08-16 | 9 | C12-29 S2: scene-light + atmosphere dimming via eclipseSceneLightFactor, measured as within-step off/on/autoexposure luminance ratios. |
 | probe-eclipse-sky-totality.mjs | probe | ACTIVE | 2026-08-16 | 5 | C12-29 S6 sky half: totality sky via algebraic recoveries — shell alpha from dual-background renders, star reveal, E3 flip, horizon twilight. |
@@ -1522,7 +1522,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| rigs.mjs | fixture | ACTIVE | — | 1 | Fixture rig records for capture-seam.spec.mjs: an absolute-url split-screen rig carrying a gate, a relative-page rig, and a page-null rig. |
+| rigs.mjs | fixture | ACTIVE | 2026-09-19 | 1 | Fixture rig records for capture-seam.spec.mjs: an absolute-url split-screen rig carrying a gate, a relative-page rig, and a page-null rig. |
 
 ### Tools/visual-regression/fixtures/nasa-svs-5073/ (2)
 
@@ -1535,7 +1535,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| fixture-receipt-input.mjs | fixture | ACTIVE | — | 1 | The one fixed `buildReceipt` input shared by the golden-comparison |
+| fixture-receipt-input.mjs | fixture | ACTIVE | 2026-09-19 | 1 | The one fixed `buildReceipt` input shared by the golden-comparison |
 
 ### Tools/visual-regression/lib/ (130)
 
@@ -1566,11 +1566,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c12-29-s5-svs-footprint-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 7 | Gate library for the S5 NASA-SVS-5073 eclipse-footprint certification shard, pairing its probe and spec. |
 | c12-29-s5-terrain-selection-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 4 | Frozen inputs, exact terrain-radius arithmetic, evidence-shape checks and verdict folding for S5's first final-certification shard (v10 schema). |
 | c12-31-aureole-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 4 | Gate-predicate library for the C12-31 sky-aureole certification lane, pairing probe-sky-aureole-anchor with its spec. |
-| c13-41-deckfree-control.mjs | lib | ACTIVE | 2026-08-29 | 6 | State-isolated ABBA session plan plus pinned lighting/fade constants for C13-41's deck-free eclipse control lane. |
+| c13-41-deckfree-control.mjs | lib | ACTIVE | 2026-08-29 | 7 | State-isolated ABBA session plan plus pinned lighting/fade constants for C13-41's deck-free eclipse control lane. |
 | c13-42-godray-fixture.mjs | lib | NO @purpose HEADER | 2026-09-13 | 8 | — |
 | c13-42-reproduction-contract.mjs | lib | NO @purpose HEADER | 2026-09-13 | 13 | — |
 | c13-42-reproduction-harness.mjs | lib | NO @purpose HEADER | 2026-09-12 | 4 | — |
-| capture.mjs | lib | ACTIVE | — | 8 | Captures one or more rigs over BEFORE and AFTER origins on both renderers in a single browser run, emitting the capture manifest, the diff heat-maps, the metric strip and the receipt. |
+| capture.mjs | lib | ACTIVE | 2026-09-19 | 8 | Captures one or more rigs over BEFORE and AFTER origins on both renderers in a single browser run, emitting the capture manifest, the diff heat-maps, the metric strip and the receipt. |
 | celestial-capture-harness.mjs | lib | ACTIVE | 2026-08-21 | 9 | Shared Playwright/page half of the celestial fleet: one pinned-clock settle recipe, warm-up-then-same-task capture, lane driver, PNG writer. |
 | celestial-g1-gate.mjs | gate-lib | ACTIVE | 2026-08-25 | 10 | Pure verdict logic for the C12 G1 gate after six recorded repairs: per-backend non-vacuity, doubly-blind certifying mode voids the lane as STRUCTURAL. |
 | celestial-g2-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 12 | Pure verdict logic plus display-transform inversion for G2 (star PSF, delivered magnitude range, C12-27 solar glare) on linearized captures. |
@@ -1593,7 +1593,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-tour-fixtures.mjs | lib | ACTIVE | 2026-09-12 | 31 | Deterministic C13-01 tour definitions: pinned local-solar clocks, absolute camera stations, replay keys, three-lane wind/time discriminators. |
 | cloud-tour-metrics.mjs | lib | ACTIVE | 2026-08-16 | 5 | Pure C13-01 per-sequence metrics plus manifest validation, including assessInterleavedAb enforcing the C13-39 interleaved GPU-timing protocol. |
 | cloud-u2-perf-evidence.mjs | lib | ACTIVE | 2026-08-21 | 3 | Manifest policy for the C13-16 U2 cross-bundle GPU-timing gate: comparison, environment-drift rejection, immutable evidence naming. |
-| contact-sheet-page.mjs | lib | ACTIVE | — | 8 | Pure capture-manifest → contact-sheet page model + HTML renderer: a static, verdict-free page comparing BEFORE/AFTER captures across rigs and renderers, with the manifest's own shape guard. |
+| contact-sheet-page.mjs | lib | ACTIVE | 2026-09-19 | 8 | Pure capture-manifest → contact-sheet page model + HTML renderer: a static, verdict-free page comparing BEFORE/AFTER captures across rigs and renderers, with the manifest's own shape guard. |
 | daynight-terminator-law.mjs | lib | ACTIVE | 2026-08-16 | 4 | Pure model behind probe-daynight-terminator-law (CLT-B1); deliberately unchanged post-fix, so lanes A/D now REFUTE — read metrics, not verdicts. |
 | determinism-kit.mjs | lib | ACTIVE | 2026-08-16 | 11 | Probe determinism kit: pinClock, settleTiles, dampSky, nRunMedian — neutralises the four measured sources of run-to-run drift in visual probes. |
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-02 | 17 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
@@ -1640,7 +1640,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | prohibited-reader-rule.mjs | lib | ACTIVE | 2026-08-20 | 8 | Detect drawImage calls that copy a live scene canvas into a scratch context. |
 | provenance-markers.mjs | lib | ACTIVE | 2026-08-16 | 10 | Enforces bundler/formatter-proof provenance-marker strings for probes; encodes six recorded marker failure modes as shared validators. |
 | purpose-header-allowlist.mjs | lib | ACTIVE | 2026-08-21 | 5 | Frozen shrink-only snapshot of the probes and gate libs that predate the @purpose/@status header rule. |
-| relative-path.mjs | lib | ACTIVE | — | 8 | Single fail-closed predicate for "a relative, POSIX, non-escaping path", shared by the capture manifest's image paths, the contact sheet's image/receipt paths and a banked sheet-index entry's repo-relative path. |
+| relative-path.mjs | lib | ACTIVE | 2026-09-19 | 8 | Single fail-closed predicate for "a relative, POSIX, non-escaping path", shared by the capture manifest's image paths, the contact sheet's image/receipt paths and a banked sheet-index entry's repo-relative path. |
 | representative-performance-content.mjs | lib | ACTIVE | 2026-08-16 | 12 | Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads. |
 | representative-tileset-request-ledger.mjs | lib | ACTIVE | 2026-08-16 | 6 | Event-sourced ledger of tileset content requests (issue/terminal events, byte totals, hashes) with cross-run comparison for perf evidence. |
 | rig-registry.mjs | lib | ACTIVE | 2026-09-18 | 12 | Load, validate and hash the rig records under rigs/, and regenerate scenes.json byte-identically from the rigs tagged wave-end. |

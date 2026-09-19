@@ -7383,6 +7383,210 @@ test("K11 baseColor, fade, and exact light classes are read back on every fresh 
   );
 });
 
+// The deck-free control runs against a BUNDLE. esbuild renames declarations
+// whose names collide across modules, so the served engine's directional light
+// reads back as `DirectionalLight2` while its SunLight sibling keeps the source
+// spelling - which is why a control that keyed identity on the spelling failed
+// on one side only and looked like a product miss. These cases fix the OUTPUT
+// the control must produce for a light that IS the right light under any
+// spelling, and the OUTPUT it must still produce for one that is not.
+test("K11b deck-free light identity survives the bundler's renaming and still refuses a wrong light", () => {
+  const run = passingRun();
+  const ladder = run.cloudLanes.rungs.map(
+    ({ target, iso, scheduledObscuration }) => ({
+      target,
+      iso,
+      obscuration: scheduledObscuration,
+    }),
+  );
+  const fold = (sessions) =>
+    foldDeckFreeControlSessions({
+      sessions,
+      ladder,
+      certifiedRungs: run.cloudLanes.rungs,
+      factorTolerance: ECLIPSE_CLOUD_BANDS.factorTolerance.hi,
+      scheduleObscurationTolerance:
+        ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi,
+      captureDelta: BAND_MEAN_CAPTURE_DELTA,
+      diagnosticSite: DECK_FREE_DIAGNOSTIC_SITE,
+    });
+  const eachDirectionalSide = (sessions, visit) => {
+    for (const session of sessions) {
+      for (const diagnostic of session.directionalDiagnosticRungs) {
+        visit(diagnostic.light.scene);
+        visit(diagnostic.light.frameState);
+      }
+    }
+    return sessions;
+  };
+  const eachSunSide = (sessions, visit) => {
+    for (const session of sessions) {
+      visit(session.light.scene);
+      visit(session.light.frameState);
+      for (const rung of session.rungs) {
+        visit(rung.light.scene);
+        visit(rung.light.frameState);
+      }
+    }
+    return sessions;
+  };
+  const rename = (name) => (side) => {
+    side.constructorName = name;
+  };
+
+  // The exact string the 2026-09-03 WebGPU sweep banked for every one of its
+  // sixteen directional diagnostic read-backs.
+  const bundledDirectional = eachDirectionalSide(
+    freshDeckFreeSessions(run.cloudLanes.rungs),
+    rename("DirectionalLight2"),
+  );
+  const bundledDirectionalResult = fold(bundledDirectional);
+  assert.equal(bundledDirectionalResult.stateIsolated, true);
+  assert.deepEqual(bundledDirectionalResult.isolationReasons, []);
+
+  // The unbundled spelling keeps working: the repair widens what is accepted,
+  // it does not move the target.
+  const sourceSpelledDirectional = eachDirectionalSide(
+    freshDeckFreeSessions(run.cloudLanes.rungs),
+    rename("DirectionalLight"),
+  );
+  assert.equal(fold(sourceSpelledDirectional).stateIsolated, true);
+
+  // The sibling the 2026-09-03 bundle happened not to rename. Nothing about the
+  // control may depend on that accident.
+  const bundledSun = eachSunSide(
+    eachDirectionalSide(
+      freshDeckFreeSessions(run.cloudLanes.rungs),
+      rename("DirectionalLight2"),
+    ),
+    rename("SunLight2"),
+  );
+  assert.equal(fold(bundledSun).stateIsolated, true);
+
+  // A light that is not directional is refused whatever it is called.
+  const notDirectional = eachDirectionalSide(
+    freshDeckFreeSessions(run.cloudLanes.rungs),
+    (side) => {
+      side.constructorName = "DirectionalLight2";
+      side.isDirectionalLight = false;
+      side.isSunLight = true;
+    },
+  );
+  const notDirectionalResult = fold(notDirectional);
+  assert.equal(notDirectionalResult.stateIsolated, false);
+  assert.match(
+    notDirectionalResult.isolationReasons.join("\n"),
+    /custom-light read-back is not the exact diagnostic DirectionalLight/,
+  );
+
+  // A name that merely starts with the right prefix buys nothing without the
+  // brand evidence underneath it.
+  const prefixOnly = eachDirectionalSide(
+    freshDeckFreeSessions(run.cloudLanes.rungs),
+    (side) => {
+      side.constructorName = "DirectionalLightStub";
+      side.isDirectionalLight = false;
+    },
+  );
+  assert.equal(fold(prefixOnly).stateIsolated, false);
+  assert.match(
+    fold(prefixOnly).isolationReasons.join("\n"),
+    /custom-light read-back is not the exact diagnostic DirectionalLight/,
+  );
+
+  // The shape the probe ACTUALLY emits when no light was observed:
+  // `readSide(null)` yields a null name AND both brands false AND null
+  // direction/colour/intensity. That is what "a light was not read" looks like
+  // on the wire, and it is refused.
+  const lightNeverRead = eachDirectionalSide(
+    freshDeckFreeSessions(run.cloudLanes.rungs),
+    (side) => {
+      side.constructorName = null;
+      side.isSunLight = false;
+      side.isDirectionalLight = false;
+      side.directionWC = null;
+      side.color = null;
+      side.intensity = null;
+    },
+  );
+  assert.equal(fold(lightNeverRead).stateIsolated, false);
+  assert.match(
+    fold(lightNeverRead).isolationReasons.join("\n"),
+    /custom-light read-back is not the exact diagnostic DirectionalLight/,
+  );
+
+  // The other end of the same rule: a bundler that emits the class anonymously
+  // reads back as `""`, and that is still the right light. A control that
+  // refused it would have swapped one bundler dependence for another.
+  const anonymouslyBundled = eachDirectionalSide(
+    freshDeckFreeSessions(run.cloudLanes.rungs),
+    rename(""),
+  );
+  assert.equal(fold(anonymouslyBundled).stateIsolated, true);
+  assert.deepEqual(fold(anonymouslyBundled).isolationReasons, []);
+
+  // Intensity, colour and direction each still decide on their own, under the
+  // bundled name.
+  const bundledWrongIntensity = eachDirectionalSide(
+    freshDeckFreeSessions(run.cloudLanes.rungs),
+    rename("DirectionalLight2"),
+  );
+  bundledWrongIntensity[1].directionalDiagnosticRungs[2].light.scene.intensity = 2;
+  assert.equal(fold(bundledWrongIntensity).stateIsolated, false);
+  assert.match(
+    fold(bundledWrongIntensity).isolationReasons.join("\n"),
+    /rung 2 custom-light read-back is not the exact diagnostic DirectionalLight/,
+  );
+
+  const bundledWrongColor = eachDirectionalSide(
+    freshDeckFreeSessions(run.cloudLanes.rungs),
+    rename("DirectionalLight2"),
+  );
+  bundledWrongColor[2].directionalDiagnosticRungs[0].light.frameState.color[1] = 0.5;
+  assert.equal(fold(bundledWrongColor).stateIsolated, false);
+  assert.match(
+    fold(bundledWrongColor).isolationReasons.join("\n"),
+    /rung 0 custom-light read-back is not the exact diagnostic DirectionalLight/,
+  );
+
+  const bundledWrongDirection = eachDirectionalSide(
+    freshDeckFreeSessions(run.cloudLanes.rungs),
+    rename("DirectionalLight2"),
+  );
+  bundledWrongDirection[3].directionalDiagnosticRungs[1].light.scene.directionWC[2] += 0.01;
+  assert.equal(fold(bundledWrongDirection).stateIsolated, false);
+  assert.match(
+    fold(bundledWrongDirection).isolationReasons.join("\n"),
+    /rung 1 custom-light read-back is not the exact diagnostic DirectionalLight/,
+  );
+
+  // A light that is absent is not a light that is right.
+  const bundledMissingLight = eachDirectionalSide(
+    freshDeckFreeSessions(run.cloudLanes.rungs),
+    rename("DirectionalLight2"),
+  );
+  bundledMissingLight[0].directionalDiagnosticRungs[3].light = null;
+  assert.equal(fold(bundledMissingLight).stateIsolated, false);
+  assert.match(
+    fold(bundledMissingLight).isolationReasons.join("\n"),
+    /rung 3 custom-light read-back is not the exact diagnostic DirectionalLight/,
+  );
+
+  // And the Sun side refuses on its brand under the bundled spelling too.
+  const bundledSunNotSun = eachSunSide(
+    freshDeckFreeSessions(run.cloudLanes.rungs),
+    (side) => {
+      side.constructorName = "SunLight2";
+      side.isSunLight = false;
+    },
+  );
+  assert.equal(fold(bundledSunNotSun).stateIsolated, false);
+  assert.match(
+    fold(bundledSunNotSun).isolationReasons.join("\n"),
+    /top-level light read-back is not a restored fresh SunLight/,
+  );
+});
+
 test("K12 every expected fresh context must serve the exact local runtime entry", () => {
   const expectedLabels = ["derive", "cloud", "off-a", "on-a"];
   const localEntry = {
