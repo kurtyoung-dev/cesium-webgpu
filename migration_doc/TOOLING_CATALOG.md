@@ -222,11 +222,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1321 |
-| ACTIVE | 1081 |
+| Files in census | 1323 |
+| ACTIVE | 1083 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 44 |
-| Classes | probe 676, spec 365, lib 120, other 115, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
+| Classes | probe 676, spec 367, lib 120, other 115, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
 
 ### Tools/ (62)
 
@@ -421,7 +421,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1042)
+### Tools/visual-regression/ (1043)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -603,7 +603,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | globe-pipeline-readiness.spec.mjs | spec | ACTIVE | 2026-08-29 | 4 | Scoring tests plus engine mechanism pins for probe-globe-pipeline-readiness; a pin failure means the traced path changed, not the instrument. |
 | globe-shaderset-flag-injectivity.spec.mjs | spec | ACTIVE | — | 3 | Pins that the WebGL globe shader key is injective: no two globe configurations that compile to different #define sets are ever served the same cached ShaderProgram. |
 | globe-surface-tile-provider-clipping-teardown.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that GlobeSurfaceTileProvider.destroy() routes its clipping-polygon teardown through ClippingPolygonCollection.setOwner so a backend feature renderer's cached GPU resources are released, with the context itself untouched. |
-| globe-terrain-provider-contract.spec.mjs | spec | ACTIVE | — | 3 | Pins three provider-chain behaviours in Node: zero-padded tile URLs never throw, a rejected availability request is evicted and re-issued, and destroying an imagery layer releases its queued reprojection references. |
+| globe-terrain-provider-contract.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Pins three provider-chain behaviours in Node: zero-padded tile URLs never throw, a rejected availability request is evicted and re-issued, and destroying an imagery layer releases its queued reprojection references. |
 | globe-use-log-depth.spec.mjs | spec | ACTIVE | 2026-08-16 | 8 | Pins that the globe resolves the shared isWebGPULogDepthActive gate so orthographic modes never mix log and hyperbolic encodings in one depth buffer. |
 | godray-energy-law.spec.mjs | spec | ACTIVE | 2026-09-11 | 6 | Executes the god-ray energy law straight out of GodRayGenerate.wgsl, pins count invariance and the energy bound against derived tolerances, records the emitter data dependency, and carries the inertness mutants that make those verdicts able to fail. |
 | godray-sun-usability-uniform-ranges.spec.mjs | spec | ACTIVE | 2026-09-16 | 8 | Pins the god-ray sun-usability determination and the disjoint uniform write ranges it publishes through, including that some setter covers the sunUnusable byte range. |
@@ -1404,6 +1404,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | sun-hdr-radiance.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Node gate for true-HDR sun radiance: derived disc radiance, alpha-clamp safety, derived BrightPass retune, SunPostProcess 8-bit vacuity fix. |
 | sun-orbital-limb-extinction.spec.mjs | spec | ACTIVE | 2026-08-28 | 6 | Measures the shipped orbital extinction ramp and behaviorally verifies the shared Sun atmospheric-alpha publication and WebGPU pack. |
 | sun-radiance-delta.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Browser-free guard for the two-radiance solar-disc probe lane: pre-registration vs SolarDiscModel, measurement recovery, named mutant worlds. |
+| task-processor-error-path.spec.mjs | spec | ACTIVE | — | 3 | Prove a worker `error` or `messageerror` settles the task it was carrying, releases the active-task slot it held, and that a cached web-assembly init rejects instead of waiting forever. |
 | texture-mip-queue-safety.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Gate for the texture-mip generation queue on WebGPUContext: job stamping, dedupe, transactional requeue, cube-layer slicing, teardown order. |
 | tidal-harmonics.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Executable tide gates: Doodson arguments vs published elements, UT1/TT bridge, spring/neap on syzygy, sub-lunar bulge, atlas round-trip. |
 | tileset-lifecycle-v2.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | node:test coverage of the representative-tileset lifecycle tracker using fake tiles, requests and content promises. |
@@ -1640,11 +1641,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | patchEslintSeatbelt.mjs | other | ACTIVE | 2026-08-16 | 4 | postinstall patch normalizing eslint-seatbelt path keys to forward slashes so the committed POSIX seatbelt.tsv grandfathers on Windows. |
 | run-build-no-tsc.mjs | runner | ACTIVE | 2026-08-16 | 9 | Dev build helper: converts WGSL then runs buildEngine/buildWidgets/buildCesium (development, unminified, sourcemapped) skipping tsc. |
 
-### scripts/__tests__/ (8)
+### scripts/__tests__/ (9)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | bundleVariantPlugin.spec.mjs | spec | ACTIVE | 2026-08-21 | 10 | Exercises the build-variant alias plugin's onResolve decision matrix, compat exemption allowlist, re-entry guard and decision cache, no esbuild. |
+| bundleWorkersPragmas.spec.mjs | spec | ACTIVE | — | 3 | Prove a release worker bundle carries no debug-only assertion text while a debug worker bundle keeps it. |
 | createIndexJs.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Regression that the generated engine index omits private named-export temporal-history helpers yet still esbuild-bundles cleanly. |
 | engineTypeCheck.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Proves the engine type check runs only in a built tree, propagates failure, announces every skip, and stays tied to the build artifact and the hook. |
 | ensureCesiumTypeDefinitions.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Coverage for the missing-type-defs decision logic AND the gulpfile.apps.js |

@@ -276,4 +276,40 @@ describe("Core/TaskProcessor", function () {
       }),
     ).toBeRejectedWithError(RuntimeError);
   });
+
+  it("rejects a scheduled task when the worker script throws while loading", async function () {
+    // A served worker whose module evaluation throws: the browser fires `error`
+    // at the Worker and delivers no message.
+    taskProcessor = new TaskProcessor(
+      absolutize("../Build/Specs/TestWorkers/throwsOnLoad.js"),
+      1,
+    );
+
+    await expectAsync(taskProcessor.scheduleTask({})).toBeRejectedWithError(
+      RuntimeError,
+    );
+
+    // The failed task has to give its only active-task slot back, otherwise
+    // the processor stops accepting work with no error of its own. The retry
+    // is not awaited: the worker is already terminated, so it can post no
+    // second error to settle it.
+    expect(taskProcessor._activeTasks).toBe(0);
+    expect(taskProcessor.scheduleTask({})).toBeDefined();
+  });
+
+  it("rejects the web assembly module when the worker script throws while loading", async function () {
+    // Its own fixture, so the worker this case builds is its own request and
+    // not one shared with the task-path case above.
+    const binaryUrl = absolutize("../Specs/TestWorkers/TestWasm/testWasm.wasm");
+    taskProcessor = new TaskProcessor(
+      absolutize("../Build/Specs/TestWorkers/throwsOnLoadDuringWasmInit.js"),
+    );
+
+    await expectAsync(
+      taskProcessor.initWebAssemblyModule({
+        wasmBinaryFile: binaryUrl,
+        fallbackModulePath: "TestWasm/testWasmFallback",
+      }),
+    ).toBeRejectedWithError(RuntimeError);
+  });
 });

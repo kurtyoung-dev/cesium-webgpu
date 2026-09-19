@@ -31,19 +31,29 @@ function canTransferArrayBuffer() {
     }
 
     TaskProcessor._canTransferArrayBuffer = new Promise((resolve) => {
-      worker.onmessage = function (event) {
-        const array = event.data.array;
-
-        // some versions of Firefox silently fail to transfer typed arrays.
-        // https://bugzilla.mozilla.org/show_bug.cgi?id=841904
-        // Check to make sure the value round-trips successfully.
-        const result = defined(array) && array[0] === value;
+      const settle = (result) => {
         resolve(result);
 
         worker.terminate();
 
         TaskProcessor._canTransferArrayBuffer = result;
       };
+
+      worker.onmessage = function (event) {
+        const array = event.data.array;
+
+        // some versions of Firefox silently fail to transfer typed arrays.
+        // https://bugzilla.mozilla.org/show_bug.cgi?id=841904
+        // Check to make sure the value round-trips successfully.
+        settle(defined(array) && array[0] === value);
+      };
+
+      // This answer is cached for the lifetime of the page and the first task
+      // of every processor waits on it, so a probe worker that cannot load or
+      // whose reply cannot be read answers "no transferables" rather than
+      // nothing. Copying is always correct; stranding every later caller is not.
+      worker.onerror = () => settle(false);
+      worker.onmessageerror = () => settle(false);
     });
   }
 
@@ -169,6 +179,18 @@ async function getWebAssemblyLoaderConfig(processor, wasmOptions) {
   return config;
 }
 
+function workerErrorMessage(workerPath, event) {
+  const reason =
+    event?.message ??
+    "the worker script failed to load or threw before it could respond";
+  const filename = defined(event?.filename) ? ` (${event.filename})` : "";
+  return `An error occurred in the worker ${workerPath}${filename}: ${reason}`;
+}
+
+function workerMessageErrorMessage(workerPath) {
+  return `A message from the worker ${workerPath} could not be deserialized.`;
+}
+
 /**
  * A wrapper around a web worker that allows scheduling tasks for a given worker,
  * returning results asynchronously via a promise.
@@ -250,6 +272,32 @@ class TaskProcessor {
 
     const init = async () => {
       const worker = (this._worker = createWorker(this._workerPath));
+
+      // Installed before the first await for the reason runTask subscribes
+      // early — the worker's `error` event is one-shot and the config below
+      // costs a fetch — and this promise is cached for the lifetime of the
+      // processor, so a lost event leaves every caller waiting on a promise
+      // that can neither resolve nor reject.
+      const promise = new Promise((resolve, reject) => {
+        worker.onmessage = function ({ data }) {
+          if (defined(data)) {
+            resolve(data.result);
+          } else {
+            reject(new RuntimeError("Could not configure wasm module"));
+          }
+        };
+        worker.onerror = (event) => {
+          const message = workerErrorMessage(this._workerPath, event);
+          event?.preventDefault?.();
+          console.error(message);
+          reject(new RuntimeError(message));
+        };
+        worker.onmessageerror = () => {
+          reject(new RuntimeError(workerMessageErrorMessage(this._workerPath)));
+        };
+      });
+      promise.catch(() => {});
+
       const wasmConfig = await getWebAssemblyLoaderConfig(
         this,
         webAssemblyOptions,
@@ -260,16 +308,6 @@ class TaskProcessor {
       if (defined(binary) && canTransfer) {
         transferableObjects = [binary];
       }
-
-      const promise = new Promise((resolve, reject) => {
-        worker.onmessage = function ({ data }) {
-          if (defined(data)) {
-            resolve(data.result);
-          } else {
-            reject(new RuntimeError("Could not configure wasm module"));
-          }
-        };
-      });
 
       worker.postMessage(
         {
@@ -314,8 +352,18 @@ class TaskProcessor {
   }
 }
 
-const createOnmessageHandler = (worker, id, resolve, reject) => {
-  const listener = ({ data }) => {
+const createTaskListeners = (worker, workerPath, id, resolve, reject) => {
+  const listeners = {};
+
+  // The three listeners are removed together: the task settles once, and a
+  // worker-level failure settles every task that worker is carrying.
+  const removeListeners = () => {
+    worker.removeEventListener("message", listeners.message);
+    worker.removeEventListener("error", listeners.error);
+    worker.removeEventListener("messageerror", listeners.messageerror);
+  };
+
+  listeners.message = ({ data }) => {
     if (data.id !== id) {
       return;
     }
@@ -339,38 +387,90 @@ const createOnmessageHandler = (worker, id, resolve, reject) => {
       resolve(data.result);
     }
 
-    worker.removeEventListener("message", listener);
+    removeListeners();
   };
 
-  return listener;
+  // A worker that fails to load, is blocked, or throws at the top level posts
+  // no message at all; without this the task promise never settles and the
+  // active-task slot it holds is never released.
+  listeners.error = (event) => {
+    const message = workerErrorMessage(workerPath, event);
+    // The rejection is this failure's handled channel. Left unmarked, the event
+    // also reaches the page's global error handler, where it surfaces as an
+    // uncaught error from a worker the caller already heard about.
+    event?.preventDefault?.();
+    console.error(message);
+    const error = new RuntimeError(message);
+    taskCompletedEvent.raiseEvent(error);
+    reject(error);
+    removeListeners();
+  };
+
+  listeners.messageerror = () => {
+    const error = new RuntimeError(workerMessageErrorMessage(workerPath));
+    taskCompletedEvent.raiseEvent(error);
+    reject(error);
+    removeListeners();
+  };
+
+  listeners.remove = removeListeners;
+
+  return listeners;
 };
 
 const emptyTransferableObjectArray = [];
-async function runTask(processor, parameters, transferableObjects) {
-  const canTransfer = await Promise.resolve(canTransferArrayBuffer());
-  if (!defined(transferableObjects)) {
-    transferableObjects = emptyTransferableObjectArray;
-  } else if (!canTransfer) {
-    transferableObjects.length = 0;
-  }
-
+function runTask(processor, parameters, transferableObjects) {
+  // The worker was built synchronously by the caller and its `error` event is
+  // one-shot, so the task subscribes before anything asynchronous happens.
   const id = processor._nextID++;
+  let rejectTask;
+  let taskListeners;
   const promise = new Promise((resolve, reject) => {
+    rejectTask = reject;
+    taskListeners = createTaskListeners(
+      processor._worker,
+      processor._workerPath,
+      id,
+      resolve,
+      reject,
+    );
+    processor._worker.addEventListener("message", taskListeners.message);
+    processor._worker.addEventListener("error", taskListeners.error);
     processor._worker.addEventListener(
-      "message",
-      createOnmessageHandler(processor._worker, id, resolve, reject),
+      "messageerror",
+      taskListeners.messageerror,
     );
   });
 
-  processor._worker.postMessage(
-    {
-      id: id,
-      baseUrl: buildModuleUrl.getCesiumBaseUrl().url,
-      parameters: parameters,
-      canTransferArrayBuffer: canTransfer,
-    },
-    transferableObjects,
-  );
+  // The message is posted once the transferable-array capability is known, but
+  // the promise is returned without waiting for it: that probe is a worker
+  // round trip of its own, and a task whose worker is already failing must be
+  // able to reject whatever the probe does.
+  Promise.resolve(canTransferArrayBuffer())
+    .then((canTransfer) => {
+      if (!defined(transferableObjects)) {
+        transferableObjects = emptyTransferableObjectArray;
+      } else if (!canTransfer) {
+        transferableObjects.length = 0;
+      }
+
+      processor._worker.postMessage(
+        {
+          id: id,
+          baseUrl: buildModuleUrl.getCesiumBaseUrl().url,
+          parameters: parameters,
+          canTransferArrayBuffer: canTransfer,
+        },
+        transferableObjects,
+      );
+    })
+    // A probe that rejects, or a `postMessage` that throws on an uncloneable
+    // parameter, settles the task the way the await used to. No listener has
+    // fired on this route, so the subscriptions are released here.
+    .catch((error) => {
+      rejectTask(error);
+      taskListeners.remove();
+    });
 
   return promise;
 }

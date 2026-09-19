@@ -700,6 +700,12 @@ export async function bundleWorkers(options) {
       re.test(file.replace(/\\/g, "/")),
     );
 
+  // Debug pragmas are stripped for both worker output shapes: the IIFE
+  // inline bundle and the ESM files under `<path>/Workers/`. A release build
+  // therefore ships no `Check`/`DeveloperError` block in a worker, and a
+  // debug build (`removePragmas` false) keeps every one of them.
+  workerConfig.plugins = options.removePragmas ? [stripPragmaPlugin] : [];
+
   if (options.iife) {
     let contents = ``;
     const files = (await globby(workers)).filter((f) => !isExcludedFromIIFE(f));
@@ -748,10 +754,10 @@ export async function bundleWorkers(options) {
         }));
       },
     };
-    workerConfig.plugins = [excludeWorkerStubPlugin];
-    if (options.removePragmas) {
-      workerConfig.plugins.push(stripPragmaPlugin);
-    }
+    // The stub has to be consulted before the pragma plugin: esbuild takes the
+    // first onLoad result and the pragma filter matches every .js/.ts file, so
+    // a stub registered after it would never see RendererWorker.js.
+    workerConfig.plugins.unshift(excludeWorkerStubPlugin);
   } else {
     workerConfig.format = "esm";
     workerConfig.splitting = true;

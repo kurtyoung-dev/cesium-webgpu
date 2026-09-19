@@ -21887,3 +21887,92 @@ asserts the cache is empty after the first failure, that the second call raises 
 that no unhandled rejection was recorded. Restoring `.then(deleteFromCache)` turns it red on the cache
 assertion (`['10-1-1']` survives). Karma: `Specs/Core/CesiumTerrainProviderSpec.js`, "re-requests an
 availability tile whose earlier request was rejected".
+
+## Lane W2-D (Brockhouse, Gemini-audit fix wave 2, 2026-09-17) — the release workers kept their debug asserts, and a worker that failed to load stranded every task it was given
+
+### Bug W2D-1 — `Build/<variant>/Workers/*.js` shipped every `Check` / `DeveloperError` block
+
+- **Files affected:** `scripts/build.js` (`bundleWorkers`).
+- **Root cause:** `workerConfig.plugins` was assigned only inside `if (options.iife)`; the ESM branch
+  that produces `Build/<variant>/Workers/` never received `stripPragmaPlugin`, and
+  `defaultESBuildOptions()` supplies no `plugins` key, so a release build passed `removePragmas: true`
+  into a branch with no consumer for it. 64,495 bytes (5.9%) of the worker text was debug-only.
+- **Correction to the audit's evidence:** the "146 of 230 worker entries" figure rests on the
+  `Check.js` message builder, which carries no pragma markers at all and survives stripping (measured
+  `to be typeof`: 1 hit in both bundles after the fix). It counts `Check.js` importers, not shipped
+  debug code. Use an assert text that sits inside a pragma block as the canary.
+- **Why it was invisible:** the minifier strips the `//>>includeStart('debug')` comment markers from
+  the output, so grepping a shipped worker for the marker returns nothing whether or not the plugin
+  ran. Only the surviving assertion *string* distinguishes the two.
+- **Fix applied:** the `removePragmas → stripPragmaPlugin` decision is hoisted above the `iife` split
+  and the IIFE branch `unshift`s its stub plugin so the stub keeps resolving before the pragma
+  plugin (esbuild takes the first `onLoad` result; the pragma filter matches every `.js`/`.ts`).
+- **Measured:** release worker text 1,032,141 bytes and 0 hits of `options.skirtHeight is required.`;
+  debug worker text 1,096,636 bytes and 1 hit. IIFE bundle 902,833 bytes with the stub first,
+  909,038 with the order reversed.
+- **Files modified:** `scripts/build.js`, `scripts/__tests__/bundleWorkersPragmas.spec.mjs` (new),
+  `package.json` (runner line).
+
+### Bug W2D-2 — a worker `error` settled nothing, and the cached WASM init promise settled never
+
+- **Files affected:** `packages/engine/Source/Core/TaskProcessor.js`.
+- **Root cause:** `runTask` subscribed to `"message"` only and `initWebAssemblyModule` set only
+  `worker.onmessage`. A worker that 404s, is blocked, or throws at the top level fires `error`; with
+  no listener the task promise stayed pending, `_activeTasks` was never decremented, and a throttled
+  processor returned `undefined` forever once the cap filled. The cached `_webAssemblyPromise` left
+  `DracoLoader` with neither its ready flag nor its error flag set.
+- **Fix applied:** per-task `error` / `messageerror` listeners rejecting with a `RuntimeError` that
+  names the worker path and the event's `message` / `filename`, removed together with the message
+  listener; `worker.onerror` / `worker.onmessageerror` added to the web-assembly init promise.
+- **Second mechanism, found by the Edge leg and fixed in the same entry — the listeners were correct
+  and attached too late.** The first round attached them *after*
+  `await Promise.resolve(canTransferArrayBuffer())`. The worker is constructed synchronously by
+  `scheduleTask`, its `error` event is **one-shot** and is not replayed, and on first use that probe
+  is uncached: it builds a second worker (`Workers/transferTypedArrayTest.js`), posts to it and waits
+  for the reply. The 404 worker fired its only `error` inside that window, with no listener attached;
+  the task then subscribed to a dead worker and posted into the void. The karma case
+  `rejects a scheduled task when the worker script fails to load` therefore timed out at 30 s
+  (`Specs/spec-main.js:36`) while the Node twin passed, because the twin's stub built no worker.
+  Measured by the Edge executor on the served build, same URL and page: with
+  `TaskProcessor._canTransferArrayBuffer` already cached the task **REJECTED**; forced to `undefined`
+  (karma's first-use state) it was **still PENDING after 12 s**. A microtask-sized or single-fetch
+  delay does **not** lose the event — only a delay as long as the uncached probe's worker round trip.
+  Diagnostic:
+  `Tools/visual-regression/output/wave-end/gemini-fix-wave2-20260917/brockhouse-taskprocessor-diagnostic.md`.
+- **Third mechanism, found by the v3 Edge re-validation — the capability probe had the same hole,
+  and the task promise was hostage to it.** `canTransferArrayBuffer()` (`:11-51`) builds a
+  `transferTypedArrayTest` worker of its own and installs **only** `onmessage`: no `error`, no
+  `messageerror`, no timeout. A probe worker that cannot load leaves `_canTransferArrayBuffer` a
+  permanently pending promise — and because `runTask` was an `async` function that could only
+  `return promise` after awaiting that probe, every first task was suspended behind it with correct
+  listeners it never got to hand to its caller. Measured by the executor on the served v3 build:
+  probe cached `true` → REJECTED; probe uncached → REJECTED; probe delayed 5 s → REJECTED (the
+  round-2 race is closed); probe **never settles** → **PENDING**.
+- **Fourth mechanism — the handled failure was also an unhandled one.** A worker `error` event that
+  is listened to but not cancelled still performs its default action: the browser reports it to the
+  page as an uncaught error. Under karma that surfaced as `browser_error: An error was thrown in
+  afterAll — Uncaught Error: This worker throws while loading` and **aborted the run**, skipping about
+  5,000 of 18,406 specs, even though both target cases had passed in 26 ms and 15 ms. Measured by the
+  executor on the same page: a plain listener leaves 1 page-level error, a listener calling
+  `event.preventDefault()` leaves 0, and the worker `error` — and the rejection — still fire.
+- **Fix applied (round 5):** `listeners.error` and `initWebAssemblyModule`'s `worker.onerror` mark the
+  event handled and emit one permanent `console.error` naming the worker script and the reason before
+  rejecting. The log is deliberately unwrapped: a worker that cannot load is a real failure producing
+  broken output, which the pragma rules say must always reach the console, and cancelling the event
+  removes the only other channel that would have reported it.
+- **Fix applied (round 4):** the probe settles to `false` on `error` / `messageerror` and terminates
+  its worker — copying is always correct, stranding every later caller is not — and `runTask` stops
+  being `async`: it subscribes, hands the promise back, and posts the message from a `.then` on the
+  probe. A task whose own worker fails now rejects whatever the probe does, which is what makes the
+  fix independent of which of the two workers stalls. **No timeout was added** — see the ledger entry
+  for why.
+- **Fix applied (round 3):** both subscriptions move above the first `await` — `runTask` creates the
+  id, the promise and the three listeners before the capability probe, and `initWebAssemblyModule`
+  installs `onmessage` / `onerror` / `onmessageerror` immediately after `createWorker`, before the
+  config fetch. Each promise then takes a no-op `catch` observer, because it can now reject while its
+  own function is still suspended at the await: without that, a browser fires `unhandledrejection`
+  (and node:test fails the run) in the gap before the caller receives it. The caller still sees the
+  rejection through the returned promise.
+- **Files modified:** `packages/engine/Source/Core/TaskProcessor.js`,
+  `packages/engine/Specs/Core/TaskProcessorSpec.js`,
+  `Tools/visual-regression/task-processor-error-path.spec.mjs` (new), `package.json` (runner line).

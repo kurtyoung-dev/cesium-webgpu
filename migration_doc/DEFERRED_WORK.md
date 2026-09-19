@@ -21325,3 +21325,199 @@ is pinned by `Tools/visual-regression/globe-terrain-provider-contract.spec.mjs` 
 
 **Not touched by this lane:** `globe-terrain-01` (`GlobeSurfaceTileProvider.js:1392`) is on the
 do-not-execute list and remains a separate P2.
+
+## 2026-09-17 — lane W2-D (Brockhouse), Gemini-audit fix wave 2: release workers shipped debug code, and a failed worker never settled
+
+### `WORKERS-PRAGMA-STRIP-ESM-BRANCH` — release ESM worker bundles never stripped debug pragmas (FIXED 2026-09-17, audit id `workers-wasm-01` = `build-thirdparty-01`, Gemini `BUG-15`)
+
+**Where.** `scripts/build.js`, `bundleWorkers` — the `workerConfig.plugins` assignment that lived at
+`:751-754` inside `if (options.iife)`, against the `else` branch at `:755` that assigns `format`,
+`splitting`, `banner`, `entryPoints`, `outdir`, `minify`, `write` and the rimraf cleanup and never
+assigned `plugins` at all. `defaultESBuildOptions()` (`:146-165`) sets no `plugins` key either, so the
+ESM worker build reached esbuild plugin-less by construction.
+
+**What shipped.** `buildCesium` calls `bundleWorkers({ iife: false, …, removePragmas })` (`:2160-2168`)
+and that call owns `Build/<variant>/Workers/`, so every release worker bundle carried the pragma-guarded
+`Check` / `DeveloperError` blocks of every module it reaches, while the main bundle beside it had them
+removed. **Measured blast radius (this lane, unbuilt tree, real `bundleWorkers`, `write: false`):** the
+release ESM worker text drops from **1,096,636 to 1,032,141 bytes — 64,495 bytes, 5.9%, of debug-only
+text** that used to ship, across the whole worker set, not one chunk.
+
+**Correction to the audit's blast-radius evidence (the tree wins).** The refuter's "146 of 230 worker
+entry files" rests on the literal `Expected %s to be typeof …` in the shared `Check.js` chunk.
+`packages/engine/Source/Core/Check.js` contains **zero** pragma markers (`grep -c includeStart` → 0);
+its message builder is a plain template literal at `:20`, and it survives pragma stripping — measured
+`to be typeof`: **1 hit in the debug bundle and 1 in the release bundle, after this fix**. So that
+string proves those files import `Check.js`, not that they ship debug-only code, and it must not be
+used as a release-build canary. The valid canaries are assert texts that sit **inside** a pragma block,
+e.g. `options.skirtHeight is required.` (`Core/HeightmapTessellator.js`), which goes 1 → 0.
+
+**Change.** The `removePragmas → stripPragmaPlugin` decision is hoisted above the `if (options.iife)`
+split (`workerConfig.plugins = options.removePragmas ? [stripPragmaPlugin] : []`), and the IIFE branch
+now `unshift`s `excludeWorkerStubPlugin` instead of overwriting the array. The order is load-bearing:
+esbuild takes the first `onLoad` result and `stripPragmaPlugin`'s filter is `/\.[jt]sx?$/`, so a stub
+registered after it never sees `RendererWorker.js`. Measured on the real function with
+`write: false`: the IIFE bundle is 902,833 bytes with the stub first and 909,038 bytes with the order
+reversed (`RendererWorker` occurrences 1 → 2), i.e. the exclusion silently stops working.
+
+**Authorship UPSTREAM shape, fixed in-fork** (ruling R-2026-09-17-1). `git blame -L 755,758` →
+`07b105ca2b4` (Gabby Getz, 2023-09-08); `upstream/main:scripts/build.js` carries the same asymmetry
+(`workerConfig.plugins = options.removePragmas ? [stripPragmaPlugin] : undefined;` inside the IIFE
+branch, nothing in the `else`). The fork's own edit here was `excludeWorkerStubPlugin`
+(`c7a502de6e7`, 2026-04-19). The file already diverges heavily in this same function, so the fix adds
+no new conflict surface. **Worth filing upstream**, since the `else` branch is verbatim upstream.
+
+**Proof.** `scripts/__tests__/bundleWorkersPragmas.spec.mjs` (home: `npm run test-build-infra`) drives
+the real `bundleWorkers` twice with `write: false` and greps the emitted text for the assert **string**
+`options.skirtHeight is required.` — the `//>>includeStart` markers are removed by the minifier from
+both bundles, so a marker grep proves nothing. Debug bundle: 1 hit, 1,096,636 bytes. Release bundle:
+0 hits, 1,032,141 bytes.
+
+**Caveat for whoever re-runs a release build.** The ESM worker branch runs with `splitting: true` and
+content-hashed chunk names, so turning stripping on changes every chunk filename under
+`Build/*/Workers/`. Anything pinning a chunk name must be re-run rather than assumed. The vendored
+`packages/engine/Source/ThirdParty/Workers/**` copy uses a separate `thirdPartyWorkerConfig`
+(`:670-676`, `bundle: false`, no plugins) and is deliberately untouched.
+
+### `TASKPROCESSOR-WORKER-ERROR-NEVER-SETTLES` — a failed worker left every task pending and its slot consumed (FIXED 2026-09-17, audit id `workers-wasm-02`, absorbing `core-04`)
+
+**Where.** `packages/engine/Source/Core/TaskProcessor.js` — `runTask` (HEAD `:349-376`; the audit cites
+`:356`) subscribed only to `"message"`, and `initWebAssemblyModule` (`:246-287`) set only
+`worker.onmessage`. Neither `"error"` nor `"messageerror"` appeared anywhere in the file.
+
+**Failure.** A worker script that 404s, is blocked by CSP, or throws during module evaluation fires
+`error` and posts no message: the task promise never settled, `scheduleTask`'s `--_activeTasks`
+(`:378-388`) never ran, and after `maximumActiveTasks` such events a throttled processor returned
+`undefined` forever with nothing logged — the throttles are real and numerous
+(`QuantizedMeshTerrainData.js:585`, `HeightmapTerrainData.js:665`, `Cesium3DTilesTerrainData.js:470`,
+`GoogleEarthEnterpriseTerrainData.js:404`, `DracoLoader._maxDecodingConcurrency`,
+`GaussianSplatSorter._maxSortingConcurrency`). The WASM half is worse: `_webAssemblyPromise` is cached
+for the processor's life, and `DracoLoader._getDecoderTaskProcessor` sets `_taskProcessorReady` or
+`_error` from it — a promise that never settles sets **neither**, so Draco/KTX2/splat loads stall
+permanently with no error reaching the app.
+
+**Change.** `createOnmessageHandler` becomes `createTaskListeners`, returning `message`, `error` and
+`messageerror` listeners that share one `removeListeners()`; `runTask` subscribes all three **before
+its first `await`**; the message listener's body is unchanged.
+
+**The capability probe is the second half of the same defect.** `canTransferArrayBuffer()`
+(`:11-51`) builds its own `transferTypedArrayTest` worker and installs only `onmessage`, so a probe
+worker that fails to load leaves the cached `_canTransferArrayBuffer` promise pending forever. The
+probe now settles to `false` on `error` / `messageerror` and terminates that worker: reporting "no
+transferables" costs a copy, while reporting nothing strands every task on the page. Its cached
+semantics are unchanged — the static still holds a promise first and the resolved boolean after.
+
+**`runTask` no longer withholds its promise behind the probe.** It was an `async` function, so the
+task promise — listeners correctly attached — could not reach the caller until the probe settled. It
+is now an ordinary function: subscribe, return the promise, and post the message from a `.then` on
+the probe, with a `.catch` routing a probe rejection or a `postMessage` throw into the task the way
+the `await` used to. A task whose own worker fails therefore rejects regardless of the probe, which
+is what makes the fix independent of which worker stalls.
+
+**A cancelled event and a permanent log, not one or the other.** A worker `error` that is
+listened to but not cancelled still performs its default action — the browser reports it to the page as
+an uncaught error, which aborted a whole karma run (about 5,000 specs skipped) even with both target
+cases passing. `listeners.error` and `initWebAssemblyModule`'s `worker.onerror` therefore call
+`event.preventDefault()`: the rejection is the handled channel. Because cancelling removes the only
+other report, each emits one **permanent, unwrapped** `console.error` naming the worker script and the
+reason first — a worker that cannot load is a real failure producing broken output, the class the
+pragma rules say must always reach the console. Measured by the executor: plain listener 1 page-level
+error, with `preventDefault()` 0, worker `error` and rejection unchanged.
+
+**`DX-KARMA-WORKER-SCRIPT-REQUEST-NEVER-ANSWERED` — a 404-worker case cannot run under karma
+(tools class, OPEN, recorded 2026-09-18 by lane W2-D).** Karma's own server never completes a request
+for a missing path **while the browser has that path in flight as a worker script**: measured at 8.0 s,
+12.1 s and 15.6 s in three captures, on paths inside a watched `files` glob and outside every glob and
+proxy alike, while a *different* unserved path 404'd in 77 ms and the same path 404'd in 13 ms once the
+worker request was over. The script therefore neither loads nor fails and **no event of any kind
+exists** for a listener to catch, however early it is attached, so any spec that asserts a worker-load
+failure through a missing URL times out at `DEFAULT_TIMEOUT_INTERVAL`. **Use a served fixture whose
+module evaluation throws** (`Specs/TestWorkers/throwsOnLoad.js`) — the browser then fires `error` at
+the Worker exactly as it does for a 404 (measured at +27 ms for a module worker, +13 ms classic, under
+a normal server). Receipts:
+`Tools/visual-regression/output/wave-end/gemini-fix-wave2-20260917/brockhouse-v4-revalidation/` (the
+module-worker event proof and the first attribution) and `…/brockhouse-v6-revalidation/` (the
+correction: the stall follows the worker fetch, not glob membership). **Effort:** S to work around, as
+here; the harness fix itself belongs to karma's file-list middleware and is unowned.
+
+**The post path settles the task and releases its subscriptions.** The `.catch` behind that
+`.then` is the only route on which no listener has fired — a probe that rejects, or a `postMessage`
+that throws `DataCloneError` on an uncloneable parameter — so it rejects the task and calls the
+listener factory's own `remove()`. Without the rejection the task never settles and its
+`maximumActiveTasks` slot stays consumed; without the removal it settles but leaves three listeners on
+a worker that base left holding one.
+
+**No timeout was added to the probe, deliberately.** A worker that loads but never answers is the one
+case neither handler covers, and the only way to cover it inside the probe is a timeout — a magic
+number that on a slow CI machine would silently answer "no transferables" and turn every zero-copy
+transfer into a copy, a performance regression nothing would report. The failure that actually
+strands users — a task that cannot report its own worker's death — is closed structurally above,
+without a constant. If a timeout is ever wanted it needs a named constant and a measurement of real
+probe latency, not a guess.
+
+**Residue, named rather than routed around (Principle 9): `initWebAssemblyModule` still awaits inside
+its own `init()`.** Its handlers are installed before the first await (round 3), and with the probe
+now settling on error its exposure is the "probe loads but never answers" case only, in which the
+cached init promise stays pending. Closing it means dropping the `async init` closure and rejecting
+the outer promise from a captured `reject` — a larger divergence from upstream than this round should
+take, against a path the Edge job measured green (Draco + KTX2 READY, 0 console errors; the karma
+WASM case passes). Whoever takes it should do it with the same shape `runTask` now has.
+
+**The attachment point is part of the fix, not a detail.** The worker is built synchronously by
+`scheduleTask`, its `error` event is one-shot, and `await Promise.resolve(canTransferArrayBuffer())`
+costs a whole worker round trip the first time it runs — so listeners attached after that await miss
+the event entirely and the task settles never. This was measured, not reasoned: the karma case timed
+out at 30 s with the listeners attached late, rejected correctly with the probe pre-cached, and the
+same reordering is applied to `initWebAssemblyModule` (handlers installed immediately after
+`createWorker`, before the config fetch). Each promise carries a no-op `catch` observer because it can
+now reject while its own function is suspended at the await; without it the browser reports an
+`unhandledrejection` in the gap. Diagnostic:
+`Tools/visual-regression/output/wave-end/gemini-fix-wave2-20260917/brockhouse-taskprocessor-diagnostic.md`. `initWebAssemblyModule` gains `worker.onerror` and
+`worker.onmessageerror` that reject the cached promise. Both paths reject with a `RuntimeError`
+naming the worker path and the event's `message` / `filename`.
+
+**`_webAssemblyPromise` stays cached as a REJECTED promise — deliberate, no retry.** Every consumer
+latches a terminal ready-or-error flag from that one promise (`DracoLoader`, `KTX2Transcoder`, the
+splat sorter, `I3SDecoder`), so a rejected cache gives each of them exactly one error to latch and
+every later caller the same terminal answer. Clearing it on rejection would be a retry policy — a
+behaviour change beyond this fix, and one that would re-attempt a load that failed for a reason
+(404, CSP, corrupt binary) that does not change between calls.
+
+**Authorship UPSTREAM, fixed in-fork** (ruling R-2026-09-17-1). `git blame -L 348,376`: 27 of 29 lines
+`Gabby Getz`, "Refactor workers to be ESM, remove RequireJS"; `upstream/main` has no `error` listener
+either. The file already diverges from upstream by 272 lines, so the fix adds no new conflict surface.
+
+**Upstream issue text (to file verbatim).**
+
+> **`TaskProcessor` never settles a task when its worker fails to load**
+>
+> `TaskProcessor.runTask` subscribes only to the worker's `message` event
+> (`packages/engine/Source/Core/TaskProcessor.js`: `createOnmessageHandler` at `:189`, the sole
+> `addEventListener("message", …)` at `:231`), and `initWebAssemblyModule` sets only
+> `worker.onmessage` (`:338`). Line numbers are `main` at the time of writing. When the worker script
+> 404s, is blocked by a CSP, or throws during module evaluation, the `error` event fires and no message
+> is ever posted, so:
+>
+> 1. the promise returned by `scheduleTask` never settles;
+> 2. `_activeTasks` is never decremented, because it is decremented only around the awaited
+>    `runTask`;
+> 3. once `maximumActiveTasks` such failures accumulate, `scheduleTask` returns `undefined`
+>    forever and terrain meshing / geometry creation stop silently, with nothing logged;
+> 4. `initWebAssemblyModule` caches the never-settling promise for the processor's lifetime, so
+>    `DracoLoader` sets neither `_taskProcessorReady` nor `_error` and every Draco-compressed glTF or
+>    3D Tile silently fails to load.
+>
+> Suggested fix: add per-task `error` and `messageerror` listeners that reject with a `RuntimeError`
+> carrying `event.message` / `event.filename`, remove them wherever the message listener is removed,
+> and give the web-assembly init promise the same two handlers.
+
+**Proof.** `Tools/visual-regression/task-processor-error-path.spec.mjs` (home:
+`npm run test-visual-regression-node`) imports the real module with a stubbed global `Worker` and
+asserts the outcomes: the task promise rejects with a `RuntimeError` naming the worker,
+`_activeTasks` returns to 0, all three listeners are removed, a processor whose only slot was
+consumed by a failure still accepts and completes the next task, and `initWebAssemblyModule` rejects
+instead of staying pending. `packages/engine/Specs/Core/TaskProcessorSpec.js` gains the two karma
+cases that drive a real browser `Worker` at a missing script.
+
+**Tracked:** attaches to `ARCHITECTURE_REVIEW_2026-09-02.md` §3.11 row `1390-10 [shaderasync]`
+(previously unowned) — see the dated attachment line under that table. No new row opened.
