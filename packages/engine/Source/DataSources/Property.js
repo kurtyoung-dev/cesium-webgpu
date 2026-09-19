@@ -71,7 +71,11 @@ Property.prototype.equals = DeveloperError.throwInstantiationError;
  * @private
  */
 Property.equals = function (left, right) {
-  return left === right || (defined(left) && left.equals(right));
+  return (
+    left === right ||
+    (defined(left) &&
+      (typeof left.equals === "function" ? left.equals(right) : left === right))
+  );
 };
 
 /**
@@ -130,7 +134,7 @@ Property.getValueOrClonedDefault = function (
     value = property.getValue(time, result);
   }
   if (!defined(value)) {
-    value = valueDefault.clone(value);
+    value = valueDefault.clone(result);
   }
   return value;
 };

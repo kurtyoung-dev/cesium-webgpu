@@ -123,7 +123,10 @@ Object.defineProperties(ImageMaterialProperty.prototype, {
   isConstant: {
     get: function () {
       return (
-        Property.isConstant(this._image) && Property.isConstant(this._repeat)
+        Property.isConstant(this._image) &&
+        Property.isConstant(this._repeat) &&
+        Property.isConstant(this._color) &&
+        Property.isConstant(this._transparent)
       );
     },
   },

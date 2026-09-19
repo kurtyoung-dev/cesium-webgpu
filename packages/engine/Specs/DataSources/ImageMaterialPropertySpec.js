@@ -5,6 +5,7 @@ import {
   TimeInterval,
   ConstantProperty,
   ImageMaterialProperty,
+  SampledProperty,
   TimeIntervalCollectionProperty,
 } from "../../index.js";
 
@@ -189,6 +190,25 @@ describe("DataSources/ImageMaterialProperty", function () {
         start: start,
         stop: stop,
         data: new Cartesian2(2, 3),
+      }),
+    );
+    expect(property.isConstant).toBe(false);
+
+    property.repeat = undefined;
+    expect(property.isConstant).toBe(true);
+    property.color = new SampledProperty(Color);
+    property.color.addSample(start, Color.RED);
+    property.color.addSample(stop, Color.BLUE);
+    expect(property.isConstant).toBe(false);
+
+    property.color = undefined;
+    expect(property.isConstant).toBe(true);
+    property.transparent = new TimeIntervalCollectionProperty();
+    property.transparent.intervals.addInterval(
+      new TimeInterval({
+        start: start,
+        stop: stop,
+        data: true,
       }),
     );
     expect(property.isConstant).toBe(false);

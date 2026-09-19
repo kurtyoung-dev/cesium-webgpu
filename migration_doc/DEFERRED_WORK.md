@@ -21171,3 +21171,96 @@ calling that remover a second time (or after a `removeAll()` that the helper has
 re-populated past) splices at `-1` and removes the **last** registration instead, so that
 registration escapes the helper's own `removeAll()` and its listener outlives the owner that
 registered it. Guarding with `if (index !== -1)` fixes it.
+
+## 2026-09-17 — DataSources property helpers: a comparator that throws, a destination that is discarded, and an `isConstant` narrower than its own `equals` (Gemini-audit wave 2, lane W2-B-DATASOURCES, Smallburrow)
+
+Base `91a7a8c9ff8817ab3d864f8ad6c931cf40ed9a44`. Evidence: `V-datasources-Holfast.md` items ds-01, ds-02,
+ds-03, ds-04, ds-18; refuter `R-datasources-Odovacar.md`; `FINAL-Whitfoot.md` §c/§d. Ruling
+`R-2026-09-17-1` (fix in-fork AND record the upstream issue text) and `R-2026-09-17-4` (the named leg is
+the karma suite `Specs/DataSources/PropertySpec.js` + `ImageMaterialPropertySpec.js`).
+
+- **`datasources-02` (P1) — `packages/engine/Source/DataSources/Property.js:73-75`.** `Property.equals`
+  dispatched `left.equals(right)` with no method check, so comparing two `TimeIntervalCollectionProperty`
+  instances whose intervals match on start/stop/inclusion but whose data are primitives threw
+  `TypeError: left.equals is not a function` out of the per-frame material-batching path
+  (`StaticGeometryPerMaterialBatch` -> `PolylineGlowMaterialProperty.equals` ->
+  `TimeIntervalCollection.equals` -> `TimeInterval.equals`'s `dataComparer`). Now
+  `typeof left.equals === "function" ? left.equals(right) : left === right`; the `left === right` arm is
+  already short-circuited by the first clause, so the guard only converts a throw into `false`, which is
+  the existing semantics for data that cannot compare itself. Authorship **UPSTREAM**, blame
+  `2fd0e8f7e42` (Matthew Amato, 2020-04-16), lineage `d78e25c3bf9` (2013); the file was **byte-identical**
+  to `upstream/main` before this hunk, which is the fork's first divergence in it.
+  **Upstream issue to file:** *"`Property.equals` (`packages/engine/Source/DataSources/Property.js:74`)
+  calls `left.equals(right)` without checking that `left` has an `equals` method. It is passed to
+  `TimeIntervalCollection.equals` as the `dataComparer` by `TimeIntervalCollectionProperty.equals`
+  (`:83`), so it receives raw interval DATA, not a Property. `TimeInterval.equals`
+  (`packages/engine/Source/Core/TimeInterval.js:274-275`) reaches the comparer exactly when two
+  intervals' start/stop/inclusion match and the data differ by reference — i.e. two entities sharing a
+  CZML interval grid with different numeric or boolean values — and the comparison throws `TypeError`.
+  The same class already supports non-object interval data one method away:
+  `TimeIntervalCollectionProperty.getValue` (`upstream/main:109`) guards with
+  `typeof value.clone === "function"` before cloning. CZML reaches the shape on its default path —
+  `CzmlDataSource.js:743` sets `needsUnpacking = typeof type.unpack === "function" && type !== Rotation`,
+  so `processPacketData(Number, …)` with an interval array stores a raw JavaScript number as interval
+  data (`:789-791`, `:801-803`). Suggested fix at `:74`:
+  `typeof left.equals === "function" ? left.equals(right) : left === right`."*
+- **`datasources-01` (P2) — `packages/engine/Source/DataSources/Property.js:132-134`.**
+  `Property.getValueOrClonedDefault` cloned the default into `value`, which is guaranteed `undefined` at
+  that point, so the caller's pre-allocated destination was discarded and a fresh instance allocated on
+  every default-valued evaluation. Now `valueDefault.clone(result)`. All 21 call sites pass the
+  correspondingly typed sub-field of their own `result` (or a module scratch, at
+  `EllipsoidGeometryUpdater.js:405-410`, whose value is copied into `_lastOutlineColor` by `Color.clone`
+  and never retained), so writing into the destination is the documented contract, not new aliasing. GC
+  pressure on the default path, not wrong output. Authorship **UPSTREAM**, same blame and same
+  byte-identical file as `datasources-02`.
+  **Upstream issue to file:** *"`Property.getValueOrClonedDefault`
+  (`packages/engine/Source/DataSources/Property.js:132-134`) reads
+  `if (!defined(value)) { value = valueDefault.clone(value); }`. Inside that branch `value` is
+  `undefined` by construction, so the `result` argument the caller supplied is ignored and `clone`
+  allocates. Every engine call site passes a destination (e.g. `ColorMaterialProperty.js:49`,
+  `GridMaterialProperty.js:76`, `ImageMaterialProperty.js:72`), so the allocation happens once per
+  property per frame for every entity whose property is absent. Suggested fix:
+  `valueDefault.clone(result)`."*
+- **`datasources-04` (P2 after refutation) — `packages/engine/Source/DataSources/ImageMaterialProperty.js:123-130`.**
+  `isConstant` tested only `_image` and `_repeat` while `equals()` (`:100-108`) compares all four fields,
+  so an `ImageMaterialProperty` with a time-varying `color` or `transparent` reported itself constant.
+  Now all four terms. The live consumer is **`PathVisualizer.js:1017`**
+  (`materialMode === PathMode.PORTIONS && !materialProp.isConstant`), not
+  `StaticGeometryPerMaterialBatch.js:96` — that batch re-evaluates its material unconditionally every
+  frame (`:207-219`) and an `ImageMaterialProperty` never reaches the color batches
+  (`GeometryVisualizer.js:460/467/485` and `PolylineVisualizer.js:62` route on
+  `instanceof ColorMaterialProperty`). Effect: a path with an animated image tint in `PathMode.PORTIONS`
+  rendered as one polyline instead of split portions. Authorship **MIXED** — blame `18420431793`
+  (KurtTrottr, 2026-04-14, ES6-class reformat); the expression is verbatim at `upstream/main:53-59`. The
+  file already diverges (87+/82-).
+  **Upstream issue to file:** *"`ImageMaterialProperty`'s `isConstant`
+  (`packages/engine/Source/DataSources/ImageMaterialProperty.js:56` at `upstream/main`) returns
+  `Property.isConstant(this._image) && Property.isConstant(this._repeat)`, while `equals()` in the same
+  file compares `_image`, `_repeat`, `_color` and `_transparent`. A property whose `color` is a
+  `SampledProperty` therefore reports `isConstant === true`, and `PathVisualizer.js`'s
+  `materialMode === PathMode.PORTIONS && !materialProp.isConstant` branch is skipped, so the path draws
+  as a single polyline instead of per-interval portions. Suggested fix: add
+  `&& Property.isConstant(this._color) && Property.isConstant(this._transparent)`."*
+- **`datasources-18` (P2) — `packages/engine/Specs/DataSources/PropertySpec.js` now exists** (93 spec
+  files in that directory had no direct coverage of `Property.equals`, `arrayEquals`, `isConstant`,
+  `getValueOrUndefined`, `getValueOrDefault` or `getValueOrClonedDefault`; upstream has no such file
+  either). It is the karma acceptance for `datasources-02` and `datasources-01`;
+  `ImageMaterialPropertySpec.js`'s `isConstant` case gains the `color` and `transparent` arms for
+  `datasources-04`. Karma cannot run in this lane (no build, no browser) — the suite is the named Edge
+  leg. The Node-runnable half is `Tools/visual-regression/datasources-property-contract.spec.mjs`, added
+  to the `test-visual-regression-node` runner.
+- **`datasources-03` (P2) — RETURNED, premise refuted at HEAD.**
+  `CompositeProperty.subscribeAll` (`packages/engine/Source/DataSources/CompositeProperty.js:12-20`)
+  does build an `items` array it never pushes to, exactly as filed. The stated consequence — "intervals
+  sharing one property instance attach duplicate `definitionChanged` listeners and the composite
+  re-raises N times per underlying change" — **does not hold in this tree or in upstream.** `Event`
+  stores listeners as `Map<listener, Set<scope>>` and `addEventListener`
+  (`packages/engine/Source/Core/Event.js:163-173`) returns `false` without incrementing `_listenerCount`
+  when the `(listener, scope)` pair is already present; `subscribeAll` passes one closure and no scope
+  for every interval, so the second subscription is a no-op. Measured at base `91a7a8c9ff`: a
+  `CompositeProperty` with two non-adjacent intervals sharing one `ConstantProperty` raises
+  `definitionChanged` **once** per `setValue`, before any change. `numberOfListeners` does not drift
+  either, and `EventHelper.removeAll` tolerates the duplicate removal functions. The residue is a
+  vestigial second-level dedup and a few extra closures in `EventHelper._removalFunctions` — no
+  assertable output, therefore no behaviour spec and no inertness mutant are possible, so the item is
+  below the proof bar as briefed. No code changed for this row.

@@ -21746,3 +21746,72 @@ as well as against the original.
 **Detection.** Both defects were found by reading, not by a failing test: `EventSpec.js` had no
 throwing-listener case and `EventHelper` had no spec at all. Both gaps are now closed, and the
 Node-level acceptance runs without a build.
+
+## Lane Smallburrow, Bug 1 — `datasources-02`: `Property.equals` is handed raw interval data and dispatches a method that primitives do not have (2026-09-17, Gemini-audit wave 2, base `91a7a8c9ff`)
+
+**Bug:** comparing two `TimeIntervalCollectionProperty` instances whose intervals agree on start, stop
+and inclusion but whose interval DATA are primitives (a number, a boolean, a string) throws
+`TypeError: left.equals is not a function`. The throw is raised from the per-frame material-batching
+path, so it kills the frame, not one entity. Reproduced directly and through the real consumer at base
+`91a7a8c9ff` under Node against the fork's own ES modules:
+
+    direct 0.25 vs 0.5   -> THREW TypeError: left.equals is not a function
+    direct true vs false -> THREW TypeError: left.equals is not a function
+    direct "a" vs "b"    -> THREW TypeError: left.equals is not a function
+    direct same-value    -> true          (data === data, the comparer is never reached)
+    PolylineGlow.equals  -> THREW TypeError: left.equals is not a function
+
+**Files:** `packages/engine/Source/DataSources/Property.js`.
+
+**Root cause.** `Property.equals` (`:73-75`) read
+`return left === right || (defined(left) && left.equals(right));`. It is not only a Property-to-Property
+comparator: `TimeIntervalCollectionProperty.equals` (`:83`) passes it to
+`TimeIntervalCollection.equals` as the `dataComparer`, and `TimeInterval.equals`
+(`Core/TimeInterval.js:274-275`) invokes the comparer with the two intervals' `data`. The comparer is
+reached exactly when the interval boundaries match and the data differ by reference — two entities
+sharing a CZML interval grid with different values — at which point `left` is `0.25` and
+`(0.25).equals` is `undefined`.
+
+CZML produces that shape on its default path, not an exotic one: `CzmlDataSource.js:743` computes
+`needsUnpacking = typeof type.unpack === "function" && type !== Rotation`, `:789-791` assigns
+`combinedInterval.data = needsUnpacking ? type.unpack(…) : unwrappedInterval`, and `:801-803` builds the
+`TimeIntervalCollectionProperty` — so a `Number`-typed packet authored as intervals stores a raw
+JavaScript number. `StaticGeometryPerMaterialBatch.js:80` and `PolylineVisualizer` then call
+`PolylineGlowMaterialProperty.equals` (`:97` `Property.equals(this._glowPower, other._glowPower)`) every
+frame to decide material batching, which is how the `TypeError` reaches the render loop.
+
+The class already defends against exactly this shape one method away, upstream-verbatim:
+`TimeIntervalCollectionProperty.getValue` (`:66`, `upstream/main:109`) guards
+`if (defined(value) && typeof value.clone === "function")` before cloning. Interval data that is not an
+object with methods is a supported input; `equals` simply forgot the symmetric guard.
+
+**Fix.** Guard the dispatch at `Property.js:73-78`:
+
+    Property.equals = function (left, right) {
+      return (
+        left === right ||
+        (defined(left) &&
+          (typeof left.equals === "function" ? left.equals(right) : left === right))
+      );
+    };
+
+The `left === right` fallback arm is already short-circuited by the first clause, so the guard converts
+a throw into `false` and changes nothing else: a value that cannot compare itself and is not identical
+is not equal. After the fix the five lines above read `false, false, false, true, false`.
+
+**Authorship.** UPSTREAM. `git blame -L 70,76` gives `2fd0e8f7e42` (Matthew Amato, 2020-04-16) with
+lineage `d78e25c3bf9` (2013), and `Property.js` was byte-identical to `upstream/main` before this hunk —
+`git diff upstream/main:<path> HEAD:<path>` empty. Fixed in fork per `R-2026-09-17-1`, with the upstream
+issue text recorded in `DEFERRED_WORK.md` under the 2026-09-17 DataSources entry.
+
+**Acceptance.** `packages/engine/Specs/DataSources/PropertySpec.js` (new; the karma leg — that file did
+not exist, and none of the `Property` statics had direct coverage) and
+`Tools/visual-regression/datasources-property-contract.spec.mjs` (new; node:test, in
+`npm run test-visual-regression-node`). Inertness mutant: restoring the unguarded
+`left.equals(right)` turns the interval-collection and `PolylineGlowMaterialProperty` cases RED with the
+original `TypeError`.
+
+**Files modified:** `packages/engine/Source/DataSources/Property.js`,
+`packages/engine/Specs/DataSources/PropertySpec.js` (new),
+`Tools/visual-regression/datasources-property-contract.spec.mjs` (new), `package.json` (runner line),
+`migration_doc/DEFERRED_WORK.md`.
