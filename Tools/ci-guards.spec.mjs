@@ -155,6 +155,63 @@ test("every wired npm script actually exists", () => {
   }
 });
 
+test("the c16 suite runs its spec files one at a time", () => {
+  // One spec in that suite owns the live source tree while it runs.
+  // comment-marker-guard.spec.mjs plants fixtures into the real
+  // packages/{engine,widgets}/Source on purpose - its own docstring (:92-97)
+  // records why: "a fixture in a temp directory would prove nothing about the
+  // scope predicate, which is one of the things under test". Its sibling
+  // comment-only-diff.spec.mjs enumerates that same tree through an fs.readdir
+  // walk (comment-marker-guard.mjs:379-405, not git ls-files) and then reads
+  // every path it enumerated, in four separate tests. Run as parallel child
+  // processes the fixture is removed between the enumerate and the read, and
+  // the reader dies with
+  //   ENOENT: no such file or directory, open
+  //     '.../packages/engine/Source/Scene/C16GuardFixture.js'
+  // about one CI run in five. Reproduced 2 of 3 offline with the planting
+  // window widened to 300 ms, and 0 of 10 with this flag. Serializing the files
+  // is what makes that single ownership real, for a few seconds of runtime;
+  // dropping the flag brings the race back without touching a spec.
+  const script = packageJson.scripts["test-c16"];
+  assert.ok(script, "package.json has no test-c16 script");
+  assert.match(
+    script,
+    /--test-concurrency=1(?![0-9])/,
+    "test-c16 must run its spec files one at a time: one of them plants fixtures in the live source tree that the others walk",
+  );
+  // Position is load-bearing. Node applies the flag only where it precedes the
+  // file list: `node --test a.mjs b.mjs --test-concurrency=1` exits 0, says
+  // nothing about the trailing argument, and runs the files in parallel anyway
+  // (two files sleeping 2 s each: 2.7 s that way, 4.7 s with the flag in
+  // front). A flag that has drifted behind the first path is present and inert,
+  // which is the one way this assertion could read green over the live race.
+  assert.ok(
+    script.indexOf("--test-concurrency=1") < script.indexOf("Tools/c16/"),
+    "--test-concurrency=1 must come before the spec paths: node ignores it after the file list and runs the files in parallel again",
+  );
+});
+
+test("the node-smoke-test matrix reports every Node version in one run", () => {
+  // A matrix that fails fast cancels its siblings, and a cancelled leg is not a
+  // result: across two consecutive runs of this workflow the 24 leg was
+  // cancelled once and the 22 leg the next time, so the two have never both
+  // reported. The job exists to measure a packaged install under more than one
+  // Node major; while either leg cancels the other, half of that measurement
+  // does not exist.
+  const job = workflow.jobs["node-smoke-test"];
+  assert.ok(job, "dev.yml has no node-smoke-test job");
+  const versions = job.strategy?.matrix?.version;
+  assert.ok(
+    Array.isArray(versions) && versions.length > 1,
+    "the node-smoke-test job no longer runs a multi-version matrix",
+  );
+  assert.equal(
+    job.strategy?.["fail-fast"],
+    false,
+    "the node-smoke-test matrix must not fail fast: one leg cancelling the other hides whatever the cancelled leg was about to report",
+  );
+});
+
 test("the tools reached only through a script are present", () => {
   for (const tool of SCRIPT_ONLY_TOOLS) {
     const script = Object.values(packageJson.scripts).find((value) =>
@@ -541,4 +598,390 @@ test("an override key splits into a package name and a selector", () => {
     name: "@scope/pkg",
     selector: null,
   });
+});
+
+// ---------------------------------------------------------------------------
+// The lifecycle scripts a CONSUMER runs.
+//
+// npm runs `preinstall`, `install` and `postinstall` from the manifest of a
+// package installed as a DEPENDENCY: `@npmcli/arborist` sorts the installed
+// tree into queues for exactly those three plus `prepare`, and runs the
+// `prepare` queue only for link nodes (`rebuild.js:153-168` in npm 10.9.8, the
+// npm CI installs). `prepare` and its `preprepare` / `postprepare` wrappers
+// belong to the project itself: `npm install` runs that chain for the current
+// directory only when it is called with no arguments
+// (`lib/commands/install.js:151-169`), which is what npm-scripts(7) states as
+// "Runs on local `npm install` without any arguments".
+//
+// The published tarball is a different set of files from the working tree, so a
+// script under one of the three consumer events may name a path that only
+// exists here. Such a script cannot succeed anywhere except in a consumer's
+// node_modules, where it fails the install outright:
+//
+//   npm error path .../test/node_modules/cesium
+//   npm error command sh -c node scripts/patchEslintSeatbelt.mjs
+//   npm error Error: Cannot find module
+//     '.../node_modules/cesium/scripts/patchEslintSeatbelt.mjs'
+//
+// That is what this root manifest shipped for 76 days, and the only thing that
+// noticed was a job that was already red. The rule is decided below as a pure
+// function over (manifest, publish filter) so the cases can drive it with
+// synthetic manifests as well as the real ones.
+// ---------------------------------------------------------------------------
+
+/** Lifecycle events npm runs from the manifest of an installed dependency. */
+const CONSUMER_INSTALL_EVENTS = ["preinstall", "install", "postinstall"];
+
+/** Paths npm puts in the tarball whatever the filter says. */
+const ALWAYS_PUBLISHED = new Set(["package.json"]);
+
+/** Path-shaped runs inside a script command: two or more segments. */
+const PATH_RUN = /[A-Za-z0-9_.@-]+(?:\/[A-Za-z0-9_.@*-]+)+/g;
+
+/**
+ * Translate the glob subset these manifests use into a regular-expression body.
+ *
+ * @param {string} pattern One pattern with its anchors and negation removed.
+ * @returns {string|null} The body, or null when the pattern is outside the subset.
+ */
+function compileGlobBody(pattern) {
+  if (/[[\]{}()\\]/.test(pattern)) {
+    return null;
+  }
+  let body = "";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index];
+    if (character === "*") {
+      if (pattern[index + 1] === "*") {
+        body += ".*";
+        index += 1;
+      } else {
+        body += "[^/]*";
+      }
+    } else if (character === "?") {
+      body += "[^/]";
+    } else {
+      body += character.replace(/[.+^$|]/g, "\\$&");
+    }
+  }
+  return body;
+}
+
+/**
+ * Parse one `.npmignore` line or one `files` entry.
+ *
+ * The supported subset is the one these manifests use: blank lines, `#`
+ * comments, `!` negation, a leading `/` anchor, a trailing `/` directory, and
+ * `*` / `?` / `**` globs. Anything else parses as `unsupported`, so an undecided
+ * path gets reported rather than waved through.
+ *
+ * @param {string} line The raw line.
+ * @returns {{kind: string, negated?: boolean, matches?: (relPath: string) => boolean, source?: string}} The parsed entry.
+ */
+function parsePublishPattern(line) {
+  const trimmed = line.replace(/\r$/, "").trim();
+  if (trimmed === "" || trimmed.startsWith("#")) {
+    return { kind: "skip" };
+  }
+  let body = trimmed;
+  let negated = false;
+  if (body.startsWith("!")) {
+    negated = true;
+    body = body.slice(1);
+  }
+  let directoryOnly = false;
+  if (body.endsWith("/")) {
+    directoryOnly = true;
+    body = body.slice(0, -1);
+  }
+  let anchored = false;
+  if (body.startsWith("/")) {
+    anchored = true;
+    body = body.slice(1);
+  } else if (body.includes("/")) {
+    anchored = true;
+  }
+  const glob = body === "" ? null : compileGlobBody(body);
+  if (glob === null) {
+    return { kind: "unsupported", source: trimmed };
+  }
+  const head = anchored ? "^" : "(?:^|/)";
+  const tail = directoryOnly ? "/.+$" : "(?:/.+)?$";
+  const expression = new RegExp(head + glob + tail);
+  return {
+    kind: "pattern",
+    negated,
+    matches: (relPath) => expression.test(relPath),
+  };
+}
+
+/**
+ * The filter npm applies when it packs this manifest's directory.
+ *
+ * A `files` array is an allow list and takes precedence; without one npm falls
+ * back to `.npmignore` as a deny list.
+ *
+ * @param {{files?: string[], npmignore?: string}} input The manifest's `files` and the directory's `.npmignore`.
+ * @returns {{kind: string, entries: object[]}} The compiled filter.
+ */
+function publishFilter({ files, npmignore }) {
+  if (Array.isArray(files)) {
+    return { kind: "files", entries: files.map(parsePublishPattern) };
+  }
+  return {
+    kind: "npmignore",
+    entries: (npmignore ?? "").split("\n").map(parsePublishPattern),
+  };
+}
+
+/**
+ * Whether the packed tarball carries one repo-relative path.
+ *
+ * @param {string} relPath A path relative to the package directory.
+ * @param {{kind: string, entries: object[]}} filter From {@link publishFilter}.
+ * @returns {string} `INCLUDED`, `EXCLUDED`, or `UNDECIDABLE`.
+ */
+function classifyPublishedPath(relPath, filter) {
+  const normalized = relPath.replace(/^\.\//, "");
+  if (ALWAYS_PUBLISHED.has(normalized)) {
+    return "INCLUDED";
+  }
+  if (filter.entries.some((entry) => entry.kind === "unsupported")) {
+    return "UNDECIDABLE";
+  }
+  let selected = false;
+  for (const entry of filter.entries) {
+    if (entry.kind !== "pattern" || !entry.matches(normalized)) {
+      continue;
+    }
+    selected = !entry.negated;
+  }
+  if (filter.kind === "files") {
+    return selected ? "INCLUDED" : "EXCLUDED";
+  }
+  return selected ? "EXCLUDED" : "INCLUDED";
+}
+
+/**
+ * The repo-relative paths one script command names.
+ *
+ * Whitespace is not the unit, because a path can sit inside a quoted argument;
+ * the unit is a run of two or more path segments. A run preceded by `/` is an
+ * absolute path or a URL authority and belongs to neither this package nor this
+ * rule. Backslash-separated paths are out of scope: npm hands these to `sh` on
+ * the machine that installs them.
+ *
+ * @param {string} command The script command.
+ * @returns {string[]} Repo-relative paths, in first-seen order.
+ */
+function repoRelativePathTokens(command) {
+  const found = [];
+  for (const match of command.matchAll(PATH_RUN)) {
+    if (command.slice(0, match.index).endsWith("/")) {
+      continue;
+    }
+    const token = match[0].replace(/^\.\//, "");
+    if (token.startsWith("node_modules/") || found.includes(token)) {
+      continue;
+    }
+    found.push(token);
+  }
+  return found;
+}
+
+/**
+ * Every consumer-install script path the published package would not carry.
+ *
+ * @param {object} manifest A package manifest.
+ * @param {{kind: string, entries: object[]}} filter From {@link publishFilter}.
+ * @returns {{event: string, path: string, verdict: string}[]} One finding per offending path.
+ */
+function consumerInstallFindings(manifest, filter) {
+  const findings = [];
+  for (const event of CONSUMER_INSTALL_EVENTS) {
+    const command = manifest.scripts?.[event];
+    if (typeof command !== "string") {
+      continue;
+    }
+    for (const candidate of repoRelativePathTokens(command)) {
+      const verdict = classifyPublishedPath(candidate, filter);
+      if (verdict !== "INCLUDED") {
+        findings.push({ event, path: candidate, verdict });
+      }
+    }
+  }
+  return findings;
+}
+
+const npmignoreText = readFileSync(path.join(REPO_ROOT, ".npmignore"), {
+  encoding: "utf8",
+});
+const rootPublishFilter = publishFilter({
+  files: packageJson.files,
+  npmignore: npmignoreText,
+});
+
+test("no consumer-install script of the root package names a path the tarball drops", () => {
+  const findings = consumerInstallFindings(packageJson, rootPublishFilter);
+  assert.deepEqual(
+    findings,
+    [],
+    "every install of this package as a dependency would run these and fail: " +
+      findings
+        .map((finding) => finding.event + " -> " + finding.path)
+        .join(" | "),
+  );
+});
+
+test("the same rule over the published workspaces", () => {
+  for (const { path: manifestPath, manifest } of workspaceManifests()) {
+    const findings = consumerInstallFindings(
+      manifest,
+      publishFilter({ files: manifest.files }),
+    );
+    assert.deepEqual(
+      findings,
+      [],
+      manifestPath +
+        " would fail a consumer install: " +
+        findings
+          .map((finding) => finding.event + " -> " + finding.path)
+          .join(" | "),
+    );
+  }
+});
+
+test("the defect this rule exists for: postinstall reaching into an excluded directory", () => {
+  // The manifest shape that shipped, against the real .npmignore. The
+  // `/scripts/` rule there is upstream-inherited; the postinstall entry was not.
+  const findings = consumerInstallFindings(
+    { scripts: { postinstall: "node scripts/patchEslintSeatbelt.mjs" } },
+    rootPublishFilter,
+  );
+  assert.deepEqual(findings, [
+    {
+      event: "postinstall",
+      path: "scripts/patchEslintSeatbelt.mjs",
+      verdict: "EXCLUDED",
+    },
+  ]);
+});
+
+test("a consumer-install script naming a published path is fine", () => {
+  assert.deepEqual(
+    consumerInstallFindings(
+      { scripts: { postinstall: "node Build/Cesium/index.cjs" } },
+      rootPublishFilter,
+    ),
+    [],
+  );
+});
+
+test("prepare may name an excluded path, because npm does not run it for a dependency", () => {
+  // Not a loophole and not an oversight: it is the whole reason the fix is a
+  // lifecycle rename rather than a packaging change. The real `prepare` names
+  // scripts/isCI.js, which the same `/scripts/` rule excludes, and that has
+  // never broken a consumer install - npm runs `prepare` for a bare local
+  // install, a git dependency and a pack, never for a package unpacked from a
+  // tarball into node_modules.
+  assert.match(packageJson.scripts.prepare, /scripts\/isCI\.js/);
+  assert.equal(
+    classifyPublishedPath("scripts/isCI.js", rootPublishFilter),
+    "EXCLUDED",
+  );
+  assert.deepEqual(consumerInstallFindings(packageJson, rootPublishFilter), []);
+});
+
+test("a files allow list decides the same question the other way round", () => {
+  const shipped = publishFilter({
+    files: ["index.js", "Source", "tools/*.mjs"],
+  });
+  assert.equal(classifyPublishedPath("index.js", shipped), "INCLUDED");
+  assert.equal(classifyPublishedPath("Source/Cesium.js", shipped), "INCLUDED");
+  assert.equal(classifyPublishedPath("tools/run.mjs", shipped), "INCLUDED");
+  assert.equal(
+    classifyPublishedPath("tools/deep/run.mjs", shipped),
+    "EXCLUDED",
+  );
+  assert.equal(classifyPublishedPath("scripts/patch.mjs", shipped), "EXCLUDED");
+  assert.deepEqual(
+    consumerInstallFindings(
+      { files: ["index.js"], scripts: { install: "node scripts/build.mjs" } },
+      publishFilter({ files: ["index.js"] }),
+    ),
+    [{ event: "install", path: "scripts/build.mjs", verdict: "EXCLUDED" }],
+  );
+});
+
+test("a negation re-publishes what an earlier pattern dropped", () => {
+  const filter = publishFilter({
+    npmignore: "/scripts/\n!/scripts/keep.mjs\n",
+  });
+  assert.equal(classifyPublishedPath("scripts/drop.mjs", filter), "EXCLUDED");
+  assert.equal(classifyPublishedPath("scripts/keep.mjs", filter), "INCLUDED");
+  assert.deepEqual(
+    consumerInstallFindings(
+      { scripts: { postinstall: "node scripts/keep.mjs" } },
+      filter,
+    ),
+    [],
+  );
+});
+
+test("the real .npmignore is inside the grammar this rule understands", () => {
+  const unsupported = rootPublishFilter.entries
+    .filter((entry) => entry.kind === "unsupported")
+    .map((entry) => entry.source);
+  assert.deepEqual(
+    unsupported,
+    [],
+    "the publish filter can no longer be decided for: " +
+      unsupported.join(" | "),
+  );
+});
+
+test("a pattern outside the grammar is reported, never waved through", () => {
+  // A guard that silently passes what it cannot parse is worse than no guard:
+  // it reads green for exactly the manifests nobody has checked.
+  const filter = publishFilter({ npmignore: "/scripts/[a-z]*.mjs\n" });
+  assert.equal(
+    classifyPublishedPath("scripts/patch.mjs", filter),
+    "UNDECIDABLE",
+  );
+  assert.deepEqual(
+    consumerInstallFindings(
+      { scripts: { postinstall: "node scripts/patch.mjs" } },
+      filter,
+    ),
+    [
+      {
+        event: "postinstall",
+        path: "scripts/patch.mjs",
+        verdict: "UNDECIDABLE",
+      },
+    ],
+  );
+});
+
+test("a command yields its repo-relative paths and nothing else", () => {
+  assert.deepEqual(repoRelativePathTokens("node scripts/patch.mjs"), [
+    "scripts/patch.mjs",
+  ]);
+  assert.deepEqual(repoRelativePathTokens("node ./scripts/patch.mjs --quiet"), [
+    "scripts/patch.mjs",
+  ]);
+  assert.deepEqual(
+    repoRelativePathTokens(
+      "gulp prepare && husky && node scripts/isCI.js || playwright install --with-deps",
+    ),
+    ["scripts/isCI.js"],
+  );
+  assert.deepEqual(
+    repoRelativePathTokens("node -e \"import('./scripts/patch.mjs')\""),
+    ["scripts/patch.mjs"],
+  );
+  assert.deepEqual(repoRelativePathTokens("echo done"), []);
+  assert.deepEqual(repoRelativePathTokens("curl https://host.tld/a/b"), []);
+  assert.deepEqual(repoRelativePathTokens("/usr/bin/env node"), []);
+  assert.deepEqual(repoRelativePathTokens("node node_modules/.bin/thing"), []);
 });

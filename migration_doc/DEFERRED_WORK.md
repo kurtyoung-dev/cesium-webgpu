@@ -23120,3 +23120,251 @@ resolver acts on textual conflicts, and there was none.
 The two guards now standing are complementary and neither replaces the other: the seat's landing
 wrapper refuses a commit whose manifest carries a duplicate key, and **this** one is tracked, so CI
 sees the class on any branch and any clone, including one the wrapper never touched.
+
+## 2026-09-19 — lane CI-L2L4 (Huan): one spec owned the live source tree while a sibling walked it, and a lifecycle script the published tarball does not carry
+
+Base `0f0fa444e8`. Three files: `package.json` (two script entries), `Tools/ci-guards.spec.mjs`
+(twelve added cases) and `.github/workflows/dev.yml` (one matrix line). Authority: the CI triage —
+`TRIAGE_EGLANTINE.md` for the first row, `TRIAGE_ELANOR.md` for the second, `CI_GREEN_PLAN.md` §2/L2,
+§2/L4 and §4.5 for the third, with `CRITIQUE_FASTOLPH.md` F6.4, F8, F10.1 and F10.4 folded in. Every
+cited anchor was re-read at this base before the edit; the three corrections the re-reading produced
+are at the end of this entry.
+
+### `CI-C16-PARALLEL-LIVE-TREE-RACE` — `test-c16` raced itself in roughly one CI run in five (FIXED 2026-09-19)
+
+**The defect.** `package.json`'s `test-c16` named four spec files to `node --test` with no concurrency
+flag, so node ran them as parallel child processes (tests inside one file are serial; files are not).
+One of those four owns the live source tree while it runs.
+`Tools/c16/comment-marker-guard.spec.mjs` writes fixtures into the real
+`packages/engine/Source/Scene/` and `packages/widgets/Source/` (`withSourceFixtures`, `:100-118`;
+planted at `:556`, `:608` and `:656` from the paths declared at `:545` and `:578-579`), and its own
+docstring at `:92-97` records why that is deliberate: *"The paths have to be real in-scope paths — a
+fixture in a temp directory would prove nothing about the scope predicate, which is one of the things
+under test."* Its sibling `Tools/c16/comment-only-diff.spec.mjs` enumerates that same tree through
+`collectScopeFiles()` (`comment-marker-guard.mjs:412-417`), whose `collect()` helper (`:379-405`) is an
+`fs.readdir` walk of the filesystem and not a `git ls-files` listing, so an untracked fixture planted a
+millisecond earlier is in the returned list. Four of its tests then read every path they enumerated —
+`:589`/`:597`, `:799`/`:804`, `:829`/`:833` and `:851`/`:857` — and all four are exposed, not just the
+one CI happened to hit. The window is enumerate → read; the fixture is removed inside it.
+
+**What CI read**, `dev` run 35419478276 (`58c5147763`), job `guards` step 7:
+
+```
+not ok 55 - canonicalization is idempotent over the whole corpus
+  location: '.../Tools/c16/comment-only-diff.spec.mjs:829:1'
+  error: "ENOENT: no such file or directory, open '.../packages/engine/Source/Scene/C16GuardFixture.js'"
+  code: 'ENOENT'
+# tests 80 / # pass 79 / # fail 1
+```
+
+The same failure on the same path two weeks earlier, run 33996217531 (`556f0648`, 2026-09-05), reported
+`not ok 54` and `# tests 79` — the total drifts as tests land, so only the failure count is worth
+pinning. The step passed eight minutes after the red one, on Batch 1514, with an empty diff over
+`Tools/c16` and the corpus: same bytes, different outcome.
+
+**The fix.** `--test-concurrency=1` in `test-c16`. It makes the suite's implicit single ownership of the
+tree real without weakening anything: `withSourceFixtures`'s reason for living in the real tree survives
+untouched. It cannot disturb `Tools/ci-guards.spec.mjs`'s `WIRED_GUARDS` (`:43-53`), which matches the
+workflow's `run:` string `npm run test-c16` and not the script body — re-checked at this base.
+
+**The two alternatives, rejected with their reasons.** Swallowing `ENOENT` in the four corpus loops would
+also hide a genuinely unreadable in-scope file, which `comment-only-diff.spec.mjs:741` ("an in-scope file
+the tool cannot strip is a VIOLATION, not a pass") exists to catch. Switching `collectScopeFiles()` to
+`git ls-files` would stop the guard seeing a newly added, not-yet-tracked source file, which is a real
+loss in the lint-staged path.
+
+**Proof, deterministic first.** Serialised files cannot race; the local evidence is what shows the
+mechanism is the one that fires. In an isolated copy of the tree (2,211 in-scope files plus the real
+`Tools/c16`), a planter mirroring `withSourceFixtures` line for line with the hold widened to 300 ms,
+run alongside the REAL `comment-only-diff.spec.mjs` in one invocation: **ENOENT in 2 of 3 parallel runs**
+(run 1 on `:589`, run 3 on `:799` *and* `:829` — the CI subtest by name), **0 of 10** with the flag. Then
+`npm run test-c16` in the lane clone, **five consecutive runs, `# tests 80 / # pass 80 / # fail 0`**.
+
+**The CI leg is corroboration and must be labelled as such.** At the measured ~20% flake rate, five
+consecutive green CI runs survive the null hypothesis with probability 0.8⁵ ≈ 33%. One green run is not
+even that: the step was already green about four times in five.
+
+**Cost.** Measured on the lane clone: parallel 41 s / 52 s / 40 s, serialised 64 s / 63 s / 47 s / 70 s
+(plus a 157 s cold first run) — a Windows box with a junction-farm `node_modules`, so the ratio matters
+and the absolutes do not. In CI the whole step took 3.8 s parallel; the serial form is expected near 6 s,
+against a job whose `npm install` dominates it.
+
+**Pinned by** `Tools/ci-guards.spec.mjs`, *"the c16 suite runs its spec files one at a time"*. Removing
+the flag from the manifest reds it; leaving the flag removed AND making its assertion unreachable
+(`if (false && script)`) greens the run again, which is what distinguishes a live assertion from a
+text-shaped one.
+
+**The pin also asserts the flag’s POSITION, which review found load-bearing.** `node` applies
+`--test-concurrency=1` only where it precedes the file list: measured on two files sleeping 2 s each,
+`node --test a b --test-concurrency=1` finishes in 2,550 ms — exit 0, no complaint about the trailing
+argument, the files still parallel — against 5,059 ms with the flag in front and 2,792 ms with no flag
+at all. A manifest whose flag had drifted behind the first path would be *present and inert*, and a regex
+that matches anywhere in the string would read green over the live race. The case therefore also asserts
+`script.indexOf("--test-concurrency=1") < script.indexOf("Tools/c16/")`: moving the flag to the end of
+the script reds it (`not ok 4`), and making that one assertion unreachable with the flag still at the end
+greens the run again. Found by the lane reviewer (Inziladun) as an inertness mutant of the v1 pin —
+CLAUDE.md Principle 10, “mutate for inertness, not just absence”.
+
+### `CI-ROOT-POSTINSTALL-UNPUBLISHED-PATH` — every consumer install of the root package has failed for 76 days (FIXED 2026-09-19 — and this does NOT green `node-smoke-test`)
+
+**The defect.** Two facts in the root manifest that cannot both hold. `package.json:121` declared
+`"postinstall": "node scripts/patchEslintSeatbelt.mjs"`, and `.npmignore:23` is `/scripts/` with no
+`files` array in the root manifest (`require("./package.json").files` → `undefined`, re-checked), so the
+whole directory is excluded from the packed tarball. npm runs `preinstall`, `install` and `postinstall`
+from the manifest of a package installed as a **dependency**, so every consumer install of this fork's
+root package ran a script the same tarball deliberately omits:
+
+```
+npm error path /home/runner/work/cesium-webgpu/test/node_modules/cesium
+npm error command sh -c node scripts/patchEslintSeatbelt.mjs
+npm error Error: Cannot find module '.../test/node_modules/cesium/scripts/patchEslintSeatbelt.mjs'
+```
+
+Byte-identical on four sampled runs spanning 2026-07-05 → 2026-09-19. The defect entered at
+`d06742a2ac` (2026-06-19, the v1.141-1.143 supervised-hybrid merge — the first commit carrying both the
+script and the entry; neither parent had either) and was masked until Batch 575 fixed the earlier
+failure in front of it. `/scripts/` is upstream-inherited and byte-identical to `upstream/main`; the
+`postinstall` entry is fork-added — upstream declares **no** install-time lifecycle script at all.
+
+**The fix.** `postinstall` → `preprepare`, with the `prepare` string byte-identical either side of the
+edit (asserted, both strings quoted in the landing packet). The rule this rests on, verified against npm
+**10.9.8** — the npm `actions/setup-node` installs for `node-version: '22'`, which is what CI runs, not
+the 11.4.1 that shadows it on a developer PATH — in two places rather than from memory:
+
+- npm's own shipped `npm-scripts(7)`, §"Life Cycle Scripts": **prepare** *"Runs BEFORE the package is
+  packed, i.e. during `npm publish` and `npm pack`"*, *"Runs on local `npm install` without any
+  arguments"*, and for a package installed **through git**;
+- npm's code: `@npmcli/arborist`'s `rebuild.js` sorts the installed tree into queues for `preinstall`,
+  `install`, `postinstall` and `prepare` (`:203-204`) but runs the `prepare` queue **only for link
+  nodes** (`:153-168`, `type === "links"`; a tarball dependency is a dep node, `:100-110`), while
+  npm's `lib/commands/install.js:151-169` runs the project's own
+  `preinstall → install → postinstall → prepublish → preprepare → prepare → postprepare` chain
+  guarded by `!args.length && !isGlobalInstall && !ignoreScripts`.
+
+So the patch keeps firing for every developer's bare `npm install` and for every CI `npm install` in the
+repository, and stops firing inside `node_modules/cesium`.
+
+**Known accepted cost, stated because it is a real behaviour change:** `npm install <pkg>` **with
+arguments** in the repo root no longer re-applies the patch, because npm skips the `prepare` chain when
+arguments are given. A bare `npm install` still does. If it bites, the pre-commit eslint run surfaces it
+immediately as un-grandfathered seatbelt violations.
+
+**The two alternatives, rejected with their reasons.** `"postinstall": "… || exit 0"` masks real failures
+and still dumps a MODULE_NOT_FOUND stack into every downstream install; the silent form needs
+`2>/dev/null`, which is wrong under npm's Windows `script-shell`. Un-ignoring the file
+(`!/scripts/patchEslintSeatbelt.mjs`) makes every consumer of this package execute a developer-environment
+patch on install, for a no-op.
+
+**What this does and does not buy.** On the next `dev` run, `node-smoke-test` no longer fails at
+`npm install cesium-1.*.tgz`; that command succeeds. **The job stays red.** Behind it sits
+`NEW-CI-NODE20-ESM-TS-BARREL` (`DEFERRED_WORK.md:7744`), whose 5 named modules have grown to 25
+re-export specifiers over 24 distinct files, and which needs a maintainer ruling before anyone starts.
+The step's next error is a *prediction, not a claim*: half B of `.github/actions/verify-package/script.sh`
+has not run past line 20 since 2026-07-05, and two `node test.cjs` invocations (`:21-22`) sit between the
+install and `node test.mjs`; `.npmignore` does not exclude `/Build/Cesium`, so they *should* pass. A
+different error there is new information about a step nobody has seen past line 20 in ten weeks, and it
+belongs to the lane that owns `script.sh`.
+
+**Where it does buy a whole workflow.** The same step is the **only** red step in `deploy.yml`.
+Re-measured for this lane: 1,404 runs, **0** successes, and the newest run (35425797371, head
+`90bbf98cc0`) fails at step 10 `Run ./.github/actions/verify-package` with steps 1-9 all `success` and
+steps 11-12 `skipped` for want of `DEV_AWS_*`. This row plus the `script.sh`/ESM row green that workflow
+outright.
+
+**Pinned by** ten cases in `Tools/ci-guards.spec.mjs` driving one pure rule — *no lifecycle script npm
+runs for a DEPENDENCY may name a path the published package excludes* — over synthetic manifests and the
+real ones. The rule decides from `package.json` plus `files`/`.npmignore` alone; it reports `EXCLUDED`
+and, separately, `UNDECIDABLE` for a pattern outside the grammar it understands, because a guard that
+silently passes what it cannot parse reads green for exactly the manifests nobody has checked. The case
+that matters replays the shipped shape against the REAL `.npmignore` and requires the finding to name
+`scripts/patchEslintSeatbelt.mjs`. Its companion is the one that explains the fix: the real `prepare`
+names `scripts/isCI.js`, which the same `/scripts/` rule excludes, and that is legal precisely because
+npm does not run `prepare` for a dependency. Two inertness mutants: forcing the `.npmignore` verdict to
+`INCLUDED` reds three cases, and making the findings loop unreachable reds three others.
+
+**What the rule does not reach, recorded rather than left for the next reader to discover** (raised by
+review, Inziladun; each re-checked here against the code and the three workspace manifests). (a) The
+workspace leg passes `publishFilter({ files: manifest.files })` only, never that workspace’s own
+`.npmignore` — which is complete today, because none of the three workspaces ships one, but would stop
+being complete the day one does. A workspace with neither `files` nor a read `.npmignore` is waved
+through; today that is only `packages/sandcastle`, which is `"private": true` and declares no install
+script, while `packages/engine` and `packages/widgets` both carry `files` arrays (`index.js`,
+`index.d.ts`, `Source`) and do exercise the allow-list branch.
+(b) `PATH_RUN` requires two or more path segments, so a single-segment repo-relative path
+(`"postinstall": "node install.js"`) is invisible to the rule. (c) `ALWAYS_PUBLISHED` models only
+`package.json`, where npm in fact always ships README, LICENSE and `main` as well — which errs toward a
+false positive and is unreachable today. All three are narrow, none affects the defect this row fixes,
+and each is a one-line extension the day a manifest needs it.
+
+### `CI-NODE-SMOKE-MATRIX-FAIL-FAST` — the two Node legs cancelled each other, so neither was ever measured in the same run (FIXED 2026-09-19)
+
+`.github/workflows/dev.yml`'s `node-smoke-test` matrix carried no `fail-fast`, so a failure on either leg
+cancelled the other: the 24 leg was cancelled in run 35419478276 and the 22 leg in run 35420648558. A
+cancelled leg is not a result, and the version-specific half of what the job exists to measure has never
+existed. One line, `fail-fast: false`, and both legs report. Upstream carries the identical matrix block
+with no `fail-fast` (`upstream/main:.github/workflows/dev.yml:74-78`), so this is a one-line divergence in
+an otherwise upstream-authored hunk — kept to one line, no reflow, so the next sync sees the smallest
+possible conflict. It is a prerequisite for any acceptance that reads "both legs green in one run", which
+is otherwise a coin flip about which leg gets cancelled. Pinned by *"the node-smoke-test matrix reports
+every Node version in one run"*, which asserts the multi-version matrix is still multi-version and that
+`fail-fast` is `false`; removing the line reds it.
+
+### Rows this lane surfaces and does NOT fix
+
+- **`DX-C16-FIXTURE-IN-LIVE-TREE`** *(2026-09-19)* — serialising makes the race impossible, but the
+  fixture still lands in the tracked tree, so a hard kill between the write and the `finally` leaves
+  `packages/engine/Source/Scene/C16GuardFixture.js` and its widgets twin behind for the next run, the
+  pre-commit hook and `npm run lint-comment-markers` to trip over. The real fix is to sandbox the
+  fixture under `os.tmpdir()` **without** weakening the scope predicate the docstring defends, and the
+  cost is concrete: `comment-marker-guard.mjs` binds `ROOT` once at `:84` and uses it at eleven sites
+  (`CLEAN_LIST_PATH` `:99-100`, `GRANDFATHER_PATH` `:106-107`, `toRepoRelative` `:126-127`,
+  `collectScopeFiles` `:415`, the reader at `:584`), so the module would need `ROOT` and `SCOPE_ROOTS`
+  injected rather than derived, the CLI would need a `--root` flag because the spec drives it through
+  `execFileSync` (`comment-marker-guard.spec.mjs:74-81`), and the clean-list and grandfather rows —
+  which are repo-relative by definition — would need to resolve against the injected root. Medium, not
+  small, and worth doing for crash-safety rather than for this race.
+- **`DX-C16-GRANDFATHER-FILE-MUTATED-IN-PLACE`** *(2026-09-19)* — `withGrandfatherRows`
+  (`comment-marker-guard.spec.mjs:127-146`) rewrites the **tracked**
+  `Tools/c16/comment-marker-grandfather.txt` in place and restores it in `finally`. Serialisation does
+  not make that crash-safe; a killed run leaves a tracked file dirty that both the pre-commit hook and
+  `npm run lint-comment-markers` read.
+- **`DX-PARALLEL-SPECS-SHARING-ONE-TREE`** *(2026-09-19)* — the shape fixed here (many spec files in one
+  parallel `node --test`, sharing one live tree) also exists in `test-landing-rules` (13 files) and
+  `test-build-infra` (14). Worth an audit of which of those write inside `ROOT`; not done here, because
+  the acceptance for each would have to be measured the way this one was.
+- **`DX-PATCHESLINTSEATBELT-DOCSTRING-SAYS-POSTINSTALL`** *(2026-09-19)* —
+  `scripts/patchEslintSeatbelt.mjs:1-3` still opens *"Postinstall patch"* with
+  `@purpose postinstall patch normalizing …`, and `:16-17` still says *"Implemented as a postinstall
+  script rather than patch-package"*; `migration_doc/TOOLING_CATALOG.md:1717` carries the same sentence.
+  All three are now wrong by one word. That file was read-only to this lane by its brief, so the
+  correction is owed to whoever owns it next; it is a comment change with no runtime effect.
+
+### Premise corrections from re-reading the citations at this base (Principle 10)
+
+1. **The bundled npm on the seat machine is reachable only by path.** The dispatch said "this machine's
+   PATH npm is 11.4.1 and the bundled one under `C:/Program Files/nodejs` is 10.9.8". Half right:
+   `C:/Program Files/nodejs/node_modules/npm/package.json` is **10.9.8**, but running
+   `C:/Program Files/nodejs/npm` prints **11.4.1** — the shim resolves to the globally installed
+   `C:/Users/Kurt/AppData/Roaming/npm/node_modules/npm`. CI's npm is reached only as
+   `node "C:/Program Files/nodejs/node_modules/npm/bin/npm-cli.js"`, which is what every npm measurement
+   in this entry used.
+2. **`comment-marker-guard.mjs`'s walker is at `:379-405`, not `:380-404`** — the brief missed the
+   `collect()` declaration line at one end (`:379`) and the closing brace at the other (`:405`;
+   `return out;` is `:404`). Everything the citation supports is exact. The other two anchors checked for
+   the same reason hold as written: `Tools/ci-guards.spec.mjs:81` is inside the `packageJson` parse
+   (`:80-82`), and `WIRED_GUARDS` at `:43-53` does carry the workflow's `run:` string rather than the
+   script body, which is why adding a flag to `test-c16` cannot break it.
+3. **The base moved under the lane and it does not matter.** The seat advanced to `90bbf98cc0`
+   (Batch 1516) during this work; that batch touches eight `migration_doc` files and nothing this lane
+   owns, so the patch applies to either tip.
+
+### What was not done, deliberately
+
+- **No `Tools/lib/npm-lifecycle-rules.mjs`.** The immediate precedent in this same spec file extracts its
+  rule into `Tools/lib/npm-override-rules.mjs`, and a second consumer would justify the same here. It was
+  kept inside `Tools/ci-guards.spec.mjs` because a new `Tools/` module also owes a
+  `migration_doc/TOOLING_CATALOG.md` census row, and that generator is neither in this lane's gate set
+  nor runnable on a lane clone. The rule is still a pure function driven by synthetic cases, which is
+  what the shape was for; extracting it is a one-file move the day something else needs it.
+- **No karma, no build, no browser, no `npm pack`.** Nothing here needs one: both fixes are decided by
+  manifest text and by `node --test`.

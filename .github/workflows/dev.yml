@@ -134,6 +134,7 @@ jobs:
   node-smoke-test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         version: [22, 24]
     steps:
