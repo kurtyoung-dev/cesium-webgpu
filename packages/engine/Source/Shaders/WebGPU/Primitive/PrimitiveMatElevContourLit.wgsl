@@ -10,7 +10,7 @@
 // unshadowed; only direct diffuse and specular lighting is modulated.
 //
 // The chunk marker supplies point-light cube-shadow sampling.
-// @chunk csm_samplePointShadow
+//>> @chunk csm_samplePointShadow
 
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,

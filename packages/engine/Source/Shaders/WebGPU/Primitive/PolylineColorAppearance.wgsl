@@ -93,7 +93,7 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
-// @chunk functions/csm_polylineCommon
+//>> @chunk functions/csm_polylineCommon
 
 // RTE: subtract the encoded camera FIRST. Mirrors translateRelativeToEye in
 // the other primitive shaders / czm_translateRelativeToEye.

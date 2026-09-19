@@ -205,9 +205,13 @@ fn computeMain(
 // declaration. The host preprocessor (WebGPUGPUCuller-style) prepends the
 // directive on capable devices and strips this entire block via the
 // __SUBGROUP_BLOCK_*__ sentinels on non-capable devices. Do not remove the
-// sentinel comments.
+// sentinel comments, and do not "tidy" the `//>>` in front of them: the
+// minify-time comment strip emits only lines starting `//>>`, and the host
+// regex matches the `// __SUBGROUP_BLOCK_*__` text still inside the line.
+// Spelled plainly, a minified build ships `subgroupBallot` with no
+// `enable subgroups;`.
 
-// __SUBGROUP_BLOCK_START__
+//>>// __SUBGROUP_BLOCK_START__
 @compute @workgroup_size(256)
 fn computeMainSubgroups(
   @builtin(global_invocation_id) gid: vec3<u32>,
@@ -294,4 +298,4 @@ fn computeMainSubgroups(
     visibleIndices[globalIdx] = sharedVisible[lid.x];
   }
 }
-// __SUBGROUP_BLOCK_END__
+//>>// __SUBGROUP_BLOCK_END__

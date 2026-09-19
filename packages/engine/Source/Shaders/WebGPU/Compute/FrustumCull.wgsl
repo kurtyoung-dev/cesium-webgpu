@@ -117,9 +117,13 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
 // all `enable` directives to precede every global declaration. WebGPUGPUCuller
 // preprocesses this source by either prepending the directive (subgroup-capable
 // devices) or stripping the entire SUBGROUP_BLOCK between the markers below
-// (non-subgroup devices). Do not remove the marker comments.
+// (non-subgroup devices). Do not remove the marker comments, and do not
+// "tidy" the `//>>` in front of them: the minify-time comment strip emits
+// only lines starting `//>>`, and the host regex matches the
+// `// __SUBGROUP_BLOCK_*__` text still inside the line. Spelled plainly, a
+// minified build ships `subgroupBallot` with no `enable subgroups;`.
 
-// __SUBGROUP_BLOCK_START__
+//>>// __SUBGROUP_BLOCK_START__
 @compute @workgroup_size(256)
 fn mainSubgroups(@builtin(global_invocation_id) globalId: vec3<u32>,
                  @builtin(subgroup_invocation_id) sgLocalId: u32) {
@@ -158,4 +162,4 @@ fn mainSubgroups(@builtin(global_invocation_id) globalId: vec3<u32>,
     }
   }
 }
-// __SUBGROUP_BLOCK_END__
+//>>// __SUBGROUP_BLOCK_END__

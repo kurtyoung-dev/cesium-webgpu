@@ -65,7 +65,7 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
-// @chunk functions/csm_polylineCommon
+//>> @chunk functions/csm_polylineCommon
 
 const CSM_INFINITY: f32 = 5906376272000.0; // czm_infinity
 

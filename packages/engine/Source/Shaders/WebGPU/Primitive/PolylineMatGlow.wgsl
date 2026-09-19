@@ -70,7 +70,7 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
-// @chunk functions/csm_polylineCommon
+//>> @chunk functions/csm_polylineCommon
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;

@@ -94,6 +94,10 @@ export const makeZip = gulp.series(
     //For now we regenerate the JS glsl to force it to be unminified in the release zip
     //See https://github.com/CesiumGS/cesium/pull/3106#discussion_r42793558 for discussion.
     await glslToJavaScript(false, "Build/minifyShaders.state", "engine");
+    //WGSL deliberately has no counterpart here. The GLSL refresh is about the
+    //readability of a shipped artifact, not about correctness; the WGSL strip
+    //preserves every directive line, so the stripped modules in the zip carry
+    //the same chunk markers the engine matches at runtime.
 
     const packageJsonSrc = await pruneScriptsForZip("package.json");
     const enginePackageJsonSrc = await pruneScriptsForZip(

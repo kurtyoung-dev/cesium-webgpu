@@ -347,7 +347,7 @@ export class WebGPUPerformanceManager {
 
   // Subgroup-preprocessed compute sources. Lazy-built on first dispatch.
   // The PointCloudLOD shader wraps its accelerated entry point in
-  // `// __SUBGROUP_BLOCK_*__` sentinels and ships WITHOUT an `enable
+  // `//>>// __SUBGROUP_BLOCK_*__` sentinels and ships WITHOUT an `enable
   // subgroups;` directive (WGSL parses `enable` only at the top of the
   // file, so a mid-file directive is a hard error). The host has to
   // either prepend the directive on capable devices or strip the entire

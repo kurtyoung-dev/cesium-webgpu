@@ -8,7 +8,7 @@
 // modulated by `computeShadowFactorCSM` when `effects.csmControl.x > 0.5`,
 // while ambient remains unshadowed.
 //
-// @chunk csm_samplePointShadow
+//>> @chunk csm_samplePointShadow
 
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,

@@ -75,7 +75,7 @@ struct MaterialUniforms {
 @group(2) @binding(0) var textureSampler: sampler;
 @group(2) @binding(1) var colorTexture: texture_2d<f32>;
 
-// @chunk functions/csm_polylineCommon
+//>> @chunk functions/csm_polylineCommon
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     var highDiff = high - camera.encodedCameraHigh;

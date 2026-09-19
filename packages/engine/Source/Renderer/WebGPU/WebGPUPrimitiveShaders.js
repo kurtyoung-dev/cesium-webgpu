@@ -95,7 +95,7 @@ import csm_polylineCommon from "../../Shaders/WebGPU/chunks/functions/csm_polyli
 // a `PolylineGeometry`. The shared polyline VS (color VS minus per-vertex
 // color, plus `st`) feeds a per-material-type FS (Color / Dash / Glow / Arrow /
 // Outline). Each variant carries the same
-// `// @chunk functions/csm_polylineCommon` marker, so getShaderSource prepends
+// `//>> @chunk functions/csm_polylineCommon` marker, so getShaderSource prepends
 // the (angle-capable) PolylineCommon functions.
 import PolylineMatColor from "../../Shaders/WebGPU/Primitive/PolylineMatColor.js";
 // Textured polyline materials add a group-2 texture and sampler that the other
@@ -107,7 +107,7 @@ import PolylineMatArrow from "../../Shaders/WebGPU/Primitive/PolylineMatArrow.js
 import PolylineMatOutline from "../../Shaders/WebGPU/Primitive/PolylineMatOutline.js";
 
 // Point-light cube depth comparison is shared as a WGSL chunk. Shaders opt in
-// with the `// @chunk csm_samplePointShadow` marker, avoiding copies of the
+// with the `//>> @chunk csm_samplePointShadow` marker, avoiding copies of the
 // dominant-axis perspective-depth and five-tap filtering implementation.
 import csm_samplePointShadow from "../../Shaders/WebGPU/chunks/functions/csm_samplePointShadow.js";
 

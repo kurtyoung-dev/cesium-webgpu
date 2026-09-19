@@ -12,7 +12,7 @@
 // The point-light path calls `csm_samplePointShadow` from chunks/functions; the
 // marker below tells WebGPUPrimitiveShaders to prepend that chunk's WGSL at
 // load time.
-// @chunk csm_samplePointShadow
+//>> @chunk csm_samplePointShadow
 
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,

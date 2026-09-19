@@ -4,7 +4,7 @@
 //
 // Point-light cube-shadow sampling uses `csm_samplePointShadow`; the marker
 // below causes WebGPUPrimitiveShaders.js to prepend the shared function.
-// @chunk csm_samplePointShadow
+//>> @chunk csm_samplePointShadow
 //
 // Two vertex layouts are selected at pipeline-build time by the
 // `COMPRESSED_VERTICES` define:

@@ -5,7 +5,7 @@
 //
 // Point-light cube-shadow sampling uses `csm_samplePointShadow`; the marker
 // below causes WebGPUPrimitiveShaders.js to prepend the shared function.
-// @chunk csm_samplePointShadow
+//>> @chunk csm_samplePointShadow
 
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,

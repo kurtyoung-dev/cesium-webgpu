@@ -206,6 +206,70 @@ test("removes block comments without joining tokens", () => {
   assert.equal(stripWgslComments(source), "let first = 1;\nlet second = 2;\n");
 });
 
+// A shipped shader that opts into a shared WGSL chunk. The opt-in is a comment
+// the runtime injector matches, so whether the strip keeps that line decides
+// whether the minified module declares the function it calls.
+const chunkCarrierPath = new URL(
+  "../../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitivePhongColor.wgsl",
+  import.meta.url,
+);
+const chunkMarker = /^\s*\/\/.*@chunk\s+csm_samplePointShadow\b/m;
+
+test("a chunk marker written as a directive survives minify; the same marker as a plain comment does not", () => {
+  const source = readFileSync(chunkCarrierPath, "utf8").replace(/\r\n/g, "\n");
+  assert.ok(chunkMarker.test(source), "fixture shader must carry the marker");
+  assert.equal(chunkMarker.test(wgslModuleContents(source, true)), true);
+
+  const asPlainComment = source.replace("//>> @chunk", "// @chunk");
+  assert.notEqual(asPlainComment, source);
+  assert.equal(chunkMarker.test(asPlainComment), true);
+  assert.equal(
+    chunkMarker.test(wgslModuleContents(asPlainComment, true)),
+    false,
+  );
+});
+
+// The second load-bearing comment family: the host-side preprocessor in
+// WebGPUGPUCuller / WebGPUPerformanceManager / WebGPUPointCloudLODProcessor
+// removes the subgroup entry point by matching a pair of sentinel comments.
+// The sentinel keeps its `// __SUBGROUP_BLOCK_*__` text inside the directive
+// prefix precisely so those three consumer regexes need no change.
+const subgroupShaderPath = new URL(
+  "../../packages/engine/Source/Shaders/WebGPU/Compute/FrustumCull.wgsl",
+  import.meta.url,
+);
+const subgroupBlock =
+  /\/\/ __SUBGROUP_BLOCK_START__[\s\S]*?\/\/ __SUBGROUP_BLOCK_END__/;
+
+test("the subgroup sentinels survive minify, so the non-capable-device strip still fires", () => {
+  const source = readFileSync(subgroupShaderPath, "utf8").replace(
+    /\r\n/g,
+    "\n",
+  );
+  const stripBlock = (text) =>
+    text.replace(subgroupBlock, "// (subgroup variant stripped)");
+
+  assert.ok(subgroupBlock.test(source), "fixture shader must carry sentinels");
+  const minified = wgslModuleContents(source, true);
+  assert.equal(subgroupBlock.test(minified), true);
+  // What the sentinels exist for: no subgroup-only construct may reach a
+  // device that cannot declare `enable subgroups;`.
+  assert.equal(
+    /subgroupBallot|subgroup_invocation_id/.test(stripBlock(minified)),
+    false,
+  );
+
+  const asPlainComment = source
+    .split("//>>// __SUBGROUP")
+    .join("// __SUBGROUP");
+  assert.notEqual(asPlainComment, source);
+  assert.equal(subgroupBlock.test(asPlainComment), true);
+  assert.equal(
+    subgroupBlock.test(wgslModuleContents(asPlainComment, true)),
+    false,
+  );
+});
+
 test("directive-whitelist mutation is caught by the contract fixture", async () => {
   const originalSource = stripWgslComments.toString();
   const mutatedSource = originalSource.replace(
