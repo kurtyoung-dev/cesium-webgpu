@@ -340,6 +340,63 @@ and `C15-08` were left held by that ruling; `R-2026-09-19-5`
 ([`MAINTAINER_RULINGS_2026-09-19.md`](MAINTAINER_RULINGS_2026-09-19.md)) lifts the `R4` hold as part
 of Option C, and the batch that executes Option C is what rewrites those six cells.
 
+**2026-09-19 — `C15-05` IMPLEMENTED (lane Bodo); frozen for review, not landed.** Step 0 of
+`R-2026-09-18-1` is discharged: the three products were re-fetched once each, the bytes frozen under
+`Specs/Data/SpaceWeather/` with SHA-256 provenance, and every §2a schema compared field by field —
+recorded as queue §2a-bis. The structural claims held; three figures §2a had recorded as single
+observations moved (forecast lead 62 min not 94, non-zero cells 15,887 not 17,805, observed-Kp rows
+60 not 56), and one fact §2a never measured turned out to contradict the brief's own premise: the
+**360 OVATION pole duplicates disagree in the live product**, so a require-agreement rule rejects it.
+The row ships the source-authority contract `C15-06` is built against
+(`SpaceWeatherSourceAuthority.ts`) plus two normalizers and an off-hot-path ingest. **Nothing renders
+from it** — `C15-03`, `C15-04` and `C15-07` are still unstarted or held — and the karma leg is owed to
+the wave's Edge validation job. Status is lane claims until station-3 review.
+
+**2026-09-19 — `C15-05` v2, both judgements in.** Station-3 review (Bowman) returned
+LAND-WITH-FIXES with four proven fixes; the adversarial verifier (Briffo, `R-2026-09-11-1`) returned
+REFUTED on six axes. Both agreed on what holds — the longitude-major formula re-derived cell by cell,
+the pole finding that overrode the brief, the seam, the OVATION-vs-Kp non-double-count rule and the
+property-read render path — and every refutation was in the ingest's lifecycle and clock. All eight
+defects are fixed, each with a behaviour spec and an inertness mutant: the stop fence, the leaked
+timer, the synchronous-throw escape, the fabricated poll clock, the two time-regression paths, the
+unvalidated publish, the second zone-blind time parser and the negative sample. The contract gains
+`latestOwnership()`, which `C15-06` and `C15-07` both need. Node 35/35 (suite 845/845), karma 27
+specs owed to the Edge job, 21 mutants RED. Status remains lane claims until re-reviewed.
+
+**2026-09-19 — `C15-05` v3, second round.** The adversarial verifier returned REFUTED a second
+time, and the finding that matters is that **two of the three new defects were introduced by the v2
+fixes**: the time-regression refusal added in v2 compared an incoming instant against a held one with
+nothing bounding the held one, so a single future-dated payload wedged both products permanently
+where the defect it replaced had been transient. The other two were a `stop()` raised inside the
+tick's own synchronous transport call, which cleared nothing and then re-armed, and a rejection
+reason whose own `toString` throws, escaping the cycle the fence exists to close. A surviving mutant
+also showed the poll chain itself was unpinned: removing the tick's re-arm made the ingest one-shot
+and every spec still passed. All are fixed, and the pattern behind them is addressed directly: every
+guard, refusal, latch and early-return in the ingest now has a recorded answer to "what clears this,
+and which spec proves the recovery", and the two that answered "nothing" are the two that were fixed.
+The clock rule is stated as one named tolerance with its source, and it separates the two instants a
+feed carries — an observation instant may lead the clock only by skew, a forecast instant leads it by
+design. Node 43/43 (suite 853/853), karma 35 specs still owed to the Edge job, **36 mutants RED with
+no survivor**. Status remains lane claims until re-reviewed.
+
+**2026-09-19 — `C15-05` v4, third round.** The adversarial verifier returned REFUTED a third time
+and recorded the lane as **converging: zero source defects in the ingest's core behaviour**, every
+earlier reproduction closed but the two carried as dated follow-ups, and every recovery path in the
+v3 sticky-state table load-bearing under mutation. The refutation was **spec coverage** — four
+mutants survived all 43 cases, two of them erasing behaviours the row's Exit sentence names (the
+ingest's own `polePolicy` option never had to reach the normalizer; the published packet's
+provenance triple was read by no assertion in either twin). Both his cases are taken in both twins
+and all four are RED. Station-3 returned LAND-WITH-FIXES with one finding, taken verbatim: the new
+`.gitattributes` rule reached the fixture directory's sidecar README, which would then have landed
+with the applying checkout's line endings. **Two source changes, one defect class — stale state
+presented as fresh.** A snapshot's declared horizon is bounded at both ends, so a mistyped
+`Forecast Time` year can no longer buy a year of trust; the capture is kept and published whole and
+the bound is reported. And the owner is re-decided by the clock rather than only by a response: a
+transport that never settled froze the published decision for ever (measured `ovation`/`fresh`
+thirty days on), and each poll tick now re-resolves ownership at the instant it fires, republishing
+only on a handoff. Node 47/47 (suite 857/857), karma 39 specs still owed to the Edge job, **46
+mutants RED with no survivor**. Status remains lane claims until re-reviewed.
+
 ### C16 — Comment remediation & attribution
 
 **Launched** by maintainer directive 2026-08-10 (`QUEUE_2026-08-10_CAMPAIGN16.md`). Audit

@@ -314,6 +314,62 @@ as owed before any flare-class threshold is hard-coded. Likewise the **OVATION
 0–100-percent reading remains an assumption and needs a storm-period sample or
 an official statement before `C15-05` normalizes against a fixed ceiling.
 
+### 2a-bis. Re-capture record — 2026-09-19 (lane Bodo, `C15-05` Step 0)
+
+`R-2026-09-18-1` required the §2a schemas to be re-measured before `C15-05` was
+built on them. Three endpoints were fetched once each with Node's global
+`fetch`; the bytes are frozen in `Specs/Data/SpaceWeather/` and pinned by
+SHA-256 in that directory's `README.md`. **Lane claims, not yet reviewed.**
+
+**Addendum, v2 2026-09-19.** Both judgements on the frozen patch re-derived every number in this
+record independently from the same bytes and reproduced all of them, including the pole tally
+(`{0:10, 1:8, 2:25, 3:47, 4:131, 5:139}`, sum 1418) and the 62-minute lead. One ambiguity in the
+sidecar README is now closed: the wire capture holds **15,887** non-zero cells and a normalized grid
+counts **15,897**, because the default `mean` pole policy gives the ten zero-valued south-pole
+duplicates the pole's mean. No schema verdict in the table above changed.
+
+| Endpoint | HTTP | Bytes | Verdict vs §2a |
+|---|---|---|---|
+| `json/ovation_aurora_latest.json` | 200 | 918,963 | **SAME** on every structural claim — five keys, 65,160 integer triples, longitude-major `lon * 181 + (lat + 90)` verified cell by cell, 360 × 181 unique, range 0–16. **DRIFTED** on two values §2a recorded as single observations, both of which §2a already declared variable: the forecast lead is **62 min** here against 94 min on 2026-08-06, and the non-zero cell count is 15,887 against 17,805. |
+| `products/noaa-planetary-k-index.json` | 200 | 4,634 | **SAME** on schema — `{time_tag, Kp, a_running, station_count}`, one key signature across all rows, ascending, `time_tag` zoneless, three-hour bins. **DRIFTED** on row count: **60 rows**, not the 56 §2a states. The window is rolling (2026-09-12T00:00 to 2026-09-19T09:00), so "56 rows = 7 days × 8 bins" is not a fixed contract and a consumer must not assert the length. |
+| `products/noaa-planetary-k-index-forecast.json` | 200 | 6,907 | **SAME** on the case trap — the field is `kp`, and `observed`/`noaa_scale` are present. **REFINED** beyond §2a, which described this product only as the observed one "plus" two fields: the row carries **exactly four** keys (`time_tag`, `kp`, `observed`, `noaa_scale`) and has **no** `a_running` or `station_count`. `observed` is a three-valued enum — `observed` / `estimated` / `predicted` (60/4/17 rows here) — which §2a did not record; `noaa_scale` was null on every row. 81 rows, ascending, zoneless. |
+
+**One measured fact §2a does not contain, and it changes a design decision.** §2a
+never tested whether the OVATION pole duplicates agree. They do not: in this
+capture the 360 south-pole entries carry **six distinct values (0–5, sum 1418)**
+while the entire ring one degree away is uniformly zero, and the north pole is
+uniformly zero. A "require the duplicates to agree" rule is therefore not a
+theoretical alternative — it **rejects the live product**. `C15-05` ships the
+choice as a named policy defaulting to the mean, with the refusal available and
+tested against this capture.
+
+**The `Aurora` unit gate is unchanged and still owed.** This capture is another
+quiet-period sample topping out at 16, so nothing here pins the ceiling, and the
+ingest carries the integers at `"raw"` scale rather than normalizing them.
+
+**Addendum, v3 2026-09-19 — one constant in this row is NOT a product fact.**
+`SPACE_WEATHER_CLOCK_SKEW_TOLERANCE_SECONDS` (300 s) bounds how far ahead of the
+reading clock an *observation* instant may still be credited. Nothing measured
+here sets it and no §2a claim supports it: it is a statement about two clocks,
+taken from the conventional default acceptable skew (RFC 4120 §10). Every
+observation instant in all three captures is in the past, so the tolerance does
+not touch them. A forecast instant leads the clock by design and is never
+bounded by it — the 62-minute lead above is exactly that.
+
+**Addendum, v4 2026-09-19 — the forecast lead is measured, and now also bounded.**
+The rule above stands: the lead is read from the payload's own two instants and
+never inferred from the product's name, because it is measurably variable (94
+and 62 minutes, six weeks apart). What changed is that the lead is also the
+number deciding how long an observation goes on being believed, which makes a
+payload that declares it a payload trusted to say how long to trust it — and a
+`Forecast Time` with a mistyped year declares 31,539,720 s. `C15-05` therefore
+bounds the credited horizon at `OVATION_VALIDITY_CEILING_SECONDS` = 10,800 s:
+six times this product's own nominal half-hour horizon and nearly twice the
+longest lead ever measured from it, so no capture in this record is touched by
+it. Like the skew tolerance this is a policy number and not a product fact, and
+it is recorded here so no later reader mistakes it for one. The payload is kept
+and published whole when the bound engages; only the trust is refused.
+
 ---
 
 ## 2b. Reference pre-registration (2026-08-09)
@@ -400,7 +456,7 @@ not externally trained scenes.
 | `C15-02` | WMM2025 geomagnetic coordinates and synthetic activity-dependent oval | P0 | **IMPLEMENTED 2026-09-18 (lane Bucca) — frozen for review, not landed; station-3 verdict LAND-WITH-FIXES applied (v2).** Released from the R4 hold by `R-2026-09-17-9` (2026-09-17), the narrow override covering this row and `C15-01` only; pure-Node lane. Modules + specs + mutants recorded in `DEFERRED_WORK.md` under `EPIC-AURORA-SPACE-WEATHER` | `C15-01` |
 | `C15-03` | Shared layered density/emission kernel, local-night gate, and RTE shell contract | P0 | PENDING — **HELD (R4)**; released by a later one-line ruling once the contact sheet exists (`R-2026-09-17-9`) | `C15-02` |
 | `C15-04` | WebGL + WebGPU shell renderers, visibility demand, and feature-preserving performance tiers | P0 | PENDING — **HELD (R4)** | `C15-03` |
-| `C15-05` | OVATION + planetary-Kp asynchronous ingest and source-authority policy | P1 | PENDING — **RELEASED from the R4 hold 2026-09-19 by `R-2026-09-18-1`** ([`MAINTAINER_RULINGS_2026-09-18.md`](MAINTAINER_RULINGS_2026-09-18.md)), a second named narrow override of the same shape as `R-2026-09-17-9`; dispatchable as a **pure-Node lane**, started after the CI fix lands, **fixtures re-captured first** (the §2a schemas were measured 2026-08-06 against live feeds). **This row publishes the source-authority contract `C15-06` is built against, and goes first.** Schemas now measured, §2a grid ordering is the spec | `C15-01`, `C15-02` |
+| `C15-05` | OVATION + planetary-Kp asynchronous ingest and source-authority policy | P1 | PENDING — **RELEASED from the R4 hold 2026-09-19 by `R-2026-09-18-1`** ([`MAINTAINER_RULINGS_2026-09-18.md`](MAINTAINER_RULINGS_2026-09-18.md)), a second named narrow override of the same shape as `R-2026-09-17-9`; dispatchable as a **pure-Node lane**, started after the CI fix lands, **fixtures re-captured first** (the §2a schemas were measured 2026-08-06 against live feeds). **This row publishes the source-authority contract `C15-06` is built against, and goes first.** Schemas now measured, §2a grid ordering is the spec; **2026-09-19 IMPLEMENTED (lane Bodo), frozen for review — lane claims until reviewed**: fixtures re-captured and frozen (§2a-bis), and `SpaceWeatherSourceAuthority.ts` publishes the contract `C15-06` is built against; **v2 after both judgements (Bowman LAND-WITH-FIXES, Briffo REFUTED)**: eight lifecycle/clock defects fixed with a spec and an inertness mutant each, `latestOwnership()` added to the contract, 35 Node cases and 27 karma specs, 21 mutants RED; **v3 after the second round (Briffo REFUTED again on three new defects, two of them introduced by the v2 fixes; Bowman LAND-WITH-FIXES)**: the time-regression refusal is bounded against the clock by a named tolerance so one wrong timestamp can no longer wedge either product, stopping is a state rather than an event, a rejection reason that cannot describe itself is refused like any other, the refusal diagnostic survives a clock step, `destroy()` releases the ownership decision, and the poll chain itself is now pinned — 43 Node cases, 35 karma specs, 37 mutants RED with no survivor; **v4 after the third round (Briffo REFUTED on spec coverage only, recording the lane as converging with zero source defects in core behaviour; Bowman LAND-WITH-FIXES)**: the two spec cases that close the four surviving mutants are taken in both twins, and two changes close one defect class from both ends — a snapshot's declared horizon is bounded at both ends so a mistyped `Forecast Time` cannot buy unbounded trust, and the poll tick re-resolves ownership against the clock so a transport that never settles can no longer freeze the published decision — 47 Node cases, 39 karma specs, **46 mutants RED with no survivor** | `C15-01`, `C15-02` |
 | `C15-06` | New RTSW + GOES asynchronous ingest with separate geomagnetic and flare state | P1 | PENDING — **RELEASED from the R4 hold 2026-09-19 by `R-2026-09-18-1`** ([`MAINTAINER_RULINGS_2026-09-18.md`](MAINTAINER_RULINGS_2026-09-18.md)), a second named narrow override of the same shape as `R-2026-09-17-9`; dispatchable as a **pure-Node lane**, started after the CI fix lands, **fixtures re-captured first** (the §2a schemas were measured 2026-08-06 against live feeds). **Built against `C15-05`'s published authority contract, so it follows that row.** Brief corrected for descending RTSW order + `-9999` fill | `C15-01`, `C15-05` authority contract |
 | `C15-06P` | Attributed, located solar-prominence state provider for eclipse composition; never infer image-plane location from GOES flux | P1 overlay | PENDING — **HELD (R4)**; exact data owner for the Eclipse Explorer follow-up | `C15-01`, `C15-06`; `CLT-C3P` owns prominence geometry/rendering and the satisfied `CLT-C4` seam supplies landed HDR/bloom/exposure composition |
 | `C15-07` | `effects.aurora` facade, demo, diagnostics, accessibility, attribution/licensing closure | P1 | PENDING — **HELD (R4)** | `C15-04`, `C15-05`, `C15-06` |

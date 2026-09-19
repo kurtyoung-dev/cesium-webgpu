@@ -82,3 +82,16 @@ Tools/lib/lane-tmp.spec.mjs text eol=lf
 # reproduces sha256 eca49c14483e4334bf409a7f4aacb2f2c642b885cef8691d936f12c1455d0c19
 # (22,439 bytes, 25 members) from two independent packs.
 Tools/tsd-jsdoc-compat/** -text
+
+# --- Space-weather product fixtures (C15-05) -----------------------------------
+# Every capture in this directory is a byte-frozen copy of a live product, and
+# each one is pinned by SHA-256 in its sidecar README. The captures are minified
+# single-line JSON and therefore carry no EOL byte at all, so `* text=auto` has
+# nothing to rewrite in them today -- but that is the same accident the SVS block
+# above documents, and an accident is not a guarantee. Declaring them binary makes
+# the byte-identity claim true by declaration: `-text` disables conversion in both
+# directions, where `eol=lf` only normalizes on the way in. The rule names the
+# captures rather than the directory: the sidecar README is ordinary text, and
+# `-text` across the whole directory would commit whatever line endings the
+# checkout that applied this patch happened to produce.
+Specs/Data/SpaceWeather/*.json -text
