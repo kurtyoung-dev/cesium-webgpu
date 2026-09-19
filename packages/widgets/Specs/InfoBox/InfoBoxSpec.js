@@ -29,7 +29,7 @@ describe("Widgets/InfoBox/InfoBox", function () {
   });
 
   it("can set description body", function () {
-    const infoBox = new InfoBox(testContainer);
+    infoBox = new InfoBox(testContainer);
     let node;
 
     const infoElement = testContainer.firstChild;

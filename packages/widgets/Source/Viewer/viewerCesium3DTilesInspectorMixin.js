@@ -1,4 +1,4 @@
-import { Check } from "@cesium/engine";
+import { Check, wrapFunction } from "@cesium/engine";
 import Cesium3DTilesInspector from "../Cesium3DTilesInspector/Cesium3DTilesInspector.js";
 
 /**
@@ -32,6 +32,13 @@ function viewerCesium3DTilesInspectorMixin(viewer) {
         return cesium3DTilesInspector;
       },
     },
+  });
+
+  //Viewer.destroy removes only its own element, so the panel appended to the
+  //caller's container is destroyed and removed here.
+  viewer.destroy = wrapFunction(viewer, viewer.destroy, function () {
+    cesium3DTilesInspector.destroy();
+    viewer.container.removeChild(container);
   });
 }
 export default viewerCesium3DTilesInspectorMixin;

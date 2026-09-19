@@ -1,4 +1,4 @@
-import { Check } from "@cesium/engine";
+import { Check, wrapFunction } from "@cesium/engine";
 import VoxelInspector from "../VoxelInspector/VoxelInspector.js";
 
 /**
@@ -29,6 +29,13 @@ function viewerVoxelInspectorMixin(viewer) {
         return voxelInspector;
       },
     },
+  });
+
+  //Viewer.destroy removes only its own element, so the panel appended to the
+  //caller's container is destroyed and removed here.
+  viewer.destroy = wrapFunction(viewer, viewer.destroy, function () {
+    voxelInspector.destroy();
+    viewer.container.removeChild(container);
   });
 }
 export default viewerVoxelInspectorMixin;

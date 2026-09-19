@@ -21521,3 +21521,74 @@ cases that drive a real browser `Worker` at a missing script.
 
 **Tracked:** attaches to `ARCHITECTURE_REVIEW_2026-09-02.md` §3.11 row `1390-10 [shaderasync]`
 (previously unowned) — see the dated attachment line under that table. No new row opened.
+
+## 2026-09-17 — the widget teardown contract: five fixes (lane Burrows, Gemini-audit fix plan wave 2, lane W2-E)
+
+Verified at HEAD `91a7a8c9ff`, each cited line re-read in the tree before it was changed. Authorship
+is UPSTREAM for every row; per maintainer ruling R-2026-09-17-1 the rows are fixed in-fork **and**
+their issue text is recorded here for the upstream filing. Acceptance for all five is the Node
+contract `Tools/visual-regression/widgets-teardown-contract.spec.mjs` (14 assertions, run by
+`npm run test-widgets-teardown`), which compiles the real module and spec sources through
+`vm.compileFunction` over a measurable DOM stub; each row has an inertness mutant that turns the
+matching assertion RED on OUTPUT.
+
+- **`widgets-10` (P1) — `packages/widgets/Source/Viewer/viewerCesiumInspectorMixin.js:29`,
+  `viewerCesium3DTilesInspectorMixin.js:21`, `viewerVoxelInspectorMixin.js:21`.** Each mixin appended
+  its panel to `viewer.container` and never wrapped `viewer.destroy`; `Viewer.destroy()`
+  (`Viewer.js:1466`) removes only `this._element`, so after teardown the caller's page kept a dead
+  inspector panel with its Knockout bindings applied, on 100% of extend+destroy. Each mixin now wraps
+  `viewer.destroy` with `wrapFunction` (the in-repo template is `viewerDragDropMixin.js:217`),
+  destroying the inspector and removing the panel. Authorship UPSTREAM, all three **byte-identical to
+  upstream/main before this change** (`git diff --numstat upstream/main HEAD` empty for each) — first
+  divergence, two hunks per file (the `wrapFunction` import and the wrap itself), no reflow.
+  *Upstream issue text:* "viewerCesiumInspectorMixin, viewerCesium3DTilesInspectorMixin and
+  viewerVoxelInspectorMixin append a panel to `viewer.container` and never wrap `viewer.destroy`.
+  `Viewer.destroy()` removes only its own `_element`, so the inspector panel, its Knockout bindings
+  and its view model survive teardown in the host page. `viewerDragDropMixin` already shows the
+  pattern: `viewer.destroy = wrapFunction(viewer, viewer.destroy, …)`."
+  Three new Jasmine suites cover it (`packages/widgets/Specs/Viewer/viewerCesiumInspectorMixinSpec.js`
+  and the 3DTiles/Voxel twins) — **the mixins had no karma coverage at all before this lane**, so the
+  brief's named leg pointed at files that did not exist.
+- **`widgets-01` (P2) — `FullscreenButtonViewModel.js:91`/`:106`.** The constructor subscribed on
+  `container.ownerDocument` and `destroy()` unsubscribed from the global `document`, orphaning the
+  listener whenever the widget is hosted in an iframe or a popped-out window. The constructor now
+  keeps `this._ownerDocument` and `destroy()` removes from it. Authorship UPSTREAM (upstream carries
+  the same mismatch at its `:89`/`:141`); the file already diverges (96+/100−).
+  *Upstream issue text:* "FullscreenButtonViewModel adds its `fullscreenchange` listener to
+  `container.ownerDocument` but removes it from `document`, so an iframe-hosted or popped-out viewer
+  leaks the listener and the destroyed view model."
+- **`widgets-02` (P2) — `Geocoder.js:148`, `:154`.** `pointercancel` and `touchcancel` were added on
+  the caller's container and removed nowhere; `destroy()` now removes both in their matching
+  branches. Exactly one orphan per branch — the two branches are mutually exclusive — and the
+  exposure is a caller-owned container passed to `new Geocoder({container})`, since the Viewer's own
+  geocoder container is discarded with `_element`. Authorship UPSTREAM (`:147`/`:153` upstream,
+  removing neither); the file already diverges (162+/171−).
+  *Upstream issue text:* "Geocoder's constructor registers `pointercancel` (or `touchcancel`) on the
+  container and `destroy()` does not remove it, retaining the destroyed Geocoder through
+  `_onInputEnd` for the life of a caller-owned container."
+- **`widgets-04` (P2) — `Animation.js:471`.** The constructor inserted a `<style>` node into
+  `ownerDocument.head` and `destroy()` never removed it, so every construct/destroy cycle grew
+  `<head>` by one node. Each instance creates its own node at `:457` — there is nothing shared — so
+  the fix is `this._cssStyle` plus `remove()` in `destroy()`; **no refcounting** (the verifier's
+  prescription would have been wrong, and the refuter and FINAL both corrected it). Authorship
+  UPSTREAM (identical insert at upstream `:470`); the file already diverges (782+/761−).
+  *Upstream issue text:* "Animation inserts a per-instance `<style>` element into
+  `ownerDocument.head` and never removes it in `destroy()`, so `<head>` grows by one element per
+  widget lifecycle."
+- **`widgets-16` (P2, spec hygiene) — seven sites, four files.** An inner `const` shadowed the
+  suite-scoped variable, so the suite's `afterEach` saw the outer binding and never destroyed what
+  the test created: `packages/engine/Specs/Widget/CesiumWidgetSpec.js:608`, `:1399`,
+  `packages/widgets/Specs/Viewer/ViewerSpec.js:1181`, `:1203`, `:1229`,
+  `packages/widgets/Specs/Animation/AnimationSpec.js:29`,
+  `packages/widgets/Specs/InfoBox/InfoBoxSpec.js:32`. Each is now an assignment to the outer `let`.
+  **Correction to the record, from the tree (Principle 10):** the refuter's fourth green-path leak,
+  `CesiumWidgetSpec.js:608`, does destroy — `:630 widget.destroy();` — so it is a throw-path site
+  like the three `ViewerSpec` ones, and the green-path count is **three** (`CesiumWidgetSpec:1399`,
+  `AnimationSpec:29`, `InfoBoxSpec:32`), i.e. the verifier's original figure, not the refuter's four
+  that `FINAL-Whitfoot.md` §d adopted. `AnimationSpec.js` and `InfoBoxSpec.js` were upstream-pristine
+  and now carry a one-token divergence each.
+
+**Architecture signal (FINAL A4 / AS-1): `packages/widgets` has no teardown contract.** Not built in
+this lane — the five rows above are point fixes. What this batch adds toward it is a measurable
+Node-side contract for four of the widgets and the three mixins, which a later lane can extend
+widget by widget rather than re-deriving the harness.

@@ -26,7 +26,7 @@ describe("Widgets/Animation/Animation", function () {
     container = document.createElement("div");
     const clockViewModel = new ClockViewModel();
     const animationViewModel = new AnimationViewModel(clockViewModel);
-    const animation = new Animation(container, animationViewModel);
+    animation = new Animation(container, animationViewModel);
 
     //Verify applyThemeChanges is called when we add the container to the DOM.
     spyOn(animation, "applyThemeChanges").and.callThrough();

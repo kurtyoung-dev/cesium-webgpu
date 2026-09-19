@@ -88,6 +88,7 @@ class FullscreenButtonViewModel {
     this._callback = function () {
       tmpIsFullscreen(Fullscreen.fullscreen);
     };
+    this._ownerDocument = ownerDocument;
     ownerDocument.addEventListener(Fullscreen.changeEventName, this._callback);
   }
 
@@ -103,7 +104,10 @@ class FullscreenButtonViewModel {
    * properly clean up the view model when it is no longer needed.
    */
   destroy() {
-    document.removeEventListener(Fullscreen.changeEventName, this._callback);
+    this._ownerDocument.removeEventListener(
+      Fullscreen.changeEventName,
+      this._callback,
+    );
     destroyObject(this);
   }
 

@@ -1178,7 +1178,7 @@ describe(
     });
 
     it("can get and set selectedEntity", function () {
-      const viewer = createViewer(container);
+      viewer = createViewer(container);
 
       const dataSource = new MockDataSource();
       viewer.dataSources.add(dataSource);
@@ -1200,7 +1200,7 @@ describe(
     });
 
     it("raises an event when the selected entity changes", function () {
-      const viewer = createViewer(container);
+      viewer = createViewer(container);
 
       const dataSource = new MockDataSource();
       viewer.dataSources.add(dataSource);
@@ -1226,7 +1226,7 @@ describe(
     });
 
     it("selectedEntity sets InfoBox properties", function () {
-      const viewer = createViewer(container);
+      viewer = createViewer(container);
 
       const entity = new Entity();
 

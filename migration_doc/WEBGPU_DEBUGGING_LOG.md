@@ -21976,3 +21976,40 @@ availability tile whose earlier request was rejected".
 - **Files modified:** `packages/engine/Source/Core/TaskProcessor.js`,
   `packages/engine/Specs/Core/TaskProcessorSpec.js`,
   `Tools/visual-regression/task-processor-error-path.spec.mjs` (new), `package.json` (runner line).
+
+## Lane Burrows (Gemini-audit fix plan wave 2, lane W2-E, 2026-09-17) — Bug 1497.1: the three inspector mixins leave a live panel in the caller's page
+
+**Bug:** 1497.1 (`widgets-10`, P1)
+
+**Files affected:** `packages/widgets/Source/Viewer/viewerCesiumInspectorMixin.js`,
+`packages/widgets/Source/Viewer/viewerCesium3DTilesInspectorMixin.js`,
+`packages/widgets/Source/Viewer/viewerVoxelInspectorMixin.js`
+
+**Root cause:** each mixin creates a `<div>`, appends it to `viewer.container` and constructs its
+inspector into it (`viewerCesiumInspectorMixin.js:27-33` and the twins at `:21-27`), then exposes the
+inspector through `Object.defineProperties` and returns. Nothing wraps `viewer.destroy`.
+`Viewer.destroy()` removes exactly one node — `Viewer.js:1466 this._container.removeChild(this._element);`
+— and the mixin's panel is a **sibling** of `_element`, not a descendant. So after `viewer.destroy()`
+the host page still contains the inspector panel, with Knockout bindings applied and the view model
+holding a destroyed Scene. It reproduces on 100% of `viewer.extend(mixin)` + `viewer.destroy()`; the
+symptom is visible in the user's own DOM, which is what took this row from P2 to P1. The
+`postRender` half of the leak is moot — `CesiumInspectorViewModel.js:579` and
+`Cesium3DTilesInspectorViewModel.js:1122` register on `scene.postRender`, and the Scene dies with the
+Viewer — so what survives is the DOM and the bindings.
+
+**Fix applied:** mirror the in-repo template `viewerDragDropMixin.js:217-219` — wrap `viewer.destroy`
+with `wrapFunction(viewer, viewer.destroy, …)` so that, **before** the Viewer's own teardown (the new
+function runs first, `Core/wrapFunction.js:21-24`, so the Scene is still alive for the inspector's
+own `destroy()`), the inspector is destroyed and its container removed from `viewer.container`.
+
+**Files modified:** the three mixins above (import + wrap, two hunks each, no reflow — all three were
+byte-identical to `upstream/main` before this change);
+`Tools/visual-regression/widgets-teardown-contract.spec.mjs` (new, the Node acceptance);
+`packages/widgets/Specs/Viewer/viewerCesiumInspectorMixinSpec.js` +
+`viewerCesium3DTilesInspectorMixinSpec.js` + `viewerVoxelInspectorMixinSpec.js` (new — the mixins had
+**no** karma coverage before this lane); `package.json` (one add-only runner line).
+
+**Inertness:** with the assignment made unreachable (`viewer.__inert = false && wrapFunction(…)`) on a
+temp copy of all three mixins, the Node contract goes RED on output, not on absence —
+`nothing the Viewer or the mixin added is left in the caller's container / expected: 0 / actual: 1`
+for each of the three.

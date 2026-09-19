@@ -1,4 +1,4 @@
-import { defined, DeveloperError } from "@cesium/engine";
+import { defined, DeveloperError, wrapFunction } from "@cesium/engine";
 import CesiumInspector from "../CesiumInspector/CesiumInspector.js";
 
 /**
@@ -38,6 +38,13 @@ function viewerCesiumInspectorMixin(viewer) {
         return cesiumInspector;
       },
     },
+  });
+
+  //Viewer.destroy removes only its own element, so the panel appended to the
+  //caller's container is destroyed and removed here.
+  viewer.destroy = wrapFunction(viewer, viewer.destroy, function () {
+    cesiumInspector.destroy();
+    viewer.container.removeChild(cesiumInspectorContainer);
   });
 }
 export default viewerCesiumInspectorMixin;

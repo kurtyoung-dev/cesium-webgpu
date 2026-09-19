@@ -469,6 +469,7 @@ class Animation {
   .cesium-animation-knobInner { fill: url(#animation_knobInner); }";
 
     ownerDocument.head.insertBefore(cssStyle, ownerDocument.head.childNodes[0]);
+    this._cssStyle = cssStyle;
 
     const themeEle = document.createElement("div");
     themeEle.className = "cesium-animation-theme";
@@ -777,6 +778,7 @@ class Animation {
 
     this._container.removeChild(this._svgNode);
     this._container.removeChild(this._theme);
+    this._cssStyle.remove();
     this._realtimeSVG.destroy();
     this._playReverseSVG.destroy();
     this._playForwardSVG.destroy();

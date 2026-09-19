@@ -605,7 +605,7 @@ describe(
     });
 
     it("raises an event when the tracked entity changes", function () {
-      const widget = createCesiumWidget(container);
+      widget = createCesiumWidget(container);
 
       const dataSource = new MockDataSource();
       widget.dataSources.add(dataSource);
@@ -1396,7 +1396,7 @@ describe(
 
     it("zoomTo zooms to entity when globe is disabled", async function () {
       // Create widget with globe disabled
-      const widget = createCesiumWidget(container, {
+      widget = createCesiumWidget(container, {
         globe: false,
         infoBox: false,
         selectionIndicator: false,

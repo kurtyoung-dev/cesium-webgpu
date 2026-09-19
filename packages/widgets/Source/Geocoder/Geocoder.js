@@ -171,11 +171,13 @@ class Geocoder {
     if (FeatureDetection.supportsPointerEvents()) {
       document.removeEventListener("pointerdown", this._onInputBegin, true);
       container.removeEventListener("pointerup", this._onInputEnd, true);
+      container.removeEventListener("pointercancel", this._onInputEnd, true);
     } else {
       document.removeEventListener("mousedown", this._onInputBegin, true);
       container.removeEventListener("mouseup", this._onInputEnd, true);
       document.removeEventListener("touchstart", this._onInputBegin, true);
       container.removeEventListener("touchend", this._onInputEnd, true);
+      container.removeEventListener("touchcancel", this._onInputEnd, true);
     }
     this._viewModel.destroy();
     knockout.cleanNode(this._form);
