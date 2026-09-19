@@ -26,6 +26,8 @@ export const C12_29_S5_MULTIVIEW_PAGE_SCHEMA =
   "c12-29-s5-multiview-page-progress-v3";
 export const C12_29_S5_MULTIVIEW_DIAGNOSTICS_SCHEMA =
   "c12-29-s5-multiview-runtime-diagnostics-v3";
+export const C12_29_S5_MULTIVIEW_OFFSCREEN_DIAGNOSTICS_SCHEMA =
+  "c12-29-s5-multiview-offscreen-ray-pick-diagnostics-v1";
 
 export const C12_29_S5_MULTIVIEW_RENDERERS = Object.freeze(["webgl", "webgpu"]);
 
@@ -1543,6 +1545,261 @@ function validOffscreen(value, renderer) {
   );
 }
 
+/**
+ * The conjunct vocabulary `describeC1229S5MultiviewOffscreenRayPick` draws on,
+ * in `validOffscreen`'s own evaluation order. Add-only: a name here can appear
+ * in a banked ERROR artifact, so renaming one rewrites evidence that has
+ * already been published.
+ */
+export const C12_29_S5_MULTIVIEW_OFFSCREEN_CONJUNCTS = Object.freeze([
+  "keys",
+  "viewId",
+  "defaultViewId",
+  "cameraId",
+  "defaultCameraId",
+  "constructorIsView",
+  "distinctFromDefault",
+  "orthographicFrustum",
+  "realViewObservedDuringUpdate",
+  "frameStateViewIdDuringUpdate",
+  "frameStateCameraIdDuringUpdate",
+  "eclipseStateObjectId",
+  "defaultEclipseStateObjectId",
+  "eclipseShadowObjectId",
+  "defaultEclipseShadowObjectId",
+  "ray",
+  "attempts",
+  "attemptsCeiling",
+  "resultPolicy",
+  "supportsSynchronousReadback",
+  "hit",
+  "hitGlobe",
+  "objectPresent",
+  "position",
+  "hitType",
+  "hitGlobeType",
+  "objectPresentType",
+  "positionType",
+  "cpuEllipsoidIntervalKeys",
+  "cpuEllipsoidInterval",
+  "cpuIntersectionPosition",
+  "cpuEllipsoidIntervalMatchesRay",
+  "geometricGlobeHit",
+  "geometricPosition",
+  "geometricPositionDelta",
+  "positionAgreesWithCpu",
+]);
+
+/**
+ * Names which conjuncts of `validOffscreen` an offscreen ray-pick record fails,
+ * for the renderer arm it was recorded under.
+ *
+ * `validOffscreen` answers only true or false, and a session fold reports that
+ * answer as one undifferentiated reason. An ERROR artifact published from a
+ * self-validation failure is the one place a later reader has nothing else to
+ * work from, so the attribution is computed here rather than reconstructed by a
+ * bespoke script against evidence that may no longer exist.
+ *
+ * Evaluation follows `validOffscreen`'s order and repeats its guards: a
+ * conjunct whose inputs an earlier conjunct already rejected is not evaluated.
+ * The returned list is therefore empty exactly when `validOffscreen` is true.
+ * The two predicates stay separate deliberately — the gate's verdict must not
+ * move because a diagnostic was added — and the spec pins their agreement
+ * through the real fold.
+ */
+export function describeC1229S5MultiviewOffscreenRayPick(value, renderer) {
+  const expectedResultPolicy =
+    renderer === "webgl"
+      ? "sync-position-only-globe"
+      : "known-webgpu-no-position-globe";
+  const reportedRenderer = C12_29_S5_MULTIVIEW_RENDERERS.includes(renderer)
+    ? renderer
+    : null;
+  const failedConjuncts = [];
+  const check = (name, condition) => {
+    if (condition !== true) {
+      failedConjuncts.push(name);
+      return false;
+    }
+    return true;
+  };
+  if (
+    !exactKeys(value, [
+      "viewId",
+      "defaultViewId",
+      "cameraId",
+      "defaultCameraId",
+      "constructorIsView",
+      "distinctFromDefault",
+      "orthographicFrustum",
+      "realViewObservedDuringUpdate",
+      "frameStateViewIdDuringUpdate",
+      "frameStateCameraIdDuringUpdate",
+      "eclipseStateObjectId",
+      "defaultEclipseStateObjectId",
+      "eclipseShadowObjectId",
+      "defaultEclipseShadowObjectId",
+      "ray",
+      "attempts",
+      "supportsSynchronousReadback",
+      "resultPolicy",
+      "hit",
+      "hitGlobe",
+      "objectPresent",
+      "position",
+      "cpuEllipsoidInterval",
+      "cpuIntersectionPosition",
+      "geometricGlobeHit",
+      "geometricPosition",
+    ])
+  ) {
+    return {
+      renderer: reportedRenderer,
+      expectedResultPolicy,
+      failedConjuncts: ["keys"],
+    };
+  }
+  check("viewId", validIdentity(value.viewId, "view"));
+  check("defaultViewId", validIdentity(value.defaultViewId, "view"));
+  check("cameraId", validIdentity(value.cameraId, "camera"));
+  check("defaultCameraId", validIdentity(value.defaultCameraId, "camera"));
+  check("constructorIsView", typeof value.constructorIsView === "boolean");
+  check("distinctFromDefault", typeof value.distinctFromDefault === "boolean");
+  check("orthographicFrustum", typeof value.orthographicFrustum === "boolean");
+  check(
+    "realViewObservedDuringUpdate",
+    typeof value.realViewObservedDuringUpdate === "boolean",
+  );
+  check(
+    "frameStateViewIdDuringUpdate",
+    validIdentity(value.frameStateViewIdDuringUpdate, "view"),
+  );
+  check(
+    "frameStateCameraIdDuringUpdate",
+    validIdentity(value.frameStateCameraIdDuringUpdate, "camera"),
+  );
+  check(
+    "eclipseStateObjectId",
+    validIdentity(value.eclipseStateObjectId, "state"),
+  );
+  check(
+    "defaultEclipseStateObjectId",
+    validIdentity(value.defaultEclipseStateObjectId, "state"),
+  );
+  check(
+    "eclipseShadowObjectId",
+    validIdentity(value.eclipseShadowObjectId, "shadow"),
+  );
+  check(
+    "defaultEclipseShadowObjectId",
+    validIdentity(value.defaultEclipseShadowObjectId, "shadow"),
+  );
+  const rayOk = check("ray", validRay(value.ray));
+  check("attempts", integer(value.attempts, 1));
+  check(
+    "attemptsCeiling",
+    value.attempts <= C12_29_S5_MULTIVIEW_WORKLOAD.maximumRayPickAttempts,
+  );
+  check("resultPolicy", value.resultPolicy === expectedResultPolicy);
+  if (renderer === "webgl") {
+    check(
+      "supportsSynchronousReadback",
+      value.supportsSynchronousReadback === true,
+    );
+    check("hit", value.hit === true);
+    check("hitGlobe", value.hitGlobe === true);
+    check("objectPresent", value.objectPresent === false);
+    check("position", numericArray(value.position, 3));
+  } else {
+    check(
+      "supportsSynchronousReadback",
+      value.supportsSynchronousReadback === false,
+    );
+    check("hit", value.hit === false);
+    check("hitGlobe", value.hitGlobe === false);
+    check("objectPresent", value.objectPresent === false);
+    check("position", value.position === null);
+  }
+  check("hitType", typeof value.hit === "boolean");
+  check("hitGlobeType", typeof value.hitGlobe === "boolean");
+  check("objectPresentType", typeof value.objectPresent === "boolean");
+  check(
+    "positionType",
+    value.position === null || numericArray(value.position, 3),
+  );
+  const intervalKeysOk = check(
+    "cpuEllipsoidIntervalKeys",
+    exactKeys(value.cpuEllipsoidInterval, ["start", "stop"]),
+  );
+  const intervalOk =
+    intervalKeysOk &&
+    check(
+      "cpuEllipsoidInterval",
+      finite(value.cpuEllipsoidInterval.start) &&
+        finite(value.cpuEllipsoidInterval.stop) &&
+        value.cpuEllipsoidInterval.start >= 0 &&
+        value.cpuEllipsoidInterval.stop > value.cpuEllipsoidInterval.start,
+    );
+  const cpuPointOk = check(
+    "cpuIntersectionPosition",
+    numericArray(value.cpuIntersectionPosition, 3),
+  );
+  if (rayOk && intervalOk && cpuPointOk) {
+    const expectedInterval = rayWgs84Interval(value.ray);
+    check(
+      "cpuEllipsoidIntervalMatchesRay",
+      expectedInterval !== null &&
+        nearlyEqual(
+          value.cpuEllipsoidInterval.start,
+          expectedInterval.start,
+          1e-6,
+        ) &&
+        nearlyEqual(
+          value.cpuEllipsoidInterval.stop,
+          expectedInterval.stop,
+          1e-6,
+        ) &&
+        arrayNearlyEqual(
+          value.cpuIntersectionPosition,
+          addScaled(
+            value.ray.origin,
+            value.ray.direction,
+            expectedInterval.start,
+          ),
+          1e-5,
+        ),
+    );
+  }
+  check("geometricGlobeHit", value.geometricGlobeHit === true);
+  const geometricOk = check(
+    "geometricPosition",
+    numericArray(value.geometricPosition, 3),
+  );
+  if (geometricOk && cpuPointOk) {
+    check(
+      "geometricPositionDelta",
+      vectorDistance(value.geometricPosition, value.cpuIntersectionPosition) <=
+        C12_29_S5_MULTIVIEW_WORKLOAD.maximumRayPositionDeltaMeters,
+    );
+  }
+  if (renderer === "webgl") {
+    if (numericArray(value.position, 3) && cpuPointOk) {
+      check(
+        "positionAgreesWithCpu",
+        vectorDistance(value.position, value.cpuIntersectionPosition) <=
+          C12_29_S5_MULTIVIEW_WORKLOAD.maximumRayPositionDeltaMeters,
+      );
+    }
+  } else {
+    check("positionAgreesWithCpu", value.position === null);
+  }
+  return {
+    renderer: reportedRenderer,
+    expectedResultPolicy,
+    failedConjuncts,
+  };
+}
+
 function validRestoration(value) {
   return (
     exactKeys(value, [
@@ -2620,6 +2877,66 @@ export function foldC1229S5MultiviewGate(report) {
   };
 }
 
+/**
+ * The retained offscreen ray-pick attribution an ERROR artifact may carry.
+ *
+ * Optional by construction: artifacts published before the attribution existed
+ * are re-read by the retained-red comparison, so requiring the key would make
+ * the gate reject its own banked evidence.
+ */
+function validRetainedOffscreenDiagnostics(value) {
+  if (!exactKeys(value, ["schema", "renderers"])) return false;
+  const entries = value.renderers;
+  if (
+    !Array.isArray(entries) ||
+    Object.keys(entries).length !== entries.length ||
+    entries.length < 1 ||
+    entries.length > C12_29_S5_MULTIVIEW_RENDERERS.length
+  ) {
+    return false;
+  }
+  let previousIndex = -1;
+  for (const entry of entries) {
+    if (
+      !exactKeys(entry, [
+        "renderer",
+        "expectedResultPolicy",
+        "failedConjuncts",
+        "observed",
+      ])
+    ) {
+      return false;
+    }
+    const index = C12_29_S5_MULTIVIEW_RENDERERS.indexOf(entry.renderer);
+    if (index <= previousIndex) return false;
+    previousIndex = index;
+    if (
+      entry.expectedResultPolicy !==
+      (entry.renderer === "webgl"
+        ? "sync-position-only-globe"
+        : "known-webgpu-no-position-globe")
+    ) {
+      return false;
+    }
+    const names = entry.failedConjuncts;
+    if (
+      !Array.isArray(names) ||
+      Object.keys(names).length !== names.length ||
+      names.length > C12_29_S5_MULTIVIEW_OFFSCREEN_CONJUNCTS.length ||
+      new Set(names).size !== names.length ||
+      !names.every((name) =>
+        C12_29_S5_MULTIVIEW_OFFSCREEN_CONJUNCTS.includes(name),
+      )
+    ) {
+      return false;
+    }
+    if (entry.observed !== null && !boundedPlainJson(entry.observed)) {
+      return false;
+    }
+  }
+  return value.schema === C12_29_S5_MULTIVIEW_OFFSCREEN_DIAGNOSTICS_SCHEMA;
+}
+
 function validateDiagnostics(value) {
   if (!boundedPlainJson(value)) return false;
   let encoded;
@@ -2628,17 +2945,28 @@ function validateDiagnostics(value) {
   } catch {
     return false;
   }
+  const retainsOffscreen =
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.hasOwn(value, "offscreenRayPick");
+  const expectedKeys = [
+    "schema",
+    "renderer",
+    "stage",
+    "timeoutMs",
+    "page",
+    "errorName",
+    "errorMessage",
+  ];
   return (
     encoded.length <= MAX_DIAGNOSTIC_JSON &&
-    exactKeys(value, [
-      "schema",
-      "renderer",
-      "stage",
-      "timeoutMs",
-      "page",
-      "errorName",
-      "errorMessage",
-    ]) &&
+    exactKeys(
+      value,
+      retainsOffscreen ? [...expectedKeys, "offscreenRayPick"] : expectedKeys,
+    ) &&
+    (!retainsOffscreen ||
+      validRetainedOffscreenDiagnostics(value.offscreenRayPick)) &&
     value.schema === C12_29_S5_MULTIVIEW_DIAGNOSTICS_SCHEMA &&
     (value.renderer === null ||
       C12_29_S5_MULTIVIEW_RENDERERS.includes(value.renderer)) &&
@@ -2735,6 +3063,87 @@ function validPartialPageDiagnostic(value, renderer) {
   );
 }
 
+/**
+ * Per-renderer JSON bound on a retained offscreen ray-pick record. A recorded
+ * pick is a fixed twenty-six-key object of scalars and three-element vectors,
+ * so this leaves room for one without letting a malformed session consume the
+ * whole diagnostics budget.
+ */
+const MAX_RETAINED_OFFSCREEN_JSON = 8_192;
+
+/**
+ * Folds the session list a failed run was holding into the attribution an ERROR
+ * artifact carries, one entry per renderer that produced a session, in renderer
+ * order. Returns `null` when there is nothing to retain, so an artifact built
+ * without sessions is byte-identical to one built before the attribution
+ * existed.
+ *
+ * Reads nothing but `renderer` and `offscreenRayPick`, and every read is
+ * guarded: publishing the ERROR artifact is the last chance to record anything
+ * at all, and a hostile session object must not take that away.
+ */
+function retainOffscreenRayPickDiagnostics(sessions) {
+  try {
+    if (!Array.isArray(sessions) || sessions.length === 0) return null;
+    const renderers = [];
+    for (const renderer of C12_29_S5_MULTIVIEW_RENDERERS) {
+      try {
+        let session;
+        for (const candidate of sessions) {
+          let candidateRenderer;
+          try {
+            candidateRenderer = candidate?.renderer;
+          } catch {
+            continue;
+          }
+          if (candidateRenderer === renderer) {
+            session = candidate;
+            break;
+          }
+        }
+        if (session === undefined) continue;
+        let pick;
+        try {
+          pick = session.offscreenRayPick;
+        } catch {
+          pick = undefined;
+        }
+        const described = describeC1229S5MultiviewOffscreenRayPick(
+          pick,
+          renderer,
+        );
+        let observed = null;
+        try {
+          if (boundedPlainJson(pick)) {
+            const encoded = stableC1229S5MultiviewJson(pick);
+            if (encoded.length <= MAX_RETAINED_OFFSCREEN_JSON) {
+              observed = JSON.parse(encoded);
+            }
+          }
+        } catch {
+          observed = null;
+        }
+        renderers.push({
+          renderer,
+          expectedResultPolicy: described.expectedResultPolicy,
+          failedConjuncts: described.failedConjuncts,
+          observed,
+        });
+      } catch {
+        // One unreadable session must not cost the other renderer's entry.
+      }
+    }
+    return renderers.length === 0
+      ? null
+      : {
+          schema: C12_29_S5_MULTIVIEW_OFFSCREEN_DIAGNOSTICS_SCHEMA,
+          renderers,
+        };
+  } catch {
+    return null;
+  }
+}
+
 export function createC1229S5MultiviewErrorArtifact(
   runId,
   error,
@@ -2791,6 +3200,21 @@ export function createC1229S5MultiviewErrorArtifact(
   ) {
     page = JSON.parse(stableC1229S5MultiviewJson(pageCandidate));
   }
+  const diagnostics = {
+    schema: C12_29_S5_MULTIVIEW_DIAGNOSTICS_SCHEMA,
+    renderer,
+    stage,
+    timeoutMs,
+    page,
+    errorName,
+    errorMessage,
+  };
+  const offscreenRayPick = retainOffscreenRayPickDiagnostics(
+    read(options, "sessions"),
+  );
+  if (offscreenRayPick !== null) {
+    diagnostics.offscreenRayPick = offscreenRayPick;
+  }
   return {
     schema: C12_29_S5_MULTIVIEW_SCHEMA,
     runId,
@@ -2798,15 +3222,7 @@ export function createC1229S5MultiviewErrorArtifact(
     incomplete: false,
     status: "ERROR",
     exitCode: exitCodeForC1229S5MultiviewStatus("ERROR"),
-    diagnostics: {
-      schema: C12_29_S5_MULTIVIEW_DIAGNOSTICS_SCHEMA,
-      renderer,
-      stage,
-      timeoutMs,
-      page,
-      errorName,
-      errorMessage,
-    },
+    diagnostics,
   };
 }
 

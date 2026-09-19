@@ -22940,3 +22940,116 @@ review plus the runner it homes; no Edge leg is owed and none is claimed.
   tools and adds one. **The landing commit must run `node Tools/generate-tooling-catalog-launcher.cjs`
   and stage `migration_doc/TOOLING_CATALOG.md`.** It is neither a CI gate (`.github/workflows/dev.yml`
   excludes it as shallow-checkout-ineligible) nor a `.husky` hook, so this is record hygiene.
+
+## 2026-09-19 - NEW-C12-29-S5-MULTIVIEW-ELLIPSOID-REFERENCE-REJECTS-BOTH-BACKENDS (filed by lane S5-MULTIVIEW from the banked 2026-08-29 run) — **OPEN, instrument only, no product claim. The gate's policy is NOT changed by the filing batch.**
+
+Every browser execution of the multiview lane on 2026-08-29 ended the same way. Run
+`005251e5-5206-4225-abf9-af19dd1b06d1` (tranche 3e-a, 01:01) and run
+`5323314a-a9cf-4cb4-b57e-c1a5186a01e8` (tranche 3e-e, 07:48) each exited 2 with *"multiview
+self-validation failed: webgl: offscreen ray pick is invalid; webgpu: offscreen ray pick is
+invalid"*. Which conjunct of `validOffscreen`
+(`Tools/visual-regression/lib/c12-29-s5-multiview-gate.mjs:1437`) rejected each arm was not
+recoverable from either artifact, because the ERROR path dropped the session objects. That retention
+is fixed in the filing batch. The records replayed below belong to neither published run: they come
+from a third execution taken at the time for the sole purpose of recovering them —
+`diag-q97-multiview-session.mjs` in tranche 3e-e (07:53), which wrapped the probe's page factory to
+bank the in-page session objects and reported the identical message with `sessionCount: 2`. The
+attribution does not depend on which of the three it is read from; replaying both records through it
+answers the question:
+
+- **webgl** fails `geometricPositionDelta` and `positionAgreesWithCpu`.
+- **webgpu** fails `geometricPositionDelta` alone.
+- **Neither arm fails any conjunct of `resultPolicyExact`** (`:1442`) — not
+  `supportsSynchronousReadback`, `hit`, `hitGlobe`, `objectPresent`, `position` or the
+  `resultPolicy` label. Both renderers published exactly the result their arm asks for.
+
+The rejected comparison is the same one on both arms, and its inputs say why. Distances computed
+from the banked records: `|geometricPosition − cpuIntersectionPosition|` = **43.3784 m** on both
+renderers, and on WebGL `|position − cpuIntersectionPosition|` = **43.3938 m**, against
+`maximumRayPositionDeltaMeters: 10` (`:96`). The two measured points agree with each other to
+**0.0154 m**. Their geodetic heights are what identifies the reference: `cpuIntersectionPosition`
+sits at **0.0000 m** (it is `IntersectionTests.rayEllipsoid`, the analytic WGS84 point),
+`geometricPosition` at **−43.3784 m** and the WebGL pick at **−43.3938 m** — both *inside* the
+ellipsoid.
+
+The probe serves the globe with `EllipsoidTerrainProvider`
+(`Tools/visual-regression/probe-c12-29-s5-multiview.mjs:1822`), so terrain relief is zero and every
+mesh vertex lies on the ellipsoid. A ray straight down from 1,600 km therefore meets the *rendered
+mesh* between vertices, below the surface those vertices lie on: the residual is the tessellation
+chord, and 43.3784 m over a 6,371 km radius implies a chord subtending about 0.42°. So the lane's
+renderers are not disagreeing with each other or with the globe — `scene.globe.pick` and the WebGL
+rendered depth agree to 1.5 cm — they are both being compared against a reference surface the
+renderer never draws, with a tolerance an order of magnitude tighter than the discrepancy.
+
+**Not decided here, and deliberately not changed:** whether the repair is to compare the pick
+against the mesh intersection rather than the analytic ellipsoid one, to widen the tolerance to the
+chord sag of the LOD actually resident, or to drive the globe to a deep enough LOD before the pick.
+All three move a certification gate's acceptance and need a ruling.
+
+**The measurement that settles the mechanism** (as opposed to the attribution, which is settled):
+record the tile level and the mesh triangle the pick landed on at the instant of the pick, and check
+the measured 43.3784 m against `R·(1 − cos(θ/2))` for that tile's angular size. If they match, the
+reference is simply the wrong surface; if they do not, something else puts the rendered globe 43 m
+below the ellipsoid and that is a product question, not a gate question.
+
+**Consequence for scheduling:** expect a bare re-run of this lane to reproduce the same exit 2, and
+bound that expectation by what was measured rather than by what is plausible. The two node-stage
+executions above carry the identical message across a *rebuild*: the 03:54 preflight refusal
+between them (`8aad21bd-c2cf-4c28-b5b0-58ae4ca1967a`, *“current source bytes differ from built
+sourcesContent”*) records that the source tree had drifted from the served build, and the 07:48 run
+cleared that same preflight — so the message survived one change of build and tree. The rejected
+comparison is against `IntersectionTests.rayEllipsoid`, a surface no renderer draws, so it is
+renderer-independent by construction. What is **not** pinned is the residual's size: 43.3784 m is
+the chord sag of whatever LOD happened to be resident at the instant of the pick, so a re-run may
+move that number without moving the verdict. An S5 browser session that budgets for multiview
+should treat it as owed a gate decision first.
+
+## 2026-09-19 - NEW-C12-29-S5-MULTIVIEW-WEBGPU-HIT-POLICY-VS-ENGINE-DOC (filed by lane S5-MULTIVIEW; latent, recorded not repaired) — **OPEN. Two documentation sentences and one gate predicate disagree; the disagreement does not bite this lane's ray.**
+
+What each side says, verbatim.
+
+The gate's WebGPU arm (`Tools/visual-regression/lib/c12-29-s5-multiview-gate.mjs:1442`, inside
+`validOffscreen`) certifies the exact negation of the WebGL arm:
+
+> `value?.supportsSynchronousReadback === false && value?.hit === false && value?.hitGlobe === false && value?.objectPresent === false && value?.position === null`
+
+and the probe fills `hit` from the pick's own existence
+(`Tools/visual-regression/probe-c12-29-s5-multiview.mjs:3502`, `hit: pickResult !== undefined`, from
+`scene.pickFromRay` at `:3420`).
+
+The engine, at `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts:1928-1931`:
+
+> "What remains genuinely missing here is the SYNCHRONOUS recovery: the readback is asynchronous, so
+> `Scene.pickFromRay` over an arbitrary ray still returns its hit object with `position` undefined."
+
+and the one-time warning the same path emits,
+`packages/engine/Source/Scene/PickingRayHelpers.js:337`:
+
+> "Scene.pickFromRay returns a hit object but no `position` on WebGPU"
+
+Read together, "returns its hit object" makes `hit === false` look unsatisfiable on WebGPU, which
+would make the gate's WebGPU arm a frozen expectation.
+
+**Correction, re-derived from the code rather than from the sentences.** It is not unsatisfiable for
+this lane. `assembleRayIntersection` (`packages/engine/Source/Scene/PickingRayHelpers.js:296`)
+returns `undefined` when neither an object nor a position is defined (`:302`). The multiview
+workload's ray is globe-only by construction — the WebGL arm itself requires
+`objectPresent === false` — so on WebGPU there is no picked object, the synchronous recovery yields
+no position, and `pickFromRay` returns `undefined`, i.e. `hit === false`. The banked 2026-08-29
+WebGPU record already reads `hit: false`, and the attribution above shows no `resultPolicyExact`
+conjunct failing on either arm. The two sentences are therefore true of a ray that meets a pickable
+primitive and false of a ray that meets only the globe; they lack that qualifier.
+
+Dating, for anyone re-reading the 2026-08-29 exit 2: the engine behaviour the sentences describe
+landed in `ea651de6d8` (2026-09-13), *after* that run. It cannot be its cause, and the separate row
+above gives the cause that it does have.
+
+**What would settle it**, if the gate's arm is ever to be trusted rather than reasoned about: one
+WebGPU `Scene.pickFromRay` pair, recorded — (a) over a globe-only ray, (b) over a ray through a
+pickable primitive. If (a) is `undefined` and (b) is an object whose `position` is `undefined`, the
+gate's arm is correct as written and the two doc sentences want the qualifier. If (a) returns an
+object, `hit === false` is unsatisfiable and the arm must be re-derived before any multiview
+certification is read as a WebGPU result.
+
+**Not changed in the filing batch**, on purpose: narrowing or re-deriving a certification arm is a
+gate-policy act.

@@ -13,6 +13,8 @@ import { fileURLToPath } from "node:url";
 import {
   C12_29_S5_MULTIVIEW_BUILD_SOURCE_FILES,
   C12_29_S5_MULTIVIEW_DIAGNOSTICS_SCHEMA,
+  C12_29_S5_MULTIVIEW_OFFSCREEN_CONJUNCTS,
+  C12_29_S5_MULTIVIEW_OFFSCREEN_DIAGNOSTICS_SCHEMA,
   C12_29_S5_MULTIVIEW_PAGE_SCHEMA,
   C12_29_S5_MULTIVIEW_PHASES,
   C12_29_S5_MULTIVIEW_RENDERERS,
@@ -21,6 +23,7 @@ import {
   C12_29_S5_MULTIVIEW_WEBGPU_VR_ERROR,
   C12_29_S5_MULTIVIEW_WORKLOAD,
   createC1229S5MultiviewErrorArtifact,
+  describeC1229S5MultiviewOffscreenRayPick,
   exitCodeForC1229S5MultiviewStatus,
   foldC1229S5MultiviewGate,
   isC1229S5MultiviewUuidV4,
@@ -3898,4 +3901,470 @@ test("status and UUID utilities remain exact", () => {
   );
   assert.equal(C12_29_S5_MULTIVIEW_SCHEMA.endsWith("v3"), true);
   assert.equal(C12_29_S5_MULTIVIEW_DIAGNOSTICS_SCHEMA.endsWith("v3"), true);
+});
+
+// The offscreen ray-pick record both renderers published on the first browser
+// execution of this lane, replayed verbatim. It is a fixture, not a file read:
+// `Tools/visual-regression/output/` is gitignored, so a spec that loaded it
+// would pass only on the machine that captured it.
+const REPLAYED_RAY = Object.freeze({
+  origin: Object.freeze([
+    -794518.2320254954, -6665998.721016049, 4299349.277830987,
+  ]),
+  direction: Object.freeze([
+    0.09950878274659966, 0.8348775292766495, -0.5413663392428526,
+  ]),
+  widthMeters: 1000,
+});
+
+function replayedOffscreenRayPick(renderer) {
+  const shared = {
+    viewId: "view-3",
+    defaultViewId: "view-1",
+    cameraId: "camera-3",
+    defaultCameraId: "camera-1",
+    constructorIsView: true,
+    distinctFromDefault: true,
+    orthographicFrustum: true,
+    realViewObservedDuringUpdate: true,
+    frameStateViewIdDuringUpdate: "view-3",
+    frameStateCameraIdDuringUpdate: "camera-3",
+    eclipseStateObjectId: "state-3",
+    defaultEclipseStateObjectId: "state-1",
+    eclipseShadowObjectId: "shadow-3",
+    defaultEclipseShadowObjectId: "shadow-1",
+    ray: structuredClone(REPLAYED_RAY),
+    attempts: 1,
+    cpuEllipsoidInterval: {
+      start: 1599999.9999999995,
+      stop: 14343635.008126538,
+    },
+    cpuIntersectionPosition: [
+      -635304.179630936, -5330194.674173411, 3433163.1350424234,
+    ],
+    geometricGlobeHit: true,
+    geometricPosition: [
+      -635299.8631009746, -5330158.458537266, 3433139.6514467155,
+    ],
+  };
+  if (renderer === "webgl") {
+    return {
+      ...shared,
+      supportsSynchronousReadback: true,
+      resultPolicy: "sync-position-only-globe",
+      hit: true,
+      hitGlobe: true,
+      objectPresent: false,
+      position: [-635299.861569055, -5330158.445684478, 3433139.643112479],
+    };
+  }
+  return {
+    ...shared,
+    supportsSynchronousReadback: false,
+    resultPolicy: "known-webgpu-no-position-globe",
+    hit: false,
+    hitGlobe: false,
+    objectPresent: false,
+    position: null,
+  };
+}
+
+function replayedSessions() {
+  return C12_29_S5_MULTIVIEW_RENDERERS.map((renderer) => ({
+    renderer,
+    offscreenRayPick: replayedOffscreenRayPick(renderer),
+  }));
+}
+
+const REPLAYED_MESSAGE =
+  "multiview self-validation failed: webgl: offscreen ray pick is invalid; " +
+  "webgpu: offscreen ray pick is invalid";
+
+test("a replayed self-validation failure names the offscreen conjunct each renderer failed", () => {
+  const artifact = createC1229S5MultiviewErrorArtifact(
+    RUN_ID,
+    new Error(REPLAYED_MESSAGE),
+    { stage: "node", timeoutMs: 540_000, sessions: replayedSessions() },
+  );
+  assert.deepEqual(validateC1229S5MultiviewFinalArtifact(artifact), {
+    ok: true,
+    reasons: [],
+  });
+  assert.equal(artifact.status, "ERROR");
+  assert.equal(artifact.exitCode, 2);
+  assert.equal(artifact.incomplete, false);
+  assert.equal(artifact.diagnostics.errorMessage, REPLAYED_MESSAGE);
+  assert.equal(
+    artifact.diagnostics.offscreenRayPick.schema,
+    C12_29_S5_MULTIVIEW_OFFSCREEN_DIAGNOSTICS_SCHEMA,
+  );
+  assert.deepEqual(
+    artifact.diagnostics.offscreenRayPick.renderers.map((entry) => [
+      entry.renderer,
+      entry.expectedResultPolicy,
+      entry.failedConjuncts,
+    ]),
+    [
+      [
+        "webgl",
+        "sync-position-only-globe",
+        ["geometricPositionDelta", "positionAgreesWithCpu"],
+      ],
+      ["webgpu", "known-webgpu-no-position-globe", ["geometricPositionDelta"]],
+    ],
+  );
+  // The five conjuncts of `resultPolicyExact`, plus the policy label itself,
+  // are what a renderer-policy failure would name. None appears on either arm:
+  // both renderers published the result the policy asks for and were rejected
+  // on the same geometric comparison instead.
+  for (const entry of artifact.diagnostics.offscreenRayPick.renderers) {
+    for (const name of [
+      "supportsSynchronousReadback",
+      "hit",
+      "hitGlobe",
+      "objectPresent",
+      "position",
+      "resultPolicy",
+    ]) {
+      assert.equal(
+        entry.failedConjuncts.includes(name),
+        false,
+        `${entry.renderer} unexpectedly failed ${name}`,
+      );
+    }
+  }
+  // The record itself survives, so a later reader can re-run any predicate.
+  assert.deepEqual(
+    artifact.diagnostics.offscreenRayPick.renderers.map(
+      (entry) => entry.observed,
+    ),
+    C12_29_S5_MULTIVIEW_RENDERERS.map((renderer) =>
+      JSON.parse(JSON.stringify(replayedOffscreenRayPick(renderer))),
+    ),
+  );
+  assert.ok(stableC1229S5MultiviewJson(artifact).length <= 65_536);
+});
+
+test("the retained attribution agrees with the gate's own offscreen verdict", () => {
+  const offscreenReason = (renderer) =>
+    `${renderer}: offscreen ray pick is invalid`;
+  const clean = report();
+  const cleanVerdict = foldC1229S5MultiviewGate(clean);
+  for (const [index, renderer] of C12_29_S5_MULTIVIEW_RENDERERS.entries()) {
+    assert.equal(
+      cleanVerdict.structuralReasons.includes(offscreenReason(renderer)),
+      false,
+    );
+    assert.deepEqual(
+      describeC1229S5MultiviewOffscreenRayPick(
+        clean.sessions[index].offscreenRayPick,
+        renderer,
+      ).failedConjuncts,
+      [],
+    );
+  }
+  const cases = [
+    [0, "viewId", (pick) => (pick.viewId = "camera-3")],
+    [0, "constructorIsView", (pick) => (pick.constructorIsView = "yes")],
+    [1, "orthographicFrustum", (pick) => (pick.orthographicFrustum = "yes")],
+    [
+      1,
+      "realViewObservedDuringUpdate",
+      (pick) => (pick.realViewObservedDuringUpdate = "no"),
+    ],
+    [
+      0,
+      "frameStateCameraIdDuringUpdate",
+      (pick) => (pick.frameStateCameraIdDuringUpdate = "not-a-camera"),
+    ],
+    [
+      1,
+      "eclipseShadowObjectId",
+      (pick) => (pick.eclipseShadowObjectId = "not-a-shadow"),
+    ],
+    [0, "ray", (pick) => (pick.ray.direction = [2, 0, 0])],
+    [1, "attempts", (pick) => (pick.attempts = 0)],
+    [1, "attemptsCeiling", (pick) => (pick.attempts = 99)],
+    [
+      1,
+      "resultPolicy",
+      (pick) => (pick.resultPolicy = "sync-position-only-globe"),
+    ],
+    [
+      0,
+      "supportsSynchronousReadback",
+      (pick) => (pick.supportsSynchronousReadback = false),
+    ],
+    [0, "hit", (pick) => (pick.hit = false)],
+    [1, "hit", (pick) => (pick.hit = true)],
+    [0, "hitGlobe", (pick) => (pick.hitGlobe = false)],
+    [1, "objectPresent", (pick) => (pick.objectPresent = true)],
+    [1, "position", (pick) => (pick.position = [0, 0, 0])],
+    [0, "position", (pick) => (pick.position = null)],
+    [0, "hitType", (pick) => (pick.hit = "true")],
+    [
+      0,
+      "cpuEllipsoidIntervalKeys",
+      (pick) => (pick.cpuEllipsoidInterval = { start: 0 }),
+    ],
+    [
+      0,
+      "cpuEllipsoidInterval",
+      (pick) => (pick.cpuEllipsoidInterval.start = -1),
+    ],
+    [
+      1,
+      "cpuIntersectionPosition",
+      (pick) => (pick.cpuIntersectionPosition = [0, 0]),
+    ],
+    [
+      0,
+      "cpuEllipsoidIntervalMatchesRay",
+      (pick) => (pick.cpuEllipsoidInterval.start += 100),
+    ],
+    [1, "geometricGlobeHit", (pick) => (pick.geometricGlobeHit = false)],
+    [1, "geometricPositionDelta", (pick) => (pick.geometricPosition[0] += 100)],
+    [0, "positionAgreesWithCpu", (pick) => (pick.position[0] += 100)],
+  ];
+  const emitted = new Set();
+  for (const [index, expected, mutate] of cases) {
+    const renderer = C12_29_S5_MULTIVIEW_RENDERERS[index];
+    const value = report();
+    mutate(value.sessions[index].offscreenRayPick);
+    const verdict = foldC1229S5MultiviewGate(value);
+    assert.equal(
+      verdict.structuralReasons.includes(offscreenReason(renderer)),
+      true,
+      `fold did not reject ${renderer} after mutating for ${expected}`,
+    );
+    const described = describeC1229S5MultiviewOffscreenRayPick(
+      value.sessions[index].offscreenRayPick,
+      renderer,
+    );
+    assert.equal(
+      described.failedConjuncts.includes(expected),
+      true,
+      `attribution for ${renderer} was ${JSON.stringify(
+        described.failedConjuncts,
+      )}, expected to name ${expected}`,
+    );
+    for (const name of described.failedConjuncts) emitted.add(name);
+    // The other renderer's record is untouched, and the attribution says so.
+    const otherIndex = index === 0 ? 1 : 0;
+    assert.deepEqual(
+      describeC1229S5MultiviewOffscreenRayPick(
+        value.sessions[otherIndex].offscreenRayPick,
+        C12_29_S5_MULTIVIEW_RENDERERS[otherIndex],
+      ).failedConjuncts,
+      [],
+    );
+  }
+  for (const name of emitted) {
+    assert.equal(
+      C12_29_S5_MULTIVIEW_OFFSCREEN_CONJUNCTS.includes(name),
+      true,
+      `${name} is not in the published conjunct vocabulary`,
+    );
+  }
+  assert.equal(Object.isFrozen(C12_29_S5_MULTIVIEW_OFFSCREEN_CONJUNCTS), true);
+});
+
+test("the offscreen attribution is reached before the fields it reads are trusted", () => {
+  const hostile = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error("hostile getter ran");
+      },
+      ownKeys() {
+        throw new Error("hostile ownKeys ran");
+      },
+    },
+  );
+  for (const value of [undefined, null, 7, "pick", [], {}, hostile]) {
+    for (const renderer of C12_29_S5_MULTIVIEW_RENDERERS) {
+      assert.deepEqual(
+        describeC1229S5MultiviewOffscreenRayPick(value, renderer),
+        {
+          renderer,
+          expectedResultPolicy:
+            renderer === "webgl"
+              ? "sync-position-only-globe"
+              : "known-webgpu-no-position-globe",
+          failedConjuncts: ["keys"],
+        },
+      );
+    }
+  }
+  assert.equal(
+    describeC1229S5MultiviewOffscreenRayPick(undefined, "vulkan").renderer,
+    null,
+  );
+});
+
+test("an ERROR artifact with nothing retainable is byte-identical to one built without sessions", () => {
+  const base = createC1229S5MultiviewErrorArtifact(
+    RUN_ID,
+    new Error(REPLAYED_MESSAGE),
+    { stage: "node", timeoutMs: 540_000 },
+  );
+  assert.equal(Object.hasOwn(base.diagnostics, "offscreenRayPick"), false);
+  assert.equal(validateC1229S5MultiviewFinalArtifact(base).ok, true);
+  const encoded = stableC1229S5MultiviewJson(base);
+  const throwingRenderer = new Proxy(
+    {},
+    {
+      get(target, key) {
+        if (key === "renderer") throw new Error("hostile session");
+        return undefined;
+      },
+    },
+  );
+  for (const sessions of [
+    undefined,
+    null,
+    [],
+    "webgl",
+    {},
+    [{}],
+    [{ renderer: "vulkan", offscreenRayPick: {} }],
+    [throwingRenderer],
+  ]) {
+    const artifact = createC1229S5MultiviewErrorArtifact(
+      RUN_ID,
+      new Error(REPLAYED_MESSAGE),
+      { stage: "node", timeoutMs: 540_000, sessions },
+    );
+    assert.equal(stableC1229S5MultiviewJson(artifact), encoded);
+    assert.equal(validateC1229S5MultiviewFinalArtifact(artifact).ok, true);
+  }
+});
+
+test("a retained record that cannot be bounded is named but not copied", () => {
+  const throwingPick = {
+    renderer: "webgl",
+    get offscreenRayPick() {
+      throw new Error("unreadable pick");
+    },
+  };
+  const oversized = replayedOffscreenRayPick("webgpu");
+  for (const key of [
+    "viewId",
+    "defaultViewId",
+    "cameraId",
+    "defaultCameraId",
+    "resultPolicy",
+  ]) {
+    oversized[key] = "x".repeat(2_000);
+  }
+  const artifact = createC1229S5MultiviewErrorArtifact(
+    RUN_ID,
+    new Error(REPLAYED_MESSAGE),
+    {
+      stage: "node",
+      timeoutMs: 540_000,
+      sessions: [
+        throwingPick,
+        { renderer: "webgpu", offscreenRayPick: oversized },
+      ],
+    },
+  );
+  assert.equal(validateC1229S5MultiviewFinalArtifact(artifact).ok, true);
+  const [webgl, webgpu] = artifact.diagnostics.offscreenRayPick.renderers;
+  assert.deepEqual(webgl, {
+    renderer: "webgl",
+    expectedResultPolicy: "sync-position-only-globe",
+    failedConjuncts: ["keys"],
+    observed: null,
+  });
+  assert.equal(webgpu.renderer, "webgpu");
+  assert.equal(webgpu.observed, null);
+  assert.equal(webgpu.failedConjuncts.includes("viewId"), true);
+  assert.ok(stableC1229S5MultiviewJson(artifact).length <= 65_536);
+});
+
+test("a retained attribution is rejected when it does not describe a real arm", () => {
+  const valid = createC1229S5MultiviewErrorArtifact(
+    RUN_ID,
+    new Error(REPLAYED_MESSAGE),
+    { stage: "node", timeoutMs: 540_000, sessions: replayedSessions() },
+  );
+  const mutants = [
+    (value) => (value.diagnostics.offscreenRayPick.schema = "v0"),
+    (value) => (value.diagnostics.offscreenRayPick.renderers = []),
+    (value) => (value.diagnostics.offscreenRayPick.extra = true),
+    (value) =>
+      (value.diagnostics.offscreenRayPick.renderers[0].renderer = "vulkan"),
+    (value) =>
+      (value.diagnostics.offscreenRayPick.renderers[1].renderer = "webgl"),
+    (value) =>
+      (value.diagnostics.offscreenRayPick.renderers[0].expectedResultPolicy =
+        "known-webgpu-no-position-globe"),
+    (value) =>
+      (value.diagnostics.offscreenRayPick.renderers[0].failedConjuncts = [
+        "invented",
+      ]),
+    (value) =>
+      (value.diagnostics.offscreenRayPick.renderers[0].failedConjuncts = [
+        "hit",
+        "hit",
+      ]),
+    (value) => delete value.diagnostics.offscreenRayPick.renderers[0].observed,
+    (value) => {
+      value.diagnostics.offscreenRayPick.renderers.reverse();
+    },
+  ];
+  for (const mutate of mutants) {
+    const value = clone(valid);
+    mutate(value);
+    assert.equal(validateC1229S5MultiviewFinalArtifact(value).ok, false);
+  }
+});
+
+test("the retained attribution is emitted in renderer order whatever order the sessions arrived in", () => {
+  const [webgl, webgpu] = replayedSessions();
+  const canonical = createC1229S5MultiviewErrorArtifact(
+    RUN_ID,
+    new Error(REPLAYED_MESSAGE),
+    { stage: "node", timeoutMs: 540_000, sessions: [webgl, webgpu] },
+  );
+  const arrival = createC1229S5MultiviewErrorArtifact(
+    RUN_ID,
+    new Error(REPLAYED_MESSAGE),
+    { stage: "node", timeoutMs: 540_000, sessions: [webgpu, webgl] },
+  );
+  // The probe hands over whatever order its loop produced. The validator
+  // requires a strictly increasing renderer index and
+  // `finalizeC1229S5MultiviewEvidence` throws on an artifact that fails it, so
+  // a retention that echoed arrival order would cost the run the very ERROR
+  // artifact this diagnostic exists to fill in.
+  assert.equal(
+    stableC1229S5MultiviewJson(arrival),
+    stableC1229S5MultiviewJson(canonical),
+  );
+  assert.deepEqual(
+    arrival.diagnostics.offscreenRayPick.renderers.map(
+      (entry) => entry.renderer,
+    ),
+    ["webgl", "webgpu"],
+  );
+  assert.deepEqual(validateC1229S5MultiviewFinalArtifact(arrival), {
+    ok: true,
+    reasons: [],
+  });
+  for (const [only, expected] of [
+    [webgpu, "webgpu"],
+    [webgl, "webgl"],
+  ]) {
+    const one = createC1229S5MultiviewErrorArtifact(
+      RUN_ID,
+      new Error(REPLAYED_MESSAGE),
+      { stage: "node", timeoutMs: 540_000, sessions: [only] },
+    );
+    assert.deepEqual(
+      one.diagnostics.offscreenRayPick.renderers.map((entry) => entry.renderer),
+      [expected],
+    );
+    assert.equal(validateC1229S5MultiviewFinalArtifact(one).ok, true);
+  }
 });

@@ -4338,6 +4338,12 @@ export async function runC1229S5MultiviewProbe(options = {}) {
   let ownership;
   let browser;
   let activeRenderer = null;
+  // Declared outside the try so the catch below can still read what the run
+  // had measured. The sessions the fold consumes are built inside the try, and
+  // a self-validation failure throws after they exist: without this handle the
+  // ERROR artifact can only carry the joined reason string, and the reason a
+  // renderer's offscreen ray pick was rejected is unrecoverable afterwards.
+  const observedSessions = [];
   const watchdogState = {
     renderer: null,
     page: null,
@@ -4394,6 +4400,11 @@ export async function runC1229S5MultiviewProbe(options = {}) {
             baseIdentity,
             watchdogState,
           );
+          // Banked before the abort check, not after it: a watchdog that
+          // fires while the last session is settling would otherwise discard
+          // the one record the ERROR artifact was added to carry. Only the
+          // diagnostic copy moves - `results` still respects the abort.
+          observedSessions.push(session);
           signal.throwIfAborted();
           results.push(session);
         }
@@ -4514,6 +4525,7 @@ export async function runC1229S5MultiviewProbe(options = {}) {
         stage: diagnostic.stage ?? "node",
         timeoutMs: diagnostic.timeoutMs ?? options.watchdogMs ?? WATCHDOG_MS,
         page: diagnostic.page ?? null,
+        sessions: observedSessions,
       });
       try {
         const publication = finalizeC1229S5MultiviewEvidence(
