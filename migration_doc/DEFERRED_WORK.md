@@ -17678,6 +17678,16 @@ fresh clone, and both have already caused a status misreading.
 Neither is a product defect and neither discharges or blocks an S5 browser lane.
 Filed so the next lane preflights rather than rediscovers.
 
+**2026-09-19 (lane S5-RUNNERS, Floi, C12 close-out plan step 5):** obstacle 1 is discharged for the
+two gates that carried it into a Node lane — the custom-ellipsoid source-map check and the
+replacement-device policy/source boundary now declare their build precondition instead of ENOENTing
+inside a test body, and "the build is present but was not produced from these sources" is named
+STRUCTURAL beside absence (`lib/build-source-identity.mjs`, `BUILD_NOT_CURRENT_REASON`). Obstacle 2
+is re-measured rather than discharged: `c12-29-s5-svs-footprint-gate.spec.mjs` DOES complete, 57/57
+exit 0 in 1,500.7 s, so both slow gates terminate and both are quarantined for cost under
+`test-s5-quarantine`. This entry stays OPEN for the remaining gates that hash generated shader
+modules and for the lane preflight it asks for.
+
 ## 2026-08-21 - NEW-SOL4-REFRESH-COST-BELOW-WALLCLOCK-RESOLUTION (filed at Batch 1124, C13-41 SOL-4) — **RULED `R-2026-08-21-24`: both (bank the honest record; re-instrument on GPU timestamps — Sol package in flight).** **Batch 1131: the GPU-timestamp lane LANDED (protocol v2, spec 138/138). Review finding carried here: the only labelled refresh pass is `DynEnvMap Sky Fill` — `WebGPUDynamicEnvironmentMapManager.ts` encodes per refresh one sky-fill dispatch, then `runIBLPrefilter` → `WebGPUIBLPipeline.dispatchIrradianceConvolution` (6 dispatches) and `dispatchRadiancePrefilter` (36), then `runSphericalHarmonicProjection` (1), all without `timestampWrites`, and `withComputePassTimestamps` keys on the descriptor label so unlabeled passes would collapse into one bucket. The figure is therefore declared a LOWER BOUND (`scope: sky-cube-bake-only`) and an exactly-zero differential at undeclared resolution is INVALID. NEXT (round 2): label the irradiance, radiance-prefilter, SH-projection and temporal-blend passes and make the lane sum a declared pass set; until then the WebGPU cost stays a bound.** **Batch 1136: round 2 LANDED — all five refresh passes labelled and routed through `withComputePassTimestamps` (`WebGPUDynamicEnvironmentMapManager.ts` descriptors, `WebGPUIBLPipeline.ts` optional provider threaded through one `beginIBLComputePass` helper; authored IBL passes nothing and cannot alias); lane protocol v3 over the declared pass set with the sum re-derived by the gate. Remaining exclusions, inert at defaults: two encoder-level cube copies in the temporal path (no timestampWrites possible) and the optional scene-capture render pass (timeable via `withRenderPassTimestamps`, deliberately not). The WebGPU cost becomes a FIGURE only when the Edge commissioning run executes; until then this entry stays open as a bound.**
 
 The fresh interleaved ABBA refresh-cost measurement (`probe-eclipse-cloud-response`, 801-frame 0 -> 0.9 -> 0 sweep, 8 pairs per leg, 272 environment fills on the eclipse leg) banks a WebGL cost (3.342 then 2.714 ms per refresh across two runs) but cannot attribute a WebGPU cost: in both runs the NO-refresh control leg was the slower one (5982 vs 5418 ms, then 5092 vs 4958 ms), so the differential is negative and the probe honestly refuses to print a cost. The effect is not machine contention (run 5 had no orchestration load and the sign repeated). Both WebGPU legs run at ~6.5 ms per frame against WebGL's ~1.2, and a 272-fill cost of the historical 1.607 ms order (~440 ms) sits inside the observed 134-564 ms leg-to-leg drift; the busy-leg-faster sign is the signature of a GPU power-state down-clock on the idler leg. Disposition owed by ruling (RULING_REQUESTS_2026-08-21 item 12) because R-2026-08-14-1 made the banked cost an operative C13-41 exit prerequisite: re-instrument the cost lane on GPU timestamp queries (`gpuPassCost` exists), or rule the WebGPU refresh cost below wall-clock resolution. Separately worth its own look: the ~5x per-frame WebGPU-vs-WebGL wall time in this eclipse/cloud fixture is a measurement the U2 regression ledger should be read against.
@@ -22819,3 +22829,114 @@ from touching the probe that a ruling's measurement rests on. A third item belon
 the spec helper `deckFreeLightReadback` (`spec:506`) synthesises the very field it is meant to
 observe; repairing it flips the polarity of about a dozen existing `K11` cases, so it belongs in a
 lane that owns them.
+
+## 2026-09-19 — lane S5-RUNNERS (Floi): `test-s5` is built under its ratified name, and the three specs that could only pass on one machine are repaired
+
+C12 close-out plan step 5 (`S5-N4-RUNNERS`). Base `0f0fa444e8` (Batch 1515). Tools/DX class:
+review plus the runner it homes; no Edge leg is owed and none is claimed.
+
+- **`s5-runners-01`** · `package.json` `scripts` · FORK · DONE at 2026-09-19. All ten
+  `c12-29-s5-*.spec.mjs` and six further C12 close-gate specs were orphans — `grep -c` in
+  `package.json` returned 0 for every one of them — so under `R-2026-09-13-2`(D), which runs the
+  runners a batch's files are homed in, a landing that touched any of them ran no gate at all.
+  `test-s5` now exists under the name `R-2026-09-02-16` ratified and was never built, carrying the
+  eight bounded S5 gate specs plus this lane's contract spec; `test-s5-quarantine` carries the two
+  slow ones under the quarantine convention `R-2026-09-13-2`(A) already in service as
+  `test-cloud-c13-quarantine`, which `Tools/spec-runner-census.mjs:110` recognises by suffix rather
+  than by name. The six non-S5 specs (`c12-31-aureole-gate`, `celestial-gate-class-audit`,
+  `eclipse-deckfree-night-law`, `eclipse-globe-shadow-visual`, `finding-ownership-audit`,
+  `visual-evidence-library`) are appended to `test-visual-regression-node`, which is both a ratified
+  family name and the census's own proposal for that directory. Census before: 403 specs, 196 homed
+  (7 quarantined), 207 orphaned. After: 212 homed (9 quarantined), 191 orphaned — exactly the
+  sixteen, the new contract spec not yet counted because the census reads `git ls-files`.
+- **`s5-runners-02`** · `Tools/visual-regression/lib/build-source-identity.mjs` ·
+  FORK · DONE at 2026-09-19. A Node gate's verdict has to be a function of the tree's tracked
+  content. `Build/` is gitignored output whose freshness is not a property of the commit under test,
+  so a check that reds whenever nobody has re-run gulp reports the working directory rather than the
+  product. `BUILD_NOT_CURRENT_REASON` and `buildCurrencyStructuralReason(driftedPaths,
+  integrityFaults)` name that as STRUCTURAL, beside the absence reason that was already there and
+  for the same stated reason. Drift is the only fault that classifies: a named source missing from
+  the map, an ambiguous resolution, an entry with no embedded content and a malformed map are
+  integrity faults of a build that IS current and stay red, which the helper enforces by returning
+  `undefined` whenever `integrityFaults` is non-empty.
+- **`s5-runners-03`** · `Tools/visual-regression/c12-29-s5-custom-ellipsoid-gate.spec.mjs:3842`
+  ("source map proves every frozen production entry byte-for-byte") · FORK · DONE at 2026-09-19.
+  The check read the tree's own `Build/CesiumUnminified/index.js.map` and demanded every one of the
+  46 frozen production entries be byte-identical to it. Embedding — each frozen entry resolving to
+  exactly one map entry that carries its bytes — is now asserted against whatever build is present;
+  byte-exactness is asserted only when that build is current, and a build that is not gets the named
+  structural skip. Demonstrated on a synthetic map built from the tree's own bytes: fresh → PASS
+  (not skipped); one entry drifted → SKIP naming the file; one frozen root dropped from the map →
+  FAIL, before and after, so nothing is laundered.
+- **`s5-runners-04`** · `Tools/visual-regression/c12-29-s5-replacement-device-gate.spec.mjs:1376` ·
+  FORK · DONE at 2026-09-19. One test carried two unrelated halves. The policy half fingerprinted
+  `C12_29_S5_REPLACEMENT_LOCAL_FILES` — which includes `Build/CesiumUnminified/index.js`,
+  `package-lock.json` and two `node_modules` paths — although
+  `collectC1229S5ReplacementPolicyBoundary` only ever reads fingerprints for the eight tracked
+  `C12_29_S5_REPLACEMENT_POLICY_FILES`, so it died with ENOENT on any tree missing any of them while
+  asserting nothing about them. It now fingerprints what the closure consumes. The build half is its
+  own test behind the absence guard, its product-byte mutant restated as a differential (mutating one
+  file adds exactly that path to `missingPaths`, and the unmutated read does not carry it) so it
+  holds on a build of any currency. Declaring the new import meant one added edge in
+  `C12_29_S5_REPLACEMENT_POLICY_EDGES`; the closure is an enumerated graph and refuses an undeclared
+  one by design.
+- **`s5-runners-05`** · `Tools/visual-regression/visual-evidence-library.spec.mjs:237` · FORK ·
+  DONE at 2026-09-19, found by this lane. The default-evidence-root test asserted the derivation
+  against the real repository root and then asserted that that root is literally
+  `F:/Dev/GH/cesium-webgpu-visual-evidence`. The second assertion is a statement about which
+  directory the checkout sits in, not about the product, and the derivation above it already proves
+  the rule; it made the spec red in **every worker clone** (`…-visual-evidence` named after the
+  clone) while passing at the seat. Kept, guarded on the canonical checkout, so the seat still pins
+  the named bank. 72/1 before, 73/0 after.
+
+**Premise corrections against the C12 close-out plan's step 5, all re-measured in-lane at
+`0f0fa444e8`:**
+
+- The plan reads `c12-29-s5-custom-ellipsoid-gate.spec.mjs` as "204/1, red on any tree whose `Build/`
+  is stale or absent". On a clean checkout it is **201 pass / 0 fail / 4 skipped, exit 0**: the file
+  has carried an explicit build-absence classification since it was written
+  (`:97-132`, `BUILD_ABSENT_REASON`). The red is the **stale** case only, which is why it reproduces
+  at the seat and not in a clone.
+- The plan reads `c12-29-s5-replacement-device-gate.spec.mjs` as "36/1, `ENOENT … package-lock.json`".
+  In a clean clone the same test fails first on `ENOENT …/Shaders/GlobeFS.js`, gitignored build
+  output. Both are symptoms of one cause: the test read a file set it does not consume.
+- The plan reads `test-cloud-c13` as "641 pass / 0 fail". It is **641 tests, 613 pass, 0 fail, 28
+  skipped** on an unbuilt clone; the skips are build-bound and the exit code is 0.
+- `visual-evidence-library.spec.mjs` was a **third** red spec at HEAD, measured by neither the plan
+  nor its critique, and red for a reason that only shows up off the seat.
+- Neither slow spec is unbounded. `c12-29-s5-svs-footprint-gate.spec.mjs` ran **57 pass / 0 fail,
+  exit 0, in 1,500.7 s** (25 min 1 s) — it is just past the 25-minute reading the 2026-08-28 entry
+  recorded, not non-terminating. They are quarantined for **measured cost**, which is the honest
+  reason and the one a future lane can act on.
+
+**Station-3 review round (Goldilocks, 2026-09-19) — one real defect, repaired in the same row:**
+
+- The replacement-device build-bound test called `buildCurrencyStructuralReason` with ONE argument,
+  so its `integrityFaults` defaulted to `[]` and nothing could ever reach it. That matters because
+  `boundary.missingPaths` is not a drift list: `collectC1229S5ReplacementSourceBoundary`
+  (`probe-c12-29-s5-replacement-device.mjs:3053-3069`) pushes a map entry whose specifier or
+  `sourcesContent` is not a string, or which resolves outside the repository, into `missingPaths`
+  as `source-map-entry-<index>` (or the raw specifier) and `continue`s **before** `pathEntries.push`.
+  Every one of those is an integrity fault of a build that IS current, and each was being reported
+  as staleness and skipped. Measured on a synthetic map with one such entry and all 27 roots exact:
+  `ok 1 … # SKIP structural: … 1 file(s) drifted, first source-map-entry-28` — not a file, and it
+  did not drift. `rootsPresent` was true and `duplicatePaths` empty, so neither pre-skip assertion
+  fired, and `allExact`'s `resolvedEntryCount === sources.length` conjunct — the only thing that
+  would have caught it — sat behind the skip.
+- Repaired by deriving the unresolved-entry count from what the collector already returns
+  (`sourceMapEntryCount - resolvedEntryCount`, exactly the entries the loop skipped), asserting it
+  empty, and passing it as the helper's second argument. The derivation is a named function,
+  `classifyBoundaryCurrency`, rather than four lines inside a test that SKIPS on a clean checkout:
+  inlined it is code no unbuilt gate can reach, which is how the one-argument call survived a mutant
+  that only ever exercised the helper. A new test drives it over the existing synthetic-source-map
+  seam, so the classification is now asserted on a tree with no `Build/` at all.
+- **Disclosed, not discharged:** both repairs turn a previously-red condition into a named structural
+  skip, and neither the lane nor the reviewer proved the byte-exactness leg against a real `gulp`
+  build — both used a source map constructed from the tree's own bytes, exact by construction. The
+  stale-build signal survives where it bites: `probe-c12-29-s5-custom-ellipsoid.mjs:5731-5739` still
+  folds `!buildSourceIdentity.ok` into the run's refusal and compares both `sourceMapSha256`s.
+- `npm run verify-tooling-catalog` reads the CANDIDATE INDEX, so it is exit 0 in an unstaged clone
+  and exit 1 once these nine files are staged: this row changes the runner-home column of sixteen
+  tools and adds one. **The landing commit must run `node Tools/generate-tooling-catalog-launcher.cjs`
+  and stage `migration_doc/TOOLING_CATALOG.md`.** It is neither a CI gate (`.github/workflows/dev.yml`
+  excludes it as shallow-checkout-ineligible) nor a `.husky` hook, so this is record hygiene.

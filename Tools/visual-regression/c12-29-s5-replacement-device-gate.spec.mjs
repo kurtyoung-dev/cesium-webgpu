@@ -61,6 +61,11 @@ import {
   sampleC1229S5ReplacementRgba,
 } from "./lib/c12-29-s5-replacement-device-capture.mjs";
 import {
+  BUILD_ABSENT_REASON,
+  BUILD_NOT_CURRENT_REASON,
+  buildCurrencyStructuralReason,
+} from "./lib/build-source-identity.mjs";
+import {
   FUSED_SNAPSHOT_BEGIN,
   FUSED_SNAPSHOT_END,
 } from "./lib/same-task-capture.mjs";
@@ -78,6 +83,39 @@ import {
 } from "./probe-c12-29-s5-replacement-device.mjs";
 const toolDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(toolDirectory, "../..");
+
+// Build-absence is STRUCTURAL, not a product FAIL — the same rule the
+// custom-ellipsoid gate states at length. The source boundary binds to
+// `Build/CesiumUnminified` and to the shader modules gulp generates beside
+// their raw sources, so a tree without them is a tree where this check has no
+// subject. The predicate names the artifacts, so a built tree runs everything.
+const BUILD_ARTIFACTS = Object.freeze([
+  path.join(repositoryRoot, "Build/CesiumUnminified/index.js.map"),
+  ...C12_29_S5_REPLACEMENT_SOURCE_FILES.filter((file) =>
+    file.startsWith("packages/engine/Source/Shaders/"),
+  ).map((file) => path.join(repositoryRoot, file)),
+]);
+
+const missingBuildArtifacts = BUILD_ARTIFACTS.filter(
+  (file) => !fs.existsSync(file),
+);
+
+/**
+ * Skip a build-bound check with the shared named structural reason.
+ *
+ * @param {import("node:test").TestContext} t Test context.
+ * @returns {boolean} True when the check cannot see its subject.
+ */
+function skipWithoutBuild(t) {
+  if (missingBuildArtifacts.length === 0) {
+    return false;
+  }
+  t.skip(
+    `${BUILD_ABSENT_REASON}: ${missingBuildArtifacts.length} artifact(s) absent, first ${path.relative(repositoryRoot, missingBuildArtifacts[0]).replaceAll("\\", "/")}`,
+  );
+  return true;
+}
+
 const RUN_ID = "123e4567-e89b-42d3-a456-426614174000";
 const SHA = "a".repeat(64);
 const CAPTURE_NONCES = Object.freeze({
@@ -1373,8 +1411,13 @@ test("capture marker and executable digests are structural provenance", () => {
   }
 });
 
-test("derived policy and source-map closures reject omitted helper and product-byte mutants", () => {
-  const actualFiles = C12_29_S5_REPLACEMENT_LOCAL_FILES.map((file) => {
+test("derived policy closure rejects an omitted helper import", () => {
+  // The closure consumes fingerprints for its OWN policy files, all tracked.
+  // Fingerprinting the wider local set instead made this check depend on
+  // `Build/`, `node_modules/` and `package-lock.json` — none of which it reads
+  // — so it died with ENOENT on any clean checkout while asserting nothing
+  // about them.
+  const actualFiles = C12_29_S5_REPLACEMENT_POLICY_FILES.map((file) => {
     const bytes = fs.readFileSync(path.join(repositoryRoot, file));
     return {
       path: file,
@@ -1412,7 +1455,6 @@ test("derived policy and source-map closures reject omitted helper and product-b
     false,
   );
 
-  const boundary = collectC1229S5ReplacementSourceBoundary();
   // NOT a pin on the whole build's total module count (Q-81): that count
   // drifts with every unrelated engine landing — an executor run measured
   // 2202 against a build that had drifted to 2207 with nothing in this gate
@@ -1426,6 +1468,56 @@ test("derived policy and source-map closures reject omitted helper and product-b
     27,
     "the replacement-device root file list changed size — update this pin deliberately",
   );
+});
+
+/**
+ * Split a source boundary into the two faults `buildCurrencyStructuralReason`
+ * tells apart, and answer with its verdict for that split.
+ *
+ * `missingPaths` mixes two different things. A repository file whose bytes
+ * drifted lands there, and so does a map entry that never resolved to a
+ * repository path at all — a non-string `sourcesContent`, or a specifier
+ * outside the repository. Only the first is staleness; the second is an
+ * integrity fault of a build that IS current, and it is exactly what
+ * `buildCurrencyStructuralReason`'s second argument keeps red. Every
+ * unresolved entry is one the collector skipped before it reached
+ * `pathEntries`, so the two counts differ by precisely their number.
+ *
+ * This is a named function rather than four lines inside the build-bound test
+ * because that test SKIPS on a clean checkout: inlined, the split is code no
+ * gate on an unbuilt tree can reach, and unreachable code is how the
+ * one-argument call that laundered an integrity fault as staleness survived a
+ * mutant that only ever exercised the helper.
+ *
+ * @param {{sourceMapEntryCount: number, resolvedEntryCount: number, missingPaths: ReadonlyArray<string>}} boundary
+ *   A boundary from `collectC1229S5ReplacementSourceBoundary`.
+ * @returns {{integrityFaults: string[], notCurrent: string|undefined}} The
+ *   faults the caller must assert on, and the structural reason it may skip
+ *   with — `undefined` whenever it must assert instead.
+ */
+function classifyBoundaryCurrency(boundary) {
+  const unresolvedEntries =
+    boundary.sourceMapEntryCount - boundary.resolvedEntryCount;
+  const integrityFaults = [];
+  if (unresolvedEntries > 0) {
+    integrityFaults.push(
+      `build source map has ${unresolvedEntries} ${unresolvedEntries === 1 ? "entry that resolves" : "entries that resolve"} to no repository path`,
+    );
+  }
+  return {
+    integrityFaults,
+    notCurrent: buildCurrencyStructuralReason(
+      boundary.missingPaths,
+      integrityFaults,
+    ),
+  };
+}
+
+test("built source-map closure rejects a product-byte mutant", (t) => {
+  if (skipWithoutBuild(t)) {
+    return;
+  }
+  const boundary = collectC1229S5ReplacementSourceBoundary();
   assert.equal(
     boundary.rootsPresent,
     true,
@@ -1435,11 +1527,14 @@ test("derived policy and source-map closures reject omitted helper and product-b
     boundary.sourceMapEntryCount >= C12_29_S5_REPLACEMENT_SOURCE_FILES.length,
     "the whole-build source map must contain at least the replacement-device root files",
   );
-  assert.equal(boundary.allExact, true);
-  const productPath = path.join(
-    repositoryRoot,
-    "packages/engine/Source/Renderer/WebGPU/WebGPUContextDeviceLoss.ts",
-  );
+  assert.deepEqual(boundary.duplicatePaths, []);
+
+  // The mutant proof is a DIFFERENTIAL, so it holds on a build of any
+  // currency: appending a byte to one product file must add exactly that
+  // path to `missingPaths`, and that path must not already be there.
+  const productRelative =
+    "packages/engine/Source/Renderer/WebGPU/WebGPUContextDeviceLoss.ts";
+  const productPath = path.join(repositoryRoot, productRelative);
   const productMutation = Object.create(fs);
   productMutation.readFileSync = (file, ...args) => {
     const value = fs.readFileSync(file, ...args);
@@ -1450,12 +1545,21 @@ test("derived policy and source-map closures reject omitted helper and product-b
   const mutatedBoundary =
     collectC1229S5ReplacementSourceBoundary(productMutation);
   assert.equal(mutatedBoundary.allExact, false);
-  assert.equal(
-    mutatedBoundary.missingPaths.includes(
-      "packages/engine/Source/Renderer/WebGPU/WebGPUContextDeviceLoss.ts",
-    ),
-    true,
-  );
+  assert.equal(mutatedBoundary.missingPaths.includes(productRelative), true);
+  assert.equal(boundary.missingPaths.includes(productRelative), false);
+
+  // `allExact` spans every entry of the whole-build map, so it is a statement
+  // about the build's CURRENCY rather than about this commit. A bundle that
+  // predates its sources is the same STRUCTURAL condition as no bundle at
+  // all: the served artifact this check reasons about does not exist here.
+  // Only DRIFT is that condition, though — see `classifyBoundaryCurrency`.
+  const currency = classifyBoundaryCurrency(boundary);
+  assert.deepEqual(currency.integrityFaults, []);
+  if (currency.notCurrent !== undefined) {
+    t.skip(currency.notCurrent);
+    return;
+  }
+  assert.equal(boundary.allExact, true);
 });
 
 /**
@@ -1477,22 +1581,49 @@ test("derived policy and source-map closures reject omitted helper and product-b
  * proves the RESOLUTION/PRESENCE LOGIC; it can never catch a wrong root
  * name — only a real build's source map (or a fixture independently derived
  * from one) can do that.
+ *
+ * @param {ReadonlyArray<string>} paths Repository-relative files to embed.
+ * @param {{driftedPaths?: ReadonlyArray<string>, corruptEntries?: number, externalEntries?: number}} [faults]
+ *   Perturbations, each defaulting to none so every existing caller builds the
+ *   same internally-consistent map it did before. `driftedPaths` makes the
+ *   stubbed current bytes differ from the embedded copy (staleness);
+ *   `corruptEntries` appends entries whose `sourcesContent` is not a string,
+ *   and `externalEntries` appends specifiers that resolve outside the
+ *   repository — the two shapes that never reach `pathEntries` at all.
  */
-function syntheticSourceBoundaryOperations(paths) {
+function syntheticSourceBoundaryOperations(paths, faults = {}) {
   const sourceMapPath = path.join(
     repositoryRoot,
     "Build/CesiumUnminified/index.js.map",
   );
   const sources = paths.map((file) => `../../${file}`);
   const sourcesContent = paths.map((file) => `// synthetic body for ${file}`);
-  const sourceMapBytes = Buffer.from(
-    JSON.stringify({ version: 3, sourceRoot: "", sources, sourcesContent }),
-  );
   const contentByResolvedPath = new Map(
     paths.map((file, index) => [
       path.join(repositoryRoot, file),
       Buffer.from(sourcesContent[index]),
     ]),
+  );
+  for (const drifted of faults.driftedPaths ?? []) {
+    const resolved = path.join(repositoryRoot, drifted);
+    contentByResolvedPath.set(
+      resolved,
+      Buffer.concat([
+        contentByResolvedPath.get(resolved),
+        Buffer.from("\n// drifted since the build"),
+      ]),
+    );
+  }
+  for (let index = 0; index < (faults.corruptEntries ?? 0); index++) {
+    sources.push(`../../packages/engine/Source/Core/corrupt-${index}.js`);
+    sourcesContent.push(null);
+  }
+  for (let index = 0; index < (faults.externalEntries ?? 0); index++) {
+    sources.push(`../../../outside-the-repository-${index}.js`);
+    sourcesContent.push(`// synthetic body outside the repository ${index}`);
+  }
+  const sourceMapBytes = Buffer.from(
+    JSON.stringify({ version: 3, sourceRoot: "", sources, sourcesContent }),
   );
   return {
     readFileSync(file) {
@@ -1540,6 +1671,86 @@ test("Q-81: root-presence is keyed on the named set, not the whole-build total, 
     `dropping ${droppedRoot} from the build must be caught, not silently pass`,
   );
   assert.equal(missingRootBoundary.allExact, false);
+});
+
+test("a map entry that resolves to no repository path is an integrity fault, never staleness", () => {
+  const roots = [...C12_29_S5_REPLACEMENT_SOURCE_FILES];
+
+  // A map built from the tree's own bytes is current: nothing to excuse.
+  const fresh = collectC1229S5ReplacementSourceBoundary(
+    syntheticSourceBoundaryOperations(roots),
+  );
+  assert.equal(fresh.allExact, true);
+  assert.deepEqual(classifyBoundaryCurrency(fresh), {
+    integrityFaults: [],
+    notCurrent: undefined,
+  });
+
+  // Drift alone IS staleness — the build is internally sound, its sources
+  // moved — so a build-bound check may name it and stand down.
+  const stale = collectC1229S5ReplacementSourceBoundary(
+    syntheticSourceBoundaryOperations(roots, { driftedPaths: [roots[0]] }),
+  );
+  assert.equal(stale.allExact, false);
+  assert.deepEqual(classifyBoundaryCurrency(stale), {
+    integrityFaults: [],
+    notCurrent: `${BUILD_NOT_CURRENT_REASON}: 1 file(s) drifted, first ${roots[0]}`,
+  });
+
+  // Neither of these is a file and neither drifted, yet both land in
+  // `missingPaths`. Reported as staleness they buy a malformed build a skip
+  // from the very check that exists to catch it — and no other assertion is
+  // watching: every named root is present and no path is duplicated, so the
+  // two assertions ahead of the skip stay silent, and `allExact`'s
+  // `resolvedEntryCount === sources.length` conjunct sits behind it.
+  for (const faults of [{ corruptEntries: 1 }, { externalEntries: 1 }]) {
+    const label = Object.keys(faults)[0];
+    const boundary = collectC1229S5ReplacementSourceBoundary(
+      syntheticSourceBoundaryOperations(roots, faults),
+    );
+    assert.equal(boundary.rootsPresent, true, label);
+    assert.deepEqual(boundary.duplicatePaths, [], label);
+    assert.equal(boundary.allExact, false, label);
+    assert.deepEqual(
+      classifyBoundaryCurrency(boundary),
+      {
+        integrityFaults: [
+          "build source map has 1 entry that resolves to no repository path",
+        ],
+        notCurrent: undefined,
+      },
+      `${label} must be named as an integrity fault and must not be skippable`,
+    );
+  }
+
+  // Two of them, for the plural, and the count is the entry count rather than
+  // a tally of one kind: a map may be wrong in both ways at once.
+  const both = collectC1229S5ReplacementSourceBoundary(
+    syntheticSourceBoundaryOperations(roots, {
+      corruptEntries: 1,
+      externalEntries: 1,
+    }),
+  );
+  assert.deepEqual(classifyBoundaryCurrency(both).integrityFaults, [
+    "build source map has 2 entries that resolve to no repository path",
+  ]);
+
+  // An integrity fault OUTRANKS drift, which is what makes the caller's
+  // assert-then-skip order safe rather than load-bearing: a build that is
+  // stale AND malformed may not be excused as merely stale.
+  const staleAndMalformed = collectC1229S5ReplacementSourceBoundary(
+    syntheticSourceBoundaryOperations(roots, {
+      driftedPaths: [roots[0]],
+      corruptEntries: 1,
+    }),
+  );
+  const verdict = classifyBoundaryCurrency(staleAndMalformed);
+  assert.equal(verdict.integrityFaults.length, 1);
+  assert.equal(
+    verdict.notCurrent,
+    undefined,
+    "drift must not launder the malformed entry into a skippable reason",
+  );
 });
 
 test("both renderer lanes reject vacuous black grids and non-960 images", () => {

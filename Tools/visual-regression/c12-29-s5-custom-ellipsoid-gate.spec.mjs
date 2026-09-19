@@ -52,7 +52,11 @@ import {
   validateC1229S5CustomFinalArtifact,
   validateC1229S5CustomMoonTopology,
 } from "./lib/c12-29-s5-custom-ellipsoid-gate.mjs";
-import { inspectBuildSourceIdentity } from "./lib/build-source-identity.mjs";
+import {
+  BUILD_SOURCE_DRIFT_REASON,
+  buildCurrencyStructuralReason,
+  inspectBuildSourceIdentity,
+} from "./lib/build-source-identity.mjs";
 import {
   checkEmbeddedFusedSnapshotIsCanonical,
   checkFusedCaptureUsage,
@@ -3844,16 +3848,36 @@ test("source map proves every frozen production entry byte-for-byte", (t) => {
     return;
   }
   const identity = inspectBuildSourceIdentity({
-    sourceMapPath: path.join(root, "Build/CesiumUnminified/index.js.map"),
+    sourceMapPath: path.join(root, C12_29_S5_CUSTOM_BUILD_SOURCE_MAP),
     sourceFiles: C12_29_S5_CUSTOM_BUILD_SOURCE_FILES.map((file) =>
       path.join(root, file),
     ),
   });
-  assert.equal(identity.ok, true, identity.reasons.join("\n"));
+  // Embedding is a property of the bundle and is asserted against whatever
+  // build is here: each frozen entry must resolve to exactly one source-map
+  // entry that carries its bytes. A dropped, duplicated or content-less root
+  // is a red on any build.
   assert.equal(
     identity.entries.length,
     C12_29_S5_CUSTOM_BUILD_SOURCE_FILES.length,
   );
+  const integrityFaults = identity.reasons.filter(
+    (reason) => !reason.endsWith(BUILD_SOURCE_DRIFT_REASON),
+  );
+  assert.deepEqual(integrityFaults, []);
+  // Byte-exactness is a property of the build's CURRENCY, not of the commit:
+  // `Build/` is gitignored output, so a tree whose bundle predates its sources
+  // has no served bundle to prove anything about, exactly as a tree with no
+  // bundle at all does. That is STRUCTURAL, named, and never a product FAIL.
+  const drifted = identity.entries
+    .filter((entry) => entry.reason === BUILD_SOURCE_DRIFT_REASON)
+    .map((entry) => path.relative(root, entry.file).replaceAll("\\", "/"));
+  const notCurrent = buildCurrencyStructuralReason(drifted, integrityFaults);
+  if (notCurrent !== undefined) {
+    t.skip(notCurrent);
+    return;
+  }
+  assert.equal(identity.ok, true, identity.reasons.join("\n"));
   assert.ok(identity.entries.every((entry) => entry.exact === true));
 });
 

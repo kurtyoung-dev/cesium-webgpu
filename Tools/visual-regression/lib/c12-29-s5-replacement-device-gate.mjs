@@ -185,6 +185,11 @@ export const C12_29_S5_REPLACEMENT_POLICY_EDGES = Object.freeze(
   [
     [
       "Tools/visual-regression/c12-29-s5-replacement-device-gate.spec.mjs",
+      "./lib/build-source-identity.mjs",
+      "Tools/visual-regression/lib/build-source-identity.mjs",
+    ],
+    [
+      "Tools/visual-regression/c12-29-s5-replacement-device-gate.spec.mjs",
       "./lib/c12-29-s5-replacement-device-capture.mjs",
       "Tools/visual-regression/lib/c12-29-s5-replacement-device-capture.mjs",
     ],

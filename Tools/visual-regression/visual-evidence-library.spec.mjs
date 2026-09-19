@@ -234,10 +234,17 @@ test("default library root is the external sibling of the Git common repository"
     deriveDefaultVisualEvidenceRoot(REPOSITORY_ROOT),
     actualExpected,
   );
-  assert.equal(
-    actualExpected,
-    path.normalize("F:/Dev/GH/cesium-webgpu-visual-evidence"),
-  );
+  // The canonical checkout's bank is the named directory the evidence rule
+  // cites. A clone banks under its OWN sibling and repatriates from there,
+  // so pinning the literal unconditionally asserted the directory this
+  // checkout happens to sit in — which reds the suite in every worker clone
+  // while proving nothing the derivation above has not already proved.
+  if (path.basename(REPOSITORY_ROOT) === "cesium-webgpu") {
+    assert.equal(
+      actualExpected,
+      path.normalize("F:/Dev/GH/cesium-webgpu-visual-evidence"),
+    );
+  }
 });
 
 test("Git provenance collection disables optional index writes and fsmonitor hooks", () => {

@@ -26,6 +26,9 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
+  BUILD_NOT_CURRENT_REASON,
+  BUILD_SOURCE_DRIFT_REASON,
+  buildCurrencyStructuralReason,
   compareBuildSourceIdentity,
   inspectBuildSourceIdentity,
 } from "./lib/build-source-identity.mjs";
@@ -400,6 +403,96 @@ test("mutant check: disabling the suffix match reverts the foreign-root fixture 
     assert.match(result.reasons[0], /source is absent from build source map/);
   } finally {
     await rm(scratchDir, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// ─────────────── build currency: STRUCTURAL, never a product FAIL ───────────
+//
+// `Build/` is gitignored output whose freshness is not a property of the
+// commit under test. A Node gate that reds whenever nobody has re-run gulp is
+// reporting the working directory, so drift classifies STRUCTURAL the way
+// absence already does — and ONLY drift does.
+
+test("buildCurrencyStructuralReason: no drift and no faults is not a structural condition", () => {
+  assert.equal(buildCurrencyStructuralReason([], []), undefined);
+  assert.equal(buildCurrencyStructuralReason([]), undefined);
+});
+
+test("buildCurrencyStructuralReason: drift names the count and the first file", () => {
+  const reason = buildCurrencyStructuralReason([
+    "packages/engine/Source/Scene/Globe.js",
+    "packages/engine/Source/Scene/View.js",
+  ]);
+  assert.equal(
+    reason,
+    `${BUILD_NOT_CURRENT_REASON}: 2 file(s) drifted, first packages/engine/Source/Scene/Globe.js`,
+  );
+});
+
+test("buildCurrencyStructuralReason: an integrity fault is never laundered as staleness", () => {
+  assert.equal(
+    buildCurrencyStructuralReason(
+      ["packages/engine/Source/Scene/Globe.js"],
+      [
+        "packages/engine/Source/Scene/View.js: source is absent from build source map",
+      ],
+    ),
+    undefined,
+  );
+  assert.equal(
+    buildCurrencyStructuralReason([], ["source map has no sources"]),
+    undefined,
+  );
+});
+
+test("build currency classifies a drifted fixture and refuses a missing-source one", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "build-currency-"));
+  try {
+    const text = "export const value = 1;\n";
+    const { sourcePath, mapPath } = await makeFixture(root, {
+      sourceText: `${text}// drifted\n`,
+      mapSourcesContent: text,
+    });
+    const drifted = inspectBuildSourceIdentity({
+      sourceMapPath: mapPath,
+      sourceFiles: [sourcePath],
+    });
+    assert.equal(drifted.ok, false);
+    const driftedPaths = drifted.entries
+      .filter((entry) => entry.reason === BUILD_SOURCE_DRIFT_REASON)
+      .map((entry) => entry.file);
+    const integrityFaults = drifted.reasons.filter(
+      (reason) => !reason.endsWith(BUILD_SOURCE_DRIFT_REASON),
+    );
+    assert.equal(driftedPaths.length, 1);
+    assert.deepEqual(integrityFaults, []);
+    assert.ok(
+      buildCurrencyStructuralReason(driftedPaths, integrityFaults)?.startsWith(
+        BUILD_NOT_CURRENT_REASON,
+      ),
+    );
+
+    const orphanPath = path.join(root, "Orphan.js");
+    await writeFile(orphanPath, "export const orphan = 1;\n", "utf8");
+    const missing = inspectBuildSourceIdentity({
+      sourceMapPath: mapPath,
+      sourceFiles: [orphanPath],
+    });
+    const missingIntegrity = missing.reasons.filter(
+      (reason) => !reason.endsWith(BUILD_SOURCE_DRIFT_REASON),
+    );
+    assert.equal(missingIntegrity.length, 1);
+    assert.match(
+      missingIntegrity[0],
+      /source is absent from build source map/u,
+    );
+    assert.equal(
+      buildCurrencyStructuralReason([], missingIntegrity),
+      undefined,
+      "a source the build never embedded is an integrity fault, not staleness",
+    );
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

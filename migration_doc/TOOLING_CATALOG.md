@@ -222,12 +222,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1397 |
-| ACTIVE | 1156 |
+| Files in census | 1398 |
+| ACTIVE | 1157 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 44 |
 | NO @status HEADER | 1 |
-| Classes | probe 676, spec 385, other 155, lib 134, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
+| Classes | probe 676, spec 386, other 155, lib 134, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
 
 ### Tools/ (63)
 
@@ -263,7 +263,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | report-batch-number-reuse.mjs | other | ACTIVE | 2026-09-02 | 3 | Reports every `Batch NNNN:` commit subject that reuses a number already used by a different commit, across full reachable git history. |
 | report-batch-number-reuse.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Behaviour spec for report-batch-number-reuse.mjs, run against a real temporary git repository. |
 | run-far200-shadow-self-test.mjs | runner | ACTIVE | 2026-08-16 | 2 | Thin bootstrap: esbuild-bundles Tools/far200-shadow-self-test.ts and executes it via a data: URL import. |
-| spec-runner-census.mjs | other | NO @purpose HEADER | 2026-09-12 | 17 | — |
+| spec-runner-census.mjs | other | NO @purpose HEADER | 2026-09-12 | 18 | — |
 | spec-runner-census.spec.mjs | spec | NO @purpose HEADER | 2026-09-12 | 6 | — |
 | temp-hygiene.mjs | other | ACTIVE | 2026-09-11 | 7 | Classify the Temp root into an explicit positive delete list, bank any visual evidence inside it, then delete exactly that list behind a protect set that is re-checked at execute time. |
 | temp-hygiene.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Behaviour coverage for Tools/temp-hygiene.mjs — classification age gates, the plan-only default, the execute-time protect/horizon/evidence refusals, and the guarantee that a junction inside a delete target is never followed. |
@@ -278,7 +278,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | verify-doc-citations.spec.mjs | spec | ACTIVE | 2026-09-05 | 1 | Pins verify-doc-citations.mjs against fixture trees: clean passes, a mutated link fails and is named, an out-of-bounds anchor fails, a .js→.ts rename fails, the P-14 false-positive shape stays green, and an inertness mutant of the resolution fold makes the core assertion fail. |
 | verify-landing-compliance.mjs | other | ACTIVE | 2026-08-28 | 30 | After-the-fact detector that re-runs the landing rules + C16 marker gate over a landed commit range, making any --no-verify hook bypass visible. |
 | verify-landing-compliance.spec.mjs | spec | ACTIVE | 2026-08-28 | 6 | Contract for the bypass detector against immutable history: known-bad C12-37 landing must red, known-good B1041-1043 landing must pass. |
-| verify-no-doc-shred.mjs | other | ACTIVE | 2026-08-28 | 5 | Fails when any migration_doc markdown file contains a long run of single-character lines - the signature of a splice-spread-over-string edit defect that has landed shredded ledger sections three times. |
+| verify-no-doc-shred.mjs | other | ACTIVE | 2026-08-28 | 6 | Fails when any migration_doc markdown file contains a long run of single-character lines - the signature of a splice-spread-over-string edit defect that has landed shredded ledger sections three times. |
 | verify-orientation-mirror.mjs | other | ACTIVE | 2026-08-28 | 2 | Fail closed when a status asserted by a reader-facing orientation document disagrees with, or cannot be resolved against, its campaign queue authority. |
 | verify-orientation-mirror.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Prove the orientation-mirror verifier compares closed-vocabulary statuses, fails closed on unresolved references, honors reasoned allowlisting, and behaves identically on LF and CRLF inputs. |
 | verify-readme-index.mjs | other | ACTIVE | 2026-09-05 | 5 | Fails when a tracked migration_doc/**/*.md file is named nowhere in migration_doc/README.md (by basename or by the directory-aggregate convention README.md documents at :121-127), or when a README markdown link names a migration_doc path the tree does not track. |
@@ -424,7 +424,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1061)
+### Tools/visual-regression/ (1062)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -461,17 +461,17 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c11-90-primitive-restart-harness.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Contract for the C11-90 harness + probe pair: topology expectations, backend/shape authority, watchdog ordering, probe-fleet contract membership. |
 | c12-11-star-catalog-gate.spec.mjs | spec | NO @purpose HEADER | 2026-08-21 | 3 | — |
 | c12-29-s4-orbital-sunrise-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Gate spec for C12-29 S4 orbital-sunrise certification: band/anchor constants, independent extinction oracle, artifact shape, probe route wiring. |
-| c12-29-s5-canonical-hash-parity.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 1 | — |
-| c12-29-s5-custom-ellipsoid-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Gate spec for the C12-29 S5 custom-ellipsoid certification: geometry oracles, eclipse bindings, cross-backend derivation, v6 gate fold, mutants. |
-| c12-29-s5-dense-cost-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Gate spec for the C12-29 S5 dense-cost certification: schedule/workload validation, long-task selection, legacy + superseded schema folds, sentinels. |
-| c12-29-s5-dense-cost-structural-refusal.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Q-96 — regression coverage for the dense-cost probe's structural |
-| c12-29-s5-multiview-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Gate spec for the C12-29 S5 multiview certification: phases, renderer set, WebGPU VR error contract, evidence lifecycle and lock/watchdog wiring. |
-| c12-29-s5-multiview-source-preflight.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Q-99 — regression coverage for the multiview probe's new |
-| c12-29-s5-replacement-device-gate.spec.mjs | spec | ACTIVE | 2026-08-29 | 4 | Certifies the S5 eclipse-shadow replacement-device evidence pipeline: schemas, phases, ledger/provenance validators, gate fold of its probe+lib pair. |
-| c12-29-s5-replacement-device-preflight-refusal.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Q-116 — regression coverage for the replacement-device S5 probe's |
-| c12-29-s5-svs-footprint-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | node:test half of the NASA/SVS umbra-footprint certification triple (probe + gate-lib + spec) for the S5 eclipse globe shadow. |
-| c12-29-s5-terrain-selection-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Certifies the S5 terrain-selection evidence gate: v4-v9 schema migrations, page-diagnostic validation, canonical capture checks, exit-code fold. |
-| c12-31-aureole-gate.spec.mjs | spec | ACTIVE | 2026-09-02 | 6 | node:test half of the C12-31 L1-L4 sky-aureole certification triple (probe-sky-aureole-anchor + gate lib + spec). |
+| c12-29-s5-canonical-hash-parity.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 2 | — |
+| c12-29-s5-custom-ellipsoid-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 7 | Gate spec for the C12-29 S5 custom-ellipsoid certification: geometry oracles, eclipse bindings, cross-backend derivation, v6 gate fold, mutants. |
+| c12-29-s5-dense-cost-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Gate spec for the C12-29 S5 dense-cost certification: schedule/workload validation, long-task selection, legacy + superseded schema folds, sentinels. |
+| c12-29-s5-dense-cost-structural-refusal.spec.mjs | spec | ACTIVE | 2026-09-02 | 2 | Q-96 — regression coverage for the dense-cost probe's structural |
+| c12-29-s5-multiview-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Gate spec for the C12-29 S5 multiview certification: phases, renderer set, WebGPU VR error contract, evidence lifecycle and lock/watchdog wiring. |
+| c12-29-s5-multiview-source-preflight.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Q-99 — regression coverage for the multiview probe's new |
+| c12-29-s5-replacement-device-gate.spec.mjs | spec | ACTIVE | 2026-08-29 | 6 | Certifies the S5 eclipse-shadow replacement-device evidence pipeline: schemas, phases, ledger/provenance validators, gate fold of its probe+lib pair. |
+| c12-29-s5-replacement-device-preflight-refusal.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Q-116 — regression coverage for the replacement-device S5 probe's |
+| c12-29-s5-svs-footprint-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 7 | node:test half of the NASA/SVS umbra-footprint certification triple (probe + gate-lib + spec) for the S5 eclipse globe shadow. |
+| c12-29-s5-terrain-selection-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Certifies the S5 terrain-selection evidence gate: v4-v9 schema migrations, page-diagnostic validation, canonical capture checks, exit-code fold. |
+| c12-31-aureole-gate.spec.mjs | spec | ACTIVE | 2026-09-02 | 8 | node:test half of the C12-31 L1-L4 sky-aureole certification triple (probe-sky-aureole-anchor + gate lib + spec). |
 | c13-42-characterization-contract.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Pins the C13-42 characterization contract: the released controlled-ray obligation, the calibration-not-acceptance disposition, and the per-subject served-response budget. |
 | c13-42-godray-fixture.spec.mjs | spec | NO @purpose HEADER | 2026-09-13 | 5 | — |
 | canvas-black-narrow.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Narrows the black-canvas bug by rendering three paths (default PP chain, depth overlay, frustum tint) and reporting which yields non-black pixels. |
@@ -488,7 +488,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | celestial-g2-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Guards the G2 star-PSF gate: display-transform inversion round-trip, PSF discrimination vs the old truncated Gaussian, composition rules, via mutants. |
 | celestial-g3-gate.spec.mjs | spec | ACTIVE | 2026-08-21 | 6 | Guards the G3 Milky-Way cubemap gate: arcmin/px definition pinning, orthogonal structure metrics, T3 adversarial rejection, real-byte format arm. |
 | celestial-g4-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Guards the G4 sun/moon gate: thresholds re-derived from shipped Scene modules, synthetic-frame recovery proofs, eight aimed mutants each rejected. |
-| celestial-gate-class-audit.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 5 | — |
+| celestial-gate-class-audit.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 7 | — |
 | celestial-metrics.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Trust anchor for lib/celestial-metrics.mjs: each metric (census, contrast tail, chroma, falloff, magnitude fidelity) run on closed-form images. |
 | celestial-uniform-offsets.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Derives WGSL uniform-layout offsets for the star cubemap + sprite buffers from struct source and pins the JS packers' flat indices against them. |
 | celestial-water-globe-port.spec.mjs | spec | ACTIVE | 2026-09-11 | 7 | Executes the globe ocean's celestial glint law out of the shipped WGSL, holds the GLSL twin and the FFT twin equal to it by normalised source comparison, and measures the exact-zero off contract of the camera-UB tail. |
@@ -569,9 +569,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | earth-at-night-toolbar-collapsed.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | EAN-04: prove the earth-at-night toolbar's collapsed-by-default |
 | earth-pixel-probe.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Loads CesiumViewer once per backend at one pinned camera and samples RGB at fixed screen points (center/ocean/continent/sky) to quantify color shift. |
 | eclipse-cloud-ibl-response.spec.mjs | spec | ACTIVE | 2026-09-16 | 9 | C13-41 (C12-29 S3 rider): pins seven exact-1.0 non-eclipse identity sites, rejects the S2 scene-factor shadow substitution, both env-bake halves. |
-| eclipse-cloud-response-gate.spec.mjs | spec | ACTIVE | 2026-09-02 | 17 | Pure-Node half of C13-41's Edge acceptance: derives bucket fills and submitted-refresh cost, and mutant-checks every fold predicate. |
-| eclipse-deckfree-night-law.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Re-derives the shipped globe night/day fragment law in both dialects and checks the deck-free eclipse diagnostic's closed form against banked pixels (Q-78). |
-| eclipse-globe-shadow-visual.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Pins probe-eclipse-globe-shadow.mjs structure: canonical same-task capture embed and eclipse/control x on/off isolation on both backends. |
+| eclipse-cloud-response-gate.spec.mjs | spec | ACTIVE | 2026-09-19 | 17 | Pure-Node half of C13-41's Edge acceptance: derives bucket fills and submitted-refresh cost, and mutant-checks every fold predicate. |
+| eclipse-deckfree-night-law.spec.mjs | spec | ACTIVE | 2026-08-29 | 3 | Re-derives the shipped globe night/day fragment law in both dialects and checks the deck-free eclipse diagnostic's closed form against banked pixels (Q-78). |
+| eclipse-globe-shadow-visual.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Pins probe-eclipse-globe-shadow.mjs structure: canonical same-task capture embed and eclipse/control x on/off isolation on both backends. |
 | eclipse-globe-svs-oracle.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | External S5 oracle: EclipseGlobeShadow model outputs vs published NASA 2024-04-08 figures (path centres, 197.5 km umbra width, falloff, shadow speed). |
 | eclipse-globe-umbra-rte.spec.mjs | spec | ACTIVE | 2026-09-11 | 8 | C12-29 S5 regression contract: CPU fit/composition laws, camera-independent common-ray representation, matching WebGL/WebGPU resource architecture. |
 | eclipse-high-precision-dependency.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Pins the astronomy-engine 2.1.19 dependency: fixture provenance byte/hash fingerprints vs the resolved installed package (supply-chain gate). |
@@ -591,7 +591,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | environment-refresh-priority.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Pins C11-193C same-frame dynamic-environment demand ordering in WebGPUEnvironmentRefreshCoordinator, GPU-free via esbuild-transpiled TS. |
 | environmental-snapshot-gate.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins which full-screen environmental stages run when this frame's post-processed snapshot was and was not copied, including the non-cloud stages the C13-46 narrowing reaches. |
 | eye-cartographic-uniforms.spec.mjs | spec | ACTIVE | 2026-09-11 | 6 | Executes the real globe camera-UB tail packer against a real UniformState, derives the WGSL CameraUniforms layout from the shader source, and evaluates upstream's czm_eyeToCartographicDelta GLSL and its three WGSL copies over an altitude sweep in float32 to prove they are the same arithmetic. |
-| finding-ownership-audit.spec.mjs | spec | ACTIVE | 2026-08-24 | 8 | Scans the migration_doc finding-source files for NEW-* IDs and enforces each has an ownership disposition (alias/placeholder/resolved). |
+| finding-ownership-audit.spec.mjs | spec | ACTIVE | 2026-08-24 | 10 | Scans the migration_doc finding-source files for NEW-* IDs and enforces each has an ownership disposition (alias/placeholder/resolved). |
 | fog-cheap-coverage-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 8 | Pins the fog cheap-path cloud-shadow coverage gate: samples standardised onto the baked field's moments, with mutants and byte-neutrality. |
 | globe-cloud-default.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins the managed cloud deck OFF by default (maintainer ruling M2) while proving the cinematic tier still resolves when a scene opts in. |
 | globe-cold-start-black-rule.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 2 | — |
@@ -1380,6 +1380,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | run-source-check.mjs | runner | ACTIVE | 2026-09-06 | 3 | Records one authorized Node source spec with explicit input identities and durable raw command facts. |
 | run-source-check.spec.mjs | spec | ACTIVE | 2026-09-06 | 2 | Verifies source-check identity and result folding with fake commands and storage. |
 | runtime-residency-contract.spec.mjs | spec | ACTIVE | 2026-09-03 | 9 | Contract spec for DX-02: a probe that declares @runtime residency on lib/probe-runtime.mjs must not re-implement the four concerns that module already owns. |
+| s5-runner-home.spec.mjs | spec | ACTIVE | — | 1 | Pins the C12-29 S5 gate specs to their ratified runner home: every s5 spec is reachable from `test-s5`, only the two slow ones shelter in `test-s5-quarantine`, and no runner names a file that is not there. |
 | sandcastle-batch-66-end-of-session-runner.mjs | other | INVESTIGATION | 2026-08-16 | 3 | End-of-session rerun of the Batch-66 Sandcastle sweep (direct scene.pick, pointer-error filtering) writing per-demo screenshots + report. |
 | sandcastle-batch-66-final-runner.mjs | other | INVESTIGATION | 2026-08-16 | 11 | Post-F1/F2/F3 rerun of the Batch-66 WebGPU Sandcastle sweep: every 'WebGPU *.html' demo headless, known artifacts filtered, JSON report. |
 | sandcastle-demo-verdict.spec.mjs | spec | ACTIVE | 2026-09-16 | 1 | Prevents quiet settle windows from being reported as completed demos. |
@@ -1449,7 +1450,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | verify-pick-webgl-control.mjs | other | ACTIVE | 2026-08-16 | 4 | WebGL control leg for the model-feature pick probe: same tileset/camera/pick on the reference backend to isolate WebGPU-specific defects. |
 | verify-vector-3dtile-frs.mjs | other | ACTIVE | 2026-08-16 | 4 | Smoke for Vector3DTilePrimitive/Polylines/ClampedPolylines feature renderers: FR registration, createCommands, error-free render loop. |
 | visual-evidence-library.mjs | other | ACTIVE | 2026-08-16 | 5 | CLI for the append-only content-addressed visual-evidence library: archive/import-legacy/verify/catalog/upgrade with provenance and run identity. |
-| visual-evidence-library.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | node:test coverage of the evidence-library lib + CLI: schemas, archive/verify/catalog/upgrade flows, provenance, usage errors, tmpdir fixtures. |
+| visual-evidence-library.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | node:test coverage of the evidence-library lib + CLI: schemas, archive/verify/catalog/upgrade flows, provenance, usage errors, tmpdir fixtures. |
 | voxel-inside-camera-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Device-free gate for camera-inside voxel proxy rendering: executes real WebGPUVoxelRenderer index helpers via esbuild bundle + structural pins. |
 | voxel-megatexture-reupload-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Mutant gate for the voxel megatexture reupload evidence policy: valid resident/eviction/return evidence passes, each corruption must go red. |
 | weather-field-bounds.spec.mjs | spec | ACTIVE | 2026-09-19 | 11 | WeatherField contract: grid registration, regional bounds honoured incl. antimeridian, no-data semantics, global path byte-identical to legacy. |
@@ -1545,7 +1546,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | aec-residency-e2.mjs | lib | ACTIVE | 2026-09-03 | 2 | Pure trace-clock bridging, GPU-process frame-gap overlap summarisation, shader-module census arithmetic, animation-frame gap derivation and control-matrix construction for the E-2 AEC residency measurement. |
 | aec-residency-stall-locus.mjs | lib | ACTIVE | 2026-09-02 | 5 | Decomposes an E-1 residency receipt leg into its dominant inter-frame gaps, reads the wall-clock poll cadence inside the largest gap to decide whether the renderer's main thread was blocked or free, and reports whether a pipeline-creation CAUSE is licensed by that evidence. |
 | backend-isolation-launch.mjs | lib | ACTIVE | 2026-08-20 | 3 | The gated launch step for lanes whose page builds nothing until a launch control is pressed. |
-| build-source-identity.mjs | lib | ACTIVE | 2026-09-03 | 37 | Shared provenance helpers: safe git HEAD, build/shader fingerprinting, and the STRUCTURAL build-absent reason evidence shards bind to. |
+| build-source-identity.mjs | lib | ACTIVE | 2026-09-03 | 38 | Shared provenance helpers: safe git HEAD, build/shader fingerprinting, and the STRUCTURAL build-absent reason evidence shards bind to. |
 | built-shader-identity.mjs | lib | ACTIVE | 2026-09-05 | 3 | Decides whether a BUILT bundle embeds the shader text currently on disk, so a probe cannot score a stale build as a product verdict. |
 | c11-13-public-voxel-pick-convergence.mjs | lib | ACTIVE | 2026-08-16 | 3 | Pure convergence predicate for Scene.pickVoxel warm-up: two consecutive identical real cells establish stability; an absent result resets the streak. |
 | c11-13-voxel-inside-camera-probe.mjs | lib | ACTIVE | 2026-08-27 | 6 | Shared implementation of the C11-13 inside-camera voxel probe: watchdogs, waypoint ladder, 18 error lanes, capture plumbing used by probe and spec. |
@@ -1566,7 +1567,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c12-29-s5-svs-footprint-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 7 | Gate library for the S5 NASA-SVS-5073 eclipse-footprint certification shard, pairing its probe and spec. |
 | c12-29-s5-terrain-selection-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 4 | Frozen inputs, exact terrain-radius arithmetic, evidence-shape checks and verdict folding for S5's first final-certification shard (v10 schema). |
 | c12-31-aureole-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 4 | Gate-predicate library for the C12-31 sky-aureole certification lane, pairing probe-sky-aureole-anchor with its spec. |
-| c13-41-deckfree-control.mjs | lib | ACTIVE | 2026-08-29 | 7 | State-isolated ABBA session plan plus pinned lighting/fade constants for C13-41's deck-free eclipse control lane. |
+| c13-41-deckfree-control.mjs | lib | ACTIVE | 2026-09-19 | 7 | State-isolated ABBA session plan plus pinned lighting/fade constants for C13-41's deck-free eclipse control lane. |
 | c13-42-godray-fixture.mjs | lib | NO @purpose HEADER | 2026-09-13 | 8 | — |
 | c13-42-reproduction-contract.mjs | lib | NO @purpose HEADER | 2026-09-13 | 13 | — |
 | c13-42-reproduction-harness.mjs | lib | NO @purpose HEADER | 2026-09-12 | 4 | — |

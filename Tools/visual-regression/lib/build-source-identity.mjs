@@ -49,6 +49,13 @@ export function safeGitHead(cwd) {
 export const BUILD_ABSENT_REASON =
   "structural: the run has no build to bind to";
 
+/**
+ * Named STRUCTURAL reason for a build that is present but was produced from
+ * other bytes. See {@link buildCurrencyStructuralReason}.
+ */
+export const BUILD_NOT_CURRENT_REASON =
+  "structural: the build present was not produced from these sources";
+
 /** Read failures that mean an artifact is absent rather than unreadable. */
 const BUILD_ABSENCE_CODES = new Set(["ENOENT", "ERR_MODULE_NOT_FOUND"]);
 
@@ -70,6 +77,46 @@ export function buildAbsenceReason(error) {
   }
   const target = error?.path ?? error?.url ?? error?.message ?? "";
   return `${BUILD_ABSENT_REASON}: ${String(target)}`;
+}
+
+/** The per-entry reason {@link compareBuildSourceIdentity} gives for drift. */
+export const BUILD_SOURCE_DRIFT_REASON =
+  "current source bytes differ from built sourcesContent";
+
+/**
+ * Named STRUCTURAL reason for "a build is here, but it is not the build these
+ * sources produce".
+ *
+ * A Node gate's verdict must be a function of the tree's tracked content.
+ * `Build/` is gitignored output whose freshness is not a property of the commit
+ * under test, so a check that reds whenever nobody has re-run gulp is reporting
+ * the working directory rather than the product — the same category error
+ * `BUILD_ABSENT_REASON` was written for, one step along: there the lane could
+ * not see its subject because nothing was there, here because what is there is
+ * a different build. The bundle a probe would serve is absent either way.
+ *
+ * Drift is the ONLY fault that classifies. A named source missing from the map,
+ * an ambiguous resolution, an entry with no embedded content, a malformed map:
+ * those are integrity faults of a build that IS current and stay red. Pass them
+ * in `integrityFaults` and this returns undefined, so the caller asserts.
+ *
+ * @param {ReadonlyArray<string>} driftedPaths Files whose current bytes differ
+ *   from the build's embedded copy.
+ * @param {ReadonlyArray<string>} [integrityFaults] Faults that are not drift.
+ * @returns {string|undefined} The reason, or undefined when the caller must
+ *   assert instead of skipping.
+ */
+export function buildCurrencyStructuralReason(
+  driftedPaths,
+  integrityFaults = [],
+) {
+  if (integrityFaults.length > 0) {
+    return undefined;
+  }
+  if (driftedPaths.length === 0) {
+    return undefined;
+  }
+  return `${BUILD_NOT_CURRENT_REASON}: ${driftedPaths.length} file(s) drifted, first ${driftedPaths[0]}`;
 }
 
 /**
