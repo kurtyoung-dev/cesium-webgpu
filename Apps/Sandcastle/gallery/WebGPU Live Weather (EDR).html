@@ -31,8 +31,11 @@
       • WeatherSource  — a swappable data backend. EdrWeatherSource fetches an
         OGC API-EDR `cube` query (NOAA GFS, total cloud cover) as CoverageJSON —
         compact JSON, parsed natively, no GRIB2/NetCDF binary decode.
-      • WeatherTexPacker — resamples the field into the cloud renderer's 256x128
-        weather-map texture (R = coverage).
+      • WeatherTexPacker — resamples the field into the cloud renderer's
+        1440x721 weather-map texture (R = coverage). That is GFS's own 0.25°
+        grid, so this demo now requests the model's native field rather than a
+        96x48 resample of it — a larger response, and 27.8 km per texel at the
+        equator instead of 156.4.
       • WeatherProvider  — fetches async, caches, and exposes a sync accessor the
         cloud renderer reads each frame; the weather map AUTO-ENABLES once data
         arrives. A failed fetch leaves the procedural map in place (no flash).

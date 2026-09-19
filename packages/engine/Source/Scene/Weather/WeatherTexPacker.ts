@@ -2,8 +2,10 @@
  * Bakes a normalized {@link WeatherField} into the WebGPU cloud renderer's
  * weather-map texture bytes. The output byte layout matches
  * {@link buildProceduralWeatherMap} (Scene/Weather/ProceduralWeatherMap.ts)
- * exactly — a 256x128 by default rgba8unorm equirectangular texture with row 0
- * at north:
+ * exactly — a 1440x721 by default rgba8unorm equirectangular texture with row 0
+ * at north (the default is `WEATHER_MAP_TEX_WIDTH` / `WEATHER_MAP_TEX_HEIGHT`
+ * from `WeatherMapSeam`, the one definition of that size; every function here
+ * stays parametric in `texW` / `texH`):
  *   R = coverage (0..1 -> 0..255)   — the only channel the shader reads today
  *   G = cloud type / genus (scaffolding, default 128)
  *   B = cloud base, normalized      (scaffolding, default 0)
@@ -27,6 +29,8 @@ import { GLOBAL_WEATHER_BOUNDS, type WeatherField } from "./WeatherTypes.js";
 import {
   applyEquirectPolarLowPass,
   polarLowPassWidth,
+  WEATHER_MAP_TEX_HEIGHT,
+  WEATHER_MAP_TEX_WIDTH,
 } from "./WeatherMapSeam.js";
 import { buildProceduralWeatherMap } from "./ProceduralWeatherMap.js";
 import {
@@ -327,14 +331,16 @@ function restoreProceduralNoDataFill(
  * gaps, takes the plain global path and produces the same bytes it always has.
  *
  * @param field The normalized weather grid.
- * @param texW Texture width (default 256, matches WEATHER_TEX_W).
- * @param texH Texture height (default 128, matches WEATHER_TEX_H).
+ * @param texW Texture width (default {@link WEATHER_MAP_TEX_WIDTH}, which the
+ *   renderer's `WEATHER_TEX_W` must equal).
+ * @param texH Texture height (default {@link WEATHER_MAP_TEX_HEIGHT}, which the
+ *   renderer's `WEATHER_TEX_H` must equal).
  * @param options Per-call overrides (currently the no-data fill).
  */
 export function packWeatherFieldDetailed(
   field: WeatherField,
-  texW: number = 256,
-  texH: number = 128,
+  texW: number = WEATHER_MAP_TEX_WIDTH,
+  texH: number = WEATHER_MAP_TEX_HEIGHT,
   options?: WeatherPackOptions,
 ): WeatherPackResult {
   const out = new Uint8Array(texW * texH * 4);
@@ -458,12 +464,13 @@ export function packWeatherFieldDetailed(
   // it a second time. `buildProceduralWeatherMap` ends with this same filter at
   // this same size, so the fill bytes arrive already band-limited, and
   // re-filtering widens the kernel — a box convolved with a box is triangular —
-  // which moves 6,061 of 131,072 bytes by up to 30/255 across 42 of the 128
-  // rows. That would break the byte-continuity with the no-provider render that
-  // `WeatherFieldGrid` gives as the reason `procedural` is the default fill, so
-  // attaching or detaching a partial provider — METAR emits no-data for most of
-  // the planet — would visibly re-blur high-latitude cloud structure where
-  // nothing was observed.
+  // which moves bytes near the poles: at 256 x 128 it moves 6,061 of 131,072
+  // bytes by up to 30/255 across 42 of the 128 rows; the mechanism is
+  // size-independent, the figures are not. That would break the byte-continuity
+  // with the no-provider render that `WeatherFieldGrid` gives as the reason
+  // `procedural` is the default fill, so attaching or detaching a partial
+  // provider — METAR emits no-data for most of the planet — would visibly
+  // re-blur high-latitude cloud structure where nothing was observed.
   restoreProceduralNoDataFill(out, filledMask, texW, texH, fillMap);
   return {
     bytes: out,
@@ -482,15 +489,17 @@ export function packWeatherFieldDetailed(
  * only.
  *
  * @param field The normalized weather grid.
- * @param texW Texture width (default 256, matches WEATHER_TEX_W).
- * @param texH Texture height (default 128, matches WEATHER_TEX_H).
+ * @param texW Texture width (default {@link WEATHER_MAP_TEX_WIDTH}, which the
+ *   renderer's `WEATHER_TEX_W` must equal).
+ * @param texH Texture height (default {@link WEATHER_MAP_TEX_HEIGHT}, which the
+ *   renderer's `WEATHER_TEX_H` must equal).
  * @param options Per-call overrides (currently the no-data fill).
  * @returns rgba8 bytes, length `texW*texH*4`.
  */
 export function packWeatherField(
   field: WeatherField,
-  texW: number = 256,
-  texH: number = 128,
+  texW: number = WEATHER_MAP_TEX_WIDTH,
+  texH: number = WEATHER_MAP_TEX_HEIGHT,
   options?: WeatherPackOptions,
 ): Uint8Array {
   return packWeatherFieldDetailed(field, texW, texH, options).bytes;

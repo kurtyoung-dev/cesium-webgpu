@@ -54,6 +54,38 @@ export const WEATHER_MAP_LON_RANGE = 2 * Math.PI;
 export const WEATHER_MAP_LAT_RANGE = Math.PI;
 
 /**
+ * Weather-texture width in texels, and the ONE definition of it.
+ *
+ * 1440 x 721 is the GFS 0.25-degree global grid: 360 / 0.25 = 1440 longitude
+ * columns and 180 / 0.25 + 1 = 721 latitude rows. Sizing the texture to the
+ * source grid is what makes a native-resolution request meaningful — resampling
+ * a 1440-column field onto 256 columns discarded 82% of the columns the
+ * provider had already paid to fetch.
+ *
+ * At the equator one texel spans 40,030 km / 1440 = 27.8 km of ground, against
+ * 156.4 km at the historical 256 x 128. A 2000-px full disc puts a screen pixel
+ * at 6.4 km, so the field is still coarser than the screen — this closes the
+ * gap by 5.625x linearly, it does not close it.
+ *
+ * `WEATHER_TEX_W` / `WEATHER_TEX_H` in
+ * `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts` must equal these. That
+ * agreement is asserted textually by
+ * `Tools/visual-regression/weather-map-seam.spec.mjs`, because the renderer is
+ * WebGPU-only and a backend-neutral Scene module must not import it.
+ *
+ * Nothing downstream assumes a power of two, an even row count or a square
+ * texel: {@link polarLowPassWidth} derives its kernel from `texH`/`texW`, the
+ * shader samples by UV, and the upload uses `queue.writeTexture`, whose
+ * `bytesPerRow` carries no 256-byte alignment rule (that one applies to
+ * `GPUImageCopyBuffer`, i.e. `copyBufferToTexture`, which this path does not
+ * use — 1440 * 4 = 5760 is not a multiple of 256). A 721-row cell-centred grid
+ * also places a texel centre exactly on the equator, at row 360.
+ */
+export const WEATHER_MAP_TEX_WIDTH = 1440;
+/** Weather-texture height in texels. See {@link WEATHER_MAP_TEX_WIDTH}. */
+export const WEATHER_MAP_TEX_HEIGHT = 721;
+
+/**
  * The CPU twin of `worldToWeatherUV` in `ProceduralClouds.wgsl`: geodetic-ish
  * lon/lat (radians) to weather-map UV. `v` is flipped so row 0 is the north pole.
  * Kept expression-for-expression identical to the WGSL so the two cannot drift;
@@ -161,6 +193,90 @@ export function periodicFbm2D(
     amp *= 0.5;
   }
   return v;
+}
+
+/**
+ * Row-at-a-time twin of {@link periodicFbm2D}, for producers that evaluate a
+ * whole equirectangular row at texel centres.
+ *
+ * `out[tx]` is BIT-IDENTICAL to
+ * `periodicFbm2D(((tx + 0.5) / w) * periodX, y, periodX, octaves)` — the same
+ * expression order, the same lattice wrap and the same accumulation order — and
+ * `weather-map-seam.spec.mjs` asserts that with `assert.equal` on the doubles
+ * rather than within a tolerance.
+ *
+ * Why it exists: the per-texel form hashes four lattice corners per octave per
+ * texel and `hash2` costs a `Math.sin`, so a 1440 x 721 map needs ~41.5 M sine
+ * evaluations — a first-frame main-thread stall, since the map is built when the
+ * resident weather version flips to the procedural sentinel. A row holds `y`
+ * fixed, so each octave reads only two lattice rows for the whole row; hoisting
+ * those out brings it to ~1.1 M.
+ *
+ * @param out Destination, length `w`. Returned for chaining.
+ * @param w Texels across one full longitude wrap.
+ * @param y Latitude coordinate in BASE-OCTAVE lattice units (already scaled by
+ *   the caller exactly as it would scale {@link periodicFbm2D}'s `y`).
+ * @param periodX Base-octave lattice period. MUST be a positive integer.
+ */
+export function periodicFbmRow(
+  out: Float64Array,
+  w: number,
+  y: number,
+  periodX: number,
+  octaves: number = 5,
+): Float64Array {
+  out.fill(0);
+  if (octaves < 1) {
+    return out;
+  }
+  // One scratch pair per call, sized to the finest octave's lattice period.
+  const maxPeriod = periodX * Math.pow(2, octaves - 1);
+  const latticeA = new Float64Array(maxPeriod);
+  const latticeB = new Float64Array(maxPeriod);
+  let amp = 0.5;
+  let f = 1;
+  for (let i = 0; i < octaves; i++) {
+    const period = periodX * f;
+    const yy = y * f;
+    const iy = Math.floor(yy);
+    const fy = yy - iy;
+    const uy = fy * fy * (3 - 2 * fy);
+    for (let k = 0; k < period; k++) {
+      latticeA[k] = hash2(k, iy);
+      latticeB[k] = hash2(k, iy + 1);
+    }
+    for (let tx = 0; tx < w; tx++) {
+      // `(u * periodX) * f` — the same association `periodicFbm2D` produces
+      // when its caller passes `x = u * periodX` and it forms `x * f`.
+      const xx = ((tx + 0.5) / w) * periodX * f;
+      const ix = Math.floor(xx);
+      const fx = xx - ix;
+      const ux = fx * fx * (3 - 2 * fx);
+      // Exactly `wrapIndex`, with its no-op case inlined: for `0 <= i < period`,
+      // `((i % period) + period) % period === i`. Worth spelling out because
+      // `wrapIndex` is four `%` per texel per octave — 41.5 M of them over a
+      // 1440 x 721 map — and once the lattice rows are hoisted that modulo, not
+      // the hashing, is the remaining cost. Both arms stay live: `u` in (0,1)
+      // keeps `ix` on the fast path, and `ix + 1 === period` takes the wrap once
+      // per row per octave.
+      const ix1 = ix + 1;
+      const x0 = ix >= 0 && ix < period ? ix : wrapIndex(ix, period);
+      const x1 = ix1 >= 0 && ix1 < period ? ix1 : wrapIndex(ix1, period);
+      const a = latticeA[x0];
+      const b = latticeA[x1];
+      const c = latticeB[x0];
+      const d = latticeB[x1];
+      out[tx] +=
+        amp *
+        (a * (1 - ux) * (1 - uy) +
+          b * ux * (1 - uy) +
+          c * (1 - ux) * uy +
+          d * ux * uy);
+    }
+    f *= 2;
+    amp *= 0.5;
+  }
+  return out;
 }
 
 /**

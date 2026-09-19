@@ -218,8 +218,8 @@ const CLOUD_MARCH_EMITTED_FORMAT: GPUTextureFormat =
 const WGS84_EQUATORIAL_RADIUS = CLOUD_SHADOW_WGS84_A;
 const WGS84_POLAR_RADIUS = CLOUD_SHADOW_WGS84_B;
 // Procedural weather-map texture (coarse global coverage field).
-const WEATHER_TEX_W = 256;
-const WEATHER_TEX_H = 128;
+const WEATHER_TEX_W = 1440;
+const WEATHER_TEX_H = 721;
 // Reused result for the per-frame camera high/low split, avoiding a per-frame
 // allocation. Written only when the camera position is defined, and read into
 // cloud uniform slots 120-127.

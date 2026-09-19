@@ -23,6 +23,10 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import {
+  fitSpectralSlope,
+  radialPowerSpectrum,
+} from "./lib/cloud-spectrum.mjs";
 import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
 
 // Engine `.ts` files import each other with `.js` specifiers; the hook must be
@@ -31,6 +35,7 @@ enableEngineTsResolution();
 const {
   applyEquirectPolarLowPass,
   periodicFbm2D,
+  periodicFbmRow,
   periodicValueNoise2D,
   polarLowPassWidth,
   weatherTexelCenterLonLat,
@@ -39,6 +44,8 @@ const {
   WEATHER_MAP_LON_RANGE,
   WEATHER_MAP_MIN_LAT,
   WEATHER_MAP_MIN_LON,
+  WEATHER_MAP_TEX_HEIGHT,
+  WEATHER_MAP_TEX_WIDTH,
 } =
   await import("../../packages/engine/Source/Scene/Weather/WeatherMapSeam.ts");
 const { buildProceduralWeatherMap } =
@@ -63,9 +70,18 @@ const rendererSource = fs.readFileSync(
   "utf8",
 );
 
-// Must match WEATHER_TEX_W / WEATHER_TEX_H in the renderer.
-const TEX_W = 256;
-const TEX_H = 128;
+// The ONE definition of the weather-texture size, imported rather than
+// hand-copied. The renderer's `WEATHER_TEX_W` / `WEATHER_TEX_H` literals are a
+// second spelling of it (a WebGPU-only module a backend-neutral Scene file must
+// not import), and "the renderer's weather-texture size is the seam module's"
+// below asserts textually that the two agree.
+const TEX_W = WEATHER_MAP_TEX_WIDTH;
+const TEX_H = WEATHER_MAP_TEX_HEIGHT;
+
+/** WGS84 equatorial circumference, km — the km/texel denominator. */
+const EARTH_CIRCUMFERENCE_KM = 40030;
+/** Metres of ground per weather texel at the equator. */
+const METRES_PER_TEXEL = (EARTH_CIRCUMFERENCE_KM * 1000) / TEX_W;
 
 function functionSource(source, name) {
   const start = source.indexOf(`fn ${name}(`);
@@ -282,7 +298,12 @@ test("the legacy aperiodic fBM WOULD fail the periodicity contract (defect oracl
 test("the procedural map has no antimeridian discontinuity", () => {
   const map = buildProceduralWeatherMap(TEX_W, TEX_H);
   const rows = unfilteredRows();
-  assert.ok(rows.length > 80, "expected most rows to be low-pass-free");
+  // The identity band is |lat| < 60 deg, two thirds of the sphere's latitude
+  // range, so this holds at any texture height rather than only at 128 rows.
+  assert.ok(
+    rows.length > 0.6 * TEX_H,
+    `expected most of the ${TEX_H} rows to be low-pass-free, got ${rows.length}`,
+  );
 
   let wrapMax = 0;
   let interiorMax = 0;
@@ -462,8 +483,11 @@ function rampField(gridWidth = 64, gridHeight = 32) {
 test("packWeatherField resamples at texel centres (the sampler's reconstruction point)", () => {
   const packed = packWeatherField(rampField(), TEX_W, TEX_H);
   // A west->east linear ramp resampled bilinearly is exactly linear, so the
-  // stored byte reveals the resample coordinate the packer used.
-  for (const ty of [63, 64]) {
+  // stored byte reveals the resample coordinate the packer used. Read it on the
+  // two rows straddling the equator, which are the furthest from the polar
+  // low-pass at any texture height — a fixed row index would drift into the
+  // filtered band the moment TEX_H changes.
+  for (const ty of [Math.floor(TEX_H / 2) - 1, Math.floor(TEX_H / 2)]) {
     assert.equal(polarLowPassWidth(ty, TEX_H, TEX_W), 1);
     for (const tx of [0, 1, 100, TEX_W - 2, TEX_W - 1]) {
       const expected = Math.round(255 * ((tx + 0.5) / TEX_W));
@@ -544,4 +568,218 @@ test("the renderer delegates to the shared producer instead of its own copy", ()
     !/function\s+buildProceduralWeatherMap\s*\(/.test(rendererSource),
     "renderer still defines a local buildProceduralWeatherMap — the two producers can drift again",
   );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. C13-N22 — the field is sized to the source grid, and stays so
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The renderer's own spelling of the texture size, read from its source. */
+function rendererTextureSize() {
+  const read = (name) => {
+    const match = new RegExp(`const ${name} = (\\d+);`).exec(rendererSource);
+    assert.notEqual(match, null, `renderer no longer declares ${name}`);
+    return Number(match[1]);
+  };
+  return { width: read("WEATHER_TEX_W"), height: read("WEATHER_TEX_H") };
+}
+
+test("the renderer's weather-texture size IS the seam module's", () => {
+  // The renderer is WebGPU-only, so a backend-neutral Scene module cannot import
+  // it and it cannot import one of ours without dragging Scene code into the
+  // webgl-only variant. The size therefore has two spellings, and this is the
+  // assertion that keeps them one value. Everything downstream — the packer
+  // defaults, the EDR request, the km/texel bar below — reads the seam module's.
+  const { width, height } = rendererTextureSize();
+  assert.equal(
+    width,
+    WEATHER_MAP_TEX_WIDTH,
+    `renderer WEATHER_TEX_W=${width} but WEATHER_MAP_TEX_WIDTH=${WEATHER_MAP_TEX_WIDTH}`,
+  );
+  assert.equal(
+    height,
+    WEATHER_MAP_TEX_HEIGHT,
+    `renderer WEATHER_TEX_H=${height} but WEATHER_MAP_TEX_HEIGHT=${WEATHER_MAP_TEX_HEIGHT}`,
+  );
+});
+
+test("the weather field carries the source grid without resampling it away", () => {
+  // GFS's native grid is 0.25 deg: 360/0.25 columns and 180/0.25 + 1 rows. A
+  // texture coarser than that discards data the provider already paid to fetch,
+  // which is the defect C13-N22 closes. Stated as a capacity bar, not as the
+  // literal 1440 x 721, so a LARGER field still passes.
+  assert.ok(
+    TEX_W >= 360 / 0.25,
+    `${TEX_W} columns cannot carry a 0.25 deg longitude grid`,
+  );
+  assert.ok(
+    TEX_H >= 180 / 0.25 + 1,
+    `${TEX_H} rows cannot carry a 0.25 deg latitude grid`,
+  );
+  // ...and the ground scale that buys, against the 6.4 km screen pixel of a
+  // 2000-px full disc. 27.8 km/texel at 1440; 156.4 km/texel at the historical
+  // 256, which is where the 5.625x linear gain comes from.
+  const kmPerTexel = METRES_PER_TEXEL / 1000;
+  assert.ok(
+    kmPerTexel <= 30,
+    `weather field is ${kmPerTexel.toFixed(1)} km/texel at the equator, bar is <= 30`,
+  );
+  assert.ok(
+    Math.abs(kmPerTexel - 27.8) < 0.1,
+    `expected ~27.8 km/texel, measured ${kmPerTexel.toFixed(2)}`,
+  );
+});
+
+test("the field resolves sub-300 km structure, which the 256-wide field cannot represent at all", () => {
+  // The observable, measured with the campaign's own analyzer rather than by
+  // reading the constants back: a band that lies entirely below the historical
+  // field's Nyquist wavelength and entirely above the shipped field's. At the
+  // shipped size the slope fit RETURNS a measurement; at 256 columns the band
+  // holds no bins at all, because those wavelengths are not representable.
+  const HISTORICAL_TEX_W = 256;
+  const shippedNyquistMetres = 2 * METRES_PER_TEXEL;
+  const historicalNyquistMetres =
+    (2 * EARTH_CIRCUMFERENCE_KM * 1000) / HISTORICAL_TEX_W;
+  const bandLow = shippedNyquistMetres * 1.01;
+  const bandHigh = historicalNyquistMetres * 0.9;
+  assert.ok(
+    bandLow < bandHigh,
+    "the probe band is empty — the field is no finer than the one it replaced",
+  );
+
+  const crop = 64;
+  const cropCoverage = (map, width, height) => {
+    const x0 = Math.floor(width / 2) - crop / 2;
+    const y0 = Math.floor(height / 2) - crop / 2;
+    const out = new Float64Array(crop * crop);
+    for (let y = 0; y < crop; y++) {
+      for (let x = 0; x < crop; x++) {
+        out[y * crop + x] = map[((y0 + y) * width + (x0 + x)) * 4] / 255;
+      }
+    }
+    return out;
+  };
+  const spectrumOf = (width, height) =>
+    radialPowerSpectrum(
+      cropCoverage(buildProceduralWeatherMap(width, height), width, height),
+      {
+        width: crop,
+        height: crop,
+        metresPerPixel: (EARTH_CIRCUMFERENCE_KM * 1000) / width,
+      },
+    );
+
+  const shipped = fitSpectralSlope(spectrumOf(TEX_W, TEX_H), {
+    minWavelengthMetres: bandLow,
+    maxWavelengthMetres: bandHigh,
+  });
+  assert.deepEqual(
+    shipped.failures,
+    [],
+    `the shipped field cannot be measured in [${(bandLow / 1000).toFixed(0)}, ${(bandHigh / 1000).toFixed(0)}] km`,
+  );
+  assert.ok(
+    Number.isFinite(shipped.slope),
+    "spectral slope is not a finite measurement",
+  );
+  // F6 (Malvegil): an empty `failures` and a finite slope would also hold over
+  // a band that is barely populated, or one holding no power law at all. Pin
+  // that the band is genuinely POPULATED and the law genuinely fits — measured
+  // 25 bins at r2 0.973, so these floors clear the measurement comfortably
+  // without being a transcription of it.
+  assert.ok(
+    shipped.bandBins.length >= 5,
+    `the band holds only ${shipped.bandBins.length} bins — measurable, but not populated`,
+  );
+  assert.ok(
+    shipped.r2 >= 0.8,
+    `spectral fit r2 ${shipped.r2} — the band carries no power law to measure`,
+  );
+
+  // Defect oracle: the same band on the size this row replaced. If this ever
+  // stops failing, the assertion above has stopped discriminating.
+  const historical = fitSpectralSlope(
+    spectrumOf(HISTORICAL_TEX_W, HISTORICAL_TEX_W / 2),
+    { minWavelengthMetres: bandLow, maxWavelengthMetres: bandHigh },
+  );
+  assert.equal(
+    historical.slope,
+    null,
+    `the ${HISTORICAL_TEX_W}-wide field measured a slope in a band below its own Nyquist — the oracle is inert`,
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. The row-at-a-time producer path
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("periodicFbmRow is BIT-identical to periodicFbm2D, not merely close", () => {
+  const width = 97; // deliberately not a multiple of any lattice period
+  const out = new Float64Array(width);
+  let compared = 0;
+  for (const periodX of [1, 3, 6, 18]) {
+    for (const y of [-3.25, 0, 0.5, 2.7, 17.9]) {
+      for (const octaves of [1, 3, 5, 7]) {
+        periodicFbmRow(out, width, y, periodX, octaves);
+        for (let tx = 0; tx < width; tx++) {
+          assert.equal(
+            out[tx],
+            periodicFbm2D(((tx + 0.5) / width) * periodX, y, periodX, octaves),
+            `row form diverged at tx=${tx}, periodX=${periodX}, y=${y}, octaves=${octaves}`,
+          );
+          compared++;
+        }
+      }
+    }
+  }
+  assert.ok(
+    compared > 7000,
+    `only ${compared} comparisons — the sweep is thin`,
+  );
+  // Zero octaves is the only case with no lattice to read, and it must not throw
+  // on the scratch allocation.
+  assert.equal(periodicFbmRow(new Float64Array(3), 3, 0, 6, 0)[0], 0);
+});
+
+test("the procedural map is byte-identical to the per-texel producer it replaced", () => {
+  // The reference is the pre-C13-N22 body, transcribed: the row form exists for
+  // speed only, so anything it changes in the bytes is a defect.
+  const COARSE_CYCLES = 6;
+  const FINE_CYCLES = 18;
+  const smoothstep01 = (t) => {
+    const c = t < 0 ? 0 : t > 1 ? 1 : t;
+    return c * c * (3 - 2 * c);
+  };
+  const reference = (w, h) => {
+    const data = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      const vv = (y + 0.5) / h;
+      for (let x = 0; x < w; x++) {
+        const u = (x + 0.5) / w;
+        const big = periodicFbm2D(u * COARSE_CYCLES, vv * 6, COARSE_CYCLES);
+        const fine = periodicFbm2D(u * FINE_CYCLES, vv * 18, FINE_CYCLES);
+        const f = big * 0.7 + fine * 0.3;
+        const coverage = smoothstep01((f - 0.42) / 0.18);
+        const i = (y * w + x) * 4;
+        data[i] = Math.round(coverage * 255);
+        data[i + 1] = 128;
+        data[i + 2] = 0;
+        data[i + 3] = 128;
+      }
+    }
+    return applyEquirectPolarLowPass(data, w, h);
+  };
+  // A size the row form and the per-texel form must agree on, small enough to
+  // run the O(w*h) reference twice per suite.
+  for (const [w, h] of [
+    [256, 128],
+    [180, 91],
+  ]) {
+    const now = buildProceduralWeatherMap(w, h);
+    const then = reference(w, h);
+    assert.equal(now.length, then.length);
+    for (let i = 0; i < then.length; i++) {
+      assert.equal(now[i], then[i], `byte ${i} differs at ${w}x${h}`);
+    }
+  }
 });

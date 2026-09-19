@@ -22,6 +22,10 @@ import {
   type WeatherFieldRequest,
 } from "./WeatherTypes.js";
 import { type CoverageJSON, parseCoverageJson } from "./CoverageJsonParser.js";
+import {
+  WEATHER_MAP_TEX_HEIGHT,
+  WEATHER_MAP_TEX_WIDTH,
+} from "./WeatherMapSeam.js";
 
 export interface EdrWeatherSourceOptions {
   /** EDR API base, e.g. "https://data-api.mdl.nws.noaa.gov/EDR-API". */
@@ -34,7 +38,12 @@ export interface EdrWeatherSourceOptions {
   coverageUnits?: "percent" | "fraction";
   /** Optional same-origin proxy prefix (prepended to the request URL) for CORS. */
   proxy?: string;
-  /** Requested grid resolution (server may ignore and return native). */
+  /**
+   * Requested grid resolution (server may ignore and return native). Defaults
+   * to the weather texture's own size, which is GFS's native 0.25-degree grid —
+   * see below. Lower it on a constrained link: the packer resamples whatever
+   * grid comes back.
+   */
   resolution?: { x: number; y: number };
 }
 
@@ -43,7 +52,18 @@ const DEFAULTS: Required<Omit<EdrWeatherSourceOptions, "proxy">> = {
   collection: "automated_gfs",
   parameterName: "TCDC",
   coverageUnits: "percent",
-  resolution: { x: 96, y: 48 },
+  // The default collection is GFS, whose native grid is 0.25 degrees — 1440
+  // columns by 721 rows, the same numbers the weather texture is sized to. They
+  // coincide by design, not by accident, so requesting the texture's size here
+  // requests the model's own grid rather than a resample of it: a request
+  // coarser than the texture discards columns before the field ever reaches the
+  // packer.
+  //
+  // Cost, stated: ~1.04 M values of CoverageJSON, roughly 5-6 MB uncompressed
+  // (far less over gzip). This source is opt-in — a caller constructs it — and
+  // `WeatherProvider` treats a failed fetch as no data and stays on the
+  // procedural map, so a link that cannot carry it degrades rather than breaks.
+  resolution: { x: WEATHER_MAP_TEX_WIDTH, y: WEATHER_MAP_TEX_HEIGHT },
 };
 
 export class EdrWeatherSource implements WeatherSource {

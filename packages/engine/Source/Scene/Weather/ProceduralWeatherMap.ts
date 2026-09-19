@@ -12,14 +12,17 @@
  *
  * Byte layout, which must stay identical to the packer's:
  *   R = coverage, G = cloud type/genus (128 neutral), B = cloud base, A = density
- *   bias (128 neutral). 256x128 rgba8unorm equirectangular, row 0 = north.
+ *   bias (128 neutral). 1440x721 rgba8unorm equirectangular, row 0 = north —
+ *   `WEATHER_MAP_TEX_WIDTH` / `WEATHER_MAP_TEX_HEIGHT` in `WeatherMapSeam` are
+ *   the one definition of that size, and this producer is parametric: it honours
+ *   whatever `w` x `h` it is handed.
  *
  * @module Scene/Weather/ProceduralWeatherMap
  */
-import { applyEquirectPolarLowPass, periodicFbm2D } from "./WeatherMapSeam.js";
+import { applyEquirectPolarLowPass, periodicFbmRow } from "./WeatherMapSeam.js";
 
 // Lattice periods of the two octave stacks, in cells per full longitude wrap.
-// Integers so every octave of `periodicFbm2D` wraps on an exact lattice boundary
+// Integers so every octave of `periodicFbmRow` wraps on an exact lattice boundary
 // — that is what makes the map continuous across the antimeridian.
 const COARSE_CYCLES = 6;
 const FINE_CYCLES = 18;
@@ -51,14 +54,19 @@ function smoothstep01(t: number): number {
  */
 export function buildProceduralWeatherMap(w: number, h: number): Uint8Array {
   const data = new Uint8Array(w * h * 4);
+  // One row of each octave stack at a time. `periodicFbmRow` is bit-identical to
+  // the per-texel `periodicFbm2D` it replaces and exists only because the
+  // per-texel form re-hashes the same two lattice rows `w` times per octave —
+  // affordable over 256 columns, a ~1.1 s first-frame stall over 1440.
+  const coarseRow = new Float64Array(w);
+  const fineRow = new Float64Array(w);
   for (let y = 0; y < h; y++) {
     // Texel-centre parameters. `v` is not periodic (latitude does not wrap).
     const vv = (y + 0.5) / h;
+    periodicFbmRow(coarseRow, w, vv * 6, COARSE_CYCLES);
+    periodicFbmRow(fineRow, w, vv * 18, FINE_CYCLES);
     for (let x = 0; x < w; x++) {
-      const u = (x + 0.5) / w;
-      const big = periodicFbm2D(u * COARSE_CYCLES, vv * 6, COARSE_CYCLES);
-      const fine = periodicFbm2D(u * FINE_CYCLES, vv * 18, FINE_CYCLES);
-      const f = big * 0.7 + fine * 0.3;
+      const f = coarseRow[x] * 0.7 + fineRow[x] * 0.3;
       const coverage = smoothstep01((f - 0.42) / 0.18);
       const i = (y * w + x) * 4;
       data[i] = Math.round(coverage * 255); // R coverage

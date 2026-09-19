@@ -47,7 +47,12 @@ const { packWeatherField, packWeatherFieldDetailed } =
   await import("../../packages/engine/Source/Scene/Weather/WeatherTexPacker.ts");
 const { buildProceduralWeatherMap } =
   await import("../../packages/engine/Source/Scene/Weather/ProceduralWeatherMap.ts");
-const { applyEquirectPolarLowPass, polarLowPassWidth } =
+const {
+  applyEquirectPolarLowPass,
+  polarLowPassWidth,
+  WEATHER_MAP_TEX_HEIGHT,
+  WEATHER_MAP_TEX_WIDTH,
+} =
   await import("../../packages/engine/Source/Scene/Weather/WeatherMapSeam.ts");
 const { GLOBAL_WEATHER_BOUNDS } =
   await import("../../packages/engine/Source/Scene/Weather/WeatherTypes.ts");
@@ -57,6 +62,8 @@ const { MetarWeatherSource } =
   await import("../../packages/engine/Source/Scene/Weather/MetarWeatherSource.ts");
 const { SyntheticWeatherSource } =
   await import("../../packages/engine/Source/Scene/Weather/SyntheticWeatherSource.ts");
+const { EdrWeatherSource } =
+  await import("../../packages/engine/Source/Scene/Weather/EdrWeatherSource.ts");
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -68,9 +75,13 @@ const rendererSource = readEngine(
   "Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
 );
 
-// Must match WEATHER_TEX_W / WEATHER_TEX_H in the renderer.
-const TEX_W = 256;
-const TEX_H = 128;
+// The ONE definition of the weather-texture size, imported rather than
+// hand-copied — this file used to carry its own `256`/`128` pair, which is a
+// second place for the renderer's size to drift away from. That the renderer's
+// `WEATHER_TEX_W` / `WEATHER_TEX_H` literals still equal these is asserted in
+// `weather-map-seam.spec.mjs`.
+const TEX_W = WEATHER_MAP_TEX_WIDTH;
+const TEX_H = WEATHER_MAP_TEX_HEIGHT;
 const DEG = Math.PI / 180;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -818,7 +829,9 @@ test("a declared sentinel is honoured, and 0 stays an OBSERVATION", () => {
   assert.ok(withSentinel.filledTexels > 0);
   assert.ok(withSentinel.observedTexels > 0);
   // The observed half is an observation OF CLEAR: byte 0, not fill.
-  const ty = 64;
+  // The equator row: unfiltered by the polar low-pass at any TEX_H, where a
+  // fixed index such as 64 was the equator only while the texture was 128 rows.
+  const ty = texelYForLat(0);
   assert.equal(channelAt(withSentinel.bytes, 2, ty, 0), 0);
   // Without the declaration the same array has no gaps at all (clamped to 0),
   // which is exactly why the sentinel has to be declared.
@@ -847,7 +860,9 @@ test("a constant fill is honoured and encoded like any other texel", () => {
   const result = packWeatherFieldDetailed(empty, TEX_W, TEX_H);
   assert.equal(result.fillKind, "constant");
   assert.equal(result.observedTexels, 0);
-  const ty = 64;
+  // The equator row: unfiltered by the polar low-pass at any TEX_H, where a
+  // fixed index such as 64 was the equator only while the texture was 128 rows.
+  const ty = texelYForLat(0);
   assert.ok(isIdentityRow(ty));
   assert.equal(channelAt(result.bytes, 10, ty, 0), Math.round(0.25 * 255));
   assert.equal(channelAt(result.bytes, 10, ty, 1), Math.round((5 / 10) * 255));
@@ -935,7 +950,9 @@ test("the fill does NOT bleed inward: a partial tap set renormalizes", () => {
     TEX_W,
     TEX_H,
   );
-  const ty = 64;
+  // The equator row: unfiltered by the polar low-pass at any TEX_H, where a
+  // fixed index such as 64 was the equator only while the texture was 128 rows.
+  const ty = texelYForLat(0);
   let observed = 0;
   for (let tx = 0; tx < TEX_W; tx++) {
     const byte = channelAt(result.bytes, tx, ty, 0);
@@ -974,7 +991,9 @@ test("a CELL-registered global field wraps across the antimeridian", () => {
   };
   const result = packWeatherFieldDetailed(field, TEX_W, TEX_H);
   assert.equal(result.registration, "cell");
-  const ty = 64;
+  // The equator row: unfiltered by the polar low-pass at any TEX_H, where a
+  // fixed index such as 64 was the equator only while the texture was 128 rows.
+  const ty = texelYForLat(0);
   // The texel just east of -180 and the texel just west of +180 both sit between
   // the two lit cell centres, so a wrap-aware fetch keeps them fully lit.
   assert.equal(channelAt(result.bytes, 0, ty, 0), 255);
@@ -993,7 +1012,9 @@ test("cell vs node registration differ by exactly half a source cell", () => {
     TEX_W,
     TEX_H,
   );
-  const ty = 64;
+  // The equator row: unfiltered by the polar low-pass at any TEX_H, where a
+  // fixed index such as 64 was the equator only while the texture was 128 rows.
+  const ty = texelYForLat(0);
   let differing = 0;
   for (let tx = 0; tx < TEX_W; tx++) {
     if (channelAt(asNode, tx, ty, 0) !== channelAt(asCell, tx, ty, 0)) {
@@ -1225,4 +1246,106 @@ test("the packer owns the placement — no source re-implements it", () => {
       `${file} resolves field placement itself — that belongs to the packer`,
     );
   }
+});
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. C13-N22 — the EDR request asks for the grid the texture can actually hold
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The `resolution-x` / `resolution-y` a source actually puts on the wire. */
+function requestedGrid(source, request = {}) {
+  const url = new URL(source.buildUrl(request));
+  const params = url.searchParams;
+  const x = params.get("resolution-x");
+  const y = params.get("resolution-y");
+  assert.notEqual(x, null, "request carries no resolution-x");
+  assert.notEqual(y, null, "request carries no resolution-y");
+  return { x: Number(x), y: Number(y) };
+}
+
+test("a default EDR source requests at least as many samples as the texture has texels", () => {
+  // The observable is the REQUEST, not the constant: `resolution` is written
+  // straight into the query string (`EdrWeatherSource.buildUrl`), so a source
+  // that asks for a coarser grid than the texture throws the row's whole benefit
+  // away for the live-data path — silently, because nothing downstream can tell
+  // a coarse field from a fine one after the packer has resampled it.
+  const grid = requestedGrid(new EdrWeatherSource());
+  assert.ok(
+    grid.x >= TEX_W && grid.y >= TEX_H,
+    `default EDR request is ${grid.x}x${grid.y}, coarser than the ${TEX_W}x${TEX_H} texture it fills`,
+  );
+  // ...and it is the texture's own size, so no column is discarded before the
+  // packer and none is invented after it.
+  assert.deepEqual(grid, { x: TEX_W, y: TEX_H });
+
+  // Defect oracle: the default this row replaced. If 96x48 ever satisfies the
+  // bar above, the bar has stopped discriminating.
+  const legacy = requestedGrid(
+    new EdrWeatherSource({ resolution: { x: 96, y: 48 } }),
+  );
+  assert.deepEqual(legacy, { x: 96, y: 48 });
+  assert.ok(
+    legacy.x < TEX_W && legacy.y < TEX_H,
+    "the pre-C13-N22 default was not coarser than the texture — the oracle is inert",
+  );
+});
+
+test("an explicit EDR resolution still overrides the native default", () => {
+  // The documented escape hatch for a constrained link. It has to keep working,
+  // or the ~5-6 MB native payload becomes mandatory rather than default.
+  const grid = requestedGrid(
+    new EdrWeatherSource({ resolution: { x: 180, y: 91 } }),
+  );
+  assert.deepEqual(grid, { x: 180, y: 91 });
+});
+
+test("a field delivered at the requested grid keeps structure a 96-column request destroys", () => {
+  // End to end, without the network. A ramp proves nothing here — bilinear
+  // interpolation reproduces a straight line from ANY column count — so the
+  // probe carries structure instead: 180 cycles of coverage around the globe,
+  // which 1440 columns sample 8x per cycle and 96 columns (Nyquist 48) cannot
+  // represent at all. Counting mid-level crossings along the equator row reads
+  // back how much of that structure reached the texture.
+  const CYCLES = 180;
+  const wave = (gw) => {
+    const coverage = new Float32Array(gw * 2);
+    for (let y = 0; y < 2; y++) {
+      for (let x = 0; x < gw; x++) {
+        coverage[y * gw + x] =
+          0.5 + 0.45 * Math.sin((2 * Math.PI * CYCLES * x) / (gw - 1));
+      }
+    }
+    return { gridWidth: gw, gridHeight: 2, coverage, bounds: globalBounds() };
+  };
+  const ty = texelYForLat(0);
+  assert.ok(isIdentityRow(ty), "read the structure on an unfiltered row");
+  const crossings = (gw) => {
+    const packed = packWeatherField(wave(gw), TEX_W, TEX_H);
+    let count = 0;
+    let previous = null;
+    for (let tx = 0; tx < TEX_W; tx++) {
+      const value = channelAt(packed, tx, ty, 0);
+      if (
+        previous !== null &&
+        ((previous < 128 && value >= 128) || (previous >= 128 && value < 128))
+      ) {
+        count++;
+      }
+      previous = value;
+    }
+    return count;
+  };
+
+  const grid = requestedGrid(new EdrWeatherSource());
+  const atRequested = crossings(grid.x);
+  const atLegacy = crossings(96);
+  // 180 cycles cross the midpoint twice each; the row is read open, not
+  // circular, so the wrap contributes one fewer.
+  assert.ok(
+    atRequested >= 2 * CYCLES - 20,
+    `the requested ${grid.x}-column grid delivered ${atRequested} crossings of the ${2 * CYCLES - 1} authored`,
+  );
+  assert.ok(
+    atLegacy < atRequested / 4,
+    `a 96-column request delivered ${atLegacy} crossings against the requested grid's ${atRequested} — not the collapse this row exists to prevent, so the comparison is inert`,
+  );
 });

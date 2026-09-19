@@ -1448,14 +1448,14 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | visual-evidence-library.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | node:test coverage of the evidence-library lib + CLI: schemas, archive/verify/catalog/upgrade flows, provenance, usage errors, tmpdir fixtures. |
 | voxel-inside-camera-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Device-free gate for camera-inside voxel proxy rendering: executes real WebGPUVoxelRenderer index helpers via esbuild bundle + structural pins. |
 | voxel-megatexture-reupload-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Mutant gate for the voxel megatexture reupload evidence policy: valid resident/eviction/return evidence passes, each corruption must go red. |
-| weather-field-bounds.spec.mjs | spec | ACTIVE | 2026-08-16 | 9 | WeatherField contract: grid registration, regional bounds honoured incl. antimeridian, no-data semantics, global path byte-identical to legacy. |
-| weather-map-seam.spec.mjs | spec | ACTIVE | 2026-08-16 | 11 | Pins the one equirect weather-map convention shared by CPU producers and, textually, the WGSL/sampler half: seam filters, UV mapping, bounds pack. |
+| weather-field-bounds.spec.mjs | spec | ACTIVE | 2026-08-16 | 11 | WeatherField contract: grid registration, regional bounds honoured incl. antimeridian, no-data semantics, global path byte-identical to legacy. |
+| weather-map-seam.spec.mjs | spec | ACTIVE | 2026-08-16 | 13 | Pins the one equirect weather-map convention shared by CPU producers and, textually, the WGSL/sampler half: seam filters, UV mapping, bounds pack. |
 | weather-probe-headroom.spec.mjs | spec | ACTIVE | 2026-08-21 | 6 | Guard Gate-B headroom/determinism repairs plus canonical immutable capture across the shared weather pinning helper and every direct consumer. |
 | weather-provider-cache.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 2 | — |
 | weather-regional-tails.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Contract for the rendered-tail browser probe: cyclic CoverageJSON parse, fused capture, policy rejecting duplicated antimeridian band. |
 | webgl-snap-multifrustum.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Source pins for WebGL Scene.snap occluders in DerivedCommand/Scene/SceneRenderer: depth-only reuse, zero color write, blending off, depthMask. |
 | webgl-vs-webgpu-pixel-check.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Test-infra sanity check from the canvas-black-screen investigation: do non-black pixels reach toDataURL on each backend at all? |
-| webgpu-ao-lengthcap-units.spec.mjs | spec | ACTIVE | 2026-09-03 | 3 | Executes the WebGPU HBAO march radius and distance falloff straight out of both shipped WGSL variants, pinning that lengthCap is eye-space metres in the march as well as in the falloff and that both texts still validate under Naga. |
+| webgpu-ao-lengthcap-units.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Executes the WebGPU HBAO march radius and distance falloff straight out of both shipped WGSL variants, pinning that lengthCap is eye-space metres in the march as well as in the falloff and that both texts still validate under Naga. |
 | webgpu-ao-runtime-config-propagation.spec.mjs | spec | ACTIVE | 2026-09-03 | 1 | Drives the real post-process bridge and the real AmbientOcclusionEffect against a recording fake device, and pins that a uniform written after the first enabled frame reaches the AO uniform buffer instead of being swallowed by the first-enable latch. |
 | webgpu-ao-sample-pattern-parity.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 2 | — |
 | webgpu-ao-uniform-bridge.spec.mjs | spec | NO @purpose HEADER | 2026-09-05 | 2 | — |
@@ -1482,7 +1482,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-snap-payload.spec.mjs | spec | ACTIVE | 2026-08-28 | 2 | Contract for WebGPU Scene.snap payload: one encoding home (WebGPUSnapPayload.ts), rg32uint format agreement, spiral decode, naga validation. |
 | webgpu-sun-bloom-mirror.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Guard that both backends draw ONE sun glow: WebGPU tuning derived from SolarDiscModel not copied, shared constants, one flag, WebGL untouched. |
 | webgpu-voxel-resource-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Drives real WebGPUVoxelResourceLifecycle exports (retain/release, atlas slot publish/retire/LRU, async-failure capture) plus structural pins. |
-| wgsl-mini-eval.spec.mjs | spec | ACTIVE | 2026-09-11 | 4 | Verifies restricted WGSL expression parsing distinguishes scalar comparisons from generic constructor calls. |
+| wgsl-mini-eval.spec.mjs | spec | ACTIVE | 2026-09-18 | 4 | Verifies restricted WGSL expression parsing distinguishes scalar comparisons from generic constructor calls. |
 | wgsl-window-coordinates.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Runs csm_eyeToWindowCoordinates, csm_modelToWindowCoordinates and csm_metersPerPixel through the WGSL evaluator and asserts their outputs against a CPU port of the GLSL twins, in WebGPU's NDC convention, for perspective, 2D orthographic and Columbus-View orthographic frustums. |
 | widgets-teardown-contract.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Pins that the three inspector mixins remove and destroy the panel they append to the caller's container, that FullscreenButtonViewModel unsubscribes from the document it subscribed to, that Geocoder removes every listener its constructor added, and that Animation removes the <style> node it inserted. |
 
@@ -1572,7 +1572,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-probe-harness.mjs | lib | ACTIVE | 2026-09-12 | 38 | Self-contained browser-side helper (addInitScript) configuring defaultCloudCollection.volumetric and verifying every value round-tripped. |
 | cloud-reconstruction-consume.mjs | lib | ACTIVE | 2026-08-16 | 3 | Browser-free half of the C13-10 acceptance: interleaved A/B schedule builder, null-not-zero pass-timing reads, and the FAIL-outranks-STRUCTURAL fold. |
 | cloud-refresh-skip.mjs | lib | ACTIVE | 2026-08-16 | 6 | Shared enforceable home for the requestRenderMode refresh-skip defect that froze cloud snapshots and made three probe windows lie on one day. |
-| cloud-spectrum.mjs | lib | ACTIVE | 2026-09-18 | 12 | Radially averaged power-spectrum slope fit and area-perimeter fractal |
+| cloud-spectrum.mjs | lib | ACTIVE | 2026-09-18 | 13 | Radially averaged power-spectrum slope fit and area-perimeter fractal |
 | cloud-tour-fixtures.mjs | lib | ACTIVE | 2026-09-12 | 31 | Deterministic C13-01 tour definitions: pinned local-solar clocks, absolute camera stations, replay keys, three-lane wind/time discriminators. |
 | cloud-tour-metrics.mjs | lib | ACTIVE | 2026-08-16 | 5 | Pure C13-01 per-sequence metrics plus manifest validation, including assessInterleavedAb enforcing the C13-39 interleaved GPU-timing protocol. |
 | cloud-u2-perf-evidence.mjs | lib | ACTIVE | 2026-08-21 | 3 | Manifest policy for the C13-16 U2 cross-bundle GPU-timing gate: comparison, environment-drift rejection, immutable evidence naming. |
