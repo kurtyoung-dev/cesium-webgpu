@@ -21904,3 +21904,174 @@ second copy needed the same edit. (c) **Surfaced, not fixed (Principle 9):**
 approximations of `czm_metersPerPixel`. They are separate functions with separate consumers, they
 carry the same missing orthographic arm, and they were left alone by this lane because changing them
 changes live 3D rendering on two other renderers. Whoever rules `AR-090` inherits them.
+
+## 2026-09-18 — lane KIT-A: the probe kit's pure-Node half (`DX-101`, `DX-102`, `DX-103`, `DX-107`)
+
+One Opus lead (Bunce) and four tier-3 lanes (Goold, Greenhand, Headstrong, Hayward), each in its own
+clone at `1a2baeaa4a`, integrated into one patch. No browser, no build, no engine file touched — every
+row here is `Tools/` only, and every acceptance is a `node --test` assertion over the real module.
+The wave's design constraint was **generalise what exists, rewrite nothing**: the runtime, the gate
+policy, the cloud fixtures and `capture-and-diff.mjs` are all unmodified.
+
+- **`DX-101` — the rig registry.** `Tools/visual-regression/rigs/` now holds **39** declarative
+  records, `lib/rig-registry.mjs:101` loads and validates them, and
+  `Tools/visual-regression/scenes.schema.json` finally exists, so `scenes.json:2`'s `$schema` — which
+  had pointed at a file that was never written — resolves. `capture-and-diff.mjs` is **not modified**:
+  `generateScenesJson` (`lib/rig-registry.mjs:384`) regenerates `scenes.json` from the rigs tagged
+  `wave-end`, and `rig-registry.spec.mjs` asserts the regeneration is **byte-identical to the file on
+  disk**, so the wave-end gate keeps reading the file it reads today. Seeded from what the fleet
+  already encoded: the 10 `scenes.json` scenes, the 15 `CLOUD_TOUR_FIXTURES`, the 4 rungs of
+  `ALTITUDE_LADDER_METRES`, the 3 `probe-saved-view.mjs` views, the 3 `sandcastle-smoke.mjs` demos,
+  and the 4 Campaign 15 aurora seeds (three from the plan plus the southern twin the third one's own
+  text requires). **Named honestly:** the aurora rigs' camera coordinates are this lane's
+  placeholders — the plan gives their geography in prose and no numbers — and they carry
+  `page: null` because `C15-04`/`C15-07` do not exist yet. `C15-04` replaces both; nothing downstream
+  should read them as measured. FORK-authored, new files.
+- **`DX-102` — one pixel diff.** `lib/image-diff.mjs:79` `diffImages(a, b, options)` returns
+  `{ mismatchPct, changedPx, bbox, diffRgba }` with per-channel tolerance and an optional mask, and
+  its `diffRgba` is byte-identical to what `lib/visual-gate-policy.mjs:247` `compareCaptures` already
+  renders — asserted, not asserted-about. It does **not** fork a gate policy: `evaluatePixelGate`
+  keeps deciding what a mismatch means. One caller migrated as proof of fit
+  (`probe-model-ktx2-ibl.mjs:173`, output-identical against the pre-move body). The other six copies
+  of `diffModelPixels` are the harvest's, not this row's. **Premise corrected:** both
+  `PROBE_KIT_PLAN_2026-09-17.md` §3.2 and the `DX-102` row describe the suite's default tolerance as
+  "16/255". The tree's constant is an **absolute 16 on 0–255 channel values**
+  (`visual-gate-policy.mjs:247`, tested at `:275`); read as a fraction it would have been a ~16×
+  tighter threshold. The module documents the absolute form and a spec case pins it (16 unchanged,
+  17 changed). FORK-authored.
+- **`DX-103` — the metrics, in two lanes.** `lib/metrics/` now holds seven single-concern modules.
+  Five are **extractions** that changed no banked number: `masks`, `luminance`, `saturation`,
+  `spectral-slope`, `region-means`, moved verbatim out of `lib/cloud-photometry.mjs`,
+  `lib/cloud-spectrum.mjs` and `lib/cloud-orbital-ladder-model.mjs`, which are now delegating
+  barrels. The proof is that **the cloud specs stayed green unmodified** and that
+  `metrics-cloud-extraction.spec.mjs` compares the moved code against **what the pre-move modules
+  actually returned**, at bit-for-bit equality over 36 cases — captured on 2026-09-18 by running
+  those cases against the three cloud modules as they stood at `1a2baeaa4a` and checked in as
+  `Tools/visual-regression/fixtures/metrics-cloud-extraction.golden.json`. Two are
+  **new**, because `C15-08` demands them in writing ("never use a band mean for a faint sparse
+  additive signal"): `connected-components` and `structure-similarity`. Their load-bearing spec case
+  asserts, in one test, that two fields with an **identical band mean** have **different component
+  counts** — the blindness and its cure in the same assertion. Deliberately left behind: the orbital
+  model's rig/pin data and every `evaluateO*` verdict, which are campaign verdicts rather than
+  metrics. FORK-authored.
+- **`DX-107` — the fleet contract, selected by behaviour.**
+  `lib/probe-fleet-contract.mjs` gains `launchesBrowserByBehaviour`, `fleetExemption` and
+  `selectFleetByBehaviour`: a file that imports Playwright and calls `<ident>.launch(` is in the
+  fleet, wherever it sits and whichever call form it uses. Measured at `1a2baeaa4a`: **676 files
+  selected, 630 of them already inside the `probe-*.mjs` glob and 46 outside it**, which is the row's
+  own figure reproduced. Two of the 46 —`capture-and-diff.mjs:816` and `variant-smoke-test.mjs:455`,
+  two of the wave-end gate's three children — call `browserType.launch(` and are **unreachable by any
+  literal `chromium.launch(` derivation**; the spec asserts both that they do not contain the literal
+  and that behaviour selection finds them, so the assertion cannot be satisfied by the old rule.
+  **45 of the 46 violate on contact** (45 missing a watchdog, 43 also closing the browser outside a
+  `finally`, 1 never closing it); `Tools/readme-screenshots/capture-readme-screenshots.mjs` is the
+  single compliant escapee and is deliberately absent from the allowlist. Those 45 are **not repaired
+  here** — that is the harvest, one lane per family — and are absorbed by
+  `lib/probe-fleet-behaviour-allowlist.mjs`, dated, with the constructs each is missing, an add date
+  read from `git log --diff-filter=A`, and an expiry of 2026-12-31. The expiry is **recorded, not
+  enforced by the clock**: a spec that reds on a calendar date is a landmine in a repository whose
+  landings are batched by quiet hours, so what the spec pins is the **ceiling** —
+  `BEHAVIOUR_ALLOWLIST_BASELINE = 45`, may shrink, may never grow — plus the usual no-stale/no-repaired
+  ratchet. `@status ARCHIVED-CANDIDATE` is now **reachable**: it is a named exemption from the live
+  fleet, so a retired file stops owing the live-probe contract the moment its status is flipped,
+  wherever it sits. It had **zero users anywhere in the tree** at `1a2baeaa4a` — the only tree-wide
+  hit was a fixture string — which is why `R-2026-09-17-11`'s retirement exit could not be taken.
+  The 16 files already sitting in `archive/` still read `INVESTIGATION` and are held out by a second,
+  separately named exemption until the first retirement cohort flips them. FORK-authored.
+
+### What this lane did NOT do, and why
+
+- **The 45 allowlisted files are not repaired.** A 45-file machine-safety sweep in one change is how
+  a safety rule lands unreviewed. Each is a lane of the harvest (`DX-108`); the allowlist is what
+  lets the rules start applying to NEW files immediately, which was the whole point.
+- **`requiresPurposeHeader` (`lib/probe-fleet-contract.mjs:1032`) is unchanged.** The `DX-107` row
+  names that function as the glob site to widen. Re-read at HEAD, it selects the population for the
+  **`@purpose` header** rule, not for the watchdog/`finally` rules whose acceptance the row states;
+  those are selected in `probe-fleet-contract.spec.mjs:74`. Widening the header rule by behaviour
+  would demand headers from 46 files in this batch, which is the harvest's work and not a
+  machine-safety change. Behaviour selection was therefore applied where the row's acceptance points,
+  and the header half stays on the filename rule until the 46 carry headers. Recorded so the harvest
+  can close it rather than rediscover it.
+
+### Defects and dedup candidates the reading surfaced (attached, not filed as new rows)
+
+- `probe-model-ibl.mjs:70` documents its default base as `http://localhost:8134` while `:85` codes
+  `process.env.PROBE_BASE || "http://localhost:8080"` — the documentation and the code disagree about
+  which server the measurement hits. Re-confirmed in this lane; attaches to the
+  `tools-probes-02/-01/-09/-10` exit-code lane as `PROBE_KIT_PLAN_2026-09-17.md` §3 already records.
+- `lib/metrics/spectral-slope.mjs` carries a private `labelConnectedComponents` — a second
+  connected-components implementation now sitting beside `lib/metrics/connected-components.mjs`. It
+  was **left alone deliberately**: merging them in the same batch would couple the extraction lane to
+  the new-metric lane and put a banked number at risk. A dedup candidate for the harvest, with the
+  constraint that `areaPerimeterFractalDimension`'s value must not move.
+- `probe-saved-view.mjs:16` still defaults to `http://localhost:8080` while the runtime's governed
+  default is 8094. Unchanged here — it is `DX-104`'s row, and the rigs deliberately carry no origin
+  field at all, so a rig cannot propagate a hard-coded one.
+
+### Station 3 (Fallohide) — what the review changed, and the one defect it caught
+
+The review verdict was LAND-WITH-FIXES and it caught a real one, in the one place this lane's own
+proof could not look: **`metrics-cloud-extraction.spec.mjs` would have broken the suite the moment it
+landed.** Its "before" side read each cloud module out of `HEAD` and imported it as a `data:` URL.
+`HEAD` moves. The instant this batch commits, `HEAD:` returns the *delegating barrel* the same batch
+writes, whose relative `./metrics/*.mjs` specifiers cannot resolve from a `data:` URL — the spec would
+have stopped loading at module top level with `ERR_UNSUPPORTED_RESOLVE_REQUEST`, taking
+`npm run test-visual-regression-node` red on its first post-landing run. The lane's own gates could
+not see it, because in a clone at the base commit `HEAD` *is* the pre-move source. A spec that reads
+the repository's moving state is a spec whose subject changes under it.
+
+Pinning the ref to `1a2baeaa4a` fixes the resolve error but leaves the spec needing that commit
+reachable, so it would then fail in every shallow clone and every depth-limited checkout — including
+the five clones this very wave ran in. The fix taken instead removes git from the spec entirely:
+**`Tools/visual-regression/fixtures/metrics-cloud-extraction.golden.json`** holds what the pre-move
+modules actually returned for all 36 cases, captured once against the three modules at `1a2baeaa4a`.
+The spec now needs no history, no subprocess and no network.
+
+Numbers survive JSON losslessly because the fixture does not store them as JSON numbers: each is the
+string `Number.prototype.toString()` produces — specified as the shortest decimal that reads back as
+the same double, so `Number(s)` reproduces the bit pattern — with an explicit `-0` token, and typed
+arrays carrying their constructor name plus raw bytes as base64. A fourth assertion pushes every live
+value, and the doubles JSON cannot hold (`-0`, `NaN`, `±Infinity`, `MIN_VALUE`, `EPSILON`), through the
+codec and back and requires bit-identity, so the comparison cannot be weakened by the format it
+travels in. The fixture carries its own provenance and the rule that governs it: **regenerate only
+when a banked number is deliberately changed** — a regeneration alongside a refactor is the spec being
+edited to agree with the code it exists to check.
+
+The `+1e-12` inertness mutant still reds over the fixture (`luminance/rec709: the moved implementation
+returned a different value than the pre-move body`), which is what proves the fixture holds the
+pre-move values rather than a re-capture of the moved ones.
+
+Two further review findings, recorded rather than fixed:
+
+- **`B7` was mislabelled.** It claimed to "restore filename selection"; its injected guard tests the
+  *source text* against a path pattern, so it never matches and the predicate simply becomes
+  unconditionally false — the same mutation as this lane's tree-level inertness run, not a second one.
+  The label and comment are corrected. The genuine filename-selection mutant is the reviewer's own M1
+  (the call-form regex narrowed to the literal `chromium.launch(`), which reds B1/B3/B5/B6/B7 — so the
+  independent coverage for `DX-107` rests on the reviewer's three mutants, not on B7's name.
+- **`generateScenesJson` ends with a CRLF normalisation** that is correct only under this
+  repository's `core.autocrlf=true` on Windows; on a checkout with `autocrlf=false`, or a Linux
+  runner, `scenes.json` is LF on disk and the byte-identity assertion would red. Harmless today —
+  `test-visual-regression-node` appears in no workflow file — but a latent portability pin worth
+  closing when `DX-101`'s successor touches it.
+- **`FLEET_EXEMPTIONS.LAUNCHER_LIBRARY`** is granted by the path shape `…/lib/<file>`, broader than
+  the "shared launcher libraries" its JSDoc describes. Exactly one file takes it today and the census
+  prints it, so it is visible rather than silent; narrow it when `DX-108` gets there.
+
+The review also confirmed, independently and with its own directory walk, the census this lane
+reports (676 / 630 / 46 / 45, allowlist exactly the 45), that `scenes.json` validates against the new
+`scenes.schema.json`, that the migrated diff caller is output-identical over 400 randomised fixtures
+including the degenerate `modelPx === 0` pair, and that the orphan ratchet does not move
+(387 specs, 178 homed, **209 orphaned — unchanged**). It also measured what the seat must do at
+landing: `verify-tooling-catalog` reports **55 rows added, 57 changed**, so
+`migration_doc/TOOLING_CATALOG.md` must be regenerated and staged in this batch.
+
+### Instrument note — a `--depth 1` lane clone cannot verify the tooling catalog
+
+Every clone in this wave was shallow, because the machine was at 99 % of a 932 GB volume with 11 GB
+free and five full clones would not fit. `npm run verify-tooling-catalog` refuses such a tree —
+`STRUCTURAL — candidate Git history is shallow` — and `npm run test-tooling-catalog` fails 17 of 105
+for the same reason (every failure is a history/trust-boundary case). Neither is in this wave's gate
+list and the catalog is regenerated by the seat at landing, so nothing here rests on them; recorded
+because the next lane told to run those gates in a shallow clone will read the refusal as a defect in
+its own change.

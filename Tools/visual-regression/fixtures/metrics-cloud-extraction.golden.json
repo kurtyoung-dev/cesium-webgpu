@@ -1,0 +1,1759 @@
+{
+  "capturedFrom": "1a2baeaa4abd96b8d1c33dcdc14f37b7eddd174f",
+  "capturedOn": "2026-09-18",
+  "note": "Outputs of the cloud metric functions as they stood BEFORE the extraction into lib/metrics. Regenerate only when a banked number is deliberately changed.",
+  "numberEncoding": "Every number is a string from Number.prototype.toString() (the shortest decimal that reads back as the same double), with -0 written as the token \"-0\"; typed arrays carry their constructor name and raw bytes as base64.",
+  "exports": {
+    "cloud-photometry.mjs": [
+      "DEFAULT_CLOUD_EXPOSURE",
+      "DEFAULT_SATURATION_CEILING",
+      "DEFAULT_TRANSFER",
+      "EXPOSURE_UNIFORM_SLOT",
+      "REINHARD_OPERATOR_PIN",
+      "TRANSFER_FUNCTIONS",
+      "circularMask",
+      "displaySpaceLuminanceMean",
+      "forwardReinhard",
+      "inverseReinhard",
+      "luminance",
+      "photometricRatio",
+      "photometricStats",
+      "rectRoi"
+    ],
+    "cloud-spectrum.mjs": [
+      "areaPerimeterFractalDimension",
+      "fitSpectralSlope",
+      "radialPowerSpectrum",
+      "syntheticFractionalBrownianField"
+    ],
+    "cloud-orbital-ladder-model.mjs": [
+      "AERIAL_HEURISTIC",
+      "ALTITUDE_LADDER_METRES",
+      "ORBITAL_BARS",
+      "WGS84_EQUATORIAL_RADIUS_METRES",
+      "aerialCapDistanceMetres",
+      "evaluateO3",
+      "evaluateO4",
+      "evaluateO6Retention",
+      "evaluateO6ZoomFlicker",
+      "evaluateO7",
+      "imageAerialCapFraction",
+      "limbBand",
+      "limbChordMetres",
+      "meanCloudAlpha",
+      "minimumMarchMidDistanceMetres"
+    ]
+  },
+  "cases": {
+    "circularMask/typical": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "width": {
+          "$n": "24"
+        },
+        "height": {
+          "$n": "16"
+        },
+        "data": {
+          "$typed": "Uint8Array",
+          "bytes": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBAQAAAAAAAAAAAAAAAAAAAAAAAAABAQEBAQEBAAAAAAAAAAAAAAAAAAAAAAABAQEBAQEBAAAAAAAAAAAAAAAAAAAAAAEBAQEBAQEBAQAAAAAAAAAAAAAAAAAAAAEBAQEBAQEBAQAAAAAAAAAAAAAAAAAAAAEBAQEBAQEBAQAAAAAAAAAAAAAAAAAAAAABAQEBAQEBAAAAAAAAAAAAAAAAAAAAAAABAQEBAQEBAAAAAAAAAAAAAAAAAAAAAAAAAAEBAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        "count": {
+          "$n": "61"
+        }
+      }
+    },
+    "circularMask/zero-radius-empty-mask": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "width": {
+          "$n": "24"
+        },
+        "height": {
+          "$n": "16"
+        },
+        "data": {
+          "$typed": "Uint8Array",
+          "bytes": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        "count": {
+          "$n": "0"
+        }
+      }
+    },
+    "circularMask/negative-radius-refused": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "value": {
+          "$undefined": true
+        },
+        "threw": "RangeError: radiusPixels must be non-negative, received -1"
+      }
+    },
+    "rectRoi/default-is-whole-image": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "x0": {
+          "$n": "0"
+        },
+        "y0": {
+          "$n": "0"
+        },
+        "x1": {
+          "$n": "24"
+        },
+        "y1": {
+          "$n": "16"
+        }
+      }
+    },
+    "rectRoi/clamped-out-of-bounds": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "x0": {
+          "$n": "0"
+        },
+        "y0": {
+          "$n": "9"
+        },
+        "x1": {
+          "$n": "24"
+        },
+        "y1": {
+          "$n": "12"
+        }
+      }
+    },
+    "luminance/rec709": {
+      "module": "cloud-photometry.mjs",
+      "value": [
+        {
+          "$n": "0.4649"
+        },
+        {
+          "$n": "0"
+        },
+        {
+          "$n": "1"
+        }
+      ]
+    },
+    "forwardReinhard/curve": {
+      "module": "cloud-photometry.mjs",
+      "value": [
+        {
+          "$n": "0.4487320837927233"
+        },
+        {
+          "$n": "0"
+        },
+        {
+          "$n": "0.9999954545661156"
+        }
+      ]
+    },
+    "inverseReinhard/round-trip": {
+      "module": "cloud-photometry.mjs",
+      "value": [
+        {
+          "$n": "3.7000000000000006"
+        },
+        {
+          "$n": "0"
+        }
+      ]
+    },
+    "inverseReinhard/saturation-refused": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "value": {
+          "$undefined": true
+        },
+        "threw": "RangeError: display 1 is saturated; pre-tonemap radiance is not recoverable — exclude the pixel"
+      }
+    },
+    "displaySpaceLuminanceMean/synthetic": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "$n": "0.49569665849673195"
+      }
+    },
+    "displaySpaceLuminanceMean/srgb-transfer": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "$n": "0.30774051878211156"
+      }
+    },
+    "displaySpaceLuminanceMean/zero-population-is-null": {
+      "module": "cloud-photometry.mjs",
+      "value": null
+    },
+    "pins/constants": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "pin": {
+          "file": "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
+          "exposeLine": "let exposed = weightedColor * cloud.exposure;",
+          "mapLine": "let toneMapped = exposed / (exposed + vec3<f32>(1.0));",
+          "citedAs": "ProceduralClouds.wgsl:2645-2646"
+        },
+        "slot": {
+          "$n": "97"
+        },
+        "exposure": {
+          "$n": "0.22"
+        },
+        "ceiling": {
+          "$n": "0.996078431372549"
+        },
+        "transfer": "identity",
+        "transferKeys": [
+          "identity",
+          "srgb"
+        ],
+        "srgbAt": {
+          "$n": "0.21404114048223255"
+        },
+        "identityAt": {
+          "$n": "0.5"
+        }
+      }
+    },
+    "photometricStats/synthetic": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "considered": {
+          "$n": "384"
+        },
+        "counted": {
+          "$n": "377"
+        },
+        "excludedSaturated": {
+          "$n": "7"
+        },
+        "excludedSunDisc": {
+          "$n": "0"
+        },
+        "saturatedFraction": {
+          "$n": "0.018229166666666668"
+        },
+        "meanRadiance": {
+          "r": {
+            "$n": "18.19525672440581"
+          },
+          "g": {
+            "$n": "19.092589395899143"
+          },
+          "b": {
+            "$n": "21.533883187737764"
+          }
+        },
+        "meanLuminance": {
+          "$n": "19.07807788171041"
+        },
+        "medianLuminance": {
+          "$n": "6.8294397761388845"
+        },
+        "provenance": {
+          "space": "linear-pre-reinhard",
+          "operator": "ProceduralClouds.wgsl:2645-2646",
+          "exposure": {
+            "$n": "0.22"
+          },
+          "transfer": "identity",
+          "saturationCeiling": {
+            "$n": "0.996078431372549"
+          },
+          "sunDiscMasked": false,
+          "assumption": "cloud-dominated-composite"
+        }
+      }
+    },
+    "photometricStats/uniform": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "considered": {
+          "$n": "384"
+        },
+        "counted": {
+          "$n": "384"
+        },
+        "excludedSaturated": {
+          "$n": "0"
+        },
+        "excludedSunDisc": {
+          "$n": "0"
+        },
+        "saturatedFraction": {
+          "$n": "0"
+        },
+        "meanRadiance": {
+          "r": {
+            "$n": "4.58124552612737"
+          },
+          "g": {
+            "$n": "4.58124552612737"
+          },
+          "b": {
+            "$n": "4.58124552612737"
+          }
+        },
+        "meanLuminance": {
+          "$n": "4.58124552612737"
+        },
+        "medianLuminance": {
+          "$n": "4.581245526127415"
+        },
+        "provenance": {
+          "space": "linear-pre-reinhard",
+          "operator": "ProceduralClouds.wgsl:2645-2646",
+          "exposure": {
+            "$n": "0.22"
+          },
+          "transfer": "identity",
+          "saturationCeiling": {
+            "$n": "0.996078431372549"
+          },
+          "sunDiscMasked": false,
+          "assumption": "cloud-dominated-composite"
+        }
+      }
+    },
+    "photometricStats/all-zero": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "considered": {
+          "$n": "384"
+        },
+        "counted": {
+          "$n": "384"
+        },
+        "excludedSaturated": {
+          "$n": "0"
+        },
+        "excludedSunDisc": {
+          "$n": "0"
+        },
+        "saturatedFraction": {
+          "$n": "0"
+        },
+        "meanRadiance": {
+          "r": {
+            "$n": "0"
+          },
+          "g": {
+            "$n": "0"
+          },
+          "b": {
+            "$n": "0"
+          }
+        },
+        "meanLuminance": {
+          "$n": "0"
+        },
+        "medianLuminance": {
+          "$n": "0"
+        },
+        "provenance": {
+          "space": "linear-pre-reinhard",
+          "operator": "ProceduralClouds.wgsl:2645-2646",
+          "exposure": {
+            "$n": "0.22"
+          },
+          "transfer": "identity",
+          "saturationCeiling": {
+            "$n": "0.996078431372549"
+          },
+          "sunDiscMasked": false,
+          "assumption": "cloud-dominated-composite"
+        }
+      }
+    },
+    "photometricStats/fully-saturated-counts-refusals": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "considered": {
+          "$n": "384"
+        },
+        "counted": {
+          "$n": "0"
+        },
+        "excludedSaturated": {
+          "$n": "384"
+        },
+        "excludedSunDisc": {
+          "$n": "0"
+        },
+        "saturatedFraction": {
+          "$n": "1"
+        },
+        "meanRadiance": null,
+        "meanLuminance": null,
+        "medianLuminance": null,
+        "provenance": {
+          "space": "linear-pre-reinhard",
+          "operator": "ProceduralClouds.wgsl:2645-2646",
+          "exposure": {
+            "$n": "0.22"
+          },
+          "transfer": "identity",
+          "saturationCeiling": {
+            "$n": "0.996078431372549"
+          },
+          "sunDiscMasked": false,
+          "assumption": "cloud-dominated-composite"
+        }
+      }
+    },
+    "photometricStats/sun-disc-mask-excludes-everything": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "considered": {
+          "$n": "384"
+        },
+        "counted": {
+          "$n": "0"
+        },
+        "excludedSaturated": {
+          "$n": "0"
+        },
+        "excludedSunDisc": {
+          "$n": "384"
+        },
+        "saturatedFraction": {
+          "$n": "0"
+        },
+        "meanRadiance": null,
+        "meanLuminance": null,
+        "medianLuminance": null,
+        "provenance": {
+          "space": "linear-pre-reinhard",
+          "operator": "ProceduralClouds.wgsl:2645-2646",
+          "exposure": {
+            "$n": "0.22"
+          },
+          "transfer": "identity",
+          "saturationCeiling": {
+            "$n": "0.996078431372549"
+          },
+          "sunDiscMasked": true,
+          "assumption": "cloud-dominated-composite"
+        }
+      }
+    },
+    "photometricStats/roi-and-srgb-and-lowered-ceiling": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "considered": {
+          "$n": "234"
+        },
+        "counted": {
+          "$n": "211"
+        },
+        "excludedSaturated": {
+          "$n": "23"
+        },
+        "excludedSunDisc": {
+          "$n": "0"
+        },
+        "saturatedFraction": {
+          "$n": "0.09829059829059829"
+        },
+        "meanRadiance": {
+          "r": {
+            "$n": "3.157181611519347"
+          },
+          "g": {
+            "$n": "2.8224480010974022"
+          },
+          "b": {
+            "$n": "2.8454595025977776"
+          }
+        },
+        "meanLuminance": {
+          "$n": "2.895273797081434"
+        },
+        "medianLuminance": {
+          "$n": "1.3465411560895817"
+        },
+        "provenance": {
+          "space": "linear-pre-reinhard",
+          "operator": "ProceduralClouds.wgsl:2645-2646",
+          "exposure": {
+            "$n": "0.31"
+          },
+          "transfer": "srgb",
+          "saturationCeiling": {
+            "$n": "0.9"
+          },
+          "sunDiscMasked": true,
+          "assumption": "cloud-dominated-composite"
+        }
+      }
+    },
+    "photometricStats/missing-exposure-refused": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "value": {
+          "$undefined": true
+        },
+        "threw": "TypeError: photometricStats requires the live cloud.exposure uniform (slot 97); received undefined. A photometric statistic measured against a guessed exposure is not a measurement."
+      }
+    },
+    "photometricRatio/comparable": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "ratio": {
+          "$n": "0.7914573449349523"
+        },
+        "comparable": true,
+        "numerator": {
+          "space": "linear-pre-reinhard",
+          "operator": "ProceduralClouds.wgsl:2645-2646",
+          "exposure": {
+            "$n": "0.22"
+          },
+          "transfer": "identity",
+          "saturationCeiling": {
+            "$n": "0.996078431372549"
+          },
+          "sunDiscMasked": false,
+          "assumption": "cloud-dominated-composite"
+        },
+        "denominator": {
+          "space": "linear-pre-reinhard",
+          "operator": "ProceduralClouds.wgsl:2645-2646",
+          "exposure": {
+            "$n": "0.22"
+          },
+          "transfer": "identity",
+          "saturationCeiling": {
+            "$n": "0.996078431372549"
+          },
+          "sunDiscMasked": false,
+          "assumption": "cloud-dominated-composite"
+        }
+      }
+    },
+    "photometricRatio/null-denominator": {
+      "module": "cloud-photometry.mjs",
+      "value": {
+        "ratio": null,
+        "comparable": true,
+        "numerator": {
+          "space": "linear-pre-reinhard",
+          "operator": "ProceduralClouds.wgsl:2645-2646",
+          "exposure": {
+            "$n": "0.22"
+          },
+          "transfer": "identity",
+          "saturationCeiling": {
+            "$n": "0.996078431372549"
+          },
+          "sunDiscMasked": false,
+          "assumption": "cloud-dominated-composite"
+        },
+        "denominator": {
+          "space": "linear-pre-reinhard",
+          "operator": "ProceduralClouds.wgsl:2645-2646",
+          "exposure": {
+            "$n": "0.22"
+          },
+          "transfer": "identity",
+          "saturationCeiling": {
+            "$n": "0.996078431372549"
+          },
+          "sunDiscMasked": false,
+          "assumption": "cloud-dominated-composite"
+        }
+      }
+    },
+    "syntheticFractionalBrownianField/seeded": {
+      "module": "cloud-spectrum.mjs",
+      "value": {
+        "$typed": "Float64Array",
+        "bytes": "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"
+      }
+    },
+    "radialPowerSpectrum/fbm": {
+      "module": "cloud-spectrum.mjs",
+      "value": {
+        "bins": [
+          {
+            "k": {
+              "$n": "0.00010059223176554564"
+            },
+            "wavelengthMetres": {
+              "$n": "9941.12549695428"
+            },
+            "power": {
+              "$n": "0.062305957996744515"
+            },
+            "count": {
+              "$n": "8"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.00019376173082803684"
+            },
+            "wavelengthMetres": {
+              "$n": "5160.977844936253"
+            },
+            "power": {
+              "$n": "0.06551982101775906"
+            },
+            "count": {
+              "$n": "16"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.00027559429785441224"
+            },
+            "wavelengthMetres": {
+              "$n": "3628.522098553245"
+            },
+            "power": {
+              "$n": "0.027698749033853276"
+            },
+            "count": {
+              "$n": "20"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0003532378312271357"
+            },
+            "wavelengthMetres": {
+              "$n": "2830.9538548745913"
+            },
+            "power": {
+              "$n": "0.014777376487573622"
+            },
+            "count": {
+              "$n": "24"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0004440593890053129"
+            },
+            "wavelengthMetres": {
+              "$n": "2251.9510334867296"
+            },
+            "power": {
+              "$n": "0.009421257803485395"
+            },
+            "count": {
+              "$n": "40"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0005281230744549479"
+            },
+            "wavelengthMetres": {
+              "$n": "1893.4980279588335"
+            },
+            "power": {
+              "$n": "0.006199312246463389"
+            },
+            "count": {
+              "$n": "36"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0006114421797191292"
+            },
+            "wavelengthMetres": {
+              "$n": "1635.477618602233"
+            },
+            "power": {
+              "$n": "0.004653772887330821"
+            },
+            "count": {
+              "$n": "48"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0006988567661584646"
+            },
+            "wavelengthMetres": {
+              "$n": "1430.908375541508"
+            },
+            "power": {
+              "$n": "0.0029430064675732984"
+            },
+            "count": {
+              "$n": "56"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0007823082551831771"
+            },
+            "wavelengthMetres": {
+              "$n": "1278.2685001398208"
+            },
+            "power": {
+              "$n": "0.002398136795290208"
+            },
+            "count": {
+              "$n": "56"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0008647154956039177"
+            },
+            "wavelengthMetres": {
+              "$n": "1156.4497283601927"
+            },
+            "power": {
+              "$n": "0.0015737063309994772"
+            },
+            "count": {
+              "$n": "68"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0010618559615763737"
+            },
+            "wavelengthMetres": {
+              "$n": "941.7473143113067"
+            },
+            "power": {
+              "$n": "0.0020291808391036895"
+            },
+            "count": {
+              "$n": "203"
+            }
+          }
+        ],
+        "width": {
+          "$n": "24"
+        },
+        "height": {
+          "$n": "24"
+        },
+        "metresPerPixel": {
+          "$n": "500"
+        },
+        "binCount": {
+          "$n": "12"
+        },
+        "nyquistWavenumberPerMetre": {
+          "$n": "0.001"
+        }
+      }
+    },
+    "radialPowerSpectrum/constant-field": {
+      "module": "cloud-spectrum.mjs",
+      "value": {
+        "bins": [
+          {
+            "k": {
+              "$n": "0.0003017766952966369"
+            },
+            "wavelengthMetres": {
+              "$n": "3313.70849898476"
+            },
+            "power": {
+              "$n": "0"
+            },
+            "count": {
+              "$n": "8"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0005812851924841108"
+            },
+            "wavelengthMetres": {
+              "$n": "1720.3259483120837"
+            },
+            "power": {
+              "$n": "0"
+            },
+            "count": {
+              "$n": "16"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0008267828935632369"
+            },
+            "wavelengthMetres": {
+              "$n": "1209.5073661844146"
+            },
+            "power": {
+              "$n": "0"
+            },
+            "count": {
+              "$n": "20"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0010597134936814068"
+            },
+            "wavelengthMetres": {
+              "$n": "943.6512849581973"
+            },
+            "power": {
+              "$n": "0"
+            },
+            "count": {
+              "$n": "24"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0013321781670159395"
+            },
+            "wavelengthMetres": {
+              "$n": "750.650344495576"
+            },
+            "power": {
+              "$n": "0"
+            },
+            "count": {
+              "$n": "40"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0015843692233648448"
+            },
+            "wavelengthMetres": {
+              "$n": "631.1660093196107"
+            },
+            "power": {
+              "$n": "0"
+            },
+            "count": {
+              "$n": "36"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0020620721068473954"
+            },
+            "wavelengthMetres": {
+              "$n": "484.94909401051586"
+            },
+            "power": {
+              "$n": "0"
+            },
+            "count": {
+              "$n": "111"
+            }
+          }
+        ],
+        "width": {
+          "$n": "16"
+        },
+        "height": {
+          "$n": "16"
+        },
+        "metresPerPixel": {
+          "$n": "250"
+        },
+        "binCount": {
+          "$n": "8"
+        },
+        "nyquistWavenumberPerMetre": {
+          "$n": "0.002"
+        }
+      }
+    },
+    "fitSpectralSlope/band": {
+      "module": "cloud-spectrum.mjs",
+      "value": {
+        "slope": {
+          "$n": "-1.5884868274255637"
+        },
+        "intercept": {
+          "$n": "-7.33777653587297"
+        },
+        "r2": {
+          "$n": "0.8868585206596193"
+        },
+        "sampleCount": {
+          "$n": "7"
+        },
+        "bandBins": [
+          {
+            "k": {
+              "$n": "0.00010059223176554564"
+            },
+            "wavelengthMetres": {
+              "$n": "9941.12549695428"
+            },
+            "power": {
+              "$n": "0.062305957996744515"
+            },
+            "count": {
+              "$n": "8"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.00019376173082803684"
+            },
+            "wavelengthMetres": {
+              "$n": "5160.977844936253"
+            },
+            "power": {
+              "$n": "0.06551982101775906"
+            },
+            "count": {
+              "$n": "16"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.00027559429785441224"
+            },
+            "wavelengthMetres": {
+              "$n": "3628.522098553245"
+            },
+            "power": {
+              "$n": "0.027698749033853276"
+            },
+            "count": {
+              "$n": "20"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0003532378312271357"
+            },
+            "wavelengthMetres": {
+              "$n": "2830.9538548745913"
+            },
+            "power": {
+              "$n": "0.014777376487573622"
+            },
+            "count": {
+              "$n": "24"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0004440593890053129"
+            },
+            "wavelengthMetres": {
+              "$n": "2251.9510334867296"
+            },
+            "power": {
+              "$n": "0.009421257803485395"
+            },
+            "count": {
+              "$n": "40"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0005281230744549479"
+            },
+            "wavelengthMetres": {
+              "$n": "1893.4980279588335"
+            },
+            "power": {
+              "$n": "0.006199312246463389"
+            },
+            "count": {
+              "$n": "36"
+            }
+          },
+          {
+            "k": {
+              "$n": "0.0006114421797191292"
+            },
+            "wavelengthMetres": {
+              "$n": "1635.477618602233"
+            },
+            "power": {
+              "$n": "0.004653772887330821"
+            },
+            "count": {
+              "$n": "48"
+            }
+          }
+        ],
+        "failures": []
+      }
+    },
+    "fitSpectralSlope/insufficient-band-bins": {
+      "module": "cloud-spectrum.mjs",
+      "value": {
+        "slope": null,
+        "intercept": null,
+        "r2": null,
+        "sampleCount": {
+          "$n": "0"
+        },
+        "bandBins": [],
+        "failures": [
+          "insufficient-band-bins: found 0 usable bin(s) in [1000000000, 2000000000] m, need >= 5"
+        ]
+      }
+    },
+    "areaPerimeterFractalDimension/fbm": {
+      "module": "cloud-spectrum.mjs",
+      "value": {
+        "dimension": {
+          "$n": "1.7028297539726864"
+        },
+        "intercept": {
+          "$n": "1.094534758460112"
+        },
+        "r2": {
+          "$n": "0.9884351227719365"
+        },
+        "blobCount": {
+          "$n": "56"
+        },
+        "blobs": [
+          {
+            "threshold": {
+              "$n": "0.4"
+            },
+            "area": {
+              "$n": "5"
+            },
+            "perimeter": {
+              "$n": "12"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.4"
+            },
+            "area": {
+              "$n": "7"
+            },
+            "perimeter": {
+              "$n": "16"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.4"
+            },
+            "area": {
+              "$n": "13"
+            },
+            "perimeter": {
+              "$n": "26"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.4"
+            },
+            "area": {
+              "$n": "4"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.4"
+            },
+            "area": {
+              "$n": "75"
+            },
+            "perimeter": {
+              "$n": "124"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.4"
+            },
+            "area": {
+              "$n": "6"
+            },
+            "perimeter": {
+              "$n": "14"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.4"
+            },
+            "area": {
+              "$n": "5"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.4"
+            },
+            "area": {
+              "$n": "9"
+            },
+            "perimeter": {
+              "$n": "20"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "14"
+            },
+            "perimeter": {
+              "$n": "26"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "4"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "19"
+            },
+            "perimeter": {
+              "$n": "38"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "22"
+            },
+            "perimeter": {
+              "$n": "40"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "4"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "12"
+            },
+            "perimeter": {
+              "$n": "22"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "13"
+            },
+            "perimeter": {
+              "$n": "28"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "6"
+            },
+            "perimeter": {
+              "$n": "14"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "7"
+            },
+            "perimeter": {
+              "$n": "16"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "4"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "15"
+            },
+            "perimeter": {
+              "$n": "30"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "49"
+            },
+            "perimeter": {
+              "$n": "84"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "5"
+            },
+            "perimeter": {
+              "$n": "12"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "13"
+            },
+            "perimeter": {
+              "$n": "28"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "25"
+            },
+            "perimeter": {
+              "$n": "46"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "4"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "7"
+            },
+            "perimeter": {
+              "$n": "16"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "9"
+            },
+            "perimeter": {
+              "$n": "20"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.5"
+            },
+            "area": {
+              "$n": "8"
+            },
+            "perimeter": {
+              "$n": "18"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "7"
+            },
+            "perimeter": {
+              "$n": "14"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "21"
+            },
+            "perimeter": {
+              "$n": "40"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "10"
+            },
+            "perimeter": {
+              "$n": "20"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "4"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "4"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "18"
+            },
+            "perimeter": {
+              "$n": "36"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "14"
+            },
+            "perimeter": {
+              "$n": "30"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "17"
+            },
+            "perimeter": {
+              "$n": "34"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "16"
+            },
+            "perimeter": {
+              "$n": "30"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "15"
+            },
+            "perimeter": {
+              "$n": "30"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "11"
+            },
+            "perimeter": {
+              "$n": "18"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "5"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "4"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "4"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "4"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "5"
+            },
+            "perimeter": {
+              "$n": "12"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "13"
+            },
+            "perimeter": {
+              "$n": "28"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "17"
+            },
+            "perimeter": {
+              "$n": "36"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "4"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "7"
+            },
+            "perimeter": {
+              "$n": "16"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "10"
+            },
+            "perimeter": {
+              "$n": "22"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "7"
+            },
+            "perimeter": {
+              "$n": "16"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "12"
+            },
+            "perimeter": {
+              "$n": "24"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "4"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "6"
+            },
+            "perimeter": {
+              "$n": "12"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "4"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "4"
+            },
+            "perimeter": {
+              "$n": "10"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "10"
+            },
+            "perimeter": {
+              "$n": "22"
+            }
+          },
+          {
+            "threshold": {
+              "$n": "0.6"
+            },
+            "area": {
+              "$n": "5"
+            },
+            "perimeter": {
+              "$n": "12"
+            }
+          }
+        ],
+        "failures": []
+      }
+    },
+    "areaPerimeterFractalDimension/insufficient-blobs": {
+      "module": "cloud-spectrum.mjs",
+      "value": {
+        "dimension": null,
+        "intercept": null,
+        "r2": null,
+        "blobCount": {
+          "$n": "0"
+        },
+        "blobs": [],
+        "failures": [
+          "insufficient-blobs: found 0 usable blob(s), need >= 5"
+        ]
+      }
+    },
+    "meanCloudAlpha/no-mask": {
+      "module": "cloud-orbital-ladder-model.mjs",
+      "value": {
+        "meanAlpha": {
+          "$n": "0.47622549019607807"
+        },
+        "cloudPixels": {
+          "$n": "384"
+        },
+        "totalPixels": {
+          "$n": "384"
+        },
+        "coverageFraction": {
+          "$n": "1"
+        }
+      }
+    },
+    "meanCloudAlpha/all-zero": {
+      "module": "cloud-orbital-ladder-model.mjs",
+      "value": {
+        "meanAlpha": {
+          "$n": "0"
+        },
+        "cloudPixels": {
+          "$n": "384"
+        },
+        "totalPixels": {
+          "$n": "384"
+        },
+        "coverageFraction": {
+          "$n": "1"
+        }
+      }
+    },
+    "meanCloudAlpha/empty-mask-zero-population": {
+      "module": "cloud-orbital-ladder-model.mjs",
+      "value": {
+        "meanAlpha": {
+          "$n": "0"
+        },
+        "cloudPixels": {
+          "$n": "0"
+        },
+        "totalPixels": {
+          "$n": "384"
+        },
+        "coverageFraction": {
+          "$n": "0"
+        }
+      }
+    },
+    "imageAerialCapFraction/synthetic": {
+      "module": "cloud-orbital-ladder-model.mjs",
+      "value": {
+        "cloudPixels": {
+          "$n": "384"
+        },
+        "cappedPixels": {
+          "$n": "3"
+        },
+        "fraction": {
+          "$n": "0.0078125"
+        }
+      }
+    },
+    "imageAerialCapFraction/uniform-all-capped": {
+      "module": "cloud-orbital-ladder-model.mjs",
+      "value": {
+        "cloudPixels": {
+          "$n": "384"
+        },
+        "cappedPixels": {
+          "$n": "384"
+        },
+        "fraction": {
+          "$n": "1"
+        }
+      }
+    },
+    "imageAerialCapFraction/empty-mask-zero-population": {
+      "module": "cloud-orbital-ladder-model.mjs",
+      "value": {
+        "cloudPixels": {
+          "$n": "0"
+        },
+        "cappedPixels": {
+          "$n": "0"
+        },
+        "fraction": null
+      }
+    },
+    "imageAerialCapFraction/missing-aerial-colour-refused": {
+      "module": "cloud-orbital-ladder-model.mjs",
+      "value": {
+        "value": {
+          "$undefined": true
+        },
+        "threw": "TypeError: imageAerialCapFraction requires the live aerialColor uniform"
+      }
+    }
+  }
+}

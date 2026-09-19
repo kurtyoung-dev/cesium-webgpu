@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cesium-webgpu.local/Tools/visual-regression/scenes.schema.json",
+  "title": "Wave-end scene manifest",
+  "description": "Schema for scenes.json, the wave-end-tagged subset of the DX-101 rig registry (Tools/visual-regression/lib/rig-registry.mjs) flattened into the shape capture-and-diff.mjs reads. Generated text: generateScenesJson(loadRigs()) in lib/rig-registry.mjs must equal this file's sibling scenes.json byte-for-byte; this schema describes that generated shape, not the rig record shape (see rigs/<id>.mjs for that).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "description", "baseUrl", "settleFrames", "scenes"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "const": "./scenes.schema.json"
+    },
+    "description": {
+      "type": "string",
+      "description": "Schema-level prose describing the manifest's own fields; not a scene description."
+    },
+    "baseUrl": {
+      "type": "string",
+      "format": "uri",
+      "description": "Origin-bearing URL of the split-screen comparison page every scene captures against. Mirrors every wave-end rig's `url` field (rig-registry.mjs asserts they all agree)."
+    },
+    "settleFrames": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "description": "Frames to render before capture, applied to every scene. Mirrors every wave-end rig's `readiness.frames` (rig-registry.mjs asserts they all agree)."
+    },
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/scene" }
+    }
+  },
+  "$defs": {
+    "scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "camera"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Matches a wave-end rig's `id`."
+        },
+        "description": { "type": "string" },
+        "setupFile": {
+          "type": "string",
+          "description": "Path (relative to this directory) of a JS module evaluated in the page context before the camera is applied."
+        },
+        "setupParams": {
+          "type": "object",
+          "description": "Free-form parameters passed to `setupFile`. Mirrors the rig's `setupParams` field verbatim."
+        },
+        "camera": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["destination", "orientation"],
+              "properties": {
+                "destination": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": { "type": "number" },
+                  "description": "[longitudeDegrees, latitudeDegrees, heightMetres]. Derived from a rig's degrees-form camera ({lon,lat,height}); a rig using the ECEF-pose form ({position,direction,up}) or no static pose at all renders as `null` here instead — this shape cannot hold an ECEF pose (see voxel-box-procedural)."
+                },
+                "orientation": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["heading", "pitch", "roll"],
+                  "properties": {
+                    "heading": { "type": "number", "description": "Radians." },
+                    "pitch": { "type": "number", "description": "Radians." },
+                    "roll": { "type": "number", "description": "Radians." }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "expectedMismatch": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/expectedMismatchEntry" }
+        }
+      }
+    },
+    "expectedMismatchEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate", "expect", "rationale"],
+      "properties": {
+        "gate": {
+          "type": "string",
+          "enum": ["historicalWebgl", "historicalWebgpu", "crossBackend"],
+          "description": "lib/visual-gate-policy.mjs GATE_IDS."
+        },
+        "expect": {
+          "type": "string",
+          "enum": ["PASS", "FAIL", "UNMEASURED"],
+          "description": "lib/visual-gate-policy.mjs GateExpectation. UNMEASURED is a first-class value, not a placeholder."
+        },
+        "trackedBy": {
+          "type": "string",
+          "description": "Required when expect is FAIL: the tracker id carrying the known defect."
+        },
+        "rationale": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

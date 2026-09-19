@@ -1063,3 +1063,123 @@ export function analyzePurposeHeaderSource(source) {
     violations,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Fleet selection by BEHAVIOUR rather than by filename
+// ---------------------------------------------------------------------------
+//
+// Every rule above is applied to a file set chosen by the `probe-*.mjs` glob.
+// A glob is a naming convention, and a naming convention is exactly what this
+// module exists because the fleet did not keep. Files that launch a browser
+// under any other name — `verify-*`, `diag-*`, `canvas-*`, and the wave-end
+// gate's own children — were outside the watchdog and `finally`-close rules
+// while doing the one thing those rules are about.
+//
+// Selection is therefore by behaviour: a file that imports Playwright AND
+// calls `<identifier>.launch(` is in the fleet, wherever it sits and whichever
+// call form it uses. The indirect form matters and is not a hypothetical —
+// `capture-and-diff.mjs` and `variant-smoke-test.mjs` both resolve a browser
+// type into a local binding first and then call `browserType.launch(`, so a
+// selector keyed on the literal `chromium.launch(` cannot see either of them,
+// and both are children of the wave-end gate.
+//
+// Three exemptions, each named so a reader gets the reason and not just the
+// absence, and each returned as a string rather than a boolean for that reason.
+
+/** Why a browser-launching file is nonetheless outside the live-probe fleet. */
+export const FLEET_EXEMPTIONS = Object.freeze({
+  /** A browser-free guard. This contract's own spec is itself named `probe-*`. */
+  SPEC: "spec",
+  /**
+   * The file took the archive exit: `@status ARCHIVED-CANDIDATE`, wherever it
+   * sits. Retirement is a status, not a directory, so a retired file stops
+   * owing the live-probe contract the moment the status is flipped.
+   */
+  ARCHIVED: "archived",
+  /**
+   * Physically moved to `archive/` but not yet flipped. The files there still
+   * read `INVESTIGATION`; flipping them is the first retirement cohort's work,
+   * and until then the directory is what keeps them out of the live fleet.
+   */
+  ARCHIVE_DIRECTORY: "archive-directory",
+  /**
+   * The shared launcher libraries the fleet delegates to. They own the launch
+   * on every consumer's behalf and are governed by the residency contract, not
+   * by a per-lane watchdog.
+   */
+  LAUNCHER_LIBRARY: "launcher-library",
+});
+
+/**
+ * Whether a source launches a Playwright browser, read from behaviour.
+ *
+ * Both halves are required. The import alone matches a module that only reads
+ * Playwright's types; `<ident>.launch(` alone matches an unrelated API. The
+ * import test reads the RAW source because a module specifier is a string
+ * literal, which `blankNonCode` blanks; the call test reads the blanked code so
+ * a `.launch(` inside a comment or a template string is not a launch.
+ *
+ * @param {string} source Raw file source text.
+ * @returns {boolean} True when the file launches a browser.
+ */
+export function launchesBrowserByBehaviour(source) {
+  const text = String(source ?? "");
+  if (!/(?:from|import\s*\()\s*["'`]playwright/.test(text)) {
+    return false;
+  }
+  return /\b[A-Za-z_$][\w$]*\s*\.\s*launch\s*\(/.test(blankNonCode(text));
+}
+
+/**
+ * The exemption that keeps a browser-launching file out of the live fleet, or
+ * `null` when none applies.
+ *
+ * @param {string} relPath Repo-relative, slash-separated path.
+ * @param {string} source Raw file source text.
+ * @returns {string|null} One of `FLEET_EXEMPTIONS`, or null.
+ */
+export function fleetExemption(relPath, source) {
+  const normalized = String(relPath ?? "")
+    .split("\\")
+    .join("/");
+  if (normalized.endsWith(".spec.mjs")) {
+    return FLEET_EXEMPTIONS.SPEC;
+  }
+  if (parsePurposeHeader(source).status === "ARCHIVED-CANDIDATE") {
+    return FLEET_EXEMPTIONS.ARCHIVED;
+  }
+  if (normalized.includes("/archive/")) {
+    return FLEET_EXEMPTIONS.ARCHIVE_DIRECTORY;
+  }
+  if (/(?:^|\/)lib\/[^/]+$/.test(normalized)) {
+    return FLEET_EXEMPTIONS.LAUNCHER_LIBRARY;
+  }
+  return null;
+}
+
+/**
+ * The live-probe fleet, selected by behaviour.
+ *
+ * @param {Array<{path: string, source: string}>} entries Candidate files.
+ * @returns {{selected: string[], exempt: Array<{path: string, reason: string}>}}
+ *   `selected` is the fleet the contract applies to; `exempt` records every
+ *   browser-launching file kept out of it and why.
+ */
+export function selectFleetByBehaviour(entries) {
+  const selected = [];
+  const exempt = [];
+  for (const entry of entries ?? []) {
+    if (!launchesBrowserByBehaviour(entry.source)) {
+      continue;
+    }
+    const reason = fleetExemption(entry.path, entry.source);
+    if (reason === null) {
+      selected.push(entry.path);
+    } else {
+      exempt.push({ path: entry.path, reason });
+    }
+  }
+  selected.sort();
+  exempt.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return { selected, exempt };
+}

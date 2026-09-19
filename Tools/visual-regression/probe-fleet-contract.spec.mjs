@@ -35,7 +35,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   analyzeGateLibrarySource,
@@ -45,18 +45,26 @@ import {
   codeWithTokenLiterals,
   finallyBodies,
   findExitSites,
+  FLEET_EXEMPTIONS,
+  fleetExemption,
   gateStructuralExitViolations,
   gateVerdictExitBindingViolations,
   hasStructuralTier,
   hasWatchdog,
   innermostGuard,
+  launchesBrowserByBehaviour,
   matchBrace,
   scanEndsInCode,
+  selectFleetByBehaviour,
   stringLiteralSpans,
   structuralRoutedToTwo,
   verdictExitViolations,
 } from "./lib/probe-fleet-contract.mjs";
 import { PROBE_CONTRACT_ALLOWLIST } from "./lib/probe-fleet-contract-allowlist.mjs";
+import {
+  BEHAVIOUR_ALLOWLIST_BASELINE,
+  BEHAVIOUR_FLEET_ALLOWLIST,
+} from "./lib/probe-fleet-behaviour-allowlist.mjs";
 import { PROHIBITED_READER_ALLOWLIST } from "./lib/prohibited-reader-allowlist.mjs";
 import { analyzePageScopeClosures } from "./lib/page-scope-closure.mjs";
 import { analyzeProhibitedReader } from "./lib/prohibited-reader-rule.mjs";
@@ -2234,4 +2242,297 @@ test("H7 MUTATION control: an inert governance match reports an ungoverned fleet
   );
   assert.ok(real.adopting > 0, "the real fleet has no governance adopters");
   assert.equal(mutated.adopting, 0);
+});
+
+// ---------------------------------------------------------------------------
+// B — the fleet selected by BEHAVIOUR
+// ---------------------------------------------------------------------------
+//
+// Every C rule above reads a file set chosen by the `probe-*.mjs` glob. The B
+// rules read the set chosen by what a file DOES: imports Playwright and calls
+// `<ident>.launch(`. The two sets overlap but neither contains the other — 36
+// files in the glob launch nothing, and 46 launching files sit outside it under
+// `verify-*`, `diag-*`, `canvas-*` and two of the wave-end gate's own children.
+// The C rules keep their population so their ratchet is untouched; the B rules
+// bring the escapees under the same watchdog and `finally`-close rules.
+
+const REPO_ROOT = resolve(HERE, "..", "..");
+const TOOLS_ROOT = resolve(HERE, "..");
+/** Build output and dependencies are not authored files; everything else counts. */
+const BEHAVIOUR_SKIP_DIRS = new Set(["node_modules", "output"]);
+
+/** Every authored `.mjs` under `Tools/`, repo-relative and slash-separated. */
+function collectToolsModules(dir, found = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (!BEHAVIOUR_SKIP_DIRS.has(entry.name)) {
+        collectToolsModules(join(dir, entry.name), found);
+      }
+    } else if (entry.isFile() && entry.name.endsWith(".mjs")) {
+      found.push(
+        resolve(dir, entry.name)
+          .slice(REPO_ROOT.length + 1)
+          .split("\\")
+          .join("/"),
+      );
+    }
+  }
+  return found;
+}
+
+const behaviourCandidates = collectToolsModules(TOOLS_ROOT)
+  .sort()
+  .map((f) => ({ path: f, source: readFileSync(join(REPO_ROOT, f), "utf8") }));
+
+const behaviourFleet = selectFleetByBehaviour(behaviourCandidates);
+const behaviourSource = new Map(
+  behaviourCandidates.map((e) => [e.path, e.source]),
+);
+const behaviourAnalyses = new Map(
+  behaviourFleet.selected.map((p) => [
+    p,
+    analyzeProbeSource(behaviourSource.get(p)),
+  ]),
+);
+const inFilenameGlob = (p) =>
+  /^Tools\/visual-regression\/probe-[^/]+\.mjs$/.test(p);
+const behaviourEscapees = behaviourFleet.selected.filter(
+  (p) => !inFilenameGlob(p),
+);
+
+/** A file is exempt from B2 when EITHER allowlist already carries it. */
+function behaviourAllowlisted(p) {
+  return (
+    Object.hasOwn(BEHAVIOUR_FLEET_ALLOWLIST, p) ||
+    Object.hasOwn(PROBE_CONTRACT_ALLOWLIST, p.split("/").pop())
+  );
+}
+
+test("B1: behaviour selection sees the launches the filename glob cannot", () => {
+  // The two named files resolve a browser type into a local binding and call
+  // `browserType.launch(`. An acceptance keyed on the literal `chromium.launch(`
+  // is unsatisfiable for them, which is the whole point of selecting by
+  // behaviour — and both are children of the wave-end gate.
+  for (const p of [
+    "Tools/visual-regression/capture-and-diff.mjs",
+    "Tools/variant-smoke-test.mjs",
+  ]) {
+    const source = behaviourSource.get(p);
+    assert.ok(source !== undefined, `${p} is not in the candidate set`);
+    assert.ok(
+      !/\bchromium\s*\.\s*launch\s*\(/.test(blankNonCode(source)),
+      `${p} now calls chromium.launch( literally — this assertion's premise is gone`,
+    );
+    assert.ok(
+      launchesBrowserByBehaviour(source),
+      `${p} launches a browser but behaviour selection missed it`,
+    );
+    assert.ok(
+      behaviourFleet.selected.includes(p),
+      `${p} is not in the behaviour-selected fleet`,
+    );
+  }
+  assert.ok(
+    behaviourEscapees.length >= 40,
+    `behaviour selection found only ${behaviourEscapees.length} files outside the filename glob`,
+  );
+});
+
+test("B2: every non-allowlisted browser-launching file satisfies the contract", () => {
+  const offenders = [];
+  for (const p of behaviourFleet.selected) {
+    if (behaviourAllowlisted(p)) {
+      continue;
+    }
+    const violations = behaviourAnalyses.get(p).violations;
+    if (violations.length > 0) {
+      offenders.push(`${p}: ${violations.join("; ")}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `A file that launches a browser must carry a watchdog (setTimeout ->
+process.exit) and close the browser inside a finally, whatever it is named.
+Add the constructs; do NOT add the file to
+lib/probe-fleet-behaviour-allowlist.mjs — that list is closed and shrink-only.
+Offenders:\n  ${offenders.join("\n  ")}`,
+  );
+});
+
+test("B3: the behaviour allowlist is a shrink-only ratchet with dated reasons", () => {
+  const names = Object.keys(BEHAVIOUR_FLEET_ALLOWLIST);
+  assert.ok(
+    names.length <= BEHAVIOUR_ALLOWLIST_BASELINE,
+    `the behaviour allowlist grew: ${names.length} rows against a ceiling of ${BEHAVIOUR_ALLOWLIST_BASELINE}`,
+  );
+
+  const gone = names.filter((p) => !behaviourSource.has(p));
+  assert.deepEqual(
+    gone,
+    [],
+    `allowlist names files that no longer exist: ${gone.join(", ")}`,
+  );
+
+  const repaired = names.filter(
+    (p) => (behaviourAnalyses.get(p)?.violations ?? []).length === 0,
+  );
+  assert.deepEqual(
+    repaired,
+    [],
+    `these files now satisfy the contract and MUST be deleted from the allowlist
+in the same change that repaired them: ${repaired.join(", ")}`,
+  );
+
+  const mismatched = [];
+  for (const [p, reason] of Object.entries(BEHAVIOUR_FLEET_ALLOWLIST)) {
+    assert.match(
+      reason,
+      /added \d{4}-\d{2}-\d{2}; expires \d{4}-\d{2}-\d{2}$/,
+      `${p}'s reason must end in an add date and an expiry`,
+    );
+    assert.ok(!reason.includes("\n"), `${p}'s reason spans lines`);
+    for (const v of behaviourAnalyses.get(p)?.violations ?? []) {
+      if (!reason.includes(v)) {
+        mismatched.push(`${p}: has "${v}" which the reason omits`);
+      }
+    }
+  }
+  assert.deepEqual(mismatched, [], mismatched.join("\n"));
+});
+
+test("B4: ARCHIVED-CANDIDATE is a reachable exit from the live fleet", () => {
+  // The status word has zero users in the tree, and the retirement rule depends
+  // on it being takeable. A retired file stops owing the live-probe contract the
+  // moment its status is flipped, wherever the file happens to sit.
+  const body = [
+    "import { chromium } from 'playwright';",
+    "const browser = await chromium.launch();",
+    "await browser.close();",
+  ].join("\n");
+  const live = `/**\n * @purpose Synthetic fixture.\n * @status ACTIVE\n */\n${body}`;
+  const retired = `/**\n * @purpose Synthetic fixture.\n * @status ARCHIVED-CANDIDATE\n */\n${body}`;
+  const path = "Tools/visual-regression/verify-synthetic-fixture.mjs";
+
+  assert.equal(fleetExemption(path, live), null);
+  assert.equal(fleetExemption(path, retired), FLEET_EXEMPTIONS.ARCHIVED);
+
+  const { selected, exempt } = selectFleetByBehaviour([
+    { path, source: live },
+    { path: `${path}.retired.mjs`, source: retired },
+  ]);
+  assert.deepEqual(selected, [path]);
+  assert.deepEqual(exempt, [
+    { path: `${path}.retired.mjs`, reason: FLEET_EXEMPTIONS.ARCHIVED },
+  ]);
+  // And the live one is genuinely a violator, so the exemption is doing work.
+  assert.deepEqual(analyzeProbeSource(live).violations, [
+    "no watchdog",
+    "browser.close outside finally",
+  ]);
+});
+
+test("B5: a file launching through an indirect binding, outside probe-*.mjs, fails", () => {
+  // The row's acceptance sentence, as an assertion: the indirect call form under
+  // a non-probe name is exactly the shape both wave-end gate children use.
+  const source = [
+    "/**",
+    " * @purpose Synthetic fixture.",
+    " * @status ACTIVE",
+    " */",
+    "import * as playwright from 'playwright';",
+    "const browserType = playwright.chromium;",
+    "const browser = await browserType.launch();",
+    "await browser.close();",
+  ].join("\n");
+  const path = "Tools/visual-regression/verify-indirect-fixture.mjs";
+
+  assert.ok(!/\bchromium\s*\.\s*launch\s*\(/.test(blankNonCode(source)));
+  assert.ok(launchesBrowserByBehaviour(source));
+  assert.deepEqual(selectFleetByBehaviour([{ path, source }]).selected, [path]);
+  assert.deepEqual(analyzeProbeSource(source).violations, [
+    "no watchdog",
+    "browser.close outside finally",
+  ]);
+});
+
+test("B6: the exemptions are named, and none of them is a silent drop", () => {
+  const byReason = new Map();
+  for (const { path, reason } of behaviourFleet.exempt) {
+    assert.ok(
+      Object.values(FLEET_EXEMPTIONS).includes(reason),
+      `${path} was dropped for an unnamed reason: ${reason}`,
+    );
+    byReason.set(reason, (byReason.get(reason) ?? 0) + 1);
+  }
+  // The census the row asks to be REPORTED rather than gated.
+  console.log(
+    `[B] behaviour fleet: ${behaviourFleet.selected.length} selected ` +
+      `(${behaviourFleet.selected.length - behaviourEscapees.length} inside the filename glob, ` +
+      `${behaviourEscapees.length} escapees), ` +
+      `${behaviourFleet.exempt.length} exempt ` +
+      `${JSON.stringify(Object.fromEntries(byReason))}, ` +
+      `${Object.keys(BEHAVIOUR_FLEET_ALLOWLIST).length} allowlisted`,
+  );
+  assert.ok(byReason.get(FLEET_EXEMPTIONS.SPEC) >= 1);
+  assert.ok(byReason.get(FLEET_EXEMPTIONS.LAUNCHER_LIBRARY) >= 1);
+  assert.ok(byReason.get(FLEET_EXEMPTIONS.ARCHIVE_DIRECTORY) >= 1);
+});
+
+test("B7 MUTATION control: an inert behaviour predicate loses the escapees", async () => {
+  // Make the behaviour branch UNREACHABLE by guarding it with a test that can
+  // never pass, so `launchesBrowserByBehaviour` returns false for every file.
+  // Deletion would be the easy mutation; this one changes the OUTPUT the B rules
+  // read. (The narrower "literal `chromium.launch(` only" mutant is the
+  // reviewer's M1, run against the real tree at review: it reds B1/B3/B5/B6/B7.)
+  const contractSource = readFileSync(
+    join(HERE, "lib", "probe-fleet-contract.mjs"),
+    "utf8",
+  ).replaceAll("\r\n", "\n");
+  const anchor =
+    "  if (!/(?:from|import\\s*\\()\\s*[\"'`]playwright/.test(text)) {";
+  assert.equal(
+    contractSource.split(anchor).length - 1,
+    1,
+    "the mutation anchor is gone — re-point this control at the live code",
+  );
+  const mutated = contractSource.replace(
+    anchor,
+    "  if (!/^Tools\\/visual-regression\\/probe-/.test(text)) {\n    return false;\n  }\n" +
+      anchor,
+  );
+  const relativeImport = 'from "../../lib/purpose-header.mjs"';
+  assert.equal(mutated.split(relativeImport).length - 1, 1);
+  const loadable = mutated.replace(
+    relativeImport,
+    `from ${JSON.stringify(pathToFileURL(join(HERE, "..", "lib", "purpose-header.mjs")).href)}`,
+  );
+  const mutant = await import(
+    `data:text/javascript;base64,${Buffer.from(loadable).toString("base64")}`
+  );
+
+  // Under the mutant every escapee disappears and the real selector still has
+  // them. Both halves matter: the first proves B1/B2 are load-bearing, the
+  // second proves the fixture set is not simply broken.
+  const mutantSelected = new Set(
+    mutant.selectFleetByBehaviour(behaviourCandidates).selected,
+  );
+  for (const p of [
+    "Tools/visual-regression/capture-and-diff.mjs",
+    "Tools/variant-smoke-test.mjs",
+  ]) {
+    assert.ok(
+      !mutantSelected.has(p),
+      `the filename-selecting mutant still found ${p}`,
+    );
+    assert.ok(
+      behaviourFleet.selected.includes(p),
+      `the real selector stopped finding ${p}`,
+    );
+  }
+  assert.equal(
+    behaviourEscapees.filter((p) => mutantSelected.has(p)).length,
+    0,
+    "the filename-selecting mutant kept some escapees",
+  );
 });

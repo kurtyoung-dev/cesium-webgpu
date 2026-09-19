@@ -38,6 +38,7 @@ import {
   collectGateErrors,
   attachConsoleErrorGate,
 } from "../lib/webgpu-error-gate.mjs";
+import { diffModelPixelsAdapter } from "./lib/image-diff.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const MODEL = "/Apps/SampleData/models/TestKHRExtensions/TestKhrSpecular.gltf";
@@ -170,30 +171,10 @@ async function capture(renderer, envUrl) {
   };
 }
 
+// Thin adapter over lib/image-diff.mjs's diffImages — see diffModelPixelsAdapter
+// for the mask/tolerance/rounding contract this reproduces unchanged.
 function diffModelPixels(a, b) {
-  let modelPx = 0,
-    mismatch = 0;
-  if (a.w !== b.w || a.h !== b.h)
-    return { modelPx: 0, mismatch: 0, mismatchPct: null };
-  for (let i = 0; i < a.data.length; i += 4) {
-    const aLum = a.data[i] + a.data[i + 1] + a.data[i + 2];
-    const bLum = b.data[i] + b.data[i + 1] + b.data[i + 2];
-    if (aLum > 12 || bLum > 12) {
-      modelPx++;
-      if (
-        Math.abs(a.data[i] - b.data[i]) > 24 ||
-        Math.abs(a.data[i + 1] - b.data[i + 1]) > 24 ||
-        Math.abs(a.data[i + 2] - b.data[i + 2]) > 24
-      ) {
-        mismatch++;
-      }
-    }
-  }
-  return {
-    modelPx,
-    mismatch,
-    mismatchPct: modelPx ? +((100 * mismatch) / modelPx).toFixed(2) : null,
-  };
+  return diffModelPixelsAdapter(a, b);
 }
 
 const CRC_TABLE = (() => {
