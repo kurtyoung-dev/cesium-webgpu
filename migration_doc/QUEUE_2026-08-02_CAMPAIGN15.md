@@ -23,6 +23,18 @@ aurora lane and **false** of the gsplat lane, where five rows had landed.)*
   and come off by a later one-line ruling once the contact sheet exists (`DX-105`). C12 close is
   neither blocked nor forgotten. Sequencing onto the probe kit:
   [`PROBE_KIT_PLAN_2026-09-17.md`](PROBE_KIT_PLAN_2026-09-17.md) section 5.)*
+  *(Amended again 2026-09-19 by `R-2026-09-18-1`, recorded in
+  [`MAINTAINER_RULINGS_2026-09-18.md`](MAINTAINER_RULINGS_2026-09-18.md), which is its authority.
+  **`C15-05` and `C15-06` are RELEASED from the R4 hold as pure-Node lanes**, started after the CI
+  fix lands, **with their fixtures re-captured first** — the §2a schemas were measured **2026-08-06**
+  against live feeds. **`C15-05` publishes its source-authority contract first and `C15-06` is built
+  against it.** This is a **second named narrow override for two named rows**, the same shape as
+  `R-2026-09-17-9`: it does not claim R4's condition - C12 closure - is met, it is not an exercise of
+  Option C of `R-2026-08-10-1`, and it pre-empts neither arm of `R-2026-09-13-1`. `C15-03`, `C15-04`,
+  `C15-06P`, `C15-07`, `C15-07H` and `C15-08` were left HELD by that ruling; what changes them is
+  `R-2026-09-19-5` in [`MAINTAINER_RULINGS_2026-09-19.md`](MAINTAINER_RULINGS_2026-09-19.md), which
+  lifts the R4 hold as part of Option C, and a reader must read it before treating any of those six
+  as held.)*
 - **GSPLAT lane (`C15-G0`..`C15-G8`, §6): ACTIVE — maintainer-queued 2026-08-06
   under ruling R6, and explicitly NOT under the R4 hold.** `C15-G0` scoping
   COMPLETE (Batch 863); **`C15-G1`..`C15-G5` LANDED, Batches 868–895**
@@ -388,8 +400,8 @@ not externally trained scenes.
 | `C15-02` | WMM2025 geomagnetic coordinates and synthetic activity-dependent oval | P0 | **IMPLEMENTED 2026-09-18 (lane Bucca) — frozen for review, not landed; station-3 verdict LAND-WITH-FIXES applied (v2).** Released from the R4 hold by `R-2026-09-17-9` (2026-09-17), the narrow override covering this row and `C15-01` only; pure-Node lane. Modules + specs + mutants recorded in `DEFERRED_WORK.md` under `EPIC-AURORA-SPACE-WEATHER` | `C15-01` |
 | `C15-03` | Shared layered density/emission kernel, local-night gate, and RTE shell contract | P0 | PENDING — **HELD (R4)**; released by a later one-line ruling once the contact sheet exists (`R-2026-09-17-9`) | `C15-02` |
 | `C15-04` | WebGL + WebGPU shell renderers, visibility demand, and feature-preserving performance tiers | P0 | PENDING — **HELD (R4)** | `C15-03` |
-| `C15-05` | OVATION + planetary-Kp asynchronous ingest and source-authority policy | P1 | PENDING — **HELD (R4)**; schemas now measured, §2a grid ordering is the spec | `C15-01`, `C15-02` |
-| `C15-06` | New RTSW + GOES asynchronous ingest with separate geomagnetic and flare state | P1 | PENDING — **HELD (R4)**; brief corrected for descending RTSW order + `-9999` fill | `C15-01`, `C15-05` authority contract |
+| `C15-05` | OVATION + planetary-Kp asynchronous ingest and source-authority policy | P1 | PENDING — **RELEASED from the R4 hold 2026-09-19 by `R-2026-09-18-1`** ([`MAINTAINER_RULINGS_2026-09-18.md`](MAINTAINER_RULINGS_2026-09-18.md)), a second named narrow override of the same shape as `R-2026-09-17-9`; dispatchable as a **pure-Node lane**, started after the CI fix lands, **fixtures re-captured first** (the §2a schemas were measured 2026-08-06 against live feeds). **This row publishes the source-authority contract `C15-06` is built against, and goes first.** Schemas now measured, §2a grid ordering is the spec | `C15-01`, `C15-02` |
+| `C15-06` | New RTSW + GOES asynchronous ingest with separate geomagnetic and flare state | P1 | PENDING — **RELEASED from the R4 hold 2026-09-19 by `R-2026-09-18-1`** ([`MAINTAINER_RULINGS_2026-09-18.md`](MAINTAINER_RULINGS_2026-09-18.md)), a second named narrow override of the same shape as `R-2026-09-17-9`; dispatchable as a **pure-Node lane**, started after the CI fix lands, **fixtures re-captured first** (the §2a schemas were measured 2026-08-06 against live feeds). **Built against `C15-05`'s published authority contract, so it follows that row.** Brief corrected for descending RTSW order + `-9999` fill | `C15-01`, `C15-05` authority contract |
 | `C15-06P` | Attributed, located solar-prominence state provider for eclipse composition; never infer image-plane location from GOES flux | P1 overlay | PENDING — **HELD (R4)**; exact data owner for the Eclipse Explorer follow-up | `C15-01`, `C15-06`; `CLT-C3P` owns prominence geometry/rendering and the satisfied `CLT-C4` seam supplies landed HDR/bloom/exposure composition |
 | `C15-07` | `effects.aurora` facade, demo, diagnostics, accessibility, attribution/licensing closure | P1 | PENDING — **HELD (R4)** | `C15-04`, `C15-05`, `C15-06` |
 | `C15-07H` | Immutable historical eclipse/space-weather replay provider and provenance manifest | P1 overlay | PENDING — **HELD (R4)**; exact owner for the Fairbanks co-event replay | `C15-01`, `C15-05`, `C15-06`, `C15-07` |

@@ -63,6 +63,21 @@ is still served (`STOP_CHECKPOINT_2026-09-13.md` §0 and §5). The spot-check th
 positive result: `sample-height-from-3d-tiles` at settle 25000 measured WebGPU 3/3 PASS and WebGL
 3/3 PASS on the fixed tree.
 
+*[Note added 2026-09-19 under `R-2026-09-19-14`
+([`MAINTAINER_RULINGS_2026-09-19.md`](MAINTAINER_RULINGS_2026-09-19.md)) — a note, not a rewrite:
+the ruling above stands exactly as written, and its "Executed" line is corrected only as to fact.
+**This three-part close is no longer atomic.** Part 2 — delete the local backup branch
+`backup-inwindow-1405-1429-20260905` — was **executed out of band on 2026-09-18 ~22:55 EDT**, on a
+separate maintainer recommendation and **not** on this ruling's own trigger: the branch was banked
+first (bundle, `redate-map.txt`, `original-commits.txt` and a restore README under
+`cesium-webgpu-backups/branch-backup-inwindow-1405-1429-20260905/`) and then deleted, and
+`git branch` at the seat now lists `main` alone. That entry is recorded in
+[`MAINTAINER_RULINGS_2026-09-18.md`](MAINTAINER_RULINGS_2026-09-18.md). Part 1 — record P0-2 CLOSED
+— **cannot have fired**, because the legs it is conditional on still have not run and P0-2 is still
+OPEN; and part 3 — retire the served sync clone `cesium-lane-sync-1145-20260904` — is **not done**:
+the clone directory is still present at the seat. So a reader must not treat the branch's deletion
+as evidence that any other part of this act was carried out.]*
+
 Authority: charter §1.1.
 
 ## R-2026-09-13-5 — the solo roster stays RESERVED for the maintainer's own sessions
@@ -87,6 +102,19 @@ packets and summarised in `STOP_CHECKPOINT_2026-09-13.md` §3.
 
 Executed: **not yet.** The engine-legs job was briefed (executor Ferumbras) and **not dispatched**
 before the wind-down; L3's leg 2 is the first to run under this order.
+
+*[Note added 2026-09-19 under `R-2026-09-19-14`
+([`MAINTAINER_RULINGS_2026-09-19.md`](MAINTAINER_RULINGS_2026-09-19.md)) — a note, not a rewrite:
+the ordering above stands, and it has since been **executed**, but **its own precondition never
+happened.** The ruling's first clause is *"after tonight's discriminator re-run"*; that re-run — job
+13c leg (e) — has still not been taken, and `R-2026-09-13-1` records it as NOT EXECUTED. **The
+engine legs ran anyway**: L3's Edge leg on 2026-09-16 and its landing at Batch 1493, L4's legs on
+2026-09-17 and its landing at Batch 1504, L5's leg 4 on 2026-09-18 (executor Ferumbras) and its
+landing at Batch 1515. The ENGINE-LEGS-FIRST half was therefore carried out while the clause that
+gated it was unmet, and that is recorded here so no reader infers from the legs' completion that the
+discriminator re-run took place. The consequence for the slot is settled separately:
+`R-2026-09-19-14` strikes the sequencing that put the discriminator behind P0-2, so the
+discriminator now takes the Edge slot on its own merits rather than behind anything.]*
 
 Authority: charter §1.1.
 

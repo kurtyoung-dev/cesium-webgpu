@@ -287,6 +287,17 @@ discriminations asserted on output numbers and four inertness mutants red. The k
 owed to the wave's Edge validation job; nothing renders an aurora until `C15-03`/`C15-04`.
 Detail lives in the row and in `DEFERRED_WORK.md` under `EPIC-AURORA-SPACE-WEATHER`.
 
+**2026-09-19 — `C15-05` and `C15-06` are RELEASED from the `R4` hold by `R-2026-09-18-1`**
+([`MAINTAINER_RULINGS_2026-09-18.md`](MAINTAINER_RULINGS_2026-09-18.md)), a **second named narrow
+override** of the same shape as `R-2026-09-17-9` and, like it, **not** an exercise of Option C and no
+claim that `R4`'s condition is met. Both are **pure-Node** ingest lanes, started **after the CI fix
+lands**, with their **fixtures re-captured first** — the queue's §2a schemas were measured
+2026-08-06 against live feeds. **`C15-05` publishes its source-authority contract first; `C15-06` is
+built against it.** Neither lane is dispatched. `C15-03`, `C15-04`, `C15-06P`, `C15-07`, `C15-07H`
+and `C15-08` were left held by that ruling; `R-2026-09-19-5`
+([`MAINTAINER_RULINGS_2026-09-19.md`](MAINTAINER_RULINGS_2026-09-19.md)) lifts the `R4` hold as part
+of Option C, and the batch that executes Option C is what rewrites those six cells.
+
 ### C16 — Comment remediation & attribution
 
 **Launched** by maintainer directive 2026-08-10 (`QUEUE_2026-08-10_CAMPAIGN16.md`). Audit
@@ -484,6 +495,19 @@ including the 72 previously-unrun demos and the czml transient-CDN re-run — pl
 capture-and-diff and **(b3)** the settle control on that same tree → **P0-2 closes** → and only then does `C13-41`'s exposure-sweep discriminator take the single Edge slot
 under `R-2026-09-12-7`, with all cloud work staying pure-Node until it returns — which is why C13
 Wave 1's L3/L4/L5 Edge legs and Edge leg 1 are queued behind it. **P0-2 stays OPEN.**
+
+*[Corrected 2026-09-19 by `R-2026-09-19-14`
+([`MAINTAINER_RULINGS_2026-09-19.md`](MAINTAINER_RULINGS_2026-09-19.md)). **The sequencing sentence
+immediately above — "P0-2 closes → and only then does `C13-41`'s exposure-sweep discriminator take
+the single Edge slot" — is STRUCK.** `C13-41`'s discriminator **takes the slot on its own merits;
+P0-2's remaining legs do not stand in front of it**, and the ORDER clause of the discriminator's own
+brief is struck with it — that brief is re-issued, not reused, when the job is dispatched. The
+sentence was stale on both halves and was measurably so before this correction: C13 Wave 1's L3, L4
+and L5 Edge legs all **ran ahead of the discriminator** on 2026-09-16, -17 and -18, and six Edge jobs
+have taken the slot since 2026-09-16 **without P0-2 closing**. What survives above is the
+description of what P0-2 still owes — legs (b)-remainder, (c) and (b3) — and that **P0-2 stays
+OPEN**; what does not survive is the claim that anything queues behind it. The written ordering of
+the contended slot is §2b of [`C12_CLOSEOUT_PLAN_2026-09-19.md`](C12_CLOSEOUT_PLAN_2026-09-19.md).]*
 
 **Return and campaign state, 2026-09-10 (Batches 1449–1453 pushed).** The seat returned from pause
 with Batches 1449–1453 landed and pushed to origin. Uncommitted seat work was relocated to
