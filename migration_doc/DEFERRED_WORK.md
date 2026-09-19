@@ -21226,6 +21226,114 @@ install resolves the lockfile the effective version is whatever is already on di
 time of writing, which is why the `lint` gate is green either way. The `devDependencies` range
 `^10.9.1` was deliberately left alone: it is upstream-identical.
 
+**AMENDED 2026-09-18 (lane CI-INSTALL, Marroc) — that entry did not bind on the next install, it
+BROKE it: `EOVERRIDE`, and fifteen batches with no CI signal at all.** npm reads `overrides` while it
+loads the manifest, before it fetches anything, and `@npmcli/arborist`'s `Node.assertRootOverrides`
+(`lib/node.js:1347-1359`) throws `EOVERRIDE` for any edge of the PROJECT ROOT whose overridden spec
+differs from the declared spec and does not begin with `$`. `"eslint": "10.10.0"` over a declared
+`"eslint": "^10.9.1"` is exactly that shape, so every job of `dev`, `deploy` and `sandcastle-dev` has
+died at its own first step — `npm install` — on every push since Batch 1498: `npm error code EOVERRIDE`
+/ `npm error Override for eslint@^10.9.1 conflicts with direct dependency`. On the push of Batch 1512
+(`5d6be1f686`), `dev` run `35411876964` lost `lint`, `guards`, `variants`, `node-smoke-test (24)`,
+`release-tests` and `coverage` at that step with `node-smoke-test (22)` cancelled by the matrix, and
+`deploy` `35411876938` and `sandcastle-dev` `35411876953` failed the same way on the same push;
+`batch-number-report` `35411876952`, which runs no install, is the only workflow that was triggered
+and stayed green — as does `cla-rotation-reminder`, the other install-free workflow, which is
+manual-only. Three further workflows run `npm install` and are dead the same way, unmeasured only
+because nothing has triggered them since: `cla.yml` (`pull_request_target`), `visual-regression.yml`
+(`workflow_dispatch`) and `update-tokens.yml` (monthly `schedule`). `prod.yml` is outside the
+enumeration: it triggers on the `cesium.com` branch only. **Batches
+1498-1512 therefore have no CI signal — including the three gates Batch 1498 reported green**, which
+were measured locally and have not been machine-confirmed since. The first post-fix run inherits
+whatever was already red before the override landed (Batch 1497's `lint`, `guards`, `node-smoke-test`,
+`release-tests` and `coverage` failures, run `35290840006`); that is information, not a regression of
+this fix.
+
+**The fix** *(2026-09-18)*: the direct devDependency becomes the exact `"eslint": "10.10.0"` and the
+override becomes the reference `"eslint": "$eslint"`. npm compares the override against the
+declaration only AFTER `Edge.spec` (`lib/edge.js:180-207`) has substituted the reference, so the two
+legal shapes over a direct dependency are a string byte-identical to the declared spec, or a reference
+that RESOLVES to it — which a reference naming that same package does by construction, and a reference
+naming a different package generally does not (measured: a root declaring `{ms: "2.1.3", debug:
+"^4.4.3"}` with `overrides: {debug: "$ms"}` exits 1, `Override for debug@^4.4.3 conflicts with direct
+dependency`). `$eslint` resolves against the ROOT package alone, in the order devDependencies →
+optionalDependencies → dependencies → peerDependencies, so it carries the pin without repeating it.
+Measured on manifest-only copies of this tree under **npm 10.9.8** — the npm `actions/setup-node`
+installs for `node-version: '22'`, which is what CI runs, rather than the 11.4.1 that shadows it on a
+developer PATH and resolves `$` references differently: before, `npm install --dry-run` exits 1 with
+the `EOVERRIDE` text above; after, it exits 0, `added 1172 packages`, with `eslint 10.10.0` and
+exactly one `node_modules/eslint` in the resolved tree — `npm ls eslint --all` shows every consumer (`@cesium/eslint-config`, `@eslint/js`,
+`eslint-config-prettier`, `eslint-plugin-n` and its two nested consumers, `eslint-plugin-react-hooks`,
+`eslint-plugin-react-refresh`, `eslint-seatbelt`, `typescript-eslint` and its three) deduped onto it.
+
+**What this costs against `R-2026-09-17-8`'s stated basis, for the maintainer to confirm or reverse**
+*(2026-09-18)*: D8 rejected editing the `devDependencies` range because upstream carries the identical
+`^10.9.1`, and chose `overrides` precisely to avoid a new divergence. npm's rule makes those two goals
+mutually exclusive — an override string must EQUAL the declared spec, and `$eslint` resolves TO the
+declared spec, so a pin at an exact version requires the declaration itself to be exact. D8's operative
+demand (one eslint at 10.10.0 for the root and every transitive consumer, so a floating 10.x minor
+cannot redden `lint` on an unchanged tree) is kept; its no-divergence rationale is not. The divergence
+is now two lines of `package.json` rather than one, both still removable in a single edit at the next
+sync (upstream at `73c2eeec0c` carries `"eslint": "^10.9.1"` and NO eslint override). The compliant
+alternative, if the maintainer prefers the rationale to the pin, is to delete the override and restore
+`^10.9.1` — install works, and the floating-minor risk D8 was written to remove comes back. A third
+shape, `^10.9.1` on both sides, installs and reads like a pin while pinning nothing; it is worse than
+either and was rejected.
+
+**The other `overrides` keys, audited against the same rule** *(2026-09-18)*: `"protobufjs": "^8.8.0"`
+is the same class and is legal only because the string is byte-identical to the root's own
+`dependencies.protobufjs` (and to `packages/engine`'s); bump one without the other and the install
+fails the same way — `"$protobufjs"` would be immune, and is the recommended shape if that range ever
+moves. `"@huggingface/transformers@4.2.0"` and `"allotment"` are legal for a reason worth stating
+exactly, because the obvious reading is wrong: an object value with no `"."` key does NOT leave the
+package's own spec alone. `OverrideSet` sets the entry's value to its `"."` key when it has one and to
+the KEY'S OWN selector when it does not, so `"@huggingface/transformers@4.2.0"` gives that package the
+spec `4.2.0` and genuinely pins it — measured, a workspace declaring `debug: "^4.0.0"` under a root
+`overrides: {"debug@4.3.4": {…}}` resolves debug 4.3.4 where the same tree without the entry resolves
+4.4.3. It is legal here because the root does not declare `@huggingface/transformers` (the sandcastle
+workspace does, at `^4.2.0`, and `assertRootOverrides` walks root edges only); had the root declared
+it, this key would have broken the install exactly as eslint's did. `"allotment"` is inert for a
+different reason: a key with no selector yields the spec `"*"`, and `Edge.spec` skips a `"*"`
+override outright. Nothing in the tree carries a `$` reference to a name the root does not declare,
+the other error `Edge.spec` raises. Verified empirically against **npm 10.9.8**, CI's own npm, on
+twenty-three synthetic projects covering every shape this rule can take: range-vs-exact `EOVERRIDE`
+(exit 1); exact + `$name` (exit 0); exact + identical string (exit 0); range + `$name` (exit 0, but
+pins nothing); `$name` naming a DIFFERENT package (exit 1); a name declared in two sections, where the
+last section npm loads owns the edge (exit 1 one way, exit 0 with the sections swapped); a root
+override over a `peerDependencies` or `optionalDependencies` declaration (exit 1 each); `"*"` and the
+empty string (exit 0 — npm ignores both); a selectored key whose selector is the declared range
+(exit 1) and one whose selector misses it (exit 0); a selectored key with a nested-only value over a
+root-direct dependency (exit 1); a root override of a WORKSPACE-only direct dependency (exit 0 — npm
+permits that silently); and `$nope` (exit 1, `Unable to resolve reference`).
+
+**The guard** *(2026-09-18)*: `Tools/lib/npm-override-rules.mjs` decides the rule as a pure function
+over manifest objects (`findOverrideViolations({root, workspaces})`), and seventeen cases in
+`Tools/ci-guards.spec.mjs` drive it with the REAL root and workspace manifests plus synthetic ones —
+the Batch-1498 shape is reported as a violation naming `eslint`; the fixed shape and both legal shapes
+pass; a reference that resolves to ANOTHER package's spec is reported, because substitution happens
+before the comparison; `"*"` and the empty string are not reported, because npm ignores them; the
+declaration compared against is the one the single root edge carries, which is the last section npm
+loads; a root `peerDependencies` override is reported; a selectored key is reported as a certain
+`EOVERRIDE` when its selector is the declared range and as an undecided finding otherwise, since
+deciding intersection needs a semver dependency this repository does not have; a version written into
+the key sets that package's own spec; and a workspace retarget is reported as drift npm allows rather
+than as an npm error. Every finding's verdict is checked against the measured npm exit code for that
+shape: over the twenty-three projects above the rule has no false negative (clean while npm rejects)
+and no false positive (`npmEnforced` while npm installs). Home chosen because `ci-guards.spec.mjs` is
+the spec that pins "CI can actually run" and already runs under `npm run test-build-infra`, which the
+CI `guards` job itself executes; no new runner line.
+
+**Seat-side follow-up this batch does NOT do** *(2026-09-18)*: no `npm install` was run anywhere — a
+provisioned clone's `node_modules` is ~740 per-package junctions into the seat, so an install in a
+clone writes through into the seat, and an Edge job was building on this machine. The seat's installed
+`node_modules/eslint` is already `10.10.0`, so the local `lint` gate reads the same before and after,
+and the seat currently has NO `package-lock.json` on disk (`.npmrc` carries `package-lock=false`;
+`.gitignore:45` ignores the path). **The follow-up, exactly:** once this lands and no clone is
+provisioned against the seat, run `npm install` once in the seat, confirm
+`node -p "require('eslint/package.json').version"` still reads `10.10.0`, and confirm no
+`package-lock.json` was left behind — a gitignored lock steers later resolutions and must be deleted
+when a manifest batch lands.
+
 **`R-2026-09-17-8` as executed** *(2026-09-17)*: the two fork-side `new-cap` sites are hoisted to a
 PascalCase local and the four upstream sites take `eslint-seatbelt` rows; the record's D8 row of Batch
 1497 describes `.slice()` + `eslint-disable`, which was not the shape taken.

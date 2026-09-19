@@ -22197,3 +22197,78 @@ it changes nothing for its twelve existing consumers.
 `WebGPUModelRenderer.ts`, `WebGPUModelCameraArena.ts`; the seven sibling structs; and, on the tools
 side, `lib/wgsl-mini-eval.mjs`, `model-camera-arena.spec.mjs`, `probe-orbital-1m.mjs`,
 `polyline-command-bounding-volume.spec.mjs`, the four new specs and one `package.json` runner line.
+
+## Lane CI-INSTALL (Marroc, 2026-09-18) — the root `overrides` entry that pinned eslint made `npm install` itself refuse to run, so fifteen batches got no CI signal
+
+**Bug 1513.1.** **Files:** `package.json`; `Tools/lib/npm-override-rules.mjs` (new);
+`Tools/ci-guards.spec.mjs`.
+
+**Symptom.** Every job of `dev`, `deploy` and `sandcastle-dev` failed at its own first step, `npm
+install`, on every push from Batch 1498 (`1a2baeaa4a`) to Batch 1512 (`5d6be1f686`):
+
+```
+npm error code EOVERRIDE
+npm error Override for eslint@^10.9.1 conflicts with direct dependency
+```
+
+No job reached a build, a test or a lint, so the tree has been unmeasured for fifteen batches —
+including the three gates Batch 1498 reported green. `batch-number-report`, which runs no install,
+stayed green throughout, which is why the Actions list did not read as a total outage; the only other
+install-free workflow, `cla-rotation-reminder`, is manual-only. `cla.yml`, `visual-regression.yml`
+and `update-tokens.yml` all run `npm install` and are dead the same way — nothing has triggered them
+since, so their failure is latent rather than recorded.
+
+**Root cause.** Batch 1498 added `overrides: { "eslint": "10.10.0" }` to pin eslint at the installed
+version so a floating `10.x` minor could not redden the `new-cap` gate again (`R-2026-09-17-8`, D8).
+The root already declared `devDependencies: { "eslint": "^10.9.1" }`. npm builds `overrides` while it
+loads the manifest, before it fetches anything, and `@npmcli/arborist`'s `Node.assertRootOverrides`
+(`lib/node.js:1347-1359`) walks the PROJECT ROOT's own edges and throws `EOVERRIDE` for any edge whose
+overridden spec differs from the declared spec and does not start with `$`. That comparison runs
+AFTER `Edge.spec` has substituted a reference, so an override of a package the root depends on
+directly is legal only when the spec npm ends up with EQUALS the declared one: a string byte-identical
+to it, or a reference that RESOLVES to it — which `$name` naming that same package does by
+construction, and a reference naming a different package generally does not (measured under CI's own
+npm: `{ms: "2.1.3", debug: "^4.4.3"}` with `overrides: {debug: "$ms"}` exits 1 with
+`Override for debug@^4.4.3 conflicts with direct dependency`). `"10.10.0"` against `"^10.9.1"` is
+neither shape.
+
+Nothing local could have caught it. `overrides` changes resolution, not an installed tree, so every
+gate the lane and the reviewer ran passed against the `node_modules` already on disk; the batch
+message itself recorded that the pin "binds on next npm install", and lanes are forbidden to install.
+The first install after the batch was CI's.
+
+**Fix.** The direct devDependency becomes the exact `"eslint": "10.10.0"` and the override becomes the
+reference `"eslint": "$eslint"`. `Edge.spec` (`lib/edge.js:180-207`) resolves `$name` against the root
+package alone — devDependencies, then optionalDependencies, dependencies, peerDependencies — so the
+reference carries D8's pin without restating it, and every transitive consumer resolves to the same
+single instance. Measured on manifest-only copies of the tree under **npm 10.9.8** — the npm
+`actions/setup-node` installs for `node-version: '22'`, so the npm CI itself runs, and not the 11.4.1
+that shadows it on this machine's PATH and resolves `$` references differently: before,
+`npm install --dry-run --ignore-scripts` exits 1 with the text above; after, it exits 0 with
+`added 1172 packages` and `--package-lock-only` writes exactly one `node_modules/eslint` node, at
+`10.10.0`, which every consumer's peer range admits.
+
+**The D8 trade, recorded for the maintainer.** D8's basis rejected editing the `^10.9.1` range because
+upstream carries it verbatim. npm's rule makes the pin and the no-divergence goal mutually exclusive:
+an override string must equal the declared spec and `$name` resolves to it, so pinning at an exact
+version requires the declaration to be exact. The pin was kept and the divergence is now two lines of
+`package.json`, both removable in one edit at the next sync. The full argument and the alternative
+shapes are in `DEFERRED_WORK.md` under the D8 / eslint row.
+
+**Pinned by.** `Tools/lib/npm-override-rules.mjs` decides the rule as a pure function over manifest
+objects, and seventeen cases in `Tools/ci-guards.spec.mjs` (runner `npm run test-build-infra`, which
+the CI `guards` job runs) drive it with the real root and workspace manifests plus synthetic ones. The
+rule is checked against npm itself rather than against its own reading of npm: twenty-three throw-away
+projects, one per shape, were resolved under npm 10.9.8 and the rule's verdict compared with the exit
+code — no shape where it says clean and npm rejects, none where it flags `npmEnforced` and npm
+installs. The shapes that earned their own case: the Batch-1498 conflict; a reference resolving to
+another package's spec; `"*"` and the empty string, which npm ignores outright; a name declared in
+two sections, where the edge carries the LAST section npm loads; a root `peerDependencies` override;
+a selectored key whose selector is the declared range (a certain `EOVERRIDE`) against one whose
+selector may miss it (reported, but not claimed as an npm error, because intersection needs semver);
+a version written into the key, which sets that package's own spec even when the value only scopes
+children; and a workspace retarget, which npm tolerates. Eighteen inertness mutants were run against
+the finished spec — including the fix itself reverted to the Batch-1498 manifest, the canonical
+`if (false && …)` on the selector branch, the reference substitution made inert, the `"*"` early-out
+made unreachable, and the whole rule returning nothing — and every one of them fails at least one
+case.

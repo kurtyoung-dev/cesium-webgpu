@@ -352,6 +352,13 @@ scope, `C16-21`) is the highest leverage per line and needs no slot. **Holds:** 
 prompted by the seat before their waves. **Standing constraint for any reader of the archived corpus:** the
 do-not-execute list in the rulings file binds, and the corpus itself is untracked and is not a premise.
 
+**CI state, added 2026-09-18 (lane CI-INSTALL, Marroc).** W0's own root `package.json` `overrides`
+pin made `npm install` refuse to run (`EOVERRIDE`), so **every job of `dev`, `deploy` and
+`sandcastle-dev` has failed at its first step on every push from Batch 1498 to Batch 1512** and the
+three gates W0 reported green have not been machine-confirmed since. The manifest fix and a guard on
+the rule ship as their own batch; the first green install will surface whatever was already red at
+Batch 1497, which is signal this plan has been missing rather than a new regression.
+
 ### Research dispatch queue — design-model perf, Earth-at-Night, meshlets
 
 [`QUEUE_2026-08-29_RESEARCH_DISPATCH.md`](QUEUE_2026-08-29_RESEARCH_DISPATCH.md) is a **dispatch

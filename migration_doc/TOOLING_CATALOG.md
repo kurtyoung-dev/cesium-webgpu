@@ -222,12 +222,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1387 |
-| ACTIVE | 1146 |
+| Files in census | 1388 |
+| ACTIVE | 1147 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 44 |
 | NO @status HEADER | 1 |
-| Classes | probe 676, spec 382, other 154, lib 130, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
+| Classes | probe 676, spec 382, other 154, lib 131, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
 
 ### Tools/ (62)
 
@@ -239,7 +239,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | build-eot20-constituent-grid.mjs | other | ACTIVE | 2026-08-16 | 3 | Offline bake of the EOT20 ocean-tide constituent atlas into the TCG1 grid read by Core/TideConstituentGrid.js (CC BY 4.0, attribution mandated). |
 | build-geoid-undulation-grid.mjs | other | ACTIVE | 2026-08-16 | 4 | Bakes the bundled coarse EGM2008 geoid grid (egm2008-0p5deg.i16) consumed by Core/GeoidUndulationGrid.js for the ocean GEOID vertical datum. |
 | build-lake-water-mask.mjs | other | ACTIVE | 2026-08-16 | 4 | Converts Natural Earth 1:10m lakes polygons into the packed LWM1 binary bundled for LakeWaterClassificationProvider (globe.lakeWaterMask). |
-| ci-guards.spec.mjs | spec | ACTIVE | 2026-08-28 | 10 | Asserts the CI guards job wires every build-free guard, stays build-free, and records why the excluded guards are excluded. |
+| ci-guards.spec.mjs | spec | ACTIVE | 2026-08-28 | 12 | Asserts the CI guards job wires every build-free guard, stays build-free, and records why the excluded guards are excluded. |
 | codex-mcp-launcher.mjs | other | ACTIVE | 2026-08-20 | 9 | Resolve the Codex CLI across its hash-versioned install directories and exec `codex mcp-server` for .mcp.json; stable across desktop-app updates. |
 | codex-preflight.mjs | other | ACTIVE | 2026-08-20 | 5 | Prove a Codex worker can actually run before a batch is dispatched: resolves the CLI, checks auth, and fires a minimal canary exec to detect quota exhaustion and report the reset time. |
 | codex-session-gc.mjs | other | ACTIVE | 2026-08-28 | 3 | Project-scoped garbage collection for codex CLI session rollouts: lists, and on request deletes, only the sessions whose recorded cwd is under this project's worker roots, so other projects' history is never touched. |
@@ -343,7 +343,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | sortDoclets.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 1 | — |
 
-### Tools/lib/ (19)
+### Tools/lib/ (20)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -359,6 +359,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | compare-doc-anchors.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 1 | — |
 | lane-tmp.mjs | lib | ACTIVE | 2026-09-11 | 21 | The one way a spec, probe or tool takes scratch space: a single per-lane root under os.tmpdir() with removal in `finally`, so a throwing or killed run leaves one sweepable root instead of loose mkdtemp sandboxes at the Temp root. |
 | lane-tmp.spec.mjs | spec | ACTIVE | 2026-09-11 | 4 | Behaviour coverage for Tools/lib/lane-tmp.mjs — the directory is created under the lane root, removed on success AND on throw AND on rejection, refused outside tmpdir, and an inert `finally` is caught by the mutant. |
+| npm-override-rules.mjs | lib | ACTIVE | — | 3 | Decides, from manifest objects alone, which root `overrides` entries npm rejects as conflicting with a direct dependency or as an unresolvable `$` reference. |
 | png-decode.mjs | lib | ACTIVE | 2026-09-13 | 15 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
 | png-decode.spec.mjs | spec | ACTIVE | 2026-09-13 | 4 | Round-trip, filter-coverage and error-path coverage for Tools/lib/png-decode.mjs. |
 | png-rgba.mjs | lib | ACTIVE | 2026-09-02 | 12 | CRC32 + PNG chunk + zero-dependency RGBA PNG encoder shared across the probe fleet, replacing near-duplicate hand-rolled copies one consumer at a time. |
@@ -623,7 +624,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | gsplat-harness.spec.mjs | spec | ACTIVE | 2026-08-16 | 11 | Mutation-tests the C15-G1 dual-mode gsplat gate so the absence/presence flip and blank-canvas parity can never go green vacuously. |
 | gsplat-tower-framing.spec.mjs | spec | ACTIVE | 2026-09-02 | 2 | Behaviour-pin the tower/terrain range formula, the real evaluator's live cross-check that the page actually used it, and the pre-registered mask-pixel floor decision; then mutate both of the real evaluator's guards for inertness to prove each is load-bearing rather than vacuous. |
 | hdr-display-default.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Acceptance for HDR-defaults-on on HDR displays: pins the pure decision function because headless Edge cannot synthesize (dynamic-range: high). |
-| image-diff.spec.mjs | spec | ACTIVE | — | 2 | Pin diffImages's tolerance/mask/bbox contract and prove the migrated probe-model-ktx2-ibl.mjs caller is output-identical to its pre-migration body. |
+| image-diff.spec.mjs | spec | ACTIVE | 2026-09-18 | 2 | Pin diffImages's tolerance/mask/bbox contract and prove the migrated probe-model-ktx2-ibl.mjs caller is output-identical to its pre-migration body. |
 | imagery-layer-callback-values.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that every ImageryLayer property documented as scalar-or-callback resolves identically on both backends, executing the shared leaf over the documented contract and mutating the guard. |
 | j2-cpu-kernel.mjs | other | ACTIVE | 2026-08-16 | 4 | FP64 secular-J2 orbital propagator mirroring the demo's WGSL kernel; single source of truth for two orbital probes and the WebGL2 cpuKernel leg. |
 | logdepth-zfight-probe-contract.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Browser-free contract pinning probe-logdepth-zfight's deterministic offline scene and retained terrain-depth policy. |
@@ -633,8 +634,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | mat-logdepth-encode-stash.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Executes the real writeLogDepthTail packer to pin stash-first log-depth encoding for the Mat/Primitive family; replays the 2-primitive defect. |
 | material-appearance-blend-parity.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Constructs real MaterialAppearance instances over real Materials, reads the render state the WebGL command path would carry, and runs the lifted WebGPU blend derivation and scene-framebuffer target builder against those same render states, so an appearance that blends on one backend and writes opaque on the other fails here. |
 | material-texture-late-adoption.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that the WebGPU primitive material path re-binds its texture after `Material.update` drains a late image into `_imageSources`, for the main and depth-fail slots, and proves the check is live rather than inert. |
-| metrics-cloud-extraction.spec.mjs | spec | ACTIVE | — | 3 | Pins that moving the cloud metrics into lib/metrics changed no number: it runs each |
-| metrics-structure.spec.mjs | spec | ACTIVE | — | 4 | Behaviour spec proving connected-component and SSIM metrics see structure a band mean cannot, over hand-derived fixtures. |
+| metrics-cloud-extraction.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Pins that moving the cloud metrics into lib/metrics changed no number: it runs each |
+| metrics-structure.spec.mjs | spec | ACTIVE | 2026-09-18 | 4 | Behaviour spec proving connected-component and SSIM metrics see structure a band mean cannot, over hand-derived fixtures. |
 | model-3d-tile-state-packet.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral tests for Model3DTileStatePacket: immutable packet reuse when broad tileset state is unchanged, refresh on real change. |
 | model-camera-arena.spec.mjs | spec | ACTIVE | 2026-09-18 | 5 | Bundles the real WebGPUModelCameraArena and pins offset alignment, per-frame reset, view isolation, plus call-site routing source checks. |
 | model-device-recovery.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Device/resource-generation recovery contracts for native Models across renderer, pipeline cache, device resources and stub texture sources. |
@@ -995,7 +996,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-feature-id-texture.mjs | probe | ACTIVE | 2026-09-05 | 8 | Unified per-fragment feature-ID G-buffer resolvable in-shader: FeatureIdResolve.wgsl recolors two pick sources to distinct colors, and recolors ids above bit 23 to the hash of their FULL 32-bit key. |
 | probe-fft-ocean.mjs | probe | ACTIVE | 2026-08-16 | 5 | Opt-in FFT spectral ocean: OFF byte-identity across sessions, globe-hidden ON capture paints a non-empty patch, two ON frames differ (waves). |
 | probe-flat-polygon-grid-material.mjs | probe | ACTIVE | 2026-08-16 | 1 | Flat (height-0) polygon with a Grid MaterialAppearance shows the pattern on WebGPU (st generation), with an extruded-polygon off-gate. |
-| probe-fleet-contract.spec.mjs | spec | ACTIVE | 2026-09-13 | 42 | Authoring-time probe safety contract: every probe must carry watchdog + try/finally close; mutant-tested detectors, shrink-only allowlist. |
+| probe-fleet-contract.spec.mjs | spec | ACTIVE | 2026-09-18 | 42 | Authoring-time probe safety contract: every probe must carry watchdog + try/finally close; mutant-tested detectors, shrink-only allowlist. |
 | probe-flowfield-wind.mjs | probe | ACTIVE | 2026-08-16 | 3 | GPU wind-particle flow-field layer over the offline GFS sample: show=false byte-identical off-gate, ON renders particles, advection moves. |
 | probe-fog-auto-vpt.mjs | probe | ACTIVE | 2026-08-16 | 1 | volumetricFog quality='auto' resolves a hardware tier via VisualPerformanceTargetService only when VPT is opted in; default stays 'low'. |
 | probe-fog-ibl-ambient.mjs | probe | ACTIVE | 2026-08-16 | 1 | Opt-in sky-LUT/IBL fog ambient: warms at low sun, neutral/brighter at high sun; a human reads the PNGs and band stats. |
@@ -1103,7 +1104,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-model-color.mjs | probe | ACTIVE | 2026-09-02 | 11 | model.color acceptance: HIGHLIGHT/REPLACE/MIX tint parity per channel across backends, mode sanity, off-gate identity; fresh page per capture. |
 | probe-model-ibl.mjs | probe | ACTIVE | 2026-08-16 | 12 | Model IBL parity: split-sum BRDF LUT consumption + world-anchored reflection frame at two camera headings, with a specular liveness control. |
 | probe-model-instance-bg-cache.mjs | probe | ACTIVE | 2026-08-16 | 9 | Runtime gate: the per-primitive model group-2 bind-group cache creates no new merged instance groups after settle, retains cached identities. |
-| probe-model-ktx2-ibl.mjs | probe | ACTIVE | 2026-08-16 | 9 | Acceptance: authored KTX2 specular env maps load + prefilter on WebGPU — load proof, WebGL parity, consume-vs-procedural delta, 0 errors. |
+| probe-model-ktx2-ibl.mjs | probe | ACTIVE | 2026-09-18 | 9 | Acceptance: authored KTX2 specular env maps load + prefilter on WebGPU — load proof, WebGL parity, consume-vs-procedural delta, 0 errors. |
 | probe-model-mip-inspect.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | C10-05 evidence: walks model material textures to report allocation path (stub vs fallback), mipLevelCount/dims, sampler min-filter. |
 | probe-model-mip-shimmer.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | C10-05 pre/post evidence: high-frequency energy over a minified model texture per backend — mip-0 aliasing shimmer vs trilinear smoothness. |
 | probe-model-mrt.mjs | probe | ACTIVE | 2026-08-16 | 4 | Model G-buffer verification: 4-cell ao-x-deferred matrix on Milk Truck; perturbed normals + roughness in slot 1 widen the AO signal. |
@@ -1369,7 +1370,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | q132-custom-primitive-and-light-layout.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Reproduces and guards the two defects that stopped rendering in the Sandcastle2 sweep: Scene.updateHeight calling a tileset-only lifecycle method on every primitive, and the WebGL scene-light uniform being declared shorter than LightCollection.pack writes. |
 | refresh-cost-multi-metric.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Independent behavioural + canonicity coverage of Q-80's deltaOrNull/sumLegMultiMetric/available-guard formulas, which live inside a page.evaluate callback and cannot be imported. |
 | rescore-sun-disc-dawn.mjs | other | ACTIVE | 2026-09-02 | 1 | Re-score an already-acquired sun-disc-dawn artifact against a FAIL bar derived from that same artifact's own WebGL leg, never from WebGPU. |
-| rig-registry.spec.mjs | spec | ACTIVE | — | 3 | Drives the real rig-registry.mjs over the real rigs/ directory: every rig validates, ids are unique, tags are in vocabulary, replayKeyFor is stable and sensitive, and generateScenesJson reproduces scenes.json byte-for-byte. |
+| rig-registry.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Drives the real rig-registry.mjs over the real rigs/ directory: every rig validates, ids are unique, tags are in vocabulary, replayKeyFor is stable and sensitive, and generateScenesJson reproduces scenes.json byte-for-byte. |
 | run-performance-campaign.mjs | runner | ACTIVE | 2026-08-16 | 33 | The performance characterization runner: consumes performance-workloads.json, records Scene.render CPU samples + GPU timestamps; never FPS. |
 | run-regression-sweep.mjs | runner | INVESTIGATION | 2026-08-16 | 0 | Batch-146 sequential sweep of the Batches 134-145 probe arc, parsing stdout tails for PASS/FAIL markers — a did-the-arc-break-anything check. |
 | run-source-check.mjs | runner | ACTIVE | 2026-09-06 | 3 | Records one authorized Node source spec with explicit input identities and durable raw command facts. |
@@ -1565,13 +1566,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-genus-morphology-model.mjs | lib | ACTIVE | 2026-08-16 | 7 | f32 CPU twin of C13-16 per-genus cloud morphology (wind frame, fallstreak shear, fibre carve); genus rows imported from CloudTypeProfile.js. |
 | cloud-image-analysis.mjs | lib | ACTIVE | 2026-08-16 | 11 | Pure image analysis for C13 cloud probes: background subtraction, silhouette removal, morphology summary, directional autocorrelation of density. |
 | cloud-march-transfer-model.mjs | lib | ACTIVE | 2026-08-21 | 4 | Node reconstruction of the camera-to-pixel cloud march (shell geometry, live density chain, saturating transfer) predicting the probe's estimator. |
-| cloud-orbital-ladder-model.mjs | lib | ACTIVE | 2026-09-12 | 12 | O3 aerial-cap fraction, O4 limb step, O6 decade retention and zoom flicker, O7 limb sample spacing — computed from uniforms and pixels, with each bar's basis stated. |
+| cloud-orbital-ladder-model.mjs | lib | ACTIVE | 2026-09-18 | 12 | O3 aerial-cap fraction, O4 limb step, O6 decade retention and zoom flicker, O7 limb sample spacing — computed from uniforms and pixels, with each bar's basis stated. |
 | cloud-perf-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | One-function pass policy for the fixed-scene cloud perf probe: a requested pair ID must never silently degrade to a single-artifact success. |
-| cloud-photometry.mjs | lib | ACTIVE | 2026-09-12 | 12 | Recover linear pre-Reinhard cloud radiance from an 8-bit capture, mask the sun disc, and refuse where the recovery is not defined. |
+| cloud-photometry.mjs | lib | ACTIVE | 2026-09-18 | 12 | Recover linear pre-Reinhard cloud radiance from an 8-bit capture, mask the sun disc, and refuse where the recovery is not defined. |
 | cloud-probe-harness.mjs | lib | ACTIVE | 2026-09-12 | 38 | Self-contained browser-side helper (addInitScript) configuring defaultCloudCollection.volumetric and verifying every value round-tripped. |
 | cloud-reconstruction-consume.mjs | lib | ACTIVE | 2026-08-16 | 3 | Browser-free half of the C13-10 acceptance: interleaved A/B schedule builder, null-not-zero pass-timing reads, and the FAIL-outranks-STRUCTURAL fold. |
 | cloud-refresh-skip.mjs | lib | ACTIVE | 2026-08-16 | 6 | Shared enforceable home for the requestRenderMode refresh-skip defect that froze cloud snapshots and made three probe windows lie on one day. |
-| cloud-spectrum.mjs | lib | ACTIVE | 2026-09-12 | 12 | Radially averaged power-spectrum slope fit and area-perimeter fractal |
+| cloud-spectrum.mjs | lib | ACTIVE | 2026-09-18 | 12 | Radially averaged power-spectrum slope fit and area-perimeter fractal |
 | cloud-tour-fixtures.mjs | lib | ACTIVE | 2026-09-12 | 31 | Deterministic C13-01 tour definitions: pinned local-solar clocks, absolute camera stations, replay keys, three-lane wind/time discriminators. |
 | cloud-tour-metrics.mjs | lib | ACTIVE | 2026-08-16 | 5 | Pure C13-01 per-sequence metrics plus manifest validation, including assessInterleavedAb enforcing the C13-39 interleaved GPU-timing protocol. |
 | cloud-u2-perf-evidence.mjs | lib | ACTIVE | 2026-08-21 | 3 | Manifest policy for the C13-16 U2 cross-bundle GPU-timing gate: comparison, environment-drift rejection, immutable evidence naming. |
@@ -1592,7 +1593,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | gsplat-multifrustum-framing.mjs | lib | ACTIVE | 2026-08-21 | 3 | Pure far-nadir camera planning and real-PVS multi-frustum anti-vacuity/control logic for the Gaussian-splat parity probe's C15-G6 lane. |
 | gsplat-parity-model.mjs | lib | ACTIVE | 2026-08-16 | 4 | Pure dual-mode verdict logic for probe-gsplat-parity: attributable-absence marker, presence flip, blank-canvas parity refusal, exits 0/1/2/3. |
 | gsplat-tower-framing.mjs | lib | ACTIVE | 2026-09-02 | 3 | Derive the camera range that keeps the tower splat anchor and its terrain-reference anchor inside the same frustum from their real geodetic separation, and decide whether a captured tower silhouette clears the pre-registered pixel floor. |
-| image-diff.mjs | lib | ACTIVE | — | 5 | Pure per-channel RGBA pixel diff (tolerance + optional mask) returning mismatch stats and a paint-ready diff buffer, no I/O and no gate policy. |
+| image-diff.mjs | lib | ACTIVE | 2026-09-18 | 5 | Pure per-channel RGBA pixel diff (tolerance + optional mask) returning mismatch stats and a paint-ready diff buffer, no I/O and no gate policy. |
 | moon-mip-motion-certification.mjs | lib | ACTIVE | 2026-08-21 | 5 | Finalizer for C12-33-SHIMMER-ENVELOPE-CERTIFICATION: paired motion-shimmer separation, seam review, parity, and explicit non-claim of observed mip/LOD selection. |
 | ocean-datum-model.mjs | lib | ACTIVE | 2026-08-16 | 7 | Pure-math verdict model classifying Cesium World Terrain's ocean-lid datum (ELLIPSOID_ZERO/GEOID/MIXED) for the tides/ocean-dynamics W0 gate. |
 | ocean-tide-datum-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Published NOAA/ephemeris constants plus verdict logic accepting the geoid-anchor defect fix and the equilibrium-tide feature together. |
@@ -1607,9 +1608,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | pick-visibility-matrix-verdicts.mjs | lib | ACTIVE | 2026-09-10 | 5 | The pass/fail logic of probe-pick-visibility-matrix.mjs, pure over measurements and free of imports, so a browser-free spec can execute it against both named expectations and against its own mutation. |
 | polyline-multimaterial-verdicts.mjs | lib | ACTIVE | 2026-09-10 | 5 | The pass/fail logic of probe-polyline-multimaterial.mjs, pure over measurements and free of imports, so a browser-free spec can execute it against recorded defect numbers and against its own mutation. |
 | probe-edge-slot.mjs | lib | ACTIVE | 2026-09-12 | 14 | Exclusive-create lock file that enforces "one Edge job at a time", with stale/dead-holder reclamation and a release that will not free a slot someone else already took. |
-| probe-fleet-behaviour-allowlist.mjs | lib | ACTIVE | — | 3 | Dated, shrink-only census of the browser-launching files behaviour selection added to the fleet; the spec fails on any NEW violation, stale row, or growth. |
+| probe-fleet-behaviour-allowlist.mjs | lib | ACTIVE | 2026-09-18 | 3 | Dated, shrink-only census of the browser-launching files behaviour selection added to the fleet; the spec fails on any NEW violation, stale row, or growth. |
 | probe-fleet-contract-allowlist.mjs | lib | ACTIVE | 2026-09-13 | 18 | Pinned shrink-only census of pre-contract probes exempt from the fleet authoring contract; the spec fails on any NEW violation or stale row. |
-| probe-fleet-contract.mjs | lib | ACTIVE | 2026-08-16 | 16 | Source-text analyzer enforcing the probe authoring contract (watchdog + finally-close); fails closed when it cannot parse a construct. |
+| probe-fleet-contract.mjs | lib | ACTIVE | 2026-09-18 | 16 | Source-text analyzer enforcing the probe authoring contract (watchdog + finally-close); fails closed when it cannot parse a construct. |
 | probe-lifecycle-diagnostics.mjs | lib | ACTIVE | 2026-09-12 | 4 | Bounded, hostile-value-safe description of a probe failure: what the rejected value was, which lifecycle occurrences contributed, and whether a refusal is hiding inside an aggregate. |
 | probe-lifecycle-run.mjs | lib | ACTIVE | 2026-09-12 | 8 | Derives a probe's orderly deadline from its declared work budget and drives preflight, Edge slot, per-run browser and descriptor cells inside one bounded lifecycle. |
 | probe-lifecycle.mjs | lib | ACTIVE | 2026-09-12 | 8 | Coordinates a probe deadline, tracked browser resources, and the Edge lease so a probe cannot report completion while owned work remains live. |
@@ -1623,7 +1624,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | purpose-header-allowlist.mjs | lib | ACTIVE | 2026-08-21 | 5 | Frozen shrink-only snapshot of the probes and gate libs that predate the @purpose/@status header rule. |
 | representative-performance-content.mjs | lib | ACTIVE | 2026-08-16 | 12 | Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads. |
 | representative-tileset-request-ledger.mjs | lib | ACTIVE | 2026-08-16 | 6 | Event-sourced ledger of tileset content requests (issue/terminal events, byte totals, hashes) with cross-run comparison for perf evidence. |
-| rig-registry.mjs | lib | ACTIVE | — | 5 | Load, validate and hash the rig records under rigs/, and regenerate scenes.json byte-identically from the rigs tagged wave-end. |
+| rig-registry.mjs | lib | ACTIVE | 2026-09-18 | 5 | Load, validate and hash the rig records under rigs/, and regenerate scenes.json byte-identically from the rigs tagged wave-end. |
 | runtime-residency-allowlist.mjs | lib | ACTIVE | 2026-09-03 | 2 | Frozen, shrink-only allowlist of runtime-resident probes still carrying an anti-re-accretion violation, mirroring lib/prohibited-reader-allowlist.mjs's ratchet shape. |
 | runtime-residency-contract.mjs | lib | ACTIVE | 2026-09-03 | 6 | Detects a probe that declares @runtime residency on lib/probe-runtime.mjs yet still hand-rolls one of the four concerns that module already owns. |
 | same-task-capture.mjs | lib | ACTIVE | 2026-08-16 | 55 | Canonical capture primitives that keep render+readback in one task (WebGL clears, WebGPU invalidates after present), plus embed-drift validators. |
@@ -1656,57 +1657,57 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| connected-components.mjs | lib | ACTIVE | — | 3 | Label 4- or 8-connected foreground regions in a field and report per-component area, bbox, centroid and intensity, so structure survives where a band mean cannot see it. |
-| luminance.mjs | lib | ACTIVE | — | 3 | Rec. 709 luminance, the march's Reinhard operator in both directions, and the display-space mean the photometric rule exists to forbid. |
-| masks.mjs | lib | ACTIVE | — | 5 | Region-of-interest geometry for photometric statistics: the circular sun-disc mask every ROI must exclude, and a rectangle clamped to the image. |
-| region-means.mjs | lib | ACTIVE | — | 2 | Whole-image means over a cloud mask: captured alpha with its coverage fraction, and the fraction of cloud pixels whose colour has collapsed onto the aerial tint. |
-| saturation.mjs | lib | ACTIVE | — | 2 | Per-ROI photometric statistics in linear pre-Reinhard radiance, with saturated and sun-disc pixels excluded and counted, plus the ratio the bars are made of. |
-| spectral-slope.mjs | lib | ACTIVE | — | 4 | Radially averaged power-spectrum slope fit and area-perimeter fractal dimension for scalar fields, with a seeded synthetic fBm generator for validating them against a known answer. |
-| structure-similarity.mjs | lib | ACTIVE | — | 2 | Compute windowed SSIM between two scalar fields (and an RGBA-reducing wrapper) so structural change is measurable where a mean or a band mean is blind to it. |
+| connected-components.mjs | lib | ACTIVE | 2026-09-18 | 3 | Label 4- or 8-connected foreground regions in a field and report per-component area, bbox, centroid and intensity, so structure survives where a band mean cannot see it. |
+| luminance.mjs | lib | ACTIVE | 2026-09-18 | 3 | Rec. 709 luminance, the march's Reinhard operator in both directions, and the display-space mean the photometric rule exists to forbid. |
+| masks.mjs | lib | ACTIVE | 2026-09-18 | 5 | Region-of-interest geometry for photometric statistics: the circular sun-disc mask every ROI must exclude, and a rectangle clamped to the image. |
+| region-means.mjs | lib | ACTIVE | 2026-09-18 | 2 | Whole-image means over a cloud mask: captured alpha with its coverage fraction, and the fraction of cloud pixels whose colour has collapsed onto the aerial tint. |
+| saturation.mjs | lib | ACTIVE | 2026-09-18 | 2 | Per-ROI photometric statistics in linear pre-Reinhard radiance, with saturated and sun-disc pixels excluded and counted, plus the ratio the bars are made of. |
+| spectral-slope.mjs | lib | ACTIVE | 2026-09-18 | 4 | Radially averaged power-spectrum slope fit and area-perimeter fractal dimension for scalar fields, with a seeded synthetic fBm generator for validating them against a known answer. |
+| structure-similarity.mjs | lib | ACTIVE | 2026-09-18 | 2 | Compute windowed SSIM between two scalar fields (and an RGBA-reducing wrapper) so structural change is measurable where a mean or a band mean is blind to it. |
 
 ### Tools/visual-regression/rigs/ (39)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| antarctic-stratus-plateau.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "antarctic-stratus-plateau" (polar-continental/shallow-ice-stratus), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| arctic-stratus-svalbard.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "arctic-stratus-svalbard" (polar-marine/thin-polar-stratus), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| aurora-ground-polar-night.mjs | other | ACTIVE | — | 0 | Campaign 15 aurora seed rig "aurora-ground-polar-night" (PROBE_KIT_PLAN_2026-09-17.md §5), for C15-04 to iterate against once the renderer lands. |
-| aurora-midlatitude-storm-kp8-south.mjs | other | ACTIVE | — | 0 | Campaign 15 aurora seed rig "aurora-midlatitude-storm-kp8-south" (PROBE_KIT_PLAN_2026-09-17.md §5), for C15-04 to iterate against once the renderer lands. |
-| aurora-midlatitude-storm-kp8.mjs | other | ACTIVE | — | 0 | Campaign 15 aurora seed rig "aurora-midlatitude-storm-kp8" (PROBE_KIT_PLAN_2026-09-17.md §5), for C15-04 to iterate against once the renderer lands. |
-| aurora-orbit-limb.mjs | other | ACTIVE | — | 0 | Campaign 15 aurora seed rig "aurora-orbit-limb" (PROBE_KIT_PLAN_2026-09-17.md §5), for C15-04 to iterate against once the renderer lands. |
-| bengal-monsoon-nimbostratus.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "bengal-monsoon-nimbostratus" (monsoon/overcast-rain-sheet), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| benguela-dusk-stratocumulus.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "benguela-dusk-stratocumulus" (subtropical-marine-eastern-boundary/dusk-closed-cell-sheet), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| californian-nocturnal-stratus.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "californian-nocturnal-stratus" (coastal-marine-nocturnal/nocturnal-marine-layer), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| caribbean-mid.mjs | other | ACTIVE | — | 0 | Rig record for probe-saved-view.mjs's "caribbean-mid" saved view. |
-| caribbean-orbit.mjs | other | ACTIVE | — | 0 | Rig record for probe-saved-view.mjs's "caribbean-orbit" saved view. |
-| dateline-east-convective.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "dateline-east-convective" (tropical-maritime-tradewind/broken-oceanic), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| dateline-west-convective.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "dateline-west-convective" (tropical-maritime-tradewind/broken-oceanic), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| default-3d.mjs | other | ACTIVE | — | 0 | Rig record for probe-saved-view.mjs's "default-3d" saved view. |
-| globe-default.mjs | other | ACTIVE | — | 0 | Rig record for the wave-end scene "globe-default" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
-| globe-horizon.mjs | other | ACTIVE | — | 0 | Rig record for the wave-end scene "globe-horizon" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
-| globe-zoomed-mountain.mjs | other | ACTIVE | — | 0 | Rig record for the wave-end scene "globe-zoomed-mountain" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
-| gsplat-sh-unit-cube.mjs | other | ACTIVE | — | 0 | Rig record for the wave-end scene "gsplat-sh-unit-cube" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
-| high-density-5k-spheres.mjs | other | ACTIVE | — | 0 | Rig record for the wave-end scene "high-density-5k-spheres" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
-| itcz-cumulonimbus-westpacific.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "itcz-cumulonimbus-westpacific" (tropical-deep-convection/towering-anvil), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| mid-distance-12mm.mjs | other | ACTIVE | — | 0 | Rig record for the wave-end scene "mid-distance-12mm" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
-| northatlantic-cirrus-fibratus.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "northatlantic-cirrus-fibratus" (midlatitude-jetstream/fibratus-filaments), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| orbital-ladder-20000km.mjs | other | ACTIVE | — | 0 | Rig record for the C13-N04b orbital ladder rung at 20000 km (lib/cloud-orbital-ladder-model.mjs ALTITUDE_LADDER_METRES). |
-| orbital-ladder-2000km.mjs | other | ACTIVE | — | 0 | Rig record for the C13-N04b orbital ladder rung at 2000 km (lib/cloud-orbital-ladder-model.mjs ALTITUDE_LADDER_METRES). |
-| orbital-ladder-200km.mjs | other | ACTIVE | — | 0 | Rig record for the C13-N04b orbital ladder rung at 200 km (lib/cloud-orbital-ladder-model.mjs ALTITUDE_LADDER_METRES). |
-| orbital-ladder-20km.mjs | other | ACTIVE | — | 0 | Rig record for the C13-N04b orbital ladder rung at 20 km (lib/cloud-orbital-ladder-model.mjs ALTITUDE_LADDER_METRES). |
-| pacificnw-dawn-valley-stratus.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "pacificnw-dawn-valley-stratus" (temperate-continental-dawn-fog/valley-radiation-fog-dawn), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| plains-fairweather-cumulus.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "plains-fairweather-cumulus" (midlatitude-continental/humilis-scattered), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| pointcloud-timedynamic-edl.mjs | other | ACTIVE | — | 0 | Rig record for the wave-end scene "pointcloud-timedynamic-edl" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
-| sahara-clear-sky.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "sahara-clear-sky" (subtropical-desert/suppressed-near-clear), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| sandcastle-webgpu-clustered-lighting.mjs | other | ACTIVE | — | 0 | Rig record for the sandcastle-smoke.mjs gallery demo "WebGPU Clustered Lighting.html". |
-| sandcastle-webgpu-orbital-catalog.mjs | other | ACTIVE | — | 0 | Rig record for the sandcastle-smoke.mjs gallery demo "WebGPU Orbital Catalog.html". |
-| sandcastle-webgpu-point-light-shadows.mjs | other | ACTIVE | — | 0 | Rig record for the sandcastle-smoke.mjs gallery demo "WebGPU Point Light Shadows.html". |
-| sepacific-stratocumulus-closed.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "sepacific-stratocumulus-closed" (subtropical-marine-eastern-boundary/closed-cell-sheet), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| southern-ocean-stratocumulus-open.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "southern-ocean-stratocumulus-open" (cold-air-outbreak/open-cell-broken), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| tradewind-cumulus-caribbean.mjs | other | ACTIVE | — | 0 | Rig record for the cloud-tour fixture "tradewind-cumulus-caribbean" (tropical-maritime-tradewind/tradewind-mediocris), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| voxel-box-procedural.mjs | other | ACTIVE | — | 0 | Rig record for the wave-end scene "voxel-box-procedural" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
-| wgs84-close.mjs | other | ACTIVE | — | 0 | Rig record for the wave-end scene "wgs84-close" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
-| wgs84-orbit.mjs | other | ACTIVE | — | 0 | Rig record for the wave-end scene "wgs84-orbit" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
+| antarctic-stratus-plateau.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "antarctic-stratus-plateau" (polar-continental/shallow-ice-stratus), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| arctic-stratus-svalbard.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "arctic-stratus-svalbard" (polar-marine/thin-polar-stratus), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| aurora-ground-polar-night.mjs | other | ACTIVE | 2026-09-18 | 0 | Campaign 15 aurora seed rig "aurora-ground-polar-night" (PROBE_KIT_PLAN_2026-09-17.md §5), for C15-04 to iterate against once the renderer lands. |
+| aurora-midlatitude-storm-kp8-south.mjs | other | ACTIVE | 2026-09-18 | 0 | Campaign 15 aurora seed rig "aurora-midlatitude-storm-kp8-south" (PROBE_KIT_PLAN_2026-09-17.md §5), for C15-04 to iterate against once the renderer lands. |
+| aurora-midlatitude-storm-kp8.mjs | other | ACTIVE | 2026-09-18 | 0 | Campaign 15 aurora seed rig "aurora-midlatitude-storm-kp8" (PROBE_KIT_PLAN_2026-09-17.md §5), for C15-04 to iterate against once the renderer lands. |
+| aurora-orbit-limb.mjs | other | ACTIVE | 2026-09-18 | 0 | Campaign 15 aurora seed rig "aurora-orbit-limb" (PROBE_KIT_PLAN_2026-09-17.md §5), for C15-04 to iterate against once the renderer lands. |
+| bengal-monsoon-nimbostratus.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "bengal-monsoon-nimbostratus" (monsoon/overcast-rain-sheet), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| benguela-dusk-stratocumulus.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "benguela-dusk-stratocumulus" (subtropical-marine-eastern-boundary/dusk-closed-cell-sheet), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| californian-nocturnal-stratus.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "californian-nocturnal-stratus" (coastal-marine-nocturnal/nocturnal-marine-layer), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| caribbean-mid.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for probe-saved-view.mjs's "caribbean-mid" saved view. |
+| caribbean-orbit.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for probe-saved-view.mjs's "caribbean-orbit" saved view. |
+| dateline-east-convective.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "dateline-east-convective" (tropical-maritime-tradewind/broken-oceanic), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| dateline-west-convective.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "dateline-west-convective" (tropical-maritime-tradewind/broken-oceanic), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| default-3d.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for probe-saved-view.mjs's "default-3d" saved view. |
+| globe-default.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "globe-default" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
+| globe-horizon.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "globe-horizon" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
+| globe-zoomed-mountain.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "globe-zoomed-mountain" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
+| gsplat-sh-unit-cube.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "gsplat-sh-unit-cube" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
+| high-density-5k-spheres.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "high-density-5k-spheres" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
+| itcz-cumulonimbus-westpacific.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "itcz-cumulonimbus-westpacific" (tropical-deep-convection/towering-anvil), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| mid-distance-12mm.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "mid-distance-12mm" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
+| northatlantic-cirrus-fibratus.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "northatlantic-cirrus-fibratus" (midlatitude-jetstream/fibratus-filaments), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| orbital-ladder-20000km.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the C13-N04b orbital ladder rung at 20000 km (lib/cloud-orbital-ladder-model.mjs ALTITUDE_LADDER_METRES). |
+| orbital-ladder-2000km.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the C13-N04b orbital ladder rung at 2000 km (lib/cloud-orbital-ladder-model.mjs ALTITUDE_LADDER_METRES). |
+| orbital-ladder-200km.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the C13-N04b orbital ladder rung at 200 km (lib/cloud-orbital-ladder-model.mjs ALTITUDE_LADDER_METRES). |
+| orbital-ladder-20km.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the C13-N04b orbital ladder rung at 20 km (lib/cloud-orbital-ladder-model.mjs ALTITUDE_LADDER_METRES). |
+| pacificnw-dawn-valley-stratus.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "pacificnw-dawn-valley-stratus" (temperate-continental-dawn-fog/valley-radiation-fog-dawn), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| plains-fairweather-cumulus.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "plains-fairweather-cumulus" (midlatitude-continental/humilis-scattered), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| pointcloud-timedynamic-edl.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "pointcloud-timedynamic-edl" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
+| sahara-clear-sky.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "sahara-clear-sky" (subtropical-desert/suppressed-near-clear), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| sandcastle-webgpu-clustered-lighting.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the sandcastle-smoke.mjs gallery demo "WebGPU Clustered Lighting.html". |
+| sandcastle-webgpu-orbital-catalog.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the sandcastle-smoke.mjs gallery demo "WebGPU Orbital Catalog.html". |
+| sandcastle-webgpu-point-light-shadows.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the sandcastle-smoke.mjs gallery demo "WebGPU Point Light Shadows.html". |
+| sepacific-stratocumulus-closed.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "sepacific-stratocumulus-closed" (subtropical-marine-eastern-boundary/closed-cell-sheet), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| southern-ocean-stratocumulus-open.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "southern-ocean-stratocumulus-open" (cold-air-outbreak/open-cell-broken), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| tradewind-cumulus-caribbean.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "tradewind-cumulus-caribbean" (tropical-maritime-tradewind/tradewind-mediocris), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| voxel-box-procedural.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "voxel-box-procedural" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
+| wgs84-close.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "wgs84-close" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
+| wgs84-orbit.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "wgs84-orbit" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
 
 ### scripts/ (3)
 
