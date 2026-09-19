@@ -1,14 +1,18 @@
 // @purpose Behaviour spec for the DX-106 contact-sheet banking additions on
 // Tools/wave-end-gate-receipt.mjs: the byte-unchanged golden comparison, the
 // banked-sheet summary section, entry validation, and the md5-recompute
-// collector, each proved load-bearing by an in-memory source mutation.
+// collector, each proved load-bearing by an in-memory source mutation, plus
+// the .prettierignore coverage that keeps a formatter out of the byte-pinned
+// fixtures it reads.
 // @status ACTIVE
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readFile, readdir } from "node:fs/promises";
+import os from "node:os";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { getFileInfo } from "prettier";
 import {
   buildContactSheetTable,
   buildMarkdownSummary,
@@ -41,8 +45,9 @@ function fixturePath(...segments) {
 // only honoured once it is in effect: a patch that creates the fixtures and
 // that file in one apply is not covered, and the fixtures land CRLF. Reading
 // them through this makes every assertion below depend on the CONTENT rather
-// than on whether the attribute was read — the same failure `.gitattributes`
-// records at :40-54 for the probe-runtime specs.
+// than on whether the attribute was read — the failure the sibling
+// `.gitattributes` records, and the reason it is not the only guard this
+// directory needs.
 function toLf(value) {
   if (typeof value === "string") {
     return value.split("\r\n").join("\n");
@@ -830,4 +835,122 @@ test("a valid entry produced by the REAL sheetIndexEntry still validates clean �
     md5: "0".repeat(32),
   });
   assert.deepEqual(validateContactSheetEntry(entry), []);
+});
+
+// ---------------------------------------------------------------------------
+// (e) Nothing may reformat the fixtures this file reads. Every one of them is
+// compared byte-for-byte or hashed above, and the pre-commit hook runs
+// `prettier --write` over every staged .md/.html/.mjs (lint-staged.config.js),
+// which runs AFTER the gates a lane reports. That is how golden-summary.md
+// arrived with padded markdown tables the producer never writes, and how both
+// fixture pages arrived with reflowed HTML whose md5 no longer matched the
+// banked sheet-index.json.
+//
+// The question is put to prettier itself rather than to the ignore file's
+// text: a regex over .prettierignore would only prove a line exists, not that
+// prettier resolves it to these paths — and prettier is what the hook runs.
+// ---------------------------------------------------------------------------
+
+const PRETTIER_IGNORE_PATH = path.join(REPO_ROOT_PATH, ".prettierignore");
+const FIXTURE_IGNORE_ENTRY =
+  "Tools/visual-regression/fixtures/wave-end-contact-sheet/";
+
+// The four fixtures whose extensions .prettierignore un-ignores under Tools/,
+// i.e. the ones that entry is what protects. The JSON pair and .gitattributes
+// are already out of prettier's reach because the ignore file's leading `*`
+// is never undone for those extensions.
+const PRETTIER_REACHABLE_FIXTURES = [
+  "fixture-receipt-input.mjs",
+  "golden-summary.md",
+  "pages/kit-wave-b-tampered/index.html",
+  "pages/kit-wave-b/index.html",
+];
+
+async function listFixtureFilesUnder(directory) {
+  const found = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const full = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      found.push(...(await listFixtureFilesUnder(full)));
+    } else {
+      found.push(full);
+    }
+  }
+  return found.sort();
+}
+
+function repoRelativePosix(absolutePath) {
+  return path.relative(REPO_ROOT_PATH, absolutePath).split(path.sep).join("/");
+}
+
+test("every byte-pinned fixture in this directory is ignored by prettier", async () => {
+  const files = await listFixtureFilesUnder(fileURLToPath(FIXTURE_ROOT));
+  assert.ok(
+    files.length >= 8,
+    `expected the whole fixture set, walked ${files.length} file(s)`,
+  );
+  for (const file of files) {
+    // lint-staged hands its tools ABSOLUTE paths, so that is the shape asked
+    // about here.
+    const info = await getFileInfo(file, { ignorePath: PRETTIER_IGNORE_PATH });
+    assert.equal(
+      info.ignored,
+      true,
+      `${repoRelativePosix(file)} is not ignored by prettier: the pre-commit hook would rewrite it, and every byte comparison above would then be measuring the formatter's output`,
+    );
+  }
+});
+
+test("MUTATION: dropping the ignore entry puts the goldens back within prettier's reach", async () => {
+  const ignoreSource = await readFile(PRETTIER_IGNORE_PATH, "utf8");
+  assert.equal(
+    ignoreSource.split(FIXTURE_IGNORE_ENTRY).length - 1,
+    1,
+    "the fixture directory must be named exactly once in .prettierignore",
+  );
+
+  // prettier resolves an ignore file's patterns against that file's own
+  // directory, so the mutant needs a root of its own. The paths below never
+  // have to exist — getFileInfo answers from the name and the ignore file.
+  const mutantRoot = await mkdtemp(
+    path.join(os.tmpdir(), "wave-end-contact-sheet-ignore-"),
+  );
+  try {
+    const ignorePath = path.join(mutantRoot, ".prettierignore");
+    const relativeFixtures = (
+      await listFixtureFilesUnder(fileURLToPath(FIXTURE_ROOT))
+    ).map(repoRelativePosix);
+
+    // Positive control: the real ignore file, read from a different root,
+    // still covers every fixture — so a miss below is the mutation and not
+    // the relocation.
+    await writeFile(ignorePath, ignoreSource);
+    for (const relative of relativeFixtures) {
+      const info = await getFileInfo(path.join(mutantRoot, relative), {
+        ignorePath,
+      });
+      assert.equal(info.ignored, true, `control: ${relative}`);
+    }
+
+    await writeFile(
+      ignorePath,
+      ignoreSource.split(FIXTURE_IGNORE_ENTRY).join("nothing-of-the-kind/"),
+    );
+    const reachable = [];
+    for (const relative of relativeFixtures) {
+      const info = await getFileInfo(path.join(mutantRoot, relative), {
+        ignorePath,
+      });
+      if (!info.ignored) {
+        reachable.push(relative.slice(FIXTURE_IGNORE_ENTRY.length));
+      }
+    }
+    assert.deepEqual(
+      reachable.sort(),
+      PRETTIER_REACHABLE_FIXTURES,
+      "removing the entry must hand exactly the formatter-readable fixtures back to prettier",
+    );
+  } finally {
+    await rm(mutantRoot, { recursive: true, force: true });
+  }
 });

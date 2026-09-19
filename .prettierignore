@@ -54,6 +54,15 @@ Tools/shader-pipeline/naga-wasm-tools/
 # and stays formatted.
 Tools/tsd-jsdoc-compat/dist/
 Tools/tsd-jsdoc-compat/README.md
+# Byte-pinned golden fixtures. Every file here is compared byte-for-byte or
+# hashed by Tools/wave-end-contact-sheet-index.spec.mjs, so any formatter run
+# — including the prettier --write the pre-commit hook applies to staged
+# .md/.html/.mjs — invalidates the goldens. golden-summary.md in particular
+# has to stay exactly what Tools/wave-end-gate-receipt.mjs writes (unpadded
+# markdown tables), which prettier will never agree with, so making the
+# fixtures formatter-stable is not available as an alternative.
+Tools/visual-regression/fixtures/wave-end-contact-sheet/
+
 **/LICENSE.md
 
 # WebGPU files with inline WGSL shader strings that prettier cannot parse

@@ -22711,3 +22711,104 @@ before CI did.
 **What this does not do.** It does not make either job green. It removes the abort, which lets ~4,200
 specs run for the first time since 2026-07-16; their failures are newly visible, not newly broken,
 and banking that set as the baseline is the next step.
+
+## Lane KITB-FIXTURE-HOOK-REWRITE (Camellia, 2026-09-19) — the pre-commit hook reformatted three byte-pinned fixtures after every gate had run, and `test-landing-rules` has been four-red on main ever since
+
+**Bug NNNN.1** (batch number stamped by the seat). **Files:** three fixtures and the sibling
+`.gitattributes` under `Tools/visual-regression/fixtures/wave-end-contact-sheet/`;
+`.prettierignore`; `Tools/wave-end-contact-sheet-index.spec.mjs`.
+
+**Symptom.** `dev` / `guards` / step `landing rule tests` on Batch 1524 (run 35447776701; the banked
+failed-step log is timestamped 2026-09-19T14:09:15Z):
+`# tests 378 / pass 370 / fail 4 / skipped 4`. All four reds are in
+`Tools/wave-end-contact-sheet-index.spec.mjs` (numbered 250, 252, 257 and 258 in the merged suite;
+the standalone numbering below is what a single-file run prints):
+
+```
+not ok 1 - a receipt with no contact sheets is byte-identical to the pre-DX-106 golden
+not ok 3 - a banked sheet's md5 appears as a table cell in a section appended last
+not ok 8 - collectContactSheets drops a tampered entry and names both md5 values
+not ok 9 - MUTATION: removing the contact-sheet section append drops the md5 from the summary
+```
+
+Not a platform defect: `node --test Tools/wave-end-contact-sheet-index.spec.mjs` at the seat tip is
+`# tests 22 / pass 18 / fail 4`, the same four. Test 1 reports the golden summary carrying PADDED
+markdown tables (`| Artifact                         | Origin                | Bytes | …`) against the
+UNPADDED tables `buildMarkdownSummary` actually writes. Tests 3 and 8 report recomputed page md5s
+(`cf6b5126…`, `b8d10668…`) that do not match the values banked in `sheet-index.json` and asserted in
+the spec (`d25dcf1d…`, `a3c40915…`); test 9 is a consequence of 3.
+
+**Root cause — the hook is the last writer, and no gate reads after it.** Batch 1517 (`493ea4d29c`,
+lane Rudigar, KIT-B v4) added the eight fixtures. The lane's FROZEN patch
+(`lanes-2026-09-19/rudigar-v2/_lane-out/rudigar.patch`, md5 `5194955c83715a3f9a37ac008543361b` — the
+md5 the landing log verified) carries golden-summary.md with unpadded tables and both fixture pages
+unreflowed. `git show HEAD:` carries neither. In between sits `.husky/pre-commit`, whose first step is
+`node_modules/.bin/lint-staged`; the root `lint-staged.config.js` maps
+`*.{js,cjs,mjs,ts,tsx,css,html}` and `*.md` to `prettier --write` on the staged paths. That runs after
+the lane's gates, after review, and after the landing gates, and nothing re-reads the committed bytes.
+
+Proved rather than inferred: the frozen bytes were extracted into a temp mirror carrying the repo's
+own `.prettierrc` and `.prettierignore` at the same relative paths, and `prettier@3.9.6 --write` over
+them reproduces HEAD's content **for all eight files exactly**, once line endings are normalised
+(HEAD's are CRLF for the separate reason below) — including `b8d10668…`, the recomputed md5 CI
+reports for the tampered page. Prettier flags exactly three:
+`golden-summary.md`, `pages/kit-wave-b/index.html`, `pages/kit-wave-b-tampered/index.html`. The other
+five it leaves alone: `fixture-receipt-input.mjs` was already prettier-clean (the lane had adopted a
+reflow of its own `.mjs` files, banked as `PRETTIER-REFLOW-V4.diff`, and stopped at source files), and
+the two `sheet-index.json`, `golden-receipt.json` and `.gitattributes` are out of prettier's reach
+because `.prettierignore` opens with `*` and never un-ignores those extensions. `eslint` and
+`markdownlint` are not implicated: lint-staged runs eslint without `--fix`, and
+`isMarkdownlintExempt()` exempts everything under `Tools/`.
+
+**A second, separate rewrite, left alone deliberately.** All eight also landed CRLF although the
+folder's own `.gitattributes` marks it `-text`: that file was created by the same `git apply`, so the
+attribute was not yet in effect when the siblings were written under `core.autocrlf=true`. The spec's
+`toLf()` helper normalises line endings before every comparison and hash, so this is NOT what made CI
+red, and the `byteLength` each `sheet-index.json` records is the normalised length the collector
+measures rather than the on-disk one. Restoring LF was tried and abandoned on evidence: `git apply`
+writes a postimage with the line endings the target file already has, so a patch cannot put LF back —
+measured by applying an LF-postimage patch in a clone with `-text` in effect and reading CRLF out of
+it, and by the four EOL-only hunks silently becoming no-ops in the same run. A lane that shipped that
+patch would have landed bytes its own freeze did not describe, which is this bug's own failure mode.
+The fixtures therefore keep the line endings HEAD has and change only where the CONTENT is wrong.
+
+**Why no gate saw it.** Every gate in the chain — the lane's, the reviewer's, the landing wrapper's —
+ran against the pre-hook worktree. The hook writes last and the commit takes what it wrote. Nor did a
+later landing catch it: the seat cannot run `npm run test-landing-rules` whole, because the
+maintainer's held working-tree copy of `Tools/verify-landing-compliance.spec.mjs` is three-red there,
+so the suite is only ever read in CI — and nobody read it there for the seven batches 1518-1524.
+
+**Fix applied.** (1) The three reformatted fixtures restored to the content the lane froze. (2) The
+directory added to `.prettierignore` — prettier honours the ignore file for EXPLICITLY named paths,
+which is exactly how lint-staged calls it, so the hook now skips them. Making them
+formatter-STABLE instead was considered and rejected for the file that matters:
+`golden-summary.md` must be what `Tools/wave-end-gate-receipt.mjs` writes, and what it writes is
+unpadded tables that prettier will never agree with. A fixture that had been quietly reformatted to
+keep prettier happy would have made the golden assert the formatter's opinion instead of the
+producer's output. The two pages could have gone either way; they follow the same rule so the
+directory has ONE disposition rather than a per-file one nobody can reconstruct later. (3) The
+sibling `.gitattributes` now records the formatter hazard next to the EOL hazard it already recorded.
+
+**The ignore entry is required by a second CI gate, not only by the hook.** `npm run prettier-check`
+(`prettier --check "**/*"`) is its own step in `.github/workflows/dev.yml:27` and `prod.yml:32`. Measured
+here with the entry removed, `prettier --check` over the three restored fixtures exits 1 and flags all
+three — so restoring the producer's unpadded golden without it would have traded four red cases in
+`guards` for a red step in `format code`. That is a second, independent reason the formatter-stable
+alternative was not available for `golden-summary.md`.
+
+**Two guards, and they catch different things.** Mine is in the spec itself: case 23 walks the fixture
+directory and asks `prettier.getFileInfo(absolutePath, { ignorePath })` whether each file is ignored —
+prettier's own answer, not a regex over the ignore file, and absolute paths because that is what
+lint-staged passes. It covers files added to the directory later, for free. Case 24 is its inertness
+mutant, in a temp root of its own: with the real ignore file it is a positive control, and with the
+one entry removed exactly the four formatter-readable fixtures come back within reach. A separate
+out-of-spec mutant deleted the line from the real `.prettierignore` and reran the suite:
+`# pass 22 / # fail 2`, both new cases red, restored green. The seat's landing wrapper now carries the
+other half — it compares `git write-tree` before the commit with `HEAD^{tree}` after, and re-runs the
+lane's runners on the COMMITTED bytes — which catches any future hook rewrite, including the classes
+no ignore entry covers.
+
+**Restoration mutant.** Putting HEAD's bytes back over the fix gives `# tests 24 / pass 20 / fail 4` —
+exactly the four CI reds and nothing else, with the two new cases still green because they guard a
+different thing. That is the CI failure reproduced, so the restored bytes are what those four
+assertions read.

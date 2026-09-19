@@ -2,7 +2,24 @@
 # JSON/markdown, and pages whose md5 is asserted against a recorded value).
 # This repo checks out with core.autocrlf=true on Windows, which silently
 # rewrites LF to CRLF on any checkout that "touches" a text-attributed file
-# (see Tools/lib/purpose-header.mjs's own BYTE-EXACTNESS note for the same
-# hazard elsewhere in this tree) and would invalidate every hash below.
-# Marking the whole directory binary opts it out of that conversion for good.
+# (see Tools/lib/purpose-header.mjs's own BYTE-EXACTNESS note at :28-32 for
+# the same hazard elsewhere in this tree) and would invalidate every hash
+# below. Marking the whole directory binary opts it out of that conversion.
+#
+# An attribute is only honoured once it is in effect. The apply that CREATED
+# this file wrote its seven siblings with conversion still on, so they landed
+# CRLF, and they stay CRLF: `git apply` writes a postimage with the line
+# endings the target file already has, so no patch can put them back. What
+# makes that harmless is that the spec normalises line endings before it
+# compares or hashes anything, so its assertions read the CONTENT rather than
+# the convention — and the byteLength recorded in each sheet-index.json is
+# the normalised one, which is the length the collector measures.
+#
+# -text does not stop a FORMATTER. The pre-commit hook runs prettier --write
+# over staged .md/.html/.mjs (lint-staged.config.js), after the gates a lane
+# reports; it padded golden-summary.md's tables and reflowed both pages, and
+# the spec was red on main until the bytes were restored. The directory is
+# listed in .prettierignore for that reason, and
+# Tools/wave-end-contact-sheet-index.spec.mjs asks prettier itself whether
+# every file here is still covered.
 * -text

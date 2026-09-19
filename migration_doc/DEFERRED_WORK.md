@@ -23690,3 +23690,71 @@ timestamp. Every firefox number in that plan was therefore unverifiable from the
 they are in fact correct, confirmed by fetching the job live — but that is exactly the shape
 Principle 10 names. Proposed row: bank **both** browser logs, or mark in the brief which numbers
 came from a live fetch so the next lane knows what it can check.
+
+## 2026-09-19 — lane KITB-FIXTURE-HOOK-REWRITE (Camellia): the pre-commit hook reformatted three byte-pinned fixtures after every gate had run
+
+### `KITB-FIXTURE-PRETTIER-REWRITE` — `test-landing-rules` four-red on main since Batch 1517 (FIXED 2026-09-19)
+
+- **What.** `Tools/visual-regression/fixtures/wave-end-contact-sheet/` — `golden-summary.md` and both
+  `pages/*/index.html`. The bytes on main are not the bytes lane Rudigar froze: `.husky/pre-commit` →
+  `lint-staged` → `prettier --write` (root `lint-staged.config.js`, the
+  `*.{js,cjs,mjs,ts,tsx,css,html}` and `*.md` tasks) padded `golden-summary.md`'s markdown tables and
+  reflowed both fixture pages AFTER the lane,
+  the reviewer and the landing gates had all run. Four cases in
+  `Tools/wave-end-contact-sheet-index.spec.mjs` have been red ever since (CI run 35447776701, job
+  `guards`: 378 tests / 4 fail), and no later landing re-read the suite.
+- **Proof, not inference.** `prettier@3.9.6 --write` over the frozen bytes, in a mirror carrying this
+  repo's `.prettierrc`/`.prettierignore` at the same relative paths, reproduces HEAD's content for all
+  eight — including `b8d10668…`, the recomputed md5 CI reports for the tampered page.
+- **Fix.** Content restored; line endings left as HEAD has them. Those files landed CRLF because the
+  same apply created the folder's `-text` `.gitattributes`, and restoring LF is not available:
+  `git apply` writes a postimage with the line endings the target already has, measured here by
+  applying an LF-postimage patch and reading CRLF back out of it. The spec normalises before it
+  compares or hashes, and
+  each `sheet-index.json` records the normalised `byteLength`, so nothing downstream reads the
+  convention. Directory added to `.prettierignore`, which prettier honours for explicitly named paths —
+  the shape lint-staged uses. `golden-summary.md` CANNOT be made prettier-stable instead: it must stay
+  exactly what `Tools/wave-end-gate-receipt.mjs` writes, and that is unpadded tables.
+- **Guard.** Two new cases in the same spec (same runner, `test-landing-rules`, which CI's `guards`
+  job runs): one walks the directory and asks `prettier.getFileInfo(absolutePath, { ignorePath })`
+  whether every file is ignored — prettier's answer, not a regex over the ignore file — and one is its
+  inertness mutant in a temp root, where removing the single entry hands exactly the four
+  formatter-readable fixtures back. The seat's landing wrapper carries the complementary check
+  (`git write-tree` before the commit vs `HEAD^{tree}` after, plus a re-run of the lane's runners on
+  the committed bytes).
+- **The ignore entry is load-bearing for a SECOND CI gate, not only for the hook.** `npm run prettier-check`
+  (`prettier --check "**/*"`) is a step of its own in `.github/workflows/dev.yml:27` and `prod.yml:32`.
+  Measured 2026-09-19 with the entry removed: `prettier --check` over the three restored fixtures exits 1
+  and flags all three. Restoring the producer's unpadded golden WITHOUT the ignore entry would have traded
+  four red cases in `guards` for a red step in `format code`; the entry is what keeps both green at once.
+
+### `DX-TOOLS-BYTE-PINNED-FIXTURES-UNPINNED-AGAINST-THE-FORMATTER` — OPEN (DX row, not fixed here)
+
+One other byte-pinned fixture set under `Tools/**/fixtures/` is reachable by the same hook and
+protected only by happening to be prettier-clean today:
+
+- `Tools/visual-regression/fixtures/nasa-svs-5073/derive-umbra-lo-shard.mjs` and
+  `nasa-svs-5073-shapefile.mjs`. `manifest.json`'s `derivation.script` / `derivation.parser` pin each
+  file's `bytes` and `sha256`, and `Tools/visual-regression/nasa-svs-5073-umbra-fixture.spec.mjs`
+  asserts them (`assert.deepEqual(fingerprint(bytes), { bytes: tool.bytes, sha256: tool.sha256 })`).
+  Both are `.mjs` under `Tools/`, so `.prettierignore` un-ignores them and the hook reaches them
+  with `prettier --write`. Measured 2026-09-19: `prettier --check` on both exits 0, so the hook is
+  a no-op **today** — and nothing pins that. A prettier upgrade, or an option change in
+  `.prettierrc`, reflows them and reds that spec the same way this row's did. The shapefile members
+  and every `.json` fixture in that tree are out of reach (`.prettierignore` never un-ignores those
+  extensions).
+- Not fixed here because the disposition is a judgement about that fixture set, not this one: an
+  ignore entry and a coverage case like the ones added above, or an accepted dependence on
+  formatter-stability with the assertion written down. Either is a small lane; neither belongs in a
+  CI-red fix.
+- The other prettier-reachable fixtures measured at the same time —
+  `fixtures/capture-seam/rigs.mjs`, `fixtures/voxel-octree-l3.mjs`, `fixtures/voxel-octree-l4.mjs`,
+  `fixtures/nasa-svs-5073/NOTICE.md` — are prettier-clean and, as far as this lane's reading goes, not
+  hashed or byte-compared by any spec. They are listed so the next reader knows the set was
+  enumerated rather than sampled.
+- **Prior art for the class.** `scripts/build.js:1638` records `NEW-INDEXWGSL-CHURN` (Batch 303): the same
+  mechanism — the hook rewriting a tracked, byte-compared artifact — resolved the other way, by teaching the
+  emitter to reproduce prettier's exact wrapping so the build output and the committed copy agree. Two
+  occurrences with opposite resolutions is what makes this a class worth a standing rule rather than two
+  point fixes, and the rule has to name which resolution applies when: producer output that a spec asserts
+  cannot adopt the formatter's opinion, so it is ignored; an emitter with no such contract can be made stable.

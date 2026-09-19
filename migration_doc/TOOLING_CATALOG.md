@@ -278,7 +278,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | verify-doc-citations.mjs | other | ACTIVE | 2026-09-05 | 4 | Asserts every relative markdown link and every #L line anchor in the tracked LIVE migration_doc set resolves as written, that the anchored range exists, and that a range still contains the symbol its sentence names. |
 | verify-doc-citations.spec.mjs | spec | ACTIVE | 2026-09-05 | 1 | Pins verify-doc-citations.mjs against fixture trees: clean passes, a mutated link fails and is named, an out-of-bounds anchor fails, a .js→.ts rename fails, the P-14 false-positive shape stays green, and an inertness mutant of the resolution fold makes the core assertion fail. |
 | verify-landing-compliance.mjs | other | ACTIVE | 2026-08-28 | 30 | After-the-fact detector that re-runs the landing rules + C16 marker gate over a landed commit range, making any --no-verify hook bypass visible. |
-| verify-landing-compliance.spec.mjs | spec | ACTIVE | 2026-08-28 | 6 | Contract for the bypass detector against immutable history: known-bad C12-37 landing must red, known-good B1041-1043 landing must pass. |
+| verify-landing-compliance.spec.mjs | spec | ACTIVE | 2026-08-28 | 7 | Contract for the bypass detector against immutable history: known-bad C12-37 landing must red, known-good B1041-1043 landing must pass. |
 | verify-no-doc-shred.mjs | other | ACTIVE | 2026-08-28 | 6 | Fails when any migration_doc markdown file contains a long run of single-character lines - the signature of a splice-spread-over-string edit defect that has landed shredded ledger sections three times. |
 | verify-orientation-mirror.mjs | other | ACTIVE | 2026-08-28 | 2 | Fail closed when a status asserted by a reader-facing orientation document disagrees with, or cannot be resolved against, its campaign queue authority. |
 | verify-orientation-mirror.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Prove the orientation-mirror verifier compares closed-vocabulary statuses, fails closed on unresolved references, honors reasoned allowlisting, and behaves identically on LF and CRLF inputs. |
@@ -291,10 +291,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | wasm-encode-benchmark.mjs | other | ACTIVE | 2026-09-01 | 9 | Node CPU micro-benchmark of the WASM batch_rte_encode kernel vs the scalar JS fround twin, with byte-identity and fallback trip-wire asserts. |
 | wasm-subrange-encode-check.mjs | other | ACTIVE | 2026-09-01 | 7 | Standalone Node check that WasmRTEBridge.batchEncodeRange's WASM and JS paths are byte-identical, placement exact, outside bytes preserved. |
 | wasm-subrange-loader.mjs | other | ACTIVE | 2026-09-01 | 4 | ESM resolve hook redirecting WasmRTEBridge's build-layout wasm-glue specifier to the on-disk glue, plus the file-URL fetch shim and the glue/wasm path helpers, so the wasm Node checks and the benchmark run the real bridge. |
-| wave-end-contact-sheet-index.spec.mjs | spec | ACTIVE | 2026-09-19 | 6 | Behaviour spec for the DX-106 contact-sheet banking additions on |
+| wave-end-contact-sheet-index.spec.mjs | spec | ACTIVE | 2026-09-19 | 8 | Behaviour spec for the DX-106 contact-sheet banking additions on |
 | wave-end-gate-binding.mjs | other | ACTIVE | 2026-09-16 | 9 | Validates wave-end arguments, planned child bindings and served-build preconditions. |
 | wave-end-gate-contracts.spec.mjs | spec | ACTIVE | 2026-09-16 | 3 | Verifies wave-end binding and receipt contracts independently of process execution. |
-| wave-end-gate-receipt.mjs | other | ACTIVE | 2026-09-19 | 11 | Normalizes wave-end child results and constructs durable receipts and summaries. |
+| wave-end-gate-receipt.mjs | other | ACTIVE | 2026-09-19 | 12 | Normalizes wave-end child results and constructs durable receipts and summaries. |
 | wave-end-gate.mjs | other | ACTIVE | 2026-09-16 | 25 | Q-152 — close a multi-batch wave with served-build preflights, smoke/sweep/visual gates, and banked receipts. The verdict is ROOT-BOUND: no child emits a typed receipt, so the root derives one per step from its own run id, time window, root-supplied source tuple, preflighted served subject, fixed-report freshness snapshot, and the step's own declared exit-code map (`binding`, echoed in the receipt). Bindability is a function of the arguments — `--update-baselines` still refuses pre-spawn with exit 3 and zero children spawned, naming every blocker and its remediation. |
 | wave-end-gate.spec.mjs | spec | NO @purpose HEADER | 2026-09-16 | 19 | — |
 
@@ -539,7 +539,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | compute-cloud-previous-frame-rte.spec.mjs | spec | NO @status HEADER | 2026-09-18 | 2 | Executes the real camera packers of the compute-instance and cloud-collection WebGPU renderers from Node to prove their previous-frame lanes carry a relative-to-eye pair taken from UniformState, and cross-checks every float offset against the renderers' own WGSL struct text and size constants. |
 | contact-sheet.mjs | other | ACTIVE | 2026-09-19 | 5 | Thin CLI shell that reads a capture manifest, builds the pure contact-sheet page model, writes the self-contained sheet directory, and exits independently of any mismatch value. |
 | contact-sheet.spec.mjs | spec | ACTIVE | 2026-09-19 | 4 | Drive the real sheetModel/renderSheetHtml/sheetIndexEntry and runContactSheet against fixtures, asserting the manifest-validity, no-verdict-token and exit-code-independence output contracts DX-105 owns. |
-| context-3d-texture-limit.spec.mjs | spec | ACTIVE | — | 3 | Pins that Context reports the 3D-texture limit its gl object supplies - the driver value on WebGL2, the stub's value under the spec WebGL stub, and 0 on WebGL1 - and that the sibling array-texture-layer limit keeps its webgl2 gate. |
+| context-3d-texture-limit.spec.mjs | spec | ACTIVE | 2026-09-19 | 3 | Pins that Context reports the 3D-texture limit its gl object supplies - the driver value on WebGL2, the stub's value under the spec WebGL stub, and 0 on WebGL1 - and that the sibling array-texture-layer limit keeps its webgl2 gate. |
 | core-event-lifecycle.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Asserts Event survives a throwing listener and EventHelper's remover never orphans another registration, through the engine's own Core modules. |
 | coveragejson-antimeridian.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | C13-08: CoverageJSON cyclic-longitude unwrap through WeatherFieldGrid + WeatherTexPacker so antimeridian-crossing CRS84 axes parse right. |
 | cpu-frame-accounting.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Deterministic-clock tests of WebGPUCpuPassProfiler whole-scene phase accounting (CPU_SCENE_PHASE_NAMES coverage, no wall-clock leakage). |
@@ -672,7 +672,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | moon-webgpu-texture-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral tests of the WebGPU moon texture lifecycle: pair keys, candidate commit, channel reconcile, retire and diagnostics accounting. |
 | moonlight-scene-light.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Proves a MoonLight scene light produces a real ephemeris direction through the live UniformState.update, that the moon eye-space direction is unchanged by it, and that the lunar dimming arm downstream is therefore reachable. |
 | mutate-or-fail.spec.mjs | spec | ACTIVE | 2026-09-02 | 2 | Pins mutateOrFail's contract — a changed rewrite returns the |
-| nasa-svs-5073-umbra-fixture.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Offline pin of the exact cropped NASA SVS 5073 umbra_lo shapefile shard (byte hashes, optional full-source reconstruction); no rendering. |
+| nasa-svs-5073-umbra-fixture.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Offline pin of the exact cropped NASA SVS 5073 umbra_lo shapefile shard (byte hashes, optional full-source reconstruction); no rendering. |
 | ocean-datum.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Analytic trust anchor for the datum probe: table sanity, regression/classifier correctness, exit-code mapping, probe-model drift check. |
 | ocean-per-frame-scratch.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 3 | — |
 | ocean-simulation-clock.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Executes the FFT surface's simulation-clock law and the renderer's own time expression out of the shipped source, pinning that a held clock freezes the sea and a running one advances it at real rate. |
@@ -1519,27 +1519,27 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| voxel-octree-l3.mjs | fixture | ACTIVE | 2026-08-16 | 6 | Self-contained 3-level CUSTOM box voxel provider whose self-similar gy==gz diagonal yields per-level traversal-depth discriminators for octree probes. |
+| voxel-octree-l3.mjs | fixture | ACTIVE | 2026-08-16 | 7 | Self-contained 3-level CUSTOM box voxel provider whose self-similar gy==gz diagonal yields per-level traversal-depth discriminators for octree probes. |
 | voxel-octree-l4.mjs | fixture | ACTIVE | 2026-08-16 | 5 | 4-level small-tile (2x2x2) CUSTOM voxel provider whose L3 discriminators detect whether the WebGPU march reaches octree depth 3. |
 
 ### Tools/visual-regression/fixtures/capture-seam/ (1)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| rigs.mjs | fixture | ACTIVE | 2026-09-19 | 1 | Fixture rig records for capture-seam.spec.mjs: an absolute-url split-screen rig carrying a gate, a relative-page rig, and a page-null rig. |
+| rigs.mjs | fixture | ACTIVE | 2026-09-19 | 2 | Fixture rig records for capture-seam.spec.mjs: an absolute-url split-screen rig carrying a gate, a relative-page rig, and a page-null rig. |
 
 ### Tools/visual-regression/fixtures/nasa-svs-5073/ (2)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| derive-umbra-lo-shard.mjs | fixture | ACTIVE | 2026-08-16 | 2 | Deterministically crops four hash-verified umbra_lo records from NASA SVS 5073 into the pinned C12-29 S5 eclipse-footprint fixture shard. |
-| nasa-svs-5073-shapefile.mjs | fixture | ACTIVE | 2026-08-16 | 5 | Dependency-free ESRI Shapefile Polygon + dBASE reader for the SVS 5073 umbra fixture, parseable by node --test and same-origin browser probes alike. |
+| derive-umbra-lo-shard.mjs | fixture | ACTIVE | 2026-08-16 | 3 | Deterministically crops four hash-verified umbra_lo records from NASA SVS 5073 into the pinned C12-29 S5 eclipse-footprint fixture shard. |
+| nasa-svs-5073-shapefile.mjs | fixture | ACTIVE | 2026-08-16 | 6 | Dependency-free ESRI Shapefile Polygon + dBASE reader for the SVS 5073 umbra fixture, parseable by node --test and same-origin browser probes alike. |
 
 ### Tools/visual-regression/fixtures/wave-end-contact-sheet/ (1)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| fixture-receipt-input.mjs | fixture | ACTIVE | 2026-09-19 | 1 | The one fixed `buildReceipt` input shared by the golden-comparison |
+| fixture-receipt-input.mjs | fixture | ACTIVE | 2026-09-19 | 2 | The one fixed `buildReceipt` input shared by the golden-comparison |
 
 ### Tools/visual-regression/lib/ (130)
 
