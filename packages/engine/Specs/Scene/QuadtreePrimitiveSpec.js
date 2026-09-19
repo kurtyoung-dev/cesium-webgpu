@@ -72,6 +72,8 @@ describe("Scene/QuadtreePrimitive", function () {
         context: {
           drawingBufferWidth: scene.drawingBufferWidth,
           drawingBufferHeight: scene.drawingBufferHeight,
+          getFeatureRenderer: () => undefined,
+          limits: { maximumTextureImageUnits: 16 },
         },
         mode: SceneMode.SCENE3D,
         commandList: [],

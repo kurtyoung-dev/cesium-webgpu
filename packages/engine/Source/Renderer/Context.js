@@ -452,9 +452,12 @@ class Context extends GraphicsContext {
       maximumTextureImageUnits: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS),
       maximumRenderbufferSize: gl.getParameter(gl.MAX_RENDERBUFFER_SIZE),
       maximumTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
-      maximum3DTextureSize: webgl2
-        ? gl.getParameter(gl.MAX_3D_TEXTURE_SIZE)
-        : 0,
+      // A WebGL1 context exposes no MAX_3D_TEXTURE_SIZE enum, so the read
+      // yields null there and the capability record coalesces it to 0.
+      maximum3DTextureSize: gl.getParameter(gl.MAX_3D_TEXTURE_SIZE),
+      // This sibling keeps the gate: not every context this constructor runs
+      // against answers MAX_ARRAY_TEXTURE_LAYERS, and an unanswered parameter
+      // is worse than the zero a WebGL1 context reports.
       maximumArrayTextureLayers: webgl2
         ? gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS)
         : 0,

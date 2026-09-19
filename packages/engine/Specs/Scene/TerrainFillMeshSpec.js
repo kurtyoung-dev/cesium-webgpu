@@ -61,6 +61,7 @@ describe("Scene/TerrainFillMesh", function () {
       context: {
         drawingBufferWidth: scene.drawingBufferWidth,
         drawingBufferHeight: scene.drawingBufferHeight,
+        getFeatureRenderer: () => undefined,
       },
       mode: SceneMode.SCENE3D,
       commandList: [],

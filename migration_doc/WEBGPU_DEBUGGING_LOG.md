@@ -22642,3 +22642,72 @@ that same read on every checkout, so removing the normalisation reddens a test o
 well (measured: C4 fails with "the struct trailing-line mutation anchor has moved"). Mutant
 identity belongs to the source text, not to the checkout's line endings — the rule
 `Tools/visual-regression/capture-source-eol-identity.spec.mjs` already states for built output.
+
+## Bug ci-l6-01 — a WebGL2-only gate on the 3D-texture limit made every stubbed spec context report 0, and the `RuntimeError` that followed aborted both karma suites (lane CI-L6 / Mirabella, 2026-09-19)
+
+**Files affected.** `packages/engine/Source/Renderer/Context.js` (`:455-457`, the fix);
+`Specs/getWebGLStub.js` (`:4`, `:238`, `:252-258`, read-only evidence);
+`packages/engine/Source/Renderer/GraphicsCapabilities.js` (`:10`, `:70`, the coalescing that makes
+the fix safe on WebGL1); `packages/engine/Source/Scene/Megatexture.js` (`:52`, `:410-413`, the
+consumer that threw).
+
+**Symptom.** Both browser jobs of the `dev` workflow ended with `ERROR`, not merely with failures:
+
+```
+Chrome Headless 152.0.0.0 (Linux 0.0.0): Executed 14264 of 18509 (67 FAILED) (skipped 91) ERROR
+Firefox 155.0 (Linux 0.0.0):             Executed 14277 of 18515 (67 FAILED) (skipped 78) ERROR
+  An error was thrown in afterAll
+  RuntimeError: The GL context does not support a 3D texture large enough to contain a tile with the given dimensions.
+```
+
+4,154 (chrome) and 4,160 (firefox) specs never executed, including all of `packages/widgets`.
+Visible in the executed part: `Renderer/Context :: get maximum3DTextureSize`
+(`Expected 0 to be greater than or equal 256`, `ContextSpec.js:76`), `Scene/Megatexture` ×5,
+`Scene/VoxelCell` ×5, and — debug build only — `Renderer/Texture3D :: can copy into a subregion from
+a typed array`, whose `it()` is the one in its `describe` without the `if (!context.webgl2) return;`
+guard its siblings carry.
+
+**Root cause.** `Context.js:455-457` read the limit as `webgl2 ? gl.getParameter(gl.MAX_3D_TEXTURE_SIZE) : 0`,
+where `webgl2` is `glContext instanceof WebGL2RenderingContext` (`:421-422`). Under `--webgl-stub`
+the context is `clone(WebGLConstants)` — a plain object — so the `instanceof` is false in every
+browser and the limit was pinned to 0, discarding the 2048 the stub deliberately supplies
+(`getWebGLStub.js:238`, added upstream so that specs could exercise 3D textures at all). Zero then
+fails `Megatexture.get3DTextureDimension`'s first guard for any tile, and because
+`VoxelCellSpec.js:26` builds its primitive inside a `beforeAll`/`pollToPromise`, the throw escaped
+into `afterAll`, which karma treats as a run-ending browser error rather than a spec failure. The
+gate arrived with the per-context `GraphicsCapabilities` migration
+(`0e35c68c7658425bfa222972cc3370185987d9f0`, Batch 656, 2026-07-16); the same file read the parameter
+unconditionally before it, and upstream still does.
+
+**Fix.** Restore upstream's unconditional read. No gate is needed for a real WebGL1 context: the
+enum is absent there, `getParameter` of an invalid enum returns `null` rather than throwing, and
+`GraphicsCapabilities.create` coalesces `null` to the record's 0 default. The sibling
+`maximumArrayTextureLayers` KEEPS its gate — the stub carries that enum but supplies no value, so an
+ungated read throws out of the stub in a debug build and answers `undefined` in a release build. Both
+facts are asserted in `Tools/visual-regression/context-3d-texture-limit.spec.mjs` against the real
+stub source, compiled once as authored and once with the debug pragma stripped.
+
+**Also fixed, same commit.** Three spec mocks that claimed to be a context and were not, all throwing
+`TypeError: … getFeatureRenderer is not a function`: `TerrainFillMeshSpec.js` and
+`QuadtreePrimitiveSpec.js` gain `getFeatureRenderer: () => undefined`; `BillboardCollectionSpec.js`
+stops spreading a live `Context` into an object literal (which drops every prototype method) and uses
+`Object.create(context, { instancedArrays: { value: undefined } })` instead.
+
+**And the second read in the same function, which the first pass missed.** Satisfying
+`getFeatureRenderer` only moves the throw thirteen lines down:
+`GlobeSurfaceTileProviderRendering.js:1732` reads `context.limits.maximumTextureImageUnits`, put
+there by `040ffc814dfa4c6af41b57ef9ef4867f6d1aa406` ("Batch 664", 2026-07-16 — the same per-context
+window as Batch 656) in place of the module global upstream still reads
+(`GlobeSurfaceTileProvider.js:2536`). `QuadtreePrimitiveSpec`'s mock therefore carries
+`limits: { maximumTextureImageUnits: 16 }` as well — 16 is the stub's own value at
+`Specs/getWebGLStub.js:235` — and without it the seven `Scene/QuadtreePrimitive` failures persist
+with a different message and the five 30-second jasmine timeouts persist unchanged.
+`TerrainFillMesh.js` reads exactly one context property in the whole file, so its mock needs only
+the first. Both facts are asserted in Node: the spec drives the REAL prologue of
+`addDrawCommandsForTile` with the REAL mock literal sliced out of the spec file and checks that every
+`context` property the function reads is answered — which is the check that would have caught this
+before CI did.
+
+**What this does not do.** It does not make either job green. It removes the abort, which lets ~4,200
+specs run for the first time since 2026-07-16; their failures are newly visible, not newly broken,
+and banking that set as the baseline is the next step.

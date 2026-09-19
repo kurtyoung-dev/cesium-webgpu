@@ -23535,3 +23535,158 @@ control — it is on the dedicated `Scene/PointCloud.js` path, which hands a han
 generator. Every WebGPU leg is a control for the same reason: the WebGPU side assembles its shaders
 in `Renderer/WebGPU/WGSLShaderBuilder.js`, which imports neither `ShaderStruct` nor
 `ShaderFunction`. Recorded in the lane's landing packet; not run in-lane (lanes run no browser).
+
+## 2026-09-19 — lane CI-L6 (Mirabella): the 3D-texture limit that reported 0 under the spec WebGL stub, and aborted both karma jobs
+
+**`CI-L6-CONTEXT-3D-LIMIT` — `packages/engine/Source/Renderer/Context.js:455-457` gated
+`maximum3DTextureSize` on `webgl2`, so every stubbed spec context reported 0** *(2026-09-19, FIXED in
+the filing patch; FORK-authored, blame `0e35c68c7658425bfa222972cc3370185987d9f0` "Batch 656:
+SOL-LAND-01 shared core … per-context GraphicsCapabilities", 2026-07-16)*. `webgl2` is
+`glContext instanceof WebGL2RenderingContext` (`:421-422`). `Specs/getWebGLStub.js:4` builds the fake
+context as `clone(WebGLConstants)` — a plain object — so that test is false for every `--webgl-stub`
+spec context in every browser, and the limit was forced to 0 even though the stub answers **2048**
+for `MAX_3D_TEXTURE_SIZE` (`Specs/getWebGLStub.js:238`). The same commit introduced the fork-only
+`maximumArrayTextureLayers` (`:458-460`) with the identical gate; `maximumSamples` (`:469`) already
+carried it and is upstream's own form.
+
+**Upstream at the same anchor** reads it unconditionally —
+`ContextLimits._maximum3DTextureSize = gl.getParameter(gl.MAX_3D_TEXTURE_SIZE);`
+(`git show upstream/main:packages/engine/Source/Renderer/Context.js:104`) — and gates only
+`_maximumSamples` on `this._webgl2` (`:118-120`). Upstream has no `maximumArrayTextureLayers` at all.
+The pre-Batch-656 fork read it unconditionally too (`0e35c68c76^:…/Context.js:460`), so this was a
+regression away from upstream, not a fork feature.
+
+**The fix is upstream's form**, restored: `maximum3DTextureSize: gl.getParameter(gl.MAX_3D_TEXTURE_SIZE),`.
+Three candidate forms were on the table and the choice is behavioural, not stylistic:
+
+- On a **real WebGL2** context all three report the driver value.
+- On the **spec stub** the unconditional read and the `defined(getWebGLStub)` hatch both report 2048;
+  so does a `defined(gl.MAX_3D_TEXTURE_SIZE)` capability gate, because the stub is a clone of
+  `WebGLConstants` and therefore carries the enum.
+- On a **real WebGL1** context the unconditional read needs no gate, and this is the piece that
+  decided it: `gl.MAX_3D_TEXTURE_SIZE` is `undefined` there, WebIDL converts it to `GLenum` 0,
+  `getParameter` records INVALID_ENUM and returns `null` (it does not throw), and
+  `GraphicsCapabilities.create` coalesces with `options[name] ?? limitDefaults[name]` whose default
+  is 0 (`Renderer/GraphicsCapabilities.js:10`, `:70`). **The fork's own capability factory already
+  supplies the WebGL1 zero.** Neither triage report noticed that, and it is what makes the
+  minimum-divergence form also the correct one.
+- The `webgl2 || defined(getWebGLStub)` hatch would put a **test-only branch in the production
+  capability table** (Principle 9). The `defined(gl.MAX_3D_TEXTURE_SIZE)` gate would add a **new**
+  fork divergence whose condition tests for an enum constant rather than a capability, and it is a
+  trap — see the next paragraph.
+
+**HARD CONSTRAINT, recorded so nobody extends the pattern.** `maximumArrayTextureLayers` keeps its
+`webgl2` gate. `Specs/getWebGLStub.js` has **no `parameterStubValues` entry** for
+`MAX_ARRAY_TEXTURE_LAYERS`, but `Core/WebGLConstants.js:424` **does** define the enum and the stub
+clones it — so "the constant is present" is true while "a value is supplied" is false, and a
+capability gate of the form `defined(gl.MAX_ARRAY_TEXTURE_LAYERS)` would be **true** for the stub.
+An ungated read of that parameter **throws** `DeveloperError: A WebGL parameter stub for 35866 is not
+defined. Add it.` in a debug build (the `coverage (firefox)` job) and yields `undefined` in a release
+build (the `release-tests (chrome)` job), because the throw at `getWebGLStub.js:252-258` sits inside
+`//>>includeStart('debug'…)`. Both are worse than the 0 it returns today. Wanting that limit under
+the stub means adding a stub value first, in its own change. The spec below runs the REAL stub source
+both ways and asserts both outcomes, so an "extend the same pattern" edit fails in Node rather than
+in CI.
+
+**Companion, same commit, three spec files (`fork-test-defect`).** `Scene/TerrainFillMesh.js:1313`
+and `Scene/GlobeSurfaceTileProviderRendering.js:1719` call `context.getFeatureRenderer(...)`
+unguarded, which is correct for a real context; three spec mocks were never updated and threw
+`TypeError: … getFeatureRenderer is not a function`. Repaired on the **mock** side:
+`TerrainFillMeshSpec.js:61-65` and `QuadtreePrimitiveSpec.js:72-77` gain
+`getFeatureRenderer: () => undefined` (no renderer registered ⇒ the WebGL path, which is upstream's
+unconditional behaviour), and `BillboardCollectionSpec.js:1807-1812` stops spreading a live `Context`
+instance into an object literal — `{ ...context, instancedArrays: undefined }` drops every prototype
+method — and uses `Object.create(context, { instancedArrays: { value: undefined } })`, which keeps
+the prototype chain and shadows only the one accessor the spec means to disable.
+
+**`getFeatureRenderer` was not the only per-context read that migration left in that function, and a
+mock repair that stops at the first one only changes the error message.** Thirteen lines below the
+feature-renderer branch, `GlobeSurfaceTileProviderRendering.js:1732` reads
+`context.limits.maximumTextureImageUnits`, moved there by `040ffc814dfa4c6af41b57ef9ef4867f6d1aa406`
+("Batch 664 … SOL-LAND-09", **2026-07-16**, the same window as Batch 656) from the module global
+upstream still uses (`git show upstream/main:…/Scene/GlobeSurfaceTileProvider.js:2536`
+`let maxTextures = ContextLimits.maximumTextureImageUnits;`). So `QuadtreePrimitiveSpec`'s mock gains
+a **second** property, `limits: { maximumTextureImageUnits: 16 }` — 16 being the spec stub's own
+value for that parameter (`Specs/getWebGLStub.js:235`) — and without it those seven specs keep
+failing out of the same call, with the five 30-second jasmine timeouts intact.
+`TerrainFillMeshSpec` needs no equivalent: `TerrainFillMesh.js` reads exactly one context property in
+the whole file, and its reachable WebGL path is spied in `Specs/TerrainTileProcessor.js:100-121`.
+**The general rule this leaves behind:** when repairing a mock against a per-context-capabilities
+migration, read the WHOLE function for `context.` reads — Batch 656 and Batch 664 moved two different
+capabilities into one function thirteen lines apart, and each throws on the next call once the
+previous one is satisfied.
+
+*The engine-side alternative was considered and declined.* Adding `?.` at the call sites was proposed
+from merge convenience (both spec files are byte-identical to `upstream/main`, verified by md5 at
+`0f0fa444e8`). Against it: the guard is inert in production by construction, it converts "you handed
+Scene code something that is not a `GraphicsContext`" from a loud `TypeError` into a silent WebGL
+fallback, and — **a premise correction to the brief** — it is not one call site. The brief cited
+`GlobeSurfaceTileProviderRendering.js:335`; there is no such call there (`:335` is a
+`Cartesian3.fromRadians`). That file has four (`:1169`, `:1414`, `:1719`, `:2711`), and the two
+clusters reach `:1719` and `TerrainFillMesh.js:1313`, so the guard would land at 2 of 5 sites — a
+patch for the two mocks that happen to reach them, not a tolerance policy. The mock is the thing that
+is wrong; it is repaired where it is wrong. The sync cost is real and small: one added line inside an
+object literal in each of two files, and three lines for one in the third.
+
+**Proven in Node** by `Tools/visual-regression/context-3d-texture-limit.spec.mjs` (new; joins
+`test-engine-node`, add-only, `22 → 23` spec files), **21 tests, 21 pass**. It slices real source
+regions and runs them with `vm.compileFunction` against real engine modules, because neither
+`Context.js` (needs generated shader modules) nor `Megatexture.js` (a transitive `.ts` uses a
+TypeScript enum, which Node's strip-only loader rejects) can be imported on an unbuilt clone:
+`Context.js`'s `capabilityOptions` literal through the REAL `GraphicsCapabilities.create` for a
+WebGL2-shaped, a stub-shaped and a WebGL1-shaped `gl`; `Context.js`'s own
+`this._graphicsCapabilities = GraphicsCapabilities.create(capabilityOptions)` statement, so the path
+from the literal to the record is under test and not only the literal; `getWebGLStub.js`'s
+`getParameterStub` compiled twice, as authored and with the debug pragma stripped;
+`Megatexture.get3DTextureDimension` with `MegatextureSpec`'s own "constructs" inputs, so the observed
+`RuntimeError` message is the one the aborted CI run printed, plus the constructor's own read of
+`context.limits.maximum3DTextureSize`; and the prologue of `addDrawCommandsForTile` driven with the
+mock context sliced out of the real `QuadtreePrimitiveSpec.js`. Outputs asserted: **16384 / 2048 /
+0**, `>= 256` (ContextSpec's own bar), the raw WebGL1 read being `null` rather than 0, the WebGPU
+record still built from device limits, and every `context` property the tile function reads being
+answered by that mock. **What it does not cover:** it never constructs a `Context` — that needs a
+built tree and a browser, and the end-to-end assertion is `Specs/Renderer/ContextSpec.js:76` on the
+karma leg.
+
+**Mutants, eleven, all RED.** `false ? gl.getParameter(gl.MAX_3D_TEXTURE_SIZE) : 0` (inert) →
+`# fail 7`; the original `webgl2 ? … : 0` restored → `# fail 6`, B2 reporting `0 !== 2048`; a
+`defined(getWebGLStub)`-only hatch → 2; dropping `?? limitDefaults[name]` from
+`GraphicsCapabilities.js` while the fix line stands → 2; a shadowing duplicate
+`maximum3DTextureSize: 0` that leaves the fix line literally present → 7; deleting the stub's own
+2048 → 9; **overriding the limit where the record is built, with the literal untouched → 1 (G1)**;
+**`0` in place of `context.limits.maximum3DTextureSize` at `Megatexture.js:52` → 1 (G2)**; removing
+the mock's `limits` → 2 (F1/F4); removing the mock's `getFeatureRenderer` → 2; adding a third engine
+read the mock does not answer → 1 (F4). Every one is applied to a temp COPY reached through a
+`CESIUM_L6_*` override so the OUTPUT changes rather than code disappearing, except the
+`GraphicsCapabilities.js` one, which is restored byte-for-byte with its md5 compared.
+
+**This change does not by itself turn a CI job green, and the packet says so up front.** It removes
+the `ERROR` that ends both runs. About **4,154** specs (chrome: `18509 − 14264 − 91`) and **4,160**
+(firefox: `18515 − 14277 − 78`) then execute for the first time since 2026-07-16, and some will
+report their own failures — **newly visible, not newly broken**. The acceptance is the abort
+disappearing, `Executed` rising to ≈`18,4xx of 18,5xx`, and the named specs leaving the failure lists
+with no new names among the previously-executing 14,2xx. **The new failure set is the lane's real
+deliverable and it cannot be produced here** — no lane runs karma. It is produced by the Edge leg or
+the first `dev` run after this lands, normalised to `suite :: name` for both jobs and banked as the
+baseline CI-L9 is scoped against.
+
+**DX, surfaced with evidence.** `npm run test-engine-node` cannot be run whole on a provisioned but
+unbuilt lane clone: 6 of its 23 spec files (`buffer-polyline-meters-width`,
+`buffer-primitive-collection-feature-renderer-teardown`, `clipping-polygon-rebake-revision-signal`,
+`clipping-polygon-texture-backend-claim`, `globe-surface-tile-provider-clipping-teardown`,
+`vector-draping-pick-identity`) die with `ERR_MODULE_NOT_FOUND` on generated
+`packages/engine/Source/Shaders/*.js`, at this lane's base and with its patch alike (`361 tests, 355
+pass, 6 fail` with the patch, identical set both ways). A lane cannot tell "my change broke it" from
+"no build" without running each file and reading the error. Either those six move to a build-gated
+runner or the runner skips structurally when the generated shaders are absent, the way
+`cloud-primary-ray.spec.mjs` already does. Seconded independently by this lane's reviewer and its
+verifier, each reproducing the same six files in their own clones.
+
+**DX, second row — a CI triage that banks one of two browser jobs.** The lane brief quoted the
+`coverage (firefox)` summary line and stack verbatim and told the lane to verify them from the
+banked karma logs, but no firefox/coverage log was banked: in the triage folder `grep -il firefox`
+matches only the `.md`/`.txt` reports, and the only file containing `14277` matches it inside a
+timestamp. Every firefox number in that plan was therefore unverifiable from the banked evidence —
+they are in fact correct, confirmed by fetching the job live — but that is exactly the shape
+Principle 10 names. Proposed row: bank **both** browser logs, or mark in the brief which numbers
+came from a live fetch so the next lane knows what it can check.

@@ -1807,7 +1807,9 @@ describe("Scene/BillboardCollection", function () {
         expect(() =>
           billboards.update({
             ...scene.frameState,
-            context: { ...context, instancedArrays: undefined },
+            context: Object.create(context, {
+              instancedArrays: { value: undefined },
+            }),
           }),
         ).toThrowDeveloperError(/ANGLE_instanced_arrays/);
       });

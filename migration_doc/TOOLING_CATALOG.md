@@ -222,12 +222,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1400 |
-| ACTIVE | 1159 |
+| Files in census | 1401 |
+| ACTIVE | 1160 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 44 |
 | NO @status HEADER | 1 |
-| Classes | probe 676, spec 387, other 155, lib 135, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
+| Classes | probe 676, spec 388, other 155, lib 135, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
 
 ### Tools/ (64)
 
@@ -426,7 +426,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1062)
+### Tools/visual-regression/ (1063)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -539,6 +539,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | compute-cloud-previous-frame-rte.spec.mjs | spec | NO @status HEADER | 2026-09-18 | 2 | Executes the real camera packers of the compute-instance and cloud-collection WebGPU renderers from Node to prove their previous-frame lanes carry a relative-to-eye pair taken from UniformState, and cross-checks every float offset against the renderers' own WGSL struct text and size constants. |
 | contact-sheet.mjs | other | ACTIVE | 2026-09-19 | 5 | Thin CLI shell that reads a capture manifest, builds the pure contact-sheet page model, writes the self-contained sheet directory, and exits independently of any mismatch value. |
 | contact-sheet.spec.mjs | spec | ACTIVE | 2026-09-19 | 4 | Drive the real sheetModel/renderSheetHtml/sheetIndexEntry and runContactSheet against fixtures, asserting the manifest-validity, no-verdict-token and exit-code-independence output contracts DX-105 owns. |
+| context-3d-texture-limit.spec.mjs | spec | ACTIVE | — | 3 | Pins that Context reports the 3D-texture limit its gl object supplies - the driver value on WebGL2, the stub's value under the spec WebGL stub, and 0 on WebGL1 - and that the sibling array-texture-layer limit keeps its webgl2 gate. |
 | core-event-lifecycle.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Asserts Event survives a throwing listener and EventHelper's remover never orphans another registration, through the engine's own Core modules. |
 | coveragejson-antimeridian.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | C13-08: CoverageJSON cyclic-longitude unwrap through WeatherFieldGrid + WeatherTexPacker so antimeridian-crossing CRS84 axes parse right. |
 | cpu-frame-accounting.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Deterministic-clock tests of WebGPUCpuPassProfiler whole-scene phase accounting (CPU_SCENE_PHASE_NAMES coverage, no wall-clock leakage). |
@@ -1602,7 +1603,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-02 | 17 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 5 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
 | engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 30 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
-| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 42 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
+| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 43 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | globe-camera-track.mjs | lib | ACTIVE | 2026-08-16 | 13 | Shared orbit-to-ground camera route (plain serializable waypoints) used by both the visual parity probe and the performance campaign. |
 | globe-pipeline-readiness.mjs | lib | ACTIVE | 2026-08-29 | 5 | Pure scoring for the pipeline-readiness probe: snapshot summary, coverage-divergence scoring, non-vacuity; keys decoded via canonical parser. |
