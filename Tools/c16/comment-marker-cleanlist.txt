@@ -770,3 +770,7 @@ packages/engine/Source/Shaders/SkyBoxFS.glsl
 packages/engine/Source/Shaders/WebGPU/Compute/ClusterAssign.wgsl
 packages/engine/Source/Shaders/WebGPU/Compute/GBufferNormalsFromDepth.wgsl
 packages/engine/Source/Shaders/WebGPU/FlowFieldRender.wgsl
+
+# Space-weather state packet and its deterministic manual driver, authored to
+# the standard rather than remediated to it.
+packages/engine/Source/Scene/SpaceWeather

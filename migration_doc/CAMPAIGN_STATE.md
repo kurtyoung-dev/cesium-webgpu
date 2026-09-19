@@ -257,6 +257,15 @@ depends on: [`PROBE_KIT_PLAN_2026-09-17.md`](PROBE_KIT_PLAN_2026-09-17.md) secti
 [`QUEUE_2026-08-29_RESEARCH_DISPATCH.md`](QUEUE_2026-08-29_RESEARCH_DISPATCH.md) section 6a.1
 (`R-2026-09-17-12`).
 
+**2026-09-18 — `C15-01` is dispatched, frozen and reviewed under that release.** Lane Stoor built the
+backend-neutral state packet and deterministic manual driver at
+`packages/engine/Source/Scene/SpaceWeather/` on `1a2baeaa4a`: 18 Node tests homed in
+`test-visual-regression-node`, a karma twin owed to the wave's Edge job, eleven mutants each RED.
+Station 3 (Harfoot) returned **LAND-WITH-FIXES** the same day and the lane re-froze as v2 with all of
+them applied — enum key widening removed, a step-hold test added that turns the reviewer's two
+ordering mutants RED, and the geomagnetic-frame epoch made a validation requirement. Awaiting landing.
+`C15-02` (lane Bucca) runs concurrently against the interface `C15-01` published.
+
 **GSPLAT (`C15-G0..G8`, §6, ruling R6, 2026-08-06): ACTIVE, not under the R4 hold.** `G0` scoping
 COMPLETE (Batch 863); `G1`–`G5` LANDED (Batches 868–895: harness → scene-logic extraction → first
 real WebGPU splat pixels → WASM radix sort → spherical harmonics); `G6` PARTIAL (mechanism fixed

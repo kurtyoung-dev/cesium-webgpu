@@ -222,12 +222,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1332 |
-| ACTIVE | 1091 |
+| Files in census | 1333 |
+| ACTIVE | 1092 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 44 |
 | NO @status HEADER | 1 |
-| Classes | probe 676, spec 376, lib 120, other 115, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
+| Classes | probe 676, spec 377, lib 120, other 115, gate-lib 21, bake-tool 13, runner 7, fixture 4 |
 
 ### Tools/ (62)
 
@@ -422,7 +422,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1052)
+### Tools/visual-regression/ (1053)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1397,6 +1397,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | skybox-resolution-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 7 | Browser-free trust anchor for the star cube-map policy: 2048 default vs disk both directions, honest 4096 opt-in fallback, VRAM re-derived. |
 | solar-disc-model.spec.mjs | spec | ACTIVE | 2026-08-28 | 8 | Pins SolarDiscModel as the constants source for eclipse photometry, both sun-disc bakes, and the atmospheric alpha co-fade derivation. |
 | solar-glare-star-washout.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | C12-27: extracts solarGlareVeil from five shader texts, compiles each, requires 1e-15 agreement with the JS reference; rejects 7 wrong curves. |
+| space-weather-state-packet.spec.mjs | spec | ACTIVE | — | 4 | Output contract for the backend-neutral space-weather packet: preset values, timeline determinism, zero-cost OFF, per-field authority, flare/geomagnetic independence, validation rejections, staleness. |
 | spec-cesium-viewer-dev-ui.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | CesiumViewer start contract: dev chrome built only under devUi (absent, not hidden), bare URL resolves WebGPU non-strict, fleet URLs stable. |
 | spec-cesium-viewer-loading-parity.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Loading-presentation parity: the async WebGPU viewer path adds no chrome of its own; the page indicator hides at first rendered frame on both. |
 | spec-offline-isolation.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | C11-134: pins the external-URL classifier (fail-closed) and the online-lane quarantine so network suites skip with a reason offline. |
@@ -1574,7 +1575,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-02 | 16 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 5 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
 | engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 30 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
-| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 41 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
+| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 42 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | globe-camera-track.mjs | lib | ACTIVE | 2026-08-16 | 13 | Shared orbit-to-ground camera route (plain serializable waypoints) used by both the visual parity probe and the performance campaign. |
 | globe-pipeline-readiness.mjs | lib | ACTIVE | 2026-08-29 | 5 | Pure scoring for the pipeline-readiness probe: snapshot summary, coverage-divergence scoring, non-vacuity; keys decoded via canonical parser. |

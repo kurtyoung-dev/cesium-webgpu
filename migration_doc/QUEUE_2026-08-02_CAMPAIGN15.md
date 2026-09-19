@@ -384,7 +384,7 @@ not externally trained scenes.
 | ID | Work | Priority | Status | Depends on |
 |---|---|---:|---|---|
 | `C15-00` | Correct campaign identity; verify science, live schemas, lifecycle, and data-use constraints; freeze this queue | P0 | **COMPLETE — 2026-08-02 (documentation/research only); live-feed claims MEASURED 2026-08-06 under ruling R4, §2 corrected, exit gate now genuinely met (see §2a)** | — |
-| `C15-01` | Backend-neutral aurora/space-weather state packet and deterministic manual driver | P0 | PENDING — **RELEASED from the R4 hold by `R-2026-09-17-9` (2026-09-17), pending dispatch.** Pure-Node lane; C12 is NOT closed and the release is a named narrow override, not Option C. | `C15-00` |
+| `C15-01` | Backend-neutral aurora/space-weather state packet and deterministic manual driver | P0 | **FROZEN v2 2026-09-18 (lane Stoor); station-3 verdict LAND-WITH-FIXES applied, awaiting landing.** Dispatched under the release it carries: **RELEASED from the R4 hold by `R-2026-09-17-9` (2026-09-17)** — pure-Node lane; C12 is NOT closed and the release is a named narrow override, not Option C. See the §4 row note. | `C15-00` |
 | `C15-02` | WMM2025 geomagnetic coordinates and synthetic activity-dependent oval | P0 | PENDING — **RELEASED from the R4 hold by `R-2026-09-17-9` (2026-09-17), pending dispatch.** Pure-Node lane. | `C15-01` |
 | `C15-03` | Shared layered density/emission kernel, local-night gate, and RTE shell contract | P0 | PENDING — **HELD (R4)**; released by a later one-line ruling once the contact sheet exists (`R-2026-09-17-9`) | `C15-02` |
 | `C15-04` | WebGL + WebGPU shell renderers, visibility demand, and feature-preserving performance tiers | P0 | PENDING — **HELD (R4)** | `C15-03` |
@@ -437,6 +437,43 @@ only this packet, never network payloads.
 Exit: pure-Node mutation tests reject malformed versions, nonfinite/range-invalid
 values, stale regressions, and accidental coupling of flare state into the
 geomagnetic scalar; no network is needed to produce every visual state.
+
+**2026-09-18 — FROZEN, lane Stoor, awaiting review and landing.** Released from
+the R4 hold by the narrow override **R-2026-09-17-9** (`C15-01` and `C15-02`
+only). Built on `1a2baeaa4a`: `packages/engine/Source/Scene/SpaceWeather/` —
+`SpaceWeatherTypes.ts` (versioned packet, per-field authority markers, oval
+field, separate flare channel, frozen enums, the range table and the feed fill
+sentinel), `SpaceWeatherPacket.ts` (validation, authority query, derived
+age/freshness, same-source staleness, `auroraOvalIntensityScale`) and
+`ManualSpaceWeatherDriver.ts` (quiet/moderate/severe presets, the continuous
+activity and planetary-index overrides, the caller-owned ring-current override,
+a scripted interpolating timeline, default-OFF). No `Renderer/` import, no
+backend branch, no I/O. Exit-gate evidence: 18 Node tests in
+`Tools/visual-regression/space-weather-state-packet.spec.mjs` (homed in
+`test-visual-regression-node`) with a karma twin at
+`packages/engine/Specs/Scene/SpaceWeatherStatePacketSpec.js`; eleven mutants each
+RED — the lane's four (wall-clock injection breaks the byte-identical replay;
+flare-into-activity coupling breaks the channel-independence equality; an eager
+build before the enabled check drives `packetsBuilt` from 0 to 1000 while
+disabled; the geomagnetic-epoch rule made unreachable) and the station-3
+reviewer's seven, two of which are ordering mutants over the timeline's
+step-hold. The ring-current index has no built-in provider and validation
+refuses any authority for it other than the caller; a geomagnetic oval is
+refused unless it declares the field-model epoch it was placed by. Not yet run
+in a browser — the karma leg is owed to the wave's Edge job.
+
+**2026-09-18 — v2 after Harfoot's station-3 verdict (LAND-WITH-FIXES).** Four
+changes, no return. The ten widening casts on the frozen enums and
+`SPACE_WEATHER_RANGES` are removed, so a mistyped key is a compile error rather
+than a runtime `undefined` — the sharp case was `SPACE_WEATHER_RANGES.kpIndx`,
+which the published interface tells `C15-02` to clamp against and which threw
+instead of reporting. The `@example` no longer promises a barrel export the
+modules deliberately do not have. One step-hold test per spec pins that the
+timeline's discrete state comes from the step at or before the sample, which
+turns the reviewer's two previously-surviving ordering mutants RED. And
+`validateSpaceWeatherPacket` now refuses a geomagnetic-frame oval that declares
+no field-model epoch, which is the epic's "explicit and replaceable rather than
+hidden in shader constants" made mechanical rather than advisory.
 
 ### C15-02 — Geomagnetic frame + synthetic oval
 
