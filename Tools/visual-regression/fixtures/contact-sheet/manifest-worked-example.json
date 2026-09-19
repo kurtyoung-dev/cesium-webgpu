@@ -1,0 +1,198 @@
+{
+  "schemaVersion": 1,
+  "kind": "capture-manifest",
+  "generatedAt": "2026-09-19T01:23:45.678Z",
+  "captureRoot": "Tools/visual-regression/output/capture/kit-wave-b-2026-09-19",
+  "origins": {
+    "BEFORE": "http://localhost:8080",
+    "AFTER": "http://localhost:8081"
+  },
+  "servedBuildAssertion": "enforced",
+  "receipt": "capture-report.json",
+  "slots": [
+    "BEFORE",
+    "AFTER"
+  ],
+  "renderers": [
+    "webgl",
+    "webgpu"
+  ],
+  "rigs": [
+    {
+      "id": "aurora-orbit-limb",
+      "replayKey": "9f31c0a4",
+      "description": "Camera above the limb looking across the terminator at ~2,000 km",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "cells": {
+        "webgl": {
+          "BEFORE": {
+            "state": "UNMEASURED",
+            "image": null,
+            "reason": "rig declares page: null — no page exists for this rig yet",
+            "trackedBy": "C15-04",
+            "metrics": null
+          },
+          "AFTER": {
+            "state": "UNMEASURED",
+            "image": null,
+            "reason": "rig declares page: null — no page exists for this rig yet",
+            "trackedBy": "C15-04",
+            "metrics": null
+          }
+        },
+        "webgpu": {
+          "BEFORE": {
+            "state": "UNMEASURED",
+            "image": null,
+            "reason": "rig declares page: null — no page exists for this rig yet",
+            "trackedBy": "C15-04",
+            "metrics": null
+          },
+          "AFTER": {
+            "state": "UNMEASURED",
+            "image": null,
+            "reason": "rig declares page: null — no page exists for this rig yet",
+            "trackedBy": "C15-04",
+            "metrics": null
+          }
+        }
+      },
+      "pairs": {
+        "webgl": {
+          "state": "UNMEASURED",
+          "diffImage": null,
+          "mismatchPct": null,
+          "changedPx": null,
+          "bbox": null,
+          "tolerance": null,
+          "metrics": null,
+          "reason": "BEFORE is UNMEASURED"
+        },
+        "webgpu": {
+          "state": "UNMEASURED",
+          "diffImage": null,
+          "mismatchPct": null,
+          "changedPx": null,
+          "bbox": null,
+          "tolerance": null,
+          "metrics": null,
+          "reason": "BEFORE is UNMEASURED"
+        }
+      }
+    },
+    {
+      "id": "globe-default",
+      "replayKey": "4c7ae018",
+      "description": "Default load: full globe centered, Bing imagery, no overlays",
+      "viewport": {
+        "width": 1600,
+        "height": 800
+      },
+      "cells": {
+        "webgl": {
+          "BEFORE": {
+            "state": "MEASURED",
+            "image": "globe-default/webgl/BEFORE.png",
+            "width": 1600,
+            "height": 800,
+            "byteLength": 812345,
+            "sha256": "5b490badeea690e5e960359ba2f62b0d5322332587b6aad47ddcd5b9721f3b6f",
+            "url": "http://localhost:8080/Apps/WebGPUTest/split-screen-comparison.html",
+            "capturedAt": "2026-09-19T01:23:50.101Z",
+            "metrics": {
+              "rawByteLumaMean": 41.27,
+              "nonBlackFraction": 0.8642,
+              "provenance": "display-bytes; descriptive only, not photometric evidence"
+            }
+          },
+          "AFTER": {
+            "state": "MEASURED",
+            "image": "globe-default/webgl/AFTER.png",
+            "width": 1600,
+            "height": 800,
+            "byteLength": 812901,
+            "sha256": "3b5238a87de68fae18f2c9393c413633046cd16f379a5e97b7834fabd687ee32",
+            "url": "http://localhost:8081/Apps/WebGPUTest/split-screen-comparison.html",
+            "capturedAt": "2026-09-19T01:23:58.774Z",
+            "metrics": {
+              "rawByteLumaMean": 41.31,
+              "nonBlackFraction": 0.8644,
+              "provenance": "display-bytes; descriptive only, not photometric evidence"
+            }
+          }
+        },
+        "webgpu": {
+          "BEFORE": {
+            "state": "MEASURED",
+            "image": "globe-default/webgpu/BEFORE.png",
+            "width": 1600,
+            "height": 800,
+            "byteLength": 809114,
+            "sha256": "6a382f911adbb64c32bee54fcf046e02b48ccb22f197807bae6d4b9428c94822",
+            "url": "http://localhost:8080/Apps/WebGPUTest/split-screen-comparison.html",
+            "capturedAt": "2026-09-19T01:24:05.002Z",
+            "metrics": {
+              "rawByteLumaMean": 40.98,
+              "nonBlackFraction": 0.863,
+              "provenance": "display-bytes; descriptive only, not photometric evidence"
+            }
+          },
+          "AFTER": {
+            "state": "MEASURED",
+            "image": "globe-default/webgpu/AFTER.png",
+            "width": 1600,
+            "height": 800,
+            "byteLength": 809440,
+            "sha256": "d06f9cc0aaeb2d1719e190a56c25ee236ca49e32a9990e3c863f5f951015b3d3",
+            "url": "http://localhost:8081/Apps/WebGPUTest/split-screen-comparison.html",
+            "capturedAt": "2026-09-19T01:24:12.658Z",
+            "metrics": {
+              "rawByteLumaMean": 41.02,
+              "nonBlackFraction": 0.8631,
+              "provenance": "display-bytes; descriptive only, not photometric evidence"
+            }
+          }
+        }
+      },
+      "pairs": {
+        "webgl": {
+          "state": "MEASURED",
+          "diffImage": "globe-default/webgl/DIFF.png",
+          "mismatchPct": 0.42,
+          "changedPx": 5376,
+          "bbox": {
+            "x0": 610,
+            "y0": 190,
+            "x1": 980,
+            "y1": 402
+          },
+          "tolerance": 16,
+          "metrics": {
+            "mssim": 0.9971,
+            "windows": 20000
+          }
+        },
+        "webgpu": {
+          "state": "MEASURED",
+          "diffImage": "globe-default/webgpu/DIFF.png",
+          "mismatchPct": 11.07,
+          "changedPx": 141696,
+          "bbox": {
+            "x0": 0,
+            "y0": 0,
+            "x1": 1599,
+            "y1": 799
+          },
+          "tolerance": 16,
+          "metrics": {
+            "mssim": 0.8814,
+            "windows": 20000
+          }
+        }
+      }
+    }
+  ]
+}

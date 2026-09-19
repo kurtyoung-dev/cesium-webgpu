@@ -19,6 +19,12 @@ import {
   makeError,
   makeRefusal,
 } from "./wave-end-gate-binding.mjs";
+import {
+  RENDERER_IDS,
+  SLOT_IDS,
+  VERDICT_TOKENS,
+} from "./visual-regression/lib/contact-sheet-page.mjs";
+import { relativePosixPathViolation } from "./visual-regression/lib/relative-path.mjs";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
@@ -53,6 +59,7 @@ export function buildReceipt({
   reason,
   problem = null,
   verdict,
+  contactSheets,
 }) {
   return {
     schemaVersion: 1,
@@ -111,6 +118,12 @@ export function buildReceipt({
       : null,
     verdict,
     exitCode: exitCodeForS5Status(verdict),
+    // Additive and last: a receipt built with no sheets must serialize
+    // byte-identically to one from before this field existed, so an absent or
+    // empty list omits the key entirely rather than writing `[]`.
+    ...(Array.isArray(contactSheets) && contactSheets.length > 0
+      ? { contactSheets: contactSheets.map(projectContactSheetEntry) }
+      : {}),
   };
 }
 
@@ -601,6 +614,400 @@ function markdownCell(value) {
     .replaceAll("\n", " ");
 }
 
+const CONTACT_SHEET_MD5_PATTERN = /^[0-9a-f]{32}$/;
+
+/**
+ * The kebab-case grammar every rig id in `lib/rig-registry.mjs`'s registry
+ * satisfies today (39 of 39 — pinned by a spec case that loads the real
+ * registry via `loadRigs()` and asserts every id matches; a future rig id
+ * that diverged would turn that case red). `rig-registry.mjs`'s own
+ * `validateRig` requires only a non-empty string for `rig.id` — there is no
+ * grammar there to import, and `rig-registry.mjs` is a landed file outside
+ * this lane's ownership, so the grammar is declared here rather than added
+ * there. It follows the same path-safe identifier discipline
+ * `contact-sheet-page.mjs`'s (unexported) `SHEET_ID_PATTERN` uses:
+ * lowercase-only so it collates and slugifies identically on every OS, and
+ * hyphen-only separation so a rig id can never itself read as prose. Contrast
+ * `sheetId`, which carries no grammar here and is instead covered by
+ * `scanEntryForVerdicts` below.
+ */
+export const RIG_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * The complete field list of a `sheet-index.json` entry (`DX-105`'s
+ * `sheetIndexEntry`), in the order the receipt records them.
+ *
+ * WHY THE LIST EXISTS RATHER THAN A SPREAD. A banked entry is a file on disk
+ * that anyone can edit, and `{...entry}` carries whatever it finds into the
+ * wave-end receipt — including a `verdict: "PASS"` or a `gate` object, which
+ * is the exact vocabulary this row exists to keep out of the artefact, and
+ * including keys that would change the receipt's own top-level shape. The
+ * entry is therefore PROJECTED onto these fields and unknown keys are a
+ * validation violation, not silent freight.
+ */
+export const CONTACT_SHEET_ENTRY_FIELDS = Object.freeze([
+  "schemaVersion",
+  "kind",
+  "sheetId",
+  "date",
+  "path",
+  "md5",
+  "byteLength",
+  "rigIds",
+  "renderers",
+  "slots",
+  "cells",
+  "manifest",
+  "generatedAt",
+]);
+
+/**
+ * Copy exactly {@link CONTACT_SHEET_ENTRY_FIELDS} out of `entry`, in that
+ * order, deep-copying the two arrays and the cell counts so a later mutation
+ * of the source cannot reach the banked receipt.
+ *
+ * @param {object} entry A validated entry.
+ * @returns {object} The projection.
+ */
+export function projectContactSheetEntry(entry) {
+  const projected = {};
+  for (const field of CONTACT_SHEET_ENTRY_FIELDS) {
+    if (!Object.hasOwn(entry, field)) {
+      continue;
+    }
+    const value = entry[field];
+    if (Array.isArray(value)) {
+      projected[field] = [...value];
+    } else if (
+      field === "cells" &&
+      value !== null &&
+      typeof value === "object"
+    ) {
+      projected[field] = {
+        measured: value.measured,
+        unmeasured: value.unmeasured,
+      };
+    } else {
+      projected[field] = value;
+    }
+  }
+  return projected;
+}
+
+/**
+ * Fail-closed shape check for one banked `sheet-index.json` entry (DX-105's
+ * output, DX-106's input). An unrecognised shape is a violation, never a
+ * silent pass — the same discipline `validateManifest`/`validateRig` use
+ * elsewhere in this lane. `path` is asserted repo-relative and POSIX because
+ * it is the one field in the entry that is repo-relative rather than
+ * sheet-relative: a Windows backslash there would silently fail to resolve on
+ * a POSIX CI runner, and an absolute or `..`-traversing path would send
+ * `collectContactSheets`, which reads it verbatim, at a file outside the wave
+ * directory entirely.
+ *
+ * @param {unknown} entry A parsed `sheet-index.json` document.
+ * @returns {string[]} Violations; empty when the shape is valid.
+ */
+export function validateContactSheetEntry(entry) {
+  const failures = [];
+  const id =
+    entry && typeof entry === "object" && typeof entry.sheetId === "string"
+      ? entry.sheetId
+      : "(unnamed sheet)";
+  const need = (condition, message) => {
+    if (!condition) {
+      failures.push(`${id}: ${message}`);
+    }
+  };
+
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+    failures.push(`${id}: entry must be an object`);
+    return failures;
+  }
+
+  need(
+    entry.schemaVersion === 1,
+    `schemaVersion must be 1, got ${String(entry.schemaVersion)}`,
+  );
+  need(
+    entry.kind === "contact-sheet-index-entry",
+    `kind must be "contact-sheet-index-entry", got ${String(entry.kind)}`,
+  );
+  need(
+    typeof entry.sheetId === "string" && entry.sheetId.length > 0,
+    "missing sheetId",
+  );
+  need(
+    typeof entry.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(entry.date),
+    "date must be YYYY-MM-DD",
+  );
+  const pathViolation = relativePosixPathViolation(entry.path);
+  need(
+    pathViolation === null,
+    `path must be a relative POSIX path — collectContactSheets reads it verbatim (${pathViolation})`,
+  );
+  need(
+    typeof entry.md5 === "string" && CONTACT_SHEET_MD5_PATTERN.test(entry.md5),
+    "md5 must be 32 lowercase hex characters",
+  );
+  need(
+    Number.isInteger(entry.byteLength) && entry.byteLength >= 0,
+    "byteLength must be a non-negative integer",
+  );
+  need(
+    Array.isArray(entry.rigIds) &&
+      entry.rigIds.every(
+        (rigId) => typeof rigId === "string" && RIG_ID_PATTERN.test(rigId),
+      ),
+    `rigIds must be an array of ids matching ${RIG_ID_PATTERN}`,
+  );
+  need(
+    Array.isArray(entry.renderers) &&
+      entry.renderers.length > 0 &&
+      entry.renderers.every((renderer) => RENDERER_IDS.includes(renderer)) &&
+      new Set(entry.renderers).size === entry.renderers.length,
+    `renderers must be a duplicate-free non-empty subset of ${RENDERER_IDS.join(", ")}`,
+  );
+  need(
+    Array.isArray(entry.slots) &&
+      entry.slots.length > 0 &&
+      entry.slots.every((slot) => SLOT_IDS.includes(slot)) &&
+      new Set(entry.slots).size === entry.slots.length,
+    `slots must be a duplicate-free non-empty subset of ${SLOT_IDS.join(", ")}`,
+  );
+  need(
+    entry.cells !== null &&
+      typeof entry.cells === "object" &&
+      Number.isInteger(entry.cells?.measured) &&
+      entry.cells.measured >= 0 &&
+      Number.isInteger(entry.cells?.unmeasured) &&
+      entry.cells.unmeasured >= 0,
+    "cells must be { measured, unmeasured } non-negative integers",
+  );
+  const manifestViolation = relativePosixPathViolation(entry.manifest);
+  need(
+    manifestViolation === null,
+    `manifest must be a relative POSIX path (${manifestViolation})`,
+  );
+  need(
+    typeof entry.generatedAt === "string" &&
+      Number.isFinite(Date.parse(entry.generatedAt)),
+    "generatedAt must be a parseable ISO timestamp",
+  );
+  const unknown = Object.keys(entry).filter(
+    (key) => !CONTACT_SHEET_ENTRY_FIELDS.includes(key),
+  );
+  need(
+    unknown.length === 0,
+    `unknown key(s) ${unknown.join(", ")} — a banked entry carries exactly ${CONTACT_SHEET_ENTRY_FIELDS.length} fields, so nothing rides into the receipt uninspected`,
+  );
+
+  // REFUSING UNKNOWN KEYS IS NOT THE SAME AS REFUSING THE VOCABULARY. Every
+  // field above is checked for SHAPE, and a few of them are still open
+  // strings (`sheetId`) or grammar-constrained but content-agnostic
+  // (`rigIds`) — so `sheetId: "FAILED-globe-default"` validates clean on
+  // shape alone, is projected verbatim by `projectContactSheetEntry`, and
+  // would reach both `receipt.json` and the markdown summary's sheet row.
+  // The whole point of DX-105/DX-106 is that the artefact does not rule, so
+  // the CONTENT is scanned the way `lib/capture.mjs`'s `scanForVerdicts`
+  // already scans a capture manifest. This is a BACKSTOP, not the primary
+  // guard: `renderers`/`slots` are closed vocabularies and `rigIds` is
+  // grammar-constrained above, so this scan is what still catches the
+  // vocabulary when it arrives through the fields nothing else types
+  // (`sheetId`), or nested inside an otherwise-shaped value.
+  // `path` and `manifest` are filesystem locations, not prose, and are
+  // already pinned by `relativePosixPathViolation` above; excluding them
+  // also avoids a false positive from the repo's own
+  // `Tools/visual-regression/…` root, which contains "regression" at a word
+  // boundary.
+  const { path: _p, manifest: _m, ...prose } = entry;
+  scanEntryForVerdicts(prose, id, failures);
+
+  return failures;
+}
+
+/**
+ * Words a banked entry may never spell — the artefact does not rule. Sourced
+ * from `contact-sheet-page.mjs`'s `VERDICT_TOKENS` list rather than a second,
+ * independently-maintained copy, so the two vocabularies cannot drift the way
+ * the fleet's path predicates once did (see `relative-path.mjs`'s module
+ * doc).
+ */
+const FORBIDDEN_ENTRY_TOKENS = VERDICT_TOKENS;
+
+/**
+ * Recursively scan `value` (an entry, or a sub-value of one) for
+ * {@link FORBIDDEN_ENTRY_TOKENS}, pushing a violation per hit that names the
+ * exact path (`trail`) and the token found. A glyph token (no alphabetic
+ * characters) matches as a plain substring; a word token matches only at a
+ * word boundary, case-insensitively, so an organic word such as "bypass"
+ * does not false-positive against "PASS" — the same rule
+ * `findVerdictTokens` uses for rendered HTML.
+ *
+ * @param {unknown} value
+ * @param {string} trail Human-readable path to `value`, extended per
+ *   recursion step.
+ * @param {string[]} failures Violations are pushed here.
+ */
+function scanEntryForVerdicts(value, trail, failures) {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) =>
+      scanEntryForVerdicts(item, `${trail}[${index}]`, failures),
+    );
+    return;
+  }
+  if (value !== null && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      scanEntryForVerdicts(item, `${trail}.${key}`, failures);
+    }
+    return;
+  }
+  if (typeof value !== "string") {
+    return;
+  }
+  for (const token of FORBIDDEN_ENTRY_TOKENS) {
+    const hit = /[A-Za-z]/.test(token)
+      ? new RegExp(`\\b${token}\\b`, "i").test(value)
+      : value.includes(token);
+    if (hit) {
+      failures.push(
+        `${trail}: "${token}" is verdict vocabulary and may not enter a banked contact-sheet entry`,
+      );
+    }
+  }
+}
+
+/**
+ * Markdown lines for the `## Contact sheets` section, or `[]` for an empty or
+ * absent list — the empty case is what lets `buildMarkdownSummary` skip the
+ * section entirely rather than print a headerless table.
+ *
+ * @param {object[] | undefined} entries Validated, md5-confirmed entries.
+ * @returns {string[]} Markdown lines, header row included; `[]` when empty.
+ */
+export function buildContactSheetTable(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return [];
+  }
+
+  const lines = [
+    "| Sheet | Date | Rigs | Cells | MD5 |",
+    "| --- | --- | --- | --- | --- |",
+  ];
+  for (const entry of entries) {
+    const cells = `${entry.cells?.measured ?? 0} measured, ${entry.cells?.unmeasured ?? 0} unmeasured`;
+    lines.push(
+      `| ${markdownCell(entry.sheetId)} | ${markdownCell(entry.date)} | ${markdownCell((entry.rigIds ?? []).join(", "))} | ${markdownCell(cells)} | ${markdownCell(entry.md5)} |`,
+    );
+  }
+  return lines;
+}
+
+/**
+ * Reads every `<waveDirectory>/contact-sheets/*\/sheet-index.json`, validates
+ * its shape, and RECOMPUTES its md5 from the page file at the entry's own
+ * `path` rather than trusting the value the entry carries — a banked md5
+ * nobody recomputed is a claim, not a check. A mismatch is a violation naming
+ * both values, and that entry is dropped rather than banked. All I/O is
+ * injected so this runs on in-memory or fixture-backed doubles with no real
+ * filesystem access required.
+ *
+ * @param {object} options
+ * @param {string} options.waveDirectory The wave's own output directory
+ *   (`<toolsDir>/visual-regression/output/wave-end/<wave>`), absolute or
+ *   however the caller's `readDir`/`readFile` expect it.
+ * @param {(dir: string) => Promise<string[]>} options.readDir Lists a
+ *   directory's entries; rejects with `ENOENT`/`ENOTDIR` when the directory
+ *   does not exist.
+ * @param {string} [options.repositoryRoot] Root that an entry's repo-relative
+ *   `path` resolves against. Supply it and the collector no longer depends on
+ *   the caller's working directory; omit it and the path is read as given,
+ *   which is what the pre-`repositoryRoot` callers did.
+ * @param {(path: string) => Promise<Uint8Array | Buffer>} options.readFile
+ *   Reads a file's bytes given either the constructed sheet-index.json path
+ *   or an entry's own `path` field, resolved as described above.
+ * @param {(bytes: Buffer) => string} [options.md5] The hash function; the
+ *   real one by default. Injectable so a spec can prove the recomputation
+ *   actually happened rather than reading `entry.md5` back at it.
+ * @returns {Promise<{entries: object[], violations: string[]}>}
+ */
+export async function collectContactSheets({
+  waveDirectory,
+  repositoryRoot,
+  readDir,
+  readFile,
+  md5 = (bytes) => createHash("md5").update(bytes).digest("hex"),
+}) {
+  const violations = [];
+  const entries = [];
+  const sheetsDirectory = path.join(waveDirectory, "contact-sheets");
+
+  let dirNames;
+  try {
+    dirNames = await readDir(sheetsDirectory);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+      return { entries: [], violations: [] };
+    }
+    throw error;
+  }
+
+  for (const dirName of [...dirNames].sort()) {
+    const indexPath = path.join(sheetsDirectory, dirName, "sheet-index.json");
+    let raw;
+    try {
+      raw = await readFile(indexPath);
+    } catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+        continue;
+      }
+      throw error;
+    }
+
+    let entry;
+    try {
+      entry = JSON.parse(Buffer.from(raw).toString("utf8"));
+    } catch (error) {
+      violations.push(
+        `${dirName}: sheet-index.json is not valid JSON: ${error.message ?? error}`,
+      );
+      continue;
+    }
+
+    const shapeViolations = validateContactSheetEntry(entry);
+    if (shapeViolations.length > 0) {
+      violations.push(...shapeViolations);
+      continue;
+    }
+
+    const pagePath =
+      typeof repositoryRoot === "string" && repositoryRoot.length > 0
+        ? path.join(repositoryRoot, entry.path)
+        : entry.path;
+    let pageBytes;
+    try {
+      pageBytes = await readFile(pagePath);
+    } catch (error) {
+      violations.push(
+        `${entry.sheetId}: could not read ${pagePath} to recompute its md5: ${error.message ?? error}`,
+      );
+      continue;
+    }
+
+    const recomputedMd5 = md5(Buffer.from(pageBytes));
+    if (recomputedMd5 !== entry.md5) {
+      violations.push(
+        `${entry.sheetId}: recomputed md5 ${recomputedMd5} for ${pagePath} does not match the banked entry's md5 ${entry.md5}`,
+      );
+      continue;
+    }
+
+    entries.push(projectContactSheetEntry({ ...entry, md5: recomputedMd5 }));
+  }
+
+  return { entries, violations };
+}
+
 export function buildMarkdownSummary(receipt, { dryRun = false } = {}) {
   const lines = [
     `# Wave-end gate: ${receipt.wave}`,
@@ -698,6 +1105,15 @@ export function buildMarkdownSummary(receipt, { dryRun = false } = {}) {
         `| ${markdownCell(step.name)} | ${step.raw.spawned ? "yes" : "no"} | ${markdownCell(step.raw.exitCode)} | ${markdownCell(step.raw.signal)} | ${markdownCell(step.raw.error)} | ${step.raw.timedOut ? "yes" : "no"} | ${step.raw.cleanup.directChildCloseObserved ? "yes" : "no"} | ${step.raw.quiescence.descendantProcessTreeProven ? "proven" : `unproven (${step.raw.quiescence.limitation})`} | ${markdownCell(step.normalized.typedResult?.boundBy ?? "child")} | ${markdownCell(step.normalized.status)} (${markdownCell(step.normalized.reason ?? "typed")}) |`,
       );
     }
+  }
+
+  // Additive and last: appended after every existing section so a receipt
+  // with no sheets produces byte-identical output to before this section
+  // existed (see the golden comparison in
+  // Tools/wave-end-contact-sheet-index.spec.mjs).
+  const contactSheetTable = buildContactSheetTable(receipt.contactSheets);
+  if (contactSheetTable.length > 0) {
+    lines.push("", "## Contact sheets", "", ...contactSheetTable);
   }
 
   return `${lines.join("\n")}\n`;

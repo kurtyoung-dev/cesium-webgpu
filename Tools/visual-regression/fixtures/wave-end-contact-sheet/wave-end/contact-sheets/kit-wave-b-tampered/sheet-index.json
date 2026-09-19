@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "kind": "contact-sheet-index-entry",
+  "sheetId": "kit-wave-b-tampered",
+  "date": "2026-09-19",
+  "path": "Tools/visual-regression/fixtures/wave-end-contact-sheet/pages/kit-wave-b-tampered/index.html",
+  "md5": "00000000000000000000000000000000",
+  "byteLength": 247,
+  "rigIds": [
+    "globe-default"
+  ],
+  "renderers": [
+    "webgl",
+    "webgpu"
+  ],
+  "slots": [
+    "BEFORE",
+    "AFTER"
+  ],
+  "cells": {
+    "measured": 4,
+    "unmeasured": 0
+  },
+  "manifest": "capture-manifest.json",
+  "generatedAt": "2026-09-19T01:24:10.000Z"
+}

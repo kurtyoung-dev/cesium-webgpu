@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "wave": "kit-wave-b-fixture",
+  "startedAt": "2026-09-19T00:00:00.000Z",
+  "finishedAt": "2026-09-19T00:00:02.000Z",
+  "source": {
+    "commit": "ffffffffffffffffffffffffffffffffffffffff",
+    "dirty": false,
+    "identity": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "servedSubject": {
+    "base": "http://localhost:8094",
+    "sandcastleBase": "http://localhost:8095",
+    "artifacts": [
+      {
+        "path": "Build/CesiumUnminified/Cesium.js",
+        "origin": "http://localhost:8094",
+        "byteLength": 42,
+        "md5": "11111111111111111111111111111111"
+      }
+    ]
+  },
+  "preflight": [],
+  "plan": [
+    {
+      "name": "fixture-step",
+      "file": "fixture-step.mjs",
+      "args": [
+        "--fixture"
+      ],
+      "env": {},
+      "command": "node fixture-step.mjs --fixture",
+      "resultReportPath": null,
+      "bindability": {
+        "bindable": true,
+        "phase": "post-spawn",
+        "boundBy": "child",
+        "reason": "fixture step always binds",
+        "limitations": []
+      },
+      "binding": null
+    }
+  ],
+  "steps": [
+    {
+      "name": "fixture-step",
+      "command": "node fixture-step.mjs --fixture",
+      "bindability": {
+        "bindable": true,
+        "phase": "post-spawn",
+        "boundBy": "child",
+        "reason": "fixture step always binds",
+        "limitations": []
+      },
+      "binding": null,
+      "raw": {
+        "runId": "fixture-run-1",
+        "spawned": true,
+        "startedAt": "2026-09-19T00:00:00.000Z",
+        "finishedAt": "2026-09-19T00:00:01.000Z",
+        "startedEpochMs": 1758240000000,
+        "finishedEpochMs": 1758240001000,
+        "wallMs": 1000,
+        "exitCode": 0,
+        "signal": null,
+        "error": null,
+        "timedOut": false,
+        "watchdogMs": 600000,
+        "cleanup": {
+          "terminateAttempted": false,
+          "terminateAccepted": null,
+          "hardKillAttempted": false,
+          "hardKillAccepted": null,
+          "directChildCloseObserved": true,
+          "cleanupDeadlineExceeded": false,
+          "error": null
+        },
+        "quiescence": {
+          "directChildCloseObserved": true,
+          "descendantProcessTreeProven": false,
+          "limitation": "Direct-child close does not prove descendant process-tree quiescence."
+        }
+      },
+      "normalized": {
+        "status": "PASS",
+        "exitCode": 0,
+        "reason": null,
+        "message": null,
+        "typedResult": null
+      }
+    }
+  ],
+  "baselineUpdate": {
+    "requested": false,
+    "reason": null
+  },
+  "problem": null,
+  "verdict": "PASS",
+  "exitCode": 0
+}

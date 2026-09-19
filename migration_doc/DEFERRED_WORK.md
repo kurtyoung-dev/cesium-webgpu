@@ -22346,3 +22346,366 @@ through `test-cloud-c13`, which no landing runs.
   wave 3 entirely. It asserts that the engine source does NOT contain
   `if (nightImageryTileIsRetired(imageryLayer, tileImagery)) { continue; }`, and the source does. An
   orphan spec with no runner and an inverted inertness assertion is a row of its own, not this lane's.
+
+## 2026-09-18 — lane KIT-B: the probe kit's browser half (`DX-104`, `DX-105`, `DX-106`)
+
+One Opus lead (Rudigar) and two tier-3 lanes (Hildibrand, Hildigard), each in its own clone,
+integrated into one patch, then reviewed at station 3 by Rollo (LAND-WITH-FIXES) and attacked by an
+adversarial verifier, Mosco (REFUTED). What lands is v2: both verdicts answered, every supplied fix
+diff applied or superseded by a deeper one, and a reproduction re-run for each refutation. No
+browser, no build, no engine file touched: every row here is `Tools/` only and every acceptance is a
+`node --test` assertion over the real module. The design constraint was KIT-A's — **generalise what
+exists, rewrite nothing** — so the runtime, the Edge-slot lock, the probe lifecycle, the gate policy,
+`capture-and-diff.mjs` and `probe-saved-view.mjs` are all unmodified.
+
+- **`DX-104` — the capture seam.** `Tools/visual-regression/lib/capture.mjs` composes the runtime's
+  PIECES (`launchEdge`, `captureElement`, `decideServedBuildRefusal` / `decideOriginRefusal` /
+  `decideRenderReadyRefusal`, `assembleReceipt`, `withEdgeSlot`) and never calls `runProbe`, because
+  `runProbe` itself hard-defaults the origin (`probe-runtime.mjs:905`) and that default is what this
+  row exists to stop propagating. `capture(rig, {BEFORE, AFTER}, options, dependencies)` takes one
+  rig or an array, opens exactly ONE Edge browser for the whole BEFORE × AFTER × both-renderers run,
+  then computes every diff, heat-map and metric in Node from the returned PNG bytes —
+  `Tools/lib/png-decode.mjs` exists now, so nothing decodes in-page and every image assertion runs
+  under plain `node --test`. There is **no default origin**: an absent one is the refusal
+  `capture-origin-absent`, and a rig that declares an absolute `url` has that origin STRIPPED and the
+  remaining path re-based onto the caller's — without which "no `localhost:8080` literal" would have
+  been unmeetable, since 10 of the registry's 39 rigs declare exactly that absolute url. A rig with
+  `page: null` produces `UNMEASURED` cells rather than failing the run. The manifest carries no
+  verdict vocabulary at all — a rig's `gate`, `expectedMismatch` or `thresholds` is a
+  `validateManifest` violation — which is what makes `R-2026-09-17-10`'s "no pass/fail token on the
+  page" structural rather than a promise. **The browser and the Edge slot are the LIFECYCLE's**
+  (`scope.withEdgeSlot` + `scope.withResource({kind: "browser"})`, `scope.checkpoint()` between
+  cells, the per-cell browser context registered as a child resource) — see the v2 block below for
+  why a `finally` was not enough. Spec `capture-seam.spec.mjs` (41 tests,
+  `test-visual-regression-node`). FORK-authored, new files.
+- **`DX-105` — the contact sheet.** `lib/contact-sheet-page.mjs` is a dependency-free pure module:
+  `sheetModel(manifest, options)` and `renderSheetHtml(model)` render rigs × renderers ×
+  {BEFORE, AFTER} into one self-contained page — inline CSS, copied images, relative `src`, no
+  network, light and dark, every cell linking its receipt — and `contact-sheet.mjs` is a thin CLI
+  whose `exitCode` reads no measured value at all. Rigs sort by `id` in CODE-UNIT order, never by
+  `mismatchPct` and never through `localeCompare`, so neither the render order nor the page bytes
+  depend on a judgement or on a machine's collation. `UNMEASURED` cells render as placeholders, never
+  as failures. The page's class vocabulary is CLOSED (`PAGE_CLASS_NAMES` / `findUnknownClassNames`)
+  and its markup is asserted byte-identical across a mismatch sweep, because a verdict does not have
+  to be a word. Spec `contact-sheet.spec.mjs` (56 tests, `test-visual-regression-node`).
+  FORK-authored, new files.
+- **`DX-106` — banking a sheet at a wave end.** `Tools/wave-end-gate-receipt.mjs` gains
+  `validateContactSheetEntry`, `buildContactSheetTable`, `collectContactSheets` and
+  `projectContactSheetEntry`, plus an optional `contactSheets` parameter on `buildReceipt` and a
+  conditional `## Contact sheets` section in `buildMarkdownSummary`. Additive only: an absent or
+  empty list OMITS the key rather than writing `[]`, and the section appends after every existing
+  one, so a receipt with no sheets serialises byte-identically to what the function produced before
+  the row — proven against a golden captured from the unmodified function, not against a
+  reimplementation. The collector RECOMPUTES each sheet's md5 from the page on disk instead of
+  trusting the banked entry's own `md5`, refuses an entry whose `path` is not repo-relative POSIX or
+  that carries an unknown key, and takes an optional `repositoryRoot` so that path resolves without
+  depending on the caller's working directory. Spec `Tools/wave-end-contact-sheet-index.spec.mjs`
+  (22 tests, `test-landing-rules`), with four mutants embedded as permanent MUTATION-fold cases.
+  FORK-authored; the modified file is fork-authored throughout.
+
+**v2 — what the review round changed, and what it proves.** The station-3 review returned two
+documentation fixes and the adversarial verifier returned five refutations with three fix diffs. All
+of them are answered here; the three supplied diffs applied verbatim except one, which a deeper fix
+supersedes.
+
+1. **The watchdog could exit with Edge still running.** v1 opened the browser by hand inside the
+   lifecycle body and closed it in an unconditional `finally`. That is correct on the ordinary path
+   and on the throw path and reaches NEITHER of the two paths the lifecycle exists for: nothing was
+   registered, so `withProbeLifecycle`'s "prove every resource closed" check had an empty list to
+   prove, the abort the orderly deadline raises reached no aborter, and `hardExit()` could call
+   `exit` with the browser open. Driving the real lifecycle with a wedged cell measured
+   `browser.close() calls: 0` at `exit(2)`. The fix routes the slot through `scope.withEdgeSlot` and
+   the browser through `scope.withResource`, checkpoints between cells, and registers the per-cell
+   context as a child resource; the same reproduction now closes the browser at the orderly deadline
+   and only then hard-stops. It also subsumes the supplied close-masking diff: `withResource`
+   AGGREGATES a failing close with the cell failure rather than letting "Target closed" replace the
+   real diagnosis. **The general lesson is worth more than the fix:** a `finally` proves teardown on
+   the paths the caller can see, and a watchdog exists precisely for the path where the caller never
+   regains control. Registration with the lifecycle is the only form of that proof.
+2. **A verdict does not have to be a WORD.** `findVerdictTokens` is a twelve-entry text allowlist, so
+   a value-conditional CSS class (`pair-bad` at or above 5 % mismatch, `pair-good` below) rendered
+   with the guard still empty and every spec green. The page now declares a closed class vocabulary,
+   and the spec asserts a MEASURED pair's markup is byte-identical across a ten-value mismatch range
+   once the numeral is normalised — an assertion that also covers an attribute, an inline style or a
+   reordering, not just the spellings someone thought to list.
+3. **A five-point sweep is a sample, not an invariant.** A threshold in the open band (5, 11) — which
+   the sweep 0 / 0.42 / 11.07 / 100 / null does not touch — survived every spec. The exit code is now
+   swept over 101 evenly spaced values plus that band and `null`. The five-point case is deliberately
+   KEPT, so the mutant harness can show the dense sweep is what catches it.
+4. **Path relativity was claimed, not enforced.** The page module's `isRelativeImagePath` had no `..`
+   clause and `manifest.receipt` was checked only for non-emptiness, so the real CLI over real `fs`
+   copied six images OUTSIDE `--out-dir` and exited 0, with `<img src="images/../../../../…">` in the
+   page; the same string in `receipt` killed the run with an unhandled `ENOENT`. Both are refused
+   now, the CLI reports every I/O failure as its own `{exitCode: 1, error}`, and a banked
+   `sheet-index.json` entry is refused for an absolute, drive-lettered or traversing `path` — v1's
+   collector would have read any file on the machine and published its md5.
+5. **A spread publishes whatever it is handed.** `buildReceipt` spread each banked entry, so a
+   hand-edited `sheet-index.json` carrying `verdict: "PASS"` put that vocabulary into the wave-end
+   receipt. Entries are now projected onto their thirteen known fields and unknown keys are a
+   validation violation. **Shape note:** a receipt WITH sheets has fourteen top-level keys — the
+   thirteen existing ones plus `contactSheets`, last — and that is now pinned by this lane's spec.
+   `Tools/wave-end-gate-contracts.spec.mjs:518` builds its own receipt with no sheets, so it stays
+   green untouched; the verifier's "13-key contract" concern is real for the future wiring rather
+   than a break in this patch, and is recorded here rather than left to be discovered.
+6. **`localeCompare` is an environment input.** Rig order, and therefore page bytes and the banked
+   md5, depended on the runtime's collation. The sort is code-unit now, and a spec case names three
+   ids whose two orders differ on this machine so the assertion cannot pass vacuously.
+7. **Documentation that outran the code.** `DEBUGGING_GUIDE.md` said a banked sheet "is picked up by"
+   the receipt module. Nothing picks it up: `Tools/wave-end-gate.mjs:620` calls `buildReceipt`
+   without `contactSheets` and never calls the collector, so `npm run wave-end-gate` banks no sheet
+   today. The guide now says exactly that, and names the wiring as owed.
+
+**Three defects the integration stage caught, none of them visible from inside a single item's
+clone.** (a) `lib/contact-sheet-page.mjs` originally built one fragment as a template literal nested
+inside a substitution. `lib/prohibited-reader-rule.mjs`'s tokenizer (`:206-235`) does not track
+substitutions — it scans to the next backtick — so it threw on that line and `probe-fleet-contract`'s
+C14 reported the whole file as a violation, taking `test-visual-regression-node` red. Both tier-3
+lanes read that failure as pre-existing in the base; it was not, and running the analyzer directly
+over each new file attributed it to one line. Fixed by hoisting the fragment to its own statement.
+The hazard is worth knowing: **a nested template literal makes a file unanalysable to that rule, and
+an unanalysable file is reported as an offender rather than skipped.** (b) `contact-sheet.mjs` took
+`posixPath.dirname` of the `--manifest` argument as given. A backslash path — what a caller on this
+machine naturally passes — has no forward slash, so the dirname was `"."` and every image copy
+resolved against the working directory instead of against the manifest. (c) The manifest has two
+fail-closed readers — the producer's and the page's — because the lane contract requires both (its §2
+forbids DX-105 importing `lib/capture.mjs`, its §4a has DX-105 importing `validateManifest` from it;
+§2's prohibition is the more specific rule, and a consumer that validates what it is handed is
+defence in depth rather than duplication to be removed). The verifier's sharpest finding lived in
+exactly that seam: the two readers had DRIFTED on path relativity, and the weaker one was the one the
+CLI runs. They agree again, and group H asserts it.
+
+
+**v3 — the SECOND adversarial pass, and the Edge leg.** Mosco re-attacked v2 and returned REFUTED a
+second time: seven of his eight reproductions were fixed, and two defects of the same class survived
+— each one a guard that reported clean over an artefact it was written to refuse. Odo then ran the
+Edge leg on v2 (capture PASS, sheet PASS, banking PASS) and found three more, one of them blocking.
+All nine items below are fixed in the code rather than in the prose, each with a spec case that
+reproduces the refutation and an inertness mutant that reds it.
+
+1. **A judgement does not have to be a word the list knows, OR a class.** `normaliseMismatchNumerals`
+   was `/mismatch [^<]*/` — not the numeral but the whole remainder of the text node, which is
+   exactly the window a judgement fits in. `mismatch 11.07% degraded` and `mismatch 0.42% clean`
+   normalised to the same bytes, and both word-list guards reported clean across all 90 tests. The
+   normaliser now matches the NUMERAL, and — the durable half — `findForeignFigureTokens(html, model)`
+   requires every text node and every attribute value inside a cell or pair figure to be one the page
+   MODEL produced. An extra token is a violation by construction, whatever it spells. Its boundary is
+   stated in its own JSDoc and asserted by mutant `P6`: a judgement written INTO the caption model is
+   not foreign to it, and is caught by the other two guards instead. Three guards, three failure
+   modes, none subsuming another.
+2. **The verdict vocabulary still reached the receipt, through fields nothing typed.**
+   `renderers`, `slots` and `rigIds` were checked for shape only, so an entry carrying
+   `rigIds: ["globe-default — REGRESSION vs baseline"]` and `slots: [{note: "❌ AFTER is worse"}]`
+   validated clean and reached both `receipt.json` and the markdown summary. They are closed
+   vocabularies now — `renderers` and `slots` read `RENDERER_IDS`/`SLOT_IDS` from
+   `contact-sheet-page.mjs` rather than re-declaring them, `rigIds` must match `RIG_ID_PATTERN`
+   (`/^[a-z0-9][a-z0-9-]*$/`, pinned to the registry by a case that loads the real 39 rigs) — with a
+   recursive verdict scan over the rest of the entry as the backstop, reusing `VERDICT_TOKENS` so
+   there is ONE vocabulary rather than two that can drift. **Premise corrected:** the brief said to
+   reuse a rig-id validator from `lib/rig-registry.mjs`; `validateRig` requires only a non-empty
+   string, so there was no grammar there to reuse and that file is not this lane's to change.
+3. **A sweep is a sample however dense it is.** A threshold in the band (0.1, 0.4) survived the
+   101-value sweep. Two assertions replace it: 2,010 values (0 to 100 in steps of 0.05, plus the
+   boundaries and `null`), and — the one no density can substitute for — `decideContactSheetExit`,
+   which is handed `{pageWritten, ioError}` and has no measured value in its arguments to read. The
+   spec injects a spy in its place and asserts the record it receives carries exactly those two keys,
+   and pokes the real decider with throwing getters for `mismatchPct`/`worst`/`changedPx`.
+4. **One path predicate, not three.** `lib/relative-path.mjs` is a leaf module with no imports, read
+   by DX-104, DX-105 and DX-106. The copies had drifted in opposite directions — the capture seam
+   required `://` to call a path absolute, so `C:/ESCAPED/x.png` validated clean THERE and was refused
+   by the page's reader. It also closes the percent-escape hole: `images/%2e%2e/%2e%2e/x.png` escapes
+   nothing under `node:fs`, which does not decode, but a BROWSER does, and "self-contained and
+   movable" is the property the sheet exists for.
+5. **Readiness is a POLL (Odo P1, blocking).** The Edge recipe was not executable as written: the
+   seed rig's `settleFrames: 30` (~0.5 s) plus a SINGLE post-settle read of `renderReady` refused
+   every WebGPU cell at ~4.8 s while reporting a 180 s budget it never spent. Measured on a served
+   built tree: `renderReady` first true at 4,558 ms (webgl) / 6,985 ms (webgpu), `tilesLoaded` at
+   10,043 / 10,325 ms — and `Scene.renderReady`'s own JSDoc prescribes the poll. `pollReadiness`
+   re-reads the predicates every `readinessPollIntervalMs` (250) until they hold, bounded by the
+   per-cell timeout AND by a poll count derived from it, then the settle runs and the predicates are
+   re-read once more. A scene that never becomes ready is the refusal `capture-cell-not-ready`
+   naming the unmet predicate, the last observed values, the polls and the elapsed budget — never a
+   silently UNMEASURED cell, which means "this rig declares no page for this renderer". **No rig file
+   was changed:** the 39 registry rigs declare SETTLES, not readiness gates, and a 30-frame settle is
+   a correct settle. A spec case pins that census (36 `settleFrames`, 3 `settleMs`).
+6. **A watchdog that kills the run owes a diagnosis (Odo P2).** Run 2 of the leg hard-exited 2 with
+   nothing printed but the lifecycle's own "did not reach quiescence" line, and the cell failure that
+   caused the wedge was unrecoverable from the transcript. The lifecycle writes exactly one
+   diagnostic, on exactly one path, so `capture()` wraps that sink: it writes the phase, the
+   outstanding cell, the elapsed time and the open resources — to stderr AND as a durable
+   `capture-incident.json` built through the runtime's own `buildIncidentRecord` — before letting the
+   lifecycle's line through unchanged. The per-resource close budget is now the capture's own
+   `DEFAULT_CLOSE_DEADLINE_MS` (45 s, against a measured 3.3 s healthy close of that browser) rather
+   than the fleet's 10 s, `options.closeDeadlineMs` moves it, and the hard-stop grace follows it.
+7. **The sheet's date is the LOCAL calendar date (Odo P3).** A sheet made at 23:32 EDT banked under
+   `2026-09-19` while every wave-end receipt folder beside it is named for the local date.
+   `--date` still overrides and an explicit `--generated-at` keeps its documented UTC derivation —
+   an instant a caller pins carries no timezone. Both sides of midnight are specced through a
+   Date-shaped clock double that states its instant and its local date separately, so the case is
+   timezone-independent.
+8. **Two defects the spec found in its own round, recorded because they are the kind that hide.**
+   `observed?.[name] ?? undefined` collapsed `null` — the meaningful "this page has no globe to wait
+   for" answer — into the absent case, so a globe-less rig would have polled to its timeout; and a
+   poison-getter case first fired in the SPEC rather than in the function, because spreading an
+   already-poisoned record reads its getters. Both are fixed and both are asserted.
+9. **Not asserted, deliberately:** that a `capture-incident.json` carries no verdict vocabulary. It
+   carries `outcome: "errored"` by the runtime's own `RUN_OUTCOMES`, and its `captureRoot` contains
+   `visual-regression`. The no-verdict rule is about artefacts a reader could mistake for a ruling —
+   the sheet and the receipt — not about a crash diagnosis, whose job is to say something went wrong.
+
+**v3 gates:** `test-visual-regression-node` 592/592/0, `test-visual-probe-contracts` 346/346/0,
+`test-landing-rules` 377/377/0, `test-c16` 80/80/0, `comment-marker-guard --verify-cleanlist` rc 0
+with `regressed []`, prettier and eslint clean on all eight touched code/spec files, and 36 inertness
+mutants with 0 survivors. The end-to-end chain reproduces the SAME page md5 as v1 and v2
+(`e0e3a68556aa0e22633ab55e16ccf653`), so none of this round moved a rendered byte either.
+
+**Recorded, not fixed — a DX row the seat OPENS at landing.** `lib/capture.mjs` is now 2,085
+lines, 2.1× CLAUDE.md's ~1,000-line decomposition guidance and up from 1,720 at v2 (the readiness
+poll, the refusal diagnosis and the watchdog incident are ~250 of the difference). It was not split
+in-lane because the ownership table enumerates the files each owner may create and names this one as
+the home of every export; splitting it mid-round would also have moved every marker the lane's 36
+mutants match on. Three extractions, all under `lib/` so the fleet contract's `LAUNCHER_LIBRARY`
+exemption covers them unchanged and no caller's import path changes except the module's own:
+
+- `lib/capture-manifest.mjs` — `validateManifest` plus `validateManifestRig`/`Cell`/`Pair` and
+  `scanForVerdicts`, ~330 lines.
+- `lib/capture-metrics.mjs` — `cellMetrics`, `pairMetrics` and the `unmeasuredCell`/`unmeasuredPair`
+  constructors, ~110 lines.
+- `lib/capture-readiness.mjs` — `pollReadiness`, `decideCellReadinessRefusal`, `describeReadiness`,
+  `waitForCellReadiness`, `settleCell` and the predicate helpers, ~230 lines. This one is new in v3
+  and is the cleanest of the three: it has one caller (`defaultCellWork`) and its whole surface is
+  already driven by injected seams.
+
+**Two contract claims corrected against the tree.** `npm run test-visual-probe-contracts` does NOT
+home `probe-fleet-contract.spec.mjs` or `runtime-residency-contract.spec.mjs`; both are in
+`test-visual-regression-node`. And `runtime-residency-contract.spec.mjs:65-71` scans only top-level
+`probe-*.mjs`, so a file under `lib/` is never analysed by it — `lib/capture.mjs` obeys the
+no-`runProbe`-import rule, but would not have been caught mechanically if it did not.
+
+**One constraint named rather than routed around (Principle 9).** `contact-sheet.mjs` emits, in
+`sheet-index.json`, the path it WROTE the page to. DX-106 requires that field to be repo-relative
+POSIX, so an absolute `--out-dir` produces a sheet that is perfectly good to look at but whose entry
+the wave-end gate refuses until the banking step rewrites it. The default `--out-dir` is
+repo-relative; the constraint is now stated at `DEFAULT_OUT_DIR`, and the end-to-end check exercises
+the repo-relative form plus the collector's `repositoryRoot`.
+
+### 2026-09-19 — KIT-B v4: the closed-set rule covers the whole page, and every timing option is honourable
+
+The third adversarial pass (Mosco, Opus) returned **REFUTED on one finding**, narrower than v2's, and
+the Edge leg (Odo) re-ran on v3 with all five steps passing. Three things landed here; eight are
+rows below, built by nobody yet.
+
+1. **The metric-invariance cover was false for five of the six numbers the sheet prints (Mosco v3
+   §3).** `findForeignFigureTokens`' JSDoc said a judgement written into a caption table was covered
+   because "a judgement keyed to the measurement moves the markup across a mismatch sweep". The sweep
+   varied `mismatchPct` alone and held `changedPx`, `tolerance`, `mssim`, `rawByteLumaMean` and
+   `nonBlackFraction` FIXED, so `structure similarity 0.8000 degraded` against
+   `structure similarity 0.9900 clean` never moved the page and survived all 56 tests
+   (`M-MSSIM`, `M-CHANGEDPX`, `M-LUMA2`). The verifier's `FIX-A-metric-invariance.patch` is applied
+   VERBATIM: `buildSweepManifest` takes every measured value, the normaliser covers all six numeral
+   labels, and one case sweeps each axis independently across its range plus `null` against a
+   baseline, requiring the page to differ only in that number's own formatted text.
+2. **The closed set was figure-shaped, and a judgement outside every figure reached the page
+   (`M-HEADER`).** `<p class="summary">overall structure degraded</p>` in the page header rendered
+   with `findVerdictTokens`, `findUnknownClassNames` and `findForeignFigureTokens` all reporting
+   `[]`. The rule now covers the WHOLE document: `findForeignPageTokens(html, model)` requires every
+   text node and every attribute value on the page to come from the page model — through
+   `pageChromeModel` / `rigChromeModel` / the caption tables, which the RENDERER reads too, so they
+   cannot drift — or from the fixed, enumerated `PAGE_CHROME_TEXTS` / `PAGE_CHROME_ATTRIBUTES` the
+   module exports. It also pins the doctype and requires the `<style>` block to be the module's own
+   stylesheet byte for byte, which is what makes a judgement in a `content:` string a violation. The
+   figure guard is KEPT: it is the positional one, and a swapped or duplicated figure is a case the
+   page-wide union cannot see. The JSDoc now states which guard covers which case, and says plainly
+   that the sentence it used to carry was true for `mismatchPct` alone.
+3. **Every timing option is validated, with a named refusal, before a browser can launch (Mosco
+   F1).** Only `closeDeadlineMs` was checked, so `readinessTimeoutMs: Infinity`, `: NaN` and
+   `readinessPollIntervalMs: NaN` each reached `pollReadiness` and spun it without bound — the poll
+   loop's own guard is arithmetic on the very numbers nobody validated, and `Math.ceil(Infinity/x)`
+   is `Infinity` while every comparison against `NaN` is false. Only the lifecycle's hard stop ended
+   such a run, because the slot loop checkpoints between cells and not inside one.
+   `requireTimingMs` now refuses a non-finite, non-integer, zero, negative or absurd budget as
+   `capture-timing-option-invalid` (exit 3) for all six of `closeDeadlineMs`, `hardStopGraceMs`,
+   `navigationTimeoutMs`, `readinessTimeoutMs`, `readinessPollIntervalMs` and `cellBudgetMs`, at
+   `buildCaptureDescriptor` — the first thing `capture()` builds, before the preflight, the Edge
+   slot and the browser — and again at the top of `pollReadiness` so a direct caller cannot spin
+   either. The sane maximum is `MAX_TIMING_OPTION_MS` (24 h); `closeDeadlineMs`'s own ceiling is
+   that less the margin its derived grace adds, so a close budget that just fits cannot derive a
+   grace that does not. The poll count additionally carries the STATED bound
+   `MAX_READINESS_POLLS` (100,000) beside the derived one.
+4. **Readiness is observable on the SUCCESS path (Odo, minor 1).** `polls`, the elapsed time and the
+   last unmet predicate reached a caller only through the refusal, so the Edge leg had to wrap
+   `dependencies.now` in a recorder and segment its call trace to answer "how long did readiness
+   take, and on what". `summariseCellReadiness` now banks
+   `{polls, elapsedMsAfterFinalPoll, budgetMs, phase, lastUnmet}` per cell in the capture RECEIPT —
+   not in the manifest, which is the contact sheet's input and whose bytes are the sheet's identity.
+   `lastUnmet` is what the poll before the successful one was still waiting for, or the word
+   `"none"`. An injected `cellWork` that reports no readiness banks `null` rather than a row of
+   zeroes that would read like a measurement.
+5. **The one-poll overshoot is by design, and now says so (Odo, minor 2).** `elapsedMs` exceeded
+   `timeoutMs` by up to one poll (4,289 ms of a 3,000 ms budget) because the budget is tested AFTER
+   a sample returns — a `page.evaluate` round trip in flight cannot be abandoned. It is not a
+   reporting bug and nothing is clamped: `pollReadiness`'s JSDoc states the rule and the bound, and
+   the receipt field is named `elapsedMsAfterFinalPoll` for the instant it is read at, so an
+   overshoot cannot be misread as a budget that was ignored. The refusal carries both numbers
+   together, unchanged.
+
+**Behaviour on valid DEFAULT options is unchanged, measured rather than asserted.** The v3 renderer
+and the v3 `lib/capture.mjs` are reconstructed from the frozen v3 patch and run side by side with
+v4: 23 page models (the worked example, every measured axis at its extremes, a missing replay key,
+an empty description and an escapable one) render BYTE-IDENTICAL pages and identical
+`sheet-index.json` entries; the same capture with the same seams produces a BYTE-IDENTICAL manifest,
+identical `closeDeadlineMs` 45,000 / `hardStopGraceMs` 51,001 / `deadlineMs` 1,020,001 /
+`cellBudgetMs` 180,000 / `navigationTimeoutMs` 120,000 / `readinessTimeoutMs` 180,000 /
+`readinessPollIntervalMs` 250, and a receipt that differs by exactly one added field, `readiness`.
+The end-to-end chain reproduces the same page md5 as v1, v2 and v3,
+`e0e3a68556aa0e22633ab55e16ccf653`. **No Edge re-run is owed.**
+
+**v4 gates:** `test-visual-regression-node` 604/604/0, `test-visual-probe-contracts` 346/346/0,
+`test-landing-rules` 377/377/0, `test-c16` 80/80/0, `comment-marker-guard --verify-cleanlist` rc 0
+with `regressed []`, prettier and eslint clean on every touched path, and 44 inertness-mutant
+sections with 0 survivors — the 36 of v3 plus the verifier's four survivors (`M-MSSIM`, `M-CHANGEDPX`, `M-LUMA2`,
+`M-HEADER`), all four now RED, and two new ones (`V1` the timing validation removed, `V2` the
+page-wide guard made inert).
+
+**Rows, not fixes — named here so nothing is lost.** Each carries its one-line reproduction.
+
+- **`DX-104-F3` — `options.captureRoot` is not pinned relative** (Mosco F3). Repro:
+  `buildCaptureDescriptor(rig, origins, {captureRoot: "../../ESCAPED"})` puts the images, the
+  manifest, the receipt AND `capture-incident.json` outside `repositoryRoot`, while DX-105's
+  manifest paths and DX-106's `entry.path` are both pinned by `relativePosixPathViolation`. One call
+  to that predicate in `resolveCaptureRoot` makes the three agree. It is the caller naming its own
+  output root — the same class as `--out-dir` — but the asymmetry is worth closing.
+- **`DX-104-F5` — `buildCaptureIncident` sits outside the try in `writeDiagnostic`.** Repro: a
+  descriptor whose property access throws (a Proxy) makes the build throw before `hardExit()` can
+  reach `exit()`. Unreachable in the shipped shape — the descriptor is frozen and plain — but the
+  comment says "every write is guarded" and the BUILD is not. One `try` widening.
+- **`DX-104-F-SLOT` — a hard stop leaves a stale `.edge-slot.lock`** (Odo, minor 3). Repro: the P2
+  control exits 2 and leaves `output/.edge-slot.lock` holding a dead pid; the next `withEdgeSlot`
+  reclaims and removes it, so it blocks nobody. The incident record should NAME the lock path it is
+  abandoning, since that is the one resource that outlives the process.
+- **`DX-104-F-GRACE` — `hardStopGraceMs` may be set BELOW `closeDeadlineMs`.** Repro:
+  `{closeDeadlineMs: 45000, hardStopGraceMs: 1}` builds, and the hard stop then precedes the
+  orderly close it exists to backstop. v4 validates each budget's magnitude; it does not validate
+  the RELATION between them, and the derived default always satisfies it. Found while specifying
+  F1; recorded rather than added, because refusing a combination is a behaviour change on a path no
+  caller uses today.
+- **`DX-105-F4` — a legitimate non-ASCII percent escape is refused with a confusing reason** (Mosco
+  F4). Repro: `relativePosixPathViolation("images/caf%c3%a9.png")` reports "must not contain the
+  undecodable escape `%c3`". Fail-closed and correct for security; decoding the whole percent-run,
+  or saying "only ASCII escapes are accepted", would stop it reading as a tool bug.
+- **`DX-106-F2` — `VERDICT_TOKENS` is twelve entries and is now the ONE vocabulary for the page and
+  the banking** (Mosco F2). Repro: `degraded-globe`, `bad-globe`, `worse-globe`, `broken-globe` and
+  `red-globe` all bank as `rigIds`. The scope is a decision, not a defect — the page's own
+  protection is the closed set, not the word list — but the list's edge should be named in its
+  JSDoc so the next reader does not read it as exhaustive.
+- **`DX-106-F6` — `sheetId` and `byteLength` carry no bound and `date` is shape-checked, not
+  calendar-checked** (Mosco F6). Repro: a 1 MB `sheetId` and `date: "9999-99-99"` both bank. No
+  verdict, no path: receipt hygiene.
+- **`DX-106-F7` — `RIG_ID_PATTERN`'s constraint lands at BANKING time, far from where a rig is
+  named** (Mosco F7). Repro: a rig id with `_` or an uppercase letter passes `validateRig` in
+  `lib/rig-registry.mjs` and is refused a wave later by the sheet entry. All 39 ids pass today and
+  the census case reds if that changes; a one-line note beside `validateRig` would put the
+  constraint where an author sees it. That file is KIT-A's, correctly outside this lane.
+- **`DX-106-F8` — `buildReceipt` PROJECTS but does not VALIDATE** (Mosco F8). Repro: a caller that
+  bypasses `collectContactSheets` can bank `sheetId: "FAILED-globe"` through a known field. The
+  documented path validates; this is one line for the wiring brief of item (7) above, so the
+  validator is not skipped when the wave-end-gate caller lands.

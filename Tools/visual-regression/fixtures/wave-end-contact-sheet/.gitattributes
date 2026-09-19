@@ -1,0 +1,8 @@
+# Every fixture under this directory is read byte-for-byte (golden-comparison
+# JSON/markdown, and pages whose md5 is asserted against a recorded value).
+# This repo checks out with core.autocrlf=true on Windows, which silently
+# rewrites LF to CRLF on any checkout that "touches" a text-attributed file
+# (see Tools/lib/purpose-header.mjs's own BYTE-EXACTNESS note for the same
+# hazard elsewhere in this tree) and would invalidate every hash below.
+# Marking the whole directory binary opts it out of that conversion for good.
+* -text
