@@ -2119,8 +2119,18 @@ const RUN_IBL_SWEEP = async (cfg) => {
       previousCommitted = committed;
     }
     // Yield only every 32 frames: an await per frame turns an 801-frame sweep
-    // into 801 task boundaries, and the sweep is a COST measurement.
-    if ((f & 31) === 31) {
+    // into 801 task boundaries, and the sweep is a COST measurement. Every
+    // SECOND yield goes through the compositor instead of the task queue: a
+    // macrotask boundary does not wait for the device, so 801 of these submit
+    // as fast as the CPU can encode and leave a backlog the first timed
+    // segment then meets. A `requestAnimationFrame` callback is gated on the
+    // previous frame's vsync, not its own present, which still caps CPU
+    // run-ahead at 64 frames: ~12 extra presents per leg against 801 renders,
+    // leaving the per-frame cost the 32-frame cadence protects untouched.
+    // Whether it also collapses the legs' 23x gap is for the re-run to say.
+    if ((f & 63) === 63) {
+      await new Promise((r) => requestAnimationFrame(r));
+    } else if ((f & 31) === 31) {
       await new Promise((r) => setTimeout(r, 0));
     }
   }
@@ -2159,7 +2169,12 @@ const RUN_IBL_SWEEP = async (cfg) => {
       controlTransitions++;
       controlPrevious = committed;
     }
-    if ((f & 31) === 31) {
+    // Same cadence as the counting leg above, and for the same reason: the two
+    // legs are only comparable to each other if neither is allowed to run the
+    // CPU arbitrarily far ahead of the device.
+    if ((f & 63) === 63) {
+      await new Promise((r) => requestAnimationFrame(r));
+    } else if ((f & 31) === 31) {
       await new Promise((r) => setTimeout(r, 0));
     }
   }
@@ -2290,18 +2305,34 @@ const RUN_IBL_SWEEP = async (cfg) => {
       restoreGpuCapture();
     }
   }
+  // Retained rather than discarded so the resize's own precondition reaches
+  // the artifact; checked below, where the canonical drain describer exists.
+  let setupDrain = null;
   if (gpuCaptureAvailable) {
     costContext.performanceManager.config.timestampProfiling = true;
     // Drain BEFORE the resize, as setBufferCount's contract requires: it
     // clears the counters while any readback still in flight stays counted as
     // pending, and it discards `_pendingSubmissions` outright because their
-    // slot indices do not survive the resize. Resizing over a live tail is
-    // therefore the one way this probe can manufacture the very state its
-    // pre-segment drain check refuses — and pair 0 is the only segment whose
-    // pre-drain follows the resize, which is exactly where that check fired.
-    // The warmup legs above render the whole schedule on both legs, so the
-    // tail here is real rather than hypothetical.
-    await profiler.drainPendingReadbacks(
+    // slot indices do not survive the resize.
+    //
+    // ~~Resizing over a live tail is therefore the one way this probe can
+    // manufacture the very state its pre-segment drain check refuses — and
+    // pair 0 is the only segment whose pre-drain follows the resize, which is
+    // exactly where that check fired. The warmup legs above render the whole
+    // schedule on both legs, so the tail here is real rather than
+    // hypothetical.~~ STRUCK 2026-09-19, refuted by the receipts it was
+    // written to explain. `drainPendingReadbacks` computes
+    // `drained = outstanding.length - undrained`, so the reported
+    // `{drained: 0, undrained: 1}` forces `outstanding.length === 1` — a
+    // surviving pre-resize tail plus the untimed render's own readback would
+    // have made it 2. The one outstanding readback IS the untimed render's,
+    // created after this resize, and the same segment's post-loop drain takes
+    // the empty early return, so it settled late rather than being lost. The
+    // pre-drain refused on a device state the unfenced warm-up legs built,
+    // which is why a pre-segment queue fence, not this drain, is the repair.
+    // This drain keeps its place (the resize contract above is unaffected) and
+    // its result is now CHECKED instead of discarded.
+    setupDrain = await profiler.drainPendingReadbacks(
       cfg.refreshCostProtocol.readbackTimeoutMs,
     );
     // The 3-slot ring saturated on the steep segments of the first
@@ -2329,7 +2360,9 @@ const RUN_IBL_SWEEP = async (cfg) => {
       : null;
   }
 
-  const awaitQueueCompletion = async () => {
+  const awaitQueueCompletion = async (
+    timeoutMs = cfg.refreshCostProtocol.readbackTimeoutMs,
+  ) => {
     const queuePromise = costContext?.device?.queue?.onSubmittedWorkDone?.();
     if (!queuePromise) {
       return {
@@ -2348,7 +2381,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
       };
       const timer = setTimeout(
         () => finish({ completed: false, timedOut: true, error: null }),
-        cfg.refreshCostProtocol.readbackTimeoutMs,
+        timeoutMs,
       );
       Promise.resolve(queuePromise).then(
         () => finish({ completed: true, timedOut: false, error: null }),
@@ -2360,6 +2393,17 @@ const RUN_IBL_SWEEP = async (cfg) => {
           }),
       );
     });
+  };
+
+  // `awaitQueueCompletion` returns no duration, and the pre-segment fence's
+  // duration is the whole diagnostic value of adding one: it says whether the
+  // device was seconds behind the CPU (queue backlog) or already idle. Timed
+  // here rather than inside the fence so the post-segment call keeps its exact
+  // shipped shape.
+  const timedQueueFence = async (timeoutMs) => {
+    const startMs = performance.now();
+    const fence = await awaitQueueCompletion(timeoutMs);
+    return { ...fence, durationMs: performance.now() - startMs };
   };
 
   const unavailableGpuTime = () => ({
@@ -2432,6 +2476,50 @@ const RUN_IBL_SWEEP = async (cfg) => {
       .join(", ");
   };
   // ==END refresh-cost-drain-closure==
+
+  // The pre-segment precondition travels in a marked block for the same reason
+  // the two describers above do: it runs IN THE PAGE, so a Node spec can only
+  // reach it by extracting and compiling this text. Keeping the ORDER — fence,
+  // then drain, then describe — inside one function is what makes that order
+  // an executable claim rather than a source-order coincidence.
+  // ==BEGIN refresh-cost-precondition-protocol==
+  const describeRefreshCostFenceClosure = (fence) => {
+    if (!fence || typeof fence !== "object") {
+      return "fence absent";
+    }
+    return fence.completed === true
+      ? ""
+      : `timedOut=${String(fence.timedOut)}, error=${String(fence.error)}`;
+  };
+  const describeRefreshCostSetupDrain = (drain, describeDrainClosure) => {
+    const offenders = describeDrainClosure(drain);
+    return offenders === ""
+      ? ""
+      : `the pre-resize GPU readback drain did not close (${offenders})`;
+  };
+  const establishRefreshCostPrecondition = async (options) => {
+    const preFence = await options.fence(options.fenceTimeoutMs);
+    const preDrain = await options.drain(options.drainTimeoutMs);
+    return { preFence, preDrain };
+  };
+  // ==END refresh-cost-precondition-protocol==
+
+  // The pre-resize drain's result was discarded until 2026-09-19, so a resize
+  // taken over a live readback tail could not be seen in the artifact at all —
+  // the one state the comment at the drain claimed to be guarding against was
+  // also the one state nothing reported. This is the earliest point at which
+  // the canonical describer exists, and it is still before any timed segment
+  // opens.
+  const setupInvalidReasons = [];
+  if (gpuCaptureAvailable) {
+    const setupDrainReason = describeRefreshCostSetupDrain(
+      setupDrain,
+      describeRefreshCostDrainClosure,
+    );
+    if (setupDrainReason !== "") {
+      setupInvalidReasons.push(setupDrainReason);
+    }
+  }
 
   // ==BEGIN refresh-cost-multi-metric==
   // Q-80: the timing-only report violated the multi-metric performance rule
@@ -2715,9 +2803,19 @@ const RUN_IBL_SWEEP = async (cfg) => {
       };
     }
 
-    const preDrain = await profiler.drainPendingReadbacks(
-      cfg.refreshCostProtocol.readbackTimeoutMs,
-    );
+    // This was the only readback drain in the protocol with no queue fence in
+    // front of it — the post-segment pair below has always had one, which is
+    // why the post-segment drain has always closed. Unfenced, it asks whether
+    // the device has retired a submission while the device is still working
+    // through everything the warm-up legs queued ahead of it, and refuses on
+    // the answer. Fence first, under its own bound, and the question becomes
+    // the one the segment actually needs answered.
+    const { preFence, preDrain } = await establishRefreshCostPrecondition({
+      fence: timedQueueFence,
+      drain: (timeoutMs) => profiler.drainPendingReadbacks(timeoutMs),
+      fenceTimeoutMs: cfg.refreshCostProtocol.preSegmentFenceTimeoutMs,
+      drainTimeoutMs: cfg.refreshCostProtocol.readbackTimeoutMs,
+    });
     profiler.reset();
     activeGpuSamplesByPass = Object.fromEntries(
       cfg.refreshCostProtocol.gpuTime.passNames.map((passName) => [
@@ -2792,6 +2890,18 @@ const RUN_IBL_SWEEP = async (cfg) => {
     // never tripped this and must not start. What trips it is `abandoned`
     // (encoded, never handed to `afterSubmit()`) or `undrained`/`timedOut`
     // (started, never finished), and the reason now says which.
+    // The fence in front of that drain is refused on its own terms and BEFORE
+    // it, because a fence that did not complete is the explanation for a drain
+    // that then did not close. A fence cannot make a stuck readback invisible:
+    // the drain behind it keeps the same 5000 ms bound it always had.
+    const preFenceOffenders = describeRefreshCostFenceClosure(preFence);
+    if (preFenceOffenders !== "") {
+      invalidReasons.push(
+        segmentReason(
+          `the pre-segment GPU queue fence did not complete (${preFenceOffenders})`,
+        ),
+      );
+    }
     const preDrainOffenders = describeRefreshCostDrainClosure(preDrain);
     if (preDrainOffenders !== "") {
       invalidReasons.push(
@@ -2912,6 +3022,12 @@ const RUN_IBL_SWEEP = async (cfg) => {
         samplesMsByPass,
         invalidReason: valid ? null : invalidReasons.join("; "),
         queueDrain,
+        // Reported-only, never scored: how long the device took to retire
+        // everything queued before this segment. It is what separates "the CPU
+        // ran ahead of the GPU" from "the first profiled submission is
+        // expensive" without either hypothesis being able to alter a verdict.
+        preFence,
+        preFenceMs: preFence.durationMs,
         preDrain,
         drain,
         results,
@@ -2950,7 +3066,10 @@ const RUN_IBL_SWEEP = async (cfg) => {
       const reason = segment.gpuTime.invalidReason;
       return reason.startsWith(prefix) ? reason : `${prefix} ${reason}`;
     });
-  const gpuAggregateInvalidReasons = [...invalidGpuSegmentReasons];
+  const gpuAggregateInvalidReasons = [
+    ...setupInvalidReasons,
+    ...invalidGpuSegmentReasons,
+  ];
   if (
     gpuCaptureAvailable &&
     (!captureHook.restored || !captureHook.originalIdentityRestored)
@@ -3032,6 +3151,10 @@ const RUN_IBL_SWEEP = async (cfg) => {
         },
     warmupBothLegs: warmedLegs.eclipse !== null && warmedLegs.control !== null,
     warmups: [warmedLegs.eclipse, warmedLegs.control],
+    // The drain taken before `setBufferCount` resizes the ring. Retained so
+    // the artifact can answer whether the resize happened over a live readback
+    // tail; its refusal, if any, is already in `gpuTime.invalidReason`.
+    preResizeDrain: setupDrain,
     warmupNote:
       "the eclipse counting leg and the eclipse-off counting leg each rendered the whole schedule before any segment below was timed",
     interleave: "ABBA — the leg that runs first alternates per segment",
@@ -3947,6 +4070,17 @@ export async function runEclipseCloudResponseProbe() {
           webgpuUnavailableReason: REFRESH_COST_WEBGPU_GPU_UNAVAILABLE_REASON,
           webglUnavailableReason: REFRESH_COST_WEBGL_GPU_UNAVAILABLE_REASON,
           readbackTimeoutMs: 5000,
+          // The pre-segment queue fence gets its OWN bound, deliberately much
+          // larger than the drain's; reusing 5000 would only move the refusal
+          // one line up. 30000 is ~3x the longest settle this protocol has
+          // evidenced — the 2026-09-19 receipt bounds pair 0 eclipse's
+          // outstanding readback at <= 10134 ms (a 5000 ms timed-out pre-drain
+          // plus a 5133.8 ms measured loop, after which the post-loop drain
+          // found the set already empty) — and it is far inside HARD_LIMIT_MS.
+          // It cannot hide a stuck readback: the drain keeps its own 5000 ms
+          // bound behind the fence, and a fence that exhausts this one is
+          // itself a named structural refusal.
+          preSegmentFenceTimeoutMs: 30000,
         },
       };
       const iblWebGPUConfig = {
