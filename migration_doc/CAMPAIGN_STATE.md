@@ -245,6 +245,18 @@ complete (R4 endpoint spot-check executed 2026-08-06, queue §2a). `C15-01..08` 
 `R4` until C12 closes; the queue document is explicitly not a launch ruling for these rows
 (`QUEUE_2026-08-02_CAMPAIGN15.md` status block).
 
+**Amended 2026-09-17 (`R-2026-09-17-9`, [`MAINTAINER_RULINGS_2026-09-17.md`](MAINTAINER_RULINGS_2026-09-17.md)):**
+**`C15-01` and `C15-02` are RELEASED from the R4 hold and dispatchable as pure-Node lanes**, pending
+dispatch. The ruling is a **named narrow override for those two rows** and says plainly that R4 condition
+- C12 closure - is **NOT** met: C12 exit gate stays MAXIMAL (`R-2026-08-10-1`), its critical path is still
+`C12-29` S3 via `C13-41`, and `R-2026-09-13-1` neither arm has fired because job 13c leg (e) never ran
+(`RR-2026-09-13-E` open, `DEFERRED_WORK.md:2464`). It is **not** an exercise of Option C and pre-empts
+neither arm. `C15-03`..`C15-08`, `C15-06P` and `C15-07H` stay HELD and come off by a later one-line ruling
+once the contact sheet exists (`DX-105`). Sequencing onto the probe kit, and the `DX-101`..`DX-108` rows it
+depends on: [`PROBE_KIT_PLAN_2026-09-17.md`](PROBE_KIT_PLAN_2026-09-17.md) section 5 and
+[`QUEUE_2026-08-29_RESEARCH_DISPATCH.md`](QUEUE_2026-08-29_RESEARCH_DISPATCH.md) section 6a.1
+(`R-2026-09-17-12`).
+
 **GSPLAT (`C15-G0..G8`, §6, ruling R6, 2026-08-06): ACTIVE, not under the R4 hold.** `G0` scoping
 COMPLETE (Batch 863); `G1`–`G5` LANDED (Batches 868–895: harness → scene-logic extraction → first
 real WebGPU splat pixels → WASM radix sort → spherical harmonics); `G6` PARTIAL (mechanism fixed
@@ -300,6 +312,13 @@ WebGPU files, spec-home assignment, anti-re-accretion tooling, and this doc-trut
 `DX-10` → `DX-21` → **`DX-22`, `DX-23`, `DX-24`** → `DX-27` → `DX-26` → `DX-25`. `DX-19`/`DX-20`
 (branch and sibling-repo salvage) are DONE (Batches 1362/1363/1365) and are the current authority
 for branch/worktree/sibling-repo state — see §3a below, which this wave's audit superseded.
+
+**Added 2026-09-17 (`R-2026-09-17-12`):** section 6a.1 of the same queue carries `DX-101`..`DX-108` - the
+probe kit (rig registry, image diff, metrics, capture seam, contact sheet, banking, fleet contract by
+behaviour) and the fleet harvest-and-retire. No new file and no new campaign identity; the argument is
+[`PROBE_KIT_PLAN_2026-09-17.md`](PROBE_KIT_PLAN_2026-09-17.md). Trigger: after waves 0-3 of the
+Gemini-audit fix plan land. `R-2026-09-17-10` (visual acceptance) and `R-2026-09-17-11` (retirement:
+archive first, delete later from a positive list) ungate `DX-105` and `DX-108`.
 
 ### Gemini-audit fix plan — waves 0-6 (not a numbered campaign)
 

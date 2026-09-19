@@ -3,7 +3,11 @@
 Taken 2026-09-17 ~19:10–19:20 EDT, prompted by the seat from the verified result of the external
 (Gemini) codebase audit; **each entry is the option the maintainer selected**. Ruling ids are
 `R-2026-09-17-1` … `-8` and map onto the decisions `D1`, `D2`, `D6`, `D9`, `D3`, `D5` and `D8` of the
-verification report, plus one Edge-order ruling that has no decision number. The report itself lands
+verification report, plus one Edge-order ruling that has no decision number. A second sitting the
+same evening, ~22:05 EDT, added `R-2026-09-17-9` ... `-12` on a different subject - the probe kit, the
+fleet harvest-and-retire, and the Campaign 15 aurora launch - prompted by the seat from
+[`PROBE_KIT_PLAN_2026-09-17.md`](PROBE_KIT_PLAN_2026-09-17.md) section 7 after its station-3 review;
+all four were taken as recommended. The report itself lands
 as the tracked [`GEMINI_AUDIT_VERIFICATION_2026-09-17.md`](GEMINI_AUDIT_VERIFICATION_2026-09-17.md)
 in the same batch as this file; **this file is the authority** for the rulings, and the report's §g is
 the argument they were taken on.
@@ -143,6 +147,83 @@ and is trivial to drop at the next sync. Turning `capIsNew` off was rejected: th
 and it is finding real style violations.
 
 Executed: **pending** — W0-CIGREEN.
+
+Authority: charter §1.1.
+
+---
+
+## R-2026-09-17-9 — The C15 aurora hold: `C15-01` and `C15-02` are released now, as a named narrow override
+
+`C15-01` (neutral state packet + manual driver) and `C15-02` (WMM2025 geomagnetic frame + synthetic oval) are released from the `R4` hold and are dispatchable as pure-Node engine lanes. `C15-03`…`C15-08`, `C15-06P` and `C15-07H` stay held, and are released by a **later one-line ruling once the contact sheet exists** — that is, once `DX-105` has landed and `C15-04` has something to iterate on. **C12's close is neither blocked nor forgotten by this.**
+
+Basis: `PROBE_KIT_PLAN_2026-09-17.md` §7 `R-A`, taken as recommended and confirmed accurate by the
+station-3 review (lane Diggle, 2026-09-17). `R4`'s condition is **C12 closure**
+(`QUEUE_2026-08-02_CAMPAIGN15.md:14-15`, row table `:378-381`; `CAMPAIGN_STATE.md:241-248`) and **this
+ruling does not claim it is met.** C12's exit gate is MAXIMAL (`R-2026-08-10-1`, `CAMPAIGN_STATE.md:55`),
+its critical path is `C12-29` S3 via `C13-41`, and `R-2026-09-13-1` makes the S3 re-decision conditional
+on a re-run — job 13c leg (e) — that **never ran**, so neither arm has fired and `RR-2026-09-13-E` stays
+open (`DEFERRED_WORK.md:2464`). This is therefore a **narrow override of `R4`'s literal text for two named
+rows, not an exercise of Option C**, and it pre-empts neither arm of `R-2026-09-13-1`. The two rows carry
+pure-Node exit gates by their own written text, take no Edge slot, touch no C12 file and no shader, ship no
+visible effect, and produce the deterministic packet and geomagnetic frame every later aurora row consumes.
+The two alternatives were argued and declined: holding everything costs the lane its longest-lead rows for
+an indefinite wait on an Edge queue with three things in front of it; exercising Option C now would close
+C12 on a judgement about noise rather than on the measurement `R-2026-09-02-5` funded.
+
+Executed: **in force from this sitting.** `C15-01` and `C15-02` may be dispatched; every other aurora row stays `HELD (R4)`.
+
+Authority: charter §1.1.
+
+---
+
+## R-2026-09-17-10 — The visual-acceptance protocol: invariants are verified, looks are judged
+
+Adopted as written in `PROBE_KIT_PLAN_2026-09-17.md` §7 `R-B`. Invariants — RTE, byte-identity, parity, exit contracts, lifecycle, determinism — keep specs and the probes that produce their measurements. **Aesthetic questions are judged by the maintainer on a contact sheet**, which carries no verdict, no threshold and no exit code, and which cannot change any gate's status. A look the maintainer accepts is pinned **exactly once**, as a baseline refresh in its own reviewed commit, through the existing `capture-and-diff.mjs --update --confirm-baseline-promotion --update-rationale … --reviewed-by …` path. A probe written to manufacture a number for an aesthetic question is a review finding, not evidence. `CLAUDE.md` Principle 8 and `ORCHESTRATION_HANDBOOK.md` §7 "Acceptance semantics" are amended with the text drafted in the plan's §2.1, verbatim.
+
+Basis: the plan's §2, and the measurement under it — 666 executable probes and 301,541 lines, of which
+46 carry a private pixel diff, because a lane asked to answer "does this look right" with a number
+writes one. Principle 8's automation requirement is **unchanged** for everything with a right answer;
+what this adds is the distinction between a verification and a judgement, which Principle 8 did not
+previously draw. The verdict-freedom is mechanical rather than promised: `DX-105`'s acceptance asserts
+the generated page contains no pass/fail token and that the tool's exit code is independent of every
+mismatch value it renders, with an inertness mutant.
+
+Executed: **in force from this sitting.** The two governance amendments land with the batch that carries this file; `DX-105` is ungated by it.
+
+Authority: charter §1.1.
+
+---
+
+## R-2026-09-17-11 — Probe retirement: archive first, delete later, from a positive list
+
+Adopted as written in `PROBE_KIT_PLAN_2026-09-17.md` §7 `R-C`. `EXECUTOR_LANE_CHARTER_2026-08-14.md` §3.6 remains the retirement authority and is not restated. Two things it leaves open are settled. **(1) ARCHIVE means moved, not deleted:** a retired probe lands in `Tools/visual-regression/archive/` with `@status ARCHIVED-CANDIDATE`, its allowlist row and runbook references removed in the same landing group, after its conclusion is banked in `WEBGPU_DEBUGGING_LOG.md`. **Deletion is a separate, later batch**, taken only from a positive list — read back from the file, reviewed by an Opus reviewer who is not the author — after the archive move has landed and after the probe's evidence is harvested to `cesium-webgpu-worker-archive` and its images repatriated to `Tools/visual-regression/output/`. **(2) The first retirement cohort is the 143 `@status INVESTIGATION` probes**, and `ARCHIVED-CANDIDATE` becomes reachable as part of `DX-107`. A probe's appearance in a batch record is **provenance, not a live runner**, and does not block its retirement; the citation is repointed at the banked conclusion in the same landing.
+
+Basis: the ritual exists and is measurably half-applied. At `1a2baeaa4a`: **143** probes sit in the
+"done with it, left it where it was" state the charter itself names as the failure; **16** files were
+moved into `archive/` without the status flip and still read `INVESTIGATION`; and `@status
+ARCHIVED-CANDIDATE` has **zero users anywhere in the tree** — the sole tree-wide hit is a fixture
+string inside `purpose-header-contract.spec.mjs`. Two-phase, positive-list destruction with the
+read-back is the standing rule for destructive work here, and every clause of it is carried into the
+plan's §4.2 numbered criteria.
+
+Executed: **in force from this sitting.** `DX-108` is ungated by it; no deletion may land in the same batch as its archive move.
+
+Authority: charter §1.1.
+
+---
+
+## R-2026-09-17-12 — The kit rows live in WAVE DX §6a.1; no new file, no new campaign identity
+
+Adopted as written in `PROBE_KIT_PLAN_2026-09-17.md` §7 `R-D`. The probe-kit and harvest rows are `DX-101` … `DX-108` in §6a.1 of [`QUEUE_2026-08-29_RESEARCH_DISPATCH.md`](QUEUE_2026-08-29_RESEARCH_DISPATCH.md), in that document's existing flat `DX-nn` sequence and row-card format. **No new queue file, no new id prefix, and no new campaign identity** — the work is a wave inside Wave DX, not a campaign. Campaign 15 is **not** re-filed: `C15-01`…`C15-08`, `C15-06P` and `C15-07H` keep their ids and their home, and the plan's §5 attaches to them.
+
+Basis: every row the kit depends on or attaches to already lives in §6a — `DX-01` (the runtime),
+`DX-02` (anti-re-accretion), `DX-06` (which `DX-108` executes and whose acceptance it inherits),
+`DX-94` (the orphan ratchet), `DX-96` and `DX-97`. A separate file would split one programme across two
+documents, which is the **exact defect record round 5 filed `DX-96` and `DX-97` for** and which had
+already produced the `DX-86`/`DX-87` id collision. A `DX-PK-nn` prefix would add a second id grammar to
+a namespace whose add-only rule (SR-16) already works and whose ids are cited flat everywhere.
+
+Executed: **in force from this sitting.** The rows land with the batch that carries this file.
 
 Authority: charter §1.1.
 

@@ -2094,6 +2094,107 @@ see this card for tier, size, dependencies and acceptance.
 - **Acceptance:** gallery demos declare `__sandcastleSmokeReady` when they reach the state they are certified for, in batches by family; the sweep's `INCONCLUSIVE` count falls monotonically and a ratchet stops it growing; a stub demo that never declares the predicate still scores `INCONCLUSIVE`, never PASS, under at least two settle values (the adversarial construction `DX-95` already specifies).
 - **Binds:** `DX-95` (the verdict function), `DX-90` (a timed-out demo and an inconclusive demo are decided by the same function). **Source:** `ASTRA_WORK_AUDIT_2026-09-16.md` §1.1 and §5.
 
+### 6a.1 The probe kit, the fleet harvest, and the aurora launch (`DX-101` … `DX-108`)
+
+**Added 2026-09-17 by lane Cotton (PK-PLAN), measured in a fresh clone at `1a2baeaa4a`.** Plan
+authority: [`PROBE_KIT_PLAN_2026-09-17.md`](PROBE_KIT_PLAN_2026-09-17.md). Maintainer directive
+(verbatim): *"Lets queue up the probe modular components, cleaning up old useless probes after we
+harvest them for components, and space weather to run after we finish the gemini review fixes."*
+
+**The four rulings this block needed were TAKEN 2026-09-17 ~22:05 EDT, all as recommended** —
+`R-2026-09-17-9` (the `C15` aurora hold: `C15-01`/`C15-02` released now as a named narrow override,
+`C15-03`…`C15-08` by a later one-line ruling once the contact sheet exists), `R-2026-09-17-10` (the
+visual-acceptance protocol), `R-2026-09-17-11` (retirement: archive first, delete later from a
+positive list) and `R-2026-09-17-12` (this placement) — in
+[`MAINTAINER_RULINGS_2026-09-17.md`](MAINTAINER_RULINGS_2026-09-17.md), which is their authority; the
+argument is `PROBE_KIT_PLAN_2026-09-17.md` §7. `R-2026-09-17-12` is what puts these
+ids here rather than in a new queue file: `DX-01`, `DX-02`, `DX-06`, `DX-94`, `DX-96` and `DX-97` all
+live in this section, and a second file would repeat the split-across-two-files defect that `DX-96`'s
+own disposition records.
+
+**Trigger for the whole block:** after waves 0–3 of `GEMINI_AUDIT_VERIFICATION_2026-09-17.md` §f have
+landed. Waves 4–6 are decision-gated and interleave.
+
+**Measured basis, re-derived at `1a2baeaa4a` and not carried from an older row.**
+`Tools/visual-regression` holds **673 `probe-*.mjs`**, of which **666 are executable probes**
+(301,541 lines; 7 are `.spec.mjs` named `probe-*`), 313 top-level `*.spec.mjs`, and 124 `lib/*.mjs`
+(125,068 lines) with **zero** unreferenced library modules. **28** probes import the runtime and carry
+the `@runtime` residency tag; **631** still call `chromium.launch(` themselves; **46** define their own
+pixel diff. Origin governance is read from `C13-N01`'s own detector, never from a grep, per that row's
+instruction: `censusRuntimeGovernance` over the 666 at this tip gives **585 hard-defaulting** (413 by
+the env-read-with-fallback construct, 172 by a bare constant) and **32 governed** (28 runtime, 0
+edge-slot, 4 served-build-preflight); cloud+god-ray is 61 analyzed, 52 hard-defaulting, 9 governed.
+**Do not quote 585 flat against the banked `420/665` of Batch 1480** — that figure predates the
+stage-2 widening that folded the bare-constant construct in; the comparable number is 413 against 420,
+and governed has gone 24 → 32. **Zero** of the 666 are named in an `npm` script or a workflow.
+By `@status`: **523 ACTIVE, 143 INVESTIGATION, 0 ARCHIVED-CANDIDATE** — the third status word has no
+users anywhere in the tree, including the 16 `.mjs` already sitting in `archive/`. There are 259 family
+prefixes; the top 16 cover 223 probes (33.5 %) and **191 prefixes of ≤2 probes cover 232 (35 %)**, which
+is why `DX-108` splits family-harvest from a status-driven tail sweep.
+
+### `DX-101` — the rig registry: one declarative record per scene, and `scenes.json` generated from it
+
+- **Disposition:** OPEN, first row of the kit. `Tools/visual-regression/rigs/<name>.mjs` (one object each: page or URL, renderer set, camera as lon/lat/height **or** an ECEF pose with direction/up, clock, dials/quality, asset or tileset, `setupFile`/`setupParams`, viewport, readiness predicate, tags, optional `gate` + `expectedMismatch`) plus `lib/rig-registry.mjs` and the `scenes.schema.json` that `scenes.json:2` already declares and **which does not exist at HEAD**. The record's field set generalises `lib/cloud-tour-fixtures.mjs` (2,734 lines, 15 fixtures, 9 sequences, with `replayKeyFor`, `validateFixture`, `summarizeFixtureCoverage`) rather than inventing a second shape. **`capture-and-diff.mjs` is NOT modified:** `scenes.json` is generated from the rigs tagged `wave-end`, so the wave-end gate keeps reading the file it reads today. Seed rigs: the 10 `scenes.json` scenes, the 15 cloud fixtures, the 4 ladder rungs (`lib/cloud-orbital-ladder-model.mjs` `ALTITUDE_LADDER_METRES`), the 3 `probe-saved-view.mjs` views, and a sandcastle-smoke selection over the 343 gallery demo directories.
+- **Tier / Size / Backends:** OPUS-JUDGMENT · M · harness (drives both). **Depends on:** `DX-01` (landed). **Ruling touched:** none. **Gate:** none (placement settled by `R-2026-09-17-12`).
+- **Acceptance:** every rig resolves and validates; ids unique; tags drawn from a frozen vocabulary; a rig's `replayKey` is stable across two runs and changes when a determinism-relevant field changes; `node` regeneration of `scenes.json` is **byte-identical** to the file on disk. Spec under `test-visual-regression-node`, with an inertness mutant that makes the uniqueness check unreachable (`if (false && …)`) and reds the duplicate-id case.
+- **Binds:** SR-7, SR-12, SR-17. **Source:** `PROBE_KIT_PLAN_2026-09-17.md` §3.1; `scenes.json:2`; `lib/cloud-tour-fixtures.mjs`.
+
+### `DX-102` — `lib/image-diff.mjs`: one pixel diff for the fleet
+
+- **Disposition:** OPEN. `{ mismatchPct, changedPx, bbox, diffRgba }`, per-channel tolerance stated rather than hidden (the suite's existing 16/255 default), optional mask. Replaces the **46** private copies as each family is harvested. It does **not** fork a second gate policy: `lib/visual-gate-policy.mjs` `evaluatePixelGate` keeps deciding what a mismatch means; this module only computes one.
+- **Tier / Size / Backends:** TIER-3 · S · tooling. **Depends on:** none (`Tools/lib/png-decode.mjs` and `png-rgba.mjs` already exist). **Ruling touched:** none. **Gate:** `test-visual-regression-node`.
+- **Acceptance:** a known-identical fixture pair returns 0 and a known-different pair returns the value the replaced probe reported for it, per family, at migration time; a spec drives the pure function with an inertness mutant that makes the diff always return 0 and reds the different-pair case.
+- **Binds:** SR-12. **Source:** `PROBE_KIT_PLAN_2026-09-17.md` §3.2.
+
+### `DX-103` — `lib/metrics/*.mjs`: the pure measurement functions, extracted
+
+- **Disposition:** OPEN, two lanes. One concern per file, each with a `node --test` spec: masks, saturation fraction, pre-tonemap luminance statistics, spectral slope, region means, and — **new, because `C15-08` demands it in writing** ("point/structure/connected-component metrics; never a band mean for a faint sparse additive signal") — connected components and structure similarity. Extracted from `lib/cloud-photometry.mjs` (430), `lib/cloud-spectrum.mjs` (604), `lib/cloud-orbital-ladder-model.mjs` (591), `probe-model-ibl.mjs` `topBottomBrightness` (`:288`) and `probe-model-color.mjs` `meanModelColor` (`:165`).
+- **Tier / Size / Backends:** TIER-3 · M (two lanes: cloud extraction, then the new structure metrics) · tooling. **Depends on:** none for the new metrics; the cloud extraction waits for a quiescent cloud lane. **Ruling touched:** none. **Gate:** `test-visual-regression-node`, plus `test-cloud-c13` for the extraction.
+- **Acceptance:** the extraction changes **no banked number** — the ladder model's own spec and `cloud-orbital-ladder-contract.spec.mjs` stay green over the moved code, and the packet prints the before/after values; the new structure metrics carry a spec over synthetic fixtures whose answer is derivable by hand (a known component count, a known SSIM against a shifted copy) with an inertness mutant per metric.
+- **Binds:** SR-7, SR-8, SR-12. **Source:** `PROBE_KIT_PLAN_2026-09-17.md` §3.3; `QUEUE_2026-08-02_CAMPAIGN15.md` `C15-08` exit gate.
+
+### `DX-104` — `capture(rig, origin, options)`: the capture seam on the runtime
+
+- **Disposition:** OPEN. `lib/capture.mjs` over `runProbe`'s existing surface — `launchEdge`, the Edge-slot lock, the served-build preflight, the origin refusal, `captureElement`. Takes a rig, returns PNG + metrics + receipt; both renderers; **BEFORE and AFTER origins in one run** so a pair is comparable by construction; one browser per run, closed in `finally`. This is the row that makes CLAUDE.md Principle 8's template governed: after it, "copy `probe-saved-view.mjs`" becomes "declare a rig", and that template's own `localhost:8080` default (`:16`) stops propagating into new probes.
+- **Tier / Size / Backends:** OPUS-JUDGMENT · M · harness. **Depends on:** `DX-101`. **Ruling touched:** none. **Gate:** `test-visual-regression-node` for the pure parts. **Second dispatch:** OPUS-EDGE-EXECUTOR · the single browser leg for the whole kit wave (one captured pair over two origins, one rendered contact sheet), under §9's runbook.
+- **Acceptance:** the pure parts (rig → descriptor, origin resolution, refusal decisions) are spec-driven with no browser; the Edge leg produces a BEFORE/AFTER pair for one seed rig on both renderers with `servedBuildAssertion: "enforced"` in the receipt and served-md5 == disk-md5 recorded; exactly one browser is launched and it is closed on the throw path (asserted by an injected throwing `cells`).
+- **Binds:** SR-6, SR-12, SR-17. **Source:** `PROBE_KIT_PLAN_2026-09-17.md` §3.4.
+
+### `DX-105` — `contact-sheet.mjs`: the visual-iteration loop, with no verdict on it
+
+- **Disposition:** OPEN, **ungated — `R-2026-09-17-10` adopted the protocol as written.** `Tools/visual-regression/contact-sheet.mjs` renders rigs × renderers × {BEFORE, AFTER} as one static HTML page under gitignored `output/contact-sheets/<date>/`, diff heat-map and metric strip beside each pair. **No verdict, no threshold, and no exit code beyond "the page was written."** The maintainer opens it and rules; an accepted look is pinned exactly once through the existing `capture-and-diff.mjs --update --confirm-baseline-promotion --update-rationale … --reviewed-by …` path.
+- **Tier / Size / Backends:** TIER-3 · M · tooling. **Depends on:** `DX-101`, `DX-102`, `DX-104`. **Ruling touched:** executes `R-2026-09-17-10`. **Gate:** `test-visual-regression-node`.
+- **Acceptance:** the page model is a pure function of a manifest and is spec-driven with no browser; a spec asserts the generated page contains **no** pass/fail token and that the tool's exit code is independent of every mismatch value it renders, with an inertness mutant that makes the tool exit non-zero on a high mismatch and reds that assertion.
+- **Binds:** SR-6, SR-12. **Source:** `PROBE_KIT_PLAN_2026-09-17.md` §2, §3.5.
+
+### `DX-106` — bank a contact sheet in the wave-end layout
+
+- **Disposition:** OPEN. `Tools/wave-end-gate-receipt.mjs` already writes the banked artifact table with a per-file md5 (`:638`); this row adds the contact-sheet index entry so a sheet banks in the layout executors currently assemble by hand, under `Tools/visual-regression/output/wave-end/<wave>/`.
+- **Tier / Size / Backends:** TIER-3 · S · tooling. **Depends on:** `DX-105`. **Ruling touched:** none. **Gate:** `test-landing-rules` (the wave-end gate's own runner).
+- **Acceptance:** a fixture sheet banks with its md5 row present and the existing wave-end receipt fields byte-unchanged; inertness mutant removes the index write and reds the assertion.
+- **Binds:** SR-11. **Source:** `PROBE_KIT_PLAN_2026-09-17.md` §3.5.
+
+### `DX-107` — select the fleet contract by behaviour, and make `ARCHIVED-CANDIDATE` reachable
+
+- **Disposition:** OPEN. **ATTACHES to `tools-probes-04` and to `DX-02`; duplicates neither** — whichever of this row and the Gemini fix plan's wave 5 runs first owns the behaviour-selection half and the other attaches. Two changes: (a) `lib/probe-fleet-contract.mjs` selects its file set by **behaviour** — a file that launches a browser is in the fleet, wherever it lives and **whichever call form it uses**, so the selector must match the indirect `browserType.launch(` / `<ident>.launch(` shape and not only the literal `chromium.launch(` — instead of by the `probe-*.mjs` filename glob at `requiresPurposeHeader` (`:1032`); (b) the archive exit is made reachable so `@status ARCHIVED-CANDIDATE` — **0 users anywhere at HEAD** — can actually be taken. The `@purpose` grammar (`Tools/lib/purpose-header.mjs`, `PURPOSE_STATUSES`) is add-only and this row adds no status word.
+- **Tier / Size / Backends:** TIER-3 · M · tooling. **Depends on:** none. **Ruling touched:** executes `R-2026-09-17-11` part (2); attaches to catalog ruling M4. **Gate:** `test-visual-regression-node`.
+- **Acceptance:** the contract's file set, computed by behaviour, contains the **46** escapees measured here — the literal-grep derivation yields 44 (697 files under `Tools/` call `chromium.launch(`; 631 are inside the current glob; of the 66 outside it, 16 are in `archive/`, 3 are `.spec.mjs` and 3 are the library files that own the call), and widening to "imports `playwright` **and** calls `<ident>.launch(`" adds **two the literal grep cannot see**: `capture-and-diff.mjs` (`browserType.launch(` at `:816`) and `variant-smoke-test.mjs` (same form at `:455`), which are two of the wave-end gate's three children (`Tools/wave-end-gate-binding.mjs:465`, `:488`, `:516`). **Both must be in the set — an acceptance keyed on the literal string is unsatisfiable for them**, which is the point of the row. The allowlist that absorbs the set's pre-existing watchdog/`finally` violations is shrink-only and its count is printed; a synthetic file that launches through an indirect browser-type binding, outside `probe-*.mjs`, fails the contract, with an inertness mutant that restores filename selection and reds that case.
+- **Binds:** SR-12. **Source:** `GEMINI_AUDIT_VERIFICATION_2026-09-17.md` §d `tools-probes-04` and §e A1; `PROBE_KIT_PLAN_2026-09-17.md` §3.6, §1.
+
+### `DX-108` — harvest the fleet for components, then retire it: families for the head, status for the tail
+
+- **Disposition:** OPEN, batched, **ungated — `R-2026-09-17-11` settled the retirement rule.** One family, one lane, one owner, in value order: `cloud` (60 probes / 28,624 lines) → `model` (22) → `globe` (16) → `weather` (11) → `voxel` (11) → `polar` (15) → `c11`, `clustered`, `polyline`, `sun`, `moon`, `env`, `atmo`, `c10`, `wgs84`, `bloom`. Per probe the lane records its rig(s), its metrics, its **unique assertions**, and who runs it — grepping all four runner surfaces (`package.json`, `.github/workflows/**`, open queue-row acceptances, the wave-end gate) — then extracts the metrics, writes the rigs, migrates what is worth keeping onto the runtime + `DX-104`'s `capture()`, and records a disposition for the rest. Sixteen family lanes reach 223 probes (33.5 %); **the 191 prefixes of ≤2 probes (232 probes) are dispositioned by `@status`, not by family**, in roughly four lanes, and the first cohort is the **143 `INVESTIGATION` probes (27,004 lines)** — of which 43 are named in a live queue/ledger doc and 4 by a spec. Three families are almost entirely that cohort and can be taken whole: `polar` (13 of 15), `wgs84` (9 of 10), `bloom` (6 of 7). Retirement follows `EXECUTOR_LANE_CHARTER_2026-08-14.md` §3.6 as ruled by `R-2026-09-17-11`: bank the conclusion first, ARCHIVE means **moved** with the status flipped, and DELETE is a separate later batch from a positive list after the evidence is harvested.
+- **Tier / Size / Backends:** TIER-3 per family (one OPUS-JUDGMENT lead across the wave) · S–M each · harness. **Depends on:** `DX-101`, `DX-102`, `DX-103`, `DX-104`, `DX-107`; supersedes nothing — it **executes `DX-06`** family by family and inherits its acceptance. **Ruling touched:** executes `R-2026-09-17-11`. **Gate:** the wave-end gate per family batch.
+- **Acceptance:** per family — the rigs exist and validate; every unique assertion is covered by a spec, by a rig + metric, or recorded as **deliberately dropped with the reason**; the `DX-02` allowlist shrinks by the batch's migrated count and never grows; the tooling catalog regenerates in the same batch; the `DX-94` orphan ratchet holds; no deletion lands in the same batch as its archive move; and the packet names every defect the reading surfaced (five probes read while planning this yielded two — `probe-model-ibl.mjs:70` documents `localhost:8134` while `:85` codes `localhost:8080`, and the same file prints `STRUCTURAL` at `:540` then exits **1** at `:543`/`:545`, both attached to the `tools-probes-02/-01/-09/-10` exit-code lane rather than filed as new rows).
+- **Binds:** SR-10, SR-11, SR-12. **Source:** `PROBE_KIT_PLAN_2026-09-17.md` §4; `DX-06`; `EXECUTOR_LANE_CHARTER_2026-08-14.md:259`.
+
+**Campaign 15 is NOT re-filed here.** `C15-01`…`C15-08`, `C15-06P` and `C15-07H` keep their ids and
+their home in [`QUEUE_2026-08-02_CAMPAIGN15.md`](QUEUE_2026-08-02_CAMPAIGN15.md). Their sequencing onto
+the kit — which rows need none of it (`C15-01`, `C15-02`, `C15-03`, `C15-05`, `C15-06` are pure-Node by
+their own written exit gates), which need it (`C15-04` needs `DX-101`–`DX-105`; `C15-08` needs the whole
+kit plus `DX-103`'s structure metrics), and the three seed rigs for `C15-04` — is
+`PROBE_KIT_PLAN_2026-09-17.md` §5. `R-2026-09-17-9` releases `C15-01` and `C15-02` from the `R4` hold; every other aurora row stays HELD.
+
 ### `Q-130-a` — `FrustumGeometry.js` misuses `defined(vertexFormat.normal)`/`.st` on always-defined booleans
 
 - **Disposition:** OPEN. Filed here as its own row for the first time — until now `Q-130-a` existed only

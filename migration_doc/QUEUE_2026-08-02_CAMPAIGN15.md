@@ -14,6 +14,15 @@ aurora lane and **false** of the gsplat lane, where five rows had landed.)*
   R4 endpoint spot-check executed 2026-08-06, §2a). `C15-01` through `C15-08`
   are pending and **HELD** by ruling **R4** until Campaign 12 closes. **This
   queue is not a maintainer launch ruling for these rows.**
+  *(Amended 2026-09-17 by `R-2026-09-17-9`, recorded in
+  [`MAINTAINER_RULINGS_2026-09-17.md`](MAINTAINER_RULINGS_2026-09-17.md), which is its authority.
+  **`C15-01` and `C15-02` are RELEASED from the R4 hold and dispatchable as pure-Node lanes.** The
+  ruling states plainly that R4 condition - C12 closure - is **not** met, so the release is a
+  **named narrow override for two rows**, not an exercise of Option C of `R-2026-08-10-1`, and it
+  pre-empts neither arm of `R-2026-09-13-1`. `C15-03`..`C15-08`, `C15-06P` and `C15-07H` remain HELD
+  and come off by a later one-line ruling once the contact sheet exists (`DX-105`). C12 close is
+  neither blocked nor forgotten. Sequencing onto the probe kit:
+  [`PROBE_KIT_PLAN_2026-09-17.md`](PROBE_KIT_PLAN_2026-09-17.md) section 5.)*
 - **GSPLAT lane (`C15-G0`..`C15-G8`, §6): ACTIVE — maintainer-queued 2026-08-06
   under ruling R6, and explicitly NOT under the R4 hold.** `C15-G0` scoping
   COMPLETE (Batch 863); **`C15-G1`..`C15-G5` LANDED, Batches 868–895**
@@ -375,9 +384,9 @@ not externally trained scenes.
 | ID | Work | Priority | Status | Depends on |
 |---|---|---:|---|---|
 | `C15-00` | Correct campaign identity; verify science, live schemas, lifecycle, and data-use constraints; freeze this queue | P0 | **COMPLETE — 2026-08-02 (documentation/research only); live-feed claims MEASURED 2026-08-06 under ruling R4, §2 corrected, exit gate now genuinely met (see §2a)** | — |
-| `C15-01` | Backend-neutral aurora/space-weather state packet and deterministic manual driver | P0 | PENDING — **HELD (R4) until C12 closes** | `C15-00` |
-| `C15-02` | WMM2025 geomagnetic coordinates and synthetic activity-dependent oval | P0 | PENDING — **HELD (R4)** | `C15-01` |
-| `C15-03` | Shared layered density/emission kernel, local-night gate, and RTE shell contract | P0 | PENDING — **HELD (R4)** | `C15-02` |
+| `C15-01` | Backend-neutral aurora/space-weather state packet and deterministic manual driver | P0 | PENDING — **RELEASED from the R4 hold by `R-2026-09-17-9` (2026-09-17), pending dispatch.** Pure-Node lane; C12 is NOT closed and the release is a named narrow override, not Option C. | `C15-00` |
+| `C15-02` | WMM2025 geomagnetic coordinates and synthetic activity-dependent oval | P0 | PENDING — **RELEASED from the R4 hold by `R-2026-09-17-9` (2026-09-17), pending dispatch.** Pure-Node lane. | `C15-01` |
+| `C15-03` | Shared layered density/emission kernel, local-night gate, and RTE shell contract | P0 | PENDING — **HELD (R4)**; released by a later one-line ruling once the contact sheet exists (`R-2026-09-17-9`) | `C15-02` |
 | `C15-04` | WebGL + WebGPU shell renderers, visibility demand, and feature-preserving performance tiers | P0 | PENDING — **HELD (R4)** | `C15-03` |
 | `C15-05` | OVATION + planetary-Kp asynchronous ingest and source-authority policy | P1 | PENDING — **HELD (R4)**; schemas now measured, §2a grid ordering is the spec | `C15-01`, `C15-02` |
 | `C15-06` | New RTSW + GOES asynchronous ingest with separate geomagnetic and flare state | P1 | PENDING — **HELD (R4)**; brief corrected for descending RTSW order + `-9999` fill | `C15-01`, `C15-05` authority contract |
