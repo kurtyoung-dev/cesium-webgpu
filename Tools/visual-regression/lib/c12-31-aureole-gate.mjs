@@ -8,26 +8,32 @@
  * exact topology, independently checks the WGS84 camera/Sun relationships,
  * decodes the persisted PNG bytes, and folds the evidence fail closed.
  *
- * Unrepaired findings (handoff §5)
+ * Review findings (handoff §5)
  *
  * The independent review that put this tuple on hold raised eight findings.
- * Two are still OPEN, and nothing in this module or its probe closes them.
- * Read any PASS from this gate as silent on both:
- *
- *   #4 OPEN - prior latest is not required to be byte-identical to its UUID
- *      archive. beginC1231AureoleEvidence re-parses the prior .latest.json and
- *      re-folds it through validateC1231AureoleFinalArtifact, but never reads
- *      <prefix>.<prior.runId>.json and compares bytes, so a rewritten
- *      predecessor that still folds clean is accepted. The retained-first-red
- *      path does make exactly that archive comparison; latest does not.
- *   #6 OPEN - browser/context/page acquisition and teardown are unbounded and
- *      carry no observed-closure proof. Launch, newPage, page.close and
- *      browser.close are awaited with no per-operation timeout, no closure
- *      observation reaches the artifact, and the single whole-process watchdog
- *      exits without proving anything closed.
- *
- * Their two neighbours ARE repaired, recorded here so a later reader does not
+ * All are now repaired; they are recorded here so a later reader does not
  * re-open them:
+ *
+ *   #4 CLOSED 2026-09-19 (probe-sky-aureole-anchor.mjs,
+ *      beginC1231AureoleEvidence) - a prior .latest.json must now be
+ *      byte-identical to its own write-once <prefix>.<runId>.json archive, the
+ *      same comparison the retained-first-red path already made. Folding clean
+ *      is no longer sufficient, so a rewritten or wholly fabricated
+ *      predecessor cannot succeed a run it never produced. Spec case: "a
+ *      fabricated predecessor that folds clean is refused against its
+ *      archive".
+ *   #6 CLOSED 2026-09-19 (this file plus the probe) - every browser
+ *      acquisition and teardown step runs under its own ceiling through
+ *      boundedC1231BrowserStep, the steps it observed finishing travel in
+ *      lifecycle.browserClosure, and validateBrowserClosure scores that list
+ *      against C12_31_AUREOLE_BROWSER_STEPS and
+ *      C12_31_AUREOLE_BROWSER_STEP_TIMEOUT_MS, so an unproven teardown is
+ *      structural rather than silent. #7's residual is closed with it: the
+ *      watchdog now releases the run's own lock before it exits, through the
+ *      same helper the failure path uses. Spec cases: "an unsettled browser
+ *      step fails as a named bounded timeout", "the watchdog hands its own
+ *      lock back before it exits", "the bounded runner's own observations are
+ *      what the gate scores".
  *
  *   #5 REPAIRED (this file) - the source map is folded, not merely recorded.
  *      buildMap is a member of C12_31_AUREOLE_PROVENANCE_KEYS, so
@@ -36,11 +42,10 @@
  *      buildSourceIdentity entry against the independently recorded local
  *      fingerprints rather than trusting the probe's own ok flag.
  *   #7 REPAIRED (probe-sky-aureole-anchor.mjs, the runProbe catch) - a failure
- *      after lock acquisition re-asserts the owned RUNNING bytes and calls
- *      releaseC1231AureoleLock inside its own try/catch, so the lock is handed
- *      back and a release failure is logged instead of masking the original
- *      error. The watchdog-timeout path still exits without releasing; that
- *      residual belongs to #6, not to #7.
+ *      after lock acquisition re-asserts the owned RUNNING bytes and releases
+ *      the lock through retainRunningAndReleaseC1231Lock, so the lock is
+ *      handed back and a release failure is logged instead of masking the
+ *      original error. Its watchdog residual closed with #6.
  */
 
 import { createHash } from "node:crypto";
@@ -133,6 +138,24 @@ export const C12_31_AUREOLE_PUBLICATION_ORDER = Object.freeze([
   "byte-identical-final-latest",
   "successor-preserving-unlock",
 ]);
+
+/**
+ * The browser acquisition and teardown steps a run must prove it observed,
+ * in the order it performs them. An unbounded step is invisible in a report
+ * that records only what succeeded, so this set is exact and ordered: a run
+ * that hung on one of them cannot publish a complete list.
+ */
+export const C12_31_AUREOLE_BROWSER_STEPS = Object.freeze([
+  "launch",
+  "newPage:webgl",
+  "pageClose:webgl",
+  "newPage:webgpu",
+  "pageClose:webgpu",
+  "browserClose",
+]);
+
+/** Ceiling for any single browser step, well under the process watchdog. */
+export const C12_31_AUREOLE_BROWSER_STEP_TIMEOUT_MS = 120_000;
 
 const SHOT_OFFSETS = Object.freeze({
   toward: 0,
@@ -1091,6 +1114,47 @@ function validateProvenance(report, reasons) {
     reasons.push("provenance stability is false");
 }
 
+/**
+ * Score the observed-closure evidence for browser acquisition and teardown.
+ * Every step carries the ceiling it ran under and the time it actually took,
+ * so a report cannot claim a bound it never applied, and a step that hung has
+ * no entry to publish at all.
+ */
+function validateBrowserClosure(lifecycle, reasons) {
+  const observed = lifecycle?.browserClosure;
+  if (!Array.isArray(observed)) {
+    reasons.push("browser acquisition/teardown closure proof is absent");
+    return;
+  }
+  if (
+    !sameJson(
+      observed.map((entry) => entry?.step),
+      C12_31_AUREOLE_BROWSER_STEPS,
+    )
+  ) {
+    reasons.push(
+      "browser closure proof does not cover the exact ordered browser step set",
+    );
+    return;
+  }
+  for (const entry of observed) {
+    if (
+      entry?.ok !== true ||
+      entry?.timedOut !== false ||
+      !finite(entry?.timeoutMs) ||
+      !(entry.timeoutMs > 0) ||
+      entry.timeoutMs > C12_31_AUREOLE_BROWSER_STEP_TIMEOUT_MS ||
+      !finite(entry?.durationMs) ||
+      !(entry.durationMs >= 0) ||
+      !(entry.durationMs <= entry.timeoutMs)
+    ) {
+      reasons.push(
+        `browser step ${String(entry?.step)} is not a bounded observed completion`,
+      );
+    }
+  }
+}
+
 function predicateFailures(report) {
   const failures = [];
   for (const renderer of C12_31_AUREOLE_RENDERERS) {
@@ -1239,6 +1303,7 @@ export function evaluateC1231Aureole(report) {
       "collision-safe evidence lifecycle proof is incomplete",
     );
   }
+  validateBrowserClosure(lifecycle, structuralReasons);
 
   const failedPredicates = predicateFailures({ ...report, sessions });
   const status =

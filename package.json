@@ -211,6 +211,7 @@
     "test-s5": "node --test Tools/visual-regression/c12-29-s5-canonical-hash-parity.spec.mjs Tools/visual-regression/c12-29-s5-custom-ellipsoid-gate.spec.mjs Tools/visual-regression/c12-29-s5-dense-cost-structural-refusal.spec.mjs Tools/visual-regression/c12-29-s5-multiview-gate.spec.mjs Tools/visual-regression/c12-29-s5-multiview-source-preflight.spec.mjs Tools/visual-regression/c12-29-s5-replacement-device-gate.spec.mjs Tools/visual-regression/c12-29-s5-replacement-device-preflight-refusal.spec.mjs Tools/visual-regression/c12-29-s5-terrain-selection-gate.spec.mjs Tools/visual-regression/s5-runner-home.spec.mjs",
     "test-s5-quarantine": "node --test Tools/visual-regression/c12-29-s5-dense-cost-gate.spec.mjs Tools/visual-regression/c12-29-s5-svs-footprint-gate.spec.mjs",
     "test-previous-frame-rte": "node --test Tools/visual-regression/previous-frame-rte-reconstruction.spec.mjs Tools/visual-regression/collection-previous-frame-rte.spec.mjs Tools/visual-regression/model-previous-frame-rte.spec.mjs Tools/visual-regression/compute-cloud-previous-frame-rte.spec.mjs",
+    "test-s5": "node --test Tools/visual-regression/c12-31-aureole-gate.spec.mjs",
     "test-sun-disc-dawn": "node --test Tools/visual-regression/sun-disc-dawn-gate.spec.mjs",
     "test-widgets-teardown": "node --test Tools/visual-regression/widgets-teardown-contract.spec.mjs",
     "spec-census": "node Tools/spec-runner-census.mjs",

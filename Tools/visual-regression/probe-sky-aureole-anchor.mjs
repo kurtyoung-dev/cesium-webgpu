@@ -20,25 +20,28 @@
 //
 //   node Tools/visual-regression/probe-sky-aureole-anchor.mjs
 //
-// Unrepaired findings (handoff §5)
+// Review findings (handoff §5)
 //
 // The independent review that put this tuple on hold raised eight findings.
-// Two remain OPEN in this probe; a green run is silent on both:
+// All are now repaired, recorded here so a later reader does not re-open them:
 //
-//   #4 OPEN - prior latest is not required to be byte-identical to its UUID
-//      archive. beginC1231AureoleEvidence re-parses and re-folds the prior
-//      .latest.json but never reads <prefix>.<prior.runId>.json to compare
-//      bytes, so a rewritten predecessor that still folds clean is accepted.
-//      validateRetainedFirstRed does make that archive comparison for the
-//      retained red; the latest branch has no equivalent.
-//   #6 OPEN - browser/context/page acquisition and teardown are unbounded and
-//      carry no observed-closure proof. chromium.launch, browser.newPage,
-//      page.close and browser.close are awaited with no per-operation timeout,
-//      nothing about closure reaches the artifact, and the single WATCHDOG_MS
-//      process watchdog exits 2 without proving anything closed.
-//
-// Their two neighbours ARE repaired, recorded here so a later reader does not
-// re-open them:
+//   #4 CLOSED 2026-09-19 (this file, beginC1231AureoleEvidence) - a prior
+//      .latest.json must be byte-identical to its own write-once
+//      <prefix>.<runId>.json archive, the comparison validateRetainedFirstRed
+//      already made for the retained red. Folding clean is no longer enough,
+//      so a rewritten or fabricated predecessor cannot succeed a run it never
+//      produced. Spec case: "a fabricated predecessor that folds clean is
+//      refused against its archive".
+//   #6 CLOSED 2026-09-19 (this file and lib/c12-31-aureole-gate.mjs) -
+//      chromium.launch, browser.newPage, page.close and browser.close each run
+//      under their own ceiling through boundedC1231BrowserStep; the steps
+//      observed finishing travel in lifecycle.browserClosure and are scored by
+//      validateBrowserClosure, so an unproven teardown is structural rather
+//      than silent; and the WATCHDOG_MS path releases this run's own lock
+//      before it exits 2, which closes #7's residual with it. Spec cases: "an
+//      unsettled browser step fails as a named bounded timeout", "the watchdog
+//      hands its own lock back before it exits", "the bounded runner's own
+//      observations are what the gate scores".
 //
 //   #5 REPAIRED (lib/c12-31-aureole-gate.mjs) - the source map is folded, not
 //      merely recorded. buildMap is a member of C12_31_AUREOLE_PROVENANCE_KEYS,
@@ -47,11 +50,10 @@
 //      buildSourceIdentity entry is re-derived there against the independently
 //      recorded local fingerprints rather than trusting this probe's ok flag.
 //   #7 REPAIRED (this file, the runProbe catch) - a failure after lock
-//      acquisition re-asserts the owned RUNNING bytes and calls
-//      releaseC1231AureoleLock inside its own try/catch, so the lock is handed
-//      back and a release failure is logged instead of masking the original
-//      error. The watchdog-timeout path still exits without releasing; that
-//      residual belongs to #6, not to #7.
+//      acquisition re-asserts the owned RUNNING bytes and releases the lock
+//      through retainRunningAndReleaseC1231Lock, so the lock is handed back
+//      and a release failure is logged instead of masking the original error.
+//      Its watchdog residual closed with #6.
 
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -62,6 +64,7 @@ import { chromium } from "playwright";
 
 import {
   C12_31_AUREOLE_ARTIFACT_PREFIX,
+  C12_31_AUREOLE_BROWSER_STEP_TIMEOUT_MS,
   C12_31_AUREOLE_CAPTURE_METHOD,
   C12_31_AUREOLE_MAX_SETTLE_FRAMES,
   C12_31_AUREOLE_PROVENANCE_KEYS,
@@ -170,6 +173,50 @@ const provenanceFiles = Object.freeze({
   ...sourceFiles,
 });
 const WATCHDOG_MS = 600_000;
+
+/**
+ * Run one browser acquisition/teardown step under its own ceiling and record
+ * that it was observed to finish. A step that never settles rejects with the
+ * step name and the bound it broke instead of parking the run on the process
+ * watchdog, and the recorded duration is what the gate scores the bound
+ * against, so a report cannot claim a ceiling it did not apply.
+ */
+export async function boundedC1231BrowserStep({
+  step,
+  operation,
+  observations,
+  timeoutMs = C12_31_AUREOLE_BROWSER_STEP_TIMEOUT_MS,
+  now = Date.now,
+}) {
+  const started = now();
+  let timer;
+  try {
+    const value = await Promise.race([
+      Promise.resolve(operation()),
+      new Promise((resolve, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error(
+            `C12-31 browser step ${step} did not settle within ${timeoutMs} ms`,
+          );
+          error.c1231Step = step;
+          error.c1231TimeoutMs = timeoutMs;
+          reject(error);
+        }, timeoutMs);
+      }),
+    ]);
+    observations?.push({
+      step,
+      timeoutMs,
+      durationMs: Math.min(timeoutMs, Math.max(0, now() - started)),
+      ok: true,
+      timedOut: false,
+    });
+    return value;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const SHOT_OFFSETS = Object.freeze({
   toward: 0,
   left60: -60,
@@ -429,6 +476,20 @@ export function beginC1231AureoleEvidence(directory, runId, operations = fs) {
         `prior latest is incomplete or invalid: ${validation.reasons.join("; ")}`,
       );
     }
+    // Fold-clean is not enough: the predecessor's bytes must still be the
+    // bytes its own write-once UUID archive holds, or a rewritten latest that
+    // happens to fold clean succeeds a run it never produced. The retained
+    // first-red path makes the same comparison.
+    const priorArchive = path.join(
+      directory,
+      `${C12_31_AUREOLE_ARTIFACT_PREFIX}.${prior.runId}.json`,
+    );
+    assertBytes(
+      priorArchive,
+      priorLatest.bytes,
+      "prior latest immutable archive",
+      operations,
+    );
     assertArtifactPngAuthorities(directory, prior, operations);
   }
 
@@ -532,6 +593,50 @@ export function releaseC1231AureoleLock(state, operations = fs) {
     throw new Error("C12-31 foreign lock successor won before unlock");
   }
   operations.unlinkSync(state.paths.lockReceipt);
+}
+
+/**
+ * Abort path shared by the run's catch and its watchdog: RUNNING stays
+ * authoritative, and only our own exact lock is handed back, so a later
+ * investigation still tells interrupted evidence from an active owner. A
+ * release that cannot prove ownership leaves the lock in place and reports
+ * why rather than masking it.
+ */
+export function retainRunningAndReleaseC1231Lock(state, operations = fs) {
+  try {
+    assertBytes(
+      state.paths.latest,
+      state.runningBytes,
+      "retained C12-31 RUNNING",
+      operations,
+    );
+    releaseC1231AureoleLock(state, operations);
+    return { released: true, error: null };
+  } catch (error) {
+    return { released: false, error };
+  }
+}
+
+/**
+ * The watchdog's action. It releases before it exits, because after the exit
+ * nothing in this process runs, and it says in its own line whether the lock
+ * came back.
+ */
+export function fireC1231AureoleWatchdog(state, timeoutMs, hooks = {}) {
+  const log = hooks.log ?? console.error;
+  const exit = hooks.exit ?? process.exit;
+  const release = retainRunningAndReleaseC1231Lock(
+    state,
+    hooks.operations ?? fs,
+  );
+  log(
+    `[probe-sky-aureole-anchor] watchdog fired after ${timeoutMs} ms; RUNNING retained; lock ${
+      release.released
+        ? "released"
+        : `retained (${release.error?.message ?? release.error})`
+    }`,
+  );
+  return exit(2);
 }
 
 export function finalizeC1231AureoleEvidence(
@@ -1183,9 +1288,13 @@ async function servedRuntimeIdentity(page, renderer) {
   );
 }
 
-async function runBackend(browser, renderer) {
+async function runBackend(browser, renderer, closureObservations) {
   const backend = renderer;
-  const page = await browser.newPage({ viewport: C12_31_AUREOLE_VIEWPORT });
+  const page = await boundedC1231BrowserStep({
+    step: `newPage:${renderer}`,
+    operation: () => browser.newPage({ viewport: C12_31_AUREOLE_VIEWPORT }),
+    observations: closureObservations,
+  });
   const consoleErrors = [];
   const pageErrors = [];
   // Observed arming order, not an assertion. Each listener records that it was
@@ -1306,7 +1415,11 @@ async function runBackend(browser, renderer) {
     shots.push(await measureShot(page, renderer, shotId));
   }
   const completion = await completeGraphicsAndErrors(page, renderer);
-  await page.close();
+  await boundedC1231BrowserStep({
+    step: `pageClose:${renderer}`,
+    operation: () => page.close(),
+    observations: closureObservations,
+  });
   return {
     session: {
       requestedRenderer: renderer,
@@ -1380,12 +1493,14 @@ async function runProbe() {
   currentRunId = randomUUID();
   const state = beginC1231AureoleEvidence(outputDirectory, currentRunId);
   const watchdog = setTimeout(() => {
-    console.error(
-      `[probe-sky-aureole-anchor] watchdog fired after ${WATCHDOG_MS} ms; RUNNING retained`,
-    );
-    process.exit(2);
+    // The exit is named here rather than defaulted, so the timer reads as what
+    // it is: the run's last act ends the process, after the lock goes back.
+    fireC1231AureoleWatchdog(state, WATCHDOG_MS, {
+      exit: (code) => process.exit(code),
+    });
   }, WATCHDOG_MS);
   watchdog.unref?.();
+  const closureObservations = [];
 
   try {
     const filesAtStart = snapshotEvidenceFiles(provenanceFiles);
@@ -1395,21 +1510,30 @@ async function runProbe() {
       throw new Error("required local/build provenance file is absent");
     }
     const buildIdentity = buildSourceIdentity();
-    const browser = await chromium.launch({
-      channel: "msedge",
-      headless: true,
-      args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
+    const browser = await boundedC1231BrowserStep({
+      step: "launch",
+      operation: () =>
+        chromium.launch({
+          channel: "msedge",
+          headless: true,
+          args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
+        }),
+      observations: closureObservations,
     });
     const sessions = [];
     const servedEntries = [];
     try {
       for (const renderer of C12_31_AUREOLE_RENDERERS) {
-        const result = await runBackend(browser, renderer);
+        const result = await runBackend(browser, renderer, closureObservations);
         sessions.push(result.session);
         servedEntries.push(result.servedEntry);
       }
     } finally {
-      await browser.close();
+      await boundedC1231BrowserStep({
+        step: "browserClose",
+        operation: () => browser.close(),
+        observations: closureObservations,
+      });
     }
     const filesAtEnd = snapshotEvidenceFiles(provenanceFiles);
     const report = finalizeC1231AureoleReport({
@@ -1434,6 +1558,7 @@ async function runProbe() {
         pngsImmutable: true,
         foreignSuccessorPreserved: true,
         publicationOrder: [...C12_31_AUREOLE_PUBLICATION_ORDER],
+        browserClosure: closureObservations.map((entry) => ({ ...entry })),
       },
     });
     const validation = validateC1231AureoleFinalArtifact(report);
@@ -1453,15 +1578,9 @@ async function runProbe() {
     console.error(error?.stack ?? error);
     // RUNNING remains authoritative. Release only our exact lock so a manual
     // investigation distinguishes interrupted evidence from active ownership.
-    try {
-      assertBytes(
-        state.paths.latest,
-        state.runningBytes,
-        "retained C12-31 RUNNING",
-      );
-      releaseC1231AureoleLock(state);
-    } catch (releaseError) {
-      console.error(releaseError?.stack ?? releaseError);
+    const release = retainRunningAndReleaseC1231Lock(state);
+    if (!release.released) {
+      console.error(release.error?.stack ?? release.error);
     }
     process.exit(2);
   }

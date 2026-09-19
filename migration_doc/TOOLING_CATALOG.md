@@ -465,13 +465,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c12-29-s5-custom-ellipsoid-gate.spec.mjs | spec | ACTIVE | 2026-09-19 | 7 | Gate spec for the C12-29 S5 custom-ellipsoid certification: geometry oracles, eclipse bindings, cross-backend derivation, v6 gate fold, mutants. |
 | c12-29-s5-dense-cost-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Gate spec for the C12-29 S5 dense-cost certification: schedule/workload validation, long-task selection, legacy + superseded schema folds, sentinels. |
 | c12-29-s5-dense-cost-structural-refusal.spec.mjs | spec | ACTIVE | 2026-09-02 | 2 | Q-96 — regression coverage for the dense-cost probe's structural |
-| c12-29-s5-multiview-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Gate spec for the C12-29 S5 multiview certification: phases, renderer set, WebGPU VR error contract, evidence lifecycle and lock/watchdog wiring. |
+| c12-29-s5-multiview-gate.spec.mjs | spec | ACTIVE | 2026-09-19 | 3 | Gate spec for the C12-29 S5 multiview certification: phases, renderer set, WebGPU VR error contract, evidence lifecycle and lock/watchdog wiring. |
 | c12-29-s5-multiview-source-preflight.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Q-99 — regression coverage for the multiview probe's new |
 | c12-29-s5-replacement-device-gate.spec.mjs | spec | ACTIVE | 2026-09-19 | 6 | Certifies the S5 eclipse-shadow replacement-device evidence pipeline: schemas, phases, ledger/provenance validators, gate fold of its probe+lib pair. |
 | c12-29-s5-replacement-device-preflight-refusal.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Q-116 — regression coverage for the replacement-device S5 probe's |
 | c12-29-s5-svs-footprint-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 7 | node:test half of the NASA/SVS umbra-footprint certification triple (probe + gate-lib + spec) for the S5 eclipse globe shadow. |
 | c12-29-s5-terrain-selection-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Certifies the S5 terrain-selection evidence gate: v4-v9 schema migrations, page-diagnostic validation, canonical capture checks, exit-code fold. |
-| c12-31-aureole-gate.spec.mjs | spec | ACTIVE | 2026-09-02 | 8 | node:test half of the C12-31 L1-L4 sky-aureole certification triple (probe-sky-aureole-anchor + gate lib + spec). |
+| c12-31-aureole-gate.spec.mjs | spec | ACTIVE | 2026-09-02 | 9 | node:test half of the C12-31 L1-L4 sky-aureole certification triple (probe-sky-aureole-anchor + gate lib + spec). |
 | c13-42-characterization-contract.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Pins the C13-42 characterization contract: the released controlled-ray obligation, the calibration-not-acceptance disposition, and the per-subject served-response budget. |
 | c13-42-godray-fixture.spec.mjs | spec | NO @purpose HEADER | 2026-09-13 | 5 | — |
 | canvas-black-narrow.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Narrows the black-canvas bug by rendering three paths (default PP chain, depth overlay, frustum tint) and reporting which yields non-black pixels. |
@@ -791,7 +791,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-c12-29-s4-orbital-sunrise.mjs | probe | ACTIVE | 2026-08-16 | 4 | Certifying 400 km orbital-sunrise acceptance: 181 pinned one-second samples in normal + blend-neutral lanes, fail-closed write-once evidence lifecycle |
 | probe-c12-29-s5-custom-ellipsoid.mjs | probe | ACTIVE | 2026-08-16 | 10 | Runtime certification that a custom oblate ellipsoid renders and derives identically on serial fresh WebGL and WebGPU contexts; write-once evidence |
 | probe-c12-29-s5-dense-cost.mjs | probe | ACTIVE | 2026-09-02 | 6 | Dense ACTIVE/INACTIVE eclipse-lane cost characterization: 24 child Node processes, each one fresh Edge running one 600-frame condition in frozen order |
-| probe-c12-29-s5-multiview.mjs | probe | ACTIVE | 2026-08-29 | 7 | Logical-View/stereo policy certification: offscreen ray View, WebGL two-eye VR executor, WebGPU synchronous unsupported-path rejection |
+| probe-c12-29-s5-multiview.mjs | probe | ACTIVE | 2026-09-19 | 7 | Logical-View/stereo policy certification: offscreen ray View, WebGL two-eye VR executor, WebGPU synchronous unsupported-path rejection |
 | probe-c12-29-s5-replacement-device.mjs | probe | ACTIVE | 2026-08-29 | 11 | Genuine device-loss recovery certification via Chromium GPU-process termination (never destroy()); 'destroyed' losses archived STRUCTURAL not recovery |
 | probe-c12-29-s5-svs-footprint.mjs | probe | ACTIVE | 2026-08-16 | 6 | Absolute NASA-SVS 5073 eclipse geospatial-footprint acceptance over the vendored four-row fixture + local QuantizedMesh, serial WebGL/WebGPU |
 | probe-c12-29-s5-terrain-selection.mjs | probe | ACTIVE | 2026-08-16 | 6 | Real-terrain/selection acceptance: fill-to-real transitions, x2 radius law, async picking, env-map capture over local QuantizedMesh, both backends |
@@ -1561,12 +1561,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c12-29-s4-orbital-sunrise-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 3 | Frozen constants and deterministic verdict arithmetic for the C12-29 S4 orbital-sunrise limb-glow acceptance; browser driver owns capture only. |
 | c12-29-s5-custom-ellipsoid-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 9 | Frozen v7 contract plus independent f64/stepwise-f32 eclipse oracle for the S5 custom-ellipsoid certification; refuses self-attested evidence. |
 | c12-29-s5-dense-cost-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 8 | Frozen experiment and fail-closed fold for the S5 dense ACTIVE/INACTIVE cost characterization (v3 schema, SHA-pinned workload). |
-| c12-29-s5-multiview-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 7 | Frozen policy for the S5 same-context logical-View A->B->A shard; explicitly must not be cited as proof of engine multi-View scheduling. |
+| c12-29-s5-multiview-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 7 | Frozen policy for the S5 same-context logical-View A->B->A shard; explicitly must not be cited as proof of engine multi-View scheduling. |
 | c12-29-s5-replacement-device-capture.mjs | lib | ACTIVE | 2026-08-29 | 7 | Fail-closed AST/dataflow proof plus strict persisted-PNG decode for the replacement-device certification probe. |
 | c12-29-s5-replacement-device-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 8 | Fail-closed acceptance for S5 replacement-device recovery after genuine Chromium GPU-process termination (v8 semantic-attestation/candidate-recovery schemas). |
 | c12-29-s5-svs-footprint-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 7 | Gate library for the S5 NASA-SVS-5073 eclipse-footprint certification shard, pairing its probe and spec. |
 | c12-29-s5-terrain-selection-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 4 | Frozen inputs, exact terrain-radius arithmetic, evidence-shape checks and verdict folding for S5's first final-certification shard (v10 schema). |
-| c12-31-aureole-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 4 | Gate-predicate library for the C12-31 sky-aureole certification lane, pairing probe-sky-aureole-anchor with its spec. |
+| c12-31-aureole-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 5 | Gate-predicate library for the C12-31 sky-aureole certification lane, pairing probe-sky-aureole-anchor with its spec. |
 | c13-41-deckfree-control.mjs | lib | ACTIVE | 2026-09-19 | 7 | State-isolated ABBA session plan plus pinned lighting/fade constants for C13-41's deck-free eclipse control lane. |
 | c13-42-godray-fixture.mjs | lib | NO @purpose HEADER | 2026-09-13 | 8 | — |
 | c13-42-reproduction-contract.mjs | lib | NO @purpose HEADER | 2026-09-13 | 13 | — |

@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import { encodeRgbaPng } from "../lib/png-rgba.mjs";
 import {
   C12_31_AUREOLE_ARTIFACT_PREFIX,
+  C12_31_AUREOLE_BROWSER_STEP_TIMEOUT_MS,
+  C12_31_AUREOLE_BROWSER_STEPS,
   C12_31_AUREOLE_CAPTURE_METHOD,
   C12_31_AUREOLE_DAY_ISO,
   C12_31_AUREOLE_DIAGNOSTICS_SCHEMA,
@@ -34,8 +36,10 @@ import {
 } from "./lib/c12-31-aureole-gate.mjs";
 import {
   beginC1231AureoleEvidence,
+  boundedC1231BrowserStep,
   c1231AureoleEvidencePaths,
   finalizeC1231AureoleEvidence,
+  fireC1231AureoleWatchdog,
 } from "./probe-sky-aureole-anchor.mjs";
 
 const FIXED_RUN_ID = "123e4567-e89b-42d3-a456-426614174000";
@@ -366,6 +370,13 @@ function makeReport(runId = FIXED_RUN_ID, { failing = false } = {}) {
       pngsImmutable: true,
       foreignSuccessorPreserved: true,
       publicationOrder: [...C12_31_AUREOLE_PUBLICATION_ORDER],
+      browserClosure: C12_31_AUREOLE_BROWSER_STEPS.map((step) => ({
+        step,
+        timeoutMs: C12_31_AUREOLE_BROWSER_STEP_TIMEOUT_MS,
+        durationMs: 12,
+        ok: true,
+        timedOut: false,
+      })),
     },
   });
 }
@@ -1066,6 +1077,236 @@ test("probe source pins offline viewer, one-shot capture, exact truth, and hard 
       source,
       new RegExp(`\\n\\s{2}${key}: path\\.join\\(`, "u"),
       `probe does not fingerprint source key ${key}`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The two findings the 2026-08-14 review left open, each stated as the wrong
+// OUTPUT the defect produces rather than as the shape of its repair.
+// ---------------------------------------------------------------------------
+
+test("a fabricated predecessor that folds clean is refused against its archive", (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "c1231-prior-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+  // An honest completed run: latest and the write-once UUID archive agree.
+  const honestRunId = randomUUID();
+  const honestState = beginC1231AureoleEvidence(directory, honestRunId);
+  const honest = makeReport(honestRunId);
+  writeReportPngs(directory, honest);
+  finalizeC1231AureoleEvidence(honestState, honest);
+  const archiveBytes = fs.readFileSync(honestState.paths.run);
+  assert.deepEqual(fs.readFileSync(honestState.paths.latest), archiveBytes);
+
+  // The laundering: latest is rewritten with a DIFFERENT artifact that still
+  // folds to PASS on its own terms, while the archive keeps the real bytes.
+  const rewritten = finalizeC1231AureoleReport(
+    structuredClone({
+      ...honest,
+      provenance: {
+        ...honest.provenance,
+        servedEntries: honest.provenance.servedEntries.map((entry, index) =>
+          index === 0
+            ? {
+                ...entry,
+                externalRequests: ["https://tile.example.com/1/2/3.png"],
+              }
+            : entry,
+        ),
+      },
+    }),
+  );
+  assert.equal(rewritten.status, "PASS");
+  assert.equal(validateC1231AureoleFinalArtifact(rewritten).ok, true);
+  const rewrittenBytes = Buffer.from(`${JSON.stringify(rewritten, null, 2)}\n`);
+  assert.equal(rewrittenBytes.equals(archiveBytes), false);
+  fs.writeFileSync(honestState.paths.latest, rewrittenBytes);
+  assert.throws(
+    () => beginC1231AureoleEvidence(directory, randomUUID()),
+    /prior latest immutable archive bytes differ/u,
+  );
+
+  // The stronger shape: a wholly fabricated predecessor, complete with its own
+  // PNGs, has no archive to be checked against at all.
+  const inventedRunId = randomUUID();
+  const invented = makeReport(inventedRunId);
+  writeReportPngs(directory, invented);
+  fs.writeFileSync(
+    honestState.paths.latest,
+    Buffer.from(`${JSON.stringify(invented, null, 2)}\n`),
+  );
+  assert.equal(
+    fs.existsSync(
+      path.join(
+        directory,
+        `${C12_31_AUREOLE_ARTIFACT_PREFIX}.${inventedRunId}.json`,
+      ),
+    ),
+    false,
+  );
+  assert.throws(
+    () => beginC1231AureoleEvidence(directory, randomUUID()),
+    /ENOENT/u,
+  );
+
+  // The negative control: restoring the real bytes lets a successor begin.
+  fs.writeFileSync(honestState.paths.latest, archiveBytes);
+  const successor = beginC1231AureoleEvidence(directory, randomUUID());
+  assert.deepEqual(successor.priorLatest.bytes, archiveBytes);
+  assert.equal(fs.existsSync(successor.paths.lock), true);
+});
+
+test("an unsettled browser step fails as a named bounded timeout", async () => {
+  const observations = [];
+  await assert.rejects(
+    () =>
+      boundedC1231BrowserStep({
+        step: "browserClose",
+        operation: () => new Promise(() => {}),
+        observations,
+        timeoutMs: 25,
+      }),
+    (error) => {
+      assert.match(
+        error.message,
+        /C12-31 browser step browserClose did not settle within 25 ms/u,
+      );
+      assert.equal(error.c1231Step, "browserClose");
+      assert.equal(error.c1231TimeoutMs, 25);
+      return true;
+    },
+  );
+  // A step that never finished must publish nothing; silence is the defect.
+  assert.deepEqual(observations, []);
+
+  const value = await boundedC1231BrowserStep({
+    step: "launch",
+    operation: async () => "browser",
+    observations,
+    timeoutMs: 25,
+  });
+  assert.equal(value, "browser");
+  assert.deepEqual(
+    observations.map((entry) => entry.step),
+    ["launch"],
+  );
+  assert.equal(observations[0].ok, true);
+  assert.equal(observations[0].timedOut, false);
+  assert.equal(observations[0].timeoutMs, 25);
+  assert.ok(observations[0].durationMs >= 0);
+  assert.ok(observations[0].durationMs <= 25);
+});
+
+test("the watchdog hands its own lock back before it exits", (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "c1231-watchdog-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const state = beginC1231AureoleEvidence(directory, randomUUID());
+  assert.equal(fs.existsSync(state.paths.lock), true);
+
+  const lines = [];
+  const exits = [];
+  // The real hook never returns, so the fake one must not either: anything the
+  // watchdog does after exiting is unreachable in production.
+  assert.throws(
+    () =>
+      fireC1231AureoleWatchdog(state, 600_000, {
+        log: (line) => lines.push(line),
+        exit: (code) => {
+          exits.push(code);
+          throw new Error("process terminated");
+        },
+      }),
+    /process terminated/u,
+  );
+  assert.deepEqual(exits, [2]);
+  assert.equal(fs.existsSync(state.paths.lock), false);
+  assert.deepEqual(fs.readFileSync(state.paths.latest), state.runningBytes);
+  assert.match(
+    lines.join("\n"),
+    /watchdog fired after 600000 ms; RUNNING retained; lock released/u,
+  );
+
+  // The negative control: a run whose RUNNING was overtaken is not ours to
+  // unlock, so the lock stays and the line says so.
+  const foreignDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "c1231-watchdog-foreign-"),
+  );
+  t.after(() => fs.rmSync(foreignDirectory, { recursive: true, force: true }));
+  const foreignState = beginC1231AureoleEvidence(
+    foreignDirectory,
+    randomUUID(),
+  );
+  fs.writeFileSync(foreignState.paths.latest, "foreign successor\n");
+  const foreignLines = [];
+  const foreignExits = [];
+  assert.throws(
+    () =>
+      fireC1231AureoleWatchdog(foreignState, 600_000, {
+        log: (line) => foreignLines.push(line),
+        exit: (code) => {
+          foreignExits.push(code);
+          throw new Error("process terminated");
+        },
+      }),
+    /process terminated/u,
+  );
+  assert.deepEqual(foreignExits, [2]);
+  assert.equal(fs.existsSync(foreignState.paths.lock), true);
+  assert.match(
+    foreignLines.join("\n"),
+    /lock retained \(retained C12-31 RUNNING bytes differ\)/u,
+  );
+});
+
+test("the bounded runner's own observations are what the gate scores", async () => {
+  const observations = [];
+  for (const step of C12_31_AUREOLE_BROWSER_STEPS) {
+    await boundedC1231BrowserStep({
+      step,
+      operation: async () => step,
+      observations,
+    });
+  }
+  const report = structuredClone(makeReport());
+  report.lifecycle.browserClosure = observations;
+  const folded = finalizeC1231AureoleReport(report);
+  assert.equal(folded.status, "PASS");
+  assert.deepEqual(folded.diagnostics.structuralReasons, []);
+
+  assertNotPass(
+    mutateReport((entry) => {
+      delete entry.lifecycle.browserClosure;
+    }),
+    /browser acquisition\/teardown closure proof is absent/u,
+  );
+  assertNotPass(
+    mutateReport((entry) => {
+      entry.lifecycle.browserClosure = entry.lifecycle.browserClosure.filter(
+        (step) => step.step !== "browserClose",
+      );
+    }),
+    /exact ordered browser step set/u,
+  );
+  assertNotPass(
+    mutateReport((entry) => {
+      entry.lifecycle.browserClosure.reverse();
+    }),
+    /exact ordered browser step set/u,
+  );
+  for (const mutation of [
+    (step) => (step.ok = false),
+    (step) => (step.timedOut = true),
+    (step) => delete step.timeoutMs,
+    (step) => (step.timeoutMs = C12_31_AUREOLE_BROWSER_STEP_TIMEOUT_MS + 1),
+    (step) => (step.durationMs = step.timeoutMs + 1),
+    (step) => delete step.durationMs,
+  ]) {
+    assertNotPass(
+      mutateReport((entry) => {
+        mutation(entry.lifecycle.browserClosure.at(-1));
+      }),
+      /browser step browserClose is not a bounded observed completion/u,
     );
   }
 });
