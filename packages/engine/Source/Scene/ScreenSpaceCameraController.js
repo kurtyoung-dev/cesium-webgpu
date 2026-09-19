@@ -151,83 +151,162 @@ class ScreenSpaceCameraController {
     //>>includeEnd('debug');
 
     /**
+     * If true, inputs are allowed conditionally with the flags enableTranslate, enableZoom,
+     * enableRotate, enableTilt, and enableLook.  If false, all inputs are disabled.
+     *
+     * NOTE: This setting is for temporary use cases, such as camera flights and
+     * drag-selection of regions (see Picking demo).  It is typically set to false at the
+     * start of such events, and set true on completion.  To keep inputs disabled
+     * past the end of camera flights, you must use the other booleans (enableTranslate,
+     * enableZoom, enableRotate, enableTilt, and enableLook).
      * @type {boolean}
      * @default true
      */
     this.enableInputs = true;
     /**
+     * If true, allows the user to pan around the map.  If false, the camera stays locked at the current position.
+     * This flag only applies in 2D and Columbus view modes.
      * @type {boolean}
      * @default true
      */
     this.enableTranslate = true;
     /**
+     * If true, allows the user to zoom in and out.  If false, the camera is locked to the current distance from the ellipsoid.
      * @type {boolean}
      * @default true
      */
     this.enableZoom = true;
     /**
+     * If true, allows the user to rotate the world which translates the user's position.
+     * This flag only applies in 2D and 3D.
      * @type {boolean}
      * @default true
      */
     this.enableRotate = true;
     /**
+     * If true, allows the user to tilt the camera.  If false, the camera is locked to the current heading.
+     * This flag only applies in 3D and Columbus view.
      * @type {boolean}
      * @default true
      */
     this.enableTilt = true;
     /**
+     * If true, allows the user to use free-look. If false, the camera view direction can only be changed through translating
+     * or rotating. This flag only applies in 3D and Columbus view modes.
      * @type {boolean}
      * @default true
      */
     this.enableLook = true;
     /**
+     * A parameter in the range <code>[0, 1)</code> used to determine how long
+     * the camera will continue to spin because of inertia.
+     * With value of zero, the camera will have no inertia.
      * @type {number}
      * @default 0.9
      */
     this.inertiaSpin = 0.9;
     /**
+     * A parameter in the range <code>[0, 1)</code> used to determine how long
+     * the camera will continue to translate because of inertia.
+     * With value of zero, the camera will have no inertia.
      * @type {number}
      * @default 0.9
      */
     this.inertiaTranslate = 0.9;
     /**
+     * A parameter in the range <code>[0, 1)</code> used to determine how long
+     * the camera will continue to zoom because of inertia.
+     * With value of zero, the camera will have no inertia.
      * @type {number}
      * @default 0.8
      */
     this.inertiaZoom = 0.8;
     /**
+     * A parameter in the range <code>[0, 1)</code> used to limit the range
+     * of various user inputs to a percentage of the window width/height per animation frame.
+     * This helps keep the camera under control in low-frame-rate situations.
      * @type {number}
      * @default 0.1
      */
     this.maximumMovementRatio = 0.1;
     /**
+     * Sets the duration, in seconds, of the bounce back animations in 2D and Columbus view.
      * @type {number}
      * @default 3.0
      */
     this.bounceAnimationTime = 3.0;
     /**
+     * The minimum magnitude, in meters, of the camera position when zooming. Defaults to 1.0.
      * @type {number}
      * @default 1.0
      */
     this.minimumZoomDistance = 1.0;
     /**
+     * The maximum magnitude, in meters, of the camera position when zooming. Defaults to positive infinity.
      * @type {number}
-     * @default Number.POSITIVE_INFINITY
+     * @default {@link Number.POSITIVE_INFINITY}
      */
     this.maximumZoomDistance = Number.POSITIVE_INFINITY;
     /**
+     * A multiplier for the speed at which the camera will zoom.
      * @type {number}
      * @default 5.0
      */
     this.zoomFactor = 5.0;
 
+    /**
+     * The input that allows the user to pan around the map. This only applies in 2D and Columbus view modes.
+     * <p>
+     * The type can be a {@link CameraEventType}, <code>undefined</code>, an object with <code>eventType</code>
+     * and <code>modifier</code> properties with types <code>CameraEventType</code> and {@link KeyboardEventModifier},
+     * or an array of any of the preceding.
+     * </p>
+     * @type {CameraEventType|Array|undefined}
+     * @default {@link CameraEventType.LEFT_DRAG}
+     */
     this.translateEventTypes = CameraEventType.LEFT_DRAG;
+    /**
+     * The input that allows the user to zoom in/out.
+     * <p>
+     * The type can be a {@link CameraEventType}, <code>undefined</code>, an object with <code>eventType</code>
+     * and <code>modifier</code> properties with types <code>CameraEventType</code> and {@link KeyboardEventModifier},
+     * or an array of any of the preceding.
+     * </p>
+     * @type {CameraEventType|Array|undefined}
+     * @default [{@link CameraEventType.RIGHT_DRAG}, {@link CameraEventType.WHEEL}, {@link CameraEventType.PINCH}]
+     */
     this.zoomEventTypes = [
       CameraEventType.RIGHT_DRAG,
       CameraEventType.WHEEL,
       CameraEventType.PINCH,
     ];
+    /**
+     * The input that allows the user to rotate around the globe or another object. This only applies in 3D and Columbus view modes.
+     * <p>
+     * The type can be a {@link CameraEventType}, <code>undefined</code>, an object with <code>eventType</code>
+     * and <code>modifier</code> properties with types <code>CameraEventType</code> and {@link KeyboardEventModifier},
+     * or an array of any of the preceding.
+     * </p>
+     * @type {CameraEventType|Array|undefined}
+     * @default {@link CameraEventType.LEFT_DRAG}
+     */
     this.rotateEventTypes = CameraEventType.LEFT_DRAG;
+    /**
+     * The input that allows the user to tilt in 3D and Columbus view or twist in 2D.
+     * <p>
+     * The type can be a {@link CameraEventType}, <code>undefined</code>, an object with <code>eventType</code>
+     * and <code>modifier</code> properties with types <code>CameraEventType</code> and {@link KeyboardEventModifier},
+     * or an array of any of the preceding.
+     * </p>
+     * @type {CameraEventType|Array|undefined}
+     * @default [{@link CameraEventType.MIDDLE_DRAG}, {@link CameraEventType.PINCH}, {
+     *     eventType : {@link CameraEventType.LEFT_DRAG},
+     *     modifier : {@link KeyboardEventModifier.CTRL}
+     * }, {
+     *     eventType : {@link CameraEventType.RIGHT_DRAG},
+     *     modifier : {@link KeyboardEventModifier.CTRL}
+     * }]
+     */
     this.tiltEventTypes = [
       CameraEventType.MIDDLE_DRAG,
       CameraEventType.PINCH,
@@ -240,6 +319,16 @@ class ScreenSpaceCameraController {
         modifier: KeyboardEventModifier.CTRL,
       },
     ];
+    /**
+     * The input that allows the user to change the direction the camera is viewing. This only applies in 3D and Columbus view modes.
+     * <p>
+     * The type can be a {@link CameraEventType}, <code>undefined</code>, an object with <code>eventType</code>
+     * and <code>modifier</code> properties with types <code>CameraEventType</code> and {@link KeyboardEventModifier},
+     * or an array of any of the preceding.
+     * </p>
+     * @type {CameraEventType|Array|undefined}
+     * @default { eventType : {@link CameraEventType.LEFT_DRAG}, modifier : {@link KeyboardEventModifier.SHIFT} }
+     */
     this.lookEventTypes = {
       eventType: CameraEventType.LEFT_DRAG,
       modifier: KeyboardEventModifier.SHIFT,
@@ -247,24 +336,48 @@ class ScreenSpaceCameraController {
 
     const ellipsoid = scene.ellipsoid ?? Ellipsoid.default;
 
+    /**
+     * The minimum height the camera must be before picking the terrain or scene content instead of the ellipsoid. Defaults to scene.ellipsoid.minimumRadius * 0.025 when another ellipsoid than WGS84 is used.
+     * @type {number}
+     * @default 150000.0 or scene.ellipsoid.minimumRadius * 0.025
+     */
     this.minimumPickingTerrainHeight = Ellipsoid.WGS84.equals(ellipsoid)
       ? 150000.0
       : ellipsoid.minimumRadius * 0.025;
     this._minimumPickingTerrainHeight = this.minimumPickingTerrainHeight;
+    /**
+     * The minimum distance the camera must be before testing for collision with terrain when zoom with inertia. Default to scene.ellipsoid.minimumRadius * 0.00063 when another ellipsoid than WGS84 is used.
+     * @type {number}
+     * @default 4000.0 or scene.ellipsoid.minimumRadius * 0.00063
+     */
     this.minimumPickingTerrainDistanceWithInertia = Ellipsoid.WGS84.equals(
       ellipsoid,
     )
       ? 4000.0
       : ellipsoid.minimumRadius * 0.00063;
+    /**
+     * The minimum height the camera must be before testing for collision with terrain. Default to scene.ellipsoid.minimumRadius * 0.0025 when another ellipsoid than WGS84 is used.
+     * @type {number}
+     * @default 15000.0 or scene.ellipsoid.minimumRadius * 0.0025.
+     */
     this.minimumCollisionTerrainHeight = Ellipsoid.WGS84.equals(ellipsoid)
       ? 15000.0
       : ellipsoid.minimumRadius * 0.0025;
     this._minimumCollisionTerrainHeight = this.minimumCollisionTerrainHeight;
+    /**
+     * The minimum height the camera must be before switching from rotating a track ball to
+     * free look when clicks originate on the sky or in space. Defaults to ellipsoid.minimumRadius * 1.175 when another ellipsoid than WGS84 is used.
+     * @type {number}
+     * @default 7500000.0 or scene.ellipsoid.minimumRadius * 1.175
+     */
     this.minimumTrackBallHeight = Ellipsoid.WGS84.equals(ellipsoid)
       ? 7500000.0
       : ellipsoid.minimumRadius * 1.175;
     this._minimumTrackBallHeight = this.minimumTrackBallHeight;
     /**
+     * When disabled, the values of <code>maximumZoomDistance</code> and <code>minimumZoomDistance</code> are ignored.
+     * Also used in conjunction with {@link Cesium3DTileset#enableCollision} to prevent the camera from moving through or below a 3D Tileset surface.
+     * This may also affect clamping behavior when using {@link HeightReference.CLAMP_TO_GROUND} on 3D Tiles.
      * @type {boolean}
      * @default true
      */
