@@ -275,7 +275,14 @@ is HELD pending P2, Astra's return** (strip, fix list, rebase in a fresh clone, 
 behind the seat's Phase-1 lanes:** the two remaining frozen patches (`angrim`, `pimpernel-ledger`), T1
 (TaskProcessor, after W2-L11), ring Leg 2 and I-5's leg on a pre-Astra tree, E4 then I-5 then I-3
 (`C13-N69`, which lands before Astra), and N60 / N61 / N13. **E4, the native 96/8 hang A/B, is a hard
-gate before the wave's first Edge leg (E5).** No new cloud feature from Astra until A1 lands. Order and
+gate before the wave's first Edge leg (E5).** *[Updated by record round 8: **E4 is DONE**
+(`Tools/visual-regression/output/wave-end/c13-n69-e4-astra-ab-20260926/README.md`). The orbital 2048² multi-deck
+96/8 cell hung the device at base and with Astra's stack (one run each); the orbital single-deck cell completed at
+base (twice, byte-identical) and **hung with Astra's stack on its one run — a single-deck regression Astra's return
+must answer**; the 1080p ground and flight cells completed on both. The wave stays HELD pending P2 on that basis. Of Phase 1, `angrim`
+(W2-L11, Batch 1542), T1 (Batch 1544), I-5 (Batch 1543) and I-3 / `C13-N69` (Batch 1546, closed on its own leg)
+have landed; `pimpernel-ledger` is still HELD; ring Leg 2 has run only in part (R0/R1, then Arm D on the budgeted
+tree); N60 / N61 / N13 have not started, behind the maintainer's ring Q1/Q4.]* No new cloud feature from Astra until A1 lands. Order and
 batch contents: [`ASTRA_LANDING_PLAN_2026-09-26.md`](ASTRA_LANDING_PLAN_2026-09-26.md); authority:
 [`MAINTAINER_RULINGS_2026-09-26.md`](MAINTAINER_RULINGS_2026-09-26.md).
 
@@ -434,7 +441,12 @@ flavour-aware `comment-only-diff` (`R-2026-09-26-22`), gated on a green CI `guar
 `b263d8ac5e` met; **no comment batch lands before it.** **No Edge slot** is used by the wave, **on
 condition that B0-tools' flavour checks (U1a–U1e) are in force**; the wave-end gate then rides the next
 scheduled wave-end Edge job. Authority: [`MAINTAINER_RULINGS_2026-09-26.md`](MAINTAINER_RULINGS_2026-09-26.md);
-row-level status stays in the queue.
+row-level status stays in the queue. *[Updated by record round 8: **B0-tools has LANDED** (Batch 1545),
+so the critical path moves to **B1**, the first comment batch. By a new seat decision on B0-tools' verification, wider
+than `R-2026-09-26-20`'s conditional fallback (recorded
+in the rulings file's "Seat decisions taken on measurements after the sitting"), the four batches that edit comments
+in shader files — B5a, B5b, B6 and B6-sky — **each carry a named Edge leg**; the rest of the wave stays off the Edge
+slot.]*
 
 ### C17 — Celestial Light Transport (proposed)
 

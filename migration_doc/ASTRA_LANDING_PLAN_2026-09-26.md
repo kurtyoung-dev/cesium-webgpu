@@ -25,6 +25,27 @@ _Status: **CANDIDATE → ADOPTED by `R-2026-09-26-1`**
   (P1.1 requires it before each lands). Batch 1538 touched only `package.json` and `TOOLING_CATALOG.md`.
 - The rest of this plan cites `b263d8ac5e` as the tip; those citations are the revision's measurements and are left as written.
 
+**Live state after record round 8 (the tip was `861967188c`, Batch 1546, when it was recorded).**
+- **P1.1:** `angrim.patch` (W2-L11) is **DONE** — it landed with its round 6 as Batch 1542 (`fa1b363853`) after E1
+  (`Tools/visual-regression/output/wave-end/ci-wave2-l11-r6-20260926/E1/README.md`). `pimpernel-ledger.patch` is still
+  **HELD** (ring Q4 is the maintainer's); `git apply --check` of it passes at `861967188c`, and over record round 8's
+  edits.
+- **P1.2:** T1 is **DONE** — Batch 1544 (`4f5cf1c21d`), after E2 (`…/wave-end/t1-e2-20260926/README.md`).
+- **P1.3:** **partial.** On the I-5 tree, R0 and R1 were scored and R2 lost the device (`…/wave-end/ring-i5-leg-20260926/`);
+  Arm D then ran whole on the budgeted tree in lane I-3's leg (`…/wave-end/c13-n69-e4-budget-20260926/`). Leg 2's arms
+  A1-A7 have not run.
+- **P1.4:** **not taken** — whether a C12 / S3 receipt is wanted at the tip turns on Campaign 12's MQ2, which is still
+  the maintainer's.
+- **P1.5:** **E4 DONE** (`…/wave-end/c13-n69-e4-astra-ab-20260926/`: base orbital multi-deck hung; base single-deck
+  completed twice; Astra's stack hung both orbital cells, one run each; arm (c), U3 reverted, was not run), **I-5 DONE** (Batch 1543,
+  `090dc1cdec`), **I-3 DONE** (Batch 1546, `861967188c`; `C13-N69` closed on its own leg). So E5 is no longer blocked by
+  E4; it waits for P2.
+- **P1.6:** **not started** — ring Q1 (which row the promotion goes to) and Q4 (when the ledger corrections land) are
+  still the maintainer's.
+- **P2:** waits for P1.6 and for Astra's answer to the single-deck orbital regression E4 measured.
+- Ledger for all of the above: `DEFERRED_WORK.md` "Record round 8"; the seat's decisions on MQ1, MQ2 and MQ4:
+  `MAINTAINER_RULINGS_2026-09-26.md`, "Seat decisions taken on measurements after the sitting".
+
 Evidence ids follow the audit:
 - **R1–R5**: the reader reports.
 - **U1–U37**: the units.

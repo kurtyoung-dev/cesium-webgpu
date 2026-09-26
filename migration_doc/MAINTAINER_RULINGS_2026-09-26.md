@@ -1036,3 +1036,198 @@ clause again.
 | `R-2026-09-16-6`, "units 43, 39, 38 ship default-off; 39 and 43 get real dials with JSDoc" | **Moot as to its named units.** The principle carries over: U36 ships default-off, and `R-2026-09-26-11` applies the JSDoc half to every new dial | moot for 38/39/43; the principle governs `R-2026-09-26-11` and D12(c) |
 | `R-2026-09-16-7`, "same-build repeat control for units 37 and 47" | **Moot as to its named units** (ASYNC_PIPELINE, NOISE_COMPUTE absent). U34's `createRenderPipelineAsync` is a new subject. The **procedure** is carried into every byte-identity cell (standing rule 2) | moot for 37/47; procedure adopted |
 | `R-2026-09-16-4`, `-5`, `-8` … `-12` | Not re-examined clause by clause by the audit; `-5` is restated as standing rule 2 | — |
+
+## Seat decisions taken on measurements after the sitting
+
+*Appended by record round 8 (lead Arahad, Opus 5.5).* The maintainer's sentence ruled D1-D12 and G1-G10.
+The lanes those rulings dispatched then raised questions of their own, and the seat (Gandalf) decided them under the
+standing rules — the proof bar (`R-2026-08-29-1`), the adversarial verifier (`R-2026-09-11-1`) and this sitting's
+standing rules above — rather than on a new sentence from the maintainer.
+**None of the entries below is a maintainer ruling, and none carries an `R-` id.** Each names its basis: the receipt
+where a measurement decided it (S-1, S-7), and otherwise what it was taken on — a reconciliation of two briefs (S-4),
+a lane's recommendation where the data cannot decide (S-2), the absence of a measurement (S-3), a verifier's findings
+(S-5) or a lead's own re-run (S-6). The section's title covers it as a whole; not every entry was decided by a
+measurement. Each keeps every sound alternative as a fallback with its cost, and lists what was withdrawn and why. **The
+maintainer may reverse any of them**; a reversal starts from the fallback named, and the seat records it as a ruling
+of its own date.
+
+The seat's source sheet records the questions and their resolution
+(`cesium-webgpu-worker-archive/lanes-2026-09-26/rulings-source/rulings-source-2026-09-26-after-mq.md`, md5
+`903190d68f2b4be56c04b173886d3c84`, the copy that carries the MQ section; the earlier copy beside it predates that
+section). The quotations under each question below are verbatim from it. The questions themselves are in lane I-3's packet
+§9 (`cesium-webgpu-worker-archive/lanes-2026-09-26/ring-i3/rumble/LANDING_PACKET_RUMBLE.md`). These are lane I-3's
+**MQ1-MQ4**; they are not Campaign 12's MQ2 (the eclipse deck interval of `R-2026-09-19-16`), which stays open with
+the maintainer.
+
+### S-1 — MQ1, the march budget on large canvases: (a) accept as landed, with the canvas range in the acceptance
+
+**Question.** The budget of `C13-N69` reduces the default cinematic tier (tier 3, native 96/8; "high", or the default
+"auto" at or below 50 km, with no dial) on canvases above **5,859,375 px** with the bake resident: 3024 × 1964 → 94
+steps, **3840 × 2160 → 67**, 5K → 38. That is a default change on large displays, raised by the adversarial verifier
+(Robin, attack 6) and carried by the lane.
+
+**The options and the resolution, verbatim from the source sheet:**
+
+> Options: (a) accept with the canvas range written into the acceptance (<= 5,859,375 px) — LANE RECOMMENDS until a
+> baked frame above R0 is measured; (b) add a 4K baked arm to a later leg and raise the baked side only if it completes
+> with margin; (c) re-derive now with W=4, B=2.7e10 (4K inside x1.41; 5K still -> 76; R2 outside x1.43) — costs: no
+> baked frame above 9.66e9 measured to complete, and Astra's native multi-deck 96/8 hang at 1080p (1.43e10 baked,
+> confounded) would count INSIDE. Robin v2 computes whether any parameterisation keeps 4K inside AND that hang + R2
+> outside.
+
+> MQ1 update (seat, after Robin v2 + the ruled E4): the lane's option (c) cost ("Astra's 1080p multi-deck hang would sit
+> inside") is not a base-law fact - the ruled E4 measured BASE completing 1080p multi-deck ground and flight at 96/8.
+
+> Seat-computed option (d): W=3, B=2.0e10 -> every measured base survivor inside (R0 ×2.07, 1080p multi-deck ×1.40, 4K
+> single-deck ×1.047), every measured base hang outside ×1.45, 5K -> ~57 steps.
+
+> Options (c) and (d) would keep a measured base hang inside the budget and are withdrawn as unsound; (a) "accept as
+> landed, with the canvas range (<= 5,859,375 px unbudgeted) written into the acceptance" is the only sound option and
+> the seat lands I-3 on it. Fallback recorded: (b) a later leg may raise the baked side only if a larger baked frame
+> completes with margin.
+
+**Decided: (a)** — accept as landed, with "≤ 5,859,375 canvas px unbudgeted, with the bake resident" written into the
+acceptance. **Receipt that decided it:** the budget leg's arm (vii),
+`Tools/visual-regression/output/wave-end/c13-n69-e4-budget-20260926/README.md` — a **3840 × 2160 single-deck tier-3
+96/8 frame with no budget lost the device at base** (`DXGI_ERROR_DEVICE_HUNG`, warm frame index 4; one run) and
+**completed budgeted to 67/8** on the same machine. Budgeting the 4K default is therefore a fix of a measured base
+hang, not a change to a working default. **What (a) also costs:** the opt-in 1080p multi-deck ground and flight
+frames (≈1.43e10 baked), which completed at base in E4's arm (a), run budgeted to 90 steps (outside × 1.062; Robin's
+second pass, `cesium-webgpu-worker-archive/lanes-2026-09-26/ring-i3/robin-v2/VERIFY_ROBIN_V2.md`), so a measured
+survivor is budgeted here as well as under S-2.
+
+**Fallback (sound, not taken): (b)** — a later leg raises the baked side of the budget only if a larger baked frame
+**completes with margin** on the tree that would land it; cost: a hang-class leg under the hang protocol.
+
+**Withdrawn as unsound after the measurement:** **(c)** re-derive with W = 4, B ≈ 2.7e10 (4K inside × 1.41), and the
+seat-computed **(d)** W = 3, B = 2.0e10 (every measured survivor inside, every measured base hang outside × 1.45, 4K
+single-deck inside × 1.047). Both would put the 4K single-deck baked frame **inside** the budget, and arm (vii)
+measured that frame hanging at base.
+
+### S-2 — MQ2, raw `cloudQuality` 128 at 2048²: (a) accept that a measured survivor is budgeted (128 → 67)
+
+**Question.** Raw 128 × 8 with live noise at 2048² completed in Leg 1, yet the budget reduces it to 67, because the
+live weight that excludes R2 (the same tier-3 frame with live noise, which hung) also excludes it.
+
+**The options and the resolution, verbatim from the source sheet:**
+
+> MQ2 raw 128 at 2048² (a measured survivor) is budgeted 128 -> 67: (a) accept (LANE RECOMMENDS; the data cannot
+> separate why R2 hung and raw 128 did not); (b) re-derive after E4 Arm D separates jitter/erosion.
+
+> MQ2: (a) accept (raw 128 budgeted 128 -> 67; re-derive after Arm D separates jitter/erosion - today's R6 shows
+> erosion does not move the ring; jitter R1 PRESENT).
+
+The fallback below narrows (b) to the hang, because Arm D measured the ring.
+
+**Decided: (a)**, as the lane recommended: the data cannot separate why R2 hung and raw 128 did not (jitter, erosion,
+the tier path, session state or chance — each point was observed once), so the budget stays on the conservative side.
+**Receipts:** the lane's derivation (packet §2, the R0/R2 one-axis pair) and the budget leg's **GATE 2** (raw 128
+budgeted to 67 with `budgetApplied` true, and completed). The same leg's Arm D measured the **ring**, not the hang: at
+96/8 the ring family stayed PRESENT with erosion 0.10 (R6), and every row with live noise ran budgeted at 67 steps.
+The jitter-cleared row R1 (PRESENT) is the I-5 leg's, on the other driver
+(`Tools/visual-regression/output/wave-end/ring-i5-leg-20260926/README.md`; the two drivers' ring figures are compared
+only with their clocks stated, `DEFERRED_WORK.md` `DX-PROBE-PAGERUNARM-SETTLE-RENDERS-AT-NOW`). So no measurement yet
+separates jitter or erosion from the hang.
+
+**Fallback, OPEN (sound, not taken): (b)** — re-derive the live weight once an arm separates jitter and erosion **for
+the hang** (a live-noise row that is not budgeted, run under the hang protocol); cost: a hang-class leg, and a raw-128
+default that may move again.
+
+### S-3 — MQ4, the cost of the cloud-aware god-ray mask pass: (a) cost it as a full march
+
+**Question.** Cloud-aware god rays (opt-in) re-run the march at full canvas for the transmittance mask. Whether the
+compiler strips the mask's unused light march is unmeasured.
+
+**The options and the resolution, verbatim from the source sheet:**
+
+> MQ4 mask-pass cost: cloud-aware god rays (opt-in) re-run the march at full canvas. (a) cost as a full march (as
+> landed; conservative; tier 3 at 2048² with god rays -> 67) — LANE RECOMMENDS; (b) density-only (one tap per interval)
+> if the compiler strips the unused light march — measure first.
+
+> MQ4: (a) cost the mask pass as a full march (conservative); (b) measure later.
+
+**Decided: (a)**, as landed: cost the mask pass as a full march (conservative; tier 3 at 2048² with god rays → 67,
+at 1080p unchanged at 96). **Basis:** no measurement exists either way — the budget leg ran with `godRayCloudAware`
+false, and the verifier notes that no leg has yet exercised the mask hand-off on a device (Robin v2, N-DEVICE) — so the
+decision is the conservative default, taken on the absence of a measurement, not on one.
+
+**Fallback, OPEN (sound, not taken): (b)** — cost it as density-only (one tap per interval), **only after** a god-ray
+arm measures the mask pass with and without the mask; cost: one more Edge arm, and the risk that the cheaper model
+under-costs a real frame.
+
+### S-4 — MQ3, how the ruled E4 ran: two jobs, the ruled A/B first
+
+**Reconciled at 08:32.** `R-2026-09-26-9` (D9a) ruled an E4 with arm (b), base plus the frozen Astra patch built at
+`b263d8ac5e`, and a single-deck arm; the lane's own brief had carried a different E4 (T0/T1 around its patch). The seat
+ran **the ruled E4 as its own job** (executor Pearl) and the lane's budget leg as a second job (executor Cottar).
+**Receipt:** `Tools/visual-regression/output/wave-end/c13-n69-e4-astra-ab-20260926/README.md` — its base tree
+`37c0f8767e` has `packages/` byte-equal to the ruled `b263d8ac5e` (`git diff --stat` empty), so arm (a) is the ruled
+base; arm (b) applied the I-2 patch (`roac.patch`, Tools-only and engine-neutral) and Astra's patch there; the
+single-deck arm ran on both. **Not run:** the landing plan's arm (c),
+U3's step bounds reverted, which was not in the brief. **Fallback:** run arm (c) in a later leg if Astra's return
+needs to separate U3 from the rest of the stack; the D9b owner of `C13-N13` takes U3 as input either way.
+
+### S-5 — every comment batch that edits a shader file carries a named Edge leg
+
+**Decided:** `C16-B5a`, `C16-B5b`, `C16-B6` and `C16-B6-sky` each carry a named Edge leg whose scenes turn on a textured
+fabric material (BumpMap), shadows received by per-instance-colour primitives and WebGPU OIT. This is a **new seat
+decision**, seeded by and wider than the conditional fallback written inside `R-2026-09-26-20` (G8 A: *"If neither G10
+option is taken, B6 and B6-sky each need a WebGL leg …"*). That fallback named only B6 and B6-sky and a WebGL leg on
+the unminified dev build, and its trigger did not fire — G10 option A′ was taken and has landed. This decision adds
+B5a and B5b, names the scenes (including WebGPU OIT), and overrides the ruled "No Edge slot is used" for those four
+batches. **Basis:** the adversarial
+verifier refuted each of B0-tools' first three versions with pairs the gate had certified (classes A-I, R1-R9, N1-N7),
+and the landed v4 fails closed but documents readers it still cannot model
+(`cesium-webgpu-worker-archive/lanes-2026-09-26/c16-b0-tools/wilimar-v2-v3/VERIFY_WILIMAR_V3.md`;
+`…/hilda-v4/LANDING_PACKET_HILDA.md` §v4). The JS/TS batches B1-B4 and the Tools batch B7 keep the ruled no-Edge rule.
+**Fallback:** `R-2026-09-26-20` as ruled — no Edge slot while U1a-U1e are in force; cost: a shader comment edit that
+reaches a reader the gate cannot model lands without a rendering check. Recorded in `QUEUE_2026-08-10_CAMPAIGN16.md`
+below the tail table.
+
+### S-6 — B0-tools' fourth pass was its last
+
+**Decided:** v4 of `C16-B0-tools` is the final pass; where the tool cannot model a reader it fails closed, and what
+it still cannot see is written into `ForkCommentStandard.md` §8 as known limits and into `DEFERRED_WORK.md` as
+`C16-COMMENT-GATE-UNMODELLED-SHADER-TEXT-READERS`. **Basis:** the lead's own re-run of the three verification passes' probes,
+in which v4 refuses every refuting pair, with 22 mutants red and none surviving
+(`cesium-webgpu-worker-archive/lanes-2026-09-26/c16-b0-tools/hilda-v4/LANDING_PACKET_HILDA.md` §v4; landed as Batch
+1545). v4 itself was not re-reviewed or re-verified; this decision is what made it the last pass. **Fallback:** a fifth verification pass before
+the first shader comment batch; cost: calendar time, with S-5's Edge legs already covering what the gate cannot see.
+
+### S-7 — W2-L11 round 6: the bar it was judged on, and its behaviour changes
+
+**Decided (on the lead's R6.4):** round 6 was judged against three conditions instead of literally identical
+decisions across engines — (1) no leak in either engine, (2) no realistic drop, (3) every divergent decision
+classified — and its behaviour changes (a)-(d) were accepted: (a) `file:///C:/a → file://evil.invalid/share/x` now
+drops; (b) an http(s) parent drops its credentials for a derived `data:`/`mailto:`/`file:///`/opaque-path url; (c) a
+protocol-relative endpoint plus an absolute `https:` url on an `http` page gets no token; (d) a self-hosted relative
+endpoint now gets its token for derived urls in a browser. The ion token now requires the url's **scheme** to match
+the endpoint's, which closes `DEFERRED_WORK.md` `DX-ION-TOKEN-COMPARISON-IGNORES-THE-SCHEME` — a row that had named
+this a maintainer call. The FINAL (with Firefoot's F-1 folded in) landed rather than the reviewed r1. **Receipt:**
+`Tools/visual-regression/output/wave-end/ci-wave2-l11-r6-20260926/E1/README.md` and
+`…/E1/06-DIVERGENCE-CLASSIFICATION.md` — 0 leaks in Chromium (80,582 sends) and Node (87,885), 0 realistic drops, all
+10,343 divergences classified (class W 0). **Fallbacks (sound, not taken):** keep hostless urls as `undefined`
+(reopens the Chromium `file:///` → `https` divergence); allow an `http` → `https` upgrade on the page-relative arm;
+restore the scheme-blind ion comparison (upstream's semantic; cost: the bearer token travels in cleartext to an
+`http:` url under an `https:` endpoint); land r1 and carry F-1 as its own batch (Firefoot's option; cost: the F-1 leak,
+91 per https page in Firefoot's corpus, stays open for a batch). Source:
+`cesium-webgpu-worker-archive/lanes-2026-09-26/w2-l11-r6/arod/LANDING_PACKET_AROD.md` R6.3, R6.4 and R6.9.
+
+### Executed since the sitting (record round 8)
+
+- `R-2026-09-26-5` (T1): **executed** — Batch 1544 (`4f5cf1c21d`), after its karma leg E2.
+- `R-2026-09-26-9` (D9): **D9a executed** — I-3's budget landed as Batch 1546 (`861967188c`), closed on its leg, after
+  I-5's debug override (Batch 1543, `090dc1cdec`), and the ruled E4 is **done** (S-4). D9a's order (E4 before the
+  edit to `resolveCloudPreset`) was met in substance rather than in letter: I-5 had landed at 07:23 EDT, and E4 ran at
+  08:32-09:14 EDT on a base tree whose `packages/` equal `b263d8ac5e`'s, before I-3 landed; **D9c holds** — no public
+  sample-count dial has landed; **D9b** (the `C13-N13` march law) has not started.
+- `R-2026-09-26-22` (G10 A′): **executed** — `C16-B0-tools`, Batch 1545 (`0d3bb132cc`).
+- `R-2026-09-26-20` (G8 A): **executing** — B0-tools has landed, B1 is next, and S-5 applies to the shader batches.
+- `R-2026-09-26-1` (D1): Phase 1 **in progress** — `angrim` (Batch 1542), T1, I-5 and I-3 landed; `pimpernel-ledger`
+  HELD; ring Leg 2 partial; the Astra wave stays HELD pending P2, with E4's single-deck regression named.
+
+### Still open with the maintainer
+
+The ring plan's questions **Q1-Q5** (options recorded in `DEFERRED_WORK.md`, record round 8, "Ring questions still
+open to the maintainer"); the OPEN fallbacks of S-2 and S-3 above; Campaign 12's MQ2; the `update-tokens` workflow
+question; the CI wave-1 and wave-2 questions; and the three `R-2026-09-19-8`/`-9`/`-10` sittings.

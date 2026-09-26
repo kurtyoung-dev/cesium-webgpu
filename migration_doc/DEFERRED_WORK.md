@@ -24364,7 +24364,7 @@ run on purpose; (b) delete the workflow and its `.github/actions/update-tokens/`
 also uses on the `cesium.com` branch only. Either is a `.github/` edit; classify under CI wave 2's
 maintainer questions.
 
-### `DX-TOOLS-COMMENT-ONLY-DIFF-CERTIFIES-TOKENS-NOT-ARTIFACTS` — `comment-only-diff` certifies the source token stream, not what ships or runs — OPEN (DX row; remedy ruled as `C16-B0-tools`)
+### `DX-TOOLS-COMMENT-ONLY-DIFF-CERTIFIES-TOKENS-NOT-ARTIFACTS` — `comment-only-diff` certifies the source token stream, not what ships or runs — CLOSED 2026-09-26 by `C16-B0-tools` (DX row; remedy ruled as `C16-B0-tools`)
 
 `Tools/c16/comment-only-diff.mjs` compares a canonical form of the source in which a non-semantic comment
 becomes one space (`Tools/c16/lib/comment-scanner.mjs:883` at `37c0f8767e`). Three build or runtime
@@ -24399,7 +24399,16 @@ lands**. Until it does, every comment batch runs the same checks lane-local (U1a
 `QUEUE_2026-08-10_CAMPAIGN16.md` "C16 tail"). A related register gap (audit §9 DX-9): no single place lists
 the comments a machine reads; `ForkCommentStandard.md` §8.4 names lint directives only.
 
-### `DX-TOOLS-COMMENT-ONLY-DIFF-ASI-CLAIM` — the tool's ASI protection does not hold for a dropped multi-line block comment — OPEN (DX row; fix ruled into `C16-B0-tools` item f)
+*[Record round 8: **closed** by `C16-B0-tools`, landed as Batch 1545 (`0d3bb132cc`). The tool now
+checks each reader of comment text or position — the release strip through `scripts/build.js`'s own
+`constructRegex`, the WGSL minify strip, a byte-pinned copy of `removeComments`, the `--minify` GLSL strip,
+bundler annotations and legal comments retained, prefix-only `lint-debug-pragmas-allow` and `/// <reference />`,
+and the harvested shader-text readers — and all six pairs above are refused. The register gap is closed too:
+`ForkCommentStandard.md` §8 item 4 now lists the readers the tool finds and its known limits. What it still cannot
+see is `C16-COMMENT-GATE-UNMODELLED-SHADER-TEXT-READERS` in record round 8 below; the row-level record is
+`QUEUE_2026-08-10_CAMPAIGN16.md` `C16-B0-tools`.]*
+
+### `DX-TOOLS-COMMENT-ONLY-DIFF-ASI-CLAIM` — the tool's ASI protection does not hold for a dropped multi-line block comment — CLOSED 2026-09-26 by `C16-B0-tools` (DX row; fix ruled into `C16-B0-tools` item f)
 
 `Tools/c16/comment-only-diff.mjs:30-39` states that whitespace containing a line break canonicalises to a
 newline so that `return\nx` and `return x` stay distinct under automatic semicolon insertion. A **comment**,
@@ -24408,6 +24417,10 @@ however, canonicalises to one space whether or not it contains a line terminator
 `return`/`throw`/`yield` that is collapsed onto one line reads as `comment-only` while it changes what ASI
 does. Zero such sites are in scope today (critic Donnamira; audit §9 DX-8). Fix: a dropped comment
 containing a line terminator canonicalises to a newline.
+
+*[Record round 8: **closed** by `C16-B0-tools` (Batch 1545): the scanner turns a dropped multi-line
+comment into a newline. Source: `cesium-webgpu-worker-archive/lanes-2026-09-26/c16-b0-tools/hilda-v4/LANDING_PACKET_HILDA.md`
+§8 ("DX rows closed by this lane: DX-1, DX-8, DX-9").]*
 
 ### `DX-TOOLS-SKY-LIGHT-DIRECTION-SPEC-HAS-NO-RUNNER` — a 1,017-line spec with no npm runner pins comment text inside a sky GLSL doc block — OPEN (DX row, WAVE DX spec homes)
 
@@ -24576,7 +24589,7 @@ the next claimant looks in the registry, not the ledger; (C) free bit 7 and renu
 revival; (D) land `CLOUD_SPARSE_UPDATE: hiDefineBit(7)` as a real entry with no consumer — its cost: the
 add-only rule would keep an entry nothing reads, forever.
 
-### `NEW-TASKPROCESSOR-WASM-INIT-POSTS-AFTER-REJECT` — the WASM-init path posts its config after its promise has already rejected — OPEN, scheduled into batch T1 (`R-2026-09-26-5`)
+### `NEW-TASKPROCESSOR-WASM-INIT-POSTS-AFTER-REJECT` — the WASM-init path posts its config after its promise has already rejected — CLOSED 2026-09-26 by batch T1 (`R-2026-09-26-5`)
 
 `packages/engine/Source/Core/TaskProcessor.js:273-320` (identical at `37c0f8767e` and `b263d8ac5e`):
 `initWebAssemblyModule`'s `init` installs `onerror` / `onmessageerror` handlers that reject, then awaits the
@@ -24595,6 +24608,11 @@ discriminating spec in the same batch — T1 lands Astra's guard alone and this 
 follow-up; (B) hold Astra's guard and land it inside Astra's A1 — its cost: a Core fix on every backend's
 path is coupled to a cloud batch and delayed; (C) do not land it — R3 rates the risk "very low", but a real
 race stays open.
+
+*[Record round 8: **closed** — T1 landed as Batch 1544 (`4f5cf1c21d`) under option D, with the
+WASM-init guard (first settlement only; the post is skipped only when the cached promise has rejected), its spec
+cases and mutants, after the karma leg E2 (`Tools/visual-regression/output/wave-end/t1-e2-20260926/README.md`).
+Fallback (A) was not needed. The record is `T1-TASKPROCESSOR-LATE-POST-GUARDS` in record round 8 below.]*
 
 ### `NEW-CLOUD-STACK-2026-09-25-WEBGL-TWIN-GAPS` — the 2026-09-21 → 09-25 cloud units are WGSL-only; recorded, not a rejection — OPEN (`R-2026-09-26-6`)
 
@@ -24662,3 +24680,867 @@ yet" (`:60-66`) is **stale**: three freezables are live — `WebGPUEnvironmentRe
 (`"moon-renderer"`), `WebGPUVolumetricFogRenderer.ts:887` and `Scene.js:4631` (all re-checked at
 `37c0f8767e`). The stale sentence is corrected **in place** by `C16-B2b`, which also re-points the docstring
 at this row; it is not relocated.
+
+## Record round 8 — the 2026-09-26 landings, their named Edge legs, and the ring measurements
+
+*Recorded by record round 8 (lead Arahad, Opus 5.5) from the lanes' packets, reviews and verifications banked at
+`cesium-webgpu-worker-archive/lanes-2026-09-26/` and from the receipts under
+`Tools/visual-regression/output/wave-end/`. Where a packet gave finished, batch-free row text it is copied, not
+paraphrased, and the packet is cited; a copied row keeps the lane's own dates, which are its authoring dates. Where an
+item is a measurement it is recorded as numbers and a receipt, with no mechanism. The batches recorded here are
+Batch 1541 (`6c45220027`, lane I-2), Batch 1542 (`fa1b363853`, W2-L11), Batch 1543 (`090dc1cdec`, lane I-5),
+Batch 1544 (`4f5cf1c21d`, T1), Batch 1545 (`0d3bb132cc`, `C16-B0-tools`) and Batch 1546 (`861967188c`, lane I-3).
+None of them touched `migration_doc/`, so every row below was owed. The rig-census, update-tokens,
+comment-only-diff, `C16-02c` and sky-spec items were placed by record round 7 and are not repeated.*
+
+### Lane I-2 (Roac): device-loss refusal at the capture seam — Batch 1541
+
+*Source: `cesium-webgpu-worker-archive/lanes-2026-09-26/ring-i2/roac/LANDING_PACKET_ROAC.md` §7 (copied), §3 and §6;
+review `…/ring-i2/roac/REVIEW_CARC.md` (LAND-WITH-FIXES, all findings applied in v2). The row ids were minted in the
+ring lane plan (`cesium-webgpu-worker-archive/lanes-2026-09-19/c13-ring-after-leg1/RING_NEXT_STEPS.md` §3 I-2) and
+are added to `QUEUE_2026-07-23_CAMPAIGN13.md` §1 by this record.*
+
+### `C13-N67-PROBE-FLEET-NO-REFUSAL-ON-DEVICE-LOSS` — CLOSED
+
+**C13-N67-PROBE-FLEET-NO-REFUSAL-ON-DEVICE-LOSS — CLOSED.** The shared capture seam
+(`Tools/visual-regression/lib/probe-runtime.mjs` `captureElement`) now reads `window.__webgpuGate.deviceLost`
+after each screenshot and before any byte is written, and refuses `capture-device-lost` (exit 3) naming
+the capture, quoting the gate, and carrying the frame index and the last live frame serial; `reason=destroyed`
+is teardown and passes. It also refuses `capture-frame-not-redrawn` when a declared control is
+byte-identical to its treatment. The orbital march mechanism probe reads the gate it already collected
+after every arm and ends the run on a loss, keeping the arms already banked. Behaviour pinned by
+`capture-device-loss-refusal.spec.mjs` (Tarciryan's B-4 list plus "no bytes before the refusal"), whose
+`if (false && deviceLost)` mutant turns the four device-loss rows red. Residual: the guard only sees a
+device the page armed; a page with no gate, or with a gate that armed no device, records
+`liveness: unobserved`, never `live`.
+
+*v2 (review Carc F1, applied before landing): the page read reports `gateArmed` — a gate that armed at least one
+device — rather than the gate's presence, because `errorGateInit` defines `window.__webgpuGate` before any device
+exists; a new spec case drives the real page function through `captureElement` and its own mutant turns the
+unarmed case to `live`. First field use: the I-5 named leg's R2 (below) was refused `capture-device-lost` with
+exit 3 and no frame banked after the loss (`Tools/visual-regression/output/wave-end/ring-i5-leg-20260926/README.md`).*
+
+### `C13-N68-PROBE-BANKS-PNGS-OUTSIDE-THE-SHARED-CAPTURE-SEAM` — CLOSED for the named probe; fleet rule added; ten residents OWED
+
+**C13-N68-PROBE-BANKS-PNGS-OUTSIDE-THE-SHARED-CAPTURE-SEAM — CLOSED for the named probe; fleet rule
+added.** `probe-cloud-march-mechanism.mjs` banks every frame through `captureElement` (same file names; the
+per-capture sha256 now lands in its runtime receipt; each clouds-OFF frame is declared the control of its
+clouds-ON frame). `probe-fleet-contract.spec.mjs` section I requires every `@runtime lib/probe-runtime.mjs`
+probe to acquire pixels only through `captureElement`, with a shrink-only owed list of the ten residents
+that still do not: classification-frustum-slices, cloud-orbital-ladder, eye-cartographic-frame,
+oit-collection-reachable, oit-model-reachable, oit-primitive-reachable, pick-visibility-matrix,
+polyline-multimaterial, polyline-taa-velocity, postprocess-resize-survival.
+
+*Owed (the partial closure): the ten residents above still acquire frames outside the seam (packet §3 names
+`toDataURL` or a direct `screenshot` where the route is known), so a device lost under any of them is not refused. Each moves onto
+`captureElement` in its own Tools batch and leaves the owed list by a reviewed deletion; the list is shrink-only, so
+a new resident cannot join it. Out of the rule's population: the ~640 probes not on the runtime.*
+
+### `NEW-PROBE-REFUSED-PAIR-LEAVES-ORPHAN-TREATMENT-PNG` — a refused clouds-off control leaves its clouds-on PNG on disk — OPEN (P2)
+
+When the seam refuses a declared pair (`capture-frame-not-redrawn`), or a device loss resolves between an arm's ON and
+OFF captures, the arm's clouds-ON PNG has already been accepted and written. It is absent from `arms-so-far.json` and
+is named as `treatment` in the refusal record, so it is an orphan under a valid label. Mitigation today: nothing
+scores an ON without its OFF. Follow-up: quarantine the treatment on refusal (move or rename it and say so in the
+refusal record). Source: `…/ring-i2/roac/REVIEW_CARC.md` "Seat rulings" R3; `…/LANDING_PACKET_ROAC.md` v2 table.
+Related, accepted as conservative and not a row: a loss after the LAST arm also refuses (exit 3, no receipt) although
+every arm is banked (packet §6 item 4).
+
+### `DX-TOOLS-PROBE-RUNTIME-LIVENESS-BLOCK-DECOMPOSITION` — `lib/probe-runtime.mjs` is 1,306 lines — OPEN (DX row, WAVE DX)
+
+`Tools/visual-regression/lib/probe-runtime.mjs` went from 1,154 to 1,306 lines with the liveness block. That block
+(~110 lines: `pageReadCaptureLiveness`, `decideCaptureLiveness`, `throwIfDeviceLost` and the pair check) is a natural
+`lib/capture-liveness.mjs` companion; it was not extracted because the lane's file set was fixed. Source: packet §6
+item 2; reviewer Carc agreed. Related engine question, not this row: a device replaced by recovery is not re-armed by
+the gate, so a SECOND loss is invisible to it — `C13-N70` (a public device-loss surface) is where that is answered.
+
+### Lane W2-L11 (Angrim, rounds 1-5; Arod, round 6): the url and credential rows — Batch 1542
+
+*Source: Angrim's v5 packet §7, §13.7, §14.8 and §15.8 (the rows below are copied from it), banked with the lane's
+whole `_lane-out` at `cesium-webgpu-worker-archive/lanes-2026-09-19/ci-wave2-tranche1/angrim-v5/LANDING_PACKET_ANGRIM.md`
+(md5 `87be22197e5e76a845852d41fb23e78d`); every `_lane-out/evidence/…` path below is relative to that `angrim-v5/`
+folder. Round 6 is
+`cesium-webgpu-worker-archive/lanes-2026-09-26/w2-l11-r6/arod/LANDING_PACKET_AROD.md` (FINAL, md5 of its patch
+`3e0fdb192e1a71c686684d6d90d791ad`), reviewed by Firefoot (`…/w2-l11-r6/arod/REVIEW_FIREFOOT.md`, LAND on r1) and
+verified by Lightfoot (`…/w2-l11-r6/lightfoot-v2/VERIFY_LIGHTFOOT_V2.md`, second pass: HOLDS). The lane wrote its
+landing batch as a placeholder, which this record fills from `git log` as Batch 1542; Angrim's 09-19 dates are its
+authoring dates, and the fixes landed on 2026-09-26. Five copied rows describe a check that later rounds changed
+again before landing (v5's third probe, round 6's scheme-aware keys), and each carries a record-round-8 note. Angrim's `DX-BING-METADATA-CACHES-REJECTIONS` is not repeated: the same defect is
+already on file as `UPSTREAM-BING-METADATA-CACHE-KEEPS-REJECTED-PROMISES` (lane W2-L1, above). Angrim's
+`DX-GET-ABSOLUTE-URI-LOWER-CASES-EVERY-URL-IN-A-BROWSER` became a fixed bug by the lane's own v3 and is in
+`WEBGPU_DEBUGGING_LOG.md` (lane W2-L11) with the lane's three other bug entries.*
+
+**`BUG-RESOURCE-URL-NON-SPECIAL-SCHEME` — `Resource.parseUrl` corrupted every absolute url whose
+scheme is not *special*, and lower-cased the authority of the ones that are (CLOSED 2026-09-19).**
+The urijs → native `URL` sweep (`39f5341e64`, 2026-04-13; `332a8efac2`, 2026-04-19) rebuilt every
+url carrying a scheme as `` `${parsed.origin}${parsed.pathname}` `` at
+`packages/engine/Source/Core/Resource.js:225-230`. `URL.origin` is the literal string `"null"` for
+every scheme the URL Standard does not treat as special, so `file:///C:/a/b.txt` became
+`null/C:/a/b.txt` and `mailto:a@b.com` became `nulla@b.com`; `data:` and `blob:` had been guarded
+individually at `:174-185`, `file:`, `mailto:` and any application scheme had not. On the special
+schemes the same expression lower-cased the authority (`http://someImage.invalid/…` →
+`http://someimage.invalid/…`), **dropped userinfo** (`http://user:pw@h/p` → `http://h/p` —
+credentials silently discarded), and resolved dot segments upstream left alone. Measured against
+upstream's own algorithm over a 35-shape table, in **both** the Node environment and the
+`document`-bearing environment a browser supplies: 18 of 35 shapes disagreed at `30d1ceb60f` in
+each, and after the fix 0 of 35 with a document and 1 of 35 in Node — that one being a
+protocol-relative base whose answer is byte-identical at the tip and which does not arise in a
+browser. Affects Electron/desktop hosts and anything loading local assets by `file:`, plus every
+consumer that compares, displays or signs a url. Fixed by returning the caller's text for any url
+that carries a scheme, and by taking the scheme and authority for a base-resolved url from the
+caller's own `baseUrl` text — not from its resolved form, which
+`packages/engine/Source/Core/getAbsoluteUri.js:40` has already lower-cased whenever a document
+exists. Behaviour pinned by `packages/engine/Specs/Core/ResourceUrlRoundTripSpec.mjs`, which runs
+its derived-url table a second time with a `document` installed, and by additions to
+`packages/engine/Specs/Core/ResourceSpec.js`.
+
+**`BUG-ION-RESOURCE-RELATIVE-ENDPOINT` — `IonResource` threw for any endpoint whose url is not
+absolute (CLOSED 2026-09-19).** `packages/engine/Source/Core/IonResource.js:67-69` and `:128`
+replaced upstream's `new Uri(url).authority()` with `new URL(url).host`. `new URL` throws on a
+relative url where urijs returned `""`, so constructing an `IonResource` over a self-hosted or
+proxied endpoint — and every direct `new IonResource(endpoint, …)` with a relative
+`endpoint.url` — raised `TypeError: Invalid URL`. `URL.host` additionally lower-cases and drops
+userinfo, so two spellings of one endpoint could stop comparing equal in the token-domain check.
+Both sites now derive the authority from the url text. Live ion endpoints are absolute, so the
+production blast radius is self-hosted/proxied endpoints. **The two sides of that check are read off
+two different strings — the endpoint's own text and the url about to be requested — and a tile
+request is a *derived* resource, so making one side case-preserving while the other still went
+through a case-destroying `getAbsoluteUri` dropped the `Authorization` header silently. That is why
+this row's fix and `BUG-RESOURCE-URL-NON-SPECIAL-SCHEME`'s must land together**, and why the pin is
+a derived resource of a mixed-case endpoint with a document present, not a root one in Node. Pinned
+by additions to `packages/engine/Specs/Core/IonResourceSpec.js` and by
+`packages/engine/Specs/Core/ResourceUrlRoundTripSpec.mjs`.
+
+**`BUG-KMZ-ENTRY-NAME-LEADING-SLASH` — a KMZ's embedded images and nested documents were never
+resolved from the archive (CLOSED 2026-09-19).** Two open-coded `new URL(...)` sites from the same
+sweep. `embedDataUris` (`packages/engine/Source/DataSources/KmlDataSource.js:410-433`) keyed the
+lookup on `new URL(value, "https://placeholder.invalid/./").pathname`, which always carries a
+leading slash; `uriResolver`'s keys are zip entry filenames, which never do, so `keys.indexOf(...)`
+was permanently `-1` and all thirteen element/attribute rewrites at `:2176-2188` were dead for every
+relative entry — a KMZ balloon's `<img src="image.png">` pointed at a server path that does not
+exist. `resolveHref` (`:636-642`) resolved a nested href against `sourceResource.getUrlComponent()`,
+which is **relative** when the KMZ itself was loaded by a relative url; `new URL` threw, the throw
+was swallowed, and nested KML was fetched from the network instead of the archive, so a multi-level
+KMZ lost its children. Both now resolve inside a synthetic archive root and report the entry name
+relative to it, matching upstream's `new Uri(value).absoluteTo(base)` on 16 of 18 measured shapes —
+the other two being inputs (`data:`, `mailto:`) for which upstream throws outright. Pinned by
+`packages/engine/Specs/DataSources/KmzEntryResolutionSpec.mjs`, which lifts the two **consumers**
+(`embedDataUris`, `resolveHref`) out of the real source alongside the helper, because a key that is
+correct on its own and wrong by the time it reaches `keys.indexOf` rewrites nothing — the exact
+state this row describes.
+
+**`DX-KMZ-ROOT-RELATIVE-BASE-DIFFERS-FROM-UPSTREAM` (OPEN, no behavioural consequence today).** A
+KMZ loaded by a root-relative url resolves its nested hrefs differently from upstream:
+`packages/engine/Source/DataSources/KmlDataSource.js:417-436` gives `"x.kml"` for href `x.kml`
+against base `/abs/base.kmz`, where upstream's `new Uri(href).absoluteTo(base)` gives
+`"/abs/x.kml"`. Zip entry names never carry a leading slash, so **neither** spelling can match an
+entry: both miss the archive and fall through to the network, and observable behaviour is identical.
+Measured 2026-09-19 against real urijs. Recorded so nobody later "aligns" one to the other on the
+assumption that it changes something, and so that if the archive lookup is ever made tolerant of
+absolute keys the row is already on file. Surfaced by the adversarial verifier, not by this lane.
+
+**`DX-UPSTREAM-REGRESSION-CHECK-UNRUNNABLE` — the guard named in `Resource.js`'s own comment has
+stopped running (OPEN).** `Tools/upstream-regression-check.mjs` advertises itself as the standalone
+Node re-verification of eight ported upstream fixes, §2 of which is *"Resource.parseUrl — the two
+Session-35 regressions stay fixed"*, and the comment at `Resource.js:232-240` names it as one of the
+two things guarding the protocol-relative and bare-relative cases. At `30d1ceb60f` it exits 1 during
+module load: `ERR_MODULE_NOT_FOUND … packages/engine/Source/Scene/LightTypes.js imported from
+packages/engine/Source/Renderer/AutomaticUniforms.js`. `LightTypes` exists only as `.ts`; the
+bundler resolves that specifier, raw Node does not. Reproduced in the seat as well as in a lane
+clone, so it is not a clone artefact. It has no npm runner and no CI job, so nothing noticed.
+Either give the tool a transpiling entry (the `esbuild transform` idiom of
+`Tools/visual-regression/attachment-demand-registry.spec.mjs`), or retire it and let
+`packages/engine/Specs/Core/ResourceUrlRoundTripSpec.mjs` carry §2. Not this lane's file.
+**Scope correction (2026-09-19):** the *other* guard the `Resource.js:232-240` comment names is
+alive — the fork-added jasmine cases `keeps the authority of a protocol-relative url` and
+`keeps a bare-relative url relative` at `packages/engine/Specs/Core/ResourceSpec.js:228-251`, which
+exist in neither `upstream/main` nor any Node runner and which run on every `dev` karma job. So this
+row is about a dead Node tool, not about the two documented regressions being unwatched.
+
+**`DX-GOOGLE2D-MUTATES-CALLER-OPTIONS` (from the brief, filed not fixed).**
+`Google2DImageryProvider.fromIonAssetId` mutates the caller's `options` object rather than cloning
+it, so a caller reusing one options literal across two providers gets fields it did not set. Not in
+this lane's file set.
+
+**`DX-NODE-SPECS-MUST-DECLARE-THEIR-ENVIRONMENT` (OPEN, 2026-09-19).** `packages/engine/Specs/`
+now holds four `node --test` specs over real engine modules, and at least one engine function
+(`Core/getAbsoluteUri.js:51-55`) answers differently depending on whether a `document` exists —
+returning its argument untouched when one does not. A spec that runs only in bare Node therefore
+certifies its harness rather than the engine, which is how W2-L11's v1 measured 31 of 31 shapes
+clean while leaving two `DataSources/CzmlDataSource` CI rows red in every browser. W2-L11 added
+`packages/engine/Specs/browserDocumentPreload.mjs` and a second `test-engine-node` leg that runs
+its three specs under `node --import`, and its specs name their environment in every test name so
+a transcript cannot hide a preload that did not load. Nothing enforces either habit: the other
+Node specs under `packages/engine/Specs/` (`ResourceCrossOriginDerivationSpec.mjs`,
+`Renderer/ShaderGeneratorUpstreamContractSpec.mjs`) run in one environment only, and
+`Tools/spec-runner-census.mjs` does not know the axis exists. The row is the guard: a census rule
+that any `packages/engine/Specs/**/*.mjs` touching url, document or DOM state must appear in both
+legs of `test-engine-node`, or say in a comment why one environment is enough.
+
+**`DX-RESOURCE-PARSEURL-BASE-TEXT-BELT-IS-NOW-REDUNDANT` (OPEN, 2026-09-19).**
+`packages/engine/Source/Core/Resource.js:253-260` reads a base's scheme and authority out of the
+caller's own `baseUrl` first and falls back to `getAbsoluteUri(baseUrl)` only for a base that
+carries no authority of its own. The first arm was Aranwe's `FIX-ARANWE-1`, and it existed
+because `getAbsoluteUri` case-folded the resolved form. With that file repaired in the same batch
+the two readings now agree for every scheme-carrying base, so the arm is redundant defence rather
+than a fix — and it is kept deliberately, because `getAbsoluteUri._implementation` is a
+replaceable seam (the engine's own `getAbsoluteUriSpec.js:20-30` replaces it) and a `Resource`
+url must be its caller's text whatever that seam is doing. The behaviour is pinned by
+`ResourceUrlRoundTripSpec.mjs` ("a derived url keeps its parent authority even when
+getAbsoluteUri rewrites"), which installs a rewriting implementation and requires the derived url
+not to move; mutant `M5` makes the arm unreachable and that spec goes RED. The row exists so a
+future reader who finds the arm "dead" reads this first (Principle 7), and so the seat can decide
+whether one source of truth is worth the churn later.
+
+**`BUG-ION-TOKEN-DECIDED-ON-URL-TEXT-NOT-ON-THE-PARSE` — CLOSED 2026-09-19 (Batch 1542).**
+`IonResource.js` decided whether the ion access token could travel with a request by matching the
+url's text against a pattern that demands a literal `//` after the scheme
+(`IonResource.js:13-16` at the v3 draft). The WHATWG URL parser, for every special scheme, skips
+any run of `/` and `\` after the colon, and opens an authority on any such run even when no
+scheme is present — so `https:///evil/x`, `https:evil/x`, `https:/\evil/x`, `https:\\evil/x`,
+`\\evil/x`, `///evil/x`, `/\evil/x` and `\/evil/x` all reach `evil` while the pattern reads an
+empty authority. Against a self-hosted or proxied endpoint, whose own authority text is also
+empty, the two compared equal and `Authorization: Bearer <ion token>` was sent to a host named by
+the loaded document. Nine measured leaks on the matrix the refutation reported, in bare Node and
+with a `document`, plus four more url spellings that matrix did not carry. Both sides are
+now resolved through `new URL` against two probe bases differing in scheme and host, and the token
+travels only when both agree on the same host; a destination that cannot be settled attaches
+nothing. Evidence: `_lane-out/evidence/ion-sec-plus.mjs`, `beldis-hunk-check.mjs`,
+`destination-oracle.mjs`; spec `packages/engine/Specs/Core/CredentialDestinationSpec.mjs`;
+mutants `V4-M1..M10` in `_lane-out/evidence/mutants-v4.mjs`.
+
+*[Record round 8: the fix described above was changed twice more before it landed. v5 added a third probe under a
+non-special scheme and settles a destination only when all three agree (`DX-ION-DESTINATION-PROBES-ARE-BOTH-SPECIAL`,
+below), and round 6 made the token require the url's **scheme**, as well as its settled destination, to equal the
+endpoint's (R6.3), after Chromium showed all three v5 probes agreeing on a leading `\\` url. Source:
+`cesium-webgpu-worker-archive/lanes-2026-09-26/w2-l11-r6/arod/LANDING_PACKET_AROD.md` R6.2 and R6.3;
+`WEBGPU_DEBUGGING_LOG.md` Bug W2-L11.4.]*
+
+**`BUG-DERIVED-CREDENTIAL-DROP-BLIND-TO-OPAQUE-SCHEMES-THAT-NAME-A-HOST` — CLOSED 2026-09-19
+(Batch 1542).** `Resource.getDerivedResource`'s cross-origin credential drop (Batch 1438) asked
+`URL.origin` for both sides and treated the literal string `"null"` as "origin unknown". The URL
+Standard makes `origin` opaque for every scheme it does not treat as special, **including ones
+that name a server** — `custom-scheme://evil/x`, `file://evil/share/x` — so a parent's
+`Authorization` header and access-token query parameter were forwarded to a host the loaded
+document chose. While `parseUrl` was corrupting non-special urls the drop fired here by accident;
+repairing the url without repairing the check made it a leak. `getUrlOrigin` now falls back to
+`scheme://host` when the origin is opaque but a host is named, and still answers "unknown" for a
+url that names no server (`data:`, `mailto:`, `file:///C:/x`), which is what the feature's own
+comment at `Resource.js:421-423` promises them. Evidence: `_lane-out/evidence/b3-creds.mjs`;
+spec rows in `CredentialDestinationSpec.mjs`; mutants `V4-M11`, `V4-M12`.
+
+*[Record round 8: round 6 of the same batch changed the key again before it landed. `getUrlOrigin` now keys on `protocol` + `host` and never on `URL.origin`; a url that names no server keys on its scheme alone, so `file:///C:/x` is no longer "unknown"; `blob:` keys on its embedded http(s) origin; a url the parser rejects keys on `"<unfetchable>"`; and with a document the url is parsed against the page base (Firefoot's F-1). Source: `cesium-webgpu-worker-archive/lanes-2026-09-26/w2-l11-r6/arod/LANDING_PACKET_AROD.md` R6.1, R6.3 and R6.9; measured in Chromium by the E1 receipt (`W2-L11-R6-E1` below).]*
+
+**`BUG-GET-ABSOLUTE-URI-SCHEMELESS-SLASH-RUN-AUTHORITY` — OPEN, entered 2026-09-19 (Batch 1542).**
+`getAbsoluteUri.js`'s `schemeAndAuthorityRegex` (`:9`) matches exactly two forward slashes, so a
+schemeless authority written with a longer run or with backslashes is not recognised. Resolving
+`///evil.invalid/x` against `http://app.example/page/` gives `http:///x` — the host lost and the
+path truncated — and `\\evil.invalid/x` and `/\evil.invalid/x` give `http://app.example/x`.
+Upstream urijs and the URL parser both answer `http://evil.invalid/x` for all three, and so did
+the seat tip, so this is a regression introduced by the urijs→`URL` sweep. It is **not** a
+credential leak as of Batch 1542 (both credential checks read the parser and drop for these
+hosts); it is the wrong url being fetched. The candidate is to let the authority group consume a
+run (`([/\\]{2,}[^/\\?#]*)?`) in `getAbsoluteUri.js:9` **and** in the `Resource.js:30` twin, which
+re-opens the `getAbsoluteUri` upstream-parity oracle and the `ArcGisMapServerImageryProvider` /
+`Resource.js:232-240` acceptance set — it wants its own batch, not a hunk inside a security one.
+Reproduction: `_lane-out/evidence/derived-slashrun.mjs`.
+
+**`DX-ION-TOKEN-COMPARISON-IGNORES-THE-SCHEME` — CLOSED 2026-09-26 by round 6 of Batch 1542 (seat decision S-7), entered 2026-09-19.** The ion
+token check compares host and port and not the scheme, which is upstream's semantic
+(`new Uri(url).authority()`), the seat tip's, and the invariant lane brief CI2-L11 states. It
+means a derived `http://api.cesium.com/x` under an `https://api.cesium.com/` endpoint still
+carries the bearer token, in cleartext. Not introduced by Batch 1542 and deliberately not changed
+by it — the lane's spec asserts the brief's invariant, and widening it is a maintainer call
+because it would drop the token for any deployment that legitimately mixes schemes. One row in
+`CredentialDestinationSpec.mjs` would close it the day it is ruled.
+
+*[Record round 8: **CLOSED by the same batch, round 6.** `IonResource`'s destination now answers scheme + host (R6.1), and the karma case `does not send the ion token to the endpoint's host under another scheme` passed in DEBUG and in RELEASE on the built AFTER tree (E1 Part 2, 13 of 13 new cases). The "maintainer call" this row named was taken by the seat's acceptance of round 6 on 2026-09-26 (R6.4), not by a maintainer ruling, and the maintainer may reverse it; the cost this row states — a deployment that serves one ion host under two schemes loses the token on one of them — is the argument for a reversal. Recorded in `MAINTAINER_RULINGS_2026-09-26.md`, "Seat decisions taken on measurements after the sitting".]*
+
+**`DX-ION-DESTINATION-CANNOT-SETTLE-AN-ABSOLUTE-URL-NAMING-THE-DOCUMENT` — OPEN, entered
+2026-09-19 (Batch 1542).** With a relative (self-hosted) endpoint, a derived url written
+absolutely against the application's own host — `https://app.example/v1/x` where the page is
+`https://app.example/` — is the same server as the endpoint, but the check has no document to
+know it and drops the token. Fail-closed, upstream did the same, and a 401 is the symptom. Closing
+it means reading `document.baseURI` inside the destination derivation, which makes
+`_ionEndpointDomain` environment-dependent; that is a design call, not a bug fix.
+
+*[Record round 8: round 6 reads a page-relative destination on the document (R6.1, `isSameDestination`), and its accepted behaviour change (d) states that a self-hosted relative endpoint now gets its token for derived urls in a browser. This row's exact shape — a relative endpoint and a derived url that names the page's own host absolutely — was not named in E1, so the row stays OPEN until a Node or karma case pins it either way.]*
+
+**`DX-GET-ABSOLUTE-URI-OPAQUE-BASE-BRANCH-UNPINNED` — CLOSED 2026-09-19 (Batch 1542).** Beldis'
+C-M7. One `data:`-base row in `GetAbsoluteUriRoundTripSpec.mjs` distinguishes the early return
+from the fallthrough; the mutant is now RED in both environments.
+
+**`DX-RESOURCE-PARSEURL-DROPS-A-RELATIVE-BASE-IN-NODE` — OPEN, entered 2026-09-19.** Beldis §5.4
+item 2, recorded as his: `Resource.parseUrl` calls `getAbsoluteUri(baseUrl)` with one argument, so
+outside a browser a relative base is returned verbatim, `new URL(url, base)` throws, and the base
+is dropped. Pre-existing at the tip, unreachable in a browser, and 103 of his 127 residual Node
+fuzz pairs.
+
+**`DX-ION-RETRY-CARRIES-A-STALE-AUTHORIZATION` — OPEN, entered 2026-09-19 (Batch 1542).**
+`IonResource._makeRequest` (`packages/engine/Source/Core/IonResource.js:252-265`) writes
+`options.headers.Authorization` into the **caller's** `options` object, and the retry path
+re-enters it with that same object. Its early return — taken when the url about to be requested is
+not the endpoint's server — returns without clearing the header, so a second attempt whose url has
+moved would carry the first attempt's token. It is not reachable today: `IonResource`'s own
+`retryCallback` (`:349`) refreshes the endpoint and never rewrites the url, so every attempt has
+the same destination, and the check is made per attempt on a url that does not change between
+them. The row exists because the shape is one url rewrite away from a stale credential and nothing
+in the file says so: the early return is the only branch that leaves a header it did not set, and
+the invariant it silently depends on ("the url cannot move between attempts") lives in a different
+method. Found by Beldis (adversarial verification of W2-L11, round two, `evidence/toctou.mjs`);
+**predates this lane and is not a defect in it**. The repair is one line — delete
+`options.headers.Authorization` on the early-return path, or clone `options` before writing to it —
+plus a spec that drives two attempts with a url change between them.
+
+**`DX-ION-DESTINATION-PROBES-ARE-BOTH-SPECIAL` — CLOSED by Batch 1542, entered and closed
+2026-09-19.** Recorded because the reasoning is worth keeping, not because work remains. The ion
+token's destination check resolves a url against fixed probe bases and compares what the URL
+parser says. The first two probes (`packages/engine/Source/Core/IonResource.js:39-48`) differ in
+scheme and host, but **both schemes are ones the URL Standard calls *special***, and specialness
+changes how the parser reads an authority: a special scheme folds `\` into a separator and skips a
+run of separators, an opaque one does neither. So `//api.cesium.invalid\@evil.invalid/x` reads as
+`api.cesium.invalid` from every special page — and as `evil.invalid` from a page a desktop host
+serves over its own registered application scheme, where the backslash stays in the userinfo. With
+only special probes the check could not see that the answer depends on the **kind** of page, and
+the token followed the first reading; the same hole covered `\\host/x`, `/\host/x` and
+schemeless slash runs. Measured on the frozen v4 tree: 3 leak rows, identical bare and with a
+browser-shaped `document` (`_lane-out/evidence/f2-repro.mjs`). Found by Beldis (round three, F2);
+**closed by the seat ruling of 2026-09-19** with a third probe under a non-special scheme and a
+destination that is `undefined` unless all three probes agree, plus `foldOpaqueHost` so that the
+opaque probe's verbatim host spelling is not mistaken for a disagreement. Cost measured against
+three real engine trees: **zero drops** across a 134-row positive table of legitimate endpoint
+shapes in both environments, and 338 corpus destinations withdrawn, every one of them a schemeless
+slash run, a schemeless backslash run or text carrying whitespace or a control character. **One
+open question this row hands to the Edge leg**: Node's WHATWG parser gives a custom scheme an
+authority unconditionally, while Chromium and Gecko do so only for a scheme the embedder registers
+as *standard* — and a standard-URL canonicalizer folds `\` the way a special scheme does. If that
+holds, the browser window was narrower than Node's; the repair is correct either way and fails
+closed, so nothing depends on the answer, but one navigation of a registered custom-scheme page
+would settle whether the original leak was reachable in a shipping browser.
+
+*[Record round 8: **"the repair is correct either way and fails closed, so nothing depends on the answer" did not
+hold in Chromium.** Round 6 measured, in Edge 154 on v5, that Chromium on Windows resolves `\\host/x` as
+`file://host/x` against every base, so all three v5 probes agreed on the endpoint's host and the host-only comparison
+attached the ion token; Chromium also reads `file:host/x` as UNC host `host` where Node reads a hostless path, and 12
+v5 ion rows per endpoint carried the token in Chromium only (Arod's packet R6.2 item 2; `WEBGPU_DEBUGGING_LOG.md` Bug
+W2-L11.4 (2)). Round 6 closed it before landing by requiring the url's scheme to equal the endpoint's (R6.3), and E1
+measured 0 leaks in Chromium (`W2-L11-R6-E1`, below). The registered-custom-scheme question above was not named in E1
+and stays unanswered. Source: `cesium-webgpu-worker-archive/lanes-2026-09-26/w2-l11-r6/arod/LANDING_PACKET_AROD.md`.]*
+
+### `W2-L11-R6-E1` — the named Edge leg of round 6, as measured (record, not a row)
+
+Executor Nahar, 2026-09-26 05:24-06:16 EDT, BEFORE `37c0f8767e` against AFTER = the same base plus the FINAL patch,
+`tsc-engine` rc 0 on AFTER without "skipped". Selection A (the six CI rows): **6 FAILED → 0** in DEBUG and RELEASE.
+Selection B: **13 of 13 new cases PASS** in both flavours, B2 (`ResourceCacheKey` and every `*ImageryProvider`) 344/0
+on both trees. Full RELEASE suite: FIXED 6, NEW-FAILURES 0, LOST 0, failures 53 → 47, offline-ledger delta 0.
+Real-network smoke: the ion hosts receive the same credentials on both trees and no other host receives one.
+Inertness mutants in Chromium: M1, M2, M3 each RED on their twins. **The seat's bar for this round** (a seat decision
+on the lead's R6.4, recorded in `MAINTAINER_RULINGS_2026-09-26.md`): decisions need not be identical across engines;
+the bar is (1) no leak in either engine, (2) no realistic drop, (3) every divergent decision classified. Measured over
+1,794,018 decisions: **0 leaks** in Chromium (80,582 sends) and in Node (87,885 sends); **0 realistic drops** in either
+engine (561 realistic cells); **10,343** divergent decisions, every one classified — class W (same destination, one
+engine withholds) **0**; class P (the parsers settle on different destinations) **10,343** = P1 6,657 (Chromium's
+parser rejects) / P2 2,166 (Chromium settles elsewhere) / P3 1,080 (Node settles elsewhere) / P4 440 (Node's parser
+rejects). Source: `Tools/visual-regression/output/wave-end/ci-wave2-l11-r6-20260926/E1/README.md` and
+`…/E1/06-DIVERGENCE-CLASSIFICATION.md`. **Mutant `I2-mixed-scheme-accepted` survives as an equivalent mutant**: a url
+names one scheme under all three probes or takes each probe's, with 0 mixed readings over 287,089 corpus urls, raw
+and endpoint-resolved — **measured in Node only**, not in Chromium; it is kept as a guard (Principle 7). Source:
+`…/w2-l11-r6/arod/LANDING_PACKET_AROD.md` R6.6.
+
+### `W2-L11-OLDER-PARSERS-UNMEASURED` — parsers older than the standard non-special host were not measured — OPEN (P3)
+
+Firefoot F-2: Chromium before 130 and older Firefox give a non-special scheme no host. On such a parser a same-scheme
+custom parent forwards as it did on v5 and upstream, and relative or `//` ion endpoints fail closed. No such browser
+was on hand. A regex authority fallback is not free: it would re-key `file://localhost/` against `file:///` on
+standard parsers. Source: `…/w2-l11-r6/arod/LANDING_PACKET_AROD.md` R6.9; `…/arod/REVIEW_FIREFOOT.md` F-2; Lightfoot
+L-6 repeats it as still unmeasured.
+
+### `W2-L11-ION-ENDPOINT-DOMAIN-CASES-ASSERT-PRIVATE-STATE` — three spec cases assert `_ionEndpointDomain`, not behaviour — OPEN (P3, spec-only)
+
+`IonResourceSpec.js:46`, `:78` and `ResourceUrlRoundTripSpec.mjs:235` (line numbers from round 6) assert the private
+`_ionEndpointDomain`. The token itself is asserted on the request by the endpoint tables in
+`CredentialDestinationSpec.mjs` and by the karma token cases, **but not row for row**: the `:443` and userinfo
+spellings have no token-level twin. Adding one is a spec-only follow-up, kept out of round 6 so as not to widen a
+security diff that Chromium had measured. Source: `…/arod/LANDING_PACKET_AROD.md` R6.9 (Firefoot F-3, second half).
+
+### `W2-L11-HOSTLESS-FILE-URLS-SHARE-ONE-CREDENTIAL-OWNER` — hostless `file:` urls are keyed on the scheme alone — OPEN (P3, design choice)
+
+A url that names no server keys on its scheme alone (R6.3), so `file:///C:/a/` and `file:///U:/…` count as one
+credential owner: a derived url resolved against a hostless `file:///C:/a/` parent that Chromium fetches at
+`file:///U:/…` keeps the parent's credentials, because both keys are `file:` (the seat's note on Nahar's run, whose
+example url was `http:u:p@…`; Lightfoot measured the same in both engines). No server receives a Cesium header or query parameter, so it is not a
+leak by the lane's definition, and Lightfoot (L-5) classes it as a design choice. Recorded so that a later change to
+the hostless arm is a decision, not an accident. Source: the seat's note on Nahar's E1 run; `…/w2-l11-r6/lightfoot-v2/VERIFY_LIGHTFOOT_V2.md`
+L-5, rows 21 and 24.
+
+### `UPSTREAM-RESOURCE-SLASHLESS-SPECIAL-SCHEME-FORWARDS-PARENT-CREDENTIALS` — upstream forwards a parent's credentials to every derived url, so the F-1 shape is one case of that — OPEN (an upstream design question, not a check)
+
+Firefoot's F-1: a derived url with a special scheme and no `//` — `https:parent.invalid/x`, `HTTPS:/…`, `https:\…` —
+is relative to a page of the same scheme, but `getUrlOrigin` parsed it with no base and read it as the parent's
+server, so the parent's `Authorization` reached the page's own server. It was present in v5, and on the fork it
+measured **91 parent-credential leaks per https page** in Firefoot's corpus (364 in all over the two affected https legs in both of its harness engines, and 0
+after the fix). The fork closed it in Batch 1542 by parsing against the page base (`document.baseURI ??
+document.location.href`), pinned in Node (`slashlessRows`) and in karma. **Upstream, read by record round 8:**
+`Resource.prototype.getDerivedResource` at `upstream/main` `73c2eeec0c` (`packages/engine/Source/Core/Resource.js:664-700`
+there) clones the parent and has **no cross-origin credential drop at all** — the drop is the fork's Batch 1438
+addition. So F-1 is "upstream's too" only in the sense that upstream forwards a parent's headers to every derived url,
+whatever server it names; the 91-per-page figure was measured on the fork and says nothing about upstream. **Open:**
+whether upstream's forwarding of a parent's credentials to any derived url is worth an upstream report — a design
+question for upstream (adopting the fork's drop would change its behaviour), not a check still owed. Source: `…/w2-l11-r6/arod/LANDING_PACKET_AROD.md` R6.9 (the corpus table);
+`Tools/visual-regression/output/wave-end/ci-wave2-l11-r6-20260926/firefoot/proposed-followup-getUrlOrigin-page-base.diff`.
+
+### `W2-L11-FOLLOWUP-PAGE-BASE-AND-JSDOC` — the round-6 FINAL's residue: one Node-only fail-open, one public JSDoc sentence, two residues — OPEN (Core; a karma leg owed)
+
+From Lightfoot's second pass on the FINAL (verdict HOLDS; none of these refutes the Chromium bar):
+
+- **L-1 (P3, introduced by the F-1 hunk; non-browser only; parent path only).** When a `document` exists but its
+  `baseURI ?? location.href` does not parse, `new URL(absolute, base)` throws for every url, `getUrlOrigin` answers
+  `"<unfetchable>"` for the parent and the derived url alike, and the two compare equal, so the parent's
+  `Authorization` is forwarded to any host. Measured in Node with a fake document whose `baseURI` is `""`:
+  `https://parent.invalid → https://evil.invalid/x` forwards on the FINAL; v5 and r1 drop it. The ion token is
+  unaffected. No browser can reach this state. Fix, one Node-provable hunk: parse the page base on its own and fall
+  back to `new URL(absolute)` when it does not parse, **and/or** treat an `"<unfetchable>"` parent key as different
+  in `getDerivedResource` (which closes the wider class where two unfetchable keys compare equal). Node spec: a fake
+  document with `baseURI: ""`.
+- **L-2 (P3, docs).** The public JSDoc on `getDerivedResource` (`Resource.js:399`, text inherited from main) still
+  says that when either origin cannot be resolved — a relative url outside a browser, or an opaque `data:` or `file:`
+  origin — nothing is dropped. The accepted behaviour changes (a) and (b) of round 6 now drop exactly those; correct
+  the sentence.
+- **L-3 (P3, theoretical residue).** A slashless url stays unresolved in `_url` and is resolved against the base at
+  request time, so an application that changes `<base>` across schemes between derivation and request can make a
+  forwarded slashless url land off the parent. The document cannot trigger it.
+- **L-4 (P3, pre-existing residue).** In a Web Worker the F-1 shape keys on the named host while `fetch` resolves
+  against the worker's location. No engine worker uses `Resource`, so the exposure is application code only.
+- **L-6 (evidence scope).** The Chromium measurements behind F-1 cover http pages only (the karma twin at
+  `localhost:9876` and E1's classification page); https, `file:` and custom-scheme pages are reasoned, not measured.
+
+The follow-up lane is Core class and owes its own karma leg. Source: `…/w2-l11-r6/lightfoot-v2/VERIFY_LIGHTFOOT_V2.md`
+"Findings" and "Verdict".
+
+### Lane I-5 (Hundad): the cloud realization override — Batch 1543
+
+*Source: `cesium-webgpu-worker-archive/lanes-2026-09-26/ring-i5/hundad/LANDING_PACKET_HUNDAD.md` §7 with its v2
+"Ledger text" (copied; the v2 Proof bullet replaces §7's and a follow-up is added); review `…/hundad/REVIEW_BELDIR.md`
+(LAND-WITH-FIXES); verification `…/ring-i5/gamil/VERIFY_GAMIL.md` (HOLDS). The packet proposed the id; this record
+assigns it and adds it to `QUEUE_2026-07-23_CAMPAIGN13.md` §1.*
+
+### `C13-N71-CLOUD-REALIZATION-NOT-VARIABLE-ONE-AXIS-AT-A-TIME` — CLOSED (engine, Principle 9)
+
+`C13-N71-CLOUD-REALIZATION-NOT-VARIABLE-ONE-AXIS-AT-A-TIME` (engine, Principle 9) — CLOSED by this lane.
+
+- **The gap.** The cloud march's realization could not be varied one axis at a time from outside the engine. The only step dial,
+  `cloudQuality ≠ 64`, takes the escape hatch, which also swaps the noise source (LIVE), jitter (off), density domain (bit 13), erosion
+  floor (0.18→0.10) and, below 128, the light steps.
+- **Closed by.** A debug-only, pragma-stripped `CloudRealizationOverride` (`primarySteps`, `lightSteps`, set/clear of the realization bits
+  0/3/10/12/13). It resolves late in `resolveCloudPreset` and is applied as the last writer of float 74. The asks are published beside
+  the realised values in the cloud counters. `cache.executeSerial` advances only when the march is encoded.
+- **Proof.** Node spec `cloud-realization-override.spec.mjs`, 15 tests, homed on `test-cloud-c13`. It covers:
+  - the tier path held, one bit per clear, and byte-identical output with no override (absent, `undefined` or `null`);
+  - ask ≠ ran iff moved, and the workload bound;
+  - the renderer's publisher executed, including after the release strip;
+  - the call sites pinned by position.
+
+  Twelve inertness mutants on the real files are all RED. No public API. No pixel moves with the override unset.
+- **Measurement owed.** Leg 2 Arm D (one bit per row on the tier path at 96 steps). Correction to the Leg-1 record: the tier/raw split is
+  at least four axes, not three.
+- **Follow-up (Tools, owner TBD).** `Tools/visual-regression/lib/cloud-march-mechanism.mjs:838` says `qualityFlags` "has no cache
+  field at all". It now has one: `observability.qualityFlags`, beside `requestedQualityFlags`.
+
+*[Record round 8: the "Measurement owed" bullet is discharged. The named leg (Diamond) ran Part 1 green
+and stopped Part 2 at R2 on a device loss (next row); Arm D then ran whole on the budgeted tree (lane I-3's leg, row
+`C13-N69-E4-BUDGET-LEG` below). The Tools follow-up is still open. `tsc-engine`, owed by the lane, ran rc 0 on the
+built AFTER tree without "skipped".]*
+
+### `C13-N71-LEG-DIAMOND` — the I-5 named leg: Part 1 PASS, Part 2 stopped at R2 by a device loss (measurement)
+
+Executor Diamond, 2026-09-26 06:21-07:10 EDT; BEFORE `37c0f8767e`, AFTER `6c45220027` + the I-5 patch; NVIDIA Pascal.
+**Part 1 (karma, DEV, EdgeHeadlessCI):** four targeted suites identical on both trees (15, 4, 6 and 47 SUCCESS); full
+suite with `--webglStub` 18,449 executed on both trees, **NEW-FAILURES 0, LOST 0, NEW NAMES 0**; the nine FIXED are
+GaussianSplat specs that failed on BEFORE only with `Request cancelled: wasm_splats_bg.wasm` and pass alone (16 of 16),
+so they are not a lane effect. **Part 2 (Arm D on AFTER; rig `orbital-fulldisc-6608km`, tier "high", 2048², MSAA 4,
+60 settle frames):** R0 (word 12601, 96/8) metric **0.0461** at (1060.9, 1032.7), PRESENT; R1 (bit 3 cleared, word
+12593, 96/8) **0.0461**, PRESENT. **R2 (bit 0 cleared: the tier path with live noise at 96 × 8, 2048², MSAA 4) lost the
+device** — `DXGI_ERROR_DEVICE_HUNG` inside R2's 60-frame settle, observed serial 366 against last live serial 304 —
+and Batch 1541's seam refused `armd-R2` with `capture-device-lost`, exit 3, no frame banked after the loss. R3-R6 and
+A0 did not run on that tree. The estimator is not the tracked metric: the pixel pass is the tracked
+`lib/metrics/radial-banding.mjs` (`luminanceField` + `radialProfile`, 1-px bins), but the statistic is the annulus mean
+minus its centred 41-px moving average, RMS over ρ 40-400, at the centre that maximises it (calibrated on the Leg-1
+frames: M0 0.0570 against Ornendil's 0.0562). Source:
+`Tools/visual-regression/output/wave-end/ring-i5-leg-20260926/README.md` and `…/part2/ring-i5-arm-d-refusal.json`.
+**This R2 hang is a `C13-N69` datum** (the budget's live-noise point, below).
+
+### `DX-TOOLS-RING-BANDPASS-ESTIMATOR-UNTRACKED` — the ring number the legs quote comes from an untracked estimator — OPEN (DX row)
+
+Every ring figure in the two 2026-09-26 legs (0.0570, 0.0549, 0.0461, 0.0074 …) is the executors' band-pass estimator —
+annulus mean minus a centred 41-px moving average, RMS over ρ 40-400, centre searched to maximise it (a port of
+Vidugavia's `centre.mjs` and Ornendil's search) — run in each executor's own driver, because the tracked
+`lib/metrics/radial-banding.mjs` statistics are a presence ladder (E-21), not an amplitude. So the number is not
+reproducible from a tracked file. Make the estimator a tracked metric beside `radial-banding.mjs`, with its calibration
+case (M0 0.0570 at (1061, 1032.5)) as a fixture; it is the ring lane I-1's territory (`C13-N61`/`N63` in
+the held ledger patch, and the ring plan's two proposed I-1 rows on the rig's disc centre and the undeclared
+visible-period band, which have no id in the C13 queue's §1 table yet), so one owner. Source: `…/ring-i5-leg-20260926/README.md` "Estimator";
+`…/c13-n69-e4-budget-20260926/README.md` (the same estimator).
+
+### Lane T1 (Belba): the TaskProcessor late-post guards — Batch 1544
+
+*Source: `cesium-webgpu-worker-archive/lanes-2026-09-26/t1-taskprocessor/belba/LANDING_PACKET_BELBA.md` §v2 "Ledger
+text v2" (copied) and "Base defects surfaced by Ruby"; review `…/belba/REVIEW_DAISY.md` (LAND);
+verification `…/ruby/VERIFY_RUBY.md` (REFUTED v1 on the init hunk) and `…/ruby-v2/VERIFY_RUBY_V2.md`; the karma leg
+E2 at `Tools/visual-regression/output/wave-end/t1-e2-20260926/README.md`. The row
+`NEW-TASKPROCESSOR-WASM-INIT-POSTS-AFTER-REJECT` (record round 7, above) is closed by Batch 1544 (note on it, above).*
+
+### `T1-TASKPROCESSOR-LATE-POST-GUARDS` — CLOSED (`R-2026-09-26-5`, option D)
+
+> **T1 (R-2026-09-26-5, option D), the TaskProcessor late-post guards.** Two paths in
+> `Core/TaskProcessor.js` post work to a worker after an `await`. A worker `error`/`messageerror` in
+> that window rejected the work, but the late post still ran it and detached its transferables.
+> - The task path (Astra's frozen unit, md5 `c4016b88…`) skips the post once the task has settled
+>   (`listeners.isSettled()`, set only by `removeListeners` after `resolve` or `reject`), so a skipped
+>   post is one whose reply nobody would hear.
+> - The web-assembly init path (seat-authored) records only its first settlement and skips the post
+>   only when the cached promise has rejected; a failure after a resolving message still posts.
+>
+> The spec `task-processor-error-path.spec.mjs` (runner `test-visual-regression-node`) goes from 14/4
+> on the old source to 18/18. The run-inertness mutants `if (false && taskListeners.isSettled())` and
+> `if (false && settledAs === "rejected")` each redden exactly their two cases; the v1 shape reddens the
+> three resolved-then-failed cases; a healthy-init control stays green. Reviewer Daisy LAND (v1);
+> adversarial verifier Ruby REFUTED v1 on the init hunk, fixed in v2 by her own proposal and her
+> sequence added as three cases; the task-path guard HOLDS. The `DEFERRED_WORK` row for the WASM-init
+> race that fallback (A) would have filed is **not filed**: option D fixes the race in the same batch.
+> Still owed before landing: the karma Edge leg E2 on v2 (and, at the seat's option, a re-verify of the
+> v2 init hunk).
+
+*[Record round 8: E2 ran before landing (executor Anson, 07:51-08:28 EDT). The required selection
+executed 428 on every leg, with 0 FAILED on AFTER in DEBUG and 1 in RELEASE (`Scene createAsync rolls back late Scene
+construction exactly once`, which fails on BEFORE too); the widening selection executed 330, with 0 FAILED on AFTER in
+both flavours. Full DEBUG suite: NEW-FAILURES 0, LOST 0, FIXED 6 = exactly Batch 1542's six CI rows by name. Reversing
+T1 on AFTER attributed the selections' movements (the TaskProcessor cross-origin row and nine GaussianSplat rows) to
+Batch 1542, not to T1. `tsc-engine` rc 0 without "skipped". Ruby's second pass on v2 is `VERIFY_RUBY_V2.md`; its spec
+gap is the `T1-SPEC-GAP-N1A` row below. The copied sentence that the WASM-init row "is **not filed**" predates record
+round 7, which did file it as `NEW-TASKPROCESSOR-WASM-INIT-POSTS-AFTER-REJECT`; that row is closed in place above.]*
+
+### `T1-SPEC-GAP-N1A` — the first-settlement rule is pinned in one direction only — OPEN (Core, spec-only)
+
+Ruby's second pass (non-blocking): add the N1a case — emit `error`, then a defined `message`, then resolve the config
+fetch; assert the init rejects, nothing is posted, and the WASM binary's `byteLength` is still 32 — so the init path's
+first-settlement rule is pinned in both directions (v2 pins resolved-then-failed; N1a pins failed-then-resolved).
+Source: `…/t1-taskprocessor/ruby-v2/VERIFY_RUBY_V2.md` "Spec gap".
+
+### `DX-CORE-TASKPROCESSOR-GUARDS-INVISIBLE-TO-KARMA` — only the Node spec can see the T1 guards — OPEN (DX row, proof bar)
+
+E2 made both T1 guards unreachable at once and served the mutant bundle (esbuild folded both branches away; the
+bundle's `settledAs`/`isSettled` counts fell 4/2 → 3/1): the Node spec went **14 pass / 4 fail**, while karma stayed
+green — `Core/TaskProcessor` 17/0, required 428/0, widening 330/0. No karma spec creates the window with a real worker
+(an `error` or `messageerror` while the capability probe or the config fetch is pending). So for this class the Node
+spec is the only proof that the guard is live. `R-2026-09-17-4` names the relevant karma/Jasmine suite as the per-lane
+leg of a non-visual engine lane and says nothing about Node specs (the behaviour-spec bar is `R-2026-08-29-1`'s); the
+E2 receipt's sentence that R-17-4 "accepts" the Node spec is its executor's reading, not the ruling's text. The DX point
+is that the leg R-17-4 names proves "no regression" over such a batch, never "the guard is live", and a Core packet
+should say which of the two its Edge leg is for. Source: `Tools/visual-regression/output/wave-end/t1-e2-20260926/README.md` "Mutant: why karma cannot
+see it".
+
+### `DX-T1-NEGATIVE-CHECK-WAITS-TWO-MICROTASKS` — a frozen negative check is one `await` away from vacuous — OPEN (DX note)
+
+Astra's frozen task cases check "nothing was posted" two microtasks after `resolveProbe(true)`
+(`task-processor-error-path.spec.mjs:530-531` at review). Today that is enough — the probe's reaction job is queued
+before the test's continuation, and mutant M1 going red proves the assertion live — but if the post path gains
+another `await` the check passes without testing anything. A macrotask wait would be sturdier; not worth reopening a
+frozen unit for. Source: `…/belba/REVIEW_DAISY.md` "Non-blocking observations" 1.
+
+### `NEW-TASKPROCESSOR-INIT-ACCEPTS-ANY-MESSAGE-AS-READY` — OPEN (Core, base defect; not caused or fixed by T1)
+
+The web-assembly init's `onmessage` resolves on any defined message, including a task reply. It is the root that made
+Ruby's S8 sequence (a failure after a resolving message) reachable. Source: `…/belba/LANDING_PACKET_BELBA.md` §v2
+"Base defects surfaced by Ruby" 1; `…/ruby/VERIFY_RUBY.md` §base defects.
+
+### `NEW-TASKPROCESSOR-SCHEDULE-BEFORE-INIT-SPLITS-WORKERS` — OPEN (Core, base defect; reasoned, not run)
+
+`scheduleTask` called before `initWebAssemblyModule` leaves the task's listeners on worker A while its post goes to
+worker B. Reasoned by the verifier, not run. Source: as above, item 2.
+
+### `NEW-TASKPROCESSOR-KEEPS-A-DEAD-WORKER` — OPEN (Core, base defect)
+
+After a fatal worker `error` the processor keeps its dead worker, so later tasks hang; the karma spec's own comment
+acknowledges it. Source: as above, item 3.
+
+### `NEW-TASKPROCESSOR-DESTROY-LEAVES-TASK-PENDING` — OPEN (Core, base defect)
+
+`destroy()` with a task in flight leaves that task's promise pending forever. Source: as above, item 4. Related base
+behaviour the packet records and does not change: a rejected init does not terminate its worker, and an init whose
+worker fails settles only after the config fetch settles (`LANDING_PACKET_BELBA.md` "Observations").
+
+### Lane `C16-B0-tools` (Hilda): the flavour-aware comment gate — Batch 1545
+
+*Source: `cesium-webgpu-worker-archive/lanes-2026-09-26/c16-b0-tools/hilda-v4/LANDING_PACKET_HILDA.md` §v4 "DEFERRED_WORK
+row TEXT" (copied); the three verification passes `…/c16-b0-tools/wilimar-v1/VERIFY_WILIMAR.md` and
+`…/wilimar-v2-v3/VERIFY_WILIMAR_V2.md`, `VERIFY_WILIMAR_V3.md` (each REFUTED its version, v1-v3); the reviews
+`…/hilda-v4/REVIEW_MERIMAS*.md` (v1-v3). **v4, the landed version, was not re-reviewed or re-verified:** that v4
+refuses every refuting pair is its lead's re-run of the verifier's probes (packet §v4 "Gates"), and the seat ruled v4
+the last pass (seat decision S-6). The C16 row-level record is in `QUEUE_2026-08-10_CAMPAIGN16.md`. The two round-7
+rows `DX-TOOLS-COMMENT-ONLY-DIFF-CERTIFIES-TOKENS-NOT-ARTIFACTS` and `DX-TOOLS-COMMENT-ONLY-DIFF-ASI-CLAIM` are closed
+by Batch 1545 (notes on each, above).*
+
+### `C16-COMMENT-GATE-UNMODELLED-SHADER-TEXT-READERS` — the comment gate's known limits — OPEN
+
+> **C16 comment-only gate: shader-text readers it does not model.** `Tools/c16/comment-only-diff.mjs` certifies a
+> GLSL or WGSL comment edit only against the readers `Tools/c16/lib/shader-text-readers.mjs` finds or models, and it
+> refuses every shader comment edit while a `RegExp(...)` site under `Renderer/` or `Scene/` is unclassified or a
+> hand-written reader's pin is missing. Open:
+>
+> 1. **Engine defect.** The WebGPU OIT pipeline and module caches key a variant by
+>    `` `${shaderCode.length}_${fragEntry}_${label}` `` (`Renderer/WebGPU/WebGPUOIT.ts`, `createOITPipeline`), and the
+>    labels are shared across variants (`WebGPUBillboardRenderer.js` "OIT Billboard", `WebGPUPrimitiveCommands.ts`
+>    `OIT ${type} (${label})`), so two variants of equal length share a pipeline. Key by the source text or the define
+>    masks. This is independent of comments; a comment edit only makes the collision reachable.
+> 2. **Harvest reach.** Needles from non-`const` variables, needles passed through helpers or `.call`, regex literals
+>    without a three-letter word, and readers outside `Renderer/` and `Scene/` are not harvested. None is known to read
+>    tracked shader text today. A census of identifier-argument search calls would close the first two.
+> 3. **Precision.** About 22% of real shader comment rewrites are refused with no reader affected: WebGL readers run
+>    on WGSL and WebGPU readers on GLSL, presence tests are counted as match counts, and the `@location(0)` slice
+>    readers are applied to whole files. Scope each harvested reader to its backend by directory, and model
+>    `.includes`/`.test` as presence and slice readers as slices.
+> 4. **Rendering-check coverage.** A shader comment batch's Edge leg needs scenes that turn on a textured fabric
+>    material (BumpMap), shadows received by per-instance-colour primitives, and WebGPU OIT. The default scenes reach
+>    none of the readers the gate models only by widening.
+> 5. **File size (DX decomposition wave).** `Tools/c16/lib/comment-scanner.mjs` (1,124 lines),
+>    `Tools/c16/lib/shader-text-readers.mjs` (1,392, most of it classification tables) and
+>    `Tools/c16/comment-flavour-gate.spec.mjs` (1,406). Splitting the scanner adds an import edge that the policy
+>    manifest pins at `[]`; splitting the spec needs a runner-line entry.
+
+*Record round 8: item 3's rate, measured by the lane over the 360 in-scope edits of the 21 Campaign 16 rewrite batches
+986-1509 — **25 of 114 shader rewrites refused (21.9 %)**, 0 of 100 JS and 0 of 146 TS, with no true catch among
+them — is the false-refusal cost, and it is stated in `ForkCommentStandard.md` §8's known limits (lane v4 "Cost,
+measured"). Item 1 is also filed as its own engine row, next, so the defect has an id outside a Tools row.*
+
+### `NEW-WEBGPU-OIT-CACHE-KEYED-BY-SHADER-LENGTH` — two OIT variants of equal source length share a pipeline — OPEN (engine; filed from the row above, item 1)
+
+The WebGPU OIT pipeline and module caches key a variant by `` `${shaderCode.length}_${fragEntry}_${label}` ``
+(`Renderer/WebGPU/WebGPUOIT.ts`, `createOITPipeline`, `:706` at the lane's reading), and the labels are shared across
+variants, so two variants whose sources have the same length are served one pipeline. Key by the source text or the
+define masks. Found by the comment-gate verifier (Wilimar, third pass); not reproduced on a device by anyone. Principle
+10: re-read the cited lines and write the failing case (two equal-length variants) before briefing the fix. Source:
+`…/hilda-v4/LANDING_PACKET_HILDA.md` §v4 hazard table ("`WebGPUOIT.ts:706` caches keyed by `shaderCode.length`").
+
+### `C16-COMMENT-READER-CLASSES-2026-09-26` — the classes the comment gate's verifier found, and where each went (record, not a row)
+
+The adversarial verifier reproduced each class below with a before/after pair that the **HEAD** `comment-only-diff`
+certified comment-only; Batch 1545 refuses every one (by an exact model, a wider model, or a fail-closed census) by
+its lead's re-run of those pairs — v4 was not re-verified — and what it still cannot see is the known-limits row above
+and `ForkCommentStandard.md` §8. Kept here as the C16 subsystem's reference list for comment-batch reviewers (no
+`DEV_NOTES_*` file owns the comment instrument; a C16 `DEV_NOTES` entry for it is still owed, outside this record).
+
+- **First pass, A-I** (`VERIFY_WILIMAR.md`): (A) U+2028/U+2029 inside a `//` comment ends it in JS/TS and esbuild emits
+  the tail as code; (B) VT/FF/NEL/LS/PS end a WGSL `//` comment in the **unminified** module only; (C) prose spelling
+  the subgroup sentinels matches the lazy non-global regex at `WebGPUGPUCuller.ts:161-164` (also
+  `PerformanceManager` `:999`, `PointCloudLODProcessor` `:307`) — Batch 1534's class in the unminified flavour; (D)
+  prose naming an `@chunk` makes `WebGPUPrimitiveShaders.js:127-128` inject the chunk (a naga redefinition under
+  `LOG_DEPTH`); (E) a prose-quoted `//>>includeStart/End` in a GLSL file loses the whole function in the release
+  bundle, because the release build generates GLSL modules unminified and the pragma strip runs over them; (F)
+  `lint-debug-pragmas-allow` binds only on the line directly above the call; (G) an inserted comment line breaks
+  `eslint-disable-next-line`; (H) `@license`/`@preserve`/`//!` are retained by esbuild's legal comments and shader
+  `@license` blocks are hoisted into the generated module header; (I) `/// @ts-expect-error` and `@ts-nocheck` are
+  TypeScript directives.
+- **Second pass, R1-R9** (`VERIFY_WILIMAR_V2.md` §3; R1-R6 high or medium realism, R7-R9 low): the GLSL
+  `"void main"` splice (R1, on a real appearance shader through `PrimitiveCommandHelpers.js:88`); the `out_FragData`
+  pick rename; `@ts-expect-error` binding across `/* */`; `@TS-NOCHECK` case-insensitivity; a WGSL `#import` inside a
+  block comment; the storage-texture format first-occurrence swap; the harvest's spelling dependence; an `#import`
+  line's text inside a comment where the view compared only count and removal (R8); and a regex literal after
+  `export default` read as code, its whitespace collapsed (R9).
+- **Third pass, N1-N7** (`VERIFY_WILIMAR_V3.md`) and the sixteen unmodelled readers it named: runtime-built regexes in
+  `MaterialHelpers.js:668-673`/`:839-888`, `WebGPUOIT.ts:478-668`, `Cesium3DTileBatchTable.js:836-924`,
+  `WGSLShaderPreprocessor.ts:243`, `WebGPUGlobeMaterial.ts:416`, `ShaderProgram.js:327`; const-needle readers
+  `ShaderSource.js:317-340`/`:487-502`, `WebGPUGlobeSurfaceShaders.ts:415-472`, `ClusteredLightingBGL.ts:48`/`:65`; the
+  `glsl-strip-comments` pass of `gulp build --minify` (`scripts/build.js:1056`); the harvest's own blind spots; and the
+  Kelvin-sign case fold of `@ts-nocheck`. v4's disposition of each is the lane's hazard table (packet §v4).
+- **Live hazard check owed by the second pass, done by the seat at 2026-09-26 06:23 and re-read by this record at
+  `861967188c`:** `GlobeVS.glsl:6` carries `void main()` inside a `//` comment (C16-05's prose). The reader it could
+  meet is `BatchTable`'s vertex-shader callback (`Scene/BatchTable.js:321`, `source.indexOf("void main")`), which runs
+  on a **raw** shader string before `ShaderSource` strips comments (`ShaderSource.js:36`, `:166`) — callers pass raw
+  sources, e.g. `PolylineCollection.js:1398` and `PrimitiveCommandHelpers.js:88` — so the order is
+  **splice-before-strip** and a comment `void main` ahead of the real one would receive the splice. `GlobeVS.glsl` is
+  not a callback input (no globe caller of `getVertexShaderCallback`), so the live exposure is nil; the class is real
+  and Batch 1545 refuses it for every file.
+
+### Lane I-3 (Rumble): the cloud march budget — Batch 1546 — and the two E4 Edge jobs
+
+*Source: `cesium-webgpu-worker-archive/lanes-2026-09-26/ring-i3/rumble/LANDING_PACKET_RUMBLE.md` §8 (copied), §2, §9
+and §v2; review `…/rumble/REVIEW_NIBS.md` (LAND-WITH-FIXES); verification `…/ring-i3/robin-v1/VERIFY_ROBIN.md`
+(REFUTED on attack 6, the 4K default) and `…/robin-v2/VERIFY_ROBIN_V2.md`; the ruled E4 (executor Pearl)
+`Tools/visual-regression/output/wave-end/c13-n69-e4-astra-ab-20260926/README.md`; the budget leg (executor Cottar)
+`Tools/visual-regression/output/wave-end/c13-n69-e4-budget-20260926/README.md`. The maintainer questions MQ1, MQ2 and
+MQ4 were decided by the seat on these measurements (`MAINTAINER_RULINGS_2026-09-26.md`, "Seat decisions taken on
+measurements after the sitting").*
+
+### `C13-N69` — a cloud dial can express a march the device cannot finish — CLOSED on its named leg
+
+> **C13-N69 — a cloud dial can express a march the device cannot finish.** Engine lane I-3: `resolveCloudPreset` now holds every
+> frame to a march budget after the tier decision and the debug realization override. Cost = marched pixels (the reduced target, or
+> the whole canvas when it falls back, plus the whole canvas again for the cloud-aware god-ray mask pass) × decks × 3·steps (the
+> march loop's sentinel, on the f32 count the shader reads) × light taps × noise weight (live 2, baked 1), against a default of
+> 1.35e10 per device. An ask inside the budget resolves byte-identical to the pre-budget resolver; one outside loses primary steps,
+> then light steps, never the noise source or the flags, runs at most 128 primary steps (the largest count measured to complete), and
+> the frame reports `budgetApplied`, the budget, both costs and the pre-budget `requestedPrimarySteps`/`LightSteps`. A count with no
+> finite bound resolves to one step. Covers raw `cloudQuality` (production), the debug override and the interval law;
+> `primarySampleBudget` now counts the real intervals (three per step per deck). `CloudVolumetrics.cloudQuality`'s unenforced
+> "(32-128)" is corrected. Derived on one NVIDIA Pascal GPU at 2048²: 96 × 8 baked completed (inside ×1.40); the same frame with live
+> noise hung (outside ×1.43); raw 256 hung (×5.7). The live weight is a margin, not a measured ratio; jitter, erosion and the tier path
+> are not costed because no measurement separates them, so raw 128 at 2048², which completed, is budgeted on the conservative side.
+> **Default tier rows are unbudgeted up to 5,859,375 canvas pixels with the bake resident; above that the cinematic row is reduced
+> (3840 × 2160: 96 → 67)** — a maintainer-visible default change on large canvases, ruled under MQ1. The budget bounds only the
+> intervals the base march law takes: a law with more intervals per step (Astra's U3; its 384 at 960 × 540 counts 4.78e9, inside)
+> must be counted by its own sentinel (D9b/D9c). **Status: landed pending E4**; closes when E4 arms (ii) and (iii) complete on the
+> budgeted tree. Open: per-device budgets beyond the measured GPU; separating jitter/erosion (E4 Arm D); the cloud shadow and
+> reflection passes are not costed; the mask pass is costed as a full march, unmeasured; `lightSampleBudget` still multiplies
+> `lightSteps`, not the cone's six taps.
+
+*[Record round 8: **the closing condition is met.** On the budgeted tree T1 (the I-5 tree + the I-3
+patch), arm (ii) — the R2 shape, live noise, 2048² — **completed** at 67/8 (asked 96/8, `budgetApplied` true,
+`marchCost` 13,488,881,664 against `requestedMarchCost` 19,327,352,832), and arm (iii) — raw 256 at 2048² —
+**completed** at 44/12 (asked 256/12, `marchCost` 13,287,555,072 against 77,309,411,328). Both gates of the leg passed
+(GATE 1: the unbudgeted 96/8 ask reports the 1.35e10 budget and the real-interval `primarySampleBudget`; GATE 2: raw 128 is budgeted to 67 with `budgetApplied` true). **MQ1 is decided by the seat
+on a measurement:** arm (vii), a 3840 × 2160 single-deck tier-3 96/8 frame with no budget, **lost the device** on T0
+(`DXGI_ERROR_DEVICE_HUNG`, warm frame index 4; one run) and **completed** on T1 at 67/8 — so budgeting the 4K default
+fixes a base hang; the canvas range "≤ 5,859,375 px unbudgeted with the bake resident" is the row's acceptance. MQ2
+and MQ4 are decided as the lane recommended — MQ2 because the data cannot separate the hang's causes, MQ4 on the
+absence of a measurement — with their alternatives kept as fallbacks. All three are seat decisions (S-1 to S-3), not
+maintainer rulings: the copied row's "ruled under MQ1" is seat decision S-1. Of the "Open" list, "separating
+jitter/erosion (E4 Arm D)" now has Arm D's measurements (`C13-N69-E4-BUDGET-LEG`, next) but not a re-derived weight;
+the other four stay open. The row's "runs at most 128 primary steps" holds for budgeted asks only — see
+`C13-N69-ROBIN-V2-RESIDUALS` below. Source: `…/c13-n69-e4-budget-20260926/README.md`; the decisions:
+`MAINTAINER_RULINGS_2026-09-26.md`.]*
+
+### `C13-N69-E4-BUDGET-LEG` — the budget leg (executor Cottar), as measured
+
+2026-09-26 09:24-~10:35 EDT; Edge headless, NVIDIA Pascal; rig `orbital-fulldisc-6608km`, tier "high", MSAA 4,
+single-deck unless stated, `godRayCloudAware` false; one frame at a time at the **rig clock** (the tracked
+`pageRunArm` settle calls `scene.render()` with no argument, which renders at `JulianDate.now()`, `Scene.js:4549-4551`,
+so this driver rendered its own frames). T0 = `6c45220027` + the I-5 patch; T1 = T0 + the I-3 patch
+(`51e9228dd424583bf6fb60288423cd43`); `tsc-engine` rc 0 on T1 without "skipped"; served md5 = disk md5 for every
+state. **Per arm** (steps real/asked; outcome): (i-a) T0 2048² 96/8, completed twice, byte-identical across launches;
+(i-b) T1 2048² 96/8 unbudgeted, completed twice, **byte-identical to T0**; (iv) raw 128 at 2048² → 67/8 (128/8),
+completed; (ii-a) R2 shape at 1448² → 96/8, inside, completed; (ii) R2 shape at 2048² → 67/8 (96/8), completed; (iii)
+raw 256 at 2048² → 44/12 (256/12), completed; (vi) multi-deck 2048² → 44/8 (96/8), `requestedMarchCost`
+28,991,029,248, completed; **(vii) 3840 × 2160 single-deck 96/8 on T0: DEVICE LOST** at warm frame index 4 (the four
+frames before it took 0.68, 9.45, 2.44 and 2.37 s); (vii) on T1 → 67/8, completed. No budgeted arm lost its device;
+no frame was banked after the loss. Known hang shapes were not re-run on T0 (rule v): the I-5 leg's R2, Leg 1's raw
+256, and E4's multi-deck orbital.
+
+**Arm D on T1 — ring measurements for the `C13-N13` and `C13-N60` owners** (thresholds pre-registered: ≥ 0.040
+PRESENT, ≤ 0.015 ABSENT; metric at the centre it reports):
+
+| row | change from R0 | word | steps | metric | verdict |
+| --- | --- | ---: | --- | --- | --- |
+| R0 | none | 12601 | 96/8 | 0.0570 @ (1060.9, 1032.7) | PRESENT |
+| R2 | bit 0 cleared (live noise) | 12600 | **67/8 budgeted** | 0.0086 @ (1044.5, 985.2) | ABSENT |
+| R3 | bit 13 cleared (planet density) | 4409 | 96/8 | 0.0074 @ (1116.1, 1223.8) | ABSENT |
+| R4 | bits 0 + 13 cleared | 4408 | **67/8 budgeted** | 0.0086 @ (1044.5, 985.2) | ABSENT |
+| R5 | bits 0 + 3 + 13 cleared | 4400 | **67/8 budgeted** | 0.0084 @ (1015.7, 991.1) | ABSENT |
+| R6 | erosion 0.10 (u79) | 12601 | 96/8 | 0.0549 @ (1061.2, 1032.8) | PRESENT |
+| A0 | none (R0 again) | 12601 | 96/8 | 0.0570 @ (1060.9, 1032.7) | PRESENT |
+
+R0 against A0: 0 differing pixels. R2 against R4: byte-identical. R3 against R5: 93.3 % of disc pixels differ, mean
+|ΔL| 0.220. **R2, R4 and R5 ran 67 steps, not 96, so each confounds the noise axis with the step count.** With the
+I-5 leg's R1 (bit 3 cleared, jitter off) PRESENT at 0.0461 — a row from the other driver, whose figures are compared
+with this leg's only as verdicts (`DX-PROBE-PAGERUNARM-SETTLE-RENDERS-AT-NOW`, below): at unchanged 96/8 the family is PRESENT with bits 0 and 13
+set (R0, A0), PRESENT with erosion 0.10 (R6), PRESENT with jitter cleared (R1), and ABSENT with bit 13 cleared alone
+(R3). **These are measurements; no mechanism is named by this record.** Source:
+`…/c13-n69-e4-budget-20260926/README.md` "Arm D on T1".
+
+### `DX-PROBE-PAGERUNARM-SETTLE-RENDERS-AT-NOW` — two drivers read the same R0 differently — OPEN (DX row)
+
+The same R0 row (tier 3, 96/8, 2048², the same rig) read **0.0461** in the I-5 leg's driver, which settles through the
+tracked `pageRunArm` (whose loop calls `scene.render()` with no argument, so each frame renders at
+`JulianDate.now()`, `Scene.js:4549-4551`), and **0.0570** in the budget leg's driver, which renders at the rig clock;
+T0 and T1 both read 0.0570 there, byte-identical. The same tree and build (T0 is the I-5 leg's tree, served md5
+`91279c07…` in both receipts) therefore reads two numbers under two drivers. The drivers differ at least in the time
+they render at (`JulianDate.now()` against the rig clock) and in pacing (the budget leg's driver awaits
+`onSubmittedWorkDone` after every frame, with 60 s / 90 s caps); no leg has isolated which difference moves the number,
+and the I-5 leg's two launches, at two different `now()` instants, both read 0.0461. The clock is a candidate, not a
+measured cause, so a ring number is only comparable with its driver and clock stated. Fix: `pageRunArm`'s settle renders at the rig's `viewer.clock.currentTime`
+(or takes the time as an argument), and every ring receipt names its clock. Source:
+`…/ring-i5-leg-20260926/README.md` (R0 0.0461) and `…/c13-n69-e4-budget-20260926/README.md` "Protocol" and "Pixels".
+
+### `C13-N69-E4-ASTRA-AB` — the ruled E4 (executor Pearl), as measured; the Astra wave's HOLD basis
+
+2026-09-26 08:32-09:14 EDT; NVIDIA Pascal; one frame at a time; the base tree `37c0f8767e`, whose `packages/` equal
+the ruled `b263d8ac5e`'s (`git diff --stat` empty); arm (b) = base + the I-2 patch + Astra's `cloud-all-current.patch`
+(md5 `a23f4d79badcf956dd23bdf878bbf3f5`); every cell realised 96/8, MSAA 4, full resolution.
+
+| arm | ground 1080p, multi-deck | flight 1080p, multi-deck | orbital 2048², multi-deck | orbital 2048², single-deck |
+| --- | --- | --- | --- | --- |
+| (a) base | completed | completed | **DEVICE LOST** (warm frame 3) | completed (twice, byte-identical) |
+| (b) base + Astra | completed | completed | **DEVICE LOST** (warm frame 2) | **DEVICE LOST** (warm frame 3) |
+
+All three losses read `DXGI_ERROR_DEVICE_HUNG`; a fresh-device check after each succeeded. **`executeSerial` is not
+present on either tree** (only `uniformEpochSerial`). Single runs per cell, except the base single-deck cell; whether
+any outcome is stochastic is not established. Arm (c) of the landing plan's E4 row (Astra's U3 step bounds reverted)
+was not in the brief and was not run. **What it shows for the Astra wave:** the orbital multi-deck 96/8 hang is
+**pre-existing at base**, and the orbital single-deck cell **hung with Astra's stack on its single run** where base
+completed it twice (one run of the treatment cell; whether it is stochastic is not established). That is the measured basis on which the Astra wave stays HELD (`R-2026-09-26-1`): the
+return (P2) must answer the single-deck regression, and E4 — the hard gate before E5 — is **done** with this result.
+Source: `Tools/visual-regression/output/wave-end/c13-n69-e4-astra-ab-20260926/README.md`.
+
+### `C13-N69-ROBIN-V2-RESIDUALS` — the budget's second verification pass: three findings, none refuting — OPEN (follow-up)
+
+Robin's second pass on the landed v2 (verdict **HOLDS**, conditional on the seat deciding MQ1 before landing, which it
+did on arm (vii)):
+
+- **F-TRADE-R (medium for claim accuracy, low as a hazard; debug builds only).** The 128-step ceiling binds only
+  budgeted frames, so a few-tap ask *inside* the budget still runs: raw 536 + override `{lightSteps: 1}` at 2048² runs
+  **536 × 1 live** with `budgetApplied` false (cost 0.9992 B), and raw 1085 + `{lightSteps: 1}` at 1080p runs
+  **1085 × 1**. Under a "(1 + taps) full evaluations per interval" model that is 1.24 × R2's hung workload (fuzz worst
+  1.2407, analytic maximum 1.2418). Production cannot reach it (fuzz worst without an override 0.776 × R2; the release
+  strip makes the override inert), and the base resolver runs the same frame, so it is not a regression. **Correction
+  to the copied `C13-N69` row above:** its "runs at most 128 primary steps" is true of budgeted asks only; inside
+  few-tap asks remain in debug builds. Follow-up: a cost form that charges `(taps + 1)` per interval with the budget
+  scaled by 9/8, which leaves the tier-3 rows identical.
+- **N-CLIFF (informational).** Above 128 steps the fit is discontinuous: at 720p raw 221 runs 221 × 11 (inside) while
+  raw 222 (an ask 0.45 % larger) runs 128 × 11. So "no frame above the largest measured completion" is not a property
+  of the system: production asks inside the budget run up to 221 steps at 720p, and more on smaller canvases.
+- **N-DEVICE (low).** The half-resolution fallback re-application and the mask-pass hand-off are pinned only as
+  source text; no leg has exercised either on a device (the rig turns god rays off, and an allocation failure cannot be
+  forced). A god-ray arm — the measurement MQ4's fallback needs — would be the first device proof of the mask hand-off.
+
+Source: `cesium-webgpu-worker-archive/lanes-2026-09-26/ring-i3/robin-v2/VERIFY_ROBIN_V2.md` "Findings".
+
+### `C13-N69-LIGHTSAMPLEBUDGET-COUNTS-LIGHTSTEPS` — `lightSampleBudget` multiplies `lightSteps`, not the cone's six taps — OPEN (follow-up)
+
+`lightSampleBudget` is documented as `primarySampleBudget × lightSteps`, which predates the budget; the tap-true
+figure is `marchCost`. Making it tap-true needs the post-override cone bit, which is written after the counters (at
+the publish). Source: `…/rumble/LANDING_PACKET_RUMBLE.md` §v2 (Robin 5 caveat (iii)), §8 "Open".
+
+### `C13-N69-DESCRIBE-BUDGET-RERESOLVES-PER-FRAME` — `describeCloudMarchBudget` resolves the preset a second time each frame — OPEN (follow-up, perf)
+
+Deterministic, one small object per frame on a path that already builds `qualityInputs` per frame; merging the two
+calls would move I-5's pinned resolver line, so it was not changed. Source: `…/rumble/LANDING_PACKET_RUMBLE.md` §v2
+(Nibs N3).
+
+### `DX-WEBGPU-PROCEDURAL-CLOUD-RENDERER-OVER-5000-LINES` — the cloud renderer took two functional touches today without a decomposition slice — OPEN (DX row, WAVE DX)
+
+`WebGPUProceduralCloudRenderer.ts` is over 5,000 lines; Batches 1543 and 1546 each touched it functionally (~80 and
+~64 lines, hand-off and counters) and neither cut a decomposition slice, because both kept their logic in the pure
+`WebGPUCloudTierPresets.ts`. The house rule asks for a slice on a functional touch of a file over 1,000 lines; this
+row is the record that it was deferred knowingly. Source: `…/rumble/LANDING_PACKET_RUMBLE.md` §v2 (Nibs N4) and the
+packet's scope note.
+
+### Ring questions still open to the maintainer (record, not rows)
+
+The ring plan's five maintainer questions (`cesium-webgpu-worker-archive/lanes-2026-09-19/c13-ring-after-leg1/RING_NEXT_STEPS.md`
+§5) have not been answered by the maintainer; the 2026-09-26 sentence answered D1-D12 and G1-G10 only. They stay
+**OPEN**, with the plan's options:
+
+- **Q1 — `R-2026-09-18-3` promoted `C13-N13` on a refuted premise.** (a) move the promotion to `C13-N60`; (b) leave it on
+  `C13-N13`; (c) move it to a new row that owns the tip's off-axis family; (d) suspend it until Leg 2 names the anchor,
+  running I-5 meanwhile (the plan recommends (d), then (c)). *Since:* I-5 has landed (Batch 1543) and Arm D has run
+  (above); Leg 2's arms A1-A7 have not.
+- **Q2 — does `C13-N60` need an image witness at the tip?** (a) a tree bisect; (b) the occlusion-witness arm A6; (c) no
+  witness, fix on source evidence (the plan recommends (b), then (c)). A6 has not run.
+- **Q3 — the GPU hang (`C13-N69`): confirm, or file and clamp?** (a) file and clamp without re-triggering; (b) re-trigger
+  at 512² first; (c) re-trigger at 2048² (not sound). *Since:* `R-2026-09-26-9` gave `C13-N69` to lane I-3, which filed
+  and clamped (Batch 1546); the hangs recorded today came from pre-registered legs, not from a re-trigger arm.
+- **Q4 — do the ledger corrections W-1…W-10 land now or after Leg 2?** (a) now, with W-8…W-10 as riders on the held
+  `pimpernel-ledger.patch`; (b) hold until Leg 2. Until this is answered the corrections stay in the plan and are not
+  placed (record rounds 7 and 8).
+- **Q5 — which instrument lane runs first?** The plan recommended I-2 and I-5 in parallel, I-1 next, I-3 with I-5, I-4
+  optional. *Since:* I-2, I-5 and I-3 have landed (Batches 1541, 1543, 1546); I-1 (`C13-N61`/`N63` and the plan's two proposed rows) and I-4
+  (`C13-N70`) have not been dispatched.

@@ -22900,3 +22900,92 @@ mocks gained the runtime skin they had never needed before the routing change.
 **Files modified.** `packages/engine/Source/Scene/Model/SkinningPipelineStage.js`,
 `packages/engine/Source/Scene/Model/ModelSkinData.js`,
 `packages/engine/Specs/Scene/Model/SkinningPipelineStageSpec.js`.
+
+## Lane W2-L11 (Angrim, rounds 1-5; Arod, round 6) — the urijs → native `URL` sweep returned different urls than it was given, and two credential checks read text where the request reads a parse (2026-09-19 → 2026-09-26)
+
+*Placed by record round 8 (lead Arahad) from Angrim's v5 packet §7 (the three bug entries), §13.7 (the
+`getAbsoluteUri` entry, moved here from `DEFERRED_WORK.md` by the lane's v3) and §14.8 (the appended sentence) —
+copied, with the lane's own `Bug W2-L11.n` numbering — and from round 6's packet R6.2 for the last entry. The v5
+packet: `cesium-webgpu-worker-archive/lanes-2026-09-19/ci-wave2-tranche1/angrim-v5/LANDING_PACKET_ANGRIM.md`; round 6:
+`cesium-webgpu-worker-archive/lanes-2026-09-26/w2-l11-r6/arod/LANDING_PACKET_AROD.md`. Every fix below landed as
+Batch 1542 (`fa1b363853`) on 2026-09-26; the 2026-09-19 dates are the lane's. Ledger rows: `DEFERRED_WORK.md`, record
+round 8, "Lane W2-L11".*
+
+**Bug W2-L11.1 — `Resource` returned a different url than it was given.**
+*Files:* `packages/engine/Source/Core/Resource.js`.
+*Root cause:* the urijs → native `URL` sweep rebuilt every scheme-carrying url from
+`URL.origin + URL.pathname`. `URL.origin` is `"null"` for non-special schemes, lower-cases the
+authority of special ones, and omits userinfo; `URL` also resolves dot segments that upstream's
+`uri.toString()` left alone, and does not collapse the `//` that `absoluteTo`'s `normalizePath`
+collapsed. Six karma specs were the visible tip; 15 of 31 measured url shapes disagreed with
+upstream.
+*Fix:* an absolute url returns the caller's text minus query and fragment (plus the root path urijs
+gave an authority-only url); a base-resolved url takes its scheme and authority from the text that
+supplied them and collapses separator runs in the merged path exactly where `absoluteTo` did. The
+no-base branch is unchanged.
+*Files modified:* `Resource.js`, `Specs/Core/ResourceSpec.js`,
+`Specs/Core/ResourceUrlRoundTripSpec.mjs`.
+
+**Bug W2-L11.2 — `IonResource` threw on a relative endpoint url.**
+*Files:* `packages/engine/Source/Core/IonResource.js`.
+*Root cause:* `new URL(url).host` at the constructor and at `_makeRequest` where upstream had
+`new Uri(url).authority()`; `new URL` throws on a relative url, urijs returned `""`.
+*Fix:* a module-local `getAuthority` that reads the authority component out of the url text and
+returns `""` when there is none, used at both sites.
+*Files modified:* `IonResource.js`, `Specs/Core/IonResourceSpec.js`,
+`Specs/Core/ResourceUrlRoundTripSpec.mjs`.
+
+**Bug W2-L11.3 — a KMZ's relative entries never resolved from the archive.**
+*Files:* `packages/engine/Source/DataSources/KmlDataSource.js`.
+*Root cause:* `embedDataUris` keyed on a `URL.pathname` (always leading-slashed) against zip entry
+names (never leading-slashed); `resolveHref` resolved a nested href against a base that is relative
+whenever the KMZ was loaded by a relative url, which `new URL` rejects.
+*Fix:* one `resolveKmzEntryName(value, baseUrl)` used by both, resolving inside a synthetic archive
+root and reporting the name relative to it, leaving an absolute href absolute and leaving anything
+that walks above the root exactly as written.
+*Files modified:* `KmlDataSource.js`, `Specs/DataSources/KmzEntryResolutionSpec.mjs`.
+
+**`BUG-GET-ABSOLUTE-URI-REWRITES-EVERY-URL-IN-A-BROWSER` (FIXED, 2026-09-19).**
+*Files:* `packages/engine/Source/Core/getAbsoluteUri.js`,
+`packages/engine/Specs/Core/getAbsoluteUriSpec.js`,
+`packages/engine/Specs/Core/GetAbsoluteUriRoundTripSpec.mjs`,
+`packages/engine/Specs/browserDocumentPreload.mjs`.
+*Root cause:* the urijs → native `URL` sweep (`39f5341e64`, 2026-04-13) replaced
+`new Uri(relative).toString()` / `.absoluteTo(base).toString()` with
+`new URL(relative, base).href`. Native `URL` lower-cases the scheme, the host and an IPv6
+literal, resolves dot segments the caller left alone, and throws outright on a base that is
+itself relative — where the catch returned the relative and the base vanished. None of it is
+visible outside a browser: with no explicit base and no `document`, the function returns its
+argument untouched, so every Node-side measurement of every caller was blind to it.
+*Fix:* a uri that carries its own scheme comes back as written (plus the root path an
+authority-only uri serialises with); everything else has its scheme and `//authority` spliced
+back on from the text that supplied them, with the two path halves merged inside a placeholder
+origin so a relative or protocol-relative base merges instead of throwing. Measured against
+upstream's own implementation over the real urijs, 81 shapes, both environments: 27 (bare) and 40
+(document) disagreements before, 4 and 7 after, all seven deliberate and pinned.
+*Also fixed:* `IonResource`'s token-domain check now compares authorities case-insensitively
+(RFC 3986 §3.2.2), so one host spelled two ways cannot silently drop the `Authorization` header.
+*Found by:* reviewer Aranwe (HOLD) and adversarial verifier Beldis (REFUTED) on v1 of W2-L11,
+both by re-running the lane's measurements with a `document` present.
+
+*Also (lane v4, appended as the lane asked):* *the same sweep's `IonResource` and `getDerivedResource` credential checks were both reading a url's
+text where the request reads a parse; both now read the parse, and the two leaks that opened when
+the urls were repaired (the ion token to a slash-run host, a parent's `Authorization` to an opaque
+scheme that names one) are closed with an attack table and thirteen mutants.*
+
+**Bug W2-L11.4 — v5's two red karma rows were Chromium serialisation, not logic (round 6).**
+*Files:* `packages/engine/Source/Core/Resource.js`, `packages/engine/Source/Core/IonResource.js`.
+*Root cause:* measured in Edge 154 on v5, where both rows failed. (1) Chromium serialises
+`new URL("file://any.host/x").origin` as `"file://"` where Node gives `"null"`; v5's `getUrlOrigin` returned `origin`
+whenever it was not `"null"`, so in Chromium two UNC shares compared equal (and the same serialisation made v5 drop
+`file:///C:/a → https://evil` in Chromium while Node forwarded it). (2) Chromium on Windows resolves a leading `\\` as
+a UNC `file:` url against every base, so all three v5 destination probes agreed on the endpoint's host and the
+host-only comparison attached the ion token; it also reads `file:host/x` as UNC host `host` where Node reads a
+hostless path.
+*Fix:* the parent-credential key is `protocol` + `host` (the scheme alone when no server is named, an unfetchable key
+when the parser rejects the url), parsed against the document's base when there is one; the ion destination carries
+the scheme, and page-relative answers are read on the document.
+*Files modified:* `Resource.js`, `IonResource.js`, `Specs/Core/ResourceSpec.js`, `Specs/Core/IonResourceSpec.js`,
+`Specs/Core/CredentialDestinationSpec.mjs`, `Specs/Core/ResourceUrlRoundTripSpec.mjs`.
+*Measured:* E1, `Tools/visual-regression/output/wave-end/ci-wave2-l11-r6-20260926/E1/README.md` (both rows pass in
+DEBUG and RELEASE; 0 leaks in either engine).
