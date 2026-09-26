@@ -186,7 +186,7 @@
     "test-webgl-stub": "gulp test --webglStub",
     "test-webgpu": "gulp test --webgpu --browsers=EdgeHeadlessCI",
     "test-webgpu-any-adapter": "gulp test --webgpu --webgpuTier=any --browsers=EdgeHeadlessCI",
-    "test-webgpu-policy": "node --test Specs/webgpuPolicy.spec.mjs",
+    "test-webgpu-policy": "node --test Specs/webgpuPolicy.spec.mjs Specs/capabilityPolicy.spec.mjs",
     "test-offline-policy": "node --test Tools/visual-regression/spec-offline-isolation.spec.mjs",
     "test-release": "gulp test --release",
     "test-e2e": "playwright test -c Specs/e2e/playwright.config.js --project=chromium",

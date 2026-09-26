@@ -1,4 +1,10 @@
 import addDefaultMatchers from "./addDefaultMatchers.js";
+import {
+  demandedCapabilities,
+  installCapabilityLaneRunReport,
+  installCapabilityLaneSpecLedger,
+  setCapabilityLane,
+} from "./capabilityPolicy.js";
 import equalsMethodEqualityTester from "./equalsMethodEqualityTester.js";
 import {
   installOfflineNetworkGuard,
@@ -11,6 +17,18 @@ import {
   installWebGPULaneSpecLedger,
   setWebGPULane,
 } from "./webgpuPolicy.js";
+
+// Console capture stays disabled for the enormous engine suite, and
+// `specReporter.suppressSkipped` hides pending specs, so each lane sends its one
+// stable summary line through Karma explicitly. That is what makes a clean run
+// still expose every reasoned skip in its terminal output.
+function reportThroughKarma(message) {
+  if (typeof window.__karma__?.info === "function") {
+    window.__karma__.info({ log: message, type: "info" });
+  } else {
+    window.console.info(message);
+  }
+}
 
 function customizeJasmine(
   env,
@@ -40,16 +58,7 @@ function customizeJasmine(
     installOfflineNetworkGuard({ origin: window.location.origin });
     installOfflineNetworkRunAssertion(env, {
       scope: window,
-      report(message) {
-        // Console capture intentionally stays disabled for the enormous engine
-        // suite. Send this one stable line through Karma explicitly so a clean
-        // run still exposes every reasoned skip in its terminal output.
-        if (typeof window.__karma__?.info === "function") {
-          window.__karma__.info({ log: message, type: "info" });
-        } else {
-          window.console.info(message);
-        }
-      },
+      report: reportThroughKarma,
     });
   }
 
@@ -70,15 +79,24 @@ function customizeJasmine(
   installWebGPULaneSpecLedger(env, window);
   installWebGPULaneRunAssertion(env, {
     scope: window,
-    report(message) {
-      // Console capture stays disabled for the full engine suite; send this one
-      // stable line through Karma explicitly, exactly as the offline lane does.
-      if (typeof window.__karma__?.info === "function") {
-        window.__karma__.info({ log: message, type: "info" });
-      } else {
-        window.console.info(message);
-      }
-    },
+    report: reportThroughKarma,
+  });
+
+  // The spec-level host-capability lane. A guarded spec probes its capability
+  // when it starts and, where the host lacks it, records a pending spec with
+  // the probe's reason; the report below is the only place that reason
+  // surfaces. `--require-capabilities` (read by token, like `--offline`)
+  // demands every capability, and a demanded WebGPU Scene lane demands the
+  // WebGPU API, so a host that should serve a guarded spec fails it instead.
+  setCapabilityLane({
+    demanded: demandedCapabilities(window.__karma__?.config?.args, {
+      webgpuDemanded: webgpuDemanded === true,
+    }),
+  });
+  installCapabilityLaneSpecLedger(env, window);
+  installCapabilityLaneRunReport(env, {
+    scope: window,
+    report: reportThroughKarma,
   });
 
   const originalDescribe = window.describe;

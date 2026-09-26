@@ -10,6 +10,10 @@ import RendererType, {
   setGlobalDefaultRenderer,
 } from "../../../Source/Renderer/RendererType.js";
 import createCanvas from "../../../../../Specs/createCanvas.js";
+import {
+  Capability,
+  itRequiresCapability,
+} from "../../../../../Specs/capabilityPolicy.js";
 
 describe("Renderer/ContextFactory", function () {
   function makeHooks(options = {}) {
@@ -596,19 +600,25 @@ describe("Renderer/ContextFactory", function () {
     });
   });
 
-  it("creates a real WebGL context through the default hooks", async function () {
-    const canvas = createCanvas();
-    try {
-      const context = await ContextFactory.createContext(canvas, {
-        renderer: RendererType.WEBGL,
-      });
-      expect(context).toBeDefined();
-      expect(context.isWebGL).toBe(true);
-      expect(context.isWebGPU).toBe(false);
-      expect(context.id).toBeDefined();
-      context.destroy();
-    } finally {
-      document.body.removeChild(canvas);
-    }
-  });
+  // Deliberately not served by `--webgl-stub`: the default hooks construct a
+  // real `Context`, so a host that cannot create one skips with the reason.
+  itRequiresCapability(
+    Capability.REAL_WEBGL,
+    "creates a real WebGL context through the default hooks",
+    async function () {
+      const canvas = createCanvas();
+      try {
+        const context = await ContextFactory.createContext(canvas, {
+          renderer: RendererType.WEBGL,
+        });
+        expect(context).toBeDefined();
+        expect(context.isWebGL).toBe(true);
+        expect(context.isWebGPU).toBe(false);
+        expect(context.id).toBeDefined();
+        context.destroy();
+      } finally {
+        document.body.removeChild(canvas);
+      }
+    },
+  );
 });

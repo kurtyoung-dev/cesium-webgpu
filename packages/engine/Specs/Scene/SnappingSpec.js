@@ -485,18 +485,42 @@ describe("Scene/Snapping", function () {
           scene.drawingBufferHeight / 2,
         );
 
-        // Materialize the lazy framebuffer before installing the failure.
-        scene.snap(windowPosition);
-        const endFrame = spyOn(scene.context, "endFrame").and.callThrough();
-        spyOn(scene.defaultView.snapFramebuffer, "end").and.throwError(
-          "synthetic snap readback failure",
+        // The contract is the mini-frame's teardown, which does not depend on
+        // float color attachments. The spec WebGL stub has none, so snap would
+        // return before the frame begins; report support and stand in for the
+        // RGBA32F target with one that renders into the view's pick framebuffer
+        // and fails at readback, so the frame runs on every host.
+        spyOnProperty(scene.context, "colorBufferFloat", "get").and.returnValue(
+          true,
         );
+        const pickFramebuffer = scene.defaultView.pickFramebuffer;
+        let snapPassDuringReadback;
+        const snapFramebuffer = {
+          begin: jasmine
+            .createSpy("snapFramebuffer.begin")
+            .and.callFake(function (rectangle, viewport) {
+              return pickFramebuffer.begin(rectangle, viewport);
+            }),
+          end: jasmine
+            .createSpy("snapFramebuffer.end")
+            .and.callFake(function () {
+              snapPassDuringReadback = scene.frameState.passes.snap;
+              throw new Error("synthetic snap readback failure");
+            }),
+          destroy: jasmine.createSpy("snapFramebuffer.destroy"),
+        };
+        scene.defaultView.snapFramebuffer = snapFramebuffer;
+        const endFrame = spyOn(scene.context, "endFrame").and.callThrough();
 
         expect(function () {
           scene.snap(windowPosition);
         }).toThrowError("synthetic snap readback failure");
+        expect(snapFramebuffer.begin).toHaveBeenCalledTimes(1);
+        expect(snapFramebuffer.end).toHaveBeenCalledTimes(1);
+        expect(snapPassDuringReadback).toBe(true);
         expect(endFrame).toHaveBeenCalledTimes(1);
         expect(scene.frameState.passes.snap).toBe(false);
+        expect(scene.defaultView.snapFramebuffer).toBe(snapFramebuffer);
       } finally {
         scene.destroyForSpecs();
       }

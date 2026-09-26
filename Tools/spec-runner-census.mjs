@@ -469,6 +469,10 @@ export function proposedHomeFor(file) {
     return "test-webgpu-policy";
   }
 
+  if (normalized === "Specs/capabilityPolicy.spec.mjs") {
+    return "test-webgpu-policy";
+  }
+
   const packageMatch = /^packages\/([^/]+)\/Specs\//u.exec(normalized);
   if (packageMatch) {
     const packageName = packageMatch[1]
