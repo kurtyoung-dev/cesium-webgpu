@@ -206,6 +206,11 @@ describe(
     });
 
     it("passes the active frame state to WebGPU feature initialization", function () {
+      // This spec owns only the shadow maps it creates. The describe-wide
+      // afterEach destroys whatever scene.shadowMap holds, and the sun specs
+      // later render with the Scene's default map (sunShadowMap), so detach
+      // it here rather than leave it for that teardown to destroy.
+      scene.shadowMap = undefined;
       const featureRenderer = {
         init: jasmine.createSpy("shadowFeatureInit"),
         destroy: jasmine.createSpy("shadowFeatureDestroy"),
@@ -233,6 +238,11 @@ describe(
     });
 
     it("maps shadow near/far depth to texture space for both clip conventions", function () {
+      // This spec owns only the shadow maps it creates. The describe-wide
+      // afterEach destroys whatever scene.shadowMap holds, and the sun specs
+      // later render with the Scene's default map (sunShadowMap), so detach
+      // it here rather than leave it for that teardown to destroy.
+      scene.shadowMap = undefined;
       const context = scene.context;
       const originalConvention = context._clipSpaceConvention;
 
