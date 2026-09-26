@@ -8,6 +8,26 @@ import {
 import WebGPUModelCameraArena from "../../../Source/Renderer/WebGPU/WebGPUModelCameraArena.js";
 import ModelPBRComplete from "../../../Source/Shaders/WebGPU/Model/ModelPBRComplete.js";
 
+// Bounds a region of shader source by two code statements. Release shader
+// modules have their comments stripped, so only code is a landmark in both
+// build flavours. Each landmark must occur exactly once and in order, or the
+// region is undefined and the spec fails instead of asserting over an empty
+// or runaway slice.
+function sliceBetweenStatements(source, startStatement, endStatement) {
+  for (const landmark of [startStatement, endStatement]) {
+    const first = source.indexOf(landmark);
+    if (first < 0 || source.indexOf(landmark, first + 1) >= 0) {
+      throw new Error(`landmark must occur exactly once: ${landmark}`);
+    }
+  }
+  const start = source.indexOf(startStatement);
+  const end = source.indexOf(endStatement);
+  if (end <= start) {
+    throw new Error(`landmark out of order: ${endStatement}`);
+  }
+  return source.slice(start, end);
+}
+
 describe("Renderer/WebGPU model punctual-light RTE", function () {
   function makePointLight(position) {
     return {
@@ -90,12 +110,13 @@ describe("Renderer/WebGPU model punctual-light RTE", function () {
   });
 
   it("keeps punctual shading entirely camera-relative and frame-coherent", function () {
-    const punctualStart = ModelPBRComplete.indexOf("// ── Punctual lights");
-    const punctualEnd = ModelPBRComplete.indexOf(
-      "// ── Ambient / IBL",
-      punctualStart,
+    // From the punctual light count to the first statement of the
+    // ambient/IBL block.
+    const source = sliceBetweenStatements(
+      ModelPBRComplete,
+      "let pCount = i32(light.punctualLightCount);",
+      "let f90 = max(vec3<f32>(1.0 - roughness), F0);",
     );
-    const source = ModelPBRComplete.slice(punctualStart, punctualEnd);
 
     expect(source).toContain(
       "punctualNWC = normalize(light.eyeToWorldRotation * N)",

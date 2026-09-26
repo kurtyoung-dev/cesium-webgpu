@@ -385,7 +385,9 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceTileBuffers", function () {
       const packedData = resources.shadowCastUniformData;
       expect(command._shadowCastTerrainUB).toBe(bufferA);
       expect(resources.shadowCastMesh).toBeUndefined();
-      expect(packedData).toEqual(jasmine.any(Float32Array));
+      // The harness's toEqual converts a typed array to a plain Array before
+      // comparing, so `jasmine.any(Float32Array)` can never match it.
+      expect(packedData instanceof Float32Array).toBe(true);
       expect(packedData[16]).toBe(101);
       expect(packedData[17]).toBe(202);
       expect(packedData[18]).toBe(303);

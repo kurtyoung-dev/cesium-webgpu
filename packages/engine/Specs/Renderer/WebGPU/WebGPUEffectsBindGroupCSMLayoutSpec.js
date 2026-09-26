@@ -104,9 +104,21 @@ describe("Renderer/WebGPU/WebGPUEffectsBindGroup CSM layout", function () {
     expect(writes[0].buffer).toBe(uniformBuffer);
     expect(writes[0].offset).toBe(0);
     expect(writes[0].data.length).toBe(20);
-    expect(Array.from(writes[0].data.slice(0, 16))).toEqual(
-      Matrix4.pack(matrix, new Array(16)),
-    );
+    // The prefix carries `_shadowMapMatrix` in WebGPU texture orientation:
+    // a WebGPU render target puts NDC +y at row 0, so the homogeneous y row
+    // becomes w - y (v = 1 - y after the divide) and the other three rows are
+    // unchanged. The expectation is built from the input by that row
+    // arithmetic, not through the engine's conversion helper;
+    // Tools/visual-regression/webgpu-shadow-receive-contract.spec.mjs proves
+    // this orientation reproduces the texel the cast pass wrote.
+    const expected = Matrix4.pack(matrix, new Array(16));
+    for (let column = 0; column < 4; column++) {
+      expected[column * 4 + 1] =
+        expected[column * 4 + 3] - expected[column * 4 + 1];
+    }
+    expect(expected[5]).toBe(-1);
+    expect(expected[13]).toBe(1 - 5);
+    expect(Array.from(writes[0].data.slice(0, 16))).toEqual(expected);
     expect(Array.from(writes[0].data.slice(16))).toEqual([2048, 2048, 0.25, 1]);
 
     // A settled shadow prefix must not enqueue an identical 80-byte upload on

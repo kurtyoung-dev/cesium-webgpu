@@ -12,6 +12,49 @@ function countMatches(source, regex) {
   return matches ? matches.length : 0;
 }
 
+// Follows `output.eyePosition` back through the vertex stage's `let`
+// bindings. The shadow receivers sample with a camera-relative vector in
+// world axes, so the value must start at the RTE-decoded vertex position,
+// reach eye space through `modelViewRelativeToEye`, and be rotated back to
+// world axes by the inverse view quaternion. Each link is reported on its
+// own so a failure names the one that broke; a bare `eyePos.xyz` has no
+// rotation link and fails.
+function traceEyePosition(source) {
+  const start = source.indexOf("fn vertexMain(");
+  const end = source.indexOf("@fragment", start);
+  const vertexStage = start > -1 && end > start ? source.slice(start, end) : "";
+  const rotation = vertexStage.match(
+    /output\.eyePosition\s*=\s*rotateEyeToWorld\(\s*(\w+)\s*,\s*camera\.inverseViewQuaternion\s*\)\s*;/,
+  );
+  const eyeSpace =
+    rotation &&
+    vertexStage.match(
+      new RegExp(
+        String.raw`let\s+${rotation[1]}\s*=\s*\(\s*camera\.modelViewRelativeToEye\s*\*\s*(\w+)\s*\)\.xyz\s*;`,
+      ),
+    );
+  const relativeToEye =
+    eyeSpace &&
+    new RegExp(
+      String.raw`let\s+${eyeSpace[1]}\s*=\s*translateRelativeToEye\(\s*input\.positionHigh\s*,\s*input\.positionLow\s*\)\s*;`,
+    ).test(vertexStage);
+  return {
+    vertexStageFound: vertexStage.length > 0,
+    assignments: countMatches(vertexStage, /output\.eyePosition\s*=/g),
+    rotatedToWorldAxes: rotation !== null,
+    fromEyeSpace: Boolean(eyeSpace),
+    fromRelativeToEye: Boolean(relativeToEye),
+  };
+}
+
+const TRACED_EYE_POSITION = {
+  vertexStageFound: true,
+  assignments: 1,
+  rotatedToWorldAxes: true,
+  fromEyeSpace: true,
+  fromRelativeToEye: true,
+};
+
 describe("Renderer/WebGPU PBR CSM receive layout", function () {
   describe("PrimitivePBRSimple (no-texture)", function () {
     const src = PrimitivePBRSimple;
@@ -39,7 +82,8 @@ describe("Renderer/WebGPU PBR CSM receive layout", function () {
     });
 
     it("populates output.eyePosition from RTE-translated position in VS", function () {
-      expect(src).toMatch(/output\.eyePosition\s*=\s*eyePos\.xyz/);
+      expect(traceEyePosition(src)).toEqual(TRACED_EYE_POSITION);
+      expect(src).toContain("fn rotateEyeToWorld(");
     });
 
     it("gates shadow modulation on effects.csmControl.x > 0.5 in FS", function () {
@@ -101,7 +145,8 @@ describe("Renderer/WebGPU PBR CSM receive layout", function () {
     });
 
     it("populates output.eyePosition from RTE-translated position in VS", function () {
-      expect(src).toMatch(/output\.eyePosition\s*=\s*eyePos\.xyz/);
+      expect(traceEyePosition(src)).toEqual(TRACED_EYE_POSITION);
+      expect(src).toContain("fn rotateEyeToWorld(");
     });
 
     it("gates shadow modulation on effects.csmControl.x > 0.5 in FS", function () {

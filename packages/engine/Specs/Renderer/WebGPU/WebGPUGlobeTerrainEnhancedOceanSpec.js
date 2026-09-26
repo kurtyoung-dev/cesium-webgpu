@@ -97,8 +97,9 @@ describe("Renderer/WebGPU/GlobeTerrain enhanced-ocean styling gate (C11-158)", f
   it("hi=0 (default) emits the classic WebGL-parity branch, NOT the enhanced styling", function () {
     for (const defines of LO_MASKS) {
       const classic = classicOf(defines);
-      // Classic-only markers (the `//>>else` faithful computeWaterColor port).
-      expect(classic).toContain("Classic WebGL-parity ocean styling");
+      // Classic-only code identifiers (the `//>>else` faithful
+      // computeWaterColor port). Release modules have their comments
+      // stripped, so comment text cannot serve as a marker here.
       expect(classic).toContain("classicSurfaceReflectance");
       expect(classic).toContain("classicDiffuseHighlight");
       // Enhanced-only markers must be absent from the default output.
@@ -118,7 +119,6 @@ describe("Renderer/WebGPU/GlobeTerrain enhanced-ocean styling gate (C11-158)", f
       expect(enhanced).toContain("color = mix(color, foamColor, foamFactor);");
       // Classic-only markers must be absent from the enhanced output.
       expect(enhanced).not.toContain("classicSurfaceReflectance");
-      expect(enhanced).not.toContain("Classic WebGL-parity ocean styling");
     }
   });
 });

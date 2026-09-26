@@ -1,6 +1,26 @@
 import { getShadowCastVariant } from "../../../Source/Renderer/WebGPU/WebGPUShadowMapRenderer.js";
 import ModelPBRComplete from "../../../Source/Shaders/WebGPU/Model/ModelPBRComplete.js";
 
+// Bounds a region of shader source by two code statements. Release shader
+// modules have their comments stripped, so only code is a landmark in both
+// build flavours. Each landmark must occur exactly once and in order, or the
+// region is undefined and the spec fails instead of asserting over an empty
+// or runaway slice.
+function sliceBetweenStatements(source, startStatement, endStatement) {
+  for (const landmark of [startStatement, endStatement]) {
+    const first = source.indexOf(landmark);
+    if (first < 0 || source.indexOf(landmark, first + 1) >= 0) {
+      throw new Error(`landmark must occur exactly once: ${landmark}`);
+    }
+  }
+  const start = source.indexOf(startStatement);
+  const end = source.indexOf(endStatement);
+  if (end <= start) {
+    throw new Error(`landmark out of order: ${endStatement}`);
+  }
+  return source.slice(start, end);
+}
+
 describe("Renderer/WebGPU/WebGPU model shadow receive", function () {
   it("samples the default one-pass directional shadow map", function () {
     expect(ModelPBRComplete).toContain("fn computeShadowFactorSingle(");
@@ -34,9 +54,12 @@ describe("Renderer/WebGPU/WebGPU model shadow receive", function () {
   });
 
   it("modulates direct lighting without shadowing ambient", function () {
-    const singleBranch = ModelPBRComplete.slice(
-      ModelPBRComplete.indexOf("} else if (effects.shadowDarkness < 1.0)"),
-      ModelPBRComplete.indexOf("// ── Punctual lights", 0),
+    // From the single-map branch head to the first statement after the
+    // shadow routing, where punctual lighting begins.
+    const singleBranch = sliceBetweenStatements(
+      ModelPBRComplete,
+      "} else if (effects.shadowDarkness < 1.0) {",
+      "let pCount = i32(light.punctualLightCount);",
     );
 
     expect(singleBranch).toContain("direct = direct * shadowFactor");
