@@ -1,18 +1,28 @@
+// Every engine symbol comes from the barrel, the module graph the Scene under
+// test is built from. The spec bundle maps the barrel to the global Cesium
+// build and compiles a direct Source import in beside it, so a class taken
+// from Source is not the class the Scene instantiates.
 import {
   BoundingRectangle,
   Cartesian3,
+  CelestialEphemerisProvider,
   CesiumWidget,
   JulianDate,
   Matrix3,
   Matrix4,
   Moon,
   RuntimeError,
+  Simon1994EphemerisProvider,
   Transforms,
 } from "../../index.js";
 
-import CelestialEphemerisProvider from "../../Source/Core/CelestialEphemerisProvider.js";
-import Simon1994EphemerisProvider from "../../Source/Core/Simon1994EphemerisProvider.js";
 import createScene from "../../../../Specs/createScene.js";
+import getWebGLStub from "../../../../Specs/getWebGLStub.js";
+import { isOfflineLane } from "../../../../Specs/networkPolicy.js";
+import {
+  Capability,
+  itRequiresCapability,
+} from "../../../../Specs/capabilityPolicy.js";
 
 const testProvenance = Object.freeze({ id: "scene-frame-test" });
 const testTimePolicy = Object.freeze({ id: "scene-frame-test-time" });
@@ -242,10 +252,22 @@ describe("Scene celestial ephemeris integration", function () {
         "cesium-simon1994-ecef",
       );
 
+      // The frame is driven here rather than inside `toThrowDeveloperError`,
+      // whose release-build form passes without calling its function; the
+      // assertions after it read state only this frame produces. FrameState
+      // rejects the missing override with an unguarded `Check`, which both
+      // build flavours keep, so the rejection is asserted in both.
       Transforms.computeIcrfToCentralBodyFixedMatrix = undefined;
-      expect(function () {
+      let renderError;
+      try {
         scene.renderForSpecs(time);
-      }).toThrowDeveloperError();
+      } catch (error) {
+        if (error?.name !== "DeveloperError") {
+          throw error;
+        }
+        renderError = error;
+      }
+      expect(renderError).toBeDefined();
       expect(scene._activeCelestialEphemerisLegacyTransformActive).toBe(true);
       expect(frameState.celestialEphemerisSample).toBeUndefined();
 
@@ -403,26 +425,48 @@ describe("Scene celestial ephemeris integration", function () {
     }
   });
 
-  it("forwards the ready provider through CesiumWidget", function () {
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-    const provider = new SceneEphemerisProvider("WIDGET", 3.0);
-    let widget;
-    try {
-      widget = new CesiumWidget(container, {
+  // A run with the WebGL stub hands the widget the stub, as every other widget
+  // spec does, so the forwarding contract needs no GPU there. Without the stub
+  // the widget's Scene creates a real WebGL context, and a host that cannot
+  // create one skips with the probe's reason instead of failing.
+  const itCreatesWidgetContext = window.webglStub
+    ? it
+    : function (description, body) {
+        return itRequiresCapability(Capability.REAL_WEBGL, description, body);
+      };
+
+  itCreatesWidgetContext(
+    "forwards the ready provider through CesiumWidget",
+    function () {
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const provider = new SceneEphemerisProvider("WIDGET", 3.0);
+      const options = {
         celestialEphemerisProvider: provider,
         useDefaultRenderLoop: false,
-      });
-      expect(widget.scene.celestialEphemerisProvider).toBe(provider);
-      expect(widget.scene.frameState.celestialEphemerisSample.providerId).toBe(
-        "WIDGET",
-      );
-      expect(provider.calls).toBe(1);
-    } finally {
-      if (widget) {
-        widget.destroy();
+      };
+      // The online lane keeps the production World Imagery base layer; the
+      // offline lane drops it so the widget makes no Ion request.
+      if (isOfflineLane(window)) {
+        options.baseLayer = false;
       }
-      document.body.removeChild(container);
-    }
-  });
+      if (window.webglStub) {
+        options.contextOptions = { getWebGLStub: getWebGLStub };
+      }
+      let widget;
+      try {
+        widget = new CesiumWidget(container, options);
+        expect(widget.scene.celestialEphemerisProvider).toBe(provider);
+        expect(
+          widget.scene.frameState.celestialEphemerisSample.providerId,
+        ).toBe("WIDGET");
+        expect(provider.calls).toBe(1);
+      } finally {
+        if (widget) {
+          widget.destroy();
+        }
+        document.body.removeChild(container);
+      }
+    },
+  );
 });

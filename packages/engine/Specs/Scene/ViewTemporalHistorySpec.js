@@ -1,9 +1,9 @@
-import {
-  Cartesian3,
-  Matrix4,
-  OrthographicFrustum,
-  SceneMode,
-} from "../../index.js";
+import { Cartesian3, Matrix4, SceneMode } from "../../index.js";
+// The history helpers are not on the barrel, so they are compiled into the spec
+// bundle from Source and classify a frustum with `instanceof` against Source's
+// frustum classes. The frustum the spec builds must come from the same place;
+// the barrel's copy is a different class and would never read as orthographic.
+import OrthographicFrustum from "../../Source/Core/OrthographicFrustum.js";
 import {
   beginViewTemporalHistoryPresentation,
   commitPresentedViewTemporalHistory,

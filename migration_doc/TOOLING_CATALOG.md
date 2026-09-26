@@ -264,7 +264,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | report-batch-number-reuse.mjs | other | ACTIVE | 2026-09-02 | 3 | Reports every `Batch NNNN:` commit subject that reuses a number already used by a different commit, across full reachable git history. |
 | report-batch-number-reuse.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Behaviour spec for report-batch-number-reuse.mjs, run against a real temporary git repository. |
 | run-far200-shadow-self-test.mjs | runner | ACTIVE | 2026-08-16 | 2 | Thin bootstrap: esbuild-bundles Tools/far200-shadow-self-test.ts and executes it via a data: URL import. |
-| spec-runner-census.mjs | other | NO @purpose HEADER | 2026-09-12 | 19 | — |
+| spec-runner-census.mjs | other | NO @purpose HEADER | 2026-09-26 | 19 | — |
 | spec-runner-census.spec.mjs | spec | NO @purpose HEADER | 2026-09-12 | 6 | — |
 | temp-hygiene.mjs | other | ACTIVE | 2026-09-11 | 8 | Classify the Temp root into an explicit positive delete list, bank any visual evidence inside it, then delete exactly that list behind a protect set that is re-checked at execute time. |
 | temp-hygiene.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Behaviour coverage for Tools/temp-hygiene.mjs — classification age gates, the plan-only default, the execute-time protect/horizon/evidence refusals, and the guarantee that a junction inside a delete target is never followed. |
