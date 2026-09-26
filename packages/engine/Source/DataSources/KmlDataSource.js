@@ -407,6 +407,34 @@ async function loadDataUriFromZip(entry, uriResolver) {
   uriResolver[entry.filename] = dataUri;
 }
 
+// A KMZ's entries are keyed by their zip filenames, which are relative paths
+// with no leading slash, so an href is resolved against a synthetic archive
+// root and then reported relative to it. `URL.pathname` cannot be used
+// directly: it always carries a leading slash, which no entry name has.
+const kmzArchiveOrigin = "https://placeholder.invalid/";
+const kmzArchiveRoot = `${kmzArchiveOrigin}kmz/`;
+
+function resolveKmzEntryName(value, baseUrl) {
+  try {
+    const base = defined(baseUrl)
+      ? new URL(baseUrl, kmzArchiveRoot)
+      : new URL(kmzArchiveRoot);
+    const resolved = new URL(value, base).href;
+    if (resolved.startsWith(kmzArchiveRoot)) {
+      return resolved.slice(kmzArchiveRoot.length).replace(/\/{2,}/g, "/");
+    }
+    // Nothing outside the archive root can name an entry. When the base is the
+    // synthetic root, every part of the resolved form that the caller did not
+    // write came from the placeholder — its scheme for a protocol-relative
+    // href, its origin for a path that walked above the root — so the value
+    // stands exactly as written. A base that carries a real origin of its own
+    // resolves normally.
+    return base.href.startsWith(kmzArchiveOrigin) ? value : resolved;
+  } catch {
+    return value;
+  }
+}
+
 function embedDataUris(div, elementType, attributeName, uriResolver) {
   const keys = uriResolver.keys;
   const elements = div.querySelectorAll(elementType);
@@ -415,12 +443,7 @@ function embedDataUris(div, elementType, attributeName, uriResolver) {
     const value = element.getAttribute(attributeName);
     if (defined(value)) {
       // Resolve relative URI against current directory
-      let uri;
-      try {
-        uri = new URL(value, "https://placeholder.invalid/./").pathname;
-      } catch {
-        uri = value;
-      }
+      const uri = resolveKmzEntryName(value);
       const index = keys.indexOf(uri);
       if (index !== -1) {
         const key = keys[index];
@@ -630,15 +653,11 @@ function resolveHref(href, sourceResource, uriResolver) {
         url: blob,
       });
     } else {
-      // Needed for multiple levels of KML files in a KMZ
+      // Needed for multiple levels of KML files in a KMZ. The source may have
+      // been loaded by a relative url, which `new URL(href, base)` rejects
+      // outright, so the base is resolved inside the synthetic archive root.
       const baseUrl = sourceResource.getUrlComponent();
-      let resolvedHref;
-      try {
-        resolvedHref = new URL(href, baseUrl).href;
-      } catch {
-        resolvedHref = href;
-      }
-      blob = uriResolver[resolvedHref];
+      blob = uriResolver[resolveKmzEntryName(href, baseUrl)];
       if (defined(blob)) {
         resource = new Resource({
           url: blob,

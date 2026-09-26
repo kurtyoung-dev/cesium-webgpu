@@ -27,6 +27,236 @@ describe("Core/IonResource", function () {
     expect(resource.retryAttempts).toBe(1);
   });
 
+  // A self-hosted or proxied ion endpoint reports a url that is not absolute.
+  // It names no server of its own, which is not an error: the token check
+  // compares the server the endpoint is served by against the one the url about
+  // to be requested will be fetched from, and a relative url on both sides is
+  // fetched from the same place.
+  it("constructs from an endpoint whose url is not absolute", function () {
+    const relativeEndpoint = {
+      type: "TERRAIN",
+      url: "Data/CesiumTerrainTileJson/QuantizedMeshWithOctVertexNormals",
+      accessToken: "not_really_a_refresh_token",
+      attributions: [],
+    };
+    const endpointResource = IonResource._createEndpointResource(assetId);
+    const resource = new IonResource(relativeEndpoint, endpointResource);
+
+    expect(resource.url).toEqual(relativeEndpoint.url);
+    expect(resource._ionEndpointDomain).toEqual("");
+  });
+
+  // The server is read off the URL parser, which is the parser the request
+  // itself goes through: it folds the case, drops a default port and leaves out
+  // the userinfo, so one server spelled several ways is one server. The scheme
+  // is part of the answer, so the same host under another scheme is not it.
+  it("reads the endpoint's server the way the URL parser does", function () {
+    const endpointResource = IonResource._createEndpointResource(assetId);
+    const cases = [
+      ["https://API.cesium.invalid/v1/assets/1/", "https://api.cesium.invalid"],
+      [
+        "https://api.cesium.invalid:8443/v1/",
+        "https://api.cesium.invalid:8443",
+      ],
+      ["https://api.cesium.invalid:443/v1/", "https://api.cesium.invalid"],
+      ["https://User:Pw@api.cesium.invalid/v1/", "https://api.cesium.invalid"],
+      // The parser skips the slash run; a pattern over the text does not, and
+      // reading "" here is what sent the token to an attacker-named host.
+      ["https:///api.cesium.invalid/v1/", "https://api.cesium.invalid"],
+    ];
+
+    cases.forEach(function (pair) {
+      const resource = new IonResource(
+        {
+          type: "TERRAIN",
+          url: pair[0],
+          accessToken: "not_really_a_refresh_token",
+          attributions: [],
+        },
+        endpointResource,
+      );
+      expect(resource._ionEndpointDomain).toEqual(pair[1]);
+    });
+  });
+
+  // The negative direction, with hosts that are LEXICALLY RELATED to the
+  // endpoint's. A host that merely ends with, begins with or contains the
+  // endpoint's name is a host an attacker can register, and a comparison that
+  // is any weaker than equality sends the access token to it.
+  it("does not send the ion token to a host related to the endpoint's only by spelling", function () {
+    const secureEndpoint = {
+      type: "3DTILES",
+      url: "https://api.cesium.invalid/v1/assets/1/",
+      accessToken: "not_really_a_refresh_token",
+      attributions: [],
+    };
+    const relativeEndpoint = {
+      type: "3DTILES",
+      url: "Data/ion/assets/1/",
+      accessToken: "not_really_a_refresh_token",
+      attributions: [],
+    };
+    const backslash = String.fromCharCode(92);
+    const cases = [
+      [secureEndpoint, "https://evilapi.cesium.invalid/x"],
+      [secureEndpoint, "https://api.cesium.invalid.evil.invalid/x"],
+      [secureEndpoint, "https://api.cesium.invalid@evil.invalid/x"],
+      [secureEndpoint, "https://api.cesium.invalid:8443/x"],
+      // The shapes whose text carries no authority at all while the parser
+      // reads one: a self-hosted endpoint's own domain is empty text too.
+      [relativeEndpoint, "https:///evil.invalid/x"],
+      [relativeEndpoint, "https:evil.invalid/x"],
+      [relativeEndpoint, `https:${backslash}${backslash}evil.invalid/x`],
+      [relativeEndpoint, "//evil.invalid/x"],
+      [relativeEndpoint, `${backslash}${backslash}evil.invalid/x`],
+    ];
+
+    const endpointResource = IonResource._createEndpointResource(assetId);
+    const _makeRequest = spyOn(Resource.prototype, "_makeRequest");
+    cases.forEach(function (pair) {
+      _makeRequest.calls.reset();
+      const resource = new IonResource(pair[0], endpointResource);
+      resource.url = pair[1];
+
+      resource._makeRequest({});
+      expect(_makeRequest).toHaveBeenCalledTimes(1);
+      expect(_makeRequest.calls.mostRecent().args[0].headers).toBeUndefined();
+    });
+  });
+
+  // The token-domain check has two sides and they are read off two different
+  // strings: the endpoint's own text, and the url about to be requested. A
+  // tile request is a DERIVED resource, so that is where the two can be made
+  // to disagree — and failing the check drops the Authorization header
+  // silently, which is a 401 with nothing in it that says why.
+  it("sends the ion token with a derived resource of a mixed-case endpoint", function () {
+    const mixedCaseEndpoint = {
+      type: "3DTILES",
+      url: `https://API.cesium.invalid/v1/assets/${assetId}/`,
+      accessToken: "not_really_a_refresh_token",
+      attributions: [],
+    };
+
+    const _makeRequest = spyOn(Resource.prototype, "_makeRequest");
+    const endpointResource = IonResource._createEndpointResource(assetId);
+    const derived = new IonResource(
+      mixedCaseEndpoint,
+      endpointResource,
+    ).getDerivedResource({ url: "layer.json" });
+
+    derived._makeRequest({});
+    expect(_makeRequest).toHaveBeenCalledWith({
+      headers: jasmine.objectContaining({
+        Authorization: `Bearer ${mixedCaseEndpoint.accessToken}`,
+      }),
+    });
+  });
+
+  // The check asks the URL parser where a url goes, and it has to ask from a
+  // page of each KIND. Under a scheme the URL Standard calls SPECIAL a `\` ends
+  // the authority and a run of separators is skipped; under a scheme it leaves
+  // opaque neither happens. So `//api.cesium.invalid\@evil.invalid/x` is the
+  // endpoint's own server to an `https` page and `evil.invalid` to a page a
+  // desktop host serves over its own registered scheme. A url whose server
+  // depends on that has no settled server, and an unsettled server gets no
+  // token.
+  it("does not send the ion token to a url that different kinds of page address differently", function () {
+    const secureEndpoint = {
+      type: "3DTILES",
+      url: "https://api.cesium.invalid/v1/assets/1/",
+      accessToken: "not_really_a_refresh_token",
+      attributions: [],
+    };
+    const backslash = String.fromCharCode(92);
+    const urls = [
+      `//api.cesium.invalid${backslash}@evil.invalid/x`,
+      `//api.cesium.invalid${backslash}evil.invalid/x`,
+      "///api.cesium.invalid/x",
+      `${backslash}${backslash}api.cesium.invalid/x`,
+      `/${backslash}api.cesium.invalid/x`,
+    ];
+
+    const endpointResource = IonResource._createEndpointResource(assetId);
+    const _makeRequest = spyOn(Resource.prototype, "_makeRequest");
+    urls.forEach(function (url) {
+      _makeRequest.calls.reset();
+      const resource = new IonResource(secureEndpoint, endpointResource);
+      resource.url = url;
+
+      resource._makeRequest({});
+      expect(_makeRequest).toHaveBeenCalledTimes(1);
+      expect(_makeRequest.calls.mostRecent().args[0].headers).toBeUndefined();
+    });
+  });
+
+  // ... and asking a page of the other kind has to cost nothing. An opaque
+  // scheme takes its host verbatim where a special one folds the case, an IDN
+  // label, a percent-encoded label and a decimal IPv4 literal — those are
+  // spellings of ONE server, not a disagreement about which server, so an
+  // endpoint that names its host without a scheme keeps its token however its
+  // own urls spell that host.
+  it("sends the ion token to an endpoint named without a scheme however its host is spelled", function () {
+    const endpoint = {
+      type: "3DTILES",
+      url: "//api.cesium.invalid/v1/assets/1/",
+      accessToken: "not_really_a_refresh_token",
+      attributions: [],
+    };
+    const urls = [
+      "//api.cesium.invalid/v1/x",
+      "//API.CESIUM.INVALID/v1/x",
+      "//api.cesium.inval%69d/v1/x",
+    ];
+
+    const endpointResource = IonResource._createEndpointResource(assetId);
+    const _makeRequest = spyOn(Resource.prototype, "_makeRequest");
+    urls.forEach(function (url) {
+      _makeRequest.calls.reset();
+      const resource = new IonResource(endpoint, endpointResource);
+      resource.url = url;
+
+      resource._makeRequest({});
+      expect(_makeRequest).toHaveBeenCalledWith({
+        headers: jasmine.objectContaining({
+          Authorization: `Bearer ${endpoint.accessToken}`,
+        }),
+      });
+    });
+  });
+
+  // The scheme is half of "which server". Chromium on Windows reads a url
+  // that begins with two backslashes as a UNC path whatever the page, so
+  // `\\api.cesium.invalid/x` is `file://api.cesium.invalid/x` there: the
+  // endpoint's host, under a scheme that is not the endpoint's. The same holds
+  // for cleartext `http:` beside an `https` endpoint and for any other scheme
+  // on that host. Every row is false whatever page the spec runs on.
+  it("does not send the ion token to the endpoint's host under another scheme", function () {
+    const secureEndpoint = {
+      type: "3DTILES",
+      url: "https://api.cesium.invalid/v1/assets/1/",
+      accessToken: "not_really_a_refresh_token",
+      attributions: [],
+    };
+    const urls = [
+      "file://api.cesium.invalid/v1/x",
+      "http://api.cesium.invalid/v1/x",
+      "wss://api.cesium.invalid/v1/x",
+      "custom-scheme://api.cesium.invalid/v1/x",
+    ];
+
+    const endpointResource = IonResource._createEndpointResource(assetId);
+    const _makeRequest = spyOn(Resource.prototype, "_makeRequest");
+    urls.forEach(function (url) {
+      _makeRequest.calls.reset();
+      const resource = new IonResource(secureEndpoint, endpointResource);
+      resource.url = url;
+
+      resource._makeRequest({});
+      expect(_makeRequest).toHaveBeenCalledTimes(1);
+      expect(_makeRequest.calls.mostRecent().args[0].headers).toBeUndefined();
+    });
+  });
+
   it("clone works", function () {
     const endpointResource = IonResource._createEndpointResource(assetId);
     const resource = new IonResource(endpoint, endpointResource);

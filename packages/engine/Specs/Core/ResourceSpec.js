@@ -24,6 +24,188 @@ describe("Core/Resource", function () {
     });
   });
 
+  // Every expected string below is what `new Uri(url).toString()` — the
+  // normaliser this class used before it moved to `URL` — produces for the same
+  // input. `URL.origin` is the literal string "null" for every scheme the URL
+  // Standard does not treat as special, it omits userinfo, and the parser
+  // lower-cases scheme and host, so none of them can be rebuilt from it.
+  it("preserves the url it was given", function () {
+    const urls = [
+      [
+        "http://someImage.invalid/image.png",
+        "http://someImage.invalid/image.png",
+      ],
+      ["HTTP://Host.Invalid/Path", "HTTP://Host.Invalid/Path"],
+      ["http://user:pw@Host.invalid/p", "http://user:pw@Host.invalid/p"],
+      ["http://[2001:DB8::1]/p", "http://[2001:DB8::1]/p"],
+      ["http://host:8080/p", "http://host:8080/p"],
+      ["http://h/a//b.js", "http://h/a//b.js"],
+      ["http://h/a/./b/../c", "http://h/a/./b/../c"],
+      ["http://h", "http://h/"],
+      ["file:///C:/a/b.txt", "file:///C:/a/b.txt"],
+      ["mailto:a@b.com", "mailto:a@b.com"],
+      ["custom-scheme:opaque/thing", "custom-scheme:opaque/thing"],
+      ["http://h/p?q=1#f", "http://h/p"],
+      // The two shapes the no-base branch exists for.
+      ["//host/path/x.png", "//host/path/x.png"],
+      ["Assets/foo", "Assets/foo"],
+    ];
+
+    urls.forEach(function (pair) {
+      expect(new Resource({ url: pair[0] }).getUrlComponent(false)).toEqual(
+        pair[1],
+      );
+    });
+  });
+
+  it("resolves a derived url against its parent without rewriting the authority", function () {
+    const urls = [
+      [
+        "http://someImage.invalid/",
+        "image.png",
+        "http://someImage.invalid/image.png",
+      ],
+      [
+        "http://test.com/source/",
+        "Workers//transferTypedArrayTest.js",
+        "http://test.com/source/Workers/transferTypedArrayTest.js",
+      ],
+      [
+        "http://Host.Invalid/Build/Cesium/",
+        "Assets/foo",
+        "http://Host.Invalid/Build/Cesium/Assets/foo",
+      ],
+      [
+        "http://user:pw@Host.invalid/base/",
+        "x.js",
+        "http://user:pw@Host.invalid/base/x.js",
+      ],
+      [
+        "http://test.com/source/deep/",
+        "../up.js",
+        "http://test.com/source/up.js",
+      ],
+      ["http://test.com/source/", "/root.js", "http://test.com/root.js"],
+      ["http://test.com/source/", "/a//b.js", "http://test.com/a//b.js"],
+      ["HTTP://Host.Invalid/base/", "x.js", "HTTP://Host.Invalid/base/x.js"],
+      [
+        "http://test.com/source/",
+        "//other.Host/x.js",
+        "http://other.Host/x.js",
+      ],
+      [
+        "http://test.com:8080/source/",
+        "x.js",
+        "http://test.com:8080/source/x.js",
+      ],
+      [
+        "http://test.com/source/",
+        "http://elsewhere.Invalid/y.js",
+        "http://elsewhere.Invalid/y.js",
+      ],
+    ];
+
+    urls.forEach(function (triple) {
+      const derived = new Resource({ url: triple[0] }).getDerivedResource({
+        url: triple[1],
+      });
+      expect(derived.getUrlComponent(false)).toEqual(triple[2]);
+    });
+  });
+
+  // `URL.origin` cannot decide these, and not only because it is the literal
+  // string "null" in Node for every scheme the URL Standard does not treat as
+  // special: Chromium serialises the origin of EVERY `file:` url as "file://",
+  // host or no host, so an origin comparison there reads two UNC shares
+  // (`file://host/share/x`) as one and forwards the parent's Authorization
+  // header to the other. The comparison has to be of the scheme and the host,
+  // which both engines serialise alike. These are also the only rows that say
+  // it reads the HOST at all -- every other case in this area differs from its
+  // parent by the scheme as well -- and the scheme-only row says it reads the
+  // scheme. A parent that names no server (`file:///C:/`) is known by its
+  // scheme alone, so a url that names a server is never its own.
+  it("keeps a parent's credentials to its own server when the origin is opaque", function () {
+    const header = "Bearer parent-secret";
+    const cases = [
+      ["custom-scheme://parent.invalid/a/tileset.json", "other.b3dm", true],
+      [
+        "custom-scheme://parent.invalid/a/tileset.json",
+        "custom-scheme://parent.invalid/a/other.b3dm",
+        true,
+      ],
+      // An opaque scheme's host keeps the case it was written in, so the
+      // comparison is the one that has to fold it.
+      [
+        "custom-scheme://parent.invalid/a/tileset.json",
+        "custom-scheme://PARENT.INVALID/a/other.b3dm",
+        true,
+      ],
+      [
+        "custom-scheme://parent.invalid/a/tileset.json",
+        "custom-scheme://evil.invalid/x",
+        false,
+      ],
+      [
+        "file://parent.invalid/share/tileset.json",
+        "file://parent.invalid/share/other.b3dm",
+        true,
+      ],
+      [
+        "file://parent.invalid/share/tileset.json",
+        "file://evil.invalid/share/x",
+        false,
+      ],
+      [
+        "custom-scheme://parent.invalid/a/tileset.json",
+        "file://parent.invalid/share/x",
+        false,
+      ],
+      ["file:///C:/a/tileset.json", "file:///C:/a/other.b3dm", true],
+      ["file:///C:/a/tileset.json", "file://evil.invalid/share/x", false],
+      ["file:///C:/a/tileset.json", "https://evil.invalid/x", false],
+    ];
+
+    cases.forEach(function (triple) {
+      const derived = new Resource({
+        url: triple[0],
+        headers: { Authorization: header },
+      }).getDerivedResource({ url: triple[1] });
+      expect(derived.headers.Authorization).toEqual(
+        triple[2] ? header : undefined,
+      );
+    });
+  });
+
+  // A url with a special scheme but no `//` after it is relative to a page of
+  // that scheme: `http:parent.invalid/x` from an `http` page is the path
+  // `/parent.invalid/x` on the page's own server, and that is where the
+  // request goes. Read with no base it names the parent's server, and the
+  // parent's Authorization header went to the page's.
+  it("keeps a parent's credentials off the page's server for a url with a scheme but no //", function () {
+    const header = "Bearer parent-secret";
+    const scheme = new URL(document.baseURI).protocol;
+    const parent = `${scheme}//parent.invalid/a/tileset.json`;
+    const cases = [
+      [`${scheme}parent.invalid/x`, false],
+      [`${scheme.toUpperCase()}/parent.invalid/x`, false],
+      [`${scheme}//parent.invalid/a/other.b3dm`, true],
+      ["other.b3dm", true],
+    ];
+
+    cases.forEach(function (pair) {
+      const derived = new Resource({
+        url: parent,
+        headers: { Authorization: header },
+      }).getDerivedResource({ url: pair[0] });
+      // The premise, from the platform: where this page sends the request.
+      const fetched = new URL(derived.url, document.baseURI);
+      expect(fetched.host === "parent.invalid").toBe(pair[1]);
+      expect(derived.headers.Authorization).toEqual(
+        pair[1] ? header : undefined,
+      );
+    });
+  });
+
   it("Constructor sets correct properties", function () {
     const proxy = new DefaultProxy("/proxy/");
     const request = new Request();

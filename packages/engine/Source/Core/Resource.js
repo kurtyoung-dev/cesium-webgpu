@@ -24,6 +24,24 @@ import RequestState from "./RequestState.js";
 import RuntimeError from "./RuntimeError.js";
 import TrustedServers from "./TrustedServers.js";
 
+// The `<scheme>:` and `//<authority>` prefixes of a url, exactly as they were
+// written. A url has to come back out of a Resource the way the caller spelled
+// it, and neither `URL` nor `URL.origin` can rebuild one: the parser lower-cases
+// the scheme and the host, `origin` drops any userinfo, and `origin` is the
+// literal string "null" for every scheme the URL Standard does not treat as
+// special (file:, mailto:, any application scheme).
+const schemeAndAuthorityRegex = /^([a-zA-Z][a-zA-Z0-9+\-.]*:)?(\/\/[^/?#]*)/;
+
+// A url that stops at its authority; serialising one yields a root path.
+const authorityOnlyRegex = /^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\/[^/?#]*$/;
+
+// A url that carries a scheme of its own.
+const schemeRegex = /^[a-zA-Z][a-zA-Z0-9+\-.]*:/;
+
+// What `getUrlOrigin` answers for a url the URL parser rejects. No parsed url
+// serialises to it (a parsed scheme never contains `<`).
+const unfetchableUrlKey = "<unfetchable>";
+
 const xhrBlobSupported = (function () {
   try {
     const xhr = new XMLHttpRequest();
@@ -196,13 +214,15 @@ class Resource {
     // against baseUrl (when supplied) so the base's path is preserved.
     const hadScheme = /^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(url);
     let parsed;
+    let absoluteBaseUrl;
     try {
       // For relatives with a baseUrl, resolve against baseUrl directly so
       // pathname preservation happens inside the URL constructor. For
       // absolutes or relatives without a baseUrl, fall back to a placeholder
       // root so we can still extract the query string.
       if (!hadScheme && defined(baseUrl)) {
-        parsed = new URL(url, getAbsoluteUri(baseUrl));
+        absoluteBaseUrl = getAbsoluteUri(baseUrl);
+        parsed = new URL(url, absoluteBaseUrl);
       } else {
         parsed = new URL(url, "https://placeholder.invalid/");
       }
@@ -221,13 +241,43 @@ class Resource {
       : query;
 
     // Reconstruct the URL without query or fragment.
+    const queryIndex = url.search(/[?#]/);
+    const withoutQuery = queryIndex >= 0 ? url.slice(0, queryIndex) : url;
     let cleanUrl;
     if (hadScheme) {
-      cleanUrl = `${parsed.origin}${parsed.pathname}`;
+      // A url that carries its own scheme is never resolved against the base,
+      // so the caller's own text is the answer. Rebuilding it from
+      // `origin + pathname` instead lower-cased the authority, dropped any
+      // userinfo, and turned every non-special scheme into "null...".
+      cleanUrl = authorityOnlyRegex.test(withoutQuery)
+        ? `${withoutQuery}/`
+        : withoutQuery;
     } else if (defined(baseUrl)) {
       // Already resolved against the base — use the full absolute form so
-      // callers downstream see a stable, fully-qualified URL.
-      cleanUrl = `${parsed.origin}${parsed.pathname}`;
+      // callers downstream see a stable, fully-qualified URL. The scheme and
+      // authority come from the text that supplied them (a protocol-relative
+      // url brings its own, everything else inherits the base's) because
+      // `parsed` has normalised their case and dropped any userinfo.
+      const fromUrl = schemeAndAuthorityRegex.exec(url);
+      // The base's own text is the most direct source of both, and
+      // `getAbsoluteUri` is consulted only for a base that carries no authority
+      // of its own -- one the document supplied. Reading the resolved form
+      // first is what left CI rows 1-2 red through a first draft of this
+      // change: that function case-folded every url it touched, and only in a
+      // browser, so a table measured in Node read clean. It resolves without
+      // rewriting now, and this order is what keeps the two independent.
+      const fromBase =
+        schemeAndAuthorityRegex.exec(baseUrl) ??
+        schemeAndAuthorityRegex.exec(absoluteBaseUrl);
+      const authority = fromUrl?.[2] ?? fromBase?.[2];
+      // Merging a relative path onto the base collapses runs of separators;
+      // a root-relative path replaces the base's path outright and keeps them.
+      const path = url.startsWith("/")
+        ? parsed.pathname
+        : parsed.pathname.replace(/\/{2,}/g, "/");
+      cleanUrl = defined(authority)
+        ? `${fromBase?.[1] ?? parsed.protocol}${authority}${path}`
+        : `${parsed.origin}${path}`;
     } else {
       // No base — preserve the original form verbatim (minus query/fragment),
       // matching upstream's urijs `uri.toString()` semantics. Using
@@ -236,8 +286,7 @@ class Resource {
       //   - protocol-relative "//host/path" lost its authority → "/path"
       //   - bare-relative "Assets/foo" gained a leading slash → "/Assets/foo"
       //     (silently re-rooting it against the document origin)
-      const queryIndex = url.search(/[?#]/);
-      cleanUrl = queryIndex >= 0 ? url.slice(0, queryIndex) : url;
+      cleanUrl = withoutQuery;
     }
 
     this._url = cleanUrl;
@@ -377,9 +426,10 @@ class Resource {
       // parameters routinely carry credentials (an Authorization header, an access token),
       // and those are scoped to the parent's origin; forwarding them to a url that names a
       // different origin hands them to a host the document picked. Drop the inherited pair
-      // when - and only when - both origins are known and differ, so a relative url, a url
-      // whose origin is opaque (`data:`, `file:`) and a parent with no resolvable origin all
-      // keep the behaviour they have today.
+      // when - and only when - both origins are known and differ, so a relative url outside a
+      // browser and a url the parser rejects keep the behaviour they have today. A url that
+      // names no server (`data:`, `file:///C:/x`) is known by its scheme alone, and one that
+      // names a server under a non-special scheme (`file://host/share`) by that server.
       // Options supplied to this call are applied below, after the drop, so an application
       // that deliberately wants credentials to cross an origin still can by passing them.
       const parentOrigin = getUrlOrigin(this._url);
@@ -1413,14 +1463,20 @@ function parseQueryString(queryString) {
 }
 
 /**
- * Resolves the origin of a url, using the document's base uri when the url is relative.
- * Returns undefined when no origin can be determined - a relative url outside a browser, a
- * `data:` or `file:` uri (whose origin is opaque), or a url the URL parser rejects. A `blob:`
- * url resolves to the origin embedded in it, so it is compared like any other. Callers treat
- * undefined as "unknown", never as "different".
+ * Resolves the server a url is addressed to, using the document's base uri when the url is
+ * relative to it (a url with a special scheme but no `//`, such as `https:host/x`, is relative
+ * to a page of that scheme), as a key that is compared for equality. A url that names a
+ * server resolves to its scheme and host (`https://host:8443`, `custom-scheme://host`,
+ * `file://host` for a UNC share); a url that names none resolves to its scheme alone (`file:`,
+ * `data:`, `mailto:`), so it equals only another url of the same scheme that names no server
+ * either. A `blob:` url resolves to the http(s) origin embedded in it, and a url the URL parser
+ * rejects resolves to a key no server has. Returns undefined only for a relative url outside a
+ * browser, which has not been resolved at all. Callers treat undefined as "unknown", never as
+ * "different".
  *
  * @param {string} url The url whose origin is wanted.
- * @returns {string|undefined} The origin, or undefined if it cannot be determined.
+ * @returns {string|undefined} The key of the server the url is addressed to, or undefined if it
+ * cannot be determined.
  *
  * @private
  */
@@ -1429,15 +1485,52 @@ function getUrlOrigin(url) {
     return undefined;
   }
 
-  let origin;
+  const absolute = getAbsoluteUri(url);
+  let parsed;
   try {
-    origin = new URL(getAbsoluteUri(url)).origin;
+    // A scheme-bearing url with no `//` is relative to a page of the same
+    // special scheme (`https:host/x` from an `https` page is a path on the
+    // page's own server), and that is where the request goes.
+    parsed =
+      typeof document === "undefined"
+        ? new URL(absolute)
+        : new URL(absolute, document.baseURI ?? document.location.href);
   } catch {
-    return undefined;
+    // Outside a browser a relative url comes back unresolved, and names a
+    // server nobody knows yet. Anything else the parser rejects is a url no
+    // request can be sent to -- and the engines do not agree on which urls
+    // those are (Chromium rejects `custom-scheme://` with a non-ASCII host
+    // that Node percent-encodes), so reading it as "unknown" forwarded the
+    // parent's credentials in one engine and dropped them in the other.
+    return typeof document === "undefined" && !schemeRegex.test(absolute)
+      ? undefined
+      : unfetchableUrlKey;
   }
 
-  // URL.origin is the literal string "null" for opaque origins.
-  return origin === "null" ? undefined : origin;
+  // The key is built from `protocol` and `host`, never from `URL.origin`: the
+  // two engines this runs in serialise `origin` differently for the same url.
+  // Node gives the literal "null" for every scheme the URL Standard does not
+  // call special, while Chromium gives "file://" for EVERY `file:` url, with a
+  // host or without one. Keyed on `origin`, `file://parent.invalid/share/a`
+  // and `file://evil.invalid/share/x` compared equal in Chromium and the
+  // parent's credentials reached the other share. `protocol` and `host` are
+  // serialised identically by both.
+  if (parsed.protocol === "blob:") {
+    // A blob's own origin is the one embedded in it; it is only a server when
+    // that is an http(s) origin, whose serialisation both engines agree on.
+    const embedded = parsed.origin;
+    return embedded.startsWith("http://") || embedded.startsWith("https://")
+      ? embedded
+      : parsed.protocol;
+  }
+
+  // An opaque scheme's host is kept in the case it was written in, so the key
+  // folds it; a special scheme's host is already folded and this is a no-op.
+  // A url that names no server keys on its scheme alone, which no url that
+  // names one can equal.
+  return parsed.host.length > 0
+    ? `${parsed.protocol}//${parsed.host.toLowerCase()}`
+    : parsed.protocol;
 }
 
 /**
