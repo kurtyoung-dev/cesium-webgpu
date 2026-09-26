@@ -293,6 +293,11 @@ describe("Scene shadow-caster pre-PVS filtering", function () {
         jasmine.createSpy("sceneContextFlush"),
     };
     const scene = {
+      // A real Scene exposes `frameState` as a getter over `_frameState`, and
+      // the executor reads both spellings within one traversal.
+      get frameState() {
+        return this._frameState;
+      },
       _frameState: {
         context: frameContext,
         edgeVisibilityRequested: false,

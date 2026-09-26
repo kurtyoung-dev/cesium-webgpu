@@ -105,10 +105,22 @@ describe(
     });
 
     it("sets and gets entries in the table with float attributes", function () {
+      // The table sizes its texture from the limits of the context it is
+      // given; a limit below the natural width forces rows to wrap.
       const context = {
         floatingPointTexture: true,
+        limits: { maximumTextureSize: 8 },
       };
       batchTable = new BatchTable(context, floatAttributes, 5);
+
+      const dimensions = batchTable
+        .getUniformMapCallback()({})
+        .batchTextureDimensions();
+      expect(dimensions.x).toBeGreaterThan(0);
+      expect(dimensions.x).toBeLessThanOrEqual(
+        context.limits.maximumTextureSize,
+      );
+      expect(dimensions.y).toBeGreaterThan(1);
 
       let i;
       let color = new Cartesian4(0, 1, 2, 3);
@@ -131,10 +143,22 @@ describe(
     });
 
     it("sets and gets entries in the table with float attributes and forced packing", function () {
+      // The table sizes its texture from the limits of the context it is
+      // given; a limit below the natural width forces rows to wrap.
       const context = {
         floatingPointTexture: false,
+        limits: { maximumTextureSize: 8 },
       };
       batchTable = new BatchTable(context, floatAttributes, 5);
+
+      const dimensions = batchTable
+        .getUniformMapCallback()({})
+        .batchTextureDimensions();
+      expect(dimensions.x).toBeGreaterThan(0);
+      expect(dimensions.x).toBeLessThanOrEqual(
+        context.limits.maximumTextureSize,
+      );
+      expect(dimensions.y).toBeGreaterThan(1);
 
       let i;
       let color = new Cartesian4(

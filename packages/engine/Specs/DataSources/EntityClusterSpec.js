@@ -8,6 +8,8 @@ import {
   DataSourceDisplay,
   Entity,
   EntityCluster,
+  OrderedGroundPrimitiveCollection,
+  PrimitiveCollection,
   SceneTransforms,
 } from "../../index.js";
 
@@ -634,6 +636,11 @@ describe(
 
       const dataSource = new CustomDataSource("test");
       dataSource.clustering = cluster;
+      // A DataSourceDisplay gives each data source its primitive collections
+      // before it runs the visualizers callback, and the default visualizers
+      // require them.
+      dataSource._primitives = new PrimitiveCollection();
+      dataSource._groundPrimitives = new OrderedGroundPrimitiveCollection();
       dataSource._visualizers = DataSourceDisplay.defaultVisualizersCallback(
         scene,
         cluster,

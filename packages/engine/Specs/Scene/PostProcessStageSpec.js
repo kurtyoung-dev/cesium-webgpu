@@ -1,7 +1,6 @@
 import {
   BoundingRectangle,
   Color,
-  ContextLimits,
   defined,
   HeadingPitchRange,
   Math as CesiumMath,
@@ -298,8 +297,12 @@ describe(
         }),
       );
 
-      const maximumTextureSize = ContextLimits.maximumTextureSize;
-      ContextLimits._maximumTextureSize = 2;
+      // Texture limits are per context: lower the limit this scene's context
+      // reports. Jasmine restores the getter when the spec completes.
+      const limits = scene.context.limits;
+      spyOnProperty(scene.context, "limits", "get").and.returnValue(
+        Object.freeze({ ...limits, maximumTextureSize: 2 }),
+      );
 
       const pickId = { color: Color.fromBytes(1, 2, 3, 255) };
       stage.selected = [
@@ -313,17 +316,13 @@ describe(
       return pollToPromise(function () {
         scene.renderForSpecs();
         return stage.ready;
-      })
-        .then(function () {
-          expect(stage._selectedIdTexture.width).toEqual(2);
-          expect(PostProcessStage._oneTimeWarning).toHaveBeenCalledWith(
-            "postProcessStageSelectedTextureSize",
-            "The number of selected feature ids (3) exceeds the maximum texture size (2). Features beyond the limit will not have the post-process effect applied.",
-          );
-        })
-        .finally(function () {
-          ContextLimits._maximumTextureSize = maximumTextureSize;
-        });
+      }).then(function () {
+        expect(stage._selectedIdTexture.width).toEqual(2);
+        expect(PostProcessStage._oneTimeWarning).toHaveBeenCalledWith(
+          "postProcessStageSelectedTextureSize",
+          "The number of selected feature ids (3) exceeds the maximum texture size (2). Features beyond the limit will not have the post-process effect applied.",
+        );
+      });
     });
 
     it("destroys", function () {

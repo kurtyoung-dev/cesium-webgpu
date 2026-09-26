@@ -16,6 +16,9 @@ describe("Scene/FeatureRendererReadinessConsumers", function () {
           };
         },
       },
+      // FrameState always carries `passes`; VoxelPrimitive.update() reads it
+      // before the readiness early-out.
+      passes: { render: true, pick: false, pickVoxel: false },
       pixelRatio: 1,
     };
   }

@@ -1,5 +1,7 @@
 /**
- * These are set in the constructor for {@link Context}
+ * A process-global table of graphics limits that no context populates, so
+ * every value keeps its zero or <code>false</code> default. Read limits from
+ * the context in use, through its <code>limits</code> property, instead.
  *
  * @private
  */
