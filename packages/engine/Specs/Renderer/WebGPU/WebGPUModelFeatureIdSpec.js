@@ -71,6 +71,16 @@ function makeFeatureResourceHarness(options = {}) {
     return texture;
   }
 
+  // The submission timeline a real WebGPUContext and device give the model.
+  // Work enlisted on the current frame encoder is handed over only when that
+  // encoder is submitted, never on enlistment, and `onSubmittedWorkDone()`
+  // resolves only when the GPU finishes the work submitted before it was
+  // called. The spec drives both steps explicitly.
+  let submittedFrameCount = 0;
+  let frameEncoder = { label: "frame encoder 1" };
+  let afterSubmitCallbacks = [];
+  let workDoneResolvers = [];
+
   const fallbackTexture = makeTexture({ label: "fallback white" });
   const device = {
     createTexture: makeTexture,
@@ -91,10 +101,52 @@ function makeFeatureResourceHarness(options = {}) {
         }
         bufferWrites.push({ buffer, offset, values: Array.from(data) });
       },
+      onSubmittedWorkDone: function () {
+        return new Promise(function (resolve) {
+          workDoneResolvers.push(resolve);
+        });
+      },
     },
   };
+
+  // Ends the current frame: submits its encoder, runs the callbacks enlisted
+  // on it, then opens the next frame's encoder.
+  function submitFrame() {
+    submittedFrameCount++;
+    const callbacks = afterSubmitCallbacks;
+    afterSubmitCallbacks = [];
+    frameEncoder = null;
+    for (const callback of callbacks) {
+      callback(true);
+    }
+    frameEncoder = { label: `frame encoder ${submittedFrameCount + 1}` };
+  }
+
+  // The GPU finishes every submission made so far.
+  function completeSubmittedWork() {
+    const resolvers = workDoneResolvers;
+    workDoneResolvers = [];
+    for (const resolve of resolvers) {
+      resolve();
+    }
+  }
+
   const context = {
     resourceGeneration: 0,
+    get currentCommandEncoder() {
+      return frameEncoder;
+    },
+    enqueueAfterCommandEncoderSubmit: function (encoder, callback) {
+      if (
+        typeof callback !== "function" ||
+        !encoder ||
+        encoder !== frameEncoder
+      ) {
+        return false;
+      }
+      afterSubmitCallbacks.push(callback);
+      return true;
+    },
     createPickId: function (target, kind) {
       const index = pickIds.length + 1;
       const pickId = {
@@ -157,8 +209,10 @@ function makeFeatureResourceHarness(options = {}) {
     batchTexture,
     bufferWrites,
     buffers,
+    completeSubmittedWork,
     context,
     ensure,
+    submitFrame,
     failNextFeaturePickView: function () {
       failFeaturePickViewCount++;
     },
@@ -188,6 +242,28 @@ function replaceBatchTextureOwner(harness, source = "replacement") {
   };
   harness.model.featureTables[0].batchTexture = replacementBatchTexture;
   return { replacementBatchTexture, replacementFeatures };
+}
+
+function flushTasks() {
+  return new Promise(function (resolve) {
+    setTimeout(resolve, 0);
+  });
+}
+
+// Drives the frame that released a retired generation through the order a
+// real device gives it. `expectUnreleased(when)` runs at each point where the
+// released resources must still be alive: after earlier GPU work completes
+// while the releasing frame is still being encoded, and after that frame is
+// submitted but before the GPU has finished it.
+async function settleReleasingFrame(harness, expectUnreleased) {
+  harness.completeSubmittedWork();
+  await flushTasks();
+  expectUnreleased("before the releasing frame is submitted");
+  harness.submitFrame();
+  await flushTasks();
+  expectUnreleased("before the releasing frame's GPU work completes");
+  harness.completeSubmittedWork();
+  await flushTasks();
 }
 
 describe("Renderer/WebGPU/WebGPUModelFeatureId feature texture construction", function () {
@@ -346,7 +422,7 @@ describe("Renderer/WebGPU/WebGPUModelFeatureId feature texture construction", fu
   });
 
   for (const failureKind of ["view", "uniform write"]) {
-    it(`keeps an old two-primitive owner generation coherent across replacement ${failureKind} failure`, function () {
+    it(`keeps an old two-primitive owner generation coherent across replacement ${failureKind} failure`, async function () {
       const harness = makeFeatureResourceHarness();
       const firstPrimCache = {};
       const secondPrimCache = {};
@@ -406,6 +482,14 @@ describe("Renderer/WebGPU/WebGPUModelFeatureId feature texture construction", fu
       expect(oldPickIds[1].destroy).not.toHaveBeenCalled();
 
       harness.ensure(secondPrimCache, true);
+      expect(secondPrimCache._featurePickBoundGPUTexture).toBe(
+        replacementTexture,
+      );
+      await settleReleasingFrame(harness, function (when) {
+        expect(scheduledTextures.length).withContext(when).toBe(0);
+        expect(oldPickIds[0].destroy).withContext(when).not.toHaveBeenCalled();
+        expect(oldPickIds[1].destroy).withContext(when).not.toHaveBeenCalled();
+      });
       expect(scheduledTextures).toEqual([oldTexture]);
       expect(oldPickIds[0].destroy).toHaveBeenCalledTimes(1);
       expect(oldPickIds[1].destroy).toHaveBeenCalledTimes(1);
@@ -415,7 +499,7 @@ describe("Renderer/WebGPU/WebGPUModelFeatureId feature texture construction", fu
     });
   }
 
-  it("rebuilds same-count feature picking for a new BatchTexture owner", function () {
+  it("rebuilds same-count feature picking for a new BatchTexture owner", async function () {
     const harness = makeFeatureResourceHarness();
     const primCache = {};
     harness.modelCache.primitives = { primitive: primCache };
@@ -433,6 +517,11 @@ describe("Renderer/WebGPU/WebGPUModelFeatureId feature texture construction", fu
     );
     expect(harness.modelCache._featurePickGPUTexture).not.toBe(oldTexture);
     expect(harness.pickIds.length).toBe(4);
+    await settleReleasingFrame(harness, function (when) {
+      expect(oldTexture.destroy).withContext(when).not.toHaveBeenCalled();
+      expect(oldPickIds[0].destroy).withContext(when).not.toHaveBeenCalled();
+      expect(oldPickIds[1].destroy).withContext(when).not.toHaveBeenCalled();
+    });
     expect(oldTexture.destroy).toHaveBeenCalledTimes(1);
     expect(oldPickIds[0].destroy).toHaveBeenCalledTimes(1);
     expect(oldPickIds[1].destroy).toHaveBeenCalledTimes(1);
@@ -472,7 +561,7 @@ describe("Renderer/WebGPU/WebGPUModelFeatureId feature texture construction", fu
     expect(oldPickIds[1].destroy).not.toHaveBeenCalled();
   });
 
-  it("defers a multi-primitive replacement texture until the last marker migrates", function () {
+  it("defers a multi-primitive replacement texture until the last marker migrates", async function () {
     const harness = makeFeatureResourceHarness();
     const firstPrimCache = {};
     const secondPrimCache = {};
@@ -503,6 +592,10 @@ describe("Renderer/WebGPU/WebGPUModelFeatureId feature texture construction", fu
     expect(secondPrimCache._featurePickBoundGPUTexture).toBe(oldTexture);
 
     harness.ensure(secondPrimCache, true);
+    await settleReleasingFrame(harness, function (when) {
+      expect(scheduledTextures.length).withContext(when).toBe(0);
+      expect(oldTexture.destroy).withContext(when).not.toHaveBeenCalled();
+    });
     expect(scheduledTextures).toEqual([oldTexture]);
     expect(harness.context.scheduleTextureDestroy).toHaveBeenCalledTimes(1);
     expect(oldTexture.destroy).not.toHaveBeenCalled();
@@ -518,7 +611,7 @@ describe("Renderer/WebGPU/WebGPUModelFeatureId feature texture construction", fu
     expect(oldTexture.destroy).toHaveBeenCalledTimes(1);
   });
 
-  it("retries an exact-owner retired generation after the texture scheduler throws", function () {
+  it("retries an exact-owner retired generation after the texture scheduler throws", async function () {
     const harness = makeFeatureResourceHarness();
     const firstPrimCache = {};
     const secondPrimCache = {};
@@ -544,6 +637,11 @@ describe("Renderer/WebGPU/WebGPUModelFeatureId feature texture construction", fu
 
     harness.ensure(firstPrimCache, true);
     harness.ensure(secondPrimCache, true);
+    await settleReleasingFrame(harness, function (when) {
+      expect(harness.context.scheduleTextureDestroy)
+        .withContext(when)
+        .not.toHaveBeenCalled();
+    });
 
     expect(harness.context.scheduleTextureDestroy).toHaveBeenCalledTimes(1);
     expect(

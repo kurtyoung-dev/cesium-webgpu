@@ -23,11 +23,18 @@ function makeDevice(options = {}) {
   const textures = [];
   const copies = [];
   const mapResolvers = [];
+  // Queue submits and map requests in the order the framebuffer issued them,
+  // so a spec can assert that a map never starts before the command buffer
+  // carrying its copy was submitted.
+  const timeline = [];
   const queue = {
     submissions: [],
     writeTexture: jasmine.createSpy("writeTexture"),
     submit: function (commandBuffers) {
       this.submissions.push(commandBuffers);
+      timeline.push({
+        submitted: commandBuffers.map((commandBuffer) => commandBuffer.encoder),
+      });
     },
   };
 
@@ -37,6 +44,7 @@ function makeDevice(options = {}) {
     textures: textures,
     copies: copies,
     mapResolvers: mapResolvers,
+    timeline: timeline,
     queue: queue,
     createTexture: function (descriptor) {
       const texture = {
@@ -77,6 +85,7 @@ function makeDevice(options = {}) {
         destroyCount: 0,
         mapped: false,
         mapAsync: function () {
+          timeline.push({ mapped: this });
           if (options.rejectMaps) {
             return Promise.reject(new Error("synthetic map failure"));
           }
@@ -108,36 +117,104 @@ function makeDevice(options = {}) {
       buffers.push(buffer);
       return buffer;
     },
-    createCommandEncoder: function () {
-      return {
+    createCommandEncoder: function (descriptor) {
+      const encoder = {
+        label: descriptor?.label,
         copyTextureToBuffer: function (source, destination, extent) {
-          copies.push({ source: source, destination: destination, extent });
+          copies.push({
+            source: source,
+            destination: destination,
+            extent,
+            encoder,
+          });
         },
         finish: function () {
-          return {};
+          return { encoder };
         },
       };
+      return encoder;
     },
   };
 
   return device;
 }
 
-function makeFramebuffer(options) {
-  const device = makeDevice(options);
+// The frame-encoder lifecycle a real WebGPUContext gives a pick: begin() opens
+// the pick mini-frame's encoder, the synchronous end() records its copy into
+// that encoder beside the pick draw, and endFrame() (reached through
+// Picking's completePickFrame) submits it and only then runs the after-submit
+// callbacks. Callbacks are held until endFrame(), never run on enlistment.
+function makePickFrameContext(device, options) {
+  let frameEncoder = null;
+  let afterFrameSubmit = [];
   const context = {
     _device: device,
     scenePipelineFormat: "rgba8unorm",
     getObjectByPickColor: function () {
       return options?.pickObject;
     },
+    beginPickFrame: function () {
+      frameEncoder ??= context._device.createCommandEncoder({
+        label: "Pick frame encoder",
+      });
+    },
+    get currentCommandEncoder() {
+      return frameEncoder;
+    },
+    enqueueAfterFrameSubmit: function (callback) {
+      if (typeof callback !== "function" || !frameEncoder) {
+        return false;
+      }
+      afterFrameSubmit.push(callback);
+      return true;
+    },
+    endFrame: function () {
+      const encoder = frameEncoder;
+      if (!encoder) {
+        return;
+      }
+      frameEncoder = null;
+      context._device.queue.submit([encoder.finish()]);
+      const callbacks = afterFrameSubmit;
+      afterFrameSubmit = [];
+      for (const callback of callbacks) {
+        callback(true);
+      }
+    },
   };
+  return context;
+}
+
+function makeFramebuffer(options) {
+  const device = makeDevice(options);
+  const context = makePickFrameContext(device, options);
   const framebuffer = new WebGPUPickFramebuffer(context);
   framebuffer.begin(
     { x: 100, y: 50, width: 3, height: 3 },
     { x: 0, y: 0, width: 1920, height: 1080 },
   );
   return { framebuffer, device, context };
+}
+
+// Position of the queue submit that carried `encoder`, or -1 if it never
+// reached the queue.
+function submitPosition(device, encoder) {
+  return device.timeline.findIndex(
+    (entry) => entry.submitted?.includes(encoder) === true,
+  );
+}
+
+// Position of the first map request on `buffer`, or -1 if none was issued.
+function mapPosition(device, buffer) {
+  return device.timeline.findIndex((entry) => entry.mapped === buffer);
+}
+
+// A synchronous readback maps its buffer only after the pick frame carrying
+// its copy was submitted; mapping earlier would read the previous pass.
+function expectMappedAfterSubmit(device, buffer, frameEncoder) {
+  const submitted = submitPosition(device, frameEncoder);
+  expect(submitted).toBeGreaterThan(-1);
+  expect(mapPosition(device, buffer)).toBeGreaterThan(submitted);
 }
 
 describe("Renderer/WebGPU/WebGPUPickFramebuffer staging", function () {
@@ -328,23 +405,43 @@ describe("Renderer/WebGPU/WebGPUPickFramebuffer staging", function () {
   });
 
   it("keeps sync and async readbacks on separate buffers", async function () {
-    const { framebuffer, device } = makeFramebuffer({ deferMaps: true });
+    const { framebuffer, device, context } = makeFramebuffer({
+      deferMaps: true,
+    });
+    const frameEncoder = context.currentCommandEncoder;
 
     framebuffer.end({ width: 3, height: 3 }, 1);
     const asyncResult = framebuffer.endAsync({ width: 3, height: 3 }, {}, 1);
-    // A second sync request while the first buffer is mapping-pending must be
-    // skipped instead of reallocating or submitting into the mapped slot.
+    // A second sync request while the first buffer is mapping-pending must
+    // never copy into that slot. It takes its own overflow buffer instead of
+    // being dropped, so the warm-up pick for a new position is not lost.
     framebuffer.end({ width: 3, height: 3 }, 1);
 
-    expect(device.buffers.length).toBe(2);
-    expect(device.copies.length).toBe(2);
-    expect(device.buffers[0].descriptor.label).toBe("Pick sync staging buffer");
-    expect(device.buffers[1].descriptor.label).toBe(
+    expect(device.buffers.map((buffer) => buffer.descriptor.label)).toEqual([
+      "Pick sync staging buffer",
       "Pick async staging buffer",
+      "Pick sync overflow staging buffer",
+    ]);
+    expect(device.copies.map((copy) => copy.destination.buffer)).toEqual(
+      device.buffers,
     );
-    expect(device.copies[0].destination.buffer).not.toBe(
-      device.copies[1].destination.buffer,
+    // Both synchronous copies ride the pick frame's own encoder, beside the
+    // pick draw; only the async readback owns and submits a private encoder.
+    expect(device.copies[0].encoder).toBe(frameEncoder);
+    expect(device.copies[2].encoder).toBe(frameEncoder);
+    expect(device.copies[1].encoder).not.toBe(frameEncoder);
+    expect(submitPosition(device, device.copies[1].encoder)).toBeGreaterThan(
+      -1,
     );
+    // Nothing may map a synchronous buffer before the frame carrying its copy
+    // is submitted.
+    expect(mapPosition(device, device.buffers[0])).toBe(-1);
+    expect(mapPosition(device, device.buffers[2])).toBe(-1);
+
+    context.endFrame();
+    expectMappedAfterSubmit(device, device.buffers[0], frameEncoder);
+    expectMappedAfterSubmit(device, device.buffers[2], frameEncoder);
+
     for (const resolveMap of device.mapResolvers.splice(0)) {
       resolveMap();
     }
@@ -352,18 +449,29 @@ describe("Renderer/WebGPU/WebGPUPickFramebuffer staging", function () {
     await Promise.resolve();
     expect(device.buffers[0].destroyed).toBe(false);
     expect(device.buffers[1].destroyed).toBe(true);
+    expect(device.buffers[2].destroyed).toBe(true);
     framebuffer.destroy();
   });
 
   it("reuses the exact-size sync staging buffer after it is unmapped", async function () {
-    const { framebuffer, device } = makeFramebuffer();
+    const { framebuffer, device, context } = makeFramebuffer();
+    const frameEncoder = context.currentCommandEncoder;
 
     framebuffer.end({ width: 3, height: 3 }, 1);
+    expect(mapPosition(device, device.buffers[0])).toBe(-1);
+    context.endFrame();
     await Promise.resolve();
     await Promise.resolve();
+    expectMappedAfterSubmit(device, device.buffers[0], frameEncoder);
+    expect(device.buffers[0].mapped).toBe(false);
+    framebuffer.begin(
+      { x: 100, y: 50, width: 3, height: 3 },
+      { x: 0, y: 0, width: 1920, height: 1080 },
+    );
     framebuffer.end({ width: 3, height: 3 }, 1);
 
     expect(device.buffers.length).toBe(1);
+    expect(device.copies.length).toBe(2);
     expect(device.buffers[0].descriptor.size).toBe(256 * 3);
     framebuffer.destroy();
   });
@@ -374,24 +482,37 @@ describe("Renderer/WebGPU/WebGPUPickFramebuffer staging", function () {
       nonzeroPixels: true,
       pickObject: { id: "first-location" },
     };
-    const { framebuffer, device } = makeFramebuffer(options);
+    const { framebuffer, device, context } = makeFramebuffer(options);
 
     framebuffer.end({ width: 3, height: 3 }, 1);
+    expect(device.mapResolvers.length).toBe(0);
+    context.endFrame();
     device.mapResolvers[0]();
     await Promise.resolve();
     await Promise.resolve();
     expect(framebuffer._lastReadPixels).not.toBeNull();
 
+    // The second query overlaps the first query's region but its center lies
+    // just outside it. A center inside it would be served by design: the
+    // widened gate reprojects a same-view cached readback for a cursor that
+    // moved within it.
     framebuffer.begin(
-      { x: 101, y: 50, width: 3, height: 3 },
+      { x: 102, y: 50, width: 3, height: 3 },
       { x: 0, y: 0, width: 1920, height: 1080 },
     );
     options.deferMaps = false;
+    const secondFrameEncoder = context.currentCommandEncoder;
     const result = framebuffer.end({ width: 3, height: 3 }, 1);
 
     expect(result).toEqual([]);
+    // The new query re-queries: its own copy rides the second pick frame.
+    expect(device.copies.length).toBe(2);
+    expect(device.copies[1].encoder).toBe(secondFrameEncoder);
+    expect(device.copies[1].source.origin[0]).toBe(102);
+    context.endFrame();
     await Promise.resolve();
     await Promise.resolve();
+    expect(framebuffer._lastReadRegion.logicalOriginX).toBe(102);
     framebuffer.destroy();
   });
 
@@ -430,13 +551,20 @@ describe("Renderer/WebGPU/WebGPUPickFramebuffer staging", function () {
       nonzeroPixels: true,
       pickObject: { id: "old-target" },
     };
-    const { framebuffer, device } = makeFramebuffer(options);
+    const { framebuffer, device, context } = makeFramebuffer(options);
+    const frameEncoder = context.currentCommandEncoder;
 
     framebuffer.end({ width: 3, height: 3 }, 1);
+    expect(mapPosition(device, device.buffers[0])).toBe(-1);
+    context.endFrame();
+    expectMappedAfterSubmit(device, device.buffers[0], frameEncoder);
     framebuffer.begin(
       { x: 10, y: 10, width: 3, height: 3 },
       { x: 0, y: 0, width: 800, height: 600 },
     );
+    // The old target's copy was submitted and its map is pending, so the
+    // bytes do arrive after the resize; only the publish is refused.
+    expect(device.mapResolvers.length).toBe(1);
     for (const resolveMap of device.mapResolvers.splice(0)) {
       resolveMap();
     }
@@ -472,29 +600,43 @@ describe("Renderer/WebGPU/WebGPUPickFramebuffer staging", function () {
 
   it("unmaps the sync buffer when mapped-range unpacking throws", async function () {
     const options = { throwGetMappedRange: true };
-    const { framebuffer, device } = makeFramebuffer(options);
+    const { framebuffer, device, context } = makeFramebuffer(options);
+    const frameEncoder = context.currentCommandEncoder;
 
     framebuffer.end({ width: 3, height: 3 }, 1);
+    expect(mapPosition(device, device.buffers[0])).toBe(-1);
+    context.endFrame();
     await Promise.resolve();
     await Promise.resolve();
+    expectMappedAfterSubmit(device, device.buffers[0], frameEncoder);
     expect(device.buffers[0].mapped).toBe(false);
 
     options.throwGetMappedRange = false;
+    framebuffer.begin(
+      { x: 100, y: 50, width: 3, height: 3 },
+      { x: 0, y: 0, width: 1920, height: 1080 },
+    );
     framebuffer.end({ width: 3, height: 3 }, 1);
+    context.endFrame();
     await Promise.resolve();
     await Promise.resolve();
     expect(device.buffers.length).toBe(1);
     expect(device.copies.length).toBe(2);
+    expect(device.copies[1].destination.buffer).toBe(device.buffers[0]);
     framebuffer.destroy();
   });
 
   it("keeps the previous sync buffer usable when resize allocation fails", async function () {
-    const { framebuffer, device } = makeFramebuffer();
+    const { framebuffer, device, context } = makeFramebuffer();
+    const firstFrameEncoder = context.currentCommandEncoder;
 
     framebuffer.end({ width: 3, height: 3 }, 1);
-    await Promise.resolve();
-    await Promise.resolve();
     const original = device.buffers[0];
+    expect(mapPosition(device, original)).toBe(-1);
+    context.endFrame();
+    await Promise.resolve();
+    await Promise.resolve();
+    expectMappedAfterSubmit(device, original, firstFrameEncoder);
 
     device.failNextBufferCreate = true;
     framebuffer.begin(
@@ -505,14 +647,19 @@ describe("Renderer/WebGPU/WebGPUPickFramebuffer staging", function () {
       framebuffer.end({ width: 3, height: 4 }, 1);
     }).toThrowError("synthetic createBuffer failure");
     expect(original.destroyed).toBe(false);
+    // Picking still completes the failed mini-frame.
+    context.endFrame();
 
     framebuffer.begin(
       { x: 100, y: 50, width: 3, height: 3 },
       { x: 0, y: 0, width: 1920, height: 1080 },
     );
+    const frameEncoder = context.currentCommandEncoder;
     framebuffer.end({ width: 3, height: 3 }, 1);
     expect(device.buffers.length).toBe(1);
     expect(device.copies.length).toBe(2);
+    expect(device.copies[1].destination.buffer).toBe(original);
+    expect(device.copies[1].encoder).toBe(frameEncoder);
     framebuffer.destroy();
   });
 
