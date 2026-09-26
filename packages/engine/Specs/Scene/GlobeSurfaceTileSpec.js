@@ -25,6 +25,12 @@ describe("Scene/GlobeSurfaceTile", function () {
     frameState = {
       context: {
         cache: {},
+        // Every graphics context answers getFeatureRenderer, and imagery
+        // texture creation asks it which backend path to take. Undefined
+        // selects the WebGL path that mockWebGL stubs; without the method the
+        // call throws and every imagery tile fails, so no tile could ever
+        // load its own imagery.
+        getFeatureRenderer: () => undefined,
       },
     };
 
