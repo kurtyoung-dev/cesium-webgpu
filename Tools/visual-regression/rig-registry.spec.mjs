@@ -23,6 +23,40 @@ import {
   validateRig,
 } from "./lib/rig-registry.mjs";
 
+// THE registry census, and the only one left in the tree. Adding or removing a
+// rig is a reviewed act: update this object in the same commit as the rig
+// file; no other spec pins the count. Size and per-tag split are two fields
+// of ONE constant rather than two literals a later author can update one of.
+//
+// Until 2026-09-19 the size was pinned in three files across two runners. The
+// third — a contact-sheet test whose real subject was the rigId grammar, not
+// the count — was the one nobody found when the registry grew, and it held
+// CI's `guards` job red for six batches. The rule that replaced it: a spec
+// pins the registry's size only where the size IS the contract it asserts;
+// everywhere else it takes a non-vacuity floor and asserts the property.
+//
+// Deliberately not exported — importing a spec file from another spec file
+// re-registers its tests in the importer's run. A spec that needs the registry
+// should call `loadRigs()` and assert a property of what comes back.
+const REGISTRY_CENSUS = {
+  total: 41,
+  byTag: {
+    "wave-end": 10,
+    // The seeded set DX-101 names had 15 cloud rigs. The cloud count is 17
+    // because `orbital-fulldisc-6608km` and its `-imagery` sibling joined it:
+    // the orbital full-disc recipe camera every banded orbital capture on
+    // record was taken at, and the same camera with the globe left alone.
+    // Neither carries the `wave-end` tag, so `generateScenesJson` does not see
+    // them — the byte-identity case below is what proves that rather than
+    // this sentence.
+    cloud: 17,
+    "orbital-ladder": 4,
+    "saved-view": 3,
+    sandcastle: 3,
+    aurora: 4,
+  },
+};
+
 test("every rig loads and validates with zero violations", async () => {
   const rigs = await loadRigs();
   const violationsByRig = rigs.map((rig) => [rig.id, validateRig(rig)]);
@@ -40,21 +74,19 @@ test("every rig loads and validates with zero violations", async () => {
     }
   }
   // The seeded set DX-101 names: 10 wave-end, 15 cloud, 4 orbital-ladder,
-  // 3 saved-view, 3 sandcastle, 4 aurora. The cloud count is 17 because
-  // `orbital-fulldisc-6608km` and its `-imagery` sibling joined it: the
-  // orbital full-disc recipe camera every banded orbital capture on record was
-  // taken at, and the same camera with the globe left alone. Neither carries
-  // the `wave-end` tag, so `generateScenesJson` does not see them — the
-  // byte-identity case below is what proves that rather than this sentence.
-  assert.deepEqual(countsByTag, {
-    "wave-end": 10,
-    cloud: 17,
-    "orbital-ladder": 4,
-    "saved-view": 3,
-    sandcastle: 3,
-    aurora: 4,
-  });
-  assert.equal(rigs.length, 41);
+  // 3 saved-view, 3 sandcastle, 4 aurora. Why the cloud count moved off the
+  // seeded 15 is recorded beside its field in REGISTRY_CENSUS, where the next
+  // author to move it will see it.
+  assert.deepEqual(
+    countsByTag,
+    REGISTRY_CENSUS.byTag,
+    "the per-tag census moved: update REGISTRY_CENSUS at the top of this file (byTag, and total if the rig count moved), in the same commit as the rig that moved it",
+  );
+  assert.equal(
+    rigs.length,
+    REGISTRY_CENSUS.total,
+    "the registry size moved: update REGISTRY_CENSUS.total at the top of this file, in the same commit as the rig that moved it — no other spec pins the size (a wave-end rig also regenerates scenes.json, which the byte-identity case enforces)",
+  );
 });
 
 test("the orbital full-disc pair differs only in how the globe is drawn", async () => {

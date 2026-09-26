@@ -751,7 +751,7 @@ test("validateContactSheetEntry refuses a renderer/slot id outside the closed vo
   );
 });
 
-test("validateContactSheetEntry refuses a rigId that is not kebab-case, and the 39 real registry ids all pass", async () => {
+test("validateContactSheetEntry refuses a rigId that is not kebab-case, and every real registry id passes", async () => {
   for (const badRigId of [
     "globe-default — REGRESSION vs baseline",
     "Globe_Default",
@@ -770,8 +770,19 @@ test("validateContactSheetEntry refuses a rigId that is not kebab-case, and the 
   // The data-pinning half: the grammar is tied to the registry's actual
   // contents, not to an opinion about what "kebab-case" means. A future rig
   // id that diverged from this shape would turn this assertion red.
+  //
+  // How MANY rigs there are is not this test's contract — that every one of
+  // them satisfies the grammar is. The census that makes adding a rig a
+  // reviewed act lives in `Tools/visual-regression/rig-registry.spec.mjs`, and
+  // transcribing the size here a second time only meant a new rig turned this
+  // unrelated landing-rules runner red as well. What the size is replaced by
+  // is the floor the loop below actually needs: an empty registry would let it
+  // pass without checking anything.
   const rigs = await loadRigs();
-  assert.equal(rigs.length, 39, "expected the measured registry size");
+  assert.ok(
+    rigs.length > 0,
+    "loadRigs() returned no rigs, so the conformance loop below would pass vacuously",
+  );
   const nonConforming = rigs
     .map((rig) => rig.id)
     .filter((id) => !RIG_ID_PATTERN.test(id));

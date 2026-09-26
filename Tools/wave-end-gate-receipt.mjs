@@ -618,9 +618,11 @@ const CONTACT_SHEET_MD5_PATTERN = /^[0-9a-f]{32}$/;
 
 /**
  * The kebab-case grammar every rig id in `lib/rig-registry.mjs`'s registry
- * satisfies today (39 of 39 — pinned by a spec case that loads the real
- * registry via `loadRigs()` and asserts every id matches; a future rig id
- * that diverged would turn that case red). `rig-registry.mjs`'s own
+ * satisfies today (every id, whatever the registry's size — pinned by a spec
+ * case that loads the real registry via `loadRigs()` and asserts they all
+ * match; a future rig id that diverged would turn that case red). The size
+ * itself is deliberately not restated here: it is pinned once, in
+ * `visual-regression/rig-registry.spec.mjs`. `rig-registry.mjs`'s own
  * `validateRig` requires only a non-empty string for `rig.id` — there is no
  * grammar there to import, and `rig-registry.mjs` is a landed file outside
  * this lane's ownership, so the grammar is declared here rather than added

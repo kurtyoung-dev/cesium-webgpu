@@ -1263,12 +1263,17 @@ test("I. every registry rig declares a SETTLE, not a readiness predicate — the
   // needed changing — a 30-frame settle is a correct settle, and was never
   // the reason the WebGPU cells refused.
   //
-  // The census read 39 / 36 / 3 when it was taken (Batch 1517). It reads
-  // 41 / 38 / 3 since the orbital full-disc pair joined the registry, both
-  // declaring a 60-frame settle — which is the census's claim holding rather
-  // than failing: a rig added later still declares a settle and still declares
-  // no predicate. The absolute is asserted anyway, because a census that stops
-  // counting stops being a census.
+  // The census read 39 / 36 / 3 when it was taken (Batch 1517) and 41 / 38 / 3
+  // once the orbital full-disc pair joined the registry, both declaring a
+  // 60-frame settle — the census's claim holding rather than failing: a rig
+  // added later still declares a settle and still declares no predicate. That
+  // UNIVERSAL claim is what this test owes the seam, and the loop below
+  // asserts it rig by rig. The totals are incidental to it, so they are no
+  // longer transcribed here: a size pinned in this file made every rig
+  // addition turn the seam spec red alongside the registry's own census, for
+  // no claim this test is responsible for. The one census that makes adding a
+  // rig a reviewed act lives in `rig-registry.spec.mjs`; this file asserts the
+  // shape of the registry, not its size.
   const kinds = new Map();
   for (const rig of REGISTRY_RIGS) {
     assert.ok(
@@ -1283,11 +1288,14 @@ test("I. every registry rig declares a SETTLE, not a readiness predicate — the
       `${rig.id} declares readiness predicates, which the census says none do`,
     );
   }
-  assert.equal(REGISTRY_RIGS.length, 41);
-  assert.deepEqual([...kinds.entries()].sort(), [
-    ["settleFrames", 38],
-    ["settleMs", 3],
-  ]);
+  assert.ok(
+    REGISTRY_RIGS.length > 0,
+    "loadRigs() returned no rigs, so the loop above asserted nothing",
+  );
+  // Both settle kinds are really present in the registry, so neither branch of
+  // the loop's disjunction is being carried by the other — the non-vacuity the
+  // pinned 38 / 3 split was doing, stated in a form a new rig cannot break.
+  assert.deepEqual([...kinds.keys()].sort(), ["settleFrames", "settleMs"]);
 
   // And the seed rig the Edge recipe names is one of the settle-frame rigs.
   const seed = rigById(REGISTRY_RIGS, "globe-default");
