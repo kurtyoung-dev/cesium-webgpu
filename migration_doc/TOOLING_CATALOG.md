@@ -222,12 +222,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1416 |
-| ACTIVE | 1174 |
+| Files in census | 1417 |
+| ACTIVE | 1175 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 45 |
 | NO @status HEADER | 1 |
-| Classes | probe 677, spec 396, other 157, lib 139, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
+| Classes | probe 677, spec 397, other 157, lib 139, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
 
 ### Tools/ (64)
 
@@ -314,7 +314,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| comment-flavour-corpus.spec.mjs | spec | ACTIVE | — | 1 | Whole-corpus agreement between the source and the comment-reading transforms: minify-time WGSL strip vs the scanner, runtime GLSL doc-comment strip (no throw, same code, same czm_ set), no release-pragma anchor inside prose or inside a generated shader module, and a census of the engine code that reads shader source text, pinned to its classification. |
+| comment-flavour-corpus.spec.mjs | spec | ACTIVE | 2026-09-26 | 1 | Whole-corpus agreement between the source and the comment-reading transforms: minify-time WGSL strip vs the scanner, runtime GLSL doc-comment strip (no throw, same code, same czm_ set), no release-pragma anchor inside prose or inside a generated shader module, and a census of the engine code that reads shader source text, pinned to its classification. |
 | empty-module-stub.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Prove the single-backend build stub answers instanceof without throwing, keeps throwing on real use, and binds every named export of a stubbed module. |
 | wgsl-chunk-resolution.spec.mjs | spec | ACTIVE | 2026-09-19 | 7 | Prove the minify transform cannot change which csm_* calls a WGSL module leaves undeclared after the engine's real chunk splice, so a shipped shader never calls a function nothing defines. |
 | wgsl-comment-strip.spec.mjs | spec | ACTIVE | 2026-09-19 | 4 | Prove the minify-time WGSL comment strip preserves every //>> directive byte-exact, leaves unminified modules untouched, and is wired into the build. |
@@ -323,11 +323,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| comment-flavour-gate.spec.mjs | spec | ACTIVE | — | 1 | Pins that comment-only-diff refuses comment edits that change a shipped or run artifact (release pragma strip, minified WGSL, runtime GLSL strip, bundler annotations, lint and reference directives, ASI), still passes true comment-only edits, and keeps its vendored transforms pinned to their sources. |
+| comment-flavour-gate.spec.mjs | spec | ACTIVE | 2026-09-26 | 1 | Pins that comment-only-diff refuses comment edits that change a shipped or run artifact (release pragma strip, minified WGSL, runtime GLSL strip, bundler annotations, lint and reference directives, ASI), still passes true comment-only edits, and keeps its vendored transforms pinned to their sources. |
 | comment-marker-guard.mjs | other | ACTIVE | 2026-08-21 | 28 | C16 lint guard scanning engine/widgets Source for banned tracker-marker vocabulary, with a clean-list ratchet; lint-staged + one-shot modes. |
 | comment-marker-guard.spec.mjs | spec | ACTIVE | 2026-09-18 | 7 | node:test contract for the C16 marker guard: rules still match (self-test vs broken rule), scope does not overreach, ratchet honest both ways. |
-| comment-only-diff.mjs | other | ACTIVE | 2026-08-16 | 10 | Binding gate of every C16 rewrite batch: strips comments from both sides of a diff to a canonical form and requires the remaining code identical. |
-| comment-only-diff.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Mutant suite for the comment-only-diff gate: every rejected mutant is paired with the nearest legitimate edit that must be accepted. |
+| comment-only-diff.mjs | other | ACTIVE | 2026-09-26 | 10 | Binding gate of every C16 rewrite batch: strips comments from both sides of a diff to a canonical form and requires the remaining code identical. |
+| comment-only-diff.spec.mjs | spec | ACTIVE | 2026-09-26 | 4 | Mutant suite for the comment-only-diff gate: every rejected mutant is paired with the nearest legitimate edit that must be accepted. |
 | spec-anchor-sweep.mjs | other | ACTIVE | 2026-08-20 | 4 | Reports grammar, comment-only, and containment-locator anchors from spec literals against explicitly supplied source files. |
 | spec-anchor-sweep.spec.mjs | spec | NO @purpose HEADER | 2026-08-20 | 2 | — |
 | string-literal-marker-scan.mjs | other | ACTIVE | 2026-09-01 | 7 | Finds banned tracker vocabulary inside string and template literals that the comment-marker guard intentionally cannot see. |
@@ -339,10 +339,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| comment-scanner.mjs | lib | ACTIVE | 2026-09-01 | 20 | The one tokenizer both C16 instruments share (JS/TS/WGSL/GLSL comment vs code vs string), fail-closed, with semantic-comment retention rules. |
-| flavour-views.mjs | lib | ACTIVE | — | 4 | Per-reader views for the comment-only gate: the release pragma strip (scripts and generated shader modules), the minify-time WGSL comment strip, the runtime GLSL doc-comment strip, the engine code that reads shader source text, the debug-pragma lint and next-line directives, so a comment edit that changes a shipped artifact or a gate's verdict is refused. |
-| marker-grammar.mjs | lib | ACTIVE | 2026-08-28 | 16 | Machine-decidable half of the fork comment standard: the banned tracker-vocabulary regex rules (add-only ids) driven by the marker guard. |
-| shader-text-readers.mjs | lib | ACTIVE | — | 3 | Harvests every string or regex literal the renderer and scene code match against text, classifies how each one uses shader source, and describes each match by where it falls (code or comment), so the comment-only gate can refuse a comment edit that one of those readers would see. |
+| comment-scanner.mjs | lib | ACTIVE | 2026-09-26 | 20 | The one tokenizer both C16 instruments share (JS/TS/WGSL/GLSL comment vs code vs string), fail-closed, with semantic-comment retention rules. |
+| flavour-views.mjs | lib | ACTIVE | 2026-09-26 | 4 | Per-reader views for the comment-only gate: the release pragma strip (scripts and generated shader modules), the minify-time WGSL comment strip, the runtime GLSL doc-comment strip, the engine code that reads shader source text, the debug-pragma lint and next-line directives, so a comment edit that changes a shipped artifact or a gate's verdict is refused. |
+| marker-grammar.mjs | lib | ACTIVE | 2026-09-26 | 16 | Machine-decidable half of the fork comment standard: the banned tracker-vocabulary regex rules (add-only ids) driven by the marker guard. |
+| shader-text-readers.mjs | lib | ACTIVE | 2026-09-26 | 3 | Harvests every string or regex literal the renderer and scene code match against text, classifies how each one uses shader source, and describes each match by where it falls (code or comment), so the comment-only gate can refuse a comment edit that one of those readers would see. |
 
 ### Tools/jsdoc/cesium_template/ (1)
 
@@ -431,7 +431,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1069)
+### Tools/visual-regression/ (1070)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -514,6 +514,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-genus-morphology.spec.mjs | spec | ACTIVE | 2026-09-18 | 10 | C13-16 cirrus row: add-only uniform layout, exact CUMULUS byte-neutrality, structural fibre anisotropy/shear metrics, mutation-rejected predicates. |
 | cloud-ibl-revision.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | Source-anchored guard that WebGPUDynamicEnvironmentMapManager and the procedural cloud renderer keep the IBL revision handshake wired (CRLF-safe). |
 | cloud-image-analysis.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | node:test guard for lib/cloud-image-analysis.mjs: analyze/compare/periodicity-factorial classification on deterministic synthetic noise images. |
+| cloud-march-budget.spec.mjs | spec | ACTIVE | — | 3 | Executes the pure cloud resolver from Node to prove that every input path (the tier dial, raw cloudQuality and the debug realization override) resolves to a march whose cost, counted over the shader's real interval sentinel, never exceeds the budget; that an ask inside the budget resolves byte-identical to the resolver as it stood before the budget; that an ask outside it keeps every field but the step counts, loses primary steps before light steps, and reports the ask; that the measured completions and hangs fall on the stated sides; and that each gate made unreachable turns the matching assertion red. |
 | cloud-march-emission.spec.mjs | spec | ACTIVE | 2026-09-16 | 8 | C13-10: march-emitted reconstruction depth behind one compile-time bit, four sibling pipelines compile verbatim, CPU-twin cross-validation, mutants. |
 | cloud-march-transfer.spec.mjs | spec | ACTIVE | 2026-08-21 | 7 | Permanent home of the R3 march-transfer model: predicts the integrated image against 2026-08-06 tour ground truth; mutation group rebuilt non-vacuous. |
 | cloud-morphology-composition.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | C13-16 U2 candidate contract: genus-conditioned variance budget + fibre carve before erosion; WGSL wiring invariants and carve-after-erosion mutants. |

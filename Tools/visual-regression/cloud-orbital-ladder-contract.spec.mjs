@@ -1694,8 +1694,9 @@ function installFakePage() {
           marchHeight: 1024,
           marchPixels: 1048576,
           halfResActive: 1,
-          primarySampleBudget: 100663296,
-          lightSampleBudget: 805306368,
+          // Three intervals per step: the march loop's sentinel.
+          primarySampleBudget: 301989888,
+          lightSampleBudget: 2415919104,
           weatherUploads: 0,
           weatherUploadBytes: 0,
           weatherCacheHits: 3,

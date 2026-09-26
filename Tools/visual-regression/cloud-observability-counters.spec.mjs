@@ -450,7 +450,8 @@ test("C6 the snapshot's sample figures are BOUNDED PROXIES derived from the budg
   counters.marchPixels = 1000;
   counters.maxSteps = 48;
   counters.lightSteps = 4;
-  counters.primarySampleBudget = counters.marchPixels * counters.maxSteps;
+  // The march loop may take three intervals per step on a single deck.
+  counters.primarySampleBudget = counters.marchPixels * 3 * counters.maxSteps;
   counters.lightSampleBudget =
     counters.primarySampleBudget * counters.lightSteps;
   counters.historyAccepted = 1;
@@ -460,8 +461,8 @@ test("C6 the snapshot's sample figures are BOUNDED PROXIES derived from the budg
     temporal: { generation: 3, resetCount: 2, acceptedFrames: 97 },
     samples: [pass(HALF_RES, 0, 2), pass(SKY_FILL, 3, 4)],
   });
-  assert.equal(snap.raymarch.primarySampleBudget, 48000);
-  assert.equal(snap.raymarch.lightSampleBudget, 192000);
+  assert.equal(snap.raymarch.primarySampleBudget, 144000);
+  assert.equal(snap.raymarch.lightSampleBudget, 576000);
   assert.equal(snap.reconstruction.acceptanceThisFrame, 1);
   assert.equal(snap.reconstruction.lifetime.resetCount, 2);
   assert.equal(snap.gpu.clouds.cloudCoveredMs, 2);

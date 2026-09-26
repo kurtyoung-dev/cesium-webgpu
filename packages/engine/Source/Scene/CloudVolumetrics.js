@@ -155,7 +155,14 @@ function CloudVolumetrics(options) {
   // ── Quality ──
 
   /**
-   * Number of ray-march steps for cloud rendering (32-128). WebGPU only.
+   * Number of ray-march steps for cloud rendering. Any value other than the
+   * default 64 replaces the quality presets with a live-noise march of this
+   * many steps. The steps that run are held to a per-frame march budget, and a
+   * march costs more on a larger canvas, so a large value, or a moderate one on
+   * a large canvas, runs fewer steps than asked: up to 128 fits a single cloud
+   * deck at 1920x1080 without cloud-aware god rays, and a budgeted march runs
+   * at most 128. The renderer's cloud statistics report the steps asked for
+   * beside the steps that ran. WebGPU only.
    * @type {number}
    * @default 64
    */

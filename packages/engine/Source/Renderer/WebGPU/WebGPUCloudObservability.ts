@@ -142,8 +142,8 @@ export interface CloudFrameCounters {
   /** Resolved light-march step budget (`CloudUniforms.lightSteps`). */
   lightSteps: number;
   // The asks beside the realised values. Each pair differs only where a clamp,
-  // a restricted bit or an absent resource moved the ask, so a receipt can
-  // tell "asked" from "ran" without re-deriving either.
+  // a restricted bit, an absent resource or the march budget moved the ask, so
+  // a receipt can tell "asked" from "ran" without re-deriving either.
   /** Primary-march steps this frame asked for. */
   requestedPrimarySteps: number;
   /** Light-march steps this frame asked for. */
@@ -153,12 +153,20 @@ export interface CloudFrameCounters {
   /** `CLOUD_QF_*` word the pass uploaded (`CloudUniforms.qualityFlags`). */
   qualityFlags: number;
   /**
-   * Bounded proxy: `marchPixels * maxSteps`. An upper bound, never a sample
-   * count.
+   * Bounded proxy: `marchPixels` times the intervals the march loop may take,
+   * three per step on each deck marched. An upper bound, never a sample count.
    */
   primarySampleBudget: number;
-  /** Bounded proxy: `marchPixels * maxSteps * lightSteps`. */
+  /** Bounded proxy: `primarySampleBudget * lightSteps`. */
   lightSampleBudget: number;
+  /** 1 when the march budget moved a step count of the ask this frame. */
+  budgetApplied: number;
+  /** The march budget this frame was held to, in march-cost units. */
+  marchBudget: number;
+  /** March cost of the steps that ran. */
+  marchCost: number;
+  /** March cost of the ask; `Infinity` for an unbounded step count. */
+  requestedMarchCost: number;
 
   /** 1 when the temporal resolve accepted the reprojected history this frame. */
   historyAccepted: number;
@@ -271,6 +279,10 @@ const RESET_FIELDS: readonly (keyof CloudFrameCounters)[] = Object.freeze([
   "qualityFlags",
   "primarySampleBudget",
   "lightSampleBudget",
+  "budgetApplied",
+  "marchBudget",
+  "marchCost",
+  "requestedMarchCost",
   "historyAccepted",
   "historyRejected",
   "historyReset",
@@ -322,6 +334,10 @@ export function createCloudFrameCounters(): CloudFrameCounters {
     qualityFlags: 0,
     primarySampleBudget: 0,
     lightSampleBudget: 0,
+    budgetApplied: 0,
+    marchBudget: 0,
+    marchCost: 0,
+    requestedMarchCost: 0,
     historyAccepted: 0,
     historyRejected: 0,
     historyReset: 0,
@@ -705,6 +721,10 @@ export function snapshotCloudObservability(
       requestedQualityFlags: c.requestedQualityFlags,
       primarySampleBudget: c.primarySampleBudget,
       lightSampleBudget: c.lightSampleBudget,
+      budgetApplied: c.budgetApplied === 1,
+      marchBudget: c.marchBudget,
+      marchCost: c.marchCost,
+      requestedMarchCost: c.requestedMarchCost,
     },
     reconstruction: {
       resolveWidth: c.resolveWidth,

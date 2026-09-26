@@ -66,8 +66,11 @@ import type { CloudFrameCounters } from "./WebGPUCloudObservability.js";
 // `qualityFlags` assembly: the preset module is their only producer, and a
 // local `resolveCloudQuality` here would make that module's table inert.
 import {
+  applyCloudMarchBudget,
   buildCloudQualityBlock,
   buildCloudQualityInputs,
+  cloudMarchIntervals,
+  describeCloudMarchBudget,
   resolveCloudPreset,
   resolveCloudRealization,
   shouldDefaultPhysicalAerial,
@@ -3249,13 +3252,15 @@ function timedCloudPass(
  * debug builds applies the realization override's flag half. Called once per
  * execute, after every fold into float 74, because the override must be that
  * word's last writer: clearing one bit then leaves every other bit as the frame
- * assembled it. Without an override the ask is the resolved value itself.
+ * assembled it. Without an override the ask is what the dials resolved before
+ * the march budget.
  *
  * @param data The packed uniform floats, float 74 fully folded.
  * @param counters This execute's counter record.
- * @param preset The resolved preset, step override already applied.
+ * @param preset The resolved preset, step override and march budget applied.
  * @param override The debug realization override, if one is set.
  * @param bakedNoiseResident Whether the baked noise volumes are resident.
+ * @param asked The preset before the march budget; `preset` when omitted.
  */
 function publishCloudRealization(
   data: Float32Array,
@@ -3263,9 +3268,10 @@ function publishCloudRealization(
   preset: CloudTierPreset,
   override: CloudRealizationOverride | null | undefined,
   bakedNoiseResident: boolean,
+  asked: CloudTierPreset = preset,
 ): void {
-  counters.requestedPrimarySteps = preset.primarySteps;
-  counters.requestedLightSteps = preset.lightSteps;
+  counters.requestedPrimarySteps = asked.primarySteps;
+  counters.requestedLightSteps = asked.lightSteps;
   counters.requestedQualityFlags = data[74];
   //>>includeStart('debug', pragmas.debug);
   // The shader ANDs bit 13 with bit 0, so clearing bit 0 alone also leaves the
@@ -3278,6 +3284,7 @@ function publishCloudRealization(
       data[74],
       override,
       bakedNoiseResident,
+      asked,
     );
     counters.requestedPrimarySteps = realization.requestedPrimarySteps;
     counters.requestedLightSteps = realization.requestedLightSteps;
@@ -3488,14 +3495,28 @@ export function prepareCloudFrameAndEncodeMask(
 
     // Quality parameters. The resolver reads the `config.cloudVolumetricQuality`
     // preset string, the camera altitude, and the enable and disable altitudes
-    // from `AtmosphericConditions` for auto mode, and returns `config.cloudQuality`
-    // verbatim when that field has been set to a non-default value.
+    // from `AtmosphericConditions` for auto mode, and takes `config.cloudQuality`
+    // as the step count when that field has been set to a non-default value.
+    // Either way the result is held to the march budget.
     const cloudConfig = config as unknown as CloudQualityConfigLike;
     const cameraHeightM = frameState.camera?.positionCartographic?.height ?? 0;
     const qualityInputs = buildCloudQualityInputs(cloudConfig, cameraHeightM);
     //>>includeStart('debug', pragmas.debug);
     qualityInputs.realizationOverride = cache.realizationOverride;
     //>>includeEnd('debug');
+    // The budget costs the march this frame will run, so it needs the canvas,
+    // whether the bake above left the noise volumes resident, whether the
+    // multi-deck march multiplies the intervals, and whether the mask pass
+    // marches the canvas a second time.
+    const canvasW = context._canvas?.width ?? 1920;
+    const canvasH = context._canvas?.height ?? 1080;
+    const multiDeckOn =
+      (config as unknown as { cloudMultiDeck?: boolean }).cloudMultiDeck ===
+      true;
+    qualityInputs.viewportPixels = canvasW * canvasH;
+    qualityInputs.bakedNoiseResident = cache.noiseBaked && cache.noise !== null;
+    qualityInputs.multiDeck = multiDeckOn;
+    qualityInputs.transmittanceMaskPass = captureRequested;
     // One resolver. The preset supplies the step counts at floats 44 and 45, the
     // `qualityFlags` bitfield at 74, the light-sample scale at 78, the erosion
     // floor at 79 and the tier lighting row at 172-174 — all of them through the
@@ -3503,7 +3524,8 @@ export function prepareCloudFrameAndEncodeMask(
     // The flag bits that depend on whether this frame's resources allocated are
     // supplied as runtime facts, and the two LUT-coupling bits are folded into
     // float 74 further down, where their modes are known.
-    const cloudPreset = resolveCloudPreset(qualityInputs);
+    let cloudPreset = resolveCloudPreset(qualityInputs);
+    let cloudMarchBudget = describeCloudMarchBudget(qualityInputs, cloudPreset);
     // Half-resolution gate. A tier that resolves `renderResScale` below 1 marches
     // into a half-size target and bilaterally upscales; the cinematic tier and the
     // `cloudQuality` escape hatch keep it at 1.0 and take the full-resolution
@@ -3511,8 +3533,6 @@ export function prepareCloudFrameAndEncodeMask(
     // the half-resolution resources actually allocating, so a target or pipeline
     // that cannot be built falls back to full resolution rather than dropping the
     // clouds.
-    const canvasW = context._canvas?.width ?? 1920;
-    const canvasH = context._canvas?.height ?? 1080;
     let halfResActive =
       cloudPreset.renderResScale < 1.0 && cloudPreset.renderResScale > 0.0;
     if (halfResActive) {
@@ -3533,6 +3553,15 @@ export function prepareCloudFrameAndEncodeMask(
         console.error(
           `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud half-res target/pipeline allocation failed (${canvasW}x${canvasH} @${cloudPreset.renderResScale}); falling back to full-res.`,
         );
+        // The frame now marches every canvas pixel, so the budget is applied
+        // again to the same ask at that cost. `renderResScale` is not a step
+        // count, so the budget leaves it, and this gate, as they were.
+        qualityInputs.fullResolutionFallback = true;
+        cloudPreset = applyCloudMarchBudget(
+          cloudMarchBudget.asked,
+          qualityInputs,
+        );
+        cloudMarchBudget = describeCloudMarchBudget(qualityInputs, cloudPreset);
       }
       halfResActive = allocated;
     }
@@ -3609,9 +3638,17 @@ export function prepareCloudFrameAndEncodeMask(
     counters.halfResActive = halfResActive ? 1 : 0;
     counters.maxSteps = qualityBlock.maxSteps;
     counters.lightSteps = qualityBlock.lightSteps;
-    counters.primarySampleBudget = counters.marchPixels * counters.maxSteps;
+    // Every interval the march loop may take rather than one per step: the
+    // loop's sentinel allows three per step, on each deck the frame marches.
+    counters.primarySampleBudget =
+      counters.marchPixels *
+      cloudMarchIntervals(qualityBlock.maxSteps, multiDeckOn);
     counters.lightSampleBudget =
       counters.primarySampleBudget * counters.lightSteps;
+    counters.budgetApplied = cloudMarchBudget.budgetApplied ? 1 : 0;
+    counters.marchBudget = cloudMarchBudget.budget;
+    counters.marchCost = cloudMarchBudget.cost;
+    counters.requestedMarchCost = cloudMarchBudget.requestedCost;
     counters.resolveWidth = temporalActive ? cache.temporalWidth : 0;
     counters.resolveHeight = temporalActive ? cache.temporalHeight : 0;
     counters.resolvePixels = counters.resolveWidth * counters.resolveHeight;
@@ -3897,10 +3934,8 @@ export function prepareCloudFrameAndEncodeMask(
     // marches exactly one shell between `cloudLayerBottom` and `cloudLayerTop` and
     // never reads the deck bounds. The bounds come from
     // `CloudTypeProfile.CloudDeck.bounds`, the same table the per-genus deck
-    // assignment uses, so the two cannot disagree.
-    const multiDeckOn =
-      (config as unknown as { cloudMultiDeck?: boolean }).cloudMultiDeck ===
-      true;
+    // assignment uses, so the two cannot disagree. `multiDeckOn` is read once,
+    // above, where the march budget also needs it.
     const deckBounds = CloudTypeProfile.CloudDeck.bounds as number[][];
     data[offset++] = multiDeckOn ? 1.0 : 0.0; // 112 multiDeck
     data[offset++] = 0.0; // 113 pad
@@ -4205,6 +4240,7 @@ export function prepareCloudFrameAndEncodeMask(
       cloudPreset,
       qualityInputs.realizationOverride,
       cache.noiseBaked && cache.noise !== null,
+      cloudMarchBudget.asked,
     );
 
     // Resolve the weather view: the procedural map when enabled, a 1×1 white

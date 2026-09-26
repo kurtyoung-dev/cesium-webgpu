@@ -84,6 +84,37 @@ export interface CloudQualityInputs {
    * strip every reader, so a value set here there changes nothing.
    */
   realizationOverride?: CloudRealizationOverride | null;
+  /**
+   * Drawing-buffer pixels the cloud pass covers at full resolution; the march
+   * budget scales it by the preset's `renderResScale`. Absent, the budget
+   * costs {@link CLOUD_MARCH_REFERENCE_PIXELS}.
+   */
+  viewportPixels?: number;
+  /**
+   * Whether the baked noise volumes are resident this frame. Without them the
+   * march samples live noise, so the budget costs an absent or false value as
+   * live noise whatever the preset asked for.
+   */
+  bakedNoiseResident?: boolean;
+  /** `cloudMultiDeck`: the march runs once per deck. */
+  multiDeck?: boolean;
+  /**
+   * True when the reduced-resolution target a preset asks for could not
+   * allocate and the frame marches every canvas pixel instead, so the budget
+   * costs the whole canvas.
+   */
+  fullResolutionFallback?: boolean;
+  /**
+   * Whether the frame also encodes the transmittance-mask pass (cloud-aware
+   * god rays), which re-runs the primary march over every canvas pixel on the
+   * same step counts.
+   */
+  transmittanceMaskPass?: boolean;
+  /**
+   * The device's march budget, in the units of {@link cloudMarchCost}. Absent
+   * or not a positive finite number, {@link CLOUD_MARCH_BUDGET_DEFAULT} applies.
+   */
+  marchBudget?: number;
 }
 
 /**
@@ -126,10 +157,11 @@ export interface CloudRealizationReport {
 
 /**
  * The caps keep the override from raising the per-pixel workload above the
- * larger of 128 × 8 and what the dials already resolved, so a measurement dial
- * cannot ask the device for the multi-fold workloads that stall it. On the tier
- * path that bound is 128 × 8, a third above the cinematic tier's 96 × 8; on the
- * escape hatch an override of one count keeps the other's raw-derived value.
+ * larger of 128 × 8 and what the dials already resolved. On the tier path that
+ * bound is 128 × 8, a third above the cinematic tier's 96 × 8; on the escape
+ * hatch an override of one count keeps the other's raw-derived value. The caps
+ * are per pixel and blind to the noise source, so they are not what keeps a
+ * frame finishable: the march budget is, and it applies after them.
  */
 export const CLOUD_OVERRIDE_MAX_PRIMARY_STEPS = 128;
 export const CLOUD_OVERRIDE_MAX_LIGHT_STEPS = 8;
@@ -263,10 +295,20 @@ function resolveTier(inputs: CloudQualityInputs): number {
  * and a light-step count derived from it, which bypasses the reconstruction
  * stack. The `6 * sqrt(raw / 64)` light-step arithmetic carried over from the
  * deleted `resolveCloudQuality` unchanged and now lives here only.
+ *
+ * Whatever the dials and the realization override ask for, the result is held
+ * to the march budget last (see {@link cloudMarchCost}): an ask inside it is
+ * returned unchanged, and one outside it loses primary steps, then light
+ * steps, and nothing else. {@link describeCloudMarchBudget} reports the ask.
  */
 export function resolveCloudPreset(
   inputs: CloudQualityInputs,
 ): CloudTierPreset {
+  return applyCloudMarchBudget(resolveAskedPreset(inputs), inputs);
+}
+
+/** The preset the dials and any realization override ask for. */
+function resolveAskedPreset(inputs: CloudQualityInputs): CloudTierPreset {
   const preset = resolveDialPreset(inputs);
   //>>includeStart('debug', pragmas.debug);
   // The override resolves here, after the tier or escape decision, so it moves
@@ -409,6 +451,8 @@ function flagMask(value: number | undefined): number {
  * @param qualityFlags The frame's final `qualityFlags` word before the override.
  * @param override The override to apply.
  * @param bakedNoiseResident Whether the baked noise volumes are resident.
+ * @param asked The preset before the march budget, whose step counts are the
+ * ask when the override names none; the resolved preset when omitted.
  * @returns {CloudRealizationReport}
  */
 export function resolveCloudRealization(
@@ -416,6 +460,7 @@ export function resolveCloudRealization(
   qualityFlags: number,
   override: CloudRealizationOverride,
   bakedNoiseResident: boolean,
+  asked: CloudTierPreset = preset,
 ): CloudRealizationReport {
   const base = qualityFlags >>> 0;
   const askedSet = flagMask(override.qualityFlagsSet);
@@ -431,12 +476,309 @@ export function resolveCloudRealization(
       0;
   }
   return {
-    requestedPrimarySteps: override.primarySteps ?? preset.primarySteps,
+    requestedPrimarySteps: override.primarySteps ?? asked.primarySteps,
     primarySteps: preset.primarySteps,
-    requestedLightSteps: override.lightSteps ?? preset.lightSteps,
+    requestedLightSteps: override.lightSteps ?? asked.lightSteps,
     lightSteps: preset.lightSteps,
     requestedQualityFlags: ((base | askedSet) & ~askedClear) >>> 0,
     qualityFlags: realised,
+  };
+}
+
+// ── The march budget ────────────────────────────────────────────────────────
+//
+// A frame's march cost is
+//
+//   marchPixels × marches × 3·trunc(primarySteps) × lightTaps × noiseWeight
+//
+// where `marchPixels` is the viewport scaled by the preset's `renderResScale`
+// (the whole viewport when that target fell back), plus the whole viewport
+// again when the transmittance-mask pass re-runs the march; `marches` is 3 on
+// the multi-deck march and 1 otherwise; `3·steps` is the march loop's sentinel
+// (the most intervals one ray can take, coarse skips and fine steps together);
+// `lightTaps` is what the light march takes per interval (six on the cone
+// march, otherwise the shader's own `max(1, trunc(lightSteps ×
+// lightSampleScale))`); and `noiseWeight` is 1 for resident baked noise and 2
+// for live noise. Counts are read as the shader reads them, after the f32
+// upload. Jitter, erosion and the density domain are not costed, because no
+// measurement separates them. Whether the compiler drops the mask pass's unused
+// light march is unmeasured, so that pass is costed as a full march.
+//
+// Costing light taps as a product with the steps under-costs an interval's own
+// density sample when the ask has few taps, so a budgeted frame also runs no
+// more primary steps than the most a frame has been measured to finish.
+//
+// The budget is deliberately a cost ceiling, not a clamp on any one dial: the
+// same step count is safe or not depending on the canvas and the noise source.
+
+/** Intervals per primary step: the march loop's `steps * 3` sentinel. */
+export const CLOUD_MARCH_INTERVALS_PER_STEP = 3;
+/** Shells the multi-deck march runs, each on the full primary step count. */
+export const CLOUD_MULTI_DECK_MARCHES = 3;
+/** Light taps the cone march takes per interval, whatever `lightSteps` says. */
+export const CLOUD_LIGHT_CONE_TAPS = 6;
+/** The viewport costed when the caller names none: the renderer's fallback. */
+export const CLOUD_MARCH_REFERENCE_PIXELS = 1920 * 1080;
+/**
+ * The most primary steps a budgeted frame runs: the largest count measured to
+ * complete on the measured device (raw `cloudQuality` 128 on a 2048² canvas).
+ * An ask inside the budget is not held to it.
+ */
+export const CLOUD_MARCH_MAX_FITTED_PRIMARY_STEPS = 128;
+
+/**
+ * Cost of a live-noise interval relative to a baked one. On the measured
+ * device the cinematic 96 × 8 march on a 2048² canvas completed with baked
+ * noise and hung the GPU with live noise, every other flag and count equal, so
+ * the noise source alone decides between the two. The weight and
+ * {@link CLOUD_MARCH_BUDGET_DEFAULT} are chosen together so the two frames sit
+ * on either side of the budget with the same margin; 2 is the smallest integer
+ * weight that gives each a margin of at least 1.39. It is a margin, not a
+ * measured cost ratio.
+ */
+export const CLOUD_MARCH_LIVE_NOISE_WEIGHT = 2;
+
+/**
+ * The default march budget, in the units of {@link cloudMarchCost}, for a
+ * device with no measured budget of its own. The completed baked frame above
+ * costs 9.66e9 and the hung live-noise one 1.93e10; the budget is their
+ * geometric mean rounded down, 1.35e10. Raw `cloudQuality` 256 at 2048², which
+ * also hung, costs 7.7e10. At 1080p the cinematic tier fits with live noise as
+ * well as baked. Its baked march fits up to 5,859,375 canvas pixels and is
+ * reduced above that (3840 × 2160 runs 67 steps), because no baked frame above
+ * the completed one has been measured.
+ */
+export const CLOUD_MARCH_BUDGET_DEFAULT = 1.35e10;
+
+/**
+ * What the march budget did to a frame: the ask, whether a step count moved,
+ * and the cost of each side. {@link describeCloudMarchBudget} produces it.
+ */
+export interface CloudMarchBudgetReport {
+  /** The preset the dials and any realization override asked for. */
+  asked: CloudTierPreset;
+  /** True when the budget moved a step count of the ask. */
+  budgetApplied: boolean;
+  /** The budget the frame was held to. */
+  budget: number;
+  /** Cost of the ask; `Infinity` when its primary count has no finite bound. */
+  requestedCost: number;
+  /** Cost of the resolved preset. */
+  cost: number;
+}
+
+/**
+ * The most intervals one ray's march can take for a primary step count. The
+ * shader truncates the uploaded f32 count to an integer, and a count at or
+ * below zero never enters the loop.
+ *
+ * @param primarySteps The uploaded primary step count.
+ * @param multiDeck Whether the multi-deck march runs.
+ * @returns {number} `Infinity` when the count has no finite bound.
+ */
+export function cloudMarchIntervals(
+  primarySteps: number,
+  multiDeck: boolean | undefined,
+): number {
+  // The f32 upload can round a fraction just below an integer up to it.
+  const steps = Math.trunc(Math.fround(primarySteps));
+  if (Number.isNaN(steps) || steps === Infinity) {
+    return Infinity;
+  }
+  if (steps <= 0) {
+    return 0;
+  }
+  const marches = multiDeck === true ? CLOUD_MULTI_DECK_MARCHES : 1;
+  return marches * CLOUD_MARCH_INTERVALS_PER_STEP * steps;
+}
+
+/** Whether a frame's light march is the cone march, as the frame will run it. */
+function cloudMarchUsesCone(
+  preset: CloudTierPreset,
+  inputs: CloudQualityInputs,
+): boolean {
+  let cone = preset.lightConeSampling;
+  //>>includeStart('debug', pragmas.debug);
+  const flags = inputs.realizationOverride;
+  if (flags !== undefined && flags !== null) {
+    cone =
+      (cone || (flagMask(flags.qualityFlagsSet) & CLOUD_QF_LIGHT_CONE) !== 0) &&
+      (flagMask(flags.qualityFlagsClear) & CLOUD_QF_LIGHT_CONE) === 0;
+  }
+  //>>includeEnd('debug');
+  return cone;
+}
+
+/** Light taps per interval: the cone's fixed count, or the straight march's. */
+function cloudLightTaps(preset: CloudTierPreset, cone: boolean): number {
+  if (cone) {
+    return CLOUD_LIGHT_CONE_TAPS;
+  }
+  // Both factors are uploaded as f32 and multiplied in f32.
+  const taps = Math.trunc(
+    Math.fround(
+      Math.fround(preset.lightSteps) * Math.fround(preset.lightSampleScale),
+    ),
+  );
+  return Number.isFinite(taps) ? Math.max(1, taps) : Infinity;
+}
+
+/** Marched pixels times the noise weight the frame will run with. */
+function cloudMarchPixelCost(
+  preset: CloudTierPreset,
+  inputs: CloudQualityInputs,
+): number {
+  const viewport = inputs.viewportPixels;
+  const pixels =
+    typeof viewport === "number" && Number.isFinite(viewport) && viewport >= 0
+      ? viewport
+      : CLOUD_MARCH_REFERENCE_PIXELS;
+  const scale = preset.renderResScale;
+  const reduced =
+    scale > 0 && scale < 1 && inputs.fullResolutionFallback !== true;
+  const mask = inputs.transmittanceMaskPass === true ? pixels : 0;
+  const marched = (reduced ? pixels * scale * scale : pixels) + mask;
+  const resident = inputs.bakedNoiseResident === true;
+  let baked = preset.noiseSource === CloudNoiseSource.BAKED && resident;
+  //>>includeStart('debug', pragmas.debug);
+  // Bit 0 as the override leaves it: a set needs the bake, and a clear wins.
+  const flags = inputs.realizationOverride;
+  if (flags !== undefined && flags !== null) {
+    const set = flagMask(flags.qualityFlagsSet);
+    const clear = flagMask(flags.qualityFlagsClear);
+    baked =
+      (baked || ((set & CLOUD_QF_NOISE_BAKED) !== 0 && resident)) &&
+      (clear & CLOUD_QF_NOISE_BAKED) === 0;
+  }
+  //>>includeEnd('debug');
+  const weight = baked ? 1 : CLOUD_MARCH_LIVE_NOISE_WEIGHT;
+  return marched * weight;
+}
+
+/**
+ * The march cost of a preset under a frame's inputs; the formula heads this
+ * section.
+ *
+ * @param preset The preset to cost.
+ * @param inputs The frame's resolver inputs.
+ * @returns {number} `Infinity` when the primary count has no finite bound.
+ */
+export function cloudMarchCost(
+  preset: CloudTierPreset,
+  inputs: CloudQualityInputs,
+): number {
+  const intervals = cloudMarchIntervals(preset.primarySteps, inputs.multiDeck);
+  const pixelCost = cloudMarchPixelCost(preset, inputs);
+  if (intervals === 0 || pixelCost === 0) {
+    return 0;
+  }
+  const taps = cloudLightTaps(preset, cloudMarchUsesCone(preset, inputs));
+  return intervals * taps * pixelCost;
+}
+
+function cloudMarchBudgetOf(inputs: CloudQualityInputs): number {
+  const budget = inputs.marchBudget;
+  return typeof budget === "number" && Number.isFinite(budget) && budget > 0
+    ? budget
+    : CLOUD_MARCH_BUDGET_DEFAULT;
+}
+
+/**
+ * Hold an asked preset to the march budget: the ask itself when it fits, or
+ * the fitted preset when it does not. {@link resolveCloudPreset} applies it to
+ * what the dials ask for; the renderer applies it again, to the same ask, when
+ * a resource gate changes what the frame marches.
+ *
+ * @param asked The preset the dials and any realization override asked for.
+ * @param inputs The frame's resolver inputs.
+ * @returns {CloudTierPreset}
+ */
+export function applyCloudMarchBudget(
+  asked: CloudTierPreset,
+  inputs: CloudQualityInputs,
+): CloudTierPreset {
+  const budget = cloudMarchBudgetOf(inputs);
+  // NaN compares false, so an ask with no finite bound is over budget too.
+  const overBudget = !(cloudMarchCost(asked, inputs) <= budget);
+  if (overBudget) {
+    return fitCloudMarchBudget(asked, inputs, budget);
+  }
+  return asked;
+}
+
+/** The count the shader runs for an uploaded one, or the floor when unbounded. */
+function boundedStepCount(steps: number): number {
+  const uploaded = Math.fround(steps);
+  return Number.isFinite(uploaded) ? steps : 1;
+}
+
+/**
+ * The largest primary step count that fits at the asked light count, no more
+ * than the ask and no more than {@link CLOUD_MARCH_MAX_FITTED_PRIMARY_STEPS},
+ * and only when not even one fits, the largest light count at one primary
+ * step. A count with no finite bound resolves to the floor of one step rather
+ * than to whatever the budget could afford. The noise source, the flags and
+ * every other field stay as asked. The floor is one step of each.
+ */
+function fitCloudMarchBudget(
+  asked: CloudTierPreset,
+  inputs: CloudQualityInputs,
+  budget: number,
+): CloudTierPreset {
+  // Positive here: a frame with no marched pixels costs nothing and is never
+  // over budget.
+  const perStep =
+    cloudMarchIntervals(1, inputs.multiDeck) *
+    cloudMarchPixelCost(asked, inputs);
+  const cone = cloudMarchUsesCone(asked, inputs);
+  const askedLight = boundedStepCount(asked.lightSteps);
+  const taps = cloudLightTaps({ ...asked, lightSteps: askedLight }, cone);
+  let primarySteps = Math.min(
+    Math.trunc(Math.fround(boundedStepCount(asked.primarySteps))),
+    Math.floor(budget / (perStep * taps)),
+    CLOUD_MARCH_MAX_FITTED_PRIMARY_STEPS,
+  );
+  // The quotient can round up across an integer; step back if it did.
+  if (primarySteps * perStep * taps > budget) {
+    primarySteps -= 1;
+  }
+  if (primarySteps >= 1) {
+    return { ...asked, primarySteps, lightSteps: askedLight };
+  }
+  let lightSteps = askedLight;
+  if (!cone) {
+    const tapsFit = Math.max(1, Math.floor(budget / perStep));
+    const scale = asked.lightSampleScale;
+    const fit = scale > 0 ? Math.max(1, Math.floor(tapsFit / scale)) : 1;
+    if (!(lightSteps <= fit)) {
+      lightSteps = fit;
+    }
+  }
+  return { ...asked, primarySteps: 1, lightSteps };
+}
+
+/**
+ * Report the march budget beside the preset {@link resolveCloudPreset}
+ * resolved from the same inputs: the ask, whether the budget moved it, and
+ * the cost of each.
+ *
+ * @param inputs The frame's resolver inputs.
+ * @param preset The preset {@link resolveCloudPreset} returned for `inputs`.
+ * @returns {CloudMarchBudgetReport}
+ */
+export function describeCloudMarchBudget(
+  inputs: CloudQualityInputs,
+  preset: CloudTierPreset,
+): CloudMarchBudgetReport {
+  const asked = resolveAskedPreset(inputs);
+  return {
+    asked,
+    budgetApplied:
+      !Object.is(asked.primarySteps, preset.primarySteps) ||
+      !Object.is(asked.lightSteps, preset.lightSteps),
+    budget: cloudMarchBudgetOf(inputs),
+    requestedCost: cloudMarchCost(asked, inputs),
+    cost: cloudMarchCost(preset, inputs),
   };
 }
 

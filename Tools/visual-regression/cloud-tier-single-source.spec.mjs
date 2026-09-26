@@ -1119,7 +1119,19 @@ test("the packed step counts are floats 44 and 45, not 12 and 13", () => {
 test("every step count reproduces the deleted resolveCloudQuality exactly", () => {
   for (const point of SWEEP) {
     const reference = headResolveCloudQuality(point.inputs);
-    const block = live.buildCloudQualityBlock(point.preset, NEUTRAL_RUNTIME);
+    // The march budget is the one deliberate change since. The sweep names no
+    // viewport, so it costs the reference 1920×1080 canvas, where raw 1000 and
+    // a NaN step count are the only asks it cannot hold; their ask must still
+    // be HEAD's, and cloud-march-budget.spec.mjs pins what they resolve to.
+    const budget = live.describeCloudMarchBudget(point.inputs, point.preset);
+    const raw = point.inputs.rawCloudQuality;
+    if (budget.budgetApplied !== (raw === 1000 || Number.isNaN(raw))) {
+      assert.fail(`${point.label}: budgetApplied ${budget.budgetApplied}`);
+    }
+    const block = live.buildCloudQualityBlock(
+      budget.budgetApplied ? budget.asked : point.preset,
+      NEUTRAL_RUNTIME,
+    );
     if (!Object.is(block.maxSteps, reference.maxSteps)) {
       assert.fail(
         `${point.label}: maxSteps ${block.maxSteps} ≠ HEAD ${reference.maxSteps}`,

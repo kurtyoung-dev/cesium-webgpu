@@ -31,9 +31,11 @@
 //     `null` override is the same state as none. The reference is a
 //     transcription of the resolver as it stood before the override existed;
 //     when the repository still holds that commit, the module is also read out
-//     of git and all three are required to agree. A later, deliberate change to
-//     the no-override resolver (a step clamp, say) re-baselines the reference
-//     and PRE_OVERRIDE_COMMIT in the same change.
+//     of git and all three are required to agree. The march budget is the one
+//     deliberate change since: an ask inside it still agrees exactly, and an
+//     ask outside it (at the reference viewport, raw 256 and raw NaN in this
+//     sweep) resolves budgeted with the reference as its reported ask, which
+//     cloud-march-budget.spec.mjs pins in full.
 //  D. ASKED VERSUS RAN. The report's `requested*` equal the ask, its realised
 //     values equal what the resolver and the flag gate produced, and the two
 //     differ in exactly the cases where a clamp, a restricted bit or an absent
@@ -424,28 +426,52 @@ function* sweepInputs() {
   }
 }
 
+/**
+ * The march budget's outside set over this sweep. The sweep names no viewport,
+ * so the budget costs the reference 1920×1080 canvas, where raw 256 and a NaN
+ * step count are the only asks it cannot hold.
+ */
+function budgetedAtReference(inputs) {
+  const raw = inputs.rawCloudQuality;
+  return raw === 256 || Number.isNaN(raw);
+}
+
+/**
+ * Inside the march budget the resolver agrees with the reference exactly;
+ * outside it, every field but the step counts is kept and the reference is
+ * the reported ask.
+ */
+function assertReferenceOrBudgeted(inputs, resolved, reference) {
+  const label = JSON.stringify(inputs);
+  const report = live.describeCloudMarchBudget(inputs, resolved);
+  assert.equal(serialize(report.asked), serialize(reference), `${label} ask`);
+  if (!budgetedAtReference(inputs)) {
+    assert.equal(report.budgetApplied, false, label);
+    assert.equal(serialize(resolved), serialize(reference), label);
+    return;
+  }
+  assert.equal(report.budgetApplied, true, label);
+  assert.deepEqual(withoutSteps(resolved), withoutSteps(reference), label);
+}
+
 test("C1 with no override the resolver reproduces the reference for every tier and the escape hatch", () => {
   const tiersSeen = new Set();
   let escapeSeen = 0;
   let cases = 0;
   for (const inputs of sweepInputs()) {
-    const expected = serialize(referenceResolve(inputs));
+    const reference = referenceResolve(inputs);
     const absent = live.resolveCloudPreset(inputs);
-    assert.equal(serialize(absent), expected, JSON.stringify(inputs));
+    assertReferenceOrBudgeted(inputs, absent, reference);
     // The renderer writes the field even when nothing is set, so an explicit
     // `undefined` must be the same state as an absent one.
-    const explicit = live.resolveCloudPreset({
-      ...inputs,
-      realizationOverride: undefined,
-    });
-    assert.equal(serialize(explicit), expected, JSON.stringify(inputs));
+    const explicitInputs = { ...inputs, realizationOverride: undefined };
+    const explicit = live.resolveCloudPreset(explicitInputs);
+    assertReferenceOrBudgeted(explicitInputs, explicit, reference);
     // A harness that clears the override with `null` must not throw out of
     // the cloud prepare, and must get the unmoved preset back.
-    const cleared = live.resolveCloudPreset({
-      ...inputs,
-      realizationOverride: null,
-    });
-    assert.equal(serialize(cleared), expected, JSON.stringify(inputs));
+    const clearedInputs = { ...inputs, realizationOverride: null };
+    const cleared = live.resolveCloudPreset(clearedInputs);
+    assertReferenceOrBudgeted(clearedInputs, cleared, reference);
     const raw = inputs.rawCloudQuality;
     if (typeof raw === "number" && raw !== 64) {
       escapeSeen++;
@@ -502,10 +528,10 @@ test("C2 the pre-override module read out of git agrees with the live resolver",
         expected,
         "transcription",
       );
-      assert.equal(
-        serialize(live.resolveCloudPreset(inputs)),
-        expected,
-        "live",
+      assertReferenceOrBudgeted(
+        inputs,
+        live.resolveCloudPreset(inputs),
+        pre.resolveCloudPreset(inputs),
       );
       assert.equal(
         live.buildCloudQualityBlock(
@@ -731,15 +757,18 @@ test("D1 the report's ask and realised values differ exactly when something move
 function assertWorkloadBound(mod) {
   const cap =
     mod.CLOUD_OVERRIDE_MAX_PRIMARY_STEPS * mod.CLOUD_OVERRIDE_MAX_LIGHT_STEPS;
+  // The caps bound the ask. The march budget then holds what runs to its own
+  // total-cost bound, and may trade light steps for primary steps to do it,
+  // which cloud-march-budget.spec.mjs pins; so the asks are compared here.
+  const ask = (inputs) =>
+    mod.describeCloudMarchBudget(inputs, mod.resolveCloudPreset(inputs)).asked;
   let escapeCases = 0;
   for (const preset of ["low", "medium", "high"]) {
     for (const raw of [64, 24, 32, 96, 100, 128, 200, 256, 512, 1024]) {
-      const base = mod.resolveCloudPreset(
-        inputsFor(preset, { rawCloudQuality: raw }),
-      );
+      const base = ask(inputsFor(preset, { rawCloudQuality: raw }));
       for (const primarySteps of [undefined, 1, 48, 128, 129, 512, 1e9]) {
         for (const lightSteps of [undefined, 1, 4, 8, 9, 64]) {
-          const moved = mod.resolveCloudPreset(
+          const moved = ask(
             inputsFor(preset, {
               rawCloudQuality: raw,
               realizationOverride: { primarySteps, lightSteps },
