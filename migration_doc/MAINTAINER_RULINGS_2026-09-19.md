@@ -36,6 +36,9 @@ critique are banked at `cesium-webgpu-worker-archive/lanes-2026-09-19/c12-closeo
 
 Recorded 2026-09-19 by the record lane (Hamson).
 
+*[Dated note, added by record round 7: a sixteenth ruling, `R-2026-09-19-16`, was taken later on 2026-09-19 in a
+separate sitting, outside the plan's `Q0` … `Q14`. It is appended at the end of this file.]*
+
 ---
 
 ## R-2026-09-19-1 — Q0: the gate library may be repaired on the ruling's tree, with served-bundle byte-identity asserted
@@ -670,5 +673,85 @@ terrain-selection re-run is still a live prerequisite rather than a leisurely on
 does record, in the S5 honest table itself, is the reopen consequence: the three ownerless lanes are
 named as ownerless, and a red terrain-selection re-run would reopen `C12-29-S5-TERRAIN-SELECTION`'s
 `closed` entry. `S5-ROSTER` still owes the written statement before any session brief.]*
+
+Authority: charter §1.1.
+
+---
+
+## R-2026-09-19-16 — the leg (e) result is disposed of by `R-2026-09-19-2`'s own third-outcome clause: land the refresh-cost fix, re-run once
+
+*Appended by record round 7. This ruling was taken on 2026-09-19, the same day as the fifteen
+above, in a **separate** sitting after the close-out plan's confirming run returned; it is not one of the
+plan's `Q0` … `Q14` and does not share their "one sentence" basis.*
+
+**The question.** The confirming run of `C13-41`'s discriminator that the seat took instead of executing
+`R-2026-09-19-2` (Edge executor Filibert, tree `ea651de6d8`, receipt
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-19/`) fired **neither** of
+`R-2026-09-13-1`'s red triggers, and was still **GATE FAIL, exit 1**, on `deckPureRatioInBand`, with
+`refreshCostMeasured` blinded by the pre-segment readback drain. The dated annotation under
+`R-2026-09-19-2` above records that no adopted text names that exact combination. After Batch 1529 the seat
+put two options to the maintainer, verbatim:
+
+> "1. Follow your own third-outcome clause. I recommend this. Land the refresh-cost instrument fix and
+> re-run once. A second structural result fires Option C. A green result closes Campaign 12 on its real
+> gate."
+>
+> "2. Exercise Option C now by a fresh ruling"
+
+**The maintainer's answer, verbatim (~13:40 EDT, 2026-09-19):** *"1. The third outcome"*.
+
+**What it decides.** S3 continues. The 2026-09-19 run is read as the clause's **first** run, and fires
+**neither** arm. The refresh-cost instrument fix (`S3-N2-REFRESHCOST`, lane S3-L1) lands, and leg (e) is
+re-run **once**. A second **structural** result fires Option C on the ground that the instrument cannot
+answer at honest cost; a green result closes Campaign 12 on its actual gate.
+
+**What it does NOT decide — still the maintainer's, as `MQ2` of the S3 remainder plan.** Whether
+`deckPureRatioInBand` may be scored as an 8-bit propagated interval instead of a point test. The seat told
+the maintainer that doing so "alters an acceptance predicate after it failed" and is "your call". Until that
+is ruled, the interval is built **reported-only**, so the re-run shows both scorings while the gate predicate
+stays unchanged. The consequence the seat undertook to put to the maintainer with the re-run's receipt: **a
+re-run that exits 1 on the deck predicate alone is neither "structural" nor "green"**, so this ruling's two
+named arms do not reach it either.
+
+Basis: `R-2026-09-19-2`'s third-outcome clause, quoted verbatim in its dated annotation above;
+`S3_REMAINDER_PLAN.md` `MQ1` and `MQ3`, banked at
+`cesium-webgpu-worker-archive/lanes-2026-09-19/s3-remainder/S3_REMAINDER_PLAN.md`; the leg (e) receipt
+`Tools/visual-regression/output/eclipse-cloud-response-2026-09-19/`. The maintainer's words and the seat's
+two options are banked at
+`cesium-webgpu-worker-archive/lanes-2026-09-19/rulings-source/rulings-source-2026-09-18-19.r16.md`
+(md5 `fed990abdb958cd8299e1eab11bb642a`, its final section, lines 86-99); the earlier banked copy beside it,
+`rulings-source-2026-09-18-19.md`, predates this ruling and does not carry it.
+
+Executed: **the prescribed steps are DONE, and the result is the case this ruling left open — NEITHER named
+arm.**
+
+- The refresh-cost instrument fix landed as Batch 1533 (`9a66bf6ff6`, lane S3-L1, Hatholdir; reviewer
+  Ardamir): the pre-segment readback drain is fenced under its own bound, and the pre-resize drain's result is
+  checked rather than discarded. No engine file was touched.
+- The reported-only interval landed as Batch 1532 (`ad2df123e3`, lane S3-L2, Arciryas):
+  `deckPureRatioQuantization` and `deckPureRatioIntervalOverlapsBandReportedOnly` sit beside the unchanged
+  point test, and the band `[0.625, 0.645]` is unmoved.
+- **The one re-run was taken** on 2026-09-19 (Edge executor Minastan, the first run's tree `ea651de6d8`
+  re-verified and not rebuilt, served bundle md5 `3873edb82e25a724e00800ecfb99c811` == disk, the two
+  Tools overlays above and nothing else), finishing 16:41:13 EDT, runId
+  `9e51ac81-3688-4508-9101-fb5fdbd8cc29`. Receipt
+  `Tools/visual-regression/output/eclipse-cloud-response-2026-09-19b/` (gitignored, seat tree):
+  **`status` "FAIL", `exitCode` 1, `incomplete` false; 31 of 32 gate predicates pass**, and the one red is
+  `deckPureRatioInBand` — `deckPureRatio` **0.6457892095024083** against `[0.625, 0.645]`, a miss of
+  **7.89e-4** above the band. **`unscoredPredicates` `[]`, `structuralReasons` `[]`**: the refresh-cost lane
+  is now measured (`refreshCostMeasured` true, `measurementSource` "gpu-time"), so nothing is blind and the
+  run is **not structural**. `shadowContrastInvariant` stays **true** at **0.9893862265081094**;
+  `deckFreeControlStateIsolated` **true**. The reported-only
+  `deckPureRatioIntervalOverlapsBandReportedOnly` reads **true** (propagated interval
+  `[0.6282213592753136, 0.6637402946833496]`).
+
+**So the re-run is neither of this ruling's arms**: it is not a second structural result, so Option C has not
+fired; and it is not green, so Campaign 12 has not closed. That is exactly the open consequence recorded
+above, and it now turns on **`MQ2`**: on the seat's reading of this receipt, a ruling that promotes the
+interval to the gate predicate turns the same run into exit 0 — `failedPredicates` would empty, and with
+`structuralReasons` already empty nothing else stands between it and PASS — and C12 closes on its real gate;
+without one it stays exit 1. (The same substitution on the first 2026-09-19 run gives exit 3, not 0, because
+that run still carried the refresh-cost structural reason — lane S3-L2's packet §8.) **No lane rules `MQ2`.** C14
+is still blocked on C12, and the `R4` aurora hold is unchanged by this ruling.
 
 Authority: charter §1.1.

@@ -246,14 +246,14 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | collection-sentinels-check.mjs | other | ACTIVE | 2026-09-05 | 9 | Fast no-GPU smoke check of the three permanent fault sentinels in WebGPUCollectionRendererBase via in-memory esbuild transpile; <1s local run. |
 | derive-lunar-eclipse-circumstances.mjs | other | ACTIVE | 2026-08-28 | 1 | Derives lunar-eclipse contact times, umbral/penumbral magnitudes and the best-view sub-lunar point from the engine Simon1994 ephemeris; source of the eclipse-explorer lunar preset data and the VW-L golden fixtures. |
 | dev-server-artifact.spec.mjs | spec | ACTIVE | 2026-08-20 | 0 | Verify that the development server selects and validates the requested Cesium artifact without opening a socket. |
-| generate-tooling-catalog.mjs | other | ACTIVE | 2026-09-11 | 10 | Regenerates the TOOLING_CATALOG census section from @purpose/@status headers, git freshness and inbound refs; --check fails on drift. |
+| generate-tooling-catalog.mjs | other | ACTIVE | 2026-09-11 | 11 | Regenerates the TOOLING_CATALOG census section from @purpose/@status headers, git freshness and inbound refs; --check fails on drift. |
 | generate-tooling-catalog.spec.mjs | spec | ACTIVE | 2026-09-11 | 4 | Self-test for the catalog generator: marker containment, determinism, drift reporting and the no-header row. |
 | inject-purpose-headers.mjs | other | ACTIVE | 2026-08-16 | 4 | Idempotent codemod injecting @purpose/@status headers into the tooling .mjs fleet from the library-audit rows. |
 | inject-purpose-headers.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Self-test for the @purpose header codemod: mapping, placement, byte-exactness, idempotence and the dry-run report. |
 | karma-default-browsers.spec.mjs | spec | NO @purpose HEADER | 2026-08-21 | 0 | — |
 | landing-rules.mjs | other | ACTIVE | 2026-09-01 | 28 | Pure landing predicates for commit discipline, push-wide Batch uniqueness, and protected remote-ref updates. |
 | landing-rules.spec.mjs | spec | ACTIVE | 2026-09-01 | 8 | Hermetic control-and-mutant contract for commit, push-wide Batch, and protected-ref landing predicates. |
-| lint-debug-pragmas.mjs | other | ACTIVE | 2026-08-28 | 18 | Lints Renderer/WebGPU for console.log/warn/debug/info calls not wrapped in //>>includeStart('debug') pragmas; console.error exempt by policy. |
+| lint-debug-pragmas.mjs | other | ACTIVE | 2026-08-28 | 19 | Lints Renderer/WebGPU for console.log/warn/debug/info calls not wrapped in //>>includeStart('debug') pragmas; console.error exempt by policy. |
 | lint-debug-pragmas.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Proves debug-console calls stay removable unless a narrowly marked warning must remain visible. |
 | package-manifest-duplicate-keys.spec.mjs | spec | ACTIVE | 2026-09-19 | 3 | Refuses a duplicate key in the root or any workspace package.json, and pins the text-reading tokenizer that finds one where JSON.parse cannot. |
 | pre-push-guard.mjs | other | ACTIVE | 2026-09-03 | 22 | Git-aware driver behind .husky/pre-push: enforces batch-prefix/body/trailer/quiet-hours on every outgoing agent commit, and refuses deletion or non-fast-forward rewrite of main; fail-closed, no bypass flag reachable from a real push (a 5th argv slot lets a direct invocation pin the quiet-hours clock for tests; git's two-argument hook contract keeps it unreachable from `.husky/pre-push`). |
@@ -266,7 +266,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | run-far200-shadow-self-test.mjs | runner | ACTIVE | 2026-08-16 | 2 | Thin bootstrap: esbuild-bundles Tools/far200-shadow-self-test.ts and executes it via a data: URL import. |
 | spec-runner-census.mjs | other | NO @purpose HEADER | 2026-09-12 | 19 | — |
 | spec-runner-census.spec.mjs | spec | NO @purpose HEADER | 2026-09-12 | 6 | — |
-| temp-hygiene.mjs | other | ACTIVE | 2026-09-11 | 7 | Classify the Temp root into an explicit positive delete list, bank any visual evidence inside it, then delete exactly that list behind a protect set that is re-checked at execute time. |
+| temp-hygiene.mjs | other | ACTIVE | 2026-09-11 | 8 | Classify the Temp root into an explicit positive delete list, bank any visual evidence inside it, then delete exactly that list behind a protect set that is re-checked at execute time. |
 | temp-hygiene.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Behaviour coverage for Tools/temp-hygiene.mjs — classification age gates, the plan-only default, the execute-time protect/horizon/evidence refusals, and the guarantee that a junction inside a delete target is never followed. |
 | upstream-regression-check.mjs | other | ACTIVE | 2026-08-16 | 11 | Standalone Node re-verification of eight ported upstream fixes (imagery-layers guard, parseUrl, octDecode arg order, etc.); exit 0 = all hold. |
 | upstream-shape-guard.mjs | other | ACTIVE | — | 5 | Fails an upstream merge resolution that silently reverts a fork ES6-class file to upstream's prototype form. |
@@ -278,7 +278,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | verify-doc-citations.mjs | other | ACTIVE | 2026-09-05 | 4 | Asserts every relative markdown link and every #L line anchor in the tracked LIVE migration_doc set resolves as written, that the anchored range exists, and that a range still contains the symbol its sentence names. |
 | verify-doc-citations.spec.mjs | spec | ACTIVE | 2026-09-05 | 1 | Pins verify-doc-citations.mjs against fixture trees: clean passes, a mutated link fails and is named, an out-of-bounds anchor fails, a .js→.ts rename fails, the P-14 false-positive shape stays green, and an inertness mutant of the resolution fold makes the core assertion fail. |
 | verify-landing-compliance.mjs | other | ACTIVE | 2026-08-28 | 30 | After-the-fact detector that re-runs the landing rules + C16 marker gate over a landed commit range, making any --no-verify hook bypass visible. |
-| verify-landing-compliance.spec.mjs | spec | ACTIVE | 2026-08-28 | 7 | Contract for the bypass detector against immutable history: known-bad C12-37 landing must red, known-good B1041-1043 landing must pass. |
+| verify-landing-compliance.spec.mjs | spec | ACTIVE | 2026-08-28 | 8 | Contract for the bypass detector against immutable history: known-bad C12-37 landing must red, known-good B1041-1043 landing must pass. |
 | verify-no-doc-shred.mjs | other | ACTIVE | 2026-08-28 | 6 | Fails when any migration_doc markdown file contains a long run of single-character lines - the signature of a splice-spread-over-string edit defect that has landed shredded ledger sections three times. |
 | verify-orientation-mirror.mjs | other | ACTIVE | 2026-08-28 | 2 | Fail closed when a status asserted by a reader-facing orientation document disagrees with, or cannot be resolved against, its campaign queue authority. |
 | verify-orientation-mirror.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Prove the orientation-mirror verifier compares closed-vocabulary statuses, fails closed on unresolved references, honors reasoned allowlisting, and behaves identically on LF and CRLF inputs. |
@@ -315,8 +315,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | empty-module-stub.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Prove the single-backend build stub answers instanceof without throwing, keeps throwing on real use, and binds every named export of a stubbed module. |
-| wgsl-chunk-resolution.spec.mjs | spec | ACTIVE | 2026-09-19 | 4 | Prove the minify transform cannot change which csm_* calls a WGSL module leaves undeclared after the engine's real chunk splice, so a shipped shader never calls a function nothing defines. |
-| wgsl-comment-strip.spec.mjs | spec | ACTIVE | 2026-09-19 | 3 | Prove the minify-time WGSL comment strip preserves every //>> directive byte-exact, leaves unminified modules untouched, and is wired into the build. |
+| wgsl-chunk-resolution.spec.mjs | spec | ACTIVE | 2026-09-19 | 7 | Prove the minify transform cannot change which csm_* calls a WGSL module leaves undeclared after the engine's real chunk splice, so a shipped shader never calls a function nothing defines. |
+| wgsl-comment-strip.spec.mjs | spec | ACTIVE | 2026-09-19 | 4 | Prove the minify-time WGSL comment strip preserves every //>> directive byte-exact, leaves unminified modules untouched, and is wired into the build. |
 
 ### Tools/c16/ (10)
 
@@ -337,7 +337,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| comment-scanner.mjs | lib | ACTIVE | 2026-09-01 | 16 | The one tokenizer both C16 instruments share (JS/TS/WGSL/GLSL comment vs code vs string), fail-closed, with semantic-comment retention rules. |
+| comment-scanner.mjs | lib | ACTIVE | 2026-09-01 | 17 | The one tokenizer both C16 instruments share (JS/TS/WGSL/GLSL comment vs code vs string), fail-closed, with semantic-comment retention rules. |
 | marker-grammar.mjs | lib | ACTIVE | 2026-08-28 | 15 | Machine-decidable half of the fork comment standard: the banned tracker-vocabulary regex rules (add-only ids) driven by the marker guard. |
 
 ### Tools/jsdoc/cesium_template/ (1)
@@ -361,7 +361,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | compare-doc-anchors.mjs | lib | NO @purpose HEADER | 2026-09-11 | 3 | — |
 | compare-doc-anchors.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 1 | — |
 | json-duplicate-keys.mjs | lib | ACTIVE | 2026-09-19 | 3 | Reports every key a JSON document repeats within the same object, per object and string-aware, so a manifest whose duplicate `JSON.parse` silently resolves last-key-wins can be refused with the first and the repeating line. |
-| lane-tmp.mjs | lib | ACTIVE | 2026-09-11 | 21 | The one way a spec, probe or tool takes scratch space: a single per-lane root under os.tmpdir() with removal in `finally`, so a throwing or killed run leaves one sweepable root instead of loose mkdtemp sandboxes at the Temp root. |
+| lane-tmp.mjs | lib | ACTIVE | 2026-09-11 | 22 | The one way a spec, probe or tool takes scratch space: a single per-lane root under os.tmpdir() with removal in `finally`, so a throwing or killed run leaves one sweepable root instead of loose mkdtemp sandboxes at the Temp root. |
 | lane-tmp.spec.mjs | spec | ACTIVE | 2026-09-11 | 4 | Behaviour coverage for Tools/lib/lane-tmp.mjs — the directory is created under the lane root, removed on success AND on throw AND on rejection, refused outside tmpdir, and an inert `finally` is caught by the mutant. |
 | npm-override-rules.mjs | lib | ACTIVE | 2026-09-18 | 3 | Decides, from manifest objects alone, which root `overrides` entries npm rejects as conflicting with a direct dependency or as an unresolvable `$` reference. |
 | png-decode.mjs | lib | ACTIVE | 2026-09-13 | 17 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
@@ -623,7 +623,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | godray-energy-law.spec.mjs | spec | ACTIVE | 2026-09-11 | 6 | Executes the god-ray energy law straight out of GodRayGenerate.wgsl, pins count invariance and the energy bound against derived tolerances, records the emitter data dependency, and carries the inertness mutants that make those verdicts able to fail. |
 | godray-sun-usability-uniform-ranges.spec.mjs | spec | ACTIVE | 2026-09-16 | 8 | Pins the god-ray sun-usability determination and the disjoint uniform write ranges it publishes through, including that some setter covers the sunUnusable byte range. |
 | gpu-timestamp-readback-ring-depth.spec.mjs | spec | ACTIVE | 2026-08-25 | 0 | Pins the GPU timestamp profiler's readback-ring depth behaviour: a workload at the measured worst-case latency retains every sample at a sufficient depth, and a ring that saturates at any depth still reports the loss instead of averaging past it. |
-| gpu-timestamp-unique-sample-accounting.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Pins the GPU timestamp profiler's union-fold frame coverage (overlap surfaced, never double-counted) and its no-silent-loss attempt ledger. |
+| gpu-timestamp-unique-sample-accounting.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Pins the GPU timestamp profiler's union-fold frame coverage (overlap surfaced, never double-counted) and its no-silent-loss attempt ledger. |
 | gpucull-blackframe-isolation-arm-expectations.spec.mjs | spec | ACTIVE | 2026-09-03 | 2 | Pins the REAL `WebGPUSceneRenderer#_maybeGPUCullTranslucent`'s raw inclusive count-vs-threshold boundary decision against `lib/gpucull-blackframe-isolation-gate.mjs`'s ARMS table, pins that the margin-adjusted `expectDispatch` the gate module derives cannot regress to a false STRUCTURAL refusal on the boundary arm (C6), and that `judgeIsolationResults` reports the documented exit-code verdict. |
 | ground-fog-band.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Pins the inscribed-sphere altitude bug that made ground fog arithmetically absent, the Koschmieder-derived fix, four mutants, and byte-neutrality. |
 | ground-polyline-smoke.mjs | other | ACTIVE | 2026-08-16 | 5 | Early smoke probe loading the WebGPU viewer and checking GroundPolylinePrimitive classifier presence plus console health. |
@@ -851,7 +851,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-cloud-lut-flagon.mjs | probe | ACTIVE | 2026-08-16 | 5 | B434 flag-on gate: physical aerial mode fogs distant clouds toward the real sky (sun-azimuth-tracking hue) and sky-lut ambient warms sunset undersides |
 | probe-cloud-lut-parity.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | B434 zero-drift gate: default heuristic-aerial + constant-ambient path byte-identical across modified vs stash-reverted builds |
 | probe-cloud-mammatus.mjs | probe | ACTIVE | 2026-09-13 | 4 | B555 mammatus gate: underside pouch carve visibly thins the deck, OFF byte-identical under a frozen clock, strength=0 restores the baseline |
-| probe-cloud-march-mechanism.mjs | probe | ACTIVE | 2026-09-19 | 2 | Drive one orbital recipe camera through the mechanism arm table - one dial per arm off a restored baseline, a clouds-ON and a clouds-OFF frame each - recording the frustum, the depth format, the tier realization and the weather counters, so the concentric-band family in orbital cloud views is attributed by experiment rather than by inference. |
+| probe-cloud-march-mechanism.mjs | probe | ACTIVE | 2026-09-19 | 3 | Drive one orbital recipe camera through the mechanism arm table - one dial per arm off a restored baseline, a clouds-ON and a clouds-OFF frame each - recording the frustum, the depth format, the tier realization and the weather counters, so the concentric-band family in orbital cloud views is attributed by experiment rather than by inference. |
 | probe-cloud-morphology.mjs | probe | ACTIVE | 2026-08-16 | 1 | B439 morphology modes: curl erosion and perlin-worley cores A/B'd against an in-run default baseline, plus a stash-pair parity mode for default flags |
 | probe-cloud-noisebake.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | V2 inert-bake gate: 3D noise baked + bound with the shader not sampling it — byte-identical to the pre-V2 stash build, bake ran, zero device errors |
 | probe-cloud-noisecore.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | V3 keystone A/B vs the pre-V3 live-noise build: baked clouds render, sane cell count, faster frame, W1/W2 lighting survives on the baked path |
@@ -1371,7 +1371,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-wgsl-compile-error.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Diagnostic: hooks createShaderModule and dumps WGSL compile errors with source context for Model PBR variants (built for 0x8200 regression). |
 | probe-wgsl-doctype.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | Diagnostic: loads named Sandcastle demos under a renderer-override shim to reproduce the WGSL-parser DOCTYPE error (shader fetch got HTML). |
 | probe-wireframe-verify.mjs | probe | ACTIVE | 2026-09-02 | 3 | Acceptance for the WebGPU debugShowWireframe fix: wireframe draws an imagery-colored line mesh (not black), settled by frame-signature stability. |
-| prohibited-reader-allowlist.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Enforce the measured prohibited-reader allowlist as a shrink-only ratchet. |
+| prohibited-reader-allowlist.spec.mjs | spec | ACTIVE | 2026-09-02 | 2 | Enforce the measured prohibited-reader allowlist as a shrink-only ratchet. |
 | prohibited-reader-rule.spec.mjs | spec | NO @purpose HEADER | 2026-08-20 | 0 | — |
 | purpose-header-contract.spec.mjs | spec | ACTIVE | 2026-09-02 | 13 | Contract spec for maintainer ruling M4: every probe and gate library must carry a readable @purpose/@status header. |
 | q130-wgsl-derivative-uniformity.spec.mjs | spec | ACTIVE | 2026-09-01 | 14 | Guards the WGSL rule that made frustum-dev's phongTextured shader module invalid: no implicit-derivative sampling after a conditional return in a fragment entry point. |
@@ -1379,7 +1379,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | q132-custom-primitive-and-light-layout.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Reproduces and guards the two defects that stopped rendering in the Sandcastle2 sweep: Scene.updateHeight calling a tileset-only lifecycle method on every primitive, and the WebGL scene-light uniform being declared shorter than LightCollection.pack writes. |
 | radial-banding.spec.mjs | spec | ACTIVE | 2026-09-19 | 4 | Drives lib/metrics/radial-banding.mjs over synthetic fields whose answer is known by construction and over the checked-in reduction of a banked orbital capture, asserting returned numbers rather than the shape of the code that produced them. |
 | refresh-cost-multi-metric.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Independent behavioural + canonicity coverage of Q-80's deltaOrNull/sumLegMultiMetric/available-guard formulas, which live inside a page.evaluate callback and cannot be imported. |
-| refresh-cost-protocol-order.spec.mjs | spec | NO @purpose HEADER | 2026-09-19 | 1 | — |
+| refresh-cost-protocol-order.spec.mjs | spec | NO @purpose HEADER | 2026-09-19 | 2 | — |
 | rescore-sun-disc-dawn.mjs | other | ACTIVE | 2026-09-02 | 1 | Re-score an already-acquired sun-disc-dawn artifact against a FAIL bar derived from that same artifact's own WebGL leg, never from WebGPU. |
 | rig-registry.spec.mjs | spec | ACTIVE | 2026-09-26 | 7 | Drives the real rig-registry.mjs over the real rigs/ directory: every rig validates, ids are unique, tags are in vocabulary, replayKeyFor is stable and sensitive, and generateScenesJson reproduces scenes.json byte-for-byte. |
 | run-performance-campaign.mjs | runner | ACTIVE | 2026-08-16 | 33 | The performance characterization runner: consumes performance-workloads.json, records Scene.render CPU samples + GPU timestamps; never FPS. |
@@ -1409,7 +1409,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | sgp4-reference.mjs | other | ACTIVE | 2026-08-16 | 7 | Self-contained JS FP64 near-earth SGP4 (Vallado, WGS-72): sgp4init pre-conditioning + sgp4 time update; the ground truth the GPU kernel ports. |
 | sky-band-compare.mjs | other | NO @purpose HEADER | 2026-08-01 | 2 | — |
 | sky-brightness-twilight.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | C12-34 acceptance: the SkyBrightness log-luminance estimator separates the twilight bands the old smoothstep collapsed; mutation-tested. |
-| sky-light-direction.spec.mjs | spec | ACTIVE | 2026-08-29 | 9 | C12-31 contract: atmosphere NONE mode uses the astronomical Sun (not per-sample local-up), LEGACY_OVERHEAD reproduces history, twin lockstep. |
+| sky-light-direction.spec.mjs | spec | ACTIVE | 2026-08-29 | 10 | C12-31 contract: atmosphere NONE mode uses the astronomical Sun (not per-sample local-up), LEGACY_OVERHEAD reproduces history, twin lockstep. |
 | sky-shell-star-occlusion.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Executes the shipped shell-alpha expressions out of both shader texts and composites them over the shipped star exposure, so a ground camera's night stars are provably reachable. |
 | skybox-diffuse-seam.spec.mjs | spec | ACTIVE | 2026-08-16 | 14 | Standing DR-01 proof: diffuse skybox faces stay low-passed (no resolved points), band structure + TYCHO_T5 reversal intact, hashes re-derived. |
 | skybox-resolution-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 9 | Browser-free trust anchor for the star cube-map policy: 2048 default vs disk both directions, honest 4096 opt-in fallback, VRAM re-derived. |
@@ -1419,7 +1419,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | space-weather-state-packet.spec.mjs | spec | ACTIVE | 2026-09-18 | 4 | Output contract for the backend-neutral space-weather packet: preset values, timeline determinism, zero-cost OFF, per-field authority, flare/geomagnetic independence, validation rejections, staleness. |
 | spec-cesium-viewer-dev-ui.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | CesiumViewer start contract: dev chrome built only under devUi (absent, not hidden), bare URL resolves WebGPU non-strict, fleet URLs stable. |
 | spec-cesium-viewer-loading-parity.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Loading-presentation parity: the async WebGPU viewer path adds no chrome of its own; the page indicator hides at first rendered frame on both. |
-| spec-offline-isolation.spec.mjs | spec | ACTIVE | 2026-09-19 | 3 | C11-134: pins the external-URL classifier (fail-closed) and the online-lane quarantine so network suites skip with a reason offline. |
+| spec-offline-isolation.spec.mjs | spec | ACTIVE | 2026-09-19 | 4 | C11-134: pins the external-URL classifier (fail-closed) and the online-lane quarantine so network suites skip with a reason offline. |
 | splat-pipeline-request-guard.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Prove stale Gaussian-splat pipeline promises cannot publish after resource invalidation. |
 | star-catalog-depth.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | C12-09 acceptance for the deepened BrightStarCatalog: count/magnitude bands, MAG_CUTOFF = faintest row, no duplicates, sha256 provenance. |
 | star-point-census-live.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Standing discriminator: the star point census was mis-calibrated for live frames (strict local-max tie at the NDC-origin pixel corner). |
@@ -1680,7 +1680,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-model-preparation-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Accumulates and validates WebGPU model preparation/demand counters as measurement-window evidence for performance workloads. |
 | wgsl-derivative-uniformity.mjs | lib | ACTIVE | 2026-09-01 | 7 | Reports implicit-derivative calls reached through non-uniform control flow without requiring a browser, GPU, or WGSL compiler. |
 | wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 22 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
-| wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 11 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
+| wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 12 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
 ### Tools/visual-regression/lib/metrics/ (8)
 
@@ -1745,7 +1745,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| engineTypeCheck.mjs | other | ACTIVE | 2026-08-28 | 5 | Runs the engine project type check when the tree is built, and prints an explicit skip line when it is not. |
+| engineTypeCheck.mjs | other | ACTIVE | 2026-08-28 | 6 | Runs the engine project type check when the tree is built, and prints an explicit skip line when it is not. |
 | patchEslintSeatbelt.mjs | other | ACTIVE | 2026-08-16 | 7 | postinstall patch normalizing eslint-seatbelt path keys to forward slashes so the committed POSIX seatbelt.tsv grandfathers on Windows. |
 | run-build-no-tsc.mjs | runner | ACTIVE | 2026-08-16 | 9 | Dev build helper: converts WGSL then runs buildEngine/buildWidgets/buildCesium (development, unminified, sourcemapped) skipping tsc. |
 
@@ -1756,7 +1756,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | bundleVariantPlugin.spec.mjs | spec | ACTIVE | 2026-08-21 | 10 | Exercises the build-variant alias plugin's onResolve decision matrix, compat exemption allowlist, re-entry guard and decision cache, no esbuild. |
 | bundleWorkersPragmas.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Prove a release worker bundle carries no debug-only assertion text while a debug worker bundle keeps it. |
 | createIndexJs.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Regression that the generated engine index omits private named-export temporal-history helpers yet still esbuild-bundles cleanly. |
-| engineTypeCheck.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Proves the engine type check runs only in a built tree, propagates failure, announces every skip, and stays tied to the build artifact and the hook. |
+| engineTypeCheck.spec.mjs | spec | ACTIVE | 2026-08-28 | 2 | Proves the engine type check runs only in a built tree, propagates failure, announces every skip, and stays tied to the build artifact and the hook. |
 | ensureCesiumTypeDefinitions.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Coverage for the missing-type-defs decision logic AND the gulpfile.apps.js |
 | karmaTestRun.spec.mjs | spec | ACTIVE | 2026-08-29 | 4 | Static coverage of the Gulp/Karma completion bridge via a fake Karma server: strict result config, retries, disconnect/error exit codes. |
 | prepareCesiumOutputDirectory.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Regression that `clean:false` never removes files already on disk while `clean:true` still wipes the directory, so a failed rebuild cannot leave a served bundle directory both wiped and unreplaced. |

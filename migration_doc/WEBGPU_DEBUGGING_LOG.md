@@ -22487,10 +22487,10 @@ Had this guard been in `test-build-infra`, Batch 1521 could not have landed.
 
 ## Lane CI-L2L4 (Huan, 2026-09-19) — a spec suite that raced itself over the live source tree, and a lifecycle script the published tarball does not carry
 
-**Bug NNNN.1 and NNNN.2** (batch number stamped by the seat). **Files:** `package.json`;
+**Bug 1524.1 and 1524.2** (batch number stamped by record round 7). **Files:** `package.json`;
 `Tools/ci-guards.spec.mjs`; `.github/workflows/dev.yml`.
 
-### NNNN.1 — `test-c16` deleted its own corpus entry between enumerate and read
+### 1524.1 — `test-c16` deleted its own corpus entry between enumerate and read
 
 **Symptom.** `dev` / `guards` / step 7 `comment remediation tests`, about one run in five, most recently
 run 35419478276 (`58c5147763`):
@@ -22535,7 +22535,7 @@ removing the flag from the manifest reds it; leaving it removed and making the a
 (`if (false && script)`) greens the run, so the red came from the assertion and not from the file's
 shape.
 
-### NNNN.2 — the root package ran a `postinstall` its own tarball excludes
+### 1524.2 — the root package ran a `postinstall` its own tarball excludes
 
 **Symptom.** `dev` / `node-smoke-test (22|24)` / `Run ./.github/actions/verify-package`, byte-identical
 on four sampled runs from 2026-07-05 to 2026-09-19, and the **only** red step in the whole `deploy`
@@ -22714,7 +22714,7 @@ and banking that set as the baseline is the next step.
 
 ## Lane KITB-FIXTURE-HOOK-REWRITE (Camellia, 2026-09-19) — the pre-commit hook reformatted three byte-pinned fixtures after every gate had run, and `test-landing-rules` has been four-red on main ever since
 
-**Bug NNNN.1** (batch number stamped by the seat). **Files:** three fixtures and the sibling
+**Bug 1528.1** (batch number stamped by record round 7). **Files:** three fixtures and the sibling
 `.gitattributes` under `Tools/visual-regression/fixtures/wave-end-contact-sheet/`;
 `.prettierignore`; `Tools/wave-end-contact-sheet-index.spec.mjs`.
 
@@ -22812,3 +22812,91 @@ no ignore entry covers.
 exactly the four CI reds and nothing else, with the two new cases still green because they guard a
 different thing. That is the CI failure reproduced, so the restored bytes are what those four
 assertions read.
+
+## Bug ci-l10-01 — a comment was load-bearing, and the minified build deleted it, so 31 shipped WGSL modules called functions nothing declared (lane CI2-L10 / Rosamunda, 2026-09-19)
+
+*Placed by record round 7 (lane RR-2, Milo) from the lane's packet §9.2, with the one sentence its
+§11.7 appends (`cesium-webgpu-worker-archive/lanes-2026-09-19/ci-wave2-tranche1/rosamunda/LANDING_PACKET_ROSAMUNDA.md`).
+The fix landed as Batch 1534 (`69c79cf5c7`). Ledger rows: `DEFERRED_WORK.md` `### CI-W2-L10` and its
+lettered siblings.*
+
+**Files affected.** `scripts/build.js` (`:845` `stripWgslComments`, `:857-860` the whitelist, `:1125-1131`
+`wgslModuleContents`, `:1222` the call site — read-only evidence, unchanged);
+`packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveShaders.js` (`:122`, `:127-128` the marker regexes,
+`:129-141` `injectChunks`, `:243-258` `getShaderSource` — read-only evidence, unchanged); the 31 carrier
+shaders under `packages/engine/Source/Shaders/WebGPU/Primitive/` (the fix, one line each);
+`Tools/build-infra/wgsl-chunk-resolution.spec.mjs` (new guard);
+`Tools/build-infra/wgsl-comment-strip.spec.mjs` (added case); `gulpfile.makezip.js` (comment only).
+
+**Symptom.** `release tests (chrome)` reported 24 failures of the form
+`Renderer/WebGPU point-shadow receive RTE :: <key> consumes its existing camera-relative varying`, all
+release-only; `coverage (firefox)`, a debug build, had none. Under the failures sat the real defect: in
+every minified artifact since 2026-08-21, `getShaderSource` returned WGSL that called `csm_samplePointShadow`
+(24 lit primitive shaders) or the five `csm_polyline*` / log-depth functions (7 polyline shaders) with no
+declaration in the module, so `device.createShaderModule` failed and no pipeline built from it was valid.
+No spec watched the polyline half at all.
+
+**Root cause.** The chunk-splice opt-in is a comment line. `stripWgslComments` preserves only lines whose
+trimmed form starts with `//>>`; every other comment line is deleted. The strip was written for the
+preprocessor directives (Batch 1125) and the chunk-marker mechanism predates it by three and a half months,
+so `@chunk` was never in its scope. Minified and unminified builds therefore disagreed about whether a
+shader compiles, while every source file on disk stayed correct.
+
+**Fix.** Re-spell the marker line as `//>> @chunk …` in the 31 carriers, so the existing whitelist carries
+it. Both marker regexes match any comment line *containing* the marker, so no regex, no injector and no
+build code changed. `WebGPUShaderPreprocessor`'s `DIRECTIVE_PATTERN` does not match the line, so it passes
+through untouched rather than throwing — verified over 248 real preprocessor invocations (31 carriers, raw
+and chunk-injected, at masks 0, `LOG_DEPTH`, `COMPRESSED_VERTICES` and both).
+
+**Guard.** `Tools/build-infra/wgsl-chunk-resolution.spec.mjs` applies the real exported
+`wgslModuleContents(src, true)` and the real splice to all 325 tracked `.wgsl` and asserts that minification
+changes no module's set of undeclared `csm_*` callees. Build-free, so it runs in the `guards` job, which
+`Tools/ci-guards.spec.mjs:228-241` requires to stay build-free. On the pre-fix tree it is red on exactly 31
+files — the defect and nothing else.
+
+The same whitelist deleted the `// __SUBGROUP_BLOCK_START__` / `__END__` sentinels at
+`Shaders/WebGPU/Compute/FrustumCull.wgsl:122`/`:161` and `Compute/PointCloudLOD.wgsl:210`/`:297`, which
+`WebGPUGPUCuller.ts:158-165`, `WebGPUPerformanceManager.ts:995-1002` and
+`WebGPUPointCloudLODProcessor.ts:303-309` use as the only anchor for the non-subgroup-capable branch — so a
+minified bundle shipped `subgroupBallot` and `@builtin(subgroup_invocation_id)` to devices that cannot
+declare `enable subgroups;`. Measured with the real transform: the branch removed 1,389 / 3,237 bytes
+unminified and **0** minified. Fixed in the same batch by the same re-spelling, and covered by contract (C)
+of `Tools/build-infra/wgsl-chunk-resolution.spec.mjs`, which compares what every comment-matching renderer
+regex sees in the two build flavours rather than looking for one marker.
+
+## Bug ci-l12-01 — the fork routed an upstream WebGL stage through a nullable extractor, so a skin with no joints killed the whole model's draw commands (lane W2-L12 / Bregil, 2026-09-19)
+
+*Placed by record round 7 (lane RR-2, Milo) from the lane's packet §7 row 3
+(`cesium-webgpu-worker-archive/lanes-2026-09-19/ci-wave2-tranche1/bregil/LANDING_PACKET_BREGIL.md`);
+reviewer Ebor. The fix landed as Batch 1536 (`a76d42b3f8`). Ledger row: `DEFERRED_WORK.md`
+`### CI2-L12-SKIN-NULL-DEREF`.*
+
+**Symptom.** `Scene/Model/SkinningPipelineStage :: processes skin with two joints` and `:: processes skin
+with many joints` failed in both karma jobs and in both Edge flavours with
+`TypeError: Cannot read properties of null (reading 'jointCount')`. The spec file had not been edited since
+2024-09-20 and is byte-identical to `upstream/main`.
+
+**Root cause.** `a556f45724` (2026-03-22) replaced the stage's direct read of
+`runtimeNode.computedJointMatrices` with `extractSkinData(runtimeNode)` and dereferenced the result
+immediately (`SkinningPipelineStage.js:66`, `:71`). That extractor is documented nullable and returns `null`
+when the node has no runtime skin, or when its computed joint matrices are absent or empty
+(`ModelSkinData.js:29-41`). The stage runs whenever `defined(node.skin)` (`ModelRuntimePrimitive.js:229`),
+which is a weaker condition, so the two upstream mocks — and a real node built from a glTF skin with an empty
+`joints` array — met a `null` the caller had no branch for. The stage loop in
+`ModelSceneGraph.buildRenderResources` (`:249-298`) has no `try`/`catch`, and both backends run it, so the
+throw took out every primitive of the model, not the skinned one.
+
+**Fix.** Extract first, and return before declaring anything when the extractor yields `null`: the primitive
+renders unskinned (`#ifdef HAS_SKINNING`, `ModelVS.glsl:31-33`, is simply false) instead of aborting the
+model. Ordering matters — a guard after `addDefine` would leave a `getSkinningMatrix()` body referencing an
+undeclared uniform. Upstream's behaviour for the same node was measured, not assumed: it emits
+`uniform mat4 u_jointMatrices[0];`, a zero-length array declaration GLSL ES does not allow, so its tolerance
+was worth keeping and its output was not.
+
+**Also in the same commit.** `extractSkinData` gained an optional `packJointMatrices` argument so the WebGL
+stage stops allocating and filling a `Float32Array` only the WebGPU upload path reads, and the spec's two
+mocks gained the runtime skin they had never needed before the routing change.
+
+**Files modified.** `packages/engine/Source/Scene/Model/SkinningPipelineStage.js`,
+`packages/engine/Source/Scene/Model/ModelSkinData.js`,
+`packages/engine/Specs/Scene/Model/SkinningPipelineStageSpec.js`.

@@ -14470,6 +14470,7 @@ never a network payload or an eclipse flag.
 - **`C15-05` follow-ups, opened 2026-09-19 from the adversarial verification.** (a) **No request timeout.** A transport that never settles leaves the cycle and `start()`'s promise pending forever and `destroy()` cannot unsettle them. `fetch` honours the abort signal, so the exposure is a transport that ignores it; the signal's obligation is now documented on `SpaceWeatherFetchJson`, but no deadline is enforced. (b) **No minimum dwell on the ownership handoff.** `resolveOvalOwnership` is pure in the instant, so it cannot flap under a monotone clock, and the clock defect that supplied a non-monotone one is fixed — but nothing prevents flapping if another caller ever supplies one. (c) **An unpublishable source is dropped, not diagnosed.** The second publish pass hands the oval to the index, which is correct, but a consumer cannot distinguish "the model has not been fetched" from "the model arrived and could not be published"; the failure code says so and the ownership reason does not. (d) **`pollIntervalSeconds` is unvalidated**, added 2026-09-19 from the second round: `-1`, `0` and `NaN` all clamp to a zero delay in `setTimeout`, so the ingest re-fetches both products on every macrotask for the lifetime of the object. One `Check.typeOf.number.greaterThan` inside the constructor's existing debug pragma closes it. (e) **No minimum dwell on the ownership handoff, restated**: a clock that steps forward now raises one spurious `ovation → none → ovation` pair, which is the same class as (b) and is the only clock pathology the v3 fixes leave.
 - **`C15-05` — v4 2026-09-19, third round (lane Bodo); lane claims until re-reviewed.** The adversarial verifier returned REFUTED a third time and recorded the lane as **converging — zero source defects in the ingest's core behaviour**: every reproduction from the first two rounds is closed except the two already carried as dated follow-ups, and every recovery path the v3 sticky-state table claims proved load-bearing under mutation. What refuted was **spec coverage**. Four mutants survived all 43 cases and two of them erased behaviours the row's Exit sentence names by name: the ingest's own `polePolicy` constructor option never had to reach the normalizer (**pole** — five distinct published outcomes, one of them the capture being refused outright, and no assertion read any of them), and the published packet's `forecastTimeMs`, `provenance.validitySeconds` and `provenance.sourceId` were read by no assertion in either twin (**staleness**, **frozen-fixture**). Both of his spec cases are taken in both twins — with the `console.error` assertion he invited added to the pole case — and all four mutants are now RED. Station-3 returned LAND-WITH-FIXES with one finding, taken verbatim: the new `.gitattributes` rule named the whole fixture directory, so the sidecar `README.md` would have been committed with whatever line endings the applying checkout produced while the patch declared LF; the rule now names the three JSON captures, and the README stays ordinary text. **Two source changes, both the same defect class — state that is stale being presented as fresh.** (1) **A snapshot's declared horizon is bounded at both ends.** The lead is still read from the payload and never inferred from the product's name, but it is also the number that says how long to keep believing the observation, so a payload that declares it is a payload trusted to say how long to trust it: a mistyped `Forecast Time` year declares 31,539,720 s, and the snapshot then reads `fresh` for a year with the feed down. `OVATION_VALIDITY_CEILING_SECONDS` (10,800 s — six times the product's own nominal half-hour horizon, and nearly twice the longest lead ever measured from it) bounds it. The capture is **kept and published whole**, both instants as declared, because a wrong forecast instant says nothing about the grid beside it; what is refused is the trust the label asks for, and that refusal is reported as a throttled production diagnostic and as a new `ovationHorizonSeconds` beside the declared `ovationLeadSeconds`. Measured end to end: declared 31,539,720 s, credited 10,800 s, published `validitySeconds` 10,800, `fresh` at +1 h, `aging` at +6 h, handed to the index at +24 h. (2) **The owner is re-decided by the clock, not only by a response.** `_publish` was reachable from exactly one place — a completed cycle — while its own JSDoc named the poll tick as a second call site, so a transport that never settles **froze the published decision for ever**: thirty days after the last completed cycle the verifier measured `latestOwnership()` still reading `ovation`/`ovation-current`/`fresh`, with no refusal, no diagnostic and no counter moving. Each poll tick now re-resolves ownership at the instant it fires, and republishes **only** when the owner moved — so an unchanged owner leaves the packet, and the object identity a consumer may be keying a GPU upload on, exactly where it was. Measured on the same timeline: `none`/`ovation-stale`/`stale` at +1 d, +7 d and +30 d. **What this does not change:** when no successor authority can produce a packet the last good one still stays in place by design, so a consumer must gate the oval on `latestOwnership().owner` rather than on the packet's presence — the contract says so, and `C15-06` inherits it. **Spec:** 47 Node cases (was 43) and 39 karma specs (was 35), twins, the same eight-case gap for the same reasons; **46 inertness mutants, every one RED, no survivor**, plus the two equivalence probes recorded as survivors since v3. *(Figure correction to the v2 and v3 entries above, from the station-3 review: where they say "36 inertness mutants" the count was 37.)*
 - **`C15-05` follow-ups, restated and extended 2026-09-19 after the third round (lane Bodo); lane claims until re-reviewed.** **(a) is corrected, and half of it is closed.** As written it said only that a transport which never settles leaves the cycle and `start()`'s promise pending. What that actually did was measured in the third round: the staleness handoff never fired again, and both published reads went on asserting that a month-old snapshot was current — silently, with no refusal and no diagnostic. **That half is closed in v4** by the poll-tick ownership refresh, pinned by a behaviour spec in both twins and by two inertness mutants. What remains open is the resource half: nothing puts a deadline on a cycle, so a transport that ignores its abort signal leaves one promise pair outstanding per poll (six after three ticks, measured) for the life of the object, and the promise `start()` returned never settles. `fetch` honours the signal, so the exposure is a transport that does not. (f) **`_arm`'s handle assignment is not fenced against a lifecycle call raised inside the injected timer function.** The handle exists only once the host's own function returns, so a `stop()` or `destroy()` raised from inside `setTimeoutFunction` finds nothing to clear and the assignment lands after it: `stop()` returns with `isRunning` reading `true`, and `destroy()`'s "no timer survives this call" is false in that ordering. The orphan is **inert** — the tick's own stopped/destroyed fence catches it, it issues nothing and does not re-arm — and the verifier could construct no ordinary host that reaches the door, having checked every reachable sibling (`start()` re-entered from inside the transport, `stop()`/`destroy()` from inside the transport, from inside `nowFunction`, and from an abort listener on the cycle's own signal): all of them hold. Eight lines fence it. Not taken in v4, because the fix is in the lifecycle rather than in the class the round's decision rule named. (g) **One failure mode is completely silent.** A host clock a day *ahead* of a healthy feed accepts every payload, finds all of it stale, owns nothing and refuses nothing — so there is nothing to log. `latestOwnership()` reports it (`no-source`), an operator watching the console does not. The fix is a diagnostic for "every source is present and every one of them is stale". (h) **Design note for the next lane that touches this file's lifecycle.** Three rounds produced three lifecycle defects of one shape: the lifecycle is carried in three independent fields (`_destroyed`, `_stopped`, `_timerHandle`) while the public `isRunning` derives from the third alone, so the truth and the report can disagree and each new door is a new way for them to. A single `_state: IDLE | RUNNING | STOPPED | DESTROYED`, with one transition that owns the timer, makes all three impossible by construction rather than by three separate guards. It is deliberately **not** taken here: nine inertness mutants (`M8`, `M9`, `M11`, `M14`, `M17`, `N7`, `N8`, `N15`, `V1`) now pin that lifecycle against behaviours three rounds of attack produced, and replacing it on a landing day would discard that coverage to re-open a class the specs currently close. `C15-06` reads `latest()` and `latestOwnership()` and does not drive the timer, so the row belongs to whichever lane next changes the lifecycle itself.
+- **`C15-05` — v4 VERIFIED, HOLDS (adversarial verifier Briffo, fourth round, 2026-09-19); follow-ups (i)-(o) added, placed by record round 7.** The v4 entries above say "lane claims until re-reviewed"; the fourth round **confirmed** them: zero source defects, the two reproductions still open being exactly the dated follow-ups (a) resource half (R12, the cycle's promise after `destroy()`) and (d) (F6, `pollIntervalSeconds` of -1 / 0 / NaN), and four spec gaps, none on a row-exit behaviour. The lane landed as Batch 1531 (`47b37f8681`). **Correction to the wording above:** "46 inertness mutants, every one RED, no survivor" (and the same phrase in the v2 and v3 entries) is true of the lane's own mutant set and is **not** a property of the module — the verifier's independent set of **57** produced **50 RED and 7 survivors** (two equivalent, one near-equivalent, four real gaps); read it as a claim about a set. **New follow-ups, dated 2026-09-19:** **(i) the poll tick's new synchronous work runs ahead of `_arm()`.** Packet construction, schema validation, `_dropSource` and a `console.*` now execute inside the host's timer callback before the chain re-arms; a throw there stops the chain, leaves `isRunning` reading `false` with `_stopped`/`_destroyed` both false, and skips that tick's request. Demonstrated with a control against mutant `O1` (v3 ordering: no throw reaches the host, chain re-arms). **Not reachable in a production build** — the throwing call is `_logTransition`'s pragma-stripped `console.log`, and the only other `console.*` on the path needs a KP packet to fail validation, which the Kp normalizer's `[0,9]` bound makes impossible. `start()` recovers the object. Fix: hoist `this._arm()` above `this._refreshOwnership(tickMs)`, or `try { … } finally { this._arm(); }`. **(j) A single tick can emit two ownership transitions and build two packets.** When the clock hands the oval off and the same tick's response then returns a fresh capture, a consumer keyed on `changed` sees a `kp` blip the tick itself undoes: 2 transitions, 2 packets, for a tick that ended where it started. Once per staleness episode, not per tick — twenty consecutive ticks against a permanently-late feed gave 2 transitions total, so it is **not** a flap; `_commitOwnership`'s "one transition per evaluation" guarantee does not span the two evaluations a tick now performs. **(k) `O5` survives:** nothing pins that the tick re-resolves at the instant it fired rather than one poll interval earlier (measured effect: the handoff moves from +125 min to +124 min; near-equivalent — pin it only if the clause is wanted pinned). **(l) `H7` survives:** nothing pins that the bounded-horizon diagnostic carries its **own** throttle stamp. **(m) `H8` survives:** nothing pins that the bounded-horizon diagnostic survives a backward clock step (the refusal log's equivalent `T3` is RED because a spec pins it; the horizon log has no twin case). **(n) `O4` survives:** nothing pins that ownership is re-committed on a tick where the owner did **not** move, so the freshness band reported between handoffs with a hung transport is unasserted. **(o) `X6` survives:** nothing pins that a model-owned packet built while the index is **absent** carries `authority: synthetic` (the index-present direction is RED). The verifier's own judgement: worth a lane of their own when something next touches this file; none worth holding a landing for. The Edge/karma leg the verifier listed as the only unexecuted half of the proof was then run (executor Elatan, 2026-09-19, on `c46483d8f7`): `tsc-engine` exit 0 with the four new modules in the compiler's file list; targeted karma 39/39 ingest and 81/81 family in both debug and release; full release suite 0 new failures; default-off smoke 0 console errors and 0 SWPC requests over 3,368 frames (receipt `Tools/visual-regression/output/wave-end/c15-05-karma-20260919/README.md`, seat tree). Its one finding was mechanical — the patch's `package.json` hunk no longer applied at the then tip — which is incident 4 of `DX-SEAT-LANDING-MECHANICS-CLASS` below. Source: `cesium-webgpu-worker-archive/lanes-2026-09-19/briffo-v4/harvest-20260926/VERIFY_BRIFFO_V4.md` §4, §5, §7, §8.
 - **`C15-06` GOES unit gate:** pin the X-ray flux unit and both passband
   semantics from an attributable source before flare-class thresholds or any
   calibrated transfer are enabled. Until then GOES is diagnostic-only. Even
@@ -16831,6 +16832,8 @@ Three independent rungs agreeing to **0.4%** is itself the check that the two-te
 
 A spread of 0.009 on three rungs spanning F = 0.46..0.89. An unconstrained two-parameter fit of the FOURTH RUN ALONE lands at `s = 0.7175, e = 1.0525` with an RMS residual of 1.05e-5 — agreement, though NOT independent confirmation: that fit is ill-conditioned on its own (perturbing every measured ratio by one 8-bit code admits `e` in [0.21, 11.7]). The cross-run subtraction is what pins it.
 
+~~"perturbing every measured ratio by one 8-bit code admits `e` in [0.21, 11.7]"~~ — **restated 2026-09-19 (Batch 1532, lane S3-L2 / Arciryas; placed by record round 7):** the sentence stands as written and is now **instrumented rather than only argued**. The gate reports the propagation directly, and at the 2026-09-19 band means the full-code interval on the deepest rung's `rho` maps to `e` in **[0.9504078545942694, 1.278350466622693]** — half-width **0.16397**, against `deckPureDeckRatio`'s own `e`-window of **[0.9237380007695408, 1.0971453698529925]**, half-width **0.08670**, i.e. **1.89x**. (Both inverted at the run's own `published.factor` `0.46420022839842723`; at the gate's analytic `predictFactor(0.9) = 0.4642284967528173` the same two windows are `[0.9501861923917733, 1.2780915340198018]` and `[0.9235193695733674, 1.0969070310560372]`.) The single-run leg pins `e` to roughly twice the band's width, exactly as this paragraph warned; the cross-run subtraction is still what pins it, and that subtraction was taken on `1970806a59` / `6e9c997287`.
+
 **AN UNFITTED PARAMETER LANDS INSIDE ITS SHADER RANGE.** The un-eclipsed deck band is 0.627369, so the decomposition puts the tint at `s*0.627369 = 0.450` and the core at 0.177; with alpha ~ 1 that is a tint fraction `a = 0.654` and a tint luma of `0.450/0.654 = 0.6879`. `cloud.aerialColor`'s Rec.709 luma runs **0.6496** (todT 0) to **0.7081** (todT 1) from the packed literals at `WebGPUProceduralCloudRenderer.ts:2297-2299` — 0.6879 is inside that window at todT ~ 0.66, and nothing in the fit knew those literals. That is the strongest available check short of a new run.
 
 **CONSEQUENCE (i) — THE ENTRY IS REFUTED ENTIRELY.** `deckDisplayedRatio`'s [0.44, 0.70] window is `F(1+e)/(1+F*e)` for `e` in [0, 1], and its 0.70 ceiling holds up to `e = 1.693`. The measured `e = 1.01` is INSIDE the design envelope with 1.67x of margin to the ceiling. The pure-deck ratio the fit implies at the deepest rung is **0.6355**, essentially the `e = 1` edge value 0.6341 — the band was never wrong and the deck was never saturating. "The deck runs at e ~ 7.7 where a 2.15x linear dim displays as 1.13x" is false by a factor of 7.6 in `e`; the actual display compression is 0.4642 -> 0.6355, a 1.37x flattening of a 2.15x dim, which is exactly what a band derived for `e <= 1` was built to admit. None of options (a) auto-exposure, (b) pre-tonemap compositing or (c) retiring the display band is warranted, and each would change the un-eclipsed look for no defect.
@@ -16843,6 +16846,8 @@ A spread of 0.009 on three rungs spanning F = 0.46..0.89. An unconstrained two-p
 Combined, the true share is **7.2x** CO-11's estimate — **not the "~4x" the fourth-run note recorded**, which came from comparing against a pre-registration rather than re-deriving the share. `0.7101/0.099 = 7.17` (spec K1 pins it).
 
 **WHAT WOULD PIN IT IN ONE NUMBER, IF ANYONE WANTS IT.** `cloudAerialStrength` is already a live dial (`config.cloudAerialStrength ?? 1.0`, packed at float 91). A fifth-run diagnostic leg at `cloudAerialStrength = 0` sets `a = 0` exactly, so the deck's displayed ratio IS `rho` and `e` reads off a single measurement with no cross-run input. Pre-registered: **the deepest rung reads 0.635 +/- 0.01**, inside [0.44, 0.70]. The gate module's `deckTonemapFit` already accepts a lane-supplied `deckAerialShare` for exactly that leg. This is a nice-to-have, not a blocker — the entry closes on the arithmetic above.
+
+**ANNOTATION 2026-09-19 (Batch 1532, lane S3-L2 / Arciryas, ruling `R-2026-09-19-16` + the seat's MQ2 rider; placed by record round 7).** The `cloudAerialStrength = 0` leg's own resolution is now REPORTED on the verdict and is not, and may not become, the acceptance. `judgeEclipseCloudResponse` carries `deckPureRatioQuantization` — `bandMeanHalfStep 0.00196078431372549`, `twoMeanDifferenceError 0.00392156862745098`, the propagated `observedInterval`, and the band it is read against — plus the reported-only predicate `deckPureRatioIntervalOverlapsBandReportedOnly` (`Tools/visual-regression/lib/eclipse-cloud-response-gate.mjs:1623`, `:3867-3891` in the lane). The gating predicate `deckPureRatioInBand` keeps its bare `inBand` point test unchanged, and the band `[0.625, 0.645]` is unmoved. Measured on the first 2026-09-19 receipt's own band means (`N = 0.23471747849311878`, `D = 0.36345834684040734`): `rho = 0.6457892095024083`, a miss of **7.892095e-4** above `hi`, against a full-code propagated interval `[0.6282213592753136, 0.6637402946833496]` whose half-width **0.0177595** is **1.78x** the band's own **0.0100**. So the band is drawn at **0.563x** the resolution of the measurement that scores it, and the miss is **4.4%** of that resolution — the same one-code fragility this entry already recorded for `e` (the struck-and-restated sentence above). Both rival readings the band exists to exclude remain excluded under the interval rule at the same band means: `e = 0` (`rho 0.4642284967528173`) by **0.14480**, and the third pass's `e = 7.70` (`rho 0.8828801959988594`) by **0.21778**. **Whether the interval may REPLACE the point test as the acceptance is MQ2 of the S3 remainder plan and is NOT RULED**; `R-2026-09-19-16` expressly left it with the maintainer, on the ground that interval-scoring an acceptance predicate after it has failed alters a verdict on a banked run. Proof: `Tools/visual-regression/eclipse-cloud-response-gate.spec.mjs` cases L9-L12, homed in `npm run test-cloud-c13`; three temp-copy mutants (promote-to-gate, inert-computation, band-widening) each RED against a GREEN control; and an offline re-score of both banked report JSONs in which the exit code, `failedPredicates`, `structuralReasons` and `unscoredPredicates` are byte-identical before and after. **This annotation closes no question about the deck**: the un-eclipsed deck band fell 43% and `deckAerialShareSingleRun` 4.2x between `fbea2028cc` and `ea651de6d8`, which is S3-L4's open row, and the `0.635` pre-registration above is still quoted against an engine 1,072-1,077 commits older than the tree it now scores. *Record-round-7 note:* the one re-run under `R-2026-09-19-16` (`Tools/visual-regression/output/eclipse-cloud-response-2026-09-19b/`) read `deckPureRatio` **0.6457892095024083** again — the same value — with the reported-only interval predicate **true** and nothing structural; see `R-2026-09-19-16`'s Executed line in `MAINTAINER_RULINGS_2026-09-19.md`. Source: `cesium-webgpu-worker-archive/lanes-2026-09-19/s3-remainder/arciryas/LANDING_PACKET_ARCIRYAS.md` §7.
 
 **Rollback boundary: none — nothing was changed in the engine by this closure.** The gate module gained `deckDisplayedRatio`, `fitDeckAerialShare`, `fitDeckTonemapEntry`, `DECK_AERIAL_SHARE_CROSS_RUN` and the reported-only `deckTonemapEntryWithinDesignEnvelopeReportedOnly`; spec group K (K1-K4) pins the derivation, including the reproduction of the e ~ 7.7 reading as the single-term artefact.
 
@@ -21282,7 +21287,7 @@ engine, and they bind any later leg that reuses it:
   which reads as a large false regression if the arm is unguarded. Guard the first capture, or discard
   it, before comparing arms.
 
-### Lane W0-CIGREEN (Bolger) — main's three red CI gates, 2026-09-17 (Batch NNNN, number stamped by the seat)
+### Lane W0-CIGREEN (Bolger) — main's three red CI gates, 2026-09-17 (Batch 1498, number stamped by record round 7)
 
 **`C16-12` clean-list ratchet: 53 REGRESSED → 0, 8 files** *(2026-09-17)*. `comment-marker-guard
 --verify-cleanlist` went from **53 REGRESSED in 8 files** at `91a7a8c9ff` to **0**, with the
@@ -21980,7 +21985,7 @@ this lane — the five rows above are point fixes. What this batch adds toward i
 Node-side contract for four of the widgets and the three mixins, which a later lane can extend
 widget by widget rather than re-deriving the harness.
 
-### Lane W3-A-MAPPED-BUFFERS (Goatleaf) — mapped-buffer lifetime and four renderer-infrastructure omissions, 2026-09-18 (Batch NNNN, number stamped by the seat)
+### Lane W3-A-MAPPED-BUFFERS (Goatleaf) — mapped-buffer lifetime and four renderer-infrastructure omissions, 2026-09-18 (Batch 1506, number stamped by record round 7)
 
 Base `1a2baeaa4a`. Every cited line re-read in the lane's own clone before it was changed; where the
 report and the tree disagreed, the tree is what the entries below record. Node acceptance:
@@ -23883,3 +23888,777 @@ into the **report JSON** itself, beside `provenance.start.localIdentity`, so a q
 its own provenance and a plan cannot separate them; (2) a brief-time rule that any claim of the form
 "same tree" / "byte-identical engine" names the receipt line it was read from, the way this section
 does.
+
+## 2026-09-19 — lane CI2-L10 (Rosamunda): the minified WGSL comment strip deleted the chunk-splice markers and the subgroup sentinels
+
+*Placed by record round 7 (lane RR-2, Milo) from the lane's finished prose — packet §9.1 as
+amended by §11.7 (`cesium-webgpu-worker-archive/lanes-2026-09-19/ci-wave2-tranche1/rosamunda/LANDING_PACKET_ROSAMUNDA.md`);
+reviewer Rufus (LAND-WITH-FIXES), adversarial verifier Sadoc. The code landed as Batch 1534 (`69c79cf5c7`).
+The row text is the lane's, reformatted from blockquotes into this file's `###` shape; nothing of substance
+was changed.*
+
+### `CI-W2-L10` — the minified WGSL comment strip deleted the `@chunk` splice markers, so 31 shipped shaders called functions no module declared (2026-09-19, CLOSED)
+
+`scripts/build.js:845` `stripWgslComments` emits only lines whose trimmed form starts with `//>>`
+(`:857-860`), and `wgslModuleContents(source, true)` (`:1125-1131`) applies it to every generated WGSL
+module of a minified bundle (`:1222`). The chunk-splice markers `WebGPUPrimitiveShaders.injectChunks`
+matches (`:129-141`, regexes at `:122` and `:127-128`) were plain `//` comments, so from Batch 1125
+(`f0c6b33e01`, 2026-08-21) every minified artifact — `Build/Cesium`, the npm package, the CDN IIFE, the
+release zip and `deploy.yml`'s artifact — shipped 24 lit primitive shaders calling `csm_samplePointShadow`
+and 7 polyline shaders calling `csm_computePolylinePosition`, `csm_getPolylineWindowCoordinates`,
+`csm_vertexLogDepth`, `csm_updatePositionDepth` and `csm_writeLogDepth` with no declaration in the module.
+WGSL resolves a whole module, so `createShaderModule` failed outright and the primitives did not render on
+a production build. Fixed by re-spelling the marker line as `//>> @chunk …` in the 31 carriers — one line
+per file, no code change in `scripts/build.js` or `WebGPUPrimitiveShaders.js`, +1,103 bytes of minified
+WGSL (0.088 %). Guarded by the new build-free `Tools/build-infra/wgsl-chunk-resolution.spec.mjs`, which
+asserts that minification changes no module's set of undeclared `csm_*` callees across all 325 tracked
+`.wgsl`. Authorship: FORK on both sides — the marker mechanism (`ffa565b3d4`, Batch 165; `1452c8e581`,
+Batch 139) and the strip (`f0c6b33e01`, Batch 1125). No upstream PR. The same whitelist also deleted the
+`__SUBGROUP_BLOCK_*__` sentinels; that half is recorded in `WEBGPU_DEBUGGING_LOG.md` Bug ci-l10-01.
+
+### `CI-W2-L10-a` — the release zip un-minifies GLSL and not WGSL, and that asymmetry is now deliberate (2026-09-19, CLOSED as WONTFIX)
+
+`gulpfile.makezip.js:93-96` re-runs `glslToJavaScript(false, …)` so the zip's GLSL ships readable, with no
+`wgslToJavaScript(false, …)` counterpart. Once the chunk markers survive the strip there is no correctness
+reason to un-minify WGSL for the zip, and stripping it saves bytes; the GLSL precedent is about the human
+readability of a shipped artifact. Recorded as a comment at `gulpfile.makezip.js:97-100` so the next reader
+does not re-open it.
+
+### `CI-W2-L10-b` — nothing in CI ever compiles a minified WGSL module (2026-09-19, OPEN)
+
+`.github/workflows/dev.yml`'s `variants` job builds minified bundles but its only runtime smoke is
+`--variant webgl-only`, and the WebGPU smokes are LOCAL-REQUIRED; `Tools/variant-smoke-test.mjs` renders a
+default globe and `Globe/GlobeTerrain.wgsl` carries no `@chunk` marker, so the smoke gate is structurally
+blind to this class. That is why a shipping defect lived for a month. The transform guard added by W2-L10
+catches the class at source; an artifact guard over a real built bundle additionally catches a *build
+wiring* regression the transform guard cannot see, and needs a step in a job that builds — a `dev.yml`
+edit, which wave 2 was forbidden. Plan question **Q8(b)/(c)**, for the maintainer.
+
+*Id note (record round 7).* The lane's v2 §11.7 also marks a `CI-W2-L10-b` "WITHDRAWN" whose text is a
+different concern — that the new guard modelled only the `@chunk` splice and not `#import`; contract (C)
+of the guard now harvests both `#import` regexes (`WGSLShaderPreprocessor.ts:427`, `:445`), so that concern
+was closed by fix before it was ever filed. The same §11.7 states that this v1 row "stands as written", so
+it is placed here under the id it was filed with, and the withdrawn concern is recorded only in this note.
+
+### `CI-W2-L10-c` — resolve `@chunk` at build time inside `wgslToJavaScript` (2026-09-19, OPEN, plan Q2(b))
+
+The chosen fix keeps a comment load-bearing: 31 files must now remember a spelling, and the next
+chunk-carrying shader will be written by someone who does not know it. `wgslToJavaScript` already
+enumerates every chunk into `CsmBuiltins.js` (`scripts/build.js:1237-1262`), so the splice could happen at
+build time and the marker could stop being semantic. It was not done in the same commit as a production
+repair: it changes module contents in *both* flavours while `injectChunks` is still live, and
+`chunks/functions/csm_polylineCommon.wgsl:26` matches its own regex, so a half-migrated state
+double-prepends. `CsmBuiltins.js` has zero engine consumers today, so the migration must also give it one. It
+also has **two writers**, not one: `scripts/generateWgslJs.js:59-93` rebuilds it too, so a migration that
+edits only `scripts/build.js` would leave the second generator emitting the old shape; and
+`scripts/engineTypeCheck.mjs:35` and `scripts/__tests__/engineTypeCheck.spec.mjs:164-174` reference it (all
+at `37c0f8767e`).
+
+### `CI-W2-L10-d` — the polyline half of the chunk mechanism has no karma spec (2026-09-19, OPEN)
+
+`WebGPUPointShadowReceiveRTESpec.js` covers the 24 point-shadow keys and nothing covers the seven polyline
+keys `polylineColor, polylineMatColor, polylineMatImage, polylineMatDash, polylineMatGlow,
+polylineMatArrow, polylineMatOutline`, which is why a spec-count-driven repair would have fixed 24 of 31
+carriers. W2-L10 deliberately added no karma spec (the wave's acceptance required "no new names in either
+job") and covers the half with the build-free transform guard plus the Edge probe. A mirror of the
+point-shadow spec over the seven polyline keys is the missing piece.
+
+### `CI-W2-L10-e` — the WGSL chunk guard does not preprocess, so an ifdef-gated `csm_*` counts as declared (2026-09-19, OPEN — P2)
+
+`Tools/build-infra/wgsl-chunk-resolution.spec.mjs` compares the two build flavours of each module without
+running `//>>ifdef` resolution, so a shader that declares `fn csm_x` only inside `//>>ifdef FLAG` and calls
+it outside stays green while the module a pipeline compiles at `FLAG=0` would not resolve the call. **Not
+live:** measured 2026-09-19 over the 325-file corpus, all 211 ifdef-gated `csm_*` declarations pair their
+declaration and every live call inside the same block; the only two depth-0 mentions are prose inside
+comments (`Model/ModelPBRComplete.wgsl:3746`, `Primitive/PrimitivePhongColor.wgsl:14`). The guard's header
+states the gap explicitly. Closing it is a `defaultVariant()` leg from
+`Tools/visual-regression/lib/wgsl-variant.mjs`, run once per declared flag before the callee analysis.
+Raised by the adversarial verifier Sadoc as R2.
+
+### `CI-W2-L10-f` — `chunks/functions/csm_distributionGGX.wgsl` and `WGSLBuiltins.ts` hold two copies of the same chunk, and only one of them is live (2026-09-19, OPEN — P3)
+
+`WGSLBuiltins.ts:129-146` carries an inline template-literal copy of `csm_distributionGGX` — including its
+`// #import "functions/csm_constants"` line — and `:515` registers *that* copy with the shader library. No
+engine file imports the generated `chunks/CsmBuiltins.js`, so the `.wgsl` file's own module has no consumer,
+and its `#import` line being deleted by the minify strip is harmless *today* only because of that. The
+duplication is the defect: an edit to the `.wgsl` does not reach the runtime, and the day a consumer is wired
+to the generated module the comment-form `#import` becomes a live instance of the W2-L10 class. Contract (C)
+carries it as a justified `PROSE_ANCHOR_MATCHES` row and will fire when the justification stops holding.
+Raised as Sadoc R3; **its second cited file, `chunks/functions/csm_primitiveIndex.wgsl:12`, is not an
+instance** — the line is `//   #import csm_primitiveIndex;`, unquoted, inside a usage example, and
+`WGSLShaderPreprocessor.parseImports` (`:427`) requires `["']`.
+
+### `CI-W2-L10-g` — the `//>>` namespace now has non-directive members, and one Tools guard forbids that shape in its own scope (2026-09-19, OPEN — P3)
+
+After this lane, `//>>` means "survives the minify strip", not "is a preprocessor directive":
+`//>> @chunk …` in 31 shaders and `//>>// __SUBGROUP_BLOCK_*__` in 2.
+`Tools/visual-regression/gsplat-harness.spec.mjs:2167` (`assertDirectiveVocabulary`) **rejects** any `//>>`
+line that is not `ifdef`/`else`/`endif`. It is scoped to `SPLAT_WGSL` only (`:2421`, `:2564`) so no carrier
+is in scope today and nothing is broken, but a future guard of that shape placed over a chunk-carrying or
+sentinel-carrying shader would fail on correct code. Either widen the vocabulary assertion to the two
+non-directive families or scope it explicitly. Recorded by Rufus in his consumer table.
+
+### `DX-TOOLS-SHADOW-RECEIVE-CONTRACT-SPEC-HAS-NO-RUNNER` — OPEN (DX row)
+
+`Tools/visual-regression/webgpu-shadow-receive-contract.spec.mjs` — 20 Node tests, naga-validated, the
+authority for the shadow-receive contract — appears in **no** `package.json` script and in no workflow;
+`git grep` finds it only in `Tools/tooling-catalog-audit-rows-2026-08-15.json`. It passed 20/20 in the
+lane, but nothing would tell anyone if it stopped. Re-checked at `37c0f8767e` by record round 7:
+`grep -c webgpu-shadow-receive-contract package.json` is still **0**.
+
+### `DX-GIT-GREP-ANCHORED-PATTERN-MISSES-CRLF` — OPEN (DX row)
+
+With `core.autocrlf=true` and `* text=auto`,
+`git grep -l "^// @chunk " -- packages/engine/Source/Shaders/WebGPU/Primitive` returned **0** while
+`grep -l "^// @chunk csm_samplePointShadow" …/Primitive/*.wgsl` returned **24** over the same files; the
+unanchored `git grep "@chunk csm_samplePointShadow"` found them. Every lane brief tells leads to prefer
+`git grep` over recursive `grep` (for good reasons), so an anchored `git grep` that returns nothing reads as
+"no such code" when it means "CRLF". Worth one line in the search guidance.
+
+### `DX-SED-I-REWRITES-CRLF-SHADERS-TO-LF` — OPEN (DX row)
+
+Editing `.wgsl` under MSYS `sed -i` converted the whole file to LF while git's clean filter hid it
+(`--numstat` still read `1 1`). Lanes editing shader files should use a Node read/replace/write that
+preserves `\r`, or verify the CR count afterwards. **Amendment from the lane's v2 (§11.5):** a marker-flip
+helper must assert the path count it touched, not merely that it ran.
+
+## 2026-09-19 — lane CI2-L12 (Bregil): the fork routed an upstream WebGL stage through a nullable extractor, and made the WebGL configure pay for a packed copy only WebGPU reads
+
+*Placed by record round 7 (lane RR-2, Milo), verbatim from the lane's packet §7 rows 1-2
+(`cesium-webgpu-worker-archive/lanes-2026-09-19/ci-wave2-tranche1/bregil/LANDING_PACKET_BREGIL.md`);
+reviewer Ebor. The code landed as Batch 1536 (`a76d42b3f8`).*
+
+### `CI2-L12-SKIN-NULL-DEREF` — `SkinningPipelineStage` dereferenced a documented-nullable extractor (FIXED 2026-09-19)
+
+- **What.** `packages/engine/Source/Scene/Model/SkinningPipelineStage.js:66` called
+  `extractSkinData(runtimeNode)` and `:71` read `skinData.jointCount` on the next statement, with nothing
+  between them (line numbers at `30d1ceb60f`). FORK-authored: every changed line blames to `a556f45724`
+  (KurtTrottr, 2026-03-22). `packages/engine/Source/Scene/Model/ModelSkinData.js:26` documents the return as
+  `{ModelSkinDataResult|null}` and returns `null` on three paths (`:29-31`, `:33-36`, `:38-41`). Upstream's
+  stage read `runtimeNode.computedJointMatrices` directly and could not meet a `null`.
+- **Blast radius.** `ModelRuntimePrimitive.js:229` schedules the stage on `defined(node.skin)`, which is a
+  weaker condition than having joint matrices to declare, and the stage loop in
+  `ModelSceneGraph.buildRenderResources` (`:249-298`) has no `try`/`catch`. A node with a resolvable skin and
+  no joints therefore threw `TypeError: Cannot read properties of null (reading 'jointCount')` and cost the
+  **whole model** its draw commands, on **both** backends (WebGPU runs the same stages through
+  `buildBackendNeutralPrimitiveDescriptors`). Two upstream specs
+  (`Scene/Model/SkinningPipelineStage :: processes skin with two joints` / `:: with many joints`) were the
+  canaries; the spec file is byte-identical to `upstream/main` and was last edited 2024-09-20.
+- **Fix.** The stage extracts before it declares and returns when the extractor yields `null`, so the
+  primitive renders unskinned (`#ifdef HAS_SKINNING`, `Shaders/Model/ModelVS.glsl:31-33`, is simply false)
+  instead of aborting the model. The ordering is part of the fix: a guard placed after `addDefine` leaves a
+  `getSkinningMatrix()` body indexing a `u_jointMatrices` nothing declared. Upstream's own behaviour for such
+  a node was measured, not assumed — it emits `uniform mat4 u_jointMatrices[0];`, a zero-length array GLSL ES
+  does not allow — so its tolerance was kept and its output was not. For a node that **has** skin data the
+  emitted declarations, the function body and the live `Matrix4[]` identity are unchanged.
+- **Also in the same change.** `extractSkinData` gained an optional `packJointMatrices` parameter, so the
+  WebGL path stops allocating and filling a `Float32Array` that only the WebGPU upload path reads: the stage
+  reads `jointCount` and the array reference, and `UniformArrayMat4` packs per frame itself. Every existing
+  caller keeps the packing default (`WebGPUModelRenderer.ts:6221` passes one argument), and `byteLength` stays
+  unconditional because `WebGPUModelRenderer.ts:3287` sizes its GPU buffer from it. **Measured in Node/V8 on
+  one machine, so read the shape rather than the absolutes: before the change the cost is linear in joint
+  count, after it is flat, and the throwaway allocation — 64 bytes per joint — goes to zero.** On this machine,
+  19 joints ~2.8 µs → ~0.85 µs per configure and 256 joints ~24 µs → ~1 µs; the reviewer's independent re-run
+  on his own gave 19 joints 5.67 → 1.37 µs and 256 joints 37.73 → 1.00 µs, same shape, ~2× the absolutes. This
+  is pipeline-**configure** time, not frame time.
+
+### `MODEL-SKIN-INPUT-VALIDATION` — a glTF skin with an empty `joints` array survives the loader (OPEN 2026-09-19, raised by lane CI2-L12, upstream-facing)
+
+- **What.** `GltfLoader.js:3182-3197` maps a skin's `joints: []` straight through, `ModelSkin.js:123-145` then
+  builds an empty `jointMatrices`, and `ModelRuntimeNode.js:266-300` leaves `computedJointMatrices` empty,
+  while `ModelRuntimePrimitive.js:229` still schedules `SkinningPipelineStage` because `node.skin` is defined.
+  glTF requires `minItems: 1` for `skin.joints`, so such an asset is malformed — but nothing in the loader
+  says so, and the same shape exists in `upstream/main`.
+- **Status after `CI2-L12-SKIN-NULL-DEREF`.** The model renders unskinned rather than losing every draw
+  command; upstream emits `uniform mat4 u_jointMatrices[0];`, which GLSL ES does not allow. The open question
+  is whether the loader should reject or warn, and whether that belongs upstream (`CesiumGS/cesium`) rather
+  than in this fork. This is the Principle 9 surfacing that the guard owes: the guard drops skinning silently,
+  and the missing piece is loader-level validation, which this lane did not fold in.
+- **Related but separate, and benign.** `GltfLoader.js:3216-3219` assigns `nodes[i].skin = loadedSkins[skinId]`
+  unchecked. An out-of-range index yields `undefined`, which makes `defined(node.skin)` false and turns
+  skinning **off** at the gate — which is also why the triage's "unresolved skin index" route to the crash does
+  not exist (`loadSkins` stamps `skin.index` at `:3210`, `components.skins` is that same array at `:3623`, and
+  `ModelSceneGraph.js:925-937` fills `_runtimeSkins` from it one-for-one, so `runtimeSkins[skinIndex]` at
+  `:950` is always defined when `node.skin` is). Confirmed independently by the lane's reviewer.
+
+### `DX-TSC-ENGINE-SKIPS-GREEN-ON-AN-UNBUILT-CLONE` — OPEN (DX row, the lane's row 4)
+
+`npm run tsc-engine` cannot cover a lane that changes a JS signature a `.ts` file calls. The script skips on
+an unbuilt clone by design (`scripts/engineTypeCheck.mjs`, sentinel
+`packages/engine/Source/Shaders/WebGPU/chunks/CsmBuiltins.js`), printing
+`engine type check skipped: tree not built — CI covers it` and **exiting 0** — so a lane forbidden to build
+gets a green line that checked nothing. A usable supplement, which the lane ran: a temp `tsconfig` that
+`extends` `packages/engine/tsconfig.json` and `include`s a single throwaway `.ts` fixture importing the
+changed module, run with `npx tsc -p <temp> --noEmit`. It resolved the real question (does TS accept a
+one-argument call after an optional JSDoc parameter is added?) in seconds, and its negative control — passing
+a `string` where the JSDoc says `boolean` — failed with `TS2345`, which is what makes the green run mean
+something. Worth a named helper so every lane does not re-derive it. The seat's 2026-09-18 note
+(Isengrim) records the same self-skip from the other side: a lane must never report the skip line as a pass.
+
+## 2026-09-19 — lane W2-L1 (Sapphira): the offline-policy rows, and an upstream Bing cache defect found on the way
+
+*Placed by record round 7 (lane RR-2, Milo) from the lane's packet §8 and §13.4
+(`cesium-webgpu-worker-archive/lanes-2026-09-19/ci-wave2-tranche1/sapphira/LANDING_PACKET_SAPPHIRA.md`).
+The lane's spec repairs landed as Batch 1535 (`fde5154c7b`). One row (`DX-TOOLS-OFFLINE-POLICY-SPEC-NOT-IN-CI`)
+is re-stated against the tip, because part of what it asked for has since landed.*
+
+### `DX-TOOLS-OFFLINE-POLICY-SPEC-NOT-IN-CI` — the offline policy's spec has a runner line but still no CI job — OPEN (DX row)
+
+`Tools/visual-regression/spec-offline-isolation.spec.mjs` is the only mechanical gate on
+`Specs/networkPolicy.js`, and it appeared **zero** times in `package.json` at `30d1ceb60f`, so every change
+to the offline policy before this lane landed ungated. The lane returned the runner line and the seat landed
+it with the lane's batch: `package.json:190` now reads
+`"test-offline-policy": "node --test Tools/visual-regression/spec-offline-isolation.spec.mjs"` (re-checked at
+`37c0f8767e`). **The line alone does not make it run in CI.** The `guards` job (`.github/workflows/dev.yml`)
+enumerates its steps explicitly and has no `test-offline-policy` step (re-checked at `37c0f8767e`), and no
+wave-2 lane could edit `dev.yml`, so a `- name: offline policy tests / run: npm run test-offline-policy`
+step is still owed. The spec is build-free — it imports engine `Source/` modules directly and applies
+`scripts/build.js`'s own strip transform — so it satisfies `Tools/ci-guards.spec.mjs`'s "the guards job
+stays build-free" assertion; it runs in ~4 s. Owner: whoever next holds `dev.yml`.
+
+### `NEW-SPEC-OFFLINE-GUARD-TRANSPORT-COVERAGE` — the offline guard is fail-open for image loads and JSONP — OPEN
+
+`Specs/networkPolicy.js`'s guard wraps `globalThis.fetch` (`:289`) and `XMLHttpRequest.prototype.open`
+(`:310`) and nothing else, while the engine reaches the network by at least two other routes that are
+consequently invisible to the ledger: `Resource._Implementations.createImage` uses `new Image()`
+(`packages/engine/Source/Core/Resource.js:2005`) and `loadAndExecuteScript` injects a `<script>` element
+(`Resource.js:2323-2328`, the JSONP path entered from `Resource.js:1670-1692`). `WebSocket`, `EventSource`,
+`navigator.sendBeacon` and worker `importScripts` are likewise unwrapped. An imagery-tile or JSONP leak
+therefore produces a clean `blockedRequestCount: 0` — the failure mode is a false clean, not a false alarm,
+which is the worse direction for a gate that is trusted. W2-L1 narrowed the module docstring (`:18-21`) so
+the boundary is documented rather than overclaimed, and deliberately did **not** widen the guard: widening it
+would surface an unknown number of existing image/JSONP dependencies across the suite in one step, which
+needs its own scoping job and one full-suite run to size. Unmeasurable from the ledger by construction.
+
+### `DX-TOOLS-REJECTED-DEVELOPER-ERROR-LEAKS-BY-ACCIDENT` — `toBeRejectedWithDeveloperError` leaks are decided by an implementation accident — OPEN (DX row)
+
+In a release build `Specs/addDefaultMatchers.js`'s async matcher (`:71-92`) resolves `{pass:true}` for any
+settlement, and unlike the synchronous `makeThrowFunction` (`:148-157`, which never calls `actual`) the
+factory has **already run** by the time the matcher sees its promise. Whether such a spec leaks a request
+therefore depends on which line happens to dereference `undefined` first: `IonImageryProvider.js:248` builds
+a cache key with `assetId.toString()` and throws harmlessly, while `CesiumTerrainProvider.js:1219` and
+`Cesium3DTileset.js:2788` go straight to `IonResource.fromAssetId(assetId)` and reach the wire. There are
+**62 `toBeRejectedWithDeveloperError` call sites across 26 spec files** (counted at `30d1ceb60f`); W2-L1
+repaired the six that leaked, and any future engine refactor can convert a non-leaker into a leaker with no
+spec change at all. The systemic close — `networkPolicy.js` exporting a sanctioned
+`drainBlockedRequestsForCurrentSpec(mark)` that the **release-only** matcher calls for rows recorded while its
+promise was pending — is **queued, not built**: a forgiveness path in a fail-closed policy is a weakening that
+deserves its own review, and detection is now loud (CI runs the release full suite on every push).
+Prerequisite: `DX-TOOLS-OFFLINE-POLICY-SPEC-NOT-IN-CI`, because that drain would change `networkPolicy.js`.
+
+### `UPSTREAM-BING-METADATA-CACHE-KEEPS-REJECTED-PROMISES` — one transient failure disables Bing imagery for the page's lifetime — OPEN (upstream-facing; not a `WEBGPU_DEBUGGING_LOG.md` bug)
+
+`BingMapsImageryProvider._metadataCache` caches **rejected** promises for the lifetime of the page.
+`requestMetadata` stores the in-flight promise under its cache key (`BingMapsImageryProvider.js:161-164` at
+`37c0f8767e`) and `metadataFailure` rethrows without ever deleting the entry; there is no `delete` anywhere
+in the file (`_metadataCache` is declared at `:709`; both re-checked by record round 7). One transient
+metadata failure — a single network blip at startup — permanently disables Bing imagery for that url+key
+until the page is reloaded, because every later `fromUrl` awaits the same rejected promise. Identical in
+`upstream/main` (`73c2eeec0c`); **no spec covers it**. It is also a static that
+`BingMapsImageryProviderSpec.js:32-34` has to reset in `beforeEach`, i.e. a live cross-spec contamination
+vector. Found while re-deriving W2-L1's row 1; out of scope for a spec-only lane. The lane recommends an
+upstream issue plus a fork-side row if the maintainer wants it fixed before upstream takes it; this row is
+that fork-side record.
+
+### `DX-AGENT-BASH-HEREDOC-COLLAPSES-BACKSLASHES` — OPEN (DX row)
+
+Writing a generator script through `cat > file <<'EOF'` in the agent Bash tool silently rewrote `\\(` as
+`\(` and `\\\\(` as `\\(` inside a **quoted** heredoc, which is exactly what a quoted heredoc is supposed to
+prevent. Measured by the lane: the literal line `single \( double \\( quad \\\\(` came back as
+`single \( double \( quad \\(`. Any lane that writes a regex, a Windows path, or a JS string escape through
+a heredoc gets a corrupted file and a confusing "anchor matched 0 times". W2-L1 lost a round to this and
+switched to the `Write` tool for every file containing a backslash. Recommend that the worker-isolation
+handbook say so next to the existing `node -e` backslash warning.
+
+### `DX-TOOLS-OFFLINE-ESCAPE-ANCHOR-MESSAGE` — the repair anchors pin a transport name, and say nothing about how to read a rejection — OPEN (DX row)
+
+`OFFLINE_ESCAPE_REPAIR_ANCHORS` (`Tools/visual-regression/spec-offline-isolation.spec.mjs:237` in the lane's
+freeze) pins the exact transport each reviewed repair intercepts, and `auditOfflineEscapeRepairAnchors`
+(`:324-343`) rejects with only `<specPath>: repair anchor <n> missing`. Because
+`Resource.prototype.fetchJson` delegates to `this.fetch` (`packages/engine/Source/Core/Resource.js:804-810`),
+a maintainer who legitimately moves a repair down to `fetch` gets that bare rejection while the
+executed-ledger test stays green — measured as mutant S1 on 2026-09-19: `# pass 20 # fail 1`, only test 18
+red. The information needed to act is in the *other* test's colour, not in the message. Add to the thrown
+message the sentence that distinguishes the two cases — anchor red with the ledger green means a stale pin,
+anchor red with the ledger red means a broken repair — and, if the DX wave takes the file apart anyway,
+consider pinning the subject's *observable* transport reach rather than a method name. Home: the queued DX
+wave (`R-2026-08-29-3`).
+
+### `DX-TOOLS-SPEC-OFFLINE-ISOLATION-IS-1437-LINES` — OPEN (DX row, decomposition)
+
+`Tools/visual-regression/spec-offline-isolation.spec.mjs` was 1,052 lines before W2-L1 and is **1,437** at
+`37c0f8767e` (re-counted by record round 7), past the ~1,000-line decomposition guidance. It carries at least
+four separable responsibilities: the origin classifier, the guard's runtime behaviour, the live-service
+inventory/anchor audit, and the release strip probe. Splitting it mid-wave was the wrong risk — it was the
+falsifier for an in-flight CI repair — so it is filed rather than done. Queue it with `R-2026-08-29-3`.
+
+## 2026-09-19 — lane S3-L1 (Hatholdir): the refresh-cost protocol's pre-segment drain is fenced, and a discarded mitigation is made observable
+
+*Placed by record round 7 (lane RR-2, Milo) from the lane's packet §7
+(`cesium-webgpu-worker-archive/lanes-2026-09-19/s3-remainder/hatholdir/LANDING_PACKET_HATHOLDIR.md`);
+reviewer Ardamir. The code landed as Batch 1533 (`9a66bf6ff6`). This file has no earlier
+`S3-N2-REFRESHCOST` row to annotate: the drain's structural reason is recorded in the 2026-09-19 lane
+S3-DECKFREE section above ("What this does NOT say"), and this row closes that reason. The lane's
+strike-and-restate for `C12_CLOSEOUT_PLAN_2026-09-19.md` row 9 is not placed by this round — see the
+round's packet.*
+
+### `S3-N2-REFRESHCOST` — CLOSED (instrument), 2026-09-19, Batch 1533, lane S3-L1 (Hatholdir, reviewer Ardamir), under `R-2026-09-19-16`
+
+`Tools/visual-regression/probe-eclipse-cloud-response.mjs`. The refresh-cost protocol's pre-segment readback
+drain was the only drain in the protocol that can meet a live readback with no queue fence in front of it
+(the setup drain before the ring resize is unfenced too, but nothing has ever been armed by the time it
+runs), and it was the only one that ever refused: in both the banked `fbea2028cc` sweep and the fresh
+`ea651de6d8` one, pair 0 eclipse — and only pair 0 eclipse — reported
+`{drained:0, undrained:1, abandoned:0, timedOut:true}` while the other fifteen reported
+`{drained:1, undrained:0, abandoned:0, timedOut:false}`, counter for counter, across 443 commits of engine
+change. Because `drained = outstanding.length − undrained` (`WebGPUTimestampProfiler.ts:606`), exactly one
+readback was outstanding, and the same segment's post-loop drain took the empty early return (`:591-593`), so
+it **settled late rather than being lost** — and the measurement thrown away with it was perfect (101/101
+frames, 25 samples on each of four passes, ledger balanced). The cause is the probe's own two 801-frame
+warm-up legs, which yielded a macrotask every 32 frames and never waited for the device, leaving a backlog
+the first timed segment then measured. Fixed by fencing the queue before the pre-segment drain under its own
+`preSegmentFenceTimeoutMs: 30000` bound while the drain keeps its 5,000 ms bound behind it, by publishing the
+fence's measured `preFenceMs` per segment (reported-only, in no predicate), by making a fence timeout its own
+named structural reason, by checking rather than discarding the drain taken before `setBufferCount`, and by
+yielding through the compositor every 64 warm-up frames. **Authorship: FORK** — the probe is fork-only, the
+pre-segment check landed Batch 1131 `1c2161c8de` and the discarded mitigation drain Batch 1161 `874b2fc90f`.
+**No engine file was touched.** Proof: `Tools/visual-regression/refresh-cost-protocol-order.spec.mjs`
+(homed in `test-cloud-c13` with the same batch), which compiles the probe's own precondition block out of
+source and drives it against a device model — six inertness mutants, of which making the fence unreachable
+reproduces the receipt's counters exactly. **Acceptance, taken:** the one re-run of leg (e) under
+`R-2026-09-19-16` (receipt `Tools/visual-regression/output/eclipse-cloud-response-2026-09-19b/`, 2026-09-19)
+reports `refreshCostMeasured` **true**, `structuralReasons` `[]` and `unscoredPredicates` `[]`. The filed
+but not fixed snapshot/live-set counting defect in `drainPendingReadbacks` (lane packet §9) is S3-L3's row
+and is not closed by this one.
+
+### `DX-TOOLS-GPU-TIMESTAMP-ACCOUNTING-SPEC-HAS-NO-RUNNER` — OPEN (DX row)
+
+`Tools/visual-regression/gpu-timestamp-unique-sample-accounting.spec.mjs` has no npm runner home:
+`grep -c gpu-timestamp-unique-sample-accounting package.json` was **0** at `c46483d8f7` (the lane) and is
+still **0** at `37c0f8767e` (record round 7). It transpiles the real `WebGPUTimestampProfiler.ts` and is the
+only spec that drives `drainPendingReadbacks` against a controllable fake device, so it is exactly the spec
+any future drain change would need — and under `R-2026-08-29-1` a spec with no runner home is a review
+blocker, which means today it neither runs in CI nor blocks anything. One add-only line is owed.
+
+### `DX-TOOLS-A-DISCARDED-MITIGATION-IS-INDISTINGUISHABLE-FROM-NONE` — OPEN (DX row, class)
+
+The in-tree attribution at `probe-eclipse-cloud-response.mjs:2295-2304` (lane-time line numbers) was wrong
+for ~370 batches and nothing could tell. The comment landed Batch 1161 `874b2fc90f` together with a
+mitigation drain **whose result was discarded**, so the state it blamed ("resizing over a live tail") was
+also the one state the artifact could not report. The receipts refute it — a surviving tail plus the untimed
+render's own readback would have made `outstanding.length` **2**, and it was **1**. The lane struck and
+restated the comment in place (archival HELD: struck, never deleted), and that drain's result is now checked
+and published as `refreshCost.preResizeDrain`. **The general defect: a mitigation whose result is discarded
+is indistinguishable from a mitigation that does nothing.** A reviewer seeing an awaited call whose value is
+unused should ask what it would have reported.
+
+## 2026-09-19 — lane S3-L2 (Arciryas): the one DX row filed separately from the CO-17 annotation
+
+*Placed by record round 7 (lane RR-2, Milo) from the lane's packet §7
+(`cesium-webgpu-worker-archive/lanes-2026-09-19/s3-remainder/arciryas/LANDING_PACKET_ARCIRYAS.md`). The
+lane's two CO-17 rows are placed inside `### C13-41-CLOUD-DECK-TONEMAP-SWALLOWS-THE-DIM` above, where they
+belong. The code landed as Batch 1532 (`ad2df123e3`).*
+
+### `DX-TOOLS-ECLIPSE-GATE-SPEC-M7-PASSES-ONLY-ON-CRLF` — OPEN (DX row)
+
+Case M7 of `Tools/visual-regression/eclipse-cloud-response-gate.spec.mjs` asserts
+`gateSource.includes("CLOUD_SHADOW_BEER_FLOOR,\r\n      )")` — a Windows line ending in gate source text
+(`:8429` in the lane, **`:8652` at `37c0f8767e`**; locate by the quoted text). The tracked blob is LF; this
+repository's normal Windows configuration is `core.autocrlf=true`, so the assertion is satisfied by the
+checkout's rewrite rather than by the file. **Evidence:** a temp tree built from `git show HEAD:<path>` (LF,
+as any `core.autocrlf=false` or Linux checkout produces) reported **182/183 with M7 the sole RED**; writing
+the identical bytes with CRLF restored **183/183**. `test-cloud-c13` is not in `.github/workflows/dev.yml`,
+so CI does not see it today — which is exactly why it can rot unnoticed. **Fix shape:** normalise the read
+(`gateSource.replace(/\r\n/g, "\n")`, as the same spec's own `readEngine` already does) or assert on an
+EOL-agnostic pattern. Not fixed by the lane — one defect, one owner.
+
+## Record round 7 (lane RR-2) — the seat's DX rows, and the CI state since 2026-09-19
+
+*Recorded by lane RR-2 (Milo, Opus 5.5) from the seat's round-7 source list and the named evidence. Every
+row below was re-derived at `37c0f8767e` where a measurement was possible without a build, a browser or an
+install; where it was not, the row says so.*
+
+### `DX-SEAT-LANDING-MECHANICS-CLASS` — four landing-mechanics incidents in three days, and the seat-side gates that now exist for them — OPEN (DX row, class)
+
+Between 2026-09-17 and 2026-09-19 four landings broke something that every lane gate had passed, and none of
+the four was a defect in a lane's patch as reviewed:
+
+1. **A clean textual merge broke semantics.** Two lanes each edited the shared WGSL mini-evaluator; the merge
+   was textually clean and the evaluator was wrong (`WEBGPU_DEBUGGING_LOG.md` Bug tools-eval-01; the lane
+   section "lane WGSL-EVAL-MERGE (Merimac)" above).
+2. **A duplicate JSON key.** Two lanes each added `scripts.test-s5`; `JSON.parse` kept the second
+   (the "lane DUP-SCRIPT-KEY (Sakalthor)" section above).
+3. **The pre-commit hook rewrote byte-pinned fixtures after every gate had run** (the "lane
+   KITB-FIXTURE-HOOK-REWRITE (Camellia)" section above).
+4. **A lane's hand-cut `package.json` hunk** carried the base's `index` blob and failed `git apply --3way` at
+   the tip (lane C15-05; `cesium-webgpu-worker-archive/lanes-2026-09-19/briffo-v4/harvest-20260926/VERIFY_BRIFFO_V4.md`
+   §7 item 3, and the karma receipt's
+   `Tools/visual-regression/output/wave-end/c15-05-karma-20260919/06-FINDING-PATCH-STALE-AT-CURRENT-TIP.md`).
+
+The seat answered each with a gate in its **untracked** landing kit (`land-w1.sh`, seat-local): a
+duplicate-key check over `package.json`, a `git write-tree` before the commit compared with `HEAD^{tree}`
+after it (so any hook rewrite is caught and the lane's runners re-run on the committed bytes), and three
+helper scripts (`make-seat-patch.mjs`, `strip-path-from-patch.mjs`, `fix-msg.mjs`). **Proposed:** track them
+under `Tools/` as the landing kit, with specs, so they survive a seat change. Two further facts belong to the
+class: **four-`N` batch placeholders (`Bug N.1` / `N.2` with the batch spelled as four capital Ns) landed literally** in `WEBGPU_DEBUGGING_LOG.md` (two lanes, one
+of them twice) — stamped by record round 7 against `git log -S`, and the same pass found and stamped two
+`Batch` placeholders of the same shape in this file and two in `QUEUE_2026-08-10_CAMPAIGN16.md` (all four were lane W0-CIGREEN's or W3-A's, Batches 1498 and 1506); and **`git apply`
+normalises a patch postimage's line endings to the target file's**, so a patch's EOLs are not evidence of
+what lands. A landing-wrapper check that refuses a message or ledger hunk containing that four-letter placeholder would close the
+first.
+
+### `DX-SEAT-LANDING-RULES-RUNNER-SKIPPED-WHOLE` — the seat's gates skipped `test-landing-rules` for six landings, and CI's `guards` job was red the whole time — MITIGATED 2026-09-19 (DX row)
+
+CI's `guards` job runs `npm run test-landing-rules` whole. The seat could not: the maintainer's **held**
+working-tree copy of `Tools/verify-landing-compliance.spec.mjs` is red at the seat by construction (three
+held-WIP cases), so the seat's wrapper treated the whole runner as "not a seat gate" and relied on the
+reviewers' clean-clone runs. The landing that took the rig registry from 39 rigs to 41 (`7e669f6b02`) broke
+a census pin in `Tools/wave-end-contact-sheet-index.spec.mjs`, which sits in that runner, and `guards` stayed
+red through `a76d42b3f8` — six landings — unseen (see `DX-TOOLS-RIG-CENSUS-PINS` below). While `guards` was
+red its later steps did not run in CI: `test-build-infra`, `audit-feature-renderers`,
+`collection-sentinels-check` and `verify-tracked-references` ran only in the seat's local wrapper for that
+span, and the wave-end job ran none of them. **Mitigation (2026-09-19):** the wrapper runs the runner's own
+spec list **minus** the held file whenever a patch touches `Tools/` or `package.json`
+(`landing-rules-minus-held.mjs`, seat-local; untracked). `guards` read green again at `b263d8ac5e`
+(run `36220924784`). **Owed:** the held file is the maintainer's; until it lands or is reverted, the
+minus-held gate is the seat's only view of that runner, and it belongs in the tracked landing kit above.
+
+### `DX-TOOLS-RIG-CENSUS-PINS` — one contract, one place, one red — CLOSED (DX row, rule recorded)
+
+The rig registry's size was pinned in six sites across three tracked `Tools/` files and two test runners.
+When the registry went from 39 rigs to 41 (`7e669f6b02`), the lane updated the two pins it knew about
+(`capture-seam.spec.mjs`, `rig-registry.spec.mjs`) and two reviewers flagged the census as an ordering
+hazard, but the third assertion — `Tools/wave-end-contact-sheet-index.spec.mjs:774` at `a76d42b3f8`, in a test whose real
+subject is the rigId *grammar* and which had transcribed the size beside its conformance loop — sat in the
+`test-landing-rules` runner rather than the visual-regression one, and nobody found it. CI's `guards` job
+was red from that landing through `a76d42b3f8`, six landings, and the seat's own landing gates did not catch
+it (`DX-SEAT-LANDING-RULES-RUNNER-SKIPPED-WHOLE` above). Fixed by `b263d8ac5e` (lane RIG-CENSUS-PINS,
+Vinitharya; reviewer Rudibert) with a rule rather than a fourth transcription: **a spec pins the registry's
+size only where the size is the contract it asserts; everywhere else it takes a non-vacuity floor
+(`rigs.length > 0`) and asserts the property it is about.** One census survives, in the registry's own spec,
+with its size and per-tag split folded into a single `REGISTRY_CENSUS` object so the two cannot drift apart,
+and both of its assertions now carry a failure message naming that object — the per-tag one, which an author
+meets first, asks for both fields, and the size one says what else a rig can move (a wave-end rig also
+regenerates `scenes.json`); at base neither carried any message. The seam spec and the contact-sheet spec
+keep their conformance loops at full strength behind explicit non-vacuity floors, each proved live by
+stubbing the registry empty. Measured with a 42nd rig added: 1,632 tests across `test-landing-rules`,
+`test-visual-regression-node` and `test-visual-probe-contracts`, exactly one red, and it is the one that
+tells the author what to update. The general class, worth a reviewer's attention on any future count
+assertion: a literal count is a contract only where counting is the point; anywhere else it is a tripwire on
+an unrelated runner, and the runner it trips is the one the author was not looking at. *Informational
+(reviewer Rudibert):* `TOOLING_CATALOG.md`'s `rigs/ (41)` is generated by `generate-tooling-catalog.mjs` and
+checked only by `--check` drift, so it is not a hand pin. Source:
+`cesium-webgpu-worker-archive/lanes-2026-09-26/rig-census/vinitharya/LANDING_PACKET_VINITHARYA.md` §7 and §9,
+rewritten here without landing-batch numbers.
+
+### `DX-CI-UPDATE-TOKENS-FAILS-MONTHLY` — the inherited monthly ion token rotation fails in the fork every 25th — OPEN (DX row, maintainer question, CI wave 2)
+
+`.github/workflows/update-tokens.yml` is upstream's monthly ion access-token rotation (`schedule`, cron
+`"0 5 25 * *"`, `.github/workflows/update-tokens.yml:10` at `37c0f8767e`). In the fork it fails every month
+at step "run script" — runs of 2026-06-25, 07-25, 08-25 and 09-25 all failed, per the seat's read of the
+run list — because the fork has none of the three secrets the step reads (`ITWIN_SERVICE_APP_CLIENT_ID`,
+`ITWIN_SERVICE_APP_CLIENT_SECRET`, `ION_TOKEN_CONTROLLER_TOKEN`) and no PR target for the result. It is
+noise in the run list, not a defect in the code. **Options for the maintainer:** (a) drop the `schedule` in
+the fork and keep a manual `workflow_dispatch` trigger, so the file stays upstream-shaped and can still be
+run on purpose; (b) delete the workflow and its `.github/actions/update-tokens/` action, which `prod.yml`
+also uses on the `cesium.com` branch only. Either is a `.github/` edit; classify under CI wave 2's
+maintainer questions.
+
+### `DX-TOOLS-COMMENT-ONLY-DIFF-CERTIFIES-TOKENS-NOT-ARTIFACTS` — `comment-only-diff` certifies the source token stream, not what ships or runs — OPEN (DX row; remedy ruled as `C16-B0-tools`)
+
+`Tools/c16/comment-only-diff.mjs` compares a canonical form of the source in which a non-semantic comment
+becomes one space (`Tools/c16/lib/comment-scanner.mjs:883` at `37c0f8767e`). Three build or runtime
+transforms in this fork read comment text, and bundler magic comments are read by consumers, so an edit the
+tool certifies as `comment-only` can change an artifact. Six such edits were reproduced with synthetic
+before/after pairs, each certified `comment-only` (`GEMINI_PLAN_AUDIT_2026-09-26.md` §3 and §11, critic
+Donnamira F1-F5):
+
+1. a deleted `/* webpackIgnore: true */` — eight live magic-comment sites at `37c0f8767e` (the seven
+   `Wasm*Bridge.js` imports and `WebGPUNagaTranspiler.ts:118`), which webpack consumers of `@cesium/engine`
+   rely on;
+2. a one-line GLSL `/** */` block, which makes `ShaderSource.removeComments` (`ShaderSource.js:8-21`) throw
+   in unminified builds — its replacement callback calls `.length` on a `match(/\n/gm)` that is `null`;
+3. a URL (`//` text) on a GLSL doc-block closing line, which the same function's line-comment pass deletes
+   before the block pass, so the block never closes and the next function is dropped;
+4. a nested WGSL block comment, which `scripts/build.js` `stripWgslComments` (`:845`) does not nest, so only
+   the **minified** module breaks — the Batch 1534 class, and `test-build-infra` never parsed a minified
+   module before that batch;
+5. prose that quotes `//>>includeStart(…)`, which the release pragma strip `constructRegex`
+   (`scripts/build.js:51-63`) matches anywhere on a line, so the sentinel it describes is stripped from
+   release builds;
+6. an edit to a `// lint-debug-pragmas-allow:` reason, which the scanner treats as prose although
+   `Tools/lint-debug-pragmas.mjs` reads it.
+
+**All six are absent at `b263d8ac5e`** (GLSL 330 files, 0 throws; WGSL 325 files, 0 scanner/stripper
+disagreements; JS/TS 1,517 files, 0 prose-anchored pragmas — the audit's baselines), so a flavour-aware
+check starts green. **Remedy, ruled 2026-09-26 (`R-2026-09-26-22`, option A′):** the shared tool is made
+flavour-aware in `C16-B0-tools` — prefix-only retention for `lint-debug-pragmas-allow` and `/// <reference`,
+a `bundler-magic-comment` semantic rule, release-pragma / `stripWgslComments` / vendored `removeComments`
+views, corpus agreement specs with mutants in `test-c16` and `test-build-infra` — **before any comment batch
+lands**. Until it does, every comment batch runs the same checks lane-local (U1a-U1e,
+`QUEUE_2026-08-10_CAMPAIGN16.md` "C16 tail"). A related register gap (audit §9 DX-9): no single place lists
+the comments a machine reads; `ForkCommentStandard.md` §8.4 names lint directives only.
+
+### `DX-TOOLS-COMMENT-ONLY-DIFF-ASI-CLAIM` — the tool's ASI protection does not hold for a dropped multi-line block comment — OPEN (DX row; fix ruled into `C16-B0-tools` item f)
+
+`Tools/c16/comment-only-diff.mjs:30-39` states that whitespace containing a line break canonicalises to a
+newline so that `return\nx` and `return x` stay distinct under automatic semicolon insertion. A **comment**,
+however, canonicalises to one space whether or not it contains a line terminator
+(`Tools/c16/lib/comment-scanner.mjs:883` pushes `" "`), so a multi-line block comment directly after
+`return`/`throw`/`yield` that is collapsed onto one line reads as `comment-only` while it changes what ASI
+does. Zero such sites are in scope today (critic Donnamira; audit §9 DX-8). Fix: a dropped comment
+containing a line terminator canonicalises to a newline.
+
+### `DX-TOOLS-SKY-LIGHT-DIRECTION-SPEC-HAS-NO-RUNNER` — a 1,017-line spec with no npm runner pins comment text inside a sky GLSL doc block — OPEN (DX row, WAVE DX spec homes)
+
+`Tools/visual-regression/sky-light-direction.spec.mjs` (1,017 lines at `37c0f8767e`; `ACTIVE` in
+`TOOLING_CATALOG.md`) appears in no `package.json` script. It pins **comment text**: the Mie forward-peak
+figure `4869.9` inside the `/**` doc block of
+`packages/engine/Source/Shaders/Builtin/Functions/getSkyAtmosphereLightDirection.glsl` (`:24`), and a
+negative pin that no comment in `SkyAtmosphereVS.glsl` names `czm_getDynamicAtmosphereLightDirection`
+(audit §2.1). Under `R-2026-08-29-1` a spec with no runner home is a review blocker, and it is a hazard for
+any comment batch that touches the sky GLSL: `C16-B6-sky` must run it directly on both trees until it is
+homed. Not measured by record round 7 — the spec imports `acorn` through `lib/same-task-capture.mjs` and the
+round's clone is unprovisioned by rule; measure it on a provisioned tree, and home it if green. Astra's
+cloud stack also edits the spec, so whichever of the two lands second composes the runner line.
+
+### `DX-TOOLS-PROHIBITED-READER-ALLOWLIST-CONTROL-RED` — the allowlist spec's CONTROL case is red at the tip and has no runner — OPEN (DX row)
+
+`node --test Tools/visual-regression/prohibited-reader-allowlist.spec.mjs` at `37c0f8767e` (record round 7):
+`# tests 8 / # pass 7 / # fail 1` — `not ok 3 - CONTROL: sanctioned live-canvas toDataURL sources stay
+clean`, `52 !== 51`. The spec appears in no `package.json` script, so the red is visible only to someone who
+runs the file by hand. Whether 52 is a new sanctioned reader the list must learn or a new unsanctioned one
+the control exists to catch is **not** determined here; that is the row's first step.
+
+### `DX-TEMP-GIT-BASH-TMP-IS-NOT-ONE-DIRECTORY` — Git Bash's `/tmp` and `os.tmpdir()` are not reliably the same place — OPEN (DX row)
+
+Lane S3-L1 (2026-09-19) found that `/tmp` under its Git Bash resolved to **`f:\tmp`**, outside the lane temp
+root, and counted ~901 stale entries there dating back to 2026-08-14 — a directory `Tools/temp-hygiene.mjs`'s
+positive-list sweep does not reach. **Record round 7 did not reproduce the mapping:** in this lane's Git Bash
+`/tmp` is mounted `usertemp` on `C:/Users/Kurt/AppData/Local/Temp` (`mount`), while `f:\tmp` exists and
+holds 70 entries dated 2026-04-28 onward. So the mapping is environment-dependent, and the lesson is the rule
+the handbook already states — write scratch only through `Tools/lib/lane-tmp.mjs` or an explicit
+`os.tmpdir()`-rooted path, never a bare `/tmp` — plus one owed act: an inventory of `f:\tmp` against a
+positive list before anyone deletes from it.
+
+### `DX-TOOLS-KARMA-DIFFER-READS-THE-OFFLINE-BANNER-AS-A-SUITE` — OPEN (DX row)
+
+The full-suite karma differ folds the offline-ledger `ERROR` banner into the next spec's suite name — for
+example `Widgets/VRButton/VRButton :: throws if container string is undefined` — so a run that printed the
+banner appears to have LOST those specs against one that did not; the same specs are present and passing in
+both runs (`cesium-webgpu-worker-archive/lanes-2026-09-19/ci-triage-wave2/TRIAGE_MALVA.md:33-36`). A differ
+that treats the banner as a line of its own removes a false LOST set from every comparison across the
+offline-ledger change.
+
+### `DX-PRIMITIVE-READY-IS-NOT-A-RENDER-SIGNAL` — `Primitive.ready` reads true while nothing draws — OPEN (DX row, probe authoring)
+
+On the W2-L10 Edge acceptance's BEFORE arm — the minified build whose primitive shaders could not compile —
+`Primitive.ready` was `true` for both primitives while nothing drew
+(`Tools/visual-regression/output/wave-end/ci-wave2-tranche1-20260919/01-PART1-RENDER-ACCEPTANCE.md:150-151`,
+seat tree). A probe that used `ready` as its acceptance would have measured a green that is not there.
+Probe briefs must name a pixel or a draw-command observable, never `ready`.
+
+### `DX-KARMA-CESIUM3DTILESET-CACHEBYTES-ROWS-FLAKY` — OPEN (DX row)
+
+Two `Scene/Cesium3DTileset` specs — `"Restrict tileset memory usage with maximumCacheOverflowBytes"` and
+`"Unloads cached tiles outside of the view frustum using cacheBytes"` — were red on 2026-09-06 and green in
+the 2026-09-19 runs with no change to either
+(`cesium-webgpu-worker-archive/lanes-2026-09-19/ci-triage/TRIAGE_ESMERALDA.md:88-90`). A full-suite
+comparison that meets either one red should not read it as a regression without a repeat.
+
+### `DX-GOVERNANCE-TSC-NOEMIT-IS-VACUOUS-FOR-THE-ENGINE` — the documented type-check command checks `scripts/` only — OPEN (DX row, governance)
+
+`CLAUDE.md` "Build & Test Commands" lists `npx tsc --noEmit  # TypeScript type checking` (`CLAUDE.md:472` at
+`37c0f8767e`). The root `tsconfig.json` includes `scripts/*.js` only, so that command says nothing about
+`packages/engine`; the engine gate is `npm run tsc-engine` (seat observation 2026-09-18, lane Gorhendad).
+Every "tsc clean" claim in a packet before 2026-09-18 may have been the vacuous command. **Owed:** correct
+`CLAUDE.md` and `GEMINI.md` and the lane/review templates (governance files — not a lane's to edit), add
+`tsc-engine` to the landing wrapper for patches touching `packages/engine/Source/**/*.ts`, and a spot audit of
+earlier "tsc clean" claims. See also `DX-TSC-ENGINE-SKIPS-GREEN-ON-AN-UNBUILT-CLONE` above.
+
+### `DX-RECEIPT-PROOFS-CARRY-THEIR-COMMIT-PAIR` — a proof quoted from a receipt must name the two commits it compared — OPEN (DX row)
+
+Filibert's receipt PROOF 2 proved instrument identity between one pair of commits, and a later document
+re-pointed it at a different pair without re-deriving it
+(`cesium-webgpu-worker-archive/lanes-2026-09-19/c12-lege-record/VERIFY_BINGO_RECORD.md:77`); the whole
+episode is the 2026-09-19 section "a ruling was adopted on a premise that was false" above. **Rule proposed:**
+any identity or equivalence proof in a receipt states its two operands (commits, trees or bundle hashes) in
+the same line, and a document that quotes it quotes the operands with it.
+
+### `DX-PROBE-CLOUD-MARCH-MECHANISM-HAS-NO-HELP` — OPEN (DX row, probe kit)
+
+`Tools/visual-regression/probe-cloud-march-mechanism.mjs` has no `--help`: `git grep -n help` over the file at
+`37c0f8767e` returns nothing. The ring legs drive it with a long argument list; a probe of that shape should
+print its arms and arguments on request, as the probe-kit contract expects of new probes.
+
+### CI state as recorded by the seat, for the CI plan (not a row)
+
+After Batch 1536 the seat expected `release-tests` at 51 failed plus the `ERROR` banner, one offline-ledger
+row remaining (lane W2-L7's), `guards` and `variants` green, and `lint` / `node-smoke-test` standing as the
+maintainer's CI wave-1 questions Q1/Q2. `guards` read green at `b263d8ac5e` (run `36220924784`), for the
+first time since `7e669f6b02`. CI wave-2 questions Q1-Q8 are unanswered by the maintainer except Q2 and Q8,
+which the seat took as routine engineering and told the maintainer so. Record round 7 did not read any CI run
+itself; every figure here is the seat's.
+
+## Rows the 2026-09-26 maintainer rulings execute (record round 7, lane RR-2)
+
+*The maintainer, 2026-09-26: "Go with all the recommended rulings, doc these and the other good options so we
+have a paper trail of the potential options if we need to fall back". The seat maps the Astra-audit decisions
+D1-D12 to `R-2026-09-26-1` … `-12` and the Gemini-plan decisions G1-G10 to `R-2026-09-26-13` … `-22`. The
+decisions, the audits and their critiques are banked at
+`cesium-webgpu-worker-archive/lanes-2026-09-26/astra-audit/` (`DECISIONS.md`, `ASTRA_WORK_AUDIT_2026-09-25.md`,
+`CRITIQUE_FELAROF.md`, `R1`-`R5`) and `cesium-webgpu-worker-archive/lanes-2026-09-26/gemini-plan-audit/audit/`
+(`DECISIONS.md`, `GEMINI_PLAN_AUDIT_2026-09-26.md`, `CRITIQUE_DONNAMIRA.md`, `G1`-`G3`). The rows below are the
+ledger acts those decisions' "Executes" lines give the seat. The C16 tail is recorded in
+`QUEUE_2026-08-10_CAMPAIGN16.md`, which is its status authority.*
+
+### `NEW-CLOUD-SPARSE-UPDATES-WITHDRAWN` — the sparse primary-update candidate failed both of its pre-registered A/Bs and is withdrawn, not landed — WITHDRAWN (`R-2026-09-26-2`)
+
+**What it was.** Astra's unit U37 (2026-09-25): alternating-tile reuse of primary-march results through a
+separate raw history, behind a default-off `CloudVolumetrics.cloudSparseUpdates` option, with four new files
+(`WebGPUCloudSparseHistory.ts`, `WebGPUCloudSparseUpdates.ts`, `CloudSparseUpdates.wgsl`,
+`cloud-sparse-updates.spec.mjs`) and `ShaderDefineHi` bit 7. **It never landed on `main`.**
+
+**Why it is withdrawn.** Both A/Bs failed the author's own pre-registered gates: `runtime-02` (8×8 tiles, the
+final bundle) reduced static/moving work by **12.4 % / 12.6 %** against **≥ 20 %**, with p99 byte error
+**28 / 25** against **≤ 20**; `runtime-01` (4×4 tiles) failed its image gate at p99 29 (static) and both
+gates moving (0.076, p99 27). Device loss, coverage and non-finite output passed on both. The GPU accepted
+0.284 reuse, not the design's "approximately half". Its spec survives the call-site mutant
+`enabled: false && …` 10/10; the off path still builds a ~200 KB source concatenation per offscreen frame;
+8,294,656 B stays resident after disable. (Audit §2.2 U37; R2 §1; R3 F7, F9; R4 M1.) The author's own rule
+(checkpoint "Remaining work", item 1): *"If it fails, preserve the evidence, remove only its authored
+implementation changes, and keep the append-only shader bit reserved."*
+
+**Evidence, preserved.** `cesium-webgpu-worker-archive/astra-checkpoint-20260925/cloud-sparse-ab/runtime-01/`
+and `…/runtime-02/` (`result.json`), with the archive's `MANIFEST.md5`; the candidate patch
+`cloud-sparse-ab-only.patch` and `runtime-02/engine-sparse.wgsl` are written against bit 7.
+
+**What executes it.** Astra strips it as item 1 of the return (`R-2026-09-26-1`, `R-2026-09-26-8`); the
+seat's reviewer verifies `git grep -nE 'cloudSparse|CLOUD_SPARSE|CloudSparse|sparseRequested'` returns 0 over
+engine and Tools, the stripped cumulative patch passes `git apply --check`, and `cloud-march-emission` A2 and
+E4 are re-pinned green.
+
+**Re-attempt conditions** (the author's own gates, checkpoint line 67 of
+`ASTRA_SOLO_24H_CHECKPOINT_2026-09-25.md` in the same archive, plus what the audit found missing). A revived
+sparse attempt lands only when **all** hold, measured on the tree that will land:
+(1) one bounded static-and-moving flight probe at 1920×1080 output, 960×540 cloud march and 96 primary
+samples, one completed GPU frame at a time, ≥ 250 ms idle, an explicit deadline and the shared Edge slot;
+(2) against fresh full rays with frozen inputs: **≥ 20 % pass reduction, mean RGB byte error ≤ 3, p99 ≤ 20,
+coverage loss ≤ 0.5 %, no non-finite output and no errors**, on both static and moving cases;
+(3) submission, disable and resize fallback and camera movement exercised in the same probe;
+(4) the harness exits non-zero on a FAIL, and both arms run in the same clock group (`runtime-01` exited 0 on
+a FAIL, and its static 30 % was clock-imbalanced — "approximately 7 %" same-clock);
+(5) its spec kills the call-site inertness mutant, the off path builds no sparse source, and the history is
+released on disable;
+(6) it claims `ShaderDefineHi` bit 7 (reserved for it — next row) or renumbers its archived patches if bit 7
+has been released. Ground/orbit and default promotion stay separate work. The same checkpoint line ends:
+*"Do not begin native-high or 384-sample stress testing."* — the one clause tied to the hang hazard (the
+384-sample 1080p orbital case hung the device, `ASTRA_RETURN_AUDIT_AND_CLOUD_PROGRESS_2026-09-21.md` line
+299; `R-2026-09-26-9`).
+
+**Fallback on the record** (`R-2026-09-26-2` option B, not taken): keep it default-off as WIP under
+`R-2026-09-16-6` only after conditions (5) and both A/Bs recorded in its packet — still landing code that
+failed both of its pre-registered A/Bs.
+
+### `SHADERDEFINEHI-BIT-7-RESERVED-FOR-SPARSE-CLOUD-UPDATES` — hi-word bit 7 is reserved in writing, with no entry and no consumer — OPEN until the comment lands (`R-2026-09-26-3`)
+
+`ShaderDefineHi` bit 7 (`hiDefineBit(7)`, value 128) is **reserved** for a revived sparse cloud-update attempt
+(previous row). It has never landed on `main`; no module built from `main` was ever keyed on it; the
+pipeline cache folds shader-module identity, so no aliasing is possible whatever is decided. **The next
+claimant of a hi bit takes bit 8** (after Astra's U34 takes bit 6; bits 0-5 are used at `37c0f8767e`).
+**The registry comment line itself** — of the form `// hiDefineBit(7) reserved: sparse cloud updates,
+withdrawn 2026-09-25 — see DEFERRED_WORK` — is engine code and **lands with the batch that lands U34 (A2c)**,
+beside bit 6, not in this record. This row closes when that comment is on `main`. Bit 6 and `qualityFlags`
+bit 14 stay reserved for Astra until A2c lands: *"If a seat lane must claim a hi bit before then, Astra
+renumbers. Renumbering is allowed while unlanded."* Source: `DECISIONS.md` D3; audit R1 §2.1, R3 F11, R5
+§2.2, §3.8. **Fallbacks on the record (sound options not taken):** (B) this row only, no registry comment — its cost:
+the next claimant looks in the registry, not the ledger; (C) free bit 7 and renumber the archived patches on
+revival; (D) land `CLOUD_SPARSE_UPDATE: hiDefineBit(7)` as a real entry with no consumer — its cost: the
+add-only rule would keep an entry nothing reads, forever.
+
+### `NEW-TASKPROCESSOR-WASM-INIT-POSTS-AFTER-REJECT` — the WASM-init path posts its config after its promise has already rejected — OPEN, scheduled into batch T1 (`R-2026-09-26-5`)
+
+`packages/engine/Source/Core/TaskProcessor.js:273-320` (identical at `37c0f8767e` and `b263d8ac5e`):
+`initWebAssemblyModule`'s `init` installs `onerror` / `onmessageerror` handlers that reject, then awaits the
+loader config and `canTransferArrayBuffer()`, then calls `worker.postMessage(…, transferableObjects)` with
+`wasmBinary` as a transferable **whether or not the promise has already rejected** — so a worker `error`
+that fires during those awaits still detaches the caller's `wasmBinary` and posts work to a failed worker.
+It is the same race as the `runTask` path that Astra's settled-guard closes, in the same file, with no guard
+(audit §2.3; R3 §7; `DECISIONS.md` D5 facts). **Ruled (option D):** a seat Opus 5.5 lane adds a settled check
+before the init path's `postMessage` in the **same** Core batch T1 as Astra's frozen guard (packet md5
+`c4016b889ec06d782c36a50f8888e449`), with a spec case in the same error-path spec that fires `error` before
+the config resolves and asserts no post and no detached `wasmBinary`, an inertness mutant that makes the new
+check unreachable and must go red, a reviewer from a different lane, the adversarial verifier, and the karma
+leg over the `Core/TaskProcessor` specs **after W2-L11 lands**. This row closes when T1 lands. **Fallbacks on
+the record (sound options not taken):** (A) the named fall-back if the WASM-init case cannot get a
+discriminating spec in the same batch — T1 lands Astra's guard alone and this row stays open as the WASM-init
+follow-up; (B) hold Astra's guard and land it inside Astra's A1 — its cost: a Core fix on every backend's
+path is coupled to a cloud batch and delayed; (C) do not land it — R3 rates the risk "very low", but a real
+race stays open.
+
+### `NEW-CLOUD-STACK-2026-09-25-WEBGL-TWIN-GAPS` — the 2026-09-21 → 09-25 cloud units are WGSL-only; recorded, not a rejection — OPEN (`R-2026-09-26-6`)
+
+The only GLSL change in Astra's 81-path stack is U19's WebGL sky alpha clamp
+(`SkyAtmosphereFS.glsl`, `color.a = clamp(mix(color.b, 1.0, color.a), 0.0, 1.0) * …`), and it **is** a real
+twin of the WGSL clamp: under `#ifdef HDR` `color.b > 1` is reachable, so it is also a WebGL behaviour change
+under HDR, and it carries its own WebGL HDR leg under `R-2026-09-26-4` (D4 a2). Every other unit is WGSL-only
+— the cloud units (among them the lighting cache and its dependency key, the ambient/irradiance consumer,
+cloud-occluded ambient and ground bounce, physical self-shadow and scattering orders, planetary lighting,
+native temporal filtering, scene-linear composition, shader specialisation, empty-weather skipping, Worley
+pruning, zero-density exits, the cellular bake fix) and the shared multiple-scattering field U16 and
+irradiance integral U9 — and there is no WebGL volumetric-cloud **code** path at all at `37c0f8767e`. This
+extends, and does not replace, `### NEW-CLOUD-STACK-IS-WGSL-ONLY` (2026-09-16) above.
+`SkyAtmosphere.multipleScattering` was already documented as WebGPU-only at base (`SkyAtmosphere.js:66-70`),
+so U16 opens no new API gap. **Only 5 of the stack's 14 new public dials say "WebGPU"**, and
+`cloudEmptySpaceSkipping` carries no comment at all (audit R1 §2.4); under `R-2026-09-26-11` every dial that
+ships carries "WebGPU only." in its JSDoc, and Astra returns this row's per-batch text and the dial JSDoc in
+each batch packet. Home for the work: `FEATURE_INVENTORY.md` §C.7 (this gap) and §D.7 (the WebGL path for
+these units). **Fallbacks on the record (sound options not taken):** (A) record the gap without the §D.7 FUTURE
+row — its cost: the gap then has no named home (Principle 9); (C) require a WebGL implementation before
+landing — it would overturn `R-2026-09-12-8`, and with no WebGL volumetric path to twin into it is a project,
+not a port.
+
+### `NEW-CLOUD-HOLD-CHAIN-SLOTS-RESERVED-PADS` — the HOLD chain's public surface is stripped and its uniform slots become named reserved pads — OPEN (`R-2026-09-26-12`)
+
+The four HOLD units of Astra's stack — U23 cross-deck peer shadows, U26 explicit altitude/genus layers, U29
+peer-layer light cache, U30 layered daylight multiple scattering — stay **out as features**: the author's own
+hold and its visual-validation FAILs (`ASTRA_RETURN_AUDIT_AND_CLOUD_PROGRESS_2026-09-21.md` lines 335 and
+377, in `cesium-webgpu-worker-archive/astra-checkpoint-20260925/`). The device hangs in those
+receipts are in **feature-off** controls, so a unit-caused hang is not shown. Their **plumbing** runs on the
+default density and lighting path of kept units and **stays as structure** (option a): `CloudLayerProfile`,
+`cloudProfileForDeck`, the profile parameters, `peerTransport`, and the peer code in U25's lighting-cache
+module and shader. **Removed:** the three public dials `cloudLayers`, `cloudLayerShadowSteps`,
+`cloudLayerShadowCache`, their `.d.ts` fields, and every writer that puts anything but zero into uniform
+slots **220-223** (`CLOUD_SLOT_LAYER_SHADOWS`) and **228-259** (`CLOUD_SLOT_LAYER_PROFILES` 228-255,
+`CLOUD_SLOT_PEER_LIGHTING_CACHE` 256-259), which become **named reserved pads** in the layout module; the
+uniform stays **260 floats**, so the append-only chain has no gap. `layerProfilesEnabled`, the layer-shadow
+gate and `peerEnabled` are therefore 0 on every frame. **Proof owed in A1:** the byte-identity leg (clouds
+on, default, ground/flight/orbit, with a repeat control); a value oracle that executes `cloudProfileForDeck`
+at defaults and returns the global profile; `cloud-tier-single-source` models `CloudLayerProfile`; the
+reviewer's `git grep -nE 'cloudLayers\b|cloudLayerShadowSteps|cloudLayerShadowCache' -- packages/engine/Source`
+returns 0; no writer puts a non-zero value in 220-223 or 228-259; an inertness mutant that writes 1 into
+`layerProfilesEnabled` changes the default oracle and is caught. `cloud-layer-profiles.spec.mjs` is not
+homed until U26 returns. **Route back (Principle 9):** native 96/8 stability measured by E4 (`R-2026-09-26-9`)
+is the prerequisite; then option (c) — ship the features as default-off public dials under
+`R-2026-09-16-6`, with set-time validation (`R-2026-09-26-11`) and a spec that kills the call-site mutant.
+**Fallback on the record** (option b, sound, not taken): a full strip that re-signs about ten default-path functions
+in two WGSL files and deletes scaffolding for work the author has not abandoned (Principle 7). Source:
+`DECISIONS.md` D12 (added after critique, Felarof C1). This row closes when A1 lands with the proof above and A2b
+lands U25's dormant peer code as structure (Astra's fix item F-18).
+
+### `NEW-SNAPSHOT-MODE-SHARED-CONTEXT-MULTIVIEW` — snapshot mode on one Scene freezes context-shared state for every Scene on that context — OPEN (Principle 9; Gemini-plan audit, `R-2026-09-26-14`)
+
+`packages/engine/Source/Services/SnapshotModeService.js:93-110` (at `37c0f8767e`) documents a **known
+limitation**: the service is a per-Scene singleton, but several freezables — notably
+`WebGPURenderBundleManager` — live on the `GraphicsContext` and are **shared** by every Scene bound to that
+context, so if Scene A enters snapshot mode while Scene B keeps animating on the same context, Scene B sees
+frozen bundles. The docstring points the follow-up at `migration_doc/WEBGPU_MIGRATION_BACKLOG.md` "as a
+Phase 6 post-merge follow-up", a file this repository now treats as historical; **no ledger row existed**
+(audit §3 Principle-9 row; reader G2 `:76`). This is that row. **Work:** partition context-shared freezables
+per Scene (or per View), so snapshot mode on one Scene cannot freeze another's bundles; until then callers
+mixing snapshot mode and multi-view assume single-Scene ownership of the context, as the docstring says. The
+same docstring's "── Phase 0.7 status ── … **registration skeleton only**. There is no actual freeze/thaw logic
+yet" (`:60-66`) is **stale**: three freezables are live — `WebGPUEnvironmentRenderer.js:2424`
+(`"moon-renderer"`), `WebGPUVolumetricFogRenderer.ts:887` and `Scene.js:4631` (all re-checked at
+`37c0f8767e`). The stale sentence is corrected **in place** by `C16-B2b`, which also re-points the docstring
+at this row; it is not relocated.
