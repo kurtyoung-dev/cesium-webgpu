@@ -222,12 +222,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1412 |
-| ACTIVE | 1170 |
+| Files in census | 1416 |
+| ACTIVE | 1174 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 45 |
 | NO @status HEADER | 1 |
-| Classes | probe 677, spec 394, other 157, lib 137, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
+| Classes | probe 677, spec 396, other 157, lib 139, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
 
 ### Tools/ (64)
 
@@ -253,7 +253,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | karma-default-browsers.spec.mjs | spec | NO @purpose HEADER | 2026-08-21 | 0 | — |
 | landing-rules.mjs | other | ACTIVE | 2026-09-01 | 28 | Pure landing predicates for commit discipline, push-wide Batch uniqueness, and protected remote-ref updates. |
 | landing-rules.spec.mjs | spec | ACTIVE | 2026-09-01 | 8 | Hermetic control-and-mutant contract for commit, push-wide Batch, and protected-ref landing predicates. |
-| lint-debug-pragmas.mjs | other | ACTIVE | 2026-08-28 | 19 | Lints Renderer/WebGPU for console.log/warn/debug/info calls not wrapped in //>>includeStart('debug') pragmas; console.error exempt by policy. |
+| lint-debug-pragmas.mjs | other | ACTIVE | 2026-08-28 | 21 | Lints Renderer/WebGPU for console.log/warn/debug/info calls not wrapped in //>>includeStart('debug') pragmas; console.error exempt by policy. |
 | lint-debug-pragmas.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Proves debug-console calls stay removable unless a narrowly marked warning must remain visible. |
 | package-manifest-duplicate-keys.spec.mjs | spec | ACTIVE | 2026-09-19 | 3 | Refuses a duplicate key in the root or any workspace package.json, and pins the text-reading tokenizer that finds one where JSON.parse cannot. |
 | pre-push-guard.mjs | other | ACTIVE | 2026-09-03 | 22 | Git-aware driver behind .husky/pre-push: enforces batch-prefix/body/trailer/quiet-hours on every outgoing agent commit, and refuses deletion or non-fast-forward rewrite of main; fail-closed, no bypass flag reachable from a real push (a 5th argv slot lets a direct invocation pin the quiet-hours clock for tests; git's two-argument hook contract keeps it unreachable from `.husky/pre-push`). |
@@ -310,21 +310,23 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | wire-flat-shaders-aerial-lut.mjs | other | INVESTIGATION | 2026-08-16 | 1 | One-time codemod that wired the aerial-perspective LUT (EffectsUniforms + fog blend) into every Flat primitive WGSL shader from a template. |
 | wire-globe-mrt-normal.mjs | other | INVESTIGATION | 2026-08-16 | 2 | One-time codemod rewriting GlobeTerrain.wgsl's fragmentMain to the 2-attachment MRT output (color + normal-roughness G-buffer). |
 
-### Tools/build-infra/ (3)
+### Tools/build-infra/ (4)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
+| comment-flavour-corpus.spec.mjs | spec | ACTIVE | — | 1 | Whole-corpus agreement between the source and the comment-reading transforms: minify-time WGSL strip vs the scanner, runtime GLSL doc-comment strip (no throw, same code, same czm_ set), no release-pragma anchor inside prose or inside a generated shader module, and a census of the engine code that reads shader source text, pinned to its classification. |
 | empty-module-stub.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Prove the single-backend build stub answers instanceof without throwing, keeps throwing on real use, and binds every named export of a stubbed module. |
 | wgsl-chunk-resolution.spec.mjs | spec | ACTIVE | 2026-09-19 | 7 | Prove the minify transform cannot change which csm_* calls a WGSL module leaves undeclared after the engine's real chunk splice, so a shipped shader never calls a function nothing defines. |
 | wgsl-comment-strip.spec.mjs | spec | ACTIVE | 2026-09-19 | 4 | Prove the minify-time WGSL comment strip preserves every //>> directive byte-exact, leaves unminified modules untouched, and is wired into the build. |
 
-### Tools/c16/ (10)
+### Tools/c16/ (11)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| comment-marker-guard.mjs | other | ACTIVE | 2026-08-21 | 27 | C16 lint guard scanning engine/widgets Source for banned tracker-marker vocabulary, with a clean-list ratchet; lint-staged + one-shot modes. |
+| comment-flavour-gate.spec.mjs | spec | ACTIVE | — | 1 | Pins that comment-only-diff refuses comment edits that change a shipped or run artifact (release pragma strip, minified WGSL, runtime GLSL strip, bundler annotations, lint and reference directives, ASI), still passes true comment-only edits, and keeps its vendored transforms pinned to their sources. |
+| comment-marker-guard.mjs | other | ACTIVE | 2026-08-21 | 28 | C16 lint guard scanning engine/widgets Source for banned tracker-marker vocabulary, with a clean-list ratchet; lint-staged + one-shot modes. |
 | comment-marker-guard.spec.mjs | spec | ACTIVE | 2026-09-18 | 7 | node:test contract for the C16 marker guard: rules still match (self-test vs broken rule), scope does not overreach, ratchet honest both ways. |
-| comment-only-diff.mjs | other | ACTIVE | 2026-08-16 | 9 | Binding gate of every C16 rewrite batch: strips comments from both sides of a diff to a canonical form and requires the remaining code identical. |
+| comment-only-diff.mjs | other | ACTIVE | 2026-08-16 | 10 | Binding gate of every C16 rewrite batch: strips comments from both sides of a diff to a canonical form and requires the remaining code identical. |
 | comment-only-diff.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Mutant suite for the comment-only-diff gate: every rejected mutant is paired with the nearest legitimate edit that must be accepted. |
 | spec-anchor-sweep.mjs | other | ACTIVE | 2026-08-20 | 4 | Reports grammar, comment-only, and containment-locator anchors from spec literals against explicitly supplied source files. |
 | spec-anchor-sweep.spec.mjs | spec | NO @purpose HEADER | 2026-08-20 | 2 | — |
@@ -333,12 +335,14 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | verify-packaged-notices.mjs | other | ACTIVE | 2026-08-16 | 5 | Verifies every third-party license notice actually reaches each published artifact (root/engine/widgets LICENSE.md, ThirdParty.json, release zip). |
 | verify-packaged-notices.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Mutant suite for the packaged-notices check: removes one owed notice/wiring element at a time and requires the removal reported. |
 
-### Tools/c16/lib/ (2)
+### Tools/c16/lib/ (4)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| comment-scanner.mjs | lib | ACTIVE | 2026-09-01 | 17 | The one tokenizer both C16 instruments share (JS/TS/WGSL/GLSL comment vs code vs string), fail-closed, with semantic-comment retention rules. |
-| marker-grammar.mjs | lib | ACTIVE | 2026-08-28 | 15 | Machine-decidable half of the fork comment standard: the banned tracker-vocabulary regex rules (add-only ids) driven by the marker guard. |
+| comment-scanner.mjs | lib | ACTIVE | 2026-09-01 | 20 | The one tokenizer both C16 instruments share (JS/TS/WGSL/GLSL comment vs code vs string), fail-closed, with semantic-comment retention rules. |
+| flavour-views.mjs | lib | ACTIVE | — | 4 | Per-reader views for the comment-only gate: the release pragma strip (scripts and generated shader modules), the minify-time WGSL comment strip, the runtime GLSL doc-comment strip, the engine code that reads shader source text, the debug-pragma lint and next-line directives, so a comment edit that changes a shipped artifact or a gate's verdict is refused. |
+| marker-grammar.mjs | lib | ACTIVE | 2026-08-28 | 16 | Machine-decidable half of the fork comment standard: the banned tracker-vocabulary regex rules (add-only ids) driven by the marker guard. |
+| shader-text-readers.mjs | lib | ACTIVE | — | 3 | Harvests every string or regex literal the renderer and scene code match against text, classifies how each one uses shader source, and describes each match by where it falls (code or comment), so the comment-only gate can refuse a comment edit that one of those readers would see. |
 
 ### Tools/jsdoc/cesium_template/ (1)
 
@@ -1433,7 +1437,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | sun-hdr-radiance.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Node gate for true-HDR sun radiance: derived disc radiance, alpha-clamp safety, derived BrightPass retune, SunPostProcess 8-bit vacuity fix. |
 | sun-orbital-limb-extinction.spec.mjs | spec | ACTIVE | 2026-08-28 | 6 | Measures the shipped orbital extinction ramp and behaviorally verifies the shared Sun atmospheric-alpha publication and WebGPU pack. |
 | sun-radiance-delta.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Browser-free guard for the two-radiance solar-disc probe lane: pre-registration vs SolarDiscModel, measurement recovery, named mutant worlds. |
-| task-processor-error-path.spec.mjs | spec | ACTIVE | 2026-09-18 | 5 | Prove a worker `error` or `messageerror` settles the task it was carrying, releases the active-task slot it held, that a cached web-assembly init rejects instead of waiting forever, and that neither path posts its work to a worker after that work was rejected. |
+| task-processor-error-path.spec.mjs | spec | ACTIVE | 2026-09-26 | 5 | Prove a worker `error` or `messageerror` settles the task it was carrying, releases the active-task slot it held, that a cached web-assembly init rejects instead of waiting forever, and that neither path posts its work to a worker after that work was rejected. |
 | texture-mip-queue-safety.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Gate for the texture-mip generation queue on WebGPUContext: job stamping, dedupe, transactional requeue, cube-layer slicing, teardown order. |
 | tidal-harmonics.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Executable tide gates: Doodson arguments vs published elements, UT1/TT bridge, spring/neap on syzygy, sub-lunar bulge, atlas round-trip. |
 | tileset-lifecycle-v2.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | node:test coverage of the representative-tileset lifecycle tracker using fake tiles, requests and content promises. |

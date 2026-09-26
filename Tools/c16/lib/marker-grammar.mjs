@@ -29,11 +29,19 @@
  * asserts it does before it scans anything, so a rule that has been broken by
  * an edit reports itself instead of silently matching nothing.
  *
+ * `skipInsideUrl` drops matches that start inside a link target. A link has to
+ * stay byte-exact to keep working, so a label-shaped token inside one (a
+ * documentation GUID, say) is part of an address, not a history tag.
+ * `counterExamples` are strings that must produce no finding; the self-test
+ * checks them the same way it checks `example`.
+ *
  * @typedef {object} MarkerRule
  * @property {string} id Stable identifier used in reports and the clean list.
  * @property {RegExp} pattern Global regex applied to comment text.
  * @property {string} description What the family is and why it is banned.
  * @property {string} example A string the pattern must match.
+ * @property {boolean} [skipInsideUrl] Ignore matches that start inside a URL.
+ * @property {string[]} [counterExamples] Strings that must yield no finding.
  */
 
 /** @type {MarkerRule[]} */
@@ -116,11 +124,19 @@ export const MARKER_RULES = Object.freeze([
     //     suffixes NC / ND / SA and an optional version number.
     //   - Date and timestamp placeholders: the `YYYY-MM-DD` placeholder, on its
     //     own or continued with a `THH`, `THH-MM` or `THH-MM-SS` time part.
+    // A token inside a link target is skipped as well (`skipInsideUrl`):
+    // documentation sites put hyphenated GUIDs and extension names in their
+    // paths, and editing one breaks the link.
     pattern:
       /(?<![A-Z0-9_-])(?!(?:NEW|BUG|EPIC|FIX)-)(?!(?:CC-BY(?:-(?:NC|ND|SA))*(?:-\d+(?:\.\d+)?)?|YYYY-MM-DD(?:THH(?:-MM(?:-SS)?)?Z?)?)(?![A-Z0-9_-]))[A-Z][A-Z0-9]+(?:-[A-Z0-9]{2,}){2,}(?![A-Z0-9_-])/g,
     description:
       "Bare fix labels are development-history tags, not code constraints.",
     example: "POINT-SPRITE-SHAPE",
+    skipInsideUrl: true,
+    counterExamples: [
+      "{@link https://docs.example.com/en/GUID-77D54C0B-D6FF-13DA.html|the manual}",
+      "see https://example.com/specs/EXT-MESH-GPU-INSTANCING for the layout",
+    ],
   },
   {
     id: "numbered-bug-id",
@@ -179,13 +195,60 @@ export function selfTestRules(rules = MARKER_RULES) {
       broken.push(rule.id);
       continue;
     }
-    rule.pattern.lastIndex = 0;
-    if (!rule.pattern.test(rule.example)) {
+    const overmatched = (rule.counterExamples ?? []).some(
+      (counter) => ruleMatches(rule, counter).length > 0,
+    );
+    if (ruleMatches(rule, rule.example).length === 0 || overmatched) {
       broken.push(rule.id);
     }
-    rule.pattern.lastIndex = 0;
   }
   return broken;
+}
+
+/**
+ * A link target: `{@link https://…|label}` or a bare `https://…` URL. It ends
+ * at whitespace, at a link delimiter, and at `,`, `(` or `)`, so a label joined
+ * to a URL by punctuation is still read.
+ */
+const URL_PATTERN = /\b(?:https?|ftp):\/\/[^\s|}<>"'`(),]+/gi;
+
+/**
+ * Offsets covered by URLs in a block of comment text.
+ *
+ * @param {string} text Comment text.
+ * @returns {Array<[number, number]>} Half-open `[start, end)` spans.
+ */
+function urlSpans(text) {
+  return [...text.matchAll(URL_PATTERN)].map((match) => [
+    match.index,
+    match.index + match[0].length,
+  ]);
+}
+
+/**
+ * Every occurrence of one rule in a text, after the rule's own exclusions.
+ *
+ * @param {MarkerRule} rule Rule to apply; its pattern must be global.
+ * @param {string} text Text to scan.
+ * @returns {Array<{match: string, offset: number}>} Occurrences in order.
+ */
+function ruleMatches(rule, text) {
+  const spans = rule.skipInsideUrl === true ? urlSpans(text) : [];
+  const found = [];
+  rule.pattern.lastIndex = 0;
+  let match;
+  let guard = 0;
+  while ((match = rule.pattern.exec(text)) !== null && guard++ < 10000) {
+    const offset = match.index;
+    if (!spans.some(([start, end]) => offset >= start && offset < end)) {
+      found.push({ match: match[0], offset });
+    }
+    if (match[0].length === 0) {
+      rule.pattern.lastIndex += 1;
+    }
+  }
+  rule.pattern.lastIndex = 0;
+  return found;
 }
 
 /**
@@ -198,16 +261,9 @@ export function selfTestRules(rules = MARKER_RULES) {
 export function findMarkers(text) {
   const found = [];
   for (const rule of MARKER_RULES) {
-    rule.pattern.lastIndex = 0;
-    let match;
-    let guard = 0;
-    while ((match = rule.pattern.exec(text)) !== null && guard++ < 10000) {
-      found.push({ ruleId: rule.id, match: match[0], offset: match.index });
-      if (match[0].length === 0) {
-        rule.pattern.lastIndex += 1;
-      }
+    for (const { match, offset } of ruleMatches(rule, text)) {
+      found.push({ ruleId: rule.id, match, offset });
     }
-    rule.pattern.lastIndex = 0;
   }
   return found.sort((a, b) => a.offset - b.offset);
 }

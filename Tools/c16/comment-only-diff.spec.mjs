@@ -608,7 +608,7 @@ test("no in-scope comment is classified semantic by prose alone", async () => {
       // Every line-form directive in this tree starts with one of these. A
       // line comment held for any other reason is prose that got frozen.
       if (
-        !/^(>>|eslint-(disable|enable|env)\b|@ts-(check|nocheck|ignore|expect-error)\b|prettier-ignore|(istanbul|c8|v8)\s+ignore\b)/.test(
+        !/^(>>|eslint-(disable|enable|env)\b|@ts-(check|nocheck|ignore|expect-error)\b|prettier-ignore|(istanbul|c8|v8)\s+ignore\b|lint-debug-pragmas-allow\b|\/\s*<reference\b)/.test(
           body,
         )
       ) {

@@ -17,12 +17,19 @@
 // therefore over a CANONICAL form built by `lib/comment-scanner.mjs`:
 //
 //   - comments removed, each replaced by one space so adjacent tokens cannot
-//     merge;
+//     merge, or by one newline when the comment spans a line break, because a
+//     multi-line comment is a line terminator to automatic semicolon
+//     insertion;
 //   - string, template and regex literals copied VERBATIM, so a byte changed
 //     inside an embedded shader or a user-facing message is always caught;
-//   - build pragmas (`//>>includeStart`, `//>>ifdef`), linter/type directives
-//     and `/*!` license banners RETAINED, because deleting one of those is a
-//     behavioural or legal change that merely looks like a comment edit.
+//   - build pragmas (`//>>includeStart`, `//>>ifdef`), linter/type directives,
+//     bundler annotations and legal comments (`/*!`, `//!`, or any comment
+//     naming `@license` or `@preserve`, which a minified bundle keeps)
+//     RETAINED, because deleting or rewording one of those is a behavioural
+//     or legal change that merely looks like a comment edit. A `//` comment
+//     ends at every line terminator its language defines, not only at `\n`.
+//     `// lint-debug-pragmas-allow` and `/// <reference />`
+//     keep only their directive token, so the prose after it stays editable.
 //     Retention is decided by comment SHAPE as well as leading token — see
 //     `lib/comment-scanner.mjs` — because a retained comment is also a frozen
 //     one, and freezing every prose line that happens to begin with the word
@@ -38,6 +45,20 @@
 // makes CRLF and LF compare equal, which is required here — the working tree
 // is CRLF and git blobs are LF.
 //
+// COMMENT-ONLY IN EVERY FLAVOUR. Equal canonical source is necessary, not
+// sufficient: the release pragma strip (over scripts and over generated shader
+// modules), the minify-time WGSL and GLSL comment strips, the runtime GLSL
+// doc-comment strip and the engine code that reads shader source text all
+// read comment TEXT, and the debug-pragma lint and next-line directives read
+// where a comment SITS, so a comment edit can change what ships, what runs or
+// what a gate decides while the token stream stays equal. After the source
+// comparison passes, `lib/flavour-views.mjs` applies each of those readers
+// and requires it to answer the same way; a file that does not is reported as
+// `flavour-differs`. The engine readers it cannot see (a needle taken from a
+// variable, a helper or `.call`) are listed as known limits in
+// `ForkCommentStandard.md`, so a shader comment batch also carries a
+// rendering check on both backends.
+//
 // USAGE
 //   node Tools/c16/comment-only-diff.mjs --base <ref>
 //       Compare <ref> against the working tree over every file the diff names.
@@ -49,7 +70,8 @@
 //
 // EXIT CODES
 //   0  every checked file is comment-only
-//   1  at least one file's code changed, was added, removed or renamed
+//   1  at least one file's code changed, was added, removed or renamed, or a
+//      build flavour of it no longer agrees with its source
 //   2  the tool itself failed (bad ref, git unavailable, unreadable file)
 //   3  STRUCTURAL: nothing was compared, or the semantic-comment rules stopped
 //      matching their own directives. An empty file set is not a pass — it is
@@ -68,6 +90,7 @@ import {
   languageForPath,
   selfTestSemanticRules,
 } from "./lib/comment-scanner.mjs";
+import { compareFlavours } from "./lib/flavour-views.mjs";
 import { SCOPE_ROOTS } from "./comment-marker-guard.mjs";
 
 const ROOT = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -78,8 +101,11 @@ const ROOT = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
  * @param {string} before Source text at the base revision.
  * @param {string} after Source text at the head revision.
  * @param {string} relPath Repo-relative path, used to select the grammar.
- * @returns {{status: string, detail?: string}} `comment-only`, `code-differs`,
- *   or `unsupported` when no grammar covers the extension.
+ * @returns {{status: string, flavour?: string, detail?: string}}
+ *   `comment-only`, `code-differs`, `flavour-differs` when the source is
+ *   comment-only but a build or runtime transform that reads comment text
+ *   would produce different output, or `unsupported` when no grammar covers
+ *   the extension.
  */
 export function compareSources(before, after, relPath) {
   const language = languageForPath(relPath);
@@ -88,13 +114,13 @@ export function compareSources(before, after, relPath) {
   }
   const canonicalBefore = canonicalizeCode(before, language);
   const canonicalAfter = canonicalizeCode(after, language);
-  if (canonicalBefore === canonicalAfter) {
-    return { status: "comment-only" };
+  if (canonicalBefore !== canonicalAfter) {
+    return {
+      status: "code-differs",
+      detail: describeFirstDifference(canonicalBefore, canonicalAfter),
+    };
   }
-  return {
-    status: "code-differs",
-    detail: describeFirstDifference(canonicalBefore, canonicalAfter),
-  };
+  return compareFlavours(before, after, relPath) ?? { status: "comment-only" };
 }
 
 /**

@@ -33,7 +33,22 @@
 // and `/*!` license banners. Deleting one of those is a behavioural or legal
 // change wearing a comment's clothes. The canonical form therefore RETAINS
 // them, so "I only touched comments" cannot be used to drop a debug pragma or
-// an attribution banner.
+// an attribution banner. Bundler annotations (`webpackIgnore`, `@vite-ignore`,
+// `__PURE__`) are retained for the same reason. Two directives carry prose
+// after their token — `// lint-debug-pragmas-allow: <reason>` and a
+// `/// <reference ... />` tag — and for those only the token is retained, so
+// the reason stays editable. Legal comments that esbuild keeps in a minified
+// bundle (`//!`, or any comment containing `@license` or `@preserve`) are
+// retained whole, because their text ships, and so are source-map references
+// (`//# sourceMappingURL=`), because the bundler follows them.
+//
+// Comment TEXT and comment POSITION are also read by readers this scanner
+// does not model: the release pragma strip, the minify-time WGSL comment
+// strip, the runtime GLSL doc-comment strip, the engine code that reads
+// shader source text, the debug-pragma lint, and directives that bind to the
+// next line.
+// The views in `flavour-views.mjs` check those; this module stays
+// import-free.
 //
 // ...WHICH MAKES "WHAT COUNTS AS A DIRECTIVE" A LOAD-BEARING QUESTION IN BOTH
 // DIRECTIONS. Retaining a directive protects it, and protection is the same
@@ -90,6 +105,19 @@ export const SUPPORTED_EXTENSIONS = Object.freeze([
 const LINE_BREAK_CHARS = Object.freeze(["\n", "\r", "\u2028", "\u2029"]);
 
 /**
+ * Characters that end a `//` comment, per grammar. JavaScript ends one at
+ * U+2028 and U+2029 as well as at `\n`; WGSL also ends one at VT, FF and NEL.
+ * A scanner that read past one of them would call the code after it comment
+ * text, and a comment edit could then smuggle a statement into the file. `\r`
+ * is left out because every caller that compares text folds it to `\n` first.
+ */
+const LINE_COMMENT_ENDS = Object.freeze({
+  js: new Set(["\n", "\u2028", "\u2029"]),
+  wgsl: new Set(["\n", "\u000b", "\u000c", "\u0085", "\u2028", "\u2029"]),
+  glsl: new Set(["\n"]),
+});
+
+/**
  * Comments whose presence changes build output, tool behaviour, or legal
  * notice. The canonical form keeps these, so removing one is a code change —
  * and, as the header says, so is rewording one.
@@ -105,6 +133,10 @@ const LINE_BREAK_CHARS = Object.freeze(["\n", "\r", "\u2028", "\u2029"]);
  *                and surrounding whitespace removed), or
  *   - `raw`      tested against the untouched comment text, for conventions
  *                that live in the delimiter itself;
+ *   - `retain`   optional. When present, only the leading span of the raw
+ *                text this pattern matches is kept in the canonical form, so
+ *                the directive token is code and the words after it are
+ *                prose. When absent, the whole comment is kept;
  *   - `examples` / `counterExamples`  the rule's own negative control, run by
  *                `selfTestSemanticRules`. Counter-examples are drawn from real
  *                comments in this repository wherever one exists.
@@ -209,19 +241,43 @@ export const SEMANTIC_COMMENT_RULES = Object.freeze([
     // TypeScript's four suppression comments. `@ts-expect-error` and
     // `@ts-ignore` carry a free-text explanation after the token, so this is a
     // prefix rule; the closed vocabulary keeps `@ts-`-prefixed prose editable.
+    // The compiler also reads the `///` spelling, and it reads the two
+    // suppressions with no word boundary after them, so `@ts-ignored` is a
+    // suppression too. `@ts-check` and `@ts-nocheck` are pragmas, whose names
+    // the compiler lower-cases with the full Unicode mapping before it looks
+    // them up, so any letter case counts, and so does the Kelvin sign
+    // (U+212A), the one non-ASCII character that lower-cases to a letter of
+    // either name; the two suppressions are matched case-sensitively, as the
+    // compiler matches them.
     id: "typescript-directive",
     shape: "any",
-    body: /^@ts-(check|nocheck|ignore|expect-error)\b/,
+    body: /^\/?\s*@(?:[Tt][Ss]-(?:[Nn][Oo])?[Cc][Hh][Ee][Cc][Kk\u212A](?!\w)|ts-ignore|ts-expect-error)/,
     examples: [
+      "// @ts-nochec\u212A",
       "// @ts-check",
       "// @ts-expect-error Missing types.",
       "// @ts-nocheck",
       "/* @ts-ignore */",
+      "/// @ts-expect-error Missing types.",
+      "/// @ts-nocheck",
+      "// @ts-ignored until the upstream typings land.",
+      "// @TS-NOCHECK",
+      "// @Ts-NoCheck: fixture",
     ],
     counterExamples: [
       "// @ts-migrate annotations from the codemod have all been removed.",
       "// @typescript-eslint rules are configured at the repository root.",
     ],
+  },
+  {
+    // In a block comment TypeScript reads a suppression from the comment's
+    // LAST line only, so a doc block whose closing line carries one suppresses
+    // the next line's errors while its first line reads as prose.
+    id: "typescript-directive-last-line",
+    shape: "block",
+    raw: /[\n\r\u2028\u2029]\s*(?:\/|\*)*\s*@ts-(?:expect-error|ignore)[^\n\r\u2028\u2029]*$/,
+    examples: ["/**\n * Kept for the legacy overload.\n * @ts-ignore */"],
+    counterExamples: ["/**\n * Never add a @ts-ignore here.\n */"],
   },
   {
     // Coverage-tool suppressions. istanbul, c8 and v8 all read both forms.
@@ -248,7 +304,7 @@ export const SEMANTIC_COMMENT_RULES = Object.freeze([
       "/* @preserve build banner */",
     ],
     counterExamples: [
-      "// @license and @preserve are the two tags minifiers honour.",
+      "// License tags open a doc block; the minifier keeps that block.",
     ],
   },
   {
@@ -264,6 +320,101 @@ export const SEMANTIC_COMMENT_RULES = Object.freeze([
       "// !gl_FrontFacing doesn't work as expected on Mac/Intel so use the more verbose form instead.",
       "// !translucent` is false (GlobeSurfaceTileProviderRendering.js:1395-1396,",
       "// !exitFromInside && !enterFromOutside",
+    ],
+  },
+  {
+    // Bundler annotations. webpack reads its `webpack<Name>:` comments inside
+    // `import()`, Vite reads `@vite-ignore`, and minifiers read the
+    // `__PURE__` / `__NO_SIDE_EFFECTS__` call annotations. Deleting one changes
+    // what a downstream bundle resolves or keeps, and none of them ever needs
+    // rewording, so the whole comment is retained. The body must OPEN with the
+    // token: prose that names `webpackIgnore` to explain an import stays
+    // editable.
+    id: "bundler-magic-comment",
+    shape: "any",
+    body: /^(?:webpack[A-Z][A-Za-z]*\s*:|@vite-ignore$|[@#]__(?:PURE|NO_SIDE_EFFECTS)__$)/,
+    examples: [
+      "/* webpackIgnore: true */",
+      '/* webpackChunkName: "naga" */',
+      "/* @vite-ignore */",
+      "/*#__PURE__*/",
+      "/* @__PURE__ */",
+    ],
+    counterExamples: [
+      "// import external (webpackIgnore) so esbuild does not inline the glue",
+      "/**\n * external (via `webpackIgnore`) had `../../` resolve elsewhere\n */",
+      "// The `/* @vite-ignore */` + `/* webpackIgnore: true */` magic",
+    ],
+  },
+  {
+    // `Tools/lint-debug-pragmas.mjs` exempts the next console call when this
+    // token opens a line comment; the reason after it is prose the lint never
+    // reads. Only the token is retained, so the reason can be reworded while
+    // the exemption itself cannot be dropped.
+    id: "lint-debug-pragmas-allow",
+    shape: "line",
+    body: /^lint-debug-pragmas-allow\b/,
+    retain: /^\/\/\s*lint-debug-pragmas-allow\b/,
+    examples: [
+      "// lint-debug-pragmas-allow: permanent device-lost sentinel",
+      "//lint-debug-pragmas-allow",
+    ],
+    counterExamples: [
+      "/* lint-debug-pragmas-allow is honoured in line comments only */",
+      "// The lint-debug-pragmas-allow token exempts the next console call.",
+    ],
+  },
+  {
+    // A TypeScript triple-slash directive. The XML-shaped tag is what the
+    // compiler reads, so the tag is retained exactly and any text after its
+    // `/>` stays prose. A tag with no `/>` is retained whole. The compiler
+    // lower-cases the tag name, so any letter case counts, and it reads the
+    // two AMD tags as well as `<reference>`.
+    id: "typescript-reference",
+    shape: "line",
+    raw: /^\/\/\/\s*<(?:reference|amd-module|amd-dependency)\b/i,
+    retain: /^\/\/\/\s*<(?:reference|amd-module|amd-dependency)\b[^>]*\/>/i,
+    examples: [
+      '/// <reference types="@webgpu/types" />',
+      '/// <reference path="./globals.d.ts" />',
+      '/// <REFERENCE types="@webgpu/types" />',
+      '/// <amd-module name="subject" />',
+    ],
+    counterExamples: ["// <reference> tags resolve relative to this file."],
+  },
+  {
+    // A source-map reference. esbuild and browsers follow it to an input's
+    // own map, so adding, removing or changing one changes the map a build
+    // emits. It never needs rewording, so the whole comment is retained.
+    id: "source-map-comment",
+    shape: "any",
+    raw: /^\/[/*][#@]\s*source(?:Mapping)?URL=/,
+    examples: [
+      "//# sourceMappingURL=naga_wasm.js.map",
+      "//@ sourceURL=worker.js",
+    ],
+    counterExamples: [
+      "// The sourceMappingURL comment is added by the bundler, not here.",
+    ],
+  },
+  {
+    // esbuild keeps a legal comment verbatim in a minified bundle: one that
+    // opens with `//!` or `/*!`, or that contains `@license` or `@preserve`
+    // anywhere. The shader build likewise lifts a `/**` block containing
+    // `@license` into the generated module's header. The text of such a comment
+    // ships, so the whole comment is retained. The body test is a substring
+    // test, as esbuild's is.
+    id: "legal-comment",
+    shape: "any",
+    raw: /^\/\/!|@license|@preserve/,
+    examples: [
+      "// @license and @preserve are the two tags minifiers honour.",
+      "/**\n * Converts RGB to XYZ. No separate @license applies.\n */",
+      "//! Bundled notice kept by the minifier.",
+    ],
+    counterExamples: [
+      "// Licence text for the bundled shaders is in LICENSE.md.",
+      "// ! is a negation here, not a banner.",
     ],
   },
 ]);
@@ -348,6 +499,29 @@ export function isSemanticComment(rawText) {
 }
 
 /**
+ * The part of a comment the canonical form keeps.
+ *
+ * A rule with a `retain` pattern keeps only the directive token, so the prose
+ * after it can be reworded. When that pattern does not match — a malformed
+ * directive — the whole comment is kept, which fails closed.
+ *
+ * @param {string} rawText Comment text including its delimiters.
+ * @returns {string|null} Text to retain, or null for an ordinary comment.
+ */
+export function retainedCommentText(rawText) {
+  const raw = String(rawText);
+  const id = classifySemanticComment(raw);
+  if (id === null) {
+    return null;
+  }
+  const rule = SEMANTIC_COMMENT_RULES.find((candidate) => candidate.id === id);
+  if (rule.retain === undefined) {
+    return raw;
+  }
+  return raw.match(rule.retain)?.[0] ?? raw;
+}
+
+/**
  * Negative control for the rule table.
  *
  * A rule that stopped matching its own directives would unprotect them while
@@ -366,6 +540,14 @@ export function selfTestSemanticRules() {
       if (got !== rule.id) {
         broken.push(
           `${rule.id}: directive classified as ${got ?? "prose"} — ${JSON.stringify(example)}`,
+        );
+      }
+      // A prefix rule whose pattern stopped matching would silently fall
+      // back to whole-comment retention and refreeze the prose it exists to
+      // release.
+      if (rule.retain !== undefined && !rule.retain.test(example)) {
+        broken.push(
+          `${rule.id}: retained prefix does not match — ${JSON.stringify(example)}`,
         );
       }
     }
@@ -422,14 +604,18 @@ const REGEX_PRECEDING_KEYWORDS = new Set([
   "else",
   "yield",
   "await",
+  "default",
+  "extends",
 ]);
 
 /**
  * Whether the `/` at `index` opens a regex rather than a division.
  *
- * The heuristic is the conventional one (previous significant token). It can
- * be fooled, but only in the safe direction: literals are emitted verbatim, so
- * a misclassified span still compares byte-for-byte.
+ * The heuristic is the conventional one (previous significant token). A regex
+ * it misreads as division is compared as code, so whitespace inside that regex
+ * would be normalised and an edit to it read as comment-only. The keyword list
+ * therefore holds every keyword that can precede an expression; a division
+ * misread as a regex is compared byte for byte, which fails closed.
  *
  * @param {string} source Full source text.
  * @param {number} index Offset of the `/`.
@@ -511,7 +697,7 @@ function tokenizeJs(source) {
     if (c === "/" && d === "/") {
       flushCode(i);
       let j = i + 2;
-      while (j < n && source[j] !== "\n") {
+      while (j < n && !LINE_COMMENT_ENDS.js.has(source[j])) {
         j += 1;
       }
       segments.push({ kind: "comment", start: i, end: j, block: false });
@@ -710,6 +896,9 @@ function scanRegex(source, start) {
 function tokenizeShader(source, nestingBlockComments) {
   const segments = [];
   const n = source.length;
+  const lineCommentEnds = nestingBlockComments
+    ? LINE_COMMENT_ENDS.wgsl
+    : LINE_COMMENT_ENDS.glsl;
   let i = 0;
   let codeStart = 0;
   let guard = 0;
@@ -726,7 +915,7 @@ function tokenizeShader(source, nestingBlockComments) {
     if (c === "/" && d === "/") {
       flushCode(i);
       let j = i + 2;
-      while (j < n && source[j] !== "\n") {
+      while (j < n && !lineCommentEnds.has(source[j])) {
         j += 1;
       }
       segments.push({ kind: "comment", start: i, end: j, block: false });
@@ -834,11 +1023,20 @@ export function extractComments(source, language) {
  * The comparison form used by the comment-only-diff verifier.
  *
  * Construction, and why each rule is what it is:
- *   - Non-semantic comments are replaced by a single space. A space, not
- *     nothing: a block comment sitting between two identifiers must not let
- *     them merge into one token, which would make a genuine change invisible.
+ *   - Non-semantic comments are replaced by a single space, or by a single
+ *     `\n` when the comment itself spans a line break. A space, not nothing: a
+ *     block comment sitting between two identifiers must not let them merge
+ *     into one token, which would make a genuine change invisible. A newline
+ *     for a multi-line comment, because JavaScript treats such a comment as a
+ *     line terminator: `return /* a\n b *\/ x` returns undefined, and
+ *     collapsing that comment onto one line changes what the function
+ *     returns.
  *   - Semantic comments (build pragmas, tool directives, license banners) are
- *     kept, so deleting one is reported as a code change.
+ *     kept, so deleting one is reported as a code change. A rule with a
+ *     `retain` pattern keeps only its directive token.
+ *   - With `keepSemantic: false` every comment is dropped. That form is for
+ *     comparing against a transform that deletes directives too, such as the
+ *     runtime GLSL comment strip.
  *   - String, template and regex literals are copied VERBATIM — never
  *     whitespace-normalised — so a byte changed inside a shader string or a
  *     user-visible message is always caught.
@@ -862,11 +1060,13 @@ export function extractComments(source, language) {
  * literal is not a change the repository can even represent, and every other
  * byte of every literal is still compared exactly.
  *
- * @param {string} source File text.
+ * @param {string} rawSource File text.
  * @param {("js"|"wgsl"|"glsl")} language Grammar to apply.
+ * @param {{keepSemantic?: boolean}} [options] `keepSemantic` defaults to true.
  * @returns {string} Canonical code-only form.
  */
-export function canonicalizeCode(rawSource, language) {
+export function canonicalizeCode(rawSource, language, options = {}) {
+  const keepSemantic = options.keepSemantic !== false;
   const source = rawSource.replace(/\r\n?/g, "\n");
   const segments = tokenize(source, language);
   const pieces = [];
@@ -877,8 +1077,11 @@ export function canonicalizeCode(rawSource, language) {
       continue;
     }
     if (segment.kind === "comment") {
-      if (isSemanticComment(raw)) {
-        pieces.push({ verbatim: false, text: raw });
+      const retained = keepSemantic ? retainedCommentText(raw) : null;
+      if (retained !== null) {
+        pieces.push({ verbatim: false, text: retained });
+      } else if (LINE_BREAK_CHARS.some((ch) => raw.includes(ch))) {
+        pieces.push({ verbatim: false, text: "\n" });
       } else {
         pieces.push({ verbatim: false, text: " " });
       }

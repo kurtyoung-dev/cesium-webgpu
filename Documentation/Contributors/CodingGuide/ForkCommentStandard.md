@@ -89,9 +89,10 @@ reviewers to ignore the tool:
 - **No ALL-CAPS emphasis.** Upstream uses sentence case. The narrow
   `all-caps-fix-label` rule catches bare labels with three or more segments of
   at least two alphanumeric characters. It excludes the required `CC-BY-SA`
-  license identifier and the `YYYY-MM-DD` date placeholder; ordinary emphasis
-  remains a review judgement. If a point needs emphasis, the sentence is not
-  yet doing its job.
+  license identifier, the `YYYY-MM-DD` date placeholder and any token inside a
+  link URL, where a documentation GUID is part of the address; ordinary
+  emphasis remains a review judgement. If a point needs emphasis, the sentence
+  is not yet doing its job.
 - **No first person.** Not "we", "I", "our", and not "note to whoever picks
   this up". The reader is a maintainer, not an audience.
 - **No narrative.** No "this previously", "the first attempt", "turned out
@@ -304,8 +305,94 @@ Four instruments, all under `Tools/c16/`:
 4. **`comment-only-diff.mjs`** — the gate for remediation batches. It strips
    comments from both sides of a ref pair and requires the remainder to be
    identical, which is the only way "I only changed comments" can be checked
-   rather than believed. Build pragmas, lint directives and license banners
-   count as code: deleting one fails the gate.
+   rather than believed. Build pragmas, lint directives, bundler annotations
+   (`webpackIgnore`, `@vite-ignore`, `__PURE__`) and license banners count as
+   code: deleting one fails the gate. So does any comment a minified bundle
+   keeps (one that opens with `//!` or names `@license` or `@preserve`), the
+   `///` spellings of the TypeScript suppressions, and `@ts-check` or
+   `@ts-nocheck` in any letter case, including the Kelvin sign that
+   TypeScript lower-cases to `k`. For
+   `// lint-debug-pragmas-allow` and a `/// <reference />` tag only the
+   directive token counts as code, so the reason after it can be reworded. A
+   `//` comment ends at every line terminator its language defines, so a
+   line or paragraph separator (and, in WGSL, a vertical tab, form feed or
+   next-line character) inside one turns the text after it into code.
+
+   Some comment text is also read by a machine, and the gate checks each such
+   reader against the source: the release build's debug-pragma strip, over
+   scripts and over the modules the build generates from shaders (a comment
+   must not quote `//>>includeStart(...)`), the minified build's WGSL comment
+   strip (a WGSL block comment must not contain `/*`, so no nested comment
+   and no `**/*` glob), the runtime GLSL doc-comment strip in `ShaderSource`
+   (a GLSL `/** */` block stays multi-line, carries no `//` text on its
+   closing line, and is never demoted to `/*` while it names a `czm_`
+   function; no GLSL block comment on one line holds `//` text), the
+   `--minify` build's GLSL comment strip (a GLSL `//` comment does not end in
+   a backslash, no block comment opens as `/*/`, and a comment on a `#`
+   directive line, which that build keeps, is not added, removed or
+   changed), and the engine code that reads shader source text. Much of that
+   code does not skip comments: it splices before the first `void main`,
+   switches a pick shader's output when `out_FragData` appears anywhere,
+   swaps the first `texture_storage_2d_array<...>` format, expands the first
+   `#import` line, strips the `// __SUBGROUP_BLOCK_START__` section, declares
+   a material uniform only when no `uniform <type> <name>;` text is found,
+   picks a shadow shader's varying by the first of `v_normalEC`, `v_normal`
+   or `v_positionEC` it finds, and locates WebGPU OIT's fragment entry point
+   and output struct by regexes built from their names. So shader prose must
+   not add, remove or move a mention of what such a reader matches; rewording
+   around an existing mention is fine. `Tools/c16/lib/shader-text-readers.mjs`
+   lists each reader it finds and how it reads: every literal string or regex
+   passed to a search or replace call under `Renderer/` and `Scene/`, a
+   `const` needle passed by name, and a hand-written, deliberately wider
+   model of each reader that builds its pattern at runtime or keeps its
+   needles in an array. Every `RegExp(...)` call under those directories is
+   classified there, and while one is not, no shader comment edit passes. A
+   comment edit that any of these would read differently fails the gate.
+
+   Where a comment sits is read too. `Tools/lint-debug-pragmas.mjs` honours
+   `// lint-debug-pragmas-allow` only on the line directly above the
+   `console.warn`, so its reason stays on that one line; a reason wrapped onto
+   a second line fails the gate. The lint also reads a console call named in a
+   trailing comment. `eslint-disable-next-line`, `@ts-expect-error` and
+   `@ts-ignore` bind to the line after them, so no line, blank or comment, may
+   be added or removed between one of them and its code, and a `//` line
+   there stays a `//` line: TypeScript looks past `//` lines to its
+   suppression, but not past a block comment.
+
+   **Known limits.** A `comment-only` verdict on a GLSL or WGSL file is
+   necessary, not sufficient. A batch that edits shader comments also carries
+   a rendering check on both backends, and its scenes turn on the readers the
+   default view does not reach: a fabric material with a texture (such as
+   `BumpMap`), shadows received by per-instance-colour primitives, and WebGPU
+   order-independent translucency. The gate does not model:
+
+   - a needle taken from a variable other than a same-file `const` bound to
+     one literal, a needle passed through a helper function or `.call`, a
+     regex literal with no word of three or more letters, and any reader
+     outside `Renderer/` and `Scene/`;
+   - the runtime-built renames that rewrite in place (`MaterialHelpers`
+     `replaceToken` and `replaceTokenInWGSL`, the WGSL material uniform
+     rename, the duplicate-uniform rename in `ShaderProgram`), which the table
+     records as benign because a match inside a comment stays inside it;
+   - `Cesium3DTileBatchTable`'s diffuse rewrite, which reads glTF shaders that
+     carry the `_3DTILESDIFFUSE` semantic rather than tracked shader files;
+   - the WebGPU OIT pipeline and module caches, which key a variant by the
+     shader's length, entry point and label, so in an unminified build a
+     comment edit that gives two variants the same length can serve one the
+     other's pipeline;
+   - comment text read by other gates, each of which runs on its own: JSDoc
+     read by `build-ts` and `build-docs`, JSDoc types in checked JavaScript
+     read by `tsc-engine`, comment layout read by `prettier --check`, and
+     `file:line` anchors in specs and `migration_doc` that move when a
+     rewrite changes line counts;
+   - comment text with no behaviour: source-map `sourcesContent`, and shader
+     compile-error line numbers that shift with comment line counts.
+
+   The hand-written models are wider than the code they stand for, presence
+   tests are counted as match counts, and WebGL readers are applied to WGSL
+   and WebGPU readers to GLSL, so the gate also refuses edits no reader
+   would see. About one shader comment rewrite in five is refused this way
+   and needs rewording around an existing mention.
 
 `npm run build-docs` must stay clean for any change touching exported API.
 

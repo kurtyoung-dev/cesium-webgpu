@@ -774,3 +774,8 @@ packages/engine/Source/Shaders/WebGPU/FlowFieldRender.wgsl
 # Space-weather state packet and its deterministic manual driver, authored to
 # the standard rather than remediated to it.
 packages/engine/Source/Scene/SpaceWeather
+
+# Byte-identical to upstream and listed untouched. Its only finding was a
+# documentation GUID inside a link target, which the grammar does not read
+# as a fix label.
+packages/engine/Source/Core/IonSnapMode.js
