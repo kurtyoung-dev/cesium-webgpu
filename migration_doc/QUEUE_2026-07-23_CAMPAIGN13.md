@@ -247,14 +247,14 @@ is that a `C13-*` id may not be minted elsewhere without being added here first.
 | `C13-N46` | Re-write Gates C/D and EXIT against the v2 bars | — | — | M | W1 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-H -->
 | `C13-N47` | Derive and land the characterization thresholds | — | — | M | Continuous | ≥3 green calibration runs from `C13-42a`+`C13-42f`, or from `C13-N04b` for the O-bars | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
 | `C13-N48` | Wave-end gate bindability (Q-152) | — | — | M | W1 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-A -->
-| `C13-N49` | Cloud-related lighting of the scene | — | — | M | W6 | C13-N37, C13-22 | <!-- source: CAMPAIGN_13_V2 §3 WS-D -->
+| `C13-N49` | Cloud-related lighting of the scene | — | — | M | W6 | C13-N37, C13-22 | <!-- source: CAMPAIGN_13_V2 §3 WS-D --> **Rider (tidewater intake, 2026-09-26):** model and 3D-Tiles cloud-shadow receive — §11, WS-D.
 | `C13-N50` | Lifecycle proof for the widened weather resource | — | — | S | W2 | C13-N23 | <!-- source: CAMPAIGN_13_V2 §3 WS-E -->
 | `C13-N51` | GLSL density domain + the noise-source ruling | — | — | L | W7 | C13-N15b, C13-N54 | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
 | `C13-N52` | GLSL volumetric march twin | — | — | XL | W7 | — | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
 | `C13-N53` | GLSL reconstruction stack twin | — | — | L | W7 | C13-N15a, C13-12 | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
 | `C13-N54` | WGSL↔GLSL twin-drift guard | — | — | M | W4/W7 | C13-N15c | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
 | `C13-N55` | GLSL god-ray stack | — | — | L | W7 | C13-45, C13-N15a | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
-| `C13-N56` | WebGL cloud→lighting consumers | — | — | L | W7 | C13-N49, C13-N52 | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
+| `C13-N56` | WebGL cloud→lighting consumers | — | — | L | W7 | C13-N49, C13-N52 | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 --> **Rider (tidewater intake, 2026-09-26):** the WebGL arm of the §11 WS-D model and 3D-Tiles cloud-shadow rider on `C13-N49`.
 | `C13-N57` | Cross-backend parity acceptance | — | — | M | W7 | C13-N15c, C13-N52, C13-N55 | <!-- source: CAMPAIGN_13_V2 §3 WS-C2 -->
 | `C13-N60` | The cloud march's occlusion clamp must carry the depth read's own precision | — | — | S–M | W3 | — | **Filed 2026-09-19**, taking the orbital concentric band family from `C13-N13`. The clamp at `ProceduralClouds.wgsl:2455-2459` compares against a depth recovered through an `r16float` resolve whose one-ulp quantum is tens of kilometres at orbital range; the model is consistent with the banked captures in **period** (spacing constant to 1.42 % in ln(eye-axis depth), 17.07 % in cos(incidence)) and in **amplitude** (88.44 % of the disc exactly black; two independent estimates of the quantum agreeing to 18 %) and is **NOT confirmed by a controlled experiment**. **[W-9]** *Rider 2026-09-19.* The **period** half is confirmed by a second, independent route that uses no periodogram: converting the twenty-one banked annulus radii to eye-axis depth gives nineteen consecutive ln-z gaps of 0.01106–0.01130 (mean **0.011191**) against **0.0112431** predicted, i.e. **−0.5 %**. The **amplitude** half is *not* a confirmation of the same claim: a round-to-nearest f16 quantum predicts ~52 % of the disc fully marched and ~45 % black, against the measured 88.4 % black, so the model needs a **systematic short bias of roughly 0.35–0.45 of a quantum** in addition to the quantum. The patch's own wording ("biased short by up to one quantum") already assumes it. **The bias is a second mechanism claim, it is not explained by rounding, and nothing has measured it.** Any leg that tests this row must report the **lit duty per period**, not only the spacing. **[/W-9]** *(Precision: the nineteen-gap mean re-derives as 0.011187, −0.50 % — `DEFERRED_WORK.md` `C13-N60`.)* ~~That experiment is written and queued — `probe-cloud-march-mechanism.mjs`, seven arms restored to one baseline between them (fourteen capturing dial sets, each taking its own clouds-ON and clouds-OFF frame, plus one that captures nothing), `globe.show = false` as a negative-only veto and a `frustum.far` sweep as the positive arm with a STOP condition and its shifts pre-registered from the frustum `Scene.js:1477-1478` pins (-6.021 % / +6.021 % / +12.041 %).~~ **[W-8]** *Updated 2026-09-19: the leg RAN (Edge Leg 1, receipt `Tools/visual-regression/output/wave-end/c13-ring-leg1-20260919/`) and returned neither arm's reading, for a reason the leg could not have known.* The veto fired — but on a **different family** from the one this row models, and the far sweep's positive arm returned `unmeasured` because the landed metric cannot resolve a ladder on a frame that renders everywhere. **Measured on the leg's own frames: power at this row's predicted line (Δln z = 0.011243) is 1.8 × the median on `M0`, 1.6 × on `M1` and 1.5 × on `M4-q32`, against ~3.8e4 on the captures this row was filed from.** This row's evidence base is therefore **the 2026-09-18 L5 captures only**, and **nothing at the tip exhibits the family it explains**. What the row still rests on, unchanged, is source: an `r16float` resolve whose one ulp is 74,299 m at this range (`WebGPUDepthResolveMSAA.ts:67`) read by a clamp that compares it against a 2,500 m deck (`ProceduralClouds.wgsl:2455-2459`, `:2175-2179`). **[/W-8]** **Acceptance is a four-part conjunction plus a blank-frame sentinel** (banding down to the fBm control, cloud presence up, O5 slope in band, realised primary sample count up; the `r/R < 0.1` annulus, today at duty 0.00 % and peak 0, renders something). **[W-10]** *Rider 2026-09-19.* Every term of this conjunction is expressed against the L5 tree's picture (`r/R < 0.1` at duty 0.00 %, 88.4 % of the disc black). At the tip that annulus renders at duty 0.72 and the disc is 23.7 % black **before any fix**, so three of the four terms are already satisfied by a tree that contains no fix. The acceptance must be re-expressed against a baseline captured on the tree the fix will land on, or it will pass vacuously. **[/W-10]** *(Precision: 0.72 is the whole-disc `dutyFull`; the annulus itself reads `innerAnnulusDuty` 0.592, peak 0.552 — `DEFERRED_WORK.md` `C13-N60`.)* Image witness at the tip: occlusion arm A6 inside Edge Leg 2 (seat decision S-8, 2026-09-26, takes the ring plan's Q2 (b); the plan's "then (c)", a fix on source evidence, is not taken and follows A6's result; the maintainer may reverse). | <!-- row added 2026-09-19; id allocated after the then-highest C13-N59 -->
 | `C13-N61` | The noise mip is selected from the march step, not from the pixel cone | — | — | M | — | — | **Filed 2026-09-19 under Principle 9; measured, not built.** `cloudMacroSampleAt` is handed `curFineStep` as its LOD argument (`ProceduralClouds.wgsl:2625`, argument at `:2632`), so the noise mip follows the march step and not the pixel footprint — 26.04 m against a 3,725.95 m pixel at the recipe camera. The detail chain saturates, so the remedy is a **mean-preserving fade**, not a deeper mip. Pinning this argument is also what keeps `C13-N13` and this row reviewable apart. | <!-- row added 2026-09-19 -->
@@ -283,6 +283,20 @@ is that a `C13-*` id may not be minted elsewhere without being added here first.
 | `C13-N69` | A cloud dial can express a march the device cannot finish — the march budget | — | — | M | — | — | <!-- row added by record round 8; same source, I-3; owner ruled by R-2026-09-26-9 (D9a) -->
 | `C13-N70` | A public engine surface that answers whether the WebGPU device is alive | — | — | S | — | — | <!-- row added by record round 8; same source, I-4 ("nice-to-have, not blocking"); `isDeviceLost` (`WebGPUDeviceInvalidationBus.ts:94`) and `WebGPUContext._isDeviceUnavailable` are private at the plan's reading -->
 | `C13-N71` | The cloud realization can be varied one axis at a time from outside the engine (`C13-N71-CLOUD-REALIZATION-NOT-VARIABLE-ONE-AXIS-AT-A-TIME`) | — | — | S | — | — | <!-- row added by record round 8; id proposed by lane I-5's packet §7 and assigned here, after the then-highest id minted anywhere (`C13-N70`) -->
+| `C13-N75` | Pixel-fraction cloud budget: a re-attempt dossier against the withdrawn sparse update (tidewater `SkyProClouds.js` lattice trace) | — | — | S | — | `NEW-CLOUD-SPARSE-UPDATES-WITHDRAWN` (`R-2026-09-26-2`) | **Tidewater intake, v2.1 WS-B (docs; worked reference, not a lane).** Row text: §11 WS-B. <!-- id minted by the tidewater intake after the then-highest id in this table (`C13-N71`); `C13-N72`…`N74` are assigned by the seat to ring lane I-1 and are not minted here -->
+| `C13-N76` | Pixel-cone step growth and the in-cloud mean-free-path step as the worked reference for `C13-N13` | — | — | — | W3 | `C13-N13` | **Tidewater intake, v2.1 WS-B; rides `C13-N13`.** Row text: §11 WS-B. |
+| `C13-N77` | Mean-preserving octave fade as the worked law for `C13-N61` | — | — | — | — | `C13-N61` | **Tidewater intake, v2.1 WS-B; rides `C13-N61`.** Row text: §11 WS-B. |
+| `C13-N78` | Light-march opacity LOD and optical-depth cutoff, measured first, for `C13-N69`'s `lightSampleBudget` follow-up | — | — | — | — | `C13-N69` | **Tidewater intake, v2.1 WS-B; rides `C13-N69`.** Row text: §11 WS-B. |
+| `C13-N79` | God-ray mask pass: measure it, then read the sun transmittance from the resolved clouds | — | — | S (measurement) | — | `C13-N69`; engine half after Astra's A1 | **Tidewater intake, v2.1 WS-C2; rides `C13-N69`'s "mask-pass model" follow-up (seat decision S-3, fallback (b)).** Row text: §11 WS-C2. |
+| `C13-N80` | Cloud lighting look terms as a worked set for `C13-N11-TUNE` | — | — | — | W2+ | `C13-N11-TUNE` | **Tidewater intake, v2.1 WS-D; rides `C13-N11-TUNE`.** Row text: §11 WS-D. |
+| `C13-N81` | Cloud shadow map: quarter-row refresh around a snapped centre, and the two-lobe transmittance | — | — | — | W4 | `C13-22`; `C13-N69` | **Tidewater intake, v2.1 WS-D; rides `C13-22` and `C13-N69`'s shadow-pass follow-up.** Row text: §11 WS-D. |
+| `C13-N82` | Cloud panorama and a one-unit-per-frame environment refresh | — | — | — | — | `C13-N69` | **Tidewater intake, v2.1 WS-D; rides `C13-N69`'s reflection-pass follow-up.** Row text: §11 WS-D. |
+| `C13-N83` | Cloud aerial perspective keyed on the transmittance-weighted depth | — | — | — | W1 | `C13-N20`; Astra's A3 | **Tidewater intake, v2.1 WS-D; rides `C13-N20` / Astra's A3 physical aerial path.** Row text: §11 WS-D. |
+| `C13-N84` | The moon as the clouds' key light when the sun is down | — | — | — | — | — | **Tidewater intake, v2.1 WS-D; new row.** Row text: §11 WS-D. |
+| `C13-N85` | Small-angle Earth shadow as a ground-camera oracle for `C13-N18` | — | — | S | W3 | `C13-N18` | **Tidewater intake, v2.1 WS-D; reference for `C13-N18`.** Row text: §11 WS-D. |
+| `C13-N86` | Conservative coarse weather bounds with a per-cell turning-point test | — | — | — | — | Astra's A2c | **Tidewater intake, v2.1 WS-E; rides Astra's empty-weather skipping (A2c).** Row text: §11 WS-E. |
+| `C13-N87` | LIC-fibre cirrus sheet as a design reference for the genus pipeline | — | — | — | W3 | `C13-N38` | **Tidewater intake, v2.1 WS-F; design reference.** Row text: §11 WS-F. |
+| `C13-N88` | Clouds as HDR radiance before post, and the sun-disc transmittance cutoff | — | — | — | W6 | `C13-N31`; Astra's A1 (U22) | **Tidewater intake, v2.1 WS-G; design reference for `C13-N31`'s I3 slice.** Row text: §11 WS-G. |
 | `DX-82` | The provisioner stops leaving the clone's tracked governance files modified [SOLO-A] | — | — | M | — | — | <!-- row added 2026-09-12 by CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md §3.8; DX id allocated after the then-highest `DX-81` in QUEUE_2026-08-29_RESEARCH_DISPATCH.md. A `### DX-82` section in that dispatch queue is owed by the seat -->
 | `DX-83` | Point the three bare `PROGRESS_THRAIN.md` citations at the archived copy [SOLO-G] | — | — | S | — | — | <!-- row added 2026-09-12 by CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md §3.9; the file `DX-78` and `DX-79` cite is not in the repository and never was. A `### DX-83` section in the dispatch queue is owed by the seat -->
 | `DX-84` | Sweep preflight listing parent-dead `msedge`/`playwright` process trees and free memory — report only, never kills [SOLO-A] | — | — | M | — | — | <!-- row added 2026-09-12 by CAMPAIGN_13_V2_SOLO_ROWS_2026-09-12.md §3.12. SOLO-AFTER-TEMPLATE, not SOLO-NOW: the critic's proposal was confirmed by seat ruling R-HANDOFF-10, 2026-09-13, with worker Sonnet (R-HANDOFF-7) and the template being the seat's own 2026-09-12 orphan-kill procedure. The [SOLO] tag was removed the same day because the legend defines it as SOLO-NOW. A `### DX-84` section in the dispatch queue is owed by the seat. CORRECTION 2026-09-13 (`R-2026-09-13-8`, `R-HANDOFF-12`): this row is **SOLO-NOW with worker Astra**, not SOLO-AFTER-TEMPLATE with worker Sonnet — `R-HANDOFF-7` and `R-HANDOFF-10` are superseded, and Sonnet is not a solo worker. The template still stands and is briefed with the row, and the tool stays **report-only** — no kill flag, no `taskkill`, no `process.kill`. The title cell is tagged `[SOLO-A]` in the same pass. -->
@@ -951,6 +965,7 @@ landing defect.
 | `C13-N69` *(row added by record round 8)* | **COMPLETE — Batch 1546 (`861967188c`), 2026-09-26, lane I-3 (Rumble), reviewer Nibs (LAND-WITH-FIXES), verifier Robin (REFUTED on the 4K default, carried as MQ1); closed on its named leg.** | `resolveCloudPreset` holds every frame to a 1.35e10 march budget; `cloud-march-budget.spec.mjs` 24/24 with a 77,760-input sweep (21,600 inside byte-identical to the base module). The ruled E4 (`…/wave-end/c13-n69-e4-astra-ab-20260926/`): base orbital multi-deck 96/8 hung, base single-deck completed twice, Astra's stack hung both orbital cells (one run each). The budget leg (`…/wave-end/c13-n69-e4-budget-20260926/`): arms (ii) and (iii) complete on the budgeted tree, and a 3840 × 2160 single-deck 96/8 frame hung at base (one run) and completes budgeted to 67. MQ1/MQ2/MQ4: seat decisions, not maintainer rulings — MQ1 on that 4K measurement, MQ2 on the lane's recommendation where the data cannot decide, MQ4 on the absence of a measurement (`MAINTAINER_RULINGS_2026-09-26.md`). Open follow-ups: per-device budgets, the shadow and reflection passes, the mask-pass model, `lightSampleBudget`. |
 | `C13-N70` *(row added by record round 8)* | **NOT STARTED.** | Optional for I-2, which reads the Node-injected gate (`Tools/lib/webgpu-error-gate.mjs`). Adds one reason: a device replaced by recovery is not re-armed by that gate, so a second loss is invisible to the seam (lane I-2 packet §6 item 5). |
 | `C13-N71` *(row added by record round 8)* | **COMPLETE — Batch 1543 (`090dc1cdec`), 2026-09-26, lane I-5 (Hundad), reviewer Beldir (LAND-WITH-FIXES), verifier Gamil (HOLDS).** | A debug-only, pragma-stripped realization override moves the step counts and the realization bits 0/3/10/12/13 without leaving the tier path; `cloud-realization-override.spec.mjs` 15/15, twelve inertness mutants red. Named leg (`…/wave-end/ring-i5-leg-20260926/`): Part 1 karma NEW-FAILURES 0; Part 2 R0/R1 PRESENT, R2 lost the device. Arm D ran whole on the budgeted tree in the `C13-N69` leg. Tools follow-up open: `lib/cloud-march-mechanism.mjs:838`'s stale `qualityFlags` comment. |
+| `C13-N75` … `C13-N88` *(tidewater intake)* | **NOT STARTED.** | Worked references on their owning rows; row text §11. Each follows its owner's gate: `C13-N76`, `C13-N77` and `C13-N78` ride `C13-N13`, `C13-N61` and `C13-N69` in the one-owner order; `C13-N79`'s engine half, `C13-N86` and `C13-N88` wait for Astra's A1 or A2c; `C13-N83` waits for A3; `C13-N75` (docs) and `C13-N79`'s measurement touch no owned file. |
 
 **C13-43 GP E6 fixture stamp — Batch1450, source-only.** The stale E6 bit-literal
 fixture correction has56/56 focused PASS and independent source/evidence GO.
@@ -1537,3 +1552,317 @@ rerun after this packer change; landing review alone cannot promote them.
 - `CLOUD_COORDINATE_CONTRACT_2026-07-23.md`
 
 Line numbers in older reports are hints. Re-grep symbols at the start of every brief.
+
+---
+
+## 11. Tidewater intake — worked references by v2.1 workstream
+
+**Source.** tidewater (`https://github.com/dgreenheck/tidewater`) at commit `4811ba48d7`, MIT, © 2026 DRG
+Software Solutions LLC: raw WebGPU and WGSL on the author's own engine, not three.js. The shipped clouds are
+`src/sky/SkyProClouds.js`; `src/sky/Clouds.js` runs only under `?oldClouds` (`tidewater:src/App.js:119-120`).
+Citations read `tidewater:<path>:<line>` at that commit. The reviews, the two syntheses and the two verifier reports
+of 2026-09-26 are banked at `cesium-webgpu-worker-archive/lanes-2026-09-26/tidewater-review/`; these rows come from
+`SWEEP_SYNTHESIS.md` §3.1 (the C13 routing table) and §2 T-3, and each cites the verdict that let it in.
+
+**What a row here is.** A **worked reference on the owning row it names**: a code citation, the smallest first lane
+and the gate. It changes no owner, no wave and no acceptance of the owning row. Only claims the verifiers left
+HOLDS are entered, and a verifier's correction is carried in its corrected form. The workstream is the v2.1 plan's
+(`CAMPAIGN_13_V2_CLOUD_QUALITY_2026-09-12.md` §3) for the owning row; for owners filed after the plan (`C13-N11-TUNE`,
+`C13-N61`, `C13-N69`) or in Astra's stack, it is the workstream whose title covers the technique. **No verified cloud item
+routes to WS-H:** the sweep's one cloud hygiene finding (`temporalUpdateFraction` is documented as a pixel fraction
+and is a history blend weight, `WebGPUCloudTierPresets.ts:43-44`) is already recorded on `C13-10`'s plan row, so it
+is not re-filed.
+
+**Every row inherits.** Our clouds are RTE on a WGS84 shell, with log depth and TAA off by default; tidewater is a
+flat +Y world with f32 positions, reversed-Z and an always-on TAAU, and a port re-derives each of those.
+`ProceduralClouds.wgsl` has one owner at a time (`C13-N60` → `N61` → `N13` first), and no new cloud feature comes
+from Astra's stack until A1 lands (`R-2026-09-26-8`). **Parity:** the WGSL arms are WebGPU-first under
+`R-2026-09-12-8`; the GLSL twins are `C13-N52` (march), `C13-N53` (reconstruction), `C13-N55` (god rays),
+`C13-N17b` (beer map) and `C13-N56` (lighting consumers), and until they land each gap is recorded, not a reason to
+reject (`R-2026-09-26-6`). **Licence:** a take that copies code adds a `### tidewater` entry to `LICENSE.md`
+(MIT, "Copyright (c) 2026 DRG Software Solutions LLC") naming each tidewater file used, and names
+`src/sky/SkyProClouds.js` explicitly, because tidewater's own `CREDITS.md` names only `src/sky/Clouds.js` as
+republished Sky Pro code; a law or pattern taken without code needs only a citation.
+
+### WS-B — resolver, march step and budget
+
+**`C13-N75` — Pixel-fraction cloud budget: a re-attempt dossier against the withdrawn sparse update.**
+
+- *Technique (code facts):* SkyPro traces one pixel of each 4×4 cell of a half-resolution history per frame, in a
+  Morton-style order, i.e. 1/64 of the display pixels per frame (`tidewater:src/sky/SkyProClouds.js:51`, source size
+  `:859-860`, lattice `:945-957`), and reconstructs through a carried-depth history: a 5-tap Catmull-Rom history
+  clamped to the neighbourhood (`:682-703`, `:786`), reprojection from the minimum carried depth minus the wind delta
+  (`:766-779`), a fresh weight of 0.35–0.75 by depth (`:704-707`) and a carried-depth check within 15 % (`:791`); the
+  trace kernel spans `:639-796`.
+- *Ours:* every half-resolution pixel is marched every frame; `temporalUpdateFraction` is the history blend weight
+  (`WebGPUCloudTierPresets.ts:43-44`; `WebGPUProceduralCloudRenderer.ts:4979-4982`). Our sparse attempt U37 failed
+  both pre-registered A/Bs and is withdrawn (`NEW-CLOUD-SPARSE-UPDATES-WITHDRAWN`, `R-2026-09-26-2`; hi bit 7
+  reserved, `R-2026-09-26-3`).
+- *Target:* the withdrawal row's re-attempt conditions. A later engine lane would touch `ProceduralClouds.wgsl`,
+  `CloudTemporalResolve.wgsl` and `WebGPUProceduralCloudRenderer.ts`.
+- *Class · grade:* docs · A for this row; the technique is an adaptation, grade B.
+- *Parity:* none for the dossier; a later reconstruction twin is `C13-N53`.
+- *First lane:* compare U37's archived design (`cesium-webgpu-worker-archive/astra-checkpoint-20260925/`,
+  `runtime-01/-02`) with the trace kernel above; for each failed gate (timing ≥ 20 %, p99 ≤ 20) name the
+  reconstruction piece that bears on it; record the view march's share of U37's frame from per-pass GPU time
+  (`NEW-TIDEWATER-PASS-TIMESTAMP-WRAP`). It touches no owned file.
+- *Proof bar:* docs.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho, C1 and "the default traces 1/64": HOLDS. Its R6 corrects the
+  panel's per-frame bound comparison to ≈3.6× (≈17.8× with cloud god rays); both are loop bounds.
+- *Licence:* none for the dossier; an engine take names `src/sky/SkyProClouds.js` in the `### tidewater` entry.
+
+**`C13-N76` — Pixel-cone step growth and the in-cloud mean-free-path step (worked reference for `C13-N13`).**
+
+- *Technique (code facts):* `fineStep = max(scf.march.x, t * stepConeAngle * 1.5)` with `march.x` = 25 m
+  (`tidewater:src/sky/SkyProClouds.js:256`, `:967`): a metre floor and growth with distance from the camera, **no
+  ceiling**. Inside cloud the step is `clamp(0.5 / sigmaT, 0.15·fine, fine)`, blended toward `3·fine` as the
+  accumulated optical depth passes 1–3 (`:285-286`).
+- *Ours:* the constant step holds only at defaults; `marchStepGrowth` (a pow law from the layer entry) and
+  `maxRayDistance` exist as no-ops at defaults (`ProceduralClouds.wgsl:2537-2558`, `:2465`;
+  `WebGPUProceduralCloudRenderer.ts:4111-4129`), and `C13-N13` names them. `C13-N13`'s promotion is suspended by
+  seat decision S-8.
+- *Target:* `ProceduralClouds.wgsl` (through `C13-N13`'s lane).
+- *Class · grade:* adaptation · B.
+- *Parity:* WGSL; GLSL twin `C13-N52`.
+- *First lane:* none of its own. `C13-N13`'s lane evaluates the cone law and the mean-free-path step as the named
+  alternative to a floor-plus-ceiling, at its O7 recipe camera, in the one-owner order.
+- *Proof bar:* engine (`C13-N13`'s).
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho C5: HOLDS; R5 refutes "exactly `C13-N13`" (no ceiling; our
+  dials exist), and the smaller delta is what this row carries.
+- *Licence:* law-level citation; copied code names `src/sky/SkyProClouds.js`.
+
+**`C13-N77` — Mean-preserving octave fade (worked law for `C13-N61`).**
+
+- *Technique (code facts):* SkyPro selects the noise LOD from the pixel cone footprint (`scConeLod`,
+  `tidewater:src/sky/SkyProClouds.js:103`, `:259-261`); the fallback fades each detail octave to the texture mean as
+  the footprint grows, `mix(vec3(CL_D_MEAN), d, w)` with footprint-driven `smoothstep` weights
+  (`tidewater:src/sky/Clouds.js:490-494`).
+- *Ours:* `cloudMacroSampleAt` takes `curFineStep` as its LOD argument (`ProceduralClouds.wgsl:2632`), and
+  `C13-N61` names "a mean-preserving FADE, not a deeper mip" as the remedy.
+- *Target:* `ProceduralClouds.wgsl` (through `C13-N61`'s lane).
+- *Class · grade:* transplant (the fade law) · A.
+- *Parity:* WGSL; GLSL twin `C13-N52`.
+- *First lane:* `C13-N61`'s own, in the one-owner order; this row supplies the law.
+- *Proof bar:* engine (`C13-N61`'s).
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho, C6 and "G5 = the `C13-N61` remedy": HOLDS.
+- *Licence:* law-level citation; copied code names `src/sky/Clouds.js` (named in tidewater's `CREDITS.md`).
+
+**`C13-N78` — Light-march opacity LOD and optical-depth cutoff, measured first (for `C13-N69`'s `lightSampleBudget`).**
+
+- *Technique (code facts):* once accumulated opacity reaches `fullLightingAlpha` 0.5 the light march switches to
+  base-only density lookups (`tidewater:src/sky/SkyProClouds.js:51`, `:293`); the light optical-depth loop exits at
+  τ ≥ 32 (`:197`); light results are reused within a distance and density tolerance (`:294-295`).
+- *Ours:* five full-density cone taps plus a base-only far tap on every dense sample, with no opacity input
+  (`ProceduralClouds.wgsl:1880-1983`, called at `:2697`). Per-ray light reuse was built in Astra's tree and withdrawn
+  on 2026-09-14; its withdrawal record reads "Matching 1480 MHz endpoint cumulus timings improve only 3.15%"
+  (`LIGHT_REUSE_WITHDRAWAL.json` in the Astra clone `cesium-astra-20260914/_lane-out/`), and
+  `ASTRA_WORK_AUDIT_2026-09-16.md` (unit 27, LIGHT_REUSE) calls that record exemplary. The quote is also banked in the
+  review's `SWEEP_SYNTHESIS.md` ("Checked here", item 3), because the Astra clone is not a durable home. Whether that
+  candidate's reuse test matched tidewater's is not recorded, so the reuse part is not re-filed.
+- *Target:* `ProceduralClouds.wgsl`; `resolveCloudPreset`'s budget (`C13-N69`).
+- *Class · grade:* transplant · A for the two cuts, conditional on the measurement.
+- *Parity:* WGSL; GLSL twin `C13-N52`.
+- *First lane:* measurement first — per tier, at `C13-N69`'s recipe cameras, the share of dense samples at ≥ 50 %
+  accumulated opacity and the share of light marches whose optical depth passes 32, with GPU clocks recorded. An
+  engine lane follows only if the shares are material.
+- *Proof bar:* tools (the measurement), then engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho, C7 and "the cone light march": HOLDS.
+- *Licence:* law-level citation; copied code names `src/sky/SkyProClouds.js`.
+
+### WS-C2 — reconstruction stack and god rays
+
+**`C13-N79` — God-ray mask pass: measure it, then read the sun transmittance from the resolved clouds.**
+
+- *Technique (code facts):* the sun disc, the haze shafts and the lens flare all read
+  `cloudsSunTransmittance(cloudsSampleView(dir).a)` from the resolved view clouds, with no extra march
+  (`tidewater:src/sky/SkyProClouds.js:580`; `src/sky/Sky.js:192-197`; `src/post/AirHaze.js:291-296, 309-313, 506`;
+  `src/post/LensFlare.js:107`).
+- *Ours:* when cloud-aware god rays request it (`WebGPUProceduralCloudRenderer.ts:1596-1601`), a second full-canvas
+  `marchDeck` writes a canvas-sized r8unorm mask before post (`ProceduralClouds.wgsl:3182-3200`;
+  `WebGPUProceduralCloudRenderer.ts:5186, 5427-5469`); the budget costs it as a full march and says "Whether the
+  compiler drops the mask pass's unused light march is unmeasured" (`WebGPUCloudTierPresets.ts:504-505`).
+- *Target:* the budget's mask term (`WebGPUCloudTierPresets.ts`); the god-ray transmittance source.
+- *Class · grade:* measurement, then adaptation · B.
+- *Parity:* WGSL; the GLSL god-ray stack is `C13-N55`.
+- *First lane:* seat decision S-3's fallback (b), one Edge arm: GPU time of the mask pass with and without the mask,
+  tiers 1–2, at 1920×1080 and 3840×2160, GPU clocks recorded. The probe is the acceptance. The engine half — tiers
+  1–2 read the previous frame's resolved history for the god-ray transmittance, the budget drops its mask term, tier
+  3 keeps the mask — waits for Astra's A1 (U22's frame chain and the `webgpu-cloud-godray-current-mask-order` spec).
+- *Proof bar:* tools, then engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho, C10 and "the god-ray mask is a second full-canvas march":
+  HOLDS. The panel's "removes 80 % of costed pixels" is a costed ceiling, not a measurement.
+- *Licence:* pattern-level citation.
+
+### WS-D — cloud lighting, shadow and the environment
+
+**`C13-N80` — Cloud lighting look terms as a worked set (for `C13-N11-TUNE`).**
+
+- *Technique (code facts):* CPU-placed light taps at 46.3 / 103.6 / 201.2 / 367.0 / 648.9 m on a golden-angle
+  spiral (`tidewater:src/sky/SkyProClouds.js:986-997`); two upward skylight probes at +125 m and +600 m per light
+  refresh (`:299-301`); powder faded toward the sun (`:290-291`); an unnormalised three-term multiple-scattering sum,
+  weights 1, 0.5, 0.25 (`:201-205`).
+- *Ours:* layer-proportional taps, ambient lerp, light-path powder and a normalised octave sum
+  (`ProceduralClouds.wgsl:2093-2098, 2111-2159`).
+- *Target:* the tier-lighting dials `C13-N11-TUNE` owns.
+- *Class · grade:* adaptation · B; a look change, capture-gated.
+- *Parity:* WGSL; GLSL twin `C13-N52`.
+- *First lane:* none of its own; `C13-N11-TUNE`'s lane may carry the set as one internally consistent candidate
+  against its capture gate.
+- *Proof bar:* engine (capture-gated).
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho, C7 and C8: HOLDS.
+- *Licence:* law-level citation; copied code names `src/sky/SkyProClouds.js`.
+
+**`C13-N81` — Cloud shadow map: quarter-row refresh around a snapped centre, and the two-lobe transmittance.**
+
+- *Technique (code facts):* a 256² r32float map over 12 km around a centre snapped to 4 texels, a quarter of the
+  rows per frame, 16 steps, storing `T = 0.8·e^(−τ) + 0.2·e^(−τ/4)` (`tidewater:src/sky/SkyProClouds.js:814-839`,
+  `:999-1019`), read through one texture with manual bilinear filtering and a `var<private>` memo (`:524-552`).
+- *Ours:* 512² r16float over a ±60 km half-extent (a 120 km span), 16 steps, redrawn every frame, plus three
+  cascades (`WebGPUProceduralCloudRenderer.ts:1970-1980, 4469`); terrain takes a transmittance floored at 0.35
+  (`GlobeTerrain.wgsl:2459-2462`).
+- *Target:* `WebGPUProceduralCloudRenderer.ts`'s shadow pass; the snap in `WebGPUCloudShadowFrame.ts`'s f64 frame.
+- *Class · grade:* transplant (the cadence) · A; the two-lobe law is a look change on terrain and stays with
+  `C13-22`'s capture gate.
+- *Parity:* WGSL; the GLSL beer map is `C13-N17b`.
+- *First lane:* engine — the quarter-row cadence with the snap computed in the f64 frame; acceptance is the shadow
+  pass's per-frame GPU time and `C13-22`'s existing 82°N shadow-band bar (`off.mean − on.mean > 0.5`) unchanged.
+  The renderer is shared with Astra's U22: diff the path sets before dispatch.
+- *Proof bar:* engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho C9: HOLDS; R11 corrects our footprint to a ±60 km half-extent,
+  so the cadence alone is 4× and the raw column ratio 16×.
+- *Licence:* law-level citation; copied code names `src/sky/SkyProClouds.js`.
+
+**`C13-N82` — Cloud panorama and a one-unit-per-frame environment refresh (for `C13-N69`'s reflection-pass follow-up).**
+
+- *Technique (code facts):* a 512×160 cloud panorama refreshed 1/16 per frame (`PANO_LATTICE` 4,
+  `tidewater:src/sky/SkyProClouds.js:53-54`, `:566-575`, `:799-812`, `:1021-1033`), fully refreshed on a per-frame sun
+  change of dot < 0.999 or a coverage change (`:932`); the environment refresh is a list of 15 one-per-frame units
+  with a back-buffer swap (`tidewater:src/sky/Environment.js:54, 73, 252-274, 293-305`), all 15 at once on a first or
+  forced refresh (`:285-291`).
+- *Ours:* environment faces march 12 cloud steps per texel and a refresh runs whole in one frame;
+  `WebGPUEnvironmentRefreshScheduler.ts:1-9` bounds managers, not units.
+- *Target:* `WebGPUEnvironmentRefreshScheduler.ts`; `WebGPUDynamicEnvironmentMapManager.ts`.
+- *Class · grade:* the unit split is an adaptation · A; the panorama as the single secondary source is B near the
+  ground and D from orbit.
+- *Parity:* the WebGL counterpart is `Scene/DynamicEnvironmentMapManager`; cloud-to-IBL on WebGL is `C13-N56`.
+- *First lane:* engine — split one manager's refresh into units the scheduler can spread, keeping "deferral is never
+  a skip" and the SH byte-faithful to WebGL; acceptance is per-frame refresh GPU time and the frames to completion.
+  Diff the path sets against Astra's irradiance units first.
+- *Proof bar:* engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho, C11, E1 and G11: HOLDS.
+- *Licence:* pattern-level citation.
+
+**`C13-N83` — Cloud aerial perspective keyed on the transmittance-weighted depth.**
+
+- *Technique (code facts):* `depth = weightedDepth / alpha`, then `ap = exp(-depth / SC_AP_DIST)` blends toward the
+  sky behind, with a far melt into the sky (`tidewater:src/sky/SkyProClouds.js:316-326`).
+- *Ours:* aerial perspective at the interval midpoint (`ProceduralClouds.wgsl:2848`).
+- *Target:* the aerial path of Astra's A3 (U1/U2/U4/U15) and `C13-N20`.
+- *Class · grade:* transplant · A; a look change, capture-gated.
+- *Parity:* WGSL; GLSL twin `C13-N52`.
+- *First lane:* after A3, a capture-gated A/B of midpoint against weighted-depth keying.
+- *Proof bar:* engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho C8 (`:316-326`): HOLDS; R9 moves the citation from
+  `Clouds.js`, which applies aerial perspective per sample, to the shipped `SkyProClouds.js`.
+- *Licence:* law-level citation.
+
+**`C13-N84` — The moon as the clouds' key light when the sun is down.**
+
+- *Technique (code facts):* the cloud key light is the app's key light: `isMoon = dot(frame.sunDir,
+  atmosphereParams.sunDir) < 0.9999` selects `frame.sunColor` in place of the transmitted solar illuminance
+  (`tidewater:src/sky/SkyProClouds.js:212-217`; fallback `src/sky/Clouds.js:523-534`).
+- *Ours:* no `moon` token anywhere in our cloud code.
+- *Target:* the cloud uniforms and the direct term in `ProceduralClouds.wgsl`.
+- *Class · grade:* adaptation · not graded by the panels.
+- *Parity:* WGSL; GLSL twin `C13-N52`.
+- *First lane:* engine — carry the moon's direction and illuminance into the cloud uniforms and use them when the sun
+  is below the horizon; acceptance is a night capture with the moon up against one with the moon down, off
+  byte-identical, and an inertness mutant.
+- *Proof bar:* engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho, "the other worth-a-look items" (the moon key light) and "no
+  `moon` in our cloud code": HOLDS.
+- *Licence:* pattern-level citation.
+
+**`C13-N85` — Small-angle Earth shadow as a ground-camera oracle for `C13-N18`.**
+
+- *Technique (code facts):* `lit = smoothstep(-0.006, 0.006, mu + sqrt(2·alt/R))`, with `mu` tilted by the
+  horizontal offset from the camera (`tidewater:src/sky/Clouds.js:537-543`, fallback code); valid only while that
+  offset is small against the Earth radius.
+- *Ours:* `C13-N18` (planetary terminator and Earth shadow) is open.
+- *Target:* `C13-N18`'s spec, as an independent closed form at ground cameras.
+- *Class · grade:* reference · C.
+- *Parity:* n/a (an oracle).
+- *First lane:* none of its own; `C13-N18`'s spec may use it at ground cameras only.
+- *Proof bar:* tools (inside `C13-N18`'s spec).
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho G15: HOLDS.
+- *Licence:* citation only.
+
+**Rider on `C13-N49` (no new id) — cloud shadow received by models and 3D Tiles.** Tidewater multiplies the cloud
+shadow into every lit material's sun term (`tidewater:src/ocean/WaterMaterial.js:239-241`; `src/fx/Spray.js:296`;
+`src/materials/GroundBounce.js:148`; the `hookDirectModulation` every hook-lit material runs,
+`src/ocean/UnderwaterLighting.js:259`). Our receivers are `GlobeTerrain.wgsl`, `AerialPerspective.wgsl` and
+`VolumetricFog.wgsl` only; `ModelPBRComplete.wgsl` and `Ocean/OceanSurface.wgsl` have none. The map's RTE frame
+owner lets each consumer pack its own `vpRelativeToEye` (`WebGPUCloudShadowFrame.ts:24-33`). Adaptation, grade B:
+the model bind-group budget, seven fragment entry points, and `ModelPBRComplete.wgsl`'s size rule; the target is
+`ModelPBRComplete.wgsl` and the pipeline that binds it for models and 3D Tiles. First lane after
+`C11-163` S5a (the water receiver): models and tiles on WebGPU, an Edge capture under a deck with an on/off diff and
+an inertness mutant; engine proof bar. The WebGL arm is `C13-N56`. The two-lobe law stays with `C13-22`. Verdict:
+`SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho G9 and `VERIFY_GRIMA.md` §2 (fork shadows, `cloudShadow` in four shader
+files only): HOLDS. Licence: pattern-level citation; the two-lobe law, if adopted, names `src/sky/SkyProClouds.js`.
+
+### WS-E — the weather field
+
+**`C13-N86` — Conservative coarse weather bounds with a per-cell turning-point test.**
+
+- *Technique (code facts):* a 64² bounds texture holds, per cell, the maximum of the 1024² weather field over both
+  bilinear neighbours at the cell boundaries, the repeat seam included, plus 1/255
+  (`tidewater:src/sky/SkyProClouds.js:619-636`); a ray skips a cell when that maximum's cloud top lies below the
+  ray's lowest height across the cell (found with a turning-point test) or the maximum is below what the height
+  requires (`:180-190`); the cell walk is `:243-254`.
+- *Ours:* a per-coarse-step base oracle (`ProceduralClouds.wgsl:2641-2652`); Astra's A2c carries empty-weather
+  skipping (`cloud-empty-weather`) with a recorded cloudy-boundary overhead (`ASTRA_LANDING_PLAN_2026-09-26.md`, A2c).
+- *Target:* A2c's bounds, at its re-cut.
+- *Class · grade:* adaptation · B; our bound must also cover genus, species and multi-deck factors.
+- *Parity:* WGSL; GLSL twin `C13-N52`.
+- *First lane:* at A2c's re-cut, check its bounds for conservativeness over bilinear neighbours and the seam against
+  this construction, with the F-15 re-measure.
+- *Proof bar:* engine (A2c's).
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho C3: HOLDS.
+- *Licence:* pattern-level citation; copied code names `src/sky/SkyProClouds.js`.
+
+### WS-F — patterns and regimes
+
+**`C13-N87` — LIC-fibre cirrus sheet as a design reference for the genus pipeline.**
+
+- *Technique (code facts):* a cirrus sheet on a curved shell whose fibres come from a line-integral-convolution bake
+  along a curl flow (1024², mipped), read through a 3-tap anisotropic footprint filter and a 4-tap cubic B-spline
+  lookup (`tidewater:src/sky/Clouds.js:545-640, 820-876`); fallback code only — the shipped SkyPro clouds have no
+  cirrus.
+- *Ours:* a volumetric high deck with Worley streaks (`genusFibreFactor`); `C13-N38` makes fibre morphology
+  per-texel.
+- *Target:* the genus pipeline's design (`C13-N38`).
+- *Class · grade:* new subsystem · B; a design call, and it needs an RTE shell intersection.
+- *Parity:* a design question; any code needs both backends.
+- *First lane:* a design round with `C13-N38`, no code.
+- *Proof bar:* docs.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho, S2 (the cirrus sheet) and "the default has no cirrus": HOLDS.
+- *Licence:* citation; copied code names `src/sky/Clouds.js`.
+
+### WS-G — in-atmosphere and the composite
+
+**`C13-N88` — Clouds as HDR radiance before post, and the sun-disc transmittance cutoff.**
+
+- *Technique (code facts):* tidewater composites the resolved cloud view into the sky radiance in the scene pass
+  (`tidewater:src/sky/Sky.js:192-197`), ahead of its post chain (`src/post/PostFX.js:646-688`), and cuts the sun
+  disc with `cloudsSunTransmittance(T) = T * smoothstep(0.004, 0.04, T)` (`src/sky/SkyProClouds.js:577-580`).
+- *Ours:* the clouds composite in display space after post, with a Reinhard curve in the shader
+  (`ProceduralClouds.wgsl:2834`; `CLOUD_UNIFICATION_DESIGN.md:22`); Astra's U22 adds an off-by-default
+  `cloudSceneLinear` target (A1).
+- *Target:* `C13-N31`'s I3 design slice.
+- *Class · grade:* new subsystem · C for the order; the cutoff is a transplant · A once the composite is HDR.
+- *Parity:* WGSL now; the WebGL composite point is `C13-N15a`'s decision.
+- *First lane:* a design slice of `C13-N31` after A1; no code before it.
+- *Proof bar:* docs (design), then engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundolpho C10 (the cutoff) and "lighting and output" (our composite after
+  post), and §2 Gorbulas "the chain order on both sides": HOLDS.
+- *Licence:* law-level citation.

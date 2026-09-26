@@ -1231,3 +1231,26 @@ restore the scheme-blind ion comparison (upstream's semantic; cost: the bearer t
 The ring plan's questions **Q1-Q5** (options recorded in `DEFERRED_WORK.md`, record round 8, "Ring questions still
 open to the maintainer"); the OPEN fallbacks of S-2 and S-3 above; Campaign 12's MQ2; the `update-tokens` workflow
 question; the CI wave-1 and wave-2 questions; and the three `R-2026-09-19-8`/`-9`/`-10` sittings.
+
+---
+
+## Open maintainer questions raised by the tidewater intake (MQ-T1 … MQ-T4) — recorded, not ruled
+
+Recorded 2026-09-26 by the tidewater intake lane. **No ruling is taken or implied.** The maintainer's instruction
+the intake executes, verbatim: *"As all of the reviews return on the tidewater demo, add the useful tech to our
+already open campaigns, this includes any cloud improvements to campaign 13."* The four questions below are quoted
+verbatim from the seat's intake plan, §3 (banked at
+`cesium-webgpu-worker-archive/lanes-2026-09-26/tidewater-review/INTAKE_PLAN.md`). The rows they gate carry the
+question id: `DEFERRED_WORK.md` "2026-09-26 — Tidewater intake" (MQ-T1, MQ-T3, MQ-T4), the `C6-FFT-OCEAN`
+riders and `C14_READINESS_REVIEW_2026-08-28.md` §4 `C14-09`…`C14-15` (MQ-T2).
+
+- **MQ-T1 — home for the post-chain and lighting items** (haze/aerial deficit composite, GTAO, TAAU, motion blur, lens flare, ground bounce): attach to C11 (scale/parity), to the proposed C17 (celestial light transport), or open a "Post & effects" bucket. Seat recommendation: C11 rows for CSM/lighting, a new unnumbered "post chain" list under Wave DX's shape for the rest, until a campaign claims them.
+- **MQ-T2 — C14 launch.** The tidewater ocean stack is a working reference for C14 W3 and could shorten it materially. R1 holds C14 behind C12 completion (`C13-41`). Options: keep R1 (intake stays pre-launch), or lift R1 for the C13-independent phases W0–W2 + the FFT compute work (the plan's own §6 decision 5 already contemplated an earlier launch of C13-independent phases; O5 ruled against it, R1 later relaxed O5). Seat recommendation: keep R1 as ruled, file the reference rows now, and revisit when `C13-41` returns.
+- **MQ-T3 — bathymetry dataset lane** (GEBCO): approve as a C14 W0 prerequisite or defer; it is the gate for the depth-keyed half of the water stack.
+- **MQ-T4 — underwater camera:** is a submerged globe camera ever in scope? If not, T6/T7 are "do not take" and the intake files them as reference only.
+
+**Also raised by the review's syntheses, not in the intake plan's §3, and recorded in the rows that need them (no
+ruling):** MQ-T5, adopting `webgpu` (Dawn) as a devDependency (`NEW-TIDEWATER-DAWN-KERNEL-RUNNER`); a clock ruling on
+persistent foam history against the scene-time sea (`C14-11`); look rulings on the three three.js changes
+(`C11-218`, `C11-219`, `C11-220`); and three.js r183's compatibility-mode request (#32762) against our
+`featureLevel: "core"` default, which has no row.

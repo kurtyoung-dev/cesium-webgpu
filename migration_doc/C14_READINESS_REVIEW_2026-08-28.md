@@ -483,6 +483,150 @@ their evidence. No implementation.
 - **D4 — re-ratify the O4 budget** once `C14-01` lands, since the frame context it was set
   against is no longer comparable (§2b/S14).
 
+### Reference implementation found 2026-09-26 (pre-launch; not a launch)
+
+**This is not a launch and mints nothing in a launched queue.** C14 is NOT LAUNCHED: ruling **R1**
+(`DEFERRED_WORK.md` "RULING-2026-08-06") holds it behind C12 completion, which is transitively `C13-41`
+(`CAMPAIGN_STATE.md`, C14). The rows below extend **this document's provisional row set** (`C14-09` onward, after
+`C14-08`) and, like `C14-01`…`C14-08`, take effect only under a maintainer launch ruling. **Every row waits on ruling
+R1 — maintainer question MQ-T2** (`MAINTAINER_RULINGS_2026-09-26.md`, the tidewater-intake questions): keep R1 as
+ruled, or lift it for the C13-independent phases.
+
+**What was found.** tidewater (`https://github.com/dgreenheck/tidewater`) at commit `4811ba48d7`, MIT, © 2026 DRG
+Software Solutions LLC — raw WebGPU and WGSL, a working reference for much of the plan's W3 (Coverage + Sea State)
+and some W2 material. Citations read `tidewater:<path>:<line>` at that commit; the review, both syntheses and both
+verifier reports are banked at `cesium-webgpu-worker-archive/lanes-2026-09-26/tidewater-review/`. Only claims the
+verifiers left HOLDS are entered. **Not here, by routing:** the FFT compute work (the two-dispatch IFFT, cascades,
+compute mips, spectral normals) and the JONSWAP/TMA spectrum are dated riders on the existing `C6-FFT-OCEAN`
+follow-up rows in `DEFERRED_WORK.md`, which that row calls independently schedulable; the bathymetry lane is
+`NEW-BATHYMETRY-DATASET-LANE` (MQ-T3); the underwater camera and lighting are `NEW-TIDEWATER-UNDERWATER-CAMERA` and
+`NEW-TIDEWATER-UNDERWATER-LIGHTING-HOOKS` (MQ-T4).
+
+**Every row inherits.** Offsets and node origins derived in f64 on the CPU (tidewater samples f32 world xz over a
+fixed world); the sea as a function of scene time (tidewater advances by `dt`); log depth; TAA off by default; the
+full define low word (runtime floats); WebGPU-only on the FFT patch by its recorded design, and a GLSL twin for
+anything on globe water. **Licence line, every transplant row:** on code landing, a `### tidewater` entry in
+`LICENSE.md` (MIT, "Copyright (c) 2026 DRG Software Solutions LLC") naming each tidewater file used; spectrum work
+extends `### FFT-Ocean` from gasgiant's own notice.
+
+**`C14-09` — The wind inputs the reference consumes (for `C14-05`'s wind authority).** *(Waits on R1 / MQ-T2.)*
+
+- *Technique (code facts):* a scalar wind speed at 10 m in the frame uniforms, default 7 m/s
+  (`tidewater:src/engine/render/Frame.js:51`), feeds the Cox–Munk slope variance
+  `mss = (0.003 + windSpeed·0.00512)·slopeScale` (`src/ocean/WaterMaterial.js:305-312`); the frame's wind direction
+  orients the sea-detail bands, which drift by an accumulated wind offset (`src/ocean/SeaDetail.js:27, 60-61`); the
+  spectrum carries its own two wave systems, a local wind sea and a swell, each with a wind speed, direction and
+  fetch (`src/ocean/OceanFFT.js:90-91, 219-222`).
+- *Ours:* three disagreeing wind stores (`DEFERRED_WORK.md` `EPIC-DYNAMIC-OCEAN-WIND`); the FFT primitive carries
+  `_windSpeed`, default 12 (`OceanSurfacePrimitive.js:119`); globe water carries no wind speed.
+- *Target:* `C14-05`'s wind authority, as the list of consumers it must serve: the unresolved-slope roughening
+  (`C11-163` rider, `QUEUE_2026-07-18_CAMPAIGN11.md` §1.31), the spectrum (`C6-FFT-OCEAN-JONSWAP-TMA`), the sea
+  state (`C14-10`) and foam (`C14-11`).
+- *Class · grade:* adaptation · B (a contract, not code).
+- *Parity:* the authority is backend-neutral; its consumers carry their own parity notes.
+- *First lane:* a docs slice of `C14-05`'s brief listing these consumers with their units and update rates.
+- *Proof bar:* docs.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Niniel T8 Cox–Munk; fork "three disagreeing wind stores"; "globe water carries
+  no wind speed"): HOLDS.
+- *Licence:* none (a contract).
+
+**`C14-10` — Sea-state mask: gusts, slicks and windrows (plan W3's sea-state mask).** *(Waits on R1 / MQ-T2.)*
+
+- *Technique (code facts):* a tileable 4-channel noise texture built once (`tidewater:src/ocean/SeaDetail.js:20-24,
+  98-171`) drifting with the wind gives gusts (rougher), slicks (mirror bands in light wind) and windrows
+  (`:51-80`); whitecaps scale with the gust term and add the windrow streak (`src/ocean/WaterSurface.js:341-345`).
+- *Ours:* no large-scale variation on the FFT patch.
+- *Target:* `OceanSurface.wgsl`; the mask texture owned by the ocean renderer.
+- *Class · grade:* adaptation · B (the drifting offsets in f64 on the CPU).
+- *Parity:* WebGPU-only on the patch.
+- *First lane:* the mask on the patch behind a runtime float; acceptance is captures at light and fresh wind with
+  off byte-identical and an inertness mutant.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §0 (Niniel T1–T20 exist at the cited places; T16 SeaDetail): HOLDS.
+- *Licence:* `### tidewater` naming `src/ocean/SeaDetail.js` if copied.
+
+**`C14-11` — Persistent Jacobian foam and the foam pattern (plan W3's accumulating foam), with its clock ruling.**
+*(Waits on R1 / MQ-T2, and on a clock ruling first.)*
+
+- *Technique (code facts):* foam history in a storage buffer, `f = prev·exp(−decay·dt) + gen·add·dt`, clamped to 1.5
+  (`tidewater:src/ocean/OceanFFT.js:510-516`); the texture alpha only carries a copy (`:519`). A 1024² `rgba16float`
+  foam pattern with mips is built once (`src/ocean/FoamTexture.js:13-110`) and thresholded
+  (`src/ocean/WaterSurface.js:341-361`).
+- *Ours:* the merge writes Jacobian foam with no persistence; our sea is a function of the scene clock
+  (`WebGPUOceanRenderer.ts:791-809`).
+- *Target:* the FFT column stage and `OceanSurface.wgsl`.
+- *Class · grade:* adaptation · B for the history; transplant · A for the pattern.
+- *Parity:* WebGPU-only on the patch; a globe version needs the GLSL twin.
+- *First lane:* **a ruling first** — the history integrates `frame.dt` (`OceanFFT.js:514`) while our sea is a
+  function of the scene clock, so a ruling decides how a history meets clock scrubbing and multiple views; then the
+  pattern threshold alone (no history) as the first engine lane.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Niniel T3 foam; T15 pattern) and §5.1 (grade B, not A: the clock conflict):
+  HOLDS; R16 corrects the pattern's layers (the first unrotated, the second rotated and scaled by 2.37).
+- *Licence:* `### tidewater` naming `src/ocean/OceanFFT.js` and `src/ocean/FoamTexture.js` if copied.
+
+**`C14-12` — CDLOD water mesh and the handover to globe water (plan W3's clipmap).** *(Waits on R1 / MQ-T2.)*
+
+- *Technique (code facts):* a CDLOD quadtree — one 32×32 grid instanced per node, 8 m leaf, 12 levels, 40,960 m range,
+  3×3 roots of 16,384 m, geomorphing (`tidewater:src/core/CDLOD.js:44-52, 180-243`; `src/App.js:176`).
+- *Ours:* the patch never fades at the default extent and ends in a hard edge about 1.5 km out
+  (`OceanSurfacePrimitive.js:114`; `WebGPUOceanRenderer.ts:1034, 1039`); the `C6-FFT-OCEAN-CLIPMAP` rider in
+  `DEFERRED_WORK.md` is the same lane, and MQ-T2 decides which of the two carries it.
+- *Target:* the handover band between the FFT mesh and the globe water shader; `C14-08`'s coverage decision.
+- *Class · grade:* adaptation · B.
+- *Parity:* the patch is WebGPU-only; the globe side of the band needs both backends.
+- *First lane:* the handover band (node origins in f64, the curvature drop kept), measured against `C14-01`'s
+  baseline; `C14-08` puts the coverage choice to the maintainer.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Niniel T6) and R1 (the fade never engages): HOLDS.
+- *Licence:* cite Strugar (2010); `### tidewater` naming `src/core/CDLOD.js` if copied.
+
+**`C14-13` — Water-height queries on the FFT ocean.** *(Waits on R1 / MQ-T2.)*
+
+- *Technique (code facts):* 64 query slots on the GPU, slot 0 the camera; the Eulerian height solves
+  `x0 + D(x0) = xz` with two fixed-point iterations; results come back through a readback ring 1–3 frames late
+  (`tidewater:src/ocean/WaterQuery.js:4-12, 93-151`).
+- *Ours:* no FFT-ocean height query.
+- *Target:* a new asynchronous API on the ocean primitive.
+- *Class · grade:* new subsystem · B.
+- *Parity:* WebGPU-only (the FFT ocean has no WebGL path).
+- *First lane:* the query kernel and an asynchronous result API, with a spec that checks the fixed-point solve
+  against a CPU evaluation of the same displacement.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 ("Water query: 64 slots, 2 fixed-point iterations"): HOLDS.
+- *Licence:* `### tidewater` naming `src/ocean/WaterQuery.js` if copied.
+
+**`C14-14` — Deep-water colour from the water's optical properties.** *(Waits on R1 / MQ-T2.)*
+
+- *Technique (code facts):* Beer–Lambert transmission with single scattering of sun and sky, a phase of HG 0.86 at
+  weight 0.7 plus 0.3 isotropic, and a Gordon backscatter term (`tidewater:src/ocean/WaterMaterial.js:482-514`),
+  from absorption and scattering coefficients in the frame uniforms (`src/engine/render/Frame.js:50, 52`).
+- *Ours:* a constant `deepColor` on the patch; on the globe, imagery over shallow water already shows the water
+  column.
+- *Target:* `OceanSurface.wgsl` (after the sky-view reflection rider, same bind group); globe water later.
+- *Class · grade:* adaptation · B on the patch, C on the globe (absorbing again over imagery counts the column
+  twice).
+- *Parity:* WebGPU-only on the patch; the globe needs the GLSL twin.
+- *First lane:* the infinite-path limit on the patch, with the transmittance and irradiance LUTs we already bake;
+  decide the photometric scale first (tidewater works in scene units).
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 ("IOP colour uses HG 0.86 at weight 0.7 plus 0.3 isotropic, with Gordon
+  backscatter"): HOLDS.
+- *Licence:* `### tidewater` naming `src/ocean/WaterMaterial.js` if copied.
+
+**`C14-15` — Cascade attenuation by water depth.** *(Waits on R1 / MQ-T2, and on `NEW-BATHYMETRY-DATASET-LANE`.)*
+
+- *Technique (code facts):* each cascade fades out in shallow water over `d0 = min(40, 0.08·L)` with per-cascade
+  floors [0, 0.05, 0.25, 0.5] (`tidewater:src/ocean/WaterSurface.js:55-77`).
+- *Ours:* no depth input on the patch (`OceanSurface.wgsl:62-65`); Cesium World Terrain carries no seabed.
+- *Target:* the patch vertex stage.
+- *Class · grade:* adaptation · B once a depth exists, C until then.
+- *Parity:* WebGPU-only on the patch.
+- *First lane:* after the bathymetry lane supplies a depth, the attenuation behind a runtime float.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Niniel T5, "attenuation `d0=min(40,0.08L)` with floors [0,.05,.25,.5]"): HOLDS.
+- *Licence:* `### tidewater` naming `src/ocean/WaterSurface.js` if copied.
+
 ---
 
 ## 5. What this document does NOT know

@@ -293,6 +293,10 @@ batch contents: [`ASTRA_LANDING_PLAN_2026-09-26.md`](ASTRA_LANDING_PLAN_2026-09-
 Codex Sol may build bounded C13 instrument/harness work under an Opus lead with separate Opus review;
 engine-semantic changes stay Opus-authored.
 
+**Tidewater intake (2026-09-26).** The verified cloud findings of the 2026-09-26 tidewater review are filed as
+worked references on their owning rows, `C13-N75`…`C13-N88` (queue §1 table, row text §11), plus a rider on
+`C13-N49` for model and 3D-Tiles cloud-shadow receive; they change no owner, wave, hold or critical path.
+
 ### C14 — Dynamic ocean & wind
 
 **Not launched.** Ratified identity, ratified plan (`OCEAN_DYNAMICS_PLAN_2026-07-24.md`).
@@ -300,6 +304,11 @@ engine-semantic changes stay Opus-authored.
 C12 complete + C13 Gate B green; Gate B closed at Batch 866, so the sole remaining bar is **C12
 completion** — which is transitively `C13-41` (see C12/C13 above). C11-137 certification and the
 rest of C11/C13 do **not** gate C14 (`R2`).
+
+**Tidewater intake (2026-09-26) — not a launch.** A working reference for much of the plan's W3 was found and filed
+pre-launch as `C14-09`…`C14-15` in [`C14_READINESS_REVIEW_2026-08-28.md`](C14_READINESS_REVIEW_2026-08-28.md) §4, every
+row waiting on `R1` (maintainer question MQ-T2), with the FFT compute and spectrum work as dated riders on the
+`C6-FFT-OCEAN` follow-ups in `DEFERRED_WORK.md`.
 
 ### C15 — Aurora + Space Weather (two independently governed lanes)
 
@@ -484,6 +493,11 @@ behaviour) and the fleet harvest-and-retire. No new file and no new campaign ide
 [`PROBE_KIT_PLAN_2026-09-17.md`](PROBE_KIT_PLAN_2026-09-17.md). Trigger: after waves 0-3 of the
 Gemini-audit fix plan land. `R-2026-09-17-10` (visual acceptance) and `R-2026-09-17-11` (retirement:
 archive first, delete later from a positive list) ungate `DX-105` and `DX-108`.
+
+**Tidewater intake (2026-09-26):** eight DX candidates from the tidewater review (the Dawn kernel runner, per-device
+pass timestamps, a sync-compile census, an uncaptured-error sink, a TAA acceptance probe, WGSL errors with a source
+excerpt, a redundant-upload probe and four smaller engine leads) are filed in `DEFERRED_WORK.md` ("2026-09-26 —
+Tidewater intake") with Wave DX as their suggested home; none is minted as a `DX-` id or dispatched.
 
 ### Gemini-audit fix plan — waves 0-6 (not a numbered campaign)
 

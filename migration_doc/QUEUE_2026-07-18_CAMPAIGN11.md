@@ -1930,7 +1930,7 @@ CENTRALIZATION` are pre-filed DEFERRED_WORK entries dated 2026-07-18 that were a
 | `C11-160` | NEW-WEBGPU-SUNBLOOM-PP-WIRING [matrix row 3; wire `scene.sunBloom` → WebGPU PP Bloom/LensFlare] | postprocess-effects | P2 | parity | M | G6/G8 | W7 (after `C11-117`; mid-campaign intent) ⚠ **TRANSFERRED to C12 (LD-1, 2026-07-23) — ID retained as alias; C12 is the status authority for this row.** *(Stamped 2026-08-09, handover audit FIX 21 — §3.2 already carried the alias marker while this §1 cell did not.)* |
 | `C11-161` | NEW-WEBGPU-AUTOEXPOSURE-DEMAND-GATE [matrix row 14; demand-gate the dispatch + ratify HDR altitude-gate] | postprocess-effects | P2 | perf/parity | S | G6/G8 | W7 (after `C11-117` consumer inventory) ⚠ **TRANSFERRED to C12 (LD-1, 2026-07-23) — ID retained as alias; C12 is the status authority for this row.** *(Stamped 2026-08-09, handover audit FIX 21 — §3.2 already carried the alias marker while this §1 cell did not.)* |
 | `C11-162` | NEW-WEBGPU-USEPOSTPROCESSSELECTED-PORT [matrix row 19; port the selected-feature path] | postprocess-effects | P2 | correctness | M | G6 | W7 |
-| `C11-163` | C11-CELESTIAL-WATER-REFLECTION [unified sun-by-day + moon/stars-by-night reflection on water + clouds; runtime UBO enable-float — **NO new define bit, NO `C11-149` dep**; cheap path does NOT touch depth (**NOT reversed-Z-coupled**); S0 day-sun-glint audit/unify front-of-line] | water (celestial-water lane) | P2 | feature | L–XL | G8 + `CELESTIAL_WATER_REFLECTION_RESEARCH.md` | **Tier-4 / gated** (opt-in default-OFF, byte-identical off) |
+| `C11-163` | C11-CELESTIAL-WATER-REFLECTION [unified sun-by-day + moon/stars-by-night reflection on water + clouds; runtime UBO enable-float — **NO new define bit, NO `C11-149` dep**; cheap path does NOT touch depth (**NOT reversed-Z-coupled**); S0 day-sun-glint audit/unify front-of-line] | water (celestial-water lane) | P2 | feature | L–XL | G8 + `CELESTIAL_WATER_REFLECTION_RESEARCH.md` | **Tier-4 / gated** (opt-in default-OFF, byte-identical off). Riders of the 2026-09-26 tidewater intake (S5a; an unresolved-slope roughening slice): §1.31. |
 | `C11-164` | NEW-WEBGPU-PICK-COLD-SYNC-STALENESS [C10-11 fallout — **cold-page async-pick-readback RACE**; reopens the June-361 docs-only close, distinct live-race defect] | pick | P1 | correctness | M | G1 | W2 (pick fleet) |
 | `C11-165` | NEW-WEBGPU-DETERMINISTIC-SYNC-PIPELINE-CENTRALIZATION [C10-07 follow-on; pre-filed DEFERRED_WORK 2026-07-18] | build-boot | P2 | infra | M | G9 | W4 (boot chain) |
 | `C11-SEED-27` | C10-30 clean-environment r5 re-measure (Gate-D reference — C10-30 wall-clock was env-confounded at close; deterministic **−33% render-passes/frame** recorded, no banner) | — | R0 | tooling/measurement | S | G10/G9 | seed (Gate-D anchor input) |
@@ -2351,6 +2351,159 @@ makes the work countable. Scope is copied from §4 point 7 unchanged.
 |---|---|---|---|---|---|---|---|
 | `C11-214` | B699-SHARED-CAUSE-DIAGNOSIS [ONE instrumented diagnosis covering BOTH Batch-699 findings — `NEW-WEBGPU-TILE-FEATURE-TRANSLUCENT-COLOR-COMPOSITE` + `NEW-WEBGPU-B3DM-TILE-CONTENT-PICK-EMPTY` — whose recorded shared hypothesis is that `FLAG_HAS_FEATURE_ID_ATTRIBUTE` is never set for b3dm content. §4 point 7 requires the shared diagnosis to run BEFORE either finding is sliced] | tiles-model-parity | P1 | correctness/diagnosis | M | G5 §G5.0/§0 | W4 — sequenced **ahead of** `C11-82`/`C11-84` per §4 point 7 |
 
+### 1.31 TIDEWATER-INTAKE appends (2026-09-26 — APPEND-ONLY, collision-verified)
+
+Minted by the tidewater intake, which files the verified findings of the 2026-09-26 tidewater review into the open
+campaigns. **Append-only**: no existing ID was renumbered, reused or removed. `C11-215` … `C11-220` were verified free
+before minting: the highest id in this document is `C11-214`, and no `C11-21[5-9]` or `C11-22x` occurs anywhere in
+`migration_doc/`. The numbered range is now contiguous `C11-01 … C11-220`. Minting an id does **not** start the
+work; it makes the work countable. `pri` and `wave` read `—` until the seat stamps them.
+
+**Source.** tidewater (`https://github.com/dgreenheck/tidewater`) at commit `4811ba48d7`, MIT, © 2026 DRG Software
+Solutions LLC; citations read `tidewater:<path>:<line>` at that commit. Reviews, syntheses and verifier reports are
+banked at `cesium-webgpu-worker-archive/lanes-2026-09-26/tidewater-review/` (`SYNTHESIS.md` L6/L20/L35 and N3/N4;
+`SWEEP_SYNTHESIS.md` T-2 and merged ranks 3, 5, 13). Only claims the verifiers left HOLDS are entered.
+**Licence, all rows:** tidewater reproduces no upstream notice; the three.js-derived PCF variants add their notice
+from three.js (`LICENSE.md` `### three.js` already carries the project — name the new fork files there), and any
+copied tidewater code adds a `### tidewater` entry naming the file.
+
+| C11-id | Canonical name / aliases | cluster | pri | workClass | effort | guide | wave |
+|---|---|---|---|---|---|---|---|
+| `C11-215` | CSM-STAGGERED-CASCADE-REFRESH-AND-HARD-TAP [refresh the near cascade every frame, the next every 2nd, the rest every 4th, and a one-tap hard sun-shadow lookup for volumetric marches; tidewater L20] | shadows-lighting | — | perf | M | G8 | — |
+| `C11-216` | CSM-NEAR-CASCADE-PCSS [FEAT-SURVEY-10 PCSS, on the near cascade only; tidewater L20] | shadows-lighting | — | feature | M | G8 | — |
+| `C11-217` | FFT-PATCH-GLINT-CSM-SHADOW [CSM sun shadow on the FFT ocean patch's glint, after `C11-163` S5a; tidewater L6] | water (celestial-water lane) | — | feature | S | G8 + `CELESTIAL_WATER_REFLECTION_RESEARCH.md` | — |
+| `C11-218` | PCF-VOGEL-DISK-IGN [three.js r182 #32381: a 5-tap Vogel disk with interleaved gradient noise in place of the 3×3 compare grid; look change, ruling first] | shadows-lighting | — | parity/look | M | G8 | — |
+| `C11-219` | PCF-TEXTURE-GATHER-COMPARE [three.js r185 #33534: `textureGatherCompare` PCF on WebGPU; WebGPU-only speed-up, ruling first] | shadows-lighting | — | perf | S | G8 | — |
+| `C11-220` | DIRECT-LOBE-MULTISCATTER-COMPENSATION [three.js r186 #33983: Turquin energy compensation on the direct specular lobe; look change on both backends, ruling first] | model-frontend | — | parity/look | M | G8 | — |
+
+**`C11-215` — staggered cascade refresh and a one-tap hard lookup.**
+
+- *Technique (code facts):* three 2048² cascades with refresh periods 1, 2 and 4 frames
+  (`tidewater:src/engine/render/Shadows.js:31`, applied at `:135` unless the sun moved or the cascade is dirty);
+  `sunShadowHard` takes one tap for volumetric marches (`tidewater:src/engine/render/wgsl/lighting.js:238-251`).
+- *Ours:* four 1024² cascades (`WebGPUCSMRenderer.ts:32-44`), all refreshed every frame; the cascade VPs are
+  premultiplied by `T(+cameraWC)` on the CPU (`ShadowReceiveCSM.wgsl:8-15`).
+- *Target:* `WebGPUCSMRenderer.ts`, `WebGPUCSMCastPass.ts`.
+- *Class · grade:* adaptation · B: a skipped cascade keeps its light-space matrix and must be re-premultiplied by
+  `T(+cameraWC)` every frame.
+- *Parity:* the cadence is renderer-side on both backends; the GLSL receive twin is `czm_shadowVisibility`.
+- *First lane:* engine — cadence behind an option, default unchanged; acceptance is CSM pass GPU time per frame and
+  a moving-camera capture pair with no cascade-seam shift, plus an inertness mutant that refreshes every cascade.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Bregdan: "CSM: 3 x 2048x2048 cascades refreshed every 1/2/4 frames") and §6
+  (grade B, the re-premultiply): HOLDS.
+- *Licence:* pattern-level citation.
+
+**`C11-216` — PCSS on the near cascade (`FEAT-SURVEY-10`).**
+
+- *Technique (code facts):* an 8-tap blocker search and a 12-tap filter, the penumbra clamped to 1.2–32 texels,
+  with a noise rotation that changes every frame (`tidewater:src/engine/render/wgsl/lighting.js:139-185`, `:211`).
+- *Ours:* a 3×3 compare-tap PCF (`ShadowReceiveCSM.wgsl:80-130`); TAA is off by default (`Scene.js:1324`).
+- *Target:* `ShadowReceiveCSM.wgsl`; per-cascade width and depth uniforms; non-comparison loads.
+- *Class · grade:* adaptation · B; it needs TAA or a no-TAA fallback.
+- *Parity:* a GLSL twin in `czm_shadowVisibility`.
+- *First lane:* engine, opt-in, near cascade only, with a no-TAA fallback; captures with TAA on and off.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Bregdan: "PCSS makes 1+8+12 loads and clamps the penumbra to 1.2-32 texels") and
+  §6: HOLDS; R14 narrows the per-frame rotation to the PCSS noise only.
+- *Licence:* pattern-level citation.
+
+**`C11-217` — CSM sun shadow on the FFT-patch glint.**
+
+- *Technique (code facts):* the water's sun term is `sunColor × 5-tap PCF × cloudsShadow × terrainSunShadowAt`
+  (`tidewater:src/ocean/WaterMaterial.js:239-241`).
+- *Ours:* the FFT ocean reads neither the CSM nor the cloud shadow (0 `cloud`/`csm` hits in `OceanSurface.wgsl` and
+  `WebGPUOceanRenderer.ts`).
+- *Target:* `OceanSurface.wgsl`; bind the CSM atlas and the RTE-premultiplied cascade matrices.
+- *Class · grade:* adaptation · B.
+- *Parity:* the FFT patch is WebGPU-only by design (`C6-FFT-OCEAN`).
+- *First lane:* engine, after `C11-163` S5a (one owner of `OceanSurface.wgsl` at a time); acceptance is glint
+  luminance falling inside a cast shadow and unchanged outside, off byte-identical, plus an inertness mutant.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Niniel: "Sun = 5-tap PCF x clouds x hill shadow"; fork FFT ocean: "no shadow of
+  any kind"): HOLDS.
+- *Licence:* pattern-level citation.
+
+**`C11-218` — 5-tap Vogel-disk PCF with interleaved gradient noise.**
+
+- *Technique (code facts):* three.js r182 (#32381) replaces its 17/9-tap grids with a 5-tap Vogel disk rotated by
+  IGN; tidewater's far-cascade PCF is a port of three's `PCFShadowFilter`
+  (`tidewater:src/engine/render/wgsl/lighting.js:186`).
+- *Ours:* `globeShadowPCF` is a 3×3 grid of nine compare taps (`GlobeTerrain.wgsl:3436-3444`), matched by the GLSL
+  `czm_shadowVisibility`.
+- *Target:* `GlobeTerrain.wgsl`, `ShadowReceiveCSM.wgsl` and the GLSL twin.
+- *Class · grade:* adaptation · B; a look change on both backends, noisy without TAA.
+- *Parity:* both backends.
+- *First lane:* a maintainer ruling on the look (C11's pattern: default to parity, keep a toggle), then an opt-in
+  engine lane with captures on both backends.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (three.js #32381, body verified): HOLDS.
+- *Licence:* three.js (MIT) if its code is copied — name the fork files in `LICENSE.md` `### three.js`.
+
+**`C11-219` — `textureGatherCompare` PCF on WebGPU.**
+
+- *Technique (code facts):* three.js r185 (#33534) takes 13 compare taps down to 4 gathers; its WebGL polyfill needs
+  16 fetches.
+- *Ours:* no `textureGather` use in our WGSL.
+- *Target:* the WGSL PCF paths; the GLSL path keeps its taps.
+- *Class · grade:* adaptation · B.
+- *Parity:* WebGPU-only speed-up under the Principle 5 exemption for GPU-API-specific performance work.
+- *First lane:* measure the PCF share of the frame first; then an opt-in lane with GPU pass timestamps and a
+  byte-identical-when-off gate.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (three.js #33534; fork: "no `textureGather`"): HOLDS.
+- *Licence:* three.js (MIT) if its code is copied.
+
+**`C11-220` — multiple-scattering compensation on the direct specular lobe.**
+
+- *Technique (code facts):* three.js r186 (#33983) applies Turquin's compensation (eq. 16) with one DFG fetch per
+  pixel; the white furnace goes 0.58 → 0.89 at roughness 1 by the author's figure. Tidewater compensates only its
+  indirect term, so it has nothing to port here.
+- *Ours:* IBL is compensated on both backends (`ModelPBRComplete.wgsl:3294-3339`;
+  `ImageBasedLightingStageFS.glsl:26-58`); the direct lobe is `specBRDF = F * Vis * D` (`ModelPBRComplete.wgsl:2905`).
+- *Target:* `ModelPBRComplete.wgsl` and its GLSL twin.
+- *Class · grade:* adaptation · B; a look change on both backends.
+- *Parity:* both backends.
+- *First lane:* a maintainer ruling on the look, then an opt-in lane with white-furnace captures on both backends.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` R4 (the corrected form: IBL compensated, the direct lobe not) and §2 (#33983):
+  HOLDS.
+- *Licence:* three.js (MIT) if its code is copied; cite Turquin (2019).
+
+**Riders on `C11-163` (no new id).**
+
+- **Slice S5a — cloud occlusion of the glint.** S5a is already specified ("multiply glint by
+  `sampleCloudGroundShadow` (sun-view map reuse)", `CELESTIAL_WATER_REFLECTION_RESEARCH.md`, slice S5) and is open. The
+  reference: tidewater's water sun term multiplies by the cloud shadow (`tidewater:src/ocean/WaterMaterial.js:239-241`),
+  whose map stores `T = 0.8·e^(−τ) + 0.2·e^(−τ/4)` with no floor (`tidewater:src/sky/SkyProClouds.js:837`). The rider
+  adds: (1) run S5a on both WGSL glint arms that can read the map, the globe and the FFT patch; (2) **one decision the
+  brief must make and record** — `sampleCloudGroundShadow` floors transmittance at 0.35 for ambient and skylight
+  (`GlobeTerrain.wgsl:2459-2462`), while the glint is direct sunlight and tidewater's water takes the unfloored value;
+  (3) acceptance: under a covered column the glint falls by the map's transmittance and is unchanged outside the
+  footprint, off byte-identical, plus an inertness mutant. Parity: there is no GLSL cloud shadow, so the GLSL glint
+  arm keeps its behaviour and the gap is recorded (`R-2026-09-26-6`); the WebGL cloud-to-lighting consumers are
+  `C13-N56`. Models and 3D Tiles are the rider on `C13-N49`. Verdict: `VERIFY_GRIMA.md` §2 (Niniel "Sun = 5-tap PCF
+  x clouds x hill shadow"; Bregdan cloud shadow "`0.8e^-tau + 0.2e^(-tau/4)`"; fork "no shadow of any kind" on the
+  FFT ocean): HOLDS. Class · grade: adaptation · A (`SWEEP_SYNTHESIS.md` T-2; `SYNTHESIS.md` N3). Proof bar: engine.
+  Licence: none with our own map and law; the two-lobe law, if adopted, names
+  `src/sky/SkyProClouds.js` in a `### tidewater` entry.
+- **A new slice, unnumbered (the epic's owner numbers it) — unresolved-slope roughening of the glint on the FFT
+  patch.** Tidewater: `mss = (0.003 + windSpeed·0.00512)·slopeScale`, `kpx = π / footprint`,
+  `unresolved = sat(log2(110 / kpx) / 9)`, feeding both the lobe width and a lift of the reflection vector
+  (`tidewater:src/ocean/WaterMaterial.js:305-312`). Ours: the celestial arm roughens by
+  `(1 − input.fade)·CELESTIAL_DISTANCE_ROUGHEN` (`OceanSurface.wgsl:300-303`), and on the ~3 km patch `fade` is always
+  1, so the patch has no distance roughening today. First lane: add the wind speed to the surface uniforms (the
+  primitive already carries `_windSpeed`), compute the pixel footprint in uniform control flow, replace the dead term;
+  the default Blinn arm and the four shared functions stay byte-identical (`celestial-water-globe-port.spec.mjs`
+  group D); Edge captures at 5 and 15 m/s near and far; inertness mutant forces `unresolved` to 0. Adaptation · A on
+  the patch; WebGPU-only first lane. The **globe** version waits for a wind speed on globe water (C14 W1/W2) and needs
+  the GLSL twin, held equal by the port spec. Verdict: `VERIFY_GRIMA.md` §2 (Niniel T8, Cox-Munk) and R1 (the patch
+  fade never engages): HOLDS; globe water carries no wind speed (§2, fork globe ocean): HOLDS. Proof bar: engine.
+  Licence: cite Cox and Munk (1954); copied code names `src/ocean/WaterMaterial.js` in a `### tidewater` entry.
+- **Order on `OceanSurface.wgsl`.** S5a, the sky-view reflection (`C6-PLANAR-REFLECT-REFRACT` rider in
+  `DEFERRED_WORK.md`), this roughening slice, `C11-217` and the FFT restructure's second lane all edit
+  `OceanSurface.wgsl`; they run in sequence, one owner at a time, and the seat picks the order.
+
 ---
 
 ## 2. Rules (inherited verbatim from Campaign-9/10 §1 — do not weaken)
@@ -2542,6 +2695,7 @@ evidence paragraph as each slice lands.)
 | `C11-212` (Scene.snap WebGPU parity) | **PARTIAL — surface baseline + both-backend real-Edge multi-frustum gate green; broader motion/architecture gates open** | §1 v1.144 parity rows / G7 | Batches 812/813 proved the frozen-view surface hit. The 2026-08-02 continuation (landed Batch 819) fixes active-encoder ordering, immutable rendered-view/sample/far provenance, CSS/DPR/Y and asymmetric-frustum math, bounded overlap, split loads, cleanup, and snap-only command realization. WebGPU scissored reset and WebGL snapless-occluder erase pass a forced distinct-slice Edge case with TAA; compact exact RG32Uint saves 63.28 MiB at 4K and leaves ordinary picking unchanged. Combined Node 69/69. Open: SCENE2D slice depth; moving camera/cursor across DPR/projection/viewport/edge/RTE; aperture/padding; transient pooling; classification/non-Model producers. The EDGE producer (`UP144-SNAP-WEBGPU-EDGES`) landed 2026-08-02 at Batch 821 with Node 25/25 and owes only its browser gate (an Edge snap at a model silhouette returning `isEdge: true` on BOTH backends). See the current overlay rider and `DEFERRED_WORK.md`; do not close the row. |
 | `C11-213` (vector-layer draping WGSL twin) | **PARTIAL — IMPLEMENTED / LANDED Batch 827; streak defect FIXED Batch 834; PIXEL-VERIFIED Batch 835; acceptance NOT fully discharged, do NOT mark complete** | §1 v1.144 parity rows / G2 | The WGSL twin ships, but NOT in the shape the row specified. Binding "the five `u_vector*` tile textures" is impossible under the C11-208 low-limit layout: group 2 already charges 5 of the 12 non-imagery fragment sampled textures, and the reduced 4-slot imagery shape lands on exactly the 16-texture WebGPU spec floor — five more would make it 21 and fail pipeline creation on default-limit adapters. GLSL's `texelFetch` on those five is not sampling, it is WebGL2's only buffer-read primitive, so the WGSL twin uses ONE read-only storage buffer (`@group(2) @binding(11)`) packed by the new `WebGPUVectorTileResources.ts`; the sampled-texture budget (`GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES` = 12) is unchanged. Per-tile gating is a runtime header word, not a shader define, so no globe pipeline variant forks (WebGL's `0x400000000` shader-set bit stays WebGL-only and untouched). Bake routing goes through a new `prepareVectorTileData` hook on the `GLOBE_SURFACE` feature-renderer descriptor. Node `vector-layer-draping.spec.mjs` 21/21 incl. a GLSL-oracle ↔ WGSL-reader equivalence proof over real `packPolylineGrid` output, 5 mutation tests, and naga validation of `GlobeTerrain.wgsl`. **Acceptance (Batches 830/831/834/835):** `probe-vector-draping.mjs` ran twice on Edge. Run 1 verified the core claim (draping renders on WebGPU, centroid 0.4 px, count ratio 1.014, colour + width correct, grazing Jacobian holds, 0 errors including destroyed-buffer across pan churn) and caught a real WebGPU-only streak defect on gate B; Batch 834 root-caused it to a singular UV Jacobian inverted to the ZERO matrix on terrain skirts (guarded in BOTH shaders — WebGL's prior correctness rested on GLSL `inverse()` dividing by zero, which the spec leaves undefined) and run 2 verified the fix at pixels (A/C/D/E pass, RED count exactly equal, centroid 0.0/0.0, oblique bboxes identical). **Still owed — CORRECTED 2026-08-07:** ~~gate B now fails on a PRE-EXISTING WebGL-side extent (`NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT`, LOW) and~~ ✅ **gate B PASSED at Batch 842** (post-Batch-841 rebuild; identical nadir bbox `[451,19,584,747]` on both backends, delta 0, counts 22396/22397), so **gate F is the ONLY thing still owed** — STRUCTURAL pending a pre-change cross-build baseline. **RESOLUTION PATH for gate F, so the row is actionable rather than parked** *(added 2026-08-09, handover audit FIX 22)*: the gate is structural because the pre-change baseline was never captured on a build comparable to the post-change one, and cross-build comparison is exactly the class the fork has ruled invalid. **Do not compare across builds.** Instead, build the pre-change engine state at a pinned commit **in one worktree**, capture the baseline and the post-change capture **from that same build in the same session**, and score the delta — i.e. reproduce the toggle in-tree (revert-the-hunk, or gate it behind a runtime flag) so both arms come from one binary. If the hunk cannot be toggled at runtime, the honest alternative is to declare gate F **unreachable as written** and replace it with a same-build A/B on the vector-draping flag, stated in this cell. Either way the row closes on a decision, not on an indefinite wait. `DEFERRED_WORK.md` `UP144-VECTOR-LAYER-WGSL`, `NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS` (fixed+verified), `NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT` (**RESOLVED at Batch 842**). |
 | `C11-214` (B699 shared-cause diagnosis) | **NOT STARTED — MINTED 2026-08-07 (close-out docs reconciliation)** | §1.30 / §4 pt 7 / G5 §G5.0 | The item itself is not new: §4 point 7 (`C11-00B` launch intake, 2026-07-18) ruled that the two Batch-699 findings "plausibly share one cause" and must be "intake[d] as ONE shared instrumented diagnosis … before slicing either", and §1.23's append accounting deferred the ID to "when that diagnosis slice is cut". The slice was never cut, so no ID was ever assigned and the item appeared in neither §1 nor this ledger — the close-out inventory found it by reading §4, not by counting rows. Numbered here per the append-only rule (`C11-214` verified free across the whole `C11-*` namespace). **Scope unchanged:** one instrumented diagnosis of `NEW-WEBGPU-TILE-FEATURE-TRANSLUCENT-COLOR-COMPOSITE` + `NEW-WEBGPU-B3DM-TILE-CONTENT-PICK-EMPTY` under the `FLAG_HAS_FEATURE_ID_ATTRIBUTE`-for-b3dm hypothesis, sequenced ahead of `C11-82`/`C11-84`. |
+| `C11-215 … C11-220` (tidewater intake: CSM cadence and PCSS, FFT-patch CSM glint, PCF variants, direct-lobe compensation) | **NOT STARTED — MINTED 2026-09-26 (tidewater intake)** | §1.31 | `C11-218`, `C11-219` and `C11-220` wait on maintainer look rulings; `C11-217` follows `C11-163` S5a on `OceanSurface.wgsl`. The same section carries the riders on `C11-163` (S5a, and an unnumbered unresolved-slope roughening slice). |
 | `C11-176a` (skybox-fade gate probe extension) | **TRANSFERRED to C12 (LD-2, 2026-07-23) — absorbed by `C12-01`** | §1.26 / G8 | Substance half-landed in `probe-skybox-star-modulation.mjs` (Batches 722/724: sunlit + night lanes, runtime A/B, contrast metrics, opt-in gate). Still owed: M1 source census, M2e sky floor, wiring `brightPct` + a default-pair assertion into `probe-env-skybox-stars.mjs`. **`QUEUE_2026-07-19_CAMPAIGN12.md` `C12-01` ABSORBS this** — if C12 launches (LD-2), close here as transferred. |
 | `C11-176b` (moon `phaseGate` deletion) | **COMPLETE — Batch 755; targeted moon-phase browser gate PASS.** Gate deleted from `Moon.wgsl` (`var color = lit;`); `phaseFraction` UB member + `ud[67]` pack + `frameState.moonPhaseFraction` publication KEPT (C12-21 scaffolding + fog/sky scalar consumers). `probe-moon-phase-gate.mjs` covers three Simon1994-derived lanes (day-crescent blackout / crescent partial-dim / night-full control) with projected-ROI metrics and provenance SHA gating; `moon-phase-gate.spec.mjs` includes naga validation. **Batch-517 re-baseline finding: NOT needed** — its crescent lane runs at illumFrac ≈0.43 > 0.3 where the old gate was exactly 1.0, so the deletion is byte-identical there. Log: `WEBGPU_DEBUGGING_LOG.md` C11-176b entry. *(Was: TRANSFERRED to C12 W1 as rider, LD-2 2026-07-23.)* | §1.26 / G8 | `Moon.wgsl:345-346` was the third instance of the default-ON WebGPU-only celestial-multiplier class (`enableMoonPhase` defaults true, no GLSL consumer; also a physical double-count vs N·L). Root confirmed 2026-07-24: gate born in `8620f7c171` (2026-04-09) already alongside real `sunDirMC` N·L — an aesthetic double-count from birth, not scaffolding (Principle-7 check clean). |
 | `C11-176c` (celestial stale-comment corrections) | **COMPLETE (Batch 741, as C12 W1 rider per LD-2)** — 6 files corrected incl. two additional stale sites found in-flight (`StarFieldMath.ts:132` HI comment, `SkyBox.js:62-64` getter JSDoc); generated `StarField.js` regenerated | §1.26 / G8 | Four comments assert an HDR/bloom path that is off by default (`StarField.wgsl:14-16,145-146`, `StarFieldFS.glsl:23-24`, `StarFieldMath.ts:118-119`); `StarField.js:63` "~0.34°" for 0.0042 rad (actual 0.2406°); `SkyBox.js:49-55` "inert no-op" falsified by `Renderer/Context.js:766-789`. `LICENSE.md` dead-URL sub-item DISCHARGED by Batch 730. XS, comment-only. |

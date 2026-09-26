@@ -13221,9 +13221,128 @@ restart translation that actually finds a sentinel, or non-indexed synthesis.
 
 - **C6-FFT-OCEAN** — ✅ SHIPPED v1 (2026-07-11, Campaign 6/7, WebGPU-only exceed-feature; closes the deferred WATER "GPU FFT spectral ocean" gap — zero ocean-surface geometry existed before). A GPU FFT spectral ocean: a per-frame compute chain synthesizes an animated wave displacement + foam map from a Tessendorf/Phillips spectrum, and a camera-anchored RTE ENU grid patch samples it to render a displaced, Fresnel-shaded ocean surface with Jacobian foam. Compute chain (single 256×256 cascade): `OceanInitialSpectrum.wgsl` h0(k)/conj(h0(-k)) (once/on-param-change) → `OceanTwiddle.wgsl` butterfly index+factor LUT (once) → `OceanTimeSpectrum.wgsl` time-evolve h(k,t)=h0·e^{iwt}+conj(h0(-k))·e^{-iwt} into packed Dy+iDx and Dz complex fields (per frame) → `OceanIFFT.wgsl` log2(N) horizontal + log2(N) vertical radix-2 butterfly stages ×2 fields (ping-pong rg32float, per-stage compute passes so writes sync) → `OceanMerge.wgsl` (-1)^(x+y) fftshift correct + 1/N normalize → filterable rgba16float (λ·Dx, Dy, λ·Dz, foam). `OceanSurface.wgsl` VS displaces a 200×200-quad grid patch (grid∈[-0.5,0.5]×patchExtent, world-anchored UV=ENU/L, curvature drop −d²/2R, RTE anchor via EncodedCartesian3 high/low + mvpRelativeToEye — never absolute f32 position) and FS shades finite-diff normal + Schlick Fresnel (F0=0.02) + Blinn sun specular + Jacobian foam, wave-detail faded over the B630 70 km→1e6 m handover band. **License:** FFT butterfly + spectrum packing derived from gasgiant/FFT-Ocean, Popov72/OceanDemo, WebTide (all MIT, attributed in file headers); Phillips spectrum derived from Tessendorf's published SIGGRAPH notes. FFT sign/index conventions CPU-validated against a brute-force IDFT before porting (butterfly output == unnormalized IDFT, no fftshift permutation; the (-1)^(x+y) is only for the centered-spectrum indexing used here). **Opt-in default-off / byte-identical:** `scene.globe.water.ocean.enabled` (default false) lazily creates one `OceanSurfacePrimitive` and adds it to `scene.primitives`; nothing is allocated/dispatched/drawn until enabled; disabling removes+destroys it (frees all GPU textures). `FeatureRendererKey.FFT_OCEAN=53` (COUNT 53→54, add-only) registered via LAZY loader in `WebGPUFeatureRenderers.ts`; `ShaderSourceId.OCEAN_SURFACE=41` (add-only, LOG_DEPTH ifdef). WebGL contexts never register the FR → `OceanSurfacePrimitive.update` early-returns on `!context.isWebGPU` (documented no-op, Principle 2/10). **Verified** `Tools/visual-regression/probe-fft-ocean.mjs` (WebGPU, fresh-load deterministic sessions): OFF-gate off1-vs-off2(toggle) delta **0.0** == base noise-floor off1-vs-off1b **0.0** (byte-identical, no residue); isolated (globe.show=false) coverage OFF **0** → ON **0.553** (patch renders against empty scene); isolated temporal delta **42.7** (waves animate); foam white crest-streaks visible; 0 black/NaN; PNGs read (iso-on = deep-blue choppy FFT sea with foam on the folds — unambiguously spectral, not Gerstner). **v1 follow-ups (Principle 9, all independently schedulable):** (1) `C6-FFT-OCEAN-JONSWAP-TMA` — upgrade the Phillips spectrum to JONSWAP+TMA with Horvath-2015 directional spreading + dual wind-sea/swell layers (research §2 has the WGSL from Popov72, MIT); (2) `C6-FFT-OCEAN-CASCADES` — 3-cascade hard-partitioned k-space (L={250,17,5}) for cm→250 m coverage vs the single 250 m tile (visible tiling today); (3) `C6-FFT-OCEAN-CLIPMAP` — replace the single flat patch with camera-anchored clipmap rings out to ~200 km + LOD (the single ~3 km patch is only visible from low altitude); (4) `C6-FFT-OCEAN-SPECTRAL-NORMALS` — spectral (ik) derivatives + slope-variance→roughness mips instead of the current 1-texel finite-diff FS normal (grainy/aliased at fine detail); (5) `C6-FFT-OCEAN-WATERMASK-SEAM` — actually suppress the B630 terrain water-mask specular under the opaque ocean patch (currently both draw; z-buffer arbitrates but at grazing angles they can double-specular); (6) `C6-PLANAR-REFLECT-REFRACT` (queue #20, already gated on this) — the `OceanSurface.wgsl` FS has the reflection/sky seam pre-built (samples a sky gradient today); wire the mirrored reflection camera + oblique-clip target; (7) `NEW-FFT-OCEAN-WEBGL2-FALLBACK` — dli/waves (MIT) proves a WebGL2 fragment-FFT is feasible; the scene-side primitive + all math are backend-agnostic. Files: `Renderer/WebGPU/WebGPUOceanRenderer.ts` (new), `Shaders/WebGPU/Ocean/{OceanInitialSpectrum,OceanTwiddle,OceanTimeSpectrum,OceanIFFT,OceanMerge,OceanSurface}.wgsl` (new), `Scene/OceanSurfacePrimitive.js` (new), `Scene/GlobeWaterOcean.js` (new), `Scene/GlobeWater.js` (+`ocean` sub-facade getter), `Renderer/FeatureRendererKey.js`, `Renderer/WebGPU/WebGPUShaderDefines.ts`, `Renderer/WebGPU/WebGPUFeatureRenderers.ts`, `Tools/visual-regression/probe-fft-ocean.mjs` (new). **Trace:** 2026-07-06 (R-FFT-OCEAN research) → 2026-07-11 (shipped v1).
 
+  - **Rider — reference implementation found 2026-09-26 (tidewater intake).** tidewater
+    (`https://github.com/dgreenheck/tidewater`) at commit `4811ba48d7`, MIT, © 2026 DRG Software Solutions LLC,
+    carries a working four-cascade WebGPU FFT ocean in raw WGSL; citations read `tidewater:<path>:<line>` at that
+    commit, and the review, its syntheses and verifier reports are banked at
+    `cesium-webgpu-worker-archive/lanes-2026-09-26/tidewater-review/`. The follow-ups above stay **independently
+    schedulable**, in this row's own words. Cascades and spectral normals are **not** in C14 W3's list; the
+    JONSWAP/TMA spectrum and the clipmap are (W3 names the clipmap and water-mask seam, the JONSWAP/TMA/Horvath
+    spectrum, the sea-state mask, accumulating foam and a tier axis; `OCEAN_DYNAMICS_PLAN_2026-07-24.md` §5, W3).
+    Whether ruling R1 holds any of them is maintainer question MQ-T2 (`MAINTAINER_RULINGS_2026-09-26.md`, the
+    tidewater-intake questions). Every rider inherits: offsets derived in
+    f64 on the CPU (tidewater samples f32 world xz over a fixed world), our scene-time clock (tidewater advances by
+    `dt`), log depth, TAA off by default, runtime enable floats rather than new low define bits (the low word is
+    full), and the decomposition rule on `WebGPUOceanRenderer.ts` (1,113 lines).
+    - **`C6-FFT-OCEAN-CASCADES` + `C6-FFT-OCEAN-SPECTRAL-NORMALS`.** *Technique (code facts):* a row kernel
+      time-evolves h0 and packs four complex fields (Dx+iDz, Dy+i∂Dx/∂z, ∂Dy/∂x+i∂Dy/∂z, ∂Dx/∂x+i∂Dz/∂z), loading
+      them bit-reversed into `var<workgroup> fftShared: array<vec4f,512>` with 128-thread workgroups for a 256-point
+      radix-2 IFFT; a column kernel finishes, applies the sign and the Jacobian and writes two `rgba16float`
+      256²×4 `2d-array` textures; both run as two dispatches `[256, cascades, 1]` in one compute pass, followed by
+      compute-built mips (`tidewater:src/ocean/OceanFFT.js:13-15, 383-527, 529-606, 625-632`; the general form is
+      `src/ocean/ComputeMips.js:1-107`). Vertex sampling is band-limited to the mesh spacing,
+      `log2(spacing/texel)+0.7`, and normals come from aniso-4 derivative samples with a capillary resample under a
+      4 cm footprint (`src/ocean/WaterSurface.js:120-138, 241-306`). Cascades are 733 / 157 / 33.3 / 7.1 m, cut at
+      `2π/L_next·6` with end cuts 0.0001 and 9999 (`OceanFFT.js:32, 204-205`). *Ours:* 34 compute passes per frame
+      over `rg32float` ping-pong textures, each dispatch opening its own compute pass
+      (`WebGPUOceanRenderer.ts:72-75, 111-112, 841-925`); no mip chain (`:244-258`); a 4-tap finite-difference
+      normal at level 0 (`OceanSurface.wgsl:268-278`). *Class:* transplant (kernels) + adaptation (RTE offsets, our
+      clock). *Grade:* A. *Parity:* WebGPU-only by the FFT ocean's recorded design. *First lane — structure only
+      (N1 lane 1):* keep one 256² Phillips cascade, our clock, our finite-difference Jacobian foam with no history,
+      and the output texture; replace the 34 passes with a row and a column kernel in one compute pass, in a
+      companion file out of `WebGPUOceanRenderer.ts`; re-validate the sign and index conventions against the
+      brute-force IDFT as v1 did; and check this row's own premise ("per-stage compute passes so writes sync")
+      against the WebGPU rule that each dispatch is its own usage scope. Acceptance: an Edge readback of the
+      displacement texture from the old and new chains at one scene time within a stated f16 tolerance; compute
+      passes 34 → 1; per-pass GPU time (`NEW-TIDEWATER-PASS-TIMESTAMP-WRAP` or the lane's own wrappers) and frame
+      time; `probe-fft-ocean.mjs`'s OFF gate unchanged; inertness mutant: drop one butterfly stage and the readback
+      comparison must fail. *Second lane:* four cascades, the derivative field, compute mips, band-limited vertex
+      sampling and derivative normals, with per-cascade UV offsets `fract(anchor / L_c)` computed in f64 — sizes
+      that are not multiples of each other cannot share the single integer-UV snap
+      (`OceanSurfacePrimitive.js:422-433`); the lane chooses the cascade sizes against this row's planned
+      {250, 17, 5} m and records why, and leaves room for C14's quality-tier axis. *Proof bar:* engine. *Verdict:*
+      `VERIFY_GRIMA.md` §2 (Niniel T1–T5 and T7; fork FFT ocean): HOLDS; `SWEEP_VERIFY_BRANDYBUCK.md` R2
+      (`ComputeMips.js` is a general two-dispatch compute mip chain). *Licence to add when code lands:* a
+      `### tidewater` entry in `LICENSE.md` (MIT, "Copyright (c) 2026 DRG Software Solutions LLC") naming
+      `src/ocean/OceanFFT.js`, `src/ocean/ComputeMips.js` and `src/ocean/WaterSurface.js`; and, when the cascade
+      cuts land, an extension of `LICENSE.md` `### FFT-Ocean` — the `2π/L_next·6` boundary with 0.0001 / 9999 end
+      cuts matches gasgiant/FFT-Ocean's `WavesGenerator.cs` (MIT, © 2020 Ivan Pensionerov), a notice taken from
+      gasgiant, never from tidewater, which reproduces none.
+    - **`C6-FFT-OCEAN-JONSWAP-TMA`.** *Technique (code facts):* a JONSWAP spectrum with the TMA shallow-water
+      factor and `tanh(k·d)` dispersion at a 500 m depth, Horvath directional spreading, and a wind sea plus a swell
+      summed per cascade, in gasgiant's formulation (`tidewater:src/ocean/OceanFFT.js:36-51, 88, 197-233,
+      243-346`); the amplitude is `sqrt(S·|dω|/k·dk²)·0.5` (`:330`), which differs from gasgiant's
+      `sqrt(2·S·|dω/dk|/k·dk²)`. *Ours:* Phillips (`OceanInitialSpectrum.wgsl:36-56`) with deep-water dispersion
+      (`OceanTimeSpectrum.wgsl:60`), calibrated to "~2 m RMS at U=12" (`OceanMerge.wgsl:39`). *Class:* transplant.
+      *Grade:* A. *Parity:* WebGPU-only (the FFT ocean). *First lane:* port into `OceanInitialSpectrum.wgsl`, driven by
+      the FFT's own wind until C14 W1 supplies one; choose one amplitude convention and record it, re-calibrate the
+      RMS target, and keep TMA's depth at 500 m until a bathymetry exists (`NEW-BATHYMETRY-DATASET-LANE`).
+      Acceptance: a spectrum readback against a CPU evaluation of the same formula, off byte-identical, an inertness
+      mutant. *Proof bar:* engine. *Verdict:* `VERIFY_GRIMA.md` §2 (Niniel T2: "JONSWAP+TMA with `tanh(k*d)`
+      dispersion, depth 500 m and swell summed in") and §4.1 (the amplitude difference): HOLDS. *Licence to add:*
+      extend `LICENSE.md` `### FFT-Ocean` (gasgiant formulation, MIT, © 2020 Ivan Pensionerov); name
+      `src/ocean/OceanFFT.js` in the `### tidewater` entry if its WGSL is copied.
+    - **`C6-FFT-OCEAN-CLIPMAP`.** *Technique (code facts):* a Strugar-2010 CDLOD quadtree — a 32×32 grid mesh
+      instanced per node, an 8 m leaf, 12 levels, a 40,960 m range, 3×3 roots of 16,384 m, with geomorphing
+      (`tidewater:src/core/CDLOD.js:44-52, 180-243`; `src/App.js:176`). *Ours:* one 200×200 grid over a 3,000 m patch
+      (`OceanSurfacePrimitive.js:114`); the amplitude fade runs from 70 km to 1,000 km from the anchor
+      (`WebGPUOceanRenderer.ts:1034, 1039`), so at the default extent it never engages and the patch ends in a hard
+      edge about 1.5 km out. *Class:* adaptation. *Grade:* B. *Parity:* WebGPU-only (the FFT ocean). *First lane:*
+      the CDLOD mesh and its handover band to globe water are one lane, the same one as `C14-12` in
+      `C14_READINESS_REVIEW_2026-08-28.md` §4 (pre-launch); whichever home MQ-T2 gives it builds the band (node
+      origins in f64, the curvature drop kept), and `C14-08` owns the "waves everywhere" coverage decision. *Proof
+      bar:* engine. *Verdict:* `VERIFY_GRIMA.md` §2
+      (Niniel T6: "CDLOD: 32x32 grid, 8 m leaf, 12 levels …") and R1 (the patch fade never engages): HOLDS.
+      *Licence to add:* cite Strugar (2010); a `### tidewater` entry naming `src/core/CDLOD.js` if its code is
+      copied.
+
 - **C6-FSR2-UPSCALE** (NEW-FSR2-UPSCALE) — ⏸️ **DEFERRED (premise verified REAL; investigated 2026-07-11, Campaign 6/7, no code shipped — clean tree).** Queue #22 (`QUEUE_2026-07-06_CAMPAIGN7.md`), rated L/epic. Full research register at `RESEARCH_R-FSR2_2026-07-06.md` (license MIT verbatim-verified, pass table, formats, jitter formula, R/D re-pointing checklist). **Premise verification (NOT stale):** grep for `fsr2|superResolution|renderResolutionScale|internalRes|renderWidth|FidelityFX` across `packages/engine/Source` → **zero hits**; there is exactly ONE resolution today (everything derives from `context.drawingBufferWidth/Height`), no internal-res(R)/output-res(D) split, no upscale pass. The reuse anchors the research names all exist and were re-confirmed: `WebGPUTAAEffect.ts` (halton still exported even though TAA itself uses IGN since Batch 195); velocity MRT `_velocityTexture`/`_runVelocityPass` in `WebGPUSceneFramebuffer.ts`/`WebGPUSceneRenderer.ts`; the Scene.js jitter hook `taa.computeJitter`→`taa.applyProjectionJitter` at `Scene.js` ~5564–5581 (absolute-write base-capture pattern); DP-H41 `previousViewProjection`; and `FEAT-SURVEY-48 STP upscaler` still in FEATURE_INVENTORY §D line 998 (FSR2 supersedes it on landing). **Why deferred (not force-landed):** the research itself scopes this at **6–10 days across 4 phases** and it fails the single-task acceptance bar on three independent axes, none self-contained: (1) **6 dense GLSL→WGSL compute-shader ports** (LuminancePyramid/SPD, ReconstructPreviousDepth&Dilate, DepthClip, Lock, Reproject&Accumulate, +RCAS) from the FSR2 v2.2.2 GLSL set — Accumulate + the `ffx_a.h`/`ffx_fsr2_common` helper library alone are ~3–4k lines of dense temporal-resolve math whose correctness (no motion ghosting, no thin-feature washout) can only be judged by a converged multi-frame probe, not a typecheck; (2) a **known-hard WGSL rewrite** — ReconstructPreviousDepth scatters with `InterlockedMax/Min` on an `r32uint` UAV *texture*, and WGSL has **no texture atomics**, so it must be re-architected as a reusable `var<storage> array<atomic<u32>>` scatter-buffer helper (subtle indexing/read-back, must be built as a real artifact not an inline hack per the no-shortcuts rule); (3) a **17-subsystem internal-res/output-res split refactor** with a *silent picking-breakage* risk — the R/D split must re-point Scene.js viewport + jitter dims, `WebGPUContext` depth texture, `WebGPUSceneFramebuffer` (color/id/velocity/refraction), GlobeDepth, OIT, InvertClassification, TranslucentTileClassification, EdgeFramebuffer, Hi-Z pyramid, **PickFramebuffer + pick-coordinate scaling** (canvas-px→R-px in pick/pickPosition/drillPick readback — off-by-one here breaks picking with no visible symptom), and every pre-upscale PP stage + ping-pong, cloud/volumetric-fog/weather targets, while keeping Tonemap/ColorGrading/blit at D. Plus a **fork-specific prep pass** (`FSR2Prep.wgsl`: camera-motion MV synthesis from depth+previous-VP_RTE for globe/terrain/primitives which the velocity MRT does NOT cover, log-depth→linear-r32f linearize because Cesium log depth breaks FSR2's Akeley depth-clip constants, and reactive-mask merge). None of these is a shippable slice on its own: Phase-1 plumbing lands byte-identical-when-off but the acceptance probe requires the feature to **render when ON**, and there is no FSR2 to enable until Phases 2–3 also land — so a single-task landing is either half-a-refactor (broken tree) or a non-FSR2 naive-upscale masquerade (violates the full-feature rule). **Recommended phasing for a dedicated multi-batch run (each lands green with feature off):** (P1) R/D split through a new `renderResolutionScale` (4th `ensureResources` recreate trigger) + Scene viewport/jitter dims + pick-coord scaling → FSR2 off ⇒ R==D ⇒ byte-identical, independently auditable, ≈half the effort; (P2) `FSR2Prep.wgsl` MV-synthesis + log-depth-linearize + reactive target, standalone debug-visualizable; (P3) FP32 (`FFX_HALF=0`) ports of passes 0–4 + RCAS, Quality 1.5× preset, atomic-scatter storage-buffer helper, `probe-fsr2-*.mjs` (SSIM/mismatch-% vs native-res WebGPU + `gpuPassCost` timing, NOT byte parity); (P4) OIT/cloud reactive-mask writers → Balanced/Performance presets → `_f16` variants / subgroup-SPD. **Off-gate contract (for the eventual land):** `scene.fsr2Enabled` default **false** ⇒ no R/D split (R==D), no target allocation, no pass, byte-identical; mutually exclusive with TAA + FXAA at runtime (one-time warn); WGSL-only under the Principle-5 compute exemption (WebGL2 has no compute → WebGL warns + no-ops, byte-identical); add-only `ShaderDefine` bits for the f16 variants (module-cache key masks 24 bits — bits ≥24 need the Batch-476 keySalt). **License:** PORT FidelityFX-FSR2 v2.2.2 (MIT, verbatim-verified) → WGSL, retaining the AMD copyright+permission header in every derived `Shaders/WebGPU/PostProcess/FSR2/*.wgsl` + `WebGPUFSR2*.ts` file and adding a third-party manifest entry; reference the MIT-retained JuanDiegoMontoya/FidelityFX-FSR2-OpenGL port for pitfalls. **Files (projected):** `Renderer/WebGPU/WebGPUFSR2Effect.ts` + `WebGPUFSR2Resources.ts` (new), `Shaders/WebGPU/PostProcess/FSR2/{FSR2Common,FSR2LuminancePyramid,FSR2ReconstructDilate,FSR2DepthClip,FSR2Lock,FSR2Accumulate,FSR2Rcas,FSR2Prep}.wgsl` (new), plus edits to `WebGPUSceneRendererEnsureResources.ts`, `WebGPUSceneRenderer.ts`, `WebGPUContext.ts`, `WebGPUSceneFramebuffer.ts`, `WebGPUPostProcessPipeline.ts`, `WebGPUPickFramebuffer.ts`, `Scene/Scene.js` (jitter dims + `fsr2Enabled`/`fsr2QualityMode`/`fsr2Sharpness`), `WebGPUShaderDefines.ts`, and pre-upscale PP/cloud/fog resize dims; `Tools/visual-regression/probe-fsr2-upscale.mjs` (new). On landing: move FEAT-SURVEY-48 §D→§B as NEW-FSR2-UPSCALE; add DEFERRED entries for T&C mask, autogen-reactive, Ultra-Perf 3.0×, subgroup-SPD. **Effort:** L/epic, 6–10 days, 4 phases. **Trace:** 2026-07-05 (mine, THREEJS_TECH_MINE #2 / register) → 2026-07-06 (R-FSR2 research, GO) → 2026-07-11 (premise verified real, decomposition + phasing recorded; deferred as a multi-batch epic per the honest-partial / clean-tree rule).
 
+  - **Rider — reference implementation found 2026-09-26 (tidewater intake): re-cost Phase 3.** tidewater at commit
+    `4811ba48d7` (MIT, © 2026 DRG Software Solutions LLC; banked review
+    `cesium-webgpu-worker-archive/lanes-2026-09-26/tidewater-review/`). *Technique (code facts):* the FSR2 2.2
+    accumulate, lock and luma-instability logic runs in **one fragment pass**, keeping three.js TAAUNode's depth
+    dilation, reprojection and disocclusion test (`tidewater:src/post/TemporalUpscale.js:12-40, 235-557`), and
+    rebuilds the previous world position in f32 (`:296-305`); RCAS runs on a max-channel Reinhard proxy inside the
+    fused final pass (`src/post/PostFX.js:474-499`). *Ours:* this row's Phase 3 plans six compute ports including
+    ReconstructPreviousDepth's texture-atomic scatter; our TAA reprojects eye-relative (`TAA.wgsl:24-37`). *What it
+    changes:* a gather-style resolve in one fragment pass has no `InterlockedMax` scatter and admits a GLSL twin, so
+    Phase 3 should be re-costed against it; **Phase 1, the 17-subsystem render/display split, still blocks
+    upscaling**. As a native-resolution TAA resolve (no upscale) it is an adaptation, grade B; as an upscaler, C.
+    Keep our eye-relative reprojection, never an f32 world rebuild. *Parity:* WebGPU-only today; a fragment-only
+    resolve could carry a GLSL twin. *First lane:* the TAA acceptance probe (`NEW-TIDEWATER-TAA-ACCEPTANCE-PROBE`)
+    first, then a native-resolution resolve lane accepted through it; RCAS is `NEW-TIDEWATER-RCAS-SHARPEN`. *Proof
+    bar:* tools (the probe), then engine. *Verdict:* `VERIFY_GRIMA.md` §2 (Jolly T1 "the TAAU does the FSR2
+    accumulate in a single pass"; the FSR2 row's three blockers) and `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gorbulas (P1;
+    "re-costing `C6-FSR2-UPSCALE`"): HOLDS. *Licence to add:* this row's own AMD FidelityFX FSR2 v2.2 header from
+    GPUOpen (tidewater reproduces no AMD notice); `LICENSE.md` has no AMD FidelityFX entry today, so the first lane
+    that ports any of it adds one; three.js TAAUNode (MIT) under `### three.js`; `### tidewater` naming
+    `src/post/TemporalUpscale.js` if its WGSL is copied.
+
 - **C6-PLANAR-REFLECT-REFRACT** — ⏸️ **UNBLOCKED-BUT-DEFERRED (premise re-verified REAL + gate now GREEN; investigated 2026-07-11, Campaign 6/7, no code shipped — clean tree).** Queue #20 (`QUEUE_2026-07-06_CAMPAIGN7.md`) rated M/epic and gated behind #19 (FFT ocean) with an explicit "SKIP if FFT ocean not landed" rule. **Premise verification:** (a) NOT stale — no planar reflection exists. `OceanSurface.wgsl` FS (lines 153–158) reflects the sky with a crude *analytic* approximation only (`skyColor = mix(shallowColor, hardcoded (0.55,0.72,0.92), clamp(dot(reflectDir, up)))` blended by Schlick Fresnel); there is no reflection render pass, no oblique near-plane clip matrix, no projective reflection texture, and no per-surface `reflection` opt-in. The only "Reflection"-named file, `WebGPUBindGroupReflection.ts`, is Naga bind-group-layout *introspection*, unrelated. (b) **Gate is now GREEN** — the #19 dependency `C6-FFT-OCEAN` shipped Batch 654 (`08af2cd678`), so the SKIP condition no longer applies; this item is genuinely unblocked and ready to build as the next planned step. **Why deferred (not force-landed):** a faithful three.js-`Reflector` planar reflection is a multi-day *scene-renderer-orchestration* epic in the most intricate subsystem, NOT a self-contained feature-renderer change, and could not be landed verified-green within a single task's budget. The specific structural blocker: the ocean FR emits a **deferred** `WebGPUDrawCommand` via `frameState.commandList.push` (`WebGPUOceanRenderer.ts` ~L977–986, `Pass.OPAQUE`) that the scene renderer executes *later* — so the reflection texture must be produced by a reflected-camera globe/sky re-render **before** that deferred draw runs, which means hooking the 4505-line `WebGPUSceneRenderer` frame orchestration (a camera-snapshot/repoint/restore + offscreen render), not the primitive's `update()`. **Concrete design for the next campaign (reuses proven machinery):** (1) Add opt-in `reflection` option to `OceanSurfacePrimitive` (default off → byte-identical; no target allocated, no extra pass when off). (2) Build the reflected virtual camera by mirroring the main camera across the ocean's local tangent plane at the anchor (`_anchor` + `_up` normal, both already computed each frame), and apply a **Lengyel oblique near-plane clip** (the water plane in eye space) so sub-surface geometry is clipped out of the reflection — the classic Reflector/Water technique. (3) Produce the reflection color target by REUSING the exact reflected-camera re-render pattern already proven in `WebGPUDynamicEnvironmentMapCapture.runSceneCapture` (snapshot `uniformState.camera` proxy fields → repoint to the reflected+oblique camera → ask the globe renderer to build its OWN draw commands → render into the reflection target with `loadOp:'clear'` to the sky fill → restore the main camera in a `finally`, honoring the same `_logDepthEncodeNearFar` stash caveat the capture documents). Single target (one reflected view), not 6 cube faces — cheaper than the env capture. (4) Bind the reflection texture + the reflection view-proj matrix into `OceanSurface.wgsl`; replace the analytic `skyColor` seam (already Fresnel-mixed at L156–158 — the "reflection seam is pre-built" note in C6-FFT-OCEAN follow-up #6) with a **projective** sample of the reflection target (clip→uv), keeping the analytic gradient as the `//>>else`/fallback so `defines=0` stays byte-identical. RTE-correct the projective coords (never an absolute f32 world position). (5) `Refractor`/`Water2` (BSD/MIT) flow-map river advection + screen-space refraction (`C6-SCREEN-SPACE-REFRACT`, queue #24, D, reuses the Hi-Z/scene-depth/scene-color SSR targets) are a *second* increment on top — schedule after the reflection pass lands. **Off-gate contract:** opt-in default-off, byte-identical when off (no target, no pass, no bind-group change on the existing ocean pipeline — gate the new bindings behind a `ShaderDefine` add-only bit + a `//>>else` analytic fallback); WebGPU-only (WebGL never registers the ocean FR → documented no-op, Principle 2/10). **Acceptance probe (to author):** flat ocean patch at low altitude over a coastline; ON = the reflection target shows terrain/sky mirrored with the oblique clip removing below-water geometry (distinguishable from the analytic gradient by reflecting actual terrain silhouettes); OFF = byte-identical to pre-feature (0.0 vs noise floor). **License:** PORT three.js `Reflector`/`Refractor`/`Water`/`Water2` (MIT) with attribution; Lengyel oblique-clip is a published technique (derive). **Files (projected):** `Scene/OceanSurfacePrimitive.js` (+`reflection` option), `Renderer/WebGPU/WebGPUOceanRenderer.ts` (reflection target + reflected-camera pass wiring), `Renderer/WebGPU/WebGPUSceneRenderer.ts` (pre-ocean reflection re-render hook, mirrors `runSceneCapture`), `Shaders/WebGPU/Ocean/OceanSurface.wgsl` (projective reflection sample behind a new add-only `ShaderDefine`), `Renderer/WebGPU/WebGPUShaderDefines.ts` (add-only bit), `Tools/visual-regression/probe-planar-reflect.mjs` (new). **Effort:** multi-day (large). **Trace:** 2026-07-05 (mine, THREEJS_TECH_MINE #22) → 2026-07-11 (premise re-verified real, gate green, decomposition recorded; deferred per the queue's gated-tail honest-partial rule).
+
+  - **Rider — reference implementation found 2026-09-26 (tidewater intake): the sky seam first, from the sky-view
+    LUT.** tidewater at commit `4811ba48d7` (MIT, © 2026 DRG Software Solutions LLC; banked review
+    `cesium-webgpu-worker-archive/lanes-2026-09-26/tidewater-review/`). *Technique (code facts):* the water's sky
+    reflection is `skyReflectionRadiance(R)`, evaluated per pixel; the reflected vector is lifted by the unresolved
+    slope, and rays below the horizon fade to `horizonColor·0.35` through `smoothstep(-0.12, 0.08, R.y)`
+    (`tidewater:src/ocean/WaterMaterial.js:333-344`; `src/sky/Sky.js:185`). *Ours:* the patch reflects
+    `mix(shallowColor, vec3(0.55, 0.72, 0.92), skyUp)` (`OceanSurface.wgsl:285-290`); the sky-view LUT is baked by
+    default (`WebGPUAtmosphereLUT.ts:79-80`; `WebGPUPerformanceManager.ts:257`) for an observer at altitude 0, which
+    is the right viewpoint for a ray leaving the sea surface; a `sampleSkyViewLut(up, rayDir, sunDir)` helper exists
+    in `ProceduralSkyCubemap.wgsl`, `ProceduralClouds.wgsl` and `SkyAtmosphere.wgsl`. *Class:* adaptation. *Grade:* A.
+    *Parity:* WebGPU-only (the FFT ocean). *First lane (N2):* bind the LUT and a filtering sampler to the ocean;
+    consume the helper as a new shared chunk that only the ocean uses at first (repointing the copy in
+    `ProceduralClouds.wgsl` belongs to that file's one owner); apply the sky shader's post-sample scale so the sky
+    and its reflection share one scale; replace `skyColor` behind a runtime enable float with today's gradient as the
+    byte-identical off arm and the fallback when no LUT exists. Acceptance: off byte-identical; with it on, the
+    reflection near grazing matches the sky drawn at the same azimuth within a tolerance covering the LUT-versus-march
+    difference; inertness mutant samples the LUT at a fixed UV. The mirrored-camera design in this row stays the
+    later step. *Proof bar:* engine. *Verdict:* `VERIFY_GRIMA.md` R2 (the altitude-0 bake is not a blocker for
+    reflections; the LUTs are baked by default) and §6 (grade A): HOLDS. *Licence to add:* none if written from our
+    helper; if tidewater's horizon-occlusion lines are copied, name `src/ocean/WaterMaterial.js` in a `### tidewater`
+    entry. One owner of `OceanSurface.wgsl` at a time (see `C11-163`'s riders, `QUEUE_2026-07-18_CAMPAIGN11.md`
+    §1.31).
 
 - **C9-10-CONSUMER-DRIVEN-MRT** (`FAR-403-C0`, queue #27, R3) — ⏸️ **DEFERRED / BLOCKED (premise verified REAL; investigated 2026-07-16, Campaign 9; no code shipped — clean tree).** Goal: make the scene-FB G-buffer/MRT topology demand-driven so a DEFAULT scene (no G-buffer consumer) reports **zero** normal/G-buffer bytes, zero MSAA companion bytes, and zero slot-1 resolves, while any consumer (deferred-lighting/SSR/NPR/contact-shadow/SSGI/debug-overlay) toggled on — independently AND in combination — restores exact MRT bytes with per-consumer pixel parity, preserving HDR/MSAA/resize/device-loss/TAA/pick/classification. **Premise verification (NOT stale — CONFIRMED gap):** `_mrtMode` in `WebGPUSceneFBTargetHelpers.ts:71` is hardcoded `true` at declaration and `setSceneFBMrtMode()` has **zero runtime callers** (grep: only doc-comment mentions) — the topology never flips, so the ~16 MB rgba16float G-buffer (+MSAA companion + resolve) is allocated and bound on EVERY non-pick frame regardless of demand. C9-09 (`FAR-401-C0`, landed 2026-07-16) already built the authoritative per-frame demand record: `computeAttachmentDemand()` → `context._attachmentDemand` with `gbufferDemanded`, and `context.forceSceneMRT` defaults `true` (conservative always-MRT). The executor is ALREADY topology-parametric on `isSceneFBMrtMode()`: the G-buffer alloc site (`WebGPUContext.updateAndClearFramebuffers` ~L3964), the pass-open slot-1 builder (`WebGPUSceneRendererPassRedirect.buildMrtSlot1Attachment` — returns null when mode off, all three scene-pass-open sites funnel through it), and every pipeline's target array (`makeSceneFBTargets` returns length-1 vs length-2 by mode). So the "act on the record" wiring (gate alloc on `gbufferDemanded`, `setSceneFBMrtMode(gbufferDemanded)` before pipelines build each frame, flip `forceSceneMRT` default to false) is individually small. **Why deferred (not force-landed — the acceptance's toggle requirement is the blocker):** a correct mid-session flip is a large cross-cutting change across **31 renderers** with NO flip-safety scaffolding, and a partial landing would break rendering on the exact consumer-toggle path the acceptance mandates. Concrete break: `_mrtMode` is a module-global consumed at pipeline-BUILD time by 31 renderers that call `makeSceneFBTargets`, but each renderer caches its built pipeline under its OWN key that does NOT include an MRT-topology dimension — e.g. the whole `WebGPUCollectionRendererBase` family (billboard/label/point/polyline) keys via `pipelineKeyWithDepthFlag(defines, noDepthTest)` (`WebGPUCollectionRendererBase.ts:208`), a Uint32 whose bits 0-30 are ShaderDefine and bit 31 is `NO_DEPTH_TEST_PIPELINE_KEY_BIT` — **no free bit for topology**. Session starts default (`_mrtMode` false) → collection renderers cache 1-target pipelines; user enables SSR → mode flips true, pass becomes 2-attachment, but the per-renderer cache returns the stale 1-target pipeline → "attachment state not compatible" validation error → black/broken frame. (Only the GENERIC `WebGPURenderPipelineCache.generateCacheKey` is already topology-safe — its `tg:` signature at L721-732 folds the target-array shape — but the 31 per-renderer/model/globe/ocean/voxel/gsplat/etc. caches are not.) The queue row's own phrasing "**Cache exact one-target/MRT variants**" is precisely this: every scene-FB pipeline cache must key BOTH variants by topology (or a global flush-on-flip broadcast must reach all 31 renderers — none exists today). **Additional gating:** queue §3 states "Attachment topology … wait for Gate B unless an explicit gate amendment records why the slice is correctness-independent"; this slice is NOT correctness-independent (it changes frame topology with a feature-break-on-toggle risk), and Gate B is not cleanly passed (the Gate-B item `C9-02A` is PARTIAL/PAUSED and spawned `NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE` + `NEW-WEBGPU-ASYNC-PICK-PIPELINE-READINESS-CONTRACT`). **Recommended phasing for a dedicated multi-batch run (each lands green, byte-identical when no consumer):** (P0) add a topology dimension to the pipeline-cache key of EVERY scene-FB renderer — widen the collection-family key past 32 bits (`` `${defines}:${mrt}` `` or a safe-int fold, since bits 0-31 are full) and audit each of the 31 `makeSceneFBTargets` callers (billboard, label, point, polyline, buffer-point/polygon/polyline, cloud, compute-instance, cubemap-panorama, depth-plane, derived-command, edge-visibility, ellipsoid, environment, flow-field, gaussian-splat, ground-polyline, ground-primitive, model-pipeline-cache, ocean, point-cloud + EDL, primitive-commands, sky-atmosphere, starfield, vector3d-{clamped-polylines,polylines,primitive}, voxel, weather) so BOTH the 1-target and 2-target pipeline are cacheable and selected by the current mode — verify via a probe that toggles a consumer mid-session with zero validation errors; lands byte-identical because default is still forced-MRT. (P1) gate the G-buffer alloc + MSAA companion + resolve on `context._attachmentDemand.gbufferDemanded` and call `setSceneFBMrtMode(gbufferDemanded)` in `updateAndClearFramebuffers` before any pipeline builds — still with `forceSceneMRT` default true, so still byte-identical but now the machinery is demand-wired. (P2) flip `WebGPUContext.forceSceneMRT` default to false so no-consumer frames drop to one-target and report ZERO bytes; run the full acceptance matrix — per-consumer independently + combinations (SSR/NPR/contact/deferred/SSGI/debug), plus HDR/MSAA1&4/resize/device-loss/TAA(msaa1 velocity path)/pick(single-target already)/classification — each with pixel parity vs pre-change and READ PNGs; report the moving-route p95 delta (G-buffer alloc+clear+resolve bandwidth is the named saved stage). **Off-gate contract:** with `forceSceneMRT` true (or any consumer on) output is byte-identical to today; with it false and no consumer, `getAttachmentDemandStats()` reports `gbufferBytes=0`, `gbufferMsaaCompanionBytes=0`, `slot1ResolveOpens=0`, `sceneColorAttachmentCount=1`, `recordMatchesActual=true`. **NEVER** achieve the zero-bytes result by hardcoding `_mrtMode=false` (that is feature removal — breaks every consumer). **Files (projected):** `WebGPUSceneFBTargetHelpers.ts`, `WebGPUContext.ts`, `WebGPUCollectionRendererBase.ts` (+the key widening) and the per-cache key of the 31 renderers above, `WebGPUModelPipelineCache.ts`, `WebGPUGlobeSurfacePipelines.ts`; `Tools/visual-regression/probe-consumer-driven-mrt.mjs` (new, extends `probe-attachment-demand-registry.mjs`). **Effort:** L/epic, multi-batch (P0 alone is the bulk — 31-renderer cache-key audit). **Trace:** 2026-07-16 (C9-10 investigation — premise verified real vs live code; blocked on the absent per-renderer topology-keyed cache scaffolding + Gate-B gating; decomposition recorded per honest-partial / clean-tree rule).
 
@@ -25723,3 +25842,679 @@ in `C13-N13`, because the design round is archived rather than tracked, and W-2 
 - **Q5 — which instrument lane runs first?** The plan recommended I-2 and I-5 in parallel, I-1 next, I-3 with I-5, I-4
   optional. *Since:* I-2, I-5 and I-3 have landed (Batches 1541, 1543, 1546); I-1 (~~`C13-N61`/`N63` and the plan's two proposed rows~~ *[`C13-N64`/`N65`/`N66`, reserved for I-1, plus three rows with no id yet — see `DX-TOOLS-RING-BANDPASS-ESTIMATOR-UNTRACKED`]*) and I-4
   (`C13-N70`) have not been dispatched.
+
+## 2026-09-26 — Tidewater intake: the verified findings that have no open-campaign row, and where each should go
+
+*The maintainer, 2026-09-26: "As all of the reviews return on the tidewater demo, add the useful tech to our already
+open campaigns, this includes any cloud improvements to campaign 13." This section files the verified findings of
+that review which no open campaign row owns today; each row names the seat's suggested home and the maintainer
+question that decides it. The findings that do have an owner are filed on it: the cloud rows as `C13-N75`…`C13-N88`
+(`QUEUE_2026-07-23_CAMPAIGN13.md` §11) and a rider on `C13-N49`; the CSM, PCF and direct-lobe rows as
+`C11-215`…`C11-220` plus riders on `C11-163` (`QUEUE_2026-07-18_CAMPAIGN11.md` §1.31); the FFT compute, spectrum,
+clipmap, sky-seam and FSR2 riders on `C6-FFT-OCEAN`, `C6-PLANAR-REFLECT-REFRACT` and `C6-FSR2-UPSCALE` above; and the
+C14-specific material as `C14-09`…`C14-15`, pre-launch, in `C14_READINESS_REVIEW_2026-08-28.md` §4.*
+
+**Source.** tidewater (`https://github.com/dgreenheck/tidewater`) at commit `4811ba48d7` (2026-09-24), MIT, © 2026 DRG
+Software Solutions LLC. It is raw WebGPU and WGSL on the author's own engine, not a three.js app. Citations read
+`tidewater:<path>:<line>` at that commit. The two review panels, their syntheses (`SYNTHESIS.md`,
+`SWEEP_SYNTHESIS.md`) and verifier reports (`VERIFY_GRIMA.md`: 175 claims, 155 hold, 18 refuted, 2 unverifiable;
+`SWEEP_VERIFY_BRANDYBUCK.md`: 116 claims, 96 hold, 17 refuted, 3 unverifiable) are banked at
+`cesium-webgpu-worker-archive/lanes-2026-09-26/tidewater-review/`. **Only claims the verifiers left HOLDS are
+entered;** a verifier's correction is carried in its corrected form, and refuted or unverifiable claims are not
+entered at all.
+
+**Every row inherits.** Tidewater is a flat +Y world with f32 world positions, reversed-Z depth with the sky at 0,
+one fixed heightmap, an always-on TAAU and a camera never far from the ground. Ours is RTE on WGS84, log depth on
+WebGPU, TAA off by default (`Scene.js:1324`), HDR post only with `scene.highDynamicRange`, and a full low define word
+(runtime floats, not new low bits). **Proof bar** per `R-2026-08-29-1`: engine = behaviour spec + inertness mutant +
+separate review + named Edge leg; tools = a spec where there is logic to pin and a runner home, the probe as the
+acceptance; docs = review. **Licence:** tidewater reproduces no upstream notice, so AMD, three.js and gasgiant notices
+come from those projects; a take that copies tidewater code adds a `### tidewater` entry to `LICENSE.md` (MIT,
+"Copyright (c) 2026 DRG Software Solutions LLC") naming each file; `LICENSE.md` has no AMD FidelityFX entry today and
+already carries `### three.js` and `### FFT-Ocean`. `LICENSE.md` is unchanged until code lands.
+
+### Post chain and lighting — suggested home: maintainer question MQ-T1
+
+#### `NEW-TIDEWATER-MARINE-HAZE-DEFICIT-COMPOSITE` — a marine haze layer and a deficit composite in the aerial-perspective post — OPEN (suggested home: MQ-T1; `FEAT-GAP-09`)
+
+- *Technique (code facts):* two exponential height layers (marine σ 1.5e−4 /m, H 110 m; aerosol σ 3.2e−5 /m,
+  H 1.4 km) with analytic optical depth (`tidewater:src/post/AirHaze.js:13-18, 48-49, 236-247`); the haze colour is
+  the sky-view LUT just above the horizon in the view direction (`:359-364`); near geometry takes the lit in-scatter
+  and far geometry and sky take only the shadowed deficit, so the sky is only darkened (`:338-407`).
+- *Ours:* an opt-in AP post (`WebGPUAerialPerspectiveEffect.ts`) plus per-shader `FEAT-GAP-09` consumers; OIT never
+  writes depth (`WebGPUOIT.ts:726`), so OIT geometry leaves no depth for a post pass to key on.
+- *Target:* `WebGPUAerialPerspectiveEffect.ts` and its shader.
+- *Class · grade:* adaptation · B. It supports promoting the AP post; it cannot retire the per-shader consumers.
+- *Parity:* the AP post is WebGPU; the per-shader consumers keep their GLSL arms.
+- *First lane:* after Astra's A3 physical aerial path lands (it owns the files): the two-layer haze behind the AP
+  post's enable, off byte-identical, captures near the sea at two sun elevations, inertness mutant.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §0 (Bregdan T9 exists at the cited place) and `SYNTHESIS.md` D7 (grade B, not the
+  seat review's A; "every material gets it at once" does not hold): HOLDS.
+- *Licence:* `### tidewater` naming `src/post/AirHaze.js` if copied.
+
+#### `NEW-TIDEWATER-CSM-HAZE-SHAFTS` — volumetric-fog sun shafts through the CSM cascades — OPEN (suggested home: C11, the seat's MQ-T1 recommendation for CSM/lighting, or C13 WS-C2)
+
+- *Technique (code facts):* the light-space ray is hoisted out of the march loop, the lit share and the
+  marched-to-exact ratio are upsampled, and a depth-checked temporal blend at 0.12 converges the result
+  (`tidewater:src/post/AirHaze.js:397-405, 447-485, 562-598`).
+- *Ours:* the fog takes one sun-shadow tap from a single `texture_depth_2d` (`VolumetricFog.wgsl:556-581, 744`); the
+  CSM VPs are premultiplied by `T(+cameraWC)` on the CPU (`ShadowReceiveCSM.wgsl:8-15`).
+- *Target:* `Compute/VolumetricFog.wgsl`.
+- *Class · grade:* transplant · A for the march pattern; it needs a no-TAA fallback.
+- *Parity:* the fog is WebGPU-only.
+- *First lane:* after Astra's A1 fog fix and A3 (they own the fog and aerial files): cascaded shadow taps in the fog
+  march behind an option, captures with TAA on and off.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Bregdan: "AirHaze hoists the light-space ray, upsamples the lit-share and
+  marched/exact ratio, and blends temporally at 0.12"; fork "the fog takes one sun-shadow tap"): HOLDS.
+- *Licence:* `### tidewater` naming `src/post/AirHaze.js` if copied.
+
+#### `NEW-TIDEWATER-RCAS-SHARPEN` — RCAS sharpening after the TAA resolve — OPEN (suggested home: MQ-T1; the first post engine lane once homed)
+
+- *Technique (code facts):* AMD FSR1 robust contrast-adaptive sharpening on a max-channel Reinhard proxy of the HDR
+  values, inverted afterwards, fused into the final pass (`tidewater:src/post/PostFX.js:474-499`); sharpening skips
+  motion-blurred pixels (`src/post/MotionBlur.js:93-95`).
+- *Ours:* no sharpening in the post shaders; user stages run post-tonemap, pre-FXAA
+  (`WebGPUPostProcessPipeline.ts:30-37`).
+- *Target:* a `taaSharpness` option on the TAA effect, or a standalone fragment stage.
+- *Class · grade:* transplant · A.
+- *Parity:* as a TAA option it inherits TAA's WebGPU-only status; a standalone fragment stage could run on both.
+- *First lane:* engine, byte-identical at sharpness 0, accepted through `NEW-TIDEWATER-TAA-ACCEPTANCE-PROBE` with
+  sharpness on and off.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Jolly: "RCAS is fused into the final pass") and `SWEEP_VERIFY_BRANDYBUCK.md` §2
+  Gorbulas P6: HOLDS.
+- *Licence:* a new AMD FidelityFX FSR1 (MIT) entry in `LICENSE.md`, taken from AMD's source; `### tidewater` too if
+  its proxy-and-sky variant is copied.
+
+#### `NEW-TIDEWATER-GPU-RESIDENT-EXPOSURE` — auto exposure that never leaves the GPU — OPEN (suggested home: MQ-T1)
+
+- *Technique (code facts):* average log luminance of a 1/16 bloom level in one workgroup, the adapted exposure kept
+  in a storage buffer that the grading pass reads next frame (`tidewater:src/post/PostFX.js:85-96, 392-456`).
+- *Ours:* WebGPU reads exposure back through a three-buffer `mapAsync` ring into a CPU uniform
+  (`WebGPUAutoExposure.ts:103-113`); the WebGL tonemap stages already sample an `autoExposure` texture on the GPU
+  (`AcesTonemappingStage.glsl:6, 17`).
+- *Target:* `WebGPUAutoExposure.ts`, `AutoExposure.wgsl` and the WebGPU tonemap consumers.
+- *Class · grade:* adaptation · B; it closes a WebGPU-only divergence. HDR path only.
+- *Parity:* brings WebGPU to WebGL's GPU-resident shape.
+- *First lane:* engine, as a mode: move the altitude gate into a uniform and size the meter loop from the level's
+  texel count — tidewater's fixed 256×160 loop covers only about 10.49 Mpx of output.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Jolly T4; fork "a 3-buffer `mapAsync` ring") and R5 (the cap is 10.49 Mpx, not
+  6K); `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gorbulas P4: HOLDS.
+- *Licence:* `### tidewater` naming `src/post/PostFX.js` if copied.
+
+#### `NEW-TIDEWATER-HALF-RES-GTAO` — a half-resolution GTAO chain — OPEN (suggested home: MQ-T1)
+
+- *Technique (code facts):* a port of three.js r186's `GTAONode` — 12 samples as 3 directions × 4 steps, gather-min
+  depth, a 5×5 magic-square rotation — run at half resolution with a temporal pass
+  (`tidewater:src/post/GTAO.js:7-18, 85-88, 147-154`; `src/post/PostFX.js:104-133`); about 3.6 MB of targets at 1080p.
+- *Ours:* AO defaults to HBAO (`WebGPUAmbientOcclusionEffect.ts:186-187`) over four full-resolution targets, 66.4 MB
+  in HDR (`:490-513`).
+- *Target:* `WebGPUAmbientOcclusionEffect.ts` and its shaders.
+- *Class · grade:* adaptation · B; reverse our log depth; its rotation and offset sequences are temporal
+  (`GTAO.js:7-10`), so it needs a no-TAA fallback.
+- *Parity:* WebGPU-only (no GLSL GTAO).
+- *First lane:* engine, as an AO mode with a no-TAA fallback; acceptance is target memory, AO pass GPU time and a
+  capture pair.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Jolly T2: "GTAO ports three.js r186 …") and `SWEEP_VERIFY_BRANDYBUCK.md` §2
+  Gorbulas P2: HOLDS.
+- *Licence:* three.js GTAONode (MIT) under `LICENSE.md` `### three.js`, naming the new fork files; `### tidewater`
+  if tidewater's port is copied.
+
+#### `NEW-TIDEWATER-MOTION-BLUR-RECONSTRUCTION` — McGuire/Jimenez motion-blur reconstruction — OPEN (suggested home: MQ-T1)
+
+- *Technique (code facts):* 20 px tile-max and neighbour-max velocity over a 400×224 tile grid with 10×10 threads,
+  streaks capped at 40 px, and a reconstruction gather (`tidewater:src/post/MotionBlur.js:7-25, 72-73`).
+- *Ours:* `WebGPUMotionBlurEffect.ts:19-21, 60-67`.
+- *Target:* `WebGPUMotionBlurEffect.ts`.
+- *Class · grade:* adaptation · B; camera velocity comes from our RTE reprojection.
+- *Parity:* WebGPU-only.
+- *First lane:* engine, as a mode; captures of a fast pan against today's effect.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Jolly T5) and `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gorbulas P5: HOLDS.
+- *Licence:* `### tidewater` naming `src/post/MotionBlur.js` if copied.
+
+#### `NEW-TIDEWATER-BLOOM-PYRAMID-AFTER-RESOLVE` — a 13-tap/tent bloom pyramid after the TAA resolve — OPEN (suggested home: MQ-T1)
+
+- *Technique (code facts):* 13-tap downsamples with a Karis average on the first, then 3×3 tent upsamples
+  accumulating each level (`tidewater:src/post/PostFX.js:321-390`), run after the TAAU (`:646-688`).
+- *Ours:* bloom runs before TAA (`WebGPUPostProcessPipeline.ts:8-38`).
+- *Target:* `WebGPUBloomEffect.ts` and the pipeline order.
+- *Class · grade:* transplant · B; a new look, so an opt-in mode.
+- *Parity:* both backends (a fragment chain needs its GLSL twin).
+- *First lane:* after `NEW-TIDEWATER-BLOOM-TAA-ORDER-UNOWNED` records the order question; captures on both backends.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Jolly T3; fork "Bloom runs before TAA") and `SWEEP_VERIFY_BRANDYBUCK.md` §2
+  Gorbulas P3: HOLDS.
+- *Licence:* `### tidewater` naming `src/post/PostFX.js` if copied.
+
+#### `NEW-TIDEWATER-GPU-SUN-VISIBILITY` — GPU-measured sun visibility for the sun halo, sun bloom and flare — OPEN (suggested home: MQ-T1)
+
+- *Technique (code facts):* one compute thread takes 24 golden-angle depth taps around the sun each frame and eases
+  the result in a storage buffer that the final pass reads, never reading it back
+  (`tidewater:src/post/LensFlare.js:70-114`).
+- *Ours:* the sun halo is "deliberately not occluded by scene geometry" (`WebGPUSunHaloEffect.ts:184-187`).
+- *Target:* `WebGPUSunHaloEffect.ts`, `WebGPUSunBloomEffect.ts`.
+- *Class · grade:* adaptation · B; a look choice; re-derive the depth tests for log depth and multiple frusta.
+- *Parity:* a 1×1 GLSL pass for WebGL.
+- *First lane:* a look ruling (the halo's no-occlusion is deliberate), then an opt-in lane with a partial-occlusion
+  capture sequence.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Jolly: "Lens-flare visibility stays on the GPU") and §5.3; `SWEEP_VERIFY_BRANDYBUCK.md`
+  §2 Gorbulas P7: HOLDS.
+- *Licence:* `### tidewater` naming `src/post/LensFlare.js` if copied.
+
+#### `NEW-TIDEWATER-SMAA` — SMAA 1x, and SMAA before TAA — OPEN (suggested home: MQ-T1)
+
+- *Technique (code facts):* SMAA 1x medium as a port of three.js's `SMAANode` (iryoku/smaa 2.8), with area and search
+  lookup textures (`tidewater:src/post/AntiAlias.js:7-9, 43-64`; `src/post/PostFX.js:186-192, 667-679`).
+- *Ours:* no SMAA.
+- *Target:* a new AA stage.
+- *Class · grade:* transplant · B.
+- *Parity:* needs a GLSL twin.
+- *First lane:* engine, opt-in; edge captures against FXAA on both backends.
+- *Proof bar:* engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gorbulas P8 and `VERIFY_GRIMA.md` §2 (fork "no RCAS and no SMAA"):
+  HOLDS.
+- *Licence:* the lookup textures come from three.js (after Jimenez et al.) — their notice under `LICENSE.md`
+  `### three.js`; `### tidewater` if its port is copied.
+
+#### `NEW-TIDEWATER-BLOOM-TAA-ORDER-UNOWNED` — no row owns the question of bloom before TAA — OPEN (suggested home: MQ-T1)
+
+- *Technique (code facts):* tidewater runs AO, haze and the underwater composite, then the TAAU, then bloom
+  (`tidewater:src/post/PostFX.js:646-688`).
+- *Ours:* bloom runs before TAA (`WebGPUPostProcessPipeline.ts:8-38`). `NEW-TAA-PIPELINE-ORDER-RECONCILE` is resolved
+  and concerned the tonemap order (`TAA_DESIGN.md`), while `FEATURE_INVENTORY.md` still says it "stays open".
+- *Target:* the post-pipeline order decision.
+- *Class · grade:* docs (a decision row) · A.
+- *Parity:* a decision on both backends' post order.
+- *First lane:* a decision packet with captures of bloom-before-TAA against bloom-after-TAA; no code.
+- *Proof bar:* docs.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gorbulas ("the TAA reconcile wording"; "the chain order on both
+  sides"): HOLDS.
+- *Licence:* none.
+
+#### `NEW-TIDEWATER-GAUSSIAN-BLUR-TAP-MERGE` — merge Gaussian taps into bilinear fetches in the shared blur — OPEN (suggested home: C11's performance front, or MQ-T1's post bucket)
+
+- *Technique (code facts):* three.js r186 (#34479) merges adjacent Gaussian taps into one bilinear fetch, `2k−1` taps
+  to `k+1`; the author measured 0.79 → 0.53 ms at 1080p and 1.32 → 0.82 ms at 4K on an M1 for a 5-mip blur.
+- *Ours:* `GaussianBlur1D.wgsl` (and `_f16`) and `GaussianBlur1D.glsl` each make 15 fetches per pass
+  (`SAMPLES = 8`, `GaussianBlur1D.wgsl:17`), weights from runtime `delta` and `sigma`; consumers are bloom, AO, depth
+  of field and sun bloom on WebGPU, `PostProcessStageLibrary.js` and `SunPostProcess.js` on WebGL.
+- *Target:* `GaussianBlur1D.wgsl`, `GaussianBlur1D_f16.wgsl`, `GaussianBlur1D.glsl`.
+- *Class · grade:* adaptation · A.
+- *Parity:* both backends.
+- *First lane:* **measure first** — GPU timestamps of the blur passes at 1080p and 4K on Edge, stop if their share is
+  negligible; else merge (1,2), (3,4), (5,6) and keep tap 7 (15 → 9 fetches), computing merged weights and offsets
+  in the shader so `delta` and `sigma` keep working; prove whether each merged pair falls inside one texel interval
+  at each backend's default step, and state a diff tolerance where it does not.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (#34479, body verified) and R11 (15 → 9, not ~8): HOLDS.
+- *Licence:* technique-level; three.js notice only if its code is copied.
+
+#### `NEW-TIDEWATER-CAMERA-ALTITUDE-SKY-VIEW-LUT` — a camera-altitude sky-view LUT, and GPU irradiance for model lighting — OPEN (suggested home: MQ-T1)
+
+- *Technique (code facts):* a sky-view LUT whose v axis splits at `acos(vHorizon/viewH)` and re-bakes on a camera
+  height quantised to 2 m or 2 %; an irradiance kernel read back every 0.25 s
+  (`tidewater:src/sky/Atmosphere.js:197-216, 341-427, 475-510`). It marches from the camera to the nearest
+  top-of-atmosphere hit (`:384-388`).
+- *Ours:* the sky-view LUT is baked for an observer at altitude 0 and re-baked on sun or weather change; an
+  irradiance LUT is already baked (`WebGPUAtmosphereLUT.ts:239-290`); `AtmosphereDerivedLighting` uses an analytic
+  path.
+- *Target:* `WebGPUSkyAtmosphereRenderer.js`, `AtmosphereLUT.wgsl`; `AtmosphereDerivedLighting`.
+- *Class · grade:* adaptation · B. An orbital camera needs the march origin moved to the shell; do not port the
+  272-tap kernel — bind or read back the irradiance LUT we already bake.
+- *Parity:* WebGL keeps the inline march (parity of look).
+- *First lane:* bind the existing irradiance LUT to the model sun/ambient path behind an option; the camera-altitude
+  LUT follows as its own slice.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Bregdan T1; "the vacuum-leg criticism holds") and §6 (irradiance: bind our LUT),
+  R3 (our re-bake also fires on humidity, air quality and ozone): HOLDS.
+- *Licence:* `### tidewater` naming `src/sky/Atmosphere.js` if copied.
+
+#### `NEW-TIDEWATER-HILL-SHADOW-HEIGHT-WINDOW` — long hill shadows beyond the CSM range from a camera-local height window — OPEN (suggested home: MQ-T1)
+
+- *Technique (code facts):* a 512² map at 4 m storing, per cell, the lowest height that still sees the key light and
+  the distance to its occluder, marched over a max-mip height pyramid and re-baked only when the sun moves; one
+  manual-bilinear lookup (four `textureLoad`s) gives soft long hill shadows
+  (`tidewater:src/world/TerrainGPU.js:130-198, 283-296`).
+- *Ours:* no heightfield or GPU height query exists (0 hits); terrain casts into the CSM only.
+- *Target:* a new camera-local height window (the snapped camera-centred map pattern is
+  `tidewater:src/ocean/UnderwaterLighting.js:195-209`).
+- *Class · grade:* adaptation · C (the height window does not exist).
+- *Parity:* both backends.
+- *First lane:* a design for the camera-local height window, sized against the tile LOD; no code.
+- *Proof bar:* docs, then engine.
+- *Verdict:* `VERIFY_GRIMA.md` §0 (Bregdan T5 exists at the cited place), §2 (fork: no heightfield) and
+  `SYNTHESIS.md` D10 (grade C): HOLDS.
+- *Licence:* `### tidewater` naming `src/world/TerrainGPU.js` if copied.
+
+#### `NEW-TIDEWATER-GROUND-BOUNCE` — a ground-bounce term for down- and side-facing normals — OPEN (suggested home: MQ-T1; behind `NEW-TIDEWATER-HILL-SHADOW-HEIGHT-WINDOW`)
+
+- *Technique (code facts):* a 512² map of albedo × cos(sun, normal) × heightfield sun shadow, minus the ground the
+  environment already counts, blurred and re-baked when the key light moves; shading adds it for down- and
+  side-facing normals (`tidewater:src/materials/GroundBounce.js:61-188`).
+- *Ours:* no ground-bounce term; our albedo comes from imagery.
+- *Target:* the indirect-diffuse path of terrain and models.
+- *Class · grade:* adaptation · C/D (it needs the height window and an albedo domain).
+- *Parity:* both backends.
+- *First lane:* none until the height window exists.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §0 (Bregdan T10) and `SYNTHESIS.md` D9 (C/D): HOLDS.
+- *Licence:* `### tidewater` naming `src/materials/GroundBounce.js` if copied.
+
+### Water under the surface — bathymetry (MQ-T3) and the underwater camera (MQ-T4)
+
+#### `NEW-BATHYMETRY-DATASET-LANE` — a seabed height for the depth-keyed water techniques — OPEN (suggested home: C14 W0/W2, pre-launch; maintainer question MQ-T3)
+
+- *Technique (code facts):* tidewater's depth-keyed water — cascade attenuation, the refracted end point, the caustic
+  lookup, the underwater terms — reads `terrainHeightAt`, four `textureLoad`s of a 2048² `r32float` heightmap that
+  returns −90 outside its domain (`tidewater:src/world/TerrainGPU.js:63, 226-241`).
+- *Ours:* Cesium World Terrain carries no seabed; Cesium World Bathymetry is ion asset 2426648
+  (`Core/createWorldBathymetryAsync.js:38-44`); GEBCO 2024 is public domain (acknowledgement requested) at 15 arc
+  seconds, about 460 m, which resolves shelves, not surf zones. `WaterClassificationProvider` is the existing
+  water-classification seam.
+- *Target:* a terrain-provider / water-classification seam, per tile.
+- *Class · grade:* new subsystem (data) · C.
+- *Parity:* a per-tile seabed raster needs both backends.
+- *First lane:* **measure first**, tools class — probe `createWorldBathymetryAsync` for datum, seabed height and
+  nearshore post spacing at three coasts; GEBCO 2024 second. The measurement can run before MQ-T3 is answered.
+- *Proof bar:* tools (the measurement), then engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Aragost: `terrainHeightAt`; fork: "Cesium World Bathymetry is ion asset 2426648";
+  no heightfield) and §4 (GEBCO terms): HOLDS.
+- *Licence:* GEBCO acknowledgement when its data is used; none for the probe.
+
+#### `NEW-TIDEWATER-RASTERISED-CAUSTICS` — rasterised caustics from the FFT slopes — OPEN (suggested home: `FEAT-GAP-04` / Phase-8e; behind the cascades and the bathymetry lane)
+
+- *Technique (code facts):* a vertex grid over one FFT tile is displaced by refracting the sun through the wave
+  normal to a plane below, and the fragment writes the area ratio with additive blending into two focal planes
+  (436² and 218² grids; focal planes at 1.2/4 m and 3/9 m; `rgba16float`), from the two finest cascades
+  (`tidewater:src/ocean/Caustics.js:30-180`, `:162-166`); the lookup blends by depth (`:206-262`).
+- *Ours:* no caustics (0 hits); our only cascade has 0.98 m texels, where tidewater splats its 7.1 m and 33.3 m
+  cascades (2.8 cm and 13 cm texels).
+- *Target:* a caustics module fed by the FFT slopes; `FEAT-GAP-04`'s lookup.
+- *Class · grade:* transplant (the splat) + adaptation (the lookup) · C.
+- *Parity:* WebGPU-only.
+- *First lane:* after `C6-FFT-OCEAN-CASCADES`' second lane: the splat as a standalone module with a spec (mean about
+  1, not uniform) — it needs only the FFT slopes; the lookup waits for something under the water to be visible.
+  three.js's caustics through the shadow pass (#30962) is the alternative design.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Aragost A11) and §5.6 (grade C, not the seat review's A), R6 (the splat needs only
+  FFT slopes): HOLDS.
+- *Licence:* `### tidewater` naming `src/ocean/Caustics.js` if copied.
+
+#### `NEW-TIDEWATER-SEABED-REFRACTION-SSR` — seabed refraction and an inline water SSR — OPEN (suggested home: `FEAT-GAP-04`, `C6-PLANAR-REFLECT-REFRACT`; behind the bathymetry lane)
+
+- *Technique (code facts):* Snell-refract the view ray, walk to the seabed with two heightfield refinements, cap the
+  path by scene depth; an 11-step plus 3-bisection SSR march on an `r16float` depth copy; a refraction pass that
+  re-renders only geometry below sea level + 0.4 m, with a guard band of 7.5 % of the width per side and 30 % of the
+  height below (`tidewater:src/ocean/WaterMaterial.js:376-480, 686-737`; `src/ocean/RefractionPass.js:24-32, 136-170`).
+- *Ours:* the ocean draws in `Pass.OPAQUE` (`WebGPUOceanRenderer.ts:1073`); `captureRefraction` exists in the scene
+  framebuffer.
+- *Target:* the ocean's pass placement, a second scene render, log-depth decode.
+- *Class · grade:* new subsystem · C.
+- *Parity:* WebGPU-only.
+- *First lane:* none until the bathymetry lane supplies a seabed.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Niniel T11/T13: SSR and the refraction pass; fork "It draws in `Pass.OPAQUE`")
+  and §5.5 (the guard band in NDC units): HOLDS.
+- *Licence:* `### tidewater` naming `src/ocean/WaterMaterial.js` and `src/ocean/RefractionPass.js` if copied.
+
+#### `NEW-TIDEWATER-UNDERWATER-LIGHTING-HOOKS` — lighting terms for fragments below the water — OPEN (suggested home: maintainer question MQ-T4)
+
+- *Technique (code facts):* camera-centred maps of the long-wave height, slope and foam snapped to texels; hooks
+  attenuate the sun along the refracted path, tint the ambient and move the shadow lookup to the light's entry point
+  on the surface (`tidewater:src/ocean/UnderwaterLighting.js:195-210, 219-327`); the direct hook needs only the lit
+  point's depth below the water (`:232-244`).
+- *Ours:* nothing under the water is visible — the patch is opaque, globe water is the terrain surface, and there is
+  no underwater camera.
+- *Target:* none until MQ-T4 is answered; with Cesium World Bathymetry as the terrain, fragments below the datum
+  could take the terms directly (a design option for `NEW-BATHYMETRY-DATASET-LANE`).
+- *Class · grade:* adaptation · C.
+- *Parity:* per-fragment terms need GLSL twins on the globe.
+- *First lane:* none until MQ-T4.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §0 (Bregdan T7, Aragost A13 exist at the cited places) and `SYNTHESIS.md` D8: HOLDS.
+- *Licence:* `### tidewater` naming `src/ocean/UnderwaterLighting.js` if copied.
+
+#### `NEW-TIDEWATER-UNDERWATER-CAMERA` — the split waterline and the participating medium for a submerged camera — OPEN (suggested home: maintainer question MQ-T4)
+
+- *Technique (code facts):* a per-pixel medium at the near plane (0.1 m, used as the lens) from the water mask and a
+  straddle test; the closed-form in-scatter `(e^−a − e^−(a+kd))/k` that cannot overflow looking up through deep
+  water (`tidewater:src/post/Underwater.js:201-221, 320-326, 379-396`).
+- *Ours:* no underwater camera; multi-frustum log depth.
+- *Target:* a WebGPU post stage, if MQ-T4 says a submerged globe camera is in scope.
+- *Class · grade:* transplant (the composite) · B; new subsystem (the medium decision) · D.
+- *Parity:* WebGPU post.
+- *First lane:* none until MQ-T4; the closed form is a pure function that could be spec'd first.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (Bregdan: "the underwater view uses the closed form in `_uwLit`") and R9 (the app's
+  near plane is 0.1): HOLDS.
+- *Licence:* `### tidewater` naming `src/post/Underwater.js` if copied.
+
+#### `NEW-TIDEWATER-CREST-TRANSLUCENCY` — sun through thin wave crests — OPEN (suggested home: the `C6-FFT-OCEAN` follow-ups for the patch; the globe SSS term with C14, MQ-T2)
+
+- *Technique (code facts):* a back-lit lobe `pow(sat(dot(vH, −lH)·0.6 + 0.4), 2.5)` times a crest factor from the
+  vertex height and the normal's tilt, times a green-blue colour and the sun light
+  (`tidewater:src/ocean/WaterMaterial.js:516-524`).
+- *Ours:* `pow(VdotL, 4)` SSS on globe water (`GlobeTerrain.wgsl:2774`); the patch's vertex shader already has the
+  displacement height.
+- *Target:* `OceanSurface.wgsl` first.
+- *Class · grade:* transplant · A on the patch.
+- *Parity:* WebGPU-only on the patch; the globe needs the GLSL twin.
+- *First lane:* on the patch behind a runtime float, after the other `OceanSurface.wgsl` owners; back-lit captures.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §0 (Niniel T14 exists at the cited place) and §2 (fork globe ocean: "`pow(VdotL,4)`
+  SSS"): HOLDS.
+- *Licence:* `### tidewater` naming `src/ocean/WaterMaterial.js` if copied.
+
+### Level of detail and instancing — suggested home: C18 or C11
+
+#### `NEW-TIDEWATER-LOD-SCREEN-DOOR-CROSSFADE` — a complementary screen-door cross-fade between LOD levels — OPEN (suggested home: C18 or C11; it amends `NEW-VEGETATION-SYSTEM` V3)
+
+- *Technique (code facts):* a 4×4 Bayer threshold shifted every frame so all 16 offsets are visited in 16 frames;
+  the outgoing and incoming levels take complementary thresholds, so each pixel is covered exactly once, and the
+  shadow hook runs the same test (`tidewater:src/materials/LODFade.js:26-39`).
+- *Ours:* no LOD cross-fade; the Model display condition is binary; `csm_stochasticDither.wgsl` has zero call sites
+  and is V3's planned cross-fade (scaffolding, Principle 7).
+- *Target:* Model `distanceDisplayCondition`; the seven MASK discard sites (six in `ModelPBRComplete.wgsl`, one in
+  `ModelFS.glsl`); 3D Tiles refinement later.
+- *Class · grade:* adaptation · A for the chunk and the Model fade; C for 3D Tiles REPLACE (the traversal would keep
+  parent and children through the band).
+- *Parity:* both backends; the shadow and pick variants must discard identically; a no-TAA fallback.
+- *First lane:* amend V3's row to the paired complementary threshold (IGN can be paired too), then the Model fade.
+- *Proof bar:* engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundahad G1 and "no LOD cross-fade anywhere": HOLDS; R3 (seven sites,
+  not four) and R4 (the chunk has zero call sites).
+- *Licence:* `### tidewater` naming `src/materials/LODFade.js` if copied.
+
+#### `NEW-TIDEWATER-OCTAHEDRAL-IMPOSTORS` — baked octahedral impostors for far vegetation — OPEN (suggested home: C18 or C11; `NEW-VEGETATION-SYSTEM` V3 / `C7-CLOUD-IMPOSTOR-LOD`)
+
+- *Technique (code facts):* hemi-octahedral frame atlases of 3840×768 at five variants with mips, one instanced draw
+  per variant; the fragment shader picks the three frames around the view direction with barycentric weights and
+  re-projects the view ray onto each frame's plane, within 100 m, and the nearest frame beyond
+  (`tidewater:src/world/vegetation/Impostors.js:18-27, 75-157, 255-325`).
+- *Ours:* no host primitive (`NEW-VEGETATION-SYSTEM` V1); `C7-CLOUD-IMPOSTOR-LOD` prescribes a "3-nearest-frame
+  barycentric blend".
+- *Target:* V3's impostor tier.
+- *Class · grade:* adaptation · B; instance centres must be RTE; atlas mips are render-pass, not compute.
+- *Parity:* both backends.
+- *First lane:* none until V1 lands a host.
+- *Proof bar:* engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundahad G3: HOLDS; R7 (the atlas mips are render passes).
+- *Licence:* `### tidewater` naming `src/world/vegetation/Impostors.js` if copied.
+
+#### `NEW-TIDEWATER-FRAME-EXACT-INSTANCE-LOD` — a vertex-shader LOD window and per-kind indirect draws — OPEN (suggested home: C18 or C11)
+
+- *Technique (code facts):* the near/far split is decided in the vertex shader against the LOD range, so the switch
+  is frame-exact regardless of the CPU refill cadence (`tidewater:src/world/vegetation/VegNodes.js:139-145`;
+  `InstanceLOD.js:27, 214, 291-313`); per-kind indirect draws with list indirection
+  (`tidewater:src/world/reef/ReefBatch.js:141`).
+- *Ours:* the indirect fast path is opt-in (`WebGPUSceneRenderer.ts:563-566`); per-instance compaction must carry the
+  source id or `prevInstanceBuffer` smears TAA (`WebGPUModelRenderer.ts:4751-4870`).
+- *Target:* a new instanced collection or I3DM per-instance LOD.
+- *Class · grade:* adaptation · B (the LOD window; list indirection for a new collection); C for a 3D Tiles mega-buffer.
+- *Parity:* both backends for the LOD window; indirect draws are WebGPU-specific performance infrastructure.
+- *First lane:* none until V1 lands a host.
+- *Proof bar:* engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundahad G4 and G5: HOLDS.
+- *Licence:* `### tidewater` naming the files if copied.
+
+#### `NEW-TIDEWATER-MIP-AWARE-ALPHA-CUTOFF` — mip-aware alpha cutoff, edge-on thinning and `fwidth` widening — OPEN (suggested home: C18 or C11)
+
+- *Technique (code facts):* the alpha cutoff follows the texture mip, cards thin edge-on, and the test widens by
+  `fwidth` (`tidewater:src/world/vegetation/VegMaterials.js:292, 305, 620-623, 647-648`).
+- *Ours:* a fixed glTF `alphaCutoff` at seven discard sites (six in `ModelPBRComplete.wgsl`, one in `ModelFS.glsl:43`);
+  `alphaToCoverageEnabled` appears only in the pipeline cache.
+- *Target:* the seven sites, opt-in.
+- *Class · grade:* adaptation · A; opt-in because it departs from glTF `alphaCutoff`.
+- *Parity:* both backends.
+- *First lane:* engine, opt-in, captures of foliage at distance on both backends.
+- *Proof bar:* engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundahad G2: HOLDS; R3 (seven sites).
+- *Licence:* `### tidewater` naming `src/world/vegetation/VegMaterials.js` if copied.
+
+#### `NEW-TIDEWATER-TERRAIN-CDLOD` — strip-ordered indices and geomorphing for heightmap terrain tiles — OPEN (suggested home: C11)
+
+- *Technique (code facts):* a Strugar-2010 CDLOD quadtree with one instanced grid and geomorphing
+  (`tidewater:src/core/CDLOD.js:5-16, 115-145`).
+- *Ours:* no geomorph or CDLOD (0 hits); heightmap tiles and quantized-mesh tiles.
+- *Target:* heightmap terrain tile meshes.
+- *Class · grade:* strip-ordered indices A (measure first: tidewater states no number); geomorph B for heightmap
+  grids, C for quantized-mesh.
+- *Parity:* both backends.
+- *First lane:* measure vertex-cache behaviour of strip-ordered indices first.
+- *Proof bar:* engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundahad G7: HOLDS.
+- *Licence:* cite Strugar (2010); `### tidewater` naming `src/core/CDLOD.js` if copied.
+
+### Particles and the weather renderer
+
+#### `NEW-WEBGPU-WEATHER-PARTICLES-ECEF-Y-FRAME` — the WebGPU weather particles use ECEF Y as "up" — OPEN, BUG (suggested home: C13, where weather rows live, near `C13-30`; or C11's correctness-reds, as the sweep suggested — the seat's call)
+
+- *What the code does (verified):* gravity is `(0, −1, 0)·9.81` in ECEF (`WebGPUWeatherRenderer.ts:306-310`); spawn is
+  at `+halfExtents.y` (`Compute/WeatherParticles.wgsl:228`); the kill test compares `p.position.y` with the ground
+  altitude minus the camera's ECEF Y (`:175`; `WebGPUWeatherRenderer.ts:272, 345`), with `groundAltitude = 0`
+  (`WebGPUSceneRendererEnvironmentalEffects.ts:247`); emit runs after update (`WebGPUWeatherRenderer.ts:358-377`).
+  The verifier recomputed that at the precipitation probe's camera (−122.4°, 37.78°, 180 m) the camera's ECEF Y is
+  −4,261,803 m, so the test is true for every live particle at every update, and ECEF −Y lies 48.1° from local up.
+  On the offscreen route the weather depth is cleared to 1.0, so nothing in the scene occludes the particles there
+  (`WebGPUSceneRendererEnvironmentalEffects.ts:449-452`). `FEATURE_INVENTORY.md` lists the renderer as SHIPPED.
+- *Not yet known:* the visible consequence is unverified (it needs one browser readback).
+- *Reference:* tidewater has no fix to offer (its world is flat and +Y-up); its per-particle ground and water queries
+  show the shape of the test (`tidewater:src/fx/Spray.js:443-444`).
+- *First lane:* an Edge leg reads `counters[0]` back after the update pass at (−122.4°, 37.78°, 180 m) and at
+  (+90°, 0°); the observable is a non-zero alive count at both and a mean particle velocity within a stated angle of
+  −(local up). Then the fix: local up from the geodetic normal at the camera in f64 on the CPU; gravity −up·9.81;
+  spawn and the ground test along up; inertness mutant makes the new frame unreachable. Keep the unread scaffolding
+  (`counters[0]`, `snowCover`; Principle 7).
+- *Second lane (after the fix):* sub-pixel drops widened to 1.3 px with opacity scaled so projected area × dwell time
+  is conserved, and streaks aligned with velocity (`tidewater:src/fx/Spray.js:556-600`, `:565-570`) in
+  `WeatherParticleRender.wgsl`; AirMotes is not the model (it inflates coverage ×8 on purpose).
+- *Later lanes (the sweep's take-later G5b and G5c, grade B each):* per-particle sun, sky and night lighting with
+  the cloud shadow read through `WebGPUCloudShadowFrame` (tidewater lights its drops with HG lobes and multiplies
+  the cloud shadow in, `tidewater:src/fx/Spray.js:296, 604-627`); and soft particles against scene depth through
+  `csm_reverseLogDepthToEyeDistance`, which needs scene depth, log depth and the frusta bound at the after-post
+  composite (`WebGPUWeatherRenderer.ts:458-461`; tidewater `src/fx/Spray.js:691-699`). Verdict:
+  `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundahar G5 and "our side", Gundolpho G9 (`Spray.js:296`): HOLDS.
+- *Class · grade:* a fix, grade A; the second lane a transplant, grade A.
+- *Parity:* WebGPU-only compute under the Principle 5 compute exemption.
+- *Proof bar:* the measurement leg, then engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundahar ("§0, the weather frame (code facts)"; "our side … depth
+  cleared to 1.0"; G5 the sprites): HOLDS; U1 (the runtime consequence) is UNVERIFIABLE without a browser and is not
+  asserted here; R15 (AirMotes' floor is 1.2 px and inflated by design).
+- *Licence:* none for the fix; `### tidewater` naming `src/fx/Spray.js` if the sprite code is copied.
+
+#### `NEW-TIDEWATER-GPU-PARTICLE-RING` — one GPU particle ring shared by GPU and CPU emitters, and its companions — OPEN (suggested home: none until a second GPU emitter or a consumer exists)
+
+- *Technique (code facts):* a storage ring of 32,768 GPU slots plus 8,192 CPU slots in three `vec4` arrays; GPU
+  emitters reserve slots through an atomic head that is never reset (`tidewater:src/fx/Spray.js:122-132, 188-197`);
+  compact CPU requests with a prefix scan (`:387-410`); the integrator (`:412-469`); a closed-loop emission budget
+  from a readback of the ring head (`src/ocean/Breakers.js:168-211`); coverage-weighted motion vectors for blended
+  particles (`src/engine/render/MeshShader.js:341-351`); particles depositing into a grid through `atomic<u32>`
+  (`src/ocean/ShoreSim.js:62-64, 155-164`); stateless camera-wrapped fields (`src/fx/AirMotes.js:96-97, 127-138`).
+- *Ours:* one GPU emitter (weather) whose dead-slot pool never overwrites live particles; `snowCover` is unread
+  scaffolding a deposit grid could feed.
+- *Target:* none today.
+- *Class · grade:* adaptation · B (the ring), A (the budget, once a ring exists), C (motion vectors, deposits).
+- *Parity:* WebGPU-only compute; the camera-wrapped fields are vertex-only, so a GLSL twin is possible.
+- *First lane:* none until a consumer exists.
+- *Proof bar:* engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gundahar G1–G4, G6–G8: HOLDS; R10, R14, R16 are nits carried as
+  corrected.
+- *Licence:* `### tidewater` naming the files if copied.
+
+### DX — suggested home: the Wave DX list (`CAMPAIGN_STATE.md` § Wave DX)
+
+#### `NEW-TIDEWATER-DAWN-KERNEL-RUNNER` — a headless Node-WebGPU (Dawn) kernel runner — OPEN (suggested home: Wave DX; adoption is maintainer question MQ-T5)
+
+- *Technique (code facts):* tidewater binds Dawn in three lines — `import { create, globals } from 'webgpu'`,
+  `Object.assign(globalThis, globals)`, `navigator.gpu = create([])` (`tidewater:test/headless.mjs:1-8`); `webgpu`
+  0.6.1 is an MIT devDependency with an install script (`tidewater:package.json:12`). Its suite gates nothing on
+  pixels: 20 GPU scripts end in an unconditional `exit(0)`, and only `test/ocean-shore.mjs` fails, on an error count
+  (`:16-19, 219`).
+- *Ours:* `node --test` for tools, karma on Edge for WebGPU specs, `wgsl-mini-eval` for arithmetic WGSL, naga-wasm
+  validation; every GPU-executing check needs the single Edge slot.
+- *Target:* a Tools runner; no engine change.
+- *Class · grade:* new (tools) · B for kernel checks.
+- *Parity:* n/a.
+- *First lane (feasibility):* install `webgpu` under the lane's temp root only — no `package.json` change, never into
+  the seat's `node_modules`, and only with the seat's go-ahead because its install script runs at install time;
+  report whether `create([])` yields an adapter and device on this Windows 10 machine and on which backend; Dawn's
+  result on our WGSL at define set 0 with every naga disagreement listed; one numeric check of `OceanIFFT.wgsl`
+  against a CPU DFT on a seeded spectrum, exiting 1 on mismatch, with an inertness mutant (swap two butterfly
+  indices). Adoption needs MQ-T5, an npm runner home and a skip when Dawn is absent. It replaces no Edge leg.
+- *Proof bar:* tools.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Baggins B6 and `VERIFY_GRIMA.md` R7 (the smoke test asserts nothing):
+  HOLDS.
+- *Licence:* `webgpu` is MIT; a devDependency needs no `LICENSE.md` entry unless redistributed.
+
+#### `NEW-TIDEWATER-PASS-TIMESTAMP-WRAP` — per-device pass timestamps with an exclusive-cost column — OPEN (suggested home: Wave DX)
+
+- *Technique (code facts):* every pass is timestamped by wrapping the encoder's pass begins, each pass is charged
+  the time since the previous pass ended, and results resolve every 0.5 s (`tidewater:src/core/Bench.js:40-74`;
+  `src/core/Profiler.js:71-91, 117-127`); the wrap is global and `{...desc, timestampWrites}` overwrites any
+  engine-set writes.
+- *Ours:* `withRender/ComputePassTimestamps` (`WebGPUPerformanceManager.ts:629-686`), union/overlap accounting
+  (`WebGPUTimestampAccounting.ts:1-28`); `WebGPUOceanRenderer.ts` and `WebGPUWeatherRenderer.ts` use no wrapper.
+- *Target:* a probe-side, per-device, debug-gated wrap (the per-device `createShaderModule` patch in
+  `WebGPUContext.ts` is the precedent).
+- *Class · grade:* transplant (tools) · A.
+- *Parity:* WebGPU-only performance infrastructure (exempt).
+- *First lane:* the wrap, never overwriting engine-set `timestampWrites`, with exclusive-cost and ×N-per-frame
+  columns beside `overlapMs`, and distributions rather than single numbers.
+- *Proof bar:* tools (a spec for the accounting).
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Baggins B5 and `VERIFY_GRIMA.md` §2 (Jolly: "`Bench.js:43-60` wraps the
+  encoder prototype … overwrites any engine-set writes"): HOLDS.
+- *Licence:* pattern-level citation.
+
+#### `NEW-TIDEWATER-SYNC-COMPILE-CENSUS` — a census of synchronous pipeline compiles — OPEN (suggested home: Wave DX)
+
+- *Technique (code facts):* async pipeline handles whose compile starts in a microtask, a `syncCompiles` log, a
+  `pipelinesReady()` barrier, skipped unready draws and hidden precompile frames at load
+  (`tidewater:src/engine/gpu/GPU.js:136-198`; `src/App.js:373-436`). Its "Compiling shaders" bar is a timed creep,
+  not a count.
+- *Ours:* one `createRenderPipelineAsync` code site (`WebGPURenderPipelineCache.ts:760`) serves the model colour and
+  globe surface pipelines, whose draws are skipped while they compile; 139 synchronous render and 53 synchronous
+  compute pipeline hits otherwise.
+- *Target:* an Edge `addInitScript` wrapping `createRenderPipeline` / `createComputePipeline` and the async pair.
+- *Class · grade:* tools (measurement) · A.
+- *Parity:* n/a.
+- *First lane:* count calls and CPU ms per frame by label over a cold load and a camera flight; a conversion or an
+  all-ready barrier follows only where the numbers point.
+- *Proof bar:* tools.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` R1 (the corrected form: the hot paths are already async with draw skip)
+  and §2 Baggins B1: HOLDS.
+- *Licence:* pattern-level citation.
+
+#### `NEW-TIDEWATER-UNCAPTURED-ERROR-SINK` — an engine-side sink for uncaptured WebGPU errors — OPEN (suggested home: Wave DX; Principle 3)
+
+- *Technique (code facts):* tidewater's one failing GPU test counts `uncapturederror` events through
+  `addEventListener` (`tidewater:test/ocean-shore.mjs:16-19`); three.js r185 (#33418) routes them to its renderer's
+  error sink.
+- *Ours:* no engine listener; the probe gate owns `device.onuncapturederror` and says Cesium never assigns it
+  (`Tools/lib/webgpu-error-gate.mjs`, header).
+- *Target:* `WebGPUContext.ts`, one listener per device.
+- *Class · grade:* new · A.
+- *Parity:* WebGPU-only.
+- *First lane:* `addEventListener('uncapturederror', …)`, never an assignment to `device.onuncapturederror`; log
+  through `context.log('error', …)`; one listener per device because a shared device serves several contexts.
+- *Proof bar:* engine.
+- *Verdict:* `VERIFY_GRIMA.md` §2 (fork: "There is no `uncapturederror` sink") and `SWEEP_VERIFY_BRANDYBUCK.md` §2
+  Baggins B6 (`ocean-shore.mjs` exits on errors): HOLDS.
+- *Licence:* none.
+
+#### `NEW-TIDEWATER-TAA-ACCEPTANCE-PROBE` — a TAA acceptance instrument — OPEN (suggested home: Wave DX probe kit, `R-2026-09-17-12`)
+
+- *Technique (code facts):* a consecutive-frame flicker score over a region, a 16-render 4×4 stratified reference
+  written to disk, and VELCHECK comparing GPU velocity with a CPU depth reprojection at 4 pixels over 6 frames
+  (`tidewater:test/taa-pier.mjs:106-121, 135-158, 162-192`); no comparer against the reference ships.
+- *Ours:* `probe-taa-resolve.mjs`'s image checks are that the settled image is stable and that one moved frame
+  does not smear (`:15-37`); it has no reference comparison, no flicker score and no velocity check.
+- *Target:* one Edge probe on the landed probe kit (rig registry, image diff, metrics library).
+- *Class · grade:* tools · A.
+- *Parity:* WebGPU (our TAA).
+- *First lane:* compute all three measures including the comparison against the reference; VELCHECK through our
+  eye-relative reprojection (`TAA.wgsl:24-37`), never an f32 inverse view-projection. It becomes the acceptance for
+  RCAS and a resolve lane.
+- *Proof bar:* tools (a spec for the scoring, with a runner home).
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gorbulas ("'16× reference' is not reproducible") and Baggins B7/B8:
+  HOLDS; U2 (tidewater's "measured against a 16x supersampled reference" is unverifiable and is not asserted).
+- *Licence:* pattern-level citation.
+
+#### `NEW-TIDEWATER-WGSL-ERROR-SOURCE-EXCERPT` — WGSL compile errors with a source excerpt — OPEN (suggested home: Wave DX)
+
+- *Technique (code facts):* the failing line with three lines before and two after, marked with `>`
+  (`tidewater:src/engine/gpu/Shader.js:651-676`).
+- *Ours:* only `line:pos` and the message (`WebGPUContext.ts:3538-3544`; `WebGPUShaderCache.ts:345-357`), pointing
+  into preprocessed text that exists nowhere on disk.
+- *Target:* the per-device `createShaderModule` wrapper in `WebGPUContext.ts`.
+- *Class · grade:* transplant · A.
+- *Parity:* WebGPU-only; WebGL reports through its own shader log.
+- *First lane:* print an excerpt of the **preprocessed** source through `context.log` as a permanent error (no pragma).
+- *Proof bar:* engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Baggins B4: HOLDS.
+- *Licence:* pattern-level citation.
+
+#### `NEW-TIDEWATER-REDUNDANT-UPLOAD-PROBE` — a probe for uniform uploads that did not change — OPEN (suggested home: Wave DX)
+
+- *Technique (code facts):* uniform blocks compare their packed u32 words and skip `writeBuffer` when nothing changed
+  (`tidewater:src/engine/gpu/Uniforms.js:257-299`).
+- *Ours:* 329 `queue.writeBuffer(` sites in 108 files; compare-before-upload only in isolated renderers
+  (`WebGPUClusterAssignRenderer.ts:212-332`).
+- *Target:* an Edge init script wrapping `GPUQueue.prototype.writeBuffer`.
+- *Class · grade:* tools (measurement) · A.
+- *Parity:* n/a.
+- *First lane:* hash each payload per (buffer label, offset) per frame and report the bytes re-uploaded unchanged; an
+  engine helper follows only on evidence.
+- *Proof bar:* tools.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Baggins B3 (329 / 108 at HEAD): HOLDS.
+- *Licence:* pattern-level citation.
+
+#### `NEW-TIDEWATER-ENGINE-DX-LEADS` — four smaller engine and DX leads — OPEN (suggested home: Wave DX; each measured first)
+
+- *Technique (code facts):* (1) bind groups keyed by (object, version) with a 4-entry MRU
+  (`tidewater:src/engine/gpu/Shader.js:285-303, 383-456`); (2) a general two-dispatch compute mip chain
+  (`src/ocean/ComputeMips.js:1-107`); (3) a named-view `__pose()` round-trip and sun-relative aims
+  (`src/core/DebugViews.js:44-61`; `src/core/Bench.js:298-306`); (4) raised device limits, including
+  `maxComputeWorkgroupStorageSize` 32,768 (`src/engine/gpu/GPU.js:36-44`).
+- *Ours:* (1) a string-keyed `WebGPUBindGroupCache` (`:180-206`), whose `invalidateAll()` has 10 calls in 8 files;
+  (2) a blit-per-level `WebGPUMipmapGenerator.ts`; (3) the probe kit's rig registry (39 declarative rigs);
+  (4) our device request's limits.
+- *Target:* measure each first — `CesiumDebug.cacheStats()` for (1), call frequency for (2); (3) as rig-registry
+  features; (4) a check every port runs against our device request before relying on a raised limit.
+- *Class · grade:* adaptation · B, B, A, A.
+- *Parity:* WebGPU-specific performance and tooling infrastructure.
+- *First lane:* the measurements for (1) and (2).
+- *Proof bar:* tools, then engine.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Baggins B2 and B7, R2 (`ComputeMips.js`), R17 (10 calls, 8 files) and §5
+  item 3 (device limits): HOLDS.
+- *Licence:* pattern-level citations.
+
+### Docs
+
+#### `NEW-TIDEWATER-SWEEP-DOC-DRIFT` — doc and comment drift the review found in our tree — OPEN (suggested home: a docs lane; code comments through C16's comment-only gate)
+
+- *What was found (verified):* `TAA.wgsl:10-12` credits a variance clamp where the code is min/max;
+  `TAA_DESIGN.md:14, 158-164` says Halton where the code is IGN (`WebGPUTAAEffect.ts:795-796`);
+  `FEATURE_INVENTORY.md` says the auto-exposure reduction is a histogram where `AutoExposure.wgsl:1-10` is a mean;
+  `FEATURE_INVENTORY.md` says `NEW-TAA-PIPELINE-ORDER-RECONCILE` "stays open" while this ledger and `TAA_DESIGN.md:211`
+  record it resolved; `VEGETATION_SYSTEM_DESIGN.md:43, 69, 323` says 64 B per instance (96 B at HEAD) and places the
+  MASK discard at one line (six sites at HEAD); `OceanTimeSpectrum.wgsl:12-14` says the wave clock comes from the
+  frame number where the code reads scene seconds (`WebGPUOceanRenderer.ts:791-809`);
+  `AtmosphereDerivedLighting.js:16-28` justifies its analytic path by unbaked LUTs and a compute engine that is never
+  created, both stale; `WebGPUUniformGroupManager.ts` has no importer (a Principle 7 audit before any cleanup);
+  `GlobeTerrain.wgsl:2830-2831` says, of the glint roughening, "the FFT twin uses its patch amplitude fade, which has
+  the same sense", but that fade never engages at the default extent (`VERIFY_GRIMA.md` R1), so the comment changes
+  with the `C11-163` roughening slice.
+- *Target:* the named docs and comments.
+- *Class · grade:* docs · A.
+- *Parity:* n/a.
+- *First lane:* one docs lane for the docs; the shader and source comments through C16's comment-only gate.
+- *Proof bar:* docs.
+- *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gorbulas ("the four doc drifts"; "the TAA reconcile wording"), §5 item 6,
+  §2 Gundahad ("`VEGETATION_SYSTEM_DESIGN.md` is stale") and `VERIFY_GRIMA.md` §7 items 1–3: HOLDS.
+- *Licence:* none.
