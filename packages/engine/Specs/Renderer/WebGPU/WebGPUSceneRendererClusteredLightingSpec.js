@@ -6,6 +6,10 @@ import {
 // The hook is exercised over recording host, context, and dispatcher surfaces
 // so its state machine does not require a real WebGPU device.
 
+// The hook reuses a cached dispatcher only while its device is the context's
+// live device, so the fake dispatcher and the recording context share one.
+const specDevice = { label: "clustered-lighting spec device" };
+
 function makeBuffer(label) {
   return { label: label };
 }
@@ -24,6 +28,7 @@ function makeFakeDispatcher(lastActiveLightCount, lastAreaLightCount) {
   const initialActiveCount = lastActiveLightCount ?? 0;
   const initialAreaCount = lastAreaLightCount ?? 0;
   return {
+    device: specDevice,
     dispatchCalls: [],
     paramsWriteBufferCalls: 0,
     lastActiveLightCount: initialActiveCount,
@@ -85,7 +90,7 @@ function makeContext(options) {
   const opts = options ?? {};
   const calls = { endCurrentRenderPass: 0, resumeDefaultRenderPass: 0 };
   return {
-    _device: "device" in opts ? opts.device : {},
+    _device: "device" in opts ? opts.device : specDevice,
     _currentCommandEncoder: "encoder" in opts ? opts.encoder : {},
     uniformState:
       "uniformState" in opts

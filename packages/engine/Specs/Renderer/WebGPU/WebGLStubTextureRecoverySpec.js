@@ -371,12 +371,12 @@ describe("Renderer/WebGPU/WebGLStubTexture generation safety", function () {
 
     expect(encoderEvents.length).toBe(0);
     expect(device.mipJobs.length).toBe(1);
-    expect(usage).toContain(
-      jasmine.objectContaining({
-        method: "copyTexSubImage2D",
-        reason: jasmine.stringMatching(/rejected/),
-      }),
-    );
+    // A copy the context refuses reports its own reason, distinct from the
+    // unbound-texture and rejected-format reasons on neighbouring paths.
+    expect(usage).toContain({
+      method: "copyTexSubImage2D",
+      reason: "source/destination usages or formats are not copy-compatible",
+    });
   });
 
   it("preserves authored storage while surfacing automatic-generation rejection", function () {

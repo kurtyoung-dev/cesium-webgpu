@@ -604,6 +604,9 @@ describe("Renderer/WebGPU/WebGPUMoonTextureLifecycle", function () {
     };
     const context = Object.create(WebGPUContext.prototype);
     context._device = {
+      // Layered ("2d-array") jobs are queued only on devices with core view
+      // semantics.
+      features: new Set(["core-features-and-limits"]),
       createCommandEncoder: jasmine
         .createSpy("createCommandEncoder")
         .and.returnValue(encoder),

@@ -265,6 +265,8 @@ describe("Renderer/WebGPU/WebGPUDeviceLossRecovery", function () {
     cleanupContext._drainAfterFrameSubmitCallbacks = jasmine.createSpy(
       "cleanupContext._drainAfterFrameSubmitCallbacks",
     );
+    // An empty map lets the real encoder-submit drain run during cleanup.
+    cleanupContext._afterCommandEncoderSubmitCallbacks = new Map();
     cleanupContext._currentRenderPassEncoder = {};
     cleanupContext._activePassTarget = {};
     cleanupContext._currentCommandEncoder = {};
@@ -287,6 +289,9 @@ describe("Renderer/WebGPU/WebGPUDeviceLossRecovery", function () {
     cleanupContext._deviceResourceGeneration = 12;
     cleanupContext._environmentDemandRegistry = {
       reset: jasmine.createSpy("cleanupContext.resetDemand"),
+    };
+    cleanupContext._environmentRefreshCoordinator = {
+      reset: jasmine.createSpy("cleanupContext.resetCoordinator"),
     };
     cleanupContext._environmentRefreshScheduler = {
       reset: jasmine.createSpy("cleanupContext.resetScheduler"),
