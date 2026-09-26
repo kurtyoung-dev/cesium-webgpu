@@ -95,6 +95,15 @@ describe(
       return new CesiumWidget(container, options);
     }
 
+    // Subscribing to the default data source is the last step of CesiumWidget
+    // construction. Failing it drives rollback after every other ownership
+    // edge exists, through code that both build flavours run.
+    function failLateWidgetConstruction() {
+      const failure = new Error("injected late widget construction failure");
+      spyOn(CesiumWidget.prototype, "_dataSourceAdded").and.throwError(failure);
+      return failure;
+    }
+
     it("can create, render, and destroy", function () {
       widget = createCesiumWidget(container);
       expect(widget.isDestroyed()).toEqual(false);
@@ -372,14 +381,18 @@ describe(
         contextOptions.getWebGLStub = getWebGLStub;
       }
 
+      const lateFailure = failLateWidgetConstruction();
+
       let constructionError;
       try {
         await CesiumWidget.createAsync(container, {
           contextOptions,
           baseLayer: false,
           showRenderLoopErrors: false,
-          // useDefaultRenderLoop starts RAF immediately; this validation then
-          // fails, exercising rollback after Scene + handler allocation.
+          // useDefaultRenderLoop starts RAF immediately. A debug build then
+          // rejects this frame rate; a release build strips that check and
+          // fails at the last construction step instead. Either way rollback
+          // runs after Scene + handler allocation with a frame already queued.
           targetFrameRate: 0,
         });
       } catch (error) {
@@ -387,9 +400,13 @@ describe(
       }
 
       expect(constructionError).toBeDefined();
-      expect(constructionError.message).toContain(
-        "targetFrameRate must be greater than 0",
-      );
+      if (window.specsUsingRelease) {
+        expect(constructionError).toBe(lateFailure);
+      } else {
+        expect(constructionError.message).toContain(
+          "targetFrameRate must be greater than 0",
+        );
+      }
       expect(transaction.context.isDestroyed()).toBe(true);
       expect(callbacks.length).toBe(1);
       expect(Array.from(container.childNodes)).toEqual(
@@ -418,6 +435,12 @@ describe(
         contextOptions.getWebGLStub = getWebGLStub;
       }
 
+      // A debug build rejects the terrain/terrainProvider pair. A release build
+      // strips that check and goes on to set the terrain, so failing that call
+      // drives the same rollback, at the same construction step, there instead.
+      const terrainFailure = new Error("injected terrain construction failure");
+      spyOn(Scene.prototype, "setTerrain").and.throwError(terrainFailure);
+
       let constructionError;
       try {
         await CesiumWidget.createAsync(container, {
@@ -433,9 +456,13 @@ describe(
       }
 
       expect(constructionError).toBeDefined();
-      expect(constructionError.message).toContain(
-        "Specify either options.terrainProvider or options.terrain",
-      );
+      if (window.specsUsingRelease) {
+        expect(constructionError).toBe(terrainFailure);
+      } else {
+        expect(constructionError.message).toContain(
+          "Specify either options.terrainProvider or options.terrain",
+        );
+      }
       expect(transaction.context.isDestroyed()).toBe(true);
       expect(Array.from(container.childNodes)).toEqual(
         Array.from(originalChildren),
@@ -503,6 +530,8 @@ describe(
         contextOptions.getWebGLStub = getWebGLStub;
       }
 
+      const lateFailure = failLateWidgetConstruction();
+
       let constructionError;
       try {
         await CesiumWidget.createAsync(container, {
@@ -518,6 +547,16 @@ describe(
       }
 
       expect(constructionError).toBeDefined();
+      // A debug build rejects the missing element id. A release build strips
+      // that check and accepts a null viewport, so the late failure drives the
+      // rollback of the caller-owned credit container there instead.
+      if (window.specsUsingRelease) {
+        expect(constructionError).toBe(lateFailure);
+      } else {
+        expect(constructionError.message).toBe(
+          'Element with id "missing-credit-viewport" does not exist in the document.',
+        );
+      }
       expect(transaction.context.isDestroyed()).toBe(true);
       expect(Array.from(container.childNodes)).toEqual([callerChild]);
     });

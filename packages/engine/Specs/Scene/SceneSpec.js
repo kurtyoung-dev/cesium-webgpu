@@ -844,6 +844,56 @@ describe(
         let requestListenerCountDuringConstruction;
         let taskListenerCountDuringConstruction;
         const contextCallbackRemovals = [];
+        const failurePoints = [];
+
+        function failConstruction(failurePoint, partialScene) {
+          failurePoints.push(failurePoint);
+          registryCountDuringConstruction = partialScene.contextRegistry.count;
+          requestListenerCountDuringConstruction =
+            RequestScheduler.requestCompletedEvent.numberOfListeners;
+          taskListenerCountDuringConstruction =
+            TaskProcessor.taskCompletedEvent.numberOfListeners;
+
+          contextDestroy = spyOn(
+            partialScene.context,
+            "destroy",
+          ).and.callThrough();
+          viewDestroy = spyOn(
+            partialScene._defaultView,
+            "destroy",
+          ).and.callThrough();
+          creditDisplayDestroy = spyOn(
+            partialScene.frameState.creditDisplay,
+            "destroy",
+          ).and.callThrough();
+
+          for (const property of [
+            "_hdrFallbackUnsub",
+            "_asyncResourceUnsub",
+            "_featureRendererReadinessUnsub",
+          ]) {
+            const remove = partialScene[property];
+            if (typeof remove === "function") {
+              const removalSpy = jasmine
+                .createSpy(property)
+                .and.callFake(remove);
+              partialScene[property] = removalSpy;
+              contextCallbackRemovals.push(removalSpy);
+            }
+          }
+
+          throw new RuntimeError("injected Scene construction failure");
+        }
+
+        // The construction hook is debug-only by design and release bundles
+        // strip it. HDR display detection is the next construction step and
+        // runs in both flavours, so a release build fails there instead and
+        // the same rollback is asserted in the build users run.
+        spyOn(Scene.prototype, "_initializeHdrDisplayDetection").and.callFake(
+          function () {
+            failConstruction("initializeHdrDisplayDetection", this);
+          },
+        );
 
         await expectAsync(
           Scene.createAsync({
@@ -851,43 +901,7 @@ describe(
             contextOptions,
             _constructionFailureForSpecs: function (phase, partialScene) {
               expect(phase).toBe("afterGlobalListenersAndDefaultView");
-
-              registryCountDuringConstruction =
-                partialScene.contextRegistry.count;
-              requestListenerCountDuringConstruction =
-                RequestScheduler.requestCompletedEvent.numberOfListeners;
-              taskListenerCountDuringConstruction =
-                TaskProcessor.taskCompletedEvent.numberOfListeners;
-
-              contextDestroy = spyOn(
-                partialScene.context,
-                "destroy",
-              ).and.callThrough();
-              viewDestroy = spyOn(
-                partialScene._defaultView,
-                "destroy",
-              ).and.callThrough();
-              creditDisplayDestroy = spyOn(
-                partialScene.frameState.creditDisplay,
-                "destroy",
-              ).and.callThrough();
-
-              for (const property of [
-                "_hdrFallbackUnsub",
-                "_asyncResourceUnsub",
-                "_featureRendererReadinessUnsub",
-              ]) {
-                const remove = partialScene[property];
-                if (typeof remove === "function") {
-                  const removalSpy = jasmine
-                    .createSpy(property)
-                    .and.callFake(remove);
-                  partialScene[property] = removalSpy;
-                  contextCallbackRemovals.push(removalSpy);
-                }
-              }
-
-              throw new RuntimeError("injected Scene construction failure");
+              failConstruction(phase, partialScene);
             },
           }),
         ).toBeRejectedWithError(
@@ -895,6 +909,11 @@ describe(
           "injected Scene construction failure",
         );
 
+        expect(failurePoints).toEqual([
+          window.specsUsingRelease
+            ? "initializeHdrDisplayDetection"
+            : "afterGlobalListenersAndDefaultView",
+        ]);
         expect(registryCountDuringConstruction).toBe(registryCount + 1);
         expect(requestListenerCountDuringConstruction).toBe(
           requestListenerCount + 1,

@@ -1,4 +1,4 @@
-import { destroyObject, DeveloperError } from "../../index.js";
+import { destroyObject } from "../../index.js";
 
 describe("Core/destroyObject", function () {
   it("replaces instance-owned functions", function () {
@@ -161,21 +161,22 @@ describe("Core/destroyObject", function () {
   });
 
   it("throws with the provided message", function () {
+    const doWork = function () {};
     const object = {
       destroy: function () {
         return destroyObject(this, "custom message");
       },
-      doWork: function () {},
+      doWork: doWork,
     };
     object.destroy();
 
-    let thrown;
-    try {
+    // Release builds strip the throw itself, so the replacement is the part of
+    // this contract both flavours share; the matcher checks the message only
+    // where the throw exists.
+    expect(object.isDestroyed()).toBe(true);
+    expect(object.doWork).not.toBe(doWork);
+    expect(function () {
       object.doWork();
-    } catch (e) {
-      thrown = e;
-    }
-    expect(thrown instanceof DeveloperError).toBe(true);
-    expect(thrown.message).toEqual("custom message");
+    }).toThrowDeveloperError("custom message");
   });
 });

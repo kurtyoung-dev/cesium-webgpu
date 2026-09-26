@@ -574,6 +574,15 @@ describe(
         contextOptions.getWebGLStub = getWebGLStub;
       }
 
+      // A debug build rejects sceneModePicker with scene3DOnly. A release build
+      // strips that check and omits the picker, so subscribing to the default
+      // data source, near the end of Viewer construction, fails there instead.
+      // Either way the widget's render loop has already queued a frame.
+      const lateFailure = new Error(
+        "injected late Viewer construction failure",
+      );
+      spyOn(Viewer.prototype, "_dataSourceAdded").and.throwError(lateFailure);
+
       let constructionError;
       try {
         await Viewer.createAsync(container, {
@@ -590,9 +599,13 @@ describe(
       }
 
       expect(constructionError).toBeDefined();
-      expect(constructionError.message).toContain(
-        "sceneModePicker is not available when options.scene3DOnly",
-      );
+      if (window.specsUsingRelease) {
+        expect(constructionError).toBe(lateFailure);
+      } else {
+        expect(constructionError.message).toContain(
+          "sceneModePicker is not available when options.scene3DOnly",
+        );
+      }
       expect(transaction.context.isDestroyed()).toBe(true);
       expect(container.querySelectorAll(".cesium-viewer").length).toBe(0);
       expect(container.querySelectorAll(".cesium-widget").length).toBe(0);
