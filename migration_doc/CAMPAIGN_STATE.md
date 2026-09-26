@@ -267,6 +267,18 @@ clone `cesium-lane-sync-1145-20260904` @ `5be896fe3a` both still stand.
 audit doc is held behind nine corrections (`R-2026-09-16-11`), with its `_lane-out/` archived to
 `cesium-webgpu-worker-archive/lanes-2026-09-16/` rather than tracked.
 
+**Astra's 2026-09-21 → 09-25 cloud stack: a HELD wave (added 2026-09-26, `R-2026-09-26-1`, `-8`,
+`-9`).** The next stack (81 files, 37 units) was audited read-only at `a76d42b3f8`, revised at `b263d8ac5e`
+([`ASTRA_WORK_AUDIT_2026-09-25.md`](ASTRA_WORK_AUDIT_2026-09-25.md)) and is not landable as it stands;
+the ruled direction returns it to Astra. **The Astra cloud wave — batches A1 → A2a → A2b → A2c → A3 —
+is HELD pending P2, Astra's return** (strip, fix list, rebase in a fresh clone, re-cut), **and P2 waits
+behind the seat's Phase-1 lanes:** the two remaining frozen patches (`angrim`, `pimpernel-ledger`), T1
+(TaskProcessor, after W2-L11), ring Leg 2 and I-5's leg on a pre-Astra tree, E4 then I-5 then I-3
+(`C13-N69`, which lands before Astra), and N60 / N61 / N13. **E4, the native 96/8 hang A/B, is a hard
+gate before the wave's first Edge leg (E5).** No new cloud feature from Astra until A1 lands. Order and
+batch contents: [`ASTRA_LANDING_PLAN_2026-09-26.md`](ASTRA_LANDING_PLAN_2026-09-26.md); authority:
+[`MAINTAINER_RULINGS_2026-09-26.md`](MAINTAINER_RULINGS_2026-09-26.md).
+
 **`AR-D13` answered** as full WebGL parity (`R-2026-09-12-8`); the WebGL workstream is
 `C13-N15a`–`C13-N15d` (Wave 4) and WS-C2 (Wave 7).
 
@@ -412,6 +424,17 @@ this file's own update — see queue row `C16-20` for the full precondition list
 CLAUDE.md/CAMPAIGN_STATE.md/README update as one of its own legs — this document discharges
 that leg for C16-20). `C16-R1` (embedded-WGSL/string-literal blind spot) and `C16-R2` (`FORK-NN`
 id class) are both ruled and landed.
+
+**The tail is executing from the queue (added 2026-09-26, `R-2026-09-26-13` … `-22`).** Gemini's
+2026-09-20 comment-and-documentation plan was audited and **not adopted**
+([`GEMINI_PLAN_AUDIT_2026-09-26.md`](GEMINI_PLAN_AUDIT_2026-09-26.md)); the C16 tail runs from
+`QUEUE_2026-08-10_CAMPAIGN16.md` as 13 serialised Node-only batches against `C16-09`..`C16-12`,
+`C16-20` and `C16-21`, interleaved with the other landings. **Critical path: B0-tools first** — the
+flavour-aware `comment-only-diff` (`R-2026-09-26-22`), gated on a green CI `guards` job, which
+`b263d8ac5e` met; **no comment batch lands before it.** **No Edge slot** is used by the wave, **on
+condition that B0-tools' flavour checks (U1a–U1e) are in force**; the wave-end gate then rides the next
+scheduled wave-end Edge job. Authority: [`MAINTAINER_RULINGS_2026-09-26.md`](MAINTAINER_RULINGS_2026-09-26.md);
+row-level status stays in the queue.
 
 ### C17 — Celestial Light Transport (proposed)
 
