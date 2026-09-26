@@ -1,5 +1,5 @@
 // TaskProcessor worker-failure contract.
-// @purpose Prove a worker `error` or `messageerror` settles the task it was carrying, releases the active-task slot it held, and that a cached web-assembly init rejects instead of waiting forever.
+// @purpose Prove a worker `error` or `messageerror` settles the task it was carrying, releases the active-task slot it held, that a cached web-assembly init rejects instead of waiting forever, and that neither path posts its work to a worker after that work was rejected.
 // @status ACTIVE
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -81,6 +81,7 @@ const importCore = async (name) =>
 const TaskProcessor = await importCore("TaskProcessor");
 const FeatureDetection = await importCore("FeatureDetection");
 const RuntimeError = await importCore("RuntimeError");
+const Resource = await importCore("Resource");
 
 // Answer the transferable-array feature probe so no worker is spawned for it.
 TaskProcessor._canTransferArrayBuffer = false;
@@ -499,3 +500,199 @@ test("a web assembly init rejects when its worker errors", async () => {
     FeatureDetection.supportsWebAssembly = supportsWebAssembly;
   }
 });
+
+for (const eventType of ["error", "messageerror"]) {
+  test(
+    "a task rejected by " +
+      eventType +
+      " never posts after the capability probe resolves",
+    async () => {
+      const previousProbe = TaskProcessor._canTransferArrayBuffer;
+      let resolveProbe;
+      TaskProcessor._canTransferArrayBuffer = new Promise((resolve) => {
+        resolveProbe = resolve;
+      });
+      try {
+        const processor = new TaskProcessor("latePostWorker.js", 1);
+        const worker = new StubWorker("latePostWorker.js");
+        processor._worker = worker;
+        const payload = new ArrayBuffer(32);
+        const task = processor.scheduleTask({ payload }, [payload]);
+        worker.emit(
+          eventType,
+          makeErrorEvent({ message: "worker unavailable" }),
+        );
+        const outcome = await settleWithin(task, 1000);
+        assert.equal(outcome.status, "rejected");
+        assert.equal(processor._activeTasks, 0);
+        resolveProbe(true);
+        await Promise.resolve();
+        await Promise.resolve();
+        assert.equal(
+          worker.posted.length,
+          0,
+          "rejected work must not execute or transfer its input later",
+        );
+        assert.equal(worker.listenerCount("message"), 0);
+
+        const healthy = processor.scheduleTask({ value: 2 });
+        await waitUntil(() => worker.posted.length === 1);
+        const message = worker.posted[0];
+        assert.equal(message.parameters.value, 2);
+        worker.emit("message", { data: { id: message.id, result: "healthy" } });
+        assert.deepEqual(await settleWithin(healthy, 1000), {
+          status: "fulfilled",
+          value: "healthy",
+        });
+      } finally {
+        resolveProbe(true);
+        TaskProcessor._canTransferArrayBuffer = previousProbe;
+      }
+    },
+  );
+}
+
+// A real worker detaches every buffer it is handed as a transferable; the stub
+// only records the message, so the init cases model the transfer themselves.
+function detachTransfersOnPost(worker) {
+  const record = worker.postMessage.bind(worker);
+  worker.postMessage = (message, transfer) => {
+    structuredClone(message, { transfer: transfer ?? [] });
+    record(message);
+  };
+}
+
+async function withPendingWasmFetch(run) {
+  const supportsWebAssembly = FeatureDetection.supportsWebAssembly;
+  const fetchArrayBuffer = Resource.fetchArrayBuffer;
+  const previousProbe = TaskProcessor._canTransferArrayBuffer;
+  const fetch = {};
+  FeatureDetection.supportsWebAssembly = () => true;
+  Resource.fetchArrayBuffer = () =>
+    new Promise((resolve) => {
+      fetch.resolve = resolve;
+    });
+  // The binary is transferred only when transfers are supported.
+  TaskProcessor._canTransferArrayBuffer = true;
+  try {
+    await run(fetch);
+  } finally {
+    FeatureDetection.supportsWebAssembly = supportsWebAssembly;
+    Resource.fetchArrayBuffer = fetchArrayBuffer;
+    TaskProcessor._canTransferArrayBuffer = previousProbe;
+  }
+}
+
+const wasmOptions = {
+  wasmBinaryFile: "ThirdParty/lateInit.wasm",
+};
+
+for (const eventType of ["error", "messageerror"]) {
+  test(
+    "a web assembly init rejected by " +
+      eventType +
+      " never posts its config or detaches the binary",
+    async () => {
+      await withPendingWasmFetch(async (fetch) => {
+        const processor = new TaskProcessor("lateInitWorker.js");
+        const promise = processor.initWebAssemblyModule(wasmOptions);
+        const worker = processor._worker;
+        detachTransfersOnPost(worker);
+        await waitUntil(() => typeof fetch.resolve === "function");
+
+        worker.emit(
+          eventType,
+          makeErrorEvent({ message: "Failed to load module script" }),
+        );
+        const binary = new ArrayBuffer(32);
+        fetch.resolve(binary);
+
+        const outcome = await settleWithin(promise, 1000);
+        assert.notEqual(outcome, TIMED_OUT, "the init promise never settled");
+        assert.equal(outcome.status, "rejected");
+        assert.equal(outcome.reason instanceof RuntimeError, true);
+        assert.match(outcome.reason.message, /lateInitWorker\.js/u);
+        assert.equal(
+          worker.posted.length,
+          0,
+          "a rejected init must not configure its worker later",
+        );
+        assert.equal(
+          binary.byteLength,
+          32,
+          "a rejected init must not detach the binary it fetched",
+        );
+      });
+    },
+  );
+}
+
+test("a web assembly init that no failure interrupts posts its config and transfers the binary", async () => {
+  await withPendingWasmFetch(async (fetch) => {
+    const processor = new TaskProcessor("healthyInitWorker.js");
+    const promise = processor.initWebAssemblyModule(wasmOptions);
+    const worker = processor._worker;
+    detachTransfersOnPost(worker);
+    await waitUntil(() => typeof fetch.resolve === "function");
+
+    const binary = new ArrayBuffer(32);
+    fetch.resolve(binary);
+    await waitUntil(() => worker.posted.length === 1);
+    assert.equal(worker.posted.length, 1, "the config was never posted");
+    const message = worker.posted[0];
+    assert.equal(message.canTransferArrayBuffer, true);
+    assert.equal(message.parameters.webAssemblyConfig.wasmBinary, binary);
+    assert.equal(binary.byteLength, 0, "the binary was not transferred");
+
+    worker.emit("message", { data: { result: true } });
+    assert.deepEqual(await settleWithin(promise, 1000), {
+      status: "fulfilled",
+      value: true,
+    });
+  });
+});
+
+// A failure that arrives after a message has resolved the init cannot reject
+// it, so the init must still configure the worker its callers will use.
+const lateFailures = [
+  ["error", makeErrorEvent({ message: "late failure" })],
+  ["messageerror", makeErrorEvent({ message: "late failure" })],
+  ["message", { data: undefined }],
+];
+
+for (const [eventType, event] of lateFailures) {
+  test(
+    "a web assembly init a message already resolved still posts its config when " +
+      (eventType === "message" ? "an empty message" : eventType) +
+      " follows",
+    async () => {
+      await withPendingWasmFetch(async (fetch) => {
+        const processor = new TaskProcessor("resolvedInitWorker.js");
+        const promise = processor.initWebAssemblyModule(wasmOptions);
+        const worker = processor._worker;
+        detachTransfersOnPost(worker);
+        await waitUntil(() => typeof fetch.resolve === "function");
+
+        worker.emit("message", { data: { result: true } });
+        worker.emit(eventType, event);
+        const binary = new ArrayBuffer(32);
+        fetch.resolve(binary);
+
+        assert.deepEqual(await settleWithin(promise, 1000), {
+          status: "fulfilled",
+          value: true,
+        });
+        assert.equal(
+          worker.posted.length,
+          1,
+          "a resolved init must still configure its worker",
+        );
+        assert.equal(
+          worker.posted[0].parameters.webAssemblyConfig.wasmBinary,
+          binary,
+        );
+        assert.equal(binary.byteLength, 0, "the binary was not transferred");
+      });
+    },
+  );
+}

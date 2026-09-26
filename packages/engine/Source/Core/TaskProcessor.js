@@ -278,22 +278,30 @@ class TaskProcessor {
       // costs a fetch — and this promise is cached for the lifetime of the
       // processor, so a lost event leaves every caller waiting on a promise
       // that can neither resolve nor reject.
+      // Only the first settlement counts: a failure handler that fires after a
+      // message resolved the promise cannot reject it.
+      let settledAs;
       const promise = new Promise((resolve, reject) => {
+        const fail = (error) => {
+          settledAs ??= "rejected";
+          reject(error);
+        };
         worker.onmessage = function ({ data }) {
           if (defined(data)) {
+            settledAs ??= "resolved";
             resolve(data.result);
           } else {
-            reject(new RuntimeError("Could not configure wasm module"));
+            fail(new RuntimeError("Could not configure wasm module"));
           }
         };
         worker.onerror = (event) => {
           const message = workerErrorMessage(this._workerPath, event);
           event?.preventDefault?.();
           console.error(message);
-          reject(new RuntimeError(message));
+          fail(new RuntimeError(message));
         };
         worker.onmessageerror = () => {
-          reject(new RuntimeError(workerMessageErrorMessage(this._workerPath)));
+          fail(new RuntimeError(workerMessageErrorMessage(this._workerPath)));
         };
       });
       promise.catch(() => {});
@@ -303,6 +311,14 @@ class TaskProcessor {
         webAssemblyOptions,
       );
       const canTransfer = await Promise.resolve(canTransferArrayBuffer());
+      // A worker failure can reject the init while the config and the probe
+      // are awaited. The cached promise stays rejected, so posting would
+      // configure a worker no caller can use and detach its binary. An init a
+      // message already resolved still posts, because its callers go on to use
+      // the worker.
+      if (settledAs === "rejected") {
+        return promise;
+      }
       let transferableObjects;
       const binary = wasmConfig.wasmBinary;
       if (defined(binary) && canTransfer) {
@@ -354,10 +370,12 @@ class TaskProcessor {
 
 const createTaskListeners = (worker, workerPath, id, resolve, reject) => {
   const listeners = {};
+  let settled = false;
 
   // The three listeners are removed together: the task settles once, and a
   // worker-level failure settles every task that worker is carrying.
   const removeListeners = () => {
+    settled = true;
     worker.removeEventListener("message", listeners.message);
     worker.removeEventListener("error", listeners.error);
     worker.removeEventListener("messageerror", listeners.messageerror);
@@ -414,6 +432,7 @@ const createTaskListeners = (worker, workerPath, id, resolve, reject) => {
   };
 
   listeners.remove = removeListeners;
+  listeners.isSettled = () => settled;
 
   return listeners;
 };
@@ -448,6 +467,11 @@ function runTask(processor, parameters, transferableObjects) {
   // able to reject whatever the probe does.
   Promise.resolve(canTransferArrayBuffer())
     .then((canTransfer) => {
+      // A worker failure can settle the task while capability detection waits.
+      // Posting afterward would execute rejected work and detach its input.
+      if (taskListeners.isSettled()) {
+        return;
+      }
       if (!defined(transferableObjects)) {
         transferableObjects = emptyTransferableObjectArray;
       } else if (!canTransfer) {
