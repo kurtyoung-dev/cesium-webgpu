@@ -141,6 +141,17 @@ export interface CloudFrameCounters {
   maxSteps: number;
   /** Resolved light-march step budget (`CloudUniforms.lightSteps`). */
   lightSteps: number;
+  // The asks beside the realised values. Each pair differs only where a clamp,
+  // a restricted bit or an absent resource moved the ask, so a receipt can
+  // tell "asked" from "ran" without re-deriving either.
+  /** Primary-march steps this frame asked for. */
+  requestedPrimarySteps: number;
+  /** Light-march steps this frame asked for. */
+  requestedLightSteps: number;
+  /** `CLOUD_QF_*` word this frame asked for. */
+  requestedQualityFlags: number;
+  /** `CLOUD_QF_*` word the pass uploaded (`CloudUniforms.qualityFlags`). */
+  qualityFlags: number;
   /**
    * Bounded proxy: `marchPixels * maxSteps`. An upper bound, never a sample
    * count.
@@ -254,6 +265,10 @@ const RESET_FIELDS: readonly (keyof CloudFrameCounters)[] = Object.freeze([
   "upscalePixels",
   "maxSteps",
   "lightSteps",
+  "requestedPrimarySteps",
+  "requestedLightSteps",
+  "requestedQualityFlags",
+  "qualityFlags",
   "primarySampleBudget",
   "lightSampleBudget",
   "historyAccepted",
@@ -301,6 +316,10 @@ export function createCloudFrameCounters(): CloudFrameCounters {
     upscalePixels: 0,
     maxSteps: 0,
     lightSteps: 0,
+    requestedPrimarySteps: 0,
+    requestedLightSteps: 0,
+    requestedQualityFlags: 0,
+    qualityFlags: 0,
     primarySampleBudget: 0,
     lightSampleBudget: 0,
     historyAccepted: 0,
@@ -680,6 +699,10 @@ export function snapshotCloudObservability(
       halfResActive: c.halfResActive === 1,
       maxSteps: c.maxSteps,
       lightSteps: c.lightSteps,
+      requestedPrimarySteps: c.requestedPrimarySteps,
+      requestedLightSteps: c.requestedLightSteps,
+      qualityFlags: c.qualityFlags,
+      requestedQualityFlags: c.requestedQualityFlags,
       primarySampleBudget: c.primarySampleBudget,
       lightSampleBudget: c.lightSampleBudget,
     },

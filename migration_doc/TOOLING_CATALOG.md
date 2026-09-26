@@ -222,12 +222,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1411 |
-| ACTIVE | 1169 |
+| Files in census | 1412 |
+| ACTIVE | 1170 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 45 |
 | NO @status HEADER | 1 |
-| Classes | probe 677, spec 393, other 157, lib 137, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
+| Classes | probe 677, spec 394, other 157, lib 137, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
 
 ### Tools/ (64)
 
@@ -427,7 +427,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1068)
+### Tools/visual-regression/ (1069)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -521,6 +521,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-primary-shell.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | Validates CloudVolumetrics WGS84 shell ray-root math at orbital heights with f32-conditioning-aware tolerances (nadir / near-horizon / grazing). |
 | cloud-probe-harness.spec.mjs | spec | ACTIVE | 2026-09-16 | 11 | Guards lib/cloud-probe-harness.mjs + cloud-perf-evidence pass resolution: config round-trip through the collection contract across six cloud probes. |
 | cloud-ray-jitter.spec.mjs | spec | ACTIVE | 2026-09-16 | 5 | Pins the cloud ray-jitter contract across ProceduralClouds.wgsl, CloudDensityDomain.wgsl, the renderer and tier presets via source reads. |
+| cloud-realization-override.spec.mjs | spec | ACTIVE | — | 1 | Executes the pure cloud resolver and the renderer's realization publisher from Node to prove the debug realization override moves exactly the axis it names on the tier path (steps, or one qualityFlags bit) while the escape hatch cannot, that the resolver is byte-identical to its reference with no override, that the ask and the realised value differ exactly when a clamp, a restricted bit or an absent resource moved the ask, that a release strip leaves no working override, and that each of those properties goes red when the override is made unreachable. |
 | cloud-reconstruction-attachments.spec.mjs | spec | ACTIVE | 2026-09-16 | 11 | C13-09: attachment table add-only, march shader content-hash pin enforcing the C13-39 static-register constraint, stage default-OFF byte/cost neutral. |
 | cloud-reconstruction-consume-probe.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Pins the C13-10 Edge consume-probe's own instrument properties: real interleave schedule, null-not-zero pass timing, the 3-vs-2 producer-target move. |
 | cloud-refresh-skip.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Pins the repair of the requestRenderMode frozen-frame defect that made both cloud-reconstruction probes count render calls as frames; mutant-checked. |

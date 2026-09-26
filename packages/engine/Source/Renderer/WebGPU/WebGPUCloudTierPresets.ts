@@ -78,7 +78,61 @@ export interface CloudQualityInputs {
   cameraHeightMeters: number;
   enableAltitudeMeters: number;
   disableAltitudeMeters: number;
+  /**
+   * Debug builds only: a {@link CloudRealizationOverride} applied after the
+   * tier decision. `undefined` and `null` both mean none. Production builds
+   * strip every reader, so a value set here there changes nothing.
+   */
+  realizationOverride?: CloudRealizationOverride | null;
 }
+
+/**
+ * A measurement dial that varies one axis of the resolved march at a time
+ * without leaving the path the public dials chose. The escape hatch cannot do
+ * this: any `cloudQuality` other than 64 also swaps the noise source, the
+ * jitter and the density domain. Every field is optional, and an absent field
+ * leaves its axis as resolved.
+ */
+export interface CloudRealizationOverride {
+  /** Primary march steps; rounded, then clamped to 1..{@link CLOUD_OVERRIDE_MAX_PRIMARY_STEPS}. */
+  primarySteps?: number;
+  /**
+   * Light march steps; rounded, then clamped to 1..{@link CLOUD_OVERRIDE_MAX_LIGHT_STEPS}.
+   * This is the uploaded count: the straight light march takes it times
+   * `lightSampleScale`, and the cone light march (bit 10, tiers 1 and 2) never
+   * reads it.
+   */
+  lightSteps?: number;
+  /** `CLOUD_QF_*` bits to set; only {@link CLOUD_QF_OVERRIDABLE} bits apply. */
+  qualityFlagsSet?: number;
+  /** `CLOUD_QF_*` bits to clear, applied after the set; same restriction. */
+  qualityFlagsClear?: number;
+}
+
+/**
+ * What a frame was asked to march beside what it marched. The two differ only
+ * where a clamp, a restricted bit or an absent resource moved the ask. The
+ * realised values are the ones uploaded; how the shader spends the light count
+ * is described on {@link CloudRealizationOverride.lightSteps}.
+ */
+export interface CloudRealizationReport {
+  requestedPrimarySteps: number;
+  primarySteps: number;
+  requestedLightSteps: number;
+  lightSteps: number;
+  requestedQualityFlags: number;
+  qualityFlags: number;
+}
+
+/**
+ * The caps keep the override from raising the per-pixel workload above the
+ * larger of 128 × 8 and what the dials already resolved, so a measurement dial
+ * cannot ask the device for the multi-fold workloads that stall it. On the tier
+ * path that bound is 128 × 8, a third above the cinematic tier's 96 × 8; on the
+ * escape hatch an override of one count keeps the other's raw-derived value.
+ */
+export const CLOUD_OVERRIDE_MAX_PRIMARY_STEPS = 128;
+export const CLOUD_OVERRIDE_MAX_LIGHT_STEPS = 8;
 
 /**
  * Tier table, and the only source: `primarySteps`, `lightSteps` and
@@ -213,6 +267,33 @@ function resolveTier(inputs: CloudQualityInputs): number {
 export function resolveCloudPreset(
   inputs: CloudQualityInputs,
 ): CloudTierPreset {
+  const preset = resolveDialPreset(inputs);
+  //>>includeStart('debug', pragmas.debug);
+  // The override resolves here, after the tier or escape decision, so it moves
+  // only the step counts of the path the dials chose: the noise source, the
+  // density domain and every other field stay as resolved.
+  const override = inputs.realizationOverride;
+  if (override !== undefined && override !== null) {
+    return {
+      ...preset,
+      primarySteps: overrideSteps(
+        override.primarySteps,
+        preset.primarySteps,
+        CLOUD_OVERRIDE_MAX_PRIMARY_STEPS,
+      ),
+      lightSteps: overrideSteps(
+        override.lightSteps,
+        preset.lightSteps,
+        CLOUD_OVERRIDE_MAX_LIGHT_STEPS,
+      ),
+    };
+  }
+  //>>includeEnd('debug');
+  return preset;
+}
+
+/** The preset the public dials select, before any realization override. */
+function resolveDialPreset(inputs: CloudQualityInputs): CloudTierPreset {
   const raw = inputs.rawCloudQuality;
   if (typeof raw === "number" && raw !== 64) {
     const lightSteps = Math.max(2, Math.round(6 * Math.sqrt(raw / 64)));
@@ -274,6 +355,90 @@ export const CLOUD_QF_HIGH_PRECISION = 1 << 12;
 // coordinate path. This is an internal rollout bit, not a public quality or
 // appearance toggle.
 export const CLOUD_QF_PLANET_DENSITY = 1 << 13;
+
+// ── The realization override ────────────────────────────────────────────────
+
+/**
+ * The bits the override may set or clear: the march-realization axes. Bits 1
+ * and 2 describe which passes run, and bits 8, 9 and 11 select resources their
+ * own modes allocate, so flipping any of them would desynchronise the shader
+ * from the frame rather than vary the march; the octave field is a count, not
+ * a flag, and bit 7 has no reader.
+ */
+export const CLOUD_QF_OVERRIDABLE =
+  CLOUD_QF_NOISE_BAKED |
+  CLOUD_QF_JITTER |
+  CLOUD_QF_LIGHT_CONE |
+  CLOUD_QF_HIGH_PRECISION |
+  CLOUD_QF_PLANET_DENSITY;
+
+/**
+ * Bits whose SET needs the baked noise volumes resident. Setting them on a
+ * frame without the bake would sample textures that were never filled, so the
+ * set is refused there and the report shows it.
+ */
+const CLOUD_QF_NEEDS_BAKED_NOISE =
+  CLOUD_QF_NOISE_BAKED | CLOUD_QF_PLANET_DENSITY;
+
+function overrideSteps(
+  asked: number | undefined,
+  resolved: number,
+  max: number,
+): number {
+  if (asked === undefined || !Number.isFinite(asked)) {
+    return resolved;
+  }
+  const steps = Math.round(asked);
+  return steps < 1 ? resolved : Math.min(max, steps);
+}
+
+function flagMask(value: number | undefined): number {
+  return value !== undefined && Number.isFinite(value) ? value >>> 0 : 0;
+}
+
+/**
+ * Apply a realization override's flag half to a frame's fully assembled
+ * `qualityFlags` word, and report the ask beside the result.
+ *
+ * `preset` is the already-overridden preset from {@link resolveCloudPreset},
+ * so its step counts are the realised ones. `qualityFlags` must be the final
+ * word, after every renderer-side fold: the override is the last writer, which
+ * is what lets clearing bit 0 leave bit 13 exactly as it was.
+ *
+ * @param preset The resolved preset.
+ * @param qualityFlags The frame's final `qualityFlags` word before the override.
+ * @param override The override to apply.
+ * @param bakedNoiseResident Whether the baked noise volumes are resident.
+ * @returns {CloudRealizationReport}
+ */
+export function resolveCloudRealization(
+  preset: CloudTierPreset,
+  qualityFlags: number,
+  override: CloudRealizationOverride,
+  bakedNoiseResident: boolean,
+): CloudRealizationReport {
+  const base = qualityFlags >>> 0;
+  const askedSet = flagMask(override.qualityFlagsSet);
+  const askedClear = flagMask(override.qualityFlagsClear);
+  let realised = base;
+  if (askedSet !== 0 || askedClear !== 0) {
+    const settable = bakedNoiseResident
+      ? CLOUD_QF_OVERRIDABLE
+      : CLOUD_QF_OVERRIDABLE & ~CLOUD_QF_NEEDS_BAKED_NOISE;
+    realised =
+      ((base | (askedSet & settable)) &
+        ~(askedClear & CLOUD_QF_OVERRIDABLE)) >>>
+      0;
+  }
+  return {
+    requestedPrimarySteps: override.primarySteps ?? preset.primarySteps,
+    primarySteps: preset.primarySteps,
+    requestedLightSteps: override.lightSteps ?? preset.lightSteps,
+    lightSteps: preset.lightSteps,
+    requestedQualityFlags: ((base | askedSet) & ~askedClear) >>> 0,
+    qualityFlags: realised,
+  };
+}
 
 // ── The derived quality block ───────────────────────────────────────────────
 //

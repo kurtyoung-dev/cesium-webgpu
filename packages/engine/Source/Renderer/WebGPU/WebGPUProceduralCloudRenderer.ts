@@ -69,6 +69,7 @@ import {
   buildCloudQualityBlock,
   buildCloudQualityInputs,
   resolveCloudPreset,
+  resolveCloudRealization,
   shouldDefaultPhysicalAerial,
   // Bit 0 is assembled in the preset module; the renderer reads it back to gate
   // bit 13, which requires a realized baked resource.
@@ -81,6 +82,8 @@ import {
   // Inline `type` rather than a second `import type` line: the file is already
   // at its `no-duplicate-imports` seatbelt budget of five value/type pairs.
   type CloudQualityConfigLike,
+  type CloudRealizationOverride,
+  type CloudTierPreset,
 } from "./WebGPUCloudTierPresets.js";
 import {
   CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS,
@@ -556,6 +559,20 @@ export interface CloudCache {
   // 16-phase sequence, and all 6 bits drive the animated interleaved-gradient
   // noise sequence.
   frameCounter: number;
+  // Lifetime count of executes whose march and composite were encoded, and it
+  // advances nowhere else. Beside the lifetime `observability.frames`, which
+  // every entered execute bumps, it separates a frame that marched (both
+  // advance), a culled or refused one (only `frames` advances) and a frame
+  // where no execute ran at all (neither advances, and every counter is
+  // stale). A cull or a refusal before the pack leaves the counters zeroed; a
+  // refusal after it leaves them describing a frame that was packed and never
+  // marched. It restarts with the cache, which a device change rebuilds.
+  executeSerial: number;
+  // Debug builds only: the realization override applied to every execute while
+  // it is set, and `undefined` or `null` clears it. A harness writes it the
+  // way `CesiumDebug` writes `attachmentsEnabled`; production builds strip
+  // every reader.
+  realizationOverride?: CloudRealizationOverride | null;
   // Temporal reprojection and accumulation, all null while temporal is off. The
   // history is ping-ponged at half resolution and accumulates the premultiplied
   // half-resolution cloud: the resolve pass reprojects `temporalHistory[read]`,
@@ -1276,6 +1293,7 @@ export function ensureCloudCache(
       upscaleBindGroups: [null, null],
       upscaleBindGroupNextSlot: 0,
       frameCounter: 0,
+      executeSerial: 0,
       temporalHistory: [null, null],
       temporalHistoryView: [null, null],
       temporalWidth: 0,
@@ -3226,6 +3244,50 @@ function timedCloudPass(
   return context.withRenderPassTimestamps?.(descriptor) ?? descriptor;
 }
 
+/**
+ * Publishes what this frame was asked to march beside what it marched, and in
+ * debug builds applies the realization override's flag half. Called once per
+ * execute, after every fold into float 74, because the override must be that
+ * word's last writer: clearing one bit then leaves every other bit as the frame
+ * assembled it. Without an override the ask is the resolved value itself.
+ *
+ * @param data The packed uniform floats, float 74 fully folded.
+ * @param counters This execute's counter record.
+ * @param preset The resolved preset, step override already applied.
+ * @param override The debug realization override, if one is set.
+ * @param bakedNoiseResident Whether the baked noise volumes are resident.
+ */
+function publishCloudRealization(
+  data: Float32Array,
+  counters: CloudFrameCounters,
+  preset: CloudTierPreset,
+  override: CloudRealizationOverride | null | undefined,
+  bakedNoiseResident: boolean,
+): void {
+  counters.requestedPrimarySteps = preset.primarySteps;
+  counters.requestedLightSteps = preset.lightSteps;
+  counters.requestedQualityFlags = data[74];
+  //>>includeStart('debug', pragmas.debug);
+  // The shader ANDs bit 13 with bit 0, so clearing bit 0 alone also leaves the
+  // planet domain inert while bit 13 still reads set; and bit 12 also gates the
+  // planet domain's per-ray phase increments, so clearing it changes how that
+  // domain's coordinate is formed as well as the precision.
+  if (override !== undefined && override !== null) {
+    const realization = resolveCloudRealization(
+      preset,
+      data[74],
+      override,
+      bakedNoiseResident,
+    );
+    counters.requestedPrimarySteps = realization.requestedPrimarySteps;
+    counters.requestedLightSteps = realization.requestedLightSteps;
+    counters.requestedQualityFlags = realization.requestedQualityFlags;
+    data[74] = realization.qualityFlags;
+  }
+  //>>includeEnd('debug');
+  counters.qualityFlags = data[74];
+}
+
 export function prepareCloudFrameAndEncodeMask(
   context: CesiumGraphicsContext,
   frameState: CesiumFrameState,
@@ -3431,6 +3493,9 @@ export function prepareCloudFrameAndEncodeMask(
     const cloudConfig = config as unknown as CloudQualityConfigLike;
     const cameraHeightM = frameState.camera?.positionCartographic?.height ?? 0;
     const qualityInputs = buildCloudQualityInputs(cloudConfig, cameraHeightM);
+    //>>includeStart('debug', pragmas.debug);
+    qualityInputs.realizationOverride = cache.realizationOverride;
+    //>>includeEnd('debug');
     // One resolver. The preset supplies the step counts at floats 44 and 45, the
     // `qualityFlags` bitfield at 74, the light-sample scale at 78, the erosion
     // floor at 79 and the tier lighting row at 172-174 — all of them through the
@@ -4122,9 +4187,8 @@ export function prepareCloudFrameAndEncodeMask(
     }
     // Bit 13 selects the planet-scale density domain, and only a realized baked
     // resource can supply it; the live-noise fallback keeps its own formula.
-    // Unlike the high-precision bit this one has no public override, so the only
-    // way to flip it in isolation is a diagnostic that writes slot 74 directly
-    // after upload.
+    // Unlike the high-precision bit this one has no public override; the debug
+    // realization override below is the way to flip it in isolation.
     //
     // The condition is bit 0 of the block's own flags, which carries exactly the
     // fact the deleted local `noiseBakedBit` carried — the tier asked for baked
@@ -4134,6 +4198,14 @@ export function prepareCloudFrameAndEncodeMask(
     if ((qualityBlock.qualityFlags & CLOUD_QF_NOISE_BAKED) !== 0) {
       data[74] = data[74] | CLOUD_QF_PLANET_DENSITY;
     }
+    // After every fold above, so the record describes the word the shader reads.
+    publishCloudRealization(
+      data,
+      counters,
+      cloudPreset,
+      qualityInputs.realizationOverride,
+      cache.noiseBaked && cache.noise !== null,
+    );
 
     // Resolve the weather view: the procedural map when enabled, a 1×1 white
     // fallback otherwise.
@@ -5016,6 +5088,8 @@ export function prepareCloudFrameAndEncodeMask(
 
         stages.endStage(CloudCpuStage.COMPOSITE);
         compositeStageOpen = false;
+        // The one place the march and its composite are both encoded.
+        cache.executeSerial++;
         return true;
       } finally {
         if (temporalStageOpen) {
