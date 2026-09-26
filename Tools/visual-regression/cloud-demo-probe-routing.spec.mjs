@@ -562,12 +562,17 @@ for (const entry of PROBES) {
       }
       // The runtime envelope is ONE document: a `-runtime.json` sidecar beside
       // it would mean the probe declared `probe-owned` and its own fields were
-      // published without the runtime's.
+      // published without the runtime's. The PNGs are the capture seam's own
+      // writes, one per capture the receipt names.
       const written = readdirSync(out).sort();
-      assert.deepEqual(written, [
-        `${entry.descriptor.name}-report.json`,
-        `${entry.descriptor.name}-summary.md`,
-      ]);
+      assert.deepEqual(
+        written,
+        [
+          ...entry.captures.map((name) => `${name}.png`),
+          `${entry.descriptor.name}-report.json`,
+          `${entry.descriptor.name}-summary.md`,
+        ].sort(),
+      );
     } finally {
       cleanup(root);
     }

@@ -73,6 +73,7 @@ import {
   censusRuntimeGovernance,
   governanceRatchetFindings,
 } from "./lib/probe-runtime-governance.mjs";
+import { parseRuntimeTag } from "./lib/runtime-residency-contract.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -2535,4 +2536,177 @@ test("B7 MUTATION control: an inert behaviour predicate loses the escapees", asy
     0,
     "the filename-selecting mutant kept some escapees",
   );
+});
+
+// ---------------------------------------------------------------------------
+// I. Runtime-resident probes acquire pixels through the guarded capture seam
+// ---------------------------------------------------------------------------
+//
+// `captureElement` asks the page whether its WebGPU device is still alive,
+// compares a declared control against its treatment, and only then writes the
+// bytes. A probe that photographs the canvas itself — `.screenshot(` on a page
+// or locator, or `.toDataURL(` on the canvas inside a page function — gets
+// none of that: when the device is lost the canvas keeps answering with the
+// last frame it drew, and every later label banks that frame. The population
+// is the probes that declare `@runtime lib/probe-runtime.mjs`, for which the
+// seam is one import away. The residents that still acquire frames another way
+// are listed with a reason; the list is a ratchet and only shrinks.
+
+const OUT_OF_SEAM_CAPTURE = /\.(?:screenshot|toDataURL)\s*\(/g;
+
+/** Pixel acquisitions in CODE that do not go through `captureElement`. */
+function outOfSeamCaptureSites(source) {
+  const code = blankNonCode(source);
+  return [...code.matchAll(OUT_OF_SEAM_CAPTURE)].map((match) =>
+    match[0].replace(/[\s(]+$/u, ""),
+  );
+}
+
+const CAPTURE_SEAM_OWED = Object.freeze({
+  "probe-classification-frustum-slices.mjs":
+    "reads its frames with canvas .toDataURL( inside the page, so no capture asks whether the device is alive",
+  "probe-cloud-orbital-ladder.mjs":
+    "banks each rung with its own locator .screenshot( and reads photometry with canvas .toDataURL(, both outside the seam",
+  "probe-eye-cartographic-frame.mjs":
+    "reads its frame with canvas .toDataURL( inside the page, so no capture asks whether the device is alive",
+  "probe-oit-collection-reachable.mjs":
+    "banks its frame with its own locator .screenshot(, outside the seam's liveness check",
+  "probe-oit-model-reachable.mjs":
+    "banks its frame with its own locator .screenshot(, outside the seam's liveness check",
+  "probe-oit-primitive-reachable.mjs":
+    "banks its frame with its own locator .screenshot(, outside the seam's liveness check",
+  "probe-pick-visibility-matrix.mjs":
+    "banks its frames with its own locator .screenshot(, outside the seam's liveness check",
+  "probe-polyline-multimaterial.mjs":
+    "banks its frames with its own locator .screenshot(, outside the seam's liveness check",
+  "probe-polyline-taa-velocity.mjs":
+    "banks its frames with its own locator .screenshot(, outside the seam's liveness check",
+  "probe-postprocess-resize-survival.mjs":
+    "banks its before/after PNGs from canvas .toDataURL( data URLs, outside the seam's liveness check",
+});
+
+/**
+ * Split the resident fleet by how it acquires pixels, from injectable sources
+ * so the real assertion and its mutation control share one path.
+ */
+function captureSeamFindings(sourceByName, owed) {
+  const residents = [...sourceByName.keys()]
+    .filter(
+      (name) =>
+        parseRuntimeTag(sourceByName.get(name)).value ===
+        "lib/probe-runtime.mjs",
+    )
+    .sort();
+  const seamUsers = [];
+  const offenders = [];
+  const repaired = [];
+  for (const name of residents) {
+    const source = sourceByName.get(name);
+    const sites = outOfSeamCaptureSites(source);
+    if (/\bcaptureElement\s*\(/u.test(blankNonCode(source))) {
+      seamUsers.push(name);
+    }
+    if (sites.length > 0 && !Object.hasOwn(owed, name)) {
+      offenders.push(`${name}: ${sites.join(", ")}`);
+    }
+    if (sites.length === 0 && Object.hasOwn(owed, name)) {
+      repaired.push(name);
+    }
+  }
+  const gone = Object.keys(owed).filter((name) => !residents.includes(name));
+  return { residents, seamUsers, offenders, repaired, gone };
+}
+
+const residentSources = new Map(
+  probeFiles.map((name) => [name, readProbe(name)]),
+);
+
+test("I1: the out-of-seam detector reads calls in code, not prose", () => {
+  const cases = [
+    ['await page.locator("canvas").first().screenshot();', [".screenshot"]],
+    ["await page.screenshot({ path: file });", [".screenshot"]],
+    ['return canvas.toDataURL("image/png");', [".toDataURL"]],
+    ["await captureElement({ page, name, outputDirectory });", []],
+    ["// a hand-rolled .screenshot( belongs in the seam", []],
+    ['const note = "canvas.toDataURL( is outside the seam";', []],
+  ];
+  for (const [source, expected] of cases) {
+    assert.deepEqual(outOfSeamCaptureSites(source), expected, source);
+  }
+});
+
+test("I2: every runtime-resident probe captures through the seam or is owed", () => {
+  const { residents, seamUsers, offenders } = captureSeamFindings(
+    residentSources,
+    CAPTURE_SEAM_OWED,
+  );
+  assert.ok(residents.length > 0, "the resident population is empty");
+  assert.ok(
+    seamUsers.includes("probe-cloud-march-mechanism.mjs"),
+    "the mechanism probe no longer routes its frames through captureElement",
+  );
+  assert.deepEqual(
+    offenders,
+    [],
+    `a probe on the shared runtime acquires pixels outside captureElement, so a
+lost WebGPU device banks the last drawn frame under its labels. Route the
+capture through captureElement; do NOT add a new owed row.
+Offenders:\n  ${offenders.join("\n  ")}`,
+  );
+});
+
+test("I3: the owed list is a ratchet — no stale rows, every row a reason", () => {
+  const { repaired, gone } = captureSeamFindings(
+    residentSources,
+    CAPTURE_SEAM_OWED,
+  );
+  assert.deepEqual(gone, [], `owed rows name no resident probe: ${gone}`);
+  assert.deepEqual(
+    repaired,
+    [],
+    `these probes now capture only through the seam and MUST leave the owed
+list in the same change: ${repaired.join(", ")}`,
+  );
+  for (const [name, reason] of Object.entries(CAPTURE_SEAM_OWED)) {
+    assert.ok(reason.length >= 20, `${name}'s reason is not a reason`);
+    assert.doesNotMatch(reason, /[\r\n]/u, `${name}'s reason spans lines`);
+    assert.match(
+      reason,
+      /\.(?:screenshot|toDataURL)\(/u,
+      `${name}'s reason does not name the call it owes`,
+    );
+  }
+});
+
+test("I4 MUTATION control: re-rolling the mechanism probe's capture turns I2 red", () => {
+  const donor = "probe-cloud-march-mechanism.mjs";
+  const source = residentSources.get(donor);
+  const anchor = "captureElement({";
+  assert.equal(
+    source.split(anchor).length - 1,
+    1,
+    "the mutation anchor is gone — re-point this control at the live code",
+  );
+  const mutated = source.replace(
+    anchor,
+    'page.locator("canvas").first().screenshot({',
+  );
+  const { offenders, seamUsers } = captureSeamFindings(
+    new Map(residentSources).set(donor, mutated),
+    CAPTURE_SEAM_OWED,
+  );
+  assert.deepEqual(offenders, [`${donor}: .screenshot`]);
+  assert.ok(!seamUsers.includes(donor));
+});
+
+test("I5 MUTATION control: repairing an owed probe turns I3 red", () => {
+  const donor = "probe-oit-model-reachable.mjs";
+  const mutated = residentSources
+    .get(donor)
+    .replace(/\.screenshot\s*\(/gu, ".capturedElsewhere(");
+  const { repaired } = captureSeamFindings(
+    new Map(residentSources).set(donor, mutated),
+    CAPTURE_SEAM_OWED,
+  );
+  assert.deepEqual(repaired, [donor]);
 });

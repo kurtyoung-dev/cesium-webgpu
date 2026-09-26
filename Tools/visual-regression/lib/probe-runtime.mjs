@@ -531,6 +531,114 @@ export function sha256(bytes) {
 }
 
 /**
+ * The page-side half of the liveness question. Self-contained, because
+ * `page.evaluate` serialises its source; the marker comment lets a stub page
+ * dispatch on it.
+ *
+ * `window.__webgpuGate` is the gate `Tools/lib/webgpu-error-gate.mjs` installs
+ * and arms on the scene's device. The gate exists from the init script on, but
+ * only a gate that armed a device can see a loss, so a gate that armed nothing
+ * is reported exactly like a page with no gate rather than read as a live
+ * device.
+ *
+ * @returns {{gateArmed: boolean, deviceLost: string|null, frameNumber: number|null}} What the page says.
+ */
+function pageReadCaptureLiveness() {
+  // __captureLiveness
+  const root = globalThis;
+  const gate = root.__webgpuGate;
+  const viewer =
+    root.viewer ?? root.webgpuViewer ?? root.webglViewer ?? root.__viewer;
+  const frameNumber = viewer?.scene?.frameState?.frameNumber;
+  return {
+    gateArmed: (gate?.armedDevices ?? 0) > 0,
+    deviceLost: gate?.deviceLost ?? null,
+    frameNumber: typeof frameNumber === "number" ? frameNumber : null,
+  };
+}
+
+/**
+ * The gate formats a loss as `device lost: reason=<reason> …`. `destroyed` is
+ * the orderly `viewer.destroy()` path, which is teardown and not a fault.
+ */
+const DEVICE_LOSS_TEARDOWN = /\breason=destroyed\b/;
+
+/**
+ * Decide whether a page that reported `liveness` may have a frame banked.
+ *
+ * A lost device does not stop the canvas from answering a screenshot: it hands
+ * back the last frame the device drew, under whatever label the probe asks
+ * for. The only place that difference is visible is the gate, so the gate is
+ * asked at the seam, every time, before anything reaches the disk. The
+ * refusal exits 3: the run's precondition (a device that draws) failed, which
+ * is the table's REFUSAL tier, not a harness that threw.
+ *
+ * The returned decision also carries `state` — `live`, `teardown`,
+ * `unobserved` (no armed gate on the page) or `lost` — which the capture record
+ * publishes, so a receipt says whether liveness was actually confirmed.
+ *
+ * @param {{gateArmed?: boolean, deviceLost?: string|null, frameNumber?: number|null}|null} liveness What the page reported.
+ * @param {object} [context] Folded into a refusal's details: `name`, `frameIndex`, `lastLiveSerial`.
+ * @returns {object} An accepted or refusing decision with its `state`.
+ */
+export function decideCaptureLiveness(liveness, context = {}) {
+  const deviceLost = liveness?.deviceLost ?? null;
+  if (deviceLost) {
+    if (DEVICE_LOSS_TEARDOWN.test(String(deviceLost))) {
+      return { ...acceptedDecision(), state: "teardown" };
+    }
+    return {
+      ...refusedDecision("capture-device-lost", {
+        ...context,
+        deviceLost: String(deviceLost),
+        observedSerial: liveness?.frameNumber ?? null,
+      }),
+      state: "lost",
+    };
+  }
+  if (liveness?.gateArmed !== true) {
+    return { ...acceptedDecision(), state: "unobserved" };
+  }
+  return { ...acceptedDecision(), state: "live" };
+}
+
+/**
+ * Raise {@link decideCaptureLiveness}'s refusal with a message naming the
+ * capture and quoting the gate. Shared by the seam and by a probe that reads
+ * the gate between captures, so both refuse in the same words.
+ *
+ * @param {object|null} liveness What the page reported.
+ * @param {{name: string, frameIndex?: number, lastLiveSerial?: number|null}} context What is being banked.
+ * @returns {object} The accepted decision, when there was nothing to refuse.
+ */
+export function throwIfDeviceLost(liveness, context) {
+  const decision = decideCaptureLiveness(liveness, context);
+  throwForDecision(
+    decision,
+    `"${context.name}" was not banked: the page reports ${decision.details?.deviceLost}. ` +
+      "A lost device still answers a screenshot with the last frame it drew, so " +
+      "anything captured now is a picture of an earlier frame under this label " +
+      `(last live frame serial: ${context.lastLiveSerial ?? "none observed"}).`,
+  );
+  return decision;
+}
+
+/**
+ * Per-page capture history: how many frames the seam has banked from the page
+ * and the frame serial of the last one confirmed live. Weakly held, so a
+ * closed page takes its history with it.
+ */
+const captureHistory = new WeakMap();
+
+async function readCaptureLiveness(page) {
+  // A handle that cannot evaluate cannot be asked; `unobserved` says so.
+  if (typeof page.evaluate !== "function") {
+    return null;
+  }
+  return page.evaluate(pageReadCaptureLiveness);
+}
+
+/**
  * Screenshot ONE element, never the page. A page screenshot includes the
  * widget chrome and the browser's own compositing, so two backends can differ
  * by pixels neither renderer drew; every parity number in this fork that
@@ -544,6 +652,12 @@ export function sha256(bytes) {
  *
  * Zero matches always refuses: an empty capture is not a black frame.
  *
+ * NOTHING IS WRITTEN UNTIL THE FRAME HAS BEEN ACCEPTED. The screenshot is
+ * taken into memory, the page is asked whether its device is still alive, and
+ * a declared control is compared by digest; only then do the bytes reach the
+ * disk. A frame refused after it was written would already sit in the output
+ * directory under a valid-looking label, which is the failure being prevented.
+ *
  * @param {object} options Options.
  * @param {object} options.page The Playwright page.
  * @param {string} [options.selector] CSS selector; defaults to the scene canvas.
@@ -551,7 +665,10 @@ export function sha256(bytes) {
  * @param {string} options.name Capture name, used for the file and the record.
  * @param {string} options.outputDirectory Where the PNG is written.
  * @param {Array<object>} [options.captures] Sink the record is appended to.
- * @returns {Promise<{name: string, path: string, byteLength: number, sha256: string, matchCount: number, buffer: Buffer}>} The capture.
+ * @param {{name: string, sha256: string}} [options.pairedWith] The treatment
+ *   capture this one is the control for. Byte-identical bytes mean no frame
+ *   was drawn between the two, and the capture refuses.
+ * @returns {Promise<{name: string, path: string, byteLength: number, sha256: string, matchCount: number, liveness: object, buffer: Buffer}>} The capture.
  */
 export async function captureElement({
   page,
@@ -560,6 +677,7 @@ export async function captureElement({
   name,
   outputDirectory,
   captures,
+  pairedWith,
 }) {
   const locator = page.locator(selector);
   const count = await locator.count();
@@ -570,16 +688,52 @@ export async function captureElement({
       { selector, count, name },
     );
   }
+  const target = index === undefined ? locator : locator.nth(index);
+  const buffer = await target.screenshot({ type: "png" });
+
+  let history = captureHistory.get(page);
+  if (history === undefined) {
+    history = { banked: 0, lastLiveSerial: null };
+    captureHistory.set(page, history);
+  }
+  const liveness = await readCaptureLiveness(page);
+  const livenessDecision = throwIfDeviceLost(liveness, {
+    name,
+    frameIndex: history.banked,
+    lastLiveSerial: history.lastLiveSerial,
+  });
+
+  const digest = sha256(buffer);
+  if (pairedWith && pairedWith.sha256 === digest) {
+    throw new ProbeRefusal(
+      "capture-frame-not-redrawn",
+      `"${name}" is byte-identical to its treatment "${pairedWith.name}" (sha256 ${digest}): ` +
+        "no frame was drawn between them, so the pair measures nothing.",
+      {
+        treatment: pairedWith.name,
+        control: name,
+        sha256: digest,
+        frameIndex: history.banked,
+        lastLiveSerial: history.lastLiveSerial,
+      },
+    );
+  }
+
   fs.mkdirSync(outputDirectory, { recursive: true });
   const file = path.join(outputDirectory, `${name}.png`);
-  const target = index === undefined ? locator : locator.nth(index);
-  const buffer = await target.screenshot({ type: "png", path: file });
+  fs.writeFileSync(file, buffer);
+  const frameNumber = liveness?.frameNumber ?? null;
+  history.banked += 1;
+  if (livenessDecision.state === "live" && frameNumber !== null) {
+    history.lastLiveSerial = frameNumber;
+  }
   const record = {
     name,
     path: file,
     byteLength: buffer.byteLength,
-    sha256: sha256(buffer),
+    sha256: digest,
     matchCount: count,
+    liveness: { state: livenessDecision.state, frameNumber },
   };
   if (Array.isArray(captures)) {
     captures.push(record);

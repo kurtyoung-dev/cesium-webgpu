@@ -30,14 +30,19 @@
  * function's source, so an imported self-contained function reaches the page
  * exactly as a local one would.
  *
- * NO VERDICT, BUT ONE REFUSAL. This probe reports measurements. Scoring
- * happens afterwards in Node, over the banked PNGs, with
+ * NO VERDICT, BUT REFUSALS ABOUT THE RUN. This probe reports measurements.
+ * Scoring happens afterwards in Node, over the banked PNGs, with
  * `lib/metrics/radial-banding.mjs`; the numbers decide the branch and nothing
- * here prints a pass or a fail. The single exception is not a verdict about
- * the RENDERER, it is a verdict about the RUN: an arm whose dial did not
- * apply — read back off the scene by `pageRunArm`, never echoed from the
- * request — refuses by name instead of banking two PNGs under a label whose
- * treatment never happened. The arms already on disk survive it.
+ * here prints a pass or a fail. The exceptions are not verdicts about the
+ * RENDERER, they are verdicts about the RUN, and each refuses by name instead
+ * of banking a PNG under a label whose treatment never happened: an arm whose
+ * dial did not apply (read back off the scene by `pageRunArm`, never echoed
+ * from the request); a capture taken after the page's WebGPU device was lost,
+ * which is refused at the shared capture seam before its bytes are written; a
+ * clouds-OFF control byte-identical to its clouds-ON frame, which means no
+ * frame was drawn between them; and a device the gate reports lost after an
+ * arm, which ends the run before the next arm starts. The arms already on disk
+ * survive every one of them.
  *
  * THE CAMERA IS THE BANKED ONE, AND THAT IS THE WHOLE POINT. A default-camera
  * or low-altitude probe renders a clean-looking field and would miss this
@@ -61,7 +66,13 @@ import {
   pageRunArm,
 } from "./lib/cloud-march-mechanism.mjs";
 import { installCloudProbeHarness } from "./lib/cloud-probe-harness.mjs";
-import { ProbeRefusal, isEntryPoint, runProbe } from "./lib/probe-runtime.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+  throwIfDeviceLost,
+} from "./lib/probe-runtime.mjs";
 import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
 import RIG from "./rigs/orbital-fulldisc-6608km.mjs";
 
@@ -303,7 +314,7 @@ export const descriptor = {
       { flag: "--only-arm", key: "onlyArm", kind: "string" },
     ],
   },
-  async cells({ browser, options, origin, outputDirectory }) {
+  async cells({ browser, options, origin, outputDirectory, captures }) {
     // MACHINE SAFETY. The pre-adoption runtime path carries no deadline and
     // this probe drives a dozen settle legs. A hung device with no ceiling is
     // how a background probe takes the machine with it.
@@ -360,15 +371,23 @@ export const descriptor = {
       // is the run's own envelope and only exists at the end; this file is what
       // the executor repatriates from a killed run.
       const progressFile = path.join(outputDirectory, "arms-so-far.json");
-      const capture = async (label) => {
-        const buffer = await page.locator("canvas").first().screenshot();
-        const file = path.join(
+      // Every frame goes through the shared seam, which asks the page whether
+      // its device is alive and compares a control against its treatment
+      // BEFORE the bytes are written, and records each capture's sha256 in the
+      // runtime receipt. `index: 0` is the first canvas, as before, with the
+      // match count now on the record.
+      const capture = (label, pairedWith) =>
+        captureElement({
+          page,
+          selector: "canvas",
+          index: 0,
+          name: `cloud-march-mechanism-${label}`,
           outputDirectory,
-          `cloud-march-mechanism-${label}.png`,
-        );
-        fs.writeFileSync(file, buffer);
-        return path.basename(file);
-      };
+          captures,
+          pairedWith,
+        });
+      let framesBanked = 0;
+      let lastLiveSerial = null;
 
       // `--only-arm` narrows the table by LABEL or by arm id, and refuses a
       // name that matches nothing rather than running a zero-arm leg that
@@ -418,7 +437,8 @@ export const descriptor = {
         let pngCloudsOff = null;
         let measurementCloudsOff = null;
         if (set.capturesNothing !== true) {
-          png = await capture(set.label);
+          const captureOn = await capture(set.label);
+          png = path.basename(captureOn.path);
           // THE ARM'S OWN CONTROL. `cloudContributionField(on, off)` is what
           // separates the ring energy from the limb, the terminator and the
           // terrain, and the OFF frame has to come from THIS arm's scene —
@@ -428,8 +448,17 @@ export const descriptor = {
             ...armConfig,
             cloudsOn: false,
           });
-          pngCloudsOff = await capture(`${set.label}-clouds-off`);
+          const captureOff = await capture(
+            `${set.label}-clouds-off`,
+            captureOn,
+          );
+          pngCloudsOff = path.basename(captureOff.path);
+          framesBanked += 2;
+          if (captureOff.liveness.state === "live") {
+            lastLiveSerial = captureOff.liveness.frameNumber ?? lastLiveSerial;
+          }
         }
+        const deviceGate = await collectGateErrors(page);
         arms.push({
           ...set,
           png,
@@ -440,9 +469,24 @@ export const descriptor = {
           // is expected to raise a device validation error and the report has
           // to say which arm raised what.
           consoleErrors: consoleErrors.slice(before),
-          deviceGate: await collectGateErrors(page),
+          deviceGate,
         });
         fs.writeFileSync(progressFile, JSON.stringify(arms, null, 2));
+        // A device lost AFTER this arm's frames were accepted leaves this arm
+        // banked and ends the run here: every later arm would render nothing
+        // and bank the last drawn frame under its own label.
+        throwIfDeviceLost(
+          {
+            gateArmed: deviceGate.armedDevices > 0,
+            deviceLost: deviceGate.deviceLost,
+          },
+          {
+            name: `after arm ${set.label}`,
+            armIndex: arms.length - 1,
+            frameIndex: framesBanked,
+            lastLiveSerial,
+          },
+        );
       }
 
       return [

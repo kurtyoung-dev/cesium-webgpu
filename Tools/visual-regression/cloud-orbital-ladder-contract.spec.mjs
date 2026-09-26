@@ -2768,13 +2768,17 @@ function fakeMechanismPage(log, options = {}) {
     },
     locator() {
       return {
-        first: () => ({
+        count: async () => 1,
+        nth: () => ({
           async screenshot() {
-            log.trace.push(`shot:${log.nextShotLabel()}`);
+            const label = log.nextShotLabel();
+            log.trace.push(`shot:${label}`);
             // The bank-as-you-go guarantee, sampled from INSIDE the loop: at
             // arm i's two shots the progress file holds i entries.
             log.progressAtShot.push(log.readProgress());
-            return framePng(1);
+            // The clouds-OFF control must differ from its clouds-ON frame, or
+            // the capture seam refuses the pair as a frame never redrawn.
+            return framePng(label.endsWith("-clouds-off") ? 2 : 1);
           },
         }),
       };
