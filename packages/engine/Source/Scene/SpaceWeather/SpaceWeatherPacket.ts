@@ -412,6 +412,22 @@ export function validateSpaceWeatherPacket(
 }
 
 /**
+ * Check a flare section on its own, by the rule the packet check applies to it,
+ * so a producer composing a flare beside another source's channels can tell
+ * which of them a refusal belongs to.
+ *
+ * @param flare The candidate flare section.
+ * @returns Whether it is usable, and one message per violated rule.
+ */
+export function validateSolarFlareState(
+  flare: unknown,
+): SpaceWeatherValidation {
+  const errors: string[] = [];
+  validateFlare(errors, flare);
+  return { valid: errors.length === 0, errors: Object.freeze(errors) };
+}
+
+/**
  * The authority marker governing one field, or `undefined` when the packet does
  * not carry that field.
  *
@@ -478,6 +494,28 @@ export function spaceWeatherPacketAgeSeconds(
 }
 
 /**
+ * The freshness band of an age against a validity window: fresh within the
+ * window, stale past twice it, aging in between. The one statement of the rule,
+ * for readings that are not yet packets as well as for packets.
+ *
+ * @param ageSeconds Seconds since the observation.
+ * @param validitySeconds The window the observation is credited with.
+ * @returns The freshness band.
+ */
+export function spaceWeatherFreshnessForAge(
+  ageSeconds: number,
+  validitySeconds: number,
+): SpaceWeatherFreshnessValue {
+  if (ageSeconds <= validitySeconds) {
+    return SpaceWeatherFreshness.FRESH;
+  }
+  if (ageSeconds > validitySeconds * 2) {
+    return SpaceWeatherFreshness.STALE;
+  }
+  return SpaceWeatherFreshness.AGING;
+}
+
+/**
  * Where a packet sits relative to the validity window it declares: fresh within
  * that window, stale past twice it, aging in between.
  *
@@ -489,15 +527,10 @@ export function spaceWeatherFreshness(
   packet: SpaceWeatherPacket,
   nowMs: number,
 ): SpaceWeatherFreshnessValue {
-  const ageSeconds = spaceWeatherPacketAgeSeconds(packet, nowMs);
-  const validitySeconds = packet.provenance.validitySeconds;
-  if (ageSeconds <= validitySeconds) {
-    return SpaceWeatherFreshness.FRESH;
-  }
-  if (ageSeconds > validitySeconds * 2) {
-    return SpaceWeatherFreshness.STALE;
-  }
-  return SpaceWeatherFreshness.AGING;
+  return spaceWeatherFreshnessForAge(
+    spaceWeatherPacketAgeSeconds(packet, nowMs),
+    packet.provenance.validitySeconds,
+  );
 }
 
 /**

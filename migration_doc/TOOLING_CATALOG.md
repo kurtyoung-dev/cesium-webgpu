@@ -222,12 +222,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1423 |
-| ACTIVE | 1181 |
+| Files in census | 1424 |
+| ACTIVE | 1182 |
 | INVESTIGATION | 196 |
 | NO @purpose HEADER | 45 |
 | NO @status HEADER | 1 |
-| Classes | probe 677, spec 399, other 157, lib 143, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
+| Classes | probe 677, spec 400, other 157, lib 143, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
 
 ### Tools/ (64)
 
@@ -431,7 +431,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1072)
+### Tools/visual-regression/ (1073)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1384,9 +1384,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | q130-wgsl-derivative-uniformity.spec.mjs | spec | ACTIVE | 2026-09-01 | 14 | Guards the WGSL rule that made frustum-dev's phongTextured shader module invalid: no implicit-derivative sampling after a conditional return in a fragment entry point. |
 | q131-edge-pipeline-matches-pass.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Guards the edge-emitter invariant that broke styled-gltf-lines-dev and multifrustum-snapping-dev: the pipeline a tile-edges command binds must declare the colour targets of the pass it executes in. |
 | q132-custom-primitive-and-light-layout.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Reproduces and guards the two defects that stopped rendering in the Sandcastle2 sweep: Scene.updateHeight calling a tileset-only lifecycle method on every primitive, and the WebGL scene-light uniform being declared shorter than LightCollection.pack writes. |
-| radial-banding-family-mutants.spec.mjs | spec | ACTIVE | — | 2 | Makes one construct of the ring-family estimator unreachable at a time (a data: copy of its module graph, never the file on disk) and asserts that the synthetic or banked case in radial-banding-family.spec.mjs that guards it comes back wrong. |
-| radial-banding-family.spec.mjs | spec | ACTIVE | — | 3 | Drives ringFamily (lib/metrics/radial-banding-family.mjs, re-exported by radial-banding.mjs) over synthetic discs whose families are known by construction and over checked-in reductions of banked orbital frames, asserting the centre, law, period, amplitude, refusal and verdict it returns. |
-| radial-banding.spec.mjs | spec | ACTIVE | 2026-09-19 | 5 | Drives lib/metrics/radial-banding.mjs over synthetic fields whose answer is known by construction and over the checked-in reduction of a banked orbital capture, asserting returned numbers rather than the shape of the code that produced them. |
+| radial-banding-family-mutants.spec.mjs | spec | ACTIVE | 2026-09-26 | 2 | Makes one construct of the ring-family estimator unreachable at a time (a data: copy of its module graph, never the file on disk) and asserts that the synthetic or banked case in radial-banding-family.spec.mjs that guards it comes back wrong. |
+| radial-banding-family.spec.mjs | spec | ACTIVE | 2026-09-26 | 3 | Drives ringFamily (lib/metrics/radial-banding-family.mjs, re-exported by radial-banding.mjs) over synthetic discs whose families are known by construction and over checked-in reductions of banked orbital frames, asserting the centre, law, period, amplitude, refusal and verdict it returns. |
+| radial-banding.spec.mjs | spec | ACTIVE | 2026-09-26 | 5 | Drives lib/metrics/radial-banding.mjs over synthetic fields whose answer is known by construction and over the checked-in reduction of a banked orbital capture, asserting returned numbers rather than the shape of the code that produced them. |
 | refresh-cost-multi-metric.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Independent behavioural + canonicity coverage of Q-80's deltaOrNull/sumLegMultiMetric/available-guard formulas, which live inside a page.evaluate callback and cannot be imported. |
 | refresh-cost-protocol-order.spec.mjs | spec | NO @purpose HEADER | 2026-09-19 | 2 | — |
 | rescore-sun-disc-dawn.mjs | other | ACTIVE | 2026-09-02 | 1 | Re-score an already-acquired sun-disc-dawn artifact against a FAIL bar derived from that same artifact's own WebGL leg, never from WebGPU. |
@@ -1424,6 +1424,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | skybox-resolution-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 9 | Browser-free trust anchor for the star cube-map policy: 2048 default vs disk both directions, honest 4096 opt-in fallback, VRAM re-derived. |
 | solar-disc-model.spec.mjs | spec | ACTIVE | 2026-08-28 | 8 | Pins SolarDiscModel as the constants source for eclipse photometry, both sun-disc bakes, and the atmospheric alpha co-fade derivation. |
 | solar-glare-star-washout.spec.mjs | spec | ACTIVE | 2026-08-16 | 8 | C12-27: extracts solarGlareVeil from five shader texts, compiles each, requires 1e-15 agreement with the JS reference; rejects 7 wrong curves. |
+| solar-wind-flare-ingest.spec.mjs | spec | ACTIVE | — | 1 | Output contract for the solar-wind and flare ingest: frozen-fixture normalization, descending/ascending order normalization, active-source filtering, fill-by-name refusal, gaps and dropouts, instrument-source discovery, flare classification, coupling estimate, ownership gating, flare wall, time-regression and clock refusals, row-level exclusion of unreadable and future-stamped minutes, history, per-product requests and the request timeout, provider replacement, backoff under a fixed composition tick, the stop and destroy fences including from a listener or the transport, the composition key over the estimate's window, and zero cost on the render read. |
 | space-weather-feed-ingest.spec.mjs | spec | ACTIVE | 2026-09-19 | 2 | Output contract for space-weather ingest: frozen-fixture normalization, schema-mutation refusal, measured forecast lead, antimeridian rotation, pole policy, Kp/kp case trap, staleness handoff, abort/reissue, non-double-count, and zero cost on the render read. |
 | space-weather-state-packet.spec.mjs | spec | ACTIVE | 2026-09-18 | 4 | Output contract for the backend-neutral space-weather packet: preset values, timeline determinism, zero-cost OFF, per-field authority, flare/geomagnetic independence, validation rejections, staleness. |
 | spec-cesium-viewer-dev-ui.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | CesiumViewer start contract: dev chrome built only under devUi (absent, not hidden), bare URL resolves WebGPU non-strict, fleet URLs stable. |
@@ -1618,7 +1619,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 19 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 5 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
 | engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 30 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
-| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 44 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
+| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 45 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | globe-camera-track.mjs | lib | ACTIVE | 2026-08-16 | 13 | Shared orbit-to-ground camera route (plain serializable waypoints) used by both the visual parity probe and the performance campaign. |
 | globe-pipeline-readiness.mjs | lib | ACTIVE | 2026-08-29 | 5 | Pure scoring for the pipeline-readiness probe: snapshot summary, coverage-divergence scoring, non-vacuity; keys decoded via canonical parser. |
@@ -1659,7 +1660,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | prohibited-reader-rule.mjs | lib | ACTIVE | 2026-08-20 | 8 | Detect drawImage calls that copy a live scene canvas into a scratch context. |
 | provenance-markers.mjs | lib | ACTIVE | 2026-08-16 | 10 | Enforces bundler/formatter-proof provenance-marker strings for probes; encodes six recorded marker failure modes as shared validators. |
 | purpose-header-allowlist.mjs | lib | ACTIVE | 2026-08-21 | 5 | Frozen shrink-only snapshot of the probes and gate libs that predate the @purpose/@status header rule. |
-| radial-banding-family-cases.mjs | lib | ACTIVE | — | 2 | Synthetic discs and reductions whose ring families are known by construction, and the banked dense-deck reductions, shared by the ring-family behaviour spec and its mutant spec. |
+| radial-banding-family-cases.mjs | lib | ACTIVE | 2026-09-26 | 2 | Synthetic discs and reductions whose ring families are known by construction, and the banked dense-deck reductions, shared by the ring-family behaviour spec and its mutant spec. |
 | relative-path.mjs | lib | ACTIVE | 2026-09-19 | 8 | Single fail-closed predicate for "a relative, POSIX, non-escaping path", shared by the capture manifest's image paths, the contact sheet's image/receipt paths and a banked sheet-index entry's repo-relative path. |
 | representative-performance-content.mjs | lib | ACTIVE | 2026-08-16 | 12 | Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads. |
 | representative-tileset-request-ledger.mjs | lib | ACTIVE | 2026-08-16 | 6 | Event-sourced ledger of tileset content requests (issue/terminal events, byte totals, hashes) with cross-run comparison for perf evidence. |
@@ -1699,10 +1700,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | connected-components.mjs | lib | ACTIVE | 2026-09-18 | 3 | Label 4- or 8-connected foreground regions in a field and report per-component area, bbox, centroid and intensity, so structure survives where a band mean cannot see it. |
 | luminance.mjs | lib | ACTIVE | 2026-09-18 | 5 | Rec. 709 luminance, the march's Reinhard operator in both directions, and the display-space mean the photometric rule exists to forbid. |
 | masks.mjs | lib | ACTIVE | 2026-09-18 | 8 | Region-of-interest geometry for photometric statistics: the circular sun-disc mask every ROI must exclude, and a rectangle clamped to the image. |
-| radial-banding-family-centre.mjs | lib | ACTIVE | — | 2 | Pixel half of the ring-family estimator: gathers a frame's pixels about the stated disc centre, bins them radially (whole and per octant of azimuth) about any candidate centre, finds a family's own centre by band-passed amplitude, says when that centre ran into the edge of the search, and removes a fitted family from the pixels so the next family can be looked for. |
-| radial-banding-family-spectrum.mjs | lib | ACTIVE | — | 3 | Spectral half of the ring-family estimator: band-passes a radial profile, finds its lines by a Box-Cox periodogram over a scan of radial laws, fits and removes each line so a second family is not hidden in the first one's chirp, measures every line against a local floor that excludes the line's own harmonics, and tests a line's concentricity from per-octant profiles. |
-| radial-banding-family.mjs | lib | ACTIVE | — | 4 | Ring-family estimator for disc captures: finds the family's own centre from the frame, measures its band-passed amplitude in luminance units, identifies its radial law and period by a coherent periodogram, and refuses by name when the family lies outside the period band the caller declares. |
-| radial-banding.mjs | lib | ACTIVE | 2026-09-19 | 8 | Concentric-banding statistics over a disc capture — onset ladder in ln(eye-axis depth) and in cos(incidence), duty cycle per annulus, and the presence/darkness terms a banding number must be read beside. |
+| radial-banding-family-centre.mjs | lib | ACTIVE | 2026-09-26 | 2 | Pixel half of the ring-family estimator: gathers a frame's pixels about the stated disc centre, bins them radially (whole and per octant of azimuth) about any candidate centre, finds a family's own centre by band-passed amplitude, says when that centre ran into the edge of the search, and removes a fitted family from the pixels so the next family can be looked for. |
+| radial-banding-family-spectrum.mjs | lib | ACTIVE | 2026-09-26 | 3 | Spectral half of the ring-family estimator: band-passes a radial profile, finds its lines by a Box-Cox periodogram over a scan of radial laws, fits and removes each line so a second family is not hidden in the first one's chirp, measures every line against a local floor that excludes the line's own harmonics, and tests a line's concentricity from per-octant profiles. |
+| radial-banding-family.mjs | lib | ACTIVE | 2026-09-26 | 4 | Ring-family estimator for disc captures: finds the family's own centre from the frame, measures its band-passed amplitude in luminance units, identifies its radial law and period by a coherent periodogram, and refuses by name when the family lies outside the period band the caller declares. |
+| radial-banding.mjs | lib | ACTIVE | 2026-09-26 | 8 | Concentric-banding statistics over a disc capture — onset ladder in ln(eye-axis depth) and in cos(incidence), duty cycle per annulus, and the presence/darkness terms a banding number must be read beside. |
 | region-means.mjs | lib | ACTIVE | 2026-09-18 | 3 | Whole-image means over a cloud mask: captured alpha with its coverage fraction, and the fraction of cloud pixels whose colour has collapsed onto the aerial tint. |
 | saturation.mjs | lib | ACTIVE | 2026-09-18 | 3 | Per-ROI photometric statistics in linear pre-Reinhard radiance, with saturated and sun-disc pixels excluded and counted, plus the ratio the bars are made of. |
 | spectral-slope.mjs | lib | ACTIVE | 2026-09-18 | 6 | Radially averaged power-spectrum slope fit and area-perimeter fractal dimension for scalar fields, with a seeded synthetic fBm generator for validating them against a known answer. |
@@ -1735,7 +1736,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | mid-distance-12mm.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "mid-distance-12mm" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
 | northatlantic-cirrus-fibratus.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "northatlantic-cirrus-fibratus" (midlatitude-jetstream/fibratus-filaments), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | orbital-fulldisc-6608km-imagery.mjs | other | ACTIVE | 2026-09-19 | 1 | Rig record: the L5 orbital full-disc camera with imagery on and the globe left alone, the framing control for every figure measured over a deliberately blacked-out globe. |
-| orbital-fulldisc-6608km.mjs | other | ACTIVE | 2026-09-19 | 8 | Rig record reproducing the L5 orbital full-disc recipe exactly - nadir on the sub-solar point at a disc-fitting altitude, 2048 square, disc 2000 px across, weather map off, tier 3. |
+| orbital-fulldisc-6608km.mjs | other | ACTIVE | 2026-09-26 | 8 | Rig record reproducing the L5 orbital full-disc recipe exactly - nadir on the sub-solar point at a disc-fitting altitude, 2048 square, disc 2000 px across, weather map off, tier 3. |
 | orbital-ladder-20000km.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the C13-N04b orbital ladder rung at 20000 km (lib/cloud-orbital-ladder-model.mjs ALTITUDE_LADDER_METRES). |
 | orbital-ladder-2000km.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the C13-N04b orbital ladder rung at 2000 km (lib/cloud-orbital-ladder-model.mjs ALTITUDE_LADDER_METRES). |
 | orbital-ladder-200km.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the C13-N04b orbital ladder rung at 200 km (lib/cloud-orbital-ladder-model.mjs ALTITUDE_LADDER_METRES). |
