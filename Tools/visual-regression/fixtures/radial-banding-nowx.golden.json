@@ -1,5 +1,14 @@
 {
   "note": "The radial reduction of the banked L5 NOWX capture (orbital full disc, 6,608 km, weather map OFF), and the statistics radialBandingFromProfile produces from it. The capture itself lives in the gitignored visual-regression output tree; this file is what lets a spec assert the metric's numbers on real banked pixels without one. Regenerate only when a banked number is deliberately changed.",
+  "regime": {
+    "name": "sparse-deck",
+    "note": "This capture's deck is dark over most of the disc, so its rings are most of what renders; it is NOT the orbital rig's reference regime. A frame whose deck lights every annulus is the dense-deck regime of radial-banding-dense-deck.golden.json, where the onset ladder saturates and ringFamily is the instrument.",
+    "dutyFull": 0.1101405746486907,
+    "darkFraction": 0.8844113778760126,
+    "medianBinDuty": 0,
+    "binsAboveOnsetLevel": 363,
+    "bins": 1000
+  },
   "source": {
     "bank": "Tools/visual-regression/output/wave-end/c13v2-wave1-engine-legs-2026-09-18/L5",
     "cloudsOn": "structural/full-res/NOWX-clouds-on-0.png",

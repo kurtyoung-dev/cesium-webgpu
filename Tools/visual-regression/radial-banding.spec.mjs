@@ -29,6 +29,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   DEFAULT_LIT_THRESHOLD,
+  LADDER_SATURATED,
   PROVISIONAL_BANDS,
   cosIncidenceAt,
   discGeometry,
@@ -576,7 +577,7 @@ test("C2. an unmeasured clause leaves the conjunction null, never false", () => 
  * The copy is an inline `data:` module, so there is no chance of the spec
  * importing the unmutated file by mistake: the source string is mutated first,
  * the mutation is asserted to have applied, and the module object that comes
- * back was compiled from that string. Its two relative sibling imports have no
+ * back was compiled from that string. Its relative sibling imports have no
  * base to resolve against in a `data:` URL, so they are rewritten to the
  * absolute URLs this spec resolves them to — that rewrite is what makes the
  * mutant loadable and is not part of the mutation.
@@ -589,7 +590,11 @@ async function importMutatedMetric(mutate) {
     path.join(HERE, "lib", "metrics", "radial-banding.mjs"),
     "utf8",
   ).replaceAll("\r\n", "\n");
-  for (const sibling of ["./luminance.mjs", "./masks.mjs"]) {
+  const siblings = [...source.matchAll(/from "(\.\/[\w-]+\.mjs)";/g)].map(
+    (match) => match[1],
+  );
+  assert.ok(siblings.includes("./masks.mjs"), "the metric imports masks.mjs");
+  for (const sibling of siblings) {
     const specifier = `from "${sibling}";`;
     assert.equal(source.split(specifier).length - 1, 1, `${sibling} import`);
     source = source.replace(
@@ -850,4 +855,39 @@ test("15. a rung whose silhouette leaves the frame is measured on a stated in-fr
     eyeAxisDepthMetres(500, lowAltitude, 6378137 + 4000),
     eyeAxisDepthMetres(500, GOLDEN.camera, 6378137 + 4000),
   );
+});
+
+// ===========================================================================
+// The ladder on a dense deck. `ringFamily`, the instrument for such a deck,
+// has its own spec: radial-banding-family.spec.mjs.
+// ===========================================================================
+
+const DENSE = JSON.parse(
+  readFileSync(
+    path.join(HERE, "fixtures", "radial-banding-dense-deck.golden.json"),
+    "utf8",
+  ),
+);
+
+test("F8. the onset ladder refuses a deck that lights every annulus, by name, and still reads the sparse golden", () => {
+  const dense = radialBandingFromProfile(
+    DENSE.ladder.profile,
+    DENSE.ladder.camera,
+  );
+  assert.equal(dense.ladderRefusal?.name, LADDER_SATURATED);
+  assert.equal(dense.bandCount, 1);
+  assert.equal(dense.lnZSpacingMean, null);
+  // The regime labels are re-derived, not transcribed.
+  assert.equal(DENSE.regime.dutyFull, dense.dutyFull);
+  assert.equal(DENSE.regime.darkFraction, dense.darkFraction);
+  const sparse = radialBandingFromProfile(GOLDEN.profile, GOLDEN.camera);
+  assert.equal(sparse.ladderRefusal, null);
+  assert.equal(sparse.bandCount, 20);
+  assert.equal(GOLDEN.regime.dutyFull, sparse.dutyFull);
+  assert.equal(GOLDEN.regime.darkFraction, sparse.darkFraction);
+  const blank = radialBanding(
+    buildField(FRAME, () => 0),
+    CONTROL_CAMERA,
+  );
+  assert.equal(blank.ladderRefusal, null);
 });

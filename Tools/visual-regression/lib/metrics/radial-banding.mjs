@@ -72,6 +72,16 @@
  * 2026-09-19. It is latent rather than live on the blacked-out acceptance rig,
  * whose clouds-OFF frame measures a mean in-disc luminance of about 1e-6.)
  *
+ * THE LADDER READS PRESENCE, SO A DENSE DECK SATURATES IT. Onsets are where
+ * an annulus's lit fraction crosses `onsetLevel`; on a frame whose deck lights
+ * every annulus there is one run and no ladder, whatever rings the deck
+ * carries. That case comes back with `ladderRefusal` named, not as a bare
+ * `bandCount` of 1. `ringFamily` (re-exported below from
+ * `radial-banding-family.mjs`) is the instrument for such frames: it detects
+ * an oscillation rather than a presence, finds the family's own centre, and
+ * reports its amplitude in luminance rather than as a share of the deck's
+ * variance.
+ *
  * NO VERDICT. `PROVISIONAL_BANDS` may be reported; it may not gate. The bands
  * were read off one capture family and there is no measured noise floor for
  * them: consecutive frames of a still cloud scene in this renderer are
@@ -81,6 +91,19 @@
 
 import { luminance } from "./luminance.mjs";
 import { requireFinite } from "./masks.mjs";
+
+export {
+  CENTRE_AT_SEARCH_BOUNDARY,
+  RING_AMPLITUDE_CLASSES,
+  RING_DETECTION_SNR,
+  RING_FAMILY_REFUSALS,
+  ringFamily,
+  ringFamilyFromProfile,
+  ringFamilyProfile,
+} from "./radial-banding-family.mjs";
+
+/** Name `radialBanding` reports when one lit run covers the ladder. */
+export const LADDER_SATURATED = "LADDER_SATURATED_BY_PRESENCE";
 
 /** Byte level above which a pixel counts as lit: one 8-bit step clear of black. */
 export const DEFAULT_LIT_THRESHOLD = 3 / 255;
@@ -632,13 +655,23 @@ export function radialBandingFromProfile(profile, camera, options = {}) {
   // there are depends on the level and is reported WITH it.
   const onsetsPx = [];
   let inside = false;
+  let run = 0;
+  let longestRun = 0;
   for (let bin = 0; bin < bins; bin++) {
     const above = profileDuty[bin] > onsetLevel;
     if (above && !inside) {
       onsetsPx.push(((bin + 0.5) / bins) * discRadiusPixels);
     }
     inside = above;
+    run = above ? run + 1 : 0;
+    longestRun = Math.max(longestRun, run);
   }
+  // One run over nine tenths of the radius is the deck, not a band: the
+  // ladder has nothing to space, and saying so beats a `bandCount` of 1.
+  const ladderRefusal =
+    longestRun >= 0.9 * bins
+      ? { name: LADDER_SATURATED, longestRunBins: longestRun, bins, onsetLevel }
+      : null;
 
   const onsetsLnZ = [];
   const onsetsCosI = [];
@@ -761,6 +794,7 @@ export function radialBandingFromProfile(profile, camera, options = {}) {
     dominantCyclesPerUnitCos,
     bandCount: onsetsPx.length,
     bandCountThreshold: onsetLevel,
+    ladderRefusal,
 
     dutyByAnnulus,
     dutyFull,
