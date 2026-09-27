@@ -1279,6 +1279,8 @@ Shipping that table as the live source would have retuned the image inside a plu
 
 **Unlock rider, after Edge Leg 1 (2026-09-19) and seat decision S-8 (2026-09-26, recorded in the seat's rulings source sheet; the maintainer may reverse).** The unlock sentence above re-addressed `R-2026-09-18-4`'s trigger — *"taken once `C13-N13` lands"* — to `C13-N60` before Edge Leg 1 ran. After it, **`C13-N60`'s landing does not by itself unlock the LOOK at the tip**: the family the tip renders at the recipe camera is not the one `C13-N60` models (W-4, W-7), and `C13-N60`'s four-part acceptance would pass vacuously there (W-10), so the LOOK could be signed with the tip's own rings on the screen — the defect this exit's correction names about its predecessor. The row whose landing unlocks the LOOK is **under-determined** in the same way as the promotion (W-7) and follows S-8's re-addressing of it: the new row that owns the tip's family, once Edge Leg 2 names its anchor. S-8 decided the ring plan's Q1–Q5 and did not re-address this trigger, so moving `R-2026-09-18-4`'s trigger off `C13-N13` to any row is **the maintainer's to confirm**. Every sentence that places the LOOK behind `C13-N60` carries a pointer here.
 
+**Edge Leg 2 and its offline checks 2b, 2026-09-26 — the S-8 suspension continues (record round 9).** Leg 2 ran all its arms (A0-A7, one Edge job) and did **not** name the anchor: at the **registered** tolerances no candidate survives, with K1, K2 and K3-as-a-sun-direction excluded, K6 refuted for the visible family, and K4 missing its registered A1 tolerance (4.19 px against ±3) and NOT ESTABLISHED; the offline checks then placed A1's miss inside the fringe-normal estimator's own error on a rotated field, and put A2's measured centre 4.62 px (bilinear, under both the fringe-normal and the ring-RMS estimator) from the centre the same estimator finds on A0's field shifted rigidly by the K4 surface-point move, on the side of a smaller move. So S-8's condition — *"until Edge Leg 2 names the anchor"* — is not met: **the promotion stays SUSPENDED, no new row is minted, and it does not move to `C13-N60`.** The measurements, the verdicts and the receipts are in `C13-N60`'s "Edge Leg 2 appendix"; no mechanism is named there or here. The continuation is a **Leg 3, recorded as a PROPOSAL awaiting the maintainer** — one Edge job with I-1's `ringFamily` as the only instrument and every window pre-registered, not dispatched (`cesium-webgpu-worker-archive/lanes-2026-09-26/ring-leg3-proposal/brief-ring-leg3-proposal.md`). The unlock trigger above stays the maintainer's question, now with three options on the record (`MAINTAINER_RULINGS_2026-09-26.md`, "Still open with the maintainer").
+
 ### C13-N14 — Rung blending and hysteresis <!-- source: CAMPAIGN_13_V2 §3 WS-B -->
 
 **Status:** OPEN (Wave W3, Priority P1).
@@ -2523,6 +2525,40 @@ the row that would promote it.
 | A0 | none (R0 again) | 12601 | 96/8 (96) | 0.0570 @ (1060.9, 1032.7) | PRESENT | budget leg, T1 |
 
 Read-out, as measured: **at unchanged 96/8 the tip's family is PRESENT with bits 0 + 13 set (R0, A0), PRESENT with erosion 0.10 (R6), PRESENT with jitter cleared (R1), and ABSENT with bit 13 cleared alone (R3 0.0074).** R2, R4 and R5 ran 67 steps under the `C13-N69` budget, not 96, so each confounds the noise axis with the step count. R0 against A0 differ on 0 pixels; R2 against R4 are byte-identical. R1 is from the other driver, whose own R0 read 0.0461, so it is compared with the budget leg's rows as a verdict only (`DX-PROBE-PAGERUNARM-SETTLE-RENDERS-AT-NOW`). On the pre-budget tree the I-5 leg's R2 (bit 0 cleared at 96/8) lost the device during its settle and banked nothing. Receipts: `Tools/visual-regression/output/wave-end/c13-n69-e4-budget-20260926/README.md` "Arm D on T1" (`T1/armd/rows.json`) and `Tools/visual-regression/output/wave-end/ring-i5-leg-20260926/README.md` "Part 2". The full leg record is `C13-N69-E4-BUDGET-LEG`.
+
+**Edge Leg 2 appendix, measured 2026-09-26 — measurements and adjudicated verdicts only; no mechanism is named here (record round 9).** Executor Fimbrethil (Opus 5.5), one Edge job, 12:16–13:05 EDT; tree `cesium-edge-ring-leg2-20260926`, a clone of `541b821331` (Batch 1547), DEV build served from disk with served == disk asserted; Edge headless on an NVIDIA Pascal adapter. Rig `orbital-fulldisc-6608km`, tier 3 ("high"), 96/8, MSAA 4, 2048², no realization override set, `budgetApplied` 0 and `executeSerial` +60 on every arm, every frame rendered at the rig clock. **No arm was VOID, and A0 and A0b are byte-identical** (repeat floor 0.00 px on the centre, 0 on the period). Receipt: `Tools/visual-regression/output/wave-end/c13-ring-leg2-20260926/README.md` (banked with `arms.json`, the per-arm scores and the driver at `cesium-webgpu-worker-archive/lanes-2026-09-26/ring-leg2/`). Instruments, each calibrated on Leg 1's M0 before any arm: **FN**, the fringe-normal centre (ρ 100–500 about (1024, 1024), coherence ≥ 0.55; exact against its registration); **RM**, the ring-RMS argmax (41-px detrend, ρ 40–400; 0.0569 against 0.0570 registered); the period, an all-azimuth periodogram about the FN centre. **Every "offset from the silhouette" below is from the executor's own circle fit to the clouds-off silhouette (720 rays, calibrated on Leg 1's M0), (1023.50, 1019.10)** — not from the rig's declared centre (1023.992, 1019.602, `C13-N64`, landed after this leg), and it is not re-expressed here.
+
+| arm | treatment, as read back | FN centre (coherent n) | offset from (1023.50, 1019.10) | period at ρ 300 (px) | ring RMS ρ 40–400 |
+| --- | --- | --- | --- | --- | --- |
+| A0 | none | (1057.39, 1031.23) (178,528) | (+33.89, +12.13) | 7.39 | 0.0570 |
+| A0b | none, a second launch | identical | identical | 7.39 | 0.0570 |
+| A1 | heading 0.7854 | (1056.47, 1002.77) (173,220) | (+36.08, −17.62) | 7.54 | 0.0564 |
+| A2 | longitude −89.5249 | (928.32, 1029.29) (178,521) | (−95.19, +10.20) | 6.86 | 0.0496 |
+| A3 | clock 18:50:00Z | (1057.39, 1031.23) (178,536) | (+33.89, +12.13) | 7.36 | 0.0570 |
+| A4 | 1448², same altitude | pixel window (699.89, 771.52) (84,847); ρ 70.7–353.5 window (749.70, 727.69) (60,408) | (−23.58, +51.18) / (+26.23, +7.34) | 3.55 about the scaled centre; 6.03 at ρ 212 | 0.0463 / 0.0564 |
+| A5 | altitude 3,000 km | (921.25, 979.30) (129,686) | no limb in frame | 22.48 (SNR 21) | 0.0121 |
+| A6-P1 | red box, 800 km, 500 km altitude, latitude +4° | (1055.00, 1032.29) (159,570) | (+31.50, +13.19) | 7.47 | 0.0449 |
+| A6-P2 | the box moved longitude +4° | (1057.70, 1032.00) (155,585) | (+34.20, +12.91) | 7.39 | 0.0449 |
+| A7 | far plane 1.6e11 | (1057.39, 1031.23) (178,528) | (+33.89, +12.13) | 7.39 | 0.0570 |
+
+- **A6, the occlusion witness (seat decision S-8's Q2 (b)).** In both positions 0 % of the occluder's interior (the red mask eroded 3 px) differs between the clouds-ON and clouds-OFF frames, and 100 % of the OFF red mask is still pure red in ON; 64.5 % / 64.8 % of the 3–12 px surround differs, mean |ΔL| 0.204. The mask moved between the positions (IoU 0.317) and the ON red bounding box equals the OFF one at both.
+- **A7.** Period 7.39 against 7.32 ± 0.2; centre 0.6 px from (1058, 1031); 0.040 % of disc pixels differ from A0.
+- **A3.** The FN centre moved 0.00 px. The clouds-ON illumination centroid moved 0.15 px against a 0.00 px repeat floor; S3's literal rule did not fire, and the executor left to the seat whether 0.15 px satisfies it.
+
+**The adjudication** — three critics and a synthesis (`cesium-webgpu-worker-archive/lanes-2026-09-26/ring-leg2/adjudication/SYNTHESIS_ARAGLAS.md`; `CRITIC_ESTELMO.md`, `CRITIC_NUMENDIL.md`, `CRITIC_OHTAR.md` beside it). Verdicts are scored on the **registered** tolerances. The executor's post-hoc tolerances — A2 ±20 px (A3's, borrowed) and A4 ±3 px on the offset and ±0.2 px on the period (the latter A7's) — are recorded as **adopted, not registered**, and score nothing.
+
+- **ESTABLISHED:** no arm is VOID and A0 == A0b; **K1 is excluded** (A1 28.47 px against ±2; A2 129.08 px; the A4 period off by ×2); **K2 is excluded** (A1 51.9–55.1 px; A2 129.08 px); **K3 as a sun direction is excluded** (A2 271.4 px); the A1 centre co-rotates with the world (45.01°, tangential residual 0.01 px); a family is present at 3,000 km (RM 0.0580 against a wrong-centre null of at most 0.0152); **A6 cuts, and the cut follows the box**; A7 is unchanged.
+- **REFUTED:** "A5 is absent" — its 0.0121 lies inside that null, the instrument reading out of its band (evidence for lane I-1, `C13-N66`); "A4 refutes every period law" — only K1's fails, and view-angle scaling (+1.5…+15 %) lies inside the instrument's error (−7…+15 %); **K6 for the visible family** — an alias predicts 3.22 px against 9.77 measured at A4; "K4 survives all arms".
+- **NOT ESTABLISHED, each with its next measurement:** K4 at A1 within ±3 (FN **4.19 px**, radial; RM 0.53 px); A2 supporting K4 (FN **8.10 px**, no registered tolerance); K4 against a sun-fixed ground point (S3 unproven — the illumination centroid moved 0.33 px for A2's known sun change and 1.1–1.9 px with the sun held; A3 is void for K3); the A4 centre fixed in view angle (the registered window shows no line, SNR 4–11); K4's period law (the registered ln z law fails; an exploratory deck-fixed curve, unattacked and not registered, predicts 50.2 / 37.2 / 26.5 / 19.8 px against 53.3 / 37.8 / 26.2 / 19.6 measured at 3,000 km); **the clamp makes the A6 cut** (only a draw-over with the box below the deck is decisive; the cut's attribution rests on a source reading, not on an arm); the depth-precision candidate (the scored pixels lie at least 4.13 quanta from the deck); the limb "eyes" as K6 folds.
+- **Disagreements, and the number that decided each:** A1 is 4.19 px, not one critic's 4.64 (silhouette residual 0.009 px about 1023.5 against 0.54 about 1024); A2 is 8.10 px from the exact K4 point, where the receipt's 7.56 px was computed from a rounded starting centre.
+
+**Offline checks 2b** (lead Bodruith, Node only, from the banked A0, A1 and A2 frames; verifier Ufedhin AGREES to all printed digits; `cesium-webgpu-worker-archive/lanes-2026-09-26/ring-leg2/offline-2b/README.md` and `VERIFY_UFEDHIN.md`). FN and RM are the executor's registered instruments, called as the leg's `score.mjs` calls them; both reproduce the banked A0/A1/A2 centres to every printed digit.
+
+- **(i) A0 rotated by exactly 45° about (1023.5, 1023.5).** FN lands **2.80 px** (bilinear) / **2.53 px** (nearest) from A1's measured FN centre, and 1.71 / 3.88 px from the rigid rotation of A0's FN centre (the lead's README prints 1.72; the exact value is 1.71459). The pre-registered first clause — within 3 px of A1's measured centre, so the 4.19 px is the estimator's — is **MET** under both resamplers; the second clause is **NOT MET** under either. Changing only the resampler moves the rotated FN centre 2.19 px. RM on the rotated frame lies 0.21 / 0.33 px from A1's RM and 0.23 / 0.31 px from the rigid rotation of A0's RM.
+- **(ii) A0's clouds-ON minus clouds-OFF field, shifted by the exact K4 surface-point move (−137.14, −1.22) and composited onto A2's clouds-OFF frame (the pre-registered field).** FN on the composite lies **4.62 px** (bilinear) / 5.50 px (nearest) from A2's measured FN centre and **3.48 / 2.61 px** from the exact K4 point (920.25, 1030.01), which is A0's FN centre moved by the same shift; the three points are nearly collinear (4.623 + 3.479 = 8.102 against the 8.098 px A2–K4 separation). The pre-registration labels the 4.62 px "the estimator's share" and the 3.48 px the remainder; those are its labels, recorded as labels. RM on the composite lies 0.19 px from A0's RM plus the shift, 3.71 px from the K4 point, and **4.62 px** from A2's own RM centre (928.32, 1031.79).
+- **Read against the pre-registration, and no further:** A1's miss is inside the FN estimator's own error on a rotated field, so A1 is no longer evidence against K4 and is evidence for it only as far as it excludes K1 and K2; at A2 the real frame's centre lies 4.62 px from the rigidly shifted composite's under FN and 4.62 px under RM (bilinear; 5.50 / 4.49 nearest), on the side of a smaller move in all four readings, while RM on the composite follows the rigid shift itself to 0.19 px (0.10 nearest); the 3.48 px (2.61) is FN's own distance from the exact K4 point on a field shifted rigidly by construction. A new NOT ESTABLISHED item goes to the critics of any next leg: K4 as a fixed **surface** point, against an anchor that moves a few per cent less than a surface point under a 5° longitude step.
+
+**What follows, and whose it is.** S-8's condition is not met, so `C13-N13`'s promotion stays suspended (see `C13-N13`). The next measurements the synthesis names — two offline and five Edge arms — are gathered into a **Leg 3 PROPOSAL awaiting the maintainer**, not dispatched: a repeat baseline, longitude +10° and −5°, a clock step with the cloud pass's sun-direction uniform read back, 1024² with its window registered, 4,500 km with the K4 projection and the deck-fixed curve registered, the box wholly below the deck and a thin slab 10–40 km up, and a limb-eye arm at a 30° field of view (`cesium-webgpu-worker-archive/lanes-2026-09-26/ring-leg3-proposal/brief-ring-leg3-proposal.md`).
 
 **Dependencies:** none. (`C13-N13` and this row touch different regions of `marchDeck` and are SEQUENCED, never concurrent — one owner of `ProceduralClouds.wgsl` at a time.)
 
@@ -25456,7 +25492,7 @@ frames: M0 0.0570 against Ornendil's 0.0562). Source:
 `Tools/visual-regression/output/wave-end/ring-i5-leg-20260926/README.md` and `…/part2/ring-i5-arm-d-refusal.json`.
 **This R2 hang is a `C13-N69` datum** (the budget's live-noise point, below).
 
-### `DX-TOOLS-RING-BANDPASS-ESTIMATOR-UNTRACKED` — the ring number the legs quote comes from an untracked estimator — OPEN (DX row)
+### `DX-TOOLS-RING-BANDPASS-ESTIMATOR-UNTRACKED` — the ring number the legs quote comes from an untracked estimator — ~~OPEN~~ CLOSED 2026-09-26 by Batch 1559, lane I-1 (DX row; see the rider below)
 
 Every ring figure in the two 2026-09-26 legs (0.0570, 0.0549, 0.0461, 0.0074 …) is the executors' band-pass estimator —
 annulus mean minus a centred 41-px moving average, RMS over ρ 40-400, centre searched to maximise it (a port of
@@ -25471,6 +25507,13 @@ proposed for I-1 — N61 to N66 — collided with that patch on N61/N62/N63, so 
 period-band rows are `C13-N64`/`N65`/`N66`, reserved for I-1 in the §1 table, and its presence-ladder, coherence and
 disc-centre rows have no id yet]*), so one owner. Source: `…/ring-i5-leg-20260926/README.md` "Estimator";
 `…/c13-n69-e4-budget-20260926/README.md` (the same estimator).
+
+*[Record round 9: closed by Batch 1559 (`e578eb6a95`, lane I-1). The tracked estimator is `ringFamily`
+(`Tools/visual-regression/lib/metrics/radial-banding-family.mjs`, re-exported from `radial-banding.mjs`), and
+`Tools/visual-regression/fixtures/radial-banding-dense-deck.golden.json` carries the seven calibration frames: M0 reads
+**0.05700 PRESENT** about its family centre (1060.89, 1032.56), where the executors' untracked estimator gave 0.0570 at
+(1060.9, 1032.7). Figures banked before the landing stay the executors' estimator's, as quoted; a later leg quotes
+`ringFamily`. The rows are `C13-N64`…`N66` and `C13-N72`…`N74`, record round 9.]*
 
 ### Lane T1 (Belba): the TaskProcessor late-post guards — Batch 1544
 
@@ -26518,3 +26561,751 @@ already carries `### three.js` and `### FFT-Ocean`. `LICENSE.md` is unchanged un
 - *Verdict:* `SWEEP_VERIFY_BRANDYBUCK.md` §2 Gorbulas ("the four doc drifts"; "the TAA reconcile wording"), §5 item 6,
   §2 Gundahad ("`VEGETATION_SYSTEM_DESIGN.md` is stale") and `VERIFY_GRIMA.md` §7 items 1–3: HOLDS.
 - *Licence:* none.
+
+## Record round 9 — lane I-1's ring instrument, CI wave 2's second tranche, the hosted CI after it, and the day's DX rows
+
+*Recorded by record round 9 (lead Gamwich, Opus 5.5) from the lanes' packets, reviews and verifications banked at
+`cesium-webgpu-worker-archive/lanes-2026-09-26/` and from the receipts under `Tools/visual-regression/output/wave-end/`.
+Where a packet gave finished, batch-free row text it is copied, not paraphrased, and the packet is cited; a copied row
+keeps the lane's own dates, which are its authoring dates. Where an item is a measurement it is recorded as numbers and a
+receipt, with no mechanism. The batches recorded here are Batches 1549-1557 (CI wave 2, tranche 2) and Batch 1559
+(`e578eb6a95`, lane I-1); none of them touched `migration_doc/` beyond `TOOLING_CATALOG.md`, so every row below was owed.
+Ring Edge Leg 2 and its offline checks are recorded on `C13-N60` ("Edge Leg 2 appendix") and `C13-N13`, not here.
+`C15-06`'s records are not part of this round and ride a later one. Batch 1558 (the tidewater intake) needs no row: its rows
+are the landing.*
+
+### Lane I-1 (Valandur): the ring-family instrument — Batch 1559
+
+*Source: `cesium-webgpu-worker-archive/lanes-2026-09-26/i1/LANDING_PACKET_VALANDUR.md` §8 (the row text, copied; v5, where
+§v5 overrides the earlier sections), §9 (follow-ups) and §4 (calibration); review `…/i1/REVIEW_ARANTAR.md`
+(LAND-WITH-FIXES, FX-1…FX-4 applied in v2); adversarial verification by Almarian in five passes — pass 1 on v1 REFUTED
+(seven minimum fixes, recorded in the packet's §1), `…/i1/VERIFY_ALMARIAN_V2.md` on v2 REFUTED, `…/i1/VERIFY_ALMARIAN_V3.md`
+on v3 REFUTED (ND-2, the lattices), `…/i1/VERIFY_ALMARIAN_V4.md` on v4 REFUTED (one sentence of comment text), and
+`…/i1/VERIFY_ALMARIAN_V5.md` on v5 **HOLDS**. v4 and v5 changed comment text only; every code token stream is identical
+to v3's, and the calibration is bit-identical throughout. Landed as Batch 1559 (`e578eb6a95`): thirteen files, all under
+`Tools/visual-regression/` except the `package.json` runner line and the regenerated `TOOLING_CATALOG.md`. The three specs
+read 67/67 on v5 (27 behaviour, 18 inertness mutants, 22 ladder). The ids `C13-N64`…`N66` were minted by Batch 1548; the
+seat assigned `C13-N72`…`N74` to the packet's three unnumbered rows (proposed there as "N61"…"N63", numbers already
+taken), and this record mints them in `QUEUE_2026-07-23_CAMPAIGN13.md` §1 before this text.*
+
+### `C13-N64` — the orbital full-disc rig states no disc centre — CLOSED (Batch 1559)
+
+- *Status:* fixed by lane I-1 (unchanged from v1).
+- `disc` declares `centreX 1023.992, centreY 1019.602`, from an axis-aligned ellipse fitted to the ground limb of two
+  clouds-off frames from two trees. They agree to 0.002 px, with 0.23 px RMS residual; semi-axes {999.99, 997.26}.
+- The proposal's (1024.215, 1017.876) is a circle through the outer halo and is superseded.
+- `discRadiusPixels` stays 1000, because a consumer spec pins it; the rig comment states the 2.7 px polar crossing.
+- Open: the 2.3 px geocentre residual, measured and unexplained. The imagery sibling rig declares no centre yet.
+
+*Record round 9 note:* figures measured before the landing — Edge Leg 2's "offset from the silhouette" column above all —
+were taken about the leg executor's own fit, (1023.50, 1019.10), and stay so; they are re-expressed against the declared
+centre only where a lane re-scores them. The imagery sibling rig's centre is follow-up F-2.
+
+### `C13-N65` — the radial-banding golden fixture pins a regime that no longer occurs at the tip — CLOSED (Batch 1559)
+
+- *Status:* fixed by lane I-1.
+- The sparse golden carries a re-derived `regime` block.
+- `fixtures/radial-banding-dense-deck.golden.json` holds seven banked frames' reductions, as follows:
+  - Leg 1 M0 and M1, E4 R0 (= A0), R6 and R3, and the raw path at q32 and q128;
+  - each is reduced about the centre `ringFamily` found, with M0 about the stated centre as well, and M0's ladder reduction;
+  - M0 also carries its reduction split into eight octants, so the concentricity test runs on real pixels.
+- Every frame's registered verdict is re-scored from its reduction in the spec.
+
+*Calibration, re-scored on the full banked PNGs (packet §4):* M0 **0.05700** PRESENT at (1060.893, 1032.562), quadratic
+(exponent 2.085), 18.94 px mid, SNR 12,943, 8 of 8 octants; M1 0.06137 PRESENT; R0 (= A0) 0.05717 PRESENT; R6 0.05524
+PRESENT; R3 0.00719 ABSENT; raw q32 0.00847 ABSENT; raw q128 0.00866 ABSENT — every verdict as registered. M0 about the
+stated disc centre reads 0.00969 ABSENT, in-band SNR 113.12.
+
+### `C13-N66` — the radial-banding metric's visible-period band is undeclared — CLOSED (Batch 1559)
+
+- *Status:* fixed by lane I-1.
+- The rig declares `visiblePeriodBand {minPx 3, maxPx 41}`.
+- `ringFamily` is built from it:
+  - the detrend is maxPx wide;
+  - minPx must be at least three bins;
+  - each band searches past its edges;
+  - a line belongs to the band where its period lies for 40 % of the window.
+- It **refuses by name** (`RING_FAMILY_SLOWER_THAN_VISIBLE_BAND` / `…FASTER…`, with law, period and centre) a family that
+  only a neighbouring band owns. It does so **alongside** any visible family, and **only within the neighbour's reach**:
+  - faster to 1.25 px;
+  - slower to three cycles of the window, reported as `slowerReachPx` (112.7 px on the rig, 66.7 on the spec geometry).
+- Inside the reach, refused periods come back within 2 % (rig P 90 → 90.04, P 100 → 100.03; P 48 → 48.42). Past it,
+  nothing is refused and the verdict is not ABSENT.
+- A slower neighbour beside a strong visible family is refused with its period good to about 10 % at a third of the
+  family's amplitude, and to 1 % at comparable amplitude.
+- A family finer than the band folds into it at one-pixel bins; the fold is identified by quarter-pixel binning and is
+  not reported as a visible family.
+- **Limits** (measured by the adversarial verification, Almarian's second pass; v3 re-ran them unchanged):
+  - The slower reach holds only for families whose fundamental outranks their harmonics after the detrend.
+    - A 20 %-duty linear family at 50 px, inside the 66.7 px reach, is neither refused nor detected (INCONCLUSIVE; the
+      top in-band line is mislawed, exponent 2.32-2.42 at 71-77 px, SNR 14-50).
+    - One at 60 px is reported as a visible linear family at its second harmonic, 29.7 px (SNR 392 and INCONCLUSIVE at
+      RMS 0.0435; PRESENT at 0.06, 29.74 / 29.80 px), and nothing is refused.
+    - Her line dumps show the visible series taking the harmonic first and stopping at the fundamental as the same
+      family. The slower band's own window, ρ 62-230, holds only 2.86 of its 58.7 px cycles, under the three it needs.
+  - A family slower than `slowerReachPx` or finer than 1.25 px is neither a family nor refused.
+
+### `C13-N72-RADIAL-BANDING-ONSET-LADDER-IS-A-PRESENCE-DETECTOR` — CLOSED (Batch 1559)
+
+- *Status:* fixed by lane I-1 (unchanged from v1).
+- `radialBanding` returns `ladderRefusal: LADDER_SATURATED_BY_PRESENCE` when one lit run covers at least 90 % of the
+  ladder. It fires on banked M0 (989 of 990 bins), and not on the sparse golden or a blank frame.
+- The far sweep's move onto `ringFamily`'s period is follow-up F-1.
+- **Limit:** the refusal names the saturation and measures nothing. A dense-deck frame is read by `ringFamily`, whose
+  measured limits are stated with this lane's rows:
+  - the slower reach for low-duty families (C13-N66);
+  - a second family at a strong family's centre, lattices on octant-only reductions, and lattices whose harmonics fall
+    in band (C13-N73);
+  - centres past or on the edge of the search, nearby-centre pairs, ellipses, and ring-free fields on the search edge
+    (C13-N74).
+
+### `C13-N73-RADIAL-BANDING-COHERENCE-DILUTED-BY-DECK-VARIANCE` — SUPERSEDED for dense frames (Batch 1559); the lattice limit and F-8 OPEN
+
+- *Status:* superseded for dense frames by lane I-1.
+- `ringFamily` reports the ring amplitude in luminance: `bandPassRms`, and each family's fitted `lineRms`.
+- It detects by a local-floor SNR, a fitted-amplitude floor at the ABSENT class and a concentricity test in two frames,
+  not by a share of per-pixel variance. The concentricity test needs 6 of 8 octants and 12 of 16 sectors with none
+  against the line's phase.
+- The same planted rings read 0.0427 / 0.0439 / 0.0429 band-passed over black, dense and textured-dense backgrounds.
+- The six lattice inputs G17 pins read no family and refuse nothing: axis-aligned sinusoidal plaids (P 24 at A 0.2; P 12,
+  16 and 24 at A 0.1), a hexagonal lattice at P 12 (A 0.09, turned 7°) and a 1-px checkerboard at ±0.3. Each is carried
+  in 8 of 8 octants, and the sixteen-sector frame declines it. The octant and sixteen-sector frames decline these six
+  inputs (the fundamentals) only: lattices whose harmonics fall in band can still read as families or refusals (the
+  last limit below).
+- **Limits** (Almarian's second pass; v3 re-ran them unchanged):
+  - A second family about the same centre as a strong real family can hide it, non-monotonically in amplitude. On
+    banked M0 plus a linear 9 px family about M0's centre:
+    - both are found at a second-family RMS of 0.045 and from 0.07 up;
+    - at 0.0435 the 9 px line reads SNR 194 and is not counted;
+    - at 0.0475 M0's own family is lost too: its SNR 198.9, no family, INCONCLUSIVE (the same on R0);
+    - from 0.05 to 0.06 the 9 px line is read at the wrong law and period (exponent 1.02-1.04, 9.08-9.15 px, SNR
+      10-18), and M0's SNR falls 25 to 55 times, to 229-451;
+    - a 6 px family at 0.0435 leaves M0 at SNR 390;
+    - synthetic pairs whose first law is an exact power are found at every amplitude tried, so no synthetic case shows
+      this.
+  - A reduction that carries only octants (the checked-in banked reductions) is judged by the octant frame alone. A
+    lattice there is stopped only by the amplitude floor.
+  - **Lattices whose harmonics fall in band** (Almarian's third pass; v4 states the limit and changes no code). On the
+    spec geometry's uniform deck:
+    - a hexagonal lattice built as G17's (three 60° waves at A 0.09) reads 2 families at P 17.32 (0°), a family at P 20
+      (0-2°) and at every rotation at P 24, **PRESENT** at P 30 and 36 at every rotation tried (0.0421 / 0.0412), and
+      **REFUSED SLOWER** at P 48, 56 and 64 (47.95 / 56.36 / 65.23 px). Only at P 12 and 16 is it declined at every
+      rotation;
+    - added to banked R3 (registered ABSENT), the lattice at P 36 reads a family at A 0.09 and **PRESENT** 0.0490 at A
+      0.15; at P 64 it reads **REFUSED SLOWER** 63.75 px;
+    - square-wave checkerboards of 8 and 10 px cells at ±0.3 and of 12 and 16 px cells at ±0.25-0.3 read **PRESENT**
+      (0.0411-0.0639) with two families, each the board's (3,1) harmonic at period 2c/√10 (5.06, 6.32, 7.59, 10.12 px),
+      carried in 16 of 16 sectors with none against;
+    - the aligned plaid plus checkerboard of one wavelength (four waves at 0/45/90/135°) reads a family at P 12, 16 and
+      24 and **REFUSED SLOWER** at P 50 and 60 (50.28 / 60.16 px). Its azimuthal harmonics are multiples of eight and
+      average to zero over every octant and every sixteenth, so no count or uniformity test in these two frames can
+      decline it.
+    - The minimum fix is follow-up F-8: a per-sector uniformity rule (real families measure relative 0.65-1.39 with lag
+      at most 25 degrees; banked M0/R6 0.86-1.20 and at most 17 degrees; the lattices that pass reach lags of 42-71
+      degrees) or a frame resolving an 8-fold harmonic; pin hex P 24/36 (no family), P 64 (no refusal) and the 8 px
+      +-0.3 checkerboard, each with an inertness mutant; needs its own calibration so it is a separate lane.
+
+*Record round 9 follow-up (Almarian's fifth pass, `VERIFY_ALMARIAN_V5.md` §6, non-blocking; not applied in Batch 1559):*
+the landed `concentricity` JSDoc in `lib/metrics/radial-banding-family-spectrum.mjs` says a stationary lobe spanning two
+or more sixteenths "is carried in twelve or more of the sixteen with none against" with no deck scope; on the dense +
+fBm deck she measured the hexagonal lattice at P 24 at 12 / 1 (declined). The sentence should read "**on the uniform
+deck**, is carried in twelve or more …" the next time that comment is touched (a comment-only edit, through C16's gate).
+
+### `C13-N74-RADIAL-BANDING-ASSUMES-THE-STRUCTURE-IS-CENTRED-ON-THE-DISC` — CLOSED with limits stated (Batch 1559)
+
+- *Status:* fixed by lane I-1, with limits stated.
+- `ringFamily` measures each family's centre and reports it in every result, beside the stated disc centre and the
+  fringe-normal estimate.
+- It finds up to three families per centre, and one further centre after removing the first families' rings.
+- A centre stopped at the search edge is named `CENTRE_AT_SEARCH_BOUNDARY` and never reads ABSENT. Every family carries
+  its centre's `boundary`. A further centre on the search edge carries its own boundary (v3): what is measured there is
+  withheld, never reported as a family, and that search reads INCONCLUSIVE.
+- Full-azimuth families planted 33 px off are recovered to ≤ 0.21 px. Banked M0: (1060.89, 1032.56), 0.0570 PRESENT;
+  about the stated centre 0.0097 ABSENT.
+- **Limits** (Almarian's second pass; v3 re-ran them, and two changed as marked). The spec geometry is the 720 px disc
+  with a 36 px search; the rig is 2,048 px with a 48 px search.
+  - **A family centred past the search is not seen.**
+    - It is named only when the amplitude maximum lands on the search edge: on the rig 1 and 4 px past, and on the spec
+      geometry 1 px past and 4 px past on the untextured deck.
+    - Otherwise nothing names it, and the verdict is set by the deck's band-passed noise against the 0.015 class:
+      INCONCLUSIVE 4 and 14 px past on the textured deck (0.0157, 0.0151) and 12 px past on the rig (0.0156), but
+      **ABSENT** (0.0149) 8 px past on the textured deck.
+  - **A ring-free field whose band-passed maximum sits on the search edge reads INCONCLUSIVE, not ABSENT**: 4 of 16
+    ring-free rig decks, at band-passed 0.0057-0.0071, about 0.4 of the ABSENT class. This is a side effect of naming the
+    edge.
+  - **Two families about nearby centres.**
+    - Two linear 12 px families 6 px apart come back as one about their midpoint. At 9, 18, 24 and 36 px apart the
+      second is lost.
+    - 12 px apart, v2 reported the second 7.4 px off. **v3 loses it**: the further search stops at the same point, and
+      the line there fails the sixteen-sector frame, the only v2 to v3 change that bears on it.
+    - A family of another period within one period of a known family's centre is taken as that family's remainder. A
+      linear 9 px family 8 or 11 px from a quadratic one is discarded.
+    - 4 px apart, v2 reported both about one centre, with the quadratic's ρmin period 20 % long. **v3 reports the linear
+      family about its own centre** (0.37 px) and discards the quadratic, found about its own centre, as its remainder.
+  - **Elliptical rings; the loss starts before an axis ratio of 0.97.**
+    - On the spec geometry's textured deck a quadratic family is detected at 0.99, detected at 0.98 with exponent 2.054
+      and its ρmin period 9 % long, and lost at 0.97, 0.95 and 0.90 (SNR 108, 64, 28).
+    - On the rig, the silhouette's own 0.9973 reads PRESENT, 0.99 reads INCONCLUSIVE with the family detected, and 0.95
+      loses it.
+  - **Rings on one side of their centre are not a family.**
+
+### `C13-N89` — the ring-family instrument's follow-ups F-1…F-14 — OPEN (Tools; not done in Batch 1559)
+
+Copied from the packet's §9 (v4 renumbered its F-8 to F-14 and filed Almarian's uniformity rule as F-8; F-9 to F-13 kept
+their numbers):
+
+- **F-1.** `evaluateFarSweep` should score the far sweep on `ringFamily`'s `family.periodPx`.
+- **F-2.** The imagery sibling rig should declare the measured centre, and `rig-registry.spec.mjs` should compare it.
+- **F-3.** Wedge (per-sector) profiles for secondary centres near the limb. The octant sums now exist and are a start.
+- **F-4.** The fixture omits the quarter-pixel arrays, so the faster neighbour and the alias test are not re-scored from
+  it. It also omits the sixteen-sector arrays (v3), so the banked frames' sixteen-sector concentricity (16 of 16 on M0,
+  M1, R0 and R6) is measured from the full PNGs only. `centreSearchPx` 48 is sized to the rig's 36-40 px offset.
+- **F-5.** Runtime: a 2,048 px frame takes 11-17 s single-process, and 20-30 s with four at once. In v3 a 2,048 px frame
+  took 10-16 s with three at once and a 720 px frame 3-10 s; the three specs take 180 s wall.
+- **F-6.** The slower reach is three cycles of the window. Reaching the declared 3 × maxPx needs a longer window than the
+  rig's ρ 40-400.
+- **F-7.** Elliptical families: fit the family's axis ratio (the rig's silhouette ratio 0.9973 already costs amplitude at
+  0.99).
+- **F-8.** Lattices whose harmonics fall in band (C13-N73; Almarian's third pass, her §4.5 and §8): a per-sector
+  uniformity rule (real families measure relative 0.65-1.39 with lag at most 25 degrees; banked M0/R6 0.86-1.20 and at
+  most 17 degrees; the lattices that pass reach lags of 42-71 degrees) or a frame resolving an 8-fold harmonic; pin hex
+  P 24/36 (no family), P 64 (no refusal) and the 8 px +-0.3 checkerboard, each with an inertness mutant; needs its own
+  calibration so it is a separate lane. Her candidate rule is every sector at |lag| ≤ 30°. That keeps every real family
+  she measured (≤ 25°) and declines the checkerboard harmonic (43°), the hexagonal lattice at P 36 (71°) and the turned
+  8-direction pattern (44°). She dumped per-sector profiles only for the hexagonal lattice at P 12 and P 36, and weaker
+  real families may exceed 25°. Only a frame that resolves an 8-fold harmonic (sixteen sectors turned 11.25°, or 32
+  sectors) reaches the aligned 8-direction pattern. The lane should also narrow G17's title to the inputs it pins. (Until
+  v4, F-8 was the item now numbered F-14.)
+- **F-9.** A weak slower neighbour beside a strong visible family reads its period to about 10 %. M0's law is not quite a
+  power, and its removal leaves residue.
+- **F-10.** A second family at a strong real family's centre (C13-N73): keep the banked family when a second line's joint
+  fit raises its floor. The pin is M0 and R0 plus a 9 px family at 0.0475. Almarian's candidate mechanism, a residue from
+  a second law polished off 1, is not verified.
+- **F-11.** Low-duty slower families whose harmonic leads (C13-N66): when the next line is the found line's own
+  sub-harmonic, judge the fundamental on the visible series' window. The pins are 20 %-duty P 50 and P 60.
+- **F-12.** Nearby-centre pairs (C13-N74): the second family of a same-period pair 9-36 px apart, and a different-period
+  family within one period of a known centre.
+- **F-13.** The sixteen-sector arrays for the banked reductions, so the fixture can re-score the second frame (with F-4).
+- **F-14.** Same-period families closer than half a period (F-8 until v4).
+
+### I-1's contact sheet, as measured (record, not a row)
+
+Executor Gilly (Opus 5.5, Node only), under `R-2026-09-26-23`: a contact sheet of 20 rigs / 40 cells, every cell MEASURED,
+at `Tools/visual-regression/output/contact-sheets/2026-09-26/i1-ring-instrument/index.html`, over frames, a
+`capture-manifest.json`, `estimator-results.json` and a README under
+`Tools/visual-regression/output/wave-end/i1-visual-evidence-20260926/`. The estimator it ran is v4 (patch md5
+`7e617364b7872b954e5e7202949ccbd3`; v5 changed comments only), rebuilt from the frozen patch. What the sheet shows, as
+measured: the seven calibration frames reproduce the fixture's `measured` block bit for bit; four synthetic regimes read
+PRESENT with their planted family and their ring-free controls ABSENT; the 70 px case returns M0's own family PRESENT
+beside `RING_FAMILY_SLOWER_THAN_VISIBLE_BAND` at 70.51 px, and the 2 px case is REFUSED, `RING_FAMILY_FASTER_THAN_VISIBLE_BAND`
+at 2.00003 px; the three stated-limit frames read PRESENT (hexagonal P 36 0.0411; the 8 px ±0.3 checkerboard 0.0457 with
+two families at 5.06 px; the aligned 8-direction pattern P 24 0.0455), as `C13-N73` states. The same M0 pair is a row
+of the 2026-09-26 day sheet (`DX-TOOLS-CONTACT-SHEET-CLI-USAGE-TRAPS`, below, records how that sheet was built).
+
+### CI wave 2, tranche 2 — Batches 1549-1557 and their karma leg
+
+*Source: each lane's packet, review and freeze, banked at `cesium-webgpu-worker-archive/lanes-2026-09-26/tranche2-<lead>/`
+(the folder `tranche2-arassuil/` holds a copy of the ring-ledger lane, not a tranche-2 lane); the karma receipt
+`Tools/visual-regression/output/wave-end/ci-wave2-tranche2-karma-20260926/README.md` (executor Naugladur, Opus 5.5; tree a
+clone of `ce7bf229ba`, Batch 1548; DEV and release builds, `tsc-engine` rc 0 with all nine patches applied; banked at
+`cesium-webgpu-worker-archive/lanes-2026-09-26/ci-wave2-tranche2-karma-20260926/`); the plan
+`cesium-webgpu-worker-archive/lanes-2026-09-19/ci-triage-wave2/CI_WAVE2_PLAN.md`. Every lane is tests class, no file under
+`packages/engine/Source/` changed except one docstring in `ContextLimits.js` (W2-L4, comment-only), and each packet's
+first-assertion before/after table is in the packet. Karma figures are executed/failed, BEFORE → AFTER, as the receipt
+measured them. W2-L4 and W2-L13 were returned by the karma job and landed on seat decision S-11
+(`MAINTAINER_RULINGS_2026-09-26.md`).*
+
+| row | batch | lane (lead; reviewer, verdict) | what landed | karma leg (Edge), as measured |
+| --- | --- | --- | --- | --- |
+| `CI-W2-L8` | 1549 (`8927f41aed`) | W2-L8 (Lumpkin, v2 by Lofar; Rushey LAND, Groin LAND) | `Specs/capabilityPolicy.js`: a spec that needs a real WebGL context or a WebGPU implementation records a named, karma-visible skip on a host that has neither; `SnappingSpec`'s mini-frame row asserted under the stub; `Specs/capabilityPolicy.spec.mjs` homed in `test-webgpu-policy` (implements CI wave-2 Q4 (a), seat decision S-9) | debug BEFORE 71/1 → AFTER 71/0; capability summary executed 2, skipped 0; the absence mutant 69/0 with 2 skipped, the demand mutant failing rows 1-2 and both row-3 mutants red, as predicted |
+| `CI-W2-L7` | 1550 (`7924898372`) | W2-L7 (Mandos; Lorien LAND-WITH-FIXES) | the celestial and temporal-history specs take every class they compare by identity from one module graph, in both flavours; the celestial widget spec drops its World Imagery base layer in the offline lane | release 15/3 → 15/0, debug 15/2 → 15/0; offline `blockedRequestCount` 1 → 0; the seam and row-3 mutants red, the row-4 capability mutant 14/0 + 1 skipped |
+| `CI-W2-L9` | 1551 (`208d809c45`) | W2-L9 (Sandheaver; Goldworthy LAND-WITH-FIXES, message only) | the two fork-added `ShadowMap` specs at the head of the describe detach the Scene's default map before the teardown destroys it | M2(a) 1/0; BEFORE 41/2 → AFTER 41/0 in both flavours; ORDER 41/0; INERT and LEAK mutants 41/2; the no-stub M2(c) leg 2/0 |
+| `CI-W2-L2` | 1552 (`9ab7dddb76`) | W2-L2 (Araphor; Arvegil LAND-WITH-FIXES, message only) | nine WebGPU specs whose fakes now meet their real objects' contracts: one device identity for the clustered-lighting dispatcher, the layered-mip feature on the device literal, the recovery fields `_afterCommandEncoderSubmitCallbacks` **and** `_environmentRefreshCoordinator` (the second one the brief did not predict — both arrived in `b20234a16b`), and the stub copy-rejection reason pinned exactly | 58/9 → 58/0 in both flavours; the four isolation selections 10/6, 23/1, 10/1, 15/1 → each /0 in both |
+| `CI-W2-L3` | 1553 (`29ac5c4dc2`) | W2-L3 (Nessanie; Skinbark LAND-WITH-FIXES, applied in v2) | the feature-id retirement and pick-staging specs run against fakes that hold work on the frame's encoder until the frame ends; two staging pins that were stale (one of them red on the day it was written, Batch 663 `5136ec75de`) re-pinned from source facts | 45/9 → 45/0, feature-id 23/5 → 23/0, staging 22/4 → 22/0 in both flavours; eight mutants red (23/5 ×4, 22/6 ×3, 22/1) |
+| `CI-W2-L5` | 1554 (`9d60eb5708`) | W2-L5 (Finglas; Fladrif LAND) | seven WebGPU specs that pinned moved source text (three of them WGSL comment text) assert the property instead | release 73/7 → 73/0 (re-run after a second release build), debug 73/6 → 73/0 |
+| `CI-W2-L6` | 1555 (`7496b03cfd`) | W2-L6 (Varda, v2; Aule LAND-WITH-FIXES, F1 applied) | the Scene, CesiumWidget and Viewer `createAsync` rollback specs drive their failure through a construction step both flavours run (CI wave-2 Q6 (c), seat decision S-10); after F1 no row is debug-only | release 189/6 → 189/0, debug 189/0 → 189/0; the inert mutant 189/6 (release) / 189/1 (debug), the flag mutant 189/5 in both |
+| `CI-W2-L4` | 1556 (`7ffa79b1ca`) | W2-L4 (Leaflock; Beechbone LAND) | seven specs reach their assertions again because their fakes carry the context's own texture limit, a scene's `frameState` getter, a frame's passes and a data source's display-owned primitives, so the batch-table clamp, the post-process selection clamp and its warning, the active-viewport shadow-receive flush and `VoxelPrimitive`'s readiness guard are asserted again; `ContextLimits.js`'s docstring corrected (comment-only) | release 66/7 → **66/1** and the M9 mutant 1/1, as predicted — the one left is the `EntityCluster` engine defect (`NEW-BULK-VISUALIZER-CLUSTER-TOGGLE`); debug BEFORE 66/8 (two clean runs, 7 predicted) → AFTER 66/1 in 3 of 4 runs, 66/2 in one; the extra failure is `DX-KARMA-POSTPROCESSSTAGE-TEXTURE-UNIFORM-DEBUG-TIMEOUT`. **RETURNED by the job; landed on S-11** |
+| `CI-W2-L13` | 1557 (`d45aa153ed`) | W2-L13 (Longholes; Gardner LAND-WITH-FIXES, record fix applied) | `GlobeSurfaceTileSpec`'s hand-built context answers `getFeatureRenderer` as every real context does, so a tile that loads its own imagery is no longer reported as upsampled | single 1/0 and pair 2/0; the engine mutant (`GlobeSurfaceTile.js:272` `if (false)`) 2/1; BASE M1(a) 1/1 and M1(b) 2/1; whole-suite runs 22/1-22/3 on the candidate and 22/2-22/3 on BASE (0 and 1 predicted) — `DX-KARMA-GLOBESURFACETILE-WHOLE-SUITE-COUNTS-VARY`. **RETURNED by the job; landed on S-11** |
+
+Notes the lanes returned with no row of their own: `CI-W2-L3`'s two staging pins confirm `TRIAGE_GUNDABALD.md` §3(d) — a
+landing gate accepted specs it could not execute (record only; `…/tranche2-nessanie/LANDING_PACKET_NESSANIE.md` §7.3);
+`CI-W2-L5`'s rows 3, 4 and 7 are one class, specs anchored on WGSL **comment** text, which break in debug when a comment
+shard deletes the header and always break in release, where the strip removes it — after the lane `git grep` finds no
+such anchor left in `packages/engine/Specs`, and a spec lint ("no comment-text anchors into WGSL modules") would stop the
+class returning (`…/tranche2-finglas/LANDING_PACKET_FINGLAS.md` §6); `CI-W2-L9`'s triage attribution is corrected — the
+near/far spec is `0e35c68c76` (2026-07-16), not `faa3ee6f65` (`…/tranche2-sandheaver/LANDING_PACKET_SANDHEAVER.md` §8
+DX-3); and `CI-W2-L7`'s wave-end accounting note — without `--webgl-stub` the capability lane declares 3 specs, not 2
+(`…/tranche2-mandos/LANDING_PACKET_MANDOS.md` §6).
+
+### Hosted CI after tranche 2 (record, not a row)
+
+Read by this record from GitHub Actions, workflow `dev`, and quoted from the jobs' own karma summary lines:
+
+| job | before — run `36257727602` at `ce7bf229ba` (Batch 1548) | after — run `36272051552` at `d45aa153ed` (Batch 1557) |
+| --- | --- | --- |
+| `release-tests` (release tests, Chrome) — job `108447588288` → `108487746717` | executed 18,445 of 18,565, **45 FAILED**, skipped 120, and the `ERROR` banner | executed 18,445 of 18,565, **1 FAILED**, skipped 120, no `ERROR` banner |
+| `coverage` (Firefox) — job `108447588243` → `108487746679` | executed 18,464 of 18,571, **39 FAILED**, skipped 107 | executed 18,462 of 18,571, **2 FAILED**, skipped 109 |
+
+- The one `release-tests` failure is `DataSources/EntityCluster` "renders billboards with invisible labels that are not
+  clustered" (`Expected undefined to be defined.` at `EntityClusterSpec.js:699`, then a TypeError at `:700`), the lane's
+  prediction exactly — `NEW-BULK-VISUALIZER-CLUSTER-TOGGLE`.
+- The two `coverage` failures are that spec and `Core/Resource` "keeps a parent's credentials to its own server when the
+  origin is opaque" (`Expected '***' to equal undefined.` at `ResourceSpec.js:173`) — `W2-L11-OPAQUE-ORIGIN-SPEC-RED-ON-FIREFOX`.
+- `guards` and `variants` are green on both runs; `lint` and both `node-smoke-test` jobs are red on both, and stay CI
+  wave-1's maintainer questions Q1/Q2. The `dev` workflow's runs at Batches 1549, 1550, 1551 and 1553 were cancelled (runs `36269559975`, `36269800226`,
+  `36270034583`, `36270677248`).
+- **CI wave 2 is therefore closed to within those two specs and the maintainer's questions.**
+
+### `NEW-BULK-VISUALIZER-CLUSTER-TOGGLE` — enabling clustering after static entities are classified never clusters them — OPEN (engine, REAL-ENGINE-DEFECT; **owner needed** — a maintainer question)
+
+*Row A of W2-L4, copied (`cesium-webgpu-worker-archive/lanes-2026-09-26/tranche2-leaflock/LANDING_PACKET_LEAFLOCK.md` §5;
+the finding confirmed by reading in review). Measured on hosted CI above: the only red left in `release-tests`, and one
+of two in `coverage`.*
+
+The bulk billboard, label and point visualizers decide an entity's lane only when it is added or changed
+(`BulkBillboardVisualizer.js:486` in `_classify`, reached only from `_onCollectionChanged` `:512`;
+`BulkLabelVisualizer.js:476`/`:502`; `BulkPointVisualizer.js:422`/`:453`). Their `update()` only forwards to the
+wrapped legacy visualizer (`BulkBillboardVisualizer.js:352`, `BulkLabelVisualizer.js:342`, `BulkPointVisualizer.js:279`).
+`EntityCluster.enabled`'s setter (`EntityCluster.js:339-341`) only marks `_enabledDirty`, and `updateEnable`
+(`:1050-1072`) only tears down the cluster collections. So a data source whose static entities were classified while
+clustering was off, and which then sets `dataSource.clustering.enabled = true`, keeps those entities in the
+flat-buffer lane, where the cluster never sees them. This is the usual load-then-enable flow. It contradicts each
+visualizer's own docstring (`BulkBillboardVisualizer.js:274-278`: "any entity while clustering is enabled —
+transparently fall back") and the NEW-ENTITY-BULK-FASTPATH / -BILLBOARD-LABEL rows ("ALL entities while clustering is
+enabled … delegate"). Measured by lane W2-L4 (Leaflock) in Node against the real classes: `staticCount 2 /
+fallbackCount 0` both before and after `cluster.enabled = true`, and `cluster._billboardCollection` undefined. The
+upstream-identical `EntityClusterSpec.js` "renders billboards with invisible labels that are not clustered"
+(`:699-700`) is the only spec that reaches this path, and it is red for this reason once W2-L4 lands. **No bulk
+visualizer has a spec of its own** (`git ls-files packages/engine/Specs | grep -i bulk` is empty). Suggested
+direction, for the lane to measure: re-run classification for every entity on an `enabled` transition, in both
+directions, triggered from the visualizer's `update()` or from an event `EntityCluster` raises. Pin it with a spec
+per visualizer that toggles clustering after the entities are added. Class: REAL-ENGINE-DEFECT, full proof bar.
+
+### `NEW-BULK-VISUALIZER-RELEASE-PRIMITIVES-GUARD` — a release bundle raises a minified `TypeError` instead of a named error — OPEN (hardening, small)
+
+*Row B of W2-L4, copied (same packet, §5).*
+
+`BulkBillboardVisualizer` (`:295-305`), `BulkLabelVisualizer` (`:285-295`) and `BulkPointVisualizer` (`:218-228`)
+validate `primitives` only inside the debug pragma. The lazy `_ensureCollection` then dereferences
+`this._primitives.add(…)` unconditionally (`BulkBillboardVisualizer.js:413`, `BulkLabelVisualizer.js:403`). A caller
+that reaches `defaultVisualizersCallback` without display-owned collections, such as a custom `VisualizersCallback`
+user or a data source not added through a `DataSourceDisplay`, gets
+`TypeError: Cannot read properties of undefined (reading 'add')` from minified code on the first static entity. That
+message was measured on CI run 35449879930 (release-tests, `EntityClusterSpec`). The debug build names the problem
+(`DeveloperError: primitives is required.`). Decide whether the precondition is a public contract (validate outside
+the pragma) or whether the documented `VisualizersCallback` signature should state that `dataSource._primitives` must
+be present. Class: hardening, small.
+
+### `NEW-CONTEXTLIMITS-GLOBAL-ZERO` — `ContextLimits` is exported and permanently zero — OPEN (decision)
+
+*Row C of W2-L4, copied (same packet, §5).*
+
+No context writes the process-global `ContextLimits` any more. `WebGPUContextLimitsInit.ts:1-5` says so deliberately,
+`GraphicsContext.ts:1203-1206` exposes the per-context `limits` as its successor, and
+`WebGPUContextLimitsInitSpec.js:72-76` pins that the global is not mutated. The module is still re-exported from the
+generated barrel (`packages/engine/index.js:436` in the seat's build output; the packet cites `:10`, which is
+`CallbackPositionProperty` there), so user code reading
+`Cesium.ContextLimits.maximumTextureSize` silently gets `0`. W2-L4 corrected its docstring (it claimed `Context` sets
+it) and changed nothing else. The engine has no reader left: `git grep "ContextLimits\.[a-z]"` over `packages Apps`
+is empty outside the module. Open decision: keep it as an upstream-sync compatibility shim, deprecate it, or make its
+getters forward to a context. Principle 7 checked: its successor states the write is intentionally gone, so this is
+not scaffolding awaiting a fill-in.
+
+### `W2-L11-OPAQUE-ORIGIN-SPEC-RED-ON-FIREFOX` — the round-6 opaque-origin credentials spec is red on Firefox only — OPEN (Core, spec behaviour on a second engine; a W2-L11 follow-up)
+
+*Measured on hosted CI (above), run `36272051552`, job `coverage` (Firefox): `Core/Resource` "keeps a parent's credentials
+to its own server when the origin is opaque" fails with `Expected '***' to equal undefined.` at `ResourceSpec.js:173`
+(called from `:168`). The same spec passes in `release-tests` (Chrome) on the same run. Round 6 of W2-L11 (Batch 1542)
+was measured in Chromium and Node only (`Tools/visual-regression/output/wave-end/ci-wave2-l11-r6-20260926/E1/README.md`),
+so this is the first reading of it on a second engine.*
+
+The expected `undefined` is the credential the spec asserts is **not** forwarded; on Firefox the derived request carries
+it. That the difference lies in how the two engines serialise an opaque origin is the seat's reading, not a measurement:
+no leg has yet read `getUrlOrigin`'s keys on Firefox. Next step: a Firefox run of the spec's inputs through
+`getUrlOrigin` and `getDerivedResource` (Node cannot stand in for Gecko's URL parser), then either a Firefox-aware
+expectation with its reason or an engine change under the Core proof bar. It belongs to the same follow-up lane as
+`W2-L11-FOLLOWUP-PAGE-BASE-AND-JSDOC`. *(The seat's sheet calls this "follow-up L-3"; that label is already taken in the
+follow-up row by the slashless-url residue, so this row carries its own id.)* The editor's own Playwright MCP runs
+Firefox (`DX-EDITOR-PLAYWRIGHT-MCP-CONFIGURED-FIREFOX`), which could reproduce this spec's inputs but must not stand in for
+the Edge rendering legs.
+
+### Rows the other tranche-2 lanes returned
+
+*Each row is the lane's finished prose, copied, from the packet named in it; where two lanes found the same class the
+row carries both sources, so a defect has one owner.*
+
+### `NEW-SPEC-GPU-ENUM-POLYFILLS-SCATTERED-AND-WRONG` — spec-installed WebGPU enum polyfills carry wrong constants in three Node specs and are incomplete or absent in two karma specs — OPEN (harness lane; latent)
+
+*W2-L2 Row A (`…/tranche2-araphor/LANDING_PACKET_ARAPHOR.md` §5) and W2-L3 §7.1 (`…/tranche2-nessanie/LANDING_PACKET_NESSANIE.md`),
+both 2026-09-26, merged.*
+
+Twenty spec files install `globalThis.GPUBufferUsage`, `GPUTextureUsage`, `GPUMapMode` or `GPUShaderStage` when they are
+absent. All the karma `.js` ones carry WebGPU-spec values. The wrong ones are three Node `node --test` specs:
+
+- `packages/engine/Specs/Renderer/WebGPU/WebGPUModelFeatureSelectionInvalidationSpec.mjs:25-33`:
+  `GPUTextureUsage.TEXTURE_BINDING = 0x01` (spec 0x04), `RENDER_ATTACHMENT = 0x04` (spec 0x10),
+  `GPUBufferUsage.UNIFORM = 0x01` (spec 0x40), `COPY_DST = 0x02` (spec 0x08).
+- `…/WebGPUModelInstancingSpec.mjs:26-29`: `GPUBufferUsage.STORAGE = 0x01` (spec 0x80), `COPY_DST = 0x02` (spec 0x08).
+- `packages/engine/Specs/Scene/PickingMostDetailedSupportSpec.mjs:734`: `GPUBufferUsage.COPY_DST = 1` (spec 8),
+  `MAP_READ = 2` (spec 1).
+
+The inertness argument recorded in triage (karma loads the engine bundle before `SpecList.js`) covers only karma
+`*Spec.js` files (`gulpfile.js:79`). **It does not cover these `.mjs` files**. They run under Node, which has no native
+GPU enums, so the polyfill is the only value the code under test sees. Several wrong values collide with other flags'
+real values: the polyfill `GPUBufferUsage.UNIFORM` and `STORAGE` are both `0x01`, which is the real `MAP_READ`, and the
+polyfill `GPUTextureUsage.TEXTURE_BINDING` is `0x01`, which is the real `COPY_SRC`. A mask built from them means
+something else on a real device. The enum scan was a Node script, run once and not banked; it listed 20 files and 8
+mismatching constants.
+
+In the karma specs: `WebGPUPickFramebufferStagingSpec.js:3-19` installs `GPUTextureUsage` without `STORAGE_BINDING`
+(0x08) and `GPUBufferUsage {COPY_DST 0x08, MAP_READ 0x01}` **without `UNIFORM` (0x0040)** or any other flag, so on a
+browser without WebGPU any engine module that ORs in `GPUBufferUsage.UNIFORM` gets `undefined | x`; and
+`WebGPUModelFeatureIdSpec.js` installs **no** polyfill while its engine module reads `GPUTextureUsage`
+(`WebGPUModelFeatureId.js:1130-1132` and `:1203` onward) — measured in Node with no WebGPU globals, **13 of its 23
+specs** fail with `GPUTextureUsage is not defined`, and it is green on Firefox/`coverage` only because another spec
+file's module-load polyfill installed the global first.
+
+- **Fix:** one shared, spec-valued enum module imported by every installer, replacing the ad-hoc copies.
+- **Owner:** the harness lane. **Severity:** latent until a spec asserts on a usage mask.
+
+### `NEW-WEBGL-STUB-COPY-REJECTION-REASON-OVERCLAIMS` — the compatibility copy's rejection reason names one cause of five — OPEN (engine lane, full proof bar)
+
+*W2-L2 Row B, copied (`…/tranche2-araphor/LANDING_PACKET_ARAPHOR.md` §5; the seat's sheet lists it under W2-L3, but it
+is W2-L2's).*
+
+`Stubs/WebGLStubTexture.ts:1362` (`copyTexImage2D`) and `:1402` (`copyTexSubImage2D`) log
+`"source/destination usages or formats are not copy-compatible"` whenever `state.copyTextureRegion` returns `false`.
+`WebGPUContext.copyTexture` (`WebGPUContext.ts:5886-5956`) returns `false` for other causes too: an unavailable device
+(`:5893`), no encoder (`:5904`), an open render pass (`:5912`) and multisampled textures (`:5955`). The recorded reason is
+therefore wrong for those four causes. The open-render-pass case is the one most likely to be met in practice, because
+the copy is refused rather than splitting a scene pass.
+
+- **Fix shape (engine lane, full proof bar):** `copyTexture` reports why it refused, or the stub logs a neutral "copy
+  rejected by the context" plus the cause when known.
+- **Knock-on:** `WebGLStubTextureRecoverySpec.js:376-379` pins the current string (W2-L2 pinned it exactly, on purpose)
+  and would be re-pinned in the same commit.
+
+### `NEW-SPEC-CLUSTERED-LIGHTING-DEVICE-REBUILD-UNCOVERED` — the clustered-lighting device-identity rebuild has no karma spec — OPEN (spec gap)
+
+*W2-L2 Row C, copied (same packet, §5).*
+
+`WebGPUSceneRendererClusteredLightingSpec.js` now exercises only the **reuse** half of `shouldRebuildForDevice` in
+`dispatchClusteredLighting` (`WebGPUSceneRendererClusteredLighting.ts:192-205`). The **rebuild** half is not exercised.
+That half destroys the stale dispatcher in a try/catch and constructs a new one for the live device.
+`Tools/visual-regression/device-identity-recovery.spec.mjs:255-279` covers SceneRenderer invalidation, not this hook. A
+karma spec would need a recording device on which a real `WebGPUClusteredLightingDispatcher` can be constructed. It
+would also add a spec, and W2-L2's acceptance required executed counts unchanged, so it was not added there.
+
+### `DX-SPEC-NODE-PREGATE-FOR-KARMA-LANES` — a real karma spec file runs in Node in seconds; spec-only lanes could show red → green and mutants before asking for the Edge slot — OPEN (DX row)
+
+*W2-L3 §7.2 (`…/tranche2-nessanie/LANDING_PACKET_NESSANIE.md`), found independently by W2-L4
+(`…/tranche2-leaflock/LANDING_PACKET_LEAFLOCK.md` §9, harness banked at `…/tranche2-leaflock/leaflock-harness/`) and
+W2-L5 (`…/tranche2-finglas/LANDING_PACKET_FINGLAS.md` §1).*
+
+A real karma spec file can run in Node: bundle it with the repo's esbuild, with `.js`→`.ts` resolution and generated-WGSL
+imports stubbed to `""`, and run the bundle under the repo's `jasmine-core` with WebGPU constant namespaces installed at
+spec values. Each file takes seconds, with no build, no browser and no Edge slot. For W2-L3 that run reproduced the CI
+failure set name for name (23/5 and 22/4), ran nine mutants and the authoring-day commit; W2-L4's reproduced CI's
+messages exactly for 5 of its 7 rows. Proposal: a tracked `Tools/` runner with an npm home (the seat owns `package.json`)
+and a spec that pins it to one known-red / known-green pair. It stays explicitly a surrogate: Edge karma remains the
+gate (`R-2026-08-29-1`). Two traps for whoever adopts it (W2-L4): a lane clone's working tree is CRLF
+(`core.autocrlf=true`), so textual mutants must match the file's line endings; and the Bash tool collapses `\\` inside
+heredocs (`DX-AGENT-BASH-HEREDOC-COLLAPSES-BACKSLASHES`).
+
+### `DX-SPEC-TOEQUAL-JASMINE-ANY-TYPEDARRAY-UNPASSABLE` — `toEqual(jasmine.any(<TypedArray>))` is silently un-passable under the fork's default matchers — OPEN (DX row)
+
+*W2-L5 §5, copied (`…/tranche2-finglas/LANDING_PACKET_FINGLAS.md`).*
+
+`Specs/addDefaultMatchers.js:191-199` overrides `toEqual` with `Specs/equals.js:16-20`. That converts both operands to
+plain Arrays via `typedArrayToArray` (`:9-14`) before `util.equals`. So a top-level
+`expect(typedArray).toEqual(jasmine.any(Float32Array))` always fails: jasmine's `Any.asymmetricMatch` ends in
+`other instanceof this.expectedObject` (`jasmine-core/lib/jasmine-core/jasmine.js:2188`). Nested use inside an object is
+unaffected, because only the top-level operands are converted. The one in-tree instance,
+`WebGPUGlobeSurfaceTileBuffersSpec.js:388`, arrived red in `964c45309c` (Batch 777). W2-L5 replaced it with `instanceof`,
+and after that patch `git grep` finds **zero** remaining uses. Proposed guard: an ast-grep or eslint
+`no-restricted-syntax` rule over `packages/*/Specs/**` that rejects `expect(...).toEqual(jasmine.any(<X>Array))` for the
+typed-array constructors. The better alternative is to make `equals.js` skip conversion when `b` is an asymmetric tester
+(`typeof b?.asymmetricMatch === "function"`). That is a harness change and belongs to no wave-2 lane.
+
+### `UPSTREAM-CREDITVIEWPORT-MISSING-ID-SILENT-IN-RELEASE` — a `creditViewport` id that does not exist is silently accepted in release — OPEN (upstream behaviour, not a fork regression; a release-contract decision)
+
+*W2-L6 R2, copied (`…/tranche2-varda/LANDING_PACKET_VARDA.md` §5; R1 and R3 were withdrawn in v2).*
+
+`packages/engine/Source/DataSources/getElement.js:14-20` throws `Element with id "<id>" does not exist in the document.`
+only inside the debug pragma. In release it returns `null`, `packages/engine/Source/Widget/CesiumWidget.js:506-516` stores
+`widget._creditViewport = null`, and the public `creditViewport` getter (`:917-919`) then returns `null`.
+`packages/engine/Source/Scene/Scene.js:353-354` treats `null` as undefined and passes `canvas.parentNode` to
+`CreditDisplay`. So the credit popup still lands on the widget element, and no `null` reaches `CreditDisplay` (this
+corrects the brief's wording). What a user sees is that a mistyped id is silently ignored and `widget.creditViewport`
+reads `null`. Upstream at `73c2eeec0c` has the identical three sites (`getElement.js`, `CesiumWidget.js:270-272`,
+`Scene.js:166-168`). A fix is a release-contract decision of the same class as CI wave-2 plan Q7. The spec at
+`CesiumWidgetSpec.js:516` (the `it`; `toBe(lateFailure)` at `:554`) now pins the release behaviour: it expects the late
+injected failure, not a `getElement` error. Any change here will turn it red, and the spec will need its release branch
+updated.
+
+### `DX-SPEC-OFFLINE-WIDGET-DEFAULTING-HELPER` — hoist the offline-aware widget/viewer defaulting into one shared `Specs/` helper — OPEN (DX row, spec-only)
+
+*W2-L7 Row A, copied (`…/tranche2-mandos/LANDING_PACKET_MANDOS.md` §7).*
+
+Three spec sites now each decide "drop the production World Imagery base layer, but only in the offline lane":
+`packages/engine/Specs/Widget/CesiumWidgetSpec.js:76-96` (`createCesiumWidget`, which also wires `getWebGLStub`),
+`packages/widgets/Specs/createViewer.js:9` (`applyOfflineViewerNetworkDefaults`), and
+`packages/engine/Specs/Scene/CelestialEphemerisIntegrationSpec.js:444-455` (W2-L7, which reimplemented the pattern because
+wave 2 ruled out a hoist, critique F13). A fourth widget-constructing spec will copy one of them or, worse, none, and the
+offline ledger will catch it only as an end-of-run `afterAll` error. One `Specs/createCesiumWidgetForSpecs.js` (offline
+base-layer default + stub wiring) consumed by all three closes the class. Spec-only; the offline-isolation Node spec's
+anchors for `CesiumWidgetSpec.js` move with it.
+
+### `NEW-SPEC-MIXED-BARREL-AND-SOURCE-IMPORTS` — eighteen more specs mix barrel and `Source/**` imports; each is one `instanceof` from a seam — OPEN (spec audit; `coverage` cannot catch it)
+
+*W2-L7 Row B, copied as amended in v2 (same packet, §7 and §v2 F3).*
+
+The spec bundle maps `index.js`/`@cesium/*` to the global Cesium build (`scripts/build.js:1266-1300`) and compiles direct
+`Source/**` imports beside it, so a class taken from one side is not the class the other side instantiates. Two such
+specs failed on CI (W2-L7 fixed both); measured at `541b821331` with `git grep -lE 'from "(\.\./)+index\.js"'` ∩
+`git grep -lE 'from "(\.\./)+Source/'` over `packages/engine/Specs` + `packages/widgets/Specs`: 20 files. The other 18:
+`Core/TerrainPickerSpec.js`, `Renderer/CommandOrderingSpec.js`, `Renderer/PickIdSpec.js`,
+`Renderer/WebGPU/GraphicsContextSpec.js`, `Renderer/WebGPU/WebGPUDrawCommandSpec.js`, `Scene/Cesium3DTilesetSpec.js`,
+`Scene/DynamicEnvironmentMapManagerSpec.js`, `Scene/GaussianSplatPrimitiveSpec.js`, `Scene/GlobeSurfaceShaderSetSpec.js`,
+`Scene/LabelCollectionSpec.js`, `Scene/MetadataComponentTypeSpec.js`,
+`Scene/Model/EdgeVisibilityPipelineStageDecodingSpec.js`, `Scene/Model/ModelPrimitiveImagerySpec.js`,
+`Scene/Model/TextureManagerSpec.js`, `Scene/PointPrimitiveCollectionSpec.js`, `Scene/ShadowMapShaderSpec.js`,
+`Scene/WebMapTileServiceImageryProviderSpec.js`, `Widget/CesiumWidgetSpec.js` (all under `packages/engine/Specs/`).
+`ViewTemporalHistorySpec.js` stays mixed by design (the helper is off the barrel, so its frustum comes from `Source`); a
+recount on the AFTER tree therefore gives 19, these 18 plus that file. None fails today; each needs an audit of which
+symbols cross an identity check (`instanceof`, `jasmine.any`, `WeakSet`/`WeakMap` brands, `toBe` on a class or
+singleton). **The `coverage` job cannot catch this class** — `runCoverage` bundles `SpecList.js` without
+`externalResolvePlugin` (`gulpfile.js:790-803`), so both imports resolve to one module there; verify on a `gulp test`
+leg. A build-free guard that fails on a spec importing the same symbol's module from both sides would stop new ones.
+
+### `DX-TOOLS-OFFLINE-ISOLATION-MISSES-IMPLICIT-WORLD-IMAGERY` — the offline-isolation inventory cannot see an implicit World Imagery fetch — OPEN (DX row)
+
+*W2-L7 Row C, copied (same packet, §7).*
+
+`Tools/visual-regression/spec-offline-isolation.spec.mjs` `LIVE_SERVICE_CALL_PATTERNS` (`:68-75`) matches explicit
+live-service calls only. `new CesiumWidget(…)` or `new Viewer(…)` without `baseLayer` fetches Ion asset 2 through
+`CesiumWidget.js:610-613`, matches no pattern, and so reached the end-of-run ledger as a passing spec's row (the
+celestial widget spec, fixed by W2-L7). Adding a "widget/viewer constructed without `baseLayer` and without the offline
+helper" pattern — or `DX-SPEC-OFFLINE-WIDGET-DEFAULTING-HELPER`'s shared helper plus a pattern that requires it — turns
+the next one into a Node failure instead of a karma `afterAll` error. *(W2-L7 §8 also notes that
+`packages/engine/index.js` is generated and gitignored, so a fresh clone cannot `git grep` the barrel; premise checks
+against it read a built tree.)*
+
+### `NEW-SPEC-SNAPPING-MODEL-SNAP-VACUOUS-UNDER-STUB` — `Scene/Snapping`'s mini-frame contract is now asserted under the stub, but five of its specs still pass vacuously in both CI jobs — OPEN
+
+*W2-L8 Row A, copied (`…/tranche2-lumpkin/LANDING_PACKET_LUMPKIN.md` §7), with reviewer Rushey's F2 added
+(`…/tranche2-lumpkin/REVIEW_RUSHEY.md`).*
+
+Both `dev` karma jobs pass `--webgl-stub` (`.github/workflows/dev.yml:114`, `:131`). The stub's `getExtensionStub`
+(`Specs/getWebGLStub.js:208-226`) returns null for `EXT_color_buffer_float`, so `Context.js:526-529` reports
+`colorBufferFloat === false`, and `Snapping.snap` returns at `Snapping.js:397-404` before anything under test happens.
+`SnappingSpec.js:479` ("ends the snap mini-frame when synchronous readback setup throws") therefore failed in both jobs
+at its first `spyOn` (`ci-1527-failed.log:246-252`, `:31828-31834`), and passed only on real-WebGL hosts. W2-L8 now
+asserts it under the stub, through a reported float capability and a stand-in RGBA32F target. **Still open:** the four
+model-snap specs (`SnappingSpec.js:529`, `:566`, `:604`, `:632` at the W2-L8 tip) `return` early when
+`!colorBufferFloat` and pass **vacuously** in both CI jobs, and so does `SnappingSpec.js:465` "returns undefined for an
+empty scene", through the same early return (Rushey F2). `Scene.snap` against a real model has no CI coverage. Options:
+(a) a real-WebGL karma leg; (b) convert the early `return` to `itRequiresCapability`-style truthful skips, which needs a
+colour-buffer-float capability in `Specs/capabilityPolicy.js`; (c) accept Edge-only coverage and record it.
+
+### `CI-COVERAGE-FIREFOX-NO-WEBGL-CONTEXT` — Firefox headless on the ubuntu runner cannot create a WebGL context, and CI skips two specs for it — OPEN (CI wave-2 Q4 (b), the tracked experiment under seat decision S-9)
+
+*W2-L8 Row B, copied (same packet, §7).*
+
+Under Q4(a), `ContextFactorySpec.js:605` and `WebGPUContextInitializationSpec.js:29` skip on `coverage (firefox)` with the
+reason printed in the `[capability lane] summary` line. The WebGPU skip is permanent, because Firefox has no
+`navigator.gpu`. The WebGL skip is Q4(b)'s tracked experiment: try software GL on the runner (for example
+`MOZ_WEBRENDER`/`LIBGL_ALWAYS_SOFTWARE`, or `xvfb-run`). If it works, the row-1 spec executes there again with no spec
+change. Measure with the capability summary line: `probes[real-webgl].available` flips to `true`.
+
+### `DX-GULP-DOES-NOT-FORWARD-REQUIRE-CAPABILITIES` — `--require-capabilities` is read by the browser but not forwarded by gulp — OPEN (DX row; the two lines are returned as text)
+
+*W2-L8 Row C, copied (same packet, §7 and §6.2).*
+
+`Specs/customizeJasmine.js` reads the token from `__karma__.config.args`, but `gulpfile.js` `test()` builds `client.args`
+from a fixed list (`:1175-1192`). A host that should serve the guarded specs, such as the Edge seat, can demand them today
+only through `--webgpu` (WebGPU API only). The two-line fix, returned by the lane as text because `gulpfile.js` belongs to
+W2-L1: in `test()` (`gulpfile.js:1019`, beside `webgpuDemanded`)
+`const capabilitiesDemanded = argv.requireCapabilities === true;` and in `client.args` (after the `--webgpu` spread at
+`:1188`) `...(capabilitiesDemanded ? ["--require-capabilities"] : []),`. A follow-up lane that owns `gulpfile.js` lands
+them.
+
+### `DX-KARMA-GUARDED-SPECS-REPORT-HELPER-FILENAME` — guarded specs report the helper as their source file — OPEN (DX row, minor)
+
+*W2-L8 Row D, copied (same packet, §7).*
+
+Jasmine 4.6 records `filename` from `callerCallerFilename()`
+(`node_modules/karma-jasmine/node_modules/jasmine-core/lib/jasmine-core/jasmine.js:2009-2011`). For a spec declared through
+`itRequiresCapability`, that file is `Specs/capabilityPolicy.js`. Nothing in the repo's reporters reads `filename` today.
+Noted so that a future per-file report does not misattribute these specs.
+
+### `NEW-SPEC-SHADOWMAP-TEARDOWN-DESTROYS-SCENE-OWNED-MAP` — `ShadowMapSpec`'s shared teardown destroys a shadow map the Scene owns — OPEN (spec ownership, upstream-shaped; an upstream-contribution candidate)
+
+*W2-L9 §7, copied (`…/tranche2-sandheaver/LANDING_PACKET_SANDHEAVER.md`).*
+
+The `Scene/ShadowMap` describe captures the Scene's default shadow map as `sunShadowMap` in its `beforeAll`
+(`packages/engine/Specs/Scene/ShadowMapSpec.js:84`), and its describe-wide `afterEach` (`:412-419`) runs
+`scene.shadowMap = scene.shadowMap && scene.shadowMap.destroy()`, destroying whatever the Scene holds, including the map
+`Scene.js:1137` creates and owns (`ownedResources`, `Scene.js:5801`). The suite is correct only while the first spec to
+run replaces `scene.shadowMap`, as upstream's `:495` does. Fork-added specs broke that from 2026-07-16 (`0e35c68c76`) and
+2026-08-01 (`faa3ee6f65`); lane W2-L9 repaired only the symptom, by having those two specs detach the default map first
+(plan ruling F20). Two hazards remain, both upstream-shaped: any future spec inserted first that does not replace
+`scene.shadowMap` re-reds both sun specs; and the sun pair (their `scene.shadowMap = sunShadowMap` lines are `:838`/`:909`
+at W2-L9's tip, upstream `:732`/`:803`) share `sunShadowMap`, so if the first throws before its own closing
+`scene.shadowMap = undefined`, the teardown destroys the default map and the second fails as collateral. The real repair
+makes the teardown destroy only what the suite created, e.g.
+`if (scene.shadowMap !== sunShadowMap) { scene.shadowMap?.destroy(); } scene.shadowMap = undefined;`, and destroys
+`sunShadowMap` in the `afterAll`; today the default map is never destroyed once a sun spec has set
+`scene.shadowMap = undefined`, so `scene.destroyForSpecs()` leaks it. Upstream carries the same shape: treat it as an
+upstream-contribution candidate so the next sync does not conflict. Evidence: CI run 35449879930 rows
+`Scene/ShadowMap :: sun shadow map works` and `uses scene's light source`; W2-L9 landing packet §1.
+
+### `DX-BRIEF-ON-DISK-OLDER-THAN-PLAN` — a lane's brief on disk lacked the plan's own revisions — OPEN (DX row, dispatch)
+
+*W2-L9 §8 DX-1, copied (same packet).* `CI_WAVE2_PLAN.md` (critique F19/F20 rows) says `brief-CI2-L9.md` §2.6 + §4 carry
+the F20 ruling and a §6.5a ledger gate; the file handed to the lane (mtime 12:09, plan 12:10) had neither: §2.6 still
+said "repair the ownership", §6 had no 5a. The lead followed the plan's ruling. A lead given only the brief would have
+been returned "for whichever it picks" (F20's own words). The dispatch rule this asks for: a brief carries the plan
+revision it was cut from, and the dispatcher checks it against the plan's current revision before sending.
+
+### `DX-KARMA-WEBGL-STUB-MAKES-RENDER-ASSERTIONS-VACUOUS` — under `--webgl-stub` every `toRender`/`toRenderAndCall` pixel assertion is vacuous in both CI karma jobs — OPEN (DX row, CI)
+
+*W2-L9 §8 DX-2, copied (same packet).* `--webgl-stub` makes every `toRender`/`toRenderAndCall` pixel assertion vacuous in
+both CI karma jobs (`Specs/addDefaultMatchers.js:319-335`, `:808-817`). Every "real render assertion" the wave counts on
+(W2-L9's two; W2-L4's shadow-receive flush) is a render-path-does-not-throw check in CI, and no CI job evaluates shadow
+pixels. Proposed row: a named, scheduled no-stub karma selection for render-assertion suites, or at least a mandatory
+no-stub leg in every lane that unblocks a render row. (W2-L9's own no-stub leg M2(c) ran 2/0 on the Edge job.)
+
+### `NEW-SPEC-HAND-BUILT-CONTEXTS-LACK-GETFEATURERENDERER` — hand-built spec contexts that lack `getFeatureRenderer` silently fail every imagery tile — OPEN (spec audit)
+
+*W2-L13 Row A, copied as amended by review F2 (`…/tranche2-longholes/LANDING_PACKET_LONGHOLES.md` §6 and §v2).*
+
+2026-09-26 (W2-L13, Longholes). Since `ef9b9e465f` (2026-04-04) `ImageryLayer._createTexture` (`ImageryLayer.js:480-482`)
+and `_reprojectTexture` (`:628-630`, `:708`) call `context.getFeatureRenderer` unguarded, per the Feature Renderer
+contract. A spec whose `frameState.context` is a plain object throws there, and `Imagery.processStateMachine`
+(`Imagery.js:128-135`) converts the TypeError to `ImageryState.FAILED`, so any imagery-dependent assertion is evaluated
+against "every imagery tile failed". `GlobeSurfaceTileSpec.js:25-29` was one (repaired by W2-L13); `TerrainFillMeshSpec.js:64`
+and `QuadtreePrimitiveSpec.js:75` were two more (Batch 1527, `30d1ceb60f`, the precedent W2-L13 followed). Next step: a
+one-pass `git grep -n "context: {" -- packages/engine/Specs` audit of hand-built contexts on imagery paths, each checked
+for this method.
+
+### `DX-IMAGERY-FOLDS-PROGRAMMING-ERRORS-INTO-FAILED` — `Imagery` turns a programming error into a tile failure that CI cannot see — OPEN (DX row; an engine decision, full proof bar)
+
+*W2-L13 Row B, copied (same packet, §6).*
+
+`Imagery.js:128-135` catches everything from `_createTexture`, including a TypeError from a missing method, logs
+`[WebGPU:Imagery] _createTexture failed:` and marks the imagery FAILED; both karma jobs run without console capture
+(`gulpfile.js:883`, `:1174`; `dev.yml:114`, `:131` pass no `--verbose`), so the only evidence of the fault never reaches a
+log, and a triage lane read that absence as "no console output". Decision for a later engine lane (full proof bar):
+whether a non-`RuntimeError` should propagate (or be reported through a karma-visible channel) instead of being folded
+into FAILED. Not dead code; do not remove the catch without that decision. *(Under `--verbose` the karma job's first
+BASE leg, `07` — a first-pass leg, run with W2-L4's patch still applied — captured the `[WebGPU:Imagery] _createTexture
+failed:` TypeError line four times; its clean re-run, `17`, captured none and failed earlier, at
+`GlobeSurfaceTileSpec.js:217`.)*
+
+### DX rows from the day's jobs
+
+### `DX-KARMA-POSTPROCESSSTAGE-TEXTURE-UNIFORM-DEBUG-TIMEOUT` — a PostProcessStage spec times out at 5,000 ms in the debug flavour on the unpatched tree — OPEN (DX row, flake; owner needed)
+
+Measured by the tranche-2 karma job (receipt above, legs `L4-leaflock/06-BEFORE-debug-R2` and `07-BEFORE-debug-R3`):
+`Scene/PostProcessStage can use a texture uniform` fails with `Timeout 5000ms` in **2 of 2** clean debug runs of the W2-L4
+selection on the **unpatched** tree, and in 1 of 4 runs on the patched one; it did not fail in release. It is the one
+failure that separated W2-L4's measured debug counts from its prediction, and it is not W2-L4's. Next: run the spec alone
+in debug on an unpatched tree, repeatedly, and time the frame it waits for; then either raise its own timeout with a
+reason or fix what it waits for. No mechanism is claimed here.
+
+### `DX-KARMA-GLOBESURFACETILE-WHOLE-SUITE-COUNTS-VARY` — whole-suite `GlobeSurfaceTile` counts vary between runs on both trees — OPEN (DX row; isolate)
+
+Measured by the same job (the `L13-longholes/` legs; the receipt names no mechanism, and none is claimed here). On the
+clean re-runs the whole `GlobeSurfaceTile` selection reads 22 executed / 2 failed in release (`12`) and 22 / 3 in debug
+(`15`) on the candidate tree, and 22 / 3 in both flavours on BASE (`11`, `19`), against 0 and 1 predicted; the
+first-pass legs (`01`, `02`, `05`, `09`), which ran with W2-L4's patch still applied
+(`DX-KARMA-DRIVER-MSYS-SLASH-AND-STALE-INDEX`), read 22/1-22/3. The extra failures are the tile-state assertions, each
+`Expected 1 to be 2.` (a tile's state 1, LOADING, where 2, DONE, is expected: `QuadtreeTileLoadState.js:23`, `:31`), at
+`GlobeSurfaceTileSpec.js:189/:191`, `:217/:219` and `:245/:247` on BASE (legs `11`, `19`) and at the same assertions
+six lines lower on the candidate (legs `12`, `15`). The same assertion, `:217/:219`, also failed once with one spec
+executing: BASE leg `17-BASE-M1a-debug-verbose-R2`, a clean tree, "Executed 1 of 18565 (1 FAILED)"; that spec's first
+run, `07` (a first-pass leg), failed instead at `:222` with `Expected true to be false.`, as predicted. The harness runs
+the specs in a fixed order (`Specs/karma.conf.cjs:48` and `Specs/spec-main.js:48` set Jasmine's `random: false`). The
+single-spec and pair legs read as predicted in count; leg `17`'s first failing assertion differed (the receipt's note on
+that leg, `SUMMARY.json`). So whole-suite counts cannot score a patch in that file. Next: repeat the single-spec BASE
+and candidate legs several times in each flavour and on each tree, and record which assertion fails first in each run,
+before any teardown search.
+
+### `DX-KARMA-DRIVER-MSYS-SLASH-AND-STALE-INDEX` — two traps in a Git Bash karma driver — OPEN (DX row, executor kit)
+
+Measured by the same job (receipt "Incidents" 1 and 4): (1) Git Bash rewrote the leading `/` of
+`--includeName=/.../` into `C:/Program Files/Git/…` because `MSYS2_ARG_CONV_EXCL` was set for the gulp child only; the
+legs matched nothing (rc 3) and are quarantined in `_invalid-msys-argconv/`. Export `MSYS2_ARG_CONV_EXCL='*'` in the
+driver's own shell. (2) After a mutant was restored byte-exact, `git apply -R --3way <patch>` refused with
+`does not match index` because the index's stat data was stale, so one BEFORE leg ran on the AFTER tree and two lanes'
+first runs carried another lane's patch (each visible in its log header, and each re-run). Run
+`git update-index --refresh` before every apply and revert. Both belong in the executor kit's karma driver.
+
+### `DX-EDITOR-PLAYWRIGHT-MCP-CONFIGURED-FIREFOX` — the editor's Playwright MCP server launches Firefox — OPEN (DX row, maintainer configuration)
+
+Met by lanes on 2026-09-26 and read by this record: the seat's `.mcp.json` — gitignored (`.gitignore:8`), so it is
+local configuration and not in any clone — starts the `playwright` server as `npx -y @playwright/mcp@latest --browser
+firefox`. The fork's rule is Edge (Chromium) for every rendering leg, because Playwright's Firefox has no
+WebGPU (`CLAUDE.md`, "Playwright / Browser Testing"). The configuration is the maintainer's, not the repo's; until it
+changes, a lane that reaches for the MCP browser gets Firefox and must not use it for a WebGPU leg. Recorded as a note in
+`DEBUGGING_GUIDE.md`, "Using debug surfaces from Playwright". It is not a defect in the fork.
+
+### `DX-EDGE-JOB-MEMORY-FELL-DURING-CONCURRENT-SPEC-RUNS` — free memory fell from 17.1 GB to 0.59 GB during an Edge job while another lane's spec runs were live — OPEN (DX row, scheduling)
+
+Measured by the ring Leg 2 executor (`Tools/visual-regression/output/wave-end/c13-ring-leg2-20260926/README.md`
+"Hygiene"): Node processes that were not the job's — the receipt names `radial-banding.spec` / `mutants.mjs` test runs
+"by another lane", which the seat attributes to lane I-1's concurrent mutant runs — ran during the leg, and free memory
+fell from 17.1 GB at the start to **0.59 GB** at the end; the receipt records the two readings, not what held the
+memory. No frame was affected (every
+settle frame's `onSubmittedWorkDone` resolved and no VOID rule fired), but an Edge job's memory is not reserved against a
+concurrent Node lane, and I-1's own packet measures 20-30 s per 2,048 px frame "with four at once" (follow-up F-5). Rule
+to adopt: a lane that runs parallel spec or mutant processes does not run them while the Edge slot is held, or runs them
+one at a time.
+
+### `DX-TOOLS-CONTACT-SHEET-CLI-USAGE-TRAPS` — five contact-sheet traps: the CLI refuses two correct-looking inputs, writes a verdict word without checking for one, and writes two things the wave-end gate refuses — OPEN (DX row, probe kit)
+
+Measured by Gilly (I-1's visual evidence) and again by this record's day sheet: (1) `contact-sheet.mjs` takes
+`--out-dir <root> --date <YYYY-MM-DD> --sheet-id <id>` and writes `<root>/<date>/<id>/`; a full folder as `--out-dir`
+with no `--sheet-id` is refused with `--sheet-id is required`; (2) `servedBuildAssertion` accepts only `enforced` or
+`waived`, not `not-applicable`, which is what a sheet over banked frames naturally wants to say; (3) the CLI
+writes the page without running the kit's own `findVerdictTokens` over it, although the page contract is "no pass/fail
+token anywhere in the page": a verdict word in a rig description or a pair reason is rendered at exit 0, including an
+ordinary phrase ("the cloud pass", "band-passed") and a banked path, whose `visual-regression` segment matches at the
+word boundary. Gilly's first I-1 sheet (a banked path in its descriptions) and this record's first day sheet (both
+phrases) were written that way and reworded after the check was run by hand, so a caller must run it over the page; (4) the page accepts
+rig ids with capitals, but the wave-end gate's entry validator (`validateContactSheetEntry`, `Tools/wave-end-gate-receipt.mjs`)
+requires `^[a-z0-9][a-z0-9-]*$` — run against I-1's banked `sheet-index.json` it refuses seven of its twenty ids
+(`c1-calibration-M0` among them), and the day sheet's first build was refused the same way until its ids were
+lower-cased; (5) an absolute `--out-dir` writes an absolute `path` into `sheet-index.json`, which the same validator
+refuses — the CLI's header says to rewrite it when banking, and the day sheet's entry was rewritten to the repo-relative
+path and then read back clean. The fix is a usage line in the CLI's header and in `PROBE_KIT_PLAN_2026-09-17.md`'s
+DX-105 section, the page model refusing an id the gate refuses, the CLI running `findVerdictTokens` over the page it
+writes, and a third `servedBuildAssertion` value for banked
+frames if the maintainer wants one.
+
+### `DX-LANE-CLONE-TREE-DIVERGES-FROM-FROZEN-PATCH` — a lane's clone tree can hold an older version than its frozen patch — OPEN (DX row, handoff)
+
+Measured by Gilly (`Tools/visual-regression/output/wave-end/i1-visual-evidence-20260926/README.md` "Estimator version"):
+lane I-1 wrote rounds 3-5 into `_lane-out/` and its temp root only, as briefed, so its clone's tracked files still held
+v2 while the frozen patch was v5 (the packet's header says so). A consumer reading the clone's tree would have run v2;
+Gilly rebuilt v4 from the frozen patch and matched every file to its freeze md5. Rule: a consumer of a lane's work
+verifies against the frozen patch and the freeze md5s, never against the clone's tree, and a packet whose clone diverges
+from its patch says so in its header (I-1's did).
+
+### Checked current, and what is still owed (record, not rows)
+
+- **Batches 1541-1547:** record round 8 placed their rows; this round found nothing of theirs missing except the two
+  `FEATURE_INVENTORY.md` §B entries round 8 left as a seat option (the march budget, `C13-N69`, and the realization
+  override, `C13-N71`), now added, and `DX-TOOLS-RING-BANDPASS-ESTIMATOR-UNTRACKED`, now closed by Batch 1559.
+- **Batch 1548 (the ring ledger):** the corrections W-1…W-10 are placed (ring Q4 (a), S-8); the one S-8 rider in "Ring
+  questions still open to the maintainer" above is that lane's, and this round adds no second one. S-8 itself is now
+  entered in `MAINTAINER_RULINGS_2026-09-26.md`.
+- **Batch 1558 (the tidewater intake):** its rows are the landing; the C13 §1 rows `C13-N75`…`N88`, the C11 §1.31
+  appends and the C14 appendix read as pre-launch, and `CAMPAIGN_STATE.md`'s three tidewater sentences say so.
+- **Owed from record round 7, placed now:** the strike-and-restate of `C12_CLOSEOUT_PLAN_2026-09-19.md` row 9
+  (`S3-N2-REFRESHCOST`, lane S3-L1, Batch 1533), copied from
+  `cesium-webgpu-worker-archive/lanes-2026-09-19/s3-remainder/hatholdir/LANDING_PACKET_HATHOLDIR.md` §8.
+- **Still owed, outside this round:** a C16 `DEV_NOTES_*` entry for the comment readers (noted in
+  `C16-COMMENT-READER-CLASSES-2026-09-26`; a new file needs its `README.md` row); a post-fold review of `C16-B0-tools` v4
+  (S-6 records that v4 was not re-reviewed); and `C15-06`'s records (a later round).

@@ -48,6 +48,7 @@ taken only by a later ruling that says so.
 | `R-2026-09-26-4` | `D4` is **one** ruling with sub-rows `a1`–`a7` and `b1`–`b6`, each ruled as its row recommends | `ASTRA_AUDIT_DECISIONS_2026-09-26.md` D4a, D4b |
 | `R-2026-09-26-9` | `D9` is one ruling with three parts, `D9a`, `D9b` and `D9c` | `ASTRA_AUDIT_DECISIONS_2026-09-26.md` D9 |
 | `R-2026-09-26-13` … `-22` | Gemini plan audit `G1` … `G10`, one-for-one; `G9` is the re-framed option A, `G10` is option A′ | `GEMINI_PLAN_AUDIT_DECISIONS_2026-09-26.md` |
+| `R-2026-09-26-23` | not part of the sitting: a maintainer direction given at 19:40 EDT — visual evidence of progress per lane, then the probe-kit harvest *(row added by record round 9)* | this file, last section |
 
 **How the options were tested before they reached the maintainer.** Each audit ran read-only readers,
 one synthesiser and one adversarial critic, all Opus 5.5 with explicit effort. The Astra audit: readers
@@ -1213,6 +1214,97 @@ restore the scheme-blind ion comparison (upstream's semantic; cost: the bearer t
 91 per https page in Firefoot's corpus, stays open for a batch). Source:
 `cesium-webgpu-worker-archive/lanes-2026-09-26/w2-l11-r6/arod/LANDING_PACKET_AROD.md` R6.3, R6.4 and R6.9.
 
+### S-8 — the ring plan's questions Q1-Q5: taken on the plan's recommendations
+
+*Appended by record round 9 (lead Gamwich, Opus 5.5).* Record round 8 listed Q1-Q5 as still open; the ring-ledger lane
+(Batch 1548) placed the decision in the rows it moves and one rider in `DEFERRED_WORK.md`'s "Ring questions still open to
+the maintainer", and left S-8 itself to be entered here. **Basis:** the maintainer asked the seat to handle the ring items
+itself; the decision takes the plan's own recommendations and names no measurement.
+
+**The decision, verbatim from the seat's source sheet**
+(`cesium-webgpu-worker-archive/lanes-2026-09-26/rulings-source/rulings-source-2026-09-26-after-s8.md`, md5
+`c52b2177c0fec82a3445fe1bd0a015a0`):
+
+> S-8 (seat, 2026-09-26 after closeout): ring Q1-Q5 taken on RING_NEXT_STEPS §5 recommendations (Q1 (d) then (c); Q2
+> (b); Q3 executed by 1546; Q4 (a) with riders W-8..W-10; Q5 executed, I-1 next) - the maintainer asked the seat to
+> handle the two non-disk items before space weather; options recorded verbatim in RING_NEXT_STEPS §5 (banked with the
+> ring-plan folder by the ledger lane); reversible before the ring-ledger batch lands.
+
+**The options, verbatim from the ring plan** (`cesium-webgpu-worker-archive/lanes-2026-09-19/ring-plan/RING_NEXT_STEPS.md`
+§5; each option's own sentence, the plan's supporting prose left there):
+
+- **Q1** (`R-2026-09-18-3` promoted `C13-N13` on a refuted premise): "(a) Move the promotion to `C13-N60`." — "(b) Leave
+  the promotion on `C13-N13`. Not supported by any measurement." — "(c) Move it to a new row that owns the tip's
+  off-axis family." — "(d) Suspend the promotion until Leg 2 names the anchor, and meanwhile run I-5 (the missing
+  realization override) as the next engine work". Plan: "(d), then (c) with the anchor measured."
+- **Q2** (an image witness for `C13-N60`): "(a) Tree bisect" — "(b) Occlusion witness (§4.1 A6): one arm at the tip that
+  puts geometry in front of the deck." — "(c) No image witness: fix the precision defect on source evidence alone, as
+  `C13-N62` proposes (HiZ occlusion first)." Plan: "(b) inside Leg 2, then (c)."
+- **Q3** (the GPU hang): "(a) File and clamp without re-triggering" — "(b) Re-trigger at 512² first" — "(c) Re-trigger
+  at 2048²" ("not a sound option"). Plan: "(a), with (b) only if the maintainer wants reproducibility on the record."
+- **Q4** (the ledger corrections): "(a) Land now" — "(b) Hold everything until Leg 2 reports." Plan: "(a)."
+- **Q5** (which instrument lane first): "I-2 and I-5 in parallel (different files, different classes), I-1 next, I-3
+  with I-5 … I-4 optional."
+
+**Executed, as measured:** Q3 by `C13-N69` (Batch 1546); Q4 (a) by the ring ledger with W-1…W-10 (Batch 1548); Q5 by
+I-2, I-5 and I-3 (Batches 1541, 1543, 1546) and then I-1 (Batch 1559); Q2 (b) by arm A6 of Edge Leg 2 — the cut is
+established and its attribution to the clamp is not (`DEFERRED_WORK.md` `C13-N60`, "Edge Leg 2 appendix"); Q1 (d) — Leg 2
+**did not name the anchor**, so the promotion stays suspended and the (c) row is not minted (`C13-N13`). The sheet's
+"reversible before the ring-ledger batch lands" has passed with Batch 1548; the maintainer may still reverse, and a
+reversal starts from the fallbacks.
+
+**Fallbacks (sound, not taken):** Q1 (a) — move the promotion to `C13-N60`, landing with the W-8…W-10 riders; cost: no
+image witness at the tip, and an acceptance written against a baseline the tip no longer shows (W-10). Q1 (c) alone — a
+new row now; cost: a symptom with no anchor. Q2 (a) — a tree bisect, worth paying for only if an arm shows the clamp live
+and bound; Q2 (c) — the fix on source evidence, `C13-N62`'s HiZ reader first. Q3 (b) — a 512² re-trigger, for
+reproducibility on the record. **Offered, but unsupported by the plan itself:** Q1 (b) ("Not supported by any
+measurement"). **Not offered:** Q3 (c), "not a sound option" (a system-level TDR on the maintainer's machine).
+
+### S-9 — CI wave-2 Q4, the three environment rows on `coverage`: (a), truthful capability skips
+
+*Appended by record round 9.* **Basis:** the plan's recommendation, as implemented and reviewed (W2-L8, Batch 1549). The
+decision, its options and its fallbacks, verbatim from the seat's source sheet
+(`cesium-webgpu-worker-archive/lanes-2026-09-26/rulings-source/rulings-source-2026-09-26-after-s10.md`, md5
+`d69d6e033e2bb960c9a70b889e0956dd`, "Seat decisions S-9 and S-10 (2026-09-26 13:31 EDT)"; the options are the plan's,
+`cesium-webgpu-worker-archive/lanes-2026-09-19/ci-triage-wave2/CI_WAVE2_PLAN.md` §Q4):
+
+> **S-9 = CI wave-2 Q4 (the three ENV rows on `coverage`): option (a), as implemented by W2-L8 (Lumpkin; Rushey LAND).** Options verbatim from the plan: (a) "RECOMMENDED — truthful capability skips. A guard that records a reason and a roster, modelled on the existing WebGPU lane (`Specs/webgpuPolicy.js`, whose `describeRequiresWebGPU` at `:242` already does exactly this, and whose own docstring at `:30-38` explains why an *invisible* skip is the thing to avoid). The WebGPU row can use that helper today; the real-WebGL rows need a sibling. Cost: three specs stop asserting on `coverage` and keep asserting everywhere a context exists." (b) "Try to make Firefox headless produce a WebGL context on the runner (software GL / env flags). Unmeasured, possibly cheap, and strictly better if it works — but it is an experiment, not a lane, and it cannot be verified from this machine." (c) "Move `coverage` to Chrome. Clears all three and loses both the second-engine and (unless replaced) the debug-build signal that wave-1 Q3 deliberately kept." Plan: "(a) now, with (b) as a tracked experiment. Explicitly *not* (c)." Fallbacks kept on the record: (b) as the tracked experiment (the W2-L8 packet's Row B files it); (c) only if the maintainer gives up the second-engine signal. Lane deviation, recorded: row 2 cannot use `describeRequiresWebGPU` (it skips under every `--webgl-stub` run, including the Edge gate legs, and would enrol a fake-device spec in the Scene lane's ledger), so the helper reuses `isWebGPUAvailable` directly (Rushey confirmed at `webgpuPolicy.js:249-250`).
+
+**Executed:** Batch 1549 (W2-L8); the karma leg measured 71/1 → 71/0 in debug with the capability summary executing 2
+and skipping 0 on Edge; the tracked experiment (b) is `DEFERRED_WORK.md` `CI-COVERAGE-FIREFOX-NO-WEBGL-CONTEXT`.
+
+### S-10 — CI wave-2 Q6, the four `createAsync` rollback specs: (c), per spec
+
+*Appended by record round 9.* **Basis:** the plan's recommendation, as implemented and reviewed (W2-L6 v2, Batch 1555).
+Verbatim from the same sheet (the options are the plan's §Q6):
+
+> **S-10 = CI wave-2 Q6 (the four `createAsync` rollback specs): option (c), as implemented by W2-L6 v2 (Varda; Aule LAND-WITH-FIXES, F1 applied).** Options verbatim: (a) "Gate them on the build-flavour flag. Cheapest. Cost stated plainly: the transactional-rollback contract — the code that runs when construction fails in production — is then asserted only in debug." (b) "Drive the rollback with a failure that exists in both flavours (e.g. through the `CesiumWidget._createAsyncContext` spy `ViewerSpec.js` already installs at `:565`). Keeps real release coverage; more work per spec, and for `Scene/Scene constructor` there may be no non-pragma trigger at all, because `options._constructionFailureForSpecs` is a debug-only *test hook* by design." (c) "RECOMMENDED — per spec, (b) where a non-pragma trigger exists, (a) where the only trigger is a debug-only hook, with a dated tracked row naming which contracts are debug-only. W2-L6's packet must carry that table, one row per spec." As implemented after Aule F1: rows 1, 2, 4 and 5 take route (b) (a spy on a construction step both flavours run; each spec asserts from `window.specsUsingRelease` which route fired); row 3 (terrain conflict) has no release trigger and is skipped in release with `pending()` plus a karma INFO reason line = route (a) with the honest-skip marker; row 6 uses neither. Aule S1: a maintainer ruling of (a) or (c) accepts the patch either way. Fallbacks: (a) wholesale (all four debug-only, cheaper); (b) wholesale (needs a Scene-constructor trigger that does not exist).
+
+**Executed:** Batch 1555 (W2-L6); the karma leg measured release 189/6 → 189/0 and debug 189/0 → 189/0, with both mutants
+red. **As landed, v2 took route (b) for every row the plan put in scope** — Aule's F1 found a release trigger for row 3
+(`Scene.prototype.setTerrain`), so no row ended debug-only and the lane withdrew its debug-only row (R1); the sheet's
+description of row 3 as skipped in release is the pre-F1 state (`cesium-webgpu-worker-archive/lanes-2026-09-26/tranche2-varda/LANDING_PACKET_VARDA.md`
+§v2). The decision stands as (c), which permits either route per spec.
+
+### S-11 — W2-L4 and W2-L13 landed although the karma job returned them, on the measured basis
+
+*Appended by record round 9.* **Question.** The tranche-2 karma job returned two lanes whose measured counts differed from
+their predictions: W2-L4's debug BEFORE read 66/8 against 7 predicted (and one AFTER run 66/2), and W2-L13's whole-suite
+runs read 22/1-22/3 against 22/0. **Basis — the receipt**
+(`Tools/visual-regression/output/wave-end/ci-wave2-tranche2-karma-20260926/README.md`): W2-L4's extra failure,
+`Scene/PostProcessStage can use a texture uniform` timing out at 5,000 ms, appears on the **unpatched** tree in 2 of 2
+debug runs; W2-L13's whole-suite counts vary between runs on **both** trees, and the mismatch reproduces on the
+unpatched tree, while its single, pair and engine-mutant legs read as predicted in count. **The decision, verbatim from
+both landing messages (Batches 1556 and 1557):** "Seat decision
+S-11: landed on that basis; the maintainer may reverse." The seat's sheet records no option list for S-11, so the
+fallback below is this record's statement of the alternative, not a quotation. **Fallback:** hold both lanes until the
+two flakes are isolated (`DEFERRED_WORK.md` `DX-KARMA-POSTPROCESSSTAGE-TEXTURE-UNIFORM-DEBUG-TIMEOUT` and
+`DX-KARMA-GLOBESURFACETILE-WHOLE-SUITE-COUNTS-VARY`); cost: W2-L4's six rows and W2-L13's one stay red in CI
+meanwhile. **Measured after landing:** hosted CI at Batch 1557 reads `release-tests` 1 FAILED — W2-L4's `EntityCluster`
+row, red on the engine defect the lane filed, as its packet predicted — and `coverage` 2 FAILED (that row and a W2-L11
+spec); none of W2-L4's other six rows or W2-L13's row is among the failures in either job (`DEFERRED_WORK.md` record round 9, "Hosted CI
+after tranche 2").
+
 ### Executed since the sitting (record round 8)
 
 - `R-2026-09-26-5` (T1): **executed** — Batch 1544 (`4f5cf1c21d`), after its karma leg E2.
@@ -1226,11 +1318,43 @@ restore the scheme-blind ion comparison (upstream's semantic; cost: the bearer t
 - `R-2026-09-26-1` (D1): Phase 1 **in progress** — `angrim` (Batch 1542), T1, I-5 and I-3 landed; `pimpernel-ledger`
   HELD; ring Leg 2 partial; the Astra wave stays HELD pending P2, with E4's single-deck regression named.
 
+### Executed since record round 8 (record round 9)
+
+- `R-2026-09-26-1` (D1): Phase 1 **still in progress** — `pimpernel-ledger` landed as the ring ledger (Batch 1548,
+  `ce7bf229ba`); ring Edge Leg 2 ran all its arms and its offline checks followed, and it did **not** name the anchor;
+  I-1 landed (Batch 1559, `e578eb6a95`). **P1.6** (`C13-N60`, `N61` and `N13` in one-owner order) has **not started**,
+  so P2 — Astra's rebase onto the post-Phase-1 tip — has no tip to name yet (`ASTRA_LANDING_PLAN_2026-09-26.md`, live
+  state).
+- S-8 executed as recorded under S-8 above; S-9 and S-10 executed by Batches 1549 and 1555; S-11 applied to Batches 1556
+  and 1557.
+- CI wave 2, tranche 2 (Batches 1549-1557): hosted `release-tests` 45 FAILED plus the `ERROR` banner → **1 FAILED**, and
+  `coverage` 39 → **2 FAILED**, runs `36257727602` → `36272051552` (`DEFERRED_WORK.md` record round 9).
+
 ### Still open with the maintainer
 
-The ring plan's questions **Q1-Q5** (options recorded in `DEFERRED_WORK.md`, record round 8, "Ring questions still
-open to the maintainer"); the OPEN fallbacks of S-2 and S-3 above; Campaign 12's MQ2; the `update-tokens` workflow
-question; the CI wave-1 and wave-2 questions; and the three `R-2026-09-19-8`/`-9`/`-10` sittings.
+~~The ring plan's questions **Q1-Q5** (options recorded in `DEFERRED_WORK.md`, record round 8, "Ring questions still
+open to the maintainer");~~ *[Record round 9: the ring plan's questions Q1-Q5 were **taken as seat decision S-8,
+2026-09-26** (above); the maintainer may reverse.]* the OPEN fallbacks of S-2 and S-3 above; Campaign 12's MQ2; the
+`update-tokens` workflow question; the CI wave-1 questions, and the CI wave-2 questions other than Q2 and Q8 (taken by
+the seat as routine engineering) and Q4 and Q6 (S-9, S-10); and the three `R-2026-09-19-8`/`-9`/`-10` sittings.
+
+**Raised or re-raised since record round 8 (record round 9), each with the options as the seat set them:**
+
+- **Confirm or reverse S-1 … S-11.** Every seat decision above is the maintainer's to reverse; a reversal starts from the
+  fallback it names.
+- **The `C13-N22` LOOK unlock trigger.** `R-2026-09-18-4` unlocks the LOOK "once `C13-N13` lands"; after Edge Leg 1 the
+  row that should unlock it is under-determined, and Edge Leg 2 did not settle it (`DEFERRED_WORK.md` `C13-N13`, unlock
+  rider). Options: (a) keep the trigger on `C13-N13`; (b) move it to the row a ring leg names as owning the tip's family;
+  (c) make it a measurement — lane I-1's `ringFamily` reading ABSENT on the tip at the recipe camera.
+- **Ring Leg 3.** A proposal, not dispatched: one Edge job with I-1's `ringFamily` as the only instrument and every
+  window pre-registered; the seat recommends running it now that I-1 has landed
+  (`cesium-webgpu-worker-archive/lanes-2026-09-26/ring-leg3-proposal/brief-ring-leg3-proposal.md`).
+- **An owner for `NEW-BULK-VISUALIZER-CLUSTER-TOGGLE`** — the `EntityCluster` engine defect, the only red left in hosted
+  `release-tests` and one of two in `coverage` (`DEFERRED_WORK.md` record round 9).
+- **The worker naming convention.** The Tolkien name pool has run out twice; the seat's reading of `R-2026-09-26-23`
+  (below) extends it to Tolkien place names for the probe-kit harvest wave unless the maintainer names another scheme.
+- **Astra's `POST_PHASE1_SHA`** — the tip Astra rebases onto for P2 — waits on P1.6, which has not started (above).
+- **The tidewater questions MQ-T1 … MQ-T4** are recorded in the next section and are unchanged.
 
 ---
 
@@ -1254,3 +1378,32 @@ ruling):** MQ-T5, adopting `webgpu` (Dawn) as a devDependency (`NEW-TIDEWATER-DA
 persistent foam history against the scene-time sea (`C14-11`); look rulings on the three three.js changes
 (`C11-218`, `C11-219`, `C11-220`); and three.js r183's compatibility-mode request (#32762) against our
 `featureLevel: "core"` default, which has no row.
+
+---
+
+## R-2026-09-26-23 — visual evidence of progress for each lane; the probe-kit harvest is the next programme
+
+*Recorded by record round 9 (lead Gamwich, Opus 5.5).* A maintainer direction given at 19:40 EDT, after the sitting; the
+id is the seat's, the words are the maintainer's, verbatim from the seat's source sheet
+(`cesium-webgpu-worker-archive/lanes-2026-09-26/rulings-source/rulings-source-2026-09-26-after-s10.md`, md5
+`d69d6e033e2bb960c9a70b889e0956dd`):
+
+> "Lets get some visual evidence of progress for these when they are ready so that we can visually confirm progress.
+> After those three wrap up lets move onto making our probes modular, componentized, and take much much much less time
+> to build and use. We seriously spend FAR too much time building tests instead of having high quality reusable ones and
+> using visual evidence of progress."
+
+**The seat's reading, verbatim from the same sheet:**
+
+> Seat reading: (1) I-1, C15-06 and record round 9 each deliver a visual artefact at wrap-up (I-1: calibration +
+> synthetic + refusal contact sheet with the estimator's centre/period overlaid; C15-06: an Edge-rendered chart of the
+> ingested RTSW/GOES series with the published activity scalar and flare state, from Pott's leg; record round 9: the day
+> sheet of 2026-09-26). (2) The probe-kit harvest and retirement (`DX-108`, PROBE_KIT_PLAN_2026-09-17.md §6.3) launches
+> immediately after, as the seat's sole program until the fleet is on the kit. (3) The Tolkien name pool is exhausted;
+> the seat extends the convention to Tolkien PLACE names for the harvest wave unless the maintainer names another scheme.
+
+**Executing:** I-1's contact sheet is banked
+(`Tools/visual-regression/output/contact-sheets/2026-09-26/i1-ring-instrument/index.html`; `DEFERRED_WORK.md` record
+round 9, "I-1's contact sheet"); record round 9's day sheet of 2026-09-26 is its packet's deliverable, beside the docs
+patch; `C15-06`'s ingest chart and karma summary page were banked by its Edge leg before that sheet was built and are two
+of its rows (the brief's body asks for them "if they exist by then"); its records ride a later round. Reading (3) is a maintainer question ("Still open with the maintainer", above).

@@ -46,6 +46,18 @@ _Status: **CANDIDATE → ADOPTED by `R-2026-09-26-1`**
 - Ledger for all of the above: `DEFERRED_WORK.md` "Record round 8"; the seat's decisions on MQ1, MQ2 and MQ4:
   `MAINTAINER_RULINGS_2026-09-26.md`, "Seat decisions taken on measurements after the sitting".
 
+**Live state after record round 9 (the tip was `e578eb6a95`, Batch 1559, when it was recorded).**
+- **P1.1:** **DONE** — `pimpernel-ledger.patch` landed, with its Edge Leg 1 riders, as the ring ledger (Batch 1548,
+  `ce7bf229ba`).
+- **P1.3:** **DONE as a leg** — ring Edge Leg 2 ran all its arms (A0-A7) on a `541b821331` tree, and its offline checks
+  2b followed; it did **not** name the anchor (`DEFERRED_WORK.md` `C13-N60`, "Edge Leg 2 appendix"). I-1, the ring
+  instrument, landed as Batch 1559.
+- **P1.6:** **not started.** Ring Q1 and Q4 were taken by seat decision S-8 (Q1 (d): suspend until Leg 2 names the
+  anchor; Q4 (a): landed), and Leg 2 did not name it, so the order of `C13-N60`, `N61` and `N13` is still set only as
+  far as S-8 sets it; a Leg 3 waits as a proposal for the maintainer.
+- **P2:** unchanged — it waits for P1.6, and Astra's post-Phase-1 tip (`POST_PHASE1_SHA`) cannot be named before P1.6
+  lands (a maintainer question in `MAINTAINER_RULINGS_2026-09-26.md`, "Still open with the maintainer").
+
 Evidence ids follow the audit:
 - **R1–R5**: the reader reports.
 - **U1–U37**: the units.

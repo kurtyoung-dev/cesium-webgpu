@@ -297,6 +297,15 @@ engine-semantic changes stay Opus-authored.
 worked references on their owning rows, `C13-N75`…`C13-N88` (queue §1 table, row text §11), plus a rider on
 `C13-N49` for model and 3D-Tiles cloud-shadow receive; they change no owner, wave, hold or critical path.
 
+**Ring Edge Leg 2 and lane I-1 (2026-09-26, recorded by record round 9).** Leg 2 ran all its arms and **did not name the
+anchor** of the tip's ring family (no candidate survives at the registered tolerances), so seat decision S-8's
+suspension of the `C13-N13` promotion **continues** and a Leg 3 waits as a **proposal for the maintainer**; lane I-1's
+ring-family instrument landed as Batch 1559, closing `C13-N64`…`N66`, `C13-N72` and `C13-N74` (with limits stated) and
+superseding `C13-N73` for dense frames, where the lattice limit stays open; its follow-ups, F-8 among them, are
+`C13-N89`. P1.6 (`C13-N60` → `N61` →
+`N13`) has not started, so the Astra wave stays HELD pending P2. Rows: `DEFERRED_WORK.md` `C13-N60` ("Edge Leg 2
+appendix") and record round 9.
+
 ### C14 — Dynamic ocean & wind
 
 **Not launched.** Ratified identity, ratified plan (`OCEAN_DYNAMICS_PLAN_2026-07-24.md`).
@@ -499,6 +508,13 @@ pass timestamps, a sync-compile census, an uncaptured-error sink, a TAA acceptan
 excerpt, a redundant-upload probe and four smaller engine leads) are filed in `DEFERRED_WORK.md` ("2026-09-26 —
 Tidewater intake") with Wave DX as their suggested home; none is minted as a `DX-` id or dispatched.
 
+**The 2026-09-26 lanes' DX rows (record round 9):** the day's lanes and legs returned DX rows filed in `DEFERRED_WORK.md` record round 9 —
+the karma driver's two traps, two karma specs whose counts vary between runs, a Node pre-gate for spec-only karma lanes,
+the contact-sheet CLI's usage traps, free memory falling to 0.59 GB during an Edge job while another lane's spec runs
+were live, a clone tree that diverged from its frozen patch, and the editor's Playwright MCP configured for Firefox; each
+carries a descriptive `DX-…` id, and none is numbered or dispatched. Per
+`R-2026-09-26-23`, the probe-kit harvest (`DX-108`) is the seat's next programme once the three lanes it names wrap up.
+
 ### Gemini-audit fix plan — waves 0-6 (not a numbered campaign)
 
 **Launched 2026-09-17.** The verified result of the external (Gemini) codebase audit is
@@ -519,6 +535,13 @@ pin made `npm install` refuse to run (`EOVERRIDE`), so **every job of `dev`, `de
 three gates W0 reported green have not been machine-confirmed since. The manifest fix and a guard on
 the rule ship as their own batch; the first green install will surface whatever was already red at
 Batch 1497, which is signal this plan has been missing rather than a new regression.
+
+**CI state after CI wave 2's second tranche (2026-09-26, recorded by record round 9).** Batches 1549-1557 landed nine
+spec lanes; hosted `release-tests` went from **45 FAILED plus the `ERROR` banner to 1 FAILED** and `coverage` from **39
+to 2 FAILED** (runs `36257727602` → `36272051552`). The three failures left are two specs: one engine defect with no owner yet
+(`NEW-BULK-VISUALIZER-CLUSTER-TOGGLE`, red in both jobs) and one Firefox-only spec from W2-L11's round 6
+(`W2-L11-OPAQUE-ORIGIN-SPEC-RED-ON-FIREFOX`); `lint` and `node-smoke-test` stay the maintainer's CI wave-1 Q1/Q2. CI wave
+2 is closed to within those two rows and the maintainer's questions (`DEFERRED_WORK.md` record round 9).
 
 ### Research dispatch queue — design-model perf, Earth-at-Night, meshlets
 

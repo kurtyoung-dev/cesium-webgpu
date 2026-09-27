@@ -1567,6 +1567,15 @@ When adding a debug branch:
 
 Every debug surface in this guide — both fork-added (`CesiumDebug`, `globeFragmentDebug`) and upstream (`scene.debug*`, `tileset.debug*`, `DebugCameraPrimitive`, `TileCoordinatesImageryProvider`) — is reachable from automated probes via Playwright's `page.evaluate()`. The pattern is the same for every probe; copy it instead of re-inventing.
 
+### The editor's Playwright MCP server launches Firefox — do not use it for a WebGPU leg (configuration as read on 2026-09-26)
+
+The seat's `.mcp.json` is gitignored local configuration (`.gitignore:8`), and as read on 2026-09-26 it starts the `playwright`
+MCP server as `npx -y @playwright/mcp@latest --browser firefox`. Playwright's Firefox has no WebGPU, so a lane that
+drives a page through that MCP server gets a browser the fork's rule excludes from every rendering leg (Edge/Chromium
+only — `CLAUDE.md`, "Playwright / Browser Testing"). Drive rendering legs from a probe script that launches
+`channel: "msedge"` itself, as the templates in this guide do. The configuration is the maintainer's to change; the
+ledger row is `DX-EDITOR-PLAYWRIGHT-MCP-CONFIGURED-FIREFOX` in `DEFERRED_WORK.md`.
+
 ### Serving an attestable bundle (`--serve-built`)
 
 Certification and acceptance runs must attest the **gulp artifact**, not the dev server's
