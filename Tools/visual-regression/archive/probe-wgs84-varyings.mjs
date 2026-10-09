@@ -1,6 +1,17 @@
 #!/usr/bin/env node
 // @purpose One-off debug harness from the WGS84 reprojection investigation: terrain + debug-flag toggle capture (shader varyings variant).
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+//
+// ARCHIVED by the wgs84 probe-kit harvest (DX-108; R-2026-09-17-11: moved,
+// not deleted). Its conclusion is banked in the wgs84 probe-kit harvest entry in migration_doc/WEBGPU_DEBUGGING_LOG.md.
+// The window flag(s) this probe sets are named by no file in the engine's
+// Renderer/WebGPU, Scene or Core directories (a one-level search), and the
+// banked 2026-07-02 frames that set such flags are the plain frame: the
+// globe-fragment debug registry reads `globalThis._webgpuGlobeDebugMode`
+// (`CesiumDebug.globeFragmentDebug(name)`). Live equivalent, same view:
+//   _webgpuGlobeRayleighVDebug -> node Tools/visual-regression/probe-wgs84.mjs --renderer webgpu --scene home --debug-mode rayleigh-v
+//   _webgpuGlobeMieVDebug -> node Tools/visual-regression/probe-wgs84.mjs --renderer webgpu --scene home --debug-mode mie-v
+//   _webgpuGlobeViewDirDebug -> node Tools/visual-regression/probe-wgs84.mjs --renderer webgpu --scene home --debug-mode view-dir
 
 import { chromium } from "playwright";
 import path from "path";

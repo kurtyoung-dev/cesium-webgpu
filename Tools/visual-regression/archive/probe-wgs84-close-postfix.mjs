@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 // Verify close-zoom doesn't regress after Batch 56's per-fragment ground atmo fix.
 // @purpose One-off check that close zoom did not regress after Batch 56's per-fragment ground-atmosphere fix on the WGS84 ellipsoid.
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+//
+// ARCHIVED by the wgs84 probe-kit harvest (DX-108; R-2026-09-17-11: moved,
+// not deleted). Its conclusion is banked in the wgs84 probe-kit harvest entry in migration_doc/WEBGPU_DEBUGGING_LOG.md.
+// Its view is the rig `wgs84-close-1mm` (this page) and the wave-end scene
+// `wgs84-close` (split-screen page); live equivalent:
+//   node Tools/visual-regression/probe-wgs84.mjs --scene close
 
 import { chromium } from "playwright";
 import path from "path";

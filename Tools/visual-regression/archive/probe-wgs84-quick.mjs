@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 // Quick probe: orbit-only comparison for WGS84 ellipsoid.
 // @purpose Quick orbit-only WebGL-vs-WebGPU comparison used to verify the Batch-56 alpha=1 force in WebGPUImageryReprojection.
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+//
+// ARCHIVED by the wgs84 probe-kit harvest (DX-108; R-2026-09-17-11: moved,
+// not deleted). Its conclusion is banked in the wgs84 probe-kit harvest entry in migration_doc/WEBGPU_DEBUGGING_LOG.md.
+// Its view is the rig `wgs84-home-orbit`, and its in-page canvas statistics
+// are `frameChannelMeans` (lib/metrics/wgs84-channel-means.mjs), computed in
+// Node from the banked PNG; live equivalent:
+//   node Tools/visual-regression/probe-wgs84.mjs --scene home
 //
 // Used to verify the Batch 56 alpha=1 force in WebGPUImageryReprojection fix.
 
@@ -9,7 +16,7 @@ import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
 
-import { attachPageDiagnostics } from "../lib/attach-page-diagnostics.mjs";
+import { attachPageDiagnostics } from "../../lib/attach-page-diagnostics.mjs";
 
 const BASE = "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";

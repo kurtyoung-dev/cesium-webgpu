@@ -1,6 +1,16 @@
 #!/usr/bin/env node
-// @purpose One-off debug harness from the WGS84 reprojection alpha investigation: terrain + debug-flag toggle capture (layer-1 alpha variant).
-// @status INVESTIGATION
+// @purpose One-off debug harness from the WGS84 reprojection investigation: terrain + debug-flag toggle capture (post-composite stage variant).
+// @status ARCHIVED-CANDIDATE
+//
+// ARCHIVED by the wgs84 probe-kit harvest (DX-108; R-2026-09-17-11: moved,
+// not deleted). Its conclusion is banked in the wgs84 probe-kit harvest entry in migration_doc/WEBGPU_DEBUGGING_LOG.md.
+// The window flag(s) this probe sets are named by no file in the engine's
+// Renderer/WebGPU, Scene or Core directories (a one-level search), and the
+// banked 2026-07-02 frames that set such flags are the plain frame: the
+// globe-fragment debug registry reads `globalThis._webgpuGlobeDebugMode`
+// (`CesiumDebug.globeFragmentDebug(name)`). Live equivalent, same view:
+//   _webgpuGlobePostCompositeColorDebug -> node Tools/visual-regression/probe-wgs84.mjs --renderer webgpu --scene home --debug-mode post-composite-color
+//   _webgpuGlobePostCompositeAlphaDebug -> node Tools/visual-regression/probe-wgs84.mjs --renderer webgpu --scene home --debug-mode post-composite-alpha
 
 import { chromium } from "playwright";
 import path from "path";
@@ -52,6 +62,9 @@ async function capture(label, flagName) {
 }
 
 (async () => {
-  console.log(`[probe-wgs84-layer1-alpha] layer 1 alpha after fix`);
-  await capture("layer1-alpha", "_webgpuGlobeTexAlpha1Debug");
+  console.log(`[probe-wgs84-postcomposite] post-composite color and alpha`);
+  console.log(`  color`);
+  await capture("postcomp-color", "_webgpuGlobePostCompositeColorDebug");
+  console.log(`  alpha`);
+  await capture("postcomp-alpha", "_webgpuGlobePostCompositeAlphaDebug");
 })();

@@ -1,7 +1,16 @@
 #!/usr/bin/env node
 // Check tex.a values after the alpha=1 force in reprojection FS.
 // @purpose One-off debug: sampled tex.a values after the Batch-56 alpha=1 force in the WebGPU imagery-reprojection fragment shader.
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+//
+// ARCHIVED by the wgs84 probe-kit harvest (DX-108; R-2026-09-17-11: moved,
+// not deleted). Its conclusion is banked in the wgs84 probe-kit harvest entry in migration_doc/WEBGPU_DEBUGGING_LOG.md.
+// The window flag(s) this probe sets are named by no file in the engine's
+// Renderer/WebGPU, Scene or Core directories (a one-level search), and the
+// banked 2026-07-02 frames that set such flags are the plain frame: the
+// globe-fragment debug registry reads `globalThis._webgpuGlobeDebugMode`
+// (`CesiumDebug.globeFragmentDebug(name)`). Live equivalent, same view:
+//   _webgpuGlobeTexAlphaDebug -> node Tools/visual-regression/probe-wgs84.mjs --renderer webgpu --scene home --debug-mode tex0-alpha
 
 import { chromium } from "playwright";
 import path from "path";

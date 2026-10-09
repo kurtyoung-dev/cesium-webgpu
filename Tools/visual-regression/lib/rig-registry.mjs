@@ -64,6 +64,7 @@ export const RIG_TAGS = Object.freeze([
   "saved-view",
   "sandcastle",
   "aurora",
+  "wgs84",
 ]);
 
 /** `readiness.kind` vocabulary a rig may declare. */

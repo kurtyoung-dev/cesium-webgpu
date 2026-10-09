@@ -1,7 +1,17 @@
 #!/usr/bin/env node
 // Sample0 debug after alpha=1 fix.
 // @purpose One-off sample0 texture debug after the Batch-56 alpha=1 reprojection fix on the WGS84 ellipsoid.
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+//
+// ARCHIVED by the wgs84 probe-kit harvest (DX-108; R-2026-09-17-11: moved,
+// not deleted). Its conclusion is banked in the wgs84 probe-kit harvest entry in migration_doc/WEBGPU_DEBUGGING_LOG.md.
+// The window flag(s) this probe sets are named by no file in the engine's
+// Renderer/WebGPU, Scene or Core directories (a one-level search), and the
+// banked 2026-07-02 frames that set such flags are the plain frame: the
+// globe-fragment debug registry reads `globalThis._webgpuGlobeDebugMode`
+// (`CesiumDebug.globeFragmentDebug(name)`). Live equivalent, same view:
+//   _webgpuGlobeSample0Debug -> node Tools/visual-regression/probe-wgs84.mjs --renderer webgpu --scene home --debug-mode sample0
+//   _webgpuGlobeLayerCountDebug -> node Tools/visual-regression/probe-wgs84.mjs --renderer webgpu --scene home --debug-mode layer-count
 
 import { chromium } from "playwright";
 import path from "path";

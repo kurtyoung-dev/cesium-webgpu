@@ -23026,3 +23026,82 @@ So the "12–46% → 2.4–6.4%" comparison in the GLOBE-POLAR-STRETCH entry set
 **What stays live.** [`probe-polar-multi-plain.mjs`](../Tools/visual-regression/probe-polar-multi-plain.mjs) on `lib/probe-runtime.mjs`, its six standing views as rigs `polar-plain-*`, scored by `lib/metrics/polar-parity.mjs` under both rules with no limit. Its instrument changed (an element capture of the canvas with the widgets removed, one browser per run with a fresh context per capture, the determinism kit's clock pin and settle), so its first figures are not comparable to the banked ones without saying so.
 
 **Files modified.** `Tools/visual-regression/probe-polar-multi-plain.mjs`; `Tools/visual-regression/lib/metrics/polar-parity.mjs` (new) and `metrics-polar-parity.spec.mjs` (new); `Tools/visual-regression/polar-probe-family.spec.mjs` (new); 27 rigs under `Tools/visual-regression/rigs/`; `lib/rig-registry.mjs` (tag `polar`, add-only) and `rig-registry.spec.mjs` (census); the fourteen probes moved by `git mv` into `archive/` with their `@status`, `@supersededBy` and `@note` header lines changed; `lib/probe-fleet-contract-allowlist.mjs` (15 rows removed); this log's links to the moved files; `IMAGERY_PROJECTION.md` (the rule named beside the 2026-07-02 figures); `CAMPAIGN9_OPUS_EXECUTION_GUIDE_2026-07-16.md` (two citations repointed to `archive/`).
+
+---
+
+## Probe-kit harvest, wgs84 family — the conclusions of the nine retired wgs84 probes
+
+**Context (DX-108, `PROBE_KIT_PLAN_2026-09-17.md` §4.2, not a bug).** The wgs84 family's harvest
+moved nine probes to `Tools/visual-regression/archive/` as `@status ARCHIVED-CANDIDATE` and moved
+the tenth, `probe-wgs84.mjs`, onto `lib/probe-runtime.mjs`. The retirement rule banks each probe's
+conclusion here first, with its measurement and its own name. None of the ten was named by
+`package.json`, `.github/workflows/**`, an open queue row or the wave-end gate;
+`DEBUGGING_GUIDE.md` named eight of them and now points at the archive. Each view is a rig under
+`Tools/visual-regression/rigs/` (`wgs84-home-orbit`, `wgs84-close-1mm`, `wgs84-polar-14mm`), and
+`probe-wgs84.mjs` re-measures any of them. Every pixel figure below was taken by `diffImages`
+(tolerance 16) over the banked frames, which are PAGE screenshots: the viewer chrome is in them.
+
+**The window debug flags are named by no engine file the harvest searched.** Six archived probes
+(alphadbg, atmo, layer1-alpha, postcomposite, sample0, varyings) and six scenarios of
+`probe-wgs84.mjs` set `window._webgpuGlobe*Debug` flags. At `f968dfb2fb` (Batches 56-61, the
+landing that added them) and again at `a5b71fc17b`, no file in
+`packages/engine/Source/Renderer/WebGPU/*.ts`, `packages/engine/Source/Scene/*.js` or (at
+`f968dfb2fb`) `packages/engine/Source/Shaders/WebGPU/Globe/*.wgsl` names any of the sixteen flags.
+The landed mechanism reads `globalThis._webgpuGlobeDebugMode`, which
+`CesiumDebug.globeFragmentDebug(name)` sets (`WebGPUGlobeFragmentDebug.ts`,
+`WebGPUGlobeSurfaceTileUB.ts`). The banked frames agree:
+
+- `output/probe-wgs84-orbit-{uvdbg,alphadbg,lcdbg,sample0dbg,sample1dbg,texalphadbg}-webgpu.png`
+  (2026-07-02) differ from the same run's plain `probe-wgs84-orbit-webgpu.png` by 0.61 % to
+  0.82 % of pixels, less than that run's WebGPU-vs-WebGL pair (3.05 %);
+  `probe-wgs84-close-uvdbg-webgpu.png` differs from `probe-wgs84-close-webgpu.png` by 0.008 %;
+- the investigation-era debug frames of 2026-05-16, taken before the flags were folded into the
+  registry, differ from the plain orbit frame of the next day, `wgs84-quick-orbit-webgpu.png`
+  (2026-05-17), by 25.7 % (`wgs84-alphadbg-post-fix.png`) and 25.5 % (`wgs84-postcomp-color.png`),
+  and from the 2026-07-02 `probe-wgs84-orbit-webgpu.png` by 26.0 % and 25.7 %.
+
+Each flag names exactly one registry mode by its `tile.time` sentinel (the Batch 56 table above
+against `WebGPUGlobeFragmentDebug.ts`): `LEGACY_DEBUG_FLAG_MODES` in `probe-wgs84.mjs`, pinned by
+`wgs84-probe.spec.mjs`. To re-run any of them:
+`node Tools/visual-regression/probe-wgs84.mjs --renderer webgpu --scene home --debug-mode <mode>[,<mode>…]`.
+
+**`probe-wgs84-quick.mjs`, `-atmo`, `-varyings`, `-postcomposite`, `-layer1-alpha`,
+`-alphadbg` (INVESTIGATION).** Their conclusion is banked above under "Batch 56 — WGS84 orbit
+catastrophe", whose Probes line names all six: three stacked bugs (reprojection alpha 0,
+ray-sphere precision, per-vertex ground atmosphere at orbit), each fixed. The quick probe's
+in-page canvas statistics (mean R, G and B over every pixel; non-black = channel sum above 15)
+are `frameChannelMeans` in `lib/metrics/wgs84-channel-means.mjs`, held to the archived loop by
+`wgs84-channel-means.spec.mjs`. It printed numbers and always exited 0, so no assertion is lost.
+Its banked pair `output/wgs84-quick-orbit-{webgl,webgpu}.png` (2026-05-17) differs by 11.85 %.
+
+**`probe-wgs84-sample0.mjs` (INVESTIGATION).** The raw layer-0 sample and layer-count captures
+from the same bisection, banked 2026-05-16 as `output/wgs84-postfix-{sample0,lcdbg}.png`. It is
+not on the Batch 56 Probes line; its conclusion is that entry's, and its flags are the modes
+`sample0` and `layer-count`.
+
+**`probe-wgs84-close-postfix.mjs` (INVESTIGATION).** One-off check of the close view (straight
+down on 100 W, 40 N from 1,000 km) after Batch 56 made the ground atmosphere per-fragment. Its
+banked pair `output/wgs84-close-postfix-{webgl,webgpu}.png` (2026-05-17) differs by 7.23 %. The
+standing check of this camera is the wave-end scene `wgs84-close` (capture-and-diff), which
+Batch 56 added for this case; the CesiumViewer-page view is rig `wgs84-close-1mm`.
+
+**`probe-wgs84-polar-stretch.mjs` (INVESTIGATION).** The first reproduction of the user-reported
+"stretched at the northern latitudes" screenshot: WGS84, straight down on 105 W, 50 N from
+14,000 km. Its banked pair `output/wgs84-polar-{webgl,webgpu}.png` (2026-05-17 01:46) differs by
+14.13 %; the WebGPU frame shows a dark ring across the high northern latitudes and a detached arc
+of imagery at the upper right, which the WebGL frame does not (the WebGL frame alone also carries
+the ion-token banner). The conclusion is banked under "Batch 59" (not reproducible after
+Batch 58; its probes there are the polar family's) and "Bug GLOBE-POLAR-STRETCH" (2026-07-02,
+where `probe-wgs84` orbit went from 12 %+ to 5.28 %). The view is rig `wgs84-polar-14mm`.
+
+**`probe-wgs84.mjs` (ACTIVE; moved onto the runtime, not retired).** Two defects in the probe
+itself were fixed in the move: (1) the flags above; (2) its tile-state dump compared
+`readyImagery.state` against 8, which is no `ImageryState` value (READY is 4,
+`Scene/ImageryState.js`), so `sampleTileImagery.readyImageryReady` and the `riReady` bucket key
+read false for every tile it dumped, while the dump's own `readyIsActuallyReady` field (against
+4) was right. A picker with no WGS84 entry now refuses instead of capturing the default terrain
+under a WGS84 label. Its frames are element captures of the scene canvas, taken right after the
+viewer chrome is stripped (after the settle); a cell refuses (`capture-chrome-over-canvas`) when
+the strip reports anything still stacked over the canvas, or reports nothing. No browser run has
+exercised the migrated probe yet, so whether today's CesiumViewer page leaves anything over the
+canvas is unmeasured.

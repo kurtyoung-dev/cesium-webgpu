@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 // Reproduce the user-reported polar-stretching artifact on WGS84 orbit.
 // @purpose Repro of the user-reported northern-latitude polar stretching on WGS84 orbit at the default home view, WebGL vs WebGPU.
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+//
+// ARCHIVED by the wgs84 probe-kit harvest (DX-108; R-2026-09-17-11: moved,
+// not deleted). Its conclusion is banked in the wgs84 probe-kit harvest entry in migration_doc/WEBGPU_DEBUGGING_LOG.md.
+// Its view is the rig `wgs84-polar-14mm`; live equivalent:
+//   node Tools/visual-regression/probe-wgs84.mjs --scene polar
 //
 // User flagged "stretched at the northern latitudes" — similar to a prior
 // Ion-terrain bug.

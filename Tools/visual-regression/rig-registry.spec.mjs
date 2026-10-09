@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 68,
+  total: 71,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count is 17
@@ -60,6 +60,9 @@ const REGISTRY_CENSUS = {
     "saved-view": 3,
     sandcastle: 3,
     aurora: 4,
+    // The wgs84 family's three CesiumViewer-page views (home, close, polar),
+    // written by its probe-kit harvest for `probe-wgs84.mjs`.
+    wgs84: 3,
   },
 };
 

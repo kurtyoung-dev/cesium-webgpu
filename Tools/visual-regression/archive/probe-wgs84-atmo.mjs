@@ -1,6 +1,18 @@
 #!/usr/bin/env node
 // @purpose One-off debug harness from the WGS84 reprojection investigation: WGS84 terrain + window debug-flag toggle, 1200 frames, screenshot capture.
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+//
+// ARCHIVED by the wgs84 probe-kit harvest (DX-108; R-2026-09-17-11: moved,
+// not deleted). Its conclusion is banked in the wgs84 probe-kit harvest entry in migration_doc/WEBGPU_DEBUGGING_LOG.md.
+// The window flag(s) this probe sets are named by no file in the engine's
+// Renderer/WebGPU, Scene or Core directories (a one-level search), and the
+// banked 2026-07-02 frames that set such flags are the plain frame: the
+// globe-fragment debug registry reads `globalThis._webgpuGlobeDebugMode`
+// (`CesiumDebug.globeFragmentDebug(name)`). Live equivalent, same view:
+//   _webgpuGlobeFadeAmountDebug -> node Tools/visual-regression/probe-wgs84.mjs --renderer webgpu --scene home --debug-mode fade-amount
+//   _webgpuGlobeDrapedDebug -> node Tools/visual-regression/probe-wgs84.mjs --renderer webgpu --scene home --debug-mode draped
+//   _webgpuGlobeAtmoColorDebug -> node Tools/visual-regression/probe-wgs84.mjs --renderer webgpu --scene home --debug-mode atmo-color
+//   _webgpuGlobeTransmittanceDebug -> node Tools/visual-regression/probe-wgs84.mjs --renderer webgpu --scene home --debug-mode transmittance
 
 import { chromium } from "playwright";
 import path from "path";

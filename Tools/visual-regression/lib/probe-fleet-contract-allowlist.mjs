@@ -1060,26 +1060,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
   "probe-webgpu-tile-popping.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
-  "probe-wgs84-alphadbg.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-wgs84-atmo.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-wgs84-close-postfix.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-wgs84-layer1-alpha.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-wgs84-polar-stretch.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-wgs84-postcomposite.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-wgs84-quick.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-wgs84-sample0.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-wgs84-varyings.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-wgs84.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-16, pre-dates the spec",
   "probe-wgsl-compile-error.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-22, pre-dates the spec",
   "probe-wgsl-doctype.mjs":
