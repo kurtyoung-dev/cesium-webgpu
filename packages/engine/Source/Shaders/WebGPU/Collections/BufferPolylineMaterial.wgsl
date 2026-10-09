@@ -56,6 +56,30 @@ struct VertexOutput {
   //>>endif
 };
 
+// ── Join direction ──────────────────────────────────────────────────────────
+// czm_epsilon6; this shader has no constants chunk.
+const BUFFER_POLYLINE_EPSILON6: f32 = 0.000001;
+
+// Direction of the joint at a vertex whose arriving segment runs along dirPrev
+// and whose leaving segment runs along dirNext (unit window-space vectors), in
+// xy, and the cosine the half-width is divided by, in z. The bisector of a
+// 180-degree turn is the normalized zero vector, which is NaN, so there the
+// joint takes the vertex's own segment instead, as getPolylineWindowCoordinatesEC
+// does in PolylineCommon.glsl: the arriving segment at the last vertex
+// (usePrevious) and the leaving one elsewhere, extruded at half the width.
+// Elsewhere both lanes are the expressions the vertex stage used before.
+fn bufferPolylineJoin(dirPrev: vec2<f32>, dirNext: vec2<f32>, usePrevious: bool) -> vec3<f32> {
+  let sum = dirPrev + dirNext;
+  let reversed = length(sum) < BUFFER_POLYLINE_EPSILON6;
+  let ownDir = select(dirNext, dirPrev, usePrevious);
+  let tangent = select(normalize(sum), ownDir, reversed);
+  let cosHalfAngle = select(
+    dot(vec2<f32>(-tangent.y, tangent.x), vec2<f32>(-dirPrev.y, dirPrev.x)),
+    1.0,
+    reversed);
+  return vec3<f32>(tangent, cosHalfAngle);
+}
+
 // ── Vertex shader ───────────────────────────────────────────────────────────
 @vertex
 fn vertexMain(input : VertexInput) -> VertexOutput {
@@ -144,11 +168,18 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
   // Compute miter direction
   let dirPrev = normalize(screenCurr - screenPrev);
   let dirNext = normalize(screenNext - screenCurr);
-  let tangent = normalize(dirPrev + dirNext);
+  // WebGL's usePrevious (texCoord == 1.0, the last vertex) is false at every
+  // reachable 180-degree turn: an end vertex's missing neighbour is its other
+  // neighbour reflected through it, so its two directions agree, and a turn is
+  // always an interior vertex. The packed lane cannot name the last vertex
+  // anyway: s is floor(texCoord + 0.25 or 0.75), which reaches 1 well before
+  // the last vertex.
+  let join = bufferPolylineJoin(dirPrev, dirNext, false);
+  let tangent = join.xy;
   let miterDir = vec2<f32>(-tangent.y, tangent.x);
 
   // Miter length (clamped to avoid spikes)
-  let cosHalfAngle = max(dot(miterDir, vec2<f32>(-dirPrev.y, dirPrev.x)), 0.1);
+  let cosHalfAngle = max(join.z, 0.1);
   let miterLen = (width * 0.5) / cosHalfAngle;
   let clampedMiterLen = min(miterLen, width * 2.0);
 

@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 106,
+  total: 107,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count is 17
@@ -65,8 +65,10 @@ const REGISTRY_CENSUS = {
     wgs84: 3,
     // The polyline family's harvest (DX-108): one rig per scene its ten
     // probes build in the page, all `page: null` because no page renders them
-    // from data yet.
-    polyline: 18,
+    // from data yet. The nineteenth, `polyline-nearclip`, is the first built
+    // from its dials alone (`lib/polyline-rig-scene.mjs`), captured by
+    // `probe-polyline-appearance-primitive.mjs --rigs polyline-nearclip`.
+    polyline: 19,
     // The clustered-lighting family's harvest (DX-108): one rig per scene or
     // synthetic input set its ten probes drive.
     clustered: 10,
