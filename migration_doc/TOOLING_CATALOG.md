@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1521 |
-| ACTIVE | 1277 |
+| Files in census | 1525 |
+| ACTIVE | 1281 |
 | ARCHIVED-CANDIDATE | 24 |
 | INVESTIGATION | 174 |
 | NO @purpose HEADER | 45 |
 | NO @status HEADER | 1 |
-| Classes | probe 677, spec 415, other 223, lib 157, gate-lib 21, bake-tool 13, fixture 8, runner 7 |
+| Classes | probe 677, spec 417, other 225, lib 157, gate-lib 21, bake-tool 13, fixture 8, runner 7 |
 
 ### Tools/ (64)
 
@@ -324,13 +324,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| comment-flavour-gate.spec.mjs | spec | ACTIVE | 2026-09-26 | 3 | Pins that comment-only-diff refuses comment edits that change a shipped or run artifact (release pragma strip, minified WGSL, runtime GLSL strip, bundler annotations, lint and reference directives, ASI), still passes true comment-only edits, and keeps its vendored transforms pinned to their sources. |
-| comment-flavour-release-pragma.spec.mjs | spec | ACTIVE | — | 1 | Pins that an edit to a JS or TS file whose old text has a release-pragma anchor that is not a line-opening //>> comment is comment-only exactly when the release-stripped output is unchanged, in both directions (a repaired opener, a repaired closer), with LF and CRLF, and that every edit that was comment-only before still is. |
+| comment-flavour-gate.spec.mjs | spec | ACTIVE | 2026-10-09 | 3 | Pins that comment-only-diff refuses comment edits that change a shipped or run artifact (release pragma strip, minified WGSL, runtime GLSL strip, bundler annotations, lint and reference directives, ASI), still passes true comment-only edits, and keeps its vendored transforms pinned to their sources. |
+| comment-flavour-release-pragma.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Pins that an edit to a JS or TS file whose old text has a release-pragma anchor that is not a line-opening //>> comment is comment-only exactly when the release-stripped output is unchanged, in both directions (a repaired opener, a repaired closer), with LF and CRLF, and that every edit that was comment-only before still is. |
 | comment-marker-guard.mjs | other | ACTIVE | 2026-08-21 | 28 | C16 lint guard scanning engine/widgets Source for banned tracker-marker vocabulary, with a clean-list ratchet; lint-staged + one-shot modes. |
 | comment-marker-guard.spec.mjs | spec | ACTIVE | 2026-09-18 | 7 | node:test contract for the C16 marker guard: rules still match (self-test vs broken rule), scope does not overreach, ratchet honest both ways. |
 | comment-only-diff.mjs | other | ACTIVE | 2026-09-26 | 12 | Binding gate of every C16 rewrite batch: strips comments from both sides of a diff to a canonical form and requires the remaining code identical. |
 | comment-only-diff.spec.mjs | spec | ACTIVE | 2026-09-26 | 4 | Mutant suite for the comment-only-diff gate: every rejected mutant is paired with the nearest legitimate edit that must be accepted. |
-| shader-reader-oit-scope.spec.mjs | spec | ACTIVE | — | 1 | Pins that a comment edit inside the fragment-entry parameter list of a WGSL shader the WebGPU OIT transform can never be handed is comment-only, that the same edit in a shader it can be handed is flavour-differs (wgsl-runtime, oit-entry-parameters), that a non-comment parameter edit is code-differs in both, that the derived scope is the same in a built and an unbuilt tree (a generated X.js read as its X.wgsl, static and dynamic imports followed), and that the scoping fails closed (no path, an unclassified site that feeds shader text to OIT, an empty target set, an OIT input whose imports reach no WGSL). |
+| shader-reader-oit-scope.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Pins that a comment edit inside the fragment-entry parameter list of a WGSL shader the WebGPU OIT transform can never be handed is comment-only, that the same edit in a shader it can be handed is flavour-differs (wgsl-runtime, oit-entry-parameters), that a non-comment parameter edit is code-differs in both, that the derived scope is the same in a built and an unbuilt tree (a generated X.js read as its X.wgsl, static and dynamic imports followed), and that the scoping fails closed (no path, an unclassified site that feeds shader text to OIT, an empty target set, an OIT input whose imports reach no WGSL). |
 | spec-anchor-sweep.mjs | other | ACTIVE | 2026-08-20 | 4 | Reports grammar, comment-only, and containment-locator anchors from spec literals against explicitly supplied source files. |
 | spec-anchor-sweep.spec.mjs | spec | NO @purpose HEADER | 2026-08-20 | 2 | — |
 | string-literal-marker-scan.mjs | other | ACTIVE | 2026-09-01 | 7 | Finds banned tracker vocabulary inside string and template literals that the comment-marker guard intentionally cannot see. |
@@ -343,10 +343,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | comment-scanner.mjs | lib | ACTIVE | 2026-09-26 | 21 | The one tokenizer both C16 instruments share (JS/TS/WGSL/GLSL comment vs code vs string), fail-closed, with semantic-comment retention rules. |
-| flavour-views.mjs | lib | ACTIVE | 2026-09-26 | 6 | Per-reader views for the comment-only gate: the release pragma strip (scripts and generated shader modules), the minify-time WGSL comment strip, the runtime GLSL doc-comment strip, the engine code that reads shader source text, the debug-pragma lint and next-line directives, so a comment edit that changes a shipped artifact or a gate's verdict is refused. |
+| flavour-views.mjs | lib | ACTIVE | 2026-10-09 | 6 | Per-reader views for the comment-only gate: the release pragma strip (scripts and generated shader modules), the minify-time WGSL comment strip, the runtime GLSL doc-comment strip, the engine code that reads shader source text, the debug-pragma lint and next-line directives, so a comment edit that changes a shipped artifact or a gate's verdict is refused. |
 | marker-grammar.mjs | lib | ACTIVE | 2026-09-26 | 16 | Machine-decidable half of the fork comment standard: the banned tracker-vocabulary regex rules (add-only ids) driven by the marker guard. |
-| oit-reach.mjs | lib | ACTIVE | — | 2 | Census of the engine sites that give shader text to the WebGPU OIT transform (a draw command's retained `_shaderCode`, calls of `injectOITOutput` and `createOITPipeline`), and the set of tracked WGSL files those sites can reach by static imports, so the comment-only gate scopes the OIT parameter-list reader to shaders the transform can process and refuses every WGSL comment edit while a site is unclassified. |
-| shader-text-readers.mjs | lib | ACTIVE | 2026-09-26 | 7 | Harvests every string or regex literal the renderer and scene code match against text, classifies how each one uses shader source, and describes each match by where it falls (code or comment), so the comment-only gate can refuse a comment edit that one of those readers would see. |
+| oit-reach.mjs | lib | ACTIVE | 2026-10-09 | 2 | Census of the engine sites that give shader text to the WebGPU OIT transform (a draw command's retained `_shaderCode`, calls of `injectOITOutput` and `createOITPipeline`), and the set of tracked WGSL files those sites can reach by static imports, so the comment-only gate scopes the OIT parameter-list reader to shaders the transform can process and refuses every WGSL comment edit while a site is unclassified. |
+| shader-text-readers.mjs | lib | ACTIVE | 2026-10-09 | 7 | Harvests every string or regex literal the renderer and scene code match against text, classifies how each one uses shader source, and describes each match by where it falls (code or comment), so the comment-only gate can refuse a comment edit that one of those readers would see. |
 
 ### Tools/jsdoc/cesium_template/ (1)
 
@@ -435,7 +435,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1062)
+### Tools/visual-regression/ (1064)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -565,6 +565,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | datasources-property-contract.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Pins the observable contract of the DataSources property helpers: comparison of properties whose interval data has no equals method, reuse of the caller's destination in getValueOrClonedDefault, and the isConstant terms the PathMode.PORTIONS branch reads. |
 | daynight-terminator-law.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | CLT-B1 Node half: transcribed laws vs shaders, calibration inversion, ramp classifier, structural exit codes — all mutant-rejected. |
 | debug-ground-polyline-color.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Instruments the GroundPolyline renderer cache to find why per-instance color didn't reach the FS (dim-rectangle diagnosis, 2026-04-30). |
+| determinism-kit-camera.spec.mjs | spec | ACTIVE | — | 1 | Runs the determinism kit's in-page placeCameraAfterTerrain / cameraPlacementNow against a scripted scene (late terrain, a collision lift, a terrain swap after placement) and pins decideCameraPlacement and viewHeightFromUrl, including the URLs an Edge leg recorded with the camera 640 m above its rig. |
 | device-identity-recovery.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Guards the device-loss recovery seams landed with the invalidation-bus predicate: the allocation-epoch resets and the dispatcher device-identity guards that stop consumers reusing work recorded against a dead device. |
 | device-loss-liveness-gate.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Guards the synchronous device-liveness registry and the producers that consult it, so a lost GPUDevice stops receiving work when its lost promise settles rather than when a replacement is published. |
 | device-loss-recovery-render-loop.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Proves a recoverable WebGPU device loss declines the frames that arrive during recovery instead of raising the terminal-loss error out of the render loop, and that the successor device is usable without a reload. |
@@ -1422,6 +1423,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | spec-cesium-viewer-loading-parity.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Loading-presentation parity: the async WebGPU viewer path adds no chrome of its own; the page indicator hides at first rendered frame on both. |
 | spec-offline-isolation.spec.mjs | spec | ACTIVE | 2026-09-19 | 4 | C11-134: pins the external-URL classifier (fail-closed) and the online-lane quarantine so network suites skip with a reason offline. |
 | splat-pipeline-request-guard.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Prove stale Gaussian-splat pipeline promises cannot publish after resource invalidation. |
+| ssr-pass-frame.spec.mjs | spec | ACTIVE | — | 2 | Executes the SSR shader's pure helpers from the shipped WGSL and checks them against independent JavaScript references: full-target coverage of the draw, the UV/NDC round trip with and without log depth, and the bisection refinement over a synthetic plane. |
 | star-catalog-depth.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | C12-09 acceptance for the deepened BrightStarCatalog: count/magnitude bands, MAG_CUTOFF = faintest row, no duplicates, sha256 provenance. |
 | star-point-census-live.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Standing discriminator: the star point census was mis-calibrated for live frames (strict local-max tie at the NDC-origin pixel corner). |
 | starfield-psf.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | C12-05..08 analytic acceptance: CPU reference of the Moffat core+wing PSF and linear-Pogson mapping; WGSL/GLSL constant lockstep. |
@@ -1634,7 +1636,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-u2-perf-evidence.mjs | lib | ACTIVE | 2026-08-21 | 3 | Manifest policy for the C13-16 U2 cross-bundle GPU-timing gate: comparison, environment-drift rejection, immutable evidence naming. |
 | contact-sheet-page.mjs | lib | ACTIVE | 2026-09-19 | 8 | Pure capture-manifest → contact-sheet page model + HTML renderer: a static, verdict-free page comparing BEFORE/AFTER captures across rigs and renderers, with the manifest's own shape guard. |
 | daynight-terminator-law.mjs | lib | ACTIVE | 2026-08-16 | 4 | Pure model behind probe-daynight-terminator-law (CLT-B1); deliberately unchanged post-fix, so lanes A/D now REFUTE — read metrics, not verdicts. |
-| determinism-kit.mjs | lib | ACTIVE | 2026-08-16 | 16 | Probe determinism kit: pinClock, settleTiles, dampSky, nRunMedian — neutralises the four measured sources of run-to-run drift in visual probes. |
+| determinism-kit.mjs | lib | ACTIVE | 2026-08-16 | 17 | Probe determinism kit: pinClock, settleTiles, dampSky, placeCameraAfterTerrain, nRunMedian — neutralises the measured sources of run-to-run drift in visual probes and refuses a camera that did not stay where the rig put it. |
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 19 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 5 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
 | engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 33 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
@@ -1672,7 +1674,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-lifecycle-diagnostics.mjs | lib | ACTIVE | 2026-09-12 | 4 | Bounded, hostile-value-safe description of a probe failure: what the rejected value was, which lifecycle occurrences contributed, and whether a refusal is hiding inside an aggregate. |
 | probe-lifecycle-run.mjs | lib | ACTIVE | 2026-09-12 | 10 | Derives a probe's orderly deadline from its declared work budget and drives preflight, Edge slot, per-run browser and descriptor cells inside one bounded lifecycle. |
 | probe-lifecycle.mjs | lib | ACTIVE | 2026-09-12 | 9 | Coordinates a probe deadline, tracked browser resources, and the Edge lease so a probe cannot report completion while owned work remains live. |
-| probe-refusal.mjs | lib | ACTIVE | 2026-09-02 | 14 | Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns. |
+| probe-refusal.mjs | lib | ACTIVE | 2026-09-02 | 15 | Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns. |
 | probe-runtime-governance.mjs | lib | ACTIVE | 2026-09-13 | 6 | C13-N01 stage 1 detectors: read whether a probe resolves its origin from a hard-coded fallback and whether it routes through the three governance modules, and census the fleet from those two facts. |
 | probe-runtime.mjs | lib | ACTIVE | 2026-09-26 | 86 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
 | probe-work-registry.mjs | lib | ACTIVE | 2026-09-12 | 6 | Tracks every `scope.run` a descriptor starts as an attempt with a settled outcome, so a run cannot be reported complete while work it started is still live, and such work's failure reaches the incident record whenever an incident is written at all; the browser's close is NOT deferred for it — see the header. |
@@ -1710,7 +1712,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | weather-regional-tail-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Fixture and pass/fail policy for the C13-08 rendered antimeridian weather-tail probe, mutation-tested against its two target regressions. |
 | webgpu-model-preparation-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Accumulates and validates WebGPU model preparation/demand counters as measurement-window evidence for performance workloads. |
 | wgsl-derivative-uniformity.mjs | lib | ACTIVE | 2026-09-01 | 7 | Reports implicit-derivative calls reached through non-uniform control flow without requiring a browser, GPU, or WGSL compiler. |
-| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 24 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
+| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 25 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
 | wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 12 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
 ### Tools/visual-regression/lib/metrics/ (23)
@@ -1741,7 +1743,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | velocity-texels.mjs | lib | ACTIVE | 2026-10-09 | 2 | Decode IEEE-754 binary16 velocity texels read back from an rg16float motion-vector target and count those whose magnitude clears a stated noise floor, over the whole target or inside one screen rectangle. |
 | wgs84-channel-means.mjs | lib | ACTIVE | 2026-10-09 | 6 | Pure whole-frame per-channel RGB means plus the percentage of pixels whose channel sum exceeds a threshold, over decoded RGBA bytes; the Node-side home of probe-wgs84-quick.mjs's in-page canvas statistics. |
 
-### Tools/visual-regression/rigs/ (107)
+### Tools/visual-regression/rigs/ (109)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1845,6 +1847,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | sandcastle-webgpu-point-light-shadows.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the sandcastle-smoke.mjs gallery demo "WebGPU Point Light Shadows.html". |
 | sepacific-stratocumulus-closed.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "sepacific-stratocumulus-closed" (subtropical-marine-eastern-boundary/closed-cell-sheet), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | southern-ocean-stratocumulus-open.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "southern-ocean-stratocumulus-open" (cold-air-outbreak/open-cell-broken), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
+| ssr-model-over-plane.mjs | other | ACTIVE | — | 0 | Rig record for the WebGPU screen-space reflections pass - the Wood Tower model on the bare WGS84 ellipsoid with no imagery (offline page) at 100 W, 40 N, a low oblique camera 220 m south and 80 m west of it, SSR on, WebGPU only, 1280x720. |
+| ssr-off-model-over-plane.mjs | other | ACTIVE | — | 0 | Rig record for the SSR-off control - the same Wood Tower, offline page, bare ellipsoid, no imagery, camera, clock and viewport as ssr-model-over-plane, with scene.enableSSR false, WebGPU only. |
 | tradewind-cumulus-caribbean.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "tradewind-cumulus-caribbean" (tropical-maritime-tradewind/tradewind-mediocris), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | voxel-box-procedural.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "voxel-box-procedural" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
 | wgs84-close-1mm.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the WGS84-ellipsoid close view on the CesiumViewer page - nadir on 100 W, 40 N from 1,000 km, both renderers, 1280x720, a 360-frame dwell. |

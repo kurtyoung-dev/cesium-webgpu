@@ -23132,3 +23132,50 @@ canvas is unmeasured.
 **Also found and fixed:** test 15 of `cpu-primitive-breakdown-policy.spec.mjs` (the spec of `probe-c11-169-primitive-breakdown.mjs`) had been red since `3cbb82885f` (2026-08-14). That commit removed `const scratchEyeTranslation` from `ViewportExecutor.js`, the anchor where the test's slice of `updateAndRenderPrimitives` ended, so the slice end read -1. The slice now ends at the next top-level function. The spec had no runner, so nothing reported it; it is 17/17 again.
 
 *Files modified:* the eleven-probe family under `Tools/visual-regression/` (one probe moved to `archive/`); two harness libs re-pointed at the kit (`lib/c11-13-voxel-inside-camera-probe.mjs`, `lib/c11-90-primitive-restart-probe.mjs`) and `lib/c11-209-effects-placeholder-provenance.mjs`, whose probe path now names `archive/`; `lib/rig-registry.mjs` (the `c11` rig tag); five specs edited: the C11-90 harness spec (its bounds anchor, and a drift alarm on the options its kit calls pass), the C11-13 probe spec (the same drift alarm), the C11-209 provenance spec (the probe path), the C11-169 policy spec (the slice end) and `rig-registry.spec.mjs` (the census, 41 to 48 with `c11: 7`); four new `lib/metrics/c11-*.mjs`, seven `rigs/c11-*.mjs`, `metrics-c11.spec.mjs`, `c11-rigs.spec.mjs`, `fixtures/metrics-c11-references.mjs`, `DEBUGGING_GUIDE.md`, `archive/README.md`.
+
+## 2026-10-09 - SSR pass: half-viewport coverage, unproject/project Y frame, one-sided refinement
+
+Three defects in `packages/engine/Source/Shaders/WebGPU/PostProcess/ScreenSpaceReflections.wgsl`, the f32
+shader `WebGPUSSREffect.ts` compiles by default. SSR is WebGPU-only and off by default (`scene.enableSSR`);
+the fork has no WebGL SSR, so there is no GLSL twin to change.
+
+**Bug SSR-COVERAGE (F-G06-1).** Files: `ScreenSpaceReflections.wgsl` (`vertexMain`). Root cause: the
+"full-screen triangle" built its corners as `x = (vi & 1) * 2 - 1`, `y = (vi >> 1) * 2 - 1`, i.e. (-1,-1),
+(1,-1), (-1,1), which covers only NDC x + y <= 0, and `WebGPUSSREffect.ts` draws exactly those three vertices
+(`pass.draw(3)`, triangle-list) into a `loadOp: "load"` target. The top-right triangle of the frame (screen
+u > v) was never written, so it kept whatever the environmental compositor's ping texture held. Fix: the
+corners are (-1,-1), (3,-1), (-1,3) through a pure helper `ssrFullScreenCorner`, whose triangle's hypotenuse
+x + y = 2 passes through NDC (1,1). The draw call is unchanged. Files modified: `ScreenSpaceReflections.wgsl`.
+Status: proven on Edge. On the offline ellipsoid rig with SSR on, the build without the fix leaves the upper half
+black (upper half on-vs-off mean difference 125.56, near-black fraction 1.000, a hard diagonal from the top-left to the
+bottom-right corner) and the build with it covers the full frame (0.00013, near-black fraction 0.000). The corner law
+is also pinned in Node by `ssr-pass-frame.spec.mjs`.
+
+**Bug SSR-UNPROJECT-YFLIP (the Gemini audit's P1 triage, section 2.2).** Files: `ScreenSpaceReflections.wgsl` (`reconstructViewPosition`,
+`projectToScreen`). Root cause: the vertex stage puts NDC y = +1 at UV y = 0 and `projectToScreen` flipped Y
+back (`1.0 - screenUV.y`), but `reconstructViewPosition` built NDC as `uv * 2.0 - 1.0` with no flip, so a
+reconstructed position was mirrored top-to-bottom and every ray started from the wrong screen row. Fix: both
+directions go through one pair of helpers, `ssrNdcToUV` and its inverse `ssrUVToNdc` (the same
+`1.0 - uv.y * 2.0` form `ContactShadows.wgsl` uses), and the vertex stage uses `ssrNdcToUV` too, so the pass has
+one screen frame. Files modified: `ScreenSpaceReflections.wgsl`.
+Status: the round-trip law is proven in Node (`ssr-pass-frame.spec.mjs` runs `ssrNdcToUV`, `ssrUVToNdc` and the
+reconstruct/project pair from the shipped source, with and without the log-depth flag, and each inertness mutant
+fails it). On Edge the fix's entry wiring is accepted on the strength of a complete frame, a pass that ran and no
+WebGPU fault, but the reflection output is NOT verified: in the Edge scene (the Wood Tower over the bare ellipsoid)
+the pass draws no reflection at all, before the fix or after it, so a ray starting from the right row cannot be seen
+there. That absence is a separate, pre-existing defect filed open in the lane's ledger text.
+
+**Bug SSR-REFINE-ONESIDED (the Gemini audit's P2 triage, section 2.3).** Files: `ScreenSpaceReflections.wgsl` (`traceRay`). Root cause:
+each refinement iteration stepped back by the half step, halved it, and then, while the ray was still on the
+hit's side, added back twice the new step, i.e. exactly the step just taken; the walk never moved further back
+nor forward past its start, so it was not a bisection. Fix: a helper `ssrBisectStep` steps back while on the
+hit's side and forward once past the crossing; five depth samples steer six halving steps, so the refined hit
+lies within 1/64 of a march step of the crossing. Files modified: `ScreenSpaceReflections.wgsl`.
+Status: the bisection law is proven in Node (the analytic crossing of a synthetic depth plane, approached from either
+side; the loop cadence is transcribed in the spec because loops and texture fetches are outside the evaluator, so a
+cadence change in the shader is invisible to it). The reflection output is NOT verified on Edge: the pass draws no
+reflection in the Edge scene at base or after, so a refined hit cannot be seen there. The same separate defect, filed
+open in the lane's ledger text, blocks it.
+
+The f16 variant `ScreenSpaceReflections_f16.wgsl` (selected only under `useShaderF16` with `shader-f16`) carries
+the same three defects at its own lines and is not changed here; it is filed for its own owner.

@@ -1,5 +1,5 @@
 // Determinism kit for visual-regression probes (Q7-PROBE-DETERMINISM).
-// @purpose Probe determinism kit: pinClock, settleTiles, dampSky, nRunMedian — neutralises the four measured sources of run-to-run drift in visual probes.
+// @purpose Probe determinism kit: pinClock, settleTiles, dampSky, placeCameraAfterTerrain, nRunMedian — neutralises the measured sources of run-to-run drift in visual probes and refuses a camera that did not stay where the rig put it.
 // @status ACTIVE
 //
 // Globe / post-process probe severities drift run-to-run (the audit measured
@@ -29,8 +29,27 @@
 //      capture N times and reports the median + spread so a gate can key off
 //      the median and REPORT the spread instead of tripping on one outlier.
 //
+//   5. A CAMERA THAT DOES NOT STAY PUT — `camera.setView` places the camera
+//      once, but two things move it afterwards. A terrain provider that
+//      resolves after the placement replaces the surface under it (the
+//      CesiumViewer page hands the Viewer an asynchronous world terrain, and
+//      `Scene.setTerrain`'s ready listener is not cancelled when a later
+//      base-layer-picker selection sets another provider), and the camera
+//      controller's collision step then lifts the camera above whatever
+//      terrain is resident. A rig declared at 20 m above the ellipsoid was
+//      recorded at 661-670 m with its model out of frame; that reading of the
+//      two code paths is why, and the read-back below is what measures it.
+//      placeCameraAfterTerrain() places the camera only once the terrain
+//      provider has held for `stableFrames` frames, renders until the camera
+//      has stopped moving, and reads back where it is;
+//      cameraPlacementNow() re-reads it just before a capture, and
+//      decideCameraPlacement() refuses in Node when either read-back, or the
+//      `view=` the page wrote into its own URL, is off the declared height.
+//
 // The kit is split into a browser-side setup string (installed once inside a
-// page.evaluate) and node-side statistics helpers.
+// page.evaluate) and node-side statistics and decision helpers.
+
+import { acceptedDecision, refusedDecision } from "./probe-refusal.mjs";
 
 // Fixed epoch for pinClock(): a clear-sky solstice morning. Any constant
 // works — the point is that it is CONSTANT across runs and backends.
@@ -107,8 +126,173 @@ window.__det = {
     }
     return i;
   },
+
+  // Place the camera only after the globe's terrain provider has stopped
+  // changing, then render until the camera has stopped moving, and read back
+  // where it is. camera = {lon, lat, height, heading, pitch, roll} in degrees
+  // and metres / radians, the rig's own record. The terrain the caller wants
+  // must be set BEFORE this is called: it waits for the provider to hold, it
+  // does not choose one. Judge the result with decideCameraPlacement().
+  async placeCameraAfterTerrain(C, viewer, camera, opts) {
+    const o = opts || {};
+    const scene = viewer.scene;
+    const stableFrames = o.stableFrames || 30;
+    const maxFrames = o.maxFrames || 1500;
+    const frame = async () => {
+      scene.render();
+      await new Promise((r) => requestAnimationFrame(r));
+    };
+    let provider = scene.globe.terrainProvider;
+    let held = 0;
+    let terrainFrames = 0;
+    while (held < stableFrames && terrainFrames < maxFrames) {
+      await frame();
+      terrainFrames++;
+      const current = scene.globe.terrainProvider;
+      held = current !== undefined && current === provider ? held + 1 : 0;
+      provider = current;
+    }
+    const terrainSettled = held >= stableFrames;
+    this._placedTerrainProvider = provider;
+    viewer.camera.setView({
+      destination: C.Cartesian3.fromDegrees(camera.lon, camera.lat, camera.height),
+      orientation: {
+        heading: camera.heading ?? 0,
+        pitch: camera.pitch ?? -Math.PI / 2,
+        roll: camera.roll ?? 0,
+      },
+    });
+    const last = C.Cartesian3.clone(viewer.camera.positionWC);
+    let still = 0;
+    let cameraFrames = 0;
+    while (still < stableFrames && cameraFrames < maxFrames) {
+      await frame();
+      cameraFrames++;
+      const moved = C.Cartesian3.distance(viewer.camera.positionWC, last);
+      still = moved <= 1e-3 ? still + 1 : 0;
+      C.Cartesian3.clone(viewer.camera.positionWC, last);
+    }
+    return Object.assign(this.cameraPlacementNow(C, viewer), {
+      terrainSettled,
+      terrainFrames,
+      cameraSettled: still >= stableFrames,
+      cameraFrames,
+    });
+  },
+
+  // Where the camera is now, and whether the terrain provider is still the
+  // one placeCameraAfterTerrain() placed it over.
+  cameraPlacementNow(C, viewer) {
+    const carto = viewer.camera.positionCartographic;
+    const provider = viewer.scene.globe.terrainProvider;
+    return {
+      height: carto.height,
+      lon: C.Math.toDegrees(carto.longitude),
+      lat: C.Math.toDegrees(carto.latitude),
+      terrainProvider:
+        provider && provider.constructor ? provider.constructor.name : null,
+      terrainHeld:
+        this._placedTerrainProvider !== undefined &&
+        provider === this._placedTerrainProvider,
+    };
+  },
 };
 `;
+
+// ---------------------------------------------------------------------------
+// Node-side camera-placement decision.
+// ---------------------------------------------------------------------------
+
+// How far, in metres, a read-back camera height may sit from the declared one.
+export const CAMERA_PLACEMENT_TOLERANCE_M = 1;
+
+/**
+ * The camera height the CesiumViewer page wrote into its own URL, or null.
+ * The page records `view=lon,lat,height[,heading,pitch,roll]` a second after
+ * the camera last changed (`Apps/CesiumViewer/CesiumViewer.js`
+ * `setupCameraSave`), so it is a record of where the camera was, written by the
+ * page rather than by the probe.
+ *
+ * @param {string} url The page URL.
+ * @returns {number|null} The recorded height in metres.
+ */
+export function viewHeightFromUrl(url) {
+  let view;
+  try {
+    view = new URL(url).searchParams.get("view");
+  } catch {
+    return null;
+  }
+  if (view === null) {
+    return null;
+  }
+  const height = Number(view.split(/[ ,]+/)[2]);
+  return Number.isFinite(height) ? height : null;
+}
+
+/**
+ * Refuse a capture whose camera is not where its rig declared it.
+ *
+ * @param {object} args Arguments.
+ * @param {number} args.declaredHeight The rig's camera height, metres.
+ * @param {object} args.placement placeCameraAfterTerrain()'s read-back.
+ * @param {object} [args.final] cameraPlacementNow() just before the capture.
+ * @param {string} [args.recordedUrl] The page URL at capture time; when given,
+ *   its `view=` height must be present and agree too.
+ * @param {number} [args.tolerance] Metres.
+ * @returns {object} An accepted or refused decision (`lib/probe-refusal.mjs`).
+ */
+export function decideCameraPlacement({
+  declaredHeight,
+  placement,
+  final,
+  recordedUrl,
+  tolerance = CAMERA_PLACEMENT_TOLERANCE_M,
+}) {
+  const details = {
+    declaredHeight,
+    tolerance,
+    placement,
+    final: final ?? null,
+  };
+  if (placement?.terrainSettled !== true) {
+    return refusedDecision("camera-terrain-unsettled", details);
+  }
+  if (placement.cameraSettled !== true) {
+    return refusedDecision("camera-unsettled", details);
+  }
+  const heights = [["placement", placement.height]];
+  if (final !== undefined) {
+    if (final?.terrainHeld !== true) {
+      return refusedDecision("camera-terrain-changed", details);
+    }
+    heights.push(["final", final.height]);
+  }
+  if (recordedUrl !== undefined) {
+    const recorded = viewHeightFromUrl(recordedUrl);
+    if (recorded === null) {
+      return refusedDecision("camera-view-unrecorded", {
+        ...details,
+        recordedUrl,
+      });
+    }
+    heights.push(["view", recorded]);
+  }
+  for (const [where, height] of heights) {
+    if (
+      !Number.isFinite(height) ||
+      Math.abs(height - declaredHeight) > tolerance
+    ) {
+      return refusedDecision("camera-height-mismatch", {
+        ...details,
+        where,
+        height,
+        recordedUrl: recordedUrl ?? null,
+      });
+    }
+  }
+  return acceptedDecision();
+}
 
 // ---------------------------------------------------------------------------
 // Node-side statistics.

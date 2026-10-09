@@ -52,14 +52,39 @@ struct VertexOutput {
   @location(0) uv: vec2<f32>,
 };
 
+// Clip-space corner of the full-screen triangle for vertex 0, 1 or 2:
+// (-1,-1), (3,-1), (-1,3). Its hypotenuse x + y = 2 passes through the NDC
+// corner (1,1), so the one triangle covers all of [-1,1] x [-1,1]. Corners
+// at +-1 alone, (-1,-1), (1,-1), (-1,1), would cover only the half below the
+// diagonal x + y = 0. The index arrives as f32 and is matched with `select`
+// so the law stays pure arithmetic.
+fn ssrFullScreenCorner(vertexIndex: f32) -> vec2<f32> {
+  return vec2<f32>(
+    select(-1.0, 3.0, vertexIndex == 1.0),
+    select(-1.0, 3.0, vertexIndex == 2.0)
+  );
+}
+
+// NDC xy to the screen UV the color and depth textures are sampled with. UV
+// y grows downward (row 0 is the top of the target) while NDC y grows upward,
+// hence the flip. `ssrUVToNdc` is its exact inverse; the vertex stage and
+// `projectToScreen` both go through this one map, so every UV in the pass is
+// in the same frame.
+fn ssrNdcToUV(ndc: vec2<f32>) -> vec2<f32> {
+  return vec2<f32>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
+}
+
+fn ssrUVToNdc(uv: vec2<f32>) -> vec2<f32> {
+  return vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+}
+
 // Full-screen triangle (3 vertices, no vertex buffer needed)
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   var out: VertexOutput;
-  let x = f32(i32(vertexIndex & 1u) * 2 - 1);
-  let y = f32(i32(vertexIndex >> 1u) * 2 - 1);
-  out.position = vec4<f32>(x, y, 0.0, 1.0);
-  out.uv = vec2<f32>(x * 0.5 + 0.5, 1.0 - (y * 0.5 + 0.5));
+  let corner = ssrFullScreenCorner(f32(vertexIndex));
+  out.position = vec4<f32>(corner, 0.0, 1.0);
+  out.uv = ssrNdcToUV(corner);
   return out;
 }
 
@@ -75,29 +100,45 @@ fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
   return far * (1.0 - near / depthFromCamera) / (far - near);
 }
 
-// Reconstruct view-space position from depth and UV
-fn reconstructViewPosition(uv: vec2<f32>, depth: f32) -> vec3<f32> {
-  // The shared depth texture is log-encoded by default (renderer-wide log
-  // depth). Reverse to hyperbolic NDC z before unprojecting; the flag is
-  // packed by WebGPUSSREffect only when the master switch + useLogDepth are
-  // on AND a valid encode frustum is stashed, so flags.y<0.5 keeps the
-  // byte-identical pre-Slice-C path.
-  var z = depth;
+// The sampled depth as hyperbolic NDC z. The shared depth texture is
+// log-encoded by default (renderer-wide log depth), so it is reversed before
+// unprojecting. WebGPUSSREffect packs the flag only when the master switch
+// and useLogDepth are on AND a valid encode frustum is stashed; flags.y < 0.5
+// passes the depth through unchanged, the hyperbolic path.
+fn ssrNdcDepth(depth: f32) -> f32 {
   if (ssr.flags.y > 0.5) {
-    z = logDepthReverse(depth, ssr.flags.z, ssr.flags.w);
+    return logDepthReverse(depth, ssr.flags.z, ssr.flags.w);
   }
-  let ndc = vec4<f32>(uv * 2.0 - 1.0, z, 1.0);
-  var viewPos = ssr.inverseProjection * ndc;
-  viewPos /= viewPos.w;
-  return viewPos.xyz;
+  return depth;
+}
+
+// Reconstruct view-space position from depth and UV. The exact inverse of
+// `projectToScreen`: both cross between UV and NDC through the same flip.
+fn reconstructViewPosition(uv: vec2<f32>, depth: f32) -> vec3<f32> {
+  let ndc = vec4<f32>(ssrUVToNdc(uv), ssrNdcDepth(depth), 1.0);
+  let viewPos = ssr.inverseProjection * ndc;
+  return viewPos.xyz / viewPos.w;
 }
 
 // Project view-space position to screen UV + depth
 fn projectToScreen(viewPos: vec3<f32>) -> vec3<f32> {
-  var clipPos = ssr.projection * vec4<f32>(viewPos, 1.0);
-  clipPos /= clipPos.w;
-  let screenUV = clipPos.xy * 0.5 + 0.5;
-  return vec3<f32>(screenUV.x, 1.0 - screenUV.y, clipPos.z);
+  let clipPos = ssr.projection * vec4<f32>(viewPos, 1.0);
+  return vec3<f32>(ssrNdcToUV(clipPos.xy / clipPos.w), clipPos.z / clipPos.w);
+}
+
+// One step of the hit refinement's bisection. `diff` is the ray-minus-scene
+// depth difference at `pos`; `hitDiff` is the one at the march step that
+// detected the hit. While `pos` is on the hit's side of the depth crossing the
+// crossing lies behind it, so the walk steps back by `halfStep`; once it is on
+// the other side it steps forward. Repeating this with `halfStep` halved each
+// time keeps the crossing within the last step taken.
+fn ssrBisectStep(
+  pos: vec3<f32>,
+  halfStep: vec3<f32>,
+  diff: f32,
+  hitDiff: f32,
+) -> vec3<f32> {
+  return select(pos + halfStep, pos - halfStep, (diff > 0.0) == (hitDiff > 0.0));
 }
 
 // Screen-edge fade: attenuate reflections near viewport borders
@@ -156,22 +197,24 @@ fn traceRay(
       hitUV = uv;
       hit = true;
 
-      // Binary refinement (5 steps)
+      // Binary refinement: five depth samples steer six bisection steps of
+      // half, a quarter, ... 1/64 of the march step, so the refined hit lies
+      // within 1/64 of a march step of the depth crossing between the last
+      // two march positions. The first step needs no sample: the march
+      // position is on the hit's side by definition.
       var refinedPos = rayPos;
       var refinedStep = step * 0.5;
+      var refinedDiff = depthDiff;
       for (var r: i32 = 0; r < 5; r++) {
-        refinedPos -= refinedStep;
+        refinedPos = ssrBisectStep(refinedPos, refinedStep, refinedDiff, depthDiff);
         refinedStep *= 0.5;
 
         let rScreen = projectToScreen(refinedPos);
         let rDepth = textureSampleLevel(depthTex, texSampler, rScreen.xy, 0.0).r;
         let rViewPos = reconstructViewPosition(rScreen.xy, rDepth);
-        let rDiff = refinedPos.z - rViewPos.z;
-
-        if (rDiff > 0.0) {
-          refinedPos += refinedStep * 2.0;
-        }
+        refinedDiff = refinedPos.z - rViewPos.z;
       }
+      refinedPos = ssrBisectStep(refinedPos, refinedStep, refinedDiff, depthDiff);
 
       hitUV = projectToScreen(refinedPos).xy;
       break;

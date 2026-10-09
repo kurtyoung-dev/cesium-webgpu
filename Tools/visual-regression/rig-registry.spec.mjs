@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 107,
+  total: 109,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count is 17
@@ -76,6 +76,9 @@ const REGISTRY_CENSUS = {
     // kept Campaign 11 acceptance probes load; c11-rigs.spec.mjs ties each to
     // its probe's constants.
     c11: 7,
+    // The SSR pass's rig and its SSR-off control, declared with the fix to the
+    // pass's coverage, screen frame and refinement as its Edge leg's scene.
+    ssr: 2,
   },
 };
 
