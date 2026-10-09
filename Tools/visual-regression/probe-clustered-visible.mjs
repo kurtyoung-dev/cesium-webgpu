@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Probe-clustered-visible — Slice 5d Batch 153 verification.
-// @purpose Clustered consumer on the glTF Model PBR path: PointLight + clustered ON brightens the model center vs OFF by a measured margin.
+// @purpose Clustered consumer on the glTF Model PBR path: PointLight + clustered ON changes the model center vs OFF by a measured margin (sign recorded, not barred).
 // @status ACTIVE
 //
 // Confirms the Forward+ clustered lighting consumer (ModelPBRComplete +
@@ -16,309 +16,423 @@
 //   3. Add a bright PointLight at the model's bounding sphere, enable
 //      clustered lighting, capture a second screenshot.
 //   4. Decode both PNGs and compute the mean brightness over the
-//      central canvas region; the ON sample should be brighter than
-//      OFF by a measurable margin.
+//      central canvas region; the ON sample should differ from OFF
+//      by a measurable margin (the sign is recorded in `delta`, not
+//      barred).
 //
-// PASS criteria:
+// PASS criteria (the bars the original applied; see `evaluateVisible`):
 //   - 0 device errors across both phases.
-//   - Brightness delta on > off by ≥ ~5 LSBs (a no-op consumer
-//     would produce a 0 delta).
+//   - At least 50 pixels of the central box change their channel sum by
+//     more than 5 between OFF and ON, in either direction (a no-op consumer
+//     would change none). This line used to read "brightness delta on > off
+//     by ≥ ~5 LSBs"; that was prose and never a bar, and the box means are
+//     recorded, not barred (corrected in the probe-kit harvest).
+//
+// ON THE SHARED RUNTIME (probe-kit harvest, clustered family). The scene is
+// the rig `clustered-visible-vehicle`, read from `rigs/`; the browser, the
+// origin (`--port`, a governed port, never 8080), the served-build preflight,
+// the Edge slot and the receipt belong to `lib/probe-runtime.mjs`. The two
+// frames are element captures of the scene canvas through `captureElement`,
+// taken after the viewer's widgets are stripped
+// (`lib/strip-viewer-widgets.mjs`), where the original took two page
+// screenshots that included the widgets. The brightness change is
+// `lib/metrics/channel-sum-brightness.mjs`, the original in-page loop moved to
+// Node (`metrics-clustered.spec.mjs` holds the two equal). Device errors are
+// the shared WebGPU error gate's (`Tools/lib/webgpu-error-gate.mjs`), which
+// owns the same `onuncapturederror` slot the private hook used and also
+// reports a lost device. The params-buffer readback and the buffers-stash keys
+// are recorded in the cell, as the original printed them; neither was ever a
+// bar.
+//
+// THE CHROME IS REFUSED, NOT RECORDED. The widget strip runs after each
+// scene step has settled, immediately before each of the two captures, and
+// the run refuses (`viewer-chrome-over-canvas`, exit 3) if anything is still
+// stacked over the canvas: an element capture composites it into the frame
+// the measuring box reads. What the strips removed is recorded in the cell
+// (`chromeRemoved`, with both strip reports under `chrome`).
+//
+// Usage: node Tools/visual-regression/probe-clustered-visible.mjs [--port 8094]
+// @runtime lib/probe-runtime.mjs
 
-import { chromium } from "playwright";
-import fs from "fs";
+import { attachPageDiagnostics } from "../lib/attach-page-diagnostics.mjs";
+import { decodePng } from "../lib/png-decode.mjs";
+import {
+  armWebGPUDevices,
+  collectGateErrors,
+  errorGateInit,
+} from "../lib/webgpu-error-gate.mjs";
+import { captureUrlFor } from "./lib/capture.mjs";
+import {
+  channelSumChange,
+  fractionalRoi,
+} from "./lib/metrics/channel-sum-brightness.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
+import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
+import rig from "./rigs/clustered-visible-vehicle.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const OUT_OFF = "Tools/visual-regression/output/clustered-visible-off.png";
-const OUT_ON = "Tools/visual-regression/output/clustered-visible-on.png";
+const SCENE_CANVAS = ".cesium-widget canvas";
+/** The original's measuring box: the central 50 %, `[0.25, 0.75)` on both axes. */
+export const MEASURE_BOX = Object.freeze({
+  left: 0.25,
+  right: 0.75,
+  top: 0.25,
+  bottom: 0.75,
+});
+/** The original's bars: `lastActiveLightCount >= 1`, `changedPx >= 50`. */
+export const MIN_ACTIVE_LIGHTS = 1;
+export const MIN_CHANGED_PX = 50;
 
-(async () => {
-  fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
+/**
+ * Page side, phase 1: load the model, frame the camera, hide the globe and
+ * render the OFF frames. Unchanged from the in-page original apart from
+ * reading the rig and being its own step.
+ *
+ * @param {{asset: string, dials: object}} scene The rig's asset and dials.
+ * @returns {Promise<{modelReady: true, bsRadius: number} | {earlyExitErr: string}>}
+ */
+async function pageSetup({ asset, dials }) {
+  const mod = await import("/Build/CesiumUnminified/index.js");
+  const C = mod;
+  window.__C = C;
+  const v = window.viewer;
+  const scene = v.scene;
 
-  const browser = await chromium.launch({
-    channel: "msedge",
-    headless: true,
-    args: ["--enable-unsafe-webgpu"],
-  });
-  const page = await browser.newPage({
-    viewport: { width: 800, height: 600 },
-  });
-  page.on("pageerror", (e) => console.log(`>> pageerror: ${e.message}`));
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-    waitUntil: "networkidle",
-  });
-  await page.waitForFunction(() => !!window.viewer);
+  const lon = dials.position.lon;
+  const lat = dials.position.lat;
+  const height = dials.position.height;
+  const position = C.Cartesian3.fromDegrees(lon, lat, height);
 
-  await page.evaluate(() => {
-    const dev = window.viewer?.scene?.context?._device;
-    window.__probeErrors = [];
-    if (!dev) return;
-    dev.onuncapturederror = (ev) => {
-      window.__probeErrors.push({ text: ev?.error?.message ?? "" });
-    };
-  });
+  const modelMatrix = C.Transforms.headingPitchRollToFixedFrame(
+    position,
+    new C.HeadingPitchRoll(0, 0, 0),
+  );
+  const model = scene.primitives.add(
+    await C.Model.fromGltfAsync({
+      url: asset,
+      modelMatrix,
+      scale: dials.modelScale,
+    }),
+  );
+  window.__model = model;
 
-  // Phase 1 — load model + frame the camera.
-  const setupResult = await page.evaluate(async () => {
-    const mod = await import("/Build/CesiumUnminified/index.js");
-    const C = mod;
-    window.__C = C;
-    const v = window.viewer;
-    const scene = v.scene;
-
-    const lon = -79.9959;
-    const lat = 40.4406;
-    const height = 100;
-    const position = C.Cartesian3.fromDegrees(lon, lat, height);
-
-    const modelMatrix = C.Transforms.headingPitchRollToFixedFrame(
-      position,
-      new C.HeadingPitchRoll(0, 0, 0),
-    );
-    const model = scene.primitives.add(
-      await C.Model.fromGltfAsync({
-        url: "/Apps/SampleData/models/GroundVehicle/GroundVehicle.glb",
-        modelMatrix,
-        scale: 5.0,
-      }),
-    );
-    window.__model = model;
-
-    for (let i = 0; i < 240; i++) {
-      scene.render();
-      await new Promise((r) => requestAnimationFrame(r));
-      if (model.ready) break;
-    }
-    if (!model.ready) return { earlyExitErr: "model not ready" };
-
-    const bs = model.boundingSphere;
-    window.__bs = bs;
-    v.camera.viewBoundingSphere(
-      bs,
-      new C.HeadingPitchRange(0.0, C.Math.toRadians(-30), bs.radius * 3),
-    );
-
-    // Disable globe so the background is uniform (sky) and any change
-    // we observe must come from the model lighting, not terrain
-    // shading drift.
-    scene.globe.show = false;
-
-    scene.clusteredLightingEnabled = false;
-    for (let i = 0; i < 60; i++) {
-      scene.render();
-      await new Promise((r) => requestAnimationFrame(r));
-    }
-    return { modelReady: true, bsRadius: bs.radius };
-  });
-  if (setupResult?.earlyExitErr) {
-    console.log(
-      "[probe-clustered-visible] EARLY-EXIT:",
-      setupResult.earlyExitErr,
-    );
-    await browser.close();
-    process.exit(1);
+  for (let i = 0; i < dials.readyFrames; i++) {
+    scene.render();
+    await new Promise((r) => requestAnimationFrame(r));
+    if (model.ready) break;
   }
-  await page.screenshot({ path: OUT_OFF, fullPage: false });
+  if (!model.ready) return { earlyExitErr: "model not ready" };
 
-  // Phase 2 — add light + enable clustered + re-screenshot.
-  const phase2 = await page.evaluate(async () => {
-    const C = window.__C;
-    const v = window.viewer;
-    const scene = v.scene;
-    const bs = window.__bs;
+  const bs = model.boundingSphere;
+  window.__bs = bs;
+  v.camera.viewBoundingSphere(
+    bs,
+    new C.HeadingPitchRange(
+      C.Math.toRadians(dials.view.headingDegrees),
+      C.Math.toRadians(dials.view.pitchDegrees),
+      bs.radius * dials.view.rangeInRadii,
+    ),
+  );
 
-    // Place the light just in front of the model on the camera side,
-    // close to the surface. Pointing from the camera direction
-    // guarantees camera-visible front faces have NdotL > 0 (avoids the
-    // failure mode where an arbitrary ECEF offset lights hidden faces —
-    // local "up" near Pittsburgh is a diagonal ECEF vector, not +Z).
-    // Close distance keeps the 1/dist² falloff from dimming the
-    // contribution below the noise floor; high intensity + large range
-    // make the per-pixel diffuse+specular unambiguous.
-    const camDir = C.Cartesian3.subtract(
-      v.camera.positionWC,
-      bs.center,
+  // Disable globe so the background is uniform (sky) and any change
+  // we observe must come from the model lighting, not terrain
+  // shading drift.
+  scene.globe.show = false;
+
+  scene.clusteredLightingEnabled = false;
+  for (let i = 0; i < dials.offFrames; i++) {
+    scene.render();
+    await new Promise((r) => requestAnimationFrame(r));
+  }
+  return { modelReady: true, bsRadius: bs.radius };
+}
+
+/**
+ * Page side, phase 2: add the light, enable clustered lighting, render the
+ * ON frames and read the params buffer back. Unchanged from the in-page
+ * original apart from reading the rig's dials.
+ *
+ * @param {object} dials `rig.dials`.
+ * @returns {Promise<{lastActive: number, stashKeys: string, paramsActiveCount: number}>}
+ */
+async function pageLightOn(dials) {
+  const C = window.__C;
+  const v = window.viewer;
+  const scene = v.scene;
+  const bs = window.__bs;
+
+  // Place the light just in front of the model on the camera side,
+  // close to the surface. Pointing from the camera direction
+  // guarantees camera-visible front faces have NdotL > 0 (avoids the
+  // failure mode where an arbitrary ECEF offset lights hidden faces —
+  // local "up" near Pittsburgh is a diagonal ECEF vector, not +Z).
+  // Close distance keeps the 1/dist² falloff from dimming the
+  // contribution below the noise floor; high intensity + large range
+  // make the per-pixel diffuse+specular unambiguous.
+  const camDir = C.Cartesian3.subtract(
+    v.camera.positionWC,
+    bs.center,
+    new C.Cartesian3(),
+  );
+  C.Cartesian3.normalize(camDir, camDir);
+  const lightPos = C.Cartesian3.add(
+    bs.center,
+    C.Cartesian3.multiplyByScalar(
+      camDir,
+      bs.radius * dials.light.distanceInRadii,
       new C.Cartesian3(),
-    );
-    C.Cartesian3.normalize(camDir, camDir);
-    const lightPos = C.Cartesian3.add(
-      bs.center,
-      C.Cartesian3.multiplyByScalar(
-        camDir,
-        bs.radius * 1.5,
-        new C.Cartesian3(),
-      ),
-      new C.Cartesian3(),
-    );
-    scene.lights.add(
-      new C.PointLight({
-        position: lightPos,
-        color: C.Color.WHITE,
-        intensity: 500,
-        range: bs.radius * 100,
-      }),
-    );
-    scene.clusteredLightingEnabled = true;
-    for (let i = 0; i < 60; i++) {
-      scene.render();
-      await new Promise((r) => requestAnimationFrame(r));
-    }
-
-    const dispatcher =
-      v.scene._alternateSceneRenderer?._clusteredLightingDispatcher ?? null;
-    const lastActive = dispatcher?.lastActiveLightCount ?? -1;
-    const ctx = scene.context;
-    const stashKeys = ctx._clusteredLightingBuffers
-      ? Object.keys(ctx._clusteredLightingBuffers).sort().join(",")
-      : "<absent>";
-
-    let paramsActiveCount = -1;
-    if (dispatcher && ctx._clusteredLightingBuffers) {
-      const device = ctx._device;
-      const staging = device.createBuffer({
-        size: 32,
-        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-      });
-      const enc = device.createCommandEncoder();
-      enc.copyBufferToBuffer(
-        ctx._clusteredLightingBuffers.params,
-        0,
-        staging,
-        0,
-        32,
-      );
-      device.queue.submit([enc.finish()]);
-      await staging.mapAsync(GPUMapMode.READ);
-      const floats = new Float32Array(staging.getMappedRange().slice());
-      staging.unmap();
-      paramsActiveCount = floats[4];
-    }
-
-    return { lastActive, stashKeys, paramsActiveCount };
-  });
-  await page.screenshot({ path: OUT_ON, fullPage: false });
-
-  const errs = await page.evaluate(() => window.__probeErrors ?? []);
-  await browser.close();
-
-  // Decode both PNGs and compute mean brightness across a central window.
-  const decoderBrowser = await chromium.launch({
-    channel: "msedge",
-    headless: true,
-  });
-  const dp = await decoderBrowser.newPage();
-  await dp.setContent("<html><body></body></html>");
-  const offB64 = fs.readFileSync(OUT_OFF).toString("base64");
-  const onB64 = fs.readFileSync(OUT_ON).toString("base64");
-  const stats = await dp.evaluate(
-    async ({ offB64, onB64 }) => {
-      const decode = async (b64) => {
-        const img = new Image();
-        img.src = "data:image/png;base64," + b64;
-        await img.decode();
-        const c = document.createElement("canvas");
-        c.width = img.naturalWidth;
-        c.height = img.naturalHeight;
-        const ctx = c.getContext("2d");
-        ctx.drawImage(img, 0, 0);
-        return {
-          w: c.width,
-          h: c.height,
-          data: ctx.getImageData(0, 0, c.width, c.height).data,
-        };
-      };
-      const off = await decode(offB64);
-      const on = await decode(onB64);
-      // Central 50% × 50% — should cover the model bounding sphere
-      // after the camera frame.
-      const x0 = Math.floor(off.w * 0.25);
-      const x1 = Math.floor(off.w * 0.75);
-      const y0 = Math.floor(off.h * 0.25);
-      const y1 = Math.floor(off.h * 0.75);
-      let sumOff = 0,
-        sumOn = 0,
-        n = 0;
-      // Also count pixels that changed meaningfully — robust to camera
-      // jitter (entire-frame delta).
-      let changed = 0;
-      let maxDelta = 0;
-      for (let y = y0; y < y1; y++) {
-        for (let x = x0; x < x1; x++) {
-          const i = (y * off.w + x) * 4;
-          const sOff = off.data[i] + off.data[i + 1] + off.data[i + 2];
-          const sOn = on.data[i] + on.data[i + 1] + on.data[i + 2];
-          sumOff += sOff;
-          sumOn += sOn;
-          n += 1;
-          const d = Math.abs(sOn - sOff);
-          if (d > 5) changed += 1;
-          if (d > maxDelta) maxDelta = d;
-        }
-      }
-      return {
-        w: off.w,
-        h: off.h,
-        boxX: [x0, x1],
-        boxY: [y0, y1],
-        n,
-        meanOff: sumOff / n,
-        meanOn: sumOn / n,
-        delta: (sumOn - sumOff) / n,
-        changedPx: changed,
-        maxDelta,
-      };
-    },
-    { offB64, onB64 },
+    ),
+    new C.Cartesian3(),
   );
-  await decoderBrowser.close();
+  scene.lights.add(
+    new C.PointLight({
+      position: lightPos,
+      color: C.Color[dials.light.colorName],
+      intensity: dials.light.intensity,
+      range: bs.radius * dials.light.rangeInRadii,
+    }),
+  );
+  scene.clusteredLightingEnabled = true;
+  for (let i = 0; i < dials.onFrames; i++) {
+    scene.render();
+    await new Promise((r) => requestAnimationFrame(r));
+  }
 
-  console.log("[probe-clustered-visible] result:");
-  console.log(
-    `  dispatcher.lastActiveLightCount when ON: ${phase2.lastActive}`,
-  );
-  console.log(`  context._clusteredLightingBuffers keys: ${phase2.stashKeys}`);
-  console.log(
-    `  params buffer activeLightCount (GPU readback): ${phase2.paramsActiveCount}`,
-  );
-  console.log(
-    `  screenshot box: x=[${stats.boxX[0]}..${stats.boxX[1]}] y=[${stats.boxY[0]}..${stats.boxY[1]}] (image ${stats.w}x${stats.h}, n=${stats.n} px)`,
-  );
-  console.log(`  mean RGB-sum OFF: ${stats.meanOff.toFixed(2)}`);
-  console.log(`  mean RGB-sum ON:  ${stats.meanOn.toFixed(2)}`);
-  console.log(`  delta (on − off): ${stats.delta.toFixed(2)}`);
-  console.log(`  changed pixels (Δ>5): ${stats.changedPx} / ${stats.n}`);
-  console.log(`  max single-pixel delta: ${stats.maxDelta}`);
-  console.log(`\nDevice errors: ${errs.length}`);
-  if (errs.length) {
-    const seen = new Set();
-    errs.slice(0, 10).forEach((e) => {
-      const k = (e.text ?? "").slice(0, 100);
-      if (seen.has(k)) return;
-      seen.add(k);
-      console.log(`  - ${(e.text ?? "").slice(0, 250)}`);
+  const dispatcher =
+    v.scene._alternateSceneRenderer?._clusteredLightingDispatcher ?? null;
+  const lastActive = dispatcher?.lastActiveLightCount ?? -1;
+  const ctx = scene.context;
+  const stashKeys = ctx._clusteredLightingBuffers
+    ? Object.keys(ctx._clusteredLightingBuffers).sort().join(",")
+    : "<absent>";
+
+  let paramsActiveCount = -1;
+  if (dispatcher && ctx._clusteredLightingBuffers) {
+    const device = ctx._device;
+    const staging = device.createBuffer({
+      size: 32,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     });
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(
+      ctx._clusteredLightingBuffers.params,
+      0,
+      staging,
+      0,
+      32,
+    );
+    device.queue.submit([enc.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const floats = new Float32Array(staging.getMappedRange().slice());
+    staging.unmap();
+    paramsActiveCount = floats[4];
   }
 
-  let pass = true;
-  if (phase2.lastActive < 1) {
-    console.log(
-      `FAIL: dispatcher.lastActiveLightCount = ${phase2.lastActive}, expected ≥1`,
+  return { lastActive, stashKeys, paramsActiveCount };
+}
+
+/**
+ * The original's clauses, per run, with its bars: the model became ready (its
+ * EARLY-EXIT exited 1); (A) the dispatcher reports at least one active light
+ * with clustered lighting on; (B) at least 50 pixels of the measuring box
+ * changed their channel sum by more than 5 between the OFF and ON frames;
+ * (C) no uncaptured device error. (D), a lost device, is the shared error
+ * gate's addition. The header's "delta >= ~5 LSBs" prose was never a bar:
+ * the only brightness bar the original applied is (B).
+ *
+ * Pure and exported so `clustered-probe-verdicts.spec.mjs` can put a cell on
+ * either side of every bar without a browser.
+ *
+ * @param {Array<object>} cells
+ * @returns {Array<object>} Verdicts in the runtime's shape.
+ */
+export function evaluateVisible(cells) {
+  const verdicts = [];
+  for (const cell of cells) {
+    const suffix = `run${cell.run}`;
+    const measured = cell.modelReady === true;
+    const unmeasured = `not measured: ${cell.earlyExit ?? "the model was not ready"}`;
+    verdicts.push(
+      {
+        id: `model-ready/${suffix}`,
+        claim: `the glTF model became ready${measured ? "" : ` (${cell.earlyExit})`}`,
+        pass: measured,
+      },
+      {
+        id: `clustered-light-active/${suffix}`,
+        claim: measured
+          ? `(A) dispatcher.lastActiveLightCount with clustered on = ${cell.lastActive} (>= ${MIN_ACTIVE_LIGHTS})`
+          : `(A) ${unmeasured}`,
+        pass: measured && cell.lastActive >= MIN_ACTIVE_LIGHTS,
+        detail: {
+          lastActive: cell.lastActive ?? null,
+          paramsActiveCount: cell.paramsActiveCount ?? null,
+          stashKeys: cell.stashKeys ?? null,
+        },
+      },
+      {
+        id: `visible-contribution/${suffix}`,
+        claim: measured
+          ? `(B) ${cell.changedPx}/${cell.n} px of the box changed channel sum by > 5 (max ${cell.maxDelta}, mean ${cell.meanOff?.toFixed(2)} -> ${cell.meanOn?.toFixed(2)}) (>= ${MIN_CHANGED_PX})`
+          : `(B) ${unmeasured}`,
+        pass: measured && cell.changedPx >= MIN_CHANGED_PX,
+        detail: { changedPx: cell.changedPx ?? null, floor: MIN_CHANGED_PX },
+      },
+      {
+        id: `device-errors/${suffix}`,
+        claim: `(C) uncaptured device errors: ${cell.deviceErrors.length}`,
+        pass: cell.deviceErrors.length === 0,
+        detail: { errors: cell.deviceErrors.slice(0, 10) },
+      },
+      {
+        id: `device-not-lost/${suffix}`,
+        claim: `(D) device lost: ${cell.deviceLost ?? "no"}`,
+        pass: cell.deviceLost === null,
+      },
     );
-    pass = false;
   }
-  if (stats.changedPx < 50) {
-    console.log(
-      `FAIL: only ${stats.changedPx} pixels changed (max delta ${stats.maxDelta}); expected ≥50 changed pixels`,
-    );
-    pass = false;
-  }
-  if (errs.length > 0) {
-    console.log(`FAIL: ${errs.length} device errors`);
-    pass = false;
-  }
-  if (pass) {
-    console.log(
-      "\nPASS: visible per-pixel clustered lighting contribution + 0 device errors",
-    );
-  }
-  process.exit(pass ? 0 : 1);
-})();
+  return verdicts;
+}
+
+/** The rig's page on the run's origin, on the WebGPU backend. */
+function sceneUrl(origin) {
+  const url = new URL(captureUrlFor({ rig, origin }));
+  url.searchParams.set("renderer", "webgpu");
+  return url.href;
+}
+
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "clustered-visible",
+  title:
+    "Clustered lighting on the glTF Model PBR path — a vehicle changes under one point light",
+  outputSubdirectory: "clustered-visible",
+  // Nothing banked a JSON receipt before the migration, so no reader keys off
+  // a probe-owned field set; one runtime document is the honest shape.
+  receiptEnvelope: "runtime",
+  args: { defaults: { renderers: ["webgpu"] } },
+  // The CesiumViewer page and the in-page import both read this module.
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    if (!options.renderers.includes("webgpu")) {
+      throw new ProbeRefusal(
+        "renderer-unavailable",
+        "Forward+ clustered lighting is WebGPU-only, so this probe has " +
+          `nothing to measure on ${options.renderers.join(",")}`,
+        { renderers: options.renderers },
+      );
+    }
+    const context = await browser.newContext({ viewport: { ...rig.viewport } });
+    try {
+      const page = await context.newPage();
+      const diagnostics = attachPageDiagnostics(page, {
+        filter: (record) => record.type === "pageerror",
+        cap: 20,
+      });
+      await page.addInitScript(errorGateInit);
+      await page.goto(sceneUrl(origin), { waitUntil: "networkidle" });
+      await page.waitForFunction(() => !!window.viewer);
+      await armWebGPUDevices(page);
+      const setup = await page.evaluate(pageSetup, {
+        asset: rig.asset,
+        dials: rig.dials,
+      });
+      const cell = {
+        run,
+        modelReady: setup?.modelReady === true,
+        earlyExit: setup?.earlyExitErr ?? null,
+        bsRadius: setup?.bsRadius ?? null,
+        chrome: null,
+        chromeRemoved: null,
+      };
+      if (cell.modelReady) {
+        // After the OFF settle and immediately before the capture: the chrome
+        // comes off, or the run refuses rather than score it.
+        const chromeOff = await page.evaluate(`(${STRIP_WIDGETS_SOURCE})()`);
+        if (
+          !Array.isArray(chromeOff?.leftovers) ||
+          chromeOff.leftovers.length > 0
+        ) {
+          throw new ProbeRefusal(
+            "viewer-chrome-over-canvas",
+            "after the widget strip, elements were still stacked over the scene canvas " +
+              `before the OFF capture (${chromeOff?.leftovers?.join(", ") ?? "no strip report"}), so the capture would score them`,
+            { capture: "off", chrome: chromeOff ?? null },
+          );
+        }
+        const off = await captureElement({
+          page,
+          selector: SCENE_CANVAS,
+          name: `off-run${run}`,
+          outputDirectory,
+          captures,
+        });
+        const phase2 = await page.evaluate(pageLightOn, rig.dials);
+        // Again before the ON capture: the ON step runs between the two.
+        const chromeOn = await page.evaluate(`(${STRIP_WIDGETS_SOURCE})()`);
+        if (
+          !Array.isArray(chromeOn?.leftovers) ||
+          chromeOn.leftovers.length > 0
+        ) {
+          throw new ProbeRefusal(
+            "viewer-chrome-over-canvas",
+            "after the widget strip, elements were still stacked over the scene canvas " +
+              `before the ON capture (${chromeOn?.leftovers?.join(", ") ?? "no strip report"}), so the capture would score them`,
+            { capture: "on", chrome: chromeOn ?? null },
+          );
+        }
+        const on = await captureElement({
+          page,
+          selector: SCENE_CANVAS,
+          name: `on-run${run}`,
+          outputDirectory,
+          captures,
+        });
+        const offImage = decodePng(off.buffer);
+        const change = channelSumChange(offImage, decodePng(on.buffer), {
+          roi: fractionalRoi(offImage.width, offImage.height, MEASURE_BOX),
+        });
+        Object.assign(cell, {
+          chrome: { off: chromeOff, on: chromeOn },
+          chromeRemoved: chromeOff.removed + chromeOn.removed,
+          lastActive: phase2.lastActive,
+          stashKeys: phase2.stashKeys,
+          paramsActiveCount: phase2.paramsActiveCount,
+          width: offImage.width,
+          height: offImage.height,
+          roi: change.roi,
+          n: change.countedPx,
+          meanOff: change.meanBefore,
+          meanOn: change.meanAfter,
+          delta: change.delta,
+          changedPx: change.changedPx,
+          maxDelta: change.maxDelta,
+        });
+      }
+      const gate = await collectGateErrors(page);
+      cell.deviceErrors = gate.errors;
+      cell.deviceLost = gate.deviceLost;
+      cell.pageErrors = diagnostics.errors.map((record) => record.text);
+      return [cell];
+    } finally {
+      await context.close();
+    }
+  },
+  verdicts(cells) {
+    return evaluateVisible(cells);
+  },
+  receipt(cells, context) {
+    for (const verdict of context.verdicts) {
+      console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
+    }
+    return { rig: rig.id, cells, verdicts: context.verdicts };
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}

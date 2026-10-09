@@ -310,26 +310,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-05-26, pre-dates the spec",
   "probe-cluster-fs-consumer.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-26, pre-dates the spec",
-  "probe-clustered-demo-scene.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-27, pre-dates the spec",
-  "probe-clustered-dispatcher.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-26, pre-dates the spec",
-  "probe-clustered-lights-resize.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-04, pre-dates the spec",
-  "probe-clustered-litmat.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-27, pre-dates the spec",
-  "probe-clustered-matsweep.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-27, pre-dates the spec",
-  "probe-clustered-multifrustum.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
-  "probe-clustered-per-frame.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-26, pre-dates the spec",
-  "probe-clustered-phong.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-27, pre-dates the spec",
-  "probe-clustered-visible.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-27, pre-dates the spec",
-  "probe-clustered-zero-work-route.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-16, pre-dates the spec",
   "probe-cmd-pushes.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
   "probe-cold-optics-parity.mjs":

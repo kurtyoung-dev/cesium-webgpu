@@ -66,6 +66,7 @@ export const RIG_TAGS = Object.freeze([
   "aurora",
   "wgs84",
   "polyline",
+  "clustered",
 ]);
 
 /** `readiness.kind` vocabulary a rig may declare. */

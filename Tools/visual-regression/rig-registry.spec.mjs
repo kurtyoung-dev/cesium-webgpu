@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 89,
+  total: 99,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count is 17
@@ -67,6 +67,9 @@ const REGISTRY_CENSUS = {
     // probes build in the page, all `page: null` because no page renders them
     // from data yet.
     polyline: 18,
+    // The clustered-lighting family's harvest (DX-108): one rig per scene or
+    // synthetic input set its ten probes drive.
+    clustered: 10,
   },
 };
 
