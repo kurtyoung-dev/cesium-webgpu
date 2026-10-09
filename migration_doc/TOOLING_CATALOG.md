@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1518 |
-| ACTIVE | 1274 |
+| Files in census | 1521 |
+| ACTIVE | 1277 |
 | ARCHIVED-CANDIDATE | 24 |
 | INVESTIGATION | 174 |
 | NO @purpose HEADER | 45 |
 | NO @status HEADER | 1 |
-| Classes | probe 677, spec 413, other 223, lib 156, gate-lib 21, bake-tool 13, fixture 8, runner 7 |
+| Classes | probe 677, spec 415, other 223, lib 157, gate-lib 21, bake-tool 13, fixture 8, runner 7 |
 
 ### Tools/ (64)
 
@@ -320,15 +320,17 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | wgsl-chunk-resolution.spec.mjs | spec | ACTIVE | 2026-09-19 | 7 | Prove the minify transform cannot change which csm_* calls a WGSL module leaves undeclared after the engine's real chunk splice, so a shipped shader never calls a function nothing defines. |
 | wgsl-comment-strip.spec.mjs | spec | ACTIVE | 2026-09-19 | 4 | Prove the minify-time WGSL comment strip preserves every //>> directive byte-exact, leaves unminified modules untouched, and is wired into the build. |
 
-### Tools/c16/ (11)
+### Tools/c16/ (13)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | comment-flavour-gate.spec.mjs | spec | ACTIVE | 2026-09-26 | 3 | Pins that comment-only-diff refuses comment edits that change a shipped or run artifact (release pragma strip, minified WGSL, runtime GLSL strip, bundler annotations, lint and reference directives, ASI), still passes true comment-only edits, and keeps its vendored transforms pinned to their sources. |
+| comment-flavour-release-pragma.spec.mjs | spec | ACTIVE | — | 1 | Pins that an edit to a JS or TS file whose old text has a release-pragma anchor that is not a line-opening //>> comment is comment-only exactly when the release-stripped output is unchanged, in both directions (a repaired opener, a repaired closer), with LF and CRLF, and that every edit that was comment-only before still is. |
 | comment-marker-guard.mjs | other | ACTIVE | 2026-08-21 | 28 | C16 lint guard scanning engine/widgets Source for banned tracker-marker vocabulary, with a clean-list ratchet; lint-staged + one-shot modes. |
 | comment-marker-guard.spec.mjs | spec | ACTIVE | 2026-09-18 | 7 | node:test contract for the C16 marker guard: rules still match (self-test vs broken rule), scope does not overreach, ratchet honest both ways. |
-| comment-only-diff.mjs | other | ACTIVE | 2026-09-26 | 10 | Binding gate of every C16 rewrite batch: strips comments from both sides of a diff to a canonical form and requires the remaining code identical. |
+| comment-only-diff.mjs | other | ACTIVE | 2026-09-26 | 12 | Binding gate of every C16 rewrite batch: strips comments from both sides of a diff to a canonical form and requires the remaining code identical. |
 | comment-only-diff.spec.mjs | spec | ACTIVE | 2026-09-26 | 4 | Mutant suite for the comment-only-diff gate: every rejected mutant is paired with the nearest legitimate edit that must be accepted. |
+| shader-reader-oit-scope.spec.mjs | spec | ACTIVE | — | 1 | Pins that a comment edit inside the fragment-entry parameter list of a WGSL shader the WebGPU OIT transform can never be handed is comment-only, that the same edit in a shader it can be handed is flavour-differs (wgsl-runtime, oit-entry-parameters), that a non-comment parameter edit is code-differs in both, that the derived scope is the same in a built and an unbuilt tree (a generated X.js read as its X.wgsl, static and dynamic imports followed), and that the scoping fails closed (no path, an unclassified site that feeds shader text to OIT, an empty target set, an OIT input whose imports reach no WGSL). |
 | spec-anchor-sweep.mjs | other | ACTIVE | 2026-08-20 | 4 | Reports grammar, comment-only, and containment-locator anchors from spec literals against explicitly supplied source files. |
 | spec-anchor-sweep.spec.mjs | spec | NO @purpose HEADER | 2026-08-20 | 2 | — |
 | string-literal-marker-scan.mjs | other | ACTIVE | 2026-09-01 | 7 | Finds banned tracker vocabulary inside string and template literals that the comment-marker guard intentionally cannot see. |
@@ -336,14 +338,15 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | verify-packaged-notices.mjs | other | ACTIVE | 2026-08-16 | 5 | Verifies every third-party license notice actually reaches each published artifact (root/engine/widgets LICENSE.md, ThirdParty.json, release zip). |
 | verify-packaged-notices.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Mutant suite for the packaged-notices check: removes one owed notice/wiring element at a time and requires the removal reported. |
 
-### Tools/c16/lib/ (4)
+### Tools/c16/lib/ (5)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| comment-scanner.mjs | lib | ACTIVE | 2026-09-26 | 20 | The one tokenizer both C16 instruments share (JS/TS/WGSL/GLSL comment vs code vs string), fail-closed, with semantic-comment retention rules. |
-| flavour-views.mjs | lib | ACTIVE | 2026-09-26 | 4 | Per-reader views for the comment-only gate: the release pragma strip (scripts and generated shader modules), the minify-time WGSL comment strip, the runtime GLSL doc-comment strip, the engine code that reads shader source text, the debug-pragma lint and next-line directives, so a comment edit that changes a shipped artifact or a gate's verdict is refused. |
+| comment-scanner.mjs | lib | ACTIVE | 2026-09-26 | 21 | The one tokenizer both C16 instruments share (JS/TS/WGSL/GLSL comment vs code vs string), fail-closed, with semantic-comment retention rules. |
+| flavour-views.mjs | lib | ACTIVE | 2026-09-26 | 6 | Per-reader views for the comment-only gate: the release pragma strip (scripts and generated shader modules), the minify-time WGSL comment strip, the runtime GLSL doc-comment strip, the engine code that reads shader source text, the debug-pragma lint and next-line directives, so a comment edit that changes a shipped artifact or a gate's verdict is refused. |
 | marker-grammar.mjs | lib | ACTIVE | 2026-09-26 | 16 | Machine-decidable half of the fork comment standard: the banned tracker-vocabulary regex rules (add-only ids) driven by the marker guard. |
-| shader-text-readers.mjs | lib | ACTIVE | 2026-09-26 | 5 | Harvests every string or regex literal the renderer and scene code match against text, classifies how each one uses shader source, and describes each match by where it falls (code or comment), so the comment-only gate can refuse a comment edit that one of those readers would see. |
+| oit-reach.mjs | lib | ACTIVE | — | 2 | Census of the engine sites that give shader text to the WebGPU OIT transform (a draw command's retained `_shaderCode`, calls of `injectOITOutput` and `createOITPipeline`), and the set of tracked WGSL files those sites can reach by static imports, so the comment-only gate scopes the OIT parameter-list reader to shaders the transform can process and refuses every WGSL comment edit while a site is unclassified. |
+| shader-text-readers.mjs | lib | ACTIVE | 2026-09-26 | 7 | Harvests every string or regex literal the renderer and scene code match against text, classifies how each one uses shader source, and describes each match by where it falls (code or comment), so the comment-only gate can refuse a comment edit that one of those readers would see. |
 
 ### Tools/jsdoc/cesium_template/ (1)
 
@@ -366,7 +369,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | compare-doc-anchors.mjs | lib | NO @purpose HEADER | 2026-09-11 | 3 | — |
 | compare-doc-anchors.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 1 | — |
 | json-duplicate-keys.mjs | lib | ACTIVE | 2026-09-19 | 3 | Reports every key a JSON document repeats within the same object, per object and string-aware, so a manifest whose duplicate `JSON.parse` silently resolves last-key-wins can be refused with the first and the repeating line. |
-| lane-tmp.mjs | lib | ACTIVE | 2026-09-11 | 25 | The one way a spec, probe or tool takes scratch space: a single per-lane root under os.tmpdir() with removal in `finally`, so a throwing or killed run leaves one sweepable root instead of loose mkdtemp sandboxes at the Temp root. |
+| lane-tmp.mjs | lib | ACTIVE | 2026-09-11 | 26 | The one way a spec, probe or tool takes scratch space: a single per-lane root under os.tmpdir() with removal in `finally`, so a throwing or killed run leaves one sweepable root instead of loose mkdtemp sandboxes at the Temp root. |
 | lane-tmp.spec.mjs | spec | ACTIVE | 2026-09-11 | 4 | Behaviour coverage for Tools/lib/lane-tmp.mjs — the directory is created under the lane root, removed on success AND on throw AND on rejection, refused outside tmpdir, and an inert `finally` is caught by the mutant. |
 | npm-override-rules.mjs | lib | ACTIVE | 2026-09-18 | 3 | Decides, from manifest objects alone, which root `overrides` entries npm rejects as conflicting with a direct dependency or as an unresolvable `$` reference. |
 | png-decode.mjs | lib | ACTIVE | 2026-09-13 | 41 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
@@ -445,7 +448,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | attachment-demand-registry.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Pure-Node spec of computeAttachmentDemand (esbuild-transpiled TS): full 2^6 reader matrix + conservative-force + observe-only contracts. |
 | aurora-geomagnetic-oval.spec.mjs | spec | ACTIVE | 2026-09-18 | 5 | Asserts the centred-dipole frame and the synthetic oval against CPU reference vectors — the pole to its published figures, geomagnetic against geographic latitude, geocentric against geodetic, north against south, and quiet against storm geometry. |
 | backend-isolation-lane-contract.spec.mjs | spec | ACTIVE | 2026-08-20 | 0 | Pin the backend-isolation split lane to the page's explicit launch and readiness contract. |
-| buffer-polyline-hairpin-join.spec.mjs | spec | ACTIVE | — | 1 | Runs bufferPolylineJoin out of BufferPolylineMaterial.wgsl through the WGSL evaluator and asserts it against an independent JavaScript transcription of WebGL's getPolylineWindowCoordinatesEC joint (PolylineCommon.glsl): finite at a hairpin, unchanged and in parity everywhere else. |
+| buffer-polyline-hairpin-join.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Runs bufferPolylineJoin out of BufferPolylineMaterial.wgsl through the WGSL evaluator and asserts it against an independent JavaScript transcription of WebGL's getPolylineWindowCoordinatesEC joint (PolylineCommon.glsl): finite at a hairpin, unchanged and in parity everywhere else. |
 | buffer-polyline-meters-width.spec.mjs | spec | ACTIVE | 2026-09-11 | 5 | Acceptance for BufferPolylineCollection widthUnits:"meters" on WebGPU: the packer's sign and the WGSL branch pinned as ONE convention against the GLSL oracle. |
 | buffer-primitive-collection-feature-renderer-teardown.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that BufferPrimitiveCollection.destroy() releases the backend feature renderer's cached resources for the collection, so a grow-then-destroy cycle returns the collection's WebGPU resource count to baseline instead of leaking it. |
 | bug-11-imagery-probe.mjs | other | INVESTIGATION | 2026-08-16 | 2 | Early diagnostic dumping the per-tile imagery probe (debugShowImageryProbe) + canvas sample to discriminate three hypothesized BUG-11 root causes. |
@@ -709,7 +712,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | polyline-command-bounding-volume.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Pins that every WebGPU polyline colour and pick command declares a per-group bounding volume tight enough to bin into ONE frustum, positioned in world space, instead of the volume-less command that bins into every frustum. |
 | polyline-multimaterial-verdicts.spec.mjs | spec | ACTIVE | 2026-09-10 | 5 | Executes probe-polyline-multimaterial's shipped decision functions against the recorded pre-fix numbers for each of the four materials, and proves that removing any ONE material's assertions makes the probe pass a scene that is visibly wrong for that material. |
 | polyline-probe-verdicts.spec.mjs | spec | ACTIVE | 2026-10-09 | 9 | Drives each migrated polyline probe's exported decision function on hand-built results (healthy, each defect, each refusal), and walks every migrated descriptor end to end through the real runProbe on a stubbed browser, so a probe that cannot reach its verdicts fails here rather than on an Edge leg. |
-| polyline-rig-scene.spec.mjs | spec | ACTIVE | — | 1 | Drives lib/polyline-rig-scene.mjs with a stub Cesium namespace and a stub viewer and asserts the collections it builds from a rig's dials (one per kind, a buffer collection sized exactly to its dials), that dispose removes each once, that a bad dial throws a TypeError before anything is added, and that the shipped source text works on its own. |
+| polyline-rig-scene.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Drives lib/polyline-rig-scene.mjs with a stub Cesium namespace and a stub viewer and asserts the collections it builds from a rig's dials (one per kind, a buffer collection sized exactly to its dials), that dispose removes each once, that a bad dial throws a TypeError before anything is added, and that the shipped source text works on its own. |
 | polyline-taa-velocity-emission.spec.mjs | spec | ACTIVE | 2026-09-10 | 6 | Pins that an animating PolylineCollection with TAA on attaches a velocity draw command on the base-colour shader path, emits none when TAA is off or the material has no velocity entry points, and none at all with no polylines. |
 | previous-frame-rte-reconstruction.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Executes each velocity stage's previous- and current-frame position reconstruction straight out of the shipped WGSL, in f32, and measures the two properties that make a still primitive emit no velocity: the two reconstructions agree bit for bit on a history-reset frame, and the previous one is eye-relative rather than a full-magnitude world position. |
 | primitive-bindgroup-layout-arity-guard.spec.mjs | spec | ACTIVE | 2026-09-04 | 4 | Requires every createBindGroup in WebGPUPrimitiveCommands.ts to supply one entry per entry of the bind-group layout it names, and refuses to pass over a call site it cannot resolve. |
@@ -1661,7 +1664,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | pick-visibility-matrix-page.mjs | lib | ACTIVE | 2026-09-10 | 6 | The two page.evaluate bodies of probe-pick-visibility-matrix.mjs — the matrix scene and the AR-M30 snap grid — kept out of the probe so neither file exceeds the fork's 1,000-line rule, and so the browser half has one home. |
 | pick-visibility-matrix-verdicts.mjs | lib | ACTIVE | 2026-09-10 | 5 | The pass/fail logic of probe-pick-visibility-matrix.mjs, pure over measurements and free of imports, so a browser-free spec can execute it against both named expectations and against its own mutation. |
 | polyline-multimaterial-verdicts.mjs | lib | ACTIVE | 2026-09-10 | 5 | The pass/fail logic of probe-polyline-multimaterial.mjs, pure over measurements and free of imports, so a browser-free spec can execute it against recorded defect numbers and against its own mutation. |
-| polyline-rig-scene.mjs | lib | ACTIVE | — | 4 | Build the polylines a rig's dials declare (positions, width, colour material, and whether each lives in a PolylineCollection or a BufferPolylineCollection) on a given viewer, and hand back the collections with a dispose that removes them; no camera, capture, page or renderer logic. |
+| polyline-rig-scene.mjs | lib | ACTIVE | 2026-10-09 | 4 | Build the polylines a rig's dials declare (positions, width, colour material, and whether each lives in a PolylineCollection or a BufferPolylineCollection) on a given viewer, and hand back the collections with a dispose that removes them; no camera, capture, page or renderer logic. |
 | probe-edge-slot.mjs | lib | ACTIVE | 2026-09-12 | 15 | Exclusive-create lock file that enforces "one Edge job at a time", with stale/dead-holder reclamation and a release that will not free a slot someone else already took. |
 | probe-fleet-behaviour-allowlist.mjs | lib | ACTIVE | 2026-09-18 | 4 | Dated, shrink-only census of the browser-launching files behaviour selection added to the fleet; the spec fails on any NEW violation, stale row, or growth. |
 | probe-fleet-contract-allowlist.mjs | lib | ACTIVE | 2026-10-09 | 19 | Pinned shrink-only census of pre-contract probes exempt from the fleet authoring contract; the spec fails on any NEW violation or stale row. |
@@ -1832,7 +1835,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | polyline-material-glow.mjs | other | ACTIVE | 2026-10-09 | 1 | Polyline family rig "polyline-material-glow" (probe-kit harvest, DX-108): the PolylineMaterialAppearance Primitive scene probe-polyline-material-primitive builds in the page with a PolylineGlow material. |
 | polyline-multimaterial-dpr1.mjs | other | ACTIVE | 2026-10-09 | 1 | Polyline family rig "polyline-multimaterial-dpr1" (probe-kit harvest, DX-108): the five-material PolylineCollection scene probe-polyline-multimaterial builds in the page, at device scale factor 1. |
 | polyline-multimaterial-dpr2.mjs | other | ACTIVE | 2026-10-09 | 1 | Polyline family rig "polyline-multimaterial-dpr2" (probe-kit harvest, DX-108): the five-material PolylineCollection scene probe-polyline-multimaterial builds in the page, at device scale factor 2. |
-| polyline-nearclip.mjs | other | ACTIVE | — | 1 | Polyline family rig "polyline-nearclip": a PolylineCollection line that passes beneath and behind the camera, and a BufferPolyline that turns back on itself, built from these dials by lib/polyline-rig-scene.mjs and captured by probe-polyline-appearance-primitive with --rigs polyline-nearclip. |
+| polyline-nearclip.mjs | other | ACTIVE | 2026-10-09 | 1 | Polyline family rig "polyline-nearclip": a PolylineCollection line that passes beneath and behind the camera, and a BufferPolyline that turns back on itself, built from these dials by lib/polyline-rig-scene.mjs and captured by probe-polyline-appearance-primitive with --rigs polyline-nearclip. |
 | polyline-taa-velocity-color.mjs | other | ACTIVE | 2026-10-09 | 1 | Polyline family rig "polyline-taa-velocity-color" (probe-kit harvest, DX-108): one of the three scenes probe-polyline-taa-velocity steps under TAA on its own render loop (AR-752). |
 | polyline-taa-velocity-dash.mjs | other | ACTIVE | 2026-10-09 | 1 | Polyline family rig "polyline-taa-velocity-dash" (probe-kit harvest, DX-108): one of the three scenes probe-polyline-taa-velocity steps under TAA on its own render loop (AR-752). |
 | polyline-taa-velocity-empty.mjs | other | ACTIVE | 2026-10-09 | 1 | Polyline family rig "polyline-taa-velocity-empty" (probe-kit harvest, DX-108): one of the three scenes probe-polyline-taa-velocity steps under TAA on its own render loop (AR-752). |

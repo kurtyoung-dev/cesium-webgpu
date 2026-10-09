@@ -160,7 +160,7 @@ function disableFunction(signature) {
 
 /** Makes the shader-text reader check unreachable. */
 const READERS_OFF = disableFunction(
-  "shaderReaderProblems(before, after, language)",
+  "shaderReaderProblems(before, after, language, relPath)",
 );
 
 /** Leaves the hand-written readers out of the reader list. */
@@ -597,8 +597,9 @@ for (const fixture of FLAVOUR_FIXTURES) {
       if (fixture.flavour === "release-pragma") {
         // The release flavour is also compared before-against-after, so both
         // of its checks have to go for the pair to pass again.
-        const comparison = 'flavourForPath(relPath) === "release-pragma" &&';
-        edits.push([comparison, `false && ${comparison}`]);
+        const comparison =
+          'if (flavourForPath(relPath) === "release-pragma") {';
+        edits.push([comparison, comparison.replace("if (", "if (false && ")]);
       }
     }
     const overrides = {};

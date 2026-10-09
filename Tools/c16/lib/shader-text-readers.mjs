@@ -60,6 +60,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { tokenize } from "./comment-scanner.mjs";
+import { inOitReach, oitReachGaps } from "./oit-reach.mjs";
 
 /** The engine source tree the harvest paths are relative to. */
 const SOURCE_ROOT = fileURLToPath(
@@ -988,6 +989,10 @@ const UNHARVESTED_READERS = [
     reads: "the renamed entry point's parameter list",
     matcher: /fn\s+\w+\s*\(([^)]+)\)/g,
     language: "wgsl",
+    // The transform copies a comment in this list into the signature it
+    // builds, so the reader matters for every shader the transform is given
+    // and for no other (oit-reach.mjs derives which).
+    scope: "oit-reach",
   },
   {
     id: "oit-entry-signature",
@@ -1195,7 +1200,22 @@ export function readerModelGaps() {
       (pin) =>
         `the hand-written reader ${pin.id} no longer finds its source text in ${pin.file}: ${JSON.stringify(pin.text)}`,
     ),
+    ...oitReachGaps(),
   ];
+}
+
+/**
+ * Whether a reader reads the shader at a path. A reader with no scope reads
+ * every shader of its language. A scoped reader reads the shaders of its scope
+ * and every shader when the path is not known, so a caller that cannot say
+ * which file it holds is refused rather than excused.
+ *
+ * @param {{scope?: string}} reader Reader.
+ * @param {string|undefined} relPath Repo-relative path of the shader.
+ * @returns {boolean} Whether the reader applies.
+ */
+export function readerAppliesToPath(reader, relPath) {
+  return reader.scope === "oit-reach" ? inOitReach(relPath) : true;
 }
 
 /**
@@ -1275,6 +1295,7 @@ export function shaderTextReaders() {
       use: "decides",
       view: "raw",
       language: reader.language,
+      scope: reader.scope,
       unharvested: true,
       pinned: (reader.pins ?? []).length > 0,
     })),

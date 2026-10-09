@@ -154,7 +154,7 @@
     "verify-comment-cleanlist": "node Tools/c16/comment-marker-guard.mjs --verify-cleanlist",
     "verify-landing": "node Tools/verify-landing-compliance.mjs",
     "verify-es6-shape": "node Tools/upstream-shape-guard.mjs",
-    "test-c16": "node --test --test-concurrency=1 Tools/c16/comment-marker-guard.spec.mjs Tools/c16/comment-only-diff.spec.mjs Tools/c16/verify-packaged-notices.spec.mjs Tools/c16/string-literal-marker-scan.spec.mjs Tools/c16/comment-flavour-gate.spec.mjs",
+    "test-c16": "node --test --test-concurrency=1 Tools/c16/comment-marker-guard.spec.mjs Tools/c16/comment-only-diff.spec.mjs Tools/c16/verify-packaged-notices.spec.mjs Tools/c16/string-literal-marker-scan.spec.mjs Tools/c16/comment-flavour-gate.spec.mjs Tools/c16/comment-flavour-release-pragma.spec.mjs Tools/c16/shader-reader-oit-scope.spec.mjs",
     "lint-string-literal-markers": "node Tools/c16/string-literal-marker-scan.mjs",
     "verify-tracked-references": "node Tools/verify-tracked-references.mjs",
     "verify-readme-index": "node Tools/verify-readme-index.mjs",

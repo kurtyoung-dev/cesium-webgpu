@@ -348,6 +348,15 @@ Four instruments, all under `Tools/c16/`:
    needles in an array. Every `RegExp(...)` call under those directories is
    classified there, and while one is not, no shader comment edit passes. A
    comment edit that any of these would read differently fails the gate.
+   The one reader that applies only to the shaders WebGPU OIT can be handed
+   (the entry point's parameter list, which OIT copies into the signature it
+   builds) is scoped to them by `Tools/c16/lib/oit-reach.mjs`: it finds every
+   site that stores shader text on a draw command or calls the OIT transform,
+   and the WGSL files those modules import are the scope, a generated
+   `Shaders/**/X.js` being read as its `X.wgsl` so that a built and an
+   unbuilt checkout give the same scope. A site it does not know, an empty
+   scope, or a module that stores shader text yet imports no WGSL leaves no
+   shader comment edit passing until it is resolved there.
 
    Where a comment sits is read too. `Tools/lint-debug-pragmas.mjs` honours
    `// lint-debug-pragmas-allow` only on the line directly above the
@@ -376,6 +385,11 @@ Four instruments, all under `Tools/c16/`:
      records as benign because a match inside a comment stays inside it;
    - `Cesium3DTileBatchTable`'s diffuse rewrite, which reads glTF shaders that
      carry the `_3DTILESDIFFUSE` semantic rather than tracked shader files;
+   - the OIT scope follows imports from the modules that hold a site, so text
+     handed to a writer as a parameter, and a command copied without naming
+     `_shaderCode` (`Object.assign`, a spread), are not followed; a change of
+     data flow inside a classified writer is caught only through the
+     statement text its table row holds;
    - the WebGPU OIT pipeline and module caches, which key a variant by the
      shader's length, entry point and label, so in an unminified build a
      comment edit that gives two variants the same length can serve one the

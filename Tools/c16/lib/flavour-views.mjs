@@ -47,9 +47,9 @@
 // is exactly what the tokenizer says the source is:
 //
 //   - JS/TS (the files the release pragma plugin loads): every release-strip
-//     match starts and ends on a `//>>` line comment that opens its line. And
-//     when the old text also satisfies that, the two release-stripped texts are
-//     compared as well.
+//     match in the new text starts and ends on a `//>>` line comment that opens
+//     its line. The two release-stripped texts are compared as well, even when
+//     the old text holds a malformed anchor.
 //   - WGSL: the canonical form of the minify-stripped text equals the canonical
 //     form of the source.
 //   - GLSL: `removeComments` does not throw, the code it leaves equals the
@@ -73,7 +73,9 @@
 // The single-text checks run on the NEW text. The tokenizer view has already
 // proved the new source equal to the old, so every flavour of the new text
 // then agrees with the old source. An edit that repairs an old disagreement
-// passes; an edit that introduces one is refused. The shader-text readers, the
+// passes only when it leaves the release output unchanged, because repairing a
+// malformed anchor moves what the release build strips; an edit that
+// introduces a disagreement is refused. The shader-text readers, the
 // kept minified GLSL comments, the lint and the next-line directives compare
 // the old text with the new, because what they read is a position, a count or
 // a kept comment rather than a transform's output.
@@ -108,6 +110,7 @@ import {
   tokenize,
 } from "./comment-scanner.mjs";
 import {
+  readerAppliesToPath,
   readerElements,
   readerModelGaps,
   shaderTextReaders,
@@ -363,9 +366,13 @@ function quoteElement(element) {
  * @param {string} before Old shader text.
  * @param {string} after New shader text.
  * @param {("wgsl"|"glsl")} language Grammar of both texts.
+ * @param {string} [relPath] Repo-relative path of the shader. A reader scoped
+ *   to some shaders (the OIT parameter-list reader) is skipped only when this
+ *   is given and names a shader outside its scope; without it every reader
+ *   applies.
  * @returns {Array<{flavour: string, detail: string}>} Problems.
  */
-export function shaderReaderProblems(before, after, language) {
+export function shaderReaderProblems(before, after, language, relPath) {
   const oldText = before.replace(/\r\n?/g, "\n");
   const newText = after.replace(/\r\n?/g, "\n");
   const flavour = language === "wgsl" ? "wgsl-runtime" : "glsl-runtime";
@@ -379,7 +386,8 @@ export function shaderReaderProblems(before, after, language) {
     const viewLanguage = VIEW_LANGUAGE[reader.view] ?? reader.language;
     if (
       reader.use === "exempt" ||
-      (viewLanguage !== undefined && viewLanguage !== language)
+      (viewLanguage !== undefined && viewLanguage !== language) ||
+      !readerAppliesToPath(reader, relPath)
     ) {
       continue;
     }
@@ -736,7 +744,7 @@ export function compareFlavours(before, after, relPath) {
     paired.push(...nextLineBindingProblems(before, after));
   }
   if (pairedFlavour === "wgsl-minify") {
-    paired.push(...shaderReaderProblems(before, after, "wgsl"));
+    paired.push(...shaderReaderProblems(before, after, "wgsl", relPath));
   }
   if (pairedFlavour === "glsl-runtime") {
     paired.push(...glslMinifyCommentProblems(before, after));
@@ -749,10 +757,7 @@ export function compareFlavours(before, after, relPath) {
       detail: paired.map((problem) => problem.detail).join("; "),
     };
   }
-  if (
-    flavourForPath(relPath) === "release-pragma" &&
-    prosePragmaAnchors(before).length === 0
-  ) {
+  if (flavourForPath(relPath) === "release-pragma") {
     const releaseBefore = canonicalizeCode(releasePragmaView(before), "js");
     const releaseAfter = canonicalizeCode(releasePragmaView(after), "js");
     if (releaseBefore !== releaseAfter) {
