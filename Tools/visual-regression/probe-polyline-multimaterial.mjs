@@ -59,20 +59,52 @@
  *            core above and below. A collapse to Color renders the core and no
  *            outline at all, and a flood renders the outline and no core.
  *
+ * WHERE THE PIXELS ARE READ (probe-kit harvest, polyline family, DX-108).
+ * Until the harvest every one of those quantities was computed inside the
+ * page, over a `drawImage` copy of the live canvas — the reader
+ * `prohibited-reader-allowlist.mjs` exists to retire — and the banked PNG was a
+ * separate page screenshot, viewer chrome included, outside the capture seam.
+ * Now the frame is ONE element capture of the scene canvas through
+ * `captureElement` (device-liveness checked, sha256 in the runtime receipt),
+ * taken after `lib/strip-viewer-widgets.mjs` has removed the viewer chrome that
+ * otherwise sits inside the canvas's rectangle (a run with chrome left over the
+ * canvas refuses), and every quantity is computed in Node from that PNG by the
+ * kit: the six hue classes are `channelThresholds`
+ * (`lib/metrics/colour-mask.mjs`, the same strict `T = 30` bounds), and the
+ * runs, FWHM, arrow-head profile and outline cross-section are
+ * `rowRunProfile`, `arrowHeadProfile` and `outlineCrossSection`
+ * (`lib/metrics/line-structure.mjs`), the in-page bodies moved verbatim. The
+ * measurement object the verdict library reads keeps its exact shape. The two
+ * legs are the rigs `polyline-multimaterial-dpr1` and
+ * `polyline-multimaterial-dpr2`, which supply the viewport, the settle frames
+ * and the camera; the scene's five lines stay literal below because
+ * `polyline-multimaterial-verdicts.spec.mjs` A1 reads them from this source.
+ *
  * Usage: node server.js --port 8094 --serve-built   (separate terminal, once)
  *        node Tools/visual-regression/probe-polyline-multimaterial.mjs
  * Out:   Tools/visual-regression/output/polyline-multimaterial/
  */
 import fs from "node:fs";
-import path from "node:path";
 
+import { decodePng } from "../lib/png-decode.mjs";
 import {
   armWebGPUDevices,
   attachConsoleErrorGate,
   collectGateErrors,
   errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
-import { ProbeRefusal, isEntryPoint, runProbe } from "./lib/probe-runtime.mjs";
+import { channelThresholds } from "./lib/metrics/colour-mask.mjs";
+import {
+  arrowHeadProfile,
+  outlineCrossSection,
+  rowRunProfile,
+} from "./lib/metrics/line-structure.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
 import {
   DEVICE_SCALE_FACTORS,
   MATERIALS,
@@ -80,9 +112,63 @@ import {
   gateCheck,
   materialChecks,
 } from "./lib/polyline-multimaterial-verdicts.mjs";
+import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
+import dpr1Rig from "./rigs/polyline-multimaterial-dpr1.mjs";
+import dpr2Rig from "./rigs/polyline-multimaterial-dpr2.mjs";
 
-const VIEWPORT = { width: 1024, height: 768 };
+/** The rig of each device-scale leg, keyed by its factor. */
+export const RIG_BY_DEVICE_SCALE = Object.freeze(
+  Object.fromEntries(
+    [dpr1Rig, dpr2Rig].map((rig) => [rig.dials.deviceScaleFactor, rig]),
+  ),
+);
+
 const WATCHDOG_BUDGET_MS = 6 * 60 * 1000;
+
+/** The canvas the scene draws into; the CesiumViewer page has exactly one. */
+const SCENE_CANVAS = ".cesium-widget canvas";
+
+/**
+ * Six mutually exclusive hue classifiers, strict at `T = 30`. No line can be
+ * mistaken for another, so one material's collapse cannot inflate another's
+ * count.
+ */
+const T = 30;
+export const HUES = Object.freeze({
+  solid: channelThresholds({ rAbove: T, gBelow: T, bBelow: T }),
+  dash: channelThresholds({ rBelow: T, gAbove: T, bAbove: T }),
+  glow: channelThresholds({ rAbove: T, gAbove: T, bBelow: T }),
+  arrow: channelThresholds({ rAbove: T, gBelow: T, bAbove: T }),
+  outline: channelThresholds({ rBelow: T, gAbove: T, bBelow: T }),
+  outlineEdge: channelThresholds({ rBelow: T, gBelow: T, bAbove: T }),
+});
+
+/**
+ * Every quantity the verdict library reads, from one decoded frame — the
+ * object the in-page analysis used to return, key for key.
+ *
+ * @param {{width: number, height: number, data: ArrayLike<number>}} image Decoded frame.
+ * @param {{renderer: string|null, devicePixelRatio: number}} facts Page-side facts.
+ * @returns {object} The measurement.
+ */
+export function measureMultimaterialFrame(image, facts) {
+  const out = {
+    renderer: facts.renderer,
+    width: image.width,
+    height: image.height,
+    devicePixelRatio: facts.devicePixelRatio,
+  };
+  for (const [key, classify] of Object.entries(HUES)) {
+    out[key] = rowRunProfile(image, classify);
+  }
+  out.arrowProfile = arrowHeadProfile(image, HUES.arrow);
+  out.outlineCrossSection = outlineCrossSection(
+    image,
+    HUES.outline,
+    HUES.outlineEdge,
+  );
+  return out;
+}
 
 // The verdict functions live in `lib/polyline-multimaterial-verdicts.mjs`,
 // which has no imports of its own so `polyline-multimaterial-verdicts.spec.mjs`
@@ -103,386 +189,192 @@ export {
 // ---------------------------------------------------------------------------
 
 /**
- * Builds the mixed collection and measures every hue. Runs inside the page.
+ * Builds the mixed collection and renders it. Runs inside the page; it
+ * measures nothing — every hue is read in Node from the capture
+ * ({@link measureMultimaterialFrame}).
  *
  * @param {object} page Playwright page.
- * @returns {Promise<object>} Per-hue measurements.
+ * @param {object} rig The leg's rig (camera and settle frames).
+ * @returns {Promise<{renderer: string|null, devicePixelRatio: number}>} Page-side facts.
  */
-async function captureRender(page) {
-  return page.evaluate(async () => {
-    const C = await import("/Build/CesiumUnminified/index.js");
-    const v = window.viewer;
-    // Make the DPR-2 leg a second RESOLUTION and not only a second
-    // `window.devicePixelRatio`. Cesium's default
-    // `useBrowserRecommendedResolution: true` pins the drawing buffer to CSS
-    // pixels AND pins `czm_pixelRatio` to 1, so every DPR-2 count used to be a
-    // near-duplicate of DPR 1 and no pixel-ratio term in any polyline shader
-    // was ever exercised. Turning it off makes the backing store
-    // `devicePixelRatio` times the CSS size, so leg 1 is unchanged (ratio 1)
-    // and leg 2 is genuinely 2x.
-    v.useBrowserRecommendedResolution = false;
-    // The flag only sets `_forceResize`; the backing store is reconfigured by
-    // `CesiumWidget.resize()`. Call it here so the leg does not depend on the
-    // default render loop having ticked before the first measurement.
-    v.cesiumWidget?.resize();
-    v.scene.globe.show = false;
-    v.scene.skyBox.show = false;
-    v.scene.sun.show = false;
-    v.scene.moon.show = false;
-    v.scene.skyAtmosphere.show = false;
-    v.scene.backgroundColor = C.Color.BLACK;
+async function captureRender(page, rig) {
+  return page.evaluate(
+    async (scene) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const v = window.viewer;
+      // Make the DPR-2 leg a second RESOLUTION and not only a second
+      // `window.devicePixelRatio`. Cesium's default
+      // `useBrowserRecommendedResolution: true` pins the drawing buffer to CSS
+      // pixels AND pins `czm_pixelRatio` to 1, so every DPR-2 count used to be a
+      // near-duplicate of DPR 1 and no pixel-ratio term in any polyline shader
+      // was ever exercised. Turning it off makes the backing store
+      // `devicePixelRatio` times the CSS size, so leg 1 is unchanged (ratio 1)
+      // and leg 2 is genuinely 2x.
+      v.useBrowserRecommendedResolution = false;
+      // The flag only sets `_forceResize`; the backing store is reconfigured by
+      // `CesiumWidget.resize()`. Call it here so the leg does not depend on the
+      // default render loop having ticked before the first measurement.
+      v.cesiumWidget?.resize();
+      v.scene.globe.show = false;
+      v.scene.skyBox.show = false;
+      v.scene.sun.show = false;
+      v.scene.moon.show = false;
+      v.scene.skyAtmosphere.show = false;
+      v.scene.backgroundColor = C.Color.BLACK;
 
-    const prims = v.scene.primitives;
-    for (let i = prims.length - 1; i >= 0; i--) {
-      const p = prims.get(i);
-      if (p && p.constructor && p.constructor.name === "PolylineCollection") {
-        prims.remove(p);
-      }
-    }
-
-    const collection = prims.add(new C.PolylineCollection());
-    const line = (lat) =>
-      C.Cartesian3.fromDegreesArray([-76.0, lat, -72.0, lat]);
-
-    collection.add({
-      positions: line(35.6),
-      width: 12.0,
-      material: C.Material.fromType("Color", { color: C.Color.RED }),
-    });
-    collection.add({
-      positions: line(35.3),
-      width: 12.0,
-      material: C.Material.fromType("PolylineDash", {
-        color: C.Color.CYAN,
-        dashLength: 24.0,
-        dashPattern: 255.0,
-      }),
-    });
-    collection.add({
-      positions: line(35.0),
-      width: 12.0,
-      material: C.Material.fromType("PolylineGlow", {
-        color: C.Color.YELLOW,
-        glowPower: 0.25,
-        taperPower: 1.0,
-      }),
-    });
-    collection.add({
-      positions: line(34.7),
-      width: 24.0,
-      material: C.Material.fromType("PolylineArrow", {
-        color: C.Color.MAGENTA,
-      }),
-    });
-    collection.add({
-      positions: line(34.4),
-      width: 16.0,
-      material: C.Material.fromType("PolylineOutline", {
-        color: C.Color.LIME,
-        outlineColor: C.Color.BLUE,
-        outlineWidth: 6.0,
-      }),
-    });
-
-    const center = C.Cartesian3.fromDegrees(-74.0, 35.0, 0.0);
-    v.camera.lookAt(
-      center,
-      new C.HeadingPitchRange(0.0, C.Math.toRadians(-90.0), 700000.0),
-    );
-    v.camera.lookAtTransform(C.Matrix4.IDENTITY);
-
-    for (let i = 0; i < 90; i++) {
-      v.scene.render();
-      await new Promise((res) => requestAnimationFrame(res));
-    }
-
-    const canvas = v.canvas;
-    const w = canvas.width;
-    const h = canvas.height;
-    const tmp = document.createElement("canvas");
-    tmp.width = w;
-    tmp.height = h;
-    const tctx = tmp.getContext("2d");
-    tctx.drawImage(canvas, 0, 0);
-    const px = tctx.getImageData(0, 0, w, h).data;
-
-    // Six mutually exclusive hue classifiers. No line can be mistaken for
-    // another, so one material's collapse cannot inflate another's count.
-    const T = 30;
-    const hues = {
-      solid: (i) => px[i] > T && px[i + 1] < T && px[i + 2] < T,
-      dash: (i) => px[i] < T && px[i + 1] > T && px[i + 2] > T,
-      glow: (i) => px[i] > T && px[i + 1] > T && px[i + 2] < T,
-      arrow: (i) => px[i] > T && px[i + 1] < T && px[i + 2] > T,
-      outline: (i) => px[i] < T && px[i + 1] > T && px[i + 2] < T,
-      outlineEdge: (i) => px[i] < T && px[i + 1] < T && px[i + 2] > T,
-    };
-
-    /**
-     * Counts pixels, colored runs per row, and the full width at half maximum
-     * of the row-intensity profile — the cross-line thickness, which is what a
-     * glow losing its taper moves and a pixel count alone does not.
-     *
-     * @param {Function} classify Hue predicate over a pixel offset.
-     * @returns {object} The measurements.
-     */
-    function measure(classify) {
-      let colored = 0;
-      let runs = 0;
-      let coloredRows = 0;
-      const rowIntensity = new Float64Array(h);
-      for (let y = 0; y < h; y++) {
-        let prev = false;
-        let rowHas = false;
-        let sum = 0;
-        for (let x = 0; x < w; x++) {
-          const i = (y * w + x) * 4;
-          const c = classify(i);
-          if (c) {
-            colored++;
-            rowHas = true;
-            sum += Math.max(px[i], px[i + 1], px[i + 2]);
-            if (!prev) {
-              runs++;
-            }
-          }
-          prev = c;
-        }
-        rowIntensity[y] = sum;
-        if (rowHas) {
-          coloredRows++;
+      const prims = v.scene.primitives;
+      for (let i = prims.length - 1; i >= 0; i--) {
+        const p = prims.get(i);
+        if (p && p.constructor && p.constructor.name === "PolylineCollection") {
+          prims.remove(p);
         }
       }
-      let peak = 0;
-      for (let y = 0; y < h; y++) {
-        if (rowIntensity[y] > peak) {
-          peak = rowIntensity[y];
-        }
+
+      const collection = prims.add(new C.PolylineCollection());
+      const line = (lat) =>
+        C.Cartesian3.fromDegreesArray([-76.0, lat, -72.0, lat]);
+
+      collection.add({
+        positions: line(35.6),
+        width: 12.0,
+        material: C.Material.fromType("Color", { color: C.Color.RED }),
+      });
+      collection.add({
+        positions: line(35.3),
+        width: 12.0,
+        material: C.Material.fromType("PolylineDash", {
+          color: C.Color.CYAN,
+          dashLength: 24.0,
+          dashPattern: 255.0,
+        }),
+      });
+      collection.add({
+        positions: line(35.0),
+        width: 12.0,
+        material: C.Material.fromType("PolylineGlow", {
+          color: C.Color.YELLOW,
+          glowPower: 0.25,
+          taperPower: 1.0,
+        }),
+      });
+      collection.add({
+        positions: line(34.7),
+        width: 24.0,
+        material: C.Material.fromType("PolylineArrow", {
+          color: C.Color.MAGENTA,
+        }),
+      });
+      collection.add({
+        positions: line(34.4),
+        width: 16.0,
+        material: C.Material.fromType("PolylineOutline", {
+          color: C.Color.LIME,
+          outlineColor: C.Color.BLUE,
+          outlineWidth: 6.0,
+        }),
+      });
+
+      const look = scene.lookAt;
+      v.camera.lookAt(
+        C.Cartesian3.fromDegrees(look.lon, look.lat, look.height),
+        new C.HeadingPitchRange(
+          C.Math.toRadians(look.headingDegrees),
+          C.Math.toRadians(look.pitchDegrees),
+          look.rangeMetres,
+        ),
+      );
+      v.camera.lookAtTransform(C.Matrix4.IDENTITY);
+
+      for (let i = 0; i < scene.frames; i++) {
+        v.scene.render();
+        await new Promise((res) => requestAnimationFrame(res));
       }
-      let fwhm = 0;
-      if (peak > 0) {
-        const half = peak / 2;
-        for (let y = 0; y < h; y++) {
-          if (rowIntensity[y] >= half) {
-            fwhm++;
-          }
-        }
-      }
+
       return {
-        colored,
-        runs,
-        coloredRows,
-        fwhm,
-        runsPerRow: coloredRows > 0 ? runs / coloredRows : 0,
+        renderer: v.scene.context ? v.scene.context.rendererType : null,
+        devicePixelRatio: window.devicePixelRatio,
       };
-    }
-
-    /**
-     * Per-column lit-pixel heights for one hue.
-     *
-     * @param {Function} classify Hue predicate over a pixel offset.
-     * @returns {Int32Array} Height per column.
-     */
-    function columnHeights(classify) {
-      const heights = new Int32Array(w);
-      for (let x = 0; x < w; x++) {
-        let n = 0;
-        for (let y = 0; y < h; y++) {
-          if (classify((y * w + x) * 4)) {
-            n++;
-          }
-        }
-        heights[x] = n;
-      }
-      return heights;
-    }
-
-    /**
-     * The arrow's shape, not its area. `PolylineArrowMaterial.glsl` cuts the
-     * head with two half-planes that meet at the tip, so the head's column
-     * heights fall away linearly and it fills about half of its own bounding
-     * box. A head that renders at full area in the wrong shape — a filled
-     * rectangle — has the same bounding box, the same peak and nearly the same
-     * total, so only the profile separates them.
-     *
-     * @param {Function} classify The arrow hue predicate.
-     * @returns {object|null} Body height, head extent, and head fill fraction.
-     */
-    function arrowProfile(classify) {
-      const heights = columnHeights(classify);
-      let x0 = -1;
-      let x1 = -1;
-      for (let x = 0; x < w; x++) {
-        if (heights[x] > 0) {
-          if (x0 < 0) {
-            x0 = x;
-          }
-          x1 = x;
-        }
-      }
-      if (x0 < 0) {
-        return null;
-      }
-      // The shaft is the leading 80% of the span; its median height is robust
-      // against the antialiased first and last columns.
-      const bodyEnd = x0 + Math.floor((x1 - x0 + 1) * 0.8);
-      const samples = [];
-      for (let x = x0; x <= bodyEnd; x++) {
-        if (heights[x] > 0) {
-          samples.push(heights[x]);
-        }
-      }
-      samples.sort((a, b) => a - b);
-      const body = samples.length > 0 ? samples[samples.length >> 1] : 0;
-      // The head is the trailing run of columns that flare past the shaft,
-      // extended to the end of the line so the tip's taper is included.
-      const flare = body * 1.5;
-      let lastFlare = -1;
-      for (let x = x1; x >= x0; x--) {
-        if (heights[x] > flare) {
-          lastFlare = x;
-          break;
-        }
-      }
-      if (lastFlare < 0) {
-        return { body, headColumns: 0, headPeak: 0, headFill: null, head: [] };
-      }
-      let headStart = lastFlare;
-      while (headStart > x0 && heights[headStart - 1] > flare) {
-        headStart--;
-      }
-      const head = [];
-      let sum = 0;
-      let peak = 0;
-      for (let x = headStart; x <= x1; x++) {
-        head.push(heights[x]);
-        sum += heights[x];
-        if (heights[x] > peak) {
-          peak = heights[x];
-        }
-      }
-      return {
-        spanStart: x0,
-        spanEnd: x1,
-        body,
-        headStart,
-        headColumns: head.length,
-        headPeak: peak,
-        headFill:
-          peak > 0 && head.length > 0 ? sum / (peak * head.length) : null,
-        head,
-      };
-    }
-
-    /**
-     * The outline's vertical structure at its widest column: the outline hue
-     * must BRACKET the core hue above and below. A count ratio cannot tell a
-     * two-sided outline from a one-sided one, or from a flood.
-     *
-     * @param {Function} coreClassify The core hue predicate.
-     * @param {Function} edgeClassify The outline hue predicate.
-     * @returns {object|null} Column, core extent, and outline rows each side.
-     */
-    function outlineCrossSection(coreClassify, edgeClassify) {
-      const coreHeights = columnHeights(coreClassify);
-      let column = -1;
-      let best = 0;
-      for (let x = 0; x < w; x++) {
-        if (coreHeights[x] > best) {
-          best = coreHeights[x];
-          column = x;
-        }
-      }
-      if (column < 0) {
-        return null;
-      }
-      let coreMin = h;
-      let coreMax = -1;
-      for (let y = 0; y < h; y++) {
-        if (coreClassify((y * w + column) * 4)) {
-          if (y < coreMin) {
-            coreMin = y;
-          }
-          coreMax = y;
-        }
-      }
-      let edgeAbove = 0;
-      let edgeBelow = 0;
-      for (let y = 0; y < h; y++) {
-        if (edgeClassify((y * w + column) * 4)) {
-          if (y < coreMin) {
-            edgeAbove++;
-          } else if (y > coreMax) {
-            edgeBelow++;
-          }
-        }
-      }
-      return { column, coreRows: best, coreMin, coreMax, edgeAbove, edgeBelow };
-    }
-
-    const out = {
-      renderer: v.scene.context ? v.scene.context.rendererType : null,
-      width: w,
-      height: h,
-      devicePixelRatio: window.devicePixelRatio,
-    };
-    for (const [key, classify] of Object.entries(hues)) {
-      out[key] = measure(classify);
-    }
-    out.arrowProfile = arrowProfile(hues.arrow);
-    out.outlineCrossSection = outlineCrossSection(
-      hues.outline,
-      hues.outlineEdge,
-    );
-    return out;
-  });
+    },
+    { lookAt: rig.dials.lookAt, frames: rig.readiness.frames },
+  );
 }
 
 /**
- * One renderer at one device scale factor.
+ * One renderer at one device scale factor: the scene built and settled, the
+ * viewer chrome removed, one element capture of the scene canvas through the
+ * seam, and every hue measured in Node from it.
  *
- * @param {object} browser Playwright browser.
- * @param {string} origin Served origin.
- * @param {string} renderer Backend.
- * @param {number} deviceScaleFactor The DPR to emulate.
- * @param {string} outputDirectory Where the PNG goes.
+ * @param {object} options Inputs.
+ * @param {object} options.browser Playwright browser.
+ * @param {string} options.origin Served origin.
+ * @param {string} options.renderer Backend.
+ * @param {number} options.deviceScaleFactor The DPR to emulate.
+ * @param {string} options.outputDirectory Where the PNG goes.
+ * @param {Array<object>} options.captures The runtime's capture records.
  * @returns {Promise<object>} The capture.
  */
-async function captureOne(
+async function captureOne({
   browser,
   origin,
   renderer,
   deviceScaleFactor,
   outputDirectory,
-) {
-  const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor });
-  const consoleErrors = attachConsoleErrorGate(page);
-  await page.addInitScript(errorGateInit);
-  await page.goto(
-    `${origin}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
-    { waitUntil: "networkidle", timeout: 90000 },
-  );
-  await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
-  await armWebGPUDevices(page);
+  captures,
+}) {
+  const rig = RIG_BY_DEVICE_SCALE[deviceScaleFactor];
+  if (!rig) {
+    throw new ProbeRefusal(
+      "device-scale-without-rig",
+      `no polyline-multimaterial rig declares deviceScaleFactor ${deviceScaleFactor}`,
+      { deviceScaleFactor },
+    );
+  }
+  const page = await browser.newPage({
+    viewport: { ...rig.viewport },
+    deviceScaleFactor,
+  });
+  try {
+    const consoleErrors = attachConsoleErrorGate(page);
+    await page.addInitScript(errorGateInit);
+    await page.goto(
+      `${origin}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+      { waitUntil: "networkidle", timeout: 90000 },
+    );
+    await page.waitForFunction(() => !!window.viewer, null, {
+      timeout: 90000,
+    });
+    await armWebGPUDevices(page);
+    const strip = await page.evaluate(`(${STRIP_WIDGETS_SOURCE})()`);
+    if (strip.leftovers.length > 0) {
+      throw new ProbeRefusal(
+        "viewer-chrome-over-canvas",
+        `${rig.id}/${renderer}: elements still overlap the scene canvas after the widget strip (${strip.leftovers.join(", ")}), so an element capture would score them`,
+        { rig: rig.id, renderer, ...strip },
+      );
+    }
 
-  const render = await captureRender(page);
-  const buffer = await page.screenshot({ omitBackground: false });
-  const file = path.join(
-    outputDirectory,
-    `polyline-multimaterial-${renderer}-dpr${deviceScaleFactor}.png`,
-  );
-  fs.writeFileSync(file, buffer);
+    const facts = await captureRender(page, rig);
+    const shot = await captureElement({
+      page,
+      selector: SCENE_CANVAS,
+      name: `polyline-multimaterial-${renderer}-dpr${deviceScaleFactor}`,
+      outputDirectory,
+      captures,
+    });
+    const render = measureMultimaterialFrame(decodePng(shot.buffer), facts);
 
-  const gate = await collectGateErrors(page);
-  await page.close();
-  return {
-    render,
-    png: file,
-    gateErrors: gate.errors.length,
-    gateErrorsSample: gate.errors.slice(0, 6),
-    deviceLost: gate.deviceLost ?? null,
-    consoleErrors: consoleErrors.slice(0, 6),
-  };
+    const gate = await collectGateErrors(page);
+    return {
+      render,
+      png: shot.path,
+      gateErrors: gate.errors.length,
+      gateErrorsSample: gate.errors.slice(0, 6),
+      deviceLost: gate.deviceLost ?? null,
+      consoleErrors: consoleErrors.slice(0, 6),
+    };
+  } finally {
+    await page.close();
+  }
 }
 
 /** The descriptor the shared runtime executes. */
@@ -490,7 +382,7 @@ export const descriptor = {
   name: "polyline-multimaterial",
   title: "PolylineCollection mixed-material parity (AR-754)",
   receiptEnvelope: "probe-owned",
-  async cells({ browser, origin, outputDirectory, options }) {
+  async cells({ browser, origin, outputDirectory, options, captures }) {
     if (options.renderers.length !== 2) {
       throw new ProbeRefusal(
         "renderer-pair-required",
@@ -515,13 +407,14 @@ export const descriptor = {
       for (const deviceScaleFactor of DEVICE_SCALE_FACTORS) {
         const leg = { deviceScaleFactor };
         for (const renderer of options.renderers) {
-          const capture = await captureOne(
+          const capture = await captureOne({
             browser,
             origin,
             renderer,
             deviceScaleFactor,
             outputDirectory,
-          );
+            captures,
+          });
           leg[renderer] = capture.render;
           leg[`${renderer}Png`] = capture.png;
           if (renderer === "webgpu") {

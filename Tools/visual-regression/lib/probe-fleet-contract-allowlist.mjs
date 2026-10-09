@@ -826,22 +826,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-06-15, pre-dates the spec",
   "probe-pointcloud-logdepth.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
-  "probe-polyline-appearance-2d.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
-  "probe-polyline-appearance-logdepth.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
-  "probe-polyline-appearance-pick.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
-  "probe-polyline-appearance-primitive.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-21, pre-dates the spec",
-  "probe-polyline-cloud-consume.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-11, pre-dates the spec",
-  "probe-polyline-geodesic.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-20, pre-dates the spec",
-  "probe-polyline-image-material.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
-  "probe-polyline-material-primitive.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-21, pre-dates the spec",
   "probe-post-process.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
   "probe-postprocess-f16.mjs":

@@ -116,14 +116,18 @@ const CONTROL_ONLY_HALVES = halvesWhere((x) => x >= 2);
  * of the function it was handed. Dispatch order matters: the scene builder's
  * page function DEFINES `__probeReadVelocity`, `__probeStep` and
  * `__probeRender`, so it has to be recognised by its dynamic import first or it
- * would be mistaken for one of the calls it installs.
+ * would be mistaken for one of the calls it installs. The widget strip is the
+ * one call the probe hands over as a STRING (`STRIP_WIDGETS_SOURCE`), so it is
+ * recognised by type and its `leftovers` marker before anything else.
  *
- * @param {{calls: string[]}} log Records what the probe asked the page to do.
+ * @param {{calls: string[], selectors: string[]}} log Records what the probe asked the page to do.
+ * @param {{renderLoopDisabled?: boolean, leftovers?: string[]}} [options] What the page reports back.
  * @returns {object} The stub page.
  */
-function fakePage(log, { renderLoopDisabled = true } = {}) {
+function fakePage(log, { renderLoopDisabled = true, leftovers = [] } = {}) {
   let materialType = null;
   let withPolyline = false;
+  let built = 0;
   return {
     on() {},
     async addInitScript() {},
@@ -131,13 +135,21 @@ function fakePage(log, { renderLoopDisabled = true } = {}) {
     async waitForFunction() {},
     async evaluate(fn, arg) {
       const source = String(fn);
+      if (typeof fn === "string" && source.includes("leftovers")) {
+        log.calls.push("strip");
+        return { removed: 3, leftovers };
+      }
       if (source.includes("/Build/CesiumUnminified/index.js")) {
         materialType = arg.materialType;
         withPolyline = arg.withPolyline;
         log.calls.push(
           `build:${arg.renderer}:${arg.materialType}:${arg.withPolyline}`,
         );
-        return { rendererType: arg.renderer };
+        built += 1;
+        return {
+          rendererType: arg.renderer,
+          previousDestroyed: built === 1 ? null : true,
+        };
       }
       if (source.includes("__probeReadVelocity")) {
         log.calls.push(`read:${materialType}`);
@@ -161,6 +173,13 @@ function fakePage(log, { renderLoopDisabled = true } = {}) {
         log.calls.push("arm");
         return { armed: 1, found: 1, total: 1 };
       }
+      // The capture seam's liveness read. It also mentions `__webgpuGate`, so
+      // it must be recognised by its own marker first or it would be logged as
+      // the end-of-run gate read.
+      if (source.includes("__captureLiveness")) {
+        log.calls.push("live");
+        return { gateArmed: true, deviceLost: null, frameNumber: 24 };
+      }
       if (source.includes("__webgpuGate")) {
         log.calls.push("gate");
         return { errors: [], deviceLost: null, armedDevices: 1 };
@@ -170,9 +189,16 @@ function fakePage(log, { renderLoopDisabled = true } = {}) {
       // read a field off it.
       throw new Error(`unstubbed page.evaluate: ${source.slice(0, 120)}`);
     },
-    locator() {
+    // The probe banks its frames through `captureElement`, which counts the
+    // locator's matches and screenshots the declared index — the shape a
+    // Playwright locator has, and the only one this stub answers.
+    locator(selector) {
+      log.selectors.push(selector);
       return {
-        first: () => ({
+        async count() {
+          return 1;
+        },
+        nth: () => ({
           async screenshot() {
             log.calls.push(`shot:${withPolyline}`);
             return framePng(withPolyline ? LINE_PIXELS : 0);
@@ -184,7 +210,7 @@ function fakePage(log, { renderLoopDisabled = true } = {}) {
 }
 
 /**
- * @param {{calls: string[], launches: number}} log
+ * @param {{calls: string[], launches: number, selectors: string[]}} log
  * @returns {Function} A `launch` implementation for `runProbe`.
  */
 function fakeLaunch(log, pageOptions) {
@@ -241,7 +267,7 @@ async function importMutated(file, replacements) {
  */
 async function driveProbe(descriptor, { root, runs = 3, page } = {}) {
   const out = path.join(root, "out");
-  const log = { calls: [], launches: 0 };
+  const log = { calls: [], launches: 0, selectors: [] };
   const code = await runProbe(descriptor, {
     argv: [
       "--repository-root",
@@ -345,7 +371,7 @@ test("A. runProbe requires descriptor.cells to return an array", async (t) => {
           ["!Array.isArray(produced)", "false && !Array.isArray(produced)"],
         ]);
         const out = path.join(root, "out");
-        const log = { calls: [], launches: 0 };
+        const log = { calls: [], launches: 0, selectors: [] };
         const code = await mutated.runProbe(
           { ...base, cells: async () => ({ value: 1 }) },
           {
@@ -429,30 +455,52 @@ test("B. probe-polyline-taa-velocity completes a --runs 3 walk", async (t) => {
         assert.equal(run.emptyWebgpuLinePixels, 0);
         assert.equal(run.emptyWebglLinePixels, 0);
         assert.equal(run.errors, 0);
+        assert.deepEqual(
+          run.chromeRemoved,
+          { A: 3, B: 3, E1: 3, D: 3, E2: 3 },
+          "every scene's Viewer is stripped, and the count is in the cell",
+        );
+        assert.deepEqual(
+          run.previousViewerDestroyed,
+          { A: null, B: true, E1: true, D: true, E2: true },
+          "each rebuild reports whether the previous Viewer was torn down",
+        );
       }
     });
 
     await t.test("every run walks the same five scenes", () => {
       const perRun = result.log.calls.length / 3;
       assert.equal(perRun, Math.trunc(perRun), "the runs are symmetric");
+      // The strip follows each build and precedes that scene's first render:
+      // a scene rendered or captured with chrome still over its canvas would
+      // put DOM pixels into the smear terms.
       assert.deepEqual(result.log.calls.slice(0, perRun), [
         "arm",
         "build:webgpu:Color:true",
+        "strip",
         "render",
         "read:Color",
         "shot:true",
+        "live",
         "build:webgpu:PolylineDash:true",
+        "strip",
         "render",
         "read:PolylineDash",
         "build:webgpu:Color:false",
+        "strip",
         "render",
         "shot:false",
+        "live",
         "build:webgl:Color:true",
+        "strip",
         "render",
         "shot:true",
+        "live",
         "build:webgl:Color:false",
+        "strip",
         "render",
         "shot:false",
+        "live",
         "gate",
       ]);
     });
@@ -504,6 +552,28 @@ test("B. probe-polyline-taa-velocity completes a --runs 3 walk", async (t) => {
         "polyvel-webgpu-empty.png",
       ]);
     });
+
+    await t.test("every frame is banked through the capture seam", () => {
+      // The probe-kit harvest moved the probe off its private locator
+      // screenshot and onto `captureElement`: each frame is now asked whether
+      // the device is alive and recorded with its digest in the runtime
+      // receipt. Four frames per run, three runs.
+      const runtime = JSON.parse(
+        readFileSync(path.join(result.out, "polyvel-runtime.json"), "utf8"),
+      );
+      assert.equal(runtime.captures.length, 12);
+      for (const record of runtime.captures) {
+        assert.match(record.sha256, /^[0-9a-f]{64}$/);
+        assert.equal(record.liveness.state, "live");
+        assert.equal(record.matchCount, 1);
+      }
+      assert.deepEqual(
+        [...new Set(result.log.selectors)],
+        ["canvas"],
+        "the seam is pointed at the canvas the probe always photographed",
+      );
+      assert.equal(result.log.selectors.length, 12);
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -517,7 +587,7 @@ test("C. the served-build preflight refuses before any launch", async () => {
   const root = makeTempRoot();
   try {
     const out = path.join(root, "out");
-    const log = { calls: [], launches: 0 };
+    const log = { calls: [], launches: 0, selectors: [] };
     const code = await runProbe(velocityDescriptor, {
       argv: ["--repository-root", root, "--output", out, "--runs", "3"],
       launch: fakeLaunch(log),
@@ -594,6 +664,75 @@ test("E. a page whose Viewer still owns the render loop is refused, not measured
       0,
       "and it refuses BEFORE reading a velocity target it cannot attribute",
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// F. Viewer chrome left over the canvas after the strip is a refusal.
+//
+//    Through Éowyn's job 10 the smear terms were counted on element captures
+//    that still carried the viewer chrome, and the ion credit wordmark put
+//    ~440 px into both of them (AR-752 instrument defect (e)). The probe now
+//    strips every scene's chrome before it renders and refuses when anything
+//    is left over the canvas: a count that includes DOM pixels is not a count
+//    of the line.
+// ---------------------------------------------------------------------------
+
+test("F. viewer chrome left over the canvas is refused, not counted", async () => {
+  const root = makeTempRoot();
+  try {
+    const { code, out, log } = await driveProbe(velocityDescriptor, {
+      root,
+      runs: 3,
+      page: { leftovers: ["cesium-credit-logoContainer"] },
+    });
+    assert.equal(code, PROBE_EXIT_CODES.REFUSAL);
+    assert.ok(
+      !readdirSync(out).includes("polyvel-report.json"),
+      "a refused run publishes no receipt",
+    );
+    const refusal = JSON.parse(
+      readFileSync(path.join(out, "polyvel-refusal.json"), "utf8"),
+    );
+    assert.equal(refusal.outcome, "refused");
+    assert.match(JSON.stringify(refusal), /viewer-chrome-over-canvas/);
+    assert.deepEqual(
+      log.calls,
+      ["arm", "build:webgpu:Color:true", "strip"],
+      "it refuses at the first scene, before that scene renders or is captured",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// G. MUTATION: make F's refusal unreachable and require the same page to walk
+//    through to a receipt, so F is known to test the live branch.
+// ---------------------------------------------------------------------------
+
+test("G. MUTATION: an unreachable leftovers refusal lets the chrome into the counts", async () => {
+  const root = makeTempRoot();
+  try {
+    const mutated = await importMutated(PROBE_PATH, [
+      [
+        "  if (strip.leftovers.length > 0) {",
+        "  if (false && strip.leftovers.length > 0) {",
+      ],
+    ]);
+    const { code, out } = await driveProbe(mutated.descriptor, {
+      root,
+      runs: 3,
+      page: { leftovers: ["cesium-credit-logoContainer"] },
+    });
+    assert.equal(
+      code,
+      PROBE_EXIT_CODES.OK,
+      "with the refusal unreachable the chrome-covered page is measured",
+    );
+    assert.ok(readdirSync(out).includes("polyvel-report.json"));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

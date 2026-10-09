@@ -18868,6 +18868,17 @@ instrument chose to measure.
    it makes that acceptance slightly more permissive and carries no verdict of its own; the claim
    is now what the cell actually shows, which is equality across the backends.
 
+*Defect (e), measurement half (probe-kit harvest, polyline family, DX-108): the probe now runs the
+kit's widget strip (`STRIP_WIDGETS_SOURCE`, `lib/strip-viewer-widgets.mjs`) after each of its five
+scene builds, before that scene renders, and refuses (`viewer-chrome-over-canvas`, exit 3) when
+anything is still stacked over the canvas, so the ion credit wordmark is no longer in the frames
+cells C, D and E are counted from. Each cell records the elements removed per scene
+(`chromeRemoved`) and whether the previous scene's Viewer was torn down in full
+(`previousViewerDestroyed`; the strip detaches the toolbar `Viewer.destroy` removes by
+`removeChild`, so the page re-parents it first). No stripped run is banked: the owed leg's cell E
+and smear ratios are the first taken without the 440 px constant and are not comparable with the
+1.110 above. The bars below are unchanged.*
+
 Cell ids are unchanged where their meaning is unchanged (`velocity-emitted`,
 `negative-control-dash`, `ghost-smear-ratio`, `gate-clean`); `velocity-positive-control` is new.
 
@@ -25058,6 +25069,13 @@ polyline-multimaterial, polyline-taa-velocity, postprocess-resize-survival.
 `toDataURL` or a direct `screenshot` where the route is known), so a device lost under any of them is not refused. Each moves onto
 `captureElement` in its own Tools batch and leaves the owed list by a reviewed deletion; the list is shrink-only, so
 a new resident cannot join it. Out of the rule's population: the ~640 probes not on the runtime.*
+
+*Owed list, polyline family (probe-kit harvest, DX-108): `probe-polyline-multimaterial.mjs` and
+`probe-polyline-taa-velocity.mjs` now bank every frame through `captureElement` and left the owed list by
+deletion in `probe-fleet-contract.spec.mjs`; eight residents remain owed. The taa-velocity frames are the same
+`canvas` first-match capture as before, now taken after each scene's viewer chrome is stripped (a leftover refuses;
+see AR-752 defect (e) above), liveness-checked and digested; the multi-material frames are now canvas element
+captures taken after the viewer chrome is stripped, where its hues were read in the page before.*
 
 ### `NEW-PROBE-REFUSED-PAIR-LEAVES-ORPHAN-TREATMENT-PNG` — a refused clouds-off control leaves its clouds-on PNG on disk — OPEN (P2)
 

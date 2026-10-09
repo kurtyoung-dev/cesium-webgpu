@@ -2577,10 +2577,6 @@ const CAPTURE_SEAM_OWED = Object.freeze({
     "banks its frame with its own locator .screenshot(, outside the seam's liveness check",
   "probe-pick-visibility-matrix.mjs":
     "banks its frames with its own locator .screenshot(, outside the seam's liveness check",
-  "probe-polyline-multimaterial.mjs":
-    "banks its frames with its own locator .screenshot(, outside the seam's liveness check",
-  "probe-polyline-taa-velocity.mjs":
-    "banks its frames with its own locator .screenshot(, outside the seam's liveness check",
   "probe-postprocess-resize-survival.mjs":
     "banks its before/after PNGs from canvas .toDataURL( data URLs, outside the seam's liveness check",
 });

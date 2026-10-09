@@ -57,16 +57,23 @@
  *   CELL E (both) — the no-polyline control: the same scene with the collection
  *     omitted, on both backends. It is the runtime form of the row's "scenes
  *     with no polyline capture identically" clause; the browser-free form is A5
- *     of the emission spec. It is REPORTED, not verdicted, and it does NOT read
- *     0: the Cesium ion credit wordmark clears `countLinePixels`' cyan test and
- *     both backends measure ~440 px for it. That constant does NOT cancel out of
- *     the smear ratio — it sits in BOTH terms, which pulls the measured ratio
- *     toward 1 ((3948-440)/(3557-440) = 1.125 against the 1.110 reported), so
- *     the [0.75, 1.25] bar is slightly permissive as stated. The docstring used
- *     to claim "must stay 0" against a shipped measurement of 440, which is Éowyn's
- *     job-10 instrument defect (e). The claim is corrected here rather than the
- *     measurement: the cell's job is the identical-capture clause, and equality
- *     across the backends is what it shows.
+ *     of the emission spec. It is REPORTED, not verdicted. Through Éowyn's job
+ *     10 it did NOT read 0: the frames were element captures with the viewer
+ *     chrome still over the canvas, the Cesium ion credit wordmark clears
+ *     `countLinePixels`' cyan test, and both backends measured ~440 px for it.
+ *     That constant sat in BOTH terms of the smear ratio, which pulled the
+ *     measured ratio toward 1 ((3948-440)/(3557-440) = 1.125 against the 1.110
+ *     reported) and left the [0.75, 1.25] bar slightly permissive; that is
+ *     Éowyn's job-10 instrument defect (e). Batch 1451 corrected the docstring's
+ *     "must stay 0" claim and left the measurement. The probe-kit harvest
+ *     corrects the measurement: the kit's widget strip removes each scene's
+ *     viewer chrome before that scene renders, and a run with anything still
+ *     stacked over the canvas refuses (`viewer-chrome-over-canvas`, exit 3)
+ *     instead of counting it. No stripped run is banked yet, so the next cell E
+ *     reading, and every smear ratio from that run on, is the first taken
+ *     without the wordmark and is not comparable with job 10's numbers. The
+ *     cell's job is unchanged: the identical-capture clause, shown as equality
+ *     across the backends.
  *
  * WHY THE FIRST THREE EDGE RUNS READ FLAT ZERO (round 3, Batch 1448). The
  * velocity target came back with `nonZero: 0` and a maximum magnitude of
@@ -94,13 +101,32 @@
  * few pixels with rasterisation, which is why the smear acceptance is a ±25 %
  * band rather than an equality. Run `--runs 3` to see the spread.
  *
+ * ON THE KIT (probe-kit harvest, polyline family, DX-108). The half-float
+ * decoder and the two texel counters (`decodeHalf`,
+ * `countNonZeroVelocityTexels`, `countNonZeroVelocityTexelsInRegion`,
+ * `VELOCITY_NOISE_FLOOR`) moved verbatim to `lib/metrics/velocity-texels.mjs`
+ * so the next motion-vector probe reads velocity with the same decoder and
+ * floor; this file re-exports them, so every existing import keeps resolving.
+ * `countLinePixels` is `maskCount` (`lib/metrics/colour-mask.mjs`) over the
+ * same cyan-on-black class. Every frame is banked through `captureElement` —
+ * the same `canvas` locator and first match as before, now device-liveness
+ * checked and recorded with its sha256 in `polyvel-runtime.json` — instead of
+ * a private locator screenshot. The three scenes of a run are the rigs
+ * `polyline-taa-velocity-{color,dash,empty}`, which supply the viewport, the
+ * clock, the stepped-frame count and each scene's material and polyline
+ * switch; the scene geometry stays in the page function below, which the
+ * descriptor-walk spec dispatches on. Each scene builds its own Viewer, and
+ * with it a new credit container, so `STRIP_WIDGETS_SOURCE`
+ * (`lib/strip-viewer-widgets.mjs`) runs after every scene build and before
+ * that scene renders, and the number of elements it removed is recorded per
+ * cell in `chromeRemoved`; see CELL E for the numbers this moves.
+ *
  * Usage: node server.js --port 8094 --serve-built   (separate terminal, once)
  *        node Tools/visual-regression/probe-polyline-taa-velocity.mjs --runs 3
  * Out:   Tools/visual-regression/output/polyvel-*.png + polyvel-report.json +
  *        polyvel-runtime.json + polyvel-summary.md
  */
 import fs from "node:fs";
-import path from "node:path";
 
 import { decodePng } from "../lib/png-decode.mjs";
 import {
@@ -109,147 +135,50 @@ import {
   collectGateErrors,
   errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
-import { ProbeRefusal, isEntryPoint, runProbe } from "./lib/probe-runtime.mjs";
+import { maskCount } from "./lib/metrics/colour-mask.mjs";
+import {
+  VELOCITY_NOISE_FLOOR,
+  countNonZeroVelocityTexels,
+  countNonZeroVelocityTexelsInRegion,
+  decodeHalf,
+} from "./lib/metrics/velocity-texels.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
+import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
+import colorRig from "./rigs/polyline-taa-velocity-color.mjs";
+import dashRig from "./rigs/polyline-taa-velocity-dash.mjs";
+import emptyRig from "./rigs/polyline-taa-velocity-empty.mjs";
 
-const VIEWPORT = { width: 640, height: 480 };
-const CLOCK_ISO = "2026-06-21T18:00:00Z";
-const FRAMES = 24;
+// Re-exported by local binding rather than `export … from`: the emission
+// spec bundles this file with `lib/engine-stub-bundler.mjs`, whose stubs only
+// carry the names an `import` statement asks for.
+export {
+  VELOCITY_NOISE_FLOOR,
+  countNonZeroVelocityTexels,
+  countNonZeroVelocityTexelsInRegion,
+  decodeHalf,
+};
+
+/** The three scenes of every run, by role. */
+export const RIGS = Object.freeze({
+  color: colorRig,
+  dash: dashRig,
+  empty: emptyRig,
+});
+
+const VIEWPORT = { ...colorRig.viewport };
+const CLOCK_ISO = colorRig.clock;
+const FRAMES = colorRig.readiness.frames;
 // Machine safety: refuse rather than wedge the box on a hung device.
 const WATCHDOG_BUDGET_MS = 5 * 60 * 1000;
-
-// A half-float whose magnitude is at or below this is treated as "no motion".
-// The velocity FS writes an exact `vec2<f32>(0.0)` for fragments it rejects and
-// for a first frame with no history, so the floor only has to clear rg16float's
-// quantisation of a genuinely still fragment.
-export const VELOCITY_NOISE_FLOOR = 1.0e-4;
 
 // The acceptance band the row states for the ghost-smear ratio.
 export const SMEAR_RATIO_MIN = 0.75;
 export const SMEAR_RATIO_MAX = 1.25;
-
-/**
- * Decodes one IEEE-754 binary16 value from a 16-bit unsigned pattern.
- *
- * `copyTextureToBuffer` on an `rg16float` target hands back raw half-floats,
- * and neither `DataView` nor a typed array reads them, so the probe decodes
- * them itself rather than asking the page to convert (which would put the
- * conversion inside the thing being measured).
- *
- * @param {number} bits The 16-bit pattern.
- * @returns {number} The decoded value.
- */
-export function decodeHalf(bits) {
-  const sign = bits & 0x8000 ? -1 : 1;
-  const exponent = (bits >> 10) & 0x1f;
-  const mantissa = bits & 0x03ff;
-  if (exponent === 0) {
-    return sign * mantissa * 2 ** -24;
-  }
-  if (exponent === 0x1f) {
-    return mantissa ? Number.NaN : sign * Infinity;
-  }
-  return sign * (mantissa + 1024) * 2 ** (exponent - 25);
-}
-
-/**
- * Counts velocity texels whose motion clears the noise floor.
- *
- * @param {number[]} halves Flat `[r0, g0, r1, g1, …]` half-float patterns.
- * @param {number} [floor] Magnitude at or below which a texel counts as still.
- * @returns {{nonZero: number, total: number, maxMagnitude: number}} The counts.
- */
-export function countNonZeroVelocityTexels(
-  halves,
-  floor = VELOCITY_NOISE_FLOOR,
-) {
-  let nonZero = 0;
-  let maxMagnitude = 0;
-  const total = Math.floor(halves.length / 2);
-  for (let i = 0; i < total; i++) {
-    const vx = decodeHalf(halves[i * 2]);
-    const vy = decodeHalf(halves[i * 2 + 1]);
-    if (!Number.isFinite(vx) || !Number.isFinite(vy)) {
-      continue;
-    }
-    const magnitude = Math.hypot(vx, vy);
-    if (magnitude > maxMagnitude) {
-      maxMagnitude = magnitude;
-    }
-    if (magnitude > floor) {
-      nonZero += 1;
-    }
-  }
-  return { nonZero, total, maxMagnitude };
-}
-
-/**
- * Counts velocity texels that clear the noise floor INSIDE one screen rectangle.
- *
- * Whole-frame counting cannot tell the polyline's motion vectors from those of
- * the positive control that shares the frame with it, so every velocity cell is
- * counted twice — once in the subject's rectangle and once in the control's.
- * The rectangle is inclusive on both corners and clamped to the target; an
- * absent or degenerate rectangle returns `invalid: true` rather than a zero
- * that would read like a measurement.
- *
- * @param {number[]} halves Flat `[r0, g0, r1, g1, …]` half-float patterns.
- * @param {number} width Target width in texels.
- * @param {number} height Target height in texels.
- * @param {{x0: number, y0: number, x1: number, y1: number}|null} region The rectangle.
- * @param {number} [floor] Magnitude at or below which a texel counts as still.
- * @returns {{nonZero: number, total: number, maxMagnitude: number, invalid?: boolean}} The counts.
- */
-export function countNonZeroVelocityTexelsInRegion(
-  halves,
-  width,
-  height,
-  region,
-  floor = VELOCITY_NOISE_FLOOR,
-) {
-  if (
-    !region ||
-    !Number.isFinite(region.x0) ||
-    !Number.isFinite(region.y0) ||
-    !Number.isFinite(region.x1) ||
-    !Number.isFinite(region.y1) ||
-    !(width > 0) ||
-    !(height > 0)
-  ) {
-    return { nonZero: 0, total: 0, maxMagnitude: 0, invalid: true };
-  }
-  const x0 = Math.max(0, Math.min(width - 1, Math.floor(region.x0)));
-  const x1 = Math.max(0, Math.min(width - 1, Math.ceil(region.x1)));
-  const y0 = Math.max(0, Math.min(height - 1, Math.floor(region.y0)));
-  const y1 = Math.max(0, Math.min(height - 1, Math.ceil(region.y1)));
-  if (x1 < x0 || y1 < y0) {
-    return { nonZero: 0, total: 0, maxMagnitude: 0, invalid: true };
-  }
-  let nonZero = 0;
-  let maxMagnitude = 0;
-  let total = 0;
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      const index = (y * width + x) * 2;
-      if (index + 1 >= halves.length) {
-        continue;
-      }
-      const vx = decodeHalf(halves[index]);
-      const vy = decodeHalf(halves[index + 1]);
-      total += 1;
-      if (!Number.isFinite(vx) || !Number.isFinite(vy)) {
-        continue;
-      }
-      const magnitude = Math.hypot(vx, vy);
-      if (magnitude > maxMagnitude) {
-        maxMagnitude = magnitude;
-      }
-      if (magnitude > floor) {
-        nonZero += 1;
-      }
-    }
-  }
-  return { nonZero, total, maxMagnitude };
-}
 
 /**
  * Reduces one page-side velocity read into the cell this probe verdicts on.
@@ -387,12 +316,25 @@ async function buildScene(page, { renderer, materialType, withPolyline }) {
   return await page.evaluate(
     async ({ renderer, materialType, withPolyline, clockIso }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
-      if (window.__probeViewer && !window.__probeViewer.isDestroyed()) {
+      let previousDestroyed = null;
+      const previous = window.__probeViewer;
+      if (previous && !previous.isDestroyed()) {
+        // The widget strip that ran over the previous scene removed this
+        // Viewer's toolbar from the page, and `Viewer.destroy` takes the
+        // toolbar out of its element with `removeChild`, which throws on a
+        // node that is no longer its child — before the widget, the scene and
+        // the context are torn down. Put it back so the teardown runs in full;
+        // `previousDestroyed` reports whether it did.
+        const toolbar = previous._toolbar;
+        if (toolbar && toolbar.parentNode !== previous._element) {
+          previous._element.appendChild(toolbar);
+        }
         try {
-          window.__probeViewer.destroy();
+          previous.destroy();
         } catch (e) {
           void e;
         }
+        previousDestroyed = previous.isDestroyed();
       }
       let container = document.getElementById("cesiumContainer");
       if (!container) {
@@ -667,7 +609,10 @@ async function buildScene(page, { renderer, materialType, withPolyline }) {
       };
 
       await new Promise((resolve) => setTimeout(resolve, 200));
-      return { rendererType: scene.context.rendererType ?? renderer };
+      return {
+        rendererType: scene.context.rendererType ?? renderer,
+        previousDestroyed,
+      };
     },
     { renderer, materialType, withPolyline, clockIso: CLOCK_ISO },
   );
@@ -678,30 +623,86 @@ async function buildScene(page, { renderer, materialType, withPolyline }) {
 // ---------------------------------------------------------------------------
 
 /**
+ * The polyline's colour class. Cyan on black: green and blue well above the
+ * background, red low. Relative, so it is a plain predicate rather than a
+ * `channelThresholds` box.
+ *
+ * @param {number} r Red.
+ * @param {number} g Green.
+ * @param {number} b Blue.
+ * @returns {boolean} Whether the pixel is line-coloured.
+ */
+export function isLinePixel(r, g, b) {
+  return g > 40 && b > 40 && r < g - 20;
+}
+
+/**
  * Counts pixels that carry the cyan the polyline is drawn in.
  *
- * @param {{data: Buffer|Uint8Array}} image A decoded capture.
+ * @param {{width: number, height: number, data: Buffer|Uint8Array}} image A decoded capture.
  * @returns {number} The count.
  */
 export function countLinePixels(image) {
-  let count = 0;
-  const { data } = image;
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-    // Cyan on black: green and blue well above the background, red low.
-    if (g > 40 && b > 40 && r < g - 20) {
-      count += 1;
-    }
-  }
-  return count;
+  return maskCount(image, isLinePixel);
 }
 
-async function capture(page, outputDirectory, name) {
-  const buffer = await page.locator("canvas").first().screenshot();
-  fs.writeFileSync(path.join(outputDirectory, `polyvel-${name}.png`), buffer);
-  return { buffer, decoded: decodePng(buffer) };
+/**
+ * Banks one frame through the capture seam: the first `canvas` on the page
+ * (the probe's own Viewer replaced the page's, so it is the only one), the
+ * device's liveness checked, the bytes written as `polyvel-<name>.png` and
+ * recorded with their sha256 in the runtime receipt.
+ *
+ * @param {object} page Playwright page.
+ * @param {string} outputDirectory Where the PNG goes.
+ * @param {Array<object>} captures The runtime's capture records.
+ * @param {string} name Scene and backend, e.g. `webgpu-color`.
+ * @returns {Promise<{buffer: Buffer, decoded: object}>} The frame.
+ */
+async function capture(page, outputDirectory, captures, name) {
+  const shot = await captureElement({
+    page,
+    selector: "canvas",
+    index: 0,
+    name: `polyvel-${name}`,
+    outputDirectory,
+    captures,
+  });
+  return { buffer: shot.buffer, decoded: decodePng(shot.buffer) };
+}
+
+/**
+ * Removes the viewer chrome a freshly built scene's Viewer lays over its canvas
+ * (`STRIP_WIDGETS_SOURCE`), and refuses the run when anything is still stacked
+ * there, so no pixel this probe counts belongs to the DOM. Every scene builds a
+ * new Viewer, so it runs once per scene, before that scene renders.
+ *
+ * @param {object} page Playwright page.
+ * @param {string} cell The scene's cell, named in the refusal.
+ * @returns {Promise<number>} How many chrome elements the strip removed.
+ */
+async function stripViewerChrome(page, cell) {
+  const strip = await page.evaluate(`(${STRIP_WIDGETS_SOURCE})()`);
+  if (strip.leftovers.length > 0) {
+    throw new ProbeRefusal(
+      "viewer-chrome-over-canvas",
+      `probe-polyline-taa-velocity cell ${cell}: elements still overlap the scene canvas after the widget strip (${strip.leftovers.join(", ")}), so an element capture would score them`,
+      { cell, ...strip },
+    );
+  }
+  return strip.removed;
+}
+
+/**
+ * The page-side scene switches of one rig.
+ *
+ * @param {object} rig One of {@link RIGS}.
+ * @returns {{materialType: string, withPolyline: boolean}} The switches.
+ */
+function sceneOf(rig) {
+  return {
+    materialType: rig.dials.materialType,
+    withPolyline: rig.dials.withPolyline,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -713,7 +714,7 @@ export const descriptor = {
   title: "Polyline TAA velocity emission (AR-752)",
   outputSubdirectory: "",
   receiptEnvelope: "probe-owned",
-  async cells({ browser, origin, outputDirectory, options }) {
+  async cells({ browser, origin, outputDirectory, options, captures }) {
     fs.mkdirSync(outputDirectory, { recursive: true });
     if (
       options.renderers.length !== 2 ||
@@ -738,7 +739,9 @@ export const descriptor = {
           timeout: 90000,
         },
       );
-      await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
+      await page.waitForFunction(() => !!window.viewer, null, {
+        timeout: 90000,
+      });
       await armWebGPUDevices(page);
 
       // Every scene must be one the probe drove alone. A run in which the
@@ -757,12 +760,20 @@ export const descriptor = {
         }
       };
 
+      // Every scene is a new Viewer, so each one is stripped of its chrome
+      // after it is built and before it renders, and the cell records how many
+      // chrome elements went and whether the previous scene's Viewer was torn
+      // down in full (null for the first scene, which has none).
+      const chromeRemoved = {};
+      const previousViewerDestroyed = {};
+      const buildStrippedScene = async (cell, renderer, rig) => {
+        const built = await buildScene(page, { renderer, ...sceneOf(rig) });
+        previousViewerDestroyed[cell] = built?.previousDestroyed ?? null;
+        chromeRemoved[cell] = await stripViewerChrome(page, cell);
+      };
+
       // A — animating Color polyline on WebGPU: the measurement.
-      await buildScene(page, {
-        renderer: "webgpu",
-        materialType: "Color",
-        withPolyline: true,
-      });
+      await buildStrippedScene("A", "webgpu", RIGS.color);
       assertProbeOwnedTheLoop(
         await page.evaluate(
           (frames) => window.__probeRender(frames, true),
@@ -773,16 +784,17 @@ export const descriptor = {
       const animatedColor = velocityCellFromRead(
         await page.evaluate(() => window.__probeReadVelocity()),
       );
-      const webgpuShot = await capture(page, outputDirectory, "webgpu-color");
+      const webgpuShot = await capture(
+        page,
+        outputDirectory,
+        captures,
+        "webgpu-color",
+      );
 
       // B — the negative control: PolylineDash has no velocity entry points.
       // The positive control shares the scene, so the target EXISTS here and a
       // zero on the dash line is a measured zero rather than an absent read.
-      await buildScene(page, {
-        renderer: "webgpu",
-        materialType: "PolylineDash",
-        withPolyline: true,
-      });
+      await buildStrippedScene("B", "webgpu", RIGS.dash);
       assertProbeOwnedTheLoop(
         await page.evaluate(
           (frames) => window.__probeRender(frames, true),
@@ -795,11 +807,7 @@ export const descriptor = {
       );
 
       // E1 — the no-polyline control on WebGPU.
-      await buildScene(page, {
-        renderer: "webgpu",
-        materialType: "Color",
-        withPolyline: false,
-      });
+      await buildStrippedScene("E1", "webgpu", RIGS.empty);
       assertProbeOwnedTheLoop(
         await page.evaluate(
           (frames) => window.__probeRender(frames, false),
@@ -807,14 +815,15 @@ export const descriptor = {
         ),
         "E1",
       );
-      const emptyWebgpu = await capture(page, outputDirectory, "webgpu-empty");
+      const emptyWebgpu = await capture(
+        page,
+        outputDirectory,
+        captures,
+        "webgpu-empty",
+      );
 
       // D — the same animation on WebGL: the smear denominator.
-      await buildScene(page, {
-        renderer: "webgl",
-        materialType: "Color",
-        withPolyline: true,
-      });
+      await buildStrippedScene("D", "webgl", RIGS.color);
       assertProbeOwnedTheLoop(
         await page.evaluate(
           (frames) => window.__probeRender(frames, true),
@@ -822,14 +831,15 @@ export const descriptor = {
         ),
         "D",
       );
-      const webglShot = await capture(page, outputDirectory, "webgl-color");
+      const webglShot = await capture(
+        page,
+        outputDirectory,
+        captures,
+        "webgl-color",
+      );
 
       // E2 — the no-polyline control on WebGL.
-      await buildScene(page, {
-        renderer: "webgl",
-        materialType: "Color",
-        withPolyline: false,
-      });
+      await buildStrippedScene("E2", "webgl", RIGS.empty);
       assertProbeOwnedTheLoop(
         await page.evaluate(
           (frames) => window.__probeRender(frames, false),
@@ -837,7 +847,12 @@ export const descriptor = {
         ),
         "E2",
       );
-      const emptyWebgl = await capture(page, outputDirectory, "webgl-empty");
+      const emptyWebgl = await capture(
+        page,
+        outputDirectory,
+        captures,
+        "webgl-empty",
+      );
 
       const gate = await collectGateErrors(page);
       // ONE CELL PER RUN, WRAPPED IN AN ARRAY. The runtime collects each run
@@ -854,6 +869,8 @@ export const descriptor = {
           webglLinePixels: countLinePixels(webglShot.decoded),
           emptyWebgpuLinePixels: countLinePixels(emptyWebgpu.decoded),
           emptyWebglLinePixels: countLinePixels(emptyWebgl.decoded),
+          chromeRemoved,
+          previousViewerDestroyed,
           errors:
             gate.errors.length +
             consoleErrors.length +

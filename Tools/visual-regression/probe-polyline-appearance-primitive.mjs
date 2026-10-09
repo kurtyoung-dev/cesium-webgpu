@@ -4,6 +4,7 @@
  * WebGL (NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU, COLOR slice).
  * @purpose Gate: Primitive+PolylineColorAppearance renders a screen-space ribbon on WebGPU (dedicated packer/shader; was 0px from collapsed quads)
  * @status ACTIVE
+ * @runtime lib/probe-runtime.mjs
  *
  * ROOT CAUSE this verifies: WebGPUPrimitiveShaders.selectWebGPUShader only
  * inspected normal/st -> picked the "basic" shader; the basic vertex packer
@@ -24,211 +25,341 @@
  *                  webgl  cyan  > N   (reference)
  *   - AFTER fix:   webgpuCyan / webglCyan within ~15%
  *
- * Usage:
- *   PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-polyline-appearance-primitive.mjs
+ * C11-09 (`CAMPAIGN11_EXECUTION_GUIDE` cluster G1, A10) names this probe as
+ * one of the two colour/material baselines the polyline appearance pick fix
+ * must leave unchanged.
+ *
+ * ON THE SHARED RUNTIME (probe-kit harvest, polyline family, DX-108). The
+ * browser, the origin (`--port`, a governed Edge port, never 8080), the
+ * served-build preflight, the Edge slot, the lifecycle deadline and the
+ * receipt belong to `lib/probe-runtime.mjs`. The two passes are the rigs
+ * `polyline-appearance-color-geodesic` and `polyline-appearance-color-none`,
+ * and the page builds each scene from its rig. Each capture still gets a fresh
+ * browser context (the original launched a fresh browser) and the WebGPU error
+ * gate. Each frame is an element capture of the scene canvas through
+ * `captureElement`, taken after `lib/strip-viewer-widgets.mjs` has removed the
+ * viewer chrome that otherwise sits inside the canvas's rectangle (a run with
+ * chrome left over the canvas refuses); the cyan and non-black counts are
+ * `maskCount` (`lib/metrics/colour-mask.mjs`) over the decoded PNG with the
+ * original thresholds, where the original read the live canvas through
+ * `drawImage` inside the page. No clock is pinned, as before: the scene hides
+ * every time-dependent body.
+ *
+ * Usage: node server.js --port 8094 --serve-built   (separate terminal, once)
+ *        node Tools/visual-regression/probe-polyline-appearance-primitive.mjs
+ * Out:   Tools/visual-regression/output/polyline-appearance-primitive/
  */
-import { chromium } from "playwright";
+import { decodePng } from "../lib/png-decode.mjs";
 import {
   errorGateInit,
   armWebGPUDevices,
   collectGateErrors,
   attachConsoleErrorGate,
 } from "../lib/webgpu-error-gate.mjs";
+import {
+  anyChannelAbove,
+  channelThresholds,
+  maskCount,
+} from "./lib/metrics/colour-mask.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
+import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
+import geodesicRig from "./rigs/polyline-appearance-color-geodesic.mjs";
+import noneRig from "./rigs/polyline-appearance-color-none.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
+/** The two passes, in the order the probe has always measured them. */
+export const RIGS = Object.freeze([geodesicRig, noneRig]);
 
-async function captureRender(page, arcTypeName) {
-  return page.evaluate(async (arcTypeName) => {
-    const C = await import("/Build/CesiumUnminified/index.js");
-    const v = window.viewer;
-    v.scene.globe.show = false;
-    v.scene.skyBox.show = false;
-    v.scene.sun.show = false;
-    v.scene.moon.show = false;
-    v.scene.skyAtmosphere.show = false;
-    v.scene.backgroundColor = C.Color.BLACK;
+/** The line's colour class: high-contrast cyan, `b > 200 && g > 200 && r < 80`. */
+export const CYAN = channelThresholds({ bAbove: 200, gAbove: 200, rBelow: 80 });
 
-    // Remove any prior primitives (Primitive instances we added).
-    const prims = v.scene.primitives;
-    for (let i = prims.length - 1; i >= 0; i--) {
-      const p = prims.get(i);
-      if (p && p.constructor && p.constructor.name === "Primitive") {
-        prims.remove(p);
+/** Reported, never verdicted: any channel above 10. */
+export const NON_BLACK = anyChannelAbove(10);
+
+/** The canvas the scene draws into; the CesiumViewer page has exactly one. */
+const SCENE_CANVAS = ".cesium-widget canvas";
+
+/**
+ * A bound on one capture's work, from the probe's own step timeouts: page
+ * load (90 s), the wait for `window.viewer` (90 s), the settle loop (at most
+ * half a second per settle frame) and the capture (30 s). Not a measurement —
+ * a ceiling past which the lifecycle stops the run instead of letting a hung
+ * device wedge the machine (the original had no watchdog at all).
+ *
+ * @param {object} rig The capture's rig.
+ * @returns {number} Milliseconds.
+ */
+function captureBudgetMs(rig) {
+  return 90_000 + 90_000 + rig.readiness.frames * 500 + 30_000;
+}
+
+/**
+ * Builds one rig's scene in the page and renders it for the rig's settle
+ * frames. `page.evaluate` ships this function's SOURCE, so everything it reads
+ * arrives in `scene`; it measures nothing — the pixels are read in Node from
+ * the capture.
+ *
+ * @param {object} page Playwright page.
+ * @param {object} rig The pass's rig.
+ * @returns {Promise<{renderer: string, primitiveReady: boolean, arcType: string}>} Page-side facts.
+ */
+async function buildScene(page, rig) {
+  return page.evaluate(
+    async (scene) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const v = window.viewer;
+      for (const name of scene.hide) {
+        v.scene[name].show = false;
+      }
+      v.scene.backgroundColor = C.Color.BLACK;
+
+      // Remove any prior primitives (Primitive instances we added).
+      const prims = v.scene.primitives;
+      for (let i = prims.length - 1; i >= 0; i--) {
+        const p = prims.get(i);
+        if (p && p.constructor && p.constructor.name === "Primitive") {
+          prims.remove(p);
+        }
+      }
+
+      // A zig-zag line so miters are exercised, in a small lat/lon box.
+      const positions = C.Cartesian3.fromDegreesArray(scene.positionsDegrees);
+      const primitive = prims.add(
+        new C.Primitive({
+          geometryInstances: new C.GeometryInstance({
+            geometry: new C.PolylineGeometry({
+              positions: positions,
+              width: scene.width,
+              arcType: C.ArcType[scene.arcType],
+              vertexFormat: C.PolylineColorAppearance.VERTEX_FORMAT,
+            }),
+            attributes: {
+              // High-contrast CYAN (r=0, g=1, b=1).
+              color: C.ColorGeometryInstanceAttribute.fromColor(
+                new C.Color(...scene.color),
+              ),
+            },
+          }),
+          appearance: new C.PolylineColorAppearance({
+            translucent: false,
+          }),
+          asynchronous: false,
+        }),
+      );
+
+      // Frame the line from straight above.
+      const look = scene.lookAt;
+      v.camera.lookAt(
+        C.Cartesian3.fromDegrees(look.lon, look.lat, look.height),
+        new C.HeadingPitchRange(
+          C.Math.toRadians(look.headingDegrees),
+          C.Math.toRadians(look.pitchDegrees),
+          look.rangeMetres,
+        ),
+      );
+      v.camera.lookAtTransform(C.Matrix4.IDENTITY);
+
+      let ready = false;
+      for (let i = 0; i < scene.frames; i++) {
+        v.scene.render();
+        // Primitive.ready flips true after the first few async-off renders.
+        if (primitive.ready) ready = true;
+        await new Promise((res) => requestAnimationFrame(res));
+      }
+      return {
+        renderer: v.scene.context?.rendererType,
+        primitiveReady: ready,
+        arcType: scene.arcType,
+      };
+    },
+    { ...rig.dials, frames: rig.readiness.frames },
+  );
+}
+
+/**
+ * One pass on one backend: a fresh browser context, the scene built and
+ * settled, the viewer chrome removed, one element capture of the scene canvas,
+ * and the gate read before the context closes.
+ *
+ * @param {object} options Inputs.
+ * @returns {Promise<{render: object, gate: object, consoleErrors: string[]}>} The capture.
+ */
+async function capturePass({
+  browser,
+  origin,
+  rig,
+  renderer,
+  run,
+  outputDirectory,
+  captures,
+}) {
+  const context = await browser.newContext({ viewport: { ...rig.viewport } });
+  try {
+    const page = await context.newPage();
+    const consoleErrors = attachConsoleErrorGate(page);
+    await page.addInitScript(errorGateInit);
+    await page.goto(
+      `${origin}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+      { waitUntil: "networkidle", timeout: 90_000 },
+    );
+    await page.waitForFunction(() => !!window.viewer, null, {
+      timeout: 90_000,
+    });
+    await armWebGPUDevices(page);
+    const strip = await page.evaluate(`(${STRIP_WIDGETS_SOURCE})()`);
+    if (strip.leftovers.length > 0) {
+      throw new ProbeRefusal(
+        "viewer-chrome-over-canvas",
+        `${rig.id}/${renderer}: elements still overlap the scene canvas after the widget strip (${strip.leftovers.join(", ")}), so an element capture would score them`,
+        { rig: rig.id, renderer, ...strip },
+      );
+    }
+
+    const facts = await buildScene(page, rig);
+    const shot = await captureElement({
+      page,
+      selector: SCENE_CANVAS,
+      name: `polyline-appearance-${renderer}-${rig.dials.arcType}-run${run}`,
+      outputDirectory,
+      captures,
+    });
+    const image = decodePng(shot.buffer);
+    const render = {
+      ...facts,
+      width: image.width,
+      height: image.height,
+      cyan: maskCount(image, CYAN),
+      nonBlack: maskCount(image, NON_BLACK),
+    };
+    const gate = await collectGateErrors(page);
+    console.log(
+      `  [${renderer}/${rig.dials.arcType}] ${JSON.stringify(render)} gate: armed=${gate.armedDevices} uncaptured=${gate.errors.length} deviceLost=${gate.deviceLost || "no"}`,
+    );
+    return {
+      render,
+      gate: {
+        errors: gate.errors.slice(0, 6),
+        errorCount: gate.errors.length,
+        deviceLost: gate.deviceLost ?? null,
+        armedDevices: gate.armedDevices,
+      },
+      consoleErrors: consoleErrors.slice(0, 6),
+      widgetsRemoved: strip.removed,
+    };
+  } finally {
+    await context.close();
+  }
+}
+
+/**
+ * The probe's four checks per pass, over one run's results — pure and
+ * exported so `polyline-probe-verdicts.spec.mjs` can drive it.
+ *
+ * @param {Record<string, {webgl: {render: object}, webgpu: {render: object, gate: object}}>} results By arc type.
+ * @returns {Array<{id: string, claim: string, pass: boolean, detail: object}>} Verdicts.
+ */
+export function evaluateAppearancePrimitive(results) {
+  const verdicts = [];
+  for (const rig of RIGS) {
+    const arcType = rig.dials.arcType;
+    const wgl = results[arcType].webgl.render;
+    const wgpu = results[arcType].webgpu.render;
+    const gate = results[arcType].webgpu.gate;
+    const ratio = wgl.cyan > 0 ? wgpu.cyan / wgl.cyan : 0;
+    verdicts.push(
+      {
+        id: `${arcType}/webgl-draws`,
+        claim: `[${arcType}] webgl draws the cyan line (reference)`,
+        pass: wgl.cyan > 200,
+        detail: { webglCyan: wgl.cyan },
+      },
+      {
+        id: `${arcType}/webgpu-draws`,
+        claim: `[${arcType}] webgpu draws the cyan line (fix landed, not 0px)`,
+        pass: wgpu.cyan > 200,
+        detail: { webgpuCyan: wgpu.cyan },
+      },
+      {
+        id: `${arcType}/parity`,
+        claim: `[${arcType}] webgpu cyan within 15% of webgl (ratio=${ratio.toFixed(3)})`,
+        pass: ratio >= 0.85 && ratio <= 1.15,
+        detail: { ratio, webglCyan: wgl.cyan, webgpuCyan: wgpu.cyan },
+      },
+      {
+        id: `${arcType}/webgpu-error-free`,
+        claim: `[${arcType}] no uncaptured WebGPU errors`,
+        pass: (gate.errorCount ?? 0) === 0 && !gate.deviceLost,
+        detail: { errorCount: gate.errorCount, deviceLost: gate.deviceLost },
+      },
+    );
+  }
+  return verdicts;
+}
+
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "polyline-appearance-primitive",
+  title:
+    "NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU colour slice — Primitive + PolylineColorAppearance parity",
+  outputSubdirectory: "polyline-appearance-primitive",
+  // No JSON receipt was banked before the migration.
+  receiptEnvelope: "runtime",
+  // The CesiumViewer page and the in-page import both read this module.
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  workBudgetMs: () =>
+    RIGS.reduce((sum, rig) => sum + 2 * captureBudgetMs(rig), 0),
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    if (
+      !options.renderers.includes("webgl") ||
+      !options.renderers.includes("webgpu")
+    ) {
+      throw new ProbeRefusal(
+        "renderer-pair-required",
+        `the colour-slice gate is a WebGPU/WebGL cyan ratio, so both renderers are required (got ${options.renderers.join(",")})`,
+        { renderers: options.renderers },
+      );
+    }
+    const results = {};
+    for (const rig of RIGS) {
+      results[rig.dials.arcType] = {};
+      for (const renderer of ["webgl", "webgpu"]) {
+        results[rig.dials.arcType][renderer] = await capturePass({
+          browser,
+          origin,
+          rig,
+          renderer,
+          run,
+          outputDirectory,
+          captures,
+        });
       }
     }
-
-    // A zig-zag line so miters are exercised, in a small lat/lon box.
-    const positions = C.Cartesian3.fromDegreesArray([
-      -75.0, 35.0, -74.0, 36.0, -73.0, 35.0, -72.0, 36.0, -71.0, 35.0,
-    ]);
-
-    const arcType =
-      arcTypeName === "NONE" ? C.ArcType.NONE : C.ArcType.GEODESIC;
-
-    const primitive = prims.add(
-      new C.Primitive({
-        geometryInstances: new C.GeometryInstance({
-          geometry: new C.PolylineGeometry({
-            positions: positions,
-            width: 8.0,
-            arcType: arcType,
-            vertexFormat: C.PolylineColorAppearance.VERTEX_FORMAT,
-          }),
-          attributes: {
-            // High-contrast CYAN (r=0, g=1, b=1).
-            color: C.ColorGeometryInstanceAttribute.fromColor(
-              new C.Color(0.0, 1.0, 1.0, 1.0),
-            ),
-          },
-        }),
-        appearance: new C.PolylineColorAppearance({
-          translucent: false,
-        }),
-        asynchronous: false,
-      }),
+    return [{ run, results }];
+  },
+  verdicts(cells) {
+    return cells.flatMap((cell) =>
+      evaluateAppearancePrimitive(cell.results).map((verdict) => ({
+        ...verdict,
+        id: `${verdict.id}/run${cell.run}`,
+      })),
     );
-
-    // Frame the line from straight above.
-    const center = C.Cartesian3.fromDegrees(-73.0, 35.5, 0.0);
-    v.camera.lookAt(
-      center,
-      new C.HeadingPitchRange(0.0, C.Math.toRadians(-90.0), 300000.0),
-    );
-    v.camera.lookAtTransform(C.Matrix4.IDENTITY);
-
-    let ready = false;
-    for (let i = 0; i < 120; i++) {
-      v.scene.render();
-      // Primitive.ready flips true after the first few async-off renders.
-      if (primitive.ready) ready = true;
-      await new Promise((res) => requestAnimationFrame(res));
+  },
+  receipt(cells, context) {
+    for (const verdict of context.verdicts) {
+      console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
     }
-
-    const canvas = v.canvas;
-    const w = canvas.width;
-    const h = canvas.height;
-    const tmp = document.createElement("canvas");
-    tmp.width = w;
-    tmp.height = h;
-    const tctx = tmp.getContext("2d");
-    tctx.drawImage(canvas, 0, 0);
-    const px = tctx.getImageData(0, 0, w, h).data;
-
-    let cyan = 0;
-    let nonBlack = 0;
-    for (let i = 0; i < px.length; i += 4) {
-      const r = px[i];
-      const g = px[i + 1];
-      const b = px[i + 2];
-      if (r > 10 || g > 10 || b > 10) nonBlack++;
-      if (b > 200 && g > 200 && r < 80) cyan++;
-    }
-
     return {
-      renderer: v.scene.context?.rendererType,
-      primitiveReady: ready,
-      arcType: arcTypeName,
-      width: w,
-      height: h,
-      cyan,
-      nonBlack,
+      rigs: RIGS.map((rig) => rig.id),
+      cells,
+      verdicts: context.verdicts,
     };
-  }, arcTypeName);
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
 }
-
-async function captureRenderer(renderer, arcTypeName, fs) {
-  const browser = await chromium.launch({
-    channel: "msedge",
-    headless: true,
-    args: ["--enable-unsafe-webgpu"],
-  });
-  const page = await browser.newPage({
-    viewport: { width: 1024, height: 768 },
-  });
-  const consoleErrors = attachConsoleErrorGate(page);
-  await page.addInitScript(errorGateInit);
-
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-    timeout: 90_000,
-  });
-  await page.waitForFunction(() => !!window.viewer, { timeout: 90_000 });
-  await armWebGPUDevices(page);
-
-  const render = await captureRender(page, arcTypeName);
-  const buf = await page.screenshot({ omitBackground: false });
-  const out = `Tools/visual-regression/output/polyline-appearance-${renderer}-${arcTypeName}.png`;
-  fs.writeFileSync(out, buf);
-  console.log(`  [${renderer}/${arcTypeName}] ${JSON.stringify(render)}`);
-  console.log(`    PNG: ${out} (${buf.length} bytes)`);
-
-  const gate = await collectGateErrors(page);
-  await browser.close();
-  return { render, gate, consoleErrors };
-}
-
-(async () => {
-  const fs = await import("fs");
-  fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
-
-  const results = {};
-  for (const arcTypeName of ["GEODESIC", "NONE"]) {
-    results[arcTypeName] = {};
-    for (const renderer of ["webgl", "webgpu"]) {
-      console.log(
-        `\n=== Capturing ${renderer.toUpperCase()} / ${arcTypeName} ===`,
-      );
-      results[arcTypeName][renderer] = await captureRenderer(
-        renderer,
-        arcTypeName,
-        fs,
-      );
-      const g = results[arcTypeName][renderer].gate;
-      console.log(
-        `GATE: armed=${g.armedDevices} uncaptured=${g.errors.length} deviceLost=${g.deviceLost || "no"}`,
-      );
-      if (g.errors.length) console.log("  gate errors:", g.errors.slice(0, 6));
-    }
-  }
-
-  console.log(`\n=== ANALYSIS ===`);
-  const checks = [];
-  for (const arcTypeName of ["GEODESIC", "NONE"]) {
-    const wgl = results[arcTypeName].webgl.render;
-    const wgpu = results[arcTypeName].webgpu.render;
-    console.log(
-      `[${arcTypeName}] webgl cyan=${wgl.cyan}  webgpu cyan=${wgpu.cyan}`,
-    );
-
-    // WebGL must draw a meaningful number of cyan pixels (reference).
-    checks.push([
-      `[${arcTypeName}] webgl draws the cyan line (reference)`,
-      wgl.cyan > 200,
-    ]);
-    // WebGPU must draw cyan (fix landed — not 0px).
-    checks.push([
-      `[${arcTypeName}] webgpu draws the cyan line (fix landed, not 0px)`,
-      wgpu.cyan > 200,
-    ]);
-    // Parity within ~15%.
-    const ratio = wgl.cyan > 0 ? wgpu.cyan / wgl.cyan : 0;
-    checks.push([
-      `[${arcTypeName}] webgpu cyan within 15% of webgl (ratio=${ratio.toFixed(3)})`,
-      ratio >= 0.85 && ratio <= 1.15,
-    ]);
-    // No WebGPU device errors.
-    checks.push([
-      `[${arcTypeName}] no uncaptured WebGPU errors`,
-      (results[arcTypeName].webgpu.gate.errors.length ?? 0) === 0 &&
-        !results[arcTypeName].webgpu.gate.deviceLost,
-    ]);
-  }
-
-  let allPass = true;
-  for (const [label, ok] of checks) {
-    console.log(`  [${ok ? "PASS" : "FAIL"}] ${label}`);
-    if (!ok) allPass = false;
-  }
-  console.log(`\nRESULT: ${allPass ? "GREEN" : "RED"}`);
-  process.exitCode = allPass ? 0 : 1;
-})();
