@@ -54,3 +54,15 @@ polyline verification recipes.
 `Tools/visual-regression/output/` (`co41-loading-check.mjs`, `sunbloom-flip-diag.mjs`,
 `viewer-smoke.mjs`). They are untracked by design, so moving them is a tracking decision rather
 than a `git mv`, and it was left to the maintainer.
+
+## Probe-kit harvest, c11 family (DX-108)
+
+Moved under `R-2026-09-17-11` (archive means moved; deletion is a later, separate positive-list
+batch). The file still runs from its new path:
+`node Tools/visual-regression/archive/probe-c11-209-effects-placeholder-startup.mjs`, with its
+relative imports rewritten for the deeper directory. Its outputs resolve from the working
+directory, so they still land in the live `output/performance/`.
+
+| File                                            | Former path                                                             | Status             | Successor / conclusion banked where                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------------------------------------- | ----------------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `probe-c11-209-effects-placeholder-startup.mjs` | `Tools/visual-regression/probe-c11-209-effects-placeholder-startup.mjs` | ARCHIVED-CANDIDATE | Row `C11-209` is COMPLETE (Batch 1026). The pass (run `81b6febc…`, 17/17) and its conclusion are in `WEBGPU_DEBUGGING_LOG.md` under "C11-209" and "Probe-kit harvest, c11 family". The visibility arithmetic is `lib/metrics/c11-frame-nonvacuity.mjs`, and the visibility capture now removes the viewer's widgets first and refuses on leftovers (the banked pass predates this); the page is rig `c11-viewer-offline-webgpu`; the provenance policy and its spec now point here |

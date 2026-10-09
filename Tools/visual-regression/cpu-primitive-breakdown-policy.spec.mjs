@@ -733,7 +733,10 @@ test("first-red policy is write-once for failures and preserves prior evidence",
 
 test("Viewport seams are sequential and keep dynamic drain outside traversal", () => {
   const start = viewportSource.indexOf("function updateAndRenderPrimitives(");
-  const end = viewportSource.indexOf("const scratchEyeTranslation", start);
+  // The body ends where the next top-level function begins. The previous end
+  // anchor, `const scratchEyeTranslation`, left ViewportExecutor.js in
+  // 3cbb82885f (2026-08-14), after which `end` was -1 and this test red.
+  const end = viewportSource.indexOf("function executeWebVRCommands(", start);
   const body = viewportSource.slice(start, end);
   const collectionBegin = body.indexOf(
     "beginEnvironmentMapUpdateCollection?.()",

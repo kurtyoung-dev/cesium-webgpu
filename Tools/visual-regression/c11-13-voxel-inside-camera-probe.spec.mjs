@@ -857,6 +857,27 @@ test("raw mask comparison cannot pass two empty masks", () => {
   assert.equal(assessCrossBackendEvidence(blackBlack).pass, false);
 });
 
+test("the harness passes the C11-13 bars to the kit footprint (call-site drift alarm)", () => {
+  // The kit functions' defaults are pinned in metrics-c11.spec.mjs, but this
+  // harness passes its bars explicitly and analyzePng is private, so a changed
+  // bar here would go unseen (review N2). The tolerances are read by value;
+  // each kit call appears exactly once, with exactly these options.
+  assert.equal(PIXEL_TOLERANCES.nonBlackThreshold, 18);
+  assert.equal(PIXEL_TOLERANCES.minimumNonBlackPixels, 512);
+  const source = sources.implementation.replace(/\s+/g, " ");
+  for (const call of [/nonBlackFootprint\(/g, /compareFootprints\(/g]) {
+    assert.equal(source.match(call)?.length, 1, `${call} call sites`);
+  }
+  assert.match(
+    source,
+    /nonBlackFootprint\( \{ width: info\.width, height: info\.height, channels: info\.channels, data \}, \{ nonBlackThreshold: PIXEL_TOLERANCES\.nonBlackThreshold, interiorFraction: 0\.2, centerPatchRadius: 4, \}, \)/,
+  );
+  assert.match(
+    source,
+    /compareFootprints\(webgl, webgpu, \{ minimumNonBlackPixels: PIXEL_TOLERANCES\.minimumNonBlackPixels, onSizeMismatch: "not-comparable", \}\)/,
+  );
+});
+
 test("waypoint ladder and outside-return identity require a real 0→36→0 transition", () => {
   const baseline = passingWaypointResults();
   assert.equal(assessWaypointSequence(baseline).pass, true);

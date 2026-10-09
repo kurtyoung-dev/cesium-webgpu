@@ -9,7 +9,7 @@ export const C11_209_SOURCE_FILE =
 export const C11_209_RUNTIME_BUNDLE = "Build/CesiumUnminified/index.js";
 export const C11_209_SOURCE_MAP = "Build/CesiumUnminified/index.js.map";
 export const C11_209_PROBE_FILE =
-  "Tools/visual-regression/probe-c11-209-effects-placeholder-startup.mjs";
+  "Tools/visual-regression/archive/probe-c11-209-effects-placeholder-startup.mjs";
 export const C11_209_POLICY_FILE =
   "Tools/visual-regression/lib/c11-209-effects-placeholder-provenance.mjs";
 export const C11_209_RUNTIME_PATH = "/Build/CesiumUnminified/index.js";

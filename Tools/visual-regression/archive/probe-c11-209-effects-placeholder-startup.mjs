@@ -4,10 +4,11 @@
  * placeholders. Native wrappers are installed before Cesium requests a device
  * and attribute only the exact initialization encoder/command buffer.
  * @purpose Startup acceptance that the effects depth-placeholder init encoder creates exactly the expected textures/views/passes, via native WebGPU API wrappers
- * @status ACTIVE
+ * @status ARCHIVED-CANDIDATE
+ * @note Archived by the probe-kit harvest (DX-108, c11 family): row C11-209 is COMPLETE, its schema-2 pass (run 81b6febc, 17/17) and conclusion are banked in WEBGPU_DEBUGGING_LOG.md "C11-209" and "Probe-kit harvest, c11 family"; the visibility check's arithmetic now lives in lib/metrics/c11-frame-nonvacuity.mjs. The harvest also made the visibility capture canvas-only: the viewer's widgets are removed (lib/strip-viewer-widgets.mjs) before the canvas element capture, the run refuses (exit 3, status REFUSED, no first-red) if anything is still stacked over the canvas, and the count removed is recorded as visible.chromeRemoved. The banked pass predates this and was taken with the widgets in place.
  *
  * Run with the repository dev server already listening on localhost:8080:
- *   node Tools/visual-regression/probe-c11-209-effects-placeholder-startup.mjs
+ *   node Tools/visual-regression/archive/probe-c11-209-effects-placeholder-startup.mjs
  */
 
 import fs from "node:fs";
@@ -20,13 +21,16 @@ import {
   attachConsoleErrorGate,
   collectGateErrors,
   errorGateInit,
-} from "../lib/webgpu-error-gate.mjs";
+} from "../../lib/webgpu-error-gate.mjs";
 import {
   C11_209_RUNTIME_PATH,
   collectC11209SourceBuildProvenance,
   evaluateC11209Provenance,
   fingerprintBytes,
-} from "./lib/c11-209-effects-placeholder-provenance.mjs";
+} from "../lib/c11-209-effects-placeholder-provenance.mjs";
+import { frameNonVacuity } from "../lib/metrics/c11-frame-nonvacuity.mjs";
+import { ProbeRefusal } from "../lib/probe-refusal.mjs";
+import { STRIP_WIDGETS_SOURCE } from "../lib/strip-viewer-widgets.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const HEADED = process.env.PROBE_HEADED === "1";
@@ -647,34 +651,12 @@ async function analyzeScreenshot(png) {
     .removeAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
-  const colors = new Set();
-  let nonBlack = 0;
-  let sum = 0;
-  let sumSquares = 0;
-  const pixels = info.width * info.height;
-  for (let index = 0; index < data.length; index += info.channels) {
-    const red = data[index];
-    const green = data[index + 1];
-    const blue = data[index + 2];
-    if (red + green + blue > 24) {
-      nonBlack++;
-    }
-    const luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
-    sum += luma;
-    sumSquares += luma * luma;
-    colors.add(`${red >> 4},${green >> 4},${blue >> 4}`);
-  }
-  const mean = sum / pixels;
-  return {
-    width: info.width,
-    height: info.height,
-    pixels,
-    nonBlackPixels: nonBlack,
-    nonBlackFraction: nonBlack / pixels,
-    distinctQuantizedColors: colors.size,
-    meanLuma: mean,
-    lumaStddev: Math.sqrt(Math.max(0, sumSquares / pixels - mean * mean)),
-  };
+  // The arithmetic moved to lib/metrics/c11-frame-nonvacuity.mjs in the
+  // probe-kit harvest (DX-108); metrics-c11.spec.mjs proves it unchanged.
+  return frameNonVacuity(
+    { width: info.width, height: info.height, channels: info.channels, data },
+    { nonBlackChannelSum: 24, quantizeShift: 4 },
+  );
 }
 
 const artifact = {
@@ -961,10 +943,24 @@ try {
       ]),
     ),
   };
+  // An element capture of the CesiumViewer canvas composites every widget
+  // stacked over it (toolbar, animation, timeline, credits), so the pixel
+  // statistics below would partly measure DOM chrome. The counts above are
+  // already taken; remove the widgets, and refuse rather than score a frame
+  // that still has something over the canvas.
+  const chrome = await page.evaluate(`(${STRIP_WIDGETS_SOURCE})()`);
+  if (chrome.leftovers.length > 0) {
+    throw new ProbeRefusal(
+      "capture-chrome-left-over",
+      `elements still overlap the viewer canvas after widget removal: ${chrome.leftovers.join(", ")}`,
+      chrome,
+    );
+  }
   const canvas = page.locator(".cesium-widget canvas").first();
   const screenshot = await canvas.screenshot({ timeout: 30_000 });
   evidence.visible = {
     ...evidence.visible,
+    chromeRemoved: chrome.removed,
     screenshot: await analyzeScreenshot(screenshot),
   };
 
@@ -1021,10 +1017,14 @@ try {
   artifact.evidence = evidence;
 } catch (error) {
   const structural = error instanceof StructuralProbeError;
-  exitCode = structural ? 3 : 2;
+  const refused = error instanceof ProbeRefusal;
+  exitCode = structural ? 3 : refused ? error.exitCode : 2;
   const failure = String(error?.stack ?? error);
   artifact.generatedAt = new Date().toISOString();
-  artifact.status = structural ? "STRUCTURAL" : "ERROR";
+  artifact.status = structural ? "STRUCTURAL" : refused ? "REFUSED" : "ERROR";
+  if (refused) {
+    artifact.refusal = { reason: error.reason, details: error.details };
+  }
   artifact.pass = false;
   artifact.exitCode = exitCode;
   artifact.incomplete = false;
@@ -1038,10 +1038,12 @@ try {
         },
       ]
     : [];
+  // A refusal is neither a provenance break nor a harness fault, so its one
+  // failure says so rather than reading as a structural harness error.
   artifact.failures = [
     {
-      name: structural ? "provenance" : "harness",
-      structural: true,
+      name: structural ? "provenance" : refused ? "refusal" : "harness",
+      structural: !refused,
       detail: structural ? error.detail : failure,
     },
   ];
@@ -1052,7 +1054,12 @@ try {
   }
   clearTimeout(watchdog);
   artifact.firstRed.preserved = artifact.firstRed.existedBefore;
-  if (exitCode !== 0 && !artifact.firstRed.existedBefore) {
+  // A refusal measured nothing, so it is never banked as the first red.
+  if (
+    exitCode !== 0 &&
+    artifact.status !== "REFUSED" &&
+    !artifact.firstRed.existedBefore
+  ) {
     artifact.firstRed.written = true;
   }
   fs.mkdirSync(path.dirname(OUTPUT), { recursive: true });

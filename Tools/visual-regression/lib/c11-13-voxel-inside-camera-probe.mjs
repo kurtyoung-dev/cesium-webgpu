@@ -8,6 +8,10 @@ import path from "node:path";
 import sharp from "sharp";
 
 import { validateServedEntryIdentities } from "./build-source-identity.mjs";
+import {
+  compareFootprints,
+  nonBlackFootprint,
+} from "./metrics/c11-footprint.mjs";
 import { exitCodeForS5Status } from "./verdict-exit-gate.mjs";
 
 export const OUTER_WATCHDOG_GRACE_MS = 30_000;
@@ -279,6 +283,9 @@ const LOCAL_PATHS = Object.freeze({
   ),
   buildIdentityHelper: path.resolve(
     "Tools/visual-regression/lib/build-source-identity.mjs",
+  ),
+  footprintMetric: path.resolve(
+    "Tools/visual-regression/lib/metrics/c11-footprint.mjs",
   ),
   rendererSource: path.resolve(
     "packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts",
@@ -1232,157 +1239,43 @@ async function analyzePng(pngBytes) {
     .removeAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
-  const pixelCount = info.width * info.height;
-  const mask = new Uint8Array(pixelCount);
-  const threshold = PIXEL_TOLERANCES.nonBlackThreshold;
-  const interiorMinX = Math.floor(info.width * 0.2);
-  const interiorMaxX = Math.ceil(info.width * 0.8);
-  const interiorMinY = Math.floor(info.height * 0.2);
-  const interiorMaxY = Math.ceil(info.height * 0.8);
-  const centerX = Math.floor(info.width / 2);
-  const centerY = Math.floor(info.height / 2);
-  let nonBlackPixels = 0;
-  let interiorNonBlackPixels = 0;
-  let centerPatchNonBlackPixels = 0;
-  let minX = info.width;
-  let minY = info.height;
-  let maxX = -1;
-  let maxY = -1;
-  let sumR = 0;
-  let sumG = 0;
-  let sumB = 0;
-
-  for (let y = 0; y < info.height; y += 1) {
-    for (let x = 0; x < info.width; x += 1) {
-      const pixel = y * info.width + x;
-      const offset = pixel * info.channels;
-      const red = data[offset];
-      const green = data[offset + 1];
-      const blue = data[offset + 2];
-      if (Math.max(red, green, blue) < threshold) continue;
-      mask[pixel] = 1;
-      nonBlackPixels += 1;
-      sumR += red;
-      sumG += green;
-      sumB += blue;
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x);
-      maxY = Math.max(maxY, y);
-      if (
-        x >= interiorMinX &&
-        x < interiorMaxX &&
-        y >= interiorMinY &&
-        y < interiorMaxY
-      ) {
-        interiorNonBlackPixels += 1;
-      }
-      if (Math.abs(x - centerX) <= 4 && Math.abs(y - centerY) <= 4) {
-        centerPatchNonBlackPixels += 1;
-      }
-    }
-  }
-
-  const centerOffset = (centerY * info.width + centerX) * info.channels;
-  const meanRgb =
-    nonBlackPixels > 0
-      ? [sumR, sumG, sumB].map((value) => value / nonBlackPixels)
-      : [0, 0, 0];
+  // The footprint arithmetic lives in lib/metrics/c11-footprint.mjs (probe-kit
+  // harvest, DX-108; metrics-c11.spec.mjs proves it equals the inline code it
+  // replaced). The decode, both hashes and the receipt's key order stay here.
+  const { mask, metrics } = nonBlackFootprint(
+    { width: info.width, height: info.height, channels: info.channels, data },
+    {
+      nonBlackThreshold: PIXEL_TOLERANCES.nonBlackThreshold,
+      interiorFraction: 0.2,
+      centerPatchRadius: 4,
+    },
+  );
+  const { width, height, channels, pixelCount, ...footprint } = metrics;
   return {
     mask,
     metrics: {
-      width: info.width,
-      height: info.height,
-      channels: info.channels,
+      width,
+      height,
+      channels,
       pixelCount,
       rawBytes: data.length,
       rawSha256: sha256(data),
       pngBytes: pngBytes.length,
       pngSha256: sha256(pngBytes),
-      nonBlackPixels,
-      nonBlackFraction: nonBlackPixels / pixelCount,
-      interiorNonBlackPixels,
-      centerPatchNonBlackPixels,
-      centerPixelRgb: [
-        data[centerOffset],
-        data[centerOffset + 1],
-        data[centerOffset + 2],
-      ],
-      centerPixelMaximum: Math.max(
-        data[centerOffset],
-        data[centerOffset + 1],
-        data[centerOffset + 2],
-      ),
-      meanRgb,
-      greenDominance: meanRgb[1] - Math.max(meanRgb[0], meanRgb[2]),
-      boundingBox:
-        nonBlackPixels > 0
-          ? {
-              minX,
-              minY,
-              maxX,
-              maxY,
-              width: maxX - minX + 1,
-              height: maxY - minY + 1,
-            }
-          : null,
+      ...footprint,
     },
   };
 }
 
 export function compareBackendCaptures(webgl, webgpu) {
-  const comparable =
-    webgl?.metrics?.width === webgpu?.metrics?.width &&
-    webgl?.metrics?.height === webgpu?.metrics?.height &&
-    webgl?.mask?.length === webgpu?.mask?.length &&
-    webgl?.mask?.length > 0;
-  if (!comparable) {
-    return {
-      comparable: false,
-      bothNonVacuous: false,
-      intersectionPixels: 0,
-      unionPixels: 0,
-      footprintIou: 0,
-      footprintRatio: null,
-      boundingBoxWidthRatio: null,
-      boundingBoxHeightRatio: null,
-      meanColorL1: Number.POSITIVE_INFINITY,
-    };
-  }
-  let intersectionPixels = 0;
-  let unionPixels = 0;
-  for (let pixel = 0; pixel < webgl.mask.length; pixel += 1) {
-    const gl = webgl.mask[pixel] === 1;
-    const gpu = webgpu.mask[pixel] === 1;
-    if (gl && gpu) intersectionPixels += 1;
-    if (gl || gpu) unionPixels += 1;
-  }
-  const webglPixels = webgl.metrics.nonBlackPixels;
-  const webgpuPixels = webgpu.metrics.nonBlackPixels;
-  const bothNonVacuous =
-    webglPixels >= PIXEL_TOLERANCES.minimumNonBlackPixels &&
-    webgpuPixels >= PIXEL_TOLERANCES.minimumNonBlackPixels;
-  return {
-    comparable: true,
-    bothNonVacuous,
-    intersectionPixels,
-    unionPixels,
-    footprintIou: unionPixels > 0 ? intersectionPixels / unionPixels : 0,
-    footprintRatio: webglPixels > 0 ? webgpuPixels / webglPixels : null,
-    boundingBoxWidthRatio:
-      webgl.metrics.boundingBox?.width > 0
-        ? webgpu.metrics.boundingBox?.width / webgl.metrics.boundingBox.width
-        : null,
-    boundingBoxHeightRatio:
-      webgl.metrics.boundingBox?.height > 0
-        ? webgpu.metrics.boundingBox?.height / webgl.metrics.boundingBox.height
-        : null,
-    meanColorL1: webgl.metrics.meanRgb.reduce(
-      (sum, channel, index) =>
-        sum + Math.abs(channel - webgpu.metrics.meanRgb[index]),
-      0,
-    ),
-  };
+  // IoU, ratios and colour delta live in lib/metrics/c11-footprint.mjs. The
+  // kit throws on a size mismatch by default; this harness opts in to the
+  // comparable:false record it has always written, which
+  // assessCrossBackendEvidence fails.
+  return compareFootprints(webgl, webgpu, {
+    minimumNonBlackPixels: PIXEL_TOLERANCES.minimumNonBlackPixels,
+    onSizeMismatch: "not-comparable",
+  });
 }
 
 async function installPageObservers(

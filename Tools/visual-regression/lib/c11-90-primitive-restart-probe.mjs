@@ -7,6 +7,12 @@ import path from "node:path";
 
 import sharp from "sharp";
 
+import {
+  achromaticMask,
+  componentShapeStats,
+} from "./metrics/c11-component-shape.mjs";
+import { frameDifference } from "./metrics/c11-frame-difference.mjs";
+
 export const OUTER_WATCHDOG_GRACE_MS = 30_000;
 const MAX_TIMER_MS = 2_147_483_647;
 
@@ -125,6 +131,16 @@ const LOCAL_PATHS = Object.freeze({
   probeImplementation: path.resolve(
     "Tools/visual-regression/lib/c11-90-primitive-restart-probe.mjs",
   ),
+  componentShapeMetric: path.resolve(
+    "Tools/visual-regression/lib/metrics/c11-component-shape.mjs",
+  ),
+  connectedComponentsMetric: path.resolve(
+    "Tools/visual-regression/lib/metrics/connected-components.mjs",
+  ),
+  frameDifferenceMetric: path.resolve(
+    "Tools/visual-regression/lib/metrics/c11-frame-difference.mjs",
+  ),
+  imageDiff: path.resolve("Tools/visual-regression/lib/image-diff.mjs"),
   cesiumEntry: path.resolve("Source/Cesium.js"),
   engineBundle: path.resolve("packages/engine/Build/Unminified/index.js"),
   engineWgslBundle: path.resolve(
@@ -569,98 +585,29 @@ async function imageMetrics(filePath) {
     .removeAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
-  const pixelCount = info.width * info.height;
-  const mask = new Uint8Array(pixelCount);
-  let modelMaskPixels = 0;
-  for (let pixel = 0; pixel < pixelCount; pixel += 1) {
-    const offset = pixel * info.channels;
-    const colors = [data[offset], data[offset + 1], data[offset + 2]];
-    const maximum = Math.max(...colors);
-    const minimum = Math.min(...colors);
-    if (maximum >= 32 && maximum - minimum <= 42) {
-      mask[pixel] = 1;
-      modelMaskPixels += 1;
-    }
-  }
-
-  const significantThreshold = Math.max(64, Math.floor(pixelCount * 0.00005));
-  const visited = new Uint8Array(pixelCount);
-  const queue = new Int32Array(pixelCount);
-  const components = [];
-  for (let seed = 0; seed < pixelCount; seed += 1) {
-    if (!mask[seed] || visited[seed]) continue;
-    let head = 0;
-    let tail = 0;
-    let size = 0;
-    let minimumX = info.width;
-    let maximumX = -1;
-    let minimumY = info.height;
-    let maximumY = -1;
-    queue[tail++] = seed;
-    visited[seed] = 1;
-    while (head < tail) {
-      const current = queue[head++];
-      size += 1;
-      const x = current % info.width;
-      const y = Math.floor(current / info.width);
-      minimumX = Math.min(minimumX, x);
-      maximumX = Math.max(maximumX, x);
-      minimumY = Math.min(minimumY, y);
-      maximumY = Math.max(maximumY, y);
-      for (let dy = -1; dy <= 1; dy += 1) {
-        for (let dx = -1; dx <= 1; dx += 1) {
-          if (dx === 0 && dy === 0) continue;
-          const nx = x + dx;
-          const ny = y + dy;
-          if (nx < 0 || ny < 0 || nx >= info.width || ny >= info.height) {
-            continue;
-          }
-          const next = ny * info.width + nx;
-          if (mask[next] && !visited[next]) {
-            visited[next] = 1;
-            queue[tail++] = next;
-          }
-        }
-      }
-    }
-    if (size >= significantThreshold) {
-      const width = maximumX - minimumX + 1;
-      const height = maximumY - minimumY + 1;
-      components.push({
-        pixels: size,
-        bounds: { minimumX, maximumX, minimumY, maximumY },
-        width,
-        height,
-        verticalAspect: height / width,
-        elongation: Math.max(width / height, height / width),
-      });
-    }
-  }
-  components.sort((left, right) => right.pixels - left.pixels);
-  const componentSizes = components.map((component) => component.pixels);
-  const significantComponentPixels = componentSizes.reduce(
-    (sum, size) => sum + size,
-    0,
+  // The achromatic mask and the significant-component shape terms live in
+  // lib/metrics/c11-component-shape.mjs, labelled by the kit's
+  // connected-components.mjs (probe-kit harvest, DX-108; metrics-c11.spec.mjs
+  // proves the result equals the inline flood fill it replaced). The decode,
+  // the file facts and the receipt's key order stay here.
+  const shape = componentShapeStats(
+    achromaticMask(
+      {
+        width: info.width,
+        height: info.height,
+        channels: info.channels,
+        data,
+      },
+      { minimumMaximum: 32, maximumSpread: 42 },
+    ),
+    { minimumComponentPixels: 64, componentFraction: 0.00005, listLimit: 16 },
   );
-  const componentBalance =
-    components.length > 0 ? components.at(-1).pixels / components[0].pixels : 0;
   return {
     width: info.width,
     height: info.height,
     bytes: fs.statSync(filePath).size,
     sha256: sha256(fs.readFileSync(filePath)),
-    modelMaskPixels,
-    modelMaskFraction: modelMaskPixels / pixelCount,
-    significantComponentThreshold: significantThreshold,
-    significantComponentCount: components.length,
-    significantComponentPixels,
-    significantComponentCoverage:
-      modelMaskPixels > 0 ? significantComponentPixels / modelMaskPixels : 0,
-    significantComponentSizes: componentSizes.slice(0, 16),
-    significantComponents: components.slice(0, 16),
-    componentBalance,
-    largestComponentShare:
-      modelMaskPixels > 0 ? (componentSizes[0] ?? 0) / modelMaskPixels : 1,
+    ...shape,
   };
 }
 
@@ -704,36 +651,16 @@ async function imageDifference(pathA, pathB) {
       sharp(filePath).removeAlpha().raw().toBuffer({ resolveWithObject: true }),
     ),
   );
-  if (
-    first.info.width !== second.info.width ||
-    first.info.height !== second.info.height ||
-    first.info.channels !== second.info.channels
-  ) {
-    return { comparable: false, changedPixels: 0, meanAbsoluteDelta: 0 };
-  }
-  let changedPixels = 0;
-  let absoluteDelta = 0;
-  for (
-    let offset = 0;
-    offset < first.data.length;
-    offset += first.info.channels
-  ) {
-    let maximumDelta = 0;
-    for (let channel = 0; channel < 3; channel += 1) {
-      const delta = Math.abs(
-        first.data[offset + channel] - second.data[offset + channel],
-      );
-      maximumDelta = Math.max(maximumDelta, delta);
-      absoluteDelta += delta;
-    }
-    if (maximumDelta >= 12) changedPixels += 1;
-  }
-  return {
-    comparable: true,
-    changedPixels,
-    meanAbsoluteDelta:
-      absoluteDelta / (first.info.width * first.info.height * 3),
-  };
+  // Changed pixels are counted by lib/image-diff.mjs's diffImages through
+  // lib/metrics/c11-frame-difference.mjs (probe-kit harvest, DX-108). The kit
+  // throws on a size or channel mismatch by default; this harness opts in to
+  // the comparable:false record it has always written, which the
+  // "visibly distinguishes strips from fans" check fails.
+  return frameDifference(
+    { ...first.info, data: first.data },
+    { ...second.info, data: second.data },
+    { changedChannelDelta: 12, onSizeMismatch: "not-comparable" },
+  );
 }
 
 function addCheck(checks, name, pass, actual, expected) {

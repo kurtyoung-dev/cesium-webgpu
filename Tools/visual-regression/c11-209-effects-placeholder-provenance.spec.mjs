@@ -18,7 +18,7 @@ import {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PROBE_SOURCE = fs.readFileSync(
-  path.join(HERE, "probe-c11-209-effects-placeholder-startup.mjs"),
+  path.join(HERE, "archive", "probe-c11-209-effects-placeholder-startup.mjs"),
   "utf8",
 );
 

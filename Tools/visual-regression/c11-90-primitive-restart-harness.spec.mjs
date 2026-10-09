@@ -41,6 +41,12 @@ const probeImplementation = fs.readFileSync(
   path.join(here, "lib/c11-90-primitive-restart-probe.mjs"),
   "utf8",
 );
+// The component shape terms moved to the kit in the probe-kit harvest
+// (DX-108); the harness imports them, so the bounds anchor is read there.
+const componentShapeMetric = fs.readFileSync(
+  path.join(here, "lib/metrics/c11-component-shape.mjs"),
+  "utf8",
+);
 
 function webglAuthority() {
   return {
@@ -426,8 +432,39 @@ test("shape authority requires exactly nine balanced and covered authored shapes
     });
   }
   assert.match(
-    probeImplementation,
+    componentShapeMetric,
     /bounds: \{ minimumX, maximumX, minimumY, maximumY \}/,
+  );
+  assert.match(probeImplementation, /componentShapeStats\(\s*achromaticMask\(/);
+  // The kit throws on a size mismatch unless the caller opts in; the harness
+  // opts in so its strips-versus-fans record stays comparable:false (drift
+  // alarm on the call site; metrics-c11.spec.mjs pins the behaviour).
+  assert.match(
+    probeImplementation,
+    /frameDifference\([^;]*onSizeMismatch: "not-comparable"/,
+  );
+});
+
+test("the harness passes the C11-90 bars to the kit metrics (call-site drift alarm)", () => {
+  // The kit functions' defaults are pinned in metrics-c11.spec.mjs, but this
+  // harness passes its bars explicitly and its imageMetrics/imageDifference
+  // are private, so a changed literal here would go unseen (review N2). Each
+  // kit call appears exactly once, with exactly these options.
+  const source = probeImplementation.replace(/\s+/g, " ");
+  for (const call of [
+    /achromaticMask\(/g,
+    /componentShapeStats\(/g,
+    /frameDifference\(/g,
+  ]) {
+    assert.equal(source.match(call)?.length, 1, `${call} call sites`);
+  }
+  assert.match(
+    source,
+    /componentShapeStats\( achromaticMask\( \{ width: info\.width, height: info\.height, channels: info\.channels, data, \}, \{ minimumMaximum: 32, maximumSpread: 42 \}, \), \{ minimumComponentPixels: 64, componentFraction: 0\.00005, listLimit: 16 \}, \)/,
+  );
+  assert.match(
+    source,
+    /frameDifference\( \{ \.\.\.first\.info, data: first\.data \}, \{ \.\.\.second\.info, data: second\.data \}, \{ changedChannelDelta: 12, onSizeMismatch: "not-comparable" \}, \)/,
   );
 });
 
