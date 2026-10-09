@@ -826,36 +826,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-06-15, pre-dates the spec",
   "probe-pointcloud-logdepth.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
-  "probe-polar-alpha-debug.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-polar-bisect.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-polar-diff-all.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-polar-fixed-time.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-18, pre-dates the spec",
-  "probe-polar-forcered.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-polar-fs-stages.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-polar-imagery-state.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-polar-mesh-compare.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-23, pre-dates the spec",
-  "probe-polar-multi-angle.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-polar-multi-plain.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-polar-noculling.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-polar-pixel-sweep.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-polar-settle.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-polar-stretch-diag.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-polar-wireframe.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
   "probe-polyline-appearance-2d.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
   "probe-polyline-appearance-logdepth.mjs":

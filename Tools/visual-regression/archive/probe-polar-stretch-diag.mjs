@@ -3,7 +3,9 @@
 // the new DebugTileImageryProvider so we can SEE which tiles are
 // affected (by rectangle / Mercator-limit annotations).
 // @purpose Diagnostic: reproduced the polar-stretch artifact at WGS84 orbit with the tile-annotation overlay to see which tiles were affected
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+// @supersededBy probe-polar-multi-plain.mjs --rigs polar-orbit-14mm-northamerica,polar-orbit-14mm-northamerica-overlay
+// @note Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 59; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".
 
 import { chromium } from "playwright";
 import fs from "fs";

@@ -1,19 +1,30 @@
 #!/usr/bin/env node
-// At south-pole-close, check post-composite-alpha for polar tiles.
-// @purpose Polar black-hole diagnostic: samples post-composite alpha at south-pole-close to test whether imagery was masked out by texCoordsAlpha
-// @status INVESTIGATION
-//
-// If alpha = 0 in the central region, imagery is being masked out
-// (texCoordsAlpha returning 0).
+// Batch 62 — at south-pole-close, walk every meaningful FS debug stage and
+// capture the screenshot. Goal: identify the exact stage where imagery
+// composite drops to black.
+// @purpose Diagnostic: walks every globe FS debug stage at south-pole-close to find the exact stage where imagery composite drops to black
+// @status ARCHIVED-CANDIDATE
+// @supersededBy probe-polar-multi-plain.mjs --rigs polar-southpole-close-alpha (its "alpha" stage; its other stages are this file's sweep; force-red is the sibling probe-polar-forcered.mjs's scene, not one of these stages)
+// @note Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 62; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".
 
 import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
 
 const BASE = "http://localhost:8080";
-const OUT_DIR = "Tools/visual-regression/output";
+const OUT = "Tools/visual-regression/output";
 
-async function capture(mode) {
+const STAGES = [
+  "uv",
+  "alpha",
+  "layer-count",
+  "sample0",
+  "tex0-alpha",
+  "post-composite-color",
+  "post-composite-alpha",
+];
+
+async function capture(stage) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
@@ -32,8 +43,9 @@ async function capture(mode) {
   });
   await page.waitForFunction(() => !!window.viewer);
   await page.waitForFunction(() => !!window.CesiumDebug, { timeout: 5000 });
+
   await page.evaluate(
-    async ({ mode }) => {
+    async ({ stage }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const vm = v.baseLayerPicker.viewModel;
@@ -43,7 +55,7 @@ async function capture(mode) {
           .includes("wgs84"),
       );
       if (wgs84) vm.selectedTerrain = wgs84;
-      window.CesiumDebug.globeFragmentDebug(mode);
+      window.CesiumDebug.globeFragmentDebug(stage);
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(0, -89, 3_000_000),
       });
@@ -53,27 +65,20 @@ async function capture(mode) {
         if (v.scene.globe.tilesLoaded && i > 200) break;
       }
     },
-    { mode },
+    { stage },
   );
   await page.waitForTimeout(1500);
-  const out = path.join(OUT_DIR, `polar-${mode}-webgpu.png`);
+  const out = path.join(OUT, `polar-stage-${stage}-webgpu.png`);
   await page.screenshot({ path: out });
   await browser.close();
   return out;
 }
 
 (async () => {
-  if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log("[polar-alpha-debug]");
-  for (const mode of [
-    "alpha",
-    "post-composite-alpha",
-    "post-composite-color",
-    "uv",
-    "sample0",
-    "layer-count",
-  ]) {
-    console.log(`  ${mode}`);
-    await capture(mode);
+  if (!fs.existsSync(OUT)) fs.mkdirSync(OUT, { recursive: true });
+  console.log("[polar-fs-stages] @ south-pole-close (0,-89,3Mm) WGS84");
+  for (const stage of STAGES) {
+    const f = await capture(stage);
+    console.log(`  ${stage} → ${f}`);
   }
 })();

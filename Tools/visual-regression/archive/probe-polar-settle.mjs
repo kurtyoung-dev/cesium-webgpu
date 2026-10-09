@@ -4,7 +4,9 @@
 // steady-state bug. Capture at three settle budgets: 120 frames,
 // 600 frames, 2400 frames.
 // @purpose Diagnostic: captured the polar-stretch artifact at 120/600/2400-frame settle budgets to test settle-dependence vs steady-state
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+// @supersededBy probe-polar-multi-plain.mjs --rigs polar-settle-14mm-120f,polar-settle-14mm-600f,polar-settle-14mm-2400f
+// @note Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 59; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".
 
 import { chromium } from "playwright";
 import fs from "fs";

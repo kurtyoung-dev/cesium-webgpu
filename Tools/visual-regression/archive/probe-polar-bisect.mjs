@@ -3,7 +3,9 @@
 // through globeFragmentDebug modes. Captures one screenshot per mode
 // so we can see which intermediate has the streaking pattern.
 // @purpose Polar-stretch diagnostic: steps through globeFragmentDebug FS modes at 14 Mm orbit, one screenshot per mode, to locate the streaking stage
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+// @supersededBy probe-polar-multi-plain.mjs --rigs polar-orbit-14mm-northamerica (the production frame; the nine debug modes are this file's sweep)
+// @note Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 59; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".
 
 import { chromium } from "playwright";
 import fs from "fs";

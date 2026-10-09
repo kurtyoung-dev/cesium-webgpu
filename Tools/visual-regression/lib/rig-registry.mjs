@@ -59,6 +59,7 @@ const SCENES_JSON_PATH = path.join(__dirname, "..", "scenes.json");
 export const RIG_TAGS = Object.freeze([
   "wave-end",
   "cloud",
+  "polar",
   "orbital-ladder",
   "saved-view",
   "sandcastle",

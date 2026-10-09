@@ -10749,7 +10749,7 @@ v.clock.multiplier    = 0;
 Updated probes:
 
 - [probe-polar-multi-plain.mjs](../Tools/visual-regression/probe-polar-multi-plain.mjs) — the gating cross-backend probe.
-- [probe-polar-multi-angle.mjs](../Tools/visual-regression/probe-polar-multi-angle.mjs) — overlay variant.
+- [probe-polar-multi-angle.mjs](../Tools/visual-regression/archive/probe-polar-multi-angle.mjs) — overlay variant.
 - [probe-northpole-angles.mjs](../Tools/visual-regression/probe-northpole-angles.mjs) — 8 north-pole views.
 - [probe-disc-size-orbit.mjs](../Tools/visual-regression/probe-disc-size-orbit.mjs) — disc-bounds measurement.
 - [probe-atmosphere-orbit.mjs](../Tools/visual-regression/probe-atmosphere-orbit.mjs) — atmosphere isolation diff.
@@ -11108,7 +11108,7 @@ After Batch 62 (polar black hole fix), `southpole-close` was at 2.61 % but `nort
 ### Diagnostics that ruled out single-bug hypotheses
 
 1. **Sub-pixel positional drift?** Searched `(dx, dy)` ∈ [-6, 6] for the offset that minimizes mean-abs diff over three boxes (Greenland coast, ocean center, Russia coast). All three regions had their optimum at exactly `(0, 0)`. WebGPU is NOT scrolled vs WebGL.
-2. **Day/night, sun, atmosphere?** [probe-polar-fixed-time.mjs](../Tools/visual-regression/probe-polar-fixed-time.mjs) locks the simulation clock at a fixed UTC moment, and disables sky atmosphere, ground atmosphere, lighting, sun, moon, skybox, and fog before capturing. Diff numbers were **byte-identical** to the with-effects probe. The visible delta is not in any of these.
+2. **Day/night, sun, atmosphere?** [probe-polar-fixed-time.mjs](../Tools/visual-regression/archive/probe-polar-fixed-time.mjs) locks the simulation clock at a fixed UTC moment, and disables sky atmosphere, ground atmosphere, lighting, sun, moon, skybox, and fog before capturing. Diff numbers were **byte-identical** to the with-effects probe. The visible delta is not in any of these.
 3. **Tile selection or imagery LOD?** Dumped `tilesToRender` per backend at the same camera. 58 tiles on both, same per-tile (level, x, y), same imagery skeleton count + same imagery ancestor levels.
 4. **Anisotropic filtering?** WebGL imagery samplers use `maximumAnisotropy = ContextLimits.maximumTextureFilterAnisotropy` (16x). WebGPU's globe sampler in [WebGPUGlobeSurfaceLayouts.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceLayouts.ts) had no `maxAnisotropy` (defaults to 1x). Added `maxAnisotropy: 16` — **regressed `midlat-mid` from 1 % to 7 %** while improving polar-orbit by only 0.3-1.3 %. Reverted. Anisotropy is not the answer.
 
@@ -11148,7 +11148,7 @@ The actual polar BUG — Batch 62's `minV = 0.96` black hole — is fixed. Visua
 
 ### What Batch 64 ships
 
-- [probe-polar-fixed-time.mjs](../Tools/visual-regression/probe-polar-fixed-time.mjs) — captures with clock locked + all time-varying effects off. Use to rule out lighting/atmosphere when chasing a numerical-only diff.
+- [probe-polar-fixed-time.mjs](../Tools/visual-regression/archive/probe-polar-fixed-time.mjs) — captures with clock locked + all time-varying effects off. Use to rule out lighting/atmosphere when chasing a numerical-only diff.
 - [probe-align-test.mjs](../Tools/visual-regression/probe-align-test.mjs) — searches a (dx, dy) shift grid to detect sub-pixel positional drift. Returns 0,0 when none.
 - Four pre-rendered diff images at [Tools/visual-regression/output/diff-{view}-plain.png](../Tools/visual-regression/output/) for visual inspection.
 
@@ -11263,9 +11263,9 @@ The polar black hole is gone. Remaining diff is dominated by per-tile gridlines 
 ### Files modified
 
 - [packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts) — gate recalc on `useWebMercatorT === true`.
-- [Tools/visual-regression/probe-polar-imagery-state.mjs](../Tools/visual-regression/probe-polar-imagery-state.mjs) — per-skeleton state dump (proved the layerCount=0 hypothesis wrong).
-- [Tools/visual-regression/probe-polar-fs-stages.mjs](../Tools/visual-regression/probe-polar-fs-stages.mjs) — captures each FS-debug-mode screenshot at south-pole-close.
-- [Tools/visual-regression/probe-polar-pixel-sweep.mjs](../Tools/visual-regression/probe-polar-pixel-sweep.mjs) — center-pixel decode for every debug mode (the smoking gun on `rect.y = 0.96`).
+- [Tools/visual-regression/probe-polar-imagery-state.mjs](../Tools/visual-regression/archive/probe-polar-imagery-state.mjs) — per-skeleton state dump (proved the layerCount=0 hypothesis wrong).
+- [Tools/visual-regression/probe-polar-fs-stages.mjs](../Tools/visual-regression/archive/probe-polar-fs-stages.mjs) — captures each FS-debug-mode screenshot at south-pole-close.
+- [Tools/visual-regression/probe-polar-pixel-sweep.mjs](../Tools/visual-regression/archive/probe-polar-pixel-sweep.mjs) — center-pixel decode for every debug mode (the smoking gun on `rect.y = 0.96`).
 
 ---
 
@@ -11303,12 +11303,12 @@ A defensive change that did NOT visibly help but is correct: `sanitizeWebMercato
 ### What Batch 61 ships
 
 - `sanitizeWebMercatorT` helper in [packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl) — applied to all 4 WebMercT vertex entry points.
-- [probe-polar-multi-angle.mjs](../Tools/visual-regression/probe-polar-multi-angle.mjs) — 6 views × 2 backends = 12 baseline captures.
-- [probe-polar-diff-all.mjs](../Tools/visual-regression/probe-polar-diff-all.mjs) — pixel-diffs every polar-multi pair. Drop-in regression tracker for "are we at <2% on every polar view?" Writes `output/polar-multi-diff-report.json` for trend tracking.
+- [probe-polar-multi-angle.mjs](../Tools/visual-regression/archive/probe-polar-multi-angle.mjs) — 6 views × 2 backends = 12 baseline captures.
+- [probe-polar-diff-all.mjs](../Tools/visual-regression/archive/probe-polar-diff-all.mjs) — pixel-diffs every polar-multi pair. Drop-in regression tracker for "are we at <2% on every polar view?" Writes `output/polar-multi-diff-report.json` for trend tracking.
 - [probe-southpole-diag.mjs](../Tools/visual-regression/probe-southpole-diag.mjs) — inspects `tilesToRender` state at south-pole-close (mesh, indices, rectangle, renderable per tile).
-- [probe-polar-wireframe.mjs](../Tools/visual-regression/probe-polar-wireframe.mjs) — captures wireframe overlay at both poles for tile-mesh inspection.
-- [probe-polar-forcered.mjs](../Tools/visual-regression/probe-polar-forcered.mjs) — uses `globeFragmentDebug("force-red")` to verify rasterization.
-- [probe-polar-alpha-debug.mjs](../Tools/visual-regression/probe-polar-alpha-debug.mjs) — sweeps fragment-debug modes at the south-pole view.
+- [probe-polar-wireframe.mjs](../Tools/visual-regression/archive/probe-polar-wireframe.mjs) — captures wireframe overlay at both poles for tile-mesh inspection.
+- [probe-polar-forcered.mjs](../Tools/visual-regression/archive/probe-polar-forcered.mjs) — uses `globeFragmentDebug("force-red")` to verify rasterization.
+- [probe-polar-alpha-debug.mjs](../Tools/visual-regression/archive/probe-polar-alpha-debug.mjs) — sweeps fragment-debug modes at the south-pole view.
 
 ### Deferred to Batch 62 (or later)
 
@@ -22989,3 +22989,40 @@ the scheme, and page-relative answers are read on the document.
 `Specs/Core/CredentialDestinationSpec.mjs`, `Specs/Core/ResourceUrlRoundTripSpec.mjs`.
 *Measured:* E1, `Tools/visual-regression/output/wave-end/ci-wave2-l11-r6-20260926/E1/README.md` (both rows pass in
 DEBUG and RELEASE; 0 leaks in either engine).
+
+## Probe-kit harvest, polar family — the conclusions of the fourteen retired polar probes, and the rule behind each polar parity figure (lane Edoras)
+
+**Context.** The probe-kit harvest (`DX-108`; `R-2026-09-26-23`; retirement rule `R-2026-09-17-11`) moved fourteen of the fifteen `probe-polar-*` probes to `Tools/visual-regression/archive/` with `@status ARCHIVED-CANDIDATE` (moved, not deleted: each still runs from its new path) and moved `probe-polar-multi-plain.mjs` onto the shared runtime. Every scene the family captured or measured is now a rig (`Tools/visual-regression/rigs/polar-*.mjs`, 27 rigs, tag `polar`), and `probe-polar-multi-plain.mjs --rigs <id>` captures any of them. This entry banks each retired probe's conclusion under the probe's own name. Figures marked *measured here* were taken by the harvest in Node over frames the probes banked under `Tools/visual-regression/output/` (gitignored); nothing was rendered for this entry.
+
+**The rule behind each polar parity figure (measured here).** Two rules produced the polar figures on record, and they do not give the same number. Both are now `Tools/visual-regression/lib/metrics/polar-parity.mjs`:
+
+- `centre80-sum24` is `probe-polar-diff-all.mjs`'s in-page rule: the central 80% of the frame, a pixel counted when |dR| + |dG| + |dB| > 24. Over the six `polar-multi-*` pairs that probe last diffed, the module reproduces its banked `polar-multi-diff-report.json` (2026-05-19T18:54:58Z) exactly: every mismatch count, mean summed delta and brightness ratio.
+- `frame-sum30` is the rule behind the post-fix figures in the GLOBE-POLAR-STRETCH entry (2026-07-02) and in `IMAGERY_PROJECTION.md`: the whole frame, > 30. Over the six `polar-plain-*` pairs banked that day it gives 2.39 / 6.35 / 2.72 / 5.36 / 1.18 / 1.47% (northpole-close, northpole-orbit, southpole-close, southpole-orbit, equator-mid, midlat-mid), the figures on record to two decimals.
+
+| frames (banked) | rule | n-close | n-orbit | s-close | s-orbit | equator | midlat |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `polar-multi-*` (2026-05-19, last diffed by `probe-polar-diff-all`) | `centre80-sum24` | 14.04 | 33.97 | 2.61 | 14.59 | 0.03 | 1.09 |
+| `polar-multi-*` (2026-05-19) | `frame-sum30` | 11.42 | 24.82 | 3.82 | 11.34 | 1.08 | 2.49 |
+| `polar-plain-*` (2026-07-02) | `centre80-sum24` | 2.19 | 6.05 | 1.74 | 4.57 | 0.07 | 0.20 |
+| `polar-plain-*` (2026-07-02) | `frame-sum30` | 2.39 | 6.35 | 2.72 | 5.36 | 1.18 | 1.47 |
+
+So the "12–46% → 2.4–6.4%" comparison in the GLOBE-POLAR-STRETCH entry sets a `centre80-sum24` range against a `frame-sum30` range, and the "equator-mid 1.18% / midlat-mid 1.47% unchanged" beside it is a `frame-sum30` figure set against the `centre80-sum24` 0.03% / 1.09%. Over these page screenshots `frame-sum30` also counts the fork's renderer-selector toolbar, whose highlighted button differs between the two legs: a 279 × 45 pixel box over that toolbar holds 2,536 to 2,598 counted pixels (about 0.28% of the 1280 × 720 frame) on nine of the twelve pairs, and 2,957 to 6,760 on the other three. The migrated probe captures the scene canvas with the viewer widgets removed, so its figures carry neither, and it reports both rules.
+
+**The fourteen retired probes.**
+
+- [`probe-polar-multi-angle.mjs`](../Tools/visual-regression/archive/probe-polar-multi-angle.mjs) (Batches 60, 61, 63): the six polar views with `DebugTileImageryProvider` added. It showed the canvas-imagery `flipY` defect (fixed, Batch 60) and the south-pole black hole (Batch 61); Batch 63 recorded that the overlay's grid lines added 11–23% to every polar view, which is why `probe-polar-multi-plain.mjs` became the parity capture. Scenes: rigs `polar-overlay-*`.
+- [`probe-polar-diff-all.mjs`](../Tools/visual-regression/archive/probe-polar-diff-all.mjs) (Batches 61–63): its diff is rule `centre80-sum24` above. It reads only the `polar-multi-*` file names, which `probe-polar-multi-angle.mjs` writes; no committed tool diffed the `polar-plain-*` frames `probe-polar-multi-plain.mjs` wrote. The migrated probe now scores its own pairs. Its printed "Pass (<2% diff)" count was never an exit code and is not carried forward: `SHADER_PAIRS_LOCKSTEP.md` §Validation uses no fixed percentage.
+- [`probe-polar-fixed-time.mjs`](../Tools/visual-regression/archive/probe-polar-fixed-time.mjs) (Batch 64): with the clock frozen and sky atmosphere, ground atmosphere, lighting, sun, moon, sky box and fog off, the diff figures were byte-identical to the capture with them on. Scenes: rigs `polar-effects-off-northpole-close` and `-southpole-close`.
+- [`probe-polar-imagery-state.mjs`](../Tools/visual-regression/archive/probe-polar-imagery-state.mjs) (Batch 62): polar tiles carried the same imagery state on both backends (two skeletons, two ready, `imageryLayer` defined, reprojected texture present), so the Batch 61 `layerCount = 0` hypothesis was wrong. Its banked output is `polar-imagery-state.log`. Scenes: rigs `polar-tile-state-southpole-close` and `-northpole-close`.
+- [`probe-polar-fs-stages.mjs`](../Tools/visual-regression/archive/probe-polar-fs-stages.mjs) and [`probe-polar-alpha-debug.mjs`](../Tools/visual-regression/archive/probe-polar-alpha-debug.mjs) (Batches 61, 62): one WebGPU frame per globe fragment-debug mode at south pole close (banked as `polar-stage-*` and `polar-<mode>-webgpu.png`). They located the drop to black in the layer masks rather than the samples. Scene: rig `polar-southpole-close-alpha`.
+- [`probe-polar-pixel-sweep.mjs`](../Tools/visual-regression/archive/probe-polar-pixel-sweep.mjs) (Batch 62): the centre-pixel table per mode. Its `alpha` reading (mask 0, `rect.y` 0.96) was the root cause: the Batch 49 recalc clobbered the base layer's `minV = 0` fixup. Scene: rig `polar-southpole-close-alpha`.
+- [`probe-polar-forcered.mjs`](../Tools/visual-regression/archive/probe-polar-forcered.mjs) (Batches 61, 62): `force-red` showed that the polar fragments rasterize. *Measured here:* a 200 × 200 box on the centre of its banked frame (file time 2026-05-17T23:46Z) is 100% pure red. Scene: rig `polar-southpole-close-force-red`.
+- [`probe-polar-wireframe.mjs`](../Tools/visual-regression/archive/probe-polar-wireframe.mjs) (Batch 61, step 1): *measured here,* over the same centre box of its banked frames (2026-05-17, before the Batch 62 fix), the near-black share (R + G + B < 60) is 0% on WebGL and 100% on WebGPU at south pole close, and 57.6% on WebGL and 100% on WebGPU at north pole close. Scenes: rigs `polar-wireframe-southpole-close` and `-northpole-close`.
+- [`probe-polar-noculling.mjs`](../Tools/visual-regression/archive/probe-polar-noculling.mjs) (not previously banked by name): with globe back-face culling disabled, the hole stayed. *Measured here,* over the same centre box of its banked frames (file times 2026-05-17T23:38Z, before the Batch 62 fix), the near-black share is 0% on WebGL and 100% on WebGPU. Batch 62 then located the cause in the layer-0 mask. Scene: rig `polar-noculling-southpole-close`.
+- [`probe-polar-settle.mjs`](../Tools/visual-regression/archive/probe-polar-settle.mjs) (Batch 59): the 14 Mm view gave the same output at 120, 600 and 2,400 settle frames. *Measured here* on its three banked WebGPU frames: `centre80-sum24` mismatch 0.0017% (120 vs 600), 0.030% (600 vs 2,400) and 0.069% (120 vs 2,400), mean summed delta 0.38 / 0.77 / 1.00. The frames are not byte-identical: 174,541, 253,552 and 285,448 of 921,600 pixels differ in at least one channel. Scenes: rigs `polar-settle-14mm-120f`, `-600f`, `-2400f`.
+- [`probe-polar-stretch-diag.mjs`](../Tools/visual-regression/archive/probe-polar-stretch-diag.mjs) and [`probe-polar-bisect.mjs`](../Tools/visual-regression/archive/probe-polar-bisect.mjs) (Batch 59): the user's 14 Mm North America view, plain, with the overlay and on WebGL, and every fragment-debug stage on WebGPU; every stage was clean, and the streaking was attributed to the ocean shader that Batch 58 had already rewritten. Scenes: rigs `polar-orbit-14mm-northamerica` and `-overlay`.
+- [`probe-polar-mesh-compare.mjs`](../Tools/visual-regression/archive/probe-polar-mesh-compare.mjs): no measured conclusion exists. It prints a polar-tile mesh and RTE camera comparison to stdout and writes no file; no output under `Tools/visual-regression/output/` and no entry in this log carries a result of it. It was added in the Batches 65–95 commit, after Batch 64 listed "polar tessellation regularization" as a lead; the GLOBE-POLAR-STRETCH entry (2026-07-02) later located the polar residual in `ReprojectWebMercator.wgsl`'s double vertical flip. Scene: rig `polar-mesh-orbit-80n`.
+
+**What stays live.** [`probe-polar-multi-plain.mjs`](../Tools/visual-regression/probe-polar-multi-plain.mjs) on `lib/probe-runtime.mjs`, its six standing views as rigs `polar-plain-*`, scored by `lib/metrics/polar-parity.mjs` under both rules with no limit. Its instrument changed (an element capture of the canvas with the widgets removed, one browser per run with a fresh context per capture, the determinism kit's clock pin and settle), so its first figures are not comparable to the banked ones without saying so.
+
+**Files modified.** `Tools/visual-regression/probe-polar-multi-plain.mjs`; `Tools/visual-regression/lib/metrics/polar-parity.mjs` (new) and `metrics-polar-parity.spec.mjs` (new); `Tools/visual-regression/polar-probe-family.spec.mjs` (new); 27 rigs under `Tools/visual-regression/rigs/`; `lib/rig-registry.mjs` (tag `polar`, add-only) and `rig-registry.spec.mjs` (census); the fourteen probes moved by `git mv` into `archive/` with their `@status`, `@supersededBy` and `@note` header lines changed; `lib/probe-fleet-contract-allowlist.mjs` (15 rows removed); this log's links to the moved files; `IMAGERY_PROJECTION.md` (the rule named beside the 2026-07-02 figures); `CAMPAIGN9_OPUS_EXECUTION_GUIDE_2026-07-16.md` (two citations repointed to `archive/`).

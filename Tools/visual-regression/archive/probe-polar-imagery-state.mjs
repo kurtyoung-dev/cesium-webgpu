@@ -2,7 +2,8 @@
 // Batch 62 — for polar tiles (south < -85°), dump per-tile imagery
 // state on both WebGL and WebGPU.
 // @purpose Diagnostic: dumps per-tile imagery state machine (skeletons, readyImagery, textures) for polar tiles on both backends re layerCount=0
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+// @note Archived by the probe-kit harvest (R-2026-09-17-11): a tile-state dump, not a frame, so no probe supersedes it; its scenes are the rigs polar-tile-state-southpole-close and polar-tile-state-northpole-close. Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 62; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".
 //
 // Hypothesis under test: on WebGPU, `layerCount=0` for polar tiles
 // because either (a) no TileImagery skeletons exist, (b) readyImagery

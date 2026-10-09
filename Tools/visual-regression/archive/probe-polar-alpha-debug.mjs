@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-// Show the tile mesh as a wireframe at the polar views. If polar tiles
-// exist as wireframe but the imagery is black, it's a UV/sampling bug.
-// @purpose Diagnostic: rendered polar tiles as wireframe to split UV/sampling bugs (mesh present, imagery black) from mesh-construction/culling bugs
-// @status INVESTIGATION
+// At south-pole-close, check post-composite-alpha for polar tiles.
+// @purpose Polar black-hole diagnostic: samples post-composite alpha at south-pole-close to test whether imagery was masked out by texCoordsAlpha
+// @status ARCHIVED-CANDIDATE
+// @supersededBy probe-polar-multi-plain.mjs --rigs polar-southpole-close-alpha (its other five modes are this file's sweep)
+// @note Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batches 61 and 62; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".
 //
-// If no tile mesh at all, it's a mesh-construction or culling bug.
+// If alpha = 0 in the central region, imagery is being masked out
+// (texCoordsAlpha returning 0).
 
 import { chromium } from "playwright";
 import fs from "fs";
@@ -13,7 +15,7 @@ import path from "path";
 const BASE = "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
 
-async function capture(renderer, view) {
+async function capture(mode) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
@@ -27,13 +29,13 @@ async function capture(renderer, view) {
   const page = await browser.newPage({
     viewport: { width: 1280, height: 720 },
   });
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
   });
   await page.waitForFunction(() => !!window.viewer);
-
+  await page.waitForFunction(() => !!window.CesiumDebug, { timeout: 5000 });
   await page.evaluate(
-    async ({ view }) => {
+    async ({ mode }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const vm = v.baseLayerPicker.viewModel;
@@ -43,9 +45,9 @@ async function capture(renderer, view) {
           .includes("wgs84"),
       );
       if (wgs84) vm.selectedTerrain = wgs84;
-      v.scene.globe.showWireframe = true;
+      window.CesiumDebug.globeFragmentDebug(mode);
       v.camera.setView({
-        destination: C.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
+        destination: C.Cartesian3.fromDegrees(0, -89, 3_000_000),
       });
       for (let i = 0; i < 1200; i++) {
         v.scene.render();
@@ -53,13 +55,10 @@ async function capture(renderer, view) {
         if (v.scene.globe.tilesLoaded && i > 200) break;
       }
     },
-    { view },
+    { mode },
   );
   await page.waitForTimeout(1500);
-  const out = path.join(
-    OUT_DIR,
-    `polar-wireframe-${view.name}-${renderer}.png`,
-  );
+  const out = path.join(OUT_DIR, `polar-${mode}-webgpu.png`);
   await page.screenshot({ path: out });
   await browser.close();
   return out;
@@ -67,15 +66,16 @@ async function capture(renderer, view) {
 
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  const views = [
-    { name: "southpole-close", lon: 0, lat: -89, height: 3_000_000 },
-    { name: "northpole-close", lon: 0, lat: 89, height: 3_000_000 },
-  ];
-  console.log("[polar-wireframe]");
-  for (const view of views) {
-    for (const renderer of ["webgl", "webgpu"]) {
-      console.log(`  ${view.name} ${renderer}`);
-      await capture(renderer, view);
-    }
+  console.log("[polar-alpha-debug]");
+  for (const mode of [
+    "alpha",
+    "post-composite-alpha",
+    "post-composite-color",
+    "uv",
+    "sample0",
+    "layer-count",
+  ]) {
+    console.log(`  ${mode}`);
+    await capture(mode);
   }
 })();

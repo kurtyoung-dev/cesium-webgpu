@@ -222,12 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1424 |
-| ACTIVE | 1182 |
-| INVESTIGATION | 196 |
+| Files in census | 1454 |
+| ACTIVE | 1211 |
+| ARCHIVED-CANDIDATE | 14 |
+| INVESTIGATION | 183 |
 | NO @purpose HEADER | 45 |
 | NO @status HEADER | 1 |
-| Classes | probe 677, spec 400, other 157, lib 143, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
+| Classes | probe 677, spec 402, other 184, lib 144, gate-lib 21, bake-tool 13, runner 7, fixture 6 |
 
 ### Tools/ (64)
 
@@ -368,11 +369,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | lane-tmp.mjs | lib | ACTIVE | 2026-09-11 | 22 | The one way a spec, probe or tool takes scratch space: a single per-lane root under os.tmpdir() with removal in `finally`, so a throwing or killed run leaves one sweepable root instead of loose mkdtemp sandboxes at the Temp root. |
 | lane-tmp.spec.mjs | spec | ACTIVE | 2026-09-11 | 4 | Behaviour coverage for Tools/lib/lane-tmp.mjs — the directory is created under the lane root, removed on success AND on throw AND on rejection, refused outside tmpdir, and an inert `finally` is caught by the mutant. |
 | npm-override-rules.mjs | lib | ACTIVE | 2026-09-18 | 3 | Decides, from manifest objects alone, which root `overrides` entries npm rejects as conflicting with a direct dependency or as an unresolvable `$` reference. |
-| png-decode.mjs | lib | ACTIVE | 2026-09-13 | 17 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
+| png-decode.mjs | lib | ACTIVE | 2026-09-13 | 19 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
 | png-decode.spec.mjs | spec | ACTIVE | 2026-09-13 | 4 | Round-trip, filter-coverage and error-path coverage for Tools/lib/png-decode.mjs. |
 | png-rgba.mjs | lib | ACTIVE | 2026-09-02 | 14 | CRC32 + PNG chunk + zero-dependency RGBA PNG encoder shared across the probe fleet, replacing near-duplicate hand-rolled copies one consumer at a time. |
 | png-rgba.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Golden-byte and CRC32-vector coverage for Tools/lib/png-rgba.mjs. |
-| purpose-header.mjs | lib | ACTIVE | 2026-09-02 | 18 | The one shared @purpose/@status header grammar (parse, locate, byte-exact splice, violations) used by the codemod, the catalog generator and the fleet-contract analyzer. |
+| purpose-header.mjs | lib | ACTIVE | 2026-09-02 | 19 | The one shared @purpose/@status header grammar (parse, locate, byte-exact splice, violations) used by the codemod, the catalog generator and the fleet-contract analyzer. |
 | sharp-runtime-smoke.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 5 | — |
 | webgpu-error-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 180 | Shared Playwright gate catching unscoped WebGPU validation/OOM errors (onuncapturederror) and device loss, plus a console-error listener. |
 
@@ -431,7 +432,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1073)
+### Tools/visual-regression/ (1061)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -650,6 +651,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | material-appearance-blend-parity.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Constructs real MaterialAppearance instances over real Materials, reads the render state the WebGL command path would carry, and runs the lifted WebGPU blend derivation and scene-framebuffer target builder against those same render states, so an appearance that blends on one backend and writes opaque on the other fails here. |
 | material-texture-late-adoption.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that the WebGPU primitive material path re-binds its texture after `Material.update` drains a late image into `_imageSources`, for the main and depth-fail slots, and proves the check is live rather than inert. |
 | metrics-cloud-extraction.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Pins that moving the cloud metrics into lib/metrics changed no number: it runs each |
+| metrics-polar-parity.spec.mjs | spec | ACTIVE | — | 2 | Behaviour spec holding the polar channel-sum parity metric to the original in-page diff of probe-polar-diff-all.mjs and to hand-derived boundary fixtures, and proving a size mismatch fails rather than reads as parity. |
 | metrics-structure.spec.mjs | spec | ACTIVE | 2026-09-18 | 4 | Behaviour spec proving connected-component and SSIM metrics see structure a band mean cannot, over hand-derived fixtures. |
 | model-3d-tile-state-packet.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral tests for Model3DTileStatePacket: immutable packet reuse when broad tileset state is unchanged, refresh on real change. |
 | model-camera-arena.spec.mjs | spec | ACTIVE | 2026-09-18 | 5 | Bundles the real WebGPUModelCameraArena and pins offset alignment, per-frame reset, view isolation, plus call-site routing source checks. |
@@ -696,6 +698,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | pnts-model-attenuation-verdicts.spec.mjs | spec | ACTIVE | 2026-09-03 | 2 | Executes the PNTS model-path attenuation probe's decision functions against synthetic footprint counters, including the pre-fix shape the probe exists to catch, without launching a browser. |
 | pointcloud-browser-gate-contract.spec.mjs | spec | ACTIVE | 2026-08-25 | 1 | Executes point-cloud browser-gate decision functions against raw synthetic counters and mutation teeth without launching a browser. |
 | pointcloud-voxel-public-correctness.spec.mjs | spec | ACTIVE | 2026-08-25 | 6 | Contracts over WebGPU point-cloud RTE history, shared layouts and the EDL state machinery (slot/stencil/pipeline-key correctness surface). |
+| polar-probe-family.spec.mjs | spec | ACTIVE | — | 3 | Pins the harvested polar family: the rigs restate the archived probes' own scenes, the migrated parity probe selects and guards rigs, refuses a covered canvas or an excluded renderer, counts the frames its settle rendered and builds its parity cell as stated, it carries no private launch, diff or argv parsing, and every archived polar probe is flipped, parses and links from archive/. |
 | polyline-command-bounding-volume.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Pins that every WebGPU polyline colour and pick command declares a per-group bounding volume tight enough to bin into ONE frustum, positioned in world space, instead of the volume-less command that bins into every frustum. |
 | polyline-multimaterial-verdicts.spec.mjs | spec | ACTIVE | 2026-09-10 | 5 | Executes probe-polyline-multimaterial's shipped decision functions against the recorded pre-fix numbers for each of the four materials, and proves that removing any ONE material's assertions makes the probe pass a scene that is visibly wrong for that material. |
 | polyline-taa-velocity-emission.spec.mjs | spec | ACTIVE | 2026-09-10 | 5 | Pins that an animating PolylineCollection with TAA on attaches a velocity draw command on the base-colour shader path, emits none when TAA is off or the material has no velocity entry points, and none at all with no polylines. |
@@ -1206,21 +1209,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-pointcloud-gpulod-scene-wiring.mjs | probe | ACTIVE | 2026-08-25 | 3 | Verifies PointCloudShading.gpuLOD reaches the WebGPU LOD processor, decoupled-scan compute dispatches end-to-end, off-gate keeps atomic path |
 | probe-pointcloud-lod.mjs | probe | ACTIVE | 2026-08-25 | 6 | Verifies the LOD compaction WGSL no longer clobbers shared slot 255 at full workgroup occupancy (output = exact permutation 0..255) |
 | probe-pointcloud-logdepth.mjs | probe | ACTIVE | 2026-08-16 | 3 | Gate: standalone WebGPU point-cloud renderer writes log frag_depth so it occludes/sorts against the globe identically to WebGL |
-| probe-polar-alpha-debug.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Polar black-hole diagnostic: samples post-composite alpha at south-pole-close to test whether imagery was masked out by texCoordsAlpha |
-| probe-polar-bisect.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Polar-stretch diagnostic: steps through globeFragmentDebug FS modes at 14 Mm orbit, one screenshot per mode, to locate the streaking stage |
-| probe-polar-diff-all.mjs | probe | ACTIVE | 2026-08-16 | 2 | Diff companion: pixel-diffs every polar-multi capture pair in a Playwright page (no Node PNG dep), reporting per-view mismatch and brightness |
-| probe-polar-fixed-time.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Diagnostic: captured polar views with the clock frozen to isolate time-of-day drift as the residual-diff source |
-| probe-polar-forcered.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Diagnostic: force-red globe FS at south-pole-close to distinguish 'tiles not rasterizing' from 'rasterizing with wrong imagery' |
-| probe-polar-fs-stages.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Diagnostic: walks every globe FS debug stage at south-pole-close to find the exact stage where imagery composite drops to black |
-| probe-polar-imagery-state.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | Diagnostic: dumps per-tile imagery state machine (skeletons, readyImagery, textures) for polar tiles on both backends re layerCount=0 |
-| probe-polar-mesh-compare.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Diagnostic: byte-compares polar tile mesh + RTE camera encoding between backends to localize drift to mesh vs downstream RTE/MVP math |
-| probe-polar-multi-angle.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Diagnostic: multi-view polar capture WITH the debug tile overlay — diagnosed mirrored tile labels and missing polar imagery |
-| probe-polar-multi-plain.mjs | probe | ACTIVE | 2026-08-16 | 6 | Standing polar/global imagery parity capture: 6 views x 2 altitudes, clock pinned to a documented UTC so historical baselines stay comparable |
-| probe-polar-noculling.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Diagnostic: tested whether disabling backface culling fixes the polar black hole |
-| probe-polar-pixel-sweep.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Diagnostic: samples the center pixel at south-pole-close for each FS debug mode to confirm the WGSL return value at the polar zenith |
-| probe-polar-settle.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Diagnostic: captured the polar-stretch artifact at 120/600/2400-frame settle budgets to test settle-dependence vs steady-state |
-| probe-polar-stretch-diag.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Diagnostic: reproduced the polar-stretch artifact at WGS84 orbit with the tile-annotation overlay to see which tiles were affected |
-| probe-polar-wireframe.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Diagnostic: rendered polar tiles as wireframe to split UV/sampling bugs (mesh present, imagery black) from mesh-construction/culling bugs |
+| probe-polar-multi-plain.mjs | probe | ACTIVE | 2026-08-16 | 23 | Standing polar imagery parity on the shared runtime: the six polar-plain rigs (or any polar rig named with --rigs) captured on both renderers and scored in Node under both banked channel-sum rules |
 | probe-polyline-appearance-2d.mjs | probe | ACTIVE | 2026-08-16 | 5 | Gate: polyline appearance primitives render in 3D/Columbus/2D/mid-morph on WebGPU via projected-2D plumbing + csm_computePolylinePosition |
 | probe-polyline-appearance-logdepth.mjs | probe | ACTIVE | 2026-08-16 | 5 | Gate: appearance/material polylines write log frag_depth matching the globe so surface polylines rest on it at far cameras (no z-fight) |
 | probe-polyline-appearance-pick.mjs | probe | ACTIVE | 2026-08-16 | 9 | Gate: scene.pick over a PolylineColorAppearance Primitive returns the primitive on WebGPU (pick pipeline + per-primitive pick command) |
@@ -1390,7 +1379,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | refresh-cost-multi-metric.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Independent behavioural + canonicity coverage of Q-80's deltaOrNull/sumLegMultiMetric/available-guard formulas, which live inside a page.evaluate callback and cannot be imported. |
 | refresh-cost-protocol-order.spec.mjs | spec | NO @purpose HEADER | 2026-09-19 | 2 | — |
 | rescore-sun-disc-dawn.mjs | other | ACTIVE | 2026-09-02 | 1 | Re-score an already-acquired sun-disc-dawn artifact against a FAIL bar derived from that same artifact's own WebGL leg, never from WebGPU. |
-| rig-registry.spec.mjs | spec | ACTIVE | 2026-09-26 | 7 | Drives the real rig-registry.mjs over the real rigs/ directory: every rig validates, ids are unique, tags are in vocabulary, replayKeyFor is stable and sensitive, and generateScenesJson reproduces scenes.json byte-for-byte. |
+| rig-registry.spec.mjs | spec | ACTIVE | 2026-09-26 | 9 | Drives the real rig-registry.mjs over the real rigs/ directory: every rig validates, ids are unique, tags are in vocabulary, replayKeyFor is stable and sensitive, and generateScenesJson reproduces scenes.json byte-for-byte. |
 | run-performance-campaign.mjs | runner | ACTIVE | 2026-08-16 | 33 | The performance characterization runner: consumes performance-workloads.json, records Scene.render CPU samples + GPU timestamps; never FPS. |
 | run-regression-sweep.mjs | runner | INVESTIGATION | 2026-08-16 | 0 | Batch-146 sequential sweep of the Batches 134-145 probe arc, parsing stdout tails for PASS/FAIL markers — a did-the-arc-break-anything check. |
 | run-source-check.mjs | runner | ACTIVE | 2026-09-06 | 3 | Records one authorized Node source spec with explicit input identities and durable raw command facts. |
@@ -1509,7 +1498,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | wgsl-window-coordinates.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Runs csm_eyeToWindowCoordinates, csm_modelToWindowCoordinates and csm_metersPerPixel through the WGSL evaluator and asserts their outputs against a CPU port of the GLSL twins, in WebGPU's NDC convention, for perspective, 2D orthographic and Columbus-View orthographic frustums. |
 | widgets-teardown-contract.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Pins that the three inspector mixins remove and destroy the panel they append to the caller's container, that FullscreenButtonViewModel unsubscribes from the document it subscribed to, that Geocoder removes every listener its constructor added, and that Animation removes the <style> node it inserted. |
 
-### Tools/visual-regression/archive/ (16)
+### Tools/visual-regression/archive/ (30)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1523,6 +1512,20 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-gpu-tex.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Early attempt to introspect the globe imagery texture cache from the page; never reaches the per-device renderer instance |
 | probe-imagery-format.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Tried to sample imagery texture formats via a ctx._globeImageryCache field on a Sandcastle Hello World boot |
 | probe-logdepth-diag.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Read the classifier dsColorFS 'TEMP DIAG' RGB encoding (storedDepth/eyeDist/encFar) to localize breaks in the log-depth reconstruction chain |
+| probe-polar-alpha-debug.mjs | probe | ARCHIVED-CANDIDATE | — | 4 | Polar black-hole diagnostic: samples post-composite alpha at south-pole-close to test whether imagery was masked out by texCoordsAlpha — *probe-polar-multi-plain.mjs --rigs polar-southpole-close-alpha (its other five modes are this file's sweep) · Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batches 61 and 62; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".* |
+| probe-polar-bisect.mjs | probe | ARCHIVED-CANDIDATE | — | 4 | Polar-stretch diagnostic: steps through globeFragmentDebug FS modes at 14 Mm orbit, one screenshot per mode, to locate the streaking stage — *probe-polar-multi-plain.mjs --rigs polar-orbit-14mm-northamerica (the production frame; the nine debug modes are this file's sweep) · Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 59; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".* |
+| probe-polar-diff-all.mjs | probe | ARCHIVED-CANDIDATE | — | 6 | Diff companion: pixel-diffs every polar-multi capture pair in a Playwright page (no Node PNG dep), reporting per-view mismatch and brightness — *lib/metrics/polar-parity.mjs rule centre80-sum24, computed by probe-polar-multi-plain.mjs over its own pairs · Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batches 61 to 63; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".* |
+| probe-polar-fixed-time.mjs | probe | ARCHIVED-CANDIDATE | — | 4 | Diagnostic: captured polar views with the clock frozen to isolate time-of-day drift as the residual-diff source — *probe-polar-multi-plain.mjs --rigs polar-effects-off-northpole-close,polar-effects-off-southpole-close · Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 64; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".* |
+| probe-polar-forcered.mjs | probe | ARCHIVED-CANDIDATE | — | 5 | Diagnostic: force-red globe FS at south-pole-close to distinguish 'tiles not rasterizing' from 'rasterizing with wrong imagery' — *probe-polar-multi-plain.mjs --rigs polar-southpole-close-force-red · Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batches 61 and 62; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".* |
+| probe-polar-fs-stages.mjs | probe | ARCHIVED-CANDIDATE | — | 4 | Diagnostic: walks every globe FS debug stage at south-pole-close to find the exact stage where imagery composite drops to black — *probe-polar-multi-plain.mjs --rigs polar-southpole-close-alpha (its "alpha" stage; its other stages are this file's sweep; force-red is the sibling probe-polar-forcered.mjs's scene, not one of these stages) · Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 62; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".* |
+| probe-polar-imagery-state.mjs | probe | ARCHIVED-CANDIDATE | — | 5 | Diagnostic: dumps per-tile imagery state machine (skeletons, readyImagery, textures) for polar tiles on both backends re layerCount=0 — *Archived by the probe-kit harvest (R-2026-09-17-11): a tile-state dump, not a frame, so no probe supersedes it; its scenes are the rigs polar-tile-state-southpole-close and polar-tile-state-northpole-close. Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 62; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".* |
+| probe-polar-mesh-compare.mjs | probe | ARCHIVED-CANDIDATE | — | 3 | Diagnostic: byte-compares polar tile mesh + RTE camera encoding between backends to localize drift to mesh vs downstream RTE/MVP math — *Archived by the probe-kit harvest (R-2026-09-17-11): a mesh and camera-encoding dump, not a frame, so no probe supersedes it; its scene is the rig polar-mesh-orbit-80n. No measured conclusion exists; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family" says so.* |
+| probe-polar-multi-angle.mjs | probe | ARCHIVED-CANDIDATE | — | 8 | Diagnostic: multi-view polar capture WITH the debug tile overlay — diagnosed mirrored tile labels and missing polar imagery — *probe-polar-multi-plain.mjs --rigs polar-overlay-northpole-close,polar-overlay-northpole-orbit,polar-overlay-southpole-close,polar-overlay-southpole-orbit,polar-overlay-equator-mid,polar-overlay-midlat-mid · Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batches 60, 61 and 63; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".* |
+| probe-polar-noculling.mjs | probe | ARCHIVED-CANDIDATE | — | 3 | Diagnostic: tested whether disabling backface culling fixes the polar black hole — *probe-polar-multi-plain.mjs --rigs polar-noculling-southpole-close · Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked, measured from its own banked frames: WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".* |
+| probe-polar-pixel-sweep.mjs | probe | ARCHIVED-CANDIDATE | — | 4 | Diagnostic: samples the center pixel at south-pole-close for each FS debug mode to confirm the WGSL return value at the polar zenith — *probe-polar-multi-plain.mjs --rigs polar-southpole-close-alpha (its per-mode centre-pixel table is this file's own) · Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 62; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".* |
+| probe-polar-settle.mjs | probe | ARCHIVED-CANDIDATE | — | 5 | Diagnostic: captured the polar-stretch artifact at 120/600/2400-frame settle budgets to test settle-dependence vs steady-state — *probe-polar-multi-plain.mjs --rigs polar-settle-14mm-120f,polar-settle-14mm-600f,polar-settle-14mm-2400f · Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 59; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".* |
+| probe-polar-stretch-diag.mjs | probe | ARCHIVED-CANDIDATE | — | 4 | Diagnostic: reproduced the polar-stretch artifact at WGS84 orbit with the tile-annotation overlay to see which tiles were affected — *probe-polar-multi-plain.mjs --rigs polar-orbit-14mm-northamerica,polar-orbit-14mm-northamerica-overlay · Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 59; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".* |
+| probe-polar-wireframe.mjs | probe | ARCHIVED-CANDIDATE | — | 4 | Diagnostic: rendered polar tiles as wireframe to split UV/sampling bugs (mesh present, imagery black) from mesh-construction/culling bugs — *probe-polar-multi-plain.mjs --rigs polar-wireframe-southpole-close,polar-wireframe-northpole-close · Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 61; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".* |
 | probe-tonemap.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | Shim-forces WebGPU on the legacy Hello World Sandcastle page and inspects post-process pipeline stage state (tonemap/colorGrading/FXAA). |
 | probe-trace-counts.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | Reads window.__dbgDrawCounts draw counters described as instrumented into WebGPUSceneRenderer.ts + WebGPUDrawCommand.ts. |
 | quick-screenshot.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Minimal utility: captures one WebGPU and one WebGL CesiumViewer screenshot at a fixed view after 240 rendered frames. |
@@ -1615,10 +1618,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-u2-perf-evidence.mjs | lib | ACTIVE | 2026-08-21 | 3 | Manifest policy for the C13-16 U2 cross-bundle GPU-timing gate: comparison, environment-drift rejection, immutable evidence naming. |
 | contact-sheet-page.mjs | lib | ACTIVE | 2026-09-19 | 8 | Pure capture-manifest → contact-sheet page model + HTML renderer: a static, verdict-free page comparing BEFORE/AFTER captures across rigs and renderers, with the manifest's own shape guard. |
 | daynight-terminator-law.mjs | lib | ACTIVE | 2026-08-16 | 4 | Pure model behind probe-daynight-terminator-law (CLT-B1); deliberately unchanged post-fix, so lanes A/D now REFUTE — read metrics, not verdicts. |
-| determinism-kit.mjs | lib | ACTIVE | 2026-08-16 | 11 | Probe determinism kit: pinClock, settleTiles, dampSky, nRunMedian — neutralises the four measured sources of run-to-run drift in visual probes. |
+| determinism-kit.mjs | lib | ACTIVE | 2026-08-16 | 13 | Probe determinism kit: pinClock, settleTiles, dampSky, nRunMedian — neutralises the four measured sources of run-to-run drift in visual probes. |
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 19 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 5 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
-| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 30 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
+| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 31 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
 | engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 45 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | globe-camera-track.mjs | lib | ACTIVE | 2026-08-16 | 13 | Shared orbit-to-ground camera route (plain serializable waypoints) used by both the visual parity probe and the performance campaign. |
@@ -1631,7 +1634,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | gsplat-multifrustum-framing.mjs | lib | ACTIVE | 2026-08-21 | 3 | Pure far-nadir camera planning and real-PVS multi-frustum anti-vacuity/control logic for the Gaussian-splat parity probe's C15-G6 lane. |
 | gsplat-parity-model.mjs | lib | ACTIVE | 2026-08-16 | 4 | Pure dual-mode verdict logic for probe-gsplat-parity: attributable-absence marker, presence flip, blank-canvas parity refusal, exits 0/1/2/3. |
 | gsplat-tower-framing.mjs | lib | ACTIVE | 2026-09-02 | 3 | Derive the camera range that keeps the tower splat anchor and its terrain-reference anchor inside the same frustum from their real geodetic separation, and decide whether a captured tower silhouette clears the pre-registered pixel floor. |
-| image-diff.mjs | lib | ACTIVE | 2026-09-18 | 6 | Pure per-channel RGBA pixel diff (tolerance + optional mask) returning mismatch stats and a paint-ready diff buffer, no I/O and no gate policy. |
+| image-diff.mjs | lib | ACTIVE | 2026-09-18 | 7 | Pure per-channel RGBA pixel diff (tolerance + optional mask) returning mismatch stats and a paint-ready diff buffer, no I/O and no gate policy. |
 | moon-mip-motion-certification.mjs | lib | ACTIVE | 2026-08-21 | 5 | Finalizer for C12-33-SHIMMER-ENVELOPE-CERTIFICATION: paired motion-shimmer separation, seam review, parity, and explicit non-claim of observed mip/LOD selection. |
 | ocean-datum-model.mjs | lib | ACTIVE | 2026-08-16 | 7 | Pure-math verdict model classifying Cesium World Terrain's ocean-lid datum (ELLIPSOID_ZERO/GEOID/MIXED) for the tides/ocean-dynamics W0 gate. |
 | ocean-tide-datum-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Published NOAA/ephemeris constants plus verdict logic accepting the geoid-anchor defect fix and the equilibrium-tide feature together. |
@@ -1654,7 +1657,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-lifecycle.mjs | lib | ACTIVE | 2026-09-12 | 9 | Coordinates a probe deadline, tracked browser resources, and the Edge lease so a probe cannot report completion while owned work remains live. |
 | probe-refusal.mjs | lib | ACTIVE | 2026-09-02 | 13 | Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns. |
 | probe-runtime-governance.mjs | lib | ACTIVE | 2026-09-13 | 6 | C13-N01 stage 1 detectors: read whether a probe resolves its origin from a hard-coded fallback and whether it routes through the three governance modules, and census the fleet from those two facts. |
-| probe-runtime.mjs | lib | ACTIVE | 2026-09-26 | 61 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
+| probe-runtime.mjs | lib | ACTIVE | 2026-09-26 | 63 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
 | probe-work-registry.mjs | lib | ACTIVE | 2026-09-12 | 6 | Tracks every `scope.run` a descriptor starts as an attempt with a settled outcome, so a run cannot be reported complete while work it started is still live, and such work's failure reaches the incident record whenever an incident is written at all; the browser's close is NOT deferred for it — see the header. |
 | prohibited-reader-allowlist.mjs | lib | ACTIVE | 2026-08-21 | 6 | Pin the measured visual-regression sources that still use the prohibited live-canvas reader. |
 | prohibited-reader-rule.mjs | lib | ACTIVE | 2026-08-20 | 8 | Detect drawImage calls that copy a live scene canvas into a scratch context. |
@@ -1664,7 +1667,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | relative-path.mjs | lib | ACTIVE | 2026-09-19 | 8 | Single fail-closed predicate for "a relative, POSIX, non-escaping path", shared by the capture manifest's image paths, the contact sheet's image/receipt paths and a banked sheet-index entry's repo-relative path. |
 | representative-performance-content.mjs | lib | ACTIVE | 2026-08-16 | 12 | Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads. |
 | representative-tileset-request-ledger.mjs | lib | ACTIVE | 2026-08-16 | 6 | Event-sourced ledger of tileset content requests (issue/terminal events, byte totals, hashes) with cross-run comparison for perf evidence. |
-| rig-registry.mjs | lib | ACTIVE | 2026-09-18 | 12 | Load, validate and hash the rig records under rigs/, and regenerate scenes.json byte-identically from the rigs tagged wave-end. |
+| rig-registry.mjs | lib | ACTIVE | 2026-09-18 | 15 | Load, validate and hash the rig records under rigs/, and regenerate scenes.json byte-identically from the rigs tagged wave-end. |
 | runtime-residency-allowlist.mjs | lib | ACTIVE | 2026-09-03 | 2 | Frozen, shrink-only allowlist of runtime-resident probes still carrying an anti-re-accretion violation, mirroring lib/prohibited-reader-allowlist.mjs's ratchet shape. |
 | runtime-residency-contract.mjs | lib | ACTIVE | 2026-09-03 | 6 | Detects a probe that declares @runtime residency on lib/probe-runtime.mjs yet still hand-rolls one of the four concerns that module already owns. |
 | same-task-capture.mjs | lib | ACTIVE | 2026-08-16 | 57 | Canonical capture primitives that keep render+readback in one task (WebGL clears, WebGPU invalidates after present), plus embed-drift validators. |
@@ -1677,7 +1680,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | shader-block-interpreter.mjs | lib | ACTIVE | 2026-09-05 | 2 | Parses and evaluates the restricted statement grammar the collection shaders' DISABLE_DEPTH_DISTANCE blocks are written in, so a spec can run the real shader control flow browser-free. |
 | solar-bloom-glow.mjs | lib | ACTIVE | 2026-08-16 | 6 | Forward model of the sun bloom's additive glow-on-disc so differential disc measurements carry the non-cancelling bloom term correctly. |
 | star-contribution-census.mjs | lib | ACTIVE | 2026-08-29 | 3 | One home for the positional star-reachability control: luma planes, the absolute-frame census and the stars-on-minus-off difference census. |
-| strip-viewer-widgets.mjs | lib | NO @purpose HEADER | 2026-09-02 | 6 | — |
+| strip-viewer-widgets.mjs | lib | NO @purpose HEADER | 2026-09-02 | 7 | — |
 | sun-disc-dawn-gate.mjs | gate-lib | ACTIVE | 2026-09-03 | 5 | Gate-predicate library for the sun-disc dawn sweep, scoring disc-centre vs disc-annulus luminance and chroma per backend with WebGL as the parity control. |
 | sun-radiance-delta.mjs | lib | ACTIVE | 2026-08-16 | 4 | Two-radiance sun-disc measurement model discriminating multiplicative gain vs additive pedestal via a parameter-free ratio statistic. |
 | tidal-harmonics-model.mjs | lib | ACTIVE | 2026-08-16 | 1 | Published NOAA/Schureman constituent speeds, Doodson fundamental rates and physics-free signal helpers anchoring the tidal-harmonics spec. |
@@ -1693,13 +1696,14 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 23 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
 | wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 12 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
-### Tools/visual-regression/lib/metrics/ (11)
+### Tools/visual-regression/lib/metrics/ (12)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | connected-components.mjs | lib | ACTIVE | 2026-09-18 | 3 | Label 4- or 8-connected foreground regions in a field and report per-component area, bbox, centroid and intensity, so structure survives where a band mean cannot see it. |
 | luminance.mjs | lib | ACTIVE | 2026-09-18 | 5 | Rec. 709 luminance, the march's Reinhard operator in both directions, and the display-space mean the photometric rule exists to forbid. |
-| masks.mjs | lib | ACTIVE | 2026-09-18 | 8 | Region-of-interest geometry for photometric statistics: the circular sun-disc mask every ROI must exclude, and a rectangle clamped to the image. |
+| masks.mjs | lib | ACTIVE | 2026-09-18 | 9 | Region-of-interest geometry for photometric statistics: the circular sun-disc mask every ROI must exclude, and a rectangle clamped to the image. |
+| polar-parity.mjs | lib | ACTIVE | — | 12 | Pure RGBA WebGL-vs-WebGPU parity over a per-pixel channel-sum delta and an inset region (mismatch percent, mean summed delta, brightness ratio), under the two named rules the polar baselines were banked with. |
 | radial-banding-family-centre.mjs | lib | ACTIVE | 2026-09-26 | 2 | Pixel half of the ring-family estimator: gathers a frame's pixels about the stated disc centre, bins them radially (whole and per octant of azimuth) about any candidate centre, finds a family's own centre by band-passed amplitude, says when that centre ran into the edge of the search, and removes a fitted family from the pixels so the next family can be looked for. |
 | radial-banding-family-spectrum.mjs | lib | ACTIVE | 2026-09-26 | 4 | Spectral half of the ring-family estimator: band-passes a radial profile, finds its lines by a Box-Cox periodogram over a scan of radial laws, fits and removes each line so a second family is not hidden in the first one's chirp, measures every line against a local floor that excludes the line's own harmonics, and tests a line's concentricity from per-octant profiles. |
 | radial-banding-family.mjs | lib | ACTIVE | 2026-09-26 | 6 | Ring-family estimator for disc captures: finds the family's own centre from the frame, measures its band-passed amplitude in luminance units, identifies its radial law and period by a coherent periodogram, and refuses by name when the family lies outside the period band the caller declares. |
@@ -1709,7 +1713,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | spectral-slope.mjs | lib | ACTIVE | 2026-09-18 | 6 | Radially averaged power-spectrum slope fit and area-perimeter fractal dimension for scalar fields, with a seeded synthetic fBm generator for validating them against a known answer. |
 | structure-similarity.mjs | lib | ACTIVE | 2026-09-18 | 3 | Compute windowed SSIM between two scalar fields (and an RGBA-reducing wrapper) so structural change is measurable where a mean or a band mean is blind to it. |
 
-### Tools/visual-regression/rigs/ (41)
+### Tools/visual-regression/rigs/ (68)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1744,6 +1748,33 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | pacificnw-dawn-valley-stratus.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "pacificnw-dawn-valley-stratus" (temperate-continental-dawn-fog/valley-radiation-fog-dawn), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | plains-fairweather-cumulus.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "plains-fairweather-cumulus" (midlatitude-continental/humilis-scattered), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | pointcloud-timedynamic-edl.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "pointcloud-timedynamic-edl" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
+| polar-effects-off-northpole-close.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-effects-off-northpole-close, re-declared from probe-polar-fixed-time.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-effects-off-southpole-close.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-effects-off-southpole-close, re-declared from probe-polar-fixed-time.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-mesh-orbit-80n.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-mesh-orbit-80n, re-declared from probe-polar-mesh-compare.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-noculling-southpole-close.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-noculling-southpole-close, re-declared from probe-polar-noculling.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-orbit-14mm-northamerica-overlay.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-orbit-14mm-northamerica-overlay, re-declared from probe-polar-stretch-diag.mjs and probe-polar-bisect.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-orbit-14mm-northamerica.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-orbit-14mm-northamerica, re-declared from probe-polar-stretch-diag.mjs and probe-polar-bisect.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-overlay-equator-mid.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-overlay-equator-mid, re-declared from probe-polar-multi-angle.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-overlay-midlat-mid.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-overlay-midlat-mid, re-declared from probe-polar-multi-angle.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-overlay-northpole-close.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-overlay-northpole-close, re-declared from probe-polar-multi-angle.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-overlay-northpole-orbit.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-overlay-northpole-orbit, re-declared from probe-polar-multi-angle.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-overlay-southpole-close.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-overlay-southpole-close, re-declared from probe-polar-multi-angle.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-overlay-southpole-orbit.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-overlay-southpole-orbit, re-declared from probe-polar-multi-angle.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-plain-equator-mid.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-plain-equator-mid, re-declared from probe-polar-multi-plain.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-plain-midlat-mid.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-plain-midlat-mid, re-declared from probe-polar-multi-plain.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-plain-northpole-close.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-plain-northpole-close, re-declared from probe-polar-multi-plain.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-plain-northpole-orbit.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-plain-northpole-orbit, re-declared from probe-polar-multi-plain.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-plain-southpole-close.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-plain-southpole-close, re-declared from probe-polar-multi-plain.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-plain-southpole-orbit.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-plain-southpole-orbit, re-declared from probe-polar-multi-plain.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-settle-14mm-120f.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-settle-14mm-120f, re-declared from probe-polar-settle.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-settle-14mm-2400f.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-settle-14mm-2400f, re-declared from probe-polar-settle.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-settle-14mm-600f.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-settle-14mm-600f, re-declared from probe-polar-settle.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-southpole-close-alpha.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-southpole-close-alpha, re-declared from probe-polar-forcered.mjs, probe-polar-alpha-debug.mjs, probe-polar-fs-stages.mjs and probe-polar-pixel-sweep.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-southpole-close-force-red.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-southpole-close-force-red, re-declared from probe-polar-forcered.mjs, probe-polar-alpha-debug.mjs, probe-polar-fs-stages.mjs and probe-polar-pixel-sweep.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-tile-state-northpole-close.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-tile-state-northpole-close, re-declared from probe-polar-imagery-state.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-tile-state-southpole-close.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-tile-state-southpole-close, re-declared from probe-polar-imagery-state.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-wireframe-northpole-close.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-wireframe-northpole-close, re-declared from probe-polar-wireframe.mjs: camera, clock, dials and settle exactly as that probe captured it. |
+| polar-wireframe-southpole-close.mjs | other | ACTIVE | — | 0 | Rig record for the polar scene polar-wireframe-southpole-close, re-declared from probe-polar-wireframe.mjs: camera, clock, dials and settle exactly as that probe captured it. |
 | sahara-clear-sky.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "sahara-clear-sky" (subtropical-desert/suppressed-near-clear), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | sandcastle-webgpu-clustered-lighting.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the sandcastle-smoke.mjs gallery demo "WebGPU Clustered Lighting.html". |
 | sandcastle-webgpu-orbital-catalog.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the sandcastle-smoke.mjs gallery demo "WebGPU Orbital Catalog.html". |
@@ -1789,11 +1820,11 @@ Every census file whose own header reads `INVESTIGATION` or `ARCHIVED-CANDIDATE`
 
 | Disposition | Files |
 |---|---|
-| Candidates in plan | 196 |
-| ALLOWLIST-EDIT-THEN-MOVE | 37 |
-| ALREADY-ARCHIVED | 24 |
+| Candidates in plan | 197 |
+| ALLOWLIST-EDIT-THEN-MOVE | 35 |
+| ALREADY-ARCHIVED | 38 |
 | MOVE | 1 |
-| REPOINT-FIRST | 134 |
+| REPOINT-FIRST | 123 |
 
 | Row | Path | Status | Live refs | Archived refs | Allowlist row | Disposition |
 |---|---|---|---|---|---|---|
@@ -1814,6 +1845,20 @@ Every census file whose own header reads `INVESTIGATION` or `ARCHIVED-CANDIDATE`
 | <a id="ap-tools-visual-regression-archive-probe-gpu-tex-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-gpu-tex-mjs) | Tools/visual-regression/archive/probe-gpu-tex.mjs | INVESTIGATION | 1 | 1 | no | ALREADY-ARCHIVED |
 | <a id="ap-tools-visual-regression-archive-probe-imagery-format-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-imagery-format-mjs) | Tools/visual-regression/archive/probe-imagery-format.mjs | INVESTIGATION | 0 | 1 | no | ALREADY-ARCHIVED |
 | <a id="ap-tools-visual-regression-archive-probe-logdepth-diag-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-logdepth-diag-mjs) | Tools/visual-regression/archive/probe-logdepth-diag.mjs | INVESTIGATION | 0 | 1 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-polar-alpha-debug-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-alpha-debug-mjs) | Tools/visual-regression/archive/probe-polar-alpha-debug.mjs | ARCHIVED-CANDIDATE | 4 | 0 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-polar-bisect-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-bisect-mjs) | Tools/visual-regression/archive/probe-polar-bisect.mjs | ARCHIVED-CANDIDATE | 4 | 0 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-polar-diff-all-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-diff-all-mjs) | Tools/visual-regression/archive/probe-polar-diff-all.mjs | ARCHIVED-CANDIDATE | 6 | 0 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-polar-fixed-time-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-fixed-time-mjs) | Tools/visual-regression/archive/probe-polar-fixed-time.mjs | ARCHIVED-CANDIDATE | 4 | 0 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-polar-forcered-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-forcered-mjs) | Tools/visual-regression/archive/probe-polar-forcered.mjs | ARCHIVED-CANDIDATE | 4 | 1 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-polar-fs-stages-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-fs-stages-mjs) | Tools/visual-regression/archive/probe-polar-fs-stages.mjs | ARCHIVED-CANDIDATE | 4 | 0 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-polar-imagery-state-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-imagery-state-mjs) | Tools/visual-regression/archive/probe-polar-imagery-state.mjs | ARCHIVED-CANDIDATE | 5 | 0 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-polar-mesh-compare-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-mesh-compare-mjs) | Tools/visual-regression/archive/probe-polar-mesh-compare.mjs | ARCHIVED-CANDIDATE | 3 | 0 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-polar-multi-angle-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-multi-angle-mjs) | Tools/visual-regression/archive/probe-polar-multi-angle.mjs | ARCHIVED-CANDIDATE | 8 | 0 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-polar-noculling-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-noculling-mjs) | Tools/visual-regression/archive/probe-polar-noculling.mjs | ARCHIVED-CANDIDATE | 3 | 0 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-polar-pixel-sweep-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-pixel-sweep-mjs) | Tools/visual-regression/archive/probe-polar-pixel-sweep.mjs | ARCHIVED-CANDIDATE | 4 | 0 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-polar-settle-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-settle-mjs) | Tools/visual-regression/archive/probe-polar-settle.mjs | ARCHIVED-CANDIDATE | 5 | 0 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-polar-stretch-diag-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-stretch-diag-mjs) | Tools/visual-regression/archive/probe-polar-stretch-diag.mjs | ARCHIVED-CANDIDATE | 4 | 0 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-polar-wireframe-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-wireframe-mjs) | Tools/visual-regression/archive/probe-polar-wireframe.mjs | ARCHIVED-CANDIDATE | 4 | 0 | no | ALREADY-ARCHIVED |
 | <a id="ap-tools-visual-regression-archive-probe-tonemap-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-tonemap-mjs) | Tools/visual-regression/archive/probe-tonemap.mjs | INVESTIGATION | 3 | 1 | no | ALREADY-ARCHIVED |
 | <a id="ap-tools-visual-regression-archive-probe-trace-counts-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-trace-counts-mjs) | Tools/visual-regression/archive/probe-trace-counts.mjs | INVESTIGATION | 2 | 1 | no | ALREADY-ARCHIVED |
 | <a id="ap-tools-visual-regression-archive-quick-screenshot-mjs"></a>[#](#ap-tools-visual-regression-archive-quick-screenshot-mjs) | Tools/visual-regression/archive/quick-screenshot.mjs | INVESTIGATION | 0 | 1 | no | ALREADY-ARCHIVED |
@@ -1936,19 +1981,6 @@ Every census file whose own header reads `INVESTIGATION` or `ARCHIVED-CANDIDATE`
 | <a id="ap-tools-visual-regression-probe-particle-no-fog-mjs"></a>[#](#ap-tools-visual-regression-probe-particle-no-fog-mjs) | Tools/visual-regression/probe-particle-no-fog.mjs | INVESTIGATION | 0 | 0 | yes | ALLOWLIST-EDIT-THEN-MOVE |
 | <a id="ap-tools-visual-regression-probe-perf-baseline-mjs"></a>[#](#ap-tools-visual-regression-probe-perf-baseline-mjs) | Tools/visual-regression/probe-perf-baseline.mjs | INVESTIGATION | 0 | 0 | yes | ALLOWLIST-EDIT-THEN-MOVE |
 | <a id="ap-tools-visual-regression-probe-phong-render-mjs"></a>[#](#ap-tools-visual-regression-probe-phong-render-mjs) | Tools/visual-regression/probe-phong-render.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-polar-alpha-debug-mjs"></a>[#](#ap-tools-visual-regression-probe-polar-alpha-debug-mjs) | Tools/visual-regression/probe-polar-alpha-debug.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-polar-bisect-mjs"></a>[#](#ap-tools-visual-regression-probe-polar-bisect-mjs) | Tools/visual-regression/probe-polar-bisect.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-polar-fixed-time-mjs"></a>[#](#ap-tools-visual-regression-probe-polar-fixed-time-mjs) | Tools/visual-regression/probe-polar-fixed-time.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-polar-forcered-mjs"></a>[#](#ap-tools-visual-regression-probe-polar-forcered-mjs) | Tools/visual-regression/probe-polar-forcered.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-polar-fs-stages-mjs"></a>[#](#ap-tools-visual-regression-probe-polar-fs-stages-mjs) | Tools/visual-regression/probe-polar-fs-stages.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-polar-imagery-state-mjs"></a>[#](#ap-tools-visual-regression-probe-polar-imagery-state-mjs) | Tools/visual-regression/probe-polar-imagery-state.mjs | INVESTIGATION | 2 | 0 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-polar-mesh-compare-mjs"></a>[#](#ap-tools-visual-regression-probe-polar-mesh-compare-mjs) | Tools/visual-regression/probe-polar-mesh-compare.mjs | INVESTIGATION | 0 | 0 | yes | ALLOWLIST-EDIT-THEN-MOVE |
-| <a id="ap-tools-visual-regression-probe-polar-multi-angle-mjs"></a>[#](#ap-tools-visual-regression-probe-polar-multi-angle-mjs) | Tools/visual-regression/probe-polar-multi-angle.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-polar-noculling-mjs"></a>[#](#ap-tools-visual-regression-probe-polar-noculling-mjs) | Tools/visual-regression/probe-polar-noculling.mjs | INVESTIGATION | 0 | 0 | yes | ALLOWLIST-EDIT-THEN-MOVE |
-| <a id="ap-tools-visual-regression-probe-polar-pixel-sweep-mjs"></a>[#](#ap-tools-visual-regression-probe-polar-pixel-sweep-mjs) | Tools/visual-regression/probe-polar-pixel-sweep.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-polar-settle-mjs"></a>[#](#ap-tools-visual-regression-probe-polar-settle-mjs) | Tools/visual-regression/probe-polar-settle.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-polar-stretch-diag-mjs"></a>[#](#ap-tools-visual-regression-probe-polar-stretch-diag-mjs) | Tools/visual-regression/probe-polar-stretch-diag.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-polar-wireframe-mjs"></a>[#](#ap-tools-visual-regression-probe-polar-wireframe-mjs) | Tools/visual-regression/probe-polar-wireframe.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-polyline-geodesic-mjs"></a>[#](#ap-tools-visual-regression-probe-polyline-geodesic-mjs) | Tools/visual-regression/probe-polyline-geodesic.mjs | INVESTIGATION | 4 | 1 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-pp-effects-audit-mjs"></a>[#](#ap-tools-visual-regression-probe-pp-effects-audit-mjs) | Tools/visual-regression/probe-pp-effects-audit.mjs | INVESTIGATION | 3 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-replay-cesium-cmd-mjs"></a>[#](#ap-tools-visual-regression-probe-replay-cesium-cmd-mjs) | Tools/visual-regression/probe-replay-cesium-cmd.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |

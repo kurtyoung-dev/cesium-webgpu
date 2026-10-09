@@ -2,7 +2,9 @@
 // Multi-angle polar diagnostic. Loads the DebugTileImageryProvider
 // overlay on WGS84 and captures at 6 viewpoints + 3 altitudes.
 // @purpose Diagnostic: multi-view polar capture WITH the debug tile overlay — diagnosed mirrored tile labels and missing polar imagery
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+// @supersededBy probe-polar-multi-plain.mjs --rigs polar-overlay-northpole-close,polar-overlay-northpole-orbit,polar-overlay-southpole-close,polar-overlay-southpole-orbit,polar-overlay-equator-mid,polar-overlay-midlat-mid
+// @note Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batches 60, 61 and 63; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".
 //
 // Diagnoses two user-flagged issues:
 //   1. DebugTileImageryProvider labels appear mirrored in X AND Y on WebGPU

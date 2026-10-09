@@ -3,7 +3,9 @@
 // FS debug mode. Goal: numerically confirm what value the WGSL `return`
 // produces at the polar zenith pixel.
 // @purpose Diagnostic: samples the center pixel at south-pole-close for each FS debug mode to confirm the WGSL return value at the polar zenith
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+// @supersededBy probe-polar-multi-plain.mjs --rigs polar-southpole-close-alpha (its per-mode centre-pixel table is this file's own)
+// @note Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 62; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".
 
 import { chromium } from "playwright";
 import zlib from "zlib";

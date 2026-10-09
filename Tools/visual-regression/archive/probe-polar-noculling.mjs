@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Test whether disabling backface culling fixes the polar black hole.
 // @purpose Diagnostic: tested whether disabling backface culling fixes the polar black hole
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+// @supersededBy probe-polar-multi-plain.mjs --rigs polar-noculling-southpole-close
+// @note Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked, measured from its own banked frames: WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".
 
 import { chromium } from "playwright";
 import fs from "fs";

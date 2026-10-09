@@ -4,7 +4,9 @@
 // center where the black hole was. If they're NOT rasterizing at all,
 // the black hole stays.
 // @purpose Diagnostic: force-red globe FS at south-pole-close to distinguish 'tiles not rasterizing' from 'rasterizing with wrong imagery'
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+// @supersededBy probe-polar-multi-plain.mjs --rigs polar-southpole-close-force-red
+// @note Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batches 61 and 62; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".
 
 import { chromium } from "playwright";
 import path from "path";

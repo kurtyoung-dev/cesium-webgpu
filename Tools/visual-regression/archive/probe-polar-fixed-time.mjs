@@ -4,7 +4,9 @@
 // post-processing minimized. Isolates whether the residual diff comes
 // from time-of-day drift (sun direction, day/night fade, animation tick).
 // @purpose Diagnostic: captured polar views with the clock frozen to isolate time-of-day drift as the residual-diff source
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+// @supersededBy probe-polar-multi-plain.mjs --rigs polar-effects-off-northpole-close,polar-effects-off-southpole-close
+// @note Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 64; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".
 
 import { chromium } from "playwright";
 import fs from "fs";

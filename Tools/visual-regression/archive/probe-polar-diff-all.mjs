@@ -4,7 +4,9 @@
 // reports per-view mismatch%, mean per-channel delta, and overall
 // brightness ratio. Target: every view < 2% diff.
 // @purpose Diff companion: pixel-diffs every polar-multi capture pair in a Playwright page (no Node PNG dep), reporting per-view mismatch and brightness
-// @status ACTIVE
+// @status ARCHIVED-CANDIDATE
+// @supersededBy lib/metrics/polar-parity.mjs rule centre80-sum24, computed by probe-polar-multi-plain.mjs over its own pairs
+// @note Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batches 61 to 63; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".
 
 import { chromium } from "playwright";
 import fs from "fs";

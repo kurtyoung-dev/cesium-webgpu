@@ -4286,7 +4286,7 @@ Prereqs: `npx tsc --noEmit` clean; `npx gulp build` clean; `node server.js --pro
    `--scene globe-default`) — mismatch percentages unchanged vs current baselines; **read the
    PNGs yourself**. Regression probes:
    `probe-terrain-selection-parity.mjs` (GridImagery user), `probe-imagery.mjs`,
-   `probe-imagery-overlay.mjs`, `probe-polar-imagery-state.mjs`,
+   `probe-imagery-overlay.mjs`, `archive/probe-polar-imagery-state.mjs`,
    `probe-pickposition-webgpu.mjs`, `probe-split-screen.mjs` (multi-context isolation + the
    Batch 320 destroyed-texture class).
 5. **Real-imagery distinctness (rule-3 negative control).** Default TMS/Natural Earth scene (no
@@ -4374,7 +4374,7 @@ strategy (`SOL_AUDIT_REPORT_2026-07-16.md` §3.4, §7).
 **Probes/tools:** `Tools/visual-regression/run-performance-campaign.mjs` (counters handshake 320,
 GridImagery boot 1546, `--api-instrumentation`), `performance-workloads.json` (workload ids),
 `capture-and-diff.mjs`, `probe-terrain-selection-parity.mjs`, `probe-imagery*.mjs`,
-`probe-polar-imagery-state.mjs`, `probe-split-screen.mjs`, `probe-pickposition-webgpu.mjs`;
+`archive/probe-polar-imagery-state.mjs`, `probe-split-screen.mjs`, `probe-pickposition-webgpu.mjs`;
 canonical lane commands in `migration_doc/DEBUGGING_GUIDE.md` (~lines 1096–1126).
 
 **Artifacts (baselines):**

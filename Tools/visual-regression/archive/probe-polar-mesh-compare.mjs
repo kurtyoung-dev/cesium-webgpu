@@ -4,7 +4,8 @@
 // but the projected screen positions diverge, the drift is downstream
 // (RTE math precision, MVP composition, dpdx/dpdy).
 // @purpose Diagnostic: byte-compares polar tile mesh + RTE camera encoding between backends to localize drift to mesh vs downstream RTE/MVP math
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+// @note Archived by the probe-kit harvest (R-2026-09-17-11): a mesh and camera-encoding dump, not a frame, so no probe supersedes it; its scene is the rig polar-mesh-orbit-80n. No measured conclusion exists; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family" says so.
 
 import { chromium } from "playwright";
 

@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 41,
+  total: 68,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count is 17
@@ -50,6 +50,12 @@ const REGISTRY_CENSUS = {
     // them — the byte-identity case below is what proves that rather than
     // this sentence.
     cloud: 17,
+    // The polar family's harvest re-declared every scene its probes captured
+    // or measured, for the kept probe and the archived ones alike, so a
+    // retired probe's scene stays on record: one rig per capture, with the
+    // fragment-debug sweeps reduced to the two modes that carried the
+    // conclusion.
+    polar: 27,
     "orbital-ladder": 4,
     "saved-view": 3,
     sandcastle: 3,
