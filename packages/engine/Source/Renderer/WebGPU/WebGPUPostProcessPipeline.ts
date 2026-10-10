@@ -129,6 +129,11 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import type { WebGPUPassTimestampProvider } from "./WebGPUPerformanceManager.js";
+import {
+  createIdentityBlitPipeline,
+  createSinglePassStagePipeline,
+  retargetSinglePassStages,
+} from "./WebGPUPostProcessFormatPipelines.js";
 
 // Re-export effect configs for consumers
 export type {
@@ -259,6 +264,10 @@ interface CompiledStage {
   bindGroupLayout: GPUBindGroupLayout;
   uniformBuffer: GPUBuffer | null;
   enabled: boolean;
+  // Kept so `initialize()` can rebuild `pipeline` in place for a new target
+  // format; see WebGPUPostProcessFormatPipelines.ts.
+  shaderModule: GPUShaderModule;
+  targetFormat: GPUTextureFormat;
 
   // Cached per-frame bind group. The bind group entries are
   // (sourceView, sampler, uniformBuffer); the only field that ever
@@ -527,13 +536,25 @@ export class WebGPUPostProcessPipeline {
   ): void {
     if (width <= 0 || height <= 0) return;
 
+    // The identity blit writes the canvas, so it is bound to the device and
+    // the presentation format, which `useHDRCanvasOutput` switches between
+    // the preferred format and rgba16float.
+    const outputChanged =
+      this._device !== device || this._canvasFormat !== canvasFormat;
+    const sameDevice = this._device === device;
     const needsRecreate =
-      this._device !== device ||
+      outputChanged ||
       this._width !== width ||
       this._height !== height ||
       this._hdr !== highDynamicRange;
 
     if (!needsRecreate && this._pingTexture) return;
+
+    if (outputChanged) {
+      this._identityPipeline = null;
+      this._identityCachedBindGroup = null;
+      this._identityCachedSourceView = null;
+    }
 
     this._device = device;
     this._width = width;
@@ -591,6 +612,21 @@ export class WebGPUPostProcessPipeline {
       ? "rgba16float"
       : canvasFormat;
     this._intermediateFormat = intermediateFormat;
+    // The single-pass stages are not dropped like the effects above: each is
+    // created once, by the resource allocator or the configure pass, and holds
+    // runtime uniform state. A format change rebuilds their pipelines in place.
+    if (sameDevice) {
+      retargetSinglePassStages(
+        device,
+        [
+          this._tonemapStage,
+          this._colorGradingStage,
+          this._fxaaStage,
+          ...this._customStages,
+        ],
+        intermediateFormat,
+      );
+    }
 
     const textureDesc: GPUTextureDescriptor = {
       size: { width, height },
@@ -618,101 +654,13 @@ export class WebGPUPostProcessPipeline {
       });
     }
 
-    // The identity-blit pipeline is device+format dependent, not
-    // size-dependent, so we only create it once per device.
+    // The identity-blit pipeline depends on the device and canvas format, not
+    // the size; `outputChanged` above dropped it when either moved.
     if (!this._identityPipeline) {
-      this._createIdentityBlitPipeline(device, canvasFormat);
+      const blit = createIdentityBlitPipeline(device, canvasFormat);
+      this._identityPipeline = blit.pipeline;
+      this._identityBGL = blit.bindGroupLayout;
     }
-  }
-
-  /**
-   * Builds a minimal fullscreen-triangle pipeline that samples a source
-   * texture and writes it unmodified to the target. This is cheaper than
-   * the tonemapping stage because it has no uniforms and a trivial
-   * fragment shader. It exists as a fallback so the scene framebuffer
-   * always reaches the canvas, even when every post-process effect is
-   * disabled.
-   */
-  private _createIdentityBlitPipeline(
-    device: GPUDevice,
-    targetFormat: GPUTextureFormat,
-  ): void {
-    const code = `
-// Identity blit — fullscreen triangle, texture sample, NO color
-// transform.
-//
-// The blit's inline pow(1/2.2) encode was reverted because it caused
-// double-gamma encoding for the FOG /
-// SkyAtmosphere / SkyBox / ground-atmosphere paths, which ALREADY
-// apply pow(c, 1/2.2) inside the per-pixel shader (see e.g.
-// GlobeTerrain.wgsl FOG branch line 2619, SkyAtmosphere.wgsl line 492,
-// ModelPBRComplete.wgsl line 928). Fragments rendered through those
-// paths got encoded twice → pow(c, 1/4.84) → washed-out / desaturated
-// appearance characteristic of double-gamma encoding.
-//
-// Fragments rendered through paths that DON'T pre-encode (raw imagery
-// at orbit altitudes outside the fog/atmosphere drape) stayed dark
-// without the blit-side encode, producing the gamma-2.4-darker
-// signature expected when the final encode is missing.
-//
-// The proper architectural fix is one of:
-//   A. Make the canvas format bgra8unorm-srgb so the GPU ROP applies
-//      the encode in hardware on every write. Requires bumping every
-//      pipeline whose final target is the canvas (identity blit,
-//      tonemap, color grading, FXAA, custom user stages) — multi-file
-//      change.
-//   B. Audit every render path and ensure EXACTLY ONE inline encode
-//      between the imagery sampler and the canvas. Today fog/sky/PBR
-//      have encodes; imagery/atmosphere-drape do not. Pick the
-//      canonical layer (probably the final stage) and consolidate.
-//
-// Either option requires a coordinated color-space change across every
-// canvas-writing pipeline; this identity blit therefore remains a no-op.
-@group(0) @binding(0) var srcTex: texture_2d<f32>;
-@group(0) @binding(1) var srcSamp: sampler;
-
-struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
-
-@vertex fn vertexMain(@builtin(vertex_index) vi: u32) -> VsOut {
-  // Fullscreen triangle covering clip space (CCW winding):
-  //   vertex 0 → (-1, -1)   vertex 1 → (3, -1)   vertex 2 → (-1, 3)
-  var out: VsOut;
-  let x = f32(i32(vi & 1u)) * 4.0 - 1.0;
-  let y = f32(i32(vi >> 1u)) * 4.0 - 1.0;
-  out.pos = vec4f(x, y, 0.0, 1.0);
-  out.uv  = vec2f((x + 1.0) * 0.5, (1.0 - y) * 0.5);
-  return out;
-}
-
-@fragment fn fragmentMain(@location(0) uv: vec2f) -> @location(0) vec4f {
-  return textureSample(srcTex, srcSamp, uv);
-}
-`;
-
-    const module = device.createShaderModule({
-      label: "PostProcess-IdentityBlit-Shader",
-      code,
-    });
-
-    this._identityBGL = makeBindGroupLayout(
-      device,
-      "PostProcess-IdentityBlit-BGL",
-      [texture(0, Stage.FRAGMENT), sampler(1, Stage.FRAGMENT)],
-    );
-
-    this._identityPipeline = device.createRenderPipeline({
-      label: "PostProcess-IdentityBlit-Pipeline",
-      layout: device.createPipelineLayout({
-        bindGroupLayouts: [this._identityBGL],
-      }),
-      vertex: { module, entryPoint: "vertexMain" },
-      fragment: {
-        module,
-        entryPoint: "fragmentMain",
-        targets: [{ format: targetFormat }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
   }
 
   // ================================================================
@@ -1832,8 +1780,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     }
 
     // Final blit: ping-pong view → canvas. Uses the identity-blit
-    // pipeline which is built once at `initialize()` against the
-    // canvas format. Runs unconditionally — even when nothing past the
+    // pipeline, which `initialize()` builds against the current canvas
+    // format. Runs unconditionally — even when nothing past the
     // `hasActiveStages` guard executed, WebGPU still needs the identity
     // blit from the scene framebuffer to the canvas swap chain.
     this._executeCopyStage(encoder, currentView, destView);
@@ -1887,6 +1835,31 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         texelSize as Float32Array<ArrayBuffer>,
       );
     }
+  }
+
+  /**
+   * Follow a presentation-format change, such as a `useHDRCanvasOutput`
+   * toggle reconfiguring the canvas, by re-running `initialize()` at the
+   * current size and HDR mode. The configure pass calls this every frame
+   * before its re-add gates, so the effects the recreate drops come back on
+   * the same frame.
+   */
+  setCanvasFormat(canvasFormat: GPUTextureFormat): void {
+    if (!this._device || canvasFormat === this._canvasFormat) {
+      return;
+    }
+    this.initialize(
+      this._device,
+      this._width,
+      this._height,
+      canvasFormat,
+      this._hdr,
+    );
+  }
+
+  /** Whether the ColorGrading stage exists; the configure pass re-adds it when not. */
+  get hasColorGradingStage(): boolean {
+    return this._colorGradingStage !== null;
   }
 
   // ================================================================
@@ -2164,24 +2137,23 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       entries,
     );
 
-    const pipelineLayout = device.createPipelineLayout({
-      label: `PostProcess-${name}-PipelineLayout`,
-      bindGroupLayouts: [bindGroupLayout],
-    });
+    const pipeline = createSinglePassStagePipeline(
+      device,
+      name,
+      shaderModule,
+      bindGroupLayout,
+      targetFormat,
+    );
 
-    const pipeline = device.createRenderPipeline({
-      label: `PostProcess-${name}-Pipeline`,
-      layout: pipelineLayout,
-      vertex: { module: shaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: shaderModule,
-        entryPoint: "fragmentMain",
-        targets: [{ format: targetFormat }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-
-    return { name, pipeline, bindGroupLayout, uniformBuffer, enabled: true };
+    return {
+      name,
+      pipeline,
+      bindGroupLayout,
+      uniformBuffer,
+      enabled: true,
+      shaderModule,
+      targetFormat,
+    };
   }
 
   private _destroyTextures(): void {

@@ -434,6 +434,12 @@ function configureWebGPUPostProcessPipeline(
   const cache = (collection._webgpuCache ??
     getDefaultCache()) as PostProcessCache;
 
+  // Follow a presentation-format change first: a `useHDRCanvasOutput` toggle
+  // reconfigures the canvas without recreating this pipeline, and its blit to
+  // the canvas must match the new format. Any effect the recreate drops is
+  // re-added by the live-slot gates below on this same frame.
+  pipeline.setCanvasFormat(canvasFormat);
+
   // Resolve the f16 post-process opt-in once.
   // True only when the scene's context both opted in (`useShaderF16`) and
   // the device granted `shader-f16`. Threaded into the multi-pass effects'
@@ -608,7 +614,10 @@ function configureWebGPUPostProcessPipeline(
       colorGradingConfig?: import("./WebGPUPostProcessPipeline.js").ColorGradingConfig;
     }
   )?.colorGradingConfig;
-  if (cache.colorGradingEnabled && !cache.colorGradingInitialized) {
+  // Gated on the live stage slot, not a once-only latch: the resource
+  // allocator replaces this whole pipeline on a `highDynamicRange` toggle, and
+  // the replacement must get the stage back.
+  if (cache.colorGradingEnabled && !pipeline.hasColorGradingStage) {
     pipeline.addColorGrading(
       device,
       canvasFormat,
@@ -619,7 +628,6 @@ function configureWebGPUPostProcessPipeline(
     cache._colorGradingConfigRef = colorGradingConfig;
   } else if (
     cache.colorGradingEnabled &&
-    cache.colorGradingInitialized &&
     colorGradingConfig !== cache._colorGradingConfigRef
   ) {
     // Runtime re-grade: assigning a NEW config object to
@@ -654,9 +662,8 @@ function configureWebGPUPostProcessPipeline(
   // `pipeline.*Effect` slot rather than a sticky `cache.*Initialized` flag: it
   // drops all eleven on a resize or HDR toggle, and a latch that only ever
   // fires once would leave the effect destroyed and unrevivable for the life
-  // of the viewer (AR-009). ColorGrading (`:615`) is deliberately not one of
-  // them: its stage is not on that reset list, so its latch cannot strand it.
-  // The `addX` methods are themselves idempotent, so the live-slot test is the
+  // of the viewer (AR-009). ColorGrading's gate above tests its live stage
+  // slot the same way. The `addX` methods are themselves idempotent, so the live-slot test is the
   // whole gate. All six WebGL bloom uniforms —
   // contrast, brightness, glowOnly, delta, sigma, stepSize — map one to one
   // onto the WebGPU effect. Feeding WebGL's brightness, which defaults to
