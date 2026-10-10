@@ -57,6 +57,7 @@ import csm_decodeRGB8Chunk from "../../Shaders/WebGPU/chunks/functions/csm_decod
 import csm_vertexLogDepthChunk from "../../Shaders/WebGPU/chunks/functions/csm_vertexLogDepth.js";
 import csm_writeLogDepthChunk from "../../Shaders/WebGPU/chunks/functions/csm_writeLogDepth.js";
 import csm_metersPerPixelChunk from "../../Shaders/WebGPU/chunks/functions/csm_metersPerPixel.js";
+import csm_polylineCommonChunk from "../../Shaders/WebGPU/chunks/functions/csm_polylineCommon.js";
 import { preprocess } from "./WebGPUShaderPreprocessor.js";
 import { packCameraLogDepthLanes } from "./WebGPULogDepth.js";
 
@@ -73,6 +74,12 @@ import { packCameraLogDepthLanes } from "./WebGPULogDepth.js";
 // The reserved camera padding lanes carry the near and factor values and remain
 // inert when the logarithmic-depth define is absent. `csm_updatePositionDepth`
 // is included by the vertex-depth chunk; both depth chunks are leaves.
+//
+// BufferPolylineMaterial.wgsl imports `csm_polylineCommon` instead of the two
+// depth leaves: that chunk carries the near-plane clip and window-coordinate
+// law WebGL's polyline vertex stages call (PolylineCommon.glsl) and the same
+// three log-depth helpers, behind its own `//>>ifdef LOG_DEPTH` gate. The near
+// the law clips against is the same `encodedCameraPositionMCHigh.w` lane.
 const BUFFER_WGSL_CHUNKS: Record<string, string> = {
   CameraUniforms: CameraUniformsChunk,
   csm_translateRelativeToEye: csm_translateRelativeToEyeChunk,
@@ -80,6 +87,7 @@ const BUFFER_WGSL_CHUNKS: Record<string, string> = {
   csm_writeLogDepth: csm_writeLogDepthChunk,
   csm_decodeRGB8: csm_decodeRGB8Chunk,
   csm_metersPerPixel: csm_metersPerPixelChunk,
+  csm_polylineCommon: csm_polylineCommonChunk,
 };
 const _warnedUnknownImports = new Set<string>();
 

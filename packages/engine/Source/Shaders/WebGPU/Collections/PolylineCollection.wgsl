@@ -38,7 +38,7 @@ struct CameraUniforms {
   // (`frameState.splitPosition * drawingBufferWidth`).
   splitPosition: f32,
   logDepthFactor: f32,
-  // `czm_pixelRatio`. Float slot 31 of the shared 288-byte polyline camera
+  // `czm_pixelRatio`. Float slot 31 of the shared 432-byte polyline camera
   // UBO, written by `WebGPUPolylineRenderer.js`; it was padding until the quad
   // expansion needed it.
   pixelRatio: f32,
@@ -51,26 +51,22 @@ struct CameraUniforms {
   _pad2: f32,
   previousEncodedCameraLow: vec3<f32>,
   _pad3: f32,
+  // Near-plane clip inputs: the modelView matrix with its translation zeroed
+  // and the projection whose product is `mvpRelativeToEye`, and the near-plane
+  // distance of that projection. A segment end behind the near plane is moved
+  // onto it in eye coordinates before the quad is expanded, as WebGL's
+  // polyline vertex stages do.
+  modelViewRelativeToEye: mat4x4<f32>,
+  projection: mat4x4<f32>,
+  clipNear: f32,
+  _pad4: f32,
+  _pad5: f32,
+  _pad6: f32,
       previousViewProjection: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
-//>>ifdef LOG_DEPTH
-// Inline copies of the renderer-wide log-depth helpers; keep synchronized with
-// chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
-fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
-  return (clipPosition.w - near) + 1.0;
-}
-fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
-  var coords = clipPosition;
-  coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
-  return coords;
-}
-fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
-  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
-}
-//>>endif
 
 struct VertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -86,7 +82,9 @@ struct VertexInput {
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) color: vec4<f32>,
-  @location(1) distFromCenter: f32,
+  // Across-line coordinate, -1 to 1, written by csm_polylineWriteScreenLinear
+  // and read in screen space as WebGL reads v_st.t.
+  @location(1) distFromCenter: vec2<f32>,
   //>>ifdef SPLIT_ENABLED
   @location(2) splitDirection: f32,
   //>>endif
@@ -147,9 +145,22 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let clipStart = camera.mvpRelativeToEye * vec4<f32>(startRTE, 1.0);
   let clipEnd = camera.mvpRelativeToEye * vec4<f32>(endRTE, 1.0);
 
+  // Clip each end onto the near plane along its segment, as WebGL's
+  // getPolylineWindowCoordinatesEC does, before anything divides by w: an end
+  // behind the camera has a clip w at or below zero. An end in front keeps its
+  // clip position exactly.
+  let startEC = (camera.modelViewRelativeToEye * vec4<f32>(startRTE, 1.0)).xyz;
+  let endEC = (camera.modelViewRelativeToEye * vec4<f32>(endRTE, 1.0)).xyz;
+  let clipStartFinal = csm_polylineClipEnd(
+    startEC, endEC, camera.clipNear, camera.projection, clipStart,
+  );
+  let clipEndFinal = csm_polylineClipEnd(
+    endEC, startEC, camera.clipNear, camera.projection, clipEnd,
+  );
+
   // Convert to screen space
-  let screenStart = toScreenSpace(clipStart, camera.viewportSize);
-  let screenEnd = toScreenSpace(clipEnd, camera.viewportSize);
+  let screenStart = toScreenSpace(clipStartFinal, camera.viewportSize);
+  let screenEnd = toScreenSpace(clipEndFinal, camera.viewportSize);
 
   // Line direction and normal
   let lineDir = normalize(screenEnd - screenStart);
@@ -171,7 +182,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   }
 
   // Interpolate between start and end
-  let baseClip = mix(clipStart, clipEnd, isEnd);
+  let baseClip = mix(clipStartFinal, clipEndFinal, isEnd);
   let baseScreen = mix(screenStart, screenEnd, isEnd);
 
   // Offset perpendicular to line direction
@@ -241,7 +252,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   }
   //>>endif
   output.color = vec4<f32>(input.color.rgb, effectiveAlpha);
-  output.distFromCenter = side; // For AA
+  output.distFromCenter =
+    csm_polylineWriteScreenLinear(side, output.position.w); // For AA
 
   //>>ifdef SPLIT_ENABLED
   // Forward the per-polyline split direction so the FS can discard
@@ -298,7 +310,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   //>>endif
 
   // Simple anti-aliasing at edges
-  let dist = abs(input.distFromCenter);
+  let dist = abs(csm_polylineReadScreenLinear(input.distFromCenter));
   let alpha = 1.0 - smoothstep(0.8, 1.0, dist);
   var color = input.color;
   color.a *= alpha;
@@ -392,11 +404,32 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
   let prevClipEnd =
     camera.previousMvpRelativeToEye * vec4<f32>(prevEndRTE, 1.0);
 
+  // The near-plane clip of the current ends, as `vertexMain` applies it. The
+  // previous-frame position of a clipped end is that of the same world point,
+  // which lies the same fraction of the way along the segment in either frame.
+  let startEC = (camera.modelViewRelativeToEye * vec4<f32>(startRTE, 1.0)).xyz;
+  let endEC = (camera.modelViewRelativeToEye * vec4<f32>(endRTE, 1.0)).xyz;
+  let segmentLength = length(endEC - startEC);
+  let startClip = csm_polylineNearClipT(startEC, endEC, camera.clipNear);
+  let endClip = csm_polylineNearClipT(endEC, startEC, camera.clipNear);
+  let curClipStartFinal = csm_polylineClipEnd(
+    startEC, endEC, camera.clipNear, camera.projection, curClipStart,
+  );
+  let curClipEndFinal = csm_polylineClipEnd(
+    endEC, startEC, camera.clipNear, camera.projection, curClipEnd,
+  );
+  let prevClipStartFinal = csm_polylinePreviousClip(
+    prevClipStart, prevClipEnd, startClip.x, segmentLength, startClip.y,
+  );
+  let prevClipEndFinal = csm_polylinePreviousClip(
+    prevClipEnd, prevClipStart, endClip.x, segmentLength, endClip.y,
+  );
+
   // Rasterize the segment quad at the CURRENT-frame position so the
   // velocity texture covers the same pixels the color pass touched.
   // Same vertex_index → (isEnd, side) mapping as `vertexMain`.
-  let screenStart = toScreenSpace(curClipStart, camera.viewportSize);
-  let screenEnd = toScreenSpace(curClipEnd, camera.viewportSize);
+  let screenStart = toScreenSpace(curClipStartFinal, camera.viewportSize);
+  let screenEnd = toScreenSpace(curClipEndFinal, camera.viewportSize);
   let lineDir = normalize(screenEnd - screenStart);
   let lineNormal = vec2<f32>(-lineDir.y, lineDir.x);
 
@@ -413,7 +446,7 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
     default: { isEnd = 0.0; side = -1.0; }
   }
 
-  let baseClip = mix(curClipStart, curClipEnd, isEnd);
+  let baseClip = mix(curClipStartFinal, curClipEndFinal, isEnd);
   let baseScreen = mix(screenStart, screenEnd, isEnd);
   let offsetScreen = baseScreen + lineNormal * side * halfWidth;
   let finalPos = fromScreenSpace(
@@ -422,7 +455,7 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
 
   output.position = finalPos;
   output.currentBaseClip = baseClip;
-  output.prevBaseClip = mix(prevClipStart, prevClipEnd, isEnd);
+  output.prevBaseClip = mix(prevClipStartFinal, prevClipEndFinal, isEnd);
   //>>ifdef LOG_DEPTH
   output.v_logDepth =
     csm_vertexLogDepth(output.position, camera.logDepthNearFar.x);

@@ -23,7 +23,7 @@ struct CameraUniforms {
     minimumDisableDepthTestDistance: f32,
     splitPosition: f32,
   logDepthFactor: f32,
-  // `czm_pixelRatio`. Float slot 31 of the shared 288-byte polyline camera
+  // `czm_pixelRatio`. Float slot 31 of the shared 432-byte polyline camera
   // UBO, written by `WebGPUPolylineRenderer.js`; it was padding until the quad
   // expansion needed it.
   pixelRatio: f32,
@@ -36,6 +36,17 @@ struct CameraUniforms {
   _pad2: f32,
   previousEncodedCameraLow: vec3<f32>,
   _pad3: f32,
+  // Near-plane clip inputs: the modelView matrix with its translation zeroed
+  // and the projection whose product is `mvpRelativeToEye`, and the near-plane
+  // distance of that projection. A segment end behind the near plane is moved
+  // onto it in eye coordinates before the quad is expanded, as WebGL's
+  // polyline vertex stages do.
+  modelViewRelativeToEye: mat4x4<f32>,
+  projection: mat4x4<f32>,
+  clipNear: f32,
+  _pad4: f32,
+  _pad5: f32,
+  _pad6: f32,
         previousViewProjection: mat4x4<f32>,
 }
 
@@ -47,21 +58,6 @@ struct MaterialUniforms {
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
-//>>ifdef LOG_DEPTH
-// Inline copies of the renderer-wide log-depth helpers; keep synchronized with
-// chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
-fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
-  return (clipPosition.w - near) + 1.0;
-}
-fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
-  var coords = clipPosition;
-  coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
-  return coords;
-}
-fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
-  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
-}
-//>>endif
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
 struct VertexInput {
@@ -78,7 +74,9 @@ struct VertexInput {
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) v_st: vec2<f32>,
-  @location(1) v_distFromCenter: f32,
+  // Across-line coordinate, -1 to 1, written by csm_polylineWriteScreenLinear
+  // and read in screen space as WebGL reads v_st.t.
+  @location(1) v_distFromCenter: vec2<f32>,
   // Per-vertex translucency-by-distance factor; always present so all
   // distance-display and split variants share the same output layout.
   @location(2) v_alphaScale: f32,
@@ -146,8 +144,21 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let clipStart = camera.mvpRelativeToEye * vec4<f32>(startRTE, 1.0);
   let clipEnd = camera.mvpRelativeToEye * vec4<f32>(endRTE, 1.0);
 
-  let screenStart = toScreenSpace(clipStart, camera.viewportSize);
-  let screenEnd = toScreenSpace(clipEnd, camera.viewportSize);
+  // Clip each end onto the near plane along its segment, as WebGL's
+  // getPolylineWindowCoordinatesEC does, before anything divides by w: an end
+  // behind the camera has a clip w at or below zero. An end in front keeps its
+  // clip position exactly.
+  let startEC = (camera.modelViewRelativeToEye * vec4<f32>(startRTE, 1.0)).xyz;
+  let endEC = (camera.modelViewRelativeToEye * vec4<f32>(endRTE, 1.0)).xyz;
+  let clipStartFinal = csm_polylineClipEnd(
+    startEC, endEC, camera.clipNear, camera.projection, clipStart,
+  );
+  let clipEndFinal = csm_polylineClipEnd(
+    endEC, startEC, camera.clipNear, camera.projection, clipEnd,
+  );
+
+  let screenStart = toScreenSpace(clipStartFinal, camera.viewportSize);
+  let screenEnd = toScreenSpace(clipEndFinal, camera.viewportSize);
 
   let lineDir = normalize(screenEnd - screenStart);
   let lineNormal = vec2<f32>(-lineDir.y, lineDir.x);
@@ -165,7 +176,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     default: { isEnd = 0.0; side = -1.0; }
   }
 
-  let baseClip = mix(clipStart, clipEnd, isEnd);
+  let baseClip = mix(clipStartFinal, clipEndFinal, isEnd);
   let baseScreen = mix(screenStart, screenEnd, isEnd);
   let offsetScreen = baseScreen + lineNormal * side * halfWidth;
 
@@ -221,7 +232,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let s = mix(sStart, sEnd, isEnd);
   let t = side * 0.5 + 0.5;
   output.v_st = vec2<f32>(s, t);
-  output.v_distFromCenter = side;
+  output.v_distFromCenter =
+    csm_polylineWriteScreenLinear(side, output.position.w);
 
   //>>ifdef SPLIT_ENABLED
   output.splitDirection = input.perInstanceFlags.y;
@@ -268,7 +280,12 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   }
   //>>endif
 
-  let st = input.v_st;
+  // st.t is the across-line coordinate read in screen space, as
+  // PolylineFS.glsl:12 reads v_st.t; v_st.y is its perspective twin.
+  let st = vec2<f32>(
+    input.v_st.x,
+    csm_polylineReadScreenLinear(input.v_distFromCenter) * 0.5 + 0.5,
+  );
   let color = material.color;
   let glowPower = material.glowPower;
   let taperPower = material.taperPower;

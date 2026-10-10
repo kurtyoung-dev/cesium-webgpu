@@ -81,6 +81,9 @@ const polylineWgsl = read(
 const metersPerPixelWgsl = read(
   "packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_metersPerPixel.wgsl",
 );
+const polylineCommonWgsl = read(
+  "packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_polylineCommon.wgsl",
+);
 const polylineRendererTs = read(
   "packages/engine/Source/Renderer/WebGPU/WebGPUBufferPolylineRenderer.ts",
 );
@@ -153,9 +156,18 @@ const WGSL_ARM_PASSES_PIXEL_RATIO =
 /** The magnitude recovery — `abs`, never the raw signed value. */
 const WGSL_TAKES_MAGNITUDE = /=\s*abs\(signedWidth\);/u.test(polylineWgsl);
 
-/** The CSS-to-device scale that stands in for GLSL's `czm_pixelRatio` offset. */
+/**
+ * The CSS-to-device scale that stands in for GLSL's `czm_pixelRatio` offset.
+ * It lives in the LAW's application now (FW-03b): the stage hands the shared
+ * window-coordinate law its CSS-pixel `widthCss` and `params.pixelRatio`, and
+ * the law multiplies the window offset by the ratio (PolylineCommon.glsl:166).
+ * Both halves are read, so a stage that stops passing the ratio or a law that
+ * stops applying it drops the scale from the model below.
+ */
 const WGSL_SCALES_TO_DEVICE_PIXELS =
-  /let width = \w+ \* params\.pixelRatio;/u.test(polylineWgsl);
+  /csm_getPolylineWindowCoordinatesEC\(\s*[^;]*?\bwidthCss,[^;]*?params\.pixelRatio,/u.test(
+    polylineWgsl,
+  ) && /expandWidth \* pixelRatio;/u.test(polylineCommonWgsl);
 
 /** The shader must actually pull the chunk in, and the chunk must be mapped. */
 const WGSL_IMPORTS_CHUNK = /^#import csm_metersPerPixel;$/mu.test(polylineWgsl);

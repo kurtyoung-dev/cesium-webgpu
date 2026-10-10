@@ -147,11 +147,13 @@ function packNearFarScalar(out, offset, scalar, identity) {
 //   + minimumDisableDepthTestDistance(4) + splitPosition(4)
 //   + logDepthFactor(4) + pixelRatio(4)
 //   + previousMvpRTE(64) + previousCamHigh(16) + previousCamLow(16)
-//   + previousViewProjection(64)  = 288 bytes (72 floats).
+//   + modelViewRTE(64) + projection(64) + clipNear(4) + pad(12)
+//   + previousViewProjection(64)  = 432 bytes (108 floats).
 // The previous-frame RTE pair feeds velocity reprojection at float slots
-// 32..55; previousViewProjection follows it at float slots 56..71.
-const CAMERA_BUFFER_SIZE = 288;
-const CAMERA_FLOATS = CAMERA_BUFFER_SIZE / 4; // 72
+// 32..55; the near-plane clip inputs follow at float slots 56..91, and
+// previousViewProjection stays the tail member at float slots 92..107.
+const CAMERA_BUFFER_SIZE = 432;
+const CAMERA_FLOATS = CAMERA_BUFFER_SIZE / 4; // 108
 
 // Placeholder material UBO (16 bytes minimum for WebGPU)
 const PLACEHOLDER_MATERIAL_BYTES = 16;
@@ -1519,16 +1521,29 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
   uniformData[51] = 0.0;
   uniformData[55] = 0.0;
 
-  // previousViewProjection occupies slots 56..71 (16 floats, 64 bytes).
+  // Near-plane clip inputs at slots 56..91: the modelView matrix with its
+  // translation zeroed (the factor of `mvpRelativeToEye` above), the
+  // projection, and that projection's near plane, so a segment end behind the
+  // near plane can be clipped onto it in eye coordinates. The near and the
+  // projection are read together from the same uniform state, which
+  // `UniformState.updateFrustum` sets as a pair.
+  Matrix4.pack(scratchMVRTE, uniformData, 56);
+  Matrix4.pack(uniformState.projection, uniformData, 72);
+  uniformData[88] = ldFrustum ? ldFrustum.x : 0.0;
+  uniformData[89] = 0.0;
+  uniformData[90] = 0.0;
+  uniformData[91] = 0.0;
+
+  // previousViewProjection occupies slots 92..107 (16 floats, 64 bytes).
   // `UniformState.update()` caches it before overwriting the current-frame
   // state, so on frame N this slot holds frame N-1's VP. It is kept at the
   // struct tail for the camera-uniform layout rule; the velocity stage reads
   // the relative-to-eye pair above instead.
   const prevVP = uniformState.previousViewProjection;
   if (prevVP) {
-    Matrix4.pack(prevVP, uniformData, 56);
+    Matrix4.pack(prevVP, uniformData, 92);
   } else {
-    Matrix4.pack(Matrix4.IDENTITY, uniformData, 56);
+    Matrix4.pack(Matrix4.IDENTITY, uniformData, 92);
   }
 }
 

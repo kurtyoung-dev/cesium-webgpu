@@ -25,6 +25,16 @@ import PolylineDash from "../../Shaders/WebGPU/Collections/PolylineDash.js";
 import PolylineGlow from "../../Shaders/WebGPU/Collections/PolylineGlow.js";
 import PolylineOutline from "../../Shaders/WebGPU/Collections/PolylineOutline.js";
 import BillboardCollectionSDF from "../../Shaders/WebGPU/Collections/BillboardCollectionSDF.js";
+import csm_polylineCommon from "../../Shaders/WebGPU/chunks/functions/csm_polylineCommon.js";
+
+// The polyline collection shaders call the shared polyline chunk's near-plane
+// clip helpers and take its log-depth helpers, so each polyline key holds the
+// chunk followed by the shader. The text is composed once, at module load:
+// every caller of a key receives the same text, and a shader source identifier
+// never maps to two texts.
+function withPolylineCommon(source) {
+  return `${csm_polylineCommon}\n${source}`;
+}
 
 // =========================================================================
 // Shader Cache — populated synchronously from static imports
@@ -38,14 +48,14 @@ const _shaderCache = {
   billboardColor: BillboardCollection,
   billboardPick: BillboardCollectionPick,
   billboardSDF: BillboardCollectionSDF,
-  // Polyline shaders
-  polylineColor: PolylineCollection,
-  polylinePick: PolylineCollectionPick,
+  // Polyline shaders, each composed with the shared polyline chunk
+  polylineColor: withPolylineCommon(PolylineCollection),
+  polylinePick: withPolylineCommon(PolylineCollectionPick),
   // Polyline material shaders
-  polylineArrow: PolylineArrow,
-  polylineDash: PolylineDash,
-  polylineGlow: PolylineGlow,
-  polylineOutline: PolylineOutline,
+  polylineArrow: withPolylineCommon(PolylineArrow),
+  polylineDash: withPolylineCommon(PolylineDash),
+  polylineGlow: withPolylineCommon(PolylineGlow),
+  polylineOutline: withPolylineCommon(PolylineOutline),
 };
 
 // Shaders are always available — no async loading needed

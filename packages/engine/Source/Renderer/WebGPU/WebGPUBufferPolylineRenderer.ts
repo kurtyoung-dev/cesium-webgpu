@@ -75,6 +75,12 @@ const scratchNext = new Cartesian3();
 const scratchPrevEnc = { high: new Cartesian3(), low: new Cartesian3() };
 const scratchNextEnc = { high: new Cartesian3(), low: new Cartesian3() };
 
+// Floats per vertex copy in the interleaved slot-7 buffer: the
+// showColorWidthAndTexCoord vec4 at floats 0-3 (location 7), alpha at float 4
+// (location 8) and the expand direction at float 5 (location 9). The pack, the
+// allocation and the pipeline's arrayStride all read it.
+const POLYLINE_RECORD_FLOATS = 6;
+
 // ─── PolylineCache type ──────────────────────────────────────────────────────
 export interface PolylineCache extends SharedCache {
   paramsUBO: GPUBuffer;
@@ -88,8 +94,9 @@ export interface PolylineCache extends SharedCache {
   nextPositionLow: GPUBuffer;
   pickColor: GPUBuffer;
   // This interleaved buffer carries location 7 (vec4
-  // showColorWidthAndTexCoord) + loc8 (f32 alpha) so the polyline pipeline
-  // stays within WebGPU's 8-vertex-buffer limit. Array is width-5 per vertex.
+  // showColorWidthAndTexCoord), location 8 (f32 alpha) and location 9 (f32
+  // expand direction) so the polyline pipeline stays within WebGPU's
+  // 8-vertex-buffer limit. Its array holds POLYLINE_RECORD_FLOATS per vertex.
   showColorWidthAndTexCoord: GPUBuffer;
   indexBuffer: GPUBuffer;
   positionHighArr: Float32Array;
@@ -169,14 +176,16 @@ function buildPolylinePipeline(
           arrayStride: 4,
           attributes: [{ shaderLocation: 6, offset: 0, format: "unorm8x4" }],
         },
-        // Locations 7 and 8 share one 20-byte interleaved buffer: the vec4 is
-        // at offset 0 and alpha is at offset 16. This keeps the pipeline at
-        // WebGPU's guaranteed limit of eight vertex buffers.
+        // Locations 7, 8 and 9 share one interleaved buffer: the vec4 is at
+        // offset 0, alpha at offset 16 and the expand direction at offset 20.
+        // This keeps the pipeline at WebGPU's guaranteed limit of eight vertex
+        // buffers.
         {
-          arrayStride: 20,
+          arrayStride: POLYLINE_RECORD_FLOATS * 4,
           attributes: [
             { shaderLocation: 7, offset: 0, format: "float32x4" },
             { shaderLocation: 8, offset: 16, format: "float32" },
+            { shaderLocation: 9, offset: 20, format: "float32" },
           ],
         },
       ],
@@ -242,8 +251,10 @@ function initPolylineCache(
   const nextPositionHighArr = f3();
   const nextPositionLowArr = f3();
   const pickColorArr = new Uint8Array(vertexCountMax * 4);
-  // Width 5 stores a vec4 followed by interleaved alpha at byte offset 16.
-  const showColorWidthAndTexCoordArr = new Float32Array(vertexCountMax * 5);
+  // One record per vertex copy: the vec4, then alpha and the expand direction.
+  const showColorWidthAndTexCoordArr = new Float32Array(
+    vertexCountMax * POLYLINE_RECORD_FLOATS,
+  );
   const indexArr = jsModule<IndexDatatypeStatics>(
     IndexDatatype,
   ).createTypedArray(vertexCountMax, segmentCountMax * 6);
@@ -313,7 +324,9 @@ function initPolylineCache(
   const base = createSharedCacheBase(device);
   const paramsUBO = device.createBuffer({
     label: "BufferPolyline params UBO",
-    size: 32, // pixelRatio + 3 pad + viewport vec4
+    // pixelRatio + 3 pad + viewport vec4 + viewportTransformation mat4
+    // + viewportOrthographic mat4
+    size: 160,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -543,14 +556,17 @@ function repackPolylineDirty(
       EncodedCartesian3.fromCartesian(scratchPrev, scratchPrevEnc);
       EncodedCartesian3.fromCartesian(scratchNext, scratchNextEnc);
 
+      // WebGL's texCoord (renderBufferPolylineCollection.js packs j / (jl - 1)),
+      // stored unaltered: BufferPolylineMaterialVS.glsl takes usePrevious from
+      // texCoord == 1.0, which holds at the last vertex only.
       const texCoordS = jl > 1 ? j / (jl - 1) : 0;
       for (let k = 0; k < 2; k++) {
         const v3 = vOffset * 3;
         const v4 = vOffset * 4;
-        // showColorWidthAndTexCoord uses width 5
-        // (vec4 + alpha) so the alpha lane shares the loc7 buffer (drops the
-        // 9th vertex buffer). pickColor stays width 4 (`v4`).
-        const v5 = vOffset * 5;
+        // The interleaved record (vec4, alpha, expand direction) shares the
+        // loc7 buffer, which keeps the pipeline at eight vertex buffers.
+        // pickColor stays width 4 (`v4`).
+        const vRecord = vOffset * POLYLINE_RECORD_FLOATS;
         cache.positionHighArr[v3] = scratchEnc.high.x;
         cache.positionHighArr[v3 + 1] = scratchEnc.high.y;
         cache.positionHighArr[v3 + 2] = scratchEnc.high.z;
@@ -573,15 +589,16 @@ function repackPolylineDirty(
         cache.pickColorArr[v4 + 1] = Color.floatToByte(scratchColor.green);
         cache.pickColorArr[v4 + 2] = Color.floatToByte(scratchColor.blue);
         cache.pickColorArr[v4 + 3] = Color.floatToByte(scratchColor.alpha);
-        // Pack texCoord with direction in fractional bits: integer = s, fractional = direction
-        // The shader unpacks: floor() = s, sign(fract() - 0.5) = direction
-        const directionFrac = k === 0 ? 0.25 : 0.75; // -1 / +1 after sign(fract-0.5)
-        cache.showColorWidthAndTexCoordArr[v5] = show ? 1 : 0;
-        cache.showColorWidthAndTexCoordArr[v5 + 1] = encodedColor;
-        cache.showColorWidthAndTexCoordArr[v5 + 2] = signedWidth;
-        cache.showColorWidthAndTexCoordArr[v5 + 3] = texCoordS + directionFrac;
-        // alpha shares the loc7 interleaved buffer (offset 16 = 5th float).
-        cache.showColorWidthAndTexCoordArr[v5 + 4] = colorAlpha;
+        cache.showColorWidthAndTexCoordArr[vRecord] = show ? 1 : 0;
+        cache.showColorWidthAndTexCoordArr[vRecord + 1] = encodedColor;
+        cache.showColorWidthAndTexCoordArr[vRecord + 2] = signedWidth;
+        cache.showColorWidthAndTexCoordArr[vRecord + 3] = texCoordS;
+        cache.showColorWidthAndTexCoordArr[vRecord + 4] = colorAlpha;
+        // The side of the line this copy is extruded to, in its own lane so
+        // both it and texCoord round-trip exactly: WebGL's expandDir,
+        // gl_VertexID % 2 == 1 ? 1.0 : -1.0, and every polyline starts on an
+        // even vertex, so the first copy is -1.0 and the second +1.0.
+        cache.showColorWidthAndTexCoordArr[vRecord + 5] = k === 0 ? -1.0 : 1.0;
         vOffset++;
       }
     }
@@ -626,7 +643,10 @@ function uploadPolylineBuffers(device: GPUDevice, cache: PolylineCache): void {
   device.queue.writeBuffer(cache.indexBuffer, 0, gpuData(cache.indexArr));
 }
 
-const polylineParamsScratch = new Float32Array(8);
+const polylineParamsScratch = new Float32Array(40);
+const polylineParamsViewport = { x: 0, y: 0, width: 1, height: 1 };
+const scratchViewportTransformation = new Matrix4();
+const scratchViewportOrthographic = new Matrix4();
 
 export function updateWebGPUBufferPolylineCollection(
   collection: BufferPrimitiveCollection,
@@ -715,7 +735,7 @@ export function updateWebGPUBufferPolylineCollection(
   );
   device.queue.writeBuffer(cache.cameraUBO, 0, gpuData(cache.cameraData));
 
-  // Params: pixelRatio + viewport
+  // Params: pixelRatio + viewport + viewport matrices
   const pixelRatio = frameState.pixelRatio ?? 1.0;
   const vw = context.drawingBufferWidth || 1;
   const vh = context.drawingBufferHeight || 1;
@@ -727,6 +747,30 @@ export function updateWebGPUBufferPolylineCollection(
   polylineParamsScratch[5] = 0;
   polylineParamsScratch[6] = vw;
   polylineParamsScratch[7] = vh;
+  // The window-coordinate law's two viewport matrices over the drawing
+  // buffer, derived as the primitive polyline path derives them: NDC to window
+  // pixels (depth range 0 to 1), and window pixels back to clip space in this
+  // context's clip-space convention.
+  polylineParamsViewport.width = vw;
+  polylineParamsViewport.height = vh;
+  Matrix4.computeViewportTransformation(
+    polylineParamsViewport,
+    0.0,
+    1.0,
+    scratchViewportTransformation,
+  );
+  Matrix4.computeOrthographicOffCenter(
+    0.0,
+    vw,
+    0.0,
+    vh,
+    0.0,
+    1.0,
+    scratchViewportOrthographic,
+    context.clipSpaceConvention,
+  );
+  Matrix4.pack(scratchViewportTransformation, polylineParamsScratch, 8);
+  Matrix4.pack(scratchViewportOrthographic, polylineParamsScratch, 24);
   device.queue.writeBuffer(cache.paramsUBO, 0, gpuData(polylineParamsScratch));
 
   const segmentCount: number =
@@ -746,8 +790,9 @@ export function updateWebGPUBufferPolylineCollection(
     cache.nextPositionHigh,
     cache.nextPositionLow,
     cache.pickColor,
-    // Slot 7 carries loc7 (showColorWidthAndTexCoord vec4) + loc8 (alpha f32)
-    // interleaved, for eight vertex buffers total.
+    // Slot 7 carries loc7 (showColorWidthAndTexCoord vec4), loc8 (alpha f32)
+    // and loc9 (expand direction f32) interleaved, for eight vertex buffers
+    // total.
     cache.showColorWidthAndTexCoord,
   ];
   const bgs = [cache.bindGroup, cache.paramsBindGroup];

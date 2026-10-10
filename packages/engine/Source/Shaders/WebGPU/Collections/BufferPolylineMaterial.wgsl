@@ -1,15 +1,16 @@
 // BufferPolylineMaterial.wgsl — WebGPU port of BufferPolylineMaterialVS/FS.glsl
 // Renders buffer-backed polylines as screen-space thick quads with RTE precision.
-// Each line segment is expanded into a quad using prev/next positions for
-// miter-join direction computation. Matches upstream GLSL miter logic.
+// Each vertex is placed by csm_getPolylineWindowCoordinatesEC, the port of the
+// getPolylineWindowCoordinatesEC law WebGL's stage calls: the vertex's segment
+// is clipped to the near plane, the joint is mitred from the previous and next
+// positions, and the vertex is extruded in window coordinates.
 //
 // Attributes: current/prev/next positions as high/low RTE pairs, packed
-// show/color/width/texCoord, and pick color.
+// show/color/width/texCoord, alpha, the expand direction, and pick color.
 
 #import CameraUniforms;
 #import csm_translateRelativeToEye;
-#import csm_vertexLogDepth;
-#import csm_writeLogDepth;
+#import csm_polylineCommon;
 #import csm_decodeRGB8;
 #import csm_metersPerPixel;
 
@@ -20,6 +21,11 @@ struct BufferPolylineUniforms {
   padding1   : f32,
   padding2   : f32,
   viewport   : vec4<f32>, // x,y,width,height in pixels
+  // NDC to window (pixel) coordinates, and window coordinates back to WebGPU
+  // clip space: czm_viewportTransformation and czm_viewportOrthographic over
+  // the drawing buffer.
+  viewportTransformation : mat4x4<f32>,
+  viewportOrthographic   : mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera : CameraUniforms;
@@ -35,13 +41,16 @@ struct VertexInput {
   @location(5) nextPositionLow  : vec3<f32>,
   @location(6) pickColor        : vec4<f32>,
   @location(7) showColorWidthAndTexCoord : vec4<f32>,
-  // x=show, y=encodedRGB8(color), z=width, w=texCoord(packed s + direction)
+  // x=show, y=encodedRGB8(color), z=width, w=texCoord (WebGL's j / (jl - 1))
   // The vec4 above is fully saturated (all four lanes used), so material
-  // color.alpha rides in a dedicated f32 lane. CPU pack (alphaArr, width 1),
-  // GPU layout (arrayStride 4 / float32 / shaderLocation 8) and this field
-  // are in lockstep. Mirrors the WebGL `in float alpha` attribute (the GLSL
-  // path divides by 255; here we pack normalized alpha in [0,1] directly).
+  // color.alpha rides in a dedicated f32 lane at byte 16 of the same
+  // interleaved buffer; the CPU pack, the pipeline's vertex layout and this
+  // field are in lockstep. Mirrors the WebGL `in float alpha` attribute (the
+  // GLSL path divides by 255; here we pack normalized alpha in [0,1] directly).
   @location(8) alpha            : f32,
+  // WebGL's expandDir, gl_VertexID % 2 == 1 ? 1.0 : -1.0: -1.0 for the first
+  // copy of each vertex and +1.0 for the second, at byte 20 of the same buffer.
+  @location(9) expandDirection  : f32,
 };
 
 // ── Vertex → Fragment ───────────────────────────────────────────────────────
@@ -56,28 +65,12 @@ struct VertexOutput {
   //>>endif
 };
 
-// ── Join direction ──────────────────────────────────────────────────────────
-// czm_epsilon6; this shader has no constants chunk.
-const BUFFER_POLYLINE_EPSILON6: f32 = 0.000001;
-
-// Direction of the joint at a vertex whose arriving segment runs along dirPrev
-// and whose leaving segment runs along dirNext (unit window-space vectors), in
-// xy, and the cosine the half-width is divided by, in z. The bisector of a
-// 180-degree turn is the normalized zero vector, which is NaN, so there the
-// joint takes the vertex's own segment instead, as getPolylineWindowCoordinatesEC
-// does in PolylineCommon.glsl: the arriving segment at the last vertex
-// (usePrevious) and the leaving one elsewhere, extruded at half the width.
-// Elsewhere both lanes are the expressions the vertex stage used before.
-fn bufferPolylineJoin(dirPrev: vec2<f32>, dirNext: vec2<f32>, usePrevious: bool) -> vec3<f32> {
-  let sum = dirPrev + dirNext;
-  let reversed = length(sum) < BUFFER_POLYLINE_EPSILON6;
-  let ownDir = select(dirNext, dirPrev, usePrevious);
-  let tangent = select(normalize(sum), ownDir, reversed);
-  let cosHalfAngle = select(
-    dot(vec2<f32>(-tangent.y, tangent.x), vec2<f32>(-dirPrev.y, dirPrev.x)),
-    1.0,
-    reversed);
-  return vec3<f32>(tangent, cosHalfAngle);
+// usePrevious of WebGL's BufferPolylineMaterialVS.glsl, texCoord == 1.0: only
+// the polyline's last vertex takes its own segment from its previous position.
+// The renderer packs texCoord as j / (jl - 1), so it is exactly 1.0 there and
+// below 1.0 at every other vertex.
+fn bufferPolylineUsePrevious(texCoord: f32) -> bool {
+  return texCoord == 1.0;
 }
 
 // ── Vertex shader ───────────────────────────────────────────────────────────
@@ -92,11 +85,7 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
   // alpha=1). Matches WebGL's `v_color.a *= alpha` (show is applied via the
   // degenerate-position hide below, not an alpha multiply).
   color.a = input.alpha;
-  let texCoordPacked = input.showColorWidthAndTexCoord.w;
-
-  // Unpack texCoord: integer part = s coordinate, fractional part encodes direction
-  let s = floor(texCoordPacked);
-  let direction = sign(fract(texCoordPacked) - 0.5); // -1 or +1
+  let texCoord = input.showColorWidthAndTexCoord.w;
 
   // RTE positioning for current, previous, and next vertices
   let pCurr = csm_translateRelativeToEye(
@@ -129,7 +118,7 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
     // csm_metersPerPixel needs eye-space position at THIS vertex's depth
     // (metres-per-pixel varies with distance to camera) — the reason this
     // unpack waits for posEC instead of running with the rest of the
-    // attribute unpack above, where `width` used to be computed.
+    // attribute unpack above.
     // 1.0e-7 is czm_epsilon7 (GLSL names the constant; this shader has no
     // constants chunk, so the literal is commented instead of left bare).
     widthCss = widthCss / max(
@@ -137,61 +126,32 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
                          params.viewport, camera.projectionMatrix),
       1.0e-7);
   }
-  // This shader extrudes in FRAMEBUFFER (device) pixels — params.viewport.zw
-  // is context.drawingBufferWidth/Height, not CSS pixels — which is why the
-  // pre-existing pixels path already multiplied by params.pixelRatio (kept
-  // below as the last step, unchanged). For the metres path the ratio
-  // appears TWICE and still cancels correctly: on WebGL,
-  // getPolylineWindowCoordinatesEC multiplies the half-width by
-  // czm_pixelRatio when it offsets in window coordinates
-  // (PolylineCommon.glsl:166), so GLSL's `width` is in CSS pixels, while
-  // czm_metersPerPixel(positionEC) returns metres per CSS pixel (metres per
-  // device pixel * czm_pixelRatio). So WebGL's device-pixel offset for a
-  // metres line works out to metres / (2 * metresPerDevicePixel) — the ratio
-  // cancels exactly. Passing params.pixelRatio into csm_metersPerPixel above
-  // and then multiplying by it again here reproduces that same
-  // cancellation, so a metres-wide line matches WebGL on a HiDPI display and
-  // not only at pixelRatio == 1.
-  let width = widthCss * params.pixelRatio;
-
-  // Project to clip space
-  let clipPos = camera.projectionMatrix * vec4<f32>(posEC, 1.0);
-  let prevClip = camera.projectionMatrix * vec4<f32>(prevEC, 1.0);
-  let nextClip = camera.projectionMatrix * vec4<f32>(nextEC, 1.0);
-
-  // Convert to screen space for miter computation
-  let viewport = params.viewport;
-  let screenCurr = (clipPos.xy / clipPos.w) * 0.5 * viewport.zw;
-  let screenPrev = (prevClip.xy / prevClip.w) * 0.5 * viewport.zw;
-  let screenNext = (nextClip.xy / nextClip.w) * 0.5 * viewport.zw;
-
-  // Compute miter direction
-  let dirPrev = normalize(screenCurr - screenPrev);
-  let dirNext = normalize(screenNext - screenCurr);
-  // WebGL's usePrevious (texCoord == 1.0, the last vertex) is false at every
-  // reachable 180-degree turn: an end vertex's missing neighbour is its other
-  // neighbour reflected through it, so its two directions agree, and a turn is
-  // always an interior vertex. The packed lane cannot name the last vertex
-  // anyway: s is floor(texCoord + 0.25 or 0.75), which reaches 1 well before
-  // the last vertex.
-  let join = bufferPolylineJoin(dirPrev, dirNext, false);
-  let tangent = join.xy;
-  let miterDir = vec2<f32>(-tangent.y, tangent.x);
-
-  // Miter length (clamped to avoid spikes)
-  let cosHalfAngle = max(join.z, 0.1);
-  let miterLen = (width * 0.5) / cosHalfAngle;
-  let clampedMiterLen = min(miterLen, width * 2.0);
-
-  // Extrude in screen space
-  let extrusion = miterDir * direction * clampedMiterLen;
-  let screenOffset = extrusion / (0.5 * viewport.zw);
-
-  output.position = vec4<f32>(
-    clipPos.xy + screenOffset * clipPos.w,
-    clipPos.z,
-    clipPos.w,
+  // The law takes the width in CSS pixels and scales the window-space offset
+  // by the pixel ratio itself (PolylineCommon.glsl:166, czm_pixelRatio), so
+  // the quad is extruded in framebuffer (device) pixels, which is what
+  // params.viewport.zw and the viewport matrices measure. For a metres width
+  // the ratio still cancels: csm_metersPerPixel above returns metres per CSS
+  // pixel (metres per device pixel times the ratio), so the device-pixel
+  // offset works out to metres / (2 * metresPerDevicePixel), as on WebGL at
+  // any pixel ratio.
+  //
+  // The law clips the vertex's own segment to the near plane: the segment to
+  // its next position, or to its previous one at the polyline's last vertex.
+  // Its inputs are WebGL's own, each read exactly from its lane: texCoord,
+  // usePrevious (texCoord == 1.0) and expandDirection.
+  let positionWC = csm_getPolylineWindowCoordinatesEC(
+    vec4<f32>(posEC, 1.0),
+    vec4<f32>(prevEC, 1.0),
+    vec4<f32>(nextEC, 1.0),
+    input.expandDirection,
+    widthCss,
+    bufferPolylineUsePrevious(texCoord),
+    camera.projectionMatrix,
+    params.viewportTransformation,
+    params.pixelRatio,
+    camera.encodedCameraPositionMCHigh.w,
   );
+  output.position = params.viewportOrthographic * positionWC;
 
   // Hide if not shown
   if (show == 0.0) {
@@ -207,7 +167,7 @@ fn vertexMain(input : VertexInput) -> VertexOutput {
 
   output.v_pickColor = input.pickColor;
   output.v_color = color;
-  output.v_st = vec2<f32>(s, (direction + 1.0) * 0.5);
+  output.v_st = vec2<f32>(texCoord, (input.expandDirection + 1.0) * 0.5);
 
   return output;
 }

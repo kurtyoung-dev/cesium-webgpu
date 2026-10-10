@@ -1,6 +1,6 @@
-// buffer-polyline-hairpin-join.spec.mjs — the WebGPU BufferPolyline joint at a 180-degree turn, EXECUTED out of its shipped source.
+// buffer-polyline-hairpin-join.spec.mjs — the polyline window-space joint at a 180-degree turn, EXECUTED out of its shipped source.
 //
-// @purpose Runs bufferPolylineJoin out of BufferPolylineMaterial.wgsl through the WGSL evaluator and asserts it against an independent JavaScript transcription of WebGL's getPolylineWindowCoordinatesEC joint (PolylineCommon.glsl): finite at a hairpin, unchanged and in parity everywhere else.
+// @purpose Runs csm_polylineJoin out of csm_polylineCommon.wgsl (the joint of WebGL's getPolylineWindowCoordinatesEC, now the one joint every WebGPU polyline stage including BufferPolyline uses) through the WGSL evaluator and asserts it against an independent JavaScript transcription of PolylineCommon.glsl: finite at a hairpin and in parity with WebGL everywhere else.
 // @status ACTIVE
 //
 // Pure Node, real modules, no browser, no GPU:
@@ -9,39 +9,36 @@
 //
 // WHAT IS ASSERTED, AND WHY IT IS NOT A GREP
 // ------------------------------------------
-// The vertex stage extrudes a polyline vertex along the left normal of a joint
-// direction and divides the half width by a cosine. The helper that produces
-// both is a pure WGSL function, so every number below comes out of the `.wgsl`
-// that ships, read by `lib/wgsl-mini-eval.mjs`. The oracle is a transcription
-// of WebGL's law written from the GLSL: the "other" segment's left normal is
-// added to this segment's, the sum is normalized unless it is shorter than
-// czm_epsilon6 (then this segment's own left normal stands), and the extrusion
-// is clamp((width / 2) / |cross(-forward, left)|, 0, 2 * width).
+// The joint is a pure WGSL function, so every number below comes out of the
+// .wgsl that ships, read by lib/wgsl-mini-eval.mjs. The oracle is a
+// transcription of WebGL's law written from the GLSL: the "other" segment's
+// left normal is added to this segment's, the sum is normalized unless it is
+// shorter than czm_epsilon6 (then this segment's own left normal stands), and
+// the extrusion is clamp((width / 2) / |cross(-forward, left)|, 0, 2 * width).
+// A position that coincides with its previous or next position skips all of it
+// and takes its own segment's left normal at half the width.
 //
 // WHAT WAS WRONG: for opposite directions the bisector is normalize(0), which
 // is NaN in every lane, so the whole joint vanished on WebGPU while WebGL drew
 // the segment's own extrusion at half the width.
 //
-// WHICH usePrevious THE VERTEX STAGE PASSES: always false. WebGL's
-// usePrevious is texCoord == 1.0, the last vertex, and at the last vertex (as
-// at the first) the missing neighbour is the other neighbour reflected
-// through it, in both renderers' packs, so its two directions agree and it is
-// never a hairpin. A reachable 180-degree turn is always an interior vertex,
-// where WebGL's usePrevious is false. The usePrevious = true cases below are
-// therefore HELPER-CONTRACT checks (the helper still implements WebGL's law
-// for both values), not a joint the shader can produce; the label of each
-// such violation says so.
+// FW-03b moved the joint out of BufferPolylineMaterial.wgsl (where it was the
+// private helper bufferPolylineJoin) into csm_polylineCommon.wgsl as
+// csm_polylineJoin, so BufferPolyline now runs WebGL's whole window-coordinate
+// law. This spec was re-pointed with it: the former half that pinned the
+// pre-fix WGSL expressions is retired by design (that helper no longer
+// exists), and what remains is parity with WebGL.
 //
 // THE GROUPS
 //   H1  a hairpin (including an f32-rounded pair and a pair just below the
-//       epsilon) is finite and equals WebGL's extrusion with usePrevious =
-//       false (the reachable case), and with usePrevious = true as a
-//       helper-contract check.
-//   H2  every other joint is finite, still the pre-fix expressions
-//       (normalize(sum), dot of the two left normals), and in parity with
-//       WebGL for both values of usePrevious.
+//       epsilon) is finite and equals WebGL's own-segment fallback, for both
+//       values of usePrevious.
+//   H2  every other joint, from straight on through a near-reversal, is
+//       finite and equals WebGL's joint, for both values of usePrevious.
+//   H3  a coincident position takes its own segment's left normal at half the
+//       width whatever the other segment is, and nothing leaks from it.
 //   M   inertness images: the same reader over a one-substitution copy of the
-//       shipped text turns H1 or H2 RED, so neither group passes over a helper
+//       shipped text turns H1, H2 or H3 RED, so no group passes over a helper
 //       that has stopped doing its job.
 
 import assert from "node:assert/strict";
@@ -62,24 +59,54 @@ const root = path.resolve(here, "..", "..");
 
 const WGSL_PATH = path.join(
   root,
-  "packages/engine/Source/Shaders/WebGPU/Collections/BufferPolylineMaterial.wgsl",
+  "packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_polylineCommon.wgsl",
 );
 const shipped = fs.readFileSync(WGSL_PATH, "utf8").replace(/\r\n/gu, "\n");
 
 /**
- * Compile the join helper out of a WGSL text.
+ * Compile the joint out of a WGSL text.
  *
  * @param {string} source The WGSL.
  * @param {object} [extraGlobals] Extra evaluator bindings, e.g. `__round`.
- * @returns {Function} `(dirPrev, dirNext, usePrevious) => {x, y, z}`.
+ * @returns {Function} `(thisForward, otherForward, width, coincident) => {x, y, z}`.
  */
 function compileJoin(source, extraGlobals = {}) {
   const stripped = stripComments(source);
-  return compileFunction(stripped, "bufferPolylineJoin", {
+  return compileFunction(stripped, "csm_polylineJoin", {
     ...readConstants(stripped),
     __functions: {},
     ...extraGlobals,
   });
+}
+
+/**
+ * Call the joint the way the window-coordinate law does, from the vertex's
+ * travel directions: the direction to the previous position is the reverse of
+ * the direction that arrived, the direction to the next is the one that leaves.
+ * `usePrevious` (WebGL's texCoord == 1.0) makes the arriving segment this
+ * vertex's own.
+ *
+ * @param {Function} join A compiled joint.
+ * @param {number[]} dirPrev Unit direction arriving at the vertex.
+ * @param {number[]} dirNext Unit direction leaving the vertex.
+ * @param {boolean} usePrevious WebGL's usePrevious.
+ * @param {number} width The CSS-pixel width.
+ * @param {boolean} [coincident] The position coincides with a neighbour.
+ * @returns {{x: number, y: number, z: number}} (leftWC.xy, expandWidth).
+ */
+function callJoin(
+  join,
+  dirPrev,
+  dirNext,
+  usePrevious,
+  width,
+  coincident = false,
+) {
+  const dirToPrev = negate(dirPrev);
+  const dirToNext = dirNext;
+  const thisForward = usePrevious ? negate(dirToPrev) : dirToNext;
+  const otherForward = usePrevious ? dirToNext : negate(dirToPrev);
+  return join(vec2(...thisForward), vec2(...otherForward), width, coincident);
 }
 
 /**
@@ -135,19 +162,14 @@ function webglJoint(dirPrev, dirNext, usePrevious, width) {
 }
 
 /**
- * What the vertex stage does with the helper's outputs
- * (BufferPolylineMaterial.wgsl vertexMain): extrude along the left normal of
- * xy by (width / 2) / max(z, 0.1), clamped to 2 * width.
+ * The joint's outputs as an offset direction and a length (before the pixel
+ * ratio): leftWC in xy, the extrusion half-width in z.
  *
  * @param {{x: number, y: number, z: number}} joint The helper's result.
- * @param {number} width The pixel width.
  * @returns {{left: number[], length: number}} The offset direction and length.
  */
-function extrusionOf(joint, width) {
-  return {
-    left: [-joint.y, joint.x],
-    length: Math.min((width * 0.5) / Math.max(joint.z, 0.1), width * 2),
-  };
+function extrusionOf(joint) {
+  return { left: [joint.x, joint.y], length: joint.z };
 }
 
 const unit = (angle) => [Math.cos(angle), Math.sin(angle)];
@@ -232,18 +254,15 @@ function hairpinViolations(join) {
   for (const pair of hairpinPairs()) {
     for (const usePrevious of [false, true]) {
       for (const width of WIDTHS) {
-        // usePrevious = true is a helper-contract check: no reachable
-        // hairpin passes it (see the header).
-        const contract = usePrevious ? " [helper contract]" : "";
-        const label = `${pair.name} usePrevious=${usePrevious}${contract} width=${width}`;
-        const joint = join(vec2(...pair.prev), vec2(...pair.next), usePrevious);
+        const label = `${pair.name} usePrevious=${usePrevious} width=${width}`;
+        const joint = callJoin(join, pair.prev, pair.next, usePrevious, width);
         if (!finite(joint)) {
           violations.push(
             `${label}: non-finite (${joint.x}, ${joint.y}, ${joint.z})`,
           );
           continue;
         }
-        const got = extrusionOf(joint, width);
+        const got = extrusionOf(joint);
         const want = webglJoint(pair.prev, pair.next, usePrevious, width);
         if (
           !close(got.left[0], want.left[0], 1e-6) ||
@@ -265,7 +284,7 @@ function hairpinViolations(join) {
 }
 
 /**
- * H2 over a given helper: finite, the pre-fix expressions, and parity.
+ * H2 over a given helper: finite and in parity with WebGL.
  *
  * @param {Function} join A compiled helper.
  * @returns {string[]} Violations; empty when the helper behaves.
@@ -273,34 +292,17 @@ function hairpinViolations(join) {
 function bentViolations(join) {
   const violations = [];
   for (const pair of bentPairs()) {
-    const [px, py] = pair.prev;
-    const [nx, ny] = pair.next;
-    const sumLength = Math.hypot(px + nx, py + ny);
-    // The pre-fix expressions, computed here from the inputs:
-    // tangent = normalize(dirPrev + dirNext) and
-    // z = dot(left(tangent), left(dirPrev)).
-    const tangent = [(px + nx) / sumLength, (py + ny) / sumLength];
-    const oldZ = -tangent[1] * -py + tangent[0] * px;
     for (const usePrevious of [false, true]) {
       for (const width of WIDTHS) {
         const label = `${pair.name} usePrevious=${usePrevious} width=${width}`;
-        const joint = join(vec2(...pair.prev), vec2(...pair.next), usePrevious);
+        const joint = callJoin(join, pair.prev, pair.next, usePrevious, width);
         if (!finite(joint)) {
           violations.push(
             `${label}: non-finite (${joint.x}, ${joint.y}, ${joint.z})`,
           );
           continue;
         }
-        if (
-          !close(joint.x, tangent[0], 1e-9) ||
-          !close(joint.y, tangent[1], 1e-9) ||
-          !close(joint.z, oldZ, 1e-9)
-        ) {
-          violations.push(
-            `${label}: (${joint.x}, ${joint.y}, ${joint.z}) is not the unchanged (${tangent}, ${oldZ})`,
-          );
-        }
-        const got = extrusionOf(joint, width);
+        const got = extrusionOf(joint);
         const want = webglJoint(pair.prev, pair.next, usePrevious, width);
         if (
           !close(got.left[0], want.left[0], 1e-6) ||
@@ -321,6 +323,44 @@ function bentViolations(join) {
   return violations;
 }
 
+/**
+ * H3 over a given helper: a coincident position takes its own segment's left
+ * normal at half the width, whatever the other segment is, even a garbage one.
+ *
+ * @param {Function} join A compiled helper.
+ * @returns {string[]} Violations; empty when the helper behaves.
+ */
+function coincidentViolations(join) {
+  const violations = [];
+  const garbage = vec2(Number.NaN, Number.NaN);
+  for (const pair of [...hairpinPairs(), ...bentPairs()]) {
+    for (const usePrevious of [false, true]) {
+      for (const width of WIDTHS) {
+        const label = `${pair.name} usePrevious=${usePrevious} width=${width}`;
+        const thisForward = usePrevious ? pair.prev : pair.next;
+        const joint = join(vec2(...thisForward), garbage, width, true);
+        if (!finite(joint)) {
+          violations.push(
+            `${label}: non-finite (${joint.x}, ${joint.y}, ${joint.z})`,
+          );
+          continue;
+        }
+        // GLSL: leftWC = thisSegmentLeftWC, expandWidth = width * 0.5.
+        if (
+          !close(joint.x, -thisForward[1], 1e-12) ||
+          !close(joint.y, thisForward[0], 1e-12) ||
+          !close(joint.z, width * 0.5, 1e-12)
+        ) {
+          violations.push(
+            `${label}: (${joint.x}, ${joint.y}, ${joint.z}) is not this segment's left at half the width`,
+          );
+        }
+      }
+    }
+  }
+  return violations;
+}
+
 const shippedJoin = compileJoin(shipped);
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -333,13 +373,17 @@ test("H1: a 180-degree turn is finite and extrudes as WebGL does", () => {
 
 test("H1: literal pins, so the oracle is itself checked", () => {
   // WebGL, (1,0) then (-1,0): the leaving segment points -x, whose left normal
-  // is (0,-1), at half the width; that is the reachable case. The arriving
-  // pin (usePrevious = true, left normal (0,1)) is a helper-contract check.
-  const leaving = extrusionOf(shippedJoin(vec2(1, 0), vec2(-1, 0), false), 10);
+  // is (0,-1); at the last vertex the arriving segment (1,0) has left normal
+  // (0,1). Both at half the width.
+  const leaving = extrusionOf(
+    callJoin(shippedJoin, [1, 0], [-1, 0], false, 10),
+  );
   assert.ok(close(leaving.left[0], 0, 1e-12), `x ${leaving.left[0]}`);
   assert.ok(close(leaving.left[1], -1, 1e-12), `y ${leaving.left[1]}`);
   assert.ok(close(leaving.length, 5, 1e-9), `length ${leaving.length}`);
-  const arriving = extrusionOf(shippedJoin(vec2(1, 0), vec2(-1, 0), true), 10);
+  const arriving = extrusionOf(
+    callJoin(shippedJoin, [1, 0], [-1, 0], true, 10),
+  );
   assert.ok(close(arriving.left[0], 0, 1e-12), `x ${arriving.left[0]}`);
   assert.ok(close(arriving.left[1], 1, 1e-12), `y ${arriving.left[1]}`);
   assert.ok(close(arriving.length, 5, 1e-9), `length ${arriving.length}`);
@@ -352,7 +396,7 @@ test("H1: the f32-rounded hairpin is finite when every operation rounds to f32",
   const prev = unit(0.7).map(Math.fround);
   const next = negate(prev).map(Math.fround);
   for (const usePrevious of [false, true]) {
-    const joint = rounded(vec2(...prev), vec2(...next), usePrevious);
+    const joint = callJoin(rounded, prev, next, usePrevious, 10);
     assert.ok(
       finite(joint),
       `usePrevious=${usePrevious}: (${joint.x}, ${joint.y}, ${joint.z})`,
@@ -361,19 +405,35 @@ test("H1: the f32-rounded hairpin is finite when every operation rounds to f32",
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// H2 — everything else is unchanged and in parity
+// H2 — everything else is in parity with WebGL
 // ═══════════════════════════════════════════════════════════════════════
 
-test("H2: non-reversed joints keep the pre-fix outputs and match WebGL", () => {
+test("H2: joints from straight on through a near-reversal match WebGL", () => {
   assert.deepEqual(bentViolations(shippedJoin), []);
 });
 
 test("H2: a straight joint extrudes at exactly half the width", () => {
-  const joint = shippedJoin(vec2(1, 0), vec2(1, 0), false);
-  const got = extrusionOf(joint, 10);
+  const got = extrusionOf(callJoin(shippedJoin, [1, 0], [1, 0], false, 10));
   assert.ok(close(got.left[0], 0, 1e-12));
   assert.ok(close(got.left[1], 1, 1e-12));
   assert.ok(close(got.length, 5, 1e-9));
+});
+
+test("H2: a near-reversal is clamped to twice the width, as WebGL clamps it", () => {
+  // |sum| = 1.2e-6 is just over czm_epsilon6, so the bisector stands and its
+  // sine is vanishing: half the width over a tiny sine clamps to 2 * width.
+  const got = extrusionOf(
+    callJoin(shippedJoin, [1, 0], unit(Math.PI - 1.2e-6), false, 10),
+  );
+  assert.ok(close(got.length, 20, 1e-9), `length ${got.length}`);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// H3 — a coincident position
+// ═══════════════════════════════════════════════════════════════════════
+
+test("H3: a coincident position takes its own left normal at half the width", () => {
+  assert.deepEqual(coincidentViolations(shippedJoin), []);
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -383,8 +443,8 @@ test("H2: a straight joint extrudes at exactly half the width", () => {
 test("M1: with the hairpin test unreachable, H1 goes RED (non-finite)", () => {
   const image = mutate(
     shipped,
-    "let reversed = length(sum) < BUFFER_POLYLINE_EPSILON6;",
-    "let reversed = false && length(sum) < BUFFER_POLYLINE_EPSILON6;",
+    "leftSumLength < CSM_POLYLINE_EPSILON6",
+    "leftSumLength < -1.0",
   );
   const violations = hairpinViolations(compileJoin(image));
   assert.ok(violations.length > 0, "H1 stayed green over a dead hairpin test");
@@ -396,26 +456,11 @@ test("M1: with the hairpin test unreachable, H1 goes RED (non-finite)", () => {
   assert.deepEqual(bentViolations(compileJoin(image)), []);
 });
 
-test("M1b: with the pre-fix body restored outright, H1 goes RED", () => {
-  const withTangent = mutate(
-    shipped,
-    /let tangent = select\(normalize\(sum\), ownDir, reversed\);/u,
-    "let tangent = normalize(sum);",
-  );
-  const image = mutate(
-    withTangent,
-    /let cosHalfAngle = select\(\s*dot\(([^;]*?)\),\s*1\.0,\s*reversed\);/u,
-    "let cosHalfAngle = dot($1);",
-  );
-  const violations = hairpinViolations(compileJoin(image));
-  assert.ok(violations.length > 0, "H1 stayed green over the pre-fix body");
-});
-
 test("M2: with the hairpin test always true, H2 goes RED on every turning joint", () => {
   const image = mutate(
     shipped,
-    "let reversed = length(sum) < BUFFER_POLYLINE_EPSILON6;",
-    "let reversed = length(sum) < 2.1;",
+    "leftSumLength < CSM_POLYLINE_EPSILON6",
+    "leftSumLength < 2.1",
   );
   const violations = bentViolations(compileJoin(image));
   assert.ok(violations.length > 0, "H2 stayed green over an always-true test");
@@ -436,7 +481,21 @@ test("M2: with the hairpin test always true, H2 goes RED on every turning joint"
   assert.ok(turning > 20, "the matrix must hold many turning joints");
 });
 
-test("M3: the mutation helper refuses a substitution that matched nothing", () => {
+test("M3: with the coincident arm unreachable, H3 goes RED", () => {
+  const image = mutate(
+    shipped,
+    "if (coincident) {",
+    "if (false && coincident) {",
+  );
+  const violations = coincidentViolations(compileJoin(image));
+  assert.ok(
+    violations.length > 0,
+    "H3 stayed green over a dead coincident arm",
+  );
+  assert.deepEqual(hairpinViolations(compileJoin(image)), []);
+});
+
+test("M4: the mutation helper refuses a substitution that matched nothing", () => {
   assert.throws(
     () => mutate(shipped, "no such text anywhere", "x"),
     /matched nothing/u,

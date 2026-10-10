@@ -175,7 +175,13 @@ function shapeViolations(build, nearclipDials) {
     );
     expect(second?.kind === "BufferPolylineCollection", "rig: second kind");
     expect(
-      JSON.stringify(second?.names) === JSON.stringify(["hairpin"]),
+      JSON.stringify(second?.names) ===
+        JSON.stringify([
+          "hairpin",
+          "near-plane-buffer",
+          "straight-3",
+          "straight-5",
+        ]),
       `rig: second names ${JSON.stringify(second?.names)}`,
     );
     expect(
@@ -195,10 +201,10 @@ function shapeViolations(build, nearclipDials) {
     );
 
     const buffer = log.bufferCollections[0];
-    expect(buffer?.options?.primitiveCountMax === 1, "rig: primitiveCountMax");
-    expect(buffer?.options?.vertexCountMax === 3, "rig: vertexCountMax");
+    expect(buffer?.options?.primitiveCountMax === 4, "rig: primitiveCountMax");
+    expect(buffer?.options?.vertexCountMax === 13, "rig: vertexCountMax");
     const hairpin = buffer?.added?.[0];
-    expect(buffer?.added?.length === 1, "rig: one buffer polyline");
+    expect(buffer?.added?.length === 4, "rig: four buffer polylines");
     expect(
       hairpin?.positions instanceof Float64Array &&
         hairpin.positions.length === 9,
@@ -217,6 +223,28 @@ function shapeViolations(build, nearclipDials) {
         JSON.stringify(hairpin?.material?.options?.color?.components) ===
           JSON.stringify(dial.material.color),
       "rig: buffer material carries the dial's width and colour",
+    );
+    const nearBuffer = buffer?.added?.[1];
+    const nearBufferDial = nearclipDials.polylines[2];
+    expect(
+      nearBuffer?.positions instanceof Float64Array &&
+        nearBuffer.positions.length === 6 &&
+        nearBuffer.positions[5] === nearBufferDial.positionsDegreesHeights[5] &&
+        nearBuffer?.material?.options?.width === nearBufferDial.width &&
+        JSON.stringify(nearBuffer?.material?.options?.color?.components) ===
+          JSON.stringify(nearBufferDial.material.color),
+      "rig: the second buffer polyline carries its dial's points, width and colour",
+    );
+    const straight5 = buffer?.added?.[3];
+    const straight5Dial = nearclipDials.polylines[4];
+    expect(
+      straight5?.positions instanceof Float64Array &&
+        straight5.positions.length === 15 &&
+        straight5.positions[14] === straight5Dial.positionsDegreesHeights[14] &&
+        straight5?.material?.options?.width === straight5Dial.width &&
+        JSON.stringify(straight5?.material?.options?.color?.components) ===
+          JSON.stringify(straight5Dial.material.color),
+      "rig: the fourth buffer polyline carries its dial's points, width and colour",
     );
 
     const near = log.polylineCollections[0]?.added?.[0];

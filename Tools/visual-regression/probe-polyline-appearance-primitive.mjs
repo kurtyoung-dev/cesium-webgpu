@@ -93,8 +93,10 @@ export const CENTROID_TOLERANCE_PX = 4;
 /**
  * The scenes `--rigs` can name, keyed by rig id: each is built from its rig's
  * dials by `lib/polyline-rig-scene.mjs` and scored by the masks it lists.
- * `polyline-nearclip`: the green ribbon that turns back on itself is the
- * verdicted cell; the red ribbon through the near plane is reported only.
+ * `polyline-nearclip`: every mask is verdicted: the green ribbon that turns
+ * back on itself, the red (PolylineCollection) and blue
+ * (BufferPolylineCollection) ribbons through the near plane, and the yellow
+ * (three points) and magenta (five points) straight BufferPolylines.
  */
 export const STAGE_SCENES = Object.freeze({
   [nearclipRig.id]: Object.freeze({
@@ -108,7 +110,22 @@ export const STAGE_SCENES = Object.freeze({
       Object.freeze({
         name: "near-plane",
         predicate: channelThresholds({ rAbove: 150, gBelow: 90, bBelow: 90 }),
-        verdicted: false,
+        verdicted: true,
+      }),
+      Object.freeze({
+        name: "near-plane-buffer",
+        predicate: channelThresholds({ bAbove: 150, rBelow: 90, gBelow: 90 }),
+        verdicted: true,
+      }),
+      Object.freeze({
+        name: "straight-3",
+        predicate: channelThresholds({ rAbove: 150, gAbove: 150, bBelow: 90 }),
+        verdicted: true,
+      }),
+      Object.freeze({
+        name: "straight-5",
+        predicate: channelThresholds({ rAbove: 150, bAbove: 150, gBelow: 90 }),
+        verdicted: true,
       }),
     ]),
   }),

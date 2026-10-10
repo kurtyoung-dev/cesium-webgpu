@@ -6,7 +6,17 @@
 // the requested pixel width. The WebGPU primitive path uses these helpers
 // for color and material polyline appearances.
 //
-// GLSL uses `out` params; WGSL has none, so each helper returns a struct.
+// GLSL uses `out` params; WGSL has none, so the window-coordinate helpers
+// return structs. The near-plane clip, the per-end selection and the joint
+// step are also exposed as pure helpers that return vectors, with the clip
+// status as an f32 (0.0 unclipped, 1.0 clipped, 2.0 culled), so a vertex stage
+// that keeps its own quad expansion can apply the same clip to its segment
+// ends.
+//
+// Consumers: the primitive polyline shaders (prepended by
+// WebGPUPrimitiveShaders.js), the six PolylineCollection shaders (prepended by
+// WebGPUCollectionShaders.js), and BufferPolylineMaterial.wgsl (through the
+// buffer renderer's chunk table).
 //
 // WebGPU depth range:
 //   WebGL clip-z is [-1, 1]; WebGPU clip-z is [0, 1]. The original GLSL
@@ -49,13 +59,56 @@ fn csm_polylineEyeToWindow(
     // Feed raw NDC (x,y in [-1,1]) through the viewport transform exactly
     // as GLSL czm_eyeToWindowCoordinates does. The transform's halfWidth/
     // halfHeight + center translation produce pixel coordinates.
-    var window: vec4<f32> = viewportTransformation * vec4<f32>(ndc, 1.0);
-    // Override the z that the viewport transform produced (the WebGL
+    let window: vec4<f32> = viewportTransformation * vec4<f32>(ndc, 1.0);
+    // Replace the z that the viewport transform produced (the WebGL
     // 0.5*ndc.z+0.5 remap) with the raw WebGPU depth so the final
-    // round-trip stays in [0,1].
-    window.z = ndc.z;
-    window.w = clip.w;
-    return window;
+    // round-trip stays in [0,1], and carry the clip w.
+    return vec4<f32>(window.xy, ndc.z, clip.w);
+}
+
+// The near-plane test of clipLineSegmentToNearPlane (PolylineCommon.glsl) for
+// the segment p0 -> p1 in eye coordinates. Returns (t, status): status 0.0
+// when p0 is in front of the near plane, 1.0 when the segment crosses it, and
+// 2.0 when the whole segment is behind it or p0 is behind it on a segment
+// nearly parallel to it. When the status is 1.0, t is the distance from p0
+// along the segment's unit direction to the plane. Same operations, in the
+// same order, as the GLSL.
+fn csm_polylineNearClipT(p0: vec3<f32>, p1: vec3<f32>, near: f32) -> vec2<f32> {
+    let p0ToP1: vec3<f32> = p1 - p0;
+    let magnitude: f32 = length(p0ToP1);
+    let direction: vec3<f32> = normalize(p0ToP1);
+    // Distance that p0 is behind the near plane (positive => behind).
+    let endPoint0Distance: f32 = near + p0.z;
+    // Positive denominator: -Z, becoming more visible.
+    let denominator: f32 = -direction.z;
+    if (endPoint0Distance <= 0.0) {
+        return vec2<f32>(0.0, 0.0);
+    }
+    if (abs(denominator) < CSM_POLYLINE_EPSILON7) {
+        return vec2<f32>(0.0, 2.0);
+    }
+    let t: f32 = endPoint0Distance / denominator;
+    if (t < 0.0 || t > magnitude) {
+        return vec2<f32>(t, 2.0);
+    }
+    return vec2<f32>(t, 1.0);
+}
+
+// The clipped p0 for a status from csm_polylineNearClipT: p0 moved by t along
+// the segment's unit direction, with its z held on the near side of the plane
+// against rounding, when the status is 1.0; p0 itself otherwise. The move is
+// selected rather than scaled by zero because a zero-length segment has a NaN
+// direction.
+fn csm_polylineNearClipPoint(
+    p0: vec3<f32>,
+    p1: vec3<f32>,
+    near: f32,
+    t: f32,
+    status: f32
+) -> vec3<f32> {
+    let moved: vec3<f32> = p0 + t * normalize(p1 - p0);
+    let onPlane: vec3<f32> = vec3<f32>(moved.x, moved.y, min(moved.z, -near));
+    return select(p0, onPlane, status == 1.0);
 }
 
 // Port of clipLineSegmentToNearPlane (PolylineCommon.glsl). Clips p0->p1 to
@@ -67,41 +120,110 @@ fn csm_clipLineSegmentToNearPlane(
     projection: mat4x4<f32>,
     viewportTransformation: mat4x4<f32>
 ) -> CsmClipResult {
+    let clip: vec2<f32> = csm_polylineNearClipT(p0In, p1, near);
+    let p0: vec3<f32> = csm_polylineNearClipPoint(p0In, p1, near, clip.x, clip.y);
+
     var result: CsmClipResult;
-    result.culledByNearPlane = false;
-    result.clipped = false;
-
-    var p0: vec3<f32> = p0In;
-
-    let p0ToP1: vec3<f32> = p1 - p0;
-    let magnitude: f32 = length(p0ToP1);
-    let direction: vec3<f32> = normalize(p0ToP1);
-
-    // Distance that p0 is behind the near plane (positive => behind).
-    let endPoint0Distance: f32 = near + p0.z;
-
-    // Positive denominator: -Z, becoming more visible.
-    let denominator: f32 = -direction.z;
-
-    if (endPoint0Distance > 0.0 && abs(denominator) < CSM_POLYLINE_EPSILON7) {
-        // p0 behind near plane, segment nearly parallel — cull entirely.
-        result.culledByNearPlane = true;
-    } else if (endPoint0Distance > 0.0) {
-        let t: f32 = endPoint0Distance / denominator;
-        if (t < 0.0 || t > magnitude) {
-            result.culledByNearPlane = true;
-        } else {
-            p0 = p0 + t * direction;
-            // Guard against numerical noise pushing us past the near plane.
-            p0.z = min(p0.z, -near);
-            result.clipped = true;
-        }
-    }
-
+    result.clipped = clip.y == 1.0;
+    result.culledByNearPlane = clip.y == 2.0;
     result.clippedPositionEC = vec4<f32>(p0, 1.0);
     result.positionWC = csm_polylineEyeToWindow(
         result.clippedPositionEC, projection, viewportTransformation);
     return result;
+}
+
+// The clip position of one end of a segment for a vertex stage that projects
+// its ends itself. `ownEC` is this end and `otherEC` the segment's other end,
+// both in eye coordinates, and `historical` is the clip position the stage
+// computed for `ownEC`. Returns `historical` unchanged when this end is in
+// front of the near plane, the projection of the end clipped onto the plane
+// when the segment crosses it, and (0, 0, 0, 1) when the segment is culled,
+// as getPolylineWindowCoordinatesEC returns for a culled segment.
+fn csm_polylineClipEnd(
+    ownEC: vec3<f32>,
+    otherEC: vec3<f32>,
+    near: f32,
+    projection: mat4x4<f32>,
+    historical: vec4<f32>
+) -> vec4<f32> {
+    let clip: vec2<f32> = csm_polylineNearClipT(ownEC, otherEC, near);
+    let status: f32 = clip.y;
+    let clippedEC: vec3<f32> =
+        csm_polylineNearClipPoint(ownEC, otherEC, near, clip.x, status);
+    let clippedClip: vec4<f32> = projection * vec4<f32>(clippedEC, 1.0);
+    let kept: vec4<f32> = select(historical, clippedClip, status == 1.0);
+    return select(kept, vec4<f32>(0.0, 0.0, 0.0, 1.0), status == 2.0);
+}
+
+// The previous-frame clip position of the point csm_polylineClipEnd clipped
+// to. `prevOwn` and `prevOther` are the previous-frame clip positions of this
+// end and of the segment's other end, and `t` and `status` come from
+// csm_polylineNearClipT over the current eye-space ends, whose distance apart
+// is `magnitude`. Clip coordinates are linear in the world point, so the
+// clipped point's previous clip position lies the same fraction t / magnitude
+// of the way from `prevOwn` to `prevOther`. Returns `prevOwn` unchanged unless
+// the status is 1.0.
+fn csm_polylinePreviousClip(
+    prevOwn: vec4<f32>,
+    prevOther: vec4<f32>,
+    t: f32,
+    magnitude: f32,
+    status: f32
+) -> vec4<f32> {
+    let moved: vec4<f32> = prevOwn + (prevOther - prevOwn) * (t / magnitude);
+    return select(prevOwn, moved, status == 1.0);
+}
+
+// A varying the fragment stage reads linearly in screen space, as WebGL reads
+// the across-line coordinate v_st.t through czm_writeNonPerspective and
+// czm_readNonPerspective (PolylineVS.glsl:98, PolylineFS.glsl:12). The
+// rasterizer interpolates (value * w, w) with perspective, and the ratio of the
+// two is the screen-linear interpolation of value. It matters once an end is
+// clipped: the clipped end's clip w is about the near distance while the other
+// end keeps the segment's far distance, and a perspective-interpolated
+// across-line coordinate then leans to the near end's corner over most of
+// each triangle of the quad, so the edge fade erased the line toward the eye.
+// clipW is the w of the vertex's final clip position.
+fn csm_polylineWriteScreenLinear(value: f32, clipW: f32) -> vec2<f32> {
+    return vec2<f32>(value * clipW, clipW);
+}
+
+// The fragment-stage read of csm_polylineWriteScreenLinear.
+fn csm_polylineReadScreenLinear(written: vec2<f32>) -> f32 {
+    return written.x / written.y;
+}
+
+// The joint of getPolylineWindowCoordinatesEC (PolylineCommon.glsl) at a
+// vertex: the window-space left direction the vertex is extruded along, in xy,
+// and the extrusion half-width before the pixel ratio, in z. `coincident` is
+// true when this position coincides with its previous or next position (an
+// anti-meridian split); then, as at a joint whose two left directions cancel
+// (a 180-degree turn), the vertex takes its own segment's left direction.
+fn csm_polylineJoin(
+    thisSegmentForwardWC: vec2<f32>,
+    otherSegmentForwardWC: vec2<f32>,
+    width: f32,
+    coincident: bool
+) -> vec3<f32> {
+    let thisSegmentLeftWC: vec2<f32> =
+        vec2<f32>(-thisSegmentForwardWC.y, thisSegmentForwardWC.x);
+    if (coincident) {
+        return vec3<f32>(thisSegmentLeftWC, width * 0.5);
+    }
+    let otherSegmentLeftWC: vec2<f32> =
+        vec2<f32>(-otherSegmentForwardWC.y, otherSegmentForwardWC.x);
+    let leftSumWC: vec2<f32> = thisSegmentLeftWC + otherSegmentLeftWC;
+    let leftSumLength: f32 = length(leftSumWC);
+    let leftWC: vec2<f32> = select(
+        leftSumWC / leftSumLength,
+        thisSegmentLeftWC,
+        leftSumLength < CSM_POLYLINE_EPSILON6);
+    // sinAngle = |u x v| where u = -thisSegmentForwardWC, v = leftWC.
+    // Both have z=0, so the cross product reduces to the z component.
+    let u: vec2<f32> = vec2<f32>(-thisSegmentForwardWC.x, -thisSegmentForwardWC.y);
+    let sinAngle: f32 = abs(u.x * leftWC.y - u.y * leftWC.x);
+    let expandWidth: f32 = clamp(width * 0.5 / sinAngle, 0.0, width * 2.0);
+    return vec3<f32>(leftWC, expandWidth);
 }
 
 // Port of getPolylineWindowCoordinatesEC (PolylineCommon.glsl). Color
@@ -161,12 +283,6 @@ fn csm_getPolylineWindowCoordinatesEC(
         otherSegmentForwardWC = -directionToPrevWC;
     }
 
-    let thisSegmentLeftWC: vec2<f32> =
-        vec2<f32>(-thisSegmentForwardWC.y, thisSegmentForwardWC.x);
-
-    var leftWC: vec2<f32> = thisSegmentLeftWC;
-    var expandWidth: f32 = width * 0.5;
-
     // Anti-meridian split safety: when this position coincides with prev or
     // next, the miter math produces NaNs — fall back to the segment left.
     let prevDelta: vec3<f32> = prevEC.xyz - positionEC.xyz;
@@ -176,25 +292,11 @@ fn csm_getPolylineWindowCoordinatesEC(
     let nextCoincident: bool =
         all(abs(nextDelta) < vec3<f32>(CSM_POLYLINE_EPSILON1));
 
-    if (!prevCoincident && !nextCoincident) {
-        let otherSegmentLeftWC: vec2<f32> =
-            vec2<f32>(-otherSegmentForwardWC.y, otherSegmentForwardWC.x);
-
-        let leftSumWC: vec2<f32> = thisSegmentLeftWC + otherSegmentLeftWC;
-        let leftSumLength: f32 = length(leftSumWC);
-        if (leftSumLength < CSM_POLYLINE_EPSILON6) {
-            leftWC = thisSegmentLeftWC;
-        } else {
-            leftWC = leftSumWC / leftSumLength;
-        }
-
-        // sinAngle = |u x v| where u = -thisSegmentForwardWC, v = leftWC.
-        // Both have z=0, so the cross product reduces to the z component.
-        let u: vec2<f32> = -thisSegmentForwardWC;
-        let v: vec2<f32> = leftWC;
-        let sinAngle: f32 = abs(u.x * v.y - u.y * v.x);
-        expandWidth = clamp(expandWidth / sinAngle, 0.0, width * 2.0);
-    }
+    let joint: vec3<f32> = csm_polylineJoin(
+        thisSegmentForwardWC, otherSegmentForwardWC, width,
+        prevCoincident || nextCoincident);
+    let leftWC: vec2<f32> = joint.xy;
+    let expandWidth: f32 = joint.z;
 
     let offset: vec2<f32> = leftWC * expandDirection * expandWidth * pixelRatio;
     // Re-homogenize: multiply by the clip-w so the perspective divide in the
@@ -358,9 +460,12 @@ fn csm_computePolylinePosition(
 
 // Log-depth helpers.
 //
-// Renderer-wide logarithmic depth for the polyline appearance/material path.
-// The copies in chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl and
-// Collections/PolylineCollection.wgsl must remain identical. The
+// Renderer-wide logarithmic depth for every polyline-family shader: the
+// primitive polyline shaders, the six PolylineCollection shaders and
+// BufferPolylineMaterial.wgsl all take these three helpers from this chunk and
+// declare no copy of their own. The leaf chunks
+// chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl carry the same
+// functions for the non-polyline consumers and must remain identical. The
 // `//>>ifdef LOG_DEPTH` gate omits these functions from modules that do not
 // enable logarithmic depth.
 //
