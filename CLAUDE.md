@@ -180,6 +180,39 @@ This is the corollary of Principle 7: keep scaffolding in place AND finish the w
 
 ---
 
+## Probe Kit - Kit First (maintainer rule, 2026-10-08)
+
+> "We want to take all of our probes and turn them into modular pieces that we can use to quickly build and reuse probes in the future so that we spend the absolute minimum time working on probes going forward. From now on when we need probe functionality, we first see if it already exists then if it doesn't we create a new modular piece. Lets get all of our probe tech shored up and ready to rock." (maintainer, 2026-10-08)
+
+The probe kit under `Tools/visual-regression/` is the shared runtime (`lib/probe-runtime.mjs`: `runProbe`, the
+served-build preflight, the Edge slot, element capture, receipts, exit codes), the rig registry (`lib/rig-registry.mjs`
+and `rigs/*.mjs`, scenes as data), the stage and step pieces in `lib/`, the metrics in `lib/metrics/`, the capture seam
+(`lib/capture.mjs`) and the contact sheet. How it works, and the inventory of every piece:
+[`migration_doc/PROBE_KIT_GUIDE.md`](migration_doc/PROBE_KIT_GUIDE.md).
+
+**Before writing any probe code, in this order:**
+
+1. **Rig.** Is the scene already a rig? If not, declare one as data in `rigs/<id>.mjs`.
+2. **Stage.** Is there a stage or step piece for the scene kind? Reuse it, or add the missing dial to it.
+3. **Metric.** Is there a metric? Reuse it, and measure in Node from the captured PNG.
+4. **Probe.** Does a probe on the runtime already capture the scene? Extend its scene table.
+5. **Only then** write ONE new modular piece in `lib/` (one responsibility, an `@purpose`/`@status` header, a Node
+   spec with an inertness mutant). **Never** a bespoke probe or driver that launches its own browser.
+
+Principle 8's probe-first workflow stands; where its step 2 names `probe-saved-view.mjs` as the template, build the
+probe from kit pieces on the runtime instead.
+
+**Keep the guide in sync**, as for `DEBUGGING_GUIDE.md`: a change that adds or removes a kit piece, metric, rig or
+runtime probe regenerates the guide's inventory in the same change
+(`node Tools/visual-regression/probe-kit-inventory.mjs --write migration_doc/PROBE_KIT_GUIDE.md`; `--check` fails on
+drift).
+
+**Shared files at landing.** Every family edits the rig census in `rig-registry.spec.mjs`, `RIG_TAGS` and the
+shrink-only `lib/*-allowlist.mjs` files; the seat rebases a frozen lane patch's hunks on those files onto the tip with
+`Tools/landing/rebase-shared.mjs` instead of resolving the conflicts by hand.
+
+---
+
 ## Architecture Patterns
 
 ### Feature Renderer Pattern (Phase D)

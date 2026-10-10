@@ -317,6 +317,7 @@ heading, not an invented summary):
 | Doc | Role |
 |---|---|
 | [`DEBUGGING_GUIDE.md`](DEBUGGING_GUIDE.md) | Single entry point for debugging tools + probes + CesiumDebug commands. |
+| [`PROBE_KIT_GUIDE.md`](PROBE_KIT_GUIDE.md) | *(Indexed 2026-10-09.)* How the modular probe kit works (runtime, rigs, capture seam, stage pieces, metrics, archive) and the generated inventory of every piece; keep its inventory region current with `probe-kit-inventory.mjs --write`. |
 | [`FEATURE_RENDERER_ONBOARDING.md`](FEATURE_RENDERER_ONBOARDING.md) | Step-by-step guide to adding a new WebGPU Feature Renderer (key, eager/lazy registration, lifecycle, Scene access, compat exemption). |
 | [`IMAGERY_PROJECTION.md`](IMAGERY_PROJECTION.md) | Single source of truth for imagery-layer projection (WebGL + WebGPU). |
 | [`SHADER_PAIRS_LOCKSTEP.md`](SHADER_PAIRS_LOCKSTEP.md) | WGSL/GLSL shader-pair parity contract. |

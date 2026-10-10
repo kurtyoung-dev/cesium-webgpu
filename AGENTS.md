@@ -187,6 +187,15 @@ These are normative, drawn from the seat's return audit of the September 6–9 s
 - Source review first. Lead with reading the shader and the renderer; build apparatus to confirm
   what the reading predicts, not to discover it.
 
+### 9. Probe kit — kit first
+
+When a task needs probe functionality, look for it in the probe kit before writing any: a rig for the scene
+(`Tools/visual-regression/rigs/`), a stage or step piece and a metric (`Tools/visual-regression/lib/`,
+`lib/metrics/`), and a probe on the shared runtime (`lib/probe-runtime.mjs`) that already captures it. Only when
+none exists, add ONE new modular piece with its own spec; never a bespoke probe or driver that launches its own
+browser. The rule (the maintainer's, 2026-10-08) is in `CLAUDE.md`, "Probe Kit - Kit First"; how the kit works,
+and the generated inventory of every piece, are in [`migration_doc/PROBE_KIT_GUIDE.md`](migration_doc/PROBE_KIT_GUIDE.md).
+
 ---
 
 ## Part two — where governed questions are answered

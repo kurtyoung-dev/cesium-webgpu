@@ -279,6 +279,8 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 
 ## Probe inventory (`Tools/visual-regression/`)
 
+> **Kit first (maintainer rule, 2026-10-08).** Before writing a probe, look in the probe kit: [PROBE_KIT_GUIDE.md](PROBE_KIT_GUIDE.md) explains the shared runtime, the rigs, the capture seam, the stage pieces and the metrics, and carries the generated inventory of every kit piece, rig, metric and runtime probe (`node Tools/visual-regression/probe-kit-inventory.mjs --check migration_doc/PROBE_KIT_GUIDE.md`). This section stays the curated first-probe-per-subsystem view and does not repeat that inventory.
+
 **Two views, one fleet.** This inventory is the *curated* view — the first probe to run for a given subsystem question, plus the capture templates and the standing gates. It is deliberately small and hand-maintained. The *everything* view is **[TOOLING_CATALOG.md](TOOLING_CATALOG.md)**: a generated census of all 1,012 `.mjs` files under `Tools/` and `scripts/`, each with its class (probe / spec / gate-lib / lib / runner / bake-tool / fixture / scratch) and its status (`ACTIVE`, `INVESTIGATION_ARTIFACT`, `LIKELY_SUPERSEDED`, `BROKEN_STALE`, `HELD_FOR_D8`, `DELIBERATE_RED_FLAG`, `UNKNOWN`). Use this guide for "what do I run first"; use the catalog for "does an instrument for X already exist" and "is the file I just found still in service". The split is deliberate — the catalog absorbs per-batch churn so this guide's must-stay-synced rule stays honorable.
 
 **The count is CENSUS-DERIVED, not typed by hand** *(corrected 2026-08-09, handover audit FIX 36 — this line read "260+" against a disk reality more than twice that, which invited a successor to conclude the fleet was small enough to read).* Re-derive it, never copy it:
