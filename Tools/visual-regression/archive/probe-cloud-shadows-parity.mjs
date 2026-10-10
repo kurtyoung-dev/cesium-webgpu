@@ -2,7 +2,9 @@
 /**
  * CLOUD-SHADOWS parity probe (Batch 437 — 4.1 CLOUD-SHADOWS).
  * @purpose Stash-based A/B proving default-OFF cloud-shadow consumers render byte-identically across the Batch 437 change.
- * @status INVESTIGATION
+ * @status ARCHIVED-CANDIDATE
+ * Archived by the probe-kit harvest (cloud family, round 1; R-2026-09-17-11): its scene is
+ * re-declared as a rig under rigs/ and its conclusion is banked in WEBGPU_DEBUGGING_LOG.md.
  *
  * Captures the THREE default render paths that the cloud-shadow consumers touch,
  * with the feature at its DEFAULT-OFF state (globe.defaultCloudCollection.volumetric.cloudCastShadows=false,
@@ -19,8 +21,8 @@
  * Output: output/cloud-shadows/parity-<scene>-<TAG>.png
  *
  * Usage:
- *   PARITY_TAG=main     node Tools/visual-regression/probe-cloud-shadows-parity.mjs
- *   PARITY_TAG=modified node Tools/visual-regression/probe-cloud-shadows-parity.mjs
+ *   PARITY_TAG=main     node Tools/visual-regression/archive/probe-cloud-shadows-parity.mjs
+ *   PARITY_TAG=modified node Tools/visual-regression/archive/probe-cloud-shadows-parity.mjs
  */
 import { chromium } from "playwright";
 

@@ -1,23 +1,26 @@
 #!/usr/bin/env node
 /**
- * V1 — tier-preset scaffold byte-identity guard. WebGPU-only.
- * @purpose Stash-based byte-identity guard for the V1 CloudTierPreset scaffold (unread qualityFlags lane must not move pixels).
- * @status INVESTIGATION
+ * V2 — 3D noise-texture bake, bound INERT. WebGPU-only.
+ * @purpose V2 inert-bake gate: 3D noise baked + bound with the shader not sampling it — byte-identical to the pre-V2 stash build, bake ran, zero device errors
+ * @status ARCHIVED-CANDIDATE
+ * Archived by the probe-kit harvest (cloud family, round 1; R-2026-09-17-11): its scene is
+ * re-declared as a rig under rigs/ and its conclusion is banked in WEBGPU_DEBUGGING_LOG.md.
  *
- * V1 adds the `CloudTierPreset` module + the `qualityFlags`@74 uniform lane, but
- * NO shader reads `qualityFlags` yet and `maxSteps`/`lightSteps` stay on the
- * legacy resolver — so every cloud frame must render BYTE-IDENTICALLY to pre-V1.
- * This A/B also catches a packer lane-shift (if `qualityFlags` displaced a later
- * lane, the diff would be large, not zero).
+ * V2 bakes the 128³ shape + 32³ detail 3D noise textures once and binds them
+ * into the cloud BGL (bindings 6/7/8), but the shader keeps `noiseSource = 0` and
+ * never samples them — the live `fbmNoise`/`worleyF1` march still produces every
+ * pixel. So the frame must be BYTE-IDENTICAL to pre-V2, AND the bake must have
+ * actually run (`noiseBaked === true`) with zero device errors (proves the new
+ * BGL bindings + the compute bake dispatch are clean).
  *
- *   Run 1 (V1 build):   TAG=after  node probe-cloud-tier-resolver.mjs
- *   Run 2 (pre-V1):     git stash the renderer.ts + .wgsl, rebuild,
- *                       TAG=before node probe-cloud-tier-resolver.mjs   (computes the diff)
+ *   Run 1 (V2 build):   TAG=after  node Tools/visual-regression/archive/probe-cloud-noisebake.mjs
+ *   Run 2 (pre-V2):     git stash the renderer.ts + .wgsl, rebuild,
+ *                       TAG=before node Tools/visual-regression/archive/probe-cloud-noisebake.mjs   (computes the diff)
  *
- * PASS: mean-abs luma mismatch over cloud pixels ≤ 0.5/255 (byte-identical);
- * 0 device errors. READ cloud-tier-after.png — clouds render normally.
+ * PASS: noiseBaked true; mean-abs luma mismatch ≤ 0.5/255 (byte-identical);
+ * 0 device errors. READ cloud-noisebake-after.png — clouds render as baseline.
  *
- * Usage: TAG=after PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-cloud-tier-resolver.mjs
+ * Usage: TAG=after PROBE_BASE=http://localhost:8080 node Tools/visual-regression/archive/probe-cloud-noisebake.mjs
  */
 import { chromium } from "playwright";
 import {
@@ -25,7 +28,7 @@ import {
   armWebGPUDevices,
   collectGateErrors,
   attachConsoleErrorGate,
-} from "../lib/webgpu-error-gate.mjs";
+} from "../../lib/webgpu-error-gate.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const TAG = process.env.TAG || "after";
@@ -76,7 +79,18 @@ const RENDER = async (cfg) => {
     s.render(jd);
     await new Promise((r) => requestAnimationFrame(r));
   }
-  return s.canvas.toDataURL("image/png");
+  // Read the bake flag off the cloud cache (proves the bake actually ran).
+  let noiseBaked;
+  try {
+    noiseBaked = !!(
+      s.context &&
+      s.context._cloudCache &&
+      s.context._cloudCache.noiseBaked
+    );
+  } catch (e) {
+    noiseBaked = false;
+  }
+  return { noiseBaked, dataUrl: s.canvas.toDataURL("image/png") };
 };
 
 async function imageMismatchCloud(page, duA, duB) {
@@ -101,7 +115,6 @@ async function imageMismatchCloud(page, duA, duB) {
       for (let i = 0; i < da.length; i += 4) {
         const la = 0.299 * da[i] + 0.587 * da[i + 1] + 0.114 * da[i + 2];
         const lb = 0.299 * db[i] + 0.587 * db[i + 1] + 0.114 * db[i + 2];
-        // cloud pixels = bright in either frame (black sky excluded)
         if (Math.max(la, lb) < 30) continue;
         const d = Math.abs(la - lb);
         acc += d;
@@ -136,31 +149,32 @@ async function run() {
   await armWebGPUDevices(page);
   await page.evaluate(SETUP, { LON, LAT, ALT });
 
-  const dataUrl = await page.evaluate(RENDER, { iso: NOON });
-  const png = `${OUT}/cloud-tier-${TAG}.png`;
-  fs.writeFileSync(png, Buffer.from(dataUrl.split(",")[1], "base64"));
+  const r = await page.evaluate(RENDER, { iso: NOON });
+  const png = `${OUT}/cloud-noisebake-${TAG}.png`;
+  fs.writeFileSync(png, Buffer.from(r.dataUrl.split(",")[1], "base64"));
 
   const gate = await collectGateErrors(page);
   const newErrs = (gate.errors || [])
     .concat(consoleErrors)
     .filter((e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout/i.test(e));
 
-  const other = TAG === "after" ? "before" : "after";
-  const otherPng = `${OUT}/cloud-tier-${other}.png`;
-  let pass = newErrs.length === 0;
-  console.log(`[${TAG}] captured. device errors: ${newErrs.length}`);
+  console.log(
+    `[${TAG}] noiseBaked=${r.noiseBaked} device errors=${newErrs.length}`,
+  );
+  if (newErrs.length) console.log("  errs:", newErrs.slice(0, 3));
 
+  const other = TAG === "after" ? "before" : "after";
+  const otherPng = `${OUT}/cloud-noisebake-${other}.png`;
+  let pass = newErrs.length === 0;
   if (fs.existsSync(otherPng)) {
     const otherDu =
       "data:image/png;base64," + fs.readFileSync(otherPng).toString("base64");
-    const m = await imageMismatchCloud(page, dataUrl, otherDu);
+    const m = await imageMismatchCloud(page, r.dataUrl, otherDu);
     console.log("A/B (after vs before):", JSON.stringify(m));
     const checks = [
-      [
-        `byte-identical: mean-abs luma ${m.meanAbs} ≤ 0.5/255`,
-        m.meanAbs <= 0.5,
-      ],
-      [`max-abs luma ${m.maxAbs} ≤ 2/255`, m.maxAbs <= 2],
+      ["bake ran (noiseBaked true)", TAG === "before" || r.noiseBaked === true],
+      [`byte-identical: mean-abs ${m.meanAbs} ≤ 0.5`, m.meanAbs <= 0.5],
+      [`max-abs ${m.maxAbs} ≤ 2`, m.maxAbs <= 2],
       [`cloud pixels present (${m.cloudPx})`, m.cloudPx > 5000],
       ["no NEW device errors", newErrs.length === 0],
     ];

@@ -1,23 +1,20 @@
 #!/usr/bin/env node
 /**
- * Cloud atmosphere-LUT PARITY probe (Batch 434 — 3.3 CLOUD-AERIAL-LUT +
- * 3.4 CLOUD-AMBIENT-LUT). Captures the DEFAULT/cinematic FULL-RES cloud tier
- * (cloudVolumetricQuality='high' → T3 renderResScale=1.0, temporal OFF) with the
- * two new flags at their DEFAULTS (cloudAerialMode='heuristic',
- * cloudAmbientSource='constant') deterministically, dumping the RAW CANVAS pixels
- * to a PNG via the browser's toDataURL.
- * @purpose B434 zero-drift gate: default heuristic-aerial + constant-ambient path byte-identical across modified vs stash-reverted builds
- * @status INVESTIGATION
+ * Cloud half-res PARITY probe (Batch 432). Captures the DEFAULT/cinematic FULL-RES
+ * cloud tier (cloudVolumetricQuality='high' → T3 renderResScale=1.0) deterministi-
+ * cally, dumping the RAW CANVAS pixels (not a page screenshot — no UI chrome) to a
+ * PNG via the browser's toDataURL. Run once on the modified build and once on the
+ * stash-reverted main build; the two PNGs must be byte-identical (zero drift) — the
+ * half-res change must not touch the full-res default path.
+ * @purpose B432 zero-drift gate: full-res default tier raw-canvas capture must be byte-identical across modified vs stash-reverted builds
+ * @status ARCHIVED-CANDIDATE
+ * Archived by the probe-kit harvest (cloud family, round 1; R-2026-09-17-11): its scene is
+ * re-declared as a rig under rigs/ and its conclusion is banked in WEBGPU_DEBUGGING_LOG.md.
  *
- * Run once on the modified build (PARITY_TAG=modified) and once on the
- * stash-reverted main build (PARITY_TAG=main); the two PNGs MUST be byte-identical
- * (zero drift) — coupling the clouds to the atmosphere LUTs must not touch the
- * default heuristic-aerial + constant-ambient path.
- *
- * Output: output/cloud-lut/parity-<TAG>.png  (TAG from PARITY_TAG env).
+ * Output: output/cloud-halfres/parity-<TAG>.png  (TAG from PARITY_TAG env).
  *
  * Usage:
- *   PARITY_TAG=modified node Tools/visual-regression/probe-cloud-lut-parity.mjs
+ *   PARITY_TAG=modified node Tools/visual-regression/archive/probe-cloud-halfres-parity.mjs
  */
 import { chromium } from "playwright";
 
@@ -32,7 +29,7 @@ const SCENE = {
 
 (async () => {
   const fs = await import("fs");
-  fs.mkdirSync("Tools/visual-regression/output/cloud-lut", {
+  fs.mkdirSync("Tools/visual-regression/output/cloud-halfres", {
     recursive: true,
   });
   const browser = await chromium.launch({
@@ -70,13 +67,6 @@ const SCENE = {
     g.defaultCloudCollection.volumetric.cloudLayerBottom = scene.proc.bottom;
     g.defaultCloudCollection.volumetric.cloudLayerTop = scene.proc.top;
     g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high"; // DEFAULT cinematic full-res (T3)
-    // New flags left at their DEFAULTS — set them explicitly to be sure the
-    // parity capture exercises the default ('heuristic' / 'constant') path even
-    // on a build where the setters exist.
-    if ("cloudAerialMode" in g)
-      g.defaultCloudCollection.volumetric.cloudAerialMode = "heuristic";
-    if ("cloudAmbientSource" in g)
-      g.defaultCloudCollection.volumetric.cloudAmbientSource = "constant";
     v.camera.setView({
       destination: C.Cartesian3.fromDegrees(
         scene.camera.lon,
@@ -99,7 +89,7 @@ const SCENE = {
 
   await browser.close();
   const b64 = dataUrl.split(",")[1];
-  const path = `Tools/visual-regression/output/cloud-lut/parity-${TAG}.png`;
+  const path = `Tools/visual-regression/output/cloud-halfres/parity-${TAG}.png`;
   fs.writeFileSync(path, Buffer.from(b64, "base64"));
   const newErrs = errs.filter(
     (e) => !/AtmosphereLUT|default layout|favicon/.test(e),

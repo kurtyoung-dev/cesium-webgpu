@@ -2,7 +2,9 @@
 /**
  * V4 — mean-preserving erosion remap. WebGPU-only (baked tier).
  * @purpose V4 mean-preserving erosion remap A/B vs the pre-V4 build: silhouette preserved at coverage 0.40, deck reads solid (fewer holes) at 0.85
- * @status INVESTIGATION
+ * @status ARCHIVED-CANDIDATE
+ * Archived by the probe-kit harvest (cloud family, round 1; R-2026-09-17-11): its scene is
+ * re-declared as a rig under rigs/ and its conclusion is banked in WEBGPU_DEBUGGING_LOG.md.
  *
  * V3's baked erosion was a LITERAL subtraction → at high coverage it punched
  * holes through the whole deck (lumpy-with-holes / dappled). V4 swaps the baked
@@ -16,14 +18,14 @@
  *   • cov 0.85 — deck reads SOLID: mean cloud luma RISES and cloud-pixel count
  *     RISES (fewer holes) vs V3.
  *
- *   Run 1 (V4 build):  TAG=after  node probe-cloud-remap.mjs
+ *   Run 1 (V4 build):  TAG=after  node Tools/visual-regression/archive/probe-cloud-remap.mjs
  *   Run 2 (pre-V4):    git stash the wgsl + renderer, rebuild,
- *                      TAG=before node probe-cloud-remap.mjs   (computes the A/B)
+ *                      TAG=before node Tools/visual-regression/archive/probe-cloud-remap.mjs   (computes the A/B)
  *
  * PASS: cov04 count ratio in 0.92–1.08; cov85 mean luma rises + count rises;
  * 0 device errors. READ cloud-remap-{before,after}-cov{04,85}.png.
  *
- * Usage: TAG=after PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-cloud-remap.mjs
+ * Usage: TAG=after PROBE_BASE=http://localhost:8080 node Tools/visual-regression/archive/probe-cloud-remap.mjs
  */
 import { chromium } from "playwright";
 import {
@@ -31,7 +33,7 @@ import {
   armWebGPUDevices,
   collectGateErrors,
   attachConsoleErrorGate,
-} from "../lib/webgpu-error-gate.mjs";
+} from "../../lib/webgpu-error-gate.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const TAG = process.env.TAG || "after";

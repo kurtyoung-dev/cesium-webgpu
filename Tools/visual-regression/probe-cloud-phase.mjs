@@ -2,207 +2,224 @@
 /**
  * W1 — Dual-lobe Henyey-Greenstein cloud phase (silver lining). WebGPU-only
  * (procedural clouds don't render on WebGL).
- * @purpose W1 dual-lobe Henyey-Greenstein gate: toward-sun silver-lining rim energy >= 1.25x the away-sun heading; single-run PASS bars
+ * @purpose W1 dual-lobe Henyey-Greenstein gate: the backlit (toward-sun) cloud band's p95/median rim contrast exceeds the frontlit (away-sun) one's, both bands populated; single-run bars
  * @status ACTIVE
+ * @runtime lib/probe-runtime.mjs
  *
  * The forward lobe (phaseG1) makes BACKLIT clouds (camera looking toward the
  * sun) develop a bright forward-scatter rim — the silver lining — while
  * FRONTLIT clouds (camera away from the sun) stay flatter. Scene: camera below
- * the 1500-4000m cloud layer looking up at the horizon, sun low. Capture two
- * headings (toward-sun, away-sun) and compare the bright-rim energy of the
- * cloud band.
+ * the cloud layer looking up at the horizon. Capture two headings (toward-sun,
+ * away-sun) and compare the rim contrast of the cloud band.
  *
- * PASS:
- *   1. clouds render (toward-sun has a meaningful cloud band).
- *   2. silver lining: toward-sun bright-rim pixel count > away-sun by >= 1.25x
- *      (forward scatter brightens the sun-facing edges).
+ * Clauses (what the code has always enforced — the pre-harvest header promised
+ * a 1.25x bright-rim COUNT ratio that the code never computed):
+ *   1. clouds render in both views (> 5000 band pixels each).
+ *   2. silver lining: the toward-sun band's p95/median contrast is greater than
+ *      the away-sun band's (forward scatter brightens the sun-facing edges).
  *   3. no NEW WebGPU device errors (Atmosphere-LUT filtered).
  * Then READ output/cloud-phase-toward-sun.png (bright rim toward the sun) vs
  * output/cloud-phase-away-sun.png (flatter).
  *
- * Usage: PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-cloud-phase.mjs
+ * ON THE KIT (probe-kit harvest, cloud family, round 1). The two views are the
+ * rigs `cloud-phase-backlit` and `cloud-phase-frontlit`, each staged, settled,
+ * read and banked by `captureCloudRigArm` (`lib/cloud-rig-stage.mjs`); the
+ * band statistics are `lib/metrics/cloud-band.mjs`, computed in Node over the
+ * canvas read; the origin, preflight, Edge slot, lifecycle, receipt and exit
+ * code are the runtime's. The frame is the canvas (`toDataURL`, as before the
+ * harvest, now in the task of one final render), never an element screenshot,
+ * which would add the viewer's DOM chrome to the band. One deliberate change
+ * from the pre-harvest probe: the cloud dials now reach the deck (they sat
+ * behind `"cloudCoverage" in globe` guards that have been false since Batch
+ * 622). Its first Edge run on the kit is owed.
+ *
+ * Usage: node Tools/visual-regression/probe-cloud-phase.mjs --port 8094
  */
-import { chromium } from "playwright";
 import {
-  errorGateInit,
   armWebGPUDevices,
   collectGateErrors,
-  attachConsoleErrorGate,
+  errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
+import { installCloudProbeHarness } from "./lib/cloud-probe-harness.mjs";
+import {
+  CLOUD_RIG_SERVED_ARTIFACTS,
+  captureCloudRigArm,
+} from "./lib/cloud-rig-stage.mjs";
+import { bandQuantile, cloudBandStats } from "./lib/metrics/cloud-band.mjs";
+import { ProbeRefusal, isEntryPoint, runProbe } from "./lib/probe-runtime.mjs";
+import BACKLIT from "./rigs/cloud-phase-backlit.mjs";
+import FRONTLIT from "./rigs/cloud-phase-frontlit.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const W = 1024,
-  H = 768;
-const LON = -95.0,
-  LAT = 39.0,
-  ALT = 800.0;
+/** The two legs, in capture order, with the file names the evidence is banked under. */
+const LEGS = Object.freeze([
+  { key: "toward", rig: BACKLIT, capture: "cloud-phase-toward-sun" },
+  { key: "away", rig: FRONTLIT, capture: "cloud-phase-away-sun" },
+]);
 
-const SETUP = async (cfg) => {
-  const { LON, LAT, ALT } = cfg;
-  const C = await import("/Build/CesiumUnminified/index.js");
-  const v = window.viewer;
-  const s = v.scene;
-  const g = s.globe;
-  s.requestRenderMode = false;
-  g.defaultCloudCollection.enableVolumetric = true;
-  // Isolate the phase: uniform coverage (weather map OFF) + THIN clouds (0.4) so
-  // there's tonal range — a silver lining is a bright edge on a darker cloud
-  // body, which a fully-saturated thick deck can't show.
-  if ("cloudCoverage" in g)
-    g.defaultCloudCollection.volumetric.cloudCoverage = 0.4;
-  if ("cloudWeatherMap" in g)
-    g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
-  if ("cloudDensity" in g)
-    g.defaultCloudCollection.volumetric.cloudDensity = 0.7;
-  s.skyBox.show = false;
-  s.skyAtmosphere.show = false;
-  if (s.sun) s.sun.show = false;
-  s.backgroundColor = C.Color.BLACK;
-  v.clock.shouldAnimate = false;
+/** Viewer boot: the page load plus the 60 s wait for `window.viewer`. */
+const BOOT_BUDGET_MS = 90_000;
+/** One leg's 160-frame settle, at a pessimistic ~0.75 s per volumetric frame. */
+const SETTLE_BUDGET_MS = 120_000;
+/** One canvas read, its decode and the band statistics. */
+const CAPTURE_BUDGET_MS = 15_000;
 
-  const camCarto = C.Cartesian3.fromDegrees(LON, LAT, ALT);
-  const enu = C.Transforms.eastNorthUpToFixedFrame(camCarto);
-  const invEnu = C.Matrix4.inverseTransformation(enu, new C.Matrix4());
+/** Pixels whose brightest channel clears this are cloud against the black sky. */
+const CLOUD_FLOOR = 24;
+/** Each band must hold more cloud pixels than this to count as rendered. */
+const MIN_CLOUD_PIXELS = 5000;
+/** Console noise the W-series gates have always filtered. */
+const IGNORED_ERRORS = /Atmosphere ?LUT|SkyAtmosphere|default layout/i;
 
-  // Read the CURRENT world sun direction, project into the camera's ENU frame to
-  // get its azimuth/elevation. The cloud raymarch lights clouds by this
-  // direction regardless of local night, so a low/near-horizon sun is ideal
-  // backlight for the silver lining.
-  s.initializeFrame();
-  s.render();
-  const sunWC = s.context.uniformState.sunDirectionWC;
-  const local = C.Matrix4.multiplyByPointAsVector(
-    invEnu,
-    sunWC,
-    new C.Cartesian3(),
-  );
-  const n = C.Cartesian3.normalize(local, new C.Cartesian3());
-  const elevDeg = C.Math.toDegrees(Math.asin(Math.max(-1, Math.min(1, n.z))));
-  const sunHeading = Math.atan2(n.x, n.y); // toward the sun's horizontal dir
-  const heading = cfg.away ? sunHeading + Math.PI : sunHeading;
-  v.camera.setView({
-    destination: camCarto,
-    orientation: {
-      heading: heading,
-      // Pitch low so the look direction is near the sun's near-horizon
-      // alignment (forward-scatter cosTheta -> 1).
-      pitch: C.Math.toRadians(14.0),
-      roll: 0.0,
-    },
-  });
-  return {
-    elevDeg: +elevDeg.toFixed(1),
-    sunHeadingDeg: +C.Math.toDegrees(sunHeading).toFixed(1),
-    away: cfg.away === true,
-  };
-};
-
-const CAPTURE = async () => {
-  const s = window.viewer.scene;
-  for (let i = 0; i < 160; i++) {
-    s.render();
-    await new Promise((r) => requestAnimationFrame(r));
+/**
+ * The band's rim contrast, as the pre-harvest in-page `measure` returned it:
+ * brightest-channel median and 95th percentile over the upper 60 % of rows,
+ * and their ratio rounded to three places (the comparison reads the rounded
+ * value, as it always did).
+ *
+ * @param {{width: number, height: number, data: ArrayLike<number>}} image The capture.
+ * @returns {{cloud: number, median: number, p95: number, contrast: number}} The band.
+ */
+export function measurePhaseBand(image) {
+  const band = cloudBandStats(image, { minMaxChannel: CLOUD_FLOOR });
+  if (band.count === 0) {
+    return { cloud: 0, median: 0, p95: 0, contrast: 0 };
   }
-  return s.canvas.toDataURL("image/png");
-};
+  const median = bandQuantile(band.sortedMaxChannel, 0.5);
+  const p95 = bandQuantile(band.sortedMaxChannel, 0.95);
+  return {
+    cloud: band.count,
+    median,
+    p95,
+    contrast: median > 0 ? +(p95 / median).toFixed(3) : 0,
+  };
+}
 
-function measure(page, dataUrl) {
-  return page.evaluate(async (du) => {
-    const img = new Image();
-    img.src = du;
-    await img.decode();
-    const c = document.createElement("canvas");
-    c.width = img.naturalWidth;
-    c.height = img.naturalHeight;
-    const cx = c.getContext("2d");
-    cx.drawImage(img, 0, 0);
-    const d = cx.getImageData(0, 0, c.width, c.height).data;
-    const w = c.width,
-      h = c.height;
-    const lums = [];
-    // Upper 60% = sky/cloud band. Collect luminance of cloud-ish pixels (any
-    // non-black pixel; clouds are the only lit geometry against black sky).
-    for (let y = 0; y < Math.floor(h * 0.6); y++) {
-      for (let x = 0; x < w; x++) {
-        const i = (y * w + x) * 4;
-        const mx = Math.max(d[i], d[i + 1], d[i + 2]);
-        if (mx > 24) lums.push(mx);
+/**
+ * The three W1 clauses, over one run's cells. Pure, so the harvest spec can
+ * put each bar on either side without a browser. Same claim text and the same
+ * boolean test as the pre-harvest `checks` array, in the same order.
+ *
+ * @param {Array<object>} cells The run's cells.
+ * @returns {Array<object>} Verdicts in the runtime's shape.
+ */
+export function evaluatePhase(cells) {
+  const verdicts = [];
+  for (const cell of cells) {
+    const suffix = `run${cell.run}`;
+    const { toward, away } = cell;
+    verdicts.push(
+      {
+        id: `clouds-render/${suffix}`,
+        claim: `clouds render both views (toward ${toward.cloud}, away ${away.cloud} > ${MIN_CLOUD_PIXELS} px)`,
+        pass: toward.cloud > MIN_CLOUD_PIXELS && away.cloud > MIN_CLOUD_PIXELS,
+        detail: { toward: toward.cloud, away: away.cloud },
+      },
+      {
+        id: `silver-lining/${suffix}`,
+        claim: `silver lining: backlit rim contrast ${toward.contrast} > frontlit ${away.contrast}`,
+        pass: toward.contrast > away.contrast,
+        detail: { toward, away },
+      },
+      {
+        id: `device-errors/${suffix}`,
+        claim: `no NEW device errors (${cell.deviceErrors.length})`,
+        pass: cell.deviceErrors.length === 0,
+        detail: { errors: cell.deviceErrors.slice(0, 5) },
+      },
+    );
+  }
+  return verdicts;
+}
+
+function printReport(receipt) {
+  for (const cell of receipt.cells) {
+    console.log("sun:", JSON.stringify(cell.sun));
+    console.log("toward-sun:", JSON.stringify(cell.toward));
+    console.log("away-sun  :", JSON.stringify(cell.away));
+  }
+  console.log("\n=== ANALYSIS ===");
+  for (const verdict of receipt.verdicts) {
+    console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
+  }
+  console.log(
+    `\nRESULT: ${receipt.verdicts.every((v) => v.pass === true) ? "GREEN" : "RED"}`,
+  );
+}
+
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "cloud-phase",
+  title:
+    "Cloud phase (W1) — backlit rim contrast exceeds frontlit over the rig-declared underside views",
+  // The empty subdirectory keeps the captures where the pre-harvest probe
+  // wrote them: `output/cloud-phase-{toward,away}-sun.png`.
+  outputSubdirectory: "",
+  // The probe banked no JSON receipt before the harvest, so the single
+  // runtime envelope is the honest shape.
+  receiptEnvelope: "runtime",
+  servedArtifacts: [...CLOUD_RIG_SERVED_ARTIFACTS],
+  workBudgetMs: () =>
+    BOOT_BUDGET_MS + LEGS.length * (SETTLE_BUDGET_MS + CAPTURE_BUDGET_MS),
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    if (!options.renderers.includes("webgpu")) {
+      throw new ProbeRefusal(
+        "renderer-unavailable",
+        "the volumetric cloud phase is WebGPU-only, so a silver-lining gate " +
+          `measured on ${options.renderers.join(",")} would read an empty sky`,
+        { renderers: options.renderers },
+      );
+    }
+    const { width, height } = BACKLIT.viewport;
+    const page = await browser.newPage({ viewport: { width, height } });
+    await page.addInitScript(errorGateInit);
+    await page.addInitScript(installCloudProbeHarness);
+    await page.goto(`${origin}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.waitForFunction(() => !!window.viewer, null, {
+      timeout: 60000,
+    });
+    await armWebGPUDevices(page);
+
+    const cell = { run };
+    for (const leg of LEGS) {
+      const arm = await captureCloudRigArm({
+        page,
+        rig: leg.rig,
+        name: leg.capture,
+        outputDirectory,
+        captures,
+      });
+      cell[leg.key] = measurePhaseBand(arm.image);
+      if (leg.key === "toward") {
+        cell.sun = {
+          elevDeg: +Number(arm.staged.sunElevationDeg).toFixed(1),
+          sunHeadingDeg: +Number(arm.staged.sunHeadingDeg).toFixed(1),
+        };
       }
     }
-    if (!lums.length) return { cloud: 0, median: 0, p95: 0, contrast: 0 };
-    lums.sort((a, b) => a - b);
-    const median = lums[Math.floor(lums.length * 0.5)];
-    const p95 = lums[Math.floor(lums.length * 0.95)];
-    // Rim contrast — a strong forward lobe makes the sun-facing edges (p95) far
-    // brighter than the dark backlit interior (median).
-    return {
-      cloud: lums.length,
-      median,
-      p95,
-      contrast: median > 0 ? +(p95 / median).toFixed(3) : 0,
+    const gate = await collectGateErrors(page);
+    cell.deviceErrors = (gate.errors || []).filter(
+      (error) => !IGNORED_ERRORS.test(error),
+    );
+    return [cell];
+  },
+  verdicts(cells) {
+    return evaluatePhase(cells);
+  },
+  receipt(cells, context) {
+    const receipt = {
+      rigs: LEGS.map((leg) => leg.rig.id),
+      cells,
+      verdicts: context.verdicts,
     };
-  }, dataUrl);
+    if (cells.length > 0) {
+      printReport(receipt);
+    }
+    return receipt;
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
 }
-
-async function capture(page, away) {
-  const info = await page.evaluate(SETUP, { away, LON, LAT, ALT });
-  const dataUrl = await page.evaluate(CAPTURE);
-  const m = await measure(page, dataUrl);
-  const fs = await import("fs");
-  fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
-  fs.writeFileSync(
-    `Tools/visual-regression/output/cloud-phase-${away ? "away" : "toward"}-sun.png`,
-    Buffer.from(dataUrl.split(",")[1], "base64"),
-  );
-  return { info, m };
-}
-
-async function run() {
-  const browser = await chromium.launch({
-    channel: "msedge",
-    headless: true,
-    args: ["--enable-unsafe-webgpu"],
-  });
-  const page = await browser.newPage({ viewport: { width: W, height: H } });
-  attachConsoleErrorGate(page);
-  await page.addInitScript(errorGateInit);
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-    waitUntil: "domcontentloaded",
-  });
-  await page.waitForFunction(() => !!window.viewer, null, { timeout: 60000 });
-  await armWebGPUDevices(page);
-
-  const toward = await capture(page, false);
-  const away = await capture(page, true);
-  const gate = await collectGateErrors(page);
-  await browser.close();
-  const newErrs = (gate.errors || []).filter(
-    (e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout/i.test(e),
-  );
-
-  console.log("sun:", JSON.stringify(toward.info));
-  console.log("toward-sun:", JSON.stringify(toward.m));
-  console.log("away-sun  :", JSON.stringify(away.m));
-  if (newErrs.length) console.log("NEW errs:", newErrs.slice(0, 2));
-
-  const checks = [
-    [
-      `clouds render both views (toward ${toward.m.cloud}, away ${away.m.cloud} > 5000 px)`,
-      toward.m.cloud > 5000 && away.m.cloud > 5000,
-    ],
-    [
-      `silver lining: backlit rim contrast ${toward.m.contrast} > frontlit ${away.m.contrast}`,
-      toward.m.contrast > away.m.contrast,
-    ],
-    ["no NEW device errors", newErrs.length === 0],
-  ];
-  let pass = true;
-  console.log("\n=== ANALYSIS ===");
-  for (const [n, ok] of checks) {
-    console.log(`  [${ok ? "PASS" : "FAIL"}] ${n}`);
-    if (!ok) pass = false;
-  }
-  console.log(`\nRESULT: ${pass ? "GREEN" : "RED"}`);
-  process.exitCode = pass ? 0 : 1;
-}
-run();

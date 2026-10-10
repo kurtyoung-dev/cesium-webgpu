@@ -6,7 +6,9 @@
 // backend-neutral context.requestVolumetricClouds / consumeVolumetricCloudRequest
 // seam. NOTHING reads these yet.
 // @purpose U1 slice acceptance: CloudVolumetrics/CloudRenderMode API scaffold exists and, unused, leaves BILLBOARD renders byte-identical.
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
+// Archived by the probe-kit harvest (cloud family, round 1; R-2026-09-17-11): its scene is
+// re-declared as a rig under rigs/ and its conclusion is banked in WEBGPU_DEBUGGING_LOG.md.
 //
 // OFF-GATE (the key assertion): with renderMode===BILLBOARD and all volumetric
 // flags off (default), a billboard cloud scene must render BYTE-IDENTICALLY vs
@@ -24,7 +26,7 @@
 //     exercising the new default-off API (renderMode stays BILLBOARD).
 //  3. 0 console errors.
 //
-// Usage: node Tools/visual-regression/probe-cloud-u1-scaffold.mjs
+// Usage: node Tools/visual-regression/archive/probe-cloud-u1-scaffold.mjs
 // Env:   PROBE_BASE (default http://localhost:8080)
 
 import { chromium } from "playwright";

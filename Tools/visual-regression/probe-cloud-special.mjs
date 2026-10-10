@@ -4,6 +4,7 @@
  * as an iridescent SHADING tint on the WebGPU procedural-cloud arch. WebGPU-only.
  * @purpose E3 acceptance: noctilucent/nacreous iridescent tints change the deck, differ from each other, OFF stays byte-identical.
  * @status ACTIVE
+ * @runtime lib/probe-runtime.mjs
  *
  * Unlike the E1/E2 density-shaping dials (species/features), this multiplies the
  * cloud COLOR by an iridescent tint:
@@ -25,23 +26,66 @@
  *   (5) restoring OFF returns to the OFF baseline (clean toggle, no residual);
  *   (6) 0 new device errors.
  *
- * Usage: PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-cloud-special.mjs
+ * ON THE KIT (probe-kit harvest, cloud family, round 1). The deck is the rig
+ * `weather-inspector-cumulonimbus-deck`; the whole-frame difference is
+ * `lib/metrics/luma-difference.mjs` and the region measure is
+ * `lib/metrics/deck-region.mjs`, both computed in Node over the canvas
+ * reads instead of in the page; every dial goes through the cloud probe
+ * harness's `configure`, which throws on a key `CloudVolumetrics` lacks and on
+ * a value that did not round-trip; the origin, preflight, Edge slot,
+ * lifecycle, receipt and exit code are the runtime's. One deliberate change:
+ * the pre-harvest `set()` wrote each toggle onto `viewer.scene.globe`, where
+ * no cloud dial has lived since Batch 622 moved them to
+ * `globe.defaultCloudCollection.volumetric` (`Globe.js` declares none of these
+ * keys; `CloudVolumetrics.js` declares all of them), so the ON legs'
+ * assignments landed on an object no cloud dial is read from; they now set the
+ * collection's volumetric dials. Its first Edge run on the kit is owed.
+ *
+ * THE FRAME IS THE CANVAS (harvest round 3). Each leg's frame is the canvas,
+ * read by `lib/cloud-rig-stage.mjs`'s `captureViewerCanvas` in the task of
+ * one more render at the viewer's frozen clock, never an element screenshot.
+ * The demo builds its viewer with every default widget and lays its inspector
+ * panel and toolbar over the canvas, so an element screenshot of
+ * `.cesium-widget canvas` takes all of them, and the panels are translucent:
+ * on the banked 2026-07-05 element frames, blanking the help panel alone moves
+ * the sibling features probe's deck fraction from 17.03 % to 15.11 %. The
+ * pre-harvest probe read that element screenshot, so the numbers it banked
+ * are of another population than the ones this probe reads; its first Edge
+ * run banks the canvas-read numbers.
+ *
+ * Usage: node Tools/visual-regression/probe-cloud-special.mjs --port 8094
  */
-import { chromium } from "playwright";
 import {
-  errorGateInit,
   armWebGPUDevices,
-  collectGateErrors,
   attachConsoleErrorGate,
+  collectGateErrors,
+  errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
+import { installCloudProbeHarness } from "./lib/cloud-probe-harness.mjs";
+import { captureViewerCanvas } from "./lib/cloud-rig-stage.mjs";
+import { changedPixelChromaShift } from "./lib/metrics/deck-region.mjs";
+import { meanAbsLumaDifference } from "./lib/metrics/luma-difference.mjs";
+import { ProbeRefusal, isEntryPoint, runProbe } from "./lib/probe-runtime.mjs";
+import DECK from "./rigs/weather-inspector-cumulonimbus-deck.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const W = 1024,
-  H = 768;
-const OUT = "Tools/visual-regression/output";
-const DEMO = "/Apps/Sandcastle/gallery/WebGPU%20Weather%20Inspector.html";
+/** Page boot: the 30 s `goto` default plus the 60 s wait for `window.viewer`. */
+const BOOT_BUDGET_MS = 90_000;
+/** Settle after each dial change, before its capture; paid 4 times. */
+const SETTLE_AFTER_SET_MS = 4000;
+/** Five canvas reads and their decodes in Node. */
+const READBACK_BUDGET_MS = 60_000;
 
-const CUMULONIMBUS = 10;
+/**
+ * The region the noctilucent cool shift is read over: the pre-harvest
+ * probe's, set right of where the inspector panel sits on the page. A canvas
+ * read carries no panel; the region is kept so the clause reads the same part
+ * of the scene.
+ */
+const DECK_REGION = Object.freeze({ x0: 0.42, x1: 0.95, y0: 0.08, y1: 0.86 });
+
+/** Console noise the demo cohort has always filtered. */
+const IGNORED_ERRORS =
+  /Atmosphere ?LUT|SkyAtmosphere|default layout|favicon|bucket\.css|Sandcastle-header|load-cesium-es6/i;
 
 const SANDCASTLE_STUB = () => {
   window.Sandcastle = {
@@ -75,265 +119,287 @@ const BOOT = async () => {
   }
 };
 
-// Per-pixel coolward shift over the deck region. Compares two captures and, over
-// the pixels that ACTUALLY CHANGED (|ΔL| > 10 — i.e. the cloud pixels the tint
-// touched, NOT the static bright sky/atmosphere backdrop that a naive region mean
-// is dominated by), returns mean(Δb) - mean(Δr). Positive → blue rose more (or fell
-// less) than red → the changed cloud pixels shifted COOL, the noctilucent signature.
-function coolShift(page, offUrl, onUrl) {
-  return page.evaluate(
-    async ([uo, un]) => {
-      const load = async (u) => {
-        const img = new Image();
-        img.src = u;
-        await img.decode();
-        const c = document.createElement("canvas");
-        c.width = img.naturalWidth;
-        c.height = img.naturalHeight;
-        const cx = c.getContext("2d");
-        cx.drawImage(img, 0, 0);
-        return {
-          d: cx.getImageData(0, 0, c.width, c.height).data,
-          w: c.width,
-          h: c.height,
-        };
-      };
-      const A = await load(uo),
-        B = await load(un);
-      const x0 = Math.floor(A.w * 0.42),
-        x1 = Math.floor(A.w * 0.95),
-        y0 = Math.floor(A.h * 0.08),
-        y1 = Math.floor(A.h * 0.86);
-      let sdr = 0,
-        sdb = 0,
-        n = 0;
-      for (let y = y0; y < y1; y++) {
-        for (let x = x0; x < x1; x++) {
-          const i = (y * A.w + x) * 4;
-          const dr = B.d[i] - A.d[i];
-          const dg = B.d[i + 1] - A.d[i + 1];
-          const db = B.d[i + 2] - A.d[i + 2];
-          const dL = Math.abs(0.299 * dr + 0.587 * dg + 0.114 * db);
-          if (dL > 10) {
-            sdr += dr;
-            sdb += db;
-            n++;
-          }
-        }
-      }
-      if (n === 0) {
-        return { dr: 0, db: 0, cool: 0, n: 0 };
-      }
-      return {
-        dr: +(sdr / n).toFixed(2),
-        db: +(sdb / n).toFixed(2),
-        cool: +((sdb - sdr) / n).toFixed(2),
-        n,
-      };
-    },
-    [offUrl, onUrl],
-  );
-}
+/**
+ * PAGE SIDE. The deck's collection-level genus and frozen clock, which are not
+ * CloudVolumetrics properties and so are not the harness's to set.
+ */
+const APPLY_COLLECTION = (dials) => {
+  const viewer = window.viewer;
+  viewer.scene.globe.defaultCloudCollection.cloudType =
+    dials.collectionCloudType;
+  viewer.clock.shouldAnimate = dials.shouldAnimate;
+  viewer.scene.requestRender();
+  return { ok: true };
+};
 
-async function diff(page, a, b) {
-  return page.evaluate(
-    async ([ua, ub]) => {
-      const load = async (u) => {
-        const img = new Image();
-        img.src = u;
-        await img.decode();
-        const c = document.createElement("canvas");
-        c.width = img.naturalWidth;
-        c.height = img.naturalHeight;
-        const cx = c.getContext("2d");
-        cx.drawImage(img, 0, 0);
-        return cx.getImageData(0, 0, c.width, c.height).data;
-      };
-      const da = await load(ua),
-        db = await load(ub);
-      let acc = 0;
-      const n = da.length / 4;
-      for (let i = 0; i < da.length; i += 4) {
-        acc += Math.abs(
-          0.299 * da[i] +
-            0.587 * da[i + 1] +
-            0.114 * da[i + 2] -
-            (0.299 * db[i] + 0.587 * db[i + 1] + 0.114 * db[i + 2]),
-        );
-      }
-      return +(acc / n).toFixed(3);
-    },
-    [a, b],
-  );
-}
-
-async function run() {
-  const fs = await import("fs");
-  fs.mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch({
-    channel: "msedge",
-    headless: true,
-    args: ["--enable-unsafe-webgpu"],
-  });
-  const page = await browser.newPage({ viewport: { width: W, height: H } });
-  const consoleErrors = attachConsoleErrorGate(page);
-  await page.addInitScript(errorGateInit);
-  await page.addInitScript(SANDCASTLE_STUB);
-  await page.goto(`${BASE}${DEMO}`, { waitUntil: "domcontentloaded" });
-  await page.addStyleTag({
-    content:
-      "#cesiumContainer{position:absolute;top:0;left:0;width:100%;height:100%;}#loadingOverlay{display:none;}",
-  });
-  const boot = await page.evaluate(BOOT);
-  if (!boot.ok) {
-    console.log("BOOT FAILED:", boot.err);
-    await browser.close();
-    process.exitCode = 1;
-    return;
+/**
+ * PAGE SIDE. Set CloudVolumetrics dials through the harness, which throws on a
+ * key the class lacks and on a value that did not round-trip. `"__undef__"`
+ * stands for `undefined`, which page.evaluate cannot carry as a value.
+ */
+const APPLY_VOLUMETRIC = (dials) => {
+  const volumetric = {};
+  for (const [key, value] of Object.entries(dials)) {
+    volumetric[key] = value === "__undef__" ? undefined : value;
   }
-  await page.waitForFunction(
-    () => !!(window.viewer && window.viewer.scene),
-    null,
-    {
-      timeout: 60000,
+  const truth = window.__cloudProbe.configure({ volumetric });
+  window.viewer.scene.requestRender();
+  return { ok: truth.ok };
+};
+
+const round = (value, places) => +value.toFixed(places);
+
+/**
+ * The seven E3 clauses, over one run's cells. Pure; same claim text and the
+ * same boolean tests as the pre-harvest `checks` array, in the same order.
+ *
+ * @param {Array<object>} cells The run's cells.
+ * @returns {Array<object>} Verdicts in the runtime's shape.
+ */
+export function evaluateSpecial(cells) {
+  const verdicts = [];
+  for (const cell of cells) {
+    const suffix = `run${cell.run}`;
+    const d = cell.diff;
+    verdicts.push(
+      {
+        id: `off-deterministic/${suffix}`,
+        claim: `OFF is deterministic w/ grown UBO (off-vs-off2 ${d.offOff} < 0.25)`,
+        pass: d.offOff < 0.25,
+        detail: { diff: d.offOff, tolerance: 0.25 },
+      },
+      {
+        id: `noctilucent-changes-render/${suffix}`,
+        claim: `noctilucent ON substantially changes the render (${d.noctilucent} > 1.0)`,
+        pass: d.noctilucent > 1.0,
+        detail: { diff: d.noctilucent, tolerance: 1.0 },
+      },
+      {
+        id: `noctilucent-cools/${suffix}`,
+        claim: `noctilucent COOLS the changed cloud pixels (Δb-Δr ${cell.coolNoctilucent.cool} > 3)`,
+        pass: cell.coolNoctilucent.cool > 3,
+        detail: cell.coolNoctilucent,
+      },
+      {
+        id: `nacreous-changes-render/${suffix}`,
+        claim: `nacreous ON substantially changes the render (${d.nacreous} > 1.0)`,
+        pass: d.nacreous > 1.0,
+        detail: { diff: d.nacreous, tolerance: 1.0 },
+      },
+      {
+        id: `nacreous-differs/${suffix}`,
+        claim: `nacreous differs from noctilucent (nlc-vs-nac ${d.noctilucentNacreous} > 0.5)`,
+        pass: d.noctilucentNacreous > 0.5,
+        detail: { diff: d.noctilucentNacreous, tolerance: 0.5 },
+      },
+      {
+        id: `restore-returns-to-baseline/${suffix}`,
+        claim: `restoring OFF returns to baseline (restore-vs-off ${d.restore} < 0.25)`,
+        pass: d.restore < 0.25,
+        detail: { diff: d.restore, tolerance: 0.25 },
+      },
+      {
+        id: `device-errors/${suffix}`,
+        claim: `no NEW device errors (${cell.deviceErrors.length})`,
+        pass: cell.deviceErrors.length === 0,
+        detail: { errors: cell.deviceErrors.slice(0, 5) },
+      },
+    );
+  }
+  return verdicts;
+}
+
+/**
+ * The measurements, from the five decoded captures. Pure; the rounding is
+ * the pre-harvest in-page copies' (three places for a diff, two for a shift).
+ *
+ * @param {Record<string, object>} frames Decoded captures by leg.
+ * @returns {{diff: object, coolNoctilucent: object}} The measurements.
+ */
+export function measureSpecial(frames) {
+  const diff = (a, b) => round(meanAbsLumaDifference(a, b), 3);
+  const cool = changedPixelChromaShift(
+    frames.off,
+    frames.noctilucent,
+    DECK_REGION,
+  );
+  return {
+    diff: {
+      offOff: diff(frames.off, frames.off2),
+      noctilucent: diff(frames.off, frames.noctilucent),
+      nacreous: diff(frames.off, frames.nacreous),
+      noctilucentNacreous: diff(frames.noctilucent, frames.nacreous),
+      restore: diff(frames.off, frames.restore),
     },
-  );
-  await armWebGPUDevices(page);
-
-  const canvas = await page.$(".cesium-widget canvas");
-  const shot = async (name) => {
-    await canvas.screenshot({ path: `${OUT}/${name}.png` });
-    return (
-      "data:image/png;base64," +
-      fs.readFileSync(`${OUT}/${name}.png`).toString("base64")
-    );
+    coolNoctilucent: {
+      dr: round(cool.dr, 2),
+      db: round(cool.db, 2),
+      cool: round(cool.cool, 2),
+      n: cool.n,
+    },
   };
+}
 
-  // Dense deck. FREEZE the clock so cloud advection can't confound the OFF
-  // byte-identity gate — with the clock stopped `cloud.time` is constant.
-  await page.evaluate((cb) => {
-    const v = window.viewer;
-    const g = v.scene.globe;
-    g.defaultCloudCollection.cloudType = cb;
-    g.defaultCloudCollection.volumetric.cloudCoverage = 0.85;
-    g.defaultCloudCollection.volumetric.cloudDensity = 0.5;
-    g.defaultCloudCollection.volumetric.cloudSpecial = undefined; // OFF (default)
-    g.defaultCloudCollection.volumetric.cloudSpecialShadeMode = undefined;
-    v.clock.shouldAnimate = false;
-    v.scene.requestRender();
-  }, CUMULONIMBUS);
-  await page.waitForTimeout(9000);
-
-  const set = async (obj) => {
-    await page.evaluate((o) => {
-      const g = window.viewer.scene.globe;
-      for (const k of Object.keys(o)) {
-        g[k] = o[k] === "__undef__" ? undefined : o[k];
-      }
-      window.viewer.scene.requestRender();
-    }, obj);
-    await page.waitForTimeout(4000);
-  };
-
-  const duOff = await shot("special-off");
-
-  // 2nd OFF capture (frozen clock) — determinism / grown-UBO off-gate.
-  await set({ cloudSpecial: "__undef__", cloudSpecialShadeMode: "__undef__" });
-  const duOff2 = await shot("special-off2");
-
-  // Noctilucent — electric silvery-blue billow bands.
-  await set({
-    cloudSpecial: "noctilucent",
-    cloudSpecialShadeStrength: 0.9,
-    cloudSpecialShadeScale: 1.0,
-  });
-  const duNlc = await shot("special-noctilucent");
-
-  // Nacreous — pastel mother-of-pearl iridescence.
-  await set({
-    cloudSpecial: "nacreous",
-    cloudSpecialShadeStrength: 0.9,
-    cloudSpecialShadeScale: 1.0,
-  });
-  const duNac = await shot("special-nacreous");
-
-  // Restore OFF — clean toggle, no residual.
-  await set({
-    cloudSpecial: "__undef__",
-    cloudSpecialShadeMode: "__undef__",
-    cloudSpecialShadeStrength: "__undef__",
-    cloudSpecialShadeScale: "__undef__",
-    cloudSpecialShadeParam: "__undef__",
-  });
-  const duRestore = await shot("special-off-restored");
-
-  const diffOffOff = await diff(page, duOff, duOff2);
-  const diffNlc = await diff(page, duOff, duNlc);
-  const diffNac = await diff(page, duOff, duNac);
-  const diffNlcNac = await diff(page, duNlc, duNac);
-  const diffRestore = await diff(page, duOff, duRestore);
-
-  // Coolward shift on the CHANGED cloud pixels (ignores the static bright sky the
-  // region mean is otherwise dominated by): Δb - Δr per changed pixel.
-  const coolNlc = await coolShift(page, duOff, duNlc);
-
-  const gate = await collectGateErrors(page);
-  const newErrs = (gate.errors || [])
-    .concat(consoleErrors)
-    .filter(
-      (e) =>
-        !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon|bucket\.css|Sandcastle-header|load-cesium-es6/i.test(
-          e,
-        ),
+function printReport(receipt) {
+  for (const cell of receipt.cells) {
+    const c = cell.coolNoctilucent;
+    const d = cell.diff;
+    console.log(
+      `noctilucent cool-shift on changed pixels: Δr=${c.dr} Δb=${c.db} (Δb-Δr=${c.cool}, n=${c.n})`,
     );
-
-  console.log(
-    `noctilucent cool-shift on changed pixels: Δr=${coolNlc.dr} Δb=${coolNlc.db} (Δb-Δr=${coolNlc.cool}, n=${coolNlc.n})`,
-  );
-  console.log(
-    `diff: off-vs-off2=${diffOffOff} nlc=${diffNlc} nacreous=${diffNac} nlc-vs-nac=${diffNlcNac} restore=${diffRestore} | errs=${newErrs.length}`,
-  );
-
-  const checks = [
-    [
-      `OFF is deterministic w/ grown UBO (off-vs-off2 ${diffOffOff} < 0.25)`,
-      diffOffOff < 0.25,
-    ],
-    [
-      `noctilucent ON substantially changes the render (${diffNlc} > 1.0)`,
-      diffNlc > 1.0,
-    ],
-    [
-      `noctilucent COOLS the changed cloud pixels (Δb-Δr ${coolNlc.cool} > 3)`,
-      coolNlc.cool > 3,
-    ],
-    [
-      `nacreous ON substantially changes the render (${diffNac} > 1.0)`,
-      diffNac > 1.0,
-    ],
-    [
-      `nacreous differs from noctilucent (nlc-vs-nac ${diffNlcNac} > 0.5)`,
-      diffNlcNac > 0.5,
-    ],
-    [
-      `restoring OFF returns to baseline (restore-vs-off ${diffRestore} < 0.25)`,
-      diffRestore < 0.25,
-    ],
-    [`no NEW device errors (${newErrs.length})`, newErrs.length === 0],
-  ];
+    console.log(
+      `diff: off-vs-off2=${d.offOff} nlc=${d.noctilucent} nacreous=${d.nacreous} nlc-vs-nac=${d.noctilucentNacreous} restore=${d.restore} | errs=${cell.deviceErrors.length}`,
+    );
+  }
   console.log("\n=== ANALYSIS ===");
-  let pass = true;
-  for (const [n, ok] of checks) {
-    console.log(`  [${ok ? "PASS" : "FAIL"}] ${n}`);
-    if (!ok) {
-      pass = false;
-    }
+  for (const verdict of receipt.verdicts) {
+    console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
   }
-  if (newErrs.length) {
-    console.log("  errors:", newErrs.slice(0, 5));
-  }
-  console.log(`\nRESULT: ${pass ? "GREEN" : "RED"}`);
-  await browser.close();
-  process.exitCode = pass ? 0 : 1;
+  console.log(
+    `\nRESULT: ${receipt.verdicts.every((v) => v.pass === true) ? "GREEN" : "RED"}`,
+  );
 }
-run();
+
+/** The five legs: the capture's banked name and the dials set before it. */
+const LEGS = Object.freeze([
+  { key: "off", capture: "special-off", set: null },
+  {
+    key: "off2",
+    capture: "special-off2",
+    set: { cloudSpecial: "__undef__", cloudSpecialShadeMode: "__undef__" },
+  },
+  {
+    key: "noctilucent",
+    capture: "special-noctilucent",
+    set: {
+      cloudSpecial: "noctilucent",
+      cloudSpecialShadeStrength: 0.9,
+      cloudSpecialShadeScale: 1.0,
+    },
+  },
+  {
+    key: "nacreous",
+    capture: "special-nacreous",
+    set: {
+      cloudSpecial: "nacreous",
+      cloudSpecialShadeStrength: 0.9,
+      cloudSpecialShadeScale: 1.0,
+    },
+  },
+  {
+    key: "restore",
+    capture: "special-off-restored",
+    set: {
+      cloudSpecial: "__undef__",
+      cloudSpecialShadeMode: "__undef__",
+      cloudSpecialShadeStrength: "__undef__",
+      cloudSpecialShadeScale: "__undef__",
+      cloudSpecialShadeParam: "__undef__",
+    },
+  },
+]);
+
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "cloud-special",
+  title:
+    "Cloud special (E3) — noctilucent/nacreous tints change the deck, differ, and OFF stays byte-identical",
+  // Keeps every capture at `output/special-*.png`, where it was banked.
+  outputSubdirectory: "",
+  receiptEnvelope: "runtime",
+  // The demo page loads `Cesium.js` through its own script tag and its boot
+  // helper imports `index.js` — the same two its cohort declares.
+  servedArtifacts: [
+    "Build/CesiumUnminified/Cesium.js",
+    "Build/CesiumUnminified/index.js",
+  ],
+  workBudgetMs: () =>
+    BOOT_BUDGET_MS +
+    DECK.readiness.ms +
+    SETTLE_AFTER_SET_MS * (LEGS.length - 1) +
+    READBACK_BUDGET_MS,
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    if (!options.renderers.includes("webgpu")) {
+      throw new ProbeRefusal(
+        "renderer-unavailable",
+        "the special-cloud tints are WebGPU-only, so a tint gate measured on " +
+          `${options.renderers.join(",")} would read an untinted deck`,
+        { renderers: options.renderers },
+      );
+    }
+    const { width, height } = DECK.viewport;
+    const page = await browser.newPage({ viewport: { width, height } });
+    const consoleErrors = attachConsoleErrorGate(page);
+    await page.addInitScript(errorGateInit);
+    await page.addInitScript(SANDCASTLE_STUB);
+    await page.addInitScript(installCloudProbeHarness);
+    await page.goto(`${origin}/${DECK.page}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.addStyleTag({
+      content:
+        "#cesiumContainer{position:absolute;top:0;left:0;width:100%;height:100%;}#loadingOverlay{display:none;}",
+    });
+    const boot = await page.evaluate(BOOT);
+    if (!boot.ok) {
+      throw new ProbeRefusal(
+        "demo-boot-failed",
+        `the Weather Inspector demo did not boot: ${boot.err}`,
+        { page: DECK.page, error: boot.err },
+      );
+    }
+    await page.waitForFunction(
+      () => !!(window.viewer && window.viewer.scene),
+      null,
+      { timeout: 60000 },
+    );
+    await armWebGPUDevices(page);
+
+    // The rig's deck, OFF by default, clock frozen so advection cannot
+    // confound the byte-identity legs.
+    await page.evaluate(APPLY_COLLECTION, DECK.dials);
+    await page.evaluate(APPLY_VOLUMETRIC, {
+      cloudCoverage: DECK.dials.cloudCoverage,
+      cloudDensity: DECK.dials.cloudDensity,
+      cloudSpecial: "__undef__",
+      cloudSpecialShadeMode: "__undef__",
+    });
+    await page.waitForTimeout(DECK.readiness.ms);
+
+    const frames = {};
+    for (const leg of LEGS) {
+      if (leg.set !== null) {
+        await page.evaluate(APPLY_VOLUMETRIC, leg.set);
+        await page.waitForTimeout(SETTLE_AFTER_SET_MS);
+      }
+      const shot = await captureViewerCanvas({
+        page,
+        name: leg.capture,
+        rigId: DECK.id,
+        outputDirectory,
+        captures,
+      });
+      frames[leg.key] = shot.image;
+    }
+
+    const gate = await collectGateErrors(page);
+    const deviceErrors = (gate.errors || [])
+      .concat(consoleErrors)
+      .filter((error) => !IGNORED_ERRORS.test(error));
+    return [{ run, ...measureSpecial(frames), deviceErrors }];
+  },
+  verdicts(cells) {
+    return evaluateSpecial(cells);
+  },
+  receipt(cells, context) {
+    const receipt = { rig: DECK.id, cells, verdicts: context.verdicts };
+    if (cells.length > 0) {
+      printReport(receipt);
+    }
+    return receipt;
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}

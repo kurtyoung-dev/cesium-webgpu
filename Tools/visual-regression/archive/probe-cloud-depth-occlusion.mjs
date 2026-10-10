@@ -2,7 +2,9 @@
 /**
  * Batch 409 cloud depth-occlusion — A/B capture. WebGPU-only.
  * @purpose B409 A/B (stash pair) showing the cloud raymarch clamps at scene depth so far-side clouds no longer bleed through the globe disc
- * @status INVESTIGATION
+ * @status ARCHIVED-CANDIDATE
+ * Archived by the probe-kit harvest (cloud family, round 1; R-2026-09-17-11): its scene is
+ * re-declared as a rig under rigs/ and its conclusion is banked in WEBGPU_DEBUGGING_LOG.md.
  *
  * Without depth occlusion the cloud raymarch ignores the scene depth buffer, so
  * the global cloud shell renders THROUGH the globe — far-side clouds (behind the
@@ -16,9 +18,9 @@
  * diff: the fix should REMOVE through-globe cloud bleed over the disc.
  *
  * Usage:
- *   TAG=withfix PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-cloud-depth-occlusion.mjs
+ *   TAG=withfix PROBE_BASE=http://localhost:8080 node Tools/visual-regression/archive/probe-cloud-depth-occlusion.mjs
  *   (git stash the depth changes, rebuild)
- *   TAG=nofix   PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-cloud-depth-occlusion.mjs
+ *   TAG=nofix   PROBE_BASE=http://localhost:8080 node Tools/visual-regression/archive/probe-cloud-depth-occlusion.mjs
  */
 import { chromium } from "playwright";
 import {
@@ -26,7 +28,7 @@ import {
   armWebGPUDevices,
   collectGateErrors,
   attachConsoleErrorGate,
-} from "../lib/webgpu-error-gate.mjs";
+} from "../../lib/webgpu-error-gate.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const TAG = process.env.TAG || "withfix";

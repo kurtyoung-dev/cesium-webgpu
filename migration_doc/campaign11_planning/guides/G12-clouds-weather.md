@@ -243,7 +243,7 @@ renumber it. (4) A wrong (white-along-time) mask silently makes TAAU converge to
 validation error — the temporal-stability probe is the only oracle that catches it.
 
 **VERIFICATION RECIPE.** `probe-cloud-stbn-jitter.mjs` (temporal-stability under motion) +
-`probe-cloud-stbn-lod.mjs` (existing LOD-half gate) + `probe-cloud-halfres-parity.mjs` +
+`probe-cloud-stbn-lod.mjs` (existing LOD-half gate) + `archive/probe-cloud-halfres-parity.mjs` (archived by the probe-kit harvest; its byte-identity conclusion is banked in `WEBGPU_DEBUGGING_LOG.md` and its scene is the rig `cloud-cinematic-default-1200m`) +
 `probe-cloud-temporal.mjs` green; off-gate byte-identity with `CLOUD_QF_JITTER` clear. No perf
 promotion claim without the moving-altitude route (the whole point is orbit march cost — measure it).
 

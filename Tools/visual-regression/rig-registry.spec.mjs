@@ -39,17 +39,21 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 165,
+  total: 187,
   byTag: {
     "wave-end": 10,
-    // The seeded set DX-101 names had 15 cloud rigs. The cloud count is 17
-    // because `orbital-fulldisc-6608km` and its `-imagery` sibling joined it:
+    // The seeded set DX-101 names had 15 cloud rigs. The cloud count reached 17
+    // when `orbital-fulldisc-6608km` and its `-imagery` sibling joined it:
     // the orbital full-disc recipe camera every banded orbital capture on
     // record was taken at, and the same camera with the globe left alone.
     // Neither carries the `wave-end` tag, so `generateScenesJson` does not see
     // them — the byte-identity case below is what proves that rather than
     // this sentence.
-    cloud: 17,
+    //
+    // It is 39 because the cloud family's probe-kit harvest (round 1) added
+    // 22: the scenes of the ten probes that round archived and of the six it
+    // moved onto the runtime, each re-declared as data. None is `wave-end`.
+    cloud: 39,
     // The polar family's harvest re-declared every scene its probes captured
     // or measured, for the kept probe and the archived ones alike, so a
     // retired probe's scene stays on record: one rig per capture, with the

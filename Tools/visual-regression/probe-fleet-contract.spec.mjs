@@ -1871,12 +1871,22 @@ const governanceFamilyFiles = probeFiles.filter((name) =>
  * construct collapses loudly instead of reporting a repaired fleet. It stays at
  * 300 rather than rising with the widening: the two halves are 413 and 172, so
  * a detector that lost either one alone still crosses it.
+ *
+ * MOVED AGAIN BY THE PROBE-KIT HARVEST (cloud family, round 1). The tree that
+ * round started from read 62 / 52 / 10 (`probe-cloud-march-mechanism.mjs`
+ * landed governed after batch 1). The round archived ten INVESTIGATION probes
+ * — moved into `archive/`, out of the flat directory this census reads, which
+ * is the retirement exit `R-2026-09-17-11` rules and not a rename out of the
+ * glob — and routed six more onto the runtime, so the family now reads
+ * 52 / 36 / 16. `family` is the population canary and falls by exactly the
+ * ten; H12 names them and proves each one took the archive exit, so the fall
+ * is accounted for rather than silent.
  */
 const GOVERNANCE_SNAPSHOT = Object.freeze({
-  measured: "2026-09-13",
-  family: 61,
-  familyHardDefaulting: 52,
-  familyAdopting: 9,
+  measured: "2026-09-26",
+  family: 52,
+  familyHardDefaulting: 36,
+  familyAdopting: 16,
   fleetHardDefaultingFloor: 300,
 });
 
@@ -1911,6 +1921,49 @@ const PRE_BATCH_1_CENSUS = Object.freeze({
   analyzed: 61,
   hardDefaulting: 60,
   adopting: 1,
+  hardDefaultingFiles: [],
+});
+
+/**
+ * The probes the cloud family's probe-kit harvest (round 1) routed onto the
+ * runtime, by file name, for the same reason `BATCH_1_ROUTED` is named.
+ */
+const HARVEST_ROUND_1_ROUTED = Object.freeze([
+  "probe-cloud-aerial.mjs",
+  "probe-cloud-ambient.mjs",
+  "probe-cloud-features.mjs",
+  "probe-cloud-phase.mjs",
+  "probe-cloud-special.mjs",
+  "probe-cloud-tod.mjs",
+]);
+
+/**
+ * The INVESTIGATION probes the same round archived: moved into `archive/`,
+ * flipped to `ARCHIVED-CANDIDATE`, their allowlist rows deleted, their
+ * conclusions banked in `WEBGPU_DEBUGGING_LOG.md` first.
+ */
+const HARVEST_ROUND_1_ARCHIVED = Object.freeze([
+  "probe-cloud-depth-occlusion.mjs",
+  "probe-cloud-halfres-parity.mjs",
+  "probe-cloud-lighting.mjs",
+  "probe-cloud-lut-parity.mjs",
+  "probe-cloud-noisebake.mjs",
+  "probe-cloud-remap.mjs",
+  "probe-cloud-shadows-parity.mjs",
+  "probe-cloud-tier-resolver.mjs",
+  "probe-cloud-u1-scaffold.mjs",
+  "probe-cloud-u2-config.mjs",
+]);
+
+/**
+ * The family census as the harvest round FOUND it, before any file was edited:
+ * 62 probes, 52 resolving an ungoverned origin, 10 governed. H12 feeds it to
+ * the moved snapshot, for the reason H8 feeds batch 1's.
+ */
+const PRE_HARVEST_ROUND_1_CENSUS = Object.freeze({
+  analyzed: 62,
+  hardDefaulting: 52,
+  adopting: 10,
   hardDefaultingFiles: [],
 });
 
@@ -2223,6 +2276,52 @@ test("H9: every probe family batch 1 routed is governed and off the allowlist", 
     // And it is genuinely compliant rather than merely unlisted.
     assert.deepEqual(analyses.get(name).violations, [], `${name}: violations`);
   }
+});
+
+test("H12: the harvest round's routed probes are governed and off the allowlist; its archived probes took the archive exit", () => {
+  for (const name of HARVEST_ROUND_1_ROUTED) {
+    assert.ok(probeFiles.includes(name), `${name} left the fleet`);
+    const analysis = analyzeRuntimeGovernance(readProbe(name));
+    assert.equal(analysis.hardDefaultsOrigin, false, `${name}: origin`);
+    assert.deepEqual(analysis.governedBy, ["runtime"], `${name}: runtime`);
+    assert.equal(
+      Object.hasOwn(PROBE_CONTRACT_ALLOWLIST, name),
+      false,
+      `${name}: routed but still pinned in the fleet-contract allowlist`,
+    );
+    assert.deepEqual(analyses.get(name).violations, [], `${name}: violations`);
+  }
+  for (const name of HARVEST_ROUND_1_ARCHIVED) {
+    assert.ok(
+      !probeFiles.includes(name),
+      `${name} is still in the live fleet directory`,
+    );
+    const source = readFileSync(join(HERE, "archive", name), "utf8");
+    // The status is what retires it; the directory is where it went.
+    assert.equal(
+      fleetExemption(`Tools/visual-regression/archive/${name}`, source),
+      FLEET_EXEMPTIONS.ARCHIVED,
+      `${name}: moved but not flipped to ARCHIVED-CANDIDATE`,
+    );
+    assert.equal(Object.hasOwn(PROBE_CONTRACT_ALLOWLIST, name), false, name);
+    assert.equal(Object.hasOwn(PROHIBITED_READER_ALLOWLIST, name), false, name);
+  }
+  // The family's fall is exactly the archived ten, so the population canary
+  // moved for the reason the snapshot's comment gives and no other.
+  assert.equal(
+    governanceFamilyFiles.length + HARVEST_ROUND_1_ARCHIVED.length,
+    PRE_HARVEST_ROUND_1_CENSUS.analyzed,
+  );
+});
+
+test("H13: the snapshot the harvest moved still refuses the census it was moved from", () => {
+  assert.deepEqual(
+    governanceRatchetFindings(PRE_HARVEST_ROUND_1_CENSUS, GOVERNANCE_SNAPSHOT)
+      .map((finding) => finding.id)
+      .sort(),
+    ["adoption-fell", "hard-defaulting-rose"],
+    "the pre-harvest census no longer trips the ratchet it was snapshotted past",
+  );
 });
 
 test("H10 MUTATION control: an inert hard-CODED finding turns H1 and the fleet split blind", async () => {

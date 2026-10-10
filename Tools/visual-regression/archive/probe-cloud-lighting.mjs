@@ -2,7 +2,9 @@
 /**
  * V5 — Frostbite multi-scatter octaves (phase folded per-octave) + lightSampleScale.
  * @purpose V5 per-octave phase-folding acceptance: A/B vs stash-reverted pre-V5 build with W1/W2 floor gates (tonal range, lifted shadow floor, modest delta)
- * @status INVESTIGATION
+ * @status ARCHIVED-CANDIDATE
+ * Archived by the probe-kit harvest (cloud family, round 1; R-2026-09-17-11): its scene is
+ * re-declared as a rig under rigs/ and its conclusion is banked in WEBGPU_DEBUGGING_LOG.md.
  *
  * WebGPU-only (baked tier).
  *
@@ -17,14 +19,14 @@
  *     not a blow-up) and interiors trend softer (deep-cloud median ≥ pre-V5);
  *   • clouds still render; 0 device errors.
  *
- *   Run 1 (V5 build):  TAG=after  node probe-cloud-lighting.mjs
+ *   Run 1 (V5 build):  TAG=after  node Tools/visual-regression/archive/probe-cloud-lighting.mjs
  *   Run 2 (pre-V5):    git stash the wgsl + renderer, rebuild,
- *                      TAG=before node probe-cloud-lighting.mjs   (computes the A/B)
+ *                      TAG=before node Tools/visual-regression/archive/probe-cloud-lighting.mjs   (computes the A/B)
  *
  * READ cloud-lighting-{before,after}.png — interiors softer/grey, silver lining
  * intact, no new banding.
  *
- * Usage: TAG=after PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-cloud-lighting.mjs
+ * Usage: TAG=after PROBE_BASE=http://localhost:8080 node Tools/visual-regression/archive/probe-cloud-lighting.mjs
  */
 import { chromium } from "playwright";
 import {
@@ -32,7 +34,7 @@ import {
   armWebGPUDevices,
   collectGateErrors,
   attachConsoleErrorGate,
-} from "../lib/webgpu-error-gate.mjs";
+} from "../../lib/webgpu-error-gate.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const TAG = process.env.TAG || "after";

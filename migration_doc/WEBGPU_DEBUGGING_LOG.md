@@ -23419,3 +23419,108 @@ on chrome alone; the presets wedge misses every chrome rectangle, but its two wh
 (14.53 and 14.20 against `> 3`) each carry about 2 from them. The remedy (strip the widgets, mask
 `#weatherPanel`, re-derive the bars on an Edge run) is recorded in `DEFERRED_WORK.md`'s
 `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE-TAIL` row.
+
+---
+
+## Probe-kit harvest, cloud family round 1 (lane Rivendell) — ten retired cloud probes' conclusions, banked before the move, and two probe defects the harvest found
+
+*Ruling:* `R-2026-09-17-11` (ARCHIVE means MOVED, never deleted in the same landing) under `R-2026-09-26-23`.
+Each probe below was moved with `git mv` from `Tools/visual-regression/` to `Tools/visual-regression/archive/`,
+flipped to `@status ARCHIVED-CANDIDATE`, and its allowlist rows deleted. Every one of them was an INVESTIGATION
+probe whose conclusion lived only in its landing batch's record; the conclusion is copied here, with its own
+numbers, so the retirement does not depend on anyone finding that record. Each scene is re-declared as a rig
+under `Tools/visual-regression/rigs/`, and nine of the ten ran the same protocol — capture on a changed build,
+`git stash` the change, rebuild, capture again, compare (`u1-scaffold` instead compared two renders inside one run)
+— which is what `lib/capture.mjs` does over two served origins in one run once it stages a rig's camera, clock and
+dials (it does not yet; the harvest returns that defect for the kit's capture stager). Until then, a re-run is the
+archived file itself, run from its new path.
+
+**`probe-cloud-depth-occlusion.mjs`** (Batch 409, rig `cloud-depth-occlusion-thick-shell`). *Question:* does the
+cloud march stop at scene geometry, so far-side clouds of an 80-400 km test shell no longer composite over the globe
+disc? *Root cause it verified:* the march sampled `sceneDepth` but never used it; the fix reverses the log depth to
+an along-ray eye distance and clamps `tEnd` at the scene hit. *Measurement:* a git-stash A/B (`TAG=withfix` /
+`TAG=nofix`) of the 20,000 km nadir view, read as PNGs (`depth-occ-*.png`), showed the globe-disc rendering change;
+the single-run gate was a smoke test only (clouds render over the lit globe, 0 device errors), and its own comment
+says so. The sky-view side of the same fix is `probe-cloud-diagonal.mjs`, which stays live. *Caveat:*
+`DEFERRED_WORK.md` §5 (`C13-WEATHER-PROBE-FLEET-SHAPE-SWEEP`) lists this probe among the gates whose page it classes
+as network-fed, so the smoke fraction is not determinism-grade evidence until triaged.
+
+**`probe-cloud-halfres-parity.mjs`** (Batch 432, rig `cloud-cinematic-default-1200m`). *Question:* does the
+half-resolution march leave the full-resolution default (cinematic) tier untouched? *Measurement:* byte-identical
+to the stash baseline — PNGs byte-equal, decoded diff 0 of 3,145,728 channels, maximum delta 0. The half-resolution
+tier's own look is `probe-cloud-halfres.mjs`, which stays live.
+
+**`probe-cloud-lighting.mjs`** (Batch 401, rig `cloud-underside-noon-cov060`). *Question:* does folding the
+dual-lobe phase per multi-scatter octave (eccentricity decay c = 0.85) soften interiors without breaking the W1/W2
+lighting floors? *Measurement:* A/B against the pre-V5 baked build at tier 3: mean delta 0.0005, interior p50 delta
+0.0009, W1 tonal range 0.283 and W2 shadow floor 0.382 preserved, baked core active, 0 device errors; the PNG read
+showed the silver lining intact and interiors soft grey. *Caveat:* `DEFERRED_WORK.md` §5
+(`C13-WEATHER-PROBE-FLEET-SHAPE-SWEEP`) lists this probe among the gates whose page it classes as network-fed (no
+`offline=true`, no neutralizer), so these non-zero figures are not determinism-grade evidence until triaged.
+
+**`probe-cloud-lut-parity.mjs`** (Batch 434, rig `cloud-cinematic-legacy-lut-modes-1200m`). *Question:* does
+coupling the clouds to the atmosphere LUTs leave the default heuristic-aerial, constant-ambient path untouched?
+*Measurement:* byte-identical to the stash baseline, identical MD5 `899959ee`, twice. Since 2026-09-16 the aerial
+mode's default is `"auto"`, not `"heuristic"`, so the rig names the legacy values explicitly.
+
+**`probe-cloud-noisebake.mjs`** (Batch 398, rig `cloud-underside-noon-cov055`). *Question:* does baking the 3D
+Perlin-Worley textures and binding them, unsampled, leave every pixel unchanged? *Measurement:* against the pre-V2
+build, mean absolute luma 0.0000 and maximum 0 over 351,350 cloud pixels; `noiseBaked === true`; 0 device errors.
+`DEFERRED_WORK.md` §5 lists this probe too; a zero-difference identity is unaffected by that section's caveat.
+
+**`probe-cloud-remap.mjs`** (Batch 400, rigs `cloud-underside-noon-cov040` and `cloud-underside-noon-cov085`).
+*Question:* does the mean-preserving erosion remap keep low-coverage silhouettes and stop punching holes through a
+dense deck? *Measurement:* against the literal-erosion V3 build, the coverage-0.40 cloud-pixel ratio was 1.04 and
+the coverage-0.85 ratio 0.99, mean luma delta 0.003, 0 device errors; the coverage-0.85 deck was already solid
+before, so the batch recorded the remap's benefit as robustness and the new dial, not a visible fill. *Caveat:*
+`DEFERRED_WORK.md` §5 (`C13-WEATHER-PROBE-FLEET-SHAPE-SWEEP`) lists this probe among the gates whose page it classes
+as network-fed (no `offline=true`, no neutralizer), so these non-zero ratios are not determinism-grade evidence
+until triaged.
+
+**`probe-cloud-shadows-parity.mjs`** (Batch 437, rigs `cloud-shadows-parity-terrain`, `-aerial` and `-fog`).
+*Question:* with cloud shadows off (the default), do the three consumers that learned to read the shadow map —
+lit terrain, aerial perspective, volumetric fog — render exactly as before? *Measurement:* byte-identical on all
+three paths against the stash baseline, each 0 of 745,472 pixels changed, mean and maximum delta 0, re-confirmed on
+the final all-consumers build.
+
+**`probe-cloud-tier-resolver.mjs`** (Batch 397, rig `cloud-underside-noon-cov055`). *Question:* does the
+tier-preset scaffold and the unread `qualityFlags` lane move any pixel (including by shifting a later uniform lane)?
+*Measurement:* against the pre-V1 build, mean absolute luma 0.0000 and maximum 0 over 351,350 cloud pixels, 0
+device errors — every pixel identical, which also excludes a packer lane shift. `DEFERRED_WORK.md` §5 lists this
+probe too; a zero-difference identity is unaffected by that section's caveat.
+
+**`probe-cloud-u1-scaffold.mjs`** (Batch 617, rig `cloud-billboard-u1-scaffold`). *Question:* does the
+cloud-unification API scaffold (`CloudVolumetrics`, `CloudRenderMode`, the collection's `renderMode` /
+`volumetric` / `cloudType`, `CumulusCloud.cloudType`, the backend-neutral request seam) exist, and, unused, leave the
+billboard render byte-identical on both backends? *Measurement:* the batch records the acceptance probe green on
+both backends with the PNGs read; it banked no numbers.
+
+**`probe-cloud-u2-config.mjs`** (Batch 618, rig `cloud-u2-config-deterministic`). *Question:* does passing a
+structurally typed `CloudVolumetricsConfig` instead of the globe to the WebGPU cloud renderer change any pixel?
+*Measurement:* byte-identical before and after on WebGPU, ON and OFF cloud paths (FNV-1a canvas hashes equal);
+WebGL untouched.
+
+### Two probe defects the harvest found (both in probe code; neither is a renderer defect)
+
+**H-1 — dead guards since Batch 622.** Sixteen cloud probes set their cloud dials inside
+`if ("cloudCoverage" in g)` (and the same for `cloudWeatherMap`, `cloudDensity` and other keys), where `g` is
+`viewer.scene.globe`. Batch 622 deleted the `globe.cloud*` field family and rewrote each assignment's TARGET to
+`g.defaultCloudCollection.volumetric`, but left the guard, which reads a property `Globe.js` no longer declares
+(0 matches for `cloudCoverage` at the harvest's base). The guarded assignments therefore do not execute, and every
+run of those probes since Batch 622 used the collection's default coverage, density and weather map. The ten
+conclusions above were measured BEFORE Batch 622 (Batches 397-437 in June 2026, 617-618 earlier on the day 622
+landed), the six guarded ones with the guards still true, so they stand; a re-run of a guarded archived copy today
+would not reproduce its scene. *Fixed* in the four W-series gates the harvest moved onto the
+runtime (`probe-cloud-phase`, `-ambient`, `-tod`, `-aerial`): their dials now come from their rigs and go through
+`__cloudProbe.configure`, which throws on a key `CloudVolumetrics` lacks and on a value that did not round-trip.
+*Still present* in `probe-cloud-clockbind`, `-config`, `-godray`, `-lut-flagon`, `-morphology` and
+`-noisecore`, filed for the next round.
+
+**H-2 — toggles written to the globe.** Five Weather-Inspector demo probes set their feature toggles through a
+`set()` helper that assigns `viewer.scene.globe[k] = value`. The keys (`cloudFeature*`, `cloudSpecial*`,
+`cloudSpecies*`, `cloudMammatus*`, `cloudPuffSize`, `cloudExposure`, `cloudMsDecay*`) are declared on
+`CloudVolumetrics.js` and on none of `Globe.js`, so each ON leg's assignment lands on an object no cloud dial has
+been read from since Batch 622. *Fixed* in the two the harvest moved (`probe-cloud-special`, `-features`), which now
+set every toggle through the harness. *Still present* in `probe-cloud-dials`, `-mammatus` and `-species`, three of
+the eight family-batch-1 probes whose Edge equivalence leg (`C13-N01`) is owed; the fix is filed against that leg
+rather than made under it, so the leg still compares like with like.

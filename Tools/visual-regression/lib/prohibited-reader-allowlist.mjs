@@ -70,8 +70,6 @@ export const PROHIBITED_READER_ALLOWLIST = Object.freeze({
   "probe-cloud-halfres.mjs": PROHIBITED_READER_REASON,
   "probe-cloud-lod-hoist-perf.mjs": PROHIBITED_READER_REASON,
   "probe-cloud-property-edit.mjs": PROHIBITED_READER_REASON,
-  "probe-cloud-u1-scaffold.mjs": PROHIBITED_READER_REASON,
-  "probe-cloud-u2-config.mjs": PROHIBITED_READER_REASON,
   "probe-cloud-u3-toggle.mjs": PROHIBITED_READER_REASON,
   "probe-cloud-u4a-managed.mjs": PROHIBITED_READER_REASON,
   "probe-cloud-u8-offident.mjs": PROHIBITED_READER_REASON,

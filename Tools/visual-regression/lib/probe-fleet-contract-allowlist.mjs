@@ -234,68 +234,36 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-05-28, pre-dates the spec",
   "probe-clipping-planes-parity.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-01, pre-dates the spec",
-  "probe-cloud-aerial.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-25, pre-dates the spec",
-  "probe-cloud-ambient.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
   "probe-cloud-clockbind.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
   "probe-cloud-cone-parity.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
   "probe-cloud-config.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-25, pre-dates the spec",
-  "probe-cloud-depth-occlusion.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-26, pre-dates the spec",
-  "probe-cloud-features.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
   "probe-cloud-godray.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
-  "probe-cloud-halfres-parity.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
   "probe-cloud-halfres.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
   "probe-cloud-ibl-full.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-30, pre-dates the spec",
   "probe-cloud-ibl.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
-  "probe-cloud-lighting.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-25, pre-dates the spec",
   "probe-cloud-lut-flagon.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
-  "probe-cloud-lut-parity.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
   "probe-cloud-morphology.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
-  "probe-cloud-noisebake.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-25, pre-dates the spec",
   "probe-cloud-noisecore.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-25, pre-dates the spec",
-  "probe-cloud-phase.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
   "probe-cloud-property-edit.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-12, pre-dates the spec",
-  "probe-cloud-remap.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-25, pre-dates the spec",
   "probe-cloud-rte.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
   "probe-cloud-shadow-cascades.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-11, pre-dates the spec",
   "probe-cloud-shadows-flagon.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
-  "probe-cloud-shadows-parity.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
-  "probe-cloud-special.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
   "probe-cloud-temporal.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
-  "probe-cloud-tier-resolver.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-25, pre-dates the spec",
-  "probe-cloud-tod.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
-  "probe-cloud-u1-scaffold.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
-  "probe-cloud-u2-config.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
   "probe-cloud-u3-toggle.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
   "probe-cloud-u4a-managed.mjs":

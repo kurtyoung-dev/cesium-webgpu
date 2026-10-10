@@ -8,7 +8,9 @@
  * legacy call site still passes `globe` (identical field names). Therefore the
  * rendered clouds MUST be BYTE-IDENTICAL before vs after the change.
  * @purpose U2 slice byte-identity: config-indirection refactor must render identical ON-cloud hashes vs a HEAD-reverted build.
- * @status INVESTIGATION
+ * @status ARCHIVED-CANDIDATE
+ * Archived by the probe-kit harvest (cloud family, round 1; R-2026-09-17-11): its scene is
+ * re-declared as a rig under rigs/ and its conclusion is banked in WEBGPU_DEBUGGING_LOG.md.
  *
  * This probe renders a deterministic WebGPU procedural-cloud scene (clock
  * frozen at a fixed JulianDate so the wind advection — driven by
@@ -20,7 +22,7 @@
  *
  * Clouds are WebGPU-only, so this probe only exercises the WebGPU backend.
  *
- * Usage:  node Tools/visual-regression/probe-cloud-u2-config.mjs
+ * Usage:  node Tools/visual-regression/archive/probe-cloud-u2-config.mjs
  * Env:    PROBE_BASE (default http://localhost:8080)
  *         U2_TAG     (label folded into the PNG name, e.g. "after" / "before")
  */

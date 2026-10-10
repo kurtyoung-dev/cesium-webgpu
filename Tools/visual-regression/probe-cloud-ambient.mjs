@@ -1,207 +1,212 @@
 #!/usr/bin/env node
 /**
  * W2 — Sky-ambient gradient + ground bounce. WebGPU-only.
- * @purpose W2 sky-ambient/ground-bounce gate: shadow-side p10 luminance lifted into band and cloud tops bluer than bottoms; single-run PASS bars
+ * @purpose W2 sky-ambient/ground-bounce gate: over the side-lit cloud band the darkest decile sits in [0.06, 0.5] of full scale and the p90-p10 lit-to-shadow range is at least 0.10; top/bottom blue ratios reported, not asserted; single-run bars
  * @status ACTIVE
+ * @runtime lib/probe-runtime.mjs
  *
  * Adds a height-fraction ambient term so the anti-sun SHADOW side of clouds is
  * no longer near-black: blue sky lights the tops, warm ground-bounce the
  * bottoms. Scene: side-lit sun (so clouds have a clear lit face + shadow face),
  * camera below the layer looking up.
  *
- * PASS:
+ * Clauses (what the code has always enforced — the pre-harvest header listed a
+ * top-bluer-than-bottom clause that the code measured and reported but never
+ * asserted, because from below the deck the camera sees undersides only):
  *   1. clouds render (cloud band > 5000 px).
- *   2. shadow lifted: darkest-decile (p10) cloud luminance in [0.06, 0.5] of 255
- *      — off near-black, not blown out.
- *   3. vertical gradient: top cloud rows bluer than bottom rows (sky vs ground
- *      ambient) — top blue-ratio > bottom blue-ratio.
+ *   2. shadow lifted: darkest-decile (p10) cloud brightness in [0.06, 0.5] of
+ *      255 — off near-black, not blown out.
+ *   3. form preserved: p90 - p10 >= 0.10 of 255 (the fill does not flatten
+ *      the lit-to-shadow range).
  *   4. no NEW WebGPU device errors.
- * Then READ output/cloud-ambient.png — shadow side soft grey-blue (not black),
- * tops cooler/bluer than the warmer bottoms.
+ * Then READ output/cloud-ambient.png — shadow side soft grey-blue (not black).
  *
- * Usage: PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-cloud-ambient.mjs
+ * ON THE KIT (probe-kit harvest, cloud family, round 1). The scene is the rig
+ * `cloud-ambient-sidelit`, staged, settled, read and banked by
+ * `captureCloudRigArm` (`lib/cloud-rig-stage.mjs`); the band statistics are
+ * `lib/metrics/cloud-band.mjs`, computed in Node over the canvas read; the
+ * origin, preflight, Edge slot, lifecycle, receipt and exit code are the
+ * runtime's. The frame is the canvas (`toDataURL`, as before the harvest, now
+ * in the task of one final render), never an element screenshot, which would
+ * add the viewer's DOM chrome to the band. One deliberate change from the
+ * pre-harvest probe: the cloud dials now reach the deck (they sat behind
+ * `"cloudCoverage" in globe` guards that have been false since Batch 622). Its
+ * first Edge run on the kit is owed.
+ *
+ * Usage: node Tools/visual-regression/probe-cloud-ambient.mjs --port 8094
  */
-import { chromium } from "playwright";
 import {
-  errorGateInit,
   armWebGPUDevices,
   collectGateErrors,
-  attachConsoleErrorGate,
+  errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
+import { installCloudProbeHarness } from "./lib/cloud-probe-harness.mjs";
+import {
+  CLOUD_RIG_SERVED_ARTIFACTS,
+  captureCloudRigArm,
+} from "./lib/cloud-rig-stage.mjs";
+import { bandQuantile, cloudBandStats } from "./lib/metrics/cloud-band.mjs";
+import { ProbeRefusal, isEntryPoint, runProbe } from "./lib/probe-runtime.mjs";
+import SIDELIT from "./rigs/cloud-ambient-sidelit.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const W = 1024,
-  H = 768;
-const LON = -95.0,
-  LAT = 39.0,
-  ALT = 800.0;
+/** Viewer boot: the page load plus the 60 s wait for `window.viewer`. */
+const BOOT_BUDGET_MS = 90_000;
+/** The 160-frame settle, at a pessimistic ~0.75 s per volumetric frame. */
+const SETTLE_BUDGET_MS = 120_000;
+/** One canvas read, its decode and the band statistics. */
+const CAPTURE_BUDGET_MS = 15_000;
 
-const SETUP = async (cfg) => {
-  const { LON, LAT, ALT } = cfg;
-  const C = await import("/Build/CesiumUnminified/index.js");
-  const v = window.viewer;
-  const s = v.scene;
-  const g = s.globe;
-  s.requestRenderMode = false;
-  g.defaultCloudCollection.enableVolumetric = true;
-  if ("cloudCoverage" in g)
-    g.defaultCloudCollection.volumetric.cloudCoverage = 0.5;
-  if ("cloudWeatherMap" in g)
-    g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
-  if ("cloudDensity" in g)
-    g.defaultCloudCollection.volumetric.cloudDensity = 0.75;
-  s.skyBox.show = false;
-  s.skyAtmosphere.show = false;
-  if (s.sun) s.sun.show = false;
-  s.backgroundColor = C.Color.BLACK;
-  v.clock.shouldAnimate = false;
+/** Pixels whose brightest channel clears this are cloud against the black sky. */
+const CLOUD_FLOOR = 18;
+/** The band must hold more cloud pixels than this to count as rendered. */
+const MIN_CLOUD_PIXELS = 5000;
+/** Console noise the W-series gates have always filtered. */
+const IGNORED_ERRORS = /Atmosphere ?LUT|SkyAtmosphere|default layout/i;
 
-  const camCarto = C.Cartesian3.fromDegrees(LON, LAT, ALT);
-  const enu = C.Transforms.eastNorthUpToFixedFrame(camCarto);
-  const invEnu = C.Matrix4.inverseTransformation(enu, new C.Matrix4());
-  s.initializeFrame();
-  s.render();
-  const sunWC = s.context.uniformState.sunDirectionWC;
-  const local = C.Matrix4.multiplyByPointAsVector(
-    invEnu,
-    sunWC,
-    new C.Cartesian3(),
-  );
-  const n = C.Cartesian3.normalize(local, new C.Cartesian3());
-  const sunHeading = Math.atan2(n.x, n.y);
-  // Side-lit: look 90deg off the sun azimuth so clouds show a lit + shadow face.
-  v.camera.setView({
-    destination: camCarto,
-    orientation: {
-      heading: sunHeading + Math.PI / 2.0,
-      pitch: C.Math.toRadians(14.0),
-      roll: 0.0,
-    },
-  });
-  return { sunHeadingDeg: +C.Math.toDegrees(sunHeading).toFixed(1) };
-};
-
-const CAPTURE = async () => {
-  const s = window.viewer.scene;
-  for (let i = 0; i < 160; i++) {
-    s.render();
-    await new Promise((r) => requestAnimationFrame(r));
+/**
+ * The band, as the pre-harvest in-page `measure` returned it: brightest-channel
+ * p10 / p50 / p90 over the upper 60 % of rows, and the top and bottom rows'
+ * mean blue ratio rounded to four places.
+ *
+ * @param {{width: number, height: number, data: ArrayLike<number>}} image The capture.
+ * @returns {{cloud: number, p10?: number, p50?: number, p90?: number,
+ *   topBlueRatio?: number, botBlueRatio?: number}} The band; `{cloud: 0}` when empty.
+ */
+export function measureAmbientBand(image) {
+  const band = cloudBandStats(image, { minMaxChannel: CLOUD_FLOOR });
+  if (band.count === 0) {
+    return { cloud: 0 };
   }
-  return s.canvas.toDataURL("image/png");
-};
-
-function measure(page, dataUrl) {
-  return page.evaluate(async (du) => {
-    const img = new Image();
-    img.src = du;
-    await img.decode();
-    const c = document.createElement("canvas");
-    c.width = img.naturalWidth;
-    c.height = img.naturalHeight;
-    const cx = c.getContext("2d");
-    cx.drawImage(img, 0, 0);
-    const d = cx.getImageData(0, 0, c.width, c.height).data;
-    const w = c.width,
-      h = c.height;
-    const band = Math.floor(h * 0.6); // upper 60% = cloud/sky
-    const lums = [];
-    let topBlue = 0,
-      topN = 0,
-      botBlue = 0,
-      botN = 0;
-    for (let y = 0; y < band; y++) {
-      for (let x = 0; x < w; x++) {
-        const i = (y * w + x) * 4;
-        const r = d[i],
-          gg = d[i + 1],
-          b = d[i + 2];
-        const mx = Math.max(r, gg, b);
-        if (mx <= 18) continue; // sky/background
-        lums.push(mx);
-        const blue = r + gg + b > 0 ? b / (r + gg + b) : 0;
-        if (y < band * 0.4) {
-          topBlue += blue;
-          topN++;
-        } else if (y > band * 0.6) {
-          botBlue += blue;
-          botN++;
-        }
-      }
-    }
-    if (!lums.length) return { cloud: 0 };
-    lums.sort((a, b) => a - b);
-    const p = (q) => lums[Math.floor(lums.length * q)];
-    return {
-      cloud: lums.length,
-      p10: p(0.1),
-      p50: p(0.5),
-      p90: p(0.9),
-      topBlueRatio: topN ? +(topBlue / topN).toFixed(4) : 0,
-      botBlueRatio: botN ? +(botBlue / botN).toFixed(4) : 0,
-    };
-  }, dataUrl);
+  return {
+    cloud: band.count,
+    p10: bandQuantile(band.sortedMaxChannel, 0.1),
+    p50: bandQuantile(band.sortedMaxChannel, 0.5),
+    p90: bandQuantile(band.sortedMaxChannel, 0.9),
+    topBlueRatio: band.topCount ? +band.topBlueRatio.toFixed(4) : 0,
+    botBlueRatio: band.bottomCount ? +band.bottomBlueRatio.toFixed(4) : 0,
+  };
 }
 
-async function run() {
-  const browser = await chromium.launch({
-    channel: "msedge",
-    headless: true,
-    args: ["--enable-unsafe-webgpu"],
-  });
-  const page = await browser.newPage({ viewport: { width: W, height: H } });
-  attachConsoleErrorGate(page);
-  await page.addInitScript(errorGateInit);
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-    waitUntil: "domcontentloaded",
-  });
-  await page.waitForFunction(() => !!window.viewer, null, { timeout: 60000 });
-  await armWebGPUDevices(page);
+/**
+ * The four W2 clauses, over one run's cells. Pure; same claim text and the
+ * same boolean tests as the pre-harvest `checks` array, in the same order.
+ *
+ * @param {Array<object>} cells The run's cells.
+ * @returns {Array<object>} Verdicts in the runtime's shape.
+ */
+export function evaluateAmbient(cells) {
+  const verdicts = [];
+  for (const cell of cells) {
+    const suffix = `run${cell.run}`;
+    const m = cell.band;
+    const p10n = (m.p10 || 0) / 255;
+    const p90n = (m.p90 || 0) / 255;
+    verdicts.push(
+      {
+        id: `clouds-render/${suffix}`,
+        claim: `clouds render (band > ${MIN_CLOUD_PIXELS} px)`,
+        pass: m.cloud > MIN_CLOUD_PIXELS,
+        detail: { cloud: m.cloud },
+      },
+      {
+        id: `shadow-lifted/${suffix}`,
+        claim: `shadow lifted off black: p10 ${p10n.toFixed(3)} in [0.06, 0.5]`,
+        pass: p10n >= 0.06 && p10n <= 0.5,
+        detail: { p10: p10n },
+      },
+      {
+        id: `form-preserved/${suffix}`,
+        claim: `form preserved: lit-to-shadow range p90-p10 ${(p90n - p10n).toFixed(3)} >= 0.10`,
+        pass: p90n - p10n >= 0.1,
+        detail: { p10: p10n, p90: p90n },
+      },
+      {
+        id: `device-errors/${suffix}`,
+        claim: `no NEW device errors (${cell.deviceErrors.length})`,
+        pass: cell.deviceErrors.length === 0,
+        detail: { errors: cell.deviceErrors.slice(0, 5) },
+      },
+    );
+  }
+  return verdicts;
+}
 
-  const info = await page.evaluate(SETUP, { LON, LAT, ALT });
-  const dataUrl = await page.evaluate(CAPTURE);
-  const m = await measure(page, dataUrl);
-  const fs = await import("fs");
-  fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
-  fs.writeFileSync(
-    "Tools/visual-regression/output/cloud-ambient.png",
-    Buffer.from(dataUrl.split(",")[1], "base64"),
-  );
-  const gate = await collectGateErrors(page);
-  await browser.close();
-  const newErrs = (gate.errors || []).filter(
-    (e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout/i.test(e),
-  );
-
-  console.log("sun:", JSON.stringify(info));
-  console.log("cloud band:", JSON.stringify(m));
-  if (newErrs.length) console.log("NEW errs:", newErrs.slice(0, 2));
-
-  const p10n = (m.p10 || 0) / 255;
-  const p90n = (m.p90 || 0) / 255;
-  // From below the layer the camera sees cloud UNDERSIDES (ground-bounce
-  // ambient), so the sky-blue top ambient isn't in frame — the blue-vs-warm
-  // gradient is confirmed by the PNG read, not a row metric here. The verifiable
-  // core of W2: the shadow side is lifted off near-black AND the lit-to-shadow
-  // range survives (the fill doesn't flatten the form).
-  const checks = [
-    ["clouds render (band > 5000 px)", m.cloud > 5000],
-    [
-      `shadow lifted off black: p10 ${p10n.toFixed(3)} in [0.06, 0.5]`,
-      p10n >= 0.06 && p10n <= 0.5,
-    ],
-    [
-      `form preserved: lit-to-shadow range p90-p10 ${(p90n - p10n).toFixed(3)} >= 0.10`,
-      p90n - p10n >= 0.1,
-    ],
-    ["no NEW device errors", newErrs.length === 0],
-  ];
-  let pass = true;
+function printReport(receipt) {
+  for (const cell of receipt.cells) {
+    console.log("sun:", JSON.stringify(cell.sun));
+    console.log("cloud band:", JSON.stringify(cell.band));
+  }
   console.log("\n=== ANALYSIS ===");
-  for (const [n, ok] of checks) {
-    console.log(`  [${ok ? "PASS" : "FAIL"}] ${n}`);
-    if (!ok) pass = false;
+  for (const verdict of receipt.verdicts) {
+    console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
   }
-  console.log(`\nRESULT: ${pass ? "GREEN" : "RED"}`);
-  process.exitCode = pass ? 0 : 1;
+  console.log(
+    `\nRESULT: ${receipt.verdicts.every((v) => v.pass === true) ? "GREEN" : "RED"}`,
+  );
 }
-run();
+
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "cloud-ambient",
+  title:
+    "Cloud ambient (W2) — the side-lit band's shadow floor is lifted and its form survives",
+  // Keeps the capture at `output/cloud-ambient.png`, where it was banked.
+  outputSubdirectory: "",
+  receiptEnvelope: "runtime",
+  servedArtifacts: [...CLOUD_RIG_SERVED_ARTIFACTS],
+  workBudgetMs: () => BOOT_BUDGET_MS + SETTLE_BUDGET_MS + CAPTURE_BUDGET_MS,
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    if (!options.renderers.includes("webgpu")) {
+      throw new ProbeRefusal(
+        "renderer-unavailable",
+        "the volumetric cloud ambient is WebGPU-only, so a shadow-floor gate " +
+          `measured on ${options.renderers.join(",")} would read an empty sky`,
+        { renderers: options.renderers },
+      );
+    }
+    const { width, height } = SIDELIT.viewport;
+    const page = await browser.newPage({ viewport: { width, height } });
+    await page.addInitScript(errorGateInit);
+    await page.addInitScript(installCloudProbeHarness);
+    await page.goto(`${origin}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.waitForFunction(() => !!window.viewer, null, {
+      timeout: 60000,
+    });
+    await armWebGPUDevices(page);
+
+    const arm = await captureCloudRigArm({
+      page,
+      rig: SIDELIT,
+      name: "cloud-ambient",
+      outputDirectory,
+      captures,
+    });
+    const gate = await collectGateErrors(page);
+    return [
+      {
+        run,
+        sun: { sunHeadingDeg: +Number(arm.staged.sunHeadingDeg).toFixed(1) },
+        band: measureAmbientBand(arm.image),
+        deviceErrors: (gate.errors || []).filter(
+          (error) => !IGNORED_ERRORS.test(error),
+        ),
+      },
+    ];
+  },
+  verdicts(cells) {
+    return evaluateAmbient(cells);
+  },
+  receipt(cells, context) {
+    const receipt = { rigs: [SIDELIT.id], cells, verdicts: context.verdicts };
+    if (cells.length > 0) {
+      printReport(receipt);
+    }
+    return receipt;
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}
