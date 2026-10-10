@@ -50,6 +50,8 @@
 // material path's image source holds it, and what texture the WebGL-shaped
 // material path built from it).
 
+import { awaitFrameImportMap } from "./frame-import-map.mjs";
+
 /** The engine receipt's page global (mirrors `WebGLStubTextureTrace.ts`). */
 export const STUB_TEXTURE_TRACE_GLOBAL = "__cesiumStubTextureTrace";
 /** The page-wide event sequence every layer numbers its events from. */
@@ -364,7 +366,51 @@ export async function pageInstallSceneTextureTrace({ moduleUrl }) {
     }
     return o.apply(this, args);
   });
+  // The primitives drawing those materials, so the reader can compare the
+  // view the WebGPU material path bound with the material's own texture.
+  const videoPrimitives = new Set();
+  trace.videoPrimitives = videoPrimitives;
+  wrap(C?.Primitive, "update", function (o, args) {
+    const material = this.appearance?.material;
+    if (material && videoMaterials.has(material)) {
+      videoPrimitives.add(this);
+    }
+    return o.apply(this, args);
+  });
   return { installed: trace.installed };
+}
+
+/**
+ * Install the scene-side wrappers in a page or frame once it can import
+ * `moduleUrl`: for a bare specifier (the Sandcastle2 run frame maps
+ * `cesium`), wait until the document has parsed its import map, then run
+ * `pageInstallSceneTextureTrace` there. Runs in Node.
+ *
+ * The opener returns the run frame as soon as it exists, which can be before
+ * its head is parsed; an import evaluated then fails to resolve the specifier.
+ * Every cell that installs the trace in a frame goes through this.
+ *
+ * @param {{evaluate: Function, waitForFunction: Function}} frame A Playwright
+ *   page or frame.
+ * @param {{moduleUrl?: string|null, timeoutMs: number}} options The engine
+ *   module, as for `pageInstallSceneTextureTrace`, and how long to wait for
+ *   the import map.
+ * @returns {Promise<{installed: string[], importMap: object}>} The methods
+ *   wrapped, and whether and how long the import map was waited for.
+ * @throws {import("./probe-refusal.mjs").ProbeRefusal}
+ *   `frame-import-map-missing` when the import map does not appear in time.
+ */
+export async function installSceneTextureTraceInFrame(
+  frame,
+  { moduleUrl, timeoutMs },
+) {
+  const importMap = moduleUrl
+    ? await awaitFrameImportMap(frame, { specifier: moduleUrl, timeoutMs })
+    : { waited: false, elapsedMs: 0 };
+  const installed = await frame.evaluate(pageInstallSceneTextureTrace, {
+    moduleUrl,
+  });
+  return { ...installed, importMap };
 }
 
 /**
@@ -484,6 +530,14 @@ export function pageReadLabelAtlasState() {
  * as `pageInstallSceneTextureTrace` collected them. Runs in the page or frame;
  * self-contained.
  *
+ * `boundViewIsCurrentNative` follows the label atlas reader's rule: whether
+ * the view the WebGPU material path bound for the uniform's slot (the slot
+ * state the primitive texture cache keeps as `_matPrimaryTextures`) is the
+ * current view of the native texture behind `_textures[uniform]`. It is null
+ * when no primitive drawing the material carries a WebGPU texture cache (the
+ * WebGL renderer), and `boundView` reads "unavailable" when a cache carries no
+ * slot state (a tree without that state).
+ *
  * @returns {Array<object>} One entry per video uniform.
  */
 export function frameReadVideoMaterialState() {
@@ -497,6 +551,29 @@ export function frameReadVideoMaterialState() {
       }
       const texture = material._textures?.[key];
       const native = texture?._texture?._webgpuTexture ?? null;
+      const bound = [];
+      for (const primitive of globalThis.__sceneTextureTrace?.videoPrimitives ??
+        []) {
+        const cache =
+          primitive.appearance?.material === material
+            ? primitive._webgpuCache
+            : undefined;
+        if (!cache) {
+          continue;
+        }
+        const state = cache._matPrimaryTextures;
+        bound.push(
+          state === undefined
+            ? "unavailable"
+            : state.boundView === undefined
+              ? "image-path"
+              : state.boundView === null
+                ? "placeholder"
+                : native && state.boundView === native.view
+                  ? "current-native"
+                  : "other-view",
+        );
+      }
       out.push({
         uniform: key,
         materialType: material.type ?? null,
@@ -519,6 +596,11 @@ export function frameReadVideoMaterialState() {
               height: native.height,
             }
           : null,
+        boundView: bound,
+        boundViewIsCurrentNative:
+          bound.length === 0 || bound.includes("unavailable")
+            ? null
+            : bound.every((each) => each === "current-native"),
       });
     }
   }

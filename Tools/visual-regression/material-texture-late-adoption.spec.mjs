@@ -93,6 +93,19 @@ const RENDERER_FUNCTIONS = new Set([
 
 const RENDERER_CONSTANTS = new Set(["MAIN_MAT_TEX_KEYS", "DF_MAT_TEX_KEYS"]);
 
+// The renderer imports its texture-slot choice from a companion module. That
+// choice is part of the binding decision, so it is loaded whole, with the one
+// function it imports (the globe material's view resolver, and the unwrap it
+// calls) lifted by AST beside it, rather than stood in for.
+const SLOT_CHOICE_FILE =
+  "packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveMaterialTextureSource.ts";
+const GLOBE_MATERIAL_FILE =
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeMaterial.ts";
+const GLOBE_MATERIAL_FUNCTIONS = new Set([
+  "unwrapTextureHandle",
+  "resolveMaterialTextureView",
+]);
+
 // =============================================================================
 // Source loading
 // =============================================================================
@@ -118,6 +131,40 @@ async function importGenerated(text, tag) {
       // A leftover temp module in the OS temp directory is harmless.
     }
   }
+}
+
+function slotChoiceFragments(root) {
+  const globe = read(root, GLOBE_MATERIAL_FILE);
+  const globeFile = ts.createSourceFile(
+    "WebGPUGlobeMaterial.ts",
+    globe,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const lifted = [];
+  for (const statement of globeFile.statements) {
+    if (
+      ts.isFunctionDeclaration(statement) &&
+      statement.name &&
+      GLOBE_MATERIAL_FUNCTIONS.has(statement.name.text)
+    ) {
+      lifted.push(
+        globe
+          .slice(statement.getStart(globeFile), statement.end)
+          .replace(/^export /, ""),
+      );
+    }
+  }
+  assert.equal(
+    lifted.length,
+    GLOBE_MATERIAL_FUNCTIONS.size,
+    `the view resolver was not found in ${GLOBE_MATERIAL_FILE}`,
+  );
+  const companion = read(root, SLOT_CHOICE_FILE)
+    .replace(/^import [^;]+;\n/m, "")
+    .replace(/^export /gm, "");
+  return [...lifted, companion];
 }
 
 /**
@@ -199,6 +246,8 @@ async function loadRenderer(root) {
     "  create2D: () => ({ view: { label: 'unreachable-fallback' }, write: () => {} }),",
     "};",
   ].join("\n");
+
+  fragments.push(...slotChoiceFragments(REPO_ROOT));
 
   const moduleText = `${prelude}\n${fragments.join("\n")}\nexport { ${[
     ...found,

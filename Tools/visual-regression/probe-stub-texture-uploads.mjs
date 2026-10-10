@@ -20,7 +20,16 @@
 //           so its `width`/`height` read 0 while `videoWidth`/`videoHeight`
 //           are the frame size; the cell records all four. A blank surface is
 //           a central box with little spread and no change between two
-//           captures 1.5 s apart.
+//           captures 1.5 s apart. The spread is compared across renderers on
+//           a third capture with the video paused at one time on both
+//           (`matchedSpread`, `judgeMatchedSpread`), because the two moving
+//           captures land on different frames on each renderer.
+//   video-paused - only when named. Whether the WebGPU renderer shows the
+//           demo's video texture the right way up and with WebGL's content:
+//           the video held at one time, the repeat fixed, captured as four
+//           cells (WebGL twice, WebGL with the texture flipped as the control,
+//           WebGPU once) and decided in Node over one box by the rules the rig
+//           registers (`lib/video-paused-cell.mjs`).
 //   framebuffer-census - only when named, WebGPU only. Each census cell
 //           (`lib/framebuffer-census-steps.mjs`) is a registry rig plus dials,
 //           settled and captured, with the engine receipt's framebuffer
@@ -55,7 +64,8 @@
 //
 // Usage: node Tools/visual-regression/probe-stub-texture-uploads.mjs
 //   [--port 8094] [--sandcastle-port 8095]
-//   [--scene atlas,video|framebuffer-census]
+//   [--scene atlas,video|video-paused|framebuffer-census]
+//   [--paused-seconds S] (the paused cell's video time, instead of its rig's)
 //   [--renderer both|webgl|webgpu] [--runs N]
 //   [--census-settle-frames N] (a census cell's settle, instead of its rig's)
 //        node Tools/visual-regression/probe-stub-texture-uploads.mjs
@@ -98,6 +108,7 @@ import { openSandcastle2Url } from "./lib/sandcastle2-renderer-gate.mjs";
 import {
   copySourceDestroyOrder,
   frameReadVideoMaterialState,
+  installSceneTextureTraceInFrame,
   pageInstallFramebufferCensusTrace,
   pageInstallSceneTextureTrace,
   pageReadFramebufferCensusTrace,
@@ -106,6 +117,11 @@ import {
   stubTextureTraceInit,
 } from "./lib/stub-texture-trace.mjs";
 import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
+import {
+  captureVideoPausedCell,
+  frameSeekPausedVideo,
+  pairVideoPausedCells,
+} from "./lib/video-paused-cell.mjs";
 import CENSUS_GLOBE_RIG from "./rigs/framebuffer-census-globe.mjs";
 import CENSUS_MODEL_RIG from "./rigs/framebuffer-census-model-shadows-ibl.mjs";
 import ATLAS_RIG from "./rigs/texture-atlas-label-growth.mjs";
@@ -115,6 +131,7 @@ import VIDEO_RIG from "./rigs/sandcastle2-video.mjs";
 export const STUB_TEXTURE_SCENES = Object.freeze({
   atlas: ATLAS_RIG,
   video: VIDEO_RIG,
+  "video-paused": VIDEO_RIG,
   "framebuffer-census": CENSUS_GLOBE_RIG,
 });
 
@@ -125,7 +142,7 @@ const CENSUS_RIGS = Object.freeze({
 });
 
 /** Scenes a run captures only when `--scene` names them. */
-const NAMED_ONLY_SCENES = Object.freeze(["framebuffer-census"]);
+const NAMED_ONLY_SCENES = Object.freeze(["video-paused", "framebuffer-census"]);
 
 /** Every scene, in the order a run captures them. */
 export const DEFAULT_SCENES = Object.freeze(["atlas", "video"]);
@@ -269,6 +286,15 @@ export function planStubTextureCells({ scene, renderers } = {}) {
         for (const census of FRAMEBUFFER_CENSUS_CELLS) {
           const rig = CENSUS_RIGS[census.rig];
           cells.push({ scene: name, rig, renderer: "webgpu", census });
+        }
+      }
+      continue;
+    }
+    if (name === "video-paused") {
+      const rig = STUB_TEXTURE_SCENES[name];
+      for (const paused of rig.dials.paused.cells) {
+        if (renderers.includes(paused.renderer)) {
+          cells.push({ scene: name, rig, renderer: paused.renderer, paused });
         }
       }
       continue;
@@ -540,7 +566,11 @@ async function captureVideoCell({
   const frame = opened.bucketFrame;
   const traceInstalled = await budget.bound(
     "installing the texture trace",
-    () => frame.evaluate(pageInstallSceneTextureTrace, { moduleUrl: "cesium" }),
+    () =>
+      installSceneTextureTraceInFrame(frame, {
+        moduleUrl: "cesium",
+        timeoutMs: Math.min(NAVIGATION_BUDGET_MS, budget.remainingMs()),
+      }),
   );
   const video = await budget.bound("the wait for the video", () =>
     frame.evaluate(frameAwaitVideo, {
@@ -581,7 +611,6 @@ async function captureVideoCell({
       captures,
     }),
   );
-  opened.assertNoOriginBreach();
   const a = decodePng(first.buffer);
   const b = decodePng(second.buffer);
   if (a.width !== b.width || a.height !== b.height) {
@@ -591,6 +620,27 @@ async function captureVideoCell({
       { first: [a.width, a.height], second: [b.width, b.height] },
     );
   }
+  // The receipts are read before the matched capture pauses the video, so
+  // they count the same playing frames they always did.
+  const trace = {
+    installed: traceInstalled.installed,
+    ...(await budget.bound("reading the texture trace", () =>
+      frame.evaluate(pageReadStubTextureTrace),
+    )),
+    videoMaterials: await budget.bound("reading the video materials", () =>
+      frame.evaluate(frameReadVideoMaterialState),
+    ),
+  };
+  const matched = await captureMatchedSpread({
+    page,
+    frame,
+    cell,
+    run,
+    outputDirectory,
+    captures,
+    budget,
+  });
+  opened.assertNoOriginBreach();
   return {
     video,
     captures: [
@@ -602,19 +652,104 @@ async function captureVideoCell({
       b,
       centerBox(a, rig.dials.centerBoxFraction),
     ),
-    trace: {
-      installed: traceInstalled.installed,
-      ...(await budget.bound("reading the texture trace", () =>
-        frame.evaluate(pageReadStubTextureTrace),
-      )),
-      videoMaterials: await budget.bound("reading the video materials", () =>
-        frame.evaluate(frameReadVideoMaterialState),
-      ),
-    },
+    centerBoxSecond: boxSpreadAndChange(
+      b,
+      b,
+      centerBox(b, rig.dials.centerBoxFraction),
+    ),
+    matched,
+    trace,
     gate: await budget.bound("reading the error gate", () =>
       collectGateErrors(frame),
     ),
   };
+}
+
+/**
+ * The moving video cell's frame-matched capture: the video paused at the rig's
+ * `matchedSpread.seconds` and the scene drawn for its `settleMs`, then one
+ * capture whose central box spread is the one the spread band compares across
+ * renderers, so both renderers are judged on the same video frame. A seek that
+ * does not land is recorded, not refused, so the cell's receipts stand and the
+ * spread band reads void for the run.
+ */
+async function captureMatchedSpread({
+  page,
+  frame,
+  cell,
+  run,
+  outputDirectory,
+  captures,
+  budget,
+}) {
+  const { rig } = cell;
+  const dials = rig.dials.matchedSpread;
+  const seek = await budget.bound("the matched pause and seek", () =>
+    frame.evaluate(frameSeekPausedVideo, {
+      elementId: rig.dials.videoElementId,
+      seconds: dials.seconds,
+      timeoutMs: Math.min(
+        dials.seekTimeoutMs,
+        Math.max(0, budget.remainingMs() - PAGE_DEADLINE_MARGIN_MS),
+      ),
+    }),
+  );
+  if (!seek.ok) {
+    return { ok: false, seconds: dials.seconds, seek, lumaStdDev: null };
+  }
+  await budget.bound("the matched settle", () =>
+    page.waitForTimeout(dials.settleMs),
+  );
+  const shot = await budget.bound("the matched capture", () =>
+    captureElement({
+      page: frame,
+      selector: CANVAS_SELECTOR,
+      name: `video-${cell.renderer}-run${run}-m`,
+      outputDirectory,
+      captures,
+    }),
+  );
+  const image = decodePng(shot.buffer);
+  return {
+    ok: true,
+    seconds: dials.seconds,
+    seek,
+    capture: { name: shot.name, sha256: shot.sha256 },
+    size: [image.width, image.height],
+    lumaStdDev: boxSpreadAndChange(
+      image,
+      image,
+      centerBox(image, rig.dials.centerBoxFraction),
+    ).lumaStdDev,
+  };
+}
+
+/**
+ * The moving video cell's spread band, judged on the frame-matched captures:
+ * met when the WebGPU box's spread is within `factor` of the WebGL box's,
+ * either way. Void (`met` null, re-run) when either cell has no matched
+ * capture or the WebGL spread is 0. Pure and exported for a spec.
+ *
+ * @param {{matched?: {lumaStdDev: number|null}}} webgpu The WebGPU cell record.
+ * @param {{matched?: {lumaStdDev: number|null}}} webgl The WebGL cell record.
+ * @param {number} factor The band's factor.
+ * @returns {{webgpu: number|null, webgl: number|null, min: number|null, max: number|null, met: boolean|null}}
+ */
+export function judgeMatchedSpread(webgpu, webgl, factor) {
+  const gpu = webgpu?.matched?.lumaStdDev;
+  const gl = webgl?.matched?.lumaStdDev;
+  if (!Number.isFinite(gpu) || !Number.isFinite(gl) || gl <= 0) {
+    return {
+      webgpu: Number.isFinite(gpu) ? gpu : null,
+      webgl: Number.isFinite(gl) ? gl : null,
+      min: null,
+      max: null,
+      met: null,
+    };
+  }
+  const min = gl / factor;
+  const max = gl * factor;
+  return { webgpu: gpu, webgl: gl, min, max, met: gpu >= min && gpu <= max };
 }
 
 /**
@@ -753,6 +888,15 @@ export function runCensusCompare(directories) {
   return 0;
 }
 
+/** The probe's pieces the paused cell's steps in the video-paused lib use. */
+const PAUSED_CELL_KIT = Object.freeze({
+  frameAwaitVideo,
+  canvasSelector: CANVAS_SELECTOR,
+  navigationBudgetMs: NAVIGATION_BUDGET_MS,
+  videoPlayBudgetMs: VIDEO_PLAY_BUDGET_MS,
+  pageDeadlineMarginMs: PAGE_DEADLINE_MARGIN_MS,
+});
+
 /**
  * One scene on one renderer, in a fresh browser context, every browser call
  * bounded by one cell budget.
@@ -786,7 +930,9 @@ async function captureCell({
           ? captureAtlasCell
           : cell.scene === "framebuffer-census"
             ? captureCensusCell
-            : captureVideoCell;
+            : cell.scene === "video-paused"
+              ? (args) => captureVideoPausedCell(args, PAUSED_CELL_KIT)
+              : captureVideoCell;
       const measured = await work({
         page,
         origin,
@@ -847,6 +993,11 @@ export function pairStubTextureCells(records) {
           webgpu: webgpu.centerBox.lumaStdDev,
           webgl: webgl.centerBox.lumaStdDev,
         },
+        matchedSpread: judgeMatchedSpread(
+          webgpu,
+          webgl,
+          VIDEO_RIG.dials.matchedSpread.factor,
+        ),
         changedFraction: {
           webgpu: webgpu.centerBox.changedFraction,
           webgl: webgl.centerBox.changedFraction,
@@ -896,6 +1047,11 @@ export const descriptor = {
         key: "censusSettleFrames",
         kind: "positive-integer",
       },
+      {
+        flag: "--paused-seconds",
+        key: "pausedSeconds",
+        kind: "non-negative-number",
+      },
     ],
   },
   workBudgetMs: (options) =>
@@ -918,7 +1074,14 @@ export const descriptor = {
         }),
       );
     }
-    return [{ run, cells: records, pairs: pairStubTextureCells(records) }];
+    const pairs = pairStubTextureCells(records);
+    const paused = pairVideoPausedCells(records, VIDEO_RIG.dials.paused, {
+      boxSpreadAndChange,
+    });
+    if (paused) {
+      pairs.push(paused);
+    }
+    return [{ run, cells: records, pairs }];
   },
   receipt(cells, context) {
     for (const { pairs } of cells) {

@@ -95,6 +95,12 @@ import {
 } from "./RenderStateToPipelineVariant.js";
 import { writeNormalizedInverseViewQuaternion } from "./WebGPUPrimitiveCameraQuaternion.js";
 import {
+  areMaterialTextureSlotsBound,
+  chooseMaterialTextureSlots,
+  recordMaterialTextureSlotsBound,
+  releaseCreatedMaterialTexture,
+} from "./WebGPUPrimitiveMaterialTextureSource.js";
+import {
   configurePrimitiveShadowCastCommand,
   updatePrimitiveShadowCastCommand,
 } from "./WebGPUPrimitiveShadowCast.js";
@@ -226,6 +232,7 @@ interface MaterialUploadStateLike {
 
 interface MaterialLike {
   _imageSources?: { [key: string]: unknown };
+  _textures?: { [key: string]: unknown };
   _uniformBuffer?: MaterialUniformBufferLike;
   uniforms?: MaterialUniformsLike;
 }
@@ -4156,6 +4163,8 @@ const MAIN_MAT_TEX_KEYS = {
   samplerAddressV: "_matSamplerAddressV",
   gpuTexturePrimary: "_matGpuTexturePrimary",
   gpuTextureSecondary: "_matGpuTextureSecondary",
+  primaryTextures: "_matPrimaryTextures",
+  secondaryTextures: "_matSecondaryTextures",
 };
 const DF_MAT_TEX_KEYS = {
   bindGroup: "dfTextureBindGroup",
@@ -4167,6 +4176,8 @@ const DF_MAT_TEX_KEYS = {
   samplerAddressV: "_dfMatSamplerAddressV",
   gpuTexturePrimary: "_dfMatGpuTexturePrimary",
   gpuTextureSecondary: "_dfMatGpuTextureSecondary",
+  primaryTextures: "_dfMatPrimaryTextures",
+  secondaryTextures: "_dfMatSecondaryTextures",
 };
 
 function ensureMaterialTextureBindGroup(
@@ -4179,20 +4190,23 @@ function ensureMaterialTextureBindGroup(
 ) {
   const k = keys ?? MAIN_MAT_TEX_KEYS;
   const slots = getTextureUniformName(shaderType);
-  const imageSources = defined(material) ? material._imageSources : undefined;
-  const primarySource = defined(imageSources)
-    ? imageSources[slots.primary]
-    : undefined;
-  const secondarySource =
-    defined(imageSources) && defined(slots.secondary)
-      ? imageSources[slots.secondary]
-      : undefined;
+  // A slot whose uniform WebGL samples from `_textures` (a video, a Texture)
+  // binds that texture's current view rather than an `_imageSources` upload.
+  const choice = chooseMaterialTextureSlots(
+    material,
+    slots,
+    shaderType,
+    cache,
+    k,
+  );
+  const { primarySource, secondarySource } = choice;
 
   // Check if cached texture is still current (both slots unchanged)
   if (
     defined(cache[k.bindGroup]) &&
     cache[k.primarySource] === primarySource &&
-    cache[k.secondarySource] === secondarySource
+    cache[k.secondarySource] === secondarySource &&
+    areMaterialTextureSlotsBound(cache, k, choice)
   ) {
     return true;
   }
@@ -4280,7 +4294,13 @@ function ensureMaterialTextureBindGroup(
 
   // Build / rebuild slot 1 (primary)
   let primaryView;
-  if (defined(primarySource) && defined(context.createTextureFromImage)) {
+  if (choice.primary.fromTextures) {
+    releaseCreatedMaterialTexture(cache, k.gpuTexturePrimary);
+    primaryView = choice.primary.view ?? undefined;
+  } else if (
+    defined(primarySource) &&
+    defined(context.createTextureFromImage)
+  ) {
     const gpuTex = context.createTextureFromImage(
       primarySource,
       "rgba8unorm",
@@ -4302,7 +4322,13 @@ function ensureMaterialTextureBindGroup(
   // Build or rebuild slot 2. Bind the placeholder when a single-texture
   // material has no secondary view, keeping the layout satisfied.
   let secondaryView;
-  if (defined(secondarySource) && defined(context.createTextureFromImage)) {
+  if (choice.secondary.fromTextures) {
+    releaseCreatedMaterialTexture(cache, k.gpuTextureSecondary);
+    secondaryView = choice.secondary.view ?? undefined;
+  } else if (
+    defined(secondarySource) &&
+    defined(context.createTextureFromImage)
+  ) {
     const gpuTex2 = context.createTextureFromImage(
       secondarySource,
       "rgba8unorm",
@@ -4320,6 +4346,7 @@ function ensureMaterialTextureBindGroup(
     secondaryView = getPlaceholderView();
   }
   cache[k.secondarySource] = secondarySource;
+  recordMaterialTextureSlotsBound(cache, k, choice);
 
   cache[k.bindGroup] = device.createBindGroup({
     layout: cache[k.layout] as GPUBindGroupLayout,
