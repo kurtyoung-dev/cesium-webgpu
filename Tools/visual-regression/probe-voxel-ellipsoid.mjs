@@ -2,6 +2,7 @@
 // acceptance probe.
 // @purpose Acceptance: WebGPU voxel march intersects the oblate ellipsoid shell and lon/lat/height shapeUv cell colors match WebGL (IoU + color gates).
 // @status ACTIVE
+// @runtime lib/probe-runtime.mjs
 //
 // Renders the SAME procedural ELLIPSOID-shape VoxelPrimitive (oblate radii —
 // per-axis radii correction is part of what's under test) on BOTH the WebGL
@@ -27,45 +28,56 @@
 //
 // Reads BOTH PNGs (writes them to output/) so the operator can eyeball the
 // shell silhouette + the lon/lat color gradient.
-import { chromium } from "playwright";
-import fs from "fs";
-
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const OUT = "Tools/visual-regression/output";
-fs.mkdirSync(OUT, { recursive: true });
-
-const browser = await chromium.launch({
-  channel: "msedge",
-  headless: true,
-  args: ["--enable-unsafe-webgpu"],
-});
+//
+// ON THE KIT (probe-kit harvest, voxel family): scene = `rigs/voxel-ellipsoid-oblique.mjs`;
+// Edge, origin, slot, deadline, receipt and exit code = `lib/probe-runtime.mjs`;
+// viewer page = `lib/voxel-probe-page.mjs`; the frame is banked through
+// `captureElement`, decoded in Node, and measured and judged by
+// `lib/voxel-shape-parity-verdicts.mjs` (the clauses this probe and its
+// cylinder twin share) over `lib/metrics/voxel-footprint.mjs`.
+// Run: `node server.js --port 8094 --serve-built`, then this file.
+import { decodePng } from "../lib/png-decode.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
+import {
+  VOXEL_CANVAS_SELECTOR,
+  missingRenderers,
+  openVoxelViewer,
+  voxelPageErrors,
+  voxelWorkBudgetMs,
+} from "./lib/voxel-probe-page.mjs";
+import {
+  evaluateShapeParity,
+  measureShapeFrame,
+  publishedShapeCell,
+  shapeParityNumbers,
+} from "./lib/voxel-shape-parity-verdicts.mjs";
+import RIG from "./rigs/voxel-ellipsoid-oblique.mjs";
 
 // Oblate ellipsoid: x/y radius R, z radius 0.6 R, shell heights 0..1e6 m.
 const R = 6378137.0;
-const CAMERA = {
-  // Oblique so the oblateness reads in the silhouette (an axis-on view would
-  // degenerate to a circle and weaken the box-vs-ellipse discriminator).
-  destinationXYZ: [R * 2.6, R * 1.9, R * 1.7],
-};
+// The oblique camera is the rig's (`RIG.camera`).
 
-async function capture(renderer) {
-  const page = await browser.newPage({
-    viewport: { width: 1024, height: 768 },
+async function captureShape({
+  browser,
+  origin,
+  renderer,
+  outputDirectory,
+  captures,
+}) {
+  const { page, diagnostics } = await openVoxelViewer({
+    browser,
+    origin,
+    renderer,
+    rig: RIG,
   });
-  const consoleErrors = [];
-  page.on("console", (m) => {
-    if (m.type() === "error") consoleErrors.push(m.text());
-  });
-  page.on("pageerror", (e) => consoleErrors.push(String(e)));
-
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-    timeout: 90000,
-  });
-  await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const info = await page.evaluate(
-    async ({ camera, R }) => {
+    async ({ camera, R, frames }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
@@ -138,31 +150,19 @@ async function capture(renderer) {
       prim.nearestSampling = true;
       scene.primitives.add(prim);
 
+      // The rig's oblique ECEF pose: the direction is the normalised negated
+      // position (looking back at the origin) with +Z up.
       v.camera.setView({
-        destination: new C.Cartesian3(
-          camera.destinationXYZ[0],
-          camera.destinationXYZ[1],
-          camera.destinationXYZ[2],
-        ),
+        destination: new C.Cartesian3(...camera.position),
         orientation: {
-          direction: C.Cartesian3.normalize(
-            C.Cartesian3.negate(
-              new C.Cartesian3(
-                camera.destinationXYZ[0],
-                camera.destinationXYZ[1],
-                camera.destinationXYZ[2],
-              ),
-              new C.Cartesian3(),
-            ),
-            new C.Cartesian3(),
-          ),
-          up: C.Cartesian3.UNIT_Z,
+          direction: new C.Cartesian3(...camera.direction),
+          up: new C.Cartesian3(...camera.up),
         },
       });
 
       // Render enough frames for the async provider resolve + the WebGPU
       // root-tile upload state machine + the parity pipeline swap.
-      for (let i = 0; i < 240; i++) {
+      for (let i = 0; i < frames; i++) {
         scene.render();
         await new Promise((r) => setTimeout(r, 12));
       }
@@ -177,231 +177,100 @@ async function capture(renderer) {
           cache && cache.colorDescriptor ? cache.colorDescriptor.name : null,
       };
     },
-    { camera: CAMERA, R },
+    { camera: RIG.camera, R, frames: RIG.readiness.frames },
   );
 
-  const buf = await page.screenshot();
-  fs.writeFileSync(`${OUT}/probe-voxel-ellipsoid-${renderer}.png`, buf);
-
-  // Decode the PNG back into the page to build a coarse mask + per-grid-cell
-  // color record over a centered region (same harness as
-  // probe-voxel-parity.mjs, extended with per-cell RGB for the B23 gate).
-  const dataUrl = `data:image/png;base64,${buf.toString("base64")}`;
-  const px = await page.evaluate(async (url) => {
-    const img = new Image();
-    await new Promise((r) => {
-      img.onload = r;
-      img.src = url;
-    });
-    const cv = document.createElement("canvas");
-    cv.width = img.width;
-    cv.height = img.height;
-    const ctx = cv.getContext("2d");
-    ctx.drawImage(img, 0, 0);
-    const w = img.width;
-    const h = img.height;
-    const rx = Math.floor(w * 0.2);
-    const ry = Math.floor(h * 0.2);
-    const rw = Math.floor(w * 0.55);
-    const rh = Math.floor(h * 0.6);
-    const d = ctx.getImageData(rx, ry, rw, rh).data;
-    const GW = 64;
-    const GH = 48;
-    const mask = new Uint8Array(GW * GH);
-    const cellRGB = new Array(GW * GH).fill(null);
-    let nonBlack = 0;
-    for (let gy = 0; gy < GH; gy++) {
-      for (let gx = 0; gx < GW; gx++) {
-        const sx = rx + Math.floor((gx / GW) * rw);
-        const sy = ry + Math.floor((gy / GH) * rh);
-        const dd = ctx.getImageData(sx, sy, 1, 1).data;
-        if (dd[0] + dd[1] + dd[2] > 20) {
-          mask[gy * GW + gx] = 1;
-          cellRGB[gy * GW + gx] = [dd[0], dd[1], dd[2]];
-          nonBlack++;
-        }
-      }
-    }
-    let sr = 0;
-    let sg = 0;
-    let sb = 0;
-    let n = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      if (d[i] + d[i + 1] + d[i + 2] > 20) {
-        sr += d[i];
-        sg += d[i + 1];
-        sb += d[i + 2];
-        n++;
-      }
-    }
-    const nn = Math.max(1, n);
-    return {
-      GW,
-      GH,
-      mask: Array.from(mask),
-      cellRGB,
-      maskCells: nonBlack,
-      avgColor: [Math.round(sr / nn), Math.round(sg / nn), Math.round(sb / nn)],
-      coveragePct: (n / (d.length / 4)) * 100,
-    };
-  }, dataUrl);
-
+  const shot = await captureElement({
+    page,
+    selector: VOXEL_CANVAS_SELECTOR,
+    name: `probe-voxel-ellipsoid-${renderer}`,
+    outputDirectory,
+    captures,
+  });
+  // The coarse mask + per-grid-cell colour record over the centred region
+  // (the parity probe's harness, extended with per-cell RGB for the shapeUv
+  // gate), measured in Node from the banked frame.
+  const px = measureShapeFrame(decodePng(shot.buffer));
+  const errors = await voxelPageErrors(page, diagnostics);
   await page.close();
-  return { info, px, consoleErrors };
+  return { info, capture: shot.name, px, ...errors };
 }
 
-const webgl = await capture("webgl");
-const webgpu = await capture("webgpu");
-await browser.close();
-
-console.log("WebGL  info:", JSON.stringify(webgl.info));
-console.log("WebGPU info:", JSON.stringify(webgpu.info));
-console.log(
-  "WebGL  px:",
-  JSON.stringify({
-    maskCells: webgl.px.maskCells,
-    avgColor: webgl.px.avgColor,
-    coveragePct: webgl.px.coveragePct.toFixed(2),
-  }),
-);
-console.log(
-  "WebGPU px:",
-  JSON.stringify({
-    maskCells: webgpu.px.maskCells,
-    avgColor: webgpu.px.avgColor,
-    coveragePct: webgpu.px.coveragePct.toFixed(2),
-  }),
-);
-console.log("WebGL  console errors:", webgl.consoleErrors.length);
-console.log("WebGPU console errors:", webgpu.consoleErrors.length);
-if (webgl.consoleErrors.length) {
-  console.log("  WebGL:", webgl.consoleErrors.slice(0, 5).join("\n  "));
-}
-if (webgpu.consoleErrors.length) {
-  console.log("  WebGPU:", webgpu.consoleErrors.slice(0, 5).join("\n  "));
-}
-
-// Footprint IoU — the primary shell-silhouette discriminator (B22 gate). A
-// box OBB silhouette against WebGL's ellipse lands well under the gate; the
-// fixed shell tracks the ellipse closely.
-let inter = 0;
-let uni = 0;
-const a = webgl.px.mask;
-const b = webgpu.px.mask;
-for (let i = 0; i < a.length; i++) {
-  if (a[i] && b[i]) inter++;
-  if (a[i] || b[i]) uni++;
-}
-const iou = uni > 0 ? inter / uni : 0;
-
-// Projected-area ratio (B22 gate).
-const covGL = webgl.px.coveragePct;
-const covGPU = webgpu.px.coveragePct;
-const areaRatioDelta = covGL > 0 ? Math.abs(covGPU - covGL) / covGL : 1;
-
-// NEW-VOXEL-ELLIPSOID-SHAPEUV (B23) — per-grid-cell color comparison over
-// INTERIOR cells (all 4-neighbors masked in BOTH captures, keeping the
-// silhouette-edge sampling noise out of the gate). A cell matches when the
-// RGB Euclidean distance is under the tolerance; the box-affine pre-B23
-// mapping produces a wholly different lon/lat layout and fails hard.
-const GW = webgl.px.GW;
-const GH = webgl.px.GH;
-let interiorCells = 0;
-let matchedCells = 0;
-let distSum = 0;
-const glR = [];
-const glG = [];
-for (let gy = 1; gy < GH - 1; gy++) {
-  for (let gx = 1; gx < GW - 1; gx++) {
-    const idx = gy * GW + gx;
-    const nbr = [idx - 1, idx + 1, idx - GW, idx + GW];
-    const interior =
-      a[idx] && b[idx] && nbr.every((nIdx) => a[nIdx] && b[nIdx]);
-    if (!interior) continue;
-    const ca = webgl.px.cellRGB[idx];
-    const cb = webgpu.px.cellRGB[idx];
-    if (!ca || !cb) continue;
-    interiorCells++;
-    glR.push(ca[0]);
-    glG.push(ca[1]);
-    const dist = Math.hypot(ca[0] - cb[0], ca[1] - cb[1], ca[2] - cb[2]);
-    distSum += dist;
-    if (dist < 60) matchedCells++;
+function printReport(receipt) {
+  for (const cell of receipt.cells) {
+    const n = shapeParityNumbers(cell.webgl, cell.webgpu);
+    console.log("WebGL  info:", JSON.stringify(cell.webgl.info));
+    console.log("WebGPU info:", JSON.stringify(cell.webgpu.info));
+    console.log(
+      "Footprint IoU (WebGL ∩ WebGPU):",
+      n.iou.toFixed(3),
+      "coverage (GL vs GPU):",
+      n.covGL.toFixed(2),
+      n.covGPU.toFixed(2),
+      "interior cells",
+      n.cells.interiorCells,
+      "matched",
+      n.cells.matchedCells,
+      "meanDist",
+      n.cells.meanDistance.toFixed(1),
+    );
   }
+  for (const verdict of receipt.verdicts) {
+    console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
+  }
+  const pass = receipt.verdicts.every((verdict) => verdict.pass === true);
+  console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL");
 }
-const matchFrac = interiorCells > 0 ? matchedCells / interiorCells : 0;
-const meanDist = interiorCells > 0 ? distSum / interiorCells : 999;
-const stddev = (arr) => {
-  if (arr.length === 0) return 0;
-  const m = arr.reduce((s, x) => s + x, 0) / arr.length;
-  return Math.sqrt(arr.reduce((s, x) => s + (x - m) * (x - m), 0) / arr.length);
+
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "voxel-ellipsoid",
+  title:
+    "Voxel ELLIPSOID shape parity — shell intersection (B22) + lon/lat/height shapeUv (B23)",
+  // Empty, so the banked frames keep their pre-migration paths
+  // (`output/probe-voxel-ellipsoid-<renderer>.png`).
+  outputSubdirectory: "",
+  receiptEnvelope: "runtime",
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  workBudgetMs: (options) =>
+    voxelWorkBudgetMs({
+      pages: options.renderers.length,
+      frames: options.renderers.length * RIG.readiness.frames,
+      captures: options.renderers.length,
+    }),
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    const missing = missingRenderers(options.renderers, ["webgl", "webgpu"]);
+    if (missing.length > 0) {
+      throw new ProbeRefusal(
+        "renderer-pair-required",
+        `probe-voxel-ellipsoid compares WebGL with WebGPU and cannot run without ${missing.join(",")}`,
+        { renderers: options.renderers },
+      );
+    }
+    const legs = { browser, origin, outputDirectory, captures };
+    return [
+      {
+        run,
+        webgl: await captureShape({ ...legs, renderer: "webgl" }),
+        webgpu: await captureShape({ ...legs, renderer: "webgpu" }),
+      },
+    ];
+  },
+  verdicts(cells) {
+    return evaluateShapeParity(cells);
+  },
+  receipt(cells, context) {
+    if (cells.length > 0) {
+      printReport({ cells, verdicts: context.verdicts });
+    }
+    return {
+      rig: RIG.id,
+      cells: cells.map(publishedShapeCell),
+      verdicts: context.verdicts,
+    };
+  },
 };
-// Variance floor: the WebGL reference itself must show the lon/lat gradient
-// (distinct R + G across the disc) or the color gate would be vacuous.
-const glSpread = stddev(glR) + stddev(glG);
 
-console.log("---");
-console.log("Footprint IoU (WebGL ∩ WebGPU):", iou.toFixed(3));
-console.log(
-  "Coverage areas (GL vs GPU):",
-  covGL.toFixed(2),
-  covGPU.toFixed(2),
-  `delta ${(areaRatioDelta * 100).toFixed(1)}%`,
-);
-console.log(
-  "Per-cell colors: interior cells",
-  interiorCells,
-  "matched",
-  matchedCells,
-  `(${(matchFrac * 100).toFixed(1)}%)`,
-  "meanDist",
-  meanDist.toFixed(1),
-  "GL R+G spread",
-  glSpread.toFixed(1),
-);
-
-const bothRender = webgl.px.maskCells > 200 && webgpu.px.maskCells > 200;
-const bounded = covGL < 92 && covGPU < 92 && covGL > 8 && covGPU > 8;
-const footprintMatch = iou >= 0.85;
-const areaMatch = areaRatioDelta <= 0.15;
-// B23 — the color pipeline must be the USER-customShader variant (the probe
-// supplies a dual-language customShader) on real data.
-const gpuParityPipeline =
-  webgpu.info.usingRealData === true &&
-  typeof webgpu.info.colorDescName === "string" &&
-  webgpu.info.colorDescName.includes("userCustomShader");
-const cellColorsMatch = interiorCells >= 100 && matchFrac >= 0.85;
-const colorGateDiscriminates = glSpread > 30;
-const noErrors =
-  webgl.consoleErrors.length === 0 && webgpu.consoleErrors.length === 0;
-
-console.log("---");
-console.log("bothRender:", bothRender);
-console.log("bounded (both 8%<coverage<92%):", bounded);
-console.log("footprintMatch (IoU>=0.85):", footprintMatch);
-console.log("areaMatch (|ΔA|/A<=15%):", areaMatch);
-console.log(
-  "gpuParityPipeline (real data + user customShader pipeline):",
-  gpuParityPipeline,
-);
-console.log(
-  "cellColorsMatch (>=100 interior cells, >=85% match):",
-  cellColorsMatch,
-);
-console.log(
-  "colorGateDiscriminates (GL R+G spread > 30):",
-  colorGateDiscriminates,
-);
-console.log("noErrors:", noErrors);
-
-const pass =
-  bothRender &&
-  bounded &&
-  footprintMatch &&
-  areaMatch &&
-  gpuParityPipeline &&
-  cellColorsMatch &&
-  colorGateDiscriminates &&
-  noErrors;
-console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL");
-process.exit(pass ? 0 : 1);
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}

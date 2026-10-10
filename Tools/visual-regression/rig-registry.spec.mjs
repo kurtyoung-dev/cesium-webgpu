@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 113,
+  total: 134,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count is 17
@@ -87,6 +87,10 @@ const REGISTRY_CENSUS = {
     // The framebuffer census globe and model cells, for
     // `probe-stub-texture-uploads.mjs --scene framebuffer-census`.
     "framebuffer-census": 2,
+    // The voxel family's harvest: one rig per distinct scene and view its
+    // eleven probes measure. The wave-end `voxel-box-procedural` scene keeps
+    // its single `wave-end` tag, so it is counted there and not here.
+    voxel: 21,
   },
 };
 

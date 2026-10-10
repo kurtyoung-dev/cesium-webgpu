@@ -1,6 +1,7 @@
 // NS-VOXEL-REFINED-TILE-CELL-RETENTION acceptance probe.
 // @purpose Acceptance: Scene.pickVoxel on a refined octree tile — retained child content yields a full VoxelCell with identity-encoded color parity.
 // @status ACTIVE
+// @runtime lib/probe-runtime.mjs
 //
 // Exercises the PUBLIC `Scene.pickVoxel(windowPosition)` end-to-end on a
 // REFINED (octree level-1) voxel tile. Before this fix the WebGPU pick march
@@ -31,19 +32,38 @@
 // asynchronous per-cell readback. A new cursor is retried until two
 // consecutive identical REAL cells agree; repeated `undefined` results never
 // establish convergence.
-import { chromium } from "playwright";
-import fs from "fs";
+//
+// ON THE KIT (probe-kit harvest, voxel family): scene =
+// `rigs/voxel-two-level-identity-close.mjs`; Edge, origin, slot, deadline,
+// receipt and exit code = `lib/probe-runtime.mjs`; viewer page, console and
+// WebGPU error gate (whose device errors replace the in-page
+// `onuncapturederror` hook, same clause) = `lib/voxel-probe-page.mjs`; sample
+// index and colour comparison = `lib/metrics/voxel-pick-coordinate.mjs`.
+// Run: `node server.js --port 8094 --serve-built`, then this file.
 import { advanceC1113PublicVoxelPickConvergence } from "./lib/c11-13-public-voxel-pick-convergence.mjs";
+import {
+  expectedVoxelSampleIndex,
+  pickedColourMatches,
+} from "./lib/metrics/voxel-pick-coordinate.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
+import {
+  VOXEL_CANVAS_SELECTOR,
+  missingRenderers,
+  openVoxelViewer,
+  voxelPageErrors,
+  voxelWorkBudgetMs,
+} from "./lib/voxel-probe-page.mjs";
+import RIG from "./rigs/voxel-two-level-identity-close.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const OUT = "Tools/visual-regression/output";
-fs.mkdirSync(OUT, { recursive: true });
-
-const browser = await chromium.launch({
-  channel: "msedge",
-  headless: true,
-  args: ["--enable-unsafe-webgpu"],
-});
+/** Bound on pick attempts per target; each renders three frames. */
+const PICK_ATTEMPTS = 16;
+/** The pre-migration probe's colour tolerance for a picked cell. */
+const COLOUR_EPSILON = 5e-3;
 
 const TILE = 4;
 const FINE = TILE * 2;
@@ -59,10 +79,8 @@ const TARGETS = [0, 3, 4, 7].map((k) => ({
 }));
 
 // Z-up local cell → input (glTF Y-up) sample index over the padded-free 4×4×4
-// child (mirrors probe-voxel-cell-pick): ix=x, iy=z, iz=TILE-1-y.
-function expectedSampleIndex(cell) {
-  return cell.x + TILE * (cell.z + TILE * (TILE - 1 - cell.y));
-}
+// child: ix=x, iy=z, iz=TILE-1-y.
+const TILE_DIMS = { x: TILE, y: TILE, z: TILE };
 
 // Analytic stored color for a child at `octant` local cell `c` (matches the
 // makeChild fill below): r = octantIndex/8, g = localLinear/64, b = 0.5, a = 1.
@@ -72,24 +90,30 @@ function expectedColor(octant, c) {
   return [octantIndex / 8, localLinear / 64, 0.5, 1.0];
 }
 
-async function capture(renderer) {
-  const page = await browser.newPage({
-    viewport: { width: 1024, height: 768 },
+async function capturePicks({
+  browser,
+  origin,
+  renderer,
+  outputDirectory,
+  captures,
+}) {
+  const { page, diagnostics } = await openVoxelViewer({
+    browser,
+    origin,
+    renderer,
+    rig: RIG,
   });
-  const consoleErrors = [];
-  page.on("console", (m) => {
-    if (m.type() === "error") consoleErrors.push(m.text());
-  });
-  page.on("pageerror", (e) => consoleErrors.push(String(e)));
-
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-    timeout: 90000,
-  });
-  await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const result = await page.evaluate(
-    async ({ tile, fine, targets, convergenceSrc }) => {
+    async ({
+      tile,
+      fine,
+      targets,
+      convergenceSrc,
+      camera,
+      frames,
+      attemptsBound,
+    }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
@@ -103,14 +127,6 @@ async function capture(renderer) {
       if (scene.moon) scene.moon.show = false;
       scene.backgroundColor = C.Color.BLACK;
       scene.fog.enabled = false;
-
-      const errors = [];
-      const dev = scene.context?._device;
-      if (dev) {
-        dev.onuncapturederror = (ev) => {
-          errors.push(String(ev?.error?.message).slice(0, 200));
-        };
-      }
 
       const R = 6378137.0;
 
@@ -184,14 +200,14 @@ async function capture(renderer) {
 
       // Front view (+X looking −X): Y horizontal, Z vertical, CLOSE so both refine.
       v.camera.setView({
-        destination: new C.Cartesian3(10 * R, 0, 0),
+        destination: new C.Cartesian3(...camera.position),
         orientation: {
-          direction: new C.Cartesian3(-1, 0, 0),
-          up: new C.Cartesian3(0, 0, 1),
+          direction: new C.Cartesian3(...camera.direction),
+          up: new C.Cartesian3(...camera.up),
         },
       });
 
-      for (let i = 0; i < 320; i++) {
+      for (let i = 0; i < frames; i++) {
         scene.render();
         await new Promise((r) => setTimeout(r, 8));
       }
@@ -220,7 +236,7 @@ async function capture(renderer) {
           consecutiveCellCount: 0,
           stable: false,
         };
-        for (let i = 0; i < 16; i++) {
+        for (let i = 0; i < attemptsBound; i++) {
           attempts = i + 1;
           let cell;
           try {
@@ -286,7 +302,6 @@ async function capture(renderer) {
         lastTargetLevel: du ? du.lastTargetLevel : null,
         picks,
         offPick,
-        deviceErrors: errors,
       };
     },
     {
@@ -294,118 +309,187 @@ async function capture(renderer) {
       fine: FINE,
       targets: TARGETS,
       convergenceSrc: advanceC1113PublicVoxelPickConvergence.toString(),
+      camera: RIG.camera,
+      frames: RIG.readiness.frames,
+      attemptsBound: PICK_ATTEMPTS,
     },
   );
 
-  const buf = await page.screenshot();
-  fs.writeFileSync(`${OUT}/probe-voxel-refined-pick-${renderer}.png`, buf);
-  await page.close();
-  return { ...result, consoleErrors };
-}
-
-function colorsEq(a, b, eps = 5e-3) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
-    return false;
-  }
-  return a.every((v, i) => Math.abs(v - b[i]) <= eps);
-}
-
-let pass = true;
-
-const webgl = await capture("webgl");
-const webgpu = await capture("webgpu");
-
-console.log(
-  "=== NS-VOXEL-REFINED-TILE-CELL-RETENTION — refined scene.pickVoxel ===",
-);
-console.log(`renderers: webgl=${webgl.renderer} webgpu=${webgpu.renderer}`);
-console.log(
-  "WebGPU setup:",
-  JSON.stringify({
-    slotCount: webgpu.slotCount,
-    lastTargetLevel: webgpu.lastTargetLevel,
-  }),
-);
-
-// Precondition: WebGPU must actually be refined (root-only would make every
-// pick a tileIndex-0 cell and this probe would be vacuous).
-const refinedOk = webgpu.slotCount === 9 && webgpu.lastTargetLevel === 1;
-console.log(`  WebGPU refined to L1 (slotCount=9, level=1): ${refinedOk}`);
-if (!refinedOk) pass = false;
-
-for (let i = 0; i < TARGETS.length; i++) {
-  const t = TARGETS[i];
-  const gl = webgl.picks[i] || {};
-  const gp = webgpu.picks[i] || {};
-  const glc = gl.cell;
-  const gpc = gp.cell;
-  const expSample = expectedSampleIndex(t.localCell);
-  const expColor = expectedColor(t.octant, t.localCell);
-
-  if (gl.threw || gp.threw) {
-    pass = false;
-    console.log(
-      `  [${t.label}] THREW webgl=${gl.threw ?? "-"} webgpu=${gp.threw ?? "-"}`,
-    );
-    continue;
-  }
-
-  const glOk =
-    glc &&
-    gl.stable === true &&
-    glc.isVoxelCell &&
-    glc.sampleIndex === expSample &&
-    colorsEq(glc.color, expColor);
-  // WebGPU must be a REFINED cell (tileIndex >= 1) with the analytic sample+color.
-  const gpOk =
-    gpc &&
-    gp.stable === true &&
-    gpc.isVoxelCell &&
-    gpc.tileIndex >= 1 &&
-    gpc.sampleIndex === expSample &&
-    colorsEq(gpc.color, expColor);
-  const crossOk =
-    glc &&
-    gpc &&
-    glc.sampleIndex === gpc.sampleIndex &&
-    colorsEq(glc.color, gpc.color);
-  const ok = glOk && gpOk && crossOk;
-  if (!ok) pass = false;
-  console.log(
-    `  [${t.label}] expect octant(${t.octant.x},${t.octant.y},${t.octant.z}) ` +
-      `local(${t.localCell.x},${t.localCell.y},${t.localCell.z}) sample=${expSample} ` +
-      `color=[${expColor.map((x) => x.toFixed(3))}]\n` +
-      `      webgl  = ${JSON.stringify(glc)}\n` +
-      `      webgpu = ${JSON.stringify(gpc)}  ${ok ? "ok" : "MISMATCH"}`,
-  );
-}
-
-{
-  const glNone = !webgl.offPick.cell || !webgl.offPick.cell.isVoxelCell;
-  const gpNone = !webgpu.offPick.cell || !webgpu.offPick.cell.isVoxelCell;
-  const noThrow = !webgl.offPick.threw && !webgpu.offPick.threw;
-  const ok = glNone && gpNone && noThrow;
-  if (!ok) pass = false;
-  console.log(
-    `  [off-box] BOTH backends no-cell (ray-OBB gate) | ` +
-      `webgl=${JSON.stringify(webgl.offPick.cell)} webgpu=${JSON.stringify(webgpu.offPick.cell)} ${ok ? "ok" : "MISMATCH"}`,
-  );
-}
-
-const errTotal =
-  webgl.consoleErrors.length +
-  webgpu.consoleErrors.length +
-  (webgl.deviceErrors?.length || 0) +
-  (webgpu.deviceErrors?.length || 0);
-if (errTotal > 0) {
-  pass = false;
-  console.log("console/device errors:", errTotal, {
-    webgl: webgl.consoleErrors.slice(0, 3),
-    webgpu: webgpu.consoleErrors.slice(0, 3),
-    webgpuDev: webgpu.deviceErrors?.slice(0, 3),
+  const shot = await captureElement({
+    page,
+    selector: VOXEL_CANVAS_SELECTOR,
+    name: `probe-voxel-refined-pick-${renderer}`,
+    outputDirectory,
+    captures,
   });
+  const errors = await voxelPageErrors(page, diagnostics);
+  await page.close();
+  return { ...result, capture: shot.name, ...errors };
 }
 
-console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL");
-await browser.close();
-process.exit(pass ? 0 : 1);
+/**
+ * The clauses over one run's cell. Precondition first: WebGPU must actually be
+ * refined (root-only would make every pick a tileIndex-0 cell and this probe
+ * vacuous). Then per on-diagonal target: a stable VoxelCell on both backends
+ * with the analytic child-local sample and child colour, WebGPU on a REFINED
+ * tile (tileIndex >= 1), and a cross-backend match; the off-box pixel returns
+ * no cell on both backends; zero console or device errors.
+ *
+ * Pure and exported for the routing spec.
+ *
+ * @param {Array<object>} cells One cell per run.
+ * @returns {Array<object>} Verdicts in the runtime's shape.
+ */
+export function evaluateVoxelRefinedPick(cells) {
+  const verdicts = [];
+  for (const cell of cells) {
+    const { webgl, webgpu } = cell;
+    const suffix = `run${cell.run}`;
+    verdicts.push({
+      id: `webgpu-refined/${suffix}`,
+      claim: `WebGPU refined to L1 (slotCount ${webgpu.slotCount} = 9, level ${webgpu.lastTargetLevel} = 1)`,
+      pass: webgpu.slotCount === 9 && webgpu.lastTargetLevel === 1,
+      detail: {
+        slotCount: webgpu.slotCount,
+        lastTargetLevel: webgpu.lastTargetLevel,
+      },
+    });
+
+    for (let i = 0; i < TARGETS.length; i++) {
+      const t = TARGETS[i];
+      const gl = webgl.picks[i] || {};
+      const gp = webgpu.picks[i] || {};
+      const glc = gl.cell;
+      const gpc = gp.cell;
+      const expSample = expectedVoxelSampleIndex(t.localCell, TILE_DIMS);
+      const expColor = expectedColor(t.octant, t.localCell);
+      if (gl.threw || gp.threw) {
+        verdicts.push({
+          id: `target/${t.label}/${suffix}`,
+          claim: `[${t.label}] pickVoxel does not throw`,
+          pass: false,
+          detail: { webgl: gl.threw ?? null, webgpu: gp.threw ?? null },
+        });
+        continue;
+      }
+      const glOk =
+        glc &&
+        gl.stable === true &&
+        glc.isVoxelCell &&
+        glc.sampleIndex === expSample &&
+        pickedColourMatches(glc.color, expColor, COLOUR_EPSILON);
+      // WebGPU must be a REFINED cell (tileIndex >= 1) with the analytic sample+color.
+      const gpOk =
+        gpc &&
+        gp.stable === true &&
+        gpc.isVoxelCell &&
+        gpc.tileIndex >= 1 &&
+        gpc.sampleIndex === expSample &&
+        pickedColourMatches(gpc.color, expColor, COLOUR_EPSILON);
+      const crossOk =
+        glc &&
+        gpc &&
+        glc.sampleIndex === gpc.sampleIndex &&
+        pickedColourMatches(glc.color, gpc.color, COLOUR_EPSILON);
+      verdicts.push({
+        id: `target/${t.label}/${suffix}`,
+        claim: `[${t.label}] octant(${t.octant.x},${t.octant.y},${t.octant.z}) local(${t.localCell.x},${t.localCell.y},${t.localCell.z}) sample ${expSample} color [${expColor.map((x) => x.toFixed(3))}] on both backends, WebGPU on a refined tile`,
+        pass: Boolean(glOk && gpOk && crossOk),
+        detail: { expSample, expColor, webgl: glc, webgpu: gpc },
+      });
+    }
+
+    const glNone = !webgl.offPick.cell || !webgl.offPick.cell.isVoxelCell;
+    const gpNone = !webgpu.offPick.cell || !webgpu.offPick.cell.isVoxelCell;
+    const noThrow = !webgl.offPick.threw && !webgpu.offPick.threw;
+    verdicts.push({
+      id: `off-box/${suffix}`,
+      claim: "off-box: BOTH backends return no cell (ray-OBB gate)",
+      pass: glNone && gpNone && noThrow,
+      detail: {
+        webgl: webgl.offPick.cell ?? null,
+        webgpu: webgpu.offPick.cell ?? null,
+      },
+    });
+
+    const errTotal =
+      webgl.consoleErrors.length +
+      webgpu.consoleErrors.length +
+      webgl.deviceErrors.length +
+      webgpu.deviceErrors.length;
+    verdicts.push({
+      id: `errors/${suffix}`,
+      claim: `no console or device errors (${errTotal})`,
+      pass: errTotal === 0,
+      detail: {
+        webgl: webgl.consoleErrors.slice(0, 3),
+        webgpu: webgpu.consoleErrors.slice(0, 3),
+        webgpuDevice: webgpu.deviceErrors.slice(0, 3),
+      },
+    });
+  }
+  return verdicts;
+}
+
+function printReport(receipt) {
+  console.log(
+    "=== NS-VOXEL-REFINED-TILE-CELL-RETENTION — refined scene.pickVoxel ===",
+  );
+  for (const verdict of receipt.verdicts) {
+    console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
+  }
+  const pass = receipt.verdicts.every((verdict) => verdict.pass === true);
+  console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL");
+}
+
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "voxel-refined-pick",
+  title:
+    "Voxel Scene.pickVoxel on a refined octree tile (NS-VOXEL-REFINED-TILE-CELL-RETENTION)",
+  // Empty, so the banked frames keep their pre-migration paths
+  // (`output/probe-voxel-refined-pick-<renderer>.png`).
+  outputSubdirectory: "",
+  receiptEnvelope: "runtime",
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  workBudgetMs: (options) =>
+    voxelWorkBudgetMs({
+      pages: options.renderers.length,
+      frames:
+        options.renderers.length *
+        (RIG.readiness.frames + (TARGETS.length + 1) * PICK_ATTEMPTS * 3),
+      captures: options.renderers.length,
+    }),
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    const missing = missingRenderers(options.renderers, ["webgl", "webgpu"]);
+    if (missing.length > 0) {
+      throw new ProbeRefusal(
+        "renderer-pair-required",
+        `probe-voxel-refined-pick compares both backends' picked cells and cannot run without ${missing.join(",")}`,
+        { renderers: options.renderers },
+      );
+    }
+    const legs = { browser, origin, outputDirectory, captures };
+    return [
+      {
+        run,
+        webgl: await capturePicks({ ...legs, renderer: "webgl" }),
+        webgpu: await capturePicks({ ...legs, renderer: "webgpu" }),
+      },
+    ];
+  },
+  verdicts(cells) {
+    return evaluateVoxelRefinedPick(cells);
+  },
+  receipt(cells, context) {
+    const receipt = { rig: RIG.id, cells, verdicts: context.verdicts };
+    if (cells.length > 0) {
+      printReport(receipt);
+    }
+    return receipt;
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}

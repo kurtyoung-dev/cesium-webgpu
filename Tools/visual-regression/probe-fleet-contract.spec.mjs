@@ -53,6 +53,7 @@ import {
   hasWatchdog,
   innermostGuard,
   launchesBrowserByBehaviour,
+  launchesThroughRuntime,
   matchBrace,
   scanEndsInCode,
   selectFleetByBehaviour,
@@ -73,7 +74,10 @@ import {
   censusRuntimeGovernance,
   governanceRatchetFindings,
 } from "./lib/probe-runtime-governance.mjs";
-import { parseRuntimeTag } from "./lib/runtime-residency-contract.mjs";
+import {
+  parseRuntimeTag,
+  RUNTIME_MODULE,
+} from "./lib/runtime-residency-contract.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -665,12 +669,220 @@ test("B17 mutant: exit(0) after the verdict is not an exit code", () => {
 // C. The fleet
 // ---------------------------------------------------------------------------
 
+/**
+ * The C1 census over injectable analyses, so the fleet assertion and its
+ * mutation control share one path.
+ *
+ * A probe launches when it calls Playwright's `.launch(` itself OR hands the
+ * launch to `runProbe` in `lib/probe-runtime.mjs`. Counting only the first form
+ * made the census a measure of how much of the fleet the probe-kit harvest had
+ * not reached yet: at d6143f3915 the 643 probes split 587 direct, 49 runtime,
+ * 7 launching nothing (direct alone 0.913 of the fleet), and moving the voxel
+ * family's eleven probes onto the runtime took direct alone to 576 (0.896), red
+ * with the analyzer unchanged. Both forms together are 636 at either tree.
+ *
+ * The runtime half is pinned to a second, independent source: the probes that
+ * launch through `runProbe`, read from code, must be exactly the probes that
+ * declare `@runtime lib/probe-runtime.mjs` in their header.
+ *
+ * @param {string[]} names Probe file names.
+ * @param {(name: string) => {launchesBrowser: boolean, launchesViaRuntime: boolean}} analysisOf Analysis lookup.
+ * @returns {{direct: number, runtime: number, launching: number, findings: string[]}} Counts and every way the census misses its shape.
+ */
+function launchCensus(names, analysisOf) {
+  const direct = names.filter((f) => analysisOf(f).launchesBrowser);
+  const runtime = names.filter((f) => analysisOf(f).launchesViaRuntime);
+  const launching = names.filter(
+    (f) => analysisOf(f).launchesBrowser || analysisOf(f).launchesViaRuntime,
+  );
+  const runtimeSet = new Set(runtime);
+  const declared = names.filter(
+    (f) => parseRuntimeTag(readProbe(f)).value === RUNTIME_MODULE,
+  );
+  const declaredSet = new Set(declared);
+  const findings = [];
+  if (!(launching.length > names.length * 0.9)) {
+    findings.push(
+      `the analyzer stopped recognising Playwright launches: ${launching.length} of ${names.length} probes launch (${direct.length} directly, ${runtime.length} through ${RUNTIME_MODULE})`,
+    );
+  }
+  const unseen = declared.filter((f) => !runtimeSet.has(f));
+  if (unseen.length > 0) {
+    findings.push(
+      `declare @runtime ${RUNTIME_MODULE} but no runProbe launch was recognised: ${unseen.join(", ")}`,
+    );
+  }
+  const undeclared = runtime.filter((f) => !declaredSet.has(f));
+  if (undeclared.length > 0) {
+    findings.push(
+      `launch through runProbe without declaring @runtime ${RUNTIME_MODULE}: ${undeclared.join(", ")}`,
+    );
+  }
+  return {
+    direct: direct.length,
+    runtime: runtime.length,
+    launching: launching.length,
+    findings,
+  };
+}
+
 test("C1: the fleet is non-empty and the census matches the recorded shape", () => {
   assert.ok(probeFiles.length > 500, `only ${probeFiles.length} probes found`);
-  const launching = probeFiles.filter((f) => analyses.get(f).launchesBrowser);
+  const census = launchCensus(probeFiles, (f) => analyses.get(f));
+  console.log(
+    `[C1] fleet census: ${probeFiles.length} probes, ${census.direct} launch directly, ` +
+      `${census.runtime} through ${RUNTIME_MODULE}, ` +
+      `${probeFiles.length - census.launching} launch nothing`,
+  );
+  assert.deepEqual(census.findings, []);
+});
+
+test("C1a: a runProbe launch is recognised from code, not from text", () => {
+  const launches = [
+    [
+      'import { ProbeRefusal, runProbe } from "./lib/probe-runtime.mjs";',
+      "process.exitCode = await runProbe(descriptor);",
+    ],
+    [
+      "import {",
+      "  isEntryPoint,",
+      "  runProbe,",
+      '} from "./lib/probe-runtime.mjs";',
+      "if (isEntryPoint(import.meta.url)) {",
+      "  process.exitCode = await runProbe(descriptor);",
+      "}",
+    ],
+    [
+      'import { runProbe as run } from "../lib/probe-runtime.mjs";',
+      "await run(descriptor);",
+    ],
+    [
+      'import * as runtime from "./lib/probe-runtime.mjs";',
+      "await runtime.runProbe(descriptor);",
+    ],
+  ];
+  for (const lines of launches) {
+    const source = lines.join("\r\n");
+    assert.equal(launchesThroughRuntime(source), true, source);
+    const a = analyzeProbeSource(source);
+    assert.equal(a.launchesViaRuntime, true, source);
+    // The browser is the runtime's, so the per-probe watchdog and
+    // finally-close rules stay with it and are not owed here.
+    assert.equal(a.launchesBrowser, false, source);
+    assert.deepEqual(a.violations, [], source);
+  }
+
+  const notLaunches = [
+    // Only the runtime's helpers.
+    [
+      'import { parseProbeArgs } from "./lib/probe-runtime.mjs";',
+      "const args = parseProbeArgs(process.argv);",
+    ],
+    // Imported, never called.
+    [
+      'import { runProbe } from "./lib/probe-runtime.mjs";',
+      "export const descriptor = { runProbe };",
+    ],
+    // The call is in a comment.
+    [
+      'import { runProbe } from "./lib/probe-runtime.mjs";',
+      "// await runProbe(descriptor);",
+    ],
+    // The call is printed text.
+    [
+      'import { runProbe } from "./lib/probe-runtime.mjs";',
+      'console.log("await runProbe(descriptor)");',
+    ],
+    // A different module that happens to export the same name.
+    [
+      'import { runProbe } from "./lib/probe-runtime-shim.mjs";',
+      "await runProbe(descriptor);",
+    ],
+    // The specifier appears only in a comment.
+    [
+      '// import { runProbe } from "./lib/probe-runtime.mjs";',
+      'import { runProbe } from "./lib/other.mjs";',
+      "await runProbe(descriptor);",
+    ],
+    // A method of something else.
+    [
+      'import { runProbe } from "./lib/probe-runtime.mjs";',
+      "await harness.runProbe(descriptor);",
+    ],
+  ];
+  for (const lines of notLaunches) {
+    const source = lines.join("\n");
+    assert.equal(launchesThroughRuntime(source), false, source);
+    assert.equal(analyzeProbeSource(source).launchesViaRuntime, false, source);
+  }
+});
+
+test("C1b MUTATION control: an inert launch detector turns the census red", async () => {
+  // Each detector is made UNREACHABLE in a copy of the analyzer, not deleted,
+  // and the real fleet is censused through the copy. Both halves must be
+  // load-bearing: the runtime half on its own (the declared set no longer
+  // matches) and the direct half on its own (the ratio falls under its bar).
+  const contractSource = readFileSync(
+    join(HERE, "lib", "probe-fleet-contract.mjs"),
+    "utf8",
+  ).replaceAll("\r\n", "\n");
+  const relativeImport = 'from "../../lib/purpose-header.mjs"';
+  const loadMutant = async (anchor, replacement) => {
+    assert.equal(
+      contractSource.split(anchor).length - 1,
+      1,
+      `the mutation anchor is gone — re-point this control at the live code: ${anchor}`,
+    );
+    const mutated = contractSource.replace(anchor, replacement);
+    assert.equal(mutated.split(relativeImport).length - 1, 1);
+    const loadable = mutated.replace(
+      relativeImport,
+      `from ${JSON.stringify(pathToFileURL(join(HERE, "..", "lib", "purpose-header.mjs")).href)}`,
+    );
+    return import(
+      `data:text/javascript;base64,${Buffer.from(loadable).toString("base64")}`
+    );
+  };
+  const censusUnder = (mutant) => {
+    const mutantAnalyses = new Map(
+      probeFiles.map((f) => [f, mutant.analyzeProbeSource(readProbe(f))]),
+    );
+    return launchCensus(probeFiles, (f) => mutantAnalyses.get(f));
+  };
+
+  const real = launchCensus(probeFiles, (f) => analyses.get(f));
+  assert.deepEqual(real.findings, []);
+  assert.ok(real.runtime > 0, "the real fleet has no runtime launches");
+
+  const runtimeAnchor = "  return callees.some((callee) =>";
+  const inertRuntime = censusUnder(
+    await loadMutant(
+      runtimeAnchor,
+      `  return false && callees.some((callee) =>`,
+    ),
+  );
+  assert.equal(inertRuntime.runtime, 0);
   assert.ok(
-    launching.length > probeFiles.length * 0.9,
-    "the analyzer stopped recognising Playwright launches",
+    inertRuntime.findings.some((f) =>
+      f.startsWith(`declare @runtime ${RUNTIME_MODULE} but no runProbe`),
+    ),
+    `the inert runtime detector left the census green: ${inertRuntime.findings}`,
+  );
+
+  const directAnchor = "  const launchesBrowser =\n";
+  const inertDirect = censusUnder(
+    await loadMutant(
+      directAnchor,
+      "  const launchesBrowser = false;\n  const launchesBrowserInert =\n",
+    ),
+  );
+  assert.equal(inertDirect.direct, 0);
+  assert.equal(inertDirect.runtime, real.runtime);
+  assert.ok(
+    inertDirect.findings.some((f) =>
+      f.startsWith("the analyzer stopped recognising Playwright launches"),
+    ),
+    `the inert direct detector left the census green: ${inertDirect.findings}`,
   );
 });
 

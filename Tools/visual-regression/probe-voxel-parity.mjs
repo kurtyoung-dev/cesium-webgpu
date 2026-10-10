@@ -1,6 +1,7 @@
 // PARITY-VOXEL-SHAPE-PARITY acceptance probe.
 // @purpose Acceptance: the WebGPU voxel box renders at the correct world placement/extent (footprint IoU + color structure vs WebGL), not a flat quad.
 // @status ACTIVE
+// @runtime lib/probe-runtime.mjs
 //
 // Captures the SAME VoxelBox3DTiles VoxelPrimitive on BOTH the WebGL and the
 // WebGPU renderer at an IDENTICAL camera, then pixel-diffs the two frames.
@@ -23,52 +24,80 @@
 //
 // Reads BOTH PNGs (writes them to output/) so the operator can eyeball the box
 // shape/placement.
-import { chromium } from "playwright";
-import fs from "fs";
+//
+// ON THE KIT (probe-kit harvest, voxel family). Each scene is a rig: Part A is
+// `rigs/voxel-box3dtiles-offaxis.mjs`, Part B's two views are
+// `rigs/voxel-staircase-front.mjs` and `rigs/voxel-staircase-top.mjs`, and the
+// camera, viewport and settle frames are read from them. Edge, the origin, the
+// served-build preflight, the Edge slot, the deadline, the receipt and the
+// exit code belong to `lib/probe-runtime.mjs`; the viewer page is opened by
+// `lib/voxel-probe-page.mjs`; every frame is banked through
+// `captureElement` on the widget canvas, decoded in Node, and measured by
+// `lib/metrics/voxel-footprint.mjs` (Part A) and
+// `lib/metrics/voxel-cell-fill.mjs` (Part B) — the same arithmetic the page
+// used to run, pinned against it by their specs. The clauses and their bars
+// are unchanged. Console errors are gated as before; the WebGPU error gate's
+// device errors are published in the receipt but are not a clause, because
+// the pre-migration probe never gated them.
+//
+// Run: `node server.js --port 8094 --serve-built`, then
+//   node Tools/visual-regression/probe-voxel-parity.mjs [--port 8094]
+import { decodePng } from "../lib/png-decode.mjs";
+import { spread } from "./lib/determinism-kit.mjs";
+import {
+  PARITY_FILL_THRESHOLDS,
+  judgeExpectedFill,
+  windowMeanRgb,
+} from "./lib/metrics/voxel-cell-fill.mjs";
+import {
+  VOXEL_FOOTPRINT_LUM_THRESHOLD,
+  VOXEL_PARITY_REGION,
+  colourL1,
+  footprintGrid,
+  fractionalRegion,
+  maskIoU,
+  regionColourStats,
+} from "./lib/metrics/voxel-footprint.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
+import {
+  VOXEL_CANVAS_SELECTOR,
+  openVoxelViewer,
+  voxelPageErrors,
+  voxelWorkBudgetMs,
+} from "./lib/voxel-probe-page.mjs";
+import BOX_RIG from "./rigs/voxel-box3dtiles-offaxis.mjs";
+import FRONT_RIG from "./rigs/voxel-staircase-front.mjs";
+import TOP_RIG from "./rigs/voxel-staircase-top.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const OUT = "Tools/visual-regression/output";
-fs.mkdirSync(OUT, { recursive: true });
+/** Part B renders this many frames before its first view is set. */
+const PART_B_WARMUP_FRAMES = 240;
+/** Part B renders this many frames at each view before it is captured. */
+const PART_B_VIEW_FRAMES = 40;
 
-const browser = await chromium.launch({
-  channel: "msedge",
-  headless: true,
-  args: ["--enable-unsafe-webgpu"],
-});
-
-// A fixed camera (ECEF destination + orientation) computed once so BOTH
-// renderers view the Earth-sized voxel box from exactly the same pose. The
-// VoxelBox3DTiles box is centered at the Earth's origin with WGS84-radius
-// half-extents, so we sit well outside it looking back at the origin.
-const CAMERA = {
-  // Far enough out that the Earth-sized voxel box reads as a bounded silhouette
-  // against black (not a full-frame fill) so the footprint IoU is a meaningful
-  // shape-parity discriminator, and offset off-axis so the box shows an angled
-  // 3-D silhouette (edges + corners) rather than a face-on flat quad.
-  destinationXYZ: [6378137.0 * 6.0, 6378137.0 * 4.5, 6378137.0 * 4.0],
-};
-
-async function capture(renderer) {
-  const page = await browser.newPage({
-    viewport: { width: 1024, height: 768 },
+/**
+ * Part A on one backend: the VoxelBox3DTiles box at the rig's camera, its
+ * frame banked, and the footprint and colour statistics read from it.
+ */
+async function captureBox({
+  browser,
+  origin,
+  renderer,
+  outputDirectory,
+  captures,
+}) {
+  const { page, diagnostics } = await openVoxelViewer({
+    browser,
+    origin,
+    renderer,
+    rig: BOX_RIG,
   });
-  const consoleErrors = [];
-  page.on("console", (m) => {
-    if (m.type() === "error") consoleErrors.push(m.text());
-  });
-  page.on("pageerror", (e) => consoleErrors.push(String(e)));
-
-  await page.goto(
-    `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&offline=true`,
-    {
-      waitUntil: "networkidle",
-      timeout: 90000,
-    },
-  );
-  await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
-
   const info = await page.evaluate(
-    async ({ camera }) => {
+    async ({ camera, frames }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
@@ -97,32 +126,20 @@ async function capture(renderer) {
       prim.nearestSampling = true;
       scene.primitives.add(prim);
 
-      // Identical fixed camera pose for both backends.
+      // Identical fixed camera pose for both backends: the rig's ECEF pose,
+      // whose direction is the normalised negated position (looking back at
+      // the origin) with +Z up.
       v.camera.setView({
-        destination: new C.Cartesian3(
-          camera.destinationXYZ[0],
-          camera.destinationXYZ[1],
-          camera.destinationXYZ[2],
-        ),
+        destination: new C.Cartesian3(...camera.position),
         orientation: {
-          direction: C.Cartesian3.normalize(
-            C.Cartesian3.negate(
-              new C.Cartesian3(
-                camera.destinationXYZ[0],
-                camera.destinationXYZ[1],
-                camera.destinationXYZ[2],
-              ),
-              new C.Cartesian3(),
-            ),
-            new C.Cartesian3(),
-          ),
-          up: C.Cartesian3.UNIT_Z,
+          direction: new C.Cartesian3(...camera.direction),
+          up: new C.Cartesian3(...camera.up),
         },
       });
 
       // Render enough frames for the async voxel provider/traversal + the
       // WebGPU root-tile upload state machine to complete.
-      for (let i = 0; i < 300; i++) {
+      for (let i = 0; i < frames; i++) {
         scene.render();
         await new Promise((r) => setTimeout(r, 16));
       }
@@ -157,81 +174,43 @@ async function capture(renderer) {
           : null,
       };
     },
-    { camera: CAMERA },
+    { camera: BOX_RIG.camera, frames: BOX_RIG.readiness.frames },
   );
 
-  const buf = await page.screenshot();
-  fs.writeFileSync(`${OUT}/probe-voxel-parity-${renderer}.png`, buf);
+  const shot = await captureElement({
+    page,
+    selector: VOXEL_CANVAS_SELECTOR,
+    name: `probe-voxel-parity-${renderer}`,
+    outputDirectory,
+    captures,
+  });
 
-  // Decode the PNG back into the page to sample the centered scene region.
-  const dataUrl = `data:image/png;base64,${buf.toString("base64")}`;
-  const px = await page.evaluate(async (url) => {
-    const img = new Image();
-    await new Promise((r) => {
-      img.onload = r;
-      img.src = url;
-    });
-    const cv = document.createElement("canvas");
-    cv.width = img.width;
-    cv.height = img.height;
-    const ctx = cv.getContext("2d");
-    ctx.drawImage(img, 0, 0);
-    const w = img.width;
-    const h = img.height;
-    // Sample a centered region that avoids the top toolbar + right help panel.
-    const rx = Math.floor(w * 0.2);
-    const ry = Math.floor(h * 0.2);
-    const rw = Math.floor(w * 0.55);
-    const rh = Math.floor(h * 0.6);
-    const d = ctx.getImageData(rx, ry, rw, rh).data;
-    // Build a coarse boolean mask (non-black) so we can compute IoU against
-    // the other backend. Downsample to a 64x48 grid for a compact comparison.
-    const GW = 64;
-    const GH = 48;
-    const mask = new Uint8Array(GW * GH);
-    const colorSet = new Set();
-    let nonBlack = 0;
-    for (let gy = 0; gy < GH; gy++) {
-      for (let gx = 0; gx < GW; gx++) {
-        const sx = rx + Math.floor((gx / GW) * rw);
-        const sy = ry + Math.floor((gy / GH) * rh);
-        const dd = ctx.getImageData(sx, sy, 1, 1).data;
-        const lum = dd[0] + dd[1] + dd[2];
-        if (lum > 20) {
-          mask[gy * GW + gx] = 1;
-          nonBlack++;
-          colorSet.add(`${dd[0] >> 5}_${dd[1] >> 5}_${dd[2] >> 5}`);
-        }
-      }
-    }
-    // Region average color over non-black pixels (full-res region).
-    let sr = 0;
-    let sg = 0;
-    let sb = 0;
-    let n = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      const lum = d[i] + d[i + 1] + d[i + 2];
-      if (lum > 20) {
-        sr += d[i];
-        sg += d[i + 1];
-        sb += d[i + 2];
-        n++;
-      }
-    }
-    const nn = Math.max(1, n);
-    return {
-      mask: Array.from(mask),
-      gw: GW,
-      gh: GH,
-      maskCells: nonBlack,
-      distinctColors: colorSet.size,
-      avgColor: [Math.round(sr / nn), Math.round(sg / nn), Math.round(sb / nn)],
-      coveragePct: (n / (d.length / 4)) * 100,
-    };
-  }, dataUrl);
-
+  // The centred region the pre-migration probe chose to avoid the top toolbar
+  // + right help panel (both are now stripped before any frame; see
+  // lib/voxel-probe-page.mjs): a coarse 64x48 non-black mask for the IoU
+  // against the other backend, and the average colour and coverage of the
+  // region's non-black pixels.
+  const frame = decodePng(shot.buffer);
+  const region = fractionalRegion(frame, VOXEL_PARITY_REGION);
+  const grid = footprintGrid(frame, region);
+  const stats = regionColourStats(frame, region, {
+    lumThreshold: VOXEL_FOOTPRINT_LUM_THRESHOLD,
+  });
+  const errors = await voxelPageErrors(page, diagnostics);
   await page.close();
-  return { info, px, consoleErrors, pngBytes: buf.length };
+  return {
+    info,
+    capture: shot.name,
+    px: {
+      mask: Array.from(grid.mask),
+      maskCells: grid.maskCells,
+      distinctColors: grid.colourClasses,
+      avgColor: stats.avgColor,
+      coveragePct: stats.coveragePct,
+    },
+    ...errors,
+    pngBytes: shot.byteLength,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -262,27 +241,25 @@ function cellFilled(x, y, z) {
   return (x === 1 && y === z && y <= 2) || (x === 0 && y === 3 && z === 1);
 }
 
-async function captureCells(renderer) {
-  const page = await browser.newPage({
-    viewport: { width: 1024, height: 768 },
+async function captureCells({
+  browser,
+  origin,
+  renderer,
+  outputDirectory,
+  captures,
+}) {
+  // The staircase rigs are shared with the pick probes, which load the viewer
+  // without `offline=true`; this part always loaded it WITH the flag, and it
+  // still does, so its page is exactly the page its bars were set on.
+  const { page, diagnostics } = await openVoxelViewer({
+    browser,
+    origin,
+    renderer,
+    rig: FRONT_RIG,
+    query: { offline: "true" },
   });
-  const consoleErrors = [];
-  page.on("console", (m) => {
-    if (m.type() === "error") consoleErrors.push(m.text());
-  });
-  page.on("pageerror", (e) => consoleErrors.push(String(e)));
-
-  await page.goto(
-    `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&offline=true`,
-    {
-      waitUntil: "networkidle",
-      timeout: 90000,
-    },
-  );
-  await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
-
   const setupInfo = await page.evaluate(
-    async ({ dims, filledSrc }) => {
+    async ({ dims, filledSrc, warmupFrames }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
@@ -351,7 +328,7 @@ async function captureCells(renderer) {
       prim.nearestSampling = true;
       scene.primitives.add(prim);
 
-      for (let i = 0; i < 240; i++) {
+      for (let i = 0; i < warmupFrames; i++) {
         scene.render();
         await new Promise((r) => setTimeout(r, 8));
       }
@@ -370,23 +347,24 @@ async function captureCells(renderer) {
     {
       dims: CELL_DIMS,
       filledSrc: cellFilled.toString(),
+      warmupFrames: PART_B_WARMUP_FRAMES,
     },
   );
 
-  // One view = set the camera, render, screenshot, then project each cell
+  // One view = set the rig's camera, render, capture, then project each cell
   // target to window coords and analytically ray-sample the expected fill.
-  async function captureView(name, dest, dir, up, targets) {
+  async function captureView(name, rig, targets) {
     const proj = await page.evaluate(
-      async ({ dest, dir, up, targets }) => {
+      async ({ camera, targets, viewFrames }) => {
         const { C, scene, R, dims, filled } = window.__voxelProbe;
         window.viewer.camera.setView({
-          destination: new C.Cartesian3(dest[0] * R, dest[1] * R, dest[2] * R),
+          destination: new C.Cartesian3(...camera.position),
           orientation: {
-            direction: new C.Cartesian3(dir[0], dir[1], dir[2]),
-            up: new C.Cartesian3(up[0], up[1], up[2]),
+            direction: new C.Cartesian3(...camera.direction),
+            up: new C.Cartesian3(...camera.up),
           },
         });
-        for (let i = 0; i < 40; i++) {
+        for (let i = 0; i < viewFrames; i++) {
           scene.render();
           await new Promise((r) => setTimeout(r, 8));
         }
@@ -442,53 +420,19 @@ async function captureCells(renderer) {
         }
         return out;
       },
-      { dest, dir, up, targets },
+      { camera: rig.camera, targets, viewFrames: PART_B_VIEW_FRAMES },
     );
 
-    const buf = await page.screenshot();
-    fs.writeFileSync(`${OUT}/probe-voxel-cells-${renderer}-${name}.png`, buf);
-    const dataUrl = `data:image/png;base64,${buf.toString("base64")}`;
-    const samples = await page.evaluate(
-      async ({ url, points }) => {
-        const img = new Image();
-        await new Promise((r) => {
-          img.onload = r;
-          img.src = url;
-        });
-        const cv = document.createElement("canvas");
-        cv.width = img.width;
-        cv.height = img.height;
-        const ctx = cv.getContext("2d");
-        ctx.drawImage(img, 0, 0);
-        return points.map((pt) => {
-          if (!pt) {
-            return null;
-          }
-          const x = Math.round(pt[0]);
-          const y = Math.round(pt[1]);
-          const half = 3;
-          const d = ctx.getImageData(
-            x - half,
-            y - half,
-            2 * half + 1,
-            2 * half + 1,
-          ).data;
-          let sr = 0;
-          let sg = 0;
-          let sb = 0;
-          const n = d.length / 4;
-          for (let i = 0; i < d.length; i += 4) {
-            sr += d[i];
-            sg += d[i + 1];
-            sb += d[i + 2];
-          }
-          return [Math.round(sr / n), Math.round(sg / n), Math.round(sb / n)];
-        });
-      },
-      { url: dataUrl, points: proj.map((p) => p.win) },
-    );
-
-    return proj.map((p, i) => ({ ...p, rgb: samples[i] }));
+    const shot = await captureElement({
+      page,
+      selector: VOXEL_CANVAS_SELECTOR,
+      name: `probe-voxel-cells-${renderer}-${name}`,
+      outputDirectory,
+      captures,
+    });
+    // The mean colour of a 7x7 window at each projected cell centre.
+    const frame = decodePng(shot.buffer);
+    return proj.map((p) => ({ ...p, rgb: windowMeanRgb(frame, p.win, 3) }));
   }
 
   const R1 = 1.0;
@@ -503,13 +447,7 @@ async function captureCells(renderer) {
       frontTargets.push({ label: `y${y}z${z}`, p: [0, cy(y), cz(z)] });
     }
   }
-  const front = await captureView(
-    "front",
-    [4, 0, 0],
-    [-1, 0, 0],
-    [0, 0, 1],
-    frontTargets,
-  );
+  const front = await captureView("front", FRONT_RIG, frontTargets);
 
   // Top view (+Z looking −Z): the X × Y cell layout (catches X mirroring the
   // front view cannot see).
@@ -519,207 +457,262 @@ async function captureCells(renderer) {
       topTargets.push({ label: `x${x}y${y}`, p: [cx(x), cy(y), 0] });
     }
   }
-  const top = await captureView(
-    "top",
-    [0, 0, 4],
-    [0, 0, -1],
-    [0, 1, 0],
-    topTargets,
-  );
+  const top = await captureView("top", TOP_RIG, topTargets);
 
+  const errors = await voxelPageErrors(page, diagnostics);
   await page.close();
-  return { setupInfo, front, top, consoleErrors };
+  return { setupInfo, front, top, ...errors };
 }
 
-function judgeCells(name, cells) {
-  let pass = true;
-  const rows = [];
-  for (const c of cells) {
-    const lum = c.rgb ? c.rgb[0] + c.rgb[1] + c.rgb[2] : -1;
-    let verdict = "skip";
-    if (c.expected === "filled") {
-      verdict = lum > 40 ? "ok" : "MISSING";
-    } else if (c.expected === "empty") {
-      verdict = lum < 25 ? "ok" : "SPURIOUS";
+/**
+ * Part A and Part B clauses over one run's cell. The bars, the conjunction and
+ * the reasoning behind each are the pre-migration probe's:
+ *
+ * PRIMARY gate (this task = shape/OBB placement parity): a correctly
+ * shaped+placed WebGPU box overlaps the WebGL footprint heavily (high IoU) and
+ * leaves a non-trivial amount of BLACK background (so the box is a bounded
+ * silhouette, not a full-frame fill that would make IoU trivially 1.0). A flat
+ * mis-placed quad (the pre-fix defect: a tiny [-0.5,0.5] cube at the ECEF
+ * origin) would have near-zero footprint overlap with WebGL's Earth-sized box.
+ *
+ * PARITY-VOXEL-COLOR-PARITY — COLOR is a HARD gate. The WebGPU ray-march
+ * applies the default voxel customShader colour mapping + WebGL-matching
+ * front-to-back accumulation, so the mean colour of the voxel footprint must
+ * match WebGL's within a tolerance (gray box on BOTH backends, not gray-vs-
+ * green). Tolerance is generous — WebGL runs the full octree megatexture while
+ * the WebGPU path uploads only the ROOT tile, so per-voxel sampling differs
+ * slightly — but a raw-texel green/teal (the pre-fix defect, colorL1 ~433)
+ * blows well past it while a matched gray sits comfortably under. The WebGPU
+ * box must also be near-gray (r≈g≈b): the pre-fix defect was a strong green
+ * cast (g >> r, b), which the max pairwise channel spread guards.
+ *
+ * Part B (VOXEL-SHAPEUV-CONVENTION) judges the per-cell fill layout on both
+ * backends at both views, and requires the WebGPU data upload to have taken
+ * the Y-up box sampling convention.
+ *
+ * Pure and exported so the routing spec can put a fixture on either side of
+ * every bar without a browser.
+ *
+ * @param {Array<object>} cells One cell per run.
+ * @returns {Array<object>} Verdicts in the runtime's shape.
+ */
+export function evaluateVoxelParity(cells) {
+  const verdicts = [];
+  for (const cell of cells) {
+    const { webgl, webgpu } = cell.partA;
+    const suffix = `run${cell.run}`;
+    const iou = maskIoU(webgl.px.mask, webgpu.px.mask).iou;
+    const colorL1 = colourL1(webgl.px.avgColor, webgpu.px.avgColor);
+    const webgpuChannelSpread = spread(webgpu.px.avgColor);
+    const covGL = webgl.px.coveragePct;
+    const covGPU = webgpu.px.coveragePct;
+    verdicts.push(
+      {
+        id: `A/both-render/${suffix}`,
+        claim: `both backends render (footprint cells ${webgl.px.maskCells} and ${webgpu.px.maskCells} > 200)`,
+        pass: webgl.px.maskCells > 200 && webgpu.px.maskCells > 200,
+        detail: { webgl: webgl.px.maskCells, webgpu: webgpu.px.maskCells },
+      },
+      {
+        id: `A/bounded/${suffix}`,
+        claim: `both 8% < coverage < 92%, the box is a silhouette not a fill (${covGL.toFixed(2)}%, ${covGPU.toFixed(2)}%)`,
+        pass: covGL < 92 && covGPU < 92 && covGL > 8 && covGPU > 8,
+        detail: { webgl: covGL, webgpu: covGPU },
+      },
+      {
+        id: `A/footprint-match/${suffix}`,
+        claim: `footprint IoU (WebGL ∩ WebGPU) ${iou.toFixed(3)} >= 0.85`,
+        pass: iou >= 0.85,
+        detail: { iou },
+      },
+      {
+        id: `A/no-console-errors/${suffix}`,
+        claim: `no console errors (${webgl.consoleErrors.length} WebGL, ${webgpu.consoleErrors.length} WebGPU)`,
+        pass:
+          webgl.consoleErrors.length === 0 && webgpu.consoleErrors.length === 0,
+        detail: {
+          webgl: webgl.consoleErrors.slice(0, 5),
+          webgpu: webgpu.consoleErrors.slice(0, 5),
+        },
+      },
+      {
+        id: `A/colour-match/${suffix}`,
+        claim: `avg-color L1 ${colorL1} <= ${COLOR_L1_TOLERANCE}`,
+        pass: colorL1 <= COLOR_L1_TOLERANCE,
+        detail: {
+          colorL1,
+          webgl: webgl.px.avgColor,
+          webgpu: webgpu.px.avgColor,
+        },
+      },
+      {
+        id: `A/webgpu-neutral/${suffix}`,
+        claim: `WebGPU channel spread ${webgpuChannelSpread} <= 40, not green-cast`,
+        pass: webgpuChannelSpread <= 40,
+        detail: { spread: webgpuChannelSpread },
+      },
+    );
+
+    const b = cell.partB;
+    const judged = {
+      "webgl-front": judgeExpectedFill(b.webgl.front, PARITY_FILL_THRESHOLDS),
+      "webgpu-front": judgeExpectedFill(b.webgpu.front, PARITY_FILL_THRESHOLDS),
+      "webgl-top": judgeExpectedFill(b.webgl.top, PARITY_FILL_THRESHOLDS),
+      "webgpu-top": judgeExpectedFill(b.webgpu.top, PARITY_FILL_THRESHOLDS),
+    };
+    for (const [view, result] of Object.entries(judged)) {
+      verdicts.push({
+        id: `B/${view}-cells/${suffix}`,
+        claim: `${view} per-cell fill layout matches the analytic expectation`,
+        pass: result.pass,
+        detail: { rows: result.rows },
+      });
     }
-    if (verdict === "MISSING" || verdict === "SPURIOUS") {
-      pass = false;
-    }
-    rows.push(
-      `${c.label} expect=${c.expected} rgb=${c.rgb ? c.rgb.join(",") : "?"} ${verdict}`,
+    const s = b.webgpu.setupInfo;
+    verdicts.push(
+      {
+        id: `B/webgpu-convention-active/${suffix}`,
+        claim:
+          "WebGPU real data uploaded with the Y-up box sampling convention",
+        pass:
+          s.usingRealData === true &&
+          s.hasConvention === true &&
+          s.conventionYUp === true,
+        detail: s,
+      },
+      {
+        id: `B/no-console-errors/${suffix}`,
+        claim: `no console errors in the cell scenario (${b.webgl.consoleErrors.length + b.webgpu.consoleErrors.length})`,
+        pass:
+          b.webgl.consoleErrors.length + b.webgpu.consoleErrors.length === 0,
+        detail: {
+          webgl: b.webgl.consoleErrors.slice(0, 3),
+          webgpu: b.webgpu.consoleErrors.slice(0, 3),
+        },
+      },
     );
   }
-  console.log(`  [${name}] ${rows.join(" | ")}`);
-  return pass;
+  return verdicts;
 }
 
-const webgl = await capture("webgl");
-const webgpu = await capture("webgpu");
-
-const cellsWebgl = await captureCells("webgl");
-const cellsWebgpu = await captureCells("webgpu");
-await browser.close();
-
-console.log("WebGL  info:", JSON.stringify(webgl.info));
-console.log("WebGPU info:", JSON.stringify(webgpu.info));
-console.log(
-  "WebGL  px:",
-  JSON.stringify({
-    maskCells: webgl.px.maskCells,
-    distinctColors: webgl.px.distinctColors,
-    avgColor: webgl.px.avgColor,
-    coveragePct: webgl.px.coveragePct.toFixed(2),
-  }),
-);
-console.log(
-  "WebGPU px:",
-  JSON.stringify({
-    maskCells: webgpu.px.maskCells,
-    distinctColors: webgpu.px.distinctColors,
-    avgColor: webgpu.px.avgColor,
-    coveragePct: webgpu.px.coveragePct.toFixed(2),
-  }),
-);
-console.log("WebGL  console errors:", webgl.consoleErrors.length);
-console.log("WebGPU console errors:", webgpu.consoleErrors.length);
-if (webgl.consoleErrors.length) {
-  console.log("  WebGL:", webgl.consoleErrors.slice(0, 5).join("\n  "));
-}
-if (webgpu.consoleErrors.length) {
-  console.log("  WebGPU:", webgpu.consoleErrors.slice(0, 5).join("\n  "));
-}
-
-// IoU of the two coarse non-black masks — the primary footprint discriminator.
-let inter = 0;
-let uni = 0;
-const a = webgl.px.mask;
-const b = webgpu.px.mask;
-for (let i = 0; i < a.length; i++) {
-  const av = a[i];
-  const bv = b[i];
-  if (av && bv) inter++;
-  if (av || bv) uni++;
-}
-const iou = uni > 0 ? inter / uni : 0;
-
-// Color-structure delta: L1 distance between the two region average colors.
-const ac = webgl.px.avgColor;
-const bc = webgpu.px.avgColor;
-const colorL1 =
-  Math.abs(ac[0] - bc[0]) + Math.abs(ac[1] - bc[1]) + Math.abs(ac[2] - bc[2]);
-
-console.log("---");
-console.log("Footprint IoU (WebGL ∩ WebGPU):", iou.toFixed(3));
-console.log("Avg-color L1 distance:", colorL1);
-
-// Verdict.
-//
-// PRIMARY gate (this task = shape/OBB placement parity): a correctly
-// shaped+placed WebGPU box overlaps the WebGL footprint heavily (high IoU) and
-// leaves a non-trivial amount of BLACK background (so the box is a bounded
-// silhouette, not a full-frame fill that would make IoU trivially 1.0). A flat
-// mis-placed quad (the pre-fix defect: a tiny [-0.5,0.5] cube at the ECEF
-// origin) would have near-zero footprint overlap with WebGL's Earth-sized box.
-//
-// COLOR is reported but NOT a hard gate: WebGL applies its voxel-shader colormap
-// over the `a` VEC4 property while the WebGPU root-tile path renders the raw
-// RGBA sample, so exact hue parity is a SEPARATE data-path increment (a known
-// follow-up, not a shape-parity defect). We assert only that both produce
-// color (non-black) — the placement is what this increment fixes.
-const bothRender = webgl.px.maskCells > 200 && webgpu.px.maskCells > 200;
-// Guard against the trivial full-frame-fill case that makes IoU meaningless:
-// require a meaningful black margin on BOTH so the box is a bounded shape.
-const bounded =
-  webgl.px.coveragePct < 92 &&
-  webgpu.px.coveragePct < 92 &&
-  webgl.px.coveragePct > 8 &&
-  webgpu.px.coveragePct > 8;
-const footprintMatch = iou >= 0.85;
-const noErrors =
-  webgl.consoleErrors.length === 0 && webgpu.consoleErrors.length === 0;
-
-// PARITY-VOXEL-COLOR-PARITY — COLOR is now a HARD gate. The WebGPU ray-march
-// applies the default voxel customShader colour mapping + WebGL-matching
-// front-to-back accumulation, so the mean colour of the voxel footprint must
-// match WebGL's within a tolerance (gray box on BOTH backends, not gray-vs-
-// green). Tolerance is generous — WebGL runs the full octree megatexture while
-// the WebGPU path uploads only the ROOT tile, so per-voxel sampling differs
-// slightly — but a raw-texel green/teal (the pre-fix defect, colorL1 ~433)
-// blows well past it while a matched gray sits comfortably under.
+/** The pre-migration probe's colour bar, named as it was. */
 const COLOR_L1_TOLERANCE = 90;
-const colorMatch = colorL1 <= COLOR_L1_TOLERANCE;
-// Also require the WebGPU box to be near-gray (r≈g≈b) — the pre-fix defect was
-// a strong green cast (g >> r, b). Max pairwise channel spread guards hue.
-const bc2 = webgpu.px.avgColor;
-const webgpuChannelSpread =
-  Math.max(bc2[0], bc2[1], bc2[2]) - Math.min(bc2[0], bc2[1], bc2[2]);
-const webgpuNeutral = webgpuChannelSpread <= 40;
 
-const passA =
-  bothRender &&
-  bounded &&
-  footprintMatch &&
-  noErrors &&
-  colorMatch &&
-  webgpuNeutral;
-console.log("---");
-console.log("bothRender:", bothRender);
-console.log(
-  "bounded (both 8%<coverage<92%, box is a silhouette not a fill):",
-  bounded,
-);
-console.log("footprintMatch (IoU>=0.85):", footprintMatch);
-console.log("noErrors:", noErrors);
-console.log(
-  `colorMatch (colorL1 ${colorL1} <= ${COLOR_L1_TOLERANCE}):`,
-  colorMatch,
-);
-console.log(
-  `webgpuNeutral (channel spread ${webgpuChannelSpread} <= 40, not green-cast):`,
-  webgpuNeutral,
-);
-console.log(passA ? "PART A (footprint+color): PASS" : "PART A: FAIL");
-
-// Part B — per-cell sample-frame verdict (VOXEL-SHAPEUV-CONVENTION).
-console.log("---");
-console.log("WebGL  cells setup:", JSON.stringify(cellsWebgl.setupInfo));
-console.log("WebGPU cells setup:", JSON.stringify(cellsWebgpu.setupInfo));
-console.log("WebGL front:");
-const glFrontOk = judgeCells("webgl-front", cellsWebgl.front);
-console.log("WebGPU front:");
-const gpFrontOk = judgeCells("webgpu-front", cellsWebgpu.front);
-console.log("WebGL top:");
-const glTopOk = judgeCells("webgl-top", cellsWebgl.top);
-console.log("WebGPU top:");
-const gpTopOk = judgeCells("webgpu-top", cellsWebgpu.top);
-const cellErrors =
-  cellsWebgl.consoleErrors.length + cellsWebgpu.consoleErrors.length;
-if (cellErrors > 0) {
-  console.log(
-    "  cell-scenario console errors:",
-    cellsWebgl.consoleErrors.slice(0, 3),
-    cellsWebgpu.consoleErrors.slice(0, 3),
-  );
+/**
+ * The console report: the same lines the pre-migration probe printed, then
+ * each clause, then the verdict.
+ *
+ * @param {object} receipt The receipt fields.
+ * @returns {void}
+ */
+function printReport(receipt) {
+  for (const cell of receipt.cells) {
+    const { webgl, webgpu } = cell.partA;
+    console.log("WebGL  info:", JSON.stringify(webgl.info));
+    console.log("WebGPU info:", JSON.stringify(webgpu.info));
+    for (const [label, side] of [
+      ["WebGL ", webgl],
+      ["WebGPU", webgpu],
+    ]) {
+      console.log(
+        `${label} px:`,
+        JSON.stringify({
+          maskCells: side.px.maskCells,
+          distinctColors: side.px.distinctColors,
+          avgColor: side.px.avgColor,
+          coveragePct: side.px.coveragePct.toFixed(2),
+        }),
+      );
+    }
+    console.log(
+      "WebGL  cells setup:",
+      JSON.stringify(cell.partB.webgl.setupInfo),
+    );
+    console.log(
+      "WebGPU cells setup:",
+      JSON.stringify(cell.partB.webgpu.setupInfo),
+    );
+  }
+  console.log("---");
+  for (const verdict of receipt.verdicts) {
+    console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
+    if (verdict.detail?.rows) {
+      console.log(`    ${verdict.detail.rows.join(" | ")}`);
+    }
+  }
+  const pass = receipt.verdicts.every((verdict) => verdict.pass === true);
+  console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL/PARTIAL");
 }
-const gpConventionActive =
-  cellsWebgpu.setupInfo.usingRealData === true &&
-  cellsWebgpu.setupInfo.hasConvention === true &&
-  cellsWebgpu.setupInfo.conventionYUp === true;
-const passB =
-  glFrontOk &&
-  gpFrontOk &&
-  glTopOk &&
-  gpTopOk &&
-  gpConventionActive &&
-  cellErrors === 0;
-console.log("gpConventionActive:", gpConventionActive);
-console.log(
-  passB
-    ? "PART B (per-cell sample frame): PASS"
-    : "PART B (per-cell sample frame): FAIL",
-);
 
-const pass = passA && passB;
-console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL/PARTIAL");
+/** Drop the footprint masks from the published cell; the IoU carries them. */
+function publishedCell(cell) {
+  const strip = (side) => ({ ...side, px: { ...side.px, mask: undefined } });
+  return {
+    ...cell,
+    partA: { webgl: strip(cell.partA.webgl), webgpu: strip(cell.partA.webgpu) },
+  };
+}
 
-process.exit(pass ? 0 : 1);
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "voxel-parity",
+  title:
+    "Voxel shape parity — footprint IoU + colour structure (Part A) and per-cell sample frame (Part B)",
+  // Empty, so the banked frames keep their pre-migration paths directly under
+  // `output/` (`probe-voxel-parity-<renderer>.png`,
+  // `probe-voxel-cells-<renderer>-<view>.png`).
+  outputSubdirectory: "",
+  receiptEnvelope: "runtime",
+  // The viewer page imports the unminified bundle, and so does every in-page
+  // setup; the default list's other bucket is never loaded here.
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  // Two pages per backend: Part A (open, rig settle, one capture) and Part B
+  // (open, warm-up, two views of their own settle and one capture each).
+  workBudgetMs: (options) =>
+    voxelWorkBudgetMs({
+      pages: 2 * options.renderers.length,
+      frames:
+        options.renderers.length *
+        (BOX_RIG.readiness.frames +
+          PART_B_WARMUP_FRAMES +
+          2 * PART_B_VIEW_FRAMES),
+      captures: 3 * options.renderers.length,
+    }),
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    if (options.renderers.length !== 2) {
+      throw new ProbeRefusal(
+        "renderer-pair-required",
+        `probe-voxel-parity compares WebGL with WebGPU and cannot measure one backend alone; got --renderer ${options.renderers.join(",")}`,
+        { renderers: options.renderers },
+      );
+    }
+    const legs = { browser, origin, outputDirectory, captures };
+    const partA = {
+      webgl: await captureBox({ ...legs, renderer: "webgl" }),
+      webgpu: await captureBox({ ...legs, renderer: "webgpu" }),
+    };
+    const partB = {
+      webgl: await captureCells({ ...legs, renderer: "webgl" }),
+      webgpu: await captureCells({ ...legs, renderer: "webgpu" }),
+    };
+    return [{ run, partA, partB }];
+  },
+  verdicts(cells) {
+    return evaluateVoxelParity(cells);
+  },
+  receipt(cells, context) {
+    const receipt = {
+      rigs: [BOX_RIG.id, FRONT_RIG.id, TOP_RIG.id],
+      cells: cells.map(publishedCell),
+      verdicts: context.verdicts,
+    };
+    if (cells.length > 0) {
+      printReport({ cells, verdicts: context.verdicts });
+    }
+    return receipt;
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}

@@ -1,6 +1,7 @@
 // VOXEL-OCTREE-LOD acceptance probe — octree traversal / LOD refinement.
 // @purpose Acceptance: voxel octree LOD refinement to level 2 (73-slot atlas) with L1/L2 discriminator families and cone-sampled in-page expectations.
 // @status ACTIVE
+// @runtime lib/probe-runtime.mjs
 //
 // Scenario (NEW-VOXEL-OCTREE-L2-ASSET-PROBE): a CUSTOM THREE-level box voxel
 // provider (availableLevels = 3, 4x4x4 cells per tile, metadataOrder Y_UP)
@@ -51,42 +52,64 @@
 // Cells whose cone straddles filled/empty are SKIPPED, never gated. READ the
 // output PNGs in Tools/visual-regression/output/.
 //
-// Run:  node Tools/visual-regression/probe-voxel-octree.mjs
-import { chromium } from "playwright";
-import fs from "fs";
+// ON THE KIT (probe-kit harvest, voxel family): the three views are rigs
+// (`rigs/voxel-octree-l3-close.mjs`, `-close2.mjs`, `-far.mjs`), the close rig's
+// settle being the warm-up; Edge, origin, slot, deadline, receipt and exit code
+// = `lib/probe-runtime.mjs`; viewer page = `lib/voxel-probe-page.mjs`; each
+// view's frame is banked through `captureElement` and read in Node — the
+// per-cell window median and the fill judgement by
+// `lib/metrics/voxel-cell-fill.mjs`, the far-view crop difference by
+// `lib/metrics/voxel-footprint.mjs`. The in-page ray expectations and every bar
+// are unchanged.
+// Run: `node server.js --port 8094 --serve-built`, then
+//   node Tools/visual-regression/probe-voxel-octree.mjs [--port 8094]
+import { decodePng } from "../lib/png-decode.mjs";
 import { createVoxelOctreeL3Provider } from "./fixtures/voxel-octree-l3.mjs";
+import {
+  judgeEitherLevelFill,
+  judgeLevelFill,
+  windowMedianRgb,
+} from "./lib/metrics/voxel-cell-fill.mjs";
+import { cropMeanAbsDifference } from "./lib/metrics/voxel-footprint.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
+import {
+  VOXEL_CANVAS_SELECTOR,
+  missingRenderers,
+  openVoxelViewer,
+  voxelPageErrors,
+  voxelWorkBudgetMs,
+} from "./lib/voxel-probe-page.mjs";
+import CLOSE_RIG from "./rigs/voxel-octree-l3-close.mjs";
+import CLOSE2_RIG from "./rigs/voxel-octree-l3-close2.mjs";
+import FAR_RIG from "./rigs/voxel-octree-l3-far.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const OUT = "Tools/visual-regression/output";
-fs.mkdirSync(OUT, { recursive: true });
-
-const browser = await chromium.launch({
-  channel: "msedge",
-  headless: true,
-  args: ["--enable-unsafe-webgpu"],
-});
+/** Frames rendered at each view before its capture. */
+const VIEW_FRAMES = 90;
 
 // Combined per-axis resolutions: level 0 root = 4, level 1 = 8, level 2 = 16.
 const FINEST = 16;
 
-async function capture(renderer) {
-  const page = await browser.newPage({
-    viewport: { width: 1024, height: 768 },
+async function captureViews({
+  browser,
+  origin,
+  renderer,
+  outputDirectory,
+  captures,
+}) {
+  const { page, diagnostics } = await openVoxelViewer({
+    browser,
+    origin,
+    renderer,
+    rig: CLOSE_RIG,
   });
-  const consoleErrors = [];
-  page.on("console", (m) => {
-    if (m.type() === "error") consoleErrors.push(m.text());
-  });
-  page.on("pageerror", (e) => consoleErrors.push(String(e)));
-
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-    timeout: 90000,
-  });
-  await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const setupInfo = await page.evaluate(
-    async ({ providerFactorySrc }) => {
+    async ({ providerFactorySrc, camera, frames }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
@@ -125,14 +148,14 @@ async function capture(renderer) {
       // CLOSE view immediately, so the WebGL traversal's SSE test requests
       // child tiles during warm-up.
       window.viewer.camera.setView({
-        destination: new C.Cartesian3(10 * R, 0, 0),
+        destination: new C.Cartesian3(...camera.position),
         orientation: {
-          direction: new C.Cartesian3(-1, 0, 0),
-          up: new C.Cartesian3(0, 0, 1),
+          direction: new C.Cartesian3(...camera.direction),
+          up: new C.Cartesian3(...camera.up),
         },
       });
 
-      for (let i = 0; i < 300; i++) {
+      for (let i = 0; i < frames; i++) {
         scene.render();
         await new Promise((r) => setTimeout(r, 8));
       }
@@ -154,7 +177,11 @@ async function capture(renderer) {
         lastTargetLevelClose: du ? du.lastTargetLevel : null,
       };
     },
-    { providerFactorySrc: createVoxelOctreeL3Provider.toString() },
+    {
+      providerFactorySrc: createVoxelOctreeL3Provider.toString(),
+      camera: CLOSE_RIG.camera,
+      frames: CLOSE_RIG.readiness.frames,
+    },
   );
 
   // Project each FINEST-cell target to window coords and analytically
@@ -165,18 +192,18 @@ async function capture(renderer) {
   // stays out of that grid's filled cells — perspective magnification of the
   // box's near face legitimately bleeds filled columns into adjacent pixel
   // windows, and those cells must be SKIPPED, not failed.
-  async function measureView(name, destX, judgeTargets = true) {
+  async function measureView(name, rig, judgeTargets = true) {
     const proj = await page.evaluate(
-      async ({ destX, finest, judgeTargets }) => {
+      async ({ camera, finest, judgeTargets, viewFrames }) => {
         const { C, scene, prim, R } = window.__voxelProbe;
         window.viewer.camera.setView({
-          destination: new C.Cartesian3(destX * R, 0, 0),
+          destination: new C.Cartesian3(...camera.position),
           orientation: {
-            direction: new C.Cartesian3(-1, 0, 0),
-            up: new C.Cartesian3(0, 0, 1),
+            direction: new C.Cartesian3(...camera.direction),
+            up: new C.Cartesian3(...camera.up),
           },
         });
-        for (let i = 0; i < 90; i++) {
+        for (let i = 0; i < viewFrames; i++) {
           scene.render();
           await new Promise((r) => setTimeout(r, 8));
         }
@@ -305,298 +332,225 @@ async function capture(renderer) {
           lastTargetLevel: du ? du.lastTargetLevel : null,
         };
       },
-      { destX, finest: FINEST, judgeTargets },
-    );
-
-    const buf = await page.screenshot();
-    fs.writeFileSync(`${OUT}/probe-voxel-octree-${renderer}-${name}.png`, buf);
-    const dataUrl = `data:image/png;base64,${buf.toString("base64")}`;
-    const half = proj.half;
-    const samples = await page.evaluate(
-      async ({ url, points, half }) => {
-        const img = new Image();
-        await new Promise((r) => {
-          img.onload = r;
-          img.src = url;
-        });
-        const cv = document.createElement("canvas");
-        cv.width = img.width;
-        cv.height = img.height;
-        const ctx = cv.getContext("2d");
-        ctx.drawImage(img, 0, 0);
-        return points.map((pt) => {
-          if (!pt) return null;
-          const x = Math.round(pt[0]);
-          const y = Math.round(pt[1]);
-          const d = ctx.getImageData(
-            x - half,
-            y - half,
-            2 * half + 1,
-            2 * half + 1,
-          ).data;
-          // MEDIAN pixel by luminance — robust against 1-3 px star dots /
-          // faint UI specks inside the window (a mean is not).
-          const px = [];
-          for (let i = 0; i < d.length; i += 4) {
-            px.push([d[i], d[i + 1], d[i + 2]]);
-          }
-          px.sort((a, b) => a[0] + a[1] + a[2] - (b[0] + b[1] + b[2]));
-          return px[Math.floor(px.length / 2)];
-        });
+      {
+        camera: rig.camera,
+        finest: FINEST,
+        judgeTargets,
+        viewFrames: VIEW_FRAMES,
       },
-      { url: dataUrl, points: proj.targets.map((p) => p.win), half },
     );
 
-    // Center-crop mean color (for the far-view backend diff).
-    const crop = await page.evaluate(async (url) => {
-      const img = new Image();
-      await new Promise((r) => {
-        img.onload = r;
-        img.src = url;
-      });
-      const cv = document.createElement("canvas");
-      cv.width = img.width;
-      cv.height = img.height;
-      const ctx = cv.getContext("2d");
-      ctx.drawImage(img, 0, 0);
-      const rx = Math.floor(img.width * 0.3);
-      const ry = Math.floor(img.height * 0.3);
-      const rw = Math.floor(img.width * 0.4);
-      const rh = Math.floor(img.height * 0.4);
-      const d = ctx.getImageData(rx, ry, rw, rh).data;
-      const px = [];
-      for (let i = 0; i < d.length; i += 4) {
-        px.push(d[i], d[i + 1], d[i + 2]);
-      }
-      return px;
-    }, dataUrl);
-
+    const shot = await captureElement({
+      page,
+      selector: VOXEL_CANVAS_SELECTOR,
+      name: `probe-voxel-octree-${renderer}-${name}`,
+      outputDirectory,
+      captures,
+    });
+    // MEDIAN pixel by luminance of each cell's window — robust against 1-3 px
+    // star dots / faint UI specks inside the window (a mean is not).
+    const frame = decodePng(shot.buffer);
     return {
-      cells: proj.targets.map((p, i) => ({ ...p, rgb: samples[i] })),
+      cells: proj.targets.map((p) => ({
+        ...p,
+        rgb: windowMedianRgb(frame, p.win, proj.half),
+      })),
       cellPx: proj.cellPx,
       lastTargetLevel: proj.lastTargetLevel,
-      crop,
+      frame,
     };
   }
 
-  const close = await measureView("close", 10);
-  const close2 = await measureView("close2", 5);
-  const far = await measureView("far", 120, false);
+  const close = await measureView("close", CLOSE_RIG);
+  const close2 = await measureView("close2", CLOSE2_RIG);
+  const far = await measureView("far", FAR_RIG, false);
 
+  const errors = await voxelPageErrors(page, diagnostics);
   await page.close();
-  return { setupInfo, close, close2, far, consoleErrors };
+  return { setupInfo, close, close2, far, ...errors };
 }
 
-// Per-cell expectation at ONE level: FILLED when the center ray passes
-// SOLIDLY through that grid's filled cells (>= 15% of its in-box path — a
-// mere graze can legitimately render near-black in a fixed-step marcher);
-// EMPTY only when the whole 5-ray cone misses them; SKIP otherwise
-// (boundary/bleed/graze cells are never gated).
-function expectAt(c, level) {
-  if (c.frac[level] >= 0.15) {
-    return "filled";
+/**
+ * The clauses over one run's pair of three views. The fill arithmetic is
+ * `lib/metrics/voxel-cell-fill.mjs` (FILLED when the centre ray passes at
+ * least 15 % of its in-box path through the level's filled cells, EMPTY only
+ * when the whole five-ray cone misses them, SKIP otherwise; filled reads
+ * r+g+b > 60, empty r+g+b < 40), and the discriminator families are the
+ * probe's own:
+ *
+ *   - CLOSE (10R): WebGPU matches level 2 with >= 4 L1 discriminators, all
+ *     black; WebGL may refine per node, so each cell need only be consistent
+ *     with level 1 OR level 2.
+ *   - CLOSE2 (5R): WebGL must match level 2 with >= 4 L2 discriminators all
+ *     black (proves the asset and discriminators discriminate), and WebGPU
+ *     must match level 2 with all of them black (the standing gate).
+ *   - WebGPU internals: the 73-slot atlas fully engaged (8 L1 + 64 L2
+ *     tiles uploaded), target level 2 at both close views and 0 far.
+ *   - FAR: the centre-crop mean absolute channel difference < 6.
+ *   - No console errors on either backend.
+ *
+ * Pure and exported for the routing spec.
+ *
+ * @param {Array<object>} cells One cell per run.
+ * @returns {Array<object>} Verdicts in the runtime's shape.
+ */
+export function evaluateOctree(cells) {
+  const verdicts = [];
+  for (const { run, webgl, webgpu, farDiff } of cells) {
+    const sfx = `run${run}`;
+    const add = (id, claim, pass, detail) =>
+      verdicts.push({ id: `${id}/${sfx}`, claim, pass: pass === true, detail });
+    const gpClose = judgeLevelFill(webgpu.close.cells, {
+      level: 2,
+      discriminator: "discL1",
+    });
+    const glClose = judgeEitherLevelFill(webgl.close.cells, {
+      levels: [1, 2],
+    });
+    const glClose2 = judgeLevelFill(webgl.close2.cells, {
+      level: 2,
+      discriminator: "discL2",
+    });
+    const gpClose2 = judgeLevelFill(webgpu.close2.cells, {
+      level: 2,
+      discriminator: "discL2",
+    });
+    const allDiscriminators = (j) =>
+      j.discriminators >= 4 && j.discriminatorsOk === j.discriminators;
+    const s = webgpu.setupInfo || {};
+    add(
+      "atlas-active",
+      "atlasActive (slotCount=73, 8 L1 + 64 L2 uploaded)",
+      s.usingRealData === true &&
+        s.slotCount === 73 &&
+        s.childPhase === "done" &&
+        Array.isArray(s.childSlots) &&
+        s.childSlots.every((v) => v >= 0) &&
+        s.l2Uploaded === 64,
+      s,
+    );
+    add(
+      "refined-close",
+      `WebGPU targetLevel=2 at close + close2 (${webgpu.close.lastTargetLevel}, ${webgpu.close2.lastTargetLevel})`,
+      webgpu.close.lastTargetLevel === 2 && webgpu.close2.lastTargetLevel === 2,
+    );
+    add(
+      "root-far",
+      `WebGPU targetLevel=0 at far (${webgpu.far.lastTargetLevel})`,
+      webgpu.far.lastTargetLevel === 0,
+    );
+    add(
+      "close-discriminators",
+      `L1 discriminators on WebGPU close (>=4, all black): ${gpClose.discriminatorsOk}/${gpClose.discriminators}`,
+      allDiscriminators(gpClose),
+    );
+    add("webgpu-close", "WebGPU close matches level 2", gpClose.pass, {
+      failures: gpClose.failures.slice(0, 12),
+    });
+    add(
+      "webgl-close",
+      "WebGL close is consistent with level 1 or 2 per cell",
+      glClose.pass,
+      { failures: glClose.failures.slice(0, 12) },
+    );
+    add(
+      "webgl-close2-proven",
+      `WebGL close2 matches level 2 with >= 4 discriminators all black (${glClose2.discriminatorsOk}/${glClose2.discriminators})`,
+      glClose2.pass && allDiscriminators(glClose2),
+      { failures: glClose2.failures.slice(0, 12) },
+    );
+    add(
+      "webgpu-close2",
+      `WebGPU close2 matches level 2 with >= 4 discriminators all black (${gpClose2.discriminatorsOk}/${gpClose2.discriminators})`,
+      gpClose2.pass && allDiscriminators(gpClose2),
+      { failures: gpClose2.failures.slice(0, 12) },
+    );
+    add(
+      "far-diff",
+      `far-view centre-crop mean abs diff ${farDiff.toFixed(2)} < 6`,
+      farDiff < 6,
+      { farDiff },
+    );
+    add(
+      "no-console-errors",
+      `no console errors (${webgl.consoleErrors.length} WebGL, ${webgpu.consoleErrors.length} WebGPU)`,
+      webgl.consoleErrors.length === 0 && webgpu.consoleErrors.length === 0,
+      {
+        webgl: webgl.consoleErrors.slice(0, 5),
+        webgpu: webgpu.consoleErrors.slice(0, 5),
+      },
+    );
   }
-  if (!c.coneAny[level]) {
-    return "empty";
-  }
-  return "skip";
+  return verdicts;
 }
 
-// Luminance (r+g+b) verdict for one expectation. Real fills read >= ~130;
-// the empty threshold leaves headroom for faint viewer-UI overlap.
-function verdictFor(expected, lum) {
-  if (expected === "filled") {
-    return lum > 60 ? "ok" : "MISSING";
-  }
-  if (expected === "empty") {
-    return lum < 40 ? "ok" : "SPURIOUS";
-  }
-  return "skip";
-}
-
-// Judge the rendered cells against ONE level's analytic grid expectation.
-// discFamily: "L1" counts empty-at-8/filled-at-root cells, "L2" counts
-// empty-at-16/filled-at-8 cells; discriminator cells must read BLACK for the
-// judged level to be considered truly rendered.
-function judgeCells(name, cells, level, discFamily) {
-  let pass = true;
-  let discriminatorsOk = 0;
-  let discriminators = 0;
-  const failures = [];
-  for (const c of cells) {
-    const expected = expectAt(c, level);
-    const lum = c.rgb ? c.rgb[0] + c.rgb[1] + c.rgb[2] : -1;
-    const verdict = verdictFor(expected, lum);
-    const isDisc = discFamily === "L1" ? c.discL1 : c.discL2;
-    if (isDisc && expected !== "skip") {
-      discriminators++;
-      if (verdict === "ok") discriminatorsOk++;
+function printReport(receipt) {
+  for (const verdict of receipt.verdicts) {
+    console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
+    for (const failure of verdict.detail?.failures ?? []) {
+      console.log(`    ${failure}`);
     }
-    if (verdict === "MISSING" || verdict === "SPURIOUS") {
-      pass = false;
-      failures.push(
-        `${c.label} L${level}-expect=${expected}${isDisc ? ` (${discFamily} DISCRIMINATOR)` : ""} rgb=${c.rgb ? c.rgb.join(",") : "?"} ${verdict}`,
+  }
+  const pass = receipt.verdicts.every((verdict) => verdict.pass === true);
+  console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL/PARTIAL");
+}
+
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "voxel-octree",
+  title: "Voxel octree traversal to level 2 (73-slot atlas), three views",
+  // Empty, so the banked frames keep their pre-migration paths
+  // (`output/probe-voxel-octree-<renderer>-<view>.png`).
+  outputSubdirectory: "",
+  receiptEnvelope: "runtime",
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  // One page per backend: the close rig's warm-up, then three views of
+  // VIEW_FRAMES each, one capture per view.
+  workBudgetMs: (options) =>
+    voxelWorkBudgetMs({
+      pages: options.renderers.length,
+      frames:
+        options.renderers.length *
+        (CLOSE_RIG.readiness.frames + 3 * VIEW_FRAMES),
+      captures: 3 * options.renderers.length,
+    }),
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    const missing = missingRenderers(options.renderers, ["webgl", "webgpu"]);
+    if (missing.length > 0) {
+      throw new ProbeRefusal(
+        "renderer-pair-required",
+        `probe-voxel-octree judges WebGL against WebGPU and cannot run without ${missing.join(",")}`,
+        { renderers: options.renderers },
       );
     }
-  }
-  console.log(
-    `  [${name} vs level ${level}] cells=${cells.length} ${discFamily}-discriminators=${discriminatorsOk}/${discriminators} failures=${failures.length}`,
-  );
-  if (failures.length) {
-    console.log(`    ${failures.slice(0, 12).join("\n    ")}`);
-  }
-  return { pass, discriminators, discriminatorsOk };
-}
-
-// Judge cells accepting EITHER level 1 or level 2 per cell — upstream WebGL
-// legitimately renders a mixed-refinement volume at intermediate distances
-// (per-node SSE), so any cell consistent with one of the two levels is ok.
-function judgeCellsEither(name, cells) {
-  let pass = true;
-  const failures = [];
-  for (const c of cells) {
-    const lum = c.rgb ? c.rgb[0] + c.rgb[1] + c.rgb[2] : -1;
-    const v1 = verdictFor(expectAt(c, 1), lum);
-    const v2 = verdictFor(expectAt(c, 2), lum);
-    if (v1 !== "ok" && v1 !== "skip" && v2 !== "ok" && v2 !== "skip") {
-      pass = false;
-      failures.push(
-        `${c.label} rgb=${c.rgb ? c.rgb.join(",") : "?"} vsL1=${v1} vsL2=${v2}`,
-      );
+    const legs = { browser, origin, outputDirectory, captures };
+    const webgl = await captureViews({ ...legs, renderer: "webgl" });
+    const webgpu = await captureViews({ ...legs, renderer: "webgpu" });
+    // Both backends render the ROOT level at the far view and the box is
+    // small on screen, so their centre crops must nearly agree.
+    const farDiff = cropMeanAbsDifference(webgl.far.frame, webgpu.far.frame);
+    for (const leg of [webgl, webgpu]) {
+      for (const view of ["close", "close2", "far"]) {
+        delete leg[view].frame;
+      }
     }
-  }
-  console.log(
-    `  [${name} vs level 1 OR 2 per cell] cells=${cells.length} failures=${failures.length}`,
-  );
-  if (failures.length) {
-    console.log(`    ${failures.slice(0, 12).join("\n    ")}`);
-  }
-  return { pass };
+    return [{ run, webgl, webgpu, farDiff }];
+  },
+  verdicts(cells) {
+    return evaluateOctree(cells);
+  },
+  receipt(cells, context) {
+    if (cells.length > 0) {
+      printReport({ cells, verdicts: context.verdicts });
+    }
+    return {
+      rigs: [CLOSE_RIG.id, CLOSE2_RIG.id, FAR_RIG.id],
+      cells,
+      verdicts: context.verdicts,
+    };
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
 }
-
-const webgl = await capture("webgl");
-const webgpu = await capture("webgpu");
-await browser.close();
-
-console.log("WebGL  setup:", JSON.stringify(webgl.setupInfo));
-console.log("WebGPU setup:", JSON.stringify(webgpu.setupInfo));
-console.log("WebGL  console errors:", webgl.consoleErrors.length);
-console.log("WebGPU console errors:", webgpu.consoleErrors.length);
-if (webgl.consoleErrors.length) {
-  console.log("  WebGL:", webgl.consoleErrors.slice(0, 5).join("\n  "));
-}
-if (webgpu.consoleErrors.length) {
-  console.log("  WebGPU:", webgpu.consoleErrors.slice(0, 5).join("\n  "));
-}
-
-// --- CLOSE view (10R): deep traversal refines to level 2 (B17) ---
-console.log("--- CLOSE view (10R, refines to level 2 post-B17) ---");
-console.log("WebGPU close (must match level 2; L1 discriminators stay black):");
-const gpClose = judgeCells("webgpu-close", webgpu.close.cells, 2, "L1");
-console.log(
-  "WebGL close (mixed per-node refinement allowed — L1 or L2 per cell):",
-);
-const glClose = judgeCellsEither("webgl-close", webgl.close.cells);
-
-// --- CLOSE2 view (5R): the L2 discriminator gate (B17 acceptance) ---
-console.log("--- CLOSE2 view (5R, depth-2 refinement on both backends) ---");
-console.log("WebGL close2 (must match level 2 — proves asset+discriminators):");
-const glClose2 = judgeCells("webgl-close2", webgl.close2.cells, 2, "L2");
-console.log("WebGPU close2 vs level 2 (the B17 deep-traversal gate):");
-const gpClose2L2 = judgeCells("webgpu-close2", webgpu.close2.cells, 2, "L2");
-
-// WebGPU internals: the 73-slot deep atlas fully engaged (root + 8 level-1 +
-// 64 level-2 tiles uploaded) and the SSE ladder refining to level 2 up close.
-const s = webgpu.setupInfo;
-const atlasActive =
-  s.usingRealData === true &&
-  s.slotCount === 73 &&
-  s.childPhase === "done" &&
-  Array.isArray(s.childSlots) &&
-  s.childSlots.every((v) => v >= 0) &&
-  s.l2Uploaded === 64;
-const refinedClose =
-  webgpu.close.lastTargetLevel === 2 && webgpu.close2.lastTargetLevel === 2;
-const rootFar = webgpu.far.lastTargetLevel === 0;
-
-// FAR view: WebGL-vs-WebGPU center-crop mean abs diff (both render the ROOT
-// level; the box is small on screen, so the diff must be tiny).
-let farDiff;
-{
-  const a = webgl.far.crop;
-  const b = webgpu.far.crop;
-  const n = Math.min(a.length, b.length);
-  let sum = 0;
-  for (let i = 0; i < n; i++) sum += Math.abs(a[i] - b[i]);
-  farDiff = sum / Math.max(1, n);
-}
-console.log("--- FAR view (root) ---");
-console.log(
-  `WebGPU lastTargetLevel: close=${webgpu.close.lastTargetLevel} close2=${webgpu.close2.lastTargetLevel} far=${webgpu.far.lastTargetLevel}`,
-);
-console.log(`Far-view center-crop mean abs diff: ${farDiff.toFixed(2)}`);
-
-const noErrors =
-  webgl.consoleErrors.length === 0 && webgpu.consoleErrors.length === 0;
-
-// L1 family still gated at depth 2 (empty-at-8 implies empty-at-16): the
-// refinement is REAL only if enough L1 discriminator cells exist and read
-// black on WebGPU at the close view.
-const l1DiscriminatorsMeaningful =
-  gpClose.discriminators >= 4 &&
-  gpClose.discriminatorsOk === gpClose.discriminators;
-
-// L2 asset gates: WebGL at close2 must render true level-2 data with
-// enough L2 discriminators black — otherwise the asset/discriminators are
-// not actually discriminating and the WebGPU gate would run on noise.
-const webglL2Proven =
-  glClose2.pass &&
-  glClose2.discriminators >= 4 &&
-  glClose2.discriminatorsOk === glClose2.discriminators;
-
-// WebGPU at close2 must match level 2 with ALL L2 discriminators black —
-// the B17 deep-traversal acceptance gate, now the standing regression gate.
-const gpL2DiscBlack =
-  gpClose2L2.discriminators >= 4 &&
-  gpClose2L2.discriminatorsOk === gpClose2L2.discriminators;
-const webgpuClose2Gate = gpClose2L2.pass && gpL2DiscBlack;
-
-console.log("---");
-console.log(
-  "atlasActive (slotCount=73, 8 L1 + 64 L2 tiles uploaded):",
-  atlasActive,
-);
-console.log(
-  "refinedClose (WebGPU targetLevel=2 at close + close2 views):",
-  refinedClose,
-);
-console.log("rootFar (WebGPU targetLevel=0 at far view):", rootFar);
-console.log(
-  `L1 discriminators (>=4, all black on WebGPU close): ${gpClose.discriminatorsOk}/${gpClose.discriminators}`,
-);
-console.log(
-  `L2 discriminators on WebGL close2 (>=4, all black): ${glClose2.discriminatorsOk}/${glClose2.discriminators}`,
-);
-console.log(
-  `L2 discriminators on WebGPU close2 (>=4, all black): ${gpClose2L2.discriminatorsOk}/${gpClose2L2.discriminators}`,
-);
-console.log("webglClosePass (L1-or-L2 per cell):", glClose.pass);
-console.log("webglL2Proven (close2 matches level 2):", webglL2Proven);
-console.log("webgpuClosePass (level 2):", gpClose.pass);
-console.log("webgpuClose2Gate (level 2 required):", webgpuClose2Gate);
-console.log("farDiffSmall (<6):", farDiff < 6);
-console.log("noErrors:", noErrors);
-
-const pass =
-  atlasActive &&
-  refinedClose &&
-  rootFar &&
-  l1DiscriminatorsMeaningful &&
-  gpClose.pass &&
-  glClose.pass &&
-  webglL2Proven &&
-  webgpuClose2Gate &&
-  farDiff < 6 &&
-  noErrors;
-console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL/PARTIAL");
-process.exit(pass ? 0 : 1);

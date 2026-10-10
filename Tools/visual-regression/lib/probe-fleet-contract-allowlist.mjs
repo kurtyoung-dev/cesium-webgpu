@@ -966,28 +966,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
   "probe-volumetric-clouds.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
-  "probe-voxel-cell-pick.mjs":
-    "no watchdog; never closes the browser — added 2026-07-02, pre-dates the spec",
-  "probe-voxel-cylinder.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-03, pre-dates the spec",
-  "probe-voxel-ellipsoid.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-03, pre-dates the spec",
-  "probe-voxel-megatexture.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-01, pre-dates the spec",
-  "probe-voxel-octree-l3plus.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-04, pre-dates the spec",
-  "probe-voxel-octree.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-02, pre-dates the spec",
-  "probe-voxel-parity.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-01, pre-dates the spec",
-  "probe-voxel-pick-logdepth.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-18, pre-dates the spec",
-  "probe-voxel-pick.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-04, pre-dates the spec",
-  "probe-voxel-refined-pick.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
-  "probe-voxel-user-customshader.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-02, pre-dates the spec",
   "probe-vr2-polylines-3dtiles.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-27, pre-dates the spec",
   "probe-vr2-tile-brightness.mjs":

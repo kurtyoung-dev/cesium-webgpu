@@ -1,6 +1,7 @@
 // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH acceptance probe.
 // @purpose Acceptance: voxel pick with the log-depth gate forced ON — same cell picked, [ld] pipelines bound, occlusion proves frag_depth is written.
 // @status ACTIVE
+// @runtime lib/probe-runtime.mjs
 //
 // Verifies the voxel PICK path when the pick-fleet log-depth gate is FORCED ON
 // (context._pickLogDepthWriteEnabled = true — the switch C10-11 will flip for
@@ -25,17 +26,35 @@
 // The full 20/500/5,000 km 3-altitude pick-depth-plane consistency gate is
 // C10-11's (the whole fleet must be log first — this voxel slice is the
 // prerequisite). WebGPU only.
-import { chromium } from "playwright";
-import fs from "fs";
+//
+// ON THE KIT (probe-kit harvest, voxel family): scene =
+// `rigs/voxel-staircase-front-logdepth.mjs`; Edge, origin, slot, deadline,
+// receipt and exit code = `lib/probe-runtime.mjs`; viewer page, console and
+// WebGPU error gate (whose device errors replace the in-page
+// `onuncapturederror` hook, same clause) = `lib/voxel-probe-page.mjs`; sample
+// index = `lib/metrics/voxel-pick-coordinate.mjs`.
+// Run: `node server.js --port 8094 --serve-built`, then this file.
+import { expectedVoxelSampleIndex } from "./lib/metrics/voxel-pick-coordinate.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
+import {
+  VOXEL_CANVAS_SELECTOR,
+  missingRenderers,
+  openVoxelViewer,
+  voxelPageErrors,
+  voxelWorkBudgetMs,
+} from "./lib/voxel-probe-page.mjs";
+import RIG from "./rigs/voxel-staircase-front-logdepth.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const OUT = "Tools/visual-regression/output";
-fs.mkdirSync(OUT, { recursive: true });
-
-const browser = await chromium.launch({
-  channel: "msedge",
-  headless: true,
-  args: ["--enable-unsafe-webgpu"],
+/** Bounds of the in-page loops, passed in so the budget can count them. */
+const LOOP_BOUNDS = Object.freeze({
+  cellAttempts: 14,
+  objectAttempts: 16,
+  blockerFrames: 200,
 });
 
 const DIMS = { x: 2, y: 4, z: 3 };
@@ -48,30 +67,16 @@ const TARGETS = [
   { label: "y1z1", y: 1, z: 1, cell: { x: 1, y: 1, z: 1 } },
   { label: "y2z2", y: 2, z: 2, cell: { x: 1, y: 2, z: 2 } },
 ];
-function expectedSampleIndex(cell, dims) {
-  const inX = dims.x;
-  const inY = dims.z;
-  return cell.x + inX * (cell.z + inY * (dims.y - 1 - cell.y));
-}
-
-async function run() {
-  const page = await browser.newPage({
-    viewport: { width: 1024, height: 768 },
+async function captureLogDepth({ browser, origin, outputDirectory, captures }) {
+  const { page, diagnostics } = await openVoxelViewer({
+    browser,
+    origin,
+    renderer: "webgpu",
+    rig: RIG,
   });
-  const consoleErrors = [];
-  page.on("console", (m) => {
-    if (m.type() === "error") consoleErrors.push(m.text());
-  });
-  page.on("pageerror", (e) => consoleErrors.push(String(e)));
-
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-    waitUntil: "networkidle",
-    timeout: 90000,
-  });
-  await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const result = await page.evaluate(
-    async ({ dims, filledSrc, targets }) => {
+    async ({ dims, filledSrc, targets, camera, frames, bounds }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
@@ -88,14 +93,6 @@ async function run() {
       if (scene.moon) scene.moon.show = false;
       scene.backgroundColor = C.Color.BLACK;
       scene.fog.enabled = false;
-
-      const errors = [];
-      const dev = scene.context?._device;
-      if (dev) {
-        dev.onuncapturederror = (ev) => {
-          errors.push(String(ev?.error?.message).slice(0, 200));
-        };
-      }
 
       const R = 6378137.0;
       const voxelCount = dims.x * dims.y * dims.z;
@@ -145,14 +142,14 @@ async function run() {
       scene.primitives.add(prim);
 
       v.camera.setView({
-        destination: new C.Cartesian3(4 * R, 0, 0),
+        destination: new C.Cartesian3(...camera.position),
         orientation: {
-          direction: new C.Cartesian3(-1, 0, 0),
-          up: new C.Cartesian3(0, 0, 1),
+          direction: new C.Cartesian3(...camera.direction),
+          up: new C.Cartesian3(...camera.up),
         },
       });
 
-      for (let i = 0; i < 260; i++) {
+      for (let i = 0; i < frames; i++) {
         scene.render();
         await new Promise((r) => setTimeout(r, 8));
       }
@@ -189,7 +186,7 @@ async function run() {
         const pos = new C.Cartesian2(win.x, win.y);
         let prevKey = null;
         let last = null;
-        for (let i = 0; i < 14; i++) {
+        for (let i = 0; i < bounds.cellAttempts; i++) {
           let cell;
           try {
             cell = scene.pickVoxel(pos);
@@ -226,7 +223,7 @@ async function run() {
         if (!win) return { note: "no-win" };
         const pos = new C.Cartesian2(win.x, win.y);
         let last = { hit: false };
-        for (let i = 0; i < 16; i++) {
+        for (let i = 0; i < bounds.objectAttempts; i++) {
           const p = scene.pick(pos);
           last = {
             hit: !!p,
@@ -283,7 +280,7 @@ async function run() {
       });
       blocker.nearestSampling = true;
       scene.primitives.add(blocker);
-      for (let i = 0; i < 200; i++) {
+      for (let i = 0; i < bounds.blockerFrames; i++) {
         scene.render();
         await new Promise((r) => setTimeout(r, 8));
       }
@@ -309,79 +306,172 @@ async function run() {
         cellPicks,
         objectPick,
         occlusion,
-        deviceErrors: errors,
       };
     },
-    { dims: DIMS, filledSrc: cellFilled.toString(), targets: TARGETS },
+    {
+      dims: DIMS,
+      filledSrc: cellFilled.toString(),
+      targets: TARGETS,
+      camera: RIG.camera,
+      frames: RIG.readiness.frames,
+      bounds: LOOP_BOUNDS,
+    },
   );
 
-  const buf = await page.screenshot();
-  fs.writeFileSync(`${OUT}/probe-voxel-pick-logdepth.png`, buf);
-  await page.close();
-  return { ...result, consoleErrors };
-}
-
-const r = await run();
-let pass = true;
-console.log("=== NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — gate FORCED ON ===");
-console.log(`renderer=${r.renderer}`);
-console.log("introspect:", JSON.stringify(r.introspect));
-
-// Structural: the [ld] log pick pipelines with depthWriteEnabled true are bound.
-const ins = r.introspect || {};
-const ldOk =
-  ins.gate === true &&
-  typeof ins.pickName === "string" &&
-  ins.pickName.includes("[ld]") &&
-  ins.pickDepthWrite === true &&
-  typeof ins.pickVoxelName === "string" &&
-  ins.pickVoxelName.includes("[ld]") &&
-  ins.pickVoxelDepthWrite === true;
-if (!ldOk) pass = false;
-console.log(
-  `  [struct] [ld] pick pipelines + depthWriteEnabled: ${ldOk ? "ok" : "MISMATCH"}`,
-);
-
-// Cell pick correctness (same voxel picked, gate on).
-for (let i = 0; i < TARGETS.length; i++) {
-  const t = TARGETS[i];
-  const exp = expectedSampleIndex(t.cell, DIMS);
-  const c = r.cellPicks[i] && r.cellPicks[i].cell;
-  const ok = c && c.isVoxelCell && c.tileIndex === 0 && c.sampleIndex === exp;
-  if (!ok) pass = false;
-  console.log(
-    `  [cell ${t.label}] expect sample=${exp} got=${JSON.stringify(c)} ${ok ? "ok" : "MISMATCH"}`,
-  );
-}
-
-// Object pick correctness.
-const objOk = r.objectPick && r.objectPick.hit && r.objectPick.isVoxel;
-if (!objOk) pass = false;
-console.log(
-  `  [object pick] voxel primitive returned: ${JSON.stringify(r.objectPick)} ${objOk ? "ok" : "MISMATCH"}`,
-);
-
-// Front/back occlusion: nearer blocker wins the shared pick FBO depth test.
-const occ = r.occlusion || {};
-const occOk = occ.hit && occ.isBlocker === true;
-if (!occOk) pass = false;
-console.log(
-  `  [occlusion] nearer voxel wins (log depth written+ordered): ${JSON.stringify(occ)} ${occOk ? "ok" : "MISMATCH"}`,
-);
-
-const errTotal = (r.consoleErrors?.length || 0) + (r.deviceErrors?.length || 0);
-if (errTotal > 0) {
-  pass = false;
-  console.log("console/device errors:", errTotal, {
-    console: r.consoleErrors?.slice(0, 4),
-    device: r.deviceErrors?.slice(0, 4),
+  const shot = await captureElement({
+    page,
+    selector: VOXEL_CANVAS_SELECTOR,
+    name: "probe-voxel-pick-logdepth",
+    outputDirectory,
+    captures,
   });
-} else {
-  console.log(
-    "  [errors] 0 device/console errors (LOG_DEPTH pipelines compiled) ok",
-  );
+  const errors = await voxelPageErrors(page, diagnostics);
+  await page.close();
+  return { ...result, capture: shot.name, ...errors };
 }
 
-console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL");
-await browser.close();
-process.exit(pass ? 0 : 1);
+/**
+ * The clauses over one run's cell (gate FORCED on, WebGPU):
+ *
+ *   - structural: the [ld] log pick pipelines are bound, both with
+ *     `depthWriteEnabled === true`, and the gate reads ON;
+ *   - per target: `scene.pickVoxel` returns the same correct cell as the
+ *     gate-off run (tile 0, the analytic sample);
+ *   - object pick: `scene.pick` returns the voxel primitive;
+ *   - occlusion: the nearer blocker wins the shared pick FBO depth test (log
+ *     depth written and ordered);
+ *   - zero console or device errors (the LOG_DEPTH pipelines compiled).
+ *
+ * Pure and exported for the routing spec.
+ *
+ * @param {Array<object>} cells One cell per run.
+ * @returns {Array<object>} Verdicts in the runtime's shape.
+ */
+export function evaluateVoxelPickLogDepth(cells) {
+  const verdicts = [];
+  for (const cell of cells) {
+    const r = cell.webgpu;
+    const suffix = `run${cell.run}`;
+    const ins = r.introspect || {};
+    verdicts.push({
+      id: `ld-pipelines/${suffix}`,
+      claim: "[struct] [ld] pick pipelines + depthWriteEnabled",
+      pass:
+        ins.gate === true &&
+        typeof ins.pickName === "string" &&
+        ins.pickName.includes("[ld]") &&
+        ins.pickDepthWrite === true &&
+        typeof ins.pickVoxelName === "string" &&
+        ins.pickVoxelName.includes("[ld]") &&
+        ins.pickVoxelDepthWrite === true,
+      detail: ins,
+    });
+    for (let i = 0; i < TARGETS.length; i++) {
+      const t = TARGETS[i];
+      const exp = expectedVoxelSampleIndex(t.cell, DIMS);
+      const c = r.cellPicks[i] && r.cellPicks[i].cell;
+      verdicts.push({
+        id: `cell/${t.label}/${suffix}`,
+        claim: `[cell ${t.label}] tile 0 sample ${exp} (same voxel picked, gate on)`,
+        pass: Boolean(
+          c && c.isVoxelCell && c.tileIndex === 0 && c.sampleIndex === exp,
+        ),
+        detail: { expected: exp, got: c ?? null },
+      });
+    }
+    verdicts.push(
+      {
+        id: `object-pick/${suffix}`,
+        claim: "[object pick] voxel primitive returned",
+        pass: Boolean(r.objectPick && r.objectPick.hit && r.objectPick.isVoxel),
+        detail: r.objectPick ?? null,
+      },
+      {
+        id: `occlusion/${suffix}`,
+        claim: "[occlusion] nearer voxel wins (log depth written+ordered)",
+        pass: Boolean(r.occlusion?.hit && r.occlusion.isBlocker === true),
+        detail: r.occlusion ?? null,
+      },
+      {
+        id: `errors/${suffix}`,
+        claim: `[errors] no device or console errors (${r.consoleErrors.length + r.deviceErrors.length})`,
+        pass: r.consoleErrors.length + r.deviceErrors.length === 0,
+        detail: {
+          console: r.consoleErrors.slice(0, 4),
+          device: r.deviceErrors.slice(0, 4),
+        },
+      },
+    );
+  }
+  return verdicts;
+}
+
+function printReport(receipt) {
+  console.log("=== NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — gate FORCED ON ===");
+  for (const cell of receipt.cells) {
+    console.log(`renderer=${cell.webgpu.renderer}`);
+    console.log("introspect:", JSON.stringify(cell.webgpu.introspect));
+  }
+  for (const verdict of receipt.verdicts) {
+    console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
+  }
+  const pass = receipt.verdicts.every((verdict) => verdict.pass === true);
+  console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL");
+}
+
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "voxel-pick-logdepth",
+  title: "Voxel pick with the log-depth gate forced on (WebGPU)",
+  // Empty, so the banked frame keeps its pre-migration path
+  // (`output/probe-voxel-pick-logdepth.png`).
+  outputSubdirectory: "",
+  receiptEnvelope: "runtime",
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  // One WebGPU page: the rig's settle, three cell picks, an object pick, the
+  // blocker's settle and the occlusion pick, each at its in-page bound.
+  workBudgetMs: () =>
+    voxelWorkBudgetMs({
+      pages: 1,
+      frames:
+        RIG.readiness.frames +
+        TARGETS.length * LOOP_BOUNDS.cellAttempts * 3 +
+        2 * LOOP_BOUNDS.objectAttempts * 2 +
+        LOOP_BOUNDS.blockerFrames,
+      captures: 1,
+    }),
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    if (missingRenderers(options.renderers, ["webgpu"]).length > 0) {
+      throw new ProbeRefusal(
+        "renderer-unavailable",
+        `probe-voxel-pick-logdepth measures the WebGPU pick path only; got --renderer ${options.renderers.join(",")}`,
+        { renderers: options.renderers },
+      );
+    }
+    return [
+      {
+        run,
+        webgpu: await captureLogDepth({
+          browser,
+          origin,
+          outputDirectory,
+          captures,
+        }),
+      },
+    ];
+  },
+  verdicts(cells) {
+    return evaluateVoxelPickLogDepth(cells);
+  },
+  receipt(cells, context) {
+    const receipt = { rig: RIG.id, cells, verdicts: context.verdicts };
+    if (cells.length > 0) {
+      printReport(receipt);
+    }
+    return receipt;
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}

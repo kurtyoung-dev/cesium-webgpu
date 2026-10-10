@@ -1,6 +1,7 @@
 // C-R9-VOXEL-CELL-PICK-TAIL acceptance probe.
 // @purpose Acceptance: public Scene.pickVoxel end-to-end on both backends — VoxelCell returned without throw, identical color/tile/sample cross-backend.
 // @status ACTIVE
+// @runtime lib/probe-runtime.mjs
 //
 // Exercises the PUBLIC `Scene.pickVoxel(windowPosition)` end-to-end on BOTH
 // backends. Prior to this fix `Scene.pickVoxel` threw on WebGPU after the
@@ -30,19 +31,42 @@
 // asynchronous object pick. A new cursor is therefore retried until two
 // consecutive identical REAL cells agree; repeated `undefined` results never
 // establish convergence.
-import { chromium } from "playwright";
-import fs from "fs";
+//
+// ON THE KIT (probe-kit harvest, voxel family). The scene is the rig
+// `rigs/voxel-staircase-front.mjs` (camera, viewport, settle frames). The
+// runtime (`lib/probe-runtime.mjs`) owns Edge, the origin, the served-build
+// preflight, the Edge slot, the deadline, the receipt and the exit code;
+// `lib/voxel-probe-page.mjs` opens the viewer with the console collected and
+// the WebGPU error gate armed, and the gate's uncaptured device errors take
+// the place of the in-page `onuncapturederror` hook this probe used to install
+// (same clause, same count). The frame is banked through `captureElement`;
+// the sample-index and colour comparisons are
+// `lib/metrics/voxel-pick-coordinate.mjs`.
+//
+// Run: `node server.js --port 8094 --serve-built`, then
+//   node Tools/visual-regression/probe-voxel-pick.mjs [--port 8094]
 import { advanceC1113PublicVoxelPickConvergence } from "./lib/c11-13-public-voxel-pick-convergence.mjs";
+import {
+  expectedVoxelSampleIndex,
+  pickedColourMatches,
+} from "./lib/metrics/voxel-pick-coordinate.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
+import {
+  VOXEL_CANVAS_SELECTOR,
+  missingRenderers,
+  openVoxelViewer,
+  voxelPageErrors,
+  voxelWorkBudgetMs,
+} from "./lib/voxel-probe-page.mjs";
+import FRONT_RIG from "./rigs/voxel-staircase-front.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const OUT = "Tools/visual-regression/output";
-fs.mkdirSync(OUT, { recursive: true });
-
-const browser = await chromium.launch({
-  channel: "msedge",
-  headless: true,
-  args: ["--enable-unsafe-webgpu"],
-});
+/** Bound on pick attempts per target; each renders three frames. */
+const PICK_ATTEMPTS = 14;
 
 const DIMS = { x: 2, y: 4, z: 3 };
 
@@ -61,39 +85,35 @@ const TARGETS = [
   { label: "y0z2-empty", y: 0, z: 2, cell: null },
 ];
 
-// Z-up cell → input (glTF Y-up) sample index (mirrors probe-voxel-cell-pick).
-function expectedSampleIndex(cell, dims) {
-  const inX = dims.x;
-  const inY = dims.z;
-  const ix = cell.x;
-  const iy = cell.z;
-  const iz = dims.y - 1 - cell.y;
-  return ix + inX * (iy + inY * iz);
-}
-
 // The stored color for a Z-up cell (matches the asset fill below).
 function expectedColor(cell) {
   return [0.35 + 0.65 * cell.x, 0.15 + 0.28 * cell.y, 0.2 + 0.4 * cell.z, 1.0];
 }
 
-async function capture(renderer) {
-  const page = await browser.newPage({
-    viewport: { width: 1024, height: 768 },
+async function capturePicks({
+  browser,
+  origin,
+  renderer,
+  outputDirectory,
+  captures,
+}) {
+  const { page, diagnostics } = await openVoxelViewer({
+    browser,
+    origin,
+    renderer,
+    rig: FRONT_RIG,
   });
-  const consoleErrors = [];
-  page.on("console", (m) => {
-    if (m.type() === "error") consoleErrors.push(m.text());
-  });
-  page.on("pageerror", (e) => consoleErrors.push(String(e)));
-
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-    timeout: 90000,
-  });
-  await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const result = await page.evaluate(
-    async ({ dims, filledSrc, targets, convergenceSrc }) => {
+    async ({
+      dims,
+      filledSrc,
+      targets,
+      convergenceSrc,
+      camera,
+      frames,
+      attemptsBound,
+    }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
@@ -109,14 +129,6 @@ async function capture(renderer) {
       if (scene.moon) scene.moon.show = false;
       scene.backgroundColor = C.Color.BLACK;
       scene.fog.enabled = false;
-
-      const errors = [];
-      const dev = scene.context?._device;
-      if (dev) {
-        dev.onuncapturederror = (ev) => {
-          errors.push(String(ev?.error?.message).slice(0, 200));
-        };
-      }
 
       const R = 6378137.0;
       const voxelCount = dims.x * dims.y * dims.z;
@@ -163,14 +175,14 @@ async function capture(renderer) {
       scene.primitives.add(prim);
 
       v.camera.setView({
-        destination: new C.Cartesian3(4 * R, 0, 0),
+        destination: new C.Cartesian3(...camera.position),
         orientation: {
-          direction: new C.Cartesian3(-1, 0, 0),
-          up: new C.Cartesian3(0, 0, 1),
+          direction: new C.Cartesian3(...camera.direction),
+          up: new C.Cartesian3(...camera.up),
         },
       });
 
-      for (let i = 0; i < 240; i++) {
+      for (let i = 0; i < frames; i++) {
         scene.render();
         await new Promise((r) => setTimeout(r, 8));
       }
@@ -201,7 +213,7 @@ async function capture(renderer) {
           consecutiveCellCount: 0,
           stable: false,
         };
-        for (let i = 0; i < 14; i++) {
+        for (let i = 0; i < attemptsBound; i++) {
           attempts = i + 1;
           let cell;
           try {
@@ -263,7 +275,6 @@ async function capture(renderer) {
         renderer: scene.context.rendererType || null,
         picks,
         offPick,
-        deviceErrors: errors,
       };
     },
     {
@@ -271,125 +282,212 @@ async function capture(renderer) {
       filledSrc: cellFilled.toString(),
       targets: TARGETS,
       convergenceSrc: advanceC1113PublicVoxelPickConvergence.toString(),
+      camera: FRONT_RIG.camera,
+      frames: FRONT_RIG.readiness.frames,
+      attemptsBound: PICK_ATTEMPTS,
     },
   );
 
-  const buf = await page.screenshot();
-  fs.writeFileSync(`${OUT}/probe-voxel-pick-${renderer}.png`, buf);
-  await page.close();
-  return { ...result, consoleErrors };
-}
-
-function colorsEq(a, b, eps = 1e-4) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
-    return false;
-  }
-  return a.every((v, i) => Math.abs(v - b[i]) <= eps);
-}
-
-let pass = true;
-
-const webgl = await capture("webgl");
-const webgpu = await capture("webgpu");
-
-console.log("=== C-R9-VOXEL-CELL-PICK-TAIL — scene.pickVoxel end-to-end ===");
-console.log(`renderers: webgl=${webgl.renderer} webgpu=${webgpu.renderer}`);
-
-for (let i = 0; i < TARGETS.length; i++) {
-  const t = TARGETS[i];
-  const gl = webgl.picks[i] || {};
-  const gp = webgpu.picks[i] || {};
-  const glc = gl.cell;
-  const gpc = gp.cell;
-  if (gl.threw || gp.threw) {
-    pass = false;
-    console.log(
-      `  [${t.label}] THREW webgl=${gl.threw ?? "-"} webgpu=${gp.threw ?? "-"}`,
-    );
-    continue;
-  }
-  if (t.cell) {
-    const expSample = expectedSampleIndex(t.cell, DIMS);
-    const expColor = expectedColor(t.cell);
-    const glOk =
-      glc &&
-      gl.stable === true &&
-      glc.isVoxelCell &&
-      glc.tileIndex === 0 &&
-      glc.sampleIndex === expSample &&
-      colorsEq(glc.color, expColor);
-    const gpOk =
-      gpc &&
-      gp.stable === true &&
-      gpc.isVoxelCell &&
-      gpc.tileIndex === 0 &&
-      gpc.sampleIndex === expSample &&
-      colorsEq(gpc.color, expColor);
-    const crossOk =
-      glc &&
-      gpc &&
-      glc.sampleIndex === gpc.sampleIndex &&
-      colorsEq(glc.color, gpc.color);
-    const ok = glOk && gpOk && crossOk;
-    if (!ok) pass = false;
-    console.log(
-      `  [${t.label}] expect cell(${t.cell.x},${t.cell.y},${t.cell.z}) sample=${expSample} color=[${expColor.map((x) => x.toFixed(2))}]\n` +
-        `      webgl  = ${JSON.stringify(glc)}\n` +
-        `      webgpu = ${JSON.stringify(gpc)}  ${ok ? "ok" : "MISMATCH"}`,
-    );
-  } else {
-    // Empty column: `scene.pickVoxel` first calls `scene.pick`, and the result
-    // hinges on whether the OBJECT pick returns the voxel primitive there. On
-    // WebGL it does not (empty column = background), so pickVoxel returns no
-    // cell. On WebGPU the object-pick footprint currently covers the whole box
-    // (a SEPARATE, pre-existing object-pick gap — a cleared readback [0,0,0,0]
-    // is indistinguishable from a real tile-0/sample-0 hit on BOTH backends, so
-    // this cannot be disambiguated in the cell-pick path). The cell-pick-tail
-    // guarantee is only "no throw"; the WebGL result is additionally asserted.
-    const glNone = !glc || !glc.isVoxelCell;
-    const noThrow = !gl.threw && !gp.threw;
-    if (!noThrow || !glNone) pass = false;
-    console.log(
-      `  [${t.label}] no-throw + webgl no-cell (object-pick footprint residual) | ` +
-        `webgl=${JSON.stringify(glc)} webgpu=${JSON.stringify(gpc)} ${noThrow && glNone ? "ok" : "MISMATCH"}`,
-    );
-  }
-}
-
-{
-  // Off-box: the pick ray misses the volume entirely.
-  // NS-VOXEL-PICK-FOOTPRINT-SPURIOUS-ROOT — WebGL's `this.pick` returns no
-  // object off the rendered surface, so `scene.pickVoxel` returns undefined.
-  // WebGPU's object-pick footprint over-reports the whole box (and the sync
-  // pick can return a stale in-box hit for an adjacent off-box pixel), which —
-  // because a cleared voxel-coordinate readback [0,0,0,0] is indistinguishable
-  // from a genuine tile-0/sample-0 hit — used to yield a spurious ROOT cell.
-  // `Scene.pickVoxel` now casts the pick ray against the primitive's oriented
-  // bounding box and rejects the off-box pick, so BOTH backends return no cell.
-  const glNone = !webgl.offPick.cell || !webgl.offPick.cell.isVoxelCell;
-  const gpNone = !webgpu.offPick.cell || !webgpu.offPick.cell.isVoxelCell;
-  const noThrow = !webgl.offPick.threw && !webgpu.offPick.threw;
-  const ok = glNone && gpNone && noThrow;
-  if (!ok) pass = false;
-  console.log(
-    `  [off-box] no-throw + BOTH backends no-cell (ray-OBB gate) | webgl=${JSON.stringify(webgl.offPick.cell)} webgpu=${JSON.stringify(webgpu.offPick.cell)} threw(gl=${webgl.offPick.threw ?? "-"},gp=${webgpu.offPick.threw ?? "-"}) ${ok ? "ok" : "MISMATCH"}`,
-  );
-}
-
-const errTotal =
-  webgl.consoleErrors.length +
-  webgpu.consoleErrors.length +
-  (webgl.deviceErrors?.length || 0) +
-  (webgpu.deviceErrors?.length || 0);
-if (errTotal > 0) {
-  pass = false;
-  console.log("console/device errors:", errTotal, {
-    webgl: webgl.consoleErrors.slice(0, 3),
-    webgpu: webgpu.consoleErrors.slice(0, 3),
-    webgpuDev: webgpu.deviceErrors?.slice(0, 3),
+  const shot = await captureElement({
+    page,
+    selector: VOXEL_CANVAS_SELECTOR,
+    name: `probe-voxel-pick-${renderer}`,
+    outputDirectory,
+    captures,
   });
+  const errors = await voxelPageErrors(page, diagnostics);
+  await page.close();
+  return { ...result, capture: shot.name, ...errors };
 }
 
-console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL");
-await browser.close();
-process.exit(pass ? 0 : 1);
+/** The pre-migration probe's colour tolerance for a picked cell. */
+const COLOUR_EPSILON = 1e-4;
+
+/**
+ * The clauses over one run's cell: per target, a cell on both backends with
+ * the analytic tile, sample and stored colour and a cross-backend match; the
+ * empty column's no-throw plus WebGL no-cell; the off-box no-cell on both
+ * backends; and zero console or device errors. The reasoning behind the
+ * empty-column and off-box clauses is the pre-migration probe's:
+ *
+ * Empty column: `scene.pickVoxel` first calls `scene.pick`, and the result
+ * hinges on whether the OBJECT pick returns the voxel primitive there. On
+ * WebGL it does not (empty column = background), so pickVoxel returns no cell.
+ * On WebGPU the object-pick footprint currently covers the whole box (a
+ * SEPARATE, pre-existing object-pick gap — a cleared readback [0,0,0,0] is
+ * indistinguishable from a real tile-0/sample-0 hit on BOTH backends, so this
+ * cannot be disambiguated in the cell-pick path). The cell-pick-tail guarantee
+ * is only "no throw"; the WebGL result is additionally asserted.
+ *
+ * Off-box (NS-VOXEL-PICK-FOOTPRINT-SPURIOUS-ROOT): the pick ray misses the
+ * volume entirely. `Scene.pickVoxel` casts the pick ray against the
+ * primitive's oriented bounding box and rejects the off-box pick, so BOTH
+ * backends return no cell.
+ *
+ * Pure and exported for the routing spec.
+ *
+ * @param {Array<object>} cells One cell per run.
+ * @returns {Array<object>} Verdicts in the runtime's shape.
+ */
+export function evaluateVoxelPick(cells) {
+  const verdicts = [];
+  for (const cell of cells) {
+    const { webgl, webgpu } = cell;
+    const suffix = `run${cell.run}`;
+    for (let i = 0; i < TARGETS.length; i++) {
+      const t = TARGETS[i];
+      const gl = webgl.picks[i] || {};
+      const gp = webgpu.picks[i] || {};
+      const glc = gl.cell;
+      const gpc = gp.cell;
+      if (gl.threw || gp.threw) {
+        verdicts.push({
+          id: `target/${t.label}/${suffix}`,
+          claim: `[${t.label}] pickVoxel does not throw`,
+          pass: false,
+          detail: { webgl: gl.threw ?? null, webgpu: gp.threw ?? null },
+        });
+        continue;
+      }
+      if (t.cell) {
+        const expSample = expectedVoxelSampleIndex(t.cell, DIMS);
+        const expColor = expectedColor(t.cell);
+        const glOk =
+          glc &&
+          gl.stable === true &&
+          glc.isVoxelCell &&
+          glc.tileIndex === 0 &&
+          glc.sampleIndex === expSample &&
+          pickedColourMatches(glc.color, expColor, COLOUR_EPSILON);
+        const gpOk =
+          gpc &&
+          gp.stable === true &&
+          gpc.isVoxelCell &&
+          gpc.tileIndex === 0 &&
+          gpc.sampleIndex === expSample &&
+          pickedColourMatches(gpc.color, expColor, COLOUR_EPSILON);
+        const crossOk =
+          glc &&
+          gpc &&
+          glc.sampleIndex === gpc.sampleIndex &&
+          pickedColourMatches(glc.color, gpc.color, COLOUR_EPSILON);
+        verdicts.push({
+          id: `target/${t.label}/${suffix}`,
+          claim: `[${t.label}] both backends pick cell(${t.cell.x},${t.cell.y},${t.cell.z}) tile 0 sample ${expSample} color [${expColor.map((x) => x.toFixed(2))}], stable, and agree`,
+          pass: Boolean(glOk && gpOk && crossOk),
+          detail: { expSample, expColor, webgl: glc, webgpu: gpc },
+        });
+      } else {
+        const glNone = !glc || !glc.isVoxelCell;
+        verdicts.push({
+          id: `target/${t.label}/${suffix}`,
+          claim: `[${t.label}] no throw, and WebGL returns no cell (object-pick footprint residual)`,
+          pass: glNone,
+          detail: { webgl: glc, webgpu: gpc },
+        });
+      }
+    }
+
+    const glNone = !webgl.offPick.cell || !webgl.offPick.cell.isVoxelCell;
+    const gpNone = !webgpu.offPick.cell || !webgpu.offPick.cell.isVoxelCell;
+    const noThrow = !webgl.offPick.threw && !webgpu.offPick.threw;
+    verdicts.push({
+      id: `off-box/${suffix}`,
+      claim:
+        "off-box: no throw and BOTH backends return no cell (ray-OBB gate)",
+      pass: glNone && gpNone && noThrow,
+      detail: {
+        webgl: webgl.offPick.cell ?? null,
+        webgpu: webgpu.offPick.cell ?? null,
+        threw: {
+          webgl: webgl.offPick.threw ?? null,
+          webgpu: webgpu.offPick.threw ?? null,
+        },
+      },
+    });
+
+    const errTotal =
+      webgl.consoleErrors.length +
+      webgpu.consoleErrors.length +
+      webgl.deviceErrors.length +
+      webgpu.deviceErrors.length;
+    verdicts.push({
+      id: `errors/${suffix}`,
+      claim: `no console or device errors (${errTotal})`,
+      pass: errTotal === 0,
+      detail: {
+        webgl: webgl.consoleErrors.slice(0, 3),
+        webgpu: webgpu.consoleErrors.slice(0, 3),
+        webgpuDevice: webgpu.deviceErrors.slice(0, 3),
+      },
+    });
+  }
+  return verdicts;
+}
+
+function printReport(receipt) {
+  console.log("=== C-R9-VOXEL-CELL-PICK-TAIL — scene.pickVoxel end-to-end ===");
+  for (const cell of receipt.cells) {
+    console.log(
+      `renderers: webgl=${cell.webgl.renderer} webgpu=${cell.webgpu.renderer}`,
+    );
+  }
+  for (const verdict of receipt.verdicts) {
+    console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
+  }
+  const pass = receipt.verdicts.every((verdict) => verdict.pass === true);
+  console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL");
+}
+
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "voxel-pick",
+  title: "Voxel public Scene.pickVoxel end-to-end (C-R9-VOXEL-CELL-PICK-TAIL)",
+  // Empty, so the banked frames keep their pre-migration paths
+  // (`output/probe-voxel-pick-<renderer>.png`).
+  outputSubdirectory: "",
+  receiptEnvelope: "runtime",
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  // One page per backend: open, the rig's settle, then per target (and the
+  // off-box pixel) up to PICK_ATTEMPTS attempts of three frames each.
+  workBudgetMs: (options) =>
+    voxelWorkBudgetMs({
+      pages: options.renderers.length,
+      frames:
+        options.renderers.length *
+        (FRONT_RIG.readiness.frames + (TARGETS.length + 1) * PICK_ATTEMPTS * 3),
+      captures: options.renderers.length,
+    }),
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    const missing = missingRenderers(options.renderers, ["webgl", "webgpu"]);
+    if (missing.length > 0) {
+      throw new ProbeRefusal(
+        "renderer-pair-required",
+        `probe-voxel-pick compares both backends' picked cells and cannot run without ${missing.join(",")}`,
+        { renderers: options.renderers },
+      );
+    }
+    const legs = { browser, origin, outputDirectory, captures };
+    return [
+      {
+        run,
+        webgl: await capturePicks({ ...legs, renderer: "webgl" }),
+        webgpu: await capturePicks({ ...legs, renderer: "webgpu" }),
+      },
+    ];
+  },
+  verdicts(cells) {
+    return evaluateVoxelPick(cells);
+  },
+  receipt(cells, context) {
+    const receipt = { rig: FRONT_RIG.id, cells, verdicts: context.verdicts };
+    if (cells.length > 0) {
+      printReport(receipt);
+    }
+    return receipt;
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}

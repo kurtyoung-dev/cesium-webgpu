@@ -734,6 +734,59 @@ export function hasStructuralTier(code) {
   return false;
 }
 
+/** A module specifier naming the shared probe runtime, from any directory. */
+const RUNTIME_SPECIFIER = /(?:^|\/)lib\/probe-runtime\.mjs$/;
+
+/**
+ * Whether a source hands its browser launch to the shared probe runtime: it
+ * imports `runProbe` from `lib/probe-runtime.mjs` (named, renamed, or through
+ * a namespace) and calls it in code.
+ *
+ * Such a probe launches a browser on every run, but `runProbe` owns the
+ * `chromium.launch(`, so `analyzeProbeSource`'s `launchesBrowser` reads it as
+ * launching nothing. The probe-kit harvest moves whole families onto the
+ * runtime, and a census that counts only the direct form shrinks with every
+ * family it harvests while the analyzer itself is unchanged.
+ *
+ * Both halves are required, read from code: an import of only the runtime's
+ * helpers (`parseProbeArgs`, `ProbeRefusal`) is not a launch, and neither is a
+ * `runProbe(` inside a comment or a printed string. The specifier is read from
+ * the string literal the code view blanks, at the offset the import ends.
+ *
+ * @param {string} source Raw file source text.
+ * @returns {boolean} True when the file launches through `runProbe`.
+ */
+export function launchesThroughRuntime(source) {
+  const { code, strings } = scanSource(String(source ?? ""));
+  const specifierAt = new Map(strings.map((s) => [s.start, s.content]));
+  const callees = [];
+  const imports =
+    /\bimport\s*(\{[^}]*\}|\*\s*as\s+([A-Za-z_$][\w$]*))\s*from\s*(?=["'`])/g;
+  let m;
+  let guard = 0;
+  while ((m = imports.exec(code)) !== null && guard++ < 5000) {
+    const specifier = specifierAt.get(m.index + m[0].length);
+    if (specifier === undefined || !RUNTIME_SPECIFIER.test(specifier)) {
+      continue;
+    }
+    if (m[2] !== undefined) {
+      callees.push(`${m[2].replace(/[$]/g, "\\$")}\\s*\\.\\s*runProbe`);
+      continue;
+    }
+    for (const part of m[1].slice(1, -1).split(",")) {
+      const named = /^\s*runProbe(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/.exec(
+        part,
+      );
+      if (named !== null) {
+        callees.push((named[1] ?? "runProbe").replace(/[$]/g, "\\$"));
+      }
+    }
+  }
+  return callees.some((callee) =>
+    new RegExp(`(?<![\\w$.])${callee}\\s*\\(`).test(code),
+  );
+}
+
 /**
  * Analyze one probe's source against the authoring contract.
  *
@@ -744,8 +797,13 @@ export function hasStructuralTier(code) {
  * whole fleet with no exemptions, so folding it in would hide it behind 560
  * allowlist rows.
  *
+ * `launchesViaRuntime` is reported beside `launchesBrowser`, not folded into it:
+ * the watchdog and `finally`-close rules belong to the process that owns the
+ * browser, which for a runtime probe is `runProbe`, governed by the residency
+ * contract.
+ *
  * @param {string} source Raw probe source text.
- * @returns {{launchesBrowser: boolean, hasWatchdog: boolean, closesBrowser: boolean, closeInFinally: boolean, exitCodes: string[], declaresStructuralExit: boolean, structuralRoutedToTwo: number[], verdictExitViolations: string[], violations: string[]}} Analysis.
+ * @returns {{launchesBrowser: boolean, launchesViaRuntime: boolean, hasWatchdog: boolean, closesBrowser: boolean, closeInFinally: boolean, exitCodes: string[], declaresStructuralExit: boolean, structuralRoutedToTwo: number[], verdictExitViolations: string[], violations: string[]}} Analysis.
  */
 export function analyzeProbeSource(source) {
   const code = blankNonCode(source);
@@ -781,6 +839,7 @@ export function analyzeProbeSource(source) {
   }
   return {
     launchesBrowser,
+    launchesViaRuntime: launchesThroughRuntime(source),
     hasWatchdog: watchdog,
     closesBrowser,
     closeInFinally,
