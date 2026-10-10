@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1525 |
-| ACTIVE | 1281 |
+| Files in census | 1528 |
+| ACTIVE | 1284 |
 | ARCHIVED-CANDIDATE | 24 |
 | INVESTIGATION | 174 |
 | NO @purpose HEADER | 45 |
 | NO @status HEADER | 1 |
-| Classes | probe 677, spec 417, other 225, lib 157, gate-lib 21, bake-tool 13, fixture 8, runner 7 |
+| Classes | probe 677, spec 418, other 227, lib 157, gate-lib 21, bake-tool 13, fixture 8, runner 7 |
 
 ### Tools/ (64)
 
@@ -353,6 +353,14 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | sortDoclets.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 1 | — |
+
+### Tools/landing/ (3)
+
+| File | Class | Status | Touched | Refs | Purpose |
+|---|---|---|---|---|---|
+| rebase-shared-mutants.mjs | other | ACTIVE | — | 1 | Inertness-mutant runner for the landing-time shared-hunk rebaser: makes each transform unreachable in a copy of the tool and requires its spec to go RED. |
+| rebase-shared.mjs | other | ACTIVE | — | 3 | Rebase a frozen probe-family lane patch's hunks on the shared rig census, RIG_TAGS and shrink-only allowlists onto the current tip as their semantic union, refusing by name anything it cannot reproduce as row operations, so two families landing in sequence stop conflicting textually. |
+| rebase-shared.spec.mjs | spec | ACTIVE | — | 4 | Behaviour spec for the landing-time shared-hunk rebaser: semantic union, kept-as-is pass-through and every refusal, over synthetic git repos under os.tmpdir(). |
 
 ### Tools/lib/ (21)
 
@@ -565,7 +573,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | datasources-property-contract.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Pins the observable contract of the DataSources property helpers: comparison of properties whose interval data has no equals method, reuse of the caller's destination in getValueOrClonedDefault, and the isConstant terms the PathMode.PORTIONS branch reads. |
 | daynight-terminator-law.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | CLT-B1 Node half: transcribed laws vs shaders, calibration inversion, ramp classifier, structural exit codes — all mutant-rejected. |
 | debug-ground-polyline-color.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Instruments the GroundPolyline renderer cache to find why per-instance color didn't reach the FS (dim-rectangle diagnosis, 2026-04-30). |
-| determinism-kit-camera.spec.mjs | spec | ACTIVE | — | 1 | Runs the determinism kit's in-page placeCameraAfterTerrain / cameraPlacementNow against a scripted scene (late terrain, a collision lift, a terrain swap after placement) and pins decideCameraPlacement and viewHeightFromUrl, including the URLs an Edge leg recorded with the camera 640 m above its rig. |
+| determinism-kit-camera.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Runs the determinism kit's in-page placeCameraAfterTerrain / cameraPlacementNow against a scripted scene (late terrain, a collision lift, a terrain swap after placement) and pins decideCameraPlacement and viewHeightFromUrl, including the URLs an Edge leg recorded with the camera 640 m above its rig. |
 | device-identity-recovery.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Guards the device-loss recovery seams landed with the invalidation-bus predicate: the allocation-epoch resets and the dispatcher device-identity guards that stop consumers reusing work recorded against a dead device. |
 | device-loss-liveness-gate.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Guards the synchronous device-liveness registry and the producers that consult it, so a lost GPUDevice stops receiving work when its lost promise settles rather than when a replacement is published. |
 | device-loss-recovery-render-loop.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Proves a recoverable WebGPU device loss declines the frames that arrive during recovery instead of raising the terminal-loss error out of the render loop, and that the successor device is usable without a reload. |
@@ -1382,7 +1390,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | refresh-cost-multi-metric.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Independent behavioural + canonicity coverage of Q-80's deltaOrNull/sumLegMultiMetric/available-guard formulas, which live inside a page.evaluate callback and cannot be imported. |
 | refresh-cost-protocol-order.spec.mjs | spec | NO @purpose HEADER | 2026-09-19 | 2 | — |
 | rescore-sun-disc-dawn.mjs | other | ACTIVE | 2026-09-02 | 1 | Re-score an already-acquired sun-disc-dawn artifact against a FAIL bar derived from that same artifact's own WebGL leg, never from WebGPU. |
-| rig-registry.spec.mjs | spec | ACTIVE | 2026-10-09 | 9 | Drives the real rig-registry.mjs over the real rigs/ directory: every rig validates, ids are unique, tags are in vocabulary, replayKeyFor is stable and sensitive, and generateScenesJson reproduces scenes.json byte-for-byte. |
+| rig-registry.spec.mjs | spec | ACTIVE | 2026-10-09 | 12 | Drives the real rig-registry.mjs over the real rigs/ directory: every rig validates, ids are unique, tags are in vocabulary, replayKeyFor is stable and sensitive, and generateScenesJson reproduces scenes.json byte-for-byte. |
 | run-performance-campaign.mjs | runner | ACTIVE | 2026-08-16 | 33 | The performance characterization runner: consumes performance-workloads.json, records Scene.render CPU samples + GPU timestamps; never FPS. |
 | run-regression-sweep.mjs | runner | INVESTIGATION | 2026-08-16 | 0 | Batch-146 sequential sweep of the Batches 134-145 probe arc, parsing stdout tails for PASS/FAIL markers — a did-the-arc-break-anything check. |
 | run-source-check.mjs | runner | ACTIVE | 2026-09-06 | 3 | Records one authorized Node source spec with explicit input identities and durable raw command facts. |
@@ -1423,7 +1431,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | spec-cesium-viewer-loading-parity.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Loading-presentation parity: the async WebGPU viewer path adds no chrome of its own; the page indicator hides at first rendered frame on both. |
 | spec-offline-isolation.spec.mjs | spec | ACTIVE | 2026-09-19 | 4 | C11-134: pins the external-URL classifier (fail-closed) and the online-lane quarantine so network suites skip with a reason offline. |
 | splat-pipeline-request-guard.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Prove stale Gaussian-splat pipeline promises cannot publish after resource invalidation. |
-| ssr-pass-frame.spec.mjs | spec | ACTIVE | — | 2 | Executes the SSR shader's pure helpers from the shipped WGSL and checks them against independent JavaScript references: full-target coverage of the draw, the UV/NDC round trip with and without log depth, and the bisection refinement over a synthetic plane. |
+| ssr-pass-frame.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Executes the SSR shader's pure helpers from the shipped WGSL and checks them against independent JavaScript references: full-target coverage of the draw, the UV/NDC round trip with and without log depth, and the bisection refinement over a synthetic plane. |
 | star-catalog-depth.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | C12-09 acceptance for the deepened BrightStarCatalog: count/magnitude bands, MAG_CUTOFF = faintest row, no duplicates, sha256 provenance. |
 | star-point-census-live.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Standing discriminator: the star point census was mis-calibrated for live frames (strict local-max tie at the NDC-origin pixel corner). |
 | starfield-psf.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | C12-05..08 analytic acceptance: CPU reference of the Moffat core+wing PSF and linear-Pogson mapping; WGSL/GLSL constant lockstep. |
@@ -1636,7 +1644,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-u2-perf-evidence.mjs | lib | ACTIVE | 2026-08-21 | 3 | Manifest policy for the C13-16 U2 cross-bundle GPU-timing gate: comparison, environment-drift rejection, immutable evidence naming. |
 | contact-sheet-page.mjs | lib | ACTIVE | 2026-09-19 | 8 | Pure capture-manifest → contact-sheet page model + HTML renderer: a static, verdict-free page comparing BEFORE/AFTER captures across rigs and renderers, with the manifest's own shape guard. |
 | daynight-terminator-law.mjs | lib | ACTIVE | 2026-08-16 | 4 | Pure model behind probe-daynight-terminator-law (CLT-B1); deliberately unchanged post-fix, so lanes A/D now REFUTE — read metrics, not verdicts. |
-| determinism-kit.mjs | lib | ACTIVE | 2026-08-16 | 17 | Probe determinism kit: pinClock, settleTiles, dampSky, placeCameraAfterTerrain, nRunMedian — neutralises the measured sources of run-to-run drift in visual probes and refuses a camera that did not stay where the rig put it. |
+| determinism-kit.mjs | lib | ACTIVE | 2026-10-09 | 17 | Probe determinism kit: pinClock, settleTiles, dampSky, placeCameraAfterTerrain, nRunMedian — neutralises the measured sources of run-to-run drift in visual probes and refuses a camera that did not stay where the rig put it. |
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 19 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 5 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
 | engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 33 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
@@ -1668,8 +1676,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | polyline-multimaterial-verdicts.mjs | lib | ACTIVE | 2026-09-10 | 5 | The pass/fail logic of probe-polyline-multimaterial.mjs, pure over measurements and free of imports, so a browser-free spec can execute it against recorded defect numbers and against its own mutation. |
 | polyline-rig-scene.mjs | lib | ACTIVE | 2026-10-09 | 4 | Build the polylines a rig's dials declare (positions, width, colour material, and whether each lives in a PolylineCollection or a BufferPolylineCollection) on a given viewer, and hand back the collections with a dispose that removes them; no camera, capture, page or renderer logic. |
 | probe-edge-slot.mjs | lib | ACTIVE | 2026-09-12 | 15 | Exclusive-create lock file that enforces "one Edge job at a time", with stale/dead-holder reclamation and a release that will not free a slot someone else already took. |
-| probe-fleet-behaviour-allowlist.mjs | lib | ACTIVE | 2026-09-18 | 4 | Dated, shrink-only census of the browser-launching files behaviour selection added to the fleet; the spec fails on any NEW violation, stale row, or growth. |
-| probe-fleet-contract-allowlist.mjs | lib | ACTIVE | 2026-10-09 | 19 | Pinned shrink-only census of pre-contract probes exempt from the fleet authoring contract; the spec fails on any NEW violation or stale row. |
+| probe-fleet-behaviour-allowlist.mjs | lib | ACTIVE | 2026-09-18 | 5 | Dated, shrink-only census of the browser-launching files behaviour selection added to the fleet; the spec fails on any NEW violation, stale row, or growth. |
+| probe-fleet-contract-allowlist.mjs | lib | ACTIVE | 2026-10-09 | 20 | Pinned shrink-only census of pre-contract probes exempt from the fleet authoring contract; the spec fails on any NEW violation or stale row. |
 | probe-fleet-contract.mjs | lib | ACTIVE | 2026-09-18 | 19 | Source-text analyzer enforcing the probe authoring contract (watchdog + finally-close); fails closed when it cannot parse a construct. |
 | probe-lifecycle-diagnostics.mjs | lib | ACTIVE | 2026-09-12 | 4 | Bounded, hostile-value-safe description of a probe failure: what the rejected value was, which lifecycle occurrences contributed, and whether a refusal is hiding inside an aggregate. |
 | probe-lifecycle-run.mjs | lib | ACTIVE | 2026-09-12 | 10 | Derives a probe's orderly deadline from its declared work budget and drives preflight, Edge slot, per-run browser and descriptor cells inside one bounded lifecycle. |
@@ -1678,7 +1686,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-runtime-governance.mjs | lib | ACTIVE | 2026-09-13 | 6 | C13-N01 stage 1 detectors: read whether a probe resolves its origin from a hard-coded fallback and whether it routes through the three governance modules, and census the fleet from those two facts. |
 | probe-runtime.mjs | lib | ACTIVE | 2026-09-26 | 86 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
 | probe-work-registry.mjs | lib | ACTIVE | 2026-09-12 | 6 | Tracks every `scope.run` a descriptor starts as an attempt with a settled outcome, so a run cannot be reported complete while work it started is still live, and such work's failure reaches the incident record whenever an incident is written at all; the browser's close is NOT deferred for it — see the header. |
-| prohibited-reader-allowlist.mjs | lib | ACTIVE | 2026-10-09 | 10 | Pin the measured visual-regression sources that still use the prohibited live-canvas reader. |
+| prohibited-reader-allowlist.mjs | lib | ACTIVE | 2026-10-09 | 11 | Pin the measured visual-regression sources that still use the prohibited live-canvas reader. |
 | prohibited-reader-rule.mjs | lib | ACTIVE | 2026-08-20 | 8 | Detect drawImage calls that copy a live scene canvas into a scratch context. |
 | provenance-markers.mjs | lib | ACTIVE | 2026-08-16 | 10 | Enforces bundler/formatter-proof provenance-marker strings for probes; encodes six recorded marker failure modes as shared validators. |
 | purpose-header-allowlist.mjs | lib | ACTIVE | 2026-08-21 | 5 | Frozen shrink-only snapshot of the probes and gate libs that predate the @purpose/@status header rule. |
@@ -1686,7 +1694,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | relative-path.mjs | lib | ACTIVE | 2026-09-19 | 8 | Single fail-closed predicate for "a relative, POSIX, non-escaping path", shared by the capture manifest's image paths, the contact sheet's image/receipt paths and a banked sheet-index entry's repo-relative path. |
 | representative-performance-content.mjs | lib | ACTIVE | 2026-08-16 | 12 | Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads. |
 | representative-tileset-request-ledger.mjs | lib | ACTIVE | 2026-08-16 | 6 | Event-sourced ledger of tileset content requests (issue/terminal events, byte totals, hashes) with cross-run comparison for perf evidence. |
-| rig-registry.mjs | lib | ACTIVE | 2026-10-09 | 19 | Load, validate and hash the rig records under rigs/, and regenerate scenes.json byte-identically from the rigs tagged wave-end. |
+| rig-registry.mjs | lib | ACTIVE | 2026-10-09 | 22 | Load, validate and hash the rig records under rigs/, and regenerate scenes.json byte-identically from the rigs tagged wave-end. |
 | runtime-residency-allowlist.mjs | lib | ACTIVE | 2026-09-03 | 2 | Frozen, shrink-only allowlist of runtime-resident probes still carrying an anti-re-accretion violation, mirroring lib/prohibited-reader-allowlist.mjs's ratchet shape. |
 | runtime-residency-contract.mjs | lib | ACTIVE | 2026-09-03 | 6 | Detects a probe that declares @runtime residency on lib/probe-runtime.mjs yet still hand-rolls one of the four concerns that module already owns. |
 | same-task-capture.mjs | lib | ACTIVE | 2026-08-16 | 57 | Canonical capture primitives that keep render+readback in one task (WebGL clears, WebGPU invalidates after present), plus embed-drift validators. |
@@ -1847,8 +1855,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | sandcastle-webgpu-point-light-shadows.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the sandcastle-smoke.mjs gallery demo "WebGPU Point Light Shadows.html". |
 | sepacific-stratocumulus-closed.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "sepacific-stratocumulus-closed" (subtropical-marine-eastern-boundary/closed-cell-sheet), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | southern-ocean-stratocumulus-open.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "southern-ocean-stratocumulus-open" (cold-air-outbreak/open-cell-broken), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
-| ssr-model-over-plane.mjs | other | ACTIVE | — | 0 | Rig record for the WebGPU screen-space reflections pass - the Wood Tower model on the bare WGS84 ellipsoid with no imagery (offline page) at 100 W, 40 N, a low oblique camera 220 m south and 80 m west of it, SSR on, WebGPU only, 1280x720. |
-| ssr-off-model-over-plane.mjs | other | ACTIVE | — | 0 | Rig record for the SSR-off control - the same Wood Tower, offline page, bare ellipsoid, no imagery, camera, clock and viewport as ssr-model-over-plane, with scene.enableSSR false, WebGPU only. |
+| ssr-model-over-plane.mjs | other | ACTIVE | 2026-10-09 | 0 | Rig record for the WebGPU screen-space reflections pass - the Wood Tower model on the bare WGS84 ellipsoid with no imagery (offline page) at 100 W, 40 N, a low oblique camera 220 m south and 80 m west of it, SSR on, WebGPU only, 1280x720. |
+| ssr-off-model-over-plane.mjs | other | ACTIVE | 2026-10-09 | 0 | Rig record for the SSR-off control - the same Wood Tower, offline page, bare ellipsoid, no imagery, camera, clock and viewport as ssr-model-over-plane, with scene.enableSSR false, WebGPU only. |
 | tradewind-cumulus-caribbean.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "tradewind-cumulus-caribbean" (tropical-maritime-tradewind/tradewind-mediocris), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | voxel-box-procedural.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "voxel-box-procedural" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
 | wgs84-close-1mm.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the WGS84-ellipsoid close view on the CesiumViewer page - nadir on 100 W, 40 N from 1,000 km, both renderers, 1280x720, a 360-frame dwell. |
