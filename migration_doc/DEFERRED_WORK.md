@@ -4381,6 +4381,8 @@ defect that no existing gate could have seen.
 
 - **`PNTS-MODEL-PATH-EDL-INERT` (filed 2026-08-09, voxel/pointcloud/gsplat audit) — 3D Tiles PNTS eye-dome lighting is SILENTLY INERT on WebGPU.** The model path that serves all PNTS tilesets never routes its commands through the EDL processor (only `_edlSource`-tagged commands are recorded, `PointCloudEyeDomeLighting.js:61-72`), so `pointCloudShading.eyeDomeLighting` is a no-op with no warning. Same cluster: attenuation/pointSize fixed at 1 px on this path (the WGSL styling stage is orphaned; quad-expansion scaffolding recorded do-not-remove at the entry near line 9285), and style expressions are C11-86. The silent no-op is the worst part — a user enabling EDL sees nothing change. **Effort: L (cluster).**
 
+  **Evidence, 2026-10-09 Gemini audit triage:** Omission of ASPRS Classification Filtering and Dynamic Color Styling (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P43.C-327. Blueprint C-327 (EPIC-08). **Where (a5b71fc17b):** `packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudRenderer.ts:1316-1331`; re-derived at `PointCloud.js:227-229` **Code:** `data[off + 6..9] = decodedColor[0..3]` **Verified:** PointCloud.js:227-229 says per-feature colour styling "is not yet realized by this dedicated WebGPU renderer". **Severity as rated by the triage:** P2 - Known, tracked parity gap on the TimeDynamicPointCloud path. **Class / acceptance:** engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - PNTS-MODEL-PATH-EDL-INERT / C11-86 (per-feature styling not realised on the dedicated renderer). **Seat diff:** touched in seat-worktree-snapshot 20261008-2106, not a fix: a comment-only hunk; the renderer hunks are point-size attenuation. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P43.C-327. Blueprint C-327 (EPIC-08). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 22): P43.C-327.
+
 - **`PARITY-POINTCLOUD-COLOR-TINT` (PROMOTED from candidate to FILED 2026-08-09) — TimeDynamicPointCloud renders 27-45% bright/blue with SESSION-DRIFTING magnitude, and the dedicated-path color decode is wrong for most formats.** The standing sprite gate is gain-normalized AROUND the divergence, so its green does not certify color. Decode residuals: RGBA misread at stride 3, RGB565 renders white, CONSTANT_RGBA ignored, translucency lost (`WebGPUPointCloudRenderer.ts:1125-1135,1661`). Fix the tint mechanism first, then de-normalize the gate. **DIAGNOSIS UPDATE (2026-08-09, C18-V2):** the divergence is WebGPU-side NON-DETERMINISM, not a constant tint — WebGL is invariant across the 2026-07-02 captures (gain 1.002) while WebGPU alone changed (0.755/0.728/0.710 between two captures of the same scene); only 1 of 4 historical WebGPU captures carries the tint; at HEAD the EDL-on leg measures gains 0.996 (absent). Metric blindness REFUTED (replaying the recorded gains under the suite rule yields 3.19-3.51% vs the 2.00% ceiling — the gate sees it). Caveat: the tinted capture may predate Batch 490 by two minutes (possibly uncommitted mid-dev code). Next action: reproduce the tinted state (EDL-OFF leg at HEAD, repeated runs); gate sensitivity floor noted at ~0.80 uniform gain — closing it needs a per-channel gain assertion. **Effort: M.**
 
   **LOCAL C18-P2 FIX IMPLEMENTED 2026-08-09; P1 REPEATABILITY GATE REMAINS.** The dedicated WebGPU path now decodes RGB, RGBA (including alpha), RGB565, and `CONSTANT_RGBA`; alpha is retained in the existing 40-byte point record and selects translucent pass/depth semantics in both default and GPU-LOD commands. The dynamic point-size/highlight state moved to the uniform payload, EDL preserves alpha, and source/constant/highlight-opacity changes invalidate both command families without re-evaluating an unchanged point-size style on the frame hot path. The paired offline browser gate now reports raw mismatch **0.15%**, downsampled mismatch **0%**, and gains `[1.002, 1.002, 1.002]`, with zero device errors. That run is strong default-RGB/sprite parity evidence, but it does not exercise the new RGBA/RGB565/`CONSTANT_RGBA` fixture matrix and does not satisfy C18-P1's required seven repeated same-session runs; do not close the historical nondeterministic-tint row yet.
@@ -7772,6 +7774,8 @@ Filed after the WebGPU-vs-WebGL ~50%-FPS investigation (Batch 717 root-cause + f
 
 - **S5-2-WASM-CONSUME-OR-RETIRE — OPEN.** **5 of 7 WASM bridges are dead** (built and shipped, no production consumer). Either wire the consumers or retire the bridges; carrying dead bridges costs build time, bundle size, and maintenance while returning nothing. Previously tracked ONLY as `C11-SEED-25`. Per the WASM strategy rules every bridge needs a JS fallback + `destroy()`/`free_buffer()`/version-check/SIMD detection, so retirement is the cheaper path for any bridge without a credible consumer. **Effort:** M. **Attached 2026-09-17 (Gemini-audit verification, record round 6):** two alignment defects inside the bridges this row gates now have measured evidence — `globe-terrain-02` (an odd vertex count makes the input byte count ≡ 2 mod 4) and `globe-terrain-03` (a 65×65 16-bit heightmap is 8,450 bytes, likewise ≡ 2 mod 4). In both, the output view's offset is unaligned, `Float32Array` rejects it, the `catch` logs and the decode silently falls back to JS. **They attach here rather than opening rows, because fixing alignment before this row is ruled is work on provisional code** — both bridges come from one commit and both still have zero consumers, which is this row's own premise. If the ruling is "consume", the pad-and-grow fix rides with the wiring; if "retire", it never needs writing. Note for whoever writes it: the audit's own proposed arithmetic overruns the arena by up to three bytes, because it never grows the total allocation. See `GEMINI_AUDIT_VERIFICATION_2026-09-17.md` §d.
 
+  **Evidence, 2026-10-09 Gemini audit triage:** Quantized-Mesh: WASM 4-Byte / 16-Byte Unaligned Float32Array Construction Failure (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P31.193, P49.C-362 (one defect; the later ids are duplicates). Blueprint C-193 (EPIC-06). **Where (a5b71fc17b):** `packages/engine/Source/Scene/WasmHeightmapBridge.js:186-198`; re-derived at `WasmHeightmapBridge.js:166-198`, `WasmQuantizedMeshBridge.js:134-177` **Code:** `const outPtr = ptr + byteCount; ... new Float32Array(memBuf, outPtr, sampleCount)` ... `_decodeWasm` **Verified:** WasmHeightmapBridge.js:166-198 does `const outPtr = ptr + byteCount; ... new Float32Array(memBuf, outPtr, sampleCount)`. A 65x65 Uint16 tile gives byteCount 8450 (2 mod 4), so the constructor throws RangeError; the error is caught and the JS fallback runs. P2: acceleration is lost and diagnostics over-report. **Severity as rated by the triage:** P2 **Class / acceptance:** engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - S5-2-WASM-CONSUME-OR-RETIRE (globe-terrain-02/03, the WASM alignment class). **Seat diff:** no hunk in the seat diff touches this defect. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P31.193, P49.C-362 (one defect; the later ids are duplicates). Blueprint C-193 (EPIC-06). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 13): P31.193; ADJUDICATION-25-30 (Meneltarma-a05, chunk 25): P49.C-362.
+
 **⚠ STALE-SNAPSHOT WARNING on the perf backlog.** `PERF_ARCH_DEEP_DIVE_2026-07-16.md` (69 code-anchored findings) is the most complete perf register, but treat it as a **historical snapshot, not current truth**: several findings have landed (S3-1→B698, S1-2→B695, S8-1/2/3→B702/704), its line anchors have drifted, and — decisively — **it does not contain the actual root cause of the reported deficit**, because its benchmark route never bound an `oceanNormalMap`. Re-verify any finding against HEAD before scoping it.
 
 ## 2026-07-06 — NS-LARGE-LAKE-WATER-MASK (BUG 3): flat Great Lakes = provider DATA limitation, NOT a shader gate
@@ -7940,6 +7944,8 @@ Filed after the WebGPU-vs-WebGL ~50%-FPS investigation (Batch 717 root-cause + f
 
 - **`WEBGPU-TIMEDYNAMIC-POINTCLOUD-TRUE-RESIDENCY-ACCOUNTING` — OPEN (filed 2026-08-09, adversarial C18-P2 review).** The closed row above correctly repaired zero accounting and restored source-geometry eviction, but its 165 KB figure is parsed-source bytes, not actual WebGPU residency. The dedicated renderer additionally retains a 40-byte-per-point expanded CPU record and GPU instance buffer, and may retain local XYZ SOA, visible-index/count/scan buffers, previous-frame TAA records, uniforms, and backend-owned pipeline/bind-group state. `TimeDynamicPointCloud.maximumMemoryUsage` therefore underestimates the WebGPU path by roughly 3–8× depending on LOD/TAA state and can retain more frames than the configured cap implies. Fix with an owner-reported backend residency contribution that changes on allocation/destruction/device generation without double-counting shared immutable layouts or decoded source bytes; eviction must consume one backend-neutral total. Acceptance: fixture matrix over base/LOD/TAA states reconciles reported bytes to fake-device allocations, drops on feature disable/eviction/recovery, never goes negative or double-counts shared state, and a bounded playback obeys `maximumMemoryUsage` on both renderers. Do not relabel the existing 165 KB browser value as GPU residency. **Effort: M.**
 
+  **Evidence, 2026-10-09 Gemini audit triage:** Point Cloud Memory: 17x Memory Accounting Underreporting Driving Uncapped GPU VRAM OOM (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P31.207. Blueprint C-207 (EPIC-08). **Where (a5b71fc17b):** `packages/engine/Source/Scene/PointCloud.js:626-640`; re-derived at `PointCloud.js:626-640`, `WebGPUPointCloudRenderer.ts:1273-1276` **Code:** `typedArray.byteLength` ... `_geometryByteLength = geometryByteLength` **Verified:** PointCloud.js:626-640 counts the parsed typed arrays, while WebGPUPointCloudRenderer.ts:1273-1276 uses 40 B per instance plus LOD/TAA buffers. On the default path memory is under-reported by ~2.7x, not 17x, and eviction still trips, only later. P2. **Severity as rated by the triage:** P2 **Class / acceptance:** engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - WEBGPU-TIMEDYNAMIC-POINTCLOUD-TRUE-RESIDENCY-ACCOUNTING (OPEN). **Seat diff:** no hunk in the seat diff touches this defect. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P31.207. Blueprint C-207 (EPIC-08). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 14): P31.207.
+
 - **NEW-WEBGPU-ATMOSPHERE-LUT-BGL-INCOMPAT** (M, surfaced Batch 373 per Principle 9) — now that `NEW-WEBGPU-COMPUTE-ENGINE-WIRING` (Batch 367) lit up the dormant compute paths, the SkyAtmosphere LUT bake actually DISPATCHES at runtime — and it emits a WebGPU validation error every frame it runs: `The current pipeline ([ComputePipeline "perfmgr:atmosphereLUT:computeTransmittance_Pipeline"]) was created with a default layout, and is not compatible with the [BindGroup "AtmosphereLUT_BG_Sun"/"AtmosphereLUT_BG_Moon"] ... that was not created by the pipeline` → an invalid `[CommandEncoder "SkyAtmosphere LUT dispatch"]` → uncaptured GPU error on Queue.Submit. So the `computeTransmittance` (and likely the other AtmosphereLUT entry points') pipeline is created with `layout: "auto"` while its bind group is built from an EXPLICIT `AtmosphereLUT_BGL` — the two layouts must match. **Repro:** any scene that triggers the sky-atmosphere LUT dispatch on `?renderer=webgpu` (seen in `probe-morph-normals.mjs`'s console gate: `fatal=4`). **Fix:** either build the AtmosphereLUT compute pipelines with an EXPLICIT `pipelineLayout` made from `AtmosphereLUT_BGL` (preferred — matches the extended MS/irradiance passes' group-1 pattern), OR build the bind groups from `pipeline.getBindGroupLayout(0)`. Check all `AtmosphereLUT.wgsl` entry points (`computeTransmittance`, `computeInscatter`, and the Batch-306 `computeMultipleScattering`/`computeIrradiance`) — the extended pair already uses an explicit group-1 BGL, so the bug is likely only in the original transmittance/inscatter write-path pipelines. NOTE: `probe-compute-engine-wired.mjs` (Batch 367) reported 0 errors — it likely didn't trigger the sun/moon AtmosphereLUT dispatch path, so this regression slipped through; that probe should be extended to assert the AtmosphereLUT dispatch is validation-clean. **Estimated effort:** 0.5 session. Visually inert today (the LUT is baked but `ENABLE_SKY_INSCATTER_LUT=false` gates the sky FS off the read — see `NEW-ATMOSPHERE-LUT-SUN-RELATIVE`), but the per-frame uncaptured GPU error is real console noise + a latent correctness landmine for when the LUT read is re-enabled.
 
 ---
@@ -7980,6 +7986,8 @@ Source of record: [audits/2026-06-11_ULTRA_REVIEW.md](audits/2026-06-11_ULTRA_RE
 - **NEW-CAPABILITY-GETTER-CODIFY** (A, A13 from the 2026-06-11 ULTRA_REVIEW) — ⚠️ NEARLY CLOSED (Batch 303). The capability-getter-per-feature convention (CLAUDE.md §2: Scene rendering logic branches on `context.supportsX`, never `isWebGPU`/`rendererType`) is the canonical replacement for backend branches; the 2026-05-02 audit migrated the 15-branch / 11-file backlog the 2026-04-30 audit found. Batch 303 swept Scene + non-renderer code for residuals: migrated the one branch that re-appeared after the audit — `ComputeInstanceCollection.js:542` `!context.isWebGPU` → `!context.supportsComputeShaders` (the CPU-fallback gate; the getter is the precise capability — a future WebGL compute extension flips it and skips the fallback automatically). **Remaining residuals are intentionally NOT migrated:** (1) `ViewportQuad.js:144` `if (context.isWebGPU)` — divides on shader-SOURCE FORMAT (WGSL `ShaderSource` vs GLSL) + uniform-map shape, which a capability getter can't express; it is BLOCKED on the Materials API per-backend shader-source virtual method (a separate workstream — `Material` must return per-backend sources). Surfaced per Principle 9 as the concrete next step for a true fix. (2) `isWebGPUDrawCommand` checks (`Scene.js:3038`, `:5030`) are a COMMAND property, not a context branch (the 2026-04-30 audit itself classified these as non-violations). (3) Debug/external queries (`CesiumDebug`, `SceneDebug` label, `Picking.js` pragma-wrapped one-time warning, the `getDebugSnapshot` label) are legitimate per CLAUDE.md §2 ("external/extension code CAN query context type"). (4) Renderer-layer construction dispatch (`Texture3D.js:87` returns a `WebGPUTexture3D`; `ContextFactory`/`ContextRegistry`/worker host pick the backend) is the resource/factory layer that is PERMITTED to know the backend. Verified: `grep` of `Source/Scene` + non-renderer code shows no remaining `isWebGPU`/`rendererType===` branch in rendering logic except the ViewportQuad blocker; `tsc --noEmit` 0 errors; collections-regression green.
 - **NEW-MATERIAL-PER-BACKEND-SHADER-SOURCE** (A, surfaced Batch 303 per Principle 9 — the blocker behind the last `NEW-CAPABILITY-GETTER-CODIFY` residual) — `ViewportQuad.js:144` (and any future `Material`-driven primitive on WebGPU) still branches on `context.isWebGPU` to pick between a WGSL `ShaderSource` + Float32Array uniform map and a GLSL `ShaderSource` + the material's `_uniforms` map. This CANNOT be expressed as a capability getter because the divergence is in the shader-SOURCE artifact itself, not a runtime capability. The clean fix: give `Material` a per-backend shader-source virtual method (e.g. `material.getShaderSource(context)` / `material.getUniformMap(context)`) so the caller is backend-agnostic and the WGSL/GLSL selection lives inside the material abstraction (mirrors how `GraphicsContext.createViewportQuadCommand` already virtualizes command creation). Until this lands, `ViewportQuad`'s single `isWebGPU` branch is the sanctioned exception. **Estimated effort:** 1 session (Material API surface + the ~3 built-in material shader pairs that have WGSL twins).
 
+  **Evidence, 2026-10-09 seat-diff review (G06 card 14, `ViewportQuad.js`):** the source comment at `packages/engine/Source/Scene/ViewportQuad.js:141` says a backend-agnostic fix "would require `Material` to return per-backend shader sources via a virtual method" and calls it "tracked under Materials API refactor in DEFERRED_WORK"; this row is that tracker, which is why the seat-diff review's corrected fix keeps the constraint in source as "until Material provides per-backend shader sources directly" and names no tracker document there (the snapshot's rewrite that restored the "tracked under ... in DEFERRED_WORK" wording was REJECTed because the comment guard flags a tracker-document mention). Re-read at `9457bc6bd4`: the `context.isWebGPU` branch is at `packages/engine/Source/Scene/ViewportQuad.js:144`; the WebGPU branch passes a fixed WGSL quad shader and a `materialUniforms` map that reads only `uniforms.color` (white when absent; `packages/engine/Source/Scene/ViewportQuad.js:150-152`), while the WebGL branch compiles the material's own `shaderSource` (`sources: [this._material.shaderSource, ViewportQuadFS]`, `packages/engine/Source/Scene/ViewportQuad.js:173`). That is a code reading, not a run, so what a non-trivial `Material` renders in a `ViewportQuad` on WebGPU is NOT-ESTABLISHED. It is a parity gap (Principle 5) and the row's own fix, a per-backend shader-source method on `Material`, closes it. Source: `SEAT_DIFF_REVIEW_2026-10-08.md` section 4.1 item 2 (G06 card 14, ViewportQuad) and section 4.2 (B3b).
+
 ### HIGH — Axis A (WebGPU vs WebGL)
 
 - **NEW-PICK-RAY-ASYNC** — ✅ sampleHeight/clampToHeight SHIPPED (Batch 284); pickFromRay (arbitrary ray) explicitly scoped out. Ray picks used the offscreen-render sync end()→stale-depth path on WebGPU. **History:** Batch 254 (FQ-5) landed only the honesty half — a `oneTimeWarning("WebGPU.rayPick.unsupported", …)` while all three still returned undefined. **Batch 284 makes the high-value half WORK:** `Scene.sampleHeight`/`Scene.clampToHeight` on WebGPU no longer route through the offscreen ray render (whose PickDepth instances never receive `update()`, and whose target depth is LOG-encoded against the MAIN camera, not the offscreen one). Instead `Picking._reconstructHeightSurfaceWebGPU` reuses the main scene's already-rendered depth: project the cartographic/cartesian target into the live view via `SceneTransforms.worldToWindowCoordinates`, reject off-screen positions, then read the surface beneath that pixel via `Picking.pickPositionWorldCoordinates` (the proven Batch-252 full-frustum log reconstruction). Same one-frame-stale sync-cache contract (cold query → undefined + arms readback → converges 1-2 frames). sampleHeight returns the reconstructed surface's height; clampToHeight returns the surface Cartesian3. Limitation: resolves only for positions currently visible in the view, and the reconstructed point lies on the CAMERA ray through the pixel (not the geodetic-normal ray) — near-nadir views match within a few metres, oblique views drift more. **pickFromRay over an ARBITRARY ray stays scoped out** (the offscreen object readback still works → hit object, but `position` is undefined): it now emits `oneTimeWarning("WebGPU.pickFromRay.noPosition", …)` instead of the old shared rayPick warning, and does NOT throw. Building arbitrary-ray async position would need an offscreen GlobeDepth pack + per-view async readback — a separate multi-day item; defer until a consumer needs it. Evidence: `probe-pick-ray-async.mjs` (new, canonical gate) — WebGPU sampleHeight cold→converge frame 1, dH 3.5 m vs WebGL, clampToHeight at exact (-75,40), pickFromRay undefined+warning no-throw, 0 errors; `probe-sampleheight-webgpu.mjs` rewritten from the SAFE-undefined assertion to the working-parity assertion; pickposition / model-pickposition / collections-regression / sandcastle-smoke all green.
@@ -8003,6 +8011,9 @@ Source of record: [audits/2026-06-11_ULTRA_REVIEW.md](audits/2026-06-11_ULTRA_RE
 - **NEW-BLOOM-UNIFORM-PARITY** — ✅ SHIPPED (Batch 240). Bloom mis-mapped WebGL brightness/contrast onto a luminance threshold (brightness default -0.3 fed as threshold → negative threshold passed EVERYTHING; default bloom bloomed 100% of the frame, measured 1842x WebGL's fraction). Fixed: `BrightPass.wgsl` rewritten as a 1:1 ContrastBias.glsl port (HSB brightness shift via czm_RGBToHSB/czm_HSBToRGB WGSL ports + contrast curve, clamped for HDR intermediates); all six uniforms (contrast/brightness/glowOnly/delta/sigma/stepSize) mapped through the configure path with a full dirty check; `updateConfig` now also rewrites the blur UBOs (delta/sigma/stepSize were init-baked); user stepSize scaled 0.5x for the half-res blur chain (one blur texel = 2 full-res px) so the screen-space footprint matches WebGL; composite intensity default 0.5 → 1.0 (WebGL's composite is plain `bloom + color`); removed the earlier-running FR-sync cache refresh that could mask the configure-pass dirty check. Verified (`probe-bloom-parity.mjs`): default-uniform bloomed-pixel fraction webgl 0.160% vs webgpu 0.161% (ratio 1.01x), glowOnly + brightness changes respond, 0 errors. **Divergences observed while stabilizing the probe (separate items):** WebGPU ground-level daytime sky-atmosphere far brighter than WebGL; WebGPU sun primitive absent at a ground-level 45°-elevation view; no-imagery globe baseColor darker on WebGPU + water-wave material missing.
 - **NEW-GROUND-VIEW-ENV-DIVERGENCES** — ✅ SHIPPED Batch 247. Three cross-backend environment divergences at a deterministic ground-level view, all root-caused and fixed; verified by `probe-ground-view-env.mjs` (webgl-vs-webgpu, same scene, numeric). **(3) no-imagery globe baseColor** — NOT an sRGB issue: `GlobeTerrain.wgsl` hardcoded `vec3(0.04,0.04,0.06)` (rgb 10,10,15) as the first-pass base instead of consuming `globe.baseColor`. Fix: wired WebGL's `u_initialColor` through a new `TileUniforms.initialColor` vec4 tail (`TILE_UNIFORM_FLOATS` 476→480, `INITIAL_COLOR_OFFSET` 476; packer reads `tileProvider.baseColor` first-pass / zero subsequent). Now exact rgb(31,38,51) = WebGL. **(2) sun disk missing** — the WebGPU sun command was pushed onto `frameState.commandList` (frustum-binned, executes BEFORE the env-injected skyAtmosphere DUPLICATE), so the alpha-over atmosphere shell (alpha≈1 at ground) erased the disk. Fix: Sun.js adopts the dual-path convention (push for frustum existence AND return for `environmentState.sunDrawCommand`) + SceneRenderer.js env-injection now dedupes against already-binned commands. Disk renders (atmoOn bright 0→1051 px) with the atmosphere-off control intact. **(1) over-bright ground sky** — three compounding non-parity bugs in the WebGPU sky path: (a) the inscatter-LUT fast path (`useLut`) bakes the world-space sun in a synthetic Y-up frame with no view-sun azimuth axis → frame-filling daytime blue; gated OFF (`ENABLE_SKY_INSCATTER_LUT=false`; bake retained for the globe fog drape, see NEW-ATMOSPHERE-LUT-SUN-RELATIVE); (b) the scattering shell used `innerRadius=maxRadius`, `outerRadius=×1.025` instead of WebGL's `(|cam|-eyeHeight)-radiusAdjust` + `+111e3` — re-ported exactly (the missing ~5 km radiusAdjust over-weighted the Rayleigh integrand ~1.7×); (c) the 64-step uniform march was MORE converged than WebGL's coarse 16/4 adaptive quadrature, so even with matching coefficients the sky read ~1.5× bright — `computeScattering` is now a 1:1 port of `czm_computeScattering` (adaptive `w_inside_atmosphere`/`w_stop_gt_lprl` steps + stride). Also switched the per-instance `atmosphere{Rayleigh,Mie}Coefficient/ScaleHeight/Anisotropy` reads (module constants had silently diverged from WebGL defaults). Result: ground-sky luminance ratio webgpu/webgl **1.73x → 0.99x**, value **1.46x → 0.99x**. No high-altitude regression (orbit limb halo unchanged vs HEAD; bloom-parity + orbital-catalog + globe-bindgroup-cache + ground-atmosphere + sandcastle-smoke all green). **Note:** the world-terrain water-mask wave material on WebGL-only is a separate item — that's `showWaterEffect`/ocean-wave material parity, tracked under the collections/material backlog, not closed here. Reproducer/evidence: `Tools/visual-regression/probe-ground-view-env.mjs` + `output/ground-view-env/*.png`.
 - **NEW-ATMOSPHERE-LUT-SUN-RELATIVE** (M, surfaced Batch 247 per Principle 9) — ✅ **KEYSTONE SHIPPED (Batch 428, A-LUT-REPARAM).** Rather than re-parameterize the EXISTING inscatter LUT in place (which the globe/voxel/splat/point-cloud + primitive fog-drape paths sample directly via `sampleAtmosphereFogLut` and are tuned against its `(cosViewZenith × altitude)` mapping — re-paramming it would break their output), a NEW sun-relative **sky-view LUT** (Hillaire 2020) was added alongside, baked by `AtmosphereLUT.wgsl::computeSkyView`. **Parameterization:** 2D `rgba16float` 256×128 texture; U = relative view↔sun azimuth `[0,π]→[0,1]` (sky mirror-symmetric about the sun meridian → half-plane covers all azimuths), V = view-zenith with the Hillaire non-linear horizon warp `V = 0.5 + 0.5·sign(l)·sqrt(|l|)` (resolves the horizon band). Sun zenith is passed observer-relative (`dot(sunDir, normalize(cameraWC))`) in the params `_pad2`→`sunCosZenith` slot — the world-sun `.y` is NOT the observer's sun elevation at arbitrary lat/lon, which was the dominant brightness bug during bring-up. The bake reuses the existing transmittance LUT + Rayleigh/Mie/ozone constants (only the table's domain mapping is new) and rides the existing group-1 extended bind group (added binding 6); dispatched chained after `computeInscatter` on every sun-direction change. **Opt-in:** `skyAtmosphere.useScatteringLut` (default `false`), threaded → `u.debug.z`; flag-off keeps the inline `czm_computeScattering` march. **Parity:** flag-off is **byte-identical** to pre-change (probe `probe-sky-view-lut.mjs off` stash-baseline diff = **0.0000% mismatch, maxDelta 0**) — the default path never samples the new LUT and the new bake writes a texture nothing reads. **Flag-on verified** across azimuths (toward/90°/anti-sun) at a fixed low sun: meridian horizon lum 205.8 vs inline 223.1 (close match), strong correct azimuthal variation (warm/bright near the sun → cool/dim anti-sun) the old table could NOT produce, no seams at the azimuth wrap, no f16 blowout, horizon resolved; 0 device errors (`probe-atmo-lut-no-device-error` GREEN). **Inscatter-LUT fast path** (`ENABLE_SKY_INSCATTER_LUT`) for the SKY shell stays OFF — the sky-view LUT is the sun-relative replacement; the old inscatter LUT remains the fog-drape source unchanged. **Remaining follow-ups (NOT in 428):** (a) re-parameterize the MS LUT (`computeMultipleScattering`) onto the sky-view domain so SKY-MS gets directional all-azimuth lift (today it's azimuth-flat → only a tiny ~0.4-lum veil add at off-meridian); (b) optionally fold the env-map / aerial-perspective MS source onto the sky-view param (Phase 2); (c) bake at >1 observer altitude (currently ground-level only). **Files:** `AtmosphereLUT.wgsl`, `WebGPUAtmosphereLUT.ts`, `SkyAtmosphere.wgsl`, `WebGPUSkyAtmosphereRenderer.js`, `WebGPUPerformanceManager.ts`, `Scene/SkyAtmosphere.js`, `probe-sky-view-lut.mjs` (NEW).
+
+  **Evidence, 2026-10-09 Gemini audit triage:** The legacy inscatter LUT is baked for an observer on the +Y axis and indexed with the world sun direction. **Findings:** P37.C-282. Blueprint C-282 (EPIC-07). **Where (a5b71fc17b):** `packages/engine/Source/Shaders/WebGPU/Compute/AtmosphereLUT.wgsl:259-282`; re-derived at `AtmosphereLUT.wgsl:259-264`, `WebGPUAtmosphereLUT.ts:368-370` **Code:** `cosAngle = dot(viewDir, params.sunDirection)` ... `vec3(0.0, params.innerRadius + altitude, 0.0)` **Verified:** AtmosphereLUT.wgsl:259-264 observer at (0, R+h, 0) with zenith +Y, and :280-281 `cosAngle = dot(viewDir, params.sunDirection)` using the world sun direction copied unchanged at WebGPUAtmosphereLUT.ts:368-370. Same default-path consumer as C-281. **Severity as rated by the triage:** P1 - Ground-fog sun colour on the default WebGPU path is computed for the sun elevation seen from the +Y meridian; visual, not a crash, and an opt-in observer-relative sky-view LUT already exists (NEW-ATMOSPHERE-LUT-SUN-RELATIVE). **Class / acceptance:** shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - NEW-ATMOSPHERE-LUT-SUN-RELATIVE (the legacy inscatter LUT frame is kept; the observer-relative LUT is opt-in). **Seat diff:** no hunk in the seat diff touches this defect. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P37.C-282. Blueprint C-282 (EPIC-07). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 19): P37.C-282.
+
 - **NEW-GROUND-ATMOSPHERE-DRAPE-LIMB-WIDTH** — ✅ **CLOSED (Batch 513, NEW-GLOBE-DRAPE-LIMB-CLOSEOUT, 2026-07-03).** The drape band itself measured AT PARITY: `probe-limb-halo-width` drape diagnostic reports WebGL=1 px vs WebGPU=1 px (delta 0) at the full-disc framing. The residual the epic was chasing was re-re-attributed to the **SkyAtmosphere shell**: `skyColorForRay` (`SkyAtmosphere.wgsl`) clipped planet-striking rays at the earth surface (`rayEnd = earthIntersect.x`), which (a) rendered the see-through disk interior as a solid daylight-blue disc whenever the globe surface didn't cover it (globe.show=false — latent since the original port, unmasked by the 2026-06-25 skybox-over-atmosphere draw-order fix, which is why Batch 327's shell gate had measured thin-rim "parity": the opaque skybox was hiding the disc), and (b) truncated WebGL's ~10 px limb extinction tail (shallow sub-limb chords marching through the planet with finite optical depth — the row-scan proved rim peak pixels byte-matched while WebGPU cut the tail: WebGL `204:(67,108,154) 205:(219,246,245) 206-209 bright tail` vs WebGPU dark from 206). **Fix (Batch 513):** march planet-striking rays through the planet like WebGL, with a −150 km underground sample-height floor in `computeScattering` (view + light rays) so the extinction is deterministic (WGSL exp() overflow is spec-indeterminate; WebGL rides f32 overflow to the same visual black). Above −150 km the math is bit-identical, so non-striking rays (every ray in a globe-covered default view) are unchanged. **Verified:** shell gate PASS WebGL=14 px vs WebGPU=16 px median (±6 px tol); drape diag 0 px; underground/translucency/colorgrading/polar/atmosphere probes green. Historical investigation under `NEW-VR2-3b-LIMB-HALO-RESIDUAL` below.
 - **NEW-POSTPROCESS-USER-WARN-PROD** — ✅ SHIPPED (Batch 290). User-supplied GLSL `PostProcessStage`s (no `wgslFragmentShader` uniform) are silently SKIPPED on WebGPU because the backend needs WGSL — the dropped stage produces no output and the user had no signal it didn't run. The `glslOnlyCount > 0` `oneTimeWarning("WebGPUPostProcessStageCollection.userStagesGLSL", …)` in `configureWebGPUPostProcessPipeline` was wrapped in `//>>includeStart('debug', pragmas.debug)`, so shipping (minified) builds stripped it and users got silence. Un-stripped: the warning is now PERMANENT (a real, user-actionable error per the CLAUDE.md logging rules — "Real errors must always reach the console"). `oneTimeWarning` is production-safe (only its internal `defined(identifier)` assert is pragma-stripped; the `console.warn` body runs in every build) and dedupes by identifier so it fires once, not per frame. Warning text clarified to say the stages are SKIPPED / produce no output. Verified: `probe-taa-userwarn.mjs` (NEW) — adding a GLSL-only PostProcessStage on a WebGPU scene emits exactly one `console.warn` containing "GLSL custom shaders are not transpiled" and does NOT crash; a WGSL-equipped stage emits no warning.
 - **NEW-MODEL-IBL-BRDF-LUT** — ✅ SHIPPED (Batch 287). The generated split-sum environment BRDF LUT (`WebGPUBrdfLutGenerator`, rg32float 256×256) is now bound into the model material bind group (new bindings 37/38 — `unfilterable-float` texture + `non-filtering` sampler, since rg32float isn't filterable without the optional `float32-filterable` feature) and consumed by `ModelPBRComplete.wgsl`'s ambient/IBL term. The specular IBL now uses the WebGL-matching split-sum form `radiance * FssEss` where `FssEss = Fr*lut.x + lut.y` (`Fr` = roughness-dependent Fresnel `f0 + (f90-f0)*(1-NdotV)^5`, `f90 = max(1-roughness, f0)`), and the diffuse IBL uses the Fdez-Aguera multi-scatter form `irradiance * (FmsEms + dielectricScattering)` — a 1:1 port of `ImageBasedLightingStageFS.glsl::textureIBL`. Replaces the prior `radiance * fresnelSchlickRoughness(...)` approximation that ignored the LUT and the energy-compensation terms. The BRDF LUT view is plumbed from `frameState.brdfLutGenerator._colorTexture._webgpuTextureView` (with a 1×1 scale=1/bias=0 placeholder in `WebGPUModelPipelineCache` until the generator runs, collapsing the term to `radiance*F0`). Verified: `Tools/visual-regression/probe-model-ibl.mjs` — WebGPU specular IBL matches WebGL within 8.5% (edge-dominated) at two camera angles, 0 device errors; model-pbr-audit (5 models) + model-aniso-ibl + collections-regression + sandcastle-smoke all green.
@@ -8024,6 +8035,9 @@ Source of record: [audits/2026-06-11_ULTRA_REVIEW.md](audits/2026-06-11_ULTRA_RE
   - **DESIGN DECISION (owner Q, 2026-06-11 — supersedes "all-or-nothing gate"):** the right target is **per-INSTANCE partial sub-range writes**, not the all-or-nothing rebuild. WebGPU's whole-buffer rebuild is O(N) per change-frame; for "micro-updates to tens of thousands of objects" (sparse changes in a huge collection) the fix is a **resident CPU instance array + `device.queue.writeBuffer(buf, K*stride, …, stride)` per changed instance** (O(changed), e.g. ~640 B for 10-of-50k vs 3.2 MB). This NEEDS the per-instance dirty list (`_billboardsToUpdate[0.._billboardsToUpdateIndex]`) — but does NOT need WebGL's per-ATTRIBUTE separate buffers (keep interleaved for draw-time cache locality; re-writing a changed instance's full 64 B record is fine). Extreme per-frame churn (100k+ all moving) → GPU-resident scatter via compute / storage buffer (no CPU round-trip). **Best home: a shared resident-instance-buffer manager with dirty-range tracking (pairs with NEW-COLLECTION-RENDERER-BASE), used by billboard/label/point.** Do probe-driven in a dedicated session after the step-0 re-touch fix.
   - **✅ CLOSED FOR BILLBOARDS (Batch 229):** the resident-instance manager shipped and the billboard renderer is wired onto it — see NEW-RESIDENT-INSTANCE-BUFFER-MGR / NEW-PARTIAL-WRITE-WIRE-BPL below. Static collections upload 0 bytes/frame; a single moved billboard uploads exactly 1×176 B.
   - **✅ CLOSED FOR POINTS + LABELS (Batch 232):** Point + Label wired onto the manager too (NEW-PARTIAL-WRITE-WIRE-BPL fully shipped). Remaining follow-up for this ID is only the structural fold into NEW-COLLECTION-RENDERER-BASE (P1-T6) — **DONE for Billboard + Point (Batch 302):** the manager lazy-create + the capture→sync→consume ordering are now single structural calls (`getOrCreateInstanceManager` + `syncInstancesAndConsume`) in the shared base. Label/Cloud/Polyline fold pending (next Phase-11 stage).
+
+  **Evidence, 2026-10-09 Gemini audit triage:** LabelCollection Full Rebuild & Megabyte VRAM Resync on Single-Glyph Mutation (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P7.26. Blueprint C-26 (EPIC-01). **Where (a5b71fc17b):** `packages/engine/Source/Renderer/WebGPU/WebGPULabelRenderer.js:1198-1205`; re-derived at `WebGPULabelRenderer.js:1198-1205` **Code:** `const glyphDirtyCount = glyphCollection._billboardsToUpdateIndex; const forceFullRebuild = glyphDirtyCount > 0 || ...` **Verified:** Re-derived. WebGPULabelRenderer.js:1198-1205 forces a full rebuild on any dirty glyph; the load-bearing comment at :1165-1178 documents why per-slot writes are unsound for glyphs. This is a documented trade of bandwidth for correctness, not an oversight. P2 (perf). **Severity as rated by the triage:** P2 **Class / acceptance:** engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - NEW-COLLECTIONS-DIRTY-GATE (label full rebuild recorded as deliberate). **Seat diff:** no hunk in the seat diff touches this defect. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P7.26. Blueprint C-26 (EPIC-01). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 02): P7.26.
+
 - **NEW-COLLECTIONS-LOG-DEPTH** — ✅ SHIPPED (Batches 249/250/251; master switch `_logDepthWriteEnabled` defaults TRUE — globe + depth plane + all five collections + compute-instance + Model PBR write csm log frag_depth; far-camera markers verified via NEW `probe-collections-far-camera.mjs`: 220 km camera, billboards/points 1000 m above a visible globe render WITHOUT disableDepthTestDistance, below-ground negative control stays occluded, kill-switch leg reproduces the historical vanish; remaining hyperbolic writers tracked under NEW-LOG-DEPTH-REMAINING-PRODUCERS below). **Batch 253 follow-up fix:** the slice-1 depth-plane `[ld]` pipeline was never actually creatable — Batch 249 left the BGL at `Stage.VERTEX` while the [ld] FS reads `logDepthParams.z` ("Entry point's stage (Fragment) is not in the binding visibility" at creation; same class as the Batch-250 ComputeInstanceRender widening). Unexercised by every other gate because their scenes run `useDepthPlane=false`; caught by the final-sweep re-run of probe-globe-default-limits (the one standing gate that instantiates the depth plane). Widened to `Stage.VERTEX_FRAGMENT` — default-limits errors 1→0, see WEBGPU_DEBUGGING_LOG Batch 253. Original entry (M, found Batch 229) — WebGPU collections (and the globe — see the Batch 180 note: "the WebGPU globe writes hyperbolic NDC depth") write STANDARD hyperbolic clip depth; WebGL billboards/points go through czm log-depth. With near=0.1/far=1e10, a billboard 1000 m above the ground viewed from a 220 km camera is ~0.03 depth-quantization steps (0.1·Δd/d² vs 2⁻²⁴) from the globe surface — an unresolvable z-tie, so whether the billboard wins the less-equal test is per-tile rounding luck. Reproduced deterministically in probe development (Batch 229): a billboard moved out of its cluster at 220 km vanished on WebGPU under BOTH the partial-write path AND a forced full rebuild, while WebGL rendered it; at ≤ ~10 km camera range (≥ ~17 steps of separation) it renders deterministically. Same root family as NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION (`storedDepth ≈ 0.9999997` cancellation). Fix = port czm log-depth (vertex `log2(1+w)` write + matching globe encode) to the collection + globe pipelines together — encodings must match or everything z-fights.
 - **NEW-COLLECTIONS-TAA-GATE-DORMANT** — ✅ SHIPPED (Batch 234). `Scene.updateFrameState` now publishes ONE canonical `frameState.taaEnabled` (mirror of `scene.taaEnabled`; declared on `FrameState.js` + `CesiumFrameState` in cesium-js-types.d.ts), and ALL velocity-emission gates read it: the broken `frameState.scene?.taaEnabled` spelling was switched in Billboard/Label/PointPrimitive/Polyline (JS) + Cloud/PointCloud(×2)/Voxel/GaussianSplat (TS, casts removed); the Model/GroundPrimitive/GroundPolyline/Vector3DTile* renderers already read `frameState.taaEnabled` and went live with the same publication. **First-time-execution fix that surfaced (same batch):** the documented `Scene.taaEnabled` ↔ MSAA incompatibility was never enforced, and the velocity pass pairs the single-sample rg16float velocity texture with the scene depth attachment — 4x-multisampled by default → pass-killing attachment-sample-count validation error. `WebGPUSceneRenderer.prepareFrame` now forces effective samples to 1 while TAA is on (`scene.msaaSamples` untouched; existing drift detection restores it on toggle-off). Verified (probe-taa-velocity-emission.mjs, OFF→ON→OFF): OFF 25f → no velocityCommand, velocity texture unallocated, msaa=4; ON 60 moving frames → billboard+point velocityCommand attached with 2 vertex streams (current + slot-aligned prev mirror), velocity texture allocated (pass ran), msaa=1, **0 console/validation errors on the first-ever execution of the collection velocity pipelines**; OFF 10f → commands detach, msaa back to 4. Regression: probe-billboard-partial-write, probe-point-label-partial-write, probe-orbital-catalog, probe-compute-instance-generic all PASS. Remaining dormancy in the same family is the TAA effect itself — see NEW-TAA-EFFECT-NEVER-ADDED below.
 - **NEW-TAA-EFFECT-NEVER-ADDED** — ✅ SHIPPED (Batch 244; found Batch 234 while activating the velocity gates). `configureWebGPUPostProcessPipeline` now lazy-adds the TAA effect on the first `scene.taaEnabled` frame (gated on the LIVE `pipeline.taaEffect` slot — not a sticky cache flag — so it transparently re-adds after HDR-toggle/resize/device-loss pipeline recreates), bypasses cleanly on toggle-off (`enabled=false`; instance + history kept, `resetHistory()` invalidates stale history on the off→on rising edge), and `addTAA` allocates against `_intermediateFormat` (rgba16float in HDR — same Batch 225 rule as bloom/AO/DoF). TAA also joined the pipeline's recreate-reset list + `destroy()` teardown. Insertion order kept pre-tonemap per the pipeline header (Audit B.16/Batch 155); the pre- vs post-tonemap clamp retune decision is now RESOLVED under NEW-TAA-PIPELINE-ORDER-RECONCILE (Batch 290 — pre-tonemap confirmed correct, clamp constants already domain-correct, no retune). **First-ever activation surfaced three latent bugs, all fixed same batch:** (1) `TAA.wgsl` compile error — `textureSampleLevel(texture_depth_2d, …, 0.0)` needs an INTEGER mip level; (2) TAA_Pipeline creation rejected — TextureSampleType::Depth statically paired with a Filtering sampler; added a dedicated non-filtering nearest `depthSampler` (binding 7, NEW-4-B Batch 66 pattern). Neither error reached the console (caught via explicit `pushErrorScope` — see `diag-taa-black.mjs`); (3) `WebGPUContext.updateAndClearFramebuffers` fed the G-buffer the RAW `scene.msaaSamples` instead of the TAA-effective `context._msaaSamples`, leaving the Phase8a normal-roughness MSAA x4 attachment in the otherwise single-sample scene pass → attachment-sample-count validation kill → black canvas whenever TAA was on. Also fixed the related dormant gate: `WebGPUEnvironmentRenderer.js` moon snapshot-freezable registration read `frameState.scene` (never populated; same Batch 234 bug class) — `Scene.updateFrameState` now publishes canonical `frameState.snapshotMode` and the moon gate reads it. A debug-pragma `resolveCount` on `WebGPUTAAEffect` proves the resolve pass encodes. Verified: `probe-taa-resolve.mjs` (NEW) OFF→ON→OFF — OFF: no effect/no velocity/msaa=4; ON: effect added+enabled, resolveCount 29→60 across 60 moving frames, velocity attached, msaa=1, settled consecutive-frame diff 0.054% (<1%), camera-rotation moved-frame diff 0.506% (>4x settled, image follows within a frame) with billboard pixel count 2422→2443 (no ghost doubling), 0 console errors; OFF: bypassed, counter frozen, msaa restored. Regression: collections-regression, taa-velocity-emission, compute-instance-generic, billboard-partial-write, bloom-parity, orbital-catalog, globe-bindgroup-cache, sandcastle-smoke all PASS.
@@ -12906,6 +12920,7 @@ These are areas the webgpu-morph-review audit did NOT examine — flagged as lik
 >   - **Standing guard:** `Tools/visual-regression/collection-depth-override-law.spec.mjs`
 >     (`npm run test-visual-probe-contracts`) executes the real WGSL and GLSL blocks over a 252-sample
 >     clip-space grid and requires one fragment outcome from both backends, with an inertness mutant per shader.
+>   - **Evidence, 2026-10-09 Gemini audit triage:** Polyline disableDepthTestDistance Setting z = w Sending Geometry to Far Plane (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P34.C-239. Blueprint C-239 (EPIC-05). **Where (a5b71fc17b):** `packages/engine/Source/Shaders/WebGPU/Collections/PolylineCollection.wgsl:207-214`; re-derived at `PolylineCollection.wgsl:213` **Code:** `finalPos.z = finalPos.w;` **Verified:** PolylineCollection.wgsl:213, :217 and :224 set `finalPos.z = finalPos.w;`, which puts the line on the far plane. The ledger holds this divergence deliberately (AR-D09/AR-896). P2. **Severity as rated by the triage:** P2 **Class / acceptance:** shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - AR-D09 / AR-896 (held divergence; collection-depth-override-law.spec.mjs is the guard). **Seat diff:** no hunk in the seat diff touches this defect. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P34.C-239. Blueprint C-239 (EPIC-05). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 16): P34.C-239.
 > - **Bug 4 / LABEL-SPECIFIC (FIXED — Batch 219) — glyph atlas never uploaded + glyph BV degenerate.** Labels were 0 even at close camera in 3D *after* bugs 1+3. Root cause: `LabelCollection.update()` delegates glyph rendering to the dedicated `WebGPULabelRenderer` (SDF) and **returns before calling `glyphBillboardCollection.update()`** — so the billboard shared-scene-logic prologue (texture-atlas GPU upload schedule + `_baseVolume`/`_boundingVolume` computation) never ran for the glyph collection. Result: the SDF pass sampled the 1×1 placeholder atlas (→ discard every fragment) AND the glyph draw command carried the radius-0 BV (→ frustum-culled). Fix: extracted the shared prologue into `runSharedSceneLogic()` + a public `BillboardCollection.prepareForFeatureRenderer(frameState)` (prologue + `computeBoundingVolumeForFeatureRenderer`, no draw emission); `LabelCollection.update()` now calls it on the glyph + background collections before `labelFR.update()`. Verified: label "X" renders at close camera in 3D (251 lime px, was 0). (`BillboardCollection.js`, `LabelCollection.js`.)
 > - **Bug 2 + Bug 5 (OPEN — UNIFIED ROOT CAUSE, diagnosed Batch 220) — the collection camera UB is packed ONCE per frame with ONE frustum's projection, but the scene renders in MULTIPLE depth frustums.** This single root cause explains BOTH the far-camera-3D failure (was mislabeled "bug 2 = log-depth") AND the total 2D/CV no-render ("bug 5").
 >   - **Evidence (`probe-billboard-2d-debug.mjs`, SCENE2D):** the billboard command is NOT culled (`bvVisibility=1`, in command list) and `_actualPosition` IS correctly projected (0, −8.35 Mm, 4.45 Mm). But the manually-computed `clip.z = 7.289` (WebGPU clip range is [0,1] → DEPTH-CLIPPED). The scene has **`numFrustums = 9`**; the billboard's eye-space depth is **−12,756,274**; the camera UB was packed with **frustum 0** (`near=1, far=1,750,001`). `12.75M / 1.75M ≈ 7.28` = exactly the measured clip.z. So in the frustum the billboard actually belongs to (frustum 8: near 12.76M / far 14.51M), it is rendered with frustum-0's projection → clipped.
@@ -13180,6 +13195,8 @@ restart translation that actually finds a sentinel, or non-indexed synthesis.
 4. **Vertex-stage voxel customShaders not supported** (WebGL voxels don't run user vertex code either — proxy geometry is renderer-owned; parity holds, noted for completeness).
 
 **Files:** `Renderer/WebGPU/WebGPUVoxelCustomShaderCodegen.ts` (new), `Renderer/WebGPU/WebGPUVoxelRenderer.ts` (nested ifdef + resolve/patch seam), `Renderer/WebGPU/WebGPUShaderDefines.ts` (bit 29), `Tools/visual-regression/probe-voxel-user-customshader.mjs` (new gate). **Trace:** 2026-07-02.
+
+**Evidence, 2026-10-09 Gemini audit triage:** Custom Shaders with Uniforms Rejected and Multi-Property Voxel Metadata Dropped (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P34.C-248. Blueprint C-248 (EPIC-06). **Where (a5b71fc17b):** `packages/engine/Source/Renderer/WebGPU/WebGPUVoxelCustomShaderCodegen.ts:113-126 ,  148-167` - the audit citation is stale; verifier: Renderer.ts:962-972 holds the WGSL accumulation branch; the uniforms guard is at 1492; re-derived at `WebGPUVoxelCustomShaderCodegen.ts:113-126` **Code:** `if (voxelUserShaderHasUniforms(customShader)) { ... oneTimeWarning("WebGPUVoxel.customShaderUniforms", "... uniforms are not supported on the WebGPU backend yet ... default gray shading"); return null; }` **Verified:** Documented limitation: custom shaders with uniforms are rejected with a oneTimeWarning and fall back to gray, and only property 0 is bound (WebGPUVoxelCustomShaderCodegen.ts:113-126, :148-167). P2. **Severity as rated by the triage:** P2 **Class / acceptance:** engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - VOXEL-USER-CUSTOMSHADER-RESIDUALS. **Seat diff:** no hunk in the seat diff touches this defect. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P34.C-248. Blueprint C-248 (EPIC-06). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 17): P34.C-248.
 
 - **NEW-GLOBE-DAYTIME-OCEAN-BRIGHTNESS** — ✅ SHIPPED (Q10, 2026-07-04). Root cause was NEITHER glint NOR atmosphere daylight brightness (both red herrings from the original triage) — it was the ocean **`diffuseHighlight`** term in `GlobeTerrain.wgsl::computeEnhancedOcean` being **zeroed on every daytime fragment**. WebGL `computeWaterColor` (GlobeFS.glsl L830) applies `diffuseHighlight = waveHighlightColor(0.3,0.45,0.6) * NdotL * mask * (1.0 - fade)` where `fade` is the **atmosphere camera-distance fade** (L428 = `clamp((cameraDist - lightingFadeOut)/(lightingFadeIn - lightingFadeOut),0,1)`) — 0 at close/mid range → full bluish highlight. The WGSL called `computeEnhancedOcean(..., dayFade, ...)` passing the **day/night TERMINATOR fade**, which `fragmentMain` forces to `1.0` whenever `enableLighting` is off (the DEFAULT) → `highlightFade = 1 - 1 = 0` → the highlight vanished, leaving the ocean ~4x darker (deep navy vs WebGL bright blue) at mid-range while night stayed at parity (NdotL≈0 kills the highlight for both). **Fix (2 hunks, WGSL-only, GLSL already correct):** (1) call site passes `tile.groundAtmosphereControl.y` (the identical lightingFade clamp, packed per-tile) instead of `dayFade`; param renamed `dayFade`→`lightingFade`. (2) `tsPerturbationRatio` now derives from the **distance-faded** tangent normal `normalize(vec3(waveN.xy * waveIntensityFade, waveN.z)).z` (matching WebGL L818-819 `normalTangentSpace.xy *= waveIntensity`) — WITHOUT this, correcting hunk (1) unmasked a latent bug where `nonDiffuseHighlight` (peaks as NdotL→0) blew the NIGHT ocean out to saturated cyan (lum 28→208), because the raw `waveN.z` never faded to 1 at orbit. **Verified** (`diag-daytime-ocean-tmp.mjs`, pinned clocks, caribbean-mid `-70.1037,18.485,2000000`): DAY gpu-vs-gl **91.0% → 2.05%** (WebGPU lum 46.4→116.5 vs WebGL 117.3); NIGHT **1.04%** preserved (28.3 vs 29.5); PNGs read — day ocean now bright blue with visible sun-glint bloom, night correctly dark. Off-gate: change is confined to reflective-ocean water fragments (`tile.flags.x>0.5 && waterMask>0.01`); land/non-globe byte-identical; tsPerturbationRatio hunk is byte-identical at close zoom where `waveIntensityFade≈1`.
 
@@ -13621,6 +13638,9 @@ slice — each needs its own oracle before any code change (Principle 9):
   OIT+splats scenes. Behavior unchanged by C9-07 (the resume now first-opens with clear instead of
   loading the beginFrame clear — identical bytes). Needs a splats+OIT visual probe before redirecting
   to `_resumeScenePass`.
+
+  **Evidence, 2026-10-09 Gemini audit triage:** `WebGPUSceneRendererTranslucentPass` Invokes `context.resumeDefaultRenderPass()` Instead of `host._resumeScenePass()`, Diverting Subsequent Render and Post-Processing Passes to the Canvas Swapchain (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P46.C-344. Blueprint C-344 (EPIC-05). **Where (a5b71fc17b):** `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererTranslucentPass.ts:300`; re-derived at `WebGPUSceneRendererTranslucentPass.ts:299-303` **Code:** `// Resume the default render pass for subsequent work. context.resumeDefaultRenderPass?.(); ... executeDeferredSplatsInline(); return;` ... `_webgpuOITEnabled = false` **Verified:** WebGPUSceneRendererTranslucentPass.ts:299-303 calls context.resumeDefaultRenderPass (canvas pass) then draws deferred splats inline. **Severity as rated by the triage:** P2 - Only on the default-off WebGPU MRT OIT containment flag; already ledgered (NEW-WEBGPU-OIT-DEFERRED-SPLAT-CANVAS-RESUME). **Class / acceptance:** engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - NEW-WEBGPU-OIT-DEFERRED-SPLAT-CANVAS-RESUME. One owner with P37.C-259: the WebGPU OIT translucent pass. **Seat diff:** no hunk in the seat diff touches this defect. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P46.C-344. Blueprint C-344 (EPIC-05). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 23): P46.C-344.
+
 - **`NEW-SCENEOCTREE-DIRTY-REVISION-REBUILD-AND-PVS-PROMOTION`** — C9-08 landed the default-path
   demand gate (material-sort maintenance is now zero-work with no consumer; SceneOctree/OcclusionCulling
   stay call-site-gated to zero work at defaults). The remaining C9-08 acceptance clause — "enabled
@@ -15389,6 +15409,8 @@ DPR, asymmetric projection, split viewport, edge clipping, and RTE culling
 boundaries; even-aperture/WebGL logical-padding fixes; shared transient-target
 design; edge candidates; classification checkpoints; and broader producers.
 
+**Evidence, 2026-10-09 Gemini audit triage:** Interactive Snapping Deadlock, Continuous Dropped Reads & Event Starvation in `WebGPUSnapFramebuffer` (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P58.C-446. Blueprint C-446 (EPIC-01). **Where (a5b71fc17b):** `packages/engine/Source/Renderer/WebGPU/WebGPUSnapFramebuffer.ts:160-166`; re-derived at `WebGPUSnapFramebuffer.ts:166` **Code:** `_stagingBuffer` ... `_readbackInFlight` **Verified:** Re-read WebGPUSnapFramebuffer.ts:166 (MAX_PRIOR_CURSOR_DELTA_PIXELS = 2) and :1037-1048 (single in-flight readback, cleared on every exit). The documented cold-snap contract applies, and there is no deadlock. P2: UX enhancement. **Severity as rated by the triage:** P2 **Class / acceptance:** engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - UP144-SNAP-WEBGPU (a cold snap while the cursor moves is the recorded design). **Seat diff:** no hunk in the seat diff touches this defect. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P58.C-446. Blueprint C-446 (EPIC-01). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 30): P58.C-446.
+
 ### UP144-SNAP-WEBGPU-EDGES — edge snap candidates on WebGPU
 
 **Status:** IMPLEMENTED (Batch 821) — **browser acceptance gate OWED** (do NOT
@@ -15506,6 +15528,8 @@ an RG32Uint pipeline variant attached via `attachSnapToColorCommand`. The pass
 executor already visits GLOBE / CESIUM_3D_TILE / VOXELS / OPAQUE /
 GAUSSIAN_SPLATS / TRANSLUCENT in the payload phase, so no routing change would
 be needed — only the per-renderer variant.
+
+**Evidence, 2026-10-09 Gemini audit triage:** Snapping Blind Spot on Terrain Tiles, Vector Geometries, and Classification Primitives (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P58.C-448. Blueprint C-448 (EPIC-05). **Where (a5b71fc17b):** `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPickPass.ts:867-936`; re-derived at `WebGPUSceneRendererPickPass.ts:985-996` **Code:** `executeSnapPayloadBatch` ... `const dispatched = selectCommandVariant(command, scene, true, true); if (dispatched === command || dispatched.isWebGPUDrawCommand !== true) continue;` **Verified:** Re-read WebGPUSceneRendererPickPass.ts:985-996: commands without a snap variant are skipped. This is upstream scope (DrawCommand.js snapId). P2. **Severity as rated by the triage:** P2 **Class / acceptance:** engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a capture through lib/capture.mjs (BEFORE/AFTER) judged against the expected analytic or authored result, because WebGL shares the behaviour and cannot be the reference. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - UP144-SNAP-WEBGPU-NON-MODEL (upstream scope). **Seat diff:** no hunk in the seat diff touches this defect. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P58.C-448. Blueprint C-448 (EPIC-05). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 30): P58.C-448.
 
 ### UP144-VECTOR-LAYER-WGSL — clamped vector-tile polylines WGSL twin
 
@@ -17067,6 +17091,8 @@ exist yet). **Impact:** unmeasured. Two of the four renderers are the ones the
 Q15 stencil rearchitecture went through, so the blast radius is real and the
 acceptance lane is the gating cost, not the edit.
 
+**Evidence, 2026-10-09 Gemini audit triage:** Depth-sample classifier renderers bin classification and ignore-show commands one Pass slot low. **Findings:** P4.18, P10.37, P34.C-242, P55.C-409, P49.C-377 (one defect; the later ids are duplicates). Blueprint C-18 (EPIC-05). **Where (a5b71fc17b):** `packages/engine/Source/Renderer/WebGPU/WebGPUVector3DTilePrimitiveRenderer.js:1487-1492, 1643-1648` - the audit citation is stale; verifier: Citation 35-38 holds the quoted docstring but the docstring is stale (picking exists at :166,:267,:349,:548,:1368). 105-115 correct.; re-derived at `WebGPUVector3DTilePrimitiveRenderer.js:1491`, `Pass.js:22-25`, `WebGPUGroundPrimitiveRenderer.js:2416`, `GroundPrimitive.js:178`, `WebGPUVector3DTilePrimitiveRenderer.js:1487-1491` **Code:** `groundPasses.includes(` ... `passEnum === Pass.CESIUM_3D_TILE` **Verified:** Re-derived. WebGPUVector3DTilePrimitiveRenderer.js:1491 pushes Pass.CESIUM_3D_TILE (6) and :1647 uses CESIUM_3D_TILE_CLASSIFICATION (7) for ignore-show (Pass.js:22-25). Same defect family as P10.37, so ONE OWNER should take all four classification renderers. :1509 `groundPasses.includes(` and :1574 `passEnum === Pass.CESIUM_3D_TILE` key off the current value, so a partial fix such as Gemini's selects the wrong pipelines. **Severity as rated by the triage:** P1 (adjudicators split 4x P1, 1x P2; rule: majority, ties to the higher) **Class / acceptance:** engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (OPEN; needs a browser lane). One owner with P55.C-411, P55.C-410: classification (pass slots, ignore-show, GroundPrimitive containment); C-411 is sequenced after the slot fix. **Seat diff:** incomplete candidate in seat-worktree-snapshot 20261008-2106: the pass pushes move in all four renderers, but :1507 includes(Pass.CESIUM_3D_TILE) and :1574 passEnum === Pass.CESIUM_3D_TILE are untouched, so the tileset mark pipeline would no longer be selected. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P4.18, P10.37, P34.C-242, P55.C-409, P49.C-377 (one defect; the later ids are duplicates). Blueprint C-18 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 02): P4.18; ADJUDICATION-01-06 (Meneltarma-a01, chunk 03): P10.37; ADJUDICATION-13-18 (Meneltarma-a03, chunk 17): P34.C-242; ADJUDICATION-25-30 (Meneltarma-a05, chunk 28): P55.C-409; ADJUDICATION-25-30 (Meneltarma-a05, chunk 26): P49.C-377.
+
 ### NEW-SPLAT-LOG-DEPTH-ENCODE-SOURCE-SPLIT
 
 **Status:** OPEN (latent hazard) — **EXONERATED AS THE CAUSE of `NEW-SPLAT-DEPTH-ENCODE-MISMATCH-VS-GLOBE`, Batch 888.** The decider run returned all three baked triples EQUAL (splat = globe = `[0.1, 1e10, 0.030102999566280455]`; collection `[0.1000000015, …]`, an f32 round-trip of the same value), so the split does not currently BITE — nothing re-slices `currentFrustum` between the globe's per-tile pack and the splat's, and both land on the camera frustum. The real cause was command BINNING; see `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE` / `C15-G6h`. **The split itself is still real and still worth closing:** it is a latent trap that becomes a live defect the moment any producer packs on the far side of a `_updateFrustumUniforms` call, and the collections fleet's own comment already describes that failure mode. Downgraded from prime suspect to hazard. Everything below stands as the analysis of the split, with the caveat that its "prime suspect" framing was superseded by measurement — *a hypothesis that six renderers agree with is still a hypothesis.*
@@ -17551,6 +17577,8 @@ So the row's "~10^5 energy" warning understates the problem: that radiance does 
 
 **Status: OPEN / LOW (default-off).** `Shaders/WebGPU/PostProcess/BrightPass.wgsl` is NOT the curve C12-19 retuned - it is a port of `ContrastBias.glsl`, the global `scene.bloom` stage, which is default-OFF on both backends. Its body does an HSB round-trip, a contrast curve about mid-grey and a final `clamp(0, 1)`; at the WebGL defaults (contrast 128, brightness -0.3) any input whose HSB value exceeds ~1.0 already lands above 1 and clamps, so under HDR the whole stage is a binary mask rather than a graded extraction. The WebGL twin (`ContrastBias.glsl` inside `PostProcessStageLibrary.createBloomStage`) has the same shape, so this is NOT a cross-backend divergence - it is a shared SDR-shaped stage that HDR outgrew. Fix shape: a radiance-aware knee mirroring `SolarDiscModel.solarBrightPassTuning`, applied on BOTH backends together, gated so the SDR position stays byte-identical. Not scoped into C12-19 because the stage is off by default and the row's named target was the sun bloom's bright pass.
 
+**Evidence, 2026-10-09 Gemini audit triage:** Post-Processing: Explicit HDR Radiance Truncation Clamping Bloom to SDR (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P10.42, P37.C-278 (one defect; the later ids are duplicates). Blueprint C-42 (EPIC-05). **Where (a5b71fc17b):** `packages/engine/Source/Shaders/WebGPU/PostProcess/BrightPass.wgsl:86-90`; re-derived at `BrightPass.wgsl:89`, `BrightPass.wgsl:82-89` **Code:** `sceneColor = clamp(sceneColor, vec3<f32>(0.0), vec3<f32>(1.0));` ... `clamp(sceneColor, 0, 1)` **Verified:** Re-derived. BrightPass.wgsl:89 clamps to (0,1), with the parity comment at :85-88; scene.bloom is off by default; the ledger row C12-19-WEBGPU-GLOBAL-BLOOM-BRIGHTPASS-SDR-SHAPED is OPEN/LOW. This is parity behaviour, kept as the ledgered LOW item. GEMINI DIFF HAZARD: replacing the clamp with max(.,0) breaks WebGL parity and changes the default bloom look. **Severity as rated by the triage:** P2 **Class / acceptance:** engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - C12-19-WEBGPU-GLOBAL-BLOOM-BRIGHTPASS-SDR-SHAPED (OPEN/LOW). **Seat diff:** HAZARD in seat-worktree-snapshot 20261008-2106 (do not land as is): replaces the clamp with max(0): breaks WebGL parity and the bloom look; the ledger row asks for a both-backend knee with SDR byte identity. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P10.42, P37.C-278 (one defect; the later ids are duplicates). Blueprint C-42 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 03): P10.42; ADJUDICATION-19-24 (Meneltarma-a04, chunk 19): P37.C-278.
+
 ### C12-19-SUNPOSTPROCESS-HDR-STAGE-VRAM - the HDR datatype fix costs three full-resolution half-float targets (FILED 2026-08-07, CO-26)
 
 **Status: OPEN / LOW (measure).** Closing the `SunPostProcess` 8-bit vacuity blocker means stages 4, 5 and 6 (full resolution, no `textureScale`) plus the pipeline's own scene framebuffer now allocate `HALF_FLOAT` instead of `UNSIGNED_BYTE` whenever `highDynamicRange` is on. Estimated at 1920x1080 that is about +25 MB of VRAM, HDR-only, and it buys the frame back its HDR range end-to-end. Stages 0-3 run at 0.125 scale and are negligible. Not measured on hardware. If it ever matters, stages 1-3 could stay 8-bit (their output is `brightness = b/(offset+b)`, bounded below 1 by construction) while stage 0 and stages 4-6 must remain HDR - stage 0 because it is the bright pass's only view of the scene, and 4-6 because they carry the composite back to the scene framebuffer.
@@ -18005,6 +18033,8 @@ ANY scene that uses more than one imagery pass, which the default night layer of
 `R-2026-08-28-3`/`-8`/`-9` now plausibly makes the common case. Losing its supporting role
 in a gate investigation removes a reason to look at it soon; it removes no part of the
 finding.
+
+**Evidence, 2026-10-09 Gemini audit triage:** Layer 4+ Multitier Subsequent Pass Early-Return Skips All Lighting, Night Darkness, Shadows & Fog (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P7.19, P34.C-231 (one defect; the later ids are duplicates). Blueprint C-19 (EPIC-09). **Where (a5b71fc17b):** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl:5491-5494`; re-derived at `GlobeTerrain.wgsl:5491-5494` **Code:** `// Subsequent passes only apply imagery - skip all effects` ... `if (isSubsequentPass) { return makeFragOutput(vec4<f32>(color, alpha), normalEC); }` **Verified:** Re-derived. GlobeTerrain.wgsl:5491-5494 returns early on isSubsequentPass, before the globe material, eclipse and cloud shadow, the enableLighting Lambert term and fog. The verifier's night-lights scope correction stands. P2. **Severity as rated by the triage:** P2 **Class / acceptance:** shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - NEW-SUBSEQUENT-PASS-IMAGERY-SKIPS-ECLIPSE-AND-CLOUD-SHADOW (OPEN; the Lambert/terminator arm is not named there). **Seat diff:** no hunk in the seat diff touches this defect. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P7.19, P34.C-231 (one defect; the later ids are duplicates). Blueprint C-19 (EPIC-09). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 02): P7.19; ADJUDICATION-13-18 (Meneltarma-a03, chunk 16): P34.C-231.
 
 ## 2026-08-28 - NEW-C12-29-S5-GATES-REQUIRE-A-BUILD-AND-EXCEED-A-BOUNDED-LANE (filed by the C12 close-out sprint, lane C12X) — **OPEN, instrument/preflight only, no product claim.**
 
@@ -21529,6 +21559,8 @@ for several fixes), then leaks, tooling contracts, the scheduler lane, demos, pe
 | instrument scope | 5 | `webgpu-scene-fr-20` clean-listed files carry banned markers **inside WGSL template literals the guard cannot see** · `build-thirdparty-18` `lint-debug-pragmas` scans 278 of about 1,508 engine files · `webgpu-scene-fr-21` a live `GPUBindGroupLayout` label carrying an internal batch number ships to devtools. **All five fold into `C16-21`** |
 | WASM alignment | 2 | `globe-terrain-02` (an odd vertex count gives an input byte count ≡ 2 mod 4) and `globe-terrain-03` (a 65×65 16-bit heightmap is 8,450 bytes, likewise ≡ 2 mod 4): the output view's offset is unaligned, `Float32Array` rejects it, the `catch` logs and the decode silently falls back to JS. Both bridges come from one commit, both have **zero consumers**, and both are gated behind `S5-2-WASM-CONSUME-OR-RETIRE` (`DEFERRED_WORK.md:7383`, OPEN), so fixing alignment first is work on provisional code. **The audit's arithmetic overruns the arena by up to three bytes** because it never grows the total allocation; the correct shape pads and grows. **Attach to `S5-2`, do not open rows** |
 | remainder | 41 | `core-06` a query-parameter lookup throws when a key is `hasOwnProperty` · `core-18`, `-19`, `-20` three specs that assert nothing · `collections-primitives-08` hoist a stage removal above the feature-renderer early return and delete the 12-line WebGPU mirror — **S, not M** |
+
+**Evidence, 2026-10-09 Gemini audit triage:** Asset Transcoding: Draco Workers Omit transferableObjects Causing Main-Thread Structured Cloning (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P10.51, P19.112 (one defect; the later ids are duplicates). Blueprint C-51 (EPIC-05). **Where (a5b71fc17b):** `packages/engine/Source/Workers/decodeDraco.js:346-384`; re-derived at `decodeDraco.js:357-362`, `createTaskProcessorWorker.js:30` **Code:** `async function decode(parameters, transferableObjects) { if (defined(parameters.bufferView)) { return decodePrimitive(parameters); } return decodePointCloud(parameters); }` ... `new Float32Array(vertexArrayLength)` **Verified:** Re-derived. decodeDraco.js:357-362 never forwards transferableObjects, and createTaskProcessorWorker.js:30 creates the list empty. Upstream-identical. P2. **Severity as rated by the triage:** P2 **Class / acceptance:** engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a capture through lib/capture.mjs (BEFORE/AFTER) judged against the expected analytic or authored result, because WebGL shares the behaviour and cannot be the reference. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - workers-wasm-08 (perf/allocation class table). **Seat diff:** no hunk in the seat diff touches this defect. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P10.51, P19.112 (one defect; the later ids are duplicates). Blueprint C-51 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 04): P10.51; ADJUDICATION-07-12 (Meneltarma-a02, chunk 08): P19.112.
 
 **Settled and moved out of the P2 backlog.** The urijs row becomes **P3 with no security action** — the
 range admits only the last version that package ever published, the installed version is that version,
@@ -25615,6 +25647,8 @@ worker B. Reasoned by the verifier, not run. Source: as above, item 2.
 After a fatal worker `error` the processor keeps its dead worker, so later tasks hang; the karma spec's own comment
 acknowledges it. Source: as above, item 3.
 
+**Evidence, 2026-10-09 Gemini audit triage:** TaskProcessor keeps a dead worker after a fatal worker error. **Findings:** P19.115, P31.209 (one defect; the later ids are duplicates). Blueprint C-115 (EPIC-01). **Where (a5b71fc17b):** `packages/engine/Source/Core/TaskProcessor.js:243-253, 363-368, 414-432, 502-513` **Code:** `this._worker` ... `responseMessage.error` **Verified:** Reproduced in part: TaskProcessor._worker is assigned at :245/:274 and never cleared, and scheduleTask reuses it. The first half of the mechanism is stale (listeners.error at :414-425 now rejects and scheduleTask decrements _activeTasks). Already tracked as NEW-TASKPROCESSOR-KEEPS-A-DEAD-WORKER (this row, in DEFERRED_WORK.md). **Severity as rated by the triage:** P1 (adjudicators split 1x P1, 1x P2; rule: majority, ties to the higher) - After a fatal worker load failure, later tasks on that processor never settle and hold slots; requires a prior worker failure, so not the default path. **Class / acceptance:** engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - NEW-TASKPROCESSOR-KEEPS-A-DEAD-WORKER (OPEN). **Seat diff:** no hunk in the seat diff touches this defect. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P19.115, P31.209 (one defect; the later ids are duplicates). Blueprint C-115 (EPIC-01). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 08): P19.115; ADJUDICATION-13-18 (Meneltarma-a03, chunk 14): P31.209.
+
 ### `NEW-TASKPROCESSOR-DESTROY-LEAVES-TASK-PENDING` — OPEN (Core, base defect)
 
 `destroy()` with a task in flight leaves that task's promise pending forever. Source: as above, item 4. Related base
@@ -25644,6 +25678,7 @@ by Batch 1545 (notes on each, above).*
 >    labels are shared across variants (`WebGPUBillboardRenderer.js` "OIT Billboard", `WebGPUPrimitiveCommands.ts`
 >    `OIT ${type} (${label})`), so two variants of equal length share a pipeline. Key by the source text or the define
 >    masks. This is independent of comments; a comment edit only makes the collision reachable.
+>    - **Evidence, 2026-10-09 audit fix wave plan (critic item N13), re-read at `9457bc6bd4`:** the OIT cache key is at `packages/engine/Source/Renderer/WebGPU/WebGPUOIT.ts:706` (the plan cites :705, which is the comment line above the key): ``const cacheKey = `${shaderCode.length}_${fragEntry}_${config.label ?? ""}`;``, read by `this._oitPipelineCache.get(cacheKey)` at `packages/engine/Source/Renderer/WebGPU/WebGPUOIT.ts:707` and by `this._oitShaderCache.get(cacheKey)` at `packages/engine/Source/Renderer/WebGPU/WebGPUOIT.ts:714`. As read at the same lines, the key also omits the other fields that reach `device.createRenderPipeline` in the same function (`packages/engine/Source/Renderer/WebGPU/WebGPUOIT.ts:730`): `config.layout`, `config.vertexBuffers`, `config.primitive`, `config.depthStencil` and `config.multisample`; the item's text above names only length, entry and label. Code-level only: nothing was run, and reach depends on which commands retain `cmd._shaderCode` while OIT (default off) is on. The engine row filed from this item, `NEW-WEBGPU-OIT-CACHE-KEYED-BY-SHADER-LENGTH`, is the same defect, and this evidence applies to it equally. Owner: unassigned (FW-09 reports it without fixing it). Source: `AUDIT_FIX_WAVE_PLAN_2026-10-09.md` revision 2, critic item N13 and the FW-09 note.
 > 2. **Harvest reach.** Needles from non-`const` variables, needles passed through helpers or `.call`, regex literals
 >    without a three-letter word, and readers outside `Renderer/` and `Scene/` are not harvested. None is known to read
 >    tracked shader text today. A census of identifier-argument search calls would close the first two.
@@ -26068,6 +26103,8 @@ already carries `### three.js` and `### FFT-Ocean`. `LICENSE.md` is unchanged un
   §2 Gorbulas P7: HOLDS.
 - *Licence:* `### tidewater` naming `src/post/LensFlare.js` if copied.
 
+**Evidence, 2026-10-09 Gemini audit triage:** Terrain, Building & Depth-Buffer Blindness in Planetary Sun Occluder Testing (Veiling Glare Leakage Through Solid Matter) (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P37.C-280, P58.C-436 (one defect; the later ids are duplicates). Blueprint C-280 and C-436 (EPIC-07). P37.C-280 was REFUTED by its verifier as "a physics/design ruling for the maintainer, not a code defect", while P58.C-436 was CONFIRMED by its adjudicator as "a documented look choice that mirrors WebGL". The code fact is the same, so both carry one verdict after the critic (R2): CONFIRMED as fact, P2, with the look left to MQ-T1. **Where (a5b71fc17b):** `packages/engine/Source/Renderer/WebGPU/WebGPUSunHaloEffect.ts:184-188`; re-derived at `WebGPUSunHaloEffect.ts:178-188`, `WebGPUPostProcessStageCollection.ts:462-470`, `Scene.js:4222-4226`, `Scene.js:4241-4245` **Code:** `_depthView` ... `scene._environmentState.isSunVisible !== false` **Verified:** Re-read WebGPUSunHaloEffect.ts:178-188 (deliberately no depth input) and WebGPUPostProcessStageCollection.ts:462-470 (gated on isSunVisible only), and Scene.js:4222-4226 / :4241-4245, where isSunVisible tests the ellipsoid occluder alone. The facts hold, but this is a documented look choice that mirrors WebGL. P2, waiting on maintainer ruling MQ-T1. **Severity as rated by the triage:** P2 **Class / acceptance:** engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a capture through lib/capture.mjs (BEFORE/AFTER) judged against the expected analytic or authored result, because WebGL shares the behaviour and cannot be the reference. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - NEW-TIDEWATER-GPU-SUN-VISIBILITY (look ruling MQ-T1). **Seat diff:** no hunk in the seat diff touches this defect. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P37.C-280, P58.C-436 (one defect; the later ids are duplicates). Blueprint C-280 and C-436 (EPIC-07). P37.C-280 was REFUTED by its verifier as "a physics/design ruling for the maintainer, not a code defect", while P58.C-436 was CONFIRMED by its adjudicator as "a documented look choice that mirrors WebGL". The code fact is the same, so both carry one verdict after the critic (R2): CONFIRMED as fact, P2, with the look left to MQ-T1. Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 19): P37.C-280; ADJUDICATION-25-30 (Meneltarma-a05, chunk 29): P58.C-436.
+
 #### `NEW-TIDEWATER-SMAA` — SMAA 1x, and SMAA before TAA — OPEN (suggested home: MQ-T1)
 
 - *Technique (code facts):* SMAA 1x medium as a port of three.js's `SMAANode` (iryoku/smaa 2.8), with area and search
@@ -26188,6 +26225,8 @@ already carries `### three.js` and `### FFT-Ocean`. `LICENSE.md` is unchanged un
   no heightfield) and §4 (GEBCO terms): HOLDS.
 - *Licence:* GEBCO acknowledgement when its data is used; none for the probe.
 
+**Evidence, 2026-10-09 Gemini audit triage:** Absence of Beer-Lambert Optical Extinction & Water Column Depth Attenuation (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P43.C-320. Blueprint C-320 (EPIC-01). **Where (a5b71fc17b):** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl:3091-3210` **Code:** `var outc: FragOutput; outc.color = vec4<f32>(color, 1.0);` ... `color = mix(ocean.deepColor, skyColor, fresnel)` **Verified:** OceanSurface.wgsl binds only camera/ocean/displacement (:62-65) and writes alpha 1.0 (:347); no absorption term. **Severity as rated by the triage:** P2 - Missing feature tracked under NEW-BATHYMETRY-DATASET-LANE / MQ-T3; upstream has none either. **Class / acceptance:** shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - NEW-BATHYMETRY-DATASET-LANE (MQ-T3) and the tidewater water-column rows. **Seat diff:** touched in seat-worktree-snapshot 20261008-2106, not a fix: comment-only hunks. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P43.C-320. Blueprint C-320 (EPIC-01). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 22): P43.C-320.
+
 #### `NEW-TIDEWATER-RASTERISED-CAUSTICS` — rasterised caustics from the FFT slopes — OPEN (suggested home: `FEAT-GAP-04` / Phase-8e; behind the cascades and the bathymetry lane)
 
 - *Technique (code facts):* a vertex grid over one FFT tile is displaced by refracting the sun through the wave
@@ -26223,6 +26262,8 @@ already carries `### three.js` and `### FFT-Ocean`. `LICENSE.md` is unchanged un
 - *Verdict:* `VERIFY_GRIMA.md` §2 (Niniel T11/T13: SSR and the refraction pass; fork "It draws in `Pass.OPAQUE`")
   and §5.5 (the guard band in NDC units): HOLDS.
 - *Licence:* `### tidewater` naming `src/ocean/WaterMaterial.js` and `src/ocean/RefractionPass.js` if copied.
+
+**Evidence, 2026-10-09 Gemini audit triage:** Missing Screen-Space Refraction (SSR) & Inverted Internal Reflection (Snell's Window) (audit title, intensifiers removed; the Verified line is the authority). **Findings:** P43.C-321. Blueprint C-321 (EPIC-05). **Where (a5b71fc17b):** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl:5608-5680` **Code:** `fresnel = 0.02 + 0.98 * pow(1.0 - nDotV, 5.0)` **Verified:** OceanSurface.wgsl one-sided Schlick fresnel (:283), no scene-colour binding. **Severity as rated by the triage:** P2 - Missing feature tracked (NEW-TIDEWATER-SEABED-REFRACTION-SSR, MQ-T4). **Class / acceptance:** engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - NEW-TIDEWATER-SEABED-REFRACTION-SSR (MQ-T4). **Seat diff:** touched in seat-worktree-snapshot 20261008-2106, not a fix: comment-only hunks. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P43.C-321. Blueprint C-321 (EPIC-05). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 22): P43.C-321.
 
 #### `NEW-TIDEWATER-UNDERWATER-LIGHTING-HOOKS` — lighting terms for fragments below the water — OPEN (suggested home: maintainer question MQ-T4)
 
@@ -26388,6 +26429,8 @@ already carries `### three.js` and `### FFT-Ocean`. `LICENSE.md` is unchanged un
   cleared to 1.0"; G5 the sprites): HOLDS; U1 (the runtime consequence) is UNVERIFIABLE without a browser and is not
   asserted here; R15 (AirMotes' floor is 1.2 px and inflated by design).
 - *Licence:* none for the fix; `### tidewater` naming `src/fx/Spray.js` if the sprite code is copied.
+
+**Evidence, 2026-10-09 Gemini audit triage:** Weather particles take ECEF +Y as up for gravity and for the ground-kill test. **Findings:** P4.11, P34.C-256, P52.C-384 (one defect; the later ids are duplicates). Blueprint C-11 (EPIC-03). **Where (a5b71fc17b):** `packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts:270-295` - the audit citation is stale; verifier: Scene/WeatherParticles.js does not exist; the shader logic is Shaders/WebGPU/Compute/WeatherParticles.wgsl:124-132 (camera delta, gravity) and :171-177 (ground kill); re-derived at `WebGPUWeatherRenderer.ts:306-310`, `WeatherParticles.wgsl:173-176`, `WebGPUWeatherRenderer.ts:307-310`, `WeatherParticles.wgsl:132`, `WebGPUWeatherRenderer.ts:269-272` **Code:** `worldGroundAlt - currY` ... `p.position.y < relativeGroundAlt` **Verified:** Re-derived. WebGPUWeatherRenderer.ts:306-310 packs gravity (0,-1,0)*9.81 in ECEF axes and :345-347 packs `worldGroundAlt - currY` with currY = camera.positionWC.y (:272); WeatherParticles.wgsl:173-176 kills `p.position.y < relativeGroundAlt`. Where ECEF Y << 0, every camera-relative particle is killed. A user-enabled feature that fails over much of the globe: P1 (not P0, because it is off the default path). Gemini's diff is partial: the shader kill test still uses ECEF Y. **Severity as rated by the triage:** P1 **Class / acceptance:** engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** the existing row's owner. **Triage ledger note:** TRACKED - NEW-WEBGPU-WEATHER-PARTICLES-ECEF-Y-FRAME (OPEN). **Seat diff:** candidate in seat-worktree-snapshot 20261008-2106 (completeness disputed): renderer gravity and ground-height hunks plus WeatherParticles.wgsl hunks; the P4.11 verifier read the kill test as still on ECEF Y, while the C-256 and C-384 verifiers list shader hunks at :154-:262. **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.4. Findings: P4.11, P34.C-256, P52.C-384 (one defect; the later ids are duplicates). Blueprint C-11 (EPIC-03). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 01): P4.11; ADJUDICATION-13-18 (Meneltarma-a03, chunk 18): P34.C-256; ADJUDICATION-25-30 (Meneltarma-a05, chunk 26): P52.C-384.
 
 #### `NEW-TIDEWATER-GPU-PARTICLE-RING` — one GPU particle ring shared by GPU and CPU emitters, and its companions — OPEN (suggested home: none until a second GPU emitter or a consumer exists)
 
@@ -26899,6 +26942,8 @@ direction, for the lane to measure: re-run classification for every entity on an
 directions, triggered from the visualizer's `update()` or from an event `EntityCluster` raises. Pin it with a spec
 per visualizer that toggles clustering after the entities are added. Class: REAL-ENGINE-DEFECT, full proof bar.
 
+**Evidence, 2026-10-09 seat-diff review (G09, `EntityClusterGPU.js`):** a separate EntityCluster code fact, recorded under this row because it is the open EntityCluster engine row that needs an owner (the seat-diff review section 7 says "refile against the open EntityCluster owner row"); it is not the same defect as this row's. `EntityClusterGPU.js` advances `_gpuGridGeneration` (`packages/engine/Source/DataSources/EntityClusterGPU.js:140`) before calling `computeGrid`, while `WebGPUEntityClusterDispatcher.ts` returns `null` whenever a readback is in flight (`packages/engine/Source/Renderer/WebGPU/WebGPUEntityClusterDispatcher.ts:255`), so a declined request still advances the generation; `EntityCluster.js` asks for a grid on every declutter (`packages/engine/Source/DataSources/EntityCluster.js:709`). The snapshot's generation guard (G09 H1, REJECTed from code) would therefore discard the only readback that ran, and it does not address the finding's own scenario, because `clusterWithGrid` still validates a grid only by point count and pixel range (`packages/engine/Source/DataSources/EntityClusterGPU.js:229`). How often the guard would pin the CPU path at runtime is NOT-ESTABLISHED; an Edge run with a moving camera over a clustered scene would establish it. The stale-grid defect at HEAD (equal count, different membership, mis-grouped for one frame) is filed as NEW-GA-P0-044. Source: `G09-ADJUDICATION.md`, decision 3; seat-diff review `SEAT_DIFF_REVIEW_2026-10-08.md` section 3.2 ("G09 H1 (EntityClusterGPU)") and section 7.
+
 ### `NEW-BULK-VISUALIZER-RELEASE-PRIMITIVES-GUARD` — a release bundle raises a minified `TypeError` instead of a named error — OPEN (hardening, small)
 
 *Row B of W2-L4, copied (same packet, §5).*
@@ -27327,3 +27372,2711 @@ from its patch says so in its header (I-1's did).
 - **Still owed, outside this round:** a C16 `DEV_NOTES_*` entry for the comment readers (noted in
   `C16-COMMENT-READER-CLASSES-2026-09-26`; a new file needs its `README.md` row); a post-fold review of `C16-B0-tools` v4
   (S-6 records that v4 was not re-reviewed); and `C15-06`'s records (a later round).
+
+## 2026-10-09 — audit fix wave 1 intake (lane FW-01): the Gemini audit triage's confirmed defects, filed as rows
+
+The 184 rows below are the confirmed defects of the 2026-10-08 Gemini audit triage (`GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2) that are not already tracked as a row; 9 further rows are owed to the ledger by the 2026-10-08 seat-diff review, the Astra return audit and the audit fix wave plan (193 in all). They are in severity order (P0 3, P1 32, P2 151, unrated 7), then by id. Every row is filed OPEN; each carries the triage's own Verified line (the authority), its severity as the triage rated it, its one-owner group, and its source. A row marked ADJACENT names the existing row beside it; a row marked RE-OPEN names the existing row that its Verified line contradicts (that row is flagged separately, not here). A further 22 dated "Evidence, 2026-10-09" paragraphs are appended under existing rows instead of new rows: 19 defects the triage found already tracked, and 3 facts from the seat-diff review and the audit fix wave plan that an existing row already owns.
+
+## 2026-10-09 — NEW-GA-P0-001 — EllipsoidGeodesic Vincenty inverse loop has no iteration bound in release builds; near-antipodal inputs do not converge — **OPEN** (P0, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** EllipsoidGeodesic Vincenty inverse loop has no iteration bound in release builds; near-antipodal inputs do not converge. Severity: P0 - An unbounded loop on the main thread or a geometry worker in a release build, reachable with default options from user data (two consecutive near-antipodal polyline vertices): a crash-class hang. The trigger is narrow (within ~0.7 deg of antipodal).
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/EllipsoidGeodesic.js:147-188, 243-252`; re-derived at `CameraHelpers.js:366-372`, `EllipsoidGeodesic.js:147-188`
+  - Code: `} while (Math.abs(lambda - lambdaDot) > CesiumMath.EPSILON12);` ... `//>>includeStart(debug)`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced and measured by the adjudicator: a pragma-stripped copy of the real EllipsoidGeodesic.js (imports pointed at the real modules, loop capped at 2e6 only to detect) did not converge for (lat,lon) (0,0)->(0.3,179.9), (0,0)->(0,179.5) and (30,0)->(-30,179.5); (0,0)->(0,170) converged in 6 iterations. The loop at :188 has no bound and the only guard (:243-252) is debug-only. Reach: PolylinePipeline.generateCartesianArc (:107) builds an EllipsoidGeodesic for every segment and PolylineGeometry defaults to ArcType.GEODESIC (:131); CameraHelpers.js:366-372 uses one for rectangle views.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: incomplete candidate in seat-worktree-snapshot 20261008-2106: an iteration cap of 200 that returns the unconverged distance; no fallback formula.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-2 Opus lead with a tier-3 Opus worker.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.1, draft NEW-GA-P0-001. Findings: P19.106, P22.127, P28.179 (one defect; the later ids are duplicates). Blueprint C-106 (EPIC-03). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 08): P19.106; ADJUDICATION-07-12 (Meneltarma-a02, chunk 09): P22.127; ADJUDICATION-07-12 (Meneltarma-a02, chunk 12): P28.179.
+
+## 2026-10-09 — NEW-GA-P0-002 — AtmosphereLUT computeInscatter bounds and maps rows on the transmittance height (64) while the inscatter target has 128 rows — **OPEN** (P0, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-ATMOSPHERE-LUT-SUN-RELATIVE (records that consumers are tuned against the legacy mapping).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** AtmosphereLUT computeInscatter bounds and maps rows on the transmittance height (64) while the inscatter target has 128 rows. Severity: P0 (adjudicators split 1x P0, 1x P1; rule: majority, ties to the higher) - Silent wrong ground-atmosphere colour on the default WebGPU globe path; the visible magnitude is unmeasured and the fix is the sibling kernels' textureDimensions bound.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Compute/AtmosphereLUT.wgsl:244-246`; re-derived at `AtmosphereLUT.wgsl:244`, `WebGPUAtmosphereLUT.ts:361`, `WebGPUGlobeSurfaceRenderer.ts:876-895`, `GlobeTerrain.wgsl:5988-6003`, `AtmosphereLUT.wgsl:244-250`
+  - Code: `u32[7] = lut.transmittanceHeight` ... `if (gid.x >= params.lutWidth || gid.y >= params.lutHeight) { return; }`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: AtmosphereLUT.wgsl:244 computeInscatter bounds on params.lutHeight, which WebGPUAtmosphereLUT.ts:361 packs as transmittanceHeight (64), while the inscatter texture has 128 rows (:193) and the dispatch covers 128 (:453-458); uv.y (:249-250) also divides by 64. The sibling kernels already self-bound on textureDimensions (:385-391, :598-602). Default-path reach: WebGPUGlobeSurfaceRenderer.ts:876-895 binds the LUT views whenever the performance manager exists, and GlobeTerrain.wgsl:5988-6003 uses sampleAtmosphereFogLut (vCoord = altitude/thickness over the full texture, :3342) when atmosphereLutControl.x > 0.5. Result: for camera altitude h < thickness/2 the globe atmosphere colour samples the row baked for altitude 2h; above that it reads never-written rows and falls back to the inline colour, with a bilinear band at the row 63/64 seam.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: BEFORE/AFTER pair through lib/capture.mjs on the globe-horizon and orbital-ladder rigs (low altitude, below half the shell) with lib/metrics/region-means.mjs over the ground-atmosphere band. **Suggested owner:** tier-2 Opus lead with a tier-3 Opus worker.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.1, draft NEW-GA-P0-002. Findings: P28.171, P37.C-281 (one defect; the later ids are duplicates). Blueprint C-171 (EPIC-07). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 12): P28.171; ADJUDICATION-19-24 (Meneltarma-a04, chunk 19): P37.C-281.
+
+## 2026-10-09 — NEW-GA-P0-003 — TextureAtlas resize copy is skipped on WebGPU because the afterRender update runs after endFrame has cleared the command encoder — **OPEN** (P0, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** audit fix wave 1, lane FW-02.
+
+- **Symptom:** TextureAtlas resize copy is skipped on WebGPU because the afterRender update runs after endFrame has cleared the command encoder. Severity: P0
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/BillboardCollection.js:2148-2153`; re-derived at `BillboardCollection.js:2151`, `Scene.js:6670`, `WebGPUContext.ts:3444`, `TextureAtlas.js:234-286`, `WebGLStubTexture.ts:1379-1380`
+  - Code: `!binding?.texture?._webgpuTexture || !state.currentCommandEncoder` ... `frameState.afterRender.push(() => { ... return textureAtlas.update(frameState.context); });`
+  - Verified (the adjudicator's re-derivation, and the authority): Kept at P0 because this is silent wrong output on the default path; the evidence is code-level. BillboardCollection.js:2151 pushes textureAtlas.update into frameState.afterRender. Scene.js:6670 runs context.endFrame() (inside render) before :4688 runs callAfterRenderFunctions, and WebGPUContext.ts:3444 sets _currentCommandEncoder to null. TextureAtlas.js:234-286 copies the old rectangles with gl.copyTexSubImage2D. The stub at WebGLStubTexture.ts:1379-1380 returns early on `!binding?.texture?._webgpuTexture || !state.currentCommandEncoder`, and its encoder getter returns host._currentCommandEncoder (WebGPUContextWebGLStubInit.ts:151-152). TextureAtlas.js:398-406 then destroys the old texture. So on the default renderer, if the atlas grows after images are already in it (labels or billboards added or re-texted in later frames), the earlier images are lost. One Edge capture of atlas growth across frames, checking whether earlier glyphs still draw, confirms it or demotes it.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a rig that adds labels or billboards over several frames until the atlas resizes, captured on WebGPU; earlier glyphs present or absent is the measurement. **Suggested owner:** tier-2 Opus lead with a tier-3 Opus worker.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.1, draft NEW-GA-P0-003. Findings: P34.C-235. Blueprint C-235 (EPIC-01). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 16): P34.C-235.
+
+## 2026-10-09 — NEW-GA-P0-004 — Signed 8- and 16-bit structural metadata is read without sign extension (WGSL and GLSL) — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Signed 8- and 16-bit structural metadata is read without sign extension (WGSL and GLSL). Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/Model/MetadataWGSLHelpers.js:408-433`; re-derived at `MetadataWGSLHelpers.js:369-384`, `MetadataClassProperty.js:1326-1330`
+  - Code: `int(czm_unpackTexture(...))`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. buildUnpackBitsExpr yields 0..255 or 0..65535 (MetadataWGSLHelpers.js:369-384), and buildScalarFromRawBits applies bitcast<i32> with no sign extension (:423, :432), so INT8/INT16 negatives read as positive. The GLSL twin does the same (MetadataClassProperty.js:1326-1330 `int` cast, :539), so both backends and upstream are wrong. Silent wrong data for signed sub-32-bit metadata: P1. The fix shift must be 32 minus the bit width.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a metadata tileset with negative INT8/INT16 values styled by value, captured on both renderers and compared with the authored values (both backends are wrong today, so WebGL is not the reference). **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-004. Findings: P7.30. Blueprint C-30 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 02): P7.30.
+
+## 2026-10-09 — NEW-GA-P0-005 — WebGPU polyline shaders divide by clip w with no near-plane clip (PolylineCollection, BufferPolylineMaterial) — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** audit fix wave 1, lane FW-03.
+
+- **Symptom:** WebGPU polyline shaders divide by clip w with no near-plane clip (PolylineCollection, BufferPolylineMaterial). Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Collections/BufferPolylineMaterial.wgsl:134-142`; re-derived at `BufferPolylineMaterial.wgsl:140-142`, `PolylineCollection.wgsl:103-106`, `PolylineCommon.glsl:96-104`
+  - Code: `let screenCurr = (clipPos.xy / clipPos.w) * 0.5 * viewport.zw;` ... `let ndc = clipPos.xy / clipPos.w;`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. BufferPolylineMaterial.wgsl:140-142 and PolylineCollection.wgsl:103-106 divide by clip w with no near-plane clip or w guard; WebGL clips (PolylineCommon.glsl clipLineSegmentToNearPlane). PolylineCollection is a stock primitive, so camera fly-throughs of long polylines hit this in the default configuration. P1 (transient, view-dependent wrong output; not P0).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-005. Findings: P10.35, P43.C-330 (one defect; the later ids are duplicates). Blueprint C-35 (EPIC-06). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 03): P10.35; ADJUDICATION-19-24 (Meneltarma-a04, chunk 22): P43.C-330.
+
+## 2026-10-09 — NEW-GA-P0-006 — Native-WGSL CustomShader uniform struct padding does not match the CPU packer — **OPEN** (P1, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - NEW-MODEL-WGSL-CUSTOM-SHADER (its SHIPPED note claims every non-sampler uniform type works).
+
+**Owner:** audit fix wave 1, lane FW-05.
+
+- **Symptom:** Native-WGSL CustomShader uniform struct padding does not match the CPU packer. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/Model/CustomShaderWGSLPipelineStage.js:94-111, 204-228, 371-394`; re-derived at `CustomShaderWGSLPipelineStage.js:204-228`, `WebGPUModelRenderer.ts:3561-3571`, `CustomShaderWGSLPipelineStage.js:219-226`, `CustomShaderWGSLPipelineStage.js:219-225`, `CustomShaderWGSLPipelineStage.js:212-226`
+  - Code: `` lines.push(`  _czm_pad${padIndex}: vec4<f32>,`); `` (`CustomShaderWGSLPipelineStage.js:224`, emitted after each one-slot field that is not a vec4)
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. emitUniformStruct (CustomShaderWGSLPipelineStage.js:204-228) emits `_czm_padN: vec4<f32>` after every single-slot non-vec4 field. Under WGSL layout a lone f32 field therefore makes the struct 32 bytes, while packUniformBuffer (:371-394) allots 16 bytes per field and WebGPUModelRenderer.ts:3561-3571 sizes the UBO to packed.byteLength. Values after the first field are misread, and the binding is smaller than the struct, which by the spec is a WebGPU validation error that invalidates the frame's encoder (not run here). Only the opt-in native-WGSL CustomShader path is affected: P1. Re-rate to P0 for that path if an Edge leg shows a lost frame.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-006. Findings: P13.63, P25.168, P40.C-295, P55.C-422 (one defect; the later ids are duplicates). Blueprint C-63 (EPIC-06). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 05): P13.63; ADJUDICATION-07-12 (Meneltarma-a02, chunk 12): P25.168; ADJUDICATION-19-24 (Meneltarma-a04, chunk 20): P40.C-295; ADJUDICATION-25-30 (Meneltarma-a05, chunk 29): P55.C-422.
+
+## 2026-10-09 — NEW-GA-P0-007 — KmlDataSource NetworkLink loading has no visited set or depth limit — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** KmlDataSource NetworkLink loading has no visited set or depth limit. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/DataSources/KmlDataSource.js:3014-3093, 3216`
+  - Code: `load(dataSource, networkLinkCollection, href, options)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. KmlDataSource.js has no visited or depth guard (targeted grep: none), and processNetworkLink calls load(...) for each link. A self-referencing or hostile KML causes an unbounded fetch chain. Upstream-shaped. P1 (robustness against untrusted input, not the default path).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-007. Findings: P13.68. Blueprint C-68 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 05): P13.68.
+
+## 2026-10-09 — NEW-GA-P0-008 — EntityCollection.removeById leaves a removed child in its parent's _children — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW. One owner with P16.72: CZML entity hierarchy robustness.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** EntityCollection.removeById leaves a removed child in its parent's _children. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/DataSources/EntityCollection.js:224-247` (removeById), `Entity.js:294-302` (the parent setter, the only splice of `_children`) and `CzmlDataSource.js:4650-4651` (the CZML delete path). The audit cited only `ReferenceProperty.js:22-28, 115-121, 209-223`, which does not hold the defect.
+  - Code: `_children` ... `if (packet["delete"] === true) entityCollection.removeById(objectId)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. EntityCollection.removeById (:224-247) never touches entity.parent or _children; only the Entity parent setter splices _children (Entity.js:294-302); CZML delete is removeById only. Children deleted under a long-lived parent stay reachable, which grows without bound under a churning CZML stream. P1 (retention leak off the default path).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-008. Findings: P16.71. Blueprint C-71 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 05): P16.71.
+
+## 2026-10-09 — NEW-GA-P0-009 — The Entity parent setter accepts cycles; isShowing recursion then throws RangeError — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW. One owner with P16.71: CZML entity hierarchy robustness.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** The Entity parent setter accepts cycles; isShowing recursion then throws RangeError. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/DataSources/Entity.js:268-276, 287-312, 792-809`
+  - Code: `get isShowing() { return this._show && (...) && (!defined(this._parent) || this._parent.isShowing); }` ... `this._parent = value`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. Entity.isShowing (:270-276) recurses through _parent; the parent setter assigns before evaluating isShowing (:294-305) and has no cycle check; CzmlDataSource sets parent straight from the packet. A cyclic packet leaves a cycle that throws RangeError on later reads. Robustness against hostile input. P1.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-009. Findings: P16.72. Blueprint C-72 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 05): P16.72.
+
+## 2026-10-09 — NEW-GA-P0-010 — Globe clipping planes are packed in eye space but tested against ECEF positions in GlobeTerrain.wgsl — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** audit fix wave 1, lane FW-04.
+
+- **Symptom:** Globe clipping planes are packed in eye space but tested against ECEF positions in GlobeTerrain.wgsl. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl:5028-5046`; re-derived at `WebGPUClippingPlaneCollection.ts:161-218`, `ClippingPlaneCollection.js:279`, `WebGPUFeatureRenderers.ts:780`, `WebGPUClippingPlaneCollection.ts:161-178`, `WebGPUEffectsBindGroup.js:1349-1353`
+  - Code: `invViewT = uniformState.inverseViewTranspose` ... `if (globeClipByPlanes(input.v_positionMC)) { discard; }`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. updateWebGPUClippingPlanes packs planes in eye space (WebGPUClippingPlaneCollection.ts:161-218; the globe takes the inverseViewTranspose-only path), and ClippingPlaneCollection routes WebGPU updates there (ClippingPlaneCollection.js:279 -> WebGPUFeatureRenderers.ts:780). GlobeTerrain.wgsl tests the ECEF v_positionMC against them (:5029, :5040, :3697-3705), so globe.clippingPlanes clip in the wrong frame on WebGPU. P1. GEMINI DIFF HAZARD (per the verifier): the clip-distances string anchor in WebGPUGlobeSurfaceShaders.ts is not updated.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: candidate in seat-worktree-snapshot 20261008-2106: positionMC -> positionEC at the three sites; the clip-distances string anchor in WebGPUGlobeSurfaceShaders.ts is not updated.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-010. Findings: P16.73, P34.C-250 (one defect; the later ids are duplicates). Blueprint C-73 (EPIC-03). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 05): P16.73; ADJUDICATION-13-18 (Meneltarma-a03, chunk 17): P34.C-250.
+
+## 2026-10-09 — NEW-GA-P0-011 — Tileset-owned clipping planes on WebGPU drop clippingPlanesOriginMatrix — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Tileset-owned clipping planes on WebGPU drop clippingPlanesOriginMatrix. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/Model/Model.js:2597-2611`; re-derived at `Model.js:2597-2611`, `Cesium3DTileset.js:1318-1322`, `Model.js:2608`, `WebGPUClippingPlaneCollection.ts:195-205`
+  - Code: `model._clippingPlanes._webgpuOwnerMatrix = model.referenceMatrix ?? clampedOrModelMatrix` ... `if (model._clippingPlanes.owner === model)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. Model.js:2597-2611 sets _webgpuOwnerMatrix only when owner === model; Cesium3DTileset.js:1318-1322 updates tileset planes with no owner matrix; _webgpuOwnerMatrix is assigned nowhere else (targeted grep of Scene, Scene/Model and Renderer/WebGPU). The packer then uses view * cp.modelMatrix only and drops clippingPlanesOriginMatrix. P1.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-011. Findings: P16.74, P34.C-251 (one defect; the later ids are duplicates). Blueprint C-74 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 05): P16.74; ADJUDICATION-13-18 (Meneltarma-a03, chunk 17): P34.C-251.
+
+## 2026-10-09 — NEW-GA-P0-012 — decodeI3S mints blob URLs that are never revoked — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** decodeI3S mints blob URLs that are never revoked. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/I3SLayer.js:311-315`; re-derived at `I3SLayer.js:313`, `I3SNode.js:634`
+  - Code: `_binarizeGltf` ... `URL.revokeObjectURL(tile._contentResource._url)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. decodeI3S.js mints up to 8 blob URLs per tile (:672, :707, :715, :740, :748, :760, :773, :790), and the only revoke in I3S*.js is I3SLayer.js:313, for the content GLB URL (I3SNode.js:634). Leak grows with every streamed tile while the worker lives. Upstream-shaped. P1 (I3S only).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a capture through lib/capture.mjs (BEFORE/AFTER) judged against the expected analytic or authored result, because WebGL shares the behaviour and cannot be the reference. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-012. Findings: P16.85. Blueprint C-85 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 06): P16.85.
+
+## 2026-10-09 — NEW-GA-P0-013 — The FrameRateMonitor visibilitychange listener is never removed, so destroyed scenes stay reachable — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** The FrameRateMonitor visibilitychange listener is never removed, so destroyed scenes stay reachable. Severity: P1 - One Scene (and its graphics context) retained per destroyed viewer that used FrameRateMonitor.fromScene; it grows across create/destroy cycles but only with the watchdog mixin.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/FrameRateMonitor.js:130-142, 272-289`; re-derived at `FrameRateMonitor.js:129-142`
+  - Code: `this._frameRateMonitor = undefined` ... `document.addEventListener(visibilityChangeEventName, visibilityChangeListener, false)`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: FrameRateMonitor.js:129-142 adds a document visibilitychange listener whose closure retains the monitor (and its _scene); Scene.js only sets `this._frameRateMonitor = undefined` at :1455 and never destroys it; PerformanceWatchdogViewModel.destroy only unsubscribes its own events.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-013. Findings: P19.119. Blueprint C-119 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 08): P19.119.
+
+## 2026-10-09 — NEW-GA-P0-014 — KHR_materials_volume attenuationColor is packed at floats 150-152 but read from volumeFactors1 (152-154) — **OPEN** (P1, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - glTF extension table: KHR_materials_volume 'Full'. One owner with P25.147, P25.148, P25.150, P25.152, P25.156, P25.158, P25.159, P25.161: glTF KHR material extensions on WebGPU (the ledger's extension table is contradicted).
+
+**Owner:** audit fix wave 1, lane FW-05.
+
+- **Symptom:** KHR_materials_volume attenuationColor is packed at floats 150-152 but read from volumeFactors1 (152-154). Severity: P1 - Wrong absorption colour for every KHR_materials_volume asset with a finite attenuationDistance on WebGPU; asset-specific, not a crash.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts:2422-2435`; re-derived at `WebGPUModelRenderer.ts:2420-2432`
+  - Code: `attColor = material.volumeFactors1.xyz` ... `data[148]=thickness; data[149]=ad; data[150]=ac[0]; data[151]=ac[1]; data[152]=ac[2];`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: WebGPUModelRenderer.ts:2420-2432 writes thickness at 148, attenuationDistance at 149 and attenuationColor at 150-152; ModelPBRComplete.wgsl declares volumeFactors0 (148-151) and volumeFactors1 (152-155) and reads `attColor = material.volumeFactors1.xyz` (:3150-3151), i.e. (ac[2], 0, 0).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-014. Findings: P25.149. Blueprint C-149 (EPIC-06). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 10): P25.149.
+
+## 2026-10-09 — NEW-GA-P0-015 — Transmissive glTF materials run in the opaque pass and sample the previous frame's refraction backdrop — **OPEN** (P1, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - glTF extension table: KHR_materials_transmission shipped. One owner with P25.147, P25.148, P25.149, P25.152, P25.156, P25.158, P25.159, P25.161: glTF KHR material extensions on WebGPU (the ledger's extension table is contradicted).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Transmissive glTF materials run in the opaque pass and sample the previous frame's refraction backdrop. Severity: P1 - Every transmissive model on WebGPU is affected (lag, self-refraction); a rendering-order defect, not a crash.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts:7217-7221`; re-derived at `WebGPUModelRenderer.ts:7216-7220`, `WebGPUSceneRendererFrustumLoop.ts:545-554`
+  - Code: `drawPasses.push(matInfo.alphaMode === AlphaModes.BLEND ? Pass.TRANSLUCENT : model.opaquePass)` ... `host._captureRefractionScene(config)`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: WebGPUModelRenderer.ts:7216-7220 routes every non-BLEND material (transmissive included) to model.opaquePass; WebGPUSceneRendererFrustumLoop.ts:545-554 captures the refraction backdrop after the opaque bucket, so an opaque-pass transmissive draw samples the previous frame's capture (which contains itself) and writes depth.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-015. Findings: P25.150. Blueprint C-150 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 10): P25.150.
+
+## 2026-10-09 — NEW-GA-P0-016 — The TAA per-channel AABB clamp lets clamped history reach luminance >= 1; inverseTonemapWeight then returns negative radiance that feeds history — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** The TAA per-channel AABB clamp lets clamped history reach luminance >= 1; inverseTonemapWeight then returns negative radiance that feeds history. Severity: P1 - TAA is opt-in (WebGPUTAAEffect.ts:330 enabled = false); when on, saturated high-intensity colour edges produce negative or infinite radiance that persists through history feedback. Not a device loss.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/PostProcess/TAA.wgsl:95-101, 377-378`; re-derived at `TAA.wgsl:115-129`, `WebGPUTAAEffect.ts:426`, `WebGPUTAAEffect.ts:569-571`
+  - Code: `mix(clampedHistory, tonemapWeight(currentSample), blendWeight)`
+  - Verified (the adjudicator's re-derivation, and the authority): REVERSED from REFUTED: a wrongly refuted real defect. The verifier argued that a clamp into the AABB of tonemapped neighbours keeps luminance below 1, but computeNeighborhoodAABB (TAA.wgsl:115-129) builds a PER-CHANNEL min/max box and clampToAABB is a per-channel clamp(color, cMin, cMax) (:131-133). The box corners are not tonemapped colours, so the clamped history can have L >= 1. Measured by the adjudicator (node transcription of tonemapWeight / clampToAABB / mix / inverseTonemapWeight with blendWeight 0.1, the WebGPUTAAEffect.ts:426 default): 1,238 of 300,000 random 3x3 HDR neighbourhoods (channels drawn from {0,1,10,100,1000}) gave L(blended) >= 1. Example: neighbours [[10,100,10],[100,0,100],[1,0,1000],[0,1,1000],[0,10,1000],[10,1,10],[1,1,1000],[1,100,10],[0,1000,1000]] with history [100,1000,0] give L(blended) = 1.006 and inverseTonemapWeight returns (-19.8, -200.2, -221.5). An unconstrained random search reached L(clamped history) = 1.37. The resolve output becomes the next frame's history (WebGPUTAAEffect.ts:569-571), so negative radiance feeds back.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-016. Findings: P25.164. Blueprint C-164 (EPIC-09). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 11): P25.164.
+
+## 2026-10-09 — NEW-GA-P0-017 — WebGPUCubeMapPanoramaRenderer replaces cubeMapTexture without destroying the previous texture — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** audit fix wave 1, lane FW-06.
+
+- **Symptom:** WebGPUCubeMapPanoramaRenderer replaces cubeMapTexture without destroying the previous texture. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js:765-850, 867-875, 998-1024`; re-derived at `WebGPUCubeMapPanoramaRenderer.js:808-831`
+  - Code: `state.cubeMapTexture = texture` ... `_instanceState.delete(panorama)`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUCubeMapPanoramaRenderer.js:808-831 creates a new texture and assigns `state.cubeMapTexture = texture` without destroying the previous one. The only destroy is at :1018-1019. The pending .then still holds `state` after `_instanceState.delete(panorama)` (:1022). P1 resource-lifetime defect: GC reclaims the texture eventually, so this is not an unbounded leak on the default path.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-017. Findings: P28.186. Blueprint C-186 (EPIC-07). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 13): P28.186.
+
+## 2026-10-09 — NEW-GA-P0-018 — Vector glTF extraction slices MVT polygon holes by polygon index from a flat per-tile hole array — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW. One owner with P31.212, P31.213: decodeMVT and vector glTF extraction robustness.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Vector glTF extraction slices MVT polygon holes by polygon index from a flat per-tile hole array. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/Model/createVectorTileBuffersFromModelComponents.js:424-431`; re-derived at `createVectorTileBuffersFromModelComponents.js:427`, `buildVectorGltfFromMVT.js:601-604`
+  - Code: `holes = polygonHoleOffsets.slice(i, i + holeCount);` ... `holeOffsets.length`
+  - Verified (the adjudicator's re-derivation, and the authority): createVectorTileBuffersFromModelComponents.js:427 does `holes = polygonHoleOffsets.slice(i, i + holeCount);`, but the producer (buildVectorGltfFromMVT.js:601-604) appends every polygon's holes to one flat array. Any MVT tile whose earlier polygons have hole counts other than 1 gets wrong or dropped holes. P1: silent wrong output on the MVT path (MVT content is opt-in).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-018. Findings: P31.211. Blueprint C-211 (EPIC-01). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 15): P31.211.
+
+## 2026-10-09 — NEW-GA-P0-019 — decodeMVT trusts the command count of a corrupt varint, giving an unbounded loop — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW. One owner with P31.211, P31.212: decodeMVT and vector glTF extraction robustness.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** decodeMVT trusts the command count of a corrupt varint, giving an unbounded loop. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/decodeMVT.js:315-319, 343-347, 374-378`; re-derived at `decodeMVT.js:312`
+  - Code: `count = cmd >> 3` ... `const count = cmd >> 3;`
+  - Verified (the adjudicator's re-derivation, and the authority): decodeMVT.js:312/331/362 take `count = cmd >> 3`, and the loops keep pushing past cmds.length because zigzag(undefined) is 0. A hostile ~20-byte tile causes unbounded allocation (verifier's node run: a count of 268M reached a V8 OOM). P1 by exploitability (hostile input, not default data).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-019. Findings: P31.213. Blueprint C-213 (EPIC-01). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 15): P31.213.
+
+## 2026-10-09 — NEW-GA-P0-020 — BatchTableHierarchy stores parent and class indexes in Uint16Array — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** BatchTableHierarchy stores parent and class indexes in Uint16Array. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/BatchTableHierarchy.js:275-283, 312-319`; re-derived at `BatchTableHierarchy.js:275`
+  - Code: `parentIndexes = new Uint16Array(instancesLength);` ... `const classIndexes = new Uint16Array(instancesLength);`
+  - Verified (the adjudicator's re-derivation, and the authority): BatchTableHierarchy.js:275 and :313 use Uint16Array for parentIndexes and classIndexes, which wrap above 65,535 instances per class or cumulative parents. Valid large legacy tilesets get silently wrong hierarchy properties. P1.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-020. Findings: P31.224. Blueprint C-224 (EPIC-05). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 15): P31.224.
+
+## 2026-10-09 — NEW-GA-P0-021 — Composite (cmpt) parsing has no tilesLength, minimum byteLength or depth bound — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Composite (cmpt) parsing has no tilesLength, minimum byteLength or depth bound. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/Composite3DTileContent.js:180-250`; re-derived at `Composite3DTileContent.js:201-250`
+  - Code: `byteOffset += tileByteLength` ... `const tilesLength = view.getUint32(byteOffset, true);`
+  - Verified (the adjudicator's re-derivation, and the authority): In Composite3DTileContent.js:201-250, tilesLength is unbounded, `byteOffset += tileByteLength` has no minimum-header check, and cmpt recursion has no depth limit. A child with byteLength 0 keeps the offset fixed, so work grows as tilesLength^depth (verifier's node run: a 64-byte payload took 4.3 s). Hostile input: P1.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-021. Findings: P31.225. Blueprint C-225 (EPIC-05). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 15): P31.225.
+
+## 2026-10-09 — NEW-GA-P0-022 — GaussianSplat3DTileContent reports 0 bytes on the native WebGPU path, so the tileset cache cannot trim splat tiles — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** GaussianSplat3DTileContent reports 0 bytes on the native WebGPU path, so the tileset cache cannot trim splat tiles. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/GaussianSplat3DTileContent.js:198-220` - the audit citation is stale; verifier: GaussianSplatPrimitive.js:781-796 is the backend branch, not byte accounting; the accounting is GaussianSplat3DTileContent.js:198-220 (inside the first citation) plus GaussianSplatPrimitive.js:554 and :344-349; re-derived at `GaussianSplat3DTileContent.js:198-200`
+  - Code: `get geometryByteLength()` ... `get geometryByteLength() { return 0; }`
+  - Verified (the adjudicator's re-derivation, and the authority): GaussianSplat3DTileContent.js:198-200 returns 0 from `get geometryByteLength()`, and :208-219 returns 0 from texturesByteLength when primitive.gaussianSplatTexture is undefined, as it is on the native WebGPU path. On WebGPU the tileset's byte cache therefore cannot trim splat tiles. P1: memory is retained while flying; the device-loss claim is unmeasured.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-022. Findings: P34.C-228. Blueprint C-228 (EPIC-08). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 16): P34.C-228.
+
+## 2026-10-09 — NEW-GA-P0-023 — ReprojectWebMercator.wgsl writes alpha 1.0 where the GLSL twin keeps the sampled alpha — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** ReprojectWebMercator.wgsl writes alpha 1.0 where the GLSL twin keeps the sampled alpha. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/ReprojectWebMercator.wgsl:94-103`; re-derived at `ReprojectWebMercator.wgsl:103`
+  - Code: `vec4<f32>(sampled.rgb, 1.0)` ... `return vec4<f32>(sampled.rgb, 1.0);`
+  - Verified (the adjudicator's re-derivation, and the authority): ReprojectWebMercator.wgsl:103 returns `vec4<f32>(sampled.rgb, 1.0)`, and the comment at :93-102 says so; the GLSL twin returns the sampled RGBA. Users commonly add transparent Mercator overlays (label or radar layers), and these composite opaque wherever the reprojected texture is sampled. P1, magnitude unmeasured.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-023. Findings: P34.C-232. Blueprint C-232 (EPIC-05). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 16): P34.C-232.
+
+## 2026-10-09 — NEW-GA-P0-024 — eyeOffset is not implemented in the WebGPU billboard and label paths — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** eyeOffset is not implemented in the WebGPU billboard and label paths. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUBillboardRenderer.js:211-337`
+  - Code: `translateRelativeToEye` ... `mvpRelativeToEye * vec4(positionRTE, 1.0)`
+  - Verified (the adjudicator's re-derivation, and the authority): A case-insensitive grep for eyeOffset matches none of WebGPUBillboardRenderer.js, WebGPULabelRenderer.js, WebGPUCollectionShaders.js or Shaders/WebGPU/Collections/*.wgsl, while BillboardCollectionVS.glsl uses it 3 times. The public property is silently ignored on WebGPU. P1.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-024. Findings: P34.C-236. Blueprint C-236 (EPIC-03). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 16): P34.C-236.
+
+## 2026-10-09 — NEW-GA-P0-025 — Sync scene.pick on WebGPU returns no hit while view provenance changes (camera moving) — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Sync scene.pick on WebGPU returns no hit while view provenance changes (camera moving). Severity: P1 - Default sync scene.pick on WebGPU returns no hit while the camera moves, but it is a recorded fail-closed design awaiting a ruling with pickAsync available, so P1 rather than P0; the fix is a ruling first.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUPickFramebuffer.ts:1124`; re-derived at `WebGPUPickFramebuffer.ts:1124`
+  - Code: `if (cached.viewProvenance !== region.viewProvenance) { recordServeDecline('view-provenance-changed'); return null; }` ... `appendPickMatrixProvenance(parts, camera.viewMatrix)`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUPickFramebuffer.ts:1124 declines on any provenance change; its own doc (:1068-1093) says sync end() returns empty for the whole motion and names the relaxation as an open maintainer decision.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-025. Findings: P37.C-285. Blueprint C-285 (EPIC-05). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 19): P37.C-285.
+
+## 2026-10-09 — NEW-GA-P0-026 — The cluster tile Y index is mirrored between ClusterBounds and ClusteredLighting — **OPEN** (P1, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - NEW-CLUSTER-MULTIFRUSTUM-BOUNDS (claims bounds/FS self-consistency; Y order not covered).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** The cluster tile Y index is mirrored between ClusterBounds and ClusteredLighting. Severity: P1 - Every clustered light lands on the mirrored screen row whenever the feature is on, but clustered lighting is default-off.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Compute/ClusterBounds.wgsl:127-128` - the audit citation is stale; verifier: Finding has empty citations and body (the audit lists only the heading and `WebGPUContext.ts:1`). Relevant code: ClusterBounds.wgsl:125-128,163; ClusteredLighting.wgsl:130-131,143; ModelPBRComplete.wgsl:1487,2921-2923; re-derived at `ClusterBounds.wgsl:127`, `ClusteredLighting.wgsl:131`, `MotionBlur.wgsl:118`, `Compute/ClusterBounds.wgsl:127`, `WebGPUSceneRendererClusteredLighting.ts:153`
+  - Code: `yMinNdc = -1.0 + f32(gid.y) * tileSizeY` ... `tileY = floor(fragCoord.y / tileSizeY)`
+  - Verified (the adjudicator's re-derivation, and the authority): ClusterBounds.wgsl:127 `yMinNdc = -1.0 + f32(gid.y) * tileSizeY` (row 0 = NDC bottom) vs ClusteredLighting.wgsl:131 `tileY = floor(fragCoord.y / tileSizeY)` (row 0 = window top), with no flip in between. The fork does flip NDC y for UV elsewhere (MotionBlur.wgsl:118), which supports the inversion.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-026. Findings: P40.C-290, P58.C-458 (one defect; the later ids are duplicates). Blueprint C-290 (EPIC-08). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 20): P40.C-290; ADJUDICATION-31-31 (Meneltarma-a06, chunk 31): P58.C-458.
+
+## 2026-10-09 — NEW-GA-P0-027 — Swapping or removing a WGSL CustomShader destroys its UBO while the cached primitive bind group still references it — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** audit fix wave 1, lane FW-05.
+
+- **Symptom:** Swapping or removing a WGSL CustomShader destroys its UBO while the cached primitive bind group still references it. Severity: P1 - After a runtime swap/removal of a WGSL customShader on a drawn model, its bind group references a destroyed buffer, so the frame submit fails every frame; opt-in experimental path.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts:3508-3511, 3536-3538, 3562-3564, 3693-3695, 4117, 4932-4942, 6646-6665, 6837-6850`; re-derived at `WebGPUModelRenderer.ts:3536-3538`
+  - Code: `if (defined(cs?.uboBuffer)) { cs.uboBuffer.destroy(); }` ... `defined(cache.primitives[primKey])`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUModelRenderer.ts:3536-3538 / 3561-3564 / 3509-3511 destroy cs.uboBuffer on a swap/removal; ensurePrimitiveCache returns the cached entry (:3693-3695); the eviction predicate (:6646-6658) has no custom-shader term; textureEntries (with the UBO at binding 50 via :3614-3616) is rebuilt only on first build or texture upgrade (:6843-6850).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-027. Findings: P40.C-297. Blueprint C-297 (EPIC-06). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 20): P40.C-297.
+
+## 2026-10-09 — NEW-GA-P0-028 — WebGPUIndirectDrawManager rewrites one argument buffer from offset 0 for every pass in a frame — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** WebGPUIndirectDrawManager rewrites one argument buffer from offset 0 for every pass in a frame. Severity: P1 (adjudicators split 2x P1, 1x P2; rule: majority, ties to the higher) - Wrong geometry whenever the opt-in indirect tile path (useIndirectDrawForTiles default false) runs more than one pass or slice per frame.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUIndirectDrawManager.ts:126-144, 150-154, 222-237`; re-derived at `WebGPUSceneRenderer.ts:582-584`, `WebGPUIndirectDrawManager.ts:150-154`, `WebGPUContext.ts:3404`, `WebGPUSceneRenderer.ts:584`, `WebGPUIndirectDrawManager.ts:222-232`
+  - Code: `manager.beginFrame()` ... `const manager = context.indirectDrawManager; ... manager.beginFrame();`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUSceneRenderer.ts:582-584 `manager.beginFrame()` per executeBatchIndirect call; WebGPUIndirectDrawManager.ts:150-154 resets _drawCount and :222-232 flush writes from offset 0 with queue.writeBuffer; all passes share one encoder submitted at WebGPUContext.ts:3404, so earlier passes read the last pass's arguments.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-028. Findings: P40.C-307, P46.C-349, P55.C-428 (one defect; the later ids are duplicates). Blueprint C-307 (EPIC-05). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 21): P40.C-307; ADJUDICATION-19-24 (Meneltarma-a04, chunk 24): P46.C-349; ADJUDICATION-25-30 (Meneltarma-a05, chunk 29): P55.C-428.
+
+## 2026-10-09 — NEW-GA-P0-029 — The MSAA depth-resolve texture is never destroyed on resize or teardown — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** audit fix wave 1, lane FW-06.
+
+- **Symptom:** The MSAA depth-resolve texture is never destroyed on resize or teardown. Severity: P1 - Default MSAA path holds one full-resolution r16float texture per resize/rebuild until GC; bounded by GC, not an unbounded leak, so P1 rather than P0.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPURenderTarget.ts:111-113`; re-derived at `WebGPURenderTarget.ts:256-273`, `WebGPUSceneFramebuffer.ts:321-328`, `Scene.js:579`
+  - Code: `_msaaDepthResolveTexture`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPURenderTarget.ts:256-273 creates _msaaDepthResolveTexture; destroyTextures (:705-723) and destroy (:728-735) never destroy it; resize (:686-700) overwrites it. WebGPUSceneFramebuffer.ts:321-328 builds the colour target with depthSamplable: true and sampleCount numSamples; Scene.js:579 msaaSamples defaults to 4.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-029. Findings: P46.C-354. Blueprint C-354 (EPIC-05). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 24): P46.C-354.
+
+## 2026-10-09 — NEW-GA-P0-030 — Draped MVT polygons are not pickable on WebGPU (no pick index is written) — **OPEN** (P1, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - UP144-VECTOR-LAYER-WGSL / C-05, the draped-vector pick twin. Its "Still open under this row" note (:19860-19863 as of 9457bc6bd4, before this intake) expects draped polygons to read their pick word from the shared record "with no further work here". At HEAD no WGSL polygon path writes `vectorPickPrimitiveIndex` (the only writer is GlobeTerrain.wgsl:4495, polylines), so that expectation does not hold and the polygon half needs its own pick write.
+
+**Owner:** audit fix wave 1, lane FW-04.
+
+- **Symptom:** Draped MVT polygons are not pickable on WebGPU (no pick index is written). Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl:4130-4136`; re-derived at `VectorCommon.glsl:248`
+  - Code: `_ = vectorPolylineRender(input.v_textureCoordinates.xy, vectorUV_dx, vectorUV_dy, vec4<f32>(0.0)); out.color = vectorPickColorOver(camera.pickColor);` ... `if (!inside || primitiveIndex < 0) { return baseColor; } let fillColor = vectorPrimitiveRecord(primitivesBase, u32(primitiveIndex)).color; return fillColor * ...;`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read GlobeTerrain.wgsl fragmentPickMain (:4114-4140): it calls only vectorPolylineRender and then vectorPickColorOver. vectorCompositePolygonFill (:4566-4581) never writes vectorPickPrimitiveIndex; the only WGSL writer is :4495 (polylines). The GLSL twin writes it at VectorCommon.glsl:248. Draped MVT polygons cannot be picked on WebGPU. P1: a parity gap on opt-in content.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-030. Findings: P49.C-375. Blueprint C-375 (EPIC-05). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 25): P49.C-375.
+
+## 2026-10-09 — NEW-GA-P0-031 — An HTMLVideoElement with no width attribute uploads as 0x0 on WebGPU (?? keeps the 0) — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** audit fix wave 1, lane FW-02.
+
+- **Symptom:** An HTMLVideoElement with no width attribute uploads as 0x0 on WebGPU (?? keeps the 0). Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUImageUpload.ts:197-200, 203-216`; re-derived at `WebGPUImageUpload.ts:197-200`, `WebGLStubTexture.ts:886-890`, `Texture.js:422-428`
+  - Code: `width = w ?? videoWidth` ... `sized.width ?? sized.videoWidth ?? 0`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUImageUpload.ts:197-200 (`width = w ?? videoWidth`) and WebGLStubTexture.ts:886-890 and :1084-1088 (`sized.width ?? sized.videoWidth ?? 0`, then return on <=0), against Texture.js:422-428 (which prefers videoWidth). An HTMLVideoElement with no width attribute reports width 0, which `??` keeps. Texture.js loadImageSource (:919-934) uses the 6-arg texImage2D, which on WebGPU is the stub path. P1: the video texture stays blank on WebGPU. P0 CANDIDATE: if the Sandcastle 'Video' demo (a <video> with no width attribute) is blank on the WebGPU default renderer, raise this to P0. One Edge capture of that demo settles it.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-031. Findings: P52.C-403. Blueprint C-403 (EPIC-05). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 27): P52.C-403.
+
+## 2026-10-09 — NEW-GA-P0-032 — The GroundPrimitive depth-sample fast path has no footprint containment test — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW. One owner with P4.18, P55.C-411: classification (pass slots, ignore-show, GroundPrimitive containment); C-411 is sequenced after the slot fix.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** The GroundPrimitive depth-sample fast path has no footprint containment test. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js:11-18, 1103-1118, 1428-1433, 1472-1491, 2419-2431`; re-derived at `WebGPUGroundPrimitiveRenderer.js:1103-1118`
+  - Code: `if (surfaceDepth == 0.0) { discard; }` ... `primitive: { cullMode: "none" }`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUGroundPrimitiveRenderer.js:1103-1118 (dsColorFS fast path: discard only on surfaceDepth==0, no containment test), :1428-1433 (cullMode none, depth less-equal, no write) and the file header :11-17 ('Volume rasterization supplies lateral coverage', 'No stencil fallback'). Volume faces in front of the surface colour pixels outside the footprint. Kept at P1 per the rule, because the magnitude is unmeasured. It is a P0 CANDIDATE: GroundPrimitive is the default path for entity polygons without height, and the ledger measured ~2.25x area for the same technique on Vector3DTile. The named Edge leg (oblique and nadir, WebGL vs WebGPU classified-area ratio) decides it. The remedy needs a seat ruling (stencil Z-fail vs depth-sample).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-032. Findings: P55.C-410. Blueprint C-410 (EPIC-05). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 28): P55.C-410.
+
+## 2026-10-09 — NEW-GA-P0-033 — SSR reconstructViewPosition omits the NDC Y flip that projectToScreen applies — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW. One owner with P55.C-413: ScreenSpaceReflections.wgsl.
+
+**Owner:** audit fix wave 1, lane FW-07.
+
+- **Symptom:** SSR reconstructViewPosition omits the NDC Y flip that projectToScreen applies. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/PostProcess/ScreenSpaceReflections.wgsl:62 ,  89-93 ,  96-101 ,  209-231 ,  242-247 ,  262-267`; re-derived at `ScreenSpaceReflections.wgsl:62`
+  - Code: `ndc = vec4(uv*2-1, z, 1)` ... `1 - screenUV.y`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read ScreenSpaceReflections.wgsl:62 (uv.y=0 at the top), :89 (`ndc = vec4(uv*2-1, z, 1)`, no flip) and :96-101 (projectToScreen flips `1 - screenUV.y`). The unproject/project pair is inconsistent, so every reflection samples the vertically mirrored region. P1: SSR output is wholly wrong on an opt-in effect.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-033. Findings: P55.C-412. Blueprint C-412 (EPIC-03). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 28): P55.C-412.
+
+## 2026-10-09 — NEW-GA-P0-034 — The identity blit pipeline is not rebuilt when useHDRCanvasOutput changes the canvas format — **OPEN** (P1, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-WEBGPU-POSTPROCESS-FIXED-STAGES-STALE-FORMAT-AFTER-HDR-TOGGLE (OPEN). That row is the same stale-format class in the same file, for the tonemap, colour-grading and FXAA stages after a `highDynamicRange` toggle; this row is the identity blit after a `useHDRCanvasOutput` toggle. One owner for both.
+
+**Owner:** audit fix wave 1, lane FW-08.
+
+- **Symptom:** The identity blit pipeline is not rebuilt when useHDRCanvasOutput changes the canvas format. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts:621-625`; re-derived at `WebGPUPostProcessPipeline.ts:530-535`, `WebGPUContextCanvasConfig.ts:175-194`
+  - Code: `if (!this._identityPipeline) { this._createIdentityBlitPipeline(device, canvasFormat); }` ... `useHDRCanvasOutput`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUPostProcessPipeline.ts:530-535 (needsRecreate ignores canvasFormat) and :621-625 (identity pipeline created once), against WebGPUContextCanvasConfig.ts:175-194 (the presentation format switches to rgba16float and only _webgpuPipelineCache is cleared). The identity pipeline is reset only in destroy (:2240). After a runtime useHDRCanvasOutput toggle, the identity blit targets the wrong format every frame. P1: opt-in toggle, and the frame is invalidated, not the device lost.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-034. Findings: P55.C-424. Blueprint C-424 (EPIC-10). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 29): P55.C-424.
+
+## 2026-10-09 — NEW-GA-P0-035 — executeBatchIndirect casts vertex and index buffers to {buffer}; raw GPUBuffers yield undefined — **OPEN** (P1, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** executeBatchIndirect casts vertex and index buffers to {buffer}; raw GPUBuffers yield undefined. Severity: P1
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts:714-718, 720-723`; re-derived at `WebGPUSceneRenderer.ts:713-722`
+  - Code: `(headVertexBuffers[v] as {buffer}).buffer` ... `(headIndexBuffer as {buffer}).buffer`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUSceneRenderer.ts:713-722: it casts `(headVertexBuffers[v] as {buffer}).buffer` and `(headIndexBuffer as {buffer}).buffer` with no resolveBuffer. Raw GPUBuffers are legal command buffers and are what model primitives use, so setIndexBuffer(undefined) throws. P1: a TypeError out of the pass on the opt-in indirect path.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-2 Opus lead (one lead per owner group).
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.2, draft NEW-GA-P0-035. Findings: P55.C-432. Blueprint C-432 (EPIC-01). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 29): P55.C-432.
+
+## 2026-10-09 — NEW-GA-P0-036 — Host-Timeline Uniform Clobbering in GPU Bitonic Merge Sort — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-GPU-SORT-PIPELINE-PHASE-3 (the same bug was fixed in the SortKeys dispatcher only). One owner with P52.C-393, P58.C-456, P31.204: point-cloud GPU sort (params, block direction, final direction, unread output).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Host-Timeline Uniform Clobbering in GPU Bitonic Merge Sort. Severity: P2 (adjudicators split 4x P2, 1x P1; rule: majority, ties to the higher)
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudSortDispatcher.ts:316-331, 371-383`; re-derived at `WebGPUPointCloudSortDispatcher.ts:371-383`, `TimeDynamicPointCloud.js:670`, `WebGPUPointCloudSortDispatcher.ts:316-330`, `WebGPUPointCloudSortDispatcher.ts:320-330`, `PointCloudSort.wgsl:85`
+  - Code: `for (k...) for (j...) { this._writeParams(r, N, k, j); const pass = encoder.beginComputePass(...); ... pass.setBindGroup(0, r.bindGroup) ... }` ... `_writeParams`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. _encodeGlobalPhases (WebGPUPointCloudSortDispatcher.ts:371-383) calls _writeParams -> queue.writeBuffer(r.paramsBuffer, 0, ...) (:326-330) for each (k,j) with one bind group and no dynamic offset, so every recorded pass reads the last write. ADDED SCOPE: the sort output is not consumed. WasmPointCloudBridge.sortByDistance fills outIndices with identity on the GPU branch (:446-458) and TimeDynamicPointCloud never reads _sortIndices after the call (:654-677), while TimeDynamicPointCloud.js:670 can turn useGPUSort on through performanceManager.shouldUseGPUPointCloud. Today the defect costs wasted GPU work but changes no visible output. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-036. Findings: P1.5, P31.203, P43.C-325, P52.C-394, P58.C-455 (one defect; the later ids are duplicates). Blueprint C-5 (EPIC-08). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 01): P1.5; ADJUDICATION-13-18 (Meneltarma-a03, chunk 14): P31.203; ADJUDICATION-19-24 (Meneltarma-a04, chunk 22): P43.C-325; ADJUDICATION-25-30 (Meneltarma-a05, chunk 27): P52.C-394; ADJUDICATION-31-31 (Meneltarma-a06, chunk 31): P58.C-455. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-037 — Transmission Blending Destroys 100% of Specular Highlights — **OPEN** (P2, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - glTF extension table: KHR_materials_transmission shipped (no row for the specular loss). One owner with P25.153: transmission mix and shadow multiply in ModelPBRComplete.wgsl.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Transmission Blending Destroys 100% of Specular Highlights. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl:3140-3146`; re-derived at `ModelPBRComplete.wgsl:3144-3145`, `ModelPBRComplete.wgsl:3140-3145`
+  - Code: `mix(direct, refractedColor, trFactor); direct = diffuseTransmitted;` ... `let diffuseTransmitted = mix(direct, refractedColor, trFactor); direct = diffuseTransmitted;`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. ModelPBRComplete.wgsl:3144-3145 `mix(direct, refractedColor, trFactor); direct = diffuseTransmitted;` sits under a comment claiming the specular term is left intact, but `direct` already carries sun specBRDF (:2911), clustered (:2925), LTC (:2933), anisotropic (:2983), clearcoat (:3031) and sheen (:3066). IBL specular and the later point-light loop (:3290) are untouched. Fidelity defect on KHR_materials_transmission content. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: candidate in seat-worktree-snapshot 20261008-2106: mixes only the diffuse part of direct (relies on a directDiffuse split elsewhere in the diff).
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-037. Findings: P1.6, P25.151 (one defect; the later ids are duplicates). Blueprint C-6 (EPIC-06). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 01): P1.6; ADJUDICATION-07-12 (Meneltarma-a02, chunk 11): P25.151. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-038 — Pick ID Alpha Channel Bit Gate Discards High-Key 3D Tile Features — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Pick ID Alpha Channel Bit Gate Discards High-Key 3D Tile Features. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl:3830-3840, 3968, 4119`; re-derived at `ModelPBRComplete.wgsl:3833`, `GraphicsContext.ts:1657-1659`
+  - Code: `if (featurePickColor.r > 0.0 || featurePickColor.g > 0.0 || featurePickColor.b > 0.0)` ... `_nextPickColor[0]++`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. RGB-only gates at ModelPBRComplete.wgsl:3833, :3969 and :4119. createPickId increments a monotonic counter and packs Color.fromRgba(key) (GraphicsContext.ts:1657-1659), so only keys that are exact multiples of 2^24 miss. Gemini's diff fixes two of the three gates and misses the snap gate. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: incomplete candidate in seat-worktree-snapshot 20261008-2106: fixes two of the three pick gates; the snap gate (~:4119) has no hunk.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-038. Findings: P4.16. Blueprint C-16 (EPIC-06). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 02): P4.16. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-039 — TAA Parity Advancement on Skip Blend Flashes Black/Garbage Memory — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** TAA Parity Advancement on Skip Blend Flashes Black/Garbage Memory. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUTAAEffect.ts:606-620`; re-derived at `WebGPUTAAEffect.ts:606`, `TAA.wgsl:374-377`
+  - Code: `this._parityManager.advanceFrame();` ... `if (this._skipNextBlend) { this._skipNextBlend = false; return sourceView; }`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. WebGPUTAAEffect.ts:606 calls advanceFrame and the skip at :617-620 returns before the history write, so frame N+1 reads the never-written slot. TAA.wgsl:374-377 clamps history to the 3x3 AABB before the mix, which limits the one-frame darkening. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-039. Findings: P4.17. Blueprint C-17 (EPIC-10). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 02): P4.17. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-040 — BindGroup Texture View Desynchronization on Retired or Null Textures — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** BindGroup Texture View Desynchronization on Retired or Null Textures. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts:220`; re-derived at `WebGPUGlobeSurfaceTileUB.ts:220-222`, `WebGPUGlobeSurfaceRenderer.ts:2169-2196`, `GlobeSurfaceTileProviderRendering.js:1689`
+  - Code: `if (nightImageryTileIsRetired(imagery.imageryLayer, tileImagery)) { continue; }` ... `layerCount`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. WebGPUGlobeSurfaceTileUB.ts:220-222 skips a retired night layer before layerCount advances. _createTextureBindGroup (WebGPUGlobeSurfaceRenderer.ts:2169-2196) has no retirement test, and readyLayers (:1320-1337) is unfiltered. Within Renderer/WebGPU only WebGPUGlobeSurfaceTileUB.ts calls nightImageryTileIsRetired, whereas WebGL tests it at GlobeSurfaceTileProviderRendering.js:1689 and :2248. Any layer after a retired night layer pairs texture i with UB slot i-1. DUPLICATE: P16.83 is the same defect. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-040. Findings: P7.20, P16.83 (one defect; the later ids are duplicates). Blueprint C-20 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 02): P7.20; ADJUDICATION-01-06 (Meneltarma-a01, chunk 06): P16.83. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-041 — Solar Specular Radiance Double-Counting When Celestial Reflection Is Enabled — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Solar Specular Radiance Double-Counting When Celestial Reflection Is Enabled. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl:3164-3196, 3247-3288`; re-derived at `GlobeTerrain.wgsl:3164-3177`
+  - Code: `if (camera.celestialControl.x > 0.0) { oceanContribution += computeCelestialWaterSpecular(...) }` ... `classicColor += computeCelestialWaterSpecular`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. GlobeTerrain.wgsl:3164-3177 adds the Phong lobe, then :3188-3196 adds GGX into the same oceanContribution when celestialControl.x > 0. :2918-2919 calls GGX the lobe 'this replaces', while :3180-3186 says Phong is the whole story only while the float is zero. Opt-in; whether GGX replaces or adds to Phong needs a maintainer ruling. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-041. Findings: P7.22. Blueprint C-22 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 02): P7.22. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-042 — Hi-Z Bounding Sphere Non-RTE Planetary Float32 Matrix Multiply Violates Fork Rule 1 — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - FORK-41 (Hi-Z; RTE of the sphere centres not covered).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Hi-Z Bounding Sphere Non-RTE Planetary Float32 Matrix Multiply Violates Fork Rule 1. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Compute/OcclusionTest.wgsl:59-61`; re-derived at `OcclusionTest.wgsl:59-61`, `SOABoundingSphereLayout.js:195-212`, `ViewportExecutor.js:910-911`
+  - Code: `_hiZConsumeEnabled: boolean = false` ... `return params.viewProjectionMatrix * vec4<f32>(worldPos, 1.0);`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. OcclusionTest.wgsl:59-61 multiplies an f32 ECEF centre by the absolute VP; centres are copied from bv.center into Float32 (WebGPUSceneRenderer.ts ~4420-4424). The consumer is off at HEAD: `_hiZConsumeEnabled: boolean = false` (:1192), and :4204 returns the unfiltered list. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: incomplete candidate in seat-worktree-snapshot 20261008-2106: the CPU side stores centre minus camera; OcclusionTest.wgsl:59-61 and the matrix side are unchanged.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-042. Findings: P7.24, P55.C-416, P58.C-440 (one defect; the later ids are duplicates). Blueprint C-24 (EPIC-03). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 02): P7.24; ADJUDICATION-25-30 (Meneltarma-a05, chunk 28): P55.C-416; ADJUDICATION-25-30 (Meneltarma-a05, chunk 30): P58.C-440. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-043 — Bounding Sphere Screen Radius Omission of Camera Focal Length — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - FORK-41.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Bounding Sphere Screen Radius Omission of Camera Focal Length. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Compute/OcclusionTest.wgsl:83-102`; re-derived at `OcclusionTest.wgsl:86`, `OcclusionTest.wgsl:84-86`
+  - Code: `screenRadius = (radius / distance) * params.screenHeight * 0.5` ... `let screenRadius = (radius / distance) * params.screenHeight * 0.5;`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. OcclusionTest.wgsl:86 `screenRadius = (radius / distance) * params.screenHeight * 0.5` omits P[1][1]. The true UV half-extent is 0.5*radius*P11/w, so the rect is undersized by 1/P11 and errs toward culling. SEVERITY LOWERED from the verifier's P1 to P2: the consumer is a debug A/B toggle that is off by default (:1192, :4204).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: candidate in seat-worktree-snapshot 20261008-2106: screen radius from the VP row lengths; the log-depth branch is untouched.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-043. Findings: P7.25, P55.C-418 (one defect; the later ids are duplicates). Blueprint C-25 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 02): P7.25; ADJUDICATION-25-30 (Meneltarma-a05, chunk 28): P55.C-418. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-044 — Entity Clustering Stale Ordinal Desynchronization Across Async Frames — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Entity Clustering Stale Ordinal Desynchronization Across Async Frames. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/DataSources/EntityCluster.js:229-231, 401-408` - the audit citation is stale; verifier: EntityCluster.js:229-231 and :401-408 hold no freshness logic (they are the billboard-collection ready check and the clusterPoints setter); the check is at DataSources/EntityClusterGPU.js:229. The cited ...; re-derived at `DataSources/EntityClusterGPU.js:229`
+  - Code: `grid.pointCount !== points.length || grid.pixelRange !== pixelRange` ... `if (grid.pointCount !== points.length || grid.pixelRange !== pixelRange) { return null; }`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. The freshness test at DataSources/EntityClusterGPU.js:229 is `grid.pointCount !== points.length || grid.pixelRange !== pixelRange`; the generation stored at :139-140/:162 is never compared. Clusters are mis-grouped for one frame when the count is equal but membership differs. P2. The device-loss sub-claim is not established.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: touched in seat-worktree-snapshot 20261008-2106, not a fix: changes a different check (out-of-order readbacks), not the :229 freshness test.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-044. Findings: P7.28. Blueprint C-28 (EPIC-02). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 02): P7.28. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-045 — glTF Shadow Pass Vertex Shader Binds Joint Matrices but Omits Morph Targets — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** glTF Shadow Pass Vertex Shader Binds Joint Matrices but Omits Morph Targets. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts:524-541, 7860`; re-derived at `WebGPUModelRenderer.ts:524-541`
+  - Code: `_shadowCastJointMatricesSB = nodeCache.jointBuffer` ... `skinnedPos = (skinMatrix * vec4f(p, 1.0)).xyz`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. getModelShadowCastLayout (WebGPUModelRenderer.ts:524-541) has no morph parameter, and the cast wiring (:7849-7863) binds only joint and instancing buffers. Morph primitives cast rest-pose shadows. A Principle-9 missing feature. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-045. Findings: P7.29. Blueprint C-29 (EPIC-06). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 02): P7.29. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-046 — Custom Shader Fragment Input Omits Metadata Struct — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-MODEL-WGSL-CUSTOM-SHADER (metadata access not itemised).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Custom Shader Fragment Input Omits Metadata Struct. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/Model/CustomShaderWGSLPipelineStage.js:297-306`; re-derived at `CustomShaderWGSLPipelineStage.js:297-306`, `ModelPBRComplete.wgsl:2857-2862`
+  - Code: `lines.push("struct czm_customFragmentInput {"); lines.push("  attributes: czm_customAttributes,"); lines.push("};")` ... `var csInput: czm_customFragmentInput; csInput.attributes.positionMC = ...color_0 = input.color0;`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. CustomShaderWGSLPipelineStage.js:297-306 gives czm_customFragmentInput only attributes, and ModelPBRComplete.wgsl:2857-2862 fills only attributes. A native-WGSL CustomShader cannot read metadata. Feature gap. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-046. Findings: P7.31. Blueprint C-31 (EPIC-06). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 03): P7.31. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-047 — Cross-Space Normal and Sun Direction Frame Mismatch in 2D and Columbus View — **OPEN** (P2, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE (FIXED). The quoted `dayNightNormalEC` derivation is that row's own (:17198 as of 9457bc6bd4, before this intake), and its SPACE paragraph (:17203 as of 9457bc6bd4, before this intake) states that the 3x3 of `camera.modifiedModelView` reproduces `czm_normal3D` and that both operands share a frame. That holds in 3D only. In 2D and Columbus View `computeModifiedModelView` copies the planar `uniformState.view` (WebGPUGlobeSurfaceCameraUB.ts:1414-1430), while `lightDirectionEC` (:509) is built with `viewRotation3D` (UniformState.js:962-965).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Cross-Space Normal and Sun Direction Frame Mismatch in 2D and Columbus View. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl:1700-1705, 5134-5137`; re-derived at `WebGPUGlobeSurfaceCameraUB.ts:1414-1429`, `UniformState.js:962-965`, `GlobeVS.glsl:250`
+  - Code: `let nm = camera.modifiedModelView; out.v_normalEC = normalize(vec3(nm[0][0]*normalMC.x + ...))` ... `dayNightNormalEC = normalize((camera.modifiedModelView * vec4(normalize(input.v_positionMC), 0.0)).xyz)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. computeModifiedModelView copies uniformState.view (WebGPUGlobeSurfaceCameraUB.ts:1414-1429), which is the planar view in 2D/CV, while :509 packs uniformState.lightDirectionEC, built with viewRotation3D (UniformState.js:962-965). WebGL uses czm_normal3D (GlobeVS.glsl:250). SEVERITY LOWERED from P1 to P2: it needs SCENE2D/COLUMBUS_VIEW plus globe.enableLighting, which is off by default.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-047. Findings: P7.32. Blueprint C-32 (EPIC-09). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 03): P7.32. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-048 — Vector Polylines: 180° Anti-Parallel Miter Join NaN Vector Corruption — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** audit fix wave 1, lane FW-03.
+
+- **Symptom:** Vector Polylines: 180° Anti-Parallel Miter Join NaN Vector Corruption. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Collections/BufferPolylineMaterial.wgsl:144-154`; re-derived at `BufferPolylineMaterial.wgsl:145-147`, `BufferPolylineMaterial.wgsl:140-147`
+  - Code: `normalize(dirPrev + dirNext)` ... `let dirPrev = normalize(screenCurr - screenPrev); let dirNext = normalize(screenNext - screenCurr); let tangent = normalize(dirPrev + dirNext);`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. BufferPolylineMaterial.wgsl:145-147 `normalize(dirPrev + dirNext)` is unguarded for a 180-degree reversal; WebGL guards it with czm_epsilon6. Local gap. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-048. Findings: P10.36, P55.C-435 (one defect; the later ids are duplicates). Blueprint C-36 (EPIC-06). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 03): P10.36; ADJUDICATION-25-30 (Meneltarma-a05, chunk 29): P55.C-435. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-049 — Post-Processing: Static Uniform Snapshot Disconnects Runtime Uniform Mutations — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P10.41: user WGSL post-process stage sync (uniforms and the enabled flag).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Post-Processing: Static Uniform Snapshot Disconnects Runtime Uniform Mutations. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessStageCollection.ts:906`; re-derived at `WebGPUPostProcessStageCollection.ts:906-917`, `WebGPUUserPostProcessStage.ts:162`, `WebGPUPostProcessPipeline.ts:1265-1275`
+  - Code: `const userUniforms = {}` ... `private readonly _uniformValues ...; this._uniformValues = uniformValues;`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. WebGPUPostProcessStageCollection.ts:906-917 copies numeric uniforms once into userUniforms at build, and WebGPUUserPostProcessStage.ts:162/:178 keeps that copy. Rebuild triggers only on list length or identity (:843-852), and syncLibraryStage (WebGPUPostProcessPipeline.ts:1265-1275) serves library stages only. Fork-specific opt-in WGSL stage API. SEVERITY LOWERED P1 -> P2. One owner with P10.41.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-049. Findings: P10.40. Blueprint C-40 (EPIC-10). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 03): P10.40. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-050 — Post-Processing: Stage Enabled Flag Ignored During Pipeline Execution — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P10.40: user WGSL post-process stage sync (uniforms and the enabled flag).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Post-Processing: Stage Enabled Flag Ignored During Pipeline Execution. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUUserPostProcessStage.ts:127` - the audit citation is stale; verifier: 1774 (execution loop); 127 (stage flag); re-derived at `WebGPUPostProcessPipeline.ts:1773-1776`, `WebGPUPostProcessStageCollection.ts:853-935`, `WebGPUPostProcessPipeline.ts:1265-1275`, `WebGPUPostProcessStageCollection.ts:1212`
+  - Code: `if (stage.enabled)` ... `for (const stage of this._userStages) { if (stage.enabled) { currentView = stage.execute(...`
+  - Verified (the adjudicator's re-derivation, and the authority): REVERSAL. The cited mechanism is wrong: the loop does check the flag (WebGPUPostProcessPipeline.ts:1773-1776 `if (stage.enabled)`). The filed failure still reproduces from the code by another path: setting enabled=false on a user stage is ignored. WebGPUUserPostProcessStage.enabled is a field initialised to true (:127) and set false only on compile failure (:240). The collection's configure loop (WebGPUPostProcessStageCollection.ts:853-935) never reads stage.enabled for user WGSL stages, and syncLibraryStage (WebGPUPostProcessPipeline.ts:1265-1275, called from WebGPUPostProcessStageCollection.ts:1212) covers library stages only. So disabling a user WGSL PostProcessStage has no effect on WebGPU. Relayed as the failure, with the corrected mechanism. P2; same fix as P10.40 (sync user-stage enabled and uniforms every frame).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-050. Findings: P10.41. Blueprint C-41 (EPIC-10). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 03): P10.41. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-051 — Particle Systems: CPU Object Churn Allocating 300,000 Color Objects/Sec in Update Loop — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Particle Systems: CPU Object Churn Allocating 300,000 Color Objects/Sec in Update Loop. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/ParticleSystem.js:192-207, 765`; re-derived at `ParticleSystem.js:765`
+  - Code: `billboard.color = new Color(r, g, b, a);`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. ParticleSystem.js:765 runs `billboard.color = new Color(r, g, b, a);` for every live particle on every update. Upstream-identical. P2 (GC churn).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a capture through lib/capture.mjs (BEFORE/AFTER) judged against the expected analytic or authored result, because WebGL shares the behaviour and cannot be the reference. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-051. Findings: P10.48. Blueprint C-48 (EPIC-01). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 04): P10.48. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-052 — Particle Systems: Dynamic Billboard Birth/Death Forces 100% PCIe Instance Buffer Re-Uploads — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-RESIDENT-INSTANCE-BUFFER-MGR (show toggle -> full rebuild recorded as a rule).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Particle Systems: Dynamic Billboard Birth/Death Forces 100% PCIe Instance Buffer Re-Uploads. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/ParticleSystem.js:196-205`; re-derived at `WebGPUResidentInstanceBuffer.ts:186-193`
+  - Code: (no literal quoted by the adjudicator; see Verified)
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. In WebGPUResidentInstanceBuffer.ts:186-193 any show or visibility flip triggers the full rebuild, and particle birth and death flip billboard.show. P2 (upload cost).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-052. Findings: P10.49. Blueprint C-49 (EPIC-01). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 04): P10.49. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-053 — Particle Systems: Mirror Prev Overwrite Zeroes TAA Velocity on Particle Life Cycle — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-RESIDENT-INSTANCE-BUFFER-MGR (mirrorPrev).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Particle Systems: Mirror Prev Overwrite Zeroes TAA Velocity on Particle Life Cycle. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUResidentInstanceBuffer.ts:270-282`; re-derived at `WebGPUResidentInstanceBuffer.ts:269-285`
+  - Code: (no literal quoted by the adjudicator; see Verified)
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. WebGPUResidentInstanceBuffer.ts:269-285 sets prev = current on every full rebuild under mirrorPrev (deliberate per the header). Camera-motion velocity survives. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-053. Findings: P10.50. Blueprint C-50 (EPIC-10). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 04): P10.50. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-054 — Viewer & Lifecycle: isDestroyed Getter Property Incompatibility Crashing Resource Teardown — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Viewer & Lifecycle: isDestroyed Getter Property Incompatibility Crashing Resource Teardown. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts:3801-3803`; re-derived at `WebGPUSceneRenderer.ts:3801-3803`, `Scene.js:5758-5763`
+  - Code: `get isDestroyed()`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. WebGPUSceneRenderer.ts:3801-3803 defines `get isDestroyed()` as a getter, while Scene.js:5758-5763 checks for a function; destroy() still runs once. A latent API-shape defect, practically P3; P2 is the floor of this scale.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-054. Findings: P10.52. Blueprint C-52 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 04): P10.52. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-055 — DataSources: Unsubscription Skipped in `EntityCollection.removeAll()` During Suspended Events — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** DataSources: Unsubscription Skipped in `EntityCollection.removeAll()` During Suspended Events. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/DataSources/EntityCollection.js:181-184, 262-277`
+  - Code: (no literal quoted by the adjudicator; see Verified)
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. EntityCollection.removeAll (:259-276) removes the definitionChanged listener only for entities absent from _addedEntities, and add() (:177-183) puts entities there while events are suspended. Bounded retention, upstream-shaped. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-055. Findings: P13.54. Blueprint C-54 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 04): P13.54. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-056 — Time & Ephemeris: Bitwise `| 0` Truncation to Signed 32-bit Integer Overflows Deep-Time Math — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Time & Ephemeris: Bitwise `| 0` Truncation to Signed 32-bit Integer Overflows Deep-Time Math. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/JulianDate.js:115, 223` - the audit citation is stale; verifier: 115 (setComponents) and 223 (constructor); addSeconds is 1009, addDays is 1089 and have no | 0
+  - Code: (no literal quoted by the adjudicator; see Verified)
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived by a node run against HEAD source (this lane): addDays(2451545,3e9).dayNumber = 3002451545 (correct); addSeconds(j,3e9*86400).dayNumber = -1292515751 and new JulianDate(3e9,0).dayNumber = -1294967296 (both wrapped); addSeconds(j,-1e9) = 2439970 / 80032 (correct). The wrap occurs only at |days| >= 2^31. Practically P3; P2 is the floor.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-056. Findings: P13.56. Blueprint C-56 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 04): P13.56. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-057 — Geodesy: Newton-Raphson Bypass for Subterranean Points Produces Up to 20 km Inversion Errors — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Geodesy: Newton-Raphson Bypass for Subterranean Points Produces Up to 20 km Inversion Errors. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/scaleToGeodeticSurface.js:71-75`; re-derived at `scaleToGeodeticSurface.js:71-77`, `scaleToGeodeticSurface.js:71-75`, `Ellipsoid.js:69`
+  - Code: `if (squaredNorm < centerToleranceSquared) { return !isFinite(ratio) ? undefined : Cartesian3.clone(intersection, result); }` ... `ellipsoid._centerToleranceSquared = CesiumMath.EPSILON1;`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived by a node run against HEAD source (this lane): the WGS84 cartesian->cartographic->cartesian round-trip error over directions 0-90 deg at norm 0.05/0.2/0.3 peaks at 20,315.5 m. This is the upstream-documented limit (scaleToGeodeticSurface.js:71-77). Practically P3; P2 is the floor.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-057. Findings: P13.57, P22.137 (one defect; the later ids are duplicates). Blueprint C-57 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 04): P13.57; ADJUDICATION-07-12 (Meneltarma-a02, chunk 10): P22.137. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-058 — Volumetric Fog: Coordinate Frame Mismatch & Redundant Clip-to-UV Transformation in Sun Shadow Sampling — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Volumetric Fog: Coordinate Frame Mismatch & Redundant Clip-to-UV Transformation in Sun Shadow Sampling. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Compute/VolumetricFog.wgsl:560-564`; re-derived at `VolumetricFog.wgsl:560-563`, `ShadowMap.js:798-805`, `VolumetricFog.wgsl:351-352`, `WebGPUVolumetricFogRenderer.ts:980-990`, `ShadowMap.js:799-804`
+  - Code: `let clip = u.sunShadowMatrix * vec4<f32>(worldPos, 1.0); ... let uv = vec2<f32>(proj.x * 0.5 + 0.5, 0.5 - proj.y * 0.5);` ... `u.cameraAndPlanet.xyz + froxelOffsetFromCamera(gid)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. VolumetricFog.wgsl:560-563 multiplies the ECEF worldPos (:351-352) by _shadowMapMatrix, which maps eye space to texture space and is already scale-biased (ShadowMap.js:798-805), then applies *0.5+0.5 again. Gated by enableScatteringOcclusion. SEVERITY LOWERED P1 -> P2 (opt-in sub-flag; the failure is 'always lit').
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: candidate in seat-worktree-snapshot 20261008-2106: froxelOffset plus a toWebGPUShadowReceiveMatrix route; unreviewed.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-058. Findings: P13.61, P49.C-356 (one defect; the later ids are duplicates). Blueprint C-61 (EPIC-09). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 05): P13.61; ADJUDICATION-19-24 (Meneltarma-a04, chunk 24): P49.C-356. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-059 — Volumetric Fog: History Volume Reprojection Uses Current-Frame Camera Anchor — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-WEBGPU-FROXEL-FOG-SCATTER-DYNAMIC-RANGE.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Volumetric Fog: History Volume Reprojection Uses Current-Frame Camera Anchor. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Compute/VolumetricFog.wgsl:1348` - the audit citation is stale; verifier: WebGPUVolumetricFogRenderer.ts cited 1012-1025 (that is the current-frame camPos/innerRadius block for the main params); the temporal-uniform packing is at 1620-1650. WGSL line 1348 is exact.; re-derived at `VolumetricFog.wgsl:1348`, `VolumetricFog.wgsl:1271`
+  - Code: `let prevCamDist = length(worldAnchor - t.cameraAndInner.xyz);` ... `previousViewProjection`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. VolumetricFog.wgsl:1348 uses t.cameraAndInner.xyz, which is documented as the CURRENT camera (:1223), although the comment (:1344-1347) says the previous camera is intended. Opt-in temporal path, neighbourhood-clamped. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-059. Findings: P13.62, P28.176, P49.C-357 (one defect; the later ids are duplicates). Blueprint C-62 (EPIC-07). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 05): P13.62; ADJUDICATION-07-12 (Meneltarma-a02, chunk 12): P28.176; ADJUDICATION-19-24 (Meneltarma-a04, chunk 24): P49.C-357. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-060 — Materials & Shaders: `mat3x3<f32>` Packing Corrupts Follower Uniforms in `MaterialUniformBuffer` — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Materials & Shaders: `mat3x3<f32>` Packing Corrupts Follower Uniforms in `MaterialUniformBuffer`. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/MaterialUniformBuffer.js:76-113, 183-186, 362-366`; re-derived at `MaterialUniformBuffer.js:183-185`
+  - Code: `if (Array.isArray(value)) { return { type: "matrix", size: value.length, isTexture: false }; }` ... `offset += info.size;`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. MaterialUniformBuffer.js:183-185 sizes a plain-array uniform by its length (9 for mat3); :101 advances the offset by that size; :364-367 writes at stride 1; a WGSL mat3x3 is 48 bytes. No in-tree consumer. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** none until the consume-or-retire decision; Edge leg: consume-or-retire decision first (Principle 7); a spec only once a consumer exists. **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-060. Findings: P13.64. Blueprint C-64 (EPIC-06). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 05): P13.64. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-061 — Input & Gestures: Desynchronized Touch State in `ScreenSpaceEventHandler` Traps Pinch Gesture — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Input & Gestures: Desynchronized Touch State in `ScreenSpaceEventHandler` Traps Pinch Gesture. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/ScreenSpaceEventHandler.js:609-621, 623-644`; re-derived at `ScreenSpaceEventHandler.js:609`
+  - Code: `if (numberOfTouches === 0 && pinching)` ... `if (numberOfTouches === 1 && !pinching)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. ScreenSpaceEventHandler.js:609 clears pinching only at 0 touches, and :623 fires DOWN only when !pinching. This is the upstream CesiumJS gesture design, a UX limitation. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a capture through lib/capture.mjs (BEFORE/AFTER) judged against the expected analytic or authored result, because WebGL shares the behaviour and cannot be the reference. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-061. Findings: P13.65. Blueprint C-65 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 05): P13.65. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-062 — KML & GeoJSON: Inverted Boolean Logic in `KmlTourFlyTo` Ignores Tour Termination — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** KML & GeoJSON: Inverted Boolean Logic in `KmlTourFlyTo` Ignores Tour Termination. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/DataSources/KmlTourFlyTo.js:42-48, 62-69`; re-derived at `KmlTourFlyTo.js:43-47`
+  - Code: `done(defined(terminated) ? false : terminated)` ... `complete`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. KmlTourFlyTo.js:43-47 calls `done(defined(terminated) ? false : terminated)`. stop() calls activeCallback(true) (:62-69), and the flyTo options set only `complete` (:83-85), so cancelFlight does not consume the callback; KmlTour playNext continues on false (:153-167). P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-062. Findings: P13.69. Blueprint C-69 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 05): P13.69. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-063 — CZML: Unbounded Monotonic Heap Growth in `SampledProperty` and `SampledPositionProperty` — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** CZML: Unbounded Monotonic Heap Growth in `SampledProperty` and `SampledPositionProperty`. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/DataSources/SampledProperty.js:56-112, 196-202, 434-472, 561-575`; re-derived at `SampledProperty.js:196`
+  - Code: `this._times = []`
+  - Verified (the adjudicator's re-derivation, and the authority): Growth re-derived (SampledProperty.js:196, mergeNewSamples, no cap), but public removeSample/removeSamples exist (:583, :601) and unbounded retention is the upstream semantics. By design: a feature request for a retention policy, not a leak. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-063. Findings: P16.70. Blueprint C-70 (EPIC-01). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 05): P16.70. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-064 — Volume Clipping: Secondary Pass Clipping Bypass (Globe Pick, Model Hover-Pick, TAA Velocity, Classifier) — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One defect in two places, so two sub-blocks, each with its own status line and its own owner.
+
+- **Globe half (the globe pick pass: `GlobeTerrain.wgsl` `fragmentPickMain`, `:4114-4141`):** OPEN. Owner: audit fix wave 1, lane FW-04.
+- **Model half (`ModelPBRComplete.wgsl` hover-pick, metadata-pick, velocity and classification entries: `fragmentPickHoverMain` `:3763`, `fragmentPickMetadataMain` `:4150`, `fragmentVelocityMain` `:4258`, `fragmentClassificationMain` `:4311`):** OPEN. Owner: for the model-shader owner (none assigned).
+
+- **Symptom:** Volume Clipping: Secondary Pass Clipping Bypass (Globe Pick, Model Hover-Pick, TAA Velocity, Classifier). Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl:4115-4141`
+  - Code: `vectorPickColorOver(camera.pickColor)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. GlobeTerrain.wgsl fragmentPickMain (:4114-4141) has no clip call (clipping happens only at :5029 and :5055 in fragmentMain), although WebGL's pick runs the whole colour FS. ModelPBRComplete.wgsl clips in fragmentMain (:2464, :2500), fragmentPickMain (:3876, :3881) and fragmentSnapMain (:4069, :4074), but not in fragmentPickHoverMain (:3763), fragmentPickMetadataMain (:4150), fragmentVelocityMain (:4258) or fragmentClassificationMain (:4311). P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-064. Findings: P16.75. Blueprint C-75 (EPIC-06). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 05): P16.75. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-065 — Shaders & Cache: Directives with Trailing Comments Bypass Regex and Compile Guarded Code Unconditionally — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Shaders & Cache: Directives with Trailing Comments Bypass Regex and Compile Guarded Code Unconditionally. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUShaderPreprocessor.ts:65-66, 118-123, 182-184`; re-derived at `WebGPUShaderPreprocessor.ts:65-66`
+  - Code: `//>>ifdef foo` ... `const DIRECTIVE_PATTERN = /^\s*\/\/>>\s*(ifdef|else|endif)(?:\s+([A-Z_][A-Z0-9_]*))?\s*$/;`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. DIRECTIVE_PATTERN (WebGPUShaderPreprocessor.ts:65-66) anchors at the end of the line, and a non-matching `//>>` line is emitted as text (:118-125, :182-184). By the same path, the header's claim (:61-64) that `//>>ifdef foo` is an immediate parser error is also false. Whether any shipped shader has such a line needs the seat's scan (the settling step is named). P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-065. Findings: P16.76. Blueprint C-76 (EPIC-05). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 06): P16.76. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-066 — Shaders & Cache: Async Pipeline Compile Failures Cause Infinite 60 Hz Re-dispatch and Console Flood — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Shaders & Cache: Async Pipeline Compile Failures Cause Infinite 60 Hz Re-dispatch and Console Flood. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfacePipelines.ts:721-732`; re-derived at `WebGPUGlobeSurfacePipelines.ts:721-731`, `WebGPURenderPipelineCache.ts:774-778`
+  - Code: `if (!entry.pending) { entry.pending = true; pipelineCache.getPipeline(entry.descriptor).then((p)=>{entry.pipeline = p; entry.pending=false;}).catch(()=>{ entry.pending = false; }); } return null;` ... `console.error(... Failed to create pipeline ...)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. WebGPUGlobeSurfacePipelines.ts:721-731 resets pending on catch with no terminal state, and WebGPURenderPipelineCache.ts:774-778 calls console.error and rethrows on each attempt. It needs a failing variant, and the pending gate bounds the rate. SEVERITY LOWERED P1 -> P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-066. Findings: P16.77. Blueprint C-77 (EPIC-06). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 06): P16.77. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-067 — WebXR: Multi-Frustum Shear Invalidation Across Depth Slices — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** WebXR: Multi-Frustum Shear Invalidation Across Depth Slices. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/ViewportExecutor.js:454-468`; re-derived at `ViewportExecutor.js:454-468`, `SceneRenderer.js:620-629`, `PerspectiveFrustum.js:450-463`
+  - Code: `const offset = (0.5 * eyeSeparation * near) / fo; ... camera.frustum.xOffset = offset;` ... `createWorkingFrustum(camera)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-derived. ViewportExecutor.js:454-468 sets xOffset from the base near; SceneRenderer.js:620-629 changes frustum.near per slice without rescaling it; PerspectiveFrustum.js:450-463 adds xOffset to the near-plane extents. So the shear falls with the slice near. Affects WebGL stereo (the deprecated useWebVR); upstream-shaped. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a capture through lib/capture.mjs (BEFORE/AFTER) judged against the expected analytic or authored result, because WebGL shares the behaviour and cannot be the reference. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-067. Findings: P16.81. Blueprint C-81 (EPIC-03). Adjudication: ADJUDICATION-01-06 (Meneltarma-a01, chunk 06): P16.81. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-068 — Space Weather: Solar Flare Rejection Bug (Class X10+ Flares Dropped as Invalid) — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Space Weather: Solar Flare Rejection Bug (Class X10+ Flares Dropped as Invalid). Severity: P2 - Only X10+ flares lose their flare class; the other channels still publish, so no crash and not a default render path.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/SpaceWeather/SpaceWeatherTypes.ts:201`; re-derived at `SpaceWeatherTypes.ts:201`, `SpaceWeatherPacket.ts:179-186`
+  - Code: `flareMagnitude: Object.freeze({ minimum: 1, maximum: 10 })` ... `magnitude < minimum || magnitude >= maximum`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: SpaceWeatherTypes.ts:201 flareMagnitude {minimum:1,maximum:10}; SpaceWeatherPacket.ts:179-186 rejects magnitude >= maximum; GoesXrayNormalizer.classifySolarXrayFlux (:550-561) returns longBandFlux/floor unclamped (its own doc says the top class can reach ten and beyond). composeValidatedSolarWindFlarePacket refuses only the flare channel.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-068. Findings: P19.94. Blueprint C-94 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 07): P19.94. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-069 — Ocean Tides: Geometric Tangent Plane Drift & Abrupt Elevation Pop in Ocean Surface Patch — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Ocean Tides: Geometric Tangent Plane Drift & Abrupt Elevation Pop in Ocean Surface Patch. Severity: P2 - GlobeWaterOcean.js:18 says the surface is off by default; a pop of tens of metres on an opt-in feature.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/OceanSurfacePrimitive.js:410-448`; re-derived at `OceanSurfacePrimitive.js:420-431`
+  - Code: `snapE = round(offE/L)*L; snapN = ..; anchor = A0 + a0East*snapE + a0North*snapN` ... `drop = -(e0^2+n0^2)*0.5*invRadius`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: OceanSurfacePrimitive.js:420-431 places the anchor at A0 + east*snapE + north*snapN on A0's tangent plane with no re-projection; the rebase at |off| > 4*patchExtent sets _a0 = undefined. Default patchExtent 3000 m (:114) gives an ~11-23 m lift and pop, not the 785 m claimed.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-069. Findings: P19.103. Blueprint C-103 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 07): P19.103. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-070 — Procedural Geometry: 16-Bit Index Truncation and Silent Mesh Scrambling in Extruded Ellipse — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P19.105, P22.133: an index count passed where createTypedArray wants a vertex count.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Procedural Geometry: 16-Bit Index Truncation and Silent Mesh Scrambling in Extruded Ellipse. Severity: P2 - Index wrap only for extruded ellipses with 32,768-98,303 positions per layer (very fine granularity); not a default path.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/EllipseGeometry.js:794, 801-804`; re-derived at `EllipseGeometry.js:794-804`, `IndexDatatype.js:132-136`
+  - Code: `posLength = positions.length / 3; ... createTypedArray((posLength * 2) / 3, indices)` ... `new Uint16Array(array)`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: EllipseGeometry.js:794-804 passes (posLength*2)/3 (a third of the 2*posLength top+bottom vertex count) to IndexDatatype.createTypedArray, which picks Uint16Array below 65,536 (IndexDatatype.js:132-136). The wall call two lines below passes a true vertex count.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-070. Findings: P19.104. Blueprint C-104 (EPIC-01). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 07): P19.104. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-071 — Procedural Geometry: Uint16 Index Buffer Overflow on Dense Ellipsoid Geometry via indexCount Misparameterization — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P19.104, P22.133: an index count passed where createTypedArray wants a vertex count.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Procedural Geometry: Uint16 Index Buffer Overflow on Dense Ellipsoid Geometry via indexCount Misparameterization. Severity: P2 - Only for partition counts near 254x255 and above; default partitions are unaffected.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/EllipsoidGeometry.js:321, 327, 334`; re-derived at `EllipsoidGeometry.js:327-334`
+  - Code: `indexCount = slicePartitions*stackPartitions*vertexMultiplier` ... `vertexCount = numThetas*numPhis*vertexMultiplier; indexCount = slicePartitions*stackPartitions*vertexMultiplier; ... IndexDatatype.createTypedArray(indexCount, numIndices)`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: EllipsoidGeometry.js:327-334 `indexCount = slicePartitions*stackPartitions*vertexMultiplier` (a quad count) is passed as the vertex count to createTypedArray.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: candidate in seat-worktree-snapshot 20261008-2106: createTypedArray(vertexCount, numIndices), the finding's own remedy.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-071. Findings: P19.105. Blueprint C-105 (EPIC-03). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 07): P19.105. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-072 — Procedural Geometry: 180° Hairpin U-Turn Singularity & Path Collapse in Corridor Generation — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Procedural Geometry: 180° Hairpin U-Turn Singularity & Path Collapse in Corridor Generation. Severity: P2 - Wrong geometry only for an exact (EPSILON7) reversal; no crash.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/CorridorGeometryLibrary.js:276-281, 464-467`; re-derived at `CorridorGeometryLibrary.js:276-280`
+  - Code: `!equalsEpsilon(Math.abs(dot(forwardProjection, backwardProjection)), 1.0, EPSILON7)` ... `if (doCorner)`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: CorridorGeometryLibrary.js:276-280 `!equalsEpsilon(Math.abs(dot(forwardProjection, backwardProjection)), 1.0, EPSILON7)` treats a 180-degree reversal like collinear continuation; previousPos/backward are only updated inside `if (doCorner)`.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-072. Findings: P19.107. Blueprint C-107 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 08): P19.107. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-073 — Camera Navigation: 2D Map Frustum NaN Collapse and Orthographic Coordinate Destruction — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Camera Navigation: 2D Map Frustum NaN Collapse and Orthographic Coordinate Destruction. Severity: P2 - Needs an orthographic frustum plus a camera looking up or below the ellipsoid; the poisoning of camera.position was not run.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/Controllers/defaultPickWorldPosition.js:53-81`; re-derived at `defaultPickWorldPosition.js:75-77`
+  - Code: `if (belowEllipsoid || lookingUp)` ... `const focusDistance = (targetPixelSize.y * clientHeight) / (2.0 * Math.tan(camera.frustum.fovy * 0.5));`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: defaultPickWorldPosition.js:75-77 divides by Math.tan(camera.frustum.fovy*0.5) inside `if (belowEllipsoid || lookingUp)`; OrthographicFrustum.js has no fovy (grep: 0 hits). Importers: the Elevator, Map, TiltOrbit and Zoom controllers.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-073. Findings: P19.109. Blueprint C-109 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 08): P19.109. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-074 — Worker Services: Protocol Request ID Omission in RendererWorker Guarantees 100% Timeout on Host Requests — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Worker Services: Protocol Request ID Omission in RendererWorker Guarantees 100% Timeout on Host Requests. Severity: P2 - Confined to the debug-snapshot request of the worker host; a 5 s rejection, no render effect.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Workers/RendererWorker.js:679-694, 750`; re-derived at `RendererWorker.js:693`, `WorkerSceneHost.js:780`
+  - Code: `post(MSG_REPLY, { kind: "debugSnapshot", snapshot })` ... `post(MSG_REPLY, { kind: "debugSnapshot", snapshot });`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: RendererWorker.js:693 `post(MSG_REPLY, { kind: "debugSnapshot", snapshot })` carries no requestId (handleDumpDebugSnapshot takes no argument, called at :750); WorkerSceneHost.js:780 ignores replies without a numeric requestId, so fetchDebugSnapshot (:308-325) always times out at 5000 ms.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-074. Findings: P19.114. Blueprint C-114 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 08): P19.114. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-075 — Inspectors/Security: ReDoS in Geocoder Coordinate Parser & Unhandled Null Crash — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Inspectors/Security: ReDoS in Geocoder Coordinate Parser & Unhandled Null Crash. Severity: P2 - The throw is caught on the geocoder view model's search path; the regex needs tens of thousands of typed characters.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/CartographicGeocoderService.js:39-40, 46-49`; re-derived at `CartographicGeocoderService.js:39`
+  - Code: `const splitQuery = query.match(/[^\s,\n]+/g); if (splitQuery.length === 2 ...` (`CartographicGeocoderService.js:39-40`) ... `const coordTest = /^(\d+.?\d*)([nsew])/i;` (`:46`)
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced by the adjudicator on the real module: geocode(",,,") throws TypeError "Cannot read properties of null (reading 'length')" (CartographicGeocoderService.js:39 has no null check); a 20,000-digit token took 2,779 ms through the /^(\d+.?\d*)([nsew])/i test (:46), quadratic not exponential.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-075. Findings: P19.117. Blueprint C-117 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 08): P19.117. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-076 — Math: False Zero-Scale Identification Yields Zero-Matrix Inversion (Silent Rank-1 Data Corruption) — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Math: False Zero-Scale Identification Yields Zero-Matrix Inversion (Silent Rank-1 Data Corruption). Severity: P2 - Only uniform scales below 1e-7; upstream behaviour. Gemini's EPSILON20 hunk turns this into a throw, not the true inverse.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/Matrix4.js:2860-2896`; re-derived at `Matrix4.js:2860-2891`
+  - Code: `if (Math.abs(det) < CesiumMath.EPSILON21) { if (Matrix3.equalsEpsilon(getMatrix3(matrix), zero, CesiumMath.EPSILON7) && bottom row equal) { ...zero rotation, translation -matrix[12..14] } else throw }`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced by the adjudicator on the real Matrix4.inverse: fromUniformScale(1.1e-7) inverts to 9,090,909 (correct) but 9.9e-8 and 5e-8 return 0 on the diagonal (the EPSILON7 zero-rotation test inside the det < EPSILON21 branch, :2860-2896).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: behaviour change in seat-worktree-snapshot 20261008-2106 that needs a ruling: EPSILON7 -> EPSILON20 turns the silent zero matrix into a RuntimeError for uniform scale in (1e-20, 1e-7).
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-076. Findings: P22.120, P31.218 (one defect; the later ids are duplicates). Blueprint C-120 (EPIC-03). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 08): P22.120; ADJUDICATION-13-18 (Meneltarma-a03, chunk 15): P31.218. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-077 — Math: Production Pragma Stripping Causes Silent Infinity/NaN Inversion of Singular Matrices — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Math: Production Pragma Stripping Causes Silent Infinity/NaN Inversion of Singular Matrices. Severity: P2 - A singular input yields Inf/NaN entries in release builds (upstream contract); no crash or device loss shown.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/Matrix3.js:1491-1509`; re-derived at `Matrix3.js:1490-1494`
+  - Code: `scale = 1.0 / determinant` ... `const scale = 1.0 / determinant;`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: the Matrix3.js:1490-1494 non-invertible check is inside the debug pragma, and :1508 `scale = 1.0 / determinant` follows unguarded.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-077. Findings: P22.121. Blueprint C-121 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 09): P22.121. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-078 — Bounding Volumes: Non-Orthogonal Corner Breach in BoundingSphere.fromOrientedBoundingBox — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Bounding Volumes: Non-Orthogonal Corner Breach in BoundingSphere.fromOrientedBoundingBox. Severity: P2 - Needs a non-uniformly scaled tile transform with a rotated box; OBB culling uses the box itself, so the effect is limited to sphere-based consumers.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/BoundingSphere.js:836-848`; re-derived at `BoundingSphere.js:840-846`
+  - Code: `Cartesian3.add(u, v, u); Cartesian3.add(u, w, u); result.radius = Cartesian3.magnitude(u);`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: BoundingSphere.js:840-846 radius = |u+v+w|, exact only for orthogonal half-axes. A producer exists by reading: Cesium3DTile.js createBox (:2095-2100) multiplies the box halfAxes by Matrix4.getMatrix3(transform), so a tile transform with non-uniform scale and a box rotated relative to it yields non-orthogonal axes and an undersized sphere.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-078. Findings: P22.124. Blueprint C-124 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 09): P22.124. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-079 — Bounding Volumes: Division-by-Zero in Quadratic Solver & Degenerate Segment Normalization Leaks — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Bounding Volumes: Division-by-Zero in Quadratic Solver & Degenerate Segment Normalization Leaks. Severity: P2 - Degenerate caller input only (zero-length ray or segment); returns a NaN interval, no crash.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/IntersectionTests.js:278-306, 313-338, 393-408`; re-derived at `IntersectionTests.js:283`
+  - Code: `denom = 1.0 / (2.0 * a)` ... `-b / (2.0 * a)`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: IntersectionTests.js:283 `denom = 1.0 / (2.0 * a)` and :298 `-b / (2.0 * a)` with no a == 0 guard; lineSegmentSphere (:394-401) normalizes a zero direction (NaN in release) and the NaN interval passes `result.stop < 0.0 || result.start > maxT`.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-079. Findings: P22.126. Blueprint C-126 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 09): P22.126. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-080 — Geodesy: Explicit Ray Negation Inverts Tangent Plane Winding & Coordinates for Points > 90° — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Geodesy: Explicit Ray Negation Inverts Tangent Plane Winding & Coordinates for Points > 90°. Severity: P2 - Outside the documented within-hemisphere use; Gemini's remedy changes a public return contract and an upstream spec, so it needs its own decision.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/EllipsoidTangentPlane.js:83-90, 130-139, 238-242`; re-derived at `EllipsoidTangentPlane.js:83-90`
+  - Code: `if (!defined(intersectionPoint)) { Cartesian3.negate(ray.direction, ray.direction); intersectionPoint = IntersectionTests.rayPlane(...)`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: EllipsoidTangentPlane.js:83-90 negates the ray and re-intersects when the first rayPlane misses, mapping far-hemisphere points through the centre onto the plane.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: behaviour change in seat-worktree-snapshot 20261008-2106 that needs a ruling: removes the negate-and-retry block and rewrites an upstream spec expectation (a public return contract).
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-080. Findings: P22.128. Blueprint C-128 (EPIC-03). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 09): P22.128. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-081 — Frustums: Frustum Clone Omits Shear Offsets, Collapsing TAA Subpixel Jitter & VR Multiview — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Frustums: Frustum Clone Omits Shear Offsets, Collapsing TAA Subpixel Jitter & VR Multiview. Severity: P2 - The stated TAA/VR consequences were not traced to a clone site; Camera.clone is the visible exposure.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/PerspectiveFrustum.js:169-188`; re-derived at `PerspectiveFrustum.js:169-188`, `SceneRenderer.js:227-231`
+  - Code: (no literal quoted by the adjudicator; see Verified)
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: PerspectiveFrustum.js:169-188 clone() copies aspectRatio, fov, near, far and the off-center frustum, then forces a recompute from result.xOffset/yOffset, which were never copied.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-081. Findings: P22.129, P40.C-302 (one defect; the later ids are duplicates). Blueprint C-129 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 09): P22.129; ADJUDICATION-19-24 (Meneltarma-a04, chunk 21): P40.C-302. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-082 — Geometry Pipeline: Split Longitude Partial Triangle Insertion Crashes WebGPU Draw Calls — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Geometry Pipeline: Split Longitude Partial Triangle Insertion Crashes WebGPU Draw Calls. Severity: P2 - Needs a degenerate (coincident-vertex) triangle crossing the antimeridian with extra attributes; the WebGPU consequence was not exercised.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/GeometryPipeline.js:2228-2231, 2408-2428, 2523-2549`; re-derived at `GeometryPipeline.js:2228-2231`
+  - Code: `if (!defined(coords)) { return; }` ... `currentAttributes.position.values.push(point.x, point.y, point.z)`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: GeometryPipeline.js:2228-2231 returns early on a failed barycentric solve after insertSplitPoint already pushed the position, leaving attribute lists of unequal length.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-082. Findings: P22.132. Blueprint C-132 (EPIC-01). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 09): P22.132. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-083 — Geometry Pipeline: trianglesToLines IndexDatatype Misparameterization Truncates Large Meshes — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P19.104, P19.105: an index count passed where createTypedArray wants a vertex count.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Geometry Pipeline: trianglesToLines IndexDatatype Misparameterization Truncates Large Meshes. Severity: P2 - A scrambled wireframe only when the max index exceeds 65,535 while the index count is below it; toWireframe is a debug utility.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/GeometryPipeline.js:46-57, 59-82, 128-136`; re-derived at `GeometryPipeline.js:46-49`
+  - Code: `triangles.length` ... `const count = triangles.length; ... IndexDatatype.createTypedArray(count, size)`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: GeometryPipeline.js:46-49 trianglesToLines passes the index count `triangles.length` as the vertex count to createTypedArray; same pattern in the strip and fan variants.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: candidate in seat-worktree-snapshot 20261008-2106: trianglesToLines, strip, fan and toWireframe pass the vertex count.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-083. Findings: P22.133. Blueprint C-133 (EPIC-03). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 09): P22.133. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-084 — Geometry Pipeline: Zero-Area UV Determinant Inversion Injects NaNs into Vertex Buffers — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Geometry Pipeline: Zero-Area UV Determinant Inversion Injects NaNs into Vertex Buffers. Severity: P2 - Degenerate UVs only; NaN tangent/bitangent on the affected vertices, no crash.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/GeometryPipeline.js:1406-1448`; re-derived at `GeometryPipeline.js:1406`
+  - Code: `const r = 1.0 / ((st[i12] - wx) * t2 - (st[i22] - wx) * t1);` (`GeometryPipeline.js:1406`) ... `Cartesian3.normalize(Cartesian3.subtract(t, normalScale, t), t);` (`:1438`)
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: GeometryPipeline.js:1406 `r = 1.0 / (UV determinant)` unguarded, feeding the tan1 accumulation and Cartesian3.normalize at :1438 [corrected at intake; G2 read :1441-1442, which are the tangentValues writes at 9457bc6bd4].
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-084. Findings: P22.135. Blueprint C-135 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 09): P22.135. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-085 — Geometry Pipeline: Non-4-Byte Attribute Offsets Violate WebGPU 4-Byte Alignment Rule — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Geometry Pipeline: Non-4-Byte Attribute Offsets Violate WebGPU 4-Byte Alignment Rule. Severity: P2 - Latent: a validation error only for a 4-byte format placed after a 2-byte attribute, and nothing constructs the facade at runtime (Principle 7 check before any removal).
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUVertexArrayFacade.ts:284-309`; re-derived at `WebGPUVertexArrayFacade.ts:284-308`
+  - Code: `offsetInBytes += attr.componentsPerAttribute * compSize;` ... `offset: view.offsetInBytes`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: WebGPUVertexArrayFacade.ts:284-308 _createArrayViews advances offsetInBytes by componentsPerAttribute*compSize with no per-format alignment. No runtime importer found: non-recursive greps of Renderer/WebGPU, Renderer, Scene, Scene/Model, Scene/Weather, Scene/Controllers, DataSources, Core and Workers hit only the class file; Specs/Renderer/WebGPU/WebGPUVertexArrayFacadeSpec.js is the only other user.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: candidate in seat-worktree-snapshot 20261008-2106: pads before every attribute (over-pads the legal 2-byte cases); the class has no runtime importer.
+- **Acceptance:** Class: engine. **Proof bar:** none until the consume-or-retire decision; Edge leg: consume-or-retire decision first (Principle 7); a spec only once a consumer exists. **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-085. Findings: P22.136. Blueprint C-136 (EPIC-03). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 10): P22.136. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-086 — RTE Math: Rational Function Pole Crossing on Oblate Ellipsoids Produces NaN Coordinates — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** RTE Math: Rational Function Pole Crossing on Oblate Ellipsoids Produces NaN Coordinates. Severity: P2 - Only strongly oblate custom ellipsoids; Earth and the Moon are unaffected.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/scaleToGeodeticSurface.js:89-91, 109-111, 125-132`; re-derived at `scaleToGeodeticSurface.js:109-132`
+  - Code: `correction = func / derivative`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced by reading: scaleToGeodeticSurface.js:109-132 Newton step `correction = func / derivative` with no guard; the verifier's mutation-copy measurement shows NaN and hemisphere flips from a/b ~2 upward and none for WGS84 or a sphere.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: incomplete candidate in seat-worktree-snapshot 20261008-2106: a derivative guard removes the NaNs (verifier measured 481 -> 0 and 2373 -> 0) but the hemisphere flips remain (4485 -> 4880, 5245 -> 6501).
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-086. Findings: P22.139. Blueprint C-139 (EPIC-03). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 10): P22.139. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-087 — DGGS/Tiling: Bitwise Shift 2 << level Overflows Signed 32-Bit Integer at Level 30 — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** DGGS/Tiling: Bitwise Shift 2 << level Overflows Signed 32-Bit Integer at Level 30. Severity: P2 - No Cesium provider requests level 30+ (~1 cm tiles).
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/GeographicTilingScheme.js:74-76`; re-derived at `GeographicTilingScheme.js:75`, `WebMercatorTilingScheme.js:131`
+  - Code: `_numberOfLevelZeroTiles << level` ... `return this._numberOfLevelZeroTilesX << level;`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: GeographicTilingScheme.js:75/:85 and WebMercatorTilingScheme.js:131/:141 compute `_numberOfLevelZeroTiles << level`, which overflows int32 at level 30 (Geographic X) or 31.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-087. Findings: P22.140. Blueprint C-140 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 10): P22.140. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-088 — DGGS/Tiling: Rectangle.union Fails Across Antimeridian, Returning 355° Inflated Box — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** DGGS/Tiling: Rectangle.union Fails Across Antimeridian, Returning 355° Inflated Box. Severity: P2 - A conservative superset (efficiency only), upstream behaviour.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/Rectangle.js:807-837`; re-derived at `Rectangle.js:813-829`
+  - Code: (no literal quoted by the adjudicator; see Verified)
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: Rectangle.js:813-829 only adds 2*pi when one input already crosses the antimeridian, so union([170,175],[-175,-170] deg) returns [-175,175].
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-088. Findings: P22.141. Blueprint C-141 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 10): P22.141. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-089 — Polygons: Antipodal Ray Normalization Crash & NaN Propagation in Subdivisions — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Polygons: Antipodal Ray Normalization Crash & NaN Propagation in Subdivisions. Severity: P2 - Needs a triangle with an exactly antipodal edge; a spike to the origin, not NaN vertex data.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/PolygonPipeline.js:193-207, 232-234`; re-derived at `PolygonPipeline.js:194-206`
+  - Code: `Cartesian3.normalize(v0|v1|v2, ...)` ... `Cartesian3.multiplyByScalar(mid, 0.5, mid)`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: PolygonPipeline.js:194-206 normalizes v0/v1/v2 and :232-234 stores chord midpoints; an exactly antipodal edge stores a (0,0,0) midpoint, which throws in debug (Cartesian3.normalize) and in release is emitted as a vertex at the planet centre (a NaN max fails the subdivide test).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-089. Findings: P22.145. Blueprint C-145 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 10): P22.145. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-090 — Polygons: Blind Fallback indices = [0, 1, 2] Injecting Degenerate Geometry and NaN Normals — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Polygons: Blind Fallback indices = [0, 1, 2] Injecting Degenerate Geometry and NaN Normals. Severity: P2 - Collinear/degenerate input only; NaN st/tangent on a phantom triangle.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/PolygonGeometryLibrary.js:977-979`; re-derived at `PolygonGeometryLibrary.js:977-979`, `CoplanarPolygonGeometry.js:56-58`
+  - Code: `/* If polygon is completely unrenderable, just use the first three vertices */ if (indices.length < 3) { indices = [0, 1, 2]; }`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: PolygonGeometryLibrary.js:977-979 and CoplanarPolygonGeometry.js:56-58 substitute [0,1,2] when triangulation fails (an explicit upstream design comment).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-090. Findings: P22.146. Blueprint C-146 (EPIC-05). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 10): P22.146. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-091 — Clearcoat: Omission of Clearcoat Environment Specular IBL & Layer Energy Conservation Breakdown — **OPEN** (P2, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - glTF extension table: KHR_materials_clearcoat 'Full BRDF'. One owner with P25.148, P25.149, P25.150, P25.152, P25.156, P25.158, P25.159, P25.161: glTF KHR material extensions on WebGPU (the ledger's extension table is contradicted).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Clearcoat: Omission of Clearcoat Environment Specular IBL & Layer Energy Conservation Breakdown. Severity: P2 - A WebGL/WebGPU parity gap on KHR_materials_clearcoat assets; no crash.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl:3027, 3031-3032, 3206-3211, 3290, 3338-3340, 3424, 3440, 3509`; re-derived at `ModelPBRComplete.wgsl:3024-3032`
+  - Code: `var ambient = diffuseIBL + specularIBL` ... `let F_cc = fresnelSchlick(VdotH, vec3<f32>(0.04)) * ccFactor; ... direct = direct * (vec3<f32>(1.0) - F_cc) + ccBRDF * light.sunColor * light.sunIntensity * NdotL_cc;`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: ModelPBRComplete.wgsl:3024-3032 clearcoat (Fresnel on VdotH) is inside the sun block only; the punctual loop comment (:3204-3209) says clearcoat applies to the sun alone; `var ambient = diffuseIBL + specularIBL` (:3440) has no clearcoat term. The GLSL path applies clearcoat over IBL with NdotV Fresnel.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: incomplete candidate in seat-worktree-snapshot 20261008-2106: attenuates the sun-block diffuse only; punctual lights, IBL and the VdotH Fresnel are untouched.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-091. Findings: P25.147. Blueprint C-147 (EPIC-06). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 10): P25.147. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-092 — Clearcoat: Omission of Clearcoat Texture Transforms and UV Set Selection (UV Hijacking) — **OPEN** (P2, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - glTF extension table: KHR_texture_transform 'Full'. One owner with P25.147, P25.149, P25.150, P25.152, P25.156, P25.158, P25.159, P25.161: glTF KHR material extensions on WebGPU (the ledger's extension table is contradicted).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Clearcoat: Omission of Clearcoat Texture Transforms and UV Set Selection (UV Hijacking). Severity: P2 - Wrong sampling only for clearcoat textures with texCoord 1 or their own KHR_texture_transform.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl:147-155, 174-189, 2045-2089, 2425, 3001-3018`
+  - Code: `baseColorUV(input)` ... `deriveTangentRaw(input.positionEC, baseColorUV(input))`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: texCoordFlags documents bits 0-4 only (:145-155), WebGPUModelRenderer.ts builds tcFlags from five readers, and the three clearcoat textures plus clearcoatDerivTangent (:2425) sample baseColorUV(input).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-092. Findings: P25.148. Blueprint C-148 (EPIC-06). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 10): P25.148. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-093 — IOR: Loader Omission of KHR_materials_ior and Hardcoded 0.04 Dielectric F0 — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P25.147, P25.148, P25.149, P25.150, P25.156, P25.158, P25.159, P25.161: glTF KHR material extensions on WebGPU (the ledger's extension table is contradicted).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** IOR: Loader Omission of KHR_materials_ior and Hardcoded 0.04 Dielectric F0. Severity: P2 - A missing optional extension; assets render at IOR 1.5.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/GltfLoader.js:2081-2096`; re-derived at `WebGPUModelRenderer.ts:2493`, `ModelPBRComplete.wgsl:2653`
+  - Code: `data[181] = 1.5;` (`WebGPUModelRenderer.ts:2493`) ... `F0 = mix(vec3<f32>(0.04), baseColor.rgb, metallic);` (`ModelPBRComplete.wgsl:2653`). The extension name itself is an absence, not a quote: see the Verified line.
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: "KHR_materials_ior" occurs 0 times in GltfLoader.js and ModelUtility.js; WebGPUModelRenderer.ts:2493 `data[181] = 1.5;`; ModelPBRComplete.wgsl:2653 F0 = mix(0.04, baseColor, metallic).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-093. Findings: P25.152. Blueprint C-152 (EPIC-06). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 11): P25.152. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-094 — IOR: Transmissive Refraction Direct Lighting Bleed & Shadow Multiplying Background — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P1.6: transmission mix and shadow multiply in ModelPBRComplete.wgsl.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** IOR: Transmissive Refraction Direct Lighting Bleed & Shadow Multiplying Background. Severity: P2 - Darkening bounded by shadowDarkness on shadowed transmissive surfaces.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl:3144-3145, 3177-3204`
+  - Code: `direct = direct * shadowFactor` ... `direct = diffuseTransmitted`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: after the transmission mix (:3144-3145) the shadow branches multiply `direct = direct * shadowFactor` (point, CSM, single), scaling the refracted backdrop.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: incomplete candidate in seat-worktree-snapshot 20261008-2106: the diffuse-only mix lands, but the later shadow multiply (:3177-3204) still scales the transmitted colour.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-094. Findings: P25.153. Blueprint C-153 (EPIC-06). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 11): P25.153. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-095 — Sheen: Violation of Physical Energy Conservation (Purely Additive Sheen Lobe) — **OPEN** (P2, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - glTF extension table: KHR_materials_sheen 'Full BRDF'. One owner with P25.147, P25.148, P25.149, P25.150, P25.152, P25.158, P25.159, P25.161: glTF KHR material extensions on WebGPU (the ledger's extension table is contradicted).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Sheen: Violation of Physical Energy Conservation (Purely Additive Sheen Lobe). Severity: P2 - A spec-conformance gap on sheen assets; the 200-1000 percent figure is unmeasured.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl:2910-2911, 3036-3068, 3294-3440`
+  - Code: `direct = direct + sheenColor * sheenBRDF * ...`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: :3066 adds the sheen lobe to direct with no albedo scaling of the base layer, and there is no sheen term in the IBL block.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-095. Findings: P25.156. Blueprint C-156 (EPIC-06). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 11): P25.156. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-096 — Iridescence: Fourier Sensitivity Constant Inversion and Numerical Cancellation — **OPEN** (P2, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - NEW-KHR-IRIDESCENCE-LUT (RESOLVED) and the extension-table row 'Analytical (Belcour 2017)'. One owner with P25.147, P25.148, P25.149, P25.150, P25.152, P25.156, P25.159, P25.161: glTF KHR material extensions on WebGPU (the ledger's extension table is contradicted).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Iridescence: Fourier Sensitivity Constant Inversion and Numerical Cancellation. Severity: P2 - KHR_materials_iridescence is effectively inert; the RESOLVED row NEW-KHR-IRIDESCENCE-LUT should be re-opened.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl:2771-2798`; re-derived at `ModelPBRComplete.wgsl:2775-2786`
+  - Code: `let phaseR1 = phase1 * 5.4856e14 + phi.r;`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: ModelPBRComplete.wgsl:2775-2786 uses 5.4856e14 (Belcour's amplitude 5.4856e-13 used as a frequency) and the 9.7470e-14 secondary-lobe amplitude in the R channel only (G uses 1.4391e-13 and B uses 5.7188e-14, ModelPBRComplete.wgsl:2778-2783) [corrected at intake; G2 read "only the 9.7470e-14 secondary-lobe amplitude for every channel"], with no 1.0685e-7 normalisation; for opd 500 nm the oscillating term is ~1.6e-8 against DC ~0.02, so no visible interference colour.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-096. Findings: P25.158. Blueprint C-158 (EPIC-06). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 11): P25.158. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-097 — Iridescence: Erroneous Macro-Preamble Baking & Double-Fresnel Application — **OPEN** (P2, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - NEW-KHR-IRIDESCENCE-LUT (RESOLVED). One owner with P25.147, P25.148, P25.149, P25.150, P25.152, P25.156, P25.158, P25.161: glTF KHR material extensions on WebGPU (the ledger's extension table is contradicted).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Iridescence: Erroneous Macro-Preamble Baking & Double-Fresnel Application. Severity: P2 - A modelling deviation on an already near-inert feature (see P25.158).
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl:2711, 2800, 2904, 3315`
+  - Code: `F0 = mix(F0, irTint, irFactor);` ... `fresnelSchlick2(F0, directF90, VdotH)`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced by reading: :2800 bakes the thin-film reflectance (computed at approxNdotV) into F0, then Schlick at VdotH (:2903-2904) and :3315-3316 apply the angle dependence again.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-097. Findings: P25.159. Blueprint C-159 (EPIC-06). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 11): P25.159. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-098 — Emissive: Absence of KHR_materials_emissive_strength Loader & Shader Plumbing — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P25.147, P25.148, P25.149, P25.150, P25.152, P25.156, P25.158, P25.159: glTF KHR material extensions on WebGPU (the ledger's extension table is contradicted).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Emissive: Absence of KHR_materials_emissive_strength Loader & Shader Plumbing. Severity: P2 - A missing optional extension; emissive tops out at the [0,1] factor.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/GltfLoader.js:2081-2142, 2167`
+  - Code: `material.emissiveFactor = fromArray(Cartesian3, gltfMaterial.emissiveFactor);` (`GltfLoader.js:2169`). The extension name is an absence, not a quote: see the Verified line.
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: "KHR_materials_emissive_strength" and "emissiveStrength" occur 0 times in GltfLoader.js, ModelComponents.js, ModelMaterialInfo.js and ModelUtility.js.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-098. Findings: P25.161. Blueprint C-161 (EPIC-06). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 11): P25.161. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-099 — Emissive: Quadratic Overflow to NaN in Tonemapping_f16.wgsl on High-Emissive Radiance — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Emissive: Quadratic Overflow to NaN in Tonemapping_f16.wgsl on High-Emissive Radiance. Severity: P2 (adjudicators split 2x P2, 1x P1; rule: majority, ties to the higher) - The f16 variant is opt-in (scene.context.useShaderF16 = true, default false); per-pixel garbage on bright pixels, no device loss. Lowered from the verifier's P1 because the path is opt-in.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/PostProcess/Tonemapping_f16.wgsl:55, 79-87, 98, 178-185`; re-derived at `Tonemapping_f16.wgsl:179-185`, `Tonemapping_f16.wgsl:54`, `WebGPUContext.ts:1032`, `Tonemapping_f16.wgsl:85`
+  - Code: `F16_MAX_HDR = 65000.0h` ... `vec3<f16>(exposed32)`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: Tonemapping_f16.wgsl:179-185 clamps the exposed input only to 65000 before converting to f16, and acesTonemap (:78-86) evaluates color*(color+a) in f16, which overflows above ~256; the header claim (:15-21) that every downstream multiply is overflow-safe is false.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-099. Findings: P25.162, P28.190, P37.C-274 (one defect; the later ids are duplicates). Blueprint C-162 (EPIC-03). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 11): P25.162; ADJUDICATION-13-18 (Meneltarma-a03, chunk 13): P28.190; ADJUDICATION-19-24 (Meneltarma-a04, chunk 19): P37.C-274. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-100 — Atmosphere: Ray-Sphere Surface Tangent Singularity & 6,500-Kilometer Subterranean Core Tunneling in All LUT Kernels — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-ATMOSPHERE-LUT-SUN-RELATIVE.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Atmosphere: Ray-Sphere Surface Tangent Singularity & 6,500-Kilometer Subterranean Core Tunneling in All LUT Kernels. Severity: P2 - Below-horizon rows of two opt-in LUTs (useScatteringLut, multipleScattering).
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Compute/AtmosphereLUT.wgsl:210-214, 273-277, 434-438, 659-664`
+  - Code: `earthHit.x > 0.0`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced for computeMultipleScattering and computeSkyView: the observer sits exactly at innerRadius, so for a downward ray raySphereIntersect (:99-108) returns t1 = -b - |b| = 0 and the strict `earthHit.x > 0.0` (:434-438, :659-664) keeps the far atmosphere exit. Not applicable to computeTransmittance/computeInscatter (origin at least half a texel above ground), as the verifier says.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-100. Findings: P28.173. Blueprint C-173 (EPIC-07). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 12): P28.173. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-101 — Aerial Perspective: Model Forward Atmosphere Blending Inverts Semantic Channels, Omits Distance Attenuation, and Clashes with Aerial Perspective — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Aerial Perspective: Model Forward Atmosphere Blending Inverts Semantic Channels, Omits Distance Attenuation, and Clashes with Aerial Perspective. Severity: P2 - A visual approximation of model fog; whether the LUT views reach the model effects group by default was not established.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl:3530-3566`; re-derived at `ModelPBRComplete.wgsl:3542-3566`, `AtmosphereLUT.wgsl:328-331`
+  - Code: `fogWeight = clamp(iSample.a, ...)`
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: ModelPBRComplete.wgsl:3542-3566 uses `fogWeight = clamp(iSample.a, ...)` where AtmosphereLUT.wgsl:328-331 stores Mie luminance in alpha, and the lookup uses only view zenith and camera altitude (no distance term). The double-fog sub-claim is not shown.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-101. Findings: P28.175. Blueprint C-175 (EPIC-06). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 12): P28.175. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-102 — Aerial Perspective: Radial vs. Planar Depth Slicing Geometry Mismatch and Missing Near-Field Boundary Condition — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-WEBGPU-FROXEL-FOG-SCATTER-DYNAMIC-RANGE.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Aerial Perspective: Radial vs. Planar Depth Slicing Geometry Mismatch and Missing Near-Field Boundary Condition. Severity: P2 - A geometric error growing off-axis in opt-in froxel fog; the near-field 390 m claim was not evaluated.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Compute/VolumetricFog.wgsl:347-348`; re-derived at `VolumetricFog.wgsl:343-348`, `VolumetricFogComposite.wgsl:107-118`
+  - Code: (no literal quoted by the adjudicator; see Verified)
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: froxels sit at radial distance (VolumetricFog.wgsl:343-348 rayDir * linearDepth) while VolumetricFogComposite.wgsl:107-118 maps a planar eye distance to the slice with no 1/cos(theta).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-102. Findings: P28.177. Blueprint C-177 (EPIC-07). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 12): P28.177. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-103 — Atmosphere: Stale Sky-View LUT During Camera Orbit Due to Omitted Zenith Invalidation — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-ATMOSPHERE-LUT-SUN-RELATIVE.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Atmosphere: Stale Sky-View LUT During Camera Orbit Due to Omitted Zenith Invalidation. Severity: P2 - The sky-view LUT is consulted only with skyAtmosphere.useScatteringLut === true (:1169-1172); an opt-in visual pop.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js:345-355, 501-510, 576`; re-derived at `WebGPUSkyAtmosphereRenderer.js:345-355`
+  - Code: (no literal quoted by the adjudicator; see Verified)
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: WebGPUSkyAtmosphereRenderer.js:345-355 invalidates the LUT only on a sun-direction change (dot < 0.9999); the camera-dependent sunCosZenith (:501-510) is recomputed only inside the bake.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-103. Findings: P28.178. Blueprint C-178 (EPIC-07). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 12): P28.178. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-104 — Depth Buffer: Missing Near/Far Fragment Discard in All WGSL Log Depth Shaders Producing Near-Plane Clamping to 0.0 and NaN Depth Buffer Corruption — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Depth Buffer: Missing Near/Far Fragment Discard in All WGSL Log Depth Shaders Producing Near-Plane Clamping to 0.0 and NaN Depth Buffer Corruption. Severity: P2 - Wrong depth only for model fragments between the camera and the near plane (camera inside or touching a model).
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_writeLogDepth.wgsl:17-25`; re-derived at `csm_writeLogDepth.wgsl:15-25`, `writeLogDepth.glsl:28-34`
+  - Code: (no literal quoted by the adjudicator; see Verified)
+  - Verified (the adjudicator's re-derivation, and the authority): Reproduced: csm_writeLogDepth.wgsl:15-25 is a pure function whose header requires the caller to discard; ModelPBRComplete.wgsl calls it at :2482, :2574, :2611, :3695, :3758, :4039 and :4289 with no discard on v_logDepth, whereas writeLogDepth.glsl:28-34 discards.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-104. Findings: P28.180. Blueprint C-180 (EPIC-09). Adjudication: ADJUDICATION-07-12 (Meneltarma-a02, chunk 12): P28.180. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-105 — Cloud Shadows: Orthographic Eye Altitude Collapse & Near Cascade Shadow Vanishing at Low Sun Elevations — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Cloud Shadows: Orthographic Eye Altitude Collapse & Near Cascade Shadow Vanishing at Low Sun Elevations. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUCloudShadowFrame.ts:292-295` - the audit citation is stale; verifier: ProceduralClouds.wgsl:3484-3512 is past EOF at HEAD (file is 3363 lines; the numbers match the Gemini-modified file, which adds 190 lines); the shadow producer is cloudShadowMain at HEAD 3269-3363. ...; re-derived at `WebGPUCloudShadowFrame.ts:292`, `ProceduralClouds.wgsl:3287-3317`, `CloudVolumetrics.js:126`
+  - Code: `const distance = halfExtent * 2.0 + 12000.0;` ... `var tStart = max(tOuter.x, 0.0)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUCloudShadowFrame.ts:292 `const distance = halfExtent * 2.0 + 12000.0;` and ProceduralClouds.wgsl:3287-3317 (ray origin at ndc z=0, `var tStart = max(tOuter.x, 0.0)`). The near cascade exists only under `cloudShadowCascades`, which defaults to false (CloudVolumetrics.js:126). P2: opt-in and visual only.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-105. Findings: P28.182. Blueprint C-182 (EPIC-09). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 13): P28.182. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-106 — Cloud Shadows: Unbounded 2D Orthographic Projection Missing Depth (ndc.z) Testing Causing False Shadows on High-Altitude Terrain, Aircraft, and Spacecraft — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Cloud Shadows: Unbounded 2D Orthographic Projection Missing Depth (ndc.z) Testing Causing False Shadows on High-Altitude Terrain, Aircraft, and Spacecraft. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl:2395-2402, 2422-2464`; re-derived at `GlobeTerrain.wgsl:2395-2402`, `CloudVolumetrics.js:113`
+  - Code: `cloudCastShadows`
+  - Verified (the adjudicator's re-derivation, and the authority): GlobeTerrain.wgsl:2395-2402 tests uv only. The call site at :5909-5915 is gated only by cloudShadowControl.x. `cloudCastShadows` defaults to false (CloudVolumetrics.js:113). Only globe fragments and fog froxels receive the shadow. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: touched in seat-worktree-snapshot 20261008-2106, not a fix: adds an edge fade; no ndc.z or altitude test.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-106. Findings: P28.183. Blueprint C-183 (EPIC-09). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 13): P28.183. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-107 — Celestial: J2000.0/ICRS vs TEME Coordinate Frame Conflation Causing ~22.4 Arcminute Precession Drift & Ephemeris Decoupling — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Celestial: J2000.0/ICRS vs TEME Coordinate Frame Conflation Causing ~22.4 Arcminute Precession Drift & Ephemeris Decoupling. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/SkyBox.js:16, 42`; re-derived at `BrightStarCatalog.js:48-52`, `WebGPUStarFieldRenderer.ts:199`, `SkyBoxVS.glsl:6`, `Moon.js:413`, `SkyBox.js:16`
+  - Code: `Transforms.computeTemeToPseudoFixedMatrix(date, scratchTemeToFixed3)` ... `czm_viewRotation * (czm_temeToPseudoFixed * (...position))`
+  - Verified (the adjudicator's re-derivation, and the authority): BrightStarCatalog.js:48-52 says J2000 coordinates are rotated via computeTemeToPseudoFixedMatrix. WebGPUStarFieldRenderer.ts:199 and SkyBoxVS.glsl:6 use TEME, while Moon.js:413 uses computeIcrfToFixedMatrix. This is the upstream convention (SkyBox.js:16 'defined using TEME'). It gives a ~22 arcmin accuracy deviation. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a capture through lib/capture.mjs (BEFORE/AFTER) judged against the expected analytic or authored result, because WebGL shares the behaviour and cannot be the reference. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-107. Findings: P28.185. Blueprint C-185 (EPIC-07). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 13): P28.185. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-108 — Celestial: Parity / Chirality Inversion in ProceduralSkyCubemap.wgsl IBL Local-to-World Basis (det = -1) — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - C12-31-FOLLOWUP-B (lockstep pair; handedness not covered).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Celestial: Parity / Chirality Inversion in ProceduralSkyCubemap.wgsl IBL Local-to-World Basis (det = -1). Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Compute/ProceduralSkyCubemap.wgsl:460-464, 663-667`; re-derived at `ProceduralSkyCubemap.wgsl:150-157`, `Model.js:2995`
+  - Code: `return u.enuX * delta.x + u.enuZ * delta.y + u.enuY * delta.z;` ... `sunLocal = normalize(vec3(dot(sunDirectionWC, u.enuX), dot(.., u.enuZ), dot(.., u.enuY)))`
+  - Verified (the adjudicator's re-derivation, and the authority): Mechanism CORRECTED: the mirror is North-South, not East-West. The WGSL bake uses local (x=E, y=U, z=N), so its +Z face points North (ProceduralSkyCubemap.wgsl:150-157, :463). The WebGL bake's getCubeMapDirection (ComputeRadianceMapFS.glsl) maps the +Z face to ENU (s,-1,-t), which is South. The shared consumer, Model.js:2995 yUpToZUp ((e,n,u) -> (e,u,-n)), expects +Z to be South. The default `NONE` lighting is symmetric about up, so the mirror shows only with SUNLIGHT/SCENE_LIGHT or IBL clouds. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-108. Findings: P28.187. Blueprint C-187 (EPIC-05). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 13): P28.187. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-109 — Quantized-Mesh: Zig-Zag Delta & High-Water Mark Integer Underflow to Out-of-Bounds GPU Indices — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Quantized-Mesh: Zig-Zag Delta & High-Water Mark Integer Underflow to Out-of-Bounds GPU Indices. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/CesiumTerrainProvider.js:898-901, 937-945`; re-derived at `CesiumTerrainProvider.js:937-945`, `AttributeCompression.js:396-407`
+  - Code: `indices[i] = highest - code;` ... `let highest = 0; const length = indices.length; for (...) { const code = indices[i]; indices[i] = highest - code; if (code === 0) { ++highest; } }`
+  - Verified (the adjudicator's re-derivation, and the authority): CesiumTerrainProvider.js:937-945 does `indices[i] = highest - code;` with no bound check. AttributeCompression.js:396-407 accumulates zig-zag values unchecked. This is upstream behaviour and needs a malformed tile. P2 (input hardening).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-109. Findings: P31.194. Blueprint C-194 (EPIC-03). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 13): P31.194. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-110 — KTX2 Transcoder: Compressed Cubemaps Drop 5 of 6 Faces Collapsing into Broken 2D Textures — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** KTX2 Transcoder: Compressed Cubemaps Drop 5 of 6 Faces Collapsing into Broken 2D Textures. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Workers/transcodeKTX2.js:243-277`; re-derived at `transcodeKTX2.js:243-271`, `KTX2Transcoder.js:59-80`
+  - Code: `level[faceOrder[0]]` ... `// Since supercompressed cubemaps are unsupported, this function does not iterate over KTX2 faces and assumes faceCount = 1.`
+  - Verified (the adjudicator's re-derivation, and the authority): transcodeKTX2.js:243-271 uses face index literal 0 and writes `level[faceOrder[0]]`. Lines :39-45 reject only layers and depth. KTX2Transcoder.js:59-80 collapses a single face key to 2D. Upstream documents this case as unsupported. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-110. Findings: P31.196. Blueprint C-196 (EPIC-01). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 14): P31.196. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-111 — KTX2 Upload: Uncompressed 24-bit RGB KTX2 Triggers WebGPU GPUValidationError — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** KTX2 Upload: Uncompressed 24-bit RGB KTX2 Triggers WebGPU GPUValidationError. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Workers/transcodeKTX2.js:73-76, 97-98`; re-derived at `transcodeKTX2.js:72-75`, `WebGLStateConverters.ts:325-336`, `WebGLStubTexture.ts:975-976`
+  - Code: `bytesPerRow = width * bpt` ... `internalFormat = header.vkFormat === VK_FORMAT_R8G8B8_SRGB ? PixelFormat.RGB : PixelFormat.RGBA`
+  - Verified (the adjudicator's re-derivation, and the authority): transcodeKTX2.js:72-75 selects RGB (3 B/px) for R8G8B8_SRGB. WebGLStateConverters.ts:325-336 maps RGB/UNSIGNED_BYTE to rgba8unorm. WebGLStubTexture.ts:975-976 sets `bytesPerRow = width * bpt` (4w), and a grep of the stub finds no RGB-to-RGBA expansion. writeTexture fails validation and the texture stays empty. The trigger is rare: P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-111. Findings: P31.197. Blueprint C-197 (EPIC-01). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 14): P31.197. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-112 — Point Cloud Sort: Phantom Readback Contract in WASM / GPU Sort Bypassing Point Sorting — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-HIZ-SORT-CONSUME-OR-DELETE Q18 reconcile (calls the chain live). One owner with P1.5, P52.C-393, P58.C-456: point-cloud GPU sort (params, block direction, final direction, unread output).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Point Cloud Sort: Phantom Readback Contract in WASM / GPU Sort Bypassing Point Sorting. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/WasmPointCloudBridge.js:445-459` - the audit citation is stale; verifier: WebGPUPointCloudRenderer.ts:1757-1760 is the translucent-LOD eligibility comment, unrelated; the absence claim holds (0 occurrences of sortedIndicesBuffer in the file). TimeDynamicPointCloud.js:655-656 and :672-678 are ...; re-derived at `WasmPointCloudBridge.js:446-457`, `TimeDynamicPointCloud.js:159`, `TimeDynamicPointCloud.js:655-656`, `WasmPointCloudBridge.js:451-457`, `WebGPUPointCloudRenderer.ts:1757-1760`
+  - Code: `fr.sort(encoder, distSq, count); // Identity fill - readback from previous frame will be applied by the caller's next testCommands cycle. for (...) outIndices[i] = i; return;` ... `that._sortDistSq`
+  - Verified (the adjudicator's re-derivation, and the authority): WasmPointCloudBridge.js:446-457 dispatches fr.sort, fills outIndices with the identity order and returns. Nothing reads sortedIndicesBuffer (:165) back through mapAsync/MAP_READ. sortTransparentPoints defaults to false (TimeDynamicPointCloud.js:159). This is unfinished scaffolding (Principles 7 and 9): P2, to be filed as next work.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-112. Findings: P31.204, P58.C-457 (one defect; the later ids are duplicates). Blueprint C-204 (EPIC-08). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 14): P31.204; ADJUDICATION-31-31 (Meneltarma-a06, chunk 31): P58.C-457. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-113 — Vector Tiles: Unhandled TypeError Crash on Premature LineTo Commands in decodeMVT — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P31.211, P31.213: decodeMVT and vector glTF extraction robustness.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Vector Tiles: Unhandled TypeError Crash on Premature LineTo Commands in decodeMVT. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/decodeMVT.js:341-347, 372-378`; re-derived at `decodeMVT.js:327`
+  - Code: `let current = null;` ... `current.push(...)`
+  - Verified (the adjudicator's re-derivation, and the authority): decodeMVT.js:327 sets `let current = null;` and :341-346 calls `current.push(...)` with no guard (the polygon twin is at :372-377). The malformed tile fails through the normal tile-failure path. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-113. Findings: P31.212. Blueprint C-212 (EPIC-01). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 15): P31.212. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-114 — WASM Culling: WasmCullBridge.packFrustumPlanes Throws Unhandled TypeError on Canonical Cartesian4 Planes — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - S5-2-WASM-CONSUME-OR-RETIRE.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** WASM Culling: WasmCullBridge.packFrustumPlanes Throws Unhandled TypeError on Canonical Cartesian4 Planes. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/WasmCullBridge.js:102-111, 129`; re-derived at `WasmCullBridge.js:101-110`
+  - Code: `plane.normal.x` ... `plane.distance`
+  - Verified (the adjudicator's re-derivation, and the authority): WasmCullBridge.js:101-110 reads `plane.normal.x` and `plane.distance` from Cartesian4 planes. Apart from a comment in WasmArenaSlots.js, nothing imports the bridge (grep of Scene/Core/Renderer/DataSources). Latent: P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** none until the consume-or-retire decision; Edge leg: consume-or-retire decision first (Principle 7); a spec only once a consumer exists. **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-114. Findings: P31.215. Blueprint C-215 (EPIC-03). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 15): P31.215. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-115 — WASM Build: Unconditional WASM SIMD128 Compilation Without Browser Scalar Fallback — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - S5-2-WASM-CONSUME-OR-RETIRE.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** WASM Build: Unconditional WASM SIMD128 Compilation Without Browser Scalar Fallback. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/WasmFeatureDetection.js:72-87`; re-derived at `WasmMatrixBridge.js:67-84`
+  - Code: `WasmFeatureDetection.checkSIMDSupport();` ... `catch (e) { console.warn('[CesiumJS:WASM:matrix] Load failed:', e.message); return false; }`
+  - Verified (the adjudicator's re-derivation, and the authority): packages/wasm/.cargo/config.toml enables +simd128 unconditionally. WasmMatrixBridge.js:67-84 ignores the result of checkSIMDSupport() and catches the load failure with a console.warn, falling back to JS. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** none until the consume-or-retire decision; Edge leg: consume-or-retire decision first (Principle 7); a spec only once a consumer exists. **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-115. Findings: P31.219. Blueprint C-219 (EPIC-01). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 15): P31.219. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-116 — WASM Lifecycle: Systemic WASM Linear Memory Arena Leaks Across 6 Bridges Freeing Only Slot 0 — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - S5-2-WASM-CONSUME-OR-RETIRE.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** WASM Lifecycle: Systemic WASM Linear Memory Arena Leaks Across 6 Bridges Freeing Only Slot 0. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/WasmMatrixBridge.js:303`; re-derived at `lib.rs:172-174`, `WasmFeatureDetection.js:173-176`, `WasmRTEBridge.js:420-424`
+  - Code: `WasmFeatureDetection.freeBuffer(_wasmModule); this._isDestroyed = true;` ... `wasmModule.free_buffer()`
+  - Verified (the adjudicator's re-derivation, and the authority): lib.rs:172-174 free_buffer frees slot 0 only, and WasmFeatureDetection.js:173-176 freeBuffer calls it. WasmRTEBridge.js:420-424 and its five siblings never free their own slot. Each slot keeps its high-water mark; memory does not keep growing. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: candidate in seat-worktree-snapshot 20261008-2106: each of the six bridges frees its own slot.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-116. Findings: P31.220. Blueprint C-220 (EPIC-03). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 15): P31.220. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-117 — Instancing: translationsToTypedArray Matrix Indexing on Cartesian3 Generating 100% NaN Vertex Buffers — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Instancing: translationsToTypedArray Matrix Indexing on Cartesian3 Generating 100% NaN Vertex Buffers. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/Model/InstancingPipelineStage.js:490-505, 928-946`; re-derived at `InstancingPipelineStage.js:499-501`, `Model.js:569`
+  - Code: `transationsTypedArray[offset + 0] = translation[0]; [offset + 1] = translation[4]; [offset + 2] = translation[8];` ... `new Cartesian3(1,2,3)`
+  - Verified (the adjudicator's re-derivation, and the authority): InstancingPipelineStage.js:499-501 reads translation[0]/[4]/[8] from Cartesian3 values (built at :675-679), giving NaN. Reach NARROWED: the vec3 path runs only when `use2D` is true, i.e. a non-3D scene mode AND model._projectTo2D (:73-76), and projectTo2D defaults to false (Model.js:569). WebGPU's keepTypedArray takes the matrix branch (:736), so the WebGPU reach the verifier left open does not exist. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: candidate in seat-worktree-snapshot 20261008-2106: reads .x/.y/.z when defined.
+- **Seat-diff review disposition (G07 card 45, filed on this row because it is the same defect, not a second id):** KEEP-WITH-FIX. `G07-ADJUDICATION.md` card 45: premise CONFIRMED and MEASURED (importing the Cartesian3 module and writing `[c[0], c[4], c[8]]` into a Float32Array gives `[NaN, NaN, NaN]`; the same measurement was repeated at the tree this band was read against); the only caller passes `instancingTranslations`, an array of Cartesian3; the indexing is an upstream defect in shared scene code. Fix: delete the unreachable matrix-style `else` branch of the snapshot's change and read `.x/.y/.z`; in `packages/engine/Specs/Scene/Model/InstancingPipelineStageSpec.js` the test "creates TRANSLATION vertex attributes for 2D" asserts that the 2D translation typed array is finite and equals the projected translations; the inertness check reverts to `[0],[4],[8]`, which must fail; consider an upstream report (MQ-15: drafted by the seat, filed by or on the explicit authorisation of the maintainer). Source: `SEAT_DIFF_REVIEW_2026-10-08.md` section 4.4 (B-engine-model-instancing2d) and section 7. The two sources differ on reach: the seat-diff review writes "shared scene code, so both backends", while this row's Verified line narrows the reach to `use2D` (a non-3D scene mode and `model._projectTo2D`, default false) and says WebGPU's `keepTypedArray` takes the matrix branch. The Verified line is the authority.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-117. Findings: P31.222. Blueprint C-222 (EPIC-03). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 15): P31.222. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-118 — Legacy 3D Tiles: Unchecked Feature & Batch Table Binary Byte Offset Access Leading to RangeError Crashes — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Legacy 3D Tiles: Unchecked Feature & Batch Table Binary Byte Offset Access Leading to RangeError Crashes. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/Cesium3DTileFeatureTable.js:21-32, 47-59, 88-108`; re-derived at `Cesium3DTileFeatureTable.js:88-100`
+  - Code: `ComponentDatatype.createArrayBufferView(componentType, featureTable.buffer.buffer, featureTable.buffer.byteOffset + byteOffset, count * componentLength)` ... `.buffer.buffer`
+  - Verified (the adjudicator's re-derivation, and the authority): Cesium3DTileFeatureTable.js:88-100 calls createArrayBufferView with the JSON byteOffset and no bounds or alignment check (upstream code). The RangeError becomes a tile failure. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a capture through lib/capture.mjs (BEFORE/AFTER) judged against the expected analytic or authored result, because WebGL shares the behaviour and cannot be the reference. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-118. Findings: P31.223. Blueprint C-223 (EPIC-01). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 15): P31.223. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-119 — Composite 3D Tiles: Nested CMPT Lifecycle Race Condition Causing VRAM Memory Leaks and Zombie Resurrections — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Composite 3D Tiles: Nested CMPT Lifecycle Race Condition Causing VRAM Memory Leaks and Zombie Resurrections. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/Composite3DTileContent.js:240-259`; re-derived at `Cesium3DTile.js:1829-1835`, `Composite3DTileContent.js:253`
+  - Code: `const innerContents = await Promise.all(promises);` ... `const content = await makeContent(tile, arrayBuffer); ... if (tile.isDestroyed()) { // Tile is unloaded before the content can process  return; }`
+  - Verified (the adjudicator's re-derivation, and the authority): Narrowed. Cesium3DTile.js:1829-1835 drops freshly built content without destroy() when tile.isDestroyed(). The Promise.all at Composite3DTileContent.js:253 leaves resolved siblings undestroyed when another child rejects. The verifier refuted the camera-motion zombie path. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-119. Findings: P31.226. Blueprint C-226 (EPIC-01). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 16): P31.226. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-120 — Heterogeneous Tile SH Degree Array Corruption & WebGPU Buffer Desynchronization — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Heterogeneous Tile SH Degree Array Corruption & WebGPU Buffer Desynchronization. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/GaussianSplatPrimitive.js:1699-1751 ,  1784-1789`
+  - Code: `for (const tile of tiles) { if (tile.content.sphericalHarmonicsDegree > 0) {...break;}}` ... `aggregate.set(tileShData, offset); offset += tileShData.length`
+  - Verified (the adjudicator's re-derivation, and the authority): GaussianSplatPrimitive.js aggregateShData takes the coefficient count from the first tile with degree > 0, skips degree-0 tiles, and concatenates tiles of different strides. The snapshot takes its degree from tiles[0] (:1784-1789). Triggering it requires a tileset authored with mixed SH degrees. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-120. Findings: P34.C-229. Blueprint C-229 (EPIC-08). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 16): P34.C-229. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-121 — Degenerate Clip Position (0, 0, 0, 1) Placing Culled Primitives on Screen Near Plane — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Degenerate Clip Position (0, 0, 0, 1) Placing Culled Primitives on Screen Near Plane. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Collections/BillboardCollection.wgsl:406-408`
+  - Code: `vec4<f32>(0.0, 0.0, 0.0, 1.0)` ... `if (distScale == 0.0) { clipPos = vec4<f32>(0.0, 0.0, 0.0, 1.0); }`
+  - Verified (the adjudicator's re-derivation, and the authority): Narrowed. In PointPrimitiveColor.wgsl the sentinel at :204-206 comes before the corner offset (:224-229) and totalSize is clamped to >= 1, so points with scale 0 draw a 1-px quad at screen centre. The DDC sentinel (:236-240) comes after the offset and is degenerate. The polyline sentinel is per vertex (:197-201). P2, cosmetic.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-121. Findings: P34.C-238. Blueprint C-238 (EPIC-01). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 16): P34.C-238. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-122 — Stencil Reference Value Leak Across Consecutive WebGPU Draw Commands — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Stencil Reference Value Leak Across Consecutive WebGPU Draw Commands. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/RenderStateToPipelineVariant.ts:401-404`; re-derived at `RenderStateToPipelineVariant.ts:400-403`
+  - Code: `const stencilRef = renderState?.stencilTest?.reference; if (typeof stencilRef === "number" && stencilRef !== 0) { passEncoder.setStencilReference(stencilRef); }`
+  - Verified (the adjudicator's re-derivation, and the authority): RenderStateToPipelineVariant.ts:400-403 skips setStencilReference when the reference is 0, and a WebGPU stencil reference persists for the rest of the pass. No unmasked command that reads the stale value has been shown. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-122. Findings: P34.C-241. Blueprint C-241 (EPIC-05). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 17): P34.C-241. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-123 — Hardcoded stepSize=0.02 Jumping Over Thin Planetary Ellipsoid Shells — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Hardcoded stepSize=0.02 Jumping Over Thin Planetary Ellipsoid Shells. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts:3580-3587 ,  875-904`
+  - Code: `data[27] = 0.02;` ... `data[31] = 128;`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUVoxelRenderer.ts hardcodes `data[27] = 0.02;` (:3583) and `data[31] = 128;` (:3587), and primitive.stepSize is never read. The voxel primitive is opt-in, and thin shells are undersampled. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-123. Findings: P34.C-245. Blueprint C-245 (EPIC-03). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 17): P34.C-245. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-124 — WebGPU RenderPass SampleCount Mismatch Crash Under MSAA — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING / FAR-003.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** WebGPU RenderPass SampleCount Mismatch Crash Under MSAA. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUOIT.ts:156-161, 206-224`; re-derived at `WebGPUOIT.ts:206-225`, `WebGPUSceneRenderer.ts:955`, `WebGPUOIT.ts:206-224`, `WebGPURenderTarget.ts:220-231`, `WebGPUSceneRendererTranslucentPass.ts:132-140`
+  - Code: `_webgpuOITEnabled = false` ... `device.createTexture({ label: "OIT-Accumulation", size: {width,height}, format: "rgba16float", usage: ...})`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUOIT.ts:206-225 creates the accumulation and revealage textures without a sampleCount, while the scene depth is MSAA. The contained OIT path is off by default (WebGPUSceneRenderer.ts:955 `_webgpuOITEnabled = false`). The result is a validation error and a dropped pass: P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-124. Findings: P37.C-258, P52.C-387 (one defect; the later ids are duplicates). Blueprint C-258 (EPIC-05). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 18): P37.C-258; ADJUDICATION-25-30 (Meneltarma-a05, chunk 26): P52.C-387. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-125 — Non-OIT Translucent Commands Dropped When Any Command Has OIT — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - FAR-003 / NEW-WEBGPU-OIT-TRANSLUCENT-PRIMITIVE-WIRING. One owner with P46.C-344: the WebGPU OIT translucent pass.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Non-OIT Translucent Commands Dropped When Any Command Has OIT. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererTranslucentPass.ts:264-304`; re-derived at `WebGPUSceneRendererTranslucentPass.ts:266-268`
+  - Code: `_oitPipeline` ... `hasOITPipelines`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUSceneRendererTranslucentPass.ts:266-268 encodes only commands that have `_oitPipeline`, then returns (:304) before the back-to-front path. This happens only on the OIT path, which is off by default: P2. The verifier said P1, but the gate keeps it off the default path.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-125. Findings: P37.C-259. Blueprint C-259 (EPIC-05). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 18): P37.C-259. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-126 — Inverted Eye-Space Z Sign Disabling Contact Shadows — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Inverted Eye-Space Z Sign Disabling Contact Shadows. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/PostProcess/ContactShadows.wgsl:163-176` - the audit citation is stale; verifier: cited 163-176 is the start of the march loop; the decisive lines are 181-190; re-derived at `ContactShadows.wgsl:98`, `Scene.js:1226`
+  - Code: `let frontDelta = samplePos.z - sampledEyePos.z;` ... `if (frontDelta > minFrontDelta && frontDelta < scaledThickness) {` (`ContactShadows.wgsl:187-190`)
+  - Verified (the adjudicator's re-derivation, and the authority): ContactShadows.wgsl:98 unprojects through uniforms.inverseProjection (Cesium convention, forward is z < 0). Yet :187-190 tests `frontDelta = samplePos.z - sampledEyePos.z > minFrontDelta`, following a comment that says 'Z grows positive forward', so the sign is inverted. Only the sign claim is confirmed: the audit's threshold test (`0.5 < delta && delta < 0.05`) does not exist at HEAD, where :190 compares against `minFrontDelta = stepSize * 2.0` and `scaledThickness`. enableContactShadows defaults to false (Scene.js:1226): P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-126. Findings: P37.C-261. Blueprint C-261 (EPIC-09). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 18): P37.C-261. Title note: (audit title, intensifiers removed and its unsupported "Impossible Threshold" clause dropped; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-127 — Pre-Cancellation Float32 Matrix Truncation in Cascaded Shadow Maps — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Pre-Cancellation Float32 Matrix Truncation in Cascaded Shadow Maps. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUCSMRenderer.ts:442, 725-738`; re-derived at `WebGPUCSMRenderer.ts:442`
+  - Code: `viewProjection: new Float32Array(16)` ... `_computeCascadeVPMatrix(snapped, radius, lightDirection, cascade.viewProjection)`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUCSMRenderer.ts:442 allocates `viewProjection: new Float32Array(16)`. _computeCascadeVPMatrix (:725-730) writes it, and only afterwards does _applyCameraTranslationToVP (:736-744) cancel the camera, working from already-rounded values. Verifier's node replica: errors up to 9 texels at r=30 m. Shadows are opt-in: P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-127. Findings: P37.C-263. Blueprint C-263 (EPIC-09). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 18): P37.C-263. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-128 — Inverted Sky Early-Exit Condition Forcing Full 256-Sample Raymarch on Sky Pixels — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P37.C-265, P37.C-266: AmbientOcclusionGenerate.wgsl parity with the GLSL generator.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Inverted Sky Early-Exit Condition Forcing Full 256-Sample Raymarch on Sky Pixels. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/PostProcess/AmbientOcclusionGenerate.wgsl:178-181`; re-derived at `AmbientOcclusionGenerate.wgsl:84`, `AmbientOcclusionGenerate.glsl:60-61`
+  - Code: `if (posEC.z > -uniforms.frustum.x * 1.1)` ... `// Early exit for sky pixels  if (posEC.z > -uniforms.frustum.x * 1.1) { return vec4<f32>(1.0); }`
+  - Verified (the adjudicator's re-derivation, and the authority): AmbientOcclusionGenerate.wgsl:84 pixelToEye returns z = -depth, so the test at :179, `if (posEC.z > -uniforms.frustum.x * 1.1)`, is false for sky pixels (z = -far). The GLSL exits at the far end instead (AmbientOcclusionGenerate.glsl:60-61). AO is opt-in: P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-128. Findings: P37.C-264. Blueprint C-264 (EPIC-05). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 18): P37.C-264. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-129 — 180° Semicircle Ray March Leaving Blind Half-Hemisphere and Directional Bias in SSAO — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P37.C-264, P37.C-266: AmbientOcclusionGenerate.wgsl parity with the GLSL generator.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** 180° Semicircle Ray March Leaving Blind Half-Hemisphere and Directional Bias in SSAO. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/PostProcess/AmbientOcclusionGenerate.wgsl:229-235`; re-derived at `AmbientOcclusionGenerate.wgsl:230`
+  - Code: `angle = (f32(d) + randomVal.x) * PI / f32(directionCount)` ... `let angle = (f32(d) + randomVal.x) * PI / f32(directionCount);`
+  - Verified (the adjudicator's re-derivation, and the authority): AmbientOcclusionGenerate.wgsl:230 computes `angle = (f32(d) + randomVal.x) * PI / f32(directionCount)`, and the march takes steps s >= 1 only (:232-233). The GLSL uses czm_twoPi (:77). P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-129. Findings: P37.C-265. Blueprint C-265 (EPIC-05). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 18): P37.C-265. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-130 — Missing Camera Field-of-View and Viewport Aspect Ratio in SSAO pixelToEye — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P37.C-264, P37.C-265: AmbientOcclusionGenerate.wgsl parity with the GLSL generator.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Missing Camera Field-of-View and Viewport Aspect Ratio in SSAO pixelToEye. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/PostProcess/AmbientOcclusionGenerate.wgsl:79-85`; re-derived at `AmbientOcclusionGenerate.wgsl:79-84`
+  - Code: `vec3<f32>(xy * depth, -depth)` ... `fn pixelToEye ... let xy = 2.0 * uv - vec2<f32>(1.0); // Simplified eye-space reconstruction  return vec3<f32>(xy * depth, -depth);`
+  - Verified (the adjudicator's re-derivation, and the authority): AmbientOcclusionGenerate.wgsl:79-84 returns `vec3<f32>(xy * depth, -depth)` with no tan(fov/2) or aspect term. The GLSL uses czm_inverseProjection (:16). P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-130. Findings: P37.C-266. Blueprint C-266 (EPIC-05). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 18): P37.C-266. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-131 — AO Pipeline Output Texture Desynchronization Silently Breaking Auto-Exposure — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** AO Pipeline Output Texture Desynchronization Silently Breaking Auto-Exposure. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUAmbientOcclusionEffect.ts:382, 513-514`; re-derived at `WebGPUPostProcessPipeline.ts:1557-1565`
+  - Code: `currentView = this._aoEffect.execute(...)` ... `this._outputTex = createTexture(device, "AO-Output", w, h, format); this._outputView = this._outputTex.createView();`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUPostProcessPipeline.ts:1557-1565 sets `currentView = this._aoEffect.execute(...)`, which returns AO-Output. Lines :1620-1628 recognise only sourceView, _pingView and _pongView, so with AO on and no later ping-pong stage, auto-exposure does not dispatch. It needs two opt-in effects: P2 (verifier said P1).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-131. Findings: P37.C-268. Blueprint C-268 (EPIC-10). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 18): P37.C-268. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-132 — HBAO and GTAO Denoise Passes Using Depth-Agnostic Gaussian Blur Causing Silhouette Halos — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** HBAO and GTAO Denoise Passes Using Depth-Agnostic Gaussian Blur Causing Silhouette Halos. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUAmbientOcclusionEffect.ts:655-675`; re-derived at `WebGPUAmbientOcclusionEffect.ts:651`
+  - Code: `const blurSrc = f16 ? GaussianBlur1DF16WGSL : GaussianBlur1DWGSL;` ... `inputTexture`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUAmbientOcclusionEffect.ts:651 uses GaussianBlur1D (no depth input) for HBAO and GTAO. The WebGL AO is also Gaussian-only, so this is a quality request: P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-132. Findings: P37.C-269. Blueprint C-269 (EPIC-05). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 18): P37.C-269. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-133 — Buffer Zero-Initialization Defect in _resultBuffer Triggering Initial 10x Overexposure Flash — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - C12-19-AUTOEXPOSURE-LANES-OWED.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Buffer Zero-Initialization Defect in _resultBuffer Triggering Initial 10x Overexposure Flash. Severity: P2 - Auto-exposure is opt-in (addAutoExposure); a ~1.5 s exposure transient after init/resize, no crash, leak or default-path effect.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUAutoExposure.ts:248-253`; re-derived at `WebGPUAutoExposure.ts:246-252`
+  - Code: `// Result buffer: holds 1 f32 (the average luminance). Initialized to 0.5 so the first frame's temporal smoothing has a sane starting point.` ... `this._resultBuffer = device.createBuffer({ label, size: 4, usage: STORAGE | COPY_SRC });`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUAutoExposure.ts:246-252 comment says "Initialized to 0.5" but createBuffer has no mappedAtCreation and the only writeBuffer is the params buffer (:311); AutoExposure.wgsl (Compute/, not PostProcess/):104-107 EMA starts from 0 and clamps to minLuminance 0.1 (:133), so getExposureMultiplier (:169-174) ramps up to ~10x before decaying.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-133. Findings: P37.C-273. Blueprint C-273 (EPIC-10). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 19): P37.C-273. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-134 — Division-by-Zero and NaN Poisoning on Zero `inverseProjection` in 2D/Ortho — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Division-by-Zero and NaN Poisoning on Zero `inverseProjection` in 2D/Ortho. Severity: P2 - Opt-in clustered lighting in 2D/morph/ortho only; lights drop out, no crash.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Compute/ClusterBounds.wgsl:76-80`; re-derived at `UniformStateComputations.js:280-290`, `WebGPUSceneRendererClusteredLighting.ts:320-349`, `ClusterBounds.wgsl:76-80`
+  - Code: `if (_mode !== SceneMode.SCENE2D && _mode !== SceneMode.MORPHING && !_orthographicIn3D) { Matrix4.inverse(...) } else { Matrix4.clone(Matrix4.ZERO, uniformState._inverseProjection); }` ... `!inverseProjection`
+  - Verified (the adjudicator's re-derivation, and the authority): UniformStateComputations.js:280-290 sets inverseProjection to Matrix4.ZERO in SCENE2D/MORPHING/ortho-3D; WebGPUSceneRendererClusteredLighting.ts:320-349 checks only definedness; ClusterBounds.wgsl:76-80 divides by view.w = 0.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-134. Findings: P40.C-291. Blueprint C-291 (EPIC-08). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 20): P40.C-291. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-135 — Constant 0 Availability Inversion Corrupts `availableCount` and Metadata Table Sizing — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Constant 0 Availability Inversion Corrupts `availableCount` and Metadata Table Sizing. Severity: P2 - Wrong count only for constant-0 content availability with a content property table; upstream-identical; no crash shown.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/ImplicitAvailabilityBitstream.js:31-37`; re-derived at `ImplicitAvailabilityBitstream.js:34-37`, `ImplicitSubtree.js:935-940`
+  - Code: `defined(constant)` ... `Boolean(availabilityJson.constant)`
+  - Verified (the adjudicator's re-derivation, and the authority): ImplicitAvailabilityBitstream.js:34-37 sets availableCount = lengthBits whenever `defined(constant)`; ImplicitSubtree.js:935-940 passes `Boolean(availabilityJson.constant)`, so constant 0 becomes defined(false) and an all-available count; the default content availability is `{constant: 0}` (:478-480) and the count sizes the content MetadataTable (:1005-1013).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-135. Findings: P40.C-292. Blueprint C-292 (EPIC-05). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 20): P40.C-292. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-136 — No-Op / Discarded Vertex Custom Shader Output in Model WGSL — **OPEN** (P2, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - NEW-MODEL-WGSL-CUSTOM-SHADER (its SHIPPED note lists the vertex hook as supported).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** No-Op / Discarded Vertex Custom Shader Output in Model WGSL. Severity: P2 - Opt-in wgslVertexShaderText is a silent no-op; the SHIPPED ledger row (DEFERRED_WORK:9102) over-claims and should be corrected.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl:1119-1138`; re-derived at `ModelPBRComplete.wgsl:1124-1135`
+  - Code: `return output;` ... `{ var csVsInput: czm_customVertexInput; ... var csVsOutput: czm_customVertexOutput; csVsOutput.positionMC = positionMC; czm_customVertexMain(csVsInput, &csVsOutput); }`
+  - Verified (the adjudicator's re-derivation, and the authority): ModelPBRComplete.wgsl:1124-1135: csVsOutput is a block-local written by czm_customVertexMain and never read; output.position/log depth were finalised at :1115-1116.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-136. Findings: P40.C-296. Blueprint C-296 (EPIC-06). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 20): P40.C-296. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-137 — Quadtree Traversal Uncaught TypeError Crash at Level 31 — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Quadtree Traversal Uncaught TypeError Crash at Level 31. Severity: P2 - Uncaught TypeError but reachable only centimetres from the surface (level-30 geometric error ~1e-4 m); upstream-identical.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/QuadtreePrimitive.js:584-586, 825-826`; re-derived at `QuadtreePrimitive.js:584-587`
+  - Code: `const traversalQuadsByLevel = new Array(31); for (...) traversalQuadsByLevel[i] = new TraversalQuadDetails();` ... `const quadDetails = traversalQuadsByLevel[southwest.level];`
+  - Verified (the adjudicator's re-derivation, and the authority): QuadtreePrimitive.js:584-587 fills indices 0..30; :825-826 indexes by the child level, so refining a level-30 tile reads undefined.southwest.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-137. Findings: P40.C-298. Blueprint C-298 (EPIC-05). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 20): P40.C-298. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-138 — Antimeridian Longitude Calculation Breakdown & Tile Range Corruption — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Antimeridian Longitude Calculation Breakdown & Tile Range Corruption. Severity: P2 - Only a custom tiling scheme whose own rectangle crosses the antimeridian; upstream-identical; wrong tile, no crash.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/GeographicTilingScheme.js:151-174, 201-208`; re-derived at `GeographicTilingScheme.js:201-208`
+  - Code: `let longitude = position.longitude; if (rectangle.east < rectangle.west) { longitude += CesiumMath.TWO_PI; }` ... `Rectangle.contains`
+  - Verified (the adjudicator's re-derivation, and the authority): GeographicTilingScheme.js:201-208 adds TWO_PI to every longitude when the scheme rectangle crosses the antimeridian and clamps to xTiles-1.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-138. Findings: P40.C-299. Blueprint C-299 (EPIC-05). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 20): P40.C-299. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-139 — Discontinuous Coordinate Frame Jump via Asynchronous IAU-2006 XYS Fallback to TEME — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-ECLIPSE-FRAME-EPHEMERIS-INTEGRATION.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Discontinuous Coordinate Frame Jump via Asynchronous IAU-2006 XYS Fallback to TEME. Severity: P2 - Upstream-documented one-time snap at XYS arrival; preloadIcrfFixed avoids it; no crash.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/Transforms.js:554-561, 745-761, 910-943`; re-derived at `Transforms.js:554-561`
+  - Code: `transformMatrix = computeIcrfToFixedMatrix(date); if (!defined(transformMatrix)) transformMatrix = computeTemeToPseudoFixedMatrix(date, result)`
+  - Verified (the adjudicator's re-derivation, and the authority): Transforms.js:554-561 falls back to computeTemeToPseudoFixedMatrix while computeIcrfToFixedMatrix returns undefined (:940-942, XYS not loaded).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-139. Findings: P40.C-308. Blueprint C-308 (EPIC-07). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 21): P40.C-308. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-140 — Rotational Freezing and 418m Ground-Track Discontinuity during Leap Second & UT1 Omission — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - the UT1 = UTC policy note in the eclipse rows.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Rotational Freezing and 418m Ground-Track Discontinuity during Leap Second & UT1 Omission. Severity: P2 - Documented upstream approximation (<= ~0.9 s of rotation); no leap second since 2016.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/Transforms.js:601-632, 681, 967-970`; re-derived at `Transforms.js:601-608`
+  - Code: `dateInUtc = JulianDate.addSeconds(date, -JulianDate.computeTaiMinusUtc(date), dateInUtc)` ... `Transforms.earthOrientationParameters = EarthOrientationParameters.NONE`
+  - Verified (the adjudicator's re-derivation, and the authority): Transforms.js:601-608 uses UTC as UT1; :681 EOP defaults to NONE; :968-969 same with ut1MinusUtc 0. The leap-second effect is a 1 s backward step, not a freeze (verifier correction stands).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-140. Findings: P40.C-309. Blueprint C-309 (EPIC-03). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 21): P40.C-309. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-141 — Absence of GPU Compute Shader Particle Simulation & CPU/PCIe Instance Churn — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - the Large Dynamic Objects roadmap / NEW-TIDEWATER-GPU-PARTICLE-RING.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Absence of GPU Compute Shader Particle Simulation & CPU/PCIe Instance Churn. Severity: P2 - Performance/architecture gap, unmeasured; not a defect.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/ParticleSystem.js:160-164`; re-derived at `ParticleSystem.js:193-206`
+  - Code: `for (i = 0; i < length; ++i) { particle = particles[i]; if (!particle.update(dt, updateCallback)) {...} else { updateBillboard(this, particle); } }` ... `FLOATS_PER_INSTANCE = 44; BYTES_PER_INSTANCE = FLOATS_PER_INSTANCE * 4`
+  - Verified (the adjudicator's re-derivation, and the authority): ParticleSystem.js:193-206 CPU update loop; no ParticleSystem compute path. Upstream-identical architecture.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a capture through lib/capture.mjs (BEFORE/AFTER) judged against the expected analytic or authored result, because WebGL shares the behaviour and cannot be the reference. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-141. Findings: P43.C-317. Blueprint C-317 (EPIC-01). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 22): P43.C-317. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-142 — Translucent Particle Blending & Absence of GPU Depth Sorting — **OPEN** (P2, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - NEW-WEBGPU-COLLECTION-PASS-LITERAL-DRIFT, a routing ruling pinned by `collection-pass-routing.spec.mjs` and cited in the code at WebGPUBillboardRenderer.js:1353-1361. The ruling routes the collapsed draw to Pass.OPAQUE as "the WebGL contract". That premise holds for the OPAQUE and TRANSLUCENT blend options and not for the default OPAQUE_AND_TRANSLUCENT, whose translucent half WebGL bins in Pass.TRANSLUCENT (BillboardCollection.js:1195-1207). Needs a seat ruling before any lane. Re-routing the single draw to Pass.TRANSLUCENT is the regression that row recorded; the shape the code anticipates is the two-command split, for which the OIT inputs are already attached (WebGPUBillboardRenderer.js:1409-1411).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Translucent Particle Blending & Absence of GPU Depth Sorting. Severity: P2 - Blend-order artefacts in translucent billboards/particles; visual only.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUBillboardRenderer.js:1350-1363`; re-derived at `WebGPUBillboardRenderer.js:1352-1362`, `ParticleSystem.js:200`
+  - Code: `const billboardPass = Pass.OPAQUE;` ... `particles[i] = particles[length - 1]`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUBillboardRenderer.js:1352-1362 collapses every blend option to one Pass.OPAQUE draw; ParticleSystem.js:200 swap-removes so instance order is arbitrary. ParticleSystem.js:167 builds its BillboardCollection with the default OPAQUE_AND_TRANSLUCENT (BillboardCollection.js:305), so particles are in scope. What survives of P34.C-255: particles skip translucent sorting and OIT on WebGPU. What does not: its "opaque black rectangular fringes", because the draw uses `_rsTranslucent` (WebGPUBillboardRenderer.js:1375-1378) and blends.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-142. Findings: P34.C-255, P43.C-318 (one defect; the later ids are duplicates). Blueprint C-318 (EPIC-08); C-255 is under EPIC-05. P34.C-255 was REFUTED by its verifier on the premise that WebGL also bins the collection in Pass.OPAQUE, and is CONFIRMED here after the critic (R1). Adjudication: ADJUDICATION-13-18 (Meneltarma-a03, chunk 17): P34.C-255; ADJUDICATION-19-24 (Meneltarma-a04, chunk 22): P43.C-318. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-143 — Inverted Light Accumulation: Sunlight Shadows Darken Local Clustered Lights and Point Light Shadows Corrupt Sunlight — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Inverted Light Accumulation: Sunlight Shadows Darken Local Clustered Lights and Point Light Shadows Corrupt Sunlight. Severity: P2 - Needs both opt-in clustered lighting and an active shadow map; wrong darkening, no crash.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl:2911-2933`; re-derived at `ModelPBRComplete.wgsl:2921-2933`
+  - Code: `direct = direct + clusteredContrib;` ... `direct = direct + ltcAreaContrib;`
+  - Verified (the adjudicator's re-derivation, and the authority): ModelPBRComplete.wgsl:2921-2933 adds clustered and LTC area contributions into `direct`, then :3177-3203 multiplies `direct` by the shadow factor; scene.lights punctual loop (:3212+) is added after and is unshadowed.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: touched in seat-worktree-snapshot 20261008-2106, not a fix: splits direct into diffuse and specular; the clustered-then-shadow order is unchanged.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-143. Findings: P43.C-323. Blueprint C-323 (EPIC-06). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 22): P43.C-323. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-144 — Clustered Lighting Disconnect & 8-Light Collection Limit Trap — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - clustered-lighting cap notes (LightCollection.MAX_LIGHTS).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Clustered Lighting Disconnect & 8-Light Collection Limit Trap. Severity: P2 - Explicit, documented API cap; it does make the 1024-light cluster capacity unreachable, which is design debt rather than a crash.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/LightTypes.ts:430-432`; re-derived at `LightTypes.ts:431`
+  - Code: `const MAX_LIGHTS = 8;` ... `if (this._lights.length >= MAX_LIGHTS) { throw new Error(`
+  - Verified (the adjudicator's re-derivation, and the authority): LightTypes.ts:431 MAX_LIGHTS = 8 and :485-488 throws a plain Error on the 9th add. The "disconnected buffer" and "crash on init" halves are refuted (verifier reading stands).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-144. Findings: P43.C-324. Blueprint C-324 (EPIC-06). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 22): P43.C-324. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-145 — Eye-Dome Lighting (EDL) Failure in Orthographic / 2D / CV Modes — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - PNTS-MODEL-PATH-EDL-INERT.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Eye-Dome Lighting (EDL) Failure in Orthographic / 2D / CV Modes. Severity: P2 - EDL inert in 2D/ortho on one opt-in point-cloud path.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/PointCloud/PointCloudEDLDepth.wgsl:134` - the audit citation is stale; verifier: PointCloudEDLDepth.wgsl:134 (formula is now `clipPos.w`, not `log2(max(1e-6, 1.0 + clipPos.w))`); EDL.wgsl:78 and :100 match; re-derived at `PointCloudEDLDepth.wgsl:134`, `PointCloudEDL.wgsl:78`
+  - Code: `eyeDepth = clipPos.w` ... `output.eyeDepth = clipPos.w;`
+  - Verified (the adjudicator's re-derivation, and the authority): PointCloudEDLDepth.wgsl:134 `eyeDepth = clipPos.w` is 1 for every point under an orthographic projection, so PointCloudEDL.wgsl:78/:100 log2 differences are 0. Columbus View is perspective and is not affected.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-145. Findings: P43.C-326. Blueprint C-326 (EPIC-08). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 22): P43.C-326. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-146 — Camera Motion Vector Calculation & Dynamic Entity Velocity Pass Disconnect — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-TIDEWATER-MOTION-BLUR-RECONSTRUCTION and the velocity-pass notes.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Camera Motion Vector Calculation & Dynamic Entity Velocity Pass Disconnect. Severity: P2 - Opt-in motion blur without TAA blurs by camera motion only; documented fallback; visual only.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts:3080-3084` - the audit citation is stale; verifier: WebGPUModelRenderer.js:6952 does not exist: the file is WebGPUModelRenderer.ts (9410 lines); SceneRenderer 3080-3084 and MotionBlur 144-147 match; re-derived at `WebGPUSceneRenderer.ts:3082`, `MotionBlur.wgsl:144-147`, `WebGPUModelRenderer.ts:6952`, `Scene.js:6623-6626`
+  - Code: `if (!scene?.taaEnabled || ...) return;` ... `public _runVelocityPass(config) { const { context, scene } = config; if (!scene?.taaEnabled || !this._sceneFramebuffer) { return; }`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUSceneRenderer.ts:3082 `if (!scene?.taaEnabled || ...) return;` and MotionBlur.wgsl:144-147 camera-velocity fallback.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-146. Findings: P43.C-328, P55.C-415 (one defect; the later ids are duplicates). Blueprint C-328 (EPIC-05). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 22): P43.C-328; ADJUDICATION-25-30 (Meneltarma-a05, chunk 28): P55.C-415. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-147 — Absence of Miter Joins in `PolylineCollection.wgsl` Outer Elbows — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Absence of Miter Joins in `PolylineCollection.wgsl` Outer Elbows. Severity: P2 - Cosmetic gap at sharp joins on thick lines.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Collections/PolylineCollection.wgsl:154-179`; re-derived at `WebGPUPolylineRenderer.js:669`
+  - Code: `endPosHighAndMiter`
+  - Verified (the adjudicator's re-derivation, and the authority): PolylineCollection.wgsl reads only endPosHighAndMiter.xyz (:143) and expands along each segment's own normal (:155-178); the miter written at WebGPUPolylineRenderer.js:669 is unused.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-147. Findings: P43.C-331. Blueprint C-331 (EPIC-05). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 22): P43.C-331. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-148 — Viewport-Origin Stipple Evaluation & Phase Crawling in `PolylineDash.wgsl` — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Viewport-Origin Stipple Evaluation & Phase Crawling in `PolylineDash.wgsl`. Severity: P2 - Upstream-shared behaviour; a world-anchored dash would be a new feature on both backends.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Collections/PolylineDash.wgsl:156` - the audit citation is stale; verifier: JS cite :304-310 is materialNeedsST(); the cumulative-distance helper (normalized st.s) is computeNormalizedDistances at WebGPUPolylineRenderer.js:322. Shader cites :156 and :274-294 are exact.; re-derived at `PolylineDash.wgsl:274-288`, `PolylineDashMaterial.glsl:22-25`
+  - Code: `let angle = input.v_polylineAngle; ... let fragPos = input.position.xy; let rotatedPos = vec2(cosA*fragPos.x + sinA*fragPos.y, ...); ... let dashPosition = fract(rotatedPos.x / dashLen);` ... `output.v_polylineAngle = atan2(lineDir.y, lineDir.x)`
+  - Verified (the adjudicator's re-derivation, and the authority): PolylineDash.wgsl:274-288 phase from rotated window coordinates; WebGL PolylineDashMaterial.glsl:22-25 does the same.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-148. Findings: P43.C-332. Blueprint C-332 (EPIC-03). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 23): P43.C-332. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-149 — GPU Buffer Destruction & Reallocation on Dynamic Coordinate Updates — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** GPU Buffer Destruction & Reallocation on Dynamic Coordinate Updates. Severity: P2 - Allocation churn bounded by frame rate per group; no leak.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js:1906-1917`; re-derived at `WebGPUPolylineRenderer.js:1905-1917`
+  - Code: `cache[sbKey].destroy();` ... `cache[sbKey] = WebGPUBuffer.createVertexBuffer(device, requiredSize, false, ...)` (`WebGPUPolylineRenderer.js:1909-1916`). The audit's `new GPUBuffer` and `positions.length*4` do not occur in the file.
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUPolylineRenderer.js:1905-1917 and :1927-1937 exact-size, grow-only per material group with destroy on growth.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-149. Findings: P43.C-333. Blueprint C-333 (EPIC-01). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 23): P43.C-333. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-150 — Synchronous Buffer Destruction & Cross-Pass Data Hazard in `WebGPUStorageBufferPool` and Uniform Buffer Pools — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Synchronous Buffer Destruction & Cross-Pass Data Hazard in `WebGPUStorageBufferPool` and Uniform Buffer Pools. Severity: P2 - Latent API hazard with no in-tree consumer found (P3-class); becomes P1 for the first consumer.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUStorageBufferPool.ts:147-170`; re-derived at `WebGPUStorageBufferPool.ts:147-169`
+  - Code: `if (this._totalPooled >= this._maxTotal) { handle.buffer.destroy(); return; } ... if (bucket.length >= this._maxPerBucket) { handle.buffer.destroy(); return; } bucket.push(handle);` ... `handle.buffer.destroy(); return;`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUStorageBufferPool.ts:147-169 destroys at the caps and otherwise re-pools immediately, with no submit retirement. A non-recursive scan of Renderer/WebGPU, Renderer, Scene and Scene/Model found no caller of storageBufferPool / getPooledBuffer / returnPooledBuffer outside WebGPUContext.ts definitions (:5754, :5789, :7124).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: incomplete candidate in seat-worktree-snapshot 20261008-2106: defers destroy to onSubmittedWorkDone; same-frame reuse is not addressed.
+- **Acceptance:** Class: engine. **Proof bar:** none until the consume-or-retire decision; Edge leg: consume-or-retire decision first (Principle 7); a spec only once a consumer exists. **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-150. Findings: P46.C-335, P46.C-342 (one defect; the later ids are duplicates). Blueprint C-335 (EPIC-05). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 23): P46.C-335; ADJUDICATION-19-24 (Meneltarma-a04, chunk 23): P46.C-342. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-151 — Pipeline Layout Invalidation and Unbounded Leaks via `JSON.stringify` Cache Keying — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Pipeline Layout Invalidation and Unbounded Leaks via `JSON.stringify` Cache Keying. Severity: P2 - Keying weakness with no in-tree caller found; cleared on device invalidation.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts:5664-5680`; re-derived at `WebGPUContext.ts:5671`, `WebGPUContext.ts:5664`
+  - Code: `JSON.stringify(descriptor)` ... `const key = JSON.stringify(descriptor); let layout = this._bindGroupLayoutCache.get(key); if (!layout) { layout = this._device.createBindGroupLayout(descriptor); this._bindGroupLayoutCache.set(key, layout); }`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUContext.ts:5671 `JSON.stringify(descriptor)` key; same scan found getOrCreateBindGroupLayout only at its definitions (WebGPUContext.ts:5664, WebGPUResourceManager.ts).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** none until the consume-or-retire decision; Edge leg: consume-or-retire decision first (Principle 7); a spec only once a consumer exists. **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-151. Findings: P46.C-336. Blueprint C-336 (EPIC-01). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 23): P46.C-336. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-152 — `WebGPUVideoTextureManager.ts` Playback Pause / Seek State Invalidation & Blackout Crash — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** `WebGPUVideoTextureManager.ts` Playback Pause / Seek State Invalidation & Blackout Crash. Severity: P2 - Logic defect in an unreferenced scaffold (P3-class); P1 for its first consumer.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUVideoTextureManager.ts:162-183`; re-derived at `WebGPUVideoTextureManager.ts:163-182`
+  - Code: `handle.isPlaying = !handle.video.paused; if (handle.isPlaying && handle.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) { ... importExternalTexture ... } else { handle.externalTexture = null; }` ... `createBindGroup(...) { if (!handle.externalTexture) return null; ...}`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUVideoTextureManager.ts:163-182 nulls externalTexture when paused and :231 returns a null bind group. The non-recursive scan found no importer.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** none until the consume-or-retire decision; Edge leg: consume-or-retire decision first (Principle 7); a spec only once a consumer exists. **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-152. Findings: P46.C-346. Blueprint C-346 (EPIC-10). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 23): P46.C-346. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-153 — `VideoSynchronizer.js` Clock Loop Negative Modulo Underflow Seek Defect — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** `VideoSynchronizer.js` Clock Loop Negative Modulo Underflow Seek Defect. Severity: P2 - Wrong loop position only while the clock is before epoch on a looping video; the currentTime setter clamps instead of throwing; upstream-identical.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Core/VideoSynchronizer.js:127-132`; re-derived at `VideoSynchronizer.js:128-131`
+  - Code: `duration - videoTime` ... `videoTime = videoTime % duration; if (videoTime < 0.0) { videoTime = duration - videoTime; }`
+  - Verified (the adjudicator's re-derivation, and the authority): VideoSynchronizer.js:128-131 `duration - videoTime` for negative remainders (should be duration + videoTime).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: no render path: the behaviour spec run under the karma Edge runner (see maintainer question 7). **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-153. Findings: P46.C-347. Blueprint C-347 (EPIC-10). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 24): P46.C-347. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-154 — Asynchronous Validation Error Scoping with Synchronous Poisoned Bundle Caching & Replay — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Asynchronous Validation Error Scoping with Synchronous Poisoned Bundle Caching & Replay. Severity: P2 - Latent: known format/MSAA triggers already call invalidateAll; the only production consumer guards on pipeline failure.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPURenderBundleManager.ts:397-420`; re-derived at `WebGPURenderBundleManager.ts:402-419`, `WebGPURenderBundleManager.ts:397-420`
+  - Code: `const bundle = encoder.finish({ label }); this._device.popErrorScope().then((error) => { if (error) { console.error(... "This bundle will produce invalid commands if executed."); } });` ... `return { bundle, drawCallCount }`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPURenderBundleManager.ts:402-419 logs the async validation error only; _createBundle caches unconditionally (:449-462).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-154. Findings: P46.C-350, P55.C-430 (one defect; the later ids are duplicates). Blueprint C-350 (EPIC-10). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 24): P46.C-350; ADJUDICATION-25-30 (Meneltarma-a05, chunk 29): P55.C-430. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-155 — 0x0 Canvas Collapse Causes WebGPU Validation Errors and Pipeline Invalidation — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** 0x0 Canvas Collapse Causes WebGPU Validation Errors and Pipeline Invalidation. Severity: P2 - Direct scene.render on a 0x0 canvas raises validation errors (async), not device loss; next sized frame recovers.
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Widget/CesiumWidget.js:299-302`; re-derived at `WebGPUContext.ts:3474-3501`, `CesiumWidget.js:302`
+  - Code: `canvas.width = width; canvas.height = height; widget._canRender = width !== 0 && height !== 0;` ... `_ensureDepthTexture`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUContext.ts:3474-3501 creates the depth texture at canvas width/height with no zero guard, called from beginFrame (:2299); CesiumWidget.js:302 gates only the widget loop.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-155. Findings: P46.C-351. Blueprint C-351 (EPIC-01). Adjudication: ADJUDICATION-19-24 (Meneltarma-a04, chunk 24): P46.C-351. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-156 — Jimenez Interleaved Gradient Noise (`ignJitter`) Degenerates into a 1D Linear Ramp Across Frame Indices — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Jimenez Interleaved Gradient Noise (`ignJitter`) Degenerates into a 1D Linear Ramp Across Frame Indices. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `(no citation in the audit entry)`; re-derived at `WebGPUTAAEffect.ts:280-290`, `Scene.js:1324`
+  - Code: `ignJitter` ... `taaEnabled = options.taaEnabled ?? false`
+  - Verified (the adjudicator's re-derivation, and the authority): REVERSAL NOT-ESTABLISHED -> CONFIRMED. The body is empty, but the title names a function I could find and run. WebGPUTAAEffect.ts:280-290 `ignJitter`: x = frameIndex and y = axis*73 + frameIndex*1.618, so the inner fract argument is linear in frameIndex with slope 0.0766, and the outer fract steps by 52.98*0.0766 = 4.056. MEASURED in node with the function copied verbatim: successive values step by +0.0563 (mod 1) in 924 of 1000 frames. The X and Y sequences are locked along one diagonal (y = x + 0.577 mod 1). Over 16 frames the jitter covers 7 of 16 cells in a 4x4 grid, against 14 of 16 for the Halton(2,3) it replaced. So the jitter is a slow 1-D ramp, not blue noise. P2: TAA is off by default (Scene.js:1324 `taaEnabled = options.taaEnabled ?? false`), and the cost is convergence and quality only.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-156. Findings: P49.C-368. Blueprint C-368 (EPIC-10). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 25): P49.C-368. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-157 — Step Growth Over-Leaping in Empty-Space Skipping — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - C13-N13 (marchStepGrowth becomes rung-driven).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Step Growth Over-Leaping in Empty-Space Skipping. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl:2555-2561`; re-derived at `ProceduralClouds.wgsl:2555-2558`, `WebGPUProceduralCloudRenderer.ts:4123-4126`
+  - Code: `curFineStep = fineStep * pow(cloud.marchStepGrowth, (t - tStart) / max(fineStep, 1.0))` ... `if (cloud.marchStepGrowth > 1.0) { curFineStep = fineStep * pow(cloud.marchStepGrowth, (t - tStart) / max(fineStep, 1.0)); }`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read ProceduralClouds.wgsl:2555-2558: `curFineStep = fineStep * pow(cloud.marchStepGrowth, (t - tStart) / max(fineStep, 1.0))`. The exponent counts distance in base-step units while the steps themselves grow, so the growth compounds super-exponentially. WebGPUProceduralCloudRenderer.ts:4123-4126 clamps the dial to [1.0, 1.1] with a default of 1.0 (off). P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-157. Findings: P49.C-378. Blueprint C-378 (EPIC-07). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 26): P49.C-378. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-158 — 3D VRAM Texture Memory Leak on Teardown — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** 3D VRAM Texture Memory Leak on Teardown. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts:5495-5655`
+  - Code: `cache.initialized = false; cache.device = null; context._cloudCache = undefined;`
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUProceduralCloudRenderer.ts destroyProceduralCloudResources (:5495-5661) has no reference to cache.noise or noiseFallbackTexture. The only noise destroy() calls are in the PW-upgrade path (:2940-2942). P2: GC/device teardown reclaims them; not an unbounded leak.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-158. Findings: P49.C-379. Blueprint C-379 (EPIC-07). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 26): P49.C-379. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-159 — FFT Ocean Spectrum Violates Hermitian Symmetry in Frequency Domain (Imaginary Crosstalk Destroys Wave Height & Choppiness) — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** FFT Ocean Spectrum Violates Hermitian Symmetry in Frequency Domain (Imaginary Crosstalk Destroys Wave Height & Choppiness). Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Ocean/OceanInitialSpectrum.wgsl:71-81`; re-derived at `OceanInitialSpectrum.wgsl:71-78`, `OceanTimeSpectrum.wgsl:66`
+  - Code: `noise.zw` ... `let noise = textureLoad(Noise, vec2<i32>(id.xy), 0); let h0 = invSqrt2 * noise.xy * sqrt(phillips(k)); let hm = invSqrt2 * noise.zw * sqrt(phillips(-k)); let h0MinusConj = vec2(hm.x, -hm.y);`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read OceanInitialSpectrum.wgsl:71-78. The -k partner is `noise.zw` at the SAME texel, not noise.xy at the mirrored texel. So h(k,t) = h0(k)e^{iwt} + conj(h0'(-k))e^{-iwt} (OceanTimeSpectrum.wgsl:66) is not Hermitian, and the Dy+iDx packing leaks imaginary parts. P2: fidelity of an opt-in feature.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-159. Findings: P52.C-385. Blueprint C-385 (EPIC-05). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 26): P52.C-385. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-160 — Pseudo-RTE 64-Bit Precision Breakdown in Flow-Field Advection (`lonLatToEcef` FP32 Precision ) — **OPEN** (P2, RE-OPEN)
+
+**Status: OPEN.** RE-OPEN - C6-FLOWFIELD-WIND (the shipped entry says it RTE-splits).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Pseudo-RTE 64-Bit Precision Breakdown in Flow-Field Advection (`lonLatToEcef` FP32 Precision ). Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/FlowFieldRender.wgsl:57-64`; re-derived at `FlowFieldRender.wgsl:57-64`
+  - Code: `k = render.radiiSquared * n; gamma = sqrt(dot(n,k)); surface = k / gamma; return surface + n*height` ... `let pos = lonLatToEcef(p.x, p.y, ...); let high = floor(pos / 65536.0) * 65536.0; let low = pos - high;`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read FlowFieldRender.wgsl:57-64 and :83-88: lonLatToEcef runs in f32, and the 65536 high/low split is taken AFTER the f32 absolute ECEF, so it restores no precision. P2: sub-metre jitter, visible only near 15 km-altitude particles.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-160. Findings: P52.C-386. Blueprint C-386 (EPIC-03). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 26): P52.C-386. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-161 — Translucent Pick Inversion: Front-to-Back Sort with Disabled Depth Writes Causes Farthest Object to Win — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - C-R9-MODEL-PICK-TRANSLUCENT (RESOLVED for the opt-in async picks only).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Translucent Pick Inversion: Front-to-Back Sort with Disabled Depth Writes Causes Farthest Object to Win. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPickPass.ts:768-777`; re-derived at `WebGPUSceneRendererPickPass.ts:768-777`, `WebGPUModelPipelineCache.ts:1351-1356`
+  - Code: `depthWriteEnabled: !isBlend` ... `if (translucentCount > 1) { sortCommandsFrontToBack(frustumCommands.commands[Pass.TRANSLUCENT], ...) } execute(Pass.TRANSLUCENT);`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUSceneRendererPickPass.ts:768-777 (front-to-back sort, then execute) and WebGPUModelPipelineCache.ts:1351-1356 and :1400 (`depthWriteEnabled: !isBlend`). Among stacked BLEND model surfaces the farthest is drawn last and wins the pick. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-161. Findings: P52.C-389. Blueprint C-389 (EPIC-06). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 26): P52.C-389. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-162 — `setBufferCount()` Resource Leak for In-Flight Unsettled Submissions — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** `setBufferCount()` Resource Leak for In-Flight Unsettled Submissions. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUTimestampProfiler.ts:965-971`; re-derived at `WebGPUTimestampProfiler.ts:967-988`
+  - Code: `_pendingSubmissions = []` ... `// Encoded but never handed to afterSubmit(), and their slot indices do not survive the resize, so no readback can ever be started for them.  this._pendingSubmissions = [];`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUTimestampProfiler.ts:967-988: `_pendingSubmissions = []` and then readbackPending states go into _retiredStates. Their only deleter is the _readSubmittedFrame finally (:722-727), so they are held until destroy(). This is bounded and the API is probe-only. P2 (the verifier's P3 maps to P2 on this scale).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-162. Findings: P52.C-391. Blueprint C-391 (EPIC-09). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 26): P52.C-391. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-163 — Bitonic Sort Block Direction Bug in `PointCloudSort.wgsl` Breaks Global Merge — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-GPU-SORT-PIPELINE (the globalIdx fix landed in BitonicSortU64 only). One owner with P1.5, P58.C-456, P31.204: point-cloud GPU sort (params, block direction, final direction, unread output).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Bitonic Sort Block Direction Bug in `PointCloudSort.wgsl` Breaks Global Merge. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Compute/PointCloudSort.wgsl:85`; re-derived at `PointCloudSort.wgsl:78-85`, `BitonicSortU64.wgsl:102`, `WasmPointCloudBridge.js:59`
+  - Code: `let ascending = (localIdx & k) == 0u;` ... `(globalIdx & k)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read PointCloudSort.wgsl:78-85 `let ascending = (localIdx & k) == 0u;` for k up to 256, against the fixed twin BitonicSortU64.wgsl:102 `(globalIdx & k)`. P2: the path is opt-in (WasmPointCloudBridge.js:59 `useGPUSort = false`), and per P31.204 the sorted output is never read back.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: touched in seat-worktree-snapshot 20261008-2106, not a fix: a comment rewrite in BitonicSortU64.wgsl; PointCloudSort.wgsl is untouched.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-163. Findings: P52.C-393. Blueprint C-393 (EPIC-08). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 27): P52.C-393. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-164 — Non-Uniform Scale Decomposition Destroys 3D Covariance in `GaussianSplatPrimitive.transformTile` — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Non-Uniform Scale Decomposition Destroys 3D Covariance in `GaussianSplatPrimitive.transformTile`. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/GaussianSplatPrimitive.js:2159-2180 ,  2220-2239`; re-derived at `GaussianSplatPrimitive.js:2219-2238`
+  - Code: (no literal quoted by the adjudicator; see Verified)
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read GaussianSplatPrimitive.js:2219-2238: it composes T*TRS, then takes getScale of the composite and rotation = qT*q. That is exact only when the parent scale commutes with the splat rotation. P2: this is the upstream approach, and the error appears only under non-uniform tile scale.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a capture through lib/capture.mjs (BEFORE/AFTER) judged against the expected analytic or authored result, because WebGL shares the behaviour and cannot be the reference. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-164. Findings: P52.C-395. Blueprint C-395 (EPIC-08). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 27): P52.C-395. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-165 — Inverted Sun Perspective Divide Projecting Rear Sun Flares Centered On-Screen — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Inverted Sun Perspective Divide Projecting Rear Sun Flares Centered On-Screen. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessStageCollection.ts:1276-1281`; re-derived at `WebGPUPostProcessStageCollection.ts:1274-1281`, `LensFlare.wgsl:115-124`
+  - Code: `if (cw !== 0 && isFinite(cw))` ... `const cw = vp[3]*sun.x + ... + vp[15]; if (cw !== 0 && isFinite(cw)) { frame.sunNDC = [cx / cw, cy / cw]; }`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUPostProcessStageCollection.ts:1274-1281 (`if (cw !== 0 && isFinite(cw))`, with no cw>0 test) and LensFlare.wgsl:115-124 (an NDC box gate only). A sun behind the camera mirrors into view. Faithful to the WebGL behaviour, so any fix goes to both backends. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a capture through lib/capture.mjs (BEFORE/AFTER) judged against the expected analytic or authored result, because WebGL shares the behaviour and cannot be the reference. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-165. Findings: P52.C-397. Blueprint C-397 (EPIC-07). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 27): P52.C-397. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-166 — Multi-Frustum Slice Depth Clears Corrupting Heat Shimmer & Cold Optics — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P55.C-414, P58.C-437: post-process depth decoding (log depth, per-frustum clears).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Multi-Frustum Slice Depth Clears Corrupting Heat Shimmer & Cold Optics. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererFrustumLoop.ts:218-228`; re-derived at `WebGPUSceneRendererFrustumLoop.ts:224-228`, `ColdOptics.wgsl:243-247`
+  - Code: `const debugDepthViz = ...; if (!debugDepthViz || i === 0) { host._clearDepthStencil(context); }` ... `if (rawDepth < skyCutoff) { return sceneColor; }`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUSceneRendererFrustumLoop.ts:224-228 (depth cleared every frustum unless debugDepthViz) and ColdOptics.wgsl:243-247 (a depth >= skyCutoff gate on the scene depth). Same mechanism class as P28.181 (NE in chunks 13-18). The code fact holds here, but the consequence needs numFrustums>1, which is rare under the default log depth. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-166. Findings: P52.C-398. Blueprint C-398 (EPIC-07). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 27): P52.C-398. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-167 — Division by Zero & Contrast Singularity in `BrightPass.wgsl` — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - C12-19-WEBGPU-GLOBAL-BLOOM-BRIGHTPASS-SDR-SHAPED (covers the clamp only).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Division by Zero & Contrast Singularity in `BrightPass.wgsl`. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/PostProcess/BrightPass.wgsl:81-83`; re-derived at `BrightPass.wgsl:82`, `WebGPUBloomEffect.ts:46`
+  - Code: `let factor = (259.0 * (contrast + 255.0)) / (255.0 * (259.0 - contrast));` (`BrightPass.wgsl:82`)
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read BrightPass.wgsl:82 (`(259*(c+255))/(255*(259-c))`) and WebGPUBloomEffect.ts:46 (documented domain (-255, 259)) and :498 (no clamp). Out-of-contract input only, and WebGL behaves the same. P2 hardening (the verifier's P3 maps to P2).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: HAZARD in seat-worktree-snapshot 20261008-2106 (do not land as is): drops the RGBA8-parity upper clamp and leaves the denominator untouched.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a capture through lib/capture.mjs (BEFORE/AFTER) judged against the expected analytic or authored result, because WebGL shares the behaviour and cannot be the reference. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-167. Findings: P52.C-399. Blueprint C-399 (EPIC-05). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 27): P52.C-399. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-168 — Hardware MSAA Box-Filter Resolve Corrupts Packed Depth and Discrete Feature IDs — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Hardware MSAA Box-Filter Resolve Corrupts Packed Depth and Discrete Feature IDs. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUEdgeFramebuffer.ts:127-133`; re-derived at `WebGPUEdgeFramebuffer.ts:129-133`, `EdgeFramebuffer.js:70`
+  - Code: `1, // No MSAA` ... `resolveTarget`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUEdgeFramebuffer.ts:129-133 (packed id/depth stored in rgba8unorm), :160-175 and :198-212 (MSAA textures with resolveTarget on all three), against EdgeFramebuffer.js:70 (`1, // No MSAA`). An MSAA resolve averages packed bytes at partial-coverage pixels. P2: opt-in edge-visibility content.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-168. Findings: P52.C-400. Blueprint C-400 (EPIC-06). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 27): P52.C-400. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-169 — Zero Frustum & Bounding-Volume Culling in 6-Face Dynamic Scene Capture — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-DYNAMIC-ENVMAP-FULL-SCENE.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Zero Frustum & Bounding-Volume Culling in 6-Face Dynamic Scene Capture. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.ts:526-565`; re-derived at `WebGPUDynamicEnvironmentMapCapture.ts:526-591`
+  - Code: (no literal quoted by the adjudicator; see Verified)
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUDynamicEnvironmentMapCapture.ts:526-591: nested face, tile and model loops with no per-face culling test. P2: an efficiency gap in an opt-in, debounced capture.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-169. Findings: P52.C-406. Blueprint C-406 (EPIC-05). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 27): P52.C-406. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-170 — Anti-Starvation Cap Synchronization Cascade Destroys Budget Throttling — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - the C11-193 coordinator row.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Anti-Starvation Cap Synchronization Cascade Destroys Budget Throttling. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRefreshScheduler.ts:76`; re-derived at `WebGPUEnvironmentRefreshScheduler.ts:76`
+  - Code: `_grant(entry, false)` ... `const escalated = entry.deferredFrames >= MAX_DEFERRAL_FRAMES; if (escalated || urgency === MANDATORY) { ... return this._grant(entry, false); }`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUEnvironmentRefreshScheduler.ts:76 and :83 (budget 1, MAX_DEFERRAL_FRAMES 3) and :279-288 (escalated grants bypass the budget via `_grant(entry, false)`). The verifier's measured 1,1,1,9 burst follows. P2: bounded and documented anti-starvation design.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-170. Findings: P52.C-408. Blueprint C-408 (EPIC-05). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 28): P52.C-408. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-171 — Standalone `ClassificationPrimitive` drops `ignoreShowCommand` during invert classification. — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (sequence after it). One owner with P4.18, P55.C-410: classification (pass slots, ignore-show, GroundPrimitive containment); C-411 is sequenced after the slot fix.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Standalone `ClassificationPrimitive` drops `ignoreShowCommand` during invert classification. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/ClassificationPrimitive.js:494-523`; re-derived at `ClassificationPrimitive.js:494-516`, `GroundPrimitive.js:900-902`
+  - Code: `result.colorCommands[i]` ... `result.colorCommand`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read ClassificationPrimitive.js:494-516 (pushes colour commands only; ignoreShowCommand is never read), against GroundPrimitive.js:900-902. P2. Sequence the fix after C-409.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-171. Findings: P55.C-411. Blueprint C-411 (EPIC-05). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 28): P55.C-411. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-172 — Binary refinement logic branches in the wrong direction on both conditions, causing divergence, tearing, and spatial boiling. — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P55.C-412: ScreenSpaceReflections.wgsl.
+
+**Owner:** audit fix wave 1, lane FW-07.
+
+- **Symptom:** Binary refinement logic branches in the wrong direction on both conditions, causing divergence, tearing, and spatial boiling. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/PostProcess/ScreenSpaceReflections.wgsl:159-177`; re-derived at `ScreenSpaceReflections.wgsl:159-173`
+  - Code: `refinedPos -= refinedStep; refinedStep *= 0.5; ... if (rDiff > 0) { refinedPos += refinedStep * 2.0; }` ... `var refinedPos = rayPos; var refinedStep = step * 0.5; for r<5 { refinedPos -= refinedStep; refinedStep *= 0.5; ... if (rDiff > 0.0) { refinedPos += refinedStep * 2.0; } }`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read ScreenSpaceReflections.wgsl:159-173: `refinedPos -= refinedStep; refinedStep *= 0.5; ... if (rDiff > 0) { refinedPos += refinedStep * 2.0; }` adds back exactly the step just taken, so the loop is a one-sided walk, not a bisection. P2.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-172. Findings: P55.C-413. Blueprint C-413 (EPIC-01). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 28): P55.C-413. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-173 — G-Buffer Compute Reconstruction — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-LOG-DEPTH-REMAINING-CONSUMERS (MotionBlur, TAA and GBufferNormalsFromDepth not enumerated). One owner with P58.C-437, P52.C-398: post-process depth decoding (log depth, per-frustum clears).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** G-Buffer Compute Reconstruction. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/PostProcess/MotionBlur.wgsl:82-105`; re-derived at `MotionBlur.wgsl:88-104`
+  - Code: `let rawDepth = textureSampleLevel(depthTex, ...)` ... `depth = min(rawDepth, 0.9999)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read MotionBlur.wgsl:88-104 (raw depth unprojected, no log reverse). A grep of MotionBlur.wgsl, TAA.wgsl, GBufferNormalsFromDepth.wgsl and WebGPUMotionBlurEffect.ts for logDepth/reverseLog/logActive finds nothing, while SSR reverses (:87). P2: opt-in effects. TAA.wgsl is a sibling to add to the row.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: candidate in seat-worktree-snapshot 20261008-2106: csm_reverseLogDepth gated on logActive in MotionBlur and GBufferNormalsFromDepth.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-173. Findings: P55.C-414. Blueprint C-414 (EPIC-04). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 28): P55.C-414. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-174 — False Culling of Arbitrary Scene Commands in `OcclusionCulling.js` — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - FORK-41.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** False Culling of Arbitrary Scene Commands in `OcclusionCulling.js`. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Scene/OcclusionCulling.js:259-291`; re-derived at `OcclusionCulling.js:258-291`
+  - Code: `visibility[representedIndex]` ... `this._soaLayout.populate(commands)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read OcclusionCulling.js:258-291 (repopulate from this frame's list, then read `visibility[representedIndex]`) and :448-461 (readback writes into the same array by slot). SOABoundingSphereLayout never resets visibility in populate, and there is no generation check. P2: opt-in.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-174. Findings: P55.C-417. Blueprint C-417 (EPIC-03). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 28): P55.C-417. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-175 — `#define` directives in false/inactive conditional branches leak into global symbol table. — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** `#define` directives in false/inactive conditional branches leak into global symbol table. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WGSLShaderPreprocessor.ts:774`; re-derived at `WGSLShaderPreprocessor.ts:790-794`
+  - Code: `case "define": { const defName = arg.split(/\s+/)[0]; definedSymbols.add(defName); break; }` ... `currentlyActive`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WGSLShaderPreprocessor.ts:790-794: the define case adds to definedSymbols regardless of currentlyActive. Latent: getPreprocessedShader has no engine caller (see C-419). P2. Scaffolding to fix, not delete (Principle 7).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** none until the consume-or-retire decision; Edge leg: consume-or-retire decision first (Principle 7); a spec only once a consumer exists. **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-175. Findings: P55.C-420. Blueprint C-420 (EPIC-05). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 28): P55.C-420. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-176 — WebGL compatibility stub omits `gl.uniform*` setters and hardcodes attributes. — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** WebGL compatibility stub omits `gl.uniform*` setters and hardcodes attributes. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubShader.ts:581-605`; re-derived at `WebGLStubShader.ts:599-617`
+  - Code: `{ _name: name, _isWebGPU: true }` ... `position:0, normal:1, texCoord:2, color:3, tangent:4, bitangent:5`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGLStubShader.ts:599-617 (getUniformLocation returns a tag object, getAttribLocation uses a fixed table). A grep of Stubs/ and WebGLCompatibilityStub.ts finds no uniform1f/uniformMatrix*/drawElements, although the module header (:94) maps gl.drawElements. P2: a documented-scope gap with no internal consumer.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** none until the consume-or-retire decision; Edge leg: consume-or-retire decision first (Principle 7); a spec only once a consumer exists. **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-176. Findings: P55.C-421. Blueprint C-421 (EPIC-05). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 28): P55.C-421. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-177 — Vector 3D Tile velocity paths multiply absolute f32 ECEF positions by prevViewProjection instead of an RTE form — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - the AR-049 previous-frame RTE class (these Vector3DTile velocity sites were not among the fixed sites).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Vector 3D Tile velocity paths multiply absolute f32 ECEF positions by prevViewProjection instead of an RTE form. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUVector3DTilePrimitiveRenderer.js:348-349`; re-derived at `WebGPUVector3DTilePrimitiveRenderer.js:345-346`, `WebGPUVector3DTileClampedPolylinesRenderer.js:420`, `WebGPUVector3DTilePolylinesRenderer.js:355-356`
+  - Code: `worldPos = centerH + centerL + position; prevVP * worldPos` ... `let worldPos = u.centerH + u.centerL + position; let prevClip = u.prevViewProjection * vec4<f32>(worldPos, 1.0);`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUVector3DTilePrimitiveRenderer.js:348-349 [corrected at intake; G2 read :345-346, which are comment lines at 9457bc6bd4] (`worldPos = centerH + centerL + position; prevVP * worldPos`), WebGPUVector3DTileClampedPolylinesRenderer.js:420 and :434, and WebGPUVector3DTilePolylinesRenderer.js:355-356. All are absolute f32 ECEF velocity positions. P2: velocity runs only with TAA, which is off by default. This is the AR-049 class (fixed elsewhere; these sites were missed).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-177. Findings: P55.C-433. Blueprint C-433 (EPIC-03). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 29): P55.C-433. Title note: (title rewritten: the audit heading was the truncated "(AGENTS.md Part 1 Rule 1)")
+
+## 2026-10-09 — NEW-GA-P0-178 — Logarithmic Depth Breakdown in Heat Shimmer Linearization — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - the C4-LOGDEPTH-PP-FRUSTUM family (HeatShimmer not listed). One owner with P55.C-414, P52.C-398: post-process depth decoding (log depth, per-frustum clears).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Logarithmic Depth Breakdown in Heat Shimmer Linearization. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/PostProcess/HeatShimmer.wgsl:41-43`; re-derived at `HeatShimmer.wgsl:61-65`, `WebGPUPostProcessStageCollection.ts:1886-1895`
+  - Code: `fx.setFrustum(near, far)` ... `fn linearizeDepth(raw) { ... return near*far/(far - raw*(far-near)); }`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read HeatShimmer.wgsl:61-65 (hyperbolic linearize, no log reverse) and WebGPUPostProcessStageCollection.ts:1886-1895 (`fx.setFrustum(near, far)`, no logActive). P2: the depth fade is off by default.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-178. Findings: P58.C-437. Blueprint C-437 (EPIC-07). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 30): P58.C-437. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-179 — Coordinate Frame Asymmetry and Camera Rotation Coupling in Ray-Ellipsoid Intersection and Normal Derivation — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Coordinate Frame Asymmetry and Camera Rotation Coupling in Ray-Ellipsoid Intersection and Normal Derivation. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.ts:195-210`; re-derived at `WebGPUEllipsoidPrimitiveRenderer.ts:236-252`, `EllipsoidFS.glsl:376`, `EllipsoidPrimitive.js:63`
+  - Code: `intersectEllipsoid(vec3(0), rayDir, ellipsoidCenter, ellipsoid.oneOverRadiiSq)` ... `n = normalize((hit - ellipsoidCenter) * ellipsoid.oneOverRadiiSq)`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUEllipsoidPrimitiveRenderer.ts:236-252: an eye-space ray against an unrotated model-frame oneOverRadiiSq, while EllipsoidFS.glsl:376 un-rotates with czm_inverseModelView. LOWERED from the verifier's P1 to P2: EllipsoidPrimitive is @private (EllipsoidPrimitive.js:63), and its only in-engine constructor is Moon.js, a sphere for which the result is exact. The shader also uses a fixed lightDir (:253), which suggests it is not the Moon's production path.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-179. Findings: P58.C-439. Blueprint C-439 (EPIC-07). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 30): P58.C-439. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-180 — Sub-Ellipsoid Camera NaN Geometry Generation in `WebGPUDepthPlane` — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Sub-Ellipsoid Camera NaN Geometry Generation in `WebGPUDepthPlane`. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUDepthPlane.ts:179-250, 724-735`; re-derived at `WebGPUDepthPlane.ts:215-218`, `DepthPlane.js:218`
+  - Code: `Math.sqrt(qMagnitude*qMagnitude - 1.0)` ... `const qMagnitude = Cartesian3.magnitude(q); const wMagnitude = Math.sqrt(qMagnitude * qMagnitude - 1.0);`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUDepthPlane.ts:215-218: `Math.sqrt(qMagnitude*qMagnitude - 1.0)` is NaN for q<1. Identical to upstream DepthPlane.js:218. P2: the plane is dropped for that frame only.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: candidate in seat-worktree-snapshot 20261008-2106: qMagnitude <= 1 returns false and disables the pass; it also changes ring exhaustion in updateUniforms from throw to grow.
+- **Acceptance:** Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a capture through lib/capture.mjs (BEFORE/AFTER) judged against the expected analytic or authored result, because WebGL shares the behaviour and cannot be the reference. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-180. Findings: P58.C-445. Blueprint C-445 (EPIC-04). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 30): P58.C-445. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-181 — Memory Corruption and Out-of-Bounds Buffer Validation Error in `WebGPUTextureArray.uploadLayerData` and `clearLayer` — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Memory Corruption and Out-of-Bounds Buffer Validation Error in `WebGPUTextureArray.uploadLayerData` and `clearLayer`. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUTextureArray.ts:201-218`; re-derived at `WebGPUTextureArray.ts:198-218`
+  - Code: `bytesPerRow: alignedBytesPerRow` ... `{ bytesPerRow }`
+  - Verified (the adjudicator's re-derivation, and the authority): Re-read WebGPUTextureArray.ts:198-218 (bytesPerRow rounded up to 256 for tightly packed input). A git grep of packages/engine/Source and Specs finds no caller other than the file itself. P2: latent (the verifier's P3 maps to P2).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** none until the consume-or-retire decision; Edge leg: consume-or-retire decision first (Principle 7); a spec only once a consumer exists. **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-181. Findings: P58.C-451. Blueprint C-451 (EPIC-10). Adjudication: ADJUDICATION-25-30 (Meneltarma-a05, chunk 30): P58.C-451. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-182 — Hardcoded `RENDER_ATTACHMENT` Usage on `WebGPUTextureArray` Crashing Compressed & Float Formats — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Hardcoded `RENDER_ATTACHMENT` Usage on `WebGPUTextureArray` Crashing Compressed & Float Formats. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Renderer/WebGPU/WebGPUTextureArray.ts:126-130`; re-derived at `WebGPUTextureArray.ts:126-129`
+  - Code: `usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT` (`WebGPUTextureArray.ts:126-129`)
+  - Verified (the adjudicator's re-derivation, and the authority): WebGPUTextureArray.ts:126-129 `usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT` is unconditional for any options.format, and uploadLayer (:175) uses copyExternalImageToTexture with no format guard. A non-renderable format (block-compressed, *snorm) fails createTexture validation. Latent: a non-recursive search of Renderer/WebGPU/*.ts, Renderer/WebGPU/*/*.ts|js, Renderer/*.js|ts, Scene/*.js|ts, Core/*.js, DataSources/*.js and Specs/Renderer{,/WebGPU}/*.js finds no importer other than the file itself; `git log -S WebGPUTextureArray` shows only the add. The rgba32float sub-claim is wrong (renderable in core; only blending needs float32-blendable). P2: no live constructor, default rgba8unorm is legal, failure is a validation error, not a render-loop crash. Before any fix, decide reachability vs removal per Principle 7 (check the ledger; DEFERRED_WORK.md has no TextureArray row).
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine. **Proof bar:** none until the consume-or-retire decision; Edge leg: consume-or-retire decision first (Principle 7); a spec only once a consumer exists. **Suggested owner:** tier-3 Sonnet under Opus review.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-182. Findings: P58.C-452. Blueprint C-452 (EPIC-10). Adjudication: ADJUDICATION-31-31 (Meneltarma-a06, chunk 31): P58.C-452. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-183 — Inverted Sort Direction & Padding Sentinel Collision in GPU Bitonic Sort — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. One owner with P1.5, P52.C-393, P31.204: point-cloud GPU sort (params, block direction, final direction, unread output).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Inverted Sort Direction & Padding Sentinel Collision in GPU Bitonic Sort. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `packages/engine/Source/Shaders/WebGPU/Compute/PointCloudSort.wgsl:85`; re-derived at `PointCloudSort.wgsl:141`, `WebGPUPointCloudSortDispatcher.ts:185`, `WasmPointCloudBridge.js:479`
+  - Code: `arr.sort((a, b) => distSq[b] - distSq[a])` ... `let ascending = (localIdx & k) == 0u;`
+  - Verified (the adjudicator's re-derivation, and the authority): Direction half confirmed: PointCloudSort.wgsl:141/146 (and :85/:90) swap when keyA > keyB in ascending blocks; at the final k=N stage every idx<N is ascending, so the network sorts nearest-first on floatToSortableUint(distSq). The dispatcher contract (WebGPUPointCloudSortDispatcher.ts:185 'back-to-front index order') and the CPU fallback (WasmPointCloudBridge.js:479 `arr.sort((a, b) => distSq[b] - distSq[a])`, and the insertion sort at :466-472) are farthest-first. Sentinel half is not a defect: 0xffffffff padding (:309) sorts to the end under the shipped ascending network; the collision exists only under a hypothetical descending rewrite. P2: the GPU output is unread (C-457), so no visible ordering change today.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: no hunk in the seat diff touches this defect.
+- **Acceptance:** Class: engine+shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-183. Findings: P58.C-456. Blueprint C-456 (EPIC-08). Adjudication: ADJUDICATION-31-31 (Meneltarma-a06, chunk 31): P58.C-456. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-GA-P0-184 — Omission of Cone-AABB Culling in Cluster Assignment Triggering Cluster Saturation & Punctual Light Dropping — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** Omission of Cone-AABB Culling in Cluster Assignment Triggering Cluster Saturation & Punctual Light Dropping. Severity: P2
+- **Evidence:** Where (read at `a5b71fc17b`): `(no citation in the audit entry)` - the audit citation is stale; verifier: Empty citations/body; code is ClusterAssign.wgsl:10-16 (design comment), :133-151 (main loop); re-derived at `Compute/ClusterAssign.wgsl:12-16`, `ClusterAssign.wgsl:73`, `WebGPUClusterAssignRenderer.ts:306`, `WebGPUModelRenderer.ts:2983`
+  - Code: `else { // POINT or SPOT - sphere overlap test` ... `if (overlapCount >= MAX_LIGHTS_PER_CLUSTER) { break; }`
+  - Verified (the adjudicator's re-derivation, and the authority): Compute/ClusterAssign.wgsl:12-16 documents sphere-only culling for spots; the loop's `else { // POINT or SPOT - sphere overlap test` (:145-154) has no cone test, and `if (overlapCount >= MAX_LIGHTS_PER_CLUSTER) { break; }` (:134-135, cap 256) silently drops later lights. Saturation needs >256 sphere-overlapping lights in one cluster (scene cap 1024). P2: a documented optimisation gap plus a silent cap reachable only with hundreds of lights, on an opt-in path. Verifier's open question on Gemini's patch settled by reading: coneAngles.y is the outer cone angle in radians (ClusterAssign.wgsl:73; written raw as `L.outerConeAngle ?? 0` at WebGPUClusterAssignRenderer.ts:306 and WebGPUModelRenderer.ts:2983). Risk for the diff review: a spot light with no outerConeAngle packs 0, and a cone test on a 0-radian cone would cull it from every cluster.
+- **Repair:** No repair is drafted by the triage; the owner lane designs it. Seat diff: HAZARD in seat-worktree-snapshot 20261008-2106 (do not land as is): the cone test reads coneAngles.y, which packs 0 for a spot light with no outer angle, so a 0-radian test would cull that light from every cluster.
+- **Acceptance:** Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGL-vs-WebGPU BEFORE/AFTER pair through lib/capture.mjs on a rig that exercises the path. **Suggested owner:** tier-3 Opus under the owner group's lead.
+- **Source:** `GEMINI_AUDIT_P0_TRIAGE_2026-10-08.md` revision 2, section 2.3, draft NEW-GA-P0-184. Findings: P58.C-460. Blueprint C-460 (EPIC-09). Adjudication: ADJUDICATION-31-31 (Meneltarma-a06, chunk 31): P58.C-460. Title note: (audit title, intensifiers removed; the Verified line is the authority)
+
+## 2026-10-09 — NEW-CLOUD-MARCH-BUDGET-UNFIT-MINIMUM — When not even one primary march step fits the budget, the resolver returns one step anyway, so the frame is encoded over the budget — **OPEN** (P2, ADJACENT)
+
+**Status: OPEN.** ADJACENT - C13-N69 (the cloud march budget; this is the case its fitting does not cover).
+
+**Owner:** audit fix wave 1, lane FW-10.
+
+- **Symptom:** `fitCloudMarchBudget` returns early when at least one primary step fits; otherwise it falls through and returns `primarySteps: 1`, whatever one step costs, so a frame whose minimum cost exceeds the budget is encoded over it. Severity: P2 (the return audit's own rating).
+- **Evidence:** Where (read at `9457bc6bd4`): `packages/engine/Source/Renderer/WebGPU/WebGPUCloudTierPresets.ts:745`; `packages/engine/Source/Renderer/WebGPU/WebGPUCloudTierPresets.ts:757`; the doc line `packages/engine/Source/Renderer/WebGPU/WebGPUCloudTierPresets.ts:721`; the budget default `packages/engine/Source/Renderer/WebGPU/WebGPUCloudTierPresets.ts:551`
+  - Code: `if (primarySteps >= 1) {` ... `return { ...asked, primarySteps: 1, lightSteps };` ... `The floor is one step of each.`
+  - Verified (the return audit's finding and Astra's Node run, and the authority): Astra's Node run (author's verification, no GPU run): preset medium, raw quality 64, camera 7000 m, 67,108,864 viewport pixels, multi-deck, transmittance-mask pass, full-resolution fallback gave `budget` 13,500,000,000 against `minimumOneStepCost` 14,495,514,624, and the candidate repair resolved `primarySteps` 0. Reachability is a drawing-buffer threshold, not a property of a named cell: the plan derives about 1.25e8 px with cone, multi-deck and live noise, and about 6.25e7 px with the mask pass added (derived, not measured).
+- **Repair:** The candidate is Astra's checkpoint hunks (`WebGPUCloudTierPresets.ts:762-764` there and a renderer hunk at `:3322` there): the minimum that cannot fit resolves to zero primary steps and the renderer refuses the frame as `"march-budget-exceeded"` before temporal allocation, uniform upload, lighting cache, mask or visible march. One defect, one owner: do not widen it. It is excluded from any Astra re-cut and belongs to the seat's engine lane.
+- **Acceptance:** With a budget set, no frame encodes a march whose reported cost exceeds it unless that frame is reported as refused, by name, in the cloud observability counters; wherever the one-step floor fits, the resolved preset and the counters are identical to the base. Owed: a behaviour spec (budget applied, minimum unfit gives a refused frame, never one encoded with zero steps), an inertness mutant, `npm run tsc-engine`, and a base-identity check for every frame where the minimum fits. Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); the lane first computes in Node, with the real resolver, the smallest drawing buffer at which the unfit branch is taken for every default and `"auto"` tier row, and compares it with the largest drawing buffer the context can create (the plan's stop condition). **Suggested owner:** Opus lead (effort high) with a Sonnet spec writer and a separate Opus reviewer.
+- **Source:** The Astra return audit's P2 finding "the march-cap unfit-minimum case", as `SEAT_RESPONSE.md` section 4 (astra-return-p2 folder) names it ("`WebGPUCloudTierPresets.ts:749-757`", promised a ledger row "at the next record round"); `ASTRA_STACK_REVIEW_2026-10-08.md` section 2.2 and section 7 lane 7; `minimum-march-repair.json` in the same folder; AUDIT_FIX_WAVE_PLAN_2026-10-09.md revision 2, FW-10.
+
+## 2026-10-09 — NEW-C16-FLAVOUR-MALFORMED-PRAGMA-REPAIR-MISCLASSIFIED-COMMENT-ONLY — The comment-flavour gate skips its release-output comparison when the OLD text has a malformed prose pragma anchor, so a code-changing repair can read as comment-only — **OPEN** (P2, NEW)
+
+**Status: OPEN.** NEW. Promised by `SEAT_RESPONSE.md` section 4 ("at the next record round"); a grep of this ledger for "flavour-views" finds no row.
+
+**Owner:** audit fix wave 1, lane FW-09.
+
+- **Symptom:** The release-output comparison runs only when the OLD text has no prose pragma anchor, so an edit to a file whose old text has such an anchor is never compared, and a code-changing repair can be classified comment-only. Severity: P2 (the return audit's own rating).
+- **Evidence:** Where (read at `9457bc6bd4`): `Tools/c16/lib/flavour-views.mjs:753-754`; the comparison it gates `Tools/c16/lib/flavour-views.mjs:756`
+  - Code: `flavourForPath(relPath) === "release-pragma" &&` ... `prosePragmaAnchors(before).length === 0` ... `const releaseBefore = canonicalizeCode(releasePragmaView(before), "js");`
+  - Verified (the return audit's finding and Astra's checkpoint, and the authority): The checkpoint states the behaviour it wants: "Always compare canonical release outputs for JS/TS, including old malformed anchors. Code-changing repairs return flavour-differs; harmless repairs remain comment-only." The candidate is Astra's two-file patch (`Tools/c16/lib/flavour-views.mjs` and `Tools/c16/comment-flavour-gate.spec.mjs`; patch md5 `b3c0282dde2296cc562af8b16f8f1d70`, re-measured by the plan author), state PREPARED_FOR_REVIEW_NOT_LANDED: 112 of 112 focused tests on Astra's tree, 12 matrix cases, two new refusal fixtures that become accepted when the release comparison is disabled. The stack review measured the repair at 77 of 78 on the frozen tree ("not landable as is") and asks for a re-measure of 112/112 on the tip first.
+- **Repair:** The candidate above, as its own Tools batch after review (`SEAT_RESPONSE.md` section 4).
+- **Acceptance:** A JS/TS edit that repairs a malformed prose pragma anchor is comment-only exactly when the canonical release-stripped output is unchanged, and `flavour-differs` (release-pragma) otherwise, whatever anchors the old text had. Runner: `npm run test-c16` (the line is proposed to the seat, which owns `package.json`); new cases go in a companion spec file unless the reviewer accepts the +52 lines in the 1,406-line spec. Class: tools. **Proof bar:** spec with a runner home (maintainer ruling R-2026-08-29-1, tools class); no Edge leg. **Suggested owner:** Sonnet author, Opus reviewer.
+- **Source:** The Astra return audit's P2 finding A2 ("malformed-pragma repairs can be misclassified as comment-only"), recorded in `comment-flavour-repair-checkpoint-175.json` (fields `finding` and `behavior`), `SEAT_RESPONSE.md` section 4 and `ASTRA_STACK_REVIEW_2026-10-08.md` section 2.3 item 7 and section 7 lane 6; AUDIT_FIX_WAVE_PLAN_2026-10-09.md revision 2, FW-09.
+
+## 2026-10-09 — NEW-WEBGPU-SSR-FULLSCREEN-TRIANGLE-HALF-VIEWPORT — The SSR "full-screen triangle" covers half of clip space — **OPEN** (unrated, NEW)
+
+**Status: OPEN.** NEW. Found by the seat-diff review while it rated SSR hunk G06 card 40; it is not in the Gemini audit. One owner with NEW-GA-P0-033 and NEW-GA-P0-172: ScreenSpaceReflections.wgsl.
+
+**Owner:** audit fix wave 1, lane FW-07.
+
+- **Symptom:** The SSR pass draws one triangle that covers half of clip space, so it writes only half of its output texture; the other half keeps its loaded contents. What the screen shows is NOT-ESTABLISHED (it needs an Edge leg with SSR on). Severity: not rated by the source (code-derived; runtime NOT-ESTABLISHED).
+- **Evidence:** Where (read at `9457bc6bd4`): `packages/engine/Source/Shaders/WebGPU/PostProcess/ScreenSpaceReflections.wgsl:59-60`, `packages/engine/Source/Renderer/WebGPU/WebGPUSSREffect.ts:135`, `packages/engine/Source/Renderer/WebGPU/WebGPUSSREffect.ts:354`
+  - Code: `let x = f32(i32(vertexIndex & 1u) * 2 - 1);` ... `let y = f32(i32(vertexIndex >> 1u) * 2 - 1);` ... `primitive: { topology: "triangle-list" },` ... `pass.draw(3);`
+  - Verified (the seat-diff review's re-derivation, and the authority): The vertex shader builds x = (vi & 1) * 2 - 1 and y = (vi >> 1) * 2 - 1. For vi = 0, 1, 2 that is (-1,-1), (1,-1), (-1,1), evaluated in Node by the adjudicator and again at this tree: a right triangle covering half of clip space, drawn as a `triangle-list` with `pass.draw(3)`. Pre-existing at HEAD and outside the snapshot diff.
+- **Repair:** The source names the vertices `(-1,-1), (3,-1), (-1,3)` and says the fix "belongs in a separate engine lane and must land BEFORE any loadOp change" (the snapshot's SSR `loadOp: "clear"` hunk, G06 card 40, was REJECTed because the uncovered half would become (0,0,0,0)).
+- **Acceptance:** The SSR pass writes every pixel of its target (AUDIT_FIX_WAVE_PLAN_2026-10-09.md revision 2, FW-07, "Behaviour to assert" (a)); with SSR off, output is unchanged. Class: shader. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: a WebGPU capture with SSR on, before and after (G06 adjudication: "needs an Edge leg with SSR on"). Not a parity row: the source calls it "a WebGPU defect, not a parity row". **Suggested owner:** audit fix wave 1, lane FW-07.
+- **Source:** Seat-diff review `SEAT_DIFF_REVIEW_2026-10-08.md` sections 3.2, 3.3, 6 ("Pre-existing and unchanged") and 7 ("For the seat, not the maintainer"), finding id F-G06-1; adjudication `G06-ADJUDICATION.md`, "Where I overrode the verifier" item 1 and "New findings for the ledger".
+
+## 2026-10-09 — NEW-WEBGPU-GLOBE-TRANSLUCENCY-DERIVED-COUNT-FIELD-MISMATCH — The globe translucency derived-command writer reads a count field the real class never writes, and its Jasmine fake supplies that wrong name — **OPEN** (unrated, NEW)
+
+**Status: OPEN.** NEW. Found by the seat-diff review while it re-derived G06 card 1; it is not in the Gemini audit.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** `WebGPUGlobeTranslucencyState.ts` reads `_derivedCommandTypesToUpdateLength`; the real `GlobeTranslucencyState` class writes only `_derivedCommandsToUpdateLength`. On the real path the derived-marker writer is inert, and its spec certifies a fake rather than the class. Severity: not rated by the source (code-derived; the runtime effect is NOT-ESTABLISHED beyond the code read).
+- **Evidence:** Where (read at `9457bc6bd4`): `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeTranslucencyState.ts:191`; `packages/engine/Source/Scene/GlobeTranslucencyState.js:448` (also `packages/engine/Source/Scene/GlobeTranslucencyState.js:77` and `packages/engine/Source/Scene/GlobeTranslucencyState.js:173`); `packages/engine/Specs/Renderer/WebGPU/WebGPUGlobeTranslucencyStateSpec.js:28`; `packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts:1503`; the reader of the markers at `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts:829-832`
+  - Code: `const derivedCommandCount = state._derivedCommandTypesToUpdateLength;` ... `state._derivedCommandsToUpdateLength = derivedCommandsToUpdateLength;` ... `_derivedCommandTypesToUpdateLength: typesToUpdate.length,`
+  - Verified (the seat-diff review's re-derivation, and the authority): The state passed in is `frameState.globeTranslucencyState`, a `new GlobeTranslucencyState()` (`Scene.js:407`, `:3816`; `GlobeSurfaceTileProviderRendering.js:1561-1565`, per the adjudicator). So on the real path the count is `undefined`, the marker loop writes nothing, `_webgpuTranslucencyDerivedCount` is `undefined`, and the renderer's `derivedCount` falls to `[].length` = 0 and takes the single-execute branch. `WebGPUGlobeTranslucencyStateSpec.js` builds its state from a fake that supplies the wrong name, which is why that spec sees a count of 2: the spec certifies the fake rather than the class (harness-supplied context).
+- **Repair:** Not stated as a fix by the source. It states what is owed before the snapshot's card 1 (the per-pass loop removal, HOLD unit 13) can move: a Node spec independent of the blueprint that drives `executeBatchTranslucent` / `executeGlobeDispatch` with the REAL `GlobeTranslucencyState` field shape and asserts one execute per command; a Principle 7 disposition, recorded in this ledger, for `WebGPUGlobeTranslucencyState`'s marker writer and its wrong count field; and corrections to prose that the removal makes false (`WebGPUSceneRenderer.ts:806-809`, `WebGPUSceneRendererGlobePass.ts:41-44, 77-79`). Do not book the loop's removal as the H-588 "deprecation": the loop was already inert.
+- **Acceptance:** The spec above runs against the real class shape and fails when the field name is wrong. Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: none named by the source (the finding is a field-name mismatch; a spec on the real field shape is the named check). **Suggested owner:** none assigned.
+- **Source:** Seat-diff review `SEAT_DIFF_REVIEW_2026-10-08.md` sections 3.3, 5 (HOLD unit 13) and 7 (F-G06-2); adjudication `G06-ADJUDICATION.md`, "Where I overrode the verifier" item 2 and "New findings for the ledger".
+
+## 2026-10-09 — NEW-WEBGPU-LOG-DEPTH-CALLERS-BYPASS-MASTER-SWITCH — Two log-depth consumers in the seat-worktree snapshot read `frameState.useLogDepth` and skip `isWebGPULogDepthActive`; their re-land owes a conforming caller — **OPEN** (unrated, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-LOG-DEPTH-REMAINING-CONSUMERS (the reverse-path fill-ins for consumers of the log-depth contract).
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** The snapshot's G-buffer normals caller and its `Scene.js` motion-blur caller read only `frameState.useLogDepth`, so the context master switch is ignored. The sites are in the unlanded snapshot, not in this tree; the row records the contract the re-land owes. Severity: not rated by the source.
+- **Evidence:** Where (read at `9457bc6bd4`): the master switch at `packages/engine/Source/Renderer/WebGPU/WebGPULogDepth.ts:76`; the contract text at `packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts:730`; a conforming consumer at `packages/engine/Source/Renderer/WebGPU/WebGPUSSREffect.ts:284`
+  - Code: `return !!context?._logDepthWriteEnabled && !!frameState?.useLogDepth;` ... `const logActive = isWebGPULogDepthActive(`
+  - Verified (the seat-diff review's re-derivation, and the authority): `isWebGPULogDepthActive` is `!!context?._logDepthWriteEnabled && !!frameState?.useLogDepth`; SSR uses it, and the type file says consumers gate on it "not on this directly". The snapshot's G-buffer normals caller reads only `frameState.useLogDepth` (CONFIRMED, fix incomplete, per the adjudicator), and its `Scene.js` motion-blur caller (`Scene.js:6648-6650` in the snapshot) does the same; that caller runs before `updateAndExecuteCommands`, so whether `useLogDepth` holds this frame's value is NOT-ESTABLISHED. Cards 15-19 (G-buffer normals) have no valid caller until card 4 is rebuilt on the helper, and cards 34-39 (motion blur) likewise: they stay HOLD. Lead, not a finding: a grep at this tree also finds raw `frameState.useLogDepth` reads (`packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts:5245`, `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts:239`, `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts:4450`, `packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRenderer.js:2282`); this row does not classify them.
+- **Repair:** A caller that uses `isWebGPULogDepthActive(context, frameState)` for each of the two chains (HOLD unit 14: G06 15, 16, 17, 19; HOLD unit 17: G06 34-39). Seat diff: both chains are HOLD in the snapshot.
+- **Acceptance:** Per the HOLD list, unit 14: a spec through `wgsl-mini-eval`, a mutant, an Edge leg on the deferred-lighting G-buffer normals; unit 17: a packed-param spec (p[6], p[7], p[59]), a mutant and an Edge leg (an orbit with motion blur on). Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg). **Suggested owner:** none assigned.
+- **Source:** Seat-diff review `SEAT_DIFF_REVIEW_2026-10-08.md` section 7 (F-G06-3) and section 5 (HOLD units 14 and 17); adjudication `G06-ADJUDICATION.md`, spot-check of card 4 and the ruling on card 34.
+
+## 2026-10-09 — NEW-WEBGPU-GROUND-POLYLINE-IGNORE-SHOW-WEBGL-DIVERGENCE — WebGPU ground polylines emit an IGNORE_SHOW command that WebGL ground polylines do not — **OPEN** (unrated, ADJACENT)
+
+**Status: OPEN.** ADJACENT - NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (HOLD unit 24 there owes this decision).
+
+**Owner:** none assigned; the decision is the seat's.
+
+- **Symptom:** `WebGPUGroundPolylineRenderer.js` builds an IGNORE_SHOW stencil-write command, and `GroundPolylinePrimitive.js` pushes it under invert classification, where WebGL `GroundPolylinePrimitive` has no IGNORE_SHOW command. Which behaviour is right for invert classification is NOT-ESTABLISHED. Severity: not rated by the source.
+- **Evidence:** Where (read at `9457bc6bd4`): `packages/engine/Source/Renderer/WebGPU/WebGPUGroundPolylineRenderer.js:3197` (the command is built at `packages/engine/Source/Renderer/WebGPU/WebGPUGroundPolylineRenderer.js:3201`); `packages/engine/Source/Scene/GroundPolylinePrimitive.js:862`; the WebGL tileset-derived command at `packages/engine/Source/Scene/GroundPolylinePrimitive.js:750`
+  - Code: `groundPasses.includes(6) &&` ... `ignoreShowCommand = new WebGPUDrawCommand({` ... `if (result.ignoreShowCommand && frameState.invertClassification) {` ... `derivedTilesetCommand.pass = Pass.CESIUM_3D_TILE_CLASSIFICATION;`
+  - Verified (the seat-diff review's re-derivation, and the authority): The renderer builds the command when `groundPasses.includes(6)` and the scene is not morphing, and `GroundPolylinePrimitive.js` pushes it in the WebGPU feature-renderer branch. WebGL `GroundPolylinePrimitive` has none: its only IGNORE_SHOW push in that file is that WebGPU branch, and its tileset-derived command takes `Pass.CESIUM_3D_TILE_CLASSIFICATION`. The review's first draft cited `GroundPolylinePrimitive.js:751` and `ClassificationPrimitive.js:1165` as WebGL IGNORE_SHOW sites; both citations were wrong and are not used here. It was unrecorded before the review's revision.
+- **Repair:** A decision, owed inside HOLD unit 24: fixing the consumer of `groundPasses.includes(6)` in the WebGPU ground-polyline renderer keeps the divergence alive, while dropping the command moves toward WebGL. The pass-slot realign itself is the tracked NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT.
+- **Acceptance:** Edge acceptance per HOLD unit 24: draped GroundPrimitive and ClassificationPrimitive over terrain and a tileset, plus `invertClassification`, WebGL against WebGPU. Class: engine (parity, Principle 5). **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg). **Suggested owner:** none assigned.
+- **Source:** Seat-diff review `SEAT_DIFF_REVIEW_2026-10-08.md` section 6 ("Pre-existing and unchanged"), section 5 (HOLD unit 24) and section 7 ("The WebGPU-only ground-polyline IGNORE_SHOW: a ledger row").
+
+## 2026-10-09 — NEW-C16-OIT-ENTRY-PARAMETERS-READER-SCOPE — The comment-only gate's `oit-entry-parameters` reader refuses a comment edit inside `GlobeTerrain.wgsl`'s fragment-entry parameter list — **OPEN** (unrated, ADJACENT)
+
+**Status: OPEN.** ADJACENT - C16-COMMENT-GATE-UNMODELLED-SHADER-TEXT-READERS item 3 ("Precision": readers applied too widely, with the repair "scope each harvested reader to its backend by directory"). That item records the over-refusal in general (about 22% of real shader comment rewrites refused with no reader affected); this row is the one site the seat-diff review measured, `GlobeTerrain.wgsl:4713`, and the one that stops a named grandfather row from retiring. No other ledger row names this site (the seat-diff review's critic found none by targeted grep of `migration_doc`).
+
+**Owner:** audit fix wave 1, lane FW-09.
+
+- **Symptom:** With HEAD's tools, a comment-only edit that clears the `GLOBE-UNDERGROUND-COLOR` marker at `GlobeTerrain.wgsl:4713` is refused as `flavour-differs`, so the `GlobeTerrain.wgsl all-caps-fix-label` grandfather row cannot retire and the comment-marker census cannot reach 0. Severity: not rated by the source.
+- **Evidence:** Where (read at `9457bc6bd4`): `Tools/c16/lib/shader-text-readers.mjs:986-989` (the matcher, `fn` followed by a name and a parenthesised parameter list, is applied to every WGSL `fn`); the reader's subject `packages/engine/Source/Renderer/WebGPU/WebGPUOIT.ts:511` and `packages/engine/Source/Renderer/WebGPU/WebGPUOIT.ts:515`; the refused site `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl:4713` inside `fn fragmentMain(`; the grandfather row `Tools/c16/comment-marker-grandfather.txt:15` (the `all-caps-fix-label` row)
+  - Code: `id: "oit-entry-parameters",` ... `const paramType = paramDecl.split(":").slice(1).join(":").trim();` ... `// GLOBE-UNDERGROUND-COLOR — rasterizer facing (gl_FrontFacing analogue).`
+  - Verified (the seat-diff review's re-derivation, and the authority): The refusal is `flavour-differs`, flavour `wgsl-runtime`, reader `Renderer/WebGPU/WebGPUOIT.ts|unharvested:oit-entry-parameters`, measured by the review with `compareSources` on the batch keep list and on that hunk alone; the list without that hunk is `comment-only`. The marker is in the parameter list of `fn fragmentMain(`, which the reader's matcher treats as the renamed OIT entry's parameter text. While it stands, the batch that holds the shader comment hunks retires one of its two grandfather rows. Whether `WebGPUOIT` ever processes `GlobeTerrain.wgsl` is NOT-ESTABLISHED; the plan's re-derivation shows `createOITPipeline` is the generic path for any WebGPU draw command that retains `cmd._shaderCode` while OIT is on, behind the default-off MRT-OIT flag.
+- **Repair:** Per the seat-diff review: either a Tools change that scopes `oit-entry-parameters` to the shaders `WebGPUOIT.ts` actually processes, with a spec, or a seat or maintainer exception for this one line. If the lane finds `GlobeTerrain.wgsl` IS transformed by `WebGPUOIT`, no Tools change is made and the line is the conditional maintainer item (MQ-07 in the 2026-10-09 packet). The lane also reports whether a comment inside a parameter list changes the `paramType` that `WebGPUOIT.ts` builds (a possible engine row). The snapshot's own change (narrowing the matcher to `_oit_base_`) is REJECTED: it matches 0 tracked files.
+- **Acceptance:** A spec with a runner home in `test-c16`: a comment-only edit inside a parameter list of a shader that `WebGPUOIT` never transforms is `comment-only`; the same edit in a shader it does transform stays `flavour-differs`; a non-comment parameter edit is refused in both. Class: tools. **Proof bar:** spec with a runner home (maintainer ruling R-2026-08-29-1, tools class); no Edge leg. **Suggested owner:** Opus lead for the reach call, Sonnet author, separate Opus reviewer.
+- **Source:** Seat-diff review `SEAT_DIFF_REVIEW_2026-10-08.md` section 4.1 item 9, HOLD unit 28 (section 5) and section 7 ("The comment gate refuses `GlobeTerrain.wgsl:4713`"); AUDIT_FIX_WAVE_PLAN_2026-10-09.md revision 2, FW-09 (reach re-derived there).
+
+## 2026-10-09 — NEW-VPT-AUTO-TUNER-DEFERRAL — The visual-performance-target service is a skeleton whose auto-tuner is deferred, and no ledger row records the deferral — **OPEN** (n/a, NEW)
+
+**Status: OPEN.** NEW. A grep of this ledger finds no "auto-tun" entry, and `FEATURE_INVENTORY.md` lists the service only in section A. This is scaffolding (CLAUDE.md Principle 7), not dead code.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** `VisualPerformanceTargetService` is the Phase 0 skeleton: a registration API and a tick contract whose post-guard body is a stub. The roadmap lives only in source comments, so once the C16 comment cleanup strips it the deferral has no record. Severity: not applicable (a deferral, not a defect).
+- **Evidence:** Where (read at `9457bc6bd4`): `packages/engine/Source/Services/VisualPerformanceTargetService.js:39`; `packages/engine/Source/Services/VisualPerformanceTargetService.js:43`; `packages/engine/Source/Services/VisualPerformanceTargetService.js:373`; `packages/engine/Source/Services/VisualPerformanceTargetService.js:397`
+  - Code: `No probes, no sinks, no auto-tuning logic yet.` ... `// Phase 1+: query probes, evaluate frame-time budget, adjust sinks.`
+  - Verified (the seat-diff review's re-derivation, and the authority): The file calls itself "the skeleton only: registration API + tick contract"; the fields `_probes`, `_sinks`, `_lastEvaluationFrameNumber` and `_evaluationIntervalFrames` are declared "in preparation" for the auto-tuner. The seat-diff review's marker-free redo of hunk [30] keeps the constraint ("VPT does not adjust sinks yet") in source and sends the deferral to this ledger.
+- **Repair:** None; the row is the record. The `FEATURE_INVENTORY.md` section C line is added with it.
+- **Acceptance:** The row exists before the comment cleanup lands; the VPT file's comment states the constraint without a tracker marker. Class: engine (scaffolding). **Proof bar:** docs (maintainer ruling R-2026-08-29-1: review). **Suggested owner:** none assigned.
+- **Source:** Seat-diff review `SEAT_DIFF_REVIEW_2026-10-08.md` section 7 ("The VPT auto-tuner deferral: Principle 9 row") and section 4.2 (B-docs-C16-B2b); `G01-ADJUDICATION.md`, the Principle 9 note under the VPT file and hunk [30].
+
+## 2026-10-09 — NEW-WEBGPU-TEXTURE-SIZEINBYTES-AND-ID-ACCOUNTING — `WebGPUTexture` has neither `sizeInBytes` nor `_id`, but model and resource-cache statistics read both — **OPEN** (unrated, NEW)
+
+**Status: OPEN.** NEW. Routed to a lane that owns `WebGPUTexture` accounting (`sizeInBytes` and `_id`) together with `ResourceCacheStatistics`.
+
+**Owner:** none assigned (the suggested owner is on the Acceptance line).
+
+- **Symptom:** WebGL `Texture` and `Buffer` carry `sizeInBytes` and `_id`; `WebGPUTexture` and `WebGPUBuffer` carry neither, while `ModelStatistics.addTexture` and `ResourceCacheStatistics` read both. Whether any `WebGPUTexture` arrives at those statistics is NOT-ESTABLISHED. Severity: not rated by the source.
+- **Evidence:** Where (read at `9457bc6bd4`): `packages/engine/Source/Scene/Model/ModelStatistics.js:145`; `packages/engine/Source/Scene/Model/ModelStatistics.js:144`; `packages/engine/Source/Scene/ResourceCacheStatistics.js:115`; `packages/engine/Source/Renderer/WebGPU/WebGPUTexture.ts:90` (no `sizeInBytes` or `_id` member; `packages/engine/Source/Renderer/WebGPU/WebGPUTexture3D.ts:434` has one)
+  - Code: `this.texturesByteLength += texture.sizeInBytes;` ... `if (!this._textureIdByteLengths.hasOwnProperty(texture._id)) {` ... `const totalSize = loader.texture.sizeInBytes;`
+  - Verified (the seat-diff review's re-derivation, and the authority): A grep at this tree repeats the adjudicator's: `WebGPUTexture.ts` and `WebGPUBuffer.ts` have neither member. If a `WebGPUTexture` reached these statistics, the byte count would be `undefined` and the per-texture dedupe key would collapse. HOLD unit 11 (G05 24) adds the intra-WebGPU gap: `WebGPUTexture3D.sizeInBytes` uses 8/7 for mipmaps while the snapshot's `WebGPUTexture` fix used 4/3. The snapshot's `sizeInBytes ?? 0` hunk was REJECTed: "the fix is wrong in kind", since it turns a detectable NaN into silent zero-byte under-counting.
+- **Repair:** The audit finding's own remediation (C-355): a `WebGPUTexture.sizeInBytes` getter plus the fix at `ResourceCacheStatistics.js:115-116`; per HOLD unit 11, 8/7 for `_dimension === '3d'`.
+- **Acceptance:** Per HOLD unit 11: a spec (rgba8 256 x 256 with 9 mips = 349525, a BC7 cube, a 3d case) and the reach of `ResourceCacheStatistics.js:115-116` established. Class: engine (parity, Principle 5; see the `FEATURE_INVENTORY.md` section C line). **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: an Edge read of `model.statistics.texturesByteLength` on WebGPU against WebGL for a known glTF. **Suggested owner:** the accounting lane named in the Status line.
+- **Source:** Seat-diff review `SEAT_DIFF_REVIEW_2026-10-08.md` section 7 ("G07 card 54: route to a `WebGPUTexture` accounting owner"), section 5 (HOLD unit 11, G05 24) and section 6 ("Pre-existing and unchanged"); adjudication `G07-ADJUDICATION.md`, card 54 (REJECT) and parity gap 4.
