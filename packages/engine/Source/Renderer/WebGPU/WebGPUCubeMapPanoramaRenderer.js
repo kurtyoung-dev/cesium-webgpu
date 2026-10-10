@@ -698,6 +698,7 @@ function getState(panorama) {
       bindGroup0: undefined,
       bindGroup1: undefined,
       cubeMapTexture: undefined,
+      retiredCubeMapTexture: undefined,
       cubeMapView: undefined,
       command: undefined,
       cubeMapLoading: false,
@@ -799,6 +800,11 @@ function loadCubeMap(device, sources, state, panorama) {
 
   Promise.all(loadPromises)
     .then((images) => {
+      // The panorama was destroyed while the faces were loading; creating a
+      // texture now would store it in state nothing will ever release.
+      if (_instanceState.get(panorama) !== state) {
+        return;
+      }
       const size = images[0].width;
       if (size <= 0) {
         throw new Error(
@@ -828,6 +834,10 @@ function loadCubeMap(device, sources, state, panorama) {
         );
       }
 
+      // The draw command still samples the previous texture, so it is only
+      // retired here and destroyed once the command has been rebuilt.
+      state.retiredCubeMapTexture = state.cubeMapTexture;
+      state.command = undefined;
       state.cubeMapTexture = texture;
       state.cubeMapView = texture.createView({
         dimension: "cube",
@@ -942,6 +952,10 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
       context._msaaSamples ?? 1,
     );
     state._pipelineFormatGeneration = currentGen;
+
+    // No command this renderer hands out samples the retired texture now.
+    state.retiredCubeMapTexture?.destroy();
+    state.retiredCubeMapTexture = undefined;
   }
 
   // Update uniforms every frame.
@@ -1018,6 +1032,7 @@ export function destroyCubeMapPanorama(panorama) {
   if (defined(state.cubeMapTexture)) {
     state.cubeMapTexture.destroy();
   }
+  state.retiredCubeMapTexture?.destroy();
 
   _instanceState.delete(panorama);
 }

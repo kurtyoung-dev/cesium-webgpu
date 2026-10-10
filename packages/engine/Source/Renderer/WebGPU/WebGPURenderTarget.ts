@@ -720,6 +720,17 @@ export class WebGPURenderTarget {
       this.depthStencilAttachment.texture.destroy();
       this.depthStencilAttachment = undefined;
     }
+
+    // The single-sample depth-conversion target is created alongside the
+    // depth attachment, so it must leave with it. The views are cleared with
+    // the texture so a destroyed target never hands out a view of a destroyed
+    // texture, and an MSAA target never falls back to the multisampled
+    // depth-aspect view, which is the wrong binding type for its consumers.
+    this._msaaDepthResolveTexture?.destroy();
+    this._msaaDepthResolveTexture = null;
+    this._msaaDepthResolveAttachmentView = null;
+    this._msaaDepthResolveSampleableView = null;
+    this._depthSampleableView = undefined;
   }
 
   /**

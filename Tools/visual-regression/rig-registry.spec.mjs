@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 212,
+  total: 214,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count reached 17
@@ -102,7 +102,11 @@ const REGISTRY_CENSUS = {
     // The globe family's harvest (probe-kit wave 1, DX-108) declared one rig
     // per scene its sixteen probes capture or measure: kept, migrated and
     // retired probes alike, so a retired probe's scene stays on record.
-    globe: 25,
+    // The resource-lifetime leg added one globe rig (the default globe at 4x
+    // MSAA through a resize ladder) and the first skybox rig (the default sky
+    // box with its sources swapped twice in place).
+    globe: 26,
+    skybox: 1,
   },
 };
 
