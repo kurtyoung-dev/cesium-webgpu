@@ -23524,3 +23524,77 @@ been read from since Batch 622. *Fixed* in the two the harvest moved (`probe-clo
 set every toggle through the harness. *Still present* in `probe-cloud-dials`, `-mammatus` and `-species`, three of
 the eight family-batch-1 probes whose Edge equivalence leg (`C13-N01`) is owed; the fix is filed against that leg
 rather than made under it, so the leg still compares like with like.
+
+## Probe-kit harvest, globe family — the conclusions of the four retired globe probes
+
+**Context (DX-108, `PROBE_KIT_PLAN_2026-09-17.md` §4.2, not a bug).** The globe family's harvest
+moved four probes to `Tools/visual-regression/archive/` as `@status ARCHIVED-CANDIDATE`. The
+retirement rule banks each probe's conclusion here first, with its measurement and its own name.
+Each scene is recorded as a rig under `Tools/visual-regression/rigs/`. A rig is data: no capture
+path applies a globe rig's camera, clock or dials yet, so a rig names its scene and does not
+re-run it. Every pixel measure a retired probe carried is a shared metric under
+`Tools/visual-regression/lib/metrics/`.
+`metrics-globe-extraction.spec.mjs` holds those metrics to the probes' original in-page source.
+None of the four was named by `package.json`, `.github/workflows/**` or the wave-end gate.
+
+**`probe-globe-bundle-cost.mjs` (INVESTIGATION).** Its conclusion is already banked above under
+"Batch 292 — Globe group-0 dynamic-offset UBO + inline render-bundle drop". On the 55-tile low
+view, toggling `renderBundleThreshold`, the inline globe render bundle ran ~0.3-0.4 ms SLOWER at
+the median than direct `executeBatch`, with a worse p90 (~7.0 ms vs ~4.6 ms), so the bundle was
+removed. The probe toggles a path that no longer exists, so at the tip it measures nothing. It
+printed numbers and always exited 0, so no assertion is lost. Scene: rig `globe-bundle-cost-low`.
+
+**`probe-globe-farzoom.mjs` (INVESTIGATION, FARZOOM-INTERIOR-BLOBS / Q23).** Conclusion, as
+banked in `DEFERRED_WORK.md` (`NEW-GLOBE-FARZOOM-DRAPE-BRIGHTNESS-TUNE`,
+`BUG-GLOBE-FARZOOM-RESIDUAL-FLOOR` bucket (b), measured 2026-07-05) and not recorded here before:
+
+- The view: the 25 Mm default-viewer far camera, clock pinned.
+- The measurement: the `interiorBlobGpuBrighter` bucket fell from 149 px to 8 px (94.6 %) with
+  `showGroundAtmosphere` off on both renderers. Both renderers drape the same 36.6 %-of-crop
+  footprint, but the same-backend mean luma delta (on − off) is 52.1 on WebGPU and 49.8 on WebGL.
+  The atmosphere-on blob's mean delta (gpu − gl) is +21/+17/+12 R/G/B.
+- The row's reading: bucket (b) comes from the ground-atmosphere drape, not imagery mip/LOD bias,
+  and the brightness tune stays deferred as low-payoff.
+
+The probe printed a verdict line from `collapse >= 50` but never exited non-zero. A
+re-measurement is a run of the archived probe itself,
+`node Tools/visual-regression/archive/probe-globe-farzoom.mjs`, whose output folder resolves to
+`Tools/visual-regression/output/globe-farzoom/` (its path was re-based in this harvest; the
+probe has not been run since the move). The rigs and metrics stand beside it:
+
+- rigs `globe-polar-far` (atmosphere on) and `globe-farzoom-atmosphere-off` record its two
+  scenes; no capture path applies their camera, clock or `showGroundAtmosphere` dial yet;
+- `rgbSumDiff` plus `mismatchBuckets` / `bucketCentroids` compute the re-bucket and the blob
+  centroid from its frames;
+- `rgbSumDiff(off, on, {threshold: 12})`'s `meanMismatchLuma` computes the drape magnitude;
+- `metrics-globe-extraction.spec.mjs` holds these metrics to the probe's own `analyze` and
+  `selfDiff`.
+
+**`probe-globe-material.mjs` (header ACTIVE, no verdict).** It ran the legacy Globe Materials
+gallery demo under a forced-renderer Viewer shim at a hard-coded `http://localhost:8080`. It
+printed console messages, the material state and a screenshot, and it always exited 0. It
+therefore banked no measured conclusion, and there is none to carry. The standing check of
+`globe.material` on WebGPU is `probe-globe-elevation-band-material.mjs` (AR-831), together with
+`globe-material-texture-uniform-binding.spec.mjs`. Scene: rig `globe-material-demo`.
+
+**`probe-globe-rasterizes.mjs` (header ACTIVE, no verdict; BUG-11 staleness check).** Conclusion,
+as banked in `FEATURE_INVENTORY.md` ("~~BUG-11 globe geometry never rasterizes~~ — STALE/RESOLVED
+(Wave 0 verify, Batch 211)"): the globe rasterizes on WebGPU, showing North America, the oceans
+and the atmosphere limb, with WebGL colour parity and 0 GPU errors. The probe printed coverage,
+luma, colour classes and pickPosition hits, and it never exited non-zero. Three things still
+cover "the globe draws at all":
+
+- the wave-end scene `globe-default` (capture-and-diff);
+- `probe-globe-bindgroup-cache.mjs` (C), with `colourDiversity` requiring more than 8 % non-black
+  and more than 100 buckets over an element capture of the scene canvas, taken after the
+  CesiumViewer chrome is stripped (the cell refuses if anything is still over the canvas);
+- `probe-pickposition-webgpu.mjs`, for pickPosition over the globe.
+
+Scene: rig `globe-rasterizes-default`.
+
+*Files modified:* the four probes (moved, status flipped; the relative imports of farzoom and
+rasterizes, farzoom's output directory and three `Usage:` lines re-based to `archive/`),
+`Tools/visual-regression/lib/probe-fleet-contract-allowlist.mjs`,
+`Tools/visual-regression/lib/prohibited-reader-allowlist.mjs`, `migration_doc/DEBUGGING_GUIDE.md`
+(the probe-table row), `migration_doc/DEFERRED_WORK.md` (the farzoom row's probe citation),
+this log.

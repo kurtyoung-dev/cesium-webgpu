@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // probe-globe-farzoom.mjs — FARZOOM-INTERIOR-BLOBS (Q23) diagnostic probe.
 // @purpose Diagnostic re-bucketing of the far-zoom 'GPU brighter' interior blobs with ground atmosphere toggled, attributing drape vs imagery mip/LOD-bias
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
 //
 // GOAL (TIER3 diagnostic): root-cause far-zoom residual **bucket (b)** —
 // the interior "GPU brighter" blobs concentrated over high-latitude snowy
@@ -33,7 +33,7 @@
 // This is a DIAGNOSTIC probe — it prints the re-bucket and writes PNGs +
 // report.json; it does not gate a fix (no runtime code changed by Q23).
 //
-// Usage: node Tools/visual-regression/probe-globe-farzoom.mjs
+// Usage: node Tools/visual-regression/archive/probe-globe-farzoom.mjs
 //        (dev server on :8080; Edge/msedge required for WebGPU)
 
 import { chromium } from "playwright";
@@ -43,11 +43,15 @@ import { fileURLToPath } from "url";
 import {
   DET_BROWSER_SETUP,
   DETERMINISTIC_CLOCK_ISO,
-} from "./lib/determinism-kit.mjs";
+} from "../lib/determinism-kit.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
+// Resolved from this file, which now lives in archive/: the ".." keeps the
+// output in the live, gitignored output/globe-farzoom/ where it was written
+// before the move (archive/output/ is not gitignored).
 const OUT_DIR = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
+  "..",
   "output",
   "globe-farzoom",
 );

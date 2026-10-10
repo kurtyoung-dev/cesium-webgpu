@@ -14,15 +14,52 @@
 //       the fastApproximateAtan2 + merged-extent atlas convention the SDF
 //       is authored in (≤ ~0.19° boundary offset had it activated).
 //
-// Usage: node Tools/visual-regression/probe-globe-clippoly-geodetic.mjs
-// Requires dev server on :8080.
+// The scene is the rig `globe-clippoly-hexagon`.
+//
+// ON THE SHARED RUNTIME (probe-kit harvest, globe family). The browser, the
+// origin (`--port`, a governed Edge port, never the 8080 this probe used to
+// hard-code), the served-build preflight, the Edge slot and the receipt belong
+// to `lib/probe-runtime.mjs`. Each frame is an element capture of the scene
+// canvas through `captureElement` (the canvas fills the page). The in-page
+// hide in SETUP is kept from before the harvest; what the frame relies on is
+// the kit's `lib/strip-viewer-widgets.mjs`, run right before each capture, as
+// in every globe probe that captures on the CesiumViewer page: the backend
+// refuses (`capture-chrome-over-canvas`) when anything is still stacked over
+// the canvas, or when the strip reports nothing, and `chromeRemoved` in the
+// cell records how many elements went, per renderer. The analysis runs in Node
+// over the decoded PNGs:
+// the whole-frame mismatch is `rgbSumDiff` and the hole test is
+// `rgbSumBelowFraction` over the 120x120 centre box (`lib/metrics/rgb-sum.mjs`),
+// both held to the in-page original by `metrics-globe-extraction.spec.mjs`.
+//
+// Usage: node Tools/visual-regression/probe-globe-clippoly-geodetic.mjs [--port 8094]
+// @runtime lib/probe-runtime.mjs
 
-import { chromium } from "playwright";
-import fs from "fs";
-import path from "path";
+import { decodePng } from "../lib/png-decode.mjs";
+import { armWebGPUDevices, errorGateInit } from "../lib/webgpu-error-gate.mjs";
+import {
+  centredSquare,
+  rgbSumBelowFraction,
+  rgbSumDiff,
+} from "./lib/metrics/rgb-sum.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
+import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
 
-const BASE = "http://localhost:8080";
-const OUT_DIR = "Tools/visual-regression/output";
+/**
+ * The launch flags this probe always ran under — a measurement condition, so
+ * they are declared to the runtime rather than dropped.
+ */
+const LAUNCH_ARGS = Object.freeze([
+  "--enable-unsafe-webgpu",
+  "--enable-features=Vulkan",
+  "--use-vulkan",
+  "--disable-cache",
+]);
 
 const SETUP = `
   const Cesium = await import("/Build/CesiumUnminified/index.js");
@@ -88,29 +125,50 @@ const SETUP = `
   hideNonCanvas(container);
 `;
 
-async function run(rendererArg) {
-  const browser = await chromium.launch({
-    channel: "msedge",
-    headless: true,
-    args: [
-      "--enable-unsafe-webgpu",
-      "--enable-features=Vulkan",
-      "--use-vulkan",
-      "--disable-cache",
-    ],
-  });
-  const page = await browser.newPage({
+/**
+ * One backend: a fresh browser context (the original launched a fresh browser
+ * per backend), the scene set up and settled, and one element capture.
+ */
+async function capture({
+  browser,
+  origin,
+  rendererArg,
+  run,
+  outputDirectory,
+  captures,
+}) {
+  const context = await browser.newContext({
     viewport: { width: 800, height: 600 },
   });
+  try {
+    return await captureInContext(context, {
+      origin,
+      rendererArg,
+      run,
+      outputDirectory,
+      captures,
+    });
+  } finally {
+    await context.close();
+  }
+}
+
+async function captureInContext(
+  context,
+  { origin, rendererArg, run, outputDirectory, captures },
+) {
+  const page = await context.newPage();
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
   page.on("pageerror", (e) =>
     messages.push({ t: "pageerror", text: e.message }),
   );
+  await page.addInitScript(errorGateInit);
 
-  const url = `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`;
+  const url = `${origin}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`;
   await page.goto(url, { waitUntil: "networkidle" });
   await page.waitForFunction(() => !!window.viewer);
+  await armWebGPUDevices(page);
 
   await page.evaluate(async (setup) => {
     // eslint-disable-next-line no-new-func
@@ -128,116 +186,159 @@ async function run(rendererArg) {
   });
   await page.waitForTimeout(500);
 
-  const out = path.join(OUT_DIR, `probe-globe-clippoly-${rendererArg}.png`);
-  await page.screenshot({ path: out, fullPage: false });
-  await browser.close();
+  // Header: the chrome comes off right before the frame, or the backend
+  // refuses. A strip that reports nothing is not a clean canvas either.
+  const chrome = await page.evaluate(`(${STRIP_WIDGETS_SOURCE})()`);
+  if (!Array.isArray(chrome?.leftovers) || chrome.leftovers.length > 0) {
+    throw new ProbeRefusal(
+      "capture-chrome-over-canvas",
+      `clippoly (${rendererArg}): after the CesiumViewer chrome was ` +
+        "stripped, elements were still stacked over the scene canvas " +
+        `(${chrome?.leftovers?.join(", ") ?? "no strip report"}), ` +
+        "so an element capture would measure them with the scene",
+      { chrome: chrome ?? null, renderer: rendererArg },
+    );
+  }
+  const shot = await captureElement({
+    page,
+    selector: ".cesium-widget canvas",
+    name: `clippoly-${rendererArg}-run${run}`,
+    outputDirectory,
+    captures,
+  });
 
   const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
-  return { out, errs };
+  return {
+    image: decodePng(shot.buffer),
+    errs,
+    chromeRemoved: chrome.removed,
+  };
 }
 
-// Decode both PNGs in a browser canvas, compute (a) whole-image mismatch %,
-// (b) per-image "hole present" check — fraction of near-black pixels in a
-// 120x120 box at canvas center (inside the polygon → background shows).
-async function analyze(a, b) {
-  const browser = await chromium.launch({ channel: "msedge", headless: true });
-  const page = await browser.newPage();
-  await page.setContent("<html><body></body></html>");
-  const ba = fs.readFileSync(a).toString("base64");
-  const bb = fs.readFileSync(b).toString("base64");
-  const result = await page.evaluate(
-    async ({ ba, bb }) => {
-      const decode = async (b64) => {
-        const img = new Image();
-        img.src = "data:image/png;base64," + b64;
-        await img.decode();
-        const c = document.createElement("canvas");
-        c.width = img.naturalWidth;
-        c.height = img.naturalHeight;
-        c.getContext("2d").drawImage(img, 0, 0);
-        return {
-          w: img.naturalWidth,
-          h: img.naturalHeight,
-          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
-        };
-      };
-      const A = await decode(ba);
-      const B = await decode(bb);
-      if (A.w !== B.w || A.h !== B.h) return { error: "size mismatch" };
-
-      const centerDarkFrac = (im) => {
-        const cx = Math.floor(im.w / 2);
-        const cy = Math.floor(im.h / 2);
-        let dark = 0;
-        let total = 0;
-        for (let y = cy - 60; y < cy + 60; y++) {
-          for (let x = cx - 60; x < cx + 60; x++) {
-            const i = (y * im.w + x) * 4;
-            const lum = im.data[i] + im.data[i + 1] + im.data[i + 2];
-            if (lum < 60) dark++;
-            total++;
-          }
-        }
-        return dark / total;
-      };
-
-      const total = A.w * A.h;
-      let mismatch = 0;
-      for (let i = 0; i < A.data.length; i += 4) {
-        const d =
-          Math.abs(A.data[i] - B.data[i]) +
-          Math.abs(A.data[i + 1] - B.data[i + 1]) +
-          Math.abs(A.data[i + 2] - B.data[i + 2]);
-        if (d > 30) mismatch++;
-      }
-      return {
-        mismatchPct: ((100 * mismatch) / total).toFixed(2),
-        holeFracA: centerDarkFrac(A).toFixed(3),
-        holeFracB: centerDarkFrac(B).toFixed(3),
-      };
-    },
-    { ba, bb },
-  );
-  await browser.close();
-  return result;
+/**
+ * (a) the whole-frame mismatch percent and (b) each frame's "hole present"
+ * fraction — near-black pixels (channel sum < 60) in the 120x120 box at the
+ * canvas centre, inside the polygon where the background shows — in the
+ * printed precision the original compared (2 and 3 decimals). A size mismatch
+ * leaves every field null, which the verdict reads as no hole and 100 %.
+ *
+ * @param {{width: number, height: number, data: ArrayLike<number>}} gpu
+ * @param {{width: number, height: number, data: ArrayLike<number>}} gl
+ * @returns {{mismatchPct: string|null, holeFracA: string|null, holeFracB: string|null}}
+ */
+export function analyzeClippoly(gpu, gl) {
+  if (gpu.width !== gl.width || gpu.height !== gl.height) {
+    return { mismatchPct: null, holeFracA: null, holeFracB: null };
+  }
+  const centre = (img) =>
+    centredSquare(Math.floor(img.width / 2), Math.floor(img.height / 2), 60);
+  return {
+    mismatchPct: rgbSumDiff(gpu, gl).mismatchPct.toFixed(2),
+    holeFracA: rgbSumBelowFraction(gpu, centre(gpu)).fraction.toFixed(3),
+    holeFracB: rgbSumBelowFraction(gl, centre(gl)).fraction.toFixed(3),
+  };
 }
 
-(async () => {
-  if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log("[probe-clippoly] running webgpu...");
-  const gpu = await run("webgpu");
-  console.log("[probe-clippoly] running webgl...");
-  const gl = await run("webgl");
-
-  console.log(`  webgpu png: ${gpu.out}`);
-  console.log(`  webgl  png: ${gl.out}`);
-  if (gpu.errs.length)
-    console.log(
-      `  webgpu errors:`,
-      gpu.errs.slice(0, 5).map((e) => e.text),
+/**
+ * The original parity criteria over one run: the hole is present on both
+ * backends (centre >= 95 % background-black) and the whole-frame mismatch is
+ * <= 2 % (boundary alignment), read from the printed values exactly as before.
+ *
+ * Pure and exported so `globe-probe-verdicts.spec.mjs` can drive it.
+ *
+ * @param {Array<{run: number, analysis: object}>} cells
+ * @returns {Array<object>} Verdicts in the runtime's shape.
+ */
+export function evaluateClippoly(cells) {
+  const verdicts = [];
+  for (const { run, analysis } of cells) {
+    const suffix = `run${run}`;
+    const holeGpu = parseFloat(analysis.holeFracA ?? "0");
+    const holeGl = parseFloat(analysis.holeFracB ?? "0");
+    const mismatch = parseFloat(analysis.mismatchPct ?? "100");
+    verdicts.push(
+      {
+        id: `hole-webgpu/${suffix}`,
+        claim: `WebGPU clip hole present: centre dark fraction ${holeGpu} >= 0.95`,
+        pass: holeGpu >= 0.95,
+        detail: { holeFraction: holeGpu },
+      },
+      {
+        id: `hole-webgl/${suffix}`,
+        claim: `WebGL clip hole present: centre dark fraction ${holeGl} >= 0.95`,
+        pass: holeGl >= 0.95,
+        detail: { holeFraction: holeGl },
+      },
+      {
+        id: `boundary-aligned/${suffix}`,
+        claim: `clip boundary aligned: whole-frame mismatch ${mismatch}% <= 2%`,
+        pass: mismatch <= 2.0,
+        detail: { mismatchPct: mismatch },
+      },
     );
-  if (gl.errs.length)
-    console.log(
-      `  webgl errors:`,
-      gl.errs.slice(0, 5).map((e) => e.text),
-    );
+  }
+  return verdicts;
+}
 
-  const res = await analyze(gpu.out, gl.out);
-  console.log(`  analysis:`, JSON.stringify(res));
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "globe-clippoly-geodetic",
+  title:
+    "GLOBE-CLIPPOLY-GEODETIC — globe clipping polygon hole and boundary, WebGL vs WebGPU",
+  outputSubdirectory: "globe-clippoly-geodetic",
+  // No JSON receipt was banked before the migration.
+  receiptEnvelope: "runtime",
+  launchArgs: LAUNCH_ARGS,
+  // The CesiumViewer page and the SETUP import read this module.
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    if (
+      !options.renderers.includes("webgl") ||
+      !options.renderers.includes("webgpu")
+    ) {
+      throw new ProbeRefusal(
+        "renderer-unavailable",
+        "clip-polygon parity compares the two backends, so both renderers " +
+          `are required (got ${options.renderers.join(",")})`,
+        { renderers: options.renderers },
+      );
+    }
+    const shared = { browser, origin, run, outputDirectory, captures };
+    console.log("[probe-clippoly] running webgpu...");
+    const gpu = await capture({ ...shared, rendererArg: "webgpu" });
+    console.log("[probe-clippoly] running webgl...");
+    const gl = await capture({ ...shared, rendererArg: "webgl" });
+    if (gpu.errs.length)
+      console.log(
+        `  webgpu errors:`,
+        gpu.errs.slice(0, 5).map((e) => e.text),
+      );
+    if (gl.errs.length)
+      console.log(
+        `  webgl errors:`,
+        gl.errs.slice(0, 5).map((e) => e.text),
+      );
+    const analysis = analyzeClippoly(gpu.image, gl.image);
+    console.log(`  analysis:`, JSON.stringify(analysis));
+    return [
+      {
+        run,
+        analysis,
+        chromeRemoved: { webgpu: gpu.chromeRemoved, webgl: gl.chromeRemoved },
+      },
+    ];
+  },
+  verdicts(cells) {
+    return evaluateClippoly(cells);
+  },
+  receipt(cells, context) {
+    for (const verdict of context.verdicts) {
+      console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
+    }
+    return { cells, verdicts: context.verdicts };
+  },
+};
 
-  // PASS criteria:
-  //   hole present on both (center ≥95% background-black), AND
-  //   whole-image mismatch ≤ 2% (boundary alignment).
-  const holeGpu = parseFloat(res.holeFracA ?? "0") >= 0.95;
-  const holeGl = parseFloat(res.holeFracB ?? "0") >= 0.95;
-  const aligned = parseFloat(res.mismatchPct ?? "100") <= 2.0;
-  console.log(
-    `  hole webgpu=${holeGpu} webgl=${holeGl} boundaryAligned=${aligned}`,
-  );
-  const parity = holeGpu && holeGl && aligned;
-  console.log(`  PARITY: ${parity ? "PASS" : "FAIL"}`);
-  console.log("[probe-clippoly] done");
-  // A printed verdict that leaves with status 0 is read as green by anything
-  // that scores runs by exit code, so the verdict carries the code.
-  process.exit(parity ? 0 : 1);
-})();
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}

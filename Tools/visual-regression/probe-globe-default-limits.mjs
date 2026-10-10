@@ -43,41 +43,63 @@
 // probe-globe-bindgroup-cache.mjs + sandcastle-smoke.mjs — run those
 // alongside this probe for any change near the globe layout.
 //
-// Usage: node Tools/visual-regression/probe-globe-default-limits.mjs
-// Env:   PROBE_BASE (default http://localhost:8134)
-//        PROBE_TEXTURE_LIMIT (default 16; use 64 to exercise the full tier)
-// Out:   Tools/visual-regression/output/globe-limit-<limit>-{1,N}layer.png
+// The two scenes are the rigs `globe-default-limits-16` and
+// `globe-default-limits-16-overflow`.
+//
+// ON THE SHARED RUNTIME (probe-kit harvest, globe family). The browser, the
+// origin (`--port`, a governed Edge port), the served-build preflight, the
+// Edge slot and the receipt belong to `lib/probe-runtime.mjs`, and the tier is
+// the `--texture-limit` flag (the `PROBE_TEXTURE_LIMIT` variable it replaces).
+// Every pixel this probe reads — the two snaps and the centre-pixel "disk is
+// visible" wait — is an element capture through `captureElement`, which asks
+// the device-loss gate first; the in-page `drawImage` readbacks are gone. The
+// widget is published as `window.__viewer` so the shared error gate can arm
+// its device and the seam can read its frame number. (C)/(D)'s coverage and
+// colour buckets are `colourDiversity`, the green shift is
+// `channelExcessShift` and the changed fraction is `diffImages` at tolerance
+// 24, all in Node and all held to the in-page loops by
+// `metrics-globe-extraction.spec.mjs`.
+//
+// Usage: node Tools/visual-regression/probe-globe-default-limits.mjs [--port 8094] [--texture-limit 16]
+//        (--texture-limit 64 exercises the full tier)
+// Out:   Tools/visual-regression/output/globe-default-limits/
+// @runtime lib/probe-runtime.mjs
 
-import { chromium } from "playwright";
-import { mkdirSync, writeFileSync } from "fs";
-import { fileURLToPath } from "url";
-import { dirname, join } from "path";
+import { decodePng } from "../lib/png-decode.mjs";
+import { armWebGPUDevices, errorGateInit } from "../lib/webgpu-error-gate.mjs";
+import { diffImages } from "./lib/image-diff.mjs";
+import { channelExcessShift } from "./lib/metrics/channel-excess-shift.mjs";
+import { colourDiversity } from "./lib/metrics/colour-diversity.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8134";
-const TEXTURE_LIMIT = Number(process.env.PROBE_TEXTURE_LIMIT ?? 16);
-const OUT_DIR = join(dirname(fileURLToPath(import.meta.url)), "output");
-mkdirSync(OUT_DIR, { recursive: true });
+const SCENE_CANVAS = ".cesium-widget canvas";
+/**
+ * Bucket threshold note: the offline NaturalEarthII palette is softer than
+ * the Ion world imagery used by probe-globe-bindgroup-cache (which asserts
+ * >100). A composited NaturalEarthII globe measures ~300+ buckets at
+ * 1024x768; the pre-imagery failure mode (atmosphere ring over a dark disk)
+ * measures ~80. 150 splits the two cleanly.
+ */
+const BUCKETS_MIN = 150;
+/** Frames between two disk-visibility polls, as the original stepped (5). */
+const DISK_POLL_STEP = 5;
+/** Frames the disk-visibility wait may spend, as the original capped (300). */
+const DISK_POLL_FRAMES = 300;
 
-const browser = await chromium.launch({
-  channel: "msedge",
-  headless: true,
-  args: ["--enable-unsafe-webgpu"],
-});
-const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
-const errors = [];
-page.on("console", (m) => {
-  if (m.type() === "error") errors.push(m.text());
-});
-page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-
-// Bare page — MUST NOT auto-create a viewer. The device pool shares its
-// primary device with any compatible later acquire; if a default-options
-// viewer ran first, its 64-texture negotiated device would satisfy our
-// "≥16" requirement and the forced-default-limit device would never be
-// created.
-await page.goto(`${BASE}/index.html`, { waitUntil: "domcontentloaded" });
-
-const out = await page.evaluate(async (textureLimit) => {
+/**
+ * Page side: build the widget on the bare page with the pinned texture limit
+ * and aim the camera. Unchanged from the in-page original apart from
+ * publishing the widget for the gate and the seam.
+ *
+ * @param {number} textureLimit
+ * @returns {Promise<{deviceLimit: number}>}
+ */
+async function pageSetupWidget(textureLimit) {
   const C = await import("/Build/CesiumUnminified/index.js");
 
   // The bare page has no widgets CSS — without the 100% rules the
@@ -146,198 +168,277 @@ const out = await page.evaluate(async (textureLimit) => {
     }
     return false;
   };
-  // `tilesLoaded` reports the CPU-side imagery state machine; the
-  // WebGPU-side texture upload + first composited frame can land a few
-  // frames later. Gate on the actual canvas content: the globe disk is
-  // centered (camera looks at lon 0 / lat 20 from 18 Mm), so wait until
-  // the CENTER pixel carries imagery brightness. Without this the snap
-  // races the upload and captures the dark pre-imagery base color.
-  const renderUntilDiskVisible = async (maxFrames) => {
-    for (let i = 0; i < maxFrames; i += 5) {
-      const px = await new Promise((resolve) => {
-        const remove = scene.postRender.addEventListener(() => {
-          remove();
-          const c = scene.canvas;
-          const off = document.createElement("canvas");
-          off.width = c.width;
-          off.height = c.height;
-          const cx = off.getContext("2d");
-          cx.drawImage(c, 0, 0);
-          const d = cx.getImageData(
-            Math.floor(c.width / 2),
-            Math.floor(c.height / 2),
-            1,
-            1,
-          ).data;
-          resolve(d[0] + d[1] + d[2]);
-        });
-        scene.render();
-      });
-      if (px > 90) return true;
-      await frame(4);
-    }
-    return false;
-  };
-  // Deterministic readback INSIDE scene.postRender — present clears the
-  // WebGPU canvas texture, so readback in a later task is racy.
-  const snap = () =>
-    new Promise((resolve) => {
-      const remove = scene.postRender.addEventListener(() => {
-        remove();
-        const c = scene.canvas;
-        const off = document.createElement("canvas");
-        off.width = c.width;
-        off.height = c.height;
-        const cx = off.getContext("2d");
-        cx.drawImage(c, 0, 0);
-        resolve({
-          data: cx.getImageData(0, 0, c.width, c.height).data,
-          w: c.width,
-          h: c.height,
-          png: off.toDataURL("image/png"),
-        });
-      });
-      scene.render();
-    });
-  const analyze = (img) => {
-    let nonBlack = 0;
-    const buckets = new Set();
-    for (let p = 0; p < img.w * img.h; p++) {
-      const i = 4 * p;
-      const r = img.data[i];
-      const g = img.data[i + 1];
-      const b = img.data[i + 2];
-      if (r > 16 || g > 16 || b > 16) {
-        nonBlack++;
-        buckets.add(((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4));
-      }
-    }
-    return {
-      nonBlackPct: nonBlack / (img.w * img.h),
-      colorBuckets: buckets.size,
-    };
-  };
+  // Published for the shared error gate and the capture seam (both read
+  // `window.__viewer`), and for the Node side's later page steps.
+  window.__viewer = widget;
+  window.__limitsProbe = { C, scene, frame, renderUntilLoaded };
+  return { deviceLimit };
+}
 
-  // ── Phase 1: single imagery layer on the reduced layout ──
-  const loaded1 =
-    (await renderUntilLoaded(900, 20)) && (await renderUntilDiskVisible(300));
-  const img1 = await snap();
-  const a1 = analyze(img1);
-  const slotCount = globalThis.__webgpuGlobeImagerySlotCount ?? -1;
-
-  // ── Phase 2: slotCount+1 total layers → a two-pass blend path ──
-  // Local grid layers plus NaturalEarthII force exactly one overflow layer on
-  // both the four-slot compatibility tier and the sixteen-slot full tier.
-  for (let i = 0; i < slotCount; i++) {
+/**
+ * Page side: add `count` local grid layers. With NaturalEarthII that forces
+ * exactly one overflow layer on both the four-slot compatibility tier and the
+ * sixteen-slot full tier, so a second blend pass must run.
+ *
+ * @param {number} count
+ */
+async function pageAddGridLayers(count) {
+  const { C, scene } = window.__limitsProbe;
+  for (let i = 0; i < count; i++) {
     scene.imageryLayers.addImageryProvider(
       new C.GridImageryProvider({ cells: 4 }),
     );
   }
-  const loaded2 =
-    (await renderUntilLoaded(900, 20)) && (await renderUntilDiskVisible(300));
-  const img2 = await snap();
-  const a2 = analyze(img2);
-
-  // Pixel diff between the two phases — the grid layers, including the second
-  // (blend) pass must actually land on screen. Two metrics:
-  //   - changedPct: raw fraction of pixels that moved (informational —
-  //     also picks up tile-refinement noise between snaps).
-  //   - greenShift: GridImageryProvider's DEFAULT backgroundColor is
-  //     rgba(0, 0.5, 0, 0.2) — a 20% green wash over every covered
-  //     fragment. The mean green-excess (g - (r+b)/2) over pixels lit
-  //     in both phases must increase if (and only if) the second blend
-  //     pass actually composited. Tile refinement doesn't shift hue
-  //     systematically, so this isolates the pass-2 contribution.
-  let changed = 0;
-  let greenSum = 0;
-  let greenN = 0;
-  const n = Math.min(img1.data.length, img2.data.length);
-  for (let i = 0; i < n; i += 4) {
-    const r1 = img1.data[i],
-      g1 = img1.data[i + 1],
-      b1 = img1.data[i + 2];
-    const r2 = img2.data[i],
-      g2 = img2.data[i + 1],
-      b2 = img2.data[i + 2];
-    if (
-      Math.abs(r1 - r2) > 24 ||
-      Math.abs(g1 - g2) > 24 ||
-      Math.abs(b1 - b2) > 24
-    ) {
-      changed++;
-    }
-    if (r1 + g1 + b1 > 48 && r2 + g2 + b2 > 48) {
-      greenSum += g2 - (r2 + b2) / 2 - (g1 - (r1 + b1) / 2);
-      greenN++;
-    }
-  }
-
-  return {
-    deviceLimit,
-    slotCount,
-    loaded1,
-    loaded2,
-    phase1: a1,
-    phase2: a2,
-    changedPct: changed / (img1.w * img1.h),
-    greenShift: greenN > 0 ? greenSum / greenN : 0,
-    png1: img1.png,
-    png2: img2.png,
-  };
-}, TEXTURE_LIMIT);
-
-// Save screenshots for spot-checking.
-for (const [name, dataUrl] of [
-  [`globe-limit-${TEXTURE_LIMIT}-1layer.png`, out.png1],
-  [`globe-limit-${TEXTURE_LIMIT}-${out.slotCount + 1}layer.png`, out.png2],
-]) {
-  writeFileSync(
-    join(OUT_DIR, name),
-    Buffer.from(dataUrl.split(",")[1], "base64"),
-  );
 }
-await browser.close();
 
-// Bucket threshold note: the offline NaturalEarthII palette is softer
-// than the Ion world imagery used by probe-globe-bindgroup-cache (which
-// asserts >100). A composited NaturalEarthII globe measures ~300+
-// buckets at 1024x768; the pre-imagery failure mode (atmosphere ring
-// over a dark disk) measures ~80. 150 splits the two cleanly.
-const BUCKETS_MIN = 150;
-const expectedSlots = TEXTURE_LIMIT >= 28 ? 16 : 4;
-const aOK = out.deviceLimit === TEXTURE_LIMIT;
-const bOK = out.slotCount === expectedSlots;
-const cOK =
-  out.loaded1 &&
-  out.phase1.nonBlackPct > 0.08 &&
-  out.phase1.colorBuckets > BUCKETS_MIN;
-const dOK =
-  out.loaded2 &&
-  out.phase2.nonBlackPct > 0.08 &&
-  out.phase2.colorBuckets > BUCKETS_MIN &&
-  // Measured ~3.8 on a compositing pass-2; a silently-skipped blend
-  // pass measures ~0 (refinement noise is hue-neutral). 2.0 splits.
-  out.greenShift > 2;
-const eOK = errors.length === 0;
+/** The channel sum of a decoded frame's centre pixel (`floor(w/2), floor(h/2)`). */
+function centrePixelSum(image) {
+  const i =
+    4 *
+    (Math.floor(image.height / 2) * image.width + Math.floor(image.width / 2));
+  return image.data[i] + image.data[i + 1] + image.data[i + 2];
+}
 
-console.log(
-  `(A) forced texture limit: maxSampledTexturesPerShaderStage=${out.deviceLimit} (expect ${TEXTURE_LIMIT}) ${aOK ? "OK" : "FAIL"}`,
-);
-console.log(
-  `(B) imagery layout selected: imagerySlotCount=${out.slotCount} (expect ${expectedSlots}) ${bOK ? "OK" : "FAIL"}`,
-);
-console.log(
-  `(C) 1-layer render: loaded=${out.loaded1}, nonBlack=${(out.phase1.nonBlackPct * 100).toFixed(1)}% (>8%), ` +
-    `colorBuckets=${out.phase1.colorBuckets} (>${BUCKETS_MIN}) ${cOK ? "OK" : "FAIL"}`,
-);
-console.log(
-  `(D) ${out.slotCount + 1}-layer multi-pass: loaded=${out.loaded2}, nonBlack=${(out.phase2.nonBlackPct * 100).toFixed(1)}% (>8%), ` +
-    `colorBuckets=${out.phase2.colorBuckets} (>${BUCKETS_MIN}), greenShift=${out.greenShift.toFixed(1)} (>2 — grid layer's ` +
-    `green background wash from the blend pass), changedPct=${(out.changedPct * 100).toFixed(2)}% ${dOK ? "OK" : "FAIL"}`,
-);
-console.log(`(E) console errors: ${errors.length} ${eOK ? "OK" : "FAIL"}`);
-errors.slice(0, 8).forEach((e) => console.log("  ERR:", e.slice(0, 300)));
+/**
+ * `tilesLoaded` reports the CPU-side imagery state machine; the WebGPU-side
+ * texture upload + first composited frame can land a few frames later. Gate on
+ * the actual canvas content: the globe disk is centered (camera looks at lon 0
+ * / lat 20 from 18 Mm), so wait until the CENTER pixel carries imagery
+ * brightness (channel sum > 90). Without this the snap races the upload and
+ * captures the dark pre-imagery base color. Each poll renders one frame, reads
+ * the frame through the seam, then renders four more, as the in-page original
+ * stepped. The poll frame overwrites one file and stays out of the receipt's
+ * capture list; the poll count is recorded instead.
+ *
+ * @returns {Promise<{visible: boolean, polls: number}>}
+ */
+async function renderUntilDiskVisible(page, pollName, outputDirectory) {
+  let polls = 0;
+  for (let i = 0; i < DISK_POLL_FRAMES; i += DISK_POLL_STEP) {
+    await page.evaluate(() => window.__limitsProbe.frame(1));
+    const shot = await captureElement({
+      page,
+      selector: SCENE_CANVAS,
+      name: pollName,
+      outputDirectory,
+    });
+    polls++;
+    if (centrePixelSum(decodePng(shot.buffer)) > 90) {
+      return { visible: true, polls };
+    }
+    await page.evaluate(() => window.__limitsProbe.frame(4));
+  }
+  return { visible: false, polls };
+}
 
-const pass = aOK && bOK && cOK && dOK && eOK;
-console.log(pass ? "PASS" : "FAIL");
-process.exit(pass ? 0 : 1);
+/**
+ * The five clauses over one run's cell, with the original bars. (A) the
+ * device got the forced limit; (B) the imagery layout matches the tier (4
+ * slots below 28 sampled textures, 16 at or above); (C) the one-layer globe is
+ * loaded, more than 8 % non-black and more than 150 colour buckets; (D) the
+ * overflow globe is the same and its green excess rose by more than 2 — measured
+ * ~3.8 on a compositing pass-2, while a silently-skipped blend pass measures ~0
+ * (refinement noise is hue-neutral), so 2.0 splits; (E) no console error.
+ *
+ * Pure and exported so `globe-probe-verdicts.spec.mjs` can drive it.
+ *
+ * @param {Array<object>} cells
+ * @returns {Array<object>} Verdicts in the runtime's shape.
+ */
+export function evaluateDefaultLimits(cells) {
+  const verdicts = [];
+  for (const out of cells) {
+    const suffix = `run${out.run}`;
+    const expectedSlots = out.textureLimit >= 28 ? 16 : 4;
+    verdicts.push(
+      {
+        id: `forced-texture-limit/${suffix}`,
+        claim: `(A) forced texture limit: maxSampledTexturesPerShaderStage=${out.deviceLimit} (expect ${out.textureLimit})`,
+        pass: out.deviceLimit === out.textureLimit,
+        detail: { deviceLimit: out.deviceLimit, expected: out.textureLimit },
+      },
+      {
+        id: `imagery-layout-selected/${suffix}`,
+        claim: `(B) imagery layout selected: imagerySlotCount=${out.slotCount} (expect ${expectedSlots})`,
+        pass: out.slotCount === expectedSlots,
+        detail: { slotCount: out.slotCount, expected: expectedSlots },
+      },
+      {
+        id: `single-layer-renders/${suffix}`,
+        claim: `(C) 1-layer render: loaded=${out.loaded1}, nonBlack=${(out.phase1.nonBlackPct * 100).toFixed(1)}% (>8%), colorBuckets=${out.phase1.colorBuckets} (>${BUCKETS_MIN})`,
+        pass:
+          out.loaded1 &&
+          out.phase1.nonBlackPct > 0.08 &&
+          out.phase1.colorBuckets > BUCKETS_MIN,
+        detail: { loaded: out.loaded1, ...out.phase1 },
+      },
+      {
+        id: `overflow-blend-pass-composites/${suffix}`,
+        claim: `(D) ${out.slotCount + 1}-layer multi-pass: loaded=${out.loaded2}, nonBlack=${(out.phase2.nonBlackPct * 100).toFixed(1)}% (>8%), colorBuckets=${out.phase2.colorBuckets} (>${BUCKETS_MIN}), greenShift=${out.greenShift.toFixed(1)} (>2), changedPct=${(out.changedPct * 100).toFixed(2)}%`,
+        pass:
+          out.loaded2 &&
+          out.phase2.nonBlackPct > 0.08 &&
+          out.phase2.colorBuckets > BUCKETS_MIN &&
+          out.greenShift > 2,
+        detail: {
+          loaded: out.loaded2,
+          ...out.phase2,
+          greenShift: out.greenShift,
+          changedPct: out.changedPct,
+        },
+      },
+      {
+        id: `console-errors/${suffix}`,
+        claim: `(E) console errors: ${out.errors.length}`,
+        pass: out.errors.length === 0,
+        detail: { errors: out.errors.slice(0, 8) },
+      },
+    );
+  }
+  return verdicts;
+}
+
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "globe-default-limits",
+  title:
+    "NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT — the globe on a device pinned to the default sampled-texture limit",
+  outputSubdirectory: "globe-default-limits",
+  // No JSON receipt was banked before the migration.
+  receiptEnvelope: "runtime",
+  args: {
+    defaults: { renderers: ["webgpu"] },
+    extraOptions: [
+      {
+        flag: "--texture-limit",
+        key: "textureLimit",
+        kind: "positive-integer",
+        default: 16,
+      },
+    ],
+  },
+  // The bare page imports this module to build its own widget.
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    if (!options.renderers.includes("webgpu")) {
+      throw new ProbeRefusal(
+        "renderer-unavailable",
+        "the reduced imagery layout is the WebGPU globe's default-limit path, " +
+          `so this gate has nothing to measure on ${options.renderers.join(",")}`,
+        { renderers: options.renderers },
+      );
+    }
+    const limit = options.textureLimit;
+    const context = await browser.newContext({
+      viewport: { width: 1024, height: 768 },
+    });
+    try {
+      const page = await context.newPage();
+      const errors = [];
+      page.on("console", (m) => {
+        if (m.type() === "error") errors.push(m.text());
+      });
+      page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+      await page.addInitScript(errorGateInit);
+      // Bare page — MUST NOT auto-create a viewer. The device pool shares its
+      // primary device with any compatible later acquire; if a default-options
+      // viewer ran first, its 64-texture negotiated device would satisfy our
+      // "≥16" requirement and the forced-default-limit device would never be
+      // created.
+      await page.goto(`${origin}/index.html`, {
+        waitUntil: "domcontentloaded",
+      });
+      const { deviceLimit } = await page.evaluate(pageSetupWidget, limit);
+      await armWebGPUDevices(page);
+
+      const loadPhase = async (label) => {
+        const loaded = await page.evaluate(() =>
+          window.__limitsProbe.renderUntilLoaded(900, 20),
+        );
+        // The original short-circuited: no disk poll when tiles never loaded.
+        const disk = loaded
+          ? await renderUntilDiskVisible(
+              page,
+              `globe-limit-${limit}-${label}-readiness-poll-run${run}`,
+              outputDirectory,
+            )
+          : { visible: false, polls: 0 };
+        return { loaded: loaded && disk.visible, polls: disk.polls };
+      };
+
+      // ── Phase 1: single imagery layer on the reduced layout ──
+      const phase1Load = await loadPhase("1layer");
+      const snap1 = await captureElement({
+        page,
+        selector: SCENE_CANVAS,
+        name: `globe-limit-${limit}-1layer-run${run}`,
+        outputDirectory,
+        captures,
+      });
+      const slotCount = await page.evaluate(
+        () => globalThis.__webgpuGlobeImagerySlotCount ?? -1,
+      );
+
+      // ── Phase 2: slotCount+1 total layers → a two-pass blend path ──
+      await page.evaluate(pageAddGridLayers, slotCount);
+      const phase2Load = await loadPhase(`${slotCount + 1}layer`);
+      const snap2 = await captureElement({
+        page,
+        selector: SCENE_CANVAS,
+        name: `globe-limit-${limit}-${slotCount + 1}layer-run${run}`,
+        outputDirectory,
+        captures,
+      });
+
+      // Pixel diff between the two phases — the grid layers, including the
+      // second (blend) pass, must actually land on screen. changedPct is the
+      // raw fraction of pixels that moved (informational — it also picks up
+      // tile-refinement noise between snaps); greenShift is the mean
+      // green-excess change over pixels lit in both phases, which rises if
+      // (and only if) the grid's rgba(0, 0.5, 0, 0.2) background wash was
+      // composited by the second pass.
+      const img1 = decodePng(snap1.buffer);
+      const img2 = decodePng(snap2.buffer);
+      const toPhase = (image) => {
+        const m = colourDiversity(image);
+        return {
+          nonBlackPct: m.nonBlackFraction,
+          colorBuckets: m.colourBuckets,
+        };
+      };
+      return [
+        {
+          run,
+          textureLimit: limit,
+          deviceLimit,
+          slotCount,
+          loaded1: phase1Load.loaded,
+          loaded2: phase2Load.loaded,
+          diskPolls: [phase1Load.polls, phase2Load.polls],
+          phase1: toPhase(img1),
+          phase2: toPhase(img2),
+          changedPct:
+            diffImages(img1, img2, { tolerance: 24 }).changedPx /
+            (img1.width * img1.height),
+          greenShift: channelExcessShift(img1, img2).shift,
+          errors: [...errors],
+        },
+      ];
+    } finally {
+      await context.close();
+    }
+  },
+  verdicts(cells) {
+    return evaluateDefaultLimits(cells);
+  },
+  receipt(cells, context) {
+    for (const verdict of context.verdicts) {
+      console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
+    }
+    return { cells, verdicts: context.verdicts };
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}

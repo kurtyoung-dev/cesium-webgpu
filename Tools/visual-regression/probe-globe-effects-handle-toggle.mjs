@@ -24,33 +24,58 @@
 //   (D) ZERO console/validation errors across all transitions.
 //
 // Determinism: requestRenderMode off, clock pinned, fixed camera, per-toggle
-// settle. Usage: node Tools/visual-regression/probe-globe-effects-handle-toggle.mjs
-// Env: PROBE_BASE (default http://localhost:8080)
+// settle. The scene is the rig `globe-effects-clip-toggle`.
+//
+// ON THE SHARED RUNTIME (probe-kit harvest, globe family). The browser, the
+// origin (`--port`, a governed Edge port, never 8080), the served-build
+// preflight, the Edge slot and the receipt belong to `lib/probe-runtime.mjs`.
+// The four frames are element captures through `captureElement`, which asks
+// the device-loss gate before banking a frame; the in-page `drawImage`
+// readback this probe used to diff is gone. The changed-pixel counts are
+// `diffImages` (`lib/image-diff.mjs`) at the original per-channel tolerance of
+// 12, run in Node over the decoded PNGs — the same rule the in-page loop
+// applied (`metrics-globe-extraction.spec.mjs` holds the two equal).
+//
+// THE CHROME IS STRIPPED BEFORE THE FIRST FRAME. An element capture is a
+// screenshot of the canvas's rectangle, so it composites whatever the page
+// stacks over it: the CesiumViewer toolbar, the navigation-help panel (open
+// in every fresh context), the animation widget, the credits and the
+// timeline. The in-page readback this replaced saw the canvas alone, and the
+// 5000-px floor and the 15 % ratios were set on that population. The kit's
+// `lib/strip-viewer-widgets.mjs` removes the chrome after the warmup (the
+// page hides its loading indicator on the first rendered frame) and before
+// the baseline frame, so all four frames are of the canvas; the cell refuses
+// (`capture-chrome-over-canvas`) when anything is still stacked over the
+// canvas, and `chromeRemoved` records how many elements went.
+//
+// Usage: node Tools/visual-regression/probe-globe-effects-handle-toggle.mjs [--port 8094]
+// @runtime lib/probe-runtime.mjs
 
-import { chromium } from "playwright";
+import { decodePng } from "../lib/png-decode.mjs";
+import { armWebGPUDevices, errorGateInit } from "../lib/webgpu-error-gate.mjs";
+import { diffImages } from "./lib/image-diff.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
+import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
+const VIEWPORT = Object.freeze({ width: 1024, height: 768 });
+const SCENE_CANVAS = ".cesium-widget canvas";
+/** Per-channel tolerance of the original in-page diff (`> 12`). */
+const CHANNEL_TOLERANCE = 12;
+/** The four frames, in capture order. */
+const FRAMES = Object.freeze(["baseline", "on", "off", "restore"]);
 
-const browser = await chromium.launch({
-  channel: "msedge",
-  headless: true,
-  args: ["--enable-unsafe-webgpu"],
-});
-const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
-const errors = [];
-page.on("console", (m) => {
-  if (m.type() === "error") errors.push(m.text());
-});
-page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-await page.goto(
-  `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`,
-  {
-    waitUntil: "networkidle",
-  },
-);
-await page.waitForFunction(() => !!window.viewer);
-
-const out = await page.evaluate(async () => {
+/**
+ * Page side: pin the scene and warm up until imagery settles. Unchanged from
+ * the in-page original apart from being its own step.
+ *
+ * @returns {Promise<{warmupFrames: number, tilesLoaded: boolean}>}
+ */
+async function pageWarmup() {
   const C = await import("/Build/CesiumUnminified/index.js");
   const v = window.viewer;
   const scene = v.scene;
@@ -69,26 +94,6 @@ const out = await page.evaluate(async () => {
         resolve();
       });
     });
-  const grab = () =>
-    new Promise((resolve) => {
-      const remove = scene.postRender.addEventListener(() => {
-        remove();
-        const c = scene.canvas;
-        const off = document.createElement("canvas");
-        off.width = c.width;
-        off.height = c.height;
-        const cx = off.getContext("2d");
-        cx.drawImage(c, 0, 0);
-        resolve({
-          data: cx.getImageData(0, 0, c.width, c.height).data,
-          w: c.width,
-          h: c.height,
-        });
-      });
-    });
-  const settle = async (n) => {
-    for (let i = 0; i < n; i++) await oncePostRender();
-  };
 
   // Warmup until imagery settles.
   let frames = 0;
@@ -98,93 +103,196 @@ const out = await page.evaluate(async () => {
     consecutive = scene.globe.tilesLoaded ? consecutive + 1 : 0;
     if (frames > 300 && consecutive > 60) break;
   }
+  return { warmupFrames: frames, tilesLoaded: scene.globe.tilesLoaded };
+}
 
-  // Baseline (no clipping) — the un-clipped terrain.
-  const baseline = await grab();
-
-  // A large clipping plane through the view carves out terrain. The globe
-  // effects gate keys on `clippingPlanes.length > 0` (matching WebGPU's
-  // existing semantics — `.enabled` is honored upstream in the collection's
-  // texture update, not by the bind-group gate), so the memo's
-  // active -> placeholder -> active transition is driven by ASSIGNING vs
-  // REMOVING the collection (length 1 -> 0 -> 1).
+/**
+ * Page side: one clipping-state step, then the original 40-frame settle.
+ *
+ * A large clipping plane through the view carves out terrain. The globe
+ * effects gate keys on `clippingPlanes.length > 0` (matching WebGPU's existing
+ * semantics — `.enabled` is honored upstream in the collection's texture
+ * update, not by the bind-group gate), so the memo's active -> placeholder ->
+ * active transition is driven by ASSIGNING vs REMOVING the collection
+ * (length 1 -> 0 -> 1).
+ *
+ * @param {"on"|"off"|"restore"} step
+ * @returns {Promise<{tilesLoaded: boolean}>}
+ */
+async function pageClipStep(step) {
+  const C = await import("/Build/CesiumUnminified/index.js");
+  const scene = window.viewer.scene;
+  const oncePostRender = () =>
+    new Promise((resolve) => {
+      const remove = scene.postRender.addEventListener(() => {
+        remove();
+        resolve();
+      });
+    });
   const makePlane = () =>
     new C.ClippingPlane(new C.Cartesian3(1.0, 0.0, 0.0), 0.0);
-  const cp = new C.ClippingPlaneCollection({
-    planes: [makePlane()],
-    edgeWidth: 0.0,
-    enabled: true,
-    unionClippingRegions: true,
-  });
-  scene.globe.clippingPlanes = cp;
-  await settle(40);
-  const imgOn = await grab();
+  if (step === "on") {
+    scene.globe.clippingPlanes = new C.ClippingPlaneCollection({
+      planes: [makePlane()],
+      edgeWidth: 0.0,
+      enabled: true,
+      unionClippingRegions: true,
+    });
+  } else if (step === "off") {
+    // OFF — empty the collection (length -> 0): gate falls to the placeholder.
+    scene.globe.clippingPlanes.removeAll();
+  } else {
+    // RESTORE — re-add a plane (length -> 1): the memo must re-arm the
+    // active handle rather than serving the frozen placeholder.
+    scene.globe.clippingPlanes.add(makePlane());
+  }
+  for (let i = 0; i < 40; i++) await oncePostRender();
+  return { tilesLoaded: scene.globe.tilesLoaded };
+}
 
-  // OFF — empty the collection (length -> 0): gate falls to the placeholder.
-  cp.removeAll();
-  await settle(40);
-  const imgOff = await grab();
+/**
+ * The four clauses, per run, with the original bars: (A) ON changes more than
+ * 5000 px vs the baseline; (B) OFF and (C) RESTORE each differ from their
+ * reference by less than 15 % of the ON carve; (D) no console error.
+ *
+ * Pure and exported so `globe-probe-verdicts.spec.mjs` can put a cell on
+ * either side of every bar without a browser.
+ *
+ * @param {Array<object>} cells
+ * @returns {Array<object>} Verdicts in the runtime's shape.
+ */
+export function evaluateEffectsToggle(cells) {
+  const verdicts = [];
+  for (const cell of cells) {
+    const suffix = `run${cell.run}`;
+    const carve = cell.onVsBaseline * 0.15;
+    verdicts.push(
+      {
+        id: `clip-on-carves/${suffix}`,
+        claim: `(A) clipping ON changes ${cell.onVsBaseline}/${cell.totalPx} px vs baseline (warmup ${cell.warmupFrames}, tilesLoaded=${cell.tilesLoaded}) (>5000)`,
+        pass: cell.onVsBaseline > 5000,
+        detail: { changedPx: cell.onVsBaseline, floor: 5000 },
+      },
+      {
+        id: `clip-off-restores-baseline/${suffix}`,
+        claim: `(B) clipping OFF restores baseline: ${cell.offVsBaseline} px vs baseline (< ${Math.round(carve)} = 15% of ON carve)`,
+        pass: cell.offVsBaseline < carve,
+        detail: { changedPx: cell.offVsBaseline, ceiling: carve },
+      },
+      {
+        id: `clip-restore-reproduces-on/${suffix}`,
+        claim: `(C) clipping RESTORE reproduces ON: ${cell.restoreVsOn} px vs ON (< ${Math.round(carve)})`,
+        pass: cell.restoreVsOn < carve,
+        detail: { changedPx: cell.restoreVsOn, ceiling: carve },
+      },
+      {
+        id: `console-errors/${suffix}`,
+        claim: `(D) console errors: ${cell.errors.length}`,
+        pass: cell.errors.length === 0,
+        detail: { errors: cell.errors.slice(0, 8) },
+      },
+    );
+  }
+  return verdicts;
+}
 
-  // RESTORE — re-add a plane (length -> 1): the memo must re-arm the active
-  // handle rather than serving the frozen placeholder.
-  cp.add(makePlane());
-  await settle(40);
-  const imgRestore = await grab();
-
-  const n = baseline.w * baseline.h;
-  const diff = (a, b) => {
-    let d = 0;
-    for (let p = 0; p < n; p++) {
-      const i = 4 * p;
-      if (
-        Math.abs(a.data[i] - b.data[i]) > 12 ||
-        Math.abs(a.data[i + 1] - b.data[i + 1]) > 12 ||
-        Math.abs(a.data[i + 2] - b.data[i + 2]) > 12
-      ) {
-        d++;
-      }
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "globe-effects-handle-toggle",
+  title:
+    "Globe effects handle toggle — clipping ON/OFF/RESTORE carves, restores and re-carves",
+  outputSubdirectory: "globe-effects-handle-toggle",
+  // No JSON receipt was banked before the migration, so no reader keys off a
+  // probe-owned field set; one runtime document is the honest shape.
+  receiptEnvelope: "runtime",
+  args: { defaults: { renderers: ["webgpu"] } },
+  // The CesiumViewer page (`Apps/CesiumViewer/CesiumViewer.js`) and every
+  // in-page import here read this module; the default list's IIFE bundle is a
+  // file this page never loads.
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    if (!options.renderers.includes("webgpu")) {
+      throw new ProbeRefusal(
+        "renderer-unavailable",
+        "the per-frame globe effects bind-group memo is WebGPU-only, so this " +
+          `oracle has nothing to measure on ${options.renderers.join(",")}`,
+        { renderers: options.renderers },
+      );
     }
-    return d;
-  };
+    const context = await browser.newContext({ viewport: { ...VIEWPORT } });
+    try {
+      const page = await context.newPage();
+      const errors = [];
+      page.on("console", (m) => {
+        if (m.type() === "error") errors.push(m.text());
+      });
+      page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+      await page.addInitScript(errorGateInit);
+      await page.goto(
+        `${origin}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`,
+        { waitUntil: "networkidle" },
+      );
+      await page.waitForFunction(() => !!window.viewer);
+      await armWebGPUDevices(page);
 
-  return {
-    warmupFrames: frames,
-    tilesLoaded: scene.globe.tilesLoaded,
-    totalPx: n,
-    onVsBaseline: diff(imgOn, baseline), // (A) clipping visibly changes pixels
-    offVsBaseline: diff(imgOff, baseline), // (B) OFF restores baseline (small)
-    restoreVsOn: diff(imgRestore, imgOn), // (C) RESTORE reproduces ON (small)
-  };
-});
+      const warm = await page.evaluate(pageWarmup);
+      // Header: the chrome comes off before the baseline frame, or the cell
+      // refuses. A strip that reports nothing is not a clean canvas either.
+      const chrome = await page.evaluate(`(${STRIP_WIDGETS_SOURCE})()`);
+      if (!Array.isArray(chrome?.leftovers) || chrome.leftovers.length > 0) {
+        throw new ProbeRefusal(
+          "capture-chrome-over-canvas",
+          "after the CesiumViewer chrome was stripped, elements were still " +
+            `stacked over the scene canvas (${chrome?.leftovers?.join(", ") ?? "no strip report"}), ` +
+            "so an element capture would measure them with the scene",
+          { chrome: chrome ?? null },
+        );
+      }
+      let tilesLoaded = warm.tilesLoaded;
+      const images = {};
+      for (const frame of FRAMES) {
+        if (frame !== "baseline") {
+          ({ tilesLoaded } = await page.evaluate(pageClipStep, frame));
+        }
+        const shot = await captureElement({
+          page,
+          selector: SCENE_CANVAS,
+          name: `effects-toggle-${frame}-run${run}`,
+          outputDirectory,
+          captures,
+        });
+        images[frame] = decodePng(shot.buffer);
+      }
+      const count = (a, b) =>
+        diffImages(a, b, { tolerance: CHANNEL_TOLERANCE }).changedPx;
+      return [
+        {
+          run,
+          warmupFrames: warm.warmupFrames,
+          tilesLoaded,
+          totalPx: images.baseline.width * images.baseline.height,
+          onVsBaseline: count(images.on, images.baseline),
+          offVsBaseline: count(images.off, images.baseline),
+          restoreVsOn: count(images.restore, images.on),
+          chromeRemoved: chrome.removed,
+          errors: [...errors],
+        },
+      ];
+    } finally {
+      await context.close();
+    }
+  },
+  verdicts(cells) {
+    return evaluateEffectsToggle(cells);
+  },
+  receipt(cells, context) {
+    for (const verdict of context.verdicts) {
+      console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
+    }
+    return { cells, verdicts: context.verdicts };
+  },
+};
 
-await browser.close();
-
-const totalScale = out.totalPx / 100;
-// ON must differ substantially from the un-clipped baseline.
-const aOK = out.onVsBaseline > 5000;
-// OFF must return to the baseline: far fewer changed px than the clip carved.
-const bOK = out.offVsBaseline < out.onVsBaseline * 0.15;
-// RESTORE must reproduce ON: far fewer changed px than the clip carved.
-const cOK = out.restoreVsOn < out.onVsBaseline * 0.15;
-const dOK = errors.length === 0;
-
-console.log(
-  `(A) clipping ON changes ${out.onVsBaseline}/${out.totalPx} px vs baseline (warmup ${out.warmupFrames}, tilesLoaded=${out.tilesLoaded}) (>5000) ${aOK ? "OK" : "FAIL"}`,
-);
-console.log(
-  `(B) clipping OFF restores baseline: ${out.offVsBaseline} px vs baseline (< ${Math.round(out.onVsBaseline * 0.15)} = 15% of ON carve) ${bOK ? "OK" : "FAIL"}`,
-);
-console.log(
-  `(C) clipping RESTORE reproduces ON: ${out.restoreVsOn} px vs ON (< ${Math.round(out.onVsBaseline * 0.15)}) ${cOK ? "OK" : "FAIL"}`,
-);
-console.log(`(D) console errors: ${errors.length} ${dOK ? "OK" : "FAIL"}`);
-if (!dOK) errors.slice(0, 8).forEach((e) => console.log("   ", e));
-void totalScale;
-
-if (aOK && bOK && cOK && dOK) {
-  console.log("PASS");
-  process.exit(0);
-} else {
-  console.log("PROBE FAIL");
-  process.exit(1);
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
 }

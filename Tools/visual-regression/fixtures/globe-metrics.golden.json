@@ -1,0 +1,272 @@
+{
+  "schema": "globe-metrics-golden/1",
+  "base": "7e12d8f1d0",
+  "generator": "_lane-out/golden-capture/capture-globe-metrics-golden.mjs (lane Erebor)",
+  "cases": {
+    "probe-globe-translucency.mjs#diffPngs": {
+      "input": "spreadDiffPair() first=a second=b",
+      "output": {
+        "totalPx": 64000,
+        "mismatchPx": 22173,
+        "mismatchPct": 34.6453125,
+        "meanDelta": "15.18",
+        "meanSignedDR": "-3.53",
+        "meanSignedDG": "3.72",
+        "meanSignedDB": "3.15"
+      }
+    },
+    "probe-globe-underground.mjs#diffPngs": {
+      "input": "spreadDiffPair() first=a second=b",
+      "output": {
+        "totalPx": 64000,
+        "mismatchPx": 22173,
+        "mismatchPct": 34.6453125,
+        "meanDelta": "15.18",
+        "meanSignedDR": "-3.53",
+        "meanSignedDG": "3.72",
+        "meanSignedDB": "3.15"
+      }
+    },
+    "probe-globe-clippoly-geodetic.mjs#analyze": {
+      "input": "clippedHoleFrames() A=holed B=solid",
+      "output": {
+        "mismatchPct": "3.20",
+        "holeFracA": "0.933",
+        "holeFracB": "0.000"
+      }
+    },
+    "probe-globe-polar-stretch.mjs#analyze": {
+      "input": "globeDiscPair() A=first(gl) B=second(gpu)",
+      "output": {
+        "mismatchPct": 5.507,
+        "discRadius": 278.8,
+        "icePxA": 13981,
+        "icePxB": 14222,
+        "iceCentroidYA": 119.3,
+        "iceCentroidYB": 121.7,
+        "bestShift_discUnits": 0.015,
+        "buckets": {
+          "space": {
+            "px": 88,
+            "pctOfCrop": 0.019,
+            "pctOfMismatch": 0.4,
+            "meanDelta_gpuMinusGl": {
+              "r": 170.5,
+              "g": 170.5,
+              "b": 170.5
+            }
+          },
+          "limb": {
+            "px": 10826,
+            "pctOfCrop": 2.394,
+            "pctOfMismatch": 43.5,
+            "meanDelta_gpuMinusGl": {
+              "r": 16.1,
+              "g": 18.1,
+              "b": 14.3
+            }
+          },
+          "seamThin": {
+            "px": 2829,
+            "pctOfCrop": 0.626,
+            "pctOfMismatch": 11.4,
+            "meanDelta_gpuMinusGl": {
+              "r": -17.7,
+              "g": -17,
+              "b": -4.5
+            }
+          },
+          "interiorBlobGlBrighter": {
+            "px": 4786,
+            "pctOfCrop": 1.058,
+            "pctOfMismatch": 19.2,
+            "meanDelta_gpuMinusGl": {
+              "r": -83.5,
+              "g": -48.3,
+              "b": 19.5
+            }
+          },
+          "interiorBlobGpuBrighter": {
+            "px": 6375,
+            "pctOfCrop": 1.41,
+            "pctOfMismatch": 25.6,
+            "meanDelta_gpuMinusGl": {
+              "r": 88.2,
+              "g": 59.6,
+              "b": 4.5
+            }
+          }
+        },
+        "seamBluePx": 1409
+      },
+      "maskSha256": [
+        "54712337f4478e50dd3e1c9ebb0bf7fe4c08769accea4a999e9e429e46ecc77d"
+      ]
+    },
+    "probe-globe-farzoom.mjs#analyze": {
+      "input": "globeDiscPair() A=first(gl) B=second(gpu)",
+      "output": {
+        "mismatchPct": 5.507,
+        "mismatchPx": 24904,
+        "buckets": {
+          "space": {
+            "px": 88,
+            "pctOfCrop": 0.019,
+            "pctOfMismatch": 0.4,
+            "meanDelta_gpuMinusGl": {
+              "r": 170.5,
+              "g": 170.5,
+              "b": 170.5
+            }
+          },
+          "limb": {
+            "px": 10826,
+            "pctOfCrop": 2.394,
+            "pctOfMismatch": 43.5,
+            "meanDelta_gpuMinusGl": {
+              "r": 16.1,
+              "g": 18.1,
+              "b": 14.3
+            }
+          },
+          "seamThin": {
+            "px": 2829,
+            "pctOfCrop": 0.626,
+            "pctOfMismatch": 11.4,
+            "meanDelta_gpuMinusGl": {
+              "r": -17.7,
+              "g": -17,
+              "b": -4.5
+            }
+          },
+          "interiorBlobGlBrighter": {
+            "px": 4786,
+            "pctOfCrop": 1.058,
+            "pctOfMismatch": 19.2,
+            "meanDelta_gpuMinusGl": {
+              "r": -83.5,
+              "g": -48.3,
+              "b": 19.5
+            }
+          },
+          "interiorBlobGpuBrighter": {
+            "px": 6375,
+            "pctOfCrop": 1.41,
+            "pctOfMismatch": 25.6,
+            "meanDelta_gpuMinusGl": {
+              "r": 88.2,
+              "g": 59.6,
+              "b": 4.5
+            }
+          }
+        },
+        "gpuBlobCentroid": {
+          "x": 620,
+          "y": 219
+        }
+      },
+      "maskSha256": [
+        "b78c99947a52c6f8faaadb838f4a58703398d9a5b07ccbbf66e9bdc3009fa601"
+      ]
+    },
+    "probe-globe-farzoom.mjs#selfDiff": {
+      "input": "globeDiscPair() on=second off=first",
+      "output": {
+        "changedPct": 7.85,
+        "meanLumDelta_onMinusOff": 7.8
+      }
+    },
+    "probe-globe-bindgroup-cache.mjs#phaseC": {
+      "input": "imageryAndFlatFrames() imagery / flat",
+      "output": {
+        "imagery": {
+          "nonBlackPct": 0.864013671875,
+          "colorBuckets": 4095
+        },
+        "flat": {
+          "nonBlackPct": 1,
+          "colorBuckets": 1
+        }
+      },
+      "note": "the two return expressions are the probe's own return fields, transcribed"
+    },
+    "probe-globe-default-limits.mjs#analyze": {
+      "input": "imageryAndFlatFrames() imagery / flat",
+      "output": {
+        "imagery": {
+          "nonBlackPct": 0.864013671875,
+          "colorBuckets": 4095
+        },
+        "flat": {
+          "nonBlackPct": 1,
+          "colorBuckets": 1
+        }
+      }
+    },
+    "probe-globe-default-limits.mjs#phaseDiff": {
+      "input": "greenWashPair() img1=before img2=after",
+      "output": {
+        "changedPct": 0.125,
+        "greenShift": 14.129270774448841,
+        "greenN": 44225
+      },
+      "note": "changedPct/greenShift are the probe's own return expressions, transcribed"
+    },
+    "probe-globe-effects-handle-toggle.mjs#diff": {
+      "input": "toggleFrames()",
+      "output": {
+        "onVsBaseline": 15860,
+        "offVsBaseline": 1433,
+        "restoreVsOn": 1451,
+        "totalPx": 49152
+      },
+      "note": "the three diff(...) argument orders are the probe's own, transcribed"
+    },
+    "probe-globe-hdr-gamma.mjs#regionAndDecode": {
+      "input": "twoToneGrayFrames() sdr / hdr",
+      "output": {
+        "sdr": {
+          "left": 99.98078125,
+          "right": 180.0334375
+        },
+        "hdr": {
+          "left": 32.58515625,
+          "right": 118.64796875
+        },
+        "left": {
+          "expected": 32.50634502597155,
+          "single": true,
+          "notMissing": true,
+          "doubled": 2.744616646115216,
+          "notDouble": true,
+          "ok": true
+        },
+        "right": {
+          "expected": 118.55742713622811,
+          "single": true,
+          "notMissing": true,
+          "doubled": 47.2928044731807,
+          "notDouble": true,
+          "ok": true
+        },
+        "missingCase": {
+          "expected": 32.50634502597155,
+          "single": false,
+          "notMissing": false,
+          "doubled": 2.744616646115216,
+          "notDouble": true,
+          "ok": false
+        },
+        "doubleCase": {
+          "expected": 32.50634502597155,
+          "single": false,
+          "notMissing": true,
+          "doubled": 2.744616646115216,
+          "notDouble": false,
+          "ok": false
+        }
+      },
+      "note": "the region(...) call arguments are the probe's own, transcribed"
+    }
+  }
+}

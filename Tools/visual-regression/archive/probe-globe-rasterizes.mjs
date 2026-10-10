@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Probe: verify the WebGPU globe actually RASTERIZES (BUG-11 staleness check).
 // @purpose Smoke check that the WebGPU globe rasterizes at all: canvas coverage, luminance, color histogram vs WebGL, device-error gate
-// @status ACTIVE
+// @status ARCHIVED-CANDIDATE
 //
 // BUG-11 in the inventory claims "globe geometry never rasterizes; depth
 // uniformly 1.0". This probe loads the default CesiumViewer on BOTH backends,
@@ -15,7 +15,7 @@
 // Verdict pass = WebGPU canvas shows a visibly-rendered globe (substantial
 // non-background coverage that roughly matches WebGL), NOT a black/empty frame.
 //
-// Usage: node Tools/visual-regression/probe-globe-rasterizes.mjs
+// Usage: node Tools/visual-regression/archive/probe-globe-rasterizes.mjs
 // Env:   PROBE_BASE (default http://localhost:8134)
 // Out:   Tools/visual-regression/output/globe-rasterizes-{webgpu,webgl}.png
 
@@ -27,7 +27,7 @@ import {
   armWebGPUDevices,
   collectGateErrors,
   attachConsoleErrorGate,
-} from "../lib/webgpu-error-gate.mjs";
+} from "../../lib/webgpu-error-gate.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";
 const OUT_DIR = "Tools/visual-regression/output";

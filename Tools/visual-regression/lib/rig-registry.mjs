@@ -73,6 +73,7 @@ export const RIG_TAGS = Object.freeze([
   "framebuffer-census",
   "voxel",
   "weather",
+  "globe",
 ]);
 
 /** `readiness.kind` vocabulary a rig may declare. */

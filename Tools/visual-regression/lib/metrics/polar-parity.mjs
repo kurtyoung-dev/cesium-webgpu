@@ -3,14 +3,15 @@
 // @purpose Pure RGBA WebGL-vs-WebGPU parity over a per-pixel channel-sum delta and an inset region (mismatch percent, mean summed delta, brightness ratio), under the two named rules the polar baselines were banked with.
 // @status ACTIVE
 //
-// WHY THIS IS NOT `image-diff.mjs`. `diffImages` (and `png-decode.mjs`'s
-// `diffPixels`) call a pixel changed when its LARGEST channel delta exceeds a
-// tolerance. The polar imagery numbers on record were taken with a different
-// rule: a pixel mismatches when the SUM `|dR| + |dG| + |dB|` exceeds a
-// threshold. The two disagree on every pixel whose delta is spread across the
-// channels (three deltas of 9 sum to 27 and trip a sum rule at 24; their
-// maximum, 9, trips neither tolerance 16 nor 24), so a banked polar number
-// cannot be re-read through `diffImages` without re-deriving it.
+// WHY NOT `image-diff.mjs`, AND WHERE THE RULE LIVES. The polar imagery
+// numbers on record were taken under the summed-delta rule
+// `|dR| + |dG| + |dB| > threshold`, not `image-diff.mjs`'s largest-channel
+// rule. Why the two cannot be read through each other is written once, in
+// `rgb-sum.mjs`'s header. This module does not implement the rule:
+// `channelSumParity` is the inset region below, one call into `rgb-sum.mjs`'s
+// `rgbSumDiff` (the kit's one channel-sum engine) and the brightness ratio of
+// the two legs' means. What this module owns is the rule TABLE: the threshold
+// and the region each banked polar figure was taken under.
 //
 // TWO RULES, BOTH ON RECORD, AND THEY ARE NOT THE SAME NUMBER. Measured on the
 // banked frames under `Tools/visual-regression/output/` (lane Edoras, Node,
@@ -42,6 +43,7 @@
 // applies to these numbers.
 
 import { rectRoi } from "./masks.mjs";
+import { rgbSumDiff } from "./rgb-sum.mjs";
 
 /**
  * @typedef {{width: number, height: number, data: ArrayLike<number>}} RgbaImage
@@ -158,48 +160,24 @@ export function channelSumParity(first, second, rule) {
   }
   const { width, height } = first;
   const roi = insetRoi(width, height, rule.insetFraction);
-  const a = first.data;
-  const b = second.data;
-
-  let countedPx = 0;
-  let mismatchPx = 0;
-  let deltaSum = 0;
-  let sumFirst = 0;
-  let sumSecond = 0;
-  for (let y = roi.y0; y < roi.y1; y++) {
-    for (let x = roi.x0; x < roi.x1; x++) {
-      const i = (y * width + x) * 4;
-      const delta =
-        Math.abs(a[i] - b[i]) +
-        Math.abs(a[i + 1] - b[i + 1]) +
-        Math.abs(a[i + 2] - b[i + 2]);
-      sumFirst += a[i] + a[i + 1] + a[i + 2];
-      sumSecond += b[i] + b[i + 1] + b[i + 2];
-      deltaSum += delta;
-      if (delta > threshold) {
-        mismatchPx++;
-      }
-      countedPx++;
-    }
-  }
-  if (countedPx === 0) {
+  if (roi.x1 <= roi.x0 || roi.y1 <= roi.y0) {
     throw new RangeError(
       `channelSumParity: the inset leaves no pixel of a ${width}x${height} frame to compare`,
     );
   }
-  const meanFirst = sumFirst / (3 * countedPx);
-  const meanSecond = sumSecond / (3 * countedPx);
+  const diff = rgbSumDiff(first, second, { threshold, roi });
   return {
     width,
     height,
     roi,
-    countedPx,
-    mismatchPx,
-    mismatchPct: (100 * mismatchPx) / countedPx,
-    meanAbsSum: deltaSum / countedPx,
-    meanFirst,
-    meanSecond,
-    brightnessRatio: meanSecond > 0 ? meanFirst / meanSecond : Infinity,
+    countedPx: diff.countedPx,
+    mismatchPx: diff.mismatchPx,
+    mismatchPct: diff.mismatchPct,
+    meanAbsSum: diff.meanAbsSum,
+    meanFirst: diff.meanFirst,
+    meanSecond: diff.meanSecond,
+    brightnessRatio:
+      diff.meanSecond > 0 ? diff.meanFirst / diff.meanSecond : Infinity,
   };
 }
 

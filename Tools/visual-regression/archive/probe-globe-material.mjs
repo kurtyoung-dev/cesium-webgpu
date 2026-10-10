@@ -1,5 +1,5 @@
 // @purpose Runs a legacy Sandcastle gallery demo (default Globe Materials) under a forced-renderer Viewer shim; reports console errors and pixels
-// @status ACTIVE
+// @status ARCHIVED-CANDIDATE
 
 import { chromium } from "playwright";
 import fs from "fs";

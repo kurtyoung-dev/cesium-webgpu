@@ -42,6 +42,10 @@ import { chromium } from "playwright";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+// The single / missing / double decode arithmetic of (C) is the shared metric
+// (probe-kit harvest, globe family); this probe's in-page HDR readback is
+// untouched until an Edge leg calibrates a seam capture of the HDR canvas.
+import { classifyDecode } from "./lib/metrics/srgb-decode.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const BASELINE_MODE = process.argv.includes("--baseline");
@@ -303,7 +307,6 @@ function diffVsBin(img, binPath) {
     fracDiff: diffBytes / cur.length,
   };
 }
-const decode = (g) => 255 * Math.pow(g / 255, 2.2);
 
 // ================= baseline mode =================
 if (BASELINE_MODE) {
@@ -362,12 +365,11 @@ if (engaged) {
     ["right", sdr.rightMean, hdr.rightMean],
   ];
   for (const [name, s, h] of cases) {
-    const expected = decode(s);
-    const single = Math.abs(h - expected) <= 10;
-    const notMissing = Math.abs(h - s) >= 20;
-    const doubled = 255 * Math.pow(s / 255, 4.84);
-    const notDouble = Math.abs(h - doubled) >= 15;
-    const ok = single && notMissing && notDouble;
+    const {
+      expectedSingle: expected,
+      doubleWouldBe: doubled,
+      ok,
+    } = classifyDecode({ sdrMean: s, treatedMean: h });
     cOK = cOK && ok;
     console.log(
       `(C) ${name}: hdr=${h.toFixed(2)} expectedSingleDecode=${expected.toFixed(2)} ` +

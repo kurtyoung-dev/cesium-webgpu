@@ -490,31 +490,7 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
   "probe-geojson-primitive.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-19, pre-dates the spec",
-  "probe-globe-bindgroup-cache.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-12, pre-dates the spec",
-  "probe-globe-bundle-cost.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-15, pre-dates the spec",
-  "probe-globe-clippoly-geodetic.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-02, pre-dates the spec",
-  "probe-globe-default-limits.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-12, pre-dates the spec",
-  "probe-globe-effects-handle-toggle.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-16, pre-dates the spec",
-  "probe-globe-farzoom.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
   "probe-globe-hdr-gamma.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-02, pre-dates the spec",
-  "probe-globe-material.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
-  "probe-globe-pick-h44.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-23, pre-dates the spec",
-  "probe-globe-polar-stretch.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-02, pre-dates the spec",
-  "probe-globe-rasterizes.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-06, pre-dates the spec",
-  "probe-globe-translucency.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-02, pre-dates the spec",
-  "probe-globe-underground.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-02, pre-dates the spec",
   "probe-gltf-points-mode.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-02, pre-dates the spec",

@@ -6,9 +6,9 @@
 // tells us whether the per-frame bundle is paying its build cost — the
 // decision input for NEW-GLOBE-RENDERBUNDLE-CACHE (cache vs drop).
 // @purpose TEMP A/B measurement of the inline globe render-bundle's per-frame CPU cost — the decision input for the cache-vs-drop call
-// @status INVESTIGATION
+// @status ARCHIVED-CANDIDATE
 //
-// Usage: node Tools/visual-regression/probe-globe-bundle-cost.mjs
+// Usage: node Tools/visual-regression/archive/probe-globe-bundle-cost.mjs
 import { chromium } from "playwright";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";

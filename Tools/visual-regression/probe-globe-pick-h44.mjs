@@ -27,38 +27,60 @@
 // Uses pickAsync everywhere (sync scene.pick leaves the WebGPU pick buffer
 // mapped, breaking subsequent picks — see probe-pick-basic.mjs).
 //
-// Usage: PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-globe-pick-h44.mjs
+// The scene is the rig `globe-pick-h44`.
+//
+// ON THE SHARED RUNTIME (probe-kit harvest, globe family). The browser, the
+// origin (`--port`, a governed Edge port, never 8080), the served-build
+// preflight, the Edge slot and the receipt belong to `lib/probe-runtime.mjs`.
+// WebGPU validation errors are read from the shared error gate
+// (`Tools/lib/webgpu-error-gate.mjs`, the device's `onuncapturederror`), which
+// replaces the private `[GPUERR]` console hook this probe installed; console
+// errors are still every `console.error` plus page errors, as before. This
+// probe captures no pixels.
+//
+// Usage: node Tools/visual-regression/probe-globe-pick-h44.mjs [--port 8094]
+// @runtime lib/probe-runtime.mjs
 
-import { chromium } from "playwright";
+import {
+  armWebGPUDevices,
+  collectGateErrors,
+  errorGateInit,
+} from "../lib/webgpu-error-gate.mjs";
+import { ProbeRefusal, isEntryPoint, runProbe } from "./lib/probe-runtime.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const LON = -75.0;
 const LAT = 40.0;
 const HEIGHT = 2_000_000.0;
 
-const browser = await chromium.launch({
-  channel: "msedge",
-  headless: true,
-  args: ["--enable-unsafe-webgpu"],
-});
-
-async function runLeg(renderer) {
-  const page = await browser.newPage({
+async function runLeg(browser, origin, renderer) {
+  const context = await browser.newContext({
     viewport: { width: 1000, height: 700 },
   });
+  try {
+    return await measureLeg(context, origin, renderer);
+  } finally {
+    await context.close();
+  }
+}
+
+async function measureLeg(context, origin, renderer) {
+  const page = await context.newPage();
   const errors = [];
-  const gpuErrors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
-    if (m.text().includes("[GPUERR]")) gpuErrors.push(m.text());
   });
   page.on("pageerror", (e) => errors.push(`PAGEERROR: ${e.message}`));
+  await page.addInitScript(errorGateInit);
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-    timeout: 90000,
-  });
+  await page.goto(
+    `${origin}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+    {
+      waitUntil: "networkidle",
+      timeout: 90000,
+    },
+  );
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
+  await armWebGPUDevices(page);
 
   const out = await page.evaluate(
     async ({ LON, LAT, HEIGHT }) => {
@@ -66,11 +88,6 @@ async function runLeg(renderer) {
       const v = window.viewer;
       const scene = v.scene;
       v.terrainProvider = new C.EllipsoidTerrainProvider();
-      const dev = scene.context?._device;
-      if (dev) {
-        dev.onuncapturederror = (ev) =>
-          console.log(`[GPUERR] ${ev?.error?.message?.slice(0, 300)}`);
-      }
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(LON, LAT, HEIGHT),
         orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
@@ -143,13 +160,13 @@ async function runLeg(renderer) {
     { LON, LAT, HEIGHT },
   );
 
-  await page.close();
-  return { ...out, errors, gpuErrors };
+  const gate = await collectGateErrors(page);
+  const gpuErrors = [
+    ...gate.errors,
+    ...(gate.deviceLost ? [gate.deviceLost] : []),
+  ];
+  return { ...out, errors: [...errors], gpuErrors };
 }
-
-const webgl = await runLeg("webgl");
-const webgpu = await runLeg("webgpu");
-await browser.close();
 
 function printLeg(name, leg) {
   console.log(`\n=== ${name} (${leg.rendererType}) ===`);
@@ -162,52 +179,119 @@ function printLeg(name, leg) {
   leg.errors.slice(0, 6).forEach((e) => console.log("   ERR:", e));
   leg.gpuErrors.slice(0, 4).forEach((e) => console.log("   ", e));
 }
-printLeg("WebGL", webgl);
-printLeg("WebGPU", webgpu);
+/**
+ * The DP-H44 clauses over one run's two legs, with the original bars: on
+ * WebGPU the default leaves the globe unpicked, a foreground point stays
+ * pickable, `pickable=true` returns the globe, and there are no console or
+ * validation errors; on WebGL the globe is never returned in either state, the
+ * point is pickable, and there are no console errors.
+ *
+ * Pure and exported so `globe-probe-verdicts.spec.mjs` can drive every clause
+ * without a browser.
+ *
+ * @param {Array<{run: number, webgl: object, webgpu: object}>} cells
+ * @returns {Array<object>} Verdicts in the runtime's shape.
+ */
+export function evaluatePickH44(cells) {
+  const verdicts = [];
+  for (const { run, webgl, webgpu } of cells) {
+    const suffix = `run${run}`;
+    const pointOk = (leg) =>
+      leg.pickPoint.defined === true && leg.pickPoint.id === "fg-point";
+    verdicts.push(
+      {
+        id: `webgpu-default-unpickable/${suffix}`,
+        claim: "WebGPU pickable=false does not return the globe",
+        pass: !webgpu.pickGlobeFalse.isGlobe,
+        detail: { pick: webgpu.pickGlobeFalse },
+      },
+      {
+        id: `webgpu-foreground-point-pickable/${suffix}`,
+        claim: "WebGPU foreground point pickable with pickable=false",
+        pass: pointOk(webgpu),
+        detail: { pick: webgpu.pickPoint },
+      },
+      {
+        id: `webgpu-pickable-returns-globe/${suffix}`,
+        claim: "WebGPU pickable=true returns the globe",
+        pass:
+          webgpu.pickGlobeTrue.defined === true &&
+          webgpu.pickGlobeTrue.isGlobe === true,
+        detail: { pick: webgpu.pickGlobeTrue },
+      },
+      {
+        id: `webgpu-console-errors/${suffix}`,
+        claim: `WebGPU console errors: ${webgpu.errors.length}`,
+        pass: webgpu.errors.length === 0,
+        detail: { errors: webgpu.errors.slice(0, 6) },
+      },
+      {
+        id: `webgpu-validation-errors/${suffix}`,
+        claim: `WebGPU validation errors: ${webgpu.gpuErrors.length}`,
+        pass: webgpu.gpuErrors.length === 0,
+        detail: { errors: webgpu.gpuErrors.slice(0, 4) },
+      },
+      {
+        id: `webgl-never-returns-globe/${suffix}`,
+        claim: "WebGL never returns the globe from scene.pick",
+        pass: !webgl.pickGlobeFalse.isGlobe && !webgl.pickGlobeTrue.isGlobe,
+        detail: { off: webgl.pickGlobeFalse, on: webgl.pickGlobeTrue },
+      },
+      {
+        id: `webgl-foreground-point-pickable/${suffix}`,
+        claim: "WebGL foreground point pickable",
+        pass: pointOk(webgl),
+        detail: { pick: webgl.pickPoint },
+      },
+      {
+        id: `webgl-console-errors/${suffix}`,
+        claim: `WebGL console errors: ${webgl.errors.length}`,
+        pass: webgl.errors.length === 0,
+        detail: { errors: webgl.errors.slice(0, 6) },
+      },
+    );
+  }
+  return verdicts;
+}
 
-const failures = [];
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "globe-pick-h44",
+  title: "DP-H44 — opt-in WebGPU globe terrain picking (globe.pickable)",
+  outputSubdirectory: "globe-pick-h44",
+  // No JSON receipt was banked before the migration.
+  receiptEnvelope: "runtime",
+  // The CesiumViewer page and every in-page import here read this module.
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  async cells({ browser, run, options, origin }) {
+    if (
+      !options.renderers.includes("webgl") ||
+      !options.renderers.includes("webgpu")
+    ) {
+      throw new ProbeRefusal(
+        "renderer-unavailable",
+        "DP-H44 judges the WebGPU opt-in against the WebGL reference leg, so " +
+          `both renderers are required (got ${options.renderers.join(",")})`,
+        { renderers: options.renderers },
+      );
+    }
+    const webgl = await runLeg(browser, origin, "webgl");
+    const webgpu = await runLeg(browser, origin, "webgpu");
+    printLeg("WebGL", webgl);
+    printLeg("WebGPU", webgpu);
+    return [{ run, webgl, webgpu }];
+  },
+  verdicts(cells) {
+    return evaluatePickH44(cells);
+  },
+  receipt(cells, context) {
+    for (const verdict of context.verdicts) {
+      console.log(`  [${verdict.pass ? "PASS" : "FAIL"}] ${verdict.claim}`);
+    }
+    return { cells, verdicts: context.verdicts };
+  },
+};
 
-// WebGPU assertions.
-if (webgpu.pickGlobeFalse.isGlobe) {
-  failures.push(
-    "WebGPU pickable=false returned the globe (expected undefined)",
-  );
-}
-if (!webgpu.pickPoint.defined || webgpu.pickPoint.id !== "fg-point") {
-  failures.push(
-    `WebGPU foreground point not pickable with pickable=false (got ${JSON.stringify(webgpu.pickPoint)})`,
-  );
-}
-if (!webgpu.pickGlobeTrue.defined || !webgpu.pickGlobeTrue.isGlobe) {
-  failures.push(
-    `WebGPU pickable=true did NOT return the globe (got ${JSON.stringify(webgpu.pickGlobeTrue)})`,
-  );
-}
-if (webgpu.errors.length > 0)
-  failures.push(`WebGPU console errors: ${webgpu.errors.length}`);
-if (webgpu.gpuErrors.length > 0)
-  failures.push(`WebGPU validation errors: ${webgpu.gpuErrors.length}`);
-
-// WebGL reference: globe NEVER returned by scene.pick (no pick ID).
-if (webgl.pickGlobeFalse.isGlobe || webgl.pickGlobeTrue.isGlobe) {
-  failures.push("WebGL returned the globe from scene.pick (should never)");
-}
-if (!webgl.pickPoint.defined || webgl.pickPoint.id !== "fg-point") {
-  failures.push(
-    `WebGL foreground point not pickable (got ${JSON.stringify(webgl.pickPoint)})`,
-  );
-}
-if (webgl.errors.length > 0)
-  failures.push(`WebGL console errors: ${webgl.errors.length}`);
-
-console.log("");
-if (failures.length === 0) {
-  console.log(
-    "PROBE PASS: DP-H44 globe pick opt-in works on WebGPU; foreground picking + WebGL unaffected",
-  );
-  process.exit(0);
-} else {
-  console.log("PROBE FAIL:");
-  failures.forEach((f) => console.log("  - " + f));
-  process.exit(1);
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
 }
