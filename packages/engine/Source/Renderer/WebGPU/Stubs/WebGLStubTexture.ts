@@ -1411,7 +1411,7 @@ export function createTextureStubs(
     },
 
     copyTexImage2D: (
-      _target: number,
+      target: number,
       level: number,
       _internalformat: number,
       x: number,
@@ -1425,12 +1425,13 @@ export function createTextureStubs(
         commandEncodedBaseCopies,
         logUsage,
         "copyTexImage2D",
+        target,
         level,
         { x, y, destinationX: 0, destinationY: 0, width, height },
       ),
 
     copyTexSubImage2D: (
-      _target: number,
+      target: number,
       level: number,
       xoffset: number,
       yoffset: number,
@@ -1444,6 +1445,7 @@ export function createTextureStubs(
         commandEncodedBaseCopies,
         logUsage,
         "copyTexSubImage2D",
+        target,
         level,
         { x, y, destinationX: xoffset, destinationY: yoffset, width, height },
       ),

@@ -31,6 +31,17 @@
 // The counters keep a count per event and the first few details of each, so
 // a call made every frame (a video upload) cannot grow a receipt without bound.
 //
+// ORDER ACROSS LAYERS. Every event of every layer takes the next number from
+// one page-wide sequence (`globalThis.__stubTraceSequence`). Each kept
+// detail carries its event's number as `seq`, and `lastSequence[event]` is
+// the number of the event's latest occurrence, so "this destroy came after
+// the tenth submit" is read from the receipt even when the sample cap has
+// dropped the submit's own detail. The engine layer is numbered without an
+// engine change: the init script hands the engine an object whose `counts`
+// and `samples` stamp each write. The gpu layer also keeps, per texture id,
+// how often it was destroyed (`destroyedById`) and, per encoder label, which
+// texture ids its copies read (`copySourcesByLabel`), both unsampled.
+//
 // WHAT IS READ BACK. `readStubTextureTrace` returns the three layers.
 // `pageReadLabelAtlasState` adds the live state of a label collection's glyph
 // atlas (its texture, the native texture behind it, and the view the WebGPU
@@ -41,6 +52,8 @@
 
 /** The engine receipt's page global (mirrors `WebGLStubTextureTrace.ts`). */
 export const STUB_TEXTURE_TRACE_GLOBAL = "__cesiumStubTextureTrace";
+/** The page-wide event sequence every layer numbers its events from. */
+export const STUB_TRACE_SEQUENCE_GLOBAL = "__stubTraceSequence";
 /** The WebGPU call counters' page global. */
 export const GPU_CALL_TRACE_GLOBAL = "__gpuCallTrace";
 /** The scene-side counters' page global. */
@@ -56,16 +69,64 @@ export function stubTextureTraceInit() {
     return;
   }
   const SAMPLES = 4;
-  const makeTrace = () => ({ counts: {}, samples: {} });
-  globalThis.__cesiumStubTextureTrace = makeTrace();
-  const trace = makeTrace();
+  const sequence = (globalThis.__stubTraceSequence ??= { value: 0 });
+  const next = () => (sequence.value += 1);
+  // The engine writes `counts[event]` and then pushes into
+  // `samples[event]` (WebGLStubTextureTrace.ts); numbering the count write
+  // and stamping the push gives its details the same sequence as the rest.
+  const engine = { lastSequence: {} };
+  let engineSequence = 0;
+  engine.counts = new Proxy(
+    {},
+    {
+      set(target, event, value) {
+        engineSequence = next();
+        engine.lastSequence[event] = engineSequence;
+        target[event] = value;
+        return true;
+      },
+    },
+  );
+  engine.samples = new Proxy(
+    {},
+    {
+      set(target, event, kept) {
+        if (Array.isArray(kept)) {
+          Object.defineProperty(kept, "push", {
+            value(...details) {
+              return Array.prototype.push.apply(
+                this,
+                details.map((detail) => ({
+                  ...(detail ?? {}),
+                  seq: engineSequence,
+                })),
+              );
+            },
+          });
+        }
+        target[event] = kept;
+        return true;
+      },
+    },
+  );
+  globalThis.__cesiumStubTextureTrace = engine;
+  const trace = {
+    counts: {},
+    samples: {},
+    lastSequence: {},
+    destroyedById: {},
+    copySourcesByLabel: {},
+  };
   globalThis.__gpuCallTrace = trace;
   const record = (event, detail = {}) => {
+    const seq = next();
     trace.counts[event] = (trace.counts[event] ?? 0) + 1;
+    trace.lastSequence[event] = seq;
     const kept = (trace.samples[event] ??= []);
     if (kept.length < SAMPLES) {
-      kept.push(detail);
+      kept.push({ ...(detail ?? {}), seq });
     }
+    return seq;
   };
   const ids = new WeakMap();
   let nextId = 1;
@@ -100,7 +161,18 @@ export function stubTextureTraceInit() {
     return texture;
   });
   wrap(globalThis.GPUTexture?.prototype, "destroy", function (o, args) {
-    record(`destroy.${this.label || "unlabelled"}`, describe(this));
+    const detail = describe(this);
+    const seq = record(`destroy.${this.label || "unlabelled"}`, detail);
+    if (detail.id !== null) {
+      const entry = (trace.destroyedById[detail.id] ??= {
+        label: detail.label ?? null,
+        count: 0,
+        firstSequence: seq,
+        lastSequence: seq,
+      });
+      entry.count += 1;
+      entry.lastSequence = seq;
+    }
     return o.apply(this, args);
   });
   const finishedLabels = new WeakMap();
@@ -109,7 +181,11 @@ export function stubTextureTraceInit() {
     "copyTextureToTexture",
     function (o, args) {
       const [source, destination, size] = args;
-      record(`copyTextureToTexture.${this.label || "unlabelled"}`, {
+      const label = this.label || "unlabelled";
+      const sourceId = ids.get(source?.texture) ?? null;
+      const sources = (trace.copySourcesByLabel[label] ??= {});
+      sources[sourceId] = (sources[sourceId] ?? 0) + 1;
+      record(`copyTextureToTexture.${label}`, {
         source: describe(source?.texture),
         sourceOrigin: source?.origin ?? null,
         destination: describe(destination?.texture),
@@ -192,11 +268,15 @@ export async function pageInstallSceneTextureTrace({ moduleUrl }) {
   const SAMPLES = 4;
   const trace = { counts: {}, samples: {}, installed: [] };
   globalThis.__sceneTextureTrace = trace;
+  const sequence = (globalThis.__stubTraceSequence ??= { value: 0 });
+  trace.lastSequence = {};
   const record = (event, detail = {}) => {
+    const seq = (sequence.value += 1);
     trace.counts[event] = (trace.counts[event] ?? 0) + 1;
+    trace.lastSequence[event] = seq;
     const kept = (trace.samples[event] ??= []);
     if (kept.length < SAMPLES) {
-      kept.push(detail);
+      kept.push({ ...(detail ?? {}), seq });
     }
   };
   const backendOf = (context) =>
@@ -303,9 +383,51 @@ export function pageReadStubTextureTrace() {
       ? plain({
           counts: scene.counts,
           samples: scene.samples,
+          lastSequence: scene.lastSequence ?? null,
           installed: scene.installed,
         })
       : null,
+  };
+}
+
+/**
+ * When the texture an encoder label's copies read was destroyed, against that
+ * label's submits, from a gpu-layer receipt (`readStubTextureTrace(...).gpu`).
+ * Pure; runs in Node.
+ *
+ * It answers "was the source destroyed once, and only after every copy that
+ * read it was submitted" from the unsampled counters: the per-label source
+ * tally, the per-id destroy count and the last submit's sequence number.
+ *
+ * @param {object|null} gpu The gpu layer of a receipt.
+ * @param {string} label The copies' encoder label.
+ * @returns {object} The source ids, the one source (or null when there is not
+ *   exactly one), its destroy count and first destroy's sequence, the submit
+ *   count and the last submit's sequence, and `destroyedAfterLastSubmit`
+ *   (null when either sequence is missing).
+ */
+export function copySourceDestroyOrder(gpu, label) {
+  const sources = gpu?.copySourcesByLabel?.[label] ?? {};
+  const ids = Object.keys(sources).filter((id) => id !== "null");
+  const sourceId = ids.length === 1 ? Number(ids[0]) : null;
+  const destroyed =
+    sourceId === null ? null : (gpu?.destroyedById?.[sourceId] ?? null);
+  const submits = gpu?.counts?.[`submit.${label}`] ?? 0;
+  const lastSubmitSequence = gpu?.lastSequence?.[`submit.${label}`] ?? null;
+  const destroySequence = destroyed?.firstSequence ?? null;
+  return {
+    label,
+    sources,
+    sourceId,
+    destroyCount: destroyed?.count ?? 0,
+    destroyLabel: destroyed?.label ?? null,
+    destroySequence,
+    submits,
+    lastSubmitSequence,
+    destroyedAfterLastSubmit:
+      destroySequence === null || lastSubmitSequence === null
+        ? null
+        : destroySequence > lastSubmitSequence,
   };
 }
 
@@ -401,4 +523,136 @@ export function frameReadVideoMaterialState() {
     }
   }
   return out;
+}
+
+/** The framebuffer census counters' page global. */
+export const FRAMEBUFFER_CENSUS_TRACE_GLOBAL = "__framebufferCensusTrace";
+
+/**
+ * Count every `Framebuffer.js` constructed, destroyed or blitted after this
+ * runs, attributed to its consumer: the first caller outside `Framebuffer`,
+ * `FramebufferManager` and `MultisampleFramebuffer`, read from the call
+ * stack. Runs in the page or frame; self-contained.
+ *
+ * A construction is a `_bind` whose stack holds `new Framebuffer` directly
+ * (the constructor binds before it attaches), so the counter needs no hook in
+ * the constructor itself. Framebuffers built before the page ran this are not
+ * counted here; the engine receipt counts their attachments from the start.
+ *
+ * @param {{moduleUrl?: string|null}} args The engine module to import, as for
+ *   `pageInstallSceneTextureTrace`.
+ * @returns {Promise<{installed: string[]}>} The methods wrapped.
+ */
+export async function pageInstallFramebufferCensusTrace({ moduleUrl }) {
+  // __framebufferCensusTrace
+  const C = moduleUrl ? await import(moduleUrl) : globalThis.Cesium;
+  if (globalThis.__framebufferCensusTrace) {
+    return { installed: globalThis.__framebufferCensusTrace.installed };
+  }
+  const SAMPLES = 4;
+  const trace = { counts: {}, samples: {}, installed: [] };
+  globalThis.__framebufferCensusTrace = trace;
+  const sequence = (globalThis.__stubTraceSequence ??= { value: 0 });
+  trace.lastSequence = {};
+  const record = (event, detail = {}) => {
+    const seq = (sequence.value += 1);
+    trace.counts[event] = (trace.counts[event] ?? 0) + 1;
+    trace.lastSequence[event] = seq;
+    const kept = (trace.samples[event] ??= []);
+    if (kept.length < SAMPLES) {
+      kept.push({ ...(detail ?? {}), seq });
+    }
+  };
+  const WRAPPERS =
+    /^(?:new )?(?:Framebuffer|FramebufferManager|MultisampleFramebuffer)\b/;
+  const callers = () => {
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 40;
+    const lines = String(new Error().stack ?? "")
+      .split("\n")
+      .slice(1);
+    Error.stackTraceLimit = limit;
+    return lines.map((line) => {
+      const match = /^\s*at (?:async )?((?:new )?[^\s(]+)/.exec(line);
+      const name = match?.[1] ?? "?";
+      return name.includes("/") ? "anonymous" : name;
+    });
+  };
+  // The counter's own frames are `callers`, the wrapper and the function
+  // it calls around the original; V8 names the last two `<computed>` and
+  // `<anonymous>`.
+  const consumerOf = (names) =>
+    names.find(
+      (name) =>
+        name !== "?" &&
+        name !== "callers" &&
+        !name.includes("<computed>") &&
+        !name.includes("<anonymous>") &&
+        !WRAPPERS.test(name),
+    ) ?? "unknown";
+  const wrap = (owner, name, around) => {
+    const prototype = owner?.prototype;
+    const original = prototype?.[name];
+    if (typeof original !== "function") {
+      return;
+    }
+    prototype[name] = function (...args) {
+      return around.call(this, original, args);
+    };
+    trace.installed.push(`${owner.name}.${name}`);
+  };
+  wrap(C?.Framebuffer, "_bind", function (o, args) {
+    const names = callers();
+    const at = names.indexOf("new Framebuffer");
+    if (at >= 0) {
+      const after = names.slice(at + 1);
+      record(`Framebuffer.construct.${consumerOf(after)}`, {
+        immediate: after[0] ?? null,
+      });
+    }
+    return o.apply(this, args);
+  });
+  wrap(C?.Framebuffer, "destroy", function (o, args) {
+    const names = callers();
+    record(`Framebuffer.destroy.${consumerOf(names)}`, {
+      destroyAttachments: this.destroyAttachments === true,
+      colorTextures: this._colorTextures?.length ?? 0,
+      colorRenderbuffers: this._colorRenderbuffers?.length ?? 0,
+    });
+    return o.apply(this, args);
+  });
+  wrap(C?.MultisampleFramebuffer, "blitFramebuffers", function (o, args) {
+    const names = callers();
+    record(`MultisampleFramebuffer.blitFramebuffers.${consumerOf(names)}`, {
+      blitStencil: args[1] === true,
+    });
+    return o.apply(this, args);
+  });
+  wrap(C?.Texture, "copyFromFramebuffer", function (o, args) {
+    const names = callers();
+    record(`Texture.copyFromFramebuffer.${consumerOf(names)}`);
+    return o.apply(this, args);
+  });
+  return { installed: trace.installed };
+}
+
+/**
+ * Read the framebuffer census counters back. Runs in the page or frame;
+ * self-contained.
+ *
+ * @returns {object|null} The counts and samples, or null when not installed.
+ */
+export function pageReadFramebufferCensusTrace() {
+  // __readFramebufferCensusTrace
+  const trace = globalThis.__framebufferCensusTrace;
+  return trace
+    ? JSON.parse(
+        JSON.stringify({
+          counts: trace.counts,
+          samples: trace.samples,
+          lastSequence: trace.lastSequence ?? null,
+          installed: trace.installed,
+        }),
+      )
+    : null;
 }

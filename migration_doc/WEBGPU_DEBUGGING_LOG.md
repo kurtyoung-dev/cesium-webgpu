@@ -23289,3 +23289,83 @@ counterfactual is a frame bitmap placed in `_imageSources`, which the path sampl
 
 - `packages/engine/Source/Renderer/WebGPU/WebGPUImageUpload.ts`
 - `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubTexture.ts`
+
+## Bug NEW-WEBGPU-STUB-FRAMEBUFFER-ENUMS — the WebGL compatibility stub names no framebuffer enums, so `Framebuffer.js` attaches at NaN and no framebuffer records an attachment on WebGPU (lane FW-11 / Brithon, 2026-10-09)
+
+**Symptom.** The second barrier behind NEW-GA-P0-003. On FW-02's tree every off-frame copy of a real label
+atlas growth found no source: Edge measured `copyTexSubImage2D.noSource` 10 of 10, each with
+`{inFrame: false, hasReadFramebuffer: true}`.
+
+**Root cause (re-read at `9457bc6bd4`).**
+
+- The stub spreads only `TEXTURE_CONSTANTS`, `BUFFER_CONSTANTS` and `PIPELINE_STATE_CONSTANTS`
+  (`WebGLCompatibilityStub.ts:310-313`). None names `COLOR_ATTACHMENT0`, `DEPTH_ATTACHMENT`,
+  `STENCIL_ATTACHMENT`, `DEPTH_STENCIL_ATTACHMENT`, `FRAMEBUFFER`, `READ_FRAMEBUFFER`,
+  `DRAW_FRAMEBUFFER`, `RENDERBUFFER` or `NEAREST`.
+- `Framebuffer.js:210` and `:234` attach at `this._gl.COLOR_ATTACHMENT0 + i`, which is NaN on the stub.
+  `Stubs/WebGLStubFramebuffer.ts:120` records only `0x8ce0`, so no attachment is ever recorded.
+- `bindRead()`/`bindDraw()` (`Framebuffer.js:357-365`) pass `undefined` as the target, which the stub's
+  `else` branch (`Stubs/WebGLStubFramebuffer.ts:89-93`) treats as `FRAMEBUFFER`.
+- Measured in Node on the instrument-only state (the real `Framebuffer.js` on the stub the context
+  builds): the one attachment records as `framebufferTexture2D.unrecognised`, sample
+  `{attachment: "NaN", textarget: "3553", level: 0}`; the three copies are `noSource`.
+
+**Why it could not be a one-line enum.** Supplying the enums starts recording attachments for every
+`Framebuffer.js` on WebGPU. That turns on paths that were dormant:
+
+- `deleteFramebuffer` destroyed the native behind each attachment (`:100-105`), which WebGL never does;
+  ten `destroyAttachments: false` sites keep using their textures afterwards.
+- `blitFramebuffer` recorded a raw `copyTextureToTexture` that ignored its mask
+  (`Stubs/WebGLStubShader.ts:647-722`). With the targets unnamed, read and draw were the same
+  framebuffer, so an MSAA blit would have copied a texture onto itself.
+- `readPixelsAsync` read `boundReadFramebuffer || boundFramebuffer` (`:752`).
+
+**Fix (lane FW-11).**
+
+- The stub spreads `FRAMEBUFFER_CONSTANTS` (`Stubs/WebGLStubFramebuffer.ts`).
+- Bindings follow WebGL. `FRAMEBUFFER` binds read and draw, `READ_FRAMEBUFFER` and `DRAW_FRAMEBUFFER` one
+  each, and null is the default framebuffer. Any other target binds nothing. An attachment is recorded on
+  the framebuffer its target names, color attachment 0 with its texture target and level. A higher
+  color attachment never replaces it.
+- `deleteFramebuffer` destroys no attachment, and it unbinds a deleted framebuffer that is still bound.
+- The framebuffer-to-texture copy, the blit and `readPixelsAsync` read the read binding only.
+  - The copy refuses by name a destination level other than 0, a destination that is a cube map face,
+    and a source attached at a face or a level other than 0. The context's copy has no mip level or
+    layer, so each would have landed on level 0, layer 0.
+  - The blit goes through the context-validated copy and refuses by name what a copy cannot do: a
+    multisample resolve, a self-copy, a flip, a scale, the default framebuffer, and the depth and stencil
+    bits.
+  - `readPixelsAsync` refuses by name the default framebuffer, a face or level, a renderbuffer without
+    copy usage, and a multisample attachment.
+- Measured in Node on the fix (lane smoke):
+  - The atlas growth through the real `Framebuffer.js` submits 3 of 3 copies, with
+    `framebufferTexture2D.colour` 1 and no `noSource`.
+  - The old texture is destroyed once, by `deleteTexture`.
+  - An MSAA `MultisampleFramebuffer.blitFramebuffers` records no copy and reads
+    `blitFramebuffer.refused.sampleCount`.
+- Measured on Edge, label atlas (`texture-atlas-label-growth`), WebGPU, on the lane's served build:
+  - Seat job (executor Nimrais): `topWebgpuOverWebgl` 0.8359 and `bottomWebgpuOverWebgl` 0.8262 (band
+    0.8-1.25; FW-02's defect run read 0.00321 on top). `copyTexSubImage2D.offFrame.submitted` 10 of 10,
+    no `noSource`; `copyTextureToTexture.GLStub_OffFrameTextureCopy` and its submit 10 each, 256x128
+    into 512x256. Gate clean.
+  - Lane re-run with the trace numbered on one sequence: top 0.8347, bottom 0.8264. All 10 copies read
+    texture id 50, which has one `destroy`, at sequence 250; the tenth copy's submit is sequence 248.
+- Measured on Edge, framebuffer census (WebGPU, four globe cells and one model cell, the clock pinned):
+  two runs of the instrument-only tree and one of the fix differ by a changed fraction of 0 in every
+  cell (threshold 0.002). No cell counts a `framebufferTexture2D`, `blitFramebuffer`,
+  `copyTex*Image2D` or `deleteFramebuffer` event on either tree. A source census finds every caller of
+  the stub's `blitFramebuffer` behind the WebGPU scene renderer's early return, and no caller of its
+  `readPixelsAsync`.
+
+**Files modified (lane FW-11).**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGLCompatibilityStub.ts`
+- `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubFramebuffer.ts`
+- `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubFramebufferRead.ts` (new)
+- `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubFramebufferBlit.ts` (new)
+- `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubFramebufferCopy.ts`
+- `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubShader.ts`
+- `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubTexture.ts` (the copy's target argument)
+- `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubTypes.ts`
+- `packages/engine/Specs/Renderer/WebGPU/WebGLStubFramebufferSpec.js` (the delete case now asserts that
+  no attachment is destroyed)

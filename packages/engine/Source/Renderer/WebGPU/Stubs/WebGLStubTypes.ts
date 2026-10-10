@@ -77,6 +77,14 @@ export interface StubFramebuffer {
   _isWebGPU: boolean;
   /** Alias for _colorAttachment, used by some code paths. */
   colorAttachment?: StubAttachment | null;
+  /**
+   * The texture target `framebufferTexture2D` named for color attachment 0
+   * (`TEXTURE_2D` or a cube map face), or null for a renderbuffer. A reader
+   * refuses an attachment it cannot address as recorded.
+   */
+  _colorAttachmentTarget?: number | null;
+  /** The mip level `framebufferTexture2D` named for color attachment 0. */
+  _colorAttachmentLevel?: number;
 }
 
 /** A stub-managed renderbuffer object. */

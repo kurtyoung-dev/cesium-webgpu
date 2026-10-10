@@ -3,6 +3,14 @@
  * compatibility layer. Maps framebuffer/renderbuffer lifecycle operations
  * to WebGPU texture creation and state tracking.
  *
+ * The bindings and attachments follow WebGL. `FRAMEBUFFER` binds read and
+ * draw, `READ_FRAMEBUFFER` and `DRAW_FRAMEBUFFER` one each, and null is the
+ * default framebuffer. An attachment is recorded on the framebuffer its
+ * target names, color attachment 0 with the texture target and level it was
+ * attached at. Deleting a framebuffer never destroys what is attached to it:
+ * the attachments belong to their `Texture`, `Renderbuffer` or cube map,
+ * and `Framebuffer.js` destroys them itself when it owns them.
+ *
  * @see WebGLCompatibilityStub (nexus)
  * @module WebGLStubFramebuffer
  */
@@ -18,11 +26,90 @@ import type {
   StubAttachment,
   StubTextureWrapper,
 } from "./WebGLStubTypes.js";
+import { recordStubTextureTrace } from "./WebGLStubTextureTrace.js";
 
-// WebGL attachment constants
+// WebGL framebuffer target, attachment and status constants
+const GL_FRAMEBUFFER = 0x8d40;
+const GL_READ_FRAMEBUFFER = 0x8ca8;
+const GL_DRAW_FRAMEBUFFER = 0x8ca9;
+const GL_RENDERBUFFER = 0x8d41;
 const GL_COLOR_ATTACHMENT0 = 0x8ce0;
 const GL_DEPTH_ATTACHMENT = 0x8d00;
+const GL_STENCIL_ATTACHMENT = 0x8d20;
+const GL_DEPTH_STENCIL_ATTACHMENT = 0x821a;
 const GL_FRAMEBUFFER_COMPLETE = 0x8cd5;
+
+/** WebGL2's highest color attachment index is 15 (`COLOR_ATTACHMENT15`). */
+const GL_COLOR_ATTACHMENT_COUNT = 16;
+
+/**
+ * WebGL framebuffer constants, read by `Framebuffer.js`,
+ * `MultisampleFramebuffer.js` and `Renderbuffer.js` from the context's `_gl`.
+ * `NEAREST` is the blit filter `MultisampleFramebuffer.js` passes.
+ */
+export const FRAMEBUFFER_CONSTANTS = Object.freeze({
+  FRAMEBUFFER: GL_FRAMEBUFFER,
+  READ_FRAMEBUFFER: GL_READ_FRAMEBUFFER,
+  DRAW_FRAMEBUFFER: GL_DRAW_FRAMEBUFFER,
+  RENDERBUFFER: GL_RENDERBUFFER,
+  COLOR_ATTACHMENT0: GL_COLOR_ATTACHMENT0,
+  DEPTH_ATTACHMENT: GL_DEPTH_ATTACHMENT,
+  STENCIL_ATTACHMENT: GL_STENCIL_ATTACHMENT,
+  DEPTH_STENCIL_ATTACHMENT: GL_DEPTH_STENCIL_ATTACHMENT,
+  FRAMEBUFFER_COMPLETE: GL_FRAMEBUFFER_COMPLETE,
+  NEAREST: 0x2600,
+});
+
+/** Where an attachment enum attaches. */
+type AttachmentPoint =
+  | "colour"
+  | "colourMrt"
+  | "depth"
+  | "depthStencil"
+  | "stencil"
+  | "unrecognised";
+
+/**
+ * Classify an attachment enum. Color attachment 0 is the only color
+ * attachment a reader uses; a higher one (multiple render targets) never
+ * replaces it.
+ */
+function attachmentPoint(attachment: number): AttachmentPoint {
+  const colorIndex = attachment - GL_COLOR_ATTACHMENT0;
+  if (
+    Number.isInteger(colorIndex) &&
+    colorIndex >= 0 &&
+    colorIndex < GL_COLOR_ATTACHMENT_COUNT
+  ) {
+    return colorIndex === 0 ? "colour" : "colourMrt";
+  }
+  if (attachment === GL_DEPTH_ATTACHMENT) {
+    return "depth";
+  }
+  if (attachment === GL_DEPTH_STENCIL_ATTACHMENT) {
+    return "depthStencil";
+  }
+  if (attachment === GL_STENCIL_ATTACHMENT) {
+    return "stencil";
+  }
+  return "unrecognised";
+}
+
+/**
+ * The framebuffer an attachment call targets: `READ_FRAMEBUFFER` names the
+ * read binding, `FRAMEBUFFER` and `DRAW_FRAMEBUFFER` the draw binding. A
+ * state that keeps only the single binding uses it.
+ */
+function attachTargetFramebuffer(
+  state: WebGLStubState,
+  target: number,
+): StubFramebuffer | null {
+  const slot =
+    target === GL_READ_FRAMEBUFFER
+      ? state.boundReadFramebuffer
+      : state.boundDrawFramebuffer;
+  return slot === undefined ? (state.boundFramebuffer ?? null) : slot;
+}
 
 // WebGL internal format constants for renderbuffer storage
 const GL_DEPTH_COMPONENT16 = 0x81a5;
@@ -49,13 +136,12 @@ function resolveRenderbufferFormat(internalformat: number): GPUTextureFormat {
  * Creates framebuffer and renderbuffer stub methods.
  *
  * @param state - Shared mutable state from WebGPUContext
- * @param _logUsage - Optional debug logging function (unused currently but
- *   available for future debugging)
+ * @param logUsage - Debug logging function for calls the stub refuses
  * @returns Object containing all framebuffer/renderbuffer stub methods
  */
 export function createFramebufferStubs(
   state: WebGLStubState,
-  _logUsage: LogUsageFn,
+  logUsage: LogUsageFn,
 ) {
   return {
     // ==== Framebuffer methods ====
@@ -82,67 +168,134 @@ export function createFramebufferStubs(
       //   GL_DRAW_FRAMEBUFFER = 0x8CA9 → draw only (for blitFramebuffer dst)
       // Pre-WebGL2 callers always pass GL_FRAMEBUFFER, so the legacy
       // `boundFramebuffer` field stays in sync with both specific slots.
-      if (target === 0x8ca8) {
+      // Any other target is WebGL's INVALID_ENUM: no binding changes.
+      if (target === GL_READ_FRAMEBUFFER) {
         state.boundReadFramebuffer = framebuffer;
-      } else if (target === 0x8ca9) {
+      } else if (target === GL_DRAW_FRAMEBUFFER) {
         state.boundDrawFramebuffer = framebuffer;
-      } else {
+      } else if (target === GL_FRAMEBUFFER) {
         state.boundFramebuffer = framebuffer;
         state.boundReadFramebuffer = framebuffer;
         state.boundDrawFramebuffer = framebuffer;
+      } else {
+        //>>includeStart('debug', pragmas.debug);
+        recordStubTextureTrace("bindFramebuffer.refused.target", {
+          target: String(target),
+        });
+        //>>includeEnd('debug');
+        logUsage(
+          "bindFramebuffer",
+          `target ${String(target)} is not a framebuffer target; nothing was bound`,
+        );
       }
     },
 
     deleteFramebuffer: (framebuffer: StubFramebuffer | null) => {
       if (!framebuffer) return;
       const fboData = state.framebuffers.get(framebuffer);
+      //>>includeStart('debug', pragmas.debug);
+      if (fboData && (fboData.colorAttachment || fboData.depthAttachment)) {
+        recordStubTextureTrace("deleteFramebuffer.withAttachments", {
+          color: !!fboData.colorAttachment,
+          depth: !!fboData.depthAttachment,
+        });
+      }
+      //>>includeEnd('debug');
       if (fboData) {
-        if (fboData.colorAttachment?._texture?.destroy) {
-          fboData.colorAttachment._texture.destroy();
-        }
-        if (fboData.depthAttachment?._texture?.destroy) {
-          fboData.depthAttachment._texture.destroy();
-        }
+        // The attachments are not destroyed: as in WebGL, they belong to
+        // their owners, which may outlive this framebuffer.
         state.framebuffers.delete(framebuffer);
+      }
+      // Deleting a bound framebuffer binds the default one, as in WebGL.
+      if (state.boundFramebuffer === framebuffer) {
+        state.boundFramebuffer = null;
+      }
+      if (state.boundReadFramebuffer === framebuffer) {
+        state.boundReadFramebuffer = null;
+      }
+      if (state.boundDrawFramebuffer === framebuffer) {
+        state.boundDrawFramebuffer = null;
       }
     },
 
     framebufferTexture2D: (
-      _target: number,
+      target: number,
       attachment: number,
-      _textarget: number,
+      textarget: number,
       texture: StubTextureWrapper | null,
-      _level: number,
+      level: number,
     ) => {
-      if (!state.boundFramebuffer) return;
-      const fboData = state.framebuffers.get(state.boundFramebuffer);
-      if (fboData) {
-        if (attachment === GL_COLOR_ATTACHMENT0) {
-          fboData.colorAttachment = texture;
-          state.boundFramebuffer._colorAttachment = texture;
-        } else if (attachment === GL_DEPTH_ATTACHMENT) {
-          fboData.depthAttachment = texture;
-          state.boundFramebuffer._depthAttachment = texture;
-        }
+      const point = attachmentPoint(attachment);
+      const framebuffer = attachTargetFramebuffer(state, target);
+      //>>includeStart('debug', pragmas.debug);
+      recordStubTextureTrace(`framebufferTexture2D.${point}`, {
+        attachment: String(attachment),
+        textarget: String(textarget),
+        level,
+        bound: !!framebuffer,
+      });
+      //>>includeEnd('debug');
+      if (point === "unrecognised") {
+        logUsage(
+          "framebufferTexture2D",
+          `attachment ${String(attachment)} is not an attachment point; nothing was attached`,
+        );
+        return;
+      }
+      if (!framebuffer) {
+        return;
+      }
+      const fboData = state.framebuffers.get(framebuffer);
+      if (!fboData) {
+        return;
+      }
+      if (point === "colour") {
+        fboData.colorAttachment = texture;
+        framebuffer._colorAttachment = texture;
+        framebuffer._colorAttachmentTarget = textarget;
+        framebuffer._colorAttachmentLevel = level;
+      } else if (point === "depth" || point === "depthStencil") {
+        fboData.depthAttachment = texture;
+        framebuffer._depthAttachment = texture;
       }
     },
 
     framebufferRenderbuffer: (
-      _target: number,
+      target: number,
       attachment: number,
       _renderbuffertarget: number,
       renderbuffer: StubRenderbuffer | null,
     ) => {
-      if (!state.boundFramebuffer) return;
-      const fboData = state.framebuffers.get(state.boundFramebuffer);
-      if (fboData && renderbuffer) {
-        if (attachment === GL_COLOR_ATTACHMENT0) {
-          fboData.colorAttachment = renderbuffer;
-          state.boundFramebuffer._colorAttachment = renderbuffer;
-        } else if (attachment === GL_DEPTH_ATTACHMENT) {
-          fboData.depthAttachment = renderbuffer;
-          state.boundFramebuffer._depthAttachment = renderbuffer;
-        }
+      const point = attachmentPoint(attachment);
+      const framebuffer = attachTargetFramebuffer(state, target);
+      //>>includeStart('debug', pragmas.debug);
+      recordStubTextureTrace(`framebufferRenderbuffer.${point}`, {
+        attachment: String(attachment),
+        bound: !!framebuffer,
+      });
+      //>>includeEnd('debug');
+      if (point === "unrecognised") {
+        logUsage(
+          "framebufferRenderbuffer",
+          `attachment ${String(attachment)} is not an attachment point; nothing was attached`,
+        );
+        return;
+      }
+      if (!framebuffer) {
+        return;
+      }
+      const fboData = state.framebuffers.get(framebuffer);
+      if (!fboData || !renderbuffer) {
+        return;
+      }
+      if (point === "colour") {
+        fboData.colorAttachment = renderbuffer;
+        framebuffer._colorAttachment = renderbuffer;
+        framebuffer._colorAttachmentTarget = null;
+        framebuffer._colorAttachmentLevel = 0;
+      } else if (point === "depth" || point === "depthStencil") {
+        fboData.depthAttachment = renderbuffer;
+        framebuffer._depthAttachment = renderbuffer;
       }
     },
 

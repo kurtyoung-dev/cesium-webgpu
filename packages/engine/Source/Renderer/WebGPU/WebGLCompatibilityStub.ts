@@ -266,7 +266,10 @@ import {
   TEXTURE_CONSTANTS,
   createTextureStubs,
 } from "./Stubs/WebGLStubTexture.js";
-import { createFramebufferStubs } from "./Stubs/WebGLStubFramebuffer.js";
+import {
+  FRAMEBUFFER_CONSTANTS,
+  createFramebufferStubs,
+} from "./Stubs/WebGLStubFramebuffer.js";
 import {
   BUFFER_CONSTANTS,
   createBufferStubs,
@@ -311,6 +314,7 @@ export function createWebGLCompatibilityStub(state: WebGLStubState) {
     ...TEXTURE_CONSTANTS,
     ...BUFFER_CONSTANTS,
     ...PIPELINE_STATE_CONSTANTS,
+    ...FRAMEBUFFER_CONSTANTS,
 
     // Methods from domain modules
     ...createTextureStubs(state, logUsage),

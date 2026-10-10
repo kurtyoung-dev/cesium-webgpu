@@ -15,6 +15,14 @@
  * straight afterwards is legal because WebGPU defers the destruction until
  * the submitted copy has completed.
  *
+ * The copy reads the `READ_FRAMEBUFFER` binding as WebGL does: a bound
+ * framebuffer's color attachment 0, or the default framebuffer (the canvas,
+ * which exists only inside a frame) when the binding is null. It writes level
+ * 0 of a 2D texture only. The context's copy carries no mip level and no array
+ * layer, so a destination level other than 0, a cube map face, or a source
+ * attached at a face or a higher level would land on level 0, layer 0; each is
+ * refused by name instead, and nothing is recorded.
+ *
  * @module WebGLStubFramebufferCopy
  */
 
@@ -25,6 +33,14 @@ import type {
   StubFramebuffer,
   WebGLStubState,
 } from "./WebGLStubTypes.js";
+import {
+  GL_TEXTURE_2D,
+  attachmentTexture,
+  colorAttachmentIsBaseLevel2D,
+  colorAttachmentOf,
+  describeCopyRefusal,
+  readFramebufferOf,
+} from "./WebGLStubFramebufferRead.js";
 import {
   describeTraceTexture,
   recordStubTextureTrace,
@@ -50,25 +66,52 @@ export interface FramebufferCopyRegion {
 const NOT_COPY_COMPATIBLE =
   "source/destination usages or formats are not copy-compatible";
 
+/** Why a copy was refused before the context was asked. */
+type CopyAddressRefusal =
+  "destinationLevel" | "destinationTarget" | "sourceTarget";
+
+const ADDRESS_REFUSAL_REASONS: Readonly<Record<CopyAddressRefusal, string>> =
+  Object.freeze({
+    destinationLevel:
+      "the destination mip level is not 0, and the copy can only write level 0",
+    destinationTarget:
+      "the destination is not TEXTURE_2D, and the copy cannot address a cube map face",
+    sourceTarget:
+      "the read framebuffer's color attachment is a cube map face or a level other than 0, which the copy cannot address",
+  });
+
 /**
  * The texture a copy reads: the read framebuffer's color attachment, or the
  * canvas when the default framebuffer is bound. The canvas texture exists only
  * inside a frame, so outside one the default framebuffer has nothing to read.
+ * An attachment the copy cannot address as recorded is a refusal, not a
+ * source.
  */
 function readSourceTexture(
   state: WebGLStubState,
   inFrame: boolean,
-): GPUTexture | null {
-  const framebuffer: StubFramebuffer | null =
-    state.boundReadFramebuffer ?? state.boundFramebuffer ?? null;
+): GPUTexture | "sourceTarget" | null {
+  const framebuffer: StubFramebuffer | null = readFramebufferOf(state);
   if (framebuffer) {
-    // `framebufferTexture2D` records the attachment as `_colorAttachment`;
-    // `colorAttachment` is the alias the type declares for other writers.
-    const attachment =
-      framebuffer._colorAttachment ?? framebuffer.colorAttachment ?? null;
-    return attachment?._texture ?? null;
+    if (!colorAttachmentIsBaseLevel2D(framebuffer)) {
+      return "sourceTarget";
+    }
+    return attachmentTexture(colorAttachmentOf(framebuffer));
   }
   return inFrame ? (state.context?.getCurrentTexture() ?? null) : null;
+}
+
+/** Refuse a copy by name: a receipt, and the usage diagnostic. */
+function refuseAddress(
+  logUsage: LogUsageFn,
+  entryPoint: FramebufferCopyEntryPoint,
+  reason: CopyAddressRefusal,
+  detail: Record<string, unknown>,
+): void {
+  //>>includeStart('debug', pragmas.debug);
+  recordStubTextureTrace(`${entryPoint}.refused.${reason}`, detail);
+  //>>includeEnd('debug');
+  logUsage(entryPoint, ADDRESS_REFUSAL_REASONS[reason]);
 }
 
 /**
@@ -82,6 +125,7 @@ function readSourceTexture(
  *   its passes to that same encoder.
  * @param logUsage Usage diagnostic sink.
  * @param entryPoint The WebGL entry point being served.
+ * @param target The destination texture target the caller named.
  * @param level The destination mip level the caller named.
  * @param region The texels to copy.
  */
@@ -90,6 +134,7 @@ export function copyFramebufferToBoundTexture(
   frameEncodedBaseCopies: WeakMap<GPUTexture, GPUCommandEncoder>,
   logUsage: LogUsageFn,
   entryPoint: FramebufferCopyEntryPoint,
+  target: number,
   level: number,
   region: FramebufferCopyRegion,
 ): void {
@@ -111,15 +156,31 @@ export function copyFramebufferToBoundTexture(
     //>>includeEnd('debug');
     return;
   }
+  if (level !== 0) {
+    refuseAddress(logUsage, entryPoint, "destinationLevel", { level });
+    return;
+  }
+  if (target !== GL_TEXTURE_2D) {
+    refuseAddress(logUsage, entryPoint, "destinationTarget", {
+      target: String(target),
+    });
+    return;
+  }
   const frameEncoder = state.currentCommandEncoder;
   const source = readSourceTexture(state, frameEncoder !== null);
+  if (source === "sourceTarget") {
+    const framebuffer = readFramebufferOf(state);
+    refuseAddress(logUsage, entryPoint, "sourceTarget", {
+      textarget: String(framebuffer?._colorAttachmentTarget),
+      level: framebuffer?._colorAttachmentLevel ?? null,
+    });
+    return;
+  }
   if (!source) {
     //>>includeStart('debug', pragmas.debug);
     recordStubTextureTrace(`${entryPoint}.noSource`, {
       inFrame: frameEncoder !== null,
-      hasReadFramebuffer: !!(
-        state.boundReadFramebuffer ?? state.boundFramebuffer
-      ),
+      hasReadFramebuffer: !!readFramebufferOf(state),
     });
     //>>includeEnd('debug');
     logUsage(
@@ -151,6 +212,12 @@ export function copyFramebufferToBoundTexture(
         destination: describeTraceTexture(destination),
       },
     );
+    if (!copied) {
+      recordStubTextureTrace(
+        `${entryPoint}.refused.${describeCopyRefusal(state, source, destination, region, false)}`,
+        { readsDefaultFramebuffer: readFramebufferOf(state) === null },
+      );
+    }
     //>>includeEnd('debug');
     if (copied && level === 0) {
       frameEncodedBaseCopies.set(destination, frameEncoder);
@@ -182,6 +249,11 @@ export function copyFramebufferToBoundTexture(
       destination: describeTraceTexture(destination),
     },
   );
+  if (!copied) {
+    recordStubTextureTrace(
+      `${entryPoint}.refused.${describeCopyRefusal(state, source, destination, region, true)}`,
+    );
+  }
   //>>includeEnd('debug');
   if (!copied) {
     // Nothing was recorded; the unfinished encoder is simply dropped.

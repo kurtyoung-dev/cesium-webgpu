@@ -25,6 +25,11 @@
 /// <reference types="@webgpu/types" />
 
 import type { WebGLStubState, LogUsageFn } from "./WebGLStubTypes.js";
+import {
+  blitFramebufferThroughContext,
+  readPixelsSourceTexture,
+} from "./WebGLStubFramebufferBlit.js";
+import { recordStubTextureTrace } from "./WebGLStubTextureTrace.js";
 
 /** Return type for WebGL's `gl.getParameter()` — varies by parameter. */
 type GLParameterValue = string | number | Int32Array | Float32Array | null;
@@ -630,13 +635,10 @@ export function createShaderStubs(state: WebGLStubState, logUsage: LogUsageFn) {
 
     // ==== Framebuffer blitting & read pixels ====
     //
-    // Real implementations now:
-    //   blitFramebuffer → commandEncoder.copyTextureToTexture between
-    //     the bound READ + DRAW framebuffers' color attachments. Honors
-    //     the src/dst rectangles. Doesn't implement mask filtering
-    //     (GL_COLOR_BUFFER_BIT / DEPTH_BUFFER_BIT / STENCIL_BUFFER_BIT)
-    //     — we always copy color, skip depth/stencil because WebGPU
-    //     has no universal cross-format copy for depth attachments.
+    //   blitFramebuffer → a context-validated copy between the READ and
+    //     DRAW framebuffers' color attachments, inside the frame encoder;
+    //     what a copy cannot do (scale, flip, resolve, depth, stencil) is
+    //     refused by name (`WebGLStubFramebufferBlit.ts`).
     //
     //   readPixels → still returns null (sync API can't work against
     //     WebGPU's async mapAsync). Real readback goes through
@@ -653,72 +655,15 @@ export function createShaderStubs(state: WebGLStubState, logUsage: LogUsageFn) {
       dstY0: number,
       dstX1: number,
       dstY1: number,
-      _mask: number,
+      mask: number,
       _filter: number,
-    ) => {
-      if (!state.device || !state.currentCommandEncoder) return;
-      // copyTextureToTexture can only be recorded outside a render pass.
-      // If the stub consumer called blitFramebuffer while a render pass
-      // is open — unusual but legal in WebGL — skip with a one-time
-      // warning rather than corrupt the command stream.
-      if (state.currentRenderPassEncoder) {
-        logUsage(
-          "blitFramebuffer",
-          "called while a render pass is open; WebGPU requires encoder-level copies outside a pass — skipping",
-        );
-        return;
-      }
-      const srcFbo = state.boundReadFramebuffer;
-      const dstFbo = state.boundDrawFramebuffer;
-      if (!srcFbo || !dstFbo) return;
-      const srcAttachment = srcFbo._colorAttachment;
-      const dstAttachment = dstFbo._colorAttachment;
-      if (!srcAttachment || !dstAttachment) return;
-      const srcTex =
-        // StubTextureWrapper uses _webgpuTexture.texture; StubRenderbuffer uses _texture
-        (srcAttachment as { _webgpuTexture?: { texture: GPUTexture } })
-          ._webgpuTexture?.texture ||
-        (srcAttachment as { _texture?: GPUTexture })._texture;
-      const dstTex =
-        (dstAttachment as { _webgpuTexture?: { texture: GPUTexture } })
-          ._webgpuTexture?.texture ||
-        (dstAttachment as { _texture?: GPUTexture })._texture;
-      if (!srcTex || !dstTex) return;
-
-      // WebGL's blit supports flipped axes when dst and src rectangles
-      // have inverted orientation. WebGPU's copyTextureToTexture does
-      // not — it always copies in +X/+Y direction. We only handle the
-      // canonical non-flipped case; a flipped blit gets clamped to the
-      // absolute extent and emits a diagnostic once.
-      const width = Math.abs(srcX1 - srcX0);
-      const height = Math.abs(srcY1 - srcY0);
-      if (width === 0 || height === 0) return;
-      if (srcX0 > srcX1 || srcY0 > srcY1 || dstX0 > dstX1 || dstY0 > dstY1) {
-        logUsage(
-          "blitFramebuffer",
-          "flipped blit requested — WebGPU copyTextureToTexture can't flip; using unflipped extent",
-        );
-      }
-
-      try {
-        state.currentCommandEncoder.copyTextureToTexture(
-          {
-            texture: srcTex,
-            origin: { x: Math.min(srcX0, srcX1), y: Math.min(srcY0, srcY1) },
-          },
-          {
-            texture: dstTex,
-            origin: { x: Math.min(dstX0, dstX1), y: Math.min(dstY0, dstY1) },
-          },
-          { width, height, depthOrArrayLayers: 1 },
-        );
-      } catch (err) {
-        logUsage(
-          "blitFramebuffer",
-          `copyTextureToTexture failed: ${(err as Error).message}`,
-        );
-      }
-    },
+    ) =>
+      blitFramebufferThroughContext(
+        state,
+        logUsage,
+        { srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1 },
+        mask,
+      ),
 
     readPixels: (): null => null,
 
@@ -748,19 +693,26 @@ export function createShaderStubs(state: WebGLStubState, logUsage: LogUsageFn) {
       type: number,
       pixels: Uint8Array | Uint8ClampedArray,
     ): Promise<boolean> => {
-      if (!state.device) return false;
-      const srcFbo = state.boundReadFramebuffer || state.boundFramebuffer;
-      const srcAttachment = srcFbo?._colorAttachment;
-      if (!srcAttachment) return false;
-      const srcTex =
-        (srcAttachment as { _webgpuTexture?: { texture: GPUTexture } })
-          ._webgpuTexture?.texture ||
-        (srcAttachment as { _texture?: GPUTexture })._texture;
+      if (!state.device) {
+        //>>includeStart('debug', pragmas.debug);
+        recordStubTextureTrace("readPixelsAsync.noDevice");
+        //>>includeEnd('debug');
+        return false;
+      }
+      // The READ_FRAMEBUFFER binding's color attachment 0, read in texture
+      // rows from (x, y) down: output row r is texture row y + r.
+      const srcTex = readPixelsSourceTexture(state, logUsage);
       if (!srcTex) return false;
       if (
         format !== 0x1908 /* GL_RGBA */ ||
         type !== 0x1401 /* UNSIGNED_BYTE */
       ) {
+        //>>includeStart('debug', pragmas.debug);
+        recordStubTextureTrace("readPixelsAsync.refused.format", {
+          format: String(format),
+          type: String(type),
+        });
+        //>>includeEnd('debug');
         logUsage(
           "readPixelsAsync",
           `unsupported format/type combo ${format.toString(16)}/${type.toString(16)} — only RGBA+UNSIGNED_BYTE today`,
@@ -804,6 +756,9 @@ export function createShaderStubs(state: WebGLStubState, logUsage: LogUsageFn) {
           );
         }
         readback.unmap();
+        //>>includeStart('debug', pragmas.debug);
+        recordStubTextureTrace("readPixelsAsync.resolved", { width, height });
+        //>>includeEnd('debug');
         return true;
       } finally {
         readback.destroy();

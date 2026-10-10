@@ -70,6 +70,7 @@ export const RIG_TAGS = Object.freeze([
   "c11",
   "ssr",
   "texture-atlas",
+  "framebuffer-census",
 ]);
 
 /** `readiness.kind` vocabulary a rig may declare. */

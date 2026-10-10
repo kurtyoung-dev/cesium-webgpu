@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1536 |
-| ACTIVE | 1292 |
+| Files in census | 1543 |
+| ACTIVE | 1299 |
 | ARCHIVED-CANDIDATE | 24 |
 | INVESTIGATION | 174 |
 | NO @purpose HEADER | 45 |
 | NO @status HEADER | 1 |
-| Classes | probe 678, spec 420, other 229, lib 160, gate-lib 21, bake-tool 13, fixture 8, runner 7 |
+| Classes | probe 678, spec 422, other 231, lib 163, gate-lib 21, bake-tool 13, fixture 8, runner 7 |
 
 ### Tools/ (64)
 
@@ -380,7 +380,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | lane-tmp.mjs | lib | ACTIVE | 2026-09-11 | 27 | The one way a spec, probe or tool takes scratch space: a single per-lane root under os.tmpdir() with removal in `finally`, so a throwing or killed run leaves one sweepable root instead of loose mkdtemp sandboxes at the Temp root. |
 | lane-tmp.spec.mjs | spec | ACTIVE | 2026-09-11 | 4 | Behaviour coverage for Tools/lib/lane-tmp.mjs — the directory is created under the lane root, removed on success AND on throw AND on rejection, refused outside tmpdir, and an inert `finally` is caught by the mutant. |
 | npm-override-rules.mjs | lib | ACTIVE | 2026-09-18 | 3 | Decides, from manifest objects alone, which root `overrides` entries npm rejects as conflicting with a direct dependency or as an unresolvable `$` reference. |
-| png-decode.mjs | lib | ACTIVE | 2026-09-13 | 42 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
+| png-decode.mjs | lib | ACTIVE | 2026-09-13 | 43 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
 | png-decode.spec.mjs | spec | ACTIVE | 2026-09-13 | 4 | Round-trip, filter-coverage and error-path coverage for Tools/lib/png-decode.mjs. |
 | png-rgba.mjs | lib | ACTIVE | 2026-09-02 | 19 | CRC32 + PNG chunk + zero-dependency RGBA PNG encoder shared across the probe fleet, replacing near-duplicate hand-rolled copies one consumer at a time. |
 | png-rgba.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Golden-byte and CRC32-vector coverage for Tools/lib/png-rgba.mjs. |
@@ -443,7 +443,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1067)
+### Tools/visual-regression/ (1069)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1270,7 +1270,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-sandcastle-scene-capture.mjs | probe | ACTIVE | 2026-08-16 | 1 | Replays the Scene Capture Reflections demo body against CesiumViewer; capture records publish when ON, zero when OFF, 0 errors. |
 | probe-sandcastle2-ports.mjs | probe | INVESTIGATION | 2026-08-29 | 5 | One-off diagnosis loading the same Sandcastle2 demo, through the guarded opener, on the outer app origin vs directly on the inner bucket origin, and comparing. |
 | probe-sandcastle2-webgpu-start.mjs | probe | ACTIVE | 2026-08-29 | 7 | Acceptance for the Sandcastle2 frozen-module crash: Mars demo loads on both renderers, no 'Cannot assign to property Viewer', canvas renders. |
-| probe-saved-view.mjs | probe | ACTIVE | 2026-08-16 | 25 | Loads user-reported saved-view URLs and captures WebGL vs WebGPU side-by-side; the canonical capture+diff template for view-specific bugs. |
+| probe-saved-view.mjs | probe | ACTIVE | 2026-08-16 | 26 | Loads user-reported saved-view URLs and captures WebGL vs WebGPU side-by-side; the canonical capture+diff template for view-specific bugs. |
 | probe-scene-capture-cardinal.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | Ground-truth cardinal check for globe env capture: per-face on-screen camera replicas vs captured cube faces, detecting E/W swap or mirror. |
 | probe-scene-capture-off.mjs | probe | ACTIVE | 2026-08-16 | 4 | OFF-parity gate for env scene capture: both default-false flags mean no capture sources, no extra GPU pass, canvas unchanged vs WebGL baseline. |
 | probe-scene-capture-on.mjs | probe | ACTIVE | 2026-08-16 | 4 | ON-correctness gate: scene capture renders the globe into the env cube's 6 faces with correct face basis (nadir=terrain, zenith=sky). |
@@ -1307,8 +1307,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-stars-catalog.mjs | probe | ACTIVE | 2026-08-21 | 26 | UUID-bound write-once WebGPU star-catalog evidence acquisition (checks A-G); the gate lib owns the verdict fold. |
 | probe-stars-hdr-autoexposure-parity.mjs | probe | ACTIVE | 2026-08-16 | 6 | Guards the B364 fix: WebGPU honors the opt-in auto-exposure flag so the HDR night sky is not crushed to black versus WebGL. |
 | probe-stars-hdr-verify.mjs | probe | ACTIVE | 2026-08-16 | 4 | Verifies the WebGPU baked-SkyBox sRGB-to-linear decode under HDR (faint star dusting visible like WebGL) with an SDR no-op control. |
-| probe-stub-texture-uploads.mjs | probe | ACTIVE | — | 4 | Captures the label-atlas growth rig (texture-atlas-label-growth) and the Sandcastle2 Video demo rig (sandcastle2-video) on both renderers, with the atlas size before and after its growth, each half's lit fraction, the video element's sizes and the central box's spread and motion, and the WebGPU error gate. |
-| probe-stub-texture-uploads.spec.mjs | spec | ACTIVE | — | 1 | Pins that the runtime's scene frame driver renders a scene in request-render mode to the frame its step asks for, that a scene which stops rendering ends at the driver's wall-clock deadline rather than never, that the label atlas steps run to completion over the driver and refuse by name when the driver ends them early, and that the probe's cell budget turns a browser call that never returns into a named refusal within the budget. |
+| probe-stub-texture-uploads.mjs | probe | ACTIVE | 2026-10-09 | 6 | Captures the label-atlas growth rig (texture-atlas-label-growth) and the Sandcastle2 Video demo rig (sandcastle2-video) on both renderers, with the atlas size before and after its growth, each half's lit fraction, the video element's sizes and the central box's spread and motion, and the WebGPU error gate; and, when named, the framebuffer census on WebGPU (the CesiumViewer opening view with its clock pinned, with MSAA, pickPosition or a translucent rectangle, and a model with shadows and image-based lighting, each cell's clock pinned and its tiles settled through the determinism kit), with each Framebuffer.js consumer's attachments, copies, blits and teardowns counted and the three-run comparison of its captures. |
+| probe-stub-texture-uploads.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Pins that the runtime's scene frame driver renders a scene in request-render mode to the frame its step asks for, that a scene which stops rendering ends at the driver's wall-clock deadline rather than never, that the label atlas steps run to completion over the driver and refuse by name when the driver ends them early, and that the probe's cell budget turns a browser call that never returns into a named refusal within the budget. |
 | probe-sun-disc-dawn.mjs | probe | ACTIVE | 2026-09-03 | 7 | Acquire a dual-backend dawn sweep of the solar disc and publish per-sample disc-centre versus disc-annulus luminance and chroma ratios with WebGL as the parity control. |
 | probe-sun-glow-profile.mjs | probe | ACTIVE | 2026-08-16 | 9 | Measures the sun billboard's radial luminance profile (solar radii) per backend; discriminates the WebGPU zero-contribution near the limb. |
 | probe-sun-glowfactor.mjs | probe | ACTIVE | 2026-08-16 | 5 | Gates scene.sun.glowFactor driving the WebGPU sun bake + quad size, with glowFactor=1.0 byte-identical to the historical hardcoded bake. |
@@ -1506,7 +1506,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-snap-edge-payload.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Contract for the edge tier of WebGPU Scene.snap: edge-flag payload encode, pick-color plumb into the edge UB, pipeline variant, strict admission. |
 | webgpu-snap-framebuffer-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Behavioral lifecycle coverage of the real WebGPUSnapFramebuffer on GPU-shaped mocks; complements the source-contract snap-payload spec. |
 | webgpu-snap-payload.spec.mjs | spec | ACTIVE | 2026-08-28 | 2 | Contract for WebGPU Scene.snap payload: one encoding home (WebGPUSnapPayload.ts), rg32uint format agreement, spiral decode, naga validation. |
-| webgpu-stub-texture-uploads.spec.mjs | spec | ACTIVE | — | 1 | Pins that a TextureAtlas that grows after the frame's encoder is gone still carries every earlier image into the larger texture before the old texture is destroyed, and that an HTMLVideoElement uploads at its frame size on every stub and helper upload path while every other source uploads at its own width and height. |
+| webgpu-stub-framebuffer-semantics.spec.mjs | spec | ACTIVE | — | 1 | Pins that on the WebGL compatibility stub the real framebuffer classes behave as on WebGL: the framebuffer enums are named, bindings split read and draw, an attachment is recorded at color attachment 0 and never replaced by a higher or a depth/stencil one, deleting a framebuffer destroys no attachment, and an atlas growth through Framebuffer.js carries every earlier image before its one owner-driven destruction. |
+| webgpu-stub-framebuffer-transfers.spec.mjs | spec | ACTIVE | — | 1 | Pins what the WebGL compatibility stub does with a recorded framebuffer when it is read: a framebuffer-to-texture copy reads the READ binding and refuses by name what it cannot address, a blit copies only between two different single-sample textures and never copies depth or stencil, and readPixelsAsync reads color attachment 0 in texture row order and refuses by name. |
+| webgpu-stub-texture-uploads.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Pins that a TextureAtlas that grows after the frame's encoder is gone still carries every earlier image into the larger texture before the old texture is destroyed, and that an HTMLVideoElement uploads at its frame size on every stub and helper upload path while every other source uploads at its own width and height. |
 | webgpu-sun-bloom-mirror.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Guard that both backends draw ONE sun glow: WebGPU tuning derived from SolarDiscModel not copied, shared constants, one flag, WebGL untouched. |
 | webgpu-voxel-resource-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Drives real WebGPUVoxelResourceLifecycle exports (retain/release, atlas slot publish/retire/LRU, async-failure capture) plus structural pins. |
 | wgs84-channel-means.spec.mjs | spec | ACTIVE | 2026-10-09 | 3 | Drives lib/metrics/wgs84-channel-means.mjs over hand-built and seeded frames, pins its channel-sum coverage boundary and its difference from frameStats, and executes the archived probe-wgs84-quick.mjs statistics loop over the same bytes so the extraction is checked against the original code rather than against a restatement of it. |
@@ -1588,7 +1590,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | fixture-receipt-input.mjs | fixture | ACTIVE | 2026-09-19 | 2 | The one fixed `buildReceipt` input shared by the golden-comparison |
 
-### Tools/visual-regression/lib/ (136)
+### Tools/visual-regression/lib/ (139)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1647,12 +1649,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-u2-perf-evidence.mjs | lib | ACTIVE | 2026-08-21 | 3 | Manifest policy for the C13-16 U2 cross-bundle GPU-timing gate: comparison, environment-drift rejection, immutable evidence naming. |
 | contact-sheet-page.mjs | lib | ACTIVE | 2026-09-19 | 8 | Pure capture-manifest → contact-sheet page model + HTML renderer: a static, verdict-free page comparing BEFORE/AFTER captures across rigs and renderers, with the manifest's own shape guard. |
 | daynight-terminator-law.mjs | lib | ACTIVE | 2026-08-16 | 4 | Pure model behind probe-daynight-terminator-law (CLT-B1); deliberately unchanged post-fix, so lanes A/D now REFUTE — read metrics, not verdicts. |
-| determinism-kit.mjs | lib | ACTIVE | 2026-10-09 | 17 | Probe determinism kit: pinClock, settleTiles, dampSky, placeCameraAfterTerrain, nRunMedian — neutralises the measured sources of run-to-run drift in visual probes and refuses a camera that did not stay where the rig put it. |
+| determinism-kit.mjs | lib | ACTIVE | 2026-10-09 | 19 | Probe determinism kit: pinClock, settleTiles, dampSky, placeCameraAfterTerrain, nRunMedian — neutralises the measured sources of run-to-run drift in visual probes and refuses a camera that did not stay where the rig put it. |
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 19 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 5 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
 | engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 33 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
 | engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 45 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
+| framebuffer-census-steps.mjs | lib | ACTIVE | — | 4 | The framebuffer census cell table (a named rig plus the census dials applied over it: MSAA, pickPosition, an OIT translucent rectangle, a glTF model with shadows and image-based lighting), the page function that pins a cell's clock through the determinism kit, applies its camera and dials, settles its tiles through the kit and drives its settle frames from the frame its model is ready, the decisions that refuse a cell with no pinned clock and a run that did not finish or whose model never became ready, and the per-cell comparison of two runs' captures with its pre-registered threshold. |
 | globe-camera-track.mjs | lib | ACTIVE | 2026-08-16 | 16 | Shared orbit-to-ground camera route (plain serializable waypoints) used by both the visual parity probe and the performance campaign. |
 | globe-pipeline-readiness.mjs | lib | ACTIVE | 2026-08-29 | 5 | Pure scoring for the pipeline-readiness probe: snapshot summary, coverage-divergence scoring, non-vacuity; keys decoded via canonical parser. |
 | godray-near-ceiling.mjs | lib | NO @purpose HEADER | 2026-09-11 | 3 | — |
@@ -1664,7 +1667,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | gsplat-parity-model.mjs | lib | ACTIVE | 2026-08-16 | 4 | Pure dual-mode verdict logic for probe-gsplat-parity: attributable-absence marker, presence flip, blank-canvas parity refusal, exits 0/1/2/3. |
 | gsplat-tower-framing.mjs | lib | ACTIVE | 2026-09-02 | 3 | Derive the camera range that keeps the tower splat anchor and its terrain-reference anchor inside the same frustum from their real geodetic separation, and decide whether a captured tower silhouette clears the pre-registered pixel floor. |
 | image-diff.mjs | lib | ACTIVE | 2026-09-18 | 15 | Pure per-channel RGBA pixel diff (tolerance + optional mask) returning mismatch stats and a paint-ready diff buffer, no I/O and no gate policy. |
-| label-atlas-growth-steps.mjs | lib | ACTIVE | — | 3 | The reusable step sequence for a label or billboard cell whose subject is a texture atlas that grows in a later frame: the in-page steps that add each batch on its frame and trace the atlas size every frame, the decision that refuses a run whose atlas did not grow between batches, and the per-half lit-pixel metric the capture is read with. |
+| label-atlas-growth-steps.mjs | lib | ACTIVE | 2026-10-09 | 3 | The reusable step sequence for a label or billboard cell whose subject is a texture atlas that grows in a later frame: the in-page steps that add each batch on its frame and trace the atlas size every frame, the decision that refuses a run whose atlas did not grow between batches, and the per-half lit-pixel metric the capture is read with. |
 | moon-mip-motion-certification.mjs | lib | ACTIVE | 2026-08-21 | 5 | Finalizer for C12-33-SHIMMER-ENVELOPE-CERTIFICATION: paired motion-shimmer separation, seam review, parity, and explicit non-claim of observed mip/LOD selection. |
 | ocean-datum-model.mjs | lib | ACTIVE | 2026-08-16 | 7 | Pure-math verdict model classifying Cesium World Terrain's ocean-lid datum (ELLIPSOID_ZERO/GEOID/MIXED) for the tides/ocean-dynamics W0 gate. |
 | ocean-tide-datum-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Published NOAA/ephemeris constants plus verdict logic accepting the geoid-anchor defect fix and the equilibrium-tide feature together. |
@@ -1686,10 +1689,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-lifecycle-diagnostics.mjs | lib | ACTIVE | 2026-09-12 | 4 | Bounded, hostile-value-safe description of a probe failure: what the rejected value was, which lifecycle occurrences contributed, and whether a refusal is hiding inside an aggregate. |
 | probe-lifecycle-run.mjs | lib | ACTIVE | 2026-09-12 | 10 | Derives a probe's orderly deadline from its declared work budget and drives preflight, Edge slot, per-run browser and descriptor cells inside one bounded lifecycle. |
 | probe-lifecycle.mjs | lib | ACTIVE | 2026-09-12 | 9 | Coordinates a probe deadline, tracked browser resources, and the Edge lease so a probe cannot report completion while owned work remains live. |
-| probe-refusal.mjs | lib | ACTIVE | 2026-09-02 | 15 | Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns. |
+| probe-refusal.mjs | lib | ACTIVE | 2026-09-02 | 16 | Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns. |
 | probe-runtime-governance.mjs | lib | ACTIVE | 2026-09-13 | 6 | C13-N01 stage 1 detectors: read whether a probe resolves its origin from a hard-coded fallback and whether it routes through the three governance modules, and census the fleet from those two facts. |
-| probe-runtime.mjs | lib | ACTIVE | 2026-09-26 | 89 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
-| probe-scene-frames.mjs | lib | ACTIVE | — | 1 | The probe runtime's frame driver: an in-page function that renders a scene one frame at a time by requesting the next render from every postRender, hands each frame to a step callback, and ends when the step says so, at a frame cap, or at a wall-clock deadline, reporting which; plus the call that installs it in a page under one global so a step module's page function can use it. |
+| probe-runtime.mjs | lib | ACTIVE | 2026-10-09 | 89 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
+| probe-scene-frames.mjs | lib | ACTIVE | 2026-10-09 | 1 | The probe runtime's frame driver: an in-page function that renders a scene one frame at a time by requesting the next render from every postRender, hands each frame to a step callback, and ends when the step says so, at a frame cap, or at a wall-clock deadline, reporting which; plus the call that installs it in a page under one global so a step module's page function can use it. |
 | probe-work-registry.mjs | lib | ACTIVE | 2026-09-12 | 6 | Tracks every `scope.run` a descriptor starts as an attempt with a settled outcome, so a run cannot be reported complete while work it started is still live, and such work's failure reaches the incident record whenever an incident is written at all; the browser's close is NOT deferred for it — see the header. |
 | prohibited-reader-allowlist.mjs | lib | ACTIVE | 2026-10-09 | 11 | Pin the measured visual-regression sources that still use the prohibited live-canvas reader. |
 | prohibited-reader-rule.mjs | lib | ACTIVE | 2026-08-20 | 8 | Detect drawImage calls that copy a live scene canvas into a scratch context. |
@@ -1699,7 +1702,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | relative-path.mjs | lib | ACTIVE | 2026-09-19 | 8 | Single fail-closed predicate for "a relative, POSIX, non-escaping path", shared by the capture manifest's image paths, the contact sheet's image/receipt paths and a banked sheet-index entry's repo-relative path. |
 | representative-performance-content.mjs | lib | ACTIVE | 2026-08-16 | 12 | Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads. |
 | representative-tileset-request-ledger.mjs | lib | ACTIVE | 2026-08-16 | 6 | Event-sourced ledger of tileset content requests (issue/terminal events, byte totals, hashes) with cross-run comparison for perf evidence. |
-| rig-registry.mjs | lib | ACTIVE | 2026-10-09 | 22 | Load, validate and hash the rig records under rigs/, and regenerate scenes.json byte-identically from the rigs tagged wave-end. |
+| rig-registry.mjs | lib | ACTIVE | 2026-10-09 | 23 | Load, validate and hash the rig records under rigs/, and regenerate scenes.json byte-identically from the rigs tagged wave-end. |
 | runtime-residency-allowlist.mjs | lib | ACTIVE | 2026-09-03 | 2 | Frozen, shrink-only allowlist of runtime-resident probes still carrying an anti-re-accretion violation, mirroring lib/prohibited-reader-allowlist.mjs's ratchet shape. |
 | runtime-residency-contract.mjs | lib | ACTIVE | 2026-09-03 | 6 | Detects a probe that declares @runtime residency on lib/probe-runtime.mjs yet still hand-rolls one of the four concerns that module already owns. |
 | same-task-capture.mjs | lib | ACTIVE | 2026-08-16 | 57 | Canonical capture primitives that keep render+readback in one task (WebGL clears, WebGPU invalidates after present), plus embed-drift validators. |
@@ -1713,7 +1716,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | solar-bloom-glow.mjs | lib | ACTIVE | 2026-08-16 | 6 | Forward model of the sun bloom's additive glow-on-disc so differential disc measurements carry the non-cancelling bloom term correctly. |
 | star-contribution-census.mjs | lib | ACTIVE | 2026-08-29 | 3 | One home for the positional star-reachability control: luma planes, the absolute-frame census and the stars-on-minus-off difference census. |
 | strip-viewer-widgets.mjs | lib | NO @purpose HEADER | 2026-09-02 | 32 | — |
-| stub-texture-trace.mjs | lib | ACTIVE | — | 2 | The reusable runtime instrument for a texture cell: an init script that arms the engine's debug-build stub receipt and counts the WebGPU calls that create, copy, upload, submit and destroy textures; in-page wrappers that count the scene-side texture atlas, Texture and Material calls; and the readers that bring all three back with the live state of a label atlas or a video material. |
+| stub-framebuffer-rig.mjs | lib | ACTIVE | — | 2 | The shared rig for the WebGL-stub framebuffer specs: bundles Renderbuffer.js, Texture.js, MultisampleFramebuffer.js and the shader stubs beside the wired harness, and exports the rig, the texel model and the assertions both specs use. |
+| stub-texture-trace.mjs | lib | ACTIVE | 2026-10-09 | 4 | The reusable runtime instrument for a texture cell: an init script that arms the engine's debug-build stub receipt and counts the WebGPU calls that create, copy, upload, submit and destroy textures; in-page wrappers that count the scene-side texture atlas, Texture and Material calls; and the readers that bring all three back with the live state of a label atlas or a video material. |
+| stub-wired-harness.mjs | lib | ACTIVE | — | 4 | The shared harness for WebGL-stub texture and framebuffer specs: installs the DOM-class fakes and GPUTextureUsage before any engine module loads, bundles the real stub modules, Framebuffer.js and the context's stub builder with esbuild, and exports a recording fake device with a texel model, a hand-built stub state, the stub as the context builds it, and the label-atlas growth steps those specs drive. |
 | sun-disc-dawn-gate.mjs | gate-lib | ACTIVE | 2026-09-03 | 5 | Gate-predicate library for the sun-disc dawn sweep, scoring disc-centre vs disc-annulus luminance and chroma per backend with WebGL as the parity control. |
 | sun-radiance-delta.mjs | lib | ACTIVE | 2026-08-16 | 4 | Two-radiance sun-disc measurement model discriminating multiplicative gain vs additive pedestal via a parameter-free ratio statistic. |
 | tidal-harmonics-model.mjs | lib | ACTIVE | 2026-08-16 | 1 | Published NOAA/Schureman constituent speeds, Doodson fundamental rates and physics-free signal helpers anchoring the tidal-harmonics spec. |
@@ -1757,7 +1762,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | velocity-texels.mjs | lib | ACTIVE | 2026-10-09 | 2 | Decode IEEE-754 binary16 velocity texels read back from an rg16float motion-vector target and count those whose magnitude clears a stated noise floor, over the whole target or inside one screen rectangle. |
 | wgs84-channel-means.mjs | lib | ACTIVE | 2026-10-09 | 6 | Pure whole-frame per-channel RGB means plus the percentage of pixels whose channel sum exceeds a threshold, over decoded RGBA bytes; the Node-side home of probe-wgs84-quick.mjs's in-page canvas statistics. |
 
-### Tools/visual-regression/rigs/ (111)
+### Tools/visual-regression/rigs/ (113)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1792,6 +1797,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | dateline-east-convective.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "dateline-east-convective" (tropical-maritime-tradewind/broken-oceanic), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | dateline-west-convective.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "dateline-west-convective" (tropical-maritime-tradewind/broken-oceanic), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | default-3d.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for probe-saved-view.mjs's "default-3d" saved view. |
+| framebuffer-census-globe.mjs | other | ACTIVE | — | 1 | Rig record for the framebuffer census globe cells: the CesiumViewer page's own opening view over its default terrain and imagery, WebGPU only, 1280x720, 240 settle frames after a tiles-loaded settle, the clock pinned to the June solstice at 18:00 UTC. |
+| framebuffer-census-model-shadows-ibl.mjs | other | ACTIVE | — | 1 | Rig record for the framebuffer census model cell: CesiumMilkTruck on the WGS84 ellipsoid in Oregon at 20:00 UTC on the June solstice, shadows on, its default image-based lighting and environment map, looked at from 18 m, 1280x720, WebGPU only, captured 240 frames after the model is ready. |
 | globe-default.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "globe-default" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
 | globe-horizon.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "globe-horizon" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
 | globe-zoomed-mountain.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "globe-zoomed-mountain" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
@@ -1859,12 +1866,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | sandcastle-webgpu-clustered-lighting.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the sandcastle-smoke.mjs gallery demo "WebGPU Clustered Lighting.html". |
 | sandcastle-webgpu-orbital-catalog.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the sandcastle-smoke.mjs gallery demo "WebGPU Orbital Catalog.html". |
 | sandcastle-webgpu-point-light-shadows.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the sandcastle-smoke.mjs gallery demo "WebGPU Point Light Shadows.html". |
-| sandcastle2-video.mjs | other | ACTIVE | — | 1 | Rig record for the Sandcastle2 Video demo: a tracked ellipsoid whose material is a playing HTMLVideoElement with no width or height attribute, both renderers, 1280x720, captured once the video has played a second and again 1.5 s later. |
+| sandcastle2-video.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the Sandcastle2 Video demo: a tracked ellipsoid whose material is a playing HTMLVideoElement with no width or height attribute, both renderers, 1280x720, captured once the video has played a second and again 1.5 s later. |
 | sepacific-stratocumulus-closed.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "sepacific-stratocumulus-closed" (subtropical-marine-eastern-boundary/closed-cell-sheet), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | southern-ocean-stratocumulus-open.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "southern-ocean-stratocumulus-open" (cold-air-outbreak/open-cell-broken), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | ssr-model-over-plane.mjs | other | ACTIVE | 2026-10-09 | 0 | Rig record for the WebGPU screen-space reflections pass - the Wood Tower model on the bare WGS84 ellipsoid with no imagery (offline page) at 100 W, 40 N, a low oblique camera 220 m south and 80 m west of it, SSR on, WebGPU only, 1280x720. |
 | ssr-off-model-over-plane.mjs | other | ACTIVE | 2026-10-09 | 0 | Rig record for the SSR-off control - the same Wood Tower, offline page, bare ellipsoid, no imagery, camera, clock and viewport as ssr-model-over-plane, with scene.enableSSR false, WebGPU only. |
-| texture-atlas-label-growth.mjs | other | ACTIVE | — | 1 | Rig record for the label-atlas growth cell: eight glyphs in one frame, twenty-eight more 25 frames later so the glyph atlas must resize and copy the first eight, captured 60 frames after the last batch on both renderers, 1280x720, globe and sky hidden. |
+| texture-atlas-label-growth.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the label-atlas growth cell: eight glyphs in one frame, twenty-eight more 25 frames later so the glyph atlas must resize and copy the first eight, captured 60 frames after the last batch on both renderers, 1280x720, globe and sky hidden. |
 | tradewind-cumulus-caribbean.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "tradewind-cumulus-caribbean" (tropical-maritime-tradewind/tradewind-mediocris), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | voxel-box-procedural.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "voxel-box-procedural" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
 | wgs84-close-1mm.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the WGS84-ellipsoid close view on the CesiumViewer page - nadir on 100 W, 40 N from 1,000 km, both renderers, 1280x720, a 360-frame dwell. |

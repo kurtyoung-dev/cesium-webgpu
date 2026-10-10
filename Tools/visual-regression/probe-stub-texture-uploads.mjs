@@ -3,7 +3,7 @@
 // compatibility stub that a scene can watch go blank - a label glyph atlas
 // that grows in a later frame, and a video texture whose element has no width
 // attribute.
-// @purpose Captures the label-atlas growth rig (texture-atlas-label-growth) and the Sandcastle2 Video demo rig (sandcastle2-video) on both renderers, with the atlas size before and after its growth, each half's lit fraction, the video element's sizes and the central box's spread and motion, and the WebGPU error gate.
+// @purpose Captures the label-atlas growth rig (texture-atlas-label-growth) and the Sandcastle2 Video demo rig (sandcastle2-video) on both renderers, with the atlas size before and after its growth, each half's lit fraction, the video element's sizes and the central box's spread and motion, and the WebGPU error gate; and, when named, the framebuffer census on WebGPU (the CesiumViewer opening view with its clock pinned, with MSAA, pickPosition or a translucent rectangle, and a model with shadows and image-based lighting, each cell's clock pinned and its tiles settled through the determinism kit), with each Framebuffer.js consumer's attachments, copies, blits and teardowns counted and the three-run comparison of its captures.
 // @status ACTIVE
 // @runtime lib/probe-runtime.mjs
 //
@@ -21,6 +21,14 @@
 //           are the frame size; the cell records all four. A blank surface is
 //           a central box with little spread and no change between two
 //           captures 1.5 s apart.
+//   framebuffer-census - only when named, WebGPU only. Each census cell
+//           (`lib/framebuffer-census-steps.mjs`) is a registry rig plus dials,
+//           settled and captured, with the engine receipt's framebuffer
+//           events and the scene-layer `Framebuffer.js` counters
+//           (`pageInstallFramebufferCensusTrace`) beside the capture. Two
+//           BEFORE runs and one AFTER run are compared with
+//           `--census-compare <before1> <before2> <after>`, which reads the
+//           three output directories and writes no capture.
 //
 // WHY THE VIDEO SCENE IS HERE AND NOT IN lib/capture.mjs. The demo runs in the
 // Sandcastle2 run frame. `capture.mjs` navigates the top-level page only, so it
@@ -46,8 +54,12 @@
 // way.
 //
 // Usage: node Tools/visual-regression/probe-stub-texture-uploads.mjs
-//   [--port 8094] [--sandcastle-port 8095] [--scene atlas,video]
+//   [--port 8094] [--sandcastle-port 8095]
+//   [--scene atlas,video|framebuffer-census]
 //   [--renderer both|webgl|webgpu] [--runs N]
+//   [--census-settle-frames N] (a census cell's settle, instead of its rig's)
+//        node Tools/visual-regression/probe-stub-texture-uploads.mjs
+//   --census-compare <before1-dir> <before2-dir> <after-dir>
 // Outputs: Tools/visual-regression/output/stub-texture-uploads/
 
 import { attachPageDiagnostics } from "../lib/attach-page-diagnostics.mjs";
@@ -58,6 +70,17 @@ import {
   errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
 import { captureUrlFor } from "./lib/capture.mjs";
+import { DET_BROWSER_SETUP } from "./lib/determinism-kit.mjs";
+import {
+  CENSUS_MAX_FRAMES,
+  FRAMEBUFFER_CENSUS_CELLS,
+  CENSUS_TILE_SETTLE,
+  censusCaptureName,
+  compareFramebufferCensusRuns,
+  decideCensusRun,
+  pageRunFramebufferCensus,
+  requireCensusClock,
+} from "./lib/framebuffer-census-steps.mjs";
 import {
   decideAtlasGrowth,
   halfLitFractions,
@@ -73,13 +96,18 @@ import {
 } from "./lib/probe-runtime.mjs";
 import { openSandcastle2Url } from "./lib/sandcastle2-renderer-gate.mjs";
 import {
+  copySourceDestroyOrder,
   frameReadVideoMaterialState,
+  pageInstallFramebufferCensusTrace,
   pageInstallSceneTextureTrace,
+  pageReadFramebufferCensusTrace,
   pageReadLabelAtlasState,
   pageReadStubTextureTrace,
   stubTextureTraceInit,
 } from "./lib/stub-texture-trace.mjs";
 import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
+import CENSUS_GLOBE_RIG from "./rigs/framebuffer-census-globe.mjs";
+import CENSUS_MODEL_RIG from "./rigs/framebuffer-census-model-shadows-ibl.mjs";
 import ATLAS_RIG from "./rigs/texture-atlas-label-growth.mjs";
 import VIDEO_RIG from "./rigs/sandcastle2-video.mjs";
 
@@ -87,10 +115,23 @@ import VIDEO_RIG from "./rigs/sandcastle2-video.mjs";
 export const STUB_TEXTURE_SCENES = Object.freeze({
   atlas: ATLAS_RIG,
   video: VIDEO_RIG,
+  "framebuffer-census": CENSUS_GLOBE_RIG,
 });
+
+/** The census cells' rigs, by id. */
+const CENSUS_RIGS = Object.freeze({
+  [CENSUS_GLOBE_RIG.id]: CENSUS_GLOBE_RIG,
+  [CENSUS_MODEL_RIG.id]: CENSUS_MODEL_RIG,
+});
+
+/** Scenes a run captures only when `--scene` names them. */
+const NAMED_ONLY_SCENES = Object.freeze(["framebuffer-census"]);
 
 /** Every scene, in the order a run captures them. */
 export const DEFAULT_SCENES = Object.freeze(["atlas", "video"]);
+
+/** The encoder label of the stub's off-frame copies (the atlas growth's). */
+const OFF_FRAME_COPY_LABEL = "GLStub_OffFrameTextureCopy";
 
 /** The engine module the CesiumViewer page loads and the steps import. */
 const CESIUM_MODULE_URL = "/Build/CesiumUnminified/index.js";
@@ -208,15 +249,30 @@ export function planStubTextureCells({ scene, renderers } = {}) {
     .map((name) => name.trim().toLowerCase())
     .filter((name) => name.length > 0);
   if (names.length === 0) {
-    throw new TypeError("--scene needs at least one of atlas, video");
+    throw new TypeError(
+      "--scene needs at least one of atlas, video, framebuffer-census",
+    );
   }
   for (const name of names) {
     if (!Object.hasOwn(STUB_TEXTURE_SCENES, name)) {
-      throw new TypeError(`--scene must name atlas or video (got "${name}")`);
+      throw new TypeError(
+        `--scene must name atlas, video or framebuffer-census (got "${name}")`,
+      );
     }
   }
   const cells = [];
-  for (const name of DEFAULT_SCENES.filter((each) => names.includes(each))) {
+  for (const name of [...DEFAULT_SCENES, ...NAMED_ONLY_SCENES].filter((each) =>
+    names.includes(each),
+  )) {
+    if (name === "framebuffer-census") {
+      if (renderers.includes("webgpu")) {
+        for (const census of FRAMEBUFFER_CENSUS_CELLS) {
+          const rig = CENSUS_RIGS[census.rig];
+          cells.push({ scene: name, rig, renderer: "webgpu", census });
+        }
+      }
+      continue;
+    }
     const rig = STUB_TEXTURE_SCENES[name];
     for (const renderer of renderers) {
       if (rig.renderers.includes(renderer)) {
@@ -423,7 +479,7 @@ async function captureAtlasCell({
     }),
   );
   const image = decodePng(shot.buffer);
-  return {
+  const record = {
     atlas,
     framesRendered: growth.frames,
     stepsElapsedMs: growth.elapsedMs,
@@ -442,6 +498,15 @@ async function captureAtlasCell({
     },
     gate: await budget.bound("reading the error gate", () =>
       collectGateErrors(page),
+    ),
+  };
+  // Whether the texture the growth copied from was destroyed once, after the
+  // last of those copies was submitted, from the trace's unsampled counters.
+  return {
+    ...record,
+    copySourceDestroy: copySourceDestroyOrder(
+      record.trace.gpu,
+      OFF_FRAME_COPY_LABEL,
     ),
   };
 }
@@ -553,6 +618,142 @@ async function captureVideoCell({
 }
 
 /**
+ * One framebuffer census cell on WebGPU: the rig's page, the census counters
+ * installed before the settle, the cell's dials applied, the rig's settle
+ * frames driven, one element capture of the scene canvas, and the receipts.
+ */
+async function captureCensusCell({
+  page,
+  origin,
+  options,
+  cell,
+  run,
+  outputDirectory,
+  captures,
+  budget,
+}) {
+  const { rig, census } = cell;
+  const clock = requireCensusClock(rig, census);
+  const settleFrames = options.censusSettleFrames ?? rig.readiness.frames;
+  const url = new URL(captureUrlFor({ rig, origin }));
+  url.searchParams.set("renderer", cell.renderer);
+  await budget.bound("navigation", () =>
+    page.goto(url.href, {
+      waitUntil: "load",
+      timeout: Math.min(NAVIGATION_BUDGET_MS, budget.remainingMs()),
+    }),
+  );
+  await budget.bound("the wait for the viewer", () =>
+    page.waitForFunction(() => !!globalThis.viewer, null, {
+      timeout: Math.min(NAVIGATION_BUDGET_MS, budget.remainingMs()),
+    }),
+  );
+  await budget.bound("arming the error gate", () => armWebGPUDevices(page));
+  const removed = acceptStrip(
+    await budget.bound("the viewer chrome strip", () =>
+      page.evaluate(`(${STRIP_WIDGETS_SOURCE})()`),
+    ),
+    cell,
+  );
+  await budget.bound("installing the frame driver", () =>
+    installSceneFrameDriver(page),
+  );
+  const traceInstalled = await budget.bound(
+    "installing the texture trace",
+    () =>
+      page.evaluate(pageInstallSceneTextureTrace, {
+        moduleUrl: CESIUM_MODULE_URL,
+      }),
+  );
+  const censusInstalled = await budget.bound(
+    "installing the framebuffer census counters",
+    () =>
+      page.evaluate(pageInstallFramebufferCensusTrace, {
+        moduleUrl: CESIUM_MODULE_URL,
+      }),
+  );
+  const settled = decideCensusRun(
+    await budget.bound("the census settle", () =>
+      page.evaluate(pageRunFramebufferCensus, {
+        moduleUrl: CESIUM_MODULE_URL,
+        camera: rig.camera,
+        clock,
+        det: DET_BROWSER_SETUP,
+        tileSettle: CENSUS_TILE_SETTLE,
+        rigDials: rig.dials ?? {},
+        cellDials: census.dials,
+        settleFrames,
+        maxFrames: Math.max(CENSUS_MAX_FRAMES, settleFrames + 1),
+        deadlineMs: Math.max(0, budget.remainingMs() - PAGE_DEADLINE_MARGIN_MS),
+        driverGlobal: SCENE_FRAME_DRIVER_GLOBAL,
+      }),
+    ),
+    census,
+  );
+  const shot = await budget.bound("the capture", () =>
+    captureElement({
+      page,
+      selector: CANVAS_SELECTOR,
+      name: censusCaptureName(census.name, run),
+      outputDirectory,
+      captures,
+    }),
+  );
+  return {
+    census: census.name,
+    dials: census.dials,
+    settleFrames,
+    framesRendered: settled.frames,
+    stepsElapsedMs: settled.elapsedMs,
+    applied: settled.applied,
+    modelReady: settled.modelReady,
+    msaaSamples: settled.msaaSamples,
+    widgetsRemoved: removed,
+    capture: { name: shot.name, sha256: shot.sha256 },
+    trace: {
+      installed: traceInstalled.installed,
+      ...(await budget.bound("reading the texture trace", () =>
+        page.evaluate(pageReadStubTextureTrace),
+      )),
+      framebuffers: {
+        installed: censusInstalled.installed,
+        ...(await budget.bound("reading the framebuffer census", () =>
+          page.evaluate(pageReadFramebufferCensusTrace),
+        )),
+      },
+    },
+    gate: await budget.bound("reading the error gate", () =>
+      collectGateErrors(page),
+    ),
+  };
+}
+
+/**
+ * Compare a framebuffer census over three output directories and print one
+ * row per cell; never opens a browser.
+ *
+ * @param {string[]} directories B1, B2 and A, in that order.
+ * @returns {number} The exit code: 0, or 2 for a usage error.
+ */
+export function runCensusCompare(directories) {
+  const [before1, before2, after] = directories;
+  if (!before1 || !before2 || !after) {
+    console.error(
+      "usage: --census-compare <before1-dir> <before2-dir> <after-dir>",
+    );
+    return 2;
+  }
+  const rows = compareFramebufferCensusRuns({
+    before1,
+    before2,
+    after,
+    boxSpreadAndChange,
+  });
+  console.log(JSON.stringify(rows, null, 2));
+  return 0;
+}
+
+/**
  * One scene on one renderer, in a fresh browser context, every browser call
  * bounded by one cell budget.
  */
@@ -580,7 +781,12 @@ async function captureCell({
     const page = await context.newPage();
     const diagnostics = attachPageDiagnostics(page);
     try {
-      const work = cell.scene === "atlas" ? captureAtlasCell : captureVideoCell;
+      const work =
+        cell.scene === "atlas"
+          ? captureAtlasCell
+          : cell.scene === "framebuffer-census"
+            ? captureCensusCell
+            : captureVideoCell;
       const measured = await work({
         page,
         origin,
@@ -685,6 +891,11 @@ export const descriptor = {
         key: "sandcastlePort",
         kind: "positive-integer",
       },
+      {
+        flag: "--census-settle-frames",
+        key: "censusSettleFrames",
+        kind: "positive-integer",
+      },
     ],
   },
   workBudgetMs: (options) =>
@@ -720,5 +931,9 @@ export const descriptor = {
 };
 
 if (isEntryPoint(import.meta.url)) {
-  process.exitCode = await runProbe(descriptor);
+  const compareAt = process.argv.indexOf("--census-compare");
+  process.exitCode =
+    compareAt >= 0
+      ? runCensusCompare(process.argv.slice(compareAt + 1))
+      : await runProbe(descriptor);
 }

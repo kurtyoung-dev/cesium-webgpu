@@ -67,423 +67,37 @@
 // `test-engine-node` (package.json; the seat owns the line).
 
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
-import path from "node:path";
 import { describe, it } from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { build } from "esbuild";
 
-import { withLaneTmp } from "../lib/lane-tmp.mjs";
-
-const engineDir = fileURLToPath(
-  new URL("../../packages/engine/Source/Renderer/WebGPU/", import.meta.url),
-).replaceAll("\\", "/");
-
-// The stub decides "external image" with instanceof, so the fakes are real
-// classes of these names. Installed before the engine modules load.
-class FakeHTMLVideoElement {}
-class FakeHTMLImageElement {}
-class FakeHTMLCanvasElement {}
-class FakeImageBitmap {}
-globalThis.HTMLVideoElement = FakeHTMLVideoElement;
-globalThis.HTMLImageElement = FakeHTMLImageElement;
-globalThis.HTMLCanvasElement = FakeHTMLCanvasElement;
-globalThis.ImageBitmap = FakeImageBitmap;
-globalThis.GPUTextureUsage = Object.freeze({
-  COPY_SRC: 0x01,
-  COPY_DST: 0x02,
-  TEXTURE_BINDING: 0x04,
-  STORAGE_BINDING: 0x08,
-  RENDER_ATTACHMENT: 0x10,
-});
-
-// One bundle over the real modules, every import kept real: the stub module
-// uses TypeScript parameter properties, which Node's strip-only mode refuses,
-// so the modules are compiled by esbuild rather than imported directly.
-const bundled = await build({
-  stdin: {
-    contents: [
-      `export * from "${engineDir}Stubs/WebGLStubTexture.ts";`,
-      `export { createFramebufferStubs } from "${engineDir}Stubs/WebGLStubFramebuffer.ts";`,
-      `export { WebGPUImageUpload } from "${engineDir}WebGPUImageUpload.ts";`,
-      `export { STUB_TEXTURE_TRACE_GLOBAL } from "${engineDir}Stubs/WebGLStubTextureTrace.ts";`,
-      `export { default as Framebuffer } from "${engineDir}../Framebuffer.js";`,
-    ].join("\n"),
-    resolveDir: engineDir,
-    loader: "ts",
-  },
-  bundle: true,
-  write: false,
-  format: "esm",
-  target: "es2022",
-  logLevel: "silent",
-});
-const {
-  createTextureStubs,
-  WebGLStubTextureRegistry,
-  createFramebufferStubs,
-  WebGPUImageUpload,
+import {
+  COLOR_ATTACHMENT0,
+  FRAMEBUFFER,
+  FakeHTMLCanvasElement,
+  FakeHTMLImageElement,
+  FakeHTMLVideoElement,
+  FakeImageBitmap,
+  IMAGES,
+  OLD_SIZE,
+  READ_FRAMEBUFFER,
+  RGBA,
   STUB_TEXTURE_TRACE_GLOBAL,
-  Framebuffer,
-} = await import(
-  `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`
-);
-
-// The context's own wiring: the stub builder the context calls, and the
-// context class whose copy methods the "real wiring" cases run. A separate
-// bundle because the context module is large and only those cases need it.
-// It is imported from a file in a lane temp directory rather than a `data:`
-// URL: an error thrown inside it carries one stack frame per call, and a
-// frame that names an 11 MB `data:` URL makes a red run's report unreadable.
-const wiringBundle = await build({
-  stdin: {
-    contents: [
-      `export { buildWebGLCompatibilityStubFor } from "${engineDir}WebGPUContextWebGLStubInit.ts";`,
-      `export { WebGPUContext } from "${engineDir}WebGPUContext.ts";`,
-    ].join("\n"),
-    resolveDir: engineDir,
-    loader: "ts",
-  },
-  bundle: true,
-  write: false,
-  format: "esm",
-  target: "es2022",
-  logLevel: "silent",
-});
-const { buildWebGLCompatibilityStubFor, WebGPUContext } = await withLaneTmp(
-  "stub-texture-wiring-",
-  async (directory) => {
-    const file = path.join(directory, "wiring.mjs");
-    writeFileSync(file, wiringBundle.outputFiles[0].text);
-    return await import(pathToFileURL(file).href);
-  },
-);
-
-const TEXTURE_2D = 0x0de1;
-const FRAMEBUFFER = 0x8d40;
-const READ_FRAMEBUFFER = 0x8ca8;
-const COLOR_ATTACHMENT0 = 0x8ce0;
-const RGBA = 0x1908;
-const UNSIGNED_BYTE = 0x1401;
-
-// -- the recording fake device -------------------------------------------------
-
-function makeDevice() {
-  const events = [];
-  const textures = [];
-  const violations = [];
-  const encodersCreated = [];
-
-  function makeModelTexture(descriptor) {
-    const width = descriptor.size.width;
-    const height = descriptor.size.height;
-    // The fields `WebGPUContext.copyTexture` validates a copy against.
-    const texture = {
-      descriptor,
-      width,
-      height,
-      depthOrArrayLayers: descriptor.size.depthOrArrayLayers ?? 1,
-      format: descriptor.format,
-      usage: descriptor.usage ?? 0,
-      sampleCount: descriptor.sampleCount ?? 1,
-      dimension: descriptor.dimension ?? "2d",
-      data: new Uint8Array(width * height * 4),
-      destroyed: false,
-      createView() {
-        return { texture };
-      },
-      destroy() {
-        texture.destroyed = true;
-        events.push({ kind: "destroy", texture });
-      },
-    };
-    return texture;
-  }
-
-  function makeEncoder(label) {
-    const encoder = {
-      label,
-      copies: [],
-      finished: false,
-      copyTextureToTexture(source, destination, size) {
-        encoder.copies.push({
-          source: source.texture,
-          sourceOrigin: { x: source.origin.x, y: source.origin.y },
-          destination: destination.texture,
-          destinationOrigin: {
-            x: destination.origin.x,
-            y: destination.origin.y,
-          },
-          size: { width: size.width, height: size.height },
-        });
-      },
-      finish() {
-        encoder.finished = true;
-        return { encoder };
-      },
-    };
-    return encoder;
-  }
-
-  function execute(copy) {
-    const { source, destination, sourceOrigin, destinationOrigin, size } = copy;
-    for (let row = 0; row < size.height; row++) {
-      for (let column = 0; column < size.width; column++) {
-        const from =
-          ((sourceOrigin.y + row) * source.width + sourceOrigin.x + column) * 4;
-        const to =
-          ((destinationOrigin.y + row) * destination.width +
-            destinationOrigin.x +
-            column) *
-          4;
-        destination.data.set(source.data.subarray(from, from + 4), to);
-      }
-    }
-  }
-
-  const device = {
-    events,
-    textures,
-    violations,
-    encodersCreated,
-    features: new Set(),
-    createTexture(descriptor) {
-      const texture = makeModelTexture(descriptor);
-      textures.push(texture);
-      return texture;
-    },
-    createSampler(descriptor) {
-      return { descriptor };
-    },
-    createCommandEncoder(descriptor) {
-      const encoder = makeEncoder(descriptor?.label);
-      encodersCreated.push(encoder);
-      return encoder;
-    },
-    queue: {
-      writeTexture(destination, data, layout, size) {
-        const texture = destination.texture;
-        const bytes = new Uint8Array(
-          data.buffer,
-          data.byteOffset,
-          data.byteLength,
-        );
-        const ox = destination.origin?.x ?? 0;
-        const oy = destination.origin?.y ?? 0;
-        for (let row = 0; row < size.height; row++) {
-          const from = row * layout.bytesPerRow;
-          const to = ((oy + row) * texture.width + ox) * 4;
-          texture.data.set(bytes.subarray(from, from + size.width * 4), to);
-        }
-        events.push({ kind: "write", texture });
-      },
-      copyExternalImageToTexture(source, destination, size) {
-        events.push({
-          kind: "external",
-          source: source.source,
-          texture: destination.texture,
-          origin: destination.origin,
-          size: { width: size.width, height: size.height },
-        });
-      },
-      submit(commandBuffers) {
-        const submitted = [];
-        for (const commandBuffer of commandBuffers) {
-          for (const copy of commandBuffer.encoder.copies) {
-            if (copy.source.destroyed || copy.destination.destroyed) {
-              violations.push(copy);
-              continue;
-            }
-            execute(copy);
-            submitted.push(copy);
-          }
-        }
-        events.push({ kind: "submit", copies: submitted });
-      },
-    },
-  };
-  return device;
-}
-
-function makeHarness({ frameEncoder = null, withContext = true } = {}) {
-  const device = makeDevice();
-  const usage = [];
-  let currentTextureRequests = 0;
-  const canvasTexture = device.createTexture({
-    size: { width: 4, height: 4 },
-  });
-  const state = {
-    device,
-    resourceGeneration: 0,
-    context: withContext
-      ? {
-          getCurrentTexture() {
-            currentTextureRequests++;
-            return canvasTexture;
-          },
-        }
-      : null,
-    currentCommandEncoder: frameEncoder,
-    currentRenderPassEncoder: null,
-    activeTextureUnit: 0,
-    textureBindings: new Map(),
-    textureRegistry: new WebGLStubTextureRegistry(),
-    framebuffers: new Map(),
-    boundFramebuffer: null,
-    boundReadFramebuffer: null,
-    boundDrawFramebuffer: null,
-    pixelStore: {
-      unpackFlipY: false,
-      unpackPremultiplyAlpha: false,
-      unpackAlignment: 4,
-    },
-    mipmapGenerator: null,
-    enqueueMipGeneration() {
-      return true;
-    },
-    encodeMipGenerationInCurrentEncoder() {
-      return true;
-    },
-    cancelMipGeneration() {},
-    // The context's contract: record into the caller's encoder when one is
-    // passed, otherwise into the current frame encoder, and report false when
-    // there is neither.
-    copyTextureRegion(source, destination, sx, sy, dx, dy, w, h, encoder) {
-      const target = encoder ?? state.currentCommandEncoder;
-      if (!target) {
-        return false;
-      }
-      target.copyTextureToTexture(
-        { texture: source, origin: { x: sx, y: sy, z: 0 } },
-        { texture: destination, origin: { x: dx, y: dy, z: 0 } },
-        { width: w, height: h, depthOrArrayLayers: 1 },
-      );
-      return true;
-    },
-  };
-  const logUsage = (method, reason) => usage.push({ method, reason });
-  return {
-    device,
-    state,
-    usage,
-    stubs: {
-      ...createTextureStubs(state, logUsage),
-      ...createFramebufferStubs(state, logUsage),
-    },
-    canvasTexture,
-    get currentTextureRequests() {
-      return currentTextureRequests;
-    },
-  };
-}
+  TEXTURE_2D,
+  UNSIGNED_BYTE,
+  WebGPUContext,
+  WebGPUImageUpload,
+  armReceipt,
+  copyEveryImage,
+  disarmReceipt,
+  growThroughFramebufferJs,
+  imagePixel,
+  makeDevice,
+  makeHarness,
+  makeWiredHarness,
+  pixelAt,
+  setUpAtlas,
+} from "./lib/stub-wired-harness.mjs";
 
 // -- the atlas scenario ---------------------------------------------------------
-
-const OLD_SIZE = 8;
-const NEW_SIZE = 16;
-// Three earlier images: where each sits in the old texture, where the grown
-// atlas packs it, and its size. Every pixel of every image has a value no other
-// pixel has, so a copy from the wrong place or to the wrong place shows.
-const IMAGES = [
-  { id: 1, from: { x: 0, y: 0 }, to: { x: 8, y: 0 }, w: 2, h: 2 },
-  { id: 2, from: { x: 4, y: 1 }, to: { x: 0, y: 9 }, w: 2, h: 3 },
-  { id: 3, from: { x: 1, y: 5 }, to: { x: 10, y: 10 }, w: 3, h: 2 },
-];
-
-function imagePixel(image, column, row) {
-  return [image.id * 40 + column * 5 + row, 10 * column + image.id, row, 255];
-}
-
-function imageBytes(image) {
-  const bytes = new Uint8Array(image.w * image.h * 4);
-  for (let row = 0; row < image.h; row++) {
-    for (let column = 0; column < image.w; column++) {
-      bytes.set(imagePixel(image, column, row), (row * image.w + column) * 4);
-    }
-  }
-  return bytes;
-}
-
-function pixelAt(texture, x, y) {
-  const at = (y * texture.width + x) * 4;
-  return Array.from(texture.data.subarray(at, at + 4));
-}
-
-/** Allocate OLD with the images uploaded, NEW larger and empty, and bind. */
-function setUpAtlas(harness, { bindFramebuffer = true } = {}) {
-  const { stubs } = harness;
-  const oldWrapper = stubs.createTexture();
-  stubs.bindTexture(TEXTURE_2D, oldWrapper);
-  stubs.texImage2D(
-    TEXTURE_2D,
-    0,
-    RGBA,
-    OLD_SIZE,
-    OLD_SIZE,
-    0,
-    RGBA,
-    UNSIGNED_BYTE,
-    null,
-  );
-  for (const image of IMAGES) {
-    stubs.texSubImage2D(
-      TEXTURE_2D,
-      0,
-      image.from.x,
-      image.from.y,
-      image.w,
-      image.h,
-      RGBA,
-      UNSIGNED_BYTE,
-      imageBytes(image),
-    );
-  }
-  const oldTexture = oldWrapper._texture;
-
-  const newWrapper = stubs.createTexture();
-  stubs.bindTexture(TEXTURE_2D, newWrapper);
-  stubs.texImage2D(
-    TEXTURE_2D,
-    0,
-    RGBA,
-    NEW_SIZE,
-    NEW_SIZE,
-    0,
-    RGBA,
-    UNSIGNED_BYTE,
-    null,
-  );
-  const newTexture = newWrapper._texture;
-
-  let framebuffer = null;
-  if (bindFramebuffer) {
-    framebuffer = stubs.createFramebuffer();
-    stubs.bindFramebuffer(FRAMEBUFFER, framebuffer);
-    stubs.framebufferTexture2D(
-      FRAMEBUFFER,
-      COLOR_ATTACHMENT0,
-      TEXTURE_2D,
-      oldWrapper,
-      0,
-    );
-  }
-  return { oldWrapper, oldTexture, newWrapper, newTexture, framebuffer };
-}
-
-function copyEveryImage(stubs) {
-  for (const image of IMAGES) {
-    stubs.copyTexSubImage2D(
-      TEXTURE_2D,
-      0,
-      image.to.x,
-      image.to.y,
-      image.from.x,
-      image.from.y,
-      image.w,
-      image.h,
-    );
-  }
-}
 
 function sameCopy(copy, source, destination, image) {
   return (
@@ -578,8 +192,9 @@ describe("a TextureAtlas that grows after the frame's encoder is gone", () => {
   });
 
   it("does the same when the framebuffer is torn down before the old texture", () => {
-    // TextureAtlas deletes its framebuffer before it destroys the old texture;
-    // the stub's deleteFramebuffer releases the attachment's GPU texture.
+    // TextureAtlas deletes its framebuffer before it destroys the old texture.
+    // Deleting the framebuffer destroys nothing it has attached; the old
+    // texture is destroyed by its owner's deleteTexture.
     const harness = makeHarness({ frameEncoder: null });
     const { device, stubs } = harness;
     const { oldWrapper, oldTexture, newTexture, framebuffer } =
@@ -789,56 +404,6 @@ describe("which framebuffer an off-frame copy reads", () => {
 });
 
 // -- the context's own wiring ---------------------------------------------------
-
-/**
- * The stub as the context builds it: `buildWebGLCompatibilityStubFor` over a
- * host whose copy methods are the real `WebGPUContext.prototype` ones. The
- * host carries only what those methods read from `this` and the bound-state
- * slots the builder proxies.
- */
-function makeWiredHarness({ frameEncoder = null, renderPass = null } = {}) {
-  const device = makeDevice();
-  let currentTextureRequests = 0;
-  const canvasTexture = device.createTexture({
-    size: { width: 4, height: 4 },
-  });
-  const host = {
-    _isDeviceUnavailable: false,
-    _currentCommandEncoder: frameEncoder,
-    _currentRenderPassEncoder: renderPass,
-    copyTextureRegion: WebGPUContext.prototype.copyTextureRegion,
-    copyTexture: WebGPUContext.prototype.copyTexture,
-    _device: device,
-    resourceGeneration: 0,
-    _context: {
-      getCurrentTexture() {
-        currentTextureRequests++;
-        return canvasTexture;
-      },
-    },
-    _activeTextureUnit: 0,
-    _textureBindings: new Map(),
-    _boundFramebuffer: null,
-    _boundReadFramebuffer: null,
-    _boundDrawFramebuffer: null,
-    _framebuffers: new Map(),
-    enqueueTextureMipGeneration() {
-      return true;
-    },
-    encodeTextureMipGenerationInCurrentEncoder() {
-      return true;
-    },
-    cancelTextureMipGeneration() {},
-  };
-  return {
-    device,
-    host,
-    stubs: buildWebGLCompatibilityStubFor(host),
-    get currentTextureRequests() {
-      return currentTextureRequests;
-    },
-  };
-}
 
 function submitsCarrying(device, source, destination, image) {
   return device.events
@@ -1186,53 +751,12 @@ describe("every source without videoWidth uploads at exactly its width and heigh
 // read from whatever object the context hands it as `_gl`. On WebGPU that is
 // the compatibility stub `buildWebGLCompatibilityStubFor` builds, and an Edge
 // run of the instrumented probe showed every off-frame copy of a real label
-// atlas growth leaving with no source to read. These cases drive the REAL
-// `Framebuffer.js` on that stub, so they see the attachment the engine
-// actually records, and they read the stub's debug receipt
-// (`WebGLStubTextureTrace.ts`) the way the probe does.
-
-function armReceipt() {
-  const receipt = { counts: {}, samples: {} };
-  globalThis[STUB_TEXTURE_TRACE_GLOBAL] = receipt;
-  return receipt;
-}
-
-function disarmReceipt() {
-  delete globalThis[STUB_TEXTURE_TRACE_GLOBAL];
-}
-
-/**
- * Grow an atlas the way `TextureAtlas._copyFromTexture` does: wrap the old
- * texture in a real `Framebuffer`, bind the new texture to unit 0, bind the
- * framebuffer, copy every earlier image, unbind, destroy the framebuffer, then
- * destroy the old texture.
- */
-function growThroughFramebufferJs(harness) {
-  const { stubs } = harness;
-  const textures = setUpAtlas(harness, { bindFramebuffer: false });
-  const framebuffer = new Framebuffer({
-    context: { _gl: stubs, limits: { maximumColorAttachments: 4 } },
-    colorTextures: [
-      {
-        _texture: textures.oldWrapper,
-        _target: TEXTURE_2D,
-        pixelFormat: RGBA,
-        pixelDatatype: UNSIGNED_BYTE,
-      },
-    ],
-    destroyAttachments: false,
-  });
-  const recordedAttachment = framebuffer._framebuffer._colorAttachment;
-  stubs.activeTexture(stubs.TEXTURE0);
-  stubs.bindTexture(TEXTURE_2D, textures.newWrapper);
-  framebuffer._bind();
-  copyEveryImage(stubs);
-  stubs.bindTexture(TEXTURE_2D, null);
-  framebuffer._unBind();
-  framebuffer.destroy();
-  stubs.deleteTexture(textures.oldWrapper);
-  return { ...textures, recordedAttachment };
-}
+// atlas growth leaving with no source to read, because the stub named no
+// `COLOR_ATTACHMENT0` and `Framebuffer.js` attached at NaN. The stub names the
+// framebuffer enums now. These cases drive the REAL `Framebuffer.js` on that
+// stub, so they see the attachment the engine actually records, and they
+// read the stub's debug receipt (`WebGLStubTextureTrace.ts`) the way the
+// probe does.
 
 function submittedCopies(device) {
   return device.events
@@ -1241,60 +765,60 @@ function submittedCopies(device) {
 }
 
 describe("an atlas growth attached through the real Framebuffer.js on the context's stub", () => {
-  it("records no color attachment, because the stub names no COLOR_ATTACHMENT0 (the state that hides the earlier images; owned outside this lane, so this case flips when the stub names it)", () => {
+  it("records the old texture as color attachment 0, at the COLOR_ATTACHMENT0 the stub names", () => {
     const harness = makeWiredHarness({ frameEncoder: null });
-    const { recordedAttachment } = growThroughFramebufferJs(harness);
+    assert.equal(harness.stubs.COLOR_ATTACHMENT0, COLOR_ATTACHMENT0);
+    const { oldWrapper, recordedAttachment } =
+      growThroughFramebufferJs(harness);
     assert.equal(
       recordedAttachment,
-      null,
-      "Framebuffer.js attached at an enum the stub's framebufferTexture2D does not recognise",
+      oldWrapper,
+      "Framebuffer.js attached the old atlas texture where the copy reads it",
     );
   });
 
-  it("so an off-frame growth copies none of the earlier images, and the receipt names the missing source", () => {
+  it("so an off-frame growth carries every earlier image, and the receipt counts every copy submitted", () => {
     const receipt = armReceipt();
     try {
       const harness = makeWiredHarness({ frameEncoder: null });
       const { device } = harness;
-      const { newTexture } = growThroughFramebufferJs(harness);
+      const { oldTexture, newTexture } = growThroughFramebufferJs(harness);
 
-      assert.equal(submittedCopies(device).length, 0, "no copy was submitted");
-      for (const image of IMAGES) {
-        assert.deepEqual(
-          pixelAt(newTexture, image.to.x, image.to.y),
-          [0, 0, 0, 0],
-          `image ${image.id} is missing from its new rectangle`,
-        );
-      }
+      assert.equal(
+        submittedCopies(device).filter((copy) => copy.source === oldTexture)
+          .length,
+        IMAGES.length,
+        "every earlier image was copied from the old texture and submitted",
+      );
+      assertImagesCarried(newTexture);
       assert.equal(receipt.counts["copyTexSubImage2D.enter"], IMAGES.length);
-      assert.equal(receipt.counts["copyTexSubImage2D.noSource"], IMAGES.length);
       assert.equal(
         receipt.counts["copyTexSubImage2D.offFrame.submitted"],
-        undefined,
+        IMAGES.length,
       );
-      assert.deepEqual(receipt.samples["copyTexSubImage2D.noSource"][0], {
-        inFrame: false,
-        hasReadFramebuffer: true,
-      });
+      assert.equal(receipt.counts["copyTexSubImage2D.noSource"], undefined);
+      assert.equal(receipt.counts["framebufferTexture2D.colour"], 1);
     } finally {
       disarmReceipt();
     }
   });
 
-  it("given the enum the stub's framebufferTexture2D recognises, the same growth carries every earlier image before the old texture is destroyed", () => {
+  it("with no assignment to the stub, the same growth carries every earlier image before the old texture's one destruction, which is its owner's", () => {
     const receipt = armReceipt();
     try {
       const harness = makeWiredHarness({ frameEncoder: null });
-      const { device, stubs } = harness;
-      // The counterfactual the Edge run applied to the live stub object.
-      stubs.COLOR_ATTACHMENT0 = COLOR_ATTACHMENT0;
+      const { device } = harness;
       const { oldTexture, newTexture, recordedAttachment } =
         growThroughFramebufferJs(harness);
 
       assert.notEqual(recordedAttachment, null);
-      const destroyAt = device.events.findIndex(
+      const destroys = device.events.filter(
         (event) => event.kind === "destroy" && event.texture === oldTexture,
       );
+      // Deleting the framebuffer destroys nothing; the one destruction is the
+      // old texture's own deleteTexture, the growth's last step.
+      assert.equal(destroys.length, 1, "the old texture is destroyed once");
+      const destroyAt = device.events.indexOf(destroys[0]);
       assert.ok(destroyAt >= 0, "the old texture's destruction was requested");
       for (const image of IMAGES) {
         const submits = submitsCarrying(device, oldTexture, newTexture, image);
@@ -1318,7 +842,6 @@ describe("the stub's debug receipt", () => {
   it("records nothing and creates no global while no page has armed it", () => {
     disarmReceipt();
     const harness = makeWiredHarness({ frameEncoder: null });
-    harness.stubs.COLOR_ATTACHMENT0 = COLOR_ATTACHMENT0;
     growThroughFramebufferJs(harness);
     assert.equal(STUB_TEXTURE_TRACE_GLOBAL in globalThis, false);
   });

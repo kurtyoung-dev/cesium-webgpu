@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 111,
+  total: 113,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count is 17
@@ -84,6 +84,9 @@ const REGISTRY_CENSUS = {
     // The label glyph atlas that grows in a later frame, for
     // `probe-stub-texture-uploads.mjs`.
     "texture-atlas": 1,
+    // The framebuffer census globe and model cells, for
+    // `probe-stub-texture-uploads.mjs --scene framebuffer-census`.
+    "framebuffer-census": 2,
   },
 };
 

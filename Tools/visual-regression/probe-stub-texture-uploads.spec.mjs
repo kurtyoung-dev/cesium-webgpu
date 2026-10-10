@@ -41,10 +41,18 @@ import {
   driveSceneFrames,
   installSceneFrameDriver,
 } from "./lib/probe-runtime.mjs";
+import {
+  FRAMEBUFFER_CENSUS_CELLS,
+  decideCensusRun,
+  requireCensusClock,
+} from "./lib/framebuffer-census-steps.mjs";
+import { loadRigs } from "./lib/rig-registry.mjs";
 import { createCellBudget } from "./probe-stub-texture-uploads.mjs";
 import {
   GPU_CALL_TRACE_GLOBAL,
   STUB_TEXTURE_TRACE_GLOBAL,
+  STUB_TRACE_SEQUENCE_GLOBAL,
+  copySourceDestroyOrder,
   stubTextureTraceInit,
 } from "./lib/stub-texture-trace.mjs";
 
@@ -416,6 +424,7 @@ describe("the texture trace's WebGPU call counters", () => {
       "GPUTexture",
       GPU_CALL_TRACE_GLOBAL,
       STUB_TEXTURE_TRACE_GLOBAL,
+      STUB_TRACE_SEQUENCE_GLOBAL,
     ];
     const saved = Object.fromEntries(
       names.map((name) => [name, globalThis[name]]),
@@ -461,6 +470,7 @@ describe("the texture trace's WebGPU call counters", () => {
     });
     delete globalThis[GPU_CALL_TRACE_GLOBAL];
     delete globalThis[STUB_TEXTURE_TRACE_GLOBAL];
+    delete globalThis[STUB_TRACE_SEQUENCE_GLOBAL];
     try {
       stubTextureTraceInit();
       const device = new GPUDevice();
@@ -506,15 +516,46 @@ describe("the texture trace's WebGPU call counters", () => {
         label: "GLStub_Texture",
         width: 4,
         height: 2,
+        seq: 7,
       });
       assert.deepEqual(
         trace.samples["copyExternalImageToTexture.HTMLVideoElement"][0].element,
         { width: 0, height: 0, videoWidth: 640, videoHeight: 360 },
       );
-      assert.deepEqual(globalThis[STUB_TEXTURE_TRACE_GLOBAL], {
-        counts: {},
-        samples: {},
+      assert.deepEqual(
+        JSON.parse(JSON.stringify(globalThis[STUB_TEXTURE_TRACE_GLOBAL])),
+        { counts: {}, samples: {}, lastSequence: {} },
+      );
+
+      // One sequence numbers every event, in the order the page made them:
+      // create 1, create 2, copy 3, the two submits 4 and 5, the video
+      // upload 6, the destroy 7.
+      assert.equal(trace.lastSequence["submit.GLStub_OffFrameTextureCopy"], 4);
+      assert.deepEqual(trace.destroyedById, {
+        1: {
+          label: "GLStub_Texture",
+          count: 1,
+          firstSequence: 7,
+          lastSequence: 7,
+        },
       });
+      assert.deepEqual(trace.copySourcesByLabel, {
+        GLStub_OffFrameTextureCopy: { 1: 1 },
+      });
+      const order = copySourceDestroyOrder(trace, "GLStub_OffFrameTextureCopy");
+      assert.equal(order.sourceId, 1);
+      assert.equal(order.destroyCount, 1);
+      assert.equal(order.destroyedAfterLastSubmit, true);
+      // The engine writes a count and then pushes its detail
+      // (WebGLStubTextureTrace.ts); both are numbered on the same sequence.
+      const engine = globalThis[STUB_TEXTURE_TRACE_GLOBAL];
+      const event = "copyTexSubImage2D.offFrame.submitted";
+      engine.counts[event] = (engine.counts[event] ?? 0) + 1;
+      (engine.samples[event] ??= []).push({ inFrame: false });
+      assert.deepEqual(JSON.parse(JSON.stringify(engine.samples[event])), [
+        { inFrame: false, seq: 8 },
+      ]);
+      assert.equal(engine.lastSequence[event], 8);
     } finally {
       for (const name of names) {
         if (saved[name] === undefined) {
@@ -524,5 +565,47 @@ describe("the texture trace's WebGPU call counters", () => {
         }
       }
     }
+  });
+});
+
+describe("the framebuffer census cells", () => {
+  it("each names a registry rig that declares a clock, so a capture does not move with wall-clock time", async () => {
+    const rigs = new Map((await loadRigs()).map((rig) => [rig.id, rig]));
+    for (const cell of FRAMEBUFFER_CENSUS_CELLS) {
+      const rig = rigs.get(cell.rig);
+      assert.ok(rig, `${cell.name}: rig ${cell.rig} is in the registry`);
+      assert.equal(requireCensusClock(rig, cell), rig.clock);
+      assert.match(rig.clock, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    }
+  });
+
+  it("refuses a rig with no clock, and a run whose model never became ready, by name", () => {
+    const cell = { name: "globe" };
+    assert.throws(
+      () => requireCensusClock({ id: "default-3d", clock: null }, cell),
+      (error) =>
+        error instanceof ProbeRefusal &&
+        error.reason === "census-clock-unpinned",
+    );
+    assert.throws(
+      () =>
+        decideCensusRun(
+          {
+            outcome: "done",
+            applied: { model: "truck.glb" },
+            modelReady: false,
+          },
+          cell,
+        ),
+      (error) =>
+        error instanceof ProbeRefusal &&
+        error.reason === "census-model-not-ready",
+    );
+    const ready = {
+      outcome: "done",
+      applied: { model: "truck.glb" },
+      modelReady: true,
+    };
+    assert.equal(decideCensusRun(ready, cell), ready);
   });
 });

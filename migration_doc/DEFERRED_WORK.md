@@ -30080,3 +30080,87 @@ The 184 rows below are the confirmed defects of the 2026-10-08 Gemini audit tria
 - **Repair:** The audit finding's own remediation (C-355): a `WebGPUTexture.sizeInBytes` getter plus the fix at `ResourceCacheStatistics.js:115-116`; per HOLD unit 11, 8/7 for `_dimension === '3d'`.
 - **Acceptance:** Per HOLD unit 11: a spec (rgba8 256 x 256 with 9 mips = 349525, a BC7 cube, a 3d case) and the reach of `ResourceCacheStatistics.js:115-116` established. Class: engine (parity, Principle 5; see the `FEATURE_INVENTORY.md` section C line). **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); Edge leg: an Edge read of `model.statistics.texturesByteLength` on WebGPU against WebGL for a known glTF. **Suggested owner:** the accounting lane named in the Status line.
 - **Source:** Seat-diff review `SEAT_DIFF_REVIEW_2026-10-08.md` section 7 ("G07 card 54: route to a `WebGPUTexture` accounting owner"), section 5 (HOLD unit 11, G05 24) and section 6 ("Pre-existing and unchanged"); adjudication `G07-ADJUDICATION.md`, card 54 (REJECT) and parity gap 4.
+
+## 2026-10-09 — NEW-WEBGPU-STUB-FRAMEBUFFER-ENUMS — The WebGL compatibility stub names no framebuffer enums, so `Framebuffer.js` attaches at NaN and no framebuffer records an attachment on WebGPU — **CLOSED (reviewed HOLDS, Eithel pass 2; Edge Jobs A and B measured by the lane, seat re-run job 8 agrees)** (unrated, NEW)
+
+Row filed by the seat at FW-11's landing from `LEDGER_FW-02.md` and `LEDGER_FW-11.md`; reviewed pass 2 HOLDS, seat Edge re-run job 8 agrees, receipts under `Tools/visual-regression/output/wave-end/audit-fix-wave-1/FW-11/` and `Tools/visual-regression/output/wave-end/audit-fix-wave-1/FW-11/run2-seat/`.
+
+**Owner:** audit fix wave 1, lane FW-11.
+
+The compatibility stub must name the WebGL framebuffer enums `Framebuffer.js` reads from `_gl`:
+`COLOR_ATTACHMENT0` at least, and `DEPTH_ATTACHMENT`, `STENCIL_ATTACHMENT` and
+`DEPTH_STENCIL_ATTACHMENT` for its depth paths.
+
+Doing so starts recording attachments for every `Framebuffer.js` on WebGPU, which turns on three paths
+that are dormant today:
+
+- `deleteFramebuffer` destroys attachments' GPU textures (`Stubs/WebGLStubFramebuffer.ts:100-105`).
+  WebGL never does this, and framebuffers built with `destroyAttachments: false` would lose textures they
+  do not own (`ComputeEngine.js:27`, `CubeMap.js:332`, `BrdfLutGenerator.js:48`,
+  `FramebufferManager.js:228`).
+- Stub blits read framebuffer attachments (`Stubs/WebGLStubShader.ts:674`).
+- `readPixelsAsync` reads framebuffer attachments (`Stubs/WebGLStubShader.ts:753`).
+
+Files: `WebGLCompatibilityStub.ts`, `Stubs/WebGLStubFramebuffer.ts`, and an audit of
+`Stubs/WebGLStubShader.ts`. FW-02's spec case "records no color attachment ..." is the pin that flips
+when this lands, as do its two siblings.
+
+**Carried from Limlight pass 3, N2 (verbatim; this lane's brief inherits it).**
+
+> **N2 (re-own brief).** The spec case "records no color attachment ..." is a **known-defect pin**: it
+> passes while the defect stands. The enums lane must flip it, together with the "noSource" case, in the
+> same change; the ledger row says so. Put this sentence in that lane's brief, or its first green run will
+> be a red.
+
+FW-11's status block below supersedes the status text of FW-02's re-own row above ("candidate, blocks NEW-GA-P0-003").
+
+**Status (lane FW-11 / Brithon, 2026-10-09): CLOSED (reviewed HOLDS, Eithel pass 2; Edge Jobs A and B measured by the lane, seat re-run job 8 agrees).**
+
+The stub spreads `FRAMEBUFFER_CONSTANTS`: `FRAMEBUFFER`, `READ_FRAMEBUFFER`, `DRAW_FRAMEBUFFER`,
+`RENDERBUFFER`, `COLOR_ATTACHMENT0`, `DEPTH_ATTACHMENT`, `STENCIL_ATTACHMENT`, `DEPTH_STENCIL_ATTACHMENT`,
+`FRAMEBUFFER_COMPLETE` and `NEAREST`. The paths this turns on, each now held to WebGL semantics:
+
+- **B1 `deleteFramebuffer`: fixed.** It destroys no attachment. It unbinds a deleted framebuffer that is
+  still bound.
+- **B2 the framebuffer-to-texture copy: fixed, with named refusals.**
+  - It reads the READ binding only. A null binding reads the canvas inside a frame and nothing outside one.
+  - Refused by name:
+    - a destination level other than 0 (`.refused.destinationLevel`);
+    - a destination cube face (`.refused.destinationTarget`);
+    - a source attached at a cube face or a level other than 0 (`.refused.sourceTarget`).
+  - Every copy the context refuses also gets `.refused.<reason>`.
+- **B3 `blitFramebuffer`: fixed, with named refusals.**
+  - It goes through the context-validated copy.
+  - Refused by name:
+    - a multisample resolve (`refused.sampleCount`);
+    - a self-copy, a flip, a scale;
+    - the default framebuffer;
+    - a cube-face or non-zero-level attachment;
+    - an open pass;
+    - the depth and stencil mask bits.
+- **B4 `readPixelsAsync`: fixed, with named refusals.**
+  - It keeps today's row order: output row `r` is texture row `y + r`.
+  - Refused by name: the default framebuffer, a face or level, a renderbuffer without copy usage, and a
+    multisample attachment.
+- **B5 the target enums: fixed.** `FRAMEBUFFER` binds read and draw, `READ_FRAMEBUFFER` and
+  `DRAW_FRAMEBUFFER` one each, and any other target binds nothing.
+- **B6 the depth, stencil and depth-stencil enums: fixed (bookkeeping).** Depth and depth-stencil are
+  recorded in the depth slot. Stencil-only and color attachments above 0 are counted, not recorded, and
+  never replace color attachment 0.
+- *Edge Job B, the framebuffer census on WebGPU (lane, round 2; the clock pinned in every cell).* Two
+  runs of the instrument-only tree (B1, B2) and one of the fix (A), cells `globe`, `globe-msaa4`,
+  `globe-pick-position`, `globe-oit-translucent` and `model-shadows-ibl`: cf(B1,B2) 0 and cf(B1,A) 0 in
+  every cell against a threshold of 0.002, verdict within-noise; the stop does not fire. No cell counts a
+  `framebufferTexture2D`, `framebufferRenderbuffer`, `deleteFramebuffer`, `copyTex*Image2D`,
+  `blitFramebuffer` or `readPixelsAsync` event on either tree; every R2 refusal and resolve count is 0.
+  Gate clean in every cell. The seat's round-1 run fired the stop in the four globe cells (cf(B1,A)
+  0.018-0.021); its own diagnostic measured 0.019-0.021 between two BEFORE runs 52 minutes apart, and the
+  rig `default-3d` left the clock unpinned.
+- *Reach on WebGPU (source census, `scripts/source-census-fw11.mjs`).* The stub's `blitFramebuffer` and
+  `readPixelsAsync` are not reachable on a WebGPU context: every caller of the blit
+  (`MultisampleFramebuffer.blitFramebuffers` through `FramebufferManager.prepareTextures`) sits behind the
+  WebGPU scene renderer's return in `SceneRenderer.executeCommands` (`SceneRenderer.js:566`), behind
+  `WebGPUContext.resolveFramebuffers` returning true (`FramebufferOrchestrator.js:270-271`), or behind the
+  invert-classification feature renderer; nothing calls the stub's `readPixelsAsync`. So B3 and B4 are
+  held to WebGL semantics in Node only, and the paths a WebGPU default scene reaches are B1 (the
+  teardown) and B2 (the copies), both measured in the atlas cell.

@@ -251,7 +251,7 @@ describe("Renderer/WebGPU/Stubs/WebGLStubFramebuffer", function () {
       expect(state.framebuffers.has(fbo)).toBe(false);
     });
 
-    it("destroys color and depth attachment textures it owns", function () {
+    it("destroys none of its attachments, which belong to their owners as in WebGL", function () {
       const state = makeState();
       const stubs = createFramebufferStubs(state, function () {});
       const fbo = stubs.createFramebuffer();
@@ -275,8 +275,8 @@ describe("Renderer/WebGPU/Stubs/WebGLStubFramebuffer", function () {
       stubs.framebufferTexture2D(0, GL_COLOR_ATTACHMENT0, 0, color, 0);
       stubs.framebufferTexture2D(0, GL_DEPTH_ATTACHMENT, 0, depth, 0);
       stubs.deleteFramebuffer(fbo);
-      expect(colorDestroys).toBe(1);
-      expect(depthDestroys).toBe(1);
+      expect(colorDestroys).toBe(0);
+      expect(depthDestroys).toBe(0);
     });
 
     it("is a no-op when the framebuffer is null", function () {
