@@ -40,7 +40,7 @@ acceptance remains separate.
 No commits or pushes are included in any selected option. Unrelated dirty work
 and all failed-run artifacts remain intact. Root owns every Git command; workers
 operate under disjoint leases. The implementation and evidence record is
-[the approved-unblocks wave](branches/ASTRA_APPROVED_UNBLOCKS_2026-09-07.md).
+the approved-unblocks wave `ASTRA_APPROVED_UNBLOCKS_2026-09-07.md` (never tracked here; untracked copy in Astra's relocated clone `F:/Dev/GH/cesium-astra-20260910/migration_doc/branches/`; cited since Batch 1456).
 
 ## R-2026-09-07-4 — Preserve visual progress from feature branches
 

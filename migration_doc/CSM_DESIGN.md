@@ -68,7 +68,7 @@ Before this session, `WebGPUCSMRenderer.renderCastPass` filtered commands to `_s
   - Draw calls now forward `cmd.instanceCount` to `pass.drawIndexed(count, instanceCount)` so `modelInstancedSB` renders all instances (previously instancing was inherited only by the single-shadow-map path).
 - Pipeline compilation is shared through the already-wired `_getOrCreateCastPipeline` factory with a CSM-owned cache (`this._sharedPipelineCache`). Each variant compiles once per cascade-renderer lifetime. Pipeline's bind-group layout is identical to the single-shadow-map variant — the 128-byte cast UBO (Slice 1 [WebGPUCSMCastUBOLayoutSpec.js](../packages/engine/Specs/Renderer/WebGPU/WebGPUCSMCastUBOLayoutSpec.js)) matches `SHADOW_UNIFORM_SIZE`, so the same WGSL `u` struct binds cleanly against either path's UBO.
 
-**Per-command UB ownership — safe for multi-cascade iteration.** Models allocate `cache.shadowCastUB` once per Model and write the model matrix once per frame before the cast pass ([WebGPUModelRenderer.js:710-725](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js#L710-L725)). CSM iterates the same command list four times (once per cascade), each reading the same stable UB — no race, no staleness. Bind-group caches stay valid frame-to-frame because the UB object identity never changes.
+**Per-command UB ownership — safe for multi-cascade iteration.** Models allocate `cache.shadowCastUB` once per Model and write the model matrix once per frame before the cast pass ([WebGPUModelRenderer.ts:904-976](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts#L904-L976)). CSM iterates the same command list four times (once per cascade), each reading the same stable UB — no race, no staleness. Bind-group caches stay valid frame-to-frame because the UB object identity never changes.
 
 **What's live:** models cast cascaded shadows on terrain and on each other. Quantized-mesh terrain casts on models. Skinned/instanced models cast. Any future variant registered via `registerShadowCastVariant` (third-party extensions) works automatically — the CSM loop is fully metadata-driven.
 
@@ -94,12 +94,12 @@ Shadow texels were drifting continuously against world-space as the camera moved
 
 The glTF PBR shader now receives cascaded shadows. Scope was larger than the primitive receivers because the Model pipeline had 7 bind groups pre-CSM (camera, material, texture, skinning, morph, instancing, featureId); effects had to be added as a new `@group(7)` without disturbing the existing layout.
 
-**Pipeline layout extension** ([WebGPUModelPipelineCache.js:328-351](../packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.js#L328-L351)):
+**Pipeline layout extension** ([WebGPUModelPipelineCache.ts:2281-2322](../packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.ts#L2281-L2322)):
 
 - Added `this._effectsBGL = getEffectsBindGroupLayout(device)` alongside the other BGLs. Same factory the globe + primitive paths use, so the EffectsUniforms layout stays in lockstep across every consumer (272 bytes at the time of this 2026-04-18 entry; **480 bytes** at HEAD per `WebGPUEffectsBindGroup.js:198`).
 - Extended `createPipelineLayout` bindGroupLayouts array from 7 to 8 slots: `[camera, material, texture, skinning, morph, instancing, featureId, effects]`. Existing pipelines don't break — no other model-rendering code binds group 7, so the addition is backward-compatible.
 
-**Per-frame effects bind group** ([WebGPUModelRenderer.js:698-733](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js#L698-L733)):
+**Per-frame effects bind group** ([WebGPUModelRenderer.ts:5960-6097](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts#L5960-L6097)):
 
 - Per-model call to `createEffectsBindGroup(device, frameState, { shadowMap, csm, cameraInPlaneSpace })` inside `updateWebGPUModel`. Mirrors the pattern in `WebGPUGlobeSurfaceRenderer.ts:1554`. CSM binding resolved the same way: read `frameState.context.csmRenderer`, gate on `.enabled === true` plus valid `cascadeParamsBuffer` + `cascadeArrayView`.
 - Bind group stored on `cache.effectsBG` and pushed into each primitive's `WebGPUDrawCommand.bindGroups[]` at index 7.
@@ -123,7 +123,7 @@ The glTF PBR shader now receives cascaded shadows. Scope was larger than the pri
 
 Infrastructure gap discovered while shipping 2d: primitive commands were built once with the shared `getPlaceholderEffects` BG and never refreshed per-frame. Effect: `csmControl.x = 0` always reached the fragment shader, so **even the already-wired PhongColor and PhongTexturedColor CSM receivers from Slice 2b were dead code at runtime**. Globe terrain's per-frame `createEffectsBindGroup` call was the only path where CSM actually reached a receive shader.
 
-**Fix** ([WebGPUPrimitiveCommands.js](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js)):
+**Fix** ([WebGPUPrimitiveCommands.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts)):
 
 - New `_getOrCreateSharedPrimitiveEffectsBG(frameState)` caches one effects BG per frame on `context._primitiveEffectsBG`, keyed by `(frameNumber, toggleHash)` where the hash covers `hasShadow | hasCsm << 1`. Rebuilds when any of those flip.
 - New `_refreshPrimitiveEffectsSlot(command, frameState)` swaps `command.bindGroups[last]` to the active BG. Skips pick commands (they don't receive shadows). Falls through to the cached placeholder when no feature is active, so the swap becomes a no-op.
@@ -135,7 +135,7 @@ Infrastructure gap discovered while shipping 2d: primitive commands were built o
 
 Pre-2d, the material/PBR pipeline's bind-group layout was `[camera, material, (texture?)]` — no effects slot. PBR shaders declaring `@group(2)` or `@group(3)` for effects would have failed pipeline creation with a validation error.
 
-**Fix** ([WebGPUPrimitiveCommands.js#createMaterialPipelineAndCache](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js)): append `getEffectsBindGroupLayout(device)` as the final BGL in every material + PBR pipeline layout. Command creation pushes `getPlaceholderEffects(device).bindGroup` as the matching bind group. Material Lit variants that don't declare `@group(N)` for effects ignore the extra BG — WebGPU allows unused bind groups in a pipeline layout. Pipeline layouts now align with what `_refreshPrimitiveEffectsSlot` expects.
+**Fix** ([WebGPUPrimitiveCommands.ts#createMaterialPipelineAndCache](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts)): append `getEffectsBindGroupLayout(device)` as the final BGL in every material + PBR pipeline layout. Command creation pushes `getPlaceholderEffects(device).bindGroup` as the matching bind group. Material Lit variants that don't declare `@group(N)` for effects ignore the extra BG — WebGPU allows unused bind groups in a pipeline layout. Pipeline layouts now align with what `_refreshPrimitiveEffectsSlot` expects.
 
 ### PrimitivePBRSimple + PrimitivePBRTextured CSM receive — SHIPPED
 

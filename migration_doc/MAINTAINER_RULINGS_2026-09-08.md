@@ -14,7 +14,7 @@ adoption of unsupported overrides or a declaration-generator migration. Existing
 September 7 controlled-install and justified-manifest authority is unchanged.
 No commit, push, app build, browser run or broader goal-automation resume is
 included in this bounded fixture repair. Execution is recorded in
-[the fixture wave](branches/ASTRA_HRN_FIXTURE_2026-09-08.md).
+the fixture wave `ASTRA_HRN_FIXTURE_2026-09-08.md` (never tracked here; untracked copy in Astra's relocated clone `F:/Dev/GH/cesium-astra-20260910/migration_doc/branches/`; cited since Batch 1456).
 
 ## R-2026-09-08-2 — Scoped Sharp compatibility update and JSDoc 4 bridge
 
@@ -33,4 +33,4 @@ comparison, fresh identified build/browser checks and independent review before
 acceptance. ONNX1.24.3 and Adm-Zip remain unchanged; no residual security finding
 is waived. This is not permission for a forced upgrade or broad generator rewrite.
 No commit/push is included in this bounded wave. The goal tool now reports active;
-root did not synthesize its resume. See [the implementation wave](branches/ASTRA_DEPENDENCY_IMPLEMENTATION_2026-09-08.md).
+root did not synthesize its resume. See the implementation wave `ASTRA_DEPENDENCY_IMPLEMENTATION_2026-09-08.md` (never tracked here; untracked copy in Astra's relocated clone `F:/Dev/GH/cesium-astra-20260910/migration_doc/branches/`; cited since Batch 1456).

@@ -3,7 +3,7 @@
 **Date:** 2026-04-16 (third review in the 2026-04-16 series)
 **Scope:** Per-feature correctness pass through the lens of Cesium's specific requirements: (a) whole-Earth scale (sub-meter to orbital), (b) orbital viewpoints with sun/moon/stars, (c) Relative-To-Eye 64-bit-emulated precision, (d) the inherently async WebGPU API
 **Companion documents:**
-- [PRINCIPAL_ENGINEER_REVIEW_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_2026_04_16.md) — build / lifecycle / tests / type discipline
+- [PRINCIPAL_ENGINEER_REVIEW_2026_04_16.md](archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_2026_04_16.md) — build / lifecycle / tests / type discipline
 - [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) — cross-cutting renderer / scene dispatch / shader parity (general); archived 2026-09-03, id table now at [`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) §5.1
 - **This doc** — per-feature-renderer correctness at planetary scale
 
@@ -247,7 +247,7 @@ Moon.wgsl:229 and CubeMapPanorama.wgsl:84 DO use the clamp (`vec4<f32>(cp.x, cp.
 ### C-P5. Four of six collection renderers mis-encode the camera in model-space
 **FIXED 2026-04-16 (Batch 12).** `WebGPUBillboardRenderer.js`, `WebGPUPolylineRenderer.js`, and `WebGPULabelRenderer.js` now build an `inverse(modelMatrix)` scratch once per pack and transform `frameState.camera.positionWC` through it before `EncodedCartesian3.fromCartesian`. When a collection's `modelMatrix` is identity (the common case) this is a pass-through; when it's non-identity (entity clusters, explicit local frames) the camera lands in the same model-space frame as the per-vertex encoded positions, so the RTE `(posHigh − camHigh) + (posLow − camLow)` subtraction stays accurate instead of drifting by thousands of metres at Earth ECEF scale. Cloud renderer was already correct (no modelMatrix multiply; world-frame throughout); Point / Primitive follow the "correct pattern" cited in the original finding.
 
-**Verified (agent claim, high confidence from reading code patterns).** The correct pattern (used by [WebGPUPrimitiveCommands.js:180-210](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js) and [WebGPUPointPrimitiveRenderer.js:56, 379-381](../packages/engine/Source/Renderer/WebGPU/WebGPUPointPrimitiveRenderer.js)):
+**Verified (agent claim, high confidence from reading code patterns).** The correct pattern (used by [WebGPUPrimitiveCommands.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts) and [WebGPUPointPrimitiveRenderer.js:56, 379-381](../packages/engine/Source/Renderer/WebGPU/WebGPUPointPrimitiveRenderer.js)):
 
 ```js
 const inverseModel = Matrix4.inverse(collection.modelMatrix, scratchInverse);
@@ -311,13 +311,13 @@ Additionally line 806 uses `max(radii.x, radii.y, radii.z)` (6378137 m) as `inne
 ### C-P8. Model path sync pipeline compile on tileset stream hot path
 **DEFERRED 2026-04-16 (Batch 12).** This is a multi-hour architectural change — the fix requires (a) hoisting the per-Model `WebGPUModelPipelineCache` to context scope so pipelines share across tiles, (b) switching `getPipeline` to return a `Promise<GPURenderPipeline>` (via `createRenderPipelineAsync`), (c) adding pending-pipeline state in `WebGPUModelRenderer`, and (d) "skip draw this frame" logic for primitives whose pipeline is still compiling. The infrastructure primitive already exists at `WebGPURenderPipelineCache.ts:293`. Out of scope for Batch 12 which is focused on self-contained pack/frame fixes; tracked as **FOLLOW-UP C-P8-ASYNC** for a dedicated session.
 
-**Verified.** [WebGPUModelPipelineCache.js:210](../packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.js) uses synchronous `device.createRenderPipeline()`. Called on every cache miss during `updateWebGPUModelPrimitive`. For the ~520-line `ModelPBRComplete.wgsl`, driver compile is 5-50 ms per variant — stalls the main thread.
+**Verified.** [WebGPUModelPipelineCache.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.ts) uses synchronous `device.createRenderPipeline()`. Called on every cache miss during `updateWebGPUModelPrimitive`. For the ~520-line `ModelPBRComplete.wgsl`, driver compile is 5-50 ms per variant — stalls the main thread.
 
 Every Model builds its OWN `WebGPUModelPipelineCache` (line 553), so pipelines are NOT shared across tiles. Google Photorealistic streams hundreds of tiles/sec; up to 6 pipeline variants per tile.
 
 There IS an async alternative at [WebGPURenderPipelineCache.ts:293](../packages/engine/Source/Renderer/WebGPU/WebGPURenderPipelineCache.ts). The fork has the primitive; it's just not used on the hot path.
 
-Additionally — caller hazard: [WebGPUModelRenderer.js:445](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js) calls `pipelineCache.getPipeline(...)` without `await`. If the implementation returns a Promise (which the async variant does), downstream `passEncoder.setPipeline(somePromise)` will throw. NEEDS-VERIFICATION of the exact caller pattern but the hazard is real.
+Additionally — caller hazard: [WebGPUModelRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts) calls `pipelineCache.getPipeline(...)` without `await`. If the implementation returns a Promise (which the async variant does), downstream `passEncoder.setPipeline(somePromise)` will throw. NEEDS-VERIFICATION of the exact caller pattern but the hazard is real.
 
 **Severity:** CRITICAL for tileset streaming UX.
 

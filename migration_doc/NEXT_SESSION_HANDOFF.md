@@ -459,7 +459,7 @@ The whole NEW-4 sweep is closed. Next priorities pivot from "unblock the Sandcas
 
 ## Quick state-of-migration
 
-- **~95% WebGL feature parity.** Full per-batch detail in [REVIEW_FIX_PROGRESS.md](REVIEW_FIX_PROGRESS.md); per-issue status in the principal review.
+- **~95% WebGL feature parity.** Full per-batch detail in [REVIEW_FIX_PROGRESS.md](archive/REVIEW_FIX_PROGRESS.md); per-issue status in the principal review.
 - **Critical-tier review work (C-R prefix):** all 13 originally-OPEN parent findings now have at least first-cut implementations shipping. Remaining work is named-follow-up scope, all enumerated in [DEFERRED_WORK.md](DEFERRED_WORK.md).
 - **NEW-4 status (Sandcastle WebGPU baseline) — FULLY CLOSED:**
   - NEW-4-A FIXED (Batch 67) — eager typed-array retention in `GltfLoader.loadVertexAttribute`.
@@ -477,7 +477,7 @@ The whole NEW-4 sweep is closed. Next priorities pivot from "unblock the Sandcas
 
 ### Original title: Next Session Handoff — 2026-04-25 (Batch 67 — NEW-4-A + NEW-4-D closures)
 
-**Branch:** `main`. Batches 28-64 already in this branch; Batch 67 (NEW-4-A + NEW-4-D) added on top this session. Batches 65-66 were the prior session's Sandcastle demo rollout + 12 inline engine fixes (see Sandcastle batch reports). The full Batch 28-62 progression is documented in [REVIEW_FIX_PROGRESS.md](REVIEW_FIX_PROGRESS.md); per-issue status in [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) (archived 2026-09-03). The full inventory of items still deferred from this work has been consolidated into [DEFERRED_WORK.md](DEFERRED_WORK.md) — that's the canonical pick-list for the next sessions.
+**Branch:** `main`. Batches 28-64 already in this branch; Batch 67 (NEW-4-A + NEW-4-D) added on top this session. Batches 65-66 were the prior session's Sandcastle demo rollout + 12 inline engine fixes (see Sandcastle batch reports). The full Batch 28-62 progression is documented in [REVIEW_FIX_PROGRESS.md](archive/REVIEW_FIX_PROGRESS.md); per-issue status in [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) (archived 2026-09-03). The full inventory of items still deferred from this work has been consolidated into [DEFERRED_WORK.md](DEFERRED_WORK.md) — that's the canonical pick-list for the next sessions.
 
 ## ⚠️ Build is broken on `packages/engine/tsconfig.json`
 
@@ -591,7 +591,7 @@ Closes the soft-shadow follow-up that Batch 57 explicitly reserved (`pointLightP
 **BUG-36.2 regression:** [MaterialUniformBufferSpec.js](../packages/engine/Specs/Scene/MaterialUniformBufferSpec.js) covers channel-string packing, vec3+f32 tail-slot layout, and fabric orderings for AlphaMap / BumpMap / Image / Checkerboard / Fade / EmissionMap / NormalMap. Browser (Karma) spec run is still needed in CI; an in-session Node smoke test of 56 layout assertions across the same surface passed 56/56.
 **.js ↔ .wgsl wrapper sync:** `python migration_doc/_verify_wrappers.py` — **38/38 in sync**.
 
-This doc supersedes the prior 2026-04-16 handoff but **preserves it in full below** — this is a delta on top of it. Read the principal-engineer review at [PRINCIPAL_ENGINEER_REVIEW_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_2026_04_16.md) first if you need arch context on lifecycle fixes; the entries below are session-34+ work that builds on that foundation.
+This doc supersedes the prior 2026-04-16 handoff but **preserves it in full below** — this is a delta on top of it. Read the principal-engineer review at [PRINCIPAL_ENGINEER_REVIEW_2026_04_16.md](archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_2026_04_16.md) first if you need arch context on lifecycle fixes; the entries below are session-34+ work that builds on that foundation.
 
 ---
 
@@ -641,7 +641,7 @@ All gate CSM on `effects.csmControl.x > 0.5`. Ambient stays unshadowed in every 
 
 ### C-P15 — Gaussian splat modelMatrix rotation
 
-Fixed the long-deferred splat bug where `modelMatrix` rotation/scale was ignored. Implemented `R * Σ * R^T` view-rotation of the 3D covariance before the screen-space Jacobian in both [GaussianSplat.wgsl](../packages/engine/Source/Shaders/WebGPU/Advanced/GaussianSplat.wgsl) and the inline `SPLAT_WGSL` in [WebGPUGaussianSplatRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts). Splats now correctly follow `modelMatrix` rotation, scale, and shear.
+Fixed the long-deferred splat bug where `modelMatrix` rotation/scale was ignored. Implemented `R * Σ * R^T` view-rotation of the 3D covariance before the screen-space Jacobian in both GaussianSplat.wgsl (removed in Batch 103 with the other dead standalone WGSL files) and the inline `SPLAT_WGSL` in [WebGPUGaussianSplatRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts). Splats now correctly follow `modelMatrix` rotation, scale, and shear.
 
 No new uniform needed — the existing `modelViewRelativeToEye` has its translation column zeroed CPU-side, so its 3x3 block IS the rotation×scale we want. This deviates from the principal-engineer review's suggestion to add a `modelRotation` uniform, but is strictly equivalent math and avoids a uniform-layout bump.
 
@@ -690,7 +690,7 @@ Clean-from-the-start types (unchanged): Color, Checker, Dot, Grid, RimLighting, 
 
 **Water time animation (landed same session, additive):** The BUG-36.2 cleanup originally left Water rendering a static wave pattern because `material.time` was never plumbed through the UBO path. Rather than add a new per-material `time` field (wrong abstraction — `time` is per-frame, not per-material), the fix repurposes the existing `_pad1: f32` pad slot in the shared camera UBO as a per-frame `time` field.
 
-- [WebGPUPrimitiveCommands.js](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js) — new `getFrameTime(uniformState)` returns `uniformState.frameState.frameNumber` (0.0 fallback). `writeRTEUniformsFlat` packs it at `ud[23]`; `writeRTEUniformsLit` at `ud[55]` (both previously wrote `0.0`).
+- [WebGPUPrimitiveCommands.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts) — new `getFrameTime(uniformState)` returns `uniformState.frameState.frameNumber` (0.0 fallback). `writeRTEUniformsFlat` packs it at `ud[23]`; `writeRTEUniformsLit` at `ud[55]` (both previously wrote `0.0`).
 - [PrimitiveMatWaterFlat.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatWaterFlat.wgsl) / [PrimitiveMatWaterLit.wgsl](../packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatWaterLit.wgsl) — renamed `_pad1: f32` → `time: f32` in their local `CameraUniforms` struct. Fragment reads `let t = camera.time * material.animationSpeed;` (matches upstream `Water.glsl`'s `czm_frameNumber * animationSpeed`).
 - **Zero blast radius.** No UBO size change. All other Flat/Lit shaders still declare `_pad1: f32` at the same byte slot and ignore the written value — grepped `Source/Shaders/WebGPU/**` for `camera._pad0/_pad1/_pad2/_pad3` reads and found **zero** hits. The writer's value change from `0.0` to `frameNumber` is invisible to them.
 - Node smoke-test across the full Session 36 work (56 layout assertions) passes 56/56; `npx tsc --noEmit` clean; all 38 `PrimitiveMat*.js` wrappers in sync with their `.wgsl`.
@@ -1133,7 +1133,7 @@ Further tightening requires (a) porting WebGL resource JS to TS, or (b) completi
 
 **Review:**
 
-- [PRINCIPAL_ENGINEER_REVIEW_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_2026_04_16.md) — the source of the fix list
+- [PRINCIPAL_ENGINEER_REVIEW_2026_04_16.md](archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_2026_04_16.md) — the source of the fix list
 
 **Status docs:**
 

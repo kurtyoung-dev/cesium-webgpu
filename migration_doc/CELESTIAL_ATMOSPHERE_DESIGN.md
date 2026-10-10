@@ -8,7 +8,7 @@ coupling between them
 **Sibling doc:** [WATER_RENDERING_DESIGN.md](WATER_RENDERING_DESIGN.md) — water
 consumes the same `AtmosphericConditions`, sun/moon directions, and froxel grid
 defined here.
-**Decision log:** [SESSION_2026-04-08_RESEARCH_REPORT.md §8.2](SESSION_2026-04-08_RESEARCH_REPORT.md#82--b-series-celestial-atmosphere-design-23-questions)
+**Decision log:** [SESSION_2026-04-08_RESEARCH_REPORT.md §8.2](archive/SESSION_2026-04-08_RESEARCH_REPORT.md#82--b-series-celestial-atmosphere-design-23-questions)
 locks all 23 B-series decisions referenced throughout this doc. When in doubt
 on a value, that section is the source of truth.
 
@@ -1699,11 +1699,11 @@ foundation before Phase 1 begins.**
 
 ## 13. Cross-references
 
-- [SESSION_2026-04-08_RESEARCH_REPORT.md §8.2](SESSION_2026-04-08_RESEARCH_REPORT.md#82--b-series-celestial-atmosphere-design-23-questions)
+- [SESSION_2026-04-08_RESEARCH_REPORT.md §8.2](archive/SESSION_2026-04-08_RESEARCH_REPORT.md#82--b-series-celestial-atmosphere-design-23-questions)
   — locked B1-B23 decisions referenced throughout this doc
-- [SESSION_2026-04-08_RESEARCH_REPORT.md §9.5](SESSION_2026-04-08_RESEARCH_REPORT.md#95--toggle-audit-findings-current-state-of-sceneglobefogatmosphere-toggles)
+- [SESSION_2026-04-08_RESEARCH_REPORT.md §9.5](archive/SESSION_2026-04-08_RESEARCH_REPORT.md#95--toggle-audit-findings-current-state-of-sceneglobefogatmosphere-toggles)
   — toggle audit findings (the Phase 0 prep PR)
-- [SESSION_2026-04-08_RESEARCH_REPORT.md §10](SESSION_2026-04-08_RESEARCH_REPORT.md#10-new-backlog-items-from-this-session)
+- [SESSION_2026-04-08_RESEARCH_REPORT.md §10](archive/SESSION_2026-04-08_RESEARCH_REPORT.md#10-new-backlog-items-from-this-session)
   — new backlog items (NEW-1 toggle audit, NEW-2
   VisualPerformanceTargetService, NEW-3 snapshot mode, NEW-6 higher-res
   moon texture)

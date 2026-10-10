@@ -889,7 +889,7 @@ The three biggest TypeScript files in `Renderer/WebGPU/` were carved into focuse
 
 ## Recent Progress (2026-04-25 — Batches 48-57: principal review remediation continues)
 
-Ten batches in two days closed the C-R8 edge sub-tree end-to-end and shipped three additional Critical-tier items in parallel via background agents. Full per-batch detail in [REVIEW_FIX_PROGRESS.md](REVIEW_FIX_PROGRESS.md); per-issue status in [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) (archived 2026-09-03; id table at `ARCHITECTURE_REVIEW_2026-09-02.md` §5.1).
+Ten batches in two days closed the C-R8 edge sub-tree end-to-end and shipped three additional Critical-tier items in parallel via background agents. Full per-batch detail in [REVIEW_FIX_PROGRESS.md](archive/REVIEW_FIX_PROGRESS.md); per-issue status in [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) (archived 2026-09-03; id table at `ARCHITECTURE_REVIEW_2026-09-02.md` §5.1).
 
 - **Batch 48 (C-R8-EDGE-INLINE + C-R8-EDGE-FEATURE-ID).** Authoritative per-fragment `applyEdgeOverlay()` in `ModelPBRComplete.wgsl` ports WebGL's `edgeDetectionStage()` 1:1 — adaptive epsilon, background gating via globe packed depth, per-feature comparison. Emitter packs glTF FEATURE_ID_0 into `id.g` at rgba8unorm scale with consumer-side denormalisation. Effects BGL grew 12 → 17 bindings; UBO 272 → 304 bytes for `edgeControl` + `edgeViewport` blocks.
 - **Batch 49 (C-R8-EDGE-ID-FORMAT).** 16-bit feature IDs split across `id.g` (low byte) + `id.b` (high byte). 65535-feature ceiling. Same texture format, no BGL/pipeline rebuild.
@@ -901,7 +901,7 @@ Ten batches in two days closed the C-R8 edge sub-tree end-to-end and shipped thr
 - **Batch 55 (C-R11-EFFECTS-BGL-COLLECTION-CACHE).** Per-tile clipping bind group hot path: ~12k `createBindGroup` + ~12k `createBuffer` + ~36k `createView` per second → 0 steady-state. Cache plateaus at ≤4 entries; UBO bytes still rewritten per frame.
 - **Batch 56 (C-R7-RENDERER-MIGRATION).** Three feature renderers (`WebGPUEllipsoidPrimitiveRenderer`, `WebGPUGaussianSplatRenderer`, `WebGPUDepthPlane`) routed through `context.webgpuPipelineCache`. Added `webgpuPipelineCache?:` to `CesiumGraphicsContext` ambient interface for backend-agnostic TS access. 12 renderers + Model + AutoExposure remain as continuing follow-ups.
 - **Batch 57 (C-R10-POINT-LIGHT-RECEIVE).** Cube depth sampling on the receive side. BGL grew 17 → 18 bindings (binding 17 = `texture_depth_cube`); UBO 304 → 336 bytes for `pointLightControl` + `pointLightPositionWC` blocks. `samplePointShadow(fragWC)` reproduces the cast pipeline's perspective-Z formula via the dominant cube-face axis. Globe terrain receive deferred as `C-R10-GLOBE-POINT-LIGHT`.
-- **Oversight audit** ([OVERSIGHT_AUDIT_2026_04_25.md](OVERSIGHT_AUDIT_2026_04_25.md)). Read-only state-of-migration analysis. Surfaced doc-drift on C-R9 (rolled into Batches 53/54 status updates), pragma-discipline lapse in `WebGPUGlobeSurfaceRenderer.ts:1259-1311` (fixed inline post-audit), and the C-R5 imagery-layer-cap bounded fix as the next-highest-impact correctness target.
+- **Oversight audit** ([OVERSIGHT_AUDIT_2026_04_25.md](archive/OVERSIGHT_AUDIT_2026_04_25.md)). Read-only state-of-migration analysis. Surfaced doc-drift on C-R9 (rolled into Batches 53/54 status updates), pragma-discipline lapse in `WebGPUGlobeSurfaceRenderer.ts:1259-1311` (fixed inline post-audit), and the C-R5 imagery-layer-cap bounded fix as the next-highest-impact correctness target.
 
 **Verification:** `npx tsc --noEmit` clean across all batches. Pre-existing parse errors in untracked WIP file `WebGPUEdgeVisibilityEmitter.ts` carry forward — not introduced by these batches.
 
@@ -990,14 +990,14 @@ glTF models now receive cascaded shadows. This closes the largest remaining gap 
 
 ### Pipeline layout extension (7 → 8 bind groups)
 
-[WebGPUModelPipelineCache.js:328-351](../packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.js#L328-L351):
+[WebGPUModelPipelineCache.ts:2281-2322](../packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.ts#L2281-L2322):
 
 - Added `this._effectsBGL = getEffectsBindGroupLayout(device)` alongside the six existing BGLs (camera, material, texture, skinning, morph, instancing, featureId). Same factory every CSM-aware path uses, so the 272-byte EffectsUniforms layout stays in lockstep across every consumer.
 - Extended `createPipelineLayout`'s bindGroupLayouts array to 8 slots with effects at index 7. Backward-safe: no other model-rendering code references group 7, so the addition doesn't break cached pipelines or DrawCommand bind-group indexing.
 
 ### Per-frame effects bind group
 
-[WebGPUModelRenderer.js:698-733](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js#L698-L733):
+[WebGPUModelRenderer.ts:5960-6097](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts#L5960-L6097):
 
 - `updateWebGPUModel` now calls `createEffectsBindGroup(device, frameState, { shadowMap, csm, cameraInPlaneSpace })` per model per frame. Mirrors the globe renderer's pattern. CSM binding resolved by reading `frameState.context.csmRenderer` and gating on `.enabled === true` plus valid `cascadeParamsBuffer` + `cascadeArrayView`.
 - Result stored on `cache.effectsBG` and pushed into each primitive's `WebGPUDrawCommand.bindGroups[]` at index 7.
@@ -1089,7 +1089,7 @@ New exported [getShadowCastVariant(key)](../packages/engine/Source/Renderer/WebG
 
 ## Recent Progress (2026-04-18 — Principal-Engineer Review Batches 6-27 + WebGPU Infrastructure)
 
-Two commits on main (`4e91c1238a`, `23cbf1121b`) closed out the 2026-04-16 principal-engineer review remediation and landed the shader-variant + TAA infrastructure that Phase 8c/d will consume. Full per-batch write-up is in [REVIEW_FIX_PROGRESS.md](REVIEW_FIX_PROGRESS.md).
+Two commits on main (`4e91c1238a`, `23cbf1121b`) closed out the 2026-04-16 principal-engineer review remediation and landed the shader-variant + TAA infrastructure that Phase 8c/d will consume. Full per-batch write-up is in [REVIEW_FIX_PROGRESS.md](archive/REVIEW_FIX_PROGRESS.md).
 
 ### New core infrastructure (Renderer/WebGPU/)
 

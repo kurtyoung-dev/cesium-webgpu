@@ -11772,7 +11772,7 @@ WebGL has no parallel bug because it caches BOTH a `imagery.texture` (geographic
 
 **Remaining open: Moon.html.** WebGPU shows a black scene area (UI loaded, no 3D content). Pattern matches `Aerometrex` dropdown mismatch — likely the `Cesium.Ellipsoid.default = MOON` switch + default camera position interacts differently with the Sandcastle runner's deferred startup on WebGPU. Not a renderer texture bug. Track under the Sandcastle-state work, not under base-color.
 
-**Original investigation note:** [`WebGPUModelRenderer.js#L1185-L1209`](packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js) texture readers + bind-group baseColor view were the suspected race; the fix landed in Session 65 cont. (stub-wrapper GPU texture reuse + 7-arg `texSubImage2D` ImageBitmap path in `WebGLStubTexture.ts`).
+**Original investigation note:** [`WebGPUModelRenderer.ts`](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts) texture readers + bind-group baseColor view were the suspected race; the fix landed in Session 65 cont. (stub-wrapper GPU texture reuse + 7-arg `texSubImage2D` ImageBitmap path in `WebGLStubTexture.ts`).
 
 ### ~~NEW-VR2-3-IMAGERY-WASH-OUT~~ — RESOLVED for the original on-disk bug (Session 65 Batches 1/16/17/18/19); residual tracked as NEW-VR2-3b
 
@@ -11913,7 +11913,7 @@ That narrowed the bug to the post-mix lighting block, which led to the `sunDir` 
 
 > **Batch 161 reproduction result:** `Tools/visual-regression/probe-vr2-polylines-3dtiles.mjs` loads the BIM Power Plant tileset (ion asset 2464651) + a `clampToGround` polyline with `classificationType: CESIUM_3D_TILE` in both backends. The described artifact is **gone**: WebGPU shows NO saturated cyan/red panels and NO z-fight scanlines — saturated-cyan px 1116 (WebGL 1210), saturated-red px 4 (WebGL 204), **0 device errors**. The PNGs render equivalently (structure/pipes clean, the colorful ground patch is identical in BOTH backends → tileset content, not a WebGPU artifact). Likely fixed by intervening classification / depth-sample work (the doc predates many such batches). **Caveat:** tileset reported `ready:false` (BIM tilesets stream continuously) and the polyline coords approximated the demo — a longer-load, demo-exact re-confirm should precede a hard close. Probe kept as a regression guard (needs network + ion access).
 
-**Original symptom (2026-05-13):** [Polylines on 3D Tiles.html](Apps/Sandcastle/gallery/Polylines%20on%203D%20Tiles.html) on WebGPU renders polygon overlays as bright cyan/red with visible scanline patterns, polylines bleed through walls/buildings, BIM building looks bleached.
+**Original symptom (2026-05-13):** [Polylines on 3D Tiles.html](../packages/sandcastle/gallery/polylines-on-3d-tiles/index.html) on WebGPU renders polygon overlays as bright cyan/red with visible scanline patterns, polylines bleed through walls/buildings, BIM building looks bleached.
 
 **Side-by-side diagnostic captured 2026-05-13:**
 
@@ -11976,7 +11976,7 @@ User asked to fix all 6 issues. Made meaningful infrastructure progress on #2 (t
 
 **#2 partial fix landed:**
 
-- [WebGPUModelRenderer.js](packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.js) `createGPUTextureFromReader` now reuses the GPU texture already allocated by `WebGLStubTexture` when present (`cesiumTexture._texture._webgpuTexture.texture`). Previously only checked `cesiumTexture._source` which CesiumJS Texture doesn't retain after upload — every glTF texture fell back to the white default.
+- [WebGPUModelRenderer.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts) `createGPUTextureFromReader` now reuses the GPU texture already allocated by `WebGLStubTexture` when present (`cesiumTexture._texture._webgpuTexture.texture`). Previously only checked `cesiumTexture._source` which CesiumJS Texture doesn't retain after upload — every glTF texture fell back to the white default.
 - Tracks `placeholderSlots` per-primitive when a slot's reader hadn't loaded yet; `refreshDeferredModelTextures` polls per-frame and upgrades slots when readers resolve.
 - [WebGLStubTexture.ts](packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubTexture.ts) `texSubImage2D` now handles BOTH the 9-arg form (raw byte source) AND the 7-arg form (HTMLImageElement / ImageBitmap source) — previously the 7-arg form silently no-op'd, which is one of the model-texture upload paths the glTF loader uses.
 

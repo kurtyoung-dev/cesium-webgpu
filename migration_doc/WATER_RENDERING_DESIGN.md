@@ -9,7 +9,7 @@ quantized-mesh terrain + 3D Tiles.
 **Sibling doc:** [CELESTIAL_ATMOSPHERE_DESIGN.md](CELESTIAL_ATMOSPHERE_DESIGN.md)
 — water consumes the same Sun/Moon directions, atmospheric conditions, and
 volumetric fog froxel grid defined there.
-**Decision log:** [SESSION_2026-04-08_RESEARCH_REPORT.md §8.3](SESSION_2026-04-08_RESEARCH_REPORT.md#83--c-series-water-rendering-design-14-questions)
+**Decision log:** [SESSION_2026-04-08_RESEARCH_REPORT.md §8.3](archive/SESSION_2026-04-08_RESEARCH_REPORT.md#83--c-series-water-rendering-design-14-questions)
 locks all 14 C-series decisions referenced throughout this doc. When in doubt
 on a value, that section is the source of truth.
 
@@ -1314,17 +1314,17 @@ a new feature.
 
 ## 12. Cross-references
 
-- [SESSION_2026-04-08_RESEARCH_REPORT.md §8.3](SESSION_2026-04-08_RESEARCH_REPORT.md#83--c-series-water-rendering-design-14-questions)
+- [SESSION_2026-04-08_RESEARCH_REPORT.md §8.3](archive/SESSION_2026-04-08_RESEARCH_REPORT.md#83--c-series-water-rendering-design-14-questions)
   — locked C1-C14 decisions referenced throughout this doc
-- [SESSION_2026-04-08_RESEARCH_REPORT.md §9.3](SESSION_2026-04-08_RESEARCH_REPORT.md#93--c4-3d-tiles-already-supports-water-classification-via-ext_structural_metadata)
+- [SESSION_2026-04-08_RESEARCH_REPORT.md §9.3](archive/SESSION_2026-04-08_RESEARCH_REPORT.md#93--c4-3d-tiles-already-supports-water-classification-via-ext_structural_metadata)
   — full 3D Tiles spec analysis for water classification
-- [SESSION_2026-04-08_RESEARCH_REPORT.md §9.4](SESSION_2026-04-08_RESEARCH_REPORT.md#94--c9-odbl-share-alike-legal-note-osm-data-licensing)
+- [SESSION_2026-04-08_RESEARCH_REPORT.md §9.4](archive/SESSION_2026-04-08_RESEARCH_REPORT.md#94--c9-odbl-share-alike-legal-note-osm-data-licensing)
   — full ODbL legal analysis
-- [SESSION_2026-04-08_RESEARCH_REPORT.md §9.5](SESSION_2026-04-08_RESEARCH_REPORT.md#95--toggle-audit-findings-current-state-of-sceneglobefogatmosphere-toggles)
+- [SESSION_2026-04-08_RESEARCH_REPORT.md §9.5](archive/SESSION_2026-04-08_RESEARCH_REPORT.md#95--toggle-audit-findings-current-state-of-sceneglobefogatmosphere-toggles)
   — toggle audit + canonical home migration prep PR (Phase 0)
-- [SESSION_2026-04-08_RESEARCH_REPORT.md §9.6](SESSION_2026-04-08_RESEARCH_REPORT.md#96--c8-how-cesium-handles-osm-data-today-createosmbuildingsasync-precedent)
+- [SESSION_2026-04-08_RESEARCH_REPORT.md §9.6](archive/SESSION_2026-04-08_RESEARCH_REPORT.md#96--c8-how-cesium-handles-osm-data-today-createosmbuildingsasync-precedent)
   — full analysis of OSM vocabulary precedent in Cesium
-- [SESSION_2026-04-08_RESEARCH_REPORT.md §10](SESSION_2026-04-08_RESEARCH_REPORT.md#10-new-backlog-items-from-this-session)
+- [SESSION_2026-04-08_RESEARCH_REPORT.md §10](archive/SESSION_2026-04-08_RESEARCH_REPORT.md#10-new-backlog-items-from-this-session)
   — new backlog items, including NEW-7 (Quantized-mesh Option B version bump)
 - [CELESTIAL_ATMOSPHERE_DESIGN.md](CELESTIAL_ATMOSPHERE_DESIGN.md) §4.8
   (volumetric fog froxel grid) — water reuses this for underwater fog

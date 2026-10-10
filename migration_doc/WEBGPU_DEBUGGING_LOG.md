@@ -3062,7 +3062,7 @@ A Batch-95-style finding. Audited what's needed to wire FEAT-GAP-09's aerial-per
 
 **Why this is a Batch 95 sibling.** Same shape as the AO non-engagement bug: WGSL scaffolding looks correct, JS-side architecture looks correct, but the data never crosses the JS↔GPU boundary. The aerial-LUT WGSL block at `PrimitiveBasicColor.wgsl` and every `Mat*Lit` / `Phong*` variant has been "live" since Batch 91, but the gate `effects.atmosphereLutControl.x > 0.5` always evaluated false on the primitive path — so the fog block was dead code, no visible improvement, no probe regression.
 
-**Root cause.** [`_getOrCreateSharedPrimitiveEffectsBG`](packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js#L735) passed only `shadowMap`, `csm`, and `cameraInPlaneSpace` to `createEffectsBindGroup` (L794-800). It did NOT forward `atmosphereLutTransmittanceView`, `atmosphereLutInscatterView`, or `atmosphereLutPlanetRadii` — which `WebGPUGlobeSurfaceRenderer.ts:1015-1025` DOES forward correctly. `createEffectsBindGroup` defaults the unset LUT views to 1×1 placeholders AND sets `atmosphereLutControl.x = 0.0` whenever `hasAtmosphereLut` (= both views present) is false. So every primitive shader that declared the aerial-LUT bindings sampled the placeholder texture each frame and the WGSL gate evaluated false.
+**Root cause.** [`_getOrCreateSharedPrimitiveEffectsBG`](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts#L1604) passed only `shadowMap`, `csm`, and `cameraInPlaneSpace` to `createEffectsBindGroup` (L794-800). It did NOT forward `atmosphereLutTransmittanceView`, `atmosphereLutInscatterView`, or `atmosphereLutPlanetRadii` — which `WebGPUGlobeSurfaceRenderer.ts:1015-1025` DOES forward correctly. `createEffectsBindGroup` defaults the unset LUT views to 1×1 placeholders AND sets `atmosphereLutControl.x = 0.0` whenever `hasAtmosphereLut` (= both views present) is false. So every primitive shader that declared the aerial-LUT bindings sampled the placeholder texture each frame and the WGSL gate evaluated false.
 
 Compounding: the fast-path on L786-792 short-circuited to the placeholder BG when neither `shadow` nor `csm` was active — so even if the LUT views had been forwarded, the slow path would have been bypassed for the common case (no shadows + no CSM + atmosphere on).
 
@@ -3089,10 +3089,10 @@ diag: { ... primEffectsBG_exists: true,
 
 **Files modified.**
 
-- [packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js](packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js#L748-L820) — read LUT views from `performanceManager`, forward to `createEffectsBindGroup`, extend cache invalidation.
+- [packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts#L1597-L1723) — read LUT views from `performanceManager`, forward to `createEffectsBindGroup`, extend cache invalidation.
 - [Tools/visual-regression/probe-aerial-lut-primitive.mjs](Tools/visual-regression/probe-aerial-lut-primitive.mjs) — new probe (toggle-hash diagnostic + atmosphere on/off canvas diff scaffolding).
 
-**Follow-up (next batch).** Now that the JS wiring is correct, the 20 remaining `Mat*Flat` / Advanced shaders are the actual `FEAT-GAP-09` continuation: bulk WGSL changes (EffectsUniforms struct + bindings 7/8/9 + fog block) per the pattern already in `PrimitiveBasicColor.wgsl`. **Important**: the prior Batch 94 scope correction claimed those Flat shaders need JS-side pipeline-layout changes too — that claim was WRONG. Audit of [`createMaterialPipelineAndCache`](packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js#L2001-L2003) shows the effects BGL is pushed onto the Mat pipeline layout UNCONDITIONALLY for both Flat and Lit. Only WGSL changes are required.
+**Follow-up (next batch).** Now that the JS wiring is correct, the 20 remaining `Mat*Flat` / Advanced shaders are the actual `FEAT-GAP-09` continuation: bulk WGSL changes (EffectsUniforms struct + bindings 7/8/9 + fog block) per the pattern already in `PrimitiveBasicColor.wgsl`. **Important**: the prior Batch 94 scope correction claimed those Flat shaders need JS-side pipeline-layout changes too — that claim was WRONG. Audit of [`createMaterialPipelineAndCache`](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts#L4473-L4582) shows the effects BGL is pushed onto the Mat pipeline layout UNCONDITIONALLY for both Flat and Lit. Only WGSL changes are required.
 
 **Lesson.** Repeat of the Batch 95 pattern: a partially-implemented feature (WGSL bound to JS-side struct slot, but the data never gets uploaded) is the most insidious form of dead scaffolding. Pretty WGSL code + a placeholder texture + a control flag stuck at zero will silently do nothing for batches at a time. The diagnostic probe template (capture + JS-side state dump + cache hash inspection) is the right shape for catching it.
 
@@ -7918,7 +7918,7 @@ The cross-backend sweep ended Session 62 with 2 WebGPU-only failures + a visuall
 
 ### `BUG-WEBGPU-PICK-STAGING-MAPPED` — `Buffer "Pick staging buffer" used in submit while mapped` + `createBuffer Failed to read 'size' property: Value is null`
 
-**Symptom:** [Apps/Sandcastle/gallery/Clamp to 3D Model.html](Apps/Sandcastle/gallery/Clamp%20to%203D%20Model.html) hit two distinct WebGPU validation errors per second on the WebGPU backend. The CallbackProperty calls `scene.sampleHeight` every frame, which queues a pick render → readback chain.
+**Symptom:** [packages/sandcastle/gallery/clamp-to-3d-model/index.html](../packages/sandcastle/gallery/clamp-to-3d-model/index.html) hit two distinct WebGPU validation errors per second on the WebGPU backend. The CallbackProperty calls `scene.sampleHeight` every frame, which queues a pick render → readback chain.
 
 **Root causes (two):**
 
@@ -7932,11 +7932,11 @@ The cross-backend sweep ended Session 62 with 2 WebGPU-only failures + a visuall
 
 ### `BUG-WEBGPU-WRITEBUFFER-OVERFLOW` — `writeBuffer Number of bytes to write is too large`
 
-**Symptom:** [Apps/Sandcastle/gallery/Show or Hide Entities.html](Apps/Sandcastle/gallery/Show%20or%20Hide%20Entities.html) threw a writeBuffer validation error every frame from `updateWebGPUMaterialCommandUniforms`.
+**Symptom:** [packages/sandcastle/gallery/show-or-hide-entities/index.html](../packages/sandcastle/gallery/show-or-hide-entities/index.html) threw a writeBuffer validation error every frame from `updateWebGPUMaterialCommandUniforms`.
 
 **Root cause:** `scratchMaterialCameraData = new Float32Array(64)` (256 bytes) is the source for `device.queue.writeBuffer(buffer, 0, ud.buffer, 0, LIT_CAMERA_BYTES)` — but `LIT_CAMERA_BYTES = 304` (mvpRTE+mvRTE+normalMatrix+camHigh+camLow+lightDir+prevVP). Asking writeBuffer to read 304 bytes from a 256-byte source fails validation; `writeRTEUniformsLit` also writes `ud[60..75]` for `prevVP` which silently no-op'd against the undersized typed array.
 
-**Fix** ([packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js](packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js)): Bumped `scratchMaterialCameraData` to `new Float32Array(80)` (320 bytes). Sized for the larger lit/PBR layout; flat material shaders fit comfortably.
+**Fix** ([packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts)): Bumped `scratchMaterialCameraData` to `new Float32Array(80)` (320 bytes). Sized for the larger lit/PBR layout; flat material shaders fit comfortably.
 
 ### `BUG-WEBGPU-SKYBOX-INVISIBLE` — Default skybox stars rendered black on WebGPU (parity gap with WebGL)
 
@@ -8034,7 +8034,7 @@ After the initial three fixes from Session 63, the cross-backend sweep surfaced 
 
 **Root cause:** `Primitive` ships compressed geometry through `PrimitivePipeline.packCreateGeometryResults` which packs `attributes` + `indices` only — the `_compressedAttributesMeta` flag dictionary added in Batch 23 doesn't survive the `postMessage` round-trip. So `ensureUncompressedAttributes`'s fallback inference branch is the COMMON case for app-level geometry, not an edge. The original inference was "componentsPerAttribute === 1 → assume normal" which guessed wrong for ST-only geometries (rectangles + many fabric materials) and tripped octDecode's range check.
 
-**Fix** ([packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js](packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js)):
+**Fix** ([packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts)):
 
 - Probe-based inference: the first compressed value's magnitude disambiguates st vs normal. ST values from `compressTextureCoordinates` pack 12-bit pairs (range 0..16777215; real samples > 65535). Normal values from `octEncodeFloat` pack 8-bit pairs (always ≤ 65535). `probe > 65535 ⇒ ST` is unambiguous.
 - Belt-and-braces: wrapped the `octDecodeFloat` call in a `try/catch` that falls back to a unit-up normal `(0, 0, 1)` instead of killing the frame. A misclassified ST value now produces a flat-shaded primitive rather than a render-loop crash.
@@ -9251,7 +9251,7 @@ The prior audit (referenced in Batch 89 / parity audit response) reported "32 re
 For the Flat / Advanced shaders that have NO effects bind group, wiring requires:
 
 1. WGSL changes (effects struct + bindings + fog block) — 30 lines per shader
-2. **JS-side pipeline-layout change** in [WebGPUPrimitiveCommands.js](packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js): add the effects BGL to the pipeline layout for these shader variants
+2. **JS-side pipeline-layout change** in [WebGPUPrimitiveCommands.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts): add the effects BGL to the pipeline layout for these shader variants
 3. **JS-side bind-group setup**: bind the effects BG when drawing these shader variants
 
 That's a 2-3 batch effort to do all 20, not a 1-batch knock-out. The audit's underestimate was real and worth correcting.
@@ -10696,7 +10696,7 @@ So the warmup line was creating a throwaway instance, doing zero GPU work, and b
 ### What Batch 71 ships
 
 - **[WebGPUContext.ts:912-930](../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts#L912)** — removed the dead `fr._instance` write. Added a doc-block explaining why the globe warmup is currently a no-op, the two paths to actually deliver pre-compilation if first-frame stutter becomes a priority, and the trade-offs (multi-context / split-screen complicates the `_instance` field model).
-- **[probe-globe-tile-trace.mjs](../Tools/visual-regression/probe-globe-tile-trace.mjs)** — dropped the `rendererInst = fr?._instance ?? fr` defensive fallback (the line wasn't being read downstream anyway).
+- **[probe-globe-tile-trace.mjs](../Tools/visual-regression/archive/probe-globe-tile-trace.mjs)** — dropped the `rendererInst = fr?._instance ?? fr` defensive fallback (the line wasn't being read downstream anyway).
 - **[probe-batch65-state.mjs](../Tools/visual-regression/probe-batch65-state.mjs)** — updated the comment that referenced `fr._instance` so future readers know the field was removed.
 
 ### Verification
@@ -10858,7 +10858,7 @@ In particular, the Batch 68 "regression" was not real. The WGSL blend math has b
 
 **Date:** 2026-05-18
 
-Phase 2.1 of the [SHADER_PAIRS_LOCKSTEP.md](SHADER_PAIRS_LOCKSTEP.md) roadmap — bring the globe terrain's **imagery composite function** into pair-section lockstep. WebGL `sampleAndBlend` ([GlobeFS.glsl:188](../packages/engine/Source/Shaders/GlobeFS.glsl#L188)) and WebGPU `applyImageryLayer` ([GlobeTerrain.wgsl:1486](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl#L1486)) implement the same per-imagery-layer composite stage: alpha masking, gamma, split, cutout, brightness/contrast/hue/saturation effects, then blend.
+Phase 2.1 of the [SHADER_PAIRS_LOCKSTEP.md](SHADER_PAIRS_LOCKSTEP.md) roadmap — bring the globe terrain's **imagery composite function** into pair-section lockstep. WebGL `sampleAndBlend` ([GlobeFS.glsl:429](../packages/engine/Source/Shaders/GlobeFS.glsl#L429)) and WebGPU `applyImageryLayer` ([GlobeTerrain.wgsl:2248](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl#L2248)) implement the same per-imagery-layer composite stage: alpha masking, gamma, split, cutout, brightness/contrast/hue/saturation effects, then blend.
 
 ### Structural divergences inventoried
 
