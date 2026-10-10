@@ -3,6 +3,7 @@
  * Weather Phase 3 — mock-METAR offline pipeline probe (Batch 425). WebGPU-only.
  * @purpose Gate-B leg: full-RGBA METAR chain (obs parse, IDW rasterize, packer) against the /mock-metar fixture; spatial + calibrated channel gates.
  * @status ACTIVE
+ * @runtime lib/probe-runtime.mjs
  *
  * PINNED for determinism under `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE`.
  *
@@ -173,20 +174,27 @@
  * sweep against its own strength-0 twin), so the comparisons survive; the
  * absolute level does not.
  *
- * Usage:
- *   node Tools/visual-regression/probe-weather-metar.mjs
- * Env:
- *   PROBE_BASE  default http://localhost:8080
+ * RUNTIME (probe-kit harvest). The browser, the served-build preflight, the
+ * Edge slot, the deadline and the receipt belong to `lib/probe-runtime.mjs`;
+ * this file keeps both page lanes, the aim, the pins and the gates, and the
+ * page lanes and every threshold are byte-for-byte what they were before the
+ * migration. A missed aim is still STRUCTURAL: it is raised as a refusal.
+ *
+ * Usage (serve the built tree on a governed port first, e.g.
+ * `node server.js --port 8094 --serve-built`):
+ *   node Tools/visual-regression/probe-weather-metar.mjs [--port 8094] [--runs 10]
  * Out:
- *   Tools/visual-regression/output/weather-metar/*.png + manifest.json
- * Exit:
+ *   Tools/visual-regression/output/weather-metar/*.png, plus the runtime's
+ *   weather-metar-report.json / -runtime.json / -summary.md
+ * Exit (the runtime's table):
  *   0 every gate decided and passed | 1 a real product FAIL |
- *   2 watchdog or exception | 3 STRUCTURAL — a pin did not take, the fixture
- *     never reached the GPU, or the probe could not reproduce its own capture
- *     (acceptance INCOMPLETE, not green, and not red)
+ *   2 harness error or deadline | 3 STRUCTURAL, raised as a refusal — a pin
+ *     did not take, the fixture never reached the GPU, gate 4 could not be
+ *     aimed, or the probe could not reproduce its own capture (acceptance
+ *     INCOMPLETE, not green, and not red)
  */
-import { chromium } from "playwright";
 import fs from "node:fs";
+import path from "node:path";
 
 import {
   armWebGPUDevices,
@@ -195,6 +203,13 @@ import {
   errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
 import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
+import { sweepDeltas, sweepStats } from "./lib/metrics/sweep-stats.mjs";
+import {
+  ProbeRefusal,
+  isEntryPoint,
+  runProbe,
+  sha256,
+} from "./lib/probe-runtime.mjs";
 import {
   collectHeadroomStructural,
   collectPinStructural,
@@ -206,13 +221,12 @@ import {
   WEATHER_DETERMINISM_DIALS,
 } from "./lib/weather-probe-pinning.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const OUT = "Tools/visual-regression/output/weather-metar";
-const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`;
-const MOCK_URL = `${BASE}/mock-metar`;
+const PAGE = "/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true";
+const MOCK_PATH = "/mock-metar";
 const VIEW = { width: 1024, height: 768 };
 
-const WATCHDOG_MS = 600_000;
+/** The pre-migration watchdog bound, now the lifecycle's per-run work budget. */
+const WORK_BUDGET_MS = 600_000;
 
 // Fixture stations sit at lat 35: clear @ -120, BKN @ -60, OVC @ 0, CB @ 60,
 // FEW @ 120. Gate 3's two point samples are UNCHANGED from the pre-pinning probe
@@ -506,17 +520,6 @@ const RUN_SWEEPS = async (aim) => {
   };
 };
 
-function stats(list) {
-  const mean = list.reduce((a, b) => a + b, 0) / list.length;
-  const variance =
-    list.reduce((a, b) => a + (b - mean) * (b - mean), 0) / list.length;
-  return {
-    mean: +mean.toFixed(4),
-    stddev: +Math.sqrt(variance).toFixed(4),
-    range: +(Math.max(...list) - Math.min(...list)).toFixed(4),
-  };
-}
-
 function fmt(list) {
   return list.map((v) => v.toFixed(3)).join(", ");
 }
@@ -525,181 +528,66 @@ function byLon(sweep, lon) {
   return sweep.captures.find((c) => c.lon === lon);
 }
 
-async function run() {
-  fs.mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch({
-    channel: "msedge",
-    headless: true,
-    args: ["--enable-unsafe-webgpu"],
-  });
-  const page = await browser.newPage({ viewport: VIEW });
-  const consoleErrors = attachConsoleErrorGate(page);
-  await page.addInitScript(errorGateInit);
-  await installCloudProbeHarnessOnPage(page);
-  await installWeatherPinHarnessOnPage(page);
-  await page.goto(URL, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(
-    () => !!(window.viewer && window.viewer.scene),
-    null,
-    { timeout: 60000 },
-  );
-  await armWebGPUDevices(page);
-
-  const setup = await page.evaluate(RUN_SETUP, {
-    ...PIN,
-    mockUrl: MOCK_URL,
-    determinismDials: WEATHER_DETERMINISM_DIALS,
-  });
-
-  // ── GATE-4 AIM. The selector runs HERE, in the shared Node module, and sees
-  // ONLY the strength-0 ladder — it has no access to any strength-1 measurement,
-  // so it cannot prefer locations where the channel delta happens to be large.
-  const ladderSamples = setup.calibration.captures.map((c) => ({
+/**
+ * Gate 4's aim, from lane 1's calibration ladder. It runs HERE, in Node and
+ * in the shared selector, and sees ONLY the strength-0 ladder — it has no
+ * access to any strength-1 measurement, so it cannot prefer locations where
+ * the channel delta happens to be large.
+ *
+ * @param {object} setup What `RUN_SETUP` returned.
+ * @returns {{ladder: object[], aim: object}}
+ */
+export function aimGateFour(setup) {
+  const ladder = setup.calibration.captures.map((c) => ({
     key: c.lon,
     value: c.frac,
     meanMax: c.meanMax,
     eligible: !SATURATION_WITNESS_LONS.includes(c.lon),
   }));
   const aim = selectPartialCoverageBand({
-    samples: ladderSamples,
+    samples: ladder,
     count: BAND_COUNT,
     band: COVERAGE_HEADROOM_BAND,
   });
-  console.log(
-    `\n=== GATE-4 CALIBRATION LADDER (strength 0, band ` +
-      `${COVERAGE_HEADROOM_BAND.min}..${COVERAGE_HEADROOM_BAND.max}) ===\n` +
-      ladderSamples
-        .map(
-          (s) =>
-            `  lon ${String(s.key).padStart(5)} frac ${s.value.toFixed(3)} ` +
-            `meanMax ${String(s.meanMax).padStart(6)}` +
-            `${s.eligible ? (inHeadroomBand(s.value) ? "  IN-BAND" : "") : "  witness(saturated, never scored)"}`,
-        )
-        .join("\n"),
-  );
+  return { ladder, aim };
+}
 
-  const bandLons = aim.selected.map((s) => s.key);
-  console.log(
-    `  in-band candidates ${aim.inBand.length}/${ladderSamples.filter((s) => s.eligible).length}` +
-      `, selected band [${bandLons.join(", ")}]`,
-  );
-
-  // A missed aim is STRUCTURAL and the run stops here: scoring gate 4 over a
-  // saturated band is exactly the blindness this change exists to remove, so the
-  // probe must not fall back to one.
-  if (aim.reasons.length) {
-    await browser.close();
-    console.log("\n=== STRUCTURAL ===");
-    for (const reason of aim.reasons) {
-      console.log(`  - ${reason}`);
-    }
-    console.log(
-      "\nRESULT: STRUCTURAL — acceptance INCOMPLETE. Gate 4 could not be aimed at partial coverage, so it was not scored.",
-    );
-    fs.writeFileSync(
-      `${OUT}/manifest.json`,
-      JSON.stringify(
-        {
-          generatedAt: new Date().toISOString(),
-          url: URL,
-          pin: PIN,
-          setup,
-          aim: { ladder: ladderSamples, reasons: aim.reasons },
-          verdict: "STRUCTURAL",
-        },
-        null,
-        2,
-      ),
-    );
-    process.exitCode = 3;
-    return;
-  }
-
-  const strengthOneLons = [...new Set([CLEAR_LON, CLOUDY_LON, ...bandLons])];
-  const scored = await page.evaluate(RUN_SWEEPS, { strengthOneLons, bandLons });
-  const result = {
-    ...setup,
-    readiness: { ...setup.readiness, ...scored.readiness },
-    dials: scored.dials,
-    aim: { ladder: ladderSamples, bandLons, inBand: aim.inBand.length },
-    sweeps: scored.sweeps,
-  };
-
-  const gate = await collectGateErrors(page);
-  const newErrs = (gate.errors || [])
-    .concat(consoleErrors)
-    .concat(gate.deviceLost ? [gate.deviceLost] : [])
-    .filter(
-      (e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon/i.test(e),
-    );
-  await browser.close();
-
+/**
+ * Score one run from both lanes' results. Pure: the merged result and the
+ * filtered error list go in; the gates, the STRUCTURAL reasons and the numbers
+ * the receipt banks come out. Every threshold is the pre-migration probe's.
+ *
+ * @param {object} result Lane 1 merged with lane 2 and the aim.
+ * @param {string[]} errors New device / console errors, already filtered.
+ * @returns {{checks: Array<[string, string, boolean]>, structural: string[],
+ *   stats: object, control: object, headroom: object}}
+ */
+export function scoreMetar(result, errors) {
   const { ch1A, ch1B, ch0 } = result.sweeps;
+  const bandLons = result.aim.bandLons;
   const clear = byLon(ch1A, CLEAR_LON);
   const cloudy = byLon(ch1A, CLOUDY_LON);
-  // Gate 4 reads the CALIBRATED BAND only. Location count and the 0.04 bar are
-  // unchanged; only the aim moved.
+  // Gate 4 reads the CALIBRATED BAND only. Location count and the 0.04 bar
+  // are unchanged; only the aim moved.
   const ch1Fr = bandLons.map((lon) => byLon(ch1A, lon).frac);
   const ch0Fr = bandLons.map((lon) => byLon(ch0, lon).frac);
-  const ch1 = stats(ch1Fr);
-  const ch0Stats = stats(ch0Fr);
+  const ch1 = sweepStats(ch1Fr);
+  const ch0Stats = sweepStats(ch0Fr);
   // PER-LOCATION isolation: at each longitude R is identical between the two
   // sweeps (same field cell), so the ch1-vs-ch0 difference is PURELY the G/B/A
   // contribution.
-  const perLocDeltas = ch1Fr.map((f, i) => f - ch0Fr[i]);
+  const { deltas: perLocDeltas, absSum: absDeltaSum } = sweepDeltas(
+    ch1Fr,
+    ch0Fr,
+  );
   const meanShift = +(ch1.mean - ch0Stats.mean).toFixed(4);
-  const absDeltaSum = +perLocDeltas
-    .reduce((a, d) => a + Math.abs(d), 0)
-    .toFixed(4);
-
-  // ── Evidence PNGs (canvas-element bits, captured in the same task as the
-  // render that produced them).
-  const written = [];
-  const writePng = (capture, name) => {
-    if (!capture?.png) {
-      return;
-    }
-    fs.writeFileSync(
-      `${OUT}/${name}`,
-      Buffer.from(capture.png.slice(capture.png.indexOf(",") + 1), "base64"),
-    );
-    written.push(name);
-  };
-  writePng(clear, "weather-metar-clear.png");
-  writePng(cloudy, "weather-metar-ovc.png");
-  // Gate 4's evidence pair is now taken at the FIRST SCORED PARTIAL location, not
-  // at the saturated OVC station: a channels-on/off pair at a saturated point is
-  // two identical white frames and evidences nothing.
-  writePng(byLon(ch1A, bandLons[0]), "weather-metar-channels-on.png");
-  writePng(byLon(ch0, bandLons[0]), "weather-metar-channels-off.png");
-
-  console.log(
-    `renderer=${result.pins.rendererType} pins=${JSON.stringify(result.pins)}`,
-  );
-  console.log(`dials ${JSON.stringify(result.dials)}`);
-  console.log(
-    `readiness globe{binned=${result.readiness.globeReady.binnedGlobeCommands} firstMs=${result.readiness.globeReady.firstBinnedMs} elapsedMs=${result.readiness.globeReady.elapsedMs}} procedural{frames=${result.readiness.proceduralReady.waitedFrames} executeCalls=${result.readiness.proceduralReady.executeCalls}}`,
-  );
-  console.log(`cap ${JSON.stringify(result.caps)}`);
-  console.log(`state ${JSON.stringify(result.providerState)}`);
-  console.log(`applied ${JSON.stringify(result.applied)}`);
-  console.log(
-    `clear(frac=${clear.frac.toFixed(3)},meanMax=${clear.meanMax.toFixed(1)}) ` +
-      `cloudy(frac=${cloudy.frac.toFixed(3)},meanMax=${cloudy.meanMax.toFixed(1)})`,
-  );
-  console.log(`band lons: ${bandLons.join(", ")}`);
-  console.log(`ch1 fr: ${fmt(ch1Fr)} -> ${JSON.stringify(ch1)}`);
-  console.log(`ch0 fr: ${fmt(ch0Fr)} -> ${JSON.stringify(ch0Stats)}`);
-  console.log(`perLocD: ${fmt(perLocDeltas)}`);
-  console.log(`meanShift=${meanShift} absDeltaSum=${absDeltaSum}`);
-  console.log(`errs ${newErrs.length}`);
 
   // ── STRUCTURAL preconditions. Slot 107 is expected to read 1 on the two
   // full-strength sweeps and 0 on the gated one; gate 4 is meaningless
-  // otherwise.
+  // otherwise. The calibration ladder AIMS gate 4, so the pins must have held
+  // while it was measured; an unpinned ladder is an invalid aim even if the
+  // sweeps are clean.
   const labelled = [
-    // The calibration ladder AIMS gate 4, so the pins must have held while it was
-    // measured; an unpinned ladder is an invalid aim even if the sweeps are clean.
     ...result.calibration.captures.map((c) => ({
       ...c,
       label: `calibration lon ${c.lon}`,
@@ -732,21 +620,12 @@ async function run() {
 
   // ── P9 HEADROOM. Read from the SCORED `ch0` leg, never from the calibration
   // ladder that aimed it: a ladder that went stale between aim and sweep must
-  // report STRUCTURAL rather than certify a band that has since saturated. This
-  // is the precondition that makes the Batch-860 blindness (five of seven
-  // locations pinned at exactly 1.000 in both legs) impossible to reintroduce.
+  // report STRUCTURAL rather than certify a band that has since saturated.
   const headroom = collectHeadroomStructural({
     label: "gate 4 ch0 baseline",
     samples: ch0.captures.map((c) => ({ key: c.lon, value: c.frac })),
     band: COVERAGE_HEADROOM_BAND,
   });
-  console.log(
-    `\n=== GATE-4 HEADROOM (scored ch0 leg, band ${COVERAGE_HEADROOM_BAND.min}..${COVERAGE_HEADROOM_BAND.max}) ===\n` +
-      `  ch0 per-location: ${ch0.captures
-        .map((c) => `${c.lon}=${c.frac.toFixed(3)}`)
-        .join(", ")}\n` +
-      `  ${headroom.length === 0 ? "every scored location can move in both directions" : "OUT OF BAND — gate 4 is blind here"}`,
-  );
   structural.push(...headroom);
 
   // ── DETERMINISM CONTROL.
@@ -766,85 +645,47 @@ async function run() {
     mean: CONTROL.mean,
     absSum: CONTROL.absSum,
   });
-  console.log(
-    `\n=== DETERMINISM CONTROL (ch1A vs ch1B, one configuration) ===\n` +
-      `  per-location |delta|: ${fmt(control.deltas)}\n` +
-      `  max per-location ${control.maxPerSample.toFixed(4)} (tolerance ${CONTROL.perSample})\n` +
-      `  mean delta ${control.meanDelta.toFixed(4)} (tolerance ${CONTROL.mean})\n` +
-      `  summed |delta| ${control.deltaSum.toFixed(4)} (tolerance ${CONTROL.absSum}; gate 4 scores this same quantity against ${ASSERT.absDeltaSumMin})\n` +
-      `  cloud time uniform (slot 35) drift: ${control.timeDrift.length === 0 ? "none" : JSON.stringify(control.timeDrift)}`,
-  );
   structural.push(...control.reasons);
 
   // ── Scored gates. Thresholds UNCHANGED from the pre-pinning probe.
   const state = result.providerState;
-  const checks = [
-    [
-      "MetarWeatherSource cap id = metar:mock, supportsTime false",
-      result.caps.capId === "metar:mock" && result.caps.supportsTime === false,
+  return {
+    checks: [
+      // A silent WebGL fallback HARD-FAILS rather than reporting STRUCTURAL.
+      [
+        "backend-webgpu",
+        `backend is WebGPU (${result.pins.rendererType})`,
+        result.pins.rendererType === "webgpu",
+      ],
+      [
+        "caps",
+        "MetarWeatherSource cap id = metar:mock, supportsTime false",
+        result.caps.capId === "metar:mock" &&
+          result.caps.supportsTime === false,
+      ],
+      [
+        "fetched",
+        "provider FETCHED + PARSED + RASTERIZED (hasData, version>0, no fallback)",
+        Boolean(
+          state && state.hasData && state.version > 0 && !state.lastError,
+        ),
+      ],
+      [
+        "spatial",
+        `IDW coverage varies spatially (cloudy OVC ${cloudy.frac.toFixed(3)} > ` +
+          `clear SKC ${clear.frac.toFixed(3)} by >= ${ASSERT.spatialMargin})`,
+        cloudy.frac - clear.frac >= ASSERT.spatialMargin,
+      ],
+      [
+        "channels",
+        `G/B/A channels reach the shader: turning them ON shifts the deck per ` +
+          `location across the PARTIAL-COVERAGE band [${bandLons.join(",")}] ` +
+          `(sum|delta| ${absDeltaSum} >= ${ASSERT.absDeltaSumMin}, mean shift ${meanShift})`,
+        absDeltaSum >= ASSERT.absDeltaSumMin,
+      ],
+      ["clean", `no NEW device errors (${errors.length})`, errors.length === 0],
     ],
-    [
-      "provider FETCHED + PARSED + RASTERIZED (hasData, version>0, no fallback)",
-      !!state && state.hasData && state.version > 0 && !state.lastError,
-    ],
-    [
-      `IDW coverage varies spatially (cloudy OVC ${cloudy.frac.toFixed(3)} > ` +
-        `clear SKC ${clear.frac.toFixed(3)} by >= ${ASSERT.spatialMargin})`,
-      cloudy.frac - clear.frac >= ASSERT.spatialMargin,
-    ],
-    [
-      `G/B/A channels reach the shader: turning them ON shifts the deck per ` +
-        `location across the PARTIAL-COVERAGE band [${bandLons.join(",")}] ` +
-        `(sum|delta| ${absDeltaSum} >= ${ASSERT.absDeltaSumMin}, mean shift ${meanShift})`,
-      absDeltaSum >= ASSERT.absDeltaSumMin,
-    ],
-    [`no NEW device errors (${newErrs.length})`, newErrs.length === 0],
-  ];
-
-  console.log("\n=== ANALYSIS ===");
-  let pass = true;
-  // A silent WebGL fallback HARD-FAILS rather than reporting STRUCTURAL.
-  const backendOk = result.pins.rendererType === "webgpu";
-  console.log(
-    `  [${backendOk ? "PASS" : "FAIL"}] backend is WebGPU (${result.pins.rendererType})`,
-  );
-  if (!backendOk) {
-    pass = false;
-  }
-  for (const [name, ok] of checks) {
-    console.log(`  [${ok ? "PASS" : "FAIL"}] ${name}`);
-    if (!ok) {
-      pass = false;
-    }
-  }
-  if (newErrs.length) {
-    console.log("  errors:", newErrs.slice(0, 5));
-  }
-  if (state && state.lastError) {
-    console.log("  lastError:", state.lastError);
-  }
-  if (written.length) {
-    console.log(`  evidence PNGs: ${written.join(", ")} (in ${OUT})`);
-  }
-
-  const manifest = {
-    generatedAt: new Date().toISOString(),
-    url: URL,
-    pin: PIN,
-    assert: ASSERT,
-    control: {
-      ...CONTROL,
-      maxPerSample: control.maxPerSample,
-      meanDelta: control.meanDelta,
-      deltaSum: control.deltaSum,
-      ok: control.reasons.length === 0,
-    },
-    headroom: {
-      band: COVERAGE_HEADROOM_BAND,
-      ch0: ch0.captures.map((c) => ({ lon: c.lon, frac: c.frac })),
-      ok: headroom.length === 0,
-    },
-    result,
+    structural,
     stats: {
       ch1,
       ch0: ch0Stats,
@@ -854,45 +695,184 @@ async function run() {
       meanShift,
       absDeltaSum,
     },
-    errors: newErrs,
-    structural,
-    verdict: structural.length ? "STRUCTURAL" : pass ? "GREEN" : "RED",
+    headroom: {
+      band: COVERAGE_HEADROOM_BAND,
+      ch0: ch0.captures.map((c) => ({ lon: c.lon, frac: c.frac })),
+      ok: headroom.length === 0,
+    },
+    control: {
+      ...CONTROL,
+      deltas: control.deltas,
+      maxPerSample: control.maxPerSample,
+      meanDelta: control.meanDelta,
+      deltaSum: control.deltaSum,
+      timeDrift: control.timeDrift,
+      ok: control.reasons.length === 0,
+    },
   };
-  // Strip the base64 PNGs out of the manifest — they are already on disk.
-  for (const s of [
-    ...Object.values(manifest.result.sweeps),
-    manifest.result.calibration,
-  ]) {
-    for (const c of s.captures) {
-      delete c.png;
-    }
-  }
-  fs.writeFileSync(`${OUT}/manifest.json`, JSON.stringify(manifest, null, 2));
-
-  if (structural.length) {
-    console.log("\n=== STRUCTURAL ===");
-    for (const reason of structural) {
-      console.log(`  - ${reason}`);
-    }
-    console.log(
-      "\nRESULT: STRUCTURAL — acceptance INCOMPLETE. This probe certifies nothing in this state; the gate verdicts above are printed for diagnosis only.",
-    );
-    process.exitCode = 3;
-    return;
-  }
-  console.log(`\nRESULT: ${pass ? "GREEN" : "RED"}`);
-  process.exitCode = pass ? 0 : 1;
 }
 
-const watchdog = setTimeout(() => {
-  console.error(`STRUCTURAL: probe exceeded ${WATCHDOG_MS} ms`);
-  process.exit(2);
-}, WATCHDOG_MS);
-watchdog.unref?.();
+/** The runtime descriptor: both page lanes and the aim run in `cells`. */
+export const descriptor = {
+  name: "weather-metar",
+  title:
+    "Weather mock-METAR leg: station parse, IDW raster and packer, with spatial and calibrated channel gates",
+  outputSubdirectory: "weather-metar",
+  receiptEnvelope: "probe-owned",
+  // The viewer page and the page lanes both import this one ESM entry; the
+  // Sandcastle2 bucket bundle in the runtime's default list is never loaded.
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  workBudgetMs: () => WORK_BUDGET_MS,
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    if (!options.renderers.includes("webgpu")) {
+      throw new ProbeRefusal(
+        "renderer-unavailable",
+        "volumetric clouds are WebGPU-only, so this leg measured on " +
+          `${options.renderers.join(",")} would score an empty deck`,
+        { renderers: options.renderers },
+      );
+    }
+    const page = await browser.newPage({ viewport: VIEW });
+    const consoleErrors = attachConsoleErrorGate(page);
+    await page.addInitScript(errorGateInit);
+    await installCloudProbeHarnessOnPage(page);
+    await installWeatherPinHarnessOnPage(page);
+    await page.goto(`${origin}${PAGE}`, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(
+      () => !!(window.viewer && window.viewer.scene),
+      null,
+      { timeout: 60000 },
+    );
+    await armWebGPUDevices(page);
 
-run()
-  .catch((error) => {
-    console.error(`STRUCTURAL: ${error?.stack ?? error}`);
-    process.exitCode = 2;
-  })
-  .finally(() => clearTimeout(watchdog));
+    const setup = await page.evaluate(RUN_SETUP, {
+      ...PIN,
+      mockUrl: `${origin}${MOCK_PATH}`,
+      determinismDials: WEATHER_DETERMINISM_DIALS,
+    });
+
+    const { ladder, aim } = aimGateFour(setup);
+    const bandLons = aim.selected.map((s) => s.key);
+    console.log(
+      `weather-metar run ${run} gate-4 ladder (strength 0, band ` +
+        `${COVERAGE_HEADROOM_BAND.min}..${COVERAGE_HEADROOM_BAND.max}): ` +
+        ladder
+          .map(
+            (s) =>
+              `${s.key}=${s.value.toFixed(3)}` +
+              `${s.eligible ? (inHeadroomBand(s.value) ? "*" : "") : "(witness)"}`,
+          )
+          .join(" ") +
+        ` | selected [${bandLons.join(", ")}]`,
+    );
+
+    // A missed aim is STRUCTURAL and the run stops here: scoring gate 4 over a
+    // saturated band is exactly the blindness this probe exists to remove, so
+    // it must not fall back to one.
+    if (aim.reasons.length) {
+      for (const leg of [setup.calibration]) {
+        for (const capture of leg.captures) delete capture.png;
+      }
+      throw new ProbeRefusal(
+        "weather-aim-missed",
+        `STRUCTURAL in run ${run}: gate 4 could not be aimed at partial coverage, so it was not scored: ${aim.reasons.join(" | ")}`,
+        { run, setup, aim: { ladder, reasons: aim.reasons } },
+      );
+    }
+
+    const strengthOneLons = [...new Set([CLEAR_LON, CLOUDY_LON, ...bandLons])];
+    const scoredLane = await page.evaluate(RUN_SWEEPS, {
+      strengthOneLons,
+      bandLons,
+    });
+    const result = {
+      ...setup,
+      readiness: { ...setup.readiness, ...scoredLane.readiness },
+      dials: scoredLane.dials,
+      aim: { ladder, bandLons, inBand: aim.inBand.length },
+      sweeps: scoredLane.sweeps,
+    };
+
+    const gate = await collectGateErrors(page);
+    const errors = (gate.errors || [])
+      .concat(consoleErrors)
+      .concat(gate.deviceLost ? [gate.deviceLost] : [])
+      .filter(
+        (e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon/i.test(e),
+      );
+
+    // ── Evidence PNGs (canvas-element bits, captured in the same task as the
+    // render that produced them). Gate 4's pair is taken at the FIRST SCORED
+    // PARTIAL location: a channels-on/off pair at a saturated point is two
+    // identical white frames and evidences nothing.
+    const written = [];
+    fs.mkdirSync(outputDirectory, { recursive: true });
+    const { ch1A, ch0 } = result.sweeps;
+    for (const [capture, name] of [
+      [byLon(ch1A, CLEAR_LON), "weather-metar-clear.png"],
+      [byLon(ch1A, CLOUDY_LON), "weather-metar-ovc.png"],
+      [byLon(ch1A, bandLons[0]), "weather-metar-channels-on.png"],
+      [byLon(ch0, bandLons[0]), "weather-metar-channels-off.png"],
+    ]) {
+      if (!capture?.png) continue;
+      const bytes = Buffer.from(
+        capture.png.slice(capture.png.indexOf(",") + 1),
+        "base64",
+      );
+      const file = path.join(outputDirectory, name);
+      fs.writeFileSync(file, bytes);
+      captures.push({
+        name,
+        path: file,
+        byteLength: bytes.byteLength,
+        sha256: sha256(bytes),
+      });
+      written.push(name);
+    }
+    // The PNGs are on disk; the receipt keeps the numbers, not the base64.
+    for (const sweep of [...Object.values(result.sweeps), result.calibration]) {
+      for (const capture of sweep.captures) delete capture.png;
+    }
+
+    const scored = scoreMetar(result, errors);
+    console.log(
+      `weather-metar run ${run}: ${result.pins.rendererType} | clear ${scored.stats.clearFrac.toFixed(3)} ` +
+        `cloudy ${scored.stats.cloudyFrac.toFixed(3)} | ch1 ${fmt(bandLons.map((lon) => byLon(ch1A, lon).frac))} ` +
+        `ch0 ${fmt(bandLons.map((lon) => byLon(ch0, lon).frac))} | sum|delta| ${scored.stats.absDeltaSum} | ` +
+        `control sum ${scored.control.deltaSum.toFixed(4)} | errs ${errors.length}`,
+    );
+    // STRUCTURAL is a refusal, never a verdict: the runtime exits 3 and banks
+    // the reasons and the numbers in the refusal record, not a receipt.
+    if (scored.structural.length > 0) {
+      throw new ProbeRefusal(
+        "weather-structural",
+        `STRUCTURAL in run ${run}, acceptance INCOMPLETE: ${scored.structural.join(" | ")}`,
+        { run, scored },
+      );
+    }
+    return [{ run, result, errors, written, scored }];
+  },
+  verdicts(cells) {
+    return cells.flatMap((cell) =>
+      cell.scored.checks.map(([id, claim, pass]) => ({
+        id: cells.length > 1 ? `run${cell.run}:${id}` : id,
+        claim,
+        pass,
+      })),
+    );
+  },
+  receipt(cells) {
+    return {
+      page: PAGE,
+      mockPath: MOCK_PATH,
+      pin: PIN,
+      assert: ASSERT,
+      control: CONTROL,
+      runs: cells,
+    };
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}

@@ -39,7 +39,7 @@ the active slice's bytes change (not every tick). `WeatherFieldRequest.time` (`D
 "latest"`) carries the instant to the source. `SyntheticWeatherSource("drift")` is a
 deterministic time-varying field (a longitude band that phases with `request.time`,
 24 h period) so the whole model is verified offline by
-`Tools/visual-regression/probe-weather-time.mjs` (9/9 GREEN — no network, no WebGPU). The
+`Tools/visual-regression/weather-provider-time-model.spec.mjs` (9/9 in Node — no network, no browser; it was the Edge probe `probe-weather-time.mjs`, now in `Tools/visual-regression/archive/`). The
 legacy single-request (`timeMode === null` → `"latest"`) path is byte-identical. Real
 historical/projected EDR validation inherits the live-network blocker.
 **Goal (user):** ingest **historical, live, or projected** weather from **open** sources and

@@ -2,7 +2,13 @@
 /**
  * Weather ingest Phase 2 — TIME MODEL. Logic probe (no network, no WebGPU).
  * @purpose Weather time-model logic probe (no render): slice quantization, version-on-slice-change, historical/projected resolve, LRU scrub-back hit.
- * @status ACTIVE
+ * @status ARCHIVED-CANDIDATE
+ *
+ * RETIRED BY PROMOTION: every check below now runs in Node, on the real engine
+ * modules and with no browser, in
+ * `Tools/visual-regression/weather-provider-time-model.spec.mjs` (runner:
+ * `npm run test-visual-regression-node`). This file was moved rather than
+ * deleted, so `git log --follow` still reaches its history.
  *
  * The time model is pure provider logic (resolve a quantized time slice, LRU
  * cache, version-only-on-slice-change), so it's verified by the PACKED BYTES +
@@ -14,7 +20,8 @@
  *   - scrubbing back to a fetched slice is an instant LRU cache hit;
  *   - a provider with no time mode keeps the legacy "latest" behavior.
  *
- * Usage: PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-weather-time.mjs
+ * Usage (still runs from its archived path; it writes no files):
+ *   PROBE_BASE=http://localhost:8080 node Tools/visual-regression/archive/probe-weather-time.mjs
  */
 import { chromium } from "playwright";
 

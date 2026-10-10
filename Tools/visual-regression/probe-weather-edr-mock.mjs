@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 /**
  * Weather Phase 1/3 — mock-EDR offline pipeline probe (Batch 424). WebGPU-only.
- * @purpose Gate-B leg: full EDR ingest chain (fetch, CoverageJSON, packer, weatherTex, clouds) end-to-end against the /mock-edr fixture, offline.
+ * @purpose Gate-B leg: full EDR ingest chain (fetch, CoverageJSON, packer, weatherTex, clouds) end-to-end against the /mock-edr fixture, offline; hosts the coverage-sweep lane the WCS leg declares.
  * @status ACTIVE
+ * @runtime lib/probe-runtime.mjs
  *
  * PINNED for determinism under `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE`.
+ *
+ * ONE LANE, TWO SOURCES (probe-kit harvest). `probe-weather-wcs.mjs` was this
+ * file with a different source class, collection, URL check and file names —
+ * the same pins, sweep, gates and thresholds, measured by the same page code.
+ * Both sources are now rows of `COVERAGE_SWEEP_SOURCES` below, and the WCS leg
+ * is a declaration over `sweepDescriptor("wcs")`. A further offline coverage
+ * source is one more row, not one more copy of this file.
  *
  * Proves the FULL EDR ingest chain — fetch -> CoverageJSON parse -> packer ->
  * weatherTex -> clouds — works end-to-end WITHOUT the live (CORS-uncertain,
@@ -81,20 +89,25 @@
  * baseline and must not be compared against. Gate 3 is relative (east vs west
  * within one sweep), so the comparison survives; the absolute level does not.
  *
- * Usage:
- *   node Tools/visual-regression/probe-weather-edr-mock.mjs
- * Env:
- *   PROBE_BASE  default http://localhost:8080
+ * RUNTIME (probe-kit harvest). The browser, the served-build preflight, the
+ * Edge slot, the deadline and the receipt belong to `lib/probe-runtime.mjs`;
+ * this file keeps the page lane, the pins and the gates. The page lane and
+ * every threshold are byte-for-byte what they were before the migration.
+ *
+ * Usage (serve the built tree on a governed port first, e.g.
+ * `node server.js --port 8094 --serve-built`):
+ *   node Tools/visual-regression/probe-weather-edr-mock.mjs [--port 8094] [--runs 10]
  * Out:
- *   Tools/visual-regression/output/weather-edr-mock/*.png + manifest.json
- * Exit:
+ *   Tools/visual-regression/output/weather-edr-mock/*.png, plus the runtime's
+ *   weather-edr-mock-report.json / -runtime.json / -summary.md
+ * Exit (the runtime's table):
  *   0 every gate decided and passed | 1 a real product FAIL |
- *   2 watchdog or exception | 3 STRUCTURAL — a pin did not take, the fixture
- *     never reached the GPU, or the probe could not reproduce its own capture
- *     (acceptance INCOMPLETE, not green, and not red)
+ *   2 harness error or deadline | 3 STRUCTURAL, raised as a refusal — a pin
+ *     did not take, the fixture never reached the GPU, or the probe could not
+ *     reproduce its own capture (acceptance INCOMPLETE, not green, and not red)
  */
-import { chromium } from "playwright";
 import fs from "node:fs";
+import path from "node:path";
 
 import {
   armWebGPUDevices,
@@ -103,6 +116,13 @@ import {
   errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
 import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
+import { sweepStats } from "./lib/metrics/sweep-stats.mjs";
+import {
+  ProbeRefusal,
+  isEntryPoint,
+  runProbe,
+  sha256,
+} from "./lib/probe-runtime.mjs";
 import {
   collectPinStructural,
   collectRepeatStructural,
@@ -110,13 +130,53 @@ import {
   WEATHER_DETERMINISM_DIALS,
 } from "./lib/weather-probe-pinning.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const OUT = "Tools/visual-regression/output/weather-edr-mock";
-const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`;
-const MOCK_BASE = `${BASE}/mock-edr`;
+const PAGE = "/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true";
 const VIEW = { width: 1024, height: 768 };
 
-const WATCHDOG_MS = 600_000;
+/**
+ * The offline coverage sources this lane sweeps, keyed by the leg's short
+ * name. Each row is everything its leg does NOT share with the other: the
+ * dev-server mock route, the source class and collection the page builds,
+ * the URL markers gate 1 requires, and the evidence file names. Both serve a
+ * committed 12x6 TCDC CoverageJSON fixture through the shared parser.
+ */
+export const COVERAGE_SWEEP_SOURCES = Object.freeze({
+  edr: Object.freeze({
+    name: "weather-edr-mock",
+    title:
+      "Weather mock-EDR leg: fetch, CoverageJSON parse, packer, weatherTex and clouds, offline",
+    mockPath: "/mock-edr",
+    sourceClass: "EdrWeatherSource",
+    collection: "mock-gfs",
+    urlMarkers: Object.freeze([
+      "/collections/mock-gfs/cube?",
+      "parameter-name=TCDC",
+    ]),
+    evidence: Object.freeze({
+      west: "weather-edr-mock-west.png",
+      east: "weather-edr-mock-east.png",
+    }),
+  }),
+  wcs: Object.freeze({
+    name: "weather-wcs",
+    title:
+      "Weather mock OGC API-Coverages leg: the shared CoverageJSON parser, packer, weatherTex and clouds, offline",
+    mockPath: "/mock-wcs",
+    sourceClass: "WcsCoveragesWeatherSource",
+    collection: "gdps-cloud-cover",
+    urlMarkers: Object.freeze([
+      "/collections/gdps-cloud-cover/coverage?",
+      "bbox=",
+    ]),
+    evidence: Object.freeze({
+      west: "weather-wcs-mock-west.png",
+      east: "weather-wcs-mock-east.png",
+    }),
+  }),
+});
+
+/** The pre-migration watchdog bound, now the lifecycle's per-run work budget. */
+const WORK_BUDGET_MS = 600_000;
 
 const PIN = {
   // West -> east longitudes across the fixture (clear -> overcast ramp).
@@ -216,13 +276,15 @@ const RUN_LANE = async (cfg) => {
     maxFrames: cfg.readyMaxFrames,
   });
 
-  const source = new C.EdrWeatherSource({
+  // The one line that differs between the EDR and WCS legs: which source class
+  // and collection the page builds (`COVERAGE_SWEEP_SOURCES`).
+  const source = new C[cfg.sourceClass]({
     baseUrl: cfg.mockBase,
-    collection: "mock-gfs",
+    collection: cfg.collection,
     parameterName: "TCDC",
     coverageUnits: "percent",
   });
-  const edrUrl = source.buildUrl({ time: "latest" });
+  const sourceUrl = source.buildUrl({ time: "latest" });
   const volumetric = scene.globe.defaultCloudCollection.volumetric;
   // Assigned directly rather than through `configure`, whose round-trip snapshot
   // would deep-walk the packed Uint8Array the provider holds.
@@ -273,7 +335,7 @@ const RUN_LANE = async (cfg) => {
   const sweepB = await sweep("sweepB", []);
 
   return {
-    edrUrl,
+    sourceUrl,
     providerState: {
       hasData: provider.hasData,
       version: provider.version,
@@ -287,96 +349,29 @@ const RUN_LANE = async (cfg) => {
   };
 };
 
-function stats(list) {
-  const mean = list.reduce((a, b) => a + b, 0) / list.length;
-  return {
-    mean: +mean.toFixed(4),
-    range: +(Math.max(...list) - Math.min(...list)).toFixed(4),
-  };
-}
-
 function fmt(list) {
   return list.map((v) => v.toFixed(3)).join(", ");
 }
 
-async function run() {
-  fs.mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch({
-    channel: "msedge",
-    headless: true,
-    args: ["--enable-unsafe-webgpu"],
-  });
-  const page = await browser.newPage({ viewport: VIEW });
-  const consoleErrors = attachConsoleErrorGate(page);
-  await page.addInitScript(errorGateInit);
-  await installCloudProbeHarnessOnPage(page);
-  await installWeatherPinHarnessOnPage(page);
-  await page.goto(URL, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(
-    () => !!(window.viewer && window.viewer.scene),
-    null,
-    { timeout: 60000 },
-  );
-  await armWebGPUDevices(page);
-
-  const result = await page.evaluate(RUN_LANE, {
-    ...PIN,
-    mockBase: MOCK_BASE,
-    determinismDials: WEATHER_DETERMINISM_DIALS,
-  });
-
-  const gate = await collectGateErrors(page);
-  const newErrs = (gate.errors || [])
-    .concat(consoleErrors)
-    .concat(gate.deviceLost ? [gate.deviceLost] : [])
-    .filter(
-      (e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon/i.test(e),
-    );
-  await browser.close();
-
+/**
+ * Score one run from the page lane's own return value. Pure: the result, the
+ * filtered error list, the mock base the source was pointed at and the source
+ * row go in; the gates, the STRUCTURAL reasons and the numbers the receipt
+ * banks come out. Every threshold is the pre-migration probe's.
+ *
+ * @param {object} result What `RUN_LANE` returned.
+ * @param {string[]} errors New device / console errors, already filtered.
+ * @param {string} mockBase The mock endpoint this run's source targeted.
+ * @param {object} source The `COVERAGE_SWEEP_SOURCES` row this run swept.
+ * @returns {{checks: Array<[string, string, boolean]>, structural: string[],
+ *   stats: object, control: object}}
+ */
+export function scoreCoverageSweep(result, errors, mockBase, source) {
   const { sweepA, sweepB } = result.sweeps;
   const fracsA = sweepA.captures.map((c) => c.frac);
   const fracsB = sweepB.captures.map((c) => c.frac);
-  const statsA = stats(fracsA);
-  const statsB = stats(fracsB);
   const west = fracsA[0];
   const east = fracsA[fracsA.length - 1];
-
-  // ── Evidence PNGs (canvas-element bits, captured in the same task as the
-  // render that produced them), at the longitudes that are actually SCORED.
-  const written = [];
-  for (const capture of sweepA.captures) {
-    if (!capture.png) {
-      continue;
-    }
-    const name =
-      capture.lon === PIN.lonSweep[0]
-        ? "weather-edr-mock-west.png"
-        : "weather-edr-mock-east.png";
-    fs.writeFileSync(
-      `${OUT}/${name}`,
-      Buffer.from(capture.png.slice(capture.png.indexOf(",") + 1), "base64"),
-    );
-    written.push(name);
-  }
-
-  console.log(
-    `renderer=${result.pins.rendererType} pins=${JSON.stringify(result.pins)}`,
-  );
-  console.log(`dials ${JSON.stringify(result.dials)}`);
-  console.log(
-    `readiness globe{binned=${result.readiness.globeReady.binnedGlobeCommands} firstMs=${result.readiness.globeReady.firstBinnedMs} elapsedMs=${result.readiness.globeReady.elapsedMs}} procedural{frames=${result.readiness.proceduralReady.waitedFrames} executeCalls=${result.readiness.proceduralReady.executeCalls}}`,
-  );
-  console.log(`edrUrl ${result.edrUrl}`);
-  console.log(`state ${JSON.stringify(result.providerState)}`);
-  console.log(`applied ${JSON.stringify(result.applied)}`);
-  console.log(`frA: ${fmt(fracsA)} -> ${JSON.stringify(statsA)}`);
-  console.log(`frB: ${fmt(fracsB)} -> ${JSON.stringify(statsB)}`);
-  console.log(
-    `meanMax: ${sweepA.captures.map((c) => c.meanMax.toFixed(1)).join(", ")}`,
-  );
-  console.log(`west=${west.toFixed(3)} east=${east.toFixed(3)}`);
-  console.log(`errs ${newErrs.length}`);
 
   // ── STRUCTURAL preconditions.
   const labelled = [
@@ -409,112 +404,200 @@ async function run() {
     perSample: CONTROL.perSample,
     mean: CONTROL.mean,
   });
-  console.log(
-    `\n=== DETERMINISM CONTROL (sweepA vs sweepB, one configuration) ===\n` +
-      `  per-location |delta|: ${fmt(control.deltas)}\n` +
-      `  max per-location ${control.maxPerSample.toFixed(4)} (tolerance ${CONTROL.perSample})\n` +
-      `  sweep mean ${statsA.mean} vs ${statsB.mean}, delta ${control.meanDelta.toFixed(4)} (tolerance ${CONTROL.mean})\n` +
-      `  cloud time uniform (slot 35) drift: ${control.timeDrift.length === 0 ? "none" : JSON.stringify(control.timeDrift)}`,
-  );
   structural.push(...control.reasons);
 
   // ── Scored gates. Thresholds UNCHANGED from the pre-pinning probe.
   const urlOk =
-    typeof result.edrUrl === "string" &&
-    result.edrUrl.startsWith(MOCK_BASE) &&
-    result.edrUrl.includes("/collections/mock-gfs/cube?") &&
-    result.edrUrl.includes("parameter-name=TCDC");
+    typeof result.sourceUrl === "string" &&
+    result.sourceUrl.startsWith(mockBase) &&
+    source.urlMarkers.every((marker) => result.sourceUrl.includes(marker));
   const state = result.providerState;
-  const checks = [
-    ["EdrWeatherSource.buildUrl() targets the mock endpoint", urlOk],
-    [
-      "provider FETCHED + PARSED the fixture (hasData, version>0, no fallback)",
-      !!state && state.hasData && state.version > 0 && !state.lastError,
+  return {
+    checks: [
+      // A silent WebGL fallback HARD-FAILS rather than reporting STRUCTURAL:
+      // scoring a WebGL frame as a WebGPU pass is a false green, not a blind leg.
+      [
+        "backend-webgpu",
+        `backend is WebGPU (${result.pins.rendererType})`,
+        result.pins.rendererType === "webgpu",
+      ],
+      [
+        "url",
+        `${source.sourceClass}.buildUrl() targets the mock endpoint`,
+        urlOk,
+      ],
+      [
+        "fetched",
+        "provider FETCHED + PARSED the fixture (hasData, version>0, no fallback)",
+        Boolean(
+          state && state.hasData && state.version > 0 && !state.lastError,
+        ),
+      ],
+      [
+        "pattern",
+        `fixture spatial pattern reaches the deck (overcast east ${east.toFixed(3)} ` +
+          `> clear west ${west.toFixed(3)} by >= ${ASSERT.westEastMargin})`,
+        east - west >= ASSERT.westEastMargin,
+      ],
+      ["clean", `no NEW device errors (${errors.length})`, errors.length === 0],
     ],
-    [
-      `fixture spatial pattern reaches the deck (overcast east ${east.toFixed(3)} ` +
-        `> clear west ${west.toFixed(3)} by >= ${ASSERT.westEastMargin})`,
-      east - west >= ASSERT.westEastMargin,
-    ],
-    [`no NEW device errors (${newErrs.length})`, newErrs.length === 0],
-  ];
-
-  console.log("\n=== ANALYSIS ===");
-  let pass = true;
-  // A silent WebGL fallback HARD-FAILS rather than reporting STRUCTURAL: scoring
-  // a WebGL frame as a WebGPU pass is a false green, not a blind leg.
-  const backendOk = result.pins.rendererType === "webgpu";
-  console.log(
-    `  [${backendOk ? "PASS" : "FAIL"}] backend is WebGPU (${result.pins.rendererType})`,
-  );
-  if (!backendOk) {
-    pass = false;
-  }
-  for (const [name, ok] of checks) {
-    console.log(`  [${ok ? "PASS" : "FAIL"}] ${name}`);
-    if (!ok) {
-      pass = false;
-    }
-  }
-  if (newErrs.length) {
-    console.log("  errors:", newErrs.slice(0, 5));
-  }
-  if (state && state.lastError) {
-    console.log("  lastError:", state.lastError);
-  }
-  if (written.length) {
-    console.log(`  evidence PNGs: ${written.join(", ")} (in ${OUT})`);
-  }
-
-  const manifest = {
-    generatedAt: new Date().toISOString(),
-    url: URL,
-    pin: PIN,
-    assert: ASSERT,
+    structural,
+    stats: {
+      sweepA: sweepStats(fracsA),
+      sweepB: sweepStats(fracsB),
+      west,
+      east,
+    },
     control: {
       ...CONTROL,
+      deltas: control.deltas,
       maxPerSample: control.maxPerSample,
       meanDelta: control.meanDelta,
+      timeDrift: control.timeDrift,
       ok: control.reasons.length === 0,
     },
-    result,
-    stats: { sweepA: statsA, sweepB: statsB, west, east },
-    errors: newErrs,
-    structural,
-    verdict: structural.length ? "STRUCTURAL" : pass ? "GREEN" : "RED",
   };
-  // Strip the base64 PNGs out of the manifest — they are already on disk.
-  for (const s of Object.values(manifest.result.sweeps)) {
-    for (const c of s.captures) {
-      delete c.png;
-    }
-  }
-  fs.writeFileSync(`${OUT}/manifest.json`, JSON.stringify(manifest, null, 2));
-
-  if (structural.length) {
-    console.log("\n=== STRUCTURAL ===");
-    for (const reason of structural) {
-      console.log(`  - ${reason}`);
-    }
-    console.log(
-      "\nRESULT: STRUCTURAL — acceptance INCOMPLETE. This probe certifies nothing in this state; the gate verdicts above are printed for diagnosis only.",
-    );
-    process.exitCode = 3;
-    return;
-  }
-  console.log(`\nRESULT: ${pass ? "GREEN" : "RED"}`);
-  process.exitCode = pass ? 0 : 1;
 }
 
-const watchdog = setTimeout(() => {
-  console.error(`STRUCTURAL: probe exceeded ${WATCHDOG_MS} ms`);
-  process.exit(2);
-}, WATCHDOG_MS);
-watchdog.unref?.();
+/**
+ * The runtime descriptor for one coverage source: the page lane runs in
+ * `cells`, the gates in `verdicts`. `probe-weather-wcs.mjs` is this with
+ * `"wcs"`; this file's own entry point is `"edr"`.
+ *
+ * @param {keyof typeof COVERAGE_SWEEP_SOURCES} key Which source to sweep.
+ * @returns {object} The descriptor `runProbe` executes.
+ */
+export function sweepDescriptor(key) {
+  const source = COVERAGE_SWEEP_SOURCES[key];
+  if (source === undefined) {
+    throw new TypeError(`no coverage sweep source named ${String(key)}`);
+  }
+  return {
+    name: source.name,
+    title: source.title,
+    outputSubdirectory: source.name,
+    receiptEnvelope: "probe-owned",
+    // The viewer page and the page lane both import this one ESM entry; the
+    // Sandcastle2 bucket bundle in the runtime's default list is never loaded.
+    servedArtifacts: ["Build/CesiumUnminified/index.js"],
+    workBudgetMs: () => WORK_BUDGET_MS,
+    async cells({ browser, run, options, origin, outputDirectory, captures }) {
+      if (!options.renderers.includes("webgpu")) {
+        throw new ProbeRefusal(
+          "renderer-unavailable",
+          "volumetric clouds are WebGPU-only, so this leg measured on " +
+            `${options.renderers.join(",")} would score an empty deck`,
+          { renderers: options.renderers },
+        );
+      }
+      const page = await browser.newPage({ viewport: VIEW });
+      const consoleErrors = attachConsoleErrorGate(page);
+      await page.addInitScript(errorGateInit);
+      await installCloudProbeHarnessOnPage(page);
+      await installWeatherPinHarnessOnPage(page);
+      await page.goto(`${origin}${PAGE}`, { waitUntil: "domcontentloaded" });
+      await page.waitForFunction(
+        () => !!(window.viewer && window.viewer.scene),
+        null,
+        { timeout: 60000 },
+      );
+      await armWebGPUDevices(page);
 
-run()
-  .catch((error) => {
-    console.error(`STRUCTURAL: ${error?.stack ?? error}`);
-    process.exitCode = 2;
-  })
-  .finally(() => clearTimeout(watchdog));
+      const mockBase = `${origin}${source.mockPath}`;
+      const result = await page.evaluate(RUN_LANE, {
+        ...PIN,
+        mockBase,
+        sourceClass: source.sourceClass,
+        collection: source.collection,
+        determinismDials: WEATHER_DETERMINISM_DIALS,
+      });
+
+      const gate = await collectGateErrors(page);
+      const errors = (gate.errors || [])
+        .concat(consoleErrors)
+        .concat(gate.deviceLost ? [gate.deviceLost] : [])
+        .filter(
+          (e) =>
+            !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon/i.test(e),
+        );
+
+      // ── Evidence PNGs (canvas-element bits, captured in the same task as
+      // the render that produced them), at the longitudes actually SCORED.
+      const written = [];
+      fs.mkdirSync(outputDirectory, { recursive: true });
+      for (const capture of result.sweeps.sweepA.captures) {
+        if (!capture.png) {
+          continue;
+        }
+        const name =
+          capture.lon === PIN.lonSweep[0]
+            ? source.evidence.west
+            : source.evidence.east;
+        const bytes = Buffer.from(
+          capture.png.slice(capture.png.indexOf(",") + 1),
+          "base64",
+        );
+        const file = path.join(outputDirectory, name);
+        fs.writeFileSync(file, bytes);
+        captures.push({
+          name,
+          path: file,
+          byteLength: bytes.byteLength,
+          sha256: sha256(bytes),
+        });
+        written.push(name);
+      }
+      // The PNGs are on disk; the receipt keeps the numbers, not the base64.
+      for (const sweep of Object.values(result.sweeps)) {
+        for (const capture of sweep.captures) {
+          delete capture.png;
+        }
+      }
+
+      const scored = scoreCoverageSweep(result, errors, mockBase, source);
+      console.log(
+        `${source.name} run ${run}: ${result.pins.rendererType} | ` +
+          `frA ${fmt(result.sweeps.sweepA.captures.map((c) => c.frac))} | ` +
+          `frB ${fmt(result.sweeps.sweepB.captures.map((c) => c.frac))} | ` +
+          `control max ${scored.control.maxPerSample.toFixed(4)} mean ${scored.control.meanDelta.toFixed(4)} | ` +
+          `errs ${errors.length}`,
+      );
+      // STRUCTURAL is a refusal, never a verdict: the runtime exits 3 and banks
+      // the reasons and the numbers in the refusal record, not a receipt.
+      if (scored.structural.length > 0) {
+        throw new ProbeRefusal(
+          "weather-structural",
+          `STRUCTURAL in run ${run}, acceptance INCOMPLETE: ${scored.structural.join(" | ")}`,
+          { run, scored },
+        );
+      }
+      return [{ run, result, errors, written, scored }];
+    },
+    verdicts(cells) {
+      return cells.flatMap((cell) =>
+        cell.scored.checks.map(([id, claim, pass]) => ({
+          id: cells.length > 1 ? `run${cell.run}:${id}` : id,
+          claim,
+          pass,
+        })),
+      );
+    },
+    receipt(cells) {
+      return {
+        page: PAGE,
+        source,
+        pin: PIN,
+        assert: ASSERT,
+        control: CONTROL,
+        runs: cells,
+      };
+    },
+  };
+}
+
+/** This file's own leg: the EDR source. */
+export const descriptor = sweepDescriptor("edr");
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}

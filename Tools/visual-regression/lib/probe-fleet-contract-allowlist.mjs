@@ -974,24 +974,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-06-13, pre-dates the spec",
   "probe-water-mask-coast-aa.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-06, pre-dates the spec",
-  "probe-weather-channels.mjs":
-    "browser.close outside finally — added 2026-06-28, pre-dates the spec",
-  "probe-weather-edr-mock.mjs":
-    "browser.close outside finally — added 2026-06-28, pre-dates the spec",
-  "probe-weather-ingest.mjs":
-    "browser.close outside finally — added 2026-06-26, pre-dates the spec",
-  "probe-weather-inspector.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-25, pre-dates the spec",
-  "probe-weather-map.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
-  "probe-weather-metar.mjs":
-    "browser.close outside finally — added 2026-06-28, pre-dates the spec",
-  "probe-weather-presets.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-25, pre-dates the spec",
-  "probe-weather-time.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-26, pre-dates the spec",
-  "probe-weather-wcs.mjs":
-    "browser.close outside finally — added 2026-06-28, pre-dates the spec",
   "probe-webgpu-allocation-tax.mjs":
     "no watchdog — added 2026-07-16, pre-dates the spec",
   "probe-webgpu-grey.mjs":

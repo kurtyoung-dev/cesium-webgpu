@@ -19,6 +19,11 @@ and report nothing, because the engine hooks they read (`__dbg*` globals, `__FOR
 so archived probes leave its fleet; their rows were removed from
 `lib/probe-fleet-contract-allowlist.mjs` in the same change, as the C3 ratchet requires.
 
+Later arrivals come under ruling **R-2026-09-17-11**, the probe-kit harvest's retirement rule
+(`PROBE_KIT_PLAN_2026-09-17.md` §4.2: ARCHIVE means MOVED, never deleted). That rule adds one status
+to the three above: `PROMOTED`, a probe whose checks now run as a spec or standing gate, named in its
+row, with its conclusion banked in `WEBGPU_DEBUGGING_LOG.md` before the move.
+
 | File                             | Former path                                              | Catalog status         | Successor / conclusion banked where                                                                                                                                      |
 | -------------------------------- | -------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `diff-fog-ms.mjs`                | `Tools/visual-regression/diff-fog-ms.mjs`                | LIKELY_SUPERSEDED      | `diff-two-pngs.mjs` — same canvas-decode diff plus bottom-crop and a zero-drift exit code                                                                                |
@@ -33,6 +38,7 @@ so archived probes leave its fleet; their rows were removed from
 | `probe-logdepth-diag.mjs`        | `Tools/visual-regression/probe-logdepth-diag.mjs`        | BROKEN_STALE           | The classifier `TEMP DIAG` RGB encoding no longer exists, so its decode readings are meaningless; the log-depth chain findings are in `WEBGPU_DEBUGGING_LOG.md`          |
 | `probe-tonemap.mjs`              | `Tools/visual-regression/probe-tonemap.mjs`              | BROKEN_STALE           | Targets the legacy `Apps/Sandcastle` gallery, which is not served — the page hangs; use `probe-gamma-chain.mjs` for the tonemap/gamma chain                              |
 | `probe-trace-counts.mjs`         | `Tools/visual-regression/probe-trace-counts.mjs`         | BROKEN_STALE           | No `__dbgDrawCounts` instrumentation exists under `packages/`, so nothing increments the counters it reads; `probe-cmd-pushes.mjs` / `probe-pass-counts.mjs` remain live |
+| `probe-weather-time.mjs`         | `Tools/visual-regression/probe-weather-time.mjs`         | PROMOTED               | `weather-provider-time-model.spec.mjs` runs its nine checks in Node on the real `WeatherProvider`; the probe launched Edge only to import the bundle                     |
 | `quick-screenshot.mjs`           | `Tools/visual-regression/quick-screenshot.mjs`           | INVESTIGATION_ARTIFACT | Ad-hoc two-backend capture helper, no docstring and no inbound refs; `probe-saved-view.mjs` is the capture template to copy                                              |
 | `sandcastle-batch-66-runner.mjs` | `Tools/visual-regression/sandcastle-batch-66-runner.mjs` | LIKELY_SUPERSEDED      | `sandcastle-batch-66-final-runner.mjs` (post-F1/F2/F3 rerun); reports live in `migration_doc/archive/sandcastle-batch-66/`                                               |
 | `split-screen-debug.mjs`         | `Tools/visual-regression/split-screen-debug.mjs`         | INVESTIGATION_ARTIFACT | Split-screen bring-up era diagnostic; conclusions in `WEBGPU_DEBUGGING_LOG.md`, sibling of the still-live `probe-webgpu-grey.mjs`                                        |

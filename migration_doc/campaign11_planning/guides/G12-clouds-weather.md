@@ -425,7 +425,7 @@ must not silently no-op on WebGL — a facade that does nothing on WebGL is a fe
 graceful degrade.
 
 **VERIFICATION RECIPE.** `probe-weather-facade.mjs` (both backends, source-swap + time + preset) +
-the existing `probe-weather-presets.mjs`/`probe-weather-time.mjs`/`probe-weather-inspector.mjs` green
+the existing `probe-weather-presets.mjs`/`probe-weather-inspector.mjs` green + the Node spec `weather-provider-time-model.spec.mjs` green (it replaced `probe-weather-time.mjs`, which the probe-kit harvest moved to `Tools/visual-regression/archive/`)
 + a grep proving no `isWebGPU`/`Renderer/WebGPU` import entered the Scene facade file. No perf claim.
 
 **MODEL-TIER: fable** (API design + degradation-ladder judgment), **opus** for the wiring. **Effort M.**
@@ -564,7 +564,7 @@ worth surfacing to a perf campaign. XL, own post-core campaign. WebGPU-only. **M
 A/B weather-DATA keyframe lerp + per-cell U/V wind advection between sparse frames (register LQ §8.2),
 distinct from the shipped RENDER-side reprojection (B433) and the shipped DATA time-model
 (`WeatherProvider` `setTimeMode`/`tick`, verified). The **DATA keyframe-lerp half is partly covered**
-by `probe-weather-time.mjs` (the time model + LRU slice cache, 9/9 green offline). The **per-cell U/V
+by `weather-provider-time-model.spec.mjs` (the time model + LRU slice cache, 9/9 in Node; it was `probe-weather-time.mjs`, now in `Tools/visual-regression/archive/`). The **per-cell U/V
 wind advection half has NO repro probe** — this is the "item-13 Slice W needs its probe built first"
 gap the register flags. (Note: the register/assembler's blanket "a weather probe does not exist" is
 imprecise — the cluster has ~14 `probe-weather-*` probes; the genuinely-missing ones are wind

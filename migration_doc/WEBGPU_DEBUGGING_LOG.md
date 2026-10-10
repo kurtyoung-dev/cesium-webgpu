@@ -23369,3 +23369,53 @@ atlas growth found no source: Edge measured `copyTexSubImage2D.noSource` 10 of 1
 - `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubTypes.ts`
 - `packages/engine/Specs/Renderer/WebGPU/WebGLStubFramebufferSpec.js` (the delete case now asserts that
   no attachment is destroyed)
+
+## Probe-kit harvest, weather family (lane Moria) — the time-model probe promoted to a Node spec; the family on the shared runtime
+
+**Retirement: `probe-weather-time.mjs` — PROMOTED, then moved to `Tools/visual-regression/archive/`
+as `ARCHIVED-CANDIDATE`.**
+*Conclusion banked:* the weather TIME MODEL is provider logic over packed bytes and a version
+counter, not a render. The probe launched Edge only to `import()` the built bundle; it never
+rendered, read a pixel or touched `window.viewer` (the `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE`
+classification recorded that as a proof). Its nine checks — the time-model API exists;
+`SyntheticWeatherSource("drift")` advertises `supportsTime`; a live tick six hours on changes the
+packed field; a one-minute tick inside the same hour slice leaves `version` unchanged; historical
+(−9 h) and projected (+18 h) resolve slices distinct from t0; scrubbing live back to the fetched
++6 h slice is an immediate LRU hit with the same bytes; that scrub bumps `version`; a provider with
+no time mode reports `getTimeMode() === null` and still serves data — now run on the engine's own
+TypeScript in `Tools/visual-regression/weather-provider-time-model.spec.mjs` (9/9).
+*Measured (Node, the probe's own constants — a 256x128 pack, t0 = 2026-01-01T00:00Z, the sparse
+hash over every 137th byte):* hashes t0 503390960, +6 h 1425326569, −9 h 893017444, +18 h
+3599110951, scrub-back 1425326569; `version` 1 → 2 (+6 h) → 2 (+6 h 1 min) → 8 (scrub-back).
+*Given up by the promotion:* the probe's check that the built bundle EXPORTS the four weather
+names; `probe-weather-ingest.mjs` gate 1 still asserts `WeatherProvider`, `EdrWeatherSource`,
+`SyntheticWeatherSource` and `packWeatherField` are exported.
+
+**The rest of the family moved onto `lib/probe-runtime.mjs`** (channels, edr-mock, wcs, ingest,
+metar, seam-poles, map, presets, inspector): page lanes, pins and every bar unchanged; the
+browser, served-build preflight, Edge slot, deadline and receipt are the runtime's, and STRUCTURAL
+is a refusal (exit 3). `probe-weather-wcs.mjs` is now a declaration over the edr-mock file's lane
+(the two differed only in source class, collection, URL markers and file names).
+`probe-weather-map.mjs`'s reader moved from an in-page `drawImage` of the live canvas (the reader
+the fleet contract prohibits) to the runtime's element capture of the canvas, reduced in Node by
+`lib/metrics/bright-fraction.mjs`. An element capture composites whatever is stacked over the
+canvas, so before its first capture the probe removes the viewer's widgets (toolbar,
+navigation-help panel, timeline, credits) with `lib/strip-viewer-widgets.mjs`, records the count
+removed in its report, and refuses (exit 3) if anything is still over the canvas.
+`probe-weather-regional-tails.mjs` stays standalone: its canonical embedded same-task capture
+cannot pass the runtime's capture-seam rule (I2), whose owed list may not grow.
+*Measured (Node, over banked evidence PNGs):* `lib/metrics/bright-fraction.mjs`, decoding ten
+banked evidence frames of the channels, edr-mock, wcs and metar legs with `Tools/lib/png-decode.mjs`,
+reproduced every banked `frac` and `meanMax` exactly (10 of 10). On the old map probe's banked
+full-page shots of the same page and viewport (`output/weather-map-wide-{on,off}.png`), the
+navigation-help panel covers 774 of the bright-fraction window's 31,724 samples (2.44%), which is
+what the widget strip keeps out of the scored frame.
+*Not changed by the harvest, and recorded here:* the Weather Inspector preset and control probes
+score element captures that include the viewer's widgets and the demo's `#weatherPanel`, as they
+did before. On their banked frames (`output/weather-inspector-{default,coverage-hi,ovc-st}.png`),
+whitish pixels (Rec. 601 luma > 140, chroma < 45) inside the chrome rectangles that are whitish in
+all three states are 2.66% of the frame, so the inspector's whole-frame `cloudPct > 2` gate clears
+on chrome alone; the presets wedge misses every chrome rectangle, but its two whole-frame diffs
+(14.53 and 14.20 against `> 3`) each carry about 2 from them. The remedy (strip the widgets, mask
+`#weatherPanel`, re-derive the bars on an Edge run) is recorded in `DEFERRED_WORK.md`'s
+`C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE-TAIL` row.

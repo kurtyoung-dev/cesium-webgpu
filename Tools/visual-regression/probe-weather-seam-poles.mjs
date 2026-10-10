@@ -3,6 +3,7 @@
  * Probe: C13-07 — dateline + pole weather-map seam correction (pixel gate).
  * @purpose C13-07 pixel gate: no dateline luminance wall (frame-relative column-step test), bounded polar-cap variance, no NaN cluster; non-vacuity gate.
  * @status ACTIVE
+ * @runtime lib/probe-runtime.mjs
  *
  * PINNED for determinism under `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE`.
  *
@@ -116,16 +117,39 @@
  * Capture doctrine: `scene.render(julianDate)` and the `canvas.toDataURL` freeze
  * share one task with no await/rAF yield; pixel decode reads only that frozen PNG.
  *
- * Usage: PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-weather-seam-poles.mjs
- * Exit:
- *   0 PASS | 1 a real product FAIL | 2 exception
- *   3 STRUCTURAL — a pin did not take, the frame was too clear to certify, or
- *     the probe could not reproduce its own capture (acceptance INCOMPLETE)
+ * RUNTIME (probe-kit harvest). The browser, the served-build preflight, the
+ * Edge slot, the deadline and the receipt belong to `lib/probe-runtime.mjs`;
+ * this file keeps the WebGL load arm, the page lanes, the pins and the gates.
+ * The page lanes are byte-for-byte what they were; the Node-side statistics
+ * are `lib/metrics/seam-pole-structure.mjs`, and the bars that used to sit
+ * inline are the `ASSERT` table below, every value unchanged.
+ *
+ * Usage (serve the built tree on a governed port first, e.g.
+ * `node server.js --port 8094 --serve-built`):
+ *   node Tools/visual-regression/probe-weather-seam-poles.mjs [--port 8094] [--runs 10]
+ *   (`--renderer webgpu` skips the WebGL load arm; the seam lanes need WebGPU)
+ * Exit (the runtime's table):
+ *   0 PASS | 1 a real product FAIL | 2 harness error or deadline
+ *   3 STRUCTURAL, raised as a refusal — a pin did not take, the frame was too
+ *     clear to certify, or the probe could not reproduce its own capture
+ *     (acceptance INCOMPLETE)
  */
-import { chromium } from "playwright";
 import fs from "node:fs";
+import path from "node:path";
 
 import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
+import {
+  centreHotSpot,
+  columnStepStats,
+  halfBalance,
+  ringSpread,
+} from "./lib/metrics/seam-pole-structure.mjs";
+import {
+  ProbeRefusal,
+  isEntryPoint,
+  runProbe,
+  sha256,
+} from "./lib/probe-runtime.mjs";
 import {
   collectPinStructural,
   collectRepeatStructural,
@@ -133,21 +157,8 @@ import {
   WEATHER_DETERMINISM_DIALS,
 } from "./lib/weather-probe-pinning.mjs";
 
-// Machine-safety watchdog (Batch 861+ fleet sweep). A probe that wedges holds a
-// headless Edge + GPU process alive indefinitely; `unref` keeps the timer from
-// extending a healthy run.
-const WATCHDOG_MS = 600_000;
-const watchdog = setTimeout(() => {
-  console.error(
-    `[probe-weather-seam-poles] watchdog fired after ${WATCHDOG_MS} ms`,
-  );
-  process.exit(2);
-}, WATCHDOG_MS);
-watchdog.unref?.();
-
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const OUT = "Tools/visual-regression/output/weather-seam-poles";
-fs.mkdirSync(OUT, { recursive: true });
+/** The pre-migration watchdog bound, now the lifecycle's per-run work budget. */
+const WORK_BUDGET_MS = 600_000;
 
 const PIN = {
   cameraHeight: 250000.0,
@@ -165,9 +176,27 @@ const CONTROL = {
   cloudFrac: 0.01,
 };
 
-const failures = [];
-const structural = [];
-const notes = [];
+/**
+ * Scored bars — IDENTICAL to the pre-pinning probe, which wrote them inline.
+ * D-eq: a frame clearer than `minCloudFrac` is STRUCTURAL; the brighter half
+ * may be at most `maxHalfRatio` times the dimmer; the centre step may be at
+ * most `max(stepP95Multiple * p95, stepFloor)`. P-ring: a pinwheel is
+ * `mean > ringMeanFloor` AND `maxDev > max(ringDevFraction * mean,
+ * ringDevFloor)`. P-centre: a hot cluster is `centreMax > centreMultiple *
+ * max(ringMean, 20)` AND `centreMax > centreAbsolute`.
+ */
+const ASSERT = {
+  minCloudFrac: 0.05,
+  maxHalfRatio: 3.0,
+  stepP95Multiple: 2.5,
+  stepFloor: 20,
+  ringMeanFloor: 15,
+  ringDevFraction: 0.6,
+  ringDevFloor: 40,
+  centreMultiple: 3,
+  centreAbsolute: 200,
+  lowPoleCloudNote: 0.03,
+};
 
 /**
  * Runs INSIDE the page. `page.evaluate` drops the surrounding closure, so the
@@ -332,242 +361,95 @@ const CAPTURE_LANE = async (cfg) => {
   };
 };
 
-const browser = await chromium.launch({
-  channel: "msedge",
-  headless: true,
-  args: ["--enable-unsafe-webgpu"],
-});
+/**
+ * Score one run. Pure: the setup lane's report, the five captured views (the
+ * column means, sector means and centre block each view's page lane reduced
+ * its frozen frame to), the WebGL load arm's console errors (`null` when the
+ * arm did not run) and the WebGPU page's errors go in; the gates, the
+ * STRUCTURAL reasons, the notes and the numbers come out.
+ *
+ * @param {{setup: object, views: object, webglErrors: string[]|null,
+ *   webgpuErrors: string[]}} run
+ * @returns {{checks: Array<[string, string, boolean]>, structural: string[],
+ *   notes: string[], stats: object}}
+ */
+export function scoreSeamPoles({ setup, views, webglErrors, webgpuErrors }) {
+  const { seam, seamRepeat, npole, npoleRepeat, spole } = views;
+  const structural = [];
+  const notes = [];
 
-let fatal = null;
-try {
-  // --- WebGL load sanity ---------------------------------------------------
-  // Deliberately UNCHANGED, including the absence of `offline=true`. This arm
-  // scores console errors, not pixels, and exercising the normal online startup
-  // path is the point of a bundle load-sanity check.
-  {
-    const page = await browser.newPage({
-      viewport: { width: 640, height: 480 },
-    });
-    const errs = [];
-    page.on("console", (m) => m.type() === "error" && errs.push(m.text()));
-    page.on("pageerror", (e) => errs.push("PE:" + e.message));
-    await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgl`, {
-      waitUntil: "networkidle",
-      timeout: 90000,
-    });
-    await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
-    if (errs.length > 0) {
-      failures.push(`WEBGL-LOAD: ${errs.length} console errors: ${errs[0]}`);
-    } else {
-      notes.push("WEBGL-LOAD: viewer up, 0 errors");
-    }
-    await page.close();
+  // D1 — the seam view is its own control. Captured TWICE back to back: the
+  // repeat is the determinism control on the very column means both D1
+  // statistics are derived from.
+  const eqControl = collectRepeatStructural({
+    label: "CONTROL dateline-eq column means",
+    a: seam.cols.map((v, i) => ({ key: i, value: v, time: seam.slots.time })),
+    b: seamRepeat.cols.map((v, i) => ({
+      key: i,
+      value: v,
+      time: seamRepeat.slots.time,
+    })),
+    perSample: CONTROL.perSample,
+    mean: CONTROL.mean,
+  });
+  structural.push(...eqControl.reasons);
+  const fracDelta = Math.abs(seam.cloudFrac - seamRepeat.cloudFrac);
+  if (!(fracDelta <= CONTROL.cloudFrac)) {
+    structural.push(
+      `CONTROL dateline-eq: cloudFrac ${seam.cloudFrac.toFixed(3)} vs ${seamRepeat.cloudFrac.toFixed(3)} differs by ${fracDelta.toFixed(4)} (tolerance ${CONTROL.cloudFrac})`,
+    );
+  }
+  const steps = columnStepStats(seam.cols);
+  const stepsRepeat = columnStepStats(seamRepeat.cols);
+  const halves = halfBalance(seam.cols);
+  notes.push(
+    `CONTROL D-eq: max per-column |delta| ${eqControl.maxPerSample.toFixed(3)} (tol ${CONTROL.perSample}), ` +
+      `mean delta ${eqControl.meanDelta.toFixed(3)} (tol ${CONTROL.mean}), cloudFrac delta ${fracDelta.toFixed(4)}, ` +
+      `centreMax ${steps.centreMax.toFixed(1)} vs ${stepsRepeat.centreMax.toFixed(1)}, ` +
+      `time drift ${eqControl.timeDrift.length === 0 ? "none" : eqControl.timeDrift.length}`,
+    `D-eq(0.7N): halves L ${halves.left.toFixed(1)} R ${halves.right.toFixed(1)} | centreMax ${steps.centreMax.toFixed(1)} p95 ${steps.p95.toFixed(1)} | cloudFrac ${seam.cloudFrac.toFixed(3)}`,
+  );
+  if (seam.cloudFrac < ASSERT.minCloudFrac) {
+    structural.push(
+      `D-eq: cloud fraction ${seam.cloudFrac.toFixed(3)} too low to certify (twin map says both seam sides cloudy at 0.7N)`,
+    );
   }
 
-  // --- WebGPU pixel lanes --------------------------------------------------
-  const page = await browser.newPage({
-    viewport: { width: 1024, height: 768 },
+  // P1 — the pole ring and the centre block. The north lane is captured twice:
+  // the repeat is the determinism control on the sector means the ring
+  // statistic is derived from.
+  const poleControl = collectRepeatStructural({
+    label: "CONTROL npole sector means",
+    a: npole.ring.map((v, i) => ({ key: i, value: v, time: npole.slots.time })),
+    b: npoleRepeat.ring.map((v, i) => ({
+      key: i,
+      value: v,
+      time: npoleRepeat.slots.time,
+    })),
+    perSample: CONTROL.perSample,
+    mean: CONTROL.mean,
   });
-  const errs = [];
-  page.on("console", (m) => m.type() === "error" && errs.push(m.text()));
-  page.on("pageerror", (e) => errs.push("PE:" + e.message));
-  await installCloudProbeHarnessOnPage(page);
-  await installWeatherPinHarnessOnPage(page);
-  await page.goto(
-    `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`,
-    { waitUntil: "networkidle", timeout: 90000 },
-  );
-  await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
-
-  const setup = await page.evaluate(SETUP_LANE, {
-    ...PIN,
-    determinismDials: WEATHER_DETERMINISM_DIALS,
-  });
+  structural.push(...poleControl.reasons);
   notes.push(
-    `PINS: renderer=${setup.pins.rendererType} imagery=${setup.pins.imageryLayersBefore}->${setup.pins.imageryLayersAfter} ` +
-      `ellipsoidTerrain=${setup.pins.ellipsoidTerrain} dials=${JSON.stringify(setup.dials)}`,
+    `CONTROL npole: max per-sector |delta| ${poleControl.maxPerSample.toFixed(3)} (tol ${CONTROL.perSample}), ` +
+      `mean delta ${poleControl.meanDelta.toFixed(3)} (tol ${CONTROL.mean}), ` +
+      `time drift ${poleControl.timeDrift.length === 0 ? "none" : poleControl.timeDrift.length}`,
   );
-  notes.push(
-    `READY: globe binned=${setup.readiness.globeReady.binnedGlobeCommands} elapsedMs=${setup.readiness.globeReady.elapsedMs} ` +
-      `procedural frames=${setup.readiness.proceduralReady.waitedFrames} executeCalls=${setup.readiness.proceduralReady.executeCalls}`,
-  );
-
-  const captureView = (lon, lat, height, tag) =>
-    page.evaluate(CAPTURE_LANE, {
-      lon,
-      lat,
-      height,
-      tag,
-      warmupDiscards: PIN.warmupDiscards,
-      viewSettleMs: PIN.viewSettleMs,
-    });
-
-  const save = (r) =>
-    fs.writeFileSync(
-      `${OUT}/${r.tag}.png`,
-      Buffer.from(r.png.split(",")[1], "base64"),
-    );
-
-  const scored = [];
-
-  const stepStats = (cols) => {
-    const steps = [];
-    for (let i = 1; i < cols.length; i++) {
-      steps.push(Math.abs(cols[i] - cols[i - 1]));
-    }
-    const mid = Math.floor(steps.length / 2);
-    const half = Math.floor(steps.length * 0.04); // center 8% band
-    const centerMax = Math.max(...steps.slice(mid - half, mid + half));
-    const rest = steps
-      .slice(0, mid - half)
-      .concat(steps.slice(mid + half))
-      .sort((a, b) => a - b);
-    const p95 = rest[Math.floor(rest.length * 0.95)];
-    return { centerMax, p95 };
-  };
-
-  // D1 — the seam view is its own control. Latitude 0.7N chosen from the
-  // CPU-twin map: the texels on BOTH sides of the seam are cloudy there
-  // (west 0.935 / east 0.882), so a residual wall would split the frame into
-  // a bright half and a dark half at the center meridian. Post-fix the two
-  // halves must be comparably cloudy and the center column step must not be
-  // an outlier against the frame's own step distribution.
-  //
-  // Captured TWICE back to back: the repeat is the determinism control on the
-  // very column means both D1 statistics are derived from.
-  {
-    const seam = await captureView(180.0, 0.7, PIN.cameraHeight, "dateline-eq");
-    const seamRepeat = await captureView(
-      180.0,
-      0.7,
-      PIN.cameraHeight,
-      "dateline-eq-repeat",
-    );
-    save(seam);
-    save(seamRepeat);
-    scored.push(
-      { ...seam, label: "dateline-eq" },
-      { ...seamRepeat, label: "dateline-eq-repeat" },
-    );
-
-    const control = collectRepeatStructural({
-      label: "CONTROL dateline-eq column means",
-      a: seam.cols.map((v, i) => ({ key: i, value: v, time: seam.slots.time })),
-      b: seamRepeat.cols.map((v, i) => ({
-        key: i,
-        value: v,
-        time: seamRepeat.slots.time,
-      })),
-      perSample: CONTROL.perSample,
-      mean: CONTROL.mean,
-    });
-    structural.push(...control.reasons);
-    const fracDelta = Math.abs(seam.cloudFrac - seamRepeat.cloudFrac);
-    if (!(fracDelta <= CONTROL.cloudFrac)) {
-      structural.push(
-        `CONTROL dateline-eq: cloudFrac ${seam.cloudFrac.toFixed(3)} vs ${seamRepeat.cloudFrac.toFixed(3)} differs by ${fracDelta.toFixed(4)} (tolerance ${CONTROL.cloudFrac})`,
-      );
-    }
-    const s1 = stepStats(seam.cols);
-    const s1r = stepStats(seamRepeat.cols);
-    notes.push(
-      `CONTROL D-eq: max per-column |delta| ${control.maxPerSample.toFixed(3)} (tol ${CONTROL.perSample}), ` +
-        `mean delta ${control.meanDelta.toFixed(3)} (tol ${CONTROL.mean}), cloudFrac delta ${fracDelta.toFixed(4)}, ` +
-        `centerMax ${s1.centerMax.toFixed(1)} vs ${s1r.centerMax.toFixed(1)}, ` +
-        `time drift ${control.timeDrift.length === 0 ? "none" : control.timeDrift.length}`,
-    );
-
-    const cols = seam.cols;
-    const mid = Math.floor(cols.length / 2);
-    const meanOf = (a) => a.reduce((x, y) => x + y, 0) / a.length;
-    const left = meanOf(cols.slice(0, mid)),
-      right = meanOf(cols.slice(mid));
-    notes.push(
-      `D-eq(0.7N): halves L ${left.toFixed(1)} R ${right.toFixed(1)} | centerMax ${s1.centerMax.toFixed(1)} p95 ${s1.p95.toFixed(1)} | cloudFrac ${seam.cloudFrac.toFixed(3)}`,
-    );
-    if (seam.cloudFrac < 0.05) {
-      structural.push(
-        `D-eq: cloud fraction ${seam.cloudFrac.toFixed(3)} too low to certify (twin map says both seam sides cloudy at 0.7N)`,
-      );
-    } else {
-      const ratio = Math.max(left, right) / Math.max(1, Math.min(left, right));
-      if (ratio > 3.0) {
-        failures.push(
-          `D-eq: hemisphere brightness wall across the meridian (L ${left.toFixed(1)} vs R ${right.toFixed(1)})`,
-        );
-      }
-      if (s1.centerMax > Math.max(2.5 * s1.p95, 20)) {
-        failures.push(
-          `D-eq: center column step is an outlier (centerMax ${s1.centerMax.toFixed(1)} vs p95 ${s1.p95.toFixed(1)})`,
-        );
-      }
-    }
-  }
-
-  // P1 — pole ring + center garbage check (89.995 keeps the camera regular;
-  // the cap rows span 88.6..90 so the view still reads the constant cap).
-  // The north lane is captured twice: the repeat is the determinism control on
-  // the azimuthal sector means the ring statistic is derived from.
-  for (const [lat, tagP] of [
-    [89.995, "npole"],
-    [-89.995, "spole"],
+  const poles = {};
+  for (const [tag, view] of [
+    ["npole", npole],
+    ["spole", spole],
   ]) {
-    const r = await captureView(0.0, lat, PIN.cameraHeight, tagP);
-    save(r);
-    scored.push({ ...r, label: tagP });
-
-    if (tagP === "npole") {
-      const repeat = await captureView(
-        0.0,
-        lat,
-        PIN.cameraHeight,
-        "npole-repeat",
-      );
-      save(repeat);
-      scored.push({ ...repeat, label: "npole-repeat" });
-      const control = collectRepeatStructural({
-        label: "CONTROL npole sector means",
-        a: r.ring.map((v, i) => ({ key: i, value: v, time: r.slots.time })),
-        b: repeat.ring.map((v, i) => ({
-          key: i,
-          value: v,
-          time: repeat.slots.time,
-        })),
-        perSample: CONTROL.perSample,
-        mean: CONTROL.mean,
-      });
-      structural.push(...control.reasons);
+    if (view.cloudFrac < ASSERT.lowPoleCloudNote) {
       notes.push(
-        `CONTROL npole: max per-sector |delta| ${control.maxPerSample.toFixed(3)} (tol ${CONTROL.perSample}), ` +
-          `mean delta ${control.meanDelta.toFixed(3)} (tol ${CONTROL.mean}), ` +
-          `time drift ${control.timeDrift.length === 0 ? "none" : control.timeDrift.length}`,
+        `P-${tag}: cloud fraction ${view.cloudFrac.toFixed(3)} — cap row may legitimately be clear here; ring variance check still valid on any nonzero signal`,
       );
     }
-
-    if (r.cloudFrac < 0.03) {
-      notes.push(
-        `P-${tagP}: cloud fraction ${r.cloudFrac.toFixed(3)} — cap row may legitimately be clear here; ring variance check still valid on any nonzero signal`,
-      );
-    }
-    const mean = r.ring.reduce((a, b) => a + b, 0) / r.ring.length;
-    const maxDev = Math.max(...r.ring.map((v) => Math.abs(v - mean)));
-    // Constant cap row -> small azimuthal deviation on the small ring. Allow
-    // raymarch noise; a pre-fix pinwheel produced full-range spokes.
-    if (mean > 15 && maxDev > Math.max(0.6 * mean, 40)) {
-      failures.push(
-        `P-${tagP}: azimuthal ring spread too high (mean ${mean.toFixed(1)}, maxDev ${maxDev.toFixed(1)}) — pinwheel suspected`,
-      );
-    }
-    // NaN/garbage cluster at the exact pole: center block must not contain a
-    // hot cluster wildly above the ring (the atan2(0,0) failure signature).
-    const cMax = Math.max(...r.center);
-    if (cMax > 3 * Math.max(mean, 20) && cMax > 200) {
-      failures.push(
-        `P-${tagP}: center block hot cluster (${cMax}) vs ring mean ${mean.toFixed(1)} — spin-axis guard suspect`,
-      );
-    }
+    const ring = ringSpread(view.ring);
+    const hot = centreHotSpot(view.center, ring.mean);
+    poles[tag] = { ring, hot, cloudFrac: view.cloudFrac };
     notes.push(
-      `P-${tagP}: ring mean ${mean.toFixed(1)} maxDev ${maxDev.toFixed(1)} centerMax ${cMax} cloudFrac ${r.cloudFrac.toFixed(3)}`,
+      `P-${tag}: ring mean ${ring.mean.toFixed(1)} maxDev ${ring.maxDev.toFixed(1)} centreMax ${hot.centreMax} cloudFrac ${view.cloudFrac.toFixed(3)}`,
     );
   }
 
@@ -578,61 +460,257 @@ try {
     ...collectPinStructural({
       pins: setup.pins,
       dials: setup.dials,
-      captures: scored,
+      captures: [
+        { ...seam, label: "dateline-eq" },
+        { ...seamRepeat, label: "dateline-eq-repeat" },
+        { ...npole, label: "npole" },
+        { ...npoleRepeat, label: "npole-repeat" },
+        { ...spole, label: "spole" },
+      ],
       globeReadiness: { setup: setup.readiness.globeReady },
       expectedChannelStrength: undefined,
     }),
   );
-  if (setup.pins.rendererType !== "webgpu") {
-    // A silent WebGL fallback HARD-FAILS: volumetric clouds are WebGPU-only, so
-    // scoring a WebGL frame as a WebGPU pass is a false green, not a blind leg.
-    failures.push(
-      `WEBGPU-BACKEND: resolved ${setup.pins.rendererType}, expected webgpu`,
+
+  // Constant cap row -> small azimuthal deviation on the small ring; a pre-fix
+  // pinwheel produced full-range spokes. A hot centre cluster far above the
+  // ring is the atan2(0,0) failure signature.
+  const pinwheel = (p) =>
+    p.ring.mean > ASSERT.ringMeanFloor &&
+    p.ring.maxDev >
+      Math.max(ASSERT.ringDevFraction * p.ring.mean, ASSERT.ringDevFloor);
+  const hotCluster = (p) =>
+    p.hot.centreMax > ASSERT.centreMultiple * p.hot.reference &&
+    p.hot.centreMax > ASSERT.centreAbsolute;
+
+  const checks = [];
+  if (webglErrors !== null) {
+    checks.push([
+      "webgl-load",
+      `the WebGL viewer comes up with 0 console errors (${webglErrors.length}${webglErrors.length ? `: ${webglErrors[0]}` : ""})`,
+      webglErrors.length === 0,
+    ]);
+  }
+  checks.push(
+    // A silent WebGL fallback HARD-FAILS: volumetric clouds are WebGPU-only,
+    // so scoring a WebGL frame as a WebGPU pass is a false green, not a blind leg.
+    [
+      "backend-webgpu",
+      `backend is WebGPU (${setup.pins.rendererType})`,
+      setup.pins.rendererType === "webgpu",
+    ],
+    [
+      "deq-wall",
+      `no hemisphere brightness wall across the meridian (L ${halves.left.toFixed(1)} vs R ${halves.right.toFixed(1)}, ratio ${halves.ratio.toFixed(2)} <= ${ASSERT.maxHalfRatio})`,
+      halves.ratio <= ASSERT.maxHalfRatio,
+    ],
+    [
+      "deq-step",
+      `the centre column step is not an outlier (centreMax ${steps.centreMax.toFixed(1)} <= max(${ASSERT.stepP95Multiple} x p95 ${steps.p95.toFixed(1)}, ${ASSERT.stepFloor}))`,
+      steps.centreMax <=
+        Math.max(ASSERT.stepP95Multiple * steps.p95, ASSERT.stepFloor),
+    ],
+  );
+  for (const tag of ["npole", "spole"]) {
+    const p = poles[tag];
+    checks.push(
+      [
+        `${tag}-ring`,
+        `P-${tag}: no azimuthal pinwheel (ring mean ${p.ring.mean.toFixed(1)}, maxDev ${p.ring.maxDev.toFixed(1)})`,
+        !pinwheel(p),
+      ],
+      [
+        `${tag}-centre`,
+        `P-${tag}: no hot centre cluster (centreMax ${p.hot.centreMax} vs ring mean ${p.ring.mean.toFixed(1)})`,
+        !hotCluster(p),
+      ],
     );
   }
+  checks.push([
+    "webgpu-clean",
+    `0 console errors on the WebGPU page (${webgpuErrors.length}${webgpuErrors.length ? `: ${webgpuErrors[0]}` : ""})`,
+    webgpuErrors.length === 0,
+  ]);
 
-  if (errs.length > 0) {
-    failures.push(`WEBGPU console errors (${errs.length}): ${errs[0]}`);
-  }
-  await page.close();
-} catch (error) {
-  // Recorded rather than exited here, so the single `finally` still closes the
-  // browser: `process.exit()` inside a catch skips it.
-  fatal = error;
-} finally {
-  await browser.close();
+  return {
+    checks,
+    structural,
+    notes,
+    stats: {
+      deq: { ...halves, ...steps, cloudFrac: seam.cloudFrac, fracDelta },
+      npole: poles.npole,
+      spole: poles.spole,
+      controls: {
+        eq: {
+          maxPerSample: eqControl.maxPerSample,
+          meanDelta: eqControl.meanDelta,
+        },
+        npole: {
+          maxPerSample: poleControl.maxPerSample,
+          meanDelta: poleControl.meanDelta,
+        },
+      },
+    },
+  };
 }
 
-if (fatal) {
-  console.error(`STRUCTURAL: ${fatal?.stack ?? fatal}`);
-  process.exit(2);
-}
-
-console.log("=== probe-weather-seam-poles ===");
-for (const n of notes) {
-  console.log("  " + n);
-}
-if (structural.length > 0) {
-  console.log("STRUCTURAL");
-  for (const s of structural) {
-    console.log("  STRUCTURAL: " + s);
-  }
-  if (failures.length > 0) {
-    console.log("  (gate failures printed for diagnosis only:)");
-    for (const f of failures) {
-      console.log("  FAIL: " + f);
+/** The runtime descriptor: the WebGL arm and the page lanes run in `cells`. */
+export const descriptor = {
+  name: "weather-seam-poles",
+  title:
+    "Weather-map dateline and pole seam gate: no meridian wall, bounded polar-cap spread, no centre hot cluster",
+  outputSubdirectory: "weather-seam-poles",
+  receiptEnvelope: "probe-owned",
+  // Both viewer pages import this one ESM entry; the Sandcastle2 bucket
+  // bundle in the runtime's default list is never loaded.
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  workBudgetMs: () => WORK_BUDGET_MS,
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    if (!options.renderers.includes("webgpu")) {
+      throw new ProbeRefusal(
+        "renderer-unavailable",
+        "the seam lanes read volumetric clouds, which are WebGPU-only, so a run on " +
+          `${options.renderers.join(",")} would score an empty frame`,
+        { renderers: options.renderers },
+      );
     }
-  }
-  console.log(
-    "RESULT: STRUCTURAL — acceptance INCOMPLETE. This probe certifies nothing in this state.",
-  );
-  process.exit(3);
+
+    // --- WebGL load sanity --------------------------------------------------
+    // Deliberately UNCHANGED, including the absence of `offline=true`. This arm
+    // scores console errors, not pixels, and exercising the normal online
+    // startup path is the point of a bundle load-sanity check.
+    let webglErrors = null;
+    if (options.renderers.includes("webgl")) {
+      const page = await browser.newPage({
+        viewport: { width: 640, height: 480 },
+      });
+      const errs = [];
+      page.on("console", (m) => m.type() === "error" && errs.push(m.text()));
+      page.on("pageerror", (e) => errs.push("PE:" + e.message));
+      await page.goto(`${origin}/Apps/CesiumViewer/index.html?renderer=webgl`, {
+        waitUntil: "networkidle",
+        timeout: 90000,
+      });
+      // The options are the THIRD argument; the second is the page function's
+      // own argument, where this bound used to sit and never applied.
+      await page.waitForFunction(() => !!window.viewer, null, {
+        timeout: 90000,
+      });
+      webglErrors = errs;
+      await page.close();
+    }
+
+    // --- WebGPU pixel lanes -------------------------------------------------
+    const page = await browser.newPage({
+      viewport: { width: 1024, height: 768 },
+    });
+    const webgpuErrors = [];
+    page.on(
+      "console",
+      (m) => m.type() === "error" && webgpuErrors.push(m.text()),
+    );
+    page.on("pageerror", (e) => webgpuErrors.push("PE:" + e.message));
+    await installCloudProbeHarnessOnPage(page);
+    await installWeatherPinHarnessOnPage(page);
+    await page.goto(
+      `${origin}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`,
+      { waitUntil: "networkidle", timeout: 90000 },
+    );
+    await page.waitForFunction(() => !!window.viewer, null, {
+      timeout: 90000,
+    });
+
+    const setup = await page.evaluate(SETUP_LANE, {
+      ...PIN,
+      determinismDials: WEATHER_DETERMINISM_DIALS,
+    });
+    const captureView = (lon, lat, height, tag) =>
+      page.evaluate(CAPTURE_LANE, {
+        lon,
+        lat,
+        height,
+        tag,
+        warmupDiscards: PIN.warmupDiscards,
+        viewSettleMs: PIN.viewSettleMs,
+      });
+
+    // D1 — latitude 0.7N was chosen from the CPU-twin map: the texels on BOTH
+    // sides of the seam are cloudy there (west 0.935 / east 0.882), so a
+    // residual wall would split the frame into a bright half and a dark half at
+    // the centre meridian. P1 — 89.995 keeps the camera regular while the cap
+    // rows span 88.6..90, so the view still reads the constant cap. The order
+    // is the pre-migration probe's: seam, its repeat, north, its repeat, south.
+    const views = {
+      seam: await captureView(180.0, 0.7, PIN.cameraHeight, "dateline-eq"),
+      seamRepeat: await captureView(
+        180.0,
+        0.7,
+        PIN.cameraHeight,
+        "dateline-eq-repeat",
+      ),
+      npole: await captureView(0.0, 89.995, PIN.cameraHeight, "npole"),
+      npoleRepeat: await captureView(
+        0.0,
+        89.995,
+        PIN.cameraHeight,
+        "npole-repeat",
+      ),
+      spole: await captureView(0.0, -89.995, PIN.cameraHeight, "spole"),
+    };
+    await page.close();
+
+    // ── Evidence PNGs: every view, under its own tag, as the probe always
+    // banked them. The receipt keeps the numbers, not the base64.
+    const written = [];
+    fs.mkdirSync(outputDirectory, { recursive: true });
+    for (const view of Object.values(views)) {
+      const name = `${view.tag}.png`;
+      const bytes = Buffer.from(view.png.split(",")[1], "base64");
+      const file = path.join(outputDirectory, name);
+      fs.writeFileSync(file, bytes);
+      captures.push({
+        name,
+        path: file,
+        byteLength: bytes.byteLength,
+        sha256: sha256(bytes),
+      });
+      written.push(name);
+      delete view.png;
+    }
+
+    const scored = scoreSeamPoles({ setup, views, webglErrors, webgpuErrors });
+    console.log(
+      `weather-seam-poles run ${run}: renderer=${setup.pins.rendererType} ` +
+        `readiness binned=${setup.readiness.globeReady.binnedGlobeCommands}`,
+    );
+    for (const note of scored.notes) {
+      console.log(`  ${note}`);
+    }
+    // STRUCTURAL is a refusal, never a verdict: the runtime exits 3 and banks
+    // the reasons and the numbers in the refusal record, not a receipt.
+    if (scored.structural.length > 0) {
+      throw new ProbeRefusal(
+        "weather-structural",
+        `STRUCTURAL in run ${run}, acceptance INCOMPLETE: ${scored.structural.join(" | ")}`,
+        { run, scored },
+      );
+    }
+    return [{ run, setup, views, written, scored }];
+  },
+  verdicts(cells) {
+    return cells.flatMap((cell) =>
+      cell.scored.checks.map(([id, claim, pass]) => ({
+        id: cells.length > 1 ? `run${cell.run}:${id}` : id,
+        claim,
+        pass,
+      })),
+    );
+  },
+  receipt(cells) {
+    return { pin: PIN, control: CONTROL, assert: ASSERT, runs: cells };
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
 }
-if (failures.length > 0) {
-  console.log("FAIL");
-  for (const f of failures) {
-    console.log("  FAIL: " + f);
-  }
-  process.exit(1);
-}
-console.log("PASS");

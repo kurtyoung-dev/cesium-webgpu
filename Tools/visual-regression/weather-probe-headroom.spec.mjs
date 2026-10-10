@@ -627,10 +627,17 @@ test("metar: gate 4's band is calibrated, not a hard-coded saturated list", () =
 });
 
 test("metar: a failed aim exits 3 and does not fall back to a saturated band", () => {
+  // On the runtime a STRUCTURAL result is a refusal: `runProbe` exits 3 for a
+  // `ProbeRefusal` thrown from `cells`, before lane 2 ever runs.
   assert.match(
     METAR_CODE,
-    /if\s*\(aim\.reasons\.length\)\s*\{[\s\S]{0,900}?process\.exitCode\s*=\s*3/,
+    /if\s*\(aim\.reasons\.length\)\s*\{[\s\S]{0,900}?throw\s+new\s+ProbeRefusal\(/,
     "a missed aim must be STRUCTURAL",
+  );
+  assert.ok(
+    METAR_CODE.indexOf("if (aim.reasons.length)") <
+      METAR_CODE.indexOf("page.evaluate(RUN_SWEEPS"),
+    "the missed-aim refusal must come before the scored sweeps run",
   );
 });
 
@@ -733,6 +740,9 @@ test("an unparseable consumer is a PARSE_ERROR red, never a silent skip", () => 
 });
 
 test("capture doctrine traverses the shared helper and every direct probe consumer", () => {
+  // `probe-weather-wcs.mjs` is not a direct consumer any more: it declares
+  // `sweepDescriptor("wcs")` over `probe-weather-edr-mock.mjs`'s page lane, so
+  // every capture it takes flows through the edr-mock source this list covers.
   assert.deepEqual(CAPTURE_CONSUMER_PATHS, [
     "Tools/visual-regression/probe-cloud-shadows-flagon.mjs",
     "Tools/visual-regression/probe-cloud-shadows-polar.mjs",
@@ -742,9 +752,25 @@ test("capture doctrine traverses the shared helper and every direct probe consum
     "Tools/visual-regression/probe-weather-ingest.mjs",
     "Tools/visual-regression/probe-weather-metar.mjs",
     "Tools/visual-regression/probe-weather-seam-poles.mjs",
-    "Tools/visual-regression/probe-weather-wcs.mjs",
   ]);
   assert.deepEqual(weatherCaptureDoctrineFailures(), []);
+});
+
+test("the WCS leg is a declaration over the edr-mock lane, not a second copy", () => {
+  const wcs = stripComments(
+    readNormalized("Tools/visual-regression/probe-weather-wcs.mjs"),
+  );
+  assert.match(wcs, /from\s+"\.\/probe-weather-edr-mock\.mjs"/);
+  assert.match(wcs, /sweepDescriptor\("wcs"\)/);
+  // A page lane of its own would put captures outside the census above.
+  assert.ok(
+    !/page\.evaluate\(/.test(wcs),
+    "the WCS leg grew its own page lane",
+  );
+  assert.ok(
+    !/weather-probe-pinning\.mjs/.test(wcs),
+    "the WCS leg imports the pinning module directly again",
+  );
 });
 
 test("capture installer emits one parseable canonical init script and fails closed without it", async () => {
@@ -2016,13 +2042,14 @@ test("collectPinStructural — the P10 clause is REACHED, not merely exported", 
 test("every pinned weather probe hands its readiness to the enforcement layer", () => {
   // The lib can only enforce what the probes pass it. This is the anchor that
   // stops a future probe from printing `readiness` and gating nothing again.
+  // The WCS leg is scored by edr-mock's `scoreCoverageSweep`, so the edr-mock
+  // entry covers it (see the declaration test above).
   for (const name of [
     "channels",
     "edr-mock",
     "ingest",
     "metar",
     "seam-poles",
-    "wcs",
   ]) {
     const source = stripComments(
       readNormalized(`Tools/visual-regression/probe-weather-${name}.mjs`),

@@ -1,0 +1,27 @@
+// Weather rig "weather-inspector-ovc-st" (probe-kit harvest, weather family).
+//
+// @purpose The Weather Inspector demo after its overcast preset, as the inspector probe captures it.
+// @status ACTIVE
+
+export default Object.freeze({
+  id: "weather-inspector-ovc-st",
+  tags: ["weather"],
+  page: null,
+  renderers: ["webgpu"],
+  description:
+    "Weather Inspector gallery demo after its OVC stratus preset button. No page is declared: the demo boots standalone only through the gallery stub its probe installs, which the capture seam does not do.",
+  camera: null,
+  clock: null,
+  dials: {
+    demo: "WebGPU Weather Inspector",
+    preset: "OVCst",
+  },
+  viewport: {
+    width: 1024,
+    height: 768,
+  },
+  readiness: {
+    kind: "settleMs",
+    ms: 3500,
+  },
+});

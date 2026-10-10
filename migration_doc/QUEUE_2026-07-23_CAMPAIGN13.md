@@ -1460,8 +1460,8 @@ The CPU twin (`weather-field-bounds.spec.mjs`, 31/31) proves the packer's bytes.
 GPU consumes them, so these browser checks remain OPEN and are the row's acceptance:
 
 1. **Regression floor.** Re-run `probe-weather-ingest.mjs`, `probe-weather-edr-mock.mjs`,
-   `probe-weather-wcs.mjs`, `probe-weather-channels.mjs`, `probe-weather-time.mjs`, and
-   `probe-weather-seam-poles.mjs`. All six drive GLOBAL fields and the spec asserts their bytes are
+   `probe-weather-wcs.mjs`, `probe-weather-channels.mjs` and `probe-weather-seam-poles.mjs`, and run `node --test Tools/visual-regression/weather-provider-time-model.spec.mjs` for the time model (that spec replaced
+   `probe-weather-time.mjs`, which the probe-kit harvest moved to `Tools/visual-regression/archive/`; it runs the probe's nine checks in Node, with no browser). All six drive GLOBAL fields and the CPU twin asserts their bytes are
    unchanged, so any red here is a real regression, not a threshold artifact.
 2. **`probe-weather-metar.mjs` — the intended behaviour change.** Its far-field is now the procedural
    map instead of a fabricated clear hole. The clear-station (`-120°`) and cloudy-station (`0°`)

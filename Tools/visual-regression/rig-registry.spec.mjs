@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 134,
+  total: 165,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count is 17
@@ -91,6 +91,10 @@ const REGISTRY_CENSUS = {
     // eleven probes measure. The wave-end `voxel-box-procedural` scene keeps
     // its single `wave-end` tag, so it is counted there and not here.
     voxel: 21,
+    // The weather family's harvest: one rig per banked evidence pose of its
+    // probes (sweep ends, stations, seam and pole views, the regional tail,
+    // the weather-map wide pair, the Inspector demo's presets and controls).
+    weather: 31,
   },
 };
 

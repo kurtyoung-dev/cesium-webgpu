@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1574 |
-| ACTIVE | 1330 |
-| ARCHIVED-CANDIDATE | 24 |
+| Files in census | 1617 |
+| ACTIVE | 1372 |
+| ARCHIVED-CANDIDATE | 25 |
 | INVESTIGATION | 174 |
 | NO @purpose HEADER | 45 |
 | NO @status HEADER | 1 |
-| Classes | probe 678, spec 426, other 252, lib 168, gate-lib 21, bake-tool 13, fixture 9, runner 7 |
+| Classes | probe 678, spec 432, other 283, lib 174, gate-lib 21, bake-tool 13, fixture 9, runner 7 |
 
 ### Tools/ (64)
 
@@ -377,16 +377,16 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | compare-doc-anchors.mjs | lib | NO @purpose HEADER | 2026-09-11 | 3 | — |
 | compare-doc-anchors.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 1 | — |
 | json-duplicate-keys.mjs | lib | ACTIVE | 2026-09-19 | 3 | Reports every key a JSON document repeats within the same object, per object and string-aware, so a manifest whose duplicate `JSON.parse` silently resolves last-key-wins can be refused with the first and the repeating line. |
-| lane-tmp.mjs | lib | ACTIVE | 2026-09-11 | 29 | The one way a spec, probe or tool takes scratch space: a single per-lane root under os.tmpdir() with removal in `finally`, so a throwing or killed run leaves one sweepable root instead of loose mkdtemp sandboxes at the Temp root. |
+| lane-tmp.mjs | lib | ACTIVE | 2026-09-11 | 33 | The one way a spec, probe or tool takes scratch space: a single per-lane root under os.tmpdir() with removal in `finally`, so a throwing or killed run leaves one sweepable root instead of loose mkdtemp sandboxes at the Temp root. |
 | lane-tmp.spec.mjs | spec | ACTIVE | 2026-09-11 | 4 | Behaviour coverage for Tools/lib/lane-tmp.mjs — the directory is created under the lane root, removed on success AND on throw AND on rejection, refused outside tmpdir, and an inert `finally` is caught by the mutant. |
 | npm-override-rules.mjs | lib | ACTIVE | 2026-09-18 | 3 | Decides, from manifest objects alone, which root `overrides` entries npm rejects as conflicting with a direct dependency or as an unresolvable `$` reference. |
-| png-decode.mjs | lib | ACTIVE | 2026-09-13 | 51 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
+| png-decode.mjs | lib | ACTIVE | 2026-09-13 | 56 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
 | png-decode.spec.mjs | spec | ACTIVE | 2026-09-13 | 4 | Round-trip, filter-coverage and error-path coverage for Tools/lib/png-decode.mjs. |
-| png-rgba.mjs | lib | ACTIVE | 2026-09-02 | 20 | CRC32 + PNG chunk + zero-dependency RGBA PNG encoder shared across the probe fleet, replacing near-duplicate hand-rolled copies one consumer at a time. |
+| png-rgba.mjs | lib | ACTIVE | 2026-09-02 | 22 | CRC32 + PNG chunk + zero-dependency RGBA PNG encoder shared across the probe fleet, replacing near-duplicate hand-rolled copies one consumer at a time. |
 | png-rgba.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Golden-byte and CRC32-vector coverage for Tools/lib/png-rgba.mjs. |
 | purpose-header.mjs | lib | ACTIVE | 2026-09-02 | 20 | The one shared @purpose/@status header grammar (parse, locate, byte-exact splice, violations) used by the codemod, the catalog generator and the fleet-contract analyzer. |
 | sharp-runtime-smoke.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 5 | — |
-| webgpu-error-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 195 | Shared Playwright gate catching unscoped WebGPU validation/OOM errors (onuncapturederror) and device loss, plus a console-error listener. |
+| webgpu-error-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 194 | Shared Playwright gate catching unscoped WebGPU validation/OOM errors (onuncapturederror) and device loss, plus a console-error listener. |
 
 ### Tools/moon-albedo-bake/ (4)
 
@@ -443,7 +443,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1073)
+### Tools/visual-regression/ (1078)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -658,6 +658,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | hdr-display-default.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Acceptance for HDR-defaults-on on HDR displays: pins the pure decision function because headless Edge cannot synthesize (dynamic-range: high). |
 | image-diff.spec.mjs | spec | ACTIVE | 2026-09-18 | 2 | Pin diffImages's tolerance/mask/bbox contract and prove the migrated probe-model-ktx2-ibl.mjs caller is output-identical to its pre-migration body. |
 | imagery-layer-callback-values.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that every ImageryLayer property documented as scalar-or-callback resolves identically on both backends, executing the shared leaf over the documented contract and mutating the guard. |
+| import-mutated.spec.mjs | spec | ACTIVE | — | 1 | Pins lib/import-mutated.mjs: a replacement changes what the module does, relative imports still reach the original files, an anchor found zero or two times is refused, a replacement is literal, and a CRLF source matches an LF anchor. |
 | j2-cpu-kernel.mjs | other | ACTIVE | 2026-08-16 | 4 | FP64 secular-J2 orbital propagator mirroring the demo's WGSL kernel; single source of truth for two orbital probes and the WebGL2 cpuKernel leg. |
 | logdepth-zfight-probe-contract.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Browser-free contract pinning probe-logdepth-zfight's deterministic offline scene and retained terrain-depth policy. |
 | lunar-eclipse-earth-shadow.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins the shadow-cone geometry against five published eclipses, proves the WGSL/GLSL/JS coverage law is one function in three languages, and states the appearance properties that reject four wrong implementations. |
@@ -672,9 +673,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | metrics-polar-parity.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Behaviour spec holding the polar channel-sum parity metric to the original in-page diff of probe-polar-diff-all.mjs and to hand-derived boundary fixtures, and proving a size mismatch fails rather than reads as parity. |
 | metrics-polyline.spec.mjs | spec | ACTIVE | 2026-10-09 | 4 | Proves lib/metrics/colour-mask, line-structure, curve-bow and velocity-texels reproduce the polyline probes' pre-harvest pixel arithmetic exactly over seeded frames, and pins each function's behaviour on hand-derived cases. |
 | metrics-structure.spec.mjs | spec | ACTIVE | 2026-09-18 | 4 | Behaviour spec proving connected-component and SSIM metrics see structure a band mean cannot, over hand-derived fixtures. |
-| metrics-voxel-cell-fill.spec.mjs | spec | ACTIVE | — | 1 | Behaviour spec for the voxel per-cell window samplers and fill judgements: hand-derived fixtures plus a differential leg proving they reproduce the retired parity Part B and octree in-page code. |
-| metrics-voxel-footprint.spec.mjs | spec | ACTIVE | — | 2 | Behaviour spec for the voxel footprint metrics: hand-derived fixtures for every function, plus a differential leg proving each reproduces the pre-migration in-page arithmetic on the same frame. |
-| metrics-voxel-pick-coordinate.spec.mjs | spec | ACTIVE | — | 1 | Behaviour spec for the voxel pick-readback decoder: hand-derived sample indices for the probes' own targets, the 255-base byte layout, atlas-slot inversion, and a differential leg against the retired probe copies. |
+| metrics-voxel-cell-fill.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Behaviour spec for the voxel per-cell window samplers and fill judgements: hand-derived fixtures plus a differential leg proving they reproduce the retired parity Part B and octree in-page code. |
+| metrics-voxel-footprint.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Behaviour spec for the voxel footprint metrics: hand-derived fixtures for every function, plus a differential leg proving each reproduces the pre-migration in-page arithmetic on the same frame. |
+| metrics-voxel-pick-coordinate.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Behaviour spec for the voxel pick-readback decoder: hand-derived sample indices for the probes' own targets, the 255-base byte layout, atlas-slot inversion, and a differential leg against the retired probe copies. |
+| metrics-weather.spec.mjs | spec | ACTIVE | — | 2 | Pins lib/metrics bright-fraction, sweep-stats, luma-regions and seam-pole-structure to hand-computed values, to the retired in-page reducers they replace, and bright-fraction to the pin harness's live in-page copy. |
 | model-3d-tile-state-packet.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral tests for Model3DTileStatePacket: immutable packet reuse when broad tileset state is unchanged, refresh on real change. |
 | model-camera-arena.spec.mjs | spec | ACTIVE | 2026-09-18 | 5 | Bundles the real WebGPUModelCameraArena and pins offset alignment, per-frame reset, view isolation, plus call-site routing source checks. |
 | model-device-recovery.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Device/resource-generation recovery contracts for native Models across renderer, pipeline cache, device resources and stub texture sources. |
@@ -898,7 +900,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-cloud-remap.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | V4 mean-preserving erosion remap A/B vs the pre-V4 build: silhouette preserved at coverage 0.40, deck reads solid (fewer holes) at 0.85 |
 | probe-cloud-rte.mjs | probe | ACTIVE | 2026-08-16 | 2 | B445 cloudHighPrecision gate: camera-relative RTE shell path renders essentially identical to the one-part world-space fallback (OFF/ON diff ~0) |
 | probe-cloud-shadow-cascades.mjs | probe | ACTIVE | 2026-08-16 | 1 | Acceptance for the opt-in 3-cascade cloud shadow map: shadows exist, cascade sharpens near, far kept, OFF byte-identical. |
-| probe-cloud-shadows-flagon.mjs | probe | ACTIVE | 2026-08-21 | 5 | Cloud cast-shadow ON/OFF capture over lit terrain, plus a C13-16 U2 CIRRUS acceptance mode with pinned clock/wind. |
+| probe-cloud-shadows-flagon.mjs | probe | ACTIVE | 2026-08-21 | 6 | Cloud cast-shadow ON/OFF capture over lit terrain, plus a C13-16 U2 CIRRUS acceptance mode with pinned clock/wind. |
 | probe-cloud-shadows-parity.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Stash-based A/B proving default-OFF cloud-shadow consumers render byte-identically across the Batch 437 change. |
 | probe-cloud-shadows-polar.mjs | probe | ACTIVE | 2026-08-21 | 9 | C13-06 pixel gate: cloud cast shadows must darken the ground band at 82N; fully pinned (P1-P8+P10) with bracketing control legs. |
 | probe-cloud-special.mjs | probe | ACTIVE | 2026-08-16 | 3 | E3 acceptance: noctilucent/nacreous iridescent tints change the deck, differ from each other, OFF stays byte-identical. |
@@ -976,7 +978,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-depth-plane-pick-matrix.mjs | probe | ACTIVE | 2026-08-16 | 3 | Runs the live WebGPU depth plane across SDR/HDR, MSAA, resize, and device-invalidation rebuild; records dynamic uniform offsets, fails GPU errors. |
 | probe-depthfail-appearance.mjs | probe | ACTIVE | 2026-08-16 | 6 | Color-appearance depthFailAppearance parity: occluded box shades RED via the depth-fail pass; WebGPU red area within 0.6-1.6x of WebGL. |
 | probe-depthfail-material.mjs | probe | ACTIVE | 2026-08-16 | 2 | Material depthFailAppearance parity + cull derivation: a closed depthFail must back-face cull like WebGL (pins the Batch-419 fix). |
-| probe-descriptor-cells-contract.spec.mjs | spec | ACTIVE | 2026-10-09 | 11 | Drives runProbe over the REAL polyline-TAA-velocity descriptor with a stubbed browser and page, walking cells → receipt → verdicts → summary and asserting the shapes the runtime requires, plus the runtime's own cells-must-be-an-array contract. |
+| probe-descriptor-cells-contract.spec.mjs | spec | ACTIVE | 2026-10-09 | 12 | Drives runProbe over the REAL polyline-TAA-velocity descriptor with a stubbed browser and page, walking cells → receipt → verdicts → summary and asserting the shapes the runtime requires, plus the runtime's own cells-must-be-an-array contract. |
 | probe-determinism-check.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Captures one backend N times back-to-back to test whether run-to-run variance contaminated the polar-multi diff metric. |
 | probe-determinism-kit.mjs | probe | ACTIVE | 2026-08-16 | 2 | Acceptance for lib/determinism-kit.mjs: pinned-clock recipe makes globe captures reproducible run-to-run (<0.05%) while the legacy recipe drifts. |
 | probe-device-limits.mjs | probe | ACTIVE | 2026-08-16 | 4 | Dumps adapter-reported vs negotiated GPUDevice limits (e.g. the platform maxBindGroups ceiling) from a fresh browser. |
@@ -1346,32 +1348,31 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-viewer-smoke.mjs | probe | ACTIVE | 2026-08-24 | 2 | Guards UX-01: bare viewer is upstream chrome with WebGPU default, ?devUi=true restores the toolbar, ?renderer=webgl selects WebGL, and window.viewer resolves on every variant. |
 | probe-volcloud-toggle.mjs | probe | ACTIVE | 2026-08-16 | 3 | Smoke-tests that clouds.enableVolumetric activates the volumetric raymarcher and echoes the legacy flags, via a gallery-demo viewer shim. |
 | probe-volumetric-clouds.mjs | probe | ACTIVE | 2026-08-16 | 4 | Scout probe: does the WebGPU volumetric cloud raymarcher render cloud pixels at all — bright-pixel count vs WebGL at a cloud-covered view. |
-| probe-voxel-cell-pick.mjs | probe | ACTIVE | 2026-08-16 | 19 | Byte-level cross-backend parity of pickVoxelCoordinate decode: single tile, refined L1 octree, customShader alpha gate, refined L3 (Parts A-D). |
-| probe-voxel-cylinder.mjs | probe | ACTIVE | 2026-08-16 | 7 | Acceptance: WebGPU voxel march intersects a bounded hollow cylinder (not the box proxy) and cylindrical shapeUv cell colors match WebGL. |
-| probe-voxel-ellipsoid.mjs | probe | ACTIVE | 2026-08-16 | 7 | Acceptance: WebGPU voxel march intersects the oblate ellipsoid shell and lon/lat/height shapeUv cell colors match WebGL (IoU + color gates). |
-| probe-voxel-megatexture.mjs | probe | ACTIVE | 2026-08-16 | 10 | Acceptance: real tile data reaches the 3D megatexture; demand-driven descendant streaming; LRU eviction over a capacity-capped atlas. |
-| probe-voxel-octree-l3plus.mjs | probe | ACTIVE | 2026-08-16 | 9 | Acceptance: WebGPU voxel octree traversal reaches level 3 (585-slot atlas, 4-level fixture) with per-ray in-page discriminators at three views. |
-| probe-voxel-octree.mjs | probe | ACTIVE | 2026-08-16 | 11 | Acceptance: voxel octree LOD refinement to level 2 (73-slot atlas) with L1/L2 discriminator families and cone-sampled in-page expectations. |
-| probe-voxel-parity.mjs | probe | ACTIVE | 2026-08-21 | 10 | Acceptance: the WebGPU voxel box renders at the correct world placement/extent (footprint IoU + color structure vs WebGL), not a flat quad. |
-| probe-voxel-pick-logdepth.mjs | probe | ACTIVE | 2026-08-16 | 5 | Acceptance: voxel pick with the log-depth gate forced ON — same cell picked, [ld] pipelines bound, occlusion proves frag_depth is written. |
-| probe-voxel-pick.mjs | probe | ACTIVE | 2026-08-16 | 14 | Acceptance: public Scene.pickVoxel end-to-end on both backends — VoxelCell returned without throw, identical color/tile/sample cross-backend. |
-| probe-voxel-refined-pick.mjs | probe | ACTIVE | 2026-08-16 | 6 | Acceptance: Scene.pickVoxel on a refined octree tile — retained child content yields a full VoxelCell with identity-encoded color parity. |
-| probe-voxel-user-customshader.mjs | probe | ACTIVE | 2026-08-16 | 7 | Acceptance: user voxel customShader — GLSL (WebGL) vs native-WGSL codegen (WebGPU) render the same blue-red ramp; pipeline-name gate. |
+| probe-voxel-cell-pick.mjs | probe | ACTIVE | 2026-10-09 | 19 | Byte-level cross-backend parity of pickVoxelCoordinate decode: single tile, refined L1 octree, customShader alpha gate, refined L3 (Parts A-D). |
+| probe-voxel-cylinder.mjs | probe | ACTIVE | 2026-10-09 | 7 | Acceptance: WebGPU voxel march intersects a bounded hollow cylinder (not the box proxy) and cylindrical shapeUv cell colors match WebGL. |
+| probe-voxel-ellipsoid.mjs | probe | ACTIVE | 2026-10-09 | 7 | Acceptance: WebGPU voxel march intersects the oblate ellipsoid shell and lon/lat/height shapeUv cell colors match WebGL (IoU + color gates). |
+| probe-voxel-megatexture.mjs | probe | ACTIVE | 2026-10-09 | 10 | Acceptance: real tile data reaches the 3D megatexture; demand-driven descendant streaming; LRU eviction over a capacity-capped atlas. |
+| probe-voxel-octree-l3plus.mjs | probe | ACTIVE | 2026-10-09 | 9 | Acceptance: WebGPU voxel octree traversal reaches level 3 (585-slot atlas, 4-level fixture) with per-ray in-page discriminators at three views. |
+| probe-voxel-octree.mjs | probe | ACTIVE | 2026-10-09 | 11 | Acceptance: voxel octree LOD refinement to level 2 (73-slot atlas) with L1/L2 discriminator families and cone-sampled in-page expectations. |
+| probe-voxel-parity.mjs | probe | ACTIVE | 2026-10-09 | 10 | Acceptance: the WebGPU voxel box renders at the correct world placement/extent (footprint IoU + color structure vs WebGL), not a flat quad. |
+| probe-voxel-pick-logdepth.mjs | probe | ACTIVE | 2026-10-09 | 5 | Acceptance: voxel pick with the log-depth gate forced ON — same cell picked, [ld] pipelines bound, occlusion proves frag_depth is written. |
+| probe-voxel-pick.mjs | probe | ACTIVE | 2026-10-09 | 14 | Acceptance: public Scene.pickVoxel end-to-end on both backends — VoxelCell returned without throw, identical color/tile/sample cross-backend. |
+| probe-voxel-refined-pick.mjs | probe | ACTIVE | 2026-10-09 | 6 | Acceptance: Scene.pickVoxel on a refined octree tile — retained child content yields a full VoxelCell with identity-encoded color parity. |
+| probe-voxel-user-customshader.mjs | probe | ACTIVE | 2026-10-09 | 7 | Acceptance: user voxel customShader — GLSL (WebGL) vs native-WGSL codegen (WebGPU) render the same blue-red ramp; pipeline-name gate. |
 | probe-vr2-polylines-3dtiles.mjs | probe | ACTIVE | 2026-08-16 | 5 | Repro: clampToGround classification polyline on the BIM tileset — quantifies the WebGPU saturated cyan/red shadow-volume panels vs WebGL. |
 | probe-vr2-tile-brightness.mjs | probe | ACTIVE | 2026-08-16 | 4 | Repro: per-tile imagery brightness anomaly at 5 Mm over Lake Superior — max adjacent-block luminance jump WebGPU vs WebGL; PROBE_DARK lane. |
 | probe-wasm-bundle-load.mjs | probe | ACTIVE | 2026-08-16 | 6 | Proves all 7 Wasm*Bridge kernels load and genuinely execute in the emitted bundle (zero wasm 404s, WASM-vs-JS byte identity); --iife mode. |
 | probe-water-mask-coast-aa.mjs | probe | ACTIVE | 2026-08-16 | 4 | Before/after acceptance for the anti-aliased water-mask coastline band on both backends: coast Laplacian energy + changed-pixel locality. |
-| probe-weather-channels.mjs | probe | ACTIVE | 2026-08-21 | 16 | Gate-B leg: raymarcher applies weather-map G/B/A channels, 9-longitude sweep with a richA/richB determinism control bracketing scored swaps. |
-| probe-weather-edr-mock.mjs | probe | ACTIVE | 2026-08-21 | 7 | Gate-B leg: full EDR ingest chain (fetch, CoverageJSON, packer, weatherTex, clouds) end-to-end against the /mock-edr fixture, offline. |
-| probe-weather-ingest.mjs | probe | ACTIVE | 2026-08-21 | 7 | Gate-B leg: ingest MVP — SyntheticWeatherSource through provider/packer to the C2-16 weather map; deck appears at 0.95, clears at 0.0. |
-| probe-weather-inspector.mjs | probe | ACTIVE | 2026-08-16 | 4 | Boots the Weather Inspector Sandcastle demo standalone and drives its real DOM controls: coverage slider + OVC preset change the sky. |
-| probe-weather-map.mjs | probe | ACTIVE | 2026-08-16 | 7 | Keystone C2-16 seam check: cloudWeatherMap ON makes coverage vary spatially across locations (high cell stddev); OFF stays uniform. |
-| probe-weather-metar.mjs | probe | ACTIVE | 2026-08-21 | 9 | Gate-B leg: full-RGBA METAR chain (obs parse, IDW rasterize, packer) against the /mock-metar fixture; spatial + calibrated channel gates. |
-| probe-weather-presets.mjs | probe | ACTIVE | 2026-08-16 | 4 | Sweeps the Weather Inspector's 8 METAR/WMO presets: okta brightness ladder holds (clear > broken > overcast/storm), 0 device errors. |
+| probe-weather-channels.mjs | probe | ACTIVE | 2026-08-21 | 19 | Gate-B leg: raymarcher applies weather-map G/B/A channels, 9-longitude sweep with a richA/richB determinism control bracketing scored swaps. |
+| probe-weather-edr-mock.mjs | probe | ACTIVE | 2026-08-21 | 10 | Gate-B leg: full EDR ingest chain (fetch, CoverageJSON, packer, weatherTex, clouds) end-to-end against the /mock-edr fixture, offline; hosts the coverage-sweep lane the WCS leg declares. |
+| probe-weather-ingest.mjs | probe | ACTIVE | 2026-08-21 | 10 | Gate-B leg: ingest MVP — SyntheticWeatherSource through provider/packer to the C2-16 weather map; deck appears at 0.95, clears at 0.0. |
+| probe-weather-inspector.mjs | probe | ACTIVE | 2026-08-16 | 7 | Boots the Weather Inspector Sandcastle demo standalone and drives its real DOM controls: coverage slider + OVC preset change the sky. |
+| probe-weather-map.mjs | probe | ACTIVE | 2026-08-16 | 11 | Keystone C2-16 seam check: cloudWeatherMap ON makes coverage vary spatially across locations (high cell stddev); OFF stays uniform. |
+| probe-weather-metar.mjs | probe | ACTIVE | 2026-08-21 | 12 | Gate-B leg: full-RGBA METAR chain (obs parse, IDW rasterize, packer) against the /mock-metar fixture; spatial + calibrated channel gates. |
+| probe-weather-presets.mjs | probe | ACTIVE | 2026-08-16 | 7 | Sweeps the Weather Inspector's 8 METAR/WMO presets: okta brightness ladder holds (clear > broken > overcast/storm), 0 device errors. |
 | probe-weather-regional-tails.mjs | probe | ACTIVE | 2026-08-16 | 5 | C13-08: cyclic CoverageJSON crossing +/-180 ingests parser-to-shader on WebGPU; WebGL billboard pixels stay unchanged under the provider. |
-| probe-weather-seam-poles.mjs | probe | ACTIVE | 2026-08-21 | 6 | C13-07 pixel gate: no dateline luminance wall (frame-relative column-step test), bounded polar-cap variance, no NaN cluster; non-vacuity gate. |
-| probe-weather-time.mjs | probe | ACTIVE | 2026-08-16 | 6 | Weather time-model logic probe (no render): slice quantization, version-on-slice-change, historical/projected resolve, LRU scrub-back hit. |
-| probe-weather-wcs.mjs | probe | ACTIVE | 2026-08-21 | 6 | Gate-B leg: OGC API-Coverages ingest via the shared CoverageJSON parser against the /mock-wcs fixture — same pattern gates as the EDR mock. |
+| probe-weather-seam-poles.mjs | probe | ACTIVE | 2026-08-21 | 10 | C13-07 pixel gate: no dateline luminance wall (frame-relative column-step test), bounded polar-cap variance, no NaN cluster; non-vacuity gate. |
+| probe-weather-wcs.mjs | probe | ACTIVE | 2026-08-21 | 9 | Gate-B leg: OGC API-Coverages ingest via the shared CoverageJSON parser against the /mock-wcs fixture — same pattern gates as the EDR mock. |
 | probe-webgpu-allocation-tax.mjs | probe | ACTIVE | 2026-08-16 | 7 | Instruments raw browser WebGPU/WebGL API boundaries to detect a hidden WebGL context in explicit-WebGPU scenes and classify compat allocations. |
 | probe-webgpu-frame-breakdown.mjs | probe | ACTIVE | 2026-08-16 | 7 | C11-169 exact CPU frame-accounting gate: per-frame conservation (total = passes + phases + unattributed) over the shared track; negative lanes. |
 | probe-webgpu-grey.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | Quick diagnostic that opened the split-screen page and captured console errors + debug snapshot chasing the all-grey regression. |
@@ -1477,12 +1478,16 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | visual-evidence-library.spec.mjs | spec | ACTIVE | 2026-09-19 | 5 | node:test coverage of the evidence-library lib + CLI: schemas, archive/verify/catalog/upgrade flows, provenance, usage errors, tmpdir fixtures. |
 | voxel-inside-camera-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Device-free gate for camera-inside voxel proxy rendering: executes real WebGPUVoxelRenderer index helpers via esbuild bundle + structural pins. |
 | voxel-megatexture-reupload-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Mutant gate for the voxel megatexture reupload evidence policy: valid resident/eviction/return evidence passes, each corruption must go red. |
-| voxel-probe-routing.spec.mjs | spec | ACTIVE | — | 2 | Drives the eleven migrated voxel probes through runProbe against a stub browser, so each is known to take its origin from the runtime, open every page in one order (error gate installed, viewer and loading indicator waited for with a real timeout, widget chrome stripped, device armed) before any capture, capture only the widget canvas under its banked frame names, reach a receipt with every clause green on a passing fixture, carry exit 1 on a failing one, refuse a run missing a backend it measures or a page with anything left over the canvas, count every injected console, page and gate error in its error clauses, and fail closed on corner or far frames that cannot be compared. |
+| voxel-probe-routing.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Drives the eleven migrated voxel probes through runProbe against a stub browser, so each is known to take its origin from the runtime, open every page in one order (error gate installed, viewer and loading indicator waited for with a real timeout, widget chrome stripped, device armed) before any capture, capture only the widget canvas under its banked frame names, reach a receipt with every clause green on a passing fixture, carry exit 1 on a failing one, refuse a run missing a backend it measures or a page with anything left over the canvas, count every injected console, page and gate error in its error clauses, and fail closed on corner or far frames that cannot be compared. |
 | weather-field-bounds.spec.mjs | spec | ACTIVE | 2026-09-19 | 11 | WeatherField contract: grid registration, regional bounds honoured incl. antimeridian, no-data semantics, global path byte-identical to legacy. |
 | weather-map-seam.spec.mjs | spec | ACTIVE | 2026-09-19 | 14 | Pins the one equirect weather-map convention shared by CPU producers and, textually, the WGSL/sampler half: seam filters, UV mapping, bounds pack. |
-| weather-probe-headroom.spec.mjs | spec | ACTIVE | 2026-08-21 | 6 | Guard Gate-B headroom/determinism repairs plus canonical immutable capture across the shared weather pinning helper and every direct consumer. |
+| weather-probe-demo-descriptors.spec.mjs | spec | ACTIVE | — | 1 | Drives the map, Weather Inspector preset and Weather Inspector control probes' runtime descriptors through the real runProbe with a stub browser whose canvas captures are fixture PNGs, asserting exit codes, verdict ids, that the Node-side metrics read the captured bytes, that the map probe strips the viewer chrome before its first capture, and that every scored gate of the three fails on a fixture of its own. |
+| weather-probe-descriptors.spec.mjs | spec | ACTIVE | — | 4 | Drives each migrated probe-weather descriptor through the real runProbe with a stub browser whose page answers the probe's own page lanes with fixture results, asserting exit 0 / 1 / 3, the verdict ids, the evidence files and the refusal record. |
+| weather-probe-gates.spec.mjs | spec | ACTIVE | — | 3 | Drives the channels, coverage-sweep (edr-mock), ingest, metar and seam-poles descriptors through the real runProbe with one healthy lane answer and one perturbed answer per scored gate, asserting exit 1 and the exact set of failing gates, so a gate whose pass flag were stuck at true is a red test. |
+| weather-probe-headroom.spec.mjs | spec | ACTIVE | 2026-08-21 | 7 | Guard Gate-B headroom/determinism repairs plus canonical immutable capture across the shared weather pinning helper and every direct consumer. |
 | weather-provider-cache.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 2 | — |
-| weather-regional-tails.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Contract for the rendered-tail browser probe: cyclic CoverageJSON parse, fused capture, policy rejecting duplicated antimeridian band. |
+| weather-provider-time-model.spec.mjs | spec | ACTIVE | — | 9 | Promoted from the retired browser probe probe-weather-time.mjs: drives the real WeatherProvider and SyntheticWeatherSource("drift") through live, historical, projected and legacy modes and asserts the packed bytes and the version counter. |
+| weather-regional-tails.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Contract for the rendered-tail browser probe: cyclic CoverageJSON parse, fused capture, policy rejecting duplicated antimeridian band. |
 | webgl-snap-multifrustum.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Source pins for WebGL Scene.snap occluders in DerivedCommand/Scene/SceneRenderer: depth-only reuse, zero color write, blending off, depthMask. |
 | webgl-vs-webgpu-pixel-check.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Test-infra sanity check from the canvas-black-screen investigation: do non-black pixels reach toDataURL on each backend at all? |
 | webgpu-ao-lengthcap-units.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Executes the WebGPU HBAO march radius and distance falloff straight out of both shipped WGSL variants, pinning that lengthCap is eye-space metres in the march as well as in the falloff and that both texts still validate under Naga. |
@@ -1521,7 +1526,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | wgsl-window-coordinates.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Runs csm_eyeToWindowCoordinates, csm_modelToWindowCoordinates and csm_metersPerPixel through the WGSL evaluator and asserts their outputs against a CPU port of the GLSL twins, in WebGPU's NDC convention, for perspective, 2D orthographic and Columbus-View orthographic frustums. |
 | widgets-teardown-contract.spec.mjs | spec | ACTIVE | 2026-09-18 | 3 | Pins that the three inspector mixins remove and destroy the panel they append to the caller's container, that FullscreenButtonViewModel unsubscribes from the document it subscribed to, that Geocoder removes every listener its constructor added, and that Animation removes the <style> node it inserted. |
 
-### Tools/visual-regression/archive/ (40)
+### Tools/visual-regression/archive/ (41)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1552,6 +1557,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-polar-wireframe.mjs | probe | ARCHIVED-CANDIDATE | 2026-10-09 | 4 | Diagnostic: rendered polar tiles as wireframe to split UV/sampling bugs (mesh present, imagery black) from mesh-construction/culling bugs — *probe-polar-multi-plain.mjs --rigs polar-wireframe-southpole-close,polar-wireframe-northpole-close · Archived by the probe-kit harvest (R-2026-09-17-11). Conclusion banked: WEBGPU_DEBUGGING_LOG.md Batch 61; WEBGPU_DEBUGGING_LOG.md "Probe-kit harvest, polar family".* |
 | probe-tonemap.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | Shim-forces WebGPU on the legacy Hello World Sandcastle page and inspects post-process pipeline stage state (tonemap/colorGrading/FXAA). |
 | probe-trace-counts.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | Reads window.__dbgDrawCounts draw counters described as instrumented into WebGPUSceneRenderer.ts + WebGPUDrawCommand.ts. |
+| probe-weather-time.mjs | probe | ARCHIVED-CANDIDATE | — | 8 | Weather time-model logic probe (no render): slice quantization, version-on-slice-change, historical/projected resolve, LRU scrub-back hit. |
 | probe-wgs84-alphadbg.mjs | probe | ARCHIVED-CANDIDATE | 2026-10-09 | 2 | One-off debug: sampled tex.a values after the Batch-56 alpha=1 force in the WebGPU imagery-reprojection fragment shader. |
 | probe-wgs84-atmo.mjs | probe | ARCHIVED-CANDIDATE | 2026-10-09 | 2 | One-off debug harness from the WGS84 reprojection investigation: WGS84 terrain + window debug-flag toggle, 1200 frames, screenshot capture. |
 | probe-wgs84-close-postfix.mjs | probe | ARCHIVED-CANDIDATE | 2026-10-09 | 3 | One-off check that close zoom did not regress after Batch 56's per-fragment ground-atmosphere fix on the WGS84 ellipsoid. |
@@ -1592,7 +1598,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| stub-browser.mjs | fixture | ACTIVE | — | 1 | Stub browser, synthetic frames and per-probe page answers for voxel-probe-routing.spec.mjs: runs each migrated voxel probe's real descriptor through runProbe with every page.evaluate answered by a fixture, delivers injected console, page and gate errors through the listeners the probe attached, answers the kit's widget strip (with an injected leftover on request) and records each page's open-sequence calls and captures in order. |
+| stub-browser.mjs | fixture | ACTIVE | 2026-10-09 | 1 | Stub browser, synthetic frames and per-probe page answers for voxel-probe-routing.spec.mjs: runs each migrated voxel probe's real descriptor through runProbe with every page.evaluate answered by a fixture, delivers injected console, page and gate errors through the listeners the probe attached, answers the kit's widget strip (with an injected leftover on request) and records each page's open-sequence calls and captures in order. |
 
 ### Tools/visual-regression/fixtures/wave-end-contact-sheet/ (1)
 
@@ -1600,7 +1606,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | fixture-receipt-input.mjs | fixture | ACTIVE | 2026-09-19 | 2 | The one fixed `buildReceipt` input shared by the golden-comparison |
 
-### Tools/visual-regression/lib/ (141)
+### Tools/visual-regression/lib/ (143)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1650,7 +1656,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-orbital-ladder-model.mjs | lib | ACTIVE | 2026-09-19 | 12 | O3 aerial-cap fraction, O4 limb step, O6 decade retention and zoom flicker, O7 limb sample spacing — computed from uniforms and pixels, with each bar's basis stated. |
 | cloud-perf-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | One-function pass policy for the fixed-scene cloud perf probe: a requested pair ID must never silently degrade to a single-artifact success. |
 | cloud-photometry.mjs | lib | ACTIVE | 2026-09-18 | 15 | Recover linear pre-Reinhard cloud radiance from an 8-bit capture, mask the sun disc, and refuse where the recovery is not defined. |
-| cloud-probe-harness.mjs | lib | ACTIVE | 2026-09-12 | 44 | Self-contained browser-side helper (addInitScript) configuring defaultCloudCollection.volumetric and verifying every value round-tripped. |
+| cloud-probe-harness.mjs | lib | ACTIVE | 2026-09-12 | 43 | Self-contained browser-side helper (addInitScript) configuring defaultCloudCollection.volumetric and verifying every value round-tripped. |
 | cloud-reconstruction-consume.mjs | lib | ACTIVE | 2026-08-16 | 3 | Browser-free half of the C13-10 acceptance: interleaved A/B schedule builder, null-not-zero pass-timing reads, and the FAIL-outranks-STRUCTURAL fold. |
 | cloud-refresh-skip.mjs | lib | ACTIVE | 2026-08-16 | 6 | Shared enforceable home for the requestRenderMode refresh-skip defect that froze cloud snapshots and made three probe windows lie on one day. |
 | cloud-spectrum.mjs | lib | ACTIVE | 2026-09-18 | 13 | Radially averaged power-spectrum slope fit and area-perimeter fractal |
@@ -1662,8 +1668,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | determinism-kit.mjs | lib | ACTIVE | 2026-10-09 | 22 | Probe determinism kit: pinClock, settleTiles, dampSky, placeCameraAfterTerrain, nRunMedian — neutralises the measured sources of run-to-run drift in visual probes and refuses a camera that did not stay where the rig put it. |
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 19 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 5 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
-| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 33 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
-| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 45 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
+| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 34 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
+| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 46 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | framebuffer-census-steps.mjs | lib | ACTIVE | 2026-10-09 | 4 | The framebuffer census cell table (a named rig plus the census dials applied over it: MSAA, pickPosition, an OIT translucent rectangle, a glTF model with shadows and image-based lighting), the page function that pins a cell's clock through the determinism kit, applies its camera and dials, settles its tiles through the kit and drives its settle frames from the frame its model is ready, the decisions that refuse a cell with no pinned clock and a run that did not finish or whose model never became ready, and the per-cell comparison of two runs' captures with its pre-registered threshold. |
 | globe-camera-track.mjs | lib | ACTIVE | 2026-08-16 | 16 | Shared orbit-to-ground camera route (plain serializable waypoints) used by both the visual parity probe and the performance campaign. |
@@ -1677,6 +1683,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | gsplat-parity-model.mjs | lib | ACTIVE | 2026-08-16 | 4 | Pure dual-mode verdict logic for probe-gsplat-parity: attributable-absence marker, presence flip, blank-canvas parity refusal, exits 0/1/2/3. |
 | gsplat-tower-framing.mjs | lib | ACTIVE | 2026-09-02 | 3 | Derive the camera range that keeps the tower splat anchor and its terrain-reference anchor inside the same frustum from their real geodetic separation, and decide whether a captured tower silhouette clears the pre-registered pixel floor. |
 | image-diff.mjs | lib | ACTIVE | 2026-09-18 | 16 | Pure per-channel RGBA pixel diff (tolerance + optional mask) returning mismatch stats and a paint-ready diff buffer, no I/O and no gate policy. |
+| import-mutated.mjs | lib | ACTIVE | — | 3 | Load a module from its source with exact-once anchor replacements applied and its relative imports resolved to the original files, so a spec can show that the clause it pins goes red when that clause is made unreachable. |
 | label-atlas-growth-steps.mjs | lib | ACTIVE | 2026-10-09 | 3 | The reusable step sequence for a label or billboard cell whose subject is a texture atlas that grows in a later frame: the in-page steps that add each batch on its frame and trace the atlas size every frame, the decision that refuses a run whose atlas did not grow between batches, and the per-half lit-pixel metric the capture is read with. |
 | moon-mip-motion-certification.mjs | lib | ACTIVE | 2026-08-21 | 5 | Finalizer for C12-33-SHIMMER-ENVELOPE-CERTIFICATION: paired motion-shimmer separation, seam review, parity, and explicit non-claim of observed mip/LOD selection. |
 | ocean-datum-model.mjs | lib | ACTIVE | 2026-08-16 | 7 | Pure-math verdict model classifying Cesium World Terrain's ocean-lid datum (ELLIPSOID_ZERO/GEOID/MIXED) for the tides/ocean-dynamics W0 gate. |
@@ -1695,13 +1702,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-edge-slot.mjs | lib | ACTIVE | 2026-09-12 | 15 | Exclusive-create lock file that enforces "one Edge job at a time", with stale/dead-holder reclamation and a release that will not free a slot someone else already took. |
 | probe-fleet-behaviour-allowlist.mjs | lib | ACTIVE | 2026-09-18 | 5 | Dated, shrink-only census of the browser-launching files behaviour selection added to the fleet; the spec fails on any NEW violation, stale row, or growth. |
 | probe-fleet-contract-allowlist.mjs | lib | ACTIVE | 2026-10-09 | 20 | Pinned shrink-only census of pre-contract probes exempt from the fleet authoring contract; the spec fails on any NEW violation or stale row. |
-| probe-fleet-contract.mjs | lib | ACTIVE | 2026-09-18 | 19 | Source-text analyzer enforcing the probe authoring contract (watchdog + finally-close); fails closed when it cannot parse a construct. |
+| probe-fleet-contract.mjs | lib | ACTIVE | 2026-10-09 | 19 | Source-text analyzer enforcing the probe authoring contract (watchdog + finally-close); fails closed when it cannot parse a construct. |
 | probe-lifecycle-diagnostics.mjs | lib | ACTIVE | 2026-09-12 | 4 | Bounded, hostile-value-safe description of a probe failure: what the rejected value was, which lifecycle occurrences contributed, and whether a refusal is hiding inside an aggregate. |
 | probe-lifecycle-run.mjs | lib | ACTIVE | 2026-09-12 | 10 | Derives a probe's orderly deadline from its declared work budget and drives preflight, Edge slot, per-run browser and descriptor cells inside one bounded lifecycle. |
 | probe-lifecycle.mjs | lib | ACTIVE | 2026-09-12 | 9 | Coordinates a probe deadline, tracked browser resources, and the Edge lease so a probe cannot report completion while owned work remains live. |
 | probe-refusal.mjs | lib | ACTIVE | 2026-09-02 | 17 | Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns. |
 | probe-runtime-governance.mjs | lib | ACTIVE | 2026-09-13 | 6 | C13-N01 stage 1 detectors: read whether a probe resolves its origin from a hard-coded fallback and whether it routes through the three governance modules, and census the fleet from those two facts. |
-| probe-runtime.mjs | lib | ACTIVE | 2026-10-09 | 104 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
+| probe-runtime.mjs | lib | ACTIVE | 2026-10-09 | 117 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
 | probe-scene-frames.mjs | lib | ACTIVE | 2026-10-09 | 1 | The probe runtime's frame driver: an in-page function that renders a scene one frame at a time by requesting the next render from every postRender, hands each frame to a step callback, and ends when the step says so, at a frame cap, or at a wall-clock deadline, reporting which; plus the call that installs it in a page under one global so a step module's page function can use it. |
 | probe-work-registry.mjs | lib | ACTIVE | 2026-09-12 | 6 | Tracks every `scope.run` a descriptor starts as an attempt with a settled outcome, so a run cannot be reported complete while work it started is still live, and such work's failure reaches the incident record whenever an incident is written at all; the browser's close is NOT deferred for it — see the header. |
 | prohibited-reader-allowlist.mjs | lib | ACTIVE | 2026-10-09 | 11 | Pin the measured visual-regression sources that still use the prohibited live-canvas reader. |
@@ -1715,7 +1722,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | rig-registry.mjs | lib | ACTIVE | 2026-10-09 | 24 | Load, validate and hash the rig records under rigs/, and regenerate scenes.json byte-identically from the rigs tagged wave-end. |
 | runtime-residency-allowlist.mjs | lib | ACTIVE | 2026-09-03 | 2 | Frozen, shrink-only allowlist of runtime-resident probes still carrying an anti-re-accretion violation, mirroring lib/prohibited-reader-allowlist.mjs's ratchet shape. |
 | runtime-residency-contract.mjs | lib | ACTIVE | 2026-09-03 | 6 | Detects a probe that declares @runtime residency on lib/probe-runtime.mjs yet still hand-rolls one of the four concerns that module already owns. |
-| same-task-capture.mjs | lib | ACTIVE | 2026-08-16 | 57 | Canonical capture primitives that keep render+readback in one task (WebGL clears, WebGPU invalidates after present), plus embed-drift validators. |
+| same-task-capture.mjs | lib | ACTIVE | 2026-08-16 | 58 | Canonical capture primitives that keep render+readback in one task (WebGL clears, WebGPU invalidates after present), plus embed-drift validators. |
 | sandcastle2-origin-rewrite.mjs | lib | ACTIVE | 2026-08-29 | 17 | Reusable Playwright helper for every opener of the built Sandcastle2 app: rewrites the build-time-baked outer/inner origin strings the app's own responses carry, and attaches a persistent per-navigation guard (main frame + bucket/run frame) that throws a named, distinguishable refusal the instant any navigation lands off the requested origin — checked synchronously at every guard call AND automatically at page close, so a caller that never awaits a navigation call is still refused. |
 | sandcastle2-pinned-demos.mjs | lib | ACTIVE | 2026-08-29 | 1 | Derive, comment-aware, which gallery demos construct their Viewer/CesiumWidget with an explicit contextOptions.renderer, and classify HOW (Q-133). |
 | sandcastle2-renderer-gate.mjs | gate-lib | ACTIVE | 2026-08-29 | 15 | Pure helpers for the Sandcastle2 backend sweep: gallery id enumeration, URL construction, and the "the demo really ran the requested renderer" predicate. |
@@ -1725,7 +1732,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | shader-block-interpreter.mjs | lib | ACTIVE | 2026-09-05 | 2 | Parses and evaluates the restricted statement grammar the collection shaders' DISABLE_DEPTH_DISTANCE blocks are written in, so a spec can run the real shader control flow browser-free. |
 | solar-bloom-glow.mjs | lib | ACTIVE | 2026-08-16 | 6 | Forward model of the sun bloom's additive glow-on-disc so differential disc measurements carry the non-cancelling bloom term correctly. |
 | star-contribution-census.mjs | lib | ACTIVE | 2026-08-29 | 3 | One home for the positional star-reachability control: luma planes, the absolute-frame census and the stars-on-minus-off difference census. |
-| strip-viewer-widgets.mjs | lib | NO @purpose HEADER | 2026-09-02 | 34 | — |
+| strip-viewer-widgets.mjs | lib | NO @purpose HEADER | 2026-09-02 | 36 | — |
 | stub-framebuffer-rig.mjs | lib | ACTIVE | 2026-10-09 | 2 | The shared rig for the WebGL-stub framebuffer specs: bundles Renderbuffer.js, Texture.js, MultisampleFramebuffer.js and the shader stubs beside the wired harness, and exports the rig, the texel model and the assertions both specs use. |
 | stub-texture-trace.mjs | lib | ACTIVE | 2026-10-09 | 4 | The reusable runtime instrument for a texture cell: an init script that arms the engine's debug-build stub receipt and counts the WebGPU calls that create, copy, upload, submit and destroy textures; in-page wrappers that count the scene-side texture atlas, Texture and Material calls; and the readers that bring all three back with the live state of a label atlas or a video material. |
 | stub-wired-harness.mjs | lib | ACTIVE | 2026-10-09 | 4 | The shared harness for WebGL-stub texture and framebuffer specs: installs the DOM-class fakes and GPUTextureUsage before any engine module loads, bundles the real stub modules, Framebuffer.js and the context's stub builder with esbuild, and exports a recording fake device with a texel model, a hand-built stub state, the stub as the context builds it, and the label-atlas growth steps those specs drive. |
@@ -1736,20 +1743,22 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | visual-evidence-library.mjs | lib | ACTIVE | 2026-08-16 | 7 | Schema, hashing and integrity-claim machinery for the content-addressed visual-evidence publication/catalog/verification pipeline (v2). |
 | visual-gate-policy.mjs | lib | ACTIVE | 2026-08-16 | 27 | Manifest field requirements, stable stringify/sha256 and PASS/FAIL/NON_CERTIFYING policy shared by capture-and-diff and certification gates. |
 | voxel-megatexture-reupload-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 4 | Browser-free convergence predicate for the voxel megatexture probe: first-corner resident set must republish within bounded return attempts. |
-| voxel-probe-page.mjs | lib | ACTIVE | — | 12 | Open the CesiumViewer page of a voxel rig on one backend through the runtime's origin, with its error-type console messages and page errors collected by the kit's attachPageDiagnostics, the WebGPU error gate armed and the viewer's widget chrome stripped by the kit's strip-viewer-widgets (a page with anything left over the canvas is refused), plus the per-page, per-frame and per-capture budgets the voxel probes derive their lifecycle deadline from. |
-| voxel-shape-parity-verdicts.mjs | lib | ACTIVE | — | 2 | The eight shape-parity clauses (render, bounded, footprint IoU, projected area, user pipeline, interior per-cell colour match, reference colour spread, console errors) probe-voxel-ellipsoid and probe-voxel-cylinder judge their WebGL/WebGPU pair by, over one frame measurement each. |
-| weather-capture-doctrine.mjs | lib | ACTIVE | 2026-08-21 | 7 | Census weather-pin consumers and prove awaited immutable capture, live-canvas exclusion, and same-origin metric/documentary use through aliases and aggregates. |
-| weather-probe-pinning.mjs | lib | ACTIVE | 2026-09-02 | 28 | Shared weather-probe determinism pins, ALL READ BACK from the live scene and the packed cloud uniform buffer, plus the canonical immutable same-frame capture; a pin that did not take is STRUCTURAL, never a product verdict. |
+| voxel-probe-page.mjs | lib | ACTIVE | 2026-10-09 | 12 | Open the CesiumViewer page of a voxel rig on one backend through the runtime's origin, with its error-type console messages and page errors collected by the kit's attachPageDiagnostics, the WebGPU error gate armed and the viewer's widget chrome stripped by the kit's strip-viewer-widgets (a page with anything left over the canvas is refused), plus the per-page, per-frame and per-capture budgets the voxel probes derive their lifecycle deadline from. |
+| voxel-shape-parity-verdicts.mjs | lib | ACTIVE | 2026-10-09 | 2 | The eight shape-parity clauses (render, bounded, footprint IoU, projected area, user pipeline, interior per-cell colour match, reference colour spread, console errors) probe-voxel-ellipsoid and probe-voxel-cylinder judge their WebGL/WebGPU pair by, over one frame measurement each. |
+| weather-capture-doctrine.mjs | lib | ACTIVE | 2026-08-21 | 9 | Census weather-pin consumers and prove awaited immutable capture, live-canvas exclusion, and same-origin metric/documentary use through aliases and aggregates. |
+| weather-lane-fixtures.mjs | lib | ACTIVE | — | 2 | Fixture lane answers (pins, dials, slots, readiness, sweeps and one healthy lane per pinned weather probe) and a stub Playwright browser that answers each probe's page calls with them, so the runtime descriptors run end to end under node --test. |
+| weather-probe-pinning.mjs | lib | ACTIVE | 2026-09-02 | 30 | Shared weather-probe determinism pins, ALL READ BACK from the live scene and the packed cloud uniform buffer, plus the canonical immutable same-frame capture; a pin that did not take is STRUCTURAL, never a product verdict. |
 | weather-regional-tail-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Fixture and pass/fail policy for the C13-08 rendered antimeridian weather-tail probe, mutation-tested against its two target regressions. |
 | webgpu-model-preparation-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Accumulates and validates WebGPU model preparation/demand counters as measurement-window evidence for performance workloads. |
 | wgsl-derivative-uniformity.mjs | lib | ACTIVE | 2026-09-01 | 7 | Reports implicit-derivative calls reached through non-uniform control flow without requiring a browser, GPU, or WGSL compiler. |
 | wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 25 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
 | wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 12 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
-### Tools/visual-regression/lib/metrics/ (26)
+### Tools/visual-regression/lib/metrics/ (30)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
+| bright-fraction.mjs | lib | ACTIVE | — | 4 | The weather fleet's shared bright-pixel reducer over decoded RGBA: the fraction of a strided central window whose max(r,g,b) clears a threshold, with the continuous meanMax beside it. |
 | c11-component-shape.mjs | lib | ACTIVE | 2026-10-09 | 5 | Pure achromatic (grey-subject) mask over a decoded RGB/RGBA frame and the count, size balance, coverage, aspect and elongation of its significant 8-connected components, labelled by metrics/connected-components.mjs. |
 | c11-footprint.mjs | lib | ACTIVE | 2026-10-09 | 4 | Pure non-black footprint statistics over a decoded RGB/RGBA frame (count, fraction, interior and centre-patch counts, bounding box, mean colour, green dominance, mask) and the IoU / ratio / mean-colour comparison of two such footprints. |
 | c11-frame-difference.mjs | lib | ACTIVE | 2026-10-09 | 4 | Pure two-frame difference over decoded RGB/RGBA byte frames: changed-pixel count (any channel delta at or above a bar, counted by lib/image-diff.mjs diffImages) and mean absolute channel delta; a size or channel mismatch throws, or returns comparable:false to a caller that opts in. |
@@ -1760,7 +1769,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | connected-components.mjs | lib | ACTIVE | 2026-09-18 | 7 | Label 4- or 8-connected foreground regions in a field and report per-component area, bbox, centroid and intensity, so structure survives where a band mean cannot see it. |
 | curve-bow.mjs | lib | ACTIVE | 2026-10-09 | 3 | Measure a near-horizontal rendered curve in one colour class against a straight reference in another: the curve's largest perpendicular departure from the line through its own endpoints, and its largest vertical separation from the reference, column by column. |
 | line-structure.mjs | lib | ACTIVE | 2026-10-09 | 4 | Structure metrics for a rendered line in one colour class of a decoded RGBA frame: colored runs per row (dash vs solid), the full width at half maximum of the row-intensity profile (glow taper), per-column heights, an arrow head's fill against its bounding box, and whether an outline brackets its core. |
-| luminance.mjs | lib | ACTIVE | 2026-09-18 | 5 | Rec. 709 luminance, the march's Reinhard operator in both directions, and the display-space mean the photometric rule exists to forbid. |
+| luma-regions.mjs | lib | ACTIVE | — | 5 | Rec. 601 luma over a fractional region of decoded RGBA — mean luma, the whitish-cloud share and the blue-sky share — plus the whole-frame mean \|dLuma\| between two same-sized frames, as the Weather Inspector demo probes score them. |
+| luminance.mjs | lib | ACTIVE | 2026-09-18 | 6 | Rec. 709 luminance, the march's Reinhard operator in both directions, and the display-space mean the photometric rule exists to forbid. |
 | masks.mjs | lib | ACTIVE | 2026-09-18 | 13 | Region-of-interest geometry for photometric statistics: the circular sun-disc mask every ROI must exclude, and a rectangle clamped to the image. |
 | polar-parity.mjs | lib | ACTIVE | 2026-10-09 | 12 | Pure RGBA WebGL-vs-WebGPU parity over a per-pixel channel-sum delta and an inset region (mismatch percent, mean summed delta, brightness ratio), under the two named rules the polar baselines were banked with. |
 | radial-banding-family-centre.mjs | lib | ACTIVE | 2026-09-26 | 2 | Pixel half of the ring-family estimator: gathers a frame's pixels about the stated disc centre, bins them radially (whole and per octant of azimuth) about any candidate centre, finds a family's own centre by band-passed amplitude, says when that centre ran into the edge of the search, and removes a fitted family from the pixels so the next family can be looked for. |
@@ -1769,15 +1779,17 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | radial-banding.mjs | lib | ACTIVE | 2026-09-26 | 9 | Concentric-banding statistics over a disc capture — onset ladder in ln(eye-axis depth) and in cos(incidence), duty cycle per annulus, and the presence/darkness terms a banding number must be read beside. |
 | region-means.mjs | lib | ACTIVE | 2026-09-18 | 4 | Whole-image means over a cloud mask: captured alpha with its coverage fraction, and the fraction of cloud pixels whose colour has collapsed onto the aerial tint. |
 | saturation.mjs | lib | ACTIVE | 2026-09-18 | 3 | Per-ROI photometric statistics in linear pre-Reinhard radiance, with saturated and sun-disc pixels excluded and counted, plus the ratio the bars are made of. |
+| seam-pole-structure.mjs | lib | ACTIVE | — | 3 | Frame-relative seam statistics: the centre adjacent-column step against the frame's own step distribution, the two halves' brightness balance, the azimuthal spread of sector means and the hottest centre pixel against the ring. |
 | spectral-slope.mjs | lib | ACTIVE | 2026-09-18 | 6 | Radially averaged power-spectrum slope fit and area-perimeter fractal dimension for scalar fields, with a seeded synthetic fBm generator for validating them against a known answer. |
 | structure-similarity.mjs | lib | ACTIVE | 2026-09-18 | 3 | Compute windowed SSIM between two scalar fields (and an RGBA-reducing wrapper) so structural change is measurable where a mean or a band mean is blind to it. |
+| sweep-stats.mjs | lib | ACTIVE | — | 5 | Population mean, standard deviation and range of a sweep of per-location metric values, and the summed absolute per-location difference of two sweeps, rounded exactly as the weather gates score them. |
 | velocity-texels.mjs | lib | ACTIVE | 2026-10-09 | 2 | Decode IEEE-754 binary16 velocity texels read back from an rg16float motion-vector target and count those whose magnitude clears a stated noise floor, over the whole target or inside one screen rectangle. |
-| voxel-cell-fill.mjs | lib | ACTIVE | — | 4 | Voxel-family per-target metrics over decoded RGBA: the mean or luminance-median colour of a small window around a projected cell, and the fill-layout judgement (filled, empty or skipped per cell, per octree level) the voxel parity and octree probes gate on. |
-| voxel-footprint.mjs | lib | ACTIVE | — | 9 | Voxel-family frame metrics over decoded RGBA: region colour statistics, the coarse footprint grid with its per-cell colours, mask IoU, the interior per-cell colour match, a cropped frame-pair difference and a centre-crop mean channel difference. |
-| voxel-pick-coordinate.mjs | lib | ACTIVE | — | 6 | Decode a voxel pick-coordinate readback (the four RGBA bytes of the pick framebuffer) into tile, sample and Z-up cell, derive the expected sample index of a cell, map WebGPU atlas slots back to octree tiles, and compare picked cell colours. |
+| voxel-cell-fill.mjs | lib | ACTIVE | 2026-10-09 | 4 | Voxel-family per-target metrics over decoded RGBA: the mean or luminance-median colour of a small window around a projected cell, and the fill-layout judgement (filled, empty or skipped per cell, per octree level) the voxel parity and octree probes gate on. |
+| voxel-footprint.mjs | lib | ACTIVE | 2026-10-09 | 9 | Voxel-family frame metrics over decoded RGBA: region colour statistics, the coarse footprint grid with its per-cell colours, mask IoU, the interior per-cell colour match, a cropped frame-pair difference and a centre-crop mean channel difference. |
+| voxel-pick-coordinate.mjs | lib | ACTIVE | 2026-10-09 | 6 | Decode a voxel pick-coordinate readback (the four RGBA bytes of the pick framebuffer) into tile, sample and Z-up cell, derive the expected sample index of a cell, map WebGPU atlas slots back to octree tiles, and compare picked cell colours. |
 | wgs84-channel-means.mjs | lib | ACTIVE | 2026-10-09 | 6 | Pure whole-frame per-channel RGB means plus the percentage of pixels whose channel sum exceeds a threshold, over decoded RGBA bytes; the Node-side home of probe-wgs84-quick.mjs's in-page canvas statistics. |
 
-### Tools/visual-regression/rigs/ (134)
+### Tools/visual-regression/rigs/ (165)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1889,27 +1901,58 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | texture-atlas-label-growth.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the label-atlas growth cell: eight glyphs in one frame, twenty-eight more 25 frames later so the glyph atlas must resize and copy the first eight, captured 60 frames after the last batch on both renderers, 1280x720, globe and sky hidden. |
 | tradewind-cumulus-caribbean.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the cloud-tour fixture "tradewind-cumulus-caribbean" (tropical-maritime-tradewind/tradewind-mediocris), generalising lib/cloud-tour-fixtures.mjs's fixture shape. |
 | voxel-box-procedural.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "voxel-box-procedural" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
-| voxel-box3dtiles-megatexture.mjs | other | ACTIVE | — | 1 | Rig record for the VoxelBox3DTiles root-tile upload view, the scene probe-voxel-megatexture PART 1 measures. |
-| voxel-box3dtiles-offaxis.mjs | other | ACTIVE | — | 1 | Rig record for the VoxelBox3DTiles box seen off-axis at 8.5 Earth radii, the scene probe-voxel-parity Part A measures. |
-| voxel-box3dtiles-user-ramp.mjs | other | ACTIVE | — | 1 | Rig record for the VoxelBox3DTiles box under the user blue-to-red scalar ramp, the scene probe-voxel-user-customshader measures. |
-| voxel-cylinder-oblique.mjs | other | ACTIVE | — | 1 | Rig record for the hollow bounded-cylinder voxel seen obliquely, the scene probe-voxel-cylinder measures. |
-| voxel-ellipsoid-oblique.mjs | other | ACTIVE | — | 1 | Rig record for the oblate ellipsoid-shell voxel seen obliquely, the scene probe-voxel-ellipsoid measures. |
-| voxel-octree-l3-close.mjs | other | ACTIVE | — | 1 | Rig record for the three-level octree voxel at 10 Earth radii, the close view probe-voxel-octree measures. |
-| voxel-octree-l3-close2.mjs | other | ACTIVE | — | 1 | Rig record for the three-level octree voxel at 5 Earth radii, the close2 view probe-voxel-octree measures. |
-| voxel-octree-l3-far.mjs | other | ACTIVE | — | 2 | Rig record for the three-level octree voxel at 120 Earth radii, the far view probe-voxel-octree measures. |
-| voxel-octree-l3-lru-corner-a.mjs | other | ACTIVE | — | 1 | Rig record for the capped-atlas octree voxel seen from just outside its +(R,R,R) corner, corner A of probe-voxel-megatexture PART 3. |
-| voxel-octree-l3-lru-corner-b.mjs | other | ACTIVE | — | 1 | Rig record for the capped-atlas octree voxel seen from just outside its -(R,R,R) corner, corner B of probe-voxel-megatexture PART 3. |
-| voxel-octree-l3-streaming-near.mjs | other | ACTIVE | — | 1 | Rig record for the three-level octree voxel streamed in at 10 Earth radii, the near view probe-voxel-megatexture PART 2 measures. |
-| voxel-octree-l4-close.mjs | other | ACTIVE | — | 1 | Rig record for the four-level octree voxel at 6 Earth radii, the close view probe-voxel-octree-l3plus measures. |
-| voxel-octree-l4-close2.mjs | other | ACTIVE | — | 1 | Rig record for the four-level octree voxel at 3.5 Earth radii, the close2 view probe-voxel-octree-l3plus measures. |
-| voxel-octree-l4-far.mjs | other | ACTIVE | — | 1 | Rig record for the four-level octree voxel at 700 Earth radii, the far view probe-voxel-octree-l3plus measures. |
-| voxel-octree-l4-pick-close.mjs | other | ACTIVE | — | 1 | Rig record for the four-level octree voxel at 6 Earth radii with no custom shader, the scene probe-voxel-cell-pick Part D measures. |
-| voxel-staircase-front-inverted.mjs | other | ACTIVE | — | 1 | Rig record for the staircase voxel under the inverted-alpha user shader, the scene probe-voxel-cell-pick Part C measures. |
-| voxel-staircase-front-logdepth.mjs | other | ACTIVE | — | 1 | Rig record for the staircase voxel with the pick log-depth gate forced on and a nearer blocker voxel, the scene probe-voxel-pick-logdepth measures. |
-| voxel-staircase-front.mjs | other | ACTIVE | — | 3 | Rig record for the 2x4x3 staircase voxel seen head-on from +X at 4 Earth radii, the scene the voxel pick probes and parity Part B measure. |
-| voxel-staircase-top.mjs | other | ACTIVE | — | 1 | Rig record for the 2x4x3 staircase voxel seen from +Z at 4 Earth radii, the top view parity Part B measures. |
-| voxel-two-level-close.mjs | other | ACTIVE | — | 1 | Rig record for the two-level thin-diagonal voxel close enough to refine to level 1, the scene probe-voxel-cell-pick Part B measures. |
-| voxel-two-level-identity-close.mjs | other | ACTIVE | — | 1 | Rig record for the two-level voxel whose child colours encode their own octant and cell, the scene probe-voxel-refined-pick measures. |
+| voxel-box3dtiles-megatexture.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the VoxelBox3DTiles root-tile upload view, the scene probe-voxel-megatexture PART 1 measures. |
+| voxel-box3dtiles-offaxis.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the VoxelBox3DTiles box seen off-axis at 8.5 Earth radii, the scene probe-voxel-parity Part A measures. |
+| voxel-box3dtiles-user-ramp.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the VoxelBox3DTiles box under the user blue-to-red scalar ramp, the scene probe-voxel-user-customshader measures. |
+| voxel-cylinder-oblique.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the hollow bounded-cylinder voxel seen obliquely, the scene probe-voxel-cylinder measures. |
+| voxel-ellipsoid-oblique.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the oblate ellipsoid-shell voxel seen obliquely, the scene probe-voxel-ellipsoid measures. |
+| voxel-octree-l3-close.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the three-level octree voxel at 10 Earth radii, the close view probe-voxel-octree measures. |
+| voxel-octree-l3-close2.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the three-level octree voxel at 5 Earth radii, the close2 view probe-voxel-octree measures. |
+| voxel-octree-l3-far.mjs | other | ACTIVE | 2026-10-09 | 2 | Rig record for the three-level octree voxel at 120 Earth radii, the far view probe-voxel-octree measures. |
+| voxel-octree-l3-lru-corner-a.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the capped-atlas octree voxel seen from just outside its +(R,R,R) corner, corner A of probe-voxel-megatexture PART 3. |
+| voxel-octree-l3-lru-corner-b.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the capped-atlas octree voxel seen from just outside its -(R,R,R) corner, corner B of probe-voxel-megatexture PART 3. |
+| voxel-octree-l3-streaming-near.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the three-level octree voxel streamed in at 10 Earth radii, the near view probe-voxel-megatexture PART 2 measures. |
+| voxel-octree-l4-close.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the four-level octree voxel at 6 Earth radii, the close view probe-voxel-octree-l3plus measures. |
+| voxel-octree-l4-close2.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the four-level octree voxel at 3.5 Earth radii, the close2 view probe-voxel-octree-l3plus measures. |
+| voxel-octree-l4-far.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the four-level octree voxel at 700 Earth radii, the far view probe-voxel-octree-l3plus measures. |
+| voxel-octree-l4-pick-close.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the four-level octree voxel at 6 Earth radii with no custom shader, the scene probe-voxel-cell-pick Part D measures. |
+| voxel-staircase-front-inverted.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the staircase voxel under the inverted-alpha user shader, the scene probe-voxel-cell-pick Part C measures. |
+| voxel-staircase-front-logdepth.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the staircase voxel with the pick log-depth gate forced on and a nearer blocker voxel, the scene probe-voxel-pick-logdepth measures. |
+| voxel-staircase-front.mjs | other | ACTIVE | 2026-10-09 | 3 | Rig record for the 2x4x3 staircase voxel seen head-on from +X at 4 Earth radii, the scene the voxel pick probes and parity Part B measure. |
+| voxel-staircase-top.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the 2x4x3 staircase voxel seen from +Z at 4 Earth radii, the top view parity Part B measures. |
+| voxel-two-level-close.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the two-level thin-diagonal voxel close enough to refine to level 1, the scene probe-voxel-cell-pick Part B measures. |
+| voxel-two-level-identity-close.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the two-level voxel whose child colours encode their own octant and cell, the scene probe-voxel-refined-pick measures. |
+| weather-channels-rich-east.mjs | other | ACTIVE | — | 0 | The east end of the channels leg's sweep: 250 km nadir over the rich synthetic weather field, one scored and banked pose. |
+| weather-channels-rich-west.mjs | other | ACTIVE | — | 0 | The west end of the channels leg's sweep: 250 km nadir over the rich synthetic weather field, one scored and banked pose. |
+| weather-edr-mock-east.mjs | other | ACTIVE | — | 0 | The east end of the EDR mock-fixture leg's sweep: 250 km nadir over its committed cloud-cover fixture, served offline. |
+| weather-edr-mock-west.mjs | other | ACTIVE | — | 0 | The west end of the EDR mock-fixture leg's sweep: 250 km nadir over its committed cloud-cover fixture, served offline. |
+| weather-ingest-uniform-hi.mjs | other | ACTIVE | — | 0 | The ingest leg's deck-present pose: 650 m above the plains looking east at 16 degrees, uniform synthetic coverage 0.95. |
+| weather-ingest-uniform-lo.mjs | other | ACTIVE | — | 0 | The ingest leg's deck-cleared pose: 650 m above the plains looking east at 16 degrees, uniform synthetic coverage 0. |
+| weather-inspector-coverage-hi.mjs | other | ACTIVE | — | 0 | The Weather Inspector demo with coverage driven high, as the inspector probe captures it. |
+| weather-inspector-default.mjs | other | ACTIVE | — | 0 | The Weather Inspector demo as it boots, as the inspector probe captures it. |
+| weather-inspector-ovc-st.mjs | other | ACTIVE | — | 0 | The Weather Inspector demo after its overcast preset, as the inspector probe captures it. |
+| weather-map-wide-off.mjs | other | ACTIVE | — | 0 | The weather-map keystone's wide map-off view: 2,600 km nadir over the central United States. |
+| weather-map-wide-on.mjs | other | ACTIVE | — | 0 | The weather-map keystone's wide map-on view: 2,600 km nadir over the central United States. |
+| weather-metar-clear.mjs | other | ACTIVE | — | 0 | The METAR leg's clear-station pose: 250 km nadir over the inverse-distance field rasterised from the committed station fixture. |
+| weather-metar-ovc.mjs | other | ACTIVE | — | 0 | The METAR leg's overcast-station pose: 250 km nadir over the inverse-distance field rasterised from the committed station fixture. |
+| weather-preset-bkn-sc.mjs | other | ACTIVE | — | 0 | The Weather Inspector demo with its BKNsc preset applied, as the preset sweep captures it. |
+| weather-preset-cb-storm.mjs | other | ACTIVE | — | 0 | The Weather Inspector demo with its Cb preset applied, as the preset sweep captures it. |
+| weather-preset-ci.mjs | other | ACTIVE | — | 0 | The Weather Inspector demo with its Ci preset applied, as the preset sweep captures it. |
+| weather-preset-few-cu.mjs | other | ACTIVE | — | 0 | The Weather Inspector demo with its FEWcu preset applied, as the preset sweep captures it. |
+| weather-preset-ns-rain.mjs | other | ACTIVE | — | 0 | The Weather Inspector demo with its Ns preset applied, as the preset sweep captures it. |
+| weather-preset-ovc-st.mjs | other | ACTIVE | — | 0 | The Weather Inspector demo with its OVCst preset applied, as the preset sweep captures it. |
+| weather-preset-sct-cu.mjs | other | ACTIVE | — | 0 | The Weather Inspector demo with its SCTcu preset applied, as the preset sweep captures it. |
+| weather-preset-skc.mjs | other | ACTIVE | — | 0 | The Weather Inspector demo with its SKC preset applied, as the preset sweep captures it. |
+| weather-regional-east.mjs | other | ACTIVE | — | 0 | The regional antimeridian tail's east pose: 250 km nadir over a CoverageJSON field whose longitude axis walks through 180. |
+| weather-regional-far.mjs | other | ACTIVE | — | 0 | The regional antimeridian tail's far pose: 250 km nadir over a CoverageJSON field whose longitude axis walks through 180. |
+| weather-regional-seam.mjs | other | ACTIVE | — | 0 | The regional antimeridian tail's seam pose: 250 km nadir over a CoverageJSON field whose longitude axis walks through 180. |
+| weather-regional-webgl-billboard.mjs | other | ACTIVE | — | 0 | The regional tail's WebGL arm: a five-cloud billboard collection seen from 15 km, with the regional provider packed and attached. |
+| weather-regional-west.mjs | other | ACTIVE | — | 0 | The regional antimeridian tail's west pose: 250 km nadir over a CoverageJSON field whose longitude axis walks through 180. |
+| weather-seam-dateline-eq.mjs | other | ACTIVE | — | 0 | The dateline and pole seam gate's dateline-eq pose: 250 km nadir over the procedural weather map. |
+| weather-seam-npole.mjs | other | ACTIVE | — | 0 | The dateline and pole seam gate's npole pose: 250 km nadir over the procedural weather map. |
+| weather-seam-spole.mjs | other | ACTIVE | — | 0 | The dateline and pole seam gate's spole pose: 250 km nadir over the procedural weather map. |
+| weather-wcs-mock-east.mjs | other | ACTIVE | — | 0 | The east end of the OGC API-Coverages mock-fixture leg's sweep: 250 km nadir over its committed cloud-cover fixture, served offline. |
+| weather-wcs-mock-west.mjs | other | ACTIVE | — | 0 | The west end of the OGC API-Coverages mock-fixture leg's sweep: 250 km nadir over its committed cloud-cover fixture, served offline. |
 | wgs84-close-1mm.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the WGS84-ellipsoid close view on the CesiumViewer page - nadir on 100 W, 40 N from 1,000 km, both renderers, 1280x720, a 360-frame dwell. |
 | wgs84-close.mjs | other | ACTIVE | 2026-09-18 | 0 | Rig record for the wave-end scene "wgs84-close" (scenes.json), the source generateScenesJson() regenerates byte-identically. |
 | wgs84-home-orbit.mjs | other | ACTIVE | 2026-10-09 | 1 | Rig record for the WGS84-ellipsoid default home view on the CesiumViewer page - both renderers, 1280x720, a 1,200-frame dwell, the clock pinned so North America is daylit. |
@@ -1950,9 +1993,9 @@ Every census file whose own header reads `INVESTIGATION` or `ARCHIVED-CANDIDATE`
 
 | Disposition | Files |
 |---|---|
-| Candidates in plan | 198 |
+| Candidates in plan | 199 |
 | ALLOWLIST-EDIT-THEN-MOVE | 33 |
-| ALREADY-ARCHIVED | 48 |
+| ALREADY-ARCHIVED | 49 |
 | MOVE | 1 |
 | REPOINT-FIRST | 116 |
 
@@ -1992,6 +2035,7 @@ Every census file whose own header reads `INVESTIGATION` or `ARCHIVED-CANDIDATE`
 | <a id="ap-tools-visual-regression-archive-probe-polar-wireframe-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-polar-wireframe-mjs) | Tools/visual-regression/archive/probe-polar-wireframe.mjs | ARCHIVED-CANDIDATE | 4 | 0 | no | ALREADY-ARCHIVED |
 | <a id="ap-tools-visual-regression-archive-probe-tonemap-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-tonemap-mjs) | Tools/visual-regression/archive/probe-tonemap.mjs | INVESTIGATION | 3 | 1 | no | ALREADY-ARCHIVED |
 | <a id="ap-tools-visual-regression-archive-probe-trace-counts-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-trace-counts-mjs) | Tools/visual-regression/archive/probe-trace-counts.mjs | INVESTIGATION | 2 | 1 | no | ALREADY-ARCHIVED |
+| <a id="ap-tools-visual-regression-archive-probe-weather-time-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-weather-time-mjs) | Tools/visual-regression/archive/probe-weather-time.mjs | ARCHIVED-CANDIDATE | 7 | 1 | no | ALREADY-ARCHIVED |
 | <a id="ap-tools-visual-regression-archive-probe-wgs84-alphadbg-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-wgs84-alphadbg-mjs) | Tools/visual-regression/archive/probe-wgs84-alphadbg.mjs | ARCHIVED-CANDIDATE | 2 | 0 | no | ALREADY-ARCHIVED |
 | <a id="ap-tools-visual-regression-archive-probe-wgs84-atmo-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-wgs84-atmo-mjs) | Tools/visual-regression/archive/probe-wgs84-atmo.mjs | ARCHIVED-CANDIDATE | 2 | 0 | no | ALREADY-ARCHIVED |
 | <a id="ap-tools-visual-regression-archive-probe-wgs84-close-postfix-mjs"></a>[#](#ap-tools-visual-regression-archive-probe-wgs84-close-postfix-mjs) | Tools/visual-regression/archive/probe-wgs84-close-postfix.mjs | ARCHIVED-CANDIDATE | 3 | 0 | no | ALREADY-ARCHIVED |

@@ -3,6 +3,7 @@
  * Weather Phase 3 — G/B/A weather-channel reads (Batch 424). WebGPU-only.
  * @purpose Gate-B leg: raymarcher applies weather-map G/B/A channels, 9-longitude sweep with a richA/richB determinism control bracketing scored swaps.
  * @status ACTIVE
+ * @runtime lib/probe-runtime.mjs
  *
  * PINNED for determinism under `C13-GATE-B-CHANNELS-PROBE-NONDETERMINISM`.
  *
@@ -203,20 +204,26 @@
  * instead of the threshold count) so the sweep lands mid-scale. Filed under
  * `C13-GATE-B-CHANNELS-METRIC-SATURATION` in DEFERRED_WORK.md.
  *
- * Usage:
- *   node Tools/visual-regression/probe-weather-channels.mjs
- * Env:
- *   PROBE_BASE  default http://localhost:8080
+ * RUNTIME (probe-kit harvest). The browser, the served-build preflight, the
+ * Edge slot, the deadline and the receipt belong to `lib/probe-runtime.mjs`;
+ * this file keeps the page lane, the pins and the gates, and the page lane and
+ * every threshold are byte-for-byte what they were before the migration. Ten
+ * consecutive runs on one build are now one invocation: `--runs 10`.
+ *
+ * Usage (serve the built tree on a governed port first, e.g.
+ * `node server.js --port 8094 --serve-built`):
+ *   node Tools/visual-regression/probe-weather-channels.mjs [--port 8094] [--runs 10]
  * Out:
- *   Tools/visual-regression/output/weather-channels/*.png + manifest.json
- * Exit:
+ *   Tools/visual-regression/output/weather-channels/*.png, plus the runtime's
+ *   weather-channels-report.json / -runtime.json / -summary.md
+ * Exit (the runtime's table):
  *   0 every gate decided and passed | 1 a real product FAIL |
- *   2 watchdog or exception | 3 STRUCTURAL — a pin did not take, a source never
- *     reached the GPU, or the probe could not reproduce its own capture
- *     (acceptance INCOMPLETE, not green, and not red)
+ *   2 harness error or deadline | 3 STRUCTURAL, raised as a refusal — a pin
+ *     did not take, a source never reached the GPU, or the probe could not
+ *     reproduce its own capture (acceptance INCOMPLETE, not green, and not red)
  */
-import { chromium } from "playwright";
 import fs from "node:fs";
+import path from "node:path";
 
 import {
   armWebGPUDevices,
@@ -225,6 +232,13 @@ import {
   errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
 import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
+import { sweepStats } from "./lib/metrics/sweep-stats.mjs";
+import {
+  ProbeRefusal,
+  isEntryPoint,
+  runProbe,
+  sha256,
+} from "./lib/probe-runtime.mjs";
 import {
   collectPinStructural,
   collectRepeatStructural,
@@ -232,12 +246,11 @@ import {
   WEATHER_DETERMINISM_DIALS,
 } from "./lib/weather-probe-pinning.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const OUT = "Tools/visual-regression/output/weather-channels";
-const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`;
+const PAGE = "/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true";
 const VIEW = { width: 1024, height: 768 };
 
-const WATCHDOG_MS = 600_000;
+/** The pre-migration watchdog bound, now the lifecycle's per-run work budget. */
+const WORK_BUDGET_MS = 600_000;
 
 const PIN = {
   // Far-apart longitudes spanning the field west->east at a fixed mid latitude,
@@ -269,17 +282,6 @@ const CONTROL = {
   perLocation: 0.005,
   mean: 0.0025,
 };
-
-function stats(arr) {
-  const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
-  const variance =
-    arr.reduce((a, b) => a + (b - mean) * (b - mean), 0) / arr.length;
-  return {
-    mean: +mean.toFixed(4),
-    stddev: +Math.sqrt(variance).toFixed(4),
-    range: +(Math.max(...arr) - Math.min(...arr)).toFixed(4),
-  };
-}
 
 /**
  * Everything below runs INSIDE the page. `page.evaluate` serializes the function
@@ -468,91 +470,28 @@ function fmt(list) {
   return list.map((v) => v.toFixed(3)).join(", ");
 }
 
-async function run() {
-  fs.mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch({
-    channel: "msedge",
-    headless: true,
-    args: ["--enable-unsafe-webgpu"],
-  });
-  const page = await browser.newPage({ viewport: VIEW });
-  const consoleErrors = attachConsoleErrorGate(page);
-  await page.addInitScript(errorGateInit);
-  await installCloudProbeHarnessOnPage(page);
-  await installWeatherPinHarnessOnPage(page);
-  await page.goto(URL, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(
-    () => !!(window.viewer && window.viewer.scene),
-    null,
-    {
-      timeout: 60000,
-    },
-  );
-  await armWebGPUDevices(page);
-
-  const result = await page.evaluate(RUN_LANE, {
-    ...PIN,
-    determinismDials: WEATHER_DETERMINISM_DIALS,
-  });
-
-  const gate = await collectGateErrors(page);
-  const newErrs = (gate.errors || [])
-    .concat(consoleErrors)
-    .concat(gate.deviceLost ? [gate.deviceLost] : [])
-    .filter(
-      (e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon/i.test(e),
-    );
-  await browser.close();
-
+/**
+ * Score one run from the page lane's own return value. Pure: the result and
+ * the filtered error list go in; the gates, the STRUCTURAL reasons and the
+ * numbers the receipt banks come out. Every threshold is the pre-migration
+ * probe's, and the statistics are `sweepStats` — the same four-decimal
+ * rounding the private `stats()` this replaced applied, which gate 3 reads.
+ *
+ * @param {object} result What `RUN_LANE` returned.
+ * @param {string[]} errors New device / console errors, already filtered.
+ * @returns {{checks: Array<[string, string, boolean]>, structural: string[],
+ *   stats: object, control: object}}
+ */
+export function scoreChannels(result, errors) {
   const { richA, richB, neutral, richOff } = result.sweeps;
   const fracs = (s) => s.captures.map((c) => c.frac);
   const richFr = fracs(richA);
-  const richBFr = fracs(richB);
-  const neutralFr = fracs(neutral);
-  const richOffFr = fracs(richOff);
-
-  const rich = stats(richFr);
-  const richRepeat = stats(richBFr);
-  const neutralStats = stats(neutralFr);
-  const richOffStats = stats(richOffFr);
+  const rich = sweepStats(richFr);
+  const richRepeat = sweepStats(fracs(richB));
+  const neutralStats = sweepStats(fracs(neutral));
+  const richOffStats = sweepStats(fracs(richOff));
   const westFrac = richFr[0];
   const eastFrac = richFr[richFr.length - 1];
-
-  // ── Evidence PNGs (canvas-element bits, captured in the same task as the
-  // render that produced them), at the longitudes that are actually SCORED.
-  const written = [];
-  for (const capture of richA.captures) {
-    if (!capture.png) continue;
-    const name = `weather-channels-rich-lon${capture.lon}.png`;
-    fs.writeFileSync(
-      `${OUT}/${name}`,
-      Buffer.from(capture.png.slice(capture.png.indexOf(",") + 1), "base64"),
-    );
-    written.push(name);
-  }
-
-  console.log(
-    `renderer=${result.pins.rendererType} pins=${JSON.stringify(result.pins)}`,
-  );
-  console.log(`dials ${JSON.stringify(result.dials)}`);
-  console.log(
-    `readiness globe{binned=${result.readiness.globeReady.binnedGlobeCommands} firstMs=${result.readiness.globeReady.firstBinnedMs} elapsedMs=${result.readiness.globeReady.elapsedMs}} procedural{frames=${result.readiness.proceduralReady.waitedFrames} executeCalls=${result.readiness.proceduralReady.executeCalls}}`,
-  );
-  console.log(`applied ${JSON.stringify(result.applied)}`);
-  console.log(`richState ${JSON.stringify(result.richState)}`);
-  console.log(`rich    fr: ${fmt(richFr)} -> ${JSON.stringify(rich)}`);
-  console.log(`richRpt fr: ${fmt(richBFr)} -> ${JSON.stringify(richRepeat)}`);
-  console.log(
-    `neutral fr: ${fmt(neutralFr)} -> ${JSON.stringify(neutralStats)}`,
-  );
-  console.log(
-    `richOff fr: ${fmt(richOffFr)} -> ${JSON.stringify(richOffStats)}`,
-  );
-  console.log(
-    `rich  meanMax: ${richA.captures.map((c) => c.meanMax.toFixed(1)).join(", ")}`,
-  );
-  console.log(`west=${westFrac.toFixed(3)} east=${eastFrac.toFixed(3)}`);
-  console.log(`errs ${newErrs.length}`);
 
   // ── STRUCTURAL preconditions, via the shared enforcement. A pin that did not
   // take means the probe is not measuring the configuration it documents, so it
@@ -607,75 +546,51 @@ async function run() {
     perSample: CONTROL.perLocation,
     mean: CONTROL.mean,
   });
-  console.log(
-    `\n=== DETERMINISM CONTROL (richA vs richB, bracketing neutral + richOff) ===\n` +
-      `  per-location |delta|: ${fmt(control.deltas)}\n` +
-      `  max per-location ${control.maxPerSample.toFixed(4)} (tolerance ${CONTROL.perLocation})\n` +
-      `  rich mean ${rich.mean} vs ${richRepeat.mean}, delta ${control.meanDelta.toFixed(4)} (tolerance ${CONTROL.mean})\n` +
-      `  cloud time uniform (slot 35) drift: ${control.timeDrift.length === 0 ? "none" : JSON.stringify(control.timeDrift)}`,
-  );
   structural.push(...control.reasons);
 
   // ── Scored gates. Thresholds UNCHANGED from the pre-pinning probe.
-  const checks = [
-    [
-      "rich field renders a deck (hasData, version>0)",
-      !!result.richState &&
-        result.richState.hasData === true &&
-        result.richState.version > 0,
+  return {
+    checks: [
+      // A silent WebGL fallback HARD-FAILS rather than reporting STRUCTURAL:
+      // scoring a WebGL frame as a WebGPU pass is a false green, not a blind leg.
+      [
+        "backend-webgpu",
+        `backend is WebGPU (${result.pins.rendererType})`,
+        result.pins.rendererType === "webgpu",
+      ],
+      [
+        "deck",
+        "rich field renders a deck (hasData, version>0)",
+        Boolean(
+          result.richState &&
+          result.richState.hasData === true &&
+          result.richState.version > 0,
+        ),
+      ],
+      [
+        "present",
+        `clouds present across the sweep (rich mean ${rich.mean} > ${ASSERT.minRichMean})`,
+        rich.mean > ASSERT.minRichMean,
+      ],
+      [
+        "spread",
+        `G/B/A drive a per-location spread ABOVE the R-only control (rich stddev ${rich.stddev} >= neutral stddev ${neutralStats.stddev} + ${ASSERT.stddevMargin})`,
+        rich.stddev >= neutralStats.stddev + ASSERT.stddevMargin,
+      ],
+      [
+        "west-east",
+        `west(thin/flat A,G) is lighter than east(dense/tower) (west ${westFrac.toFixed(3)} < east ${eastFrac.toFixed(3)} - ${ASSERT.westEastMargin})`,
+        westFrac < eastFrac - ASSERT.westEastMargin,
+      ],
+      [
+        "gated",
+        `channelStrength=0 collapses the spread toward neutral (richOff stddev ${richOffStats.stddev} closer to neutral ${neutralStats.stddev} than rich ${rich.stddev})`,
+        Math.abs(richOffStats.stddev - neutralStats.stddev) <
+          Math.abs(rich.stddev - neutralStats.stddev),
+      ],
+      ["clean", `no NEW device errors (${errors.length})`, errors.length === 0],
     ],
-    [
-      `clouds present across the sweep (rich mean ${rich.mean} > ${ASSERT.minRichMean})`,
-      rich.mean > ASSERT.minRichMean,
-    ],
-    [
-      `G/B/A drive a per-location spread ABOVE the R-only control (rich stddev ${rich.stddev} >= neutral stddev ${neutralStats.stddev} + ${ASSERT.stddevMargin})`,
-      rich.stddev >= neutralStats.stddev + ASSERT.stddevMargin,
-    ],
-    [
-      `west(thin/flat A,G) is lighter than east(dense/tower) (west ${westFrac.toFixed(3)} < east ${eastFrac.toFixed(3)} - ${ASSERT.westEastMargin})`,
-      westFrac < eastFrac - ASSERT.westEastMargin,
-    ],
-    [
-      `channelStrength=0 collapses the spread toward neutral (richOff stddev ${richOffStats.stddev} closer to neutral ${neutralStats.stddev} than rich ${rich.stddev})`,
-      Math.abs(richOffStats.stddev - neutralStats.stddev) <
-        Math.abs(rich.stddev - neutralStats.stddev),
-    ],
-    [`no NEW device errors (${newErrs.length})`, newErrs.length === 0],
-  ];
-
-  console.log("\n=== ANALYSIS ===");
-  let pass = true;
-  // A silent WebGL fallback HARD-FAILS rather than reporting STRUCTURAL: scoring
-  // a WebGL frame as a WebGPU pass is a false green, not a blind leg.
-  const backendOk = result.pins.rendererType === "webgpu";
-  console.log(
-    `  [${backendOk ? "PASS" : "FAIL"}] backend is WebGPU (${result.pins.rendererType})`,
-  );
-  if (!backendOk) pass = false;
-  for (const [name, ok] of checks) {
-    console.log(`  [${ok ? "PASS" : "FAIL"}] ${name}`);
-    if (!ok) pass = false;
-  }
-  if (newErrs.length) {
-    console.log("  errors:", newErrs.slice(0, 5));
-  }
-  if (written.length) {
-    console.log(`  evidence PNGs: ${written.join(", ")} (in ${OUT})`);
-  }
-
-  const manifest = {
-    generatedAt: new Date().toISOString(),
-    url: URL,
-    pin: PIN,
-    assert: ASSERT,
-    control: {
-      ...CONTROL,
-      maxPerLocation: control.maxPerSample,
-      meanDelta: control.meanDelta,
-      ok: control.reasons.length === 0,
-    },
-    result,
+    structural,
     stats: {
       rich,
       richRepeat,
@@ -684,38 +599,128 @@ async function run() {
       westFrac,
       eastFrac,
     },
-    errors: newErrs,
-    structural,
-    verdict: structural.length ? "STRUCTURAL" : pass ? "GREEN" : "RED",
+    control: {
+      ...CONTROL,
+      deltas: control.deltas,
+      maxPerLocation: control.maxPerSample,
+      meanDelta: control.meanDelta,
+      timeDrift: control.timeDrift,
+      ok: control.reasons.length === 0,
+    },
   };
-  // Strip the base64 PNGs out of the manifest — they are already on disk.
-  for (const s of Object.values(manifest.result.sweeps)) {
-    for (const c of s.captures) delete c.png;
-  }
-  fs.writeFileSync(`${OUT}/manifest.json`, JSON.stringify(manifest, null, 2));
-
-  if (structural.length) {
-    console.log("\n=== STRUCTURAL ===");
-    for (const reason of structural) console.log(`  - ${reason}`);
-    console.log(
-      "\nRESULT: STRUCTURAL — acceptance INCOMPLETE. This probe certifies nothing in this state; the gate verdicts above are printed for diagnosis only.",
-    );
-    process.exitCode = 3;
-    return;
-  }
-  console.log(`\nRESULT: ${pass ? "GREEN" : "RED"}`);
-  process.exitCode = pass ? 0 : 1;
 }
 
-const watchdog = setTimeout(() => {
-  console.error(`STRUCTURAL: probe exceeded ${WATCHDOG_MS} ms`);
-  process.exit(2);
-}, WATCHDOG_MS);
-watchdog.unref?.();
+/** The runtime descriptor: the page lane runs in `cells`, the gates in `verdicts`. */
+export const descriptor = {
+  name: "weather-channels",
+  title:
+    "Weather G/B/A channels leg: the raymarcher applies genus, base and density-bias channels",
+  outputSubdirectory: "weather-channels",
+  receiptEnvelope: "probe-owned",
+  // The viewer page and the page lane both import this one ESM entry; the
+  // Sandcastle2 bucket bundle in the runtime's default list is never loaded.
+  servedArtifacts: ["Build/CesiumUnminified/index.js"],
+  workBudgetMs: () => WORK_BUDGET_MS,
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    if (!options.renderers.includes("webgpu")) {
+      throw new ProbeRefusal(
+        "renderer-unavailable",
+        "volumetric clouds are WebGPU-only, so this leg measured on " +
+          `${options.renderers.join(",")} would score an empty deck`,
+        { renderers: options.renderers },
+      );
+    }
+    const page = await browser.newPage({ viewport: VIEW });
+    const consoleErrors = attachConsoleErrorGate(page);
+    await page.addInitScript(errorGateInit);
+    await installCloudProbeHarnessOnPage(page);
+    await installWeatherPinHarnessOnPage(page);
+    await page.goto(`${origin}${PAGE}`, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(
+      () => !!(window.viewer && window.viewer.scene),
+      null,
+      { timeout: 60000 },
+    );
+    await armWebGPUDevices(page);
 
-run()
-  .catch((error) => {
-    console.error(`STRUCTURAL: ${error?.stack ?? error}`);
-    process.exitCode = 2;
-  })
-  .finally(() => clearTimeout(watchdog));
+    const result = await page.evaluate(RUN_LANE, {
+      ...PIN,
+      determinismDials: WEATHER_DETERMINISM_DIALS,
+    });
+
+    const gate = await collectGateErrors(page);
+    const errors = (gate.errors || [])
+      .concat(consoleErrors)
+      .concat(gate.deviceLost ? [gate.deviceLost] : [])
+      .filter(
+        (e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon/i.test(e),
+      );
+
+    // ── Evidence PNGs (canvas-element bits, captured in the same task as the
+    // render that produced them), at the longitudes that are actually SCORED.
+    const written = [];
+    fs.mkdirSync(outputDirectory, { recursive: true });
+    for (const capture of result.sweeps.richA.captures) {
+      if (!capture.png) continue;
+      const name = `weather-channels-rich-lon${capture.lon}.png`;
+      const bytes = Buffer.from(
+        capture.png.slice(capture.png.indexOf(",") + 1),
+        "base64",
+      );
+      const file = path.join(outputDirectory, name);
+      fs.writeFileSync(file, bytes);
+      captures.push({
+        name,
+        path: file,
+        byteLength: bytes.byteLength,
+        sha256: sha256(bytes),
+      });
+      written.push(name);
+    }
+    // The PNGs are on disk; the receipt keeps the numbers, not the base64.
+    for (const sweep of Object.values(result.sweeps)) {
+      for (const capture of sweep.captures) delete capture.png;
+    }
+
+    const scored = scoreChannels(result, errors);
+    console.log(
+      `weather-channels run ${run}: ${result.pins.rendererType} | ` +
+        `rich ${fmt(result.sweeps.richA.captures.map((c) => c.frac))} -> ${JSON.stringify(scored.stats.rich)} | ` +
+        `neutral ${JSON.stringify(scored.stats.neutral)} | richOff ${JSON.stringify(scored.stats.richOff)} | ` +
+        `control max ${scored.control.maxPerLocation.toFixed(4)} mean ${scored.control.meanDelta.toFixed(4)} | ` +
+        `errs ${errors.length}`,
+    );
+    // STRUCTURAL is a refusal, never a verdict: the runtime exits 3 and banks
+    // the reasons and the numbers in the refusal record, not a receipt.
+    if (scored.structural.length > 0) {
+      throw new ProbeRefusal(
+        "weather-structural",
+        `STRUCTURAL in run ${run}, acceptance INCOMPLETE: ${scored.structural.join(" | ")}`,
+        { run, scored },
+      );
+    }
+    return [{ run, result, errors, written, scored }];
+  },
+  verdicts(cells) {
+    return cells.flatMap((cell) =>
+      cell.scored.checks.map(([id, claim, pass]) => ({
+        id: cells.length > 1 ? `run${cell.run}:${id}` : id,
+        claim,
+        pass,
+      })),
+    );
+  },
+  receipt(cells) {
+    return {
+      page: PAGE,
+      pin: PIN,
+      assert: ASSERT,
+      control: CONTROL,
+      runs: cells,
+    };
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}

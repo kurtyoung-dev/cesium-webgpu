@@ -191,7 +191,6 @@ export const PROHIBITED_READER_ALLOWLIST = Object.freeze({
   "probe-vector-draping.mjs": PROHIBITED_READER_REASON,
   "probe-vertex-lighting.mjs": PROHIBITED_READER_REASON,
   "probe-volumetric-clouds.mjs": PROHIBITED_READER_REASON,
-  "probe-weather-map.mjs": PROHIBITED_READER_REASON,
   "probe-webgpu-tile-popping.mjs": PROHIBITED_READER_REASON,
   "probe-wireframe-verify.mjs": PROHIBITED_READER_REASON,
 });
