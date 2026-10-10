@@ -240,7 +240,27 @@ const READER_TABLE = [
   ],
   [
     "Renderer/WebGPU/WebGPUGlobeSurfaceShaders.ts",
-    "if (globeClipByPlanes(input.v_positionMC)) { discard; }",
+    "@location(4) v_distance: f32,\n",
+    "decides",
+  ],
+  [
+    "Renderer/WebGPU/WebGPUGlobeSurfaceShaders.ts",
+    /(\(\s*input:\s*)VertexOutput\b/g,
+    "decides",
+  ],
+  [
+    "Renderer/WebGPU/WebGPUGlobeSurfaceShaders.ts",
+    /struct VertexOutput \{[\s\S]*?\n\};/,
+    "decides",
+  ],
+  [
+    "Renderer/WebGPU/WebGPUGlobeSurfaceShaders.ts",
+    "struct VertexOutput {",
+    "decides",
+  ],
+  [
+    "Renderer/WebGPU/WebGPUGlobeSurfaceShaders.ts",
+    "if (globeClipByPlanes(input.v_positionEC)) { discard; }",
     "decides",
   ],
   [

@@ -3684,24 +3684,66 @@ fn globeComputeShadowFactor(positionEC: vec3<f32>) -> f32 {
   return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
-fn globeClipByPlanes(positionMC: vec3<f32>) -> bool {
+// Clipping planes, the twin of the `clip()` that `getClippingFunction.js`
+// generates for GlobeFS. The packer uploads every plane already in EYE space
+// (`WebGPUClippingPlaneCollection.ts`), so the position tested must be the
+// eye-space `v_positionEC`, as WebGL tests `czm_windowToEyeCoordinates`.
+// Distance to one packed plane, in metres; dividing by the normal's length is
+// the renormalisation `czm_transformPlane` applies before the dot product.
+fn globeClipPlaneDistance(positionEC: vec3<f32>, plane: vec4<f32>) -> f32 {
+  return (dot(positionEC, plane.xyz) + plane.w) / length(plane.xyz);
+}
+
+// The running (clipAmount, clipped) pair. Union keeps the nearest distance and
+// clips when ANY plane is at or behind it; intersection keeps the farthest,
+// floored at the 0 WebGL starts from, and clips only when EVERY plane does.
+fn globeClipPlanesSeed(isUnion: bool) -> vec2<f32> {
+  return select(vec2<f32>(0.0, 1.0), vec2<f32>(3.0e38, 0.0), isUnion);
+}
+
+fn globeClipPlanesStep(state: vec2<f32>, planeDistance: f32, isUnion: bool) -> vec2<f32> {
+  let clipped = select(0.0, 1.0, planeDistance <= 0.0);
+  if (isUnion) {
+    return vec2<f32>(min(state.x, planeDistance), max(state.y, clipped));
+  }
+  return vec2<f32>(max(state.x, planeDistance), min(state.y, clipped));
+}
+
+fn globeClipPlanesState(positionEC: vec3<f32>) -> vec2<f32> {
   let count = effects.clippingPlaneCount;
-  if (count == 0u) { return false; }
   let isUnion = effects.clippingUnionMode == 1u;
-  let texWidth = f32(count);
-  var clippedCount: u32 = 0u;
+  var state = globeClipPlanesSeed(isUnion);
   for (var i: u32 = 0u; i < count; i++) {
-    let texelU = (f32(i) + 0.5) / texWidth;
+    let texelU = (f32(i) + 0.5) / f32(count);
     let planeData = textureSampleLevel(clippingPlaneTex, clippingPlaneSampler,
                                        vec2<f32>(texelU, 0.5), 0.0);
-    let dist = dot(positionMC, planeData.xyz) + planeData.w;
-    if (dist < 0.0) {
-      clippedCount++;
-      if (isUnion) { return true; }
-    }
+    state = globeClipPlanesStep(state, globeClipPlaneDistance(positionEC, planeData), isUnion);
   }
-  if (!isUnion && clippedCount == count) { return true; }
-  return false;
+  return state;
+}
+
+fn globeClipByPlanes(positionEC: vec3<f32>) -> bool {
+  if (effects.clippingPlaneCount == 0u) { return false; }
+  return globeClipPlanesState(positionEC).y > 0.5;
+}
+
+// `czm_metersPerPixel(positionEC)` without the viewport and frustum uniforms
+// this module does not carry: one pixel's extent on the plane of constant eye
+// depth through the fragment, from the eye-position screen derivatives the
+// caller takes in uniform control flow. Under perspective the step along the
+// view ray is removed (`x/z` is screen-affine, so this is exactly
+// `2 * depth * tan(halfFov) / viewport`); orthographically `x` is screen-affine.
+fn globeClipMetersPerPixel(positionEC: vec3<f32>, positionECDx: vec3<f32>,
+                           positionECDy: vec3<f32>, perspective: bool,
+                           pixelRatio: f32) -> f32 {
+  let rayScale = select(0.0, 1.0 / positionEC.z, perspective);
+  let widthDx = positionECDx.x - positionEC.x * positionECDx.z * rayScale;
+  let widthDy = positionECDy.x - positionEC.x * positionECDy.z * rayScale;
+  let heightDx = positionECDx.y - positionEC.y * positionECDx.z * rayScale;
+  let heightDy = positionECDy.y - positionEC.y * positionECDy.z * rayScale;
+  let pixelWidth = length(vec2<f32>(widthDx, widthDy));
+  let pixelHeight = length(vec2<f32>(heightDx, heightDy));
+  return max(pixelWidth, pixelHeight) * pixelRatio;
 }
 
 // Polygon signed-distance-field clipping, a parity port of
@@ -4095,13 +4137,13 @@ fn makeFragOutput(color: vec4<f32>, normalEC: vec3<f32>) -> FragOutput {
 // needs the pick pass to reach vector-carrying tiles that the globe itself is
 // not answering for.)
 //
-// The cartographic-limit and clipping-plane discards that `fragmentMain`
-// applies are not mirrored here: an unclipped globe picks correctly, and pick
-// over a clipped or limited globe is unimplemented.
+// The clipping-plane discard IS mirrored here, so a surface the planes cut away
+// neither answers a pick nor occludes one, as in WebGL's pick variant. The
+// cartographic-limit and clipping-polygon discards are not mirrored yet.
 //
-// Draped vector polylines DO get their own pick color here, over the globe's,
-// through `vectorPickColorOver` — the twin of the `command.pickId` WebGL sets
-// per vector-carrying tile. That is an addition to the opt-in above rather than
+// Draped vector polygons and polylines DO get their own pick color here, over
+// the globe's, through `vectorPickColorOver` — the twin of the `command.pickId`
+// WebGL sets per vector-carrying tile. That is an addition to the opt-in above rather than
 // a change to it: the vector answers only where a vector is actually draped and
 // carries a pick id, and every other fragment still writes `camera.pickColor`.
 struct PickFragOutput {
@@ -4120,13 +4162,16 @@ fn fragmentPickMain(input: VertexOutput) -> PickFragOutput {
   // path is gated on a storage-buffer read, which is non-uniform by definition.
   let vectorUV_dx = dpdx(input.v_textureCoordinates.xy);
   let vectorUV_dy = dpdy(input.v_textureCoordinates.xy);
-  // Run the drape search for its effect on `vectorPickPrimitiveIndex`; the
+  if (globeClipByPlanes(input.v_positionEC)) { discard; }
+  // Run the drape searches for their effect on `vectorPickPrimitiveIndex`; the
   // composited color is discarded. This is not an extra pass bolted onto pick —
   // it is what WebGL already does, where the pick variant of the globe shader
   // runs the WHOLE color fragment shader (`czm_non_pick_main`) and then
   // evaluates `command.pickId`, which is how the GLSL global this reads gets
-  // set over there too. A tile with nothing draped early-outs on the
-  // placeholder buffer's zero `gridWidth` after one u32 load.
+  // set over there too. Polygons run first, as in `fragmentMain`, so a line
+  // drawn over a fill answers for itself. A tile with nothing draped early-outs
+  // on the placeholder buffer's zero `gridWidth` after one u32 load.
+  _ = vectorPolygonRender(input.v_textureCoordinates.xy, vec4<f32>(0.0));
   _ = vectorPolylineRender(
     input.v_textureCoordinates.xy,
     vectorUV_dx,
@@ -4573,6 +4618,10 @@ fn vectorCompositePolygonFill(
     return baseColor;
   }
 
+  // The fill the pixel ends up under is what the pick pass answers with, as
+  // `VectorCommon.glsl::vectorCompositePolygonFill` publishes it.
+  vectorPickPrimitiveIndex = primitiveIndex;
+
   let fillColor = vectorPrimitiveRecord(
     primitivesBase,
     u32(primitiveIndex),
@@ -4777,6 +4826,9 @@ fn fragmentMain(
   // `geoUV_dx`/`geoUV_dy` are hoisted.
   let vectorUV_dx = dpdx(input.v_textureCoordinates.xy);
   let vectorUV_dy = dpdy(input.v_textureCoordinates.xy);
+  // Eye-position derivatives for the clipping-plane edge band's pixel metric.
+  let clipPositionEC_dx = dpdx(input.v_positionEC);
+  let clipPositionEC_dy = dpdy(input.v_positionEC);
   // The night layer's magnification fade differentiates the same raw varying,
   // for the same reason: the seam clamp can collapse both lanes of an edge quad
   // onto one value, and a zero footprint reads as unmeasurable and returns the
@@ -5026,24 +5078,7 @@ fn fragmentMain(
   }
 
   // Clipping planes discard.
-  if (globeClipByPlanes(input.v_positionMC)) { discard; }
-
-  // Clipping edge highlight.
-  if (effects.clippingPlaneCount > 0u && effects.clippingEdgeWidth > 0.0) {
-    let clipCount = effects.clippingPlaneCount;
-    let texW = f32(clipCount);
-    var minClipDist: f32 = 1e10;
-    for (var ci: u32 = 0u; ci < clipCount; ci++) {
-      let texelU = (f32(ci) + 0.5) / texW;
-      let planeData = textureSampleLevel(clippingPlaneTex, clippingPlaneSampler,
-                                         vec2<f32>(texelU, 0.5), 0.0);
-      let dist = abs(dot(input.v_positionMC, planeData.xyz) + planeData.w);
-      minClipDist = min(minClipDist, dist);
-    }
-    if (minClipDist < effects.clippingEdgeWidth) {
-      return makeFragOutput(effects.clippingEdgeColor, normalEC);
-    }
-  }
+  if (globeClipByPlanes(input.v_positionEC)) { discard; }
 
   // Polygon SDF clipping, matching czm_clipPolygons.
   // GLOBE-CLIPPOLY-GEODETIC — full atlas-aware port shared with the model
@@ -5061,6 +5096,22 @@ fn fragmentMain(
     if (geoUV.x < clampRect.x || geoUV.x > clampRect.z ||
         geoUV.y < clampRect.y || geoUV.y > clampRect.w) {
       discard;
+    }
+  }
+
+  // Clipping edge highlight, after every discard so a fragment WebGL drops is
+  // never drawn as edge. GlobeFS compares the combined clip amount in PIXELS
+  // (`clip()` divides by `czm_metersPerPixel`) with the edge width in pixels.
+  if (effects.clippingPlaneCount > 0u && effects.clippingEdgeWidth > 0.0) {
+    // The projection w row is (0,0,-1,0) under perspective and (0,0,0,1)
+    // orthographically, so the MVP w row is a unit vector or zero in xyz.
+    let mvp = camera.modifiedModelViewProjection;
+    let clipPerspective = abs(mvp[0].w) + abs(mvp[1].w) + abs(mvp[2].w) > 0.5;
+    let metersPerPixel = globeClipMetersPerPixel(input.v_positionEC,
+      clipPositionEC_dx, clipPositionEC_dy, clipPerspective, camera.pixelRatio);
+    if (globeClipPlanesState(input.v_positionEC).x / metersPerPixel <
+        effects.clippingEdgeWidth) {
+      return makeFragOutput(effects.clippingEdgeColor, normalEC);
     }
   }
 

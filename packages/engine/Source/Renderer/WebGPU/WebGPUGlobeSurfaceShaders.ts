@@ -313,9 +313,11 @@ fn fragmentDebugNormal(input: VertexOutput) -> FragOutput {
  *      `eqHW = (n.xyz, d + dot(n, cameraWC))` in FP64 — see
  *      `WebGPUClipDistancePrecompute.ts`.
  *
- *   3. The fragment-side `globeClipByPlanes(input.v_positionMC)`
- *      discard is neutralized so the rasterizer is the sole authority
- *      for the clipping decision. The edge-highlight code path that
+ *   3. The fragment-side `globeClipByPlanes(input.v_positionEC)`
+ *      discards (colour and pick entry points) are neutralized so the
+ *      rasterizer is the sole authority for the clipping decision, and the
+ *      fragment entry points read a copy of `VertexOutput` without the
+ *      vertex-only builtin. The edge-highlight code path that
  *      reads `clippingPlaneTex` for visualization is left untouched
  *      because it's a color decoration, not a geometric clip.
  *
@@ -409,14 +411,36 @@ export function getClipDistancesShaderModule(
  */
 export function buildClipDistancesShaderSource(source: string): string | null {
   // Anchor 1: VertexOutput struct definition. Inject the builtin
-  // clip-distances output as the last member, right before the closing
-  // brace. Matching the exact existing v_distance line keeps the patch from
-  // drifting onto an unrelated struct.
-  const vertexOutputAnchor = "@location(4) v_distance: f32,\n};";
-  if (!source.includes(vertexOutputAnchor)) {
+  // clip-distances output right after the v_distance member; member order is
+  // free in WGSL. Matching the exact v_distance line keeps the patch from
+  // drifting onto an unrelated struct, and anchoring on the member rather
+  // than on the closing brace survives members added after it (the struct
+  // has grown past v_distance, which left the old `v_distance: f32,\n};`
+  // anchor unmatched and this path silently disabled).
+  const vertexOutputAnchor = "@location(4) v_distance: f32,\n";
+  const vertexOutputStruct = source.match(
+    /struct VertexOutput \{[\s\S]*?\n\};/,
+  );
+  if (
+    vertexOutputStruct === null ||
+    !vertexOutputStruct[0].includes(vertexOutputAnchor)
+  ) {
     return null;
   }
-  let out = source.replace(
+  // `clip_distances` is a vertex-output-only builtin, so a fragment entry
+  // point whose input struct carries it fails validation and takes the whole
+  // module with it. The fragment entry points therefore read the same
+  // varyings through a copy of the struct without the builtin; the locations
+  // are identical, so the two stages still link. Only the fragment entry
+  // points take an `input: VertexOutput` parameter (the vertex entry points
+  // take `VertexInput`), and matching the parameter rather than the
+  // `@fragment` attribute keeps a comment between attribute and `fn` from
+  // hiding one.
+  const fragmentInputStruct = vertexOutputStruct[0].replace(
+    "struct VertexOutput {",
+    "struct GlobeFragmentInput {",
+  );
+  const augmentedStruct = vertexOutputStruct[0].replace(
     vertexOutputAnchor,
     "@location(4) v_distance: f32,\n" +
       "  // WGF-1: hardware clip distances. The 8 entries hold the\n" +
@@ -424,9 +448,23 @@ export function buildClipDistancesShaderSource(source: string): string | null {
       "  // each clipping plane; the rasterizer clips fragments where\n" +
       "  // any value is < 0. Slots beyond the active plane count are\n" +
       "  // computed against `(0,0,0,+inf)` and trivially survive.\n" +
-      "  @builtin(clip_distances) clipDistances: array<f32, 8>,\n" +
-      "};",
+      "  @builtin(clip_distances) clipDistances: array<f32, 8>,\n",
   );
+  let out = source.replace(
+    vertexOutputStruct[0],
+    () => `${augmentedStruct}\n\n${fragmentInputStruct}`,
+  );
+  let fragmentInputsRewritten = 0;
+  out = out.replace(
+    /(\(\s*input:\s*)VertexOutput\b/g,
+    (_match: string, head: string) => {
+      fragmentInputsRewritten++;
+      return `${head}GlobeFragmentInput`;
+    },
+  );
+  if (fragmentInputsRewritten === 0) {
+    return null;
+  }
 
   // Anchor 2: end of processVertex (right after the far-plane Z clamp).
   // Compute eyeRelativePos in WC, then write all 8 clip distances. The
@@ -463,16 +501,19 @@ export function buildClipDistancesShaderSource(source: string): string | null {
   // because the rasterizer's clip-distance check is a strict superset — it
   // operates on every interpolated pixel of every clipped triangle. The
   // discard line becomes a comment rather than disappearing so line numbers
-  // in errors stay close to the original.
+  // in errors stay close to the original. Every occurrence is replaced: the
+  // pick entry point clips with the same line and its pipeline is built from
+  // this same module whenever the colour pipeline is.
   const fragmentDiscardAnchor =
-    "if (globeClipByPlanes(input.v_positionMC)) { discard; }";
+    "if (globeClipByPlanes(input.v_positionEC)) { discard; }";
   if (!out.includes(fragmentDiscardAnchor)) {
     return null;
   }
-  out = out.replace(
-    fragmentDiscardAnchor,
-    "// WGF-1: clipping handled by rasterizer via @builtin(clip_distances).",
-  );
+  out = out
+    .split(fragmentDiscardAnchor)
+    .join(
+      "// WGF-1: clipping handled by rasterizer via @builtin(clip_distances).",
+    );
 
   // The clip_distances builtin requires an `enable` directive at the top
   // of the WGSL file (matches the f16 / subgroups pattern). The directive
