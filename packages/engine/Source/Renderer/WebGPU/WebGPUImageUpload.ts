@@ -25,6 +25,8 @@
 
 /// <reference types="@webgpu/types" />
 
+import { recordStubTextureTrace } from "./Stubs/WebGLStubTextureTrace.js";
+
 /**
  * Source types accepted by the upload helpers. Mirrors the union accepted by
  * `GPUQueue.copyExternalImageToTexture()` plus `Blob`/`ArrayBuffer` which need
@@ -38,6 +40,35 @@ export type WebGPUImageSource =
   | HTMLVideoElement
   | VideoFrame
   | Blob;
+
+/**
+ * The frame size of a video-shaped source, or undefined for any other source.
+ *
+ * An `HTMLVideoElement`'s `width`/`height` are its layout attributes, which
+ * read 0 when the page sets none; the decoded frame size is
+ * `videoWidth`/`videoHeight`. WebGL's `Texture` sizes a video upload from
+ * those whenever both are defined, so every WebGPU upload path that can
+ * receive a video asks this first and keeps its own sizing for everything
+ * else.
+ *
+ * @param source Any upload source.
+ * @returns `videoWidth` x `videoHeight` when the source reports both as
+ *   numbers; otherwise undefined.
+ */
+export function intrinsicVideoSize(
+  source: unknown,
+): { width: number; height: number } | undefined {
+  if (source === null || typeof source !== "object") {
+    return undefined;
+  }
+  const { videoWidth, videoHeight } = source as {
+    videoWidth?: unknown;
+    videoHeight?: unknown;
+  };
+  return typeof videoWidth === "number" && typeof videoHeight === "number"
+    ? { width: videoWidth, height: videoHeight }
+    : undefined;
+}
 
 /**
  * Options for the image upload helper.
@@ -187,17 +218,33 @@ export class WebGPUImageUpload {
 
     // Width/height extraction matches the union accepted by
     // copyExternalImageToTexture — every member exposes both fields except
-    // VideoFrame which uses codedWidth/codedHeight.
+    // VideoFrame, which uses codedWidth/codedHeight, and a video element,
+    // whose width/height are layout attributes rather than its frame size.
     let width: number;
     let height: number;
     if (typeof VideoFrame !== "undefined" && decoded instanceof VideoFrame) {
       width = decoded.codedWidth;
       height = decoded.codedHeight;
     } else {
+      const video = intrinsicVideoSize(decoded);
       const w = (decoded as { width?: number; videoWidth?: number }).width;
       const h = (decoded as { height?: number; videoHeight?: number }).height;
-      width = w ?? (decoded as HTMLVideoElement).videoWidth;
-      height = h ?? (decoded as HTMLVideoElement).videoHeight;
+      width = video
+        ? video.width
+        : (w ?? (decoded as HTMLVideoElement).videoWidth);
+      height = video
+        ? video.height
+        : (h ?? (decoded as HTMLVideoElement).videoHeight);
+      //>>includeStart('debug', pragmas.debug);
+      if (video) {
+        recordStubTextureTrace("uploadImageToTexture.video", {
+          width,
+          height,
+          elementWidth: w,
+          elementHeight: h,
+        });
+      }
+      //>>includeEnd('debug');
     }
 
     device.queue.copyExternalImageToTexture(

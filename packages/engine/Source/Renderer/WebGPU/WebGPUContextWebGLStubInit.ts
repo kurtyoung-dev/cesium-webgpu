@@ -103,6 +103,7 @@ export interface WebGLStubInitHost {
     dy: number,
     w: number,
     h: number,
+    encoder?: GPUCommandEncoder,
   ): boolean;
   enqueueTextureMipGeneration(
     texture: GPUTexture,
@@ -364,7 +365,8 @@ export function buildWebGLCompatibilityStubFor(
       dy: number,
       w: number,
       h: number,
-    ) => host.copyTextureRegion(src, dst, sx, sy, dx, dy, w, h),
+      encoder?: GPUCommandEncoder,
+    ) => host.copyTextureRegion(src, dst, sx, sy, dx, dy, w, h, encoder),
     enqueueMipGeneration: (texture, format, mipLevelCount, options) =>
       host.enqueueTextureMipGeneration(texture, format, mipLevelCount, options),
     encodeMipGenerationInCurrentEncoder: (

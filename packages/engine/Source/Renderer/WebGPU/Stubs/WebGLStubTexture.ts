@@ -36,6 +36,12 @@ import type {
   WebGLStubState,
   LogUsageFn,
 } from "./WebGLStubTypes.js";
+import { intrinsicVideoSize } from "../WebGPUImageUpload.js";
+import { copyFramebufferToBoundTexture } from "./WebGLStubFramebufferCopy.js";
+import {
+  describeTraceTexture,
+  recordStubTextureTrace,
+} from "./WebGLStubTextureTrace.js";
 import {
   webglToWebGPUTextureFormat,
   webglFilterToWebGPU,
@@ -883,11 +889,27 @@ export function createTextureStubs(
           videoWidth?: number;
           videoHeight?: number;
         };
-        width = imgSrc.width ?? imgSrc.videoWidth ?? 0;
-        height = imgSrc.height ?? imgSrc.videoHeight ?? 0;
+        const video = intrinsicVideoSize(imgSrc);
+        width = video ? video.width : (imgSrc.width ?? 0);
+        height = video ? video.height : (imgSrc.height ?? 0);
+        //>>includeStart('debug', pragmas.debug);
+        if (video) {
+          recordStubTextureTrace("texImage2D.video", {
+            width,
+            height,
+            elementWidth: imgSrc.width,
+            elementHeight: imgSrc.height,
+          });
+        }
+        //>>includeEnd('debug');
       }
 
-      if (width <= 0 || height <= 0) return;
+      if (width <= 0 || height <= 0) {
+        //>>includeStart('debug', pragmas.debug);
+        recordStubTextureTrace("texImage2D.zeroSize", { width, height });
+        //>>includeEnd('debug');
+        return;
+      }
 
       const gpuFormat = webglToWebGPUTextureFormat(
         internalformat,
@@ -960,7 +982,21 @@ export function createTextureStubs(
             },
             { width, height, depthOrArrayLayers: 1 },
           );
+          //>>includeStart('debug', pragmas.debug);
+          recordStubTextureTrace("texImage2D.external", {
+            source: pixels.constructor?.name,
+            width,
+            height,
+            destination: describeTraceTexture(tex.texture),
+          });
+          //>>includeEnd('debug');
         } catch (err) {
+          //>>includeStart('debug', pragmas.debug);
+          recordStubTextureTrace("texImage2D.externalFailed", {
+            source: pixels.constructor?.name,
+            message: (err as Error).message,
+          });
+          //>>includeEnd('debug');
           // Some sources (CORS-tainted images, unloaded videos) cannot be
           // copied — fall back to a one-time warning instead of crashing.
           logUsage(
@@ -1041,7 +1077,14 @@ export function createTextureStubs(
       const wrapper = binding?.texture as StubTexture | undefined;
       if (!wrapper || !state.device) return;
       const tex = wrapper._webgpuTexture;
-      if (!tex) return;
+      if (!tex) {
+        //>>includeStart('debug', pragmas.debug);
+        recordStubTextureTrace("texSubImage2D.noNativeTexture", {
+          source: (formatOrSource as object | null)?.constructor?.name,
+        });
+        //>>includeEnd('debug');
+        return;
+      }
 
       // Cube face index for the upload's `origin.z`. Matches the
       // mapping in `texImage2D` above — POSITIVE_X (0x8515) is layer 0,
@@ -1081,11 +1124,28 @@ export function createTextureStubs(
           videoWidth?: number;
           videoHeight?: number;
         };
-        width = sized.width ?? sized.videoWidth ?? 0;
-        height = sized.height ?? sized.videoHeight ?? 0;
+        const video = intrinsicVideoSize(sized);
+        width = video ? video.width : (sized.width ?? 0);
+        height = video ? video.height : (sized.height ?? 0);
         pixels = src;
+        //>>includeStart('debug', pragmas.debug);
+        if (video) {
+          recordStubTextureTrace("texSubImage2D.video", {
+            width,
+            height,
+            elementWidth: sized.width,
+            elementHeight: sized.height,
+            destination: describeTraceTexture(tex.texture),
+          });
+        }
+        //>>includeEnd('debug');
       }
-      if (!pixels || width <= 0 || height <= 0) return;
+      if (!pixels || width <= 0 || height <= 0) {
+        //>>includeStart('debug', pragmas.debug);
+        recordStubTextureTrace("texSubImage2D.zeroSize", { width, height });
+        //>>includeEnd('debug');
+        return;
+      }
 
       // Clamp to mip-level extent (see paired comment in texImage2D above —
       // legacy GL callers pass base-level dimensions even at level > 0).
@@ -1117,7 +1177,22 @@ export function createTextureStubs(
             },
             { width: copyW, height: copyH, depthOrArrayLayers: 1 },
           );
+          //>>includeStart('debug', pragmas.debug);
+          recordStubTextureTrace("texSubImage2D.external", {
+            source: pixels.constructor?.name,
+            origin: { x: xoffset, y: yoffset },
+            width: copyW,
+            height: copyH,
+            destination: describeTraceTexture(tex.texture),
+          });
+          //>>includeEnd('debug');
         } catch (err) {
+          //>>includeStart('debug', pragmas.debug);
+          recordStubTextureTrace("texSubImage2D.externalFailed", {
+            source: pixels.constructor?.name,
+            message: (err as Error).message,
+          });
+          //>>includeEnd('debug');
           logUsage(
             "texSubImage2D",
             `copyExternalImageToTexture failed: ${(err as Error).message}`,
@@ -1142,6 +1217,16 @@ export function createTextureStubs(
       if (state.pixelStore.unpackFlipY) {
         data = flipYBuffer(height, bytesPerRow, data);
       }
+      //>>includeStart('debug', pragmas.debug);
+      recordStubTextureTrace("texSubImage2D.bytes", {
+        source: (pixels as object).constructor?.name,
+        origin: { x: xoffset, y: yoffset },
+        width: copyW,
+        height: copyH,
+        byteLength: data.byteLength,
+        destination: describeTraceTexture(tex.texture),
+      });
+      //>>includeEnd('debug');
       state.device.queue.writeTexture(
         {
           texture: tex.texture,
@@ -1327,83 +1412,41 @@ export function createTextureStubs(
 
     copyTexImage2D: (
       _target: number,
-      _level: number,
+      level: number,
       _internalformat: number,
       x: number,
       y: number,
       width: number,
       height: number,
       _border: number,
-    ) => {
-      const binding = state.textureBindings.get(state.activeTextureUnit);
-      if (!binding?.texture?._webgpuTexture || !state.currentCommandEncoder)
-        return;
-      const destinationTexture = binding.texture._webgpuTexture.texture;
-      const encoder = state.currentCommandEncoder;
-      const sourceTexture =
-        state.boundFramebuffer?.colorAttachment?._texture ||
-        state.context?.getCurrentTexture();
-      if (sourceTexture) {
-        const copied = state.copyTextureRegion(
-          sourceTexture,
-          destinationTexture,
-          x,
-          y,
-          0,
-          0,
-          width,
-          height,
-        );
-        if (copied && _level === 0) {
-          commandEncodedBaseCopies.set(destinationTexture, encoder);
-        } else if (!copied) {
-          logUsage(
-            "copyTexImage2D",
-            "source/destination usages or formats are not copy-compatible",
-          );
-        }
-      }
-    },
+    ) =>
+      copyFramebufferToBoundTexture(
+        state,
+        commandEncodedBaseCopies,
+        logUsage,
+        "copyTexImage2D",
+        level,
+        { x, y, destinationX: 0, destinationY: 0, width, height },
+      ),
 
     copyTexSubImage2D: (
       _target: number,
-      _level: number,
+      level: number,
       xoffset: number,
       yoffset: number,
       x: number,
       y: number,
       width: number,
       height: number,
-    ) => {
-      const binding = state.textureBindings.get(state.activeTextureUnit);
-      if (!binding?.texture?._webgpuTexture || !state.currentCommandEncoder)
-        return;
-      const destinationTexture = binding.texture._webgpuTexture.texture;
-      const encoder = state.currentCommandEncoder;
-      const sourceTexture =
-        state.boundFramebuffer?.colorAttachment?._texture ||
-        state.context?.getCurrentTexture();
-      if (sourceTexture) {
-        const copied = state.copyTextureRegion(
-          sourceTexture,
-          destinationTexture,
-          x,
-          y,
-          xoffset,
-          yoffset,
-          width,
-          height,
-        );
-        if (copied && _level === 0) {
-          commandEncodedBaseCopies.set(destinationTexture, encoder);
-        } else if (!copied) {
-          logUsage(
-            "copyTexSubImage2D",
-            "source/destination usages or formats are not copy-compatible",
-          );
-        }
-      }
-    },
+    ) =>
+      copyFramebufferToBoundTexture(
+        state,
+        commandEncodedBaseCopies,
+        logUsage,
+        "copyTexSubImage2D",
+        level,
+        { x, y, destinationX: xoffset, destinationY: yoffset, width, height },
+      ),
 
     /** Frame-owned `gl.generateMipmap()` preparation. */
     generateMipmap: (_target: number) => {

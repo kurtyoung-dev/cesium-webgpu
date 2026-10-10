@@ -5870,6 +5870,9 @@ export class WebGPUContext extends GraphicsContext {
    * @param {GPUOrigin3D} [sourceOrigin] - Source origin (default: {x: 0, y: 0, z: 0})
    * @param {GPUOrigin3D} [destinationOrigin] - Destination origin (default: {x: 0, y: 0, z: 0})
    * @param {GPUExtent3D} [copySize] - Copy size (default: source texture size)
+   * @param {GPUCommandEncoder} [encoder] - Encoder to record into instead of
+   *   the current frame encoder. The caller owns submitting it; the open
+   *   render pass check applies only to the frame encoder.
    *
    * @example
    * // Copy entire texture
@@ -5889,27 +5892,30 @@ export class WebGPUContext extends GraphicsContext {
     sourceOrigin?: GPUOrigin3D,
     destinationOrigin?: GPUOrigin3D,
     copySize?: GPUExtent3D,
+    encoder?: GPUCommandEncoder,
   ): boolean {
     if (this._isDeviceUnavailable) {
       this._throwIfDeviceTerminallyUnavailable();
       return false;
     }
+    const targetEncoder = encoder ?? this._currentCommandEncoder;
     //>>includeStart('debug', pragmas.debug);
-    if (!this._currentCommandEncoder) {
+    if (!targetEncoder) {
       throw new DeveloperError(
         "No active command encoder. Call beginFrame() first.",
       );
     }
     //>>includeEnd('debug');
-    if (!this._currentCommandEncoder) {
+    if (!targetEncoder) {
       return false;
     }
 
     // Texture copies are encoder commands and cannot be recorded while a
     // render pass is open. This bounded compatibility path must not silently
     // split a scene pass: callers that need that broader conversion must route
-    // through the resource-command scheduler. Fail closed until then.
-    if (this._currentRenderPassEncoder) {
+    // through the resource-command scheduler. Fail closed until then. A
+    // caller-owned encoder has no pass open on it.
+    if (!encoder && this._currentRenderPassEncoder) {
       return false;
     }
     const sourceUsage = source.usage;
@@ -6052,7 +6058,7 @@ export class WebGPUContext extends GraphicsContext {
     }
 
     // Perform copy
-    this._currentCommandEncoder.copyTextureToTexture(
+    targetEncoder.copyTextureToTexture(
       {
         texture: source,
         origin: srcOrigin,
@@ -6077,6 +6083,8 @@ export class WebGPUContext extends GraphicsContext {
    * @param {number} dstY - Destination Y coordinate
    * @param {number} width - Copy width
    * @param {number} height - Copy height
+   * @param {GPUCommandEncoder} [encoder] - Caller-owned encoder to record into
+   *   instead of the current frame encoder (see {@link copyTexture}).
    *
    * @example
    * context.copyTextureRegion(sourceTexture, destTexture, 64, 64, 0, 0, 128, 128);
@@ -6090,6 +6098,7 @@ export class WebGPUContext extends GraphicsContext {
     dstY: number,
     width: number,
     height: number,
+    encoder?: GPUCommandEncoder,
   ): boolean {
     return this.copyTexture(
       source,
@@ -6097,6 +6106,7 @@ export class WebGPUContext extends GraphicsContext {
       { x: srcX, y: srcY, z: 0 },
       { x: dstX, y: dstY, z: 0 },
       { width, height, depthOrArrayLayers: 1 },
+      encoder,
     );
   }
 

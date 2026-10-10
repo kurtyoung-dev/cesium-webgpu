@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 109,
+  total: 111,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count is 17
@@ -58,7 +58,9 @@ const REGISTRY_CENSUS = {
     polar: 27,
     "orbital-ladder": 4,
     "saved-view": 3,
-    sandcastle: 3,
+    // The Sandcastle2 Video demo joined the three legacy-gallery demos for
+    // `probe-stub-texture-uploads.mjs`.
+    sandcastle: 4,
     aurora: 4,
     // The wgs84 family's three CesiumViewer-page views (home, close, polar),
     // written by its probe-kit harvest for `probe-wgs84.mjs`.
@@ -79,6 +81,9 @@ const REGISTRY_CENSUS = {
     // The SSR pass's rig and its SSR-off control, declared with the fix to the
     // pass's coverage, screen frame and refinement as its Edge leg's scene.
     ssr: 2,
+    // The label glyph atlas that grows in a later frame, for
+    // `probe-stub-texture-uploads.mjs`.
+    "texture-atlas": 1,
   },
 };
 

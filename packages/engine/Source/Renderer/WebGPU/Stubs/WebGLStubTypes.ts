@@ -232,6 +232,9 @@ export interface WebGLStubState {
   setViewport(x: number, y: number, w: number, h: number): void;
   setScissorRect(x: number, y: number, w: number, h: number): void;
   disableScissorTest(): void;
+  // A context-validated texture-to-texture copy. Without `encoder` it is
+  // recorded in the current frame encoder; with one, in that encoder, which
+  // the caller submits.
   copyTextureRegion(
     src: GPUTexture,
     dst: GPUTexture,
@@ -241,6 +244,7 @@ export interface WebGLStubState {
     dy: number,
     w: number,
     h: number,
+    encoder?: GPUCommandEncoder,
   ): boolean;
   enqueueMipGeneration(
     texture: GPUTexture,

@@ -23179,3 +23179,113 @@ open in the lane's ledger text, blocks it.
 
 The f16 variant `ScreenSpaceReflections_f16.wgsl` (selected only under `useShaderF16` with `shader-f16`) carries
 the same three defects at its own lines and is not changed here; it is filed for its own owner.
+
+## Bug NEW-GA-P0-003 — a TextureAtlas that grows in an after-render callback loses its earlier images on WebGPU (lane FW-02 / Harnen, 2026-10-09)
+
+*Source: the Gemini audit P0 triage, section 2.1 (adjudication P34.C-235). Status: root cause measured,
+NOT fixed. Half of the fix is in lane FW-02's patch; the other half is outside the lane's files and is
+re-owned by the seat.*
+
+**Symptom (observed).** Edge job 1 (BEFORE, base `9457bc6bd4`, rig `texture-atlas-label-growth`): the
+label atlas grew from 256x128 to 512x256 at frame 32 on both renderers. WebGL drew both glyph rows. WebGPU
+drew only the row added after the growth (top-half lit fraction WebGPU/WebGL 0.00115). Edge job 2 (the
+lane's first fix build) measured the same: 0.00138.
+
+**What the instrumented probe measured** (lane build, debug-build stub receipt and WebGPU call counters):
+
+- *First barrier: the copy runs with no frame encoder.* At the growth, `TextureAtlas._copyFromTexture`
+  calls `copyTexSubImage2D` on the stub 10 times. Every call ran with no frame encoder (`inFrame: false`),
+  and the base stub returns on that (`Stubs/WebGLStubTexture.ts:1379-1380` at the base).
+- *Second barrier: the stub has no source to copy from.* The lane build copies outside a frame
+  (`Stubs/WebGLStubFramebufferCopy.ts`), yet all 10 calls still copied nothing. A read framebuffer was
+  bound, but it had no recorded color attachment (`copyTexSubImage2D.noSource` 10 of 10, and no
+  `GLStub_OffFrameTextureCopy` copy or submit). The compatibility stub defines no `COLOR_ATTACHMENT0`
+  (its constant tables are spread at `WebGLCompatibilityStub.ts:310-313`). So `Framebuffer.js:210`
+  attaches the old atlas texture at `gl.COLOR_ATTACHMENT0 + i`, which is NaN. The stub's
+  `framebufferTexture2D` records an attachment only at `0x8ce0` (`Stubs/WebGLStubFramebuffer.ts:120`).
+
+**Counterfactual (measured).** On the same lane build, setting `COLOR_ATTACHMENT0 = 0x8ce0` on the live
+stub object before the labels were added (no source change) gave this result:
+
+- The 10 copies were recorded in `GLStub_OffFrameTextureCopy` encoders and submitted, from the 256x128
+  texture to the 512x256 one.
+- Both glyph rows were drawn on WebGPU, with a top-half ratio of 0.836.
+- The WebGPU error gate recorded no errors.
+
+Both barriers must go. The audit's chain (no encoder after `endFrame`) is the first barrier and is
+correct, but it is incomplete.
+
+**Fix in lane FW-02 (the first half).** The stub's `copyTexImage2D` and `copyTexSubImage2D` delegate to
+`Stubs/WebGLStubFramebufferCopy.ts`. With no frame encoder, it records the copy in an encoder of its own
+and submits it before returning. `WebGPUContext.copyTexture` and `copyTextureRegion` take an optional
+caller-owned encoder to validate that copy.
+
+**Not fixed (re-owned).** The stub must name the WebGL framebuffer enums. Exposing `COLOR_ATTACHMENT0` is
+not a one-line change, because it starts recording attachments for every `Framebuffer.js` on WebGPU. That
+turns on three paths that are dormant today:
+
+- The stub's `deleteFramebuffer` destroys attachments' GPU textures
+  (`Stubs/WebGLStubFramebuffer.ts:100-105`). WebGL never does this. Framebuffers built with
+  `destroyAttachments: false` (`ComputeEngine.js:27`, `CubeMap.js:332`, `BrdfLutGenerator.js:48`,
+  `FramebufferManager.js:228`) would lose textures they do not own.
+- Stub blits read framebuffer attachments (`Stubs/WebGLStubShader.ts:674`).
+- `readPixelsAsync` reads framebuffer attachments (`Stubs/WebGLStubShader.ts:753`).
+
+**Files modified (lane FW-02).**
+
+- `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubFramebufferCopy.ts` (new)
+- `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubTextureTrace.ts` (new; debug-build receipt only)
+- `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubTexture.ts`
+- `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubTypes.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUContextWebGLStubInit.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts`
+
+## Bug NEW-GA-P0-031 — a video material is blank on WebGPU (lane FW-02 / Harnen, 2026-10-09)
+
+*Source: the Gemini audit P0 triage, section 2.2 (P52.C-403). Status: root cause measured, NOT fixed. The
+cause is outside lane FW-02's files and is re-owned by the seat. The stub sizing defect the audit named was
+real and is fixed in the lane's patch, but it is not what blanks the surface.*
+
+**Symptom (observed).** Edge job 1 (BEFORE, base `9457bc6bd4`, Sandcastle2 demo `video`). The `<video>`
+has no width attribute (`width` 0, `videoWidth x videoHeight` 640x360, playing). WebGL draws the video on
+the ellipsoid. WebGPU draws a plain white ellipsoid: in the central box, `lumaStdDev` 0.534 and
+`changedFraction` 0. Edge job 2 (the lane's first fix build) measured the same.
+
+**What the instrumented probe measured** (lane build):
+
+- *The stub path the audit named now runs correctly.* `texImage2D` with the video allocated a 640x360
+  texture (the element's width read 0). Then about one `Texture.copyFrom` call per scene frame per cell (the count
+  tracks the run's frame count: the lane counted 425-445, the seat's independent run 365 in 389 scene
+  frames), each uploaded a 640x360 video frame into that texture, with no zero-size refusals.
+- *The surface stays white anyway.* No draw samples that texture. The WebGPU primitive material path binds
+  `material._imageSources[slot]` through `createTextureFromImage`, keyed on the source's identity
+  (`WebGPUPrimitiveCommands.ts:4182`, `:4284`).
+- *The video never reaches that slot.* `Material.js:481` fills `_imageSources` only from loaded images. A
+  video uniform takes `MaterialHelpers.js:338-367` instead, which keeps a per-frame-updated texture in
+  `material._textures`. The receipt read `material._imageSources.image` as empty, so the WebGPU draw binds
+  the 1x1 white placeholder.
+
+**Counterfactual (measured).** A bitmap of the current video frame was placed in
+`material._imageSources.image` on the same build. The WebGPU path then created one `Texture from Image`,
+and the ellipsoid showed that frame, frozen (`changedFraction` 0).
+
+**Fix in lane FW-02 (stub sizing; necessary for a fix that samples the stub texture, not sufficient).**
+`intrinsicVideoSize` (exported from `WebGPUImageUpload.ts`) returns `videoWidth x videoHeight` for any
+source that reports both as numbers. The stub's 6-argument `texImage2D`, its 7-argument `texSubImage2D`
+and `WebGPUImageUpload.uploadImageToTexture` each ask it first, and keep their own sizing for every other
+source.
+
+**Not fixed (re-owned).** `WebGPUPrimitiveCommands.ts` `ensureMaterialTextureBindGroup` (`:4172`) never
+samples a video material's texture, and nothing rebinds it per frame. `createTextureFromImage`
+reads `width` and `height` from its source at `WebGPUContext.ts:6132-6135` at the base
+(`const width = "width" in source ? source.width : ...` and the same for `height`; `:6142-6145` once
+this patch lands, which adds ten lines above it). The video element's `width` measured 0 in the receipts
+(`elementWidth: 0`). A reader would expect handing the video element itself to `_imageSources` to
+size 0 there. That is a code read, not a measurement: no run has passed a video element through
+`createTextureFromImage` (`Texture from Image` was 0 in every run on this tree). The measured
+counterfactual is a frame bitmap placed in `_imageSources`, which the path sampled, frozen.
+
+**Files modified (lane FW-02).**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUImageUpload.ts`
+- `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubTexture.ts`

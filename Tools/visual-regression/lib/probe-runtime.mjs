@@ -69,6 +69,10 @@
 // Both are re-exported here, so a probe imports one module and a reviewer reads
 // three files that each stay well inside the fork's size rule. The split is
 // also what keeps the lock module free of a cycle back through the runtime.
+// The scene frame driver (`probe-scene-frames.mjs`) is re-exported the same
+// way: a step sequence that must act on given scene frames drives them through
+// `driveSceneFrames`, which keeps a request-render-mode page rendering and
+// ends at a wall-clock deadline, rather than through a private frame loop.
 //
 // THE ANTI-RE-ACCRETION CONTRACT (DX-02). Landing this runtime does not stop
 // a future probe from re-growing a private copy of one of the four concerns
@@ -122,6 +126,12 @@ import {
   throwForDecision,
 } from "./probe-refusal.mjs";
 import {
+  SCENE_FRAME_DRIVER_GLOBAL,
+  SCENE_FRAME_OUTCOMES,
+  driveSceneFrames,
+  installSceneFrameDriver,
+} from "./probe-scene-frames.mjs";
+import {
   checkNavigatedOrigin,
   computeSandcastle2Origins,
 } from "./sandcastle2-origin-rewrite.mjs";
@@ -135,10 +145,14 @@ export {
   EDGE_SLOT_STALE_AFTER_MS,
   PROBE_EXIT_CODES,
   ProbeRefusal,
+  SCENE_FRAME_DRIVER_GLOBAL,
+  SCENE_FRAME_OUTCOMES,
   acceptedDecision,
   acquireEdgeSlot,
   decideEdgeSlot,
+  driveSceneFrames,
   exitCodeForOutcome,
+  installSceneFrameDriver,
   refusedDecision,
   throwForDecision,
   withEdgeSlot,

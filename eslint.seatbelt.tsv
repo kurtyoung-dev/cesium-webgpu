@@ -71,7 +71,7 @@
 "packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubShader.ts"	"@typescript-eslint/no-unused-vars"	2
 "packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubShader.ts"	"curly"	15
 "packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubTexture.ts"	"@typescript-eslint/no-unused-vars"	3
-"packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubTexture.ts"	"curly"	30
+"packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubTexture.ts"	"curly"	25
 "packages/engine/Source/Renderer/WebGPU/WGSLShaderPreprocessor.ts"	"curly"	3
 "packages/engine/Source/Renderer/WebGPU/WGSLShaderPreprocessor.ts"	"no-irregular-whitespace"	1
 "packages/engine/Source/Renderer/WebGPU/WGSLShaderPreprocessor.ts"	"no-use-before-define"	3
