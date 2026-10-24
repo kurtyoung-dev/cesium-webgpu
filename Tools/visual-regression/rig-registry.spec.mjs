@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 230,
+  total: 238,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count reached 17
@@ -64,7 +64,7 @@ const REGISTRY_CENSUS = {
     "saved-view": 5,
     // The Sandcastle2 Video demo joined the three legacy-gallery demos for
     // `probe-stub-texture-uploads.mjs`.
-    sandcastle: 4,
+    sandcastle: 5,
     aurora: 4,
     // The wgs84 family's three CesiumViewer-page views (home, close, polar),
     // written by its probe-kit harvest for `probe-wgs84.mjs`.
@@ -111,7 +111,7 @@ const REGISTRY_CENSUS = {
     // (E-T in E11): the coast camera the water lane's job sheet names, with the
     // enhanced ocean and the HIGH water tier on so the water's GPU owners are
     // alive when the scene is torn down.
-    water: 1,
+    water: 8,
   },
 };
 
