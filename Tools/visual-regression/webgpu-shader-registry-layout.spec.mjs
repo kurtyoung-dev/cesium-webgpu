@@ -500,15 +500,17 @@ test("consumer discovery excludes comments, prose, fixtures and unrelated proper
 
 test("a reserved-to-consumed ledger update needs no registry source change", () => {
   const data = structuredClone(layout);
+  // Any entry the live ledger still holds reserved serves: a pinned name stops
+  // being reserved when its own wave lands its consumer.
   const entry = data.entries.find(
-    (item) => item.name === "CLOUD_NOISE_BAKED_ONLY",
+    (item) => item.word === "hi" && item.status === "reserved",
   );
-  assert.equal(entry.status, "reserved");
+  assert(entry, "a reserved hi entry to flip");
   const files = new Map(engineSources);
   const file = "packages/engine/Source/Renderer/WebGPU/AllocationConsumer.ts";
   files.set(
     file,
-    'import { ShaderDefineHi } from "./WebGPUShaderDefines.js";\nconst mask = ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY;',
+    `import { ShaderDefineHi } from "./WebGPUShaderDefines.js";\nconst mask = ShaderDefineHi.${entry.name};`,
   );
   assert.throws(() => validateLayout(data, registry, files), /consumer status/);
   entry.status = "consumed";
@@ -603,10 +605,23 @@ test("M-L3 rejects source 43 consumed without a qualified consumer", () => {
   const data = structuredClone(layout);
   const entry = data.sources.find((item) => item.id === 43);
   assert.equal(entry.name, "PROCEDURAL_CLOUDS");
-  assert.equal(entry.status, "reserved");
+  // Strip only the qualified reads, so a landed consumer cannot mask the check
+  // and the FeatureRendererKey.PROCEDURAL_CLOUDS decoys stay in the tree.
+  const files = new Map(
+    [...engineSources].map(([file, source]) => [
+      file,
+      source.replaceAll("ShaderSourceId.PROCEDURAL_CLOUDS", "43"),
+    ]),
+  );
+  assert(
+    [...files.values()].some((source) =>
+      source.includes("FeatureRendererKey.PROCEDURAL_CLOUDS"),
+    ),
+    "decoy present",
+  );
   entry.status = "consumed";
   assert.throws(
-    () => validateLayout(data, registry, engineSources),
+    () => validateLayout(data, registry, files),
     /ShaderSourceId\.PROCEDURAL_CLOUDS consumer status/,
   );
 });

@@ -1551,9 +1551,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-pipeline-creation-not-frame-coupled.spec.mjs | spec | ACTIVE | 2026-09-02 | 2 | Drives the real central pipeline cache with a fake device to require that an in-flight pipeline creation advances, lands and publishes its wake-up without any frame being rendered and without any concurrency cap, so the frame-coupled explanations of the AEC residency stall stay ruled out. |
 | webgpu-postprocess-effect-survives-recreate.spec.mjs | spec | ACTIVE | 2026-09-05 | 4 | Drives the real post-process bridge against the real WebGPUPostProcessPipeline under a recording fake device, and pins that Bloom, AO, DoF, GodRay, HeatShimmer, ColdOptics and AerialPerspective are still present and still produce their passes after a resize and after an HDR toggle. |
 | webgpu-postprocess-format-follows-toggle.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Drives the real post-process bridge against the real WebGPUPostProcessPipeline under a fake device that records every render pipeline's colour-target format and every encoded pass, and pins that after a useHDRCanvasOutput toggle, a highDynamicRange toggle and a pipeline replacement each pass uses a pipeline built for its own attachment, with a plain resize compiling nothing. |
-| webgpu-shader-infrastructure.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
-| webgpu-shader-registry-layout.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
-| webgpu-shader-template-cache.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
+| webgpu-shader-infrastructure.spec.mjs | spec | NO @purpose HEADER | 2026-10-24 | 1 | — |
+| webgpu-shader-registry-layout.spec.mjs | spec | NO @purpose HEADER | 2026-10-24 | 1 | — |
+| webgpu-shader-template-cache.spec.mjs | spec | NO @purpose HEADER | 2026-10-24 | 1 | — |
 | webgpu-shadow-receive-contract.spec.mjs | spec | ACTIVE | 2026-08-21 | 4 | Pins the sun-shadow fix: single cast-dispatch site + same-frame wipe guard, receive matrix reproduces the cast texel, naga-validated shaders. |
 | webgpu-snap-edge-payload.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Contract for the edge tier of WebGPU Scene.snap: edge-flag payload encode, pick-color plumb into the edge UB, pipeline variant, strict admission. |
 | webgpu-snap-framebuffer-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Behavioral lifecycle coverage of the real WebGPUSnapFramebuffer on GPU-shaped mocks; complements the source-contract snap-payload spec. |
