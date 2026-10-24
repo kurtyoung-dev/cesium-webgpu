@@ -30354,6 +30354,7 @@ The stub spreads `FRAMEBUFFER_CONSTANTS`: `FRAMEBUFFER`, `READ_FRAMEBUFFER`, `DR
 - **Repair (if the re-measure keeps the startup miss):** `Globe.js` constructs the providers only inside the `.then` of their asset fetches, so a dynamic `import()` there needs no design change; `GlobeWater.js`'s synchronous query methods import `BathymetryTensorMap.ts` statically and would need an async form (a design change).
 - **Acceptance:** the seat's 5-repeat E-D WebGL PF-3 re-measure. Class: engine. **Suggested owner:** the water lane, after the re-measure.
 - **Source:** Water round 5 (PF-3), measured by the lead.
+- **Re-measure done (records batch, 2026-10-24):** the 5-repeat E-D WebGL PF-3 re-measure ran in Edge rounds 4 and 5 and the startup miss persisted (+234.9 ms and +198.0 ms on the medians). The measurement and its follow-up (ten runs, a request log, the code-splitting evaluation, R-2026-10-23-M3) are tracked by `NEW-WATER-STARTUP-COST` (section "2026-10-24 — records batch" below); this row stays the candidate remedy that row's evaluation will size. Medians: `Tools/visual-regression/output/wave-end/water-landing-r4/SUMMARY_NIMRAIS.txt:63` and `water-landing-r5/SUMMARY_NIMRAIS.txt:53-73` (gitignored); durable copies `cesium-webgpu-visual-evidence/runs/water-landing-r4-20261023/SUMMARY_NIMRAIS.txt:63` and `runs/water-landing-r5-20261023/SUMMARY_NIMRAIS.txt:53-73`.
 
 ### NEW-WATER-DEFAULT-OCEAN-PARITY - the default WebGPU ocean on masked terrain is not GlobeFS.glsl's (the default move held out of the water landing)
 
@@ -30416,6 +30417,7 @@ Seat ruling S-R2b recorded: Chromium's localhost `file:` host behaviour is left 
   - Verification: `Tools/visual-regression/output/wave-end/water-landing/VERIFY_CALENHAD.md` items N2 and N3; probe contract corrected in KT r4 (`cesium-webgpu-worker-archive/lanes-2026-10-21/kt-kit-pieces/_lane-out-20261023-0700-r5-HOLDS/REVIEW_ETTENMOORS_P4.md` and `LANDING_PACKET_CELOS.md`) to record `threw: true`.
 - **Root cause (candidate, unmeasured):** `destroy()` assumes elements are still immediate children of `_container` and `_element` without checking `parentNode`, throwing `NotFoundError` if the probe page or widget hierarchy has modified or detached the DOM nodes prior to destruction.
 - **Acceptance:** `viewer.destroy()` completes without throwing and leaves `viewer.isDestroyed() === true` on probe teardown pages across both renderers.
+- **Fix landed (records batch, 2026-10-24):** Batch 1590 (`e4698f0767`, lane Halifirien, review Argonath pass 2 HOLDS) changes `Viewer.js` and `CreditDisplay.js` teardown after DOM detachment, pinned in Node by `widgets-teardown-contract.spec.mjs`. The Edge acceptance above is not yet re-measured: Edge round 5 ran BEFORE and the water tree, neither carrying the fix, and recorded the throw on 4/4 teardown pages per tree, 8/8 across BEFORE and AFTER, which leaves the E-T teardown owner proof open (`Tools/visual-regression/output/wave-end/water-landing-r5/SUMMARY_NIMRAIS.txt:140-143,166`; durable copy `cesium-webgpu-visual-evidence/runs/water-landing-r5-20261023/SUMMARY_NIMRAIS.txt:140-143,166`). The row stays OPEN until an Edge run on a tree carrying Batch 1590 reads the acceptance.
 
 ### BUG-RESOURCE-FILE-FOUR-SLASH-UNC-CREDENTIAL-FORWARD — `file:////` four-slash UNC url parses with empty host and forwards Authorization credentials (W0 candidate) — **OPEN** (security / correctness)
 
@@ -30489,3 +30491,232 @@ Seat ruling S-R2b recorded: Chromium's localhost `file:` host behaviour is left 
 - **Evidence:** `cesium-webgpu-worker-archive/lanes-2026-10-21/seat-scratchpad/ledger-intake-2.md`.
 - **Remedy:** Enforce that all reader and builder scripts allocate scratch space exclusively via `Tools/lib/lane-tmp.mjs` under `<tmpdir>/cesium-lane/<laneName>/`, with distinct lane names per process.
 - **Acceptance:** Concurrent execution of workflow reader scripts produces zero collisions or scratchpad race conditions.
+
+## 2026-10-24 — records batch: the water landing's residuals and the follow-ups of Batches 1585-1594
+
+Rows the water landing (Batches 1585/1586, tree `9e6bcfb7`), the W1 core (Batch 1593) and its layout-spec repair (Batch 1594)
+left open; the water rows are recorded under maintainer
+ruling R-2026-10-23-M3 ("Land tonight with the residual recorded and a follow-up lane to measure at ten runs and evaluate
+code-splitting the water modules"). Ledger intake 2 (the section above, Batch 1591) carries none of them; the one overlap,
+`NEW-WATER-MODULES-LAZY-IMPORT` (the candidate remedy), is extended in place rather than duplicated. Every number below names
+its tree, rig and run count; mechanisms are candidates unless a row says measured.
+
+### NEW-WATER-STARTUP-COST — default-path WebGL startup (PF-3) is slower on the water tree at five interleaved runs; attribution open — **OPEN** (follow-up lane PREPARED)
+
+**Status:** OPEN; landed with the residual recorded (R-2026-10-23-M3). The measurement half of the follow-up has a job sheet
+(below); no lane has run it. Severity: performance, default path, WebGL.
+
+- **Measured (Edge, rig E-D = `rigs/default-3d-pinned.mjs`, five uncontended interleaved runs per arm, BEFORE tree
+  `0dc1c35c74`):**
+  - Round 4 (AFTER = the round-6 cut `09c47f0e`): E-D WebGL PF-3 median 2293.6 -> 2528.5 ms, +234.9 ms (+10.24 %), exact
+    one-sided rank test U = 21/25, p = 0.048 (`Tools/visual-regression/output/wave-end/water-landing-r4/SUMMARY_NIMRAIS.txt:63`;
+    `water-landing-r4/VERIFY_CALENHAD.md:28-38`; durable copy
+    `cesium-webgpu-visual-evidence/runs/water-landing-r4-20261023/`, same file names).
+  - Round 5 (AFTER = the round-9 cut `9e6bcfb7`, the landed tree): E-D WebGL 2405.2 -> 2603.2 ms, +198.0 ms (+8.23 %),
+    U = 15/25, p = 0.345; E-H WebGL 1790.8 -> 1858.2 ms, +67.4 ms (+3.76 %), p = 0.111, over the sheet's 1803.2 ms with one
+    tip run at 2038.9 ms; E-D-HDR WebGL median lower (1928.0 -> 1834.4 ms) with one tip run at 2087.6 ms; cell 1g WebGL
+    (two runs, ion World Terrain) 2452.6 -> 2619.5 ms. Controls: E-D WebGPU 1726.5 -> 1650.0 ms PASS; E-O WebGPU 2223.3 ->
+    2165.9 ms PASS. Guard clear on every arm (`water-landing-r5/SUMMARY_NIMRAIS.txt:53-73,100`;
+    `water-landing-r5/VERIFY_CALENHAD.md:29-46`; per-run values in `water-landing-r5/pf-analysis.json`; durable copy
+    `cesium-webgpu-visual-evidence/runs/water-landing-r5-20261023/`, same file names).
+  - The OVER rests on the pre-registered no-slack rule (base already over the 2000 ms ceiling); the probe's own repeat band
+    for E-D WebGL (bandFraction 0.76) would have admitted it (`water-landing-r5/VERIFY_CALENHAD.md:37-39`; durable copy
+    `cesium-webgpu-visual-evidence/runs/water-landing-r5-20261023/VERIFY_CALENHAD.md:37-39`).
+- **Two attributions, neither finding a cost of this size:**
+  - The lead's Node measurement (round 9): the `Scene.js` module graph grows +69,435 B of code; a fresh `vm.Script` compile
+    reads minimum 327.1 ms base and 327.5 ms tip (15 runs each); the JavaScript the cut adds to the default path is well
+    under 2 ms at startup (`cesium-webgpu-worker-archive/lanes-2026-10-21/water-review/_lane-out-20261023-2005-r9-HOLDS-5ab828f8/LANDING_PACKET_TANIQUETIL.md:329-347`).
+  - The CPU-profile diagnostic (AFTER tree `09c47f0e`, a loaded machine, three runs per arm, relative attribution only): the
+    regression did not reproduce on those runs (AFTER mean 3303.9 vs BEFORE 3387.4 ms); the water code costs 1.5-3.1 ms
+    inclusive on the main thread; no JavaScript function or module carries a consistent positive delta; the only movements of
+    the 235 ms size are the non-JavaScript `(program)` +116.6 ms and `(idle)` -140.6 ms buckets (2/3 runs each, each smaller
+    than its own run-to-run spread) (`Tools/visual-regression/output/wave-end/water-landing-r4-diag/REPORT.md:1-30`; durable copy
+    `cesium-webgpu-worker-archive/lanes-2026-10-21/water-review/diag-startup-attribution-20261023/REPORT.md:1-30`).
+- **Follow-up (R-2026-10-23-M3), prepared:** PF-3 at TEN interleaved runs per arm on a quiet machine (BEFORE vs the landed
+  tip) for E-D WebGL (primary), E-D WebGPU (control), E-H WebGL and E-D-HDR WebGL, E-O WebGPU at five; a per-run request
+  log from navigation to first frame (a new startup fetch on the default viewer would be a finding of its own); then a
+  Node-only code-splitting evaluation of which water modules the eager import graph reaches. Job sheet:
+  `cesium-webgpu-worker-archive/lanes-2026-10-21/seat-scratchpad/SEAT_NOTE_NIMRAIS_TENRUN_20261024.md` sections 1-5.
+- **Repair (candidate, if the ten-run reading keeps the residual):** split the water modules behind a dynamic `import()`;
+  the remedy's shape and its constraints are `NEW-WATER-MODULES-LAZY-IMPORT`'s.
+- **Acceptance:** at ten interleaved uncontended runs per arm on the landed tree, E-D WebGL PF-3 reads tip median <= base
+  median (no slack), or the residual is attributed by measurement and ruled on by the maintainer. Class: engine, performance.
+  **Suggested owner:** the ten-run executor, then the water lane for any split.
+- **Source:** Edge rounds 4 and 5 (FND-5; verifier B1/B2); maintainer ruling R-2026-10-23-M3.
+
+### NEW-WATER-COAST-PARITY-RESIDUAL — the opt-in parity variant still differs from WebGL by 2.30 % at coast-50km (band 1.0 %) — **OPEN** (opt-in only)
+
+**Status:** OPEN; not a landing gate (the cell exercises the opt-in `WATER_PROVIDER_PARITY` variant only). Severity: parity,
+opt-in.
+
+- **Measured:** leg-2 cell 2a at rig `water-coast-50km`, WebGL vs WebGPU with the water ON, tolerance 16: round 4 2.2477 %,
+  round 5 (landed tree `9e6bcfb7`) 2.3014 % on both runs, against the pre-registered <= 1.0 % (BEFORE 0 %; ON repeat 0 %).
+  The mismatch map shows wave-crest speckle inside the water only, and the pair looks the same to the eye
+  (`Tools/visual-regression/output/wave-end/water-landing-r5/SUMMARY_NIMRAIS.txt:105-107`;
+  `water-landing-r5/VERIFY_CALENHAD.md` N4; map `water-landing-r5/AFTER/water-cells/coast-50km-2a-mismatch-map.png`; durable copies of all three under
+  `cesium-webgpu-visual-evidence/runs/water-landing-r5-20261023/`, same paths).
+- **What was tried:** review pass 7 measured 16 % less interior high-frequency energy on WebGPU (5-point Laplacian RMS 7.02
+  WebGL vs 5.91 WebGPU), which supported a mip-level tap as the cause, and the lead's round 7 made the parity tap a level-0
+  clamped read (`cesium-webgpu-worker-archive/lanes-2026-10-21/water-review/_lane-out-20261023-1920-r8-REFUTED-B1-karma/round7-evidence/REVIEW_ORODRUIN_P7.md:141-175`).
+  Round 5 then read 2.3014 %: the level-0 tap did not close the residual, so its cause is unattributed.
+- **Acceptance:** cell 2a at coast-50km reads <= 1.0 % on the landed tree, or the residual is shown irreducible and the band
+  is re-ruled. Class: engine/shader (parity, opt-in). **Suggested owner:** the water lane.
+- **Source:** Edge rounds 4 and 5 (FND-2); review pass 7 item B3; R-2026-10-23-M3 ("Opt-in residuals recorded, not gates").
+
+### NEW-WATER-GREAT-LAKES-BLACK-FRAME — one of four AFTER WebGPU great-lakes pages drew no globe — **CANDIDATE** (opt-in only)
+
+**Status:** CANDIDATE, unclassified (the probe records no pending-pipeline count). Severity: not rated.
+
+- **Measured:** Edge round 5 main run, rig `water-great-lakes`, water ON, WebGPU run 0 on the landed tree: no globe, only the
+  sky box (mean RGB 4.0 / 3.9 / 3.5; 0.0000 of pixels above 18), while every dial and the epoch read applied, tiles loaded,
+  liveness live at frame 187 and the gate clean. Tally: 1 of 4 AFTER WebGPU ON pages black in round 5, 0 of 4 on BEFORE, 0 of
+  2 in round 4. The pending-read repeat on a probe copy read `pending 0` before and after every AFTER ON capture with no black
+  page (`Tools/visual-regression/output/wave-end/water-landing-r5/SUMMARY_NIMRAIS.txt:110-119`;
+  `water-landing-r5/VERIFY_CALENHAD.md:79-96` (B7); PNG
+  `water-landing-r5/AFTER/water-cells/great-lakes/great-lakes-on-webgpu-run0.png`; durable copies under
+  `cesium-webgpu-visual-evidence/runs/water-landing-r5-20261023/`, same paths).
+- **Probe gap that blocks the classification:** `probe-water-cells.mjs` has no pending-pipeline reading and no
+  `--wait-pipelines` (`water-landing-r5/SUMMARY_NIMRAIS.txt:198`, S-c; durable copy in
+  `cesium-webgpu-visual-evidence/runs/water-landing-r5-20261023/`), so black at pending 0 (a finding) cannot be told
+  from black at pending > 0 (not run).
+- **Acceptance:** the probe reads the pending count on every leg-2 WebGPU capture, and repeated great-lakes ON runs on the
+  landed tree either draw the lakes on every page or classify the black page. Class: engine (opt-in) plus tools.
+  **Suggested owner:** the KT kit lane (the reading) then the water lane.
+- **Source:** Edge round 5 (verifier B7); R-2026-10-23-M3.
+
+### NEW-WEBGPU-HIDEFINEBIT-BIT31-GUARD-UNPINNED — no spec pins `hiDefineBit`'s refusal of bit 31 (follow-up F-1) — **OPEN** (tools / engine guard)
+
+**Status:** OPEN. Severity: latent; the hi word is full (bits 0-30 assigned, `WebGPUShaderDefines.ts:950-1300`), so a later
+edit writing `hiDefineBit(31)` is the only way the guard is reached.
+
+- **Evidence:** the W1 review's mutant R4c (`hiDefineBit` guard `> 30` -> `> 31`) stays GREEN, 0 of 123 cases fail
+  (`cesium-webgpu-worker-archive/lanes-2026-10-21/w1-core/_lane-out-20261023-1840-r4-HOLDS-d96b49f6/REVIEW_ARAMAN_P2.md:78,83-86`);
+  the guard is `WebGPUShaderDefines.ts:928-934` at Batch 1594, and no spec under `packages/engine/Specs` or `Tools/` names
+  `hiDefineBit(31)` or its `RangeError` text (searched at Batch 1594).
+- **Repair:** a one-case spec modelled on `Tools/visual-regression/webgpu-shader-infrastructure.spec.mjs:169-189` that
+  mutates one `hiDefineBit(n)` to 31 and asserts the exact `ShaderDefineHi` `RangeError` (`REVIEW_ARAMAN_P2.md:135-137`).
+- **Acceptance:** that case is in a runner and turns RED under R4c. Class: tools. **Suggested owner:** a later
+  infrastructure or water lane, not W1.
+- **Source:** W1 review pass 2, follow-up F-1.
+
+### BUG-KARMA-FULL-SUITE-DISCONNECTS-AT-CESIUMWIDGET — the full Karma suite does not complete on this machine, at base too (follow-up F-5) — **OPEN** (test infrastructure)
+
+**Status:** OPEN. Pre-existing at base. CI runs no Karma, so nothing outside a seat or lane run sees it.
+
+- **Measured:** BEFORE tree `0dc1c35c74`: "Executed 3000 of 18589 (2 FAILED) DISCONNECTED", the last suite started being
+  `Widget/CesiumWidget`; the two failures are `has czm_pass and czm_passOverlay` and `renders billboards with invisible labels
+  that are not clustered` (`EntityClusterSpec.js:699-700`). Round-9 water tree `9e6bcfb7`: "Executed 8335 of 18591
+  (4 FAILED) (skipped 15) DISCONNECTED", again after `Widget/CesiumWidget` started, with the same two failures plus
+  `Core/VideoSynchronizer` "Syncs time when looping" and "Syncs time when not looping" (5000 ms timeouts). The browser
+  disconnects with "no message in 120000 ms" (`cesium-webgpu-worker-archive/lanes-2026-10-21/water-review/karma-full-20261023/KARMA_FULL_BEFORE.summary.txt:1-6`,
+  `KARMA_FULL_BEFORE.log:100,1885,3335,3428`, `KARMA_FULL_AFTER3_R9.log:100,6988,6992,7831,9178,9273`).
+- **Not measured:** the base run never reached `Core/VideoSynchronizer` (the suite does not appear in its log), so whether
+  the two VideoSynchronizer timeouts are pre-existing is open; `NEW-GA-P0-153` is a different VideoSynchronizer defect.
+- **Acceptance:** the full Karma suite runs to completion on this machine at base, with every failure either fixed or owned
+  by a row. Class: tests. **Suggested owner:** unassigned.
+- **Source:** the seat's full Karma runs of 2026-10-23 (seat ruling after review pass 8 made the full run the water gate,
+  `MAINTAINER_RULINGS_2026-10-22.md` seat-ruling table); follow-up F-5.
+
+### DX-KT-E-T-RIG-NO-WATER-EPOCH — the KT E-T rig pins no wave epoch and no imagery, so its WebGL repeat clause cannot be read (follow-up F-6) — **OPEN** (tools)
+
+**Status:** OPEN (probe kit). Severity: makes one pre-registered clause NOT RUN.
+
+- **Measured:** Edge round 5, E-T WebGL run 0 vs run 1 differ by 145,752 px (15.8151 % at tolerance 16); the stage dial
+  `waterSimulationEpoch` reads `undefined` on every E-T page, so the water sheet's E-T clause ("run0 against run1 expected
+  within 2g's band") is NOT RUN as a rig defect (`Tools/visual-regression/output/wave-end/water-landing-r5/VERIFY_CALENHAD.md:132-134`
+  (N7); `water-landing-r5/SUMMARY_NIMRAIS.txt:145,200`; durable copies under
+  `cesium-webgpu-visual-evidence/runs/water-landing-r5-20261023/`, same file names). The rig also lacks imagery "none" (`SUMMARY_NIMRAIS.txt:200`, S-e;
+  first raised as round-4 verifier N3). A related scope note from the same verifier: the 3a variant's PASS holds for the
+  gates only (`VERIFY_CALENHAD.md:111-118`, N3).
+- **Repair:** declare `waterSimulationEpoch` and imagery `none` on the KT E-T rig (KT round 6).
+- **Acceptance:** E-T WebGL run 0 vs run 1 on one build reads within 2g's band. Class: tools. **Suggested owner:** the KT
+  kit lane.
+- **Source:** Edge round 5 (verifier N7, summary S-e); follow-up F-6.
+
+### KIT-6 — land the startup-attribution kit pieces `lib/cpu-profile-step.mjs` and `lib/metrics/cpu-profile-delta.mjs` — **OPEN** (probe kit)
+
+**Status:** OPEN; the pieces exist only as banked candidates (`@status EXPERIMENTAL`), absent from `Tools/visual-regression/lib/`
+at Batch 1594. They extend the kit lanes KIT-1…KIT-5 (`PROBE_KIT_GUIDE.md` §5).
+
+- **What they are:** a step piece that runs the V8 sampling profiler over CDP from before navigation to the return of a named
+  page step and writes a page-clock calibration mark, and a Node metric that crops a `.cpuprofile` to a page-time window and
+  reports AFTER-minus-BEFORE self-time deltas by function and bundled module, each with a Node spec. They produced the
+  startup diagnostic `NEW-WATER-STARTUP-COST` cites.
+- **Where:** `cesium-webgpu-worker-archive/lanes-2026-10-21/water-review/diag-startup-attribution-20261023/kit-candidates/`,
+  the durable copy of the gitignored `Tools/visual-regression/output/wave-end/water-landing-r4-diag/kit-candidates/` (`lib/cpu-profile-step.mjs`,
+  `lib/metrics/cpu-profile-delta.mjs`, `cpu-profile-step.spec.mjs`, `cpu-profile-delta.spec.mjs`, `CHANGES-r2.diff`; the
+  `superseded-1707/` copies are the earlier draft).
+- **Acceptance:** both pieces under `Tools/visual-regression/lib/` with their specs in a runner (each with an inertness
+  mutant), and the guide's inventory regenerated in the same change. Class: tools. **Suggested owner:** a kit lane; the
+  ten-run follow-up of `NEW-WATER-STARTUP-COST` is the first consumer.
+- **Source:** the startup-attribution diagnostic of 2026-10-23.
+
+### DX-115 — gate runners collide under load: a slow catalog gate (a 25-minute lane deadline hit; about 20 minutes observed at a landing) and Karma's rebuild of `Build/` under sibling gates <!-- filed 2026-10-24; id allocated after the then-highest DX-114 --> — **OPEN** (process / gate runners)
+
+**Status:** OPEN; the Karma half is already a workflow rule (the fix-lane workflow runs any Karma gate last and alone since
+2026-10-23); the catalog half has no remedy yet.
+
+- **Evidence:**
+  - The catalog lane's round 2 started `npm run test-tooling-catalog` (expected 105 pass) under a 25-minute deadline and hit
+    it; the watchdog then had to stop the owned test trees by hand (`cesium-webgpu-worker-archive/lanes-2026-10-21/catalog-a1/_lane-out-20261023-1633-r2-BLOCKED-timeout/LANDING_PACKET_PELENNOR.md:15279-15290`).
+    The same runner read 105/105 when re-run for review (`catalog-a1/_lane-out-20261023-1925-r2-HOLDS-a4bba54b/REVIEW_TROLLSHAWS_P1.md:3`).
+    The 25 minutes is the deadline the run hit, not a measured duration.
+  - At the Batch 1592 landing (a separate occasion, and a different kind of evidence): the seat watched the live landing
+    log and saw the gate line `+ npm run test-tooling-catalog` as the last line from 01:51:26 until at least 02:09 EDT,
+    with the next gate's line present at 02:11:36, so the catalog spec ran roughly 20 minutes (01:51 to 02:11) while the
+    W2 round-3 lead, the records provisioning and a Quest League Jest session shared the machine. This is the seat's
+    observation of the live log, not an instrument reading: the landing script logs only its own start and end (01:45:17
+    and 02:18:27, `land-pelennor-1.log`)
+    (`cesium-webgpu-worker-archive/lanes-2026-10-21/seat-scratchpad/landing-logs-20261024/SEAT_OBSERVATION_catalog_gate_timing.md:3-10`;
+    the thirteen landing logs of 2026-10-23/24 are in the same folder).
+  - A readiness spec went red on half-written `Shaders/*.js` while a sibling gate ran Karma, which rebuilds `Build/` and the
+    generated shader modules; the full Karma run inside the lane clone disconnected while three parallel gate runners, a
+    review and a catalog gate loaded the machine (`cesium-webgpu-worker-archive/lanes-2026-10-21/seat-scratchpad/SEAT_EVIDENCE_R7_GATES.md:16-31`;
+    rule: `seat-scratchpad/fix-lane-round-v2.workflow.js:32`).
+- **Remedy:** gate runners run Karma last and alone (adopted); give `test-tooling-catalog` a measured wall-time budget and run
+  it outside a loaded window, or split its slow cases.
+- **Acceptance:** a landing's gate set runs with Karma alone and `test-tooling-catalog` inside a declared budget on a loaded
+  machine, with no cross-runner red. Class: tools / process. **Suggested owner:** the orchestration / tooling lane.
+- **Source:** the catalog lane's round 2; the seat's observation at the Batch 1592 landing; the water round-9 gate evidence.
+
+### NEW-WEBGPU-SHADERDEFINES-JSDOC-STALE-HI-FULL — the `ShaderDefine` JSDoc still sends new defines to the hi word, which is full — **OPEN** (engine comment)
+
+**Status:** OPEN. Severity: documentation in engine source, no runtime effect. Owed to an engine lane.
+
+- **Evidence (read at Batch 1594, `b7d4af5889`):** the lo-word `ShaderDefine` JSDoc at
+  `packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts:74-79` says the word is full and "New defines go in
+  {@link ShaderDefineHi}." Since Batch 1593 the hi word is full too: `hiDefineBit(0)` … `hiDefineBit(30)` are all assigned
+  (31 of 31, `:961` … `:1300`) and the guard refuses bit 31 (`:928-934`). A new axis now claims an Ext bit in its owner's
+  range (the `ShaderDefineExt` doc comment, `:1486-1494`, names the owners), and the claim mechanism is the layout ledger
+  `Tools/visual-regression/fixtures/shader-registry-layout.json`, pinned by `webgpu-shader-registry-layout.spec.mjs`. The
+  governance files were corrected by the records batch (`CLAUDE.md` "Adding a new define bit" step 1); the engine comment
+  was outside that lane.
+- **Repair:** a comment-only change at `:74-79` that points new axes at `ShaderDefineExt` and the layout ledger; no name,
+  bit or code changes.
+- **Acceptance:** the lo-word JSDoc no longer names `ShaderDefineHi` as the home for new defines and names the Ext word and
+  the ledger instead. Class: engine comment (proof bar: review, R-2026-08-29-1). **Suggested owner:** the next engine lane
+  that touches `WebGPUShaderDefines.ts`.
+- **Source:** the records lane's round-1 finding D3 and its review's residuals for the seat; seat order for records round 2.
+
+### NEW-REGISTRY-LAYOUT-SPEC-WEAK-POINTS — two controls of the registry layout spec will break on later, valid ledger states — **OPEN** (tools / spec)
+
+**Status:** OPEN, latent: both controls are green at Batch 1594 (its message reads the spec 12/12 at the landing candidate).
+Recorded by the S11 landing for a later lane.
+
+- **Evidence:** the Batch 1594 message (`git show -s --format=%B b7d4af5889`) records: "Two weak points are recorded for a
+  later lane: the fourth control picks the first reserved hi entry and will need an Ext fallback once the hi word is
+  exhausted, and the M-L3 control's replaceAll would mangle a future PROCEDURAL_CLOUDS_* source name." At Batch 1594 the
+  fourth control is `Tools/visual-regression/webgpu-shader-registry-layout.spec.mjs:501-521` ("a reserved-to-consumed ledger
+  update needs no registry source change"), which takes the first entry with `word === "hi"` and `status === "reserved"`
+  and asserts that one exists (`:505-508`); the M-L3 control (`:604-627`) rewrites every
+  `ShaderSourceId.PROCEDURAL_CLOUDS` to `43` with `replaceAll` (`:613`), which would also rewrite the prefix of any later
+  `ShaderSourceId.PROCEDURAL_CLOUDS_*` name.
+- **Repair (candidate):** fall back to a reserved Ext entry when no hi entry is still reserved, and match the source name
+  only as a whole identifier in M-L3.
+- **Acceptance:** both controls still kill their mutants on a ledger with no reserved hi entry and on engine sources that
+  carry a `PROCEDURAL_CLOUDS_*` source name. Class: tools (spec; runner `test-webgpu-shader-infrastructure`).
+  **Suggested owner:** the first cloud wave that consumes the last reserved hi entry or adds such a source name.
+- **Source:** Batch 1594 (seat ruling R-2026-10-24-S11); repair proposal bank
+  `cesium-webgpu-worker-archive/lanes-2026-10-21/w2-cloud/_lane-out-20261024-0255-r3-HOLDS-9a3ac130/seat-proposals/`
+  (`W1-layout-spec-fixture-repair.patch`, `webgpu-shader-registry-layout.spec.mjs.proposed.txt`, which the seat addendum
+  `SEAT_ADDENDUM_W2_R3.md` in the same bank records as byte-identical to the landed spec).

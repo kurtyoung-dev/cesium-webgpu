@@ -27,19 +27,34 @@ to `CLAUDE.md`, which is the tracked rules authority.)
   (TAA, CSM and motion-vector passes read it); the JS pack writes column-major identity on the
   first frame.
 
-### 2. `ShaderDefine` is add-only
+### 2. Shader define registries are add-only
 
-`ShaderDefine` in `packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts` is the
-authoritative name/bit table, one bit per entry.
+`ShaderDefine`, `ShaderDefineHi` and `ShaderDefineExt` in
+`packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts` are the authoritative
+three-word name/bit tables, one bit per entry. Lo and hi bits 0-30 are full; bit 31 is
+reserved in every word.
 
 - **Never reorder, renumber or remove an entry**, even when its last consumer disappears.
   Reordering silently aliases cached shader modules; removal breaks any pipeline still holding
   the bit. Deprecated entries stay, marked by comment.
 - `ShaderSourceId` follows the same rule. Source ID 0 is reserved.
-- To add a bit: append it; document what it gates and which shaders consume it; in each
-  consuming shader add `//>>ifdef FLAG_NAME` / `//>>else` / `//>>endif`, keeping the `//>>else`
-  branch as the historical code path; route module creation through the preprocessor or the
-  shader-module cache so the directives resolve. Unknown flag names throw at preprocess time.
+- For a new axis, claim a vacant Ext bit in the owning subsystem's range in
+  `Tools/visual-regression/fixtures/shader-registry-layout.json` and append its declaration.
+  For an already declared reserved axis, activating a consumer flips its ledger `status`
+  to `consumed` and updates consumer records; its name, word, bit and owner stay fixed. The
+  flip lands with a qualified consumer, an engine read of the bit by name
+  (`webgpu-shader-registry-layout.spec.mjs` derives the expected status from those reads); an
+  engine literal is never a consumer.
+- Cloud Ext allocations stay at bit 20 or below (`definesExt < 2^21`). Planned W10b renderer
+  source-cache keys use `flags + definesExt * 2^32` (plan N6, as the `ShaderDefineExt` doc
+  comment at `WebGPUShaderDefines.ts:1486-1494` states), which requires this bound
+  for exact JavaScript integer packing; the shader-module cache uses separate map levels.
+- Document what an axis gates and which shaders consume it; in each consuming shader add
+  `//>>ifdef FLAG_NAME` / `//>>else` / `//>>endif`, keeping the `//>>else` branch as the
+  historical code path. Route module creation through
+  `preprocess(code, defines, definesHi, definesExt)` or
+  `getOrCreate(sourceId, source, defines, label, keySalt?, definesHi?, definesExt?)` so the
+  directives resolve. Unknown flag names throw at preprocess time.
 
 ### 3. Debug pragmas — both directions
 

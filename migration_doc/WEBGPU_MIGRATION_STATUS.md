@@ -12,6 +12,32 @@
 
 ---
 
+## Landing record (2026-10-23/24 — Batches 1585-1594: the water landing, the probe-kit pieces it was measured with, two base-bug fixes, the ledger and catalog repairs, and the W1 cloud core with its define registry)
+
+A landing table only; the coverage gap stated in the header still applies to everything between 2026-08-06 and this entry.
+Each hash and tree was read with `git log` / `git rev-parse <hash>^{tree}` at Batch 1594; each lead and reviewer is the one
+named in the lane's last review file in its bank. "Bank" paths under `lanes-2026-10-21/` are in
+`cesium-webgpu-worker-archive`; `wave-end/` is `Tools/visual-regression/output/wave-end/` (gitignored). Governing rulings:
+`MAINTAINER_RULINGS_2026-10-22.md`, including its 2026-10-23/24 section (R-2026-10-23-M1..M4, seat rulings S1-S11).
+
+| batch | hash (tree) | what is now true | lane lead | reviewer | bank |
+| --- | --- | --- | --- | --- | --- |
+| 1585 | `16e093aef6` (`1b57bfbc`) | Water layer 1: the CI lint stage and the C16 shader-text reader table pass again; the landing verifier ships with its spec. | Taniquetil | Orodruin (pass 9, HOLDS) | as 1586 |
+| 1586 | `156509c929` (`9e6bcfb7`) | Water layer 2: global water lands opt-in with the default globe unchanged; the round-9 cut, certified by Edge round 5. | Taniquetil (round 9) | Orodruin (pass 9, HOLDS); Edge rounds 4/5 executor Nimrais, verifier Calenhad | `lanes-2026-10-21/water-review/`; `wave-end/water-landing-r4/`, `wave-end/water-landing-r5/`; `cesium-webgpu-visual-evidence/runs/water-landing-r4-20261023`, `runs/water-landing-r5-20261023` |
+| 1587 | `90b98d9132` (`57d872a2`) | W0 CI repair: cluster toggling after load, the Firefox `file:` credential case, the package ESM smoke test and two Node specs. | Thangorodrim | Angmar (pass 2, HOLDS) | `lanes-2026-10-21/w0-ci-repair/` |
+| 1588 | `7a776deb03` (`0a221d5b`) | KT round 5: the landing program's Edge cells run from rigs on the shared probe runtime (stage, census, step pieces, PF-1..PF-4 metrics, `probe-landing-cells.mjs`). | Celos | Ettenmoors (pass 5, HOLDS) | `lanes-2026-10-21/kt-kit-pieces/` |
+| 1589 | `82860101c7` (`3be4ff78`) | KT-2 round 3: the water leg-2 rigs and cell 1f run from the kit (`lib/sandcastle2-demo-capture.mjs`, `probe-water-cells.mjs`). | Aldburg | Ravenhill (pass 4, HOLDS) | `lanes-2026-10-21/kt2-water-rigs/` |
+| 1590 | `e4698f0767` (`b782855e`) | F-4: `Viewer` and `CreditDisplay` teardown completes after DOM detachment (Node-pinned; the Edge acceptance is still owed, `DEFERRED_WORK.md` `BUG-VIEWER-DESTROY-THROWS-REMOVECHILD-PROBE-PAGE`). | Halifirien | Argonath (pass 2, HOLDS) | `lanes-2026-10-21/f4-teardown/` |
+| 1591 | `b509a1aaf2` (`1264719e`) | LEDGER-2: ledger intake 2 (defects, DX friction and candidate rows from the water Edge rounds and lane reviews). | Chetwood | Midgewater (pass 4, HOLDS) | `lanes-2026-10-21/ledger-intake-2/` |
+| 1592 | `c755320ad4` (`dffffd31`) | Catalog A1: the tooling catalog keeps structural drift alongside freshness changes. | Pelennor | Trollshaws (pass 1, HOLDS) | `lanes-2026-10-21/catalog-a1/` |
+| 1593 | `3f67b258c4` (`a3d4e2fd`) | W1 cloud core: the shader infrastructure core and the three-word define registry with its allocation ledger and layout spec. | Greyflood | Araman (pass 2, HOLDS) | `lanes-2026-10-21/w1-core/` |
+| 1594 | `b7d4af5889` (`c36cfe2e`) | The layout spec no longer pins a live ledger entry as reserved (seat batch, R-2026-10-24-S11). | seat | verified by Mirrormere (W2 lead) and Himling (W2 round-2 review, pass 1) | `lanes-2026-10-21/w2-cloud/` |
+
+Open after these landings: `NEW-WATER-STARTUP-COST` (follow-up prepared), `NEW-WATER-COAST-PARITY-RESIDUAL`,
+`NEW-WATER-GREAT-LAKES-BLACK-FRAME` and the W1 follow-ups, all in `DEFERRED_WORK.md` section "2026-10-24 — records batch".
+
+---
+
 ## Recent Progress (2026-08-06 — Batches 829-836: acceptance probes authored and RUN — draping verified at pixels after a real defect, fog coverage gate re-derived, the sky bake's blur found to be a no-op, cirrus acceptance still owed)
 
 Eight batches landed on `main` (`95ab21c460` → `5fe356ad52`). This run is mostly

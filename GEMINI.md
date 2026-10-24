@@ -16,7 +16,19 @@
 
 - All code must adhere to `AGENTS.md` Part One:
   - 64-bit RTE emulated precision on all rendering paths (`positionHigh` + `positionLow`, `mvpRelativeToEye`).
-  - Add-only `ShaderDefine` registry (never reorder or delete bits).
+  - Add-only three-word shader define registry (never reorder, renumber or delete bits):
+    `ShaderDefine`, `ShaderDefineHi`, `ShaderDefineExt`. Lo and hi bits 0-30 are full; bit 31
+    stays reserved in every word.
+    New axes claim an Ext bit within the owning subsystem's range in
+    `Tools/visual-regression/fixtures/shader-registry-layout.json`. Activating an existing
+    reserved axis flips its ledger `status` to `consumed` and updates consumer records,
+    preserving its name, word, bit and owner; the flip lands with a qualified consumer (an
+    engine read of the bit by name), never an engine literal. Pass all three words through
+    `preprocess(code, defines, definesHi, definesExt)` and
+    `getOrCreate(sourceId, source, defines, label, keySalt?, definesHi?, definesExt?)`.
+    Cloud Ext allocations stay at bit 20 or below (`definesExt < 2^21`) because the planned
+    W10b renderer source-cache keys use `flags + definesExt * 2^32` (plan N6, as the
+    `ShaderDefineExt` doc comment at `WebGPUShaderDefines.ts:1486-1494` states).
   - Debug pragma wrapping (`stripPragmaPlugin`) for all non-critical logs.
   - Upstream-seamless fork comment standard (no tracker, batch, or agent IDs in engine code).
 

@@ -268,7 +268,18 @@ audit doc is held behind nine corrections (`R-2026-09-16-11`), with its `_lane-o
 `cesium-webgpu-worker-archive/lanes-2026-09-16/` rather than tracked.
 
 **Astra's 2026-09-21 → 09-25 cloud stack: a HELD wave (added 2026-09-26, `R-2026-09-26-1`, `-8`,
-`-9`).** The next stack (81 files, 37 units) was audited read-only at `a76d42b3f8`, revised at `b263d8ac5e`
+`-9`) — superseded for this stack on 2026-10-22; the text after the correction is the 2026-09-26 record.**
+*[Corrected by the records batch, 2026-10-24, seat ruling `R-2026-10-24-S12`: `R-2026-10-22-11` (MQ-C1) rules "Option A:
+the 2026-10-21 directive supersedes R-2026-09-26-8 and closes the 10-08 MQ-A1/MQ-A2 for this program; the object is the
+122-unit stack on the current tip, the old frozen stack and the 09-27 chain are archived". `R-2026-10-23-M4` (maintainer,
+quoted): "Let Codex continue on its original branch for new cloud work while the seat re-lands the stack with Opus leads."
+Its effect, as the rulings file records it: Codex (Astra) works in its own workspace/branch (`cesium-astra-20260926`
+lineage) on new cloud work, the seat does not dispatch Codex onto the landing waves any more, and the seat re-lands "the
+banked 138-unit stack wave by wave (W2..W12)" (R-11 writes 122 units and M4 writes 138; both are quoted as written). So
+the held-wave order below (A1 → A3 behind P2) no longer governs this stack, and "No new cloud feature from Astra until A1
+lands" is replaced by M4 for new work on Codex's own branch; the stack's status is the section "Cloud + water re-landing
+(W-waves)" below, and the later statements of record rounds 8 and 9 that the wave "stays HELD pending P2" are history
+in the same way. Rulings: [`MAINTAINER_RULINGS_2026-10-22.md`](MAINTAINER_RULINGS_2026-10-22.md).]* The next stack (81 files, 37 units) was audited read-only at `a76d42b3f8`, revised at `b263d8ac5e`
 ([`ASTRA_WORK_AUDIT_2026-09-25.md`](ASTRA_WORK_AUDIT_2026-09-25.md)) and is not landable as it stands;
 the ruled direction returns it to Astra. **The Astra cloud wave — batches A1 → A2a → A2b → A2c → A3 —
 is HELD pending P2, Astra's return** (strip, fix list, rebase in a fresh clone, re-cut), **and P2 waits
@@ -741,6 +752,34 @@ re-landed values. The old→new map (25 rows) is banked at
 forward:** a document that cites a landed commit's hash may only be written/edited after that
 commit is pushed — a hash cited before the push is exactly the kind of citation a future redate
 invalidates.
+
+### Cloud + water re-landing (W-waves) (not a numbered campaign)
+
+**Launched 2026-10-21** (plan draft 1 of that date,
+`cesium-webgpu-worker-archive/lanes-2026-10-21/cloud-cartography/CLOUD_WATER_LANDING_PLAN_2026-10-21.md`) under the
+maintainer's rulings `R-2026-10-22-1` … `-15` and their addenda `R-2026-10-23-M1` … `-M4`
+([`MAINTAINER_RULINGS_2026-10-22.md`](MAINTAINER_RULINGS_2026-10-22.md), which also tables the seat rulings S1-S11).
+`R-2026-10-22-11` makes the 122-unit stack on the current tip the program's object and archives the old frozen stack and
+the 09-27 chain (C13's held-wave paragraph above carries the correction). Recorded here by the records batch under seat
+ruling `R-2026-10-24-S12`. Rows: `DEFERRED_WORK.md` ledger intake 2 (Batch 1591) and "2026-10-24 — records batch"; landing
+table: `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-23/24 …)".
+**Landed:** the water as Batches 1585/1586 (`16e093aef6`, `156509c929`, committed 2026-10-23 23:27 and 23:31 EDT; tree
+`9e6bcfb7`; opt-in, the default globe unchanged); then, on 2026-10-24, W0 (1587), KT round 5 (1588), KT-2 round 3 (1589),
+F-4 (1590), LEDGER-2 (1591), catalog A1 (1592) and W1, the cloud core and the three-word define registry (1593); and the
+S11 layout-spec repair (1594, `b7d4af5889`).
+**Critical path:** W2 → the next W-wave. W2 is Codex's nine units 3446, 3447, 3448, 3450, 3452, 3453, 3454, 3456 and 3457,
+regenerated onto the W1 registry (Opus lead Mirrormere, reviewer Himling). Round 3 read HOLDS (`REVIEW_HIMLING_P2.md`,
+with two packet corrections, C-1 and C-2, owed before the first batch), and the seat records W2 in review round 4; it
+lands in nine batches in stack order after a HOLDS (`msg-mirrormere.txt:1`; bank
+`cesium-webgpu-worker-archive/lanes-2026-10-21/w2-cloud/_lane-out-20261024-0255-r3-HOLDS-9a3ac130/`). The later W-waves
+(W3 … W12, `R-2026-10-23-M4`) are queued behind it.
+**Holds:** the F2 Edge leg before W2's first batch: the default-move proof of `R-2026-10-22-3` for W2's seven default moves
+(`LANDING_PACKET_W2.md` "Residuals for the seat" item 3), run as one wave-group Edge job under `R-2026-10-23-M1`; and the
+`NEW-WATER-STARTUP-COST` ten-run lane of `R-2026-10-23-M3` (PF-3 at ten interleaved runs, then the code-splitting
+evaluation; job sheet `cesium-webgpu-worker-archive/lanes-2026-10-21/seat-scratchpad/SEAT_NOTE_NIMRAIS_TENRUN_20261024.md`).
+**Codex:** continues new cloud work on its original branch (`R-2026-10-23-M4`); the seat does not dispatch it onto the
+landing waves, and new units written against the pre-W1 registry are regenerated by the seat's later waves (the re-base
+bill M4 accepts).
 
 ### Standing principles that block work (not row-specific)
 
