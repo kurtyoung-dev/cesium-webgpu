@@ -30369,3 +30369,123 @@ The stub spreads `FRAMEBUFFER_CONSTANTS`: `FRAMEBUFFER`, `READ_FRAMEBUFFER`, `DR
 - **Pin:** `composite-water-classification.spec.mjs` 22d (the stub's format for the mask, the renderer's bytes per provider mask, r8 and rgba; mutant: an r8 mask uploaded as rgba, RED).
 - **Repair:** defer the stub's native allocation until a WebGL-path consumer binds the texture, or let the stub adopt the renderer's labelled texture. **Acceptance:** 22d updated to one copy, the E-T device census unchanged. Class: engine. **Suggested owner:** the WebGPU stub owner.
 - **Source:** Water review pass 5 N4; round 6.
+
+## New findings — water landing reviews and Edge legs (ledger intake 2), 2026-10-23
+
+Intake of defects, DX friction, and candidate rows surfaced during the water landing's Edge rounds 1–3
+and concurrent review lanes (KT r4, Orodruin p1/p3, Angmar p1/p2, Thangorodrim R3, Nimrais, Calenhad).
+Authorising directives: CLAUDE.md Principle 9 and maintainer ruling R-2026-10-23-M2.
+Seat ruling S-R2b recorded: Chromium's localhost `file:` host behaviour is left unchanged (no fold).
+
+### BUG-WEBGPU-GLOBE-HORIZON-BISTABLE-RENDER — E-H globe-horizon viewer cell renders bistably on WebGPU (missing globe in some runs) — **OPEN** (high, base `a999954e2b`)
+
+**Status:** OPEN. Pre-existing defect at origin's tip (`a999954e2b`). Severity: high.
+
+**Owner:** unassigned; after the water landing.
+
+- **Symptom:** In the E-H globe-horizon viewer cell on WebGPU, rendering is bistable across runs: some runs fail to render the globe completely, showing only two atmosphere bands over black. Same-build repeats differ by 604,837 px (47.25% of the frame).
+- **Evidence:**
+  - Bank: `Tools/visual-regression/output/wave-end/water-landing/` (`AFTER/pf/landing-cells-report.json`, `pf-pixel-pairs.json`, and `SUMMARY_NIMRAIS.txt` finding F-2).
+  - Nimrais Edge round 1 run: BEFORE run1 == AFTER runs byte-exact (B1 == A0 == A1), while BEFORE run0 rendered the globe.
+  - Reviewer verification: `Tools/visual-regression/output/wave-end/water-landing/VERIFY_CALENHAD.md` item N1 plus the E11 pixel-pairs check (B1 == A0 == A1 byte-exact); `Tools/visual-regression/output/wave-end/water-landing-r2/SEAT_RULINGS_R2.md` item S4 (did not reproduce in round 2; both runs drew the globe); `cesium-webgpu-worker-archive/lanes-2026-10-21/kt-kit-pieces/_lane-out-20261023-0700-r5-HOLDS/REVIEW_ETTENMOORS_P4.md` item N-5.
+- **Root cause (candidate):** Unattacked worker conjecture: pipeline prewarm / async compilation timing or un-settled state causing the globe draw pass to be skipped or culled on the initial captured frame.
+- **Acceptance:** Repeated executions of the E-H globe-horizon viewer cell on WebGPU render deterministically across runs (0 differing pixels between same-build runs), with the globe consistently visible.
+
+### BUG-WEBGPU-E-T-WATER-CELL-CAPTURE-BLACK — E-T-water cell capture is entirely black on WebGPU — **OPEN** (not rated by the source, base `a999954e2b`)
+
+**Status:** OPEN. Round 1 showed black on WebGPU at base (`a999954e2b`) and on the water tree (`79200a1838db...`); round 2 did NOT reproduce at base (`Tools/visual-regression/output/wave-end/water-landing-r2/SUMMARY_NIMRAIS.txt:74`: BEFORE WebGPU draws uniform navy globe, as WebGL does). The persisting AFTER-only black frame is the water lane's FND-4 (`Tools/visual-regression/output/wave-end/water-landing-r2/SUMMARY_NIMRAIS.txt:81`; `Tools/visual-regression/output/wave-end/water-landing-r2/SEAT_RULINGS_R2.md:20-22`, dispatched to water round 5) and is not claimed by this row. Severity: not rated by the source.
+
+**Owner:** unassigned; after the water landing.
+
+- **Symptom:** In round 1, E-T-water cell capture was entirely black on WebGPU on both base and water trees, whereas WebGL drew uniform navy at BEFORE and the mask coastline at AFTER. In round 2, the defect did not reproduce at base (BEFORE WebGPU draws uniform navy globe, matching WebGL), with the black frame appearing only on AFTER (FND-4, owned by water lane).
+- **Evidence:**
+  - Bank: `Tools/visual-regression/output/wave-end/water-landing/` (`AFTER/et/RECEIPT.md`, `AFTER/et/E-T-water-webgpu-run0.png`, `AFTER/et/E-T-water-webgpu-run1.png`, and `SUMMARY_NIMRAIS.txt` finding F-3); round 2 re-measurement at `Tools/visual-regression/output/wave-end/water-landing-r2/SUMMARY_NIMRAIS.txt:74`.
+  - Verification: `Tools/visual-regression/output/wave-end/water-landing/VERIFY_CALENHAD.md` Checks that HOLD / PNGs opened ("E-T webgpu on both trees: non-black fraction 0").
+- **Acceptance:** At base, the E-T-water WebGPU capture draws the uniform navy globe on every repeat, as WebGL does (the round-2 measurement, `Tools/visual-regression/output/wave-end/water-landing-r2/SUMMARY_NIMRAIS.txt:74`), and the round-1 all-black frame does not recur; the mask-enabled WebGPU frame is accepted under FND-4 by the water lane.
+
+### BUG-VIEWER-DESTROY-THROWS-REMOVECHILD-PROBE-PAGE — `viewer.destroy()` throws `removeChild` on probe teardown page — **OPEN** (not rated by the source, base `a999954e2b`)
+
+**Status:** OPEN. Pre-existing defect on both backends (WebGL and WebGPU) and both trees (base `a999954e2b` and water candidate); a fix is under review (lane Halifirien). Severity: not rated by the source.
+
+**Owner:** unassigned; after the water landing.
+
+- **Symptom:** On probe teardown pages, class method `destroy()` at `packages/widgets/Source/Viewer/Viewer.js:1453` throws DOMException "Failed to execute 'removeChild' on 'Node'" four times, leaving `viewer.isDestroyed() === false`. No teardown completed cleanly on either tree.
+- **Evidence:**
+  - Where (read at a999954e2b): `packages/widgets/Source/Viewer/Viewer.js:1453` (`destroy()`), `:1466-1530` (`this._container.removeChild(this._element)`, `this._element.removeChild(...)`).
+  - Bank: `Tools/visual-regression/output/wave-end/water-landing/` (`SUMMARY_NIMRAIS.txt` finding F-4 and verdict table E11-T teardown row); confirmed on round 2 across 8/8 teardown pages (`Tools/visual-regression/output/wave-end/water-landing-r2/SUMMARY_NIMRAIS.txt:75`).
+  - Verification: `Tools/visual-regression/output/wave-end/water-landing/VERIFY_CALENHAD.md` items N2 and N3; probe contract corrected in KT r4 (`cesium-webgpu-worker-archive/lanes-2026-10-21/kt-kit-pieces/_lane-out-20261023-0700-r5-HOLDS/REVIEW_ETTENMOORS_P4.md` and `LANDING_PACKET_CELOS.md`) to record `threw: true`.
+- **Root cause (candidate, unmeasured):** `destroy()` assumes elements are still immediate children of `_container` and `_element` without checking `parentNode`, throwing `NotFoundError` if the probe page or widget hierarchy has modified or detached the DOM nodes prior to destruction.
+- **Acceptance:** `viewer.destroy()` completes without throwing and leaves `viewer.isDestroyed() === true` on probe teardown pages across both renderers.
+
+### BUG-RESOURCE-FILE-FOUR-SLASH-UNC-CREDENTIAL-FORWARD — `file:////` four-slash UNC url parses with empty host and forwards Authorization credentials (W0 candidate) — **OPEN** (security / correctness)
+
+**Status:** OPEN. Candidate row `W0-FILE-FOUR-SLASH-UNC-CREDENTIAL-FORWARD` surfaced by lane W0 (Thangorodrim R3).
+
+**Owner:** unassigned.
+
+- **Seat ruling S-R2b:** Chromium's localhost `file:` host behaviour is left unchanged (no fold); recorded.
+- **Symptom:** `file:///C:/a/x` -> `file:////evil.invalid/share/x` forwards the parent's `Authorization` header in Node and Firefox (under the Firefox-host shim; real Gecko through `Resource` not run) at base (`a999954e2b`) and tip.
+- **Evidence:**
+  - Where (read at a999954e2b): `packages/engine/Source/Core/Resource.js:1483-1534` (`getUrlOrigin`).
+  - At HEAD, `getUrlOrigin` at `Resource.js:1529-1533` (the ternary is at `:1531-1533`) keys on `parsed.host`; a Node host of `""` gives the key `file:`, equal to the parent's key (`file:`), improperly forwarding credentials. (The regex `/^file:\/\/([^/?#]*)/i` is W0's unlanded `fileAuthorityRegex`, which behaves the same).
+  - `new URL("file:////evil.invalid/share/x")` parses with `host === ""` in Node 22 and Firefox 155 (`href` retains four slashes).
+  - Edge 155 parses with `host === "evil.invalid"`, keying as a named host and withholding credentials (inferred from the parse, not run through `Resource`).
+  - Reproduction: `node --input-type=module -e "import Resource from './packages/engine/Source/Core/Resource.js'; const u = 'file:////evil.invalid/share/x'; const d = new Resource({ url: 'file:///C:/a/x', headers: { Authorization: 'Bearer parent-secret' } }).getDerivedResource({ url: u }); console.log(JSON.stringify(new URL(u).host), d.headers.Authorization);"` prints `"" Bearer parent-secret` at both base and tip.
+  - Review report: `cesium-webgpu-worker-archive/lanes-2026-10-21/w0-ci-repair/_lane-out-20261022-2035/LANDING_PACKET_THANGORODRIM.md` §R3 and `BEHAVIOUR_THANGORODRIM.md`.
+- **Repair:** Ensure `file:` authority parsing accounts for leading multiple slashes / UNC paths so that `file:////host/share` is treated as a remote authority and does not inherit credentials from a local `file:///` resource.
+- **Acceptance:** A derived request to `file:////evil.invalid/share/x` from a `file:///C:/...` parent strips the `Authorization` header across all supported engines (Node, Firefox, Chromium).
+
+### DX-110 — `capture-and-diff.mjs` line count decomposition: extract page-state helpers <!-- filed 2026-10-23; id allocated after the then-highest DX-109 --> — **OPEN** (tooling)
+
+**Status:** OPEN. Surfaced in KT round 4 review (Ettenmoors P4 N-3; remedy arrives with KT).
+
+**Owner:** tooling lane.
+
+- **Symptom:** `Tools/visual-regression/capture-and-diff.mjs` is 1,258 lines at base `a999954e2b` and grew to 1,320 lines on KT's unlanded branch (expanding with served-build verification), breaching the fork's 1,000-line soft ceiling.
+- **Evidence:** `cesium-webgpu-worker-archive/lanes-2026-10-21/kt-kit-pieces/_lane-out-20261023-0700-r5-HOLDS/REVIEW_ETTENMOORS_P4.md` item N-3.
+- **Remedy:** Move page-state helpers `bindRunPage` and `sceneIdentityForRun` (which arrive with KT, unlanded) from `Tools/visual-regression/capture-and-diff.mjs` into `Tools/visual-regression/lib/visual-gate-policy.mjs` or a dedicated piece.
+- **Acceptance:** The two page-state helpers move to `lib/visual-gate-policy.mjs` or a new piece, and the file shrinks by what they weigh, while `test-visual-regression-node` and visual regression runner suites remain green.
+
+### DX-111 — `Tools/lib/lane-tmp.mjs` C2 hazard: `lane-tmp.spec.mjs` deletes `packages/` when checkout sits under temp namespace <!-- filed 2026-10-23; id allocated after the then-highest DX-109 --> — **OPEN** (tooling / safety)
+
+**Status:** OPEN. Pre-existing hazard in Batch 1464 test suite, discovered during water review.
+
+**Owner:** tooling lane.
+
+- **Symptom:** `Tools/lib/lane-tmp.spec.mjs:206-211` (C2) executes `removeLaneTmp(path.join(process.cwd(), "packages"))` expecting a refusal error ("outside the system temp directory"). When a review clone or worker checkout resides under the system temp directory (`<os.tmpdir()>/cesium-lane/<name>/`), the path is considered inside the temp directory, passes the guard, and recursively deletes the checkout's `packages/` directory (5,308 tracked files unlinked).
+- **Evidence:** `cesium-webgpu-worker-archive/lanes-2026-10-21/water-review/_lane-out-20261022-2035/REVIEW_ORODRUIN_P1.md` item N10; `_lane-out-20261023-0100/REVIEW_ORODRUIN_P3.md` item N7 and appendix.
+- **Remedy:** In `Tools/lib/lane-tmp.spec.mjs`, construct the test path outside `os.tmpdir()` by construction (e.g. using a system root or sibling drive path) rather than relying on `process.cwd()`.
+- **Acceptance:** `node --test Tools/lib/lane-tmp.spec.mjs` passes cleanly when executed from within a working directory located inside `<os.tmpdir()>/cesium-lane/` without deleting repository files.
+
+### DX-112 — `mkLaneTmp` root `rmdir` race against `verify-package-smoke.spec.mjs` teardown <!-- filed 2026-10-23; id allocated after the then-highest DX-109 --> — **OPEN** (tooling / concurrency)
+
+**Status:** OPEN. Surfaced during W0 review (Angmar p2 R5 nit; subject code arrives with W0).
+
+**Owner:** tooling lane.
+
+- **Symptom:** When `CESIUM_LANE` is unset (in CI or a seat run), `laneTmpRoot()` resolves to `<tmpdir>/cesium-lane/seat`. The creator in `mkLaneTmp` has a microsecond window between `mkdirSync(root)` and `mkdtempSync` where a concurrent process running `verify-package-smoke.spec.mjs` (which arrives with W0) can execute its `test.after` empty-root `rmdir`, racing the creator.
+- **Evidence:** `cesium-webgpu-worker-archive/lanes-2026-10-21/w0-ci-repair/_lane-out-20261023-1100-r2-HOLDS/REVIEW_ANGMAR_P2.md:121-127`.
+- **Remedy:** Drop the root `rmdir` in `verify-package-smoke.spec.mjs` `test.after` and let `Tools/temp-hygiene.mjs` sweep empty lane roots. `removeLaneTmp` removes only the directory it is given (`Tools/lib/lane-tmp.mjs:168-194` at a999954e2b). The module's one lane-root removal is `sweepLaneTmp` (`:240-279`), the killed-run backstop, which `verify-package-smoke.spec.mjs` does not call.
+- **Acceptance:** Concurrent seat/CI processes and `verify-package-smoke.spec.mjs` execute without root `rmdir` race conditions during directory creation or teardown.
+
+### DX-113 — `fix-msg.mjs` should refuse commit messages with empty bodies <!-- filed 2026-10-23; id allocated after the then-highest DX-109 --> — **OPEN** (tooling / landing kit)
+
+**Status:** OPEN. Surfaced during seat landing preparations (Batch 1581 push guard refusal).
+
+**Owner:** tooling / seat landing kit.
+
+- **Symptom:** `fix-msg.mjs` normalises lane commit messages by formatting `Batch NNNN:` on the subject line and appending the mandatory `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` trailer. If an input message has no body text between the subject and the trailer, `fix-msg.mjs` emits a message containing only a subject and a trailer, which is rejected downstream by push guards (e.g., Batch 1581).
+- **Evidence:** `cesium-webgpu-worker-archive/lanes-2026-10-21/seat-scratchpad/fix-msg.mjs:1-9`; `cesium-webgpu-worker-archive/lanes-2026-10-21/seat-scratchpad/ledger-intake-2.md`.
+- **Remedy:** Update `fix-msg.mjs` to validate that at least one non-empty line of body text exists after stripping existing trailers and subject line; throw a clear error if the body is empty.
+- **Acceptance:** `fix-msg.mjs` throws an error when given a message lacking a body, preventing invalid commit messages from reaching pre-push guards.
+
+### DX-114 — Workflow readers must scratch only under `tmpdir/cesium-lane/<name>/` <!-- filed 2026-10-23; id allocated after the then-highest DX-109 --> — **OPEN** (process / workflow)
+
+**Status:** OPEN. Discovered when concurrent delta readers collided in shared harness scratchpad.
+
+**Owner:** orchestration / workflow documentation.
+
+- **Symptom:** Workflow automation scripts and delta readers wrote intermediate files (`stats.mjs`, `build.mjs`) into a common, shared harness scratchpad directory, leading to file overwrite collisions when multiple lanes executed concurrently.
+- **Evidence:** `cesium-webgpu-worker-archive/lanes-2026-10-21/seat-scratchpad/ledger-intake-2.md`.
+- **Remedy:** Enforce that all reader and builder scripts allocate scratch space exclusively via `Tools/lib/lane-tmp.mjs` under `<tmpdir>/cesium-lane/<laneName>/`, with distinct lane names per process.
+- **Acceptance:** Concurrent execution of workflow reader scripts produces zero collisions or scratchpad race conditions.
