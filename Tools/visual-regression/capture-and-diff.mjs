@@ -17,6 +17,17 @@
  *     --confirm-baseline-promotion \
  *     --update-rationale "reviewed change" --reviewed-by "name"
  *   node Tools/visual-regression/capture-and-diff.mjs --scene globe-default
+ *   node Tools/visual-regression/capture-and-diff.mjs --show-pane-status
+ *
+ * The split-screen page draws a per-run status box ("WebGPU — 342ms", the
+ * viewer creation time) over the bottom-left of each canvas, and an element
+ * screenshot captures what is drawn over the element, so the box's digits
+ * differed run to run inside the compared pixels. The box is hidden before
+ * every capture unless `--show-pane-status` is given (round 5, K5-4); the
+ * constant pane label ("WebGL" / "WebGPU") is left as it is. The historical
+ * baselines were captured with the box shown, so a historical gate still sees
+ * the old box until those baselines are refreshed by their own reviewed commit
+ * (R-2026-08-29-2); the report's `paneStatus` says which way a run went.
  *
  * Output layout:
  *   Tools/visual-regression/baseline/<scene>.webgl.png
@@ -65,6 +76,12 @@ import {
   validatePromotionRequest,
   validatePromotionSourceStability,
 } from "./lib/visual-gate-policy.mjs";
+import {
+  PANE_STATUS_SELECTOR,
+  restoreSceneClockInPage,
+  setPaneStatusVisibilityInPage,
+  snapshotSceneClockInPage,
+} from "./lib/split-screen-page-state.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENES_PATH = path.join(__dirname, "scenes.json");
@@ -87,6 +104,8 @@ export function parseArgs(argv) {
     // Additive, default-off. Absent, every downstream decision is byte-for-byte
     // what it was before this flag existed.
     servedBase: null,
+    // Round 5, K5-4: the per-run status box is hidden unless asked for.
+    showPaneStatus: false,
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -99,6 +118,7 @@ export function parseArgs(argv) {
     // become a LOUD refusal downstream, not a silent fall-back to the origin
     // scenes.json hard-codes — which is the port this override exists to escape.
     else if (a === "--served-base") args.servedBase = argv[++i] ?? "";
+    else if (a === "--show-pane-status") args.showPaneStatus = true;
     else if (a === "--confirm-baseline-promotion") {
       args.confirmBaselinePromotion = true;
     } else if (a === "--update-rationale") {
@@ -158,6 +178,61 @@ export function resolveBaseUrl(configuredBaseUrl, servedBase = null) {
   rewritten.protocol = override.protocol;
   rewritten.host = override.host;
   return { url: rewritten.href, origin: override.origin, error: null };
+}
+
+/**
+ * The run's page binding: the URL it navigates, the page its scene identities
+ * bind, and the origin it was served from.
+ *
+ * WHY THE IDENTITY BINDS THE DECLARED PAGE, NOT THE SERVED ONE (round 4, F2).
+ * A scene identity names what is rendered: the scene (camera, setup, setup
+ * file bytes), the page under test, the settle frames and the viewport. The
+ * served origin names the server, which is not part of the picture; folding
+ * the resolved URL in made every historical gate read NON_CERTIFYING
+ * (`MANIFEST_MISMATCH:sceneIdentity`) whenever a tree was served on a port other
+ * than the one scenes.json declares (Calenhad B3, the 2026-10-22 water leg on
+ * 8094/8096). The identity therefore takes `configuredBaseUrl`, the scenes.json
+ * value, which is constant across every served origin, and keeps every
+ * accepted manifest entry's identity as it was; the served origin is recorded
+ * beside it as `servedOrigin` (the report's `served` field).
+ *
+ * @param {string} configuredBaseUrl The `baseUrl` from scenes.json.
+ * @param {string|null} servedBase The `--served-base` override, or null.
+ * @returns {{url: string, origin: string|null, error: string|null,
+ *   configuredBaseUrl: string, servedOrigin: string|null}} `url`, `origin`
+ *   and `error` as {@link resolveBaseUrl}; `servedOrigin` is the origin of
+ *   `url` (null on error).
+ */
+export function bindRunPage(configuredBaseUrl, servedBase = null) {
+  const resolved = resolveBaseUrl(configuredBaseUrl, servedBase);
+  let servedOrigin = null;
+  if (resolved.error === null) {
+    try {
+      servedOrigin = new URL(resolved.url).origin;
+    } catch {
+      servedOrigin = null;
+    }
+  }
+  return { ...resolved, configuredBaseUrl, servedOrigin };
+}
+
+/**
+ * One scene's identity in this run: what is rendered, independent of the
+ * origin and port the page was served from (see {@link bindRunPage}).
+ *
+ * @param {object} scene A scenes.json scene.
+ * @param {{configuredBaseUrl: string}} binding A {@link bindRunPage} result.
+ * @param {{settleFrames: number, viewport: object,
+ *   setupFileSha256?: string|null}} run
+ * @returns {string} The sha256 identity.
+ */
+export function sceneIdentityForRun(scene, binding, run) {
+  return createSceneIdentity(scene, {
+    baseUrl: binding.configuredBaseUrl,
+    settleFrames: run.settleFrames,
+    viewport: run.viewport,
+    setupFileSha256: run.setupFileSha256,
+  });
 }
 
 const WAVE_END_COMMIT_PATTERN = /^[0-9a-f]{40}$/i;
@@ -504,7 +579,13 @@ async function decodePngInPage(page, pngBuffer) {
  * decode those back to raw RGBA in the page using
  * `createImageBitmap` so the diff comparator works byte-for-byte.
  */
-async function captureCanvases(page) {
+export async function captureCanvases(page, { showPaneStatus = false } = {}) {
+  // Round 5, K5-4: the per-run status box sits over each canvas; an element
+  // screenshot would capture its timing digits into the compared pixels.
+  const paneStatusElements = await page.evaluate(
+    setPaneStatusVisibilityInPage,
+    { selector: PANE_STATUS_SELECTOR, show: showPaneStatus },
+  );
   // Tag both canvases so the locator can find them deterministically
   // even if the page has other canvases (FPS overlay etc.).
   await page.evaluate(() => {
@@ -529,7 +610,15 @@ async function captureCanvases(page) {
     decodePngInPage(page, webglPng),
     decodePngInPage(page, webgpuPng),
   ]);
-  return { webgl, webgpu };
+  return {
+    webgl,
+    webgpu,
+    paneStatus: {
+      selector: PANE_STATUS_SELECTOR,
+      shown: showPaneStatus,
+      elements: paneStatusElements,
+    },
+  };
 }
 
 /**
@@ -747,16 +836,16 @@ async function main() {
   }
 
   const cfg = JSON.parse(await fs.readFile(SCENES_PATH, "utf8"));
-  const resolvedBase = resolveBaseUrl(cfg.baseUrl, args.servedBase);
-  if (resolvedBase.error !== null) {
-    console.error(`[visual-regression] ${resolvedBase.error}`);
+  const binding = bindRunPage(cfg.baseUrl, args.servedBase);
+  if (binding.error !== null) {
+    console.error(`[visual-regression] ${binding.error}`);
     process.exit(2);
   }
-  if (resolvedBase.origin !== null) {
+  if (binding.origin !== null) {
     console.log(
-      `[visual-regression] served-base override: ${cfg.baseUrl} -> ${resolvedBase.url}`,
+      `[visual-regression] served-base override: ${cfg.baseUrl} -> ${binding.url}`,
     );
-    cfg.baseUrl = resolvedBase.url;
+    cfg.baseUrl = binding.url;
   }
   const scenes = args.scene
     ? cfg.scenes.filter((s) => s.name === args.scene)
@@ -906,7 +995,22 @@ async function main() {
     // the scene declares none) and the run gained `expectations` plus
     // `summary.expectationCounts`. A version that does not move when the
     // schema does is worse than no version at all.
-    schemaVersion: 3,
+    // 4 — additive: the run gained `served` (the declared page, the URL
+    // navigated and the served origin), because `sceneIdentity` no longer
+    // carries the served origin (see bindRunPage).
+    // 5 — additive: the run gained `paneStatus` and each scene
+    // `paneStatus` (round 5, K5-4: the per-run status box hidden or shown)
+    // and `clockAtCapture` (K5-5: the instant the capture shows).
+    schemaVersion: 5,
+    paneStatus: {
+      selector: PANE_STATUS_SELECTOR,
+      shown: args.showPaneStatus,
+    },
+    served: {
+      configuredBaseUrl: binding.configuredBaseUrl,
+      url: binding.url,
+      servedOrigin: binding.servedOrigin,
+    },
     startedAt: new Date().toISOString(),
     threshold: args.threshold,
     thresholdRole: "migration-fallback",
@@ -931,8 +1035,14 @@ async function main() {
   const promotionCandidates = [];
   for (const scene of scenes) {
     console.log(`[visual-regression] scene: ${scene.name}`);
+    // Round 5, K5-5: a setup may pin the clock; the next scene gets it back.
+    const clockBefore = await page.evaluate(snapshotSceneClockInPage);
     const appliedScene = await applyScene(page, scene, cfg.settleFrames);
-    const cap = await captureCanvases(page);
+    const cap = await captureCanvases(page, {
+      showPaneStatus: args.showPaneStatus,
+    });
+    const clockAtCapture = await page.evaluate(snapshotSceneClockInPage);
+    await page.evaluate(restoreSceneClockInPage, clockBefore);
 
     const webglPath = path.join(OUTPUT_DIR, `${scene.name}.webgl.png`);
     const webgpuPath = path.join(OUTPUT_DIR, `${scene.name}.webgpu.png`);
@@ -961,8 +1071,7 @@ async function main() {
       loadHistoricalCapture(page, baselineWebgpuPath),
     ]);
     const thresholds = resolveSceneThresholds(scene, args.threshold);
-    const sceneIdentity = createSceneIdentity(scene, {
-      baseUrl: cfg.baseUrl,
+    const sceneIdentity = sceneIdentityForRun(scene, binding, {
       settleFrames: cfg.settleFrames,
       viewport: VIEWPORT,
       setupFileSha256: appliedScene.setupFileSha256,
@@ -1101,6 +1210,8 @@ async function main() {
       ratio: gates.crossBackend.ratio,
       crossBackendStatus: gates.crossBackend.status,
       gateCounts: summary.gateCounts,
+      paneStatus: cap.paneStatus,
+      clockAtCapture,
       gates,
     });
 

@@ -75,6 +75,7 @@ export const RIG_TAGS = Object.freeze([
   "weather",
   "globe",
   "skybox",
+  "water",
 ]);
 
 /** `readiness.kind` vocabulary a rig may declare. */

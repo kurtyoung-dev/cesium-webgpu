@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 220,
+  total: 230,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count reached 17
@@ -53,7 +53,7 @@ const REGISTRY_CENSUS = {
     // It is 39 because the cloud family's probe-kit harvest (round 1) added
     // 22: the scenes of the ten probes that round archived and of the six it
     // moved onto the runtime, each re-declared as data. None is `wave-end`.
-    cloud: 39,
+    cloud: 43,
     // The polar family's harvest re-declared every scene its probes captured
     // or measured, for the kept probe and the archived ones alike, so a
     // retired probe's scene stays on record: one rig per capture, with the
@@ -61,7 +61,7 @@ const REGISTRY_CENSUS = {
     // conclusion.
     polar: 27,
     "orbital-ladder": 4,
-    "saved-view": 3,
+    "saved-view": 5,
     // The Sandcastle2 Video demo joined the three legacy-gallery demos for
     // `probe-stub-texture-uploads.mjs`.
     sandcastle: 4,
@@ -105,8 +105,13 @@ const REGISTRY_CENSUS = {
     // The resource-lifetime leg added one globe rig (the default globe at 4x
     // MSAA through a resize ladder) and the first skybox rig (the default sky
     // box with its sources swapped twice in place).
-    globe: 32,
+    globe: 35,
     skybox: 1,
+    // The landing cells' teardown and device-loss scene for the water landing
+    // (E-T in E11): the coast camera the water lane's job sheet names, with the
+    // enhanced ocean and the HIGH water tier on so the water's GPU owners are
+    // alive when the scene is torn down.
+    water: 1,
   },
 };
 
