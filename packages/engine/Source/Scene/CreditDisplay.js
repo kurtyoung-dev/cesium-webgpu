@@ -685,10 +685,10 @@ class CreditDisplay {
       false,
     );
 
-    this.container.removeChild(this._cesiumCreditContainer);
-    this.container.removeChild(this._screenContainer);
-    this.container.removeChild(this._expandLink);
-    this.viewport.removeChild(this._lightbox);
+    this._cesiumCreditContainer.remove();
+    this._screenContainer.remove();
+    this._expandLink.remove();
+    this._lightbox.remove();
 
     return destroyObject(this);
   }

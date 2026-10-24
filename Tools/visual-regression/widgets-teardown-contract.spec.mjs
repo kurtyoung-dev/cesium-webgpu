@@ -3,7 +3,7 @@
 //
 //   node --test Tools/visual-regression/widgets-teardown-contract.spec.mjs
 //
-// @purpose Pins that the three inspector mixins remove and destroy the panel they append to the caller's container, that FullscreenButtonViewModel unsubscribes from the document it subscribed to, that Geocoder removes every listener its constructor added, and that Animation removes the <style> node it inserted.
+// @purpose Pins Viewer and CreditDisplay teardown after DOM detachment, error propagation, inspector panel cleanup, FullscreenButtonViewModel document unsubscription, Geocoder listener removal, and Animation style removal.
 // @status ACTIVE
 //
 // ── WHY THE SOURCES ARE COMPILED RATHER THAN IMPORTED ───────────────────────
@@ -35,6 +35,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
+import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..", "..");
@@ -315,6 +316,337 @@ function runInspectorMixinCase(relativePath, inspectorName) {
   viewer.destroy();
 
   return { viewer, panel };
+}
+
+function makeViewerTeardownFixture() {
+  const document = makeDocument();
+  const realDestroyObject = loadWidgetModule(
+    "packages/engine/Source/Core/destroyObject.js",
+    { DeveloperError },
+  );
+  const bindings = {
+    defined,
+    destroyObject: realDestroyObject,
+    BoundingSphere: class {},
+    Cartesian3: class {},
+    JulianDate: class {},
+    ScreenSpaceEventType: { LEFT_CLICK: 1, LEFT_DOUBLE_CLICK: 2 },
+  };
+  const Viewer = loadWidgetModule(
+    "packages/widgets/Source/Viewer/Viewer.js",
+    bindings,
+  );
+  const CesiumWidget = loadWidgetModule(
+    "packages/engine/Source/Widget/CesiumWidget.js",
+    bindings,
+  );
+  const CreditDisplay = loadWidgetModule(
+    "packages/engine/Source/Scene/CreditDisplay.js",
+    bindings,
+  );
+  // Execute the real Scene drain without constructing a renderer or GPU context.
+  const sceneFile = path.join(
+    SOURCE_ROOT,
+    "packages/engine/Source/Scene/Scene.js",
+  );
+  const sceneCleanup = fs
+    .readFileSync(sceneFile, "utf8")
+    .match(/^function destroySceneResources\(scene\) \{[\s\S]*?^\}/m);
+  assert.ok(sceneCleanup, "Scene cleanup is available for execution");
+  const destroySceneResources = vm.compileFunction(
+    `${sceneCleanup[0]}; return destroySceneResources;`,
+    ["defined"],
+    { filename: sceneFile },
+  )(defined);
+  const counters = {};
+  const count = (key) => {
+    counters[key] = (counters[key] ?? 0) + 1;
+  };
+  const owner = (key) => ({
+    isDestroyed: () => false,
+    destroy() {
+      count(key);
+      return realDestroyObject(this);
+    },
+  });
+  const append = (parent, className) => {
+    const node = document.createElement("div");
+    node.className = className;
+    parent.appendChild(node);
+    return node;
+  };
+  const container = append(document.body, "host");
+  const element = append(container, "cesium-viewer");
+  const toolbar = append(element, "cesium-viewer-toolbar");
+  const widgetContainer = append(
+    element,
+    "cesium-viewer-cesiumWidgetContainer",
+  );
+  const bottom = append(element, "cesium-viewer-bottom");
+  const widget = Object.create(CesiumWidget.prototype);
+  widget._element = append(widgetContainer, "cesium-widget");
+  widget._innerCreditContainer = append(bottom, "cesium-widget-credits");
+  widget._eventHelper = { removeAll: () => count("widgetEvents") };
+  widget._screenSpaceEventHandler = owner("screenHandler");
+  const inputActions = [];
+  widget._screenSpaceEventHandler.removeInputAction = (type) => {
+    inputActions.push(type);
+  };
+  widget._scene = owner("scene");
+  widget._scene._context = owner("context");
+  const creditDisplay = Object.create(CreditDisplay.prototype);
+  creditDisplay.container = widget._innerCreditContainer;
+  creditDisplay.viewport = widget._element;
+  creditDisplay._cesiumCreditContainer = append(
+    creditDisplay.container,
+    "cesium-credit-logoContainer",
+  );
+  creditDisplay._screenContainer = append(
+    creditDisplay.container,
+    "cesium-credit-textContainer",
+  );
+  creditDisplay._expandLink = append(
+    creditDisplay.container,
+    "cesium-credit-expand-link",
+  );
+  creditDisplay._lightbox = append(
+    creditDisplay.viewport,
+    "cesium-credit-lightbox-overlay",
+  );
+  creditDisplay._hideLightbox = () => {};
+  creditDisplay._hideLightboxOnEscape = () => {};
+  creditDisplay._lightbox.addEventListener(
+    "click",
+    creditDisplay._hideLightbox,
+    false,
+  );
+  creditDisplay._lightbox.addEventListener(
+    "keydown",
+    creditDisplay._hideLightboxOnEscape,
+    false,
+  );
+  const creditErrors = [];
+  creditDisplay.destroy = function () {
+    count("creditDisplay");
+    try {
+      return CreditDisplay.prototype.destroy.call(this);
+    } catch (error) {
+      creditErrors.push(error);
+      throw error;
+    }
+  };
+  widget._scene._frameState = { creditDisplay };
+  widget._scene.destroy = function () {
+    count("scene");
+    destroySceneResources(this);
+    return realDestroyObject(this);
+  };
+
+  const viewer = Object.create(Viewer.prototype);
+  viewer._container = container;
+  viewer._element = element;
+  viewer._toolbar = toolbar;
+  viewer._cesiumWidget = widget;
+  viewer._eventHelper = { removeAll: () => count("viewerEvents") };
+  viewer._entityCollectionChangedListenerRemovers = new Map([
+    [{}, { removeListener: () => count("entityListener") }],
+  ]);
+  viewer._destroyClockViewModel = true;
+  viewer._clockViewModel = owner("clock");
+  const nodes = {
+    element,
+    toolbar,
+    creditLogo: creditDisplay._cesiumCreditContainer,
+    creditText: creditDisplay._screenContainer,
+    creditExpand: creditDisplay._expandLink,
+    creditLightbox: creditDisplay._lightbox,
+  };
+  const owners = {};
+  for (const key of [
+    "animation",
+    "timeline",
+    "fullscreenButton",
+    "vrButton",
+    "infoBox",
+    "selectionIndicator",
+  ]) {
+    const classKey = key.replace("Button", "");
+    const node = append(element, `cesium-viewer-${classKey}Container`);
+    const resource = owner(key);
+    resource.container = node;
+    owners[key] = resource;
+    viewer[`_${key}`] = resource;
+    nodes[key] = node;
+  }
+  viewer._timeline.removeEventListener = (name) => {
+    assert.equal(name, "settime");
+    count("timelineListener");
+  };
+  for (const key of ["fullscreen", "vr", "vrMode"]) {
+    viewer[`_${key}Subscription`] = {
+      dispose: () => count(`${key}Subscription`),
+    };
+  }
+
+  function assertDestroyed() {
+    assert.equal(viewer.isDestroyed(), true);
+    assert.equal(widget.isDestroyed(), true);
+    assert.equal(creditDisplay.isDestroyed(), true);
+    assert.deepEqual(
+      creditErrors,
+      [],
+      "Scene cleanup did not hide a credit error",
+    );
+    assert.equal(nodes.creditLightbox.listeners.length, 0);
+    assert.equal(widget._useDefaultRenderLoop, false);
+    assert.equal(widget._renderLoopRunning, false);
+    assert.deepEqual(inputActions, [1, 2]);
+    assert.equal(viewer._entityCollectionChangedListenerRemovers.size, 0);
+    for (const key of [
+      ...Object.keys(owners),
+      "clock",
+      "screenHandler",
+      "scene",
+      "context",
+      "creditDisplay",
+      "widgetEvents",
+      "viewerEvents",
+      "entityListener",
+      "timelineListener",
+      "fullscreenSubscription",
+      "vrSubscription",
+      "vrModeSubscription",
+    ]) {
+      assert.equal(counters[key], 1, `${key} is cleaned up exactly once`);
+    }
+    for (const [key, node] of Object.entries(nodes)) {
+      assert.equal(node.parentNode, null, `${key} is detached`);
+    }
+    assert.equal(widget._element.parentNode, null);
+    assert.equal(widget._innerCreditContainer.parentNode, null);
+  }
+  return {
+    document,
+    container,
+    viewer,
+    widget,
+    creditDisplay,
+    creditErrors,
+    nodes,
+    owners,
+    assertDestroyed,
+  };
+}
+
+function stripWidgetDom(document) {
+  document.querySelectorAll = (selector) => {
+    const matches = [];
+    const visit = (node) => {
+      if (`.${node.className}` === selector) {
+        matches.push(node);
+      }
+      node.childNodes.forEach(visit);
+    };
+    visit(document.body);
+    return matches;
+  };
+  // This DOM-only fixture has no rendered canvas or capture geometry.
+  document.querySelector = () => null;
+  return vm.compileFunction(`return (${STRIP_WIDGETS_SOURCE})();`, [
+    "document",
+  ])(document);
+}
+
+test("Viewer teardown after capture strips widget DOM completes resource cleanup", () => {
+  const fixture = makeViewerTeardownFixture();
+  const { document, viewer, nodes } = fixture;
+  const stripped = stripWidgetDom(document);
+  assert.ok(stripped.removed > 0);
+  assert.equal(nodes.toolbar.parentNode, null);
+  assert.equal(nodes.animation.parentNode, null);
+  assert.equal(nodes.timeline.parentNode, null);
+  assert.equal(nodes.fullscreenButton.parentNode, null);
+  assert.equal(nodes.creditLightbox.parentNode, null);
+  assert.equal(viewer.isDestroyed(), false);
+  let threw = null;
+  try {
+    viewer.destroy();
+  } catch (error) {
+    threw = error.message;
+  }
+  assert.deepEqual(
+    { destroyed: viewer.isDestroyed(), threw },
+    { destroyed: true, threw: null },
+  );
+  fixture.assertDestroyed();
+});
+
+test("CreditDisplay teardown after capture strips its lightbox completes without a throw", () => {
+  const { document, creditDisplay, creditErrors, nodes } =
+    makeViewerTeardownFixture();
+  stripWidgetDom(document);
+  assert.equal(nodes.creditLightbox.parentNode, null);
+  assert.doesNotThrow(() => creditDisplay.destroy());
+  assert.equal(creditDisplay.isDestroyed(), true);
+  assert.deepEqual(creditErrors, []);
+  assert.equal(nodes.creditLightbox.listeners.length, 0);
+  for (const key of [
+    "creditLogo",
+    "creditText",
+    "creditExpand",
+    "creditLightbox",
+  ]) {
+    assert.equal(nodes[key].parentNode, null);
+  }
+});
+
+for (const state of ["attached", "detached", "reparented"]) {
+  test(`Viewer teardown cleans up ${state} owned DOM`, () => {
+    const fixture = makeViewerTeardownFixture();
+    const { document, viewer, nodes } = fixture;
+    const otherParent = document.createElement("section");
+    const unrelated = document.createElement("span");
+    otherParent.appendChild(unrelated);
+    document.body.appendChild(otherParent);
+    for (const node of Object.values(nodes)) {
+      if (state === "detached") {
+        node.remove();
+      } else if (state === "reparented") {
+        otherParent.appendChild(node);
+      }
+    }
+    assert.doesNotThrow(() => viewer.destroy());
+    fixture.assertDestroyed();
+    assert.deepEqual(otherParent.childNodes, [unrelated]);
+    assert.throws(() => viewer.destroy(), /This object was destroyed/);
+  });
+}
+
+for (const failure of [
+  "DOM removal",
+  "resource destruction",
+  "widget destruction",
+]) {
+  test(`Viewer teardown propagates an unrelated error during ${failure}`, () => {
+    const { container, viewer } = makeViewerTeardownFixture();
+    const error = new Error("unexpected teardown failure");
+    const fail = () => {
+      throw error;
+    };
+    if (failure === "DOM removal") {
+      container.removeChild = fail;
+      viewer._element.remove = fail;
+    } else if (failure === "resource destruction") {
+      viewer._animation.destroy = fail;
+    } else {
+      viewer._cesiumWidget.destroy = fail;
+    }
+    assert.throws(
+      () => viewer.destroy(),
+      (actual) => actual === error,
+    );
+    assert.equal(viewer.isDestroyed(), false);
+  });
 }
 
 // ── widgets-10: the inspector mixins ────────────────────────────────────────

@@ -1463,8 +1463,8 @@ class Viewer {
       );
     }
 
-    this._container.removeChild(this._element);
-    this._element.removeChild(this._toolbar);
+    this._element.remove();
+    this._toolbar.remove();
 
     removeAllDataSourceCollectionChangedListeners(this);
     this._eventHelper.removeAll();
@@ -1494,7 +1494,7 @@ class Viewer {
     }
 
     if (defined(this._animation)) {
-      this._element.removeChild(this._animation.container);
+      this._animation.container.remove();
       this._animation = this._animation.destroy();
     }
 
@@ -1504,30 +1504,30 @@ class Viewer {
         onTimelineScrubfunction,
         false,
       );
-      this._element.removeChild(this._timeline.container);
+      this._timeline.container.remove();
       this._timeline = this._timeline.destroy();
     }
 
     if (defined(this._fullscreenButton)) {
       this._fullscreenSubscription.dispose();
-      this._element.removeChild(this._fullscreenButton.container);
+      this._fullscreenButton.container.remove();
       this._fullscreenButton = this._fullscreenButton.destroy();
     }
 
     if (defined(this._vrButton)) {
       this._vrSubscription.dispose();
       this._vrModeSubscription.dispose();
-      this._element.removeChild(this._vrButton.container);
+      this._vrButton.container.remove();
       this._vrButton = this._vrButton.destroy();
     }
 
     if (defined(this._infoBox)) {
-      this._element.removeChild(this._infoBox.container);
+      this._infoBox.container.remove();
       this._infoBox = this._infoBox.destroy();
     }
 
     if (defined(this._selectionIndicator)) {
-      this._element.removeChild(this._selectionIndicator.container);
+      this._selectionIndicator.container.remove();
       this._selectionIndicator = this._selectionIndicator.destroy();
     }
 
