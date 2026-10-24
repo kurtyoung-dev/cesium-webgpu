@@ -368,6 +368,36 @@ const READER_TABLE = [
     "a primitive topology name",
   ],
   [
+    "Renderer/WebGPU/WebGPUPrimitiveMaterialTextureSource.ts",
+    "32float",
+    "exempt",
+    "a texture format name",
+  ],
+  [
+    "Renderer/WebGPU/WebGPUPrimitiveMaterialTextureSource.ts",
+    "depth",
+    "exempt",
+    "a texture format name",
+  ],
+  [
+    "Renderer/WebGPU/WebGPUPrimitiveMaterialTextureSource.ts",
+    "ElevBand",
+    "exempt",
+    "a primitive shader-type name",
+  ],
+  [
+    "Renderer/WebGPU/WebGPUPrimitiveMaterialTextureSource.ts",
+    "int",
+    "exempt",
+    "a texture format name",
+  ],
+  [
+    "Renderer/WebGPU/WebGPUPrimitiveMaterialTextureSource.ts",
+    "stencil",
+    "exempt",
+    "a depth texture format name",
+  ],
+  [
     "Renderer/WebGPU/WebGPUPrimitiveShaders.js",
     "Lit",
     "exempt",

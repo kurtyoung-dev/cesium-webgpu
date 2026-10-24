@@ -48,7 +48,11 @@ const VERIFIER = fileURLToPath(
 );
 const TIMEOUT_MS = 120_000;
 const CLEAN_LIST_PATH = "Tools/c16/comment-marker-cleanlist.txt";
+const GRANDFATHER_LIST_PATH = "Tools/c16/comment-marker-grandfather.txt";
+const GRANDFATHER_REASON = "2026-08-21 grammar widening";
 const SOURCE_PATH = "packages/engine/Source/Scene/HistoricalFixture.js";
+const RENAMED_SOURCE_PATH =
+  "packages/engine/Source/Scene/HistoricalFixtureRenamed.js";
 const MERGE_SOURCE_PATH = "packages/engine/Source/Scene/MergeParentFixture.js";
 const ODD_SOURCE_PATH = "packages/engine/Source/Scene/Odd marker fixture.js";
 const COLLISION_SLASH_PATH = "packages/engine/Source/Collision/Fixture.js";
@@ -670,7 +674,7 @@ function commitFixture(root, batch, subject) {
  * Initialize a temporary history fixture with an optional strict source path.
  *
  * @param {import("node:test").TestContext} t Test context.
- * @param {{cleanListed?: boolean, cleanListEntries?: string[], cleanListPresent?: boolean, source?: string|null}} [options] Baseline shape.
+ * @param {{cleanListed?: boolean, cleanListEntries?: string[], cleanListPresent?: boolean, grandfatherRows?: Array<{file: string, ruleId: string}>, grandfatherListPresent?: boolean, source?: string|null}} [options] Baseline shape.
  * @returns {{root: string, base: string}} Fixture identity.
  */
 function createHistoryFixture(t, options = {}) {
@@ -707,6 +711,17 @@ function createHistoryFixture(t, options = {}) {
         .join("")}`,
     );
   }
+  if (options.grandfatherListPresent !== false) {
+    writeFixture(
+      root,
+      GRANDFATHER_LIST_PATH,
+      `# fixture grandfather list\n${(options.grandfatherRows ?? [])
+        .map(
+          ({ file, ruleId }) => `${file}\t${ruleId}  # ${GRANDFATHER_REASON}\n`,
+        )
+        .join("")}`,
+    );
+  }
   if (options.source !== null) {
     writeFixture(
       root,
@@ -733,6 +748,69 @@ function mutateFixturePolicy(root, relative, mutate) {
   assert.notEqual(after, before, `policy mutant was a no-op: ${relative}`);
   writeFixture(root, relative, after);
   return { before, after };
+}
+
+/** Make inherited clean-list resolution inert in a disposable verifier. */
+function disableInheritedCleanListResolution(source) {
+  const eol = source.includes("\r\n") ? "\r\n" : "\n";
+  const active = [
+    "const currentSourceEntries = [...currentSources.values()];",
+    "    for (const priorEntry of parentEnforced) {",
+  ].join(eol);
+  const inert = [
+    "const currentSourceEntries = [...currentSources.values()];",
+    "    for (const priorEntry of []) {",
+  ].join(eol);
+  assert.equal(source.split(active).length, 2);
+  return source.replace(active, inert);
+}
+
+/** Make historical exact grandfather classification ignore every row. */
+function disableHistoricalGrandfatherClassification(source) {
+  const eol = source.includes("\r\n") ? "\r\n" : "\n";
+  const active = [
+    "const grandfatherRows = activeGrandfatherLists.get(snapshot.commit) ?? [];",
+    "    const classified = policy.classifyFindings(",
+  ].join(eol);
+  const inert = [
+    "const grandfatherRows = [];",
+    "    const classified = policy.classifyFindings(",
+  ].join(eol);
+  assert.equal(source.split(active).length, 2);
+  return source.replace(active, inert);
+}
+
+/** Make the shrink-only addition gate unreachable. */
+function disableGrandfatherAdditionRatchet(source) {
+  const active = "if (parentHasGrandfatherPolicy) {";
+  const inert = "if (false && parentHasGrandfatherPolicy) {";
+  assert.equal(source.split(active).length, 2);
+  return source.replace(active, inert);
+}
+
+/** Make stale-row validation unreachable while retaining its source shape. */
+function disableHistoricalStaleGrandfatherValidation(source) {
+  const active = "const staleRows = policy.findStaleGrandfatherRows(";
+  const inert =
+    "const staleRows = [];\n    if (false) policy.findStaleGrandfatherRows(";
+  assert.equal(source.split(active).length, 2);
+  return source.replace(active, inert);
+}
+
+/** Omit unchanged sources whose grandfather row was removed. */
+function disableRemovedGrandfatherSourceScan(source) {
+  const active = "for (const row of removedGrandfatherRows) {";
+  const inert = "for (const row of []) {";
+  assert.equal(source.split(active).length, 2);
+  return source.replace(active, inert);
+}
+
+/** Broaden the captured live guard from exact pairs to path-prefix matches. */
+function broadenGrandfatherMatchingByPathPrefix(source) {
+  const active = "(row) => grandfatherKey(row.file, row.ruleId) === key,";
+  const mutant = "(row) => finding.file.startsWith(row.file),";
+  assert.equal(source.split(active).length, 2);
+  return source.replace(active, mutant);
 }
 
 /** Install a real external ESM module that records if policy loading reaches it. */
@@ -2500,6 +2578,281 @@ test("a newly added ratchet entry activates in its own commit and descendants", 
   assert.equal(descendantReport.markerGuard.errors[0].ruleId, "batch-id");
 });
 
+test("historical grandfathering is exact by commit-local file and rule", (t) => {
+  const { root, base } = createHistoryFixture(t, {
+    cleanListEntries: [SOURCE_PATH, RENAMED_SOURCE_PATH],
+    grandfatherRows: [{ file: SOURCE_PATH, ruleId: "campaign-row-id" }],
+    source:
+      "// C15-G3 keeps the baseline pair live.\nexport const fixture = 0;\n",
+  });
+  writeFixture(
+    root,
+    SOURCE_PATH,
+    [
+      "// C15-G3 is the exact grandfathered pair.",
+      "// Batch 999 is a different rule in the same file.",
+      "export const fixture = 1;",
+      "",
+    ].join("\n"),
+  );
+  writeFixture(
+    root,
+    RENAMED_SOURCE_PATH,
+    "// C15-G3 is the same rule in a different file.\nexport const sibling = 1;\n",
+  );
+  const head = commitFixture(root, 101, "exercise exact grandfather pairs");
+  const args = ["--range", `${base}..${head}`, "--json"];
+
+  const result = verify(args, { repoRoot: root });
+  assert.equal(result.status, 1, result.output);
+  const report = reportOf(result);
+  assert.equal(report.markerGuard.errors.length, 2);
+  assert.deepEqual(
+    report.markerGuard.errors.map(({ file, ruleId }) => ({ file, ruleId })),
+    [
+      { file: SOURCE_PATH, ruleId: "batch-id" },
+      { file: RENAMED_SOURCE_PATH, ruleId: "campaign-row-id" },
+    ],
+  );
+  assert.deepEqual(
+    report.markerGuard.warnings.map(({ file, ruleId, grandfathered }) => ({
+      file,
+      ruleId,
+      grandfathered,
+    })),
+    [
+      {
+        file: SOURCE_PATH,
+        ruleId: "campaign-row-id",
+        grandfathered: true,
+      },
+    ],
+  );
+
+  const verifierMutation = mutateFixturePolicy(
+    root,
+    "Tools/verify-landing-compliance.mjs",
+    disableHistoricalGrandfatherClassification,
+  );
+  const disabled = verify(args, { repoRoot: root });
+  assert.equal(disabled.status, 1, disabled.output);
+  assert.equal(reportOf(disabled).markerGuard.errors.length, 3);
+  assert.equal(reportOf(disabled).markerGuard.warnings.length, 0);
+  writeFixture(
+    root,
+    "Tools/verify-landing-compliance.mjs",
+    verifierMutation.before,
+  );
+
+  mutateFixturePolicy(
+    root,
+    MARKER_GUARD_PATH,
+    broadenGrandfatherMatchingByPathPrefix,
+  );
+  const overbroad = verify(args, { repoRoot: root });
+  assert.equal(overbroad.status, 3, overbroad.output);
+  assert.ok(
+    reportOf(overbroad).policySemanticFailures.some(
+      (failure) => failure.control === "grandfather-classification-exact-pair",
+    ),
+  );
+});
+
+test("the historical grandfather ledger is shrink-only after introduction", (t) => {
+  const { root, base } = createHistoryFixture(t, { cleanListed: true });
+  writeFixture(
+    root,
+    GRANDFATHER_LIST_PATH,
+    `# unauthorized expansion\n${SOURCE_PATH}\tbatch-id  # ${GRANDFATHER_REASON}\n`,
+  );
+  writeFixture(
+    root,
+    SOURCE_PATH,
+    "// Batch 999 attempted a same-commit exception.\nexport const fixture = 1;\n",
+  );
+  const head = commitFixture(root, 101, "attempt grandfather expansion");
+  const args = ["--range", `${base}..${head}`, "--json"];
+
+  const result = verify(args, { repoRoot: root });
+  assert.equal(result.status, 1, result.output);
+  const report = reportOf(result);
+  assert.equal(report.markerGuard.ratchetErrors, 1);
+  assert.equal(report.markerGuard.errors.length, 1);
+  assert.equal(
+    report.markerGuard.errors[0].ruleId,
+    "grandfather-ratchet-addition",
+  );
+  assert.equal(report.markerGuard.warnings.length, 1);
+  assert.equal(report.markerGuard.warnings[0].grandfathered, true);
+
+  mutateFixturePolicy(
+    root,
+    "Tools/verify-landing-compliance.mjs",
+    disableGrandfatherAdditionRatchet,
+  );
+  const inert = verify(args, { repoRoot: root });
+  assert.equal(inert.status, 0, inert.output);
+  assert.equal(reportOf(inert).markerGuard.errors.length, 0);
+  assert.equal(reportOf(inert).markerGuard.warnings.length, 1);
+});
+
+test("removing a grandfather row scans its unchanged source", (t) => {
+  const { root, base } = createHistoryFixture(t, {
+    cleanListed: true,
+    grandfatherRows: [{ file: SOURCE_PATH, ruleId: "batch-id" }],
+    source:
+      "// Batch 999 keeps the baseline pair live.\nexport const fixture = 0;\n",
+  });
+  writeFixture(root, GRANDFATHER_LIST_PATH, "# retired grandfather pair\n");
+  const head = commitFixture(root, 101, "retire grandfather row only");
+  const args = ["--range", `${base}..${head}`, "--json"];
+
+  const result = verify(args, { repoRoot: root });
+  assert.equal(result.status, 1, result.output);
+  const report = reportOf(result);
+  assert.equal(report.markerGuard.errors.length, 1);
+  assert.equal(report.markerGuard.errors[0].file, SOURCE_PATH);
+  assert.equal(report.markerGuard.errors[0].ruleId, "batch-id");
+  assert.deepEqual(report.markerGuard.errors[0].gitStatuses, [
+    "GRANDFATHER_REMOVE",
+  ]);
+  assert.equal(report.markerGuard.warnings.length, 0);
+
+  mutateFixturePolicy(
+    root,
+    "Tools/verify-landing-compliance.mjs",
+    disableRemovedGrandfatherSourceScan,
+  );
+  const inert = verify(args, { repoRoot: root });
+  assert.equal(inert.status, 0, inert.output);
+  assert.equal(reportOf(inert).markerGuard.scanned, 0);
+});
+
+test("a grandfather row can retire with the exact source finding", (t) => {
+  const { root, base } = createHistoryFixture(t, {
+    cleanListed: true,
+    grandfatherRows: [{ file: SOURCE_PATH, ruleId: "batch-id" }],
+    source:
+      "// Batch 999 keeps the baseline pair live.\nexport const fixture = 0;\n",
+  });
+  writeFixture(root, GRANDFATHER_LIST_PATH, "# retired grandfather pair\n");
+  writeFixture(root, SOURCE_PATH, "export const fixture = 1;\n");
+  const head = commitFixture(root, 101, "retire cleaned grandfather row");
+
+  const result = verify(["--range", `${base}..${head}`, "--json"], {
+    repoRoot: root,
+  });
+  assert.equal(result.status, 0, result.output);
+  const report = reportOf(result);
+  assert.equal(report.markerGuard.errors.length, 0);
+  assert.equal(report.markerGuard.warnings.length, 0);
+});
+
+test("a retained grandfather row fails when its exact pair self-cleans", (t) => {
+  const { root, base } = createHistoryFixture(t, {
+    cleanListed: true,
+    grandfatherRows: [{ file: SOURCE_PATH, ruleId: "batch-id" }],
+    source:
+      "// Batch 999 keeps the baseline pair live.\nexport const fixture = 0;\n",
+  });
+  writeFixture(root, SOURCE_PATH, "export const fixture = 1;\n");
+  const head = commitFixture(root, 101, "leave stale grandfather row");
+  const args = ["--range", `${base}..${head}`, "--json"];
+
+  const result = verify(args, { repoRoot: root });
+  assert.equal(result.status, 1, result.output);
+  const report = reportOf(result);
+  assert.equal(report.markerGuard.staleGrandfatherRows, 1);
+  assert.equal(report.markerGuard.ratchetErrors, 1);
+  assert.equal(report.markerGuard.errors.length, 1);
+  assert.equal(report.markerGuard.errors[0].ruleId, "grandfather-row-stale");
+  assert.equal(report.markerGuard.errors[0].match, `${SOURCE_PATH} [batch-id]`);
+
+  mutateFixturePolicy(
+    root,
+    "Tools/verify-landing-compliance.mjs",
+    disableHistoricalStaleGrandfatherValidation,
+  );
+  const inert = verify(args, { repoRoot: root });
+  assert.equal(inert.status, 0, inert.output);
+  assert.equal(reportOf(inert).markerGuard.errors.length, 0);
+});
+
+test("grandfather absence is empty before introduction but structural afterward", (t) => {
+  const { root, base } = createHistoryFixture(t, {
+    cleanListed: true,
+    grandfatherListPresent: false,
+  });
+  writeFixture(
+    root,
+    SOURCE_PATH,
+    "// Batch 999 predates grandfather policy.\nexport const fixture = 1;\n",
+  );
+  const beforeIntroduction = commitFixture(
+    root,
+    101,
+    "exercise pre-grandfather history",
+  );
+  const before = verify(
+    ["--range", `${base}..${beforeIntroduction}`, "--json"],
+    { repoRoot: root },
+  );
+  assert.equal(before.status, 1, before.output);
+  const beforeReport = reportOf(before);
+  assert.equal(beforeReport.markerGuard.grandfatherPolicyAbsent, 2);
+  assert.equal(beforeReport.markerGuard.errors.length, 1);
+  assert.equal(beforeReport.markerGuard.errors[0].ruleId, "batch-id");
+
+  writeFixture(
+    root,
+    GRANDFATHER_LIST_PATH,
+    `# initial policy\n${SOURCE_PATH}\tbatch-id  # ${GRANDFATHER_REASON}\n`,
+  );
+  const introduced = commitFixture(root, 102, "introduce grandfather policy");
+  const introduction = verify(
+    ["--range", `${beforeIntroduction}..${introduced}`, "--json"],
+    { repoRoot: root },
+  );
+  assert.equal(introduction.status, 0, introduction.output);
+  const introductionReport = reportOf(introduction);
+  assert.equal(introductionReport.markerGuard.errors.length, 0);
+  assert.equal(introductionReport.markerGuard.warnings.length, 1);
+  assert.equal(introductionReport.markerGuard.warnings[0].grandfathered, true);
+
+  unlinkSync(path.join(root, ...GRANDFATHER_LIST_PATH.split("/")));
+  const removed = commitFixture(root, 103, "remove grandfather policy file");
+  const deletion = verify(["--range", `${introduced}..${removed}`, "--json"], {
+    repoRoot: root,
+  });
+  assert.equal(deletion.status, 3, deletion.output);
+  const deletionReport = reportOf(deletion);
+  assert.equal(deletionReport.structural, true);
+  assert.equal(deletionReport.role, "grandfather-list");
+  assert.equal(deletionReport.revision, removed);
+  assert.match(deletionReport.reason, /missing.*grandfather list/);
+});
+
+test("malformed historical grandfather rows are STRUCTURAL", (t) => {
+  const { root, base } = createHistoryFixture(t, { cleanListed: true });
+  writeFixture(
+    root,
+    GRANDFATHER_LIST_PATH,
+    `${SOURCE_PATH}\tbatch-id # malformed reason separator\n`,
+  );
+  const head = commitFixture(root, 101, "malform grandfather policy");
+
+  const result = verify(["--range", `${base}..${head}`, "--json"], {
+    repoRoot: root,
+  });
+  assert.equal(result.status, 3, result.output);
+  const report = reportOf(result);
+  assert.equal(report.structural, true);
+  assert.equal(report.role, "grandfather-list");
+  assert.equal(report.revision, head);
+  assert.match(report.reason, /grandfather list is malformed/);
+  assert.match(report.parseError, /invalid grandfather row/);
+});
+
 test("a marker introduced and removed later remains attributed to its commit", (t) => {
   const { root, base } = createHistoryFixture(t, { cleanListed: true });
   writeFixture(
@@ -2544,11 +2897,21 @@ test("a marker in a path added and deleted inside the range remains visible", (t
   assert.equal(report.markerGuard.pathsConsidered, 2);
   assert.equal(report.markerGuard.scanned, 1);
   assert.equal(report.markerGuard.deleted, 1);
-  assert.equal(report.markerGuard.errors.length, 1);
-  assert.equal(report.markerGuard.errors[0].commit, added);
+  assert.equal(report.markerGuard.ratchetErrors, 1);
+  assert.equal(report.markerGuard.errors.length, 2);
+  const markerFinding = report.markerGuard.errors.find(
+    (finding) => finding.ruleId === "batch-id",
+  );
+  assert.equal(markerFinding?.commit, added);
+  assert.equal(markerFinding?.file, SOURCE_PATH);
+  const staleEntryFinding = report.markerGuard.errors.find(
+    (finding) => finding.ruleId === "clean-list-entry-unmatched",
+  );
+  assert.equal(staleEntryFinding?.commit, deleted);
+  assert.equal(staleEntryFinding?.match, SOURCE_PATH);
 });
 
-test("a genuine D-status source deletion is counted without requiring a blob", (t) => {
+test("a source deletion cannot retain an unmatched inherited clean-list entry", (t) => {
   const { root, base } = createHistoryFixture(t, { cleanListed: true });
   unlinkSync(path.join(root, ...SOURCE_PATH.split("/")));
   const deleted = commitFixture(root, 101, "delete source path control");
@@ -2556,12 +2919,81 @@ test("a genuine D-status source deletion is counted without requiring a blob", (
   const result = verify(["--range", `${base}..${deleted}`, "--json"], {
     repoRoot: root,
   });
-  assert.equal(result.status, 0, result.output);
+  assert.equal(result.status, 1, result.output);
   const report = reportOf(result);
   assert.equal(report.markerGuard.pathsConsidered, 1);
   assert.equal(report.markerGuard.scanned, 0);
   assert.equal(report.markerGuard.deleted, 1);
-  assert.equal(report.markerGuard.errors.length, 0);
+  assert.equal(report.markerGuard.ratchetErrors, 1);
+  assert.equal(report.markerGuard.errors.length, 1);
+  assert.equal(report.markerGuard.errors[0].commit, deleted);
+  assert.equal(
+    report.markerGuard.errors[0].ruleId,
+    "clean-list-entry-unmatched",
+  );
+  assert.equal(report.markerGuard.errors[0].match, SOURCE_PATH);
+
+  mutateFixturePolicy(
+    root,
+    "Tools/verify-landing-compliance.mjs",
+    disableInheritedCleanListResolution,
+  );
+  const inertResult = verify(["--range", `${base}..${deleted}`, "--json"], {
+    repoRoot: root,
+  });
+  assert.equal(inertResult.status, 0, inertResult.output);
+  assert.equal(reportOf(inertResult).markerGuard.errors.length, 0);
+});
+
+test("a renamed marked successor cannot remain warning-only behind a stale inherited path", (t) => {
+  const { root, base } = createHistoryFixture(t, { cleanListed: true });
+  writeFixture(
+    root,
+    RENAMED_SOURCE_PATH,
+    "// Batch 999 moved behind a stale clean-list path.\nexport const renamedFixture = 1;\n",
+  );
+  unlinkSync(path.join(root, ...SOURCE_PATH.split("/")));
+  const renamed = commitFixture(
+    root,
+    101,
+    "rename source without ratchet repair",
+  );
+
+  const result = verify(["--range", `${base}..${renamed}`, "--json"], {
+    repoRoot: root,
+  });
+  assert.equal(result.status, 1, result.output);
+  const report = reportOf(result);
+  assert.equal(report.markerGuard.pathsConsidered, 2);
+  assert.equal(report.markerGuard.scanned, 1);
+  assert.equal(report.markerGuard.deleted, 1);
+  assert.equal(report.markerGuard.ratchetErrors, 1);
+  assert.equal(report.markerGuard.errors.length, 1);
+  assert.equal(report.markerGuard.errors[0].commit, renamed);
+  assert.equal(
+    report.markerGuard.errors[0].ruleId,
+    "clean-list-entry-unmatched",
+  );
+  assert.equal(report.markerGuard.errors[0].match, SOURCE_PATH);
+  assert.equal(report.markerGuard.warnings.length, 1);
+  assert.equal(report.markerGuard.warnings[0].commit, renamed);
+  assert.equal(report.markerGuard.warnings[0].file, RENAMED_SOURCE_PATH);
+  assert.equal(report.markerGuard.warnings[0].ruleId, "batch-id");
+  assert.equal(report.markerGuard.warnings[0].cleanListed, false);
+
+  mutateFixturePolicy(
+    root,
+    "Tools/verify-landing-compliance.mjs",
+    disableInheritedCleanListResolution,
+  );
+  const inertResult = verify(["--range", `${base}..${renamed}`, "--json"], {
+    repoRoot: root,
+  });
+  assert.equal(inertResult.status, 0, inertResult.output);
+  const inertReport = reportOf(inertResult);
+  assert.equal(inertReport.markerGuard.errors.length, 0);
+  assert.equal(inertReport.markerGuard.warnings.length, 1);
+  assert.equal(inertReport.markerGuard.warnings[0].file, RENAMED_SOURCE_PATH);
 });
 
 test("genuine historical clean-list absence has explicit empty-policy semantics", (t) => {
@@ -2812,6 +3244,7 @@ test("slash and literal-backslash Git paths retain distinct blob identities", (t
     root,
     `# exact Git path identity\n${COLLISION_BACKSLASH_PATH}\n`,
   );
+  const grandfatherListBlob = fixtureBlob(root, "# empty exact-pair ledger\n");
   const collisionTree = fixtureTree(root, [
     {
       mode: "100644",
@@ -2846,6 +3279,12 @@ test("slash and literal-backslash Git paths retain distinct blob identities", (t
       type: "blob",
       oid: cleanListBlob,
       name: "comment-marker-cleanlist.txt",
+    },
+    {
+      mode: "100644",
+      type: "blob",
+      oid: grandfatherListBlob,
+      name: "comment-marker-grandfather.txt",
     },
   ]);
   const toolsTree = fixtureTree(root, [
@@ -2897,6 +3336,7 @@ test("invalid-UTF-8 Git paths retain distinct raw-byte identities and verdicts",
     "// Batch 999 remains bound to its raw path.\nexport const rawMarked = true;\n",
   );
   const cleanListBlob = fixtureBlob(root, "packages/engine/Source\n");
+  const grandfatherListBlob = fixtureBlob(root, "# empty exact-pair ledger\n");
   const cleanName = Buffer.concat([
     Buffer.from("Raw", "ascii"),
     Buffer.from([0x80]),
@@ -2923,6 +3363,12 @@ test("invalid-UTF-8 Git paths retain distinct raw-byte identities and verdicts",
       type: "blob",
       oid: cleanListBlob,
       name: "comment-marker-cleanlist.txt",
+    },
+    {
+      mode: "100644",
+      type: "blob",
+      oid: grandfatherListBlob,
+      name: "comment-marker-grandfather.txt",
     },
   ]);
   const toolsTree = fixtureTree(root, [

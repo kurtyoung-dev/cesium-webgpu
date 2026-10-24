@@ -1,20 +1,19 @@
 #!/usr/bin/env node
-// verify-landing-compliance.mjs — the after-the-fact detector that makes a
-// `--no-verify` bypass visible.
-// @purpose After-the-fact detector that re-runs the landing rules + C16 marker gate over a landed commit range, making any --no-verify hook bypass visible.
+// verify-landing-compliance.mjs — after-the-fact commit-history and C16 checks.
+// @purpose Re-check commit-message/timestamp landing rules and C16 marker history over selected landed commits; cannot reconstruct bypassed ref events.
 // @status ACTIVE
 //
 // Ruling: migration_doc/MAINTAINER_RULINGS_2026-08-14.md R-2026-08-14-4
 // Charter: EXECUTOR_LANE_CHARTER_2026-08-14.md §2.2/§2.3
 // Findings: SOL_WEEK_AUDIT_2026-08-14.md S9, S10
 //
-// WHY THIS EXISTS. `.husky/pre-push` refuses a non-compliant push, and the
-// pre-commit hook runs the C16 marker guard over staged files — but git's own
-// `--no-verify` skips both, and nothing recorded that it had been used. Finding
-// S9 was reconstructed by noticing that eight clean-listed marker ERRORS were
-// sitting in a landed commit; that reconstruction should not have needed an
-// audit. This script re-runs both checks over a range of already-landed
-// commits, so the bypass produces a red on the next run instead of silence.
+// WHY THIS EXISTS. `.husky/pre-push` refuses non-compliant commit history, and
+// the pre-commit hook runs the C16 marker guard over staged files — but git's
+// own `--no-verify` skips both. This script re-runs those historical checks over
+// selected landed commits. It can surface violations left in history, but it
+// does not infer whether a hook was bypassed or missing. It also cannot
+// reconstruct a protected-ref deletion or non-fast-forward rewrite; server-side
+// branch protection is a separate control.
 //
 // WHAT IT CHECKS over the range, per commit authored by `cesium-webgpu-agent`:
 //   (a) `Batch NNNN: ` prefix, monotonic against the highest batch reachable
@@ -22,17 +21,17 @@
 //   (b) non-empty body;
 //   (c) `Co-Authored-By:` trailer;
 //   (+) the commit's own timestamps against the quiet-hours window. The hook
-//       can only see push time; commit time is the half finding S10 measured,
-//       and it is only observable after the fact — which is here.
+//       checks them before a push; this verifier repeats the check later over
+//       the selected historical range.
 // Merge commits (two or more parents) skip (a)-(c) exactly as the hook does.
 //
 // AND for every selected commit, regardless of author: the C16 comment-marker grammar and its
-// clean-list ratchet, re-run over every in-scope source path that commit
-// changed. Source is read from THAT COMMIT; enforcement is the union of every
-// parent's and the commit's own clean-list, and the commit's clean-list may
-// only preserve or strengthen the parent union. Newly covered paths are read
-// from the commit tree even when their source blob did not otherwise change.
-// This is deliberately not a
+// clean-list and exact file/rule grandfather ratchets, re-run over every
+// in-scope source path that commit changed. Source and both ratchets are read
+// from THAT COMMIT; clean-list enforcement is the union of every parent's and
+// the commit's own clean-list, and the commit's clean-list may only preserve or
+// strengthen the parent union. Newly covered paths are read from the commit
+// tree even when their source blob did not otherwise change. This is deliberately not a
 // base-to-head snapshot: a later commit that removes a marker or deletes the
 // path must not make the commit that shipped it read clean, and working-tree
 // clean-list drift must not redefine historical severity.
@@ -482,6 +481,9 @@ const SOURCE_GIT_ENV = Object.freeze({
 
 /** Repo-relative home of the C16 clean-list ratchet. */
 const CLEAN_LIST_PATH = "Tools/c16/comment-marker-cleanlist.txt";
+
+/** Repo-relative home of the exact C16 grandfather ratchet. */
+const GRANDFATHER_LIST_PATH = "Tools/c16/comment-marker-grandfather.txt";
 
 /** Default depth when the branch has no upstream to diff against. */
 const DEFAULT_LAST = 20;
@@ -1068,6 +1070,7 @@ function validatePolicySemantics(policy) {
       0,
     ),
     markerScanCases: 2,
+    grandfatherScenarios: 5,
     landingRuleScenarios: 3,
   };
   const markerRules = policy.MARKER_RULES;
@@ -1204,6 +1207,107 @@ function validatePolicySemantics(policy) {
     failures.push({
       control: "marker-scan-execution",
       expected: "exact integrated finding",
+      actual: { error: error?.message ?? String(error) },
+    });
+  }
+
+  const grandfatherControlPath =
+    "packages/engine/Source/Scene/VerifierGrandfatherControl.js";
+  const grandfatherSiblingPath =
+    "packages/engine/Source/Scene/VerifierGrandfatherControl.jsExtra.js";
+  try {
+    const grandfatherRows = policy.parseGrandfatherList(
+      `${grandfatherControlPath}\tcampaign-row-id  # 2026-08-21 grammar widening\n`,
+    );
+    requirePolicyValue(
+      failures,
+      "grandfather-parse-exact-row",
+      grandfatherRows,
+      [{ file: grandfatherControlPath, ruleId: "campaign-row-id" }],
+    );
+
+    const grandfatherFindings = [
+      { file: grandfatherControlPath, ruleId: "campaign-row-id" },
+      { file: grandfatherControlPath, ruleId: "batch-id" },
+      { file: grandfatherSiblingPath, ruleId: "campaign-row-id" },
+    ];
+    const cleanList = ["packages/engine/Source/Scene"];
+    const classified = policy.classifyFindings(grandfatherFindings, {
+      strict: false,
+      cleanList,
+      grandfatherRows,
+    });
+    requirePolicyValue(
+      failures,
+      "grandfather-classification-exact-pair",
+      {
+        errors: classified.errors.map(({ file, ruleId }) => ({ file, ruleId })),
+        warnings: classified.warnings.map(({ file, ruleId }) => ({
+          file,
+          ruleId,
+        })),
+      },
+      {
+        errors: [
+          { file: grandfatherControlPath, ruleId: "batch-id" },
+          { file: grandfatherSiblingPath, ruleId: "campaign-row-id" },
+        ],
+        warnings: [{ file: grandfatherControlPath, ruleId: "campaign-row-id" }],
+      },
+    );
+
+    const strict = policy.classifyFindings(grandfatherFindings, {
+      strict: true,
+      cleanList,
+      grandfatherRows,
+    });
+    requirePolicyValue(
+      failures,
+      "grandfather-classification-strict-override",
+      {
+        errors: strict.errors.map(({ file, ruleId }) => ({ file, ruleId })),
+        warnings: strict.warnings.map(({ file, ruleId }) => ({ file, ruleId })),
+      },
+      {
+        errors: grandfatherFindings,
+        warnings: [],
+      },
+    );
+
+    requirePolicyValue(
+      failures,
+      "grandfather-stale-exact-pair",
+      policy.findStaleGrandfatherRows(
+        [
+          ...grandfatherRows,
+          { file: grandfatherControlPath, ruleId: "batch-id" },
+        ],
+        [grandfatherControlPath],
+        [grandfatherFindings[0]],
+        cleanList,
+        false,
+      ),
+      [{ file: grandfatherControlPath, ruleId: "batch-id" }],
+    );
+
+    let malformedRejected = false;
+    try {
+      policy.parseGrandfatherList(
+        `${grandfatherControlPath}\tcampaign-row-id # wrong reason\n`,
+      );
+    } catch {
+      malformedRejected = true;
+    }
+    requirePolicyValue(
+      failures,
+      "grandfather-malformed-row-rejected",
+      malformedRejected,
+      true,
+    );
+  } catch (error) {
+    failures.push({
+      control: "grandfather-policy-execution",
+      expected: "five exact grandfather behavior controls",
       actual: { error: error?.message ?? String(error) },
     });
   }
@@ -1599,8 +1703,12 @@ async function loadPolicyBinding() {
   }
   const policy = Object.freeze({
     SCOPE_ROOTS: markerGuard.SCOPE_ROOTS,
+    classifyFindings: markerGuard.classifyFindings,
+    findStaleGrandfatherRows: markerGuard.findStaleGrandfatherRows,
     isCleanListed: markerGuard.isCleanListed,
+    isGrandfathered: markerGuard.isGrandfathered,
     isInScope: markerGuard.isInScope,
+    parseGrandfatherList: markerGuard.parseGrandfatherList,
     scanSource: markerGuard.scanSource,
     MARKER_RULES: markerGrammar.MARKER_RULES,
     selfTestRules: markerGrammar.selfTestRules,
@@ -3216,6 +3324,7 @@ function gitPathIsInScope(identity) {
 }
 
 const CLEAN_LIST_GIT_PATH = gitPathIdentity(CLEAN_LIST_PATH);
+const GRANDFATHER_LIST_GIT_PATH = gitPathIdentity(GRANDFATHER_LIST_PATH);
 
 /**
  * Source paths one commit changed that the comment standard applies to.
@@ -3307,7 +3416,10 @@ function changedScopeFiles(commit) {
  * Git path bytes as host-platform separators.
  */
 function historicalTreeSliceRoot(pathIdentity) {
-  if (pathIdentity.key === CLEAN_LIST_GIT_PATH.key) {
+  if (
+    pathIdentity.key === CLEAN_LIST_GIT_PATH.key ||
+    pathIdentity.key === GRANDFATHER_LIST_GIT_PATH.key
+  ) {
     return "Tools/c16";
   }
   const root = activePolicy().SCOPE_ROOTS.find((candidate) =>
@@ -3454,6 +3566,44 @@ function historicalSourceTreeEntries(revision, cache) {
   return sources;
 }
 
+/** Resolve one revision-local C16 policy file without reading ambient bytes. */
+function historicalPolicyBlobStates(
+  revisions,
+  pathIdentity,
+  role,
+  cache,
+  references,
+) {
+  return new Map(
+    revisions.map((revision) => {
+      const entry = historicalTreeEntry(revision, pathIdentity, cache);
+      if (!entry.present) {
+        return [revision, { present: false }];
+      }
+      if (entry.type !== "blob") {
+        throw new HistoricalStructureError(
+          `a historical ${role} path resolves to a non-blob object`,
+          {
+            role,
+            revision,
+            file: pathIdentity.display,
+            object: entry.oid,
+            objectType: entry.type,
+            mode: entry.mode,
+          },
+        );
+      }
+      references.push({
+        oid: entry.oid,
+        role,
+        revision,
+        file: pathIdentity.display,
+      });
+      return [revision, { present: true, oid: entry.oid }];
+    }),
+  );
+}
+
 /**
  * Parse the historical clean-list text with the guard's contract.
  *
@@ -3476,7 +3626,7 @@ function parseHistoricalCleanList(text) {
  * absence is resolved before this function; a missing or non-blob object here
  * is therefore STRUCTURAL, never a deletion.
  *
- * @param {Array<{oid: string, role: "source"|"clean-list", revision: string, file: string, statuses?: string[]}>} references Blob references.
+ * @param {Array<{oid: string, role: "source"|"clean-list"|"grandfather-list"|"grandfather-source", revision: string, file: string, statuses?: string[]}>} references Blob references.
  * @returns {Map<string, string>} Object-id-to-blob map.
  */
 function readHistoricalBlobs(references) {
@@ -3545,7 +3695,33 @@ function readHistoricalBlobs(references) {
     if (end >= output.length || output[end] !== 0x0a) {
       throw new Error(`truncated cat-file blob for ${oid}`);
     }
-    blobs.set(oid, output.subarray(offset, end).toString("utf8"));
+    const blobBytes = output.subarray(offset, end);
+    const objectReferences = references.filter(
+      (reference) => reference.oid === oid,
+    );
+    const policyReferences = objectReferences.filter(
+      (reference) =>
+        reference.role === "clean-list" ||
+        reference.role === "grandfather-list",
+    );
+    let text;
+    if (policyReferences.length > 0) {
+      try {
+        text = new TextDecoder("utf-8", { fatal: true }).decode(blobBytes);
+      } catch (error) {
+        throw new HistoricalStructureError(
+          "a historical C16 policy blob is not valid UTF-8",
+          {
+            object: oid,
+            references: policyReferences,
+            decodeError: error?.message ?? String(error),
+          },
+        );
+      }
+    } else {
+      text = blobBytes.toString("utf8");
+    }
+    blobs.set(oid, text);
     offset = end + 1;
   }
   if (offset !== output.length) {
@@ -3566,7 +3742,7 @@ function readHistoricalBlobs(references) {
  *
  * @param {Array<{sha: string, governed: boolean}>} commits Evaluated commits.
  * @param {{base: string, head: string}} range Immutable range boundaries.
- * @returns {{errors: object[], warnings: object[], scanned: number, uniqueFiles: number, commits: number, pathsConsidered: number, deleted: number, policyAbsent: number, ratchetErrors: number}} Findings.
+ * @returns {{errors: object[], warnings: object[], scanned: number, uniqueFiles: number, commits: number, pathsConsidered: number, deleted: number, policyAbsent: number, grandfatherPolicyAbsent: number, grandfatherRowsEvaluated: number, staleGrandfatherRows: number, ratchetErrors: number}} Findings.
  */
 function scanHistoricalMarkers(commits, range) {
   const policy = activePolicy();
@@ -3580,7 +3756,7 @@ function scanHistoricalMarkers(commits, range) {
       statuses,
     })),
   );
-  const cleanListRevisions = [
+  const policyRevisions = [
     ...new Set(
       commits.flatMap((commit) => [commit.sha, ...(commit.parents ?? [])]),
     ),
@@ -3644,37 +3820,19 @@ function scanHistoricalMarkers(commits, range) {
     references.push(reference);
     return { ...snapshot, deleted: false, oid: entry.oid };
   });
-  const cleanListStates = new Map(
-    cleanListRevisions.map((revision) => {
-      const entry = historicalTreeEntry(
-        revision,
-        CLEAN_LIST_GIT_PATH,
-        treeEntryCache,
-      );
-      if (!entry.present) {
-        return [revision, { present: false }];
-      }
-      if (entry.type !== "blob") {
-        throw new HistoricalStructureError(
-          "a historical clean-list path resolves to a non-blob object",
-          {
-            role: "clean-list",
-            revision,
-            file: CLEAN_LIST_PATH,
-            object: entry.oid,
-            objectType: entry.type,
-            mode: entry.mode,
-          },
-        );
-      }
-      references.push({
-        oid: entry.oid,
-        role: "clean-list",
-        revision,
-        file: CLEAN_LIST_PATH,
-      });
-      return [revision, { present: true, oid: entry.oid }];
-    }),
+  const cleanListStates = historicalPolicyBlobStates(
+    policyRevisions,
+    CLEAN_LIST_GIT_PATH,
+    "clean-list",
+    treeEntryCache,
+    references,
+  );
+  const grandfatherListStates = historicalPolicyBlobStates(
+    policyRevisions,
+    GRANDFATHER_LIST_GIT_PATH,
+    "grandfather-list",
+    treeEntryCache,
+    references,
   );
   const blobs = readHistoricalBlobs(references);
   const errors = [];
@@ -3683,7 +3841,7 @@ function scanHistoricalMarkers(commits, range) {
   let ratchetErrors = 0;
   const uniqueFiles = new Set();
   const cleanLists = new Map(
-    cleanListRevisions.map((revision) => {
+    policyRevisions.map((revision) => {
       const state = cleanListStates.get(revision);
       if (state?.present !== true) {
         return [revision, []];
@@ -3697,14 +3855,187 @@ function scanHistoricalMarkers(commits, range) {
       return [revision, parseHistoricalCleanList(text)];
     }),
   );
+  const grandfatherLists = new Map(
+    policyRevisions.map((revision) => {
+      const state = grandfatherListStates.get(revision);
+      if (state?.present !== true) {
+        return [revision, []];
+      }
+      const text = blobs.get(state.oid);
+      if (text === undefined) {
+        throw new Error(
+          `historical grandfather-list blob was not returned for ${revision}`,
+        );
+      }
+      try {
+        return [revision, policy.parseGrandfatherList(text)];
+      } catch (error) {
+        throw new HistoricalStructureError(
+          "a historical grandfather list is malformed",
+          {
+            role: "grandfather-list",
+            revision,
+            file: GRANDFATHER_LIST_PATH,
+            object: state.oid,
+            parseError: error?.message ?? String(error),
+          },
+        );
+      }
+    }),
+  );
   const enforcedCleanLists = new Map();
+  const activeGrandfatherLists = new Map();
+  const grandfatherValidationTargets = new Map();
   const snapshotKeys = new Set(
     resolvedSnapshots.map(
       (snapshot) => `${snapshot.commit}\0${snapshot.path.key}`,
     ),
   );
   const addedReferences = [];
+
+  const enqueueGrandfatherSource = (commit, row, status) => {
+    const pathIdentity = gitPathIdentity(row.file);
+    const entry = historicalTreeEntry(commit.sha, pathIdentity, treeEntryCache);
+    if (!entry.present) {
+      return;
+    }
+    if (entry.type !== "blob") {
+      throw new HistoricalStructureError(
+        "a grandfather-transition source path resolves to a non-blob object",
+        {
+          role: "source",
+          revision: commit.sha,
+          ...gitPathReport(pathIdentity),
+          object: entry.oid,
+          objectType: entry.type,
+          mode: entry.mode,
+          grandfatherRuleId: row.ruleId,
+        },
+      );
+    }
+    const snapshotKey = `${commit.sha}\0${pathIdentity.key}`;
+    if (snapshotKeys.has(snapshotKey)) {
+      return;
+    }
+    snapshotKeys.add(snapshotKey);
+    const statuses = [status];
+    addedReferences.push({
+      oid: entry.oid,
+      role: "source",
+      revision: commit.sha,
+      ...gitPathReport(pathIdentity),
+      statuses,
+    });
+    resolvedSnapshots.push({
+      commit: commit.sha,
+      shortSha: commit.sha.slice(0, 10),
+      path: pathIdentity,
+      statuses,
+      deleted: false,
+      oid: entry.oid,
+    });
+  };
+
   for (const commit of commits) {
+    const currentGrandfatherState = grandfatherListStates.get(commit.sha) ?? {
+      present: false,
+    };
+    const parentGrandfatherStates = (commit.parents ?? []).map(
+      (parent) =>
+        grandfatherListStates.get(parent) ?? {
+          present: false,
+        },
+    );
+    const parentHasGrandfatherPolicy = parentGrandfatherStates.some(
+      (state) => state.present,
+    );
+    if (!currentGrandfatherState.present && parentHasGrandfatherPolicy) {
+      throw new HistoricalStructureError(
+        "a selected commit is missing its parent-established grandfather list",
+        {
+          role: "grandfather-list",
+          revision: commit.sha,
+          file: GRANDFATHER_LIST_PATH,
+          parents: commit.parents ?? [],
+        },
+      );
+    }
+
+    const parentGrandfatherRows = [];
+    for (const parent of commit.parents ?? []) {
+      for (const row of grandfatherLists.get(parent) ?? []) {
+        if (!policy.isGrandfathered(row, parentGrandfatherRows)) {
+          parentGrandfatherRows.push(row);
+        }
+      }
+    }
+    const currentGrandfatherRows = grandfatherLists.get(commit.sha) ?? [];
+    activeGrandfatherLists.set(commit.sha, currentGrandfatherRows);
+    const addedGrandfatherRows = currentGrandfatherRows.filter(
+      (row) => !policy.isGrandfathered(row, parentGrandfatherRows),
+    );
+    const removedGrandfatherRows = parentGrandfatherRows.filter(
+      (row) => !policy.isGrandfathered(row, currentGrandfatherRows),
+    );
+    if (parentHasGrandfatherPolicy) {
+      for (const row of addedGrandfatherRows) {
+        ratchetErrors += 1;
+        errors.push({
+          file: GRANDFATHER_LIST_PATH,
+          line: 1,
+          ruleId: "grandfather-ratchet-addition",
+          match: `${row.file} [${row.ruleId}]`,
+          text: `selected commit added a pair to the shrink-only grandfather ledger: ${row.file} [${row.ruleId}]`,
+          commit: commit.sha,
+          shortSha: commit.sha.slice(0, 10),
+          cleanListed: true,
+        });
+      }
+    }
+    for (const row of addedGrandfatherRows) {
+      enqueueGrandfatherSource(commit, row, "GRANDFATHER_ADD");
+    }
+    for (const row of removedGrandfatherRows) {
+      enqueueGrandfatherSource(commit, row, "GRANDFATHER_REMOVE");
+    }
+
+    const validationTargets = new Map();
+    for (const row of currentGrandfatherRows) {
+      if (validationTargets.has(row.file)) {
+        continue;
+      }
+      const pathIdentity = gitPathIdentity(row.file);
+      const entry = historicalTreeEntry(
+        commit.sha,
+        pathIdentity,
+        treeEntryCache,
+      );
+      validationTargets.set(row.file, { path: pathIdentity, entry });
+      if (entry.present && entry.type !== "blob") {
+        throw new HistoricalStructureError(
+          "a grandfather-row target path resolves to a non-blob object",
+          {
+            role: "grandfather-source",
+            revision: commit.sha,
+            ...gitPathReport(pathIdentity),
+            object: entry.oid,
+            objectType: entry.type,
+            mode: entry.mode,
+            grandfatherRuleId: row.ruleId,
+          },
+        );
+      }
+      if (entry.present) {
+        addedReferences.push({
+          oid: entry.oid,
+          role: "grandfather-source",
+          revision: commit.sha,
+          ...gitPathReport(pathIdentity),
+        });
+      }
+    }
+    grandfatherValidationTargets.set(commit.sha, validationTargets);
+
     const parentEnforced = [
       ...new Set(
         (commit.parents ?? []).flatMap(
@@ -3735,16 +4066,37 @@ function scanHistoricalMarkers(commits, range) {
     const newEntries = current.filter(
       (entry) => !policy.isCleanListed(entry, parentEnforced),
     );
+    const currentSources =
+      parentEnforced.length === 0 && newEntries.length === 0
+        ? new Map()
+        : historicalSourceTreeEntries(commit.sha, treeEntryCache);
+    const currentSourceEntries = [...currentSources.values()];
+    for (const priorEntry of parentEnforced) {
+      if (
+        currentSourceEntries.some((entry) =>
+          policy.isCleanListed(entry.path.policyPath, [priorEntry]),
+        )
+      ) {
+        continue;
+      }
+      ratchetErrors += 1;
+      errors.push({
+        file: CLEAN_LIST_PATH,
+        line: 1,
+        ruleId: "clean-list-entry-unmatched",
+        match: priorEntry,
+        text: `parent-enforced clean-list entry does not cover an in-scope source in the selected commit: ${priorEntry}`,
+        commit: commit.sha,
+        shortSha: commit.sha.slice(0, 10),
+        cleanListed: true,
+      });
+    }
     if (newEntries.length === 0) {
       continue;
     }
-    const currentSources = historicalSourceTreeEntries(
-      commit.sha,
-      treeEntryCache,
-    );
     for (const cleanEntry of newEntries) {
       if (
-        [...currentSources.values()].some((entry) =>
+        currentSourceEntries.some((entry) =>
           policy.isCleanListed(entry.path.policyPath, [cleanEntry]),
         )
       ) {
@@ -3809,6 +4161,46 @@ function scanHistoricalMarkers(commits, range) {
   for (const [oid, source] of readHistoricalBlobs(addedReferences)) {
     blobs.set(oid, source);
   }
+  let staleGrandfatherRows = 0;
+  for (const commit of commits) {
+    const grandfatherRows = activeGrandfatherLists.get(commit.sha) ?? [];
+    const targets = grandfatherValidationTargets.get(commit.sha) ?? new Map();
+    const files = [...targets.keys()];
+    const findings = [];
+    for (const [file, { entry }] of targets) {
+      if (!entry.present || entry.type !== "blob") {
+        continue;
+      }
+      const source = blobs.get(entry.oid);
+      if (source === undefined) {
+        throw new Error(
+          `historical grandfather source blob was not returned for ${commit.sha}:${file}`,
+        );
+      }
+      findings.push(...policy.scanSource(file, source));
+    }
+    const staleRows = policy.findStaleGrandfatherRows(
+      grandfatherRows,
+      files,
+      findings,
+      cleanLists.get(commit.sha) ?? [],
+      true,
+    );
+    for (const row of staleRows) {
+      staleGrandfatherRows += 1;
+      ratchetErrors += 1;
+      errors.push({
+        file: GRANDFATHER_LIST_PATH,
+        line: 1,
+        ruleId: "grandfather-row-stale",
+        match: `${row.file} [${row.ruleId}]`,
+        text: `grandfather row is stale in the selected commit: ${row.file} [${row.ruleId}]`,
+        commit: commit.sha,
+        shortSha: commit.sha.slice(0, 10),
+        cleanListed: true,
+      });
+    }
+  }
   for (const snapshot of resolvedSnapshots) {
     if (snapshot.deleted) {
       continue;
@@ -3821,19 +4213,33 @@ function scanHistoricalMarkers(commits, range) {
     }
     scanned += 1;
     uniqueFiles.add(snapshot.path.key);
-    const strict = policy.isCleanListed(
-      snapshot.path.policyPath,
-      enforcedCleanLists.get(snapshot.commit) ?? [],
+    const cleanList = enforcedCleanLists.get(snapshot.commit) ?? [];
+    const grandfatherRows = activeGrandfatherLists.get(snapshot.commit) ?? [];
+    const classified = policy.classifyFindings(
+      policy.scanSource(snapshot.path.policyPath, source),
+      {
+        strict: false,
+        cleanList,
+        grandfatherRows,
+      },
     );
-    for (const finding of policy.scanSource(snapshot.path.policyPath, source)) {
-      (strict ? errors : warnings).push({
-        ...finding,
-        ...gitPathReport(snapshot.path),
-        commit: snapshot.commit,
-        shortSha: snapshot.shortSha,
-        cleanListed: strict,
-        gitStatuses: snapshot.statuses,
-      });
+    for (const [severity, findings] of [
+      [errors, classified.errors],
+      [warnings, classified.warnings],
+    ]) {
+      for (const finding of findings) {
+        const cleanListed = policy.isCleanListed(finding.file, cleanList);
+        severity.push({
+          ...finding,
+          ...gitPathReport(snapshot.path),
+          commit: snapshot.commit,
+          shortSha: snapshot.shortSha,
+          cleanListed,
+          grandfathered:
+            cleanListed && policy.isGrandfathered(finding, grandfatherRows),
+          gitStatuses: snapshot.statuses,
+        });
+      }
     }
   }
   return {
@@ -3847,6 +4253,15 @@ function scanHistoricalMarkers(commits, range) {
     policyAbsent: [...cleanListStates.values()].filter(
       (state) => !state.present,
     ).length,
+    grandfatherPolicyAbsent: [...grandfatherListStates.values()].filter(
+      (state) => !state.present,
+    ).length,
+    grandfatherRowsEvaluated: commits.reduce(
+      (total, commit) =>
+        total + (activeGrandfatherLists.get(commit.sha)?.length ?? 0),
+      0,
+    ),
+    staleGrandfatherRows,
     ratchetErrors,
   };
 }
