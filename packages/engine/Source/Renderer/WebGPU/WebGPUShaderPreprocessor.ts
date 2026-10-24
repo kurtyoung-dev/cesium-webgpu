@@ -29,7 +29,7 @@
  *
  * Nesting is supported to arbitrary depth. Flag names must be
  * registered in `WebGPUShaderDefines.ShaderDefine` (lo word) or
- * `ShaderDefineHi` (hi word); unknown names throw
+ * `ShaderDefineHi` (hi word) or `ShaderDefineExt` (extra word); unknown names throw
  * at preprocess time (better to fail loudly than silently emit the
  * wrong branch). A hi-word flag tests against the `definesHi`
  * argument; legacy 1-/2-arg callers implicitly pass `definesHi = 0`,
@@ -37,12 +37,12 @@
  *
  * # Purity
  *
- * `preprocess(source, defines, definesHi)` is a pure function: same
+ * `preprocess(source, defines, definesHi, definesExt)` is a pure function: same
  * inputs always produce byte-identical output. In particular,
  * `preprocess(source, defines, 0)` is byte-identical to the historical
  * two-argument `preprocess(source, defines)`. Callers cache results in
- * `WebGPUShaderModuleCache`; the preprocessor itself has no cache
- * concept.
+ * `WebGPUShaderModuleCache`. Parsed source templates are shared across
+ * variants; each call evaluates its own active branches.
  *
  * @private
  * @module WebGPUShaderPreprocessor
@@ -51,6 +51,7 @@
 import {
   resolveDefineBit,
   resolveDefineBitHi,
+  resolveDefineBitExt,
   type ShaderDefineLoMask,
 } from "./WebGPUShaderDefines.js";
 
@@ -60,37 +61,16 @@ import {
 //   //>>endif
 // Leading whitespace is allowed (authors may indent inside blocks for
 // readability). Flag names are uppercase identifiers with underscores;
-// the pattern rejects lowercase so a typo like `//>>ifdef foo` is an
-// immediate parser error rather than a silent-false match.
+// only complete directive lines with uppercase names are recognized.
 const DIRECTIVE_PATTERN =
   /^\s*\/\/>>\s*(ifdef|else|endif)(?:\s+([A-Z_][A-Z0-9_]*))?\s*$/;
 
 interface Frame {
   conditionWasTrue: boolean;
   inElse: boolean;
-  startLine: number;
+  startOffset: number;
 }
 
-/**
- * Preprocess a WGSL source string against an active-defines bitmask.
- *
- * @param source Raw WGSL source (as imported from a `.wgsl` module;
- *   debug pragmas already stripped at build time for release builds).
- * @param defines Active LO-word defines bitmask. Each set bit
- *   corresponds to an entry in `ShaderDefine` and enables the matching
- *   `//>>ifdef` block. Pass `0` for "no conditional blocks active."
- *   Typed as `ShaderDefineLoMask` so a branded `ShaderDefineHi` bit
- *   passed here is a compile error (it would silently test false).
- * @param definesHi Active hi-word defines bitmask.
- *   Each set bit corresponds to an entry in `ShaderDefineHi`. Defaults
- *   to `0`, which leaves a lo-only call site's output unchanged.
- * @returns Preprocessed WGSL, ready for `device.createShaderModule`.
- * @throws {Error} when the source contains an unknown `//>>ifdef FLAG`
- *   (registered in neither word's registry), an unbalanced directive
- *   (extra `//>>endif`, unclosed `//>>ifdef`), or a duplicate
- *   `//>>else` within a single block. Errors carry the offending line
- *   number.
- */
 interface TemplateOp {
   kind: "text" | "ifdef" | "else" | "endif";
   slice?: string;
@@ -176,10 +156,32 @@ function getParsedTemplate(source: string): ReadonlyArray<TemplateOp> {
   return parsed;
 }
 
+/**
+ * Preprocess a WGSL source string against an active-defines bitmask.
+ *
+ * @param source Raw WGSL source (as imported from a `.wgsl` module;
+ *   debug pragmas already stripped at build time for release builds).
+ * @param defines Active LO-word defines bitmask. Each set bit
+ *   corresponds to an entry in `ShaderDefine` and enables the matching
+ *   `//>>ifdef` block. Pass `0` for "no conditional blocks active."
+ *   Typed as `ShaderDefineLoMask` so a branded `ShaderDefineHi` bit
+ *   passed here is a compile error (it would silently test false).
+ * @param definesHi Active hi-word defines bitmask.
+ *   Each set bit corresponds to an entry in `ShaderDefineHi`. Defaults
+ *   to `0`, which leaves a lo-only call site's output unchanged.
+ * @param definesExt Active additional-word bitmask, defaulting to zero.
+ * @returns Preprocessed WGSL, ready for `device.createShaderModule`.
+ * @throws {Error} when the source contains an unknown `//>>ifdef FLAG`
+ *   (registered in none of the flag registries), an unbalanced directive
+ *   (extra `//>>endif`, unclosed `//>>ifdef`), or a duplicate
+ *   `//>>else` within a single block. Errors carry the offending line
+ *   number.
+ */
 export function preprocess(
   source: string,
   defines: ShaderDefineLoMask,
   definesHi: number = 0,
+  definesExt: number = 0,
 ): string {
   const ops = getParsedTemplate(source);
   if (ops.length === 1 && ops[0].kind === "text") {
@@ -224,8 +226,11 @@ export function preprocess(
         );
       }
       let conditionWasTrue: boolean;
+      const extBit = resolveDefineBitExt(flag);
       const hiBit = resolveDefineBitHi(flag);
-      if (hiBit !== undefined) {
+      if (extBit !== undefined) {
+        conditionWasTrue = (definesExt & extBit) !== 0;
+      } else if (hiBit !== undefined) {
         conditionWasTrue = (definesHi & hiBit) !== 0;
       } else {
         const bit = resolveDefineBit(flag);
@@ -234,7 +239,7 @@ export function preprocess(
           throw new Error(
             `WGSL preprocessor: unknown define "${flag}" at line ${lineNum}. ` +
               `Register it in WebGPUShaderDefines.ShaderDefine (lo word) ` +
-              `or ShaderDefineHi (hi word) before use.`,
+              `or ShaderDefineHi/ShaderDefineExt before use.`,
           );
         }
         conditionWasTrue = (defines & bit) !== 0;
@@ -242,7 +247,7 @@ export function preprocess(
       stack.push({
         conditionWasTrue,
         inElse: false,
-        startLine: op.charOffset,
+        startOffset: op.charOffset,
       });
       emitting = emitting && conditionWasTrue;
     } else if (directive === "else") {
@@ -255,7 +260,7 @@ export function preprocess(
       const top = stack[stack.length - 1];
       if (top.inElse) {
         const lineNum = lineOfOffset(source, op.charOffset);
-        const startLine = lineOfOffset(source, top.startLine);
+        const startLine = lineOfOffset(source, top.startOffset);
         throw new Error(
           `WGSL preprocessor: duplicate //>>else at line ${lineNum} ` +
             `(ifdef opened at line ${startLine})`,
@@ -277,7 +282,7 @@ export function preprocess(
 
   if (stack.length > 0) {
     const top = stack[stack.length - 1];
-    const startLine = lineOfOffset(source, top.startLine);
+    const startLine = lineOfOffset(source, top.startOffset);
     throw new Error(
       `WGSL preprocessor: unclosed //>>ifdef opened at line ${startLine}`,
     );

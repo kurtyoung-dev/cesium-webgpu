@@ -1,0 +1,1020 @@
+{
+  "version": 1,
+  "reservedDefineBit": 31,
+  "reservedSourceId": 0,
+  "cloudExtMaxBit": 20,
+  "ranges": [
+    {
+      "word": "lo",
+      "start": 0,
+      "end": 30,
+      "name": "historical",
+      "owner": "historical"
+    },
+    {
+      "word": "hi",
+      "start": 0,
+      "end": 0,
+      "name": "infrastructure-probe",
+      "owner": "infrastructure"
+    },
+    {
+      "word": "hi",
+      "start": 1,
+      "end": 1,
+      "name": "water-ocean-styling",
+      "owner": "water-ocean"
+    },
+    {
+      "word": "hi",
+      "start": 2,
+      "end": 3,
+      "name": "gaussian-splats",
+      "owner": "gaussian-splats"
+    },
+    {
+      "word": "hi",
+      "start": 4,
+      "end": 5,
+      "name": "cloud-reconstruction",
+      "owner": "cloud-reconstruction"
+    },
+    {
+      "word": "hi",
+      "start": 6,
+      "end": 7,
+      "name": "water-ocean-optics",
+      "owner": "water-ocean"
+    },
+    {
+      "word": "hi",
+      "start": 8,
+      "end": 14,
+      "name": "cloud-march",
+      "owner": "cloud-march"
+    },
+    {
+      "word": "hi",
+      "start": 15,
+      "end": 19,
+      "name": "cloud-lighting",
+      "owner": "cloud-lighting"
+    },
+    {
+      "word": "hi",
+      "start": 20,
+      "end": 23,
+      "name": "cloud-weather",
+      "owner": "cloud-weather"
+    },
+    {
+      "word": "hi",
+      "start": 24,
+      "end": 28,
+      "name": "cloud-transport",
+      "owner": "cloud-transport"
+    },
+    {
+      "word": "hi",
+      "start": 29,
+      "end": 30,
+      "name": "cloud-spatial",
+      "owner": "cloud-spatial"
+    },
+    {
+      "word": "ext",
+      "start": 0,
+      "end": 0,
+      "name": "weather-material",
+      "owner": "cloud-weather"
+    },
+    {
+      "word": "ext",
+      "start": 1,
+      "end": 1,
+      "name": "geographic-transport",
+      "owner": "cloud-transport"
+    },
+    {
+      "word": "ext",
+      "start": 2,
+      "end": 2,
+      "name": "weather-formations",
+      "owner": "cloud-weather"
+    },
+    {
+      "word": "ext",
+      "start": 3,
+      "end": 5,
+      "name": "spatial-columns",
+      "owner": "cloud-spatial"
+    },
+    {
+      "word": "ext",
+      "start": 6,
+      "end": 6,
+      "name": "profile-lighting",
+      "owner": "cloud-lighting"
+    },
+    {
+      "word": "ext",
+      "start": 7,
+      "end": 10,
+      "name": "spatial-profiles",
+      "owner": "cloud-spatial"
+    },
+    {
+      "word": "ext",
+      "start": 11,
+      "end": 12,
+      "name": "banked-cloud-profiles",
+      "owner": "cloud-profiles-held-banked"
+    },
+    {
+      "word": "ext",
+      "start": 13,
+      "end": 13,
+      "name": "spatial-pages",
+      "owner": "cloud-spatial"
+    },
+    {
+      "word": "ext",
+      "start": 14,
+      "end": 20,
+      "name": "cloud-expansion",
+      "owner": "cloud-expansion"
+    },
+    {
+      "word": "ext",
+      "start": 21,
+      "end": 23,
+      "name": "water-ocean",
+      "owner": "water-ocean"
+    },
+    {
+      "word": "ext",
+      "start": 24,
+      "end": 25,
+      "name": "globe-atmosphere",
+      "owner": "globe-atmosphere"
+    },
+    {
+      "word": "ext",
+      "start": 26,
+      "end": 29,
+      "name": "scene-model",
+      "owner": "scene-model"
+    },
+    {
+      "word": "ext",
+      "start": 30,
+      "end": 30,
+      "name": "infrastructure",
+      "owner": "infrastructure"
+    }
+  ],
+  "entries": [
+    {
+      "word": "lo",
+      "bit": 0,
+      "name": "GEODETIC_NORMAL",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 1,
+      "name": "DISABLE_DEPTH_DISTANCE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 2,
+      "name": "SPLIT_ENABLED",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 3,
+      "name": "COMPRESSED_VERTICES",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 4,
+      "name": "DISTANCE_DISPLAY_CONDITION",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 5,
+      "name": "EYE_DISTANCE_TRANSLUCENCY",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 6,
+      "name": "EYE_DISTANCE_PIXEL_OFFSET",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 7,
+      "name": "EYE_DISTANCE_SCALING",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 8,
+      "name": "VS_THREE_POINT_DEPTH_CHECK",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 9,
+      "name": "MODEL_HAS_KHR_TEXTURES",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 10,
+      "name": "STOCHASTIC_DITHER_ALPHA",
+      "owner": "historical",
+      "status": "reserved"
+    },
+    {
+      "word": "lo",
+      "bit": 11,
+      "name": "STENCIL_PICK_WINNER",
+      "owner": "historical",
+      "status": "reserved"
+    },
+    {
+      "word": "lo",
+      "bit": 12,
+      "name": "MODEL_HAS_TEXCOORD_1",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 13,
+      "name": "MODEL_HAS_FEATURE_ID_0",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 14,
+      "name": "MATERIAL_APPLY",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 15,
+      "name": "LOG_DEPTH",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 16,
+      "name": "GLOBE_IMAGERY_REDUCED",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 17,
+      "name": "CAPTURE_MODE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 18,
+      "name": "MODEL_HAS_METADATA",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 19,
+      "name": "MODEL_HAS_PROPERTY_TEXTURES",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 20,
+      "name": "MODEL_HAS_PROPERTY_TABLES",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 21,
+      "name": "METADATA_PICKING_ENABLED",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 22,
+      "name": "POINT_CLOUD_EDL_DEPTH",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 23,
+      "name": "MODEL_HAS_WGSL_CUSTOM_SHADER",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 24,
+      "name": "MODEL_HAS_WGSL_CUSTOM_VERTEX",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 25,
+      "name": "VOXEL_CUSTOM_SHADER_COLOR",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 26,
+      "name": "MODEL_SPLIT_ENABLED",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 27,
+      "name": "MODEL_HAS_COLOR",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 28,
+      "name": "MODEL_SILHOUETTE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 29,
+      "name": "VOXEL_USER_CUSTOM_SHADER",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "lo",
+      "bit": 30,
+      "name": "MODEL_METADATA_MAT_TRANSPORT",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "word": "hi",
+      "bit": 0,
+      "name": "HI_WORD_PROBE",
+      "owner": "infrastructure",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 1,
+      "name": "ENHANCED_OCEAN",
+      "owner": "water-ocean",
+      "status": "consumed"
+    },
+    {
+      "word": "hi",
+      "bit": 2,
+      "name": "SPLAT_PACKED_WASM",
+      "owner": "gaussian-splats",
+      "status": "consumed"
+    },
+    {
+      "word": "hi",
+      "bit": 3,
+      "name": "SPLAT_SPHERICAL_HARMONICS",
+      "owner": "gaussian-splats",
+      "status": "consumed"
+    },
+    {
+      "word": "hi",
+      "bit": 4,
+      "name": "CLOUD_MARCH_EMIT_RECONSTRUCTION",
+      "owner": "cloud-reconstruction",
+      "status": "consumed"
+    },
+    {
+      "word": "hi",
+      "bit": 5,
+      "name": "CLOUD_RECONSTRUCTION_CONSUME",
+      "owner": "cloud-reconstruction",
+      "status": "consumed"
+    },
+    {
+      "word": "hi",
+      "bit": 6,
+      "name": "UNDERWATER_OPTICS",
+      "owner": "water-ocean",
+      "status": "consumed"
+    },
+    {
+      "word": "hi",
+      "bit": 7,
+      "name": "WATER_PROVIDER_PARITY",
+      "owner": "water-ocean",
+      "status": "consumed"
+    },
+    {
+      "word": "hi",
+      "bit": 8,
+      "name": "CLOUD_NOISE_BAKED_ONLY",
+      "owner": "cloud-march",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 9,
+      "name": "CLOUD_MORPHOLOGY_BASE_ONLY",
+      "owner": "cloud-march",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 10,
+      "name": "CLOUD_DENSITY_MOMENTS",
+      "owner": "cloud-march",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 11,
+      "name": "CLOUD_PRIMARY_REUSE",
+      "owner": "cloud-march",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 12,
+      "name": "CLOUD_SPATIAL_OCCUPANCY",
+      "owner": "cloud-march",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 13,
+      "name": "CLOUD_DENSITY_SAMPLE_CACHE",
+      "owner": "cloud-march",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 14,
+      "name": "CLOUD_PRIMARY_DENSITY_CACHE",
+      "owner": "cloud-march",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 15,
+      "name": "CLOUD_LIGHTING_PREVIEW",
+      "owner": "cloud-lighting",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 16,
+      "name": "CLOUD_DIRECTIONAL_LIGHTING",
+      "owner": "cloud-lighting",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 17,
+      "name": "CLOUD_DEEP_SHADOW_CACHE",
+      "owner": "cloud-lighting",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 18,
+      "name": "CLOUD_LIGHTING_RESPONSE",
+      "owner": "cloud-lighting",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 19,
+      "name": "CLOUD_CONTRIBUTION_LIGHTING",
+      "owner": "cloud-lighting",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 20,
+      "name": "CLOUD_WEATHER_VOLUME_BOUNDS",
+      "owner": "cloud-weather",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 21,
+      "name": "CLOUD_WEATHER_TRANSITION",
+      "owner": "cloud-weather",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 22,
+      "name": "CLOUD_WEATHER_VERTICAL",
+      "owner": "cloud-weather",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 23,
+      "name": "CLOUD_WEATHER_POPULATIONS",
+      "owner": "cloud-weather",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 24,
+      "name": "CLOUD_GEOGRAPHIC_WIND",
+      "owner": "cloud-transport",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 25,
+      "name": "CLOUD_SINGLE_LEVEL_WIND",
+      "owner": "cloud-transport",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 26,
+      "name": "CLOUD_VELOCITY_ONLY_WIND",
+      "owner": "cloud-transport",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 27,
+      "name": "CLOUD_PADDED_MATERIAL_FLOW",
+      "owner": "cloud-transport",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 28,
+      "name": "CLOUD_MATERIAL_REPROJECTION",
+      "owner": "cloud-transport",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 29,
+      "name": "CLOUD_SPATIAL_PROXY",
+      "owner": "cloud-spatial",
+      "status": "reserved"
+    },
+    {
+      "word": "hi",
+      "bit": 30,
+      "name": "CLOUD_JOINT_SPATIAL_PROXY",
+      "owner": "cloud-spatial",
+      "status": "reserved"
+    },
+    {
+      "word": "ext",
+      "bit": 0,
+      "name": "CLOUD_WEATHER_MATERIAL",
+      "owner": "cloud-weather",
+      "status": "reserved"
+    },
+    {
+      "word": "ext",
+      "bit": 1,
+      "name": "CLOUD_GEOGRAPHIC_FIBRES",
+      "owner": "cloud-transport",
+      "status": "reserved"
+    },
+    {
+      "word": "ext",
+      "bit": 2,
+      "name": "CLOUD_WEATHER_FORMATIONS",
+      "owner": "cloud-weather",
+      "status": "reserved"
+    },
+    {
+      "word": "ext",
+      "bit": 3,
+      "name": "CLOUD_OPTICAL_JOINT_COLUMNS",
+      "owner": "cloud-spatial",
+      "status": "reserved"
+    },
+    {
+      "word": "ext",
+      "bit": 4,
+      "name": "CLOUD_SPATIAL_PROFILES",
+      "owner": "cloud-spatial",
+      "status": "reserved"
+    },
+    {
+      "word": "ext",
+      "bit": 5,
+      "name": "CLOUD_JOINT_HEIGHT_PROFILES",
+      "owner": "cloud-spatial",
+      "status": "reserved"
+    },
+    {
+      "word": "ext",
+      "bit": 6,
+      "name": "CLOUD_PROFILE_LATERAL_LIGHTING",
+      "owner": "cloud-lighting",
+      "status": "reserved"
+    },
+    {
+      "word": "ext",
+      "bit": 7,
+      "name": "CLOUD_SPATIAL_PROXY_REGION",
+      "owner": "cloud-spatial",
+      "status": "reserved"
+    },
+    {
+      "word": "ext",
+      "bit": 8,
+      "name": "CLOUD_SPARSE_PROFILES",
+      "owner": "cloud-spatial",
+      "status": "reserved"
+    },
+    {
+      "word": "ext",
+      "bit": 9,
+      "name": "CLOUD_PROFILE_BAND_SUPPORT",
+      "owner": "cloud-spatial",
+      "status": "reserved"
+    },
+    {
+      "word": "ext",
+      "bit": 10,
+      "name": "CLOUD_REGIONAL_PROXY_LEVELS",
+      "owner": "cloud-spatial",
+      "status": "reserved"
+    },
+    {
+      "word": "ext",
+      "bit": 11,
+      "name": "CLOUD_REGIONAL_HEIGHT_SUPPORT",
+      "owner": "cloud-profiles-held-banked",
+      "status": "reserved"
+    },
+    {
+      "word": "ext",
+      "bit": 12,
+      "name": "CLOUD_FILTERED_HEIGHT_PROFILES",
+      "owner": "cloud-profiles-held-banked",
+      "status": "reserved"
+    },
+    {
+      "word": "ext",
+      "bit": 13,
+      "name": "CLOUD_SPATIAL_PROXY_PAGES",
+      "owner": "cloud-spatial",
+      "status": "reserved"
+    }
+  ],
+  "sourceRanges": [
+    {
+      "start": 1,
+      "end": 42,
+      "name": "historical",
+      "owner": "historical"
+    },
+    {
+      "start": 43,
+      "end": 63,
+      "name": "cloud",
+      "owner": "cloud"
+    },
+    {
+      "start": 64,
+      "end": 95,
+      "name": "water-ocean",
+      "owner": "water-ocean"
+    },
+    {
+      "start": 96,
+      "end": 127,
+      "name": "globe-atmosphere",
+      "owner": "globe-atmosphere"
+    },
+    {
+      "start": 128,
+      "end": 159,
+      "name": "scene-model",
+      "owner": "scene-model"
+    },
+    {
+      "start": 160,
+      "end": 191,
+      "name": "infrastructure",
+      "owner": "infrastructure"
+    },
+    {
+      "start": 192,
+      "end": 255,
+      "name": "reserved",
+      "owner": "reserved"
+    }
+  ],
+  "sources": [
+    {
+      "id": 1,
+      "name": "GLOBE_TERRAIN",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 2,
+      "name": "BILLBOARD_COLLECTION",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 3,
+      "name": "BILLBOARD_COLLECTION_PICK",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 4,
+      "name": "BILLBOARD_COLLECTION_SDF",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 5,
+      "name": "POINT_PRIMITIVE_COLOR",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 6,
+      "name": "POINT_PRIMITIVE_PICK",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 7,
+      "name": "POLYLINE_COLLECTION",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 8,
+      "name": "POLYLINE_COLLECTION_PICK",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 9,
+      "name": "POLYLINE_ARROW",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 10,
+      "name": "POLYLINE_DASH",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 11,
+      "name": "POLYLINE_GLOW",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 12,
+      "name": "POLYLINE_OUTLINE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 13,
+      "name": "CLOUD_COLLECTION",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 14,
+      "name": "VOXEL_PRIMITIVE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 15,
+      "name": "WEATHER_PARTICLE_RENDER",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 16,
+      "name": "WEATHER_PARTICLES_COMPUTE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 17,
+      "name": "ENVIRONMENT_SUN",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 18,
+      "name": "ENVIRONMENT_MOON",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 19,
+      "name": "VOLUMETRIC_FOG_COMPUTE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 20,
+      "name": "VOLUMETRIC_FOG_COMPOSITE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 21,
+      "name": "POINT_CLOUD",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 22,
+      "name": "POINT_CLOUD_LOD",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 23,
+      "name": "MODEL_PBR_COMPLETE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 24,
+      "name": "VECTOR_3DTILE_PRIMITIVE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 25,
+      "name": "VECTOR_3DTILE_POLYLINES",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 26,
+      "name": "VECTOR_3DTILE_CLAMPED_POLYLINES",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 27,
+      "name": "BUFFER_POINT_MATERIAL",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 28,
+      "name": "BUFFER_POLYLINE_MATERIAL",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 29,
+      "name": "BUFFER_POLYGON_MATERIAL",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 30,
+      "name": "GROUND_PRIMITIVE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 31,
+      "name": "GROUND_POLYLINE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 32,
+      "name": "SKY_ATMOSPHERE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 33,
+      "name": "ELLIPSOID_PRIMITIVE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 34,
+      "name": "COMPUTE_INSTANCE_SCAFFOLD",
+      "owner": "historical",
+      "status": "reserved"
+    },
+    {
+      "id": 35,
+      "name": "COMPUTE_INSTANCE_RENDER",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 36,
+      "name": "GAUSSIAN_SPLAT",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 37,
+      "name": "STAR_FIELD_CATALOG",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 38,
+      "name": "POINT_CLOUD_EDL_DEPTH",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 39,
+      "name": "POINT_CLOUD_EDL_BLEND",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 40,
+      "name": "FLOW_FIELD_RENDER",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 41,
+      "name": "OCEAN_SURFACE",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 42,
+      "name": "EDGE_EMITTER",
+      "owner": "historical",
+      "status": "consumed"
+    },
+    {
+      "id": 43,
+      "name": "PROCEDURAL_CLOUDS",
+      "owner": "cloud",
+      "status": "reserved"
+    },
+    {
+      "id": 44,
+      "name": "CLOUD_PRIMARY_COMPOSITE",
+      "owner": "cloud",
+      "status": "reserved"
+    }
+  ]
+}

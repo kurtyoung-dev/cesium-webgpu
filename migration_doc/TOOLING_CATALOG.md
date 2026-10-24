@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1782 |
+| Files in census | 1785 |
 | ACTIVE | 1535 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
-| NO @purpose HEADER | 45 |
+| NO @purpose HEADER | 48 |
 | NO @status HEADER | 1 |
-| Classes | probe 683, spec 475, other 361, lib 212, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
+| Classes | probe 683, spec 478, other 361, lib 212, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
 
 ### Tools/ (68)
 
@@ -251,8 +251,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | collection-sentinels-check.mjs | other | ACTIVE | 2026-09-05 | 9 | Fast no-GPU smoke check of the three permanent fault sentinels in WebGPUCollectionRendererBase via in-memory esbuild transpile; <1s local run. |
 | derive-lunar-eclipse-circumstances.mjs | other | ACTIVE | 2026-08-28 | 1 | Derives lunar-eclipse contact times, umbral/penumbral magnitudes and the best-view sub-lunar point from the engine Simon1994 ephemeris; source of the eclipse-explorer lunar preset data and the VW-L golden fixtures. |
 | dev-server-artifact.spec.mjs | spec | ACTIVE | 2026-08-20 | 0 | Verify that the development server selects and validates the requested Cesium artifact without opening a socket. |
-| generate-tooling-catalog.mjs | other | ACTIVE | 2026-09-11 | 12 | Regenerates the TOOLING_CATALOG census section from @purpose/@status headers, git freshness and inbound refs; --check fails on drift. |
-| generate-tooling-catalog.spec.mjs | spec | ACTIVE | 2026-09-11 | 4 | Self-test for the catalog generator: marker containment, determinism, drift reporting and the no-header row. |
+| generate-tooling-catalog.mjs | other | ACTIVE | 2026-10-24 | 12 | Regenerates the TOOLING_CATALOG census section from @purpose/@status headers, git freshness and inbound refs; --check fails on drift. |
+| generate-tooling-catalog.spec.mjs | spec | ACTIVE | 2026-10-24 | 4 | Self-test for the catalog generator: marker containment, determinism, drift reporting and the no-header row. |
 | inject-purpose-headers.mjs | other | ACTIVE | 2026-08-16 | 4 | Idempotent codemod injecting @purpose/@status headers into the tooling .mjs fleet from the library-audit rows. |
 | inject-purpose-headers.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Self-test for the @purpose header codemod: mapping, placement, byte-exactness, idempotence and the dry-run report. |
 | karma-default-browsers.spec.mjs | spec | NO @purpose HEADER | 2026-08-21 | 0 | — |
@@ -449,7 +449,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1112)
+### Tools/visual-regression/ (1115)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1216,7 +1216,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-oit-model-reachable.mjs | probe | ACTIVE | 2026-09-03 | 9 | C11-157 Slice C: MRT-OIT reachable for translucent models — BLEND primary + per-feature-styled translucent twin; FAR-003 runtime flip. |
 | probe-oit-primitive-reachable.mjs | probe | ACTIVE | 2026-09-03 | 8 | C11-157 Slice A: MRT-OIT reachable for translucent primitives via both injectOITOutput branches; FAR-003 runtime flip, hard gates. |
 | probe-oit-reachability-runtime-migration.spec.mjs | spec | ACTIVE | 2026-09-03 | 3 | Fixture-receipt and mutation-control spec for the C11-157 OIT-reachability probe trio's DX-06 migration onto lib/probe-runtime.mjs. |
-| probe-oit-transparency.mjs | probe | ACTIVE | 2026-08-16 | 11 | OIT coverage + default-flip evidence: WebGL OIT genuinely active; WebGPU opt-in hard-gated active post-Slice-A; splat deferral lane. |
+| probe-oit-transparency.mjs | probe | ACTIVE | 2026-08-16 | 12 | OIT coverage + default-flip evidence: WebGL OIT genuinely active; WebGPU opt-in hard-gated active post-Slice-A; splat deferral lane. |
 | probe-orbital-1m.mjs | probe | ACTIVE | 2026-09-18 | 6 | Validates the GPU-resident compute-instance pipeline at a 1M-object catalog against negotiated device limits (SSBO sizes, dispatch headroom). |
 | probe-orbital-catalog.mjs | probe | ACTIVE | 2026-08-16 | 7 | Regression gate: orbital demo on generic ComputeInstanceCollection renders ~2000 moving points, pinned clock, zero GPU errors |
 | probe-orbital-j2.mjs | probe | ACTIVE | 2026-08-16 | 7 | Verifies df64 GPU secular-J2 orbital kernel matches a JS FP64 reference over 30-day propagation and beats the f32 control |
@@ -1240,7 +1240,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-pickmodel-instanced.mjs | probe | ACTIVE | 2026-08-16 | 11 | Gate for upstream #13433 port: octDecode arg order + CPU pickModel on instanced models (WebGL readback and WebGPU keepTypedArray paths) |
 | probe-pickposition-model-webgpu.mjs | probe | ACTIVE | 2026-08-16 | 9 | Gate: pickPosition over an opaque glTF model returns the model top (not the globe below) on WebGPU — depth re-packed after the OPAQUE pass |
 | probe-pickposition-webgpu.mjs | probe | ACTIVE | 2026-08-16 | 16 | Gate: pickPosition returns a real globe-surface Cartesian3 on WebGPU (converges by frame 3) matching WebGL; zoom-to-cursor smoke |
-| probe-pipeline-key-aliasing.mjs | probe | ACTIVE | 2026-08-16 | 12 | Runtime detector for pipeline-cache key aliasing: wraps getPipeline, recomputes keys, flags served entries whose shader modules differ |
+| probe-pipeline-key-aliasing.mjs | probe | ACTIVE | 2026-08-16 | 13 | Runtime detector for pipeline-cache key aliasing: wraps getPipeline, recomputes keys, flags served entries whose shader modules differ |
 | probe-plain-hdr-gamma.mjs | probe | ACTIVE | 2026-08-16 | 3 | Acceptance: plain highDynamicRange=true brightness parity WebGL vs WebGPU (sRGB decodes, no double tonemap), with SDR control legs |
 | probe-plain-hdr-tonemap.mjs | probe | ACTIVE | 2026-08-16 | 4 | Acceptance for plain-HDR tails: exposure synced to WebGPU tonemap, non-default operators match czm_* references, entity color parity |
 | probe-png-bytes.mjs | probe | ACTIVE | 2026-08-16 | 2 | CLI utility: minimal Node PNG decoder reporting mean RGB bytes of output PNGs — 'image is dark' vs 'display looks dark' |
@@ -1322,8 +1322,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-snap-multifrustum.mjs | probe | ACTIVE | 2026-08-16 | 5 | C11-212 multi-frustum snap occlusion: far snappable model hidden/revealed by a near primitive across slices; no stale far-slice payload. |
 | probe-source-mercator-compare.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Compares SOURCE Mercator imagery-texture pixels row-by-row across backends to attribute the polar reprojection diff to upload vs algorithm. |
 | probe-southpole-diag.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Dumps per-tile selection/mesh/renderable state at lat -89 to find why WebGPU rendered a black hole around the south pole. |
-| probe-splat-globe-occlusion.mjs | probe | ACTIVE | 2026-08-16 | 10 | Gaussian splats compose over the opaque globe and stay hidden behind it; OIT-deferral never-drop seatbelt plus occlusion controls. |
-| probe-splat-sort.mjs | probe | ACTIVE | 2026-08-16 | 14 | Splat back-to-front sort consumption + log-depth producer gate; docstring voids pre-2026-08-01 gate-OFF results (pipeline-key aliasing). |
+| probe-splat-globe-occlusion.mjs | probe | ACTIVE | 2026-08-16 | 11 | Gaussian splats compose over the opaque globe and stay hidden behind it; OIT-deferral never-drop seatbelt plus occlusion controls. |
+| probe-splat-sort.mjs | probe | ACTIVE | 2026-08-16 | 15 | Splat back-to-front sort consumption + log-depth producer gate; docstring voids pre-2026-08-01 gate-OFF results (pipeline-key aliasing). |
 | probe-split-screen.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Launches the split-screen comparison page and samples the WebGPU scene-framebuffer center via GPU readback plus frame stats. |
 | probe-ssgi.mjs | probe | ACTIVE | 2026-08-16 | 6 | C6 SSGI acceptance: ssgi renders, GI-only debug output non-black, OFF byte-identical, orbit degrades to no-op, zero device errors. |
 | probe-ssr-consumer.mjs | probe | ACTIVE | 2026-08-16 | 4 | Verifies SSR reads the G-buffer regardless of deferredLighting (legacy gate B122 removed): SSR-on legs match with deferred on and off. |
@@ -1551,6 +1551,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-pipeline-creation-not-frame-coupled.spec.mjs | spec | ACTIVE | 2026-09-02 | 2 | Drives the real central pipeline cache with a fake device to require that an in-flight pipeline creation advances, lands and publishes its wake-up without any frame being rendered and without any concurrency cap, so the frame-coupled explanations of the AEC residency stall stay ruled out. |
 | webgpu-postprocess-effect-survives-recreate.spec.mjs | spec | ACTIVE | 2026-09-05 | 4 | Drives the real post-process bridge against the real WebGPUPostProcessPipeline under a recording fake device, and pins that Bloom, AO, DoF, GodRay, HeatShimmer, ColdOptics and AerialPerspective are still present and still produce their passes after a resize and after an HDR toggle. |
 | webgpu-postprocess-format-follows-toggle.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Drives the real post-process bridge against the real WebGPUPostProcessPipeline under a fake device that records every render pipeline's colour-target format and every encoded pass, and pins that after a useHDRCanvasOutput toggle, a highDynamicRange toggle and a pipeline replacement each pass uses a pipeline built for its own attachment, with a plain resize compiling nothing. |
+| webgpu-shader-infrastructure.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
+| webgpu-shader-registry-layout.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
+| webgpu-shader-template-cache.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
 | webgpu-shadow-receive-contract.spec.mjs | spec | ACTIVE | 2026-08-21 | 4 | Pins the sun-shadow fix: single cast-dispatch site + same-frame wipe guard, receive matrix reproduces the cast texel, naga-validated shaders. |
 | webgpu-snap-edge-payload.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Contract for the edge tier of WebGPU Scene.snap: edge-flag payload encode, pick-color plumb into the edge UB, pipeline variant, strict admission. |
 | webgpu-snap-framebuffer-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Behavioral lifecycle coverage of the real WebGPUSnapFramebuffer on GPU-shaped mocks; complements the source-contract snap-payload spec. |
@@ -1727,7 +1730,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | device-loss-steps.mjs | lib | ACTIVE | 2026-10-24 | 4 | Step piece for the landing program's E-T cell: runs a rig's provoking steps (resize ladder via lib/globe-resize-steps.mjs, sky-box swaps via lib/skybox-swap-steps.mjs, a water or cloud tier switch), reads the error gate and the runtime's capture-liveness decision after each, then either destroys the viewer (teardown) or forces the device lost (WebGPU device.destroy, WebGL WEBGL_lose_context) and renders on, and returns {mode, steps, terminal, deviceLost, errors, owners, consoleErrors} - the named owners' live census rows before and after, and the console errors split into the engine's device-lost sentinel and everything else; terminalShape/sameTerminal are the one reader of the terminal record. |
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 20 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 6 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
-| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 41 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
+| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 43 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
 | engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 61 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 6 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | frame-import-map.mjs | lib | ACTIVE | 2026-10-09 | 2 | The readiness wait for a dynamic import of a bare specifier in a page or frame: whether a specifier is bare, an in-page predicate that reports whether the document has parsed an import map, and the Node-side wait that blocks until it has, or refuses by name when it does not appear in time. |

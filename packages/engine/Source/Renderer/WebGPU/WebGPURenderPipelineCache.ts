@@ -212,6 +212,7 @@ export interface WebGPURenderPipelineDescriptor {
    * (`ShaderDefineHi`). Same optional, defence-in-depth status.
    */
   definesHi?: number;
+  definesExt?: number;
 }
 
 /**
@@ -1113,6 +1114,9 @@ export class WebGPURenderPipelineCache {
       );
     }
 
+    if (descriptor.definesExt) {
+      parts.push(`dfx:${descriptor.definesExt >>> 0}`);
+    }
     return parts.join("|");
   }
 

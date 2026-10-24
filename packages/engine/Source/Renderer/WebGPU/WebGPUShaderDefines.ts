@@ -17,7 +17,7 @@
  * sources whose WGSL text is generated dynamically and therefore needs
  * an additional content fingerprint beyond `(sourceId, defines)`.
  *
- * # Two-word (lo/hi) widening
+ * # Define words and allocation ranges
  *
  * The lo-word `ShaderDefine` registry is exhausted: bits 0-30 are all
  * occupied, and bit 31 is deliberately left unclaimed: the
@@ -33,11 +33,29 @@
  * makes passing a hi-word bit where a lo-word mask is expected a
  * compile error in TypeScript; the reverse direction — a lo bit passed
  * as a `definesHi` argument — is not compile-checked, so hi-word call
- * sites need review.
+ * sites need review. {@link ShaderDefineExt} provides a third independent
+ * word for weather, transport and spatial cloud specializations. Its bit 31
+ * is also reserved, and the cache keeps its mask in a separate map level.
+ *
+ * Hi-word owners: infrastructure owns bit 0; water/ocean owns bits 1 and
+ * 6-7; Gaussian splats own bits 2-3; cloud reconstruction owns bits 4-5.
+ * Cloud march owns bits 8-14, cloud lighting owns 15-19, cloud weather
+ * owns 20-23, cloud transport owns 24-28, and cloud spatial owns 29-30.
+ * Ext-word owners: cloud weather owns bits 0 and 2, cloud transport owns
+ * bit 1, cloud spatial owns 3-5, 7-10 and 13, and cloud lighting owns 6.
+ * Cloud profile allocations occupy 11-12. Cloud expansion owns
+ * 14-20, water/ocean owns 21-23, globe/atmosphere owns 24-25, scene/model
+ * owns 26-29, and infrastructure owns 30. Vacant positions stay available
+ * within their owner's range; an assigned name never changes identity.
+ *
+ * The allocation ledger at
+ * `Tools/visual-regression/fixtures/shader-registry-layout.json` records
+ * owners and consumer state separately from these stable declarations.
  *
  * # Add-only rule
  *
- * All three tables (`ShaderDefine`, `ShaderDefineHi`, `ShaderSourceId`)
+ * All four tables (`ShaderDefine`, `ShaderDefineHi`, `ShaderDefineExt`,
+ * `ShaderSourceId`)
  * are add-only. Never reorder, renumber, or remove an
  * entry even if its last consumer disappears. Reordering silently
  * aliases cached modules across rebuilds; removal breaks any pipeline
@@ -923,8 +941,9 @@ function hiDefineBit(bitIndex: number): ShaderDefineHiMask {
  * at module load), and a hi-word `//>>ifdef FLAG` resolves against the
  * `definesHi` argument of `preprocess`, never against the lo word.
  *
- * Every new specialization axis claims a bit here, because the lo word is
- * full. Bits 0-30 of this word are claimable; bit 31 stays reserved.
+ * Specialization axes claim a bit in their subsystem's range here or in
+ * {@link ShaderDefineExt}, because the lo word is full. Bits 0-30 of this
+ * word are claimable; bit 31 stays reserved.
  *
  * Add-only; never reorder or remove.
  */
@@ -1135,10 +1154,9 @@ export const ShaderDefineHi = Object.freeze({
    * Consumer: `GlobeTerrain.wgsl` (`computeUnderwaterVerticalOpticsAndBenthic`).
    */
   UNDERWATER_OPTICS: hiDefineBit(6),
-
   /**
    * Opt-in WebGL-parity ocean for globes fed by a water classification
-   * provider (water round 6, seat ruling R-2026-10-23-S8). Set by the globe
+   * provider. Set by the globe
    * surface pipeline only while `Globe.beginFrame` hands the tile provider a
    * `waterClassificationProvider` (`Globe.globalWaterMask` once its dataset
    * has loaded, or `Globe.lakeWaterMask` / `Globe.riverWaterMask` once loaded
@@ -1152,12 +1170,134 @@ export const ShaderDefineHi = Object.freeze({
    *   * Clear — the shipped physical-wavelength march and texel-footprint
    *     coast band, byte for byte.
    *
-   * The ENHANCED_OCEAN arm never reads it. The cloud core lane's registry
-   * re-layout may renumber it before its first release (R-2).
+   * The ENHANCED_OCEAN arm never reads it.
    *
-   * Consumer: `GlobeTerrain.wgsl` (the three `water-parity-r5` blocks).
+   * Consumer: `GlobeTerrain.wgsl` (`classicOceanWaveNormal`,
+   * `computeEnhancedOcean` and the water-mask coast-band calculation).
    */
   WATER_PROVIDER_PARITY: hiDefineBit(7),
+
+  /**
+   * Cloud-march allocation for baked-noise variants in `ProceduralClouds.wgsl`,
+   * which omit live FBM fallbacks.
+   */
+  CLOUD_NOISE_BAKED_ONLY: hiDefineBit(8),
+  /**
+   * Cloud-march allocation for base morphology in `ProceduralClouds.wgsl`,
+   * which omits inactive curl and optional morphology bodies.
+   */
+  CLOUD_MORPHOLOGY_BASE_ONLY: hiDefineBit(9),
+  /**
+   * Cloud-march allocation for post-formation distant-density statistics
+   * consumed by `ProceduralClouds.wgsl`.
+   */
+  CLOUD_DENSITY_MOMENTS: hiDefineBit(10),
+  /**
+   * Cloud-march allocation for the joint radiance/mask output in
+   * `CloudViewIntegration.wgsl`.
+   */
+  CLOUD_PRIMARY_REUSE: hiDefineBit(11),
+  /**
+   * Cloud-march allocation for rejecting empty density work in
+   * `CloudSpatialOccupancy.wgsl`.
+   */
+  CLOUD_SPATIAL_OCCUPANCY: hiDefineBit(12),
+  /**
+   * Cloud-march allocation for prepared lighting and shadow density in
+   * `CloudDensityCache.wgsl`.
+   */
+  CLOUD_DENSITY_SAMPLE_CACHE: hiDefineBit(13),
+  /**
+   * Cloud-march allocation for filtered fine-sample density in
+   * `CloudPrimaryDensity.wgsl`; requires `CLOUD_DENSITY_SAMPLE_CACHE`.
+   */
+  CLOUD_PRIMARY_DENSITY_CACHE: hiDefineBit(14),
+
+  /**
+   * Cloud-lighting allocation for analytic startup attenuation in
+   * `ProceduralClouds.wgsl`.
+   */
+  CLOUD_LIGHTING_PREVIEW: hiDefineBit(15),
+  /**
+   * Cloud-lighting allocation for the finite Sun-facing shell integral in
+   * `CloudDirectionalLighting.wgsl`.
+   */
+  CLOUD_DIRECTIONAL_LIGHTING: hiDefineBit(16),
+  /**
+   * Cloud-lighting allocation for cumulative directional optical depth in
+   * `CloudDeepShadow.wgsl`.
+   */
+  CLOUD_DEEP_SHADOW_CACHE: hiDefineBit(17),
+  /**
+   * Cloud-lighting allocation for angular transport in
+   * `CloudScatteringResponse.wgsl` and `CloudLightingResponse.wgsl`.
+   */
+  CLOUD_LIGHTING_RESPONSE: hiDefineBit(18),
+  /**
+   * Cloud-lighting allocation for bounded secondary march counts in
+   * `CloudLightingBudget.wgsl`.
+   */
+  CLOUD_CONTRIBUTION_LIGHTING: hiDefineBit(19),
+
+  /**
+   * Cloud-weather allocation for view-interval weather bounds in
+   * `CloudWeatherVolumeBounds.wgsl`.
+   */
+  CLOUD_WEATHER_VOLUME_BOUNDS: hiDefineBit(20),
+  /**
+   * Cloud-weather allocation for complete epoch interpolation in
+   * `CloudWeatherTransition.wgsl` and `CloudMaterialFlow.wgsl`.
+   */
+  CLOUD_WEATHER_TRANSITION: hiDefineBit(21),
+  /**
+   * Cloud-weather allocation for regional density, lighting and shadow
+   * heights in `CloudWeatherVertical.wgsl`.
+   */
+  CLOUD_WEATHER_VERTICAL: hiDefineBit(22),
+  /**
+   * Cloud-weather allocation for independent media with regional heights in
+   * `CloudPopulationWeather.wgsl`, `CloudPopulationLighting.wgsl` and
+   * `CloudPopulationMarch.wgsl`.
+   */
+  CLOUD_WEATHER_POPULATIONS: hiDefineBit(23),
+
+  /**
+   * Cloud-transport allocation for geographic material motion in the
+   * procedural march and shadows through `CloudMaterialFlow.wgsl`.
+   */
+  CLOUD_GEOGRAPHIC_WIND: hiDefineBit(24),
+  /**
+   * Cloud-transport allocation for single-level wind sampling in
+   * `CloudMaterialFlow.wgsl`.
+   */
+  CLOUD_SINGLE_LEVEL_WIND: hiDefineBit(25),
+  /**
+   * Cloud-transport allocation for omitting stored displacement sampling in
+   * `CloudMaterialFlow.wgsl` when a snapshot carries only velocity.
+   */
+  CLOUD_VELOCITY_ONLY_WIND: hiDefineBit(26),
+  /**
+   * Cloud-transport allocation for seam/pole-padded immutable flow grids in
+   * `CloudMaterialFlow.wgsl`.
+   */
+  CLOUD_PADDED_MATERIAL_FLOW: hiDefineBit(27),
+  /**
+   * Cloud-transport allocation for opacity-weighted material motion shared
+   * by `CloudPopulationMarch.wgsl`, `CloudReconstructionAttachments.wgsl`
+   * and `CloudTemporalResolve.wgsl`.
+   */
+  CLOUD_MATERIAL_REPROJECTION: hiDefineBit(28),
+
+  /**
+   * Cloud-spatial allocation for geographic optical-column hierarchies in
+   * `CloudSpatialProxy.wgsl`.
+   */
+  CLOUD_SPATIAL_PROXY: hiDefineBit(29),
+  /**
+   * Cloud-spatial allocation for correlated deck prefixes in
+   * `CloudSpatialJointProxy.wgsl` and the column producer.
+   */
+  CLOUD_JOINT_SPATIAL_PROXY: hiDefineBit(30),
 } as const);
 
 // Namespace-collision boot assertion: a name living in BOTH tables would
@@ -1180,6 +1320,10 @@ for (const name of Object.keys(ShaderDefineHi)) {
  *
  * **Add-only; never renumber.** Source ID 0 is intentionally unused
  * so cache keys of zero are distinguishable from "no source."
+ * IDs 1-42 retain their established assignments. Cloud rendering owns
+ * 43-63, water/ocean owns 64-95, globe/atmosphere owns 96-127, scene/model
+ * owns 128-159, infrastructure owns 160-191, and 192-255 remain reserved.
+ * Allocate within the owning subsystem's range without moving existing IDs.
  */
 export const ShaderSourceId = Object.freeze({
   GLOBE_TERRAIN: 1,
@@ -1300,6 +1444,16 @@ export const ShaderSourceId = Object.freeze({
   // log `frag_depth` write — preprocesses and the log and non-log variants
   // dedupe per `(sourceId, defines)`. Add-only.
   EDGE_EMITTER: 42,
+  /**
+   * Cloud-source allocation for the composed density, sampling, lighting
+   * and march source in `ProceduralClouds.wgsl`.
+   */
+  PROCEDURAL_CLOUDS: 43,
+  /**
+   * Cloud-source allocation for combining the stored integral with late
+   * scene color in `CloudPrimaryComposite.wgsl`.
+   */
+  CLOUD_PRIMARY_COMPOSITE: 44,
 } as const);
 
 /**
@@ -1329,6 +1483,121 @@ export function defineHiKeyToNames(definesHi: number): string[] {
 }
 
 /**
+ * Third independent define word. Cloud weather owns bits 0 and 2, cloud
+ * transport owns 1, cloud spatial owns 3-5, 7-10 and 13, cloud lighting
+ * owns 6, and cloud profile allocations occupy 11-12. Cloud
+ * expansion owns 14-20, water/ocean owns 21-23, globe/atmosphere owns
+ * 24-25, scene/model owns 26-29, and infrastructure owns 30.
+ * Cloud masks must stay below 2^21 for exact numeric source-cache packing
+ * in the planned W10b renderer keys (plan N6): flags + definesExt * 2^32.
+ * Bit 31 remains reserved. Names and bit assignments are add-only.
+ */
+declare const shaderDefineExtBrand: unique symbol;
+export type ShaderDefineExtMask = number & {
+  readonly [shaderDefineExtBrand]: "ext";
+};
+
+function extDefineBit(bitIndex: number): ShaderDefineExtMask {
+  if (!Number.isInteger(bitIndex) || bitIndex < 0 || bitIndex > 30) {
+    throw new RangeError(
+      `ShaderDefineExt bits must use bit indices 0..30 (got ${bitIndex}); ext-word bit 31 is reserved`,
+    );
+  }
+  return ((1 << bitIndex) >>> 0) as ShaderDefineExtMask;
+}
+
+export const ShaderDefineExt = Object.freeze({
+  /**
+   * Cloud-weather allocation for regional physical profiles in
+   * `CloudWeatherMaterial.wgsl`.
+   */
+  CLOUD_WEATHER_MATERIAL: extDefineBit(0),
+  /**
+   * Cloud-transport allocation for local wind fibres in
+   * `CloudWindMorphology.wgsl` and `CloudWeatherMaterial.wgsl`;
+   * requires typed materials and geographic material flow.
+   */
+  CLOUD_GEOGRAPHIC_FIBRES: extDefineBit(1),
+  /**
+   * Cloud-weather allocation for shared macro density and proxy periods in
+   * `CloudWeatherFormations.wgsl`; requires baked noise and typed materials.
+   */
+  CLOUD_WEATHER_FORMATIONS: extDefineBit(2),
+  /**
+   * Cloud-spatial allocation for joint support in the geographic column and
+   * optical-normalization producers in `CloudSpatialProxyColumns.wgsl`.
+   */
+  CLOUD_OPTICAL_JOINT_COLUMNS: extDefineBit(3),
+  /**
+   * Cloud-spatial allocation for height-band extinction and lighting in the
+   * geographic producers in `CloudSpatialProxyColumns.wgsl`.
+   */
+  CLOUD_SPATIAL_PROFILES: extDefineBit(4),
+  /**
+   * Cloud-spatial allocation for `CloudProxyProfiles.wgsl` and
+   * `CloudProfileProxy.wgsl` to retain paired area-column transport.
+   */
+  CLOUD_JOINT_HEIGHT_PROFILES: extDefineBit(5),
+  /**
+   * Cloud-lighting allocation for `CloudProfileLateralLighting.wgsl` to
+   * sample neighbouring height bands for solar depth.
+   */
+  CLOUD_PROFILE_LATERAL_LIGHTING: extDefineBit(6),
+  /**
+   * Cloud-spatial allocation for geographic profile producers, mips and
+   * consumers to share bounded UV regions through `CloudSpatialProxy.wgsl`.
+   */
+  CLOUD_SPATIAL_PROXY_REGION: extDefineBit(7),
+  /**
+   * Cloud-spatial allocation for bounded float32 phase-band storage and its
+   * density-only solar hierarchy in `CloudProxyProfiles.wgsl`.
+   */
+  CLOUD_SPARSE_PROFILES: extDefineBit(8),
+  /**
+   * Cloud-spatial allocation for field-wide represented-band support in
+   * sparse primary and solar queries through `CloudProfileProxy.wgsl`.
+   */
+  CLOUD_PROFILE_BAND_SUPPORT: extDefineBit(9),
+  /**
+   * Cloud-spatial allocation for `CloudSpatialProxyAccess.wgsl`,
+   * `CloudSpatialProxyLevels.wgsl` and profile transport to share one
+   * per-ray query budget.
+   */
+  CLOUD_REGIONAL_PROXY_LEVELS: extDefineBit(10),
+  /**
+   * Cloud-profile allocation for regional producers and transport to share
+   * a certified physical height interval through `CloudProfileProxy.wgsl`.
+   */
+  CLOUD_REGIONAL_HEIGHT_SUPPORT: extDefineBit(11),
+  /**
+   * Cloud-profile allocation for weighted height-profile mips that retain
+   * clear area and correlated optical transport. Intended consumers are the
+   * spatial profile producer, hierarchy and view sampler in
+   * `CloudProxyProfiles.wgsl` and `CloudProfileProxy.wgsl`.
+   */
+  CLOUD_FILTERED_HEIGHT_PROFILES: extDefineBit(12),
+  /**
+   * Cloud-spatial allocation for geographic update rectangles in
+   * `CloudSpatialProxyColumns.wgsl` and `CloudSpatialProxyMips.wgsl`.
+   */
+  CLOUD_SPATIAL_PROXY_PAGES: extDefineBit(13),
+} as const);
+
+for (const name of Object.keys(ShaderDefineExt)) {
+  if (name in ShaderDefine || name in ShaderDefineHi) {
+    throw new Error(
+      `WebGPUShaderDefines: duplicate define name "${name}" across flag words.`,
+    );
+  }
+}
+
+export function resolveDefineBitExt(
+  name: string,
+): ShaderDefineExtMask | undefined {
+  return (ShaderDefineExt as Record<string, ShaderDefineExtMask>)[name];
+}
+
+/**
  * Resolve a lo-word define flag name to its bit. Returns `undefined` for
  * unknown names so the preprocessor can produce a clear error.
  *
@@ -1340,6 +1609,11 @@ export function defineHiKeyToNames(definesHi: number): string[] {
  * {@link resolveDefineBitHi} first, as the preprocessor does.
  */
 export function resolveDefineBit(name: string): number | undefined {
+  if ((ShaderDefineExt as Record<string, number>)[name] !== undefined) {
+    throw new Error(
+      `WebGPUShaderDefines: "${name}" is an EXT-word define (ShaderDefineExt). Resolve it with resolveDefineBitExt.`,
+    );
+  }
   if ((ShaderDefineHi as Record<string, number>)[name] !== undefined) {
     throw new Error(
       `WebGPUShaderDefines: "${name}" is a HI-word define (ShaderDefineHi). ` +

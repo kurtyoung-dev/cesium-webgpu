@@ -1,11 +1,13 @@
 import {
   ShaderDefine,
   ShaderDefineHi,
+  ShaderDefineExt,
   ShaderSourceId,
   defineKeyToNames,
   defineHiKeyToNames,
   resolveDefineBit,
   resolveDefineBitHi,
+  resolveDefineBitExt,
 } from "../../../Source/Renderer/WebGPU/WebGPUShaderDefines.js";
 
 describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
@@ -133,13 +135,15 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
       // caught by the count guard below on the suite's first Edge run since
       // (Batch 951). The registry addition itself was legitimate add-only.
       expect(ShaderSourceId.EDGE_EMITTER).toBe(42);
+      expect(ShaderSourceId.PROCEDURAL_CLOUDS).toBe(43);
+      expect(ShaderSourceId.CLOUD_PRIMARY_COMPOSITE).toBe(44);
     });
 
     it("pins every declared source ID (no unpinned additions)", function () {
       // As with the defines, this count guard forces a newly-added source
-      // ID to come with its own explicit pin above. IDs 1..42 with 0
-      // reserved => 42 entries.
-      expect(Object.keys(ShaderSourceId).length).toBe(42);
+      // ID to come with its own explicit pin above. IDs 1..44 with 0
+      // reserved => 44 entries.
+      expect(Object.keys(ShaderSourceId).length).toBe(44);
     });
 
     it("reserves source ID 0 (no entry uses it)", function () {
@@ -278,10 +282,36 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
       expect(ShaderDefineHi.WATER_PROVIDER_PARITY).toBe(1 << 7);
     });
 
+    it("pins cloud allocations to their subsystem ranges", function () {
+      expect(ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY).toBe(1 << 8);
+      expect(ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY).toBe(1 << 9);
+      expect(ShaderDefineHi.CLOUD_DENSITY_MOMENTS).toBe(1 << 10);
+      expect(ShaderDefineHi.CLOUD_PRIMARY_REUSE).toBe(1 << 11);
+      expect(ShaderDefineHi.CLOUD_SPATIAL_OCCUPANCY).toBe(1 << 12);
+      expect(ShaderDefineHi.CLOUD_DENSITY_SAMPLE_CACHE).toBe(1 << 13);
+      expect(ShaderDefineHi.CLOUD_PRIMARY_DENSITY_CACHE).toBe(1 << 14);
+      expect(ShaderDefineHi.CLOUD_LIGHTING_PREVIEW).toBe(1 << 15);
+      expect(ShaderDefineHi.CLOUD_DIRECTIONAL_LIGHTING).toBe(1 << 16);
+      expect(ShaderDefineHi.CLOUD_DEEP_SHADOW_CACHE).toBe(1 << 17);
+      expect(ShaderDefineHi.CLOUD_LIGHTING_RESPONSE).toBe(1 << 18);
+      expect(ShaderDefineHi.CLOUD_CONTRIBUTION_LIGHTING).toBe(1 << 19);
+      expect(ShaderDefineHi.CLOUD_WEATHER_VOLUME_BOUNDS).toBe(1 << 20);
+      expect(ShaderDefineHi.CLOUD_WEATHER_TRANSITION).toBe(1 << 21);
+      expect(ShaderDefineHi.CLOUD_WEATHER_VERTICAL).toBe(1 << 22);
+      expect(ShaderDefineHi.CLOUD_WEATHER_POPULATIONS).toBe(1 << 23);
+      expect(ShaderDefineHi.CLOUD_GEOGRAPHIC_WIND).toBe(1 << 24);
+      expect(ShaderDefineHi.CLOUD_SINGLE_LEVEL_WIND).toBe(1 << 25);
+      expect(ShaderDefineHi.CLOUD_VELOCITY_ONLY_WIND).toBe(1 << 26);
+      expect(ShaderDefineHi.CLOUD_PADDED_MATERIAL_FLOW).toBe(1 << 27);
+      expect(ShaderDefineHi.CLOUD_MATERIAL_REPROJECTION).toBe(1 << 28);
+      expect(ShaderDefineHi.CLOUD_SPATIAL_PROXY).toBe(1 << 29);
+      expect(ShaderDefineHi.CLOUD_JOINT_SPATIAL_PROXY).toBe(1 << 30);
+    });
+
     it("pins every declared hi define (no unpinned additions)", function () {
       // Same discipline as the lo table: a newly-claimed hi bit must come
       // with its own explicit pin above; bump this count with it.
-      expect(Object.keys(ShaderDefineHi).length).toBe(8);
+      expect(Object.keys(ShaderDefineHi).length).toBe(31);
     });
 
     it("uses each hi bit exactly once, as a power of two, below bit 31", function () {
@@ -306,6 +336,89 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
 
     it("is frozen (add-only registry cannot be mutated at runtime)", function () {
       expect(Object.isFrozen(ShaderDefineHi)).toBe(true);
+    });
+  });
+
+  describe("ShaderDefineExt registry", function () {
+    it("pins each allocation to its stable bit and declaration order", function () {
+      expect(ShaderDefineExt.CLOUD_WEATHER_MATERIAL).toBe(1 << 0);
+      expect(ShaderDefineExt.CLOUD_GEOGRAPHIC_FIBRES).toBe(1 << 1);
+      expect(ShaderDefineExt.CLOUD_WEATHER_FORMATIONS).toBe(1 << 2);
+      expect(ShaderDefineExt.CLOUD_OPTICAL_JOINT_COLUMNS).toBe(1 << 3);
+      expect(ShaderDefineExt.CLOUD_SPATIAL_PROFILES).toBe(1 << 4);
+      expect(ShaderDefineExt.CLOUD_JOINT_HEIGHT_PROFILES).toBe(1 << 5);
+      expect(ShaderDefineExt.CLOUD_PROFILE_LATERAL_LIGHTING).toBe(1 << 6);
+      expect(ShaderDefineExt.CLOUD_SPATIAL_PROXY_REGION).toBe(1 << 7);
+      expect(ShaderDefineExt.CLOUD_SPARSE_PROFILES).toBe(1 << 8);
+      expect(ShaderDefineExt.CLOUD_PROFILE_BAND_SUPPORT).toBe(1 << 9);
+      expect(ShaderDefineExt.CLOUD_REGIONAL_PROXY_LEVELS).toBe(1 << 10);
+      expect(ShaderDefineExt.CLOUD_REGIONAL_HEIGHT_SUPPORT).toBe(1 << 11);
+      expect(ShaderDefineExt.CLOUD_FILTERED_HEIGHT_PROFILES).toBe(1 << 12);
+      expect(ShaderDefineExt.CLOUD_SPATIAL_PROXY_PAGES).toBe(1 << 13);
+      expect(Object.keys(ShaderDefineExt)).toEqual([
+        "CLOUD_WEATHER_MATERIAL",
+        "CLOUD_GEOGRAPHIC_FIBRES",
+        "CLOUD_WEATHER_FORMATIONS",
+        "CLOUD_OPTICAL_JOINT_COLUMNS",
+        "CLOUD_SPATIAL_PROFILES",
+        "CLOUD_JOINT_HEIGHT_PROFILES",
+        "CLOUD_PROFILE_LATERAL_LIGHTING",
+        "CLOUD_SPATIAL_PROXY_REGION",
+        "CLOUD_SPARSE_PROFILES",
+        "CLOUD_PROFILE_BAND_SUPPORT",
+        "CLOUD_REGIONAL_PROXY_LEVELS",
+        "CLOUD_REGIONAL_HEIGHT_SUPPORT",
+        "CLOUD_FILTERED_HEIGHT_PROFILES",
+        "CLOUD_SPATIAL_PROXY_PAGES",
+      ]);
+    });
+
+    it("pins every declared ext define (no unpinned additions)", function () {
+      expect(Object.keys(ShaderDefineExt).length).toBe(14);
+    });
+
+    it("uses unique powers of two within the cloud cache packing bound", function () {
+      const bits = Object.values(ShaderDefineExt);
+      expect(new Set(bits).size).toBe(bits.length);
+      for (const bit of bits) {
+        expect(bit & (bit - 1)).toBe(0);
+        expect(bit).toBeGreaterThan(0);
+        expect(bit).toBeLessThan(1 << 21);
+      }
+    });
+
+    it("shares no name with either earlier define word", function () {
+      for (const name of Object.keys(ShaderDefineExt)) {
+        expect(name in ShaderDefine).toBe(false);
+        expect(name in ShaderDefineHi).toBe(false);
+      }
+    });
+
+    it("is frozen (add-only registry cannot be mutated at runtime)", function () {
+      expect(Object.isFrozen(ShaderDefineExt)).toBe(true);
+    });
+  });
+
+  describe("resolveDefineBitExt", function () {
+    it("resolves every ext-word flag to its own word", function () {
+      for (const [name, bit] of Object.entries(ShaderDefineExt)) {
+        expect(resolveDefineBitExt(name)).toBe(bit);
+        expect(resolveDefineBitHi(name)).toBeUndefined();
+      }
+    });
+
+    it("returns undefined for unknown names and earlier words", function () {
+      expect(resolveDefineBitExt("NOT_A_REAL_DEFINE")).toBeUndefined();
+      expect(resolveDefineBitExt("LOG_DEPTH")).toBeUndefined();
+      expect(resolveDefineBitExt("HI_WORD_PROBE")).toBeUndefined();
+    });
+
+    it("rejects every ext-word name through the lo resolver", function () {
+      for (const name of Object.keys(ShaderDefineExt)) {
+        expect(function () {
+          resolveDefineBit(name);
+        }).toThrowError(/EXT-word define/);
+      }
     });
   });
 
@@ -349,7 +462,7 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
 
     it("ignores hi bits that don't correspond to any hi define", function () {
       expect(
-        defineHiKeyToNames(ShaderDefineHi.HI_WORD_PROBE | 0x40000000),
+        defineHiKeyToNames(ShaderDefineHi.HI_WORD_PROBE | 0x80000000),
       ).toEqual(["HI_WORD_PROBE"]);
     });
   });

@@ -30,7 +30,7 @@
  *
  * # Hi-word widening
  *
- * The define space is the two-word `(defines, definesHi)` pair; see
+ * The define space uses `(defines, definesHi, definesExt)` words; see
  * `ShaderDefineHi` in `WebGPUShaderDefines`. The hi word is a second
  * cache level, not a wider packed integer — packing 64 define bits plus 8
  * source-id bits into one number would exceed the 53-bit safe-integer
@@ -188,6 +188,10 @@ export class WebGPUShaderModuleCache {
     number,
     Map<number | string, GPUShaderModule>
   > | null = null;
+  private _modulesByExt: Map<
+    number,
+    Map<number, Map<number | string, GPUShaderModule>>
+  > | null = null;
 
   // The device's shared census record, resolved once here so the lookup path
   // never pays a WeakMap read.
@@ -228,6 +232,8 @@ export class WebGPUShaderModuleCache {
    *   word is a fresh namespace with no signed legacy, so only
    *   `0..0x7fffffff` is accepted (hi bit 31 is reserved — see
    *   `ShaderDefineHi`).
+   * @param definesExt Optional third define word. Nonzero values select a
+   *   separate lazy cache level; zero retains the historical lookup paths.
    */
   getOrCreate(
     sourceId: number,
@@ -236,6 +242,7 @@ export class WebGPUShaderModuleCache {
     label: string,
     keySalt = 0,
     definesHi: number = 0,
+    definesExt: number = 0,
   ): GPUShaderModule {
     if (!Number.isInteger(sourceId) || sourceId < 0 || sourceId > 0xff) {
       throw new RangeError("sourceId must be an integer in the range 0..255");
@@ -257,10 +264,31 @@ export class WebGPUShaderModuleCache {
       );
     }
 
-    // Select the cache level. `definesHi === 0` is the hot path: the
-    // `_modules` field, a 40-bit key, one `Map.get`.
+    if (
+      !Number.isInteger(definesExt) ||
+      definesExt < 0 ||
+      definesExt > 0x7fffffff
+    ) {
+      throw new RangeError(
+        "definesExt must use integer bits 0..30; bit 31 is reserved",
+      );
+    }
+    // Zero hi and extra words retain the historical single-map lookup.
     let level: Map<number | string, GPUShaderModule>;
-    if (definesHi === 0) {
+    if (definesExt !== 0) {
+      this._modulesByExt ??= new Map();
+      let words = this._modulesByExt.get(definesExt);
+      if (!words) {
+        words = new Map();
+        this._modulesByExt.set(definesExt, words);
+      }
+      let extLevel = words.get(definesHi);
+      if (!extLevel) {
+        extLevel = new Map();
+        words.set(definesHi, extLevel);
+      }
+      level = extLevel;
+    } else if (definesHi === 0) {
       level = this._modules;
     } else {
       let byHi = this._modulesByHi;
@@ -283,7 +311,7 @@ export class WebGPUShaderModuleCache {
       return module;
     }
 
-    const processed = preprocess(source, defines, definesHi);
+    const processed = preprocess(source, defines, definesHi, definesExt);
     module = this._device.createShaderModule({ code: processed, label });
     // Counted at the one site that hands WGSL to the device, so the totals
     // cannot drift from what was actually compiled.
@@ -312,32 +340,49 @@ export class WebGPUShaderModuleCache {
   prewarm(
     sourceId: number,
     source: string,
-    defineSets: readonly (number | readonly [number, number])[],
+    defineSets: readonly (number | readonly [number, number, number?])[],
     labelPrefix: string,
   ): void {
     for (let i = 0; i < defineSets.length; i++) {
       const entry = defineSets[i];
       const defines = typeof entry === "number" ? entry : entry[0];
       const definesHi = typeof entry === "number" ? 0 : entry[1];
+      const definesExt = typeof entry === "number" ? 0 : (entry[2] ?? 0);
       const loHex = (defines >>> 0).toString(16).padStart(8, "0");
-      const label =
+      let label =
         definesHi === 0
           ? `${labelPrefix} (defines=0x${loHex})`
           : `${labelPrefix} (defines=0x${loHex},hi=0x${(definesHi >>> 0)
               .toString(16)
               .padStart(8, "0")})`;
-      this.getOrCreate(sourceId, source, defines, label, 0, definesHi);
+      if (definesExt !== 0) {
+        label += ` ext=0x${definesExt.toString(16)}`;
+      }
+      this.getOrCreate(
+        sourceId,
+        source,
+        defines,
+        label,
+        0,
+        definesHi,
+        definesExt,
+      );
     }
   }
 
   /**
    * Diagnostic: number of compiled modules currently cached, across the
-   * hi=0 level and every hi-word level.
+   * base level and every hi-word and extra-word level.
    */
   size(): number {
     let n = this._modules.size;
     if (this._modulesByHi !== null) {
       for (const level of this._modulesByHi.values()) {
+        n += level.size;
+      }
+    }
+    for (const words of this._modulesByExt?.values() ?? []) {
+      for (const level of words.values()) {
         n += level.size;
       }
     }
@@ -354,6 +399,8 @@ export class WebGPUShaderModuleCache {
    * history a reader is asking about at exactly the moment it matters.
    */
   destroy(): void {
+    this._modulesByExt?.clear();
+    this._modulesByExt = null;
     this._modules.clear();
     if (this._modulesByHi !== null) {
       this._modulesByHi.clear();
