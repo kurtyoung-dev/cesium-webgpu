@@ -1,12 +1,23 @@
 // OceanInitialSpectrum.wgsl — initial wave-height spectrum h0(k) for the FFT
 // spectral ocean. Computed once, or when the spectrum parameters change, never
 // per frame. Output rgba32float packs the complex h0(k) in .xy and the complex
-// conjugate partner h0(-k) in .zw, so the per-frame time-evolution pass
+// conjugate partner conj(h0(-k)) in .zw, so the per-frame time-evolution pass
 // (OceanTimeSpectrum.wgsl) can build the Hermitian
 // h(k,t) = h0(k)e^{iwt} + conj(h0(-k))e^{-iwt} from a single texel fetch.
 //
-// Gaussian noise (xr, xi per partner) is uploaded deterministically from the
-// CPU by Box-Muller, so results are reproducible across contexts.
+// h0(-k) is the .xy half of the texel at the mirrored frequency index, so the
+// two texels of a pair read the same gaussian and the field is Hermitian (its
+// inverse transform is real). The row and column at texel 0 are the k = -N/2
+// edge, which has no +N/2 partner in the grid; they are left empty rather than
+// paired with themselves, which would break the symmetry.
+//
+// Gaussian noise is uploaded deterministically from the CPU by Box-Muller, so
+// results are reproducible across contexts. Only the .xy pair of each texel is
+// read; .zw is generated and uploaded but unused.
+//
+// The seabed depth in metres rides in the otherwise unused params._pad1 slot;
+// when it is positive the spectrum is attenuated by the TMA finite-depth
+// factor (Bouws et al. 1985).
 //
 // Reference: Jerry Tessendorf, "Simulating Ocean Water" (SIGGRAPH course notes
 // 1999-2004) — the Phillips spectrum, implemented from the published math with
@@ -27,7 +38,7 @@ struct InitParams {
   _pad2: f32,
 };
 
-@group(0) @binding(0) var Noise: texture_2d<f32>;     // rgba32float, 4 gaussians
+@group(0) @binding(0) var Noise: texture_2d<f32>;     // rgba32float, .xy used
 @group(0) @binding(1) var H0: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(2) var<uniform> params: InitParams;
 
@@ -52,6 +63,20 @@ fn phillips(k: vec2<f32>) -> f32 {
   let l = params.smallWave;
   var p = params.amplitude * exp(-1.0 / (kLen2 * L * L)) / kLen4 * dirFactor;
   p = p * exp(-kLen2 * l * l); // suppress very short waves
+  // TMA finite-depth attenuation (Kitaigorodskii / Bouws et al. 1985) when depth > 0.
+  let depth = params._pad1;
+  if (depth > 0.0) {
+    let omega = sqrt(params.gravity * kLen);
+    let omegaH = omega * sqrt(depth / max(params.gravity, 1.0e-4));
+    var phiTma = 1.0;
+    if (omegaH <= 1.0) {
+      phiTma = 0.5 * omegaH * omegaH;
+    } else if (omegaH < 2.0) {
+      let dOmega = 2.0 - omegaH;
+      phiTma = 1.0 - 0.5 * dOmega * dOmega;
+    }
+    p = p * clamp(phiTma, 0.02, 1.0);
+  }
   return p;
 }
 
@@ -59,6 +84,11 @@ fn phillips(k: vec2<f32>) -> f32 {
 fn initialSpectrum(@builtin(global_invocation_id) id: vec3<u32>) {
   let N = params.size;
   if (id.x >= N || id.y >= N) {
+    return;
+  }
+  // Unpaired k = -N/2 row and column: no partner exists, so no pair is formed.
+  if (id.x == 0u || id.y == 0u) {
+    textureStore(H0, vec2<i32>(id.xy), vec4<f32>(0.0, 0.0, 0.0, 0.0));
     return;
   }
   let half = i32(N) / 2;
@@ -69,12 +99,14 @@ fn initialSpectrum(@builtin(global_invocation_id) id: vec3<u32>) {
   let k = vec2<f32>(f32(mx) * dk, f32(mz) * dk);
 
   let noise = textureLoad(Noise, vec2<i32>(id.xy), 0);
+  let mirrorCoord = vec2<i32>(i32((N - id.x) % N), i32((N - id.y) % N));
+  let noiseMinus = textureLoad(Noise, mirrorCoord, 0);
   let invSqrt2 = 0.70710678118;
 
   // h0(k) from the first gaussian pair.
   let h0 = invSqrt2 * noise.xy * sqrt(phillips(k));
-  // conj(h0(-k)): spectrum at -k, second gaussian pair, conjugated.
-  let hm = invSqrt2 * noise.zw * sqrt(phillips(-k));
+  // conj(h0(-k)): spectrum at -k, mirrored frequency coordinate, conjugated.
+  let hm = invSqrt2 * noiseMinus.xy * sqrt(phillips(-k));
   let h0MinusConj = vec2<f32>(hm.x, -hm.y);
 
   textureStore(H0, vec2<i32>(id.xy),

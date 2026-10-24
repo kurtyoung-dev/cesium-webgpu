@@ -37,6 +37,14 @@ Tools/visual-regression/fixtures/nasa-svs-5073/NOTICE.md text eol=lf
 Tools/visual-regression/fixtures/nasa-svs-5073/*.mjs text eol=lf
 migration_doc/pending/*.diff -text
 
+# --- WaterMask binary assets ----------------------------------------------------
+# These packed binaries (LWM2 / NE1R / GBT1 / CWT1) contain NUL bytes today, so git
+# classifies them as binary on its own, but nothing pinned it: with
+# `core.autocrlf=true` a heuristic that ever guessed "text" would rewrite bytes
+# inside records. The shipped byte counts are named in both LICENSE.md files and
+# re-derived by Tools/visual-regression/water-mask-assets.spec.mjs.
+packages/engine/Source/Assets/WaterMask/*.bin binary
+
 # --- Shared probe runtime -------------------------------------------------------
 # Same mechanism as the fixture block above, different consequence. `* text=auto`
 # plus `core.autocrlf=true` means an ordinary text file is stored LF and checked

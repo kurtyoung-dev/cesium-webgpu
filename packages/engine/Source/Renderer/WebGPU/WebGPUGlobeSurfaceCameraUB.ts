@@ -49,6 +49,7 @@ import {
   CAMERA_UNIFORM_BYTES,
   CAMERA_UNIFORM_FLOATS,
   multiplyMat4ColumnMajor,
+  OCEAN_WAVE_SECONDS_OFFSET,
 } from "./WebGPUGlobeSurfaceTypes.js";
 // The shared cloud-shadow RTE frame owner.
 import {
@@ -184,6 +185,89 @@ export interface CameraUBHost {
   readonly _cameraUniformData: Float32Array;
   readonly _cameraMvpScratch: Float64Array;
   _diagShouldLog(): boolean;
+  _getOceanTransitionDeficit?(): number;
+}
+
+/**
+ * The tile-provider fields the globe camera UB reads for the water controls.
+ * `Globe.beginFrame` mirrors them from `globe.water` every frame.
+ */
+export interface WaterCameraControlSource {
+  waterQualityPreset?: string;
+  waterSubmersibleLightEnabled?: boolean;
+  waterSubmersibleLightIntensity?: number;
+  waterBathymetricReliefBoost?: number;
+  waterEmergenceWetness?: number;
+  waterVesselWakeIntensity?: number;
+  // True only when a consumer uploads vessel-wake emitter positions to the
+  // globe shader. Nothing sets it yet (DEFERRED: vessel-wake emitter wiring),
+  // so the wake gate below stays exactly 0.
+  waterVesselWakeEmittersWired?: boolean;
+  waterNearSurfaceTransparency?: number;
+  waterDiveDepthMeters?: number;
+}
+
+/** The camera-UB lanes the water controls fill. */
+export interface WaterCameraControls {
+  /** `CameraUniforms.vesselWakeGate`: 0 unless a wake can actually be drawn. */
+  vesselWakeGate: number;
+  /** `hdrControl.z`: detail bias from the quality preset plus the relief boost. */
+  detailBias: number;
+  /** `hdrControl.w`: ROV lamp intensity when positive, minus the emergence wetness when negative. */
+  lampOrWetness: number;
+  /** `cloudShadowCascadeParams.z`. */
+  nearSurfaceTransparency: number;
+  /** `cloudShadowCascadeParams.w`, in metres. */
+  diveDepthMeters: number;
+}
+
+/**
+ * Resolve the water-control lanes of the camera UB.
+ *
+ * The wake gate is its own lane so the preset and the relief boost can never
+ * raise it: `hdrControl.z` used to carry preset + relief + wake in one float,
+ * and the shader's wake gate read that float, so a HIGH preset alone drew a
+ * wake with the wake feature off.
+ */
+export function resolveWaterCameraControls(
+  source: WaterCameraControlSource,
+): WaterCameraControls {
+  const presetDelta =
+    source.waterQualityPreset === "LOW"
+      ? -0.35
+      : source.waterQualityPreset === "HIGH"
+        ? 0.45
+        : 0.0;
+  const reliefDelta =
+    Math.max(0.0, source.waterBathymetricReliefBoost ?? 0.0) * 0.5;
+  const wakeIntensity = Math.max(0.0, source.waterVesselWakeIntensity ?? 0.0);
+  const rovActive = source.waterSubmersibleLightEnabled === true;
+  const emergenceWet = Math.max(
+    0.0,
+    Math.min(1.0, source.waterEmergenceWetness ?? 0.0),
+  );
+  return {
+    vesselWakeGate:
+      source.waterVesselWakeEmittersWired === true
+        ? Math.min(1.0, wakeIntensity * 0.5)
+        : 0.0,
+    detailBias: presetDelta + reliefDelta,
+    // One float, sign-coded, because no free lane exists in CameraUniforms:
+    // positive = ROV lamp intensity, negative = emergence wetness. The lamp
+    // wins, so wetness reads 0 while the lamp is on, a known limitation until
+    // a lane frees up. The shader decodes it at `emergenceWetness` and
+    // `rovSpotlightGain`.
+    lampOrWetness: rovActive
+      ? Math.max(0.05, source.waterSubmersibleLightIntensity ?? 1.0)
+      : emergenceWet > 0.001
+        ? -emergenceWet
+        : 0.0,
+    nearSurfaceTransparency: Math.max(
+      0.0,
+      Math.min(1.0, source.waterNearSurfaceTransparency ?? 0.0),
+    ),
+    diveDepthMeters: Math.max(0.0, source.waterDiveDepthMeters ?? 0.0),
+  };
 }
 
 export function createCameraUniformBuffer(
@@ -198,6 +282,9 @@ export function createCameraUniformBuffer(
 ): { buffer: GPUBuffer; offset: number; size: number } {
   const data = host._cameraUniformData;
   let offset = 0;
+  const waterControls = resolveWaterCameraControls(
+    tileProvider as unknown as WaterCameraControlSource,
+  );
   const ellipsoid =
     (
       tileProvider as CesiumGlobeTileProvider & {
@@ -522,7 +609,7 @@ export function createCameraUniformBuffer(
     for (let i = 0; i < 16; i++) data[offset++] = i % 5 === 0 ? 1.0 : 0.0;
   }
 
-  // minMaxHeight (vec2) + ellipsoidRadius (f32) + pad (f32)
+  // minMaxHeight (vec2) + ellipsoidRadius (f32) + vesselWakeGate (f32)
   // ellipsoidRadius carries the tile provider's ellipsoid maximum radius
   // so the shader's altitude calculations work for non-WGS84 ellipsoids
   // (Mars, Moon, custom). Falls through to 0 when unavailable; the shader
@@ -530,7 +617,7 @@ export function createCameraUniformBuffer(
   data[offset++] = encoding?.minimumHeight ?? 0.0;
   data[offset++] = encoding?.maximumHeight ?? 0.0;
   data[offset++] = ellipsoid?.maximumRadius ?? 0.0;
-  data[offset++] = 0; // reserved (future minor-axis radius)
+  data[offset++] = waterControls.vesselWakeGate; // CameraUniforms.vesselWakeGate
 
   // tileRectangle (vec4): planar modes pack the projected rectangle in meters,
   // relative to rtc2D for SCENE2D / COLUMBUS_VIEW and absolute for MORPHING.
@@ -597,7 +684,9 @@ export function createCameraUniformBuffer(
   const projection = frameState?.mapProjection;
   const isWebMercator = projection instanceof WebMercatorProjection;
   data[offset++] = isWebMercator ? 1.0 : 0.0;
-  data[offset++] = 0; // pad
+  data[offset++] = host._getOceanTransitionDeficit
+    ? host._getOceanTransitionDeficit()
+    : 0; // oceanTransitionDeficit (the former alignment pad)
 
   // previousViewProjection (mat4x4, 16 floats, offsets 100-115).
   // `UniformState.update()` clones the current viewProjection into
@@ -1155,19 +1244,26 @@ export function createCameraUniformBuffer(
   // y carries czm_gamma (uniformState.gamma, default 2.2). All-zero on the
   // default SDR path, where useHDR is false, so czm_gammaCorrect stays an
   // identity and the render is byte-identical.
+  //
+  // z and w are the water controls, read by the enhanced ocean only: z is the
+  // detail bias (quality preset plus relief boost) and w is the sign-coded
+  // ROV-lamp intensity or emergence wetness. Both are exactly 0 at the default
+  // preset with no lamp and no emergence. See `resolveWaterCameraControls`.
   const hdrEnabled =
     (frameState as { useHDR?: boolean } | undefined)?.useHDR === true;
   data[offset++] = hdrEnabled ? 1.0 : 0.0;
   data[offset++] = (uniformState as { gamma?: number }).gamma ?? 2.2;
-  data[offset++] = 0.0;
-  data[offset++] = 0.0;
+  data[offset++] = waterControls.detailBias;
+  data[offset++] = waterControls.lampOrWetness;
 
   // Cloud-shadow cascade tail (196-231): cloudShadowVP1 (mat4) +
   // cloudShadowVP2 (mat4) are the mid and far cascade forward VPs, cascade 0
   // being packed above into cloudShadowVP. cloudShadowCascadeParams (vec4)
-  // carries x = atlas tile count (3.0). All-zero unless the opt-in cascade
-  // tier rendered the atlas this frame, so the FS single-map branch stays
-  // byte-identical.
+  // carries x = atlas tile count (3.0), y = eye-relative flag, z = near-surface
+  // water transparency and w = dive depth in metres (the last two from
+  // `resolveWaterCameraControls`, written in both branches). The matrices and
+  // the atlas count are all-zero unless the opt-in cascade tier rendered the
+  // atlas this frame, so the FS single-map branch stays byte-identical.
   if (cascadeReady) {
     for (let ci = 1; ci < 3; ci++) {
       const cascadeFrame = cloudShadowCascadeFrames?.[ci];
@@ -1191,14 +1287,14 @@ export function createCameraUniformBuffer(
     // that it must project `v_positionRTE` rather than the full-ECEF
     // `v_positionMC`.
     data[offset++] = cloudShadowRelativeToEye ? 1.0 : 0.0;
-    data[offset++] = 0.0;
-    data[offset++] = 0.0;
+    data[offset++] = waterControls.nearSurfaceTransparency;
+    data[offset++] = waterControls.diveDepthMeters;
   } else {
     for (let i = 0; i < 32; i++) data[offset++] = 0.0;
     data[offset++] = 0.0; // x = tile count (single-map branch)
     data[offset++] = cloudShadowRelativeToEye ? 1.0 : 0.0; // y = eye-relative VP
-    data[offset++] = 0.0;
-    data[offset++] = 0.0;
+    data[offset++] = waterControls.nearSurfaceTransparency;
+    data[offset++] = waterControls.diveDepthMeters;
   }
 
   // Celestial water reflection (232-243). Off is exact: every one of the
@@ -1217,6 +1313,12 @@ export function createCameraUniformBuffer(
   // `csm_eyeToCartographicDelta`. Appended, so no offset above moved.
   writeEyeCartographicTail(data, offset, uniformState);
   offset += EYE_CARTOGRAPHIC_FLOATS;
+  // The eye-cartographic vec3's alignment lane carries the unwrapped scene wave
+  // seconds, the clock GlobeFS.glsl's classic waves run on
+  // (`u_oceanWaveSeconds`). Only the opt-in WATER_PROVIDER_PARITY variant reads
+  // it; the shipped march keeps the wrapped tile clock, which is commensurate
+  // with its own rates and not with czm_getWaterNoise's (water round 6).
+  data[OCEAN_WAVE_SECONDS_OFFSET] = tileProvider.oceanWaveSeconds ?? 0.0;
 
   // The packer walks one cursor through a struct declared in a different file
   // and a different language. A lane added to the WGSL struct without a

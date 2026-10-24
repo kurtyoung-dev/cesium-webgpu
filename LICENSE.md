@@ -1511,11 +1511,11 @@ The pseudo-random stream is AES-256-CTR over a zero plaintext keyed by SHA-256 o
 
 ### Inland-lake polygon mask — Natural Earth 1:10m Lakes
 
-**File:** `packages/engine/Source/Assets/WaterMask/ne10mLakes.bin` (912,548 bytes). Read by `packages/engine/Source/Scene/WaterClassificationProvider.ts` (`LakeWaterClassificationProvider`), which composites the lake polygons over a terrain provider's own water mask at the shared upload point so both rendering backends consume identical texels. Fetched by `packages/engine/Source/Scene/Globe.js` only when `globe.lakeWaterMask` is enabled — the flag is off by default, so an application that never sets it never downloads the file.
+**File:** `packages/engine/Source/Assets/WaterMask/ne10mLakes.bin` (962,372 bytes). Read by `packages/engine/Source/Scene/WaterClassificationProvider.ts` (`LakeWaterClassificationProvider`), which composites the lake polygons over the water mask the terrain supplies (on a tile without a mask of its own, such as an upsampled tile, over its nearest real ancestor's mask resampled to that tile) or over the coastline mask of `globe.globalWaterMask`, at the shared upload point so both rendering backends consume identical texels; over terrain without a water mask and without `globe.globalWaterMask` it changes nothing. Fetched by `packages/engine/Source/Scene/Globe.js` only when `globe.lakeWaterMask` is enabled — the flag is off by default, so an application that never sets it never downloads the file.
 
-**Product:** Natural Earth "Lakes + Reservoirs" at 1:10m scale — the global file `ne_10m_lakes.geojson` together with the North America supplement `ne_10m_lakes_north_america.geojson`, as redistributed by the Natural Earth vector repository. Natural Earth classes the Caspian as ocean, so it is absent from this dataset and from the bundled file.
+**Product:** Natural Earth 1:10m "Lakes + Reservoirs", playa and reef data — the global file `ne_10m_lakes.geojson` together with the supplements `ne_10m_lakes_north_america.geojson` and `ne_10m_lakes_europe.geojson`, the playa polygons `ne_10m_playas.geojson` and the reef lines `ne_10m_reefs.geojson` (five sources), as redistributed by the Natural Earth vector repository. The builder downloads from that repository at commit `ca96624a56bd078437bca8184e78163e5039ad19` (which is also its `master`, unchanged since 2022-06-02) and refuses a file whose SHA-256 differs from the table in `Tools/lib/natural-earth-pinned.mjs`. The bundled file was baked from exactly those pinned sources by the previous revision of the builder (a rebuild with it is byte-identical, checked 2026-10-22); the current revision quantises slightly differently, and the re-bake is recorded as follow-up work. Natural Earth classes the Caspian as ocean, so it is absent from this dataset and from the bundled file.
 
-**Conversion applied:** multi-polygon parts flattened to independent polygons, each carrying its own bounding box for tile culling; ring vertices quantized to a pair of 16-bit fractions of that bounding box; packed into the little-endian `LWM1` container whose layout is documented in the header of `Tools/build-lake-water-mask.mjs`, which reproduces the file from the two source GeoJSONs. Worst-case quantization error is about 17 m on the largest bounding box, well inside the 1:10m dataset's own cartographic accuracy. Geometry only — no name, class, scale-rank or other attribute field is carried. The source GeoJSONs are **not** bundled.
+**Conversion applied:** multi-polygon parts flattened to independent polygons, each carrying its own bounding box for tile culling; reef lines widened into thin polygons; ring vertices quantized to a pair of 16-bit fractions of that bounding box; packed into the little-endian `LWM2` container (4,421 polygons) whose layout is documented in the header of `Tools/build-lake-water-mask.mjs`, which rebuilds the file from the five source GeoJSONs. Each polygon also carries a water-type code and a depth byte; both are heuristic estimates made by the tool from latitude, elongation and area, not surveyed values. Worst-case quantization error is about 17 m on the largest bounding box, well inside the 1:10m dataset's own cartographic accuracy. At runtime `globe.lakeWaterMask` skips the playa and reef polygons (type codes 5 and 8) until a maintainer ruling on them; they stay in the file because the offline bathymetry tensor builder reads them. The source GeoJSONs are **not** bundled.
 
 - Source: <https://www.naturalearthdata.com/downloads/10m-physical-vectors/>
 - Vector repository: <https://github.com/nvkelso/natural-earth-vector>
@@ -1524,6 +1524,52 @@ The pseudo-random stream is AES-256-CTR over a zero plaintext keyed by SHA-256 o
 **Credit:** Made with Natural Earth. Free vector and raster map data @ naturalearthdata.com.
 
 **Terms.** Natural Earth places all of its map data in the public domain. Its terms of use state that no permission is needed to use the data and that users may modify, disseminate and print it, that no fee is charged, and that attribution is appreciated but not required. The credit above is therefore given as the customary courtesy, not because a licence term compels it. Natural Earth disclaims liability for the data's accuracy, and the same disclaimer is passed on here: this asset drives a cartographic water mask for shading, and is not a survey product.
+
+### Global land-polygon coastline mask — Natural Earth 1:10m Land
+
+**File:** `packages/engine/Source/Assets/WaterMask/ne50mCoastlines.bin` (1,869,180 bytes; the file name is historical, the content is 1:10m land, not 1:50m). Read by `packages/engine/Source/Scene/GlobalCoastlineWaterClassificationProvider.ts`. Fetched by `packages/engine/Source/Scene/Globe.js` only when `globe.globalWaterMask` is enabled — the flag is off by default, so an application that never sets it never downloads the file.
+
+**Product:** Natural Earth 1:10m land, minor islands and Antarctic ice shelves — `ne_10m_land.geojson`, `ne_10m_minor_islands.geojson` and `ne_10m_antarctic_ice_shelves_polys.geojson`, as redistributed by the Natural Earth vector repository. The builder downloads from that repository at commit `ca96624a56bd078437bca8184e78163e5039ad19` (which is also its `master`, unchanged since 2022-06-02) and refuses a file whose SHA-256 differs from the table in `Tools/lib/natural-earth-pinned.mjs`; a rebuild from those pinned sources reproduces the bundled bytes exactly (checked 2026-10-22).
+
+**Conversion applied:** polygons simplified (Douglas-Peucker, 0.0012 degrees), clipped to a 15-degree grid, quantized to 16-bit fractions of each polygon's bounding box and packed into the little-endian `LWM2` container whose layout is documented in the header of `Tools/build-coastline-water-mask.mjs`. Source polygon parts enclosing less than 1e-4 square degrees (about 1.2 km² at the equator) are dropped by a stated minimum-area filter; the bundled file is the network build followed by the tool's deterministic offline `--refilter` pass (9,641 polygons before, 7,897 after). Geometry only — no name or attribute field is carried. The source GeoJSONs are **not** bundled.
+
+- Source: <https://www.naturalearthdata.com/downloads/10m-physical-vectors/>
+- Vector repository: <https://github.com/nvkelso/natural-earth-vector>
+- Terms of use: <https://www.naturalearthdata.com/about/terms-of-use/>
+
+**Credit:** Made with Natural Earth. Free vector and raster map data @ naturalearthdata.com.
+
+**Terms.** Natural Earth places all of its map data in the public domain. Its terms of use state that no permission is needed to use the data and that users may modify, disseminate and print it, that no fee is charged, and that attribution is appreciated but not required. The credit above is therefore given as the customary courtesy, not because a licence term compels it. Natural Earth disclaims liability for the data's accuracy, and the same disclaimer is passed on here: this asset drives a cartographic water mask for shading, and is not a survey product.
+
+### Global river centerline mask — Natural Earth 1:10m Rivers and authored trunks
+
+**File:** `packages/engine/Source/Assets/WaterMask/ne10mRivers.bin` (1,182,648 bytes; 1,993 polylines). Read by `packages/engine/Source/Scene/WaterClassificationProvider.ts` (`RiverWaterClassificationProvider`). Fetched by `packages/engine/Source/Scene/Globe.js` only when `globe.riverWaterMask` is enabled — the flag is off by default, so an application that never sets it never downloads the file.
+
+**Product:** two parts of different origin. 1,971 polylines are Natural Earth 1:10m `ne_10m_rivers_lake_centerlines.geojson` (lake centerlines excluded), as redistributed by the Natural Earth vector repository, downloaded at commit `ca96624a56bd078437bca8184e78163e5039ad19` (which is also its `master`, unchanged since 2022-06-02) with the SHA-256 pinned in `Tools/lib/natural-earth-pinned.mjs`; the bundled file was baked from that pinned source by the previous revision of the builder (a rebuild with it is byte-identical, checked 2026-10-22), and the re-bake with the current revision is recorded as follow-up work. The other 22 polylines are **authored** here: hand-typed coordinate tables and mouth half-widths for major world river trunks, written into `Tools/build-global-river-binary.mjs`. They are approximations made in this repository, are not generated from Natural Earth by the tool, and carry no recorded source; they are covered by this repository's own licence, not by Natural Earth's terms.
+
+**Conversion applied:** polylines simplified, densified and quantized to 16-bit fractions of a per-river bounding box, with a per-vertex width scale, and packed into the little-endian `NE1R` container whose layout is documented in the header of `Tools/build-global-river-binary.mjs`. The tool rebuilds the Natural Earth part from the downloaded file or from `--input <file>`, and exits non-zero rather than writing a canonical-only file when the download fails. The bundled bytes predate the tool's rule that Natural Earth pieces keep one constant width (only the authored trunks taper); the next network rebuild applies it.
+
+- Source: <https://www.naturalearthdata.com/downloads/10m-physical-vectors/>
+- Vector repository: <https://github.com/nvkelso/natural-earth-vector>
+- Terms of use: <https://www.naturalearthdata.com/about/terms-of-use/>
+
+**Credit:** Made with Natural Earth. Free vector and raster map data @ naturalearthdata.com.
+
+**Terms.** Natural Earth places all of its map data in the public domain; its terms of use are summarised in the entries above, and the same disclaimer applies: this asset drives a cartographic water mask for shading and is not a survey product.
+
+### Global depth-and-optics prior — derived from Natural Earth and EGM2008
+
+**File:** `packages/engine/Source/Assets/WaterMask/globalBathymetryTensor.bin` (1,036,812 bytes: a 12-byte `GBT1` header followed by a 720 × 360 RGBA8 grid at 0.5 degrees). Read by `packages/engine/Source/Scene/BathymetryTensorMap.ts`. Fetched by `packages/engine/Source/Scene/Globe.js` only on the `globe.globalWaterMask` path (once the coastline dataset has loaded); that flag is off by default, and `globe.lakeWaterMask` and `globe.riverWaterMask` never fetch it.
+
+**What it is, plainly:** a **procedural prior, not survey data**. It is not GEBCO, ETOPO or any measured bathymetry. Depth, Jerlov water type, seabed substrate and tidal range are rules of three derived inputs: distance to the nearest coast, the EGM2008 geoid undulation and its discrete Laplacian, and the lake and river polygons. Trench and ridge depths are approximate shapes, not measurements, and land cells carry shelf-start values, so a consumer must gate on a water mask.
+
+**Inputs:** the three Natural Earth assets described above (`ne50mCoastlines.bin`, `ne10mLakes.bin`, `ne10mRivers.bin`; the authored river trunks are among them) and the EGM2008 grid bundled as `packages/engine/Source/Assets/Geoid/egm2008-0p5deg.i16`, described under *Geoid undulation grid — EGM2008 (NGA)* in this file. Those are the only third-party inputs.
+
+**Conversion applied:** produced by `Tools/build-global-bathymetry-tensor.mjs`, which is deterministic: the bundled bytes equal that tool run on the bundled inputs, and `Tools/visual-regression/water-mask-assets.spec.mjs` re-derives them.
+
+**Credit:** Made with Natural Earth. Free vector and raster map data @ naturalearthdata.com.
+
+**Terms.** Natural Earth is public domain (terms summarised above) and EGM2008 is a work of the U.S. Government, not subject to copyright protection in the United States. No attribution obligation and no share-alike condition attach to either input; the credit above is given as the customary courtesy. The derived grid is made in this repository and is covered by its licence.
 
 # Example Applications
 

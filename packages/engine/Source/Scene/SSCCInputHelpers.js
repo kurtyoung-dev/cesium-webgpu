@@ -361,6 +361,52 @@ export function handleZoom(
   rangeWindowRatio = Math.min(rangeWindowRatio, object.maximumMovementRatio);
   let distance = zoomRate * rangeWindowRatio;
 
+  // The virtual dive counts depth only over a sea-level surface. Elsewhere
+  // (a ridge, a plateau) the zoom is the stock one, and a depth left over from
+  // a dive is cleared rather than carried onto land.
+  // `_water`, not `water`: a facade nobody created has the dive off.
+  const water = object._globe?._water;
+  const allowWaterDive =
+    defined(water) && water.canDiveAtSurfaceHeight(object._scene.globeHeight);
+  if (
+    defined(water) &&
+    !allowWaterDive &&
+    water.disableWaterCollision === true &&
+    water.diveDepthMeters > 0.0
+  ) {
+    water.diveDepthMeters = 0.0;
+  }
+  if (allowWaterDive) {
+    const diveSurfaceDist = Math.max(minHeight + 2.0, 14.0);
+    if (diff < 0.0 && water.diveDepthMeters > 0.0) {
+      const diveStep = Math.max(
+        2.5,
+        (14.0 + water.diveDepthMeters * 0.45) *
+          Math.abs(rangeWindowRatio) *
+          Math.max(zoomFactor, 1.0),
+      );
+      water.diveDepthMeters = Math.max(0.0, water.diveDepthMeters - diveStep);
+      if (water.diveDepthMeters > 0.0) {
+        return;
+      }
+    } else if (diff > 0.0 && distanceMeasure - distance <= diveSurfaceDist) {
+      const diveStep = Math.max(
+        2.5,
+        (14.0 + water.diveDepthMeters * 0.45) *
+          Math.abs(rangeWindowRatio) *
+          Math.max(zoomFactor, 1.0),
+      );
+      water.diveDepthMeters = Math.min(
+        11000.0,
+        water.diveDepthMeters + diveStep,
+      );
+      if (distanceMeasure <= diveSurfaceDist + 0.5) {
+        return;
+      }
+      distance = Math.max(0.0, distanceMeasure - diveSurfaceDist);
+    }
+  }
+
   if (
     object.enableCollisionDetection ||
     object.minimumZoomDistance === 0.0 ||

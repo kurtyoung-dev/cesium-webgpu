@@ -329,6 +329,17 @@ class GlobeSurfaceTileProvider {
     // is the phase origin, so a provider that never received a frame draws the
     // sea the first frame would have drawn rather than an undefined one.
     this.oceanWaveSeconds = 0.0;
+    // Per-frame mirrors of the `globe.water` facade, written by
+    // `Globe.beginFrame` only while a facade exists (it is created on the
+    // first `globe.water` read, or on the first frame with
+    // `enableEnhancedOcean` on, whose variants are the only readers of these
+    // lanes). Declared here so the object's shape is fixed at construction;
+    // each value is what the camera UB packer substitutes for an unset field,
+    // so a default provider whose globe's water is never read packs exactly
+    // what it packed before these were declared (the facade's own 0.78
+    // transparency default arrives with the first enhanced-ocean frame, or with
+    // the first frame after a read).
+    resetGlobeWaterMirrors(this);
     this.enableLighting = false;
     // Backend-neutral, per-frame mirror of Globe.terminatorGlowStrength.
     // Zero is the natural/parity identity; renderers branch before evaluating
@@ -1722,4 +1733,28 @@ function getTileReadyCallback(tileImageriesToFree, layer, terrainProvider) {
 const readyImageryScratch = [];
 const canRenderTraversalStack = [];
 
+/**
+ * Puts the `globe.water` mirrors of a tile provider at their defaults: the
+ * values the camera UB packer substitutes for an unset field.
+ *
+ * @param {GlobeSurfaceTileProvider} tileProvider
+ * @private
+ */
+function resetGlobeWaterMirrors(tileProvider) {
+  tileProvider.oceanTideEnabled = true;
+  tileProvider.oceanTideExaggeration = 1.0;
+  tileProvider.oceanTideCallback = undefined;
+  tileProvider.oceanMeanSeaLevelPressure = 1013.25;
+  tileProvider.waterQualityPreset = "MEDIUM";
+  tileProvider.waterSubmersibleLightEnabled = false;
+  tileProvider.waterSubmersibleLightIntensity = 1.0;
+  tileProvider.waterBathymetricReliefBoost = 0.0;
+  tileProvider.waterEmergenceWetness = 0.0;
+  tileProvider.waterVesselWakeIntensity = 0.0;
+  tileProvider.waterNearSurfaceTransparency = 0.0;
+  tileProvider.waterDiveDepthMeters = 0.0;
+  tileProvider.waterDisableCollision = false;
+}
+
+export { resetGlobeWaterMirrors };
 export default GlobeSurfaceTileProvider;

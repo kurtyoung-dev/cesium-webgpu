@@ -223,18 +223,20 @@ relative to `packages/engine/Source/Shaders/WebGPU/Globe/`; GLSL and JS paths to
 
 - **Rows 1-2 (per-vertex geoUV / Mercator-V).** Symbol corrected from `v_texCoords`
   to the real varying name `v_textureCoordinates`, which both backends use:
-  `Shaders/GlobeFS.glsl:160` and `GlobeTerrain.wgsl:3846-3847`. The WGSL adds a
-  `clamp(..., 0, 1)` seam guard with no WebGL counterpart (`GlobeTerrain.wgsl:3838-3847`);
+  `Shaders/GlobeFS.glsl:160` and, in `GlobeTerrain.wgsl`, the `var geoUV = clamp(input.v_textureCoordinates.xy, ...)` /
+  `var webMercT = clamp(input.v_textureCoordinates.z, ...)` pair at the head of `fragmentMain`. The WGSL adds a
+  `clamp(..., 0, 1)` seam guard with no WebGL counterpart (that same statement pair);
   it moves a UV by at most ~1e-6 and exists to stop epsilon-overshoot at shared tile
   boundaries from zeroing the step-mask. Benign, like the `sanitizeWebMercatorT` NaN
-  guard already noted (`GlobeTerrain.wgsl:846`, applied at `:1656`, `:1671`, `:1720` and `:1747`).
+  guard already noted (the function, applied in the `vertexMainWebMerc*` entry points and their
+  quantized variants).
 - **Row 3 (texCoordsRect test, Web-Mercator, deep/interior).** The inverted row.
   `applyImageryLayer` takes two UV parameters and tests the rect against the
-  SELECTED one: `texCoordsAlpha(texCoordsBoundsUV, layer.texCoordsRect)` at
-  `GlobeTerrain.wgsl:1977`, while the cutout keeps `boundsUV`. All 16 unrolled call
-  sites pass `(..., geoUV, uv, ...)` where `uv = selectLayerUV(geoUV, webMercT, useWMT)`
-  (`GlobeTerrain.wgsl:4233` and `:4239`, pattern repeated through `:4440`).
-  `selectLayerUV` is at `:1786`. WebGL's one-V rule is unchanged:
+  SELECTED one: `texCoordsAlpha(texCoordsBoundsUV, layer.texCoordsRect)` inside
+  `applyImageryLayer`, while the cutout keeps `boundsUV`. All 16 unrolled call
+  sites in `fragmentMain` pass `(..., geoUV, uv, ...)` where `uv = selectLayerUV(geoUV, webMercT, useWMT)`
+  (the `let uv = selectLayerUV(geoUV, webMercT, useWMT);` statement opens each layer slot).
+  `selectLayerUV` is the function of that name. WebGL's one-V rule is unchanged:
   `GlobeSurfaceShaderSet.js:552` picks `textureCoordinates.xz` or `.xy` once and
   `GlobeFS.glsl` uses that single `tileTextureCoordinates` for both the `step()`
   mask (`:261,264`) and the sample (`:273`).
@@ -244,19 +246,21 @@ relative to `packages/engine/Source/Shaders/WebGPU/Globe/`; GLSL and JS paths to
   Match cell is `✅ (moot)` rather than a claim about the coordinate.
 - **Row 5 (texCoordsRect test, geographic).** Unchanged in substance; the cell now
   names the mechanism. `selectLayerUV` returns `geoUV` when `useWebMerc <= 0.5`
-  (`GlobeTerrain.wgsl:1786-1789`), so the geographic path is byte-identical to the
+  (the `select(geoUV.y, webMercT, useWebMerc > 0.5)` in `selectLayerUV`), so the geographic path is byte-identical to the
   old wording.
 - **Row 6 (texture sample).** WebGL cell corrected from `tileTexCoords` to the real
   parameter name `tileTextureCoordinates` (`GlobeFS.glsl:239`).
 - **Row 8 (textureTranslationAndScale).** WGSL cell corrected from `cached ts` to
   the real field: `sampleImagery` applies `layer.translationAndScale.zw/.xy` to the
-  selected UV (`GlobeTerrain.wgsl:1765-1768`), matching WebGL's
+  selected UV (`sampleImagery`: `baseUV * layer.translationAndScale.zw + layer.translationAndScale.xy`), matching WebGL's
   `tileTextureCoordinates * scale + translation` (`GlobeFS.glsl:271-273`).
 
 Row 7 (`cutoutRectangle` test) was re-derived and left byte-identical: WebGL tests
 the cutout against `v_textureCoordinates.x/.y` (`GlobeSurfaceShaderSet.js:542`) and
 WGSL against `boundsUV`, which is `geoUV` at every call site
-(`GlobeTerrain.wgsl:2020`, `applyCutoutMask` at `:1860`).
+(the `applyCutoutMask(boundsUV, layer.cutoutRectangle)` call in `applyImageryLayer`; the function is `applyCutoutMask`).
+
+**Anchor refresh and sync check, 2026-10-22 (water landing).** The `GlobeTerrain.wgsl` line numbers in the block above were verified at tip `2ede0a8c89` and had already drifted by the pre-water base `a999954e2b` (`fragmentMain`'s clamp pair was at `:4786-4787`, `applyImageryLayer` at `:2248`); the water landing then moves every site again, so they were replaced by the symbol that names the code. Grep the symbol; do not restore a line number. The sync rule was run against the four files this landing changes in the projection chain (`GlobeTerrain.wgsl`, `WebGPUGlobeSurfaceTextures.ts`, `WebGPUGlobeSurfaceTileUB.ts`, `WebGPUGlobeSurfaceCameraUB.ts`): **no projection change.** No hunk touches `selectLayerUV`, `applyImageryLayer`, the `texCoordsRect` or `cutoutRectangle` tests, the flip logic, the web-Mercator V selection or the reprojection chain; the water-mask texture format change in `WebGPUGlobeSurfaceTextures.ts` and the new water fields in the tile and camera uniform buffers are not imagery projection. The hydro RGBA mask is a second source for the water-mask texture and does not pass through the imagery layers.
 
 ### LOD / altitude behavior — the bug is latitude-gated, NOT LOD/altitude-gated
 

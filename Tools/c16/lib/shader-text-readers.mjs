@@ -437,6 +437,12 @@ const READER_TABLE = [
     "decides",
   ],
   [
+    "Renderer/WebGPU/WebGPUShaderPreprocessor.ts",
+    "//>>",
+    "exempt",
+    "a prefilter: the template parser re-tests every line it finds against the directive regex above, which decides, so a hit decides nothing",
+  ],
+  [
     "Renderer/demodernizeShader.js",
     /(in)\s+(vec\d|mat\d|float)/g,
     "rewrites",

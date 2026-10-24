@@ -1,0 +1,684 @@
+<style>
+  @import url(../templates/bucket.css);
+
+  #waterWeatherPanel {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    width: 320px;
+    max-height: calc(100vh - 30px);
+    overflow-y: auto;
+    background: rgba(22, 25, 30, 0.92);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    padding: 12px 14px;
+    color: #f0f0f0;
+    font-family:
+      -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 12px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+    z-index: 1000;
+  }
+  #waterWeatherPanel h2 {
+    margin: 0 0 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #79b8ff;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  #waterWeatherPanel .btn-group {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  #waterWeatherPanel .btn-group button {
+    flex: 1;
+    padding: 6px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+    background: #282c34;
+    color: #ddd;
+    font-weight: 600;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  #waterWeatherPanel .btn-group button:hover {
+    background: #3b4252;
+    color: #fff;
+  }
+  #waterWeatherPanel .btn-group button.active {
+    background: #0969da;
+    border-color: #2188ff;
+    color: #fff;
+    box-shadow: 0 0 8px rgba(9, 105, 218, 0.5);
+  }
+  #waterWeatherPanel fieldset {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    margin: 8px 0;
+    padding: 6px 10px 8px;
+  }
+  #waterWeatherPanel legend {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #80c4ff;
+    padding: 0 5px;
+    font-weight: 600;
+  }
+  #waterWeatherPanel .control-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 4px 0;
+  }
+  #waterWeatherPanel label {
+    font-size: 11px;
+    color: #c0c6d0;
+  }
+  #waterWeatherPanel input[type="range"] {
+    width: 130px;
+    accent-color: #2188ff;
+  }
+  #waterWeatherPanel select {
+    background: #1e222a;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: #eee;
+    border-radius: 4px;
+    padding: 2px 4px;
+    font-size: 11px;
+    max-width: 140px;
+  }
+  #waterWeatherPanel .readout {
+    font-family: monospace;
+    font-size: 11px;
+    color: #9cdcfe;
+    min-width: 48px;
+    text-align: right;
+  }
+  #waterWeatherPanel .preset-desc {
+    font-size: 11px;
+    line-height: 1.4;
+    color: #a0a8b6;
+    margin-bottom: 8px;
+    padding: 4px 6px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+  }
+</style>
+<div id="cesiumContainer" class="fullSize"></div>
+<div id="loadingOverlay"><h1>Loading Planetary Water & Weather...</h1></div>
+
+<div id="waterWeatherPanel">
+  <h2>Global Water & Weather</h2>
+
+  <label style="font-weight: 600; margin-bottom: 4px; display: block"
+    >Quality Tier</label
+  >
+  <div class="btn-group" id="presetButtons">
+    <button id="btnLow" onclick="selectPreset('low')">Low</button>
+    <button id="btnMedium" class="active" onclick="selectPreset('medium')">
+      Medium
+    </button>
+    <button id="btnHigh" onclick="selectPreset('high')">High</button>
+  </div>
+  <div id="presetDescription" class="preset-desc">
+    Spectral FFT ocean, Jerlov Type IB ocean darkening, Beaufort 4 breeze, and
+    celestial GGX reflection.
+  </div>
+
+  <label style="font-weight: 600; margin-bottom: 4px; display: block"
+    >Vertical Regimes (Orbit &rarr; Hadal Trench)</label
+  >
+  <div class="btn-group" style="flex-wrap: wrap">
+    <button
+      data-loc="orbit"
+      data-name="1. Orbit"
+      onclick="flyToLocation('orbit')"
+    >
+      1. Orbit
+    </button>
+    <button
+      data-loc="atmosphere"
+      data-name="2. Atmosphere"
+      onclick="flyToLocation('atmosphere')"
+    >
+      2. Atmosphere
+    </button>
+    <button
+      data-loc="flight"
+      data-name="3. In Flight"
+      onclick="flyToLocation('flight')"
+    >
+      3. In Flight
+    </button>
+    <button
+      data-loc="seaLevel"
+      data-name="4. Sea Level"
+      onclick="flyToLocation('seaLevel')"
+    >
+      4. Sea Level
+    </button>
+    <button
+      data-loc="shallowUnderwater"
+      data-name="5. Photic Reef"
+      onclick="flyToLocation('shallowUnderwater')"
+    >
+      5. Photic Reef
+    </button>
+    <button
+      data-loc="deepUnderwater"
+      data-name="6. Abyssal Trench"
+      onclick="flyToLocation('deepUnderwater')"
+    >
+      6. Abyssal Trench
+    </button>
+  </div>
+  <div class="preset-desc">
+    Regimes 5 and 6 keep the camera just above the surface and simulate depth
+    through <code>globe.water.diveDepthMeters</code>; the depth shown is
+    simulated, not a real underwater camera height.
+  </div>
+
+  <label style="font-weight: 600; margin-bottom: 4px; display: block"
+    >Camera Locations &amp; Water Subtypes (<span id="siteCount">0</span> Global
+    Sites)</label
+  >
+  <div class="control-row" style="margin-bottom: 6px">
+    <select
+      id="biomeLocationSelect"
+      style="flex: 1; max-width: 100%"
+      onchange="flyToLocation(this.value)"
+    >
+      <optgroup label="Vertical Regimes (Orbit &rarr; Hadal Trench)">
+        <option
+          value="orbit"
+          data-loc="orbit"
+          data-name="1. Orbit &mdash; Bahamas"
+        >
+          1. Orbit &mdash; Bahamas
+        </option>
+        <option
+          value="atmosphere"
+          data-loc="atmosphere"
+          data-name="2. Atmosphere &mdash; Amazon Delta"
+        >
+          2. Atmosphere &mdash; Amazon Delta
+        </option>
+        <option
+          value="flight"
+          data-loc="flight"
+          data-name="3. In Flight &mdash; Kauai Reef"
+          selected
+        >
+          3. In Flight &mdash; Kauai Reef
+        </option>
+        <option
+          value="seaLevel"
+          data-loc="seaLevel"
+          data-name="4. Sea Level &mdash; Kauai Surf"
+        >
+          4. Sea Level &mdash; Kauai Surf
+        </option>
+        <option
+          value="shallowUnderwater"
+          data-loc="shallowUnderwater"
+          data-name="5. Photic Reef &mdash; Bahamas"
+        >
+          5. Photic Reef &mdash; Bahamas
+        </option>
+        <option
+          value="deepUnderwater"
+          data-loc="deepUnderwater"
+          data-name="6. Abyssal Trench &mdash; Mariana"
+        >
+          6. Abyssal Trench &mdash; Mariana
+        </option>
+      </optgroup>
+      <optgroup label="Open Ocean, Coral Atolls &amp; Fjords (OCEAN)">
+        <option value="kauai">Kauai North Shore Reef (Hawaii)</option>
+        <option value="bahamas">Great Bahama Bank (Carbonate Lagoon)</option>
+        <option value="atlantic">North Atlantic Open Ocean Swell</option>
+        <option value="greatBarrierReef">Great Barrier Reef (Australia)</option>
+        <option value="boraBoraLagoon">
+          Bora Bora Barrier Lagoon (Tahiti)
+        </option>
+        <option value="maldivesAtoll">Maldives Ari Atoll (Indian Ocean)</option>
+        <option value="marianaChallenger">
+          Mariana Challenger Deep (Pacific)
+        </option>
+        <option value="drakePassageGale">
+          Drake Passage Southern Ocean Gale
+        </option>
+        <option value="vancouverIslandFjord">
+          Vancouver Island &mdash; Clayoquot Sound (Canada)
+        </option>
+        <option value="norwayGeirangerfjord">
+          Geirangerfjord Glacial Fjord (Norway)
+        </option>
+        <option value="rajaAmpatLagoon">
+          Raja Ampat Karst Coral Lagoon (Indonesia)
+        </option>
+        <option value="milfordSoundFjord">
+          Milford Sound Tannin-Capped Fjord (NZ)
+        </option>
+      </optgroup>
+      <optgroup label="Arctic &amp; Antarctic Sea Ice (POLAR_SEA_ICE)">
+        <option value="arcticSvalbard">
+          Arctic Pack Ice &mdash; Svalbard Fjord (78&deg;N)
+        </option>
+        <option value="arcticIlulissat">
+          Greenland Glacial Icefjord &mdash; Ilulissat (69&deg;N)
+        </option>
+        <option value="arcticBaffin">
+          Arctic Pancake Ice &mdash; Baffin Bay (72&deg;N)
+        </option>
+        <option value="antarcticPeninsula">
+          Antarctic Sea Ice &mdash; Lemaire Channel (64&deg;S)
+        </option>
+        <option value="polar">Antarctic Weddell Sea Pack Ice (72&deg;S)</option>
+      </optgroup>
+      <optgroup label="Inland &amp; Marginal Seas (SEA)">
+        <option value="caspianInlandSea">
+          Caspian Inland Sea &mdash; Absheron Shelf
+        </option>
+        <option value="caspianVolgaDelta">
+          North Caspian Sea &mdash; Volga Shelf
+        </option>
+        <option value="mediterraneanSantorini">
+          Aegean Sea &mdash; Santorini Caldera
+        </option>
+        <option value="redSeaCoral">
+          Red Sea Fringing Reefs &mdash; Hurghada
+        </option>
+        <option value="blackSeaCrimea">
+          Black Sea Shelf &mdash; Crimean Coast
+        </option>
+        <option value="balticArchipelago">Baltic Inland Archipelago Sea</option>
+        <option value="haLongBayKarst">
+          Ha Long Bay Limestone Karst Sea (Vietnam)
+        </option>
+      </optgroup>
+      <optgroup label="Swamps &amp; Mangrove Bayous (SWAMP)">
+        <option value="evergladesSwamp">
+          Florida Everglades Sawgrass Slough
+        </option>
+        <option value="atchafalayaBayou">
+          Atchafalaya Cypress Bayou (Louisiana)
+        </option>
+        <option value="sundarbansMangrove">
+          Sundarbans Mangrove Swamp (Bengal)
+        </option>
+        <option value="okavangoDelta">
+          Okavango Inland Alluvial Delta (Botswana)
+        </option>
+      </optgroup>
+      <optgroup label="Freshwater Marshes &amp; Reed Wetlands (WETLAND)">
+        <option value="danubeWetland">
+          Danube Delta Reed Wetland (Romania)
+        </option>
+        <option value="pantanalWetland">
+          Pantanal Tropical Floodplain (Brazil)
+        </option>
+        <option value="camargueWetland">Camargue Coastal Marsh (Rhone)</option>
+        <option value="lencoisMaranhenses">
+          Len&ccedil;&oacute;is Maranhenses Dune Lagoons (Brazil)
+        </option>
+      </optgroup>
+      <optgroup label="Tannin Blackwater Rivers (BLACKWATER_RIVER)">
+        <option value="rioNegroBlackwater">
+          Rio Negro Tannin Blackwater (Amazon)
+        </option>
+        <option value="orinocoAtabapoBlackwater">
+          Orinoco-Atabapo Blackwater Confluence
+        </option>
+      </optgroup>
+      <optgroup label="Ancient Tectonic Rift Lakes (ANCIENT_RIFT_LAKE)">
+        <option value="baikalRift">Lake Baikal Graben Abyss (Siberia)</option>
+        <option value="tanganyikaRift">
+          Lake Tanganyika Rift Basin (East Africa)
+        </option>
+        <option value="malawiRift">
+          Lake Malawi / Nyasa Rift (East Africa)
+        </option>
+        <option value="issykKulRift">Issyk-Kul Endorheic Tian Shan Rift</option>
+      </optgroup>
+      <optgroup
+        label="Glacial Rock-Flour &amp; Alpine Lakes (DEEP_GLACIAL_LAKE)"
+      >
+        <option value="rockiesGlacial">
+          Canadian Rockies Glacial Turquoise Lake
+        </option>
+        <option value="patagoniaGlacial">
+          Lago Argentino Glacial Meltwater (Patagonia)
+        </option>
+        <option value="pukakiGlacial">
+          Lake Pukaki Rock-Flour Basin (New Zealand)
+        </option>
+        <option value="tahoeAlpine">
+          Lake Tahoe Oligotrophic Alpine Basin
+        </option>
+        <option value="lakeComoItaly">
+          Lake Como / Lago di Como &mdash; Bellagio (Italy)
+        </option>
+        <option value="plitviceTravertine">
+          Plitvice Travertine Tufa Lakes (Croatia)
+        </option>
+      </optgroup>
+      <optgroup label="Hypersaline Brine Lakes (HYPERSALINE_LAKE)">
+        <option value="deadSeaBrine">Dead Sea Halite Brine Basin</option>
+        <option value="greatSaltLakeBrine">
+          Great Salt Lake Evaporite Basin (Utah)
+        </option>
+        <option value="urmiaBrine">Lake Urmia Hypersaline Basin</option>
+        <option value="balkhashBrine">
+          Lake Balkhash Endorheic Steppe Basin
+        </option>
+        <option value="sharkBayAustralia">
+          Shark Bay &amp; Hamelin Pool Stromatolites (Australia)
+        </option>
+      </optgroup>
+      <optgroup label="Continental Freshwater Lakes (LAKE)">
+        <option value="superiorFreshLake">
+          Lake Superior (Apostle Islands)
+        </option>
+        <option value="victoriaFreshLake">
+          Lake Victoria (Equatorial Basin)
+        </option>
+        <option value="titicacaFreshLake">
+          Lake Titicaca (High-Altitude Altiplano)
+        </option>
+        <option value="genevaFreshLake">Lake Geneva / Lac L&eacute;man</option>
+        <option value="lakeGeorgeNY">
+          Lake George &amp; The Narrows (Adirondacks, NY)
+        </option>
+        <option value="lakePlacidNY">
+          Lake Placid &amp; Mirror Lake (Adirondacks, NY)
+        </option>
+        <option value="tonleSapBasin">
+          Tonl&eacute; Sap Reversing Floodplain Lake (Cambodia)
+        </option>
+      </optgroup>
+      <optgroup label="Wide River Channels &amp; Confluences (RIVER_AREA)">
+        <option value="amazonManausRiver">
+          Amazon Solim&otilde;es Mainstem (Manaus)
+        </option>
+        <option value="paranaRiver">
+          Paran&aacute; Braided River Floodplain
+        </option>
+        <option value="congoRiver">Congo River Pool Malebo Reach</option>
+        <option value="ohioMississippiConfluence">
+          Ohio &amp; Mississippi River Confluence (Cairo, IL)
+        </option>
+        <option value="pittsburghThreeRivers">
+          Pittsburgh Three Rivers Confluence (Allegheny, Monongahela &amp; Ohio,
+          PA)
+        </option>
+        <option value="yangtzeThreeGorges">
+          Yangtze River Three Gorges (China)
+        </option>
+      </optgroup>
+      <optgroup label="Strahler River Corridors (RIVER_LINE)">
+        <option value="mississippiRiver">
+          Mississippi Meander Bend (New Orleans)
+        </option>
+        <option value="nileRiver">Nile River Corridor (Cairo)</option>
+        <option value="mekongRiver">
+          Mekong Alluvial Channel (Phnom Penh)
+        </option>
+      </optgroup>
+      <optgroup label="Estuaries, Lagoons &amp; Macro-Tidal Bays (ESTUARY)">
+        <option value="surge">Mont-Saint-Michel Macro-Tidal Bay</option>
+        <option value="amazonMouthEstuary">
+          Amazon Delta &amp; Maraj&oacute; Silt Plume
+        </option>
+        <option value="gangesEstuary">Ganges-Brahmaputra Meghna Estuary</option>
+        <option value="chesapeakeEstuary">
+          Chesapeake Bay Drowned-Valley Estuary
+        </option>
+        <option value="miamiIntracoastal">
+          Miami Intracoastal &amp; Biscayne Bay (FL)
+        </option>
+        <option value="sanibelCaloosahatchee">
+          Sanibel, Captiva &amp; Caloosahatchee Estuary (FL)
+        </option>
+        <option value="tampaBayEstuary">
+          Tampa Bay &amp; Sunshine Skyway Mouth (FL)
+        </option>
+        <option value="sanFranciscoBay">
+          San Francisco Bay &amp; Golden Gate Strait (CA)
+        </option>
+        <option value="veniceLagoonCanals">
+          Venice Lagoon &amp; Grand Canal (Italy)
+        </option>
+        <option value="bayOfFundyTides">
+          Bay of Fundy 16m Macro-Tidal Basin (Canada)
+        </option>
+        <option value="waddenSeaTidalFlats">
+          Wadden Sea Intertidal Barrier Flats (Europe)
+        </option>
+        <option value="riaFormosaLagoon">
+          Ria Formosa Barrier Lagoon (Algarve, Portugal)
+        </option>
+        <option value="keralaBackwaters">
+          Kerala Backwaters &amp; Vembanad Lagoon (India)
+        </option>
+      </optgroup>
+    </select>
+  </div>
+  <div class="btn-group" style="flex-wrap: wrap">
+    <button onclick="flyToLocation('kauai')">Kauai Reef</button>
+    <button onclick="flyToLocation('bahamas')">Bahamas</button>
+    <button onclick="flyToLocation('arcticSvalbard')">Arctic Ice</button>
+    <button onclick="flyToLocation('arcticIlulissat')">Greenland Fjord</button>
+    <button onclick="flyToLocation('caspianInlandSea')">Caspian Sea</button>
+    <button onclick="flyToLocation('mediterraneanSantorini')">
+      Aegean Sea
+    </button>
+    <button onclick="flyToLocation('evergladesSwamp')">Everglades Swamp</button>
+    <button onclick="flyToLocation('atchafalayaBayou')">
+      Atchafalaya Bayou
+    </button>
+    <button onclick="flyToLocation('rioNegroBlackwater')">Rio Negro</button>
+    <button onclick="flyToLocation('baikalRift')">Lake Baikal</button>
+    <button onclick="flyToLocation('rockiesGlacial')">Glacial Lake</button>
+    <button onclick="flyToLocation('deadSeaBrine')">Dead Sea Brine</button>
+    <button onclick="flyToLocation('mississippiRiver')">Mississippi</button>
+    <button onclick="flyToLocation('pittsburghThreeRivers')">
+      Pittsburgh 3 Rivers
+    </button>
+    <button onclick="flyToLocation('chesapeakeEstuary')">Chesapeake</button>
+    <button onclick="flyToLocation('veniceLagoonCanals')">Venice Canals</button>
+    <button onclick="flyToLocation('lakeComoItaly')">Lake Como</button>
+    <button onclick="flyToLocation('sanibelCaloosahatchee')">
+      Sanibel / Ft Myers
+    </button>
+    <button onclick="flyToLocation('haLongBayKarst')">Ha Long Bay</button>
+  </div>
+
+  <div class="control-row" style="margin-bottom: 6px">
+    <label>Active Vertical Regime</label>
+    <span id="regimeReadout" class="readout" style="color: #79b8ff"
+      >in_flight</span
+    >
+  </div>
+
+  <fieldset>
+    <legend>Ocean Surface, Rivers &amp; Waves</legend>
+    <div class="control-row">
+      <label for="oceanEnabled">Global Natural Ocean</label>
+      <input type="checkbox" id="oceanEnabled" checked />
+    </div>
+    <div class="control-row">
+      <label for="riverMaskEnabled">Global River Network</label>
+      <input type="checkbox" id="riverMaskEnabled" checked />
+    </div>
+    <div class="control-row">
+      <label for="enhancedOcean">Multi-Octave Waves &amp; Optics</label>
+      <input type="checkbox" id="enhancedOcean" checked />
+    </div>
+    <div class="control-row">
+      <label for="celestialGlint">Solar &amp; Lunar Glint</label>
+      <input type="checkbox" id="celestialGlint" checked />
+    </div>
+    <div class="control-row">
+      <label for="tideExaggeration">Tide Exaggeration</label>
+      <input
+        type="range"
+        id="tideExaggeration"
+        min="0"
+        max="10"
+        step="0.5"
+        value="2.0"
+      />
+      <span id="tideReadout" class="readout">2.0x</span>
+    </div>
+    <div class="control-row">
+      <label for="windSpeed">Beaufort / Wind</label>
+      <input type="range" id="windSpeed" min="0" max="32" step="0.5" />
+      <span id="windSpeedReadout" class="readout">8.0 m/s</span>
+    </div>
+    <div class="control-row">
+      <label for="mslp">Atmospheric Pressure</label>
+      <input type="range" id="mslp" min="920" max="1040" step="1" />
+      <span id="mslpReadout" class="readout">1013 hPa</span>
+    </div>
+    <div class="control-row">
+      <label>Storm Surge Delta</label>
+      <span id="surgeReadout" class="readout" style="color: #4ec9b0"
+        >0.00 m</span
+      >
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Underwater, Bathymetry &amp; ROV Light</legend>
+    <div class="control-row">
+      <label for="disableWaterCollision">Disable Water Camera Collision</label>
+      <input type="checkbox" id="disableWaterCollision" checked />
+    </div>
+    <div class="control-row">
+      <label for="nearSurfaceTransparency">Near-Water Transparency</label>
+      <input
+        type="range"
+        id="nearSurfaceTransparency"
+        min="0"
+        max="1"
+        step="0.02"
+        value="0.78"
+      />
+      <span id="nearSurfaceTransReadout" class="readout">78%</span>
+    </div>
+    <div class="control-row">
+      <label for="jerlovType">Jerlov Water Type (ocean darkening)</label>
+      <select id="jerlovType">
+        <option value="0">Type I (Open Ocean)</option>
+        <option value="1">Type IA (Clear)</option>
+        <option value="2" selected>Type IB (Subtropical)</option>
+        <option value="3">Type II (Temperate)</option>
+        <option value="4">Type III (Productive)</option>
+        <option value="5">Coastal 1</option>
+        <option value="7">Coastal 5</option>
+        <option value="9">Coastal 9 (Turbid)</option>
+      </select>
+    </div>
+    <div class="control-row">
+      <label for="bathymetryDepth"
+        >Seabed Depth (stored, not yet rendered)</label
+      >
+      <input type="range" id="bathymetryDepth" min="2" max="6000" step="5" />
+      <span id="depthReadout" class="readout">25 m</span>
+    </div>
+    <div class="control-row">
+      <label for="bathymetricReliefBoost">Bathymetric Relief Boost</label>
+      <input
+        type="range"
+        id="bathymetricReliefBoost"
+        min="0.5"
+        max="4.0"
+        step="0.25"
+        value="1.35"
+      />
+      <span id="reliefBoostReadout" class="readout">1.35x</span>
+    </div>
+    <div class="control-row">
+      <label for="submersibleLightEnabled">Submersible ROV Headlamp</label>
+      <input type="checkbox" id="submersibleLightEnabled" />
+    </div>
+    <div class="control-row">
+      <label for="submersibleLightIntensity">ROV Lamp Intensity</label>
+      <input
+        type="range"
+        id="submersibleLightIntensity"
+        min="0"
+        max="3"
+        step="0.1"
+        value="1.0"
+      />
+      <span id="rovIntensityReadout" class="readout">1.0</span>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Diurnal Time of Day, Sun, Moon &amp; Clouds</legend>
+    <div class="btn-group" style="flex-wrap: wrap; margin-bottom: 6px">
+      <button onclick="setLightingScenario('dawn')">Dawn</button>
+      <button onclick="setLightingScenario('sunrise')">Sunrise</button>
+      <button onclick="setLightingScenario('morning')">Morning</button>
+      <button onclick="setLightingScenario('noon')">Solar Noon</button>
+      <button onclick="setLightingScenario('sun_golden_hour')">
+        Golden Hour
+      </button>
+      <button onclick="setLightingScenario('sunset')">Sunset</button>
+      <button onclick="setLightingScenario('blue_hour')">Blue Hour</button>
+      <button onclick="setLightingScenario('moon_night')">Moonlight</button>
+      <button onclick="setLightingScenario('cloud_shadows')">
+        Cloud Shadows
+      </button>
+    </div>
+    <div class="control-row">
+      <label for="solarTimeSlider">Local Solar Time</label>
+      <input
+        type="range"
+        id="solarTimeSlider"
+        min="0"
+        max="24"
+        step="0.1"
+        value="12.0"
+      />
+      <span id="solarTimeReadout" class="readout">12:00</span>
+    </div>
+    <div class="control-row">
+      <label for="cloudShadowsCheckbox">3-Cascade Cloud Shadows</label>
+      <input type="checkbox" id="cloudShadowsCheckbox" />
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Atmosphere &amp; Precipitation</legend>
+    <div class="control-row">
+      <label for="weatherEnabled">Weather Particles</label>
+      <input type="checkbox" id="weatherEnabled" checked />
+    </div>
+    <div class="control-row">
+      <label for="temperature">Surface Temp (C)</label>
+      <input type="range" id="temperature" min="-25" max="35" step="1" />
+      <span id="tempReadout" class="readout">15 C</span>
+    </div>
+    <div class="control-row">
+      <label for="precipIntensity">Precip Intensity</label>
+      <input type="range" id="precipIntensity" min="0" max="1" step="0.05" />
+      <span id="intensityReadout" class="readout">0.50</span>
+    </div>
+    <div class="control-row">
+      <label>Precip Phase</label>
+      <span id="precipPhaseReadout" class="readout" style="color: #dcdcaa"
+        >Rain</span
+      >
+    </div>
+  </fieldset>
+</div>

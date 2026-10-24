@@ -1115,6 +1115,49 @@ export const ShaderDefineHi = Object.freeze({
    * Consumer: `CloudTemporalResolve.wgsl` (`fragmentMain`).
    */
   CLOUD_RECONSTRUCTION_CONSUME: hiDefineBit(5),
+
+  /**
+   * Lazy underwater and benthic optics axis (Tier 2 of the 3-tier water
+   * compilation pipeline). ORed alongside {@link ShaderDefineHi.ENHANCED_OCEAN}
+   * only when the camera descends below +500 m altitude or enters the
+   * subsurface/underground regime.
+   *
+   *   * Set — `GlobeTerrain.wgsl` compiles the full underwater and benthic
+   *     optical suite inside `computeUnderwaterVerticalOpticsAndBenthic`
+   *     (split-lens waterline meniscus, Snell's window 48.6-degree critical
+   *     cone and TIR dispersion, wave-coupled volumetric god-rays, anisotropic
+   *     pitch-stratified water volume, color-restoring ROV headlamp, procedural
+   *     benthic micro-relief, and mesopelagic bioluminescent marine snow).
+   *   * Clear — the `//>>else` branch compiles only lightweight surface-visible
+   *     shallow photic caustics, so orbital and aviation shaders never compile
+   *     underwater instructions.
+   *
+   * Consumer: `GlobeTerrain.wgsl` (`computeUnderwaterVerticalOpticsAndBenthic`).
+   */
+  UNDERWATER_OPTICS: hiDefineBit(6),
+
+  /**
+   * Opt-in WebGL-parity ocean for globes fed by a water classification
+   * provider (water round 6, seat ruling R-2026-10-23-S8). Set by the globe
+   * surface pipeline only while `Globe.beginFrame` hands the tile provider a
+   * `waterClassificationProvider` (`Globe.globalWaterMask` once its dataset
+   * has loaded, or `Globe.lakeWaterMask` / `Globe.riverWaterMask` once loaded
+   * over a terrain or global water mask) and enhanced ocean is off; never at
+   * defaults, so the default variant (definesHi 0) keeps the shipped ocean.
+   *
+   *   * Set — the classic arm of `computeEnhancedOcean` draws GlobeFS.glsl's
+   *     `czm_getWaterNoise` waves (`classicOceanWaveNormal`, on the unwrapped
+   *     `camera.oceanWaveSeconds` clock) and the coast band is GlobeFS.glsl's
+   *     `fwidth(mask)` law (forward differences of the mask).
+   *   * Clear — the shipped physical-wavelength march and texel-footprint
+   *     coast band, byte for byte.
+   *
+   * The ENHANCED_OCEAN arm never reads it. The cloud core lane's registry
+   * re-layout may renumber it before its first release (R-2).
+   *
+   * Consumer: `GlobeTerrain.wgsl` (the three `water-parity-r5` blocks).
+   */
+  WATER_PROVIDER_PARITY: hiDefineBit(7),
 } as const);
 
 // Namespace-collision boot assertion: a name living in BOTH tables would

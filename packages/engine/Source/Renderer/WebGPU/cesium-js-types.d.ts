@@ -1404,9 +1404,17 @@ interface CesiumGlobeTileProvider {
    * Elapsed SCENE seconds the water-mask ocean's wave phase advances on,
    * resolved once per rendered frame by `Globe.beginFrame` and read by both
    * backends: WebGL as the `u_oceanWaveSeconds` uniform, WebGPU through the
-   * tile uniform buffer's time slot.
+   * tile uniform buffer's time slot (wrapped) and, unwrapped, the camera
+   * buffer's `oceanWaveSeconds` lane the opt-in WATER_PROVIDER_PARITY classic
+   * waves read.
    */
   oceanWaveSeconds?: number;
+  /**
+   * Set by `Globe.beginFrame` while a water classification provider (global,
+   * lake, river or their composite) feeds the tile water masks; undefined at
+   * defaults. Its presence selects the opt-in WATER_PROVIDER_PARITY ocean.
+   */
+  waterClassificationProvider?: unknown;
   /**
    * Mirrored raw from `Globe`, never pre-gated. `enableEnhancedOcean`
    * carries the enable; `WebGPUGlobeSurfaceTileUB` owns the encoding of "off"
@@ -1438,6 +1446,28 @@ interface CesiumGlobeTileProvider {
   oceanCelestialRoughness?: number;
   oceanCelestialSunIntensity?: number;
   oceanCelestialMoonIntensity?: number;
+  oceanTideEnabled?: boolean;
+  oceanTideExaggeration?: number;
+  oceanTideCallback?: (
+    positionWC: CesiumCartesian3,
+    time: CesiumJulianDate,
+  ) => number;
+  oceanMeanSeaLevelPressure?: number;
+  /**
+   * The eight `water*` fields below are mirrored raw from `Globe.water` each
+   * frame by `Globe.render` (`GlobeWater`'s quality preset, ROV lamp, relief
+   * boost, emergence wetness, vessel wake, near-surface transparency and dive
+   * depth). Optional because a frame can be packed before the first mirror, and
+   * because `Globe` without a `water` facade never sets them.
+   */
+  waterQualityPreset?: string;
+  waterSubmersibleLightEnabled?: boolean;
+  waterSubmersibleLightIntensity?: number;
+  waterBathymetricReliefBoost?: number;
+  waterEmergenceWetness?: number;
+  waterVesselWakeIntensity?: number;
+  waterNearSurfaceTransparency?: number;
+  waterDiveDepthMeters?: number;
   nightFadeOutDistance: number;
   nightFadeInDistance: number;
   hasWaterMask: boolean;
@@ -1796,6 +1826,14 @@ interface CesiumLuminanceTexelSource {
   width: number;
   height: number;
   arrayBufferView: Uint8Array;
+  rgbaArrayBufferView?: Uint8Array;
+  /**
+   * True for a mask a water classification provider built (generated,
+   * augmented or composited over an ancestor), false or absent for a
+   * terrain's own mask. The WebGPU renderer gives such a mask its own
+   * labelled texture (water round 5, FND-7).
+   */
+  waterProviderMask?: boolean;
 }
 
 /** CesiumJS Texture accessed to extract the underlying image source. */

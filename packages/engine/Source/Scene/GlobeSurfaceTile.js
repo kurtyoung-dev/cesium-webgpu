@@ -48,6 +48,31 @@ import TerrainState from "./TerrainState.js";
  * @alias GlobeSurfaceTile
  * @private
  */
+/**
+ * Drops this tile's reference to its water-mask texture and destroys the
+ * texture when it was the last one.
+ *
+ * @param {GlobeSurfaceTile} surfaceTile
+ * @ignore
+ */
+function releaseWaterMaskTexture(surfaceTile) {
+  const texture = surfaceTile.waterMaskTexture;
+  if (!defined(texture)) {
+    return;
+  }
+  --texture.referenceCount;
+  if (texture.referenceCount === 0) {
+    // Release the WebGPU renderer's cached GPU copy of this mask, registered by
+    // `WebGPUGlobeSurfaceTextures.getOrCreateWaterMaskTexture` and never set on
+    // the WebGL backend.
+    if (defined(texture._webgpuTextureCacheCleanup)) {
+      texture._webgpuTextureCacheCleanup();
+    }
+    texture.destroy();
+  }
+  surfaceTile.waterMaskTexture = undefined;
+}
+
 class GlobeSurfaceTile {
   constructor() {
     /**
@@ -59,6 +84,13 @@ class GlobeSurfaceTile {
 
     this.waterMaskTexture = undefined;
     this.waterMaskTranslationAndScale = new Cartesian4(0.0, 0.0, 1.0, 1.0);
+    this._waterMaskEvaluated = false;
+    this._waterMaskProviderReady = false;
+    this._waterMaskProvider = undefined;
+    // The mask a water classification provider generated for this tile. Kept
+    // here, never on terrainData: terrain data is shared Core state and must not
+    // be mutated by the scene.
+    this._generatedWaterMask = undefined;
 
     this.terrainData = undefined;
 
@@ -164,20 +196,11 @@ class GlobeSurfaceTile {
   }
 
   freeResources() {
-    if (defined(this.waterMaskTexture)) {
-      --this.waterMaskTexture.referenceCount;
-      if (this.waterMaskTexture.referenceCount === 0) {
-        // Release the WebGPU renderer's cached GPU copy of this mask,
-        // registered by
-        // `WebGPUGlobeSurfaceTextures.getOrCreateWaterMaskTexture` and never
-        // set on the WebGL backend.
-        if (defined(this.waterMaskTexture._webgpuTextureCacheCleanup)) {
-          this.waterMaskTexture._webgpuTextureCacheCleanup();
-        }
-        this.waterMaskTexture.destroy();
-      }
-      this.waterMaskTexture = undefined;
-    }
+    releaseWaterMaskTexture(this);
+    this._generatedWaterMask = undefined;
+    this._waterMaskEvaluated = false;
+    this._waterMaskProviderReady = false;
+    this._waterMaskProvider = undefined;
 
     if (defined(this.vectorData)) {
       VectorPipeline.freeResources(this.vectorData);
@@ -436,8 +459,14 @@ class GlobeSurfaceTile {
     );
 
     const surfaceTile = tile.data;
+    const wcp = quadtree?.tileProvider?.waterClassificationProvider;
+    const needsWaterMaskUpgrade =
+      defined(wcp) &&
+      wcp.ready &&
+      (!surfaceTile._waterMaskProviderReady ||
+        surfaceTile._waterMaskProvider !== wcp);
 
-    if (tile.state === QuadtreeTileLoadState.LOADING) {
+    if (tile.state === QuadtreeTileLoadState.LOADING || needsWaterMaskUpgrade) {
       processTerrainStateMachine(
         tile,
         frameState,
@@ -763,27 +792,67 @@ function processTerrainStateMachine(
     surfaceTile.updateExaggeration(tile, frameState, quadtree);
   }
 
+  const hasWaterMask =
+    terrainProvider.hasWaterMask ||
+    Boolean(quadtree?.tileProvider?.hasWaterMask) ||
+    defined(quadtree?.tileProvider?.waterClassificationProvider);
+
+  const waterClassificationProvider =
+    quadtree?.tileProvider?.waterClassificationProvider;
+  const providerReady =
+    defined(waterClassificationProvider) && waterClassificationProvider.ready;
+  const needsProviderUpgrade =
+    providerReady &&
+    (!surfaceTile._waterMaskProviderReady ||
+      surfaceTile._waterMaskProvider !== waterClassificationProvider);
+
   if (
     surfaceTile.terrainState >= TerrainState.RECEIVED &&
-    surfaceTile.waterMaskTexture === undefined &&
-    terrainProvider.hasWaterMask
+    hasWaterMask &&
+    ((surfaceTile.waterMaskTexture === undefined &&
+      !surfaceTile._waterMaskEvaluated) ||
+      needsProviderUpgrade)
   ) {
     const terrainData = surfaceTile.terrainData;
-    if (terrainData.waterMask !== undefined) {
-      // When `globe.lakeWaterMask` is on, the tile provider mirrors the loaded
-      // water classification provider here, and leaves it undefined otherwise.
+    const terrainHasOwnMask =
+      defined(terrainData) && terrainData.waterMask !== undefined;
+    const providerGenerates =
+      providerReady &&
+      typeof waterClassificationProvider.generateWaterMask === "function";
+
+    // A tile with no mask of its own (every upsampled tile) under a lake or
+    // river layer that touches it: composite the layer over the terrain mask
+    // the nearest real ancestor carries, resampled to this tile. Adopting the
+    // ancestor's texture would drop the lakes; a lakes-only mask would drop the
+    // terrain's sea water. Without an intersecting layer the ancestor's texture
+    // is adopted below, as base did.
+    let ancestorWaterMask;
+    if (
+      !terrainHasOwnMask &&
+      providerReady &&
+      !providerGenerates &&
+      waterClassificationProvider.intersectsRectangle(tile.rectangle)
+    ) {
+      ancestorWaterMask = findAncestorWaterMask(surfaceTile, tile);
+    }
+
+    if (terrainHasOwnMask || providerGenerates || defined(ancestorWaterMask)) {
+      releaseWaterMaskTexture(surfaceTile);
+      // When `globe.globalWaterMask` is on, or `globe.lakeWaterMask` / `globe.riverWaterMask` over a
+      // terrain water mask, the tile provider mirrors the loaded water classification provider here,
+      // and leaves it undefined otherwise (`Globe.beginFrame`).
       // This is the single upload point both backends consume, so augmenting
       // the mask bytes here keeps WebGL and WebGPU texel-identical by
       // construction.
-      const waterClassificationProvider =
-        quadtree?.tileProvider?.waterClassificationProvider;
       createWaterMaskTextureIfNeeded(
         frameState.context,
         surfaceTile,
         tile.rectangle,
         waterClassificationProvider,
+        ancestorWaterMask,
       );
-    } else {
+      surfaceTile._waterMaskEvaluated = true;
+    } else if (!defined(surfaceTile.waterMaskTexture)) {
       const sourceTile = surfaceTile._findAncestorTileWithTerrainData(tile);
       if (defined(sourceTile) && defined(sourceTile?.data?.waterMaskTexture)) {
         surfaceTile.waterMaskTexture = sourceTile.data.waterMaskTexture;
@@ -795,6 +864,15 @@ function processTerrainStateMachine(
         );
       }
     }
+    // Record the provider on every path (not only the first branch), otherwise
+    // `needsWaterMaskUpgrade` stays true and this block, including the ancestor
+    // search, re-runs for the tile every frame. `_waterMaskEvaluated` is left
+    // alone on purpose so a late-arriving ancestor is still picked up while the
+    // tile is loading.
+    surfaceTile._waterMaskProviderReady = providerReady;
+    surfaceTile._waterMaskProvider = providerReady
+      ? waterClassificationProvider
+      : undefined;
   }
 }
 
@@ -1036,22 +1114,69 @@ function getContextWaterMaskData(context) {
   return data;
 }
 
-function createWaterMaskTextureIfNeeded(
-  context,
+/**
+ * Picks the water mask for a tile: the terrain provider's own mask, augmented
+ * by the water classification provider when one is active, or a mask the
+ * provider generates when the terrain has none. Never writes to
+ * `surfaceTile.terrainData`; a generated mask is kept on the surface tile.
+ *
+ * A lake or river layer (a provider without `generateWaterMask`) only ever
+ * augments a terrain mask: the tile's own, or for a tile without one, the
+ * nearest real ancestor's, resampled to this tile (`ancestorWaterMask`).
+ *
+ * @param {GlobeSurfaceTile} surfaceTile
+ * @param {Rectangle} tileRectangle
+ * @param {object} [waterClassificationProvider]
+ * @param {{mask: Uint8Array|Uint8ClampedArray, rectangle: Rectangle}} [ancestorWaterMask]
+ *   The ancestor terrain mask a tile without its own mask is composited on.
+ * @returns {Uint8Array|ImageBitmap|undefined}
+ * @ignore
+ */
+function resolveWaterMaskForTile(
   surfaceTile,
   tileRectangle,
   waterClassificationProvider,
+  ancestorWaterMask,
 ) {
-  let waterMask = surfaceTile.terrainData.waterMask;
+  let waterMask = defined(surfaceTile.terrainData)
+    ? surfaceTile.terrainData.waterMask
+    : undefined;
 
-  // OR-composite the opt-in supplementary lake mask over the terrain
-  // provider's ocean-only mask. This works on a copy of the mask bytes and
-  // never mutates `terrainData.waterMask`, which may be shared with upsampled
-  // descendants, and it expands the one-byte all-land fast path to 256×256
-  // only when a lake actually rasterizes into the tile. ImageBitmap-shaped
-  // masks, which come from providers other than quantized-mesh, pass through
-  // un-augmented.
+  const tileSpanRad = defined(tileRectangle)
+    ? Math.max(
+        Math.abs(tileRectangle.east - tileRectangle.west),
+        Math.abs(tileRectangle.north - tileRectangle.south),
+      )
+    : 0.0;
+  const adaptiveMaskSize =
+    tileSpanRad > 0.2094 ? 64 : tileSpanRad > 0.0349 ? 128 : 256;
+
+  const fromAncestor =
+    !defined(waterMask) && defined(ancestorWaterMask) && defined(tileRectangle);
+  if (fromAncestor) {
+    waterMask = upsampleAncestorWaterMask(
+      ancestorWaterMask.mask,
+      ancestorWaterMask.rectangle,
+      tileRectangle,
+      adaptiveMaskSize,
+    );
+  }
+
   if (
+    !defined(waterMask) &&
+    defined(waterClassificationProvider) &&
+    waterClassificationProvider.ready &&
+    defined(tileRectangle)
+  ) {
+    if (typeof waterClassificationProvider.generateWaterMask === "function") {
+      waterMask = waterClassificationProvider.generateWaterMask(
+        tileRectangle,
+        adaptiveMaskSize,
+      );
+    }
+    surfaceTile._generatedWaterMask = waterMask;
+  } else if (
+    defined(waterMask) &&
     defined(waterClassificationProvider) &&
     waterClassificationProvider.ready &&
     defined(tileRectangle) &&
@@ -1061,10 +1186,122 @@ function createWaterMaskTextureIfNeeded(
     const augmented = waterClassificationProvider.augmentWaterMask(
       waterMask,
       tileRectangle,
+      adaptiveMaskSize,
     );
     if (defined(augmented)) {
       waterMask = augmented;
     }
+  }
+  if (fromAncestor) {
+    // Kept on the surface tile, never on the shared terrain data.
+    surfaceTile._generatedWaterMask = waterMask;
+  }
+
+  return waterMask;
+}
+
+const ALL_LAND_WATER_MASK = new Uint8Array([0]);
+
+/**
+ * The nearest real (not upsampled) ancestor's terrain water mask and
+ * rectangle, for a tile without a mask of its own. An ancestor whose terrain
+ * data carries no mask is all land, as at base (its texture is left
+ * undefined). Returns `undefined` when no ancestor with terrain data exists
+ * yet, or when its mask is an `ImageBitmap`, whose bytes are not readable
+ * here; the caller then adopts the ancestor's texture as base did.
+ *
+ * @param {GlobeSurfaceTile} surfaceTile
+ * @param {QuadtreeTile} tile
+ * @returns {{mask: Uint8Array|Uint8ClampedArray, rectangle: Rectangle}|undefined}
+ * @ignore
+ */
+function findAncestorWaterMask(surfaceTile, tile) {
+  const sourceTile = surfaceTile._findAncestorTileWithTerrainData(tile);
+  const sourceData = sourceTile?.data?.terrainData;
+  if (!defined(sourceData) || !defined(sourceTile.rectangle)) {
+    return undefined;
+  }
+  const mask = sourceData.waterMask ?? ALL_LAND_WATER_MASK;
+  if (!(mask instanceof Uint8Array || mask instanceof Uint8ClampedArray)) {
+    return undefined;
+  }
+  return { mask: mask, rectangle: sourceTile.rectangle };
+}
+
+/**
+ * Resamples an ancestor tile's water mask onto a descendant tile's rectangle
+ * at `size`², north row first like every terrain mask. Each texel takes the
+ * bilinear, clamp-to-edge sample at its centre, which is what the shared
+ * water-mask sampler (LINEAR, CLAMP_TO_EDGE) reads from the ancestor's
+ * texture through `waterMaskTranslationAndScale`. A one-byte mask is entirely
+ * land or entirely water, and so is every part of it. Never writes `mask`.
+ *
+ * @param {Uint8Array|Uint8ClampedArray} mask
+ * @param {Rectangle} sourceRectangle
+ * @param {Rectangle} tileRectangle
+ * @param {number} size
+ * @returns {Uint8Array|Uint8ClampedArray}
+ * @ignore
+ */
+function upsampleAncestorWaterMask(mask, sourceRectangle, tileRectangle, size) {
+  if (mask.length === 1) {
+    return mask;
+  }
+  const n = Math.round(Math.sqrt(mask.length));
+  const last = n - 1;
+  const sourceWidth = sourceRectangle.east - sourceRectangle.west;
+  const sourceHeight = sourceRectangle.north - sourceRectangle.south;
+  const dLon = (tileRectangle.east - tileRectangle.west) / size;
+  const dLat = (tileRectangle.north - tileRectangle.south) / size;
+  const out = new Uint8Array(size * size);
+  for (let row = 0; row < size; row++) {
+    const latitude = tileRectangle.north - (row + 0.5) * dLat;
+    const fy = Math.min(
+      Math.max(
+        ((sourceRectangle.north - latitude) / sourceHeight) * n - 0.5,
+        0,
+      ),
+      last,
+    );
+    const y0 = Math.floor(fy);
+    const y1 = Math.min(y0 + 1, last);
+    const wy = fy - y0;
+    for (let column = 0; column < size; column++) {
+      const longitude = tileRectangle.west + (column + 0.5) * dLon;
+      const fx = Math.min(
+        Math.max(
+          ((longitude - sourceRectangle.west) / sourceWidth) * n - 0.5,
+          0,
+        ),
+        last,
+      );
+      const x0 = Math.floor(fx);
+      const x1 = Math.min(x0 + 1, last);
+      const wx = fx - x0;
+      const north = mask[y0 * n + x0] * (1 - wx) + mask[y0 * n + x1] * wx;
+      const south = mask[y1 * n + x0] * (1 - wx) + mask[y1 * n + x1] * wx;
+      out[row * size + column] = Math.round(north * (1 - wy) + south * wy);
+    }
+  }
+  return out;
+}
+
+function createWaterMaskTextureIfNeeded(
+  context,
+  surfaceTile,
+  tileRectangle,
+  waterClassificationProvider,
+  ancestorWaterMask,
+) {
+  const waterMask = resolveWaterMaskForTile(
+    surfaceTile,
+    tileRectangle,
+    waterClassificationProvider,
+    ancestorWaterMask,
+  );
+
+  if (!defined(waterMask)) {
+    return;
   }
 
   const waterMaskData = getContextWaterMaskData(context);
@@ -1083,7 +1320,7 @@ function createWaterMaskTextureIfNeeded(
     // `getContextWaterMaskData`. The ImageBitmap is already retained by
     // `terrainData.waterMask`, so this adds a reference, not a copy.
     texture._webgpuSource = waterMask;
-  } else if (waterMaskLength === 1) {
+  } else if (waterMaskLength === 1 && !defined(waterMask._rgbaHydroData)) {
     // Length 1 means the tile is entirely land or entirely water.
     // A value of 0 indicates entirely land, a value of 1 indicates entirely water.
     if (waterMask[0] !== 0) {
@@ -1093,7 +1330,16 @@ function createWaterMaskTextureIfNeeded(
       return;
     }
   } else {
-    const textureSize = Math.sqrt(waterMaskLength);
+    const textureSize = Math.max(
+      1,
+      Math.round(
+        Math.sqrt(
+          defined(waterMask._rgbaHydroData)
+            ? waterMask._rgbaHydroData.length / 4
+            : waterMaskLength,
+        ),
+      ),
+    );
     texture = Texture.create({
       context: context,
       pixelFormat: PixelFormat.LUMINANCE,
@@ -1109,12 +1355,17 @@ function createWaterMaskTextureIfNeeded(
 
     texture.referenceCount = 0;
     // The WebGPU cross-device fallback needs the source retained; see
-    // `getContextWaterMaskData`. `waterMask` aliases `terrainData.waterMask`,
-    // which is already retained, so this is a reference, not a copy.
+    // `getContextWaterMaskData`. `waterMask` is the terrain mask or the
+    // provider's cached tile, both already retained, so this is a reference,
+    // not a copy.
     texture._webgpuSource = {
       width: textureSize,
       height: textureSize,
       arrayBufferView: waterMask,
+      rgbaArrayBufferView: waterMask._rgbaHydroData,
+      // A mask a water provider built, not the terrain's own: the WebGPU
+      // renderer uploads it under a stable water label (water round 5, FND-7).
+      waterProviderMask: waterMask !== surfaceTile.terrainData?.waterMask,
     };
   }
 
@@ -1130,4 +1381,5 @@ function createWaterMaskTextureIfNeeded(
   );
 }
 
+export { resolveWaterMaskForTile };
 export default GlobeSurfaceTile;

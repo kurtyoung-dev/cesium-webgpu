@@ -1,0 +1,7 @@
+title: WebGPU Global Water & Weather Presets
+description: "Planetary water across all 6 vertical regimes (Orbit, Atmosphere, Flight, Sea Level, Photic Underwater, Abyssal Trench) with Cox-Munk glint, global rivers, surf swash, Snell's Window, bathymetric substrate grading, and Low/Medium/High quality presets."
+labels:
+  - WebGPU
+  - Showcases
+  - Visuals
+thumbnail: thumbnail.jpg

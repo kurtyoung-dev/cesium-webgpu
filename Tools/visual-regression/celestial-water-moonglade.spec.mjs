@@ -296,8 +296,9 @@ test("H1 slots 40 to 47 carry the Moon, each written once", () => {
     [43, /od\[43\] = p\._celestialMoonPhase \?\? 0\.0;/],
     [44, /od\[44\] = p\._celestialResolvedMoonIntensity \?\? 0\.0;/],
     [45, /od\[45\] = p\._celestialMoonSinAngularRadius \?\? 0\.0;/],
-    [46, /od\[46\] = 0\.0;/],
-    [47, /od\[47\] = 0\.0;/],
+    // Slots 46 and 47 carry the bathymetry pair; they are no longer pads.
+    [46, /od\[46\] = p\._bathymetryDepthM \?\? 0\.0;/],
+    [47, /od\[47\] = p\._bathymetryJerlovType \?\? 0\.0;/],
   ];
   for (const [slot, re] of expected) {
     const writes = oceanTs.match(new RegExp(`od\\[${slot}\\]\\s*=`, "g")) ?? [];
@@ -322,8 +323,17 @@ test("H2 the pad slots are written, not left to whatever was there", () => {
 // ──────────────── I. the terminator gate, evaluated from source ────────────────
 
 test("I1 the gate reads a geodetic up, never the wave normal", () => {
+  // The gated arm binds up to the function-level upDir; that name must in
+  // turn be bound once, before the gate, from the geodetic up uniform.
   const upExpr = bindingExpression("up");
-  assert.match(upExpr, /normalize\(ocean\.up\)/);
+  assert.equal(upExpr.trim(), "upDir");
+  const upDirDefs = wgsl.match(/let upDir = [^;]*;/g) ?? [];
+  assert.equal(upDirDefs.length, 1, "upDir must be bound exactly once");
+  assert.equal(upDirDefs[0], "let upDir = normalize(ocean.up);");
+  assert.ok(
+    wgsl.indexOf(upDirDefs[0]) < GATE_AT,
+    "upDir must be bound before the gated arm that reads it",
+  );
   const gateExpr = bindingExpression("nightGate");
   assert.match(gateExpr, /celestialNightGate\(up, sunDir\)/);
   assert.ok(

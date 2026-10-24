@@ -119,6 +119,22 @@ interface OceanCache {
   ifftHPipeline: GPUComputePipeline | null;
   ifftVPipeline: GPUComputePipeline | null;
   mergePipeline: GPUComputePipeline | null;
+  computePipelinesReady?: boolean;
+  /**
+   * Terminal: an async compute pipeline creation was rejected. Set once, after
+   * the one permanent error is logged, and cleared only by a re-initialisation.
+   */
+  computePipelinesFailed?: boolean;
+  /** Terminal, like `computePipelinesFailed`, for the render pipeline. */
+  renderPipelineFailed?: boolean;
+  /**
+   * Bumped by every (re)initialisation. An async pipeline result carries the
+   * value it was requested under and is ignored when it no longer matches, so a
+   * result built for a superseded descriptor (format or log-depth change) can
+   * neither overwrite the new pipeline nor clear its pending flag.
+   */
+  pipelineGeneration?: number;
+  readyFrames?: number;
   // Compute bind groups
   initBindGroup: GPUBindGroup | null;
   twiddleBindGroup: GPUBindGroup | null;
@@ -134,8 +150,12 @@ interface OceanCache {
   mergeParamsBuffer: GPUBuffer | null;
   // Reused 32-byte CPU scratch for time parameters.
   timeParamsScratch: ArrayBuffer | null;
+  timeParamsU32?: Uint32Array;
+  timeParamsF32?: Float32Array;
   // Reused 32-byte CPU scratch for merge parameters.
   mergeParamsScratch: ArrayBuffer | null;
+  mergeParamsU32?: Uint32Array;
+  mergeParamsF32?: Float32Array;
   stepBuffers: GPUBuffer[]; // [0..7]
   // Render side
   gridVertexBuffer: GPUBuffer | null;
@@ -204,6 +224,8 @@ interface OceanPrimitiveLike {
   _invRadius?: number;
   _deepColor?: { x: number; y: number; z: number };
   _shallowColor?: { x: number; y: number; z: number };
+  _bathymetryDepthM?: number;
+  _bathymetryJerlovType?: number;
   _paramsDirty?: boolean;
   _webgpuCache?: unknown;
 }
@@ -228,8 +250,10 @@ function makeNoise(): Float32Array {
   };
   const gauss = () => {
     let u = rand();
-    let v = rand();
-    if (u < 1e-7) u = 1e-7;
+    const v = rand();
+    if (u < 1e-7) {
+      u = 1e-7;
+    }
     return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
   };
   for (let i = 0; i < N * N; i++) {
@@ -262,9 +286,15 @@ function createGrid(device: GPUDevice, cache: OceanCache): void {
   const verts = new Float32Array((res + 1) * (res + 1) * 2);
   let vi = 0;
   for (let j = 0; j <= res; j++) {
+    const ty = (j / res) * 2.0 - 1.0;
+    const cdlodRadialY =
+      Math.sign(ty) * (0.35 * Math.abs(ty) + 0.65 * ty * ty) * 0.5;
     for (let i = 0; i <= res; i++) {
-      verts[vi++] = i / res - 0.5; // [-0.5, 0.5]
-      verts[vi++] = j / res - 0.5;
+      const tx = (i / res) * 2.0 - 1.0;
+      const cdlodRadialX =
+        Math.sign(tx) * (0.35 * Math.abs(tx) + 0.65 * tx * tx) * 0.5;
+      verts[vi++] = cdlodRadialX; // [-0.5, 0.5] radial CDLOD-graded
+      verts[vi++] = cdlodRadialY;
     }
   }
   const indices = new Uint32Array(res * res * 6);
@@ -313,6 +343,81 @@ const GRID_VERTEX_LAYOUT: GPUVertexBufferLayout[] = [
   },
 ];
 
+interface OceanLogContext {
+  id?: string;
+  log?: (level: "error", message: string) => void;
+}
+
+/**
+ * Report a rejected pipeline creation. Permanent (no debug pragma): a pipeline
+ * that never compiles leaves the ocean silently absent, and this line is the
+ * only way anyone finds out. The caller logs once and then stays failed, so a
+ * broken shader cannot become one error per frame.
+ */
+function reportOceanPipelineFailure(
+  context: OceanLogContext,
+  label: string,
+  error: unknown,
+): void {
+  const reason = error instanceof Error ? error.message : String(error);
+  const message = `${label} pipeline creation failed; the FFT ocean will not draw until its resources are re-initialised: ${reason}`;
+  if (typeof context.log === "function") {
+    context.log("error", message);
+  } else {
+    console.error(`[CesiumJS:webgpu:${context.id ?? "unknown"}] ${message}`);
+  }
+}
+
+/**
+ * Create the six compute pipelines, asynchronously where the device allows.
+ * A rejection logs once and leaves the cache in a terminal failed state; a
+ * result from a superseded generation is dropped.
+ */
+function requestComputePipelines(
+  device: GPUDevice,
+  descs: GPUComputePipelineDescriptor[],
+  cache: OceanCache,
+  context: OceanLogContext,
+): void {
+  const assign = (pipelines: GPUComputePipeline[]): void => {
+    cache.initPipeline = pipelines[0];
+    cache.twiddlePipeline = pipelines[1];
+    cache.evolvePipeline = pipelines[2];
+    cache.ifftHPipeline = pipelines[3];
+    cache.ifftVPipeline = pipelines[4];
+    cache.mergePipeline = pipelines[5];
+    cache.computePipelinesReady = true;
+  };
+  if (typeof device.createComputePipelineAsync === "function") {
+    cache.computePipelinesReady = false;
+    const generation = cache.pipelineGeneration ?? 0;
+    Promise.all([
+      device.createComputePipelineAsync(descs[0]),
+      device.createComputePipelineAsync(descs[1]),
+      device.createComputePipelineAsync(descs[2]),
+      device.createComputePipelineAsync(descs[3]),
+      device.createComputePipelineAsync(descs[4]),
+      device.createComputePipelineAsync(descs[5]),
+    ])
+      .then((pipelines) => {
+        if ((cache.pipelineGeneration ?? 0) !== generation) {
+          return;
+        }
+        assign(pipelines);
+        cache.paramsDirty = true;
+      })
+      .catch((error: unknown) => {
+        if ((cache.pipelineGeneration ?? 0) !== generation) {
+          return;
+        }
+        cache.computePipelinesFailed = true;
+        reportOceanPipelineFailure(context, "Ocean compute", error);
+      });
+  } else {
+    assign(descs.map((d) => device.createComputePipeline(d)));
+  }
+}
+
 function initializeOceanResources(
   context: CesiumGraphicsContext,
   device: GPUDevice,
@@ -320,6 +425,11 @@ function initializeOceanResources(
   sceneFormat: GPUTextureFormat,
   logDepthActive: boolean,
 ): void {
+  cache.pipelineGeneration = (cache.pipelineGeneration ?? 0) + 1;
+  cache.computePipelinesFailed = false;
+  cache.renderPipelineFailed = false;
+  cache.renderPipelineRequestPending = false;
+
   // ── Textures ──
   cache.noiseTexture = device.createTexture({
     label: "Ocean noise",
@@ -399,14 +509,14 @@ function initializeOceanResources(
     storageTexture(1, Stage.COMPUTE, "rgba32float", { access: "write-only" }),
     uniformBuffer(2, Stage.COMPUTE),
   ]);
-  cache.initPipeline = device.createComputePipeline({
+  const initDesc: GPUComputePipelineDescriptor = {
     label: "Ocean init pipeline",
     layout: device.createPipelineLayout({ bindGroupLayouts: [initBGL] }),
     compute: {
       module: makeComputeModule(device, OceanInitialSpectrumWGSL, "Ocean init"),
       entryPoint: "initialSpectrum",
     },
-  });
+  };
   cache.initBindGroup = device.createBindGroup({
     label: "Ocean init BG",
     layout: initBGL,
@@ -421,14 +531,14 @@ function initializeOceanResources(
     storageTexture(0, Stage.COMPUTE, "rgba32float", { access: "write-only" }),
     uniformBuffer(1, Stage.COMPUTE),
   ]);
-  cache.twiddlePipeline = device.createComputePipeline({
+  const twiddleDesc: GPUComputePipelineDescriptor = {
     label: "Ocean twiddle pipeline",
     layout: device.createPipelineLayout({ bindGroupLayouts: [twiddleBGL] }),
     compute: {
       module: makeComputeModule(device, OceanTwiddleWGSL, "Ocean twiddle"),
       entryPoint: "precompute",
     },
-  });
+  };
   cache.twiddleBindGroup = device.createBindGroup({
     label: "Ocean twiddle BG",
     layout: twiddleBGL,
@@ -444,14 +554,14 @@ function initializeOceanResources(
     storageTexture(2, Stage.COMPUTE, "rg32float", { access: "write-only" }),
     uniformBuffer(3, Stage.COMPUTE),
   ]);
-  cache.evolvePipeline = device.createComputePipeline({
+  const evolveDesc: GPUComputePipelineDescriptor = {
     label: "Ocean evolve pipeline",
     layout: device.createPipelineLayout({ bindGroupLayouts: [evolveBGL] }),
     compute: {
       module: makeComputeModule(device, OceanTimeSpectrumWGSL, "Ocean evolve"),
       entryPoint: "evolve",
     },
-  });
+  };
   cache.evolveBindGroup = device.createBindGroup({
     label: "Ocean evolve BG",
     layout: evolveBGL,
@@ -474,16 +584,16 @@ function initializeOceanResources(
     bindGroupLayouts: [ifftBGL],
   });
   const ifftModule = makeComputeModule(device, OceanIFFTWGSL, "Ocean ifft");
-  cache.ifftHPipeline = device.createComputePipeline({
+  const ifftHDesc: GPUComputePipelineDescriptor = {
     label: "Ocean ifft H",
     layout: ifftLayout,
     compute: { module: ifftModule, entryPoint: "horizontalStep" },
-  });
-  cache.ifftVPipeline = device.createComputePipeline({
+  };
+  const ifftVDesc: GPUComputePipelineDescriptor = {
     label: "Ocean ifft V",
     layout: ifftLayout,
     compute: { module: ifftModule, entryPoint: "verticalStep" },
-  });
+  };
   // Per-stage bind groups: even step reads A writes B, odd reads B writes A.
   cache.ifftBindGroups1 = [];
   cache.ifftBindGroups2 = [];
@@ -522,14 +632,14 @@ function initializeOceanResources(
     storageTexture(2, Stage.COMPUTE, "rgba16float", { access: "write-only" }),
     uniformBuffer(3, Stage.COMPUTE),
   ]);
-  cache.mergePipeline = device.createComputePipeline({
+  const mergeDesc: GPUComputePipelineDescriptor = {
     label: "Ocean merge pipeline",
     layout: device.createPipelineLayout({ bindGroupLayouts: [mergeBGL] }),
     compute: {
       module: makeComputeModule(device, OceanMergeWGSL, "Ocean merge"),
       entryPoint: "merge",
     },
-  });
+  };
   cache.mergeBindGroup = device.createBindGroup({
     label: "Ocean merge BG",
     layout: mergeBGL,
@@ -540,6 +650,13 @@ function initializeOceanResources(
       { binding: 3, resource: { buffer: cache.mergeParamsBuffer } },
     ],
   });
+
+  requestComputePipelines(
+    device,
+    [initDesc, twiddleDesc, evolveDesc, ifftHDesc, ifftVDesc, mergeDesc],
+    cache,
+    context as unknown as OceanLogContext,
+  );
 
   // ── Render pipeline ──
   const renderModule = getRenderShaderModuleCache(device).getOrCreate(
@@ -575,7 +692,7 @@ function initializeOceanResources(
     fragment: {
       module: renderModule,
       entryPoint: "fragmentMain",
-      targets: makeSceneFBTargets(sceneFormat),
+      targets: makeSceneFBTargets(sceneFormat, { translucent: true }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
@@ -606,14 +723,35 @@ function tryResolveRenderPipeline(
   device: GPUDevice,
   pipelineCache: WebGPURenderPipelineCache | null | undefined,
   cache: OceanCache,
+  context: OceanLogContext,
 ): boolean {
   if (cache.renderPipeline) {
     return true;
+  }
+  if (cache.renderPipelineFailed) {
+    return false;
   }
   const desc = cache.renderPipelineDescriptor;
   if (!desc) {
     return false;
   }
+  // A result is applied only while this generation is still the current one.
+  const generation = cache.pipelineGeneration ?? 0;
+  const resolved = (p: GPURenderPipeline): void => {
+    if ((cache.pipelineGeneration ?? 0) !== generation) {
+      return;
+    }
+    cache.renderPipeline = p;
+    cache.renderPipelineRequestPending = false;
+  };
+  const failed = (error: unknown): void => {
+    if ((cache.pipelineGeneration ?? 0) !== generation) {
+      return;
+    }
+    cache.renderPipelineRequestPending = false;
+    cache.renderPipelineFailed = true;
+    reportOceanPipelineFailure(context, desc.name ?? "Ocean render", error);
+  };
   if (pipelineCache) {
     const sync = pipelineCache.getPipelineSync(desc);
     if (sync) {
@@ -623,19 +761,11 @@ function tryResolveRenderPipeline(
     }
     if (!cache.renderPipelineRequestPending) {
       cache.renderPipelineRequestPending = true;
-      pipelineCache
-        .getPipeline(desc)
-        .then((p) => {
-          cache.renderPipeline = p;
-          cache.renderPipelineRequestPending = false;
-        })
-        .catch(() => {
-          cache.renderPipelineRequestPending = false;
-        });
+      pipelineCache.getPipeline(desc).then(resolved).catch(failed);
     }
     return false;
   }
-  cache.renderPipeline = device.createRenderPipeline({
+  const gpuDesc: GPURenderPipelineDescriptor = {
     label: desc.name,
     layout: desc.layout ?? "auto",
     vertex: desc.vertex,
@@ -643,7 +773,15 @@ function tryResolveRenderPipeline(
     primitive: desc.primitive,
     depthStencil: desc.depthStencil,
     multisample: desc.multisample,
-  });
+  };
+  if (typeof device.createRenderPipelineAsync === "function") {
+    if (!cache.renderPipelineRequestPending) {
+      cache.renderPipelineRequestPending = true;
+      device.createRenderPipelineAsync(gpuDesc).then(resolved).catch(failed);
+    }
+    return false;
+  }
+  cache.renderPipeline = device.createRenderPipeline(gpuDesc);
   return true;
 }
 
@@ -687,6 +825,11 @@ function updateWebGPUOcean(
       ifftHPipeline: null,
       ifftVPipeline: null,
       mergePipeline: null,
+      computePipelinesReady: false,
+      computePipelinesFailed: false,
+      renderPipelineFailed: false,
+      pipelineGeneration: 0,
+      readyFrames: 0,
       initBindGroup: null,
       twiddleBindGroup: null,
       evolveBindGroup: null,
@@ -758,11 +901,24 @@ function updateWebGPUOcean(
     cache._logDepthEnabled = logDepthActive;
   }
 
-  if (
-    !tryResolveRenderPipeline(device, ctxAny.webgpuPipelineCache ?? null, cache)
-  ) {
+  if (cache.computePipelinesFailed || cache.renderPipelineFailed) {
+    // Terminal until a re-initialisation; the one error was already logged.
     return;
   }
+  const renderReady = tryResolveRenderPipeline(
+    device,
+    ctxAny.webgpuPipelineCache ?? null,
+    cache,
+    context as unknown as OceanLogContext,
+  );
+  if (!renderReady || !cache.computePipelinesReady) {
+    return;
+  }
+
+  // The sleep decision (orbit above 15 km, submerged below 80 m) is made once,
+  // in OceanSurfacePrimitive.update, against the height above the sea surface;
+  // the primitive returns before this renderer runs, so there is no second
+  // predicate here.
 
   // ── Upload compute uniforms ──
   const patchLength = p._patchLength ?? 250.0;
@@ -780,6 +936,7 @@ function updateWebGPUOcean(
     iff[7] = p._amplitude ?? 1.0;
     iff[8] = p._smallWave ?? 1.0;
     iff[9] = p._dirDamp ?? 0.15;
+    iff[10] = p._bathymetryDepthM ?? 0.0;
     device.queue.writeBuffer(cache.initParamsBuffer!, 0, initBuf);
     device.queue.writeBuffer(
       cache.twiddleParamsBuffer!,
@@ -810,17 +967,22 @@ function updateWebGPUOcean(
   const timeSpeed = p._timeSpeed ?? 1.0;
   const time = cache.simulationSeconds * timeSpeed;
   const timeBuf = cache.timeParamsScratch!;
-  const tu = new Uint32Array(timeBuf);
-  const tf = new Float32Array(timeBuf);
+  const tu =
+    cache.timeParamsU32 ?? (cache.timeParamsU32 = new Uint32Array(timeBuf));
+  const tf =
+    cache.timeParamsF32 ?? (cache.timeParamsF32 = new Float32Array(timeBuf));
   tu[0] = N;
   tf[2] = patchLength;
   tf[3] = gravity;
   tf[4] = time;
+  tf[5] = p._bathymetryDepthM ?? 0.0;
   device.queue.writeBuffer(cache.timeParamsBuffer!, 0, timeBuf);
 
   const mergeBuf = cache.mergeParamsScratch!;
-  const mu = new Uint32Array(mergeBuf);
-  const mf = new Float32Array(mergeBuf);
+  const mu =
+    cache.mergeParamsU32 ?? (cache.mergeParamsU32 = new Uint32Array(mergeBuf));
+  const mf =
+    cache.mergeParamsF32 ?? (cache.mergeParamsF32 = new Float32Array(mergeBuf));
   mu[0] = N;
   mf[2] = patchLength;
   mf[3] = p._choppiness ?? 1.0;
@@ -831,101 +993,96 @@ function updateWebGPUOcean(
 
   // ── Compute chain ──
   // During normal rendering `beginFrame()` has already opened the shared
-  // command encoder and no render pass is active yet. Record the FFT ladder
-  // there so it stays ordered immediately before the ocean draw without an
-  // extra queue submission. Direct/off-frame update callers retain the
-  // historical private-encoder fallback.
+  // command encoder and no render pass is active yet. Record the entire FFT
+  // ladder inside a single compute pass so all stages execute back-to-back
+  // without 34 separate compute-pass begin/end barriers.
   const frameEncoder = getAvailableFrameCommandEncoder(context);
   const enc =
     frameEncoder ?? device.createCommandEncoder({ label: "Ocean compute" });
-  const dispatchPass = (
+  const computePass = enc.beginComputePass({
+    label: "Ocean FFT single-pass compute chain",
+  });
+  const dispatchStage = (
     pipeline: GPUComputePipeline,
     bg: GPUBindGroup,
     gx: number,
     gy: number,
-    label: string,
   ) => {
-    const pass = enc.beginComputePass({ label });
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(gx, gy);
-    pass.end();
+    computePass.setPipeline(pipeline);
+    computePass.setBindGroup(0, bg);
+    computePass.dispatchWorkgroups(gx, gy);
   };
 
   if (cache.paramsDirty || p._paramsDirty) {
-    dispatchPass(
+    dispatchStage(
       cache.twiddlePipeline!,
       cache.twiddleBindGroup!,
       LOG2N,
       Math.ceil(N / 64),
-      "Ocean twiddle",
     );
-    dispatchPass(
+    dispatchStage(
       cache.initPipeline!,
       cache.initBindGroup!,
       DISPATCH,
       DISPATCH,
-      "Ocean init",
     );
     cache.paramsDirty = false;
     p._paramsDirty = false;
   }
 
-  dispatchPass(
+  dispatchStage(
     cache.evolvePipeline!,
     cache.evolveBindGroup!,
     DISPATCH,
     DISPATCH,
-    "Ocean evolve",
   );
   // IFFT field1: horizontal then vertical (result lands back in field1[0]=A).
   for (let s = 0; s < LOG2N; s++) {
-    dispatchPass(
+    dispatchStage(
       cache.ifftHPipeline!,
       cache.ifftBindGroups1[s]!,
       DISPATCH,
       DISPATCH,
-      `Ocean ifft1 H${s}`,
     );
   }
   for (let s = 0; s < LOG2N; s++) {
-    dispatchPass(
+    dispatchStage(
       cache.ifftVPipeline!,
       cache.ifftBindGroups1[s]!,
       DISPATCH,
       DISPATCH,
-      `Ocean ifft1 V${s}`,
     );
   }
   for (let s = 0; s < LOG2N; s++) {
-    dispatchPass(
+    dispatchStage(
       cache.ifftHPipeline!,
       cache.ifftBindGroups2[s]!,
       DISPATCH,
       DISPATCH,
-      `Ocean ifft2 H${s}`,
     );
   }
   for (let s = 0; s < LOG2N; s++) {
-    dispatchPass(
+    dispatchStage(
       cache.ifftVPipeline!,
       cache.ifftBindGroups2[s]!,
       DISPATCH,
       DISPATCH,
-      `Ocean ifft2 V${s}`,
     );
   }
-  dispatchPass(
+  dispatchStage(
     cache.mergePipeline!,
     cache.mergeBindGroup!,
     DISPATCH,
     DISPATCH,
-    "Ocean merge",
   );
+  computePass.end();
   if (!frameEncoder) {
     device.queue.submit([enc.finish()]);
   }
   cache.frameNumber++;
+  cache.readyFrames = (cache.readyFrames ?? 0) + 1;
+  const warmupT = Math.min(1.0, cache.readyFrames / 45.0);
+  const warmupRamp = warmupT * warmupT * (3.0 - 2.0 * warmupT);
 
   // ── Render bind group (built once) ──
   if (!cache.renderBindGroup) {
@@ -1026,7 +1183,7 @@ function updateWebGPUOcean(
   od[20] = sun.x;
   od[21] = sun.y;
   od[22] = sun.z;
-  od[23] = p._foamStrength ?? 1.0;
+  od[23] = (p._foamStrength ?? 1.0) * warmupRamp;
   const deep = p._deepColor ?? { x: 0.02, y: 0.08, z: 0.13 };
   od[24] = deep.x;
   od[25] = deep.y;
@@ -1040,7 +1197,7 @@ function updateWebGPUOcean(
   od[32] = p._uvOffsetX ?? 0.0;
   od[33] = p._uvOffsetY ?? 0.0;
   od[34] = 1.0 / N; // texelSize
-  od[35] = p._detailScale ?? 1.0;
+  od[35] = (p._detailScale ?? 1.0) * warmupRamp;
   // Celestial-reflection tail. The primitive resolves these ahead of the
   // backend branch and publishes all four as exactly 0 while the reflection
   // is off, which is what the tail held before the feature existed -- so an
@@ -1056,8 +1213,8 @@ function updateWebGPUOcean(
   od[43] = p._celestialMoonPhase ?? 0.0;
   od[44] = p._celestialResolvedMoonIntensity ?? 0.0;
   od[45] = p._celestialMoonSinAngularRadius ?? 0.0;
-  od[46] = 0.0;
-  od[47] = 0.0;
+  od[46] = p._bathymetryDepthM ?? 0.0;
+  od[47] = p._bathymetryJerlovType ?? 0.0;
   device.queue.writeBuffer(cache.oceanUniformBuffer!, 0, od);
 
   // ── Draw command ──

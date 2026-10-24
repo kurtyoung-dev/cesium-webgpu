@@ -182,3 +182,33 @@ decomposition performed for its own sake, which the incremental rule forbids.
 | Date | File (before → after) | Slice extracted | Went to | Occasioned by |
 |---|---|---|---|---|
 | 2026-09-12 | `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts` 5,570 → 5,534 | The cloud quality resolver/preset seam: the duplicate `resolveCloudQuality` and its `QualityResolverInputs`, the config→inputs gather, the `qualityFlags` bit assembly, and the `lightSampleScale` / `erosionStrength` / tier-lighting derivations | `Renderer/WebGPU/WebGPUCloudTierPresets.ts` 234 → 469 (`buildCloudQualityInputs`, `shouldDefaultPhysicalAerial`, `buildCloudQualityBlock`) | `C13-N10` — one quality resolver. The renderer held a second copy of the tier table and of the `"auto"` altitude bands, and it was the copy that reached the uniforms; the preset table was inert. Both files stay under 1,000 lines; the renderer's main class stays in place. Node-assertable by construction, which is what `cloud-tier-single-source.spec.mjs` needs |
+
+<!-- water-landing-oversize:begin -->
+### 7.1 Oversize files grown without decomposition: the water landing (2026-10-22), open follow-ups
+
+The water landing created or grew the files below beyond 1,000 lines and decomposed almost none of them. The rule above says a functional change to an oversize file should decompose it, so each is recorded here as an open follow-up and not as a row of the add-only log (nothing moved, bar the two slices named after the table). The plan is the queued WAVE DX (`R-2026-08-29-3`). Whether to decompose before landing or after is maintainer question MQ-8 in the water review; the seat's ruling, pending the maintainer, is that the landing does not decompose them and a follow-up DX batch does, file by file in the table below, and the 1586 message says so. Sizes are `git show a999954e2b:<file>` against the working tree on 2026-10-22, counted as lines; re-measure before quoting them, since the fix pass was still changing these files.
+
+| File | Lines, base → landing | Slice that should move | Note |
+|---|---|---|---|
+| `Shaders/WebGPU/Globe/GlobeTerrain.wgsl` | 6,503 → 9,618 (round 4: the shipped default text restored in `//>>else` arms, W-A1; round 6: the GlobeFS.glsl classic waves and coast band in the opt-in `WATER_PROVIDER_PARITY` arm, the default arm the shipped text; round 7: that arm's level-0 texture tap) | A real split needs a shader include or build-assembly step; the generated-chunk copy was rejected and removed from the landing. | `DEFERRED_WORK.md` `NEW-WATER-GLOBETERRAIN-DECOMPOSITION-NEEDS-INCLUDE-SUPPORT`. |
+| `Scene/BathymetryTensorMap.ts` | new → 2,758 | Tensor parsing and sampling, the CPU optics models, and the WMTS survey provider and table. | New in this landing. The optics models and the WMTS pieces are scaffolding with no consumer. |
+| `Scene/WaterClassificationProvider.ts` | 302 → 2,574 | One file per provider (Lake, Composite, River, PMTiles, CloudTiled) plus the shared raster helpers. | The PMTiles and CloudTiled providers have no runtime consumer. |
+| `Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts` | 3,081 → 3,199 | Further ocean, hydro-mask and pipeline-warm helpers; the tier and transition state already moved (below). | Partly decomposed in this landing. |
+| `Scene/GlobalCoastlineWaterClassificationProvider.ts` | new → 1,302 (round 5: the shore smoothing) | LWM2 parsing, the scanline rasteriser and the tile cache. | New in this landing. |
+| `Scene/Globe.js` | 1,788 → 2,097 | The water-provider wiring (`globalWaterMask`, `lakeWaterMask`, `riverWaterMask`, the composite and the tensor load) into a companion module. | The new code in this landing uses arrow callbacks. |
+| `Scene/GlobeWater.js` | 315 → 1,318 | The enums, `OsmWaterTypeAdapter` and `WaterRegionCollection` into their own default-export files (named exports of a file whose default export is the class; the barrel generator re-exports defaults, so they are probably unreachable from the public API, review finding W-17). | The named exports are documented in JSDoc `{@link}`s that may not resolve. |
+| `Renderer/WebGPU/WebGPUGlobeSurfacePipelines.ts` | 1,384 → 1,665 (round 5: the classic bootstrap request and the deferred warms) | The bootstrap-fallback and lazy-tier warm helpers. | Partly decomposed in this landing. |
+| `Renderer/WebGPU/WebGPUOceanRenderer.ts` | 1,113 → 1,270 | The pipeline and async-compile helpers. |  |
+| `Scene/GlobeSurfaceTile.js` | 1,133 → 1,385 (round 4: the ancestor-mask resample, P3-B1; round 5: the provider-mask tag) | The water-mask evaluation block. |  |
+| `Scene/SSCCInputHelpers.js` | 1,161 → 1,206 | The dive-depth and clamp-bypass helpers. |  |
+| `Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts` | 1,430 → 1,525 | The water, wake and tide packers. |  |
+| `Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts` | 1,052 → 1,134 | The tide and surge packer. |  |
+| `Renderer/WebGPU/WebGPUGlobeSurfaceTextures.ts` | 1,103 → 1,141 | The water-mask texture path. |  |
+| `Scene/GlobeSurfaceTileProvider.js` | 1,725 → 1,757 | Not water-owned; grew by the thirteen water mirrors and the reset they share with `Globe.beginFrame` (round 7). | Recorded for completeness. |
+| `Scene/TerrainFillMesh.js` | 2,239 → 2,243 | Not water-owned; grew by a few lines. | Recorded for completeness. |
+| `Renderer/WebGPU/WebGPUShaderDefines.ts` | 1,320 → 1,340 | Do not decompose: a registry of add-only enums, which the file-size rule exempts (pure data and enum definitions). | Grew by the `UNDERWATER_OPTICS` entry. |
+
+Slices that did move inside this landing: the ocean tier and transition state of the globe surface renderer and its pipelines went to `Renderer/WebGPU/WebGPUGlobeSurfaceOceanTiers.ts` (fix item `HO-06`), and the bathymetry-tensor texture upload went from `Scene/BathymetryTensorMap.ts` to `Renderer/WebGPU/WebGPUBathymetryTensorTexture.ts` (fix item `DE-06`), so that the behaviour is testable on the real class and a Scene file no longer reaches into the WebGPU renderer.
+
+**ES6 and RxJS rules on touched files, not applied.** `Scene/OceanSurfacePrimitive.js` (+215 lines at the measurement) and `Scene/GlobeWaterOcean.js` (+245) still use `Object.defineProperties` although each changed by well over 10 lines; `Scene/WaterClassificationProvider.ts` uses `async` methods (`prefetchTile`, `prefetchCell`) where the project prefers RxJS. Convert them the next time they are functionally touched; none blocks the landing.
+<!-- water-landing-oversize:end -->

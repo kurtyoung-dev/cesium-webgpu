@@ -385,7 +385,7 @@ test("C1 the struct tail matches the packing order, and the struct is 192 B", ()
       "celestialMoonPhase:f32",
       "celestialMoonIntensity:f32",
       "celestialMoonSinAngularRadius:f32",
-      "_p2:vec2<f32>",
+      "bathymetry:vec2<f32>",
     ],
     "the tail order is the packing order",
   );
@@ -618,7 +618,10 @@ test("E1 the off arm is the historical highlight, unchanged", () => {
     oceanWgsl.includes(HISTORICAL_GLINT),
     "the else arm must reproduce the Blinn-Phong highlight verbatim",
   );
-  const powCount = (oceanWgsl.match(/200\.0/g) ?? []).length;
+  // Count the lobe itself, not the bare literal: unrelated constants such as
+  // 2200.0 contain the text "200.0" without being a shininess exponent.
+  const lobe = "pow(max(dot(worldNormal, halfway), 0.0), 200.0)";
+  const powCount = oceanWgsl.split(lobe).length - 1;
   assert.equal(powCount, 1, "the shininess-200 lobe must exist exactly once");
 });
 

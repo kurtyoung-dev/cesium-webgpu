@@ -343,6 +343,59 @@ function canonicalise(text, dialect) {
     .trim();
 }
 
+/**
+ * The two styling arms of `computeEnhancedOcean`: the enhanced and classic arms
+ * of the ENHANCED_OCEAN block that holds the enhanced arm's celestial call.
+ * Read from the raw text (the directives are line comments), depth-aware: since
+ * the water landing's W-A1 the function carries smaller ENHANCED_OCEAN blocks
+ * ahead of this one, so "the first `//>>else` after the function" is no longer it.
+ *
+ * @param {string} text The WGSL source, LF line endings.
+ * @returns {{enhanced: string, classic: string}|null} The arms, or null.
+ */
+function splitOceanArms(text) {
+  const start = text.indexOf("fn computeEnhancedOcean");
+  if (start < 0) {
+    return null;
+  }
+  const lines = text.slice(start).split("\n");
+  const stack = [];
+  let target = null;
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^\s*\/\/>>(ifdef|else|endif)\b\s*(\w*)/.exec(lines[i]);
+    if (m) {
+      if (m[1] === "ifdef") {
+        stack.push({ flag: m[2], open: i, elseAt: -1 });
+      } else if (m[1] === "else") {
+        stack[stack.length - 1].elseAt = i;
+      } else {
+        const frame = stack.pop();
+        if (frame === target) {
+          if (frame.elseAt < 0) {
+            return null;
+          }
+          return {
+            enhanced: lines.slice(frame.open + 1, frame.elseAt).join("\n"),
+            classic: lines.slice(frame.elseAt + 1, i).join("\n"),
+          };
+        }
+      }
+      continue;
+    }
+    if (
+      target === null &&
+      lines[i].includes("oceanContribution += computeCelestialWaterSpecular(")
+    ) {
+      target =
+        stack.find((f) => f.flag === "ENHANCED_OCEAN" && f.elseAt < 0) ?? null;
+      if (target === null) {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
 // ───────── A. the port reached the ocean a default globe actually draws ──────
 
 test("A1 both styling arms call the celestial law, not just the enhanced one", () => {
@@ -357,17 +410,14 @@ test("A1 both styling arms call the celestial law, not just the enhanced one", (
 
   // The arms are delimited by preprocessor directives, which are line comments;
   // the stripped source cannot see them, so this reads the raw text.
-  const fn = globeWgsl.slice(globeWgsl.indexOf("fn computeEnhancedOcean"));
-  const enhancedStart = fn.indexOf("//>>ifdef ENHANCED_OCEAN");
-  const elseAt = fn.indexOf("//>>else");
-  const endAt = fn.indexOf("//>>endif");
+  const arms = splitOceanArms(globeWgsl);
   assert.ok(
-    enhancedStart > 0 && elseAt > enhancedStart && endAt > elseAt,
+    arms,
     "computeEnhancedOcean must still be split into an enhanced and a classic arm",
   );
 
-  const enhancedArm = fn.slice(enhancedStart, elseAt);
-  const classicArm = fn.slice(elseAt, endAt);
+  const enhancedArm = arms.enhanced;
+  const classicArm = arms.classic;
   assert.ok(
     enhancedArm.includes("computeCelestialWaterSpecular("),
     "the enhanced arm must call the celestial law",
@@ -389,13 +439,12 @@ test("A2 the classic arm is the one a default globe compiles", () => {
 });
 
 test("A3 the celestial contribution reaches each arm's returned colour", () => {
-  const fn = globeWgsl.slice(globeWgsl.indexOf("fn computeEnhancedOcean"));
-  const elseAt = fn.indexOf("//>>else");
-  const endAt = fn.indexOf("//>>endif");
+  const arms = splitOceanArms(globeWgsl);
+  assert.ok(arms, "the two styling arms must exist");
 
   // Enhanced: added into `oceanContribution`, which the arm returns through
   // `baseColor + oceanContribution`.
-  const enhancedArm = fn.slice(0, elseAt);
+  const enhancedArm = arms.enhanced;
   assert.match(
     enhancedArm,
     /oceanContribution \+= computeCelestialWaterSpecular\(/,
@@ -410,7 +459,7 @@ test("A3 the celestial contribution reaches each arm's returned colour", () => {
   // Classic: the historical three-term sum is built first and returned
   // untouched, and the celestial term is added into it only inside the gate.
   // That ordering is what keeps the off path the arithmetic it always was.
-  const classicArm = fn.slice(elseAt, endAt);
+  const classicArm = arms.classic;
   assert.match(
     classicArm,
     /classicColor \+= computeCelestialWaterSpecular\(/,
@@ -1770,20 +1819,18 @@ function verdict(override) {
 
     // 1. The port reached both arms — the classic one especially, since that is
     //    the arm a default globe compiles.
-    const fn = wgsl.slice(wgsl.indexOf("fn computeEnhancedOcean"));
-    const elseAt = fn.indexOf("//>>else");
-    const endAt = fn.indexOf("//>>endif");
-    if (elseAt < 0 || endAt < elseAt) {
+    const arms = splitOceanArms(wgsl);
+    if (!arms) {
       return false;
     }
     if (
-      !fn
-        .slice(0, elseAt)
-        .includes("oceanContribution += computeCelestialWaterSpecular(")
+      !arms.enhanced.includes(
+        "oceanContribution += computeCelestialWaterSpecular(",
+      )
     ) {
       return false;
     }
-    const classicArm = fn.slice(elseAt, endAt);
+    const classicArm = arms.classic;
     if (
       !classicArm.includes("classicColor += computeCelestialWaterSpecular(")
     ) {

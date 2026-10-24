@@ -78,15 +78,61 @@ export interface ShaderFactoryHost {
    * back is consistent with the renderer's current ocean state.
    */
   readonly _enhancedOceanEnabled?: boolean;
+  /**
+   * True while enhanced ocean is active and the eye is below +500 m (released
+   * above +1500 m) or underground. ORs `ShaderDefineHi.UNDERWATER_OPTICS` into
+   * `definesHi`. The Tier 2 pipelines are only warmed once the eye first comes
+   * below about 5000 m, so an orbital or ordinary aviation camera never
+   * compiles the underwater instructions; a camera that dives straight in
+   * compiles them on first use.
+   */
+  readonly _underwaterOpticsEnabled?: boolean;
+  /**
+   * True while the globe draws from a water classification provider (see
+   * {@link resolveWaterProviderParity}). With enhanced ocean off it ORs
+   * `ShaderDefineHi.WATER_PROVIDER_PARITY` into `definesHi`, selecting
+   * GlobeFS.glsl's classic waves and coast band; the ENHANCED_OCEAN arm never
+   * reads the bit, so it is not set alongside it.
+   */
+  readonly _waterProviderParityEnabled?: boolean;
+}
+
+/**
+ * Whether the opt-in WATER_PROVIDER_PARITY ocean applies: exactly when
+ * `Globe.beginFrame` has handed the tile provider a
+ * `waterClassificationProvider`, that is `Globe.globalWaterMask` once its
+ * coastline dataset has loaded, or `Globe.lakeWaterMask` /
+ * `Globe.riverWaterMask` once loaded over a terrain or global water mask
+ * (water round 6, seat ruling R-2026-10-23-S8). At defaults no provider is
+ * set, so the default variant (definesHi 0) keeps the shipped ocean.
+ */
+export function resolveWaterProviderParity(
+  tileProvider: { waterClassificationProvider?: unknown } | null | undefined,
+): boolean {
+  return (
+    tileProvider?.waterClassificationProvider !== undefined &&
+    tileProvider.waterClassificationProvider !== null
+  );
 }
 
 // Hi-word define mask for the current ocean state. Returns
-// `ShaderDefineHi.ENHANCED_OCEAN` when the renderer mirrors
-// `Globe.enableEnhancedOcean === true`, else 0 (classic WebGL-parity styling).
+// `ShaderDefineHi.ENHANCED_OCEAN` (plus `ShaderDefineHi.UNDERWATER_OPTICS`
+// while the eye is in the underwater tier) when the renderer mirrors
+// `Globe.enableEnhancedOcean === true`; otherwise
+// `ShaderDefineHi.WATER_PROVIDER_PARITY` while a water classification provider
+// feeds the globe, else 0 (the shipped default ocean).
 // The value threads into `getOrCreate(..., definesHi)` + `preprocess(...,
 // definesHi)`, which key the compiled module by the hi word.
-function oceanDefinesHi(host: ShaderFactoryHost): number {
-  return host._enhancedOceanEnabled ? ShaderDefineHi.ENHANCED_OCEAN : 0;
+export function oceanDefinesHi(host: ShaderFactoryHost): number {
+  if (!host._enhancedOceanEnabled) {
+    return host._waterProviderParityEnabled
+      ? ShaderDefineHi.WATER_PROVIDER_PARITY
+      : 0;
+  }
+  return (
+    ShaderDefineHi.ENHANCED_OCEAN |
+    (host._underwaterOpticsEnabled ? ShaderDefineHi.UNDERWATER_OPTICS : 0)
+  );
 }
 
 // The globe terrain shader flows through `WebGPUShaderModuleCache`, which
@@ -292,7 +338,7 @@ fn fragmentDebugNormal(input: VertexOutput) -> FragOutput {
     });
     host._debugFragmentShaderModules.set(defines, mod);
     return mod;
-  } catch (e) {
+  } catch {
     host._debugFragmentShaderModules.set(defines, null);
     return null;
   }
@@ -393,7 +439,7 @@ export function getClipDistancesShaderModule(
     });
     host._clipDistancesShaderModules.set(defines, mod);
     return mod;
-  } catch (e) {
+  } catch {
     host._clipDistancesShaderModules.set(defines, null);
     return null;
   }

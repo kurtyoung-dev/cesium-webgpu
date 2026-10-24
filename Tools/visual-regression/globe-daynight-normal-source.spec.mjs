@@ -715,6 +715,8 @@ const FLAGS = Object.freeze([
   "GLOBE_IMAGERY_REDUCED",
   "LOG_DEPTH",
   "MATERIAL_APPLY",
+  "UNDERWATER_OPTICS",
+  "WATER_PROVIDER_PARITY",
 ]);
 
 /** Lines this row edited — the ones every define set must be shown to carry. */
@@ -776,9 +778,9 @@ test("F2: every edited line sits at `//>>ifdef` depth 0", () => {
   }
 });
 
-test("F3: all 64 define sets carry the edit and produce no live directive", () => {
-  // Bounded: 2^6 = 64 subsets of a frozen 6-element list.
-  assert.equal(FLAGS.length, 6);
+test("F3: all 256 define sets carry the edit and produce no live directive", () => {
+  // Bounded: 2^8 = 256 subsets of a frozen 8-element list.
+  assert.equal(FLAGS.length, 8);
   for (let mask = 0; mask < 1 << FLAGS.length; mask++) {
     const defines = FLAGS.filter((_, bit) => (mask & (1 << bit)) !== 0);
     const text = expandDefines(wgsl, defines);
@@ -814,11 +816,11 @@ test("F4: naga validates the edited shader across the define-set sweep", async (
   // `czm_getMaterial`, which the material codegen injects at pipeline-build
   // time and which therefore does not exist in the source module. naga rejects
   // that expansion at HEAD too — it is a property of the material pipeline, not
-  // of this row's edit. The other five flags are self-contained.
+  // of this row's edit. The other six flags are self-contained.
   const validatable = FLAGS.filter((f) => f !== "MATERIAL_APPLY");
-  // The whole power set would be 64 full validations of a 5.4k-line module.
+  // The whole power set would be 256 full validations of a 9k-line module.
   // The empty set, every singleton, and the all-on set bracket it: the edited
-  // region is at depth 0 (F2) and present in all 64 (F3), so what remains to
+  // region is at depth 0 (F2) and present in all 256 (F3), so what remains to
   // check is that no flag's OWN arm stopped compiling next to the new `let`.
   const sets = [[], ...validatable.map((f) => [f]), validatable.slice()];
   for (const defines of sets) {

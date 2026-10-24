@@ -1597,7 +1597,9 @@ class Scene {
         this,
         this._globe,
       );
-      this._globe._water = new GlobeWater(this, this._globe);
+      // Optional call: a globe-like object without the method (the specs'
+      // mock globes) is accepted, as it was when the facade was assigned.
+      this._globe._bindWaterFacade?.(this, GlobeWater);
     }
 
     // Give frameState, camera, and screen space camera controller initial state before rendering
@@ -2018,7 +2020,8 @@ class Scene {
     // current globe.
     if (defined(globe)) {
       globe._atmosphericConditions = new AtmosphericConditions(this, globe);
-      globe._water = new GlobeWater(this, globe);
+      // Optional for the same reason as the constructor's publish block.
+      globe._bindWaterFacade?.(this, GlobeWater);
     }
 
     updateGlobeListeners(this, globe);

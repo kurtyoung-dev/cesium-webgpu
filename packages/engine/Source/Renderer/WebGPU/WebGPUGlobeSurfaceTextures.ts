@@ -553,12 +553,19 @@ export function getOrCreateImageryTexture(
  * pooled contexts sharing one `GPUDevice` may borrow, while a texture
  * realized on another device must use the retained `_webgpuSource` fallback.
  *
- * The fallback payload has two source shapes (see
+ * The fallback payload has three source shapes (see
  * `createWaterMaskTextureIfNeeded`):
  *
  *   - `{width, height, arrayBufferView}` — LUMINANCE typed array (the
  *     quantized-mesh 256×256 mask and the shared 1×1 all-water texture).
  *     Uploaded unchanged as single-mip `r8unorm` via `writeTexture`.
+ *   - `{width, height, arrayBufferView, rgbaArrayBufferView}` — the composite
+ *     hydrography mask. The R channel still carries the luminance mask; G and B
+ *     carry the water type and the depth/optics class. Uploaded as
+ *     `rgba8unorm` from the RGBA payload instead of the luminance one, and
+ *     never borrows the stub's `r8` texture, which holds only the luminance
+ *     (so such a tile briefly holds both until the stub is released). WebGL
+ *     builds only the LUMINANCE texture and ignores the RGBA payload.
  *   - `ImageBitmap` — uploaded via `copyExternalImageToTexture` with
  *     `flipY: false`, matching `Texture.create({ flipY: false })`.
  *
@@ -576,7 +583,18 @@ export function getOrCreateWaterMaskTexture(
   const wm = waterMaskTex as StubBackedWaterMaskTexture;
   const device = host._device;
   const native = wm._texture?._webgpuTexture;
+  const texelSource = wm._webgpuSource as
+    CesiumLuminanceTexelSource | undefined;
+  const hasRgbaHydroPayload = !!texelSource?.rgbaArrayBufferView;
+  // A mask a water provider built is never served from the stub's own texture
+  // (label `GLStub_Texture`): it gets one created here under a stable water
+  // label, so a device census that wraps `createTexture` sees every water
+  // mask by its label at creation (water round 5, FND-7). A terrain's own mask
+  // keeps the base path.
+  const isWaterProviderMask = texelSource?.waterProviderMask === true;
   if (
+    !hasRgbaHydroPayload &&
+    !isWaterProviderMask &&
     device !== null &&
     wm._context?.device === device &&
     native?.texture &&
@@ -631,6 +649,7 @@ export function getOrCreateWaterMaskTexture(
     } else {
       const texels = source as CesiumLuminanceTexelSource;
       const data = texels.arrayBufferView;
+      const rgbaData = texels.rgbaArrayBufferView;
       width = texels.width;
       height = texels.height;
       if (
@@ -641,18 +660,37 @@ export function getOrCreateWaterMaskTexture(
       ) {
         return null;
       }
-      texture = device.createTexture({
-        label: `Globe ${cacheKey}`,
-        size: [width, height],
-        format: "r8unorm",
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-      });
-      device.queue.writeTexture(
-        { texture },
-        data,
-        { bytesPerRow: width, rowsPerImage: height },
-        [width, height],
-      );
+      if (rgbaData && rgbaData.length >= width * height * 4) {
+        // A stable class prefix (W-A2): the device-loss census finds every
+        // composite hydrography mask by it; the r8 branch keeps base's label.
+        texture = device.createTexture({
+          label: `Globe water hydro mask ${cacheKey}`,
+          size: [width, height],
+          format: "rgba8unorm",
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        });
+        device.queue.writeTexture(
+          { texture },
+          rgbaData,
+          { bytesPerRow: width * 4, rowsPerImage: height },
+          [width, height],
+        );
+      } else {
+        texture = device.createTexture({
+          label: isWaterProviderMask
+            ? `Globe water mask ${cacheKey}`
+            : `Globe ${cacheKey}`,
+          size: [width, height],
+          format: "r8unorm",
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        });
+        device.queue.writeTexture(
+          { texture },
+          data,
+          { bytesPerRow: width, rowsPerImage: height },
+          [width, height],
+        );
+      }
     }
 
     const view = texture.createView();

@@ -41,12 +41,18 @@ const GALLERY_DIR = resolve(
 
 // --- Group A: the census against the real, current gallery ----------------
 
-test("A1 the derived pinned-demo count is exactly 30, not 32", () => {
+test("A1 the derived pinned-demo count is exactly 31 (the 30 of the census plus the water demo), not 32", () => {
   const rows = derivePinnedDemos(GALLERY_DIR);
+  // 30 -> 31 at the water landing: `webgpu-global-water-weather` (Batch 1586)
+  // pins WebGPU with an async literal.
   assert.equal(
     rows.length,
-    30,
-    `expected 30 pinned demos, got ${rows.length}:\n${formatPinnedDemosTable(rows)}`,
+    31,
+    `expected 31 pinned demos, got ${rows.length}:\n${formatPinnedDemosTable(rows)}`,
+  );
+  assert.ok(
+    rows.some((row) => row.id === "webgpu-global-water-weather"),
+    "the 31st pinned demo is the water demo",
   );
 });
 
@@ -70,7 +76,7 @@ test("A2 every row is one of the three named kinds, and the kinds sum to the tot
   assert.equal(sum, rows.length);
   // Pinned in this row from the real current gallery — a change here is a
   // real gallery change, not spec drift, and should be reviewed as one.
-  assert.equal(counts[PIN_KIND.ASYNC_LITERAL], 26);
+  assert.equal(counts[PIN_KIND.ASYNC_LITERAL], 27);
   assert.equal(counts[PIN_KIND.PARAM_DEFAULTED], 3);
   assert.equal(counts[PIN_KIND.SYNC_PIN_THROWS], 1);
   assert.equal(counts[PIN_KIND.SYNC_LITERAL_SAFE], 0);

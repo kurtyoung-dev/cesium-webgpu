@@ -61,6 +61,11 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
+import {
+  ShaderDefineHi,
+  defaultVariant,
+  hiVariant,
+} from "./lib/wgsl-variant.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -402,39 +407,91 @@ test("C6: the identity argument is FALSIFIABLE", () => {
 
 // ─── D. the sibling-sentinel audit, recorded as executable facts ─────────────
 
-test("D1: getFoamThreshold is REACHED on the classic path", () => {
-  // `computeFoam` is called OUTSIDE the `//>>ifdef ENHANCED_OCEAN` block, so
-  // the foam threshold's sentinel was a LIVE hole whenever the enhanced branch
-  // was compiled in — an explicit `oceanFoamThreshold = 0` was unreachable.
-  const call = /foamFactor\s*=\s*computeFoam\(/.exec(wgslCode);
-  assert.ok(call, "computeFoam call site not found");
-  const ifdefIndex = wgsl.indexOf("//>>ifdef ENHANCED_OCEAN");
-  assert.ok(ifdefIndex > 0);
-  assert.ok(
-    wgsl.indexOf("foamFactor = computeFoam(") < ifdefIndex,
-    "computeFoam is expected to run unconditionally; if it moves inside the " +
-      "define, this row's foam finding needs restating",
+/**
+ * The `//>>ifdef` directives still open at a character index of a WGSL text,
+ * outermost first. Depth-aware on purpose: the file carries `ENHANCED_OCEAN`
+ * helpers ahead of the call this row watches, so "before the first ifdef in the
+ * file" no longer means "outside every ifdef".
+ */
+function openDirectivesAt(source, index) {
+  const open = [];
+  for (const line of source.slice(0, index).split("\n")) {
+    const directive = /^\s*\/\/>>(ifdef|else|endif)\b\s*(\w*)/.exec(line);
+    if (!directive) {
+      continue;
+    }
+    if (directive[1] === "ifdef") {
+      open.push(directive[2]);
+    } else if (directive[1] === "endif") {
+      open.pop();
+    }
+  }
+  return open;
+}
+
+/** The `computeFoam` call sites of a WGSL text and the directives open at each. */
+function foamCallSites(source) {
+  return [...source.matchAll(/foamFactor = computeFoam\(/g)].map((m) =>
+    openDirectivesAt(source, m.index),
   );
+}
+
+test("D1: getFoamThreshold is REACHED on the classic path and on the enhanced path", () => {
+  // W-A1 put the shipped foam term back in the default variant, so the call
+  // `foamFactor = computeFoam(` sits in both arms of one `ENHANCED_OCEAN`
+  // block (the non-enhanced arm split again by the opt-in
+  // `WATER_PROVIDER_PARITY`, water round 6) and the threshold's sentinel is a
+  // live read in every variant: an explicit `oceanFoamThreshold = 0` is never
+  // unreachable.
+  for (const open of foamCallSites(wgsl)) {
+    assert.equal(open[0], "ENHANCED_OCEAN", "every call is in one arm");
+  }
+  for (const variant of [
+    defaultVariant(wgsl),
+    hiVariant(wgsl, ShaderDefineHi.ENHANCED_OCEAN),
+    hiVariant(wgsl, ShaderDefineHi.WATER_PROVIDER_PARITY),
+  ]) {
+    assert.ok(foamCallSites(variant).length >= 1, "each variant calls it");
+    const body = /fn computeFoam\([^)]*\) -> f32 \{[\s\S]*?\n\}/.exec(variant);
+    assert.ok(body, "each variant defines computeFoam");
+    assert.match(body[0], /getFoamThreshold\(\)/);
+  }
+});
+
+test("D1b: dropping the classic arm's computeFoam call is DETECTED", () => {
+  // Inertness for D1: the same reader on a copy whose classic-arm call is gone,
+  // in the default arm and in the opt-in parity arm (water round 6), which calls
+  // it on the GlobeFS.glsl wave normal.
+  for (const [classic, variantOf] of [
+    ["    foamFactor = computeFoam(waveN, distance);\n", defaultVariant],
+    [
+      "    foamFactor = computeFoam(normalTangentSpace, distance);\n",
+      (text) => hiVariant(text, ShaderDefineHi.WATER_PROVIDER_PARITY),
+    ],
+  ]) {
+    assert.equal(wgsl.split(classic).length - 1, 1);
+    const mutant = wgsl.replace(classic, "");
+    assert.equal(foamCallSites(variantOf(mutant)).length, 0);
+    assert.notDeepEqual(foamCallSites(mutant), foamCallSites(wgsl));
+  }
 });
 
 test("D2: the other four ocean getters have no live consumer at HEAD", () => {
-  // Recorded, not enforced as a permanent invariant: `getOceanDeepColor`,
-  // `getOceanReflectivity` and `getOceanDarkening` have zero call sites, and
-  // `getFresnelPower` is reached only through `fresnelSchlick`, which itself
-  // has none. Their sentinel hole was therefore LATENT. Principle 7 says leave
-  // the scaffolding alone; this row fixes the encoding without deleting it, so
-  // the fill-in inherits a correct getter.
-  for (const name of [
-    "getOceanDeepColor",
-    "getOceanReflectivity",
-    "getOceanDarkening",
+  // Recorded, not enforced as a permanent invariant: `getOceanReflectivity`
+  // has zero call sites, and `getFresnelPower` is reached only through
+  // `fresnelSchlick`, which itself has none. `getOceanDeepColor` and
+  // `getOceanDarkening` now have exactly one live caller in the enhanced
+  // ocean arm.
+  for (const [name, expectedCalls] of [
+    ["getOceanDeepColor", 2],
+    ["getOceanReflectivity", 1],
+    ["getOceanDarkening", 2],
   ]) {
     const calls = wgslCode.match(new RegExp(`${name}\\(\\)`, "g")) ?? [];
     assert.equal(
       calls.length,
-      1,
-      `${name} now has ${calls.length} occurrences (1 = definition only). ` +
-        "If a consumer landed, re-run the CLT-B2 audit for that slot.",
+      expectedCalls,
+      `${name} now has ${calls.length} occurrences (expected ${expectedCalls}).`,
     );
   }
   const fresnelCalls = wgslCode.match(/fresnelSchlick\(/g) ?? [];

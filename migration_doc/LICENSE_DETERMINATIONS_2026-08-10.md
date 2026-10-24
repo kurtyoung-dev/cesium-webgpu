@@ -286,15 +286,19 @@ the copyright line — `Copyright 2020 the Vello Authors`, from the upstream
 
 Flagged by the census under `needs-citation`, but it is a shipped binary and
 cannot hold a comment, so it is resolved here rather than in the citation pass.
-912,548 bytes of Natural Earth 1:10m lake polygons, built by
-`Tools/build-lake-water-mask.mjs` from `ne_10m_lakes.geojson` and
-`ne_10m_lakes_north_america.geojson`, fetched at runtime only when
+962,372 bytes of Natural Earth 1:10m lake, playa and reef data (refreshed
+2026-10-22; first recorded as 912,548 bytes of lakes alone), built by
+`Tools/build-lake-water-mask.mjs` from the five sources `ne_10m_lakes.geojson`,
+`ne_10m_lakes_north_america.geojson`, `ne_10m_lakes_europe.geojson`,
+`ne_10m_playas.geojson` and `ne_10m_reefs.geojson` (downloaded from
+natural-earth-vector commit `ca96624a`, SHA-256 per file pinned in
+`Tools/lib/natural-earth-pinned.mjs`), fetched at runtime only when
 `globe.lakeWaterMask` is on. Natural Earth is public domain and asks for no
 attribution; the existing `# Example Applications` entry covers the example
 apps' Natural Earth imagery, not an asset shipped inside `@cesium/engine`. An
 **Inland-lake polygon mask — Natural Earth 1:10m Lakes** entry now sits under
 `# Bundled Engine Assets` in both files, recording the source files, the
-quantized `LWM1` container, the ~17 m worst-case quantization error, and the
+quantized `LWM2` container, the ~17 m worst-case quantization error, and the
 customary credit.
 
 ### L-22 — two engine dependencies missing from the generated manifest · RESOLVED
@@ -552,6 +556,9 @@ names a row that must be present in the generated `ThirdParty.json`.
     { "id": "L-17", "heading": "NVIDIA GameWorks FXAA Shader", "files": ["root", "engine"], "status": "COVERED" },
     { "id": "L-18", "heading": "Vello", "files": ["root", "engine"], "status": "RESOLVED" },
     { "id": "L-21", "heading": "Inland-lake polygon mask — Natural Earth 1:10m Lakes", "files": ["root", "engine"], "status": "RESOLVED" },
+    { "id": "L-26a", "heading": "Global land-polygon coastline mask — Natural Earth 1:10m Land", "files": ["root", "engine"], "status": "RESOLVED" },
+    { "id": "L-26b", "heading": "Global river centerline mask — Natural Earth 1:10m Rivers and authored trunks", "files": ["root", "engine"], "status": "RESOLVED" },
+    { "id": "L-26c", "heading": "Global depth-and-optics prior — derived from Natural Earth and EGM2008", "files": ["root", "engine"], "status": "RESOLVED" },
     { "id": "L-22a", "heading": null, "files": [], "thirdPartyJson": "@spz-loader/core", "status": "RESOLVED" },
     { "id": "L-22b", "heading": null, "files": [], "thirdPartyJson": "@cesium/wasm-splats", "status": "RESOLVED" },
     { "id": "L-24", "heading": "Takram three-geospatial", "files": ["root", "engine"], "status": "RESOLVED" },
@@ -611,3 +618,32 @@ standalone license file, so the full upstream notice is mirrored in both
 shipped `LICENSE.md` files and the dependency is named in `ThirdParty.json`.
 The frozen registry-tarball and installed-file fingerprints live in
 `Tools/visual-regression/fixtures/astronomy-engine-2.1.19-provenance.json`.
+
+## 10. Addendum — 2026-10-22, the other WaterMask binaries (L-26)
+
+### L-26 — `Assets/WaterMask/ne50mCoastlines.bin`, `ne10mRivers.bin`, `globalBathymetryTensor.bin` · RESOLVED
+
+`L-21` covered the one WaterMask binary that existed when it was written. Three
+more now ship, and `Tools/visual-regression/water-mask-assets.spec.mjs` requires
+every shipped `.bin` in that folder to be named, with its exact byte count, in both
+`LICENSE.md` files. Entries now sit under `# Bundled Engine Assets` in both files:
+
+- **Coastline** (1,869,180 bytes): Natural Earth 1:10m land, minor islands and
+  Antarctic ice shelves, from the pinned commit `ca96624a`; the file keeps its
+  historical `ne50m` name. Public domain.
+- **Rivers** (1,182,648 bytes): 1,971 Natural Earth polylines (public domain)
+  plus 22 river trunks **authored** in this repository, with no recorded source.
+  The entry says so.
+- **Depth-and-optics tensor** (1,036,812 bytes): derived data made by
+  `Tools/build-global-bathymetry-tensor.mjs` from the three Natural Earth assets
+  and EGM2008 (a U.S. Government work). It is a **procedural prior, not survey
+  data**, and the entry says so.
+
+The lake entry is refreshed (962,372 bytes, `LWM2`, five sources). Every
+Natural Earth source is now pinned to commit `ca96624a` with a SHA-256 per file
+(`Tools/lib/natural-earth-pinned.mjs`, added at the water landing freeze): the
+coast builder reproduces its binary byte for byte from them, and the previous
+revisions of the lake and river builders reproduce theirs; re-baking those two
+with the current builders is a follow-up. `globalHydrographyTileArchive.bin` is
+held out of the shipped set and has no entry; if it is kept, it needs one (it is a
+derivative of the other four).

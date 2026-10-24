@@ -38,6 +38,13 @@ function GlobeWaterOcean(scene, globe) {
   // Cached tunables applied to the primitive when (re)created / live.
   this._windSpeed = 12.0;
   this._windDirection = 0.0;
+  // Cached appearance dials; the defaults equal the primitive's own so that an
+  // untouched facade creates the same surface the primitive would by itself.
+  this._detailScale = 2.0;
+  this._foamStrength = 1.0;
+  // Bathymetry sampled before the primitive exists, forwarded on enable.
+  this._bathymetryDepthM = undefined;
+  this._bathymetryJerlovType = undefined;
   this._amplitude = 4.0;
   this._choppiness = 1.0;
   this._deepColor = new Color(0.02, 0.08, 0.13, 1.0);
@@ -53,6 +60,7 @@ function GlobeWaterOcean(scene, globe) {
   this._celestialSunIntensity = CELESTIAL_DEFAULT_SUN_INTENSITY;
   this._celestialMoonIntensity = CELESTIAL_DEFAULT_MOON_INTENSITY;
   this._simulationEpoch = undefined;
+  this._meanSeaLevelPressure = 1013.25;
 }
 
 /**
@@ -98,6 +106,10 @@ Object.defineProperties(GlobeWaterOcean.prototype, {
         this._primitive = new OceanSurfacePrimitive({
           windSpeed: this._windSpeed,
           windDirection: this._windDirection,
+          detailScale: this._detailScale,
+          foamStrength: this._foamStrength,
+          bathymetryDepthMeters: this._bathymetryDepthM,
+          bathymetryJerlovType: this._bathymetryJerlovType,
           amplitude: this._amplitude,
           choppiness: this._choppiness,
           deepColor: this._deepColor,
@@ -110,6 +122,7 @@ Object.defineProperties(GlobeWaterOcean.prototype, {
           celestialSunIntensity: this._celestialSunIntensity,
           celestialMoonIntensity: this._celestialMoonIntensity,
           simulationEpoch: this._simulationEpoch,
+          meanSeaLevelPressure: this._meanSeaLevelPressure,
           globe: this._globe ?? this._scene?.globe,
         });
         prefetchGeoid(this);
@@ -148,6 +161,124 @@ Object.defineProperties(GlobeWaterOcean.prototype, {
         this._primitive._windSpeed = v;
         this._primitive._paramsDirty = true;
       }
+    },
+  },
+
+  /**
+   * Wind direction in radians (0 = +east, counter-clockwise). Applied on
+   * enable and live; changing it regenerates the wave spectrum.
+   * @memberof GlobeWaterOcean.prototype
+   * @type {number}
+   * @default 0
+   */
+  windDirection: {
+    get: function () {
+      return this._windDirection;
+    },
+    set: function (v) {
+      if (typeof v === "number" && Number.isFinite(v)) {
+        this._windDirection = v;
+        if (defined(this._primitive)) {
+          this._primitive.windDirection = v;
+        }
+      }
+    },
+  },
+
+  /**
+   * Gain on the small-scale detail bands. Applied on enable and live, so a
+   * value set before the ocean exists is not lost.
+   * @memberof GlobeWaterOcean.prototype
+   * @type {number}
+   * @default 2.0
+   */
+  detailScale: {
+    get: function () {
+      return this._detailScale;
+    },
+    set: function (v) {
+      if (typeof v === "number" && Number.isFinite(v)) {
+        this._detailScale = v;
+        if (defined(this._primitive)) {
+          this._primitive._detailScale = v;
+        }
+      }
+    },
+  },
+
+  /**
+   * Gain on the Jacobian foam. Applied on enable and live, so a value set
+   * before the ocean exists is not lost.
+   * @memberof GlobeWaterOcean.prototype
+   * @type {number}
+   * @default 1.0
+   */
+  foamStrength: {
+    get: function () {
+      return this._foamStrength;
+    },
+    set: function (v) {
+      if (typeof v === "number" && Number.isFinite(v)) {
+        this._foamStrength = v;
+        if (defined(this._primitive)) {
+          this._primitive._foamStrength = v;
+        }
+      }
+    },
+  },
+
+  /**
+   * The Beaufort wind force scale (0 to 12) coupled to wind speed.
+   * Derived via B = clamp((U10 / 0.836)^(2/3), 0, 12).
+   * Setting this updates windSpeed via U10 = 0.836 * B^(3/2).
+   * @memberof GlobeWaterOcean.prototype
+   * @type {number}
+   */
+  beaufortScale: {
+    get: function () {
+      const u10 = Math.max(0.0, this._windSpeed);
+      return Math.min(12.0, Math.pow(u10 / 0.836, 2.0 / 3.0));
+    },
+    set: function (v) {
+      if (typeof v === "number" && Number.isFinite(v)) {
+        const b = Math.max(0.0, Math.min(12.0, v));
+        this.windSpeed = 0.836 * Math.pow(b, 1.5);
+      }
+    },
+  },
+
+  /**
+   * Mean sea level atmospheric pressure in hectopascals (hPa) / millibars (mbar).
+   * Default 1013.25. Drives the physical inverse barometer storm surge effect:
+   * delta_h = (1013.25 - P_msl) * 0.01 m.
+   * @memberof GlobeWaterOcean.prototype
+   * @type {number}
+   * @default 1013.25
+   */
+  meanSeaLevelPressure: {
+    get: function () {
+      return this._meanSeaLevelPressure;
+    },
+    set: function (v) {
+      if (typeof v === "number" && Number.isFinite(v)) {
+        this._meanSeaLevelPressure = Math.max(800.0, Math.min(1100.0, v));
+        if (defined(this._primitive)) {
+          this._primitive.meanSeaLevelPressure = this._meanSeaLevelPressure;
+        }
+      }
+    },
+  },
+
+  /**
+   * Barometric storm surge height in metres resulting from the inverse barometer effect.
+   * Evaluated as (1013.25 - meanSeaLevelPressure) * 0.01.
+   * @memberof GlobeWaterOcean.prototype
+   * @type {number}
+   * @readonly
+   */
+  stormSurgeMeters: {
+    get: function () {
+      return (1013.25 - this._meanSeaLevelPressure) * 0.01;
     },
   },
 
@@ -449,6 +580,120 @@ Object.defineProperties(GlobeWaterOcean.prototype, {
         : undefined;
     },
   },
+
+  /**
+   * Barometric storm surge applied at the patch anchor on the last rendered frame,
+   * in metres. 0.0 at standard atmospheric pressure (1013.25 mbar).
+   * @memberof GlobeWaterOcean.prototype
+   * @type {number|undefined}
+   * @readonly
+   */
+  surgeHeightMeters: {
+    get: function () {
+      return defined(this._primitive)
+        ? this._primitive._surgeHeightM
+        : undefined;
+    },
+  },
+
+  /**
+   * Seabed bathymetric depth in metres at the patch anchor from the last applied bathymetry tensor.
+   * @memberof GlobeWaterOcean.prototype
+   * @type {number|undefined}
+   * @readonly
+   */
+  bathymetryDepthMeters: {
+    get: function () {
+      return defined(this._primitive) &&
+        defined(this._primitive.bathymetryDepthMeters)
+        ? this._primitive.bathymetryDepthMeters
+        : this._bathymetryDepthM;
+    },
+  },
+
+  /**
+   * Jerlov optical water clarity type at the patch anchor from the last applied bathymetry tensor.
+   * @memberof GlobeWaterOcean.prototype
+   * @type {number|undefined}
+   * @readonly
+   */
+  bathymetryJerlovType: {
+    get: function () {
+      return defined(this._primitive) &&
+        defined(this._primitive.bathymetryJerlovType)
+        ? this._primitive.bathymetryJerlovType
+        : this._bathymetryJerlovType;
+    },
+  },
 });
+
+/**
+ * Applies local atmospheric and marine environmental parameters sampled from an
+ * environmental tensor set or state at the specified geographic coordinates.
+ *
+ * @param {object} tensors The environmental tensor set or state.
+ * @param {number} longitudeRad Longitude in radians.
+ * @param {number} latitudeRad Latitude in radians.
+ * @returns {object|undefined} The sampled environmental state applied.
+ */
+GlobeWaterOcean.prototype.applyEnvironmentalTensor = function (
+  tensors,
+  longitudeRad,
+  latitudeRad,
+) {
+  if (!defined(tensors)) {
+    return undefined;
+  }
+  const state =
+    typeof tensors.sample === "function"
+      ? tensors.sample(longitudeRad, latitudeRad)
+      : tensors;
+  if (defined(state.windSpeed)) {
+    this.windSpeed = state.windSpeed;
+  }
+  if (defined(state.windHeadingRad)) {
+    this.windDirection = state.windHeadingRad;
+  }
+  if (defined(state.pressureHpa)) {
+    this.meanSeaLevelPressure = state.pressureHpa;
+  }
+  if (defined(this._primitive)) {
+    this._primitive.applyEnvironmentalTensor(state, longitudeRad, latitudeRad);
+  }
+  return state;
+};
+
+/**
+ * Applies local bathymetry, water optical clarity, and seabed substrate sampled from a
+ * bathymetry tensor set or state at the specified geographic coordinates.
+ *
+ * @param {object} tensors The bathymetry tensor set or state.
+ * @param {number} longitudeRad Longitude in radians.
+ * @param {number} latitudeRad Latitude in radians.
+ * @returns {object|undefined} The sampled bathymetry state applied.
+ */
+GlobeWaterOcean.prototype.applyBathymetryTensor = function (
+  tensors,
+  longitudeRad,
+  latitudeRad,
+) {
+  if (!defined(tensors)) {
+    return undefined;
+  }
+  const state =
+    typeof tensors.sample === "function"
+      ? tensors.sample(longitudeRad, latitudeRad)
+      : tensors;
+  if (defined(state.depthMeters)) {
+    this._bathymetryDepthM = state.depthMeters;
+  }
+  if (defined(state.jerlovType)) {
+    this._bathymetryJerlovType = state.jerlovType;
+  }
+  if (defined(this._primitive)) {
+    this._primitive.applyBathymetryTensor(state, longitudeRad, latitudeRad);
+  }
+  return state;
+};
 
 export default GlobeWaterOcean;

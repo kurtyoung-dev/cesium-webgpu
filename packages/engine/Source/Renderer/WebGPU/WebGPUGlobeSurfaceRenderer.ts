@@ -7,6 +7,8 @@ import {
   getProductionShaderModule as getProductionShaderModuleHelper,
   getDebugFragmentShaderModule as getDebugFragmentShaderModuleHelper,
   getClipDistancesShaderModule as getClipDistancesShaderModuleHelper,
+  oceanDefinesHi,
+  resolveWaterProviderParity,
 } from "./WebGPUGlobeSurfaceShaders.js";
 import {
   createBindGroupLayouts as createBindGroupLayoutsHelper,
@@ -18,8 +20,8 @@ import {
   getOrCreateImageryTexture as getOrCreateImageryTextureHelper,
   getOrCreateWaterMaskTexture as getOrCreateWaterMaskTextureHelper,
   uploadImageSource as uploadImageSourceHelper,
+  type ImageryRealizationContext,
 } from "./WebGPUGlobeSurfaceTextures.js";
-import type { ImageryRealizationContext } from "./WebGPUGlobeSurfaceTextures.js";
 import {
   VECTOR_TILE_PLACEHOLDER_BYTES,
   resolveVectorTileBuffer,
@@ -40,8 +42,9 @@ import {
   buildPipelineDescriptor,
   descriptorToGPU,
   warmDefaultPipelines as warmDefaultPipelinesHelper,
+  scheduleUnderwaterTier2Warm as scheduleUnderwaterTier2WarmHelper,
 } from "./WebGPUGlobeSurfacePipelines.js";
-import { ShaderDefine, ShaderDefineHi } from "./WebGPUShaderDefines.js";
+import { ShaderDefine } from "./WebGPUShaderDefines.js";
 import {
   isWebGPULogDepthActive,
   isWebGPUPickLogDepthActive,
@@ -50,10 +53,8 @@ import {
   buildGlobePipelineCacheKey,
   findGlobePipelineVariant,
   listGlobePipelineVariants,
-} from "./WebGPUGlobeSurfacePipelineKey.js";
-import type {
-  GlobePipelineVariantInfo,
-  GlobePipelineVariantKind,
+  type GlobePipelineVariantInfo,
+  type GlobePipelineVariantKind,
 } from "./WebGPUGlobeSurfacePipelineKey.js";
 import { preprocess as preprocessWGSL } from "./WebGPUShaderPreprocessor.js";
 import {
@@ -82,14 +83,18 @@ import {
   MAX_IMAGERY_LAYERS,
   computeGlobeImagerySlotCount,
   DebugFragmentMode,
+  type GlobePipelineEntry,
+  type TileGPUResources,
+  type ImageryGPUTexture,
+  type TileDrawDescriptor,
+  type WebGPUGlobeLogicalCounters,
 } from "./WebGPUGlobeSurfaceTypes.js";
-import type {
-  GlobePipelineEntry,
-  TileGPUResources,
-  ImageryGPUTexture,
-  TileDrawDescriptor,
-  WebGPUGlobeLogicalCounters,
-} from "./WebGPUGlobeSurfaceTypes.js";
+import {
+  GlobeOceanTierTransition,
+  GlobeUnderwaterWarmPlan,
+  resolveUnderwaterTier,
+  stashResolvedPipelinesAsFallback,
+} from "./WebGPUGlobeSurfaceOceanTiers.js";
 
 // ShadowMode.js adds its helper functions after constructing the enum object.
 // TypeScript sees only the initial enum literals across the JS module boundary,
@@ -218,6 +223,16 @@ export class WebGPUGlobeSurfaceRenderer {
   // multi-viewer) sharing the same descriptor share one `GPURenderPipeline`.
   // Public underscore: shared with the pipeline helpers.
   public _pipelineCache: Map<string, GlobePipelineEntry> = new Map();
+  // Holds materialized pipelines from the prior ocean-styling mode so tiles
+  // continue rendering with the previous variant while the newly requested
+  // variant compiles asynchronously in the background.
+  public _fallbackPipelineCache: Map<string, GPURenderPipeline> = new Map();
+  // The classic-to-enhanced fade and its once-per-frame bookkeeping; see
+  // `WebGPUGlobeSurfaceOceanTiers.ts`.
+  public _oceanTier: GlobeOceanTierTransition = new GlobeOceanTierTransition();
+  // Holds the Tier 2 warm back until the eye first comes near the sea.
+  public _underwaterWarmPlan: GlobeUnderwaterWarmPlan =
+    new GlobeUnderwaterWarmPlan();
   // Central pipeline cache reference, captured lazily on the first
   // `createTileCommands` call (which has access to `frameState.context`).
   // Stays null when the renderer's GraphicsContext doesn't expose one
@@ -401,6 +416,15 @@ export class WebGPUGlobeSurfaceRenderer {
   // renderer-local globe pipeline caches on a flip so the module and pipeline
   // re-resolve.
   public _enhancedOceanEnabled: boolean = false;
+  // Lazy Tier 2 underwater optics flag. True only when `_enhancedOceanEnabled`
+  // is true and the camera drops below +500 m altitude (with 1500 m exit
+  // hysteresis) or enters the underground/subsurface regime.
+  public _underwaterOpticsEnabled: boolean = false;
+  // Opt-in WebGL-parity ocean (`ShaderDefineHi.WATER_PROVIDER_PARITY`): true
+  // while the tile provider carries a water classification provider, mirrored
+  // each frame through `_applyWaterProviderParityState`. Only read with
+  // enhanced ocean off.
+  public _waterProviderParityEnabled: boolean = false;
   // The scene-pipeline format generation last applied, so a runtime HDR or
   // canvas-format change clears the pipeline, wireframe and debug-fragment
   // caches and rebuilds against the new scene framebuffer color format.
@@ -565,7 +589,7 @@ export class WebGPUGlobeSurfaceRenderer {
         fullSource,
         ShaderDefine.MATERIAL_APPLY |
           (this._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0),
-        this._enhancedOceanEnabled ? ShaderDefineHi.ENHANCED_OCEAN : 0,
+        oceanDefinesHi(this),
       );
       const module = device.createShaderModule({
         label: `Globe material module ${material.type}`,
@@ -811,6 +835,18 @@ export class WebGPUGlobeSurfaceRenderer {
       return;
     }
     this._enhancedOceanEnabled = enabled;
+    if (!enabled) {
+      this._underwaterOpticsEnabled = false;
+      this._underwaterWarmPlan.reset();
+    }
+    stashResolvedPipelinesAsFallback(
+      this._pipelineCache,
+      this._fallbackPipelineCache,
+    );
+    this._oceanTier.onEnhancedChanged(
+      enabled,
+      this._fallbackPipelineCache.size > 0,
+    );
     this._pipelineCache.clear();
     this._wireframePipelineCache.clear();
     this._debugFragmentPipelineCache.clear();
@@ -819,6 +855,123 @@ export class WebGPUGlobeSurfaceRenderer {
     // The clip-distances module map keys by the lo defines only; wipe it so the
     // next lookup rebuilds its base against the new `definesHi`.
     this._clipDistancesShaderModules.clear();
+  }
+
+  /**
+   * Apply the opt-in WATER_PROVIDER_PARITY state (a water classification
+   * provider feeds the globe). With enhanced ocean off a flip selects another
+   * GlobeTerrain module, and the renderer-local caches key without the hi word,
+   * so they are wiped exactly as on an enhanced-ocean flip, the resolved
+   * pipelines kept as the fallback so no frame goes blank while the new
+   * variant compiles. With enhanced ocean on the bit is not used, so only the
+   * flag is recorded. Idempotent.
+   */
+  private _applyWaterProviderParityState(enabled: boolean): void {
+    if (this._waterProviderParityEnabled === enabled) {
+      return;
+    }
+    this._waterProviderParityEnabled = enabled;
+    if (this._enhancedOceanEnabled) {
+      return;
+    }
+    stashResolvedPipelinesAsFallback(
+      this._pipelineCache,
+      this._fallbackPipelineCache,
+    );
+    this._pipelineCache.clear();
+    this._oceanTier.invalidate();
+    this._wireframePipelineCache.clear();
+    this._debugFragmentPipelineCache.clear();
+    this._capturePipelineCache.clear();
+    this._materialPipelineCache.clear();
+    this._clipDistancesShaderModules.clear();
+  }
+
+  /**
+   * Lazily toggle the Tier 2 `ShaderDefineHi.UNDERWATER_OPTICS` hi-word define
+   * when the camera descends below +500 m (with +1500 m exit hysteresis) while
+   * enhanced ocean is active. Preserves the resolved Tier 1 surface pipelines
+   * in `_fallbackPipelineCache` so the frame never stalls while the Tier 2
+   * underwater pipeline compiles asynchronously.
+   */
+  public _applyUnderwaterOpticsState(enabled: boolean): void {
+    const effective = this._enhancedOceanEnabled && enabled;
+    if (this._underwaterOpticsEnabled === effective) {
+      return;
+    }
+    this._underwaterOpticsEnabled = effective;
+    stashResolvedPipelinesAsFallback(
+      this._pipelineCache,
+      this._fallbackPipelineCache,
+    );
+    this._pipelineCache.clear();
+    this._oceanTier.invalidate();
+    this._wireframePipelineCache.clear();
+    this._debugFragmentPipelineCache.clear();
+    this._capturePipelineCache.clear();
+    this._materialPipelineCache.clear();
+    this._clipDistancesShaderModules.clear();
+  }
+
+  /**
+   * Once per tile call, in both the on-screen and the capture path: mirrors the
+   * ocean tier flags, arms the Tier 2 warm when the eye first comes near the
+   * sea, samples the fade clock for this frame, and asks for one more frame
+   * (once, however many tiles call) while the fade is running.
+   */
+  public _tickOceanTier(
+    tileProvider: CesiumGlobeTileProvider,
+    frameState: CesiumFrameState | null | undefined,
+    uniformState: CesiumUniformState | null | undefined,
+  ): void {
+    this._applyEnhancedOceanState(tileProvider.enableEnhancedOcean ?? false);
+    this._applyWaterProviderParityState(
+      resolveWaterProviderParity(tileProvider),
+    );
+    const tier = resolveUnderwaterTier(
+      this._enhancedOceanEnabled,
+      (frameState as { cameraUnderground?: boolean } | null | undefined)
+        ?.cameraUnderground === true,
+      uniformState?.eyeHeight ??
+        (
+          frameState as
+            | { camera?: { positionCartographic?: { height?: number } } }
+            | null
+            | undefined
+        )?.camera?.positionCartographic?.height,
+      this._underwaterOpticsEnabled,
+    );
+    if (tier.warmEligible) {
+      for (const candidate of this._underwaterWarmPlan.arm()) {
+        scheduleUnderwaterTier2WarmHelper(this, candidate);
+      }
+    }
+    this._applyUnderwaterOpticsState(tier.wanted);
+    this._oceanTier.beginFrame(frameState?.frameNumber);
+    this._oceanTier.requestFrame(
+      (frameState as { afterRender?: Array<() => boolean> } | null | undefined)
+        ?.afterRender,
+    );
+  }
+
+  public _noteEnhancedOceanFallbackUsed(): void {
+    this._oceanTier.noteFallbackUsed(this._enhancedOceanEnabled);
+  }
+
+  public _stampOceanPipelineEntry(entry: GlobePipelineEntry): void {
+    this._oceanTier.stamp(entry, this._enhancedOceanEnabled);
+  }
+
+  public _noteEnhancedOceanPipelineResolved(entry: GlobePipelineEntry): void {
+    this._oceanTier.noteResolved(entry);
+  }
+
+  public _noteEnhancedOceanPipelineFailed(entry: GlobePipelineEntry): void {
+    this._oceanTier.noteFailed(entry);
+  }
+
+  public _getOceanTransitionDeficit(): number {
+    return this._oceanTier.deficit;
   }
 
   // Bind-group layouts, pipeline layout, samplers and the placeholder texture
@@ -1272,6 +1425,8 @@ export class WebGPUGlobeSurfaceRenderer {
         (frameState.context as unknown as { _msaaSamples?: number })
           ._msaaSamples ?? 1;
       this._pipelineCache.clear();
+      this._oceanTier.invalidate();
+      this._fallbackPipelineCache.clear();
       this._wireframePipelineCache.clear();
       this._debugFragmentPipelineCache.clear();
       this._materialPipelineCache.clear();
@@ -1302,7 +1457,7 @@ export class WebGPUGlobeSurfaceRenderer {
     // or the classic ocean styling module. The default, false, is classic
     // WebGL-parity water. A flip wipes the globe pipeline caches — see
     // `_applyEnhancedOceanState` — so it takes effect without a reload.
-    this._applyEnhancedOceanState(tileProvider.enableEnhancedOcean ?? false);
+    this._tickOceanTier(tileProvider, frameState, uniformState);
 
     const device = this._device;
     const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
@@ -1968,22 +2123,19 @@ export class WebGPUGlobeSurfaceRenderer {
       // rebuild bindGroup2 with the material UBO and textures included;
       // otherwise the four-binding water/ocean group is padded with
       // placeholders to match the expanded layout.
-      let bindGroup2Final = bindGroup2;
-      if (materialEntry) {
-        bindGroup2Final = this._createWaterOceanMaterialBindGroup(
-          surfaceTile,
-          tileProvider,
-          materialEntry,
-          tpMaterial!,
-        );
-      } else {
-        bindGroup2Final = this._createWaterOceanMaterialBindGroup(
-          surfaceTile,
-          tileProvider,
-          null,
-          null,
-        );
-      }
+      const bindGroup2Final = materialEntry
+        ? this._createWaterOceanMaterialBindGroup(
+            surfaceTile,
+            tileProvider,
+            materialEntry,
+            tpMaterial!,
+          )
+        : this._createWaterOceanMaterialBindGroup(
+            surfaceTile,
+            tileProvider,
+            null,
+            null,
+          );
 
       // Globe terrain pick pipeline, selected for the primary (first) pass
       // only. The scene adapter attaches the resulting pick command to that
@@ -2705,7 +2857,7 @@ export class WebGPUGlobeSurfaceRenderer {
     // it is read directly to stay in sync on the first capture of the frame.
     // The shared `_applyEnhancedOceanState` wipes all globe pipeline caches on
     // a flip, so whichever path runs first covers both.
-    this._applyEnhancedOceanState(tileProvider.enableEnhancedOcean ?? false);
+    this._tickOceanTier(tileProvider, frameState, uniformState);
 
     const device = this._device;
     const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
@@ -3042,6 +3194,7 @@ export class WebGPUGlobeSurfaceRenderer {
     }
 
     this._pipelineCache.clear();
+    this._fallbackPipelineCache.clear();
     this._wireframePipelineCache.clear();
     this._debugFragmentPipelineCache.clear();
     // Drop all cached bind groups, which reference textures and buffers

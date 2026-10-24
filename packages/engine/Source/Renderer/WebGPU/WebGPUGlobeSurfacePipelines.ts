@@ -37,6 +37,10 @@ import {
   DebugFragmentMode,
   type GlobePipelineEntry,
 } from "./WebGPUGlobeSurfaceTypes.js";
+import type {
+  GlobeUnderwaterWarmPlan,
+  UnderwaterWarmCandidate,
+} from "./WebGPUGlobeSurfaceOceanTiers.js";
 import { buildPickPipelineDescriptor } from "./WebGPUPickCommandHelpers.js";
 import type {
   WebGPURenderPipelineCache,
@@ -107,6 +111,12 @@ export interface PipelineHost extends ShaderFactoryHost {
    * into the shared pick FBO.
    */
   readonly _pickLogDepthEnabled?: boolean;
+  readonly _fallbackPipelineCache?: Map<string, GPURenderPipeline>;
+  readonly _underwaterWarmPlan?: GlobeUnderwaterWarmPlan;
+  _noteEnhancedOceanFallbackUsed?(): void;
+  _stampOceanPipelineEntry?(entry: GlobePipelineEntry): void;
+  _noteEnhancedOceanPipelineResolved?(entry: GlobePipelineEntry): void;
+  _noteEnhancedOceanPipelineFailed?(entry: GlobePipelineEntry): void;
 }
 
 // Pipelines are built lazily, one per actual vertex stride. This returns a
@@ -443,7 +453,13 @@ export function buildPipelineDescriptor(
   // renderer-local pipeline caches key without the hi word, so they are wiped
   // on a flag flip instead; see
   // `WebGPUGlobeSurfaceRenderer._applyEnhancedOceanState`.
-  const oceanLabel = host._enhancedOceanEnabled ? ", enhOcean" : "";
+  const oceanLabel = host._enhancedOceanEnabled
+    ? host._underwaterOpticsEnabled
+      ? ", enhOceanUw"
+      : ", enhOcean"
+    : host._waterProviderParityEnabled
+      ? ", wpp"
+      : "";
   // `logDepthOn` selects a different GlobeTerrain module through the `defines`
   // bitmask above. `generateCacheKey` folds shader-module identity into every
   // central-cache key, so the two modules cannot collide on their own; this
@@ -707,6 +723,7 @@ export function resolveGlobePipelineEntry(
   host: PipelineHost,
   entry: GlobePipelineEntry,
 ): GPURenderPipeline | null {
+  host._stampOceanPipelineEntry?.(entry);
   if (entry.pipeline) {
     return entry.pipeline;
   }
@@ -715,7 +732,9 @@ export function resolveGlobePipelineEntry(
     const sync = pipelineCache.getPipelineSync(entry.descriptor);
     if (sync) {
       entry.pipeline = sync;
+      entry.fallbackPipeline = null;
       entry.pending = false;
+      host._noteEnhancedOceanPipelineResolved?.(entry);
       return sync;
     }
     if (!entry.pending) {
@@ -724,11 +743,17 @@ export function resolveGlobePipelineEntry(
         .getPipeline(entry.descriptor)
         .then((p) => {
           entry.pipeline = p;
+          entry.fallbackPipeline = null;
           entry.pending = false;
+          host._noteEnhancedOceanPipelineResolved?.(entry);
         })
         .catch(() => {
           entry.pending = false;
+          host._noteEnhancedOceanPipelineFailed?.(entry);
         });
+    }
+    if (entry.fallbackPipeline) {
+      return entry.fallbackPipeline;
     }
     return null;
   }
@@ -742,7 +767,9 @@ export function resolveGlobePipelineEntry(
   entry.pipeline = host._device!.createRenderPipeline(
     descriptorToGPU(entry.descriptor),
   );
+  entry.fallbackPipeline = null;
   entry.pending = false;
+  host._noteEnhancedOceanPipelineResolved?.(entry);
   return entry.pipeline;
 }
 
@@ -793,6 +820,174 @@ export function resolveCapturePipelineEntrySync(
   );
   entry.pending = false;
   return entry.pipeline;
+}
+
+/**
+ * Vertex stride of the quantized-mesh counterpart of an uncompressed key: the
+ * layout `TerrainEncoding._calculateStrideAndOffsets` produces for a quantized
+ * encoding (checked against all eight flag combinations). One copy, shared by
+ * the Tier 1 and Tier 2 warms.
+ */
+function quantizedStrideFor(
+  hasNormals: boolean,
+  hasWebMercatorT: boolean,
+  hasGeodeticSurfaceNormals: boolean,
+): number {
+  return (
+    (hasWebMercatorT || hasNormals ? 16 : 12) +
+    (hasWebMercatorT && hasNormals ? 4 : 0) +
+    (hasGeodeticSurfaceNormals ? 12 : 0)
+  );
+}
+
+/**
+ * A read-only view of `host` pinned to another ocean tier, for building the
+ * descriptor of a pipeline that tier owns. `buildPipelineDescriptor` only reads
+ * the host; a write made through this clone would land on the throwaway object
+ * and be lost, so it must stay that way.
+ */
+function withOceanTier(
+  host: PipelineHost,
+  enhanced: boolean,
+  underwater: boolean,
+): PipelineHost {
+  return Object.assign(Object.create(host) as PipelineHost, {
+    _enhancedOceanEnabled: enhanced,
+    _underwaterOpticsEnabled: underwater,
+  });
+}
+
+// Finds a previous-tier pipeline to keep a new entry's tile drawing while its
+// own pipeline compiles. It only LOOKS: a pipeline the central cache does not
+// hold yet is never created here. The first request for an uncached key is
+// skipped for a frame or two, exactly as it is with enhanced ocean off, instead
+// of stalling the render thread on a ~6.6k-line shader (and, as it used to,
+// compiling the same descriptor a second time through `warm`).
+//
+// Clip-distance variants get no fallback. Their module comes from a map keyed
+// by the lo defines only and wiped on every tier flip, so another tier's module
+// would be a fresh shader compile on the render path, and the pipeline built
+// from it could never be served: module identity is part of the cache key.
+//
+// When neither the entry's own pipeline nor a previous tier's is cached (enhanced
+// ocean on from the first frame, or a key first requested under it, such as a
+// new MSAA count after a resize), nothing could draw the tile until the enhanced
+// shader compiled: the E-T capture was black at frame 158 with five enhanced
+// pipelines pending (water round 5, FND-4). The classic (Tier 0) pipeline of the
+// same key is then requested too, asynchronously, and becomes the entry's
+// fallback when it lands, so the tile draws what a classic globe draws until its
+// own tier is ready. The timeout of the fade only ends the fade; the fallback
+// stays until the entry's own pipeline resolves.
+function resolveCachedFallbackPipeline(
+  host: PipelineHost,
+  entry: GlobePipelineEntry,
+  cacheKey: string,
+  targetDescriptor: WebGPURenderPipelineDescriptor,
+  isQuantized: boolean,
+  hasNormals: boolean,
+  hasWebMercatorT: boolean,
+  isBlend: boolean,
+  strideBytes: number,
+  useClipDistances: boolean,
+  hasGeodeticSurfaceNormals: boolean,
+  disableCulling: boolean,
+): GPURenderPipeline | null {
+  const pipelineCache = host._centralPipelineCache;
+  if (
+    !pipelineCache ||
+    useClipDistances ||
+    pipelineCache.getPipelineSync(targetDescriptor)
+  ) {
+    return null;
+  }
+  const descriptorFor = (
+    enhanced: boolean,
+    underwater: boolean,
+  ): WebGPURenderPipelineDescriptor =>
+    buildPipelineDescriptor(
+      withOceanTier(host, enhanced, underwater),
+      isQuantized,
+      hasNormals,
+      hasWebMercatorT,
+      isBlend,
+      strideBytes,
+      DebugFragmentMode.NONE,
+      false,
+      hasGeodeticSurfaceNormals,
+      disableCulling,
+    );
+  if (host._underwaterOpticsEnabled) {
+    const tier1Sync = pipelineCache.getPipelineSync(descriptorFor(true, false));
+    if (tier1Sync) {
+      host._fallbackPipelineCache?.set(cacheKey, tier1Sync);
+      return tier1Sync;
+    }
+  }
+  const tier0Descriptor = descriptorFor(false, false);
+  const tier0Sync = pipelineCache.getPipelineSync(tier0Descriptor);
+  if (tier0Sync) {
+    host._fallbackPipelineCache?.set(cacheKey, tier0Sync);
+    host._noteEnhancedOceanFallbackUsed?.();
+    return tier0Sync;
+  }
+  pipelineCache
+    .getPipeline(tier0Descriptor)
+    .then((tier0) => {
+      // Adopted only while the entry still has nothing to draw with; an entry
+      // a later flip dropped from the cache is never drawn, so adopting there
+      // is harmless and needs no generation check.
+      if (!entry.pipeline && !entry.fallbackPipeline) {
+        entry.fallbackPipeline = tier0;
+        host._noteEnhancedOceanFallbackUsed?.();
+      }
+    })
+    .catch(() => {
+      // The entry keeps waiting for its own tier, as before this bootstrap.
+    });
+  return null;
+}
+
+// Warms the two Tier 2 (underwater optics) pipelines of one uncompressed key a
+// beat after it is requested, so the shader-module build they trigger does not
+// land inside the frame that asked. Only reached once the eye has come within
+// `UNDERWATER_WARM_ELIGIBLE_M` of the sea (see `GlobeUnderwaterWarmPlan`).
+export function scheduleUnderwaterTier2Warm(
+  host: PipelineHost,
+  candidate: UnderwaterWarmCandidate,
+): void {
+  const tier2Host = withOceanTier(host, true, true);
+  const warm = (): void => {
+    const cache = host._centralPipelineCache;
+    if (!host._device || !cache) {
+      return;
+    }
+    const quantizedStride = quantizedStrideFor(
+      candidate.hasNormals,
+      candidate.hasWebMercatorT,
+      candidate.hasGeodeticSurfaceNormals,
+    );
+    for (const isQuantized of [false, true]) {
+      cache.warm(
+        buildPipelineDescriptor(
+          tier2Host,
+          isQuantized,
+          candidate.hasNormals,
+          candidate.hasWebMercatorT,
+          false,
+          isQuantized ? quantizedStride : candidate.strideBytes,
+          DebugFragmentMode.NONE,
+          false,
+          candidate.hasGeodeticSurfaceNormals,
+          candidate.disableCulling,
+        ),
+      );
+    }
+  };
+  if (typeof setTimeout === "function") {
+    setTimeout(warm, 180);
+  } else {
+    warm();
+  }
 }
 
 // Selects the production globe pipeline for one vertex / blend / cull
@@ -853,7 +1048,28 @@ export function selectPipeline(
       hasGeodeticSurfaceNormals,
       disableCulling,
     );
-    entry = { descriptor, pipeline: null, pending: false };
+    entry = {
+      descriptor,
+      pipeline: null,
+      fallbackPipeline: host._fallbackPipelineCache?.get(cacheKey) ?? null,
+      pending: false,
+    };
+    if (!entry.fallbackPipeline && host._enhancedOceanEnabled) {
+      entry.fallbackPipeline = resolveCachedFallbackPipeline(
+        host,
+        entry,
+        cacheKey,
+        descriptor,
+        isQuantized,
+        hasNormals,
+        hasWebMercatorT,
+        isBlend,
+        strideBytes,
+        useClipDistances,
+        hasGeodeticSurfaceNormals,
+        disableCulling,
+      );
+    }
     host._pipelineCache.set(cacheKey, entry);
     entryWasJustCreated = true;
   }
@@ -866,8 +1082,22 @@ export function selectPipeline(
   // `cache.warm()` is a no-op once the entry is cached or pending. The inverse
   // direction is skipped: opaque is the default state and is almost always
   // already cached by the time a blend request fires.
+  //
+  // Under enhanced ocean the speculative warms (the blend counterpart, the
+  // quantized twin and the Tier 2 candidate, each a ~415 KB shader) wait until
+  // the entry's own pipeline has resolved, so they do not compete with the one
+  // the tile is waiting for (water round 5, FND-4). The classic path warms on
+  // first request as before.
+  const speculativeWarmDue = host._enhancedOceanEnabled
+    ? pipeline !== null &&
+      pipeline === entry.pipeline &&
+      entry.speculativeWarmed !== true
+    : entryWasJustCreated;
+  if (speculativeWarmDue) {
+    entry.speculativeWarmed = true;
+  }
   if (
-    entryWasJustCreated &&
+    speculativeWarmDue &&
     !isBlend &&
     !disableCulling &&
     host._centralPipelineCache
@@ -885,6 +1115,44 @@ export function selectPipeline(
       disableCulling,
     );
     host._centralPipelineCache.warm(blendDescriptor);
+    if (host._enhancedOceanEnabled && !isQuantized) {
+      const quantizedStride = quantizedStrideFor(
+        hasNormals,
+        hasWebMercatorT,
+        hasGeodeticSurfaceNormals,
+      );
+      const quantizedDescriptor = buildPipelineDescriptor(
+        host,
+        true,
+        hasNormals,
+        hasWebMercatorT,
+        false,
+        quantizedStride,
+        DebugFragmentMode.NONE,
+        useClipDistances,
+        hasGeodeticSurfaceNormals,
+        disableCulling,
+      );
+      host._centralPipelineCache.warm(quantizedDescriptor);
+      // Tier 2 (underwater optics) is warmed only once the eye has come near
+      // the sea; keys requested before then are remembered and released on
+      // arrival. Clip-distance variants are skipped: their module is not the
+      // one a later request would build, so the warm could never be served.
+      const candidate: UnderwaterWarmCandidate = {
+        hasNormals,
+        hasWebMercatorT,
+        strideBytes,
+        hasGeodeticSurfaceNormals,
+        disableCulling,
+      };
+      if (
+        !useClipDistances &&
+        !host._underwaterOpticsEnabled &&
+        host._underwaterWarmPlan?.noteCandidate(cacheKey, candidate)
+      ) {
+        scheduleUnderwaterTier2Warm(host, candidate);
+      }
+    }
   }
 
   return pipeline;
@@ -1169,7 +1437,12 @@ export function selectTranslucentBackFacePipeline(
       false, // depthOnlyBackFace
       true, // translucentBackFace — sets cullMode: "front" + blend ALPHA
     );
-    entry = { descriptor, pipeline: null, pending: false };
+    entry = {
+      descriptor,
+      pipeline: null,
+      fallbackPipeline: host._fallbackPipelineCache?.get(cacheKey) ?? null,
+      pending: false,
+    };
     host._pipelineCache.set(cacheKey, entry);
   }
   return resolveGlobePipelineEntry(host, entry);
@@ -1244,7 +1517,12 @@ export function selectDepthOnlyBackFacePipeline(
       true, // depthOnlyBackFace
       false, // translucentBackFace
     );
-    entry = { descriptor, pipeline: null, pending: false };
+    entry = {
+      descriptor,
+      pipeline: null,
+      fallbackPipeline: host._fallbackPipelineCache?.get(cacheKey) ?? null,
+      pending: false,
+    };
     host._pipelineCache.set(cacheKey, entry);
   }
   return resolveGlobePipelineEntry(host, entry);
@@ -1309,7 +1587,12 @@ export function selectDepthOnlyFrontFacePipeline(
       undefined, // captureFaceFormat
       true, // depthOnlyFrontFace
     );
-    entry = { descriptor, pipeline: null, pending: false };
+    entry = {
+      descriptor,
+      pipeline: null,
+      fallbackPipeline: host._fallbackPipelineCache?.get(cacheKey) ?? null,
+      pending: false,
+    };
     host._pipelineCache.set(cacheKey, entry);
   }
   return resolveGlobePipelineEntry(host, entry);

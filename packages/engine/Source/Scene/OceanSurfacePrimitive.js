@@ -68,6 +68,11 @@ import {
  * @param {number} [options.patchExtent=3000] Rendered patch half-... full extent (meters).
  * @param {number} [options.windSpeed=12] Wind speed U (m/s) — sea maturity.
  * @param {number} [options.windDirection=0] Wind direction (radians, 0 = +east).
+ * @param {number} [options.detailScale=2] Gain on the small-scale detail bands.
+ * @param {number} [options.foamStrength=1] Gain on the Jacobian foam.
+ * @param {number} [options.bathymetryDepthMeters] Seabed depth at the patch, if
+ *   already known; otherwise set by {@link OceanSurfacePrimitive#applyBathymetryTensor}.
+ * @param {number} [options.bathymetryJerlovType] Jerlov water type at the patch.
  * @param {number} [options.amplitude=4] Phillips spectrum amplitude constant.
  * @param {number} [options.choppiness=1] Horizontal displacement scale (lambda).
  * @param {number} [options.heightScale=1] Vertical displacement gain.
@@ -124,8 +129,10 @@ function OceanSurfacePrimitive(options) {
   this._heightScale = options.heightScale ?? 1.0;
   this._foamThreshold = 0.6;
   this._foamScale = 1.2;
-  this._foamStrength = 1.0;
-  this._detailScale = 2.0;
+  this._foamStrength = options.foamStrength ?? 1.0;
+  this._detailScale = options.detailScale ?? 2.0;
+  this._bathymetryDepthM = options.bathymetryDepthMeters;
+  this._bathymetryJerlovType = options.bathymetryJerlovType;
   this._timeSpeed = options.timeSpeed ?? 1.0;
 
   const deep = options.deepColor ?? new Color(0.02, 0.08, 0.13, 1.0);
@@ -177,7 +184,9 @@ function OceanSurfacePrimitive(options) {
   this._resolvedVerticalDatum = VerticalDatum.ELLIPSOID;
   this._geoidUndulationM = 0.0;
   this._tideHeightM = 0.0;
+  this._surgeHeightM = 0.0;
   this._anchorHeightM = 0.0;
+  this._meanSeaLevelPressure = options.meanSeaLevelPressure ?? 1013.25;
 
   this._webgpuCache = undefined;
   // Simulation epoch. Undefined means "adopt the first frame's scene time",
@@ -288,6 +297,15 @@ function resolveCelestialReflection(primitive, frameState) {
   );
 }
 
+/**
+ * Camera height above the sea surface (metres) outside which the FFT ocean
+ * sleeps: below the minimum the surface ceiling is optically extinct, above the
+ * maximum the globe shader draws the ocean.
+ * @private
+ */
+const OCEAN_SLEEP_MIN_HEIGHT_M = -80.0;
+const OCEAN_SLEEP_MAX_HEIGHT_M = 15000.0;
+
 const scratchSubpoint = new Cartesian3();
 const scratchEnu = new Matrix4();
 const scratchDelta = new Cartesian3();
@@ -354,9 +372,14 @@ function computeSeaLevelOffset(primitive, anchor, frameState, ellipsoid) {
   }
   primitive._tideHeightM = tide;
 
+  // ── Barometric storm surge (Inverse Barometer Effect) ──
+  const pressure = primitive._meanSeaLevelPressure;
+  const surge = Number.isFinite(pressure) ? (1013.25 - pressure) * 0.01 : 0.0;
+  primitive._surgeHeightM = surge;
+
   // Compose with scene.verticalExaggeration so the patch tracks the terrain's
   // ocean lid, which that exaggeration displaces.
-  let height = undulation + tide;
+  let height = undulation + tide + surge;
   let scale = frameState.verticalExaggeration;
   let relative = frameState.verticalExaggerationRelativeHeight;
   scale = Number.isFinite(scale) ? scale : 1.0;
@@ -431,6 +454,12 @@ OceanSurfacePrimitive.prototype.update = function (frameState) {
   // Integer UV offset keeps waves world-locked (no swimming on rebase).
   this._uvOffsetX = snapE / L;
   this._uvOffsetY = snapN / L;
+  // Project the snapped lattice point back onto the ellipsoid. A0 + east + north
+  // lies on the tangent plane at A0, up to d^2 / 2R (about 9.5 m at the 11 km
+  // rebase distance) above the surface, while the vertex curvature drop assumes
+  // the anchor is on the sphere. The up axis stays A0's normal: the tilt that
+  // leaves is at most 1.9 mrad at that distance.
+  ellipsoid.scaleToGeodeticSurface(this._anchor, this._anchor);
 
   // Sea-level datum + tide. Applied along `_a0Up` — the patch's own vertical
   // axis — so the whole cap translates rather than tilting. Evaluated at the
@@ -480,10 +509,96 @@ OceanSurfacePrimitive.prototype.update = function (frameState) {
   this._celestialResolvedMoonIntensity = celestial.moonIntensity;
   this._celestialMoonSinAngularRadius = celestial.moonSinAngularRadius;
 
+  // Compute camera height relative to the local sea-level anchor. This is the
+  // one place the FFT ocean decides to sleep: compute and surface draw stop
+  // when submerged deeper than 80 m (where the surface ceiling is optically
+  // extinct) or above 15 km (where the globe shader renders the ocean). The
+  // height is above the SEA SURFACE, not the ellipsoid: under the AUTO/GEOID
+  // datum the sea sits at the geoid undulation (about -104 m at the Indian
+  // coast), so an ellipsoidal-height test would put the ocean to sleep for a
+  // camera that is above the water.
+  Cartesian3.subtract(cameraPos, this._anchor, scratchDelta);
+  const heightAboveSeaM = Cartesian3.dot(scratchDelta, this._up);
+  this._cameraSubmergedDepthM = Math.max(0.0, -heightAboveSeaM);
+  this._fftComputeActive =
+    heightAboveSeaM >= OCEAN_SLEEP_MIN_HEIGHT_M &&
+    heightAboveSeaM <= OCEAN_SLEEP_MAX_HEIGHT_M;
+  if (!this._fftComputeActive) {
+    return;
+  }
+
   const fr = context.getFeatureRenderer(FeatureRendererKey.FFT_OCEAN);
   if (defined(fr)) {
     fr.update(this, frameState);
   }
+};
+
+/**
+ * Applies local atmospheric and marine environmental parameters sampled from an
+ * environmental tensor set or state at the specified geographic coordinates.
+ *
+ * @param {object} tensors The environmental tensor set or state.
+ * @param {number} longitudeRad Longitude in radians.
+ * @param {number} latitudeRad Latitude in radians.
+ * @returns {object|undefined} The sampled environmental state applied.
+ */
+OceanSurfacePrimitive.prototype.applyEnvironmentalTensor = function (
+  tensors,
+  longitudeRad,
+  latitudeRad,
+) {
+  if (!defined(tensors)) {
+    return undefined;
+  }
+  const state =
+    typeof tensors.sample === "function"
+      ? tensors.sample(longitudeRad, latitudeRad)
+      : tensors;
+  // Each of these is a real accessor below; assigning a name that has no
+  // accessor would create an inert expando and leave the spectrum untouched.
+  if (defined(state.windSpeed)) {
+    this.windSpeed = state.windSpeed;
+  }
+  if (defined(state.windHeadingRad)) {
+    this.windDirection = state.windHeadingRad;
+  }
+  if (defined(state.pressureHpa)) {
+    this.meanSeaLevelPressure = state.pressureHpa;
+  }
+  return state;
+};
+
+/**
+ * Applies local bathymetry, water optical clarity, and seabed substrate sampled from a
+ * bathymetry tensor set or state at the specified geographic coordinates.
+ *
+ * @param {object} tensors The bathymetry tensor set or state.
+ * @param {number} longitudeRad Longitude in radians.
+ * @param {number} latitudeRad Latitude in radians.
+ * @returns {object|undefined} The sampled bathymetry state applied.
+ */
+OceanSurfacePrimitive.prototype.applyBathymetryTensor = function (
+  tensors,
+  longitudeRad,
+  latitudeRad,
+) {
+  if (!defined(tensors)) {
+    return undefined;
+  }
+  const state =
+    typeof tensors.sample === "function"
+      ? tensors.sample(longitudeRad, latitudeRad)
+      : tensors;
+  if (defined(state.depthMeters)) {
+    if (this._bathymetryDepthM !== state.depthMeters) {
+      this._bathymetryDepthM = state.depthMeters;
+      this._paramsDirty = true;
+    }
+  }
+  if (defined(state.jerlovType)) {
+    this._bathymetryJerlovType = state.jerlovType;
+  }
+  return state;
 };
 
 /**
@@ -508,6 +623,103 @@ OceanSurfacePrimitive.prototype.destroy = function () {
   }
   return destroyObject(this);
 };
+
+Object.defineProperties(OceanSurfacePrimitive.prototype, {
+  /**
+   * Wind speed U (m/s) the wave spectrum is generated for. Setting it
+   * regenerates the spectrum.
+   * @memberof OceanSurfacePrimitive.prototype
+   * @type {number}
+   * @default 12
+   */
+  windSpeed: {
+    get: function () {
+      return this._windSpeed;
+    },
+    set: function (v) {
+      if (typeof v === "number" && Number.isFinite(v)) {
+        this._windSpeed = v;
+        this._paramsDirty = true;
+      }
+    },
+  },
+
+  /**
+   * Wind direction in radians (0 = +east, counter-clockwise), the direction the
+   * wave spectrum is aligned to. Setting it regenerates the spectrum.
+   * @memberof OceanSurfacePrimitive.prototype
+   * @type {number}
+   * @default 0
+   */
+  windDirection: {
+    get: function () {
+      return Math.atan2(this._windDirZ, this._windDirX);
+    },
+    set: function (v) {
+      if (typeof v === "number" && Number.isFinite(v)) {
+        this._windDirX = Math.cos(v);
+        this._windDirZ = Math.sin(v);
+        this._paramsDirty = true;
+      }
+    },
+  },
+
+  /**
+   * Mean sea level atmospheric pressure in hectopascals (hPa) / millibars (mbar).
+   * Default 1013.25. Drives the physical inverse barometer storm surge effect.
+   * Pressure moves the sea level only; it does not enter the wave spectrum, so
+   * setting it does not regenerate the spectrum.
+   * @memberof OceanSurfacePrimitive.prototype
+   * @type {number}
+   * @default 1013.25
+   */
+  meanSeaLevelPressure: {
+    get: function () {
+      return this._meanSeaLevelPressure;
+    },
+    set: function (v) {
+      if (typeof v === "number" && Number.isFinite(v)) {
+        this._meanSeaLevelPressure = Math.max(800.0, Math.min(1100.0, v));
+      }
+    },
+  },
+
+  /**
+   * Barometric storm surge height in metres resulting from the inverse barometer effect.
+   * @memberof OceanSurfacePrimitive.prototype
+   * @type {number}
+   * @readonly
+   */
+  surgeHeightMeters: {
+    get: function () {
+      return this._surgeHeightM;
+    },
+  },
+
+  /**
+   * Seabed bathymetric depth in metres at the patch anchor from the last applied bathymetry tensor.
+   * @memberof OceanSurfacePrimitive.prototype
+   * @type {number|undefined}
+   * @readonly
+   */
+  bathymetryDepthMeters: {
+    get: function () {
+      return this._bathymetryDepthM;
+    },
+  },
+
+  /**
+   * Jerlov optical water clarity type at the patch anchor from the last applied bathymetry tensor.
+   * @memberof OceanSurfacePrimitive.prototype
+   * @type {number|undefined}
+   * @readonly
+   */
+  bathymetryJerlovType: {
+    get: function () {
+      return this._bathymetryJerlovType;
+    },
+  },
+});
 
 // Named side exports so node specs can execute three laws without standing up
 // a WebGPU context: the composition ORDER of the sea-level offset (geoid ->

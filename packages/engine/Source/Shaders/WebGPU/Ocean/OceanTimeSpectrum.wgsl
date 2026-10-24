@@ -9,9 +9,11 @@
 //
 // Two-for-one packing — both the Dy and Dx spectra are Hermitian, so each
 // inverse-transforms to a real field: output0 = Dy + i*Dx (IFFT gives re=Dy,
-// im=Dx) and output1 = Dz. Deep-water dispersion is w = sqrt(g|k|). The wave
-// clock `time` is derived from the frame number and quantized upstream, so a
-// paused scene clock still animates deterministically across multiple views.
+// im=Dx) and output1 = Dz. Dispersion is w = sqrt(g|k| tanh(|k| h)) when a
+// seabed depth h is set in params._pad1 (finite depth), and the deep-water
+// w = sqrt(g|k|) when it is 0. The wave clock `time` is advanced upstream from
+// the scene clock (one nominal frame per update when a frame carries no time),
+// so a paused scene clock holds the sea still.
 //
 // Reference: Jerry Tessendorf, "Simulating Ocean Water" (SIGGRAPH course
 // notes) for the equations, implemented from the published math; the
@@ -57,7 +59,9 @@ fn evolve(@builtin(global_invocation_id) id: vec3<u32>) {
   let h0 = packed.xy;
   let h0MinusConj = packed.zw;
 
-  let w = sqrt(params.gravity * kLen);
+  let depth = params._pad1;
+  let dispersionTanh = select(1.0, tanh(min(kLen * depth, 20.0)), depth > 0.0);
+  let w = sqrt(params.gravity * kLen * dispersionTanh);
   let phase = w * params.time;
   let ep = vec2<f32>(cos(phase), sin(phase));   // e^{iwt}
   let em = vec2<f32>(cos(phase), -sin(phase));  // e^{-iwt}

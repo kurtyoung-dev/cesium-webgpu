@@ -545,8 +545,17 @@ class ScreenSpaceCameraController {
       projection.unproject(camera.position, cartographic);
     }
 
+    // The opt-in water dive lifts the terrain clamp only where the surface
+    // under the camera is sea level; over land the stock clamp still applies.
+    // `_water`, not `water`: a facade nobody created has the dive off, and
+    // reading the public accessor here would create it every frame.
+    const allowWaterDive =
+      this._globe?._water?.canDiveAtSurfaceHeight(scene.globeHeight) === true;
     let heightUpdated = false;
-    if (cartographic.height < this._minimumCollisionTerrainHeight) {
+    if (
+      !allowWaterDive &&
+      cartographic.height < this._minimumCollisionTerrainHeight
+    ) {
       const globeHeight = this._scene.globeHeight;
       if (defined(globeHeight)) {
         const height = globeHeight + this.minimumZoomDistance;

@@ -169,13 +169,8 @@
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeMaterial.ts"	"curly"	18
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts"	"curly"	14
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts"	"curly"	24
-"packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts"	"no-duplicate-imports"	3
-"packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts"	"no-useless-assignment"	1
-"packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceShaders.ts"	"@typescript-eslint/no-unused-vars"	2
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTextures.ts"	"curly"	17
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileBuffers.ts"	"curly"	11
-"packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts"	"@typescript-eslint/no-unused-vars"	1
-"packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts"	"curly"	2
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceWireframe.ts"	"@typescript-eslint/no-unused-vars"	1
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceWireframe.ts"	"curly"	2
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceWireframe.ts"	"no-duplicate-imports"	1
@@ -208,8 +203,6 @@
 "packages/engine/Source/Renderer/WebGPU/WebGPUNagaTranspiler.ts"	"curly"	5
 "packages/engine/Source/Renderer/WebGPU/WebGPUOIT.ts"	"@typescript-eslint/no-unused-vars"	1
 "packages/engine/Source/Renderer/WebGPU/WebGPUOIT.ts"	"curly"	5
-"packages/engine/Source/Renderer/WebGPU/WebGPUOceanRenderer.ts"	"curly"	1
-"packages/engine/Source/Renderer/WebGPU/WebGPUOceanRenderer.ts"	"prefer-const"	1
 "packages/engine/Source/Renderer/WebGPU/WebGPUPerformanceManager.ts"	"@typescript-eslint/no-unused-vars"	5
 "packages/engine/Source/Renderer/WebGPU/WebGPUPerformanceManager.ts"	"curly"	34
 "packages/engine/Source/Renderer/WebGPU/WebGPUPerformanceManager.ts"	"no-duplicate-imports"	1
@@ -292,11 +285,9 @@
 "packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts"	"curly"	7
 "packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts"	"no-useless-assignment"	1
 "packages/engine/Source/Renderer/WebGPU/loadCubeMapWebGPU.ts"	"@typescript-eslint/no-unused-vars"	1
-"packages/engine/Source/Scene/AtmosphericEffects.ts"	"no-use-before-define"	7
 "packages/engine/Source/Scene/FrameState.d.ts"	"@typescript-eslint/no-unsafe-declaration-merging"	2
 "packages/engine/Source/Scene/HdrDisplayCapability.ts"	"@typescript-eslint/no-unused-vars"	5
 "packages/engine/Source/Scene/Vector3DTilePrimitive.js"	"new-cap"	2
-"packages/engine/Source/Scene/WaterClassificationProvider.ts"	"curly"	16
 "packages/engine/Source/Scene/Weather/MetarWeatherSource.ts"	"@typescript-eslint/no-unused-vars"	1
 "packages/engine/Source/Scene/Weather/MetarWeatherSource.ts"	"no-useless-assignment"	1
 "packages/engine/Source/Services/WorkerSceneHost.js"	"preserve-caught-error"	1

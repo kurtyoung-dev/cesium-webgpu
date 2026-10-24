@@ -91,16 +91,105 @@ interface Frame {
  *   `//>>else` within a single block. Errors carry the offending line
  *   number.
  */
+interface TemplateOp {
+  kind: "text" | "ifdef" | "else" | "endif";
+  slice?: string;
+  flag?: string;
+  charOffset: number;
+}
+
+const _templateCache = new Map<string, ReadonlyArray<TemplateOp>>();
+const MAX_TEMPLATE_CACHE_ENTRIES = 16;
+
+function lineOfOffset(source: string, charOffset: number): number {
+  let line = 1;
+  for (
+    let p = source.indexOf("\n", 0);
+    p !== -1 && p < charOffset;
+    p = source.indexOf("\n", p + 1)
+  ) {
+    line++;
+  }
+  return line;
+}
+
+function getParsedTemplate(source: string): ReadonlyArray<TemplateOp> {
+  const ops = _templateCache.get(source);
+  if (ops !== undefined) {
+    return ops;
+  }
+
+  const parsed: TemplateOp[] = [];
+  let blockStart = 0;
+  let searchPos = 0;
+  const len = source.length;
+
+  while (searchPos < len) {
+    const idx = source.indexOf("//>>", searchPos);
+    if (idx === -1) {
+      break;
+    }
+    let lineStart = idx;
+    while (lineStart > 0 && source.charCodeAt(lineStart - 1) !== 10) {
+      lineStart--;
+    }
+    let lineEnd = source.indexOf("\n", idx + 4);
+    if (lineEnd === -1) {
+      lineEnd = len;
+    }
+
+    const line = source.slice(lineStart, lineEnd);
+    const m = DIRECTIVE_PATTERN.exec(line);
+    if (m) {
+      if (lineStart > blockStart) {
+        parsed.push({
+          kind: "text",
+          slice: source.slice(blockStart, lineStart - 1),
+          charOffset: blockStart,
+        });
+      }
+      parsed.push({
+        kind: m[1] as "ifdef" | "else" | "endif",
+        flag: m[2],
+        charOffset: lineStart,
+      });
+      blockStart = lineEnd < len ? lineEnd + 1 : len + 1;
+    }
+    searchPos = lineEnd + 1;
+  }
+
+  if (blockStart <= len) {
+    parsed.push({
+      kind: "text",
+      slice: source.slice(blockStart, len),
+      charOffset: blockStart,
+    });
+  }
+
+  if (_templateCache.size >= MAX_TEMPLATE_CACHE_ENTRIES) {
+    const oldest = _templateCache.keys().next().value;
+    if (oldest !== undefined) {
+      _templateCache.delete(oldest);
+    }
+  }
+  _templateCache.set(source, parsed);
+  return parsed;
+}
+
 export function preprocess(
   source: string,
   defines: ShaderDefineLoMask,
   definesHi: number = 0,
 ): string {
-  const lines = source.split("\n");
+  const ops = getParsedTemplate(source);
+  if (ops.length === 1 && ops[0].kind === "text") {
+    return source;
+  }
+
   const output: string[] = [];
   const stack: Frame[] = [];
 
-  // Walk the frame stack to decide whether the current line should be
+  // Walk the frame stack to decide whether the current block should be
   // emitted. O(depth) per call; depth is almost always ≤2 in practice.
   const shouldEmit = (): boolean => {
     for (let f = 0; f < stack.length; f++) {
@@ -113,81 +202,84 @@ export function preprocess(
     return true;
   };
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const m = line.match(DIRECTIVE_PATTERN);
+  let emitting = true;
 
-    if (m) {
-      const directive = m[1];
-      const flag = m[2];
-
-      if (directive === "ifdef") {
-        if (flag === undefined) {
-          throw new Error(
-            `WGSL preprocessor: //>>ifdef at line ${i + 1} missing flag name`,
-          );
-        }
-        // Probe the hi-word registry first: the lo resolver
-        // `resolveDefineBit` deliberately throws on a hi-word name, so a
-        // hi flag must never reach it. The hi table is tiny, so this is
-        // one failed property lookup per lo-flag directive — and the
-        // preprocessor result is cached per (source, defines, definesHi)
-        // by the module cache, so none of this is hot.
-        let conditionWasTrue: boolean;
-        const hiBit = resolveDefineBitHi(flag);
-        if (hiBit !== undefined) {
-          conditionWasTrue = (definesHi & hiBit) !== 0;
-        } else {
-          const bit = resolveDefineBit(flag);
-          if (bit === undefined) {
-            throw new Error(
-              `WGSL preprocessor: unknown define "${flag}" at line ${i + 1}. ` +
-                `Register it in WebGPUShaderDefines.ShaderDefine (lo word) ` +
-                `or ShaderDefineHi (hi word) before use.`,
-            );
-          }
-          conditionWasTrue = (defines & bit) !== 0;
-        }
-        stack.push({
-          conditionWasTrue,
-          inElse: false,
-          startLine: i + 1,
-        });
-      } else if (directive === "else") {
-        if (stack.length === 0) {
-          throw new Error(
-            `WGSL preprocessor: //>>else at line ${i + 1} without matching //>>ifdef`,
-          );
-        }
-        const top = stack[stack.length - 1];
-        if (top.inElse) {
-          throw new Error(
-            `WGSL preprocessor: duplicate //>>else at line ${i + 1} ` +
-              `(ifdef opened at line ${top.startLine})`,
-          );
-        }
-        top.inElse = true;
-      } else if (directive === "endif") {
-        if (stack.length === 0) {
-          throw new Error(
-            `WGSL preprocessor: //>>endif at line ${i + 1} without matching //>>ifdef`,
-          );
-        }
-        stack.pop();
+  for (let i = 0; i < ops.length; i++) {
+    const op = ops[i];
+    if (op.kind === "text") {
+      if (emitting && op.slice !== undefined) {
+        output.push(op.slice);
       }
-      // Directive lines are consumed; never emitted to output.
       continue;
     }
 
-    if (shouldEmit()) {
-      output.push(line);
+    const directive = op.kind;
+    const flag = op.flag;
+
+    if (directive === "ifdef") {
+      if (flag === undefined) {
+        const lineNum = lineOfOffset(source, op.charOffset);
+        throw new Error(
+          `WGSL preprocessor: //>>ifdef at line ${lineNum} missing flag name`,
+        );
+      }
+      let conditionWasTrue: boolean;
+      const hiBit = resolveDefineBitHi(flag);
+      if (hiBit !== undefined) {
+        conditionWasTrue = (definesHi & hiBit) !== 0;
+      } else {
+        const bit = resolveDefineBit(flag);
+        if (bit === undefined) {
+          const lineNum = lineOfOffset(source, op.charOffset);
+          throw new Error(
+            `WGSL preprocessor: unknown define "${flag}" at line ${lineNum}. ` +
+              `Register it in WebGPUShaderDefines.ShaderDefine (lo word) ` +
+              `or ShaderDefineHi (hi word) before use.`,
+          );
+        }
+        conditionWasTrue = (defines & bit) !== 0;
+      }
+      stack.push({
+        conditionWasTrue,
+        inElse: false,
+        startLine: op.charOffset,
+      });
+      emitting = emitting && conditionWasTrue;
+    } else if (directive === "else") {
+      if (stack.length === 0) {
+        const lineNum = lineOfOffset(source, op.charOffset);
+        throw new Error(
+          `WGSL preprocessor: //>>else at line ${lineNum} without matching //>>ifdef`,
+        );
+      }
+      const top = stack[stack.length - 1];
+      if (top.inElse) {
+        const lineNum = lineOfOffset(source, op.charOffset);
+        const startLine = lineOfOffset(source, top.startLine);
+        throw new Error(
+          `WGSL preprocessor: duplicate //>>else at line ${lineNum} ` +
+            `(ifdef opened at line ${startLine})`,
+        );
+      }
+      top.inElse = true;
+      emitting = shouldEmit();
+    } else if (directive === "endif") {
+      if (stack.length === 0) {
+        const lineNum = lineOfOffset(source, op.charOffset);
+        throw new Error(
+          `WGSL preprocessor: //>>endif at line ${lineNum} without matching //>>ifdef`,
+        );
+      }
+      stack.pop();
+      emitting = shouldEmit();
     }
   }
 
   if (stack.length > 0) {
     const top = stack[stack.length - 1];
+    const startLine = lineOfOffset(source, top.startLine);
     throw new Error(
-      `WGSL preprocessor: unclosed //>>ifdef opened at line ${top.startLine}`,
+      `WGSL preprocessor: unclosed //>>ifdef opened at line ${startLine}`,
     );
   }
 

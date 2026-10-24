@@ -28,7 +28,15 @@ import type { SharedImageryRealization } from "./WebGPUSharedImageryRealizations
 export interface GlobePipelineEntry {
   descriptor: WebGPURenderPipelineDescriptor;
   pipeline: GPURenderPipeline | null;
+  fallbackPipeline?: GPURenderPipeline | null;
+  // Stamped on first resolve by `GlobeOceanTierTransition.stamp`: the cache-wipe
+  // generation the entry was built under, and whether enhanced ocean was on.
+  oceanGeneration?: number;
+  builtEnhanced?: boolean;
   pending: boolean;
+  // Set once the speculative warms for this key have been requested; under
+  // enhanced ocean that waits for the entry's own pipeline (water round 5).
+  speculativeWarmed?: boolean;
 }
 
 // CameraUniforms float layout. Must match the struct of the same name in
@@ -187,7 +195,9 @@ export interface GlobePipelineEntry {
 //   eyeCartographic (vec3, offsets 244-246) — (longitude, latitude) in
 //     radians and height in metres of the eye, from
 //     `UniformState.eyeCartographic`. Only meaningful in SCENE3D.
-//   _padEyeCartographic (f32, offset 247) — the vec3's alignment lane.
+//   oceanWaveSeconds (f32, offset 247) — the vec3's alignment lane, carrying
+//     the unwrapped scene wave seconds for the opt-in WATER_PROVIDER_PARITY
+//     classic waves (water round 6); see `OCEAN_WAVE_SECONDS_OFFSET`.
 //   eyeToEnu (mat3x3<f32>, offsets 248-259) — the eye → east-north-up
 //     rotation. WGSL lays a `mat3x3<f32>` out as THREE vec4 columns, not the
 //     nine tight floats GLSL's `mat3` uses, so the packer writes three values
@@ -202,6 +212,10 @@ export interface GlobePipelineEntry {
 // 100-115 included — is unmoved. Written every frame from the live
 // `UniformState`; see `writeEyeCartographicTail`.
 export const CAMERA_UNIFORM_FLOATS = 264;
+// `CameraUniforms.oceanWaveSeconds`: GlobeFS.glsl's `u_oceanWaveSeconds`,
+// unwrapped. The tile clock (`TIME_OFFSET`) wraps every 1777.8 s at a period the
+// classic czm_getWaterNoise taps are not commensurate with.
+export const OCEAN_WAVE_SECONDS_OFFSET = 247;
 export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms layout.
@@ -292,8 +306,9 @@ export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 //                WebGL selects it with the `VECTOR_ANTIALIAS` shader-set flag;
 //                this backend gates the whole vector path at runtime, so a
 //                define here would fork every globe pipeline variant.
-//   493        padding — the vec2 below has an 8-byte alignment, so WGSL
-//                rounds past this float rather than starting on it.
+//   493        oceanTideHeight (f32) — local equilibrium tide displacement plus
+//                barometric storm surge in metres. Modulates the coastal water mask
+//                boundary and intertidal wet sand.
 //   494 - 495  vectorMetersPerUv (vec2) — ground size of the tile's UV domain
 //                in meters along each UV axis, the uniform twin of
 //                `VectorCommon.glsl`'s `u_vectorMetersPerUv`. Packed from the
@@ -358,6 +373,7 @@ export const LOCALIZED_TRANSLUCENCY_RECT_OFFSET = 480;
 export const OCEAN_WAVE_PHASE_A_OFFSET = 484; // octave1.xy, octave2.xy
 export const OCEAN_WAVE_PHASE_B_OFFSET = 488; // octave3.xy, spanNorm.xy
 export const VECTOR_COVERAGE_RADIUS_OFFSET = 492;
+export const OCEAN_TIDE_HEIGHT_OFFSET = 493;
 /**
  * Ground size of the tile's UV domain, in meters, along each UV axis — the
  * uniform twin of `VectorCommon.glsl`'s `u_vectorMetersPerUv`, packed from the

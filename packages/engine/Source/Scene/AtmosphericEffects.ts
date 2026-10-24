@@ -15,6 +15,7 @@
  * @module Scene/AtmosphericEffects
  */
 import CloudType from "./CloudType.js";
+import type { DecodedEnvironmentalState } from "./Weather/EnvironmentalTensorMap.js";
 
 /**
  * Precipitation genus index used by the unified effects hierarchy
@@ -244,6 +245,10 @@ export function precipFromWmoCode(ww: number): PrecipFromWmo {
   };
 }
 
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
 /** Linear ramp of `v` across `[lo, hi]` mapped to `[outLo, outHi]`, clamped. */
 function rampInBand(
   v: number,
@@ -359,9 +364,6 @@ export interface AtmosphericKnobs {
   /** `globe.cloudType` genus bias (CloudType index), or undefined for no bias. */
   cloudType: number | undefined;
 }
-
-const clamp = (v: number, lo: number, hi: number): number =>
-  v < lo ? lo : v > hi ? hi : v;
 
 /**
  * Map weather conditions to visual knobs. Pure + deterministic.
@@ -500,6 +502,8 @@ interface AtmosphericSceneLike {
   enableWeather?: boolean;
   weatherType?: number;
   weatherIntensity?: number;
+  weatherWindSpeed?: number;
+  weatherWindDirection?: { x: number; y: number; z: number };
   /**
    * Ground snow-cover scalar (0..1) the data-driven precipitation path
    * time-integrates and the WebGPU weather renderer consumes. Default-off
@@ -735,4 +739,50 @@ function applyDataDrivenPrecip(
     precip.snowCover = cover;
     scene.weatherSnowCover = cover;
   }
+}
+
+/**
+ * Applies local environmental tensor observations to scene atmospheric conditions,
+ * weather knobs, wind speed/direction, and precipitation state.
+ *
+ * @param scene The Cesium Scene or atmospheric scene-like object.
+ * @param tensorState The decoded local environmental state.
+ */
+export function applyEnvironmentalTensor(
+  scene: AtmosphericSceneLike,
+  tensorState: DecodedEnvironmentalState,
+): void {
+  if (!scene || !tensorState) {
+    return;
+  }
+  const globe = scene.globe;
+  const weather = globe?.atmosphericConditions?.weather;
+  if (weather) {
+    weather.temperature = tensorState.temperatureC;
+    if (tensorState.precipitationRate > 0.05) {
+      weather.intensity = tensorState.precipitationRate;
+      weather.type =
+        tensorState.temperatureC <= 0.0
+          ? PrecipitationType.SNOW
+          : PrecipitationType.RAIN;
+    } else {
+      weather.intensity = 0.0;
+      weather.type = PrecipitationType.NONE;
+    }
+  }
+
+  scene.weatherWindSpeed = tensorState.windSpeed;
+  scene.weatherIntensity = tensorState.precipitationRate;
+  scene.weatherType = precipitationTypeToWeatherTypeIndex(
+    tensorState.temperatureC <= 0.0
+      ? PrecipitationType.SNOW
+      : PrecipitationType.RAIN,
+  );
+  scene.weatherWindDirection = {
+    x: Math.cos(tensorState.windHeadingRad),
+    y: Math.sin(tensorState.windHeadingRad),
+    z: 0.0,
+  };
+
+  applyAtmosphericConditions(scene);
 }

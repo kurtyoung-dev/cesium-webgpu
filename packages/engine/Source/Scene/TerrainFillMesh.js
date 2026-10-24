@@ -1328,7 +1328,11 @@ function createFillMesh(tileProvider, frameState, tile, vertexArraysToDestroy) {
   const oldTexture = fill.waterMaskTexture;
   fill.waterMaskTexture = undefined;
 
-  if (tileProvider.terrainProvider.hasWaterMask) {
+  if (
+    tileProvider.terrainProvider.hasWaterMask ||
+    tileProvider.hasWaterMask ||
+    defined(tileProvider.waterClassificationProvider)
+  ) {
     const waterSourceTile = surfaceTile._findAncestorTileWithTerrainData(tile);
     if (
       defined(waterSourceTile) &&

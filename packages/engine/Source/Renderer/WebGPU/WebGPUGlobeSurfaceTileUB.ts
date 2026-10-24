@@ -72,6 +72,7 @@ import {
   OCEAN_WAVE_PHASE_B_OFFSET,
   OCEAN_OCTAVE_REPEATS,
   VECTOR_COVERAGE_RADIUS_OFFSET,
+  OCEAN_TIDE_HEIGHT_OFFSET,
   VECTOR_COVERAGE_RADIUS_ANTIALIASED,
   VECTOR_COVERAGE_RADIUS_HARD,
   VECTOR_METERS_PER_UV_OFFSET,
@@ -116,6 +117,26 @@ import {
   resolveImageryProjection,
   type TextureCacheHost,
 } from "./WebGPUGlobeSurfaceTextures.js";
+import Cartographic from "../../Core/Cartographic.js";
+import Cartesian3 from "../../Core/Cartesian3.js";
+import Ellipsoid from "../../Core/Ellipsoid.js";
+import JulianDate from "../../Core/JulianDate.js";
+import TideModel from "../../Core/TideModel.js";
+
+const scratchCartographic = new Cartographic();
+const scratchCartesian = new Cartesian3();
+
+/**
+ * TideModel is the Earth's equilibrium tide (lunar and solar GM), so the tide
+ * term is only meaningful on the WGS84 ellipsoid; a custom or planetary
+ * ellipsoid must not borrow it.
+ */
+function isEarthEllipsoid(ellipsoid: { radii?: Cartesian3 } | undefined) {
+  return (
+    ellipsoid?.radii !== undefined &&
+    Cartesian3.equalsEpsilon(ellipsoid.radii, Ellipsoid.WGS84.radii, 0.0, 1.0)
+  );
+}
 
 /**
  * Per-frame increment for the deterministic ocean-wave animation clock.
@@ -187,7 +208,6 @@ export function createTileUniformBuffer(
   isSubsequentPass: boolean,
 ): { buffer: GPUBuffer; offset: number; size: number } {
   const data = host._tileUniformData;
-  const u32 = host._tileUniformU32View;
   data.fill(0);
 
   // Imagery layers. Per-layer struct = 24 floats / 96 bytes. Unused slots
@@ -205,10 +225,14 @@ export function createTileUniformBuffer(
     i++
   ) {
     const tileImagery = passLayers[i];
-    if (!tileImagery || !tileImagery.readyImagery) continue;
+    if (!tileImagery || !tileImagery.readyImagery) {
+      continue;
+    }
 
     const imagery = tileImagery.readyImagery;
-    if (!imagery.imageryLayer) continue;
+    if (!imagery.imageryLayer) {
+      continue;
+    }
 
     // Below the deepest level the bundled night pyramid contains, one of its
     // texels covers the whole terrain tile and replaces the scene under it with
@@ -1028,6 +1052,64 @@ export function createTileUniformBuffer(
     tileProvider?.vectorProvider?.antialias === false
       ? VECTOR_COVERAGE_RADIUS_HARD
       : VECTOR_COVERAGE_RADIUS_ANTIALIASED;
+
+  // Localized equilibrium tide displacement plus barometric storm surge.
+  // Modulates the shoreline boundary and exposes intertidal wet sand on coastal tiles.
+  // Both are read only inside the ENHANCED_OCEAN shader arm, so none of this CPU
+  // work runs, and float 493 stays 0, unless enhanced ocean is on. The tide has
+  // its own gate (`oceanTideEnabled`, Earth ellipsoid); the surge has its own
+  // (a finite mean sea level pressure), so switching the tide off keeps the surge.
+  let tideHeight = 0.0;
+  if (showReflectiveOcean && enhancedOceanOn) {
+    if (tileProvider?.oceanTideEnabled !== false && tile?.rectangle) {
+      const midLon = (tile.rectangle.west + tile.rectangle.east) * 0.5;
+      const midLat = (tile.rectangle.south + tile.rectangle.north) * 0.5;
+      scratchCartographic.longitude = midLon;
+      scratchCartographic.latitude = midLat;
+      scratchCartographic.height = 0.0;
+      const ellipsoid = (
+        frameState?.mapProjection as {
+          ellipsoid?: {
+            radii?: Cartesian3;
+            cartographicToCartesian?: (
+              c: Cartographic,
+              result?: Cartesian3,
+            ) => Cartesian3;
+          };
+        }
+      )?.ellipsoid;
+      if (
+        ellipsoid &&
+        isEarthEllipsoid(ellipsoid) &&
+        typeof ellipsoid.cartographicToCartesian === "function" &&
+        frameState?.time
+      ) {
+        const posWC = ellipsoid.cartographicToCartesian(
+          scratchCartographic,
+          scratchCartesian,
+        );
+        if (posWC) {
+          const callback = tileProvider.oceanTideCallback;
+          const time = frameState.time as unknown as JulianDate;
+          tideHeight =
+            typeof callback === "function"
+              ? callback(posWC, time)
+              : TideModel.equilibriumHeight(time, posWC);
+          if (!Number.isFinite(tideHeight)) {
+            tideHeight = 0.0;
+          }
+          const exag = tileProvider.oceanTideExaggeration;
+          tideHeight *= Number.isFinite(exag) ? exag : 1.0;
+        }
+      }
+    }
+    const pressure = tileProvider.oceanMeanSeaLevelPressure;
+    if (typeof pressure === "number" && Number.isFinite(pressure)) {
+      const surge = (1013.25 - pressure) * 0.01;
+      tideHeight += surge;
+    }
+  }
+  data[OCEAN_TIDE_HEIGHT_OFFSET] = tideHeight;
 
   // Ground metres per unit of tile UV, the input a GROUND-METRE stroke width
   // is measured against. Read from the tile's own baked `VectorTileData`, the

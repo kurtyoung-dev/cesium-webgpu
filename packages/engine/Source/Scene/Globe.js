@@ -22,8 +22,18 @@ import AtmosphereCommon from "../Shaders/AtmosphereCommon.js";
 import GroundAtmosphere from "../Shaders/GroundAtmosphere.js";
 import CloudCollection from "./CloudCollection.js";
 import GlobeSurfaceShaderSet from "./GlobeSurfaceShaderSet.js";
-import LakeWaterClassificationProvider from "./WaterClassificationProvider.js";
-import GlobeSurfaceTileProvider from "./GlobeSurfaceTileProvider.js";
+import LakeWaterClassificationProvider, {
+  CompositeWaterClassificationProvider,
+  RiverWaterClassificationProvider,
+} from "./WaterClassificationProvider.js";
+import { GlobalCoastlineWaterClassificationProvider } from "./GlobalCoastlineWaterClassificationProvider.js";
+import {
+  parseBundledBathymetryTensor,
+  setGlobalBundledBathymetryTensor,
+} from "./BathymetryTensorMap.js";
+import GlobeSurfaceTileProvider, {
+  resetGlobeWaterMirrors,
+} from "./GlobeSurfaceTileProvider.js";
 import GlobeTranslucency from "./GlobeTranslucency.js";
 import ImageryLayer from "./ImageryLayer.js";
 import ImageryLayerCollection from "./ImageryLayerCollection.js";
@@ -395,6 +405,23 @@ class Globe {
     this._lakeWaterClassificationProvider = undefined;
     this._lakeWaterMaskLoadPending = false;
 
+    this._globalWaterMask = false;
+    this._globalWaterClassificationProvider = undefined;
+    this._globalWaterMaskLoadPending = false;
+    // The bundled bathymetry tensor rides along with the global coastline
+    // mask; it is process-wide once parsed (see setGlobalBundledBathymetryTensor).
+    this._globalBathymetryTensor = undefined;
+    this._globalBathymetryTensorLoadPending = false;
+    this._riverWaterMask = false;
+    this._riverWaterClassificationProvider = undefined;
+    this._riverWaterMaskLoadPending = false;
+    this._compositeWaterClassificationProvider = undefined;
+    // Rebuilt in place each frame: the providers the water mask currently
+    // composites, kept here so `beginFrame` allocates nothing.
+    this._activeWaterProviders = [];
+    // The last `water.regions.version` this globe rebuilt the masks for.
+    this._waterRegionsVersionSeen = 0;
+
     // Auto-managed night imagery. The state record holds what the attached
     // layer was built from, so an unchanged request is a no-op and a changed
     // one destroys the old layer rather than stacking a second one on it.
@@ -656,9 +683,18 @@ class Globe {
     // The facades are wired by Scene after construction, to avoid a circular
     // import: Scene imports AtmosphericConditions and GlobeWater and hangs
     // them here once `scene.atmosphere`, `scene.fog` and `scene.skyAtmosphere`
-    // are all built.
+    // are all built. The water facade is created on the first `globe.water`
+    // read (`_bindWaterFacade`) or on the first frame with
+    // `enableEnhancedOcean` on, so a default globe whose water is never asked
+    // for builds no facade and mirrors none of it per frame.
     this._atmosphericConditions = undefined;
     this._water = undefined;
+    this._waterScene = undefined;
+    this._WaterFacade = undefined;
+    // Whether `beginFrame` has written the facade's mirrors into the tile
+    // provider since the facade was last bound, so a rebind that drops the
+    // facade puts the provider's defaults back once.
+    this._waterMirrorsWritten = false;
 
     // The water-mask ocean's wave phase, in scene seconds. Owned here because
     // it is backend-agnostic: `beginFrame` resolves it above the point where
@@ -694,7 +730,28 @@ class Globe {
    * @readonly
    */
   get water() {
+    if (!defined(this._water) && defined(this._WaterFacade)) {
+      this._water = new this._WaterFacade(this._waterScene, this);
+    }
     return this._water;
+  }
+
+  /**
+   * Binds the water facade to a scene without creating it: the facade is
+   * built on the first {@link Globe#water} read, and a rebind drops the one
+   * the previous scene built, as constructing a fresh one did. Engine code
+   * that only asks whether a facade setting is in force reads
+   * <code>_water</code>, so the default path never creates it.
+   *
+   * @param {Scene} scene The owning scene.
+   * @param {Function} WaterFacade The facade class, passed in by Scene to keep
+   *   the import graph as it was.
+   * @private
+   */
+  _bindWaterFacade(scene, WaterFacade) {
+    this._waterScene = scene;
+    this._WaterFacade = WaterFacade;
+    this._water = undefined;
   }
 
   /**
@@ -810,8 +867,11 @@ class Globe {
    * animated water effect that ocean-only provider masks deny them.
    * Only takes effect when the terrain provider supplies a water mask
    * (e.g. Cesium World Terrain with <code>requestWaterMask: true</code>)
-   * and {@link Globe#showWaterEffect} is enabled. The bundled lake
-   * dataset (~900 KiB) is fetched lazily on first enable.
+   * or {@link Globe#globalWaterMask} is also true, and
+   * {@link Globe#showWaterEffect} is enabled. Over terrain without a water
+   * mask, the default ellipsoid included, it changes nothing on its own.
+   * Natural Earth playa and reef polygons in the dataset are not painted.
+   * The bundled lake dataset (~940 KiB) is fetched lazily on first enable.
    *
    * @type {boolean}
    * @default false
@@ -855,6 +915,144 @@ class Globe {
         });
     }
     // Rebuild tiles so toggling takes effect on already-loaded tiles.
+    this._surface.invalidateAllTiles();
+  }
+
+  /**
+   * When true, a lightweight vector dataset of global coastlines and oceans
+   * provides water masks for all terrain tiles globally, enabling natural
+   * planetary oceans and coastlines even when the terrain provider does not
+   * supply a water mask. The bundled coastline dataset (about 1.8 MiB) and
+   * the bathymetry tensor that rides along with it (about 1.0 MiB) are
+   * fetched lazily on first enable.
+   * <p>
+   * The dataset covers oceans, seas and coasts. Inland lakes are not in it:
+   * they appear only when {@link Globe#lakeWaterMask} is also true (about
+   * 0.9 MiB of its own), and major rivers only with {@link Globe#riverWaterMask}
+   * (about 1.1 MiB).
+   * </p>
+   *
+   * @type {boolean}
+   * @default false
+   */
+  get globalWaterMask() {
+    return this._globalWaterMask;
+  }
+
+  set globalWaterMask(value) {
+    value = value === true;
+    if (value === this._globalWaterMask) {
+      return;
+    }
+    this._globalWaterMask = value;
+    if (
+      value &&
+      !defined(this._globalWaterClassificationProvider) &&
+      !this._globalWaterMaskLoadPending
+    ) {
+      this._globalWaterMaskLoadPending = true;
+      Resource.fetchArrayBuffer(
+        buildModuleUrl("Assets/WaterMask/ne50mCoastlines.bin"),
+      )
+        .then((buffer) => {
+          this._globalWaterClassificationProvider =
+            new GlobalCoastlineWaterClassificationProvider(buffer);
+          this._globalWaterMaskLoadPending = false;
+          this._loadBathymetryTensor();
+          if (this._globalWaterMask) {
+            this._surface.invalidateAllTiles();
+          }
+        })
+        .catch((error) => {
+          this._globalWaterMaskLoadPending = false;
+          this._loadBathymetryTensor();
+          console.error(
+            `[CesiumJS] Globe.globalWaterMask: failed to load coastline dataset: ${error}`,
+          );
+        });
+    }
+    this._surface.invalidateAllTiles();
+  }
+
+  /**
+   * Fetches and parses the bundled bathymetry tensor once. The coastline
+   * mask can render without it, so a failure is logged (once per attempt)
+   * and otherwise leaves the globe as it was.
+   * @private
+   */
+  _loadBathymetryTensor() {
+    if (
+      defined(this._globalBathymetryTensor) ||
+      this._globalBathymetryTensorLoadPending
+    ) {
+      return;
+    }
+    this._globalBathymetryTensorLoadPending = true;
+    Resource.fetchArrayBuffer(
+      buildModuleUrl("Assets/WaterMask/globalBathymetryTensor.bin"),
+    )
+      .then((bathyBuffer) => {
+        const parsed = parseBundledBathymetryTensor(bathyBuffer);
+        this._globalBathymetryTensor = parsed;
+        setGlobalBundledBathymetryTensor(parsed);
+        this._globalBathymetryTensorLoadPending = false;
+        if (this._globalWaterMask) {
+          this._surface.invalidateAllTiles();
+        }
+      })
+      .catch((error) => {
+        this._globalBathymetryTensorLoadPending = false;
+        console.error(
+          `[CesiumJS] Globe.globalWaterMask: failed to load the bundled bathymetry tensor (Assets/WaterMask/globalBathymetryTensor.bin): ${error}`,
+        );
+      });
+  }
+
+  /**
+   * When true, major continental rivers and deltas from the bundled Natural Earth
+   * 1:10m rivers dataset are composited into the terrain water mask.
+   * Like {@link Globe#lakeWaterMask}, it takes effect only when the terrain
+   * provider supplies a water mask or {@link Globe#globalWaterMask} is also
+   * true; on its own it changes nothing.
+   *
+   * @type {boolean}
+   * @default false
+   */
+  get riverWaterMask() {
+    return this._riverWaterMask;
+  }
+
+  set riverWaterMask(value) {
+    value = value === true;
+    if (value === this._riverWaterMask) {
+      return;
+    }
+    this._riverWaterMask = value;
+    if (
+      value &&
+      !defined(this._riverWaterClassificationProvider) &&
+      !this._riverWaterMaskLoadPending
+    ) {
+      this._riverWaterMaskLoadPending = true;
+      const that = this;
+      Resource.fetchArrayBuffer(
+        buildModuleUrl("Assets/WaterMask/ne10mRivers.bin"),
+      )
+        .then(function (buffer) {
+          that._riverWaterClassificationProvider =
+            new RiverWaterClassificationProvider(buffer);
+          that._riverWaterMaskLoadPending = false;
+          if (that._riverWaterMask) {
+            that._surface.invalidateAllTiles();
+          }
+        })
+        .catch(function (error) {
+          that._riverWaterMaskLoadPending = false;
+          console.error(
+            `[CesiumJS] Globe.riverWaterMask: failed to load river dataset: ${error}`,
+          );
+        });
+    }
     this._surface.invalidateAllTiles();
   }
 
@@ -1363,10 +1561,28 @@ class Globe {
 
     reconcileNightImagery(this);
     const terrainProvider = this.terrainProvider;
-    const hasWaterMask =
+    const terrainHasWaterMask =
       defined(terrainProvider) &&
       terrainProvider.hasWaterMask &&
       terrainProvider.hasWaterMask;
+    const globalWaterActive =
+      this._globalWaterMask && defined(this._globalWaterClassificationProvider);
+    // The lake and river layers add to a water mask that the terrain or the
+    // coastline dataset supplies; on their own they create none. That keeps
+    // `lakeWaterMask` at the meaning it shipped with: over terrain without a
+    // water mask (the default ellipsoid included) it changes nothing.
+    const waterLayersHaveMask = Boolean(
+      terrainHasWaterMask || globalWaterActive,
+    );
+    const lakeWaterActive =
+      waterLayersHaveMask &&
+      this._lakeWaterMask &&
+      defined(this._lakeWaterClassificationProvider);
+    const riverWaterActive =
+      waterLayersHaveMask &&
+      this._riverWaterMask &&
+      defined(this._riverWaterClassificationProvider);
+    const hasWaterMask = terrainHasWaterMask || globalWaterActive;
 
     if (hasWaterMask && this._oceanNormalMapResourceDirty) {
       // url changed, load new normal map asynchronously
@@ -1430,11 +1646,68 @@ class Globe {
           : 0.0;
       tileProvider.hasWaterMask = hasWaterMask;
       tileProvider.showWaterEffect = this.showWaterEffect;
-      // Mirror the loaded lake provider only while the opt-in flag is on;
+      // Mirror the loaded global, lake, or composite provider while active;
       // undefined leaves the default water-mask upload path untouched.
-      tileProvider.waterClassificationProvider = this._lakeWaterMask
-        ? this._lakeWaterClassificationProvider
-        : undefined;
+      const activeWaterProviders = this._activeWaterProviders;
+      activeWaterProviders.length = 0;
+      if (globalWaterActive) {
+        activeWaterProviders.push(this._globalWaterClassificationProvider);
+      }
+      if (lakeWaterActive) {
+        activeWaterProviders.push(this._lakeWaterClassificationProvider);
+      }
+      if (riverWaterActive) {
+        activeWaterProviders.push(this._riverWaterClassificationProvider);
+      }
+
+      const waterRegions = this._water?.regions;
+      const hasWaterRegions = defined(waterRegions) && waterRegions.length > 0;
+      const hasBundledBathymetry = defined(this._globalBathymetryTensor);
+      if (
+        activeWaterProviders.length > 1 ||
+        (activeWaterProviders.length === 1 &&
+          (hasWaterRegions || hasBundledBathymetry))
+      ) {
+        let needsRebuild =
+          !defined(this._compositeWaterClassificationProvider) ||
+          this._compositeWaterClassificationProvider.providers.length !==
+            activeWaterProviders.length;
+        if (!needsRebuild) {
+          for (let i = 0; i < activeWaterProviders.length; i++) {
+            if (
+              this._compositeWaterClassificationProvider.providers[i] !==
+              activeWaterProviders[i]
+            ) {
+              needsRebuild = true;
+              break;
+            }
+          }
+        }
+        if (needsRebuild) {
+          this._compositeWaterClassificationProvider =
+            new CompositeWaterClassificationProvider(activeWaterProviders);
+        }
+        tileProvider.waterClassificationProvider =
+          this._compositeWaterClassificationProvider;
+      } else if (activeWaterProviders.length === 1) {
+        tileProvider.waterClassificationProvider = activeWaterProviders[0];
+      } else {
+        tileProvider.waterClassificationProvider = undefined;
+      }
+      // The inputs reach whichever composite exists, selected or not, so a
+      // composite that is parked between uses never serves stale ones.
+      this._compositeWaterClassificationProvider?.setBathymetryTensor(
+        this._globalBathymetryTensor,
+      );
+      this._compositeWaterClassificationProvider?.setWaterRegions(waterRegions);
+      // A region added, removed or edited (markDirty) after tiles were built:
+      // rebuild their masks so the change shows within a frame.
+      const waterRegionsVersion = waterRegions?.version ?? 0;
+      if (waterRegionsVersion !== this._waterRegionsVersionSeen) {
+        this._waterRegionsVersionSeen = waterRegionsVersion;
+        surface.invalidateAllTiles();
+      }
+      tileProvider.waterClassificationProvider?.beginFrameBudget?.();
       tileProvider.oceanNormalMap = this._oceanNormalMap;
       tileProvider.enableLighting = this.enableLighting;
       const terminatorGlowStrength = this.terminatorGlowStrength;
@@ -1535,7 +1808,6 @@ class Globe {
       tileProvider.oceanCelestialSunIntensity = this.oceanCelestialSunIntensity;
       tileProvider.oceanCelestialMoonIntensity =
         this.oceanCelestialMoonIntensity;
-
       // The wave phase belongs to the clock the scene is showing, not to how
       // many times the renderer has been called, and it is resolved HERE — once
       // per rendered frame, above the point where the two backends diverge — so
@@ -1549,6 +1821,49 @@ class Globe {
         frameState,
         this._water?.pinnedOceanSimulationEpoch,
       );
+      // The facade's mirrors. The enhanced-ocean variants are the only ones
+      // that read the mirrored lanes (near-surface transparency, emergence
+      // wetness), so an enhanced-ocean globe takes the facade through the
+      // creating accessor and its documented defaults arrive with the first
+      // frame whether or not `globe.water` was ever read. Otherwise, while no
+      // facade exists the provider keeps the defaults it was built with,
+      // which are what the camera UB packer packed before these mirrors
+      // existed, and nothing here runs.
+      const water =
+        this._water ?? (this.enableEnhancedOcean ? this.water : undefined);
+      if (defined(water)) {
+        this._waterMirrorsWritten = true;
+        const waterOcean = water.hasOcean ? water.ocean : undefined;
+        tileProvider.oceanTideEnabled = waterOcean?.tideEnabled ?? true;
+        tileProvider.oceanTideExaggeration =
+          waterOcean?.tideExaggeration ?? 1.0;
+        tileProvider.oceanTideCallback = waterOcean?.tideCallback;
+        tileProvider.oceanMeanSeaLevelPressure =
+          waterOcean?.meanSeaLevelPressure ?? 1013.25;
+        const camHeight =
+          frameState?.camera?.positionCartographic?.height ?? 100.0;
+        const emergenceWetness = water.updateCameraEmergenceState(
+          camHeight,
+          tileProvider.oceanWaveSeconds,
+        );
+        tileProvider.waterQualityPreset = water.qualityPreset;
+        tileProvider.waterSubmersibleLightEnabled =
+          water.submersibleLightEnabled;
+        tileProvider.waterSubmersibleLightIntensity =
+          water.submersibleLightIntensity;
+        tileProvider.waterBathymetricReliefBoost = water.bathymetricReliefBoost;
+        tileProvider.waterEmergenceWetness = emergenceWetness;
+        tileProvider.waterVesselWakeIntensity = water.vesselWakeEnabled
+          ? water.vesselWakeIntensity
+          : 0.0;
+        tileProvider.waterNearSurfaceTransparency =
+          water.nearSurfaceTransparency;
+        tileProvider.waterDiveDepthMeters = water.diveDepthMeters;
+        tileProvider.waterDisableCollision = water.disableWaterCollision;
+      } else if (this._waterMirrorsWritten) {
+        this._waterMirrorsWritten = false;
+        resetGlobeWaterMirrors(tileProvider);
+      }
 
       // Ground atmosphere needs no separate WebGPU pass — it is shaded inside
       // GlobeTerrain.wgsl (csm_computeGroundAtmosphereScattering plus

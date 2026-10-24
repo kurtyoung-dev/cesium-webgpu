@@ -10858,7 +10858,7 @@ In particular, the Batch 68 "regression" was not real. The WGSL blend math has b
 
 **Date:** 2026-05-18
 
-Phase 2.1 of the [SHADER_PAIRS_LOCKSTEP.md](SHADER_PAIRS_LOCKSTEP.md) roadmap — bring the globe terrain's **imagery composite function** into pair-section lockstep. WebGL `sampleAndBlend` ([GlobeFS.glsl:429](../packages/engine/Source/Shaders/GlobeFS.glsl#L429)) and WebGPU `applyImageryLayer` ([GlobeTerrain.wgsl:2248](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl#L2248)) implement the same per-imagery-layer composite stage: alpha masking, gamma, split, cutout, brightness/contrast/hue/saturation effects, then blend.
+Phase 2.1 of the [SHADER_PAIRS_LOCKSTEP.md](SHADER_PAIRS_LOCKSTEP.md) roadmap — bring the globe terrain's **imagery composite function** into pair-section lockstep. WebGL `sampleAndBlend` ([GlobeFS.glsl:429](../packages/engine/Source/Shaders/GlobeFS.glsl#L429)) and WebGPU `applyImageryLayer` ([GlobeTerrain.wgsl](../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl); the `#L2248` anchor this entry carried was a 2026-05-18 line number that every later edit to the file moved, so the link now names the function and not a line) implement the same per-imagery-layer composite stage: alpha masking, gamma, split, cutout, brightness/contrast/hue/saturation effects, then blend.
 
 ### Structural divergences inventoried
 
@@ -23598,3 +23598,183 @@ rasterizes, farzoom's output directory and three `Usage:` lines re-based to `arc
 `Tools/visual-regression/lib/prohibited-reader-allowlist.mjs`, `migration_doc/DEBUGGING_GUIDE.md`
 (the probe-table row), `migration_doc/DEFERRED_WORK.md` (the farzoom row's probe citation),
 this log.
+
+## Bug water-01 - the composite water classification wrote region texels into the array it was handed, so one region corrupted the coastline provider's tile cache and the terrain provider's mask (water landing review finding D-01; fix item DE-01, 2026-10-22)
+
+*Source: the water landing review, `review-derndingle.md` D-01 (BLOCKING), re-read by the lead against `WaterClassificationProvider.ts` before the fix list was cut. Status: fixed in the water landing.*
+
+**Symptom (measured by the review).** With any `water.regions` entry overlapping a tile, `CompositeWaterClassificationProvider._applyBathymetryAndRegionMetadata` painted the region (texel value 255, plus `_rgbaHydroData`) in place. In `generateWaterMask` the array it was handed was the coastline provider's own cached tile: the cached mask changed in 25,764 of 65,536 texels and the very same object came back (`cm === coastMask`). A fresh composite built with no regions then still returned the painted mask, with stale hydro data (25,764 texels differing from the pristine mask). In `augmentWaterMask` the array was the terrain provider's `terrainData.waterMask`: 32,768 texels were written into the caller's array. Removing a region never restored the water.
+
+**Root cause.** `out = hydroMask` aliased the input, and the hydro RGBA buffer was attached to the input array as an expando. The interface contract of `WaterClassificationProvider` says the input is never mutated, and the comment the water work deleted from `GlobeSurfaceTile.js` ("never mutates `terrainData.waterMask`, which may be shared") named the same invariant. No spec built a tile with a region and read the cache back, so nothing saw it.
+
+**Fix.** Copy-on-write. When a region or a tensor pass must write, the method allocates a new mask (`new Uint8Array(mask)`, or a fresh full-size array for the one-byte fast path) and a new RGBA buffer, writes only into those, and never attaches hydro data to the input. Pinned by tests 6 and 7 of `composite-water-classification.spec.mjs`: the coastline provider's cached bytes and a caller's terrain mask are snapshotted, a region is applied and then removed, and the bytes must be identical and `out !== input`.
+
+**Files modified.** `packages/engine/Source/Scene/WaterClassificationProvider.ts`, `Tools/visual-regression/composite-water-classification.spec.mjs`.
+
+## Bug water-02 - a tile whose water mask came from an ancestor re-ran the water block, including the ancestor search, on every frame (water landing review finding D-05; fix item DE-03, 2026-10-22)
+
+*Source: the water landing review, `review-derndingle.md` D-05 (MAJOR). Status: fixed in the water landing.*
+
+**Symptom.** With `lakeWaterMask` or `riverWaterMask` on and no other provider (the lake and river providers define only `intersectsRectangle`, not `generateWaterMask`), every tile that did not intersect water stayed in the water-mask upgrade state for good: `processTerrainStateMachine` and `_findAncestorTileWithTerrainData` ran for the tile on every frame. The river provider's `intersectsRectangle` also returns false for any tile spanning more than 0.12 rad, which widens the set. With `globalWaterMask`, or two or more providers, the composite defines `generateWaterMask` and the case does not arise.
+
+**Root cause.** `GlobeSurfaceTile.js` set `_waterMaskProviderReady` and `_waterMaskProvider` only in the first branch of the water block. A tile that took the `else if (!defined(waterMaskTexture))` ancestor branch, or found no ancestor, never recorded them, so `needsWaterMaskUpgrade` stayed true.
+
+**Fix.** The provider is recorded on every path after the ancestor lookup. `_waterMaskEvaluated` is deliberately left alone on that path, so an ancestor that arrives later while the tile is loading is still picked up. Pinned by test 9 of `composite-water-classification.spec.mjs`: a mock quadtree with a lake-style provider counts `_findAncestorTileWithTerrainData` calls over 300 steady frames and requires 0.
+
+**Files modified.** `packages/engine/Source/Scene/GlobeSurfaceTile.js`, `Tools/visual-regression/composite-water-classification.spec.mjs`.
+
+## Bug water-03 - the 600 ms enhanced-ocean fade never ran when enhanced ocean was switched on at run time, and a late pipeline resolution could start it for the wrong pipelines (water landing review finding H-01; fix item HO-01, 2026-10-22)
+
+*Source: the water landing review, `review-hoarwell.md` H-01 (MAJOR). Status: fixed in the water landing.*
+
+**Symptom.** Turning `enableEnhancedOcean` on after the globe had already rendered classic frames swapped the classic fallback for the enhanced pipeline with a hard cut, with no fade and no pending-compile state. Only "enhanced from the first frame" faded. The spec that existed read source text, so it could not see this.
+
+**Root cause.** `_noteEnhancedOceanPipelineResolved` set `_hasResolvedEnhancedOcean = true` whenever any globe pipeline resolved, classic ones included, and cleared it only when enhanced was turned off. After classic frames the flag was already true, so `_applyEnhancedOceanState(true)` skipped arming the transition. Second path: the `.then` of a pipeline build closed over an entry that a tier flip had already detached from `_pipelineCache`; resolving late, it could start the fade while the new pipelines were still compiling.
+
+**Fix.** The tier and transition state moved into `Renderer/WebGPU/WebGPUGlobeSurfaceOceanTiers.ts` (`GlobeOceanTierTransition`), where it can be driven as a real class. Every cache wipe bumps a generation, an entry remembers the generation and whether it was built with enhanced ocean on, and only an entry built enhanced and still current marks "enhanced resolved" or starts the fade. Pinned by `water-ocean-tier-transition.spec.mjs` (the run-time flip fades over the window; a late resolution from before an off/on flip is ignored), which runs the real renderer under a fake device and carries an inertness mutant behind each scenario.
+
+**Files modified.** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`, `WebGPUGlobeSurfacePipelines.ts`, `WebGPUGlobeSurfaceOceanTiers.ts` (new), `Tools/visual-regression/water-ocean-tier-transition.spec.mjs` (new).
+
+## Bug water-04 - the bootstrap fallback created a globe pipeline synchronously on the render path and then warmed the same descriptor a second time (water landing review finding H-03; fix item HO-02, 2026-10-22)
+
+*Source: the water landing review, `review-hoarwell.md` H-03 (MAJOR). Status: fixed in the water landing.*
+
+**Symptom.** With enhanced ocean on, a first request for an uncached pipeline key (quantized x normals x web-Mercator x stride x clip distances) stalled the main thread while the roughly 6,600-line globe shader compiled, and the GPU held a duplicate pipeline: the synchronous one was never registered in the central cache, and `pipelineCache.warm(...)` then started a second, asynchronous build of the same descriptor. There was no error scope around the synchronous call. The codebase restricts synchronous creation to the scene-capture path and says why.
+
+**Root cause.** `resolveBootstrapFallbackPipeline` called `device.createRenderPipeline` directly on a miss and also called `warm`.
+
+**Fix.** The render path no longer creates a globe pipeline synchronously when the central cache exists. A first request starts the cache's asynchronous build and returns the cached classic fallback pipeline, or null so the tile is skipped while it compiles (the degradation an uncompiled variant already has). Pinned by `water-ocean-tier-transition.spec.mjs` ("a first request for an uncached key under enhanced ocean creates nothing synchronously" and the cached-classic-fallback case), which counts synchronous and asynchronous creations on a mock device.
+
+**Files modified.** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfacePipelines.ts`, `Tools/visual-regression/water-ocean-tier-transition.spec.mjs` (new).
+
+## Bug water-05 - the wind heading from an environmental tensor was written to a property that did not exist, so it never reached the ocean spectrum (water landing review finding W-05; fix item GL-04, 2026-10-22)
+
+*Source: the water landing review, `review-glanduin.md` W-05 (MAJOR). Status: fixed in the water landing.*
+
+**Symptom.** `applyEnvironmentalTensor` on `OceanSurfacePrimitive` and `GlobeWaterOcean` set wind speed and heading from a weather tensor. Speed worked through the facade; heading did nothing, and calling the method on the primitive directly changed neither.
+
+**Root cause.** Both methods assigned `this.windDirection = state.windHeadingRad`, but neither class had a `windDirection` accessor (the only occurrences were the constructor option and the facade's `_windDirection`). The assignment created an inert expando: `_windDirX` and `_windDirZ` were never updated and `_paramsDirty` was never set. The primitive's own `this.windSpeed = ...` was an expando for the same reason. The spec "wire with `EnvironmentalTensorMap`" built a mock scene, never a primitive, and asserted only speed and pressure, so it could not fail.
+
+**Fix.** Real `windDirection` accessors on both classes (the setter updates `_windDirX` and `_windDirZ` and sets `_paramsDirty`; a non-finite heading is ignored), and the primitive's `applyEnvironmentalTensor` writes through the accessors. Pinned by `ocean-fft-controls.spec.mjs` (GL-04a to GL-04f: a heading handed to the facade reaches the primitive's spectrum and dirties it, the same call on the primitive directly changes the wind, and a heading set before the primitive exists is applied on enable).
+
+**Files modified.** `packages/engine/Source/Scene/OceanSurfacePrimitive.js`, `packages/engine/Source/Scene/GlobeWaterOcean.js`, `Tools/visual-regression/ocean-fft-controls.spec.mjs` (new).
+
+## Bug water-06 - the water commits changed the default (classic) WebGPU ocean, and the GLSL twin still used the old law (water landing review finding W-B2 and W-M1; fix items WL-01 and WL-02, 2026-10-22)
+
+*Source: the water landing review, `review-wellinghall.md` W-B2 (BLOCKING) and W-M1 (MAJOR); `review-emyn.md` E-05. Status: fixed in the water landing. The Edge legs that confirm it are the lead's (fix item L-08) and are not claimed here.*
+
+**Symptom.** With `enableEnhancedOcean` false (the default, `definesHi = 0`), the globe's wave perturbation and the near-specular term `mix(camera.lighting.w, 0.5, waveIntensity)` reached their orbit values by about 68 km instead of 1,000 km, and at 100 km the wave strength fell from about 0.66 to 0. The default path also carried a new coast feather and a 0.22 floor, a tide-driven coast threshold shift, a time-animated swash and wet-sand fringe, a sea-level "bay" gate, and a changed degenerate-footprint guard, none with a GLSL twin, under comments that still said "byte-identical" and "the 0.2 floor".
+
+**Root cause.** The shared wave prelude of `computeEnhancedOcean` runs in both branches. The classic branch took its intensity from the new 24-68 km law (`waveIntensityFade`) in place of the base quintic fade from 70 km to 1,000 km (the law `GlobeFS.glsl` still has, `waveFade(70000, 1000000)`), and the strength from `smoothstep(10000, 65000, d)` in place of `mix(0.85, 0.05, smoothstep(10000, 500000, d))`. The coast, tide, swash and bay-gate edits sat in the `//>>else` arm or outside every `//>>ifdef`. Nothing compared the default variant with the base, so a default-path change passed every spec.
+
+**Fix.** The default arm is the base text again (the 70-1,000 km fade and the original strength law), and every change since base moved under `//>>ifdef ENHANCED_OCEAN` with the base expression in `//>>else`: the coast-band floor and feather, `tideShift` and `coastalTideGate`, the swash and wet-sand fringe, `baySeaLevelGate`, and the degenerate-footprint guard. Stale comments corrected. Pinned by `globe-classic-ocean-default-parity.spec.mjs`, which evaluates the `definesHi = 0` variant of the real shader through `lib/wgsl-mini-eval.mjs` over a grid and requires equality with the base expressions, and carries a mutant behind each clause (the new law in the default arm, the 0.22 floor, the unconditional coast arm, the unconditional wet-sand fringe, the footprint guard).
+
+**Files modified.** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`, `Tools/visual-regression/globe-classic-ocean-default-parity.spec.mjs` (new).
+
+## Bug water-07 - `globe.lakeWaterMask` alone painted reflective lakes over terrain without a water mask, against its own documentation (water landing review pass 2, finding B1; 2026-10-22)
+
+*Source: `REVIEW_ORODRUIN_P2.md` B1 (BLOCKING), re-read by the lead against `a999954e2b` and the round-2 tree. Status: fixed in the water landing.*
+
+**Symptom (measured by the review).** On a globe whose terrain provider has `hasWaterMask: false` (the default ellipsoid, or any terrain requested without `requestWaterMask`), turning on only `lakeWaterMask` set `tileProvider.hasWaterMask` to true at the round-2 tree and false at base. Tiles then built lake masks and the reflective water shading switched on, on WebGL and WebGPU alike. The flag's JSDoc, unchanged from base, says it takes effect only when the terrain supplies a water mask.
+
+**Root cause.** `Globe.beginFrame` ORed every active water layer into `hasWaterMask` and mirrored any active layer onto the tile provider. Base gated mask creation on `terrainProvider.hasWaterMask` alone, so the lake layer could only add to a terrain mask; `GlobeSurfaceTile.js` now also builds masks wherever a provider is mirrored, which made the lake layer create one.
+
+**Fix.** The lake and river layers count, and are mirrored, only when the terrain supplies a water mask or `globalWaterMask` is active; `hasWaterMask` is the terrain's mask or the coastline layer. Over a terrain mask the lake layer is mirrored as it shipped, and with `globalWaterMask` it joins the composite. The `lakeWaterMask` and `riverWaterMask` JSDoc say so. Pinned by EM-10 in `globe-water-facade.spec.mjs` (lake-only and lake-plus-river over a maskless terrain build nothing; over a terrain mask the lake provider is mirrored; with the coastline layer the composite is `[global, lake]`), with two mutants: EM-10a restores the round-2 extension and EM-10b makes the lake arm unreachable (the review's P5). Both turn it red.
+
+**Files modified.** `packages/engine/Source/Scene/Globe.js`, `packages/engine/Source/Scene/GlobeSurfaceTile.js` (comment), `Tools/visual-regression/globe-water-facade.spec.mjs`.
+
+## Bug water-08 - `globe.lakeWaterMask` over a terrain water mask dropped the terrain's sea on every upsampled tile that touches a lake (water landing review pass 3, finding B1; 2026-10-23)
+
+*Source: `REVIEW_ORODRUIN_P3.md` B1 (BLOCKING), re-derived by the lead on the round-3 tree. Status: fixed in the water landing (round 4, seat decision: fix (c)).*
+
+**Symptom (measured by the review).** With `lakeWaterMask` on over a terrain that supplies a water mask, a tile made by `upsample` (its terrain data has no `waterMask`) that intersects any lake skipped the ancestor-mask adoption and received a lakes-only mask: the lake painted, the terrain's sea water in that tile gone (no reflective ocean, no waves), on WebGL and WebGPU alike. Base adopted the ancestor's mask texture there (sea kept, no lakes).
+
+**Root cause.** `processTerrainStateMachine` took the mask-creation branch whenever the mirrored provider intersected the tile, and `resolveWaterMaskForTile` then built `augmentWaterMask(new Uint8Array([0]), ...)`: an all-land base with only the lakes on it.
+
+**Fix.** A tile without a mask of its own under an intersecting lake or river layer now composites the layer over the nearest real ancestor's terrain mask, resampled to the tile (`findAncestorWaterMask` and `upsampleAncestorWaterMask` in `GlobeSurfaceTile.js`: bilinear, clamp-to-edge, at texel centres, which is what the shared water-mask sampler reads from the ancestor's texture). An ancestor whose terrain data has no mask is all land, as at base; an ancestor whose mask is an `ImageBitmap` (bytes not readable on the CPU) is adopted as base did, without lakes. A tile no layer touches adopts the ancestor's texture as base did, and the lakes-only branch is gone. Pinned in `composite-water-classification.spec.mjs` tests 19-19c on the real `processStateMachine`, with the shipped `ne10mLakes.bin`, the review's Lake Salvador and Barataria Bay tile and its real ancestor: every ancestor sea texel stays water and every lake texel is painted; mutants Q4 (base adoption) and the dropped ancestor base (lakes only) both turn it red.
+
+The same round restores base's all-land path (review N1): a one-byte all-land mask leaves the tile's texture undefined again whenever no water is in it, so land tiles under a mirrored layer no longer switch to the reflective-ocean shader variant (tests 20 and 20b).
+
+**Files modified.** `packages/engine/Source/Scene/GlobeSurfaceTile.js`, `packages/engine/Source/Scene/WaterClassificationProvider.ts` (comment), `Tools/visual-regression/composite-water-classification.spec.mjs`, `LICENSE.md`, `packages/engine/LICENSE.md`.
+
+## Bug water-09 - the lake and coast shores were serrated on both renderers, and the WebGPU default coast band was 2.5 times WebGL's (Edge water cell great-lakes, FND-1; 2026-10-23)
+
+*Source: the seat's Edge round 2 (`wave-end/water-landing-r2/`, `VERIFY_CALENHAD.md` B1). Status: fixed in the water landing (round 5; the WGSL band re-cut opt-in in round 6, Bug water-13).*
+
+**Symptom (measured on Edge).** `lakeWaterMask` plus `globalWaterMask` over the Great Lakes at 900 km: every lake shore ran a dark, jagged fringe into the land on both renderers, wider and softer on WebGPU; WebGL against WebGPU 4.99 % against a 1 % band, effect areas 32.2 % and 36.4 %. The dark colour is the Natural Earth imagery's own blurred lake, which reaches past the vector shore; the jag and the width were the defects.
+
+**Root cause (two).** (1) The coastline and lake masks are a distance field built from texel-centre classification, so the 0.5 isoline followed the raster staircase: at that camera a 128-texel tile spans about three screen pixels per texel (isoline swing 0.48-0.50 texel on a straight shallow shore, measured in Node). (2) The default WGSL coast band read the texel footprint per pixel, which stands in for GLSL's `fwidth(mask)` only over a binary mask (about 1.0 per texel); the distance field ramps over 12 texels, so the band reached its 0.5 cap and spread the coast over the whole ramp, where GlobeFS.glsl stays on its 0.2 floor.
+
+**Fix.** (1) `applyCoastalSignedDistanceField` smooths the transition band with a separable 1 4 6 4 1 kernel (`COASTAL_SDF_SMOOTHING_RADIUS_TEXELS` = 2) after building the field; only band texels change, interiors stay exact 0 and 255, and the tiles are padded by two more texels (`coastalSdfPadTexels`) so neighbours still agree at the seam. Swing 0.498 to 0.192 (slope 0.37) and 0.483 to 0.287 (slope 0.12), offset 0.002 texel; the Lake Michigan tile's band roughness 16.66 to 5.49. (2) The default WGSL band is GlobeFS.glsl's: `clamp(fwidth(mask) * 1.5, 0.2, 0.5)` with `fwidth(mask)` as forward differences one pixel along each screen axis. Pinned: `global-coastline-water-classification.spec.mjs` 8 and 8b, `composite-water-classification.spec.mjs` 21, `globe-classic-ocean-default-parity.spec.mjs` B1, I4 and I5 (file mutant: the smoothing unreachable turns 8 and 21 red).
+
+**Files modified.** `packages/engine/Source/Scene/GlobalCoastlineWaterClassificationProvider.ts`, `packages/engine/Source/Scene/WaterClassificationProvider.ts`, `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`, the three specs above, `migration_doc/SHADER_PAIRS_LOCKSTEP.md`.
+
+## Bug water-10 - the default WebGPU ocean drew no wave texture at a 50 km camera where WebGL draws it (Edge water cell coast-50km, FND-2; 2026-10-23)
+
+*Source: the seat's Edge round 2 (`VERIFY_CALENHAD.md` B2). Status: fixed in the water landing for the provider-fed ocean (round 5; re-cut opt-in in round 6, Bug water-13).*
+
+**Symptom (measured on Edge).** `globalWaterMask` on, enhanced ocean off, 50 km over San Francisco: WebGL water carries the classic wave and specular speckle, WebGPU water is a smooth gradient (2a 14.6 % against 10.7 %); the WebGL repeat moved 18.2 % between runs, the WebGPU one 1 pixel.
+
+**Root cause.** Not the W-A1 ifdef split (the default arm was the base text) and not a pending pipeline (enhanced ocean was off). The default WGSL arm ran the physical-wavelength march of C11-172 (150, 50 and 15 m octaves); at 44 m per pixel the swell's normal map is mip-averaged to flat, while GlobeFS.glsl runs `czm_getWaterNoise` at 125000 and 825000 repeats (33 km and 5 km structure at SF), which a 50 km camera resolves. A pre-existing parity gap of the base default ocean, recorded as "not a bug" in `SHADER_PAIRS_LOCKSTEP.md`, that the coastline mask made visible on the default ellipsoid.
+
+**Fix.** The default variant runs GlobeFS.glsl's waves: `classicOceanWaveNormal` and `classicWaterNoise` in `GlobeTerrain.wgsl` are the GLSL branch constant for constant (taps through `textureSampleGrad`); the eye-space normal and the perturbation ratio come from it as in WebGL. The physical march stays in the `ENHANCED_OCEAN` variants (byte-identical to round 4). This changes the default WebGPU ocean wherever a water mask exists (Cesium World Terrain included), towards WebGL. Pinned: parity spec I1 (executed against the GLSL constants, 144 cases), I2, I3 (three mutants red); the default-variant identity spec now cuts exactly the three named `water-parity-r5` blocks.
+
+**Files modified.** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`, `Tools/visual-regression/globe-classic-ocean-default-parity.spec.mjs`, `Tools/visual-regression/globe-terrain-default-variant-identity.spec.mjs`, `Tools/visual-regression/globe-night-ocean-sentinel.spec.mjs`, `migration_doc/SHADER_PAIRS_LOCKSTEP.md`.
+
+## Bug water-11 - with enhanced ocean on from the first frame, WebGPU drew nothing until the enhanced pipelines compiled (Edge E-T, FND-4; 2026-10-23)
+
+*Source: the seat's Edge round 2 (`VERIFY_CALENHAD.md` B3). Status: fixed in the water landing (round 5).*
+
+**Symptom (measured on Edge).** The E-T water rig (enhanced HIGH, MSAA 4, `globalWaterMask`): AFTER WebGPU captured uniform black on both runs at frame 158, no error, no device loss, 5 pipelines pending, 210 pipeline-cache misses (BEFORE navy, 87).
+
+**Root cause.** A key first requested under enhanced ocean found no previous-tier pipeline to fall back on (the classic pipeline of that key had never been compiled: enhanced on from the start, or a new MSAA count), so every tile was skipped until its ~415 KB enhanced shader compiled; the speculative warms (blend and quantized twins) compiled alongside and competed with it. The misses are polling, not fan-out: every pending entry calls `getPipelineSync` once per frame.
+
+**Fix.** `resolveCachedFallbackPipeline` requests the classic (Tier 0) pipeline of the same key asynchronously when nothing is cached and adopts it as the entry's fallback when it lands, so the tile draws what a classic globe draws until its own tier is ready; the fade's timeout ends the fade and keeps the fallback. Under enhanced ocean the speculative warms wait for the entry's own pipeline. Pinned: `water-ocean-tier-transition.spec.mjs` "FND-4" scenarios on the real renderer and pipeline cache, each with an inertness mutant.
+
+**Files modified.** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfacePipelines.ts`, `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts`, `Tools/visual-regression/water-ocean-tier-transition.spec.mjs`.
+
+## Bug water-12 - the device census could not see the water masks it was asked to keep alive (Edge E-T, FND-7; 2026-10-23)
+
+*Source: the seat's Edge round 2 (`VERIFY_CALENHAD.md` B5). Status: fixed in the water landing (round 5).*
+
+**Symptom (measured on Edge).** On the AFTER WebGPU pages no water owner was seen, including `prefix:Globe wm_`, a texture label the census does wrap.
+
+**Root cause.** A mask the coastline provider generates is uploaded by the WebGL compatibility stub (label `GLStub_Texture`), and `getOrCreateWaterMaskTexture` served that native view, so no `Globe ...` texture was ever created for it (`WebGPUGlobeSurfaceTextures.ts`, the native-stub early return).
+
+**Fix.** `GlobeSurfaceTile.js` tags a mask a water provider built (`waterProviderMask` on `_webgpuSource`); the WebGPU renderer never serves such a mask from the stub, and creates it under `Globe water mask wm_<id>` (r8) or `Globe water hydro mask wm_<id>` (rgba). A terrain's own mask keeps the base path. Pinned: `composite-water-classification.spec.mjs` 22-22c with mutants on both sides.
+
+**Files modified.** `packages/engine/Source/Scene/GlobeSurfaceTile.js`, `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTextures.ts`, `packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts`, `Tools/visual-regression/composite-water-classification.spec.mjs`.
+
+## Bug water-13 - the round-5 parity ocean was a default move without its proof, popped at every tile-clock wrap and blurred above 64 degrees (review pass 5 B1, N1; 2026-10-23)
+
+*Source: water review pass 5 (Orodruin, REFUTED on B1); seat ruling R-2026-10-23-S8 (option 2). Status: fixed in the water landing (round 6).*
+
+**Symptom (from the code; no Edge rig could see the second and third).** (1) Round 5 put GlobeFS.glsl's classic waves and `fwidth(mask)` coast band in the default WebGPU variant, so the default ocean moved on every masked terrain (Cesium World Terrain included) without R-2026-10-22-3's three cells and performance leg (fetches per wave-shaded fragment: normal map 3 -> 8, water mask 1 -> 3). (2) The classic waves ran on `tile.time`, which wraps every 1777.8 s at a period their tap rates are not commensurate with, so the whole sea popped every 29.6 minutes of scene time (30 s at a 60x clock); every rig pins the wave epoch at 0 s. (3) Above about 64 degrees GLSL blends the texture coordinates to the flipped parameterisation, but the WGSL call site passed the unflipped derivatives (5.8x too large at 80 degrees), so the waves faded and blurred early there.
+
+**Fix.** (1) The three `water-parity-r5` blocks sit under the new hi bit `ShaderDefineHi.WATER_PROVIDER_PARITY` (bit 7), which the globe surface pipeline sets only while the tile provider carries a `waterClassificationProvider` and enhanced ocean is off (`resolveWaterProviderParity`, `oceanDefinesHi`; pipeline marker `, wpp`; a flip stashes the resolved pipelines as fallbacks and wipes the renderer-local caches, as the enhanced flip does). The default variant is the base shader byte for byte again. The default move is `DEFERRED_WORK.md` `NEW-WATER-DEFAULT-OCEAN-PARITY`. (2) The classic waves run on the unwrapped scene seconds in the camera buffer's renamed alignment lane `oceanWaveSeconds` (float 247). (3) `classicFlippedTcStep` carries the ellipsoid-coordinate step through the flip by the chain rule, and the blend's own slope is added: `dFdx(mix(E, F, w))`. Pinned: `globe-terrain-default-variant-identity.spec.mjs` 1-11; `globe-classic-ocean-default-parity.spec.mjs` I1 (7 points incl. 66, 75 and 80 degrees, 4 clocks to 1800.5 s, against finite differences of the GLSL coordinates), I6 (three pole-cap mutants), I7 and I7b (past the wrap; the wrapped clock RED); `water-ocean-tier-transition.spec.mjs` (the bit's gate on the real renderer, three mutants).
+
+**Files modified.** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`, `packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts`, `WebGPUGlobeSurfaceShaders.ts`, `WebGPUGlobeSurfacePipelines.ts`, `WebGPUGlobeSurfaceRenderer.ts`, `WebGPUGlobeSurfaceCameraUB.ts`, `WebGPUGlobeSurfaceTypes.ts`, `cesium-js-types.d.ts`, `packages/engine/Specs/Renderer/WebGPU/WebGPUShaderDefinesSpec.js`, the specs above, `migration_doc/DEFERRED_WORK.md`, `migration_doc/SHADER_PAIRS_LOCKSTEP.md`.
+
+## Bug water-14 - the opt-in parity ocean read blurred mip levels of the wave texture where WebGL reads level 0 (Edge water cell coast-50km 2a, FND-2; 2026-10-23)
+
+*Source: the seat's Edge round 4 on the round-6 tree (`water-landing-r4/AFTER/water-cells/coast-50km`), verifier Calenhad B3. Status: fixed in the water landing (round 7); the pixel effect is Edge round 5's cell 2a to measure.*
+
+**Symptom.** Cell 2a (WebGL against WebGPU, flags on, 50 km over San Francisco) read 2.2477 % at tolerance 16 against the pre-registered 1.0 %; BEFORE reads 0 %. The two ON PNGs are byte-identical to round 3's. Read from them: 20,714 of the 20,715 differing pixels lie inside the water (13,707 more than 32 px from the coast, 76 within 2 px of it), the mean channel difference is -1.4 / -1.8 / -2.2 (no bias), the water's luma mean and spread agree (180.97 / 19.49 WebGL, 180.67 / 19.43 WebGPU) and the two waters correlate at 0.94 per pixel: the same waves, sampled differently. The CPU twin (`globe-classic-ocean-default-parity.spec.mjs` I1) was green because its map is a continuous function read at the tap's coordinate.
+
+**Root cause.** WebGL builds `u_oceanNormalMap` as `new Texture({ context, source: image })` (`Globe.js`): one level, the default Sampler (CLAMP_TO_EDGE, LINEAR, maxAnisotropy 1), so every `czm_getWaterNoise` tap is a bilinear read of level 0. The WebGPU copy is uploaded with a full mip chain (`uploadImageSource`) and bound with the shared repeat sampler, linear mip, maxAnisotropy 8 (`WebGPUGlobeSurfaceLayouts.ts`), which the enhanced march needs, and round 6's `classicWaterNoise` sampled it with `textureSampleGrad` and the coordinates' derivatives: at 45 m per pixel the 825000-repeat layer's first two taps step about 3 texels per pixel, so they read levels 1-2.
+
+**Fix.** `classicWaterNoiseTap` in `GlobeTerrain.wgsl` (opt-in `WATER_PROVIDER_PARITY` variant only): `textureSampleLevel(..., 0.0)` at the coordinate clamped to `[0.5, size - 0.5] / size`, which is CLAMP_TO_EDGE at level 0 under the repeat sampler. The derivatives still drive the footprint fade. Default and enhanced variants unchanged (S8, `globe-terrain-default-variant-identity.spec.mjs`). Spec: `globe-classic-ocean-default-parity.spec.mjs` J1-J4 (the taps over a 256 x 256 texel grid with a mip chain against the GLSL read; mutants: the round-6 taps, no clamp, level 1).
+
+**Files modified.** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`, `Tools/visual-regression/globe-classic-ocean-default-parity.spec.mjs`, `migration_doc/SHADER_PAIRS_LOCKSTEP.md`.
+
+## Bug water-15 - every scene built the water facade and mirrored it per frame, read or not (Edge PF-3 E-D WebGL, FND-5; 2026-10-23)
+
+*Source: the seat's Edge round 4 (PF-3 E-D WebGL startup median 2293.6 -> 2528.5 ms at five interleaved runs, +10.2 %), verifier Calenhad B1. Status: the default-path work removed in the water landing (round 7), with the enhanced-ocean contract restored in round 8 (review pass 7); the startup re-measure is Edge round 5's.*
+
+**Symptom.** The default viewer's WebGL startup read slower on the water tree; WebGPU's did not (1653.4 -> 1650.4 ms).
+
+**What the code did on the default path.** `Scene` built a `GlobeWater` for every globe (`Scene.js`, constructor and `set globe`; base did too, with a smaller facade), and `Globe.beginFrame` then ran the facade's mirrors every frame (the emergence state and thirteen tile-provider writes); the camera controller read the public accessor every frame. Measured in Node, none of this is large: the new modules' module-scope evaluation is under 1.5 ms in all (bundled alone), the Scene module graph's compile time does not move (fresh-compile minimum 327.1 ms base, 327.5 ms tip, +69 KB of bundled code), and the per-frame water work is microseconds. So the code changed here does not account for +235 ms; the attribution of the rest is the seat's CPU profile.
+
+**Fix.** `Globe#water` builds the facade on first read (`_bindWaterFacade(scene, GlobeWater)`, called by `Scene` where it used to construct one; a rebind drops it as a fresh construction did). `beginFrame` writes the tide and facade mirrors only while a facade exists, and puts the provider's defaults back once after a rebind (`resetGlobeWaterMirrors`, shared with the provider's constructor). The camera controller and the zoom helper read `_water`. With `enableEnhancedOcean` on, `beginFrame` takes the facade through the creating accessor on the first frame (`this._water ?? (this.enableEnhancedOcean ? this.water : undefined)`): the enhanced-ocean variants are the only ones that read the mirrored values (the near-surface transparency, default 0.78, and the emergence wetness), and round 7 had left them at the provider's reset values until something read `globe.water` (review pass 7, B1). So the facade's dials take effect without a read whenever `enableEnhancedOcean` is true, and on first read otherwise. Spec: `globe-water-facade.spec.mjs` DP-1, DP-2 (counting facade constructions and mirror writes), DP-3 (enhanced ocean, nothing read: one frame builds one facade and mirrors 0.78) and DP-4 (the two `Scene` call sites, vm-executed: the class is bound, no facade built); mutants DP-1a-c, DP-2a-b, DP-3a (the enhanced gate dropped) and DP-4a-b (eager construction restored).
+
+**Files modified.** `packages/engine/Source/Scene/Globe.js`, `Scene.js`, `GlobeSurfaceTileProvider.js`, `ScreenSpaceCameraController.js`, `SSCCInputHelpers.js`, `Tools/visual-regression/globe-water-facade.spec.mjs`.

@@ -505,7 +505,9 @@ test("the shipped clean list and grandfather ratchets are current", async () => 
   // pairs, which is the intended direction — and is why this stays an equality
   // rather than an upper bound: a rewrite that cleans two pairs has to say so
   // here, and one that puts a marker back cannot slip past a `>=`.
-  assert.match(result.output, /GRANDFATHERED 53 current findings/);
+  // 53 -> 51 at the water landing (Batch 1586): the GlobeTerrain.wgsl wave-fade
+  // rewrite folded two copies of one Q10 comment into one.
+  assert.match(result.output, /GRANDFATHERED 51 current findings/);
 
   const grandfatherRows = await readGrandfatherList();
   assert.equal(grandfatherRows.length, 15);

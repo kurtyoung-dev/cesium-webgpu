@@ -270,10 +270,18 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
       expect(ShaderDefineHi.CLOUD_RECONSTRUCTION_CONSUME).toBe(1 << 5);
     });
 
+    it("pins the lazy underwater optics axis to hi-word bit 6", function () {
+      expect(ShaderDefineHi.UNDERWATER_OPTICS).toBe(1 << 6);
+    });
+
+    it("pins the opt-in water-provider parity ocean axis to hi-word bit 7", function () {
+      expect(ShaderDefineHi.WATER_PROVIDER_PARITY).toBe(1 << 7);
+    });
+
     it("pins every declared hi define (no unpinned additions)", function () {
       // Same discipline as the lo table: a newly-claimed hi bit must come
       // with its own explicit pin above; bump this count with it.
-      expect(Object.keys(ShaderDefineHi).length).toBe(6);
+      expect(Object.keys(ShaderDefineHi).length).toBe(8);
     });
 
     it("uses each hi bit exactly once, as a power of two, below bit 31", function () {

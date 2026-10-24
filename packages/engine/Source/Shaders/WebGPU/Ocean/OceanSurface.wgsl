@@ -1,7 +1,10 @@
 // OceanSurface.wgsl — displaced ocean surface patch for the FFT spectral
 // ocean. A flat ENU grid patch anchored at the camera sub-point is displaced by
-// the merged FFT displacement map and shaded with a simple Fresnel water BRDF
-// plus Jacobian foam. Positioning is relative-to-eye: the anchor is
+// the merged FFT displacement map (one 250 m cascade, resampled at several
+// scales: see sampleMultiBandDisp) and shaded with an exact dielectric Fresnel
+// reflection of an elevation-dependent sky, a Gordon-style in-scattering term,
+// a refracted-column absorption ceiling when the eye is under the surface, and
+// Jacobian foam. Positioning is relative-to-eye: the anchor is
 // EncodedCartesian3-split into high and low halves and the vertex is
 // transformed with mvpRelativeToEye, never an absolute f32 world position.
 //
@@ -56,7 +59,8 @@ struct OceanUniforms {
   celestialMoonPhase: f32,
   celestialMoonIntensity: f32,
   celestialMoonSinAngularRadius: f32,
-  _p2: vec2<f32>,
+  // Seabed depth in metres (x, 0 when unknown) and Jerlov water type (y).
+  bathymetry: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -90,6 +94,101 @@ struct VertexOutput {
 
 fn sampleDisp(uv: vec2<f32>) -> vec4<f32> {
   return textureSampleLevel(Displacement, DisplacementSampler, uv, 0.0);
+}
+
+// Detail bands built from ONE 250 m FFT cascade: the Displacement texture is
+// sampled at several scales and orientations and the samples are summed. These
+// are scaled resamples, not spectral cascades.
+// - band 0 (250 m, domain-warped): the cascade itself
+// - sub band (0.276x, rotated): a slow low-frequency repeat breaker
+// - band 1 (5.95238x, about 42 m, rotated +17 deg): intermediate chop
+// - band 2 (35.714x, about 7 m, rotated -23 deg): fine wavelets
+// The wavelengths shrink but the time evolution is still the 250 m spectrum's,
+// so the smaller bands move at the wrong phase speed, and no spectrum was
+// generated for them. Separate spectral cascades (L = 250 / 17 / 5) are still
+// open work. The 7 m band is also displaced at the
+// vertices, where the 5.25 m grid is above its Nyquist length, so that term
+// aliases; its weight (0.045) keeps this mild.
+fn evaluateOceanStochasticGroup(uv: vec2<f32>) -> vec3<f32> {
+  let p0 = uv * 0.19098301;
+  let p1 = vec2<f32>(uv.x * 0.11803399 - uv.y * 0.22360680, uv.x * 0.22360680 + uv.y * 0.11803399);
+  let f = abs(fract(vec4<f32>(p0, p1)) * 2.0 - 1.0);
+  let q = f * f * (3.0 - 2.0 * f) * 2.0 - 1.0;
+  let warp = vec2<f32>(q.x * 0.62 + q.z * 0.38, q.y * 0.62 + q.w * 0.38);
+  let env = mix(0.42, 1.34, clamp(0.5 + 0.32 * (q.x + q.w) + 0.22 * (q.y * q.z), 0.0, 1.0));
+  return vec3<f32>(warp * 0.18, env);
+}
+
+fn sampleMultiBandDisp(uv: vec2<f32>, detailFade: f32) -> vec4<f32> {
+  let sg = evaluateOceanStochasticGroup(uv);
+  let warpedUv = uv + sg.xy;
+  let groupEnv = sg.z;
+  let uvSub = vec2<f32>(
+    uv.x * 0.6180340 - uv.y * 0.7861514,
+    uv.x * 0.7861514 + uv.y * 0.6180340,
+  ) * 0.2763932 - sg.yx * 0.45 + vec2<f32>(0.19, 0.83);
+  let dSub = sampleDisp(uvSub) * vec4<f32>(0.42, 0.38, 0.42, 0.28);
+  let d0 = sampleDisp(warpedUv) * vec4<f32>(groupEnv, groupEnv, groupEnv, mix(0.65, 1.15, groupEnv));
+  let uv1 = vec2<f32>(
+    warpedUv.x * 0.9563047 - warpedUv.y * 0.2923717,
+    warpedUv.x * 0.2923717 + warpedUv.y * 0.9563047,
+  ) * 5.95238 + vec2<f32>(0.37, 0.61);
+  let d1 = sampleDisp(uv1) * vec4<f32>(0.22, 0.24, 0.22, 0.45) * (0.35 + 0.65 * detailFade) * groupEnv;
+  if (detailFade <= 1.0e-3) {
+    return d0 + dSub + d1;
+  }
+  let uv2 = vec2<f32>(
+    warpedUv.x * 0.9205048 + warpedUv.y * 0.3907311,
+    -warpedUv.x * 0.3907311 + warpedUv.y * 0.9205048,
+  ) * 35.714 + vec2<f32>(0.73, 0.19);
+  let d2 = sampleDisp(uv2) * vec4<f32>(0.045, 0.055, 0.045, 0.30) * detailFade;
+  return d0 + dSub + d1 + d2;
+}
+
+// Analytical Lord Kelvin 19.47 deg (arcsin(1/3), tan(alpha) ~= 0.35355) vessel V-wake
+// and turbulent stern propeller wash evaluated in local ENU meters.
+//
+// NOT CALLED (deferred, CI-01). The previous revision displaced every enabled
+// ocean by this wake at a hard-coded origin (85, 140) with a phase taken from
+// the integer lattice offset, so it jumped on every 250 m snap and the
+// fragment copy was disabled by a position hack. A wake belongs behind a gate
+// uniform driven by vesselWakeEnabled, with emitter position and velocity
+// uploaded and the phase taken from the simulation clock; none of that exists
+// for the FFT ocean yet (GlobeWater's emitters feed only the globe shader).
+// The function stays as the scaffold that wiring will call; the origin below is
+// a placeholder, not a position.
+fn computeKelvinVesselWake(localEnu: vec2<f32>, phaseTime: f32, detailFade: f32) -> vec2<f32> {
+  if (detailFade <= 1.0e-3) {
+    return vec2<f32>(0.0);
+  }
+  let wakeOrigin = vec2<f32>(85.0, 140.0);
+  let rel = localEnu - wakeOrigin;
+  // Wake trails behind the vessel along (-0.8, -0.6)
+  let s = -(rel.x * 0.8 + rel.y * 0.6);
+  let r = abs(-rel.x * 0.6 + rel.y * 0.8);
+  if (s <= 0.0 || s > 480.0 || r > s * 0.42 + 8.0) {
+    return vec2<f32>(0.0);
+  }
+  let kelvinSlope = 0.3535534; // tan(19.47122 deg) = 1 / sqrt(8)
+  let armRatio = r / max(s * kelvinSlope, 1.0);
+  let cuspEnvelope =
+    smoothstep(0.45, 0.96, armRatio) *
+    (1.0 - smoothstep(1.0, 1.18, armRatio));
+  let longitudinalDecay = exp(-0.0048 * s) * smoothstep(0.0, 14.0, s);
+  let divergentWave = sin(r * 0.62 - s * 0.22 - phaseTime * 2.4) * cuspEnvelope;
+  let transverseWave =
+    cos(s * 0.28 - phaseTime * 1.8) *
+    (1.0 - smoothstep(0.0, 0.98, armRatio)) *
+    0.55;
+  let wakeHeight = (divergentWave + transverseWave) * longitudinalDecay * detailFade * 0.42;
+  let propWashCore =
+    exp(-r * r / max(10.0 + s * 0.16, 1.0)) *
+    exp(-0.0065 * s) *
+    (0.65 + 0.35 * sin(s * 0.85 - phaseTime * 3.5));
+  let cuspFoam = clamp(abs(divergentWave) * cuspEnvelope * 1.15 + propWashCore * 0.88, 0.0, 1.0) *
+    longitudinalDecay *
+    detailFade;
+  return vec2<f32>(wakeHeight, cuspFoam);
 }
 
 // Microfacet glint of a celestial disc on water.
@@ -214,16 +313,20 @@ fn vertexMain(@location(0) gridPos: vec2<f32>) -> VertexOutput {
   let e0 = gridPos.x * ocean.patchExtent;
   let n0 = gridPos.y * ocean.patchExtent;
 
-  let uv = vec2<f32>(e0, n0) / ocean.patchL + ocean.uvOffset;
-  let disp = sampleDisp(uv);
-
-  // Distance fade of wave amplitude (matches the B630 water-mask handover band).
+  // Distance fade of wave amplitude + radial patch-edge feather to eliminate rectangular seam.
   let planarDist = length(vec2<f32>(e0, n0));
+  let detailFade = 1.0 - smoothstep(180.0, 2200.0, planarDist);
+  let uv = vec2<f32>(e0, n0) / ocean.patchL + ocean.uvOffset;
+  let disp = sampleMultiBandDisp(uv, detailFade);
   let fadeLin = clamp(
     (planarDist - ocean.waveFadeNear) /
       max(ocean.waveFadeFar - ocean.waveFadeNear, 1.0),
     0.0, 1.0);
-  let amp = pow(1.0 - fadeLin, 5.0);
+  let patchEdgeWindow = 1.0 - smoothstep(
+    ocean.patchExtent * 0.60,
+    ocean.patchExtent * 0.96,
+    planarDist);
+  let amp = pow(1.0 - fadeLin, 5.0) * patchEdgeWindow;
 
   let e = e0 + disp.x * amp;
   let n = n0 + disp.z * amp;
@@ -262,40 +365,110 @@ struct FragOutput {
   //>>endif
 };
 
+fn fresnelDielectric(cosI: f32, eta: f32) -> f32 {
+  let c = clamp(cosI, 0.0, 1.0);
+  let sin2T = (1.0 - c * c) / (eta * eta);
+  if (sin2T >= 1.0) {
+    return 1.0;
+  }
+  let cosT = sqrt(max(0.0, 1.0 - sin2T));
+  let rS = (c - eta * cosT) / max(c + eta * cosT, 1.0e-5);
+  let rP = (eta * c - cosT) / max(eta * c + cosT, 1.0e-5);
+  return clamp(0.5 * (rS * rS + rP * rP), 0.0, 1.0);
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> FragOutput {
-  // Normal from the height-gradient of the displacement map (finite difference).
+  let eyeDist = length(input.posRelEye);
+  let detailFade = 1.0 - smoothstep(180.0, 2200.0, eyeDist);
+  let altitudeHandover = 1.0 - smoothstep(3000.0, 12000.0, eyeDist);
+
+  // Normal from the 3-cascade height-gradient of the displacement map (forward finite difference).
+  let dispCenter = sampleMultiBandDisp(input.uv, detailFade);
+  let h0 = sampleDisp(input.uv).y;
   let t = ocean.texelSize;
-  let hL = sampleDisp(input.uv - vec2<f32>(t, 0.0)).y;
   let hR = sampleDisp(input.uv + vec2<f32>(t, 0.0)).y;
-  let hD = sampleDisp(input.uv - vec2<f32>(0.0, t)).y;
   let hU = sampleDisp(input.uv + vec2<f32>(0.0, t)).y;
-  let worldStep = 2.0 * t * ocean.patchL;
-  let slopeE = (hR - hL) / max(worldStep, 1e-3) * ocean.detailScale * input.fade;
-  let slopeN = (hU - hD) / max(worldStep, 1e-3) * ocean.detailScale * input.fade;
+  let worldStep = t * ocean.patchL;
+  let cascadeRippleE = (dispCenter.x - h0 * 0.15) * 0.08 * detailFade;
+  let cascadeRippleN = (dispCenter.z - h0 * 0.15) * 0.08 * detailFade;
+  let slopeE = ((hR - h0) / max(worldStep, 1e-3) + cascadeRippleE) * ocean.detailScale * input.fade;
+  let slopeN = ((hU - h0) / max(worldStep, 1e-3) + cascadeRippleN) * ocean.detailScale * input.fade;
   let nLocal = normalize(vec3<f32>(-slopeE, -slopeN, 1.0));
   let worldNormal = normalize(
     ocean.east * nLocal.x + ocean.north * nLocal.y + ocean.up * nLocal.z);
 
   let viewDir = normalize(-input.posRelEye);
-  let nDotV = max(dot(worldNormal, viewDir), 0.0);
-  // Schlick Fresnel, F0 = 0.02 for water.
-  let fresnel = 0.02 + 0.98 * pow(1.0 - nDotV, 5.0);
+  let rawNdotV = dot(worldNormal, viewDir);
+  let nDotV = max(rawNdotV, 0.0);
+  // Exact unpolarized dielectric Fresnel for air-to-water (eta = 1.333333).
+  let fresnel = fresnelDielectric(nDotV, 1.333333);
 
-  // Sky reflection: brighten with the up-component of the reflected ray.
+  // Sky reflection: couple zenith/horizon dome to solar elevation (day -> twilight -> night).
+  let upDir = normalize(ocean.up);
+  let sunDir = normalize(ocean.sunDirection);
+  let sunElev = dot(upDir, sunDir);
+  let dayWeight = smoothstep(-0.08, 0.18, sunElev);
+  let twilightWeight =
+    smoothstep(-0.22, -0.02, sunElev) * (1.0 - smoothstep(0.02, 0.24, sunElev));
+  let zenithSky = mix(
+    vec3<f32>(0.02, 0.04, 0.09),
+    vec3<f32>(0.55, 0.72, 0.92),
+    dayWeight) + vec3<f32>(0.42, 0.18, 0.08) * twilightWeight;
   let reflectDir = reflect(-viewDir, worldNormal);
-  let skyUp = clamp(dot(reflectDir, normalize(ocean.up)), 0.0, 1.0);
-  let skyColor = mix(ocean.shallowColor, vec3<f32>(0.55, 0.72, 0.92), skyUp);
-
-  var color = mix(ocean.deepColor, skyColor, fresnel);
+  let skyUp = clamp(dot(reflectDir, upDir), 0.0, 1.0);
+  let horizonConeGate = (1.0 - smoothstep(0.0, 0.16, skyUp)) * (0.35 + 0.65 * dayWeight);
+  let localHorizonReflection = mix(
+    ocean.shallowColor,
+    mix(vec3<f32>(0.08, 0.18, 0.12), ocean.shallowColor, 0.65),
+    horizonConeGate,
+  );
+  let skyColor = mix(localHorizonReflection, zenithSky, skyUp);
 
   // Sun specular. Two laws, chosen at runtime by the celestial-reflection
   // enable float rather than by a shader define, because the microfacet lobe
   // shares its evaluation with the night-side terms and both have to be
   // switchable without recompiling or spending one of the exhausted define
-  // bits. The off arm below is the historical Blinn-Phong highlight, unchanged,
-  // so the default look survives the addition untouched.
-  let sunDir = normalize(ocean.sunDirection);
+  // bits. The off arm below is the historical Blinn-Phong highlight, unchanged;
+  // the surrounding shading (Fresnel, sky, scatter, foam) is not, see the
+  // header.
+  let localEnuFrag = (input.uv - ocean.uvOffset) * ocean.patchL;
+  let refractedViewDir = refract(-viewDir, worldNormal, 0.75);
+  let refractedCos = max(-dot(refractedViewDir, upDir), 0.12);
+  let columnSlant = clamp(1.0 / refractedCos, 1.0, 4.5);
+  let bathyDepth = ocean.bathymetry.x;
+  let bathyJerlov = clamp(ocean.bathymetry.y, 0.0, 5.0);
+  let shallowShelfBoost = select(
+    1.0,
+    1.0 + (1.0 - smoothstep(4.0, 85.0, bathyDepth)) * (0.45 - bathyJerlov * 0.05),
+    bathyDepth > 0.0,
+  );
+  let gordonScatter =
+    ocean.shallowColor *
+    (1.0 - exp(-0.28 * columnSlant)) *
+    (0.35 + 0.65 * max(sunElev, 0.0)) *
+    (1.0 - fresnel) *
+    0.22 *
+    shallowShelfBoost;
+  let vDotNegL = max(dot(viewDir, -sunDir), 0.0);
+  let broadForward = max(0.0, dot(sunDir, -viewDir) + 0.3);
+  let crestElevation = clamp(max(dispCenter.y, 0.0) * 0.35, 0.0, 1.5);
+  let crestToTroughTranslucency =
+    mix(vec3<f32>(-0.006, -0.012, -0.018), vec3<f32>(0.024, 0.26, 0.34), clamp(crestElevation, 0.0, 1.0)) *
+    input.fade *
+    altitudeHandover;
+  let vDotNegL2 = vDotNegL * vDotNegL;
+  let sssFactor =
+    (1.0 - nDotV) *
+    (vDotNegL2 * vDotNegL2 * 0.16 + broadForward * broadForward * 0.12) *
+    (1.0 + crestElevation) *
+    (1.0 - fresnel * 0.5) *
+    input.fade *
+    altitudeHandover;
+  var color =
+    mix(ocean.deepColor + gordonScatter + crestToTroughTranslucency, skyColor, fresnel) +
+    vec3<f32>(0.05, 0.25, 0.35) * sssFactor;
+
   if (ocean.celestialEnable > 0.0) {
     let celestialRoughness = clamp(
       ocean.celestialRoughness + (1.0 - input.fade) * CELESTIAL_DISTANCE_ROUGHEN,
@@ -304,7 +477,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     // The two light sources hand over across the terminator through
     // complementary weights, so neither is counted twice and no seam appears
     // where one takes over from the other.
-    let up = normalize(ocean.up);
+    let up = upDir;
     let nightGate = celestialNightGate(up, sunDir);
     let dayGate = 1.0 - nightGate;
 
@@ -339,12 +512,80 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     color += vec3<f32>(1.0, 0.98, 0.9) * spec * nDotV;
   }
 
-  // Foam from the Jacobian channel.
-  let foam = clamp(sampleDisp(input.uv).w * ocean.foamStrength, 0.0, 1.0) * input.fade;
-  color = mix(color, vec3<f32>(0.92, 0.95, 0.97), foam);
+  // Foam from the Jacobian channel + cellular Voronoi lace.
+  let laceTrig = sin(vec4<f32>(
+    localEnuFrag.x * 0.45 + localEnuFrag.y * 0.32,
+    localEnuFrag.x * 0.38 - localEnuFrag.y * 0.51,
+    localEnuFrag.x * 1.15 - localEnuFrag.y * 0.85,
+    localEnuFrag.x * 0.92 + localEnuFrag.y * 1.24,
+  ));
+  let cascadeFoamLace = mix(
+    1.0,
+    clamp(0.55 + 0.30 * (laceTrig.x * laceTrig.y) + 0.25 * (laceTrig.z * laceTrig.w), 0.35, 1.25),
+    detailFade,
+  );
+  let foam =
+    clamp(dispCenter.w * ocean.foamStrength * cascadeFoamLace, 0.0, 1.0) *
+    input.fade *
+    altitudeHandover;
+  let oneMinusNDotVOcean = 1.0 - nDotV;
+  let crestSpindrift =
+    vec3<f32>(0.76, 0.88, 0.96) *
+    foam *
+    (oneMinusNDotVOcean * oneMinusNDotVOcean * oneMinusNDotVOcean) *
+    altitudeHandover *
+    0.24;
+  color = mix(color + crestSpindrift, vec3<f32>(0.92, 0.95, 0.97), foam);
+
+  // Submerged upward-looking 3D wave ceiling: Snell's Window (48.6 deg critical cone),
+  // Total Internal Reflection (TIR), and RGB prismatic rim dispersion (n_R=1.331, n_G=1.334, n_B=1.338).
+  let meanSurfaceRelEyeUp = dot(input.posRelEye, upDir) - dispCenter.y * input.fade;
+  if (rawNdotV < 0.0 && meanSurfaceRelEyeUp > 0.25) {
+    let cosThetaI = clamp(dot(-worldNormal, -viewDir), 0.0, 1.0);
+    let sin2ThetaI = max(0.0, 1.0 - cosThetaI * cosThetaI);
+    let sin2ThetaR = 1.331 * 1.331 * sin2ThetaI;
+    let sin2ThetaG = 1.334 * 1.334 * sin2ThetaI;
+    let sin2ThetaB = 1.338 * 1.338 * sin2ThetaI;
+    let cosThetaR = sqrt(max(0.0, 1.0 - sin2ThetaR));
+    let cosThetaG = sqrt(max(0.0, 1.0 - sin2ThetaG));
+    let cosThetaB = sqrt(max(0.0, 1.0 - sin2ThetaB));
+    let snellWindowMask = 1.0 - smoothstep(0.94, 1.0, sin2ThetaG);
+    let rimDispersion = vec3<f32>(
+      smoothstep(0.76, 0.99, sin2ThetaR) * (1.0 - smoothstep(0.99, 1.02, sin2ThetaR)),
+      smoothstep(0.76, 0.99, sin2ThetaG) * (1.0 - smoothstep(0.99, 1.02, sin2ThetaG)),
+      smoothstep(0.76, 0.99, sin2ThetaB) * (1.0 - smoothstep(0.99, 1.02, sin2ThetaB))
+    );
+    let refractedSky = zenithSky * vec3<f32>(
+      0.55 + 0.45 * cosThetaR,
+      0.55 + 0.45 * cosThetaG,
+      0.55 + 0.45 * cosThetaB
+    ) + rimDispersion * vec3<f32>(0.36, 0.26, 0.48) * dayWeight;
+    let tirUndersea = mix(ocean.deepColor, ocean.shallowColor, 0.38) * (0.25 + 0.75 * dayWeight);
+    let ceilingColor = mix(tirUndersea, refractedSky, snellWindowMask);
+    let beerLambert = exp(-vec3<f32>(0.22, 0.032, 0.0095) * min(eyeDist, 120.0));
+    let inscatter = vec3<f32>(0.015, 0.16, 0.28) * (0.25 + 0.75 * dayWeight);
+    color = ceilingColor * beerLambert + inscatter * (1.0 - beerLambert);
+  }
+
+  // Close-range water-type transparency & radial patch-edge alpha feathering:
+  // Clear tropical water (high blue-green ratio in shallowColor) transmits more
+  // light at steep viewing angles (low Fresnel), while turbid coastal water and
+  // grazing horizon reflections approach full opacity.
+  let closeClarityFade = 1.0 - smoothstep(180.0, 3800.0, eyeDist);
+  let waterTypeTurbidity = clamp(
+    (ocean.shallowColor.r * 2.4 + ocean.shallowColor.g * 1.1) /
+      max(ocean.shallowColor.b, 0.08),
+    0.22,
+    0.92,
+  );
+  let minOpacityByWaterType = mix(0.36, 0.88, waterTypeTurbidity);
+  let angleOpacity = mix(minOpacityByWaterType, 1.0, fresnel);
+  let closeAlpha = mix(1.0, angleOpacity, closeClarityFade);
+  let edgeAlpha = smoothstep(0.0, 0.22, input.fade);
+  let surfaceAlpha = clamp(closeAlpha + foam * 0.85, 0.28, 1.0) * edgeAlpha;
 
   var outc: FragOutput;
-  outc.color = vec4<f32>(color, 1.0);
+  outc.color = vec4<f32>(color, surfaceAlpha);
   //>>ifdef LOG_DEPTH
   outc.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
   //>>endif

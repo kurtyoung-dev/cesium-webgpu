@@ -879,6 +879,8 @@ const FLAGS = Object.freeze([
   "GLOBE_IMAGERY_REDUCED",
   "LOG_DEPTH",
   "MATERIAL_APPLY",
+  "UNDERWATER_OPTICS",
+  "WATER_PROVIDER_PARITY",
 ]);
 
 /** The lines CO-18 wrote — every define set must be shown to carry them. */
@@ -937,9 +939,9 @@ test("F2: every edited line sits at `//>>ifdef` depth 0", () => {
   }
 });
 
-test("F3: all 64 define sets carry the edit and produce no live directive", () => {
-  // Bounded: 2^6 = 64 subsets of a frozen 6-element list.
-  assert.equal(FLAGS.length, 6);
+test("F3: all 256 define sets carry the edit and produce no live directive", () => {
+  // Bounded: 2^8 = 256 subsets of a frozen 8-element list.
+  assert.equal(FLAGS.length, 8);
   for (let mask = 0; mask < 1 << FLAGS.length; mask++) {
     const defines = FLAGS.filter((_, bit) => (mask & (1 << bit)) !== 0);
     const text = expandDefines(wgsl, defines);

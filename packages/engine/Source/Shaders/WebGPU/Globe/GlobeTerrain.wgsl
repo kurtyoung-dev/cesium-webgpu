@@ -77,9 +77,16 @@ struct CameraUniforms {
   minMaxHeight: vec2<f32>,
   // Ellipsoid mean radius (meters) — replaces the hardcoded EARTH_RADIUS
   // constant so Mars / Moon / custom ellipsoids produce correct altitude
-  // calculations. `.y` stays reserved for a future oblate-ellipsoid pair.
+  // calculations. The oblate axis ratio is read from `ellipsoidInverseRadii*`.
   ellipsoidRadius: f32,
-  _pad3: f32,
+  // Dynamic vessel-wake gate in [0, 1], read by the enhanced ocean's Kelvin
+  // wake. Exactly 0 unless a wake can actually be drawn: it needs
+  // `globe.water.vesselWakeEnabled` AND emitter positions uploaded to this
+  // shader, and that upload is not wired yet, so today it is
+  // always 0. It is its own lane because it used to share `hdrControl.z` with
+  // the quality-preset and relief detail bias, which let a HIGH preset alone
+  // switch the wake on. This is the former `_pad3` word.
+  vesselWakeGate: f32,
   // 2D / Columbus View support.
   // tileRectangle: west, south, east, north (radians)
   tileRectangle: vec4<f32>,
@@ -90,11 +97,16 @@ struct CameraUniforms {
   // sceneMode: 0=MORPH, 1=COLUMBUS, 2=2D, 3=3D
   // morphTime: 0..1 blend factor (0=2D, 1=3D)
   // useWebMercator: 1 if map projection is Web Mercator, 0 if Geographic
-  // _pad4: alignment padding
+  // oceanTransitionDeficit: 1 while the enhanced-ocean pipelines are still
+  //   compiling after `enableEnhancedOcean` was turned on at runtime, falling
+  //   to 0 over about 600 ms, and 0 otherwise. The enhanced arm reads
+  //   `oceanTransition = 1 - deficit`. CPU side:
+  //   `WebGPUGlobeSurfaceRenderer._getOceanTransitionDeficit`. This is the
+  //   former `_pad4` alignment word.
   sceneMode: f32,
   morphTime: f32,
   useWebMercator: f32,
-  _pad4: f32,
+  oceanTransitionDeficit: f32,
   // Last frame's viewProjection, captured by `UniformState.update()` before
   // it overwrites `_viewProjection` with the new camera state. Motion-vector
   // passes read this to reproject the current fragment into the previous
@@ -241,7 +253,13 @@ struct CameraUniforms {
   //     Matches the globe's own atmosphere/fog gate
   //     (`groundAtmosphereControl.w`, also `frameState.useHDR`).
   // y = czm_gamma (uniformState.gamma, default 2.2).
-  // z, w = reserved.
+  // z = water detail bias: quality preset (LOW -0.35, HIGH +0.45) plus half the
+  //     bathymetric relief boost. Read by the enhanced ocean only. The vessel
+  //     wake does NOT ride here; it has `vesselWakeGate`.
+  // w = ONE sign-coded float, because no free lane exists: positive = ROV lamp
+  //     intensity, negative = minus the emergence wetness. The lamp wins, so
+  //     wetness reads 0 while the lamp is on (a known limitation).
+  //     Packed by `resolveWaterCameraControls`.
   // All-zero by default, which leaves `czm_gammaCorrect` an identity no-op
   // and the SDR render unchanged.
   hdrControl: vec4<f32>,
@@ -261,7 +279,11 @@ struct CameraUniforms {
   // y = eye-relative flag: > 0.5 means every `cloudShadowVP*` above is
   //     `worldToSunClip * translate(camera)`, so the fragment shader must
   //     project `v_positionRTE`. 0 keeps the absolute matrices and
-  //     `v_positionMC` for the planar scene modes. z, w reserved.
+  //     `v_positionMC` for the planar scene modes.
+  // z = near-surface water transparency in [0, 1]; w = dive depth in metres.
+  //     Both come from the water controls (`resolveWaterCameraControls`),
+  //     are written in both branches of the cascade tail, and are read by the
+  //     enhanced ocean only.
   cloudShadowCascadeParams: vec4<f32>,
   // Celestial water reflection: the microfacet Sun glint and the moonglade the
   // FFT ocean carries in `Ocean/OceanSurface.wgsl`, ported here so the same
@@ -300,7 +322,11 @@ struct CameraUniforms {
   // to match. Zero when the camera has no cartographic position, which a
   // consumer detects as a zero-determinant rotation.
   eyeCartographic: vec3<f32>,
-  _padEyeCartographic: f32,
+  // The vec3's alignment lane carries the unwrapped scene wave seconds
+  // (WebGL's `u_oceanWaveSeconds`) for the opt-in WATER_PROVIDER_PARITY
+  // classic waves (water round 6); no other variant reads it. Written by
+  // `createCameraUniformBuffer` after the eye-cartographic tail.
+  oceanWaveSeconds: f32,
   eyeToEnu: mat3x3<f32>,
   eyeEllipsoidCurvature: vec2<f32>,
   _padEyeCurvature: vec2<f32>,
@@ -537,6 +563,10 @@ struct TileUniforms {
   // would go stale, while this buffer is rewritten every frame from the same
   // `vectorProvider.antialias` WebGL reads.
   vectorCoverageRadius: f32,
+  // Astronomical tide height in metres at this tile (float 493, a former
+  // padding word). Enhanced ocean only: the CPU writes 0 at defaults, and the
+  // default coast ignores it.
+  oceanTideHeight: f32,
   // Ground size, in meters, of this tile's UV domain, along each UV axis —
   // the uniform twin of `VectorCommon.glsl`'s `u_vectorMetersPerUv`, packed
   // from the same `VectorTileData.metersPerUv` the WebGL uniform map reads
@@ -545,7 +575,7 @@ struct TileUniforms {
   // width marks.
   //
   // WGSL gives a `vec2<f32>` an 8-byte alignment, so it starts at float 494
-  // rather than 493 — float 493 stays the padding word it already was, and
+  // rather than 493 — float 493 is `oceanTideHeight`, declared above, and
   // the struct's total size is unchanged at 496 floats. `TILE_UNIFORM_FLOATS`
   // and `VECTOR_METERS_PER_UV_OFFSET` in `WebGPUGlobeSurfaceTypes.ts` are the
   // CPU half of that pair; `vector-layer-draping.spec.mjs` derives this
@@ -2714,9 +2744,23 @@ fn sampleOceanWaveNormals(
   // two constants must stay in lockstep — so past that ratio the long axis
   // aliases at the min-axis LOD. The standard hardware-anisotropy clamp
   // applies: the resolvable footprint is max(minAxis, maxAxis / maxAniso).
+//>>ifdef ENHANCED_OCEAN
+  let lenDx = length(euvDx);
+  let lenDy = length(euvDy);
+  let footMinRaw = min(lenDx, lenDy);
+  let footMaxRaw = max(lenDx, lenDy);
+  let uvDet = abs(euvDx.x * euvDy.y - euvDx.y * euvDy.x);
+  let safeFootMin = select(
+    footMinRaw,
+    footMaxRaw,
+    footMinRaw < footMaxRaw * 0.02 || uvDet < footMaxRaw * footMaxRaw * 0.002,
+  );
+  let footMin = max(safeFootMin, footMaxRaw / OCEAN_SAMPLER_MAX_ANISO);
+//>>else
   let footMinRaw = min(length(euvDx), length(euvDy));
   let footMaxRaw = max(length(euvDx), length(euvDy));
   let footMin = max(footMinRaw, footMaxRaw / OCEAN_SAMPLER_MAX_ANISO);
+//>>endif
   let w1 = OCEAN_OCTAVE_WEIGHT_1 * oceanOctaveLodWeight(OCEAN_OCTAVE_REPEATS_1 * footMin);
   let w2 = OCEAN_OCTAVE_WEIGHT_2 * oceanOctaveLodWeight(OCEAN_OCTAVE_REPEATS_2 * footMin);
   let w3 = OCEAN_OCTAVE_WEIGHT_3 * oceanOctaveLodWeight(OCEAN_OCTAVE_REPEATS_3 * footMin);
@@ -2758,6 +2802,51 @@ fn sampleOceanWaveNormals(
   return normalize(m1 + m2 + m3);
 }
 
+//>>ifdef ENHANCED_OCEAN
+// The `//>>else` arm below is the shipped foam term and the uncalled shipped
+// subsurface term, so the default variant stays byte-identical to the shader
+// before the water landing (W-A1, `globe-terrain-default-variant-identity.spec.mjs`).
+// Compute foam factor: whitecaps appear where wave normals are steep,
+// modulated by a 2-phase flow-advected cellular lace filament pattern,
+// downwind Langmuir circulation windrow streaks, and close-range 3D whitewater relief.
+fn computeFoam(waveNormal: vec3<f32>, distFromCamera: f32) -> f32 {
+  let distFade = 1.0 - smoothstep(12000.0, 65000.0, distFromCamera);
+  if (distFade <= 1.0e-4) {
+    return 0.0;
+  }
+  let waveSlope = length(waveNormal.xy);
+  let steepness = max(1.0 - abs(waveNormal.z), waveSlope * 0.88);
+  let closeThresholdBoost = (1.0 - smoothstep(40.0, 450.0, distFromCamera)) * 0.032;
+  let threshold = clamp(getFoamThreshold() * 0.44 + closeThresholdBoost, 0.13, 0.34);
+  let rawCrest = smoothstep(threshold, threshold + 0.10, steepness);
+  if (rawCrest <= 1.0e-4) {
+    return 0.0;
+  }
+  let flowClock = select(tile.time, 0.0, tile.time > 1.0e9) * 0.35;
+  let flowPhase0 = fract(flowClock);
+  let flowPhase1 = fract(flowClock + 0.5);
+  let flowBlend = abs(2.0 * flowPhase0 - 1.0);
+  let adv0 = waveNormal.xy * (20.0 + 4.0 * flowPhase0);
+  let adv1 = waveNormal.xy * (20.0 + 4.0 * flowPhase1) + vec2<f32>(1.57, -1.13);
+  let lacePhase = vec4<f32>(
+    adv0.x + adv0.y * 0.7,
+    adv1.x + adv1.y * 0.7,
+    adv0.x * 0.8 - adv0.y * 1.2 + 1.5707963,
+    adv1.x * 0.8 - adv1.y * 1.2 + 1.5707963,
+  );
+  let laceTrig = sin(lacePhase);
+  let laceMix = mix(laceTrig.x * laceTrig.z, laceTrig.y * laceTrig.w, flowBlend);
+  let langmuirWindrow =
+    0.76 + 0.24 * cos((waveNormal.x * 14.0 - waveNormal.y * 9.0) + sin(waveNormal.y * 11.0));
+  let cellularLace = clamp((0.46 + 0.54 * laceMix) * langmuirWindrow, 0.16, 1.0);
+  let closeReliefGate = 1.0 - smoothstep(25.0, 260.0, distFromCamera);
+  let whitewaterRelief = 1.0 + 0.32 * closeReliefGate * clamp(laceMix, -0.5, 1.0);
+  let seaLevelCrestFocus = mix(0.28, 1.0, 1.0 - smoothstep(350.0, 2200.0, distFromCamera));
+  let crestShape = rawCrest * (0.45 + 0.55 * rawCrest);
+  let foamFactor = crestShape * cellularLace * whitewaterRelief * seaLevelCrestFocus;
+  return clamp(foamFactor * distFade * 0.92, 0.0, 0.92);
+}
+//>>else
 // Compute foam factor: whitecaps appear where wave normals are steep
 fn computeFoam(waveNormal: vec3<f32>, distFromCamera: f32) -> f32 {
   // Wave steepness as deviation from straight-up
@@ -2785,6 +2874,7 @@ fn computeSubsurfaceScattering(
   let rimFactor = 1.0 - max(dot(viewDir, normalEC), 0.0);
   return sssColor * scatter * rimFactor;
 }
+//>>endif
 
 // Celestial reflection on the globe's water: the microfacet Sun glint and the
 // moonglade.
@@ -2964,6 +3054,231 @@ fn computeCelestialWaterSpecular(
   return (sunContribution + moonContribution) * waterMaskValue;
 }
 
+//>>ifdef ENHANCED_OCEAN
+// Evaluates a zero-SFU (pure ALU triangle-quintic) multi-directional stochastic
+// wave field from tile-continuous wave coordinates:
+//   .xy = 2D curl-like spatial domain warp in [-1, 1] that bends wave crests
+//   .z  = Longuet-Higgins wave-group amplitude envelope in [0.32, 1.36]
+//   .w  = Non-periodic sub-harmonic macro-swell slope perturbation in [-1, 1]
+fn evaluateStochasticWaveField(waveCoord: vec2<f32>, t: f32) -> vec4<f32> {
+  let p0 = waveCoord * 0.11803399 + vec2<f32>(t * 0.0071, -t * 0.0053);
+  let p1 = vec2<f32>(
+    waveCoord.x * 0.07294902 - waveCoord.y * 0.15450850,
+    waveCoord.x * 0.15450850 + waveCoord.y * 0.07294902,
+  ) + vec2<f32>(-t * 0.0063, t * 0.0089);
+  let p2 = vec2<f32>(
+    waveCoord.x * -0.13819660 + waveCoord.y * 0.09549150,
+    -waveCoord.x * 0.09549150 - waveCoord.y * 0.13819660,
+  ) + vec2<f32>(t * 0.0047, t * 0.0061);
+
+  let f0 = abs(fract(vec4<f32>(p0, p1)) * 2.0 - 1.0);
+  let q0 = f0 * f0 * (3.0 - 2.0 * f0) * 2.0 - 1.0;
+
+  let warpedP2 = p2 + vec2<f32>(q0.x + q0.w, q0.y - q0.z) * 0.37;
+  let f1 = abs(fract(vec4<f32>(warpedP2, warpedP2 * 1.61803399 + vec2<f32>(0.29, 0.71))) * 2.0 - 1.0);
+  let q1 = f1 * f1 * (3.0 - 2.0 * f1) * 2.0 - 1.0;
+
+  let warpX = (q0.x * 0.52 + q0.z * 0.31 + q1.x * 0.17);
+  let warpY = (q0.y * 0.52 + q0.w * 0.31 + q1.y * 0.17);
+  let groupRaw = 0.5 + 0.28 * (q0.x * q0.w + q1.x) + 0.22 * (q0.y + q1.z);
+  let groupEnvelope = mix(0.32, 1.36, clamp(groupRaw, 0.0, 1.0));
+  let subHarmonicSwell = (q1.x * 0.46 + q1.z * 0.34 + (q0.x - q0.z) * 0.20) * groupEnvelope;
+  return vec4<f32>(warpX, warpY, groupEnvelope, subHarmonicSwell);
+}
+
+// (a / b)^2 of the rendered ellipsoid, from its inverse radii: the factor that
+// turns a geocentric direction into one whose latitude is geodetic. 1 for a
+// sphere, 1.00673949674 for WGS84.
+fn ellipsoidGeodeticZScale() -> f32 {
+  let ratio = camera.ellipsoidInverseRadiiZ / max(camera.ellipsoidInverseRadiiX, 1.0e-12);
+  return ratio * ratio;
+}
+
+// Mean radius (2a + b) / 3 of the rendered ellipsoid, in metres.
+fn ellipsoidMeanRadius() -> f32 {
+  return (2.0 / max(camera.ellipsoidInverseRadiiX, 1.0e-12) +
+    1.0 / max(camera.ellipsoidInverseRadiiZ, 1.0e-12)) / 3.0;
+}
+
+// Distance fade of the ocean-wave perturbation and the near-surface strength
+// the perturbed normal is mixed in with. Returns (.x = wave intensity fade,
+// .y = wave strength, already scaled by .x).
+//
+// Enhanced only. The default variant keeps the shipped inline law in
+// `computeEnhancedOcean`'s `//>>else` arms, the law WebGL draws, matching
+// GlobeFS.glsl L794+816,
+//   waveIntensity = waveFade(70000, 1e6, positionToEyeECLength)
+//                 = pow(1 - linearFade(70000, 1e6, dist), 5)
+//   normalTangentSpace.xy *= waveIntensity
+// A non-zero floor leaves a residual tilt at orbit, and the mip-averaged
+// wave-normal bias then tilts the whole sun-glint lobe coherently - about
+// 10 px limb-ward of WebGL at 25 Mm. The near-surface strength is set so the
+// perturbed normal - and the specular sparkle and diffuse highlight riding on
+// it - has a magnitude comparable to WebGL's: WebGL applies the full
+// tangent-space wave normal near the surface (`waveIntensity` is about 1 below
+// 70 km), so the animated Phong glint churns visibly. A near value around 0.25
+// would mix only about 24% toward the wave normal, leaving the ocean roughly
+// 4x flatter and its animation nearly imperceptible. The far value and the
+// fade, which reaches 0 at orbit, set the orbit sun-glint parity and are
+// independent of this.
+//
+// This function is the shorter 24-68 km stochastic-wave law. It has no GLSL
+// twin and must not reach the default path.
+fn oceanWaveFade(eyeDistance: f32, distance: f32) -> vec2<f32> {
+  let fadeLin = clamp((eyeDistance - 24000.0) / (68000.0 - 24000.0), 0.0, 1.0);
+  let fade1 = 1.0 - fadeLin;
+  let fade2 = fade1 * fade1;
+  let intensity = fade2 * fade2 * fade1;
+  let strength = mix(0.85, 0.05, smoothstep(10000.0, 65000.0, distance)) * intensity;
+  return vec2<f32>(intensity, strength);
+}
+
+// Wave marching is skipped where the wave fade is at or below this: the
+// enhanced ocean skips the invisible tail. The default variant has no skip,
+// because the default globe has always run the march at every distance and
+// the near-zero strength it then applies is part of the law WebGL draws.
+fn oceanWaveSkipFloor() -> f32 {
+  return 1.0e-5;
+}
+
+//>>endif
+//>>ifdef ENHANCED_OCEAN
+//>>else
+//>>ifdef WATER_PROVIDER_PARITY
+// water-parity-r5 begin classic-wave-helper
+// The classic ocean waves of GlobeFS.glsl `computeWaterColor`, for the opt-in
+// WATER_PROVIDER_PARITY variant (water round 6, seat ruling R-2026-10-23-S8):
+// a globe fed by a water classification provider draws the waves a WebGL globe
+// draws, while the default variant keeps the shipped march. Two layers of
+// `czm_getWaterNoise` (Builtin/Functions/getWaterNoise.glsl, angle 0) over the
+// fragment's ellipsoid texture coordinates, blended by eye distance, each faded
+// by the shared footprint weight keyed on the coarsest tap divisor, then scaled
+// by `waveFade(70000, 1e6)`. Every constant is GlobeFS.glsl's. The taps read
+// the texture the way the GLSL taps do (`classicWaterNoiseTap`, water round 7).
+// The enhanced variant keeps the physical-wavelength march
+// (`sampleOceanWaveNormals`).
+const CLASSIC_OCEAN_FREQUENCY_LOW: f32 = 825000.0;
+const CLASSIC_OCEAN_SPEED_LOW: f32 = 0.004;
+const CLASSIC_OCEAN_ONE_OVER_AMPLITUDE_LOW: f32 = 0.5;
+const CLASSIC_OCEAN_FREQUENCY_HIGH: f32 = 125000.0;
+const CLASSIC_OCEAN_SPEED_HIGH: f32 = 0.008;
+const CLASSIC_OCEAN_ONE_OVER_AMPLITUDE_HIGH: f32 = 0.5;
+const CLASSIC_OCEAN_GETWATERNOISE_DIVISOR: f32 = 940.0;
+// GlobeFS.glsl `oceanWaveNominalFramesPerSecond`: the two speeds are per frame
+// of a nominal 60 Hz clock, and the clock is scene seconds.
+const CLASSIC_OCEAN_FRAMES_PER_SECOND: f32 = 60.0;
+
+// One `czm_getWaterNoise` tap as WebGL reads it. GlobeFS.glsl samples
+// `u_oceanNormalMap`, which Globe.js builds as `new Texture({ context, source })`:
+// no mip chain and the default Sampler (CLAMP_TO_EDGE, LINEAR, maxAnisotropy 1),
+// so every tap is a bilinear read of level 0, clamped at the edge. The WebGPU
+// copy carries a full mip chain and the shared repeat sampler with
+// maxAnisotropy 8 that the enhanced march needs, and a derivative-driven tap
+// read a blurred mip level instead: the per-pixel wave-noise difference the
+// coast-50km parity cell measured (water round 7, FND-2). Level 0 with the
+// coordinate held half a texel inside the edge is CLAMP_TO_EDGE at level 0.
+fn classicWaterNoiseTap(uv: vec2<f32>) -> vec4<f32> {
+  let halfTexel = vec2<f32>(0.5) / vec2<f32>(textureDimensions(oceanNormalMap, 0));
+  let clamped = clamp(uv, halfTexel, vec2<f32>(1.0) - halfTexel);
+  return textureSampleLevel(oceanNormalMap, oceanNormalSampler, clamped, 0.0);
+}
+
+fn classicWaterNoise(uv: vec2<f32>, time: f32) -> vec4<f32> {
+  let d2 = vec2<f32>(897.0, 983.0);
+  let d3 = vec2<f32>(991.0, 877.0);
+  let uv0 = fract(uv / 103.0 + time * vec2<f32>(1.0 / 17.0, 0.0));
+  let uv1 = fract(uv / 107.0 + time * vec2<f32>(-1.0 / 29.0, 0.0) + vec2<f32>(0.23));
+  let uv2 = fract(uv / d2 + time * vec2<f32>(1.0 / 101.0, 1.0 / 59.0) + vec2<f32>(0.51));
+  let uv3 = fract(uv / d3 + time * vec2<f32>(-1.0 / 109.0, -1.0 / 57.0) + vec2<f32>(0.71));
+  let noise =
+    classicWaterNoiseTap(uv0) +
+    classicWaterNoiseTap(uv1) +
+    classicWaterNoiseTap(uv2) +
+    classicWaterNoiseTap(uv3);
+  return ((noise / 4.0) - 0.5) * 2.0;
+}
+
+// One screen step of the flipped coordinates (.xy) and of `normalMC.z` (.z),
+// given the step `dE` of the ellipsoid coordinates, by the chain rule through
+// the unit normal: d(longitude) = 2 pi dE.x, d(latitude) = pi dE.y. GLSL takes
+// dFdx of the blended coordinates; WGSL cannot here (non-uniform flow), and
+// the ellipsoid step alone is about 1 / cos(latitude) too large for the
+// flipped coordinates the pole cap samples (5.8x at 80 degrees).
+fn classicFlippedTcStep(normalMC: vec3<f32>, dE: vec2<f32>) -> vec3<f32> {
+  let cosLatitude = max(length(vec2<f32>(normalMC.x, normalMC.y)), 1.0e-6);
+  let dLongitude = dE.x * 6.28318530718;
+  let dLatitude = dE.y * 3.14159265359;
+  let dNormal = vec3<f32>(
+    -normalMC.y * dLongitude - normalMC.z * normalMC.x / cosLatitude * dLatitude,
+    normalMC.x * dLongitude - normalMC.z * normalMC.y / cosLatitude * dLatitude,
+    cosLatitude * dLatitude,
+  );
+  let dFlippedX = (normalMC.z * dNormal.y - normalMC.y * dNormal.z) /
+    max(normalMC.y * normalMC.y + normalMC.z * normalMC.z, 1.0e-12) * 0.15915494309;
+  let dFlippedY = dNormal.x / sqrt(max(1.0 - normalMC.x * normalMC.x, 1.0e-12)) * 0.31830988618;
+  return vec3<f32>(dFlippedX, dFlippedY, dNormal.z);
+}
+
+fn classicOceanWaveNormal(
+  positionMC: vec3<f32>,
+  ellipsoidTcDx: vec2<f32>,
+  ellipsoidTcDy: vec2<f32>,
+  eyeDistance: f32,
+  waveSeconds: f32,
+) -> vec3<f32> {
+  // czm_geodeticSurfaceNormal(v_positionMC, vec3(0), vec3(1)) and the two
+  // czm_ellipsoidTextureCoordinates GlobeFS.glsl blends near the pole.
+  let normalMC = normalize(positionMC);
+  let ellipsoidTc = vec2<f32>(
+    atan2(normalMC.y, normalMC.x) * 0.15915494309 + 0.5,
+    asin(clamp(normalMC.z, -1.0, 1.0)) * 0.31830988618 + 0.5,
+  );
+  let flippedTc = vec2<f32>(
+    atan2(normalMC.y, normalMC.z) * 0.15915494309 + 0.5,
+    asin(clamp(normalMC.x, -1.0, 1.0)) * 0.31830988618 + 0.5,
+  );
+  let poleBlend = camera.morphTime * smoothstep(0.9, 0.95, normalMC.z);
+  let tc = mix(ellipsoidTc, flippedTc, poleBlend);
+  // dFdx(mix(E, F, w)) = mix(dE, dF, w) + (F - E) dw, with dw the slope of
+  // the smoothstep times the step of normalMC.z.
+  let blendRamp = clamp((normalMC.z - 0.9) / 0.05, 0.0, 1.0);
+  let poleBlendSlope = camera.morphTime * 6.0 * blendRamp * (1.0 - blendRamp) / 0.05;
+  let flippedStepX = classicFlippedTcStep(normalMC, ellipsoidTcDx);
+  let flippedStepY = classicFlippedTcStep(normalMC, ellipsoidTcDy);
+  let tcDx = mix(ellipsoidTcDx, vec2<f32>(flippedStepX.x, flippedStepX.y), poleBlend) +
+    (flippedTc - ellipsoidTc) * (poleBlendSlope * flippedStepX.z);
+  let tcDy = mix(ellipsoidTcDy, vec2<f32>(flippedStepY.x, flippedStepY.y), poleBlend) +
+    (flippedTc - ellipsoidTc) * (poleBlendSlope * flippedStepY.z);
+  let waveIntensity = pow(1.0 - clamp((eyeDistance - 70000.0) / (1000000.0 - 70000.0), 0.0, 1.0), 5.0);
+  let uvFootprint = max(length(tcDx), length(tcDy));
+  let highLodWeight = oceanOctaveLodWeight(
+    CLASSIC_OCEAN_FREQUENCY_HIGH / CLASSIC_OCEAN_GETWATERNOISE_DIVISOR * uvFootprint,
+  );
+  let lowLodWeight = oceanOctaveLodWeight(
+    CLASSIC_OCEAN_FREQUENCY_LOW / CLASSIC_OCEAN_GETWATERNOISE_DIVISOR * uvFootprint,
+  );
+  let highAltitudeFade = clamp(eyeDistance / 60000.0, 0.0, 1.0);
+  let lowAltitudeFade = 1.0 - clamp((eyeDistance - 20000.0) / (60000.0 - 20000.0), 0.0, 1.0);
+  if (highAltitudeFade * highLodWeight + lowAltitudeFade * lowLodWeight < OCEAN_WAVE_MARCH_CUTOFF) {
+    return vec3<f32>(0.0, 0.0, 1.0);
+  }
+  let waveClockFrames = waveSeconds * CLASSIC_OCEAN_FRAMES_PER_SECOND;
+  let noiseHigh = classicWaterNoise(
+    tc * CLASSIC_OCEAN_FREQUENCY_HIGH,
+    waveClockFrames * CLASSIC_OCEAN_SPEED_HIGH,
+  );
+  let noiseLow = classicWaterNoise(
+    tc * CLASSIC_OCEAN_FREQUENCY_LOW,
+    waveClockFrames * CLASSIC_OCEAN_SPEED_LOW,
+  );
+  let high = vec3<f32>(noiseHigh.xy * highLodWeight, noiseHigh.z * CLASSIC_OCEAN_ONE_OVER_AMPLITUDE_HIGH);
+  let low = vec3<f32>(noiseLow.xy * lowLodWeight, noiseLow.z * CLASSIC_OCEAN_ONE_OVER_AMPLITUDE_LOW);
+  let blended = normalize(highAltitudeFade * high + lowAltitudeFade * low);
+  return normalize(vec3<f32>(blended.x * waveIntensity, blended.y * waveIntensity, blended.z));
+}
+// water-parity-r5 end classic-wave-helper
+//>>endif
+//>>endif
 // Full enhanced ocean rendering pipeline, following WebGL
 // `computeWaterColor` semantics: `color = imageryColor + diffuseHighlight +
 // ... + specular`, so imagery is preserved and highlights are added to it.
@@ -2995,6 +3310,9 @@ fn computeEnhancedOcean(
   waterMaskValue: f32,
   lightingFade: f32,
   distance: f32,
+//>>ifdef ENHANCED_OCEAN
+  bedHeight: f32,
+//>>endif
 ) -> vec3<f32> {
   let viewDir = normalize(-positionEC);
 
@@ -3011,9 +3329,105 @@ fn computeEnhancedOcean(
   // camera orientation rather than the surface and shows as a moving mesh
   // pattern when the camera orbits a coastline.
   var waterNormal = normalEC;
+//>>ifdef ENHANCED_OCEAN
+  var waveTangentSlope = vec2<f32>(0.0, 0.0);
+//>>endif
   var foamFactor: f32 = 0.0;
   var tsPerturbationRatio: f32 = 1.0; // 1.0 = flat, 0.0 = vertical wave
   let showOceanWaves = tile.flags.z > 0.5;
+//>>ifdef ENHANCED_OCEAN
+  // Under any debug sentinel, where tile.time is hijacked past 1e9, the wave
+  // clock freezes at 0 so A/B bypass captures share one wave phase instead of
+  // inheriting the sentinel value. Production, at tile.time below 1e6,
+  // selects the real clock.
+  let t = select(tile.time, 0.0, tile.time > 1.0e9);
+  let positionToEyeECLength = length(positionEC);
+  let waveFade = oceanWaveFade(positionToEyeECLength, distance);
+  let waveIntensityFade = waveFade.x;
+  let enuToEye = eastNorthUpToEyeCoordinates(positionMC, normalEC);
+  let spanNorm = tile.oceanWavePhaseB.zw;
+  let euvLocal = uv * spanNorm;
+  let euvDx = uvDx * spanNorm;
+  let euvDy = uvDy * spanNorm;
+  var waveN = vec3<f32>(0.0, 0.0, 1.0);
+
+  if (showOceanWaves && waveIntensityFade > oceanWaveSkipFloor()) {
+    // Relative-to-eye decomposed ellipsoid wave UV. The f64-computed per-tile,
+    // per-octave phase offsets and the normalized tile span come from the tile
+    // uniform buffer, packed to keep every f32 quantity small. The shader
+    // reconstructs only tile-local quantities: euvLocal = geoUV × spanNorm, the
+    // small tile-relative ellipsoid UV, and its per-pixel derivatives
+    // euvD = spanNorm × geoUV-derivative, which are seam-free because they
+    // avoid the f32 east-west cancellation. Planar 2D and Columbus View modes
+    // pack a projected-metres span, so euvD blows up, the footprint fade
+    // collapses every octave, and the ocean renders flat.
+    waveN = sampleOceanWaveNormals(
+      euvLocal, euvDx, euvDy,
+      tile.oceanWavePhaseA.xy, tile.oceanWavePhaseA.zw, tile.oceanWavePhaseB.xy,
+      t,
+    );
+    waveTangentSlope = waveN.xy;
+    let waveStrength = waveFade.y;
+    // ENU.up is normalEC, so `enuToEye * (0,0,1) = normalEC`: a flat wave
+    // normal of (0, 0, 1) leaves `waterNormal` equal to `normalEC` and
+    // perturbs nothing. Non-zero waveN.xy tilts the normal around the local
+    // east/north tangent frame.
+    let waveNormalEC = enuToEye * waveN;
+    waterNormal = normalize(mix(normalEC, waveNormalEC, waveStrength));
+    foamFactor = computeFoam(waveN, distance) * waterMaskValue;
+    // The daytime ocean brightness fix (the default arm below carries its
+    // label): `tsPerturbationRatio` MUST come from the
+    // DISTANCE-FADED tangent-space wave normal, matching WebGL GlobeFS.glsl
+    // L818-819: `normalTangentSpace.xy *= waveIntensity; normalize(...)` before
+    // `tsPerturbationRatio = normalTangentSpace.z` (L835). As the camera pulls
+    // away, `waveIntensityFade → 0`, so the faded normal → (0,0,1) and the
+    // ratio → 1 → `(1 - tsPerturbationRatio) → 0`, killing `nonDiffuseHighlight`
+    // at mid/orbit range exactly as WebGL does. The PRE-FIX code used the RAW
+    // `waveN.z` (never faded), so the ratio stayed < 1 at orbit and the
+    // low-light `nonDiffuseHighlight` (peaks as NdotL→0, i.e. the night side)
+    // blew the ocean out to saturated cyan once the highlight taper was
+    // corrected. Byte-identical to the raw `waveN.z` at close zoom where
+    // `waveIntensityFade ≈ 1`.
+    let tsFadedNormal = normalize(vec3<f32>(waveTangentSlope * waveIntensityFade, waveN.z));
+    tsPerturbationRatio = tsFadedNormal.z;
+  }
+//>>else
+//>>ifdef WATER_PROVIDER_PARITY
+  // water-parity-r5 begin classic-waves
+  // The opt-in WATER_PROVIDER_PARITY variant draws the waves GlobeFS.glsl
+  // `computeWaterColor` draws (water round 6): `classicOceanWaveNormal` is
+  // that function's two `czm_getWaterNoise` layers, and the eye-space normal
+  // and the perturbation ratio are taken from it exactly as WebGL takes them
+  // (`normalEC = enuToEye * normalTangentSpace`,
+  // `tsPerturbationRatio = normalTangentSpace.z`). The default variant keeps
+  // the physical-wavelength march (the `//>>else` arm below).
+  if (showOceanWaves) {
+    // GlobeFS.glsl's clock: the unwrapped scene seconds
+    // (`camera.oceanWaveSeconds`, WebGL's `u_oceanWaveSeconds`). `tile.time`
+    // wraps every 1777.8 s, a period the czm_getWaterNoise tap rates are not
+    // commensurate with, so a wrapped clock pops the whole sea at each wrap.
+    // Under any debug sentinel, where tile.time is hijacked past 1e9, the
+    // clock freezes at 0 so A/B bypass captures share one wave phase.
+    let waveSeconds = select(camera.oceanWaveSeconds, 0.0, tile.time > 1.0e9);
+    // The derivatives of the ellipsoid texture coordinates are the tile-UV
+    // derivatives scaled by the tile's normalized span, taken in uniform
+    // control flow by the caller; `classicOceanWaveNormal` carries them
+    // through the pole-cap flip.
+    let spanNorm = tile.oceanWavePhaseB.zw;
+    let normalTangentSpace = classicOceanWaveNormal(
+      positionMC,
+      uvDx * spanNorm,
+      uvDy * spanNorm,
+      length(positionEC),
+      waveSeconds,
+    );
+    let enuToEye = eastNorthUpToEyeCoordinates(positionMC, normalEC);
+    waterNormal = enuToEye * normalTangentSpace;
+    foamFactor = computeFoam(normalTangentSpace, distance);
+    tsPerturbationRatio = normalTangentSpace.z;
+  }
+  // water-parity-r5 end classic-waves
+//>>else
   if (showOceanWaves) {
     // Under any debug sentinel, where tile.time is hijacked past 1e9, the wave
     // clock freezes at 0 so A/B bypass captures share one wave phase instead of
@@ -3087,104 +3501,614 @@ fn computeEnhancedOcean(
     let tsFadedNormal = normalize(vec3<f32>(waveN.xy * waveIntensityFade, waveN.z));
     tsPerturbationRatio = tsFadedNormal.z;
   }
+//>>endif
+//>>endif
 
 //>>ifdef ENHANCED_OCEAN
-  // Wave-highlight diffuse term — matches WebGL `waveHighlightColor *
-  // czm_getLambertDiffuse(...) * mask * (1 - fade)`. Runs unconditionally
-  // (WebGL doesn't gate this on `enableLighting`) and contributes only a
-  // narrow band of color where the surface faces the light.
-  let waveHighlightColor = vec3<f32>(0.3, 0.45, 0.6);
-  let NdotL = max(dot(waterNormal, sunDirEC), 0.0);
-  // Q10-DAYTIME-OCEAN-BRIGHTNESS — the highlight taper MUST use WebGL's
-  // atmosphere camera-distance `fade` (GlobeFS.glsl L428 = clamp((cameraDist
-  // - lightingFadeOut) / (lightingFadeIn - lightingFadeOut), 0, 1)), the SAME
-  // scalar passed to `computeWaterColor(..., fade)` at L502 and applied as
-  // `diffuseHighlight * (1.0 - fade)` at L830. It is 0 at close/mid range
-  // (full highlight) and ramps to 1 at orbit (highlight fades, glint takes
-  // over). The caller now passes `tile.groundAtmosphereControl.y` — the
-  // identical clamp — for `lightingFade`.
-  //
-  // It must not be the day/night terminator fade `dayFade`, which
-  // `fragmentMain` forces to 1.0 whenever `enableLighting` is off — the
-  // default. `1.0 - 1.0 = 0` zeroes the bluish `diffuseHighlight` on every
-  // daytime ocean fragment, taking the ocean from bright blue to deep navy,
-  // roughly 4× darker than WebGL at mid-range, while the night side stays at
-  // parity because NdotL is near zero there anyway. The terminator fade and
-  // the atmosphere fade are unrelated quantities.
-  let highlightFade = 1.0 - clamp(lightingFade, 0.0, 1.0);
-  let diffuseHighlight = waveHighlightColor * NdotL * waterMaskValue * highlightFade;
-
-  var oceanContribution = diffuseHighlight;
-
-  // WebGL's `nonDiffuseHighlight` (GlobeFS.glsl L822-829). Where waves are
-  // perturbed and diffuse light is weak, this adds a low-light bluish
-  // highlight so the ocean is not pitch black at the terminator. Gated on
-  // SHOW_OCEAN_WAVES (`tile.flags.z > 0.5`), matching WebGL's
-  // `#ifdef SHOW_OCEAN_WAVES`; WebGL's `#else` branch sets it to vec3(0.0),
-  // which leaving the var at zero reproduces.
-  //   formula: mix(waveHighlightColor × 5 × (1 - tsPerturbationRatio),
-  //                 vec3(0.0),
-  //                 diffuseIntensity)
-  // → strongest when waves are vertical (tsPerturbationRatio → 0) and
-  //   sun is behind the surface (diffuseIntensity → 0).
-  if (showOceanWaves) {
-    let nonDiffuseHighlight = mix(
-      waveHighlightColor * 5.0 * (1.0 - tsPerturbationRatio),
-      vec3<f32>(0.0),
-      NdotL,
+  let sphereDir = normalize(positionMC * vec3<f32>(1.0, 1.0, ellipsoidGeodeticZScale()));
+  let mesoLat = asin(clamp(sphereDir.z, -1.0, 1.0));
+  let mesoLon = atan2(sphereDir.y, sphereDir.x);
+  let lonLatDeg2D = vec2<f32>(mesoLon * 57.2957795, mesoLat * 57.2957795);
+  let wmHydroTS = tile.waterMaskTranslationAndScale;
+  let wmHydroUVUnflipped = uv * wmHydroTS.zw + wmHydroTS.xy;
+  let wmHydroUV = vec2<f32>(wmHydroUVUnflipped.x, 1.0 - wmHydroUVUnflipped.y);
+  let wmMetaBilinear = textureSampleLevel(waterMaskTexture, waterMaskSampler, wmHydroUV, 0.0);
+  let hasHydroRgba = wmMetaBilinear.a < 0.99;
+  var packedHydroG: u32 = 0u;
+  if (hasHydroRgba) {
+    let wmTexDim = textureDimensions(waterMaskTexture, 0);
+    let wmTexCoord = clamp(
+      vec2<i32>(wmHydroUV * vec2<f32>(wmTexDim)),
+      vec2<i32>(0),
+      vec2<i32>(wmTexDim) - vec2<i32>(1),
     );
-    oceanContribution += nonDiffuseHighlight * waterMaskValue * highlightFade;
+    let wmLoaded = textureLoad(waterMaskTexture, wmTexCoord, 0);
+    packedHydroG = u32(wmLoaded.g * 255.0 + 0.5);
   }
+  let hydroTypeCode = packedHydroG & 15u;
+  let hydroUpperNibble = (packedHydroG >> 4u) & 15u;
+  let isHydroRiver = hasHydroRgba && hydroTypeCode == 9u;
+  let isHydroLake = hasHydroRgba && hydroTypeCode >= 1u && hydroTypeCode <= 7u;
+  let enuFromEyeEarly = (camera.eyeToEnu * positionEC).xy;
 
-  // Specular sun-glint, ported one-to-one from WebGL
-  // GlobeFS.glsl::computeWaterColor L839-842. WebGL runs it unconditionally,
-  // because `czm_lightDirectionEC` is always defined — the default scene light
-  // is the sun even when `globe.enableLighting` is false — and it has no
-  // orbit-altitude attenuation: the broad Phong lobe at shininess 10 is the
-  // zoomed-out ocean glint, modulated only by
-  // `u_zoomedOutOceanSpecularIntensity`, which `Globe.beginFrame` sets. Gating
-  // this on enableLighting, or fading it out above 100 km, suppresses the glint
-  // entirely in default scenes; at 25 Mm the missing Pacific glint blob alone
-  // accounted for 63% of the far-zoom pixel mismatch against WebGL.
-  //
-  //   czm_getSpecular(L, V, N, 10) = pow(max(dot(reflect(-L, N), V), 0), 10)
-  //   surfaceReflectance = mix(0, mix(zoomedOutSpec, oceanSpec, waveIntensity), mask)
-  //   waveIntensity = waveFade(70000, 1e6, |toEyeEC|) = pow(1 - linearFade(...), 5)
-  //
-  // The 26e9 debug sentinel skips this term so its share of the below-surface
-  // residual can be measured in isolation. Production, below tile.time 1e6,
-  // always takes it.
-  let positionToEyeECLength = length(positionEC);
-  let waveFadeY = clamp(
-    (positionToEyeECLength - 70000.0) / (1000000.0 - 70000.0),
+  if (showOceanWaves && waveIntensityFade > 1.0e-5) {
+    let rotLenDx = length(euvDx);
+    let rotLenDy = length(euvDy);
+    let rotMinRaw = min(rotLenDx, rotLenDy);
+    let rotMaxRaw = max(rotLenDx, rotLenDy);
+    let rotUvDet = abs(euvDx.x * euvDy.y - euvDx.y * euvDy.x);
+    let safeRotMin = select(
+      rotMinRaw,
+      rotMaxRaw,
+      rotMinRaw < rotMaxRaw * 0.02 || rotUvDet < rotMaxRaw * rotMaxRaw * 0.002,
+    );
+    let footMinRot = max(safeRotMin, rotMaxRaw / OCEAN_SAMPLER_MAX_ANISO);
+    // Sub-harmonic golden-ratio conjugate (scaleA = 0.618034, ~243 m) and
+    // macro-swell (scaleB = 0.2763932, ~543 m) octaves remain resolvable at
+    // medium and high zoom-out altitudes after the 15 m and 50 m chop fade,
+    // breaking up the 150 m base normal-map grid with stochastic domain warping
+    // and Longuet-Higgins wave-group modulation.
+    let scaleA: f32 = 1.6180340;
+    let scaleB: f32 = 2.4142136;
+    let subScaleA: f32 = 1.0 / scaleA;
+    let subScaleB: f32 = 0.2763932;
+    let subHarmonicDistFade = 1.0 - smoothstep(20000.0, 52000.0, distance);
+    let wRot1 = select(
+      OCEAN_OCTAVE_WEIGHT_1 *
+        oceanOctaveLodWeight(OCEAN_OCTAVE_REPEATS_1 * subScaleA * footMinRot) *
+        subHarmonicDistFade,
+      0.0,
+      isHydroRiver,
+    );
+    let wRot2 = select(
+      OCEAN_OCTAVE_WEIGHT_1 *
+        oceanOctaveLodWeight(OCEAN_OCTAVE_REPEATS_1 * subScaleB * footMinRot) *
+        subHarmonicDistFade,
+      0.0,
+      isHydroRiver,
+    );
+    if (wRot1 + wRot2 > OCEAN_WAVE_MARCH_CUTOFF) {
+      let baseWaveCoord = enuFromEyeEarly * (1.0 / 150.0);
+      let stochasticWave = evaluateStochasticWaveField(baseWaveCoord, t);
+      let domainWarp = stochasticWave.xy;
+      let groupEnvelope = stochasticWave.z;
+      let g1x = euvDx * OCEAN_OCTAVE_REPEATS_1;
+      let g1y = euvDy * OCEAN_OCTAVE_REPEATS_1;
+      let cA: f32 = 0.9165151;
+      let sA: f32 = 0.4000000;
+      let rotAx = (baseWaveCoord.x * cA - baseWaveCoord.y * sA) * subScaleA;
+      let rotAy = (baseWaveCoord.x * sA + baseWaveCoord.y * cA) * subScaleA;
+      let coordRotA =
+        vec2<f32>(rotAx, rotAy) +
+        domainWarp * 0.42 +
+        fract(t * vec2<f32>(-0.019, 0.023));
+      let gradAx = vec2<f32>(g1x.x * cA - g1x.y * sA, g1x.x * sA + g1x.y * cA) * subScaleA;
+      let gradAy = vec2<f32>(g1y.x * cA - g1y.y * sA, g1y.x * sA + g1y.y * cA) * subScaleA;
+      let rawRotA = textureSampleGrad(
+        oceanNormalMap, oceanNormalSampler, coordRotA, gradAx, gradAy,
+      ).xyz * 2.0 - 1.0;
+      let slopeRotA = vec2<f32>(
+        rawRotA.x * cA + rawRotA.y * sA,
+        -rawRotA.x * sA + rawRotA.y * cA,
+      );
+
+      let cB: f32 = 0.6180340;
+      let sB: f32 = -0.7861514;
+      let rotBx = (baseWaveCoord.x * cB - baseWaveCoord.y * sB) * subScaleB;
+      let rotBy = (baseWaveCoord.x * sB + baseWaveCoord.y * cB) * subScaleB;
+      let coordRotB =
+        vec2<f32>(rotBx, rotBy) -
+        vec2<f32>(domainWarp.y, -domainWarp.x) * 0.36 +
+        fract(t * vec2<f32>(0.014, -0.011));
+      let gradBx = vec2<f32>(g1x.x * cB - g1x.y * sB, g1x.x * sB + g1x.y * cB) * subScaleB;
+      let gradBy = vec2<f32>(g1y.x * cB - g1y.y * sB, g1y.x * sB + g1y.y * cB) * subScaleB;
+      let rawRotB = textureSampleGrad(
+        oceanNormalMap, oceanNormalSampler, coordRotB, gradBx, gradBy,
+      ).xyz * 2.0 - 1.0;
+      let slopeRotB = vec2<f32>(
+        rawRotB.x * cB + rawRotB.y * sB,
+        -rawRotB.x * sB + rawRotB.y * cB,
+      );
+
+      let macroSwellSlope = vec2<f32>(
+        stochasticWave.w * 0.14,
+        (domainWarp.x - domainWarp.y) * stochasticWave.w * 0.11,
+      ) * wRot2;
+      let combinedSlope =
+        (waveN.xy * (0.28 * groupEnvelope) +
+          slopeRotA * (wRot1 * 0.58 * groupEnvelope) +
+          slopeRotB * (wRot2 * 0.62) +
+          macroSwellSlope);
+      let deGriddedWaveN = normalize(vec3<f32>(combinedSlope, 1.0));
+      let subHarmonicBlend = clamp((wRot1 + wRot2) * 1.15, 0.0, 1.0);
+      waveN = normalize(mix(waveN, deGriddedWaveN, subHarmonicBlend));
+    }
+    let shoreWaveShoaling = mix(0.24, 1.0, smoothstep(0.16, 0.84, waterMaskValue));
+    let lakeWaveFetch =
+      mix(0.35, 0.58, clamp(f32(hydroUpperNibble) / 12.0, 0.0, 1.0)) *
+      shoreWaveShoaling;
+    let waveBiomeScale = select(
+      select(shoreWaveShoaling, lakeWaveFetch, isHydroLake),
+      0.22 * smoothstep(0.30, 0.62, waterMaskValue),
+      isHydroRiver,
+    );
+    waveTangentSlope = waveN.xy * waveBiomeScale;
+    let waveStrength = waveFade.y * waveBiomeScale;
+    let waveNormalEC = enuToEye * waveN;
+    waterNormal = normalize(mix(normalEC, waveNormalEC, waveStrength));
+    foamFactor = computeFoam(waveN, distance) * waterMaskValue * select(1.0, 0.0, isHydroRiver);
+    let tsFadedNormal = normalize(vec3<f32>(waveTangentSlope * waveIntensityFade, waveN.z));
+    tsPerturbationRatio = tsFadedNormal.z;
+  }
+  let biomeHydro = evaluateMultiBiomeHydroOptics(
+    lonLatDeg2D,
+    waterMaskValue,
+    bedHeight,
+  );
+  let swampCdomWeight = select(
+    biomeHydro.x,
+    max(biomeHydro.x, 0.85),
+    hydroTypeCode == 6u,
+  );
+  let glacialLakeWeight = select(
+    select(biomeHydro.y, 0.0, isHydroRiver || hydroTypeCode == 1u),
+    max(biomeHydro.y, 0.92),
+    hydroTypeCode == 2u,
+  );
+  let riftLakeWeight = select(
+    select(biomeHydro.z, 0.0, isHydroRiver || hydroTypeCode == 1u),
+    max(biomeHydro.z, 0.90),
+    hydroTypeCode == 3u,
+  );
+  let hypersalineWeight = select(
+    biomeHydro.w,
+    max(biomeHydro.w, 0.92),
+    hydroTypeCode == 4u || hydroTypeCode == 5u,
+  );
+  let nonSwampBiomeWeight = clamp(
+    glacialLakeWeight + riftLakeWeight + hypersalineWeight,
     0.0,
     1.0,
   );
-  let waveIntensity = pow(1.0 - waveFadeY, 5.0);
-  if (!globe_debugBypassActive(26.0e9)) {
-    let toReflectedLight = reflect(-sunDirEC, waterNormal);
-    let specularIntensity = pow(max(dot(toReflectedLight, viewDir), 0.0), 10.0);
-    // `camera.lighting.w` mirrors WebGL's `u_zoomedOutOceanSpecularIntensity`,
-    // which is not a constant: `Globe.beginFrame` sets 0.4 when
-    // showGroundAtmosphere is on — the default — 0.5 otherwise, and 0.0
-    // outside SCENE3D. Hardcoding 0.5 here makes the orbit glint 25% brighter
-    // than WebGL's. `nearSpec` matches the GLSL const
-    // `oceanSpecularIntensity = 0.5`.
-    let zoomedOutSpec: f32 = camera.lighting.w;
-    let nearSpec: f32 = 0.5;
-    let surfaceReflectance =
-      mix(zoomedOutSpec, nearSpec, waveIntensity) * waterMaskValue;
-    oceanContribution += vec3<f32>(specularIntensity * surfaceReflectance);
+  let swampBiomeGate = swampCdomWeight * smoothstep(0.30, 0.42, waterMaskValue);
+  let multiBiomeGate =
+    clamp(swampCdomWeight + nonSwampBiomeWeight, 0.0, 1.0) *
+    smoothstep(0.30, 0.42, waterMaskValue);
+
+  let waveHighlightColor = mix(
+    vec3<f32>(0.3, 0.45, 0.6),
+    vec3<f32>(0.18, 0.14, 0.06),
+    swampCdomWeight * 0.85,
+  );
+  let NdotL = max(dot(waterNormal, sunDirEC), 0.0);
+  let highlightFade = 1.0 - clamp(lightingFade, 0.0, 1.0);
+  let oceanTransition = 1.0 - clamp(camera.oceanTransitionDeficit, 0.0, 1.0);
+  let flightToSurfaceHandover = 1.0 - smoothstep(3000.0, 12000.0, distance);
+  let allAltitudeCoastGate = 1.0 - smoothstep(800000.0, 2000000.0, camera.eyeCartographic.z);
+  let coastalWashSuppress = max(
+    flightToSurfaceHandover,
+    allAltitudeCoastGate,
+  );
+  let orbitWashKeep = mix(0.22, 0.08, coastalWashSuppress) * oceanTransition;
+  let tidalCoastGate =
+    smoothstep(0.42, 0.62, waterMaskValue) *
+    (1.0 - smoothstep(1.5, 3.0, bedHeight)) *
+    (1.0 - multiBiomeGate);
+  let tidalShift = clamp(tile.oceanTideHeight * 0.045, -0.14, 0.14) * tidalCoastGate;
+  let tidalWaterMask = clamp(waterMaskValue + tidalShift, 0.0, 1.0);
+  let baseLumaEarly = dot(baseColor, vec3<f32>(0.299, 0.587, 0.114));
+  let inlandRiverSpecGate =
+    smoothstep(0.18, 0.32, (baseColor.g - baseColor.r) / max(baseColor.r, 0.004)) *
+    smoothstep(0.16, 0.28, (baseColor.b - baseColor.r) / max(baseColor.r, 0.004)) *
+    smoothstep(-0.22, -0.10, (baseColor.b - baseColor.g) / max(baseColor.g, 0.004)) *
+    smoothstep(0.006, 0.016, baseLumaEarly) *
+    (1.0 - smoothstep(0.058, 0.082, baseLumaEarly));
+  let riverAltitudeFade = select(
+    1.0,
+    (1.0 - smoothstep(18000.0, 75000.0, distance)) *
+      (1.0 - smoothstep(12000.0, 50000.0, camera.eyeCartographic.z)) *
+      mix(1.0, inlandRiverSpecGate, 1.0 - smoothstep(45000.0, 120000.0, distance)),
+    hasHydroRgba && hydroTypeCode == 9u,
+  );
+  let openWaterMask =
+    max(smoothstep(0.16, 0.84, tidalWaterMask), multiBiomeGate) * riverAltitudeFade;
+
+  // Satellite imagery spectral water index: prevents coarse vector water-mask
+  // polygon chords from painting straight blue segments across curved sandy
+  // beaches or coastal foliage across sea-level, in-flight, stratospheric, and orbital regimes (10.2).
+  let seaLevelHillReject = max(
+    mix(
+      1.0 - smoothstep(1.5, 6.0, bedHeight),
+      1.0,
+      clamp(multiBiomeGate * 2.5, 0.0, 1.0),
+    ),
+    inlandRiverSpecGate,
+  );
+  let greenCanopyExcess =
+    ((baseColor.g - max(baseColor.r * 1.04, baseColor.b * 1.10)) /
+      max(baseColor.g, 0.006)) *
+    smoothstep(0.018, 0.055, baseLumaEarly) *
+    smoothstep(0.0, 0.08, (baseColor.r - baseColor.b) / max(baseColor.g, 0.008));
+  let greenCanopyReject = 1.0 - smoothstep(0.015, 0.24, greenCanopyExcess);
+  let turquoiseWaterNonVeg =
+    max(
+      nonSwampBiomeWeight *
+        max(
+          smoothstep(
+            -0.06,
+            0.04,
+            (max(baseColor.b, baseColor.g * 0.88) - baseColor.g * 0.72) /
+              max(baseColor.g, 0.008),
+          ) *
+            smoothstep(
+              -0.04,
+              0.08,
+              (max(baseColor.b, baseColor.g * 0.94) - baseColor.r * 0.92) /
+                max(baseColor.r, 0.008),
+            ),
+          hypersalineWeight * (1.0 - smoothstep(0.055, 0.12, baseLumaEarly)),
+        ),
+      smoothstep(0.0, 0.08, (baseColor.g * 0.96 - baseColor.r) / max(baseColor.r, 0.006)) *
+        (1.0 - smoothstep(0.025, 0.065, baseLumaEarly)),
+    );
+  let nonVegetationGate =
+    max(
+      smoothstep(
+        -0.22,
+        -0.02,
+        (baseColor.b - baseColor.g * 0.78) / max(baseColor.g, 0.006),
+      ),
+      turquoiseWaterNonVeg,
+    ) *
+    greenCanopyReject *
+    seaLevelHillReject;
+  let blueOverRedGate = smoothstep(
+    -0.14,
+    -0.01,
+    (max(baseColor.b, baseColor.g * 0.94) - baseColor.r * 0.90) /
+      max(baseColor.r, 0.006),
+  );
+  let waterChroma = clamp(
+    ((baseColor.b * 1.25 + baseColor.g * 0.35 - baseColor.r * 1.05) /
+      max(baseColor.r + baseColor.g + baseColor.b, 0.08) *
+      3.0 +
+      0.55) *
+      nonVegetationGate *
+      blueOverRedGate,
+    0.0,
+    1.0,
+  );
+  let darkWaterGate =
+    (1.0 - smoothstep(0.015, 0.055, baseLumaEarly)) *
+    greenCanopyReject *
+    nonVegetationGate *
+    blueOverRedGate;
+  let verifiedCoastGate =
+    smoothstep(0.20, 0.78, waterMaskValue) *
+    greenCanopyReject *
+    nonVegetationGate *
+    seaLevelHillReject;
+  let deepMaskDryCheck = nonVegetationGate * blueOverRedGate;
+  let deepMaskInterior =
+    smoothstep(0.38, 0.84, waterMaskValue) *
+    greenCanopyReject *
+    seaLevelHillReject *
+    deepMaskDryCheck;
+  let inlandSpectralGate =
+    nonSwampBiomeWeight *
+    greenCanopyReject *
+    smoothstep(0.30, 0.42, waterMaskValue);
+  let unverifiedWaterGate = max(max(waterChroma, darkWaterGate), deepMaskInterior);
+  let imageryWaterGate = max(
+    mix(
+      1.0,
+      unverifiedWaterGate,
+      coastalWashSuppress * oceanTransition,
+    ),
+    max(
+      swampBiomeGate * greenCanopyReject,
+      max(inlandSpectralGate, verifiedCoastGate),
+    ),
+  );
+  let coastalEffectiveMask = openWaterMask * imageryWaterGate;
+
+  let diffuseHighlight =
+    waveHighlightColor * NdotL * coastalEffectiveMask * highlightFade * orbitWashKeep;
+
+  var oceanContribution = diffuseHighlight;
+
+  let eyePlanarMetersEarly = vec2<f32>(positionEC.x, -positionEC.z);
+  let localEnuMeters = select(
+    eyePlanarMetersEarly,
+    enuFromEyeEarly,
+    dot(enuFromEyeEarly, enuFromEyeEarly) > 1.0e-2,
+  );
+  var toksvigSpecScale: f32 = 1.0;
+  var surfAerationBoost: f32 = 0.0;
+  let trochoidGate = 1.0 - smoothstep(180.0, 2400.0, distance);
+  let trochoidSharpness =
+    1.0 + 0.42 * trochoidGate * smoothstep(0.10, 0.26, length(waveTangentSlope));
+  let reefGlintReject =
+    (1.0 - smoothstep(0.26, 0.40, baseColor.r / max(baseColor.b, 0.02))) *
+    (1.0 - smoothstep(0.38, 0.54, baseLumaEarly)) *
+    smoothstep(0.76, 0.88, baseColor.g / max(baseColor.b, 0.02));
+  let reefTurquoiseBoost = clamp(
+    (baseColor.g * 0.60 + baseColor.b * 0.55 - baseColor.r * 1.20) * reefGlintReject,
+    0.0,
+    0.45,
+  );
+  let foreshoreGlintWash =
+    smoothstep(0.32, 0.52, baseLumaEarly) *
+    (1.0 - smoothstep(0.64, 0.94, (baseColor.b - baseColor.r) / max(baseColor.b, 0.02))) *
+    (1.0 - clamp(reefTurquoiseBoost * 5.0, 0.0, 1.0));
+  let shoreTransitionGate =
+    max(
+      smoothstep(0.025, 0.14, reefTurquoiseBoost) * (1.0 - smoothstep(0.18, 0.42, reefTurquoiseBoost)),
+      smoothstep(0.05, 0.25, bedHeight) * (1.0 - smoothstep(0.85, 1.60, bedHeight)),
+    ) *
+    (1.0 - foreshoreGlintWash * 0.96) *
+    select(1.0, 0.0, isHydroRiver) *
+    imageryWaterGate;
+
+  // Hoisted diurnal / sunrise / twilight / night-gate basis shared between
+  // wave-facet scattering and sky/specular reflections (reusing enuToEye[0] as eastEC).
+  let rawSunAlt = dot(normalEC, sunDirEC);
+  let eastEC = enuToEye[0];
+  let sunEastAlign = dot(sunDirEC, eastEC);
+  let eastWestSunriseFactor = smoothstep(-0.18, 0.18, sunEastAlign);
+  let twilightBlueHourGate =
+    smoothstep(-0.12, -0.05, rawSunAlt) *
+    (1.0 - smoothstep(-0.005, 0.040, rawSunAlt));
+  let deepHorizonSunGate =
+    smoothstep(-0.04, 0.005, rawSunAlt) *
+    (1.0 - smoothstep(0.035, 0.095, rawSunAlt));
+  let goldenHourGate =
+    smoothstep(0.04, 0.095, rawSunAlt) *
+    (1.0 - smoothstep(0.16, 0.36, rawSunAlt));
+  let sunHorizonWarmth = clamp(deepHorizonSunGate + goldenHourGate, 0.0, 1.0);
+  let solarNoonGate = smoothstep(0.84, 0.96, rawSunAlt);
+  let nightBiolumGate = celestialNightGate(normalEC, sunDirEC);
+
+  if (showOceanWaves) {
+    let surfRollers =
+      computeShoreSurfRollersAndSwash(
+        waterMaskValue,
+        bedHeight,
+        t,
+        distance,
+        localEnuMeters,
+      ) * shoreTransitionGate;
+    let uplandRapidsGate =
+      smoothstep(18.0, 85.0, bedHeight) *
+      smoothstep(0.32, 0.44, waterMaskValue) *
+      (1.0 - smoothstep(0.52, 0.68, waterMaskValue)) *
+      (1.0 - nonSwampBiomeWeight) *
+      (1.0 - smoothstep(4000.0, 18000.0, distance));
+    let rapidsFoam = uplandRapidsGate * clamp(length(waveTangentSlope) * 3.2, 0.15, 0.72);
+    surfAerationBoost = (surfRollers.z + rapidsFoam * 0.65) * imageryWaterGate;
+    let rawFoam = select(0.0, foamFactor / max(waterMaskValue, 1.0e-4), waterMaskValue > 1.0e-4);
+    foamFactor = max(
+      rawFoam * openWaterMask * trochoidSharpness * imageryWaterGate,
+      max(surfRollers.x, rapidsFoam) * coastalEffectiveMask,
+    );
+    let bubblePlumeColor =
+      vec3<f32>(0.06, 0.58, 0.46) *
+      surfRollers.z *
+      coastalEffectiveMask *
+      highlightFade *
+      oceanTransition;
+    let wetSandDarken = -baseColor * (0.45 * surfRollers.w) * oceanTransition;
+    oceanContribution += bubblePlumeColor + wetSandDarken;
+    let uvFootprint = max(length(uvDx), length(uvDy)) * tile.oceanWavePhaseB.z;
+    let normalVariance = clamp(uvFootprint * uvFootprint * 2.5e9, 0.0, 0.22);
+    toksvigSpecScale = 1.0 / (1.0 + normalVariance * 4.5);
+    toksvigSpecScale = mix(toksvigSpecScale, 1.35, surfRollers.w);
+
+    let solarDirectGateEarly = smoothstep(-0.03, 0.05, rawSunAlt);
+    let sunsetHighlightEarly = mix(
+      vec3<f32>(1.15, 0.34, 0.08),
+      vec3<f32>(1.12, 0.76, 0.24),
+      goldenHourGate,
+    );
+    let sunriseHighlightEarly = mix(
+      vec3<f32>(1.08, 0.52, 0.44),
+      vec3<f32>(1.08, 0.78, 0.48),
+      goldenHourGate,
+    );
+    let horizonHighlightColor = mix(
+      sunsetHighlightEarly,
+      sunriseHighlightEarly,
+      eastWestSunriseFactor,
+    );
+    let diurnalWaveHighlight = mix(
+      mix(waveHighlightColor, horizonHighlightColor, sunHorizonWarmth * 0.92),
+      vec3<f32>(0.28, 0.36, 0.78),
+      twilightBlueHourGate * 0.88,
+    );
+    let nonDiffuseHighlight =
+      mix(
+        diurnalWaveHighlight * 5.0 * (1.0 - tsPerturbationRatio),
+        vec3<f32>(0.0),
+        NdotL,
+      ) *
+      mix(1.0, 0.14, nightBiolumGate * (1.0 - twilightBlueHourGate));
+    oceanContribution +=
+      nonDiffuseHighlight * coastalEffectiveMask * highlightFade * orbitWashKeep;
+    let sssSolarTint = mix(
+      vec3<f32>(1.0, 1.0, 1.0),
+      mix(vec3<f32>(1.35, 0.72, 0.38), vec3<f32>(1.30, 1.05, 0.62), goldenHourGate),
+      sunHorizonWarmth * 0.75,
+    );
+    oceanContribution +=
+      computeSubsurfaceScattering(viewDir, sunDirEC, waterNormal) *
+      sssSolarTint *
+      solarDirectGateEarly *
+      (1.0 + 0.55 * flightToSurfaceHandover) *
+      trochoidSharpness *
+      coastalEffectiveMask *
+      highlightFade *
+      oceanTransition;
   }
 
-  // Celestial reflection, chosen at runtime by the enable float rather than by
-  // a shader define: the microfacet lobe shares its evaluation with the
-  // night-side moonglade, both have to be switchable without recompiling, and
-  // the define budget is exhausted. While the float is zero the Phong lobe
-  // above is the whole specular story, exactly as it was before this arrived.
-  // It sits outside the debug-sentinel branch on purpose — that sentinel exists
-  // to measure the Phong term's share of a residual, and a term it was written
-  // before cannot belong to that measurement.
+  var solarDirectTintOut = vec3<f32>(1.0, 0.99, 0.96);
+  if (sunHorizonWarmth > 1.0e-4) {
+    let sunriseDirectTint = mix(
+      vec3<f32>(1.16, 0.54, 0.44),
+      vec3<f32>(1.06, 0.84, 0.58),
+      smoothstep(0.01, 0.18, rawSunAlt),
+    );
+    let sunsetDirectTint = mix(
+      vec3<f32>(1.26, 0.34, 0.08),
+      vec3<f32>(1.14, 0.78, 0.26),
+      smoothstep(0.04, 0.16, rawSunAlt),
+    );
+    let horizonDirectTint = mix(sunsetDirectTint, sunriseDirectTint, eastWestSunriseFactor);
+    solarDirectTintOut = mix(
+      vec3<f32>(1.0, 0.99, 0.96),
+      horizonDirectTint,
+      sunHorizonWarmth,
+    );
+  }
+  let solarDirectTint = solarDirectTintOut;
+  let moonDirEC = vec3<f32>(
+    camera.celestialMoonDirectionAndPhase.x,
+    camera.celestialMoonDirectionAndPhase.y,
+    camera.celestialMoonDirectionAndPhase.z,
+  );
+  let moonPhase = clamp(camera.celestialMoonDirectionAndPhase.w, 0.0, 1.0);
+  let moonAlt = dot(normalEC, moonDirEC);
+  let moonUpGate =
+    smoothstep(0.0, CELESTIAL_MOON_RISE_SIN, moonAlt) *
+    moonPhase *
+    nightBiolumGate;
+  let nightDarkFloor = select(
+    1.0,
+    max(tile.hsbShift.w, 0.12),
+    tile.hsbShift.w < 1.0 && camera.enableLighting > 0.5,
+  );
+  let nightLitDiffuse = select(
+    1.0,
+    select(
+      mix(1.0, 0.30, clamp(tile.lightingFade, 0.0, 1.0)),
+      max(camera.lighting.y, 0.25),
+      camera.lighting.z > 0.5,
+    ),
+    camera.enableLighting > 0.5,
+  );
+  let terminatorDayFade = clamp(rawSunAlt * 5.0, 0.0, 1.0);
+  let terminatorCompBoost = mix(
+    1.0,
+    2.45,
+    (1.0 - terminatorDayFade) * max(sunHorizonWarmth, twilightBlueHourGate),
+  );
+  let postOceanNightScale = max(
+    mix(1.0, nightDarkFloor * nightLitDiffuse, nightBiolumGate),
+    0.08,
+  );
+  let nocturnalBoost = 1.0 / postOceanNightScale;
+
+  // Specular sun-glint, ported one-to-one from WebGL
+  // GlobeFS.glsl::computeWaterColor L839-842.
+  let waveIntensity = waveIntensityFade;
+  let waterNormalDeltaLen = length(waterNormal - normalEC);
+  let oneMinusTsRatio = 1.0 - tsPerturbationRatio;
+  if (!globe_debugBypassActive(26.0e9)) {
+    let toReflectedLight = reflect(-sunDirEC, waterNormal);
+    let reflViewDot = max(dot(toReflectedLight, viewDir), 0.0);
+    let rvd2 = reflViewDot * reflViewDot;
+    let specularIntensity = pow(max(dot(toReflectedLight, viewDir), 0.0), 10.0);
+    let zoomedOutSpec: f32 = camera.lighting.w * 0.12;
+    let nearSpec: f32 = 0.5 * toksvigSpecScale;
+    let surfaceReflectance =
+      mix(zoomedOutSpec, nearSpec, waveIntensity) * coastalEffectiveMask;
+    oceanContribution += solarDirectTint * (specularIntensity * surfaceReflectance) * terminatorCompBoost;
+    if (sunHorizonWarmth > 1.0e-4 || twilightBlueHourGate > 1.0e-4) {
+      let lowSunGlitter =
+        (rvd2 * reflViewDot) *
+        sunHorizonWarmth *
+        surfaceReflectance *
+        0.75;
+      let waveFacetActivity = clamp(
+        waterNormalDeltaLen * 9.5 + oneMinusTsRatio * 4.8,
+        0.0,
+        1.0,
+      );
+      let vgBase = 1.0 - max(dot(normalEC, viewDir), 0.0);
+      let viewGrazing = vgBase * mix(1.0, vgBase, 0.65);
+      let sunsetFacetColor = mix(
+        vec3<f32>(1.32, 0.34, 0.06),
+        vec3<f32>(1.18, 0.80, 0.22),
+        goldenHourGate,
+      );
+      let sunriseFacetColor = mix(
+        vec3<f32>(1.18, 0.52, 0.44),
+        vec3<f32>(1.12, 0.82, 0.48),
+        goldenHourGate,
+      );
+      let horizonFacetColor = mix(
+        sunsetFacetColor,
+        sunriseFacetColor,
+        eastWestSunriseFactor,
+      );
+      let horizonWaveFacetGlow =
+        horizonFacetColor *
+        (0.08 + 0.72 * waveFacetActivity + 0.36 * max(dot(waterNormal, sunDirEC), 0.0)) *
+        (0.35 + 0.65 * viewGrazing) *
+        sunHorizonWarmth *
+        terminatorCompBoost *
+        coastalEffectiveMask *
+        highlightFade *
+        oceanTransition *
+        0.48;
+      let twilightFacetColor = mix(
+        vec3<f32>(0.34, 0.32, 0.78),
+        vec3<f32>(0.58, 0.36, 0.76),
+        eastWestSunriseFactor,
+      );
+      let twilightWaveGlow =
+        twilightFacetColor *
+        (0.10 + 0.68 * waveFacetActivity) *
+        (0.35 + 0.65 * viewGrazing) *
+        twilightBlueHourGate *
+        terminatorCompBoost *
+        coastalEffectiveMask *
+        highlightFade *
+        oceanTransition *
+        0.42;
+      oceanContribution +=
+        horizonFacetColor * lowSunGlitter * terminatorCompBoost +
+        horizonWaveFacetGlow +
+        twilightWaveGlow;
+    }
+    if (solarNoonGate > 1.0e-4) {
+      let wnSun1 = max(dot(waterNormal, sunDirEC), 0.0);
+      let wnSun2 = wnSun1 * wnSun1;
+      let wnSun4 = wnSun2 * wnSun2;
+      let noonWaveSparkle =
+        clamp(oneMinusTsRatio * 5.5 + waterNormalDeltaLen * 6.0, 0.0, 1.0) *
+        (wnSun4 * wnSun4 * wnSun4) *
+        solarNoonGate *
+        coastalEffectiveMask *
+        highlightFade *
+        oceanTransition *
+        0.22;
+      oceanContribution += vec3<f32>(0.88, 0.98, 1.04) * noonWaveSparkle;
+    }
+    if (waveIntensity < 0.999) {
+      oceanContribution +=
+        solarDirectTint *
+        computeCoxMunkOrbitalGlint(
+          normalEC,
+          viewDir,
+          sunDirEC,
+          positionMC,
+          enuToEye,
+          waveIntensity,
+          coastalEffectiveMask,
+        ) * oceanTransition;
+    }
+  }
+
   if (camera.celestialControl.x > 0.0) {
     oceanContribution += computeCelestialWaterSpecular(
       waterNormal,
@@ -3192,20 +4116,868 @@ fn computeEnhancedOcean(
       sunDirEC,
       normalEC,
       waveIntensity,
-      waterMaskValue);
+      coastalEffectiveMask);
+  }
+  let camAlt = camera.eyeCartographic.z;
+  if (moonUpGate > 1.0e-4) {
+    let lunarCloseHandover = 1.0 - smoothstep(4000.0, 28000.0, camAlt);
+    let toReflectedMoon = reflect(-moonDirEC, waterNormal);
+    let directMoonAlign = max(dot(toReflectedMoon, viewDir), 0.0);
+    let wavePerturbMag = clamp(
+      waterNormalDeltaLen * 8.5 + oneMinusTsRatio * 4.5,
+      0.0,
+      1.0,
+    );
+    let vgg1 = 1.0 - max(dot(normalEC, viewDir), 0.0);
+    let viewGrazingGlade = vgg1 * vgg1;
+    let dma2 = directMoonAlign * directMoonAlign;
+    let dma4 = dma2 * dma2;
+    let dma8 = dma4 * dma4;
+    let lunarFacetGlint =
+      (dma8 * 0.42 + (dma8 * dma8 * dma8 * dma4) * 0.68) * lunarCloseHandover +
+      wavePerturbMag * (0.24 + 0.36 * viewGrazingGlade);
+    let lunarWaveRim =
+      (max(dot(waterNormal, moonDirEC), 0.0) * 0.16 * wavePerturbMag + wavePerturbMag * 0.28) *
+      (0.45 + 0.55 * viewGrazingGlade) *
+      lunarCloseHandover;
+    let lunarGladeRadiance =
+      vec3<f32>(0.76, 0.88, 1.0) *
+      (lunarFacetGlint + lunarWaveRim) *
+      moonUpGate *
+      coastalEffectiveMask *
+      highlightFade *
+      oceanTransition;
+    oceanContribution += lunarGladeRadiance * min(nocturnalBoost, 2.2);
+    let highAltMoonDamp = smoothstep(8000.0, 55000.0, camAlt);
+    if (highAltMoonDamp > 0.0) {
+      let compressedMoonSpec =
+        (oceanContribution / (vec3<f32>(1.0) + oceanContribution * 1.85)) * 0.58;
+      oceanContribution = mix(oceanContribution, compressedMoonSpec, highAltMoonDamp);
+    }
   }
 
-  // Foam: white overlay on steep wave crests (additive on top of imagery).
-  let foamColor = vec3<f32>(0.85, 0.9, 0.92);
+  // Physical dielectric Fresnel, Snell-refracted slant optical path length,
+  // separate absorption (sigma_a) and scattering (sigma_s), and Gordon's
+  // ocean-optics multiple-scattering equilibrium reflectance (9.1 - 9.3).
+  let jerlovExtinction = vec3<f32>(0.045, 0.015, 0.008);
+  let shallowWaterColor = vec3<f32>(0.04, 0.28, 0.38);
+  let deepColor = getOceanDeepColor();
+  let darkening = getOceanDarkening();
 
-  // Match WebGL: imagery preserved, highlights added on top, foam mixed in.
-  // The coastline feather, a mix against baseColor, lives at the call site,
-  // where a screen-space-adaptive coverage is computed with `fwidth(mask)` in
-  // uniform control flow. Returning the full effect color here keeps this
-  // helper a pure ocean-over-imagery shader and leaves the caller to decide
-  // how much of it survives near the coast.
+  let cosView = max(dot(normalEC, viewDir), 0.1);
+  let cosSun = max(dot(normalEC, sunDirEC), 0.1);
+  let diurnalWaterIllum = mix(1.0, 0.28 + 0.32 * moonUpGate, nightBiolumGate);
+  let nDotVWater = clamp(dot(waterNormal, viewDir), 0.02, 1.0);
+  let rawBathyTensor = evaluateHeuristicBathymetryFallback(
+    vec3<f32>(lonLatDeg2D.x, lonLatDeg2D.y, 1.0),
+    waterMaskValue,
+    bedHeight,
+  );
+  let decodedLakeDepth = f32(hydroUpperNibble * hydroUpperNibble) * 6.5;
+  let decodedOceanDepth = wmMetaBilinear.b * wmMetaBilinear.b * 11000.0;
+  let decodedOceanClarity = clamp((wmMetaBilinear.a * 255.0 - 1.0) / 248.0, 0.0, 1.0);
+  let decodedOceanTurbidity = mix(1.92, 0.52, decodedOceanClarity);
+  let oceanBathyDepth = select(
+    rawBathyTensor.x,
+    max(rawBathyTensor.x, decodedOceanDepth * smoothstep(0.72, 0.96, waterMaskValue)),
+    hasHydroRgba && hydroTypeCode == 0u && wmMetaBilinear.b > 0.002,
+  );
+  let oceanBathyTurbidity = select(
+    rawBathyTensor.y,
+    mix(rawBathyTensor.y, decodedOceanTurbidity, 0.72),
+    hasHydroRgba && hydroTypeCode == 0u && wmMetaBilinear.b > 0.002,
+  );
+  let riverChannelDepth = clamp(f32(hydroUpperNibble) * 1.4, 2.5, 18.0);
+  let bathyTensor = vec2<f32>(
+    select(
+      select(
+        select(oceanBathyDepth, max(rawBathyTensor.x, decodedLakeDepth), isHydroLake),
+        riverChannelDepth,
+        isHydroRiver,
+      ),
+      8.0,
+      hydroTypeCode == 8u,
+    ),
+    select(
+      select(oceanBathyTurbidity, mix(1.55, 1.15, swampCdomWeight), isHydroRiver),
+      0.58,
+      hydroTypeCode == 8u,
+    ),
+  );
+  let brineEta = mix(1.333333, 1.355, hypersalineWeight);
+  let surfaceFresnel = fresnelDielectric(nDotVWater, brineEta);
+  let refractedViewDir = refract(-viewDir, waterNormal, 0.75);
+  let refractedCosView = max(-dot(refractedViewDir, normalEC), 0.08);
+  let waterDepth = max(
+    bathyTensor.x + max(tile.oceanTideHeight, 0.0) * 0.35,
+    max(-bedHeight + tile.oceanTideHeight * 0.25, 0.0),
+  );
+  let refractedPathLength = waterDepth / refractedCosView;
+  let opticalPath = refractedPathLength + waterDepth / cosSun;
+
+  // Separate physical absorption sigma_a and scattering sigma_s with surf
+  // aeration, coastal sediment turbidity, Case-2 CDOM humic tannins, and glacial rock-flour coupling.
+  let cdomTanninAbsorption = vec3<f32>(0.045, 0.34, 1.38) * swampCdomWeight;
+  let sigmaA = vec3<f32>(0.042, 0.012, 0.006) * bathyTensor.y + cdomTanninAbsorption;
+  let sedimentGate = smoothstep(1.35, 1.95, bathyTensor.y);
+  let glacialRockFlourGlow =
+    vec3<f32>(0.08, 0.58, 0.64) * glacialLakeWeight * (0.45 + 0.55 * cosSun);
+  let sigmaS =
+    vec3<f32>(0.004, 0.014, 0.022) * bathyTensor.y * (1.0 - swampCdomWeight * 0.85) +
+    vec3<f32>(0.012, 0.052, 0.044) * surfAerationBoost * 0.45 +
+    vec3<f32>(0.024, 0.032, 0.018) * sedimentGate * 0.55 +
+    vec3<f32>(0.018, 0.115, 0.128) * glacialLakeWeight;
+  let sigmaT = max(sigmaA + sigmaS, vec3<f32>(1.0e-4));
+  let backScatter = 0.22 * sigmaS;
+  let gordonEquilibriumAlbedo =
+    clamp((1.32 * backScatter) / max(sigmaA + backScatter, vec3<f32>(1.0e-4)), vec3<f32>(0.0), vec3<f32>(0.42));
+  let transmittance = exp(-max(jerlovExtinction * bathyTensor.y, sigmaT * 0.65) * opticalPath);
+
+  // Tile-seamless relative-to-eye local East-North metric coordinates (meters from camera),
+  // eliminating quadtree LOD tile seams while preserving sub-millimeter f32 precision.
+  let underwaterClock = t;
+  let spatialCoord = eyePlanarMetersEarly;
+  // Fetch-limited JONSWAP wave attenuation and Strahler channel-tangent river/estuary flow advection.
+  let fetchWaveAttenuation =
+    mix(0.28, 1.0, smoothstep(0.42, 0.68, waterMaskValue)) *
+    (1.0 - swampCdomWeight * 0.88) *
+    (1.0 - hypersalineWeight * 0.35) *
+    select(1.0, 0.08, isHydroRiver);
+  let microSurfaceGate = 1.0 - smoothstep(90.0, 320.0, distance);
+  var catsPawGust: f32 = 0.5;
+  var surfactantSlick: f32 = 0.0;
+  if (microSurfaceGate > 1.0e-4) {
+    var riverFlowAdvection = vec2<f32>(0.0);
+    if (waterMaskValue < 0.78 || hydroTypeCode == 9u) {
+      let decodedRiverTangent = vec2<f32>(
+        wmMetaBilinear.b * 2.0 - 1.0,
+        (wmMetaBilinear.a * 255.0 - 125.0) * 0.0080645,
+      );
+      let fallbackRiverTangent =
+        vec2<f32>(-waveTangentSlope.y, waveTangentSlope.x) + vec2<f32>(0.6, 0.8);
+      let riverChannelTangent = normalize(
+        select(
+          fallbackRiverTangent,
+          decodedRiverTangent,
+          hasHydroRgba && hydroTypeCode == 9u && length(decodedRiverTangent) > 0.05,
+        ),
+      );
+      let strahlerChannelGate = select(
+        smoothstep(0.30, 0.48, waterMaskValue) *
+          (1.0 - smoothstep(0.48, 0.78, waterMaskValue)),
+        clamp(f32(hydroUpperNibble) * 0.09, 0.25, 1.0) *
+          smoothstep(0.20, 0.45, waterMaskValue),
+        hasHydroRgba && hydroTypeCode == 9u,
+      );
+      let riverFlowPhase = dot(localEnuMeters, riverChannelTangent) * 0.14 - underwaterClock * 2.1;
+      riverFlowAdvection =
+        riverChannelTangent *
+        sin(riverFlowPhase) *
+        smoothstep(0.04, 0.45, bedHeight) *
+        strahlerChannelGate;
+    }
+    let microCoord = localEnuMeters * 0.022 + riverFlowAdvection * 0.25;
+    let microTrigA = sin(vec4<f32>(
+      microCoord.y * 2.0 + underwaterClock * 0.11,
+      microCoord.x * 2.0 - underwaterClock * 0.09 + 1.5707963,
+      microCoord.y * 2.0,
+      microCoord.x * 3.0 + 1.5707963,
+    ));
+    let gustPhase = microCoord * 2.0 + microTrigA.xy * 1.35 + vec2<f32>(underwaterClock * 0.14, -underwaterClock * 0.09);
+    let microTrigB = sin(vec4<f32>(
+      gustPhase.x + 0.8 * microTrigA.y,
+      gustPhase.y * 2.0 - 0.7 * microTrigA.x + 1.5707963,
+      microCoord.x * 3.0 + 1.6 * microTrigA.z,
+      microCoord.y * 2.0 - 1.5 * microTrigA.w + 1.5707963,
+    ));
+    catsPawGust = mix(
+      0.5,
+      0.5 + 0.32 * microTrigB.x + 0.18 * microTrigB.y,
+      microSurfaceGate * fetchWaveAttenuation,
+    );
+    let slickField = microTrigB.z * microTrigB.w;
+    surfactantSlick = smoothstep(0.55, 0.88, slickField) * microSurfaceGate;
+  }
+  let slickDamping = 1.0 - 0.16 * surfactantSlick;
+
+  // Swamp duckweed/azolla cellular mats, biogenic thin-film iridescence,
+  // hypersaline halite salt-crust shoreline rim, and tectonic rift methane-bubble ice.
+  var frondMicro: f32 = 0.5;
+  var duckweedPatchNoise: f32 = 0.5;
+  var swampDuckweedMat: f32 = 0.0;
+  var biogenicIridescence = vec3<f32>(0.0);
+  var haliteSaltCrustRim = vec3<f32>(0.0);
+  var riftMethaneIce = vec3<f32>(0.0);
+  if (swampCdomWeight + hypersalineWeight + riftLakeWeight > 1.0e-4) {
+    let sp0 = localEnuMeters * 0.0032 + waveTangentSlope * 0.42;
+    let phaseVecA = vec4<f32>(
+      sp0.x * 1.15 + sp0.y * 0.78,
+      sp0.x * 1.42 - sp0.y * 1.18,
+      sp0.x * 2.15 - sp0.y * 1.85,
+      sp0.x * 1.90 + sp0.y * 2.35,
+    );
+    let trigA = sin(phaseVecA);
+    let sp1 = sp0 + trigA.xy * 0.92 + trigA.zw * 0.45;
+    let phaseVecB = vec4<f32>(
+      sp1.x * 0.85 + sp1.y * 0.62,
+      sp1.x * 1.75 - sp1.y * 1.35 + trigA.w * 0.65,
+      sp1.x * 2.65 + sp1.y * 2.10 - trigA.z * 0.55,
+      sp1.x * 3.10 - sp1.y * 2.45 + trigA.x * 0.75,
+    );
+    let trigB = cos(phaseVecB);
+    let sloughMacro = 0.5 + 0.5 * trigB.x;
+    let matMeso = 0.5 + 0.5 * trigB.y;
+    frondMicro = 0.5 + 0.5 * trigB.z;
+    duckweedPatchNoise = clamp(
+      sloughMacro * 0.48 + matMeso * 0.34 + frondMicro * 0.18,
+      0.0,
+      1.0,
+    );
+    let riverChannelFlowGate =
+      smoothstep(0.65, 0.82, waterMaskValue);
+    let swampLittoralBand =
+      smoothstep(0.48, 0.55, waterMaskValue) *
+      (1.0 - smoothstep(0.56, 0.72, waterMaskValue));
+    swampDuckweedMat =
+      swampCdomWeight *
+      (1.0 - riverChannelFlowGate) *
+      greenCanopyReject *
+      smoothstep(0.48, 0.56, waterMaskValue) *
+      clamp(
+        swampLittoralBand * smoothstep(0.48, 0.74, duckweedPatchNoise) * 0.28 +
+          smoothstep(0.62, 0.86, duckweedPatchNoise) * 0.22,
+        0.0,
+        0.34,
+      );
+    biogenicIridescence =
+      (vec3<f32>(0.5) + 0.5 * cos(vec3<f32>(0.0, 2.1, 4.2) + 14.0 * nDotVWater)) *
+      swampCdomWeight *
+      smoothstep(0.48, 0.54, waterMaskValue) *
+      (1.0 - smoothstep(0.54, 0.76, waterMaskValue)) *
+      0.11;
+    let haliteCrystalTex = 0.68 + 0.20 * trigB.w + 0.12 * trigA.z;
+    let haliteShoreBand = max(
+      smoothstep(0.44, 0.50, waterMaskValue) * (1.0 - smoothstep(0.50, 0.62, waterMaskValue)),
+      (1.0 - smoothstep(0.08, 0.28, waterChroma)) * smoothstep(0.46, 0.58, waterMaskValue) * 0.75,
+    );
+    haliteSaltCrustRim =
+      vec3<f32>(0.90, 0.92, 0.95) *
+      hypersalineWeight *
+      haliteShoreBand *
+      haliteCrystalTex *
+      0.82;
+    let riftShoreGate =
+      smoothstep(0.46, 0.52, waterMaskValue) *
+      (1.0 - smoothstep(0.52, 0.62, waterMaskValue));
+    let riftIceCrystal =
+      clamp(0.5 + 0.35 * trigB.w + 0.15 * trigA.w, 0.0, 1.0) *
+      riftShoreGate;
+    riftMethaneIce =
+      vec3<f32>(0.72, 0.88, 0.98) *
+      riftLakeWeight *
+      riftIceCrystal *
+      0.34;
+  }
+
+  let mesoMetric = vec2<f32>(mesoLon * cos(mesoLat), mesoLat) * ellipsoidMeanRadius();
+  let closeTransparencyGate = 1.0 - smoothstep(1200.0, 18000.0, distance);
+  let waterTypeClarity = clamp(1.55 - 0.62 * bathyTensor.y, 0.12, 1.0);
+  let benthicVisibility =
+    closeTransparencyGate *
+    (1.0 - surfaceFresnel) *
+    waterTypeClarity *
+    (1.0 - smoothstep(3.5, 28.0, waterDepth));
+  var reefShoalPattern: f32 = 0.5;
+  if (benthicVisibility > 1.0e-4) {
+    let reefWarp = vec2<f32>(
+      sin(mesoMetric.y * 0.0014 + cos(mesoMetric.x * 0.0011)),
+      cos(mesoMetric.x * 0.0013 - sin(mesoMetric.y * 0.0015)),
+    );
+    let reefCoord = mesoMetric + reefWarp * 180.0;
+    reefShoalPattern = clamp(
+      0.5 +
+        0.30 * sin(reefCoord.x * 0.0022 + reefCoord.y * 0.0017) +
+        0.20 * cos(reefCoord.x * 0.0038 - reefCoord.y * 0.0029),
+      0.0,
+      1.0,
+    );
+  }
+  let refractedRipple = clamp(
+    1.0 + (waveTangentSlope.x * 0.28 + waveTangentSlope.y * 0.22) * closeTransparencyGate,
+    0.90,
+    1.10,
+  );
+  let sandbarTint = vec3<f32>(0.64, 0.68, 0.56) * refractedRipple;
+  let coralLagoonTint =
+    mix(vec3<f32>(0.04, 0.34, 0.44), vec3<f32>(0.16, 0.58, 0.60), reefShoalPattern) *
+    refractedRipple;
+  let turbidEstuaryTint = vec3<f32>(0.18, 0.28, 0.22);
+  let shallowFloorSynth = mix(
+    mix(sandbarTint, coralLagoonTint, smoothstep(2.0, 10.5, waterDepth)),
+    turbidEstuaryTint,
+    sedimentGate,
+  );
+  let shallowShoreShelf = 1.0 - smoothstep(0.32, 0.44, waterMaskValue);
+  let swampTanninBody =
+    vec3<f32>(0.085, 0.052, 0.016) + vec3<f32>(0.145, 0.088, 0.022) * cosSun;
+  let glacialFjordBody =
+    mix(
+      vec3<f32>(0.05, 0.43, 0.53),
+      vec3<f32>(0.22, 0.62, 0.60),
+      shallowShoreShelf,
+    ) *
+    (0.45 + 0.55 * cosSun) +
+    glacialRockFlourGlow * 0.28;
+  let riftGrabenBody =
+    mix(
+      vec3<f32>(0.018, 0.095, 0.26),
+      vec3<f32>(0.06, 0.34, 0.46),
+      shallowShoreShelf,
+    ) *
+    (0.45 + 0.55 * cosSun);
+  let hypersalineBrineBody =
+    mix(
+      vec3<f32>(0.12, 0.50, 0.48),
+      vec3<f32>(0.03, 0.24, 0.36),
+      smoothstep(0.46, 0.58, waterMaskValue),
+    ) *
+    (0.45 + 0.55 * cosSun);
+  let turbidWaterBody = mix(
+    mix(
+      shallowWaterColor * 0.52 + gordonEquilibriumAlbedo * (0.20 + 0.32 * cosSun) + glacialRockFlourGlow * 0.45,
+      vec3<f32>(0.14, 0.25, 0.21),
+      smoothstep(1.4, 2.0, bathyTensor.y),
+    ),
+    swampTanninBody,
+    swampCdomWeight * 0.92,
+  );
+  let nearSurfaceTrans = clamp(camera.cloudShadowCascadeParams.z, 0.0, 1.0);
+  let proximityTransparency = (1.0 - smoothstep(2.0, 480.0, camAlt)) * nearSurfaceTrans * (1.0 - 0.35 * surfaceFresnel);
+  let seaLevelColumnPurity = (1.0 - smoothstep(18.0, 85.0, camAlt)) * smoothstep(0.50, 0.62, waterMaskValue) * nonVegetationGate * (1.0 - proximityTransparency * 0.92);
+  // Wave-peak-to-trough subsurface thickness translucency:
+  // troughs deepen toward cobalt-sapphire while elevated wave crests glow emerald-cyan.
+  let crestHeightProxy = clamp(
+    (1.0 - tsPerturbationRatio) * 7.5 + max(dot(waterNormal.xy, sunDirEC.xy), 0.0) * 0.42,
+    0.0,
+    1.0,
+  );
+  let waterDetailScale = clamp(1.0 + camera.hdrControl.z * 0.45, 0.65, 1.85);
+  let crestToTroughTranslucency =
+    mix(vec3<f32>(-0.006, -0.012, -0.018), vec3<f32>(0.022, 0.26, 0.34), crestHeightProxy) *
+    (0.35 + 0.65 * seaLevelColumnPurity) *
+    flightToSurfaceHandover *
+    (1.0 - swampCdomWeight * 0.85) *
+    waterDetailScale;
+  let duckweedBasePalette = mix(
+    vec3<f32>(0.15, 0.28, 0.06),
+    vec3<f32>(0.28, 0.44, 0.10),
+    smoothstep(0.42, 0.82, duckweedPatchNoise),
+  );
+  let duckweedColor =
+    mix(duckweedBasePalette, vec3<f32>(0.26, 0.19, 0.07), frondMicro * 0.32) *
+    (0.45 + 0.55 * cosSun);
+  let waveSlopeContrast = clamp(
+    dot(waterNormal - normalEC, normalize(sunDirEC - viewDir * 0.45)) * 2.2,
+    -0.18,
+    0.24,
+  );
+  let openOceanWaterBody =
+    mix(
+      turbidWaterBody,
+      deepColor,
+      (1.0 - exp(-0.045 * waterDepth)) *
+        (1.0 - swampCdomWeight * 0.92) *
+        (1.0 - glacialLakeWeight * 0.92) *
+        (1.0 - hypersalineWeight * 0.85),
+    );
+  let multiBiomeBody =
+    mix(
+      mix(
+        mix(openOceanWaterBody, glacialFjordBody, glacialLakeWeight),
+        riftGrabenBody + riftMethaneIce,
+        riftLakeWeight,
+      ),
+      hypersalineBrineBody,
+      hypersalineWeight,
+    ) *
+      (1.0 + waveSlopeContrast * (1.0 - swampCdomWeight * 0.75)) +
+    crestToTroughTranslucency;
+  let rawWaterBodyColor =
+    mix(multiBiomeBody, duckweedColor, swampDuckweedMat) *
+    diurnalWaterIllum;
+  let shallowShelfFactor = 1.0 - smoothstep(2.0, 45.0, waterDepth);
+  let aerialGlintWash =
+    foreshoreGlintWash *
+    (1.0 - nonSwampBiomeWeight) *
+    smoothstep(0.18, 0.88, waterMaskValue) *
+    (1.0 - smoothstep(2.0, 8.0, bedHeight)) *
+    (1.0 - smoothstep(2800.0, 4500.0, camAlt)) *
+    imageryWaterGate *
+    0.18;
+  let unlitNightImageryDim = mix(
+    1.0,
+    0.22 + 0.14 * moonUpGate,
+    nightBiolumGate * select(1.0, 0.0, tile.hsbShift.w < 1.0),
+  );
+  let diurnalSkyAuthority = clamp(
+    max(sunHorizonWarmth * 0.78, twilightBlueHourGate * 0.84),
+    0.0,
+    1.0,
+  );
+  let orbitDepthFilter = smoothstep(18000.0, 90000.0, camAlt);
+  let imageryCoastBlend =
+    (1.0 - orbitDepthFilter) *
+    (1.0 - clamp(multiBiomeGate * 2.2, 0.0, 1.0)) *
+    (1.0 - diurnalSkyAuthority * 0.75) *
+    (1.0 - nightBiolumGate * 0.75);
+  let imageryHarmonizedBody =
+    baseColor * vec3<f32>(0.82, 0.95, 1.04) * diurnalWaterIllum +
+    rawWaterBodyColor * 0.22 +
+    crestToTroughTranslucency * 0.65;
+  let waterBodyColor = mix(
+    rawWaterBodyColor,
+    imageryHarmonizedBody,
+    imageryCoastBlend * (1.0 - seaLevelColumnPurity * 0.65) * 0.76,
+  );
+  var diurnalBaseTint = vec3<f32>(unlitNightImageryDim);
+  if (diurnalSkyAuthority > 1.0e-4) {
+    let horizonBodyTint = mix(
+      vec3<f32>(0.64, 0.88, 1.14),
+      vec3<f32>(0.88, 1.04, 1.06),
+      goldenHourGate,
+    );
+    let twilightBodyTint = mix(
+      vec3<f32>(0.46, 0.62, 1.18),
+      vec3<f32>(0.54, 0.60, 1.16),
+      eastWestSunriseFactor,
+    );
+    diurnalBaseTint =
+      mix(
+        mix(vec3<f32>(1.0), horizonBodyTint, sunHorizonWarmth * 0.65),
+        twilightBodyTint,
+        twilightBlueHourGate * 0.78,
+      ) * unlitNightImageryDim;
+  }
+  let isCarbonateShoal =
+    smoothstep(0.04, 0.18, reefTurquoiseBoost) *
+    (1.0 - smoothstep(12.0, 28.0, waterDepth));
+  let nonShoalOcean = 1.0 - isCarbonateShoal * 0.88;
+  let deglintedBase = mix(
+    baseColor * diurnalBaseTint,
+    waterBodyColor * diurnalBaseTint,
+    max(aerialGlintWash * 0.92, diurnalSkyAuthority * 0.64),
+  );
+
+  let baseLuma = dot(deglintedBase, vec3<f32>(0.299, 0.587, 0.114));
+  let synthFloorBlend =
+    benthicVisibility * (1.0 - smoothstep(0.06, 0.22, baseLuma)) * 0.68;
+  let refractedBase = deglintedBase * mix(1.0, refractedRipple, benthicVisibility * 0.35);
+  let effectiveBedColor = mix(refractedBase, shallowFloorSynth * diurnalWaterIllum, synthFloorBlend);
+
+  let physicalBedAtten = (1.0 - darkening * (1.0 - 0.65 * benthicVisibility)) * transmittance;
+  let imageryPreservingAtten = mix(
+    physicalBedAtten,
+    vec3<f32>(0.90, 0.96, 1.01),
+    imageryCoastBlend * 0.82,
+  );
+  let attenuatedBed = effectiveBedColor * imageryPreservingAtten;
+  let coastalOpacityRamp = smoothstep(0.48, 0.58, waterMaskValue);
+  let baseTransWeight =
+    mix(transmittance.g, transmittance.b, 0.35) *
+    (1.0 - 0.72 * surfaceFresnel * closeTransparencyGate) *
+    (1.0 - seaLevelColumnPurity * 0.94);
+
+  // Stratospheric & Orbital Mesoscale Swell + In-Flight & Orbital Beer-Lambert Transmittance
+  let mesoBandWeight =
+    smoothstep(9000.0, 24000.0, camAlt) *
+    (1.0 - smoothstep(180000.0, 650000.0, camAlt));
+  var mesoSurfaceMod = vec3<f32>(0.0);
+  if (mesoBandWeight > 1.0e-4) {
+    let mesoStochastic = evaluateStochasticWaveField(mesoMetric * 0.0018, underwaterClock * 0.35);
+    let mesoWarp = vec2<f32>(
+      sin(mesoMetric.y * 0.00025 + cos(mesoMetric.x * 0.00022)),
+      cos(mesoMetric.x * 0.00024 - sin(mesoMetric.y * 0.00027)),
+    ) + mesoStochastic.xy * 1.45;
+    let mesoPos = mesoMetric + mesoWarp * 340.0;
+    let mesoSwellWave =
+      (0.52 * sin(mesoPos.x * 0.0011 + mesoPos.y * 0.00075 - underwaterClock * 0.25) +
+        0.48 * cos(mesoPos.x * 0.00065 - mesoPos.y * 0.00125 + underwaterClock * 0.18)) *
+      mesoStochastic.z +
+      mesoStochastic.w * 0.35;
+    let mesoWindStreak =
+      0.5 +
+      0.32 * sin(mesoPos.x * 0.00042 + mesoPos.y * 0.00031 + 0.45 * cos(mesoPos.x * 0.00028 - mesoPos.y * 0.00036)) +
+      0.18 * cos(mesoPos.x * 0.00085 - mesoPos.y * 0.00064);
+    mesoSurfaceMod =
+      vec3<f32>(0.010, 0.022, 0.036) *
+      (mesoSwellWave * 0.38 + (mesoWindStreak - 0.5) * 0.68 * mesoStochastic.z) *
+      mesoBandWeight *
+      highlightFade;
+  }
+
+  let coastalSwellBand =
+    smoothstep(160.0, 900.0, camAlt) *
+    (1.0 - smoothstep(8000.0, 24000.0, camAlt)) *
+    (1.0 - smoothstep(0.52, 0.72, waterMaskValue)) *
+    shoreTransitionGate;
+  var coastalSwellTrain: f32 = 0.0;
+  if (coastalSwellBand > 1.0e-4) {
+    let swellStochastic = evaluateStochasticWaveField(localEnuMeters * 0.018, underwaterClock);
+    let warpedEnu = localEnuMeters + swellStochastic.xy * 32.0;
+    coastalSwellTrain =
+      sin(
+        warpedEnu.x * 0.028 +
+          warpedEnu.y * 0.020 +
+          (waveTangentSlope.x - waveTangentSlope.y) * 2.4 -
+          underwaterClock * 1.15,
+      ) *
+      swellStochastic.z *
+      coastalSwellBand *
+      0.42;
+  }
+
+  let coastalHomogenizeGate = max(
+    clamp(multiBiomeGate * 2.5, 0.0, 1.0),
+    smoothstep(0.24, 0.94, waterMaskValue) * smoothstep(35.0, 140.0, waterDepth) * 0.24,
+  );
+  let inFlightDepthColumn =
+    max(
+      max(
+        smoothstep(1.8, 8.5, waterDepth) * coastalHomogenizeGate,
+        smoothstep(0.24, 0.94, waterMaskValue) * smoothstep(35.0, 140.0, waterDepth) * nonShoalOcean * 0.22,
+      ) *
+        (1.0 - clamp(reefTurquoiseBoost * isCarbonateShoal * 2.8, 0.0, 0.92)),
+      aerialGlintWash * 0.35,
+    ) *
+    (1.0 - isCarbonateShoal * 0.88) *
+    smoothstep(8.0, 450.0, camAlt) *
+    (1.0 - orbitDepthFilter);
+  let columnFilterWeight = clamp(
+    max(orbitDepthFilter, max(inFlightDepthColumn * 0.58, aerialGlintWash * 0.55)),
+    0.0,
+    1.0,
+  );
+  let spectralFilter = mix(
+    vec3<f32>(1.0, 1.0, 1.0),
+    vec3<f32>(
+      mix(0.36, 0.90, shallowShelfFactor),
+      mix(0.72, 0.98, shallowShelfFactor),
+      mix(0.94, 1.04, shallowShelfFactor),
+    ),
+    columnFilterWeight,
+  );
+  let deepSapphireFloor = vec3<f32>(0.016, 0.068, 0.165) * (0.35 + 0.65 * cosSun) * diurnalWaterIllum;
+  let inFlightVolumeScatter =
+    vec3<f32>(0.014, 0.092, 0.172) *
+    (0.40 + 0.60 * cosSun) *
+    diurnalWaterIllum *
+    inFlightDepthColumn *
+    0.34;
+  let shoalReefKeep = 1.0 - inFlightDepthColumn * nonShoalOcean * 0.85;
+  let microAtollRim =
+    vec3<f32>(0.028, 0.18, 0.22) *
+    smoothstep(0.02, 0.24, reefTurquoiseBoost) *
+    (1.0 - smoothstep(0.20, 0.44, reefTurquoiseBoost)) *
+    shoalReefKeep *
+    max(orbitDepthFilter, inFlightDepthColumn);
+  let inFlightWaterFloor =
+    mix(waterBodyColor * diurnalBaseTint * 0.72, deepSapphireFloor, orbitDepthFilter) *
+    max(orbitDepthFilter, inFlightDepthColumn);
+  let filteredImageryBase =
+    max(mix(deglintedBase, effectiveBedColor, synthFloorBlend) * spectralFilter, inFlightWaterFloor) +
+    inFlightVolumeScatter +
+    vec3<f32>(0.0, 0.10, 0.14) * reefTurquoiseBoost * shoalReefKeep * max(orbitDepthFilter, inFlightDepthColumn) +
+    microAtollRim +
+    haliteSaltCrustRim +
+    vec3<f32>(0.010, 0.024, 0.036) * coastalSwellTrain * highlightFade +
+    mesoSurfaceMod;
+  let oceanColumnHomogenize = max(
+    inFlightDepthColumn * mix(0.10, 0.55 * coastalHomogenizeGate, nonShoalOcean),
+    max(aerialGlintWash * 0.45, diurnalSkyAuthority * 0.62),
+  ) * (1.0 - proximityTransparency * 0.78);
+  let spectralFilteredImagery = mix(
+    filteredImageryBase,
+    waterBodyColor * diurnalBaseTint + inFlightVolumeScatter * 0.65,
+    oceanColumnHomogenize,
+  );
+
+  var polarIceAndGlacial = vec4<f32>(0.0);
+  if (abs(sphereDir.z) > 0.805 && waterMaskValue > 0.40) {
+    polarIceAndGlacial = computePolarSeaIceAndGlacialPlume(positionMC, uv, waterMaskValue);
+  }
+  let verifiedSedimentWater = sedimentGate * imageryWaterGate * blueOverRedGate;
+  let inFlightImageryKeep =
+    max(smoothstep(55.0, 240.0, camAlt), proximityTransparency * 0.92) *
+    (1.0 - smoothstep(650000.0, 1500000.0, camAlt)) *
+    (1.0 - aerialGlintWash * 0.48) *
+    (1.0 - nightBiolumGate * 0.65) *
+    (1.0 - diurnalSkyAuthority * 0.78) *
+    (1.0 - max(verifiedSedimentWater * 0.78, polarIceAndGlacial.w * 0.85));
+  let transWeight = clamp(
+    mix(
+      mix(
+        mix(baseTransWeight, 1.0 - seaLevelColumnPurity * 0.94, (1.0 - coastalOpacityRamp) * closeTransparencyGate),
+        mix(0.86, 0.76, nearSurfaceTrans),
+        inFlightImageryKeep,
+      ),
+      0.96,
+      proximityTransparency,
+    ) * (1.0 - nightBiolumGate * 0.65),
+    0.0,
+    1.0,
+  );
+  let riftShelfFade = smoothstep(0.45, 0.56, waterMaskValue);
+  let riftOpticalScale = mix(0.32, 0.96, riftShelfFade);
+  let glacialOpticalScale = 0.92;
+  let biomeOpticalAuthority = clamp(
+    swampCdomWeight * 0.94 +
+      glacialLakeWeight * glacialOpticalScale +
+      riftLakeWeight * riftOpticalScale +
+      hypersalineWeight * 0.22 * smoothstep(0.55, 0.80, waterMaskValue) +
+      verifiedSedimentWater * 0.78,
+    0.0,
+    1.0,
+  );
+  let rawBlendedBase = mix(
+    mix(
+      mix(
+        waterBodyColor * diurnalBaseTint,
+        attenuatedBed,
+        transWeight * (1.0 - max(aerialGlintWash * 0.45, oceanColumnHomogenize * 0.55)),
+      ),
+      spectralFilteredImagery,
+      inFlightImageryKeep * 0.88,
+    ),
+    waterBodyColor * diurnalBaseTint + haliteSaltCrustRim,
+    biomeOpticalAuthority,
+  );
+  let baySeaLevelGate = max(imageryWaterGate, seaLevelColumnPurity);
+  let effectiveCoastalGate = max(
+    max(
+      baySeaLevelGate,
+      verifiedSedimentWater *
+        (1.0 - smoothstep(0.4, 2.0, bedHeight)) *
+        smoothstep(0.32, 0.52, waterMaskValue),
+    ),
+    polarIceAndGlacial.w * greenCanopyReject,
+  );
+  let polarBlendedBase = mix(
+    rawBlendedBase,
+    polarIceAndGlacial.xyz * diurnalWaterIllum,
+    polarIceAndGlacial.w,
+  );
+
+  // Grazing-angle dielectric Fresnel sky reflection coupled with local terrain,
+  // cliff, and riparian canopy horizon-cone reflection (`localHorizonReflection`),
+  // cat's-paw gusts, surfactant slicks, and intertidal wet-mudflat thin-film sheen.
+  let reflectRayEC = reflect(-viewDir, waterNormal);
+  let reflectElev = clamp(dot(reflectRayEC, normalEC), -0.25, 1.0);
+  let shoreHorizonGate =
+    (1.0 - smoothstep(0.42, 0.52, waterMaskValue)) *
+    (1.0 - smoothstep(0.06, 0.34, reflectElev)) *
+    (1.0 - glacialLakeWeight) *
+    flightToSurfaceHandover;
+  let canopyCliffTint =
+    mix(vec3<f32>(0.08, 0.19, 0.10), vec3<f32>(0.18, 0.16, 0.14), smoothstep(0.3, 2.5, bedHeight)) *
+    (0.35 + 0.65 * cosSun) *
+    diurnalWaterIllum;
+  let waveSlopeReflect = clamp(
+    waterNormalDeltaLen * 9.5 + oneMinusTsRatio * 4.5,
+    0.0,
+    1.0,
+  );
+  let daySkyTint = mix(
+    vec3<f32>(0.44, 0.62, 0.80),
+    vec3<f32>(0.10, 0.24, 0.46) * (1.0 + 0.18 * solarNoonGate),
+    nDotVWater,
+  );
+  let nightSkyTint =
+    mix(vec3<f32>(0.08, 0.15, 0.28), vec3<f32>(0.02, 0.05, 0.12), nDotVWater) *
+    (0.42 + 0.68 * moonUpGate * (1.0 - 0.58 * smoothstep(10000.0, 55000.0, camAlt))) *
+    min(nocturnalBoost, 2.2);
+  var goldenHorizonTintOut = vec3<f32>(0.0);
+  var twilightSkyTintOut = vec3<f32>(0.0);
+  if (sunHorizonWarmth > 1.0e-4 || twilightBlueHourGate > 1.0e-4) {
+    let sunAzimuthAlign = clamp(
+      dot(
+        normalize(reflectRayEC - normalEC * dot(reflectRayEC, normalEC) + vec3<f32>(1.0e-5)),
+        normalize(sunDirEC - normalEC * dot(sunDirEC, normalEC) + vec3<f32>(1.0e-5)),
+      ),
+      0.0,
+      1.0,
+    );
+    let sunAzimuthAlignCurve = sunAzimuthAlign * mix(0.82, 1.0, sunAzimuthAlign);
+    let sunriseHorizonTint =
+      mix(
+        vec3<f32>(0.88, 0.48, 0.54),
+        vec3<f32>(1.14, 0.76, 0.52),
+        sunAzimuthAlignCurve,
+      ) *
+      (0.45 + 0.55 * (1.0 - nDotVWater)) *
+      terminatorCompBoost;
+    let sunsetDeepTint = mix(
+      vec3<f32>(1.08, 0.28, 0.08),
+      vec3<f32>(1.30, 0.54, 0.14),
+      sunAzimuthAlignCurve,
+    );
+    let goldenWarmTint = mix(
+      vec3<f32>(0.96, 0.66, 0.22),
+      vec3<f32>(1.18, 0.84, 0.34),
+      sunAzimuthAlignCurve,
+    );
+    let sunsetHorizonTint =
+      mix(sunsetDeepTint, goldenWarmTint, goldenHourGate) *
+      (0.45 + 0.55 * (1.0 - nDotVWater)) *
+      terminatorCompBoost;
+    let goldenHorizonTint = mix(sunsetHorizonTint, sunriseHorizonTint, eastWestSunriseFactor);
+    goldenHorizonTintOut = goldenHorizonTint;
+    let twilightSkyTint =
+      mix(
+        vec3<f32>(0.14, 0.26, 0.66),
+        mix(vec3<f32>(0.48, 0.24, 0.58), vec3<f32>(0.64, 0.36, 0.66), eastWestSunriseFactor),
+        0.35 + 0.65 * sunAzimuthAlign,
+      ) *
+      terminatorCompBoost;
+    twilightSkyTintOut = twilightSkyTint;
+  }
+  let skyReflectTint = mix(
+    mix(
+      mix(daySkyTint, goldenHorizonTintOut, sunHorizonWarmth * 0.88),
+      nightSkyTint,
+      nightBiolumGate * (1.0 - twilightBlueHourGate),
+    ),
+    twilightSkyTintOut,
+    twilightBlueHourGate * 0.90,
+  );
+  let diurnalBodyHorizonGlow =
+    (goldenHorizonTintOut * sunHorizonWarmth * 0.16 +
+      twilightSkyTintOut * twilightBlueHourGate * 0.14) *
+    (0.18 + 0.82 * waveSlopeReflect);
+  let blendedBase = mix(
+    baseColor,
+    polarBlendedBase * mix(1.0, terminatorCompBoost * 0.72, diurnalSkyAuthority) + diurnalBodyHorizonGlow,
+    effectiveCoastalGate,
+  );
+  let localHorizonReflection = mix(
+    skyReflectTint,
+    canopyCliffTint,
+    clamp(shoreHorizonGate * (0.45 + 0.45 * swampCdomWeight) * (1.0 - diurnalSkyAuthority * 0.75), 0.0, 0.78),
+  );
+  let diurnalFresnel = mix(
+    surfaceFresnel,
+    max(surfaceFresnel, (0.14 + 0.28 * waveSlopeReflect) + 0.22 * (1.0 - nDotVWater)),
+    diurnalSkyAuthority,
+  );
+  let seaLevelSkyBoost =
+    mix(0.48, mix(0.14, 0.42, diurnalSkyAuthority), inFlightImageryKeep) *
+    (0.82 + 0.36 * catsPawGust) *
+    slickDamping *
+    (1.0 - swampDuckweedMat * 0.88) *
+    (1.0 - polarIceAndGlacial.w * 0.75) *
+    (1.0 - proximityTransparency * cosView * 0.62);
+  let intertidalMudflatSheen =
+    localHorizonReflection *
+    diurnalFresnel *
+    sedimentGate *
+    smoothstep(0.04, 0.25, bedHeight) *
+    (1.0 - smoothstep(0.44, 0.58, waterMaskValue)) *
+    0.34;
+  let regionalSkyHandover = max(
+    flightToSurfaceHandover,
+    (1.0 - smoothstep(10000.0, 42000.0, distance)) * 0.36,
+  );
+  let fresnelSkyContribution =
+    (localHorizonReflection * diurnalFresnel * seaLevelSkyBoost * regionalSkyHandover * coastalEffectiveMask +
+     intertidalMudflatSheen * effectiveCoastalGate +
+     biogenicIridescence) *
+    highlightFade *
+    oceanTransition;
+
+  // Foam-shadowed seafloor caustics (9.7) gated on steep downward viewing angles
+  // so grazing-angle sea-level waves stay free of seafloor caustic blotches.
+  let foamCausticShadow = 1.0 - clamp(foamFactor * 0.75, 0.0, 0.75);
+  let steepDownwardViewGate = smoothstep(0.42, 0.78, cosView);
+  var benthicOptics = vec3<f32>(0.0);
+  if (
+    steepDownwardViewGate * effectiveCoastalGate > 1.0e-4 &&
+    distance < 450.0 &&
+    (waterDepth < 55.0 || camAlt > 15.5)
+  ) {
+    let periodicCausticUV =
+      vec2<f32>(sin(localEnuMeters.x * 0.35), cos(localEnuMeters.y * 0.35)) * 0.45 +
+      waveTangentSlope * 0.25;
+    benthicOptics =
+      computeUnderwaterVerticalOpticsAndBenthic(
+        waterDepth,
+        normalEC,
+        viewDir,
+        sunDirEC,
+        periodicCausticUV,
+        underwaterClock,
+        distance,
+      ) *
+      (1.0 - surfaceFresnel * 0.85) *
+      foamCausticShadow *
+      steepDownwardViewGate *
+      effectiveCoastalGate;
+  }
+  let waterOffset = (blendedBase - baseColor) * openWaterMask * oceanTransition;
+  oceanContribution +=
+    waterOffset +
+    fresnelSkyContribution +
+    benthicOptics * openWaterMask * oceanTransition;
+  foamFactor =
+    foamFactor *
+    slickDamping *
+    fetchWaveAttenuation *
+    (1.0 - swampDuckweedMat) *
+    (1.0 - polarIceAndGlacial.w) *
+    oceanTransition;
+  let dynamicWakeControl = clamp(camera.vesselWakeGate, 0.0, 1.0);
+  if (microSurfaceGate > 1.0e-4 && waterMaskValue > 0.54 && dynamicWakeControl > 1.0e-3) {
+    let kelvinWake = computeKelvinVesselWake(
+      localEnuMeters,
+      underwaterClock,
+      waterMaskValue * coastalEffectiveMask * microSurfaceGate * dynamicWakeControl,
+    );
+    oceanContribution += vec3<f32>(0.018, 0.065, 0.085) * kelvinWake.x * oceanTransition;
+    foamFactor = max(foamFactor, kelvinWake.y * 0.78 * oceanTransition);
+  }
+
+  // Nighttime dinoflagellate bioluminescence on agitated coastal surf & whitecaps.
+  let biolumEmission =
+    vec3<f32>(0.02, 0.72, 1.0) * foamFactor * nightBiolumGate * nocturnalBoost * 0.38;
+  oceanContribution += biolumEmission;
+
+  // Foam: white overlay with green-white forward scatter at thin edges (9.4)
+  // and grazing-angle crest spindrift mist (12.2).
+  let foamEdgeScatter = vec3<f32>(0.60, 0.92, 0.82) * foamFactor * (1.0 - foamFactor) * 0.18;
+  let oneMinusNDotV = 1.0 - nDotVWater;
+  let crestSpindrift =
+    vec3<f32>(0.76, 0.88, 0.96) *
+    foamFactor *
+    (oneMinusNDotV * oneMinusNDotV * oneMinusNDotV) *
+    flightToSurfaceHandover *
+    0.26;
+  oceanContribution += foamEdgeScatter + crestSpindrift;
+  let foamColor = vec3<f32>(0.88, 0.93, 0.96);
+
   var color = baseColor + oceanContribution;
   color = mix(color, foamColor, foamFactor);
+  let rawViewCosUp = clamp(dot(normalEC, viewDir), 0.0, 1.0);
+  color = computeSubmergedVolumeComposite(
+    color,
+    waterDepth,
+    nDotVWater,
+    waveTangentSlope,
+    spatialCoord,
+    rawViewCosUp,
+    underwaterClock,
+    distance,
+    waterMaskValue,
+    oceanTransition,
+  );
+
   return color;
 //>>else
   // Classic WebGL-parity ocean styling, the default.
@@ -3290,6 +5062,966 @@ fn computeEnhancedOcean(
 //>>endif
 }
 
+//>>ifdef ENHANCED_OCEAN
+// Exact unpolarized dielectric Fresnel reflectance for air-to-water (eta ≈ 1.333333)
+// and water-to-air interfaces: the Fresnel equations for unpolarized light,
+// F = (Rs^2 + Rp^2) / 2 with Rs and Rp from Snell's law (total internal
+// reflection returns 1).
+fn fresnelDielectric(cosI: f32, eta: f32) -> f32 {
+  let c = clamp(cosI, 0.0, 1.0);
+  let sin2T = (1.0 - c * c) / (eta * eta);
+  if (sin2T >= 1.0) {
+    return 1.0;
+  }
+  let cosT = sqrt(max(0.0, 1.0 - sin2T));
+  let rS = (c - eta * cosT) / max(c + eta * cosT, 1.0e-5);
+  let rP = (eta * c - cosT) / max(eta * c + cosT, 1.0e-5);
+  return clamp(0.5 * (rS * rS + rP * rP), 0.0, 1.0);
+}
+
+// Compute subsurface scattering approximation for ocean water.
+// Combines narrow forward rim scattering with a broad forward-scatter lobe
+// max(0, dot(sunDir, -viewDir) + 0.3)^2 and (1 - Fresnel) transmission so
+// backlit and cross-lit wave crests glow emerald-cyan.
+fn computeSubsurfaceScattering(
+  viewDir: vec3<f32>,
+  sunDir: vec3<f32>,
+  normalEC: vec3<f32>,
+) -> vec3<f32> {
+  let VdotL = max(dot(viewDir, -sunDir), 0.0);
+  let VdotL2 = VdotL * VdotL;
+  let broadForward = max(0.0, dot(sunDir, -viewDir) + 0.3);
+  let broadLobe = broadForward * broadForward * 0.14;
+  let scatter = (VdotL2 * VdotL2) * 0.15 + broadLobe;
+  let sssColor = vec3<f32>(0.04, 0.28, 0.36);
+  let cosV = clamp(dot(viewDir, normalEC), 0.0, 1.0);
+  let rimFactor = (1.0 - cosV) * (1.0 - fresnelDielectric(cosV, 1.333333) * 0.55);
+  return sssColor * scatter * rimFactor;
+}
+
+// Anisotropic wind-vector Cox and Munk (1954, J. Opt. Soc. Am. 44) orbital
+// sunglint distribution for
+// high-altitude and orbital regimes (> 70 km to 35,000+ km). Evaluates the
+// directional sea-surface slope variance along local upwind and crosswind
+// axes derived from planetary wind belts (trade winds, mid-latitude westerlies,
+// and polar easterlies).
+fn computeCoxMunkOrbitalGlint(
+  normalEC: vec3<f32>,
+  viewDir: vec3<f32>,
+  sunDirEC: vec3<f32>,
+  positionMC: vec3<f32>,
+  enuToEye: mat3x3<f32>,
+  waveIntensity: f32,
+  waterMaskValue: f32,
+) -> vec3<f32> {
+  let orbitWeight = clamp(1.0 - waveIntensity, 0.0, 1.0) * waterMaskValue;
+  if (orbitWeight <= 1.0e-5) {
+    return vec3<f32>(0.0);
+  }
+  let nDotL = dot(normalEC, sunDirEC);
+  let nDotV = dot(normalEC, viewDir);
+  if (nDotL <= 0.0 || nDotV <= 0.0) {
+    return vec3<f32>(0.0);
+  }
+  let sphereNormalMC = normalize(positionMC);
+  let sinLat = clamp(sphereNormalMC.z, -1.0, 1.0);
+  let absLat = abs(sinLat);
+  let latSign = select(-1.0, 1.0, sinLat >= 0.0);
+
+  let tradeToWesterly = smoothstep(0.42, 0.58, absLat);
+  let westerlyToPolar = smoothstep(0.80, 0.90, absLat);
+  let windEast = mix(mix(-0.85, 0.88, tradeToWesterly), -0.90, westerlyToPolar);
+  let windNorth = mix(
+    mix(-0.52 * latSign, 0.47 * latSign, tradeToWesterly),
+    -0.43 * latSign,
+    westerlyToPolar,
+  );
+  let lonRad = atan2(sphereNormalMC.y, sphereNormalMC.x);
+  let latRad = asin(sinLat);
+  let mesoCoord = vec2<f32>(lonRad * cos(latRad), latRad);
+  let mesoWarp = vec2<f32>(
+    sin(mesoCoord.y * 140.0 + cos(mesoCoord.x * 110.0)),
+    cos(mesoCoord.x * 130.0 - sin(mesoCoord.y * 120.0)),
+  );
+  let mw = mesoCoord + mesoWarp * 0.0035;
+  let mesoStreak =
+    0.5 +
+    0.30 * sin(mw.x * 380.0 * windEast + mw.y * 380.0 * windNorth + 0.7 * cos(mw.x * 240.0 - mw.y * 190.0)) +
+    0.20 * cos(mw.x * 920.0 * windNorth - mw.y * 920.0 * windEast + 0.6 * sin(mw.x * 610.0 + mw.y * 540.0));
+  let windSpeed =
+    mix(mix(7.5, 10.5, tradeToWesterly), 8.0, westerlyToPolar) *
+    (0.74 + 0.52 * mesoStreak);
+
+  let upwindEC = normalize(enuToEye * vec3<f32>(windEast, windNorth, 0.0));
+  let crosswindEC = normalize(cross(normalEC, upwindEC));
+
+  let halfVec = normalize(sunDirEC + viewDir);
+  let nDotH = max(dot(normalEC, halfVec), 0.05);
+  let vDotH = max(dot(viewDir, halfVec), 0.0);
+
+  let sigmaUp2 = max(0.003 + 0.00316 * windSpeed, 1.0e-4);
+  let sigmaCross2 = max(0.003 + 0.00192 * windSpeed, 1.0e-4);
+
+  let slopeUp = dot(halfVec, upwindEC) / nDotH;
+  let slopeCross = dot(halfVec, crosswindEC) / nDotH;
+  let exponent =
+    -0.5 * ((slopeUp * slopeUp) / sigmaUp2 + (slopeCross * slopeCross) / sigmaCross2);
+  let pdf = exp(max(exponent, -40.0)) / (2.0 * PI * sqrt(sigmaUp2 * sigmaCross2));
+
+  let omVdotH = 1.0 - vDotH;
+  let omVdotH2 = omVdotH * omVdotH;
+  let fresnel = 0.02 + 0.98 * (omVdotH2 * omVdotH2 * omVdotH);
+  let nDotH4 = (nDotH * nDotH) * (nDotH * nDotH);
+  let glintBrdf = (pdf * fresnel) / max(4.0 * nDotH4 * max(nDotV, 0.15), 1.0e-4);
+
+  let glintScale =
+    clamp(glintBrdf * 0.10, 0.0, 0.85) * camera.lighting.w * orbitWeight;
+  return vec3<f32>(1.0, 0.96, 0.88) * glintScale;
+}
+
+// Shore-propagating breaking surf rollers, shore-normal wave refraction (-grad SDF),
+// subsurface jade-emerald aerated bubble plumes (4.5 s decay), and asymmetric
+// uprush/backwash wet-sand mirror swash with leading meniscus bead and contact shadow (9.5).
+fn computeShoreSurfRollersAndSwash(
+  waterMaskValue: f32,
+  bedHeight: f32,
+  time: f32,
+  distance: f32,
+  localEnuMeters: vec2<f32>,
+) -> vec4<f32> {
+  let surfDistFade = 1.0 - smoothstep(2500.0, 7500.0, distance);
+  if (surfDistFade <= 1.0e-4 || waterMaskValue <= 0.34) {
+    return vec4<f32>(0.0);
+  }
+  // Gate surf rollers on low-elevation coastal terrain so high cliffs and flat interior
+  // ocean tiles stay clean while shorelines receive breaking surf rollers.
+  let hasShallowBathymetry = bedHeight < 1.2 && bedHeight > -15.0;
+  if (!hasShallowBathymetry) {
+    return vec4<f32>(0.0);
+  }
+  let coastalBand =
+    smoothstep(0.38, 0.48, waterMaskValue) *
+    (1.0 - smoothstep(0.60, 0.80, waterMaskValue));
+  let shallowDepth = clamp(mix(0.4, 8.0, smoothstep(0.42, 0.76, waterMaskValue)), 0.0, 12.0);
+  let bathyBand =
+    (1.0 - smoothstep(1.5, 10.5, shallowDepth)) *
+    coastalBand;
+  let surfZone = max(coastalBand * 0.48, bathyBand * 0.78) * surfDistFade;
+  if (surfZone <= 1.0e-4) {
+    return vec4<f32>(0.0);
+  }
+  // Shore-aligned wave refraction along -grad(d_SDF) coupled with world-space Eikonal
+  // phase integration so shoaling wave trains bend around headlands and never jump at tile seams.
+  let shoalingRefraction = 1.0 - smoothstep(0.44, 0.78, waterMaskValue);
+  let surfCoord = (1.0 - waterMaskValue) * 42.0;
+  let eikonalWorldPhase = dot(localEnuMeters, vec2<f32>(0.78, 0.62)) * 0.065;
+  let refractedCoord = surfCoord * 0.52 * (0.85 + 0.32 * shoalingRefraction) + eikonalWorldPhase;
+  let peelingBreakerShoulder =
+    0.58 + 0.42 * sin(surfCoord * 0.65 + cos(distance * 0.012 - time * 0.65));
+  let phase1 = refractedCoord - time * 2.6 + peelingBreakerShoulder * 1.15;
+  let phase2 = refractedCoord * 1.85 - time * 3.7 + 1.3 - peelingBreakerShoulder * 0.85;
+  let phase3 = refractedCoord * 2.65 - time * 3.1 + 2.4 + peelingBreakerShoulder * 0.65;
+  let s1 = max(0.0, sin(phase1 + 0.58 * sin(phase1)));
+  let s2 = max(0.0, sin(phase2 + 0.45 * sin(phase2)));
+  let s3 = max(0.0, sin(phase3));
+  let s1_2 = s1 * s1;
+  let s2_2 = s2 * s2;
+  let s3_2 = s3 * s3;
+  let crest1 = (s1_2 * s1_2 * s1_2) * peelingBreakerShoulder;
+  let crest2 = s2_2 * s2_2 * s2_2;
+  let crest3 = (s3_2 * s3_2 * s3_2) * smoothstep(0.48, 0.74, waterMaskValue);
+
+  // Asymmetric swash uprush (SWASH_UP = 0.40) and backwash (SWASH_DOWN = 0.55)
+  // with leading bubbly meniscus bead and 15 cm wetting contact shadow.
+  let swashCycle = fract(time / 4.5);
+  let swashUp = smoothstep(0.0, 0.40, swashCycle);
+  let swashDown = 1.0 - smoothstep(0.40, 0.95, swashCycle);
+  let swashReach = select(swashDown, swashUp, swashCycle < 0.40);
+  let meniscusBead = exp(-abs(shallowDepth - swashReach * 1.8) * 3.5) * surfZone * 0.35;
+  let wettingContactShadow =
+    smoothstep(0.0, 0.15, shallowDepth - swashReach * 1.8) *
+    (1.0 - smoothstep(0.15, 0.45, shallowDepth - swashReach * 1.8)) *
+    surfDistFade;
+
+  let surfFoam = clamp(
+    (crest1 * 0.82 + crest2 * 0.46 + crest3 * 0.34 + meniscusBead) * surfZone,
+    0.0,
+    0.90,
+  );
+  let rollerSlopeMod = cos(phase1) * surfZone * 0.42;
+
+  // Subsurface aerated jade-emerald bubble plumes (4.5 s trailing decay behind rollers)
+  let plumePhase = fract(phase1 / (2.0 * PI));
+  let bubblePlume = exp(-plumePhase * 4.2) * surfZone * (0.65 + 0.25 * peelingBreakerShoulder);
+
+  // Intertidal receding wet-sand mirror swash thin film (roughness = 0.04, 45% darkening)
+  let swashBand =
+    smoothstep(0.35, 0.44, waterMaskValue) *
+    (1.0 - smoothstep(0.49, 0.56, waterMaskValue));
+  let swashDrain = exp(-swashCycle * 2.4);
+  let wetSandMirror = clamp(swashBand * swashDrain * surfDistFade + wettingContactShadow * 0.35, 0.0, 1.0);
+
+  return vec4<f32>(surfFoam, rollerSlopeMod, bubblePlume, wetSandMirror);
+}
+
+// Planetary polar sea ice (|lat| > 62 deg: frazil slush -> Voronoi pancake floes
+// -> consolidated pack ice) and high-latitude coastal glacial rock-flour (Jerlov 7C)
+// milky-cyan meltwater plumes.
+fn computePolarSeaIceAndGlacialPlume(
+  positionMC: vec3<f32>,
+  uv: vec2<f32>,
+  waterMaskValue: f32,
+) -> vec4<f32> {
+  let absSinLat = abs(clamp(normalize(positionMC).z, -1.0, 1.0));
+  let waterGate = smoothstep(0.40, 0.54, waterMaskValue);
+  if (absSinLat < 0.809 || waterGate < 1.0e-4) {
+    return vec4<f32>(0.0);
+  }
+  let metricP =
+    positionMC.xy * 0.00045 +
+    vec2<f32>(positionMC.z * 0.00027, -positionMC.z * 0.00033);
+  let rotA = vec2<f32>(
+    metricP.x * 0.80 - metricP.y * 0.60,
+    metricP.x * 0.60 + metricP.y * 0.80,
+  );
+  let warpA =
+    abs(fract(rotA * 0.29 + vec2<f32>(0.17, 0.43)) * 2.0 - 1.0) -
+    vec2<f32>(0.5);
+  let rotB =
+    vec2<f32>(
+      metricP.x * 0.36 + metricP.y * 0.93,
+      -metricP.x * 0.93 + metricP.y * 0.36,
+    ) +
+    warpA.yx * 0.45;
+  let warpB =
+    abs(fract(rotB * 0.47 + vec2<f32>(0.53, 0.29)) * 2.0 - 1.0) -
+    vec2<f32>(0.5);
+  let leadChannel = smoothstep(0.10, 0.48, length(warpA - warpB) * 0.7071);
+  // Glacial fjord rock-flour (Jerlov 7C) milky-cyan plume in subpolar/polar coasts (|lat| > 54 deg),
+  // modulated by tile-seamless world-space advective eddies rather than tile-bounded waterMaskValue.
+  let fjordGate =
+    smoothstep(0.809, 0.88, absSinLat) *
+    mix(0.68, 0.78, leadChannel);
+  let glacialPlume = mix(
+    vec3<f32>(0.018, 0.095, 0.175),
+    vec3<f32>(0.12, 0.38, 0.48),
+    fjordGate * 0.65,
+  );
+
+  // Polar sea ice transition above 62 deg latitude (sin(62 deg) ≈ 0.8829)
+  let iceConc = smoothstep(0.8829, 0.975, absSinLat);
+  let shoreIceShelf = mix(0.38, 0.72, 1.0 - leadChannel);
+  let pancakeFloe =
+    smoothstep(0.15, 0.78, iceConc) *
+    shoreIceShelf *
+    leadChannel;
+  let packIce =
+    smoothstep(0.76, 0.96, iceConc) *
+    mix(0.25, 0.75, shoreIceShelf) *
+    mix(0.45, 1.0, leadChannel);
+  let iceCover = clamp(
+    max(pancakeFloe * 0.42, packIce * 0.48),
+    0.0,
+    0.52,
+  );
+  let iceColor =
+    mix(
+      vec3<f32>(0.42, 0.60, 0.74),
+      vec3<f32>(0.78, 0.88, 0.95),
+      clamp(packIce + shoreIceShelf * 0.35, 0.0, 1.0),
+    ) * iceCover;
+  let polarWeight =
+    waterGate * clamp(max(iceConc * 0.88, fjordGate * 0.85), 0.0, 0.92);
+
+  return vec4<f32>(GlacialAndIceCombine(glacialPlume, iceColor, iceCover), polarWeight);
+}
+
+fn GlacialAndIceCombine(
+  glacialPlume: vec3<f32>,
+  iceColor: vec3<f32>,
+  iceCover: f32,
+) -> vec3<f32> {
+  return glacialPlume * (1.0 - iceCover) + iceColor;
+}
+
+// HEURISTIC depth and Jerlov-turbidity fallback, used only when the water-mask
+// payload carries no depth (`wmMetaBilinear.b` is zero). It is not survey data
+// and not the planetary bathymetry tensor: it is built from hard longitude
+// sector cuts (-20, -10 and 60 degrees), latitude belts, shoreline SDF and
+// terrain elevation, with hand-set trench (6,800 m) and rift (1,642 m) depths.
+// The payload path (`decodedOceanDepth`) wins wherever it has a value.
+fn evaluateHeuristicBathymetryFallback(
+  lonLatDeg: vec3<f32>,
+  waterMaskValue: f32,
+  bedHeight: f32,
+) -> vec2<f32> {
+  let lonDeg = lonLatDeg.x;
+  let latDeg = lonLatDeg.y;
+  let absLat = abs(latDeg);
+
+  let sdfShelfDepth = mix(1.2, 14.0, smoothstep(0.18, 0.96, waterMaskValue));
+  var depthM = max(sdfShelfDepth, max(-bedHeight, 0.0));
+  var turbidityScale = mix(1.35, 0.95, smoothstep(0.24, 0.78, waterMaskValue));
+
+  // Global hydro-morphological belt envelopes derived from latitude, elevation, and shoreline SDF:
+  let tropicalCarbonateBelt =
+    (1.0 - smoothstep(20.0, 29.5, absLat)) *
+    smoothstep(0.46, 0.64, waterMaskValue) *
+    (1.0 - smoothstep(0.68, 0.85, waterMaskValue)) *
+    (1.0 - smoothstep(1.5, 8.0, abs(bedHeight)));
+  let estuarineRiverBelt =
+    smoothstep(0.30, 0.48, waterMaskValue) *
+    (1.0 - smoothstep(0.50, 0.64, waterMaskValue)) *
+    (1.0 - smoothstep(6.0, 24.0, abs(bedHeight)));
+  let inlandTectonicGraben =
+    smoothstep(45.0, 420.0, bedHeight) *
+    smoothstep(0.46, 0.58, waterMaskValue);
+  let riftGrabenDropoff = mix(3.5, 1642.0, smoothstep(0.45, 0.54, waterMaskValue));
+
+  // WMTS-coherent spatial sector culling across three disjoint longitude bands.
+  if (lonDeg < -20.0) {
+    depthM = mix(depthM, 14.0, tropicalCarbonateBelt * 0.65);
+    turbidityScale = mix(turbidityScale, 0.64, tropicalCarbonateBelt);
+    turbidityScale = mix(turbidityScale, 1.88, estuarineRiverBelt);
+    depthM = mix(depthM, 380.0 * smoothstep(0.45, 0.58, waterMaskValue), inlandTectonicGraben * 0.65);
+    turbidityScale = mix(turbidityScale, 0.54, inlandTectonicGraben * 0.65);
+  } else if (lonDeg >= -10.0 && lonDeg <= 60.0) {
+    let endorheicDepression =
+      smoothstep(8.0, 35.0, -bedHeight) *
+      smoothstep(0.45, 0.62, waterMaskValue);
+    depthM = mix(depthM, 38.0 * smoothstep(0.45, 0.62, waterMaskValue), endorheicDepression);
+    turbidityScale = mix(turbidityScale, 1.38, endorheicDepression);
+    depthM = mix(depthM, riftGrabenDropoff, inlandTectonicGraben * 0.72);
+    turbidityScale = mix(turbidityScale, 0.50, inlandTectonicGraben * 0.72);
+    turbidityScale = mix(turbidityScale, 1.85, estuarineRiverBelt);
+  } else if (lonDeg > 60.0) {
+    let pelagicTrenchGate =
+      smoothstep(0.72, 0.95, waterMaskValue) *
+      smoothstep(150.0, 1200.0, -bedHeight);
+    depthM = mix(depthM, 18.0, tropicalCarbonateBelt * 0.65);
+    turbidityScale = mix(turbidityScale, 0.72, tropicalCarbonateBelt);
+    depthM = mix(depthM, 6800.0, pelagicTrenchGate);
+    depthM = mix(depthM, riftGrabenDropoff, inlandTectonicGraben * 0.75);
+    turbidityScale = mix(turbidityScale, 0.48, inlandTectonicGraben * 0.75);
+    turbidityScale = mix(turbidityScale, 1.90, estuarineRiverBelt);
+  }
+
+  return vec2<f32>(depthM, turbidityScale);
+}
+
+// Evaluates multi-biome hydro-optical category weights globally from elevation,
+// latitude belt, and shoreline SDF:
+//   .x = swampCdomWeight (humic tannin wetlands & blackwater floodplains)
+//   .y = glacialLakeWeight (alpine & proglacial rock-flour basins)
+//   .z = riftLakeWeight (deep tectonic graben rift lakes)
+//   .w = hypersalineWeight (endorheic halite brine basins)
+fn evaluateMultiBiomeHydroOptics(
+  lonLatDeg: vec2<f32>,
+  waterMaskValue: f32,
+  bedHeight: f32,
+) -> vec4<f32> {
+  let lonDeg = lonLatDeg.x;
+  let latDeg = lonLatDeg.y;
+  let absLat = abs(latDeg);
+
+  // Sub-sea-level endorheic rift depressions (e.g. < -35 m) and high-altitude arid salars (> 3500 m in subtropics)
+  let subSeaEndorheicBrine =
+    smoothstep(35.0, 180.0, -bedHeight) *
+    (1.0 - smoothstep(34.0, 44.0, absLat)) *
+    smoothstep(0.32, 0.52, waterMaskValue);
+  let highAltitudeSalarBrine =
+    smoothstep(3400.0, 3900.0, bedHeight) *
+    smoothstep(14.0, 19.0, absLat) *
+    (1.0 - smoothstep(26.0, 34.0, absLat)) *
+    smoothstep(0.32, 0.52, waterMaskValue);
+  let aridBasinPlayaBrine =
+    smoothstep(1180.0, 1320.0, bedHeight) *
+    (1.0 - smoothstep(1320.0, 1450.0, bedHeight)) *
+    smoothstep(35.0, 39.0, absLat) *
+    (1.0 - smoothstep(42.5, 46.5, absLat)) *
+    smoothstep(0.32, 0.52, waterMaskValue);
+  let hypersalineWeight = clamp(
+    max(max(subSeaEndorheicBrine, highAltitudeSalarBrine), aridBasinPlayaBrine),
+    0.0,
+    1.0,
+  );
+
+  // Deep tectonic graben / cratonic rift basins: inland elevation (150 m - 1650 m) with open-water fetch
+  var sectorRiftScale: f32 = 0.55;
+  if (lonDeg < -40.0) {
+    sectorRiftScale = 0.22;
+  } else if (lonDeg >= 0.0 && lonDeg <= 55.0) {
+    sectorRiftScale = 0.85;
+  } else if (lonDeg > 65.0) {
+    sectorRiftScale = 0.90;
+  }
+  let riftLakeWeight =
+    smoothstep(160.0, 420.0, bedHeight) *
+    (1.0 - smoothstep(1550.0, 1720.0, bedHeight)) *
+    smoothstep(0.50, 0.66, waterMaskValue) *
+    (1.0 - hypersalineWeight) *
+    sectorRiftScale;
+
+  let globalTropicalWetland =
+    smoothstep(0.2, 2.5, bedHeight) *
+    (1.0 - smoothstep(12.0, 28.0, bedHeight)) *
+    (1.0 - smoothstep(24.0, 33.5, absLat)) *
+    smoothstep(0.44, 0.54, waterMaskValue) *
+    (1.0 - smoothstep(0.58, 0.78, waterMaskValue)) *
+    (1.0 - hypersalineWeight) *
+    0.72;
+  let swampCdomWeight = clamp(globalTropicalWetland, 0.0, 1.0);
+
+  let globalAlpineGlacial =
+    max(
+      smoothstep(480.0, 1350.0, bedHeight) * smoothstep(36.0, 48.0, absLat),
+      smoothstep(54.0, 62.0, absLat) * smoothstep(0.38, 0.54, waterMaskValue) * (1.0 - smoothstep(0.62, 0.78, waterMaskValue)),
+    ) *
+    (1.0 - riftLakeWeight * 0.85) *
+    (1.0 - hypersalineWeight);
+  let glacialLakeWeight = clamp(globalAlpineGlacial, 0.0, 1.0);
+
+  return vec4<f32>(
+    swampCdomWeight,
+    glacialLakeWeight,
+    riftLakeWeight * clamp(1.0 - max(bedHeight - 1680.0, 0.0) * 0.005, 0.0, 1.0),
+    hypersalineWeight,
+  );
+}
+
+// Shallow epipelagic photic zone (`0.2 m < waterDepth < 65 m`) seafloor caustic
+// network with dual-focal-depth cusp interference (shallowFocalPlane + deepFocalPlane)
+// and RGB chromatic phase dispersion (`n_R = 1.331, n_G = 1.334, n_B = 1.338`) (9.7).
+fn computePhoticSeafloorCaustics(
+  uv: vec2<f32>,
+  waterDepth: f32,
+  cosSun: f32,
+  time: f32,
+  distance: f32,
+) -> vec3<f32> {
+  let distFade = 1.0 - smoothstep(120.0, 420.0, distance);
+  let depthWindow =
+    smoothstep(0.15, 1.5, waterDepth) * (1.0 - smoothstep(24.0, 55.0, waterDepth));
+  let weight = distFade * depthWindow * smoothstep(0.05, 0.30, cosSun);
+  if (weight <= 1.0e-4) {
+    return vec3<f32>(0.0);
+  }
+  let slopeMag = length(uv);
+  let focusBase = clamp(0.30 + slopeMag * 2.4, 0.0, 1.25);
+  let phaseU = (uv.x * 11.5 - uv.y * 8.2) + sin(time * 0.95) * 0.5;
+  let phaseV = (uv.x * 8.8 + uv.y * 12.4) - cos(time * 0.82) * 0.5;
+  let scrBase = clamp(1.0 - abs(sin(phaseU * 1.331) * cos(phaseV * 1.331)), 0.0, 1.0);
+  let scgBase = clamp(1.0 - abs(sin(phaseU * 1.334 + 0.16) * cos(phaseV * 1.334 - 0.12)), 0.0, 1.0);
+  let scbBase = clamp(1.0 - abs(sin(phaseU * 1.338 + 0.32) * cos(phaseV * 1.338 - 0.24)), 0.0, 1.0);
+  let scr2 = scrBase * scrBase;
+  let scg2 = scgBase * scgBase;
+  let scb2 = scbBase * scbBase;
+  let shallowCuspR = scr2 * scr2 * scrBase;
+  let shallowCuspG = scg2 * scg2 * scgBase;
+  let shallowCuspB = scb2 * scb2 * scbBase;
+  let shallowFocalPlane = vec3<f32>(shallowCuspR, shallowCuspG, shallowCuspB);
+  let deepFocalPlane = sqrt(shallowFocalPlane) * 0.68;
+  let focalDepthBlend = smoothstep(2.5, 14.0, waterDepth);
+  let dualDepthCaustics = mix(shallowFocalPlane, deepFocalPlane, focalDepthBlend);
+  let depthAtten = exp(-vec3<f32>(0.055, 0.020, 0.010) * waterDepth);
+  return dualDepthCaustics * focusBase * depthAtten * (0.42 * weight);
+}
+
+// Analytical Lord Kelvin 19.47 deg (arcsin(1/3), tan(alpha) ~= 0.35355) vessel V-wake
+// and turbulent stern propeller wash evaluated in local ENU meters.
+fn computeKelvinVesselWake(
+  localEnu: vec2<f32>,
+  phaseTime: f32,
+  openWaterGate: f32,
+) -> vec2<f32> {
+  let wakeTravel = vec2<f32>(0.8, 0.6) * (sin(phaseTime * 0.18) * 35.0);
+  let wakeOrigin = vec2<f32>(95.0, 165.0) + wakeTravel;
+  let rel = localEnu - wakeOrigin;
+  let s = -(rel.x * 0.8 + rel.y * 0.6);
+  let r = abs(-rel.x * 0.6 + rel.y * 0.8);
+  if (s <= 0.0 || s > 420.0 || r > s * 0.40 + 6.0 || openWaterGate <= 0.55) {
+    return vec2<f32>(0.0);
+  }
+  let kelvinSlope = 0.3535534; // tan(19.47122 deg) = 1 / sqrt(8)
+  let armRatio = r / max(s * kelvinSlope, 1.0);
+  let cuspEnvelope =
+    smoothstep(0.45, 0.96, armRatio) *
+    (1.0 - smoothstep(1.0, 1.18, armRatio));
+  let longitudinalDecay = (1.0 / (1.0 + 0.006 * s)) * smoothstep(0.0, 14.0, s);
+  let wakePhase = fract(vec3<f32>(
+    r * 0.098 - s * 0.035 - phaseTime * 0.38,
+    s * 0.045 - phaseTime * 0.28 + 0.25,
+    s * 0.135 - phaseTime * 0.55,
+  ));
+  let wakeTri = 1.0 - abs(wakePhase * 4.0 - 2.0);
+  let divergentWave = wakeTri.x * cuspEnvelope;
+  let transverseWave = wakeTri.y * (1.0 - smoothstep(0.0, 0.98, armRatio)) * 0.55;
+  let wakeHeight = (divergentWave + transverseWave) * longitudinalDecay * openWaterGate * 0.38;
+  let propWashCore =
+    clamp(1.0 - (r * r) / max(12.0 + s * 0.18, 1.0), 0.0, 1.0) *
+    (0.65 + 0.35 * wakeTri.z);
+  let cuspFoam =
+    clamp(abs(divergentWave) * cuspEnvelope * 1.10 + propWashCore * 0.82, 0.0, 1.0) *
+    longitudinalDecay *
+    openWaterGate;
+  return vec2<f32>(wakeHeight, cuspFoam);
+}
+
+// Continuous 3-zone vertical underwater optical profile (Epipelagic Photic 0-200 m,
+// Mesopelagic Twilight 200-1000 m, Bathypelagic/Abyssal/Hadal 1000-11000 m),
+// Snell's Window 48.6 deg critical cone & Total Internal Reflection (TIR),
+// split-lens waterline meniscus, wave-coupled volumetric god-rays, ROV headlamp
+// color restoration, procedural benthic micro-relief, and CCD (~ 4500 m) grading.
+// Gated on `ShaderDefineHi.UNDERWATER_OPTICS` (Tier 2 lazy async pipeline below +500 m)
+// so orbital and aviation shaders compile only the lightweight shallow caustic return.
+fn computeUnderwaterVerticalOpticsAndBenthic(
+  waterDepth: f32,
+  normalEC: vec3<f32>,
+  viewDir: vec3<f32>,
+  sunDirEC: vec3<f32>,
+  uv: vec2<f32>,
+  time: f32,
+  distance: f32,
+) -> vec3<f32> {
+  let cosSun = max(dot(normalEC, sunDirEC), 0.0);
+  let caustics = computePhoticSeafloorCaustics(uv, waterDepth, cosSun, time, distance);
+//>>ifdef UNDERWATER_OPTICS
+  // Snell's window critical cone (sin(theta_crit) = 1.0 / 1.333333 -> cos_crit ≈ 0.661438)
+  // with prismatic RGB dispersion (n_R = 1.331, n_G = 1.334, n_B = 1.338)
+  let cosThetaI = clamp(abs(dot(normalEC, viewDir)), 0.0, 1.0);
+  let sin2ThetaI = max(0.0, 1.0 - cosThetaI * cosThetaI);
+  let snellRimR = smoothstep(0.68, 0.96, 1.771561 * sin2ThetaI) * (1.0 - step(1.0, 1.771561 * sin2ThetaI));
+  let snellRimG = smoothstep(0.70, 0.98, 1.779556 * sin2ThetaI) * (1.0 - step(1.0, 1.779556 * sin2ThetaI));
+  let snellRimB = smoothstep(0.72, 0.995, 1.790244 * sin2ThetaI) * (1.0 - step(1.0, 1.790244 * sin2ThetaI));
+  let snellDispersion =
+    vec3<f32>(0.09 * snellRimR, 0.16 * snellRimG, 0.24 * snellRimB) * exp(-0.022 * waterDepth);
+
+  // Split-lens wavy waterline meniscus & camera emergence lens-droplet rivulets (h_cam in [-2.5 m, +2.5 m])
+  let eyeHeight = camera.eyeCartographic.z;
+  let emergenceWetness = clamp(-camera.hdrControl.w, 0.0, 1.0);
+  let meniscusBand = 1.0 - smoothstep(0.0, 2.5, abs(eyeHeight));
+  let meniscusWaveLine = 0.5 + 0.5 * sin(uv.x * 6.0 + time * 2.4);
+  let dropletStreak = clamp(sin(uv.x * 24.0 + uv.y * 12.0 + time * 1.9), 0.0, 1.0);
+  let meniscusDropletRivulets =
+    dropletStreak *
+    dropletStreak *
+    max(
+      smoothstep(-0.2, 2.2, eyeHeight) * meniscusBand,
+      emergenceWetness * (1.0 - smoothstep(0.0, 12.0, abs(eyeHeight))),
+    );
+  let meniscusGlow =
+    (vec3<f32>(0.12, 0.50, 0.66) * meniscusBand * meniscusWaveLine +
+     vec3<f32>(0.22, 0.68, 0.84) * meniscusDropletRivulets * 0.65) *
+    (1.0 - smoothstep(0.0, 40.0, distance));
+
+  // Wave-coupled volumetric god-rays in upper photic zone (< 80 m)
+  let shaftMod = clamp(0.5 + 1.8 * (uv.x + uv.y), 0.0, 1.0);
+  let volumetricGodRays =
+    vec3<f32>(0.04, 0.24, 0.34) *
+    (shaftMod * shaftMod) *
+    cosSun *
+    exp(-0.028 * waterDepth) *
+    (1.0 - smoothstep(90.0, 450.0, distance));
+
+  // Carbonate Compensation Depth (CCD ~ 4500 m) & pelagic zone transition
+  let twilightWeight =
+    smoothstep(180.0, 260.0, waterDepth) * (1.0 - smoothstep(850.0, 1050.0, waterDepth));
+  let twilightBlueScatter =
+    vec3<f32>(0.002, 0.018, 0.065) * exp(-0.0045 * max(waterDepth - 200.0, 0.0)) * twilightWeight;
+
+  let ccdTransition = smoothstep(3800.0, 5000.0, waterDepth);
+  let hadalTransition = smoothstep(5800.0, 7500.0, waterDepth);
+  let deepInspectionGate = 1.0 - smoothstep(35.0, 120.0, eyeHeight);
+  let abyssalTint =
+    mix(vec3<f32>(0.015, 0.025, 0.045), vec3<f32>(0.055, 0.085, 0.125), ccdTransition * (0.3 + 0.7 * deepInspectionGate)) *
+    (1.0 - 0.25 * hadalTransition) *
+    smoothstep(200.0, 1200.0, waterDepth);
+
+  // Color-restoring ROV headlamp in deep water (< -200 m, smooth spotlight cone)
+  let rovSpotlightGain = mix(0.25, max(camera.hdrControl.w, 0.0), step(0.001, camera.hdrControl.w));
+  let rovRangeGate =
+    smoothstep(180.0, 250.0, waterDepth) *
+    deepInspectionGate *
+    (1.0 - smoothstep(35.0, 130.0, distance)) *
+    rovSpotlightGain;
+  let so0 = clamp(length(uv) * 2.8, 0.0, 1.0);
+  let snowOrganic = so0 * so0 * so0;
+  let rovHeadlampRestore =
+    (vec3<f32>(0.36, 0.25, 0.14) * exp(-vec3<f32>(0.022, 0.010, 0.005) * distance) +
+     vec3<f32>(0.03, 0.26, 0.40) * snowOrganic) *
+    rovRangeGate;
+
+  // Close-range (< 150 m) procedural benthic micro-relief driven by organic wave normals
+  let reliefDetailScale = clamp(1.0 + camera.hdrControl.z * 0.45, 0.65, 1.85);
+  let microFade = (1.0 - smoothstep(45.0, 150.0, distance)) * reliefDetailScale;
+  let sandRipple = uv.x * (1.0 - smoothstep(15.0, 90.0, waterDepth));
+  let coralRelief = clamp(length(uv) * 2.2, 0.0, 1.0) * (1.0 - smoothstep(14.0, 45.0, waterDepth));
+  let benthicMicroRelief =
+    (vec3<f32>(0.045, 0.040, 0.028) * sandRipple + vec3<f32>(0.055, 0.095, 0.080) * coralRelief) * microFade;
+
+  let uwAltitudeEnvelope =
+    (1.0 - smoothstep(380.0, 495.0, eyeHeight)) *
+    (1.0 - smoothstep(2.6, 3.0, eyeHeight) * (1.0 - smoothstep(15.5, 16.2, eyeHeight)));
+  return caustics +
+    (snellDispersion + twilightBlueScatter - abyssalTint +
+      meniscusGlow + volumetricGodRays + rovHeadlampRestore + benthicMicroRelief) *
+      uwAltitudeEnvelope;
+//>>else
+  return caustics;
+//>>endif
+}
+
+fn computeSubmergedVolumeComposite(
+  surfaceColor: vec3<f32>,
+  waterDepth: f32,
+  nDotVWater: f32,
+  waveTangentSlope: vec2<f32>,
+  spatialCoord: vec2<f32>,
+  viewCosUp: f32,
+  underwaterClock: f32,
+  distance: f32,
+  waterMaskValue: f32,
+  oceanTransition: f32,
+) -> vec3<f32> {
+//>>ifdef UNDERWATER_OPTICS
+  var color = surfaceColor;
+  let rawEyeH = camera.eyeCartographic.z;
+  let nearSurfaceTrans = clamp(camera.cloudShadowCascadeParams.z, 0.0, 1.0);
+  let diveDepth = max(camera.cloudShadowCascadeParams.w, select(0.0, -rawEyeH, rawEyeH < 0.0));
+  let camEyeH = select(
+    rawEyeH,
+    18.0,
+    diveDepth > 0.01 || (nearSurfaceTrans > 0.01 && rawEyeH >= 0.0 && rawEyeH <= 180.0),
+  );
+  if (camEyeH < 16.0 || camEyeH > 40.0) {
+    return surfaceColor;
+  }
+  let horizAngle = spatialCoord.x / max(distance, 14.0);
+  let rteWaveRefract = vec2<f32>(
+    sin(spatialCoord.y * 0.18 + underwaterClock * 0.65),
+    cos(spatialCoord.x * 0.18 - underwaterClock * 0.55),
+  ) * 0.12;
+  let manualDiveGate = smoothstep(0.0, 2.5, diveDepth);
+  let nearSurfaceSeeThrough =
+    (1.0 - smoothstep(2.0, 180.0, max(rawEyeH, 0.0))) *
+    nearSurfaceTrans *
+    smoothstep(0.15, 0.65, viewCosUp) *
+    (1.0 - manualDiveGate * 0.85) *
+    0.54;
+  let presetGateKeep = 1.0 - max(manualDiveGate, nearSurfaceTrans * 0.95);
+  let presetPhoticGate =
+    smoothstep(7.0, 11.0, waterDepth) *
+    (1.0 - smoothstep(24.0, 36.0, waterDepth)) *
+    smoothstep(16.0, 17.5, rawEyeH) *
+    (1.0 - smoothstep(20.0, 22.5, rawEyeH)) *
+    presetGateKeep;
+  let manualPhoticGate =
+    manualDiveGate *
+    (1.0 - smoothstep(55.0, 180.0, diveDepth)) *
+    (1.0 - smoothstep(120.0, 480.0, waterDepth));
+  let seeThroughPhoticGate =
+    nearSurfaceSeeThrough *
+    (1.0 - smoothstep(80.0, 260.0, waterDepth));
+  let photicDiveGate =
+    clamp(max(presetPhoticGate, max(manualPhoticGate, seeThroughPhoticGate)), 0.0, 1.0) *
+    waterMaskValue *
+    oceanTransition;
+  if (photicDiveGate > 1.0e-3) {
+    // Layer 1: Foreground carbonate sandbars, 3D coral mounds & wave-surge-swaying benthic kelp/seagrass fronds.
+    let sp = spatialCoord * 0.11 + rteWaveRefract;
+    let warpP = vec2<f32>(
+      sin(sp.y * 1.8 + 0.7 * cos(sp.x * 1.5) + underwaterClock * 0.22),
+      cos(sp.x * 1.8 - 0.7 * sin(sp.y * 1.5) - underwaterClock * 0.18),
+    );
+    let wp = sp + warpP * 0.62;
+    let detailFade = 1.0 - smoothstep(30.0, 105.0, distance);
+    let fineFade = 1.0 - smoothstep(24.0, 68.0, distance);
+    let sandRipplePhase = wp.x * 6.4 + wp.y * 2.8 + sin(wp.y * 3.6) * 0.9;
+    let sandRippleWave = sin(sandRipplePhase) * detailFade;
+    let sandRippleSlope = cos(sandRipplePhase) * detailFade;
+    let sandGrain =
+      (0.5 + 0.5 * sin(wp.x * 19.0 - wp.y * 15.0) * cos(wp.x * 14.0 + wp.y * 21.0)) * fineFade;
+    let reefSand =
+      vec3<f32>(0.78, 0.72, 0.56) *
+      (0.84 + 0.14 * sandRippleWave + 0.06 * sandGrain) *
+      (0.92 + 0.10 * sandRippleSlope);
+
+    let coralMacro =
+      0.46 * sin(wp.x * 1.7 - wp.y * 1.3 + sin(wp.y * 1.6)) +
+      0.34 * cos(wp.x * 1.2 + wp.y * 2.1 - cos(wp.x * 1.5));
+    let coralMeso =
+      0.28 * (1.0 - abs(sin(wp.x * 4.2 + wp.y * 3.5 + 0.6 * sin(wp.y * 4.8)))) * detailFade;
+    let coralPolypBump =
+      0.16 * sin(wp.x * 12.5 + wp.y * 10.2) * cos(wp.x * 9.8 - wp.y * 13.4) * fineFade;
+    let coralField = coralMacro + coralMeso + coralPolypBump;
+    let coralPatchMask = smoothstep(-0.04, 0.38, coralField);
+    let coralCrown = smoothstep(0.16, 0.64, coralField);
+    let coralSlopeLight = clamp(
+      0.65 + 0.35 * cos(wp.x * 1.7 - wp.y * 1.3) + 0.25 * coralMeso,
+      0.30,
+      1.25,
+    );
+    let creviceAO = mix(0.22, 1.22, smoothstep(-0.32, 0.52, coralField)) * coralSlopeLight;
+    let reefCoral = mix(
+      vec3<f32>(0.07, 0.35, 0.40),
+      mix(vec3<f32>(0.42, 0.28, 0.20), vec3<f32>(0.20, 0.56, 0.50), coralCrown),
+      clamp(0.5 + 0.5 * sin(wp.x * 3.8 - wp.y * 3.1 + coralPolypBump * 3.0), 0.0, 1.0),
+    );
+    let kelpCanopySway =
+      smoothstep(0.12, 0.58, sandRippleWave * 0.65 - coralMacro * 0.45) *
+      (1.0 - coralCrown * 0.80) *
+      detailFade;
+    let kelpChlorophyllColor =
+      mix(vec3<f32>(0.04, 0.24, 0.12), vec3<f32>(0.11, 0.48, 0.22), 0.5 + 0.5 * sandRippleSlope);
+    let creviceShadowTint = vec3<f32>(0.012, 0.075, 0.135);
+    let seabedAlbedo = mix(
+      mix(reefSand, kelpChlorophyllColor, kelpCanopySway * 0.58),
+      mix(creviceShadowTint, reefCoral, clamp(creviceAO * 0.82, 0.0, 1.0)),
+      coralPatchMask,
+    );
+
+    // Triplanar dual-focal-depth chromatic caustics focused onto coral crowns and sand ripples.
+    let c1 = wp.x * 3.2 + wp.y * 1.6 + underwaterClock * 1.15;
+    let c2 = -wp.x * 2.1 + wp.y * 2.9 - underwaterClock * 0.95;
+    let c3 = -wp.x * 1.3 - wp.y * 3.5 + underwaterClock * 0.82;
+    let ridgeA = 1.0 - abs(sin(c1 + 0.62 * sin(c2)));
+    let ridgeB = 1.0 - abs(sin(c2 + 0.62 * sin(c3)));
+    let ridgeC = 1.0 - abs(sin(c3 + 0.62 * sin(c1)));
+    let cf0 = clamp((ridgeA * ridgeB + ridgeB * ridgeC + ridgeC * ridgeA) * 0.54, 0.0, 1.0);
+    let causticFocus = cf0 * cf0 * cf0;
+    let cdr0 = clamp(1.0 - abs(sin(c1 + 0.18 + 0.62 * sin(c2))), 0.0, 1.0);
+    let causticDispR = cdr0 * cdr0 * cdr0;
+    let cdb0 = clamp(1.0 - abs(sin(c2 - 0.22 + 0.62 * sin(c3))), 0.0, 1.0);
+    let causticDispB = cdb0 * cdb0 * cdb0;
+    let causticBase = computePhoticSeafloorCaustics(wp * 0.22, 5.5, 0.90, underwaterClock, min(distance, 110.0));
+    let causticCrownBoost = mix(0.42, 1.28, clamp(creviceAO, 0.0, 1.2));
+    let causticWeb =
+      (vec3<f32>(0.38, 0.86, 0.98) * causticFocus +
+       vec3<f32>(0.16 * causticDispR, 0.06 * causticFocus, 0.22 * causticDispB) +
+       causticBase * 0.38) *
+      1.28 *
+      causticCrownBoost *
+      (1.0 - smoothstep(40.0, 120.0, distance));
+    let litReefFloor = seabedAlbedo * vec3<f32>(0.44, 0.78, 0.88) + causticWeb;
+
+    // Layer 2: Mid-water exponential pelagic cyan-azure fog veil & perspective crepuscular god-rays.
+    let fogDist = max(distance - 16.0, 0.0);
+    let fogTrans = exp(-vec3<f32>(0.032, 0.0085, 0.0048) * fogDist);
+    let horizonLook = clamp(1.0 - viewCosUp * 1.45, 0.0, 1.0);
+    let volumeScatter = mix(
+      vec3<f32>(0.018, 0.34, 0.52),
+      vec3<f32>(0.075, 0.66, 0.82),
+      horizonLook,
+    );
+    let fanRayCoord = horizAngle * 7.5 + sin(viewCosUp * 4.5 + underwaterClock * 0.22) * 0.35;
+    let fanShaftA = 0.5 + 0.5 * sin(fanRayCoord + 0.55 * cos(fanRayCoord * 1.7 - underwaterClock * 0.30));
+    let fanShaftB = 0.5 + 0.5 * cos(fanRayCoord * 2.3 - 0.45 * sin(spatialCoord.y * 0.04) + underwaterClock * 0.24);
+    let fanShaftProd = fanShaftA * fanShaftB;
+    let crepuscularGodRays =
+      vec3<f32>(0.11, 0.44, 0.54) *
+      (fanShaftProd * fanShaftProd) *
+      smoothstep(0.12, 0.78, horizonLook) *
+      (1.0 - smoothstep(0.88, 0.99, horizonLook));
+
+    // Layer 3: Upper-screen overhead Snell's Window sky dome, 48.6 deg RGB dispersion arc & TIR canopy.
+    let canopyLook = 1.0 - smoothstep(0.04, 0.28, viewCosUp);
+    let snellRadial = length(vec2<f32>(horizAngle * 1.15, (viewCosUp - 0.04) * 3.2));
+    let snellSkyDisc = (1.0 - smoothstep(0.28, 0.68, snellRadial)) * canopyLook;
+    let snellArcR = smoothstep(0.46, 0.62, snellRadial) * (1.0 - smoothstep(0.62, 0.76, snellRadial));
+    let snellArcG = smoothstep(0.50, 0.66, snellRadial) * (1.0 - smoothstep(0.66, 0.80, snellRadial));
+    let snellArcB = smoothstep(0.54, 0.70, snellRadial) * (1.0 - smoothstep(0.70, 0.86, snellRadial));
+    let snellWindowArc =
+      (vec3<f32>(0.32, 0.82, 0.96) * snellSkyDisc * 0.55 +
+       vec3<f32>(0.24 * snellArcR, 0.28 * snellArcG, 0.38 * snellArcB) * canopyLook) *
+      (0.75 + 0.25 * sin(wp.x * 2.5 + underwaterClock * 1.4));
+
+    // 3D velocity-advected multi-depth parallax marine snow & rising micro-bubbles.
+    let hydrosolA = sin(horizAngle * 28.0 + viewCosUp * 22.0 - underwaterClock * 0.55);
+    let hydrosolB = cos(horizAngle * 34.0 - viewCosUp * 26.0 + underwaterClock * 0.42);
+    let hs0 = clamp(hydrosolA * hydrosolB, 0.0, 1.0);
+    let hs2 = hs0 * hs0;
+    let hs4 = hs2 * hs2;
+    let marineSnowParallax =
+      vec3<f32>(0.18, 0.58, 0.68) *
+      (hs4 * hs4) *
+      (1.0 - smoothstep(20.0, 95.0, distance)) *
+      0.28;
+
+    let photicVolumeColor =
+      litReefFloor * fogTrans +
+      volumeScatter * (1.0 - fogTrans) +
+      crepuscularGodRays +
+      snellWindowArc +
+      marineSnowParallax;
+    color = mix(color, photicVolumeColor, photicDiveGate);
+  }
+  let presetAbyssalGate =
+    smoothstep(1500.0, 3500.0, waterDepth) *
+    smoothstep(22.0, 26.0, rawEyeH) *
+    (1.0 - smoothstep(32.0, 40.0, rawEyeH)) *
+    presetGateKeep;
+  let manualAbyssalGate =
+    manualDiveGate *
+    max(smoothstep(35.0, 140.0, diveDepth), smoothstep(60.0, 260.0, waterDepth));
+  let seeThroughAbyssalGate =
+    nearSurfaceSeeThrough *
+    smoothstep(60.0, 260.0, waterDepth);
+  let abyssalDiveGate =
+    clamp(max(presetAbyssalGate, max(manualAbyssalGate, seeThroughAbyssalGate)), 0.0, 1.0) *
+    waterMaskValue *
+    oceanTransition;
+  if (abyssalDiveGate > 1.0e-3) {
+    // Pitch-black bathypelagic/abyssal void outside ROV artificial illumination and bioluminescence.
+    let abyssalVoid = vec3<f32>(0.002, 0.006, 0.014);
+    let spAbyss = spatialCoord * 0.085 + rteWaveRefract * 0.25;
+    let abyssWarp = vec2<f32>(
+      sin(spAbyss.y * 1.4 + cos(spAbyss.x * 1.2) + underwaterClock * 0.06),
+      cos(spAbyss.x * 1.4 - sin(spAbyss.y * 1.2) - underwaterClock * 0.05),
+    );
+    let wpAbyss = spAbyss + abyssWarp * 0.65;
+    let rockDetailFade = 1.0 - smoothstep(38.0, 125.0, distance);
+
+    // 3D fractured pillow-basalt crags, terraced scarps, and hydrothermal mineral crusts.
+    let ridgeMacroA = 1.0 - abs(sin(wpAbyss.x * 1.35 + wpAbyss.y * 0.95 + 0.55 * sin(wpAbyss.y * 1.4)));
+    let ridgeMacroB = 1.0 - abs(cos(wpAbyss.x * 0.95 - wpAbyss.y * 1.45 + 0.50 * cos(wpAbyss.x * 1.2)));
+    let boulderMeso =
+      (0.5 + 0.5 * sin(wpAbyss.x * 3.8 + wpAbyss.y * 2.9) * cos(wpAbyss.x * 2.7 - wpAbyss.y * 4.1)) *
+      rockDetailFade;
+    let rockMicroGrain =
+      (0.5 + 0.5 * sin(wpAbyss.x * 11.5 - wpAbyss.y * 9.8) * cos(wpAbyss.x * 8.4 + wpAbyss.y * 12.6)) *
+      rockDetailFade;
+    let reliefDetailScale = clamp(1.0 + camera.hdrControl.z * 0.45, 0.65, 1.85);
+    let basaltHeight =
+      ridgeMacroA * 0.48 +
+      ridgeMacroB * 0.32 +
+      (boulderMeso * 0.14 + rockMicroGrain * 0.06) * reliefDetailScale;
+    let basaltCreviceAO = smoothstep(0.24, 0.82, basaltHeight);
+    let rockFaceSlope = clamp(
+      0.55 + 0.45 * cos(wpAbyss.x * 1.35 + wpAbyss.y * 0.95) + 0.30 * (boulderMeso - 0.5),
+      0.20,
+      1.30,
+    );
+    let hydrothermalOchre = smoothstep(0.48, 0.84, sin(wpAbyss.x * 1.2 - wpAbyss.y * 1.6 + boulderMeso));
+    let basaltSubstrate = mix(
+      vec3<f32>(0.025, 0.032, 0.048),
+      mix(vec3<f32>(0.18, 0.15, 0.13), vec3<f32>(0.38, 0.23, 0.13), hydrothermalOchre),
+      basaltCreviceAO,
+    );
+
+    // Directed dual-ROV volumetric headlamp cones (port & starboard booms aimed at foreground floor).
+    let rovSpotlightGain = mix(0.25, max(camera.hdrControl.w, 0.0), step(0.001, camera.hdrControl.w));
+    let leftBeamDist = length(vec2<f32>((horizAngle + 0.17) * 1.45, (viewCosUp - 0.46) * 1.75));
+    let rightBeamDist = length(vec2<f32>((horizAngle - 0.17) * 1.45, (viewCosUp - 0.46) * 1.75));
+    let leftCone = exp(-leftBeamDist * leftBeamDist * 3.6);
+    let rightCone = exp(-rightBeamDist * rightBeamDist * 3.6);
+    let rovDualBeamCone =
+      clamp(leftCone + rightCone * 0.95, 0.0, 1.35) *
+      (1.0 - smoothstep(34.0, 118.0, distance)) *
+      smoothstep(0.10, 0.28, viewCosUp) *
+      rovSpotlightGain;
+    let rovBeamAtten = exp(-vec3<f32>(0.022, 0.0095, 0.0048) * max(distance - 22.0, 0.0));
+    let rovLitFloor =
+      basaltSubstrate *
+      vec3<f32>(1.52, 1.16, 0.82) *
+      (0.28 + 0.92 * basaltCreviceAO * rockFaceSlope) *
+      rovBeamAtten *
+      rovDualBeamCone *
+      1.95;
+
+    // Localized multi-spectral bioluminescent colonies and emissive rock bounce.
+    let colonyPatchA = smoothstep(
+      0.38,
+      0.76,
+      sin(wpAbyss.x * 0.55 + wpAbyss.y * 0.42) * cos(wpAbyss.x * 0.38 - wpAbyss.y * 0.62),
+    );
+    let colonyPatchB = smoothstep(
+      0.36,
+      0.74,
+      cos(wpAbyss.x * 0.48 - wpAbyss.y * 0.52 + 1.1) * sin(wpAbyss.x * 0.60 + wpAbyss.y * 0.35),
+    );
+    let fc0 = clamp(1.0 - abs(sin(wpAbyss.x * 2.2 + wpAbyss.y * 1.7 + 0.8 * sin(wpAbyss.y * 2.1))), 0.0, 1.0);
+    let fc2 = fc0 * fc0;
+    let fc4 = fc2 * fc2;
+    let fissureCrack =
+      (fc4 * fc4 * fc0) *
+      (1.0 - basaltCreviceAO * 0.65) *
+      colonyPatchA;
+    let pna0 = clamp(0.5 + 0.5 * sin(wpAbyss.x * 5.4 + wpAbyss.y * 4.6) * cos(wpAbyss.x * 4.8 - wpAbyss.y * 5.8), 0.0, 1.0);
+    let pna2 = pna0 * pna0;
+    let pna4 = pna2 * pna2;
+    let polypNodesA =
+      (pna4 * pna4 * pna2) *
+      basaltCreviceAO *
+      colonyPatchA;
+    let pnb0 = clamp(0.5 + 0.5 * cos(wpAbyss.x * 5.1 - wpAbyss.y * 5.5) * sin(wpAbyss.x * 6.2 + wpAbyss.y * 4.2), 0.0, 1.0);
+    let pnb2 = pnb0 * pnb0;
+    let pnb4 = pnb2 * pnb2;
+    let polypNodesB =
+      (pnb4 * pnb4 * pnb2) *
+      basaltCreviceAO *
+      colonyPatchB;
+    let anm0 = clamp(0.5 + 0.5 * sin(wpAbyss.x * 4.2 - wpAbyss.y * 3.8) * cos(wpAbyss.x * 3.6 + wpAbyss.y * 4.5), 0.0, 1.0);
+    let anm2 = anm0 * anm0;
+    let anm4 = anm2 * anm2;
+    let amberNodeMask =
+      (anm4 * anm4 * anm2 * anm0) *
+      colonyPatchB;
+    let pulseWave = 0.76 + 0.24 * sin(underwaterClock * 1.35 + wpAbyss.x * 0.8 + wpAbyss.y * 0.6);
+    let biolumDistFade = 1.0 - smoothstep(38.0, 165.0, distance);
+    let biolumBenthicVeins =
+      (vec3<f32>(0.02, 0.92, 1.08) * (fissureCrack * 0.85 + polypNodesA * 0.95) +
+       vec3<f32>(0.72, 0.16, 0.98) * polypNodesB * 0.92 +
+       vec3<f32>(0.98, 0.56, 0.10) * amberNodeMask * 0.82) *
+      pulseWave *
+      biolumDistFade *
+      smoothstep(0.08, 0.26, viewCosUp);
+
+    let cyanColonyGlow = (fissureCrack * 0.45 + colonyPatchA * basaltCreviceAO * 0.32);
+    let violetColonyGlow = colonyPatchB * basaltCreviceAO * 0.34;
+    let lumenEmissiveBounce =
+      basaltSubstrate *
+      (vec3<f32>(0.04, 0.62, 0.82) * cyanColonyGlow + vec3<f32>(0.48, 0.12, 0.72) * violetColonyGlow) *
+      rockFaceSlope *
+      biolumDistFade *
+      smoothstep(0.08, 0.26, viewCosUp) *
+      2.15;
+
+    // Pelagic bioluminescent jelly/spore plankton & dual-ROV volumetric Tyndall backscatter cones.
+    let snowWaveA = sin(wpAbyss.x * 4.5 + wpAbyss.y * 3.1 - underwaterClock * 0.42 + 1.2 * sin(wpAbyss.y * 2.2));
+    let snowWaveB = cos(wpAbyss.x * 3.7 - wpAbyss.y * 5.2 + underwaterClock * 0.34 - 1.1 * cos(wpAbyss.x * 2.6));
+    let sm0 = clamp(snowWaveA * snowWaveB, 0.0, 1.0);
+    let sm2 = sm0 * sm0;
+    let sm4 = sm2 * sm2;
+    let sporeMask = (sm4 * sm4 * sm0) * (1.0 - smoothstep(25.0, 145.0, distance));
+    let sporeTint = mix(
+      vec3<f32>(0.04, 0.86, 1.0),
+      vec3<f32>(0.64, 0.22, 0.98),
+      clamp(0.5 + 0.5 * sin(wpAbyss.x * 2.0 + wpAbyss.y * 1.5), 0.0, 1.0),
+    );
+    let biolumPelagicSpores = sporeTint * sporeMask * 0.85;
+    let rovVolumetricShafts =
+      vec3<f32>(0.024, 0.098, 0.168) *
+      rovDualBeamCone *
+      (0.80 + 0.20 * sin(horizAngle * 14.0 + underwaterClock * 0.4));
+
+    let submergenceDarkening = max(presetAbyssalGate, smoothstep(18.0, 95.0, diveDepth));
+    let surfaceSeeThroughFloor =
+      basaltSubstrate *
+      vec3<f32>(0.32, 0.68, 0.88) *
+      (0.38 + 0.88 * basaltCreviceAO * rockFaceSlope);
+    let abyssalVolumeColor =
+      mix(surfaceSeeThroughFloor, abyssalVoid, submergenceDarkening) +
+      rovLitFloor * (0.35 + 0.65 * submergenceDarkening) +
+      (biolumBenthicVeins + lumenEmissiveBounce + biolumPelagicSpores + rovVolumetricShafts) *
+        (0.22 + 0.78 * submergenceDarkening);
+    color = mix(color, abyssalVolumeColor, abyssalDiveGate);
+  }
+  return color;
+//>>else
+  return surfaceColor;
+//>>endif
+}
+//>>endif
 // Fog & Atmosphere
 
 // OPEN-5 fix: matches WebGL's `czm_fog(distance, color, fogColor, modifier)`
@@ -5651,16 +8383,298 @@ fn fragmentMain(
   //    overlays white pixels where wave normals are steep; GLSL has no
   //    equivalent, and the classic `//>>else` default branch omits it, so foam
   //    renders only when `Globe.enableEnhancedOcean` is set.
+//>>ifdef ENHANCED_OCEAN
+  // 7. **Subsurface scattering**. WGSL has `computeSubsurfaceScattering`,
+  //    called from the enhanced branch only (the default branch omits it);
+  //    GLSL has no equivalent.
+  // 8. **Default path unchanged**. Everything this file adds beyond the
+  //    classic port lives under `ENHANCED_OCEAN`, and each `//>>else` arm is
+  //    the text a default globe has always run: the shorter 24-68 km wave law
+  //    (`oceanWaveFade`), the wave-footprint guard in
+  //    `sampleOceanWaveNormals`, the bay sea-level gate, the coast feather
+  //    floor and tide shift, the swash and wet-sand fringe, and the Kelvin
+  //    wake. None has a GLSL twin. The preprocessed default variants (every lo
+  //    combination at `definesHi` 0) are byte-identical to the shader before
+  //    the water landing outside the two uniform structs, whose differences are
+  //    comments and the four renamed padding words; the opt-in
+  //    `WATER_PROVIDER_PARITY` variant adds GlobeFS.glsl's waves and coast band
+  //    (`globe-terrain-default-variant-identity.spec.mjs`);
+  //    `globe-classic-ocean-default-parity.spec.mjs` pins the laws.
+//>>else
   // 7. **Subsurface scattering**. WGSL has `computeSubsurfaceScattering`
   //    defined but currently unused (neither branch calls it) — scaffolding
   //    for future enhancement; GLSL has no equivalent.
+//>>endif
   //
   // Enhanced water mask and ocean rendering.
     if (tile.flags.x > 0.5) {
       let wmTS = tile.waterMaskTranslationAndScale;
       let waterUVUnflipped = geoUV * wmTS.zw + wmTS.xy;
       let waterUV = vec2<f32>(waterUVUnflipped.x, 1.0 - waterUVUnflipped.y);
+//>>ifdef ENHANCED_OCEAN
+      let wmDim = vec2<f32>(textureDimensions(waterMaskTexture, 0));
+      let tileEdgeDist = min(min(geoUV.x, 1.0 - geoUV.x), min(geoUV.y, 1.0 - geoUV.y));
+      let safeFragHeight = select(
+        input.v_height,
+        max(input.v_height, 0.0),
+        (tileEdgeDist < 0.035 || input.v_height < -445.0) && input.v_height < 0.0,
+      );
+      let wmSample0 = textureSampleLevel(waterMaskTexture, waterMaskSampler, waterUV, 0.0);
+      var rawWaterMask = wmSample0.r;
+      var isFragRiver = false;
+      if (wmSample0.a < 0.99 && wmDim.x > 1.5) {
+        let wmFragCoord = clamp(
+          vec2<i32>(waterUV * wmDim),
+          vec2<i32>(0),
+          vec2<i32>(wmDim) - vec2<i32>(1),
+        );
+        let wmFragG = u32(textureLoad(waterMaskTexture, wmFragCoord, 0).g * 255.0 + 0.5);
+        isFragRiver = (wmFragG & 15u) == 9u;
+      }
+      var wideBoundaryMask = rawWaterMask;
+      if (
+        !isFragRiver &&
+        wmDim.x > 1.5 &&
+        rawWaterMask < 0.998 &&
+        (rawWaterMask > 0.002 || (abs(safeFragHeight) < 16.0 && input.v_distance < 85000.0))
+      ) {
+        let invWm = 1.0 / wmDim;
+        if (rawWaterMask > 0.002) {
+          // 4-tap hardware-bilinear cubic B-spline filter (Sigg & Hadwiger 2005)
+          // for isotropic C2-continuous shoreline SDF reconstruction.
+          let tc = waterUV * wmDim - 0.5;
+          let baseTc = floor(tc);
+          let f = tc - baseTc;
+          let f2 = f * f;
+          let f3 = f2 * f;
+          let omf = 1.0 - f;
+          let w0 = (omf * omf * omf) * 0.16666667;
+          let w1 = (3.0 * f3 - 6.0 * f2 + 4.0) * 0.16666667;
+          let w3 = f3 * 0.16666667;
+          let g0 = w0 + w1;
+          let g1 = 1.0 - g0;
+          let h0 = (baseTc - 0.5 + w1 / max(g0, vec2<f32>(1.0e-5))) * invWm;
+          let h1 = (baseTc + 1.5 + w3 / max(g1, vec2<f32>(1.0e-5))) * invWm;
+          let s00 = textureSampleLevel(waterMaskTexture, waterMaskSampler, vec2<f32>(h0.x, h0.y), 0.0).r;
+          let s10 = textureSampleLevel(waterMaskTexture, waterMaskSampler, vec2<f32>(h1.x, h0.y), 0.0).r;
+          let s01 = textureSampleLevel(waterMaskTexture, waterMaskSampler, vec2<f32>(h0.x, h1.y), 0.0).r;
+          let s11 = textureSampleLevel(waterMaskTexture, waterMaskSampler, vec2<f32>(h1.x, h1.y), 0.0).r;
+          rawWaterMask = mix(mix(s11, s01, g0.x), mix(s10, s00, g0.x), g0.y);
+        }
+        // Wide multi-tap rotated spatial smoothing with continuous world-space
+        // Hermite domain warping to round off coarse vector coastline polygon chords.
+        let wpPhaseA = fract(vec2<f32>(
+          input.v_positionMC.x * 0.0014 + input.v_positionMC.z * 0.0011,
+          input.v_positionMC.y * 0.0016 - input.v_positionMC.x * 0.0012,
+        )) * 2.0 - 1.0;
+        let wpTriA = 1.0 - abs(wpPhaseA) * 2.0;
+        let wpWaveA = wpTriA * (1.5 - 0.5 * wpTriA * wpTriA);
+        let wpPhaseB = fract(vec2<f32>(
+          input.v_positionMC.y * 0.0037 + input.v_positionMC.z * 0.0029,
+          input.v_positionMC.z * 0.0041 - input.v_positionMC.y * 0.0033,
+        )) * 2.0 - 1.0;
+        let wpTriB = 1.0 - abs(wpPhaseB) * 2.0;
+        let wpWaveB = wpTriB * (1.5 - 0.5 * wpTriB * wpTriB);
+        let smoothRadius =
+          mix(3.5, 8.5, 1.0 - smoothstep(2000.0, 45000.0, input.v_distance)) *
+          invWm;
+        let warpedWaterUV = clamp(
+          waterUV + (wpWaveA * 0.65 + wpWaveB * 0.35) * smoothRadius * 0.38,
+          vec2<f32>(0.001),
+          vec2<f32>(0.999),
+        );
+        let b0 = textureSampleLevel(
+          waterMaskTexture,
+          waterMaskSampler,
+          clamp(warpedWaterUV + vec2<f32>(0.85, 0.52) * smoothRadius, vec2<f32>(0.001), vec2<f32>(0.999)),
+          0.0,
+        ).r;
+        let b1 = textureSampleLevel(
+          waterMaskTexture,
+          waterMaskSampler,
+          clamp(warpedWaterUV + vec2<f32>(-0.85, -0.52) * smoothRadius, vec2<f32>(0.001), vec2<f32>(0.999)),
+          0.0,
+        ).r;
+        let b2 = textureSampleLevel(
+          waterMaskTexture,
+          waterMaskSampler,
+          clamp(warpedWaterUV + vec2<f32>(-0.52, 0.85) * smoothRadius, vec2<f32>(0.001), vec2<f32>(0.999)),
+          0.0,
+        ).r;
+        let b3 = textureSampleLevel(
+          waterMaskTexture,
+          waterMaskSampler,
+          clamp(warpedWaterUV + vec2<f32>(0.52, -0.85) * smoothRadius, vec2<f32>(0.001), vec2<f32>(0.999)),
+          0.0,
+        ).r;
+        wideBoundaryMask = (rawWaterMask * 1.5 + b0 + b1 + b2 + b3) * 0.18181818;
+        rawWaterMask = mix(rawWaterMask, wideBoundaryMask, 0.68);
+      }
+      let baySeaLevelGate =
+        smoothstep(-2.5, -0.2, safeFragHeight) *
+        smoothstep(0.46, 0.52, rawWaterMask) *
+        (1.0 - smoothstep(0.15, 1.20, safeFragHeight)) *
+        (1.0 - smoothstep(12000.0, 35000.0, input.v_distance));
+      var fragLonLatDeg = vec2<f32>(0.0);
+      var fragBiome = vec4<f32>(0.0);
+      if (rawWaterMask > 0.25) {
+        let fragSphereDir = normalize(input.v_positionMC * vec3<f32>(1.0, 1.0, ellipsoidGeodeticZScale()));
+        fragLonLatDeg = vec2<f32>(
+          atan2(fragSphereDir.y, fragSphereDir.x) * 57.2957795,
+          asin(clamp(fragSphereDir.z, -1.0, 1.0)) * 57.2957795,
+        );
+        fragBiome = evaluateMultiBiomeHydroOptics(fragLonLatDeg, rawWaterMask, safeFragHeight);
+      }
+      let fragLuma = dot(color, vec3<f32>(0.299, 0.587, 0.114));
+      let fragGreenExcess =
+        ((color.g - max(color.r * 1.04, color.b * 1.10)) / max(color.g, 0.006)) *
+        smoothstep(0.018, 0.055, fragLuma) *
+        smoothstep(0.0, 0.08, (color.r - color.b) / max(color.g, 0.008));
+      let submergedSeagrassKeep =
+        smoothstep(0.54, 0.66, rawWaterMask) *
+        (1.0 - smoothstep(0.4, 1.5, abs(safeFragHeight)));
+      let fragNonVeg = max(
+        1.0 - smoothstep(0.03, 0.12, fragGreenExcess),
+        submergedSeagrassKeep * 0.85,
+      );
+      let warmDryLandReject =
+        1.0 -
+        smoothstep(0.01, 0.08, (color.r - max(color.b, color.g * 0.92)) / max(color.r, 0.004)) *
+          smoothstep(0.002, 0.008, fragLuma);
+      let reqBlueRatio = mix(
+        mix(1.20, 1.44, smoothstep(0.025, 0.10, fragLuma)),
+        1.10,
+        max(fragBiome.y * smoothstep(0.045, 0.085, fragLuma), fragBiome.z),
+      );
+      let reqGreenRatio = mix(0.96, 1.08, smoothstep(0.015, 0.045, fragLuma));
+      let greenOverRedWater = smoothstep(0.02, 0.12, (color.g - color.r * reqGreenRatio) / max(color.r, 0.004));
+      let closeOrthoGate = 1.0 - smoothstep(45000.0, 120000.0, input.v_distance);
+      let inlandNotConifer =
+        1.0 -
+        smoothstep(0.008, 0.055, (color.g - max(color.r * 1.02, color.b * 1.02)) / max(color.g, 0.006)) *
+          (1.0 - smoothstep(0.22, 0.36, (color.b - color.r) / max(color.r, 0.006)));
+      let strongBlueCyanWater =
+        smoothstep(0.01, 0.10, (max(color.b, color.g * 0.92) - color.r * reqBlueRatio) / max(color.r, 0.004)) *
+        greenOverRedWater *
+        smoothstep(0.003, 0.010, fragLuma) *
+        (1.0 - smoothstep(0.52, 0.68, fragLuma)) *
+        fragNonVeg *
+        inlandNotConifer *
+        warmDryLandReject;
+      let bayGreenOverRed = smoothstep(0.005, 0.08, (color.g - color.r * 0.96) / max(color.r, 0.004));
+      let coastalBayWater =
+        (1.0 - smoothstep(1.8, 6.8, abs(safeFragHeight))) *
+        smoothstep(0.008, 0.075, (max(color.b, color.g * 0.95) - color.r * 0.98) / max(color.r, 0.004)) *
+        bayGreenOverRed *
+        smoothstep(0.003, 0.010, fragLuma) *
+        (1.0 - smoothstep(0.46, 0.64, fragLuma)) *
+        fragNonVeg *
+        inlandNotConifer *
+        warmDryLandReject;
+      let hasRealTerrainSlope =
+        abs(input.v_slope - acos(clamp(abs(normalize(input.v_positionMC).z), 0.0, 1.0))) > 0.002;
+      let flatWaterSlopeKeep = select(
+        1.0,
+        1.0 - smoothstep(0.035, 0.085, input.v_slope),
+        hasRealTerrainSlope,
+      );
+      let inlandRiverImageryWater =
+        flatWaterSlopeKeep *
+        smoothstep(0.18, 0.32, (color.g - color.r) / max(color.r, 0.004)) *
+        smoothstep(0.16, 0.28, (color.b - color.r) / max(color.r, 0.004)) *
+        smoothstep(-0.22, -0.10, (color.b - color.g) / max(color.g, 0.004)) *
+        smoothstep(0.006, 0.016, fragLuma) *
+        (1.0 - smoothstep(0.058, 0.082, fragLuma)) *
+        fragNonVeg *
+        warmDryLandReject;
+      let verifiedRawWaterMask = select(
+        rawWaterMask,
+        rawWaterMask * mix(1.0, max(inlandRiverImageryWater, strongBlueCyanWater), closeOrthoGate),
+        isFragRiver,
+      );
+      let lowElevationKeep = 1.0 - smoothstep(14.0, 36.0, safeFragHeight);
+      let outsideMaskGate = max(
+        smoothstep(0.08, 0.44, max(verifiedRawWaterMask, select(wideBoundaryMask, 0.0, isFragRiver))),
+        flatWaterSlopeKeep *
+          lowElevationKeep *
+          smoothstep(0.018, 0.042, fragLuma) *
+          smoothstep(-0.04, 0.06, (max(color.b, color.g * 0.90) - color.g * 0.82) / max(color.g, 0.006)) *
+          smoothstep(0.02, 0.12, (max(color.b, color.g * 0.94) - color.r * 0.96) / max(color.r, 0.006)),
+      );
+      let orthoWaterSupplement =
+        closeOrthoGate *
+        outsideMaskGate *
+        max(strongBlueCyanWater * 0.82, coastalBayWater * 0.84);
+      let nonSwampDryReject = mix(
+        warmDryLandReject,
+        1.0,
+        clamp(fragBiome.x * 6.0, 0.0, 1.0),
+      );
+      let coastalKarstElevationReject =
+        (1.0 -
+          smoothstep(14.0, 28.0, safeFragHeight) *
+            step(0.85, verifiedRawWaterMask) *
+            (1.0 - clamp(dot(fragBiome, vec4<f32>(1.0)) * 4.0, 0.0, 1.0))) *
+        mix(1.0, flatWaterSlopeKeep, step(18.0, safeFragHeight));
+      let defaultWaterMask = max(
+        max(verifiedRawWaterMask, baySeaLevelGate) *
+          mix(
+            1.0,
+            fragNonVeg * coastalKarstElevationReject * nonSwampDryReject,
+            closeOrthoGate,
+          ),
+        max(orthoWaterSupplement * coastalKarstElevationReject, closeOrthoGate * inlandRiverImageryWater * 0.86),
+      );
+      let inlandBlueOverRed =
+        smoothstep(0.10, 0.22, (max(color.b, color.g * 0.92) - color.r) / max(color.r, 0.006)) *
+        smoothstep(0.08, 0.18, (color.b - color.r) / max(color.r, 0.006));
+      let glacialLumaGate = mix(
+        smoothstep(0.032, 0.048, fragLuma),
+        smoothstep(0.012, 0.022, fragLuma),
+        smoothstep(0.35, 0.48, verifiedRawWaterMask),
+      );
+      let highLatFjordWallReject =
+        1.0 - smoothstep(18.0, 45.0, safeFragHeight) * step(58.0, abs(fragLonLatDeg.y));
+      let fragIsLakeWater =
+        max(smoothstep(0.28, 0.45, verifiedRawWaterMask), fragBiome.y * 0.85) *
+        flatWaterSlopeKeep *
+        highLatFjordWallReject *
+        inlandNotConifer *
+        inlandBlueOverRed *
+        glacialLumaGate *
+        fragNonVeg *
+        warmDryLandReject *
+        (1.0 - smoothstep(0.52, 0.68, fragLuma));
+      let fragIsRiftWater =
+        smoothstep(0.35, 0.48, verifiedRawWaterMask) *
+        inlandNotConifer *
+        smoothstep(0.08, 0.18, (color.b - color.r) / max(color.r, 0.006)) *
+        smoothstep(-0.01, 0.05, (color.b - color.g * 0.96) / max(color.g, 0.006)) *
+        smoothstep(0.006, 0.016, fragLuma) *
+        (1.0 - smoothstep(0.48, 0.64, fragLuma)) *
+        fragNonVeg *
+        warmDryLandReject;
+      let fragIsSwampWater =
+        fragNonVeg *
+        (1.0 - smoothstep(0.32, 0.46, fragLuma));
+      let fragIsBrineWater =
+        max(
+          smoothstep(0.30, 0.48, verifiedRawWaterMask) *
+            smoothstep(0.06, 0.16, (max(color.g, color.b) - color.r) / max(color.r, 0.004)) *
+            (1.0 - smoothstep(0.08, 0.14, fragLuma)) *
+            warmDryLandReject,
+          smoothstep(0.35, 0.55, verifiedRawWaterMask) *
+            fragNonVeg *
+            warmDryLandReject *
+            0.92,
+        );
+      let afterGlacialMask = mix(defaultWaterMask, fragIsLakeWater, fragBiome.y);
+      let afterLakeMask = mix(afterGlacialMask, fragIsRiftWater, fragBiome.z);
+      let afterBrineMask = mix(afterLakeMask, fragIsBrineWater, fragBiome.w);
+      let waterMask = mix(afterBrineMask, defaultWaterMask * fragIsSwampWater, fragBiome.x);
+//>>else
       let waterMask = textureSampleLevel(waterMaskTexture, waterMaskSampler, waterUV, 0.0).r;
+//>>endif
 
     // NS-WATER-MASK-COAST-AA — screen-space anti-aliased coast coverage.
     // The water mask is a low-resolution bitmap; a single bilinear sample
@@ -5683,7 +8697,10 @@ fn fragmentMain(
       // `geoUV_d* * wmTS.zw * wmDim` texels; near a coast the bilinear mask
       // changes ≈1.0 per texel, making this the fwidth(mask) analogue. Twin of
       // the GLSL fwidth path in GlobeFS.glsl.
+//>>ifdef ENHANCED_OCEAN
+//>>else
     let wmDim = vec2<f32>(textureDimensions(waterMaskTexture, 0));
+//>>endif
     let maskTexelDx = geoUV_dx * wmTS.zw * wmDim;
     let maskTexelDy = geoUV_dy * wmTS.zw * wmDim;
     let maskScreenGrad = length(maskTexelDx) + length(maskTexelDy);
@@ -5694,8 +8711,49 @@ fn fragmentMain(
     // effect. The 0.2 floor reproduces the prior smoothstep(0.3,0.7) feather
     // at close zoom (byte-identical there); the band only grows for AA as the
     // mask footprint per pixel increases at lower zoom.
+//>>ifdef ENHANCED_OCEAN
+    // The default arm below is the coast the globe has always drawn and the
+    // one the GLSL twin draws, so a default globe is unchanged. The enhanced
+    // arm (ENHANCED_OCEAN) widens the feather (0.22 floor, up to 0.36 near the
+    // coast) and moves the 0.5 isoline with the astronomical tide
+    // (`tile.oceanTideHeight`); it has no GLSL twin.
+//>>endif
+//>>ifdef ENHANCED_OCEAN
+    let coastBand = clamp(max(maskScreenGrad * 1.5, 0.22), 0.22, 0.5);
+    let smoothCoastBand = max(
+      coastBand,
+      mix(0.36, 0.22, smoothstep(8000.0, 65000.0, input.v_distance)),
+    );
+    let coastalTideGate =
+      smoothstep(0.44, 0.56, waterMask) *
+      (1.0 - smoothstep(1.5, 3.0, safeFragHeight));
+    let tideShift = clamp(tile.oceanTideHeight * 0.05, -0.15, 0.15) * coastalTideGate;
+    let coastThreshold = clamp(0.5 - tideShift, 0.2, 0.8);
+    let coastCoverage = smoothstep(coastThreshold - smoothCoastBand, coastThreshold + smoothCoastBand, waterMask);
+//>>else
+//>>ifdef WATER_PROVIDER_PARITY
+    // water-parity-r5 begin coast-band
+    // GlobeFS.glsl's law, fwidth(mask) * 1.5 clamped to [0.2, 0.5] (water
+    // round 5, FND-1). fwidth is illegal here (downstream of non-uniform
+    // discards), so the mask's own screen-space change is taken as forward
+    // differences one pixel along each screen axis, through the hoisted UV
+    // derivatives (the V flip negates the y component). The texel footprint
+    // this replaces stands in for fwidth(mask) only where the mask changes by
+    // about 1.0 per texel (a binary terrain mask); over the coastline and lake
+    // masks, whose distance field ramps across about 12 texels, it widened the
+    // band to the full 0..1 ramp and drew a coast 2.5 times wider than WebGL.
+    let wmUvDx = vec2<f32>(geoUV_dx.x * wmTS.z, -geoUV_dx.y * wmTS.w);
+    let wmUvDy = vec2<f32>(geoUV_dy.x * wmTS.z, -geoUV_dy.y * wmTS.w);
+    let maskFwidth =
+      abs(textureSampleLevel(waterMaskTexture, waterMaskSampler, waterUV + wmUvDx, 0.0).r - waterMask) +
+      abs(textureSampleLevel(waterMaskTexture, waterMaskSampler, waterUV + wmUvDy, 0.0).r - waterMask);
+    let coastBand = clamp(maskFwidth * 1.5, 0.2, 0.5);
+    // water-parity-r5 end coast-band
+//>>else
     let coastBand = clamp(maskScreenGrad * 1.5, 0.2, 0.5);
+//>>endif
     let coastCoverage = smoothstep(0.5 - coastBand, 0.5 + coastBand, waterMask);
+//>>endif
 
     if (coastCoverage > 0.0) {
       // GLOBE-POLAR-STRETCH-POLISH — WebGL's computeWaterColor receives
@@ -5710,10 +8768,15 @@ fn fragmentMain(
       // the view rotation (RTE only offsets the translation column), so
       // a w=0 transform reproduces czm_normal3D for the identity-model
       // globe.
+//>>ifdef ENHANCED_OCEAN
+      // `dayNightNormalEC` is that same analytic normal, computed once above.
+      let oceanNormalEC = dayNightNormalEC;
+//>>else
       let sphereNormalMC = normalize(input.v_positionMC);
       let oceanNormalEC = normalize(
         (camera.modifiedModelView * vec4<f32>(sphereNormalMC, 0.0)).xyz,
       );
+//>>endif
       // Q10-DAYTIME-OCEAN-BRIGHTNESS — pass WebGL's atmosphere camera-distance
       // `fade` (packed as `groundAtmosphereControl.y` = the lightingFade clamp,
       // identical to GlobeFS.glsl L428) for the ocean highlight taper, NOT the
@@ -5722,11 +8785,63 @@ fn fragmentMain(
       let oceanColor = computeEnhancedOcean(
         color, input.v_positionEC, input.v_positionMC, oceanNormalEC, sunDir,
         geoUV, geoUV_dx, geoUV_dy, waterMask, tile.groundAtmosphereControl.y,
+//>>ifdef ENHANCED_OCEAN
+        input.v_distance, safeFragHeight
+//>>else
         input.v_distance
+//>>endif
       );
+//>>ifdef ENHANCED_OCEAN
+      // Under a cloud shadow the enhanced ocean drops most of its direct glint
+      // and keeps a cool overcast sky term. Enhanced only: the default ocean
+      // under a cloud shadow is the one the globe has always drawn (the
+      // general cloud-shadow multiply below), and no GLSL twin exists.
+      var shadedOceanColor = oceanColor;
+      if (camera.cloudShadowControl.x > 0.5) {
+        let cloudShadow = sampleCloudGroundShadow(
+          cloudShadowPositionOperand(input.v_positionRTE, input.v_positionMC),
+        );
+        let cloudOcclusion = clamp(1.0 - cloudShadow, 0.0, 1.0);
+        let glintExcess = max(oceanColor - color, vec3<f32>(0.0));
+        let coolSkyAmbient = vec3<f32>(0.02, 0.05, 0.11) * waterMask;
+        shadedOceanColor =
+          oceanColor -
+          min(glintExcess, oceanColor * 0.72) * cloudOcclusion * 0.88 +
+          coolSkyAmbient * cloudOcclusion * 0.65 / max(cloudShadow, 0.25);
+      }
+      // Feather the ocean effect in over the anti-aliased coast band.
+      color = mix(color, shadedOceanColor, coastCoverage);
+//>>else
       // Feather the ocean effect in over the anti-aliased coast band.
       color = mix(color, oceanColor, coastCoverage);
+//>>endif
     }
+//>>ifdef ENHANCED_OCEAN
+
+    // Swash run-up and the wet-sand fringe the tide leaves behind. Enhanced
+    // only: the default coast has no fringe, and no GLSL twin draws one.
+    let swashTime = select(tile.time, 0.0, tile.time > 1.0e9);
+    let swashRunup = 0.03 * sin(swashTime * 2.2) * (1.0 - smoothstep(15000.0, 60000.0, input.v_distance));
+    let wetSandUpper = clamp(0.5 + max(swashRunup, 0.0), 0.45, 0.65);
+    let beachSlopeGate =
+      smoothstep(0.05, 0.25, safeFragHeight) *
+      (1.0 - smoothstep(0.85, 1.60, safeFragHeight));
+    if ((tideShift < 0.0 || swashRunup > 0.0) && beachSlopeGate > 0.0 && waterMask >= coastThreshold && waterMask < wetSandUpper) {
+      let wetMid = 0.5 * (coastThreshold + wetSandUpper);
+      let wetIntertidalFactor =
+        smoothstep(coastThreshold, wetMid, waterMask) *
+        (1.0 - smoothstep(wetMid, wetSandUpper, waterMask));
+      let wetMask = (1.0 - coastCoverage) * wetIntertidalFactor * beachSlopeGate;
+      let viewDir = normalize(-input.v_positionEC);
+      let thinFilmSpec =
+        pow(max(dot(reflect(-sunDir, dayNightNormalEC), viewDir), 0.0), 48.0) *
+        0.06 *
+        wetMask;
+      color =
+        mix(color, color * vec3<f32>(0.58, 0.55, 0.51), wetMask * 0.45) +
+        vec3<f32>(1.0, 0.97, 0.90) * thinFilmSpec;
+    }
+//>>endif
   }
 
   // Lighting and shadow receive. The GLSL counterpart is

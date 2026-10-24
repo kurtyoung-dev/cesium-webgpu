@@ -4111,6 +4111,7 @@ function expandDefines(source, defines) {
 const VECTOR_METERS_PER_UV_OFFSET = globeTypesConstant(
   "VECTOR_METERS_PER_UV_OFFSET",
 );
+const OCEAN_TIDE_HEIGHT_OFFSET = globeTypesConstant("OCEAN_TIDE_HEIGHT_OFFSET");
 
 // ── The tile-uniform layout, DERIVED from the WGSL struct ──────────────
 //
@@ -4118,8 +4119,8 @@ const VECTOR_METERS_PER_UV_OFFSET = globeTypesConstant(
 // struct members. Nothing but this derivation connects the two, and WGSL's
 // uniform address space is where they can silently disagree: `vec2<f32>` has
 // an 8-byte alignment, so `vectorMetersPerUv` lands at float 494 and NOT at
-// 493, the next free pad word — the offset a reader counting floats would
-// naturally pick. Restating 494 here would prove nothing; computing it from
+// 493, where `oceanTideHeight` sits — the offset a reader counting floats
+// would naturally pick. Restating 494 here would prove nothing; computing it from
 // the struct text proves the pair.
 //
 // Layout rules (WGSL §"Structure Member Layout", uniform address space):
@@ -4441,12 +4442,24 @@ test("F1 — the float offsets the packer writes ARE the WGSL struct's own offse
     "WebGPUGlobeSurfaceTypes.ts and GlobeTerrain.wgsl disagree about where " +
       "the metres-per-UV pair lives; the shader would read padding",
   );
-  // 494 and not 493: a `vec2<f32>` is 8-byte aligned, so the first free pad
-  // float after the coverage radius is NOT where the member starts.
+  // 494 and not 493: a `vec2<f32>` is 8-byte aligned, so the float right
+  // after the coverage radius is NOT where the member starts. Float 493 is
+  // `oceanTideHeight`, which the tide packer writes; it is not padding.
   assert.equal(
     VECTOR_METERS_PER_UV_OFFSET,
     VECTOR_COVERAGE_RADIUS_OFFSET + 2,
-    "the vec2's alignment must leave float 493 as padding",
+    "the vec2's alignment must leave float 493 to oceanTideHeight",
+  );
+  assert.equal(
+    tileFloatOffset("oceanTideHeight"),
+    OCEAN_TIDE_HEIGHT_OFFSET,
+    "WebGPUGlobeSurfaceTypes.ts and GlobeTerrain.wgsl disagree about where " +
+      "oceanTideHeight lives; the shader would read the wrong float for the tide",
+  );
+  assert.equal(
+    OCEAN_TIDE_HEIGHT_OFFSET,
+    VECTOR_COVERAGE_RADIUS_OFFSET + 1,
+    "oceanTideHeight is the float between the coverage radius and the vec2",
   );
   assert.equal(
     TILE_UNIFORM_LAYOUT.size / 4,
