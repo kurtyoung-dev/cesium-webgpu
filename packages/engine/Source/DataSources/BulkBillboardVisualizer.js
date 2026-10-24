@@ -7,6 +7,7 @@ import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import DistanceDisplayCondition from "../Core/DistanceDisplayCondition.js";
+import JulianDate from "../Core/JulianDate.js";
 import NearFarScalar from "../Core/NearFarScalar.js";
 import BillboardCollection from "../Scene/BillboardCollection.js";
 import HeightReference from "../Scene/HeightReference.js";
@@ -308,6 +309,24 @@ class BulkBillboardVisualizer {
     this._entityCollection = entityCollection;
     this._primitives = primitives;
 
+    // An entity's lane depends on whether clustering is enabled, but the lane
+    // is decided when the entity is added or changed. Clustering is usually
+    // enabled after a data source loads, so every entity is re-classified when
+    // the cluster's `enabled` flag flips, in both directions; otherwise static
+    // entities stay in the flat-buffer lane the cluster never sees.
+    this._clusteringEnabled = entityCluster.enabled === true;
+    // The last time update() ran, so a re-classification between frames can
+    // give the legacy visualizer's entities their primitives at once.
+    this._lastTime = undefined;
+    this._removeClusterToggleListener = defined(
+      entityCluster._enabledChangedEvent,
+    )
+      ? entityCluster._enabledChangedEvent.addEventListener(
+          this._onClusteringToggled,
+          this,
+        )
+      : undefined;
+
     // Flat-buffer collection that holds the static fast-pathed billboards.
     // Created LAZILY on the first static-lane add (see _ensureCollection) so a
     // data source with zero static billboards pays no BillboardCollection
@@ -360,6 +379,7 @@ class BulkBillboardVisualizer {
     // once (the collection's own update() finishes any async image upload).
     // Only the (typically small) set of dynamic / clamped entities is updated,
     // by the wrapped legacy visualizer.
+    this._lastTime = JulianDate.clone(time, this._lastTime);
     return this._fallback.update(time);
   }
 
@@ -392,6 +412,10 @@ class BulkBillboardVisualizer {
       this._onCollectionChanged,
       this,
     );
+    if (defined(this._removeClusterToggleListener)) {
+      this._removeClusterToggleListener();
+      this._removeClusterToggleListener = undefined;
+    }
     this._fallback.destroy();
     this._staticItems.removeAll();
     this._fallbackEntities.removeAll();
@@ -505,6 +529,31 @@ class BulkBillboardVisualizer {
       this._addFallback(entity);
     } else {
       this._removeFallback(entity);
+    }
+  }
+
+  // Moves every entity to the lane the cluster's new `enabled` state calls for.
+  // Turning clustering on hands static entities to the legacy visualizer, which
+  // owns the cluster collections; turning it off returns them to the
+  // flat-buffer lane.
+  /** @private */
+  _onClusteringToggled() {
+    const enabled = this._cluster.enabled === true;
+    if (enabled === this._clusteringEnabled) {
+      return;
+    }
+    this._clusteringEnabled = enabled;
+
+    const entities = this._entityCollection.values;
+    for (let i = entities.length - 1; i > -1; i--) {
+      this._classify(entities[i]);
+    }
+
+    // The cluster can be updated before this visualizer's next update(), so
+    // the legacy visualizer creates the cluster primitives for the entities it
+    // just received now, at the time it last drew.
+    if (defined(this._lastTime)) {
+      this._fallback.update(this._lastTime);
     }
   }
 

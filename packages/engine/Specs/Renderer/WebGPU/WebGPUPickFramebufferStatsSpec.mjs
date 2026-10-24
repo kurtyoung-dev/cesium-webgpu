@@ -55,6 +55,11 @@ const MODULE_URL =
 const { WebGPUPickFramebuffer, WebGPUPickFramebufferStats } = await import(
   MODULE_URL
 );
+const { TRANSIENT_PICK_READBACK_CAPACITY } = await import(
+  pathToFileURL(
+    resolve(ENGINE_SOURCE, "Renderer/WebGPU/WebGPUPickTransientReadback.ts"),
+  ).href
+);
 const { default: BoundingRectangle } = await import(
   pathToFileURL(resolve(ENGINE_SOURCE, "Core/BoundingRectangle.js")).href
 );
@@ -299,22 +304,48 @@ test("decline reasons are distinguishable, not one undifferentiated tally", asyn
   assert.equal(unbegunStats.serveDeclines["no-device"], 0);
 });
 
-test("a second pick before the map resolves is an in-flight suppression", async () => {
+test("picks before the map resolves take overflow buffers until the pool is spent, then are in-flight suppressions", async () => {
   const harness = makeHarness();
   const query = rect(10, 10, 3, 3);
 
   await pickOnce(harness, query, "view-a");
   assert.equal(harness.framebuffer.getStatistics().readbacksArmed, 1);
 
-  // Deliberately do NOT settle: the previous staging buffer is still
-  // mapping-pending, so the next pick must not encode another copy into it.
+  // Deliberately do NOT settle: the persistent staging buffer is still
+  // mapping-pending, so it cannot take another copy. A pick in that window is
+  // the warm-up for the next position a caller asks about, so it arms on an
+  // overflow buffer of its own rather than being dropped.
   await pickOnce(harness, query, "view-a");
-  const stats = harness.framebuffer.getStatistics();
+  let stats = harness.framebuffer.getStatistics();
+  assert.equal(stats.readbacksArmed, 2, "the second pick armed an overflow");
+  assert.equal(stats.armDeclines["readback-in-flight"], 0);
+  assert.equal(stats.readbackInFlightSuppressions, 0);
 
+  // The overflow pool is bounded, so a device whose maps never resolve
+  // cannot grow allocations without limit.
+  for (let i = 1; i < TRANSIENT_PICK_READBACK_CAPACITY; ++i) {
+    await pickOnce(harness, query, "view-a");
+  }
+  stats = harness.framebuffer.getStatistics();
+  const armedAtCapacity = 1 + TRANSIENT_PICK_READBACK_CAPACITY;
+  assert.equal(stats.readbacksArmed, armedAtCapacity);
+  assert.equal(stats.armDeclines["readback-in-flight"], 0);
+
+  // Past the cap the pick is suppressed and says why.
+  await pickOnce(harness, query, "view-a");
+  stats = harness.framebuffer.getStatistics();
   assert.equal(stats.armDeclines["readback-in-flight"], 1);
   assert.equal(stats.readbackInFlightSuppressions, 1);
-  assert.equal(stats.readbacksArmed, 1, "the suppressed pick armed nothing");
-  assert.equal(stats.readbacksUnresolved, 1, "the first readback never landed");
+  assert.equal(
+    stats.readbacksArmed,
+    armedAtCapacity,
+    "the suppressed pick armed nothing",
+  );
+  assert.equal(
+    stats.readbacksUnresolved,
+    armedAtCapacity,
+    "no armed readback has landed",
+  );
 });
 
 test("a rejected frame submit is an arm decline, never an arm", async () => {

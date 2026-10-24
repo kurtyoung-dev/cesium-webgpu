@@ -988,6 +988,50 @@ const opaqueParentDerivations = [
     "https://evil.invalid/x",
     false,
   ],
+  // `localhost` names no server: the URL Standard reads `file://localhost/a`
+  // as `file:///a`, in any case it is written in, so it is the parent that
+  // names none and it keeps its credentials from a share that names one. Node
+  // and Firefox parse it that way; Chromium keeps `localhost` as the host
+  // and answers the three forwarding rows below the other way, which is left
+  // to a decision of its own and not asserted for Chromium anywhere.
+  [
+    "file://localhost/a/tileset.json",
+    "file:///C:/a/other.b3dm",
+    "file:///C:/a/other.b3dm",
+    true,
+  ],
+  [
+    "file://localhost/a/tileset.json",
+    "file://evil.invalid/share/x",
+    "file://evil.invalid/share/x",
+    false,
+  ],
+  [
+    "file://LOCALHOST/a/tileset.json",
+    "file:///C:/a/other.b3dm",
+    "file:///C:/a/other.b3dm",
+    true,
+  ],
+  [
+    "file:///C:/a/tileset.json",
+    "file://LocalHost/a/other.b3dm",
+    "file:///a/other.b3dm",
+    true,
+  ],
+  // A share's server name compares case-insensitively from the parent's side
+  // as well as from the derived url's.
+  [
+    "file://PARENT.INVALID/share/tileset.json",
+    "file://parent.invalid/share/other.b3dm",
+    "file://parent.invalid/share/other.b3dm",
+    true,
+  ],
+  [
+    "file://PARENT.INVALID/share/tileset.json",
+    "file://evil.invalid/share/x",
+    "file://evil.invalid/share/x",
+    false,
+  ],
 ];
 
 test("the opaque-parent table states the rule it is testing", () => {
@@ -1100,6 +1144,64 @@ test("a parent's credentials are decided the same way under Chromium's origin se
     }
   });
   assert.equal(new URL("file://parent.invalid/share/x").origin, "null");
+});
+
+// Firefox parses `file://server/share/x` with an empty host where Node and
+// Chromium keep `server`, so a decision read from the parsed host alone keyed
+// every share alike there and the parent's credentials reached the other one
+// (W2-L11-OPAQUE-ORIGIN-SPEC-RED-ON-FIREFOX). Node cannot produce that parse,
+// so this reproduces it: `host` and `hostname` answer the way Gecko does for
+// a `file:` url, and both tables above are replayed. Only the parsed host is
+// reproduced; the url as written is untouched, as it is in Firefox.
+function withFirefoxFileHost(run) {
+  const descriptors = ["host", "hostname"].map((name) => [
+    name,
+    Object.getOwnPropertyDescriptor(URL.prototype, name),
+  ]);
+  for (const [name, descriptor] of descriptors) {
+    Object.defineProperty(URL.prototype, name, {
+      configurable: true,
+      enumerable: descriptor.enumerable,
+      get() {
+        return this.protocol === "file:" ? "" : descriptor.get.call(this);
+      },
+      set: descriptor.set,
+    });
+  }
+  try {
+    run();
+  } finally {
+    for (const [name, descriptor] of descriptors) {
+      Object.defineProperty(URL.prototype, name, descriptor);
+    }
+  }
+}
+
+test("a parent's credentials are decided the same way under Firefox's file: host parse", () => {
+  withFirefoxFileHost(() => {
+    assert.equal(new URL("file://parent.invalid/share/x").host, "");
+    assert.equal(new URL("https://parent.invalid/x").host, "parent.invalid");
+    for (const [parentUrl, url, , forwarded] of opaqueParentDerivations) {
+      const derived = new Resource({
+        url: parentUrl,
+        headers: { Authorization: PARENT_HEADER },
+      }).getDerivedResource({ url });
+      assert.equal(
+        derived.headers?.Authorization,
+        forwarded ? PARENT_HEADER : undefined,
+        `parent ${JSON.stringify(parentUrl)} derived ${JSON.stringify(url)}`,
+      );
+    }
+    for (const [url, , forwarded] of derivations) {
+      const derived = parentResource().getDerivedResource({ url });
+      assert.equal(
+        derived.headers?.Authorization,
+        forwarded ? PARENT_HEADER : undefined,
+        `derived ${JSON.stringify(url)}`,
+      );
+    }
+  });
+  assert.equal(new URL("file://parent.invalid/share/x").host, "parent.invalid");
 });
 
 // ---------------------------------------------------------------------------

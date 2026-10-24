@@ -163,6 +163,23 @@ describe("Core/Resource", function () {
       ["file:///C:/a/tileset.json", "file:///C:/a/other.b3dm", true],
       ["file:///C:/a/tileset.json", "file://evil.invalid/share/x", false],
       ["file:///C:/a/tileset.json", "https://evil.invalid/x", false],
+      // Firefox reports an empty host for every one of these, so the server
+      // is read from the url as written there: `localhost` is no share's
+      // server, and a share's server name compares case-insensitively from
+      // the parent's side as well. (Whether `localhost` names a server at all
+      // differs between engines -- Chromium keeps it as the host, Firefox and
+      // Node drop it -- so only the row every engine answers alike is here.)
+      ["file://localhost/a/tileset.json", "file://evil.invalid/share/x", false],
+      [
+        "file://PARENT.INVALID/share/tileset.json",
+        "file://parent.invalid/share/other.b3dm",
+        true,
+      ],
+      [
+        "file://PARENT.INVALID/share/tileset.json",
+        "file://evil.invalid/share/x",
+        false,
+      ],
     ];
 
     cases.forEach(function (triple) {

@@ -38,6 +38,9 @@ const authorityOnlyRegex = /^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\/[^/?#]*$/;
 // A url that carries a scheme of its own.
 const schemeRegex = /^[a-zA-Z][a-zA-Z0-9+\-.]*:/;
 
+// The authority a `file:` url was written with.
+const fileAuthorityRegex = /^file:\/\/([^/?#]*)/i;
+
 // What `getUrlOrigin` answers for a url the URL parser rejects. No parsed url
 // serialises to it (a parsed scheme never contains `<`).
 const unfetchableUrlKey = "<unfetchable>";
@@ -1528,8 +1531,19 @@ function getUrlOrigin(url) {
   // folds it; a special scheme's host is already folded and this is a no-op.
   // A url that names no server keys on its scheme alone, which no url that
   // names one can equal.
-  return parsed.host.length > 0
-    ? `${parsed.protocol}//${parsed.host.toLowerCase()}`
+  let host = parsed.host;
+  if (host.length === 0 && parsed.protocol === "file:") {
+    // Firefox parses `file://server/share/x` with an empty host, where
+    // Chromium and Node keep `server`, so two different shares keyed alike
+    // there and the parent's credentials reached the other one. Read the
+    // server from the url as written instead; `localhost` names no server, as
+    // the URL Standard says.
+    const written = fileAuthorityRegex.exec(absolute);
+    const authority = defined(written) ? written[1].toLowerCase() : "";
+    host = authority === "localhost" ? "" : authority;
+  }
+  return host.length > 0
+    ? `${parsed.protocol}//${host.toLowerCase()}`
     : parsed.protocol;
 }
 

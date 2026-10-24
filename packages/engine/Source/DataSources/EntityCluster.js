@@ -81,6 +81,12 @@ class EntityCluster {
 
     this._clusterEvent = new Event();
 
+    // Raised when `enabled` actually changes. The bulk visualizers keep static
+    // entities in a flat-buffer lane the cluster never sees, so they listen for
+    // this to move those entities into (or back out of) the cluster's own
+    // collections at the moment clustering flips.
+    this._enabledChangedEvent = new Event();
+
     /**
      * Determines if entities in this collection will be shown.
      *
@@ -337,8 +343,12 @@ class EntityCluster {
   }
 
   set enabled(value) {
-    this._enabledDirty = value !== this._enabled;
+    const changed = value !== this._enabled;
+    this._enabledDirty = changed;
     this._enabled = value;
+    if (changed) {
+      this._enabledChangedEvent.raiseEvent(this);
+    }
   }
 
   /**

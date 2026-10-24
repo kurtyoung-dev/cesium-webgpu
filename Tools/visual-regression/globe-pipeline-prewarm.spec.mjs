@@ -40,9 +40,12 @@
 //
 // Two things. Both are named here rather than hidden, and both are guarded.
 //
-//   1. The `WebGPUContext` CONSTRUCTOR BODY is neutralised after `super()`, so a
-//      context can be constructed without a canvas, a device or a WebGL
-//      compatibility stub. Class FIELD INITIALISERS still run — they are where
+//   1. The `WebGPUContext` CONSTRUCTOR BODY is neutralised once it has stored
+//      its canvas and options, so a context can be constructed without a
+//      canvas, a device or a WebGL compatibility stub. The options are kept
+//      because real getters read them: `prewarmGlobeRendererEnabled`, which
+//      the globe's tile-provider seam consults before it warms, reads
+//      `_options`. Class FIELD INITIALISERS still run — they are where
 //      `_msaaSamples`, `_sceneColorFormat` and `_logDepthWriteEnabled` come
 //      from — and every getter read here (`fragmentDepth`,
 //      `scenePipelineFormat`, `webgpuPipelineCache`) is the real one on the real
@@ -169,14 +172,15 @@ const PRESEED = [
 ];
 
 // See "WHAT IS MIRRORED" above. The `if` keeps the parameter used, so the
-// neutralised constructor still reads as a function of its arguments.
+// neutralised constructor still reads as a function of its arguments. The
+// constructor's own options assignment runs before the early return.
 const NEUTRALISE_CONTEXT_CONSTRUCTOR = {
   basename: "WebGPUContext.ts",
   label: "context-constructor-body-neutralised",
   mutate: (source) =>
     source.replace(
       "    this._canvas = canvas;\n    this._options = options;",
-      "    if (canvas === undefined) {\n      return;\n    }\n    return;\n    this._options = options;",
+      "    this._canvas = canvas;\n    this._options = options;\n    if (canvas === undefined) {\n      return;\n    }\n    return;",
     ),
 };
 
