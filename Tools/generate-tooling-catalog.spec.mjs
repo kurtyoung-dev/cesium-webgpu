@@ -301,6 +301,24 @@ function assertCensusCurrent(result, context = "") {
   assert.match(result.stdout, /census is current/u);
 }
 
+function stageCurrentCatalog(sandbox) {
+  const pathname = "migration_doc/TOOLING_CATALOG.md";
+  const original = readCandidateObject(
+    sandbox,
+    candidatePathOid(sandbox, pathname),
+  );
+  const split = splitCatalog(original);
+  assert.ok(split !== null);
+  // Prepare the full-index control before applying the mutation under test.
+  const generated = runCandidate(sandbox, ["--stdout"]);
+  assert.equal(generated.status, 0, generated.stderr);
+  const rendered = splitCatalog(generated.stdout);
+  assert.ok(rendered !== null);
+  const current = `${split.before}${rendered.region}${split.after}`;
+  updateCandidatePath(sandbox, pathname, current);
+  return current;
+}
+
 function updateCandidateEntry(sandbox, pathname, mode, oid) {
   const update = spawnSync(
     "git",
@@ -509,7 +527,11 @@ function installGitHistoryAbaShim(sandbox, head, variant = "shallow") {
 function candidateIndexMutant(pathname, mutate) {
   const sandbox = createCandidateSandbox();
   try {
-    const current = readTrackedFiles([pathname]).get(pathname);
+    stageCurrentCatalog(sandbox);
+    const current = readCandidateObject(
+      sandbox,
+      candidatePathOid(sandbox, pathname),
+    );
     assert.equal(typeof current, "string");
     const mutated = mutate(current);
     assert.notEqual(mutated, current, "candidate mutant did not change bytes");
@@ -722,6 +744,7 @@ test("A1a3: undeclared or computed candidate imports are STRUCTURAL", () => {
 
   const inverse = createCandidateSandbox();
   try {
+    stageCurrentCatalog(inverse);
     const result = runCandidate(inverse);
     assertCensusCurrent(result);
   } finally {
@@ -735,6 +758,7 @@ test(
   () => {
     const sandbox = createCandidateSandbox();
     try {
+      stageCurrentCatalog(sandbox);
       const cleanEnv = { ...sandbox.env };
       for (const name of Object.keys(cleanEnv)) {
         if (
@@ -973,6 +997,7 @@ test(
 
     const inverse = createCandidateSandbox();
     try {
+      stageCurrentCatalog(inverse);
       const result = runCandidate(inverse);
       assertCensusCurrent(result);
     } finally {
@@ -1415,6 +1440,23 @@ function stageWorkingTreeGenerator(sandbox) {
   );
 }
 
+function createCurrentCatalogWorktree(sandbox) {
+  stageWorkingTreeGenerator(sandbox);
+  const current = stageCurrentCatalog(sandbox);
+  const runtime = createRuntimeWorktree(
+    sandbox,
+    readFileSync(GENERATOR, "utf8"),
+  );
+  const catalogPath = path.join(
+    runtime.worktree,
+    "migration_doc",
+    "TOOLING_CATALOG.md",
+  );
+  mkdirSync(path.dirname(catalogPath), { recursive: true });
+  writeFileSync(catalogPath, current);
+  return { current, runtime };
+}
+
 test("A1i2: a drift report says whether the census is unregenerated or merely unstaged", () => {
   // Leg 1 — the state a `generate` run leaves behind before `git add`: the
   // candidate index still holds the old catalog while the working tree holds
@@ -1423,31 +1465,19 @@ test("A1i2: a drift report says whether the census is unregenerated or merely un
   // again, which is the remedy that cannot work.
   const unstaged = createCandidateSandbox();
   try {
-    stageWorkingTreeGenerator(unstaged);
-    const committed = readTrackedFiles([
-      "migration_doc/TOOLING_CATALOG.md",
-    ]).get("migration_doc/TOOLING_CATALOG.md");
-    const stale = committed.replace("Columns: file", "Columns: stale file");
-    assert.notEqual(stale, committed);
+    const { current, runtime } = createCurrentCatalogWorktree(unstaged);
+    const stale = current.replace("Columns: file", "Columns: stale file");
+    assert.notEqual(stale, current);
     updateCandidatePath(unstaged, "migration_doc/TOOLING_CATALOG.md", stale);
 
-    const result = runCandidate(unstaged);
+    const result = runRuntimeWorktree(runtime);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /DRIFTED/u);
-    // This leg stales only the candidate INDEX, and the child runs against the
-    // repository's own working tree, so it presumes that tree's catalog is
-    // current. Say so: otherwise the one state the fix is about — a stale
-    // working-tree catalog — would red this leg opaquely.
-    assert.match(
-      result.stderr,
-      /UNSTAGED, not unregenerated/u,
-      "this leg requires the repository's WORKING-TREE " +
-        "migration_doc/TOOLING_CATALOG.md to be current; if it is itself stale " +
-        `the tool is RIGHT to print the regenerate remedy. Run \`node ${LAUNCHER_REL}\` ` +
-        "and re-run this spec",
-    );
+    assert.match(result.stderr, /UNSTAGED, not unregenerated/u);
     assert.match(result.stderr, /git add migration_doc\/TOOLING_CATALOG\.md/u);
     assert.doesNotMatch(result.stderr, /Regenerate with/u);
+    updateCandidatePath(unstaged, "migration_doc/TOOLING_CATALOG.md", current);
+    assertCensusCurrent(runRuntimeWorktree(runtime));
   } finally {
     rmSync(unstaged.root, { recursive: true, force: true });
   }
@@ -1458,7 +1488,7 @@ test("A1i2: a drift report says whether the census is unregenerated or merely un
   const unregenerated = createCandidateSandbox();
   const fixturePath = "Tools/tooling-catalog-unstaged-control-fixture.mjs";
   try {
-    stageWorkingTreeGenerator(unregenerated);
+    const { runtime } = createCurrentCatalogWorktree(unregenerated);
     const oid = writeCandidateBlob(
       unregenerated,
       "// @purpose Exercises the unregenerated leg of the drift remedy.\n" +
@@ -1466,7 +1496,7 @@ test("A1i2: a drift report says whether the census is unregenerated or merely un
     );
     updateCandidateEntry(unregenerated, fixturePath, "100644", oid);
 
-    const result = runCandidate(unregenerated);
+    const result = runRuntimeWorktree(runtime);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /DRIFTED/u);
     assert.ok(
@@ -1625,6 +1655,7 @@ test("A1m: split and skip-worktree candidate indexes materialize as full snapsho
   for (const variant of ["split", "skip-worktree"]) {
     const sandbox = createCandidateSandbox();
     try {
+      stageCurrentCatalog(sandbox);
       const args =
         variant === "split"
           ? ["update-index", "--split-index"]
@@ -1691,35 +1722,12 @@ test(
         { cwd: root, env: cleanEnv, encoding: "utf8" },
       );
       assert.equal(cloned.status, 0, cloned.stderr);
-      for (const args of [
-        ["-C", clone, "read-tree", "HEAD"],
-        ["-C", clone, "sparse-checkout", "init", "--cone", "--sparse-index"],
-        [
-          "-C",
-          clone,
-          "sparse-checkout",
-          "set",
-          "Tools",
-          "scripts",
-          "migration_doc",
-          ".husky",
-        ],
-      ]) {
-        const configured = spawnSync("git", args, {
-          cwd: root,
-          env: cleanEnv,
-          encoding: "utf8",
-        });
-        assert.equal(configured.status, 0, configured.stderr);
-      }
-
-      const sparseBefore = spawnSync(
-        "git",
-        ["ls-files", "--sparse", "--stage"],
-        { cwd: clone, env: cleanEnv, encoding: "utf8" },
-      );
-      assert.equal(sparseBefore.status, 0, sparseBefore.stderr);
-      assert.match(sparseBefore.stdout, /^040000 [0-9a-f]{40,64} 0\t.+\/$/mu);
+      const loaded = spawnSync("git", ["read-tree", "HEAD"], {
+        cwd: clone,
+        env: cleanEnv,
+        encoding: "utf8",
+      });
+      assert.equal(loaded.status, 0, loaded.stderr);
       // The fixture is the CANDIDATE expressed as a sparse index, so it must
       // carry everything this working tree changes — not a fixed five. The
       // census counts inbound references out of `migration_doc` prose as well
@@ -1773,6 +1781,39 @@ test(
         );
         assert.equal(update.status, 0, update.stderr);
       }
+      const candidateEnv = {
+        ...cleanEnv,
+        GIT_DIR: path.join(clone, ".git"),
+        GIT_WORK_TREE: ROOT,
+      };
+      stageCurrentCatalog({ env: candidateEnv });
+      for (const args of [
+        ["-C", clone, "sparse-checkout", "init", "--cone", "--sparse-index"],
+        [
+          "-C",
+          clone,
+          "sparse-checkout",
+          "set",
+          "Tools",
+          "scripts",
+          "migration_doc",
+          ".husky",
+        ],
+      ]) {
+        const configured = spawnSync("git", args, {
+          cwd: root,
+          env: cleanEnv,
+          encoding: "utf8",
+        });
+        assert.equal(configured.status, 0, configured.stderr);
+      }
+      const sparseBefore = spawnSync(
+        "git",
+        ["ls-files", "--sparse", "--stage"],
+        { cwd: clone, env: cleanEnv, encoding: "utf8" },
+      );
+      assert.equal(sparseBefore.status, 0, sparseBefore.stderr);
+      assert.match(sparseBefore.stdout, /^040000 [0-9a-f]{40,64} 0\t.+\/$/mu);
       const sparse = spawnSync("git", ["ls-files", "--sparse", "--stage"], {
         cwd: clone,
         env: cleanEnv,
@@ -1783,11 +1824,6 @@ test(
 
       const indexPath = path.join(clone, ".git", "index");
       const before = readFileSync(indexPath);
-      const candidateEnv = {
-        ...cleanEnv,
-        GIT_DIR: path.join(clone, ".git"),
-        GIT_WORK_TREE: ROOT,
-      };
       const result = spawnSync(process.execPath, [SCRIPT, "--check"], {
         cwd: ROOT,
         env: candidateEnv,
@@ -1805,6 +1841,7 @@ test("A1n: replacement objects cannot launder catalog or runtime blobs", () => {
   {
     const sandbox = createCandidateSandbox();
     try {
+      stageCurrentCatalog(sandbox);
       const pathname = "migration_doc/TOOLING_CATALOG.md";
       const currentOid = candidatePathOid(sandbox, pathname);
       const current = readCandidateObject(sandbox, currentOid);
@@ -1863,6 +1900,7 @@ test("A1n: replacement objects cannot launder catalog or runtime blobs", () => {
   {
     const sandbox = createCandidateSandbox();
     try {
+      stageCurrentCatalog(sandbox);
       const launcherOid = candidatePathOid(sandbox, LAUNCHER_REL);
       const launcher = readCandidateObject(sandbox, launcherOid);
       const forged = `${launcher}\n// replacement-object launcher mutant\n`;
@@ -1890,6 +1928,7 @@ test("A1o: replacement history is ignored; grafted or shallow history is STRUCTU
   {
     const sandbox = createCandidateSandbox();
     try {
+      stageCurrentCatalog(sandbox);
       const head = spawnSync("git", ["rev-parse", "HEAD"], {
         cwd: ROOT,
         env: sandbox.env,
@@ -2207,6 +2246,7 @@ test("A1s: unrenderable raw Git identities are explicitly STRUCTURAL", () => {
 
   const unrelated = createCandidateSandbox();
   try {
+    stageCurrentCatalog(unrelated);
     const pathname = "packages/unrelated\\name.mjs";
     const oid = writeCandidateBlob(unrelated, "unrelated raw-path fixture\n");
     updateCandidateEntryRaw(unrelated, pathname, "100644", oid);
@@ -2478,6 +2518,45 @@ test("D4: freshness-only drift is advisory; structural drift still fails", () =>
   // (prose/layout) - the detailed verdict must call that structural too.
   assert.equal(describeDriftDetailed(before, before).structural, false);
   assert.equal(catalogCheckExitCode(before, before), 0);
+
+  const dated = ROW("a.mjs", "2026-08-16", "A.");
+  const header = "| File | Class | Status | Last touch | Refs | Purpose |";
+  for (const [oldRegion, newRegion] of [
+    [`Columns: stale file\n${before}`, `Columns: file\n${dated}`],
+    [`| probe | 9 |\n${before}`, `| probe | 1 |\n${dated}`],
+    [`${before}\n${before}`, dated],
+    [
+      `${before}\n${ROW("b.mjs", "2026-08-01", "B.")}`,
+      `${ROW("b.mjs", "2026-08-01", "B.")}\n${dated}`,
+    ],
+    [
+      `${header}\n${before}`,
+      `${header.replace("Last touch", "Forged")}\n${dated}`,
+    ],
+    [`${before}\r\n`, `${dated}\n`],
+  ]) {
+    assert.equal(describeDriftDetailed(oldRegion, newRegion).structural, true);
+    assert.equal(
+      catalogCheckExitCode(oldRegion, newRegion, new Set(["a.mjs"])),
+      1,
+    );
+  }
+  assert.equal(
+    catalogCheckExitCode(
+      ROW("a.mjs", "2026-08-01", "A \\| B."),
+      ROW("a.mjs", "2026-08-16", "A \\| B."),
+      new Set(["a.mjs"]),
+    ),
+    0,
+  );
+  const duplicateBefore = `${before}\n${dated}`;
+  const duplicateAfter = `${ROW("a.mjs", "2026-08-02", "A.")}\n${dated}`;
+  assert.equal(
+    describeDriftDetailed(duplicateBefore, duplicateAfter).structural,
+    true,
+  );
+  assert.equal(catalogCheckExitCode(duplicateBefore, duplicateAfter), 1);
+  assert.equal(catalogCheckExitCode(duplicateBefore, duplicateBefore), 0);
 });
 
 test("D5: duplicate basenames retain directory-qualified drift identities", () => {

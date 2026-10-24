@@ -1735,6 +1735,7 @@ export function describeDrift(committed, regenerated) {
  * @returns {{ lines: string[], structural: boolean }} Report + verdict.
  */
 export function describeDriftDetailed(committed, regenerated) {
+  const duplicateKeys = new Set();
   const rowBase = (line) => {
     const m = /^\|\s*([^|]+?)\s*\|/.exec(line);
     return m === null ? null : m[1];
@@ -1757,6 +1758,10 @@ export function describeDriftDetailed(committed, regenerated) {
         !raw.startsWith("|---") &&
         raw.split(/(?<!\\)\|/).length - 1 === 7
       ) {
+        // An overwritten identity cannot bound freshness drift to one row.
+        if (base.endsWith(".mjs") && map.has(key)) {
+          duplicateKeys.add(key);
+        }
         map.set(key, raw);
       }
     }
@@ -1769,14 +1774,17 @@ export function describeDriftDetailed(committed, regenerated) {
   const changed = [...after.keys()].filter(
     (k) => before.has(k) && before.get(k) !== after.get(k),
   );
-  const dateOnly = changed.filter((k) => {
-    const strip = (row) =>
-      row
-        .split("|")
-        .filter((_, i) => i !== 4)
-        .join("|");
-    return strip(before.get(k)) === strip(after.get(k));
-  });
+  const stripFreshness = (row) => {
+    const cells = row.split(/(?<!\\)\|/);
+    if (cells.length !== 8 || !rowBase(row)?.endsWith(".mjs")) {
+      return row;
+    }
+    cells[4] = "";
+    return cells.join("|");
+  };
+  const dateOnly = changed.filter(
+    (k) => stripFreshness(before.get(k)) === stripFreshness(after.get(k)),
+  );
   const out = [
     `rows added ${added.length}, removed ${removed.length}, changed ${changed.length} (of which ${dateOnly.length} differ only in the git-freshness column)`,
   ];
@@ -1794,10 +1802,14 @@ export function describeDriftDetailed(committed, regenerated) {
   }
   // Byte-identical regions are not drift; otherwise anything beyond the
   // freshness column - including prose outside the row tables - is structural.
+  const withoutFreshness = (text) =>
+    text
+      .split(/(\r?\n)/)
+      .map(stripFreshness)
+      .join("");
   const structural =
-    committed !== regenerated &&
-    (added.length + removed.length + (changed.length - dateOnly.length) > 0 ||
-      added.length + removed.length + changed.length === 0);
+    withoutFreshness(committed) !== withoutFreshness(regenerated) ||
+    (committed !== regenerated && duplicateKeys.size > 0);
   return { lines: out, structural, freshnessOnlyPaths: dateOnly };
 }
 
