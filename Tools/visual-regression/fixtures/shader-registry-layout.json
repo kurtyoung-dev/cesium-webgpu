@@ -452,14 +452,14 @@
       "bit": 8,
       "name": "CLOUD_NOISE_BAKED_ONLY",
       "owner": "cloud-march",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",
       "bit": 9,
       "name": "CLOUD_MORPHOLOGY_BASE_ONLY",
       "owner": "cloud-march",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",
@@ -1008,7 +1008,7 @@
       "id": 43,
       "name": "PROCEDURAL_CLOUDS",
       "owner": "cloud",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "id": 44,

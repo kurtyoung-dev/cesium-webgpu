@@ -455,6 +455,11 @@ fn hash33(p: vec3<f32>) -> vec3<f32> {
 }
 
 // Value noise 3D
+//>>ifdef CLOUD_MORPHOLOGY_BASE_ONLY
+fn valueNoise(p: vec3<f32>) -> f32 {
+  return 0.0;
+}
+//>>else
 fn valueNoise(p: vec3<f32>) -> f32 {
   let i = floor(p);
   let f = fract(p);
@@ -468,8 +473,12 @@ fn valueNoise(p: vec3<f32>) -> f32 {
     u.z
   );
 }
+//>>endif
 
 // FBM (fractal Brownian motion) noise — 5 octaves
+//>>ifdef CLOUD_NOISE_BAKED_ONLY
+
+//>>else
 fn fbmNoise(p: vec3<f32>) -> f32 {
   var val: f32 = 0.0;
   var amp: f32 = 0.5;
@@ -483,6 +492,7 @@ fn fbmNoise(p: vec3<f32>) -> f32 {
   }
   return val;
 }
+//>>endif
 
 // Worley (cellular) noise 3D — F1 distance.
 // Distance to the nearest feature point, one per cell and hashed, over the 3×3×3
@@ -494,6 +504,11 @@ fn fbmNoise(p: vec3<f32>) -> f32 {
 // Worley instead — `remap(perlin, worleyLow - 1, 1, 0, 1)` — raises the density
 // floor and over-densifies the deck; erosion can carve detail but never add
 // density, so it cannot reach that failure.
+//>>ifdef CLOUD_MORPHOLOGY_BASE_ONLY
+fn worleyF1(p: vec3<f32>) -> f32 {
+  return 0.0;
+}
+//>>else
 fn worleyF1(p: vec3<f32>) -> f32 {
   let id = floor(p);
   let fd = fract(p);
@@ -510,6 +525,7 @@ fn worleyF1(p: vec3<f32>) -> f32 {
   }
   return sqrt(min(minDistSq, 1.0));
 }
+//>>endif
 
 // Analytic curl-noise domain warp.
 // Curl of a three-component value-noise vector potential, evaluated by central
@@ -521,6 +537,11 @@ fn worleyF1(p: vec3<f32>) -> f32 {
 // constants per component so the three scalar fields decorrelate. The call sites
 // guard on curlAmplitude > 0, so this is not evaluated at all when the warp is
 // off; at amplitude 0 the offset would be exactly vec3(0) in any case.
+//>>ifdef CLOUD_MORPHOLOGY_BASE_ONLY
+fn curlPotential(p: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(0.0);
+}
+//>>else
 fn curlPotential(p: vec3<f32>) -> vec3<f32> {
   return vec3<f32>(
     valueNoise(p),
@@ -528,7 +549,13 @@ fn curlPotential(p: vec3<f32>) -> vec3<f32> {
     valueNoise(p + vec3<f32>(-19.13, 83.71, -5.29)),
   );
 }
+//>>endif
 
+//>>ifdef CLOUD_MORPHOLOGY_BASE_ONLY
+fn curlNoise3(p: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(0.0);
+}
+//>>else
 fn curlNoise3(p: vec3<f32>) -> vec3<f32> {
   let e = 0.35; // finite-difference epsilon (noise-space units)
   let dx = vec3<f32>(e, 0.0, 0.0);
@@ -548,6 +575,7 @@ fn curlNoise3(p: vec3<f32>) -> vec3<f32> {
   ) * inv2e;
   return curl;
 }
+//>>endif
 
 // ECEF world position to weather-map UV.
 // Equirectangular geodetic lon/lat under a spherical approximation, since a
@@ -586,7 +614,11 @@ fn remap(v: f32, lo: f32, hi: f32, a: f32, b: f32) -> f32 {
 
 // Is the baked-3D-texture density core active? (qualityFlags bit 0)
 fn noiseBakedEnabled() -> bool {
+//>>ifdef CLOUD_NOISE_BAKED_ONLY
+  return true;
+//>>else
   return (u32(cloud.qualityFlags) & QF_NOISE_BAKED) != 0u;
+//>>endif
 }
 
 fn planetDensityEnabled() -> bool {
@@ -856,6 +888,11 @@ fn heightGradientFor(h: f32, shape: f32, anvil: f32) -> f32 {
 //
 // `sp` is the wind-advected noise-space sample position and `h` the shell height
 // fraction (0 base .. 1 top), matching every other factor in the chain.
+//>>ifdef CLOUD_MORPHOLOGY_BASE_ONLY
+fn genusFibreFactor(sp: vec3<f32>, h: f32) -> f32 {
+  return 1.0;
+}
+//>>else
 fn genusFibreFactor(sp: vec3<f32>, h: f32) -> f32 {
   let strength = clamp(cloud.genusFibreStrength, 0.0, 1.0);
   if (strength <= 0.0) {
@@ -889,6 +926,7 @@ fn genusFibreFactor(sp: vec3<f32>, h: f32) -> f32 {
   let carve = smoothstep(0.12, 0.72, streak) * strength;
   return clamp(1.0 - carve, 0.0, 1.0);
 }
+//>>endif
 
 // Model-approved fibre-composition constants. These are global authored
 // constants rather than new uniforms because the operating point is one
@@ -1010,6 +1048,11 @@ fn genusForwardG() -> f32 {
 // same in-[0,1] factor, so `base >= full` survives, since base·f >= full·f for
 // f >= 0. `sp` is the wind-advected noise-space sample position, so the pouches
 // drift with the deck; `h` is the shell height fraction (0 base .. 1 top).
+//>>ifdef CLOUD_MORPHOLOGY_BASE_ONLY
+fn mammatusFactor(sp: vec3<f32>, h: f32) -> f32 {
+  return 1.0;
+}
+//>>else
 fn mammatusFactor(sp: vec3<f32>, h: f32) -> f32 {
   if (cloud.mammatusStrength <= 0.0) {
     return 1.0;
@@ -1033,6 +1076,7 @@ fn mammatusFactor(sp: vec3<f32>, h: f32) -> f32 {
   let carve = smoothstep(0.15, 1.0, cellDist) * band * cloud.mammatusStrength;
   return clamp(1.0 - carve, 0.0, 1.0);
 }
+//>>endif
 
 // Species and varieties as bounded density shaping. Returns a per-position
 // density multiplier in [0,1]:
@@ -1050,6 +1094,11 @@ fn mammatusFactor(sp: vec3<f32>, h: f32) -> f32 {
 // cloudBaseDensity with the same in-[0,1] factor, so `base >= full` survives.
 // `sp` is the wind-advected noise-space sample position; `h` is the shell height
 // fraction.
+//>>ifdef CLOUD_MORPHOLOGY_BASE_ONLY
+fn speciesFactor(sp: vec3<f32>, h: f32) -> f32 {
+  return 1.0;
+}
+//>>else
 fn speciesFactor(sp: vec3<f32>, h: f32) -> f32 {
   if (cloud.speciesMode < 0.5 || cloud.speciesStrength <= 0.0) {
     return 1.0;
@@ -1092,6 +1141,7 @@ fn speciesFactor(sp: vec3<f32>, h: f32) -> f32 {
   let fib = mix(1.0, 1.0 - wisp, strength);
   return clamp(fib, 0.0, 1.0);
 }
+//>>endif
 
 // Supplementary features, the sibling of the mammatus and species factors above.
 // Returns a per-position density multiplier in [0,1]:
@@ -1114,6 +1164,11 @@ fn speciesFactor(sp: vec3<f32>, h: f32) -> f32 {
 // cloudBaseDensity with the same in-[0,1] factor, so `base >= full` survives.
 // `sp` is the wind-advected noise-space sample position; `h` is the shell height
 // fraction, 0 to 1.
+//>>ifdef CLOUD_MORPHOLOGY_BASE_ONLY
+fn featureFactor(sp: vec3<f32>, h: f32) -> f32 {
+  return 1.0;
+}
+//>>else
 fn featureFactor(sp: vec3<f32>, h: f32) -> f32 {
   if (cloud.featureMode < 0.5 || cloud.featureStrength <= 0.0) {
     return 1.0;
@@ -1202,6 +1257,7 @@ fn featureFactor(sp: vec3<f32>, h: f32) -> f32 {
   let carve = gaps * band * strength;
   return clamp(1.0 - carve, 0.0, 1.0);
 }
+//>>endif
 
 // Smooth pastel spectral palette — an Iñigo Quilez cosine gradient. Maps a
 // scalar phase t (any real; only fract(t) matters) to a mother-of-pearl
@@ -1232,6 +1288,11 @@ fn iridescentHue(t: f32) -> vec3<f32> {
 // vec3(1.0) and makes the feature opt-in. `sp` is the noise-space sample
 // position, `h` the shell height fraction (0 base .. 1 top), and `cosTheta` is
 // dot(view, sun).
+//>>ifdef CLOUD_MORPHOLOGY_BASE_ONLY
+fn specialShadeTint(sp: vec3<f32>, h: f32, cosTheta: f32) -> vec3<f32> {
+  return vec3<f32>(1.0);
+}
+//>>else
 fn specialShadeTint(sp: vec3<f32>, h: f32, cosTheta: f32) -> vec3<f32> {
   if (cloud.specialShadeMode < 0.5 || cloud.specialShadeStrength <= 0.0) {
     return vec3<f32>(1.0);
@@ -1259,6 +1320,7 @@ fn specialShadeTint(sp: vec3<f32>, h: f32, cosTheta: f32) -> vec3<f32> {
   let phase = (cosTheta * 0.5 + 0.5) * freq + spatial * 0.15;
   return mix(vec3<f32>(1.0), iridescentHue(phase), strength);
 }
+//>>endif
 
 // Per-position G/B/A channel decode.
 // Decodes the weather sample's three secondary channels into model-space
@@ -1329,11 +1391,15 @@ fn legacyCloudDensity(
   }
 
   var density: f32;
+//>>ifdef CLOUD_NOISE_BAKED_ONLY
+  density = legacyBakedBase(samplePos);
+//>>else
   if (noiseBakedEnabled()) {
     density = legacyBakedBase(samplePos);
   } else {
     density = fbmNoise(samplePos);
   }
+//>>endif
   let coverageThreshold = 1.0 - cloudEffectiveCoverage(effectiveCoverage);
   density = smoothstep(coverageThreshold, 1.0, density);
   density = applyGenusBaseVarianceBudget(density, coverageThreshold);
@@ -1351,6 +1417,28 @@ fn legacyCloudDensity(
   let genusFibre = genusFibreFactor(samplePos, heightFraction);
   density *= genusFibre;
 
+//>>ifdef CLOUD_NOISE_BAKED_ONLY
+  if (true) {
+    var detailPos = samplePos * 5.0;
+    if (cloud.curlAmplitude > 0.0) {
+      let warp =
+        curlNoise3(samplePos * cloud.curlFrequency) *
+        (cloud.curlAmplitude * 2.0);
+      detailPos = detailPos + warp;
+    }
+    let detail = textureSampleLevel(
+      cloudDetailTex, cloudNoiseSampler, detailPos, 0.0
+    );
+    let worleyDetail = 1.0 - detail.r;
+    let erosionLo =
+      worleyDetail * cloud.erosionStrength *
+      genusErosionDepthScale() *
+      genusErosionHeightWeight(heightFraction);
+    density = clamp(
+      remap(density, erosionLo, 1.0, 0.0, 1.0), 0.0, 1.0
+    );
+  }
+//>>else
   if (noiseBakedEnabled()) {
     var detailPos = samplePos * 5.0;
     if (cloud.curlAmplitude > 0.0) {
@@ -1378,6 +1466,7 @@ fn legacyCloudDensity(
       genusErosionHeightWeight(heightFraction);
     density = max(density, 0.0);
   }
+//>>endif
 
   return density *
     cloud.densityMultiplier *
@@ -1414,11 +1503,15 @@ fn legacyCloudBaseDensity(
   }
 
   var density: f32;
+//>>ifdef CLOUD_NOISE_BAKED_ONLY
+  density = legacyBakedBase(samplePos);
+//>>else
   if (noiseBakedEnabled()) {
     density = legacyBakedBase(samplePos);
   } else {
     density = fbmNoise(samplePos);
   }
+//>>endif
   let coverageThreshold = 1.0 - cloudEffectiveCoverage(effectiveCoverage);
   density = smoothstep(coverageThreshold, 1.0, density);
   density = applyGenusBaseVarianceBudget(density, coverageThreshold);
@@ -1484,12 +1577,17 @@ fn cloudMacroSampleAt(
 
   var mipLevels = CloudNoiseMipLevels(0.0, 0.0, 0.0);
   var density: f32;
+//>>ifdef CLOUD_NOISE_BAKED_ONLY
+  mipLevels = cloudDensityMipLevels(footprintMeters);
+  density = bakedBase(coordinates, mipLevels);
+//>>else
   if (noiseBakedEnabled()) {
     mipLevels = cloudDensityMipLevels(footprintMeters);
     density = bakedBase(coordinates, mipLevels);
   } else {
     density = fbmNoise(coordinates.canonical);
   }
+//>>endif
   let coverageThreshold = 1.0 - cloudEffectiveCoverage(effectiveCoverage);
   density = smoothstep(coverageThreshold, 1.0, density);
   density = applyGenusBaseVarianceBudget(density, coverageThreshold);

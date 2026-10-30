@@ -90,6 +90,8 @@ const REAL_MASK_PATHS = [
   "WebGPUDeviceInvalidationBus.ts",
   "WebGPUShaderDefines.ts",
   "WebGPUShaderPreprocessor.ts",
+  "WebGPUShaderModuleCache.ts",
+  "WebGPUPipelineRequestGuard.ts",
   "WebGPUCloudReconstructionAttachments.ts",
   "WebGPUCloudTemporalHistory.ts",
   "WebGPUCloudShadowFrame.ts",
@@ -377,6 +379,13 @@ function makeCloudFixture() {
     device: recorder.device,
     _canvas: { width: 64, height: 48 },
     _canvasFormat: "rgba8unorm",
+    webgpuPipelineCache: {
+      getPipelineSync: (descriptor) =>
+        context._device.createRenderPipeline({
+          ...descriptor,
+          label: "ProceduralClouds pipeline",
+        }),
+    },
     _currentCommandEncoder: encoder,
     _sceneColorView: color,
     _depthStencilView: depth,

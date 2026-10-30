@@ -150,7 +150,9 @@ import {
 // march's emission on a uniform would charge the shadow map, the cascade atlas,
 // the god-ray mask and the full-resolution march for registers only the
 // half-resolution march uses.
-import { ShaderDefineHi } from "./WebGPUShaderDefines.js";
+import { ShaderDefineHi, ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import { WebGPUPipelineRequestGuard } from "./WebGPUPipelineRequestGuard.js";
 import { preprocess } from "./WebGPUShaderPreprocessor.js";
 import type {
   CloudAttachmentGeneration,
@@ -510,6 +512,13 @@ export interface CloudCache {
    */
   device: GPUDevice | null;
   pipeline: GPURenderPipeline | null;
+  startupStartedAt?: number;
+  firstDrawElapsedMs?: number;
+  marchPipelineTimings?: Map<string, number>;
+  marchPipelines: Map<string, GPURenderPipeline | null>;
+  marchModules: WebGPUShaderModuleCache | null;
+  marchPipelineLayout: GPUPipelineLayout | null;
+  marchRequestGuard: WebGPUPipelineRequestGuard<CloudCache>;
   uniformBuffer: GPUBuffer | null;
   bindGroupLayout: GPUBindGroupLayout | null;
   sampler: GPUSampler | null;
@@ -1265,6 +1274,10 @@ export function ensureCloudCache(
     context._cloudCache = {
       device: liveDevice,
       pipeline: null,
+      marchPipelines: new Map(),
+      marchModules: null,
+      marchPipelineLayout: null,
+      marchRequestGuard: new WebGPUPipelineRequestGuard<CloudCache>(),
       uniformBuffer: null,
       bindGroupLayout: null,
       sampler: null,
@@ -2586,74 +2599,6 @@ function ensureHalfResResources(
     cache.halfHeight = halfH;
   }
 
-  // The raymarch-into-half pipeline reuses the cloud shader + BGL but targets the
-  // rgba16float half-res attachment (the full-res pipeline targets canvasFormat).
-  if (!cache.halfPipeline && cache.bindGroupLayout) {
-    const shaderModule = device.createShaderModule({
-      label: "ProceduralClouds shader (half-res)",
-      // The source carries preprocessor blocks, so its raw text is not valid
-      // WGSL; preprocessing with no defines emits the non-emitting march.
-      code: preprocess(PROCEDURAL_CLOUDS_SOURCE, 0, 0),
-    });
-    const layout = device.createPipelineLayout({
-      label: "ProceduralClouds half-res pipeline layout",
-      bindGroupLayouts: [cache.bindGroupLayout],
-    });
-    cache.halfPipeline = device.createRenderPipeline({
-      label: "ProceduralClouds half-res pipeline",
-      layout,
-      vertex: { module: shaderModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: shaderModule,
-        entryPoint: "fragmentMain",
-        targets: [{ format: CLOUD_HALF_FORMAT }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-  }
-
-  // The emitting half-resolution march: a separate pipeline from a separate
-  // module, built beside the non-emitting one rather than replacing it, so a
-  // runtime flip never invalidates or recompiles the base pipeline. It is the
-  // only pipeline in this renderer compiled with the emission bit — the
-  // full-resolution march, the Beer shadow map, the cascade atlas and the
-  // god-ray mask all keep compiling `PROCEDURAL_CLOUDS_SOURCE` at
-  // `definesHi = 0`, which is what holds their register footprint down.
-  if (
-    cache.reconstructionEnabled &&
-    !cache.halfEmitPipeline &&
-    cache.bindGroupLayout
-  ) {
-    const emitModule = device.createShaderModule({
-      label: `ProceduralClouds shader (half-res, emit, definesHi=0x${CLOUD_MARCH_EMIT_DEFINES_HI.toString(16)})`,
-      code: preprocess(
-        PROCEDURAL_CLOUDS_SOURCE,
-        0,
-        CLOUD_MARCH_EMIT_DEFINES_HI,
-      ),
-    });
-    cache.halfEmitPipeline = device.createRenderPipeline({
-      label: "ProceduralClouds half-res pipeline (emit)",
-      layout: device.createPipelineLayout({
-        label: "ProceduralClouds half-res emit pipeline layout",
-        bindGroupLayouts: [cache.bindGroupLayout],
-      }),
-      vertex: { module: emitModule, entryPoint: "vertexMain" },
-      fragment: {
-        module: emitModule,
-        entryPoint: "fragmentMain",
-        // @location(0) is the colour target; @location(1) is contract slot 1,
-        // whose format comes from the contract table so the pipeline and the
-        // texture cannot disagree.
-        targets: [
-          { format: CLOUD_HALF_FORMAT },
-          { format: CLOUD_MARCH_EMITTED_FORMAT },
-        ],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-  }
-
   // The bilateral-upscale composite pipeline (new shader).
   if (!cache.upscalePipeline) {
     cache.upscaleBindGroupLayout = makeBindGroupLayout(
@@ -2699,7 +2644,7 @@ function ensureHalfResResources(
     });
   }
 
-  return !!cache.halfView && !!cache.halfPipeline && !!cache.upscalePipeline;
+  return !!cache.halfView && !!cache.upscalePipeline;
 }
 
 // Returns the weather texture view to bind this frame, building the procedural
@@ -2968,6 +2913,97 @@ function ensureNoiseBaked(
   };
 }
 
+function requestCloudMarchPipeline(
+  context: CesiumGraphicsContext,
+  cache: CloudCache,
+  format: GPUTextureFormat,
+  emit: boolean,
+): GPURenderPipeline | null {
+  const device = context._device;
+  const pipelines = context.webgpuPipelineCache;
+  if (!device || !pipelines || !cache.bindGroupLayout) {
+    return null;
+  }
+  const bakedOnly = (cache.uniformData[74] & CLOUD_QF_NOISE_BAKED) !== 0;
+  const data = cache.uniformData;
+  const baseMorphology =
+    bakedOnly &&
+    data[75] <= 0 &&
+    data[128] <= 0 &&
+    (data[132] < 0.5 || data[133] <= 0) &&
+    (data[136] < 0.5 || data[137] <= 0) &&
+    (data[140] < 0.5 || data[141] <= 0) &&
+    data[168] <= 0;
+  const definesHi =
+    (baseMorphology ? ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY : 0) |
+    (bakedOnly ? ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY : 0) |
+    (emit ? CLOUD_MARCH_EMIT_DEFINES_HI : 0);
+  const key = `${format}:${definesHi}`;
+  //>>includeStart('debug', pragmas.debug);
+  const requestStartedAt = performance.now();
+  //>>includeEnd('debug');
+  cache.marchModules ??= new WebGPUShaderModuleCache(device);
+  const module = cache.marchModules.getOrCreate(
+    ShaderSourceId.PROCEDURAL_CLOUDS,
+    PROCEDURAL_CLOUDS_SOURCE,
+    0,
+    `ProceduralClouds shader (definesHi=${definesHi})`,
+    0,
+    definesHi,
+  );
+  if (!emit && cache.maskShaderModule !== module) {
+    cache.maskShaderModule = module;
+    cache.maskPipeline = null;
+    cache.shadowPipeline = null;
+  }
+  if (cache.marchPipelines.has(key)) {
+    return cache.marchPipelines.get(key) ?? null;
+  }
+  cache.marchPipelineLayout ??= device.createPipelineLayout({
+    label: "ProceduralClouds pipeline layout",
+    bindGroupLayouts: [cache.bindGroupLayout],
+  });
+  const descriptor = {
+    name: `ProceduralClouds ${key}`,
+    layout: cache.marchPipelineLayout,
+    vertex: { module, entryPoint: "vertexMain" },
+    fragment: {
+      module,
+      entryPoint: "fragmentMain",
+      targets: emit
+        ? [{ format }, { format: CLOUD_MARCH_EMITTED_FORMAT }]
+        : [{ format }],
+    },
+    primitive: { topology: "triangle-list" as const },
+    definesHi,
+  };
+  const ready = pipelines.getPipelineSync(descriptor) ?? null;
+  cache.marchPipelines.set(key, ready);
+  if (!ready) {
+    const token = cache.marchRequestGuard.beginRequest(cache);
+    void pipelines.getPipeline(descriptor).then(
+      (pipeline) => {
+        if (context._cloudCache === cache && context._device === device) {
+          cache.marchRequestGuard.publishIfCurrent(token, () => {
+            cache.marchPipelines.set(key, pipeline);
+            //>>includeStart('debug', pragmas.debug);
+            cache.marchPipelineTimings ??= new Map();
+            cache.marchPipelineTimings.set(
+              key,
+              performance.now() - requestStartedAt,
+            );
+            //>>includeEnd('debug');
+          });
+        }
+      },
+      (error: unknown) => {
+        console.error(`Cloud march pipeline creation failed (${key}).`, error);
+      },
+    );
+  }
+  return ready;
+}
+
 function initializeCloudPipeline(
   device: GPUDevice,
   cache: CloudCache,
@@ -2976,16 +3012,6 @@ function initializeCloudPipeline(
 ): void {
   verifyCloudMutationLease(cache, lease);
   if (cache.initialized) return;
-
-  const shaderModule = device.createShaderModule({
-    label: "ProceduralClouds shader",
-    // The source carries preprocessor blocks, so its raw text is not valid
-    // WGSL; preprocessing with no defines emits the non-emitting march.
-    code: preprocess(PROCEDURAL_CLOUDS_SOURCE, 0, 0),
-  });
-  // Retained so the lazily built transmittance-mask pipeline can reuse the same
-  // module and bind-group layout without recompiling the shader.
-  cache.maskShaderModule = shaderModule;
 
   cache.bindGroupLayout = makeBindGroupLayout(device, "ProceduralClouds BGL", [
     texture(0, Stage.FRAGMENT),
@@ -3008,23 +3034,6 @@ function initializeCloudPipeline(
     texture(11, Stage.FRAGMENT),
     sampler(12, Stage.FRAGMENT),
   ]);
-
-  const pipelineLayout = device.createPipelineLayout({
-    label: "ProceduralClouds pipeline layout",
-    bindGroupLayouts: [cache.bindGroupLayout],
-  });
-
-  cache.pipeline = device.createRenderPipeline({
-    label: "ProceduralClouds pipeline",
-    layout: pipelineLayout,
-    vertex: { module: shaderModule, entryPoint: "vertexMain" },
-    fragment: {
-      module: shaderModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format: canvasFormat }],
-    },
-    primitive: { topology: "triangle-list" },
-  });
 
   cache.sampler = device.createSampler({
     magFilter: "linear",
@@ -3151,12 +3160,7 @@ function ensureShadowResources(
         uniformBuffer(13, Stage.FRAGMENT), // CloudShadowUniforms (sun-view)
       ],
     );
-    const shaderModule = device.createShaderModule({
-      label: "ProceduralClouds shader (shadow pass)",
-      // The source carries preprocessor blocks, so its raw text is not valid
-      // WGSL; preprocessing with no defines emits the non-emitting march.
-      code: preprocess(PROCEDURAL_CLOUDS_SOURCE, 0, 0),
-    });
+    const shaderModule = cache.maskShaderModule!;
     cache.shadowPipeline = device.createRenderPipeline({
       label: "CloudShadow pipeline",
       layout: device.createPipelineLayout({
@@ -3355,6 +3359,9 @@ export function prepareCloudFrameAndEncodeMask(
       cache.observability = attempt.counters;
     }
     attempt.cache = cache;
+    //>>includeStart('debug', pragmas.debug);
+    cache.startupStartedAt ??= performance.now();
+    //>>includeEnd('debug');
   } catch (error: unknown) {
     attempt.originalError = error;
     cancelCloudPreparationLease(lease);
@@ -4245,6 +4252,28 @@ export function prepareCloudFrameAndEncodeMask(
       cloudMarchBudget.asked,
     );
 
+    const marchFormat = halfResActive
+      ? CLOUD_HALF_FORMAT
+      : context._canvasFormat || "bgra8unorm";
+    const marchPipeline = requestCloudMarchPipeline(
+      context,
+      cache,
+      marchFormat,
+      false,
+    );
+    cache.pipeline = halfResActive ? null : marchPipeline;
+    cache.halfPipeline = halfResActive ? marchPipeline : null;
+    cache.halfEmitPipeline =
+      halfResActive && marchPipeline && cache.reconstructionEnabled
+        ? requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true)
+        : null;
+    if (!marchPipeline) {
+      markCloudTemporalInactive(cache);
+      stages.endStage(CloudCpuStage.PACK);
+      packStageOpen = false;
+      return finishNegativeCloudFrameAttempt(attempt, "resource-not-ready");
+    }
+
     // Resolve the weather view: the procedural map when enabled, a 1×1 white
     // fallback otherwise.
     const weatherView = ensureWeatherView(
@@ -5127,6 +5156,14 @@ export function prepareCloudFrameAndEncodeMask(
         stages.endStage(CloudCpuStage.COMPOSITE);
         compositeStageOpen = false;
         // The one place the march and its composite are both encoded.
+        //>>includeStart('debug', pragmas.debug);
+        if (
+          cache.firstDrawElapsedMs === undefined &&
+          cache.startupStartedAt !== undefined
+        ) {
+          cache.firstDrawElapsedMs = performance.now() - cache.startupStartedAt;
+        }
+        //>>includeEnd('debug');
         cache.executeSerial++;
         return true;
       } finally {
@@ -5510,6 +5547,10 @@ export function destroyProceduralCloudResources(
       cache.uniformBuffer,
       "Cloud uniform buffer",
     );
+    cache.marchRequestGuard.invalidate();
+    cache.marchPipelines.clear();
+    cache.marchModules = null;
+    cache.marchPipelineLayout = null;
     cache.pipeline = null;
     cache.uniformBuffer = null;
     cache.bindGroupLayout = null;

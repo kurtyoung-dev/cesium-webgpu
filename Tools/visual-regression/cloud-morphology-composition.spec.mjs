@@ -18,6 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { defaultVariant } from "./lib/wgsl-variant.mjs";
 
 import CloudType from "../../packages/engine/Source/Scene/CloudType.js";
 import CloudTypeProfile from "../../packages/engine/Source/Scene/CloudTypeProfile.js";
@@ -33,12 +34,12 @@ const shaderPath = path.join(
   root,
   "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
 );
-const shaderSource = fs
-  .readFileSync(shaderPath, "utf8")
-  .replace(
-    new RegExp(String.fromCharCode(13) + String.fromCharCode(10), "g"),
-    String.fromCharCode(10),
-  );
+const shaderSource = defaultVariant(
+  fs.readFileSync(shaderPath, "utf8"),
+).replace(
+  new RegExp(String.fromCharCode(13) + String.fromCharCode(10), "g"),
+  String.fromCharCode(10),
+);
 
 function functionSource(source, name) {
   const start = source.indexOf(`fn ${name}(`);

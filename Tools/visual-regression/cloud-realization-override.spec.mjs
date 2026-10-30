@@ -1158,11 +1158,37 @@ function assertRendererWiring(source) {
   );
   const next = lines.slice(serial + 1).find((l) => l !== "");
   assert.equal(next, "return true;", "the advance is the success return's");
-  assert.ok(
-    lines
-      .slice(Math.max(0, serial - 4), serial)
-      .includes("stages.endStage(CloudCpuStage.COMPOSITE);"),
-    "the advance follows the composite stage",
+  // The composite close and the advance are pinned as a pair by ORDER, not by
+  // line distance: statements may sit between them (the debug-pragma
+  // first-draw timing, the startup-preview flag), but the close comes first,
+  // both are in one block, and nothing between them returns, throws, or opens
+  // or closes a stage.
+  const closes = [];
+  lines.forEach((l, i) => {
+    if (l === "stages.endStage(CloudCpuStage.COMPOSITE);" && i < serial) {
+      closes.push(i);
+    }
+  });
+  assert.ok(closes.length > 0, "the advance follows the composite stage");
+  let depth = 0;
+  for (const l of lines.slice(closes.at(-1) + 1, serial)) {
+    assert.doesNotMatch(
+      l,
+      /\breturn\b|\bthrow\b|\b(?:begin|end)Stage\(/,
+      "the advance follows the composite stage with no exit between them",
+    );
+    for (const ch of l) {
+      depth += ch === "{" ? 1 : ch === "}" ? -1 : 0;
+    }
+    assert.ok(
+      depth >= 0,
+      "the advance follows the composite stage in its block",
+    );
+  }
+  assert.equal(
+    depth,
+    0,
+    "the advance follows the composite stage in its block",
   );
 }
 
@@ -1215,6 +1241,37 @@ test("F4 each renderer mutant turns F1 or F3 red", async () => {
       `the pin survived: ${name}`,
     );
   }
+  // The pair's ORDER: the advance, with the success return that must follow
+  // it, moved ahead of the composite close must turn F3 red. Moving the return
+  // with it keeps the "next line returns" pin above satisfied, so only the
+  // order check can kill this mutant.
+  const advance = "        cache.executeSerial++;\n        return true;\n";
+  const compositeClose =
+    "\n        stages.endStage(CloudCpuStage.COMPOSITE);\n        compositeStageOpen = false;\n";
+  const unadvanced = mutateRenderer(advance, "");
+  assert.equal(
+    unadvanced.split(compositeClose).length,
+    2,
+    "swap anchor: the success path's one composite close",
+  );
+  const swapped = unadvanced.replace(compositeClose, advance + compositeClose);
+  assert.throws(
+    () => assertRendererWiring(swapped),
+    assert.AssertionError,
+    "the pin survived: the advance swapped ahead of the composite close",
+  );
+  // And an exit between the pair, at the distance the old window allowed.
+  assert.throws(
+    () =>
+      assertRendererWiring(
+        mutateRenderer(
+          "        cache.startupPreviewDrawn ||= cache.usingStartupPreview;\n",
+          "        if (cache.startupPreviewDrawn) { return false; }\n        cache.startupPreviewDrawn ||= cache.usingStartupPreview;\n",
+        ),
+      ),
+    assert.AssertionError,
+    "the pin survived: a return between the composite close and the advance",
+  );
   const executedMutants = [
     [
       "the publisher's gate unreachable",

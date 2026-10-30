@@ -219,69 +219,43 @@ test("A1-MUTATION removing either rationale sentence makes A1 fail", () => {
   }
 });
 
-test("A2 EXACTLY ONE march pipeline compiles the emission bit", () => {
-  // Batch 942 correction: this test originally pinned the historical
-  // pipelines compiling the shared source VERBATIM "with no preprocess call
-  // at all" — and the browser refuted that design premise on the first
-  // post-landing run: RAW ifdef-bearing text is both branches concatenated,
-  // which is invalid WGSL ("expected '}'"), and every page logged compile
-  // errors. The invariant this test actually protects is unchanged and is
-  // carried by the DEFAULT-BRANCH text instead: the non-emitting pipelines
-  // compile `preprocess(source, 0, 0)`, which F1b pins byte-identical to the
-  // pre-C13-10 module — so the C13-39 register footprint is held by text
-  // equality, not by skipping the preprocessor.
-  const defaultCompile =
-    /code: preprocess\(\s*PROCEDURAL_CLOUDS_SOURCE,\s*0,\s*0,?\s*\)/g;
-  const verbatim = [...cloudRenderer.matchAll(defaultCompile)];
-  assert.equal(
-    verbatim.length,
-    3,
-    "the full-res march, the mask module and the shadow map must compile the DEFAULT branch (preprocess at defines=0)",
+test("A2 only the requested emitting half march selects the emission axis", () => {
+  const helper = cloudRenderer.slice(
+    cloudRenderer.indexOf("function requestCloudMarchPipeline("),
+    cloudRenderer.indexOf("function initializeCloudPipeline("),
   );
-  // Whitespace-tolerant: prettier wraps the argument list at this width, and a
-  // pin that breaks on reformatting is a pin nobody trusts.
-  const emitCompile =
-    /code: preprocess\(\s*PROCEDURAL_CLOUDS_SOURCE,\s*0,\s*CLOUD_MARCH_EMIT_DEFINES_HI,?\s*\)/g;
-  const preprocessed = [...cloudRenderer.matchAll(emitCompile)];
+  const gate = /\(emit \? CLOUD_MARCH_EMIT_DEFINES_HI : 0\)/;
+  assert.match(helper, gate);
   assert.equal(
-    preprocessed.length,
+    (
+      cloudRenderer.match(
+        /requestCloudMarchPipeline\(context, cache, CLOUD_HALF_FORMAT, true\)/g,
+      ) ?? []
+    ).length,
     1,
-    "exactly one pipeline may compile the emission variant of the march",
   );
-  // ...and it is the HALF-RES one, which is the only pipeline that writes a
-  // reconstruction attachment.
-  const emitStart = cloudRenderer.search(
-    /cache\.reconstructionEnabled &&\s*!cache\.halfEmitPipeline/,
-  );
-  const emitEnd = cloudRenderer.indexOf(
-    "// The bilateral-upscale composite pipeline",
-  );
-  assert.ok(emitStart > 0 && emitEnd > emitStart);
-  const emitBlock = cloudRenderer.slice(emitStart, emitEnd);
-  assert.match(emitBlock, emitCompile);
   assert.match(
-    emitBlock,
-    /label: "ProceduralClouds half-res pipeline \(emit\)"/,
+    cloudRenderer,
+    /halfResActive && marchPipeline && cache\.reconstructionEnabled\s*\? requestCloudMarchPipeline/,
   );
-  // The mutant that matters: routing one of the default-branch sites through
-  // the preprocessor with the emission bit would charge a non-emitting
-  // pipeline for the registers.
-  const oneDefaultSite = cloudRenderer.match(
-    /code: preprocess\(\s*PROCEDURAL_CLOUDS_SOURCE,\s*0,\s*0,?\s*\)/,
-  )[0];
-  const mutated = cloudRenderer.replace(
-    oneDefaultSite,
-    "code: preprocess(PROCEDURAL_CLOUDS_SOURCE, 0, CLOUD_MARCH_EMIT_DEFINES_HI)",
+  assert.match(
+    cloudRenderer,
+    /requestCloudMarchPipeline\(\s*context,\s*cache,\s*marchFormat,\s*false,?\s*\)/,
   );
-  assert.equal(
-    [...mutated.matchAll(defaultCompile)].length,
-    2,
-    "the mutant did not take",
+  assert.match(
+    helper,
+    /targets: emit\s*\? \[\{ format \}, \{ format: CLOUD_MARCH_EMITTED_FORMAT \}\]\s*: \[\{ format \}\]/,
   );
-  assert.notEqual(
-    [...mutated.matchAll(emitCompile)].length,
-    1,
-    "the count check above does not detect a second emitting pipeline",
+  assert.doesNotMatch(
+    helper.replace(
+      "(emit ? CLOUD_MARCH_EMIT_DEFINES_HI : 0)",
+      "CLOUD_MARCH_EMIT_DEFINES_HI",
+    ),
+    gate,
+  );
+  assert.match(
+    helper,
+    /getOrCreate\(\s*ShaderSourceId\.PROCEDURAL_CLOUDS,\s*PROCEDURAL_CLOUDS_SOURCE,\s*0,[\s\S]*?definesHi,\s*\)/,
   );
 });
 
@@ -310,13 +284,11 @@ test("A3 the emitting pipelines are SEPARATE objects, never a rebuild of the shi
   assert.match(destroy, /cache\.halfEmitPipeline = null;/);
   assert.match(destroy, /cache\.attachmentEmitPipeline = null;/);
   assert.match(destroy, /cache\.temporalConsumePipeline = null;/);
-  // The historical half-res pipeline's construction still compiles the
-  // DEFAULT branch (Batch 942: preprocess at defines=0 — byte-identical text
-  // per F1b; raw compilation was the landing defect).
-  assert.match(
-    cloudRenderer,
-    /if \(!cache\.halfPipeline && cache\.bindGroupLayout\) \{\n\s*const shaderModule = device\.createShaderModule\(\{\n\s*label: "ProceduralClouds shader \(half-res\)",\n(\s*\/\/[^\n]*\n)*\s*code: preprocess\(PROCEDURAL_CLOUDS_SOURCE, 0, 0\),/,
-  );
+  // Format and the complete define word retain each base and emitting handle.
+  assert.ok(cloudRenderer.includes("const key = `${format}:${definesHi}`;"));
+  assert.match(cloudRenderer, /cache\.marchPipelines\.has\(key\)/);
+  assert.match(cloudRenderer, /cache\.marchPipelines\.get\(key\)/);
+  assert.match(cloudRenderer, /cache\.marchPipelines\.set\(key, pipeline\)/);
 });
 
 test("A4 the resolve compiles the CONSUMPTION axis, not the emission one", () => {
@@ -1260,14 +1232,13 @@ test("G1: no createShaderModule site compiles PROCEDURAL_CLOUDS_SOURCE or CloudT
     !/code:\s*CloudReconstructionAttachmentsWGSL\s*,/.test(cloudRenderer),
     "a shader-module site compiles the attachment producer RAW — route it through preprocess(source, defines, definesHi)",
   );
-  // The default-branch compiles exist and are explicit about defines=0.
-  const zeroPre = (
-    cloudRenderer.match(
-      /preprocess\(\s*(?:PROCEDURAL_CLOUDS_SOURCE|CloudTemporalResolveWGSL),\s*0,\s*0,?\s*\)/g,
-    ) ?? []
-  ).length;
-  assert.ok(
-    zeroPre >= 4,
-    `expected the four historical compile sites to preprocess at defines=0 (found ${zeroPre})`,
+  // The march module cache resolves directives before GPU module creation.
+  assert.match(
+    cloudRenderer,
+    /cache\.marchModules\.getOrCreate\(\s*ShaderSourceId\.PROCEDURAL_CLOUDS,\s*PROCEDURAL_CLOUDS_SOURCE,/,
+  );
+  assert.match(
+    cloudRenderer,
+    /code: preprocess\(\s*CloudTemporalResolveWGSL,\s*0,\s*0,?\s*\)/,
   );
 });

@@ -84,7 +84,7 @@ function functionSource(source, name) {
 }
 
 function normalizedLegacyHash(source) {
-  const normalized = source
+  const normalized = defaultVariant(source)
     .replace(/\/\/.*$/gm, "")
     .replace(/\s+/g, "")
     .replace(/legacyCloudDensity/g, "cloudDensity")
@@ -984,4 +984,155 @@ test("cloud local sunlight follows ellipsoid occlusion and the elevated solar di
   assert(Math.abs(at(-dip) - 0.5) < 0.01);
   assert.equal(at(-dip + 0.0093), 1);
   assert.equal(at(-dip - 0.0093), 0);
+});
+
+test("baked cloud specialization removes live FBM without changing the historical form", async () => {
+  const { preprocess, shaderDefines } = await import("./lib/wgsl-variant.mjs");
+  const bit = shaderDefines.ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY;
+  assert.equal(bit, 1 << 8);
+  const source = wgslSource + "\n" + cloudShaderSource;
+  const baked = preprocess(source, 0, bit);
+  const live = defaultVariant(source);
+  assert.match(live, /fn fbmNoise\(/);
+  assert.doesNotMatch(baked, /\bfbmNoise\s*\(/);
+  assert.match(functionSource(baked, "noiseBakedEnabled"), /return true;/);
+  const before = fs.readFileSync(cloudShaderPath, "utf8");
+  assert.match(before, /\/\/>>else\s+fn fbmNoise/);
+  const nagaDirectory = path.join(
+    root,
+    "Tools/shader-pipeline/naga-wasm-tools",
+  );
+  const naga = await import(
+    pathToFileURL(path.join(nagaDirectory, "naga_wasm_tools.js")).href
+  );
+  await naga.default({
+    module_or_path: fs.readFileSync(
+      path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
+    ),
+  });
+  for (const flags of [
+    bit,
+    bit | shaderDefines.ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION,
+    bit | shaderDefines.ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY,
+    bit |
+      shaderDefines.ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY |
+      shaderDefines.ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION,
+  ]) {
+    assert.doesNotThrow(() => naga.validate_wgsl(preprocess(source, 0, flags)));
+  }
+});
+
+test("cloud async march requests deduplicate pending variants and discard late publication", async () => {
+  const { transform } = await import("esbuild");
+  const { WebGPUPipelineRequestGuard } =
+    await import("../../packages/engine/Source/Renderer/WebGPU/WebGPUPipelineRequestGuard.ts");
+  const { shaderDefines } = await import("./lib/wgsl-variant.mjs");
+  const renderer = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
+    ),
+    "utf8",
+  );
+  const begin = renderer.indexOf("function requestCloudMarchPipeline(");
+  const end = renderer.indexOf("function initializeCloudPipeline(", begin);
+  assert(begin >= 0 && end > begin);
+  const transformed = await transform(renderer.slice(begin, end), {
+    loader: "ts",
+    format: "cjs",
+  });
+  let moduleCreates = 0,
+    requests = 0,
+    finish;
+  let expectedFlags =
+    shaderDefines.ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY |
+    shaderDefines.ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY;
+  class Modules {
+    getOrCreate() {
+      moduleCreates++;
+      return {};
+    }
+  }
+  const dependencies = {
+    WebGPUShaderModuleCache: Modules,
+    performance: globalThis.performance,
+    ShaderDefineHi: shaderDefines.ShaderDefineHi,
+    ShaderSourceId: shaderDefines.ShaderSourceId,
+    CLOUD_QF_NOISE_BAKED: 1,
+    CLOUD_MARCH_EMIT_DEFINES_HI:
+      shaderDefines.ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION,
+    CLOUD_MARCH_EMITTED_FORMAT: "rg32float",
+    PROCEDURAL_CLOUDS_SOURCE: "fixture",
+  };
+  const { runInNewContext } = await import("node:vm");
+  const request = runInNewContext(
+    transformed.code + "\nrequestCloudMarchPipeline;",
+    dependencies,
+  );
+  const device = { createPipelineLayout: () => ({}) };
+  const cache = {
+    uniformData: new Float32Array(176),
+    bindGroupLayout: {},
+    marchPipelines: new Map(),
+    marchRequestGuard: new WebGPUPipelineRequestGuard(),
+    marchModules: null,
+    marchPipelineLayout: null,
+  };
+  const context = {
+    _device: device,
+    _cloudCache: cache,
+    webgpuPipelineCache: {
+      getPipelineSync: () => undefined,
+      getPipeline: (descriptor) => {
+        requests++;
+        assert.equal(descriptor.definesHi, expectedFlags);
+        assert.equal(descriptor.fragment.targets.length, 1);
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      },
+    },
+  };
+  cache.uniformData[74] = 1;
+  for (let i = 0; i < 100; i++)
+    assert.equal(request(context, cache, "rgba16float", false), null);
+  assert.equal(requests, 1);
+  const pipeline = {};
+  finish(pipeline);
+  await Promise.resolve();
+  assert.equal(request(context, cache, "rgba16float", false), pipeline);
+  cache.marchPipelines.clear();
+  assert.equal(request(context, cache, "rgba16float", false), null);
+  cache.marchRequestGuard.invalidate();
+  context._cloudCache = {};
+  finish({ stale: true });
+  await Promise.resolve();
+  assert.equal(cache.marchPipelines.get("rgba16float:" + expectedFlags), null);
+  expectedFlags = shaderDefines.ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY;
+  context._cloudCache = cache;
+  for (const values of [
+    [[75, 0.2]],
+    [[128, 0.5]],
+    [
+      [132, 2],
+      [133, 1],
+    ],
+    [
+      [136, 1],
+      [137, 1],
+    ],
+    [
+      [140, 1],
+      [141, 1],
+    ],
+    [[168, 0.4]],
+  ]) {
+    cache.uniformData.fill(0);
+    cache.uniformData[74] = 1;
+    for (const [slot, value] of values) cache.uniformData[slot] = value;
+    cache.marchPipelines.clear();
+    assert.equal(request(context, cache, "rgba16float", false), null);
+  }
+  assert.equal(requests, 8);
+  assert(moduleCreates > 0);
 });

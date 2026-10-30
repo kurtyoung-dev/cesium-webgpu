@@ -58,8 +58,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
 const read = (relative) => fs.readFileSync(path.join(root, relative), "utf8");
 
-const cloudShaderSource = read(
-  "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
+const cloudShaderSource = defaultVariant(
+  read(
+    "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
+  ),
 );
 const domainSource = read(
   "packages/engine/Source/Shaders/WebGPU/Environment/CloudDensityDomain.wgsl",
@@ -731,7 +733,7 @@ test("naga validates the cloud shader with the per-genus morphology", async () =
   });
   assert.doesNotThrow(() =>
     naga.validate_wgsl(
-      `${domainSource}\n${["CloudMarchSampling.wgsl", "CloudSolarLighting.wgsl"].map((name) => read("packages/engine/Source/Shaders/WebGPU/Environment/" + name)).join("\n")}\n${defaultVariant(cloudShaderSource)}`,
+      `${domainSource}\n${["CloudMarchSampling.wgsl", "CloudSolarLighting.wgsl"].map((name) => read("packages/engine/Source/Shaders/WebGPU/Environment/" + name)).join("\n")}\n${cloudShaderSource}`,
     ),
   );
 });
