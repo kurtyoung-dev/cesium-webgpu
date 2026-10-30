@@ -1216,3 +1216,164 @@ test("aerial transport uses contributing distance and altitude rather than empty
   assert.doesNotMatch(march, /cloudSampleTransmittance\(|let midDist =/);
   assert.match(march, /hazed = mix\(toneMapped, farTarget, aerial\)/);
 });
+
+test("cloud lighting preview preserves density integration and validates each startup recipe", async () => {
+  const { preprocess, shaderDefines } = await import("./lib/wgsl-variant.mjs");
+  const flags = shaderDefines.ShaderDefineHi;
+  const source = wgslSource + "\n" + cloudShaderSource;
+  const preview = preprocess(source, 0, flags.CLOUD_LIGHTING_PREVIEW);
+  const complete = defaultVariant(source);
+  assert.equal(
+    functionSource(preview, "marchDeck"),
+    functionSource(complete, "marchDeck"),
+  );
+  const lighting = functionSource(preview, "lightMarch");
+  assert.doesNotMatch(lighting, /cloudDensity|lightMarchCone|for\s*\(/);
+  assert.match(
+    functionSource(complete, "lightMarch"),
+    /cloudDensityAtCoordinates/,
+  );
+  const nagaDirectory = path.join(
+    root,
+    "Tools/shader-pipeline/naga-wasm-tools",
+  );
+  const naga = await import(
+    pathToFileURL(path.join(nagaDirectory, "naga_wasm_tools.js")).href
+  );
+  await naga.default({
+    module_or_path: fs.readFileSync(
+      path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
+    ),
+  });
+  for (const bits of [
+    flags.CLOUD_LIGHTING_PREVIEW,
+    flags.CLOUD_LIGHTING_PREVIEW | flags.CLOUD_NOISE_BAKED_ONLY,
+    flags.CLOUD_LIGHTING_PREVIEW |
+      flags.CLOUD_NOISE_BAKED_ONLY |
+      flags.CLOUD_MORPHOLOGY_BASE_ONLY,
+  ]) {
+    assert.doesNotThrow(() => naga.validate_wgsl(preprocess(source, 0, bits)));
+  }
+});
+
+test("cloud progressive selection draws preview before requesting final and retains it while pending", async () => {
+  const { transform } = await import("esbuild");
+  const { WebGPUPipelineRequestGuard } =
+    await import("../../packages/engine/Source/Renderer/WebGPU/WebGPUPipelineRequestGuard.ts");
+  const { shaderDefines } = await import("./lib/wgsl-variant.mjs");
+  const { runInNewContext } = await import("node:vm");
+  const renderer = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
+    ),
+    "utf8",
+  );
+  const begin = renderer.indexOf("function requestCloudMarchPipeline(");
+  const end = renderer.indexOf("function initializeCloudPipeline(", begin);
+  const transformed = await transform(renderer.slice(begin, end), {
+    loader: "ts",
+    format: "cjs",
+  });
+  const modules = new Map(),
+    pending = new Map(),
+    requested = [];
+  class Modules {
+    getOrCreate(sourceId, source, bits, label, extra, hi) {
+      if (!modules.has(hi)) {
+        modules.set(hi, {});
+      }
+      return modules.get(hi);
+    }
+  }
+  const { request, select } = runInNewContext(
+    transformed.code +
+      "\n({request:requestCloudMarchPipeline,select:selectCloudMarchPipeline});",
+    {
+      WebGPUShaderModuleCache: Modules,
+      performance: globalThis.performance,
+      ShaderDefineHi: shaderDefines.ShaderDefineHi,
+      ShaderSourceId: shaderDefines.ShaderSourceId,
+      CLOUD_QF_NOISE_BAKED: 1,
+      CLOUD_MARCH_EMIT_DEFINES_HI:
+        shaderDefines.ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION,
+      CLOUD_MARCH_EMITTED_FORMAT: "rg32float",
+      PROCEDURAL_CLOUDS_SOURCE: "fixture",
+      CLOUD_TEMPORAL_RESET_RESOURCE: 8,
+    },
+  );
+  const cache = {
+    uniformData: new Float32Array(176),
+    bindGroupLayout: {},
+    marchPipelines: new Map(),
+    marchRequestGuard: new WebGPUPipelineRequestGuard(),
+    marchModules: null,
+    marchPipelineLayout: null,
+    startupPreviewDrawn: false,
+    usingStartupPreview: false,
+    temporalHistoryPendingResetReasons: 0,
+  };
+  const device = { createPipelineLayout: () => ({}) };
+  const context = {
+    _device: device,
+    _cloudCache: cache,
+    webgpuPipelineCache: {
+      getPipelineSync: () => undefined,
+      getPipeline: (descriptor) => {
+        requested.push(descriptor.definesHi);
+        return new Promise((resolve) => {
+          pending.set(descriptor.definesHi, resolve);
+        });
+      },
+    },
+  };
+  const previewBit = shaderDefines.ShaderDefineHi.CLOUD_LIGHTING_PREVIEW;
+  for (let i = 0; i < 20; i++) {
+    assert.equal(select(context, cache, "rgba16float", true), null);
+  }
+  assert.deepEqual(requested, [previewBit]);
+  const early = { preview: true },
+    final = { final: true };
+  pending.get(previewBit)(early);
+  await Promise.resolve();
+  assert.equal(select(context, cache, "rgba16float", true), early);
+  assert.equal(cache.usingStartupPreview, true);
+  assert.deepEqual(
+    requested,
+    [previewBit],
+    "preparation alone is not a preview draw",
+  );
+  cache.startupPreviewDrawn = true;
+  cache.temporalHistoryPendingResetReasons = 0;
+  const mask = (cache.maskPipeline = {}),
+    shadow = (cache.shadowPipeline = {}),
+    selectedModule = cache.maskShaderModule;
+  for (let i = 0; i < 20; i++) {
+    assert.equal(select(context, cache, "rgba16float", true), early);
+  }
+  assert.deepEqual(requested, [previewBit, 0]);
+  assert.equal(cache.maskPipeline, mask);
+  assert.equal(cache.shadowPipeline, shadow);
+  assert.equal(cache.maskShaderModule, selectedModule);
+  assert.equal(cache.temporalHistoryPendingResetReasons, 0);
+  pending.get(0)(final);
+  await Promise.resolve();
+  assert.equal(select(context, cache, "rgba16float", true), final);
+  assert.equal(cache.usingStartupPreview, false);
+  assert.equal(cache.temporalHistoryPendingResetReasons, 8);
+  assert.equal(cache.maskPipeline, null);
+  assert.equal(cache.shadowPipeline, null);
+  cache.temporalHistoryPendingResetReasons = 0;
+  assert.equal(select(context, cache, "rgba16float", true), final);
+  assert.equal(select(context, cache, "rgba16float", false), final);
+  assert.equal(cache.temporalHistoryPendingResetReasons, 0);
+  assert.equal(request(context, cache, "rgba16float", false), final);
+  assert.equal(requested.length, 2);
+  cache.startupPreviewDrawn = false;
+  assert.equal(select(context, cache, "bgra8unorm", false), null);
+  assert.equal(
+    requested.at(-1),
+    0,
+    "disabling progressive startup requests final directly",
+  );
+});

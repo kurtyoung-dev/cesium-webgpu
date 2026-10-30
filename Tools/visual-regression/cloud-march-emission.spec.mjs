@@ -237,11 +237,11 @@ test("A2 only the requested emitting half march selects the emission axis", () =
   );
   assert.match(
     cloudRenderer,
-    /halfResActive && marchPipeline && cache\.reconstructionEnabled\s*\? requestCloudMarchPipeline/,
+    /halfResActive\s*&&\s*marchPipeline\s*&&\s*!cache\.usingStartupPreview\s*&&\s*cache\.reconstructionEnabled\s*\?\s*requestCloudMarchPipeline/,
   );
   assert.match(
     cloudRenderer,
-    /requestCloudMarchPipeline\(\s*context,\s*cache,\s*marchFormat,\s*false,?\s*\)/,
+    /selectCloudMarchPipeline\(\s*context,\s*cache,\s*marchFormat,\s*cloudProgressiveStartupRequested\(config\),/,
   );
   assert.match(
     helper,

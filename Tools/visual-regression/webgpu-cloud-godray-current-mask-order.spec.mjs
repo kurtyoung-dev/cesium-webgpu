@@ -446,6 +446,7 @@ function makeCloudFixture() {
     atmosphereLightIntensity: 10,
     cloudType: 0,
     cloudQuality: 128,
+    cloudProgressiveStartup: false,
   };
   const scene = {
     context,

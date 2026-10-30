@@ -501,7 +501,7 @@
       "bit": 15,
       "name": "CLOUD_LIGHTING_PREVIEW",
       "owner": "cloud-lighting",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",

@@ -516,6 +516,9 @@ export interface CloudCache {
   pipeline: GPURenderPipeline | null;
   startupStartedAt?: number;
   firstDrawElapsedMs?: number;
+  firstDrawUsedPreview?: boolean;
+  startupPreviewDrawn: boolean;
+  usingStartupPreview: boolean;
   marchPipelineTimings?: Map<string, number>;
   marchPipelines: Map<string, GPURenderPipeline | null>;
   marchModules: WebGPUShaderModuleCache | null;
@@ -1280,6 +1283,8 @@ export function ensureCloudCache(
     context._cloudCache = {
       device: liveDevice,
       pipeline: null,
+      startupPreviewDrawn: false,
+      usingStartupPreview: false,
       marchPipelines: new Map(),
       marchModules: null,
       marchPipelineLayout: null,
@@ -3008,6 +3013,7 @@ function requestCloudMarchPipeline(
   cache: CloudCache,
   format: GPUTextureFormat,
   emit: boolean,
+  preview = false,
 ): GPURenderPipeline | null {
   const device = context._device;
   const pipelines = context.webgpuPipelineCache;
@@ -3027,7 +3033,8 @@ function requestCloudMarchPipeline(
   const definesHi =
     (baseMorphology ? ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY : 0) |
     (bakedOnly ? ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY : 0) |
-    (emit ? CLOUD_MARCH_EMIT_DEFINES_HI : 0);
+    (emit ? CLOUD_MARCH_EMIT_DEFINES_HI : 0) |
+    (preview ? ShaderDefineHi.CLOUD_LIGHTING_PREVIEW : 0);
   const key = `${format}:${definesHi}`;
   //>>includeStart('debug', pragmas.debug);
   const requestStartedAt = performance.now();
@@ -3041,57 +3048,93 @@ function requestCloudMarchPipeline(
     0,
     definesHi,
   );
-  if (!emit && cache.maskShaderModule !== module) {
+  let ready = cache.marchPipelines.get(key) ?? null;
+  if (!cache.marchPipelines.has(key)) {
+    cache.marchPipelineLayout ??= device.createPipelineLayout({
+      label: "ProceduralClouds pipeline layout",
+      bindGroupLayouts: [cache.bindGroupLayout],
+    });
+    const descriptor = {
+      name: `ProceduralClouds ${key}`,
+      layout: cache.marchPipelineLayout,
+      vertex: { module, entryPoint: "vertexMain" },
+      fragment: {
+        module,
+        entryPoint: "fragmentMain",
+        targets: emit
+          ? [{ format }, { format: CLOUD_MARCH_EMITTED_FORMAT }]
+          : [{ format }],
+      },
+      primitive: { topology: "triangle-list" as const },
+      definesHi,
+    };
+    ready = pipelines.getPipelineSync(descriptor) ?? null;
+    cache.marchPipelines.set(key, ready);
+    if (!ready) {
+      const token = cache.marchRequestGuard.beginRequest(cache);
+      void pipelines.getPipeline(descriptor).then(
+        (pipeline) => {
+          if (context._cloudCache === cache && context._device === device) {
+            cache.marchRequestGuard.publishIfCurrent(token, () => {
+              cache.marchPipelines.set(key, pipeline);
+              //>>includeStart('debug', pragmas.debug);
+              cache.marchPipelineTimings ??= new Map();
+              cache.marchPipelineTimings.set(
+                key,
+                performance.now() - requestStartedAt,
+              );
+              //>>includeEnd('debug');
+            });
+          }
+        },
+        (error: unknown) => {
+          console.error(
+            `Cloud march pipeline creation failed (${key}).`,
+            error,
+          );
+        },
+      );
+    }
+  }
+  // Pending recipes must not invalidate the selected mask and shadow modules.
+  if (ready && !emit && cache.maskShaderModule !== module) {
     cache.maskShaderModule = module;
     cache.maskPipeline = null;
     cache.shadowPipeline = null;
   }
-  if (cache.marchPipelines.has(key)) {
-    return cache.marchPipelines.get(key) ?? null;
-  }
-  cache.marchPipelineLayout ??= device.createPipelineLayout({
-    label: "ProceduralClouds pipeline layout",
-    bindGroupLayouts: [cache.bindGroupLayout],
-  });
-  const descriptor = {
-    name: `ProceduralClouds ${key}`,
-    layout: cache.marchPipelineLayout,
-    vertex: { module, entryPoint: "vertexMain" },
-    fragment: {
-      module,
-      entryPoint: "fragmentMain",
-      targets: emit
-        ? [{ format }, { format: CLOUD_MARCH_EMITTED_FORMAT }]
-        : [{ format }],
-    },
-    primitive: { topology: "triangle-list" as const },
-    definesHi,
-  };
-  const ready = pipelines.getPipelineSync(descriptor) ?? null;
-  cache.marchPipelines.set(key, ready);
-  if (!ready) {
-    const token = cache.marchRequestGuard.beginRequest(cache);
-    void pipelines.getPipeline(descriptor).then(
-      (pipeline) => {
-        if (context._cloudCache === cache && context._device === device) {
-          cache.marchRequestGuard.publishIfCurrent(token, () => {
-            cache.marchPipelines.set(key, pipeline);
-            //>>includeStart('debug', pragmas.debug);
-            cache.marchPipelineTimings ??= new Map();
-            cache.marchPipelineTimings.set(
-              key,
-              performance.now() - requestStartedAt,
-            );
-            //>>includeEnd('debug');
-          });
-        }
-      },
-      (error: unknown) => {
-        console.error(`Cloud march pipeline creation failed (${key}).`, error);
-      },
-    );
-  }
   return ready;
+}
+
+// Progressive startup is opt-in: only an explicit `true` draws the preview
+// lighting while the final march pipeline compiles. Frames drawn while startup
+// pipelines are still pending can show a black band below the horizon, so a
+// config without the field keeps the path that draws no cloud until the final
+// pipeline is ready, matching the public default.
+function cloudProgressiveStartupRequested(
+  config: CloudVolumetricsConfig,
+): boolean {
+  return config.cloudProgressiveStartup === true;
+}
+
+function selectCloudMarchPipeline(
+  context: CesiumGraphicsContext,
+  cache: CloudCache,
+  format: GPUTextureFormat,
+  progressive: boolean,
+): GPURenderPipeline | null {
+  let preview = progressive && !cache.startupPreviewDrawn;
+  let pipeline = preview
+    ? null
+    : requestCloudMarchPipeline(context, cache, format, false);
+  if (!pipeline && progressive) {
+    preview = true;
+    pipeline = requestCloudMarchPipeline(context, cache, format, false, true);
+  }
+  if (pipeline && preview !== cache.usingStartupPreview) {
+    cache.usingStartupPreview = preview;
+    cache.temporalHistoryPendingResetReasons |= CLOUD_TEMPORAL_RESET_RESOURCE;
+  }
+  return pipeline;
 }
 
 function initializeCloudPipeline(
@@ -4352,16 +4395,19 @@ export function prepareCloudFrameAndEncodeMask(
     const marchFormat = halfResActive
       ? CLOUD_HALF_FORMAT
       : context._canvasFormat || "bgra8unorm";
-    const marchPipeline = requestCloudMarchPipeline(
+    const marchPipeline = selectCloudMarchPipeline(
       context,
       cache,
       marchFormat,
-      false,
+      cloudProgressiveStartupRequested(config),
     );
     cache.pipeline = halfResActive ? null : marchPipeline;
     cache.halfPipeline = halfResActive ? marchPipeline : null;
     cache.halfEmitPipeline =
-      halfResActive && marchPipeline && cache.reconstructionEnabled
+      halfResActive &&
+      marchPipeline &&
+      !cache.usingStartupPreview &&
+      cache.reconstructionEnabled
         ? requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true)
         : null;
     if (!marchPipeline) {
@@ -5260,8 +5306,10 @@ export function prepareCloudFrameAndEncodeMask(
           cache.startupStartedAt !== undefined
         ) {
           cache.firstDrawElapsedMs = performance.now() - cache.startupStartedAt;
+          cache.firstDrawUsedPreview = cache.usingStartupPreview;
         }
         //>>includeEnd('debug');
+        cache.startupPreviewDrawn ||= cache.usingStartupPreview;
         cache.executeSerial++;
         return true;
       } finally {

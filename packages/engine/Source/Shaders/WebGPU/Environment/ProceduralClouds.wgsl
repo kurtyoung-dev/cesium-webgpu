@@ -2088,6 +2088,12 @@ fn lightMarch(
   densityCoordinates: CloudDensityCoordinates,
   morphologyCoordinate: vec3<f32>,
 ) -> f32 {
+  //>>ifdef CLOUD_LIGHTING_PREVIEW
+  // A vertical column estimate avoids secondary density evaluation at startup.
+  let columnHeight = max(deckTop - deckBottom, 0.0) *
+    (1.0 - clamp(heightFraction, 0.0, 1.0));
+  return columnHeight * cloud.densityMultiplier * cloud.profileDensityScale * 0.05;
+  //>>else
   if (lightConeEnabled()) {
     return lightMarchCone(
       pos, heightFraction, deckBottom, deckTop,
@@ -2171,6 +2177,7 @@ fn lightMarch(
   }
 
   return opticalDepth;
+  //>>endif
 }
 
 // Per-genus optical extinction coefficient. `cloud.absorptionCoeff` carries the

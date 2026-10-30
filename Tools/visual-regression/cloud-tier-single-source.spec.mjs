@@ -1979,7 +1979,7 @@ test("the collection publishes the dial verbatim, so the twin above is the real 
 });
 
 /**
- * Copy `CloudVolumetrics.js` and the two modules it imports into a fresh
+ * Copy `CloudVolumetrics.js` and the modules it imports into a fresh
  * directory under `os.tmpdir()`, mutate the first, and import it. The siblings
  * are copied unmodified, so the mutant is the shipped module with one line
  * changed and nothing else, and the frozen tree is never mutated in place.
@@ -1996,9 +1996,17 @@ async function withApiMutant(mutate, check) {
   try {
     fs.mkdirSync(path.join(dir, "Scene"));
     fs.mkdirSync(path.join(dir, "Core"));
+    // `Check.js` validates the class's accessors; it brings `defined.js` and
+    // `DeveloperError.js` with it.
     for (const [from, to] of [
       ["packages/engine/Source/Scene/CloudType.js", "Scene/CloudType.js"],
       ["packages/engine/Source/Core/Frozen.js", "Core/Frozen.js"],
+      ["packages/engine/Source/Core/Check.js", "Core/Check.js"],
+      ["packages/engine/Source/Core/defined.js", "Core/defined.js"],
+      [
+        "packages/engine/Source/Core/DeveloperError.js",
+        "Core/DeveloperError.js",
+      ],
     ]) {
       fs.copyFileSync(path.join(root, from), path.join(dir, to));
     }
@@ -2094,5 +2102,374 @@ test('MUTANT g: making the renderer\'s `"auto"` arm inert kills it from the othe
     mutantFn({}, inputs, preset, live.shouldDefaultPhysicalAerial),
     true,
     "mutant g also broke the undeclared-dial arm, so it is not the narrow mutation this test claims",
+  );
+});
+
+// ── 9. The class's validated dials reach the renderer configuration ────────
+//
+// R-2026-09-26-11 (option C). `CloudVolumetrics` is an ES6 class whose
+// validated dials are OWN ENUMERABLE instance accessors, because the
+// collection forwards it with an object spread (`{ ...this.volumetric }`), and
+// a spread copies own enumerable properties only: a prototype accessor, or a
+// non-enumerable one, would be dropped on the way to the renderer without an
+// error. These tests execute the collection's real `_resolveVolumetricConfig`
+// body, read out of CloudCollection.js, against a real instance, so a dial that
+// stops being forwarded for any reason is red here. The mutants make the
+// validated accessor non-enumerable, and the experimental namespace
+// enumerable, and each must turn the forwarding check red.
+
+/** The collection's real `_resolveVolumetricConfig`, executed as written. */
+function collectionResolver() {
+  const source = read(CLOUD_COLLECTION_JS);
+  const header = "_resolveVolumetricConfig() {";
+  const at = source.indexOf(header);
+  assert.ok(at > 0, "_resolveVolumetricConfig moved or was renamed");
+  const close = source.indexOf("\n  }\n", at);
+  assert.ok(close > at, "_resolveVolumetricConfig has no method-depth close");
+  // eslint-disable-next-line no-new-func -- the collection's own method body, executed as written
+  return new Function(source.slice(at + header.length, close));
+}
+
+/** Every dial the class declares: each `this.x = options.x` it assigns. */
+function declaredDials(source) {
+  return [
+    ...source.matchAll(
+      /^\s*this\.([A-Za-z_$][\w$]*)\s*=\s*(?:cloneXY\(\s*)?options\./gm,
+    ),
+  ].map((m) => m[1]);
+}
+
+/**
+ * Build a collection's renderer configuration from a real instance of the
+ * given class and require every declared dial to arrive with its value.
+ *
+ * @param {Function} VolumetricsClass The class under test (live or a mutant).
+ */
+function assertDialsForward(VolumetricsClass) {
+  const dials = declaredDials(read(CLOUD_VOLUMETRICS_JS));
+  assert.ok(
+    dials.includes("cloudProgressiveStartup"),
+    "fixture: the validated dial is declared",
+  );
+  assert.ok(dials.length > 40, `fixture: ${dials.length} dials declared`);
+  // The validated dial is set away from its default: the renderer reads it as
+  // `config.cloudProgressiveStartup === true`, so a dropped copy would read as
+  // the default and only a `true` that fails to arrive is visible.
+  const instance = new VolumetricsClass({ cloudProgressiveStartup: true });
+  const config = collectionResolver().call({
+    volumetric: instance,
+    _cloudType: VolumetricsClass.DEFAULT_CLOUD_TYPE,
+  });
+  for (const dial of dials) {
+    assert.ok(
+      Object.hasOwn(config, dial),
+      `${dial} does not reach the renderer configuration`,
+    );
+    if (dial !== "cloudType") {
+      assert.deepEqual(
+        config[dial],
+        instance[dial],
+        `${dial} changed in transit`,
+      );
+    }
+  }
+  assert.equal(config.cloudProgressiveStartup, true);
+  assert.equal(
+    Object.hasOwn(config, "experimental"),
+    false,
+    "the experimental namespace reached the configuration as a nested key",
+  );
+}
+
+test("every dial CloudVolumetrics declares reaches _resolveVolumetricConfig()", () => {
+  assertDialsForward(CloudVolumetrics);
+});
+
+test("the validated dial is an own enumerable instance accessor that rejects a non-boolean", () => {
+  const instance = new CloudVolumetrics();
+  const descriptor = Object.getOwnPropertyDescriptor(
+    instance,
+    "cloudProgressiveStartup",
+  );
+  assert.equal(typeof descriptor?.get, "function", "an accessor");
+  assert.equal(descriptor.enumerable, true, "enumerable");
+  assert.equal(
+    Object.getOwnPropertyDescriptor(
+      CloudVolumetrics.prototype,
+      "cloudProgressiveStartup",
+    ),
+    undefined,
+    "no prototype twin a spread would skip",
+  );
+  assert.equal(instance.cloudProgressiveStartup, false, "the default");
+  assert.throws(
+    () => {
+      instance.cloudProgressiveStartup = "true";
+    },
+    (error) => error?.name === "DeveloperError",
+    "a non-boolean is rejected when set",
+  );
+  assert.equal(
+    instance.cloudProgressiveStartup,
+    false,
+    "a rejected set is not stored",
+  );
+  instance.cloudProgressiveStartup = true;
+  assert.equal(instance.cloudProgressiveStartup, true);
+  assert.throws(
+    () => new CloudVolumetrics({ cloudProgressiveStartup: 0 }),
+    (error) => error?.name === "DeveloperError",
+    "the constructor validates through the same setter",
+  );
+  const namespace = Object.getOwnPropertyDescriptor(instance, "experimental");
+  assert.equal(namespace?.enumerable, false, "the namespace is not forwarded");
+  assert.equal(typeof instance.experimental, "object");
+  assert.notEqual(
+    new CloudVolumetrics().experimental,
+    instance.experimental,
+    "each instance owns its namespace",
+  );
+});
+
+/**
+ * The renderer's march-pipeline selection, executed as written: the slice from
+ * `requestCloudMarchPipeline` to `initializeCloudPipeline` (the request, the
+ * progressive-startup predicate and the selection) through esbuild into a fresh
+ * VM context, driven by a fake pipeline cache whose asynchronous compiles stay
+ * pending until the harness resolves them.
+ *
+ * @param {string} renderer Renderer source (live or a mutant).
+ * @returns {Promise<object>} The executed functions and the fake's state.
+ */
+async function loadStartupSelection(renderer) {
+  const { transform } = await import("esbuild");
+  const { runInNewContext } = await import("node:vm");
+  const { shaderDefines } = await import("./lib/wgsl-variant.mjs");
+  const { WebGPUPipelineRequestGuard } = await import(
+    pathToFileURL(path.join(root, WEBGPU_DIR, "WebGPUPipelineRequestGuard.ts"))
+      .href
+  );
+  const begin = renderer.indexOf("function requestCloudMarchPipeline(");
+  const end = renderer.indexOf("function initializeCloudPipeline(", begin);
+  assert.ok(begin > 0 && end > begin, "the selection slice moved");
+  const transformed = await transform(renderer.slice(begin, end), {
+    loader: "ts",
+    format: "cjs",
+  });
+  const fns = runInNewContext(
+    `${transformed.code}
+({
+  select: selectCloudMarchPipeline,
+  progressive: cloudProgressiveStartupRequested,
+});`,
+    {
+      WebGPUShaderModuleCache: class {
+        getOrCreate(sourceId, source, lo, label, salt, hi) {
+          return { hi };
+        }
+      },
+      performance: globalThis.performance,
+      ShaderDefineHi: shaderDefines.ShaderDefineHi,
+      ShaderSourceId: shaderDefines.ShaderSourceId,
+      CLOUD_QF_NOISE_BAKED: 1,
+      CLOUD_MARCH_EMIT_DEFINES_HI:
+        shaderDefines.ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION,
+      CLOUD_MARCH_EMITTED_FORMAT: "rg32float",
+      PROCEDURAL_CLOUDS_SOURCE: "fixture",
+      CLOUD_TEMPORAL_RESET_RESOURCE: 8,
+    },
+  );
+  const requested = [];
+  const pending = new Map();
+  const cache = {
+    uniformData: new Float32Array(176),
+    bindGroupLayout: {},
+    marchPipelines: new Map(),
+    marchRequestGuard: new WebGPUPipelineRequestGuard(),
+    marchModules: null,
+    marchPipelineLayout: null,
+    startupPreviewDrawn: false,
+    usingStartupPreview: false,
+    temporalHistoryPendingResetReasons: 0,
+  };
+  const context = {
+    _device: { createPipelineLayout: () => ({}) },
+    _cloudCache: cache,
+    webgpuPipelineCache: {
+      getPipelineSync: () => undefined,
+      getPipeline: (descriptor) => {
+        requested.push(descriptor.definesHi);
+        return new Promise((resolve) => {
+          pending.set(descriptor.definesHi, resolve);
+        });
+      },
+    },
+  };
+  return {
+    ...fns,
+    cache,
+    context,
+    requested,
+    pending,
+    previewBit: shaderDefines.ShaderDefineHi.CLOUD_LIGHTING_PREVIEW,
+  };
+}
+
+/**
+ * The default configuration draws no cloud frame while a startup pipeline is
+ * pending: the collection's default configuration, and one that omits the
+ * field, select nothing until the final march pipeline is ready, and the
+ * preview recipe is never requested. The round-5 default drew the preview
+ * pipeline as soon as it resolved, while the final pipeline was still
+ * compiling: the frame the Edge leg captured with a black band below the
+ * horizon.
+ *
+ * @param {Function} VolumetricsClass The class under test (live or a mutant).
+ * @param {string} renderer Renderer source (live or a mutant).
+ */
+async function assertDefaultDrawsNoPendingFrame(VolumetricsClass, renderer) {
+  const calls = [
+    ...stripComments(renderer).matchAll(
+      /selectCloudMarchPipeline\(\s*context,\s*cache,\s*marchFormat,\s*([^,]+),\s*\)/g,
+    ),
+  ];
+  assert.equal(calls.length, 1, "one per-frame selection call");
+  assert.equal(
+    calls[0][1].trim(),
+    "cloudProgressiveStartupRequested(config)",
+    "the per-frame selection reads the predicate with the frame's config",
+  );
+  const collectionConfig = collectionResolver().call({
+    volumetric: new VolumetricsClass(),
+    _cloudType: VolumetricsClass.DEFAULT_CLOUD_TYPE,
+  });
+  for (const [label, config] of [
+    ["the collection's default configuration", collectionConfig],
+    ["a configuration without the field", {}],
+  ]) {
+    const h = await loadStartupSelection(renderer);
+    const progressive = h.progressive(config);
+    // Exactly what a drawn frame records in the renderer.
+    const frame = () => {
+      const pipeline = h.select(h.context, h.cache, "rgba16float", progressive);
+      if (pipeline) {
+        h.cache.startupPreviewDrawn ||= h.cache.usingStartupPreview;
+      }
+      return pipeline;
+    };
+    for (let i = 0; i < 4; i++) {
+      assert.equal(frame(), null, `${label}: a cloud frame was drawn`);
+    }
+    // Every compile but the final march lands; the final stays pending.
+    for (const [bits, resolve] of h.pending) {
+      if (bits !== 0) {
+        resolve({ bits });
+      }
+    }
+    await Promise.resolve();
+    for (let i = 0; i < 4; i++) {
+      assert.equal(
+        frame(),
+        null,
+        `${label}: a cloud frame was drawn while the final pipeline was pending`,
+      );
+    }
+    assert.equal(h.cache.usingStartupPreview, false, `${label}: preview`);
+    assert.deepEqual(h.requested, [0], `${label}: only the final recipe`);
+    const final = { final: true };
+    h.pending.get(0)(final);
+    await Promise.resolve();
+    assert.equal(frame(), final, `${label}: the final pipeline draws`);
+    assert.equal(progressive, false, `${label}: progressive startup is off`);
+  }
+}
+
+test("the default configuration draws no cloud frame while a startup pipeline is pending", async () => {
+  await assertDefaultDrawsNoPendingFrame(CloudVolumetrics, rendererSource);
+});
+
+test("MUTANT j: the round-5 public default (progressive startup on) is caught", async () => {
+  await withApiMutant(
+    (source) =>
+      replaceOnce(
+        source,
+        "options.cloudProgressiveStartup ?? false",
+        "options.cloudProgressiveStartup ?? true",
+      ),
+    async (Mutant) => {
+      await assert.rejects(
+        () => assertDefaultDrawsNoPendingFrame(Mutant, rendererSource),
+        assert.AssertionError,
+        "the check survived a default that draws the preview frame",
+      );
+    },
+  );
+});
+
+test("MUTANT k: the renderer predicate restored to the round-5 `!== false` is caught", async () => {
+  await assert.rejects(
+    () =>
+      assertDefaultDrawsNoPendingFrame(
+        CloudVolumetrics,
+        replaceOnce(
+          rendererSource,
+          "return config.cloudProgressiveStartup === true;",
+          "return config.cloudProgressiveStartup !== false;",
+        ),
+      ),
+    assert.AssertionError,
+    "the check survived a renderer that treats a missing field as on",
+  );
+});
+
+test("MUTANT l: the per-frame selection made to bypass the predicate is caught", async () => {
+  await assert.rejects(
+    () =>
+      assertDefaultDrawsNoPendingFrame(
+        CloudVolumetrics,
+        replaceOnce(
+          rendererSource,
+          "      marchFormat,\n      cloudProgressiveStartupRequested(config),\n",
+          "      marchFormat,\n      true || cloudProgressiveStartupRequested(config),\n",
+        ),
+      ),
+    assert.AssertionError,
+    "the check survived a selection call that never reaches the predicate",
+  );
+});
+
+test("MUTANT h: the validated accessor made non-enumerable is dropped by the forwarding, and the check sees it", async () => {
+  await withApiMutant(
+    (source) =>
+      replaceOnce(
+        source,
+        "cloudProgressiveStartup: {\n        enumerable: true,",
+        "cloudProgressiveStartup: {\n        enumerable: false,",
+      ),
+    (Mutant) => {
+      assert.throws(
+        () => assertDialsForward(Mutant),
+        assert.AssertionError,
+        "the forwarding check survived a non-enumerable accessor",
+      );
+    },
+  );
+});
+
+test("MUTANT i: the experimental namespace made enumerable leaks a nested key, and the check sees it", async () => {
+  await withApiMutant(
+    (source) =>
+      replaceOnce(
+        source,
+        "value: {},\n      enumerable: false,",
+        "value: {},\n      enumerable: true,",
+      ),
+    (Mutant) => {
+      assert.throws(
+        () => assertDialsForward(Mutant),
+        assert.AssertionError,
+        "the forwarding check survived an enumerable namespace",
+      );
+    },
   );
 });

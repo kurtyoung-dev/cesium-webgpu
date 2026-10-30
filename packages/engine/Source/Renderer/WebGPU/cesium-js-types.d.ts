@@ -1341,6 +1341,7 @@ interface CesiumGlobe {
 interface CloudVolumetricsConfig {
   showProceduralClouds?: boolean;
   cloudContributesIBL?: boolean;
+  cloudProgressiveStartup?: boolean;
   cloudCoverage?: number;
   cloudDensity?: number;
   cloudLayerBottom?: number;
