@@ -1028,3 +1028,161 @@ test("float 64 reads 1 only on a frame that binds a real weather map, never the 
     "the agreement survived a predicate that ignores the bound view",
   );
 });
+
+test("synoptic weather is seed/time reproducible, globe-continuous and seasonally asymmetric", async () => {
+  const { SynopticWeatherPattern } =
+    await import("../../packages/engine/Source/Scene/Weather/SynopticWeatherPattern.ts");
+  const june = Date.parse("2026-06-21T12:00:00Z"),
+    december = Date.parse("2026-12-21T12:00:00Z");
+  const a = new SynopticWeatherPattern("weather-key", june),
+    b = new SynopticWeatherPattern("weather-key", june);
+  const other = new SynopticWeatherPattern("different-key", june),
+    later = new SynopticWeatherPattern("weather-key", june + 6 * 3600000);
+  const winter = new SynopticWeatherPattern("weather-key", december);
+  let seedDelta = 0,
+    timeDelta = 0,
+    fronts = 0,
+    clear = 0,
+    maxWind = 0;
+  for (let lat = -1.4; lat < 1.5; lat += 0.07) {
+    for (let lon = -Math.PI; lon < Math.PI; lon += 0.08) {
+      const sample = a.sample(lon, lat);
+      assert.deepEqual(sample, b.sample(lon, lat));
+      for (const value of Object.values(sample)) {
+        assert(Number.isFinite(value));
+      }
+      assert(sample.coverage >= 0 && sample.coverage <= 1);
+      seedDelta += Math.abs(sample.coverage - other.sample(lon, lat).coverage);
+      timeDelta += Math.abs(sample.coverage - later.sample(lon, lat).coverage);
+      fronts += sample.coverage > 0.75;
+      clear += sample.coverage < 0.15;
+      maxWind = Math.max(maxWind, Math.hypot(sample.windU, sample.windV));
+    }
+    const west = a.sample(-Math.PI + 1e-8, lat),
+      east = a.sample(Math.PI + 1e-8, lat);
+    for (const key of ["coverage", "pressureHpa", "windU", "windV"]) {
+      assert(Math.abs(west[key] - east[key]) < 1e-10);
+    }
+  }
+  assert(seedDelta > 100);
+  assert(timeDelta > 10);
+  assert(fronts > 20);
+  assert(clear > 100);
+  assert(maxWind > 10);
+  for (const pole of [-Math.PI / 2, Math.PI / 2]) {
+    const reference = a.sample(0, pole);
+    for (const lon of [-Math.PI, -1, 1, Math.PI]) {
+      const sample = a.sample(lon, pole);
+      for (const key of Object.keys(reference)) {
+        assert(Math.abs(sample[key] - reference[key]) < 1e-10);
+      }
+    }
+  }
+  assert(
+    a.sample(0, 0.8).temperatureC > winter.sample(0, 0.8).temperatureC + 10,
+  );
+  assert(
+    a.sample(0, -0.8).temperatureC < winter.sample(0, -0.8).temperatureC - 10,
+  );
+  const beforeMidnight = new SynopticWeatherPattern(7, june + 12 * 3600000 - 1);
+  const afterMidnight = new SynopticWeatherPattern(7, june + 12 * 3600000 + 1);
+  assert(
+    Math.abs(
+      beforeMidnight.sample(1, 0.7).coverage -
+        afterMidnight.sample(1, 0.7).coverage,
+    ) < 0.00001,
+  );
+});
+
+test("async synoptic source packs matching cloud and atmospheric fields and cancels", async () => {
+  const { SynopticWeatherSource } =
+    await import("../../packages/engine/Source/Scene/Weather/SynopticWeatherSource.ts");
+  const { SynopticWeatherPattern } =
+    await import("../../packages/engine/Source/Scene/Weather/SynopticWeatherPattern.ts");
+  const { decodeWindVector, decodePressureAnomaly } =
+    await import("../../packages/engine/Source/Scene/Weather/EnvironmentalTensorMap.ts");
+  const source = new SynopticWeatherSource("seed", 64, 33),
+    time = new Date("2026-10-19T12:00:00Z");
+  let done = false;
+  const pending = source.fetchField({ time }).then((field) => {
+    done = true;
+    return field;
+  });
+  assert.equal(done, false);
+  const field = await pending,
+    repeated = await source.fetchField({ time });
+  assert.deepEqual(field.coverage, repeated.coverage);
+  assert.equal(field.registration, "cell");
+  assert.equal(field.validTime, time.toISOString());
+  const tensor = field.environmentalTensors,
+    x = 21,
+    y = 14,
+    index = y * 64 + x,
+    offset = index * 4;
+  const expected = new SynopticWeatherPattern("seed", time.getTime()).sample(
+    -Math.PI + ((x + 0.5) / 64) * Math.PI * 2,
+    Math.PI / 2 - ((y + 0.5) / 33) * Math.PI,
+  );
+  assert(Math.abs(field.coverage[index] - expected.coverage) < 1e-7);
+  assert.equal(
+    tensor.marineBytes[offset],
+    Math.round(field.coverage[index] * 255),
+  );
+  const wind = decodeWindVector(
+    tensor.atmosphericBytes[offset],
+    tensor.atmosphericBytes[offset + 1],
+  );
+  assert(Math.abs(wind.u - expected.windU) < 0.6);
+  assert(Math.abs(wind.v - expected.windV) < 0.6);
+  assert(
+    Math.abs(
+      decodePressureAnomaly(tensor.atmosphericBytes[offset + 2]).pressureHpa -
+        expected.pressureHpa,
+    ) < 0.3,
+  );
+  assert.equal(packWeatherField(field, 64, 33).length, 64 * 33 * 4);
+  const controller = new AbortController(),
+    aborted = source.fetchField({ time, signal: controller.signal });
+  controller.abort();
+  await assert.rejects(aborted, /aborted/);
+});
+
+test("weather provider activates and clears matching environmental tensors with its cloud slice", async () => {
+  const { WeatherProvider } =
+    await import("../../packages/engine/Source/Scene/Weather/WeatherProvider.ts");
+  const { SynopticWeatherSource } =
+    await import("../../packages/engine/Source/Scene/Weather/SynopticWeatherSource.ts");
+  const provider = new WeatherProvider(new SynopticWeatherSource(5, 32, 17), {
+    time: new Date("2026-10-19T12:00:00Z"),
+  });
+  assert.equal(provider.getEnvironmentalTensors(), null);
+  for (let i = 0; i < 100 && !provider.hasData; i++) {
+    provider.getPackedTexture(64, 33);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  assert.equal(provider.hasData, true);
+  const tensor = provider.getEnvironmentalTensors();
+  assert(tensor?.sample);
+  assert.equal(tensor.width, 32);
+  assert.equal(provider.validTime, "2026-10-19T12:00:00.000Z");
+  const firstTime = new Date("2026-10-19T12:00:00Z"),
+    nextTime = new Date("2026-10-19T18:00:00Z");
+  provider.setTime(firstTime);
+  for (let i = 0; i < 100 && !provider.hasData; i++) {
+    provider.getPackedTexture(64, 33);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  const firstTensor = provider.getEnvironmentalTensors();
+  provider.setTime(nextTime);
+  assert.equal(provider.getEnvironmentalTensors(), null);
+  for (let i = 0; i < 100 && !provider.hasData; i++) {
+    provider.getPackedTexture(64, 33);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  assert.notEqual(provider.getEnvironmentalTensors(), firstTensor);
+  provider.setTime(firstTime);
+  assert.equal(provider.getEnvironmentalTensors(), firstTensor);
+  provider.setSource(null);
+  assert.equal(provider.hasData, false);
+  assert.equal(provider.getEnvironmentalTensors(), null);
+});

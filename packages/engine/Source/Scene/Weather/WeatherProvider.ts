@@ -29,6 +29,7 @@ import {
 } from "./WeatherTexPacker.js";
 import type { WeatherNoDataFill } from "./WeatherFieldGrid.js";
 import type { WeatherSource } from "./WeatherSource.js";
+import type { EnvironmentalTensorSet } from "./EnvironmentalTensorMap.js";
 import type {
   WeatherField,
   WeatherFieldRequest,
@@ -44,6 +45,7 @@ interface CachedWeatherSlice {
   validTime: string | undefined;
   presentWeather: WeatherPresentWeather | null;
   packStats: WeatherPackStats;
+  environmentalTensors?: EnvironmentalTensorSet;
 }
 
 const HOUR_MS = 3600000;
@@ -52,6 +54,7 @@ export class WeatherProvider {
   private _source: WeatherSource | null;
   private _request: WeatherFieldRequest;
   private _packed: Uint8Array | null = null;
+  private _environmentalTensors: EnvironmentalTensorSet | null = null;
   private _version = 0;
   private _fetching = false;
   private _lastError: string | null = null;
@@ -110,6 +113,9 @@ export class WeatherProvider {
   }
   get validTime(): string | undefined {
     return this._validTime;
+  }
+  getEnvironmentalTensors(): EnvironmentalTensorSet | null {
+    return this._environmentalTensors;
   }
   getSource(): WeatherSource | null {
     return this._source;
@@ -348,6 +354,7 @@ export class WeatherProvider {
         bytes: result.bytes,
         validTime: field.validTime,
         presentWeather: extractPresentWeather(field),
+        environmentalTensors: field.environmentalTensors,
         packStats: {
           observedTexels: result.observedTexels,
           filledTexels: result.filledTexels,
@@ -395,6 +402,7 @@ export class WeatherProvider {
 
   private _clearActiveSlice(): void {
     this._packed = null;
+    this._environmentalTensors = null;
     this._validTime = undefined;
     this._presentWeather = null;
     this._packStats = null;
@@ -405,6 +413,7 @@ export class WeatherProvider {
     fallbackTime: Date | "latest",
   ): void {
     this._packed = slice.bytes;
+    this._environmentalTensors = slice.environmentalTensors ?? null;
     this._validTime =
       slice.validTime ??
       (fallbackTime instanceof Date ? fallbackTime.toISOString() : undefined);
