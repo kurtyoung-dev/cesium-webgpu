@@ -54,6 +54,37 @@ function smoothstep01(t: number): number {
  */
 export function buildProceduralWeatherMap(w: number, h: number): Uint8Array {
   const data = new Uint8Array(w * h * 4);
+  for (const row of proceduralWeatherRows(data, w, h)) {
+    void row;
+  }
+  return applyEquirectPolarLowPass(data, w, h);
+}
+
+export async function buildProceduralWeatherMapAsync(
+  w: number,
+  h: number,
+  cancelled: () => boolean = () => false,
+): Promise<Uint8Array | null> {
+  if (cancelled()) {
+    return null;
+  }
+  const data = new Uint8Array(w * h * 4);
+  for (const row of proceduralWeatherRows(data, w, h)) {
+    if (row % 8 === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (cancelled()) {
+        return null;
+      }
+    }
+  }
+  return cancelled() ? null : applyEquirectPolarLowPass(data, w, h);
+}
+
+function* proceduralWeatherRows(
+  data: Uint8Array,
+  w: number,
+  h: number,
+): Generator<number> {
   // One row of each octave stack at a time. `periodicFbmRow` is bit-identical to
   // the per-texel `periodicFbm2D` it replaces and exists only because the
   // per-texel form re-hashes the same two lattice rows `w` times per octave —
@@ -74,6 +105,6 @@ export function buildProceduralWeatherMap(w: number, h: number): Uint8Array {
       data[i + 2] = 0; // B base/deck
       data[i + 3] = 128; // A density-bias
     }
+    yield y;
   }
-  return applyEquirectPolarLowPass(data, w, h);
 }

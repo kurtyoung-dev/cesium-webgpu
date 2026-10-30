@@ -783,3 +783,248 @@ test("the procedural map is byte-identical to the per-texel producer it replaced
     }
   }
 });
+
+test("async procedural weather yields, preserves exact bytes and supports cancellation", async () => {
+  const { buildProceduralWeatherMapAsync } =
+    await import("../../packages/engine/Source/Scene/Weather/ProceduralWeatherMap.ts");
+  let settled = false;
+  const pending = buildProceduralWeatherMapAsync(64, 33).then((bytes) => {
+    settled = true;
+    return bytes;
+  });
+  assert.equal(settled, false);
+  assert.deepEqual(await pending, buildProceduralWeatherMap(64, 33));
+  let cancel = false;
+  const cancelled = buildProceduralWeatherMapAsync(128, 65, () => cancel);
+  cancel = true;
+  assert.equal(await cancelled, null);
+});
+
+test("cloud weather preparation deduplicates and rejects stale cache publication", async () => {
+  const { transform } = await import("esbuild");
+  const { runInNewContext } = await import("node:vm");
+  const begin = rendererSource.indexOf(
+    "function requestCloudWeatherPreparation(",
+  );
+  const end = rendererSource.indexOf("function ensureWeatherView(", begin);
+  const transformed = await transform(rendererSource.slice(begin, end), {
+    loader: "ts",
+    format: "cjs",
+  });
+  let jobs = 0,
+    release;
+  const events = [];
+  const monitor = {
+    begin: (token) => {
+      events.push("begin");
+      return token;
+    },
+    resolve: () => events.push("resolve"),
+    reject: () => events.push("reject"),
+  };
+  const request = runInNewContext(
+    transformed.code + "\nrequestCloudWeatherPreparation;",
+    {
+      buildProceduralWeatherMapAsync: () => {
+        jobs++;
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      },
+      WEATHER_TEX_W: 64,
+      WEATHER_TEX_H: 33,
+      cloudResourceGeneration: () => 1,
+      console: { error: () => events.push("error") },
+    },
+  );
+  const makeCache = () => ({
+    proceduralWeatherBytes: null,
+    proceduralWeatherPending: false,
+    proceduralWeatherFailed: false,
+  });
+  const cache = makeCache(),
+    context = { _device: {}, _cloudCache: cache, asyncResources: monitor };
+  for (let i = 0; i < 100; i++) request(context, cache);
+  assert.equal(jobs, 0);
+  await new Promise(setImmediate);
+  assert.equal(jobs, 1);
+  const bytes = new Uint8Array(64 * 33 * 4);
+  release(bytes);
+  await new Promise(setImmediate);
+  assert.equal(cache.proceduralWeatherBytes, bytes);
+  assert.equal(cache.proceduralWeatherPending, false);
+  assert.deepEqual(events, ["begin", "resolve"]);
+  const stale = makeCache();
+  context._cloudCache = stale;
+  request(context, stale);
+  await new Promise(setImmediate);
+  context._cloudCache = {};
+  release(bytes);
+  await new Promise(setImmediate);
+  assert.equal(stale.proceduralWeatherBytes, null);
+  assert.equal(stale.proceduralWeatherPending, false);
+});
+
+test("weather publication holds a valid view while pending and gives provider bytes priority", async () => {
+  const { transform } = await import("esbuild");
+  const { runInNewContext } = await import("node:vm");
+  const begin = rendererSource.indexOf("function ensureWeatherView(");
+  const end = rendererSource.indexOf("function ensureCloudLutViews(", begin);
+  const transformed = await transform(rendererSource.slice(begin, end), {
+    loader: "ts",
+    format: "cjs",
+  });
+  let requested = 0,
+    textures = 0;
+  const uploads = [],
+    device = {
+      createTexture: () => ({ createView: () => ({ id: ++textures }) }),
+      queue: { writeTexture: (destination, bytes) => uploads.push(bytes) },
+    };
+  const ensure = runInNewContext(transformed.code + "\nensureWeatherView;", {
+    verifyCloudMutationLease: () => {},
+    requestCloudWeatherPreparation: () => {
+      requested++;
+    },
+    GPUTextureUsage: { TEXTURE_BINDING: 1, COPY_DST: 2 },
+    WEATHER_TEX_W: 4,
+    WEATHER_TEX_H: 3,
+    CLOUD_TEMPORAL_RESET_RESOURCE: 1,
+  });
+  const cache = {
+    weatherFallbackView: null,
+    weatherView: null,
+    weatherTexture: null,
+    weatherProviderVersion: -2,
+    proceduralWeatherBytes: null,
+    temporalHistoryPendingResetReasons: 0,
+    observability: {
+      weatherCacheHits: 0,
+      weatherCacheMisses: 0,
+      weatherUploads: 0,
+      weatherUploadBytes: 0,
+    },
+  };
+  const context = {},
+    lease = {};
+  const fallback = ensure(context, device, cache, true, null, -1, lease);
+  assert.equal(fallback, cache.weatherFallbackView);
+  assert.equal(cache.weatherTexture, null);
+  assert.deepEqual(Array.from(uploads[0]), [255, 128, 0, 128]);
+  assert.equal(requested, 1);
+  const provider = new Uint8Array(48).fill(50);
+  const providedView = ensure(context, device, cache, true, provider, 7, lease);
+  assert.equal(uploads.at(-1), provider);
+  assert.equal(cache.weatherProviderVersion, 7);
+  const count = uploads.length;
+  assert.equal(
+    ensure(context, device, cache, true, null, -1, lease),
+    providedView,
+  );
+  assert.equal(uploads.length, count);
+  assert.equal(cache.weatherProviderVersion, 7);
+  cache.proceduralWeatherBytes = new Uint8Array(48).fill(70);
+  ensure(context, device, cache, true, provider, 7, lease);
+  assert.equal(uploads.length, count);
+  ensure(context, device, cache, true, null, -1, lease);
+  assert.equal(uploads.at(-1), cache.proceduralWeatherBytes);
+  assert.equal(cache.weatherProviderVersion, -1);
+  assert.equal(cache.temporalHistoryPendingResetReasons, 1);
+});
+
+test("float 64 reads 1 only on a frame that binds a real weather map, never the fallback texel", async () => {
+  // The fallback texel is no weather data: R = 255 drives coverage to its
+  // maximum. While the procedural map prepares (or after it failed) an enabled
+  // frame binds that fallback, so the shader's `weatherMapEnabled` gate must
+  // stay closed on exactly those frames. This executes the renderer's own
+  // `cloudWeatherMapBound` and `ensureWeatherView` over every combination of
+  // provider bytes, prepared procedural bytes and an earlier bound map.
+  const { transform } = await import("esbuild");
+  const { runInNewContext } = await import("node:vm");
+  const begin = rendererSource.indexOf("function cloudWeatherMapBound(");
+  const end = rendererSource.indexOf("function ensureCloudLutViews(", begin);
+  assert.ok(
+    begin > 0 && end > begin,
+    "the predicate precedes ensureWeatherView",
+  );
+  const load = async (source) => {
+    const transformed = await transform(source, {
+      loader: "ts",
+      format: "cjs",
+    });
+    return runInNewContext(
+      `${transformed.code}\n({ bound: cloudWeatherMapBound, ensure: ensureWeatherView });`,
+      {
+        verifyCloudMutationLease: () => {},
+        requestCloudWeatherPreparation: () => {},
+        GPUTextureUsage: { TEXTURE_BINDING: 1, COPY_DST: 2 },
+        WEATHER_TEX_W: 4,
+        WEATHER_TEX_H: 3,
+        CLOUD_TEMPORAL_RESET_RESOURCE: 1,
+      },
+    );
+  };
+  const agreement = ({ bound, ensure }) => {
+    let views = 0;
+    const device = {
+      createTexture: () => ({
+        createView: () => ({ id: ++views }),
+        destroy() {},
+      }),
+      queue: { writeTexture: () => {} },
+    };
+    for (const provider of [null, new Uint8Array(48).fill(50)]) {
+      for (const prepared of [null, new Uint8Array(48).fill(70)]) {
+        for (const earlier of [null, { id: "earlier map" }]) {
+          const cache = {
+            weatherFallbackView: null,
+            weatherView: earlier,
+            weatherTexture: earlier ? { destroy() {} } : null,
+            weatherProviderVersion: -2,
+            proceduralWeatherBytes: prepared,
+            temporalHistoryPendingResetReasons: 0,
+            observability: {
+              weatherCacheHits: 0,
+              weatherCacheMisses: 0,
+              weatherUploads: 0,
+              weatherUploadBytes: 0,
+              weatherLiveBytes: 0,
+            },
+          };
+          // The renderer packs float 64 before it resolves the view, so the
+          // predicate is read first, as there.
+          const applied = bound(cache, provider);
+          const view = ensure({}, device, cache, true, provider, 1, {});
+          const label = `provider ${provider !== null}, prepared ${prepared !== null}, earlier map ${earlier !== null}`;
+          assert.equal(
+            view === cache.weatherFallbackView,
+            !applied,
+            `${label}: float 64 ${applied ? "opens" : "closes"} the gate on a frame that binds ${view === cache.weatherFallbackView ? "the fallback" : "a real map"}`,
+          );
+        }
+      }
+    }
+  };
+  const slice = rendererSource.slice(begin, end);
+  agreement(await load(slice));
+
+  // The slot-64 writer reads the predicate, not the request alone.
+  assert.match(
+    rendererSource,
+    /const weatherMapApplied =\s*weatherEnabled && cloudWeatherMapBound\(cache, providerBytes\);\s*data\[offset\+\+\] = weatherMapApplied \? 1\.0 : 0\.0; \/\/ 64 weatherMapEnabled/,
+    "float 64 is written from the bound predicate",
+  );
+
+  // Inertness: a predicate that reports a map whenever one was requested (the
+  // gate as it stood) must turn the agreement red.
+  const inert = slice.replace(
+    /return \(\s*providerBytes !== null \|\|/,
+    "return (true ||",
+  );
+  assert.notEqual(inert, slice, "mutant anchor");
+  await assert.rejects(
+    async () => agreement(await load(inert)),
+    assert.AssertionError,
+    "the agreement survived a predicate that ignores the bound view",
+  );
+});

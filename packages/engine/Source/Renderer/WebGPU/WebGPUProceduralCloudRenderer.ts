@@ -181,7 +181,7 @@ import CloudType from "../../Scene/CloudType.js";
 // The default global weather map. Shared with the real-data packer so both
 // producers write the one dateline- and pole-safe equirectangular convention
 // defined in `Scene/Weather/WeatherMapSeam.ts`.
-import { buildProceduralWeatherMap } from "../../Scene/Weather/ProceduralWeatherMap.js";
+import { buildProceduralWeatherMapAsync } from "../../Scene/Weather/ProceduralWeatherMap.js";
 // The eclipse response for this subsystem: backend-neutral scene math over the
 // eclipse state published by the frame. Nothing about the eclipse geometry is
 // recomputed here.
@@ -539,11 +539,15 @@ export interface CloudCache {
   // Global coverage field sampled by the march.
   weatherTexture: GPUTexture | null; // 2d-array depth-1 coverage field
   weatherView: GPUTextureView | null;
+  weatherFallbackTexture: GPUTexture | null;
   weatherFallbackView: GPUTextureView | null; // 1×1 white, bound when disabled
   weatherSampler: GPUSampler | null;
   // Which bytes `weatherTexture` currently holds: -2 = nothing, -1 = the
   // procedural map, >= 0 = the uploaded `WeatherProvider.version`.
   weatherProviderVersion: number;
+  proceduralWeatherBytes: Uint8Array | null;
+  proceduralWeatherPending: boolean;
+  proceduralWeatherFailed: boolean;
   // Baked 3D shape and detail noise, bound at 6, 7 and 8.
   noise: CloudNoiseResources | null;
   noiseBaked: boolean;
@@ -1292,9 +1296,13 @@ export function ensureCloudCache(
       timeEpoch: null,
       weatherTexture: null,
       weatherView: null,
+      weatherFallbackTexture: null,
       weatherFallbackView: null,
       weatherSampler: null,
       weatherProviderVersion: -2,
+      proceduralWeatherBytes: null,
+      proceduralWeatherPending: false,
+      proceduralWeatherFailed: false,
       noise: null,
       noiseBaked: false,
       noiseFallbackTexture: null,
@@ -2654,7 +2662,81 @@ function ensureHalfResResources(
 // always has a valid 2d-array texture at binding 4. The default global map lives
 // in `Scene/Weather/ProceduralWeatherMap.ts` so that it and the real-data packer
 // share one seam and pole convention.
+function requestCloudWeatherPreparation(
+  context: CesiumGraphicsContext,
+  cache: CloudCache,
+): void {
+  const device = context._device;
+  if (
+    !device ||
+    cache.proceduralWeatherBytes ||
+    cache.proceduralWeatherPending ||
+    cache.proceduralWeatherFailed
+  ) {
+    return;
+  }
+  cache.proceduralWeatherPending = true;
+  const cancelled = () =>
+    context._cloudCache !== cache || context._device !== device;
+  const monitor = (
+    context as CesiumGraphicsContext & {
+      readonly asyncResources?: import("./AsyncResourceMonitor.js").AsyncResourceMonitor;
+    }
+  ).asyncResources;
+  const token = monitor?.begin({
+    kind: "texture-upload",
+    key: `cloud-weather:${cloudResourceGeneration(context)}`,
+    label: "Procedural cloud weather preparation",
+    priority: "background",
+  });
+  void Promise.resolve()
+    .then(() =>
+      buildProceduralWeatherMapAsync(WEATHER_TEX_W, WEATHER_TEX_H, cancelled),
+    )
+    .then(
+      (bytes) => {
+        if (bytes && !cancelled()) {
+          cache.proceduralWeatherBytes = bytes;
+        }
+        if (token) {
+          monitor!.resolve(token);
+        }
+      },
+      (error: unknown) => {
+        if (!cancelled()) {
+          cache.proceduralWeatherFailed = true;
+        }
+        if (token) {
+          monitor!.reject(token, error);
+        }
+        console.error("Procedural cloud weather preparation failed.", error);
+      },
+    )
+    .finally(() => {
+      cache.proceduralWeatherPending = false;
+    });
+}
+
+/**
+ * Whether an enabled frame binds a real weather map rather than the 1x1
+ * fallback: provider or prepared procedural bytes upload one this frame, or an
+ * earlier map is still bound. `ensureWeatherView` returns the fallback for an
+ * enabled frame exactly when this is false, which is what float 64 must
+ * follow, because the fallback is no weather data at all.
+ */
+function cloudWeatherMapBound(
+  cache: CloudCache,
+  providerBytes: Uint8Array | null,
+): boolean {
+  return (
+    providerBytes !== null ||
+    cache.proceduralWeatherBytes !== null ||
+    cache.weatherView !== null
+  );
+}
+
 function ensureWeatherView(
+  context: CesiumGraphicsContext,
   device: GPUDevice,
   cache: CloudCache,
   enabled: boolean,
@@ -2673,14 +2755,23 @@ function ensureWeatherView(
     });
     device.queue.writeTexture(
       { texture: fb },
-      new Uint8Array([255, 255, 255, 255]),
+      new Uint8Array([255, 128, 0, 128]),
       { bytesPerRow: 4, rowsPerImage: 1 },
       { width: 1, height: 1, depthOrArrayLayers: 1 },
     );
+    cache.weatherFallbackTexture = fb;
     cache.weatherFallbackView = fb.createView({ dimension: "2d-array" });
   }
   if (!enabled) {
     return cache.weatherFallbackView;
+  }
+  if (providerBytes === null && !cache.proceduralWeatherBytes) {
+    requestCloudWeatherPreparation(context, cache);
+    cache.observability.weatherLiveBytes = cache.weatherTexture
+      ? WEATHER_TEX_W * WEATHER_TEX_H * 4
+      : 0;
+    cache.observability.weatherCacheMisses++;
+    return cache.weatherView ?? cache.weatherFallbackView;
   }
   // Allocate the WEATHER_TEX_W x WEATHER_TEX_H weather texture once. Name the
   // constants here, never their current numeric values: the grid is expected to
@@ -2737,15 +2828,12 @@ function ensureWeatherView(
     if (cache.weatherProviderVersion !== providerVersion) {
       device.queue.writeTexture(dst, providerBytes, layout, size);
       cache.weatherProviderVersion = providerVersion;
+      cache.temporalHistoryPendingResetReasons |= CLOUD_TEMPORAL_RESET_RESOURCE;
     }
   } else if (cache.weatherProviderVersion !== -1) {
-    device.queue.writeTexture(
-      dst,
-      buildProceduralWeatherMap(WEATHER_TEX_W, WEATHER_TEX_H),
-      layout,
-      size,
-    );
+    device.queue.writeTexture(dst, cache.proceduralWeatherBytes!, layout, size);
     cache.weatherProviderVersion = -1;
+    cache.temporalHistoryPendingResetReasons |= CLOUD_TEMPORAL_RESET_RESOURCE;
   }
   return cache.weatherView!;
 }
@@ -3737,7 +3825,14 @@ export function prepareCloudFrameAndEncodeMask(
     const providerVersion = weatherProvider?.version ?? -1;
     const weatherEnabled =
       config.cloudWeatherMap === true || providerBytes !== null;
-    data[offset++] = weatherEnabled ? 1.0 : 0.0; // 64 weatherMapEnabled
+    // Requested is not bound. While the procedural map is still preparing, or
+    // its preparation failed, `ensureWeatherView` binds the 1x1 fallback, and a
+    // shader that read that texel as weather would draw maximum coverage
+    // everywhere; float 64 therefore reads 1 only on a frame that binds a real
+    // map, and the deck stays on global coverage until one is.
+    const weatherMapApplied =
+      weatherEnabled && cloudWeatherMapBound(cache, providerBytes);
+    data[offset++] = weatherMapApplied ? 1.0 : 0.0; // 64 weatherMapEnabled
     // 65 weatherStrength — the global cloudCoverage folded in as a per-cell
     // multiplier (default coverage 0.5 → 1.0 neutral so the map's R drives directly).
     data[offset++] = (config.cloudCoverage ?? 0.5) * 2.0;
@@ -4279,6 +4374,7 @@ export function prepareCloudFrameAndEncodeMask(
     // Resolve the weather view: the procedural map when enabled, a 1×1 white
     // fallback otherwise.
     const weatherView = ensureWeatherView(
+      context,
       device,
       cache,
       weatherEnabled,
@@ -5557,6 +5653,22 @@ export function destroyProceduralCloudResources(
     cache.uniformBuffer = null;
     cache.bindGroupLayout = null;
     cache.sampler = null;
+    destroyCloudGpuResource(
+      context,
+      cache.weatherTexture,
+      "Cloud weather texture",
+    );
+    destroyCloudGpuResource(
+      context,
+      cache.weatherFallbackTexture,
+      "Cloud weather fallback",
+    );
+    cache.weatherTexture = null;
+    cache.weatherView = null;
+    cache.weatherFallbackTexture = null;
+    cache.weatherFallbackView = null;
+    cache.proceduralWeatherBytes = null;
+    cache.weatherProviderVersion = -2;
     // Half-resolution target and upscale resources.
     destroyCloudGpuResource(context, cache.halfTexture, "Cloud half target");
     cache.halfTexture = null;
