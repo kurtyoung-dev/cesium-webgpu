@@ -1,5 +1,6 @@
 import CloudType from "./CloudType.js";
 import Check from "../Core/Check.js";
+import DeveloperError from "../Core/DeveloperError.js";
 import Frozen from "../Core/Frozen.js";
 
 /**
@@ -330,6 +331,39 @@ class CloudVolumetrics {
      * @default false
      */
     this.cloudWeatherMap = options.cloudWeatherMap ?? false;
+    let weatherSeed = 1;
+    Object.defineProperties(this, {
+      /**
+       * Seed of the procedural synoptic weather pattern the collection draws
+       * when <code>cloudWeatherMap</code> is on and no
+       * <code>weatherProvider</code> is set. Equal seeds draw the same pattern;
+       * a new seed rebuilds it. The pattern advances with the scene clock.
+       * WebGPU only.
+       * @memberof CloudVolumetrics.prototype
+       * @type {string|number}
+       * @default 1
+       */
+      cloudWeatherSeed: {
+        enumerable: true,
+        get: function () {
+          return weatherSeed;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          if (
+            typeof value !== "string" &&
+            !(typeof value === "number" && Number.isFinite(value))
+          ) {
+            throw new DeveloperError(
+              "cloudWeatherSeed must be a string or a finite number.",
+            );
+          }
+          //>>includeEnd('debug');
+          weatherSeed = value;
+        },
+      },
+    });
+    this.cloudWeatherSeed = options.cloudWeatherSeed ?? 1;
 
     /**
      * How strongly the weather map's G/B/A channels modulate the clouds. WebGPU only.

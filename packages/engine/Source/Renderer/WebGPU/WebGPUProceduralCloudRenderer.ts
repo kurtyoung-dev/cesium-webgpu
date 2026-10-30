@@ -556,6 +556,7 @@ export interface CloudCache {
   // Which bytes `weatherTexture` currently holds: -2 = nothing, -1 = the
   // procedural map, >= 0 = the uploaded `WeatherProvider.version`.
   weatherProviderVersion: number;
+  weatherProviderBytes: Uint8Array | null;
   proceduralWeatherBytes: Uint8Array | null;
   proceduralWeatherPending: boolean;
   proceduralWeatherFailed: boolean;
@@ -1316,6 +1317,7 @@ export function ensureCloudCache(
       weatherFallbackView: null,
       weatherSampler: null,
       weatherProviderVersion: -2,
+      weatherProviderBytes: null,
       proceduralWeatherBytes: null,
       proceduralWeatherPending: false,
       proceduralWeatherFailed: false,
@@ -2763,6 +2765,7 @@ function ensureWeatherView(
   providerBytes: Uint8Array | null,
   providerVersion: number,
   lease: CloudPreparationLease,
+  providerPreparing = false,
 ): GPUTextureView {
   verifyCloudMutationLease(cache, lease);
   if (!cache.weatherFallbackView) {
@@ -2785,8 +2788,13 @@ function ensureWeatherView(
   if (!enabled) {
     return cache.weatherFallbackView;
   }
-  if (providerBytes === null && !cache.proceduralWeatherBytes) {
-    requestCloudWeatherPreparation(context, cache);
+  if (
+    providerBytes === null &&
+    (providerPreparing || !cache.proceduralWeatherBytes)
+  ) {
+    if (!providerPreparing) {
+      requestCloudWeatherPreparation(context, cache);
+    }
     cache.observability.weatherLiveBytes = cache.weatherTexture
       ? WEATHER_TEX_W * WEATHER_TEX_H * 4
       : 0;
@@ -2812,6 +2820,7 @@ function ensureWeatherView(
     cache.weatherTexture = tex;
     cache.weatherView = tex.createView({ dimension: "2d-array" });
     cache.weatherProviderVersion = -2; // nothing uploaded yet
+    cache.weatherProviderBytes = null;
   }
   const dst = { texture: cache.weatherTexture };
   const layout = {
@@ -2823,8 +2832,8 @@ function ensureWeatherView(
     height: WEATHER_TEX_H,
     depthOrArrayLayers: 1,
   };
-  // Real data from a `WeatherProvider` wins and is re-uploaded only when its
-  // version changes; otherwise the procedural map is used, uploaded once under
+  // Provider data wins. Its version and byte identity distinguish slices from
+  // different providers; otherwise the procedural map is uploaded once under
   // sentinel -1. Switching back from provider to procedural re-uploads the
   // procedural fill.
   //
@@ -2836,7 +2845,10 @@ function ensureWeatherView(
   const weatherBytes = WEATHER_TEX_W * WEATHER_TEX_H * 4;
   counters.weatherLiveBytes = weatherBytes;
   const wantedVersion = providerBytes !== null ? providerVersion : -1;
-  if (cache.weatherProviderVersion === wantedVersion) {
+  if (
+    cache.weatherProviderVersion === wantedVersion &&
+    cache.weatherProviderBytes === providerBytes
+  ) {
     counters.weatherCacheHits++;
   } else {
     counters.weatherCacheMisses++;
@@ -2845,14 +2857,19 @@ function ensureWeatherView(
   }
 
   if (providerBytes !== null) {
-    if (cache.weatherProviderVersion !== providerVersion) {
+    if (
+      cache.weatherProviderVersion !== providerVersion ||
+      cache.weatherProviderBytes !== providerBytes
+    ) {
       device.queue.writeTexture(dst, providerBytes, layout, size);
       cache.weatherProviderVersion = providerVersion;
+      cache.weatherProviderBytes = providerBytes;
       cache.temporalHistoryPendingResetReasons |= CLOUD_TEMPORAL_RESET_RESOURCE;
     }
   } else if (cache.weatherProviderVersion !== -1) {
     device.queue.writeTexture(dst, cache.proceduralWeatherBytes!, layout, size);
     cache.weatherProviderVersion = -1;
+    cache.weatherProviderBytes = null;
     cache.temporalHistoryPendingResetReasons |= CLOUD_TEMPORAL_RESET_RESOURCE;
   }
   return cache.weatherView!;
@@ -4487,6 +4504,7 @@ export function prepareCloudFrameAndEncodeMask(
       providerBytes,
       providerVersion,
       lease,
+      weatherProvider?.isPreparing === true && !weatherProvider.lastError,
     );
     // `noise` (the 3D shape/detail views + sampler) was resolved up-front so the
     // qualityFlags noiseSource bit reflects the same-frame baked state.
@@ -5782,6 +5800,7 @@ export function destroyProceduralCloudResources(
     cache.weatherFallbackView = null;
     cache.proceduralWeatherBytes = null;
     cache.weatherProviderVersion = -2;
+    cache.weatherProviderBytes = null;
     // Half-resolution target and upscale resources.
     destroyCloudGpuResource(context, cache.halfTexture, "Cloud half target");
     cache.halfTexture = null;

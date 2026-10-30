@@ -2565,3 +2565,45 @@ test("MUTANT j: the collection's experimental spread removed drops the experimen
     "the forwarding check survived a dropped experimental spread",
   );
 });
+
+test("cloudWeatherSeed is an own enumerable validated accessor taking a string or a finite number", () => {
+  const instance = new CloudVolumetrics();
+  const descriptor = Object.getOwnPropertyDescriptor(
+    instance,
+    "cloudWeatherSeed",
+  );
+  assert.equal(typeof descriptor?.get, "function", "an accessor");
+  assert.equal(descriptor.enumerable, true, "enumerable");
+  assert.equal(
+    Object.getOwnPropertyDescriptor(
+      CloudVolumetrics.prototype,
+      "cloudWeatherSeed",
+    ),
+    undefined,
+    "no prototype twin a spread would skip",
+  );
+  assert.equal(instance.cloudWeatherSeed, 1, "the default");
+  for (const bad of [Number.NaN, Infinity, null, {}, true]) {
+    assert.throws(
+      () => {
+        instance.cloudWeatherSeed = bad;
+      },
+      (error) => error?.name === "DeveloperError",
+      `${String(bad)} is rejected when set`,
+    );
+  }
+  assert.equal(instance.cloudWeatherSeed, 1, "a rejected set is not stored");
+  instance.cloudWeatherSeed = "shared-key";
+  assert.equal(instance.cloudWeatherSeed, "shared-key");
+  instance.cloudWeatherSeed = 7;
+  assert.equal(instance.cloudWeatherSeed, 7);
+  assert.equal(
+    new CloudVolumetrics({ cloudWeatherSeed: "a" }).cloudWeatherSeed,
+    "a",
+  );
+  assert.throws(
+    () => new CloudVolumetrics({ cloudWeatherSeed: Number.NaN }),
+    (error) => error?.name === "DeveloperError",
+    "the constructor validates through the same setter",
+  );
+});

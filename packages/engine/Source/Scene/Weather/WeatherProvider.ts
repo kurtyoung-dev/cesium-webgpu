@@ -23,13 +23,17 @@
  *
  * @module Scene/Weather/WeatherProvider
  */
+import Event from "../../Core/Event.js";
 import {
-  packWeatherFieldDetailed,
+  packWeatherFieldDetailedAsync,
   type WeatherPackResult,
 } from "./WeatherTexPacker.js";
 import type { WeatherNoDataFill } from "./WeatherFieldGrid.js";
 import type { WeatherSource } from "./WeatherSource.js";
-import type { EnvironmentalTensorSet } from "./EnvironmentalTensorMap.js";
+import {
+  sampleEnvironmentalTensor,
+  type EnvironmentalTensorSet,
+} from "./EnvironmentalTensorMap.js";
 import type {
   WeatherField,
   WeatherFieldRequest,
@@ -51,6 +55,7 @@ interface CachedWeatherSlice {
 const HOUR_MS = 3600000;
 
 export class WeatherProvider {
+  readonly changed = new Event<() => void>();
   private _source: WeatherSource | null;
   private _request: WeatherFieldRequest;
   private _packed: Uint8Array | null = null;
@@ -80,6 +85,8 @@ export class WeatherProvider {
   // Time model, entirely inactive while `_timeMode` is null.
   private _timeMode: WeatherTimeMode | null = null;
   private _explicitTime: Date | null = null;
+  private _sceneTimeMs: number | undefined;
+  private _activeKey: string | null = null;
   private _forecastOffsetMs = 0;
   private _quantizeMs = HOUR_MS;
   private _nowMs: number;
@@ -107,6 +114,9 @@ export class WeatherProvider {
   }
   get hasData(): boolean {
     return this._packed !== null;
+  }
+  get isPreparing(): boolean {
+    return this._fetching;
   }
   get lastError(): string | null {
     return this._lastError;
@@ -151,7 +161,7 @@ export class WeatherProvider {
     this._cache.clear();
     this._effectiveKey = null;
     this._invalidation++;
-    this._version++;
+    this._publishVersion();
     this._refreshSlice();
   }
 
@@ -177,7 +187,7 @@ export class WeatherProvider {
     this._cache.clear();
     this._effectiveKey = null;
     this._invalidation++;
-    this._version++;
+    this._publishVersion();
     this._refreshSlice();
   }
 
@@ -188,7 +198,7 @@ export class WeatherProvider {
     this._cache.clear();
     this._effectiveKey = null;
     this._invalidation++;
-    this._version++;
+    this._publishVersion();
     this._refreshSlice();
   }
 
@@ -198,7 +208,7 @@ export class WeatherProvider {
     this._cache.clear();
     this._effectiveKey = null;
     this._invalidation++;
-    this._version++;
+    this._publishVersion();
     this._refreshSlice();
   }
 
@@ -209,6 +219,11 @@ export class WeatherProvider {
     if (mode === this._timeMode) {
       return;
     }
+    if (mode === "scene" || this._timeMode === "scene") {
+      this._invalidation++;
+      this._clearActiveSlice();
+      this._sceneTimeMs = undefined;
+    }
     this._timeMode = mode;
     this._effectiveKey = null;
     this._refreshSlice();
@@ -217,7 +232,9 @@ export class WeatherProvider {
   /** Set the historical instant (also switches to `historical` if in legacy mode). */
   setTime(date: Date): void {
     this._explicitTime = date;
-    if (this._timeMode === null) {
+    if (this._timeMode === "scene") {
+      this.setTimeMode("historical");
+    } else if (this._timeMode === null) {
       this._timeMode = "historical";
     }
     this._refreshSlice();
@@ -251,12 +268,33 @@ export class WeatherProvider {
     }
   }
 
+  // Scene time is supplied before either backend publishes the cloud request.
+  tickSceneTime(timeMs: number): void {
+    if (
+      this._timeMode !== "scene" ||
+      !Number.isFinite(timeMs) ||
+      Math.abs(timeMs) > 8640000000000000 ||
+      timeMs === this._sceneTimeMs
+    ) {
+      return;
+    }
+    this._sceneTimeMs = timeMs;
+    this._refreshSlice();
+  }
+
+  private _publishVersion(): void {
+    this._version++;
+    this.changed.raiseEvent();
+  }
   /**
    * The renderer's per-frame accessor. Returns cached packed bytes, or null on a
    * miss (which starts a background fetch). Never throws; a failed fetch leaves
    * this null and records {@link lastError}.
    */
   getPackedTexture(texW: number, texH: number): Uint8Array | null {
+    if (this._timeMode === "scene" && this._sceneTimeMs === undefined) {
+      return null;
+    }
     // In time-model mode a texture-size change invalidates the cached slices.
     if (
       this._timeMode !== null &&
@@ -272,6 +310,12 @@ export class WeatherProvider {
       this._refreshSlice();
     }
     if (this._packed) {
+      if (
+        this._timeMode === "scene" &&
+        this._activeKey !== this._effectiveKey
+      ) {
+        void this._ensureFetch(texW, texH);
+      }
       return this._packed;
     }
     void this._ensureFetch(texW, texH);
@@ -280,8 +324,11 @@ export class WeatherProvider {
 
   /** Resolve the effective slice for the current state; swap from cache or flag a fetch. */
   private _refreshSlice(): void {
-    if (this._timeMode === null) {
-      return; // legacy path is untouched
+    if (
+      this._timeMode === null ||
+      (this._timeMode === "scene" && this._sceneTimeMs === undefined)
+    ) {
+      return;
     }
     const { time, key } = this._resolveEffectiveTime(this._nowMs);
     if (key === this._effectiveKey) {
@@ -294,9 +341,9 @@ export class WeatherProvider {
       this._cache.delete(key);
       this._cache.set(key, cached); // LRU bump
       this._activateSlice(cached, time);
-      this._version++;
-    } else {
-      this._clearActiveSlice(); // miss → getPackedTexture() kicks the fetch
+      this._publishVersion();
+    } else if (this._timeMode !== "scene") {
+      this._clearActiveSlice();
     }
   }
 
@@ -308,7 +355,9 @@ export class WeatherProvider {
       return { time: this._request.time ?? "latest", key: "latest" };
     }
     let ms: number;
-    if (this._timeMode === "historical") {
+    if (this._timeMode === "scene") {
+      ms = this._sceneTimeMs!;
+    } else if (this._timeMode === "historical") {
       ms = this._explicitTime ? this._explicitTime.getTime() : nowMs;
     } else if (this._timeMode === "projected") {
       ms = nowMs + this._forecastOffsetMs;
@@ -337,24 +386,36 @@ export class WeatherProvider {
     const request: WeatherFieldRequest = timed
       ? { ...this._request, time: this._effectiveTime }
       : this._request;
+    const cancelled = () =>
+      this._invalidation !== gen ||
+      (this._timeMode === "scene" && key !== this._effectiveKey);
     try {
       const field = await source.fetchField(request);
-      if (this._invalidation !== gen) {
+      if (cancelled()) {
         return; // superseded by a source/request swap — drop it
       }
-      const result = packWeatherFieldDetailed(
+      const validTime = field.validTime;
+      const presentWeather = extractPresentWeather(field);
+      const environmentalTensors = cloneWeatherTensors(
+        field.environmentalTensors,
+      );
+      const result = await packWeatherFieldDetailedAsync(
         field,
         texW,
         texH,
         this._noDataFill === undefined
           ? undefined
           : { noDataFill: this._noDataFill },
+        cancelled,
       );
+      if (!result || cancelled()) {
+        return;
+      }
       const slice: CachedWeatherSlice = {
         bytes: result.bytes,
-        validTime: field.validTime,
-        presentWeather: extractPresentWeather(field),
-        environmentalTensors: field.environmentalTensors,
+        validTime,
+        presentWeather,
+        environmentalTensors,
         packStats: {
           observedTexels: result.observedTexels,
           filledTexels: result.filledTexels,
@@ -365,7 +426,7 @@ export class WeatherProvider {
       };
       if (!timed) {
         this._activateSlice(slice, "latest");
-        this._version++;
+        this._publishVersion();
       } else {
         if (key !== null) {
           this._cache.set(key, slice);
@@ -376,17 +437,20 @@ export class WeatherProvider {
         // Activate only if this is still the live slice (the user may have scrubbed).
         if (key === this._effectiveKey) {
           this._activateSlice(slice, this._effectiveTime);
-          this._version++;
+          this._publishVersion();
         }
       }
       this._lastError = null;
     } catch (e) {
-      if (this._invalidation === gen) {
+      if (!cancelled()) {
         this._lastError = (e as Error)?.message ?? String(e);
       }
       // leave _packed null → renderer falls back to the procedural map
     } finally {
       this._fetching = false;
+      if (cancelled() && this._source) {
+        this.changed.raiseEvent();
+      }
     }
   }
 
@@ -401,6 +465,7 @@ export class WeatherProvider {
   }
 
   private _clearActiveSlice(): void {
+    this._activeKey = null;
     this._packed = null;
     this._environmentalTensors = null;
     this._validTime = undefined;
@@ -412,6 +477,8 @@ export class WeatherProvider {
     slice: CachedWeatherSlice,
     fallbackTime: Date | "latest",
   ): void {
+    this._activeKey = this._timeMode === null ? "latest" : this._effectiveKey;
+    this._lastError = null;
     this._packed = slice.bytes;
     this._environmentalTensors = slice.environmentalTensors ?? null;
     this._validTime =
@@ -453,4 +520,21 @@ function extractPresentWeather(
     return null;
   }
   return { ww, visibilityKm: field.visibilityKm };
+}
+
+function cloneWeatherTensors(
+  field: EnvironmentalTensorSet | undefined,
+): EnvironmentalTensorSet | undefined {
+  if (!field) {
+    return undefined;
+  }
+  const copy: EnvironmentalTensorSet = {
+    width: field.width,
+    height: field.height,
+    atmosphericBytes: field.atmosphericBytes.slice(),
+    marineBytes: field.marineBytes.slice(),
+  };
+  copy.sample = (longitude, latitude) =>
+    sampleEnvironmentalTensor(copy, longitude, latitude);
+  return copy;
 }

@@ -1354,6 +1354,7 @@ interface CloudVolumetricsConfig {
   atmosphereLightIntensity?: number;
   cloudSilverLiningIntensity?: number;
   cloudWeatherMap?: boolean;
+  cloudWeatherSeed?: string | number;
   cloudWeatherChannelStrength?: number;
   cloudPhaseForwardG?: number;
   cloudPhaseBackG?: number;
@@ -1374,6 +1375,8 @@ interface CloudVolumetricsConfig {
   weatherProvider?: {
     getPackedTexture(texW: number, texH: number): Uint8Array | null;
     readonly version: number;
+    readonly isPreparing?: boolean;
+    readonly lastError?: string | null;
   };
 }
 

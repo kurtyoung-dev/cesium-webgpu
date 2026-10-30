@@ -133,7 +133,7 @@ export interface WeatherField {
  *   - `"historical"` : a fixed past instant set via `setTime(date)`.
  *   - `"projected"`  : `now + forecastOffset`, advanced by `tick(now)`.
  */
-export type WeatherTimeMode = "live" | "historical" | "projected";
+export type WeatherTimeMode = "live" | "historical" | "projected" | "scene";
 
 /** What a {@link WeatherSource} is asked to return. */
 export interface WeatherFieldRequest {

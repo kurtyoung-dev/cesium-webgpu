@@ -723,13 +723,13 @@ test("D9 the temporal verdict is recorded on the same branches as the lifetime t
 test("D10 the weather cache accounting sits on the version comparison the upload uses", () => {
   pinWithMutant(
     cloudRenderer,
-    /const wantedVersion = providerBytes !== null \? providerVersion : -1;\n\s*if \(cache\.weatherProviderVersion === wantedVersion\) \{\n\s*counters\.weatherCacheHits\+\+;/,
+    /const wantedVersion = providerBytes !== null \? providerVersion : -1;\n\s*if \(\s*cache\.weatherProviderVersion === wantedVersion &&\s*cache\.weatherProviderBytes === providerBytes\s*\) \{\n\s*counters\.weatherCacheHits\+\+;/,
     (s) =>
       s.replace(
-        "if (cache.weatherProviderVersion === wantedVersion) {\n    counters.weatherCacheHits++;",
-        "if (true) {\n    counters.weatherCacheHits++;",
+        "cache.weatherProviderVersion === wantedVersion &&\n    cache.weatherProviderBytes === providerBytes\n  ) {\n    counters.weatherCacheHits++;",
+        "true\n  ) {\n    counters.weatherCacheHits++;",
       ),
-    "a hit is a frame whose resident version already matched",
+    "a hit is a frame whose resident version and bytes already matched",
   );
   assert.match(cloudRenderer, /counters\.weatherUploadBytes \+= weatherBytes;/);
   assert.match(cloudRenderer, /counters\.weatherLiveBytes = weatherBytes;/);

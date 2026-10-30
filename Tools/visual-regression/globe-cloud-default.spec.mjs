@@ -26,6 +26,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import CloudRenderMode from "../../packages/engine/Source/Scene/CloudRenderMode.js";
+import FeatureRendererKey from "../../packages/engine/Source/Renderer/FeatureRendererKey.js";
 import { resolveCloudPreset } from "../../packages/engine/Source/Renderer/WebGPU/WebGPUCloudTierPresets.ts";
 import { bundle } from "./lib/engine-stub-bundler.mjs";
 
@@ -33,7 +34,7 @@ const sceneDirectory = fileURLToPath(
   new URL("../../packages/engine/Source/Scene/", import.meta.url),
 );
 
-async function loadCloudDefaults(mutate, label) {
+async function loadCloudDefaults(mutate, label, overrides = []) {
   const globePath = path.join(sceneDirectory, "Globe.js");
   const source = readFileSync(globePath, "utf8").replaceAll("\r\n", "\n");
   return bundle({
@@ -44,19 +45,23 @@ async function loadCloudDefaults(mutate, label) {
       "CloudVolumetrics",
       "CloudRenderMode",
       "CloudType",
+      "CloudWeatherState",
       "CumulusCloud",
       "AtmosphericConditions",
+      "FeatureRendererKey",
       "Frozen",
       "defined",
       "Math",
     ],
     preseed: [
       "CloudCollection.js",
+      "CloudWeatherState.js",
       "CumulusCloud.js",
       "AtmosphericConditions.js",
     ].map((name) => path.join(sceneDirectory, name)),
     mutate,
     label,
+    overrides,
   });
 }
 
@@ -169,4 +174,152 @@ test("the guard fails when the held default-on construction is restored", async 
   assert.throws(() => assertManagedDeckDrivesNoWork(createGlobe(Globe)), {
     name: "AssertionError",
   });
+});
+
+// ── Scene-clock weather: a state exists only where a cloud renderer reads it ──
+//
+// The managed deck is not a primitive, so `Globe.beginFrame` ticks its weather;
+// a user collection ticks its own in `update`. These tests drive the real
+// `Globe.beginFrame` and `CloudCollection` with a stub frame state. A context
+// that carries a CLOUD_COLLECTION feature renderer stands for WebGPU; one
+// without it stands for WebGL, whose frame keeps the base behaviour: no weather
+// state is ever created there. The two mutants make the `beginFrame` hook, and
+// the consumer gate, unreachable, and each must turn a check red.
+
+function weatherFrameState(consumer) {
+  const renderer = { update() {}, destroy() {} };
+  const requests = [];
+  return {
+    requests,
+    frameState: {
+      context: {
+        getFeatureRenderer: (key) =>
+          consumer && key === FeatureRendererKey.CLOUD_COLLECTION
+            ? renderer
+            : undefined,
+        requestVolumetricClouds: (config) => requests.push(config),
+      },
+      passes: {},
+      afterRender: [],
+    },
+  };
+}
+
+function quietGlobe(Globe) {
+  const globe = createGlobe(Globe);
+  // The ocean normal-map reload in `beginFrame` is unrelated to clouds, and
+  // with its dependencies stubbed its resource would look defined.
+  globe._oceanNormalMapResourceDirty = false;
+  return globe;
+}
+
+/** Steps the managed deck through every gate and records whether a state exists. */
+function managedWeatherStates(globe, frameState) {
+  const collection = globe.defaultCloudCollection;
+  const seen = {};
+  const step = (name, renderMode, enabled, show = true) => {
+    collection.renderMode = renderMode;
+    collection.volumetric.enabled = enabled;
+    collection.show = show;
+    globe.beginFrame(frameState);
+    seen[name] = collection._weatherState !== undefined;
+  };
+  step("billboard", CloudRenderMode.BILLBOARD, false);
+  step("volumetric", CloudRenderMode.VOLUMETRIC, true);
+  step("hidden", CloudRenderMode.VOLUMETRIC, true, false);
+  step("disabled", CloudRenderMode.VOLUMETRIC, false);
+  step("billboardEnabled", CloudRenderMode.BILLBOARD, true);
+  step("volumetricAgain", CloudRenderMode.VOLUMETRIC, true);
+  return seen;
+}
+
+const ONLY_WHEN_SHOWN_VOLUMETRIC_ENABLED = {
+  billboard: false,
+  volumetric: true,
+  hidden: false,
+  disabled: false,
+  billboardEnabled: false,
+  volumetricAgain: true,
+};
+
+test("Globe.beginFrame ticks the managed deck's weather only while it is shown, VOLUMETRIC and enabled", async () => {
+  const { default: Globe } = await loadCloudDefaults();
+  const { frameState } = weatherFrameState(true);
+  assert.deepEqual(
+    managedWeatherStates(quietGlobe(Globe), frameState),
+    ONLY_WHEN_SHOWN_VOLUMETRIC_ENABLED,
+  );
+});
+
+test("without a cloud feature renderer (WebGL) no weather state is ever created", async () => {
+  const { default: Globe } = await loadCloudDefaults();
+  const { frameState } = weatherFrameState(false);
+  const seen = managedWeatherStates(quietGlobe(Globe), frameState);
+  assert.deepEqual(
+    Object.values(seen),
+    Object.values(seen).map(() => false),
+  );
+});
+
+test("a user collection publishes this frame's weather with its request, and a hidden one publishes nothing", async () => {
+  const { CloudCollection } = await loadCloudDefaults();
+  const collection = new CloudCollection({
+    enableVolumetric: true,
+    volumetric: { cloudWeatherMap: true },
+  });
+  const { frameState, requests } = weatherFrameState(true);
+  collection.update(frameState);
+  assert.notEqual(collection._weatherState, undefined);
+  assert.equal(requests.length, 1);
+  assert.notEqual(requests[0].weatherProvider, undefined);
+  assert.equal(
+    requests[0].weatherProvider,
+    collection._weatherState.provider,
+    "the request carries the state's provider",
+  );
+  collection.show = false;
+  collection.update(frameState);
+  assert.equal(
+    collection._weatherState,
+    undefined,
+    "a hidden collection drops its weather",
+  );
+  assert.equal(requests.length, 1, "a hidden collection publishes nothing");
+  collection.destroy();
+});
+
+test("MUTANT: the beginFrame weather hook made unreachable leaves the managed deck without weather, and the check sees it", async () => {
+  const { default: Globe } = await loadCloudDefaults(
+    (source) =>
+      source.replace(
+        "    this._defaultCloudCollection?._updateWeather?.(frameState);",
+        "    if (false) this._defaultCloudCollection?._updateWeather?.(frameState);",
+      ),
+    "make the Globe.beginFrame weather hook unreachable",
+  );
+  const { frameState } = weatherFrameState(true);
+  assert.notDeepEqual(
+    managedWeatherStates(quietGlobe(Globe), frameState),
+    ONLY_WHEN_SHOWN_VOLUMETRIC_ENABLED,
+  );
+});
+
+test("MUTANT: the consumer gate made unreachable creates weather on WebGL, and the check sees it", async () => {
+  const { default: Globe } = await loadCloudDefaults(undefined, undefined, [
+    {
+      basename: "CloudCollection.js",
+      mutate: (source) =>
+        source.replace(
+          "      defined(\n        frameState.context?.getFeatureRenderer?.(\n          FeatureRendererKey.CLOUD_COLLECTION,\n        ),\n      )",
+          "      true",
+        ),
+      label: "drop the cloud feature renderer gate from _updateWeather",
+    },
+  ]);
+  const { frameState } = weatherFrameState(false);
+  assert.equal(
+    managedWeatherStates(quietGlobe(Globe), frameState).volumetric,
+    true,
+    "without the gate the WebGL frame creates a weather state",
+  );
 });

@@ -167,3 +167,186 @@ test('a provider with no time mode keeps the legacy "latest" behaviour and still
   assert.equal(run.legacyMode, null);
   assert.equal(run.legacyHasData, true);
 });
+
+test("scene weather waits for its clock, holds a coherent slice while replacing it, and replays from cache", async () => {
+  const calls = [];
+  const source = {
+    getCapabilities: () => ({
+      id: "scene-clock-fixture",
+      label: "Scene clock fixture",
+      supportsTime: true,
+    }),
+    async fetchField(request) {
+      assert(request.time instanceof Date);
+      const instant = request.time.getTime();
+      calls.push(instant);
+      const value = Math.floor((instant - T0) / HOUR) + 32;
+      return {
+        gridWidth: 2,
+        gridHeight: 2,
+        bounds: {
+          west: -Math.PI,
+          east: Math.PI,
+          south: -Math.PI / 2,
+          north: Math.PI / 2,
+        },
+        coverage: new Float32Array(4).fill(value / 100),
+        validTime: request.time.toISOString(),
+        environmentalTensors: {
+          width: 2,
+          height: 2,
+          atmosphericBytes: new Uint8Array(16).fill(value),
+          marineBytes: new Uint8Array(16).fill(value + 1),
+        },
+      };
+    },
+  };
+  const provider = new WeatherProvider(source);
+  let notifications = 0;
+  provider.changed.addEventListener(() => {
+    notifications++;
+  });
+  provider.setTimeMode("scene");
+  assert.equal(provider.getPackedTexture(W, H), null);
+  provider.tick(T0 + 100 * HOUR);
+  provider.tickSceneTime(NaN);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(calls.length, 0);
+  const current = async (instant) => {
+    for (let i = 0; i < 60; i++) {
+      const bytes = provider.getPackedTexture(W, H);
+      if (bytes && provider.validTime === new Date(instant).toISOString())
+        return bytes;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.fail("scene weather did not publish the requested time");
+  };
+  provider.tickSceneTime(T0);
+  const first = await current(T0),
+    version = provider.version;
+  const tensor = provider.getEnvironmentalTensors();
+  provider.tickSceneTime(T0 + 6 * HOUR);
+  assert.equal(provider.getPackedTexture(W, H), first);
+  assert.equal(provider.version, version);
+  assert.equal(provider.getEnvironmentalTensors(), tensor);
+  assert.equal(provider.validTime, new Date(T0).toISOString());
+  const later = await current(T0 + 6 * HOUR);
+  assert.notEqual(hash(later), hash(first));
+  assert.equal(provider.getEnvironmentalTensors().atmosphericBytes[0], 38);
+  provider.tickSceneTime(T0);
+  assert.equal(provider.getPackedTexture(W, H), first);
+  assert.equal(provider.getEnvironmentalTensors(), tensor);
+  assert.equal(calls.length, 2);
+  assert.equal(notifications, 3);
+  provider.setTime(new Date(T0 + HOUR));
+  assert.equal(
+    provider.getTimeMode(),
+    "historical",
+    "an explicit time pins an automatically followed scene",
+  );
+});
+
+test("shared cloud weather owns only its procedural provider, follows scene time and releases render listeners", async () => {
+  const { default: CloudWeatherState } =
+    await import("../../packages/engine/Source/Scene/CloudWeatherState.js");
+  const { default: JulianDate } =
+    await import("../../packages/engine/Source/Core/JulianDate.js");
+  const state = new CloudWeatherState();
+  const frame = {
+    time: JulianDate.fromIso8601("2026-10-19T12:03:00Z"),
+    afterRender: [],
+  };
+  const config = { cloudWeatherMap: true, cloudWeatherSeed: "shared-key" };
+  state.update(config, frame);
+  const first = state.provider;
+  assert.equal(first.getTimeMode(), "scene");
+  assert.equal(
+    first.getEffectiveTime().toISOString(),
+    "2026-10-19T12:00:00.000Z",
+  );
+  assert.equal(
+    first.getSource().getCapabilities().id,
+    "procedural:synoptic:shared-key",
+  );
+  state.update(config, frame);
+  assert.equal(state.provider, first);
+  first.changed.raiseEvent();
+  first.changed.raiseEvent();
+  assert.equal(frame.afterRender.length, 1);
+  assert.equal(frame.afterRender.shift()(), true);
+  first.changed.raiseEvent();
+  config.cloudWeatherSeed = "another-key";
+  state.update(config, frame);
+  assert.notEqual(state.provider, first);
+  assert.equal(first.getSource(), null);
+  assert.equal(frame.afterRender.shift()(), false);
+  assert.equal(first.changed.numberOfListeners, 0);
+  const externalSource = {
+    getCapabilities: () => ({ id: "external" }),
+    fetchField() {},
+  };
+  const external = new WeatherProvider(externalSource);
+  state.update({ cloudWeatherMap: true, weatherProvider: external }, frame);
+  assert.equal(state.provider, external);
+  assert.equal(external.getTimeMode(), null);
+  state.destroy();
+  assert.equal(external.getSource(), externalSource);
+  assert.equal(external.changed.numberOfListeners, 0);
+});
+
+test("asynchronous provider publication owns tensor/coverage input and drops a cancelled pack", async () => {
+  const makeField = () => ({
+    gridWidth: 2,
+    gridHeight: 2,
+    bounds: {
+      west: -Math.PI,
+      east: Math.PI,
+      south: -Math.PI / 2,
+      north: Math.PI / 2,
+    },
+    coverage: new Float32Array(4).fill(0.8),
+    validTime: new Date(T0).toISOString(),
+    environmentalTensors: {
+      width: 2,
+      height: 2,
+      atmosphericBytes: new Uint8Array(16).fill(32),
+      marineBytes: new Uint8Array(16).fill(33),
+    },
+  });
+  const input = makeField();
+  const provider = new WeatherProvider({
+    getCapabilities: () => ({ id: "owned-pack" }),
+    async fetchField() {
+      setTimeout(() => {
+        input.coverage.fill(0);
+        input.environmentalTensors.atmosphericBytes.fill(99);
+      }, 0);
+      return input;
+    },
+  });
+  provider.getPackedTexture(256, 256);
+  for (let i = 0; i < 100 && !provider.hasData; i++)
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  assert(provider.hasData);
+  assert.equal(provider.getPackedTexture(256, 256)[0], 204);
+  assert.equal(provider.getEnvironmentalTensors().atmosphericBytes[0], 32);
+  const cancelled = new WeatherProvider({
+    getCapabilities: () => ({ id: "cancel-pack" }),
+    async fetchField() {
+      setTimeout(() => cancelled.setSource(null), 0);
+      return makeField();
+    },
+  });
+  cancelled.getPackedTexture(256, 256);
+  for (let i = 0; i < 100 && cancelled.isPreparing; i++)
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(cancelled.isPreparing, false);
+  assert.equal(cancelled.hasData, false);
+  assert.equal(
+    cancelled.version,
+    1,
+    "only the explicit source change may publish a version",
+  );
+  assert.equal(cancelled.lastError, null);
+  assert.equal(cancelled.getEnvironmentalTensors(), null);
+});

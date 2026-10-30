@@ -32,7 +32,10 @@ import {
   WEATHER_MAP_TEX_HEIGHT,
   WEATHER_MAP_TEX_WIDTH,
 } from "./WeatherMapSeam.js";
-import { buildProceduralWeatherMap } from "./ProceduralWeatherMap.js";
+import {
+  buildProceduralWeatherMap,
+  buildProceduralWeatherMapAsync,
+} from "./ProceduralWeatherMap.js";
 import {
   DEFAULT_WEATHER_GRID_REGISTRATION,
   isGlobalWeatherWindow,
@@ -343,6 +346,80 @@ export function packWeatherFieldDetailed(
   texH: number = WEATHER_MAP_TEX_HEIGHT,
   options?: WeatherPackOptions,
 ): WeatherPackResult {
+  const steps = packWeatherFieldSteps(field, texW, texH, options);
+  let result = steps.next();
+  while (!result.done) {
+    result = steps.next(
+      result.value === "fill" ? proceduralFillBytes(texW, texH) : undefined,
+    );
+  }
+  return result.value;
+}
+
+export async function packWeatherFieldDetailedAsync(
+  field: WeatherField,
+  texW: number = WEATHER_MAP_TEX_WIDTH,
+  texH: number = WEATHER_MAP_TEX_HEIGHT,
+  options?: WeatherPackOptions,
+  cancelled: () => boolean = () => false,
+): Promise<WeatherPackResult | null> {
+  if (cancelled()) {
+    return null;
+  }
+  // Sources may reuse their arrays on later fetches; each pack owns its input.
+  const snapshot: WeatherField = {
+    ...field,
+    coverage: field.coverage.slice(),
+    ...(field.type ? { type: field.type.slice() } : {}),
+    ...(field.baseMeters ? { baseMeters: field.baseMeters.slice() } : {}),
+    ...(field.densityBias ? { densityBias: field.densityBias.slice() } : {}),
+    ...(field.bounds ? { bounds: { ...field.bounds } } : {}),
+    ...(field.noDataFill ? { noDataFill: { ...field.noDataFill } } : {}),
+  };
+  const settings = options?.noDataFill
+    ? { noDataFill: { ...options.noDataFill } }
+    : options;
+  const steps = packWeatherFieldSteps(snapshot, texW, texH, settings);
+  let result = steps.next();
+  while (!result.done) {
+    let fill: Uint8Array | undefined;
+    if (result.value === "fill") {
+      if (texW * texH < 65536) {
+        fill = proceduralFillBytes(texW, texH);
+      } else if (
+        proceduralFillCache?.w === texW &&
+        proceduralFillCache.h === texH
+      ) {
+        fill = proceduralFillCache.bytes;
+      } else {
+        const bytes = await buildProceduralWeatherMapAsync(
+          texW,
+          texH,
+          cancelled,
+        );
+        if (!bytes || cancelled()) {
+          return null;
+        }
+        proceduralFillCache = { w: texW, h: texH, bytes };
+        fill = bytes;
+      }
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    if (cancelled()) {
+      return null;
+    }
+    result = steps.next(fill);
+  }
+  return cancelled() ? null : result.value;
+}
+
+function* packWeatherFieldSteps(
+  field: WeatherField,
+  texW: number,
+  texH: number,
+  options?: WeatherPackOptions,
+): Generator<"rows" | "fill", WeatherPackResult, Uint8Array | undefined> {
   const out = new Uint8Array(texW * texH * 4);
   const gw = field.gridWidth;
   const gh = field.gridHeight;
@@ -384,6 +461,9 @@ export function packWeatherFieldDetailed(
   let filledTexels = 0;
 
   for (let ty = 0; ty < texH; ty++) {
+    if (texW * texH >= 65536 && ty % 8 === 0) {
+      yield "rows";
+    }
     // Row 0 is north in both the field and the texture, so the v axes align.
     // Resample at texel centres, `(ty + 0.5) / texH`, rather than at texel
     // indices normalized over `texH - 1`. A `linear` sampler reconstructs the
@@ -419,7 +499,7 @@ export function packWeatherFieldDetailed(
           out[i + 2] = constantQuad[2];
           out[i + 3] = constantQuad[3];
         } else {
-          fillMap = fillMap ?? proceduralFillBytes(texW, texH);
+          fillMap = fillMap ?? (yield "fill")!;
           out[i] = fillMap[i];
           out[i + 1] = fillMap[i + 1];
           out[i + 2] = fillMap[i + 2];

@@ -1556,6 +1556,10 @@ class Globe {
    * @private
    */
   beginFrame(frameState) {
+    // The managed cloud deck is not a primitive, so no update() reaches it; the
+    // WebGPU scene renderer reads its configuration directly. Tick its weather
+    // here, before that read. Without a cloud feature renderer this is a no-op.
+    this._defaultCloudCollection?._updateWeather?.(frameState);
     const surface = this._surface;
     const tileProvider = surface.tileProvider;
 

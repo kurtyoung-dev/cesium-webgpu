@@ -896,6 +896,7 @@ test("weather publication holds a valid view while pending and gives provider by
     weatherView: null,
     weatherTexture: null,
     weatherProviderVersion: -2,
+    weatherProviderBytes: null,
     proceduralWeatherBytes: null,
     temporalHistoryPendingResetReasons: 0,
     observability: {
@@ -926,10 +927,94 @@ test("weather publication holds a valid view while pending and gives provider by
   cache.proceduralWeatherBytes = new Uint8Array(48).fill(70);
   ensure(context, device, cache, true, provider, 7, lease);
   assert.equal(uploads.length, count);
+  const replacement = new Uint8Array(48).fill(90);
+  ensure(context, device, cache, true, replacement, 7, lease);
+  assert.equal(
+    uploads.length,
+    count + 1,
+    "a different provider can reuse the same local version",
+  );
+  assert.equal(cache.weatherProviderBytes, replacement);
+  const requestedBefore = requested;
+  ensure(context, device, cache, true, null, -1, lease, true);
+  assert.equal(
+    requested,
+    requestedBefore,
+    "a pending provider must not launch a second procedural generator",
+  );
+  assert.equal(cache.weatherProviderBytes, replacement);
   ensure(context, device, cache, true, null, -1, lease);
   assert.equal(uploads.at(-1), cache.proceduralWeatherBytes);
   assert.equal(cache.weatherProviderVersion, -1);
   assert.equal(cache.temporalHistoryPendingResetReasons, 1);
+});
+
+test("yielding weather packs preserve synchronous bytes, snapshot their inputs and cancel before publication", async () => {
+  const { packWeatherFieldDetailed, packWeatherFieldDetailedAsync } =
+    await import("../../packages/engine/Source/Scene/Weather/WeatherTexPacker.ts");
+  for (const regional of [false, true]) {
+    const field = {
+      gridWidth: 2,
+      gridHeight: 2,
+      coverage: new Float32Array([0.2, 0.6, 0.8, regional ? NaN : 0.9]),
+      type: new Float32Array([1, 2, 4, 7]),
+      baseMeters: new Float32Array([500, 1000, 4000, 8000]),
+      densityBias: new Float32Array([0.2, 0.3, 0.5, 0.9]),
+      bounds: regional
+        ? { west: -0.7, east: 0.7, south: -0.4, north: 0.4 }
+        : {
+            west: -Math.PI,
+            east: Math.PI,
+            south: -Math.PI / 2,
+            north: Math.PI / 2,
+          },
+    };
+    const options = regional
+      ? { noDataFill: { kind: "constant", coverage: 0.15, type: 1 } }
+      : undefined;
+    const expected = packWeatherFieldDetailed(field, 256, 256, options);
+    let heartbeat = false;
+    setTimeout(() => {
+      heartbeat = true;
+    }, 0);
+    const pending = packWeatherFieldDetailedAsync(field, 256, 256, options);
+    field.coverage.fill(0);
+    field.type.fill(0);
+    field.baseMeters.fill(0);
+    field.densityBias.fill(0);
+    field.bounds.west = 0;
+    if (options) options.noDataFill.coverage = 1;
+    const result = await pending;
+    assert(heartbeat, "large packing must yield to the event loop");
+    assert.deepEqual(result, expected);
+  }
+  const empty = {
+    gridWidth: 2,
+    gridHeight: 2,
+    coverage: new Float32Array(4).fill(NaN),
+    bounds: {
+      west: -Math.PI,
+      east: Math.PI,
+      south: -Math.PI / 2,
+      north: Math.PI / 2,
+    },
+  };
+  const expectedFill = packWeatherFieldDetailed(empty, 256, 256);
+  assert.deepEqual(
+    await packWeatherFieldDetailedAsync(empty, 256, 256),
+    expectedFill,
+  );
+  let checks = 0;
+  assert.equal(
+    await packWeatherFieldDetailedAsync(
+      empty,
+      256,
+      256,
+      undefined,
+      () => ++checks > 2,
+    ),
+    null,
+  );
 });
 
 test("float 64 reads 1 only on a frame that binds a real weather map, never the fallback texel", async () => {

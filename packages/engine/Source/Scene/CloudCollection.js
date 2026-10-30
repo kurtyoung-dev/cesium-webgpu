@@ -8,6 +8,7 @@ import ComputeCommand from "../Renderer/ComputeCommand.js";
 import CloudRenderMode from "./CloudRenderMode.js";
 import CloudType from "./CloudType.js";
 import CloudVolumetrics from "./CloudVolumetrics.js";
+import CloudWeatherState from "./CloudWeatherState.js";
 import CloudCollectionFS from "../Shaders/CloudCollectionFS.js";
 import CloudCollectionVS from "../Shaders/CloudCollectionVS.js";
 import CloudNoiseFS from "../Shaders/CloudNoiseFS.js";
@@ -239,6 +240,7 @@ class CloudCollection {
     // from options.volumetric on first access so a config bag passed at
     // construction is honored.
     this._volumetric = undefined;
+    this._weatherState = undefined;
     this._volumetricOptions = options.volumetric;
     if (options.enableVolumetric === true) {
       this._volumetricOptions = { ...this._volumetricOptions, enabled: true };
@@ -371,6 +373,8 @@ class CloudCollection {
       // spread above skips it; its own enumerable dials join the configuration
       // flat, under the names the renderer reads.
       ...this.volumetric.experimental,
+      weatherProvider:
+        this.volumetric.weatherProvider ?? this._weatherState?.provider,
       showProceduralClouds: true,
       cloudType: this.volumetric.cloudType ?? this._cloudType,
     };
@@ -586,6 +590,32 @@ class CloudCollection {
     return this._clouds[index];
   }
 
+  // Ticks the scene-clock weather this collection publishes with its volumetric
+  // configuration. The state exists only while a cloud feature renderer can
+  // consume it: the collection is shown, VOLUMETRIC and enabled, and the
+  // context carries a CLOUD_COLLECTION feature renderer. A backend without that
+  // renderer (WebGL) never creates one, so its frame keeps the base behaviour.
+  // `Globe.beginFrame` calls this for the managed deck, which is not a
+  // primitive; `update` calls it for a user collection.
+  _updateWeather(frameState) {
+    if (
+      this.show &&
+      this._renderMode === CloudRenderMode.VOLUMETRIC &&
+      this.volumetric.enabled === true &&
+      defined(
+        frameState.context?.getFeatureRenderer?.(
+          FeatureRendererKey.CLOUD_COLLECTION,
+        ),
+      )
+    ) {
+      this._weatherState ??= new CloudWeatherState();
+      this._weatherState.update(this.volumetric, frameState);
+    } else {
+      this._weatherState?.destroy();
+      this._weatherState = undefined;
+    }
+  }
+
   /**
    * @private
    */
@@ -602,11 +632,14 @@ class CloudCollection {
       // VOLUMETRIC collection this frame wins — see
       // GraphicsContext#requestVolumetricClouds). The `this.show` gate is
       // load-bearing: a hidden collection cedes the deck (publishes nothing).
+      // The weather state is ticked first, under the same gate, so the snapshot
+      // carries this frame's scene-clock weather.
       // The feature renderer itself suppresses THIS collection's billboards
       // whenever renderMode is VOLUMETRIC (the mode is exclusive). On the WebGL
-      // renderer there is no CLOUD_COLLECTION FR, so `requestVolumetricClouds`
-      // is a base-class no-op and the billboard path below runs unchanged — a
-      // documented graceful no-op for the volumetric config.
+      // renderer there is no CLOUD_COLLECTION FR, so neither the weather state
+      // nor the request exists there and the billboard path below runs
+      // unchanged — a documented graceful no-op for the volumetric config.
+      this._updateWeather(frameState);
       if (
         this.show &&
         this._renderMode === CloudRenderMode.VOLUMETRIC &&
@@ -707,6 +740,8 @@ class CloudCollection {
    * @see CloudCollection#isDestroyed
    */
   destroy() {
+    this._weatherState?.destroy();
+    this._weatherState = undefined;
     this._noiseTexture = this._noiseTexture && this._noiseTexture.destroy();
     this._sp = this._sp && this._sp.destroy();
     this._vaf = this._vaf && this._vaf.destroy();

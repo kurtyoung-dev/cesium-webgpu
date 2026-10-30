@@ -18,6 +18,11 @@ const REAL_WEATHER_MODULES = [
   "WeatherMapSeam",
   "WeatherTypes",
   "WeatherSource",
+  "EnvironmentalTensorMap",
+  "Event",
+  "Check",
+  "defined",
+  "DeveloperError",
 ];
 
 async function loadProvider(mutate, label) {
@@ -584,14 +589,14 @@ test("metadata-blind production mutant is rejected by the replay oracle", async 
 test("setNoDataFill refresh mutant is rejected by the timed replay oracle", async () => {
   const MutantProvider = await loadProvider((source) => {
     const fixedAnchor =
-      "    this._version++;\n" +
+      "    this._publishVersion();\n" +
       "    this._refreshSlice();\n" +
       "  }\n\n" +
       "  /** The active no-data fill override";
     assert.ok(source.includes(fixedAnchor), "setNoDataFill fix anchor missing");
     return source.replace(
       fixedAnchor,
-      "    this._version++;\n" +
+      "    this._publishVersion();\n" +
         "  }\n\n" +
         "  /** The active no-data fill override",
     );
