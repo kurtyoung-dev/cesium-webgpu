@@ -85,9 +85,10 @@ const observabilitySource = readEngine(
 );
 const definesSource = readEngine("Renderer/WebGPU/WebGPUShaderDefines.ts");
 const debugSource = readEngine("Scene/CesiumDebug.js");
-const marchWgsl = readEngine(
-  "Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
-);
+const marchWgsl =
+  readEngine("Shaders/WebGPU/Environment/ProceduralClouds.wgsl") +
+  "\n" +
+  readEngine("Shaders/WebGPU/Environment/CloudViewIntegration.wgsl");
 const producerWgsl = readEngine(
   "Shaders/WebGPU/Environment/CloudReconstructionAttachments.wgsl",
 );
@@ -525,11 +526,13 @@ test("B8 the WGSL and the TS twin are the SAME expression, character for charact
   // The multi-deck composition, likewise.
   assert.ok(
     emitMarch.includes(
-      "emitWeightedSum = emitWeightedSum + trans * r.weightedDistanceSum;",
+      "result.weightedDistanceSum += transmittance * deck.weightedDistanceSum;",
     ),
   );
   assert.ok(
-    emitMarch.includes("emitWeightedSum / max(accAlpha, CLOUD_EMIT_MIN_ALPHA)"),
+    emitMarch.includes(
+      "result.weightedDistanceSum / max(result.alpha, CLOUD_EMIT_MIN_ALPHA)",
+    ),
   );
   // The floors are the SAME numbers, or the twin stops predicting the shader.
   assert.ok(emitMarch.includes("const CLOUD_EMIT_MIN_ALPHA: f32 = 1.0e-6;"));
@@ -793,15 +796,17 @@ test("D3 the empty-neighbourhood early-out is OUTPUT-EQUIVALENT, not a shortcut"
   // would not collapse, and skipping the blend would change the picture.
   const march = defaultVariant(marchWgsl);
   assert.ok(
-    march.includes("return vec4<f32>(hazed * cloudAlpha, cloudAlpha);"),
+    march.includes(
+      "result.radiance += transmittance * deck.alpha * deck.hazed;",
+    ),
     "the single-shell half-res path must emit premultiplied radiance",
   );
   assert.ok(
-    march.includes("return vec4<f32>(accColor, accAlpha);"),
+    march.includes("var color = vec4<f32>(view.radiance, view.alpha);"),
     "the multi-deck half-res path must emit premultiplied radiance",
   );
   assert.ok(
-    march.includes("if (r.alpha <= 0.0) { continue; }"),
+    march.includes("if (deck.alpha <= 0.0) { continue; }"),
     "an empty deck must contribute nothing to accColor, or accAlpha 0 would not imply accColor 0",
   );
   // ...and the shader's own early-out demands the variance agree, so an

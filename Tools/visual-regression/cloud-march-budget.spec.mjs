@@ -18,8 +18,9 @@
 // ----------------
 //  A. THE RULE'S CONSTANTS ARE THE SHADER'S. The per-step interval sentinel,
 //     the multi-deck march count and the cone tap count are read out of the
-//     WGSL, so a march-law change there cannot leave the budget costing the
-//     old one.
+//     march the renderer compiles (its module composition), by call graph and
+//     loop bound, so a march-law change there cannot leave the budget costing
+//     the old one.
 //  B. THE MEASURED POINTS FALL ON THEIR SIDES. The completed 96 × 8 baked
 //     frame and its jitter-off twin resolve untouched; the live-noise frame
 //     that hung, raw 256 and raw 384 resolve budgeted with the ask reported;
@@ -65,6 +66,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { defaultVariant } from "./lib/wgsl-variant.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -75,8 +77,6 @@ const RENDERER_TS =
   "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts";
 const OBSERVABILITY_TS =
   "packages/engine/Source/Renderer/WebGPU/WebGPUCloudObservability.ts";
-const CLOUDS_WGSL =
-  "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl";
 // The last commit whose resolver has no march budget. Read only when present,
 // so a shallow clone still runs every other assertion.
 const PRE_BUDGET_COMMIT = "090dc1cdec02399128a37676f0ebaa25ee5a3639";
@@ -228,32 +228,262 @@ function inputsFor(preset, extra = {}) {
 
 // ── A. The rule's constants are the shader's ────────────────────────────────
 
-test("A1 the budget's interval, deck and cone constants are read out of the march shader", () => {
-  const wgsl = readSource(CLOUDS_WGSL);
-  assert.match(wgsl, /let maxIter: i32 = steps \* 3;/);
-  assert.equal(live.CLOUD_MARCH_INTERVALS_PER_STEP, 3);
-  assert.match(
-    wgsl,
-    /for \(var k: i32 = 0; k < 3; k = k \+ 1\) \{\n\s*if \(trans < 0\.005\) \{ break; \}[^\n]*\n\s*let di = order\[k\];\n\s*let r = marchDeck\(/,
+// A1' (the W2 round-3 review's replacement contract): the budget's interval,
+// deck and cone constants are read off the march the renderer COMPILES (its
+// PROCEDURAL_CLOUDS_SOURCE composition at definesHi 0), by call graph and loop
+// bound, instead of off one module's text shape. It reads no comment text:
+// `functions()` strips every `//` line comment before it matches a brace.
+
+/** The march source the renderer compiles (its PROCEDURAL_CLOUDS_SOURCE). */
+function compiledMarch() {
+  const renderer = readSource(RENDERER_TS);
+  const template = renderer.match(
+    /const PROCEDURAL_CLOUDS_SOURCE = `([^`]*)`;/,
   );
-  assert.equal(live.CLOUD_MULTI_DECK_MARCHES, 3);
-  assert.match(wgsl, /Six taps, five full and one cheap/);
-  assert.equal(live.CLOUD_LIGHT_CONE_TAPS, 6);
-  assert.match(
-    wgsl,
-    /let steps = max\(1, i32\(cloud\.lightSteps \* cloud\.lightSampleScale\)\);/,
+  assert.ok(template, "the renderer's PROCEDURAL_CLOUDS_SOURCE composition");
+  const names = [...template[1].matchAll(/\$\{(\w+)\}/g)].map((m) => m[1]);
+  assert.equal(
+    template[1],
+    names.map((n) => `\${${n}}`).join("\\n"),
+    "whole modules joined by newlines",
   );
+  return defaultVariant(
+    names
+      .map((name) => {
+        const imported = renderer.match(
+          new RegExp(
+            `import ${name} from "\\.\\./\\.\\./(Shaders/[\\w/]+)\\.js";`,
+          ),
+        );
+        assert.ok(imported, `the renderer imports ${name}`);
+        return readSource(`packages/engine/Source/${imported[1]}.wgsl`);
+      })
+      .join("\n"),
+  );
+}
+
+/** Index of the brace closing the one opened at or after `from`. */
+function closeOf(text, from) {
+  let depth = 0;
+  for (let i = text.indexOf("{", from); i < text.length; i++) {
+    if (text[i] === "{") {
+      depth++;
+    } else if (text[i] === "}" && --depth === 0) {
+      return i;
+    }
+  }
+  return text.length;
+}
+
+/**
+ * Every function's body, by brace matching from its header, on the source with
+ * its `//` line comments stripped, so a call or a brace inside a comment is
+ * not read as code.
+ */
+function functions(wgsl) {
+  const code = wgsl.replace(/\/\/[^\n]*/g, "");
+  const out = new Map();
+  for (const m of code.matchAll(/\bfn\s+(\w+)\s*\(/g)) {
+    assert.ok(!out.has(m[1]), `one definition of ${m[1]} at definesHi 0`);
+    const open = code.indexOf("{", m.index);
+    out.set(m[1], code.slice(open + 1, closeOf(code, m.index)));
+  }
+  return out;
+}
+
+/** Whether `from` reaches `to` through calls inside the composition. */
+function reaches(fns, from, to, seen = new Set()) {
+  if (seen.has(from)) {
+    return false;
+  }
+  seen.add(from);
+  for (const m of (fns.get(from) ?? "").matchAll(/\b(\w+)\s*\(/g)) {
+    if (m[1] === to || (fns.has(m[1]) && reaches(fns, m[1], to, seen))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const COUNTED_LOOP =
+  /for\s*\(\s*var\s+(\w+)\s*(?::\s*i32)?\s*=\s*0\s*;\s*\1\s*<\s*(\w+)\s*;[^)]*\)\s*\{/g;
+
+/**
+ * How many times the call at `index` runs per ray: 1 outside any counted loop
+ * (the single-deck path), else the bound of the innermost counted loop whose
+ * body contains it, capped by a `counter >= N` break at its head.
+ */
+function callMultiplicity(body, index) {
+  const inner = [...body.matchAll(COUNTED_LOOP)]
+    .filter((m) => m.index < index && index < closeOf(body, m.index))
+    .at(-1);
+  if (!inner) {
+    return 1;
+  }
+  const [, counter, limit] = inner;
+  const hard = body
+    .slice(inner.index, index)
+    .match(
+      new RegExp(
+        `if\\s*\\(\\s*${counter}\\s*>=\\s*(\\d+)\\b[^)]*\\)\\s*\\{\\s*break;`,
+      ),
+    );
+  const cap = hard ? Number(hard[1]) : Infinity;
+  if (/^\d+$/.test(limit)) {
+    return Math.min(Number(limit), cap);
+  }
+  // A variable limit: its largest literal assignment, capped by the break.
+  const assigned = [
+    ...body.matchAll(new RegExp(`\\b${limit}\\s*=\\s*(\\d+)\\s*;`, "g")),
+  ].map((m) => Number(m[1]));
+  assert.ok(
+    assigned.length > 0,
+    `the loop limit ${limit} is assigned a literal`,
+  );
+  return Math.min(Math.max(...assigned), cap);
+}
+
+function assertA1(wgsl, mod) {
+  const fns = functions(wgsl);
+  // Intervals per step: the march's loop sentinel is steps * N, steps is the
+  // uniform's maxSteps, and the loop breaks once the guard passes it.
+  const march = fns.get("marchDeck");
+  assert.ok(march, "marchDeck is compiled");
+  const sentinel = march.match(
+    /let\s+maxIter\s*:\s*i32\s*=\s*steps\s*\*\s*(\d+)\s*;/,
+  );
+  assert.ok(sentinel, "the march's interval sentinel");
+  assert.equal(
+    Number(sentinel[1]),
+    mod.CLOUD_MARCH_INTERVALS_PER_STEP,
+    "intervals per step",
+  );
+  assert.match(march, /let\s+steps\s*=\s*i32\(cloud\.maxSteps\)\s*;/);
+  assert.match(
+    march,
+    /guard\s*=\s*guard\s*\+\s*1\s*;\s*if\s*\(\s*guard\s*>\s*maxIter\s*\)\s*\{\s*break;\s*\}/,
+  );
+  // Decks: every marchDeck call site runs once (the single-deck path, costed
+  // as one march) or once per deck, and the multi-deck one exists.
+  const sites = [];
+  for (const [name, body] of fns) {
+    for (const m of body.matchAll(/\bmarchDeck\s*\(/g)) {
+      sites.push({ name, runs: callMultiplicity(body, m.index) });
+    }
+  }
+  assert.ok(sites.length > 0, "a marchDeck call site");
+  for (const s of sites) {
+    assert.ok(
+      s.runs === 1 || s.runs === mod.CLOUD_MULTI_DECK_MARCHES,
+      `deck marches at ${s.name}: ${s.runs}`,
+    );
+  }
+  assert.ok(
+    sites.some((s) => s.runs === mod.CLOUD_MULTI_DECK_MARCHES),
+    "the multi-deck march runs once per deck",
+  );
+  // The visible and the mask pass both march: each entry reaches marchDeck.
+  for (const entry of ["fragmentMain", "fragmentCloudMaskMain"]) {
+    assert.ok(fns.has(entry), `${entry} is compiled`);
+    assert.ok(reaches(fns, entry, "marchDeck"), `${entry} marches the deck`);
+  }
+  // Cone taps: the full-density cone loop plus the one cheap far tap, counted
+  // on either branch (the baked macro sample or the legacy base density).
+  const cone = fns.get("lightMarchCone");
+  assert.ok(cone, "lightMarchCone is compiled");
+  const coneLoop = cone.match(
+    /for\s*\(\s*var\s+(\w+)\s*:\s*i32\s*=\s*0\s*;\s*\1\s*<\s*(\d+)\s*;/,
+  );
+  assert.ok(coneLoop, "the cone loop");
+  const afterLoop = cone.slice(closeOf(cone, coneLoop.index) + 1);
+  const farTaps = Math.max(
+    ...afterLoop
+      .split(/\}\s*else\s*\{/)
+      .map(
+        (part) =>
+          (
+            part.match(
+              /\b(?:legacyCloudBaseDensity|cloudBaseDensity\w*|cloudMacroSampleAt)\s*\(/g,
+            ) ?? []
+          ).length,
+      ),
+  );
+  assert.equal(
+    Number(coneLoop[2]) + farTaps,
+    mod.CLOUD_LIGHT_CONE_TAPS,
+    "cone taps",
+  );
+  assert.ok(
+    reaches(fns, "lightMarch", "lightMarchCone"),
+    "lightMarch takes the cone",
+  );
+  assert.match(
+    fns.get("lightMarch"),
+    /let\s+steps\s*=\s*max\(1,\s*i32\(cloud\.lightSteps \* cloud\.lightSampleScale\)\);/,
+  );
+}
+
+test("A1' the budget's interval, deck and cone constants are the compiled march's", () => {
+  assertA1(compiledMarch(), live);
+  // The budget's own constants, which no shader carries, are this file's.
   assert.equal(live.CLOUD_MARCH_BUDGET_DEFAULT, BUDGET);
   assert.equal(live.CLOUD_MARCH_LIVE_NOISE_WEIGHT, LIVE_WEIGHT);
   assert.equal(live.CLOUD_MARCH_REFERENCE_PIXELS, REFERENCE_PIXELS);
   assert.equal(live.CLOUD_MARCH_MAX_FITTED_PRIMARY_STEPS, FITTED_CEILING);
-  // The mask pass is a second march: its entry calls the same deck march on
-  // the same step count, so the budget costs it as one.
-  const maskEntry = wgsl.slice(wgsl.indexOf("fn fragmentCloudMaskMain("));
-  assert.match(
-    maskEntry.slice(0, maskEntry.indexOf("\n}\n")),
-    /let r = marchDeck\(/,
-  );
+});
+
+test("A1' mutants: each constant moved in the shader or the preset turns the contract red", () => {
+  const wgsl = compiledMarch();
+  const maskBody =
+    /fn fragmentCloudMaskMain\(input: VertexOutput\) -> @location\(0\) f32 \{[\s\S]*?\n\}/;
+  for (const [label, ...forms] of [
+    [
+      "intervals",
+      [/let maxIter: i32 = steps \* 3;/, "let maxIter: i32 = steps * 4;"],
+    ],
+    [
+      "deck count",
+      [/deckCount = 3;/, "deckCount = 2;"],
+      [
+        /k < 3; k = k \+ 1\) \{(\s*)if \(trans < 0\.005\)/,
+        "k < 2; k = k + 1) {$1if (trans < 0.005)",
+      ],
+    ],
+    [
+      "mask stops marching",
+      [
+        maskBody,
+        "fn fragmentCloudMaskMain(input: VertexOutput) -> @location(0) f32 {\n  return 1.0;\n}",
+      ],
+    ],
+    [
+      "cone loop",
+      [
+        /for \(var i: i32 = 0; i < 5; i = i \+ 1\)/,
+        "for (var i: i32 = 0; i < 6; i = i + 1)",
+      ],
+    ],
+  ]) {
+    const form = forms.find(([from]) => from.test(wgsl));
+    assert.ok(form, `mutant anchor: ${label}`);
+    const [from, to] = form;
+    assert.throws(
+      () => assertA1(wgsl.replace(from, to), live),
+      assert.AssertionError,
+      `the A1' pin survived: ${label}`,
+    );
+  }
+  for (const [key, value] of [
+    ["CLOUD_MULTI_DECK_MARCHES", 2],
+    ["CLOUD_LIGHT_CONE_TAPS", 5],
+    ["CLOUD_MARCH_INTERVALS_PER_STEP", 2],
+  ]) {
+    assert.throws(
+      () => assertA1(wgsl, { ...live, [key]: value }),
+      assert.AssertionError,
+      `the A1' pin survived: preset ${key} moved`,
+    );
+  }
 });
 
 // ── B. The measured points fall on their sides ──────────────────────────────

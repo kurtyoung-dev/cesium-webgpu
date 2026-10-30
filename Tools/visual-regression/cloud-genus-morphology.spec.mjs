@@ -58,11 +58,18 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
 const read = (relative) => fs.readFileSync(path.join(root, relative), "utf8");
 
-const cloudShaderSource = defaultVariant(
-  read(
-    "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
-  ),
-);
+const cloudShaderSource =
+  defaultVariant(
+    read(
+      "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
+    ),
+  ) +
+  "\n" +
+  defaultVariant(
+    read(
+      "packages/engine/Source/Shaders/WebGPU/Environment/CloudViewIntegration.wgsl",
+    ),
+  );
 const domainSource = read(
   "packages/engine/Source/Shaders/WebGPU/Environment/CloudDensityDomain.wgsl",
 );

@@ -56,7 +56,11 @@ const cloudShaderPath = path.join(
   "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
 );
 const cloudShaderSource =
-  ["CloudMarchSampling.wgsl", "CloudSolarLighting.wgsl"]
+  [
+    "CloudMarchSampling.wgsl",
+    "CloudSolarLighting.wgsl",
+    "CloudViewIntegration.wgsl",
+  ]
     .map((name) =>
       fs.readFileSync(path.join(path.dirname(cloudShaderPath), name), "utf8"),
     )
@@ -1135,4 +1139,37 @@ test("cloud async march requests deduplicate pending variants and discard late p
   }
   assert.equal(requests, 8);
   assert(moduleCreates > 0);
+});
+
+test("cloud deck ordering uses ray entry below, within and above the layer", () => {
+  const source = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Shaders/WebGPU/Environment/CloudViewIntegration.wgsl",
+    ),
+    "utf8",
+  );
+  const entry = cloudMath.compileFunction(
+    cloudMath.stripComments(source),
+    "cloudDeckEntryDistance",
+    cloudMathGlobals,
+  );
+  const v = cloudMath.vec;
+  assert.equal(entry(v(-2, 300), v(-3, 600), 800, 1500, 4000), 300);
+  assert.equal(entry(v(-2, 300), v(-3, 600), 2000, 1500, 4000), 0);
+  assert.equal(entry(v(500, 900), v(100, 1000), 5000, 1500, 4000), 100);
+  assert.equal(entry(v(-2, -1), v(-3, -1), 5000, 1500, 4000), 1e30);
+  const low = entry(v(6000, 12700000), v(4000, 12702000), 6000, 0, 2000);
+  const high = entry(v(-1000, 12700000), v(-4000, 12703000), 6000, 7000, 10000);
+  assert(low < high);
+  assert.equal((source.match(/\bmarchDeck\s*\(/g) ?? []).length, 1);
+  assert.match(
+    source,
+    /result\.radiance \+= transmittance \* deck\.alpha \* deck\.hazed/,
+  );
+  assert.match(
+    source,
+    /result\.weightedDistanceSum \+= transmittance \* deck\.weightedDistanceSum/,
+  );
+  assert.doesNotMatch(source, /abs\(camAlt - mid/);
 });

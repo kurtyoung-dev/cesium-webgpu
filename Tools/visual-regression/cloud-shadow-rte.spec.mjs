@@ -860,24 +860,69 @@ test("the eye-relative flag is published for every globe branch", () => {
 
 // ─── 5. the consumers that were ALREADY on the owner stay there ───
 
+// Every function body in a WGSL source, by brace matching from its header, on
+// the source with its `//` line comments stripped, so a call, a token or a brace
+// inside a comment is not read as code.
+function wgslFunctionBodies(wgsl) {
+  const code = wgsl.replace(/\/\/[^\n]*/g, "");
+  const bodies = new Map();
+  for (const m of code.matchAll(/\bfn\s+(\w+)\s*\(/g)) {
+    const open = code.indexOf("{", m.index);
+    let depth = 0;
+    let close = code.length;
+    for (let i = open; i < code.length; i++) {
+      if (code[i] === "{") {
+        depth++;
+      } else if (code[i] === "}" && --depth === 0) {
+        close = i;
+        break;
+      }
+    }
+    bodies.set(m[1], code.slice(open + 1, close));
+  }
+  return bodies;
+}
+
 test("the god-ray transmittance mask stays on the primary marchDeck RTE frame", () => {
-  const start = cloudShaderSource.indexOf("fn fragmentCloudMaskMain(");
-  assert.ok(start > 0);
-  const end = cloudShaderSource.indexOf("\n@fragment", start);
-  const body = cloudShaderSource.slice(start, end > start ? end : undefined);
-  assert.match(body, /let centerHigh = -cloud\.encodedCameraHigh;/);
-  assert.match(body, /let centerLow = -cloud\.encodedCameraLow;/);
-  assert.match(body, /marchDeck\(/);
-  assert.doesNotMatch(
-    body,
-    /raySphereIntersect\(/,
-    "the mask must inherit marchDeck's WGS84 shells, not roll its own",
-  );
-  assert.doesNotMatch(
-    body,
-    /cloudDensityCoordinatesAtWorld\(/,
-    "the mask must not build a private density coordinate",
-  );
+  // The mask entry and the deck integration it may delegate to live in the
+  // renderer's march composition, not necessarily in the march file.
+  const bodies = wgslFunctionBodies(defaultVariant(rendererMarchSource()));
+  const body = bodies.get("fragmentCloudMaskMain");
+  assert.ok(body, "the mask entry is compiled");
+  // The RTE centre handed to the march is the camera's negated encoding, bound
+  // to a local or passed straight through.
+  assert.match(body, /-cloud\.encodedCameraHigh\b/);
+  assert.match(body, /-cloud\.encodedCameraLow\b/);
+  // The mask marches the deck: it calls marchDeck itself or through the
+  // composition's deck integration. That path, short of marchDeck, may not
+  // build its own shells or density coordinate.
+  const route = [];
+  const reaches = (name, seen = new Set()) => {
+    if (seen.has(name)) {
+      return false;
+    }
+    seen.add(name);
+    for (const m of (bodies.get(name) ?? "").matchAll(/\b(\w+)\s*\(/g)) {
+      if (m[1] === "marchDeck" || (bodies.has(m[1]) && reaches(m[1], seen))) {
+        route.push(name);
+        return true;
+      }
+    }
+    return false;
+  };
+  assert.ok(reaches("fragmentCloudMaskMain"), "the mask reaches marchDeck");
+  for (const name of route) {
+    assert.doesNotMatch(
+      bodies.get(name),
+      /raySphereIntersect\(/,
+      `the mask must inherit marchDeck's WGS84 shells, not roll its own (${name})`,
+    );
+    assert.doesNotMatch(
+      bodies.get(name),
+      /cloudDensityCoordinatesAtWorld\(/,
+      `the mask must not build a private density coordinate (${name})`,
+    );
+  }
   // The mask still reuses the SAME per-frame bind group as the visible march, so
   // it cannot drift onto a different uniform frame.
   assert.match(rendererSource, /maskPass\.setBindGroup\(0, bindGroup\);/);
