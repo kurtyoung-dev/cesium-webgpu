@@ -123,6 +123,12 @@ fn cloudViewReconstructionDepth(result: CloudViewResult) -> vec2<f32> {
 //>>else
 //>>endif
 
+fn loadCloudSceneDepth(uv: vec2<f32>) -> f32 {
+  let size = vec2<i32>(textureDimensions(depthTex));
+  let pixel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - vec2<i32>(1));
+  return textureLoad(depthTex, pixel, 0).r;
+}
+
 @fragment
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
 fn fragmentMain(input: VertexOutput) -> CloudMarchOutput {
@@ -136,7 +142,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     uv += offset / max(cloud.resolution, vec2<f32>(1.0));
   }
   let sceneColor = textureSample(colorTex, texSampler, uv);
-  let sceneDepth = textureSampleLevel(depthTex, texSampler, uv, 0.0).r;
+  let sceneDepth = loadCloudSceneDepth(uv);
   let view = integrateCloudView(
     cloud.cameraPosition, getWorldRay(uv), sceneDepth,
     -cloud.encodedCameraHigh, -cloud.encodedCameraLow,
@@ -168,7 +174,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 // Technique only — no source was copied.
 @fragment
 fn fragmentCloudMaskMain(input: VertexOutput) -> @location(0) f32 {
-  let sceneDepth = textureSampleLevel(depthTex, texSampler, input.uv, 0.0).r;
+  let sceneDepth = loadCloudSceneDepth(input.uv);
   let view = integrateCloudView(
     cloud.cameraPosition, getWorldRay(input.uv), sceneDepth,
     -cloud.encodedCameraHigh, -cloud.encodedCameraLow, 0.5,

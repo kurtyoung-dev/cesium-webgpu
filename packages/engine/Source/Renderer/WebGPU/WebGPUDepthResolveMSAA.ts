@@ -5,8 +5,8 @@
  * Per-device cache of the MSAA-depth resolve pipeline. The pipeline runs
  * a fullscreen render pass that reads sample 0 of a
  * `texture_depth_multisampled_2d` and writes the value to a single-sample
- * `r16float` color attachment. Consumers bind the resolve as filterable float
- * depth data; it is not a depth-aspect texture.
+ * float color attachment. Clouds use full-precision unfiltered reads; other
+ * consumers retain the filterable f16 target. Neither is a depth-aspect texture.
  *
  * @module WebGPUDepthResolveMSAA
  */
@@ -19,17 +19,25 @@ interface ResolvePipelineCache {
   bindGroups: WeakMap<GPUTextureView, GPUBindGroup>;
 }
 
-const _perDevicePipelineCache = new WeakMap<GPUDevice, ResolvePipelineCache>();
+type ResolveDepthFormat = "r16float" | "r32float";
+const _perDevicePipelineCache = new WeakMap<
+  GPUDevice,
+  Map<ResolveDepthFormat, ResolvePipelineCache>
+>();
 
 /**
  * Get-or-create the depth-resolve render pipeline for a device.
  * Pipeline is cached per-device + reused across SceneFramebuffer
- * instances; the output format is fixed at `r16float`.
+ * instances; the selected output format is part of the cache identity.
  */
 export function getDepthResolvePipeline(
   device: GPUDevice,
+  format: ResolveDepthFormat = "r16float",
 ): ResolvePipelineCache {
-  const cached = _perDevicePipelineCache.get(device);
+  const formats =
+    _perDevicePipelineCache.get(device) ??
+    new Map<ResolveDepthFormat, ResolvePipelineCache>();
+  const cached = formats.get(format);
   if (cached) return cached;
 
   const shaderModule = device.createShaderModule({
@@ -57,14 +65,9 @@ export function getDepthResolvePipeline(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Single r16float color attachment. The
-      // shader emits depth as @location(0) f32 (NOT @builtin(frag_depth))
-      // so consumers keep their filterable-float depth bindings.
-      // r16float covers the [0,1] post-perspective depth range with
-      // ~10-bit precision near 1.0 — adequate for AO + NPR + DoF, and
-      // matches the precision of the upstream perspective-divided
-      // depth before resolve.
-      targets: [{ format: "r16float" }],
+      // Clouds require the original f32 log depth; existing consumers retain
+      // the filterable f16 resolve. Each output format has its own pipeline.
+      targets: [{ format }],
     },
     primitive: { topology: "triangle-list" },
   });
@@ -74,7 +77,8 @@ export function getDepthResolvePipeline(
     bindGroupLayout,
     bindGroups: new WeakMap(),
   };
-  _perDevicePipelineCache.set(device, entry);
+  formats.set(format, entry);
+  _perDevicePipelineCache.set(device, formats);
   return entry;
 }
 
@@ -92,15 +96,16 @@ export function getDepthResolvePipeline(
  *   `texture_depth_multisampled_2d`.
  * @param resolveTargetView - Render-attachment view of the
  *   single-sample resolve texture (the output destination). Must be
- *   `r16float` format, sampleCount 1, RENDER_ATTACHMENT usage.
+ *   selected float format, sampleCount 1, RENDER_ATTACHMENT usage.
  */
 export function dispatchDepthResolve(
   encoder: GPUCommandEncoder,
   device: GPUDevice,
   msaaDepthView: GPUTextureView,
   resolveTargetView: GPUTextureView,
+  format: ResolveDepthFormat = "r16float",
 ): void {
-  const cache = getDepthResolvePipeline(device);
+  const cache = getDepthResolvePipeline(device, format);
   const { pipeline, bindGroupLayout } = cache;
   let bindGroup = cache.bindGroups.get(msaaDepthView);
   if (!bindGroup) {

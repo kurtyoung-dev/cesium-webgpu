@@ -111,6 +111,7 @@ function createCloudFrameOutcome(
   preparation: CloudFramePreparationOutcome | null,
   negativeReason: CloudFrameOutcomeNegativeReason | null,
   displaySnapshotView: GPUTextureView | null = null,
+  depthView: GPUTextureView | null = null,
 ): EnvironmentalCloudFrameOutcome {
   return Object.freeze({
     plan,
@@ -118,6 +119,7 @@ function createCloudFrameOutcome(
     preparation,
     negativeReason,
     displaySnapshotView,
+    depthView,
   });
 }
 
@@ -236,6 +238,7 @@ export function executePostFrustumChain(
 
   let cloudRenderer: ProceduralCloudFrameRenderer | null = null;
   let cloudPreparation: CloudFramePreparationOutcome | null = null;
+  let cloudDepthView = context._depthStencilView;
   let cloudNegativeReason: CloudFrameOutcomeNegativeReason | null =
     cloudPlan.active ? null : "inactive";
 
@@ -274,13 +277,18 @@ export function executePostFrustumChain(
       if (renderer.prepareCloudFrameAndEncodeMask) {
         cloudRenderer = renderer;
         try {
+          context.endCurrentRenderPass?.();
+          cloudDepthView =
+            host._sceneFramebuffer?.resolveCloudDepth?.(
+              context._currentCommandEncoder!,
+            ) ?? context._depthStencilView;
           cloudPreparation = asCloudFramePreparationOutcome(
             renderer.prepareCloudFrameAndEncodeMask(
               context,
               config.scene._frameState,
               cloudAttempt,
               context._sceneColorView,
-              context._depthStencilView,
+              cloudDepthView,
               cloudPlan.config!,
               cloudPlan.captureRequested,
             ),
@@ -338,6 +346,8 @@ export function executePostFrustumChain(
     cloudRenderer,
     cloudPreparation,
     cloudNegativeReason,
+    null,
+    cloudDepthView,
   );
   try {
     if (cloudPlan.captureRequested && isPreparedCloudFrameOutcome(cloudFrame)) {
@@ -423,6 +433,7 @@ export function executePostFrustumChain(
       cloudPreparation,
       cloudNegativeReason,
       copiedSnapshotView,
+      cloudDepthView,
     );
 
     // Environmental effects run after post-processing so their canvas writes

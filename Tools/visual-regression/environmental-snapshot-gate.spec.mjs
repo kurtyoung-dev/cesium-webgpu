@@ -309,3 +309,187 @@ test("the environmental stage no longer consumes the cloud request", async () =>
     "the request is consumed once, by the post-frustum chain, not again here",
   );
 });
+
+test("half precision log depth can erase orbital cloud layers while f32 preserves them", () => {
+  const near = 0.1,
+    far = 1e10,
+    layerDepth = 2500;
+  const encode = (distance) =>
+    Math.log2(distance - near + 1) / Math.log2(far - near + 1);
+  const decode = (value) => 2 ** (value * Math.log2(far - near + 1)) - 1 + near;
+  let erased = 0;
+  for (let distance = 1e7; distance < 1.4e7; distance += 10000) {
+    const depth = encode(distance);
+    const half = Math.round(depth * 2048) / 2048;
+    erased += decode(half) < distance - layerDepth;
+    assert(Math.abs(decode(Math.fround(depth)) - distance) < 25);
+  }
+  assert(
+    erased > 100,
+    "half-depth orbital clipping must be reproduced by the regression",
+  );
+});
+
+test("MSAA depth resolve caches independent f16 and f32 pipelines for each device", async () => {
+  const depthPath = path.join(webgpuDirectory, "WebGPUDepthResolveMSAA.ts");
+  const { getDepthResolvePipeline } = await bundle({
+    path: depthPath,
+    source: readFileSync(depthPath, "utf8"),
+    real: [],
+    stubSources: {
+      "../../Shaders/WebGPU/PostProcess/DepthResolveMSAA.js":
+        'export default "fixture";',
+    },
+  });
+  const previous = globalThis.GPUShaderStage;
+  globalThis.GPUShaderStage = { FRAGMENT: 2 };
+  try {
+    const formats = [];
+    const device = {
+      createShaderModule: () => ({}),
+      createBindGroupLayout: () => ({}),
+      createPipelineLayout: () => ({}),
+      createRenderPipeline: (descriptor) => {
+        formats.push(descriptor.fragment.targets[0].format);
+        return {};
+      },
+    };
+    const half = getDepthResolvePipeline(device),
+      full = getDepthResolvePipeline(device, "r32float");
+    assert.notEqual(half, full);
+    assert.equal(getDepthResolvePipeline(device), half);
+    assert.equal(getDepthResolvePipeline(device, "r32float"), full);
+    assert.deepEqual(formats, ["r16float", "r32float"]);
+  } finally {
+    globalThis.GPUShaderStage = previous;
+  }
+});
+
+test("cloud depth allocation is lazy, full precision and owned by target resize/destruction", async () => {
+  const targetPath = path.join(webgpuDirectory, "WebGPURenderTarget.ts");
+  const { WebGPURenderTarget } = await bundle({
+    path: targetPath,
+    source: readFileSync(targetPath, "utf8"),
+    real: [],
+    stubSources: {
+      "./WebGPUDepthResolveMSAA.js":
+        "export function dispatchDepthResolve(...args){globalThis.__cloudDepthResolveCalls.push(args);}",
+    },
+  });
+  const previousUsage = globalThis.GPUTextureUsage,
+    previousCalls = globalThis.__cloudDepthResolveCalls;
+  globalThis.GPUTextureUsage = {
+    RENDER_ATTACHMENT: 1,
+    TEXTURE_BINDING: 2,
+    COPY_SRC: 4,
+  };
+  globalThis.__cloudDepthResolveCalls = [];
+  try {
+    const textures = [],
+      device = {
+        createTexture: (descriptor) => {
+          const texture = {
+            descriptor,
+            destroyed: false,
+            createView: (options) => ({ texture, options }),
+            destroy: () => {
+              texture.destroyed = true;
+            },
+          };
+          textures.push(texture);
+          return texture;
+        },
+      };
+    const target = new WebGPURenderTarget(device, {
+      name: "scene",
+      width: 64,
+      height: 32,
+      sampleCount: 4,
+      depthStencilFormat: "depth24plus-stencil8",
+      depthSamplable: true,
+    });
+    assert.equal(
+      textures.filter((t) => t.descriptor.format === "r32float").length,
+      0,
+    );
+    const half = target.getDepthSampleableView(),
+      precise = target.resolveCloudDepth({});
+    assert.equal(precise.texture.descriptor.format, "r32float");
+    assert.equal(target.getDepthSampleableView(), half);
+    assert.equal(target.resolveCloudDepth({}), precise);
+    assert.equal(
+      textures.filter((t) => t.descriptor.format === "r32float").length,
+      1,
+    );
+    assert.equal(globalThis.__cloudDepthResolveCalls.at(-1).at(-1), "r32float");
+    target.resize(128, 64);
+    assert.equal(precise.texture.destroyed, true);
+    const resized = target.resolveCloudDepth({});
+    assert.notEqual(resized, precise);
+    assert.equal(resized.texture.descriptor.size.width, 128);
+    target.destroy();
+    assert.equal(resized.texture.destroyed, true);
+    const single = new WebGPURenderTarget(device, {
+      name: "single",
+      width: 64,
+      height: 32,
+      sampleCount: 1,
+      depthStencilFormat: "depth24plus-stencil8",
+      depthSamplable: true,
+    });
+    assert.equal(single.resolveCloudDepth({}), single.getDepthSampleableView());
+    single.destroy();
+  } finally {
+    globalThis.GPUTextureUsage = previousUsage;
+    globalThis.__cloudDepthResolveCalls = previousCalls;
+  }
+});
+
+test("cloud composition keeps the prepared precise depth while other effects retain scene depth", async () => {
+  const { executeEnvironmentalEffects } = await loadEnvironmentalEffects();
+  const harness = makeHarness({ snapshotCopied: true });
+  let cloudDepth;
+  const plan = { ...harness.cloudFrame.plan, active: true };
+  const cloudFrame = {
+    ...harness.cloudFrame,
+    plan,
+    depthView: "precise-cloud-depth",
+    negativeReason: null,
+    preparation: { kind: "prepared", plan, maskView: null },
+    renderer: {
+      isPreparedCloudFrame: () => true,
+      executePreparedCloudFrame: (...args) => {
+        cloudDepth = args[3];
+        return true;
+      },
+    },
+  };
+  executeEnvironmentalEffects(harness.config, cloudFrame);
+  assert.equal(cloudDepth, "precise-cloud-depth");
+  assert.equal(harness.config.context._depthStencilView, DEPTH_VIEW);
+});
+
+test("cloud upscale validates with unfiltered full-precision scene depth", async () => {
+  const { pathToFileURL } = await import("node:url");
+  const nagaDirectory = path.resolve(
+    webgpuDirectory,
+    "../../../../../Tools/shader-pipeline/naga-wasm-tools",
+  );
+  const naga = await import(
+    pathToFileURL(path.join(nagaDirectory, "naga_wasm_tools.js")).href
+  );
+  await naga.default({
+    module_or_path: readFileSync(
+      path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
+    ),
+  });
+  const shader = readFileSync(
+    path.resolve(
+      webgpuDirectory,
+      "../../Shaders/WebGPU/Environment/CloudUpscale.wgsl",
+    ),
+    "utf8",
+  );
+  assert.doesNotMatch(shader, /textureSampleLevel\(sceneDepthTex/);
+  assert.doesNotThrow(() => naga.validate_wgsl(shader));
+});

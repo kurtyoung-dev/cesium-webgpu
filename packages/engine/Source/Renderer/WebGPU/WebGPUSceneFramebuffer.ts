@@ -239,6 +239,10 @@ export class WebGPUSceneFramebuffer {
     return this._colorTarget?.getDepthSampleableView();
   }
 
+  resolveCloudDepth(encoder: GPUCommandEncoder): GPUTextureView | undefined {
+    return this._colorTarget?.resolveCloudDepth(encoder);
+  }
+
   /**
    * Converts sample zero of the MSAA depth attachment into the single-sample
    * `r16float` color target. No-op in single-sample mode, where the depth

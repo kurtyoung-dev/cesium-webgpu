@@ -111,6 +111,8 @@ export class WebGPURenderTarget {
   private _msaaDepthResolveTexture: GPUTexture | null = null;
   private _msaaDepthResolveAttachmentView: GPUTextureView | null = null;
   private _msaaDepthResolveSampleableView: GPUTextureView | null = null;
+  private _cloudDepthTexture: GPUTexture | null = null;
+  private _cloudDepthView: GPUTextureView | null = null;
 
   // MSAA resolve targets (if MSAA enabled)
   private resolveTargets: RenderTargetAttachment[] = [];
@@ -273,6 +275,34 @@ export class WebGPURenderTarget {
           this._msaaDepthResolveAttachmentView;
       }
     }
+  }
+
+  resolveCloudDepth(encoder: GPUCommandEncoder): GPUTextureView | undefined {
+    if (!this._depthSampleableView || !this.depthStencilAttachment) {
+      return undefined;
+    }
+    if (!this.isMSAA()) {
+      return this._depthSampleableView;
+    }
+    // Log-depth quantization to f16 can exceed the entire cloud-layer depth.
+    if (!this._cloudDepthTexture) {
+      this._cloudDepthTexture = this.device.createTexture({
+        label: "Cloud scene depth",
+        size: { width: this.descriptor.width, height: this.descriptor.height },
+        format: "r32float",
+        usage:
+          GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      this._cloudDepthView = this._cloudDepthTexture.createView();
+    }
+    dispatchDepthResolve(
+      encoder,
+      this.device,
+      this._depthSampleableView,
+      this._cloudDepthView!,
+      "r32float",
+    );
+    return this._cloudDepthView!;
   }
 
   /**
@@ -726,6 +756,9 @@ export class WebGPURenderTarget {
     // the texture so a destroyed target never hands out a view of a destroyed
     // texture, and an MSAA target never falls back to the multisampled
     // depth-aspect view, which is the wrong binding type for its consumers.
+    this._cloudDepthTexture?.destroy();
+    this._cloudDepthTexture = null;
+    this._cloudDepthView = null;
     this._msaaDepthResolveTexture?.destroy();
     this._msaaDepthResolveTexture = null;
     this._msaaDepthResolveAttachmentView = null;

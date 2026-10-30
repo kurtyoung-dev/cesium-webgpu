@@ -2622,7 +2622,7 @@ function ensureHalfResResources(
       [
         texture(0, Stage.FRAGMENT), // half-res cloud (premultiplied)
         texture(1, Stage.FRAGMENT), // full-res scene color
-        texture(2, Stage.FRAGMENT), // full-res scene depth
+        texture(2, Stage.FRAGMENT, { sampleType: "unfilterable-float" }), // full-res scene depth
         sampler(3, Stage.FRAGMENT),
         uniformBuffer(4, Stage.FRAGMENT),
       ],
@@ -3148,7 +3148,7 @@ function initializeCloudPipeline(
 
   cache.bindGroupLayout = makeBindGroupLayout(device, "ProceduralClouds BGL", [
     texture(0, Stage.FRAGMENT),
-    texture(1, Stage.FRAGMENT),
+    texture(1, Stage.FRAGMENT, { sampleType: "unfilterable-float" }),
     sampler(2, Stage.FRAGMENT),
     uniformBuffer(3, Stage.FRAGMENT),
     // Weather map, a depth-1 2d-array, and its sampler.

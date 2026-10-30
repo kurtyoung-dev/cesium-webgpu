@@ -110,6 +110,7 @@ export interface EnvironmentalCloudFrameOutcome {
   readonly preparation: CloudFramePreparationOutcome | null;
   readonly negativeReason: CloudFrameOutcomeNegativeReason | null;
   readonly displaySnapshotView: GPUTextureView | null;
+  readonly depthView?: GPUTextureView | null;
 }
 
 export function isPreparedCloudFrameOutcome(
@@ -330,7 +331,7 @@ export function executeEnvironmentalEffects(
           context,
           frameState,
           composition.sourceView,
-          depthView,
+          cloudFrame.depthView ?? depthView,
           composition.targetView,
           preparation,
         );

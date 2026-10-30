@@ -70,11 +70,17 @@ fn depthWeight(centerDepth: f32, tapDepth: f32) -> f32 {
   return exp(-(d * d) / (s * s));
 }
 
+fn loadUpscaleSceneDepth(uv: vec2<f32>) -> f32 {
+  let size = vec2<i32>(textureDimensions(sceneDepthTex));
+  let pixel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - vec2<i32>(1));
+  return textureLoad(sceneDepthTex, pixel, 0).r;
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let uv = input.uv;
   let sceneColor = textureSampleLevel(sceneColorTex, linearSampler, uv, 0.0);
-  let centerDepth = textureSampleLevel(sceneDepthTex, linearSampler, uv, 0.0).r;
+  let centerDepth = loadUpscaleSceneDepth(uv);
 
   // Locate this full-res pixel within the half-res grid. The four nearest
   // half-res texel centres form the bilinear footprint; `f` is the bilinear
@@ -109,7 +115,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // against.
     let tapUV = (texel + vec2<f32>(0.5)) * u.invHalfResolution;
     let cloudTap = textureSampleLevel(cloudHalfTex, linearSampler, tapUV, 0.0);
-    let tapDepth = textureSampleLevel(sceneDepthTex, linearSampler, tapUV, 0.0).r;
+    let tapDepth = loadUpscaleSceneDepth(tapUV);
     let w = spatial[i] * depthWeight(centerDepth, tapDepth);
     cloudAccum = cloudAccum + cloudTap * w;
     weightAccum = weightAccum + w;
