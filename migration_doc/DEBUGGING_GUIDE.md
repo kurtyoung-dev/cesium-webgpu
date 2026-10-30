@@ -14,6 +14,27 @@ If the answer isn't in those four, it should be in this guide. If it's not in th
 
 ---
 
+
+## Orbital cloud rings: preserve scene-depth precision
+
+Repeated concentric gaps in orbital clouds can be a depth-format failure rather than procedural noise, cloud types, temporal jitter or insufficient ray steps.
+
+In the October 19 main-based repair, MSAA depth was copied into a filterable `r16float` target. Rounding logarithmic depth to f16 can move a decoded surface by tens of kilometres at a 10,000 km camera altitude. Alternating screen annuli therefore placed the apparent globe in front of a cloud layer only a few kilometres thick. Uniform coverage and a single deck retained the same rings, separating the renderer defect from the new weather generator.
+
+The repair uses a lazy `r32float` cloud-depth resolve owned by `WebGPURenderTarget`. Its format is part of the per-device resolve-pipeline cache identity, and resize/destruction releases its texture. Cloud preparation, mask capture and visible composition carry the same precise view. The march and bilateral upscale use `textureLoad` with `unfilterable-float` bindings, so no optional float32-filtering feature is needed. Other effects retain the existing f16 resolve. Direct single-sample depth remains supported.
+
+When diagnosing this class of failure:
+
+1. Inspect the depth producer's actual format, the cloud binding layout, the log-depth decode near/far values and the exact depth-view identity through preparation/composition.
+2. Reproduce with the existing cloud rig/probe kit at the same camera and clock. Compare the weather field with uniform coverage and compare multiple decks with one deck; retain every failed capture.
+3. Estimate the decoded depth error from the storage quantum against the cloud-layer thickness. More ray steps cannot recover geometry that was clipped before the march.
+4. Verify full/half-resolution and MSAA/single-sample routes. A successful pipeline or bright sky is not evidence of cloud contribution.
+5. Read the image as well as the metric's stated domain. The existing ring-family metric classified some visibly striped baselines as ABSENT/INCONCLUSIVE in this case; do not use that number to close the issue or recursively tune its thresholds.
+
+Evidence: [cause isolation](../Tools/visual-regression/output/astra-return-p2-20260927/3455-RESULT.json), [repair/result](../Tools/visual-regression/output/astra-return-p2-20260927/3456-RESULT.json), [matched 1080p captures](../Tools/visual-regression/output/astra-captures-20260927/3456-precise-orbit-depth-01/), [resolution/MSAA routes](../Tools/visual-regression/output/astra-captures-20260927/3456-precision-fallbacks-02/). The code is an unlanded author patch named by [the main preparation manifest](../Tools/visual-regression/output/astra-return-p2-20260927/MAIN_PREPARATION_STACK.json), not a claim that landing or independent acceptance has happened.
+
+The repeating clipping rings are repaired in those captures. Flat grey cloud interiors and a separate circular lighting/aerial boundary remain open. The additional full-screen resolve and 8,294,400-byte 1080p target must be included in later total GPU/memory accounting; no net performance gain is inferred.
+
 ## Decision Tree — "I have a bug, what do I reach for?"
 
 ```text
