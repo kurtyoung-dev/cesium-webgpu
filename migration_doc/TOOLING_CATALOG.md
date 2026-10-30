@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1809 |
+| Files in census | 1810 |
 | ACTIVE | 1559 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
-| NO @purpose HEADER | 48 |
+| NO @purpose HEADER | 49 |
 | NO @status HEADER | 1 |
-| Classes | probe 683, spec 483, other 378, lib 214, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
+| Classes | probe 683, spec 484, other 378, lib 214, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
 
 ### Tools/ (69)
 
@@ -467,7 +467,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1119)
+### Tools/visual-regression/ (1120)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -550,7 +550,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-demo-probe-routing.spec.mjs | spec | ACTIVE | 2026-09-26 | 7 | Drives the eight routed Weather-Inspector cloud probes through runProbe against a stub browser, so the routing is known to reach a receipt, take its origin from the runtime and refuse port 8080 before an Edge slot is spent on it. |
 | cloud-density-domain.spec.mjs | spec | ACTIVE | 2026-10-30 | 11 | Pins the cloud density-domain layout: noise origin/phase/rotation float offsets shared between WebGPUCloudDensityDomain.ts and the WGSL, via exports. |
 | cloud-density-lod.spec.mjs | spec | ACTIVE | 2026-10-29 | 2 | Pins LOD agreement across CloudDensityDomain.wgsl, ProceduralClouds.wgsl and ProceduralSkyCubemap.wgsl via direct source reads. |
-| cloud-genus-morphology.spec.mjs | spec | ACTIVE | 2026-10-29 | 10 | C13-16 cirrus row: add-only uniform layout, exact CUMULUS byte-neutrality, structural fibre anisotropy/shear metrics, mutation-rejected predicates. |
+| cloud-genus-morphology.spec.mjs | spec | ACTIVE | 2026-10-30 | 10 | C13-16 cirrus row: add-only uniform layout, exact CUMULUS byte-neutrality, structural fibre anisotropy/shear metrics, mutation-rejected predicates. |
 | cloud-harvest-routing.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Drives the six harvested cloud probes (phase, ambient, tod, aerial, special, features) through runProbe on a stub browser whose canvas reads and element screenshots are hand-painted PNGs, so each descriptor is known to stage its rigs, take its origin from the runtime, measure the canvas in Node with the kit metrics and bind every clause to the exit code before an Edge slot is spent on it; the demo probes' own page functions run against a stub window, so their dials are seen to reach the cloud collection. |
 | cloud-ibl-revision.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | Source-anchored guard that WebGPUDynamicEnvironmentMapManager and the procedural cloud renderer keep the IBL revision handshake wired (CRLF-safe). |
 | cloud-image-analysis.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | node:test guard for lib/cloud-image-analysis.mjs: analyze/compare/periodicity-factorial classification on deterministic synthetic noise images. |
@@ -563,8 +563,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-orbital-ladder-contract.spec.mjs | spec | ACTIVE | 2026-09-26 | 9 | Unit-checks the orbital ladder's four statistics against geometry the plan states independently, then drives the REAL descriptor through runProbe with a stubbed browser so the instrument is known to reach a verdict before an Edge slot is spent on it. |
 | cloud-photometry-rule.spec.mjs | spec | ACTIVE | 2026-09-12 | 7 | Asserts the photometric path measures linear PRE-Reinhard radiance with the sun disc masked, that measuring after the tonemapper gives a different answer, and that the harness capture path supplies the live exposure rather than a default. |
 | cloud-primary-ray.spec.mjs | spec | ACTIVE | 2026-10-29 | 5 | Validates that primary procedural-cloud rays preserve framebuffer UV row order through inverse projection. |
-| cloud-primary-shell.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | Validates CloudVolumetrics WGS84 shell ray-root math at orbital heights with f32-conditioning-aware tolerances (nadir / near-horizon / grazing). |
+| cloud-primary-shell.spec.mjs | spec | ACTIVE | 2026-10-30 | 6 | Validates CloudVolumetrics WGS84 shell ray-root math at orbital heights with f32-conditioning-aware tolerances (nadir / near-horizon / grazing). |
 | cloud-probe-harness.spec.mjs | spec | ACTIVE | 2026-09-16 | 11 | Guards lib/cloud-probe-harness.mjs + cloud-perf-evidence pass resolution: config round-trip through the collection contract across six cloud probes. |
+| cloud-radiance-transport.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
 | cloud-ray-jitter.spec.mjs | spec | ACTIVE | 2026-10-29 | 6 | Pins the cloud ray-jitter contract across ProceduralClouds.wgsl, CloudDensityDomain.wgsl, the renderer and tier presets via source reads. |
 | cloud-realization-override.spec.mjs | spec | ACTIVE | 2026-10-29 | 4 | Executes the pure cloud resolver and the renderer's realization publisher from Node to prove the debug realization override moves exactly the axis it names on the tier path (steps, or one qualityFlags bit) while the escape hatch cannot, that the resolver is byte-identical to its reference with no override, that the ask and the realised value differ exactly when a clamp, a restricted bit or an absent resource moved the ask, that a release strip leaves no working override, and that each of those properties goes red when the override is made unreachable. |
 | cloud-reconstruction-attachments.spec.mjs | spec | ACTIVE | 2026-10-29 | 11 | C13-09: attachment table add-only, march shader content-hash pin enforcing the C13-39 static-register constraint, stage default-OFF byte/cost neutral. |
@@ -576,11 +577,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-spectrum.spec.mjs | spec | ACTIVE | 2026-09-12 | 6 | node:test guard for lib/cloud-spectrum.mjs (C13-N04, O5 Structure): |
 | cloud-temporal-rte.spec.mjs | spec | ACTIVE | 2026-09-16 | 5 | Pins WebGPUCloudTemporalHistory reset classification (teleport, morph, deck bounds, scene mode...) and commit semantics vs the engine module. |
 | cloud-temporal-source-view.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins that both cloud temporal bind-group pairs rebuild when the half-res target is replaced at an unchanged size, and that the check is live rather than inert. |
-| cloud-tier-lighting-dials.spec.mjs | spec | ACTIVE | 2026-09-18 | 6 | C13-N11: pins the 172-175 tail slots and the 176-float block, the conditional powder byte-identity at 0.5, the guarded floors' neutrality at 0, each dial's authority and direction, the byte-identity equivalence (identical IFF powder 0.5 and both floors 0) with the per-tier delta reported, the consumer-side parse that makes a neutered powder use observable, and QF_PROFILE_ON deprecated in place. |
+| cloud-tier-lighting-dials.spec.mjs | spec | ACTIVE | 2026-10-30 | 6 | C13-N11: pins the 172-175 tail slots and the 176-float block, the conditional powder byte-identity at 0.5, the guarded floors' neutrality at 0, each dial's authority and direction, the byte-identity equivalence (identical IFF powder 0.5 and both floors 0) with the per-tier delta reported, the consumer-side parse that makes a neutered powder use observable, and QF_PROFILE_ON deprecated in place. |
 | cloud-tier-single-source.spec.mjs | spec | ACTIVE | 2026-10-30 | 10 | Executes the real preset→uniform seam from Node to prove a tier-table edit reaches the packed float, derives each float's flat index by walking the renderer's packer and cross-checking it against the WGSL struct, and pins every current default byte-identical to the deleted second resolver. |
 | cloud-tour-sequences.spec.mjs | spec | ACTIVE | 2026-09-12 | 11 | C13-01 tour contract: fixture/sequence coverage per the queue row, pinned derived clocks, engine-export constants, probe capture discipline. |
 | cloud-u2-perf-evidence.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Guards lib/cloud-u2-perf-evidence.mjs manifest assessment for C13-16 U2 perf evidence (no-regression / unchanged pass expectations, lane shapes). |
-| cloud-uniform-layout.spec.mjs | spec | ACTIVE | — | 3 | Pins the cloud main uniform block's named slot layout (the R-2026-09-26-12 slot rule, restated for this layout) against the WGSL struct's computed offsets and the renderer's allocation, and executes the tail writers' reserved pads. |
+| cloud-uniform-layout.spec.mjs | spec | ACTIVE | 2026-10-30 | 3 | Pins the cloud main uniform block's named slot layout (the R-2026-09-26-12 slot rule, restated for this layout) against the WGSL struct's computed offsets and the renderer's allocation, and executes the tail writers' reserved pads. |
 | clustered-light-upload-invalidation.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 1 | — |
 | clustered-probe-chrome.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Drives each clustered-lighting probe that captures the CesiumViewer canvas against a fake page whose widget strip leaves an element over the canvas at one capture at a time, and requires a viewer-chrome-over-canvas refusal at exactly that capture, a strip taken after the scene step and directly before every capture, and a record-only disposition for the lights-resize record frame that no verdict reads. |
 | clustered-probe-verdicts.spec.mjs | spec | ACTIVE | 2026-10-09 | 12 | Drives every migrated clustered-lighting probe's exported verdict function one step inside and one step outside each bar the pre-harvest probe applied, pins the family's runtime shape and rig transcriptions, refuses a WebGL-only run before any browser work, and runs the zero-work gate's clustered-label inventory over the real engine sources as a standing Node gate. |
@@ -1558,7 +1559,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-classification-instance-color.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Drives the real WebGPU ground-primitive colour packer over a real BatchTable and a real ColorGeometryInstanceAttribute, and requires the four uniform floats the classification fragment shader returns to quantize to the instance colour rather than to the uniform's untouched fallback. |
 | webgpu-cloud-frame-error-context.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Pins that cloud-frame failures in the post-frustum chain and the environmental stage are reported through the context-carrying reporter, so a multi-context session can tell which context failed. |
 | webgpu-cloud-godray-current-mask-order.spec.mjs | spec | NO @purpose HEADER | 2026-10-30 | 6 | — |
-| webgpu-cloud-shadow-bind-group-cache.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Drives the real WebGPUCloudShadowBindGroupCache on a fake device: per-slot dedupe, descriptor identity, invalidation on resource change. |
+| webgpu-cloud-shadow-bind-group-cache.spec.mjs | spec | ACTIVE | 2026-10-30 | 2 | Drives the real WebGPUCloudShadowBindGroupCache on a fake device: per-slot dedupe, descriptor identity, invalidation on resource change. |
 | webgpu-clustered-zero-light-dispatch.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Proves settled zero-light frames avoid redundant params writes and compute passes. |
 | webgpu-dynamic-environment-recovery.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Source-anchored pins that dynamic environment-map caches are owned by one device generation and recover across manager/capture/Scene wiring. |
 | webgpu-frame-accounting-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Guard for the frame-breakdown probe's accounting: phase names match the engine profiler, coverage/overlap validity, request-render suppression. |
@@ -1850,7 +1851,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-model-preparation-evidence.mjs | lib | ACTIVE | 2026-08-16 | 3 | Accumulates and validates WebGPU model preparation/demand counters as measurement-window evidence for performance workloads. |
 | wgsl-derivative-uniformity.mjs | lib | ACTIVE | 2026-09-01 | 8 | Reports implicit-derivative calls reached through non-uniform control flow without requiring a browser, GPU, or WGSL compiler. |
 | wgsl-function-body.mjs | lib | ACTIVE | 2026-10-09 | 2 | Builds an inertness mutant of a shader helper by swapping the whole body of a named WGSL function, so a mutant does not depend on the helper's current wording. |
-| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 33 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
+| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 34 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
 | wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 24 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
 ### Tools/visual-regression/lib/metrics/ (50)

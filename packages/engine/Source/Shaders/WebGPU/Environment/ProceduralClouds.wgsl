@@ -2924,19 +2924,15 @@ fn marchDeck(
     tProcessed = t;
   }
 
-  // HDR tone-map the accumulated cloud radiance before compositing. The
-  // dual-lobe phase peaks around 6× at the forward lobe and is multiplied by a
-  // sun intensity of ~10, so the radiance peaks around 20-30 and clips every
-  // cloud to flat white without this, hiding the silver lining along with the
-  // ambient, time-of-day and aerial terms. Exposure plus Reinhard maps it to
-  // [0,1), so the bright sun-facing edges read as a rim over a darker body.
-  let exposed = weightedColor * cloud.exposure;
-  let toneMapped = exposed / (exposed + vec3<f32>(1.0));
+  // The accumulated radiance already includes opacity. Tone-map its straight
+  // source color so the deck compositor applies opacity exactly once.
+  let opacity = 1.0 - transmittance;
+  let toneMapped = cloudToneMappedRadiance(weightedColor, opacity, cloud.exposure);
 
   // Use the extinction weights that produced the pixel, so a nearby opaque
   // cloud does not inherit the range of the otherwise empty shell.
   let visible = cloudVisibleAerialSample(
-    visibleDistanceSum, visibleAltitudeSum, 1.0 - transmittance,
+    visibleDistanceSum, visibleAltitudeSum, opacity,
     tStart, tEnd, deckBottom, deckTop,
   );
   let visiblePos = rayOrigin + rayDir * visible.x;
@@ -2959,7 +2955,7 @@ fn marchDeck(
   }
 
   result.hazed = hazed;
-  result.alpha = 1.0 - transmittance;
+  result.alpha = opacity;
   return result;
 }
 

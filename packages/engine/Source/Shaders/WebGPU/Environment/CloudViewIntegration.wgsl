@@ -1,6 +1,19 @@
 // Shared view-ray deck selection and premultiplied integration.
 // The detailed density march has one call site for both view entrypoints.
 
+// Convert extinction-weighted HDR radiance to straight color. The opacity
+// normalization cancels algebraically, keeping very thin contributions bounded.
+fn cloudToneMappedRadiance(
+  weightedRadiance: vec3<f32>,
+  opacity: f32,
+  exposure: f32,
+) -> vec3<f32> {
+  let exposed = weightedRadiance * exposure;
+  let visible = opacity > 0.0;
+  let denominator = select(vec3<f32>(1.0), exposed + vec3<f32>(opacity), visible);
+  return select(vec3<f32>(0.0), exposed / denominator, visible);
+}
+
 struct CloudViewResult {
   radiance: vec3<f32>,
   alpha: f32,

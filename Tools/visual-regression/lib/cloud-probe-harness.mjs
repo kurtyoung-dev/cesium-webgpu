@@ -390,10 +390,11 @@ export function installCloudProbeHarness() {
      *
      * §1.3 of the Campaign 13 v2 plan makes one rule binding on every
      * photometric statistic: measure linear PRE-tonemap values, with the sun
-     * disc masked. The march tone-maps at `ProceduralClouds.wgsl:2645-2646`
-     * (`exposed = weightedColor * cloud.exposure; toneMapped = exposed /
-     * (exposed + 1)`), so a ratio taken off the canvas bytes is a ratio of that
-     * curve, not of the clouds.
+     * disc masked. The march tone-maps in `cloudToneMappedRadiance`
+     * (CloudViewIntegration.wgsl: `exposed = weightedRadiance * exposure`, then
+     * `exposed / (exposed + opacity)`, which on straight radiance is Reinhard),
+     * so a ratio taken off the canvas bytes is a ratio of that curve, not of
+     * the clouds.
      *
      * Inverting it needs the exposure the march ACTUALLY used — not the
      * packer's 0.22 fallback, and not a constant transcribed into a probe. That

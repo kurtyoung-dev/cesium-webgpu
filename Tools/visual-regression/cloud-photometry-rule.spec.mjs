@@ -105,7 +105,7 @@ function paintSaturatedDisc(rgba, { width, centreX, centreY, radiusPixels }) {
 // 1. The operator this module inverts is still the operator the shader applies
 // ---------------------------------------------------------------------------
 
-test("the pinned Reinhard operator is the one ProceduralClouds.wgsl applies", () => {
+test("the pinned Reinhard operator is the one the cloud march applies", () => {
   const shaderPath = path.join(REPO_ROOT, REINHARD_OPERATOR_PIN.file);
   assert.ok(
     fs.existsSync(shaderPath),
@@ -125,11 +125,17 @@ test("the pinned Reinhard operator is the one ProceduralClouds.wgsl applies", ()
   );
   assert.ok(mapIndex >= 0, "the Reinhard map is no longer in the shader");
   // Adjacency matters: the inverse assumes the map consumes the exposed value
-  // directly. Something inserted between them would break that assumption
-  // without either line disappearing.
+  // directly. Since 3461 one line sits between them, the opacity > 0 guard that
+  // keeps a transparent pixel at zero; anything else inserted would break that
+  // assumption without either line disappearing.
+  assert.equal(
+    lines[exposeIndex + 1].trim(),
+    "let visible = opacity > 0.0;",
+    "the only line between the exposure multiply and the map is the visibility guard",
+  );
   assert.equal(
     mapIndex,
-    exposeIndex + 1,
+    exposeIndex + 2,
     `the exposure multiply (line ${exposeIndex + 1}) and the Reinhard map (line ${
       mapIndex + 1
     }) are no longer adjacent; lib/cloud-photometry.mjs inverts them as a pair`,
@@ -137,7 +143,7 @@ test("the pinned Reinhard operator is the one ProceduralClouds.wgsl applies", ()
   // And the shader tone-maps ONLY once on this path: two Reinhards in the
   // composite would make a single inverse a half-measure.
   const reinhardOccurrences = lines.filter((line) =>
-    line.includes("exposed + vec3<f32>(1.0)"),
+    line.includes("exposed + vec3<f32>(opacity)"),
   ).length;
   assert.equal(
     reinhardOccurrences,

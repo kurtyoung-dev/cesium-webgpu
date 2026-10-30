@@ -9,16 +9,25 @@ import { rectRoi, requireFinite } from "./masks.mjs";
  * The exact operator this module inverts, as it is written in the shader.
  *
  * This string is a PIN, not documentation: `cloud-photometry-rule.spec.mjs`
- * asserts it still occurs in `ProceduralClouds.wgsl`. If a later row replaces
- * Reinhard with ACES, a filmic curve or an exposure-only path, the inverse here
- * stops being the inverse of what the renderer did — and the spec goes red in
- * the same commit rather than every photometric bar silently drifting.
+ * asserts it still occurs in the march's tone-map helper. If a later row
+ * replaces Reinhard with ACES, a filmic curve or an exposure-only path, the
+ * inverse here stops being the inverse of what the renderer did — and the spec
+ * goes red in the same commit rather than every photometric bar silently
+ * drifting.
+ *
+ * Since unit 3461 the helper is `cloudToneMappedRadiance` in
+ * CloudViewIntegration.wgsl: it maps the extinction-weighted radiance w as
+ * e / (e + opacity), e = w * exposure, and the deck compositor applies opacity
+ * once. In the straight radiance L = w / opacity, which is what the bars
+ * measure, that is exactly L * exposure / (L * exposure + 1), so the forward and
+ * inverse below are unchanged.
  */
 export const REINHARD_OPERATOR_PIN = Object.freeze({
-  file: "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
-  exposeLine: "let exposed = weightedColor * cloud.exposure;",
-  mapLine: "let toneMapped = exposed / (exposed + vec3<f32>(1.0));",
-  citedAs: "ProceduralClouds.wgsl:2645-2646",
+  file: "packages/engine/Source/Shaders/WebGPU/Environment/CloudViewIntegration.wgsl",
+  exposeLine: "let exposed = weightedRadiance * exposure;",
+  mapLine:
+    "let denominator = select(vec3<f32>(1.0), exposed + vec3<f32>(opacity), visible);",
+  citedAs: "CloudViewIntegration.wgsl:11-14 (cloudToneMappedRadiance)",
 });
 
 /**
