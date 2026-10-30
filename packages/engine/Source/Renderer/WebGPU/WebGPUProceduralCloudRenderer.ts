@@ -52,10 +52,21 @@ import CloudViewIntegrationWGSL from "../../Shaders/WebGPU/Environment/CloudView
 import CloudAerialTransportWGSL from "../../Shaders/WebGPU/Environment/CloudAerialTransport.js";
 import CloudDensityFormationWGSL from "../../Shaders/WebGPU/Environment/CloudDensityFormation.js";
 import CloudDensityMomentsWGSL from "../../Shaders/WebGPU/Environment/CloudDensityMoments.js";
+import CloudMaterialFlowWGSL from "../../Shaders/WebGPU/Environment/CloudMaterialFlow.js";
+import {
+  CloudMaterialFlowResources,
+  type CloudMaterialFlowField,
+} from "./WebGPUCloudMaterialFlow.js";
 import { CloudDensityMomentsResources } from "./WebGPUCloudDensityMoments.js";
+import {
+  CLOUD_MATERIAL_FLOW_FLOATS,
+  CLOUD_QUALITY_FLAGS_SLOT,
+  writeCloudMaterialFlowUniforms,
+} from "./WebGPUCloudUniformLayout.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
+  storageBuffer,
   texture,
   sampler,
   Stage,
@@ -96,7 +107,6 @@ import {
   type CloudTierPreset,
 } from "./WebGPUCloudTierPresets.js";
 import {
-  CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS,
   CLOUD_DENSITY_ORIGIN_PHASE_FLOATS,
   CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS,
   writeCloudDensityAdvectedOriginPhases,
@@ -211,9 +221,10 @@ const CLOUD_UNIFORM_FLOATS =
   148 +
   CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS +
   CLOUD_GENUS_MORPHOLOGY_FLOATS +
-  CLOUD_TIER_LIGHTING_FLOATS;
+  CLOUD_TIER_LIGHTING_FLOATS +
+  CLOUD_MATERIAL_FLOW_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
-const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
+const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
 // High-word define masks for the emitting march and the consuming resolve.
 // Named once so no call site spells a bit inline, and so a spec can assert the
 // renderer preprocesses with the axis the registry documents rather than with a
@@ -258,6 +269,7 @@ export interface CloudMainBindGroupEntry {
   transmittanceView: GPUTextureView;
   lutSampler: GPUSampler;
   densityMomentsView: GPUTextureView;
+  materialFlowBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
 }
 
@@ -361,6 +373,7 @@ interface CloudNonColorBindings {
   readonly transmittance: GPUTextureView;
   readonly lutSampler: GPUSampler;
   readonly densityMomentsView: GPUTextureView;
+  readonly materialFlowBuffer: GPUBuffer;
 }
 
 interface PreparedCloudFrame {
@@ -557,6 +570,9 @@ export interface CloudCache {
   // procedural map, >= 0 = the uploaded `WeatherProvider.version`.
   weatherProviderVersion: number;
   weatherProviderBytes: Uint8Array | null;
+  weatherFlow: CloudMaterialFlowField | undefined;
+  materialFlow: CloudMaterialFlowResources;
+  geographicWindRequested: boolean;
   proceduralWeatherBytes: Uint8Array | null;
   proceduralWeatherPending: boolean;
   proceduralWeatherFailed: boolean;
@@ -1318,6 +1334,9 @@ export function ensureCloudCache(
       weatherSampler: null,
       weatherProviderVersion: -2,
       weatherProviderBytes: null,
+      weatherFlow: undefined,
+      materialFlow: new CloudMaterialFlowResources(),
+      geographicWindRequested: false,
       proceduralWeatherBytes: null,
       proceduralWeatherPending: false,
       proceduralWeatherFailed: false,
@@ -1500,6 +1519,8 @@ export function getOrCreateCloudMainBindGroup(
   const exactDetailView = exactBindings?.detailView ?? detailView;
   const exactNoiseSampler = exactBindings?.noiseSampler ?? noiseSampler;
   const densityMomentsView = exactBindings?.densityMomentsView ?? shapeView;
+  const materialFlowBuffer =
+    exactBindings?.materialFlowBuffer ?? cache.materialFlow.buffer!;
   const exactSkyView = exactBindings?.skyView ?? lutViews.skyView;
   const exactMultipleScatter =
     exactBindings?.multipleScatter ?? lutViews.multipleScatter;
@@ -1522,7 +1543,8 @@ export function getOrCreateCloudMainBindGroup(
       entry.multipleScatterView === exactMultipleScatter &&
       entry.transmittanceView === exactTransmittance &&
       entry.lutSampler === lutSampler &&
-      entry.densityMomentsView === densityMomentsView
+      entry.densityMomentsView === densityMomentsView &&
+      entry.materialFlowBuffer === materialFlowBuffer
     ) {
       return entry.bindGroup;
     }
@@ -1545,6 +1567,7 @@ export function getOrCreateCloudMainBindGroup(
       { binding: 11, resource: exactTransmittance },
       { binding: 12, resource: lutSampler },
       { binding: 14, resource: densityMomentsView },
+      { binding: 15, resource: { buffer: materialFlowBuffer } },
     ],
   });
   const slot = cache.mainBindGroupNextSlot;
@@ -1564,6 +1587,7 @@ export function getOrCreateCloudMainBindGroup(
     transmittanceView: exactTransmittance,
     lutSampler,
     densityMomentsView,
+    materialFlowBuffer,
     bindGroup,
   };
   cache.mainBindGroupNextSlot = (slot + 1) & 1;
@@ -2766,6 +2790,7 @@ function ensureWeatherView(
   providerVersion: number,
   lease: CloudPreparationLease,
   providerPreparing = false,
+  providerFlow?: CloudMaterialFlowField,
 ): GPUTextureView {
   verifyCloudMutationLease(cache, lease);
   if (!cache.weatherFallbackView) {
@@ -2864,12 +2889,14 @@ function ensureWeatherView(
       device.queue.writeTexture(dst, providerBytes, layout, size);
       cache.weatherProviderVersion = providerVersion;
       cache.weatherProviderBytes = providerBytes;
+      cache.weatherFlow = providerFlow;
       cache.temporalHistoryPendingResetReasons |= CLOUD_TEMPORAL_RESET_RESOURCE;
     }
   } else if (cache.weatherProviderVersion !== -1) {
     device.queue.writeTexture(dst, cache.proceduralWeatherBytes!, layout, size);
     cache.weatherProviderVersion = -1;
     cache.weatherProviderBytes = null;
+    cache.weatherFlow = undefined;
     cache.temporalHistoryPendingResetReasons |= CLOUD_TEMPORAL_RESET_RESOURCE;
   }
   return cache.weatherView!;
@@ -3068,7 +3095,10 @@ function requestCloudMarchPipeline(
     (bakedOnly ? ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY : 0) |
     (emit ? CLOUD_MARCH_EMIT_DEFINES_HI : 0) |
     (preview ? ShaderDefineHi.CLOUD_LIGHTING_PREVIEW : 0) |
-    (moments && !preview ? ShaderDefineHi.CLOUD_DENSITY_MOMENTS : 0);
+    (moments && !preview ? ShaderDefineHi.CLOUD_DENSITY_MOMENTS : 0) |
+    (cache.geographicWindRequested && !preview
+      ? ShaderDefineHi.CLOUD_GEOGRAPHIC_WIND
+      : 0);
   const key = `${format}:${definesHi}`;
   //>>includeStart('debug', pragmas.debug);
   const requestStartedAt = performance.now();
@@ -3212,6 +3242,7 @@ function initializeCloudPipeline(
     texture(11, Stage.FRAGMENT),
     sampler(12, Stage.FRAGMENT),
     texture(14, Stage.FRAGMENT, { viewDimension: "3d" }),
+    storageBuffer(15, Stage.FRAGMENT, { readOnly: true }),
   ]);
 
   cache.sampler = device.createSampler({
@@ -3337,6 +3368,7 @@ function ensureShadowResources(
         texture(7, Stage.FRAGMENT, { viewDimension: "3d" }), // detail noise
         sampler(8, Stage.FRAGMENT),
         uniformBuffer(13, Stage.FRAGMENT), // CloudShadowUniforms (sun-view)
+        storageBuffer(15, Stage.FRAGMENT, { readOnly: true }),
       ],
     );
     const shaderModule = cache.maskShaderModule!;
@@ -3914,6 +3946,18 @@ export function prepareCloudFrameAndEncodeMask(
     const providerVersion = weatherProvider?.version ?? -1;
     const weatherEnabled =
       config.cloudWeatherMap === true || providerBytes !== null;
+    const weatherView = ensureWeatherView(
+      context,
+      device,
+      cache,
+      weatherEnabled,
+      providerBytes,
+      providerVersion,
+      lease,
+      weatherProvider?.isPreparing === true && !weatherProvider.lastError,
+      weatherProvider?.getFlowField?.(),
+    );
+    cache.geographicWindRequested = config.cloudGeographicWind === true;
     // Requested is not bound. While the procedural map is still preparing, or
     // its preparation failed, `ensureWeatherView` binds the 1x1 fallback, and a
     // shader that read that texel as weather would draw maximum coverage
@@ -4325,41 +4369,9 @@ export function prepareCloudFrameAndEncodeMask(
     data[offset++] = 0.0; // 146 pad
     data[offset++] = 0.0; // 147 pad
 
-    // 148-159 — f64 planet-domain origin phases, three vec4 rows. The march
-    // reconstructs density coordinates from these camera-origin phases plus its
-    // own small camera-relative sample offset. Wind advection is folded into the
-    // origin here in f64, so a long timeline scrub never constructs a
-    // planet-scale f32 displacement in the shader.
-    writeCloudDensityAdvectedOriginPhases(
-      data,
-      offset,
-      camPos?.x ?? 0.0,
-      camPos?.y ?? 0.0,
-      camPos?.z ?? 0.0,
-      cloudPuffSize,
-      cloudWindX,
-      cloudWindY,
-      cloudWindSpeed,
-      cloudTimeSeconds,
-    );
-    offset += CLOUD_DENSITY_ORIGIN_PHASE_FLOATS;
-
-    // 160-167 — the encoded canonical morphology origin, as high xyz plus pad and
-    // low xyz plus pad. The analytic species and feature terms work in an
-    // unrotated x/z wind plane, which this supplies without them having to consume
-    // the wrapped texture coordinates.
-    writeCloudMorphologyOriginHighLow(
-      data,
-      offset,
-      camPos?.x ?? 0.0,
-      camPos?.y ?? 0.0,
-      camPos?.z ?? 0.0,
-      cloudWindX,
-      cloudWindY,
-      cloudWindSpeed,
-      cloudTimeSeconds,
-    );
-    offset += CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS;
+    // Origin rows are packed after the final density-domain realization.
+    const densityOriginOffset = offset;
+    offset += CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS;
 
     // 168-171 — per-genus morphology, carrying two {@link CloudTypeProfile} axes
     // into the shader: the fibrous or puffy erosion style, which becomes an
@@ -4438,6 +4450,49 @@ export function prepareCloudFrameAndEncodeMask(
       cloudMarchBudget.asked,
     );
 
+    const geographicFlow =
+      cache.geographicWindRequested &&
+      weatherEnabled &&
+      (data[CLOUD_QUALITY_FLAGS_SLOT] &
+        (CLOUD_QF_PLANET_DENSITY | CLOUD_QF_NOISE_BAKED)) ===
+        (CLOUD_QF_PLANET_DENSITY | CLOUD_QF_NOISE_BAKED)
+        ? cache.weatherFlow
+        : undefined;
+    const originWindSpeed = geographicFlow ? 0 : cloudWindSpeed;
+    // 176-179: the flow age, its enable flag and two reserved pads.
+    offset = writeCloudMaterialFlowUniforms(
+      data,
+      offset,
+      cache.materialFlow.ageSeconds(geographicFlow, frameState.time),
+      Boolean(geographicFlow),
+    );
+    // Density phases are reduced in CPU doubles before upload. Geographic
+    // transport supplies bounded ECEF deltas at each probe instead of adding
+    // the legacy global X/Z scroll a second time.
+    writeCloudDensityAdvectedOriginPhases(
+      data,
+      densityOriginOffset,
+      camPos?.x ?? 0,
+      camPos?.y ?? 0,
+      camPos?.z ?? 0,
+      cloudPuffSize,
+      cloudWindX,
+      cloudWindY,
+      originWindSpeed,
+      cloudTimeSeconds,
+    );
+    writeCloudMorphologyOriginHighLow(
+      data,
+      densityOriginOffset + CLOUD_DENSITY_ORIGIN_PHASE_FLOATS,
+      camPos?.x ?? 0,
+      camPos?.y ?? 0,
+      camPos?.z ?? 0,
+      cloudWindX,
+      cloudWindY,
+      originWindSpeed,
+      cloudTimeSeconds,
+    );
+
     // Statistics prepare after the first real cloud draw. Weather and time are
     // lookup inputs, so they do not invalidate this material distribution.
     const baseDensityMaterial =
@@ -4454,7 +4509,7 @@ export function prepareCloudFrameAndEncodeMask(
       baseDensityMaterial &&
       cache.noiseBaked &&
       cache.executeSerial > 0 &&
-      (data[74] & CLOUD_QF_PLANET_DENSITY) !== 0
+      (data[CLOUD_QUALITY_FLAGS_SLOT] & CLOUD_QF_PLANET_DENSITY) !== 0
     ) {
       cache.densityMoments ??= new CloudDensityMomentsResources(device);
       const view = cache.densityMoments.prepare(
@@ -4494,18 +4549,6 @@ export function prepareCloudFrameAndEncodeMask(
       return finishNegativeCloudFrameAttempt(attempt, "resource-not-ready");
     }
 
-    // Resolve the weather view: the procedural map when enabled, a 1×1 white
-    // fallback otherwise.
-    const weatherView = ensureWeatherView(
-      context,
-      device,
-      cache,
-      weatherEnabled,
-      providerBytes,
-      providerVersion,
-      lease,
-      weatherProvider?.isPreparing === true && !weatherProvider.lastError,
-    );
     // `noise` (the 3D shape/detail views + sampler) was resolved up-front so the
     // qualityFlags noiseSource bit reflects the same-frame baked state.
 
@@ -4523,6 +4566,11 @@ export function prepareCloudFrameAndEncodeMask(
 
     verifyCloudMutationLease(cache, lease);
     device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
+    const materialFlowBuffer = cache.materialFlow.prepare(
+      device,
+      geographicFlow,
+      frameState.frameNumber,
+    );
     const uniformEpoch: CloudMainUniformEpoch = Object.freeze({
       serial: ++cache.uniformEpochSerial,
       buffer: cache.uniformBuffer!,
@@ -4547,6 +4595,7 @@ export function prepareCloudFrameAndEncodeMask(
       transmittance: lutViews.transmittance,
       lutSampler: cache.lutSampler!,
       densityMomentsView,
+      materialFlowBuffer,
     });
 
     const earlyMaskGroup = getOrCreateCloudMainBindGroup(
@@ -4704,6 +4753,7 @@ export function prepareCloudFrameAndEncodeMask(
               cache.shadowUniformBuffer!,
               0,
               CLOUD_SHADOW_UNIFORM_BYTES,
+              materialFlowBuffer,
             );
             const shadowPass = encoder.beginRenderPass(
               timedCloudPass(context, {
@@ -4833,6 +4883,7 @@ export function prepareCloudFrameAndEncodeMask(
                     cache.shadowCascadeUniformBuffer!,
                     ci * CLOUD_SHADOW_CASCADE_STRIDE_BYTES,
                     CLOUD_SHADOW_UNIFORM_BYTES,
+                    materialFlowBuffer,
                   );
                   cascadePass.setBindGroup(0, cascadeBindGroup);
                   cascadePass.draw(3);
@@ -5772,6 +5823,9 @@ export function destroyProceduralCloudResources(
       cache.uniformBuffer,
       "Cloud uniform buffer",
     );
+    cache.materialFlow.destroy();
+    cache.weatherFlow = undefined;
+    cache.geographicWindRequested = false;
     cache.densityMoments?.destroy();
     cache.densityMoments = null;
     cache.densityMomentsEnabled = false;

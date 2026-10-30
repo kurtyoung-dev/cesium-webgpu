@@ -86,6 +86,7 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { CLOUD_UNIFORM_LAYOUT_FLOATS } from "../../packages/engine/Source/Renderer/WebGPU/WebGPUCloudUniformLayout.ts";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -219,7 +220,9 @@ const DIAL_ROW = Object.freeze([
   { name: "ambientFloor", slot: 174 },
   { name: "_padQ", slot: 175 },
 ]);
-const CLOUD_UNIFORM_TOTAL_FLOATS = 176;
+// The block's size is the layout module's (the slot rule, plan 4.6): the dial
+// row is the frozen prefix's last row, and the append-only tail follows it.
+const CLOUD_UNIFORM_TOTAL_FLOATS = CLOUD_UNIFORM_LAYOUT_FLOATS;
 // The block immediately before the dial row, spot-checked so an "append" that
 // silently reordered its neighbours is caught.
 const PRECEDING_BLOCK = Object.freeze([
@@ -660,13 +663,17 @@ const historical = buildModel(historicalSource);
 
 // ── Layout ───────────────────────────────────────────────────────────────────
 
-test("the dial row is the struct tail, at slots 172-175", () => {
+test("the dial row closes the frozen prefix, at slots 172-175", () => {
   const { fields, total } = parseCloudUniforms(shippedSource);
-  const tail = fields.slice(-DIAL_ROW.length);
+  const tail = fields.filter((f) => f.from >= 172 && f.to <= 175);
   assert.deepEqual(
     tail.map((f) => ({ name: f.name, slot: f.from })),
     DIAL_ROW.map((d) => ({ name: d.name, slot: d.slot })),
-    "the four dial floats must be the last four fields, in slot order",
+    "the four dial floats must be the fields at 172-175, in slot order",
+  );
+  assert.ok(
+    fields.some((f) => f.from === 176) || total === 176,
+    "the append-only tail starts right after the dial row",
   );
   for (const field of tail) {
     assert.equal(field.type, "f32", `${field.name} must be a single float`);
@@ -674,7 +681,7 @@ test("the dial row is the struct tail, at slots 172-175", () => {
   assert.equal(
     total,
     CLOUD_UNIFORM_TOTAL_FLOATS,
-    "the uniform block is 176 floats — this is the number the packing site must agree with",
+    "the uniform block is the layout module's size — the number the packing site must agree with",
   );
 });
 

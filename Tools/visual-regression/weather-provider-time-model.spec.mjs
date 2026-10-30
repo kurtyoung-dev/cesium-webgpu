@@ -350,3 +350,199 @@ test("asynchronous provider publication owns tensor/coverage input and drops a c
   assert.equal(cancelled.lastError, null);
   assert.equal(cancelled.getEnvironmentalTensors(), null);
 });
+
+const { tensorCloudMaterialFlow } =
+  await import("../../packages/engine/Source/Scene/Weather/TensorCloudMaterialFlow.ts");
+const { sampleCloudMaterialFlow, validCloudMaterialFlow } =
+  await import("../../packages/engine/Source/Scene/Weather/CloudMaterialFlow.ts");
+const { CloudMaterialFlowResources } =
+  await import("../../packages/engine/Source/Renderer/WebGPU/WebGPUCloudMaterialFlow.ts");
+const { default: JulianDate } =
+  await import("../../packages/engine/Source/Core/JulianDate.js");
+
+function windTensor() {
+  const width = 64,
+    height = 32;
+  const atmosphericBytes = new Uint8Array(width * height * 4);
+  for (let i = 0; i < atmosphericBytes.length; i += 4) {
+    atmosphericBytes[i] = 213;
+    atmosphericBytes[i + 1] = 128;
+  }
+  return {
+    width,
+    height,
+    atmosphericBytes,
+    marineBytes: new Uint8Array(atmosphericBytes.length),
+  };
+}
+
+test("tensor material wind converts geographic components before interpolation and closes the dateline and poles", async () => {
+  const tensor = windTensor();
+  const flow = await tensorCloudMaterialFlow(tensor, T0);
+  assert.ok(validCloudMaterialFlow(flow));
+  assert.equal(flow.timeMs, T0);
+  assert.ok(flow.displacement.every((value) => value === 0));
+  for (const i of [7, 498, 1302]) {
+    const lon = (((i % flow.width) + 0.5) / flow.width - 0.5) * Math.PI * 2;
+    const lat =
+      (0.5 - (Math.floor(i / flow.width) + 0.5) / flow.height) * Math.PI;
+    const position = [
+      Math.cos(lat) * Math.cos(lon),
+      Math.cos(lat) * Math.sin(lon),
+      Math.sin(lat),
+    ];
+    const offset = i * 4;
+    const dot = position.reduce(
+      (sum, value, axis) => sum + value * flow.velocity[offset + axis],
+      0,
+    );
+    assert.ok(
+      Math.abs(dot) < 0.000003,
+      "stored velocity is an ECEF tangent delta",
+    );
+  }
+  const sample = (lon, lat) => {
+    const displacement = new Float64Array(3),
+      velocity = new Float64Array(3);
+    sampleCloudMaterialFlow(flow, lon, lat, displacement, velocity);
+    return velocity;
+  };
+  assert.ok(
+    Math.hypot(
+      ...sample(Math.PI - 1e-9, 0.3).map(
+        (v, i) => v - sample(-Math.PI + 1e-9, 0.3)[i],
+      ),
+    ) < 1e-6,
+  );
+  for (const lat of [-Math.PI / 2, Math.PI / 2]) {
+    assert.deepEqual(sample(-2.1, lat), sample(1.4, lat));
+    assert.ok(
+      Math.hypot(
+        ...sample(1.4, lat).map((v, i) => v - sample(1.4, lat * (1 - 1e-9))[i]),
+      ) < 1e-5,
+    );
+  }
+});
+
+test("tensor material preparation yields and cancellation prevents a completed field", async () => {
+  let turns = 0;
+  const handle = setInterval(() => turns++, 0);
+  try {
+    assert.equal(
+      await tensorCloudMaterialFlow(windTensor(), T0, () => turns >= 2),
+      undefined,
+    );
+    assert.ok(turns >= 2);
+    await assert.rejects(
+      tensorCloudMaterialFlow({ ...windTensor(), width: 0 }, T0),
+      /Invalid/,
+    );
+  } finally {
+    clearInterval(handle);
+  }
+});
+
+test("material-flow GPU resources use a shared UTC age and retain identity until a real snapshot change", async () => {
+  const flow = await tensorCloudMaterialFlow(windTensor(), T0);
+  const first = new CloudMaterialFlowResources(),
+    other = new CloudMaterialFlowResources();
+  const time = JulianDate.fromDate(new Date(T0 + 1250));
+  assert.equal(first.ageSeconds(flow, time), 1.25);
+  assert.equal(other.ageSeconds(flow, time), 1.25);
+  assert.equal(
+    first.ageSeconds(flow, JulianDate.fromDate(new Date(T0 - HOUR))),
+    -900,
+  );
+  assert.equal(
+    first.ageSeconds(flow, JulianDate.fromDate(new Date(T0 + HOUR))),
+    900,
+  );
+  assert.equal(first.ageSeconds(undefined, time), 0);
+  const uploads = [],
+    buffers = [];
+  globalThis.GPUBufferUsage ??= { STORAGE: 128, COPY_DST: 8 };
+  const device = {
+    createBuffer(descriptor) {
+      const buffer = {
+        descriptor,
+        destroyed: false,
+        destroy() {
+          this.destroyed = true;
+        },
+      };
+      buffers.push(buffer);
+      return buffer;
+    },
+    queue: {
+      writeBuffer(buffer, offset, bytes) {
+        uploads.push({ buffer, bytes: bytes.slice(0) });
+      },
+    },
+  };
+  const buffer = first.prepare(device, flow, 1);
+  assert.equal(first.prepare(device, flow, 1), buffer);
+  assert.equal(uploads.length, 1);
+  assert.equal(first.bytes, 16 + (64 * 32 + 2) * 32);
+  const packed = new Float32Array(uploads[0].bytes, 16);
+  const pole = new Float64Array(3),
+    velocity = new Float64Array(3);
+  sampleCloudMaterialFlow(flow, 0.2, Math.PI / 2, pole, velocity);
+  assert.deepEqual(
+    Array.from(packed.slice(64 * 32 * 8 + 4, 64 * 32 * 8 + 7)),
+    Array.from(velocity),
+  );
+  first.prepare(device, undefined, 1);
+  assert.equal(buffer.destroyed, false);
+  first.prepare(device, undefined, 2);
+  assert.equal(buffer.destroyed, true);
+  first.destroy();
+  other.destroy();
+  assert.ok(buffers.every((value) => value.destroyed));
+});
+
+test("provider flow is cloned, retained during a scene miss and restored by cache replay with its weather", async () => {
+  const authored = await tensorCloudMaterialFlow(windTensor(), T0);
+  let release;
+  const provider = new WeatherProvider({
+    fetchField(request) {
+      const result = {
+        gridWidth: 2,
+        gridHeight: 2,
+        coverage: new Float32Array(4).fill(0.7),
+        bounds: {
+          west: -Math.PI,
+          east: Math.PI,
+          south: -Math.PI / 2,
+          north: Math.PI / 2,
+        },
+        validTime: request.time.toISOString(),
+        flow: authored,
+      };
+      return request.time.getTime() === T0
+        ? Promise.resolve(result)
+        : new Promise((resolve) => {
+            release = () => resolve(result);
+          });
+    },
+  });
+  provider.setTimeMode("scene");
+  provider.tickSceneTime(T0);
+  await poll(provider);
+  const bytes = provider.getPackedTexture(W, H),
+    flow = provider.getFlowField();
+  assert.notEqual(flow, authored);
+  assert.deepEqual(flow.velocity, authored.velocity);
+  authored.velocity[0] = 123;
+  assert.notEqual(flow.velocity[0], 123);
+  provider.tickSceneTime(T0 + HOUR);
+  assert.equal(provider.getPackedTexture(W, H), bytes);
+  assert.equal(provider.getFlowField(), flow);
+  release();
+  for (let i = 0; i < 60 && provider.isPreparing; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.notEqual(provider.getFlowField(), flow);
+  provider.tickSceneTime(T0);
+  assert.equal(provider.getPackedTexture(W, H), bytes);
+  assert.equal(provider.getFlowField(), flow);
+});

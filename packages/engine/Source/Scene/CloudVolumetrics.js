@@ -364,6 +364,33 @@ class CloudVolumetrics {
       },
     });
     this.cloudWeatherSeed = options.cloudWeatherSeed ?? 1;
+    let geographicWind = false;
+    Object.defineProperties(this, {
+      /**
+       * When <code>true</code>, cloud material is carried by the weather
+       * provider's geographic wind field (a displacement applied per sample in
+       * the view, light and shadow lookups) in place of the global wind scroll.
+       * It takes effect only while the weather map is on, the provider publishes
+       * a flow field, and the deck uses baked planetary density; otherwise the
+       * global scroll stays. WebGPU only.
+       * @memberof CloudVolumetrics.prototype
+       * @type {boolean}
+       * @default false
+       */
+      cloudGeographicWind: {
+        enumerable: true,
+        get: function () {
+          return geographicWind;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.bool("cloudGeographicWind", value);
+          //>>includeEnd('debug');
+          geographicWind = value;
+        },
+      },
+    });
+    this.cloudGeographicWind = options.cloudGeographicWind ?? false;
 
     /**
      * How strongly the weather map's G/B/A channels modulate the clouds. WebGPU only.

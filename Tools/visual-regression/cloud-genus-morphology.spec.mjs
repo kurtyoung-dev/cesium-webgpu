@@ -152,7 +152,9 @@ test("the per-genus morphology row is appended at 168-171, offsets frozen", () =
   // the rest of this test checks.
   assert.match(
     rendererSource,
-    /const CLOUD_UNIFORM_FLOATS =\s*148 \+\s*CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS \+\s*CLOUD_GENUS_MORPHOLOGY_FLOATS \+\s*CLOUD_TIER_LIGHTING_FLOATS;/,
+    // The frozen prefix, then only named append-only tail terms (the slot
+    // rule); cloud-uniform-layout.spec.mjs pins and executes the size itself.
+    /const CLOUD_UNIFORM_FLOATS =\s*148 \+\s*CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS \+\s*CLOUD_GENUS_MORPHOLOGY_FLOATS \+\s*CLOUD_TIER_LIGHTING_FLOATS(?:\s*\+\s*[A-Z][A-Z0-9_]*_FLOATS)*;/,
   );
   // 148 + 20 + 4 + 4 = 176 floats = 704 bytes = 44 whole 16-byte rows.
   assert.equal((148 + 20 + 4 + 4) % 4, 0);

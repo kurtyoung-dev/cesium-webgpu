@@ -564,7 +564,7 @@
       "bit": 24,
       "name": "CLOUD_GEOGRAPHIC_WIND",
       "owner": "cloud-transport",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",

@@ -65,6 +65,7 @@ function resolve(harness, slot = 0, offset = 0, size = 80) {
     r.shadowUniformBuffer,
     offset,
     size,
+    r.materialFlowBuffer,
   );
 }
 
@@ -117,4 +118,18 @@ test("a changed resource invalidates only the selected slot", () => {
   assert.equal(harness.descriptors.length, 3);
   assert.notEqual(resolve(harness, 1, 0, 80), cascade);
   assert.equal(harness.descriptors.length, 4);
+});
+
+test("shadow flow resource identity is bound and invalidates cached groups", () => {
+  const harness = createHarness();
+  harness.resources.materialFlowBuffer = {};
+  const first = resolve(harness);
+  assert.equal(resolve(harness), first);
+  assert.equal(
+    first.descriptor.entries.find((entry) => entry.binding === 15).resource
+      .buffer,
+    harness.resources.materialFlowBuffer,
+  );
+  harness.resources.materialFlowBuffer = {};
+  assert.notEqual(resolve(harness), first);
 });

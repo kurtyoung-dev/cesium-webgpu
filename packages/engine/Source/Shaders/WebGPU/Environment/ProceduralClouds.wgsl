@@ -281,6 +281,10 @@ struct CloudUniforms {
   isotropicFloor: f32,           // 173 — lower bound on the per-octave phase (neutral: 0)
   ambientFloor: f32,             // 174 — per-channel lower bound on the ambient fill (neutral: 0)
   _padQ: f32,                    // 175
+  materialFlowAge: f32,          // 176 — bounded seconds from the published UTC slice
+  materialFlowEnabled: f32,      // 177
+  _padFlow0: f32,                // 178
+  _padFlow1: f32,                // 179
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -1550,22 +1554,34 @@ struct CloudMacroSample {
 };
 
 fn cloudWindOffset() -> vec3<f32> {
+//>>ifdef CLOUD_GEOGRAPHIC_WIND
+  if (cloud.materialFlowEnabled > 0.5) { return vec3<f32>(0.0); }
+//>>else
+//>>endif
   return vec3<f32>(cloud.windDirection.x, 0.0, cloud.windDirection.y)
        * cloud.windSpeed * cloud.time;
 }
 
 fn cloudMacroSampleAt(
   worldPos: vec3<f32>,
-  coordinates: CloudDensityCoordinates,
-  morphologyCoordinate: vec3<f32>,
+  inputCoordinates: CloudDensityCoordinates,
+  inputMorphologyCoordinate: vec3<f32>,
   heightFraction: f32,
   deckBottom: f32,
   deckTop: f32,
   footprintMeters: f32,
 ) -> CloudMacroSample {
-  // Weather stays geographically anchored to worldPos: the equirectangular seam
-  // and bounds handling live in worldToWeatherUV, and the density coordinates
-  // never advect it.
+//>>ifdef CLOUD_GEOGRAPHIC_WIND
+  // All view and lighting probes enter with unadvected coordinates. Apply the
+  // same geographic material backtrace once, independently at each position.
+  let materialOffset = cloudMaterialNoiseOffset(worldPos);
+  let coordinates = advanceCloudDensityCoordinates(inputCoordinates, materialOffset, cloud.puffSize);
+  let morphologyCoordinate = inputMorphologyCoordinate + materialOffset;
+//>>else
+  let coordinates = inputCoordinates;
+  let morphologyCoordinate = inputMorphologyCoordinate;
+//>>endif
+  // Weather remains anchored to its published geographic slice.
   var effectiveCoverage = cloud.coverage;
   var wch = WeatherChannels(1.0, 0.0, cloud.profileShape);
   if (cloud.weatherMapEnabled > 0.5) {
@@ -2726,7 +2742,15 @@ fn marchDeck(
           detailRayPhasePerMeter * sampleDistance
         );
         densityCoordinates.detail = detailCoordinate;
+//>>ifdef CLOUD_GEOGRAPHIC_WIND
+        // The deferred detail input was zero when the shared macro evaluator
+        // applied transport; its result contains only the material phase.
+        macroSample.coordinates.detail = wrapCloudDensityDomain(
+          detailCoordinate + macroSample.coordinates.detail
+        );
+//>>else
         macroSample.coordinates.detail = detailCoordinate;
+//>>endif
       }
 //>>ifdef CLOUD_DENSITY_MOMENTS
       density = distantDensity.moments.x * distantDensity.densityFactor;

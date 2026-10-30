@@ -25,6 +25,11 @@
  */
 import Event from "../../Core/Event.js";
 import {
+  cloneCloudMaterialFlow,
+  type CloudMaterialFlowField,
+} from "./CloudMaterialFlow.js";
+import { tensorCloudMaterialFlow } from "./TensorCloudMaterialFlow.js";
+import {
   packWeatherFieldDetailedAsync,
   type WeatherPackResult,
 } from "./WeatherTexPacker.js";
@@ -50,6 +55,7 @@ interface CachedWeatherSlice {
   presentWeather: WeatherPresentWeather | null;
   packStats: WeatherPackStats;
   environmentalTensors?: EnvironmentalTensorSet;
+  flow?: CloudMaterialFlowField;
 }
 
 const HOUR_MS = 3600000;
@@ -60,6 +66,7 @@ export class WeatherProvider {
   private _request: WeatherFieldRequest;
   private _packed: Uint8Array | null = null;
   private _environmentalTensors: EnvironmentalTensorSet | null = null;
+  private _flow: CloudMaterialFlowField | undefined;
   private _version = 0;
   private _fetching = false;
   private _lastError: string | null = null;
@@ -126,6 +133,9 @@ export class WeatherProvider {
   }
   getEnvironmentalTensors(): EnvironmentalTensorSet | null {
     return this._environmentalTensors;
+  }
+  getFlowField(): CloudMaterialFlowField | undefined {
+    return this._flow;
   }
   getSource(): WeatherSource | null {
     return this._source;
@@ -399,6 +409,13 @@ export class WeatherProvider {
       const environmentalTensors = cloneWeatherTensors(
         field.environmentalTensors,
       );
+      const authoredFlow = field.flow
+        ? cloneCloudMaterialFlow(field.flow)
+        : undefined;
+      const flowTime = Date.parse(
+        validTime ??
+          (request.time instanceof Date ? request.time.toISOString() : ""),
+      );
       const result = await packWeatherFieldDetailedAsync(
         field,
         texW,
@@ -411,11 +428,24 @@ export class WeatherProvider {
       if (!result || cancelled()) {
         return;
       }
+      const flow =
+        authoredFlow ??
+        (environmentalTensors && Number.isFinite(flowTime)
+          ? await tensorCloudMaterialFlow(
+              environmentalTensors,
+              flowTime,
+              cancelled,
+            )
+          : undefined);
+      if (cancelled()) {
+        return;
+      }
       const slice: CachedWeatherSlice = {
         bytes: result.bytes,
         validTime,
         presentWeather,
         environmentalTensors,
+        flow,
         packStats: {
           observedTexels: result.observedTexels,
           filledTexels: result.filledTexels,
@@ -468,6 +498,7 @@ export class WeatherProvider {
     this._activeKey = null;
     this._packed = null;
     this._environmentalTensors = null;
+    this._flow = undefined;
     this._validTime = undefined;
     this._presentWeather = null;
     this._packStats = null;
@@ -481,6 +512,7 @@ export class WeatherProvider {
     this._lastError = null;
     this._packed = slice.bytes;
     this._environmentalTensors = slice.environmentalTensors ?? null;
+    this._flow = slice.flow;
     this._validTime =
       slice.validTime ??
       (fallbackTime instanceof Date ? fallbackTime.toISOString() : undefined);

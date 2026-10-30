@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1808 |
-| ACTIVE | 1558 |
+| Files in census | 1809 |
+| ACTIVE | 1559 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
 | NO @purpose HEADER | 48 |
 | NO @status HEADER | 1 |
-| Classes | probe 683, spec 482, other 378, lib 214, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
+| Classes | probe 683, spec 483, other 378, lib 214, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
 
 ### Tools/ (69)
 
@@ -467,7 +467,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1118)
+### Tools/visual-regression/ (1119)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -559,7 +559,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-march-transfer.spec.mjs | spec | ACTIVE | 2026-08-21 | 7 | Permanent home of the R3 march-transfer model: predicts the integrated image against 2026-08-06 tour ground truth; mutation group rebuilt non-vacuous. |
 | cloud-morphology-composition.spec.mjs | spec | ACTIVE | 2026-10-29 | 2 | C13-16 U2 candidate contract: genus-conditioned variance budget + fibre carve before erosion; WGSL wiring invariants and carve-after-erosion mutants. |
 | cloud-noise-mipmaps.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Pins WebGPUCloudNoiseResources + CloudNoiseMipmap.wgsl mip-chain agreement, with a loud guard on the halve-to-1 loop's integer precondition. |
-| cloud-observability-counters.spec.mjs | spec | ACTIVE | 2026-09-26 | 6 | C13-02 Gate-A: cloud GPU total is a union not a sum, Sky Fill excluded, per-frame counters reset, pass counts tied to encode sites. |
+| cloud-observability-counters.spec.mjs | spec | ACTIVE | 2026-10-30 | 6 | C13-02 Gate-A: cloud GPU total is a union not a sum, Sky Fill excluded, per-frame counters reset, pass counts tied to encode sites. |
 | cloud-orbital-ladder-contract.spec.mjs | spec | ACTIVE | 2026-09-26 | 9 | Unit-checks the orbital ladder's four statistics against geometry the plan states independently, then drives the REAL descriptor through runProbe with a stubbed browser so the instrument is known to reach a verdict before an Edge slot is spent on it. |
 | cloud-photometry-rule.spec.mjs | spec | ACTIVE | 2026-09-12 | 7 | Asserts the photometric path measures linear PRE-Reinhard radiance with the sun disc masked, that measuring after the tonemapper gives a different answer, and that the harness capture path supplies the live exposure rather than a default. |
 | cloud-primary-ray.spec.mjs | spec | ACTIVE | 2026-10-29 | 5 | Validates that primary procedural-cloud rays preserve framebuffer UV row order through inverse projection. |
@@ -580,6 +580,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-tier-single-source.spec.mjs | spec | ACTIVE | 2026-10-30 | 10 | Executes the real preset→uniform seam from Node to prove a tier-table edit reaches the packed float, derives each float's flat index by walking the renderer's packer and cross-checking it against the WGSL struct, and pins every current default byte-identical to the deleted second resolver. |
 | cloud-tour-sequences.spec.mjs | spec | ACTIVE | 2026-09-12 | 11 | C13-01 tour contract: fixture/sequence coverage per the queue row, pinned derived clocks, engine-export constants, probe capture discipline. |
 | cloud-u2-perf-evidence.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Guards lib/cloud-u2-perf-evidence.mjs manifest assessment for C13-16 U2 perf evidence (no-regression / unchanged pass expectations, lane shapes). |
+| cloud-uniform-layout.spec.mjs | spec | ACTIVE | — | 3 | Pins the cloud main uniform block's named slot layout (the R-2026-09-26-12 slot rule, restated for this layout) against the WGSL struct's computed offsets and the renderer's allocation, and executes the tail writers' reserved pads. |
 | clustered-light-upload-invalidation.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 1 | — |
 | clustered-probe-chrome.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Drives each clustered-lighting probe that captures the CesiumViewer canvas against a fake page whose widget strip leaves an element over the canvas at one capture at a time, and requires a viewer-chrome-over-canvas refusal at exactly that capture, a strip taken after the scene step and directly before every capture, and a record-only disposition for the lights-resize record frame that no verdict reads. |
 | clustered-probe-verdicts.spec.mjs | spec | ACTIVE | 2026-10-09 | 12 | Drives every migrated clustered-lighting probe's exported verdict function one step inside and one step outside each bar the pre-harvest probe applied, pins the family's runtime shape and rig transcriptions, refuses a WebGL-only run before any browser work, and runs the zero-work gate's clustered-label inventory over the real engine sources as a standing Node gate. |
@@ -656,7 +657,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | globe-classic-ocean-default-parity.spec.mjs | spec | ACTIVE | 2026-10-23 | 6 | Pins that a default globe (definesHi 0, enableEnhancedOcean false) draws the base ocean in GlobeTerrain.wgsl, that the opt-in WATER_PROVIDER_PARITY variant draws GlobeFS.glsl's classic waves (unwrapped clock, derivatives through the pole flip) and coast band (executed against the GLSL twin), that the enhanced water changes live only under ENHANCED_OCEAN, that the vessel-wake gate is its own camera lane, and that a globe material still receives the base waterMask under MATERIAL_APPLY (the water work's sample is held back; its GLSL-law control runs on a copy). |
 | globe-clip-distances-build.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Runs the real buildClipDistancesShaderSource over the real GlobeTerrain.wgsl after the real preprocessor for every define combination the globe compiles, and requires a non-null result that naga validates, alongside the validity of each un-augmented composed variant; a source whose anchor drifts must make the build return null. |
 | globe-clip-planes-law.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Executes the real clipping-plane packer and the globe shader's own plane-distance, union/intersection fold and pixel-metric helpers (out of GlobeTerrain.wgsl via wgsl-mini-eval) against independent transcriptions of WebGL's clip() path, then composes them over a rendered-globe pixel grid and requires the same discard set and the same edge band; every group is mutant-checked. |
-| globe-cloud-default.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins the managed cloud deck OFF by default (maintainer ruling M2) while proving the cinematic tier still resolves when a scene opts in. |
+| globe-cloud-default.spec.mjs | spec | ACTIVE | 2026-10-30 | 3 | Pins the managed cloud deck OFF by default (maintainer ruling M2) while proving the cinematic tier still resolves when a scene opts in. |
 | globe-cold-start-black-rule.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 2 | — |
 | globe-cold-start-readiness.spec.mjs | spec | ACTIVE | 2026-08-29 | 4 | Pins the backend-neutral readiness query, the deferred-command count that makes an undrawn globe tile observable, and the init-time prewarm that lets the first tile find its pipeline already built. |
 | globe-contour-pixel-ratio-parity.spec.mjs | spec | ACTIVE | 2026-09-11 | 7 | Evaluates the contour line-width threshold taken from the live ElevationContour fabric's WGSL body against the threshold parsed out of ElevationContourMaterial.glsl over an envelope of device pixel ratios, derives the byte offset the globe camera struct puts the ratio at, and executes the globe camera packer's write sequence to check the ratio lands on that same slot. |
@@ -1539,13 +1540,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | water-underwater-bathymetry-regimes.spec.mjs | spec | ACTIVE | 2026-10-23 | 1 | Verifies shallow photic and deep pelagic/abyssal/hadal underwater optics, Snell's Window 48.6 deg TIR cone, CCD seabed substrate grading, Hermitian/TMA FFT spectrum, and 6-regime WaterQualityPreset scaling. |
 | water-wave-clock-determinism.spec.mjs | spec | ACTIVE | 2026-10-23 | 1 | Pins that two page loads pinned to the same scene clock hand both backends the same water wave phase once the probe stage sets the FFT surface's simulationEpoch to that instant (the deterministic switch, scene.globe.water.ocean.simulationEpoch), records that without it the phase depends on when each page first rendered, and turns red under a mutant that lets the first-frame epoch back in. |
 | weather-field-bounds.spec.mjs | spec | ACTIVE | 2026-09-19 | 12 | WeatherField contract: grid registration, regional bounds honoured incl. antimeridian, no-data semantics, global path byte-identical to legacy. |
-| weather-map-seam.spec.mjs | spec | ACTIVE | 2026-10-29 | 14 | Pins the one equirect weather-map convention shared by CPU producers and, textually, the WGSL/sampler half: seam filters, UV mapping, bounds pack. |
+| weather-map-seam.spec.mjs | spec | ACTIVE | 2026-10-30 | 14 | Pins the one equirect weather-map convention shared by CPU producers and, textually, the WGSL/sampler half: seam filters, UV mapping, bounds pack. |
 | weather-probe-demo-descriptors.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Drives the map, Weather Inspector preset and Weather Inspector control probes' runtime descriptors through the real runProbe with a stub browser whose canvas captures are fixture PNGs, asserting exit codes, verdict ids, that the Node-side metrics read the captured bytes, that the map probe strips the viewer chrome before its first capture, and that every scored gate of the three fails on a fixture of its own. |
 | weather-probe-descriptors.spec.mjs | spec | ACTIVE | 2026-10-09 | 5 | Drives each migrated probe-weather descriptor through the real runProbe with a stub browser whose page answers the probe's own page lanes with fixture results, asserting exit 0 / 1 / 3, the verdict ids, the evidence files and the refusal record. |
 | weather-probe-gates.spec.mjs | spec | ACTIVE | 2026-10-09 | 4 | Drives the channels, coverage-sweep (edr-mock), ingest, metar and seam-poles descriptors through the real runProbe with one healthy lane answer and one perturbed answer per scored gate, asserting exit 1 and the exact set of failing gates, so a gate whose pass flag were stuck at true is a red test. |
 | weather-probe-headroom.spec.mjs | spec | ACTIVE | 2026-10-09 | 7 | Guard Gate-B headroom/determinism repairs plus canonical immutable capture across the shared weather pinning helper and every direct consumer. |
-| weather-provider-cache.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 2 | — |
-| weather-provider-time-model.spec.mjs | spec | ACTIVE | 2026-10-09 | 9 | Promoted from the retired browser probe probe-weather-time.mjs: drives the real WeatherProvider and SyntheticWeatherSource("drift") through live, historical, projected and legacy modes and asserts the packed bytes and the version counter. |
+| weather-provider-cache.spec.mjs | spec | NO @purpose HEADER | 2026-10-30 | 2 | — |
+| weather-provider-time-model.spec.mjs | spec | ACTIVE | 2026-10-30 | 9 | Promoted from the retired browser probe probe-weather-time.mjs: drives the real WeatherProvider and SyntheticWeatherSource("drift") through live, historical, projected and legacy modes and asserts the packed bytes and the version counter. |
 | weather-regional-tails.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Contract for the rendered-tail browser probe: cyclic CoverageJSON parse, fused capture, policy rejecting duplicated antimeridian band. |
 | webgl-snap-multifrustum.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Source pins for WebGL Scene.snap occluders in DerivedCommand/Scene/SceneRenderer: depth-only reuse, zero color write, blending off, depthMask. |
 | webgl-vs-webgpu-pixel-check.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Test-infra sanity check from the canvas-black-screen investigation: do non-black pixels reach toDataURL on each backend at all? |
@@ -1752,7 +1753,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | device-loss-steps.mjs | lib | ACTIVE | 2026-10-24 | 5 | Step piece for the landing program's E-T cell: runs a rig's provoking steps (resize ladder via lib/globe-resize-steps.mjs, sky-box swaps via lib/skybox-swap-steps.mjs, a water or cloud tier switch), reads the error gate and the runtime's capture-liveness decision after each, then either destroys the viewer (teardown) or forces the device lost (WebGPU device.destroy, WebGL WEBGL_lose_context) and renders on, and returns {mode, steps, terminal, deviceLost, errors, owners, consoleErrors} - the named owners' live census rows before and after, and the console errors split into the engine's device-lost sentinel and everything else; terminalShape/sameTerminal are the one reader of the terminal record. |
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 20 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 6 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
-| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 43 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
+| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 44 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
 | engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 61 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 6 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | frame-import-map.mjs | lib | ACTIVE | 2026-10-09 | 2 | The readiness wait for a dynamic import of a bare specifier in a page or frame: whether a specifier is bare, an in-page predicate that reports whether the document has parsed an import map, and the Node-side wait that blocks until it has, or refuses by name when it does not appear in time. |

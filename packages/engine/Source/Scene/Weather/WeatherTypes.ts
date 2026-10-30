@@ -9,6 +9,7 @@
  * uploads.
  */
 import type { EnvironmentalTensorSet } from "./EnvironmentalTensorMap.js";
+import type { CloudMaterialFlowField } from "./CloudMaterialFlow.js";
 import type {
   WeatherGridRegistration,
   WeatherNoDataFill,
@@ -54,6 +55,7 @@ export interface WeatherField {
   coverage: Float32Array;
   // Matching pressure, temperature and wind for the same geographic/time slice.
   environmentalTensors?: EnvironmentalTensorSet;
+  flow?: CloudMaterialFlowField;
   /** Optional cloud-type index per cell (CloudType enum), 0..10. */
   type?: Float32Array;
   /** Optional cloud-base height per cell, in metres. */

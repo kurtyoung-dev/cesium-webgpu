@@ -19,6 +19,8 @@ const REAL_WEATHER_MODULES = [
   "WeatherTypes",
   "WeatherSource",
   "EnvironmentalTensorMap",
+  "CloudMaterialFlow",
+  "TensorCloudMaterialFlow",
   "Event",
   "Check",
   "defined",

@@ -1355,6 +1355,7 @@ interface CloudVolumetricsConfig {
   cloudSilverLiningIntensity?: number;
   cloudWeatherMap?: boolean;
   cloudWeatherSeed?: string | number;
+  cloudGeographicWind?: boolean;
   cloudWeatherChannelStrength?: number;
   cloudPhaseForwardG?: number;
   cloudPhaseBackG?: number;
@@ -1375,6 +1376,9 @@ interface CloudVolumetricsConfig {
   weatherProvider?: {
     getPackedTexture(texW: number, texH: number): Uint8Array | null;
     readonly version: number;
+    getFlowField?():
+      | import("../../Scene/Weather/CloudMaterialFlow.js").CloudMaterialFlowField
+      | undefined;
     readonly isPreparing?: boolean;
     readonly lastError?: string | null;
   };

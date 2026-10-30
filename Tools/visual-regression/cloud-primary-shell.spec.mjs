@@ -522,7 +522,9 @@ test("renderer preserves the WGS84 rows and appends the C13-37 phase layout", ()
   // The WGS84 rows this test guards keep their offsets; only the total grows.
   assert.match(
     renderer,
-    /const CLOUD_UNIFORM_FLOATS =\s*148 \+\s*CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS \+\s*CLOUD_GENUS_MORPHOLOGY_FLOATS \+\s*CLOUD_TIER_LIGHTING_FLOATS;/,
+    // The frozen prefix, then only named append-only tail terms (the slot
+    // rule); cloud-uniform-layout.spec.mjs pins and executes the size itself.
+    /const CLOUD_UNIFORM_FLOATS =\s*148 \+\s*CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS \+\s*CLOUD_GENUS_MORPHOLOGY_FLOATS \+\s*CLOUD_TIER_LIGHTING_FLOATS(?:\s*\+\s*[A-Z][A-Z0-9_]*_FLOATS)*;/,
   );
   assert.match(
     renderer,
@@ -530,7 +532,20 @@ test("renderer preserves the WGS84 rows and appends the C13-37 phase layout", ()
   );
   assert.match(renderer, /writeCloudDensityAdvectedOriginPhases\(/);
   assert.match(renderer, /writeCloudMorphologyOriginHighLow\(/);
-  assert.match(renderer, /offset \+= CLOUD_DENSITY_ORIGIN_PHASE_FLOATS;/);
-  assert.match(renderer, /offset \+= CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS;/);
+  // The origin rows (148-167) are reserved in one step and written once the
+  // frame's material transport is known: the phases at the recorded offset,
+  // the morphology origin right after them.
+  assert.match(
+    renderer,
+    /const densityOriginOffset = offset;\s*offset \+= CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS;/,
+  );
+  assert.match(
+    renderer,
+    /writeCloudDensityAdvectedOriginPhases\(\s*data,\s*densityOriginOffset,/,
+  );
+  assert.match(
+    renderer,
+    /writeCloudMorphologyOriginHighLow\(\s*data,\s*densityOriginOffset \+ CLOUD_DENSITY_ORIGIN_PHASE_FLOATS,/,
+  );
   assert.match(renderer, /\.cloudHighPrecision !== false;/);
 });

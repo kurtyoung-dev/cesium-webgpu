@@ -1464,6 +1464,164 @@ test("zero-coverage statistical bins are empty even at the largest possible nois
     }
 });
 
+test("geographic material work is omitted from disabled recipes and shared by primary and shadow density", async () => {
+  const { hiVariant, ShaderDefineHi } = await import("./lib/wgsl-variant.mjs");
+  const directory = path.dirname(cloudShaderPath);
+  const flow = fs.readFileSync(
+    path.join(directory, "CloudMaterialFlow.wgsl"),
+    "utf8",
+  );
+  const raw = flow + "\n" + fs.readFileSync(cloudShaderPath, "utf8");
+  const disabled = defaultVariant(raw);
+  assert.ok(!disabled.includes("var<storage, read> cloudMaterialFlow"));
+  assert.ok(!disabled.includes("cloudMaterialNoiseOffset(worldPos)"));
+  const enabled = hiVariant(raw, ShaderDefineHi.CLOUD_GEOGRAPHIC_WIND);
+  assert.ok(
+    enabled.includes("@binding(15) var<storage, read> cloudMaterialFlow"),
+  );
+  const macro = functionSource(enabled, "cloudMacroSampleAt");
+  assert.equal(
+    (macro.match(/cloudMaterialNoiseOffset\(worldPos\)/g) ?? []).length,
+    1,
+  );
+  assert.ok(
+    macro.includes(
+      "advanceCloudDensityCoordinates(inputCoordinates, materialOffset",
+    ),
+  );
+  assert.ok(
+    functionSource(enabled, "cloudDensityRelativeWithFootprint").includes(
+      "cloudDensityAtCoordinates(",
+    ),
+  );
+  assert.ok(
+    functionSource(enabled, "cloudDensityAtCoordinates").includes(
+      "cloudMacroSampleAt(",
+    ),
+  );
+  assert.ok(
+    functionSource(enabled, "lightMarch").includes(
+      "cloudDensityAtCoordinates(",
+    ),
+  );
+  assert.ok(
+    enabled.includes("detailCoordinate + macroSample.coordinates.detail"),
+  );
+  const nagaDirectory = path.join(
+    root,
+    "Tools/shader-pipeline/naga-wasm-tools",
+  );
+  const naga = await import(
+    pathToFileURL(path.join(nagaDirectory, "naga_wasm_tools.js")).href
+  );
+  await naga.default({
+    module_or_path: fs.readFileSync(
+      path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
+    ),
+  });
+  const source = wgslSource + "\n" + flow + "\n" + cloudShaderSource;
+  const renderer = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
+    ),
+    "utf8",
+  );
+  assert.ok(
+    renderer.indexOf("const geographicFlow =") >
+      renderer.indexOf("    publishCloudRealization("),
+  );
+  assert.ok(renderer.includes("cache.geographicWindRequested && !preview"));
+  const start = renderer.indexOf(
+    "    writeCloudDensityAdvectedOriginPhases(",
+    renderer.indexOf("const geographicFlow ="),
+  );
+  const end =
+    renderer.indexOf(
+      ");",
+      renderer.indexOf("    writeCloudMorphologyOriginHighLow(", start),
+    ) + 2;
+  const packing = renderer.slice(start, end);
+  const parameters = [
+    "data",
+    "densityOriginOffset",
+    "camPos",
+    "cloudPuffSize",
+    "cloudWindX",
+    "cloudWindY",
+    "originWindSpeed",
+    "cloudTimeSeconds",
+    "CLOUD_DENSITY_ORIGIN_PHASE_FLOATS",
+    "writeCloudDensityAdvectedOriginPhases",
+    "writeCloudMorphologyOriginHighLow",
+  ].join(",");
+  const { default: pack } = await import(
+    "data:text/javascript;base64," +
+      Buffer.from(
+        "export default function(" + parameters + ") {" + packing + "}",
+      ).toString("base64")
+  );
+  const uniform = new Float32Array(180).fill(7.25);
+  pack(
+    uniform,
+    148,
+    { x: 4367414, y: -1170245, z: 4491237 },
+    1,
+    0.7,
+    0.3,
+    0,
+    300,
+    CLOUD_DENSITY_ORIGIN_PHASE_FLOATS,
+    writeCloudDensityAdvectedOriginPhases,
+    writeCloudMorphologyOriginHighLow,
+  );
+  assert.ok(
+    uniform.slice(0, 148).every((value) => value === 7.25),
+    "material origins never overwrite camera or lighting data",
+  );
+  assert.ok(
+    uniform.slice(168).every((value) => value === 7.25),
+    "material origins stay inside their20-float block",
+  );
+  const expected = new Float32Array(20);
+  writeCloudDensityAdvectedOriginPhases(
+    expected,
+    0,
+    4367414,
+    -1170245,
+    4491237,
+    1,
+    0.7,
+    0.3,
+    0,
+    300,
+  );
+  writeCloudMorphologyOriginHighLow(
+    expected,
+    12,
+    4367414,
+    -1170245,
+    4491237,
+    0.7,
+    0.3,
+    0,
+    300,
+  );
+  assert.deepEqual(uniform.slice(148, 168), expected);
+  const base =
+    ShaderDefineHi.CLOUD_GEOGRAPHIC_WIND |
+    ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY |
+    ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY;
+  for (const bits of [
+    base,
+    base | ShaderDefineHi.CLOUD_LIGHTING_PREVIEW,
+    base | ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION,
+    ShaderDefineHi.CLOUD_GEOGRAPHIC_WIND,
+  ]) {
+    assert.doesNotThrow(() => naga.validate_wgsl(hiVariant(source, bits)));
+  }
+});
+
 test("cloud deck ordering uses ray entry below, within and above the layer", () => {
   const source = fs.readFileSync(
     path.join(

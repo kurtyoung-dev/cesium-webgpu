@@ -98,6 +98,9 @@ const RENDERER_TS =
   "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts";
 const DENSITY_TS =
   "packages/engine/Source/Renderer/WebGPU/WebGPUCloudDensityDomain.ts";
+// The append-only tail rows name their float counts in their own modules.
+const LAYOUT_TS =
+  "packages/engine/Source/Renderer/WebGPU/WebGPUCloudUniformLayout.ts";
 const CLOUDS_WGSL =
   "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl";
 const WEBGPU_DIR = "packages/engine/Source/Renderer/WebGPU";
@@ -198,7 +201,7 @@ const rendererCode = stripComments(rendererSource, { keepStrings: true });
 
 /** @type {Record<string, string>} */
 const constantExpressions = {};
-for (const file of [RENDERER_TS, DENSITY_TS]) {
+for (const file of [RENDERER_TS, DENSITY_TS, LAYOUT_TS]) {
   const text = stripComments(read(file));
   for (const m of text.matchAll(
     /(?:export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*=\s*([^;]+);/g,
@@ -257,6 +260,11 @@ function evalConstant(name, seen = new Set()) {
  * @param {string} source Renderer source text.
  * @returns {{writes: {index:number,line:number,slot:number|null,text:string}[], finalOffset:number}}
  */
+/** Each tail writer the packer calls, and the constant naming the floats it writes. */
+const TAIL_WRITERS = {
+  writeCloudMaterialFlowUniforms: "CLOUD_MATERIAL_FLOW_FLOATS",
+};
+
 function walkPacker(source) {
   const rawLines = source.split("\n");
   const codeLines = stripComments(source).split("\n");
@@ -333,6 +341,14 @@ function walkPacker(source) {
     const jump = /offset\s*\+=\s*([A-Za-z_]\w*|\d+)\s*;/.exec(code);
     if (jump) {
       offset += /^\d+$/.test(jump[1]) ? Number(jump[1]) : evalConstant(jump[1]);
+    }
+    // A tail row packed by its own module's writer, `offset = writeX(...)`,
+    // advances by the float count that module declares for it.
+    const writer = /offset\s*=\s*(write\w+)\(/.exec(code);
+    if (writer) {
+      const floats = TAIL_WRITERS[writer[1]];
+      assert.ok(floats, `unmodelled tail writer ${writer[1]}`);
+      offset += evalConstant(floats);
     }
 
     for (let k = 0; k < closes - (isElse ? 1 : 0); k++) {
@@ -991,12 +1007,12 @@ test("the tier lighting row has its shader consumer and closes the block (C13-N1
     );
     return index;
   });
-  // Contiguous, and followed by the pad that completes the 16-byte row.
-  assert.deepEqual(indices, [
-    bufferFloats - 4,
-    bufferFloats - 3,
-    bufferFloats - 2,
-  ]);
+  // Contiguous at 172-174, followed by the pad that completes the 16-byte row.
+  // The row closed the block until the append-only tail grew past it (the
+  // flow tail at 176), so it is pinned where it sits, under the slot rule:
+  // a slot is never moved, and the tail only grows.
+  assert.deepEqual(indices, [172, 173, 174]);
+  assert.ok(bufferFloats >= 176, "the frozen prefix ends at 175");
 });
 
 test("every CLOUD_QF_* bit matches its WGSL twin", () => {
@@ -2603,6 +2619,44 @@ test("cloudWeatherSeed is an own enumerable validated accessor taking a string o
   );
   assert.throws(
     () => new CloudVolumetrics({ cloudWeatherSeed: Number.NaN }),
+    (error) => error?.name === "DeveloperError",
+    "the constructor validates through the same setter",
+  );
+});
+
+test("cloudGeographicWind is an own enumerable validated accessor that rejects a non-boolean", () => {
+  const instance = new CloudVolumetrics();
+  const descriptor = Object.getOwnPropertyDescriptor(
+    instance,
+    "cloudGeographicWind",
+  );
+  assert.equal(typeof descriptor?.get, "function", "an accessor");
+  assert.equal(descriptor.enumerable, true, "enumerable");
+  assert.equal(
+    Object.getOwnPropertyDescriptor(
+      CloudVolumetrics.prototype,
+      "cloudGeographicWind",
+    ),
+    undefined,
+    "no prototype twin a spread would skip",
+  );
+  assert.equal(instance.cloudGeographicWind, false, "the default");
+  assert.throws(
+    () => {
+      instance.cloudGeographicWind = "true";
+    },
+    (error) => error?.name === "DeveloperError",
+    "a non-boolean is rejected when set",
+  );
+  assert.equal(
+    instance.cloudGeographicWind,
+    false,
+    "a rejected set is not stored",
+  );
+  instance.cloudGeographicWind = true;
+  assert.equal(instance.cloudGeographicWind, true);
+  assert.throws(
+    () => new CloudVolumetrics({ cloudGeographicWind: 1 }),
     (error) => error?.name === "DeveloperError",
     "the constructor validates through the same setter",
   );
