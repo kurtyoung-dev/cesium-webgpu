@@ -187,6 +187,45 @@ test("extra-word declarations reject reserved bit 31 at module load", async () =
     },
   );
 });
+test("hi-word declarations reject reserved bit 31 at module load and mutant R4c (> 30 -> > 31) is caught", async () => {
+  const file = path.join(root, gpu, "WebGPUShaderDefines.ts");
+  const text = fs.readFileSync(file, "utf8").replaceAll("\r\n", "\n");
+  const anchor = "HI_WORD_PROBE: hiDefineBit(0),";
+  const guardAnchor =
+    "function hiDefineBit(bitIndex: number): ShaderDefineHiMask {\n  if (!Number.isInteger(bitIndex) || bitIndex < 0 || bitIndex > 30) {";
+  assert.equal(text.split(anchor).length - 1, 1);
+  assert.equal(text.split(guardAnchor).length - 1, 1);
+  await assert.rejects(
+    bundle({
+      path: file,
+      source: text,
+      real: [],
+      label: "hi-word-reserved-bit-31",
+      mutate: (input) =>
+        input.replace(anchor, "HI_WORD_PROBE: hiDefineBit(31),"),
+    }),
+    {
+      name: "RangeError",
+      message:
+        "ShaderDefineHi bits must use bit indices 0..30 (got 31); hi-word bit 31 is reserved",
+    },
+  );
+  // Mutant R4c: relaxing `bitIndex > 30` to `bitIndex > 31` allows bit 31 to load, which would fail the rejection assertion above.
+  const relaxed = await bundle({
+    path: file,
+    source: text,
+    real: [],
+    label: "hi-word-reserved-bit-31-mutant-r4c",
+    mutate: (input) =>
+      input
+        .replace(
+          guardAnchor,
+          "function hiDefineBit(bitIndex: number): ShaderDefineHiMask {\n  if (!Number.isInteger(bitIndex) || bitIndex < 0 || bitIndex > 31) {",
+        )
+        .replace(anchor, "HI_WORD_PROBE: hiDefineBit(31),"),
+  });
+  assert.equal(relaxed.ShaderDefineHi.HI_WORD_PROBE, 0x80000000);
+});
 test("extra-word names must use the extra-word resolver", () => {
   assert.ok(Object.keys(current.ShaderDefineExt).length > 0);
   for (const [name, value] of Object.entries(current.ShaderDefineExt)) {

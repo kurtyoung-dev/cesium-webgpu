@@ -503,19 +503,60 @@ test("a reserved-to-consumed ledger update needs no registry source change", () 
   // Any entry the live ledger still holds reserved serves: a pinned name stops
   // being reserved when its own wave lands its consumer.
   const entry = data.entries.find(
-    (item) => item.word === "hi" && item.status === "reserved",
+    (item) =>
+      (item.word === "hi" || item.word === "ext") && item.status === "reserved",
   );
-  assert(entry, "a reserved hi entry to flip");
+  assert(entry, "a reserved hi or ext entry to flip");
   const files = new Map(engineSources);
   const file = "packages/engine/Source/Renderer/WebGPU/AllocationConsumer.ts";
   files.set(
     file,
-    `import { ShaderDefineHi } from "./WebGPUShaderDefines.js";\nconst mask = ShaderDefineHi.${entry.name};`,
+    `import { ${entry.word === "hi" ? "ShaderDefineHi" : "ShaderDefineExt"} } from "./WebGPUShaderDefines.js";\nconst mask = ${entry.word === "hi" ? "ShaderDefineHi" : "ShaderDefineExt"}.${entry.name};`,
   );
   assert.throws(() => validateLayout(data, registry, files), /consumer status/);
   entry.status = "consumed";
   if (entry.consumers !== undefined) {
     entry.consumers = [file];
+  }
+  validateLayout(data, registry, files);
+});
+
+test("reserved-to-consumed ledger update falls back cleanly to ext when all hi entries are consumed", () => {
+  const data = structuredClone(layout);
+  const files = new Map(engineSources);
+  const hiConsumerFile =
+    "packages/engine/Source/Renderer/WebGPU/AllHiConsumedSynthetic.ts";
+  const hiReads = [];
+  for (const item of data.entries) {
+    if (item.word === "hi" && item.status === "reserved") {
+      item.status = "consumed";
+      if (item.consumers !== undefined) {
+        item.consumers = [hiConsumerFile];
+      }
+      hiReads.push(`ShaderDefineHi.${item.name}`);
+    }
+  }
+  if (hiReads.length > 0) {
+    files.set(
+      hiConsumerFile,
+      `import { ShaderDefineHi } from "./WebGPUShaderDefines.js";\nconst masks = [${hiReads.join(", ")}];`,
+    );
+  }
+  const entry = data.entries.find(
+    (item) =>
+      (item.word === "hi" || item.word === "ext") && item.status === "reserved",
+  );
+  assert(entry && entry.word === "ext", "an ext reserved entry to flip");
+  const extConsumerFile =
+    "packages/engine/Source/Renderer/WebGPU/ExtAllocationConsumer.ts";
+  files.set(
+    extConsumerFile,
+    `import { ShaderDefineExt } from "./WebGPUShaderDefines.js";\nconst mask = ShaderDefineExt.${entry.name};`,
+  );
+  assert.throws(() => validateLayout(data, registry, files), /consumer status/);
+  entry.status = "consumed";
+  if (entry.consumers !== undefined) {
+    entry.consumers = [extConsumerFile];
   }
   validateLayout(data, registry, files);
 });
@@ -610,7 +651,7 @@ test("M-L3 rejects source 43 consumed without a qualified consumer", () => {
   const files = new Map(
     [...engineSources].map(([file, source]) => [
       file,
-      source.replaceAll("ShaderSourceId.PROCEDURAL_CLOUDS", "43"),
+      source.replace(/\bShaderSourceId\.PROCEDURAL_CLOUDS\b/g, "43"),
     ]),
   );
   assert(
@@ -618,6 +659,18 @@ test("M-L3 rejects source 43 consumed without a qualified consumer", () => {
       source.includes("FeatureRendererKey.PROCEDURAL_CLOUDS"),
     ),
     "decoy present",
+  );
+  const decoyFile =
+    "packages/engine/Source/Renderer/WebGPU/DecoyProceduralCloudsExtra.ts";
+  const decoySource =
+    'import { ShaderSourceId } from "./WebGPUShaderDefines.js";\nconst decoy = ShaderSourceId.PROCEDURAL_CLOUDS_EXTRA;';
+  files.set(
+    decoyFile,
+    decoySource.replace(/\bShaderSourceId\.PROCEDURAL_CLOUDS\b/g, "43"),
+  );
+  assert(
+    files.get(decoyFile).includes("ShaderSourceId.PROCEDURAL_CLOUDS_EXTRA"),
+    "whole-identifier regex preserves prefix-sharing decoy",
   );
   entry.status = "consumed";
   assert.throws(

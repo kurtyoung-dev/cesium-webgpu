@@ -133,7 +133,7 @@ export const LANDING_STEP_DIALS = Object.freeze([
 ]);
 
 /** The values `imagery` and `terrain` accept. */
-export const LANDING_IMAGERY_VALUES = Object.freeze(["naturalEarth"]);
+export const LANDING_IMAGERY_VALUES = Object.freeze(["naturalEarth", "none"]);
 export const LANDING_TERRAIN_VALUES = Object.freeze(["ellipsoid"]);
 
 const CLOUD_DIAL_RE = /^cloud[A-Z]/;
@@ -389,6 +389,15 @@ export async function stageLandingCellInPage(payload) {
       );
     } else if (key === "imagery") {
       scene.imageryLayers.removeAll(false);
+      if (value === "none") {
+        note(
+          key,
+          value,
+          scene.imageryLayers.length,
+          scene.imageryLayers.length === 0,
+        );
+        continue;
+      }
       try {
         const provider = await C.TileMapServiceImageryProvider.fromUrl(
           "/Build/CesiumUnminified/Assets/Textures/NaturalEarthII",

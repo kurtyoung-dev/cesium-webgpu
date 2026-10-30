@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 238,
+  total: 243,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count reached 17
@@ -111,7 +111,7 @@ const REGISTRY_CENSUS = {
     // (E-T in E11): the coast camera the water lane's job sheet names, with the
     // enhanced ocean and the HIGH water tier on so the water's GPU owners are
     // alive when the scene is torn down.
-    water: 8,
+    water: 13,
   },
 };
 

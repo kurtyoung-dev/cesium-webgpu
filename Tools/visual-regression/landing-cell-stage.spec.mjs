@@ -316,6 +316,26 @@ test("S2: camera that is null is accepted without error", () => {
   assert.equal(payload.camera, null);
 });
 
+test("S2b: imagery 'none' is accepted in stage payload and clears imagery layers in page", async () => {
+  const payload = landingStagePayload({
+    id: "imagery-none-rig",
+    dials: { imagery: "none" },
+  });
+  assert.equal(payload.globe.imagery, "none");
+
+  const viewer = createFakeViewer();
+  assert.equal(viewer.scene.imageryLayers.length, 1);
+  globalThis.viewer = viewer;
+  const staged = await stageLandingCellInPage({
+    ...payload,
+    moduleUrl: FAKE_CESIUM_URL,
+  });
+  assert.equal(staged.dials.imagery.requested, "none");
+  assert.equal(staged.dials.imagery.observed, 0);
+  assert.equal(staged.dials.imagery.applied, true);
+  assert.equal(viewer.scene.imageryLayers.length, 0);
+});
+
 // -----------------------------------------------------------------------------
 // S3: cloudsEnabled derivation and needsCloudHarness flag
 // -----------------------------------------------------------------------------
