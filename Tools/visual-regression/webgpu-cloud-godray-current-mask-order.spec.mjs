@@ -2878,6 +2878,7 @@ test("optional half primary reuse feeds the existing upscale without a repeated 
 
   cache.attachmentsEnabled = true;
   cache.reconstructionEnabled = true;
+  fixture.frameState.mode = 0;
   const fallback = runPrimaryReuseFrame(engine, fixture, config);
   assert.equal(cache.primaryReuseApplied, false);
   assert.equal(
@@ -2922,6 +2923,211 @@ test("pending optional primary pipelines retain the complete baseline draw and m
     ),
     true,
   );
+});
+
+test("shared primary depth feeds same-frame motion and temporal consumers across resize", async () => {
+  const engine = await loadIntegrationHarness();
+  const fixture = makeCloudFixture();
+  installActualContextContract(engine, fixture);
+  engine.setCloudTransmittanceCapture(fixture.context, true);
+  const cache = fixture.context._cloudCache;
+  cache.attachmentsEnabled = true;
+  cache.reconstructionEnabled = true;
+  fixture.context.uniformState.previousViewProjectionRelativeToEye =
+    perspectiveViewProjection();
+  fixture.context.uniformState.previousCameraPosition = {
+    ...fixture.frameState.camera.positionWC,
+  };
+  const config = {
+    ...fixture.config,
+    cloudQuality: 64,
+    cloudVolumetricQuality: "medium",
+    cloudReusePrimaryIntegral: true,
+  };
+  runPrimaryReuseFrame(engine, fixture, config);
+  const passes = runPrimaryReuseFrame(engine, fixture, config);
+  const primary = passes.find(
+    (pass) => pass.descriptor.label === "CloudPrimaryReuse march pass",
+  );
+  assert.ok(primary);
+  assert.equal(primary.descriptor.colorAttachments.length, 3);
+  const depth = cache.attachmentViews[0];
+  assert.equal(primary.descriptor.colorAttachments[2].view, depth);
+  const pipeline = primary.calls.find(
+    (call) => call.op === "pipeline",
+  ).pipeline;
+  assert.deepEqual(
+    pipeline.descriptor.fragment.targets.map((target) => target.format),
+    ["rgba16float", "r8unorm", "rg32float"],
+  );
+  assert.match(
+    pipeline.descriptor.fragment.module.descriptor.code,
+    /@location\(2\) depth: vec2<f32>/,
+  );
+  const motion = passes.find(
+    (pass) => pass.descriptor.label === "CloudReconstructionAttachments pass",
+  );
+  const motionGroup = motion.calls.find((call) => call.op === "bind").bindGroup;
+  assert.equal(motion.descriptor.colorAttachments.length, 2);
+  assert.equal(
+    motionGroup.descriptor.entries.find((entry) => entry.binding === 2)
+      .resource,
+    depth,
+  );
+  const temporal = passes.find(
+    (pass) => pass.descriptor.label === "CloudTemporalResolve pass",
+  );
+  const temporalGroup = temporal.calls.find(
+    (call) => call.op === "bind",
+  ).bindGroup;
+  assert.equal(
+    temporalGroup.descriptor.entries.find((entry) => entry.binding === 4)
+      .resource,
+    depth,
+  );
+  assert.equal(
+    cache.attachmentEmitBindGroupLayout.descriptor.entries.find(
+      (entry) => entry.binding === 2,
+    ).texture.sampleType,
+    "unfilterable-float",
+  );
+  assert.equal(
+    cache.temporalConsumeBindGroupLayout.descriptor.entries.find(
+      (entry) => entry.binding === 4,
+    ).texture.sampleType,
+    "unfilterable-float",
+  );
+  assert.equal(
+    passes.some(
+      (pass) => pass.descriptor.label === "ProceduralClouds half-res pass",
+    ),
+    false,
+  );
+  assert.equal(cache.reconstructionEmittedThisFrame, true);
+  assert.equal(cache.reconstructionConsumedThisFrame, true);
+  assert.equal(cache.observability.reconstructionProducerTargets, 2);
+
+  const generation = cache.attachmentGeneration.generation;
+  const recipeCount = cache.marchPipelines.size;
+  fixture.context._canvas.width = 80;
+  fixture.context._canvas.height = 64;
+  const resized = runPrimaryReuseFrame(engine, fixture, config);
+  const resizedPrimary = resized.find(
+    (pass) => pass.descriptor.label === "CloudPrimaryReuse march pass",
+  );
+  assert.notEqual(cache.attachmentViews[0], depth);
+  assert.equal(
+    resizedPrimary.descriptor.colorAttachments[2].view,
+    cache.attachmentViews[0],
+  );
+  assert.ok(cache.attachmentGeneration.generation > generation);
+  assert.equal(
+    cache.temporalConsumeAttachmentGeneration,
+    cache.attachmentGeneration.generation,
+  );
+  assert.equal(cache.marchPipelines.size, recipeCount);
+  assert.equal(cache.reconstructionConsumedThisFrame, true);
+});
+
+test("a pending shared-depth recipe preserves the complete legacy reconstruction chain", async () => {
+  const engine = await loadIntegrationHarness();
+  const fixture = makeCloudFixture();
+  installActualContextContract(engine, fixture);
+  engine.setCloudTransmittanceCapture(fixture.context, true);
+  const cache = fixture.context._cloudCache;
+  cache.attachmentsEnabled = true;
+  cache.reconstructionEnabled = true;
+  const config = {
+    ...fixture.config,
+    cloudQuality: 64,
+    cloudVolumetricQuality: "medium",
+    cloudReusePrimaryIntegral: true,
+  };
+  runPrimaryReuseFrame(engine, fixture, config);
+  const original = fixture.context.webgpuPipelineCache.getPipelineSync;
+  fixture.context.webgpuPipelineCache.getPipelineSync = (descriptor) =>
+    descriptor.fragment.entryPoint === "fragmentCloudPrimaryMain"
+      ? null
+      : original(descriptor);
+  fixture.context.webgpuPipelineCache.getPipeline = () => new Promise(() => {});
+  const passes = runPrimaryReuseFrame(engine, fixture, config);
+  const half = passes.find(
+    (pass) => pass.descriptor.label === "ProceduralClouds half-res pass",
+  );
+  assert.ok(half);
+  assert.equal(half.descriptor.colorAttachments.length, 2);
+  assert.equal(
+    half.descriptor.colorAttachments[1].view,
+    cache.attachmentViews[0],
+  );
+  assert.equal(
+    passes.some(
+      (pass) =>
+        pass.descriptor.label === "ProceduralClouds transmittance-mask pass",
+    ),
+    true,
+  );
+  assert.equal(
+    passes.some(
+      (pass) => pass.descriptor.label === "CloudPrimaryReuse march pass",
+    ),
+    false,
+  );
+  assert.equal(cache.primaryReuseApplied, false);
+  assert.equal(cache.reconstructionEmittedThisFrame, true);
+  assert.equal(cache.reconstructionConsumedThisFrame, true);
+});
+
+test("enabling reconstruction after a color-only shared preparation cannot consume stale depth", async () => {
+  const engine = await loadIntegrationHarness();
+  const fixture = makeCloudFixture();
+  installActualContextContract(engine, fixture);
+  engine.setCloudTransmittanceCapture(fixture.context, true);
+  const cache = fixture.context._cloudCache;
+  cache.attachmentsEnabled = true;
+  const config = {
+    ...fixture.config,
+    cloudQuality: 64,
+    cloudVolumetricQuality: "medium",
+    cloudReusePrimaryIntegral: true,
+  };
+  runPrimaryReuseFrame(engine, fixture, config);
+  const firstPass = fixture.receipts.passes.length;
+  const outcome = prepareLifecycleFrame(engine, fixture, config);
+  cache.reconstructionEnabled = true;
+  engine.completePreparedCloudMask(outcome);
+  assert.equal(
+    engine.executePreparedCloudFrame(
+      fixture.context,
+      fixture.frameState,
+      fixture.snapshotView,
+      fixture.depth,
+      fixture.output,
+      outcome,
+    ),
+    true,
+  );
+  settleCurrentEncoderWithActualContext(fixture);
+  const passes = fixture.receipts.passes.slice(firstPass);
+  const primary = passes.find(
+    (pass) => pass.descriptor.label === "CloudPrimaryReuse march pass",
+  );
+  assert.equal(primary.descriptor.colorAttachments.length, 2);
+  assert.equal(
+    passes.some(
+      (pass) => pass.descriptor.label === "CloudReconstructionAttachments pass",
+    ),
+    false,
+  );
+  assert.equal(cache.reconstructionEmittedThisFrame, false);
+  assert.equal(cache.reconstructionConsumedThisFrame, false);
+  fixture.frameState.frameNumber++;
+  fixture.context._currentCommandEncoder = fixture.makeEncoder({
+    label: "reconstruction recovery",
+  });
+  runPrimaryReuseFrame(engine, fixture, config);
+  assert.equal(cache.reconstructionEmittedThisFrame, true);
+  assert.equal(cache.reconstructionConsumedThisFrame, true);
 });
 
 test("same cloud-pass pipeline predicate must fail under unique-anchor in-memory mask-to-visible pipeline mutation", async () => {

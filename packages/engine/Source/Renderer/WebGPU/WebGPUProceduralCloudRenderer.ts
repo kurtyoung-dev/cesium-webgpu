@@ -2281,7 +2281,7 @@ function ensureTemporalResources(
         texture(1, Stage.FRAGMENT), // previous accumulated history
         sampler(2, Stage.FRAGMENT),
         uniformBuffer(3, Stage.FRAGMENT),
-        texture(4, Stage.FRAGMENT), // contract slot 1 — depth
+        texture(4, Stage.FRAGMENT, { sampleType: "unfilterable-float" }), // contract slot 1 — depth
         texture(5, Stage.FRAGMENT), // contract slot 2 — velocity
         texture(6, Stage.FRAGMENT), // contract slot 3 — moments
       ],
@@ -2556,7 +2556,7 @@ function ensureCloudAttachmentResources(
       [
         texture(0, Stage.FRAGMENT), // freshly marched half-res cloud
         uniformBuffer(1, Stage.FRAGMENT),
-        texture(2, Stage.FRAGMENT), // contract slot 1, written by the march
+        texture(2, Stage.FRAGMENT, { sampleType: "unfilterable-float" }), // contract slot 1, written by the march
       ],
     );
     const emitModule = device.createShaderModule({
@@ -3115,16 +3115,16 @@ function requestCloudMarchPipeline(
     (data[140] < 0.5 || data[141] <= 0) &&
     data[168] <= 0;
   const primaryReuse = primaryReuseDefinesHi !== undefined;
-  const definesHi = primaryReuse
-    ? primaryReuseDefinesHi | ShaderDefineHi.CLOUD_PRIMARY_REUSE
-    : (baseMorphology ? ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY : 0) |
-      (bakedOnly ? ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY : 0) |
-      (emit ? CLOUD_MARCH_EMIT_DEFINES_HI : 0) |
-      (preview ? ShaderDefineHi.CLOUD_LIGHTING_PREVIEW : 0) |
-      (moments && !preview ? ShaderDefineHi.CLOUD_DENSITY_MOMENTS : 0) |
-      (cache.geographicWindRequested && !preview
-        ? ShaderDefineHi.CLOUD_GEOGRAPHIC_WIND
-        : 0);
+  const definesHi =
+    (primaryReuse
+      ? primaryReuseDefinesHi | ShaderDefineHi.CLOUD_PRIMARY_REUSE
+      : (baseMorphology ? ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY : 0) |
+        (bakedOnly ? ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY : 0) |
+        (preview ? ShaderDefineHi.CLOUD_LIGHTING_PREVIEW : 0) |
+        (moments && !preview ? ShaderDefineHi.CLOUD_DENSITY_MOMENTS : 0) |
+        (cache.geographicWindRequested && !preview
+          ? ShaderDefineHi.CLOUD_GEOGRAPHIC_WIND
+          : 0)) | (emit ? CLOUD_MARCH_EMIT_DEFINES_HI : 0);
   const key = `${format}:${definesHi}`;
   //>>includeStart('debug', pragmas.debug);
   const requestStartedAt = performance.now();
@@ -3160,7 +3160,11 @@ function requestCloudMarchPipeline(
     };
     if (primaryReuse) {
       descriptor.fragment.entryPoint = "fragmentCloudPrimaryMain";
-      descriptor.fragment.targets = [{ format }, { format: "r8unorm" }];
+      descriptor.fragment.targets = [
+        { format },
+        { format: "r8unorm" },
+        ...(emit ? [{ format: CLOUD_MARCH_EMITTED_FORMAT }] : []),
+      ];
     }
     ready = pipelines.getPipelineSync(descriptor) ?? null;
     cache.marchPipelines.set(key, ready);
@@ -4658,18 +4662,43 @@ export function prepareCloudFrameAndEncodeMask(
     packStageOpen = false;
 
     // Optional pipelines never gate the first useful or requested-quality draw.
-    const reuseRequested =
+    const primaryReuseRequested =
       captureRequested &&
       config.cloudReusePrimaryIntegral === true &&
       cache.executeSerial > 0 &&
-      !cache.usingStartupPreview &&
-      !cache.reconstructionEnabled;
+      !cache.usingStartupPreview;
+    let reuseEmitDepth = false;
+    if (
+      primaryReuseRequested &&
+      halfResActive &&
+      cache.reconstructionEnabled &&
+      cache.attachmentsEnabled &&
+      cache.halfView
+    ) {
+      const targetsReady =
+        resolveCloudInverseCurrentVpRte(
+          temporalReprojectionSupported,
+          us?.inverseProjection,
+          us?.inverseView,
+        ) &&
+        ensureCloudAttachmentResources(
+          device,
+          cache,
+          cache.halfWidth,
+          cache.halfHeight,
+          cache.halfView,
+          lease,
+        );
+      reuseEmitDepth = targetsReady && cloudReconstructionVariantReady(cache);
+    }
+    const reuseRequested =
+      primaryReuseRequested && (!cache.reconstructionEnabled || reuseEmitDepth);
     const reuseMarchPipeline = reuseRequested
       ? requestCloudMarchPipeline(
           context,
           cache,
           CLOUD_HALF_FORMAT,
-          false,
+          reuseEmitDepth,
           false,
           false,
           cache.selectedMarchDefinesHi,
@@ -4685,6 +4714,7 @@ export function prepareCloudFrameAndEncodeMask(
     const reuseReady =
       !!reuseMarchPipeline && (halfResActive || !!reuseCompositePipeline);
     let reusedPrimary = false;
+    let reusedPrimaryDepth = false;
     let primaryColorView: GPUTextureView | null = null;
 
     const executeLate = (
@@ -5001,6 +5031,9 @@ export function prepareCloudFrameAndEncodeMask(
             );
             attachmentsReady =
               attachmentTransformValid &&
+              (!reusedPrimary ||
+                !cache.reconstructionEnabled ||
+                reusedPrimaryDepth) &&
               ensureCloudAttachmentResources(
                 device,
                 cache,
@@ -5606,6 +5639,20 @@ export function prepareCloudFrameAndEncodeMask(
                 loadOp: "clear",
                 storeOp: "store",
               },
+              ...(reuseReady && reuseEmitDepth
+                ? [
+                    {
+                      view: cache.attachmentViews[
+                        CLOUD_MARCH_EMITTED_SLOT - 1
+                      ]!,
+                      clearValue:
+                        CLOUD_OWNED_ATTACHMENTS[CLOUD_MARCH_EMITTED_SLOT - 1]
+                          .clearValue,
+                      loadOp: "clear" as const,
+                      storeOp: "store" as const,
+                    },
+                  ]
+                : []),
             ],
           }),
         );
@@ -5616,6 +5663,8 @@ export function prepareCloudFrameAndEncodeMask(
         maskPass.draw(3);
         maskPass.end();
         reusedPrimary = reuseReady;
+        reusedPrimaryDepth = reusedPrimary && reuseEmitDepth;
+        cache.reconstructionEmittedThisFrame ||= reusedPrimaryDepth;
         cache.primaryReuseApplied = reusedPrimary;
         receipt = Object.freeze({
           brand: cloudMaskReceiptBrand,

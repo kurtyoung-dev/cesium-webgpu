@@ -199,6 +199,10 @@ fn fragmentCloudMaskMain(input: VertexOutput) -> @location(0) f32 {
 struct CloudPrimaryOutput {
   @location(0) color: vec4<f32>,
   @location(1) transmittance: f32,
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+  @location(2) depth: vec2<f32>,
+//>>else
+//>>endif
 };
 
 @fragment
@@ -214,9 +218,13 @@ fn fragmentCloudPrimaryMain(input: VertexOutput) -> CloudPrimaryOutput {
     -cloud.encodedCameraHigh, -cloud.encodedCameraLow,
     cloudRaySamplePhase(input.position.xy),
   );
-  return CloudPrimaryOutput(
-    vec4<f32>(view.radiance, view.alpha), clamp(1.0 - view.alpha, 0.0, 1.0)
-  );
+  let color = vec4<f32>(view.radiance, view.alpha);
+  let transmittance = clamp(1.0 - view.alpha, 0.0, 1.0);
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+  return CloudPrimaryOutput(color, transmittance, cloudViewReconstructionDepth(view));
+//>>else
+  return CloudPrimaryOutput(color, transmittance);
+//>>endif
 }
 //>>else
 //>>endif
