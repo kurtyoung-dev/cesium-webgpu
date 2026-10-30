@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1812 |
-| ACTIVE | 1561 |
+| Files in census | 1813 |
+| ACTIVE | 1562 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
 | NO @purpose HEADER | 49 |
 | NO @status HEADER | 1 |
-| Classes | probe 683, spec 486, other 378, lib 214, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
+| Classes | probe 683, spec 487, other 378, lib 214, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
 
 ### Tools/ (69)
 
@@ -240,8 +240,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | build-cloud-tiled-hydrography.mjs | other | ACTIVE | 2026-10-23 | 3 | Builds the CWT1 per-tile hydrography spatial archive (one 10-degree cell per HTTP Range slice) from the coast, lake, river and bathymetry-tensor assets. |
 | build-coastline-water-mask.mjs | other | ACTIVE | 2026-10-23 | 4 | Converts Natural Earth 1:10m land, minor-island and Antarctic ice-shelf polygons into the packed LWM2 binary bundled for GlobalCoastlineWaterClassificationProvider. |
 | build-eot20-constituent-grid.mjs | other | ACTIVE | 2026-08-16 | 5 | Offline bake of the EOT20 ocean-tide constituent atlas into the TCG1 grid read by Core/TideConstituentGrid.js (CC BY 4.0, attribution mandated). |
-| build-geoid-undulation-grid.mjs | other | ACTIVE | 2026-08-16 | 6 | Bakes the bundled coarse EGM2008 geoid grid (egm2008-0p5deg.i16) consumed by Core/GeoidUndulationGrid.js for the ocean GEOID vertical datum. |
-| build-global-bathymetry-tensor.mjs | other | ACTIVE | 2026-10-23 | 7 | Bakes the 0.5-degree PROCEDURAL depth-and-optics prior (GBT1 RGBA8 tensor) from the coast, lake, river and EGM2008 geoid assets. |
+| build-geoid-undulation-grid.mjs | other | ACTIVE | 2026-08-16 | 7 | Bakes the bundled coarse EGM2008 geoid grid (egm2008-0p5deg.i16) consumed by Core/GeoidUndulationGrid.js for the ocean GEOID vertical datum. |
+| build-global-bathymetry-tensor.mjs | other | ACTIVE | 2026-10-23 | 8 | Bakes the 0.5-degree PROCEDURAL depth-and-optics prior (GBT1 RGBA8 tensor) from the coast, lake, river and EGM2008 geoid assets. |
 | build-global-river-binary.mjs | other | ACTIVE | 2026-10-23 | 3 | Generates the packed NE1R global river & delta centerlines binary (packages/engine/Source/Assets/WaterMask/ne10mRivers.bin) for RiverWaterClassificationProvider. |
 | build-lake-water-mask.mjs | other | ACTIVE | 2026-10-23 | 7 | Converts Natural Earth 1:10m lakes, playas and reefs into the packed LWM2 binary bundled for LakeWaterClassificationProvider (globe.lakeWaterMask). |
 | ci-guards.spec.mjs | spec | ACTIVE | 2026-09-19 | 12 | Asserts the CI guards job wires every build-free guard, stays build-free, and records why the excluded guards are excluded. |
@@ -467,7 +467,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1122)
+### Tools/visual-regression/ (1123)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -481,6 +481,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | aurora-geomagnetic-oval.spec.mjs | spec | ACTIVE | 2026-09-18 | 5 | Asserts the centred-dipole frame and the synthetic oval against CPU reference vectors — the pole to its published figures, geomagnetic against geographic latitude, geocentric against geodetic, north against south, and quiet against storm geometry. |
 | backend-isolation-lane-contract.spec.mjs | spec | ACTIVE | 2026-08-20 | 0 | Pin the backend-isolation split lane to the page's explicit launch and readiness contract. |
 | bathymetry-environmental-tensor-coupling.spec.mjs | spec | ACTIVE | 2026-10-23 | 1 | Verifies bathymetry tensor quantization, Jerlov classification, CLOD blending, and end-to-end coupling with GlobeWaterOcean and AtmosphericEffects. |
+| bathymetry-tensor-geoid-header.spec.mjs | spec | ACTIVE | — | 1 | Pins that Tools/build-global-bathymetry-tensor.mjs places geoid features at their own longitude (the 32-byte EGM1 header is skipped, not read as samples) and that the shipped tensor carries no header-leak trenches at the poles. |
 | buffer-polyline-hairpin-join.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Runs csm_polylineJoin out of csm_polylineCommon.wgsl (the joint of WebGL's getPolylineWindowCoordinatesEC, now the one joint every WebGPU polyline stage including BufferPolyline uses) through the WGSL evaluator and asserts it against an independent JavaScript transcription of PolylineCommon.glsl: finite at a hairpin and in parity with WebGL everywhere else. |
 | buffer-polyline-meters-width.spec.mjs | spec | ACTIVE | 2026-10-09 | 5 | Acceptance for BufferPolylineCollection widthUnits:"meters" on WebGPU: the packer's sign and the WGSL branch pinned as ONE convention against the GLSL oracle. |
 | buffer-primitive-collection-feature-renderer-teardown.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that BufferPrimitiveCollection.destroy() releases the backend feature renderer's cached resources for the collection, so a grow-then-destroy cycle returns the collection's WebGPU resource count to baseline instead of leaking it. |

@@ -34,7 +34,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import GeoidUndulationGrid from "../packages/engine/Source/Core/GeoidUndulationGrid.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -67,6 +69,9 @@ const MAGIC_NE1R = 0x5231454e;
 
 const WIDTH = 720;
 const HEIGHT = 360;
+const GEOID_W = 721;
+const GEOID_H = 361;
+const GEOID_STEP_DEG = 0.5;
 const BATHYMETRY_MAX_DEPTH_M = 11000.0;
 const MAX_TIDAL_RANGE_M = 16.0;
 
@@ -324,19 +329,74 @@ function parseArgs(argv) {
   return args;
 }
 
+/**
+ * Node reader over the bundled `EGM1` geoid grid, in metres. The bytes go
+ * through the engine's own parser (`Core/GeoidUndulationGrid.js`), which
+ * validates the 32-byte header and starts the payload after it; reading the
+ * file as raw int16 from byte 0 put the header in the first 16 samples and
+ * shifted every row 16 nodes (8 deg) west. Sampling exactly on a node is exact
+ * in the engine's bilinear path (all weights are 0 or 1).
+ *
+ * @param {Uint8Array} bytes The grid file.
+ * @returns {(row: number, col: number) => number} Undulation at node
+ *   (row from the north, col from -180 deg east).
+ */
+export function createGeoidNodeReader(bytes) {
+  const grid = new GeoidUndulationGrid(
+    bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+  );
+  if (
+    grid.longitudeCount !== GEOID_W ||
+    grid.latitudeCount !== GEOID_H ||
+    grid.stepDegrees !== GEOID_STEP_DEG
+  ) {
+    throw new Error(
+      `geoid grid is ${grid.longitudeCount}x${grid.latitudeCount} at ${grid.stepDegrees} deg; ` +
+        `the tensor needs the global ${GEOID_W}x${GEOID_H} 0.5-deg grid`,
+    );
+  }
+  return (row, col) =>
+    grid.sampleDegrees(
+      -180.0 + col * GEOID_STEP_DEG,
+      90.0 - row * GEOID_STEP_DEG,
+    );
+}
+
+/**
+ * The geoid terms the tensor uses at tensor cell (r, c): the undulation, its
+ * 5-point Laplacian and its slope, read on the geoid node grid (node (r, c),
+ * wrapping east-west on the tensor width and clamping north-south).
+ *
+ * @param {(row: number, col: number) => number} geoidNode A node reader.
+ * @param {number} r Tensor row.
+ * @param {number} c Tensor column.
+ * @returns {{undulation: number, laplacian: number, slope: number}}
+ */
+export function geoidTermsAtCell(geoidNode, r, c) {
+  const gRow = clamp(r, 0, GEOID_H - 1);
+  const gRowN = clamp(r - 1, 0, GEOID_H - 1);
+  const gRowS = clamp(r + 1, 0, GEOID_H - 1);
+  const gCol = clamp(c, 0, GEOID_W - 1);
+  const gColW = (c - 1 + WIDTH) % WIDTH;
+  const gColE = (c + 1) % WIDTH;
+  const nCenter = geoidNode(gRow, gCol);
+  const nNorth = geoidNode(gRowN, gCol);
+  const nSouth = geoidNode(gRowS, gCol);
+  const nWest = geoidNode(gRow, gColW);
+  const nEast = geoidNode(gRow, gColE);
+  return {
+    undulation: nCenter,
+    laplacian: nNorth + nSouth + nWest + nEast - 4.0 * nCenter,
+    slope: Math.hypot(nEast - nWest, nNorth - nSouth),
+  };
+}
+
 function main() {
   const args = parseArgs(process.argv);
   const coastPolys = parseLwmPolygons(fs.readFileSync(COAST_PATH));
   const lakePolys = parseLwmPolygons(fs.readFileSync(LAKES_PATH));
   const rivers = parseNe1rRivers(fs.readFileSync(RIVERS_PATH));
-  const geoidBuf = fs.readFileSync(GEOID_PATH);
-  const geoidView = new DataView(
-    geoidBuf.buffer,
-    geoidBuf.byteOffset,
-    geoidBuf.byteLength,
-  );
-  const geoidW = 721;
-  const geoidH = 361;
+  const geoidNode = createGeoidNodeReader(fs.readFileSync(GEOID_PATH));
 
   // 1. Rasterize land mask (1 = land, 0 = ocean)
   const landMask = new Uint8Array(WIDTH * HEIGHT);
@@ -473,29 +533,15 @@ function main() {
   for (let r = 0; r < HEIGHT; r++) {
     const latDeg = 90.0 - (r + 0.5) * 0.5;
     const absLat = Math.abs(latDeg);
-    const gRow = clamp(r, 0, geoidH - 1);
-    const gRowN = clamp(r - 1, 0, geoidH - 1);
-    const gRowS = clamp(r + 1, 0, geoidH - 1);
 
     for (let c = 0; c < WIDTH; c++) {
       const idx = r * WIDTH + c;
-      const gCol = clamp(c, 0, geoidW - 1);
-      const gColW = (c - 1 + WIDTH) % WIDTH;
-      const gColE = (c + 1) % WIDTH;
 
       // Geoid undulation in meters and discrete 5-point Laplacian (gravity gradient proxy)
-      const nCenter =
-        geoidView.getInt16((gRow * geoidW + gCol) * 2, true) * 0.01;
-      const nNorth =
-        geoidView.getInt16((gRowN * geoidW + gCol) * 2, true) * 0.01;
-      const nSouth =
-        geoidView.getInt16((gRowS * geoidW + gCol) * 2, true) * 0.01;
-      const nWest =
-        geoidView.getInt16((gRow * geoidW + gColW) * 2, true) * 0.01;
-      const nEast =
-        geoidView.getInt16((gRow * geoidW + gColE) * 2, true) * 0.01;
-      const geoidLaplacian = nNorth + nSouth + nWest + nEast - 4.0 * nCenter;
-      const geoidSlope = Math.hypot(nEast - nWest, nNorth - nSouth);
+      const geoid = geoidTermsAtCell(geoidNode, r, c);
+      const nCenter = geoid.undulation;
+      const geoidLaplacian = geoid.laplacian;
+      const geoidSlope = geoid.slope;
 
       const distCells = Math.sqrt(distToLandSq[idx]);
       const distKm = distCells * 55.6;
@@ -608,4 +654,9 @@ function main() {
   );
 }
 
-main();
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main();
+}
