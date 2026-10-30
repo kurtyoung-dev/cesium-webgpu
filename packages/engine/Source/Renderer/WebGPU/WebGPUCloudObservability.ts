@@ -74,6 +74,8 @@ export const CLOUD_TIMED_PASS_NAMES: readonly string[] = Object.freeze([
   "CloudUpscale composite pass",
   "ProceduralClouds pass",
   "ProceduralClouds transmittance-mask pass",
+  "CloudPrimaryReuse march pass",
+  "CloudPrimaryReuse composite pass",
 ]);
 
 /**

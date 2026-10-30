@@ -1344,6 +1344,8 @@ interface CloudVolumetricsConfig {
   cloudProgressiveStartup?: boolean;
   /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
   cloudDistantDensityMoments?: boolean;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudReusePrimaryIntegral?: boolean;
   cloudCoverage?: number;
   cloudDensity?: number;
   cloudLayerBottom?: number;

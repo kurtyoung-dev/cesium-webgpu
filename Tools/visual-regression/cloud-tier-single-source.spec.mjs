@@ -2664,3 +2664,16 @@ test("cloudGeographicWind is an own enumerable validated accessor that rejects a
     "the constructor validates through the same setter",
   );
 });
+
+test("cloudReusePrimaryIntegral is an experimental validated accessor that reaches the configuration flat", () => {
+  assertExperimentalBooleanDial("cloudReusePrimaryIntegral");
+  const instance = new CloudVolumetrics({
+    experimental: { cloudReusePrimaryIntegral: true },
+  });
+  const config = collectionResolver().call({
+    volumetric: instance,
+    _cloudType: CloudVolumetrics.DEFAULT_CLOUD_TYPE,
+  });
+  assert.equal(config.cloudReusePrimaryIntegral, true);
+  assert.equal(config.cloudDistantDensityMoments, false);
+});

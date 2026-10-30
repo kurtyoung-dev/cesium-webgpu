@@ -6,7 +6,11 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { defaultVariant } from "./lib/wgsl-variant.mjs";
+import {
+  defaultVariant,
+  hiVariant,
+  ShaderDefineHi,
+} from "./lib/wgsl-variant.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -298,27 +302,49 @@ test("the shared frame counter keeps 64 IGN phases while preserving Bayer's 16-p
     /cache\.frameCounter\s*=\s*\(cache\.frameCounter\s*\+\s*1\)\s*&\s*63/,
     "the CPU counter must wrap at 64 for exact f32 IGN seeds",
   );
-  const bayerIndex = assertBayerLowFourBits(shader);
+  // The law holds per compiled variant: the default variant carries one
+  // half-resolution offset (fragmentMain). Unit 3464's optional primary-reuse
+  // entry point (fragmentCloudPrimaryMain, compiled only under
+  // CLOUD_PRIMARY_REUSE) carries its own, and the same law holds inside it.
+  // R-12 (R-2026-10-22-12): the lead's form; the W3 reviewer re-derives it.
+  const selected = defaultVariant(shader);
+  const bayerIndex = assertBayerLowFourBits(selected);
+  const reuse = hiVariant(shader, ShaderDefineHi.CLOUD_PRIMARY_REUSE);
+  const primaryAt = reuse.indexOf("fn fragmentCloudPrimaryMain(");
+  assert.ok(primaryAt >= 0, "the primary-reuse entry point is compiled");
+  const primaryMain = reuse.slice(primaryAt);
+  const primaryBody = primaryMain.slice(0, primaryMain.indexOf("\n}\n") + 3);
+  const primaryIndex = assertBayerLowFourBits(primaryBody);
   assert.match(shader, /const BAYER4:\s*array<f32,\s*16>/);
-  // Inertness: a wider mask, or a Bayer read off the masked binding, is red.
-  for (const [label, from, to] of [
-    [
-      "mask widened",
-      "u32(cloud.frameCounter) & 15u;",
-      "u32(cloud.frameCounter) & 31u;",
-    ],
-    [
-      "unmasked read",
-      `BAYER4[(${bayerIndex} + 5u) & 15u]`,
-      `BAYER4[${bayerIndex} + 5u]`,
-    ],
+  // Inertness, in each compiled variant: a wider mask, or a Bayer read off the
+  // masked binding, is red.
+  for (const [variant, source, index] of [
+    ["default", selected, bayerIndex],
+    ["primary reuse", primaryBody, primaryIndex],
   ]) {
-    assert.equal(shader.split(from).length, 2, `mutant anchor: ${label}`);
-    assert.throws(
-      () => assertBayerLowFourBits(shader.replace(from, to)),
-      assert.AssertionError,
-      `the Bayer pin survived: ${label}`,
-    );
+    for (const [label, from, to] of [
+      [
+        "mask widened",
+        "u32(cloud.frameCounter) & 15u;",
+        "u32(cloud.frameCounter) & 31u;",
+      ],
+      [
+        "unmasked read",
+        `BAYER4[(${index} + 5u) & 15u]`,
+        `BAYER4[${index} + 5u]`,
+      ],
+    ]) {
+      assert.equal(
+        source.split(from).length,
+        2,
+        `mutant anchor (${variant}): ${label}`,
+      );
+      assert.throws(
+        () => assertBayerLowFourBits(source.replace(from, to)),
+        assert.AssertionError,
+        `the Bayer pin survived (${variant}): ${label}`,
+      );
+    }
   }
 
   let frameCounter = 0;

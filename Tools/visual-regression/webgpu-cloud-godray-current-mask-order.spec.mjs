@@ -104,6 +104,11 @@ const REAL_MASK_PATHS = [
   "CloudAerialTransport.js",
   "CloudAirLight.js",
   "WebGPUCloudAirLight.ts",
+  "WebGPUCloudPrimaryReuse.ts",
+  "CloudPrimaryComposite.js",
+  "CloudUpscale.js",
+  "CloudTemporalResolve.js",
+  "CloudReconstructionAttachments.js",
   "CloudMaterialFlow.js",
   "WebGPUCloudMaterialFlow.ts",
   "CloudDensityFormation.js",
@@ -2742,6 +2747,183 @@ test("same fallback predicate must fail under unique-anchor in-memory GodRay bin
   );
 });
 
+function runPrimaryReuseFrame(engine, fixture, config) {
+  const firstPass = fixture.receipts.passes.length;
+  const outcome = prepareLifecycleFrame(engine, fixture, config);
+  engine.completePreparedCloudMask(outcome);
+  assert.equal(
+    engine.executePreparedCloudFrame(
+      fixture.context,
+      fixture.frameState,
+      fixture.snapshotView,
+      fixture.depth,
+      fixture.output,
+      outcome,
+    ),
+    true,
+  );
+  settleCurrentEncoderWithActualContext(fixture);
+  const passes = fixture.receipts.passes.slice(firstPass);
+  fixture.frameState.frameNumber++;
+  fixture.context._currentCommandEncoder = fixture.makeEncoder({
+    label: "next primary reuse frame",
+  });
+  return passes;
+}
+
+test("optional full primary reuse preserves baseline-first admission and skips the second march", async () => {
+  const engine = await loadIntegrationHarness();
+  const fixture = makeCloudFixture();
+  installActualContextContract(engine, fixture);
+  const config = { ...fixture.config, cloudReusePrimaryIntegral: true };
+  const cold = runPrimaryReuseFrame(engine, fixture, config);
+  assert.equal(
+    cold.some(
+      (pass) => pass.descriptor.label === "CloudPrimaryReuse march pass",
+    ),
+    false,
+  );
+  const passes = runPrimaryReuseFrame(engine, fixture, config);
+  const primary = passes.filter(
+    (pass) => pass.descriptor.label === "CloudPrimaryReuse march pass",
+  );
+  assert.equal(primary.length, 1);
+  const primaryPipeline = primary[0].calls.find(
+    (call) => call.op === "pipeline",
+  ).pipeline;
+  assert.match(
+    primaryPipeline.descriptor.fragment.module.descriptor.code,
+    /fn fragmentCloudPrimaryMain\(/,
+  );
+  const baselinePipeline = cold
+    .find((pass) => pass.descriptor.label === "ProceduralClouds pass")
+    .calls.find((call) => call.op === "pipeline").pipeline;
+  assert.doesNotMatch(
+    baselinePipeline.descriptor.fragment.module.descriptor.code,
+    /fn fragmentCloudPrimaryMain\(/,
+  );
+  assert.equal(
+    passes.filter((pass) =>
+      /^(ProceduralClouds pass|ProceduralClouds transmittance-mask pass)$/.test(
+        pass.descriptor.label,
+      ),
+    ).length,
+    0,
+  );
+  const composite = passes.find(
+    (pass) => pass.descriptor.label === "CloudPrimaryReuse composite pass",
+  );
+  assert.ok(composite);
+  const epoch = fixture.context._cloudCache.maskResourceEpoch;
+  assert.equal(
+    primary[0].descriptor.colorAttachments[0].view,
+    epoch.radianceView,
+  );
+  assert.equal(primary[0].descriptor.colorAttachments[1].view, epoch.view);
+  const group = composite.calls.find((call) => call.op === "bind").bindGroup;
+  assert.equal(group.descriptor.entries[0].resource, fixture.snapshotView);
+  assert.equal(group.descriptor.entries[1].resource, epoch.radianceView);
+  assert.equal(fixture.context._cloudCache.primaryReuseApplied, true);
+
+  const pending = fixture.context.webgpuPipelineCache.getPipelineSync;
+  fixture.context.webgpuPipelineCache.getPipelineSync = () => null;
+  const off = runPrimaryReuseFrame(engine, fixture, {
+    ...config,
+    cloudReusePrimaryIntegral: false,
+  });
+  assert.equal(
+    off.some((pass) => pass.descriptor.label === "ProceduralClouds pass"),
+    true,
+  );
+  assert.equal(fixture.context._cloudCache.primaryReuseApplied, false);
+  assert.equal(epoch.texture.destroyed, true);
+  assert.equal(epoch.radianceTexture.destroyed, true);
+  fixture.context.webgpuPipelineCache.getPipelineSync = pending;
+});
+
+test("optional half primary reuse feeds the existing upscale without a repeated march", async () => {
+  const engine = await loadIntegrationHarness();
+  const fixture = makeCloudFixture();
+  installActualContextContract(engine, fixture);
+  const config = {
+    ...fixture.config,
+    cloudQuality: 64,
+    cloudVolumetricQuality: "medium",
+    cloudReusePrimaryIntegral: true,
+  };
+  runPrimaryReuseFrame(engine, fixture, config);
+  const passes = runPrimaryReuseFrame(engine, fixture, config);
+  const cache = fixture.context._cloudCache;
+  const primary = passes.find(
+    (pass) => pass.descriptor.label === "CloudPrimaryReuse march pass",
+  );
+  assert.ok(primary);
+  assert.equal(primary.descriptor.colorAttachments[0].view, cache.halfView);
+  assert.equal(cache.maskWidth, cache.halfWidth);
+  assert.equal(cache.maskHeight, cache.halfHeight);
+  assert.equal(cache.maskResourceEpoch.radianceTexture, null);
+  assert.equal(
+    passes.some(
+      (pass) => pass.descriptor.label === "ProceduralClouds half-res pass",
+    ),
+    false,
+  );
+  assert.equal(
+    passes.some(
+      (pass) => pass.descriptor.label === "CloudUpscale composite pass",
+    ),
+    true,
+  );
+  assert.equal(cache.primaryReuseApplied, true);
+
+  cache.attachmentsEnabled = true;
+  cache.reconstructionEnabled = true;
+  const fallback = runPrimaryReuseFrame(engine, fixture, config);
+  assert.equal(cache.primaryReuseApplied, false);
+  assert.equal(
+    fallback.some(
+      (pass) =>
+        pass.descriptor.label === "ProceduralClouds transmittance-mask pass",
+    ),
+    true,
+  );
+  assert.equal(
+    fallback.some(
+      (pass) => pass.descriptor.label === "ProceduralClouds half-res pass",
+    ),
+    true,
+  );
+});
+
+test("pending optional primary pipelines retain the complete baseline draw and mask", async () => {
+  const engine = await loadIntegrationHarness();
+  const fixture = makeCloudFixture();
+  installActualContextContract(engine, fixture);
+  runPrimaryReuseFrame(engine, fixture, fixture.config);
+  const original = fixture.context.webgpuPipelineCache.getPipelineSync;
+  fixture.context.webgpuPipelineCache.getPipelineSync = (descriptor) =>
+    descriptor.fragment.entryPoint === "fragmentCloudPrimaryMain"
+      ? null
+      : original(descriptor);
+  fixture.context.webgpuPipelineCache.getPipeline = () => new Promise(() => {});
+  const passes = runPrimaryReuseFrame(engine, fixture, {
+    ...fixture.config,
+    cloudReusePrimaryIntegral: true,
+  });
+  assert.equal(fixture.context._cloudCache.primaryReuseApplied, false);
+  assert.equal(
+    passes.some((pass) => pass.descriptor.label === "ProceduralClouds pass"),
+    true,
+  );
+  assert.equal(
+    passes.some(
+      (pass) =>
+        pass.descriptor.label === "ProceduralClouds transmittance-mask pass",
+    ),
+    true,
+  );
+});
+
 test("same cloud-pass pipeline predicate must fail under unique-anchor in-memory mask-to-visible pipeline mutation", async () => {
   const original = await loadHarness();
   const originalFixture = makeCloudFixture();
@@ -2756,7 +2938,7 @@ test("same cloud-pass pipeline predicate must fail under unique-anchor in-memory
         mutate: (source) =>
           replaceExactlyOnce(
             source,
-            "maskPass.setPipeline(cache.maskPipeline);",
+            "maskPass.setPipeline(\n          reuseReady ? reuseMarchPipeline! : cache.maskPipeline!,\n        );",
             "maskPass.setPipeline(cache.pipeline!);",
             "replace the mask pass pipeline with the visible cloud pipeline",
           ),
@@ -2779,8 +2961,8 @@ test("same cloud-pass pipeline predicate must fail under unique-anchor in-memory
         mutate: (source) =>
           replaceExactlyOnce(
             source,
-            "maskPass.setPipeline(cache.maskPipeline);\n        maskPass.setBindGroup(0, earlyMaskGroup);",
-            "maskPass.setPipeline(cache.maskPipeline);\n        maskPass.setPipeline(cache.pipeline!);\n        maskPass.setBindGroup(0, earlyMaskGroup);",
+            "maskPass.setPipeline(\n          reuseReady ? reuseMarchPipeline! : cache.maskPipeline!,\n        );\n        maskPass.setBindGroup(0, earlyMaskGroup);",
+            "maskPass.setPipeline(\n          reuseReady ? reuseMarchPipeline! : cache.maskPipeline!,\n        );\n        maskPass.setPipeline(cache.pipeline!);\n        maskPass.setBindGroup(0, earlyMaskGroup);",
             "override the mask pipeline before its binding and draw",
           ),
         label: "override mask pipeline with visible cloud pipeline",

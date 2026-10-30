@@ -194,3 +194,29 @@ fn fragmentCloudMaskMain(input: VertexOutput) -> @location(0) f32 {
   );
   return clamp(1.0 - view.alpha, 0.0, 1.0);
 }
+
+//>>ifdef CLOUD_PRIMARY_REUSE
+struct CloudPrimaryOutput {
+  @location(0) color: vec4<f32>,
+  @location(1) transmittance: f32,
+};
+
+@fragment
+fn fragmentCloudPrimaryMain(input: VertexOutput) -> CloudPrimaryOutput {
+  var uv = input.uv;
+  if (halfResEnabled()) {
+    let index = u32(cloud.frameCounter) & 15u;
+    let offset = vec2<f32>(BAYER4[index], BAYER4[(index + 5u) & 15u]) - 0.5;
+    uv += offset / max(cloud.resolution, vec2<f32>(1.0));
+  }
+  let view = integrateCloudView(
+    cloud.cameraPosition, getWorldRay(uv), loadCloudSceneDepth(uv),
+    -cloud.encodedCameraHigh, -cloud.encodedCameraLow,
+    cloudRaySamplePhase(input.position.xy),
+  );
+  return CloudPrimaryOutput(
+    vec4<f32>(view.radiance, view.alpha), clamp(1.0 - view.alpha, 0.0, 1.0)
+  );
+}
+//>>else
+//>>endif

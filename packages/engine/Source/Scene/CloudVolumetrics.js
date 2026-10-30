@@ -522,6 +522,7 @@ class CloudVolumetrics {
     // accessor on the namespace object for the same reason as the core dials.
     const experimental = {};
     let distantDensityMoments = false;
+    let reusePrimaryIntegral = false;
     Object.defineProperties(experimental, {
       /**
        * When <code>true</code>, distant and orbital cloud fronts read a baked
@@ -543,9 +544,32 @@ class CloudVolumetrics {
           distantDensityMoments = value;
         },
       },
+      /**
+       * When <code>true</code>, one primary march yields both the visible cloud
+       * radiance and the same frame's god-ray transmittance mask, where the
+       * frame requests that mask and the target supports the combined pass;
+       * otherwise the separate mask march runs. WebGPU only.
+       * @type {boolean}
+       * @default false
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudReusePrimaryIntegral: {
+        enumerable: true,
+        get: function () {
+          return reusePrimaryIntegral;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.bool("experimental.cloudReusePrimaryIntegral", value);
+          //>>includeEnd('debug');
+          reusePrimaryIntegral = value;
+        },
+      },
     });
     experimental.cloudDistantDensityMoments =
       options.experimental?.cloudDistantDensityMoments ?? false;
+    experimental.cloudReusePrimaryIntegral =
+      options.experimental?.cloudReusePrimaryIntegral ?? false;
     /**
      * Experimental volumetric cloud dials, grouped apart from the core dials on
      * this object. A dial here may change without notice. WebGPU only.

@@ -51,6 +51,7 @@ import CloudSolarLightingWGSL from "../../Shaders/WebGPU/Environment/CloudSolarL
 import CloudViewIntegrationWGSL from "../../Shaders/WebGPU/Environment/CloudViewIntegration.js";
 import CloudAerialTransportWGSL from "../../Shaders/WebGPU/Environment/CloudAerialTransport.js";
 import CloudAirLightWGSL from "../../Shaders/WebGPU/Environment/CloudAirLight.js";
+import { CloudPrimaryReuseResources } from "./WebGPUCloudPrimaryReuse.js";
 import {
   CLOUD_AIR_LIGHT_FLOATS,
   readPublishedAtmosphereParams,
@@ -330,6 +331,8 @@ interface CloudMaskResourceEpoch {
   readonly generation: number;
   readonly texture: GPUTexture;
   readonly view: GPUTextureView;
+  readonly radianceTexture: GPUTexture | null;
+  readonly radianceView: GPUTextureView | null;
   readonly width: number;
   readonly height: number;
   readonly device: GPUDevice;
@@ -546,6 +549,7 @@ export interface CloudCache {
   startupPreviewDrawn: boolean;
   usingStartupPreview: boolean;
   selectedMarchPipeline: GPURenderPipeline | null;
+  selectedMarchDefinesHi: number;
   densityMoments: CloudDensityMomentsResources | null;
   densityMomentsEnabled: boolean;
   marchPipelineTimings?: Map<string, number>;
@@ -788,6 +792,8 @@ export interface CloudCache {
   // before postprocessing. Its raw-color group and the later display-composite
   // group share the exact non-color bindings and one uniform upload.
   maskCaptureEnabled: boolean;
+  primaryReuse: CloudPrimaryReuseResources | null;
+  primaryReuseApplied: boolean;
   maskTexture: GPUTexture | null;
   maskView: GPUTextureView | null; // r8unorm, 1=clear 0=opaque cloud
   maskWidth: number;
@@ -1019,14 +1025,19 @@ function retireCloudMaskEpoch(
   epoch.terminal = true;
   epoch.destroyAttempted = true;
   lease.retiredMaskEpochs.delete(epoch);
-  try {
-    epoch.texture.destroy();
-  } catch (error: unknown) {
-    reportCloudLifecycleError(
-      lease.context,
-      "Cloud mask retirement destroy failed.",
-      error,
-    );
+  for (const texture of [epoch.texture, epoch.radianceTexture]) {
+    if (!texture) {
+      continue;
+    }
+    try {
+      texture.destroy();
+    } catch (error: unknown) {
+      reportCloudLifecycleError(
+        lease.context,
+        "Cloud mask retirement destroy failed.",
+        error,
+      );
+    }
   }
 }
 
@@ -1197,6 +1208,7 @@ export function invalidateCloudFrameMask(context: CesiumGraphicsContext): void {
     return;
   }
   cache.maskRenderedThisFrame = false;
+  cache.primaryReuseApplied = false;
   cache.currentMaskReceipt = null;
   cache.maskFrameNumber = -1;
   cache.maskReceiptGeneration = 0;
@@ -1319,6 +1331,7 @@ export function ensureCloudCache(
       startupPreviewDrawn: false,
       usingStartupPreview: false,
       selectedMarchPipeline: null,
+      selectedMarchDefinesHi: 0,
       densityMoments: null,
       densityMomentsEnabled: false,
       marchPipelines: new Map(),
@@ -1438,6 +1451,8 @@ export function ensureCloudCache(
       iblRevisionAdvectionX: Number.NaN,
       iblRevisionAdvectionZ: Number.NaN,
       maskCaptureEnabled: false,
+      primaryReuse: null,
+      primaryReuseApplied: false,
       maskTexture: null,
       maskView: null,
       maskWidth: 0,
@@ -3082,6 +3097,7 @@ function requestCloudMarchPipeline(
   emit: boolean,
   preview = false,
   moments = cache.densityMomentsEnabled ?? false,
+  primaryReuseDefinesHi?: number,
 ): GPURenderPipeline | null {
   const device = context._device;
   const pipelines = context.webgpuPipelineCache;
@@ -3098,15 +3114,17 @@ function requestCloudMarchPipeline(
     (data[136] < 0.5 || data[137] <= 0) &&
     (data[140] < 0.5 || data[141] <= 0) &&
     data[168] <= 0;
-  const definesHi =
-    (baseMorphology ? ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY : 0) |
-    (bakedOnly ? ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY : 0) |
-    (emit ? CLOUD_MARCH_EMIT_DEFINES_HI : 0) |
-    (preview ? ShaderDefineHi.CLOUD_LIGHTING_PREVIEW : 0) |
-    (moments && !preview ? ShaderDefineHi.CLOUD_DENSITY_MOMENTS : 0) |
-    (cache.geographicWindRequested && !preview
-      ? ShaderDefineHi.CLOUD_GEOGRAPHIC_WIND
-      : 0);
+  const primaryReuse = primaryReuseDefinesHi !== undefined;
+  const definesHi = primaryReuse
+    ? primaryReuseDefinesHi | ShaderDefineHi.CLOUD_PRIMARY_REUSE
+    : (baseMorphology ? ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY : 0) |
+      (bakedOnly ? ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY : 0) |
+      (emit ? CLOUD_MARCH_EMIT_DEFINES_HI : 0) |
+      (preview ? ShaderDefineHi.CLOUD_LIGHTING_PREVIEW : 0) |
+      (moments && !preview ? ShaderDefineHi.CLOUD_DENSITY_MOMENTS : 0) |
+      (cache.geographicWindRequested && !preview
+        ? ShaderDefineHi.CLOUD_GEOGRAPHIC_WIND
+        : 0);
   const key = `${format}:${definesHi}`;
   //>>includeStart('debug', pragmas.debug);
   const requestStartedAt = performance.now();
@@ -3140,6 +3158,10 @@ function requestCloudMarchPipeline(
       primitive: { topology: "triangle-list" as const },
       definesHi,
     };
+    if (primaryReuse) {
+      descriptor.fragment.entryPoint = "fragmentCloudPrimaryMain";
+      descriptor.fragment.targets = [{ format }, { format: "r8unorm" }];
+    }
     ready = pipelines.getPipelineSync(descriptor) ?? null;
     cache.marchPipelines.set(key, ready);
     if (!ready) {
@@ -3169,7 +3191,10 @@ function requestCloudMarchPipeline(
     }
   }
   // Pending recipes must not invalidate the selected mask and shadow modules.
-  if (ready && !emit && cache.maskShaderModule !== module) {
+  if (ready && !emit && !primaryReuse) {
+    cache.selectedMarchDefinesHi = definesHi;
+  }
+  if (ready && !emit && !primaryReuse && cache.maskShaderModule !== module) {
     cache.maskShaderModule = module;
     cache.maskPipeline = null;
     cache.shadowPipeline = null;
@@ -4632,6 +4657,36 @@ export function prepareCloudFrameAndEncodeMask(
     stages.endStage(CloudCpuStage.PACK);
     packStageOpen = false;
 
+    // Optional pipelines never gate the first useful or requested-quality draw.
+    const reuseRequested =
+      captureRequested &&
+      config.cloudReusePrimaryIntegral === true &&
+      cache.executeSerial > 0 &&
+      !cache.usingStartupPreview &&
+      !cache.reconstructionEnabled;
+    const reuseMarchPipeline = reuseRequested
+      ? requestCloudMarchPipeline(
+          context,
+          cache,
+          CLOUD_HALF_FORMAT,
+          false,
+          false,
+          false,
+          cache.selectedMarchDefinesHi,
+        )
+      : null;
+    const reuseOwner =
+      reuseRequested && !halfResActive
+        ? (cache.primaryReuse ??= new CloudPrimaryReuseResources(device))
+        : null;
+    const reuseCompositePipeline =
+      reuseOwner?.getPipeline(context, context._canvasFormat || "bgra8unorm") ??
+      null;
+    const reuseReady =
+      !!reuseMarchPipeline && (halfResActive || !!reuseCompositePipeline);
+    let reusedPrimary = false;
+    let primaryColorView: GPUTextureView | null = null;
+
     const executeLate = (
       lateColorTextureView: GPUTextureView,
       lateDepthTextureView: GPUTextureView,
@@ -4968,47 +5023,49 @@ export function prepareCloudFrameAndEncodeMask(
           // same pass also writes contract slot 1 from the march's own per-sample
           // accumulation, so the depth is a by-product of one traversal rather than a
           // second march.
-          const halfPass = encoder.beginRenderPass(
-            timedCloudPass(context, {
-              label: "ProceduralClouds half-res pass",
-              colorAttachments: emitReconstruction
-                ? [
-                    {
-                      view: cache.halfView,
-                      clearValue: { r: 0, g: 0, b: 0, a: 0 },
-                      loadOp: "clear" as const,
-                      storeOp: "store" as const,
-                    },
-                    {
-                      view: cache.attachmentViews[
-                        CLOUD_MARCH_EMITTED_SLOT - 1
-                      ]!,
-                      // The contract's own sentinel: a texel the triangle somehow
-                      // misses must read "no cloud", never distance zero.
-                      clearValue:
-                        CLOUD_OWNED_ATTACHMENTS[CLOUD_MARCH_EMITTED_SLOT - 1]
-                          .clearValue,
-                      loadOp: "clear" as const,
-                      storeOp: "store" as const,
-                    },
-                  ]
-                : [
-                    {
-                      view: cache.halfView,
-                      clearValue: { r: 0, g: 0, b: 0, a: 0 },
-                      loadOp: "clear" as const,
-                      storeOp: "store" as const,
-                    },
-                  ],
-            }),
-          );
-          halfPass.setPipeline(
-            emitReconstruction ? cache.halfEmitPipeline! : cache.halfPipeline,
-          );
-          halfPass.setBindGroup(0, bindGroup);
-          halfPass.draw(3); // full-screen triangle
-          halfPass.end();
-          cache.reconstructionEmittedThisFrame = emitReconstruction;
+          if (!reusedPrimary) {
+            const halfPass = encoder.beginRenderPass(
+              timedCloudPass(context, {
+                label: "ProceduralClouds half-res pass",
+                colorAttachments: emitReconstruction
+                  ? [
+                      {
+                        view: cache.halfView,
+                        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                        loadOp: "clear" as const,
+                        storeOp: "store" as const,
+                      },
+                      {
+                        view: cache.attachmentViews[
+                          CLOUD_MARCH_EMITTED_SLOT - 1
+                        ]!,
+                        // The contract's own sentinel: a texel the triangle somehow
+                        // misses must read "no cloud", never distance zero.
+                        clearValue:
+                          CLOUD_OWNED_ATTACHMENTS[CLOUD_MARCH_EMITTED_SLOT - 1]
+                            .clearValue,
+                        loadOp: "clear" as const,
+                        storeOp: "store" as const,
+                      },
+                    ]
+                  : [
+                      {
+                        view: cache.halfView,
+                        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                        loadOp: "clear" as const,
+                        storeOp: "store" as const,
+                      },
+                    ],
+              }),
+            );
+            halfPass.setPipeline(
+              emitReconstruction ? cache.halfEmitPipeline! : cache.halfPipeline,
+            );
+            halfPass.setBindGroup(0, bindGroup);
+            halfPass.draw(3); // full-screen triangle
+            halfPass.end();
+            cache.reconstructionEmittedThisFrame = emitReconstruction;
+          }
 
           // The reconstruction attachment producer. It runs between the raymarch and
           // the temporal resolve, so a consumer can read the set inside the resolve
@@ -5423,6 +5480,27 @@ export function prepareCloudFrameAndEncodeMask(
           upscalePass.setBindGroup(0, upscaleBindGroup);
           upscalePass.draw(3);
           upscalePass.end();
+        } else if (
+          reusedPrimary &&
+          primaryColorView &&
+          reuseCompositePipeline &&
+          reuseOwner
+        ) {
+          const pass = encoder.beginRenderPass(
+            timedCloudPass(context, {
+              label: "CloudPrimaryReuse composite pass",
+              colorAttachments: [
+                { view: outputView, loadOp: "load", storeOp: "store" },
+              ],
+            }),
+          );
+          pass.setPipeline(reuseCompositePipeline);
+          pass.setBindGroup(
+            0,
+            reuseOwner.getBindGroup(colorTextureView, primaryColorView),
+          );
+          pass.draw(3);
+          pass.end();
         } else {
           // Full-resolution path: march straight into the output view.
           const pass = encoder.beginRenderPass(
@@ -5491,18 +5569,37 @@ export function prepareCloudFrameAndEncodeMask(
       const maskResource = ensureCloudMaskResources(
         device,
         cache,
-        canvasW,
-        canvasH,
+        reuseReady && halfResActive ? cache.halfWidth : canvasW,
+        reuseReady && halfResActive ? cache.halfHeight : canvasH,
         lease,
+        reuseReady && !halfResActive,
+        !reuseReady,
       );
-      if (cache.maskPipeline && maskResource) {
+      if ((reuseReady || cache.maskPipeline) && maskResource) {
         if (currentCloudEncoder(context) !== encoder) {
           return finishNegativeCloudFrameAttempt(attempt, "encoder-mismatch");
         }
+        primaryColorView = reuseReady
+          ? halfResActive
+            ? cache.halfView
+            : maskResource.radianceView
+          : null;
         const maskPass = encoder.beginRenderPass(
           timedCloudPass(context, {
-            label: "ProceduralClouds transmittance-mask pass",
+            label: reuseReady
+              ? "CloudPrimaryReuse march pass"
+              : "ProceduralClouds transmittance-mask pass",
             colorAttachments: [
+              ...(primaryColorView
+                ? [
+                    {
+                      view: primaryColorView,
+                      clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                      loadOp: "clear" as const,
+                      storeOp: "store" as const,
+                    },
+                  ]
+                : []),
               {
                 view: maskResource.view,
                 clearValue: { r: 1, g: 1, b: 1, a: 1 },
@@ -5512,10 +5609,14 @@ export function prepareCloudFrameAndEncodeMask(
             ],
           }),
         );
-        maskPass.setPipeline(cache.maskPipeline);
+        maskPass.setPipeline(
+          reuseReady ? reuseMarchPipeline! : cache.maskPipeline!,
+        );
         maskPass.setBindGroup(0, earlyMaskGroup);
         maskPass.draw(3);
         maskPass.end();
+        reusedPrimary = reuseReady;
+        cache.primaryReuseApplied = reusedPrimary;
         receipt = Object.freeze({
           brand: cloudMaskReceiptBrand,
           prepared,
@@ -5751,12 +5852,21 @@ function ensureCloudMaskResources(
   width: number,
   height: number,
   lease: CloudPreparationLease,
+  radiance = false,
+  requireMaskPipeline = true,
 ): CloudMaskResourceEpoch | null {
   verifyCloudMutationLease(cache, lease);
   const w = Math.max(1, Math.floor(width));
   const h = Math.max(1, Math.floor(height));
-  if (!cache.maskTexture || cache.maskWidth !== w || cache.maskHeight !== h) {
+  if (
+    !cache.maskTexture ||
+    cache.maskWidth !== w ||
+    cache.maskHeight !== h ||
+    !!cache.maskResourceEpoch?.radianceTexture !== radiance
+  ) {
     let texture: GPUTexture | null = null;
+    let radianceTexture: GPUTexture | null = null;
+    let radianceView: GPUTextureView | null = null;
     let view: GPUTextureView;
     try {
       texture = device.createTexture({
@@ -5767,10 +5877,23 @@ function ensureCloudMaskResources(
           GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
       });
       view = texture.createView();
+      if (radiance) {
+        radianceTexture = device.createTexture({
+          label: "Cloud primary radiance",
+          size: { width: w, height: h, depthOrArrayLayers: 1 },
+          format: CLOUD_HALF_FORMAT,
+          usage:
+            GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        radianceView = radianceTexture.createView();
+      }
     } catch (error: unknown) {
-      if (texture) {
+      for (const allocated of [texture, radianceTexture]) {
+        if (!allocated) {
+          continue;
+        }
         try {
-          texture.destroy();
+          allocated.destroy();
         } catch (destroyError: unknown) {
           reportCloudLifecycleError(
             lease.context,
@@ -5787,6 +5910,8 @@ function ensureCloudMaskResources(
       generation: cache.maskGeneration,
       texture,
       view,
+      radianceTexture,
+      radianceView,
       width: w,
       height: h,
       device,
@@ -5803,7 +5928,12 @@ function ensureCloudMaskResources(
       lease.retiredMaskEpochs.add(oldEpoch);
     }
   }
-  if (!cache.maskPipeline && cache.maskShaderModule && cache.bindGroupLayout) {
+  if (
+    requireMaskPipeline &&
+    !cache.maskPipeline &&
+    cache.maskShaderModule &&
+    cache.bindGroupLayout
+  ) {
     const layout = device.createPipelineLayout({
       label: "ProceduralClouds mask pipeline layout",
       bindGroupLayouts: [cache.bindGroupLayout],
@@ -5979,6 +6109,13 @@ export function destroyProceduralCloudResources(
     cache.shadowCascadeSize = 0;
     // Transmittance-mask target and pipeline.
     destroyCloudGpuResource(context, cache.maskTexture, "Cloud mask texture");
+    destroyCloudGpuResource(
+      context,
+      cache.maskResourceEpoch?.radianceTexture ?? null,
+      "Cloud primary radiance",
+    );
+    cache.primaryReuse?.destroy();
+    cache.primaryReuse = null;
     cache.maskTexture = null;
     cache.maskView = null;
     cache.maskWidth = 0;

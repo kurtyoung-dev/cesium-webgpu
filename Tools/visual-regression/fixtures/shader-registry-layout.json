@@ -473,7 +473,7 @@
       "bit": 11,
       "name": "CLOUD_PRIMARY_REUSE",
       "owner": "cloud-march",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",
@@ -1014,7 +1014,7 @@
       "id": 44,
       "name": "CLOUD_PRIMARY_COMPOSITE",
       "owner": "cloud",
-      "status": "reserved"
+      "status": "consumed"
     }
   ]
 }

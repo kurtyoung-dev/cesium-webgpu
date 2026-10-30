@@ -487,11 +487,14 @@ function pinWithMutant(source, re, mutate, label) {
 
 test("D1 the pass registry and the encode sites agree in BOTH directions", () => {
   // Forward: every registered label has a `timedCloudPass` encode site.
+  // A site's label may be a literal or a conditional between literals (3464's
+  // mask site: the primary-reuse march or the transmittance-mask pass), so
+  // every literal in the label expression is one registered label.
   const encodeLabels = [
     ...cloudRenderer.matchAll(
-      /timedCloudPass\(context, \{\n\s*label: "([^"]+)"/g,
+      /timedCloudPass\(context, \{\n\s*label:([^,]*(?:\?[^:]*:[^,]*)?),/g,
     ),
-  ].map((m) => m[1]);
+  ].flatMap((m) => [...m[1].matchAll(/"([^"]+)"/g)].map((s) => s[1]));
   assert.equal(
     encodeLabels.length,
     CLOUD_TIMED_PASS_NAMES.length,
