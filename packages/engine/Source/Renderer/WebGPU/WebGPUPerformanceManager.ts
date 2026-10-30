@@ -912,6 +912,18 @@ export class WebGPUPerformanceManager {
   }
 
   /**
+   * The sun LUT's published bake parameters (planet and atmosphere radii,
+   * scale heights, Mie anisotropy, intensity and the Rayleigh, Mie and ozone
+   * coefficients the last sun dispatch wrote), for consumers that must match
+   * the bake, such as the cloud air-light tail. Returns null until
+   * {@link ensureAtmosphereLUTResources} has run. The array is the manager's
+   * own upload buffer: read it, never write it.
+   */
+  getAtmosphereLUTParams(): Float32Array | null {
+    return this._atmosphereLutResources?.paramsData ?? null;
+  }
+
+  /**
    * Dispatch both LUT compute entry points (computeTransmittance,
    * computeInscatter) into the requested light's LUT pair. Phase 1.3c
    * adds the `target: "sun" | "moon"` parameter so the sky atmosphere

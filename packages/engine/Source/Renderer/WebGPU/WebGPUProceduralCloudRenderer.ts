@@ -50,6 +50,13 @@ import CloudMarchSamplingWGSL from "../../Shaders/WebGPU/Environment/CloudMarchS
 import CloudSolarLightingWGSL from "../../Shaders/WebGPU/Environment/CloudSolarLighting.js";
 import CloudViewIntegrationWGSL from "../../Shaders/WebGPU/Environment/CloudViewIntegration.js";
 import CloudAerialTransportWGSL from "../../Shaders/WebGPU/Environment/CloudAerialTransport.js";
+import CloudAirLightWGSL from "../../Shaders/WebGPU/Environment/CloudAirLight.js";
+import {
+  CLOUD_AIR_LIGHT_FLOATS,
+  readPublishedAtmosphereParams,
+  writeCloudAirLightUniforms,
+  type CloudAirLightConditions,
+} from "./WebGPUCloudAirLight.js";
 import CloudDensityFormationWGSL from "../../Shaders/WebGPU/Environment/CloudDensityFormation.js";
 import CloudDensityMomentsWGSL from "../../Shaders/WebGPU/Environment/CloudDensityMoments.js";
 import CloudMaterialFlowWGSL from "../../Shaders/WebGPU/Environment/CloudMaterialFlow.js";
@@ -222,9 +229,10 @@ const CLOUD_UNIFORM_FLOATS =
   CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS +
   CLOUD_GENUS_MORPHOLOGY_FLOATS +
   CLOUD_TIER_LIGHTING_FLOATS +
-  CLOUD_MATERIAL_FLOW_FLOATS;
+  CLOUD_MATERIAL_FLOW_FLOATS +
+  CLOUD_AIR_LIGHT_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
-const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
+const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudAirLightWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
 // High-word define masks for the emitting march and the consuming resolve.
 // Named once so no call site spells a bit inline, and so a spec can assert the
 // renderer preprocesses with the axis the registry documents rather than with a
@@ -4465,6 +4473,14 @@ export function prepareCloudFrameAndEncodeMask(
       offset,
       cache.materialFlow.ageSeconds(geographicFlow, frameState.time),
       Boolean(geographicFlow),
+    );
+    const atmosphereParams = readPublishedAtmosphereParams(context);
+    offset = writeCloudAirLightUniforms(
+      data,
+      offset,
+      frameState.atmosphericConditions as CloudAirLightConditions | undefined,
+      atmosphereParams,
+      eclipseCloudFactor,
     );
     // Density phases are reduced in CPU doubles before upload. Geographic
     // transport supplies bounded ECEF deltas at each probe instead of adding

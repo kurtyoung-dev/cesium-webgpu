@@ -55,13 +55,18 @@ fn cloudCurvedAirInterval(h0: f32, mu: f32, pathLength: f32, radius: f32) -> vec
   return vec2<f32>(entry, max(entry, clippedExit));
 }
 
-fn cloudCurvedAirDensity(h0: f32, mu: f32, distance: f32, radius: f32) -> f32 {
+fn cloudCurvedAirHeight(h0: f32, mu: f32, distance: f32, radius: f32) -> f32 {
   let r0 = radius + h0;
   let radialDelta = distance * (distance + 2.0 * r0 * mu);
   // Rationalize the height difference to preserve sub-metre changes near the
   // cloud instead of subtracting two planet-sized radii.
   let height = max(h0 + radialDelta /
     (sqrt(max(r0 * r0 + radialDelta, 0.0)) + r0), 0.0);
+  return height;
+}
+
+fn cloudCurvedAirDensity(h0: f32, mu: f32, distance: f32, radius: f32) -> f32 {
+  let height = cloudCurvedAirHeight(h0, mu, distance, radius);
   let density = exp(-height / CLOUD_AIR_SCALE_HEIGHT_M);
   return density;
 }

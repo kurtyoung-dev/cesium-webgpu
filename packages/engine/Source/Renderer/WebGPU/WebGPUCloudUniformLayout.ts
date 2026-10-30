@@ -47,6 +47,8 @@ function range(
 export const CLOUD_QUALITY_FLAGS_SLOT = 74;
 
 /** The geographic material-flow tail (176-179): age, enable flag, two pads. */
+// The finite air-light tail (180-195) is `WebGPUCloudAirLight.ts`'s; its writer
+// fills the pad at 195.
 export const CLOUD_MATERIAL_FLOW_OFFSET = 176;
 export const CLOUD_MATERIAL_FLOW_FLOATS = 4;
 
@@ -65,12 +67,16 @@ export const CLOUD_UNIFORM_RANGES: readonly CloudUniformRange[] = Object.freeze(
     range("materialFlowEnabled", 177, 1),
     range("_padFlow0", 178, 1),
     range("_padFlow1", 179, 1),
+    range("airRayleigh", 180, 4),
+    range("airMie", 184, 4),
+    range("airOzonePhase", 188, 4),
+    range("airLightControl", 192, 4),
   ],
 );
 
 /** Slots every writer fills with zero (rule 3); slot 175's bits are rule 4's. */
 export const CLOUD_UNIFORM_RESERVED_SLOTS: readonly number[] = Object.freeze([
-  175, 178, 179,
+  175, 178, 179, 195,
 ]);
 
 /** Float count of the block, from the ranges. */

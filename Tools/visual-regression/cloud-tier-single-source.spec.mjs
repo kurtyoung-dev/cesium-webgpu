@@ -101,6 +101,8 @@ const DENSITY_TS =
 // The append-only tail rows name their float counts in their own modules.
 const LAYOUT_TS =
   "packages/engine/Source/Renderer/WebGPU/WebGPUCloudUniformLayout.ts";
+const AIR_LIGHT_TS =
+  "packages/engine/Source/Renderer/WebGPU/WebGPUCloudAirLight.ts";
 const CLOUDS_WGSL =
   "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl";
 const WEBGPU_DIR = "packages/engine/Source/Renderer/WebGPU";
@@ -201,7 +203,7 @@ const rendererCode = stripComments(rendererSource, { keepStrings: true });
 
 /** @type {Record<string, string>} */
 const constantExpressions = {};
-for (const file of [RENDERER_TS, DENSITY_TS, LAYOUT_TS]) {
+for (const file of [RENDERER_TS, DENSITY_TS, LAYOUT_TS, AIR_LIGHT_TS]) {
   const text = stripComments(read(file));
   for (const m of text.matchAll(
     /(?:export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*=\s*([^;]+);/g,
@@ -263,6 +265,7 @@ function evalConstant(name, seen = new Set()) {
 /** Each tail writer the packer calls, and the constant naming the floats it writes. */
 const TAIL_WRITERS = {
   writeCloudMaterialFlowUniforms: "CLOUD_MATERIAL_FLOW_FLOATS",
+  writeCloudAirLightUniforms: "CLOUD_AIR_LIGHT_FLOATS",
 };
 
 function walkPacker(source) {

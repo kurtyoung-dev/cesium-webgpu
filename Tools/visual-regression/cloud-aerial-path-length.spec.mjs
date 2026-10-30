@@ -88,6 +88,7 @@ function compileAerial(source) {
   functions.cloudAirColumnMeters = column;
   for (const name of [
     "cloudCurvedAirInterval",
+    "cloudCurvedAirHeight",
     "cloudCurvedAirDensity",
     "cloudCurvedAirPair",
     "cloudCurvedAirColumnMeters",
@@ -694,23 +695,32 @@ test("MUTANT 0 — the row's own defect restored at the composite is caught", ()
   }, "the O3 premise predicate must REJECT the restored defect");
 });
 
-test("MUTANT 0b — the LUT composite must read the same weight", () => {
-  // The physical-mode branch reuses `aerial` as its own blend weight, so the
-  // same defect can be reintroduced there alone. Pinned structurally because
-  // that branch's endpoints are LUT samples this file does not model — stated
-  // rather than silently skipped.
+test("MUTANT 0b — the physical composite must read the same visible sample as the weight", () => {
+  // R-12 (R-2026-10-22-12): unit 3463 retired the physical-mode LDR blend
+  // `hazed = mix(toneMapped, farTarget, aerial)` this test pinned. The physical branch
+  // now composes the cloud and the finite air in HDR before one tone map, and
+  // that law is EXECUTED by cloud-finite-air-light.spec.mjs (its R-12 contract
+  // and two mutants). What this file still owns is the same-sample rule: the
+  // physical composite reads the visible sample the heuristic weight reads, so
+  // the old defect (a fixed range in one branch only) cannot come back there.
   const code = stripComments(shippedSource);
+  const sample =
+    /hazed = cloudPhysicalAerialColor\(weightedColor, opacity, hazed,\s*visible\.y, -rayDir, visibleUp, visible\.x,/;
   assert.match(
     code,
-    /hazed = mix\(toneMapped, farTarget, aerial\)/,
-    "the physical aerial branch must blend on the computed fraction too",
+    sample,
+    "the physical branch must read the visible sample",
   );
   const mutated = code.replace(
-    /hazed = mix\(toneMapped, farTarget, aerial\)/,
-    "hazed = mix(toneMapped, farTarget, 0.85)",
+    sample,
+    "hazed = cloudPhysicalAerialColor(weightedColor, opacity, hazed,\n      visible.y, -rayDir, visibleUp, 400000.0,",
   );
-  assert.notEqual(mutated, code, "the LUT composite mutation matched nothing");
-  assert.doesNotMatch(mutated, /hazed = mix\(toneMapped, farTarget, aerial\)/);
+  assert.notEqual(
+    mutated,
+    code,
+    "the physical-sample mutation matched nothing",
+  );
+  assert.doesNotMatch(mutated, sample);
 });
 
 // ── 6. Mutation — every assertion above must be load bearing ─────────────────

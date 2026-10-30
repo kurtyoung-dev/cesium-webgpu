@@ -285,6 +285,10 @@ struct CloudUniforms {
   materialFlowEnabled: f32,      // 177
   _padFlow0: f32,                // 178
   _padFlow1: f32,                // 179
+  airRayleigh: vec4<f32>,        // 180-183 — scattering coefficient and scale height
+  airMie: vec4<f32>,             // 184-187 — scattering coefficient and scale height
+  airOzonePhase: vec4<f32>,      // 188-191 — absorption coefficient and Mie anisotropy
+  airLightControl: vec4<f32>,    // 192-195 — intensity, LUT readiness/domain and pad
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -2953,18 +2957,10 @@ fn marchDeck(
   );
   var hazed = mix(toneMapped, cloud.aerialColor, aerial);
 
-  // The sky LUT supplies air-light color. Its atmosphere-escape transmittance
-  // does not describe this finite camera-to-cloud path.
-  let aerialLutWeight = cloudAerialSkyViewWeight(rayDir);
-  if ((u32(cloud.qualityFlags) & QF_AERIAL_LUT) != 0u && aerialLutWeight > 0.0) {
-    let observerUp = normalize(cloud.cameraPosition);
-    let inscatterHDR = cloudSampleSkyViewLut(observerUp, rayDir, sunDir);
-    if (cloudLutLuminance(inscatterHDR) > 1e-5) {
-      let inscatterExposed = inscatterHDR * cloud.exposure;
-      let farTarget = mix(cloud.aerialColor,
-        inscatterExposed / (inscatterExposed + vec3<f32>(1.0)), aerialLutWeight);
-      hazed = mix(toneMapped, farTarget, aerial);
-    }
+  if ((u32(cloud.qualityFlags) & QF_AERIAL_LUT) != 0u) {
+    hazed = cloudPhysicalAerialColor(weightedColor, opacity, hazed,
+      visible.y, -rayDir, visibleUp, visible.x,
+      cloudAirCurvatureRadius(visibleUp, -rayDir), sunDir);
   }
 
   result.hazed = hazed;

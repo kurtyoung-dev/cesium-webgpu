@@ -40,6 +40,7 @@ for (const name of [
   "cloudAirColumnMeters",
   "cloudAirCurvatureRadius",
   "cloudCurvedAirInterval",
+  "cloudCurvedAirHeight",
   "cloudCurvedAirDensity",
   "cloudCurvedAirPair",
   "cloudCurvedAirColumnMeters",
@@ -629,12 +630,14 @@ test("MUTANT: the clouds-active gate made always true is red on the clouds-off h
 
 test("the selected march consumes curved geometry and uses the observer sky-view frame", () => {
   assert.match(march, /cloudAirCurvatureRadius\(visibleUp, -rayDir\)/);
-  assert.match(march, /cloudSampleSkyViewLut\(observerUp, rayDir, sunDir\)/);
+  // R-12: 3463 replaced the observer sky-view aerial blend with the finite
+  // spectral air composite, whose law cloud-finite-air-light.spec.mjs executes.
+  // The march keeps the curved geometry, never samples the sky view from the
+  // cloud's own up, and keeps the observer-domain ambient weight.
   assert.doesNotMatch(
     march,
     /cloudSampleSkyViewLut\(visibleUp, rayDir, sunDir\)/,
   );
-  assert.match(march, /aerialLutWeight > 0\.0/);
   assert.match(march, /cloudAmbientSkyViewWeight\(localUp, sunDir\)/);
-  assert.match(march, /hazed = mix\(toneMapped, farTarget, aerial\)/);
+  assert.match(march, /hazed = cloudPhysicalAerialColor\(/);
 });

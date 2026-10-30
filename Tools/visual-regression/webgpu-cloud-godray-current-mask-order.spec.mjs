@@ -102,6 +102,8 @@ const REAL_MASK_PATHS = [
   "CloudSolarLighting.js",
   "CloudViewIntegration.js",
   "CloudAerialTransport.js",
+  "CloudAirLight.js",
+  "WebGPUCloudAirLight.ts",
   "CloudMaterialFlow.js",
   "WebGPUCloudMaterialFlow.ts",
   "CloudDensityFormation.js",
@@ -2795,5 +2797,78 @@ test("same cloud-pass pipeline predicate must fail under unique-anchor in-memory
     () =>
       assertCapturedMaskReceipt(overridingFixture, overridingCapture.current),
     /cloud mask pass must consume its exact cached pipeline/,
+  );
+});
+
+test("binding 11 of the cloud march bind group is the exact transmittance view the performance manager publishes", async () => {
+  function observeCloudMarchBindings(engine) {
+    const fixture = makeCloudFixture();
+    const lutViews = {
+      skyViewView: token("published-sky-view"),
+      multipleScatterView: token("published-multiple-scatter-view"),
+      transmittanceView: token("published-transmittance-view"),
+    };
+    installActualContextContract(engine, fixture);
+    fixture.context._performanceManager = {
+      ensureAtmosphereLUTResources(device) {
+        assert.strictEqual(device, fixture.device);
+        return lutViews;
+      },
+      getAtmosphereLUTParams() {
+        return null;
+      },
+      endFrame() {},
+    };
+    prepareLifecycleFrame(engine, fixture, {
+      ...fixture.config,
+      cloudAerialMode: "physical",
+    });
+    const group = fixture.receipts.bindGroups.find(({ descriptor }) =>
+      [9, 10, 11, 12, 15].every((binding) =>
+        descriptor.entries.some((entry) => entry.binding === binding),
+      ),
+    );
+    assert.ok(group, "cloud march bind group must be recorded");
+    const bindings = new Map(
+      group.descriptor.entries.map(({ binding, resource }) => [
+        binding,
+        resource,
+      ]),
+    );
+    assert.strictEqual(bindings.get(9), lutViews.skyViewView);
+    assert.strictEqual(bindings.get(10), lutViews.multipleScatterView);
+    return { bindings, transmittanceView: lutViews.transmittanceView };
+  }
+
+  function assertTransmittanceBinding({ bindings, transmittanceView }) {
+    assert.strictEqual(
+      bindings.get(11),
+      transmittanceView,
+      "binding 11 must consume the published transmittance view",
+    );
+  }
+
+  const engine = await loadIntegrationHarness();
+  assertTransmittanceBinding(observeCloudMarchBindings(engine));
+
+  const mutant = await loadIntegrationHarness({
+    overrides: [
+      {
+        basename: "WebGPUProceduralCloudRenderer.ts",
+        mutate: (source) =>
+          replaceExactlyOnce(
+            source,
+            "{ binding: 11, resource: exactTransmittance },",
+            "{ binding: 11, resource: exactSkyView },",
+            "replace the cloud transmittance binding with the sky view",
+          ),
+        label: "replace cloud binding 11 with the sky view",
+      },
+    ],
+  });
+  const mutantBindings = observeCloudMarchBindings(mutant);
+  assert.throws(
+    () => assertTransmittanceBinding(mutantBindings),
+    assert.AssertionError,
   );
 });

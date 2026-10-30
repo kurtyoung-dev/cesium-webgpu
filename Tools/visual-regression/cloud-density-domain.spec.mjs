@@ -60,6 +60,7 @@ const cloudShaderSource =
     "CloudMarchSampling.wgsl",
     "CloudSolarLighting.wgsl",
     "CloudAerialTransport.wgsl",
+    "CloudAirLight.wgsl",
     "CloudDensityFormation.wgsl",
     "CloudDensityMoments.wgsl",
     "CloudViewIntegration.wgsl",
@@ -1694,7 +1695,13 @@ test("aerial transport uses contributing distance and altitude rather than empty
   );
   assert.match(march, /visible\.y, -rayDir, visibleUp, visible\.x/);
   assert.doesNotMatch(march, /cloudSampleTransmittance\(|let midDist =/);
-  assert.match(march, /hazed = mix\(toneMapped, farTarget, aerial\)/);
+  // R-12: the physical branch composes in HDR now (3463); its law is executed
+  // by cloud-finite-air-light.spec.mjs. This file pins only that it consumes
+  // the same visible sample.
+  assert.match(
+    march,
+    /hazed = cloudPhysicalAerialColor\(weightedColor, opacity, hazed,\s*visible\.y, -rayDir, visibleUp, visible\.x,/,
+  );
 });
 
 test("cloud lighting preview preserves density integration and validates each startup recipe", async () => {

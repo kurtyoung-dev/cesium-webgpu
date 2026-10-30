@@ -115,8 +115,12 @@ const AUDIT_GATES = Object.freeze([
   {
     flag: "enableSunLight",
     discoveryKey: "lighting.enableSunLight",
-    kind: "UNWIRED",
-    noConsumerCensus: true,
+    // Unit 3463 wired this flag into the volumetric cloud deck's finite air
+    // light, which exists on WebGPU only; R-2026-10-22-6 routes WebGL cloud
+    // parity to the WebGL owner lane, so the missing GLSL consumer is a routed
+    // gap rather than an unrouted WGSL-only quantity.
+    kind: "WEBGPU-ONLY-CLOUD",
+    maintainerRoute: "R-2026-10-22-6",
     evidence: [
       evidence(ATMOSPHERIC_CONDITIONS, "enableSunLight: true,"),
       evidence(
@@ -124,7 +128,29 @@ const AUDIT_GATES = Object.freeze([
         "enableSunLight: true,",
       ),
     ],
-    chains: [],
+    chains: [
+      {
+        name: "sun switch feeding the cloud finite air light",
+        resolvedQuantity:
+          "lighting.enableSunLight === false ? 0 : sun intensity -> CloudUniforms.airLightControl.x (slot 192)",
+        chain:
+          "AtmosphericConditions.lighting -> WebGPUCloudAirLight.writeCloudAirLightUniforms -> CloudAirLight.wgsl",
+        contribution: "additive",
+        plumbing: [
+          evidence(
+            "packages/engine/Source/Renderer/WebGPU/WebGPUCloudAirLight.ts",
+            "conditions?.lighting?.enableSunLight === false",
+          ),
+        ],
+        wgslConsumers: [
+          evidence(
+            "packages/engine/Source/Shaders/WebGPU/Environment/CloudAirLight.wgsl",
+            "(cloud.airLightControl.x * visibility)",
+          ),
+        ],
+        glslConsumers: [],
+      },
+    ],
   },
   {
     flag: "enableMoonLight",

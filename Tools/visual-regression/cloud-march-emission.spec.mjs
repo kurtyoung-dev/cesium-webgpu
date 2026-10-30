@@ -1166,9 +1166,12 @@ test("F1 all six compiled forms pass naga validation", async () => {
     "CloudMarchSampling.wgsl",
     "CloudSolarLighting.wgsl",
     "CloudAerialTransport.wgsl",
+    "CloudAirLight.wgsl",
     "CloudDensityFormation.wgsl",
   ]
-    .map((name) => readEngine("Shaders/WebGPU/Environment/" + name))
+    .map((name) =>
+      defaultVariant(readEngine("Shaders/WebGPU/Environment/" + name)),
+    )
     .join("\n");
   const forms = [
     ["march default", `${densityDomain}\n${defaultVariant(marchWgsl)}`],

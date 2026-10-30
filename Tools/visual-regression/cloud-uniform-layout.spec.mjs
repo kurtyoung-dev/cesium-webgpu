@@ -34,7 +34,7 @@ const read = (file) => fs.readFileSync(file, "utf8").replaceAll("\r\n", "\n");
 
 // The block's float count at this tip. Growing it is a new row at the tail and
 // a deliberate edit here.
-const PINNED_FLOATS = 180;
+const PINNED_FLOATS = 196;
 
 // Host-shareable layout in f32 units: [size, alignment].
 const WGSL_TYPES = {
@@ -141,20 +141,54 @@ function assertLayout(layout) {
   }
 }
 
+const airLightPath = path.join(webgpu, "WebGPUCloudAirLight.ts");
+
+async function loadAirLight(mutate, label) {
+  return bundle({
+    path: airLightPath,
+    source: read(airLightPath),
+    real: [],
+    mutate,
+    label,
+  });
+}
+
+/** A valid published LUT parameter row, as the sky bake writes it. */
+function publishedParams() {
+  const params = new Float32Array(24);
+  params.set([6378137, 6537590.5, 8500, 1200, 0.758, 50]);
+  params.set([5.5e-6, 13e-6, 22.4e-6], 8);
+  params.set([21e-6, 21e-6, 21e-6], 12);
+  params.set([0.65e-6, 1.881e-6, 0.085e-6], 20);
+  return params;
+}
+
 /** Rule 3: every reserved pad a tail writer covers reads zero after it runs. */
-function assertPadsZero(layout) {
-  for (const enabled of [true, false]) {
+function assertPadsZero(layout, airLight) {
+  for (const [enabled, published] of [
+    [true, publishedParams()],
+    [false, undefined],
+  ]) {
     const data = new Float32Array(PINNED_FLOATS).fill(7);
-    const end = layout.writeCloudMaterialFlowUniforms(
+    const flowEnd = layout.writeCloudMaterialFlowUniforms(
       data,
       layout.CLOUD_MATERIAL_FLOW_OFFSET,
       12.5,
       enabled,
     );
     assert.equal(
-      end,
+      flowEnd,
       layout.CLOUD_MATERIAL_FLOW_OFFSET + layout.CLOUD_MATERIAL_FLOW_FLOATS,
     );
+    assert.equal(airLight.CLOUD_AIR_LIGHT_OFFSET, flowEnd);
+    const end = airLight.writeCloudAirLightUniforms(
+      data,
+      flowEnd,
+      undefined,
+      published,
+      1,
+    );
+    assert.equal(end, PINNED_FLOATS);
     assert.equal(data[176], 12.5);
     assert.equal(data[177], enabled ? 1 : 0);
     for (const slot of layout.CLOUD_UNIFORM_RESERVED_SLOTS) {
@@ -209,7 +243,7 @@ test("the renderer allocates exactly the layout's float count", () => {
 });
 
 test("the tail writers fill every reserved pad with zero", async () => {
-  assertPadsZero(await loadLayout());
+  assertPadsZero(await loadLayout(), await loadAirLight());
 });
 
 test("MUTANT: a flow writer that puts a non-zero value into a reserved pad is red", async () => {
@@ -218,7 +252,18 @@ test("MUTANT: a flow writer that puts a non-zero value into a reserved pad is re
       source.replace("  data[offset + 3] = 0;", "  data[offset + 3] = 1;"),
     "write 1 into the flow tail's last reserved pad",
   );
-  assert.throws(() => assertPadsZero(mutant), assert.AssertionError);
+  const airLight = await loadAirLight();
+  assert.throws(() => assertPadsZero(mutant, airLight), assert.AssertionError);
+});
+
+test("MUTANT: an air-light writer that puts a non-zero value into its reserved pad is red", async () => {
+  const mutant = await loadAirLight(
+    (source) =>
+      source.replace("  data[offset + 15] = 0;", "  data[offset + 15] = 1;"),
+    "write 1 into the air-light tail reserved pad at 195",
+  );
+  const layout = await loadLayout();
+  assert.throws(() => assertPadsZero(layout, mutant), assert.AssertionError);
 });
 
 test("MUTANT: a range table that resizes a slot is red", async () => {

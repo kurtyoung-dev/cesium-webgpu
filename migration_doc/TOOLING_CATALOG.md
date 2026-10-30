@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1811 |
-| ACTIVE | 1560 |
+| Files in census | 1812 |
+| ACTIVE | 1561 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
 | NO @purpose HEADER | 49 |
 | NO @status HEADER | 1 |
-| Classes | probe 683, spec 485, other 378, lib 214, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
+| Classes | probe 683, spec 486, other 378, lib 214, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
 
 ### Tools/ (69)
 
@@ -467,7 +467,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1121)
+### Tools/visual-regression/ (1122)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -544,13 +544,14 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | classification-bounding-volume-frustum-slices.spec.mjs | spec | ACTIVE | 2026-09-10 | 5 | Drives the real View.createPotentiallyVisibleSet, the real Scene.isVisible and the real GroundPolylinePrimitive queue path over the real WebGPU classification bounding-volume selection, and requires the slice count, the frustum-list length, the per-frame classification draw count and the blend fold they imply to match the single-draw values on every scene mode. |
 | clipping-polygon-rebake-revision-signal.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that the WebGPU CLIPPING_POLYGONS feature renderer rebakes on every real content change of ClippingPolygonCollection — including an equal-count polygon swap that a vertex/polygon COUNT comparison cannot see — and does not rebake when nothing changed. |
 | clipping-polygon-texture-backend-claim.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that ClippingPolygonCollection.requestRectangleData asks the active backend before building WebGL clipping textures, so WebGPU builds zero Texture objects while the CPU edge/grid tables still reach a future WGSL twin. |
-| cloud-aerial-path-length.spec.mjs | spec | ACTIVE | 2026-10-29 | 8 | C13-N20: executes cloudAirColumnMeters/cloudAerialFraction straight out of ProceduralClouds.wgsl; pins the legacy calibration point, the orbital non-saturation that bar O3 is about, monotonicity, the near-horizontal guard, the reach-the-image assertion on the composited output, and six mutants. |
+| cloud-aerial-path-length.spec.mjs | spec | ACTIVE | 2026-10-30 | 8 | C13-N20: executes cloudAirColumnMeters/cloudAerialFraction straight out of ProceduralClouds.wgsl; pins the legacy calibration point, the orbital non-saturation that bar O3 is about, monotonicity, the near-horizontal guard, the reach-the-image assertion on the composited output, and six mutants. |
 | cloud-api-enum-reachability.spec.mjs | spec | NO @purpose HEADER | 2026-09-17 | 6 | — |
 | cloud-coverage-response.spec.mjs | spec | ACTIVE | 2026-10-29 | 9 | Pins the CLOUD-LOW-COVERAGE-CUTOFF fix: baked base-field support, monotone coverage response on the CPU twin, exact high-anchor preservation. |
-| cloud-curved-air-transport.spec.mjs | spec | ACTIVE | — | 1 | Executes finite cloud air columns and observer sky-view domain admission. |
+| cloud-curved-air-transport.spec.mjs | spec | ACTIVE | 2026-10-30 | 1 | Executes finite cloud air columns and observer sky-view domain admission. |
 | cloud-demo-probe-routing.spec.mjs | spec | ACTIVE | 2026-09-26 | 7 | Drives the eight routed Weather-Inspector cloud probes through runProbe against a stub browser, so the routing is known to reach a receipt, take its origin from the runtime and refuse port 8080 before an Edge slot is spent on it. |
 | cloud-density-domain.spec.mjs | spec | ACTIVE | 2026-10-30 | 11 | Pins the cloud density-domain layout: noise origin/phase/rotation float offsets shared between WebGPUCloudDensityDomain.ts and the WGSL, via exports. |
 | cloud-density-lod.spec.mjs | spec | ACTIVE | 2026-10-29 | 2 | Pins LOD agreement across CloudDensityDomain.wgsl, ProceduralClouds.wgsl and ProceduralSkyCubemap.wgsl via direct source reads. |
+| cloud-finite-air-light.spec.mjs | spec | ACTIVE | — | 4 | Verifies finite spectral cloud air transport and its append-only atmosphere inputs. |
 | cloud-genus-morphology.spec.mjs | spec | ACTIVE | 2026-10-30 | 10 | C13-16 cirrus row: add-only uniform layout, exact CUMULUS byte-neutrality, structural fibre anisotropy/shear metrics, mutation-rejected predicates. |
 | cloud-harvest-routing.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Drives the six harvested cloud probes (phase, ambient, tod, aerial, special, features) through runProbe on a stub browser whose canvas reads and element screenshots are hand-painted PNGs, so each descriptor is known to stage its rigs, take its origin from the runtime, measure the canvas in Node with the kit metrics and bind every clause to the exit code before an Edge slot is spent on it; the demo probes' own page functions run against a stub window, so their dials are seen to reach the cloud collection. |
 | cloud-ibl-revision.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | Source-anchored guard that WebGPUDynamicEnvironmentMapManager and the procedural cloud renderer keep the IBL revision handshake wired (CRLF-safe). |
@@ -1852,8 +1853,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-model-preparation-evidence.mjs | lib | ACTIVE | 2026-08-16 | 3 | Accumulates and validates WebGPU model preparation/demand counters as measurement-window evidence for performance workloads. |
 | wgsl-derivative-uniformity.mjs | lib | ACTIVE | 2026-09-01 | 8 | Reports implicit-derivative calls reached through non-uniform control flow without requiring a browser, GPU, or WGSL compiler. |
 | wgsl-function-body.mjs | lib | ACTIVE | 2026-10-09 | 2 | Builds an inertness mutant of a shader helper by swapping the whole body of a named WGSL function, so a mutant does not depend on the helper's current wording. |
-| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 35 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
-| wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 24 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
+| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 36 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
+| wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 25 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
 ### Tools/visual-regression/lib/metrics/ (50)
 
