@@ -95,6 +95,8 @@ const REAL_MASK_PATHS = [
   "WebGPUCloudShadowFrame.ts",
   "WebGPUCloudShadowBindGroupCache.ts",
   "CloudDensityDomain.js",
+  "CloudMarchSampling.js",
+  "CloudSolarLighting.js",
   "ProceduralClouds.js",
   "Cartesian3.js",
   "defined.js",

@@ -94,6 +94,36 @@ const temporalResolveWgsl = readEngine(
 );
 const upscaleWgsl = readEngine("Shaders/WebGPU/Environment/CloudUpscale.wgsl");
 
+// The march source the renderer compiles: the modules its
+// `PROCEDURAL_CLOUDS_SOURCE` template joins, in its order, each read from the
+// `.wgsl` behind the generated module it imports (as `cloud-density-lod` reads
+// it). The march is split across several modules, so the march file alone no
+// longer compiles; naga validates this composition, in both variants.
+function rendererMarchSource() {
+  const template = cloudRenderer.match(
+    /const PROCEDURAL_CLOUDS_SOURCE = `([^`]*)`;/,
+  );
+  assert.ok(template, "the renderer's PROCEDURAL_CLOUDS_SOURCE composition");
+  const names = [...template[1].matchAll(/\$\{(\w+)\}/g)].map((m) => m[1]);
+  assert.ok(names.includes("ProceduralCloudsWGSL"), "the march module");
+  assert.equal(
+    template[1],
+    names.map((name) => `\${${name}}`).join("\\n"),
+    "the composition joins whole modules with newlines only",
+  );
+  return names
+    .map((name) => {
+      const imported = cloudRenderer.match(
+        new RegExp(
+          `import ${name} from "\\.\\./\\.\\./(Shaders/[\\w/]+)\\.js";`,
+        ),
+      );
+      assert.ok(imported, `the renderer imports ${name} as a shader module`);
+      return readEngine(`${imported[1]}.wgsl`);
+    })
+    .join("\n");
+}
+
 const toDataUrl = (code) =>
   `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 
@@ -1007,10 +1037,27 @@ test("F2 the producer is a SEPARATE module that does not embed the march", () =>
     !ensure.includes("PROCEDURAL_CLOUDS_SOURCE"),
     "compiling the march source into this pipeline would reintroduce exactly the register pressure C13-39 measured",
   );
-  // The march's own source composition is untouched.
-  assert.match(
-    cloudRenderer,
-    /const PROCEDURAL_CLOUDS_SOURCE = `\$\{CloudDensityDomainWGSL\}\\n\$\{ProceduralCloudsWGSL\}`;/,
+  // The march's own source composition stays the march: whole modules joined
+  // with newlines, the density domain first, the march module among them, and
+  // never the producer. Not pinned to one module list (W2's march split
+  // composes six), as `cloud-primary-ray` reads the same template.
+  const composition = cloudRenderer.match(
+    /const PROCEDURAL_CLOUDS_SOURCE = `((?:\$\{\w+WGSL\}(?:\\n)?)+)`;/,
+  );
+  assert.ok(composition, "the march's source composition");
+  const modules = [...composition[1].matchAll(/\$\{(\w+)WGSL\}/g)].map(
+    ([, module]) => module,
+  );
+  assert.equal(
+    composition[1],
+    modules.map((module) => `\${${module}WGSL}`).join("\\n"),
+    "the composition joins whole modules with newlines only",
+  );
+  assert.equal(modules[0], "CloudDensityDomain", "the density domain heads it");
+  assert.ok(modules.includes("ProceduralClouds"), "the march module is in it");
+  assert.ok(
+    !modules.includes("CloudReconstructionAttachments"),
+    "the producer must not join the march's composition",
   );
 });
 
@@ -1185,16 +1232,13 @@ test("G1 the producer shader passes naga validation", async () => {
       ),
     ),
   );
-  // ...and the march still validates in BOTH variants.
-  const densityDomain = readEngine(
-    "Shaders/WebGPU/Environment/CloudDensityDomain.wgsl",
-  );
-  assert.doesNotThrow(() =>
-    naga.validate_wgsl(`${densityDomain}\n${defaultVariant(marchWgsl)}`),
-  );
+  // ...and the march still validates in BOTH variants, as the renderer's
+  // composition (which the density domain heads).
+  const march = rendererMarchSource();
+  assert.doesNotThrow(() => naga.validate_wgsl(defaultVariant(march)));
   assert.doesNotThrow(() =>
     naga.validate_wgsl(
-      `${densityDomain}\n${preprocess(marchWgsl, 0, ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION)}`,
+      preprocess(march, 0, ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION),
     ),
   );
 });

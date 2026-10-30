@@ -55,7 +55,14 @@ const cloudShaderPath = path.join(
   root,
   "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
 );
-const cloudShaderSource = fs.readFileSync(cloudShaderPath, "utf8");
+const cloudShaderSource =
+  ["CloudMarchSampling.wgsl", "CloudSolarLighting.wgsl"]
+    .map((name) =>
+      fs.readFileSync(path.join(path.dirname(cloudShaderPath), name), "utf8"),
+    )
+    .join("\n") +
+  "\n" +
+  fs.readFileSync(cloudShaderPath, "utf8");
 
 function functionSource(source, name) {
   const start = source.indexOf(`fn ${name}(`);
@@ -854,4 +861,127 @@ test("the shared domain composes into the IBL cloud consumer", async () => {
       `${defaultVariant(wgslSource)}\n${defaultVariant(iblSource)}`,
     ),
   );
+});
+
+const cloudSamplingProgram = fs.readFileSync(
+  path.join(
+    root,
+    "packages/engine/Source/Shaders/WebGPU/Environment/CloudMarchSampling.wgsl",
+  ),
+  "utf8",
+);
+const cloudSolarProgram = fs.readFileSync(
+  path.join(
+    root,
+    "packages/engine/Source/Shaders/WebGPU/Environment/CloudSolarLighting.wgsl",
+  ),
+  "utf8",
+);
+const cloudMath = await import("./lib/wgsl-mini-eval.mjs");
+const cloudMathGlobals = {
+  PI: Math.PI,
+  __functions: {
+    exp: Math.exp,
+    asin: Math.asin,
+    acos: Math.acos,
+    mix: (a, b, t) =>
+      cloudMath.isVec(a)
+        ? cloudMath.vec(
+            ...cloudMath
+              .laneValues(a)
+              .map((v, i) => v * (1 - t) + cloudMath.laneValues(b)[i] * t),
+          )
+        : a * (1 - t) + b * t,
+  },
+};
+const marchBoundary = cloudMath.compileFunction(
+  cloudMath.stripComments(cloudSamplingProgram),
+  "cloudMarchIntervalBoundary",
+  cloudMathGlobals,
+);
+
+test("cloud march boundaries remain finite, monotonic and complete across near/far growth budgets", () => {
+  for (const count of [1, 2, 24, 64, 96])
+    for (const chord of [2500, 111000, 800000])
+      for (const entry of [0, 3000, 500000])
+        for (const growth of [1, 1.01, 1.1, 2, 1e6]) {
+          const exponent = Math.min(Math.log(growth) * count, 8);
+          let previous = marchBoundary(0, count, chord, entry, 2500, exponent),
+            integrated = 0;
+          assert.equal(previous, 0);
+          for (let interval = 1; interval <= count; interval++) {
+            const next = marchBoundary(
+              interval,
+              count,
+              chord,
+              entry,
+              2500,
+              exponent,
+            );
+            assert(Number.isFinite(next) && next > previous);
+            integrated += next - previous;
+            previous = next;
+          }
+          assert(Math.abs(previous - chord) < chord * 1e-10);
+          assert(Math.abs(integrated - chord) < chord * 1e-10);
+        }
+  const near = marchBoundary(1, 24, 111000, 0, 2500, 0);
+  const far = marchBoundary(1, 24, 111000, 500000, 2500, 0);
+  assert(near < 500);
+  assert.equal(far, 111000 / 24);
+});
+
+test("cloud projected footprint responds to distance, field of view and output resolution", () => {
+  const footprint = cloudMath.compileFunction(
+    cloudMath.stripComments(cloudSamplingProgram),
+    "cloudViewPixelFootprint",
+    cloudMathGlobals,
+  );
+  assert.equal(footprint(0, 0.8, 1080), 0);
+  assert.equal(footprint(500000, 0.8, 1080), 2 * footprint(250000, 0.8, 1080));
+  assert.equal(footprint(500000, 0.8, 2160), footprint(500000, 0.4, 1080));
+  assert(footprint(200, 0.8, 1080) < 1);
+});
+
+test("cloud local sunlight follows ellipsoid occlusion and the elevated solar disk horizon", () => {
+  const globals = {
+    ...cloudMathGlobals,
+    __functions: {
+      ...cloudMathGlobals.__functions,
+      cloudShellAxes: () => cloudMath.vec(6378137, 6378137, 6356752.314245179),
+    },
+  };
+  for (const name of [
+    "cloudSolarDiskVisibility",
+    "cloudSunVisibility",
+    "cloudLocalDaylight",
+    "cloudLocalSunlight",
+  ])
+    globals.__functions[name] = cloudMath.compileFunction(
+      cloudMath.stripComments(cloudSolarProgram),
+      name,
+      globals,
+    );
+  const {
+    cloudSunVisibility: visibility,
+    cloudLocalSunlight: sunlight,
+    cloudLocalDaylight: daylight,
+  } = globals.__functions;
+  const equator = cloudMath.vec(6378137 + 2000, 0, 0),
+    pole = cloudMath.vec(0, 0, 6356752.314245179 + 2000);
+  assert.equal(visibility(equator, cloudMath.vec(1, 0, 0)), 1);
+  assert.equal(visibility(equator, cloudMath.vec(-1, 0, 0)), 0);
+  assert.equal(visibility(pole, cloudMath.vec(0, 0, 1)), 1);
+  assert.equal(visibility(pole, cloudMath.vec(0, 0, -1)), 0);
+  assert.deepEqual(
+    cloudMath.laneValues(sunlight(equator, cloudMath.vec(-1, 0, 0))),
+    [0, 0, 0],
+  );
+  assert.equal(daylight(equator, cloudMath.vec(-1, 0, 0)), 0.002);
+  const dip = Math.acos(6378137 / (6378137 + 2000));
+  const at = (angle) =>
+    visibility(equator, cloudMath.vec(Math.sin(angle), Math.cos(angle), 0));
+  assert(Math.abs(at(-dip) - 0.5) < 0.01);
+  assert.equal(at(-dip + 0.0093), 1);
+  assert.equal(at(-dip - 0.0093), 0);
 });

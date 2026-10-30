@@ -85,6 +85,41 @@ const environmentManagerSource = read(
   "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts",
 );
 
+// The march source the renderer compiles: the modules its
+// `PROCEDURAL_CLOUDS_SOURCE` template joins, in its order, each read from the
+// `.wgsl` behind the generated module it imports (as `cloud-density-lod` reads
+// it). The march is split across several modules, so the march file alone no
+// longer compiles; reading the composition out of the renderer keeps naga on
+// the unit a pipeline receives.
+function rendererMarchSource() {
+  const renderer = rendererSource.replace(/\r\n/g, "\n");
+  const template = renderer.match(
+    /const PROCEDURAL_CLOUDS_SOURCE = `([^`]*)`;/,
+  );
+  assert.ok(template, "the renderer's PROCEDURAL_CLOUDS_SOURCE composition");
+  const names = [...template[1].matchAll(/\$\{(\w+)\}/g)].map((m) => m[1]);
+  assert.ok(names.includes("ProceduralCloudsWGSL"), "the march module");
+  assert.equal(
+    template[1],
+    names.map((name) => `\${${name}}`).join("\\n"),
+    "the composition joins whole modules with newlines only",
+  );
+  return names
+    .map((name) => {
+      const imported = renderer.match(
+        new RegExp(
+          `import ${name} from "\\.\\./\\.\\./(Shaders/[\\w/]+)\\.js";`,
+        ),
+      );
+      assert.ok(imported, `the renderer imports ${name} as a shader module`);
+      return read(`packages/engine/Source/${imported[1]}.wgsl`).replace(
+        /\r\n/g,
+        "\n",
+      );
+    })
+    .join("\n");
+}
+
 // ─── small f64 / f32 helpers (same conventions as cloud-temporal-rte.spec.mjs) ───
 
 function dot(a, b) {
@@ -890,10 +925,10 @@ test("every shader C13-06 touched passes naga validation", async () => {
     ),
   });
 
+  // The visible/shadow march compiles as the renderer's composition, which the
+  // density domain heads.
   assert.doesNotThrow(() =>
-    naga.validate_wgsl(
-      `${densityDomainSource}\n${defaultVariant(cloudShaderSource)}`,
-    ),
+    naga.validate_wgsl(defaultVariant(rendererMarchSource())),
   );
   assert.doesNotThrow(() =>
     naga.validate_wgsl(defaultVariant(aerialShaderSource)),

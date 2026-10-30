@@ -4,9 +4,10 @@
 // screenshot causality or the visual magnitude of the row inversion.
 
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import nodeTest from "node:test";
+import { isDeepStrictEqual } from "node:util";
 
 import Cartesian4 from "../../packages/engine/Source/Core/Cartesian4.js";
 import ClipSpaceConvention from "../../packages/engine/Source/Core/ClipSpaceConvention.js";
@@ -18,17 +19,40 @@ import {
   tokenize,
 } from "./lib/wgsl-mini-eval.mjs";
 
-const rawShaderUrl = new URL(
-  "../../packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
+const engineSourceUrl = new URL(
+  "../../packages/engine/Source/",
   import.meta.url,
 );
-const generatedShaderUrl = new URL(
-  "../../packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.js",
+const rendererUrl = new URL(
+  "../../packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
   import.meta.url,
 );
 
-const missingGeneratedShaders = [generatedShaderUrl].filter(
-  (shader) => !existsSync(shader),
+// The primary march is compiled from the modules the renderer's
+// `PROCEDURAL_CLOUDS_SOURCE` template joins, in its order: `vertexMain` and
+// `getWorldRay` live in `ProceduralClouds.wgsl`, the visible and mask entry
+// points in `CloudViewIntegration.wgsl`. Both copies below (the raw WGSL and
+// the generated modules) are that composition, read out of the renderer.
+const rendererText = readFileSync(rendererUrl, "utf8").replace(/\r\n/g, "\n");
+const compositionTemplate =
+  rendererText.match(/const PROCEDURAL_CLOUDS_SOURCE = `([^`]*)`;/)?.[1] ?? "";
+const compositionModules = [
+  ...compositionTemplate.matchAll(/\$\{(\w+)\}/g),
+].map(([, name]) => ({
+  name,
+  path: rendererText.match(
+    new RegExp(`import ${name} from "\\.\\./\\.\\./(Shaders/[\\w/]+)\\.js";`),
+  )?.[1],
+}));
+const rawShaderUrls = compositionModules.map(
+  ({ path }) => path && new URL(`${path}.wgsl`, engineSourceUrl),
+);
+const generatedShaderUrls = compositionModules.map(
+  ({ path }) => path && new URL(`${path}.js`, engineSourceUrl),
+);
+
+const missingGeneratedShaders = generatedShaderUrls.filter(
+  (shader) => shader && !existsSync(shader),
 );
 
 function test(name, body) {
@@ -37,17 +61,12 @@ function test(name, body) {
     {
       skip:
         missingGeneratedShaders.length > 0
-          ? "STRUCTURAL: generated ProceduralClouds.js is missing; run npx gulp build"
+          ? `STRUCTURAL: generated ${missingGeneratedShaders.map((url) => url.pathname.split("/").at(-1)).join(", ")} missing; run npx gulp build`
           : false,
     },
     body,
   );
 }
-
-const rendererUrl = new URL(
-  "../../packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
-  import.meta.url,
-);
 
 const vertexUvRhs = "vec2<f32>(x * 0.5 + 0.5, 1.0 - (y * 0.5 + 0.5))";
 const currentNdcRhs = "vec4<f32>(uv * 2.0 - 1.0, 1.0, 1.0)";
@@ -116,25 +135,41 @@ async function structurallyAsync(label, operation) {
 }
 
 async function readShaderCopies() {
-  const raw = await structurallyAsync(
-    "cannot read raw ProceduralClouds WGSL",
-    () => readFile(rawShaderUrl, "utf8"),
-  );
-  const generatedModule = await structurallyAsync(
-    "cannot import generated ProceduralClouds shader",
-    () => import(generatedShaderUrl.href),
-  );
   if (
-    typeof generatedModule.default !== "string" ||
-    generatedModule.default.length === 0
+    !compositionModules.some(({ name }) => name === "ProceduralCloudsWGSL") ||
+    compositionModules.some(({ path }) => !path)
   ) {
     throw structural(
-      "generated ProceduralClouds module must have a non-empty string default export",
+      "the renderer's PROCEDURAL_CLOUDS_SOURCE modules cannot be resolved",
     );
   }
+  const raw = [];
+  const generated = [];
+  for (const [index, { name }] of compositionModules.entries()) {
+    raw.push(
+      (
+        await structurallyAsync(`cannot read raw ${name}`, () =>
+          readFile(rawShaderUrls[index], "utf8"),
+        )
+      ).replace(/\r\n/g, "\n"),
+    );
+    const generatedModule = await structurallyAsync(
+      `cannot import generated ${name}`,
+      () => import(generatedShaderUrls[index].href),
+    );
+    if (
+      typeof generatedModule.default !== "string" ||
+      generatedModule.default.length === 0
+    ) {
+      throw structural(
+        `generated ${name} module must have a non-empty string default export`,
+      );
+    }
+    generated.push(generatedModule.default);
+  }
   return [
-    { name: "raw WGSL", source: raw },
-    { name: "generated module", source: generatedModule.default },
+    { name: "raw WGSL", source: raw.join("\n") },
+    { name: "generated module", source: generated.join("\n") },
   ];
 }
 
@@ -357,14 +392,57 @@ function uvConsumers(source) {
     /\bfn\s+fragmentCloudMaskMain\s*\(\s*input\s*:\s*VertexOutput\s*\)\s*->\s*@location\s*\(\s*0\s*\)\s*f32\s*\{/gu,
     "fragmentCloudMaskMain",
   );
+  // Every write to `uv`, compound ones (`uv += …`) included, so a jitter or a
+  // second offset added in any spelling changes the recorded list.
   const assignments = (body, label) => {
-    if (/\buv\s*\.\s*[xy]\s*=/u.test(body)) {
+    if (/\buv\s*\.\s*[xy]\s*[-+*/]?=(?!=)/u.test(body)) {
       throw structural(`${label} writes a reversed UV component`);
     }
-    return [...body.matchAll(/\b(?:(?:var|let)\s+)?uv\s*=\s*([^;]+);/gu)].map(
-      (match) => canonical(match[1], `${label} UV assignment`),
+    return [
+      ...body.matchAll(
+        /\b(?:(?:var|let)\s+)?uv\s*([-+*/]?=)(?!=)\s*([^;]+);/gu,
+      ),
+    ].map(
+      (match) => `${match[1]}${canonical(match[2], `${label} UV assignment`)}`,
     );
   };
+  // The depth read: a direct sample, or `loadCloudSceneDepth(uv)`, whose body
+  // must load the texel under the UV it is handed and nothing else.
+  const depthUv = (body, label) => {
+    const match = uniqueMatch(
+      body,
+      /\blet\s+sceneDepth\s*=\s*(?:textureSampleLevel\s*\(\s*depthTex\s*,\s*texSampler\s*,\s*([^,]+)\s*,\s*0\.0\s*\)\.r|loadCloudSceneDepth\s*\(\s*([^\)]+)\s*\))\s*;/gu,
+      `${label} scene-depth UV`,
+    );
+    if (match[2] !== undefined) {
+      const helper = functionBody(
+        source,
+        /\bfn\s+loadCloudSceneDepth\s*\(\s*uv\s*:\s*vec2\s*<\s*f32\s*>\s*\)\s*->\s*f32\s*\{/gu,
+        "loadCloudSceneDepth",
+      );
+      if (
+        !/\blet\s+pixel\s*=\s*clamp\s*\(\s*vec2\s*<\s*i32\s*>\s*\(\s*uv\s*\*\s*vec2\s*<\s*f32\s*>\s*\(\s*size\s*\)\s*\)/u.test(
+          helper,
+        ) ||
+        !/\breturn\s+textureLoad\s*\(\s*depthTex\s*,\s*pixel\s*,\s*0\s*\)\.r\s*;/u.test(
+          helper,
+        ) ||
+        assignments(helper, "loadCloudSceneDepth").length > 0
+      ) {
+        throw structural("loadCloudSceneDepth does not load at its own UV");
+      }
+    }
+    return canonical(match[1] ?? match[2]);
+  };
+  // The ray: bound to a local or passed inline, exactly once per entry point.
+  const rayUv = (body, label) =>
+    canonical(
+      uniqueMatch(
+        body,
+        /\bgetWorldRay\s*\(\s*([^\)]+)\s*\)/gu,
+        `${label} ray UV`,
+      )[1],
+    );
   return {
     visibleAssignments: assignments(visible, "fragmentMain"),
     visibleColor: canonical(
@@ -374,35 +452,11 @@ function uvConsumers(source) {
         "fragmentMain scene-color UV",
       )[1],
     ),
-    visibleDepth: canonical(
-      uniqueMatch(
-        visible,
-        /\blet\s+sceneDepth\s*=\s*textureSampleLevel\s*\(\s*depthTex\s*,\s*texSampler\s*,\s*([^,]+)\s*,\s*0\.0\s*\)\.r\s*;/gu,
-        "fragmentMain scene-depth UV",
-      )[1],
-    ),
-    visibleRay: canonical(
-      uniqueMatch(
-        visible,
-        /\blet\s+rayDir\s*=\s*getWorldRay\s*\(\s*([^\)]+)\s*\)\s*;/gu,
-        "fragmentMain ray UV",
-      )[1],
-    ),
+    visibleDepth: depthUv(visible, "fragmentMain"),
+    visibleRay: rayUv(visible, "fragmentMain"),
     maskAssignments: assignments(mask, "fragmentCloudMaskMain"),
-    maskDepth: canonical(
-      uniqueMatch(
-        mask,
-        /\blet\s+sceneDepth\s*=\s*textureSampleLevel\s*\(\s*depthTex\s*,\s*texSampler\s*,\s*([^,]+)\s*,\s*0\.0\s*\)\.r\s*;/gu,
-        "fragmentCloudMaskMain scene-depth UV",
-      )[1],
-    ),
-    maskRay: canonical(
-      uniqueMatch(
-        mask,
-        /\blet\s+rayDir\s*=\s*getWorldRay\s*\(\s*([^\)]+)\s*\)\s*;/gu,
-        "fragmentCloudMaskMain ray UV",
-      )[1],
-    ),
+    maskDepth: depthUv(mask, "fragmentCloudMaskMain"),
+    maskRay: rayUv(mask, "fragmentCloudMaskMain"),
   };
 }
 
@@ -451,20 +505,99 @@ test("in-memory NDC correction passes and its inertness mutant fails", async () 
 
 test("visible and mask consumers keep color, depth, and ray on one UV", async () => {
   const copies = await readShaderCopies();
+  // The visible pass applies the half-resolution Bayer offset once and reads
+  // color, depth and ray at that one UV; the mask pass reads all three at the
+  // unjittered `input.uv`. The offset has two spellings across the march
+  // split, both the same +-0.5-texel Bayer law: `uv = uv + vec2<f32>(bx, by) *
+  // texel` before it and `uv += offset / max(cloud.resolution, vec2<f32>(1.0))`
+  // after it. The mask either binds `let uv = input.uv` or reads `input.uv`
+  // directly; a local bound only to `input.uv` is read as `input.uv`.
+  const jitterForms = [
+    `=${canonical("uv + vec2<f32>(bx, by) * texel")}`,
+    `+=${canonical("offset / max(cloud.resolution, vec2<f32>(1.0))")}`,
+  ];
+  const unjittered = `=${canonical("input.uv")}`;
+  const contract = (source) => {
+    const facts = uvConsumers(source);
+    const [first, jitter, ...extra] = facts.visibleAssignments;
+    const maskAlias =
+      facts.maskAssignments.length === 1 &&
+      facts.maskAssignments[0] === unjittered;
+    const maskRead = (read) =>
+      maskAlias && read === canonical("uv") ? canonical("input.uv") : read;
+    return {
+      visibleBindsInputUv: first === unjittered,
+      visibleJitterOnce:
+        extra.length === 0 && jitterForms.includes(jitter ?? ""),
+      visibleColor: facts.visibleColor,
+      visibleDepth: facts.visibleDepth,
+      visibleRay: facts.visibleRay,
+      maskWritesOnlyAnAlias: facts.maskAssignments.length === 0 || maskAlias,
+      maskDepth: maskRead(facts.maskDepth),
+      maskRay: maskRead(facts.maskRay),
+    };
+  };
   const expected = {
-    visibleAssignments: [
-      canonical("input.uv"),
-      canonical("uv + vec2<f32>(bx, by) * texel"),
-    ],
+    visibleBindsInputUv: true,
+    visibleJitterOnce: true,
     visibleColor: canonical("uv"),
     visibleDepth: canonical("uv"),
     visibleRay: canonical("uv"),
-    maskAssignments: [canonical("input.uv")],
-    maskDepth: canonical("uv"),
-    maskRay: canonical("uv"),
+    maskWritesOnlyAnAlias: true,
+    maskDepth: canonical("input.uv"),
+    maskRay: canonical("input.uv"),
   };
+  // Inertness: each mutant moves one consumer off the shared UV, or adds a
+  // write the old `uv =` reader could not see, and must change the result.
+  // Each finds its site by pattern (the first match is the visible pass in
+  // every form of the composition), and a mutant whose site is absent is void
+  // and fails, except the depth helper's, which exists only once the helper
+  // does.
+  const mutants = [
+    [
+      "visible depth off the jittered UV",
+      /(let\s+sceneDepth\s*=\s*(?:loadCloudSceneDepth\s*\(\s*|textureSampleLevel\s*\(\s*depthTex\s*,\s*texSampler\s*,\s*))uv\b/u,
+      "$1input.uv",
+    ],
+    [
+      "a compound UV write before the color read",
+      /(let\s+sceneColor\s*=\s*textureSample\s*\(\s*colorTex\s*,\s*texSampler\s*,\s*uv\s*\)\s*;)/u,
+      "uv *= 2.0;\n  $1",
+    ],
+    [
+      "the mask ray off the unjittered UV",
+      /(fn\s+fragmentCloudMaskMain[\s\S]*?getWorldRay\s*\(\s*)(?:input\.)?uv\s*\)/u,
+      "$1input.uv + vec2<f32>(0.25))",
+    ],
+    [
+      "the depth helper loading a fixed texel",
+      /(let\s+pixel\s*=\s*clamp\s*\(\s*vec2\s*<\s*i32\s*>\s*\(\s*)uv(\s*\*)/u,
+      "$1vec2<f32>(0.5)$2",
+      "optional",
+    ],
+  ];
   for (const { name, source } of copies) {
-    assert.deepEqual(uvConsumers(source), expected, name);
+    assert.deepEqual(contract(source), expected, name);
+    for (const [label, pattern, replacement, optional] of mutants) {
+      if (!pattern.test(source)) {
+        assert.equal(
+          optional,
+          "optional",
+          `${name}: mutant site absent: ${label}`,
+        );
+        continue;
+      }
+      const mutated = source.replace(pattern, replacement);
+      let survived = false;
+      try {
+        survived = isDeepStrictEqual(contract(mutated), expected);
+      } catch (error) {
+        if (error?.code !== "STRUCTURAL") {
+          throw error;
+        }
+      }
+      assert.equal(survived, false, `${name}: the pin survived ${label}`);
+    }
   }
 });
 
@@ -480,11 +613,39 @@ nodeTest(
       /import\s+ProceduralCloudsWGSL\s+from\s+"\.\.\/\.\.\/Shaders\/WebGPU\/Environment\/ProceduralClouds\.js"\s*;/gu,
       "generated ProceduralClouds import",
     );
-    uniqueMatch(
+    // The runtime source joins whole generated shader modules with newlines:
+    // the density domain first, the march module among them (W2's march split
+    // composes six). Every module named in the template is imported, once,
+    // from its generated `.js` module.
+    const composition = uniqueMatch(
       renderer,
-      /const\s+PROCEDURAL_CLOUDS_SOURCE\s*=\s*`\$\{CloudDensityDomainWGSL\}\\n\$\{ProceduralCloudsWGSL\}`\s*;/gu,
+      /const\s+PROCEDURAL_CLOUDS_SOURCE\s*=\s*`((?:\$\{\w+WGSL\}(?:\\n)?)+)`\s*;/gu,
       "runtime ProceduralClouds source composition",
+    )[1];
+    const modules = [...composition.matchAll(/\$\{(\w+)WGSL\}/gu)].map(
+      ([, module]) => module,
     );
+    if (
+      composition !== modules.map((module) => `\${${module}WGSL}`).join("\\n")
+    ) {
+      throw structural("the composition joins modules with newlines only");
+    }
+    if (modules[0] !== "CloudDensityDomain") {
+      throw structural("the density domain heads the composition");
+    }
+    if (!modules.includes("ProceduralClouds")) {
+      throw structural("the composition carries the march module");
+    }
+    for (const module of modules) {
+      uniqueMatch(
+        renderer,
+        new RegExp(
+          `import\\s+${module}WGSL\\s+from\\s+"\\.\\./\\.\\./Shaders/WebGPU/Environment/${module}\\.js"\\s*;`,
+          "gu",
+        ),
+        `generated ${module} import`,
+      );
+    }
     uniqueMatch(
       renderer,
       /const\s+invProj\s*=\s*us\s*\?\.\s*inverseProjection\s*;/gu,

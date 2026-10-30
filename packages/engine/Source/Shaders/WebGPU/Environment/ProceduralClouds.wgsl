@@ -201,17 +201,18 @@ struct CloudUniforms {
   specialShadeStrength: f32,     // 141 — tint blend depth (0 off → vec3(1.0); clamped 0..1)
   specialShadeScale: f32,        // 142 — band/iridescence spatial frequency (1.0 neutral)
   specialShadeParam: f32,        // 143 — mode extra (nacreous spectral cycling frequency)
-  // Two orbit-cost dials for the view-ray march in marchDeck, 144-147. Both
-  // default to a no-op:
-  //   marchStepGrowth=1.0 → the `> 1.0` guard is false, so the pow is never
-  //     evaluated and curStep equals fineStep exactly.
+  // Two orbit-cost dials for the view-ray march in marchDeck, 144-147:
+  //   marchStepGrowth=1.0 → growthExponent is 0, so cloudMarchIntervalBoundary
+  //     (CloudMarchSampling.wgsl) returns its near-weighted quadratic: interval
+  //     widths grow linearly along the ray, uniform only when the chord is no
+  //     longer than max(entry distance, deck thickness). Not a no-op.
   //   maxRayDistance=0.0  → the `> 0.0` far-cap guard is false, so tEnd is
-  //     untouched.
-  // When opted in, the fixed sampling comb grows geometrically along the ray so
+  //     untouched (a no-op).
+  // When opted in, the sampling comb grows exponentially along the ray so
   // far shell samples, which subtend one or two pixels, coarsen; and the march
   // stops past maxRayDistance, where clouds are sub-pixel. There is no WebGL
   // twin: this is a cost/quality dial with no visual-parity requirement.
-  marchStepGrowth: f32,          // 144 — geometric per-fine-step growth (1.0 = off, uniform comb)
+  marchStepGrowth: f32,          // 144 — march step growth (1.0 = quadratic comb, > 1.0 = exponential)
   maxRayDistance: f32,           // 145 — far cap on the view march in meters (0 = off, infinite)
   _padJ: f32,                    // 146 — pad to the 16-byte row
   _padK: f32,                    // 147 — pad to the 16-byte row
@@ -2488,10 +2489,11 @@ fn marchDeck(
   // the back-up keeps the fine grid aligned to tStart + k·fineStep — so the
   // image is the fixed march's, with cheap base taps replacing full taps over
   // empty space at a quarter of the count. `maxSteps` governs the fine budget.
-  let fineStep = (tEnd - tStart) / f32(steps);
-  // The coarse step is derived per iteration as curCoarseStep, so the geometric
-  // step growth scales the coarse skip and the fine cadence together. At
-  // marchStepGrowth 1.0, curCoarseStep is exactly fineStep * 4.0.
+  let marchLength = tEnd - tStart;
+  let growthExponent = clamp(log(max(cloud.marchStepGrowth, 1.0)) * f32(steps), 0.0, 8.0);
+  var interval = 0.0;
+  var processedInterval = 0.0;
+  // Coarse probes span four intervals of the same near-to-far distribution.
 
   var transmittance: f32 = 1.0;
   var lightEnergy: f32 = 0.0;
@@ -2500,7 +2502,7 @@ fn marchDeck(
 
   var t: f32 = tStart;
   var tProcessed: f32 = tStart; // furthest point already examined at fine resolution
-  var fine: bool = false;
+  var fine: bool = tStart <= layerThickness;
   var emptyRun: i32 = 0;
   var guard: i32 = 0;
   let maxIter: i32 = steps * 3; // permanent loop sentinel (coarse skips + fine)
@@ -2535,28 +2537,14 @@ fn marchDeck(
     guard = guard + 1;
     if (guard > maxIter) { break; }
 
-    // Geometric in-march step growth. A fixed sampling comb pays full detail
-    // cost for far shell samples that subtend one or two pixels, so the step
-    // grows geometrically with distance from the layer entry: near samples stay
-    // crisp and far samples coarsen. `pow(growth, k)` with k the number of fine
-    // steps travelled is stateless and exact. At marchStepGrowth 1.0 the guard
-    // is false, the pow is never evaluated and curFineStep equals fineStep.
-    // Growth only advances t faster, so it strictly reduces the iteration count
-    // and cannot trip the maxIter sentinel.
-    //
-    // Reference: Shota Matsuda, Takram — `@takram/three-clouds` in
-    // three-geospatial (MIT),
-    // https://github.com/takram-design-engineering/three-geospatial — the
-    // perspective step-growth and far ray-distance cap that this pair of dials
-    // follows. Their march accumulates the scale per iteration
-    // (`stepSize *= perspectiveStepScale`); the closed-form `pow` used here is
-    // ours, chosen so the comb stays stateless and exactly reproducible from t.
-    // Technique only — no source was copied.
-    var curFineStep = fineStep;
-    if (cloud.marchStepGrowth > 1.0) {
-      curFineStep = fineStep * pow(cloud.marchStepGrowth, (t - tStart) / max(fineStep, 1.0));
-    }
-    let curCoarseStep = curFineStep * 4.0;
+    // Perspective growth uses normalized interval boundaries so refinement
+    // revisits the same samples and the finite budget reaches the far boundary.
+    let fineBoundary = tStart + cloudMarchIntervalBoundary(
+      interval + 1.0, f32(steps), marchLength, tStart, layerThickness, growthExponent);
+    let coarseBoundary = tStart + cloudMarchIntervalBoundary(
+      interval + 4.0, f32(steps), marchLength, tStart, layerThickness, growthExponent);
+    let curFineStep = max(min(fineBoundary, tEnd) - t, 0.0001);
+    let curCoarseStep = max(min(coarseBoundary, tEnd) - t, curFineStep);
 
     let curStep = select(curCoarseStep, curFineStep, fine);
     // The sample phase shifts only the sample within the current interval. `t`,
@@ -2629,7 +2617,10 @@ fn marchDeck(
         heightFraction,
         deckBottom,
         deckTop,
-        curFineStep,
+        // The pixel footprint, clamped to the fine interval: from orbit the pixel
+        // is far wider than the interval and would blur the noise to its mean
+        // before the coverage gate (see cloudDensityLodFootprint).
+        cloudDensityLodFootprint(sampleDistance, cloud.inverseProjection[1].y, cloud.resolution.y, curFineStep),
       );
       base = cloudBaseFromMacro(macroSample);
     } else {
@@ -2647,10 +2638,13 @@ fn marchDeck(
         // Back up one coarse step to catch the cloud edge the coarse sample
         // stepped over — but never below tProcessed, so the march can't stall by
         // re-entering an already-examined span (the cause of early-out + empty).
-        t = max(t - curCoarseStep, tProcessed);
+        interval = max(interval - 4.0, processedInterval);
+        t = max(tStart + cloudMarchIntervalBoundary(
+          interval, f32(steps), marchLength, tStart, layerThickness, growthExponent), tProcessed);
         continue;
       }
-      t = t + curCoarseStep;
+      interval = min(interval + 4.0, f32(steps));
+      t = min(coarseBoundary, tEnd);
       continue;
     }
 
@@ -2660,11 +2654,13 @@ fn marchDeck(
     // the full density is 0.
     if (base <= 0.0001) {
       emptyRun = emptyRun + 1;
-      if (emptyRun >= 2) { // base is reliable, so no longer confirmation is needed
+      if (emptyRun >= 2 && t - tStart >= layerThickness * 2.0) {
         fine = false;
         emptyRun = 0;
       }
-      t = t + curFineStep;
+      interval = min(interval + 1.0, f32(steps));
+      processedInterval = interval;
+      t = min(fineBoundary, tEnd);
       tProcessed = t;
       continue;
     }
@@ -2694,14 +2690,14 @@ fn marchDeck(
     if (density > 0.001) {
       // Light contribution. The multi-scatter octaves fold the phase in per
       // octave, so the returned value already carries it.
-      let lightOpticalDepth = lightMarch(
-        samplePos,
-        heightFraction,
-        deckBottom,
-        deckTop,
-        densityCoordinates,
-        morphologyCoordinate,
-      );
+      let sunlight = cloudLocalSunlight(samplePos, sunDir);
+      var lightOpticalDepth = 0.0;
+      if (dot(sunlight, sunlight) > 0.0) {
+        lightOpticalDepth = lightMarch(
+          samplePos, heightFraction, deckBottom, deckTop,
+          densityCoordinates, morphologyCoordinate,
+        );
+      }
       // `powder` is the resolved tier's `powderStrength`, slot 172.
       // It was the literal 0.5 here while `CloudTierPreset.powderStrength`
       // existed with no reader, which made the tier table's lighting column
@@ -2813,14 +2809,17 @@ fn marchDeck(
         heightFraction,
         cosTheta
       );
-      weightedColor += (cloudColor * cloud.sunLightColor * scatteredLight + ambient)
+      weightedColor += (cloudColor * sunlight * scatteredLight +
+                       ambient * cloudLocalDaylight(samplePos, sunDir))
                      * specialTint * sampleWeight;
       lightEnergy += scatteredLight * sampleWeight;
       totalDensity += density * curFineStep;
       transmittance *= sampleTransmittance;
     }
 
-    t = t + curFineStep;
+    interval = min(interval + 1.0, f32(steps));
+    processedInterval = interval;
+    t = min(fineBoundary, tEnd);
     tProcessed = t;
   }
 

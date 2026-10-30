@@ -1184,9 +1184,13 @@ test("F1 all six compiled forms pass naga validation", async () => {
       path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
     ),
   });
-  const densityDomain = readEngine(
-    "Shaders/WebGPU/Environment/CloudDensityDomain.wgsl",
-  );
+  const densityDomain = [
+    "CloudDensityDomain.wgsl",
+    "CloudMarchSampling.wgsl",
+    "CloudSolarLighting.wgsl",
+  ]
+    .map((name) => readEngine("Shaders/WebGPU/Environment/" + name))
+    .join("\n");
   const forms = [
     ["march default", `${densityDomain}\n${defaultVariant(marchWgsl)}`],
     ["march emit", `${densityDomain}\n${preprocess(marchWgsl, 0, EMIT)}`],

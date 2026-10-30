@@ -62,6 +62,43 @@ const twinSource = read(
   "packages/engine/Source/Renderer/WebGPU/WebGPUCloudDensityDomain.ts",
 );
 
+// The march source the renderer compiles: the modules its
+// `PROCEDURAL_CLOUDS_SOURCE` template joins, in its order, each read from the
+// `.wgsl` behind the generated module it imports (as `cloud-density-lod` reads
+// it). The march is split across several modules, so the march file alone no
+// longer compiles; reading the composition out of the renderer keeps naga on
+// the unit a pipeline receives.
+function rendererMarchSource() {
+  const renderer = read(
+    "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
+  ).replace(/\r\n/g, "\n");
+  const template = renderer.match(
+    /const PROCEDURAL_CLOUDS_SOURCE = `([^`]*)`;/,
+  );
+  assert.ok(template, "the renderer's PROCEDURAL_CLOUDS_SOURCE composition");
+  const names = [...template[1].matchAll(/\$\{(\w+)\}/g)].map((m) => m[1]);
+  assert.ok(names.includes("ProceduralCloudsWGSL"), "the march module");
+  assert.equal(
+    template[1],
+    names.map((name) => `\${${name}}`).join("\\n"),
+    "the composition joins whole modules with newlines only",
+  );
+  return names
+    .map((name) => {
+      const imported = renderer.match(
+        new RegExp(
+          `import ${name} from "\\.\\./\\.\\./(Shaders/[\\w/]+)\\.js";`,
+        ),
+      );
+      assert.ok(imported, `the renderer imports ${name} as a shader module`);
+      return read(`packages/engine/Source/${imported[1]}.wgsl`).replace(
+        /\r\n/g,
+        "\n",
+      );
+    })
+    .join("\n");
+}
+
 // The acceptance's sampled coverages.
 const SAMPLED = [0.15, 0.25, 0.35, 0.45, 0.55];
 
@@ -192,9 +229,10 @@ test("both composed consumers still compile with the shared response", async () 
   // branches at once and is not valid WGSL on its own. `defaultVariant` is the
   // engine's own preprocessor at `definesHi = 0`, i.e. exactly what every
   // pipeline in this test's scope receives, and it is a no-op for any shader
-  // that carries no directives.
+  // that carries no directives. The march's unit is the renderer's
+  // composition, which the density domain heads.
   assert.doesNotThrow(() =>
-    naga.validate_wgsl(`${domainSource}\n${defaultVariant(cloudSource)}`),
+    naga.validate_wgsl(defaultVariant(rendererMarchSource())),
   );
   assert.doesNotThrow(() =>
     naga.validate_wgsl(`${domainSource}\n${defaultVariant(iblSource)}`),

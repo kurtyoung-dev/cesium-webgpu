@@ -730,6 +730,8 @@ test("naga validates the cloud shader with the per-genus morphology", async () =
     ),
   });
   assert.doesNotThrow(() =>
-    naga.validate_wgsl(`${domainSource}\n${defaultVariant(cloudShaderSource)}`),
+    naga.validate_wgsl(
+      `${domainSource}\n${["CloudMarchSampling.wgsl", "CloudSolarLighting.wgsl"].map((name) => read("packages/engine/Source/Shaders/WebGPU/Environment/" + name)).join("\n")}\n${defaultVariant(cloudShaderSource)}`,
+    ),
   );
 });

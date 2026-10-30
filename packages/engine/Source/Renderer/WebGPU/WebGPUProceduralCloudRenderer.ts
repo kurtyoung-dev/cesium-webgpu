@@ -46,6 +46,8 @@
 import { shouldRebuildForDevice } from "./WebGPUDeviceInvalidationBus.js";
 import ProceduralCloudsWGSL from "../../Shaders/WebGPU/Environment/ProceduralClouds.js";
 import CloudDensityDomainWGSL from "../../Shaders/WebGPU/Environment/CloudDensityDomain.js";
+import CloudMarchSamplingWGSL from "../../Shaders/WebGPU/Environment/CloudMarchSampling.js";
+import CloudSolarLightingWGSL from "../../Shaders/WebGPU/Environment/CloudSolarLighting.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -204,7 +206,7 @@ const CLOUD_UNIFORM_FLOATS =
   CLOUD_GENUS_MORPHOLOGY_FLOATS +
   CLOUD_TIER_LIGHTING_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
-const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${ProceduralCloudsWGSL}`;
+const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${ProceduralCloudsWGSL}`;
 // High-word define masks for the emitting march and the consuming resolve.
 // Named once so no call site spells a bit inline, and so a spec can assert the
 // renderer preprocesses with the axis the registry documents rather than with a
@@ -4107,15 +4109,15 @@ export function prepareCloudFrameAndEncodeMask(
     data[offset++] = globeSpecial.cloudSpecialShadeScale ?? 1.0; // 142 specialShadeScale
     data[offset++] = globeSpecial.cloudSpecialShadeParam ?? specialParamDefault; // 143 specialShadeParam
 
-    // 144-147 — two march dials that trade quality for cost at orbital distance,
-    // both no-ops at their defaults: `marchStepGrowth` at 1.0 fails the shader's
-    // `> 1.0` guard and every step stays the fine step, and `maxRayDistance` at 0
-    // fails its `> 0.0` guard and the ray end is untouched. `cloudMarchStepGrowth`
-    // is geometric growth per fine step, clamped to [1.0, 1.1] so near samples stay
-    // crisp while far shell samples coarsen; `cloudMaxRayDistance` is a distance
-    // in metres past which the view march stops, where clouds are sub-pixel
-    // anyway. The WebGL cloud path is a separate, simpler renderer and has no
-    // equivalent.
+    // 144-147 — two march dials that trade quality for cost at orbital distance.
+    // `marchStepGrowth` at its default 1.0 gives the shader a growthExponent of 0,
+    // so cloudMarchIntervalBoundary samples its near-weighted quadratic comb (not a
+    // uniform one); `maxRayDistance` at 0 fails its `> 0.0` guard and the ray end
+    // is untouched. `cloudMarchStepGrowth` is clamped to [1.0, 1.1]; above 1.0 the
+    // comb grows exponentially so near samples stay crisp while far shell samples
+    // coarsen. `cloudMaxRayDistance` is a distance in metres past which the view
+    // march stops, where clouds are sub-pixel anyway. The WebGL cloud path is a
+    // separate, simpler renderer and has no equivalent.
     const globeLod = config as unknown as {
       cloudMarchStepGrowth?: number;
       cloudMaxRayDistance?: number;
@@ -4125,7 +4127,7 @@ export function prepareCloudFrameAndEncodeMask(
       Math.max(1.0, globeLod.cloudMarchStepGrowth ?? 1.0),
     );
     const maxRayDistance = Math.max(0.0, globeLod.cloudMaxRayDistance ?? 0.0);
-    data[offset++] = marchStepGrowth; // 144 marchStepGrowth (1.0 = off)
+    data[offset++] = marchStepGrowth; // 144 marchStepGrowth (1.0 = quadratic comb)
     data[offset++] = maxRayDistance; // 145 maxRayDistance (0 = off/infinite)
     data[offset++] = 0.0; // 146 pad
     data[offset++] = 0.0; // 147 pad

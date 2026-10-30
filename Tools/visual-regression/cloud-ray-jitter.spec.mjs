@@ -10,14 +10,6 @@ import { defaultVariant } from "./lib/wgsl-variant.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
-const shaderPath = path.join(
-  root,
-  "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
-);
-const densityDomainPath = path.join(
-  root,
-  "packages/engine/Source/Shaders/WebGPU/Environment/CloudDensityDomain.wgsl",
-);
 const rendererPath = path.join(
   root,
   "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
@@ -27,10 +19,44 @@ const tierPath = path.join(
   "packages/engine/Source/Renderer/WebGPU/WebGPUCloudTierPresets.ts",
 );
 
-const shader = fs.readFileSync(shaderPath, "utf8");
-const densityDomain = fs.readFileSync(densityDomainPath, "utf8");
 const renderer = fs.readFileSync(rendererPath, "utf8");
 const tiers = fs.readFileSync(tierPath, "utf8");
+
+// The march source the renderer compiles: the modules its
+// `PROCEDURAL_CLOUDS_SOURCE` template joins, in its order, each read from the
+// `.wgsl` behind the generated module it imports. The view entry points live
+// in `CloudViewIntegration.wgsl` and the interval lattice in
+// `CloudMarchSampling.wgsl`, so a pin on one module alone reads the wrong text.
+function rendererMarchSource(rendererText) {
+  const text = rendererText.replace(/\r\n/g, "\n");
+  const template = text.match(/const PROCEDURAL_CLOUDS_SOURCE = `([^`]*)`;/);
+  assert.ok(template, "the renderer's PROCEDURAL_CLOUDS_SOURCE composition");
+  const names = [...template[1].matchAll(/\$\{(\w+)\}/g)].map((m) => m[1]);
+  assert.ok(names.includes("ProceduralCloudsWGSL"), "the march module");
+  assert.equal(
+    template[1],
+    names.map((name) => `\${${name}}`).join("\\n"),
+    "the composition joins whole modules with newlines only",
+  );
+  return names
+    .map((name) => {
+      const imported = text.match(
+        new RegExp(
+          `import ${name} from "\\.\\./\\.\\./(Shaders/[\\w/]+)\\.js";`,
+        ),
+      );
+      assert.ok(imported, `the renderer imports ${name} as a shader module`);
+      return fs
+        .readFileSync(
+          path.join(root, "packages/engine/Source", `${imported[1]}.wgsl`),
+          "utf8",
+        )
+        .replace(/\r\n/g, "\n");
+    })
+    .join("\n");
+}
+
+const shader = rendererMarchSource(renderer);
 
 function sourceSection(source, start, end) {
   const startIndex = source.indexOf(start);
@@ -38,6 +64,59 @@ function sourceSection(source, start, end) {
   const endIndex = source.indexOf(end, startIndex + start.length);
   assert.notEqual(endIndex, -1, `missing source anchor: ${end}`);
   return source.slice(startIndex, endIndex);
+}
+
+// The half-resolution Bayer offset reads the shared frame counter through one
+// binding masked to its low four bits, and every BAYER4 read is indexed by that
+// binding or by it plus a constant re-masked to four bits. Name-agnostic: the
+// march split renamed `bIndex` to `index` without changing the law.
+function assertBayerLowFourBits(source) {
+  const bindings = [
+    ...source.matchAll(
+      /let\s+(\w+)\s*=\s*u32\(cloud\.frameCounter\)\s*&\s*15u;/g,
+    ),
+  ];
+  assert.equal(
+    bindings.length,
+    1,
+    "Bayer must continue indexing only its low four bits",
+  );
+  const name = bindings[0][1];
+  const reads = [...source.matchAll(/BAYER4\[([^\]]+)\]/g)].map((m) =>
+    m[1].replace(/\s+/g, " ").trim(),
+  );
+  assert.ok(reads.length > 0, "the half-resolution offset reads BAYER4");
+  for (const index of reads) {
+    assert.ok(
+      index === name ||
+        new RegExp(`^\\(${name} \\+ \\d+u\\) & 15u$`).test(index),
+      `Bayer must continue indexing only its low four bits: BAYER4[${index}]`,
+    );
+  }
+  return name;
+}
+
+// The coarse backtrack steps back one coarse span (four intervals) on the
+// interval lattice, never below the furthest interval already examined at
+// fine resolution, and the distance it lands on is clamped to tProcessed.
+// `tProcessed` advances only where `processedInterval` does. That the lattice
+// boundary is monotonic in the interval (so the clamp is the floor it claims)
+// is executed out of the shader by cloud-density-domain.spec.mjs ("cloud march
+// boundaries remain finite, monotonic and complete").
+function assertCoarseBacktrackClamped(march) {
+  assert.match(
+    march,
+    /interval\s*=\s*max\(interval\s*-\s*4\.0,\s*processedInterval\);\s*t\s*=\s*max\(tStart\s*\+\s*cloudMarchIntervalBoundary\(\s*interval,[^;]*\),\s*tProcessed\);/,
+    "the coarse backtrack steps back on the interval lattice, never below tProcessed",
+  );
+  const processed = march.match(/processedInterval\s*=\s*interval;/g) ?? [];
+  const advanced = march.match(/tProcessed\s*=\s*t;/g) ?? [];
+  assert.ok(processed.length > 0, "the fine phase records processedInterval");
+  assert.equal(
+    advanced.length,
+    processed.length,
+    "tProcessed advances only with processedInterval",
+  );
 }
 
 // Model the authored WGSL operation order. JavaScript otherwise evaluates the
@@ -219,12 +298,28 @@ test("the shared frame counter keeps 64 IGN phases while preserving Bayer's 16-p
     /cache\.frameCounter\s*=\s*\(cache\.frameCounter\s*\+\s*1\)\s*&\s*63/,
     "the CPU counter must wrap at 64 for exact f32 IGN seeds",
   );
-  assert.match(
-    shader,
-    /let bIndex\s*=\s*u32\(cloud\.frameCounter\)\s*&\s*15u/,
-    "Bayer must continue indexing only its low four bits",
-  );
+  const bayerIndex = assertBayerLowFourBits(shader);
   assert.match(shader, /const BAYER4:\s*array<f32,\s*16>/);
+  // Inertness: a wider mask, or a Bayer read off the masked binding, is red.
+  for (const [label, from, to] of [
+    [
+      "mask widened",
+      "u32(cloud.frameCounter) & 15u;",
+      "u32(cloud.frameCounter) & 31u;",
+    ],
+    [
+      "unmasked read",
+      `BAYER4[(${bayerIndex} + 5u) & 15u]`,
+      `BAYER4[${bayerIndex} + 5u]`,
+    ],
+  ]) {
+    assert.equal(shader.split(from).length, 2, `mutant anchor: ${label}`);
+    assert.throws(
+      () => assertBayerLowFourBits(shader.replace(from, to)),
+      assert.AssertionError,
+      `the Bayer pin survived: ${label}`,
+    );
+  }
 
   let frameCounter = 0;
   const ignPhases = [];
@@ -264,7 +359,27 @@ test("jitter changes only the sample phase, preserving adaptive control interval
     1,
     "base/full density must share one macro evaluation at the jittered sample",
   );
-  assert.match(march, /t\s*=\s*max\(t\s*-\s*curCoarseStep,\s*tProcessed\);/);
+  assertCoarseBacktrackClamped(march);
+  // Inertness: either clamp removed turns the backtrack pin red.
+  for (const [label, from, to] of [
+    [
+      "interval clamp removed",
+      "interval = max(interval - 4.0, processedInterval);",
+      "interval = interval - 4.0;",
+    ],
+    [
+      "distance clamp removed",
+      "growthExponent), tProcessed);",
+      "growthExponent), tStart);",
+    ],
+  ]) {
+    assert.equal(march.split(from).length, 2, `mutant anchor: ${label}`);
+    assert.throws(
+      () => assertCoarseBacktrackClamped(march.replace(from, to)),
+      assert.AssertionError,
+      `the backtrack pin survived: ${label}`,
+    );
+  }
   assert.doesNotMatch(
     march,
     /var t:\s*f32\s*=\s*tStart\s*[+-].*(?:jitter|phase)/i,
@@ -343,6 +458,8 @@ test("the complete procedural-cloud shader passes Naga WGSL validation", async (
   // temporal resolve now carry `//>>ifdef` variants, so their raw text holds both
   // branches at once and is not valid WGSL alone. `defaultVariant` is the engine
   // preprocessor at `definesHi = 0`, and a no-op for a directive-free shader.
-  const composedShader = `${densityDomain}\n${defaultVariant(shader)}`;
+  // `shader` is already the renderer's whole composition, density domain
+  // included, so it is validated as the pipeline receives it.
+  const composedShader = defaultVariant(shader);
   assert.doesNotThrow(() => naga.validate_wgsl(composedShader));
 });

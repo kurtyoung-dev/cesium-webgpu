@@ -395,10 +395,13 @@ function CloudVolumetrics(options) {
   // LOD dials that bound the march cost from orbit.
 
   /**
-   * Geometric growth of the view-ray march step per fine step. <code>1.0</code>
-   * (default/undefined) is a no-op — the march comb is uniform and the render is
-   * byte-identical. Values in <code>(1.0, 1.1]</code> grow the step with distance
-   * so near cloud samples stay crisp while far shell samples (which read as 1-2 px)
+   * Growth of the view-ray march step from near to far. At <code>1.0</code>
+   * (default/undefined) the march samples a near-weighted quadratic comb: the
+   * interval widths grow linearly along the ray, and the comb is uniform only
+   * when the ray's cloud chord is no longer than the larger of its entry
+   * distance and the deck thickness. Values in <code>(1.0, 1.1]</code> switch the
+   * comb to a normalized exponential whose steepness rises with the value, so
+   * near cloud samples stay crisp while far shell samples (which read as 1-2 px)
    * coarsen, cutting far-shell march cost. WebGPU only.
    * @type {number|undefined}
    */
