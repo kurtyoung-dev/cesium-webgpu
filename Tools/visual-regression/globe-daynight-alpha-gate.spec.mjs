@@ -512,7 +512,14 @@ test("E1: the ramp-contract spec still passes, unmodified", () => {
   delete childEnv.NODE_TEST_CONTEXT;
   const result = spawnSync(
     process.execPath,
-    ["--test", "Tools/visual-regression/globe-daynight-ramp-law.spec.mjs"],
+    // The assertion below reads the TAP summary line, so the child is asked for
+    // the TAP reporter explicitly: Node 24 defaults to the spec reporter even when
+    // its output is a pipe, and the spec reporter never prints "# fail".
+    [
+      "--test",
+      "--test-reporter=tap",
+      "Tools/visual-regression/globe-daynight-ramp-law.spec.mjs",
+    ],
     { cwd: root, encoding: "utf8", env: childEnv },
   );
   const report = result.stdout ?? "";
