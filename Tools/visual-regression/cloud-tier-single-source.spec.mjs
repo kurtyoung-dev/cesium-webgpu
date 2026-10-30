@@ -576,14 +576,23 @@ function foldBlockSource(flagIndex) {
   const slot = `data[${flagIndex}]`;
   const start = rendererCode.indexOf(`if (aerialLutOn || ambientLutOn) {`);
   assert.ok(start >= 0, "the first LUT-coupling fold moved");
+  // A fold WRITES the flags float back (`data[N] = ...`); a later plain read of
+  // it (3460's geographic-flow eligibility test) is not a fold and must not
+  // stretch the slice into unrelated code.
+  const isWrite = (at) =>
+    /^\s*=(?!=)/.test(
+      rendererCode.slice(at + slot.length, at + slot.length + 4),
+    );
   let last = rendererCode.indexOf(slot, start);
   assert.ok(last > start, `nothing folds into ${slot} after the pack`);
-  for (;;) {
-    const next = rendererCode.indexOf(slot, last + 1);
-    if (next < 0) {
-      break;
+  for (
+    let next = last;
+    next >= 0;
+    next = rendererCode.indexOf(slot, next + 1)
+  ) {
+    if (isWrite(next)) {
+      last = next;
     }
-    last = next;
   }
   const end = rendererCode.indexOf("}", last);
   assert.ok(end > last, "the last fold block is unterminated");
@@ -2119,8 +2128,8 @@ test('MUTANT g: making the renderer\'s `"auto"` arm inert kills it from the othe
 // enumerable, and each must turn the forwarding check red.
 
 /** The collection's real `_resolveVolumetricConfig`, executed as written. */
-function collectionResolver() {
-  const source = read(CLOUD_COLLECTION_JS);
+function collectionResolver(mutate = (text) => text) {
+  const source = mutate(read(CLOUD_COLLECTION_JS));
   const header = "_resolveVolumetricConfig() {";
   const at = source.indexOf(header);
   assert.ok(at > 0, "_resolveVolumetricConfig moved or was renamed");
@@ -2145,7 +2154,7 @@ function declaredDials(source) {
  *
  * @param {Function} VolumetricsClass The class under test (live or a mutant).
  */
-function assertDialsForward(VolumetricsClass) {
+function assertDialsForward(VolumetricsClass, resolver = collectionResolver()) {
   const dials = declaredDials(read(CLOUD_VOLUMETRICS_JS));
   assert.ok(
     dials.includes("cloudProgressiveStartup"),
@@ -2156,7 +2165,7 @@ function assertDialsForward(VolumetricsClass) {
   // `config.cloudProgressiveStartup === true`, so a dropped copy would read as
   // the default and only a `true` that fails to arrive is visible.
   const instance = new VolumetricsClass({ cloudProgressiveStartup: true });
-  const config = collectionResolver().call({
+  const config = resolver.call({
     volumetric: instance,
     _cloudType: VolumetricsClass.DEFAULT_CLOUD_TYPE,
   });
@@ -2178,6 +2187,66 @@ function assertDialsForward(VolumetricsClass) {
     Object.hasOwn(config, "experimental"),
     false,
     "the experimental namespace reached the configuration as a nested key",
+  );
+  // The namespace's own enumerable dials join the configuration flat, under
+  // the names the renderer reads, as the collection's second spread puts them.
+  const experimentalDials = Object.keys(instance.experimental);
+  assert.ok(
+    experimentalDials.includes("cloudDistantDensityMoments"),
+    "fixture: the experimental dial is declared",
+  );
+  for (const dial of experimentalDials) {
+    assert.ok(
+      Object.hasOwn(config, dial),
+      `experimental ${dial} does not reach the renderer configuration`,
+    );
+    assert.equal(
+      config[dial],
+      instance.experimental[dial],
+      `experimental ${dial} changed in transit`,
+    );
+  }
+}
+
+/**
+ * An experimental dial's accessor contract: an own enumerable accessor on the
+ * namespace (no prototype twin), the default, a rejected non-boolean that is
+ * not stored, and the constructor's `options.experimental` honoured through
+ * the same setter.
+ */
+function assertExperimentalBooleanDial(dial) {
+  const instance = new CloudVolumetrics();
+  const descriptor = Object.getOwnPropertyDescriptor(
+    instance.experimental,
+    dial,
+  );
+  assert.equal(typeof descriptor?.get, "function", `${dial}: an accessor`);
+  assert.equal(descriptor.enumerable, true, `${dial}: enumerable`);
+  assert.equal(
+    Object.hasOwn(instance, dial),
+    false,
+    `${dial}: not a core dial`,
+  );
+  assert.equal(instance.experimental[dial], false, `${dial}: the default`);
+  assert.throws(
+    () => {
+      instance.experimental[dial] = "true";
+    },
+    (error) => error?.name === "DeveloperError",
+    `${dial}: a non-boolean is rejected when set`,
+  );
+  assert.equal(instance.experimental[dial], false, `${dial}: not stored`);
+  instance.experimental[dial] = true;
+  assert.equal(instance.experimental[dial], true);
+  assert.equal(
+    new CloudVolumetrics({ experimental: { [dial]: true } }).experimental[dial],
+    true,
+    `${dial}: the constructor reads options.experimental`,
+  );
+  assert.throws(
+    () => new CloudVolumetrics({ experimental: { [dial]: 1 } }),
+    (error) => error?.name === "DeveloperError",
+    `${dial}: the constructor validates through the same setter`,
   );
 }
 
@@ -2461,8 +2530,8 @@ test("MUTANT i: the experimental namespace made enumerable leaks a nested key, a
     (source) =>
       replaceOnce(
         source,
-        "value: {},\n      enumerable: false,",
-        "value: {},\n      enumerable: true,",
+        "value: experimental,\n      enumerable: false,",
+        "value: experimental,\n      enumerable: true,",
       ),
     (Mutant) => {
       assert.throws(
@@ -2471,5 +2540,28 @@ test("MUTANT i: the experimental namespace made enumerable leaks a nested key, a
         "the forwarding check survived an enumerable namespace",
       );
     },
+  );
+});
+
+test("cloudDistantDensityMoments is an experimental validated accessor that reaches the configuration flat", () => {
+  assertExperimentalBooleanDial("cloudDistantDensityMoments");
+  const instance = new CloudVolumetrics({
+    experimental: { cloudDistantDensityMoments: true },
+  });
+  const config = collectionResolver().call({
+    volumetric: instance,
+    _cloudType: CloudVolumetrics.DEFAULT_CLOUD_TYPE,
+  });
+  assert.equal(config.cloudDistantDensityMoments, true);
+});
+
+test("MUTANT j: the collection's experimental spread removed drops the experimental dials, and the check sees it", () => {
+  const resolver = collectionResolver((text) =>
+    replaceOnce(text, "      ...this.volumetric.experimental,\n", ""),
+  );
+  assert.throws(
+    () => assertDialsForward(CloudVolumetrics, resolver),
+    assert.AssertionError,
+    "the forwarding check survived a dropped experimental spread",
   );
 });

@@ -101,6 +101,8 @@ const REAL_MASK_PATHS = [
   "CloudSolarLighting.js",
   "CloudViewIntegration.js",
   "CloudAerialTransport.js",
+  "CloudDensityFormation.js",
+  "CloudDensityMoments.js",
   "ProceduralClouds.js",
   "Cartesian3.js",
   "defined.js",

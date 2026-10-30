@@ -1342,6 +1342,8 @@ interface CloudVolumetricsConfig {
   showProceduralClouds?: boolean;
   cloudContributesIBL?: boolean;
   cloudProgressiveStartup?: boolean;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudDistantDensityMoments?: boolean;
   cloudCoverage?: number;
   cloudDensity?: number;
   cloudLayerBottom?: number;

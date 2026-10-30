@@ -367,6 +367,10 @@ class CloudCollection {
   _resolveVolumetricConfig() {
     return {
       ...this.volumetric,
+      // The experimental namespace is not enumerable on the instance, so the
+      // spread above skips it; its own enumerable dials join the configuration
+      // flat, under the names the renderer reads.
+      ...this.volumetric.experimental,
       showProceduralClouds: true,
       cloudType: this.volumetric.cloudType ?? this._cloudType,
     };

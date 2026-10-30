@@ -455,10 +455,36 @@ class CloudVolumetrics {
 
     // Experimental dials live under one namespace, apart from the core dials
     // above. The namespace itself is NOT enumerable, so the forwarding spread
-    // copies no nested key and the renderer configuration is unchanged while it
-    // is empty; the change that adds the first experimental dial also adds the
-    // step that spreads this object's own enumerable accessors into that
-    // configuration.
+    // copies no nested key; `CloudCollection._resolveVolumetricConfig` spreads
+    // the namespace's own enumerable dials into the configuration flat, under
+    // the names the renderer reads. Each dial is an own enumerable validated
+    // accessor on the namespace object for the same reason as the core dials.
+    const experimental = {};
+    let distantDensityMoments = false;
+    Object.defineProperties(experimental, {
+      /**
+       * When <code>true</code>, distant and orbital cloud fronts read a baked
+       * statistics volume of the formed density in place of per-sample noise,
+       * filtering detail a pixel cannot resolve. WebGPU only.
+       * @type {boolean}
+       * @default false
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudDistantDensityMoments: {
+        enumerable: true,
+        get: function () {
+          return distantDensityMoments;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.bool("experimental.cloudDistantDensityMoments", value);
+          //>>includeEnd('debug');
+          distantDensityMoments = value;
+        },
+      },
+    });
+    experimental.cloudDistantDensityMoments =
+      options.experimental?.cloudDistantDensityMoments ?? false;
     /**
      * Experimental volumetric cloud dials, grouped apart from the core dials on
      * this object. A dial here may change without notice. WebGPU only.
@@ -469,7 +495,7 @@ class CloudVolumetrics {
      * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
      */
     Object.defineProperty(this, "experimental", {
-      value: {},
+      value: experimental,
       enumerable: false,
       writable: false,
     });

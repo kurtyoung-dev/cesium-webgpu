@@ -1589,7 +1589,11 @@ fn cloudMacroSampleAt(
   }
 //>>endif
   let coverageThreshold = 1.0 - cloudEffectiveCoverage(effectiveCoverage);
+//>>ifdef CLOUD_DENSITY_MOMENTS
+  density = cloudCoverageGate(density, coverageThreshold);
+//>>else
   density = smoothstep(coverageThreshold, 1.0, density);
+//>>endif
   density = applyGenusBaseVarianceBudget(density, coverageThreshold);
 
   let hForGradient = clamp(
@@ -1647,7 +1651,11 @@ fn cloudDensityFromMacro(
     worleyDetail * cloud.erosionStrength *
     genusErosionDepthScale() *
     genusErosionHeightWeight(heightFraction);
+//>>ifdef CLOUD_DENSITY_MOMENTS
+  density = cloudErodedDensity(density, erosionLo);
+//>>else
   density = clamp(remap(density, erosionLo, 1.0, 0.0, 1.0), 0.0, 1.0);
+//>>endif
   return density * sample.densityFactor;
 }
 
@@ -2509,6 +2517,12 @@ fn marchDeck(
   var weightedColor = vec3<f32>(0.0);
   var visibleDistanceSum = 0.0;
   var visibleAltitudeSum = 0.0;
+//>>ifdef CLOUD_DENSITY_MOMENTS
+  var filteredOpticalMoments = vec3<f32>(0.0);
+  var filteredOccupied = 0.0;
+  var filteredTransmittance = 1.0;
+//>>else
+//>>endif
 
   var t: f32 = tStart;
   var tProcessed: f32 = tStart; // furthest point already examined at fine resolution
@@ -2595,7 +2609,14 @@ fn marchDeck(
       morphologyCoordinate,
       0.0,
     );
-    var base: f32;
+    var base: f32 = 0.0;
+//>>ifdef CLOUD_DENSITY_MOMENTS
+    let distantDensity = cloudDistantDensityAt(
+      samplePos, heightFraction, deckBottom, deckTop,
+      cloudViewPixelFootprint(sampleDistance, cloud.inverseProjection[1].y, cloud.resolution.y), rayDir,
+    );
+//>>else
+//>>endif
     if (usePlanetDensity) {
       if (highPrecisionEnabled()) {
         let relativeNoise = rayNoisePerMeter * sampleDistance;
@@ -2620,6 +2641,10 @@ fn marchDeck(
         morphologyCoordinate =
           cloudMorphologyCoordinateAtWorld(samplePos, windOffset);
       }
+//>>ifdef CLOUD_DENSITY_MOMENTS
+      if (distantDensity.blend < 1.0) {
+//>>else
+//>>endif
       macroSample = cloudMacroSampleAt(
         samplePos,
         densityCoordinates,
@@ -2633,6 +2658,14 @@ fn marchDeck(
         cloudDensityLodFootprint(sampleDistance, cloud.inverseProjection[1].y, cloud.resolution.y, curFineStep),
       );
       base = cloudBaseFromMacro(macroSample);
+//>>ifdef CLOUD_DENSITY_MOMENTS
+      }
+      // A positive filtered contribution cannot be declared empty by the point oracle.
+      if (distantDensity.blend > 0.0 && distantDensity.moments.x * distantDensity.densityFactor > 0.0) {
+        base = max(base, 0.0002);
+      }
+//>>else
+//>>endif
     } else {
       base = legacyCloudBaseDensity(
         samplePos, heightFraction, deckBottom, deckTop
@@ -2679,6 +2712,10 @@ fn marchDeck(
     // Inside the cloud shape — integrate the full eroded density. An erosion
     // pocket, where that is 0, contributes nothing but stays in the fine phase.
     var density: f32;
+//>>ifdef CLOUD_DENSITY_MOMENTS
+    var detailedDensity = 0.0;
+//>>else
+//>>endif
     if (usePlanetDensity) {
       // The coarse/base probe never reads erosion detail. Materialize the third
       // rotated domain only after the base oracle confirms an occupied fine
@@ -2691,13 +2728,26 @@ fn marchDeck(
         densityCoordinates.detail = detailCoordinate;
         macroSample.coordinates.detail = detailCoordinate;
       }
+//>>ifdef CLOUD_DENSITY_MOMENTS
+      density = distantDensity.moments.x * distantDensity.densityFactor;
+      if (distantDensity.blend < 1.0) {
+        detailedDensity = cloudDensityFromMacro(macroSample, heightFraction);
+        density = mix(detailedDensity, density, distantDensity.blend);
+      }
+//>>else
       density = cloudDensityFromMacro(macroSample, heightFraction);
+//>>endif
     } else {
       density = legacyCloudDensity(
         samplePos, heightFraction, deckBottom, deckTop
       );
     }
-    if (density > 0.001) {
+    var contributes = density > 0.001;
+//>>ifdef CLOUD_DENSITY_MOMENTS
+    contributes = contributes || (distantDensity.blend > 0.0 && distantDensity.moments.x * distantDensity.densityFactor > 0.0);
+//>>else
+//>>endif
+    if (contributes) {
       // Light contribution. The multi-scatter octaves fold the phase in per
       // octave, so the returned value already carries it.
       let sunlight = cloudLocalSunlight(samplePos, sunDir);
@@ -2732,7 +2782,24 @@ fn marchDeck(
       // profileExtinction the light march uses, so a genus that absorbs more is
       // also more opaque along the view ray: denser genera read consistently
       // darker and more opaque, thin genera wispier.
-      let sampleTransmittance = exp(-density * curFineStep * effectiveAbsorption());
+      var sampleTransmittance = exp(-density * curFineStep * effectiveAbsorption());
+//>>ifdef CLOUD_DENSITY_MOMENTS
+      if (distantDensity.blend > 0.0) {
+        // Correlated column moments retain clear area across fine intervals.
+        // Independent per-step averages would fill those gaps as steps increase.
+        filteredOpticalMoments += cloudOpticalMomentIncrement(
+          distantDensity.moments, distantDensity.densityFactor * curFineStep * effectiveAbsorption()
+        );
+        filteredOccupied = max(filteredOccupied, distantDensity.moments.w);
+        let columnTransmittance = min(filteredTransmittance,
+          cloudColumnMomentTransmittance(filteredOpticalMoments, filteredOccupied));
+        let filteredStepTransmittance = columnTransmittance / max(filteredTransmittance, 1e-6);
+        filteredTransmittance = columnTransmittance;
+        let directTransmittance = exp(-detailedDensity * curFineStep * effectiveAbsorption());
+        sampleTransmittance = mix(directTransmittance, filteredStepTransmittance, distantDensity.blend);
+      }
+//>>else
+//>>endif
       let sampleWeight = (1.0 - sampleTransmittance) * transmittance;
       visibleDistanceSum += sampleWeight * sampleDistance;
       visibleAltitudeSum += sampleWeight * (deckBottom + heightFraction * layerThickness);

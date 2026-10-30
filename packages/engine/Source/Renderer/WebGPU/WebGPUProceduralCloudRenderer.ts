@@ -50,6 +50,9 @@ import CloudMarchSamplingWGSL from "../../Shaders/WebGPU/Environment/CloudMarchS
 import CloudSolarLightingWGSL from "../../Shaders/WebGPU/Environment/CloudSolarLighting.js";
 import CloudViewIntegrationWGSL from "../../Shaders/WebGPU/Environment/CloudViewIntegration.js";
 import CloudAerialTransportWGSL from "../../Shaders/WebGPU/Environment/CloudAerialTransport.js";
+import CloudDensityFormationWGSL from "../../Shaders/WebGPU/Environment/CloudDensityFormation.js";
+import CloudDensityMomentsWGSL from "../../Shaders/WebGPU/Environment/CloudDensityMoments.js";
+import { CloudDensityMomentsResources } from "./WebGPUCloudDensityMoments.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -210,7 +213,7 @@ const CLOUD_UNIFORM_FLOATS =
   CLOUD_GENUS_MORPHOLOGY_FLOATS +
   CLOUD_TIER_LIGHTING_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
-const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
+const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
 // High-word define masks for the emitting march and the consuming resolve.
 // Named once so no call site spells a bit inline, and so a spec can assert the
 // renderer preprocesses with the axis the registry documents rather than with a
@@ -254,6 +257,7 @@ export interface CloudMainBindGroupEntry {
   multipleScatterView: GPUTextureView;
   transmittanceView: GPUTextureView;
   lutSampler: GPUSampler;
+  densityMomentsView: GPUTextureView;
   bindGroup: GPUBindGroup;
 }
 
@@ -356,6 +360,7 @@ interface CloudNonColorBindings {
   readonly multipleScatter: GPUTextureView;
   readonly transmittance: GPUTextureView;
   readonly lutSampler: GPUSampler;
+  readonly densityMomentsView: GPUTextureView;
 }
 
 interface PreparedCloudFrame {
@@ -519,6 +524,9 @@ export interface CloudCache {
   firstDrawUsedPreview?: boolean;
   startupPreviewDrawn: boolean;
   usingStartupPreview: boolean;
+  selectedMarchPipeline: GPURenderPipeline | null;
+  densityMoments: CloudDensityMomentsResources | null;
+  densityMomentsEnabled: boolean;
   marchPipelineTimings?: Map<string, number>;
   marchPipelines: Map<string, GPURenderPipeline | null>;
   marchModules: WebGPUShaderModuleCache | null;
@@ -1285,6 +1293,9 @@ export function ensureCloudCache(
       pipeline: null,
       startupPreviewDrawn: false,
       usingStartupPreview: false,
+      selectedMarchPipeline: null,
+      densityMoments: null,
+      densityMomentsEnabled: false,
       marchPipelines: new Map(),
       marchModules: null,
       marchPipelineLayout: null,
@@ -1486,6 +1497,7 @@ export function getOrCreateCloudMainBindGroup(
   const exactShapeView = exactBindings?.shapeView ?? shapeView;
   const exactDetailView = exactBindings?.detailView ?? detailView;
   const exactNoiseSampler = exactBindings?.noiseSampler ?? noiseSampler;
+  const densityMomentsView = exactBindings?.densityMomentsView ?? shapeView;
   const exactSkyView = exactBindings?.skyView ?? lutViews.skyView;
   const exactMultipleScatter =
     exactBindings?.multipleScatter ?? lutViews.multipleScatter;
@@ -1507,7 +1519,8 @@ export function getOrCreateCloudMainBindGroup(
       entry.skyView === exactSkyView &&
       entry.multipleScatterView === exactMultipleScatter &&
       entry.transmittanceView === exactTransmittance &&
-      entry.lutSampler === lutSampler
+      entry.lutSampler === lutSampler &&
+      entry.densityMomentsView === densityMomentsView
     ) {
       return entry.bindGroup;
     }
@@ -1529,6 +1542,7 @@ export function getOrCreateCloudMainBindGroup(
       { binding: 10, resource: exactMultipleScatter },
       { binding: 11, resource: exactTransmittance },
       { binding: 12, resource: lutSampler },
+      { binding: 14, resource: densityMomentsView },
     ],
   });
   const slot = cache.mainBindGroupNextSlot;
@@ -1547,6 +1561,7 @@ export function getOrCreateCloudMainBindGroup(
     multipleScatterView: exactMultipleScatter,
     transmittanceView: exactTransmittance,
     lutSampler,
+    densityMomentsView,
     bindGroup,
   };
   cache.mainBindGroupNextSlot = (slot + 1) & 1;
@@ -3014,6 +3029,7 @@ function requestCloudMarchPipeline(
   format: GPUTextureFormat,
   emit: boolean,
   preview = false,
+  moments = cache.densityMomentsEnabled ?? false,
 ): GPURenderPipeline | null {
   const device = context._device;
   const pipelines = context.webgpuPipelineCache;
@@ -3034,7 +3050,8 @@ function requestCloudMarchPipeline(
     (baseMorphology ? ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY : 0) |
     (bakedOnly ? ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY : 0) |
     (emit ? CLOUD_MARCH_EMIT_DEFINES_HI : 0) |
-    (preview ? ShaderDefineHi.CLOUD_LIGHTING_PREVIEW : 0);
+    (preview ? ShaderDefineHi.CLOUD_LIGHTING_PREVIEW : 0) |
+    (moments && !preview ? ShaderDefineHi.CLOUD_DENSITY_MOMENTS : 0);
   const key = `${format}:${definesHi}`;
   //>>includeStart('debug', pragmas.debug);
   const requestStartedAt = performance.now();
@@ -3126,11 +3143,22 @@ function selectCloudMarchPipeline(
   let pipeline = preview
     ? null
     : requestCloudMarchPipeline(context, cache, format, false);
+  if (!pipeline && !preview && cache.densityMomentsEnabled) {
+    pipeline = requestCloudMarchPipeline(
+      context,
+      cache,
+      format,
+      false,
+      false,
+      false,
+    );
+  }
   if (!pipeline && progressive) {
     preview = true;
     pipeline = requestCloudMarchPipeline(context, cache, format, false, true);
   }
-  if (pipeline && preview !== cache.usingStartupPreview) {
+  if (pipeline && pipeline !== cache.selectedMarchPipeline) {
+    cache.selectedMarchPipeline = pipeline;
     cache.usingStartupPreview = preview;
     cache.temporalHistoryPendingResetReasons |= CLOUD_TEMPORAL_RESET_RESOURCE;
   }
@@ -3166,6 +3194,7 @@ function initializeCloudPipeline(
     texture(10, Stage.FRAGMENT),
     texture(11, Stage.FRAGMENT),
     sampler(12, Stage.FRAGMENT),
+    texture(14, Stage.FRAGMENT, { viewDimension: "3d" }),
   ]);
 
   cache.sampler = device.createSampler({
@@ -4392,6 +4421,37 @@ export function prepareCloudFrameAndEncodeMask(
       cloudMarchBudget.asked,
     );
 
+    // Statistics prepare after the first real cloud draw. Weather and time are
+    // lookup inputs, so they do not invalidate this material distribution.
+    const baseDensityMaterial =
+      data[75] <= 0 &&
+      data[128] <= 0 &&
+      (data[132] < 0.5 || data[133] <= 0) &&
+      (data[136] < 0.5 || data[137] <= 0) &&
+      (data[140] < 0.5 || data[141] <= 0) &&
+      data[168] <= 0;
+    cache.densityMomentsEnabled = false;
+    let densityMomentsView = noise.shapeView;
+    if (
+      config.cloudDistantDensityMoments === true &&
+      baseDensityMaterial &&
+      cache.noiseBaked &&
+      cache.executeSerial > 0 &&
+      (data[74] & CLOUD_QF_PLANET_DENSITY) !== 0
+    ) {
+      cache.densityMoments ??= new CloudDensityMomentsResources(device);
+      const view = cache.densityMoments.prepare(
+        noise.shapeView,
+        noise.detailView,
+        noise.sampler,
+        data[96],
+      );
+      if (view) {
+        densityMomentsView = view;
+        cache.densityMomentsEnabled = true;
+      }
+    }
+
     const marchFormat = halfResActive
       ? CLOUD_HALF_FORMAT
       : context._canvasFormat || "bgra8unorm";
@@ -4468,6 +4528,7 @@ export function prepareCloudFrameAndEncodeMask(
       multipleScatter: lutViews.multipleScatter,
       transmittance: lutViews.transmittance,
       lutSampler: cache.lutSampler!,
+      densityMomentsView,
     });
 
     const earlyMaskGroup = getOrCreateCloudMainBindGroup(
@@ -5693,6 +5754,10 @@ export function destroyProceduralCloudResources(
       cache.uniformBuffer,
       "Cloud uniform buffer",
     );
+    cache.densityMoments?.destroy();
+    cache.densityMoments = null;
+    cache.densityMomentsEnabled = false;
+    cache.selectedMarchPipeline = null;
     cache.marchRequestGuard.invalidate();
     cache.marchPipelines.clear();
     cache.marchModules = null;

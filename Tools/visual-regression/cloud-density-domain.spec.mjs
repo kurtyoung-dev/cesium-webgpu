@@ -60,6 +60,8 @@ const cloudShaderSource =
     "CloudMarchSampling.wgsl",
     "CloudSolarLighting.wgsl",
     "CloudAerialTransport.wgsl",
+    "CloudDensityFormation.wgsl",
+    "CloudDensityMoments.wgsl",
     "CloudViewIntegration.wgsl",
   ]
     .map((name) =>
@@ -1140,6 +1142,326 @@ test("cloud async march requests deduplicate pending variants and discard late p
   }
   assert.equal(requests, 8);
   assert(moduleCreates > 0);
+});
+
+const densityFormationProgram = fs.readFileSync(
+  path.join(
+    root,
+    "packages/engine/Source/Shaders/WebGPU/Environment/CloudDensityFormation.wgsl",
+  ),
+  "utf8",
+);
+
+test("formed density quadrature preserves clear mass, two occupied populations and transmission bounds", () => {
+  const transmission = cloudMath.compileFunction(
+    cloudMath.stripComments(densityFormationProgram),
+    "cloudMomentTransmittance",
+    cloudMathGlobals,
+  );
+  const moment = (populations) => {
+    const values = [1, 2, 3, 0].map((power) =>
+      populations.reduce(
+        (sum, [density, weight]) =>
+          sum + weight * (power ? density ** power : Number(density > 0)),
+        0,
+      ),
+    );
+    return { x: values[0], y: values[1], z: values[2], w: values[3] };
+  };
+  for (const populations of [
+    [[0, 1]],
+    [[0.4, 1]],
+    [
+      [0, 0.7],
+      [0.3, 0.3],
+    ],
+    [
+      [0, 0.4],
+      [0.1, 0.2],
+      [0.8, 0.4],
+    ],
+    [
+      [0.1, 0.5],
+      [0.9, 0.5],
+    ],
+  ]) {
+    const m = moment(populations);
+    let previous = 1;
+    for (const scale of [0, 0.1, 1, 10, 100]) {
+      const actual = transmission(m, scale);
+      const expected = populations.reduce(
+        (sum, [density, weight]) => sum + weight * Math.exp(-density * scale),
+        0,
+      );
+      assert(
+        Number.isFinite(actual) && actual >= 0 && actual <= previous + 1e-12,
+      );
+      assert(
+        Math.abs(actual - expected) < 1e-8,
+        "quadrature must be exact for at most two occupied nodes plus clear area",
+      );
+      previous = actual;
+    }
+  }
+  const sparse = moment([
+    [0, 0.75],
+    [1, 0.25],
+  ]);
+  assert(transmission(sparse, 100) >= 0.75);
+  assert(
+    Math.exp(-sparse.x * 100) < 0.001,
+    "mean-density extinction loses clear area",
+  );
+  const erode = cloudMath.compileFunction(
+    cloudMath.stripComments(densityFormationProgram),
+    "cloudErodedDensity",
+    cloudMathGlobals,
+  );
+  for (const base of [0, 0.1, 0.6, 1])
+    for (const low of [0, 0.1, 0.6, 0.99])
+      assert.equal(
+        erode(base, low),
+        Math.max(0, Math.min(1, (base - low) / (1 - low))),
+      );
+});
+
+test("moment producer and all selected detailed/preview/emission shaders validate", async () => {
+  const { preprocess, shaderDefines } = await import("./lib/wgsl-variant.mjs");
+  const nagaDirectory = path.join(
+    root,
+    "Tools/shader-pipeline/naga-wasm-tools",
+  );
+  const naga = await import(
+    pathToFileURL(path.join(nagaDirectory, "naga_wasm_tools.js")).href
+  );
+  await naga.default({
+    module_or_path: fs.readFileSync(
+      path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
+    ),
+  });
+  const producer = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Shaders/WebGPU/Compute/CloudDensityMomentsBake.wgsl",
+    ),
+    "utf8",
+  );
+  naga.validate_wgsl(
+    wgslSource + "\n" + densityFormationProgram + "\n" + producer,
+  );
+  const flags = shaderDefines.ShaderDefineHi;
+  const selected =
+    flags.CLOUD_DENSITY_MOMENTS |
+    flags.CLOUD_NOISE_BAKED_ONLY |
+    flags.CLOUD_MORPHOLOGY_BASE_ONLY;
+  for (const additional of [
+    0,
+    flags.CLOUD_MARCH_EMIT_RECONSTRUCTION,
+    flags.CLOUD_LIGHTING_PREVIEW,
+  ])
+    naga.validate_wgsl(
+      preprocess(
+        wgslSource + "\n" + cloudShaderSource,
+        0,
+        selected | additional,
+      ),
+    );
+  const source = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Shaders/WebGPU/Environment/CloudDensityMoments.wgsl",
+    ),
+    "utf8",
+  );
+  assert.match(source, /footprintMeters/);
+  assert.match(
+    source,
+    /cloudDistantDensityWeight\(footprintMeters, period, dot\(rayDir, up\)\)/,
+  );
+  assert.match(source, /decodeWeatherChannels/);
+  assert.doesNotMatch(defaultVariant(source), /cloudDensityMomentsTex/);
+});
+
+test("density statistics prepare asynchronously, reuse material data, rebake on changes and reject late publication", async () => {
+  const { transform } = await import("esbuild");
+  const source = fs
+    .readFileSync(
+      path.join(
+        root,
+        "packages/engine/Source/Renderer/WebGPU/WebGPUCloudDensityMoments.ts",
+      ),
+      "utf8",
+    )
+    .replace(
+      /^import .+ from .+;\r?\n/gm,
+      (match) => "const " + match.match(/^import (\w+)/)[1] + ' = "fixture";\n',
+    );
+  const transformed = await transform(source, { loader: "ts", format: "esm" });
+  const { CloudDensityMomentsResources } = await import(
+    "data:text/javascript;base64," +
+      Buffer.from(transformed.code).toString("base64")
+  );
+  const previous = [
+    globalThis.GPUShaderStage,
+    globalThis.GPUTextureUsage,
+    globalThis.GPUBufferUsage,
+  ];
+  globalThis.GPUShaderStage = { COMPUTE: 4 };
+  globalThis.GPUTextureUsage = { STORAGE_BINDING: 8, TEXTURE_BINDING: 4 };
+  globalThis.GPUBufferUsage = { STORAGE: 128, UNIFORM: 64, COPY_DST: 8 };
+  try {
+    let allocations = 0,
+      submissions = 0,
+      destroyed = 0;
+    const pending = [];
+    const resource = () => ({
+      destroy() {
+        destroyed++;
+      },
+      createView() {
+        return {};
+      },
+    });
+    const device = {
+      createBindGroupLayout: () => ({}),
+      createPipelineLayout: () => ({}),
+      createShaderModule: () => ({}),
+      createComputePipelineAsync: () =>
+        new Promise((resolve) => pending.push(resolve)),
+      createTexture() {
+        allocations++;
+        return resource();
+      },
+      createBuffer() {
+        allocations++;
+        return resource();
+      },
+      createBindGroup: () => ({}),
+      createCommandEncoder: () => ({
+        beginComputePass: () => ({
+          setPipeline() {},
+          setBindGroup() {},
+          dispatchWorkgroups() {},
+          end() {},
+        }),
+        finish: () => ({}),
+      }),
+      queue: {
+        writeBuffer() {},
+        submit() {
+          submissions++;
+        },
+      },
+    };
+    const state = new CloudDensityMomentsResources(device),
+      shape = {},
+      detail = {},
+      sampler = {};
+    assert.equal(state.prepare(shape, detail, sampler, 0.45), null);
+    state.prepare(shape, detail, sampler, 0.45);
+    assert.equal(pending.length, 2);
+    assert.equal(allocations, 0);
+    for (const resolve of pending.splice(0)) resolve({});
+    await new Promise((resolve) => setImmediate(resolve));
+    const view = state.prepare(shape, detail, sampler, 0.45);
+    assert(view);
+    assert.equal(allocations, 3);
+    assert.equal(submissions, 1);
+    assert.equal(state.prepare(shape, detail, sampler, 0.45), view);
+    assert.equal(submissions, 1);
+    state.prepare(shape, detail, sampler, 0.5);
+    assert.equal(submissions, 2);
+    state.prepare({}, detail, sampler, 0.5);
+    assert.equal(submissions, 3);
+    state.destroy();
+    assert.equal(destroyed, 3);
+    assert.equal(state.prepare(shape, detail, sampler, 0.45), null);
+    const late = new CloudDensityMomentsResources(device);
+    late.prepare(shape, detail, sampler, 0.45);
+    late.destroy();
+    for (const resolve of pending.splice(0)) resolve({});
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(late.prepare(shape, detail, sampler, 0.45), null);
+    assert.equal(allocations, 3);
+  } finally {
+    [
+      globalThis.GPUShaderStage,
+      globalThis.GPUTextureUsage,
+      globalThis.GPUBufferUsage,
+    ] = previous;
+  }
+});
+
+test("correlated optical columns preserve clear coverage and are invariant to march partition count", () => {
+  const source = cloudMath.stripComments(densityFormationProgram);
+  const globals = {
+    ...cloudMathGlobals,
+    __functions: { ...cloudMathGlobals.__functions },
+  };
+  for (const name of [
+    "cloudMomentTransmittance",
+    "cloudOpticalMomentIncrement",
+    "cloudColumnMomentTransmittance",
+  ])
+    globals.__functions[name] = cloudMath.compileFunction(
+      source,
+      name,
+      globals,
+    );
+  const moments = cloudMath.vec4(0.25, 0.25, 0.25, 0.25);
+  const expected = 0.75 + 0.25 * Math.exp(-20);
+  for (const count of [1, 2, 8, 24, 48, 96, 128]) {
+    const step = globals.__functions.cloudOpticalMomentIncrement(
+      moments,
+      20 / count,
+    );
+    const values = cloudMath.laneValues(step).map((value) => value * count);
+    const actual = globals.__functions.cloudColumnMomentTransmittance(
+      cloudMath.vec(...values),
+      0.25,
+    );
+    assert(Math.abs(actual - expected) < 1e-8);
+    assert(actual >= 0.75);
+    if (count > 1)
+      assert(
+        Math.abs((0.75 + 0.25 * Math.exp(-20 / count)) ** count - expected) >
+          0.1,
+        "independent interval mixtures must fail the retained clear-area criterion",
+      );
+  }
+});
+
+test("distant density admission uses the noise feature wavelength and retains near and limb detail", () => {
+  const weight = cloudMath.compileFunction(
+    cloudMath.stripComments(densityFormationProgram),
+    "cloudDistantDensityWeight",
+    cloudMathGlobals,
+  );
+  const period = 1 / (0.0003 * 0.45);
+  assert.equal(
+    weight(6000, period, 0.9),
+    1,
+    "the global orbital footprint must select filtered optics",
+  );
+  assert.equal(weight(10, period, 0.9), 0);
+  assert.equal(weight(100000, period, 0.1), 0);
+  assert.equal(weight(6000, period, -0.9), 1);
+  const partial = weight(period * 0.375, period, 0.9);
+  assert(Math.abs(partial - 0.5) < 1e-8);
+});
+
+test("zero-coverage statistical bins are empty even at the largest possible noise value", () => {
+  const gate = cloudMath.compileFunction(
+    cloudMath.stripComments(densityFormationProgram),
+    "cloudCoverageGate",
+    cloudMathGlobals,
+  );
+  for (const noise of [0, 0.4, 0.7, 1]) assert.equal(gate(noise, 1), 0);
+  for (const threshold of [0, 0.3, 0.6, 0.9])
+    for (const noise of [0, 0.4, 0.7, 1]) {
+      const t = Math.max(0, Math.min(1, (noise - threshold) / (1 - threshold)));
+      assert.equal(gate(noise, threshold), t * t * (3 - 2 * t));
+    }
 });
 
 test("cloud deck ordering uses ray entry below, within and above the layer", () => {

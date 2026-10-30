@@ -1166,6 +1166,7 @@ test("F1 all six compiled forms pass naga validation", async () => {
     "CloudMarchSampling.wgsl",
     "CloudSolarLighting.wgsl",
     "CloudAerialTransport.wgsl",
+    "CloudDensityFormation.wgsl",
   ]
     .map((name) => readEngine("Shaders/WebGPU/Environment/" + name))
     .join("\n");

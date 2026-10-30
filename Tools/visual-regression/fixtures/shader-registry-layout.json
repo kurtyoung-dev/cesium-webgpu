@@ -466,7 +466,7 @@
       "bit": 10,
       "name": "CLOUD_DENSITY_MOMENTS",
       "owner": "cloud-march",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",
