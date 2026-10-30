@@ -2343,101 +2343,6 @@ fn cloudLutLuminance(c: vec3<f32>) -> f32 {
   return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
-// ── Aerial perspective: how much air actually lies on the path ───────────────
-//
-// The term this replaces was `clamp(midDist / 60000.0 * aerialStrength, 0, 0.85)`
-// — haze as a linear function of RANGE, keyed to a 60 km horizon scale, capped
-// at 0.85. It is defensible from the ground, where 60 km of horizontal path does
-// carry roughly a horizon's worth of air; it is wrong everywhere else, and from
-// orbit it is wrong in the worst possible way. midDist for an orbital camera is
-// hundreds of kilometres for EVERY pixel, so every cloud pixel saturates the cap
-// and the whole disc is rendered as maximally hazed flat tint. That is bar O3
-// ("fraction of cloud pixels at the aerial cap, 0 at h >= 200 km") reading 1.0
-// by construction.
-//
-// The physical quantity is not range, it is the AIR COLUMN on the path: the
-// integral of air density between the camera and the cloud. An orbital ray
-// crosses a few scale heights of atmosphere and then hundreds of kilometres of
-// vacuum, so its column is small and bounded no matter how long the ray is,
-// which is why the Earth's cloud deck looks crisp from orbit and hazy from a
-// mountain top.
-//
-// Air density is exponential in altitude, rho(h) = exp(-h/H), H ~ 8.5 km for the
-// lower atmosphere. Parameterise the path by s from the cloud toward the camera,
-// take the plane-parallel altitude rate mu = dot(dirTowardCamera, up) at the
-// cloud, and the column has a closed form:
-//
-//   column(L) = rho0 * (H/mu) * (1 - exp(-L*mu/H))        (mu != 0)
-//   column(L) = rho0 * L                                  (mu == 0, horizontal)
-//
-// in metres of sea-level-equivalent air. It is correct in every regime this
-// renderer has: it tends to rho0 * H/mu as L -> infinity (the orbital case, a
-// bounded column), it reduces to rho0 * L for a horizontal path (which is what
-// the 60 km heuristic was calibrating against), and for mu < 0 — a camera below
-// the deck looking up — it grows into the denser air below, which is correct.
-// L*mu is the endpoint altitude difference, so the exponent is bounded by
-// (h_camera - h_cloud)/H and cannot overflow f32 in either direction.
-//
-// Not modelled, deliberately and stated rather than hidden: ray curvature
-// relative to the ellipsoid. The true altitude profile along a chord is convex
-// in s, so for a near-limb ray the plane-parallel line underestimates the
-// column and the limb is rendered slightly clearer than truth. The error is zero
-// at nadir, grows toward the limb, and is bounded by the geometry; the analytic
-// shell is where the limb chord gets its exact treatment. Under-hazing
-// cannot re-saturate the cap, so it cannot mask an O3 failure.
-const CLOUD_AIR_SCALE_HEIGHT_M: f32 = 8500.0;
-// Broadband haze extinction per metre of sea-level-equivalent air. Chosen so the
-// legacy calibration point is preserved exactly: a horizontal sea-level path of
-// 60 km, which is where the old term first reached its cap, still returns the
-// cap. ln(1/(1-0.85)) / 60000 = 3.16187e-5, a meteorological range of ~124 km —
-// inside the observed range for a clear-to-lightly-hazy lower atmosphere, and
-// above the ~1.2e-5 pure-Rayleigh floor at 550 nm, which is the right side to
-// err on for a term whose job is atmospheric obscuration rather than molecular
-// scattering alone.
-const CLOUD_AERIAL_EXTINCTION_PER_M: f32 = 3.1618666e-5;
-// The cap is KEPT, and kept at its historical value, so bar O3 stays falsifiable:
-// a path model that saturates is still detectable as "pixels at the cap". A
-// Beer law with no cap would make O3 trivially 0 and the gate unable to fail,
-// which is the one shape a gate must never take.
-const CLOUD_AERIAL_MAX: f32 = 0.85;
-
-// Sea-level-equivalent air column, in metres, along a straight path of length
-// `pathLength` starting at altitude `startAltitude` with altitude rate `mu`
-// (the cosine between the direction of travel and local up).
-fn cloudAirColumnMeters(startAltitude: f32, mu: f32, pathLength: f32) -> f32 {
-  let h0 = max(startAltitude, 0.0);
-  let rho0 = exp(-h0 / CLOUD_AIR_SCALE_HEIGHT_M);
-  // A DESCENDING path (mu < 0) is bounded where it reaches sea level: no view
-  // ray continues below the surface. Without the bound the closed form's
-  // `exp(-x)` grows without limit along such a path and overflows f32, which
-  // then reaches the caller as a NaN haze fraction. At mu >= 0 the path is
-  // unbounded and the closed form converges on its own.
-  let base = max(pathLength, 0.0);
-  let usable = select(base, min(base, h0 / max(-mu, 1e-6)), mu < 0.0);
-  let x = usable * mu / CLOUD_AIR_SCALE_HEIGHT_M;
-  // Near-horizontal paths: (1 - exp(-x))/x -> 1 - x/2 as x -> 0. Taking the
-  // closed form there divides two quantities that both go to zero.
-  if (abs(x) < 1e-3) {
-    return rho0 * usable * (1.0 - 0.5 * x);
-  }
-  return rho0 * (CLOUD_AIR_SCALE_HEIGHT_M / mu) * (1.0 - exp(-x));
-}
-
-// Fraction of the cloud color replaced by the aerial term, in [0, CLOUD_AERIAL_MAX].
-fn cloudAerialFraction(
-  cloudAltitude: f32,
-  towardCamera: vec3<f32>,
-  upAtCloud: vec3<f32>,
-  pathLength: f32,
-  strength: f32,
-) -> f32 {
-  let column = cloudAirColumnMeters(
-    cloudAltitude, dot(towardCamera, upAtCloud), max(pathLength, 0.0)
-  );
-  let opticalDepth = column * CLOUD_AERIAL_EXTINCTION_PER_M * max(strength, 0.0);
-  return clamp(1.0 - exp(-opticalDepth), 0.0, CLOUD_AERIAL_MAX);
-}
-
 // Per-deck march result. `hazed` is the LDR tone-mapped and aerial-hazed cloud
 // color for this deck; `alpha` is 1 - transmittance, the deck's coverage. For a
 // single shell the front-to-back composite over one deck reduces to
@@ -2594,9 +2499,9 @@ fn marchDeck(
   // Coarse probes span four intervals of the same near-to-far distribution.
 
   var transmittance: f32 = 1.0;
-  var lightEnergy: f32 = 0.0;
   var weightedColor = vec3<f32>(0.0);
-  var totalDensity: f32 = 0.0;
+  var visibleDistanceSum = 0.0;
+  var visibleAltitudeSum = 0.0;
 
   var t: f32 = tStart;
   var tProcessed: f32 = tStart; // furthest point already examined at fine resolution
@@ -2822,6 +2727,8 @@ fn marchDeck(
       // darker and more opaque, thin genera wispier.
       let sampleTransmittance = exp(-density * curFineStep * effectiveAbsorption());
       let sampleWeight = (1.0 - sampleTransmittance) * transmittance;
+      visibleDistanceSum += sampleWeight * sampleDistance;
+      visibleAltitudeSum += sampleWeight * (deckBottom + heightFraction * layerThickness);
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
       // Accumulate the reconstruction depth from the weight the radiance uses,
       // at the same sample position. Nothing here re-derives a distance or
@@ -2910,8 +2817,6 @@ fn marchDeck(
       weightedColor += (cloudColor * sunlight * scatteredLight +
                        ambient * cloudLocalDaylight(samplePos, sunDir))
                      * specialTint * sampleWeight;
-      lightEnergy += scatteredLight * sampleWeight;
-      totalDensity += density * curFineStep;
       transmittance *= sampleTransmittance;
     }
 
@@ -2930,87 +2835,27 @@ fn marchDeck(
   let exposed = weightedColor * cloud.exposure;
   let toneMapped = exposed / (exposed + vec3<f32>(1.0));
 
-  // Aerial perspective. Distant clouds lose contrast and tint toward the
-  // atmosphere inscatter color; without it far clouds keep their full white and
-  // stand out against the hazed horizon. The haze is keyed on the march midpoint
-  // distance, tStart + 0.5·(tEnd - tStart), rather than on tStart: from below the
-  // layer tStart collapses to ~0 for every pixel, so keying on it hazes by view
-  // angle rather than by true range. Both operands are LDR — the post-tonemap
-  // color against the packed horizon tint — so the lerp stays in display space.
-  //
-  // The haze FRACTION is the air column on the camera-to-midpoint path, not the
-  // range: see cloudAirColumnMeters above for the model, the calibration and the
-  // one approximation it makes. It replaced `midDist / 60000` here, which
-  // saturated the cap for every pixel of an orbital frame.
-  let midDist = tStart + 0.5 * (tEnd - tStart);
-  let midPos = rayOrigin + rayDir * midDist;
-  let midUp = normalize(midPos);
-  // The midpoint lies inside the marched shell by construction, so the deck
-  // midpoint is its altitude to within half the deck thickness — a fraction of
-  // a scale height, and far cheaper than a second ellipsoid solve on the default
-  // path. The LUT branch below still resolves the exact midpoint altitude,
-  // because its transmittance lookup is a per-altitude table rather than a
-  // smooth exponential.
-  let aerial = cloudAerialFraction(
-    deckBottom + 0.5 * (deckTop - deckBottom),
-    -rayDir,
-    midUp,
-    midDist,
-    cloud.aerialStrength,
+  // Use the extinction weights that produced the pixel, so a nearby opaque
+  // cloud does not inherit the range of the otherwise empty shell.
+  let visible = cloudVisibleAerialSample(
+    visibleDistanceSum, visibleAltitudeSum, 1.0 - transmittance,
+    tStart, tEnd, deckBottom, deckTop,
   );
-  // Heuristic haze, the path taken when `aerialLutMode` is 'heuristic'.
+  let visiblePos = rayOrigin + rayDir * visible.x;
+  let surfaceAxes = cloudShellAxes(0.0);
+  let visibleUp = normalize(visiblePos / (surfaceAxes * surfaceAxes));
+  let aerial = cloudAerialFraction(
+    visible.y, -rayDir, visibleUp, visible.x, cloud.aerialStrength,
+  );
   var hazed = mix(toneMapped, cloud.aerialColor, aerial);
 
-  // Physical aerial perspective. When `aerialLutMode` is set and the atmosphere
-  // LUTs are baked, the flat-tint lerp is replaced by an inscatter and
-  // transmittance lookup at the march midpoint:
-  //   - transmittance(midpoint altitude, view cosZenith) attenuates the cloud
-  //     color toward the horizon, so distant clouds dim and redden,
-  //   - the sun-relative sky-view inscatter LUT adds the in-between air light,
-  //     warm toward a low sun and cooler away, scaled by the same midpoint-range
-  //     fraction the heuristic uses, so the near deck stays crisp and the far
-  //     deck dissolves into the true sky color.
-  // Falls back to the heuristic `hazed` when the sky-view LUT reads ~0.
+  // The sky LUT supplies air-light color. Its atmosphere-escape transmittance
+  // does not describe this finite camera-to-cloud path.
   if ((u32(cloud.qualityFlags) & QF_AERIAL_LUT) != 0u) {
-    // `midPos` and `midUp` are resolved once above, for the path-length model
-    // the heuristic now shares with this branch; this block used to recompute
-    // both.
-    let inscatterHDR = cloudSampleSkyViewLut(midUp, rayDir, sunDir);
+    let inscatterHDR = cloudSampleSkyViewLut(visibleUp, rayDir, sunDir);
     if (cloudLutLuminance(inscatterHDR) > 1e-5) {
-      // Resolve the midpoint against the same oblate boundaries as the march. Keep
-      // `midPos` in the world domain for the atmosphere LUT's direction lookup.
-      var midHeightFraction: f32;
-      if (highPrecisionEnabled()) {
-        midHeightFraction = ellipsoidShellHeightFractionRTE(
-          rayDir * midDist, centerHigh, centerLow,
-          innerInverseAxes, outerInverseAxes
-        );
-      } else {
-        midHeightFraction = ellipsoidShellHeightFraction(
-          midPos, innerInverseAxes, outerInverseAxes
-        );
-      }
-      let midAltitude =
-        deckBottom + midHeightFraction * (deckTop - deckBottom);
-      let midCosZenith = dot(rayDir, midUp);
-      let trans = cloudSampleTransmittance(max(midAltitude, 0.0), midCosZenith);
-      // The sky-view LUT radiance is in the pre-tonemap HDR space the sky dome
-      // uses, since SkyAtmosphere tone-maps after sampling. `toneMapped` is
-      // already LDR, so the inscatter is brought into the same display space
-      // with the same Reinhard and exposure operator before compositing;
-      // otherwise the HDR air light blows the far clouds to white. Hue ratios
-      // survive Reinhard, so the warm-toward-sun and cool-away directionality
-      // that motivates the term is preserved.
       let inscatterExposed = inscatterHDR * cloud.exposure;
-      let inscatterLDR = inscatterExposed / (inscatterExposed + vec3<f32>(1.0));
-      // Energy-correct aerial perspective: the air light fills exactly the
-      // fraction of cloud radiance lost to extinction, avgTrans, so the far
-      // target is a convex blend of attenuated cloud and sky air light, bounded
-      // in [0,1] and never a white-out. `aerial`, the same 0..0.85
-      // midpoint-range fraction the heuristic uses, ramps from crisp near cloud
-      // to fully-fogged far cloud.
-      let avgTrans = (trans.r + trans.g + trans.b) / 3.0;
-      let farTarget = toneMapped * trans + inscatterLDR * (1.0 - avgTrans);
+      let farTarget = inscatterExposed / (inscatterExposed + vec3<f32>(1.0));
       hazed = mix(toneMapped, farTarget, aerial);
     }
   }

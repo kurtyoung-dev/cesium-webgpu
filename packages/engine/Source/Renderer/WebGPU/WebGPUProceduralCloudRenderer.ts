@@ -49,6 +49,7 @@ import CloudDensityDomainWGSL from "../../Shaders/WebGPU/Environment/CloudDensit
 import CloudMarchSamplingWGSL from "../../Shaders/WebGPU/Environment/CloudMarchSampling.js";
 import CloudSolarLightingWGSL from "../../Shaders/WebGPU/Environment/CloudSolarLighting.js";
 import CloudViewIntegrationWGSL from "../../Shaders/WebGPU/Environment/CloudViewIntegration.js";
+import CloudAerialTransportWGSL from "../../Shaders/WebGPU/Environment/CloudAerialTransport.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -209,7 +210,7 @@ const CLOUD_UNIFORM_FLOATS =
   CLOUD_GENUS_MORPHOLOGY_FLOATS +
   CLOUD_TIER_LIGHTING_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
-const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
+const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
 // High-word define masks for the emitting march and the consuming resolve.
 // Named once so no call site spells a bit inline, and so a spec can assert the
 // renderer preprocesses with the axis the registry documents rather than with a

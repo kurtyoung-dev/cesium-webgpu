@@ -58,7 +58,16 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
 const CLOUD_WGSL_PATH =
   "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl";
-const shippedSource = fs.readFileSync(path.join(root, CLOUD_WGSL_PATH), "utf8");
+const shippedSource =
+  fs.readFileSync(path.join(root, CLOUD_WGSL_PATH), "utf8") +
+  "\n" +
+  fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Shaders/WebGPU/Environment/CloudAerialTransport.wgsl",
+    ),
+    "utf8",
+  );
 
 /**
  * Compile the two aerial functions out of a WGSL source string.

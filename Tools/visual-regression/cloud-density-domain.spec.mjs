@@ -59,6 +59,7 @@ const cloudShaderSource =
   [
     "CloudMarchSampling.wgsl",
     "CloudSolarLighting.wgsl",
+    "CloudAerialTransport.wgsl",
     "CloudViewIntegration.wgsl",
   ]
     .map((name) =>
@@ -1172,4 +1173,46 @@ test("cloud deck ordering uses ray entry below, within and above the layer", () 
     /result\.weightedDistanceSum \+= transmittance \* deck\.weightedDistanceSum/,
   );
   assert.doesNotMatch(source, /abs\(camAlt - mid/);
+});
+
+test("aerial transport uses contributing distance and altitude rather than empty shell range", () => {
+  const source = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Shaders/WebGPU/Environment/CloudAerialTransport.wgsl",
+    ),
+    "utf8",
+  );
+  const representative = cloudMath.compileFunction(
+    cloudMath.stripComments(source),
+    "cloudVisibleAerialSample",
+    cloudMathGlobals,
+  );
+  const sample = cloudMath.laneValues(
+    representative(
+      0.9 * 1000 + 0.05 * 50000,
+      0.95 * 2000,
+      0.95,
+      500,
+      100000,
+      1500,
+      4000,
+    ),
+  );
+  assert(Math.abs(sample[0] - 3400 / 0.95) < 1e-8);
+  assert(Math.abs(sample[1] - 2000) < 1e-8);
+  assert(sample[0] < 4000);
+  assert.deepEqual(
+    cloudMath.laneValues(representative(0, 0, 0, 500, 100000, 1500, 4000)),
+    [500, 1500],
+  );
+  const march = functionSource(defaultVariant(cloudShaderSource), "marchDeck");
+  assert.match(march, /visibleDistanceSum \+= sampleWeight \* sampleDistance/);
+  assert.match(
+    march,
+    /visibleAltitudeSum \+= sampleWeight \* \(deckBottom \+ heightFraction \* layerThickness\)/,
+  );
+  assert.match(march, /visible\.y, -rayDir, visibleUp, visible\.x/);
+  assert.doesNotMatch(march, /cloudSampleTransmittance\(|let midDist =/);
+  assert.match(march, /hazed = mix\(toneMapped, farTarget, aerial\)/);
 });
