@@ -60,6 +60,21 @@ const sourceIdx = args.indexOf("--source");
 const sourceRepo = sourceIdx >= 0 ? args[sourceIdx + 1] : process.cwd();
 const CODEX_TRUST = args.includes("--codex-trust");
 const CODEX_UNTRUST = args.includes("--codex-untrust");
+const CODEX_MCP = args.includes("--codex-mcp");
+const CODEX_UNMCP = args.includes("--codex-unmcp");
+const capsuleIdx = args.indexOf("--capsule");
+const capsuleRaw = capsuleIdx >= 0 ? (args[capsuleIdx + 1] ?? "") : "";
+const capsuleTargets = capsuleRaw
+  .split(",")
+  .map((s) => s.trim())
+  .filter((s) => s.length > 0 && !s.startsWith("--"));
+const capsuleRoleIdx = args.indexOf("--capsule-role");
+const capsuleRole =
+  capsuleRoleIdx >= 0 &&
+  (args[capsuleRoleIdx + 1] === "reviewer" ||
+    args[capsuleRoleIdx + 1] === "orchestrator")
+    ? args[capsuleRoleIdx + 1]
+    : "worker";
 
 /**
  * Governance a clone cannot obtain from git, and why.
@@ -356,6 +371,77 @@ if (!VERIFY_ONLY) {
       path.join(clonePath, "_review", "PROVISION.objectid"),
       `${manifest}\n`,
     );
+  }
+}
+
+if (!VERIFY_ONLY) {
+  // Seed the gitignored context-spine DB and .mcp.json (Tools/context-spine/seed-clone.mjs:
+  // nothing is written in the source, and no pointer into the source tree is left).
+  const { seedCloneContextSpine } =
+    await import("./context-spine/seed-clone.mjs");
+  notes.push(
+    ...seedCloneContextSpine({
+      sourceRepo,
+      clonePath,
+      seedDb: !args.includes("--no-spine-seed"),
+    }),
+  );
+}
+
+if (CODEX_MCP || CODEX_UNMCP) {
+  try {
+    const codexConfigPath = resolveCodexConfigPath({ args });
+    const { codexMcpAdd, codexMcpRemove } =
+      await import("./context-spine/codex-mcp-config.mjs");
+    if (CODEX_MCP) {
+      const r = codexMcpAdd({ configPath: codexConfigPath, args });
+      notes.push(
+        r.changed
+          ? `codex mcp: registered ${r.header}`
+          : `codex mcp: already present (${r.header})`,
+      );
+    }
+    if (CODEX_UNMCP) {
+      const r = codexMcpRemove({ configPath: codexConfigPath, args });
+      notes.push(
+        r.changed
+          ? `codex mcp: removed ${r.header}`
+          : `codex mcp: not present (${r.header})`,
+      );
+    }
+  } catch (error) {
+    fail(`codex mcp update failed: ${error?.message ?? error}`);
+  }
+}
+
+if (!VERIFY_ONLY && capsuleTargets.length > 0) {
+  try {
+    const { openOrBuildSpine, generateContextCapsule } =
+      await import("./context-spine/query-engine.mjs");
+    const { capsuleSpineRoot } = await import("./context-spine/seed-clone.mjs");
+    const spineRoot = capsuleSpineRoot({ sourceRepo, clonePath });
+    if (!spineRoot) {
+      throw new Error(
+        "no context-spine DB in the clone or the source; run npm run context-build in the source first",
+      );
+    }
+    // autoBuild false: a capsule never starts a full build in the source tree.
+    const spineDb = await openOrBuildSpine(spineRoot, { autoBuild: false });
+    try {
+      const capsuleOut = path.join(clonePath, "_review", "context-capsule.md");
+      const cap = generateContextCapsule(spineDb, clonePath, {
+        targets: capsuleTargets,
+        role: capsuleRole,
+        outPath: capsuleOut,
+      });
+      notes.push(
+        `generated _review/context-capsule.md (~${cap.approxTokens} tokens for ${capsuleTargets.join(", ")})`,
+      );
+    } finally {
+      spineDb.close();
+    }
+  } catch (error) {
+    fail(`context capsule generation failed: ${error?.message ?? error}`);
   }
 }
 

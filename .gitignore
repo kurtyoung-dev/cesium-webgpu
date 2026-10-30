@@ -95,6 +95,11 @@ __pycache__/
 # under Documentation/Images/webgpu-fork/, the run reports are not.
 /Tools/readme-screenshots/output/
 /_review/
+/_lane-out/
+
+# Local SQLite context spine and optional --code-only Graphify AST cache.
+/.cache/
+/graphify-out/
 
 # Codex seat scratch: Rust build targets and evidence staging written into the
 # repo tree during the 2026-08-30/31 process-supervisor lanes (926 MB, 4,577

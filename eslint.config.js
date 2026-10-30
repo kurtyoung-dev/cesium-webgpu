@@ -50,6 +50,10 @@ export default [
       // them keeps local `npm run eslint` equivalent to the CI run.
       // .claude/ is harness scratch (agent worktrees, workflow scripts).
       ".claude/",
+      ".cache/",
+      "graphify-out/",
+      "_lane-out/",
+      "_review/",
       "packages/wasm/pkg/",
       "packages/wasm-naga/pkg/",
       "packages/wasm-naga/pkg-tooling/",

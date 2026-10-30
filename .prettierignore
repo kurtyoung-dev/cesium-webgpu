@@ -84,3 +84,7 @@ packages/sandcastle/templates/Sandcastle.js
 packages/sandcastle/templates/Sandcastle.d.ts
 # Harness scratch (agent worktrees, workflow scripts) — git-ignored, local-only
 .claude/
+.cache/
+graphify-out/
+_lane-out/
+_review/
