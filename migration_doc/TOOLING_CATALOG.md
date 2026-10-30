@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1810 |
-| ACTIVE | 1559 |
+| Files in census | 1811 |
+| ACTIVE | 1560 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
 | NO @purpose HEADER | 49 |
 | NO @status HEADER | 1 |
-| Classes | probe 683, spec 484, other 378, lib 214, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
+| Classes | probe 683, spec 485, other 378, lib 214, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
 
 ### Tools/ (69)
 
@@ -467,7 +467,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1120)
+### Tools/visual-regression/ (1121)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -547,6 +547,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-aerial-path-length.spec.mjs | spec | ACTIVE | 2026-10-29 | 8 | C13-N20: executes cloudAirColumnMeters/cloudAerialFraction straight out of ProceduralClouds.wgsl; pins the legacy calibration point, the orbital non-saturation that bar O3 is about, monotonicity, the near-horizontal guard, the reach-the-image assertion on the composited output, and six mutants. |
 | cloud-api-enum-reachability.spec.mjs | spec | NO @purpose HEADER | 2026-09-17 | 6 | — |
 | cloud-coverage-response.spec.mjs | spec | ACTIVE | 2026-10-29 | 9 | Pins the CLOUD-LOW-COVERAGE-CUTOFF fix: baked base-field support, monotone coverage response on the CPU twin, exact high-anchor preservation. |
+| cloud-curved-air-transport.spec.mjs | spec | ACTIVE | — | 1 | Executes finite cloud air columns and observer sky-view domain admission. |
 | cloud-demo-probe-routing.spec.mjs | spec | ACTIVE | 2026-09-26 | 7 | Drives the eight routed Weather-Inspector cloud probes through runProbe against a stub browser, so the routing is known to reach a receipt, take its origin from the runtime and refuse port 8080 before an Edge slot is spent on it. |
 | cloud-density-domain.spec.mjs | spec | ACTIVE | 2026-10-30 | 11 | Pins the cloud density-domain layout: noise origin/phase/rotation float offsets shared between WebGPUCloudDensityDomain.ts and the WGSL, via exports. |
 | cloud-density-lod.spec.mjs | spec | ACTIVE | 2026-10-29 | 2 | Pins LOD agreement across CloudDensityDomain.wgsl, ProceduralClouds.wgsl and ProceduralSkyCubemap.wgsl via direct source reads. |
@@ -561,11 +562,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-noise-mipmaps.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Pins WebGPUCloudNoiseResources + CloudNoiseMipmap.wgsl mip-chain agreement, with a loud guard on the halve-to-1 loop's integer precondition. |
 | cloud-observability-counters.spec.mjs | spec | ACTIVE | 2026-10-30 | 6 | C13-02 Gate-A: cloud GPU total is a union not a sum, Sky Fill excluded, per-frame counters reset, pass counts tied to encode sites. |
 | cloud-orbital-ladder-contract.spec.mjs | spec | ACTIVE | 2026-09-26 | 9 | Unit-checks the orbital ladder's four statistics against geometry the plan states independently, then drives the REAL descriptor through runProbe with a stubbed browser so the instrument is known to reach a verdict before an Edge slot is spent on it. |
-| cloud-photometry-rule.spec.mjs | spec | ACTIVE | 2026-09-12 | 7 | Asserts the photometric path measures linear PRE-Reinhard radiance with the sun disc masked, that measuring after the tonemapper gives a different answer, and that the harness capture path supplies the live exposure rather than a default. |
+| cloud-photometry-rule.spec.mjs | spec | ACTIVE | 2026-10-30 | 7 | Asserts the photometric path measures linear PRE-Reinhard radiance with the sun disc masked, that measuring after the tonemapper gives a different answer, and that the harness capture path supplies the live exposure rather than a default. |
 | cloud-primary-ray.spec.mjs | spec | ACTIVE | 2026-10-29 | 5 | Validates that primary procedural-cloud rays preserve framebuffer UV row order through inverse projection. |
 | cloud-primary-shell.spec.mjs | spec | ACTIVE | 2026-10-30 | 6 | Validates CloudVolumetrics WGS84 shell ray-root math at orbital heights with f32-conditioning-aware tolerances (nadir / near-horizon / grazing). |
 | cloud-probe-harness.spec.mjs | spec | ACTIVE | 2026-09-16 | 11 | Guards lib/cloud-probe-harness.mjs + cloud-perf-evidence pass resolution: config round-trip through the collection contract across six cloud probes. |
-| cloud-radiance-transport.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
+| cloud-radiance-transport.spec.mjs | spec | NO @purpose HEADER | 2026-10-30 | 1 | — |
 | cloud-ray-jitter.spec.mjs | spec | ACTIVE | 2026-10-29 | 6 | Pins the cloud ray-jitter contract across ProceduralClouds.wgsl, CloudDensityDomain.wgsl, the renderer and tier presets via source reads. |
 | cloud-realization-override.spec.mjs | spec | ACTIVE | 2026-10-29 | 4 | Executes the pure cloud resolver and the renderer's realization publisher from Node to prove the debug realization override moves exactly the axis it names on the tier path (steps, or one qualityFlags bit) while the escape hatch cannot, that the resolver is byte-identical to its reference with no override, that the ask and the realised value differ exactly when a clamp, a restricted bit or an absent resource moved the ask, that a release strip leaves no working override, and that each of those properties goes red when the override is made unreachable. |
 | cloud-reconstruction-attachments.spec.mjs | spec | ACTIVE | 2026-10-29 | 11 | C13-09: attachment table add-only, march shader content-hash pin enforcing the C13-39 static-register constraint, stage default-OFF byte/cost neutral. |
@@ -1738,7 +1739,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-orbital-ladder-model.mjs | lib | ACTIVE | 2026-09-19 | 13 | O3 aerial-cap fraction, O4 limb step, O6 decade retention and zoom flicker, O7 limb sample spacing — computed from uniforms and pixels, with each bar's basis stated. |
 | cloud-perf-evidence.mjs | lib | ACTIVE | 2026-08-16 | 3 | One-function pass policy for the fixed-scene cloud perf probe: a requested pair ID must never silently degrade to a single-artifact success. |
 | cloud-photometry.mjs | lib | ACTIVE | 2026-09-18 | 16 | Recover linear pre-Reinhard cloud radiance from an 8-bit capture, mask the sun disc, and refuse where the recovery is not defined. |
-| cloud-probe-harness.mjs | lib | ACTIVE | 2026-09-12 | 52 | Self-contained browser-side helper (addInitScript) configuring defaultCloudCollection.volumetric and verifying every value round-tripped. |
+| cloud-probe-harness.mjs | lib | ACTIVE | 2026-10-30 | 52 | Self-contained browser-side helper (addInitScript) configuring defaultCloudCollection.volumetric and verifying every value round-tripped. |
 | cloud-reconstruction-consume.mjs | lib | ACTIVE | 2026-08-16 | 4 | Browser-free half of the C13-10 acceptance: interleaved A/B schedule builder, null-not-zero pass-timing reads, and the FAIL-outranks-STRUCTURAL fold. |
 | cloud-refresh-skip.mjs | lib | ACTIVE | 2026-08-16 | 7 | Shared enforceable home for the requestRenderMode refresh-skip defect that froze cloud snapshots and made three probe windows lie on one day. |
 | cloud-rig-stage.mjs | lib | ACTIVE | 2026-10-09 | 10 | Turns a cloud rig into a serialisable stage payload (Node side), applies it in the page through the cloud probe harness (scene dials, CloudVolumetrics dials with their round trip, the clock, a camera that may be stated relative to the sun's azimuth), settles it and reads the canvas in the task of the final render, and banks that frame (one arm); the same read and acceptance serve a page the probe staged itself (one demo leg). |
@@ -1754,7 +1755,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | device-loss-steps.mjs | lib | ACTIVE | 2026-10-24 | 5 | Step piece for the landing program's E-T cell: runs a rig's provoking steps (resize ladder via lib/globe-resize-steps.mjs, sky-box swaps via lib/skybox-swap-steps.mjs, a water or cloud tier switch), reads the error gate and the runtime's capture-liveness decision after each, then either destroys the viewer (teardown) or forces the device lost (WebGPU device.destroy, WebGL WEBGL_lose_context) and renders on, and returns {mode, steps, terminal, deviceLost, errors, owners, consoleErrors} - the named owners' live census rows before and after, and the console errors split into the engine's device-lost sentinel and everything else; terminalShape/sameTerminal are the one reader of the terminal record. |
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 20 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 6 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
-| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 44 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
+| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 45 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
 | engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 61 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 6 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | frame-import-map.mjs | lib | ACTIVE | 2026-10-09 | 2 | The readiness wait for a dynamic import of a bare specifier in a page or frame: whether a specifier is bare, an in-page predicate that reports whether the document has parsed an import map, and the Node-side wait that blocks until it has, or refuses by name when it does not appear in time. |
@@ -1851,7 +1852,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-model-preparation-evidence.mjs | lib | ACTIVE | 2026-08-16 | 3 | Accumulates and validates WebGPU model preparation/demand counters as measurement-window evidence for performance workloads. |
 | wgsl-derivative-uniformity.mjs | lib | ACTIVE | 2026-09-01 | 8 | Reports implicit-derivative calls reached through non-uniform control flow without requiring a browser, GPU, or WGSL compiler. |
 | wgsl-function-body.mjs | lib | ACTIVE | 2026-10-09 | 2 | Builds an inertness mutant of a shader helper by swapping the whole body of a named WGSL function, so a mutant does not depend on the helper's current wording. |
-| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 34 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
+| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 35 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
 | wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 24 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
 ### Tools/visual-regression/lib/metrics/ (50)
@@ -1883,7 +1884,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | line-structure.mjs | lib | ACTIVE | 2026-10-09 | 5 | Structure metrics for a rendered line in one colour class of a decoded RGBA frame: colored runs per row (dash vs solid), the full width at half maximum of the row-intensity profile (glow taper), per-column heights, an arrow head's fill against its bounding box, and whether an outline brackets its core. |
 | luma-difference.mjs | lib | ACTIVE | 2026-10-09 | 6 | Pure Rec. 601 luma and the whole-frame mean absolute luma difference the cloud demo probes each hand-rolled in the page, now computed in Node over decoded RGBA. |
 | luma-regions.mjs | lib | ACTIVE | 2026-10-09 | 6 | Rec. 601 luma over a fractional region of decoded RGBA — mean luma, the whitish-cloud share and the blue-sky share — plus the whole-frame mean \|dLuma\| between two same-sized frames, as the Weather Inspector demo probes score them. |
-| luminance.mjs | lib | ACTIVE | 2026-09-18 | 11 | Rec. 709 luminance, the march's Reinhard operator in both directions, and the display-space mean the photometric rule exists to forbid. |
+| luminance.mjs | lib | ACTIVE | 2026-10-30 | 11 | Rec. 709 luminance, the march's Reinhard operator in both directions, and the display-space mean the photometric rule exists to forbid. |
 | masks.mjs | lib | ACTIVE | 2026-09-18 | 16 | Region-of-interest geometry for photometric statistics: the circular sun-disc mask every ROI must exclude, and a rectangle clamped to the image. |
 | mean-chroma.mjs | lib | ACTIVE | 2026-10-09 | 3 | Pure RGBA metric: the mean chroma (max channel minus min channel) over a frame's non-black pixels, and the fraction of them with any visible chroma, the "is a saturation-0 grade actually applied" measure. |
 | merge-landing-reports.mjs | lib | ACTIVE | 2026-10-24 | 3 | Node-only reader of probe-landing-cells reports: armKey and groupArms (page records -> per-arm PF inputs, captures, per-run machine CPU and device-loss terminals), the tree identity a report was served from (preflight disk md5s, or the same read from a tree on disk), and mergeLandingReports, which refuses reports of different trees, windows, perf settings or pending-pipeline waits and otherwise renumbers their runs in order and regroups them, so merging two --runs 1 reports equals one --runs 2 report; plus the probe's --merge-reports glue (read and check the named reports against the invocation's own tree, and fold their runs before its pages). |

@@ -1977,6 +1977,31 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * Frame number of the last frame whose environmental pass resolved a
+   * volumetric cloud deck, or `undefined` when none has.
+   */
+  private _volumetricCloudFrameNumber?: number;
+
+  /**
+   * Record that the environmental pass of frame `frameNumber` resolved a
+   * volumetric cloud deck. The sky atmosphere updates before primitives
+   * publish the frame's request, and that request is consumed in the same
+   * frame's environmental pass, so the sky can never see it pending. This
+   * record is the non-consuming signal it reads instead, one frame late.
+   */
+  noteVolumetricCloudFrame(frameNumber: number): void {
+    this._volumetricCloudFrameNumber = frameNumber;
+  }
+
+  /**
+   * The frame number {@link WebGPUContext#noteVolumetricCloudFrame} last
+   * recorded, or `undefined` when no frame resolved a volumetric deck.
+   */
+  get volumetricCloudFrameNumber(): number | undefined {
+    return this._volumetricCloudFrameNumber;
+  }
+
+  /**
    * The single packed pick-depth texture — `WebGPUGlobeDepth.globeDepthTexture`,
    * shared across all frustum slices — carries full-frustum log depth whenever
    * the renderer-wide log-depth master switch is on. This mirrors

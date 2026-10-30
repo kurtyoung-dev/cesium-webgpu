@@ -2317,7 +2317,8 @@ fn logDepthToEyeDistance(logZ: f32, near: f32, far: f32) -> f32 {
 
 // Physical aerial: sun-relative sky-view single-scatter inscatter, the
 // in-between air light. U = relativeAzimuth(view, sun) / π; V is the Hillaire
-// horizon warp of cosViewZenith. `up` is the local vertical at the sample point.
+// horizon warp of cosViewZenith. The bake carries the observer's sun zenith;
+// its caller must retain that frame or validate a local ambient sample.
 fn cloudSampleSkyViewLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>) -> vec3<f32> {
   let cosViewZenith = clamp(dot(rayDir, up), -1.0, 1.0);
   let vCoord = clamp(0.5 + 0.5 * sign(cosViewZenith) * sqrt(abs(cosViewZenith)), 0.0, 1.0);
@@ -2856,27 +2857,32 @@ fn marchDeck(
       var groundAmbColor = cloud.groundAmbientColor;
       if ((u32(cloud.qualityFlags) & QF_AMBIENT_LUT) != 0u) {
         let localUp = normalize(samplePos);
-        // Total sky radiance in each hemisphere is the sun-relative
-        // single-scatter sky-view term plus the multiple-scattering residual,
-        // which share a sky-view domain. The single-scatter term carries the
-        // warm sunset and cool noon color; multiple scattering adds the diffuse
-        // fill. The up hemisphere lights the cloud tops, down the bottoms.
-        let skyHDR =
-          cloudSampleSkyViewLut(localUp, localUp, sunDir)
-          + cloudSampleMultipleScatterLut(localUp, localUp, sunDir);
-        let skyLum = cloudLutLuminance(skyHDR);
-        if (skyLum > 1e-5) {
-          let groundHDR =
-            cloudSampleSkyViewLut(localUp, -localUp, sunDir)
-            + cloudSampleMultipleScatterLut(localUp, -localUp, sunDir);
-          let groundLum = max(cloudLutLuminance(groundHDR), 1e-5);
-          // Replace only the ambient hue and chroma with the real sky's, keeping
-          // each constant ambient's nominal brightness, so `ambientIntensity`
-          // remains the magnitude knob and the energy cannot blow out while the
-          // tint tracks the true time-of-day sky: warm undersides at sunset,
-          // blue at noon.
-          skyAmbColor = (skyHDR / skyLum) * cloudLutLuminance(cloud.skyAmbientColor);
-          groundAmbColor = (groundHDR / groundLum) * cloudLutLuminance(cloud.groundAmbientColor);
+        let ambientLutWeight = cloudAmbientSkyViewWeight(localUp, sunDir);
+        if (ambientLutWeight > 0.0) {
+          // Total sky radiance in each hemisphere is the sun-relative
+          // single-scatter sky-view term plus the multiple-scattering residual,
+          // which share a sky-view domain. The single-scatter term carries the
+          // warm sunset and cool noon color; multiple scattering adds the diffuse
+          // fill. The up hemisphere lights the cloud tops, down the bottoms.
+          let skyHDR =
+            cloudSampleSkyViewLut(localUp, localUp, sunDir)
+            + cloudSampleMultipleScatterLut(localUp, localUp, sunDir);
+          let skyLum = cloudLutLuminance(skyHDR);
+          if (skyLum > 1e-5) {
+            let groundHDR =
+              cloudSampleSkyViewLut(localUp, -localUp, sunDir)
+              + cloudSampleMultipleScatterLut(localUp, -localUp, sunDir);
+            let groundLum = max(cloudLutLuminance(groundHDR), 1e-5);
+            // Replace only the ambient hue and chroma with the real sky's, keeping
+            // each constant ambient's nominal brightness, so `ambientIntensity`
+            // remains the magnitude knob and the energy cannot blow out while the
+            // tint tracks the true time-of-day sky: warm undersides at sunset,
+            // blue at noon.
+            skyAmbColor = mix(skyAmbColor,
+              (skyHDR / skyLum) * cloudLutLuminance(cloud.skyAmbientColor), ambientLutWeight);
+            groundAmbColor = mix(groundAmbColor,
+              (groundHDR / groundLum) * cloudLutLuminance(cloud.groundAmbientColor), ambientLutWeight);
+          }
         }
       }
       var ambient = mix(groundAmbColor, skyAmbColor, heightFraction)
@@ -2924,6 +2930,9 @@ fn marchDeck(
     tProcessed = t;
   }
 
+  // Empty decks contribute neither radiance nor extinction and need no air integration.
+  if (transmittance >= 1.0) { return result; }
+
   // The accumulated radiance already includes opacity. Tone-map its straight
   // source color so the deck compositor applies opacity exactly once.
   let opacity = 1.0 - transmittance;
@@ -2940,16 +2949,20 @@ fn marchDeck(
   let visibleUp = normalize(visiblePos / (surfaceAxes * surfaceAxes));
   let aerial = cloudAerialFraction(
     visible.y, -rayDir, visibleUp, visible.x, cloud.aerialStrength,
+    cloudAirCurvatureRadius(visibleUp, -rayDir),
   );
   var hazed = mix(toneMapped, cloud.aerialColor, aerial);
 
   // The sky LUT supplies air-light color. Its atmosphere-escape transmittance
   // does not describe this finite camera-to-cloud path.
-  if ((u32(cloud.qualityFlags) & QF_AERIAL_LUT) != 0u) {
-    let inscatterHDR = cloudSampleSkyViewLut(visibleUp, rayDir, sunDir);
+  let aerialLutWeight = cloudAerialSkyViewWeight(rayDir);
+  if ((u32(cloud.qualityFlags) & QF_AERIAL_LUT) != 0u && aerialLutWeight > 0.0) {
+    let observerUp = normalize(cloud.cameraPosition);
+    let inscatterHDR = cloudSampleSkyViewLut(observerUp, rayDir, sunDir);
     if (cloudLutLuminance(inscatterHDR) > 1e-5) {
       let inscatterExposed = inscatterHDR * cloud.exposure;
-      let farTarget = inscatterExposed / (inscatterExposed + vec3<f32>(1.0));
+      let farTarget = mix(cloud.aerialColor,
+        inscatterExposed / (inscatterExposed + vec3<f32>(1.0)), aerialLutWeight);
       hazed = mix(toneMapped, farTarget, aerial);
     }
   }

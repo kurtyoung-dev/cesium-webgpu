@@ -268,6 +268,50 @@ function createPipeline(
   return { pipeline, bindGroupLayout, lutBindGroupLayout };
 }
 
+// Whether a volumetric cloud deck consumes the sky-view LUT this frame. The
+// globe-managed deck is published into the atmospheric conditions before the
+// sky updates, so it is seen in the same frame. A user collection's request is
+// not: the sky updates in Scene.updateEnvironment, before primitives update
+// (where CloudCollection.update publishes the request), and the environmental
+// pass consumes the request later in the same frame. The scene renderer
+// therefore records every frame that resolved a deck
+// (WebGPUContext#noteVolumetricCloudFrame), and a user deck reaches the sky the
+// frame after it was resolved, or later in the same frame for a second view.
+// The frame-number wrap (15,000,000) costs one base-path frame.
+// R-2026-10-22-14: the observer-relative invalidation below and the stricter
+// bake-ready condition apply only while this holds, so a scene without
+// volumetric clouds keeps the base sky path.
+function volumetricCloudsActive(context, frameState) {
+  if (frameState.atmosphericConditions?.clouds?.enableVolumetric === true) {
+    return true;
+  }
+  const sinceDeck = frameState.frameNumber - context.volumetricCloudFrameNumber;
+  return sinceDeck === 0 || sinceDeck === 1;
+}
+
+function updateSkyViewObserver(cache, frameState, sunDir, perfMgr) {
+  const position = frameState.camera?.positionWC;
+  const magnitude = position
+    ? Math.hypot(position.x, position.y, position.z)
+    : 0.0;
+  const sunCosZenith =
+    magnitude > 1.0
+      ? (sunDir.x * position.x +
+          sunDir.y * position.y +
+          sunDir.z * position.z) /
+        magnitude
+      : sunDir.z;
+  // The sky-view bake depends on observer-relative sun elevation, even when
+  // the world-space sun has not moved.
+  if (
+    cache.lastSkyViewSunCosZenith === undefined ||
+    Math.abs(cache.lastSkyViewSunCosZenith - sunCosZenith) > 0.002
+  ) {
+    perfMgr.invalidateAtmosphereLUT();
+  }
+  return sunCosZenith;
+}
+
 /**
  * Lazily ensures the atmosphere LUT compute pass has been dispatched at
  * least once and that a sampler + bind group exist for sampling it from
@@ -342,6 +386,10 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
   const sunDir = defined(frameState.sunDirectionWC)
     ? frameState.sunDirectionWC
     : new Cartesian3(0, 0, 1);
+  const cloudsActive = volumetricCloudsActive(context, frameState);
+  const observerSunCosZenith = cloudsActive
+    ? updateSkyViewObserver(cache, frameState, sunDir, perfMgr)
+    : undefined;
   const last = cache.lastSunDirection;
   if (!last) {
     cache.lastSunDirection = Cartesian3.clone(sunDir, new Cartesian3());
@@ -508,6 +556,10 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
           camMag;
       }
     }
+    // A cloud deck bakes with the observer value its invalidation compared.
+    if (cloudsActive) {
+      sunCosZenith = observerSunCosZenith;
+    }
 
     // Atmospheric conditions modulate coefficients before the LUT bake:
     //   humidity   (0..1, default 0.5) → mie scale (0.5 + humidity)
@@ -618,8 +670,14 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
     }
 
     device.queue.submit([encoder.finish()]);
-    if (sunOk) {
+    // With clouds active only a successful sun bake publishes the sky view, and
+    // it records the observer elevation it was baked for; a moon-only bake
+    // leaves an unpublished sun bake to retry.
+    if (cloudsActive ? sunDirty && sunOk : sunOk) {
       cache.lutReady = true;
+      if (cloudsActive) {
+        cache.lastSkyViewSunCosZenith = sunCosZenith;
+      }
     }
   }
 

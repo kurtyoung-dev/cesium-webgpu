@@ -82,11 +82,20 @@ const shippedSource =
 function compileAerial(source) {
   const src = stripComments(source);
   const constants = readConstants(src);
-  const functions = { exp: Math.exp };
+  const functions = { exp: Math.exp, sqrt: Math.sqrt };
   const globals = { ...constants, __functions: functions };
   const column = compileFunction(src, "cloudAirColumnMeters", globals);
   functions.cloudAirColumnMeters = column;
-  const fraction = compileFunction(src, "cloudAerialFraction", globals);
+  for (const name of [
+    "cloudCurvedAirInterval",
+    "cloudCurvedAirDensity",
+    "cloudCurvedAirPair",
+    "cloudCurvedAirColumnMeters",
+  ]) {
+    functions[name] = compileFunction(src, name, globals);
+  }
+  const selectedFraction = compileFunction(src, "cloudAerialFraction", globals);
+  const fraction = (...args) => selectedFraction(...args, MEAN_RADIUS_M);
   return { column, fraction, constants };
 }
 
@@ -730,7 +739,7 @@ test("MUTANT 1 — column reverted to range re-saturates the orbital disc", () =
   // unreachable by feeding `cloudAerialFraction` the RANGE it used to be given,
   // and the O3 predicate must go red at every orbital decade.
   const inert = mutate(
-    /let column = cloudAirColumnMeters\([\s\S]*?\);/,
+    /let column = cloudCurvedAirColumnMeters\([\s\S]*?\);/,
     "let column = max(pathLength, 0.0);",
   );
   for (const altitude of ORBITAL_ALTITUDES_M) {
@@ -780,8 +789,8 @@ test("MUTANT 4 — a flat density profile loses the altitude response", () => {
   // rho0 is what makes a high cloud hazier-than-nothing and a low cloud hazy.
   // Flatten it and the per-altitude ordering assertion must go red.
   const flat = mutate(
-    /let rho0 = exp\(-h0 \/ CLOUD_AIR_SCALE_HEIGHT_M\);/,
-    "let rho0 = 1.0;",
+    /let density = exp\(-height \/ CLOUD_AIR_SCALE_HEIGHT_M\);/,
+    "let density = 1.0;",
   );
   const values = [0, 4000, 12000].map((h) =>
     fractionAt(flat.fraction, 60, 400e3, 1, h),

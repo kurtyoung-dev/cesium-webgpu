@@ -167,6 +167,13 @@ export function resolveCloudFramePlan(
   }
 
   const active = cloudConfig !== undefined;
+  // The sky atmosphere updates before primitives publish next frame's request
+  // and after this pass consumed this frame's, so it reads this record
+  // (WebGPUSkyAtmosphereRenderer volumetricCloudsActive) instead of the
+  // request. Clouds off never records, so the sky keeps the base path.
+  if (active) {
+    context.noteVolumetricCloudFrame?.(frameState.frameNumber);
+  }
   return Object.freeze({
     frameNumber: frameState.frameNumber,
     request: chosenRequest,
