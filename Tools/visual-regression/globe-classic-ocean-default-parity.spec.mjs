@@ -1,11 +1,11 @@
 // globe-classic-ocean-default-parity.spec.mjs - FIX_LIST_WATER WL-01, WL-02,
 // WL-04, WL-06 and WL-08, BEHAVIOUR_WATER A3, C1 and C2; section H is the
-// review's B1 (the globe material's water mask on the default hi word, held at base);
+// review's B1 and NEW-WATER-GLOBE-MATERIAL-WATER-MASK (the globe material's water mask on the default hi word);
 // section I is water rounds 5 and 6 (FND-1, FND-2, B1-wrap, N1): GlobeFS.glsl's waves
 // and coast band in the opt-in WATER_PROVIDER_PARITY variant only; section J is
 // water round 7 (FND-2): the parity taps read the ocean normal texture as WebGL
 // reads it (level 0, bilinear, clamped), executed over a texel grid with a mip chain.
-// @purpose Pins that a default globe (definesHi 0, enableEnhancedOcean false) draws the base ocean in GlobeTerrain.wgsl, that the opt-in WATER_PROVIDER_PARITY variant draws GlobeFS.glsl's classic waves (unwrapped clock, derivatives through the pole flip) and coast band (executed against the GLSL twin), that the enhanced water changes live only under ENHANCED_OCEAN, that the vessel-wake gate is its own camera lane, and that a globe material still receives the base waterMask under MATERIAL_APPLY (the water work's sample is held back; its GLSL-law control runs on a copy).
+// @purpose Pins that a default globe (definesHi 0, enableEnhancedOcean false) draws the base ocean in GlobeTerrain.wgsl, that the opt-in WATER_PROVIDER_PARITY variant draws GlobeFS.glsl's classic waves (unwrapped clock, derivatives through the pole flip) and coast band (executed against the GLSL twin), that the enhanced water changes live only under ENHANCED_OCEAN, that the vessel-wake gate is its own camera lane, and that a globe material receives GlobeFS.glsl's water-mask sample under MATERIAL_APPLY, gated on the tile mask alone so it holds with showWaterEffect off (executed against the GLSL law, with inertness mutants).
 // @status ACTIVE
 //
 // WHAT THIS GUARDS. The Argon water work changed the shader a default WebGPU
@@ -62,10 +62,7 @@ import {
   vec2,
   vec4,
 } from "./lib/wgsl-mini-eval.mjs";
-import {
-  applyAnchors,
-  assertInertnessMutantTurnsRed,
-} from "./water-spec-mutants.mjs";
+import { assertInertnessMutantTurnsRed } from "./water-spec-mutants.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -1228,21 +1225,23 @@ test("G2 (mutant): a comment naming a third-party water shader is DETECTED", () 
 // ──────────── H. the globe material's water mask (MATERIAL_APPLY) ───────────
 //
 // MATERIAL_APPLY is a LO define, set whenever `globe.material` is, so its
-// block is on the default hi word. At base (a999954e2b) every WebGPU globe
-// material receives `waterMask = 0.0` (a TODO), where GlobeFS.glsl hands
-// `materialInput.waterMask = mask`. The water work wired the sample in, but
-// gated it on the tile flag (water mask AND `globe.showWaterEffect`) where
-// GLSL gates on the mask alone, and the canonical demo
-// (`globe-materials-water-mask-elevation-map`) turns `showWaterEffect` off. So
-// this batch holds that change back (review B1, option b) and lands the base
-// text; the parity fix is `NEW-WATER-GLOBE-MATERIAL-WATER-MASK`.
+// block is on the default hi word. GlobeFS.glsl hands a globe material
+// `materialInput.waterMask = mask` under HAS_WATER_MASK, a define that needs
+// only the provider's mask and the tile's texture - not
+// `globe.showWaterEffect`, which the canonical demo
+// (`globe-materials-water-mask-elevation-map`) turns off. Until
+// NEW-WATER-GLOBE-MATERIAL-WATER-MASK the WebGPU material received 0.0 (a
+// TODO); the water work's first attempt gated the sample on `flags.x` (mask
+// AND `showWaterEffect`) and was held back (review B1, option b). The block now
+// samples on the tile's own mask lane `hasRawWaterMask` (TileUniforms float
+// 496, packed from the mask alone; water-material-water-mask-tail spec).
 //
 // The block is EXECUTED out of the MATERIAL_APPLY variant: a small statement
 // walker runs its `var` / `let` / assignment / `if` lines through the mini
 // evaluator, with the texture fetch bound to a function of the UV, and the
-// value the material receives is read back. H2 pins the base value; H4 runs
-// the held-back hunk on a copy to show the walker does see a live sample, and
-// is the acceptance the parity fix starts from.
+// value the material receives is read back. H2 holds the shipped block to
+// GlobeFS.glsl's law with `showWaterEffect` off and on; H4-H7 are its
+// controls and inertness mutants.
 
 /** Run straight-line WGSL statements and `if` blocks against `env`, failing closed. */
 function runStatements(text, env) {
@@ -1333,7 +1332,10 @@ function materialBlock(source) {
 }
 
 /** The waterMask the material receives, executed out of the shader text. */
-function materialWaterMask(source, { hasMask, geoUV, translation, scale }) {
+function materialWaterMask(
+  source,
+  { hasMask, showWaterEffect = false, geoUV, translation, scale },
+) {
   const fetches = [];
   const env = {
     __functions: {
@@ -1353,8 +1355,11 @@ function materialWaterMask(source, { hasMask, geoUV, translation, scale }) {
       v_height: 12,
       v_aspect: 0.2,
     },
+    // What the tile packer writes: `flags.x` is the mask AND showWaterEffect,
+    // `hasRawWaterMask` the mask alone (WebGPUGlobeSurfaceTileUB.ts).
     tile: {
-      flags: vec4(hasMask ? 1 : 0, 0, 0, 0),
+      flags: vec4(hasMask && showWaterEffect ? 1 : 0, 0, 0, 0),
+      hasRawWaterMask: hasMask ? 1 : 0,
       waterMaskTranslationAndScale: {
         xy: vec2(translation[0], translation[1]),
         zw: vec2(scale[0], scale[1]),
@@ -1381,59 +1386,57 @@ const MATERIAL_CASES = [
 const BASE_MATERIAL_LINE =
   "  matInput.waterMask = 0.0;  // TODO wire from water-mask texture path";
 
-/** The water work's material sample, held back from this batch (banked in the lane). */
-const HELD_MATERIAL_HUNK = [
-  "  var matWaterMask = 0.0;",
-  "  if (tile.flags.x > 0.5) {",
-  "    let matWmTS = tile.waterMaskTranslationAndScale;",
-  "    let matWaterUVUnflipped = geoUV * matWmTS.zw + matWmTS.xy;",
-  "    let matWaterUV = vec2<f32>(matWaterUVUnflipped.x, 1.0 - matWaterUVUnflipped.y);",
-  "    matWaterMask = textureSampleLevel(waterMaskTexture, waterMaskSampler, matWaterUV, 0.0).r;",
-  "  }",
-  "  matInput.waterMask = matWaterMask;",
-].join("\n");
+const SHIPPED_MATERIAL_GATE = "  if (tile.hasRawWaterMask > 0.5) {";
+const SHIPPED_MATERIAL_ASSIGN = "  matInput.waterMask = matWaterMask;";
 
-const withHeldHunk = (text) =>
-  applyAnchors(text, [[BASE_MATERIAL_LINE, HELD_MATERIAL_HUNK]]);
-
-/** Every case where the material is handed anything but the base 0 with no fetch. */
-function baseMaterialFindings(source) {
+/**
+ * Every case where the material's waterMask is not GlobeFS.glsl's: on a mask
+ * tile, one fetch of the mask texture at the law's UV, whatever
+ * `showWaterEffect` says; without a mask, 0 and no fetch.
+ */
+function glslLawFindings(source) {
   const findings = [];
   for (const c of MATERIAL_CASES) {
-    for (const hasMask of [true, false]) {
-      const { waterMask, fetches } = materialWaterMask(source, {
+    for (const showWaterEffect of [false, true]) {
+      const lit = materialWaterMask(source, {
         ...c,
-        hasMask,
+        hasMask: true,
+        showWaterEffect,
       });
-      if (waterMask !== 0 || fetches.length !== 0) {
-        findings.push({ case: c, hasMask, waterMask, fetches: fetches.length });
+      const expected = glslMaterialWaterMask(c);
+      if (
+        lit.fetches.length !== 1 ||
+        lit.fetches[0].texture !== "waterMaskTexture" ||
+        Math.abs(lit.waterMask - expected) > 1e-12
+      ) {
+        findings.push({
+          case: c,
+          showWaterEffect,
+          waterMask: lit.waterMask,
+          expected,
+          fetches: lit.fetches.length,
+        });
+      }
+      const dark = materialWaterMask(source, {
+        ...c,
+        hasMask: false,
+        showWaterEffect,
+      });
+      if (dark.waterMask !== 0 || dark.fetches.length !== 0) {
+        findings.push({
+          case: c,
+          showWaterEffect,
+          hasMask: false,
+          waterMask: dark.waterMask,
+          fetches: dark.fetches.length,
+        });
       }
     }
   }
   return findings;
 }
 
-/** Every case where the material's waterMask is not the GLSL law's value. */
-function glslLawFindings(source) {
-  const findings = [];
-  for (const c of MATERIAL_CASES) {
-    const { waterMask, fetches } = materialWaterMask(source, {
-      ...c,
-      hasMask: true,
-    });
-    const expected = glslMaterialWaterMask(c);
-    if (
-      fetches.length !== 1 ||
-      fetches[0].texture !== "waterMaskTexture" ||
-      Math.abs(waterMask - expected) > 1e-12
-    ) {
-      findings.push({ case: c, waterMask, expected, fetches: fetches.length });
-    }
-  }
-  return findings;
-}
-
-test("H1: GlobeFS.glsl hands the material the V-flipped water-mask sample (the law H4 holds the held-back hunk to)", () => {
+test("H1: GlobeFS.glsl hands the material the V-flipped water-mask sample under HAS_WATER_MASK (the law H2 holds the WGSL block to)", () => {
   assert.match(
     glsl,
     /waterMaskTextureCoordinates = v_textureCoordinates\.xy \* waterMaskScale \+ waterMaskTranslation;\s*waterMaskTextureCoordinates\.y = 1\.0 - waterMaskTextureCoordinates\.y;/,
@@ -1442,10 +1445,16 @@ test("H1: GlobeFS.glsl hands the material the V-flipped water-mask sample (the l
     glsl,
     /#ifdef HAS_WATER_MASK\s*materialInput\.waterMask = mask;/,
   );
+  // The sample is declared for a material as well as for the ocean, so a
+  // material sees the mask with SHOW_REFLECTIVE_OCEAN (showWaterEffect) off.
+  assert.match(
+    glsl,
+    /#if defined\(HAS_WATER_MASK\) && \(defined\(SHOW_REFLECTIVE_OCEAN\) \|\| defined\(APPLY_MATERIAL\)\)\s*vec2 waterMaskTranslation/,
+  );
 });
 
-test("H2: the MATERIAL_APPLY variant hands the material the base waterMask 0 and makes no water-mask fetch, with or without a mask", () => {
-  assert.deepEqual(baseMaterialFindings(terrain), []);
+test("H2: the MATERIAL_APPLY variant hands the material GlobeFS.glsl's sample on a mask tile with showWaterEffect off and on, and 0 with no fetch without a mask", () => {
+  assert.deepEqual(glslLawFindings(terrain), []);
 });
 
 test("H3: the material block exists only in the MATERIAL_APPLY variant", () => {
@@ -1453,32 +1462,41 @@ test("H3: the material block exists only in the MATERIAL_APPLY variant", () => {
   assert.equal(hiVariant(terrain, ENHANCED).includes(MATERIAL_START), false);
 });
 
-test("H4 (control): the held-back hunk, on a copy, hands the GLSL law's sample on a mask tile and 0 without a mask", () => {
-  const held = withHeldHunk(terrain);
-  assert.deepEqual(glslLawFindings(held), []);
-  for (const c of MATERIAL_CASES) {
-    const { waterMask, fetches } = materialWaterMask(held, {
-      ...c,
-      hasMask: false,
-    });
-    assert.equal(waterMask, 0);
-    assert.equal(fetches.length, 0);
-  }
-});
-
-test("H5 (mutant): the held-back hunk put back is DETECTED", () => {
+test("H4 (mutant): the base's waterMask 0.0 put back is DETECTED", () => {
+  const start = terrain.indexOf("  var matWaterMask = 0.0;");
+  const end =
+    terrain.indexOf(SHIPPED_MATERIAL_ASSIGN) + SHIPPED_MATERIAL_ASSIGN.length;
+  assert.ok(start > 0 && end > start, "mutation anchor");
   assertInertnessMutantTurnsRed(
-    "material water mask held at base",
+    "material water mask back at the base 0.0",
     terrain,
-    withHeldHunk,
-    (text) => assert.deepEqual(baseMaterialFindings(text), []),
+    (text) => text.slice(0, start) + BASE_MATERIAL_LINE + text.slice(end),
+    (text) => assert.deepEqual(glslLawFindings(text), []),
   );
 });
 
-test("H6 (control): on the held-back hunk, a sample without the V flip is DETECTED by the GLSL law", () => {
+test("H5 (mutant): the sample made unreachable is DETECTED", () => {
+  assertInertnessMutantTurnsRed(
+    "material water mask sample unreachable",
+    terrain,
+    [[SHIPPED_MATERIAL_GATE, "  if (false && tile.hasRawWaterMask > 0.5) {"]],
+    (text) => assert.deepEqual(glslLawFindings(text), []),
+  );
+});
+
+test("H6 (mutant): the sample gated on flags.x (mask AND showWaterEffect, the held-back gate) is DETECTED", () => {
+  assertInertnessMutantTurnsRed(
+    "material water mask gated on showWaterEffect",
+    terrain,
+    [[SHIPPED_MATERIAL_GATE, "  if (tile.flags.x > 0.5) {"]],
+    (text) => assert.deepEqual(glslLawFindings(text), []),
+  );
+});
+
+test("H7 (mutant): a sample without the V flip is DETECTED by the GLSL law", () => {
   assertInertnessMutantTurnsRed(
     "material water mask V flip",
-    withHeldHunk(terrain),
+    terrain,
     [
       [
         "let matWaterUV = vec2<f32>(matWaterUVUnflipped.x, 1.0 - matWaterUVUnflipped.y);",

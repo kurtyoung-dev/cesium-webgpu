@@ -75,6 +75,12 @@ export const Math = {
 
 export class EllipsoidTerrainProvider {}
 
+export class Material {
+  static fromType(type) {
+    return { type };
+  }
+}
+
 export class TileMapServiceImageryProvider {
   static async fromUrl(url) {
     return { url };
@@ -122,6 +128,7 @@ function createFakeViewer(overrides = {}) {
         showGroundAtmosphere: false,
         baseColor: null,
         terrainProvider: null,
+        material: undefined,
         globalWaterMask: false,
         lakeWaterMask: false,
         riverWaterMask: false,
@@ -338,6 +345,108 @@ test("S2b: imagery 'none' is accepted in stage payload and clears imagery layers
   assert.equal(staged.dials.imagery.observed, 0);
   assert.equal(staged.dials.imagery.applied, true);
   assert.equal(viewer.scene.imageryLayers.length, 0);
+});
+
+// -----------------------------------------------------------------------------
+// S8: globeMaterial: the globe's material, applied and read back as its type
+// -----------------------------------------------------------------------------
+
+function materialPayload(id, dials) {
+  return landingStagePayload({ id, camera: null, clock: null, dials });
+}
+
+test("S8: globeMaterial is a globe dial, carried in payload.globe", () => {
+  const payload = materialPayload("material-payload-rig", {
+    globeShowWaterEffect: false,
+    globeMaterial: "WaterMask",
+  });
+  assert.equal(payload.globe.globeMaterial, "WaterMask");
+  assert.equal(payload.globe.globeShowWaterEffect, false);
+  assert.equal(payload.water.globeMaterial, undefined);
+  assert.equal(payload.scene.globeMaterial, undefined);
+});
+
+test("S8: a globeMaterial value outside WaterMask/none is refused in Node, naming it", () => {
+  assert.throws(
+    () => materialPayload("material-refused-rig", { globeMaterial: "Grid" }),
+    (err) => {
+      assert.ok(err instanceof ProbeRefusal);
+      assert.equal(err.reason, "rig-dial-unsupported");
+      assert.ok(
+        err.message.includes('globeMaterial="Grid"'),
+        `message must name globeMaterial="Grid", got: ${err.message}`,
+      );
+      return true;
+    },
+  );
+});
+
+test("S8: in the page, WaterMask sets globe.material and reads back applied", async () => {
+  const viewer = createFakeViewer();
+  globalThis.viewer = viewer;
+  const staged = await stageLandingCellInPage({
+    ...materialPayload("material-set-rig", { globeMaterial: "WaterMask" }),
+    moduleUrl: FAKE_CESIUM_URL,
+  });
+  assert.equal(viewer.scene.globe.material.type, "WaterMask");
+  assert.deepEqual(staged.dials.globeMaterial, {
+    requested: "WaterMask",
+    observed: "WaterMask",
+    applied: true,
+  });
+  assert.ok(!staged.notApplied.includes("globeMaterial"));
+});
+
+test("S8: in the page, none clears a material the globe held and reads back applied", async () => {
+  const viewer = createFakeViewer();
+  viewer.scene.globe.material = { type: "Grid" };
+  globalThis.viewer = viewer;
+  const staged = await stageLandingCellInPage({
+    ...materialPayload("material-none-rig", { globeMaterial: "none" }),
+    moduleUrl: FAKE_CESIUM_URL,
+  });
+  assert.equal(viewer.scene.globe.material, undefined);
+  assert.deepEqual(staged.dials.globeMaterial, {
+    requested: "none",
+    observed: "none",
+    applied: true,
+  });
+});
+
+test("S8: globeMaterial WaterMask with globeShowWaterEffect false applies both", async () => {
+  const viewer = createFakeViewer();
+  viewer.scene.globe.showWaterEffect = true;
+  globalThis.viewer = viewer;
+  const staged = await stageLandingCellInPage({
+    ...materialPayload("material-both-rig", {
+      globeShowWaterEffect: false,
+      globeMaterial: "WaterMask",
+    }),
+    moduleUrl: FAKE_CESIUM_URL,
+  });
+  assert.equal(viewer.scene.globe.showWaterEffect, false);
+  assert.equal(viewer.scene.globe.material.type, "WaterMask");
+  assert.equal(staged.dials.globeShowWaterEffect.applied, true);
+  assert.equal(staged.dials.globeMaterial.applied, true);
+  assert.deepEqual(staged.notApplied, []);
+});
+
+test("S8: a Cesium build without Material reads globeMaterial applied: false with a reason", async () => {
+  const viewer = createFakeViewer();
+  globalThis.viewer = viewer;
+  const noMaterialSource = FAKE_CESIUM_MODULE_SOURCE.replace(
+    "export class Material {",
+    "class NotExportedMaterial {",
+  );
+  const staged = await stageLandingCellInPage({
+    ...materialPayload("material-missing-rig", { globeMaterial: "WaterMask" }),
+    moduleUrl: "data:text/javascript," + encodeURIComponent(noMaterialSource),
+  });
+  assert.equal(staged.dials.globeMaterial.applied, false);
+  assert.equal(staged.dials.globeMaterial.observed, "none");
+  assert.ok(staged.dials.globeMaterial.reason);
+  assert.ok(staged.notApplied.includes("globeMaterial"));
+  assert.equal(viewer.scene.globe.material, undefined);
 });
 
 // -----------------------------------------------------------------------------

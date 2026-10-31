@@ -1,7 +1,7 @@
 /**
  * Stages any landing-cell rig on a CesiumViewer page, on either renderer: its
  * clock, its camera and every dial it declares, each read back.
- * @purpose Stage piece for the landing program's Edge cells: turns a rig into a JSON-safe payload (Node side, refusing a dial it does not know before a browser is involved), and applies it in the page on WebGL or WebGPU - pinned clock, camera (or the page's own), scene and globe dials, the water flags and the water tier, clouds on or off - reading every dial back as {requested, observed, applied}, with the cloud* dials handed to the cloud probe harness so their round trip stays in one place; plus the ocean's pinned wave epoch, the opt-in FFT ocean (read back by its primitive), the globe's own show flag, the SSR scene switches, the WebGPU render pipeline cache's pending count, and an opt-in wait that drives frames until no pipeline is pending.
+ * @purpose Stage piece for the landing program's Edge cells: turns a rig into a JSON-safe payload (Node side, refusing a dial it does not know before a browser is involved), and applies it in the page on WebGL or WebGPU - pinned clock, camera (or the page's own), scene and globe dials (including the globe material), the water flags and the water tier, clouds on or off - reading every dial back as {requested, observed, applied}, with the cloud* dials handed to the cloud probe harness so their round trip stays in one place; plus the ocean's pinned wave epoch, the opt-in FFT ocean (read back by its primitive), the globe's own show flag, the SSR scene switches, the WebGPU render pipeline cache's pending count, and an opt-in wait that drives frames until no pipeline is pending.
  * @status ACTIVE
  *
  * WHY A NEW STAGE AND NOT `lib/cloud-rig-stage.mjs`. The landing cells span a
@@ -39,6 +39,12 @@
  * the settle, the startup timeline and the performance windows all render
  * explicitly at the pinned clock. A rig's `useDefaultRenderLoop` dial is
  * recorded but cannot turn the loop back on.
+ *
+ * GLOBE MATERIAL. `globeMaterial` sets `globe.material` to a built-in
+ * material type (`"WaterMask"`) or clears it (`"none"`), read back as the
+ * material's type: the dial that makes a material reading the tile water
+ * mask (`materialInput.waterMask`) the picture, with `globeShowWaterEffect`
+ * off so the water effect does not paint over it.
  *
  * STEP DIALS. `resizeLadder`, `settleFramesPerStep`, `swaps`, `clockSteps` and
  * `tierSwitch` belong to step pieces (`lib/globe-resize-steps.mjs`,
@@ -108,6 +114,7 @@ export const LANDING_GLOBE_DIALS = Object.freeze([
   "removeImageryLayers",
   "imagery",
   "terrain",
+  "globeMaterial",
 ]);
 
 /**
@@ -153,6 +160,11 @@ export const LANDING_STEP_DIALS = Object.freeze([
 /** The values `imagery` and `terrain` accept. */
 export const LANDING_IMAGERY_VALUES = Object.freeze(["naturalEarth", "none"]);
 export const LANDING_TERRAIN_VALUES = Object.freeze(["ellipsoid"]);
+/** The values `globeMaterial` accepts: a built-in material type, or none. */
+export const LANDING_GLOBE_MATERIAL_VALUES = Object.freeze([
+  "WaterMask",
+  "none",
+]);
 
 const CLOUD_DIAL_RE = /^cloud[A-Z]/;
 
@@ -168,8 +180,8 @@ const isFiniteNumber = (value) =>
  *   volumetric: object, cloudsEnabled: boolean|null, needsCloudHarness: boolean,
  *   stepDials: string[]}}
  * @throws {ProbeRefusal} `rig-dial-unsupported` for a dial no list above names
- *   and that is not a `cloud*` property, or an `imagery` / `terrain` value the
- *   stage cannot build.
+ *   and that is not a `cloud*` property, or an `imagery` / `terrain` /
+ *   `globeMaterial` value the stage cannot build.
  * @throws {TypeError} For a camera that is neither null nor the degrees form
  *   with finite lon, lat and height.
  */
@@ -224,6 +236,12 @@ export function landingStagePayload(rig) {
     !LANDING_TERRAIN_VALUES.includes(globe.terrain)
   ) {
     unsupported.push(`terrain=${JSON.stringify(globe.terrain)}`);
+  }
+  if (
+    globe.globeMaterial !== undefined &&
+    !LANDING_GLOBE_MATERIAL_VALUES.includes(globe.globeMaterial)
+  ) {
+    unsupported.push(`globeMaterial=${JSON.stringify(globe.globeMaterial)}`);
   }
   if (
     water.waterSimulationEpoch !== undefined &&
@@ -459,6 +477,21 @@ export async function stageLandingCellInPage(payload) {
           scene.imageryLayers.length,
           false,
           `imagery failed to load: ${String(error && error.message ? error.message : error)}`,
+        );
+      }
+    } else if (key === "globeMaterial") {
+      try {
+        globe.material =
+          value === "none" ? undefined : C.Material.fromType(value);
+        const observed = globe.material ? globe.material.type : "none";
+        note(key, value, observed, observed === value);
+      } catch (error) {
+        note(
+          key,
+          value,
+          globe.material ? globe.material.type : "none",
+          false,
+          `globe material failed to build: ${String(error && error.message ? error.message : error)}`,
         );
       }
     } else if (key === "terrain") {

@@ -76,6 +76,7 @@ import {
   VECTOR_COVERAGE_RADIUS_ANTIALIASED,
   VECTOR_COVERAGE_RADIUS_HARD,
   VECTOR_METERS_PER_UV_OFFSET,
+  HAS_RAW_WATER_MASK_OFFSET,
   MAX_IMAGERY_LAYERS,
   resolveImageryLayerValue,
 } from "./WebGPUGlobeSurfaceTypes.js";
@@ -665,6 +666,12 @@ export function createTileUniformBuffer(
   data[FLAGS_OFFSET + 1] = enableClipping ? 1.0 : 0.0;
   data[FLAGS_OFFSET + 2] = showOceanWaves ? 1.0 : 0.0;
   data[FLAGS_OFFSET + 3] = isSubsequentPass ? 1.0 : 0.0;
+  // The mask on its own, without `showWaterEffect`: WebGL defines
+  // `HAS_WATER_MASK` from the provider and the texture alone and feeds the
+  // sampled mask to a globe material (`materialInput.waterMask`) even with the
+  // reflective ocean off, so the material composite needs this lane rather
+  // than `flags.x`.
+  data[HAS_RAW_WATER_MASK_OFFSET] = hasWaterMask ? 1.0 : 0.0;
 
   // Ocean enhancement params: x=deepR, y=deepG, z=deepB, w=fresnelPower.
   //

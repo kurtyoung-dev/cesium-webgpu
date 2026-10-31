@@ -285,10 +285,32 @@ test("P1: planLandingCells plans default cells when options omitted", () => {
   }
 });
 
-test("P1: planLandingCells plans full table to 25 pages", () => {
+test("P1: planLandingCells plans the full table to one page per renderer a rig declares, two for a device-loss cell", () => {
   const allCellNames = Object.keys(LANDING_CELLS).join(",");
   const plan = planLandingCells({ cells: allCellNames }, rigsById);
-  assert.equal(plan.length, 25);
+  let expected = 0;
+  for (const { rig: rigId, kind } of Object.values(LANDING_CELLS)) {
+    const renderers = rigsById.get(rigId).renderers.length;
+    expected += renderers * (kind === "device-loss" ? 2 : 1);
+  }
+  assert.equal(plan.length, expected);
+  // The literal as well as the derivation: 25 pages before E-M-water, which
+  // adds one page per renderer.
+  assert.equal(plan.length, 27);
+});
+
+test("P1: E-M-water is a capture cell on both renderers and is not in the default cells", () => {
+  assert.equal(LANDING_CELLS["E-M-water"].rig, "globe-material-water-mask");
+  assert.equal(LANDING_CELLS["E-M-water"].kind, "capture");
+  assert.ok(!DEFAULT_CELLS.includes("E-M-water"));
+  const plan = planLandingCells({ cells: "E-M-water" }, rigsById);
+  assert.deepEqual(
+    plan.map((entry) => [entry.renderer, entry.page]),
+    [
+      ["webgl", "scene"],
+      ["webgpu", "scene"],
+    ],
+  );
 });
 
 // ---------------------------------------------------------------------------

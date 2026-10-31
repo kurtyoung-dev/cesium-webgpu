@@ -576,7 +576,7 @@ struct TileUniforms {
   //
   // WGSL gives a `vec2<f32>` an 8-byte alignment, so it starts at float 494
   // rather than 493 — float 493 is `oceanTideHeight`, declared above, and
-  // the struct's total size is unchanged at 496 floats. `TILE_UNIFORM_FLOATS`
+  // the struct's total size stayed 496 floats (the tail after it took it to 500). `TILE_UNIFORM_FLOATS`
   // and `VECTOR_METERS_PER_UV_OFFSET` in `WebGPUGlobeSurfaceTypes.ts` are the
   // CPU half of that pair; `vector-layer-draping.spec.mjs` derives this
   // member's offset from THIS struct text and fails if the two drift.
@@ -588,6 +588,17 @@ struct TileUniforms {
   // infinity and paint the whole tile, and degrading to the pixel branch is
   // the survivable failure.
   vectorMetersPerUv: vec2<f32>,
+  // 1.0 when the tile has a water-mask texture on the first imagery pass,
+  // whatever `globe.showWaterEffect` says (float 496, `HAS_RAW_WATER_MASK_OFFSET`).
+  // The twin of WebGL's `HAS_WATER_MASK` define: GlobeFS.glsl hands the
+  // sampled mask to a globe material even with the reflective ocean off,
+  // while `flags.x` is the mask AND `showWaterEffect`.
+  hasRawWaterMask: f32,
+  // Floats 497-499: the 16-byte round-up a struct with vec4 members takes
+  // anyway (2000 bytes), named so the CPU's TILE_UNIFORM_FLOATS = 500 reads
+  // off the text.
+  _padTileTail0: f32,
+  _padTileTail1: vec2<f32>,
 };
 
 @group(0) @binding(1) var<uniform> tile: TileUniforms;
@@ -8307,7 +8318,20 @@ fn fragmentMain(
   matInput.slope = input.v_slope;
   matInput.height = input.v_height;
   matInput.aspect = input.v_aspect;
-  matInput.waterMask = 0.0;  // TODO wire from water-mask texture path
+  // GlobeFS.glsl's `materialInput.waterMask = mask` under HAS_WATER_MASK:
+  // the tile coordinates translated and scaled into the mask, V flipped, the
+  // red channel. Gated on the mask alone, not on `flags.x`, because WebGL hands
+  // the material the mask with `globe.showWaterEffect` off (the water-mask
+  // elevation demo turns it off). Without a mask it stays 0.0 (GLSL leaves the
+  // member unwritten).
+  var matWaterMask = 0.0;
+  if (tile.hasRawWaterMask > 0.5) {
+    let matWmTS = tile.waterMaskTranslationAndScale;
+    let matWaterUVUnflipped = geoUV * matWmTS.zw + matWmTS.xy;
+    let matWaterUV = vec2<f32>(matWaterUVUnflipped.x, 1.0 - matWaterUVUnflipped.y);
+    matWaterMask = textureSampleLevel(waterMaskTexture, waterMaskSampler, matWaterUV, 0.0).r;
+  }
+  matInput.waterMask = matWaterMask;
   let m = czm_getMaterial(matInput);
   color = mix(color, m.diffuse, m.alpha);
   alpha = max(alpha, m.alpha);

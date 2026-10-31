@@ -1,5 +1,5 @@
 // globe-terrain-default-variant-identity.spec.mjs - W-A1 of the water landing (R-3, PF-3).
-// @purpose Pins that every default variant of GlobeTerrain.wgsl (the 32 lo-define combinations at definesHi 0, and with UNDERWATER_OPTICS alone) preprocesses to the shader a default WebGPU globe compiled before the water landing (a999954e2b), byte for byte outside the two uniform structs (whose allowed differences are comments and four padding words now named), and that the opt-in WATER_PROVIDER_PARITY variant is that shader plus exactly the three named water parity blocks; each check has a mutant that must turn it red.
+// @purpose Pins that every default variant of GlobeTerrain.wgsl (the 32 lo-define combinations at definesHi 0, and with UNDERWATER_OPTICS alone) preprocesses to the shader a default WebGPU globe compiled before the water landing (a999954e2b), byte for byte outside the two uniform structs (whose allowed differences are comments, four padding words now named and the TileUniforms tail members appended after the last base member), with the MATERIAL_APPLY variants (a globe material is bound, so never the no-material default) allowed exactly one named hunk, the material's water-mask sample, and that the opt-in WATER_PROVIDER_PARITY variant is that shader plus exactly the three named water parity blocks; each check has a mutant that must turn it red.
 // @status ACTIVE
 //
 // WHY. The water landing added about 2,800 lines to GlobeTerrain.wgsl. Before W-A1
@@ -21,9 +21,24 @@
 //     unchanged; `TILE_UNIFORM_FLOATS` stays 496).
 //   - `_padEyeCartographic` is named `oceanWaveSeconds` (the unwrapped wave clock
 //     the opt-in classic waves read; water round 6).
-// A renamed or added word changes no layout and no instruction. Anything else, in
-// or outside the structs, must be byte-identical: there is NO default move in
-// this landing (seat ruling R-2026-10-23-S8).
+//   - `TileUniforms` ends in `TILE_TAIL_MEMBERS` (`hasRawWaterMask` at float 496
+//     and the explicit pad to 500), appended after `vectorMetersPerUv`. Only as
+//     the struct's last three members: every base offset (0-495) is unchanged,
+//     and the same lines anywhere else are a layout move the check sees. The
+//     member is read only inside MATERIAL_APPLY (below).
+// A renamed or added word changes no instruction, and none moves a base offset.
+//
+// THE MATERIAL HUNK (`MATERIAL_WATER_MASK_HUNK`). MATERIAL_APPLY is set only when
+// `globe.material` is bound, so a no-material globe never compiles it. Those 16
+// variants are the base plus exactly one hunk between two fixed anchors: the
+// base's `matInput.waterMask = 0.0` (a TODO) becomes GlobeFS.glsl's mask sample
+// (NEW-WATER-GLOBE-MATERIAL-WATER-MASK). The check puts the base line back in
+// place of the hunk, which must match the constant byte for byte, and then
+// requires the base digest; a different hunk is not put back and mismatches.
+// What the hunk does is pinned by executing it, in globe-classic-ocean-default-
+// parity section H against GlobeFS.glsl's law. The 16 no-material variants
+// take no hunk. Anything else, in or outside the structs, must be
+// byte-identical: there is NO default move (seat ruling R-2026-10-23-S8).
 //
 // THE OPT-IN PARITY VARIANT (water round 6). GlobeFS.glsl's classic waves and
 // coast band sit under the hi bit `WATER_PROVIDER_PARITY`, which the globe sets
@@ -90,20 +105,86 @@ function loMask(combination) {
   return mask;
 }
 
-/** The allow-list: inside the two uniform structs, drop comments and map the three words. */
+/** The TileUniforms tail after `vectorMetersPerUv` (floats 496-499), comments stripped. */
+const TILE_TAIL_MEMBERS = [
+  "hasRawWaterMask: f32,",
+  "_padTileTail0: f32,",
+  "_padTileTail1: vec2<f32>,",
+];
+
+/** Drop the tail members only where they are the struct's last members. */
+function dropTileTail(lines) {
+  const end = lines.length - 1 - TILE_TAIL_MEMBERS.length;
+  const tail = lines.slice(end, lines.length - 1);
+  return tail.length === TILE_TAIL_MEMBERS.length &&
+    tail.every((line, k) => line === TILE_TAIL_MEMBERS[k])
+    ? [...lines.slice(0, end), lines[lines.length - 1]]
+    : lines;
+}
+
+/** The allow-list: inside the two uniform structs, drop comments and the tail, map the three words. */
 function normaliseStructs(text) {
   return text.replace(
     /^struct (CameraUniforms|TileUniforms) \{[\s\S]*?^\}/gm,
-    (block) =>
-      block
+    (block, name) => {
+      const lines = block
         .split("\n")
         .map((line) => line.replace(/\/\/.*$/, "").trim())
-        .filter((line) => line.length > 0 && line !== "oceanTideHeight: f32,")
+        .filter((line) => line.length > 0 && line !== "oceanTideHeight: f32,");
+      return (name === "TileUniforms" ? dropTileTail(lines) : lines)
         .join("\n")
         .replace(/\bvesselWakeGate: f32,/, "_pad3: f32,")
         .replace(/\boceanTransitionDeficit: f32,/, "_pad4: f32,")
-        .replace(/\boceanWaveSeconds: f32,/, "_padEyeCartographic: f32,"),
+        .replace(/\boceanWaveSeconds: f32,/, "_padEyeCartographic: f32,");
+    },
   );
+}
+
+const MATERIAL_AFTER = "  matInput.aspect = input.v_aspect;\n";
+const MATERIAL_BEFORE = "  let m = czm_getMaterial(matInput);\n";
+const MATERIAL_BASE_LINE =
+  "  matInput.waterMask = 0.0;  // TODO wire from water-mask texture path\n";
+/** The one hunk a MATERIAL_APPLY variant may carry, as the preprocessor emits it. */
+const MATERIAL_WATER_MASK_HUNK = [
+  "  // GlobeFS.glsl's `materialInput.waterMask = mask` under HAS_WATER_MASK:",
+  "  // the tile coordinates translated and scaled into the mask, V flipped, the",
+  "  // red channel. Gated on the mask alone, not on `flags.x`, because WebGL hands",
+  "  // the material the mask with `globe.showWaterEffect` off (the water-mask",
+  "  // elevation demo turns it off). Without a mask it stays 0.0 (GLSL leaves the",
+  "  // member unwritten).",
+  "  var matWaterMask = 0.0;",
+  "  if (tile.hasRawWaterMask > 0.5) {",
+  "    let matWmTS = tile.waterMaskTranslationAndScale;",
+  "    let matWaterUVUnflipped = geoUV * matWmTS.zw + matWmTS.xy;",
+  "    let matWaterUV = vec2<f32>(matWaterUVUnflipped.x, 1.0 - matWaterUVUnflipped.y);",
+  "    matWaterMask = textureSampleLevel(waterMaskTexture, waterMaskSampler, matWaterUV, 0.0).r;",
+  "  }",
+  "  matInput.waterMask = matWaterMask;",
+  "",
+].join("\n");
+
+/**
+ * Put the base material line back where the variant carries exactly
+ * `MATERIAL_WATER_MASK_HUNK` between the two anchors. A variant without the
+ * material block (no MATERIAL_APPLY), or with any other text there, is
+ * returned unchanged, so the digest comparison sees it.
+ *
+ * @returns {{text: string, restored: boolean}}
+ */
+function restoreMaterialBase(variant) {
+  const i = variant.indexOf(MATERIAL_AFTER);
+  if (i < 0 || variant.split(MATERIAL_AFTER).length !== 2) {
+    return { text: variant, restored: false };
+  }
+  const from = i + MATERIAL_AFTER.length;
+  const to = variant.indexOf(MATERIAL_BEFORE, from);
+  if (to < 0 || variant.slice(from, to) !== MATERIAL_WATER_MASK_HUNK) {
+    return { text: variant, restored: false };
+  }
+  return {
+    text: variant.slice(0, from) + MATERIAL_BASE_LINE + variant.slice(to),
+    restored: true,
+  };
 }
 
 const PARITY_MARK = "// water-parity-r5";
@@ -178,7 +259,9 @@ function variantDigests(
   return Array.from(
     { length: 1 << LO_FLAGS.length },
     (ignored, combination) => {
-      const variant = preprocess(source, loMask(combination), definesHi);
+      const variant = restoreMaterialBase(
+        preprocess(source, loMask(combination), definesHi),
+      ).text;
       return sha256(
         normaliseStructs(cut ? cutParityRegions(variant, marked) : variant),
       );
@@ -406,4 +489,71 @@ test("11 (mutant): a change on the line before a parity block is DETECTED in the
     "  var tsPerturbationRatio: f32 = 0.5; // 1.0 = flat, 0.0 = vertical wave\n",
   );
   assert.equal(parityMismatches(mutant).length, 32);
+});
+
+const MATERIAL_BIT = 1 << LO_FLAGS.indexOf("MATERIAL_APPLY");
+
+test("12: the material hunk is put back in exactly the 16 MATERIAL_APPLY combinations, and the 16 no-material ones take no hunk", () => {
+  for (const hi of [
+    0,
+    ShaderDefineHi.UNDERWATER_OPTICS,
+    ShaderDefineHi.WATER_PROVIDER_PARITY,
+  ]) {
+    const restored = [];
+    for (
+      let combination = 0;
+      combination < 1 << LO_FLAGS.length;
+      combination++
+    ) {
+      if (
+        restoreMaterialBase(preprocess(terrain, loMask(combination), hi))
+          .restored
+      ) {
+        restored.push(combination);
+      }
+    }
+    const material = Array.from({ length: 32 }, (ignored, c) => c).filter(
+      (c) => (c & MATERIAL_BIT) !== 0,
+    );
+    assert.deepEqual(restored, material, `definesHi ${hi}`);
+  }
+});
+
+test("13 (mutant): the material hunk without its V flip is DETECTED in every MATERIAL_APPLY variant and in no other", () => {
+  const flipped =
+    "    let matWaterUV = vec2<f32>(matWaterUVUnflipped.x, 1.0 - matWaterUVUnflipped.y);\n";
+  assert.equal(terrain.split(flipped).length - 1, 1, "mutation anchor");
+  const mutant = terrain.replace(
+    flipped,
+    "    let matWaterUV = vec2<f32>(matWaterUVUnflipped.x, matWaterUVUnflipped.y);\n",
+  );
+  assert.deepEqual(
+    mismatches(mutant, 0),
+    Array.from({ length: 32 }, (ignored, c) => c).filter(
+      (c) => (c & MATERIAL_BIT) !== 0,
+    ),
+  );
+});
+
+test("14 (mutant): the tile tail members moved ahead of vectorMetersPerUv (a base offset moved) are DETECTED", () => {
+  const tail =
+    "  hasRawWaterMask: f32,\n" +
+    terrain.slice(
+      terrain.indexOf("  hasRawWaterMask: f32,\n") +
+        "  hasRawWaterMask: f32,\n".length,
+      terrain.indexOf("  _padTileTail1: vec2<f32>,\n") +
+        "  _padTileTail1: vec2<f32>,\n".length,
+    );
+  const last = "  vectorMetersPerUv: vec2<f32>,\n";
+  assert.equal(terrain.split(tail).length - 1, 1, "mutation anchor");
+  assert.equal(terrain.split(last).length - 1, 1, "mutation anchor");
+  const mutant = terrain.replace(tail, "").replace(last, tail + last);
+  assert.equal(mismatches(mutant, 0).length, 32);
+});
+
+test("15 (mutant): a member appended after the tile tail is DETECTED", () => {
+  const pad = "  _padTileTail1: vec2<f32>,\n";
+  assert.equal(terrain.split(pad).length - 1, 1, "mutation anchor");
+  const mutant = terrain.replace(pad, pad + "  extraTileTail: vec4<f32>,\n");
+  assert.equal(mismatches(mutant, 0).length, 32);
 });

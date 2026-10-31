@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Probe: the landing program's Edge cells on the shared runtime - one command
 // per cell for the seat's executor, base arm and tip arm.
-// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14 and the E-T teardown/device-loss cells) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, optionally the PF-1..PF-4 performance windows, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
+// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture and the E-T teardown/device-loss cells) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, optionally the PF-1..PF-4 performance windows, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
 // @status ACTIVE
 // @runtime lib/probe-runtime.mjs
 //
@@ -18,6 +18,7 @@
 //   E-T-flight cloud-flight-multideck-hdr-1080p           WebGPU
 //   E-T-resize globe-msaa4-resize-ladder                  both renderers
 //   E-T-skybox skybox-source-swap                         both renderers
+//   E-M-water  globe-material-water-mask (off by default) both renderers
 // A cell runs on each renderer its rig declares that `--renderer` keeps.
 //
 // ONE ARM PER INVOCATION. The probe measures the tree its origin serves. The
@@ -191,6 +192,12 @@ export const LANDING_CELLS = Object.freeze({
   "E-T-skybox": Object.freeze({
     rig: "skybox-source-swap",
     kind: "device-loss",
+  }),
+  // Not in DEFAULT_CELLS: a material-reading-the-tile-water-mask capture the
+  // water landing asks for by name (`--cells E-M-water`).
+  "E-M-water": Object.freeze({
+    rig: "globe-material-water-mask",
+    kind: "capture",
   }),
 });
 

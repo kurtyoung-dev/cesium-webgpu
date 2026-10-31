@@ -323,10 +323,21 @@ export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 //                backend branches per primitive on the packed width's SIGN,
 //                for the same reason `vectorCoverageRadius` is a uniform —
 //                a define here would fork every globe pipeline variant.
+//   496        hasRawWaterMask (f32) — 1.0 when the tile has a water-mask
+//                texture on the first imagery pass, whatever
+//                `globe.showWaterEffect` says (`flags.x` still ANDs it). The
+//                twin of WebGL's `HAS_WATER_MASK` define, which GlobeFS.glsl
+//                uses to hand `materialInput.waterMask` to a globe material.
+//   497 - 499  _padTileTail0 (f32) + _padTileTail1 (vec2) — explicit padding
+//                to the struct's 16-byte size round-up. An f32 at byte 1984
+//                ends at 1988, and WGSL rounds a struct holding vec4 members
+//                up to a multiple of 16, so the struct is 2000 bytes either
+//                way; the pad members only make that visible in the text.
 //
-// Total = 496 floats = 1984 bytes. Well under WebGPU's
+// Total = 500 floats = 2000 bytes, which still fits the 2048-byte
+// 256-aligned uniform slice the 1984-byte struct used. Well under WebGPU's
 // `maxUniformBufferBindingSize` floor (16 KiB).
-export const TILE_UNIFORM_FLOATS = 496;
+export const TILE_UNIFORM_FLOATS = 500;
 export const TILE_UNIFORM_BYTES = TILE_UNIFORM_FLOATS * 4;
 
 // Normal-map repeat counts per octave, round(equatorial circumference /
@@ -381,11 +392,14 @@ export const OCEAN_TIDE_HEIGHT_OFFSET = 493;
  *
  * 494, not 493: the WGSL member is a `vec2<f32>`, whose 8-byte alignment
  * rounds the offset after the f32 at 492 up to the next even float. Float 493
- * stays the padding word it already was, and `TILE_UNIFORM_FLOATS` is
- * unchanged at 496 — the struct had three declared pad floats and this
- * consumes two of them.
+ * stays the padding word it already was (later `oceanTideHeight`), and
+ * `TILE_UNIFORM_FLOATS` stayed at 496 — the struct had three declared pad
+ * floats and this consumed two of them.
  */
 export const VECTOR_METERS_PER_UV_OFFSET = 494;
+// `TileUniforms.hasRawWaterMask`: the first member after the vec2 at 494-495,
+// so an f32 at float 496 with no alignment gap.
+export const HAS_RAW_WATER_MASK_OFFSET = 496;
 
 /**
  * Coverage radius matching `VectorCommon.glsl`'s `#ifdef VECTOR_ANTIALIAS`

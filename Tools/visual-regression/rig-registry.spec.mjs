@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 260,
+  total: 261,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count reached 17
@@ -110,7 +110,7 @@ const REGISTRY_CENSUS = {
     // The resource-lifetime leg added one globe rig (the default globe at 4x
     // MSAA through a resize ladder) and the first skybox rig (the default sky
     // box with its sources swapped twice in place).
-    globe: 35,
+    globe: 36,
     skybox: 1,
     // The landing cells' teardown and device-loss scene for the water landing
     // (E-T in E11): the coast camera the water lane's job sheet names, with the
@@ -120,7 +120,9 @@ const REGISTRY_CENSUS = {
     // four nadir rigs (on/off, globe shown/hidden), seven gallery-bookmark
     // rigs (one of them the Sandcastle2 demo, also counted under sandcastle)
     // and the enhanced-ocean ON/OFF pair over the Kauai shelf.
-    water: 26,
+    // The globe-material landing cell (E-M-water) adds one rig that is both: the
+    // water-coast scene with the WaterMask globe material and the water effect off.
+    water: 27,
   },
 };
 
