@@ -212,12 +212,13 @@ test("4. WebGPUOceanRenderer compiles compute and render pipelines asynchronousl
     /if\s*\(typeof\s+device\.createComputePipelineAsync\s*===\s*"function"\)/,
     "initializeOceanResources must prefer device.createComputePipelineAsync",
   );
-  const asyncComputeCalls =
-    oceanRendererSrc.match(/device\.createComputePipelineAsync\(/g) ?? [];
-  assert.equal(
-    asyncComputeCalls.length,
-    6,
-    "all 6 FFT ocean compute pipelines must compile via createComputePipelineAsync",
+  // One async request per descriptor the compute chain returns (eight with
+  // the Stockham pair); ocean-fft-controls GL-05a/f and
+  // water-ocean-stockham-ifft count the requests the device actually sees.
+  assert.match(
+    oceanRendererSrc,
+    /Promise\.all\(\s*descs\.map\(\(d\)\s*=>\s*device\.createComputePipelineAsync\(d\)\)/,
+    "every FFT ocean compute pipeline must compile via createComputePipelineAsync",
   );
   assert.match(
     oceanRendererSrc,

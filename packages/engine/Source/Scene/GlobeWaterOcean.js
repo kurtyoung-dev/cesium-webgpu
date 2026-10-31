@@ -61,6 +61,7 @@ function GlobeWaterOcean(scene, globe) {
   this._celestialMoonIntensity = CELESTIAL_DEFAULT_MOON_INTENSITY;
   this._simulationEpoch = undefined;
   this._meanSeaLevelPressure = 1013.25;
+  this._ifftKernel = "stockham";
 }
 
 /**
@@ -123,6 +124,7 @@ Object.defineProperties(GlobeWaterOcean.prototype, {
           celestialMoonIntensity: this._celestialMoonIntensity,
           simulationEpoch: this._simulationEpoch,
           meanSeaLevelPressure: this._meanSeaLevelPressure,
+          ifftKernel: this._ifftKernel,
           globe: this._globe ?? this._scene?.globe,
         });
         prefetchGeoid(this);
@@ -377,6 +379,31 @@ Object.defineProperties(GlobeWaterOcean.prototype, {
       this._tideCallback = v;
       if (defined(this._primitive)) {
         this._primitive._tideCallback = v;
+      }
+    },
+  },
+
+  /**
+   * WebGPU only, like the surface it configures. The inverse-FFT kernel:
+   * `"stockham"` (default) transforms rows and columns in two dispatches with
+   * every stage in workgroup memory; `"pingpong"` keeps the historical
+   * one-dispatch-per-stage path. Both produce the same wave field. Other
+   * values are ignored.
+   *
+   * @memberof GlobeWaterOcean.prototype
+   * @type {string}
+   * @default "stockham"
+   */
+  ifftKernel: {
+    get: function () {
+      return this._ifftKernel;
+    },
+    set: function (v) {
+      if (v === "stockham" || v === "pingpong") {
+        this._ifftKernel = v;
+        if (defined(this._primitive)) {
+          this._primitive.ifftKernel = v;
+        }
       }
     },
   },

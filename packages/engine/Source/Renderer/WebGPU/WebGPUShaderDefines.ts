@@ -1435,8 +1435,9 @@ export const ShaderSourceId = Object.freeze({
   // its `//>>ifdef LOG_DEPTH` blocks preprocess and the log-depth variant
   // dedupes per `(sourceId, defines)`. The FFT compute modules
   // (initial-spectrum, twiddle, time-evolve, IFFT, merge) have no ifdef blocks
-  // and are created directly by the renderer, so they need no source id.
-  // Add-only.
+  // and are created directly by the renderer, so they need no source id. The
+  // Stockham IFFT (69) is the exception: it goes through the cache so one
+  // module serves every ocean surface on a device. Add-only.
   OCEAN_SURFACE: 41,
   // The inline edge-visibility emitter WGSL
   // (`WebGPUEdgeVisibilityEmitter.ts` EDGE_EMITTER_WGSL), so its
@@ -1454,6 +1455,13 @@ export const ShaderSourceId = Object.freeze({
    * scene color in `CloudPrimaryComposite.wgsl`.
    */
   CLOUD_PRIMARY_COMPOSITE: 44,
+  /**
+   * Water-ocean allocation for the FFT ocean's shared-memory Stockham inverse
+   * FFT (`Ocean/OceanStockhamIFFT.wgsl`), compiled through the module cache by
+   * `WebGPUOceanComputeChain.ts`. Ids 64-68 stay vacant for the other FFT
+   * compute modules should they move onto the cache. Add-only.
+   */
+  OCEAN_STOCKHAM_IFFT: 69,
 } as const);
 
 /**

@@ -1015,6 +1015,12 @@
       "name": "CLOUD_PRIMARY_COMPOSITE",
       "owner": "cloud",
       "status": "consumed"
+    },
+    {
+      "id": 69,
+      "name": "OCEAN_STOCKHAM_IFFT",
+      "owner": "water-ocean",
+      "status": "consumed"
     }
   ]
 }

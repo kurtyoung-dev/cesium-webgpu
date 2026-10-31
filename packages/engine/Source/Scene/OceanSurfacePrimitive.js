@@ -102,6 +102,8 @@ import {
  * @param {number} [options.celestialMoonIntensity=0.35] Multiplier on the
  *   reflected lunar disc, before the illuminated fraction and the night
  *   ramp. An appearance dial, not a photometric ratio.
+ * @param {string} [options.ifftKernel="stockham"] The inverse-FFT kernel,
+ *   `"stockham"` or `"pingpong"`. WebGPU only.
  */
 function OceanSurfacePrimitive(options) {
   options = options ?? Frozen.EMPTY_OBJECT;
@@ -134,6 +136,7 @@ function OceanSurfacePrimitive(options) {
   this._bathymetryDepthM = options.bathymetryDepthMeters;
   this._bathymetryJerlovType = options.bathymetryJerlovType;
   this._timeSpeed = options.timeSpeed ?? 1.0;
+  this._ifftKernel = normalizeIfftKernel(options.ifftKernel) ?? "stockham";
 
   const deep = options.deepColor ?? new Color(0.02, 0.08, 0.13, 1.0);
   this._deepColor = { x: deep.red, y: deep.green, z: deep.blue };
@@ -214,6 +217,12 @@ function OceanSurfacePrimitive(options) {
  */
 function cloneSimulationEpoch(epoch) {
   return defined(epoch) ? JulianDate.clone(epoch) : undefined;
+}
+
+// The two inverse-FFT kernels the WebGPU renderer keeps; anything else is not
+// a kernel name and yields undefined, so the caller keeps its current value.
+function normalizeIfftKernel(kernel) {
+  return kernel === "stockham" || kernel === "pingpong" ? kernel : undefined;
 }
 
 /**
@@ -661,6 +670,26 @@ Object.defineProperties(OceanSurfacePrimitive.prototype, {
         this._windDirZ = Math.sin(v);
         this._paramsDirty = true;
       }
+    },
+  },
+
+  /**
+   * WebGPU only, like the surface itself. The inverse-FFT kernel the wave
+   * field is transformed with: `"stockham"` runs the row and column transforms
+   * as two dispatches with every stage in workgroup memory; `"pingpong"` runs
+   * the historical one-dispatch-per-stage path (32 dispatches a frame). Both
+   * read the same twiddle table and produce the same field. Other values are
+   * ignored. Takes effect on the next frame, without regenerating the spectrum.
+   * @memberof OceanSurfacePrimitive.prototype
+   * @type {string}
+   * @default "stockham"
+   */
+  ifftKernel: {
+    get: function () {
+      return this._ifftKernel;
+    },
+    set: function (v) {
+      this._ifftKernel = normalizeIfftKernel(v) ?? this._ifftKernel;
     },
   },
 
