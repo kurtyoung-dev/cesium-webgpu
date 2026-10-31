@@ -1688,7 +1688,12 @@ test("aerial transport uses contributing distance and altitude rather than empty
     [500, 1500],
   );
   const march = functionSource(defaultVariant(cloudShaderSource), "marchDeck");
-  assert.match(march, /visibleDistanceSum \+= sampleWeight \* sampleDistance/);
+  // W2 round 9: the interval, not the jittered sample, sets the range
+  // (cloud-air-light-anchor.spec.mjs executes the phase invariance).
+  assert.match(
+    march,
+    /visibleDistanceSum \+= sampleWeight \* cloudVisibleIntervalDistance\(t, curStep\)/,
+  );
   assert.match(
     march,
     /visibleAltitudeSum \+= sampleWeight \* \(deckBottom \+ heightFraction \* layerThickness\)/,

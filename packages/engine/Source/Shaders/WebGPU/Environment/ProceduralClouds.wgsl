@@ -129,7 +129,7 @@ struct CloudUniforms {
   // constant branch when the sampled LUT radiance is ~0, which is what an
   // unbaked LUT reads as (skyAtmosphere off, for instance), so a stray
   // "physical" flag cannot black out the clouds.
-  aerialLutMode: f32,            // 108 — 0 heuristic / 1 physical (sky-view inscatter + transmittance)
+  aerialLutMode: f32,            // 108 — 0 heuristic / 1 physical (finite spectral air light, CloudAirLight.wgsl)
   ambientLutMode: f32,           // 109 — 0 constant / 1 sky-LUT (up/down hemispheres of the multiple-scattering LUT)
   atmosphereThickness: f32,      // 110 — m; must equal the LUT bake's ATMOSPHERE_THICKNESS (111e3)
   _padE: f32,                    // 111 — pad to the 16-byte row
@@ -313,7 +313,8 @@ struct CloudUniforms {
 // because an unbaked LUT reads all-zero and the constant fallback runs instead.
 // Same 256×128 sun-relative sky-view domain as SkyAtmosphere's bindings 5 and 6;
 // the transmittance LUT is 256×64.
-//   9  — sun-relative sky-view single-scatter inscatter (the air light)
+//   9  — sun-relative sky-view single-scatter inscatter (ambient sky fill;
+//        the physical air light integrates its own path in CloudAirLight.wgsl)
 //   10 — sun-relative multiple-scattering sky radiance (ambient hemispheres)
 //   11 — transmittance (altitude × cosZenith) for cloud-color attenuation
 //   12 — linear LUT sampler (clamp-to-edge)
@@ -372,7 +373,7 @@ const QF_PROFILE_ON: u32 = 128u;    // bit 7 — deprecated in place, no produce
 // corresponding mode flag is 'physical' or 'sky-lut'; the shader additionally
 // gates each on a non-zero LUT radiance, so an unbaked LUT falls back to the
 // constant path.
-const QF_AERIAL_LUT: u32 = 256u;    // bit 8 — physical aerial (sky-view + transmittance)
+const QF_AERIAL_LUT: u32 = 256u;    // bit 8 — physical aerial (finite spectral air light)
 const QF_AMBIENT_LUT: u32 = 512u;   // bit 9 — sky-LUT cloud ambient (multiple-scattering LUT)
 const QF_LIGHT_CONE: u32 = 1024u;   // bit 10 — cone-sampled light march
 const QF_MULTI_DECK: u32 = 2048u;   // bit 11 — multi-deck shell march
@@ -2830,7 +2831,11 @@ fn marchDeck(
 //>>else
 //>>endif
       let sampleWeight = (1.0 - sampleTransmittance) * transmittance;
-      visibleDistanceSum += sampleWeight * sampleDistance;
+      // The representative distance takes the interval this sample stands for,
+      // not the jittered point inside it: the sample phase dithers where the
+      // density is read, and must not also move the range the air light is
+      // integrated over (unit 3450's per-pixel phase spread, W2 round 9).
+      visibleDistanceSum += sampleWeight * cloudVisibleIntervalDistance(t, curStep);
       visibleAltitudeSum += sampleWeight * (deckBottom + heightFraction * layerThickness);
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
       // Accumulate the reconstruction depth from the weight the radiance uses,

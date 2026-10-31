@@ -132,6 +132,14 @@ fn cloudAerialFraction(
   return clamp(1.0 - exp(-opticalDepth), 0.0, CLOUD_AERIAL_MAX);
 }
 
+// The distance one contributing march interval stands for: its midpoint. The
+// march's sample phase (QF_JITTER) moves the density read inside the interval;
+// keeping it out of the representative distance leaves the air light a
+// function of the extinction weights alone, with no per-pixel phase pattern.
+fn cloudVisibleIntervalDistance(intervalStart: f32, intervalLength: f32) -> f32 {
+  return intervalStart + 0.5 * max(intervalLength, 0.0);
+}
+
 fn cloudVisibleAerialSample(
   distanceSum: f32,
   altitudeSum: f32,

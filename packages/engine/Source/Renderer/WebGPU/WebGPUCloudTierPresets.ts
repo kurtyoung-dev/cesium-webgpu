@@ -379,7 +379,7 @@ export const CLOUD_QF_PROFILE_ON = 1 << 7;
 // public `"auto"` default — once `shouldDefaultPhysicalAerial` fires, which is
 // at or above the band edge. A default render above that edge therefore carries
 // bit 8, by intent.
-export const CLOUD_QF_AERIAL_LUT = 1 << 8; // physical aerial: sky-view + transmittance
+export const CLOUD_QF_AERIAL_LUT = 1 << 8; // physical aerial: finite spectral air light
 export const CLOUD_QF_AMBIENT_LUT = 1 << 9; // sky-LUT cloud ambient
 // Set by the renderer only when the resolved tier's `lightConeSampling` is
 // true, which is tiers 1 and 2. Tier 3 and the escape hatch leave it clear, and
@@ -848,8 +848,10 @@ export function buildCloudQualityInputs(
  * Why the promotion exists: the heuristic aerial term is
  * `clamp(midDist / 60000, 0, 0.85)`, and above the band edge every pixel
  * is far past 60 km, so the heuristic is pinned at its 0.85 cap for the whole
- * frame — a flat haze wash instead of a range-correct path length. The sky-view
- * and transmittance LUTs give the correct term there, so they are the default.
+ * frame — a flat haze wash instead of a range-correct path length. The finite
+ * spectral air light (CloudAirLight.wgsl) integrates the camera-to-cloud path
+ * with each node's own solar visibility, so it gives the correct term there,
+ * night limb included, and it is the default.
  *
  * The band edge is `disableAltitudeMeters`, the same threshold `resolveTier`
  * uses, so the two cannot disagree about where "orbital" starts.

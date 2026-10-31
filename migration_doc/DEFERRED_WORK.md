@@ -30810,7 +30810,7 @@ show that cloud shading at one sample is correct (the verifier's limit, which th
 **Source:** `wave-end/w2-f2-repair/SUMMARY_Nimrais.txt:12`; `wave-end/w2-r7-identity/SUMMARY_Nimrais.txt:14` and
 `VERIFY_CALENHAD.md:62-64`; `wave-end/w3-identity/SUMMARY_Tarondor.txt:14`; `git show -s e8046e5ae1`.
 
-### NEW-CLOUD-W2-3450-ORBITAL-SEAM — the orbital full disc falls to 0.784x of main with a hard-edged central seam from unit 3450 — **OPEN** (engine/shader, default path, WebGPU)
+### NEW-CLOUD-W2-3450-ORBITAL-SEAM — the orbital full disc falls to 0.784x of main with a hard-edged central seam from unit 3450 — **CLOSED** (step removed by Batch 1612 `6face1ede7`, level set by Batch 1613 `86fee24dd2`, anchored by R-2026-10-30-M2; pinned by Batch NNNN `<hash>`; engine/shader, default path, WebGPU)
 
 On the W2-R7 identity job E-O (orbital full disc, MSAA 4) reads mean luma 60.97 on BEFORE and 47.82 on TIP(8) (0.784x, 2
 runs each, byte-identical), outside the pre-registered [0.90, 1.10]; per-tip localisation (1 run per tip) puts the whole
@@ -30832,6 +30832,18 @@ W3 lands.
 **Source:** `wave-end/w2-r7-identity/SUMMARY_Nimrais.txt:10`, `:20`, `:23`; `VERIFY_CALENHAD.md:38`, `:46`, `:94-101`;
 `wave-end/w2-r7-identity/diag-3450/REPORT.txt:37-78`; `git show -s b6a18cc088` ("Round-8 findings"); W3:
 `wave-end/w3-identity/SUMMARY_Tarondor.txt:13`, `:35-41`.
+**Closed by W3 under the ruling; W2 round 9 (lead Mirrormere) pins it (seat to fill the batch and hash).** The step went with
+W3's unit 3462 (Batch 1612; the W3 job's per-tip localisation shows it gone at TIP(5)) and the level was set by 3463
+(Batch 1613: E-O 67.48 from TIP(6), 2 runs on TIP(8)). Under the maintainer's ruling R-2026-10-30-M2 (D1: the physical look,
+`NEW-CLOUD-W2-AERIAL-ORBITAL-ANCHOR`) that level is the anchor: 67.48 = 1.107x of the pre-W2 60.97, because main's outer
+disc carried effectively no air light and the physical path hazes it with the limb's own air. This round pins it without a
+browser: `Tools/visual-regression/cloud-air-light-anchor.spec.mjs` executes the shipped `cloudFiniteAirTransport` (its
+eight-node loop unrolled mechanically) on the E-O geometry and finds it within 0.4 % of an independent single-scatter
+integral (1,200-cell midpoint rule, exact sphere geometry, the sun's optical depth integrated along the sun ray) from the
+nadir to 60.3 deg (the limb is 60.6 deg), with the air light non-decreasing outward and the nadir its own limit; mutants S1
+(a view-cosine clamp) and S2 (a readiness select back to the flat tint) turn it red. Expected on the seat's Edge leg: E-O
+67.48 +- 0.1 (this round moves the representative distance by at most half a march interval, tens of metres against a
+6,600 km path).
 
 ### NEW-CLOUD-W2-3450-SKY-HATCHING — the flight cell's sky turns grey with coarse hatching above the horizon from unit 3450 — **OPEN** (engine/shader, default path, WebGPU)
 
@@ -30855,8 +30867,25 @@ owner:** W2 round 9, with the seam row.
 **Source:** `wave-end/w2-r7-identity/SUMMARY_Nimrais.txt:19`, `:25`; `VERIFY_CALENHAD.md:43`, `:102-106`;
 `wave-end/w2-r7-identity/diag-3450/REPORT.txt:84-133`; `.../w2-cloud/_lane-out-20261026-1505-r8-REFUTED-0c30e855/REVIEW_HIMLING_P7.md:130`
 (N5); W3: `wave-end/w3-identity/SUMMARY_Tarondor.txt:17`, `:42-46`, `VERIFY_CALIMEHTAR.md:89-92`.
+**W2 round 9 (lead Mirrormere): narrowed, not closed.** On main the aerial no longer reads the sky-view table at all (W3's
+Batch 1613 replaced it with the finite spectral air light), so the round-7 row-warp mechanism has no subject; the hatching
+survived W3 at the same density because the common factor is 3450's representative point. Executed (the shipped transport
+on E-F rays, sun 45 deg): the representative distance carried the march's jittered sample position, so the per-pixel
+interleaved-gradient phase moved the range by up to one fine interval (0.14 km at 5 km, 2.8 km at 99 km) and the composite
+by at most 0.84/255 per ray (row 210, 99 km). Round 9 accumulates the interval midpoint instead
+(`cloudVisibleIntervalDistance`, CloudAerialTransport.wgsl), so at fixed extinction weights the range no longer moves with
+the phase (pinned, mutants P1/P2); the altitude sum still reads the jittered height (<= 0.11/255 on these rays, bounded by
+the same spec). That direct term cannot account for the measured 5.3-10.7 near the horizon: a 10/255 swing needs the
+representative distance to move by about 30 km. The remaining candidate (unmeasured): on the long grazing rays of rows
+160-230 the jittered density reads decide whether a near or a far cloud mass carries the weight, and the range-correct air
+light then shows that Monte-Carlo noise where TIP(3)'s chord midpoint hid it. The half-resolution, temporal and upscale
+(reconstruction) path is not ruled out as a contributor. Expected on the seat's E-F leg: frame mean 146.89 +- 0.3
+and hatching energy lower by a fraction of 1 near the horizon, NOT back to the TIP(3) level of about 2. Next lever (not taken
+here, unmeasured): weights from the smooth base shape the march already evaluates (`base`, no extra fetch), or a tier-3
+temporal or spatial filter of the representative distance. **Acceptance unchanged.** **Source:** round-9 packet
+`LANDING_PACKET_MIRRORMERE.md`; `Tools/visual-regression/cloud-air-light-anchor.spec.mjs`.
 
-### NEW-CLOUD-W2-AERIAL-ORBITAL-ANCHOR — which look is the orbital reference: main's (no air light) or a physical air light — **MAINTAINER DECISION** (seat ruling S14)
+### NEW-CLOUD-W2-AERIAL-ORBITAL-ANCHOR — which look is the orbital reference: main's (no air light) or a physical air light — **DECIDED: physical** (R-2026-10-30-M2; seat ruling S14)
 
 The round-8 fix in 3450's batch (the LUT read in the camera's vertical, a horizon clamp, and a flat tint above about
 333 km) was REFUTED, and the round-7 cut landed. B1: above about 333 km `cloudAirLightLutWeight` is 0, so every cloud gets
@@ -30875,6 +30904,23 @@ the maintainer (decision), then W2 round 9.
 **Source:** `.../w2-cloud/_lane-out-20261026-1505-r8-REFUTED-0c30e855/REVIEW_HIMLING_P7.md:1`, `:72-119`;
 `wave-end/w2-r7-identity/diag-3450/REPORT.txt:134-198`;
 `cesium-webgpu-worker-archive/lanes-2026-10-29/DECISIONS_FOR_MAINTAINER_2026-10-29.md:45-50`.
+**Decided 2026-10-30 (R-2026-10-30-M2, D1):** the orbital reference is the PHYSICAL air light with the night-limb glow guard.
+On the landed tree that is Batch 1613's finite spectral air light: E-O reads 67.48 (1.107x of the pre-W2 60.97; W3 identity
+job), a continuous disc with limb haze. The guard is already the law of that path: every quadrature node of the
+camera-to-cloud segment takes its own solar visibility (`cloudAirSolarVisibility`, planet shadow from the node's height),
+which is the reviewer's "weight the far target by the representative point's daylight" applied at each point of the air
+rather than once; a single multiplicative `cloudLocalDaylight` at the representative point would double-gate and delete
+the sunlit high air above a night-side cloud near the terminator, so round 9 does not add one. Executed (W2 round 9,
+`cloud-air-light-anchor.spec.mjs`): with the terminator through the disc centre, night-side clouds at 15-58 deg out to
+the limb get exactly zero air light and composite at or below their own tone map (the reviewer's 0.02-0.03 band holds);
+twilight nodes give 1.5e-2 at sun -4 deg against 2.4 on the day side; mutant N1 (daylight forced to 1) and N2 (a
+camera-keyed sun) turn it red. The round-8 symbols (`cloudAerialFarTarget`, `cloudAirLightLutWeight`,
+`cloudAirLightLutUv`), its flat tint (B1), its swapped mix (H1) and its half-texel horizon clamp (N3) do not exist on this
+tree; the spec pins that the aerial reads no sky-view row. **Remaining parity note:** the opt-in progressive-startup preview
+(`CLOUD_LIGHTING_PREVIEW`, default off) still returns the flat-tint baseline, and an explicit `cloudAerialMode
+"heuristic"` keeps the camera-keyed flat tint at orbit by request, night-limb glow included; neither is the default, and
+neither needs a row. No GLSL twin: the volumetric deck is
+WebGPU-only (R-2026-10-22-6).
 
 ### NEW-CLOUD-AERIAL-CHROMATIC-FINITE-PATH — 3450's aerial blend is achromatic while the finite camera-to-cloud path it models reddens — **CANDIDATE** (engine/shader)
 
