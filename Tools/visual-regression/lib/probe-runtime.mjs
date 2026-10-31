@@ -74,6 +74,16 @@
 // `driveSceneFrames`, which keeps a request-render-mode page rendering and
 // ends at a wall-clock deadline, rather than through a private frame loop.
 //
+// FIVE COMPANION PIECES (DX-KIT-DECOMPOSE-RUNTIME-WATER). The flag table and
+// its value parsers live in `probe-runtime-args.mjs`, the three refusal
+// decisions in `probe-runtime-decisions.mjs`, Edge launch and the origin
+// rewrite in `probe-runtime-browser.mjs`, and the receipt builders, outcomes
+// and `sha256` in `probe-runtime-receipts.mjs`. Every name they own is
+// re-exported below, so no importer changed. What stays here is what the
+// runtime specs mutate in this file's own source and what is the composition
+// root: `parseProbeArgs` with its port-8080 refusal, capture liveness and
+// `captureElement`, and `runProbe`.
+//
 // THE ANTI-RE-ACCRETION CONTRACT (DX-02). Landing this runtime does not stop
 // a future probe from re-growing a private copy of one of the four concerns
 // it owns beside a `runProbe(` call that already handles them — that is how
@@ -98,7 +108,6 @@
 // none`) and is out of scope — migrating the fleet in family batches is
 // `DX-06`'s job, not this contract's.
 
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -127,163 +136,84 @@ import {
   throwForDecision,
 } from "./probe-refusal.mjs";
 import {
+  CORE_OPTION_DEFAULTS,
+  CORE_OPTION_SPECS,
+  REQUIRED_SERVED_ARTIFACTS,
+  RENDERERS,
+  nonNegativeNumber,
+  optionValue,
+  positiveInteger,
+  rendererList,
+} from "./probe-runtime-args.mjs";
+import {
+  EDGE_LAUNCH_ARGS,
+  installSandcastle2OriginRewrite,
+  launchEdge,
+} from "./probe-runtime-browser.mjs";
+import {
+  decideOriginRefusal,
+  decideRenderReadyRefusal,
+  decideServedBuildRefusal,
+} from "./probe-runtime-decisions.mjs";
+import {
+  INCIDENT_ARTIFACT_SUFFIX,
+  RUN_OUTCOMES,
+  assembleReceipt,
+  buildIncidentRecord,
+  buildMarkdownSummary,
+  buildRuntimeReceipt,
+  normalizeJson,
+  outcomeOfRun,
+  sha256,
+} from "./probe-runtime-receipts.mjs";
+import {
   SCENE_FRAME_DRIVER_GLOBAL,
   SCENE_FRAME_OUTCOMES,
   driveSceneFrames,
   installSceneFrameDriver,
 } from "./probe-scene-frames.mjs";
-import {
-  checkNavigatedOrigin,
-  computeSandcastle2Origins,
-} from "./sandcastle2-origin-rewrite.mjs";
-import {
-  DEFAULT_SERVED_BUILD_ARTIFACTS,
-  preflightServedBuildArtifacts,
-} from "./served-build-preflight.mjs";
+import { preflightServedBuildArtifacts } from "./served-build-preflight.mjs";
 
 export {
+  CORE_OPTION_DEFAULTS,
+  CORE_OPTION_SPECS,
   DEFAULT_EDGE_SLOT_LOCK_PATH,
+  EDGE_LAUNCH_ARGS,
   EDGE_SLOT_STALE_AFTER_MS,
+  INCIDENT_ARTIFACT_SUFFIX,
   PROBE_EXIT_CODES,
   ProbeRefusal,
+  RENDERERS,
+  REQUIRED_SERVED_ARTIFACTS,
+  RUN_OUTCOMES,
   SCENE_FRAME_DRIVER_GLOBAL,
   SCENE_FRAME_OUTCOMES,
   acceptedDecision,
   acquireEdgeSlot,
+  assembleReceipt,
+  buildIncidentRecord,
+  buildMarkdownSummary,
+  buildRuntimeReceipt,
   decideEdgeSlot,
+  decideOriginRefusal,
+  decideRenderReadyRefusal,
+  decideServedBuildRefusal,
   driveSceneFrames,
   exitCodeForOutcome,
+  installSandcastle2OriginRewrite,
   installSceneFrameDriver,
+  launchEdge,
+  normalizeJson,
+  outcomeOfRun,
   refusedDecision,
+  sha256,
   throwForDecision,
   withEdgeSlot,
 };
 
 // ---------------------------------------------------------------------------
-// 1. Constants
+// 1. Argument parsing (flag table and value parsers: probe-runtime-args.mjs)
 // ---------------------------------------------------------------------------
-
-/**
- * The bundles a served-build assertion checks unless a probe narrows it.
- *
- * This is a RE-EXPORT, not a second list. The preflight library owns the set,
- * and a copy here would drift fail-open: if that library ever gained a third
- * bundle, a runtime with its own two-entry copy would let a stale third one
- * through without ever naming it in the refusal.
- */
-export const REQUIRED_SERVED_ARTIFACTS = DEFAULT_SERVED_BUILD_ARTIFACTS;
-
-/** Renderer names a probe may be pointed at. */
-export const RENDERERS = Object.freeze(["webgl", "webgpu"]);
-
-// ---------------------------------------------------------------------------
-// 2. Argument parsing
-// ---------------------------------------------------------------------------
-
-/**
- * The flags every probe accepts. A probe adds its own through
- * `descriptor.args.extraOptions`; it never re-implements one of these.
- *
- * `--serve-built` is an ASSERTION, not a server switch: the probe cannot start
- * the server, so what the flag governs is whether the runtime insists that the
- * bytes the origin serves are the bytes on disk. It defaults ON — fail-closed —
- * and `--no-serve-built` is the visible, recorded waiver.
- */
-export const CORE_OPTION_SPECS = Object.freeze([
-  { flag: "--port", key: "port", kind: "positive-integer" },
-  { flag: "--runs", key: "runs", kind: "positive-integer" },
-  { flag: "--reverse", key: "reverse", kind: "boolean" },
-  { flag: "--headed", key: "headed", kind: "boolean" },
-  { flag: "--renderer", key: "renderers", kind: "renderer-list" },
-  { flag: "--serve-built", key: "servedBuild", kind: "boolean" },
-  { flag: "--no-serve-built", key: "servedBuild", kind: "boolean-false" },
-  { flag: "--repository-root", key: "repositoryRoot", kind: "string" },
-  { flag: "--output", key: "outputDirectory", kind: "string" },
-  { flag: "--timeout-ms", key: "timeoutMs", kind: "positive-integer" },
-]);
-
-/** Defaults for the core flags. `port` is a governed Edge port, never 8080. */
-export const CORE_OPTION_DEFAULTS = Object.freeze({
-  port: 8094,
-  runs: 1,
-  reverse: false,
-  headed: false,
-  renderers: RENDERERS,
-  servedBuild: true,
-  repositoryRoot: null,
-  outputDirectory: null,
-  timeoutMs: 120000,
-});
-
-/**
- * @param {string[]} argv Raw argument list.
- * @param {number} index Index of the flag.
- * @param {string} name The flag, for the error message.
- * @returns {string} The flag's value.
- */
-function optionValue(argv, index, name) {
-  if (index + 1 >= argv.length || argv[index + 1].startsWith("--")) {
-    throw new TypeError(`${name} requires a value`);
-  }
-  return argv[index + 1];
-}
-
-/**
- * @param {string} value Raw value.
- * @param {string} name The flag, for the error message.
- * @returns {number} The parsed integer.
- */
-function positiveInteger(value, name) {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new TypeError(`${name} must be a positive integer`);
-  }
-  return parsed;
-}
-
-/**
- * @param {string} value Raw value.
- * @param {string} name The flag, for the error message.
- * @returns {number} The parsed number.
- */
-function nonNegativeNumber(value, name) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new TypeError(`${name} must be a non-negative number`);
-  }
-  return parsed;
-}
-
-/**
- * `--renderer` accepts one backend, both comma-separated, or the word `both`.
- * The result always lists backends in `RENDERERS` order, so a probe's cell
- * order — and therefore its receipt — does not depend on how the flag was
- * spelled.
- *
- * @param {string} value Raw value.
- * @param {string} name The flag, for the error message.
- * @returns {string[]} Selected backends, in canonical order.
- */
-function rendererList(value, name) {
-  const requested =
-    value === "both"
-      ? [...RENDERERS]
-      : value
-          .split(",")
-          .map((entry) => entry.trim().toLowerCase())
-          .filter((entry) => entry.length > 0);
-  if (requested.length === 0) {
-    throw new TypeError(`${name} requires at least one renderer`);
-  }
-  for (const entry of requested) {
-    if (!RENDERERS.includes(entry)) {
-      throw new TypeError(
-        `${name} must be one of ${RENDERERS.join(", ")}, both, or a comma-separated subset (got "${entry}")`,
-      );
-    }
-  }
-  return RENDERERS.filter((entry) => requested.includes(entry));
-}
 
 /**
  * Parse a probe's command line against the core flags plus whatever the probe
@@ -359,191 +289,8 @@ export function parseProbeArgs(argv, options = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Refusal decisions over the served build and the navigated origin
+// 2. Capture liveness and element capture
 // ---------------------------------------------------------------------------
-
-/**
- * Decide whether a served-build preflight clears the run.
- *
- * @param {object|null} preflight Result of `preflightServedBuildArtifacts`, or `null` when waived.
- * @param {object} [options] Options.
- * @param {string[]} [options.requiredArtifacts] Artifacts that must have matched.
- * @param {boolean} [options.waived] Whether `--no-serve-built` waived the assertion.
- * @returns {object} An accepted or refusing decision.
- */
-export function decideServedBuildRefusal(preflight, options = {}) {
-  const requiredArtifacts =
-    options.requiredArtifacts ?? REQUIRED_SERVED_ARTIFACTS;
-  if (options.waived === true) {
-    return acceptedDecision();
-  }
-  if (!preflight || preflight.ok !== true) {
-    return refusedDecision("served-build-preflight-failed", {
-      preflight: preflight ?? null,
-    });
-  }
-  const results = Array.isArray(preflight.artifacts) ? preflight.artifacts : [];
-  const byPath = new Map(results.map((result) => [result.path, result]));
-  const missingOrUnmatched = requiredArtifacts.filter((artifact) => {
-    const result = byPath.get(artifact);
-    return !result || result.match !== true;
-  });
-  if (missingOrUnmatched.length > 0) {
-    return refusedDecision("served-build-preflight-incomplete", {
-      missingOrUnmatched,
-      preflight,
-    });
-  }
-  return acceptedDecision();
-}
-
-/**
- * Decide whether a navigation stayed on the origin it was pointed at. The
- * comparison itself is delegated to `sandcastle2-origin-rewrite.mjs` so the
- * origin grammar has one home; this wrapper only maps its verdict onto the
- * runtime's decision shape.
- *
- * @param {object} options Inputs.
- * @param {string} options.requestedOrigin Origin the navigation was asked to reach.
- * @param {string} options.actualUrl The url the page ended on, after redirects.
- * @param {string} [options.label] What is being checked, folded into the reason.
- * @returns {object} An accepted or refusing decision.
- */
-export function decideOriginRefusal({
-  requestedOrigin,
-  actualUrl,
-  label = "navigation",
-}) {
-  let expected;
-  try {
-    expected = new URL(requestedOrigin).origin;
-  } catch {
-    return refusedDecision("requested-origin-invalid", { requestedOrigin });
-  }
-  const verdict = checkNavigatedOrigin({
-    observedUrl: actualUrl,
-    expectedOrigin: expected,
-    label,
-  });
-  if (verdict.ok === true) {
-    return acceptedDecision();
-  }
-  return refusedDecision(
-    verdict.code === "UNPARSABLE_URL"
-      ? "navigation-url-invalid"
-      : "origin-mismatch",
-    {
-      requestedOrigin: expected,
-      actualOrigin: verdict.observedOrigin,
-      actualUrl,
-      reason: verdict.reason,
-    },
-  );
-}
-
-/**
- * Decide whether a settle that was supposed to be gated on `Scene.renderReady`
- * may be believed. A capture taken before readiness is not a slow measurement,
- * it is a different measurement, so it refuses rather than scoring.
- *
- * @param {object} options Inputs.
- * @param {unknown} options.renderReady What the page reported for `scene.renderReady`.
- * @param {number} options.elapsedMs How long the wait took.
- * @param {number} options.timeoutMs The budget it had.
- * @returns {object} An accepted or refusing decision.
- */
-export function decideRenderReadyRefusal({
-  renderReady,
-  elapsedMs,
-  timeoutMs,
-}) {
-  if (typeof renderReady !== "boolean") {
-    return refusedDecision("render-ready-absent", {
-      observed: renderReady === undefined ? "undefined" : typeof renderReady,
-    });
-  }
-  if (renderReady !== true) {
-    return refusedDecision("render-ready-timeout", { elapsedMs, timeoutMs });
-  }
-  return acceptedDecision();
-}
-
-// ---------------------------------------------------------------------------
-// 4. Browser lifecycle, origin rewrite, capture
-// ---------------------------------------------------------------------------
-
-/**
- * The Edge flag the fleet actually shares, and the ONLY one the runtime adds
- * on its own.
- *
- * A census of the 647 top-level probes taken while writing this module: 562
- * pass `--enable-unsafe-webgpu`, 210 pass `--use-vulkan`, and exactly one
- * (`probe-aec-perf.mjs`) passes `--enable-precise-memory-info`. A runtime
- * that quietly handed all four to every migrated probe would be changing the
- * measurement conditions of 437 probes that have never run under Vulkan and
- * 646 that have never run with un-bucketed `performance.memory` — and it
- * would do it invisibly, because a launch flag leaves no trace in a receipt.
- * Both of those flags are measurement-affecting here specifically:
- * `--use-vulkan` moves ANGLE and Dawn off the Windows D3D default, which is
- * pipeline-compile behaviour, and pipeline-compile counters are precisely what
- * the cold-start probe publishes; `--enable-precise-memory-info` un-buckets
- * `usedJSHeapSize`, which the cold-start harness reads and the probe reports
- * per cell.
- *
- * So the default is the common denominator and nothing more. A probe that
- * genuinely needs others declares `descriptor.launchArgs`, which puts the
- * change in the probe, in review, and in the runtime receipt.
- */
-export const EDGE_LAUNCH_ARGS = Object.freeze(["--enable-unsafe-webgpu"]);
-
-/**
- * Launch Edge. Channel `msedge` is not a preference: Playwright's bundled
- * Firefox is Nightly and has no WebGPU, so a Firefox run measures WebGL twice.
- *
- * @param {object} options Options.
- * @param {boolean} options.headed Whether to show the browser.
- * @param {string[]} [options.launchArgs] Flags to pass instead of {@link EDGE_LAUNCH_ARGS}.
- * @param {object} [options.chromium] Playwright's chromium namespace; imported lazily when absent.
- * @returns {Promise<object>} The launched browser.
- */
-export async function launchEdge({ headed, launchArgs, chromium }) {
-  const impl = chromium ?? (await import("playwright")).chromium;
-  return impl.launch({
-    channel: "msedge",
-    headless: !headed,
-    args: [...(launchArgs ?? EDGE_LAUNCH_ARGS)],
-  });
-}
-
-/**
- * Install the Sandcastle2 origin rewrite on a context or page, for probes that
- * open the built app. Lazily imported so probes that never touch Sandcastle2
- * do not pay for it.
- *
- * @param {{route: Function}} contextOrPage A Playwright context or page.
- * @param {object} options Options.
- * @param {number|string} options.servedPort Port the app is served on.
- * @param {number|string} options.bucketPort Port the run/bucket frame is served on.
- * @returns {Promise<object>} The computed origins.
- */
-export async function installSandcastle2OriginRewrite(
-  contextOrPage,
-  { servedPort, bucketPort },
-) {
-  const origins = computeSandcastle2Origins({ servedPort, bucketPort });
-  const { installOriginRewrite } =
-    await import("./sandcastle2-origin-rewrite.mjs");
-  await installOriginRewrite(contextOrPage, origins);
-  return origins;
-}
-
-/**
- * @param {Buffer|Uint8Array} bytes Bytes to fingerprint.
- * @returns {string} Lowercase hex sha256.
- */
-export function sha256(bytes) {
-  return createHash("sha256").update(bytes).digest("hex");
-}
 
 /**
  * The page-side half of the liveness question. Self-contained, because
@@ -754,200 +501,6 @@ export async function captureElement({
     captures.push(record);
   }
   return { ...record, buffer };
-}
-
-// ---------------------------------------------------------------------------
-// 5. Receipts
-// ---------------------------------------------------------------------------
-
-/**
- * Serialize a receipt the way every banked receipt in this fork is serialized:
- * two-space JSON, LF line endings, trailing newline. A receipt that changes its
- * whitespace between runs cannot be diffed, and diffing receipts is how a
- * regression gets found.
- *
- * @param {unknown} value The receipt.
- * @returns {string} The serialized text.
- */
-export function normalizeJson(value) {
-  return `${JSON.stringify(value, null, 2).replace(/\r\n/g, "\n")}\n`;
-}
-
-/**
- * Assemble the document a probe publishes.
- *
- * `probe-owned` (the default for a migrated probe) writes the probe's fields
- * and nothing else, so a receipt's field set survives migration unchanged.
- * `runtime` wraps them in the runtime's own envelope for probes written after
- * this module existed.
- *
- * @param {object} options Options.
- * @param {"probe-owned"|"runtime"} options.envelope Which shape to produce.
- * @param {object} options.fields The probe's own receipt fields.
- * @param {object} options.runtime The runtime section (origin, options, preflight, ...).
- * @returns {object} The receipt.
- */
-export function assembleReceipt({ envelope, fields, runtime }) {
-  if (envelope === "probe-owned") {
-    return { ...fields };
-  }
-  if (envelope === "runtime") {
-    return { ...runtime, ...fields };
-  }
-  throw new TypeError(`unknown receipt envelope: ${envelope}`);
-}
-
-/**
- * The runtime's own record of a run: everything the runtime knew and the probe
- * did not have to restate.
- *
- * @param {object} options Options.
- * @param {string} options.probe Probe name.
- * @param {string} options.generatedAt ISO timestamp.
- * @param {string} options.origin Resolved origin.
- * @param {object} options.options Parsed options.
- * @param {object|null} options.preflight Preflight result, or `null` when waived.
- * @param {object} options.edgeSlot Slot record.
- * @param {string[]} [options.launchArgs] Edge flags the run was launched with.
- * @param {Array<object>} options.captures Capture records.
- * @param {Array<object>} options.verdicts Probe verdicts.
- * @param {number} options.exitCode Final exit code.
- * @returns {object} The runtime receipt.
- */
-export function buildRuntimeReceipt({
-  probe,
-  generatedAt,
-  origin,
-  options,
-  preflight,
-  edgeSlot,
-  launchArgs,
-  captures,
-  verdicts,
-  exitCode,
-}) {
-  return {
-    probe,
-    generatedAt,
-    origin,
-    options,
-    servedBuildAssertion: options.servedBuild ? "enforced" : "waived",
-    preflight,
-    edgeSlot,
-    launchArgs: launchArgs ?? null,
-    captures,
-    verdicts,
-    exitCode,
-  };
-}
-
-/**
- * The three ways a run can end, as far as its artifacts are concerned.
- *
- * Only a MEASURED run has standing to publish. The other two produce a
- * document that looks like a measurement and is not one: the cell loop never
- * ran, or ran partly, so a probe's receipt builder assembles a well-formed
- * envelope over zero cells and zero verdicts — and a `probe-owned` envelope by
- * design carries none of the runtime's fields, so it cannot even say why.
- * Written over a banked receipt, that is a probe reporting "nothing failed"
- * about a run it never took.
- */
-export const RUN_OUTCOMES = Object.freeze({
-  MEASURED: "measured",
-  REFUSED: "refused",
-  ERRORED: "errored",
-});
-
-/**
- * The sidecar a non-measuring run writes INSTEAD of a receipt.
- *
- * The name differs from `<name>-report.json` deliberately. What tells a reader
- * that the banked receipt is still the last real measurement is that no fresh
- * one appeared; an incident written under the receipt's own name could not say
- * that, whatever it contained.
- */
-export const INCIDENT_ARTIFACT_SUFFIX = Object.freeze({
-  [RUN_OUTCOMES.REFUSED]: "refusal",
-  [RUN_OUTCOMES.ERRORED]: "error",
-});
-
-/**
- * Classify a finished run for the purpose of deciding what it may write.
- *
- * @param {object} options Options.
- * @param {object|null} [options.refusal] The refusal, when one occurred.
- * @param {boolean} [options.errored] Whether the harness threw.
- * @returns {string} One of {@link RUN_OUTCOMES}.
- */
-export function outcomeOfRun({ refusal, errored }) {
-  if (refusal) {
-    return RUN_OUTCOMES.REFUSED;
-  }
-  if (errored === true) {
-    return RUN_OUTCOMES.ERRORED;
-  }
-  return RUN_OUTCOMES.MEASURED;
-}
-
-/**
- * The durable record of a run that did not measure: the outcome first, then
- * everything the runtime knew — origin, options, the preflight result, the
- * Edge slot, the launch flags, the refusal — plus the harness error when there
- * was one. It is a strict superset of what the runtime sidecar carried, so
- * skipping the sidecar on this path loses nothing.
- *
- * @param {object} options Options.
- * @param {string} options.outcome One of {@link RUN_OUTCOMES}.
- * @param {object} options.runtimeReceipt The runtime receipt for the run.
- * @param {string|null} [options.error] The harness error text, when it threw.
- * @returns {object} The incident record.
- */
-export function buildIncidentRecord({ outcome, runtimeReceipt, error = null }) {
-  const record = { outcome, ...runtimeReceipt };
-  if (error !== null && error !== undefined) {
-    record.error = error;
-  }
-  return record;
-}
-
-/**
- * Default markdown summary. A probe with a richer table supplies its own
- * `summary(receipt, runtimeReceipt)`.
- *
- * @param {object} receipt The probe receipt.
- * @param {object} runtimeReceipt The runtime receipt.
- * @param {string} title Heading.
- * @returns {string} Markdown.
- */
-export function buildMarkdownSummary(receipt, runtimeReceipt, title) {
-  const verdicts = Array.isArray(runtimeReceipt.verdicts)
-    ? runtimeReceipt.verdicts
-    : [];
-  const lines = [
-    `# ${title}`,
-    "",
-    `Generated: ${runtimeReceipt.generatedAt}`,
-    "",
-    `Origin: \`${runtimeReceipt.origin}\``,
-    "",
-    `Served-build assertion: ${runtimeReceipt.servedBuildAssertion}`,
-    "",
-    `Exit code: ${runtimeReceipt.exitCode}`,
-    "",
-  ];
-  if (verdicts.length > 0) {
-    lines.push("| Verdict | Result |", "| --- | --- |");
-    for (const verdict of verdicts) {
-      const id = String(verdict.id ?? verdict.claim ?? "verdict").replaceAll(
-        "|",
-        "\\|",
-      );
-      lines.push(`| ${id} | ${verdict.pass === true ? "PASS" : "FAIL"} |`);
-    }
-    lines.push("");
-  }
-  lines.push(`Receipt fields: ${Object.keys(receipt).join(", ")}`, "");
-  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
