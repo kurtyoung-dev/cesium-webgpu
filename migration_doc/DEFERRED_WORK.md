@@ -30251,7 +30251,7 @@ The stub spreads `FRAMEBUFFER_CONSTANTS`: `FRAMEBUFFER`, `READ_FRAMEBUFFER`, `DR
 
 ### NEW-WATER-GLOBE-MATERIAL-WATER-MASK - a WebGPU globe material receives `waterMask = 0.0` where WebGL hands it the tile water mask - **SHIPPED** (Batch 1621, `d4610a4ff3`); Edge acceptance PASSED 2026-10-31 on the seam-fix tree (`EDGE_RECEIPT_EOWYN_SEAMS.md`)
 
-- **Status (Batch 1621, 2026-10-30; recorded by records batch 3 round 2):** SHIPPED pending Edge acceptance = rig `globe-material-water-mask` (`probe-landing-cells.mjs --cells E-M-water`, WebGL against WebGPU, base against tip). `TileUniforms.hasRawWaterMask` (float 496; the struct grows 496 -> 500 floats inside the same 2,048-byte slice) is packed from the mask, the tile texture and the first pass alone, and the `MATERIAL_APPLY` block samples the mask with the ocean block's translate-scale and V flip when it is set. `globe-classic-ocean-default-parity.spec.mjs` section H flipped as the Acceptance below asks (H2 = the GLSL law with `showWaterEffect` false and true; H4-H7 executed mutants), and `water-material-water-mask-tail.spec.mjs` pins the layout and the packer. This changes WebGPU rendering for every globe material over water-mask terrain, by design; a globe without a material compiles main's shader text plus the struct tail (identity spec 15/15, digest table unchanged). Salvaged by lane D (lead Mering, reviewer Firien P2 HOLDS) from the Antigravity wave w4b, whose closure the w4b review found reachable (`REVIEW_AELUIN_W4B.md` section 5); w4b's skirt-count lane, camera tail and RTE move were not taken. The seat accepted the w4b reviewer's Q2 for this landing (`REVIEW_FIRIEN_P1.md:14`, `:112`). Source: `cesium-webgpu-worker-archive/lanes-2026-10-30/salvage-night/mering/round2/LANDING_PACKET_MERING.md:84-94` (its Batch NNNN is 1621); `git show -s d4610a4ff3`.
+- **Status (Batch 1621, 2026-10-30; recorded by records batch 3 round 2):** SHIPPED; Edge acceptance PASSED 2026-10-31 (the status line below; pending when this line was written) = rig `globe-material-water-mask` (`probe-landing-cells.mjs --cells E-M-water`, WebGL against WebGPU, base against tip). `TileUniforms.hasRawWaterMask` (float 496; the struct grows 496 -> 500 floats inside the same 2,048-byte slice) is packed from the mask, the tile texture and the first pass alone, and the `MATERIAL_APPLY` block samples the mask with the ocean block's translate-scale and V flip when it is set. `globe-classic-ocean-default-parity.spec.mjs` section H flipped as the Acceptance below asks (H2 = the GLSL law with `showWaterEffect` false and true; H4-H7 executed mutants), and `water-material-water-mask-tail.spec.mjs` pins the layout and the packer. This changes WebGPU rendering for every globe material over water-mask terrain, by design; a globe without a material compiles main's shader text plus the struct tail (identity spec 15/15, digest table unchanged). Salvaged by lane D (lead Mering, reviewer Firien P2 HOLDS) from the Antigravity wave w4b, whose closure the w4b review found reachable (`REVIEW_AELUIN_W4B.md` section 5); w4b's skirt-count lane, camera tail and RTE move were not taken. The seat accepted the w4b reviewer's Q2 for this landing (`REVIEW_FIRIEN_P1.md:14`, `:112`). Source: `cesium-webgpu-worker-archive/lanes-2026-10-30/salvage-night/mering/round2/LANDING_PACKET_MERING.md:84-94` (its Batch NNNN is 1621); `git show -s d4610a4ff3`.
 
 - **Symptom:** Pre-existing since base. `GlobeTerrain.wgsl` fills `matInput.waterMask = 0.0` inside its `MATERIAL_APPLY` block (a lo define, set whenever `globe.material` is), where `GlobeFS.glsl` hands `materialInput.waterMask = mask` under `HAS_WATER_MASK`. A globe material that reads the mask (the WaterMask material, the `globe-materials-water-mask-elevation-map` demo) therefore shades land and sea alike on WebGPU. The water work wired a sample in, but gated it on the tile flag `tile.flags.x` (water mask AND `globe.showWaterEffect`) where GLSL gates on the mask alone, and that demo sets `showWaterEffect = false`, so the hunk would have changed default WebGPU rendering without fixing the demo. Batch 1586 holds the hunk back (review B1, option b) and lands the base line.
 - **Evidence:** Where (read 2026-10-22): `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl` (the `MATERIAL_APPLY` block), `packages/engine/Source/Shaders/GlobeFS.glsl` (`#ifdef HAS_WATER_MASK` / `materialInput.waterMask = mask`), `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts` (`showReflectiveOcean = hasWaterMask && tileProvider.showWaterEffect === true`), `packages/sandcastle/gallery/globe-materials-water-mask-elevation-map/main.js` (`globe.showWaterEffect = false`). The held-back hunk is banked in the water lane (`water-review/banked/material-water-mask-hunk-HELD-r2.txt`).
@@ -30260,12 +30260,12 @@ The stub spreads `FRAMEBUFFER_CONSTANTS`: `FRAMEBUFFER`, `READ_FRAMEBUFFER`, `DR
 - **Source:** Water review pass 1 (Orodruin) finding B1; repair round 2.
 - **Status (salvage-night Edge job, 2026-10-30, and the seam batch, 2026-10-31):** shipped (Batch 1621). **Edge acceptance PASSED 2026-10-31** on the seam-fix tree; receipt `F:/Dev/GH/cesium-webgpu-worker-archive/lanes-2026-10-30/watermask-seams/EDGE_RECEIPT_EOWYN_SEAMS.md`, evidence `Tools/visual-regression/output/wave-end/watermask-seams-20261031/`.
   - The first Edge job, at Batch 1623 (`EDGE_RECEIPT_EOWYN.md` cell 2), saw the WaterMask material compile on WebGPU (0 gate errors) and the white sea render. It also showed seams at tile edges: 1,573 px more than 8 levels from WebGL, max 127, identical on both runs.
-  - The seams were a separate defect with its own row, `NEW-WATER-GLOBE-MATERIAL-WATER-MASK-TILE-EDGE-SEAMS` (below), closed by the seam batch. That batch does not change this row's mask sample.
+  - The seams were a separate defect with its own row, `NEW-WATER-GLOBE-MATERIAL-WATER-MASK-TILE-EDGE-SEAMS` (below), closed by the seam batch (Batch 1627, `6b1b2d0ebe`). That batch does not change this row's mask sample.
   - On its tree, `probe-landing-cells.mjs --cells E-M-water --runs 2 --wait-pipelines` shows the mask with the coast continuous across tile edges: 0 px more than 8 levels against WebGL (max 6), and 0 gate, console or page errors.
 
-### NEW-WATER-GLOBE-MATERIAL-WATER-MASK-TILE-EDGE-SEAMS - the WebGPU globe material wrote hyperbolic depth into the log-depth frame, so tile skirts painted seams over their neighbours - **CLOSED** (the batch that adds this row; Edge acceptance PASSED 2026-10-31)
+### NEW-WATER-GLOBE-MATERIAL-WATER-MASK-TILE-EDGE-SEAMS - the WebGPU globe material wrote hyperbolic depth into the log-depth frame, so tile skirts painted seams over their neighbours - **CLOSED** (Batch 1627, `6b1b2d0ebe`; Edge acceptance PASSED 2026-10-31)
 
-- **Status:** OPEN as measured by the seat's Edge job (2026-10-30), then CLOSED by this batch with the mechanism measured below. Edge acceptance PASSED 2026-10-31, run by the seat's executor on the frozen patch (md5 c5a726a9d1318dddfac7718727df2c45 over 95cfcdc24a); receipt `F:/Dev/GH/cesium-webgpu-worker-archive/lanes-2026-10-30/watermask-seams/EDGE_RECEIPT_EOWYN_SEAMS.md`, evidence `Tools/visual-regression/output/wave-end/watermask-seams-20261031/`.
+- **Status:** OPEN as measured by the seat's Edge job (2026-10-30), then CLOSED by Batch 1627 (`6b1b2d0ebe`) with the mechanism measured below. Edge acceptance PASSED 2026-10-31, run by the seat's executor on the frozen patch (md5 c5a726a9d1318dddfac7718727df2c45 over 95cfcdc24a); receipt `F:/Dev/GH/cesium-webgpu-worker-archive/lanes-2026-10-30/watermask-seams/EDGE_RECEIPT_EOWYN_SEAMS.md`, evidence `Tools/visual-regression/output/wave-end/watermask-seams-20261031/`.
   - **The cell:** `probe-landing-cells.mjs --cells E-M-water --runs 2 --wait-pipelines`, WebGPU against WebGL.
   - **BEFORE** (Batch 1623 engine, byte-identical to the salvage-night capture): 1,573 px more than 8 levels, in 28 regions, max 127.
   - **AFTER:** 0 px, max 6. Only 11 isolated single pixels are more than 2 levels off.
@@ -30296,7 +30296,7 @@ The stub spreads `FRAMEBUFFER_CONSTANTS`: `FRAMEBUFFER`, `READ_FRAMEBUFFER`, `DR
   - naga validates the WaterMask modules with log depth on and off, at hi 0 and with WATER_PROVIDER_PARITY.
   - The depth arithmetic above.
   - Four executed mutants turn the checks red, each for its own reason: the fix made unreachable (the pre-fix mask), the key without LOG_DEPTH, a module map that ignores the defines, and a module compiled without the hi word.
-- **Acceptance:** PASSED 2026-10-31. The seat's E-M-water re-capture on the batch's tree gives 1,573 -> 0 px more than 8 levels (Status above; receipt `EDGE_RECEIPT_EOWYN_SEAMS.md`). Still open as an optional discriminator: E-M-water at the base with `scene.logarithmicDepthBuffer = false` should also lose the seams. The kit has no dial for it. Class: engine (parity). **Suggested owner:** closed by this batch.
+- **Acceptance:** PASSED 2026-10-31. The seat's E-M-water re-capture on the batch's tree gives 1,573 -> 0 px more than 8 levels (Status above; receipt `EDGE_RECEIPT_EOWYN_SEAMS.md`). Still open as an optional discriminator: E-M-water at the base with `scene.logarithmicDepthBuffer = false` should also lose the seams. The kit has no dial for it. Class: engine (parity). **Suggested owner:** closed by Batch 1627 (lane Almiel, reviewer Ailinel P1 HOLDS-WITH-FIXES, applied in round 2).
 - **Source:** the seat's salvage-night Edge job (executor Eowyn) cell 2; lane Almiel (2026-10-31).
 
 ### NEW-WATER-MASK-FILL-TILE-WEBGPU - a WebGPU tile drawn through its terrain fill mesh gets no water mask, where WebGL uses the fill's - **OPEN** (lead, unmeasured)
@@ -30856,7 +30856,7 @@ show that cloud shading at one sample is correct (the verifier's limit, which th
 **Source:** `wave-end/w2-f2-repair/SUMMARY_Nimrais.txt:12`; `wave-end/w2-r7-identity/SUMMARY_Nimrais.txt:14` and
 `VERIFY_CALENHAD.md:62-64`; `wave-end/w3-identity/SUMMARY_Tarondor.txt:14`; `git show -s e8046e5ae1`.
 
-### NEW-CLOUD-W2-3450-ORBITAL-SEAM — the orbital full disc falls to 0.784x of main with a hard-edged central seam from unit 3450 — **CLOSED** (step removed by Batch 1612 `6face1ede7`, level set by Batch 1613 `86fee24dd2`, anchored by R-2026-10-30-M2; pinned by Batch NNNN `<hash>`; engine/shader, default path, WebGPU)
+### NEW-CLOUD-W2-3450-ORBITAL-SEAM — the orbital full disc falls to 0.784x of main with a hard-edged central seam from unit 3450 — **CLOSED** (step removed by Batch 1612 `6face1ede7`, level set by Batch 1613 `86fee24dd2`, anchored by R-2026-10-30-M2; pinned by Batch 1626 `7b5bfbce2d`; engine/shader, default path, WebGPU)
 
 On the W2-R7 identity job E-O (orbital full disc, MSAA 4) reads mean luma 60.97 on BEFORE and 47.82 on TIP(8) (0.784x, 2
 runs each, byte-identical), outside the pre-registered [0.90, 1.10]; per-tip localisation (1 run per tip) puts the whole
@@ -30878,7 +30878,7 @@ W3 lands.
 **Source:** `wave-end/w2-r7-identity/SUMMARY_Nimrais.txt:10`, `:20`, `:23`; `VERIFY_CALENHAD.md:38`, `:46`, `:94-101`;
 `wave-end/w2-r7-identity/diag-3450/REPORT.txt:37-78`; `git show -s b6a18cc088` ("Round-8 findings"); W3:
 `wave-end/w3-identity/SUMMARY_Tarondor.txt:13`, `:35-41`.
-**Closed by W3 under the ruling; W2 round 9 (lead Mirrormere) pins it (seat to fill the batch and hash).** The step went with
+**Closed by W3 under the ruling; W2 round 9 (lead Mirrormere) pins it (Batch 1626, `7b5bfbce2d`).** The step went with
 W3's unit 3462 (Batch 1612; the W3 job's per-tip localisation shows it gone at TIP(5)) and the level was set by 3463
 (Batch 1613: E-O 67.48 from TIP(6), 2 runs on TIP(8)). Under the maintainer's ruling R-2026-10-30-M2 (D1: the physical look,
 `NEW-CLOUD-W2-AERIAL-ORBITAL-ANCHOR`) that level is the anchor: 67.48 = 1.107x of the pre-W2 60.97, because main's outer
@@ -30890,6 +30890,14 @@ nadir to 60.3 deg (the limb is 60.6 deg), with the air light non-decreasing outw
 (a view-cosine clamp) and S2 (a readiness select back to the flat tint) turn it red. Expected on the seat's Edge leg: E-O
 67.48 +- 0.1 (this round moves the representative distance by at most half a march interval, tens of metres against a
 6,600 km path).
+**Measured on the seat's Edge leg (2026-10-31; recorded by records round 4):** E-O reads 67.483 on BEFORE (Batch 1623's
+engine) and on AFTER (round 9 on Batch 1625), two runs each, byte-identical run to run; the AFTER-minus-BEFORE luma of every
+20 px annulus around the disc centre is 0.000, and neither arm has a half-radius step. Both arms show the same concentric
+moire rings and a dark central spot, recorded as `NEW-CLOUD-ORBITAL-DISC-MOIRE-RINGS` (records round 4). The leg ran on the
+round-9 patch; the landed round 9b changed spec, rows and message only (the three engine files' md5s are equal in
+`w2-r9/FREEZE_MIRRORMERE.md5` and `w2-r9/round9b/FREEZE_MIRRORMERE.md5`). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-30/w2-r9/EDGE_RECEIPT_EOWYN_W2R9.md` (results table and "E-O seam"); reviewer
+`w2-r9/round9b/REVIEW_HIMLING_P8.md:1` (HOLDS-WITH-FIXES, applied in round 9b).
 
 ### NEW-CLOUD-W2-3450-SKY-HATCHING — the flight cell's sky turns grey with coarse hatching above the horizon from unit 3450 — **OPEN** (engine/shader, default path, WebGPU)
 
@@ -30930,6 +30938,13 @@ and hatching energy lower by a fraction of 1 near the horizon, NOT back to the T
 here, unmeasured): weights from the smooth base shape the march already evaluates (`base`, no extra fetch), or a tier-3
 temporal or spatial filter of the representative distance. **Acceptance unchanged.** **Source:** round-9 packet
 `LANDING_PACKET_MIRRORMERE.md`; `Tools/visual-regression/cloud-air-light-anchor.spec.mjs`.
+**Measured on the seat's E-F leg (2026-10-31; recorded by records round 4): the hatching did not move.** Round 9 landed as
+Batch 1626 (`7b5bfbce2d`). E-F reads frame mean 146.889 on BEFORE and AFTER; the lead's metric (mean |L(x+1) - L(x)| over x
+800-1199) in rows 150-209 reads 5.356 BEFORE and 5.364 AFTER (max 9.456 at row 202 and 9.424 at row 201), noise-level and not
+"lower by a fraction of 1"; the contact crops show the same coarse diagonal hatching on both arms. The row stays **OPEN**; the
+round-9 packet's remaining candidate (the jittered density reads choosing the weighted cloud mass on grazing rays) and the
+reconstruction path are unmeasured. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-30/w2-r9/EDGE_RECEIPT_EOWYN_W2R9.md`
+("E-F hatching"); contact `Tools/visual-regression/output/wave-end/w2-r9-20261031/contact/EF_horizon_crop_x800-1199_y120-260_x3.png`.
 
 ### NEW-CLOUD-W2-AERIAL-ORBITAL-ANCHOR — which look is the orbital reference: main's (no air light) or a physical air light — **DECIDED: physical** (R-2026-10-30-M2; seat ruling S14)
 
@@ -30967,6 +30982,11 @@ tree; the spec pins that the aerial reads no sky-view row. **Remaining parity no
 "heuristic"` keeps the camera-keyed flat tint at orbit by request, night-limb glow included; neither is the default, and
 neither needs a row. No GLSL twin: the volumetric deck is
 WebGPU-only (R-2026-10-22-6).
+**Landed and measured (records round 4):** round 9 landed as Batch 1626 (`7b5bfbce2d`). On the seat's Edge leg E-O reads
+67.483 and E-G-night 23.401 -> 23.400 across the round, and E-G-night shows no glow on AFTER; the kit has no night-limb or
+terminator cloud cell (E-O looks at the sub-solar point, so its disc has no night side), so the night-limb guard stays
+pinned by the spec only. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-30/w2-r9/EDGE_RECEIPT_EOWYN_W2R9.md`
+("Night-limb clouds").
 
 ### NEW-CLOUD-AERIAL-CHROMATIC-FINITE-PATH — 3450's aerial blend is achromatic while the finite camera-to-cloud path it models reddens — **CANDIDATE** (engine/shader)
 
@@ -31241,20 +31261,26 @@ kit, not in a tracked runner. **Acceptance:** `--check` exits 0 at every batch o
 seat.
 **Source:** this lane's four `--check` runs; `cesium-webgpu-worker-archive/lanes-2026-10-29/gwip-cut-r3-landing/landing-b2-attempt2.output.txt:11-12`, `:21`.
 
-### DX-SEAT-WORKTREE-FOREIGN-WIP — an Antigravity session edited the seat worktree uncommitted on 2026-10-29 — **OPEN** (DX row, process; maintainer decision A1)
+### DX-SEAT-WORKTREE-FOREIGN-WIP — an Antigravity session edited the seat worktree uncommitted on 2026-10-29 — **CLOSED** (DX row, process; decision A1 resolved by R-2026-10-30-M3, recorded in CLAUDE.md by Batch 1625)
 
 On 2026-10-29 the seat found uncommitted Antigravity (Gemini) work in the seat worktree `F:/Dev/GH/cesium-webgpu` (files
 dated 2026-10-29 14:16-19:22): 23 modified tracked paths and 13 untracked paths, plus an edit to the gitignored `.mcp.json`
 and a 256 MB gitignored `.cache/context-spine/`. Under seat ruling S15 it was banked byte-exactly (`tracked.patch` =
 `git diff --binary`, `untracked.tar`, `MD5SUMS`), the seat was cleaned by positive list, and the work continued in lane
-GWIP, where it was audited, repaired and landed as Batches 1606-1607; its governance batch is held. Nothing kept a non-seat
+GWIP, where it was audited, repaired and landed as Batches 1606-1607; its governance batch was held, then folded into the
+rules consolidation that landed as Batch 1625 (`R-2026-10-30-M2`). Nothing kept a non-seat
 agent out of the seat worktree. **Repair (decision A1, recommended):** Antigravity gets its own clone, provisioned by the
 seat, and never edits `F:/Dev/GH/cesium-webgpu`; only the seat lands on main. **Acceptance:** the maintainer's ruling,
 recorded with the agent rules. **Suggested owner:** the seat.
 **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-29/gemini-wip-seat-transplant/MANIFEST.txt:1-3`;
 `lanes-2026-10-29/DECISIONS_FOR_MAINTAINER_2026-10-29.md:7-9`; the "Provenance" lines of Batches 1606 and 1607.
+**Closed (records round 4):** the acceptance is met. `R-2026-10-30-M3` ("if a LLM does not have the seat it should work in a
+cloned copy, unless I override") is recorded in `MAINTAINER_RULINGS_2026-10-22.md` (Batch 1624) and with the agent rules in
+`CLAUDE.md` "Rules Files and Routing" (`CLAUDE.md:753`, Batch 1625, `95cfcdc24a`). The rule is a rule, not a mechanism:
+nothing technical keeps a non-seat agent out of the seat worktree, and the seat's session scratchpad got its own rule the
+same night (seat note B51, recorded in the records-round-4 section).
 
-### NEW-WATER-W1A-GLOBE-PIPELINE-FALLBACK — the Antigravity lane water-w1a needs rework: its pipeline-cache key removes main's previous-tier fallback — **OPEN** (REWORK; maintainer decisions B1-B3 pending)
+### NEW-WATER-W1A-GLOBE-PIPELINE-FALLBACK — the Antigravity lane water-w1a needs rework: its pipeline-cache key removes main's previous-tier fallback — **OPEN** (REWORK; decisions B1-B3 resolved through the per-wave fix list, R-2026-10-30-M1)
 
 Lane water-w1a (2026-10-29) carries real value: a globe fed by a water classification provider draws Base tiles from
 frame 1 instead of holes, each provider water mask holds one GPU copy instead of two (`NEW-WATER-MASK-STUB-COPY`), the debug
@@ -31271,7 +31297,7 @@ rework round that closes F1-F5 under review. **Suggested owner:** the seat's wat
 **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-29/water-w1-inventory/REVIEW_POROS_W1A.md:1`, `:43-145`,
 `:266-282`; `lanes-2026-10-29/DECISIONS_FOR_MAINTAINER_2026-10-29.md:18-21`.
 
-### NEW-WATER-W1B-OCEAN-LIFECYCLE — the Antigravity lane water-w1b fixes two real FFT-ocean defects but needs rework — **OPEN** (REWORK; maintainer decisions B1 and B4 pending)
+### NEW-WATER-W1B-OCEAN-LIFECYCLE — the Antigravity lane water-w1b fixes two real FFT-ocean defects but needs rework — **OPEN** (REWORK; decisions B1 and B4 resolved through the per-wave fix list, R-2026-10-30-M1)
 
 Lane water-w1b fixes two real FFT-ocean defects that no ledger row covered (WebGPU only; the opt-in
 `scene.globe.water.ocean.enabled`; defaults unchanged). (1) An HDR toggle, an MSAA change or a log-depth flip re-runs
@@ -31288,7 +31314,7 @@ that turns the FFT ocean on. **Suggested owner:** the seat's water rework lane, 
 **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-29/water-w1-inventory/REVIEW_MITHEITHEL_W1B.md:1-10`, `:147-166`,
 `:184-205`; `lanes-2026-10-29/DECISIONS_FOR_MAINTAINER_2026-10-29.md:22-24`.
 
-### NEW-WATER-W1C-PRIMITIVE-WATER-SSR — the Antigravity lane water-w1c (SSR on opaque primitive water) is refuted — **OPEN** (REFUTED; needs a narrowed rework; maintainer decisions B5 and B6 pending)
+### NEW-WATER-W1C-PRIMITIVE-WATER-SSR — the Antigravity lane water-w1c (SSR on opaque primitive water) is refuted — **OPEN** (REFUTED; needs a narrowed rework; decisions B5 and B6 resolved through the per-wave fix list, R-2026-10-30-M1)
 
 Lane water-w1c's value (SSR on opaque primitive water, and a pipeline rebuild on a format change) is real, but two of its
 headline premises are false and each turns into a regression that its own spec certifies. SSR builds its pipeline for the
@@ -31302,6 +31328,11 @@ UBO float. **Acceptance:** the maintainer's B5/B6 rulings, then a narrowed rewor
 **Suggested owner:** the seat's water rework lane, if B1 says so.
 **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-29/water-w1-inventory/REVIEW_CELDUIN_W1C.md:1`, `:12-58`,
 `:145-164`; `lanes-2026-10-29/DECISIONS_FOR_MAINTAINER_2026-10-29.md:25-26`.
+**First SSR capture (2026-10-30, records round 4):** the seat's Edge job ran `probe-ssr-water.mjs` on Batch 1623: ssr-engagement
+0 % / 0 px (the SSR-on frame byte-identical to SSR-off, `enableSSR` applied) and the deferred-lighting no-op check PASS. SSR on
+opaque primitive water is this wave's feature and is not on main, so the band registers when a narrowed w1c lands; the fix
+list carries the probe as w1c's acceptance. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-30/salvage-night/edge/EDGE_RECEIPT_EOWYN.md:29`;
+`lanes-2026-10-30/gemini-fix-list/GEMINI_WATER_FIX_LIST_2026-10-31.md:93`, `:375`.
 
 ### NEW-WEBGPU-EFFECT-DEAD-CANVASFORMAT-FALLBACK — WebGPU readers fall back on a `context._canvasFormat` the context never sets — **CANDIDATE** (engine, WebGPU; one defect, one owner)
 
@@ -31323,7 +31354,7 @@ gives the output view a format. Every reader named here belongs to this row; the
 readers at Batch 1622 (a grep for `_canvasFormat` under `packages/engine/Source/Renderer/WebGPU/`); the records review of
 2026-10-30, note N1.
 
-### NEW-CODEX-POST-PLAN-UNITS-3587-3789 — the harmonization audit of Codex's post-plan cloud units: 27 unit numbers worth regenerating — **RECORD** (audit, critic HOLDS pass 3; maintainer decisions C1-C5 pending)
+### NEW-CODEX-POST-PLAN-UNITS-3587-3789 — the harmonization audit of Codex's post-plan cloud units: 27 unit numbers worth regenerating — **RECORD** (audit, critic HOLDS pass 3; decisions C1-C5 accepted as recommended, C5 opt-in now, R-2026-10-30-M2)
 
 The audit (pass 3, critic HOLDS) counts 203 unit numbers after the plan: 102 with a landing patch, 92 records or drafts,
 and 9 with no files, all written on Codex's chain over `1ef3cb6400`, which is not an ancestor of main. Its verdict:
@@ -31334,7 +31365,8 @@ record 27, absent 9. The 27 ride the plan's groups G1-G6, which are W4-W11, as 2
 W5+W6 and W7a for one more Edge job, and 3782's weather mode-race guard moves to G1. Priced per unit, the inflow costs 56.5
 lane hours as a floor by the audit (`:811`), or 58.6 h in the critic's pricing (`CRITIC_MIDGEWATER_P3.md:68`, `:216`, the
 figure the seat's decision C4 quotes), against 155 h to land the 102 patches as delivered. Nothing here lands by itself: the kept units are
-regenerated onto the seat's line in their groups (R-2026-10-23-M4), and decisions C1-C5 are the maintainer's.
+regenerated onto the seat's line in their groups (R-2026-10-23-M4), and decisions C1-C5, the maintainer's, are accepted as
+the seat recommended, C5 opt-in now (`R-2026-10-30-M2`, recorded by Batch 1624).
 **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-29/codex-cartography-3587-3789/HARMONIZATION_AUDIT.md:1`, `:76-78`,
 `:103`, `:390-398`, `:626-635`, section 9 (`:968-986`); critic `CRITIC_MIDGEWATER_P3.md:1` (same folder);
 `lanes-2026-10-29/DECISIONS_FOR_MAINTAINER_2026-10-29.md:29-43`.
@@ -31355,8 +31387,10 @@ Dolbaran P4) = 1622, and B (Emerie, Nindamos P2, P3 and P3b HOLDS) = 1623, `c2d6
 `salvage-night/landing-logs/` (lane B: `land-salvage-queue-1793415148.log` and `land-emerie-3.log`). Batch 1623 carries lane B's round-2 content, which the P2 review held,
 and its round 3, which the P3 review held (`emerie/round4/REVIEW_NINDAMOS_P3.md`, with the P3b section appended): a brace-counting D4 check in
 `globe-night-imagery-option.spec.mjs`, a tracked-files-only spec census and five shader-reader allowlist rows. Seat rulings S17 and S18 are in `MAINTAINER_RULINGS_2026-10-22.md`; the
-seat's decisions list (B9-B49, banked as `salvage-night/DECISIONS_FOR_MAINTAINER_2026-10-29.md`) is open for the maintainer
-and is cited here as decisions, not rulings. Rows for the lanes' own defects are not written: they are the rework items in
+seat's decisions list (B9-B49, banked as `salvage-night/DECISIONS_FOR_MAINTAINER_2026-10-29.md`) was open for the maintainer
+until the rulings of 2026-10-30 23:2x EDT: B9-B44, with the groups `R-2026-10-30-M2` … `-M4` name, are answered by
+`R-2026-10-30-M1` … `-M4`, while B45-B49 stay seat defaults or rows (corrected by records round 4); the items are cited here
+as decisions, not rulings. Rows for the lanes' own defects are not written: they are the rework items in
 each review file.
 
 ### NEW-WATER-GEOID-HEADER-OFFSET — the bathymetry tensor builder read the EGM geoid without its 32-byte header — **CLOSED** (Batch 1616, `c17e4af13b`)
@@ -31406,17 +31440,21 @@ either tensor yet. If a later salvage brings back w2b's categorical polar filter
 not another copy. **Source:** `lanes-2026-10-30/water-w2b-w3-review/REVIEW_GABILGATHOL_W2C.md` (G5); the salvage bank's
 `nisimaldar/LANDING_PACKET_NISIMALDAR3.md:83-87`; `git show -s 5e0b30b08f`.
 
-### DX-KIT-WATER-OCEAN-DIAL — the kit had no dial for `globe.water.ocean.enabled`, so the FFT-ocean rig rendered no ocean — **CLOSED** (Batch 1619, `2f3160261f`; Edge capture owed)
+### DX-KIT-WATER-OCEAN-DIAL — the kit had no dial for `globe.water.ocean.enabled`, so the FFT-ocean rig rendered no ocean — **CLOSED** (Batch 1619, `2f3160261f`; first Edge capture ran 2026-10-30)
 
 The Batch 1607 rig `ocean-fft-patch-rebase` declared an FFT-ocean scene the kit could not switch on (the water-w3 review,
 `REVIEW_TUMUNZAHAR_W3.md` D6), and the w5 rewrite of `probe-fft-ocean.mjs` enabled the ocean through a private page function
-(`REVIEW_BRITHOMBAR_W5.md`). Batch 1619 (lane A, Andustar, reviewer Hyarnustar P2 HOLDS) lifts it into
+(`REVIEW_BRITHOMBAR_W5.md`). *(Records round 4: the first capture ran in the seat's salvage-night Edge job on Batch 1623 -
+`probe-fft-ocean.mjs` PASS, off-gate 0 against 0.5, isolated coverage 0.9939 against 0.1, temporal 34.846 against 0.5,
+`waterOceanEnabled` applied with the primitive present, 4 of 6 verdict ids emitted and neither refusal hit, so its bands are
+registrable from that capture; `probe-ssr-water.mjs` read SSR engagement 0 % because SSR on opaque water is not on main
+(`NEW-WATER-W1C-PRIMITIVE-WATER-SSR`); `salvage-night/edge/EDGE_RECEIPT_EOWYN.md:28-29`.)* Batch 1619 (lane A, Andustar, reviewer Hyarnustar P2 HOLDS) lifts it into
 `lib/landing-cell-stage.mjs` as `waterOceanEnabled` (`scene.globe.water.ocean.enabled`, read back through `ocean.primitive`),
 and the FFT-ocean and SSR water probes run on the runtime from seventeen rigs. The bands the w5 probes carry are NEW and
 re-registration-owed from the first Edge capture, which the seat's Edge job owes (no capture has run). **Source:** the salvage
 bank's `andustar/round2/LANDING_PACKET_ANDUSTAR.md:75-79`, `:86-92`, and `andustar/round2/REVIEW_HYARNUSTAR_P2.md:1`.
 
-### DX-KIT-MATERIAL-DIAL — no kit dial applied a globe material, so the material water-mask demo had no Edge cell — **CLOSED** (Batch 1621, `d4610a4ff3`; Edge capture owed)
+### DX-KIT-MATERIAL-DIAL — no kit dial applied a globe material, so the material water-mask demo had no Edge cell — **CLOSED** (Batch 1621, `d4610a4ff3`; Edge capture ran 2026-10-30, the cell's acceptance PASSED 2026-10-31 after Batch 1627)
 
 The w4b review found no dial in `lib/landing-cell-stage.mjs` that applies `globe.material`, so the
 `globe-materials-water-mask-elevation-map` demo could not be a rig cell and `NEW-WATER-GLOBE-MATERIAL-WATER-MASK` had no Edge
@@ -31426,7 +31464,7 @@ the cell `E-M-water`. The reviewer's minor m2 stands: the dial's read-back mutan
 **Source:** `lanes-2026-10-30/water-w2b-w3-review/REVIEW_AELUIN_W4B.md`; the salvage bank's
 `mering/round2/LANDING_PACKET_MERING.md:84-94` and `mering/round2/REVIEW_FIRIEN_P2.md:40-42`.
 
-### C6-FFT-OCEAN-STOCKHAM-IFFT — the FFT ocean's inverse FFT runs as two shared-memory Stockham dispatches behind an `ifftKernel` toggle — **LANDED** (Batch 1622, `9ac404eb46`; Edge readback owed)
+### C6-FFT-OCEAN-STOCKHAM-IFFT — the FFT ocean's inverse FFT runs as two shared-memory Stockham dispatches behind an `ifftKernel` toggle — **LANDED** (Batch 1622, `9ac404eb46`; Edge readback identity PASSED 2026-10-31 at simulationSeconds 0; PF leg owed)
 
 Salvage lane E (Hornburg, reviewer Dolbaran P4 HOLDS) from the Antigravity wave w6a (`REVIEW_RERIR_W6A.md`). The inverse FFT
 runs as two shared-memory Stockham dispatches (`OceanStockhamIFFT.wgsl`, 256-lane workgroups, 8 stages in 8,192 B of
@@ -31440,6 +31478,15 @@ shows a contraction difference, the default becomes `"pingpong"`. Spec: `water-o
 conversion of `GlobeWaterOcean.js` and `OceanSurfacePrimitive.js` is deferred once more by seat decision B45
 (`ES6_MODERNIZATION_STATUS.md` §7.1). **Source:** the salvage bank's `hornburg/round4/LANDING_PACKET_HORNBURG.md:128-132` and
 `hornburg/round4/REVIEW_DOLBARAN_P4.md:1`; `git show -s 9ac404eb46`.
+**Readback measured (records round 4).** Batch 1628 (`5e684450f1`) gave the kit the `waterOceanIfftKernel` dial and the
+displacement readback, and the seat's Edge leg ran cell `E-FFT-ifft` (`--no-cell-perf`) on Batch 1625 plus that patch: the
+Stockham and ping-pong pages give the same displacement hash on both runs, maxAbsDelta 0 and 0 differing values (rgba16float
+256x256 read back, 220,916 non-zero texels, `computePipelinesReady` on all four pages, the kernel read back as requested on
+the facade and the primitive). The identity is measured at `simulationSeconds` 0 only, the transform of the initial spectrum
+(`DX-KIT-FFT-IDENTITY-EVOLVED-EPOCH`), so the default stays `"stockham"`. Still owed: per-pass GPU and frame time for both
+kernels, which needs a quiet-machine PF leg (`DX-KIT-E-FFT-PF-LEG`). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/EDGE_RECEIPT_EOWYN_KIT.md` (section 1 cell 3; section 2 "Readback
+state", "Kernel dial", "simulationSeconds"; section 3 finding 3).
 
 ### NEW-FFT-OCEAN-REINIT-LEAK — an FFT-ocean re-initialisation re-creates its textures and buffers without destroying the old set — **OPEN** (engine, opt-in FFT ocean)
 
@@ -31755,5 +31802,237 @@ else is a W3 defect), with an inertness mutant each. **Suggested owner:** a boun
   `probe-landing-cells.spec.mjs` P4. The w5 lane pre-empted both; neither lands from a lane patch.
 - The probe-kit guide is regenerated at every landing and never rebased (CLAUDE.md "Probe Kit - Kit First"); the merged Gemini
   bases fail `probe-kit-inventory --check` for that reason alone.
-- `NEW-WATER-GLOBE-MATERIAL-WATER-MASK` is shipped pending Edge acceptance (status line on the row); the Antigravity w4b wave
+- `NEW-WATER-GLOBE-MATERIAL-WATER-MASK` is shipped and its Edge acceptance PASSED on 2026-10-31, after Batch 1627 fixed the
+  tile-edge seams the first capture found (status lines on the row; corrected by records round 4); the Antigravity w4b wave
   as a whole stays REWORK.
+
+## 2026-10-31 — records round 4: Batches 1624-1628 and the Edge legs that accepted them
+
+On 2026-10-31 (00:03-02:06 EDT) five batches landed: 1624 (records batch 3, round 3, lead Gwathlo,
+reviewer Glanduin P2 and P2b HOLDS), 1625 (the rules consolidation, lead Lindorie, reviewer Nolimon P1 HOLDS with two
+REQUIRED edits, applied in round 2), 1626 (W2 round 9, lead Mirrormere, reviewer Himling P8 HOLDS-WITH-FIXES, applied in
+round 9b), 1627 (the material water-mask seams, lead Almiel, reviewer Ailinel P1 HOLDS-WITH-FIXES, applied in round 2) and
+1628 (probe-kit pieces, lead Lindisse with workers Zimrahin, Nuneth and Abrazan, reviewer Tar-Palantir P1 HOLDS-WITH-FIXES,
+applied in round 2). Their landing table is `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-31 …)". The seat's Edge
+executor Eowyn ran four Edge jobs: the salvage-night acceptance job on Batch 1623
+(`cesium-webgpu-worker-archive/lanes-2026-10-30/salvage-night/edge/EDGE_RECEIPT_EOWYN.md`, "the salvage receipt" below) and
+one leg each for 1626, 1627 and 1628 (`lanes-2026-10-30/w2-r9/EDGE_RECEIPT_EOWYN_W2R9.md`,
+`lanes-2026-10-30/watermask-seams/EDGE_RECEIPT_EOWYN_SEAMS.md`, `lanes-2026-10-30/kit-pieces/EDGE_RECEIPT_EOWYN_KIT.md`, "the
+kit receipt" below). The three legs captured the frozen patch on Batch 1625 (`95cfcdc24a`). For 1626 and 1627 the landed
+round changed no engine or shader byte: the engine files' md5s are equal in the measured and the landed freeze
+(`w2-r9/FREEZE_MIRRORMERE.md5` against `w2-r9/round9b/FREEZE_MIRRORMERE.md5`; `watermask-seams/FREEZE_ALMIEL.as-delivered.md5`
+against `watermask-seams/round2/FREEZE_ALMIEL.md5`). 1628 landed the measured patch itself (md5 `df2561a860f40f68bc4ecfc980c50201`,
+`kit-pieces/round2/FREEZE_LINDISSE.md5:1` and the landing log). Landing logs:
+`salvage-night/landing-logs/land-records-r3-1793419054.log` (1624), `land-lindorie-1793419805.log` (1625's first attempt,
+refused on the excluded path `AGENTS.md`) and `land-lindorie-1793420257-gov.log` (1625, governance paths allowed under
+`R-2026-10-30-M2`), `w2-r9/landing-logs/land-mirrormere-r9-1793424357.log` (1626),
+`watermask-seams/landing-logs/land-almiel-1793425331.log` (1627) and `kit-pieces/landing-logs/land-lindisse-kit-1793425877.log`
+(1628). Rows already updated in place by this round: `NEW-CLOUD-W2-3450-ORBITAL-SEAM` (hash filled, Edge measured),
+`NEW-CLOUD-W2-3450-SKY-HATCHING` (Edge: unchanged), `NEW-CLOUD-W2-AERIAL-ORBITAL-ANCHOR`,
+`NEW-WATER-GLOBE-MATERIAL-WATER-MASK-TILE-EDGE-SEAMS` (batch filled), `C6-FFT-OCEAN-STOCKHAM-IFFT` (readback PASSED),
+`DX-KIT-WATER-OCEAN-DIAL`, `DX-KIT-MATERIAL-DIAL`, `NEW-WATER-W1A/W1B/W1C-*` and `NEW-CODEX-POST-PLAN-UNITS-3587-3789` (decisions
+answered), `DX-SEAT-WORKTREE-FOREIGN-WIP` (closed). The rows below are new.
+
+### NEW-CLOUD-ORBITAL-DISC-MOIRE-RINGS — the orbital full disc shows concentric moire rings and a dark central spot, on main before and after W2 round 9 — **OPEN** (candidate; engine/shader, WebGPU volumetric clouds)
+
+- **Symptom (seat observation 2026-10-31 01:2x, measured by the W2-r9 leg):** on cell E-O (orbital full disc, 6,608 km, nadir
+  over the sub-solar point, MSAA 4) both arms show concentric moire rings over the whole disc and a dark central spot: the
+  annuli at r 0-60 px read 60-65 against 66-67 around them. A nearest-neighbour crop shows the rings are in the pixels, not
+  display aliasing. BEFORE (Batch 1623's engine) and AFTER (W2 round 9) are the same pattern byte for byte (radial annulus
+  delta 0.000), so round 9 neither introduced nor changed it. It is not `NEW-CLOUD-W2-3450-ORBITAL-SEAM`'s hard-edged central
+  step, which has been gone since W3 (Batches 1612-1613).
+- **Related rows (cross-referenced, not merged):** `C13-N60` (orbital concentric bands from the march's occlusion clamp at
+  the depth read's precision, filed 2026-09-19) and the orbital-ladder follow-up `R-b` (concentric ray-march ringing at
+  2,000 km and above). Batch 1604 gave the cloud passes a full-precision scene-depth view since `C13-N60` was filed. Whether
+  these rings are that family is not measured.
+- **Candidate mechanisms (unmeasured):** march-step aliasing against the disc's radial parameterisation at orbit, or the
+  half-resolution, temporal or upscale (reconstruction) path.
+- **Acceptance:** a measured mechanism on cell E-O with the diag-3450 radial metric, then a fix whose AFTER removes the
+  rings without moving E-O's mean (67.48 is the anchor under `R-2026-10-30-M2`). Class: engine/shader. **Suggested owner:**
+  a cloud lane after the Antigravity water program lands.
+- **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-30/w2-r9/EDGE_RECEIPT_EOWYN_W2R9.md` ("E-O seam"); contact
+  `Tools/visual-regression/output/wave-end/w2-r9-20261031/contact/W2R9_before_after.png` and
+  `contact/EO_centre_crop_x824-1224_y820-1220_x2.png`; the seat's addendum
+  `lanes-2026-10-30/salvage-night/rows-for-records-r2-addendum.md`.
+
+### NEW-WATER-ANTIMERIDIAN-BASE-COLOUR-STEP-BOTH-RENDERERS — the Chukotka antimeridian rig shows a hard straight base-colour step on both renderers — **OPEN** (seat-measured; owner unattributed)
+
+- **Symptom:** on rig `water-antimeridian-chukotka` (cell `E-C-chukotka`, Batch 1628) WebGL and WebGPU show the same hard
+  straight 1-px colour step, from (154,156,141) to (146,162,153), along a line from about x 1115 at y 0 to x 1280 at y 600.
+  It leans the way a meridian does under the heading-0 camera, so it is most likely the +-180 degree meridian; that is not
+  confirmed by picking. Because both renderers draw it, the cross-renderer diff cannot see it. The rig exists to test the
+  dateline wrap, and this frame suggests the base colour is not continuous there.
+- **Not this row:** Batch 1617 (`06aed69cfb`) made the global coastline's distance field continuous across the antimeridian;
+  this is a base-colour step, not the coastline tensor seam.
+- **Repair:** first a picking step that reads the line's longitude; then the owner (the global-coastline wrap or the water
+  classification wrap are candidates, not premises).
+- **Acceptance:** the step gone on both renderers on `E-C-chukotka`, read from the crop, with the cross-renderer band of S19
+  still met. Class: engine (both backends). **Suggested owner:** a water lane, picking step first.
+- **Source:** the kit receipt, section 3 finding 2; crop
+  `Tools/visual-regression/output/wave-end/kit-pieces-20261031/E-C-chukotka/crop-webgl-left-webgpu-right-1140-300.png` (the seat
+  read it); the seat's addendum (as above).
+
+### NEW-2D-WEBGPU-CONCENTRIC-BANDING — the default globe's base colour in settled 2D (and Columbus View) is concentric bands on WebGPU and flat navy on WebGL — **OPEN** (parity observation, WebGPU; seat-measured)
+
+- **Symptom:** in the `E-ID-2d` frame (rig `default-2d-pinned`: CesiumViewer offline, no imagery, pinned 2026-06-21T18:00:00Z,
+  a zero-duration morph from the default 3D camera) WebGL renders the flat navy 2D base colour with dark night corners and
+  WebGPU renders concentric dark-blue, blue and grey banding across the map. Deterministic (0 px run to run). The kit receipt
+  names the same difference in the `E-ID-cv` frames; the seat read the 2D pair (`E-ID-armA/E-ID-2d-webgpu-run0.png` against
+  `E-ID-2d-webgl-run0.png`). The frame is a zoomed-in map edge, not a pinned whole-map view
+  (`DX-KIT-2D-CV-RIG-PINNED-CAMERA`).
+- **Cross-reference (records round 4, checked before filing):** `NEW-CLASSIFIER-2D-CV-MORPH` covers the classifier renderers,
+  not the globe base colour; the scene-mode morph pillar ("Scene-mode morph (3D ⇄ Columbus ⇄ 2D transition)") covers the
+  transition, and these frames are settled; `NEW-GA-P0-047` (the day/night normal frame in 2D and Columbus View) needs
+  `globe.enableLighting`, which the rig does not set (`Globe.js:236` defaults it to false and the rig carries only the
+  `sceneMode` dial). None covers this frame, so the row is new; `NEW-GA-P0-047` is the nearest and its owner should read this
+  row first.
+- **Candidate mechanism (unmeasured):** a planar-mode camera or RTE convention difference in the WebGPU globe or ground
+  atmosphere path (no ledger or inventory row tracks a 2D camera-axis deferral; `CLAUDE.md:175` uses the convention only as an
+  illustration).
+- **Acceptance:** a measured mechanism on `E-ID-2d` and `E-ID-cv` once the rigs pin a 2D / CV camera, then WebGPU within the
+  cell's WebGL band. Class: engine (parity). **Suggested owner:** a 2D/CV parity lane, probe-first.
+- **Source:** the kit receipt, section 3 finding 1 and section 4 (`<R>/E-ID-armA/`); the seat's addendum (as above).
+
+### DX-KIT-IDENTITY-WAIT-PIPELINES — identity cells captured with pipelines pending — **CLOSED** (Batch 1628, `5e684450f1`)
+
+The salvage receipt's identity cell caught E-D's WebGPU run 0 with 3 pipelines pending on a cold cache (ring only, no globe);
+the warm re-run was the verdict (`EDGE_RECEIPT_EOWYN.md:24-25`). Batch 1628 makes the pending-pipeline wait the default for the
+identity cells, E-M-water, E-C-chukotka and E-FFT-ifft (`waitPipelines: true` in `lib/landing-cell-table.mjs`);
+`--no-wait-pipelines` is the recorded waiver, both flags together refuse (`pipeline-wait-conflict`), and a base report
+captured without the wait refuses `base-report-invalid` unless the run waives too. On the kit receipt the identity pages
+waited 122-241 frames to 0 pending (cell 1). Every banked E-D / E-D-HDR report under `wave-end/` predates the wait, so a
+comparison against one passes `--no-wait-pipelines` (as the kit receipt's cell 2 did). **Source:** the kit receipt, section 1
+cells 1-2; `kit-pieces/round2/LANDING_PACKET_LINDISSE.md` (L2 and R4); reviewer `kit-pieces/round2/REVIEW_TARPALANTIR_P1.md:1`.
+
+### DX-KIT-E-M-WATER-WAIT-PIPELINES-DEFAULT — E-M-water without the wait drew a black frame — **CLOSED** (Batch 1628, `5e684450f1`)
+
+Without `--wait-pipelines` the salvage job's WebGPU E-M-water frame was all black with 2 pipelines pending. Batch 1628 makes
+the wait E-M-water's default (as `DX-KIT-IDENTITY-WAIT-PIPELINES`). **Source:** the seat's addendum; `lib/landing-cell-table.mjs`
+(`"E-M-water"`, `waitPipelines: true`).
+
+### DX-KIT-IFFT-KERNEL-DIAL — no landing dial selected the FFT ocean's inverse-FFT kernel — **CLOSED** (Batch 1628, `5e684450f1`)
+
+The salvage job could not run Batch 1622's Stockham-against-ping-pong cell from a rig (salvage receipt section 3 item 5).
+Batch 1628 adds the water dial `waterOceanIfftKernel` (`"stockham"` or `"pingpong"`, applied after the other water dials,
+read back on the facade and on `primitive.ifftKernel`; `lib/landing-cell-stage.mjs`), and cell `E-FFT-ifft` stages one page
+per kernel. On Edge it read back stockham / stockham / stockham and pingpong / pingpong / pingpong, applied (kit receipt
+section 2 "Kernel dial"). **Source:** as above; `kit-pieces/round2/LANDING_PACKET_LINDISSE.md` (Z1).
+
+### DX-KIT-DISPLACEMENT-READBACK — no kit piece read the FFT ocean's displacement field — **CLOSED** (Batch 1628, `5e684450f1`)
+
+Batch 1628 adds `lib/ocean-displacement-readback.mjs`: it reads `primitive._webgpuCache.displacementTexture` (rgba16float, no
+COPY_SRC, so a compute `textureLoad` into a storage buffer and a MAP_READ copy) and returns a hash with summary statistics;
+`compareDisplacementReadbacks` judges two readbacks NOT measured when their wave times are missing, non-finite or differ, and
+reports `maxAbsDelta` and `differingValues`. On Edge it read all four pages (`computePipelinesReady`, 220,916 non-zero texels, 0
+non-finite) and judged the kernels identical (`C6-FFT-OCEAN-STOCKHAM-IFFT`). Spec `ocean-displacement-readback.spec.mjs`, homed in
+`test-visual-regression-node-b`. **Source:** the kit receipt, section 1 cell 3 and section 2; the packet (Z2, R3a, R3b).
+
+### DX-KIT-CHUKOTKA-CONSUMER — no probe consumed the antimeridian rig — **CLOSED** (Batch 1628, `5e684450f1`)
+
+Batch 1628's cell `E-C-chukotka` captures rig `water-antimeridian-chukotka` on both renderers and diffs the WebGPU capture
+against the same run's WebGL capture (`lib/metrics/landing-cross-page.mjs`); the verdict says only "measured" until a band is
+registered. First capture (kit receipt cell 4): mismatch 47.7788 % (440,329 px) on both runs; 440,159 px at delta 1, 151 at
+delta 2-3, 19 at delta 4-7 and none at 8 or more. The band to register is seat ruling proposal S19 (records-round-4 notes
+below). There is still no BEFORE build of Batch 1617's parent, so the cell is cross-renderer, not BEFORE/AFTER; it showed a
+shared step (`NEW-WATER-ANTIMERIDIAN-BASE-COLOUR-STEP-BOTH-RENDERERS`). **Source:** the kit receipt, section 1 cell 4 and
+section 2 "E-C-chukotka".
+
+### DX-WATER-CELLS-SANDCASTLE2-PREFLIGHT — `probe-water-cells` demanded Sandcastle 2 for every cell set — **CLOSED** (Batch 1628, `5e684450f1`)
+
+The salvage job's water identity cells refused `served-build-preflight-failed` (exit 3) because the probe always listed the
+Sandcastle 2 artifacts, which an unbuilt tree serves as 404 (salvage receipt section 3 item 1). Batch 1628 lets a descriptor's
+`servedArtifacts` be a function of the options (`resolveServedArtifacts`, `lib/probe-runtime.mjs`) and the water probe lists
+Sandcastle 2 only when `--cells` includes `1f` (`servedArtifactsForCells`, `probe-water-cells.mjs`). On Edge, coast-50km passed
+the preflight with three engine artifacts; 2b, 2c, 2e and 2g PASS; 2a reads 2.3014 % against 1 %, the known
+`NEW-WATER-COAST-PARITY-RESIDUAL` red (equal to round 5 AFTER); the default `--cells` (1f included) still refuses on five 404s,
+the intended negative control. The refusal's "rebuild, or restart the server with --serve-built" wording misleads for a 404 on
+an unbuilt Sandcastle 2 (kit receipt, non-finding note). **Source:** the kit receipt, section 1 cell 5 and section 2.
+
+### DX-KIT-2D-CV-IDENTITY-RIG — no pinned 2D or Columbus View identity rig — **CLOSED** (Batch 1628, `5e684450f1`; camera pin owed)
+
+Batch 1628 adds the scene dial `sceneMode` (a zero-duration `morphTo*`, read back from `scene.mode`) and rigs
+`default-2d-pinned` / `default-columbus-pinned` with cells `E-ID-2d` / `E-ID-cv`. On Edge both are deterministic: 24/24 PASS on
+arm A, 0 changed px on all four arms of arm B against arm A, the mode read back SCENE2D and COLUMBUS_VIEW on both renderers.
+The rigs carry no camera, so the frames are a map edge (`DX-KIT-2D-CV-RIG-PINNED-CAMERA`). **Source:** the kit receipt,
+section 1 cells 1 and 1b, section 2 "E-ID modes".
+
+### DX-KIT-ONMESSAGE-SENTINEL — no kit reader caught a load that replaces `window.onmessage` — **CLOSED** (Batch 1628, `5e684450f1`)
+
+The Antigravity w6b regression X1 replaces `window.onmessage`. Batch 1628 adds `lib/onmessage-sentinel.mjs` (an init script that
+wraps the accessor with a forwarding counter, a page reader and the verdict `<prefix>:onmessage-unchanged`, NOT RUN when not
+installed) and runs it in every identity cell. On Edge, Chromium's `onmessage` is an own accessor on `window`, null before and
+after; the identity pages PASS with 0 assignments (16 per the receipt, whose per-cell breakdown sums to 24); the executor's positive control (one page assigning a handler) records 1
+assignment and FAILS as it must. Residual, recorded by the reviewer and the executor: the sentinel is read once, before
+staging, so a module that loads lazily later is not covered. **Source:** the kit receipt, section 2 "Sentinel" and "Positive
+control"; spec `onmessage-sentinel.spec.mjs` (17 tests).
+
+### DX-KIT-CONTACT-SHEET-MANIFEST — `contact-sheet.mjs` reads a capture-seam manifest that no landing or water probe emits — **OPEN** (probe kit)
+
+The salvage job produced no contact sheet: `contact-sheet.mjs` reads only a capture-seam manifest and none of the probes it ran
+emits one, so crops were banked instead (salvage receipt section 3 item 8). For the same reason the lane A contact sheet of
+`ocean-fft-patch-rebase`, the seven `water-bookmark-*` rigs and `water-bathymetry-offline{,-off}` was not made, and the
+`water-bookmark-sunset-glint` sun-in-frame check is still owed (item 7). **Repair:** the landing and water probes emit the
+manifest (kit first). **Suggested owner:** the seat's kit work.
+
+### DX-PROBE-CLOCK-PIN — the weather probes have no clock pin, so the W3 remainder cannot run at night — **OPEN** (probe kit)
+
+The W3 identity verifier's F2 (`probe-weather-map` / `probe-weather-ingest` must exit 0 on both arms) and F4 (a pinned-clock A/B
+of the weather-map-off view) are still owed: the probes take no clock pin, the salvage job ran at 00:00 EDT (night over the US
+view), and the BEFORE arm `6b3b80f644` has no banked build (salvage receipt section 3 item 9). Rows
+`NEW-CLOUD-W3-WEATHER-PROBES-LEG-OWED` and `NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY` wait on it. **Repair:** a clock-pin dial or
+flag for the weather probes (kit first), then the leg in a daylight window. **Suggested owner:** the seat's kit work.
+
+### DX-KIT-2D-CV-RIG-PINNED-CAMERA — the pinned 2D / Columbus View rigs carry no camera — **OPEN** (probe kit)
+
+`default-2d-pinned` and `default-columbus-pinned` deliberately keep `camera: null`, so after the morph the frames show a zoomed-in
+map edge with black off-map margins (2D: 24 px at the top; CV: 122 px left and 68 px top) and exercise little of the 2D/CV
+path. **Repair:** pin a camera that shows the whole 2D / CV globe (a seat ruling: the rigs' null camera was deliberate).
+**Source:** the kit receipt, section 3 finding 1; `Tools/visual-regression/rigs/default-2d-pinned.mjs`.
+
+### DX-KIT-FFT-IDENTITY-EVOLVED-EPOCH — the kernel identity is measured at wave time 0 only — **OPEN** (probe kit)
+
+`E-FFT-ifft` read both kernels at `simulationSeconds` 0, where the dispersion phase factor is 1, so it checks the transform of
+the initial spectrum, not a time-evolved one. **Repair:** a second readback at a later pinned clock. **Source:** the kit receipt,
+section 3 finding 3.
+
+### DX-KIT-SENTINEL-POSITIVE-CONTROL — the onmessage sentinel's positive control is an executor helper — **OPEN** (probe kit)
+
+The executor wrote the positive control as `_lane-out/_executor/onmessage-positive-control.mjs` on the shared runtime; the kit
+has no switch for it. **Repair:** a kit switch that runs the control. **Source:** the kit receipt, non-finding notes.
+
+### DX-KIT-E-FFT-PF-LEG — the PF-1 / PF-2 leg of `E-FFT-ifft` is owed — **OPEN** (probe kit, performance)
+
+The kit leg ran `E-FFT-ifft` with `--no-cell-perf` (machine contended by a landing; every PF-3 read `unmeasured-contended`), so
+per-pass GPU and frame time for the two kernels are unmeasured. **Repair:** run the cell's PF leg in a quiet-machine window.
+**Source:** the kit receipt, section 0 and section 2 "Order and PF".
+
+### DX-KIT-DECOMPOSE-RUNTIME-WATER — two kit files are over the 1,000-line rule — **OPEN** (DX row, file size)
+
+At Batch 1628 `Tools/visual-regression/lib/probe-runtime.mjs` is 1,340 lines and `Tools/visual-regression/probe-water-cells.mjs`
+1,459 (`wc -l` at the tip); Batch 1628 added a minimal hunk to each without decomposing (the packet's "Over 1000 lines" note).
+The same batch did split `probe-landing-cells.mjs`, moving its cell table to `lib/landing-cell-table.mjs` (993 lines remain).
+**Repair:** decompose both by responsibility, each piece with its spec. **Suggested owner:** the queued WAVE DX.
+
+### Notes on rulings, decisions and seat notes (no new ids)
+
+- **S19 (seat ruling proposal, 2026-10-31):** `E-C-chukotka`'s first capture registers its band: PASS = mismatch at most 48.5 %
+  at tolerance 0 AND 0 px with any channel delta of 8 or more. The 1-level residual is the renderer's base-colour floor (seen at
+  37 % on E-M-water too). Recorded in `MAINTAINER_RULINGS_2026-10-22.md` as a seat proposal the maintainer may overrule.
+- **Seat notes B49-B51 (open, seat defaults unless overruled):** B49 adopts RUN-line validation in the seat kit
+  (`DX-RUNNERS-RUN-LINE-VALIDATION`); B50 makes a frozen wave's `_lane-out` immutable until its review returns, corrections going
+  to a new round with a new freeze (Axantur found three Gemini packets rewritten after their reviews); B51 makes the seat's
+  session scratchpad and memory directories the seat's: a lane, worker, reviewer or executor writes only in its own clone and
+  lane temp root. **Source:** `salvage-night/DECISIONS_FOR_MAINTAINER_2026-10-29.md:150-151` (B49), `:179-183` (B50),
+  `:185-189` (B51).
+- **F2 (disk, HELD under `R-2026-10-30-M4`):** F: had 12.5 GB free on 2026-10-30 (68 GB on 2026-10-24); the seat listed fourteen
+  candidate trees and `cesium-webgpu-backups` for retirement, recommending nine; nothing is deleted until the maintainer's word.
+  **Source:** `DECISIONS_FOR_MAINTAINER_2026-10-29.md:159-177`.
+- **Identity on the night's trees:** E-D / E-D-HDR at Batch 1623 against the W3 tip `8fd1fa2673`: WebGPU 0 px on both; WebGL
+  340 px on E-D (band 742) and 0 on E-D-HDR (salvage receipt `:24`). On Batch 1625 plus the kit patch against the salvage
+  capture (waiver recorded): WebGPU 0 px on both, WebGL 356 px (band 810) and 1 px (band 2) (kit receipt cell 2); on the seams
+  leg E-D WebGPU 0 px (`EDGE_RECEIPT_EOWYN_SEAMS.md`). PF-3 read `unmeasured-contended` on every leg (landings and lanes were
+  running), so no timing is claimed.
+- **The Antigravity hand-over is final:** the bottom-up fix list (lead Axantur, reviewer Vardilme P1 HOLDS) and the hand-over
+  `SEAT_TO_ANTIGRAVITY_2026-10-31.md` name the base clone `F:/Dev/GH/cesium-gemini-base-20261031` at `5e684450f1` (Batch 1628),
+  with a seat note on Batches 1626-1628 (`lanes-2026-10-30/gemini-fix-list/SEAT_TO_ANTIGRAVITY_2026-10-31.md:72-75`,
+  `LANDING_PACKET_AXANTUR.md:28-29`, `REVIEW_VARDILME_P1.md:1`).

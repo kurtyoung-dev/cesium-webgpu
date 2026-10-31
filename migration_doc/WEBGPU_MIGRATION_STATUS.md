@@ -48,7 +48,8 @@ identity job (executor Nimrais, verifier Calenhad, HOLDS on the last two). Their
 | 1606 | `2da9f329de` (`516747f8`) | GWIP 1/3: the context spine lands (a local, gitignored SQLite index, a CLI, an MCP server and a guide), audited and repaired; its RTE hazard rule is retuned and its output is a scoping lead, never a gate (S13). | Noakes (lane GWIP) | Nora (pass 3 HOLDS on round 3; pass 4 HOLDS on round 4) | `F:/Dev/GH/cesium-lane-gemini-wip-20261029/_lane-out/` (lane clone); `lanes-2026-10-29/gwip-cut-r3-landing/`; harvest `lanes-2026-10-29/gemini-wip-seat-transplant/` (S15) |
 | 1607 | `a46ed8feeb` (`8a2680a6`) | GWIP 2/3 (round 4): the probe kit gains a CDP startup-profile step and a windowed self-time delta metric, five water rigs, an imagery "none" landing dial and three shader-infrastructure specs; the kit guide is regenerated. | Noakes (lane GWIP) | Nora (pass 4, HOLDS) | as 1606 |
 
-GWIP's third batch (the governance text for `CLAUDE.md`, `AGENTS.md` and `GEMINI.md`) is held for the maintainer. W3
+GWIP's third batch (the governance text for `CLAUDE.md`, `AGENTS.md` and `GEMINI.md`) was held for the maintainer;
+`R-2026-10-30-M2` folded it into the rules consolidation, which landed as Batch 1625 (`95cfcdc24a`; records round 4). W3
 landed next, as Batches 1608-1615 (the table below). Open after these landings: the rows of `DEFERRED_WORK.md` section
 "2026-10-30 — records batch 3".
 
@@ -86,11 +87,34 @@ reviews held (S17); each lane's packet and reviews are under `lanes-2026-10-30/s
 | 1620 | `ce8b170c93` (`4aa75c2a`) | The cloud-extraction metrics spec runs under a pinned pure-arithmetic sine and cosine; the standing red is gone (`NEW-METRICS-CLOUD-EXTRACTION-ULP-RED`). | Westemnet (fix lane) | Eastemnet (HOLDS) | `salvage-night/westemnet/` |
 | 1621 | `d4610a4ff3` (`2517f943`) | A WebGPU globe material receives the tile water mask through a new TileUniforms lane; the kit gains the globe-material dial, rig and cell `E-M-water` (Edge acceptance owed). | Mering (lane D; from w4b) | Firien (P2 HOLDS) | `salvage-night/mering/` |
 | 1622 | `9ac404eb46` (`03a71f92`) | The opt-in FFT ocean's inverse FFT runs as two shared-memory Stockham dispatches by default, behind `ifftKernel` (Edge readback owed). | Hornburg (lane E; from w6a) | Dolbaran (P4 HOLDS) | `salvage-night/hornburg/` |
-| 1623 | `c2d6e501fd` (`ff4583cf`) | Every Tools spec gets a runner home or a named reason in a shrink-only allowlist, the GlobeTerrain readers go through one kit reader, the water hygiene scan widens to 34 specs, two water-path specs skip their build-dependent tests on an unbuilt tree, and the probe runtime's output no longer follows cwd; lane B's vr-node homes sit in the new key `test-visual-regression-node-b` (`DX-RUNNER-LIST-FILES`). S18 applied to four pre-existing reds (`landing-logs/baseline-runners-tip-9ac404eb46.log`): `test-build-infra` minus `verify-package-smoke.spec.mjs`, and `test-cloud-c13-quarantine` minus `cloud-observability-counters`, `cloud-reconstruction-attachments` and `cloud-shadow-rte` (rows `DX-VERIFY-PACKAGE-SMOKE-RED-AT-SEAT`, `NEW-W3-QUARANTINE-PINS-STALE`). Round 3 added a brace-counting D4 check, a tracked-files-only census and five shader-reader allowlist rows. | Emerie (lane B, DX sweep) | Nindamos (P2, P3 and P3b HOLDS) | `salvage-night/emerie/` |
+| 1623 | `c2d6e501fd` (`ff4583cf`) | Every Tools spec gets a runner home or a named reason in a shrink-only allowlist, the GlobeTerrain readers go through one kit reader, the water hygiene scan widens to 34 specs, two water-path specs skip their build-dependent tests on an unbuilt tree, and the probe runtime's output no longer follows cwd; lane B's vr-node homes sit in the new key `test-visual-regression-node-b` (`DX-RUNNER-LIST-FILES`). S18 applied to four spec files with pre-existing reds (`landing-logs/baseline-runners-tip-9ac404eb46.log`): `test-build-infra` minus `verify-package-smoke.spec.mjs`, and `test-cloud-c13-quarantine` minus `cloud-observability-counters`, `cloud-reconstruction-attachments` and `cloud-shadow-rte` (rows `DX-VERIFY-PACKAGE-SMOKE-RED-AT-SEAT`, `NEW-W3-QUARANTINE-PINS-STALE`). Round 3 added a brace-counting D4 check, a tracked-files-only census and five shader-reader allowlist rows. | Emerie (lane B, DX sweep) | Nindamos (P2, P3 and P3b HOLDS) | `salvage-night/emerie/` |
 
 Next: the seat's Edge acceptance job (the FFT ocean through the new dial, cell `E-M-water`, the Stockham readback and the
 antimeridian rig), then the W4 regeneration from the post-plan audit, pending the maintainer's decisions (C1-C5 and the
 open B items). Open after these landings: the rows of `DEFERRED_WORK.md` section "2026-10-30 — records batch 3, round 2".
+*[Records round 4:]* that Edge job ran on Batch 1623 (`lanes-2026-10-30/salvage-night/edge/EDGE_RECEIPT_EOWYN.md`); its
+findings and the cells it could not run were answered by Batches 1627 and 1628 (the table below), and the maintainer
+accepted C1-C5 as the seat recommended (`R-2026-10-30-M2`).
+
+## Landing record (2026-10-31 — Batches 1624-1628: the records round, the rules consolidation, W2 round 9, the material water-mask seams and the probe-kit acceptance cells)
+
+A landing table only. Each hash and tree was read at Batch 1628 with `git log --format='%h %H %T %s' fd3f08ebd7..HEAD`, and
+Batch 1624's with `git log -1 --format='%h %T' fd3f08ebd7`; each landing log shows the `main -> main` push (the logs are named
+in `DEFERRED_WORK.md` section "2026-10-31 — records round 4", which also carries the rows). "Bank" paths are under
+`cesium-webgpu-worker-archive/lanes-2026-10-30/`. The three Edge legs (executor Eowyn) captured the frozen patches on Batch 1625;
+for 1626 and 1627 the landed round changed no engine byte, and 1628 landed the measured patch (that section names the freeze files).
+
+| batch | hash (tree) | what is now true | lane lead | reviewer | bank |
+| --- | --- | --- | --- | --- | --- |
+| 1624 | `fd3f08ebd7` (`12832565`) | The records carry W3 and the salvage night (Batches 1608-1623) with their ledger rows and inventory moves, seat rulings S17 and S18, and the maintainer's rulings `R-2026-10-30-M1` … `-M4` verbatim. | Gwathlo (records batch 3, rounds 1-3) | Glanduin (P1 REFUTED, text only; P2 and P2b HOLDS) | `salvage-night/records/round3/` |
+| 1625 | `95cfcdc24a` (`20bfcf91`) | `CLAUDE.md` is the one rules file for every agent (section "Rules Files and Routing", `R-2026-10-30-M2` and `-M3`); `AGENTS.md`, `GEMINI.md` and `.clinerules` are pointers that carry only their agent's specifics; Principle 13 (the context spine: scope with it, verify at HEAD) lands once, folding GWIP's held governance batch (decision E1). The first attempt refused on the excluded path `AGENTS.md`; the second ran with governance paths allowed under M2. | Lindorie (rules consolidation) | Nolimon (P1 HOLDS, two REQUIRED edits applied in round 2) | `rules-consolidation/round2/` |
+| 1626 | `7b5bfbce2d` (`322e7030`) | W2 round 9: the cloud march takes its air-light range from each contributing sample's interval midpoint, and `cloud-air-light-anchor.spec.mjs` pins the physical orbital air light against an independent single-scatter integral and the night-limb guard (`R-2026-10-30-M2`, D1). The orbital seam is closed and pinned; the sky hatching stays open. Edge: E-O 67.483, E-F 146.889, E-G 62.299 and E-G-night 23.401 -> 23.400 across the round (means unchanged, hatching unchanged); both arms show moire rings on the orbital disc. | Mirrormere (W2, rounds 9 and 9b) | Himling (P8 HOLDS-WITH-FIXES, applied in 9b); Edge Eowyn | `w2-r9/` (`EDGE_RECEIPT_EOWYN_W2R9.md`) |
+| 1627 | `6b1b2d0ebe` (`31812942`) | A WebGPU globe material's shader module compiles under the production module's define set plus `MATERIAL_APPLY`, so it writes the renderer-wide log depth and tile skirts no longer paint seams over their neighbours: E-M-water 1,573 -> 0 px more than 8 levels from WebGL, and Batch 1621's material water mask is accepted. | Almiel (water-mask seams) | Ailinel (P1 HOLDS-WITH-FIXES, applied in round 2); Edge Eowyn | `watermask-seams/` (`EDGE_RECEIPT_EOWYN_SEAMS.md`) |
+| 1628 | `5e684450f1` (`536cebeb`) | The probe kit gains the acceptance cells the salvage night left NOT RUN: the FFT ocean's displacement readback per inverse-FFT kernel (`E-FFT-ifft`, Stockham equals ping-pong at wave time 0), the Chukotka cross-renderer diff (`E-C-chukotka`), pinned 2D and Columbus View identity cells (`E-ID-2d`, `E-ID-cv`), the `window.onmessage` sentinel in every identity cell, the pending-pipeline wait as a per-cell default, `--no-cell-perf`, and the water probe's globe cells without Sandcastle 2. Edge: all six cells ran. | Lindisse (workers Zimrahin, Nuneth, Abrazan) | Tar-Palantir (P1 HOLDS-WITH-FIXES, applied in round 2); Edge Eowyn | `kit-pieces/` (`EDGE_RECEIPT_EOWYN_KIT.md`) |
+
+Next: the Antigravity water program's re-delivery against the base clone `F:/Dev/GH/cesium-gemini-base-20261031`
+(`5e684450f1`) and its landing (`R-2026-10-30-M1`), then the W4 regeneration. Open after these landings: the rows of
+`DEFERRED_WORK.md` section "2026-10-31 — records round 4".
 
 ---
 

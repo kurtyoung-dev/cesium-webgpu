@@ -132,7 +132,9 @@ when it times out"; gitignored, no durable copy) and `VERIFY_CALIMEHTAR.md:45` o
 
 The seat's decisions list of 2026-10-29/30 (B9-B49, from the Antigravity water reviews and the salvage lanes; banked as
 `cesium-webgpu-worker-archive/lanes-2026-10-30/salvage-night/DECISIONS_FOR_MAINTAINER_2026-10-29.md`) was open for the
-maintainer until the rulings of 23:2x EDT below (R-2026-10-30-M1 … -M4). Where the seat resolved an item by a conservative default for the landing night (B33/B36, B37, B38, B39, B40,
+maintainer until the rulings of 23:2x EDT below (R-2026-10-30-M1 … -M4), which answer B9-B44 with the groups M2-M4 name.
+B45-B49 are none of those groups: B45, B46 and B49 stay seat defaults and B47 and B48 are rows (corrected by records round 4,
+from the review of records batch 3, note Q1). Where the seat resolved an item by a conservative default for the landing night (B33/B36, B37, B38, B39, B40,
 B42, B45 and B46; `salvage-night/PLAN_LANDING_NIGHT_2026-10-30.md` and the decisions file), the default is a seat decision the
 maintainer may overrule, not a ruling, and none of these items is recorded here as one.
 
@@ -173,3 +175,14 @@ seat to another LLM, and the others adapt and clean up. This resolves decision A
 
 Seat reading: the ASK list (section F of the decisions file, and the stray `F:/Dev/GH/node_modules`) stays held; nothing is
 deleted.
+
+## Seat ruling proposal of 2026-10-31 (S19)
+
+*(Appended by records round 4.)* This round records no new maintainer ruling (the seat named none after R-2026-10-30-M1 … -M4). The seat proposes one ruling
+for the maintainer's overrule; it is not a maintainer ruling. The seat notes B50 (a frozen wave's `_lane-out` is immutable
+until its review returns) and B51 (the seat's session scratchpad and memory directories are the seat's) are seat defaults,
+recorded as notes in `DEFERRED_WORK.md` section "2026-10-31 — records round 4", not here.
+
+| id | ruling, in one sentence | source |
+|---|---|---|
+| S19 (proposal) | The first capture of cell `E-C-chukotka` (rig `water-antimeridian-chukotka`, WebGPU against the same run's WebGL, Batch 1628) registers its band: PASS is a mismatch of at most 48.5 % at tolerance 0 AND 0 px with any channel delta of 8 or more, because the measured 47.7788 % is nearly all a 1-level base-colour floor (440,159 of 440,329 px; the same floor reads 37 % on E-M-water). The maintainer may overrule. | the seat's addendum `cesium-webgpu-worker-archive/lanes-2026-10-30/salvage-night/rows-for-records-r2-addendum.md` (section "S19"); the kit receipt `lanes-2026-10-30/kit-pieces/EDGE_RECEIPT_EOWYN_KIT.md` (section 1 cell 4; section 2 "E-C-chukotka", the executor's proposed band) |

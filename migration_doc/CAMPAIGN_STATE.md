@@ -761,7 +761,8 @@ the 09-27 chain (C13's held-wave paragraph above carries the correction). Record
 ruling `R-2026-10-24-S12`. Rows: `DEFERRED_WORK.md` ledger intake 2 (Batch 1591) and "2026-10-24 — records batch"; landing
 table: `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-23/24 …)"; from 2026-10-30 also `DEFERRED_WORK.md`
 "2026-10-30 — records batch 3" and "… round 2", and the landing tables "Landing record (2026-10-29/30 …)" and "Landing
-record (2026-10-30 — Batches 1608-1623 …)".
+record (2026-10-30 — Batches 1608-1623 …)"; from 2026-10-31 also `DEFERRED_WORK.md` "2026-10-31 — records round 4" and the
+landing table "Landing record (2026-10-31 — Batches 1624-1628 …)".
 **Landed:** the water as Batches 1585/1586 (`16e093aef6`, `156509c929`, committed 2026-10-23 23:27 and 23:31 EDT; tree
 `9e6bcfb7`; opt-in, the default globe unchanged); then, on 2026-10-24, W0 (1587), KT round 5 (1588), KT-2 round 3 (1589),
 F-4 (1590), LEDGER-2 (1591), catalog A1 (1592) and W1, the cloud core and the three-word define registry (1593); and the
@@ -770,7 +771,8 @@ Batches 1596-1602, 1604 and 1605 (`7f92e7bcb6` … `6b3b80f644`): Codex's nine u
 3454, 3456 and 3457 as the round-7 cut, seven of them default moves that land on identity proof with their PF debt
 recorded (`R-2026-10-24-M5`), and unit 3450 as cut with its orbital seam and sky hatching recorded (seat ruling S14), with
 the seat's spec repair 1603 between them; and on 2026-10-30 the context spine and its probe-kit pieces from lane GWIP
-(1606 `2da9f329de`, 1607 `a46ed8feeb`), whose governance text, the lane's third batch, is held for the maintainer.
+(1606 `2da9f329de`, 1607 `a46ed8feeb`), whose governance text, the lane's third batch, was held for the maintainer and
+then folded into the rules consolidation (Batch 1625, `R-2026-10-30-M2`).
 *[Round 2 of records batch 3:]* On 2026-10-30, W3 as Batches 1608-1615 (`b6ba377c52` … `8fd1fa2673`): Codex's units
 3458-3465 regenerated and re-cut over the W2 tip (Opus lead Erchirion, reviewer Amrothos, round 4 HOLDS,
 `cesium-webgpu-worker-archive/lanes-2026-10-21/w3-cloud/_lane-out-20261026-1358-r4-HOLDS-30640b4b/REVIEW_AMROTHOS_P4.md:1`),
@@ -784,17 +786,29 @@ REFUTED: twelve verdicts, one per review file; index
 the parts the reviewers held, each separately reviewed: Batches 1616-1618 (geoid header, antimeridian seam, polar wind),
 1619 (probe kit: FFT-ocean dial and the water and SSR rigs), 1620 (the metrics spec's standing red, fixed forward under seat
 ruling S18), 1621 (the material water mask), 1622 (the Stockham inverse FFT behind a toggle) and 1623 (the DX sweep:
-runner homes, the shader reader, the hygiene scan). The Antigravity program's path is set by `R-2026-10-30-M1` (below); the
-other open decisions of the list (`salvage-night/DECISIONS_FOR_MAINTAINER_2026-10-29.md`, B9-B49) are answered by
-`R-2026-10-30-M1` … `-M4`.
-**Critical path:** W4. *[Updated 2026-10-30 by records batch 3 round 2; round 1 read W3 → W4.]* The next step is the
-seat's Edge acceptance job for the salvage night's owed captures, the Antigravity water program's landing on 2026-10-31 (`R-2026-10-30-M1`),
-and the W4 regeneration from the Codex post-plan audit, its decisions C1-C5 accepted as the seat recommended (`R-2026-10-30-M2`). The later W-waves (W4 … W12, `R-2026-10-23-M4`) queue behind it, one lane
+runner homes, the shader reader, the hygiene scan). The Antigravity program's path is set by `R-2026-10-30-M1` (below); of
+the list's other decisions (`salvage-night/DECISIONS_FOR_MAINTAINER_2026-10-29.md`, B9-B49), B9-B44, with the groups
+`-M2` … `-M4` name, are answered by `R-2026-10-30-M1` … `-M4`, and B45-B49 stay seat defaults or rows (corrected by
+records round 4).
+**Landing night, second half (2026-10-31, records round 4):**
+- Landed: Batches 1624 (records round 3), 1625 (the rules consolidation: `CLAUDE.md` is the one rules file, `R-2026-10-30-M2`),
+  1626 (W2 round 9), 1627 (the material water-mask seams) and 1628 (probe-kit acceptance cells), `fd3f08ebd7` … `5e684450f1`
+  (`WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-31 …)").
+- The Antigravity hand-over is final: the per-wave fix list and `SEAT_TO_ANTIGRAVITY_2026-10-31.md` name the base clone
+  `F:/Dev/GH/cesium-gemini-base-20261031` at `5e684450f1` (`cesium-webgpu-worker-archive/lanes-2026-10-30/gemini-fix-list/`).
+- The kit's acceptance cells for the water waves now exist and ran on Edge (`E-FFT-ifft`, `E-C-chukotka`, `E-ID-2d`,
+  `E-ID-cv`, the `window.onmessage` sentinel, the water cells without Sandcastle 2; Batch 1628).
+- The material water mask's Edge acceptance PASSED (`NEW-WATER-GLOBE-MATERIAL-WATER-MASK`, after Batch 1627's seam fix).
+- W2's orbital air-light anchor is decided (`R-2026-10-30-M2`) and pinned by W2 round 9 (Batch 1626); the sky hatching stays
+  open (`NEW-CLOUD-W2-3450-SKY-HATCHING`, unchanged on the Edge leg).
+**Critical path:** W4. *[Updated 2026-10-31 by records round 4; records batch 3 round 2 put the seat's Edge acceptance job
+first, and it has run.]* The next step is the Antigravity water program's landing on 2026-10-31 (`R-2026-10-30-M1`),
+re-delivered against the base clone at `5e684450f1`, and the W4 regeneration from the Codex post-plan audit, its decisions C1-C5 accepted as the seat recommended (`R-2026-10-30-M2`). The later W-waves (W4 … W12, `R-2026-10-23-M4`) queue behind it, one lane
 round per wave with overlapped phases and one identity Edge job per wave (`R-2026-10-24-M5`).
 **Holds:** the per-change PF legs of every default move wait for a whole-product performance campaign after the stack
 lands (`R-2026-10-24-M5`) and are recorded per wave as PF debt (`NEW-CLOUD-W2-PF-DEBT`, `NEW-CLOUD-W3-PF-DEBT`); the
-orbital air-light anchor of W2's unit 3450 is decided (D1 accepted by `R-2026-10-30-M2`: the physical look with the night-limb
-guard) and waits for its W2 round 9 (`NEW-CLOUD-W2-AERIAL-ORBITAL-ANCHOR`, seat ruling S14);
+orbital air-light anchor of W2's unit 3450 is no longer a hold: it is decided (D1 accepted by `R-2026-10-30-M2`: the physical
+look with the night-limb guard) and pinned by W2 round 9, Batch 1626 (`NEW-CLOUD-W2-AERIAL-ORBITAL-ANCHOR`, seat ruling S14);
 and the `NEW-WATER-STARTUP-COST` ten-run lane of `R-2026-10-23-M3` (job sheet
 `cesium-webgpu-worker-archive/lanes-2026-10-21/seat-scratchpad/SEAT_NOTE_NIMRAIS_TENRUN_20261024.md`), which has not
 run: no bank for it exists under `wave-end/` at Batch 1607. The F2 Edge leg that held W2's first batch ran as three jobs:
@@ -813,7 +827,8 @@ REWORK) are outside the W-waves; only their salvaged parts landed, through the s
   consolidates the twelve reviews into one bottom-up fix list per wave, and the program is to land on Saturday 2026-10-31.
 - `R-2026-10-30-M2` (seat-ready batches): fix and land; the seat's recommendations on E1-E4, D1, C1-C5 and A1-A2 are accepted,
   at the proof bar by change class with no extra rounds; the governance `.md` files become pointers to one refined rules file,
-  queued as a docs batch (lane Lindorie), into which the held context-spine governance batch 3 (E1) folds.
+  queued as a docs batch (lane Lindorie), into which the held context-spine governance batch 3 (E1) folds; it landed as
+  Batch 1625 (`95cfcdc24a`).
 - `R-2026-10-30-M3` (seat and clones): an LLM without the seat works in a clone unless the maintainer overrides; the maintainer
   may hand the seat to another LLM.
 - `R-2026-10-30-M4` (housekeeping): the ASK list stays held; nothing is deleted.
