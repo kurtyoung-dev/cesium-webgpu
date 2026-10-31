@@ -32,9 +32,17 @@
  * over (`chromeRemoved`, `chromeLeftovers`) in each run of its report, and
  * refuses (exit 3) when anything still overlaps the canvas: the scored pixels
  * are the canvas's own again, as the old reader's were. The page, the dials,
- * the locations and the settles are unchanged, and so is what the probe does
- * NOT pin: it still loads the network globe and the wall clock, which
- * `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE-TAIL` owns.
+ * the locations and the settles are unchanged. By default the probe still pins
+ * neither the wall clock, the cloud wind, the cloud quality tier nor the
+ * network globe (`C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE-TAIL` owns the
+ * default); `--clock`, `--cloud-wind-speed`, `--cloud-quality` and
+ * `--offline-globe` pin them opt-in, each read back from the live scene and
+ * refused (exit 3, `dial-not-applied`) when it did not take.
+ *
+ * FIRST FRAME. Before the first capture the probe waits on the render
+ * pipeline cache (`pageWaitForPendingPipelines`); a first capture that is
+ * still black is re-settled, then refused (`first-frame-black`,
+ * `lib/first-frame-guard.mjs`): a black canvas is not a measurement.
  *
  * Usage (serve the built tree on a governed port first, e.g.
  * `node server.js --port 8094 --serve-built`):
@@ -50,6 +58,15 @@ import {
   pinClock,
   clockFlagExitCode,
 } from "./lib/clock-pin.mjs";
+import {
+  FIRST_FRAME_MAX_RESETTLES,
+  guardFirstFrame,
+} from "./lib/first-frame-guard.mjs";
+import {
+  PIPELINE_WAIT_DEFAULTS,
+  pageReadPendingPipelines,
+  pageWaitForPendingPipelines,
+} from "./lib/landing-cell-stage.mjs";
 import { brightFraction } from "./lib/metrics/bright-fraction.mjs";
 import { sweepStats } from "./lib/metrics/sweep-stats.mjs";
 import {
@@ -100,10 +117,122 @@ const ASSERT = {
  * frames, the two 120-frame wide views, and twenty-two element captures — not
  * a measured one.
  */
-const WORK_BUDGET_MS = 600_000;
+const BASE_WORK_BUDGET_MS = 600_000;
 
-/** Set the dials, the lights and the camera, then render `frames` frames. */
-const SET_VIEW = async ({ lon, lat, height, weatherOn, frames }) => {
+/**
+ * Extra time the first-frame readiness can add: the pipeline wait before the
+ * first capture and before each re-settle (each bounded by its own deadline),
+ * plus one located settle and capture per re-settle. The 10 s per settle and
+ * capture is the base budget's own share, (600 s - 180 s boot) / (22 settles
+ * + 22 captures) rounded up, not a measured figure.
+ */
+const FIRST_FRAME_RESETTLES = FIRST_FRAME_MAX_RESETTLES;
+const WORK_BUDGET_MS =
+  BASE_WORK_BUDGET_MS +
+  PIPELINE_WAIT_DEFAULTS.deadlineMs * (1 + FIRST_FRAME_RESETTLES) +
+  10_000 * FIRST_FRAME_RESETTLES;
+
+/** The page-side opt-in dials, as the flags declare them. */
+export const MAP_DIAL_OPTIONS = Object.freeze([
+  {
+    flag: "--cloud-wind-speed",
+    key: "cloudWindSpeed",
+    kind: "non-negative-number",
+  },
+  { flag: "--cloud-quality", key: "cloudQuality", kind: "non-negative-number" },
+  { flag: "--offline-globe", key: "offlineGlobe", kind: "boolean" },
+]);
+
+/**
+ * Pure. The dials the command line asked for, or null when it asked for none
+ * (then the run writes nothing to the scene and loads today's URL).
+ *
+ * @param {{cloudWindSpeed?: number, cloudQuality?: number,
+ *   offlineGlobe?: boolean}} options Parsed probe options.
+ * @returns {{cloudWindSpeed?: number, cloudQuality?: number,
+ *   offlineGlobe?: true}|null}
+ */
+export function planMapDials(options) {
+  const plan = {};
+  if (options.cloudWindSpeed !== undefined) {
+    plan.cloudWindSpeed = options.cloudWindSpeed;
+  }
+  if (options.cloudQuality !== undefined) {
+    plan.cloudQuality = options.cloudQuality;
+  }
+  if (options.offlineGlobe === true) plan.offlineGlobe = true;
+  return Object.keys(plan).length === 0 ? null : plan;
+}
+
+/**
+ * Pure. The page URL: the offline globe asks the viewer app for no base
+ * layer and no streamed terrain (`CesiumViewerStartupOptions`), as the weather
+ * fleet's P1 pin does.
+ *
+ * @param {object} options Parsed probe options.
+ * @returns {string}
+ */
+export function mapPageUrl(options) {
+  return options.offlineGlobe === true ? `${PAGE}&offline=true` : PAGE;
+}
+
+/**
+ * Pure. Whether the live scene reads back what the plan requested.
+ *
+ * @param {object|null} plan From {@link planMapDials}.
+ * @param {object|null} observed From the page: `cloudWindSpeed`,
+ *   `cloudQuality`, `imageryLayerCount`, `terrainIsEllipsoid`.
+ * @returns {{applied: boolean, mismatches: Array<{dial: string,
+ *   requested: unknown, observed: unknown}>}}
+ */
+export function judgeMapDials(plan, observed) {
+  const mismatches = [];
+  if (plan !== null) {
+    const seen = observed ?? {};
+    for (const dial of ["cloudWindSpeed", "cloudQuality"]) {
+      if (plan[dial] !== undefined && seen[dial] !== plan[dial]) {
+        mismatches.push({
+          dial,
+          requested: plan[dial],
+          observed: seen[dial] ?? null,
+        });
+      }
+    }
+    if (plan.offlineGlobe === true) {
+      if (seen.imageryLayerCount !== 0) {
+        mismatches.push({
+          dial: "offlineGlobe.imageryLayerCount",
+          requested: 0,
+          observed: seen.imageryLayerCount ?? null,
+        });
+      }
+      if (seen.terrainIsEllipsoid !== true) {
+        mismatches.push({
+          dial: "offlineGlobe.terrainIsEllipsoid",
+          requested: true,
+          observed: seen.terrainIsEllipsoid ?? null,
+        });
+      }
+    }
+  }
+  return { applied: mismatches.length === 0, mismatches };
+}
+
+/**
+ * Set the dials, the lights and the camera, then render `frames` frames. With
+ * `dials` (opt-in; null writes nothing) the requested wind, quality and
+ * offline-globe pins are applied after the volumetric dials and read back at
+ * the end of the settle, when a streamed layer or provider would have
+ * reappeared; the answer is the readback, or null with no dials.
+ */
+export const SET_VIEW = async ({
+  lon,
+  lat,
+  height,
+  weatherOn,
+  frames,
+  dials,
+}) => {
   const C = await import("/Build/CesiumUnminified/index.js");
   const v = window.viewer,
     s = v.scene,
@@ -114,6 +243,19 @@ const SET_VIEW = async ({ lon, lat, height, weatherOn, frames }) => {
   g.defaultCloudCollection.volumetric.cloudLayerBottom = 1500;
   g.defaultCloudCollection.volumetric.cloudLayerTop = 4000;
   g.defaultCloudCollection.volumetric.cloudWeatherMap = weatherOn;
+  if (dials) {
+    const vol = g.defaultCloudCollection.volumetric;
+    if (dials.cloudWindSpeed !== undefined) {
+      vol.cloudWindSpeed = dials.cloudWindSpeed;
+    }
+    if (dials.cloudQuality !== undefined) vol.cloudQuality = dials.cloudQuality;
+    if (dials.offlineGlobe) {
+      g.imageryLayers.removeAll();
+      if (!(g.terrainProvider instanceof C.EllipsoidTerrainProvider)) {
+        g.terrainProvider = new C.EllipsoidTerrainProvider();
+      }
+    }
+  }
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
   if (s.moon) s.moon.show = false;
@@ -132,6 +274,14 @@ const SET_VIEW = async ({ lon, lat, height, weatherOn, frames }) => {
     s.render();
     await new Promise((res) => requestAnimationFrame(res));
   }
+  if (!dials) return null;
+  const vol = g.defaultCloudCollection.volumetric;
+  return {
+    cloudWindSpeed: vol.cloudWindSpeed,
+    cloudQuality: vol.cloudQuality,
+    imageryLayerCount: g.imageryLayers.length,
+    terrainIsEllipsoid: g.terrainProvider instanceof C.EllipsoidTerrainProvider,
+  };
 };
 
 /**
@@ -188,7 +338,7 @@ export const descriptor = {
   // Sandcastle2 bucket bundle in the runtime's default list is never loaded.
   servedArtifacts: ["Build/CesiumUnminified/index.js"],
   workBudgetMs: () => WORK_BUDGET_MS,
-  args: { extraOptions: [CLOCK_OPTION] },
+  args: { extraOptions: [CLOCK_OPTION, ...MAP_DIAL_OPTIONS] },
   async cells({ browser, run, options, origin, outputDirectory, captures }) {
     if (!options.renderers.includes("webgpu")) {
       throw new ProbeRefusal(
@@ -204,7 +354,8 @@ export const descriptor = {
       if (m.type() === "error") errs.push(m.text());
     });
     page.on("pageerror", (e) => errs.push("PE:" + e.message));
-    await page.goto(`${origin}${PAGE}`, {
+    const url = mapPageUrl(options);
+    await page.goto(`${origin}${url}`, {
       waitUntil: "networkidle",
       timeout: 90000,
     });
@@ -217,23 +368,77 @@ export const descriptor = {
     let clockPin =
       options.clock === undefined ? null : await pinClock(page, options.clock);
 
+    // Opt-in dials: SET_VIEW applies them on every call and answers with the
+    // scene's own readback, so a dial the scene dropped mid-run (a provider
+    // swapped back, a layer re-added) refuses at the view that saw it.
+    const dialPlan = planMapDials(options);
+    const dialRecord =
+      dialPlan === null
+        ? null
+        : { url, requested: dialPlan, observed: null, observedAtEnd: null };
+    const setView = async (viewArgs) => {
+      const observed = await page.evaluate(SET_VIEW, {
+        ...viewArgs,
+        dials: dialPlan,
+      });
+      if (dialPlan === null) return;
+      const judged = judgeMapDials(dialPlan, observed);
+      if (!judged.applied) {
+        throw new ProbeRefusal(
+          "dial-not-applied",
+          "the scene does not read back the requested pins: " +
+            judged.mismatches
+              .map(
+                (m) =>
+                  `${m.dial} requested ${JSON.stringify(m.requested)}, ` +
+                  `observed ${JSON.stringify(m.observed)}`,
+              )
+              .join("; "),
+          { requested: dialPlan, observed, mismatches: judged.mismatches },
+        );
+      }
+      dialRecord.observed ??= observed;
+      dialRecord.observedAtEnd = observed;
+    };
+
     const fracs = { off: [], on: [] };
     let chrome = null;
+    let firstFrame = null;
     for (const weatherOn of [false, true]) {
       for (const [lon, lat] of LOCATIONS) {
-        await page.evaluate(SET_VIEW, {
+        const located = {
           lon,
           lat,
           height: VIEWS.located.height,
           weatherOn,
           frames: VIEWS.located.frames,
-        });
+        };
+        await setView(located);
+        const shotName = `located-${weatherOn ? "on" : "off"}-lon${lon}-lat${lat}`;
+        const capture = async (name) => {
+          const shot = await captureElement({
+            page,
+            selector: CANVAS,
+            name,
+            outputDirectory,
+            captures,
+          });
+          return { name, shot, image: decodePng(shot.buffer) };
+        };
+        let taken;
         if (chrome === null) {
-          // Once, after the first settle and before the first capture: the
-          // element capture must read the canvas, not the chrome over it. Not
-          // earlier, because the viewer page hides its centred loading
+          // Once, before the first capture: wait for the render pipeline cache
+          // to drain (the first frame is the one that has to compile them),
+          // then the element capture must read the canvas, not the chrome over
+          // it. Not earlier, because the viewer page hides its centred loading
           // indicator only after a frame has rendered, and the strip would
           // (rightly) refuse on it.
+          const waitForPipelines = () =>
+            page.evaluate(pageWaitForPendingPipelines, {
+              ...PIPELINE_WAIT_DEFAULTS,
+              readerSource: pageReadPendingPipelines.toString(),
+            });
+          const pipelines = await waitForPipelines();
           chrome = await page.evaluate(`(${STRIP_WIDGETS_SOURCE})()`);
           if (chrome.leftovers.length > 0) {
             throw new ProbeRefusal(
@@ -244,17 +449,29 @@ export const descriptor = {
               { chrome },
             );
           }
+          // A black first capture is a probe readiness gap (the globe was not
+          // drawn yet), never a verdict: re-settle, then refuse.
+          const guarded = await guardFirstFrame({
+            capture: (attempt) =>
+              capture(attempt === 0 ? shotName : `${shotName}-retry${attempt}`),
+            resettle: async () => {
+              await setView(located);
+              return waitForPipelines();
+            },
+          });
+          taken = guarded.accepted;
+          firstFrame = {
+            pipelines,
+            attempts: guarded.attempts,
+            minNonBlackPct: guarded.minNonBlackPct,
+            maxResettles: guarded.maxResettles,
+          };
+        } else {
+          taken = await capture(shotName);
         }
-        const shot = await captureElement({
-          page,
-          selector: CANVAS,
-          name: `located-${weatherOn ? "on" : "off"}-lon${lon}-lat${lat}`,
-          outputDirectory,
-          captures,
-        });
         fracs[weatherOn ? "on" : "off"].push(
           brightFraction(
-            decodePng(shot.buffer),
+            taken.image,
             ASSERT.brightThreshold,
             ASSERT.sampleStride,
           ).frac,
@@ -264,7 +481,7 @@ export const descriptor = {
     // Wide-orbit captures for the visual read (regional structure spans many
     // texels). Not scored.
     for (const weatherOn of [false, true]) {
-      await page.evaluate(SET_VIEW, { ...VIEWS.wide, weatherOn });
+      await setView({ ...VIEWS.wide, weatherOn });
       await captureElement({
         page,
         selector: CANVAS,
@@ -290,9 +507,12 @@ export const descriptor = {
         chromeRemoved: chrome.removed,
         chromeLeftovers: chrome.leftovers,
         clockPin,
+        dials: dialRecord,
+        firstFrame,
       },
     ];
   },
+
   verdicts(cells) {
     return cells.flatMap((cell) =>
       cell.scored.checks.map(([id, claim, pass]) => ({

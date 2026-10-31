@@ -1,5 +1,5 @@
 // spec-runner-homes.spec.mjs — every spec under Tools/ has a runner home or a named reason.
-// @purpose Pins that every *.spec.mjs under Tools/ is run by some package.json runner script (by the census's reading of node --test commands) or is listed in the shrink-only homeless allowlist with a one-line reason, that the allowlist holds no homed or deleted spec, and that a lane's pending homes (RUNNER_HOMES_FILE) apply exactly as the seat appends them; mutants make the overlay inert and must turn the homing check red.
+// @purpose Pins that every *.spec.mjs under Tools/ is run by some package.json runner script (by the census's reading of node --test commands) or is listed in the shrink-only homeless allowlist with a one-line reason, that the allowlist holds no homed or deleted spec, and that a lane's pending homes and SCRIPT replacements (RUNNER_HOMES_FILE) apply exactly as the seat makes them; mutants make the overlay inert and must turn the homing check red.
 // @status ACTIVE
 //
 // A red nobody can see was the recurring defect of 2026-10: ocean-tide-datum
@@ -23,11 +23,18 @@ import { fileURLToPath } from "node:url";
 import { runCensus } from "../spec-runner-census.mjs";
 import { HOMELESS_SPEC_ALLOWLIST } from "./lib/homeless-spec-allowlist.mjs";
 import { importMutated } from "./lib/import-mutated.mjs";
-import { mkLaneTmp, removeLaneTmp, sweepLaneTmp } from "../lib/lane-tmp.mjs";
+import {
+  mkLaneTmp,
+  removeLaneTmp,
+  sweepLaneTmp,
+  withLaneTmp,
+} from "../lib/lane-tmp.mjs";
 import {
   applyRunnerHomes,
+  applyScriptLines,
   loadRunnerScripts,
   parseRunnerHomes,
+  parseRunnerLines,
 } from "./lib/runner-homes.mjs";
 import { listToolSpecs } from "./lib/shader-reader-scan.mjs";
 
@@ -198,5 +205,206 @@ test("INERTNESS MUTANT — listing untracked files too puts the untracked spec i
       "Tools/untracked.spec.mjs",
     ),
     "the tracked-only check survived a census that lists untracked files",
+  );
+});
+
+// A lane that changes a package.json script (not only appends a spec) declares
+// it as `SCRIPT: <key>=<value>`; before this the parser refused the line and
+// the seat stripped it by hand.
+const SCRIPT_RUNNERS = [
+  "# a lane's RUNNERS file",
+  "test-a=Tools/visual-regression/b.spec.mjs",
+  "SCRIPT: test-a=node --test Tools/visual-regression/a.spec.mjs Tools/visual-regression/a2.spec.mjs",
+  "",
+  "RUN: npm run test-a",
+].join("\n");
+
+test("a RUNNERS text parses into homes and SCRIPT replacements, and ignores comments and RUN lines", () => {
+  const parsed = parseRunnerLines(SCRIPT_RUNNERS);
+  assert.deepEqual(parsed.homes, [
+    { script: "test-a", spec: "Tools/visual-regression/b.spec.mjs" },
+  ]);
+  assert.deepEqual(parsed.scriptLines, [
+    {
+      script: "test-a",
+      value:
+        "node --test Tools/visual-regression/a.spec.mjs Tools/visual-regression/a2.spec.mjs",
+    },
+  ]);
+  // The homes-only view keeps its contract: a SCRIPT line is not a home.
+  assert.deepEqual(parseRunnerHomes(SCRIPT_RUNNERS), parsed.homes);
+  assert.deepEqual(parseRunnerLines("# only a comment\nRUN: x"), {
+    homes: [],
+    scriptLines: [],
+  });
+});
+
+test("a SCRIPT line replaces the script verbatim and refuses an unknown key", () => {
+  const { scriptLines } = parseRunnerLines(SCRIPT_RUNNERS);
+  assert.deepEqual(applyScriptLines(SYNTHETIC_SCRIPTS, scriptLines), {
+    "test-a":
+      "node --test Tools/visual-regression/a.spec.mjs Tools/visual-regression/a2.spec.mjs",
+    "test-b": SYNTHETIC_SCRIPTS["test-b"],
+  });
+  assert.throws(
+    () =>
+      applyScriptLines(SYNTHETIC_SCRIPTS, [
+        { script: "test-new", value: "node x" },
+      ]),
+    /does not declare/,
+  );
+  // An inherited property name is not a declared script.
+  assert.throws(
+    () =>
+      applyScriptLines(SYNTHETIC_SCRIPTS, [
+        { script: "constructor", value: "node x" },
+      ]),
+    /does not declare/,
+  );
+});
+
+test("a SCRIPT value carrying parentheses, a SCRIPT line without a key, and an indented SCRIPT line are refused with the line", () => {
+  assert.throws(
+    () => parseRunnerLines("SCRIPT: test-a=node x (see the plan)"),
+    /parentheses.*SCRIPT: test-a=node x \(see the plan\)/,
+  );
+  assert.throws(
+    () => parseRunnerLines("SCRIPT: =node x"),
+    /malformed SCRIPT line: SCRIPT: =node x/,
+  );
+  assert.throws(
+    () => parseRunnerLines("SCRIPT: no-equals-sign"),
+    /malformed SCRIPT line/,
+  );
+  assert.throws(
+    () => parseRunnerLines("  SCRIPT: test-a=node x"),
+    /unreadable home line/,
+  );
+});
+
+/** Load a synthetic root (package.json + RUNNERS file) through the overlay, with `load` choosing the module. */
+function overlayScripts(
+  runnersText,
+  { load = loadRunnerScripts, scripts = SYNTHETIC_SCRIPTS } = {},
+) {
+  return withLaneTmp(
+    "homes-overlay-",
+    (root) => {
+      fs.writeFileSync(
+        path.join(root, "package.json"),
+        JSON.stringify({ scripts }),
+      );
+      fs.writeFileSync(path.join(root, "RUNNERS_X.txt"), runnersText);
+      return load({ root, overlayFile: "RUNNERS_X.txt" });
+    },
+    { laneName: SCRATCH_LANE },
+  );
+}
+
+const OVERLAY_EXPECTED =
+  "node --test Tools/visual-regression/a.spec.mjs Tools/visual-regression/a2.spec.mjs Tools/visual-regression/b.spec.mjs";
+
+test("the overlay applies the SCRIPT replacement and then the home append, as the seat's landing does", () => {
+  const { scripts, homes, scriptLines } = overlayScripts(SCRIPT_RUNNERS);
+  assert.equal(scripts["test-a"], OVERLAY_EXPECTED);
+  assert.equal(scripts["test-b"], SYNTHETIC_SCRIPTS["test-b"]);
+  assert.equal(homes.length, 1);
+  assert.equal(scriptLines.length, 1);
+  // Without an overlay the scripts are package.json as it stands.
+  const bare = withLaneTmp(
+    "homes-bare-",
+    (root) => {
+      fs.writeFileSync(
+        path.join(root, "package.json"),
+        JSON.stringify({ scripts: SYNTHETIC_SCRIPTS }),
+      );
+      return loadRunnerScripts({ root, overlayFile: "" });
+    },
+    { laneName: SCRATCH_LANE },
+  );
+  assert.deepEqual(bare, {
+    scripts: SYNTHETIC_SCRIPTS,
+    homes: [],
+    scriptLines: [],
+  });
+  assert.throws(
+    () => overlayScripts("SCRIPT: test-new=node x"),
+    /does not declare/,
+  );
+});
+
+/** The behaviours the SCRIPT kind promises, as one check a mutant can be held to. */
+function assertScriptKindBehaviour(mod) {
+  const parsed = mod.parseRunnerLines(SCRIPT_RUNNERS);
+  assert.equal(parsed.scriptLines.length, 1);
+  assert.throws(
+    () =>
+      mod.applyScriptLines(SYNTHETIC_SCRIPTS, [
+        { script: "test-new", value: "node x" },
+      ]),
+    /does not declare/,
+  );
+  assert.throws(
+    () => mod.parseRunnerLines("SCRIPT: test-a=node x (prose)"),
+    /parentheses/,
+  );
+  assert.equal(
+    overlayScripts(SCRIPT_RUNNERS, { load: mod.loadRunnerScripts }).scripts[
+      "test-a"
+    ],
+    OVERLAY_EXPECTED,
+  );
+}
+
+test("the SCRIPT-kind check passes on the real module", () => {
+  assertScriptKindBehaviour({
+    parseRunnerLines,
+    applyScriptLines,
+    loadRunnerScripts,
+  });
+});
+
+test("INERTNESS MUTANT — with the SCRIPT branch unreachable, a SCRIPT line is unreadable again", async () => {
+  const mutant = await importMutated(RUNNER_HOMES, [
+    [
+      'if (raw.startsWith("SCRIPT:")) {',
+      'if (false && raw.startsWith("SCRIPT:")) {',
+    ],
+  ]);
+  assert.throws(
+    () => assertScriptKindBehaviour(mutant),
+    /unreadable home line/,
+  );
+});
+
+test("INERTNESS MUTANT — with the key-existence check unreachable, a SCRIPT line mints a new script", async () => {
+  const mutant = await importMutated(RUNNER_HOMES, [
+    [
+      "if (!Object.hasOwn(result, script)) {",
+      "if (false && !Object.hasOwn(result, script)) {",
+    ],
+  ]);
+  assert.throws(() => assertScriptKindBehaviour(mutant), /Missing expected/);
+});
+
+test("INERTNESS MUTANT — with the parenthesis refusal unreachable, prose is accepted as a script value", async () => {
+  const mutant = await importMutated(RUNNER_HOMES, [
+    ["if (/[()]/.test(value)) {", "if (false && /[()]/.test(value)) {"],
+  ]);
+  assert.throws(() => assertScriptKindBehaviour(mutant), /Missing expected/);
+});
+
+test("INERTNESS MUTANT — with the replacement applied after the append, the overlay loses the home token", async () => {
+  const mutant = await importMutated(RUNNER_HOMES, [
+    [
+      "applyRunnerHomes(applyScriptLines(scripts, scriptLines), homes)",
+      "applyScriptLines(applyRunnerHomes(scripts, homes), scriptLines)",
+    ],
+  ]);
+  assert.notEqual(
+    overlayScripts(SCRIPT_RUNNERS, { load: mutant.loadRunnerScripts }).scripts[
+      "test-a"
+    ],
+    OVERLAY_EXPECTED,
   );
 });

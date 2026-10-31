@@ -37,6 +37,34 @@ export function resolveDbPath(repoRoot, dbPath) {
   return path.resolve(repoRoot, DEFAULT_DB_REL_PATH);
 }
 
+const RESET_HOLD_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+
+/**
+ * The refusal text for a reset whose file removal was denied. The error code
+ * alone cannot show WHICH process holds the file, so the message says "another
+ * process" and gives the MCP server only as the usual example: on Windows the
+ * session's cesium-context-spine MCP server keeps the database open. It states
+ * what has and has not been deleted: the main file is removed first, so a
+ * refusal on it deletes nothing, while a refusal on a sidecar comes after the
+ * files before it are already gone.
+ *
+ * @param {{ dbFilePath: string, failedFile: string, removedFiles: string[],
+ *   code: string }} args
+ * @returns {string}
+ */
+export function describeResetRefusal({
+  dbFilePath,
+  failedFile,
+  removedFiles,
+  code,
+}) {
+  const state =
+    removedFiles.length === 0
+      ? "nothing was deleted"
+      : `already deleted: ${removedFiles.map((file) => path.basename(file)).join(", ")}; rebuild with a full build once the other process has released the database`;
+  return `${dbFilePath}: another process (for example the cesium-context-spine MCP server) holds the database (${code} removing ${path.basename(failedFile)}; ${state}); use the incremental build or close the other process`;
+}
+
 /**
  * Open and initialize a SQLite context-spine database.
  *
@@ -54,20 +82,24 @@ export function openContextDatabase(dbFilePath, options = {}) {
   } = options;
   if (dbFilePath !== ":memory:") {
     if (reset && !readOnly) {
+      const removedFiles = [];
       for (const suffix of ["", "-wal", "-shm"]) {
         const candidate = `${dbFilePath}${suffix}`;
         if (fs.existsSync(candidate)) {
           try {
             removeFile(candidate);
+            removedFiles.push(candidate);
           } catch (err) {
             const code = /** @type {{ code?: string }} */ (err)?.code;
-            if (code === "EPERM" || code === "EBUSY" || code === "EACCES") {
-              // The main file is removed first, so a refusal here (another
-              // process holds it open, as the cesium-context-spine MCP server
-              // does on Windows) happens before anything has been deleted.
+            if (RESET_HOLD_CODES.has(String(code))) {
               throw Object.assign(
                 new Error(
-                  `${dbFilePath}: the cesium-context-spine MCP server holds the database; use the incremental build or close the session's MCP server`,
+                  describeResetRefusal({
+                    dbFilePath,
+                    failedFile: candidate,
+                    removedFiles,
+                    code: String(code),
+                  }),
                   { cause: err },
                 ),
                 { code },

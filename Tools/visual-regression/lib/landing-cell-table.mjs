@@ -193,6 +193,23 @@ export const LANDING_CELLS = Object.freeze({
     crossRenderer: true,
     variants: GLOBE_STAGE_VARIANTS,
   }),
+  // Not in DEFAULT_CELLS: the W3 cloud job's E-W identity cells, brought into
+  // the kit from the out-of-tree instrument that ran them. The managed deck on
+  // with the weather map, at the ground and at 30 km, SDR and HDR; each page
+  // also reads the managed collection's weather state with the deck on and
+  // after it is switched off (`lib/weather-state-steps.mjs`). Not `identity`
+  // cells: the W3 job ran them with an explicit `--runs`, took no onmessage
+  // sentinel, and waited for no pipelines.
+  "E-W-ground": Object.freeze({ rig: "w3-ew-ground", kind: "weather-state" }),
+  "E-W-ground-hdr": Object.freeze({
+    rig: "w3-ew-ground-hdr",
+    kind: "weather-state",
+  }),
+  "E-W-30km": Object.freeze({ rig: "w3-ew-30km", kind: "weather-state" }),
+  "E-W-30km-hdr": Object.freeze({
+    rig: "w3-ew-30km-hdr",
+    kind: "weather-state",
+  }),
   // The opt-in FFT ocean once per inverse-FFT kernel (Batch 1622), the
   // displacement field read back after each capture and compared between the
   // kernels, with the frame-time and per-pass window on each.

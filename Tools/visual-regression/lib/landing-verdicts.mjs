@@ -1,7 +1,7 @@
 /**
  * The landing probe's base-vs-tip comparison and its verdicts, pure over the
  * page records.
- * @purpose Verdict piece for probe-landing-cells.mjs: the PF-1..PF-4 and first-capture pixel comparison of every arm a base report shares (compareArms), the per-page verdicts (stage, onmessage sentinel and its positive control, device loss, uncaught errors, teardown owners, the named GPU pass a cell expects in its PF-2 window) and the per-arm PF and terminal verdicts (landingVerdicts) and the uncapped non-sentinel console error count (otherConsoleErrorCount), all pure except compareArms' PNG reads.
+ * @purpose Verdict piece for probe-landing-cells.mjs: the PF-1..PF-4 and first-capture pixel comparison of every arm a base report shares (compareArms), the per-page verdicts (stage, onmessage sentinel and its positive control, device loss, the weather-state identity claim of a weather-state cell, uncaught errors, teardown owners, the named GPU pass a cell expects in its PF-2 window) and the per-arm PF and terminal verdicts (landingVerdicts) and the uncapped non-sentinel console error count (otherConsoleErrorCount), all pure except compareArms' PNG reads.
  * @status ACTIVE
  *
  * WHY A PIECE. Lane TAR-ALDARION moved these out of `probe-landing-cells.mjs`
@@ -33,6 +33,7 @@ import {
 } from "./onmessage-sentinel.mjs";
 import { LANDING_CELLS } from "./landing-cell-table.mjs";
 import { UNMEASURED_REASONS } from "./probe-refusal.mjs";
+import { weatherStateVerdict } from "./weather-state-steps.mjs";
 
 /**
  * A PF reading that does not exist on this renderer on either arm (the per-pass
@@ -219,6 +220,9 @@ export function landingVerdicts(records, comparison) {
       pass: !lost,
       deviceLost: lost ?? null,
     });
+    if (record.kind === "weather-state") {
+      verdicts.push(weatherStateVerdict(id, record));
+    }
     const timed = perfPassTiming(record);
     if (timed?.available === true) {
       verdicts.push({

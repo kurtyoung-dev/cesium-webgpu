@@ -64,6 +64,14 @@ import { withEdgeSlot } from "./probe-edge-slot.mjs";
 import { withProbeLifecycle } from "./probe-lifecycle.mjs";
 import { ProbeRefusal, throwForDecision } from "./probe-refusal.mjs";
 import {
+  assessLifecycleFailure,
+  createCloseRecord,
+  describeBrowserCloses,
+  onlyLingeringClose,
+  recordCloseExpiries,
+} from "./probe-close-exemption.mjs";
+import {
+  PROBE_EXIT_CODES,
   RUN_OUTCOMES,
   assembleReceipt,
   buildIncidentRecord,
@@ -293,6 +301,36 @@ export async function capture(rig, origins, options = {}, dependencies = {}) {
     completed: [],
   };
 
+  // What the close exemption reads (`probe-close-exemption.mjs`): whether every
+  // measurable cell returned, and one record per browser close.
+  const closeState = { complete: false, closes: [] };
+  const browserLabel = `${descriptor.slotOwner} browser`;
+
+  // Run at most once: the lifecycle's hard stop publishes through it when only
+  // a lingering browser kept a complete capture from finishing, and the
+  // ordinary return path would otherwise write everything a second time.
+  let finished = null;
+  const finish = () => {
+    finished ??= finishCapture({
+      descriptor,
+      produced,
+      servedBuildAssertion,
+      preflight: descriptor.servedBuild ? preflightBySlot : null,
+      edgeSlot,
+      browsersLaunched,
+      browserCloses:
+        closeState.closes.length > 0
+          ? describeBrowserCloses(closeState, now)
+          : null,
+      decodePngImpl,
+      encodePng,
+      writeFile,
+      mkdir,
+      now,
+    });
+    return finished;
+  };
+
   if (measurable.length > 0) {
     // THE SLOT AND THE BROWSER ARE THE LIFECYCLE'S, NOT THIS FUNCTION'S.
     // An earlier shape opened the browser by hand inside the lifecycle body
@@ -322,7 +360,7 @@ export async function capture(rig, origins, options = {}, dependencies = {}) {
             // pair are only comparable if nothing between them changed, and a
             // second browser changes the shader cache, the GPU process and
             // the adapter.
-            label: `${descriptor.slotOwner} browser`,
+            label: browserLabel,
             acquire: async () => {
               const browser = await launch({
                 headed: descriptor.headed,
@@ -335,8 +373,24 @@ export async function capture(rig, origins, options = {}, dependencies = {}) {
             },
             close: async (browser) => {
               progress.phase = "closing the browser";
-              await browser.close();
-              progress.open.delete("browser");
+              // Drained when the cells all returned: they are awaited one at
+              // a time, so a close that begins after the last one has no work
+              // left to wait for.
+              const record = createCloseRecord({
+                run: 0,
+                label: browserLabel,
+                deadlineMs: descriptor.closeDeadlineMs,
+                startedAt: now(),
+              });
+              record.drained = closeState.complete;
+              closeState.closes.push(record);
+              try {
+                await browser.close();
+                record.browserCloseMs = now() - record.startedAt;
+                progress.open.delete("browser");
+              } finally {
+                record.closeMs = now() - record.startedAt;
+              }
             },
             isClosed: (browser) => !browser.isConnected(),
           },
@@ -362,6 +416,7 @@ export async function capture(rig, origins, options = {}, dependencies = {}) {
               progress.cell = null;
             }
             progress.phase = "every cell captured";
+            closeState.complete = true;
           },
         );
         progress.open.delete("edge slot");
@@ -392,8 +447,25 @@ export async function capture(rig, origins, options = {}, dependencies = {}) {
     const baseWriteDiagnostic =
       lifecycleDependencies?.writeDiagnostic ??
       ((text) => process.stderr.write(text));
+    let incident = null;
+    let incidentBanked = false;
+    const bankIncident = () => {
+      if (incident === null || incidentBanked) {
+        return;
+      }
+      incidentBanked = true;
+      try {
+        mkdir(descriptor.outputDirectory);
+        writeFile(
+          path.join(descriptor.outputDirectory, descriptor.incidentName),
+          `${JSON.stringify(incident, null, 2)}\n`,
+        );
+      } catch {
+        // Likewise for a read-only or absent output directory.
+      }
+    };
     const writeDiagnostic = (text) => {
-      const incident = buildCaptureIncident({
+      incident = buildCaptureIncident({
         descriptor,
         progress,
         at: now(),
@@ -406,44 +478,74 @@ export async function capture(rig, origins, options = {}, dependencies = {}) {
       } catch {
         // A broken sink is not worth failing the exit over.
       }
-      try {
-        mkdir(descriptor.outputDirectory);
-        writeFile(
-          path.join(descriptor.outputDirectory, descriptor.incidentName),
-          `${JSON.stringify(incident, null, 2)}\n`,
-        );
-      } catch {
-        // Likewise for a read-only or absent output directory.
+      // A complete capture whose browser has not yet closed may still be
+      // published by the hard-stop hook that runs next; its incident is banked
+      // there when it is not.
+      if (!(
+        closeState.complete &&
+        closeState.closes.some((record) => record.closeMs === null)
+      )) {
+        bankIncident();
       }
       return baseWriteDiagnostic(text);
     };
 
-    await lifecycle(
-      {
-        probe: descriptor.slotOwner,
-        deadlineMs: descriptor.deadlineMs,
-        closeDeadlineMs: descriptor.closeDeadlineMs,
-        hardStopGraceMs: descriptor.hardStopGraceMs,
-        edgeSlotLockPath: descriptor.edgeSlotLockPath,
-      },
-      lifecycleBody,
-      { ...lifecycleDependencies, edgeSlot: slotDependency, writeDiagnostic },
-    );
+    // The hard stop is the last synchronous point before the process dies: a
+    // capture whose cells all returned and whose only open resource is a
+    // browser that will not close is published from here (the manifest and
+    // receipt, exit 0). Any other hard stop keeps its incident and exit 2.
+    const onHardStop = (raws) => {
+      recordCloseExpiries(closeState, raws);
+      if (!onlyLingeringClose(raws, closeState)) {
+        bankIncident();
+        return undefined;
+      }
+      try {
+        finish();
+      } catch {
+        bankIncident();
+        return undefined;
+      }
+      return PROBE_EXIT_CODES.OK;
+    };
+
+    try {
+      await lifecycle(
+        {
+          probe: descriptor.slotOwner,
+          deadlineMs: descriptor.deadlineMs,
+          closeDeadlineMs: descriptor.closeDeadlineMs,
+          hardStopGraceMs: descriptor.hardStopGraceMs,
+          edgeSlotLockPath: descriptor.edgeSlotLockPath,
+          onHardStop,
+        },
+        lifecycleBody,
+        {
+          ...lifecycleDependencies,
+          edgeSlot: slotDependency,
+          writeDiagnostic,
+        },
+      );
+    } catch (error) {
+      // A browser that outlived its close deadline AFTER every cell was
+      // captured is a teardown problem, not a lost measurement: the capture is
+      // published and the close is in the receipt. Any other rejection is the
+      // error it was.
+      const lingering = assessLifecycleFailure(error, closeState);
+      if (!lingering) {
+        throw error;
+      }
+      try {
+        baseWriteDiagnostic(
+          `${descriptor.slotOwner}: a browser close outlived its deadline after every cell was captured; the capture is published and the close is in the receipt\n`,
+        );
+      } catch {
+        // A broken sink must not turn a published capture into a failure.
+      }
+    }
   }
 
-  return finishCapture({
-    descriptor,
-    produced,
-    servedBuildAssertion,
-    preflight: descriptor.servedBuild ? preflightBySlot : null,
-    edgeSlot,
-    browsersLaunched,
-    decodePngImpl,
-    encodePng,
-    writeFile,
-    mkdir,
-    now,
-  });
+  return finish();
 }
 
 function finishCapture({
@@ -453,6 +555,7 @@ function finishCapture({
   preflight,
   edgeSlot,
   browsersLaunched,
+  browserCloses,
   decodePngImpl,
   encodePng,
   writeFile,
@@ -590,6 +693,7 @@ function finishCapture({
       launchArgs: descriptor.launchArgs,
       deadlineMs: descriptor.deadlineMs,
       browsersLaunched,
+      ...(browserCloses === null ? {} : { browserCloses }),
       captures,
     },
     fields: {

@@ -29,7 +29,7 @@ import {
   clockFlagExitCode,
 } from "./lib/clock-pin.mjs";
 import { pageSetClock } from "./lib/clock-steps.mjs";
-import { makeSmallPng } from "./lib/landing-fake-browser.mjs";
+import { encodeRgbaPng } from "../lib/png-rgba.mjs";
 import {
   PROBE_EXIT_CODES,
   ProbeRefusal,
@@ -299,9 +299,16 @@ async function driveIngest(root, extraArgv, { laneHook } = {}) {
 /** The map probe through the real runtime with a stub browser. */
 async function driveMap(root, extraArgv, { viewHook } = {}) {
   const log = { calls: [], launches: 0 };
-  const png = makeSmallPng();
+  // A drawn (mid-grey) canvas: the map probe refuses an all-black first frame.
+  const png = Buffer.from(
+    encodeRgbaPng(new Uint8Array(8 * 8 * 4).fill(128), 8, 8),
+  );
   const page = fakePage(log, [
     ...CLOCK_LANES,
+    {
+      marker: "function pageWaitForPendingPipelines",
+      respond: () => ({ requested: true, available: true, timedOut: false }),
+    },
     { marker: "cloudWeatherMap = weatherOn", respond: () => viewHook?.() },
     {
       marker: ".cesium-navigation-help",

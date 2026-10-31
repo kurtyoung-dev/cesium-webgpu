@@ -177,6 +177,11 @@ function mapSetup({ onLikeOff = false, leftovers = [] } = {}) {
         marker: STRIP_MARKER,
         respond: () => ({ removed: 7, leftovers }),
       },
+      {
+        // The kit's pending-pipeline wait before the first capture.
+        marker: "function pageWaitForPendingPipelines",
+        respond: () => ({ requested: true, available: true, timedOut: false }),
+      },
     ],
     screenshot: (state) => {
       if (!state.weatherOn || onLikeOff) {

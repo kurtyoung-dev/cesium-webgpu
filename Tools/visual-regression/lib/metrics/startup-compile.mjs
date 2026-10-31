@@ -1,7 +1,7 @@
 /**
  * PF-3, startup to the first useful frame and the shader and pipeline compile
  * time, read against the startup ceiling and a pre-registered band.
- * @purpose PF-3 for the R-2026-10-22-3 performance leg: reduces one run's startup record (page timestamps from lib/frame-timing-steps.mjs, relative to navigation start, and the compile tallies of lib/gpu-device-census.mjs) to named intervals and compile totals, and reads base vs tip with the ceiling rule of lib/metrics/perf-band.mjs (every tip repeat under the 2.5 s ceiling and within the band, whose floor for PF-3 is 10 % on WebGPU and 15 % on WebGL; a base already at or over the ceiling reads the banded compare alone and is reported) for the startup interval taken without the cell pending-pipeline wait, which is reported beside it, and the band rule for the compile total.
+ * @purpose PF-3 for the R-2026-10-22-3 performance leg: reduces one run's startup record (page timestamps from lib/frame-timing-steps.mjs, relative to navigation start, and the compile tallies of lib/gpu-device-census.mjs) to named intervals and compile totals, and reads base vs tip with the ceiling rule of lib/metrics/perf-band.mjs (the median of the tip repeats under the 2.5 s ceiling, the slowest repeat reported, and within the band, whose floor for PF-3 is 10 % on WebGPU and 15 % on WebGL; a base already at or over the ceiling reads the banded compare alone and is reported) for the startup interval taken without the cell pending-pipeline wait, which is reported beside it, and the band rule for the compile total.
  * @status ACTIVE
  *
  * THE CLOCK. Every page timestamp is `performance.now()` in the page, whose

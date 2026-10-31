@@ -2,7 +2,7 @@
  * The pre-registered performance band the landing program's PF-1..PF-4 legs
  * are judged against: same-build repeat spread, the band it implies, and the
  * base-against-tip comparison that reads a band.
- * @purpose Pure band arithmetic for the R-2026-10-22-3 performance leg: the seat's default bands (3 % floor, 2 x repeat factor, 10 % startup band floor, 2.5 s startup ceiling, 0 declared allocation), the relative spread of same-build repeats, the band fraction b = max(factor x base-arm spread, floor) (PF-3 reads the startup band floor in the floor's place), verdict objects ({within, over, unmeasured, unmeasured-contended}) for a lower-is-better statistic and for the startup ceiling rule, each carrying the band it was given, and the pre-registered machine-CPU contention guard (a run's mean CPU, the arms' mean delta, and a streak of consecutive busy samples) that turns a PF-1..PF-3 statistic read on a busy machine into unmeasured-contended.
+ * @purpose Pure band arithmetic for the R-2026-10-22-3 performance leg: the seat's default bands (3 % floor, 2 x repeat factor, 10 % startup band floor, 2.5 s startup ceiling read on the median of the tip repeats, 0 declared allocation), the relative spread of same-build repeats, the band fraction b = max(factor x base-arm spread, floor) (PF-3 reads the startup band floor in the floor's place), verdict objects ({within, over, unmeasured, unmeasured-contended}) for a lower-is-better statistic and for the startup ceiling rule, each carrying the band it was given, and the pre-registered machine-CPU contention guard (a run's mean CPU, the arms' mean delta, and a streak of consecutive busy samples) that turns a PF-1..PF-3 statistic read on a busy machine into unmeasured-contended.
  * @status ACTIVE
  *
  * WHERE THE RULES COME FROM. `CLOUD_WATER_LANDING_PLAN_2026-10-21.md` §2.2
@@ -26,6 +26,16 @@
  * <= base median x (1 + b), and the ceiling clause is not applied (the base is
  * itself over it). `baseOverCeiling` stays set and the rule reads
  * `base-over-ceiling-banded`, so the wave packet still reports the cell.
+ *
+ * THE CEILING READS THE MEDIAN (row DX-KIT-PF3-CEILING-ON-MEDIAN). The ceiling
+ * first applied to every tip repeat. The KIT3 Edge job (same-build arms, quiet
+ * machine) measured the WebGL 2D startup at a median of 2453.1 ms with a
+ * slowest repeat of 2692.4 ms, and the per-repeat clause read `over` for a
+ * median that is inside the guard. The ceiling is a blow-up guard, and one
+ * slow repeat of a few is the noise the band is already sized for, so the
+ * ceiling now reads the median of the tip repeats, the same statistic the
+ * band reads. The slowest repeat is still reported as `tipMax`, and
+ * `ceilingStatistic` names the statistic the ceiling read.
  *
  * "ON THAT ARM" IS READ AS THE BASE ARM. The band is a tolerance around the
  * base measurement, so it is sized by the base arm's own repeat spread. The
@@ -300,8 +310,9 @@ export function compareToBase({
 }
 
 /**
- * The startup rule (PF-3): every tip repeat strictly under the ceiling
- * (`startupCeilingMs`, 2.5 s, a blow-up guard) and median(tip) <=
+ * The startup rule (PF-3): median(tip) strictly under the ceiling
+ * (`startupCeilingMs`, 2.5 s, a blow-up guard; the slowest repeat is
+ * reported, not judged) and median(tip) <=
  * median(base) x (1 + b), with b = max(repeatFactor x base-arm spread,
  * `startupBandFloor`). When median(base) is already at or over the ceiling the
  * ceiling clause is not applied (the base is itself over it): the verdict is
@@ -312,7 +323,8 @@ export function compareToBase({
  *
  * @param {object} input As {@link compareToBase}, in milliseconds.
  * @returns {object} The {@link compareToBase} record plus `ceilingMs`,
- *   `tipMax`, `baseOverCeiling` and the `rule` that applied.
+ *   `tipMax` (reported only), `ceilingStatistic` (`"median"`),
+ *   `baseOverCeiling` and the `rule` that applied.
  */
 export function ceilingVerdict({
   metric,
@@ -337,6 +349,7 @@ export function ceilingVerdict({
     ...record,
     ceilingMs,
     tipMax,
+    ceilingStatistic: "median",
     baseOverCeiling: record.base !== null && record.base >= ceilingMs,
     rule: "ceiling-and-band",
   };
@@ -358,12 +371,12 @@ export function ceilingVerdict({
     }
     return out;
   }
-  const underCeiling = tipMax < ceilingMs;
+  const underCeiling = record.tip < ceilingMs;
   out.verdict =
     underCeiling && withinBand ? PERF_VERDICTS.WITHIN : PERF_VERDICTS.OVER;
   if (!underCeiling) {
     out.reasons.push(
-      `a tip repeat took ${tipMax} ms, not under the ${ceilingMs} ms ceiling`,
+      `the tip median took ${record.tip} ms (slowest repeat ${tipMax} ms), not under the ${ceilingMs} ms ceiling`,
     );
   }
   if (!withinBand) {

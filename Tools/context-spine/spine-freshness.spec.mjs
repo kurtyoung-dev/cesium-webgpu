@@ -11,13 +11,18 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { withLaneTmp } from "../lib/lane-tmp.mjs";
 import { buildContextSpine } from "./query-engine.mjs";
-import { openContextDatabase } from "./schema.mjs";
-import { SPINE_DB_REL_PATH, seedCloneContextSpine } from "./seed-clone.mjs";
+import { describeResetRefusal, openContextDatabase } from "./schema.mjs";
+import {
+  REFRESH_TIMEOUT_MS,
+  SPINE_DB_REL_PATH,
+  runIncrementalBuildInClone,
+  seedCloneContextSpine,
+} from "./seed-clone.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TOOLS_DIR = path.resolve(__dirname, "..");
 const REFUSAL =
-  "the cesium-context-spine MCP server holds the database; use the incremental build or close the session's MCP server";
+  "another process (for example the cesium-context-spine MCP server) holds the database";
 const GIT_IDENTITY = [
   "-c",
   "user.name=spec",
@@ -187,6 +192,136 @@ describe("spine freshness: a reset refuses a held database", () => {
         assert.equal(metaValue(dbFile, "spec_sentinel"), "alive");
       }),
   );
+});
+
+describe("spine freshness: the refusal message names the holder honestly", () => {
+  const held = (code) => Object.assign(new Error("held"), { code });
+
+  // Sidecars are plain files here: the reset only needs them to exist and its
+  // injected removal to run.
+  function dbWithSidecars(dir) {
+    const dbFile = path.join(dir, "db", "cesium-context.sqlite");
+    fs.mkdirSync(path.dirname(dbFile), { recursive: true });
+    for (const suffix of ["", "-wal", "-shm"]) {
+      fs.writeFileSync(`${dbFile}${suffix}`, "x");
+    }
+    return dbFile;
+  }
+
+  function resetThrowing(dbFile, failOn, code) {
+    try {
+      openContextDatabase(dbFile, {
+        reset: true,
+        removeFile: (file) => {
+          if (file.endsWith(failOn)) {
+            throw held(code);
+          }
+          fs.rmSync(file, { force: true });
+        },
+      });
+    } catch (err) {
+      return err;
+    }
+    assert.fail("reset must refuse");
+  }
+
+  it("a refusal on the main file says nothing was deleted and never asserts the MCP server is the holder", () =>
+    withLaneTmp("spine-fresh-msg-main-", (dir) => {
+      const dbFile = dbWithSidecars(dir);
+      const err = resetThrowing(dbFile, "cesium-context.sqlite", "EBUSY");
+      assert.equal(err.code, "EBUSY");
+      assert.ok(err.message.includes(REFUSAL), err.message);
+      assert.ok(err.message.includes("nothing was deleted"), err.message);
+      assert.ok(!/MCP server holds/.test(err.message), err.message);
+      for (const suffix of ["", "-wal", "-shm"]) {
+        assert.ok(fs.existsSync(`${dbFile}${suffix}`), suffix);
+      }
+    }));
+
+  it("a refusal on a sidecar names what was already deleted instead of claiming nothing was", () =>
+    withLaneTmp("spine-fresh-msg-wal-", (dir) => {
+      const dbFile = dbWithSidecars(dir);
+      const err = resetThrowing(dbFile, "-wal", "EACCES");
+      assert.equal(err.code, "EACCES");
+      assert.ok(err.message.includes("already deleted: cesium-context.sqlite"));
+      assert.ok(!err.message.includes("nothing was deleted"), err.message);
+      assert.ok(err.message.includes("removing cesium-context.sqlite-wal"));
+      assert.ok(!fs.existsSync(dbFile));
+      assert.ok(fs.existsSync(`${dbFile}-wal`));
+    }));
+
+  it("an error that is not a hold is rethrown untouched", () =>
+    withLaneTmp("spine-fresh-msg-other-", (dir) => {
+      const dbFile = dbWithSidecars(dir);
+      const err = resetThrowing(dbFile, "cesium-context.sqlite", "EISDIR");
+      assert.equal(err.code, "EISDIR");
+      assert.equal(err.message, "held");
+    }));
+
+  it("the message builder is a pure function of the failure", () => {
+    const text = describeResetRefusal({
+      dbFilePath: "/x/db.sqlite",
+      failedFile: "/x/db.sqlite-shm",
+      removedFiles: ["/x/db.sqlite", "/x/db.sqlite-wal"],
+      code: "EPERM",
+    });
+    assert.ok(text.startsWith("/x/db.sqlite: " + REFUSAL), text);
+    assert.ok(text.includes("EPERM removing db.sqlite-shm"), text);
+    assert.ok(text.includes("already deleted: db.sqlite, db.sqlite-wal"), text);
+  });
+});
+
+describe("spine freshness: the refresh child is bounded", () => {
+  it("the default bound is 180000 ms and reaches the child spawn", () => {
+    assert.equal(REFRESH_TIMEOUT_MS, 180000);
+    const seen = [];
+    runIncrementalBuildInClone("/no/clone", undefined, (cmd, argv, options) => {
+      seen.push(options);
+      return { status: 0, stdout: "", stderr: "" };
+    });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].timeout, 180000);
+  });
+
+  // The clone's own query-context.mjs stands in as a build that never finishes.
+  function hungClone(dir) {
+    const clonePath = path.join(dir, "clone");
+    writeFile(
+      clonePath,
+      "Tools/query-context.mjs",
+      "setTimeout(() => {}, 8000);\n",
+    );
+    return clonePath;
+  }
+
+  it("a child that outlives the bound is killed and surfaces as an ETIMEDOUT throw", () =>
+    withLaneTmp("spine-fresh-timeout-", (dir) => {
+      const clonePath = hungClone(dir);
+      const startedAt = Date.now();
+      assert.throws(
+        () => runIncrementalBuildInClone(clonePath, 300),
+        /ETIMEDOUT/,
+      );
+      assert.ok(Date.now() - startedAt < 5000, "the bound did not apply");
+    }));
+
+  it("seeding turns the timeout into a WARNING note and still returns", () =>
+    withLaneTmp("spine-fresh-timeout-note-", (dir) => {
+      const clonePath = hungClone(dir);
+      const dbFile = path.join(clonePath, SPINE_DB_REL_PATH);
+      fs.mkdirSync(path.dirname(dbFile), { recursive: true });
+      fs.writeFileSync(dbFile, "placeholder");
+      const notes = seedCloneContextSpine({
+        sourceRepo: path.join(dir, "no-source"),
+        clonePath,
+        readDbHeadSha: () => "a".repeat(40),
+        readCloneHead: () => "b".repeat(40),
+        runIncrementalBuild: (c) => runIncrementalBuildInClone(c, 300),
+      });
+      const warning = notes.find((n) => n.startsWith("WARNING:"));
+      assert.ok(warning?.includes("ETIMEDOUT"), notes.join("\n"));
+      assert.ok(warning.includes("stale"));
+    }));
 });
 
 describe("spine freshness: clone seeding refreshes a stale DB", () => {

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Probe: the landing program's Edge cells on the shared runtime - one command
 // per cell for the seat's executor, base arm and tip arm.
-// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture, the opt-in 2D and Columbus-view identity cells E-ID-2d / E-ID-cv, the Chukotka cross-renderer cell E-C-chukotka, the FFT-ocean kernel-identity cell E-FFT-ifft and the E-T teardown/device-loss cells) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs with a per-cell pending-pipeline wait, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, the window.onmessage sentinel on identity cells (with an opt-in in-run positive control), the ocean displacement readback per kernel at wave time 0 and at an evolved clock, the ocean compute pass a PF-2 window must list, optionally the PF-1..PF-4 performance windows, a capture-seam manifest for contact-sheet.mjs, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
+// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture, the opt-in 2D and Columbus-view identity cells E-ID-2d / E-ID-cv, the Chukotka cross-renderer cell E-C-chukotka, the FFT-ocean kernel-identity cell E-FFT-ifft, the opt-in W3 weather-state cells E-W-ground / E-W-ground-hdr / E-W-30km / E-W-30km-hdr and the E-T teardown/device-loss cells) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs with a per-cell pending-pipeline wait, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, the window.onmessage sentinel on identity cells (with an opt-in in-run positive control), the ocean displacement readback per kernel at wave time 0 and at an evolved clock, the ocean compute pass a PF-2 window must list, optionally the PF-1..PF-4 performance windows, a capture-seam manifest for contact-sheet.mjs, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
 // @status ACTIVE
 // @runtime lib/probe-runtime.mjs
 //
@@ -23,6 +23,8 @@
 //   E-ID-cv    default-columbus-pinned (off by default)   both renderers
 //   E-C-chukotka water-antimeridian-chukotka (off by default) both renderers
 //   E-FFT-ifft ocean-fft-patch-rebase, one page per kernel  WebGPU
+//   E-W-ground / E-W-ground-hdr / E-W-30km / E-W-30km-hdr
+//              w3-ew-* (off by default; weather-state)     both renderers
 // A cell runs on each renderer its rig declares that `--renderer` keeps. The
 // table and its planning live in `lib/landing-cell-table.mjs`.
 //
@@ -126,6 +128,16 @@
 //   report (`lib/landing-capture-manifest.mjs`), BEFORE from `--base-report`;
 //   a manifest that would not validate is refused and the receipt says why.
 // - The comparison and verdicts moved to `lib/landing-verdicts.mjs`.
+//
+// LANE FINDEKANO (probe-kit round 5). The W3 job's E-W cells (kind
+// `weather-state`) came into the kit from an out-of-tree copy of this probe:
+// after the capture a page reads the managed collection's weather state, turns
+// the deck off, renders five frames and reads again (`lib/weather-state-steps.mjs`),
+// and its verdict comes from `lib/landing-verdicts.mjs`, so a PF-3 reading the
+// machine kept from being measured carries the unmeasured marker and does not
+// fail the run. The old `-kit60` variant (a kit copy with a 60 s close
+// deadline) is retired: the runtime's deadline is 90 s with a per-probe
+// `closeDeadlineMs` override.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -143,6 +155,7 @@ import { runClockSteps } from "./lib/clock-steps.mjs";
 import { installCloudProbeHarness } from "./lib/cloud-probe-harness.mjs";
 import { startCpuSampler } from "./lib/cpu-sampler.mjs";
 import { runDeviceLossSteps } from "./lib/device-loss-steps.mjs";
+import { runWeatherStateSteps } from "./lib/weather-state-steps.mjs";
 import {
   measureLandingPerformance,
   pageMeasureStartup,
@@ -459,7 +472,7 @@ async function runLandingPage({
         };
       };
 
-      if (entry.kind === "capture") {
+      if (entry.kind === "capture" || entry.kind === "weather-state") {
         record.capture = await capture(
           entry.page === "scene" ? base : `${base}-${entry.page}`,
         );
@@ -487,6 +500,11 @@ async function runLandingPage({
         record.captureStart = await capture(`${base}-start`);
         record.steps = await runClockSteps({ page, rig, settle });
         record.capture = await capture(`${base}-end`);
+      }
+
+      if (entry.kind === "weather-state") {
+        // After the capture, so the first read is of the captured frame's state.
+        Object.assign(record, await runWeatherStateSteps({ page }));
       }
 
       if (

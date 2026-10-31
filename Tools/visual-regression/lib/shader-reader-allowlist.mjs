@@ -42,8 +42,8 @@ export const SHADER_READER_ALLOWLIST = Object.freeze({
     "raw read of BillboardCollection.wgsl, X.wgsl, Y.wgsl; not a GlobeTerrain reader, owed to the DX-RAW-SHADER-READERS follow-up",
   "Tools/c16/verify-packaged-notices.spec.mjs":
     "raw read of Thing.wgsl; not a GlobeTerrain reader, owed to the DX-RAW-SHADER-READERS follow-up",
-  "Tools/context-spine/context-spine.spec.mjs":
-    "raw read of ModelPBR.wgsl, BrokenHazard.wgsl, MiniGlobe.wgsl and 4 more; not a GlobeTerrain reader, owed to the DX-RAW-SHADER-READERS follow-up",
+  "Tools/context-spine/context-spine-spatial-hazards.spec.mjs":
+    "raw read of MiniGlobe.wgsl, PrimitiveLit.wgsl, CustomBadCamera.wgsl, Probe.wgsl (fixture shaders, moved here from context-spine.spec.mjs by its split); not a GlobeTerrain reader, owed to the DX-RAW-SHADER-READERS follow-up",
   "Tools/visual-regression/buffer-polyline-hairpin-join.spec.mjs":
     "raw read of csm_polylineCommon.wgsl; not a GlobeTerrain reader, owed to the DX-RAW-SHADER-READERS follow-up",
   "Tools/visual-regression/buffer-polyline-meters-width.spec.mjs":

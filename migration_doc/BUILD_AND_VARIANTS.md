@@ -71,8 +71,9 @@ mapping is `variantDirSuffix()` in `scripts/build.js` (line ~1201): `webgl-only`
 
 ### Measured sizes
 
-The following are the sizes recorded in `CLAUDE.md`'s *Build Variants*
-section (minified IIFE `Cesium.js`). **`status: verify` — STALE** — these were
+The following are the sizes once recorded in the rules file's *Build Variants*
+section (minified IIFE `Cesium.js`), which now lives in the `build-and-variants`
+skill ([SKILL.md](../.claude/skills/build-and-variants/SKILL.md)) and points back here instead of restating them. **`status: verify` — STALE** — these were
 measured at an earlier batch (the doc was last refreshed around Batches 56–185;
 HEAD is 506, and the WebGPU surface has grown substantially since, e.g. the
 cloud / atmosphere / env campaigns in Batches 400–453, DP-H46 metadata in
@@ -421,7 +422,7 @@ A–E pass; the baseline needs a refresh — tracked as an OPEN doc-wave follow-
   smoke test (§6).
 - **When you add a `.wgsl` shader**, rebuild (don't hand-edit the `.js`); for a
   new define bit, route it through the preprocessor/module cache per
-  `CLAUDE.md` → *WGSL Shader Pipeline*.
+  the `wgsl-shader-pipeline` skill ([SKILL.md](../.claude/skills/wgsl-shader-pipeline/SKILL.md)).
 - **Never remove** `"./Source/Cesium*.js"` from `package.json` `sideEffects`
   without replacing the default-renderer-hint mechanism (§5).
 - **Re-measure variant sizes** (§2) before quoting them in user-facing material

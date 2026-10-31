@@ -98,8 +98,9 @@ export const DEFAULT_NAVIGATION_TIMEOUT_MS = 120_000;
  * close is margin for a loaded machine without being so long that a genuinely
  * wedged browser is never reported. `options.closeDeadlineMs` overrides it, and
  * the hard-stop grace keeps the fleet's own margin above whatever it becomes.
- * Unlike `runProbe`, the capture seam does not publish a run whose close
- * outlived this deadline; that exemption lives in `probe-lifecycle-run.mjs`.
+ * Like `runProbe`, the capture seam publishes a capture whose cells all
+ * returned when only the browser close outlived this deadline, and records the
+ * close in the receipt (`browserCloses`); the rule is `probe-close-exemption.mjs`.
  */
 export const DEFAULT_CLOSE_DEADLINE_MS = 45_000;
 

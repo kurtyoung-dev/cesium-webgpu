@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 263,
+  total: 267,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count reached 17
@@ -105,7 +105,10 @@ const REGISTRY_CENSUS = {
     // The weather family's harvest: one rig per banked evidence pose of its
     // probes (sweep ends, stations, seam and pole views, the regional tail,
     // the weather-map wide pair, the Inspector demo's presets and controls).
-    weather: 31,
+    // The W3 job's four E-W weather-state rigs (ground and 30 km, SDR and HDR)
+    // joined it when the landing probe took the E-W cells in from the
+    // out-of-tree instrument that had run them.
+    weather: 35,
     // The globe family's harvest (probe-kit wave 1, DX-108) declared one rig
     // per scene its sixteen probes capture or measure: kept, migrated and
     // retired probes alike, so a retired probe's scene stays on record.

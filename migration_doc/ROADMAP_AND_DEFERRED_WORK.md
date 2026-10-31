@@ -83,7 +83,7 @@ disposition but the heading stays for `grep`-ability). The ID prefixes:
 | `C2-* / Vn` | Campaign-2 batch IDs / Campaign-3-v2 cloud version tags | campaign queues |
 
 **Rule:** add new IDs at the bottom of the relevant subsystem; never reorder or remove. This mirrors
-the `ShaderDefine` bitmask add-only rule (CLAUDE.md → WGSL Shader Pipeline) and keeps cross-references
+the `ShaderDefine` bitmask add-only rule (the `wgsl-shader-pipeline` skill, [SKILL.md](../.claude/skills/wgsl-shader-pipeline/SKILL.md)) and keeps cross-references
 in `WEBGPU_DEBUGGING_LOG.md` / `FEATURE_INVENTORY.md` / git history valid forever.
 
 ### 1.2 Priority bands

@@ -35,6 +35,14 @@
 // Adopted (C13-42a) from the unlanded runtime rewrite that produced the
 // 2026-09-09 C13-42 runs.
 
+import {
+  LEGACY_CLOSE_DEADLINE_MS,
+  assessLifecycleFailure,
+  createCloseRecord,
+  describeBrowserCloses,
+  onlyLingeringClose,
+  recordCloseExpiries,
+} from "./probe-close-exemption.mjs";
 import { EDGE_SLOT_CLOSE_TIMEOUT_MS } from "./probe-edge-slot.mjs";
 import { withProbeLifecycle } from "./probe-lifecycle.mjs";
 import {
@@ -45,14 +53,22 @@ import {
   registerObservedRun,
 } from "./probe-work-registry.mjs";
 
+// The exemption itself is shared with the capture seam; these names stay
+// importable from here for the callers and specs that always took them from
+// this module.
+export {
+  LEGACY_CLOSE_DEADLINE_MS,
+  assessLifecycleFailure,
+  describeBrowserCloses,
+  onlyLingeringClose,
+  recordCloseExpiries,
+};
+
 /** How long the served-build preflight may take before the run is wedged. */
 export const PREFLIGHT_BUDGET_MS = 60_000;
 
 /** How long one Edge launch may take. */
 export const LAUNCH_BUDGET_MS = 120_000;
-
-/** The close deadline before the 2026-10-31 measurement; the receipt reports against it. */
-export const LEGACY_CLOSE_DEADLINE_MS = 10_000;
 
 /**
  * How long a single tracked resource may take to close, unless the descriptor
@@ -169,115 +185,6 @@ export function deriveLifecycleDeadline(options, descriptor) {
     );
   }
   return Number(required);
-}
-
-const failureKind = (raw) => {
-  try {
-    return raw?.details?.kind;
-  } catch {
-    return undefined;
-  }
-};
-
-/**
- * Note on each browser-close record which closes the lifecycle reported as
- * past their deadline. Idempotent.
- *
- * @param {{closes?: Array<object>}} state The run state.
- * @param {unknown[]} raws The lifecycle's raw failures.
- * @returns {void}
- */
-export function recordCloseExpiries(state, raws) {
-  for (const raw of raws) {
-    if (failureKind(raw) !== "close-deadline") {
-      continue;
-    }
-    for (const record of state.closes ?? []) {
-      if (record.label === raw.details.resource) {
-        record.expired = true;
-      }
-    }
-  }
-}
-
-/**
- * Whether the failures are nothing but a browser that lingered after the run's
- * work was complete: every cell of every run returned, the verdicts were
- * computed, every expired close had already drained the descriptor's work, and
- * the only failures are close deadlines (plus an orderly deadline, which after
- * complete work can only have measured the same slow teardown).
- *
- * @param {unknown[]} raws The lifecycle's raw failures.
- * @param {{complete?: boolean, closes?: Array<object>}} state The run state.
- * @returns {boolean} True when the receipt may be published.
- */
-export function onlyLingeringClose(raws, state) {
-  if (state.complete !== true || raws.length === 0) {
-    return false;
-  }
-  if (!raws.some((raw) => failureKind(raw) === "close-deadline")) {
-    return false;
-  }
-  if (
-    !raws.every((raw) =>
-      ["close-deadline", "orderly-deadline"].includes(failureKind(raw)),
-    )
-  ) {
-    return false;
-  }
-  return (state.closes ?? []).every(
-    (record) => record.expired !== true || record.drained === true,
-  );
-}
-
-/**
- * Read a lifecycle rejection: record which closes expired and say whether it
- * is a lingering browser after complete work (published, not an error).
- *
- * @param {unknown} error What the lifecycle rejected with.
- * @param {{complete?: boolean, closes?: Array<object>}} state The run state.
- * @returns {boolean} True when the rejection is only a lingering close.
- */
-export function assessLifecycleFailure(error, state) {
-  const occurrences = Array.isArray(error?.failureOccurrences)
-    ? error.failureOccurrences
-    : [];
-  const raws = occurrences.map((occurrence) => occurrence.raw);
-  recordCloseExpiries(state, raws);
-  if (occurrences.length === 0) {
-    return false;
-  }
-  const primary = error.primaryCause;
-  return (
-    onlyLingeringClose(raws, state) &&
-    (primary === undefined || failureKind(primary) === "close-deadline")
-  );
-}
-
-/**
- * The per-run browser-close records for the runtime receipt. A close that
- * never settled has `closeMs: null` and is measured to `now`.
- *
- * @param {{closes?: Array<object>}} state The run state.
- * @param {() => number} now Clock.
- * @returns {Array<object>} One entry per browser run that began closing.
- */
-export function describeBrowserCloses(state, now) {
-  return (state.closes ?? []).map((record) => {
-    const elapsedMs =
-      record.closeMs === null ? now() - record.startedAt : record.closeMs;
-    return {
-      run: record.run,
-      deadlineMs: record.deadlineMs,
-      legacyDeadlineMs: LEGACY_CLOSE_DEADLINE_MS,
-      settled: record.closeMs !== null,
-      closeMs: record.closeMs,
-      browserCloseMs: record.browserCloseMs,
-      elapsedMs,
-      exceededLegacy: elapsedMs > LEGACY_CLOSE_DEADLINE_MS,
-      expired: record.expired === true || elapsedMs >= record.deadlineMs,
-    };
-  });
 }
 
 /**
@@ -429,16 +336,12 @@ export async function runDescriptorUnderLifecycle({
                 launch({ headed: options.headed, launchArgs, chromium }),
               close: async (browser) => {
                 attempt.finishNotStarted("resource use was not started");
-                const record = {
+                const record = createCloseRecord({
                   run,
                   label: `${descriptor.name} browser run ${run}`,
                   deadlineMs: closeDeadlineMs,
                   startedAt: now(),
-                  closeMs: null,
-                  browserCloseMs: null,
-                  drained: false,
-                  expired: false,
-                };
+                });
                 state.closes.push(record);
                 const drained = Promise.resolve(
                   workRegistry.settleAndSeal(),

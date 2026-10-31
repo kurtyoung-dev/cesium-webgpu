@@ -1,0 +1,13 @@
+{
+  "baseCommit": "12d9bea471",
+  "source": "git show <baseCommit>:Tools/provision-worker-clone.mjs, every top-level export, typeof",
+  "exports": {
+    "toCodexTrustKey": "function",
+    "resolveCodexConfigPath": "function",
+    "assertCodexConfigTargetAllowed": "function",
+    "codexTrustAdd": "function",
+    "codexTrustRemove": "function",
+    "restoreUnchangedProvisionedFile": "function",
+    "provisionNodeModulesJunctions": "function"
+  }
+}

@@ -9,7 +9,9 @@ import { DatabaseSync } from "node:sqlite";
 
 export const SPINE_DB_REL_PATH = ".cache/context-spine/cesium-context.sqlite";
 
-const REFRESH_TIMEOUT_MS = 180000;
+// Bounds the clone's incremental build so a wedged child cannot hang provisioning; the
+// resulting ETIMEDOUT throw becomes a WARNING note in seedCloneContextSpine.
+export const REFRESH_TIMEOUT_MS = 180000;
 
 /**
  * The `meta.head_sha` a spine DB was last built at.
@@ -52,13 +54,15 @@ export function readCloneHead(clonePath) {
  *
  * @param {string} clonePath
  * @param {number} [timeoutMs]
+ * @param {typeof spawnSync} [spawn] replaces the child spawn (specs)
  */
 export function runIncrementalBuildInClone(
   clonePath,
   timeoutMs = REFRESH_TIMEOUT_MS,
+  spawn = spawnSync,
 ) {
   const script = path.resolve(clonePath, "Tools", "query-context.mjs");
-  const run = spawnSync(
+  const run = spawn(
     process.execPath,
     [script, "build", "--incremental", "--repo", clonePath],
     { cwd: clonePath, encoding: "utf8", timeout: timeoutMs },

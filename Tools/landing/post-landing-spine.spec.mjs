@@ -6,13 +6,13 @@
 // runner that records its argv and updates a fake DB meta the way a build would, and asserts on the calls made,
 // the exit code and the printed lines. Run: node --test Tools/landing/post-landing-spine.spec.mjs
 // (POST_LANDING_SPINE_TOOL=<path> aims it at a mutant copy of the tool.)
-import { test, describe } from "node:test";
+import { test, describe, after as afterAll } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
-import { withLaneTmp } from "../lib/lane-tmp.mjs";
+import { laneTmpRoot, removeLaneTmp, withLaneTmp } from "../lib/lane-tmp.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const TOOL = path.resolve(
@@ -116,9 +116,18 @@ async function drive(repo, flags, behave = () => undefined) {
   return { code, calls, lines, errs, meta };
 }
 
+// A per-run lane root derived from CESIUM_LANE (so a lane sweep still finds it) and the
+// pid (so two runs at once never share, or delete, each other's fixtures). It is removed
+// whole after the last case: withLaneTmp removes only its own child directory and would
+// leave this empty root under %TEMP%/cesium-lane/.
+const SPEC_LANE = `${(process.env.CESIUM_LANE || "seat").slice(0, 40)}-pls-${process.pid}`;
+afterAll(() => {
+  removeLaneTmp(laneTmpRoot(SPEC_LANE));
+});
+
 const withRepo = (rels, fn) =>
   withLaneTmp("post-landing-spine-", (dir) => fn(makeRepo(dir, rels), dir), {
-    laneName: "post-landing-spine-spec",
+    laneName: SPEC_LANE,
   });
 
 describe("which build calls a landed commit causes", () => {

@@ -1520,7 +1520,7 @@ Useful for "what does state X look like just before / after every render?" witho
 
 ## WGSL / TS debug instrumentation (pragma-stripped from production)
 
-CesiumJS has a pragma stripping system that removes debug-only code from production builds with **zero runtime cost**. Detail in [CLAUDE.md "Logging & Debug Pragmas"](../CLAUDE.md). Quick reference here:
+CesiumJS has a pragma stripping system that removes debug-only code from production builds with **zero runtime cost**. Detail in the `logging-pragmas` skill, ["Logging & Debug Pragmas"](../.claude/skills/logging-pragmas/SKILL.md). Quick reference here:
 
 ### Wrap with pragmas when
 
@@ -1589,7 +1589,7 @@ Every debug surface in this guide — both fork-added (`CesiumDebug`, `globeFrag
 The seat's `.mcp.json` is gitignored local configuration (`.gitignore:8`), and as read on 2026-09-26 it starts the `playwright`
 MCP server as `npx -y @playwright/mcp@latest --browser firefox`. Playwright's Firefox has no WebGPU, so a lane that
 drives a page through that MCP server gets a browser the fork's rule excludes from every rendering leg (Edge/Chromium
-only — `CLAUDE.md`, "Playwright / Browser Testing"). Drive rendering legs from a probe script that launches
+only — the `build-and-variants` skill, ["Playwright / Browser Testing"](../.claude/skills/build-and-variants/SKILL.md)). Drive rendering legs from a probe script that launches
 `channel: "msedge"` itself, as the templates in this guide do. The configuration is the maintainer's to change; the
 ledger row is `DX-EDITOR-PLAYWRIGHT-MCP-CONFIGURED-FIREFOX` in `DEFERRED_WORK.md`.
 
@@ -1914,7 +1914,7 @@ WebGPU adds a class of failures WebGL didn't have: shader compilation succeeds b
 ### Shader compilation
 
 - `device.createShaderModule()` returns a module even on parse failure — the error surfaces at pipeline creation. WGSL parse messages name the line, the unexpected token, and the rule. Read them — they're better than GLSL's.
-- For the cached path, the module is keyed by `(sourceId, defines)` — see [WebGPUShaderModuleCache.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUShaderModuleCache.ts) and [CLAUDE.md "WGSL Shader Pipeline"](../CLAUDE.md).
+- For the cached path, the module is keyed by `(sourceId, defines)` — see [WebGPUShaderModuleCache.ts](../packages/engine/Source/Renderer/WebGPU/WebGPUShaderModuleCache.ts) and the `wgsl-shader-pipeline` skill, ["Shader module cache"](../.claude/skills/wgsl-shader-pipeline/SKILL.md).
 
 ### Vertex-buffer stride / format
 
@@ -2317,7 +2317,7 @@ Run after any change that could affect demo-level behavior (renderer, scene logi
 
 ### Variant smoke test
 
-`node Tools/variant-smoke-test.mjs` loads each build variant (`Cesium.js`, `CesiumWebGL.js`, `CesiumWebGPU.js`) in Playwright, asserts no console errors, and verifies a non-uniform frame renders (pixel gate sampled INSIDE `scene.postRender` and polled until a 15 s deadline — Batch 242; a deferred read races the compositor and false-positives black on both backends). Run after any change to the bundle variant plugin, the exemption list, or the entry-barrel generation. See [CLAUDE.md "Build Variants"](../CLAUDE.md).
+`node Tools/variant-smoke-test.mjs` loads each build variant (`Cesium.js`, `CesiumWebGL.js`, `CesiumWebGPU.js`) in Playwright, asserts no console errors, and verifies a non-uniform frame renders (pixel gate sampled INSIDE `scene.postRender` and polled until a 15 s deadline — Batch 242; a deferred read races the compositor and false-positives black on both backends). Run after any change to the bundle variant plugin, the exemption list, or the entry-barrel generation. See the `build-and-variants` skill, ["Build Variants"](../.claude/skills/build-and-variants/SKILL.md).
 
 **CI coverage (Batch 242 NEW-VARIANT-CI; extended Batch 246):** the `variants` job in [.github/workflows/dev.yml](../.github/workflows/dev.yml) runs `npx gulp buildAllVariants` (build-time gate for all three variants — catches the Batch-224 ESM named-re-export class) + the **webgl-only** runtime smoke under headless Chromium/SwiftShader + (Batch 246) the **dual** and **webgpu-only** runtime smokes pinned to the SwiftShader WebGPU adapter via the new `--webgpu-adapter swiftshader` flag, on every push/PR. First-hosted-run caveat: the Linux runner's Chromium must expose the SwiftShader Vulkan WebGPU adapter under that flag (verified locally via the Edge channel; if the hosted run reports "no adapter", revert those two steps to LOCAL-REQUIRED — see NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT in DEFERRED_WORK.md).
 
@@ -2344,7 +2344,7 @@ After changes that touch the variant plugin ([scripts/bundleVariantPlugin.js](..
 node Tools/variant-smoke-test.mjs
 ```
 
-Bundle-size table and full architecture: [CLAUDE.md "Build Variants"](../CLAUDE.md).
+Full architecture: the `build-and-variants` skill, ["Build Variants"](../.claude/skills/build-and-variants/SKILL.md); the bundle-size table is [BUILD_AND_VARIANTS.md](BUILD_AND_VARIANTS.md) §2.
 
 ---
 

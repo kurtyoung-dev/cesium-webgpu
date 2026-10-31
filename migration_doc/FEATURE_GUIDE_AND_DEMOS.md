@@ -74,7 +74,7 @@ effect (TAA, SSR, god-rays, bloom, DoF, AO) plugs into the same post-process cha
 ### Build variants (tree-shaking)
 
 Three bundles reduce download size when only one backend is needed (full detail in
-CLAUDE.md → Build Variants):
+the `build-and-variants` skill, [Build Variants](../.claude/skills/build-and-variants/SKILL.md)):
 
 | Variant | Build cmd | Output | Size (min IIFE) |
 |---|---|---|---|
