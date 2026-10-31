@@ -137,11 +137,11 @@ All in `Shaders/WebGPU/Model/ModelPBRComplete.wgsl` (~3100 LOC) with GLSL twins 
 
 ### 4.1 Backend-agnostic surface (CLAUDE.md Principle 2)
 
-Scene-level code never imports from `Renderer/WebGPU/`. A new `FeatureRendererKey.VEGETATION_SCATTER` (enum, O(1) array access per CLAUDE.md "Enumerated Keys") routes to a WebGPU feature renderer; the WebGL2 path is the default fallback in the same Scene file, after the `if (fr) { fr.update(...); return; }` branch.
+Scene-level code never imports from `Renderer/WebGPU/`. A new `FeatureRendererKey.VEGETATION_SCATTER` (enum, O(1) array access per "Enumerated Keys" in `.claude/skills/engine-code-standards/SKILL.md`) routes to a WebGPU feature renderer; the WebGL2 path is the default fallback in the same Scene file, after the `if (fr) { fr.update(...); return; }` branch.
 
 ```
 Scene/VegetationLayer.js          // backend-agnostic public API (add/remove, density map, biome)
-  ├─ runs shared "Scene Logic Extractor" BEFORE isWebGPU branch (CLAUDE.md Collections rule)
+  ├─ runs shared "Scene Logic Extractor" BEFORE isWebGPU branch (engine-code-standards skill, Collections rule)
   ├─ WebGPU:  context.getFeatureRenderer(FeatureRendererKey.VEGETATION_SCATTER)
   │            → Renderer/WebGPU/WebGPUVegetationScatterRenderer.ts  (compute scatter + GPU LOD + indirect)
   └─ WebGL2:  CPU scatter (worker) + per-instance LOD + I3DM-style instanced draw (fallback)

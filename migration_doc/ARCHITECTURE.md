@@ -567,7 +567,7 @@ it. `GlobeTerrain.wgsl:105` is recorded in that row as the existing precedent
 bearing on the third arm; the 57-of-72 measurement above is the wider version of
 the same evidence.
 
-`CLAUDE.md`'s WGSL/RTE section still states the tail rule as an absolute MUST.
+The RTE section (`.claude/skills/engine-code-standards/SKILL.md`, summarised in `CLAUDE.md`) still states the tail rule as an absolute MUST.
 Until `AR-D12` is ruled, treat **this** section as the description of HEAD and
 `AR-D12` as the authority on where the rule is going. What is *not* in doubt is
 the discipline that actually prevents silent corruption — see §5.5.

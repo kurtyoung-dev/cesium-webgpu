@@ -60,3 +60,27 @@ From Principle 6 (Feature Inventory), the bucket counts as they stood:
 Counts measured 2026-09-05 by counting top-level `-` bullet lines in each section's line range in `FEATURE_INVENTORY.md`. They drift as the inventory grows — re-measure rather than trust these absolutes indefinitely. The §C figure includes 15 struck-through entries already marked resolved but not yet migrated to §B, so the true open-WIP count is lower.
 
 From "64-Bit Precision & RTE": Measured 2026-09-06: 57 of 72 shaders declare `previousViewProjection` mid-struct; bringing them to the rule is the AR-D12 enforcement lane (ruling D4, 2026-09-05).
+
+## 5. The engine code standards move (2026-10-31)
+
+Ruled by the maintainer on 2026-10-31 ("Yes Middle Path.", on `DX-RULES-DIET-2`): seven engine-code sections of
+`CLAUDE.md` moved verbatim into the on-demand skill
+[`.claude/skills/engine-code-standards/SKILL.md`](../.claude/skills/engine-code-standards/SKILL.md): "Architecture
+Patterns" (its five subsections), "64-Bit Precision & RTE", "Monorepo Architecture — File Placement Rules", "File Size &
+Code Organization", "Preferred Tech Stack", "ES6+ Modernization — Incremental Upgrade Rule" and "Comment & JSDoc Rules".
+The one change inside the moved text is its single relative link (`ForkCommentStandard.md`), re-rooted to resolve from the
+skill directory.
+
+Measured at the move with `node Tools/rules-file-diet-check.mjs` (tokens are bytes / 4): the moved range was 10,954 B as
+git stores it (LF; 11,085 B in a CRLF worktree). The core went from 42,907 to 33,682 B in git (43,445 to 34,104 B CRLF;
+538 to 422 lines; about 10.7K to 8.4K tokens by LF bytes). The skill file is 11,365 B LF (body 11,152 B as the guard counts it, description 186 B). Of
+what the core gained, the five-line summary section is 1,278 B (CRLF), the Principle 13 landing-hook sentence that
+replaced the bare `npm run context-refresh` one adds 393 B, and the skill's bullet in "On-demand Skills" 71 B; the 33 KB
+target was missed by about that margin.
+
+Why five lines stay in the core: every agent loads the core, but a skill loads only when invoked, so the rules whose
+breach is silent and costly keep a restatement every session sees: RTE (a single-precision position renders with jitter
+no spec flags), file placement (an edit in the root `Source/` build output is overwritten without error), the language
+rule (TypeScript preferred for new code, the `any` ban), the fork comment standard (enforced at landing, after the work is written)
+and file size (a decomposition owed when a file is touched). Each line is a summary or a pointer; the full rule is the
+skill, which binds exactly as `CLAUDE.md` does, and the core routes any change under `packages/**` to it.

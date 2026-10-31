@@ -13,8 +13,8 @@ harness.
 
 The CesiumJS repo is an **npm-workspaces monorepo**. Root `Source/` is a
 **build output**, not the source of truth — edit `packages/engine/Source/` and
-`packages/widgets/Source/`. See `cesium-webgpu/CLAUDE.md` → *Monorepo
-Architecture — File Placement Rules*.
+`packages/widgets/Source/`. See *Monorepo
+Architecture — File Placement Rules* in `.claude/skills/engine-code-standards/SKILL.md`.
 
 ---
 
@@ -343,7 +343,7 @@ modules** at build time by `wgslToJavaScript()` in `scripts/build.js`
 next build. Edit the `.wgsl` and rebuild. The generated `.js` wrappers are
 explicitly treated as build output (e.g. clean globs and the
 `Shaders/WebGPU/**/*.js` entries in build.js). This mirrors the *Monorepo File
-Placement Rules* in `CLAUDE.md` (canonical = `packages/engine/Source/...`,
+Placement Rules* in `.claude/skills/engine-code-standards/SKILL.md` (canonical = `packages/engine/Source/...`,
 build output = root `Source/...`).
 
 ---

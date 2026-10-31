@@ -847,7 +847,7 @@ motion-vector work:
   **no remaining `var` in actual JavaScript** — all grep hits are WGSL `var<…>` inside shader-string
   template literals (not modernizable). Highest-value **on-touch** targets: `Scene.js`,
   `Cesium3DTileset.js`, the DataSources `*Graphics` classes. Conversions are **opportunistic on-touch
-  only** (CLAUDE.md Principle: never modernize a file you're not otherwise touching); do NOT bulk-sweep
+  only** (ES6 rule, `.claude/skills/engine-code-standards/SKILL.md`: never modernize a file you're not otherwise touching); do NOT bulk-sweep
   (a prior bulk sweep shipped HIGH-severity BUGs). **P2.**
 - **`NEW-CAMERA-UPDATEVIEWMATRIX-REVERT` / `NEW-FORK-MODERNIZATION-REVERT`** — merge-conflict-surface
   reverts; matter only at upstream-merge time. **P2 (merge-time).** (`NEW-FORK-MODERNIZATION-REVERT` is

@@ -248,7 +248,7 @@ caches on `_instance` (see `GLOBE_SURFACE` → `WebGPUGlobeSurfaceRenderer`,
 
 Prefer TypeScript for new renderer code. Never use a single
 `position: vec3<f32>`; use RTE `positionHigh`/`positionLow` and
-`mvpRelativeToEye` (CLAUDE.md 64-bit precision section).
+`mvpRelativeToEye` (64-bit precision section, `.claude/skills/engine-code-standards/SKILL.md`).
 
 ### Before you hand-roll buffers or bind groups — read these two
 

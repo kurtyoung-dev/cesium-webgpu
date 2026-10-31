@@ -197,7 +197,7 @@ ECS-on-worker earns its multi-week cost **only** when updates are *simultaneousl
 **Hard blockers if the full system is built:**
 - **No ECS exists** — no entity/component/system framework, no object-pool (`**/*ObjectPool*` = zero hits), no archetype/free-list/generational-id allocator. Greenfield framework with no in-fork pattern → high over-build risk; keep workload-driven and minimal.
 - **SharedArrayBuffer unavailable today** — COOP/COEP headers set *nowhere* (`server.js:179` sets only CORS `*`; `web.config` only MIME maps). So `SharedResourcePool`, `SOABoundingSphereLayout(useSharedMemory)`, `WasmCullBridge` all silently fall back to plain ArrayBuffer. **Without SAB the worker can only `postMessage`-transfer results per frame, not share live memory** — the zero-copy promise collapses to double-buffered transfer, which may erase the benefit entirely. Enabling COOP/COEP is itself risky (`OPTION_B §5.2`: breaks third-party embeds).
-- **RTE precision:** worker must emit RTE-split `positionHigh`/`positionLow` (CLAUDE.md 64-bit rule), not raw f32 — easy to get wrong in f32 SIMD/WASM.
+- **RTE precision:** worker must emit RTE-split `positionHigh`/`positionLow` (64-bit rule, `.claude/skills/engine-code-standards/SKILL.md`), not raw f32 — easy to get wrong in f32 SIMD/WASM.
 
 ### Tasks
 

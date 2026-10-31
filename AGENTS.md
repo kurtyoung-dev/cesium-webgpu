@@ -32,6 +32,7 @@ you as fully as `CLAUDE.md` does: read the matching file before the work it cove
 - [`.claude/skills/upstream-sync/SKILL.md`](.claude/skills/upstream-sync/SKILL.md) — merging CesiumGS `upstream/main` into the fork.
 - [`.claude/skills/wasm-strategy/SKILL.md`](.claude/skills/wasm-strategy/SKILL.md) — WASM bridges, fallbacks, loading, memory, toolchains, threading.
 - [`.claude/skills/debug-console/SKILL.md`](.claude/skills/debug-console/SKILL.md) — `CesiumDebug` console commands; recording a fixed bug.
+- [`.claude/skills/engine-code-standards/SKILL.md`](.claude/skills/engine-code-standards/SKILL.md) — engine code: architecture patterns, RTE precision, file placement, file size, tech stack, ES6, comments and JSDoc.
 
 ## Keep doing — observed on this fork, 2026-09-06 → 09-10
 

@@ -1945,7 +1945,7 @@ CesiumJS uses `@private` to mean "not in the published API" but TypeScript corre
 
 ### Don't trim WIP-module interfaces during cast cleanup
 
-Some `CesiumGraphicsContext`-adjacent interfaces (e.g., `PerformanceManagerContext`) carry forward-looking method slots that aren't yet implemented on the real classes. The cast at the construction site bridges the gap intentionally. Don't delete interface methods because grep shows no callers — verify the owning module is fully implemented first. [CLAUDE.md "Preferred Tech Stack"](../CLAUDE.md) has the full rule.
+Some `CesiumGraphicsContext`-adjacent interfaces (e.g., `PerformanceManagerContext`) carry forward-looking method slots that aren't yet implemented on the real classes. The cast at the construction site bridges the gap intentionally. Don't delete interface methods because grep shows no callers — verify the owning module is fully implemented first. ["Preferred Tech Stack" in the engine-code-standards skill](../.claude/skills/engine-code-standards/SKILL.md) has the full rule.
 
 ---
 

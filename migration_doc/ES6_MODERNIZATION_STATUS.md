@@ -3,7 +3,7 @@
 **Scope:** Canonical source only — `packages/engine/Source/` and `packages/widgets/Source/`.
 **Excluded:** root `Source/` (build output), `Build/`, `node_modules/`, `**/ThirdParty/**`, `**/Workers/**` (generated), and `*.d.ts`.
 
-**Nature of this document:** This is an **inventory of remaining pre-ES6 surface**, not a mandate to mass-rewrite. Per CLAUDE.md: *"When making >10 lines of changes to a file, modernize pre-ES6 patterns (var→const/let, prototype→class, Object.defineProperties→get/set, string concat→template literals); NEVER modernize a file you are not otherwise touching."* Conversions are **opportunistic on-touch**, not a campaign.
+**Nature of this document:** This is an **inventory of remaining pre-ES6 surface**, not a mandate to mass-rewrite. Per the ES6 rule (`.claude/skills/engine-code-standards/SKILL.md`): *"When making >10 lines of changes to a file, modernize pre-ES6 patterns (var→const/let, prototype→class, Object.defineProperties→get/set, string concat→template literals); NEVER modernize a file you are not otherwise touching."* Conversions are **opportunistic on-touch**, not a campaign.
 
 > Note: raw grep counts differ between scan passes depending on whether shader-string files and generated chunks were filtered. Where scans disagree, the lower (canonical-JS-only) figure is the load-bearing one and the discrepancy is called out. Treat all counts as approximate.
 
@@ -173,7 +173,7 @@ The TypeScript story is bifurcated: the **WebGPU renderer is ~87% TS**, while **
 
 ## 7. Decomposition log
 
-CLAUDE.md's file-size rule ("files over ~1,000 lines SHOULD be decomposed … when
+The file-size rule in `.claude/skills/engine-code-standards/SKILL.md` ("files over ~1,000 lines SHOULD be decomposed … when
 touching a file over 1000 lines for functional changes, decompose it too") asks
 for its records here. Add-only, newest last. A row names what moved, where it
 went, the line delta, and the functional change that occasioned it — never a
