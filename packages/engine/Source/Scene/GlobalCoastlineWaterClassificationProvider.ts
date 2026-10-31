@@ -2,6 +2,7 @@ import {
   type GeographicRectangle,
   type WaterClassificationProvider,
 } from "./WaterClassificationProvider.js";
+import { antimeridianWrapPasses } from "./GlobalCoastlineAntimeridian.js";
 
 const MAGIC_LWM1 = 0x314d574c;
 const MAGIC_LWM2 = 0x324d574c;
@@ -711,6 +712,39 @@ export class GlobalCoastlineWaterClassificationProvider implements WaterClassifi
     return !hasBoxes;
   }
 
+  // The coast polygons beyond the antimeridian that a padded rectangle reaches,
+  // grouped with the shifted rectangle to rasterize them over. Empty unless the
+  // pad crosses +-PI (see antimeridianWrapPasses).
+  private _collectAntimeridianPolygons(
+    paddedRect: GeographicRectangle,
+    invDLat: number,
+  ): { rasterRect: GeographicRectangle; polygons: CoastlinePolygon[] }[] {
+    const groups: {
+      rasterRect: GeographicRectangle;
+      polygons: CoastlinePolygon[];
+    }[] = [];
+    for (const pass of antimeridianWrapPasses(paddedRect)) {
+      const matched: CoastlinePolygon[] = [];
+      const candidates = this._querySpatialGrid(pass.queryRect);
+      for (let i = 0; i < candidates.length; i++) {
+        const poly = this._polygons[candidates[i]];
+        if (
+          Math.floor((paddedRect.north - poly.north) * invDLat - 0.5) ===
+          Math.floor((paddedRect.north - poly.south) * invDLat - 0.5)
+        ) {
+          continue;
+        }
+        if (this._intersectsTile(poly, pass.queryRect)) {
+          matched.push(poly);
+        }
+      }
+      if (matched.length > 0) {
+        groups.push({ rasterRect: pass.rasterRect, polygons: matched });
+      }
+    }
+    return groups;
+  }
+
   intersectsRectangle(rectangle: GeographicRectangle): boolean {
     if (!this._ready) {
       return false;
@@ -785,9 +819,10 @@ export class GlobalCoastlineWaterClassificationProvider implements WaterClassifi
         intersecting.push(poly);
       }
     }
+    const acrossSeam = this._collectAntimeridianPolygons(paddedRect, invDLat);
 
     // Fast Path 1: Completely outside all coastline chunks
-    if (intersecting.length === 0) {
+    if (intersecting.length === 0 && acrossSeam.length === 0) {
       const midLon = (rectangle.west + rectangle.east) * 0.5;
       const midLat = (rectangle.south + rectangle.north) * 0.5;
       const midCellBucket =
@@ -821,6 +856,15 @@ export class GlobalCoastlineWaterClassificationProvider implements WaterClassifi
     for (const polygon of intersecting) {
       if (rasterizeLandPolygon(polygon, paddedRect, paddedSize, paddedOut)) {
         changed = true;
+      }
+    }
+    for (const group of acrossSeam) {
+      for (const polygon of group.polygons) {
+        if (
+          rasterizeLandPolygon(polygon, group.rasterRect, paddedSize, paddedOut)
+        ) {
+          changed = true;
+        }
       }
     }
 
@@ -932,7 +976,8 @@ export class GlobalCoastlineWaterClassificationProvider implements WaterClassifi
         intersecting.push(poly);
       }
     }
-    if (intersecting.length === 0) {
+    const acrossSeam = this._collectAntimeridianPolygons(paddedRect, invDLat);
+    if (intersecting.length === 0 && acrossSeam.length === 0) {
       return undefined;
     }
 
@@ -958,6 +1003,15 @@ export class GlobalCoastlineWaterClassificationProvider implements WaterClassifi
     for (const polygon of intersecting) {
       if (rasterizeLandPolygon(polygon, paddedRect, paddedSize, padded)) {
         changed = true;
+      }
+    }
+    for (const group of acrossSeam) {
+      for (const polygon of group.polygons) {
+        if (
+          rasterizeLandPolygon(polygon, group.rasterRect, paddedSize, padded)
+        ) {
+          changed = true;
+        }
       }
     }
     if (!changed) {

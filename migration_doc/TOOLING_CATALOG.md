@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1813 |
-| ACTIVE | 1562 |
+| Files in census | 1814 |
+| ACTIVE | 1563 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
 | NO @purpose HEADER | 49 |
 | NO @status HEADER | 1 |
-| Classes | probe 683, spec 487, other 378, lib 214, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
+| Classes | probe 683, spec 488, other 378, lib 214, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
 
 ### Tools/ (69)
 
@@ -241,7 +241,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | build-coastline-water-mask.mjs | other | ACTIVE | 2026-10-23 | 4 | Converts Natural Earth 1:10m land, minor-island and Antarctic ice-shelf polygons into the packed LWM2 binary bundled for GlobalCoastlineWaterClassificationProvider. |
 | build-eot20-constituent-grid.mjs | other | ACTIVE | 2026-08-16 | 5 | Offline bake of the EOT20 ocean-tide constituent atlas into the TCG1 grid read by Core/TideConstituentGrid.js (CC BY 4.0, attribution mandated). |
 | build-geoid-undulation-grid.mjs | other | ACTIVE | 2026-08-16 | 7 | Bakes the bundled coarse EGM2008 geoid grid (egm2008-0p5deg.i16) consumed by Core/GeoidUndulationGrid.js for the ocean GEOID vertical datum. |
-| build-global-bathymetry-tensor.mjs | other | ACTIVE | 2026-10-23 | 8 | Bakes the 0.5-degree PROCEDURAL depth-and-optics prior (GBT1 RGBA8 tensor) from the coast, lake, river and EGM2008 geoid assets. |
+| build-global-bathymetry-tensor.mjs | other | ACTIVE | 2026-10-30 | 8 | Bakes the 0.5-degree PROCEDURAL depth-and-optics prior (GBT1 RGBA8 tensor) from the coast, lake, river and EGM2008 geoid assets. |
 | build-global-river-binary.mjs | other | ACTIVE | 2026-10-23 | 3 | Generates the packed NE1R global river & delta centerlines binary (packages/engine/Source/Assets/WaterMask/ne10mRivers.bin) for RiverWaterClassificationProvider. |
 | build-lake-water-mask.mjs | other | ACTIVE | 2026-10-23 | 7 | Converts Natural Earth 1:10m lakes, playas and reefs into the packed LWM2 binary bundled for LakeWaterClassificationProvider (globe.lakeWaterMask). |
 | ci-guards.spec.mjs | spec | ACTIVE | 2026-09-19 | 12 | Asserts the CI guards job wires every build-free guard, stays build-free, and records why the excluded guards are excluded. |
@@ -467,7 +467,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1123)
+### Tools/visual-regression/ (1124)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -481,7 +481,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | aurora-geomagnetic-oval.spec.mjs | spec | ACTIVE | 2026-09-18 | 5 | Asserts the centred-dipole frame and the synthetic oval against CPU reference vectors — the pole to its published figures, geomagnetic against geographic latitude, geocentric against geodetic, north against south, and quiet against storm geometry. |
 | backend-isolation-lane-contract.spec.mjs | spec | ACTIVE | 2026-08-20 | 0 | Pin the backend-isolation split lane to the page's explicit launch and readiness contract. |
 | bathymetry-environmental-tensor-coupling.spec.mjs | spec | ACTIVE | 2026-10-23 | 1 | Verifies bathymetry tensor quantization, Jerlov classification, CLOD blending, and end-to-end coupling with GlobeWaterOcean and AtmosphericEffects. |
-| bathymetry-tensor-geoid-header.spec.mjs | spec | ACTIVE | — | 1 | Pins that Tools/build-global-bathymetry-tensor.mjs places geoid features at their own longitude (the 32-byte EGM1 header is skipped, not read as samples) and that the shipped tensor carries no header-leak trenches at the poles. |
+| bathymetry-tensor-geoid-header.spec.mjs | spec | ACTIVE | 2026-10-30 | 1 | Pins that Tools/build-global-bathymetry-tensor.mjs places geoid features at their own longitude (the 32-byte EGM1 header is skipped, not read as samples) and that the shipped tensor carries no header-leak trenches at the poles. |
 | buffer-polyline-hairpin-join.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Runs csm_polylineJoin out of csm_polylineCommon.wgsl (the joint of WebGL's getPolylineWindowCoordinatesEC, now the one joint every WebGPU polyline stage including BufferPolyline uses) through the WGSL evaluator and asserts it against an independent JavaScript transcription of PolylineCommon.glsl: finite at a hairpin and in parity with WebGL everywhere else. |
 | buffer-polyline-meters-width.spec.mjs | spec | ACTIVE | 2026-10-09 | 5 | Acceptance for BufferPolylineCollection widthUnits:"meters" on WebGPU: the packer's sign and the WGSL branch pinned as ONE convention against the GLSL oracle. |
 | buffer-primitive-collection-feature-renderer-teardown.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that BufferPrimitiveCollection.destroy() releases the backend feature renderer's cached resources for the collection, so a grow-then-destroy cycle returns the collection's WebGPU resource count to baseline instead of leaking it. |
@@ -657,6 +657,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | eye-cartographic-uniforms.spec.mjs | spec | ACTIVE | 2026-09-11 | 6 | Executes the real globe camera-UB tail packer against a real UniformState, derives the WGSL CameraUniforms layout from the shader source, and evaluates upstream's czm_eyeToCartographicDelta GLSL and its three WGSL copies over an altitude sweep in float32 to prove they are the same arithmetic. |
 | finding-ownership-audit.spec.mjs | spec | ACTIVE | 2026-08-24 | 10 | Scans the migration_doc finding-source files for NEW-* IDs and enforces each has an ownership disposition (alias/placeholder/resolved). |
 | fog-cheap-coverage-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 13 | Pins the fog cheap-path cloud-shadow coverage gate: samples standardised onto the baked field's moments, with mutants and byte-neutrality. |
+| global-coastline-antimeridian-seam.spec.mjs | spec | ACTIVE | — | 1 | Pins that GlobalCoastlineWaterClassificationProvider sees coast polygons across the antimeridian when a tile's distance-field pad crosses it: land that continues across the seam keeps no fake shoreline, a coast crossing the seam has an ordinary tile seam, and the augment path matches the generate path there. |
 | global-coastline-water-classification.spec.mjs | spec | ACTIVE | 2026-10-23 | 4 | Pins the global coastline water classification provider: tile masks, island and open-ocean fast paths, tile-seam agreement of the generate and augment paths (and a tile's border texels equal to the same texels inside an overlapping tile, which pins the distance-field pad), and the byte-bounded tile cache. |
 | globe-classic-ocean-default-parity.spec.mjs | spec | ACTIVE | 2026-10-23 | 6 | Pins that a default globe (definesHi 0, enableEnhancedOcean false) draws the base ocean in GlobeTerrain.wgsl, that the opt-in WATER_PROVIDER_PARITY variant draws GlobeFS.glsl's classic waves (unwrapped clock, derivatives through the pole flip) and coast band (executed against the GLSL twin), that the enhanced water changes live only under ENHANCED_OCEAN, that the vessel-wake gate is its own camera lane, and that a globe material still receives the base waterMask under MATERIAL_APPLY (the water work's sample is held back; its GLSL-law control runs on a copy). |
 | globe-clip-distances-build.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Runs the real buildClipDistancesShaderSource over the real GlobeTerrain.wgsl after the real preprocessor for every define combination the globe compiles, and requires a non-null result that naga validates, alongside the validity of each un-augmented composed variant; a source whose anchor drifts must make the build return null. |
@@ -1758,7 +1759,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 20 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 6 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
 | engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 45 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
-| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 61 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
+| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 62 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 6 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | frame-import-map.mjs | lib | ACTIVE | 2026-10-09 | 2 | The readiness wait for a dynamic import of a bare specifier in a page or frame: whether a specifier is bare, an in-page predicate that reports whether the document has parsed an import map, and the Node-side wait that blocks until it has, or refuses by name when it does not appear in time. |
 | frame-timing-steps.mjs | lib | ACTIVE | 2026-10-24 | 6 | Step piece for the R-2026-10-22-3 performance leg (PF-1..PF-4 inputs): in-page samplers for the startup timeline (first frame, first frame with clouds drawn, tiles loaded, in navigation-relative page time), per-frame times from scene.render to the device reporting the work done, CesiumDebug.gpuPassCost over its own window, and the renderer's cache statistics; plus the Node-side sequence that renders the warm-up first and then brackets exactly the measured frame window with two GPU device census snapshots. |
