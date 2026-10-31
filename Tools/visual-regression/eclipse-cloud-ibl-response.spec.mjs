@@ -58,6 +58,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -66,7 +67,9 @@ const enginePath = (p) => path.join(root, "packages/engine/Source", p);
 // Multi-line source anchors below are written with LF. The checkout is CRLF on
 // Windows working trees, so normalize or every anchor silently misses.
 const readEngine = (p) =>
-  fs.readFileSync(enginePath(p), "utf8").replace(/\r\n/g, "\n");
+  p.startsWith("Shaders/")
+    ? readEngineShader(p)
+    : fs.readFileSync(enginePath(p), "utf8").replace(/\r\n/g, "\n");
 
 const cloudRenderer = readEngine(
   "Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
@@ -903,7 +906,7 @@ test("E1 no WGSL was touched — the C13-39 occupancy mandate is structural", ()
   }
   // And within GlobeTerrain the CLOUD-SHADOW function specifically stays
   // eclipse-free: the response lives entirely in the CPU-packed `strength`.
-  const globeSrc = readEngine("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
+  const globeSrc = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   const shadowFn = globeSrc.slice(
     globeSrc.indexOf("fn sampleCloudGroundShadow("),
     globeSrc.indexOf("fn computeDayNightFade("),
@@ -917,7 +920,7 @@ test("E1 no WGSL was touched — the C13-39 occupancy mandate is structural", ()
     /let scatteredLight = \(msLight \+ silverLining\) \* cloud\.sunIntensity;/,
   );
   assert.match(clouds, /\* cloud\.ambientIntensity;/);
-  const globe = readEngine("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
+  const globe = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   assert.match(globe, /let strength = camera\.cloudShadowControl\.z;/);
   assert.match(
     globe,

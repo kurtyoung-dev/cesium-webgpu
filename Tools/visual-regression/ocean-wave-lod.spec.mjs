@@ -40,13 +40,10 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
-const wgslPath = path.join(
-  root,
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-);
 const glslPath = path.join(root, "packages/engine/Source/Shaders/GlobeFS.glsl");
 const samplerTsPath = path.join(
   root,
@@ -57,7 +54,9 @@ const typesTsPath = path.join(
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts",
 );
 
-const wgsl = fs.readFileSync(wgslPath, "utf8");
+const wgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+  eol: "native",
+});
 const glsl = fs.readFileSync(glslPath, "utf8");
 const samplerTs = fs.readFileSync(samplerTsPath, "utf8");
 const typesTs = fs.readFileSync(typesTsPath, "utf8");

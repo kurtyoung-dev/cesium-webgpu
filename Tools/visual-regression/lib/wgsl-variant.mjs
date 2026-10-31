@@ -20,15 +20,16 @@
  * `definesHi = 0` sees, which for the cloud lane is every pipeline except the
  * two C13-10 opt-in ones.
  */
-import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { enableEngineTsResolution } from "./engine-ts-resolver.mjs";
+import {
+  ENGINE_SOURCE_ROOT as engineSource,
+  readEngineShader,
+} from "./engine-shader-source.mjs";
 
 enableEngineTsResolution();
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const engineSource = path.resolve(here, "../../../packages/engine/Source");
 const engineModule = (relativePath) =>
   pathToFileURL(path.join(engineSource, relativePath)).href;
 
@@ -43,12 +44,9 @@ const { ShaderDefine, ShaderDefineHi } = shaderDefines;
 
 export { preprocess, ShaderDefine, ShaderDefineHi };
 
-/** Read one engine shader, LF-normalized (Windows checkouts are CRLF). */
-export function readEngineShader(relativePath) {
-  return fs
-    .readFileSync(path.join(engineSource, relativePath), "utf8")
-    .replace(/\r\n/g, "\n");
-}
+// The reader lives in a leaf module so text-only specs need not load the
+// engine preprocessor; it is re-exported here for the specs that use both.
+export { readEngineShader };
 
 /**
  * The WGSL a pipeline compiled with NO defines actually receives: directive

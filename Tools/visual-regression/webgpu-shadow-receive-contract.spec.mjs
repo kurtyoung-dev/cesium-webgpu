@@ -47,6 +47,7 @@ import Matrix4 from "../../packages/engine/Source/Core/Matrix4.js";
 import OrthographicOffCenterFrustum from "../../packages/engine/Source/Core/OrthographicOffCenterFrustum.js";
 import { shouldClearShadowCastTarget } from "../../packages/engine/Source/Renderer/WebGPU/WebGPUShadowCastTargetState.ts";
 import { toWebGPUShadowReceiveMatrix } from "../../packages/engine/Source/Renderer/WebGPU/WebGPUShadowReceiveTransform.ts";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -76,8 +77,9 @@ const globeSurfaceRendererSource = read(
 );
 
 const RECEIVER_SHADERS = {
-  "Globe/GlobeTerrain.wgsl": read(
-    `${ENGINE}/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`,
+  "Globe/GlobeTerrain.wgsl": readEngineShader(
+    "Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+    { eol: "native" },
   ),
   "Model/ModelPBRComplete.wgsl": read(
     `${ENGINE}/Shaders/WebGPU/Model/ModelPBRComplete.wgsl`,

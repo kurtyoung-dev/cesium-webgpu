@@ -57,6 +57,10 @@ import {
   readConstants,
   tokenize,
 } from "./lib/wgsl-mini-eval.mjs";
+import {
+  engineShaderPath,
+  readEngineShader,
+} from "./lib/engine-shader-source.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..");
@@ -66,8 +70,10 @@ const CLOCK_REL = "packages/engine/Source/Scene/GlobeOceanWaveClock.js";
 const TILE_UB_REL =
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts";
 const GLSL_REL = "packages/engine/Source/Shaders/GlobeFS.glsl";
-const WGSL_REL =
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl";
+const WGSL_REL = path
+  .relative(ROOT, engineShaderPath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"))
+  .split(path.sep)
+  .join("/");
 const GLOBE_REL = "packages/engine/Source/Scene/Globe.js";
 const RENDERING_REL =
   "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js";
@@ -82,6 +88,11 @@ const BUILD_REL = "scripts/build.js";
  * @returns {string} The source.
  */
 function read(relativePath) {
+  if (relativePath.startsWith("packages/engine/Source/Shaders/")) {
+    return readEngineShader(
+      relativePath.slice("packages/engine/Source/".length),
+    );
+  }
   return fs
     .readFileSync(path.join(ROOT, relativePath), "utf8")
     .replace(/\r\n/g, "\n");

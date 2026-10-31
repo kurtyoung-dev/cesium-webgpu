@@ -82,11 +82,20 @@ import {
   readConstants,
   stripComments,
 } from "./lib/wgsl-mini-eval.mjs";
+import {
+  engineShaderPath,
+  readEngineShader,
+} from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
 
 function read(relativePath) {
+  if (relativePath.startsWith("packages/engine/Source/Shaders/")) {
+    return readEngineShader(
+      relativePath.slice("packages/engine/Source/".length),
+    );
+  }
   return fs
     .readFileSync(path.join(root, relativePath), "utf8")
     .replace(/\r\n/g, "\n");
@@ -103,8 +112,10 @@ const TILE_RENDERING_PATH =
 const SHADER_SET_PATH = "packages/engine/Source/Scene/GlobeSurfaceShaderSet.js";
 const TILE_UB_PATH =
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts";
-const WGSL_PATH =
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl";
+const WGSL_PATH = path
+  .relative(root, engineShaderPath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"))
+  .split(path.sep)
+  .join("/");
 const GLSL_PATH = "packages/engine/Source/Shaders/GlobeFS.glsl";
 const TILEMAP_PATH =
   "packages/engine/Source/Assets/Textures/BlackMarble/tilemapresource.xml";

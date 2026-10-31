@@ -558,3 +558,47 @@ test("quarantine classification is unreachable under an inertness mutant, and th
     true,
   );
 });
+
+// test-engine-node's second segment is `node --import <preload> --test ...`;
+// before this case the whole runner read as opaque and its 40-odd specs as
+// orphans. Only a separate, portable `--import` value is accepted.
+test("a node --import preload ahead of --test still homes its selectors", async (t) => {
+  const packageJson = {
+    scripts: {
+      "test-preload":
+        "node --test Tools/direct.spec.mjs && node --import ./Specs/preload.mjs --test Tools/preloaded.spec.mjs",
+      "test-absolute-preload":
+        "node --import C:/preload.mjs --test Tools/operand.spec.mjs",
+      "test-other-flag":
+        "node --inspect ./Specs/preload.mjs --test Tools/operand.spec.mjs",
+    },
+  };
+  const files = [
+    "Tools/direct.spec.mjs",
+    "Tools/preloaded.spec.mjs",
+    "Tools/operand.spec.mjs",
+  ];
+  const result = runCensus({ packageJson, files });
+
+  assert.deepEqual(findSpec(result, "Tools/preloaded.spec.mjs").runners, [
+    "test-preload",
+  ]);
+  assert.deepEqual(findSpec(result, "Tools/direct.spec.mjs").runners, [
+    "test-preload",
+  ]);
+  assert.deepEqual(findSpec(result, "Tools/operand.spec.mjs").runners, []);
+
+  await t.test("the preload skip is load-bearing", async (t) => {
+    const mutantModule = await importMutatedCensus(
+      t,
+      "  const testFlagIndex = skipLeadingImports(tokens);",
+      "  const testFlagIndex = 1;",
+    );
+    const mutantResult = mutantModule.runCensus({ packageJson, files });
+
+    assert.deepEqual(
+      findSpec(mutantResult, "Tools/preloaded.spec.mjs").runners,
+      [],
+    );
+  });
+});

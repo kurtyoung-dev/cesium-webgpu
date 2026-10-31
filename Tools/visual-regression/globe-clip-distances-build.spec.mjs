@@ -33,6 +33,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 enableEngineTsResolution();
 const { buildClipDistancesShaderSource } =
@@ -44,11 +45,7 @@ const { ShaderDefine, ShaderDefineHi } =
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..");
-const GLOBE_WGSL = path.join(
-  ROOT,
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-);
-const rawWgsl = fs.readFileSync(GLOBE_WGSL, "utf8").replace(/\r\n/g, "\n");
+const rawWgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
 
 const nagaDirectory = path.join(ROOT, "Tools/shader-pipeline/naga-wasm-tools");
 const naga = await import(

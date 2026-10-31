@@ -69,6 +69,10 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
+import {
+  engineShaderPath,
+  readEngineShader,
+} from "./lib/engine-shader-source.mjs";
 
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -81,8 +85,13 @@ const CAMERA_UB_FILE =
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts";
 const TYPES_FILE =
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts";
-const TERRAIN_FILE =
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl";
+const TERRAIN_FILE = path
+  .relative(
+    REPO_ROOT,
+    engineShaderPath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"),
+  )
+  .split(path.sep)
+  .join("/");
 const CHUNK_FILE =
   "packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_eyeToCartographicDelta.wgsl";
 const BUILTINS_FILE = "packages/engine/Source/Renderer/WebGPU/WGSLBuiltins.ts";
@@ -203,7 +212,9 @@ function constantFrom(source, name, file) {
 
 const cameraUbSource = read(CAMERA_UB_FILE);
 const typesSource = read(TYPES_FILE);
-const terrainSource = read(TERRAIN_FILE);
+const terrainSource = readEngineShader(
+  "Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+);
 
 const CAMERA_UNIFORM_FLOATS = constantFrom(
   typesSource,

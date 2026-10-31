@@ -59,6 +59,7 @@ import {
   vec,
 } from "./lib/wgsl-mini-eval.mjs";
 import { resolveCelestialReflection } from "../../packages/engine/Source/Scene/OceanSurfacePrimitive.js";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..");
@@ -74,10 +75,6 @@ const OCEAN_TS_PATH = path.join(
 const PRIMITIVE_PATH = path.join(
   ROOT,
   "packages/engine/Source/Scene/OceanSurfacePrimitive.js",
-);
-const GLOBE_WGSL_PATH = path.join(
-  ROOT,
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
 );
 const GLOBE_GLSL_PATH = path.join(
   ROOT,
@@ -663,7 +660,7 @@ test("E4 the enable float is read nowhere else", () => {
 // ───────── F. the four water glint laws, all accounted for ──────────────────
 
 test("F1 the globe ocean carries the microfacet lobe in both arms, over its Phong off path", () => {
-  const globeWgsl = read(GLOBE_WGSL_PATH);
+  const globeWgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   // The Phong lobe is still there, twice, because it is now the OFF path
   // rather than the only law. This half of the pin has not moved: what the
   // globe draws with the feature switched off must still be what it always
@@ -722,7 +719,7 @@ test("F3 the divergence between the two oceans is recorded, not assumed", () => 
   //     WebGL twin carrying its night half.
   // The two oceans now share ONE microfacet law rather than each carrying its
   // own; celestial-water-globe-port.spec.mjs holds the copies equal.
-  const globeWgsl = read(GLOBE_WGSL_PATH);
+  const globeWgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   const glsl = read(GLOBE_GLSL_PATH);
   assert.ok(globeWgsl.includes("10.0)"), "globe off: Phong 10");
   assert.ok(oceanWgsl.includes("200.0)"), "FFT off: Blinn-Phong 200");

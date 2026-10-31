@@ -30,7 +30,8 @@
  *   node Tools/temp-hygiene.mjs --execute --plan plan.json
  *
  * Default mode is `--plan`, which is read-only: nothing is deleted unless
- * `--execute` is passed AND a plan file is named.
+ * `--execute` is passed AND a plan file is named. Without `--out` the plan is
+ * written to the lane temp root (`laneTmpRoot()`), never the working directory.
  *
  * Exit: 0 ok · 1 refused (unbanked evidence, bad plan) · 2 cannot determine
  *
@@ -43,7 +44,20 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { LANE_TMP_NAMESPACE } from "./lib/lane-tmp.mjs";
+import { LANE_TMP_NAMESPACE, laneTmpRoot } from "./lib/lane-tmp.mjs";
+
+/**
+ * Where `--plan` writes without `--out`: the lane temp root, so a plan run from
+ * inside another checkout leaves nothing in that checkout. A freshly written
+ * lane root is younger than the lane-root age floor, so the plan never lists
+ * itself for deletion.
+ *
+ * @param {string} [laneName] Defaults as `laneTmpRoot` does.
+ * @returns {string}
+ */
+export function defaultPlanPath(laneName) {
+  return path.join(laneTmpRoot(laneName), "temp-hygiene-plan.json");
+}
 
 const DAY_MS = 86_400_000;
 
@@ -937,8 +951,11 @@ function main(argv) {
   }
 
   const plan = planTempRoot({ temp: readOption(argv, "--temp") ?? undefined });
-  const out =
-    readOption(argv, "--out") ?? path.resolve("temp-hygiene-plan.json");
+  let out = readOption(argv, "--out");
+  if (out === null) {
+    out = defaultPlanPath();
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+  }
   fs.writeFileSync(out, JSON.stringify(plan, null, 1));
   const byCategory = new Map();
   for (const row of plan.delete) {

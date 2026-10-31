@@ -734,3 +734,90 @@ test("E2: INERTNESS MUTANT — with the protect check unreachable, C1 stops fail
     removeLaneTmp(host);
   }
 });
+
+// ---------------------------------------------------------------------------
+// G. The default plan path does not depend on the working directory
+// (DX-KIT-OUTPUT-NOT-CWD): a plan run from inside another checkout used to
+// leave `temp-hygiene-plan.json` in that checkout.
+// ---------------------------------------------------------------------------
+
+const PLAN_LANE = "temp-hygiene-spec-plan";
+
+/**
+ * Run `script --plan` with no `--out` from a foreign working directory and
+ * report what landed there and where the plan went.
+ */
+function planFromForeignCwd(script) {
+  const foreign = mkLaneTmp("foreign-cwd-", { laneName: LANE });
+  const temp = fakeTemp();
+  try {
+    const run = spawnSync(
+      process.execPath,
+      [script, "--plan", "--temp", temp],
+      {
+        cwd: foreign,
+        encoding: "utf8",
+        env: { ...process.env, CESIUM_LANE: PLAN_LANE },
+      },
+    );
+    assert.equal(run.status, 0, run.stderr);
+    const planLine = /^PLAN (.+)$/m.exec(run.stdout);
+    return {
+      landedInCwd: fs.readdirSync(foreign),
+      planPath: planLine ? planLine[1].trim() : null,
+    };
+  } finally {
+    removeLaneTmp(foreign);
+    removeLaneTmp(temp);
+    sweepLaneTmp(PLAN_LANE);
+  }
+}
+
+function assertNothingLandsInCwd(result) {
+  assert.deepEqual(
+    result.landedInCwd,
+    [],
+    "the plan was written into the working directory",
+  );
+}
+
+test("G1: --plan without --out writes the plan to the lane temp root, not the cwd", () => {
+  const result = planFromForeignCwd(SCRIPT);
+  assertNothingLandsInCwd(result);
+  assert.ok(result.planPath, "the CLI did not report where the plan went");
+  assert.ok(
+    path
+      .resolve(result.planPath)
+      .startsWith(
+        path.resolve(os.tmpdir(), "cesium-lane", PLAN_LANE) + path.sep,
+      ),
+    `the plan went to ${result.planPath}, not the lane temp root`,
+  );
+});
+
+test("G2: INERTNESS MUTANT — with the cwd default restored, G1 goes red", () => {
+  const host = mkLaneTmp("mutant-host-", { laneName: LANE });
+  try {
+    const source = fs
+      .readFileSync(MODULE_PATH, "utf8")
+      .split("\r\n")
+      .join("\n");
+    const marker = "    out = defaultPlanPath();";
+    assert.ok(source.includes(marker), "main no longer defaults the plan path");
+    const mutated = source
+      .replace(marker, '    out = path.resolve("temp-hygiene-plan.json");')
+      .replace(
+        'from "./lib/lane-tmp.mjs"',
+        `from ${JSON.stringify(pathToFileURL(path.join(import.meta.dirname, "lib", "lane-tmp.mjs")).href)}`,
+      );
+    assert.notEqual(mutated, source, "the mutation changed nothing");
+    const file = path.join(host, "temp-hygiene-cwd-mutant.mjs");
+    fs.writeFileSync(file, mutated);
+    assert.throws(
+      () => assertNothingLandsInCwd(planFromForeignCwd(file)),
+      "G1 survived the cwd default — the spec is not testing the plan path",
+    );
+  } finally {
+    removeLaneTmp(host);
+  }
+});

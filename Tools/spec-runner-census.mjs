@@ -309,12 +309,33 @@ function isPortableSelector(token) {
   return !value.includes("*") || token.quoted;
 }
 
+// `node --import <preload> --test ...` is a real runner shape (test-engine-node
+// preloads a browser-document shim for its second segment). Only a separate,
+// portable `--import` value is accepted ahead of `--test`; any other leading
+// flag still makes the segment opaque.
+function skipLeadingImports(tokens) {
+  let index = 1;
+
+  while (
+    !tokens[index]?.quoted &&
+    tokens[index]?.value === "--import" &&
+    tokens[index + 1] !== undefined &&
+    isPortableSelector(tokens[index + 1])
+  ) {
+    index += 2;
+  }
+
+  return index;
+}
+
 function parseNodeTestPart(tokens) {
+  const testFlagIndex = skipLeadingImports(tokens);
+
   if (
     tokens[0]?.quoted ||
     tokens[0]?.value !== "node" ||
-    tokens[1]?.quoted ||
-    tokens[1]?.value !== "--test"
+    tokens[testFlagIndex]?.quoted ||
+    tokens[testFlagIndex]?.value !== "--test"
   ) {
     return null;
   }
@@ -322,7 +343,7 @@ function parseNodeTestPart(tokens) {
   const selectors = [];
   let optionsEnded = false;
 
-  for (const token of tokens.slice(2)) {
+  for (const token of tokens.slice(testFlagIndex + 1)) {
     if (!optionsEnded && !token.quoted && token.value === "--") {
       optionsEnded = true;
       continue;

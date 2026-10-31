@@ -303,6 +303,8 @@ function liftFunctionBody(source, name) {
 // The alternative — evaluating the text in-process — would be the same
 // execution with a worse provenance story.
 async function importLiftedPacker(commands) {
+  // The output folder is gitignored, so a fresh checkout does not have it.
+  fs.mkdirSync(path.join(REPO_ROOT, OUTPUT_RELATIVE), { recursive: true });
   const directory = fs.mkdtempSync(
     path.join(REPO_ROOT, OUTPUT_RELATIVE, "contour-pixel-ratio-"),
   );

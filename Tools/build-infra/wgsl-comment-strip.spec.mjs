@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { readEngineShader } from "../visual-regression/lib/engine-shader-source.mjs";
 import {
   constructRegex as constructPluginRegex,
   escapeCharacters,
@@ -25,11 +26,6 @@ function pragmaBlock(prefix, pragma, body) {
     "",
   ].join("\n");
 }
-
-const realShaderPath = new URL(
-  "../../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-  import.meta.url,
-);
 
 function assertPunctuationEscape(escape) {
   const pattern = new RegExp(`^${escape(punctuationPragma)}$`);
@@ -112,7 +108,7 @@ test("wgslModuleContents applies the strip under minify and terminates the modul
 });
 
 test("a real shader keeps every directive and loses every comment line under minify only", () => {
-  const source = readFileSync(realShaderPath, "utf8").replace(/\r\n/g, "\n");
+  const source = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   assert.equal(wgslModuleContents(source, false), source);
   const minified = wgslModuleContents(source, true);
   const directives = source

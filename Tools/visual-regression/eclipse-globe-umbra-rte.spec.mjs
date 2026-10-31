@@ -11,7 +11,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
+
+// Scene/LightTypes.js and its siblings are TypeScript sources imported by their .js
+// name, so the chain below does not resolve without this hook.
+enableEngineTsResolution();
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -19,6 +27,38 @@ const sourceRoot = path.join(root, "packages", "engine", "Source");
 const sourcePath = (relativePath) => path.join(sourceRoot, relativePath);
 const readSource = (relativePath) =>
   fs.readFileSync(sourcePath(relativePath), "utf8");
+
+// GlobeTranslucencyState and GlobeSurfaceTileProviderRendering reach shader modules the
+// shader build writes and a fresh checkout does not have, so on that tree their import
+// is ERR_MODULE_NOT_FOUND. The tests that execute them are skipped there with this
+// reason instead of failing the whole file at import.
+const GENERATED_ENGINE_INPUTS = [
+  "Shaders/Builtin/CzmBuiltins.js",
+  "Shaders/BufferPolylineMaterialVS.js",
+  "Shaders/BufferPolylineMaterialFS.js",
+  "Shaders/PolylineCommon.js",
+  "Shaders/BufferPolygonMaterialVS.js",
+  "Shaders/BufferPolygonMaterialFS.js",
+  "Shaders/ReprojectWebMercatorFS.js",
+  "Shaders/ReprojectWebMercatorVS.js",
+  "Shaders/Appearances/PerInstanceColorAppearanceFS.js",
+  "Shaders/Appearances/PerInstanceColorAppearanceVS.js",
+  "Shaders/Appearances/PerInstanceFlatColorAppearanceFS.js",
+  "Shaders/Appearances/PerInstanceFlatColorAppearanceVS.js",
+];
+
+function missingGeneratedInputs(exists = fs.existsSync) {
+  return GENERATED_ENGINE_INPUTS.filter((rel) => !exists(sourcePath(rel)));
+}
+
+function unbuiltSkipReason(missing) {
+  return missing.length === 0
+    ? false
+    : `the engine shader build has not run (${missing.length} generated modules absent, first ${missing[0]}); run the build to enable it`;
+}
+
+const SKIP_UNBUILT = unbuiltSkipReason(missingGeneratedInputs());
+const testBuilt = (name, fn) => test(name, { skip: SKIP_UNBUILT }, fn);
 
 const {
   applyLimbDarkeningFit,
@@ -57,20 +97,25 @@ const { default: Ellipsoid } = await import(
 const { default: DrawCommand } = await import(
   pathToFileURL(sourcePath("Renderer/DrawCommand.js")).href
 );
-const { default: GlobeTranslucencyState } = await import(
-  pathToFileURL(sourcePath("Scene/GlobeTranslucencyState.js")).href
-);
+const { default: GlobeTranslucencyState } = SKIP_UNBUILT
+  ? {}
+  : await import(
+      pathToFileURL(sourcePath("Scene/GlobeTranslucencyState.js")).href
+    );
 const { createWebGLViewBoundGlobeCommand, pushWebGLViewBoundGlobeCommand } =
-  await import(
-    pathToFileURL(sourcePath("Scene/GlobeSurfaceTileProviderRendering.js")).href
-  );
+  SKIP_UNBUILT
+    ? {}
+    : await import(
+        pathToFileURL(sourcePath("Scene/GlobeSurfaceTileProviderRendering.js"))
+          .href
+      );
 
 const SOLAR_RADIUS = 695_700_000.0;
 const LUNAR_RADIUS = 1_737_400.0;
 const AU = 149_597_870_700.0;
 const EARTH_RADIUS = 6_378_137.0;
 
-test("WebGL pick replays isolate the logical View S5 carrier", () => {
+testBuilt("WebGL pick replays isolate the logical View S5 carrier", () => {
   const packedA = new Float32Array(16).fill(1.0);
   const packedB = new Float32Array(16).fill(2.0);
   const shadowA = { webglPackedUniform: packedA };
@@ -205,7 +250,7 @@ function createTestPickFrame(
   };
 }
 
-test("WebGL View-bound replays own translucent pick derivations", () => {
+testBuilt("WebGL View-bound replays own translucent pick derivations", () => {
   const packedA = new Float32Array(16).fill(3.0);
   const packedB = new Float32Array(16).fill(5.0);
   const shadowA = { webglPackedUniform: packedA };
@@ -1441,7 +1486,9 @@ test("direct-position f32 common rays agree with f64 and are camera-independent"
 
 test("WebGL and WebGPU pin direct rays, exact support, ellipsoid limb, and floor", () => {
   const glsl = readSource("Shaders/GlobeFS.glsl");
-  const wgsl = readSource("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
+  const wgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+    eol: "native",
+  });
   const eclipseCpu = readSource("Scene/EclipseGlobeShadow.js");
   const webgpuEclipse = readSource(
     "Renderer/WebGPU/WebGPUGlobeEclipseUniforms.ts",
@@ -1665,7 +1712,7 @@ test("WebGL excludes S5 from inactive globe shader variants", () => {
     /#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW\s+groundAtmosphereColor\.rgb \*= eclipseRelative;\s+#endif/,
   );
 
-  assert.match(shaderSet, /\(enableEclipseGlobeShadow \? 0x200000000 : 0\)/);
+  assert.match(shaderSet, /\(enableEclipseGlobeShadow \? 0x8000000000 : 0\)/);
   assert.match(
     shaderSet,
     /if \(enableEclipseGlobeShadow\) \{\s*fs\.defines\.push\("ENABLE_ECLIPSE_GLOBE_SHADOW"\);\s*\}/,
@@ -1681,7 +1728,12 @@ test("WebGPU uses a dedicated third dynamic UBO without widening CameraUniforms"
   const renderer = readSource("Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts");
   const types = readSource("Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts");
   const cameraUB = readSource("Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts");
-  const terrainShader = readSource("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
+  const terrainShader = readEngineShader(
+    "Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+    {
+      eol: "native",
+    },
+  );
   const eclipseUniforms = readSource(
     "Renderer/WebGPU/WebGPUGlobeEclipseUniforms.ts",
   );
@@ -2077,3 +2129,52 @@ test("uniform ring and retained capture snapshots cannot survive device teardown
   assert.match(clearCaches, /\)._webgpuSceneCaptureSources = null;/);
   assert.match(clearCaches, /\)._webgpuSceneCaptureModels = null;/);
 });
+
+// The unbuilt-tree guard (DX-WATER-RUNNER-UNBUILT-TREE): a checkout without the shader
+// build skips the tests that execute the globe command modules, with a reason, instead
+// of dying at import; a built tree runs every test above unchanged.
+test("the unbuilt-tree guard names the generated modules, skips with a reason, and never skips a built tree", () => {
+  assert.deepEqual(
+    missingGeneratedInputs(() => true),
+    [],
+  );
+  assert.equal(unbuiltSkipReason([]), false);
+  const missing = missingGeneratedInputs(() => false);
+  assert.deepEqual(missing, GENERATED_ENGINE_INPUTS);
+  assert.match(unbuiltSkipReason(missing), /build has not run/);
+  assert.match(unbuiltSkipReason(missing), /CzmBuiltins\.js/);
+});
+
+test(
+  "mutant: forcing the globe command import on a tree without the generated modules fails with ERR_MODULE_NOT_FOUND, so the skip is the live path",
+  {
+    skip: SKIP_UNBUILT
+      ? false
+      : "this tree is built, so the unbuilt-tree failure cannot be reproduced here",
+  },
+  () => {
+    const resolver = pathToFileURL(
+      path.join(here, "lib/engine-ts-resolver.mjs"),
+    ).href;
+    const target = pathToFileURL(
+      sourcePath("Scene/GlobeSurfaceTileProviderRendering.js"),
+    ).href;
+    const run = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { enableEngineTsResolution } from ${JSON.stringify(resolver)};
+         enableEngineTsResolution();
+         await import(${JSON.stringify(target)});`,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(run.status, 0, "the forced import must fail");
+    assert.match(run.stderr, /ERR_MODULE_NOT_FOUND/);
+    const named = GENERATED_ENGINE_INPUTS.some((rel) =>
+      run.stderr.split(path.sep).join("/").includes(`Source/${rel}`),
+    );
+    assert.ok(named, "the failure must name one of the generated modules");
+  },
+);

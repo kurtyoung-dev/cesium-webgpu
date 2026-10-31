@@ -13,18 +13,37 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { loadRunnerScripts } from "./lib/runner-homes.mjs";
+import { WATER_SPEC_HYGIENE_ALLOWLIST } from "./lib/water-spec-hygiene-allowlist.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, "../..");
-const SCRIPTS = JSON.parse(
-  fs.readFileSync(path.join(ROOT, "package.json"), "utf8"),
-).scripts;
+// package.json is seat-owned, so a lane that homes a new water spec declares the home in
+// its RUNNERS_<LANE>.txt; RUNNER_HOMES_FILE applies it here exactly as the seat will at
+// landing (lib/runner-homes.mjs), and without it this reads package.json as it stands.
+const SCRIPTS = loadRunnerScripts({ root: ROOT }).scripts;
 const read = (rel) =>
   fs.readFileSync(path.join(ROOT, rel), "utf8").replace(/\r\n/g, "\n");
 
 const GALLERY = "packages/sandcastle/gallery/webgpu-global-water-weather";
-// The specs the water landing adds or touches, besides every water-*.spec.mjs in the
-// folder. Other ocean-* specs predate this work and are not this spec's to police.
+// Every spec whose file name starts with one of these is a water or ocean spec, so a new
+// one is scanned without anyone remembering to list it. A prefix is here only because
+// every spec under it is about the sea, its tide or its optics; eclipse-globe-* is not
+// (those specs are about the umbra on the globe), nor is globe-* as a whole.
+const WATER_SPEC_PREFIXES = [
+  "water-",
+  "ocean-",
+  "globe-ocean-",
+  "globe-water-",
+  "celestial-water-",
+  "composite-water-",
+  "tidal-",
+  "bathymetry-",
+  "probe-water-",
+];
+// Water specs scanned by name: the ones whose names carry none of the prefixes above,
+// and some that also match one. Other specs that mention the sea in passing are not this
+// spec's to police.
 const WATER_SPEC_NAMES = [
   "composite-water-classification",
   "global-coastline-water-classification",
@@ -43,30 +62,30 @@ const WATER_SPEC_NAMES = [
   "globe-water-facade",
   "globe-terrain-default-variant-identity",
 ];
-const WATER_FAMILY = [
-  "water-async-pipeline-transition",
-  "water-flight-surface-regimes",
-  "water-orbit-atmosphere-regimes",
-  "water-underwater-bathymetry-regimes",
-  "water-multi-biome-perf-compile",
-];
-const PRETTIER_FILES = [
-  ...WATER_FAMILY.map((n) => `Tools/visual-regression/${n}.spec.mjs`),
-  "Tools/visual-regression/water-demo-behaviour.spec.mjs",
-  "Tools/visual-regression/water-spec-hygiene.spec.mjs",
+// The files the prettier pin covers besides every scanned spec.
+const PRETTIER_EXTRA_FILES = [
   "Tools/visual-regression/water-spec-mutants.mjs",
+  "Tools/visual-regression/lib/water-spec-hygiene-allowlist.mjs",
   `${GALLERY}/main.js`,
   `${GALLERY}/index.html`,
 ];
 
-function waterSpecFiles() {
+// `prefixes` and `names` are parameters so a mutant can ask what a narrower rule scans.
+function waterSpecFiles({
+  prefixes = WATER_SPEC_PREFIXES,
+  names: listed = WATER_SPEC_NAMES,
+} = {}) {
   const names = new Set(
     fs
       .readdirSync(here)
-      .filter((name) => /^water-.*\.spec\.mjs$/.test(name))
+      .filter(
+        (name) =>
+          name.endsWith(".spec.mjs") &&
+          prefixes.some((prefix) => name.startsWith(prefix)),
+      )
       .map((name) => name.replace(/\.spec\.mjs$/, "")),
   );
-  for (const name of WATER_SPEC_NAMES) {
+  for (const name of listed) {
     if (fs.existsSync(path.join(here, `${name}.spec.mjs`))) {
       names.add(name);
     }
@@ -93,6 +112,65 @@ function checkRunnerHomes(scripts, specs) {
   }
 }
 
+// The per-spec checks, by the id the allowlist files its exemptions under. Each one
+// throws on a spec that fails it; the bodies are the pure checks defined below.
+const CHECKS = {
+  "IT-01": (rel) => checkPrettierClean(rel, read(rel)),
+  "IT-02": (rel) => checkRunnerHomes(SCRIPTS, [rel]),
+  "IT-03": (rel) => checkNoTreeWrites(read(rel), rel),
+  "WALL-CLOCK": (rel) => checkNoWallClockCeiling(read(rel), rel),
+};
+
+const isAllowlisted = (id, rel, allowlist = WATER_SPEC_HYGIENE_ALLOWLIST) =>
+  Object.hasOwn(allowlist[id] ?? {}, path.posix.basename(rel));
+
+function failsCheck(id, rel) {
+  try {
+    CHECKS[id](rel);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** Run check `id` over every spec not allowlisted for it. */
+function checkScanned(id, specs, allowlist = WATER_SPEC_HYGIENE_ALLOWLIST) {
+  for (const rel of specs) {
+    if (!isAllowlisted(id, rel, allowlist)) {
+      CHECKS[id](rel);
+    }
+  }
+}
+
+// The allowlist is shrink-only: a row names a scanned spec that still fails the check
+// it is filed under, with a one-line reason. A repaired row turns this red until deleted.
+function checkAllowlistShrinkOnly(allowlist, scanned) {
+  for (const [id, entries] of Object.entries(allowlist)) {
+    assert.ok(Object.hasOwn(CHECKS, id), `unknown check id ${id}`);
+    for (const [name, reason] of Object.entries(entries)) {
+      const rel = `Tools/visual-regression/${name}`;
+      assert.ok(
+        fs.existsSync(path.join(ROOT, rel)),
+        `${id}: ${name} no longer exists; delete its allowlist row`,
+      );
+      assert.ok(
+        scanned.includes(rel),
+        `${id}: ${name} is not a scanned water spec; delete its allowlist row`,
+      );
+      assert.ok(
+        typeof reason === "string" &&
+          reason.trim() !== "" &&
+          !/[\r\n]/.test(reason),
+        `${id}: ${name} needs a non-empty one-line reason`,
+      );
+      assert.ok(
+        failsCheck(id, rel),
+        `${id}: ${name} passes now; delete its allowlist row`,
+      );
+    }
+  }
+}
+
 function mutantFails(name, check, mutate) {
   assert.doesNotThrow(check, `${name}: the check must pass on the real input`);
   assert.throws(
@@ -105,14 +183,16 @@ function mutantFails(name, check, mutate) {
 test("every water or ocean spec has exactly one runner home (IT-02)", () => {
   const specs = waterSpecFiles();
   assert.ok(
-    specs.length >= 15,
+    specs.length >= 30,
     `expected the water spec set, got ${specs.length}`,
   );
-  checkRunnerHomes(SCRIPTS, specs);
+  checkScanned("IT-02", specs);
 });
 
 test("IT-02 mutants: a spec with no home, or two, turns the runner check red", () => {
-  const specs = waterSpecFiles();
+  // The mutants run over the specs that are homed, so they do not go red for a home a
+  // lane has yet to land; the test above is the one that names a spec still homeless.
+  const specs = waterSpecFiles().filter((s) => runnerHomes(SCRIPTS, s) === 1);
   const water = SCRIPTS["test-water-regimes"];
   const dropped = specs.find((s) => water.split(/\s+/).includes(s));
   assert.ok(dropped, "test-water-regimes must name at least one water spec");
@@ -153,12 +233,7 @@ function checkNoTreeWrites(text, label) {
 }
 
 test("no water spec extracts or verifies GlobeTerrain chunks (IT-03)", () => {
-  for (const spec of waterSpecFiles()) {
-    if (spec.endsWith("water-spec-hygiene.spec.mjs")) {
-      continue; // it names the forbidden calls in order to forbid them
-    }
-    checkNoTreeWrites(read(spec), spec);
-  }
+  checkScanned("IT-03", waterSpecFiles());
   const perf = read(
     "Tools/visual-regression/water-multi-biome-perf-compile.spec.mjs",
   );
@@ -202,17 +277,11 @@ test("the perf spec asserts no absolute wall-clock ceiling and measures 4x work 
 });
 
 // Added at the freeze: the coastline spec's Kauai test still asserted a 50 ms
-// ceiling and went red under load. Every spec this landing adds or touches is
-// held to the same rule as the perf spec (this spec excepted: it quotes one in
-// its own mutant).
+// ceiling and went red under load. Every scanned water spec is held to the same
+// rule as the perf spec (this spec excepted: it quotes one in its own mutant, and
+// the allowlist says so).
 test("no water-landing spec asserts an absolute wall-clock ceiling", () => {
-  const names = [...WATER_SPEC_NAMES, ...WATER_FAMILY];
-  for (const name of names) {
-    checkNoWallClockCeiling(
-      read(`Tools/visual-regression/${name}.spec.mjs`),
-      name,
-    );
-  }
+  checkScanned("WALL-CLOCK", waterSpecFiles());
   const coast = read(
     "Tools/visual-regression/global-coastline-water-classification.spec.mjs",
   );
@@ -288,7 +357,8 @@ function checkPrettierClean(rel, text) {
 }
 
 test("the water specs, helper and demo are prettier-clean (IT-01)", () => {
-  for (const rel of PRETTIER_FILES) {
+  checkScanned("IT-01", waterSpecFiles());
+  for (const rel of PRETTIER_EXTRA_FILES) {
     checkPrettierClean(rel, read(rel));
   }
   const rel = "Tools/visual-regression/water-flight-surface-regimes.spec.mjs";
@@ -342,4 +412,123 @@ test("the demo and the perf spec pass the frozen eslint gate (IT-09)", () => {
       () => checkEslintClean(rel, `${read(rel)}\nconst unusedMutantVar = 1;\n`),
     );
   }
+});
+
+// The scan is the thing every other pin leans on, so it is pinned too: the old rule
+// (every water-*.spec.mjs plus the named list) missed the ocean-*, tidal-, celestial-water-
+// and globe-ocean- specs, and a prefix dropped from the list must turn this red.
+const SCANNED_BY_PREFIX_ONLY = [
+  "ocean-datum",
+  "ocean-per-frame-scratch",
+  "ocean-simulation-clock",
+  "ocean-tide-datum",
+  "tidal-harmonics",
+  "globe-ocean-wave-clock",
+  "celestial-water-globe-port",
+  "probe-water-cells",
+].map((name) => `Tools/visual-regression/${name}.spec.mjs`);
+
+function checkScanCovers(scanned, required) {
+  for (const rel of required) {
+    assert.ok(scanned.includes(rel), `${rel} must be a scanned water spec`);
+  }
+}
+
+function checkNoDeadPrefix(prefixes) {
+  for (const prefix of prefixes) {
+    assert.ok(
+      fs
+        .readdirSync(here)
+        .some((name) => name.endsWith(".spec.mjs") && name.startsWith(prefix)),
+      `prefix ${prefix} matches no spec; delete it`,
+    );
+  }
+}
+
+test("the scan covers the prefix-only water specs the old rule missed (scan mutant)", () => {
+  const scanned = waterSpecFiles();
+  const legacy = waterSpecFiles({ prefixes: ["water-"] });
+  const added = scanned.filter((rel) => !legacy.includes(rel));
+  assert.ok(added.length > 0, "the widened scan must add specs to the old one");
+  checkScanCovers(scanned, SCANNED_BY_PREFIX_ONLY);
+  checkNoDeadPrefix(WATER_SPEC_PREFIXES);
+  mutantFails(
+    "the old water- only rule",
+    () => checkScanCovers(scanned, SCANNED_BY_PREFIX_ONLY),
+    () => checkScanCovers(legacy, SCANNED_BY_PREFIX_ONLY),
+  );
+  mutantFails(
+    "one prefix dropped",
+    () => checkScanCovers(scanned, SCANNED_BY_PREFIX_ONLY),
+    () =>
+      checkScanCovers(
+        waterSpecFiles({
+          prefixes: WATER_SPEC_PREFIXES.filter((p) => p !== "ocean-"),
+        }),
+        SCANNED_BY_PREFIX_ONLY,
+      ),
+  );
+  mutantFails(
+    "a prefix that matches nothing",
+    () => checkNoDeadPrefix(WATER_SPEC_PREFIXES),
+    () => checkNoDeadPrefix([...WATER_SPEC_PREFIXES, "no-such-water-prefix-"]),
+  );
+});
+
+test("the hygiene allowlist is shrink-only: every row exists, still fails its check, and says why", () => {
+  const scanned = waterSpecFiles();
+  checkAllowlistShrinkOnly(WATER_SPEC_HYGIENE_ALLOWLIST, scanned);
+  // A homed spec passes IT-02 and a clean spec passes the others, so a row for either
+  // is a repaired row the ratchet must refuse.
+  const mutate = (allowlist) => () =>
+    checkAllowlistShrinkOnly(allowlist, scanned);
+  mutantFails(
+    "a repaired row (the spec now passes its check)",
+    () => checkAllowlistShrinkOnly(WATER_SPEC_HYGIENE_ALLOWLIST, scanned),
+    mutate({
+      ...WATER_SPEC_HYGIENE_ALLOWLIST,
+      "IT-02": {
+        ...WATER_SPEC_HYGIENE_ALLOWLIST["IT-02"],
+        "water-mask-assets.spec.mjs": "homed, so this row is stale",
+      },
+    }),
+  );
+  mutantFails(
+    "a row for a spec that is gone",
+    () => checkAllowlistShrinkOnly(WATER_SPEC_HYGIENE_ALLOWLIST, scanned),
+    mutate({
+      ...WATER_SPEC_HYGIENE_ALLOWLIST,
+      "IT-03": {
+        ...WATER_SPEC_HYGIENE_ALLOWLIST["IT-03"],
+        "water-no-such-spec.spec.mjs": "deleted long ago",
+      },
+    }),
+  );
+  mutantFails(
+    "an empty reason",
+    () => checkAllowlistShrinkOnly(WATER_SPEC_HYGIENE_ALLOWLIST, scanned),
+    mutate({
+      ...WATER_SPEC_HYGIENE_ALLOWLIST,
+      "WALL-CLOCK": { "water-spec-hygiene.spec.mjs": "  " },
+    }),
+  );
+  mutantFails(
+    "a multi-line reason",
+    () => checkAllowlistShrinkOnly(WATER_SPEC_HYGIENE_ALLOWLIST, scanned),
+    mutate({
+      ...WATER_SPEC_HYGIENE_ALLOWLIST,
+      "WALL-CLOCK": { "water-spec-hygiene.spec.mjs": "one\ntwo" },
+    }),
+  );
+  mutantFails(
+    "an unknown check id",
+    () => checkAllowlistShrinkOnly(WATER_SPEC_HYGIENE_ALLOWLIST, scanned),
+    mutate({ ...WATER_SPEC_HYGIENE_ALLOWLIST, "IT-99": {} }),
+  );
+});
+
+test("an allowlisted spec is exempt from its check only (allowlist mutant)", () => {
+  // Without the allowlist the hygiene spec itself fails IT-03, so the exemption is live.
+  assert.throws(() => checkScanned("IT-03", waterSpecFiles(), {}));
+  assert.doesNotThrow(() => checkScanned("IT-03", waterSpecFiles()));
 });

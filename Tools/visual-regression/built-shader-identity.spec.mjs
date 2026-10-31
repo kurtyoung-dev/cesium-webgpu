@@ -46,6 +46,7 @@ import {
   decodeJsStringLiteral,
   extractEmbeddedShaders,
 } from "./lib/built-shader-identity.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -218,10 +219,6 @@ test("C1 — a comparison that ignores the embedded text cannot tell the two apa
 
 test("D1 — this checkout's own bundle, when one has been built, carries its shaders", (t) => {
   const bundlePath = path.join(root, "Build/CesiumUnminified/Cesium.js");
-  const shaderPath = path.join(
-    root,
-    "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-  );
   if (!fs.existsSync(bundlePath)) {
     t.skip("no Build/CesiumUnminified — nothing to verify");
     return;
@@ -229,7 +226,12 @@ test("D1 — this checkout's own bundle, when one has been built, carries its sh
   const report = compareBuiltShaderIdentity({
     bundleText: fs.readFileSync(bundlePath, "utf8"),
     shaders: [
-      { name: "GlobeTerrain", source: fs.readFileSync(shaderPath, "utf8") },
+      {
+        name: "GlobeTerrain",
+        source: readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+          eol: "native",
+        }),
+      },
     ],
   });
   const status = report.results[0].status;

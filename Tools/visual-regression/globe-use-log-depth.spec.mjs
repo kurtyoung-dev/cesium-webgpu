@@ -65,14 +65,13 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..");
 const WEBGPU_DIR = resolve(ROOT, "packages/engine/Source/Renderer/WebGPU");
-const GLOBE_WGSL = resolve(
-  ROOT,
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-);
+const readGlobeWgsl = () =>
+  readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", { eol: "native" });
 
 const RENDERER = "WebGPUGlobeSurfaceRenderer.ts";
 const PIPELINES = "WebGPUGlobeSurfacePipelines.ts";
@@ -513,7 +512,7 @@ const expand = (source, on) =>
   stripWgslComments(preprocess(source, on ? ShaderDefine.LOG_DEPTH : 0, 0));
 
 test("WGSL — the LOG_DEPTH-off expansion of GlobeTerrain contains no log-depth machinery at all", () => {
-  const wgsl = readFileSync(GLOBE_WGSL, "utf8");
+  const wgsl = readGlobeWgsl();
   const off = expand(wgsl, false);
   const survivors = LOG_ONLY_TOKENS.filter((t) => off.includes(t));
   assert.deepEqual(
@@ -527,7 +526,7 @@ test("WGSL — the LOG_DEPTH-off expansion of GlobeTerrain contains no log-depth
 });
 
 test("WGSL — the LOG_DEPTH-on expansion really does carry all of it (the off result is not vacuous)", () => {
-  const wgsl = readFileSync(GLOBE_WGSL, "utf8");
+  const wgsl = readGlobeWgsl();
   const on = expand(wgsl, true);
   const missing = LOG_ONLY_TOKENS.filter((t) => !on.includes(t));
   assert.deepEqual(
@@ -539,7 +538,7 @@ test("WGSL — the LOG_DEPTH-on expansion really does carry all of it (the off r
 });
 
 test("WGSL — both expansions are still a complete globe shader", () => {
-  const wgsl = readFileSync(GLOBE_WGSL, "utf8");
+  const wgsl = readGlobeWgsl();
   for (const on of [false, true]) {
     const out = expand(wgsl, on);
     for (const anchor of STRUCTURAL_ANCHORS) {
@@ -557,7 +556,7 @@ test("WGSL — both expansions are still a complete globe shader", () => {
 });
 
 test("MUTATION — unguarding the frag_depth member makes the WGSL off-path check FAIL", () => {
-  const wgsl = readFileSync(GLOBE_WGSL, "utf8");
+  const wgsl = readGlobeWgsl();
   assert.ok(
     !expand(wgsl, false).includes("frag_depth"),
     "precondition: the unmutated off expansion must be clean",

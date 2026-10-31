@@ -18,6 +18,7 @@ import {
   assertInertnessMutantTurnsRed,
   stripUses,
 } from "./water-spec-mutants.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 enableEngineTsResolution();
 
@@ -55,10 +56,6 @@ const globeCameraUBPath = path.join(
   root,
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts",
 );
-const globeWgslPath = path.join(
-  root,
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-);
 const oceanRendererPath = path.join(
   root,
   "packages/engine/Source/Renderer/WebGPU/WebGPUOceanRenderer.ts",
@@ -68,7 +65,10 @@ const globeTypesSrc = fs.readFileSync(globeTypesPath, "utf8");
 const globePipelinesSrc = fs.readFileSync(globePipelinesPath, "utf8");
 const globeRendererSrc = fs.readFileSync(globeRendererPath, "utf8");
 const globeCameraUBSrc = fs.readFileSync(globeCameraUBPath, "utf8");
-const globeWgslSrc = fs.readFileSync(globeWgslPath, "utf8");
+const globeWgslSrc = readEngineShader(
+  "Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+  { eol: "native" },
+);
 const oceanRendererSrc = fs.readFileSync(oceanRendererPath, "utf8");
 
 test("1. GlobePipelineEntry and resolveGlobePipelineEntry retain fallbackPipeline during async compile", () => {

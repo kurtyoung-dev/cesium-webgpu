@@ -66,18 +66,29 @@ import {
   defaultVariant,
   hiVariant,
 } from "./lib/wgsl-variant.mjs";
+import {
+  engineShaderPath,
+  readEngineShader,
+} from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
 
 function read(relativePath) {
+  if (relativePath.startsWith("packages/engine/Source/Shaders/")) {
+    return readEngineShader(
+      relativePath.slice("packages/engine/Source/".length),
+    );
+  }
   return fs
     .readFileSync(path.join(root, relativePath), "utf8")
     .replace(/\r\n/g, "\n");
 }
 
-const WGSL_PATH =
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl";
+const WGSL_PATH = path
+  .relative(root, engineShaderPath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"))
+  .split(path.sep)
+  .join("/");
 const TILE_UB_PATH =
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts";
 const GLOBE_PATH = "packages/engine/Source/Scene/Globe.js";

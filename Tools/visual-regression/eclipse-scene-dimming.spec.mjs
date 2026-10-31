@@ -44,12 +44,16 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
 
 const enginePath = (p) => path.join(root, "packages/engine/Source", p);
-const readEngine = (p) => fs.readFileSync(enginePath(p), "utf8");
+const readEngine = (p) =>
+  p.startsWith("Shaders/")
+    ? readEngineShader(p, { eol: "native" })
+    : fs.readFileSync(enginePath(p), "utf8");
 
 const {
   createEclipseState,
@@ -1836,9 +1840,7 @@ test("S6 really is additive and S5 really is subtractive — checked at the sour
   assert.match(globeFs, /finalColor\.rgb \*= eclipseAbsolute;/);
   // Both backends compose S5 the same way; a divergence here WOULD be a
   // product defect rather than an instrument one, so it is pinned.
-  const globeWgsl = readEngine(
-    "Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-  ).replace(/\r\n/g, "\n");
+  const globeWgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   for (const src of [globeFs, globeWgsl]) {
     assert.match(src, /eclipseRelative = eclipseAbsolute \* /);
   }

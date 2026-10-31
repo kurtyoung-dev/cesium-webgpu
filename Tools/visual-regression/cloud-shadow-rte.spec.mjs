@@ -34,6 +34,7 @@ import {
   writeCloudShadowViewProjection,
   writeCloudShadowViewProjectionRelativeToEye,
 } from "../../packages/engine/Source/Renderer/WebGPU/WebGPUCloudShadowFrame.ts";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const WGS84_A = CLOUD_SHADOW_WGS84_A;
 const WGS84_B = CLOUD_SHADOW_WGS84_B;
@@ -60,8 +61,9 @@ const cloudShaderSource = read(
 const densityDomainSource = read(
   "packages/engine/Source/Shaders/WebGPU/Environment/CloudDensityDomain.wgsl",
 );
-const globeShaderSource = read(
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+const globeShaderSource = readEngineShader(
+  "Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+  { eol: "native" },
 );
 const globeCameraSource = read(
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts",

@@ -72,6 +72,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -82,12 +83,10 @@ function read(relativePath) {
     .replace(/\r\n/g, "\n");
 }
 
-const WGSL_PATH =
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl";
 const PIPELINES_PATH =
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfacePipelines.ts";
 
-const wgsl = read(WGSL_PATH);
+const wgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
 const pipelines = read(PIPELINES_PATH);
 const shaderSet = read("packages/engine/Source/Scene/GlobeSurfaceShaderSet.js");
 const globeFs = read("packages/engine/Source/Shaders/GlobeFS.glsl");

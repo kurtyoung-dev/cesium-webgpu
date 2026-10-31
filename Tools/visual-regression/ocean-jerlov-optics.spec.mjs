@@ -8,10 +8,7 @@
 // Run: node --test Tools/visual-regression/ocean-jerlov-optics.spec.mjs
 
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { compileFunction, stripComments, vec2 } from "./lib/wgsl-mini-eval.mjs";
 import {
@@ -19,16 +16,10 @@ import {
   defaultVariant,
   hiVariant,
 } from "./lib/wgsl-variant.mjs";
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(here, "..", "..");
-const globeWgslPath = path.join(
-  root,
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-);
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 function readGlobeWgsl() {
-  return fs.readFileSync(globeWgslPath, "utf8").replace(/\r\n/g, "\n");
+  return readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
 }
 
 test("1. Jerlov extinction coefficients match Type IB ocean classification", () => {

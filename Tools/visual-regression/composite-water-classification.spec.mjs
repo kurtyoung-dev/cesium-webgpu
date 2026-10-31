@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import nodeTest from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
@@ -28,6 +28,46 @@ const LAKE_ASSET = path.resolve(
   "../../packages/engine/Source/Assets/WaterMask/ne10mLakes.bin",
 );
 const RAD = Math.PI / 180.0;
+
+// GlobeSurfaceTile statically reaches Renderer/ShaderSource.js, which imports these
+// shader modules; the shader build writes them and a fresh checkout has none, so on
+// that tree the import is ERR_MODULE_NOT_FOUND. Every test that needs GlobeSurfaceTile
+// is skipped there with this reason instead of failing the whole file at import.
+const GENERATED_ENGINE_INPUTS = [
+  "Shaders/Builtin/CzmBuiltins.js",
+  "Shaders/BufferPolylineMaterialVS.js",
+  "Shaders/BufferPolylineMaterialFS.js",
+  "Shaders/PolylineCommon.js",
+  "Shaders/BufferPolygonMaterialVS.js",
+  "Shaders/BufferPolygonMaterialFS.js",
+];
+
+function missingGeneratedInputs(exists = fs.existsSync) {
+  return GENERATED_ENGINE_INPUTS.filter(
+    (rel) => !exists(path.resolve(here, "../../packages/engine/Source", rel)),
+  );
+}
+
+function unbuiltSkipReason(missing) {
+  return missing.length === 0
+    ? false
+    : `the engine shader build has not run (${missing.length} generated modules absent, first ${missing[0]}); run the build to enable it`;
+}
+
+const SKIP_UNBUILT = unbuiltSkipReason(missingGeneratedInputs());
+
+// The tests that execute GlobeSurfaceTile, by the number their title starts with. Matching
+// on the title keeps every test body, and its formatting, exactly as it was.
+const NEEDS_BUILD = /^(?:9|10|11|19|19b|19c|20|20b|22c). /;
+function test(name, ...rest) {
+  const fn = rest.pop();
+  const options = rest[0] ?? {};
+  return nodeTest(
+    name,
+    NEEDS_BUILD.test(name) ? { ...options, skip: SKIP_UNBUILT } : options,
+    fn,
+  );
+}
 
 // Compares typed arrays without letting assert print a megabyte diff on failure.
 function assertSameBytes(actual, expected, message = "bytes differ") {
@@ -160,8 +200,9 @@ const RENDERER_WEBGPU_DIR = path.resolve(
   "../../packages/engine/Source/Renderer/WebGPU",
 );
 
-const { default: GlobeSurfaceTile, resolveWaterMaskForTile } =
-  await import("../../packages/engine/Source/Scene/GlobeSurfaceTile.js");
+const { default: GlobeSurfaceTile, resolveWaterMaskForTile } = SKIP_UNBUILT
+  ? {}
+  : await import("../../packages/engine/Source/Scene/GlobeSurfaceTile.js");
 const { default: TerrainState } =
   await import("../../packages/engine/Source/Scene/TerrainState.js");
 const { default: QuadtreeTileLoadState } =
@@ -1129,7 +1170,10 @@ test("19c. P3-B1 an upsampled tile no layer touches adopts its ancestor's textur
         augmentWaterMask: () => undefined,
       },
       rectangle: SALVADOR,
-      terrainData: { waterMask: undefined, wasCreatedByUpsampling: () => true },
+      terrainData: {
+        waterMask: undefined,
+        wasCreatedByUpsampling: () => true,
+      },
       parent,
     },
   );
@@ -1476,3 +1520,58 @@ test("22c. FND-7 the scene side tags a provider-built mask, and only that, for t
   ]);
   assert.notDeepEqual(providerMaskTags(mutant), { built: true, own: false });
 });
+
+// ---------------------------------------------------------------------------
+// The unbuilt-tree guard (DX-WATER-RUNNER-UNBUILT-TREE): a checkout without the
+// shader build skips the GlobeSurfaceTile tests, with a reason, instead of dying at
+// import; a built tree runs every test above unchanged.
+// ---------------------------------------------------------------------------
+
+test("23. the unbuilt-tree guard names the generated modules, skips with a reason, and never skips a built tree", () => {
+  assert.deepEqual(
+    missingGeneratedInputs(() => true),
+    [],
+  );
+  assert.equal(unbuiltSkipReason([]), false);
+  const missing = missingGeneratedInputs(() => false);
+  assert.deepEqual(missing, GENERATED_ENGINE_INPUTS);
+  assert.match(unbuiltSkipReason(missing), /build has not run/);
+  assert.match(unbuiltSkipReason(missing), /CzmBuiltins\.js/);
+});
+
+test(
+  "23b. (mutant) forcing the GlobeSurfaceTile import on a tree without the generated modules fails with ERR_MODULE_NOT_FOUND, so the skip is the live path",
+  {
+    skip: SKIP_UNBUILT
+      ? false
+      : "this tree is built, so the unbuilt-tree failure cannot be reproduced here",
+  },
+  () => {
+    const resolver = pathToFileURL(
+      path.join(here, "lib/engine-ts-resolver.mjs"),
+    ).href;
+    const target = pathToFileURL(
+      path.resolve(
+        here,
+        "../../packages/engine/Source/Scene/GlobeSurfaceTile.js",
+      ),
+    ).href;
+    const run = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { enableEngineTsResolution } from ${JSON.stringify(resolver)};
+         enableEngineTsResolution();
+         await import(${JSON.stringify(target)});`,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(run.status, 0, "the forced import must fail");
+    assert.match(run.stderr, /ERR_MODULE_NOT_FOUND/);
+    const named = GENERATED_ENGINE_INPUTS.some((rel) =>
+      run.stderr.split(path.sep).join("/").includes(`Source/${rel}`),
+    );
+    assert.ok(named, "the failure must name one of the generated modules");
+  },
+);

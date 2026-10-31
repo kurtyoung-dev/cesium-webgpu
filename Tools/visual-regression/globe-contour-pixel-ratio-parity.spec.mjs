@@ -58,6 +58,7 @@ import { registerHooks } from "node:module";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -68,8 +69,6 @@ const ENGINE_SOURCE = path.join(REPO_ROOT, "packages", "engine", "Source");
 
 const GLSL_FILE =
   "packages/engine/Source/Shaders/Materials/ElevationContourMaterial.glsl";
-const TERRAIN_FILE =
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl";
 const CAMERA_UB_FILE =
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts";
 const TYPES_FILE =
@@ -410,6 +409,8 @@ async function importPackerPrefix(cameraSource) {
     `${PACKER_FUNCTION} never writes ${RATIO_SOURCE} through data[offset++]`,
   );
 
+  // The output folder is gitignored, so a fresh checkout does not have it.
+  fs.mkdirSync(path.join(REPO_ROOT, OUTPUT_RELATIVE), { recursive: true });
   const directory = fs.mkdtempSync(
     path.join(REPO_ROOT, OUTPUT_RELATIVE, "globe-contour-ratio-"),
   );
@@ -477,7 +478,7 @@ test("the fabric reads the ratio rather than a literal", () => {
 });
 
 test("the globe shader exposes the ratio through a czm_pixelRatio accessor", () => {
-  const terrain = read(TERRAIN_FILE);
+  const terrain = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   const accessor = terrain.match(
     /fn czm_pixelRatio\(\) -> f32 \{\s*return ([^;]+);\s*\}/,
   );
@@ -486,7 +487,7 @@ test("the globe shader exposes the ratio through a czm_pixelRatio accessor", () 
 });
 
 test("the camera struct carries the ratio in the slot the packer writes", async () => {
-  const terrain = read(TERRAIN_FILE);
+  const terrain = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   const shaderFloatOffset = fieldFloatOffset(terrain, "pixelRatio");
   const floats = cameraUniformFloats(read(TYPES_FILE));
 
@@ -517,7 +518,12 @@ test("the lane was carved out of padding, not appended", () => {
   // offset above it. What this lane needs pinned is that its ratio still sits
   // in the padding slot that followed `center3DLow`, ahead of every tail, so
   // that no future append can reach it.
-  const placed = layout(structFields(read(TERRAIN_FILE), "CameraUniforms"));
+  const placed = layout(
+    structFields(
+      readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"),
+      "CameraUniforms",
+    ),
+  );
   const floatOffset = (name) => {
     const field = placed.find((entry) => entry.name === name);
     assert.ok(field, `CameraUniforms has no field ${name}`);
@@ -555,7 +561,7 @@ test("MUTANT — a fabric that multiplies by a literal goes red", () => {
 });
 
 test("MUTANT — an accessor that answers a constant goes red", () => {
-  const terrain = read(TERRAIN_FILE);
+  const terrain = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   const mutated = terrain.replace(
     "  return camera.pixelRatio;",
     "  if (false) { return camera.pixelRatio; }\n  return 1.0;",
@@ -588,7 +594,7 @@ test("MUTANT — a packer that writes a constant goes red", async () => {
 });
 
 test("MUTANT — a struct field renamed back to padding goes red", () => {
-  const terrain = read(TERRAIN_FILE);
+  const terrain = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   const mutated = terrain.replace("  pixelRatio: f32,", "  _pad2b: f32,");
   assert.notEqual(mutated, terrain);
   assert.throws(

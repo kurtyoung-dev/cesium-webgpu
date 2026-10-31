@@ -29,6 +29,10 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { withLaneTmp } from "../lib/lane-tmp.mjs";
+import {
+  engineShaderPath,
+  readEngineShader,
+} from "../visual-regression/lib/engine-shader-source.mjs";
 import { compareSources } from "./comment-only-diff.mjs";
 import { shaderReaderProblems } from "./lib/flavour-views.mjs";
 import {
@@ -41,7 +45,10 @@ import {
 
 const ROOT = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const SHADERS = "packages/engine/Source/Shaders/WebGPU/";
-const GLOBE = `${SHADERS}Globe/GlobeTerrain.wgsl`;
+const GLOBE = path
+  .relative(ROOT, engineShaderPath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"))
+  .split(path.sep)
+  .join("/");
 const BILLBOARD = `${SHADERS}Collections/BillboardCollection.wgsl`;
 const ONE_LINE_ENTRY = "fn fragmentMain(input: VertexOutput) -> FragOutput {";
 const SPREAD_ENTRY =
@@ -168,7 +175,7 @@ function fragmentParameterList(text) {
 
 /** The GlobeTerrain edits: reword, add and remove a comment in the list. */
 async function globeEdits() {
-  const base = await readLf(GLOBE);
+  const base = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   const { open, close } = fragmentParameterList(base);
   const list = base.slice(open, close);
   const note = list.match(/^( *)\/\/ (.+)$/m);
@@ -286,7 +293,7 @@ test("a non-comment edit to the parameter list is code-differs in a shader OIT c
     ],
     [
       GLOBE,
-      await readLf(GLOBE),
+      readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"),
       "  input: VertexOutput,\n",
       [
         "  frag: VertexOutput,\n",

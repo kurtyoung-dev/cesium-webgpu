@@ -49,6 +49,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -59,8 +60,6 @@ function read(relativePath) {
     .replace(/\r\n/g, "\n");
 }
 
-const WGSL_PATH =
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl";
 const GLSL_PATH = "packages/engine/Source/Shaders/GlobeFS.glsl";
 const TILE_UB_PATH =
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts";
@@ -70,7 +69,7 @@ const SHADER_SET_PATH = "packages/engine/Source/Scene/GlobeSurfaceShaderSet.js";
 const TILE_RENDERING_PATH =
   "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js";
 
-const wgsl = read(WGSL_PATH);
+const wgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
 const glsl = read(GLSL_PATH);
 const tileUb = read(TILE_UB_PATH);
 const types = read(TYPES_PATH);

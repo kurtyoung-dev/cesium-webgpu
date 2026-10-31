@@ -44,6 +44,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 import {
+  engineShaderPath,
+  readEngineShader,
+} from "../visual-regression/lib/engine-shader-source.mjs";
+import {
   flavourForPath,
   flavourProblems,
   prosePragmaAnchors,
@@ -113,9 +117,11 @@ function readTracked(relPath) {
 test("every tracked WGSL file reads the same to the minify strip and the scanner", () => {
   assert.deepEqual(corpusProblems("wgsl-minify", 300), []);
 
-  const relPath =
-    "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl";
-  const source = readTracked(relPath);
+  const relPath = path
+    .relative(ROOT, engineShaderPath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"))
+    .split(path.sep)
+    .join("/");
+  const source = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   assert.deepEqual(flavourProblems(source, relPath), [], "control");
   const injected = `/* Shaders under Shaders/WebGPU/**/*.wgsl only. */\n${source}`;
   assert.match(

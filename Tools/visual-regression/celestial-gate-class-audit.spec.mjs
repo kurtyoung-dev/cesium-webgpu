@@ -11,6 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -1407,9 +1408,11 @@ const maskedSourceCache = new Map();
 function readSource(relativePath) {
   let source = sourceCache.get(relativePath);
   if (source === undefined) {
-    source = fs
-      .readFileSync(path.join(root, relativePath), "utf8")
-      .replace(/\r\n/g, "\n");
+    source = relativePath.startsWith("packages/engine/Source/Shaders/")
+      ? readEngineShader(relativePath.slice("packages/engine/Source/".length))
+      : fs
+          .readFileSync(path.join(root, relativePath), "utf8")
+          .replace(/\r\n/g, "\n");
     sourceCache.set(relativePath, source);
   }
   return source;

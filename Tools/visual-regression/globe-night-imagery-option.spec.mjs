@@ -399,10 +399,49 @@ test("D3: assignment records the explicit request", () => {
   );
 });
 
+// The body of the first `signature {` method in `source`, by brace depth with
+// line comments and string literals skipped. D4 used to pin the call within
+// 200 characters of `beginFrame(frameState) {`; Batch 1609 put a cloud-weather
+// tick ahead of it and the window broke while the call stayed in the method.
+// What the row needs is "beginFrame calls it, once", not a distance.
+function methodBody(source, signature) {
+  const start = source.indexOf(`${signature} {`);
+  assert.ok(start >= 0, `no ${signature} method`);
+  const open = start + signature.length + 1;
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === "/" && source[i + 1] === "/") {
+      i = source.indexOf("\n", i);
+      if (i < 0) break;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      for (i++; i < source.length && source[i] !== ch; i++) {
+        if (source[i] === "\\") i++;
+      }
+      continue;
+    }
+    if (ch === "{") depth++;
+    if (ch === "}" && --depth === 0) return source.slice(open + 1, i);
+  }
+  throw new Error(`unbalanced body for ${signature}`);
+}
+
+const callsReconcileOnce = (source) =>
+  methodBody(source, "beginFrame(frameState)").split(
+    "reconcileNightImagery(this);",
+  ).length === 2;
+
 test("D4: the globe reconciles once per frame and hands off its own state", () => {
-  assert.match(
-    globe,
-    /beginFrame\(frameState\) \{[\s\S]{0,200}?reconcileNightImagery\(this\);/,
+  assert.ok(
+    callsReconcileOnce(globe),
+    "Globe.beginFrame must call reconcileNightImagery(this) exactly once",
+  );
+  // Inertness: the same check over a copy whose beginFrame lost the call.
+  assert.equal(
+    callsReconcileOnce(globe.replace("reconcileNightImagery(this);", "")),
+    false,
   );
   assert.match(
     globe,

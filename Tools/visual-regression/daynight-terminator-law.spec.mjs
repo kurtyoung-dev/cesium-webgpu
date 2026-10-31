@@ -53,6 +53,7 @@ import {
   checkEmbeddedCaptureIsCanonical,
   checkFusedCaptureUsage,
 } from "./lib/same-task-capture.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -66,9 +67,7 @@ function read(relativePath) {
 const PROBE_PATH = "Tools/visual-regression/probe-daynight-terminator-law.mjs";
 const probe = read(PROBE_PATH);
 const glsl = read("packages/engine/Source/Shaders/GlobeFS.glsl");
-const wgsl = read(
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-);
+const wgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
 const shaderSet = read("packages/engine/Source/Scene/GlobeSurfaceShaderSet.js");
 
 // ─── A. the transcribed laws still match the shaders ─────────────────────────

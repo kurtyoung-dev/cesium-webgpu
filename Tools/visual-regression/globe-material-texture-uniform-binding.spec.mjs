@@ -32,20 +32,12 @@
 // exercised below so it has a runner home of its own.
 
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 enableEngineTsResolution();
-
-const REPO_ROOT = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
-  "..",
-);
 
 const Material = (
   await import("../../packages/engine/Source/Scene/Material.js")
@@ -70,12 +62,9 @@ const PixelDatatype = (
 const { webglToWebGPUTextureFormat, bytesPerTexel } =
   await import("../../packages/engine/Source/Renderer/WebGPU/WebGLStateConverters.ts");
 
-const GLOBE_TERRAIN_WGSL = fs.readFileSync(
-  path.join(
-    REPO_ROOT,
-    "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-  ),
-  "utf8",
+const GLOBE_TERRAIN_WGSL = readEngineShader(
+  "Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+  { eol: "native" },
 );
 
 // `MaterialHelpers`'s texture-adoption path branches on four DOM constructors.

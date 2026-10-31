@@ -70,13 +70,16 @@ import {
   CELESTIAL_SUN_SIN_ANGULAR_RADIUS,
   resolveCelestialWaterTail,
 } from "../../packages/engine/Source/Scene/CelestialWaterReflection.js";
+import {
+  engineShaderPath,
+  readEngineShader,
+} from "./lib/engine-shader-source.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..");
 
-const GLOBE_WGSL_PATH = path.join(
-  ROOT,
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+const GLOBE_WGSL_PATH = engineShaderPath(
+  "Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
 );
 const OCEAN_WGSL_PATH = path.join(
   ROOT,
@@ -114,7 +117,7 @@ function read(file) {
   return fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
 }
 
-const globeWgsl = read(GLOBE_WGSL_PATH);
+const globeWgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
 const oceanWgsl = read(OCEAN_WGSL_PATH);
 const globeGlsl = read(GLOBE_GLSL_PATH);
 const cameraUbTs = read(CAMERA_UB_PATH);
@@ -1741,9 +1744,21 @@ const MUTABLE_PATHS = {
   rendering: RENDERING_PATH,
 };
 
+// The globe shader is read through the engine-shader reader, whatever file or
+// files it is stored in.
+const diskBytes = (file) =>
+  file === GLOBE_WGSL_PATH
+    ? Buffer.from(
+        readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+          eol: "native",
+        }),
+        "utf8",
+      )
+    : fs.readFileSync(file);
+
 const sourcesOnDisk = new Map();
 for (const file of Object.values(MUTABLE_PATHS)) {
-  sourcesOnDisk.set(file, fs.readFileSync(file));
+  sourcesOnDisk.set(file, diskBytes(file));
 }
 
 /**
@@ -2192,7 +2207,7 @@ test("G13 the mutants are discriminating, not merely destructive", () => {
 test("G14 no source file was written — every mutation was a substitution", () => {
   for (const [file, before] of sourcesOnDisk) {
     assert.ok(
-      before.equals(fs.readFileSync(file)),
+      before.equals(diskBytes(file)),
       `${path.basename(file)} was modified on disk; mutants must substitute in memory`,
     );
   }

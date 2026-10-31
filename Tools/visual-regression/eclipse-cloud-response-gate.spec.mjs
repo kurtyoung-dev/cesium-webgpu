@@ -159,6 +159,7 @@ import {
   publishC1341Running,
   releaseC1341RunLock,
 } from "./probe-eclipse-cloud-response.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -4487,7 +4488,7 @@ test("F5 lane B publishes the producer / consumer / footprint telemetry", () => 
     /cloudShadowVP \(mat4, offsets 148-163\) \+ cloudShadowControl \(vec4, 164-167\)/,
   );
   assert.match(cameraUb, /cascade tail \(196-231\)/);
-  const globeFs = readEngine("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
+  const globeFs = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   assert.match(globeFs, /if \(camera\.cloudShadowControl\.x > 0\.5\) \{/);
   assert.match(globeFs, /if \(camera\.cloudShadowCascadeParams\.y > 0\.5\) \{/);
   // And the verdict carries them, so the console line has something to print.
@@ -7429,7 +7430,9 @@ test("K11 baseColor, fade, and exact light classes are read back on every fresh 
     ),
     null,
   );
-  const globeTerrain = readEngine("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
+  const globeTerrain = readEngineShader(
+    "Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+  );
   assert.match(
     globeTerrain,
     /let terminatorFactor = exp\(-NdotL \* NdotL \* 40\.0\);/,

@@ -15,6 +15,7 @@ import {
   ShaderDefine,
   ShaderDefineHi,
 } from "./lib/wgsl-variant.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 enableEngineTsResolution();
 
@@ -58,10 +59,6 @@ await naga.default({
   ),
 });
 
-const GLOBE_WGSL_PATH = path.join(
-  ROOT,
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-);
 const OCEAN_WGSL_PATH = path.join(
   ROOT,
   "packages/engine/Source/Shaders/WebGPU/Ocean/OceanSurface.wgsl",
@@ -79,7 +76,10 @@ const RIVER_ASSET_PATH = path.join(
   "packages/engine/Source/Assets/WaterMask/ne10mRivers.bin",
 );
 
-const globeWgslRaw = fs.readFileSync(GLOBE_WGSL_PATH, "utf8");
+const globeWgslRaw = readEngineShader(
+  "Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+  { eol: "native" },
+);
 const oceanWgslRaw = fs.readFileSync(OCEAN_WGSL_PATH, "utf8");
 
 // Timings are reported through t.diagnostic and never asserted against a wall-clock
@@ -1176,7 +1176,10 @@ test("WMTSBathymetryTensorTileProvider and water classification providers stream
   );
 
   // 6. Verify WGSL shader has WMTS-coherent longitude sector culling & shore early-out gates
-  const globeTerrainWgsl = fs.readFileSync(GLOBE_WGSL_PATH, "utf8");
+  const globeTerrainWgsl = readEngineShader(
+    "Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+    { eol: "native" },
+  );
   assert.match(
     globeTerrainWgsl,
     /if\s*\(\s*lonDeg\s*<\s*-20\.0\s*\)/,

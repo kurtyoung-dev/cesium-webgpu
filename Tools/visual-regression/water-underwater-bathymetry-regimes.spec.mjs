@@ -16,6 +16,7 @@ import {
   assertInertnessMutantTurnsRed,
   stripUses,
 } from "./water-spec-mutants.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 enableEngineTsResolution();
 
@@ -224,10 +225,9 @@ test("3. Seabed substrate optics grade across shelf, Carbonate Compensation Dept
 });
 
 test("4. GlobeTerrain.wgsl and OceanInitialSpectrum.wgsl wire underwater optics, bioluminescence, and Hermitian/TMA spectrum", () => {
-  const globeWgsl = fs.readFileSync(
-    enginePath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"),
-    "utf8",
-  );
+  const globeWgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+    eol: "native",
+  });
   assert.ok(
     globeWgsl.includes("fn computePhoticSeafloorCaustics("),
     "GlobeTerrain.wgsl must define computePhoticSeafloorCaustics",
@@ -568,10 +568,9 @@ test("8. Single-pass FFT compute chain & auto-sleep, OceanSurface submerged Snel
 });
 
 test("9. Phase 8 Open-Source Realism & Water-Type Close-Range Transparency: cellular lace whitecaps, dual-orthogonal caustics, benthic visibility, submerged volume composite, and FFT translucent alpha", () => {
-  const globeWgsl = fs.readFileSync(
-    enginePath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"),
-    "utf8",
-  );
+  const globeWgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+    eol: "native",
+  });
   assert.ok(
     globeWgsl.includes("cellularLace") &&
       globeWgsl.includes("orbitWashKeep") &&
@@ -611,10 +610,9 @@ test("9. Phase 8 Open-Source Realism & Water-Type Close-Range Transparency: cell
 });
 
 test("10. Phase 9.A (9.1-9.3): Exact dielectric Fresnel, Snell-refracted path length, Gordon multiple-scattering equilibrium reflectance, and coastal satellite chromaticity feathering", () => {
-  const globeWgsl = fs.readFileSync(
-    enginePath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"),
-    "utf8",
-  );
+  const globeWgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+    eol: "native",
+  });
   assert.ok(
     globeWgsl.includes("fn fresnelDielectric(cosI: f32, eta: f32) -> f32") &&
       globeWgsl.includes(
@@ -654,10 +652,9 @@ test("10. Phase 9.A (9.1-9.3): Exact dielectric Fresnel, Snell-refracted path le
 });
 
 test("11. Phase 9.B (9.4-9.7): 2-phase flow-advected Voronoi lace & 3D whitewater relief, asymmetric swash uprush/backwash + meniscus bead + contact shadow, cat's-paw wind gusts & surfactant slicks, dual-focal-depth foam-shadowed caustics, and spatial underwater volumes", () => {
-  const globeWgsl = fs.readFileSync(
-    enginePath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"),
-    "utf8",
-  );
+  const globeWgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+    eol: "native",
+  });
   assert.ok(
     globeWgsl.includes("flowPhase0") &&
       globeWgsl.includes("flowPhase1") &&
@@ -693,10 +690,9 @@ test("11. Phase 9.B (9.4-9.7): 2-phase flow-advected Voronoi lace & 3D whitewate
 });
 
 test("12. Phase 10.A (10.1-10.2): Orbital & Stratospheric Water Realism — mesoscale wind-streak Cox-Munk glint, spectral Beer-Lambert shelf/reef transmittance, mesoscale swell bridge, and all-altitude coastal mask gating", () => {
-  const globeWgsl = fs.readFileSync(
-    enginePath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"),
-    "utf8",
-  );
+  const globeWgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+    eol: "native",
+  });
   assert.ok(
     globeWgsl.includes("mesoStreak") &&
       globeWgsl.includes("(0.74 + 0.52 * mesoStreak)"),
@@ -719,10 +715,9 @@ test("12. Phase 10.A (10.1-10.2): Orbital & Stratospheric Water Realism — meso
 });
 
 test("13. Phase 10.B (10.3-10.4): In-Flight & Sea-Level Water Realism — depth-driven spectral glint-wash correction, shore-refracting coastal swell train, calibrated whitecap slope onset, and trochoidal wave-crest sharpness", () => {
-  const globeWgsl = fs.readFileSync(
-    enginePath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"),
-    "utf8",
-  );
+  const globeWgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+    eol: "native",
+  });
   assert.ok(
     globeWgsl.includes("inFlightDepthColumn") &&
       globeWgsl.includes("inFlightVolumeScatter") &&
@@ -739,10 +734,9 @@ test("13. Phase 10.B (10.3-10.4): In-Flight & Sea-Level Water Realism — depth-
 });
 
 test("14. Phase 12 (12.1-12.5): Subnautica 1/2 & Tidewater Second-Pass Realism — peeling shore breakers, Langmuir windrows, crest-to-trough translucency, spindrift, 3-layer photic reef + Snell canopy + crepuscular god-rays, and dual-ROV Lumen bioluminescent abyss", () => {
-  const globeWgsl = fs.readFileSync(
-    enginePath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"),
-    "utf8",
-  );
+  const globeWgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+    eol: "native",
+  });
   assert.ok(
     globeWgsl.includes("peelingBreakerShoulder") &&
       globeWgsl.includes("smoothstep(0.025, 0.14, reefTurquoiseBoost)"),
@@ -946,10 +940,9 @@ test("15. Phase 13 (13.1-13.6): Multi-Biome Planetary Hydrosphere Realism — Ca
   );
 
   // 13.3-13.6: WGSL shader symbols and Sandcastle2 multi-biome bookmarks
-  const globeWgsl = fs.readFileSync(
-    enginePath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"),
-    "utf8",
-  );
+  const globeWgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+    eol: "native",
+  });
   assert.ok(
     globeWgsl.includes("fn evaluateMultiBiomeHydroOptics(") &&
       globeWgsl.includes("riftGrabenDropoff") &&

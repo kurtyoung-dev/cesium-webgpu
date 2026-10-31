@@ -51,12 +51,18 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import {
+  engineShaderPath,
+  readEngineShader,
+} from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
 
-const WGSL_PATH =
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl";
+const WGSL_PATH = path
+  .relative(root, engineShaderPath("Shaders/WebGPU/Globe/GlobeTerrain.wgsl"))
+  .split(path.sep)
+  .join("/");
 const GLSL_PATH = "packages/engine/Source/Shaders/GlobeFS.glsl";
 const SHADER_SET_PATH = "packages/engine/Source/Scene/GlobeSurfaceShaderSet.js";
 const TILE_RENDERING_PATH =
@@ -72,7 +78,24 @@ function absolute(relativePath) {
 }
 
 function read(relativePath) {
+  if (relativePath.startsWith("packages/engine/Source/Shaders/")) {
+    return readEngineShader(
+      relativePath.slice("packages/engine/Source/".length),
+    );
+  }
   return fs.readFileSync(absolute(relativePath), "utf8").replace(/\r\n/g, "\n");
+}
+
+function readBytes(relativePath) {
+  if (relativePath.startsWith("packages/engine/Source/Shaders/")) {
+    return Buffer.from(
+      readEngineShader(relativePath.slice("packages/engine/Source/".length), {
+        eol: "native",
+      }),
+      "utf8",
+    );
+  }
+  return fs.readFileSync(absolute(relativePath));
 }
 
 function sha256(buffer) {
@@ -686,7 +709,7 @@ for (const relativePath of [
   TILE_RENDERING_PATH,
   GLOBE_PATH,
 ]) {
-  sourcesOnDisk.set(relativePath, fs.readFileSync(absolute(relativePath)));
+  sourcesOnDisk.set(relativePath, readBytes(relativePath));
 }
 
 /**
@@ -864,7 +887,7 @@ test("E10: no source file was written — every mutation was a substitution", ()
   // and one that leaves a mutant behind on a throw or races a concurrent run.
   for (const [relativePath, original] of sourcesOnDisk) {
     assert.equal(
-      sha256(fs.readFileSync(absolute(relativePath))),
+      sha256(readBytes(relativePath)),
       sha256(original),
       `${relativePath} changed under the spec`,
     );

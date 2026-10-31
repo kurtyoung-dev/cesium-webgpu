@@ -117,6 +117,7 @@ import {
   projectLifecycleFailures,
 } from "./probe-lifecycle-diagnostics.mjs";
 import { runDescriptorUnderLifecycle } from "./probe-lifecycle-run.mjs";
+import { resolveProbeLocations } from "./probe-output-location.mjs";
 import {
   PROBE_EXIT_CODES,
   ProbeRefusal,
@@ -1054,22 +1055,14 @@ export async function runProbe(descriptor, dependencies = {}) {
 
   try {
     options = parseProbeArgs(argv, descriptor.args ?? {});
-    // Every runner in this fork invokes a probe from the repository root, so
-    // cwd is the last-resort default; `--repository-root` is what a spec or an
-    // out-of-tree caller passes instead.
-    repositoryRoot = path.resolve(
-      options.repositoryRoot ?? repositoryRootOverride ?? process.cwd(),
-    );
-    outputDirectory = path.resolve(
-      options.outputDirectory ??
-        path.join(
-          repositoryRoot,
-          "Tools",
-          "visual-regression",
-          "output",
-          descriptor.outputSubdirectory ?? descriptor.name,
-        ),
-    );
+    // Never cwd: the default root is the checkout holding the kit, and an
+    // output outside it needs an explicit `--repository-root` (specs pass one).
+    ({ repositoryRoot, outputDirectory } = resolveProbeLocations({
+      repositoryRoot: options.repositoryRoot,
+      repositoryRootOverride,
+      outputDirectory: options.outputDirectory,
+      outputSubdirectory: descriptor.outputSubdirectory ?? descriptor.name,
+    }));
     origin = `http://localhost:${options.port}`;
 
     // Shared by both paths so the served-build assertion cannot drift between

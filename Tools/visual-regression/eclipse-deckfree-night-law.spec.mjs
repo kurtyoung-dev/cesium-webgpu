@@ -21,6 +21,7 @@ import {
   computeDeckFreeNightDarkeningMultiplier,
 } from "./lib/c13-41-deckfree-control.mjs";
 import { BAND_MEAN_CAPTURE_DELTA } from "./lib/eclipse-cloud-response-gate.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const engineShaders = path.join(
@@ -495,7 +496,9 @@ test("N9 the independently modelled terms are the ones the fold multiplies", () 
 test("N10 SOURCE ANCHOR — both dialects still carry the floor ahead of their lighting arms", () => {
   // A drift alarm, not the proof: N1-N8 are the behavioural half. This only
   // asserts that the two transcriptions above still describe the files.
-  const wgsl = readShader(path.join("WebGPU", "Globe", "GlobeTerrain.wgsl"));
+  const wgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+    eol: "native",
+  });
   const glsl = readShader("GlobeFS.glsl");
 
   const wgslFloor = wgsl.indexOf(

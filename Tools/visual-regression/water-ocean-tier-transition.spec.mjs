@@ -18,22 +18,21 @@
 // file is written.
 
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { bundle } from "./lib/engine-stub-bundler.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
 const engine = path.join(root, "packages/engine/Source");
 const webgpu = path.join(engine, "Renderer/WebGPU");
 
-const REAL_WGSL = fs.readFileSync(
-  path.join(engine, "Shaders/WebGPU/Globe/GlobeTerrain.wgsl"),
-  "utf8",
-);
+const REAL_WGSL = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+  eol: "native",
+});
 
 // ───────────────────────────── graph helpers ───────────────────────────────
 

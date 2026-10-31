@@ -99,14 +99,11 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
 
-const wgslPath = path.join(
-  root,
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-);
 const glslCommonPath = path.join(
   root,
   "packages/engine/Source/Shaders/VectorCommon.glsl",
@@ -136,7 +133,9 @@ const vectorProviderPath = path.join(
   "packages/engine/Source/Core/VectorProvider.js",
 );
 
-const wgsl = fs.readFileSync(wgslPath, "utf8");
+const wgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl", {
+  eol: "native",
+});
 const glslCommon = fs.readFileSync(glslCommonPath, "utf8");
 const glslGlobe = fs.readFileSync(glslGlobePath, "utf8");
 const layoutsTs = fs.readFileSync(layoutsPath, "utf8");

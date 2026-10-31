@@ -63,6 +63,7 @@ import {
   vec4,
 } from "./lib/wgsl-mini-eval.mjs";
 import { assertInertnessMutantTurnsRed } from "./water-spec-mutants.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -70,12 +71,11 @@ const root = path.resolve(here, "..", "..");
 const read = (relative) =>
   fs.readFileSync(path.join(root, relative), "utf8").replace(/\r\n/g, "\n");
 
-const TERRAIN = "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl";
 const GLSL = "packages/engine/Source/Shaders/GlobeFS.glsl";
 const CAMERA_UB =
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts";
 
-const terrain = read(TERRAIN);
+const terrain = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
 const glsl = read(GLSL);
 const cameraUb = read(CAMERA_UB);
 

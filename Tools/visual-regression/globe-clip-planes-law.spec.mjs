@@ -39,10 +39,7 @@
 // bound is derived, not guessed: see `packingTolerance`.
 
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
 import {
@@ -72,19 +69,13 @@ import {
   tiltedSurface,
 } from "./lib/globe-clip-webgl-oracle.mjs";
 import { replaceFunctionBody } from "./lib/wgsl-function-body.mjs";
+import { readEngineShader } from "./lib/engine-shader-source.mjs";
 
 enableEngineTsResolution();
 // The packer names the WebGPU usage flags as a global; Node has none.
 globalThis.GPUTextureUsage ??= { TEXTURE_BINDING: 4, COPY_DST: 2 };
 const { updateWebGPUClippingPlanes } =
   await import("../../packages/engine/Source/Renderer/WebGPU/WebGPUClippingPlaneCollection.ts");
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(HERE, "..", "..");
-const GLOBE_WGSL = path.join(
-  ROOT,
-  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-);
 
 const HELPERS = [
   "globeClipPlaneDistance",
@@ -95,7 +86,7 @@ const HELPERS = [
 
 // ── Loading the shader laws ─────────────────────────────────────────────────
 
-const rawWgsl = fs.readFileSync(GLOBE_WGSL, "utf8").replace(/\r\n/g, "\n");
+const rawWgsl = readEngineShader("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
 
 /**
  * Compile the four clip helpers out of a WGSL source text.
