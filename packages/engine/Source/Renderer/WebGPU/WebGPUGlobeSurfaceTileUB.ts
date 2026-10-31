@@ -898,10 +898,15 @@ export function createTileUniformBuffer(
   //
   // The per-tile drape is gated off when the unified aerial-perspective
   // post-process is active, since that owns the haze and the two would
-  // double-apply.
+  // double-apply. It is also off outside SCENE3D, as in WebGL
+  // (`GlobeSurfaceTileProviderRendering.js` turns ground atmosphere on in
+  // SCENE3D only): the drape works on world-space positions, and the 2D,
+  // Columbus-view and morphing vertices are planar projected ones.
   const aerialPerspectiveActive =
     (frameState as { aerialPerspective?: boolean })?.aerialPerspective === true;
+  const scene3D = (frameState?.mode ?? SceneMode.SCENE3D) === SceneMode.SCENE3D;
   const showGroundAtmosphere =
+    scene3D &&
     !aerialPerspectiveActive &&
     (tileProvider as { showGroundAtmosphere?: boolean })
       .showGroundAtmosphere !== false;

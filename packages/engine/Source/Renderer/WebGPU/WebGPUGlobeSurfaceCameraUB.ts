@@ -841,8 +841,14 @@ export function createCameraUniformBuffer(
   const aerialPerspectiveActive =
     (frameState as { aerialPerspective?: boolean })?.aerialPerspective === true;
   const fogEnabled = !aerialPerspectiveActive && fs?.fog?.enabled !== false;
+  // Ground atmosphere is SCENE3D only, as in WebGL
+  // (`GlobeSurfaceTileProviderRendering.js`); fog already turns itself off
+  // outside SCENE3D (`Fog.js`), so in 2D, Columbus view and mid-morph the
+  // flag reads 0 and the fragment drape is skipped.
   const groundAtmoEnabled =
-    !aerialPerspectiveActive && tp.showGroundAtmosphere !== false;
+    sceneMode === 3 /* SCENE3D */ &&
+    !aerialPerspectiveActive &&
+    tp.showGroundAtmosphere !== false;
   // `atmosphereParams.w` encodes both the enable flag and the lighting mode:
   //
   //   0.0 → atmosphere off (skip per-vertex ray-march entirely)
