@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1882 |
-| ACTIVE | 1626 |
+| Files in census | 1890 |
+| ACTIVE | 1634 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
 | NO @purpose HEADER | 53 |
 | NO @status HEADER | 2 |
-| Classes | probe 683, spec 511, other 398, lib 239, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
+| Classes | probe 683, spec 512, other 398, lib 246, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
 
 ### Tools/ (69)
 
@@ -404,7 +404,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | lane-tmp.spec.mjs | spec | ACTIVE | 2026-09-11 | 5 | Behaviour coverage for Tools/lib/lane-tmp.mjs — the directory is created under the lane root, removed on success AND on throw AND on rejection, refused outside tmpdir, and an inert `finally` is caught by the mutant. |
 | natural-earth-pinned.mjs | lib | ACTIVE | 2026-10-23 | 6 | One table of the natural-earth-vector commit and the SHA-256 of every GeoJSON source the water-mask builders read, so a network rebuild is reproducible and a changed source fails loudly. |
 | npm-override-rules.mjs | lib | ACTIVE | 2026-09-18 | 3 | Decides, from manifest objects alone, which root `overrides` entries npm rejects as conflicting with a direct dependency or as an unresolvable `$` reference. |
-| png-decode.mjs | lib | ACTIVE | 2026-09-13 | 77 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
+| png-decode.mjs | lib | ACTIVE | 2026-09-13 | 78 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
 | png-decode.spec.mjs | spec | ACTIVE | 2026-09-13 | 4 | Round-trip, filter-coverage and error-path coverage for Tools/lib/png-decode.mjs. |
 | png-rgba.mjs | lib | ACTIVE | 2026-09-02 | 33 | CRC32 + PNG chunk + zero-dependency RGBA PNG encoder shared across the probe fleet, replacing near-duplicate hand-rolled copies one consumer at a time. |
 | png-rgba.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Golden-byte and CRC32-vector coverage for Tools/lib/png-rgba.mjs. |
@@ -467,7 +467,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1147)
+### Tools/visual-regression/ (1148)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -525,10 +525,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | canvas-black-readback.mjs | other | INVESTIGATION | 2026-08-16 | 5 | Reads back the sceneFramebuffer color texture via copyTextureToBuffer/mapAsync to prove whether the globe pass wrote any color, ignoring the PP chain. |
 | canvas-black-trace.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Renders 60 WebGPU frames capturing all [WebGPU:] console output to pin whether globe commands submit and pass validation (black-canvas bug). |
 | canvas-format-probe.mjs | other | INVESTIGATION | 2026-08-16 | 1 | One-shot dump of presentation/preferred/scene color formats and the HDR-canvas flag from a live WebGPU viewer. |
-| capture-and-diff.mjs | runner | ACTIVE | 2026-10-24 | 84 | Primary VR runner: drives the split-screen page over scenes.json, captures WebGL+WebGPU canvases, evaluates 3 gates vs reviewed historical baselines. |
+| capture-and-diff.mjs | runner | ACTIVE | 2026-10-24 | 85 | Primary VR runner: drives the split-screen page over scenes.json, captures WebGL+WebGPU canvases, evaluates 3 gates vs reviewed historical baselines. |
 | capture-and-diff.policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | node:test guard for lib/visual-gate-policy.mjs: pixel-gate evaluation, scene thresholds/expectations, manifest and baseline-promotion validation. |
 | capture-and-diff.served-binding.spec.mjs | spec | ACTIVE | 2026-10-24 | 2 | node:test guard for capture-and-diff.mjs's root-binding seams: the additive --served-base origin override, the WAVE_END_SOURCE_* provenance preference and its baseline-promotion carve-out, and the CLI entry guard whose failure mode is a silent clean exit, and the per-run status box hidden before every capture unless asked for (round 5, K5-4). |
 | capture-device-loss-refusal.spec.mjs | spec | ACTIVE | 2026-09-26 | 4 | Drives captureElement and the cloud march mechanism probe with stub pages to pin that a lost WebGPU device or a control byte-identical to its treatment is refused by name before any bytes are written, ends the run with exit 3, and keeps the arms already banked. |
+| capture-exports.spec.mjs | spec | ACTIVE | — | 1 | Pins that lib/capture.mjs still exports exactly the 38 names it exported before it was split into capture-{vocabulary,urls,descriptor,metrics,manifest,cell-work,readiness}.mjs, that every moved name is the SAME binding as the piece that now owns it, and that the module and each piece stay under the 1,000-line file-size rule. |
 | capture-seam.spec.mjs | spec | ACTIVE | 2026-09-26 | 7 | Pin DX-104's capture seam: origins are required and never defaulted, a rig's declared origin is re-based onto the caller's, exactly one browser is opened and closed even on the throw path, and the manifest carries no verdict. |
 | capture-source-eol-identity.spec.mjs | spec | ACTIVE | 2026-08-28 | 2 | Materializes the real capture library as both a CRLF and an LF checkout, imports each, and evaluates whether the published sampler and runtime-attestor digests and the analyzer's verdict on the real probe source are the same from either, with an absence and an inertness mutant required to break all three signals. |
 | celestial-capture-harness.spec.mjs | spec | ACTIVE | 2026-08-21 | 1 | Mutation-checked guard for lib/celestial-capture-harness.mjs, including its shared frozen-PNG acquisition path. |
@@ -1714,7 +1715,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | fixture-receipt-input.mjs | fixture | ACTIVE | 2026-09-19 | 2 | The one fixed `buildReceipt` input shared by the golden-comparison |
 
-### Tools/visual-regression/lib/ (186)
+### Tools/visual-regression/lib/ (193)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1747,7 +1748,14 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c13-42-godray-fixture.mjs | lib | NO @purpose HEADER | 2026-09-13 | 9 | — |
 | c13-42-reproduction-contract.mjs | lib | NO @purpose HEADER | 2026-09-13 | 14 | — |
 | c13-42-reproduction-harness.mjs | lib | NO @purpose HEADER | 2026-09-12 | 7 | — |
-| capture.mjs | lib | ACTIVE | 2026-09-19 | 41 | Captures one or more rigs over BEFORE and AFTER origins on both renderers in a single browser run, emitting the capture manifest, the diff heat-maps, the metric strip and the receipt. |
+| capture-cell-work.mjs | lib | ACTIVE | — | 4 | Cell-work piece of capture.mjs: defaultCellWork, the default descriptor.cellWork, which navigates a cell's url on its origin, refuses a navigation that left the origin, waits for the cell's readiness through capture-readiness.mjs and element-captures the scene. |
+| capture-descriptor.mjs | lib | ACTIVE | — | 4 | Descriptor piece of capture.mjs: buildCaptureDescriptor (rigs and origins to cells, deadlines, paths and the lifecycle budget), deriveCaptureDeadline and decideCaptureRefusal (every refusal a capture can decide, composed from the runtime's deciders), all pure. |
+| capture-manifest.mjs | lib | ACTIVE | — | 4 | Manifest piece of capture.mjs: buildCaptureManifest (the one document the contact sheet reads, carrying no verdict), the unmeasuredCell and unmeasuredPair records, and validateManifest with its cell, pair and rig readers and the verdict-token scan that reports a pass/fail word anywhere in the document. |
+| capture-metrics.mjs | lib | ACTIVE | — | 4 | Metrics piece of capture.mjs: cellMetrics (the per-cell strip of non-black fraction and luma over decoded RGBA) and pairMetrics (the BEFORE-vs-AFTER pixel diff, changed fraction, bounding box, heat-map and mean structural similarity), computed in Node after the browser has closed. |
+| capture-readiness.mjs | lib | ACTIVE | — | 5 | Readiness piece of capture.mjs: pollReadiness (the bounded wait for the page's readiness predicates), describeReadiness, decideCellReadinessRefusal (the named refusal when the budget runs out), waitForCellReadiness (the in-page sample, the settle and the poll) and summariseCellReadiness (the record a cell carries). |
+| capture-urls.mjs | lib | ACTIVE | — | 4 | URL piece of capture.mjs: resolveRigPage (a rig's page as a kind and a path), captureUrlFor (the url a rig has on a caller's origin) and resolveCaptureOrigins (the required BEFORE and AFTER origins, verbatim, never defaulted), all pure. |
+| capture-vocabulary.mjs | lib | ACTIVE | — | 8 | Vocabulary piece of capture.mjs: the manifest schema version and kind, the BEFORE/AFTER slots, the MEASURED/UNMEASURED cell states, the renderer ids, the metric-strip provenance and thresholds, the forbidden verdict keys and values, every default budget and timeout, the readiness predicates, requireTimingMs and the patterns the other pieces share. |
+| capture.mjs | lib | ACTIVE | 2026-09-19 | 49 | Captures one or more rigs over BEFORE and AFTER origins on both renderers in a single browser run, emitting the capture manifest, the diff heat-maps, the metric strip and the receipt. |
 | celestial-capture-harness.mjs | lib | ACTIVE | 2026-08-21 | 10 | Shared Playwright/page half of the celestial fleet: one pinned-clock settle recipe, warm-up-then-same-task capture, lane driver, PNG writer. |
 | celestial-g1-gate.mjs | gate-lib | ACTIVE | 2026-08-25 | 11 | Pure verdict logic for the C12 G1 gate after six recorded repairs: per-backend non-vacuity, doubly-blind certifying mode voids the lane as STRUCTURAL. |
 | celestial-g2-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 13 | Pure verdict logic plus display-transform inversion for G2 (star PSF, delivered magnitude range, C12-27 solar glare) on linearized captures. |
@@ -1804,8 +1812,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | gsplat-parity-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Pure dual-mode verdict logic for probe-gsplat-parity: attributable-absence marker, presence flip, blank-canvas parity refusal, exits 0/1/2/3. |
 | gsplat-tower-framing.mjs | lib | ACTIVE | 2026-09-02 | 4 | Derive the camera range that keeps the tower splat anchor and its terrain-reference anchor inside the same frustum from their real geodetic separation, and decide whether a captured tower silhouette clears the pre-registered pixel floor. |
 | homeless-spec-allowlist.mjs | lib | ACTIVE | 2026-10-30 | 4 | Pinned shrink-only census of Tools specs that have no package.json runner home, each with the one-line reason it is not homed (red at HEAD, fails to import on an unbuilt tree, or too slow); spec-runner-homes.spec.mjs fails on any other homeless spec and on a row whose spec is gone or homed. |
-| image-diff.mjs | lib | ACTIVE | 2026-09-18 | 28 | Pure per-channel RGBA pixel diff (tolerance + optional mask) returning mismatch stats and a paint-ready diff buffer, no I/O and no gate policy. |
-| import-mutated.mjs | lib | ACTIVE | 2026-10-09 | 29 | Load a module from its source with exact-once anchor replacements applied and its relative imports resolved to the original files, so a spec can show that the clause it pins goes red when that clause is made unreachable. |
+| image-diff.mjs | lib | ACTIVE | 2026-09-18 | 29 | Pure per-channel RGBA pixel diff (tolerance + optional mask) returning mismatch stats and a paint-ready diff buffer, no I/O and no gate policy. |
+| import-mutated.mjs | lib | ACTIVE | 2026-10-09 | 30 | Load a module from its source with exact-once anchor replacements applied and its relative imports resolved to the original files, so a spec can show that the clause it pins goes red when that clause is made unreachable. |
 | label-atlas-growth-steps.mjs | lib | ACTIVE | 2026-10-09 | 4 | The reusable step sequence for a label or billboard cell whose subject is a texture atlas that grows in a later frame: the in-page steps that add each batch on its frame and trace the atlas size every frame, the decision that refuses a run whose atlas did not grow between batches, and the per-half lit-pixel metric the capture is read with. |
 | landing-capture-manifest.mjs | lib | ACTIVE | 2026-10-31 | 5 | Pure builder from a probe-landing-cells run's page records (plus an optional base report) to a capture-seam manifest that lib/capture.mjs validates and contact-sheet.mjs reads, and the Node writer that puts capture-manifest.json and its images beside landing-cells-report.json, refusing to leave a manifest that fails validation. |
 | landing-cell-stage.mjs | lib | ACTIVE | 2026-10-31 | 29 | Stage piece for the landing program's Edge cells: turns a rig into a JSON-safe payload (Node side, refusing a dial it does not know before a browser is involved), and applies it in the page on WebGL or WebGPU - pinned clock, camera (or the page's own), scene and globe dials (including the globe material), the water flags and the water tier, clouds on or off - reading every dial back as {requested, observed, applied}, with the cloud* dials handed to the cloud probe harness so their round trip stays in one place; plus the ocean's pinned wave epoch, the opt-in FFT ocean (read back by its primitive), the globe's own show flag, the SSR scene switches, the WebGPU render pipeline cache's pending count, and an opt-in wait that drives frames until no pipeline is pending; plus the scene mode (3D, 2D, Columbus view, morphed with duration 0 and read back) and the FFT ocean's inverse-FFT kernel (stockham or pingpong, read back on the facade and on the primitive). |
@@ -1839,13 +1847,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-lifecycle-run.mjs | lib | ACTIVE | 2026-09-12 | 12 | Derives a probe's orderly deadline from its declared work budget and drives preflight, Edge slot, per-run browser and descriptor cells inside one bounded lifecycle. |
 | probe-lifecycle.mjs | lib | ACTIVE | 2026-09-12 | 10 | Coordinates a probe deadline, tracked browser resources, and the Edge lease so a probe cannot report completion while owned work remains live. |
 | probe-output-location.mjs | lib | ACTIVE | 2026-10-30 | 5 | Resolves a probe's repository root and output directory from the kit's own location instead of process.cwd(), and refuses an output directory outside that root unless the caller named a repository root explicitly. |
-| probe-refusal.mjs | lib | ACTIVE | 2026-09-02 | 30 | Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns. |
+| probe-refusal.mjs | lib | ACTIVE | 2026-09-02 | 35 | Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns. |
 | probe-runtime-args.mjs | lib | ACTIVE | 2026-10-31 | 5 | Companion of probe-runtime.mjs: the REQUIRED_SERVED_ARTIFACTS and RENDERERS constants, the core flag table (CORE_OPTION_SPECS), its defaults (CORE_OPTION_DEFAULTS) and the four value parsers parseProbeArgs applies (optionValue, positiveInteger, nonNegativeNumber, rendererList). |
 | probe-runtime-browser.mjs | lib | ACTIVE | 2026-10-31 | 4 | Companion of probe-runtime.mjs: EDGE_LAUNCH_ARGS (the one launch flag the fleet shares), launchEdge (Edge per run through Playwright's msedge channel) and installSandcastle2OriginRewrite (the lazily imported origin rewrite for probes that open the built app). |
 | probe-runtime-decisions.mjs | lib | ACTIVE | 2026-10-31 | 4 | Companion of probe-runtime.mjs: decideServedBuildRefusal, decideOriginRefusal and decideRenderReadyRefusal, the pure decisions that map a preflight result, a navigated url and a renderReady wait onto the runtime's accepted/refused decision shape. |
 | probe-runtime-governance.mjs | lib | ACTIVE | 2026-09-13 | 7 | C13-N01 stage 1 detectors: read whether a probe resolves its origin from a hard-coded fallback and whether it routes through the three governance modules, and census the fleet from those two facts. |
 | probe-runtime-receipts.mjs | lib | ACTIVE | 2026-10-31 | 4 | Companion of probe-runtime.mjs: sha256, normalizeJson, assembleReceipt, buildRuntimeReceipt, RUN_OUTCOMES, INCIDENT_ARTIFACT_SUFFIX, outcomeOfRun, buildIncidentRecord and buildMarkdownSummary, the pure builders of everything a run writes to disk. |
-| probe-runtime.mjs | lib | ACTIVE | 2026-10-31 | 165 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
+| probe-runtime.mjs | lib | ACTIVE | 2026-10-31 | 168 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
 | probe-scene-frames.mjs | lib | ACTIVE | 2026-10-09 | 5 | The probe runtime's frame driver: an in-page function that renders a scene one frame at a time by requesting the next render from every postRender, hands each frame to a step callback, and ends when the step says so, at a frame cap, or at a wall-clock deadline, reporting which; plus the call that installs it in a page under one global so a step module's page function can use it. |
 | probe-work-registry.mjs | lib | ACTIVE | 2026-09-12 | 7 | Tracks every `scope.run` a descriptor starts as an attempt with a settled outcome, so a run cannot be reported complete while work it started is still live, and such work's failure reaches the incident record whenever an incident is written at all; the browser's close is NOT deferred for it — see the header. |
 | prohibited-reader-allowlist.mjs | lib | ACTIVE | 2026-10-30 | 12 | Pin the measured visual-regression sources that still use the prohibited live-canvas reader. |
@@ -1856,7 +1864,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | relative-path.mjs | lib | ACTIVE | 2026-09-19 | 9 | Single fail-closed predicate for "a relative, POSIX, non-escaping path", shared by the capture manifest's image paths, the contact sheet's image/receipt paths and a banked sheet-index entry's repo-relative path. |
 | representative-performance-content.mjs | lib | ACTIVE | 2026-08-16 | 13 | Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads. |
 | representative-tileset-request-ledger.mjs | lib | ACTIVE | 2026-08-16 | 7 | Event-sourced ledger of tileset content requests (issue/terminal events, byte totals, hashes) with cross-run comparison for perf evidence. |
-| rig-registry.mjs | lib | ACTIVE | 2026-10-24 | 39 | Load, validate and hash the rig records under rigs/, and regenerate scenes.json byte-identically from the rigs tagged wave-end. |
+| rig-registry.mjs | lib | ACTIVE | 2026-10-24 | 40 | Load, validate and hash the rig records under rigs/, and regenerate scenes.json byte-identically from the rigs tagged wave-end. |
 | runner-homes.mjs | lib | ACTIVE | 2026-10-30 | 3 | Loads the root package.json scripts and, when RUNNER_HOMES_FILE names a lane's RUNNERS_<LANE>.txt, appends each declared `<script>=<spec>` home to its script, so a homing spec can be proven green before the seat appends the tokens at landing. |
 | runtime-residency-allowlist.mjs | lib | ACTIVE | 2026-09-03 | 3 | Frozen, shrink-only allowlist of runtime-resident probes still carrying an anti-re-accretion violation, mirroring lib/prohibited-reader-allowlist.mjs's ratchet shape. |
 | runtime-residency-contract.mjs | lib | ACTIVE | 2026-09-03 | 7 | Detects a probe that declares @runtime residency on lib/probe-runtime.mjs yet still hand-rolls one of the four concerns that module already owns. |
@@ -1935,7 +1943,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | line-structure.mjs | lib | ACTIVE | 2026-10-09 | 5 | Structure metrics for a rendered line in one colour class of a decoded RGBA frame: colored runs per row (dash vs solid), the full width at half maximum of the row-intensity profile (glow taper), per-column heights, an arrow head's fill against its bounding box, and whether an outline brackets its core. |
 | luma-difference.mjs | lib | ACTIVE | 2026-10-09 | 6 | Pure Rec. 601 luma and the whole-frame mean absolute luma difference the cloud demo probes each hand-rolled in the page, now computed in Node over decoded RGBA. |
 | luma-regions.mjs | lib | ACTIVE | 2026-10-09 | 6 | Rec. 601 luma over a fractional region of decoded RGBA — mean luma, the whitish-cloud share and the blue-sky share — plus the whole-frame mean \|dLuma\| between two same-sized frames, as the Weather Inspector demo probes score them. |
-| luminance.mjs | lib | ACTIVE | 2026-10-30 | 11 | Rec. 709 luminance, the march's Reinhard operator in both directions, and the display-space mean the photometric rule exists to forbid. |
+| luminance.mjs | lib | ACTIVE | 2026-10-30 | 12 | Rec. 709 luminance, the march's Reinhard operator in both directions, and the display-space mean the photometric rule exists to forbid. |
 | masks.mjs | lib | ACTIVE | 2026-09-18 | 16 | Region-of-interest geometry for photometric statistics: the circular sun-disc mask every ROI must exclude, and a rectangle clamped to the image. |
 | mean-chroma.mjs | lib | ACTIVE | 2026-10-09 | 3 | Pure RGBA metric: the mean chroma (max channel minus min channel) over a frame's non-black pixels, and the fraction of them with any visible chroma, the "is a saturation-0 grade actually applied" measure. |
 | merge-landing-reports.mjs | lib | ACTIVE | 2026-10-31 | 4 | Node-only reader of probe-landing-cells reports: armKey and groupArms (page records -> per-arm PF inputs, captures, per-run machine CPU and device-loss terminals), the tree identity a report was served from (preflight disk md5s, or the same read from a tree on disk), and mergeLandingReports, which refuses reports of different trees, windows, perf settings or pending-pipeline waits and otherwise renumbers their runs in order and regroups them, so merging two --runs 1 reports equals one --runs 2 report; plus the probe's --merge-reports glue (read and check the named reports against the invocation's own tree, and fold their runs before its pages). |
