@@ -2,12 +2,21 @@
  * The landing cells' within-run comparisons between pages: a cell's WebGPU
  * capture against the same run's WebGL capture, and a variant cell's
  * displacement readbacks against each other.
- * @purpose Cross-page metric for probe-landing-cells.mjs: per run, the kit's pixel diff of a crossRenderer cell's WebGL and WebGPU captures (reported, its band registered by the first capture), and the ocean displacement-readback identity between a readback cell's two variant pages (lib/ocean-displacement-readback.mjs), with the verdicts each yields; Node only for the pixel diff (reads the PNGs), pure otherwise.
+ * @purpose Cross-page metric for probe-landing-cells.mjs: per run, the kit's pixel diff of a crossRenderer cell's WebGL and WebGPU captures (reported, its band registered by the first capture; for a cell with variants, once per variant page, each WebGPU variant against the WebGL page of the same name), and the ocean displacement-readback identity between a readback cell's two variant pages (lib/ocean-displacement-readback.mjs), with the verdicts each yields; Node only for the pixel diff (reads the PNGs), pure otherwise.
  * @status ACTIVE
  *
  * WHY NOT `compareArms`. The base-vs-tip comparison pairs the SAME page of two
  * trees. These pair two pages of ONE run on one tree: the two renderers of a
  * cell, or the two kernels of E-FFT-ifft. Neither needs a base report.
+ *
+ * VARIANT CELLS PAIR BY PAGE NAME. A crossRenderer cell with `variants`
+ * (E-2D-stages, E-CV-stages) runs every variant on both renderers, and each
+ * WebGPU page is diffed against the WebGL page of the same name, one entry per
+ * run and variant in table order, each carrying `page`. Every WebGL variant
+ * page is the plain frame (the WebGL globe ignores the debug mode), so each
+ * pair reads "this WebGPU term against WebGL". A cell without variants pairs
+ * its one page per renderer exactly as before and its entries carry no
+ * `page`.
  *
  * NO BAND IS CLAIMED. The cross-renderer diff has no pre-registered band: the
  * first capture registers it, so its verdict says only whether the diff was
@@ -38,7 +47,7 @@ const runsOf = (pages) =>
  * @param {object[]} pages Page records.
  * @param {{diff?: Function}} [options] `diff` defaults to the kit's
  *   `pixelDiff` (`lib/metrics/landing-pixel-band.mjs`).
- * @returns {Array<{cell: string, run: number, measured: boolean,
+ * @returns {Array<{cell: string, run: number, page?: string, measured: boolean,
  *   reason?: string, webgl?: string, webgpu?: string, changedPx?: number,
  *   mismatchPct?: number, bbox?: object, band: string}>}
  */
@@ -49,36 +58,47 @@ export function crossRendererComparisons(pages, { diff = pixelDiff } = {}) {
   );
   for (const cell of cells) {
     const ofCell = pages.filter((page) => page.cell === cell);
+    const names = LANDING_CELLS[cell].variants
+      ? Object.keys(LANDING_CELLS[cell].variants)
+      : [null];
     for (const run of runsOf(ofCell)) {
-      const find = (renderer) =>
-        ofCell.find((page) => page.run === run && page.renderer === renderer);
-      const webgl = find("webgl");
-      const webgpu = find("webgpu");
-      const entry = {
-        cell,
-        run,
-        band: "unregistered (first capture registers)",
-      };
-      if (!webgl?.capture || !webgpu?.capture) {
-        const missing = [
-          webgl?.capture ? null : `webgl (${webgl?.notRun ?? "no page"})`,
-          webgpu?.capture ? null : `webgpu (${webgpu?.notRun ?? "no page"})`,
-        ].filter(Boolean);
+      for (const name of names) {
+        const find = (renderer) =>
+          ofCell.find(
+            (page) =>
+              page.run === run &&
+              page.renderer === renderer &&
+              (name === null || page.page === name),
+          );
+        const webgl = find("webgl");
+        const webgpu = find("webgpu");
+        const entry = {
+          cell,
+          run,
+          ...(name === null ? {} : { page: name }),
+          band: "unregistered (first capture registers)",
+        };
+        if (!webgl?.capture || !webgpu?.capture) {
+          const missing = [
+            webgl?.capture ? null : `webgl (${webgl?.notRun ?? "no page"})`,
+            webgpu?.capture ? null : `webgpu (${webgpu?.notRun ?? "no page"})`,
+          ].filter(Boolean);
+          out.push({
+            ...entry,
+            measured: false,
+            reason: `no capture on ${missing.join(", ")}`,
+          });
+          continue;
+        }
+        const result = diff(webgl.capture, webgpu.capture);
         out.push({
           ...entry,
-          measured: false,
-          reason: `no capture on ${missing.join(", ")}`,
+          webgl: webgl.capture.name,
+          webgpu: webgpu.capture.name,
+          ...result,
+          measured: result?.measured === true,
         });
-        continue;
       }
-      const result = diff(webgl.capture, webgpu.capture);
-      out.push({
-        ...entry,
-        webgl: webgl.capture.name,
-        webgpu: webgpu.capture.name,
-        ...result,
-        measured: result?.measured === true,
-      });
     }
   }
   return out;
@@ -172,7 +192,7 @@ export function crossPageVerdicts({ crossRenderer = [], kernelIdentity = [] }) {
   const verdicts = [];
   for (const entry of crossRenderer) {
     verdicts.push({
-      id: `${entry.cell}:cross-renderer:run${entry.run}:measured`,
+      id: `${entry.cell}${entry.page === undefined ? "" : `:${entry.page}`}:cross-renderer:run${entry.run}:measured`,
       pass: entry.measured === true,
       ...(entry.measured === true
         ? {

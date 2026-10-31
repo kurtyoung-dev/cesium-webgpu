@@ -11,6 +11,8 @@
 // NOT RUN items: the per-cell pipeline wait, the onmessage sentinel in the
 // identity cells, the ocean-kernel cell and the Chukotka cross-renderer cell.
 // P1, P10 and P13 moved with the per-cell wait (E-D now waits by default).
+// P15 is the 2D / Columbus banding lane's (Ibal): the stage cells and the variant
+// pairing of the cross-renderer metric.
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -37,6 +39,7 @@ import {
   rigForPage,
   waitedForCell,
 } from "./lib/landing-cell-table.mjs";
+import { GLOBE_FRAGMENT_DEBUG_MODE_NAMES } from "./lib/globe-fragment-debug-dial.mjs";
 import {
   crossPageVerdicts,
   crossRendererComparisons,
@@ -164,8 +167,9 @@ test("P1: planLandingCells plans the full table to one page per renderer a rig d
   assert.equal(plan.length, expected);
   // The literal as well as the derivation: 25 pages before E-M-water, which
   // adds one page per renderer; lane LINDISSE adds E-ID-2d, E-ID-cv and
-  // E-C-chukotka (two renderers each) and E-FFT-ifft (WebGPU, two kernels).
-  assert.equal(plan.length, 35);
+  // E-C-chukotka (two renderers each) and E-FFT-ifft (WebGPU, two kernels);
+  // E-2D-stages and E-CV-stages add six variant pages per renderer each.
+  assert.equal(plan.length, 59);
 });
 
 test("P1: E-M-water is a capture cell on both renderers and is not in the default cells", () => {
@@ -1708,6 +1712,9 @@ test("P13: (ROUND 5, K5-6) a base report is regrouped from its pages, so its arm
 // Lead additions, written from the salvage-night Edge receipt's NOT RUN items
 // (1-3, 5, 6) and its cold-capture findings (cells 1a and 2a).
 
+const CROSS_MODULE = fileURLToPath(
+  new URL("./lib/metrics/landing-cross-page.mjs", import.meta.url),
+);
 const TABLE_MODULE = fileURLToPath(
   new URL("./lib/landing-cell-table.mjs", import.meta.url),
 );
@@ -2129,6 +2136,215 @@ test("P14: the cross-renderer diff is NOT RUN without both captures, and the ker
       [0, true],
       [1, false],
     ],
+  );
+});
+
+const STAGES_CELLS = [
+  ["E-2D-stages", "default-2d-pinned"],
+  ["E-CV-stages", "default-columbus-pinned"],
+];
+const STAGE_PAGES = [
+  "control",
+  "no-drape",
+  "fade",
+  "atmo",
+  "composite",
+  "view-dir",
+];
+
+test("P15: the 2D and Columbus stage cells vary the globe fragment-debug dial over their pinned rigs, six pages per renderer, outside the default cells", () => {
+  const modes = [
+    "bypass-none",
+    "bypass-drape",
+    "fade-amount",
+    "atmo-color",
+    "post-composite-color",
+    "view-dir",
+  ];
+  for (const [cell, rigId] of STAGES_CELLS) {
+    const entry = LANDING_CELLS[cell];
+    assert.equal(entry.rig, rigId);
+    assert.equal(entry.kind, "capture");
+    assert.equal(entry.crossRenderer, true);
+    assert.equal(entry.waitPipelines, true);
+    assert.ok(!DEFAULT_CELLS.includes(cell));
+    assert.deepEqual(Object.keys(entry.variants), STAGE_PAGES);
+    assert.deepEqual(
+      Object.values(entry.variants).map((dials) => dials.globeFragmentDebug),
+      modes,
+    );
+    for (const mode of modes) {
+      assert.ok(GLOBE_FRAGMENT_DEBUG_MODE_NAMES.includes(mode), mode);
+    }
+    const plan = planLandingCells({ cells: cell }, rigsById);
+    assert.deepEqual(
+      plan.map((p) => [p.renderer, p.page]),
+      ["webgl", "webgpu"].flatMap((renderer) =>
+        STAGE_PAGES.map((page) => [renderer, page]),
+      ),
+    );
+    // A variant page stages the rig with its mode laid over the rig's dials.
+    const rig = rigsById.get(rigId);
+    const staged = rigForPage(rig, { cell, page: "fade" });
+    const payload = landingStagePayload(staged);
+    assert.equal(payload.globe.globeFragmentDebug, "fade-amount");
+    assert.equal(payload.scene.sceneMode, rig.dials.sceneMode);
+    assert.equal(rig.dials.globeFragmentDebug, undefined, "rig untouched");
+  }
+});
+
+// A page record of the cross-renderer metric; the capture name tells which
+// pair a diff received.
+const crossPage = (cell, run, renderer, page) => ({
+  cell,
+  run,
+  renderer,
+  page,
+  capture: { name: `${renderer}-${page}-${run}`, path: "x.png" },
+});
+const stubDiff = () => {
+  const calls = [];
+  const diff = (a, b) => {
+    calls.push([a.name, b.name]);
+    return {
+      measured: true,
+      changedPx: calls.length,
+      mismatchPct: 0.1,
+      bbox: null,
+    };
+  };
+  return { diff, calls };
+};
+
+test("P15: a cell without variants pairs exactly as before (literal derived by running the unchanged function)", () => {
+  const { diff } = stubDiff();
+  const page = (run, renderer, capture, extra = {}) => ({
+    cell: "E-C-chukotka",
+    run,
+    renderer,
+    page: "scene",
+    capture,
+    ...extra,
+  });
+  const out = crossRendererComparisons(
+    [
+      page(0, "webgl", { name: "a0" }),
+      page(0, "webgpu", { name: "b0" }),
+      page(1, "webgl", { name: "a1" }),
+      page(1, "webgpu", null, { notRun: "no terrain" }),
+    ],
+    { diff },
+  );
+  assert.deepEqual(out, [
+    {
+      cell: "E-C-chukotka",
+      run: 0,
+      band: "unregistered (first capture registers)",
+      webgl: "a0",
+      webgpu: "b0",
+      measured: true,
+      changedPx: 1,
+      mismatchPct: 0.1,
+      bbox: null,
+    },
+    {
+      cell: "E-C-chukotka",
+      run: 1,
+      band: "unregistered (first capture registers)",
+      measured: false,
+      reason: "no capture on webgpu (no terrain)",
+    },
+  ]);
+  assert.deepEqual(
+    crossPageVerdicts({ crossRenderer: out }).map((v) => v.id),
+    [
+      "E-C-chukotka:cross-renderer:run0:measured",
+      "E-C-chukotka:cross-renderer:run1:measured",
+    ],
+  );
+});
+
+const stagePages = (cell, runs, { without = [] } = {}) =>
+  runs.flatMap((run) =>
+    ["webgl", "webgpu"].flatMap((renderer) =>
+      STAGE_PAGES.filter(
+        (name) => !(renderer === "webgpu" && without.includes(name)),
+      ).map((name) => crossPage(cell, run, renderer, name)),
+    ),
+  );
+
+async function assertVariantPairing(comparisons) {
+  for (const [cell] of STAGES_CELLS) {
+    const { diff, calls } = stubDiff();
+    const out = comparisons(stagePages(cell, [0, 1]), { diff });
+    assert.equal(out.length, 12, cell);
+    assert.deepEqual(
+      out.map((entry) => [entry.run, entry.page]),
+      [0, 1].flatMap((run) => STAGE_PAGES.map((name) => [run, name])),
+    );
+    // Each entry paired the WebGL page of the same name with the WebGPU one.
+    assert.deepEqual(
+      calls,
+      [0, 1].flatMap((run) =>
+        STAGE_PAGES.map((name) => [
+          `webgl-${name}-${run}`,
+          `webgpu-${name}-${run}`,
+        ]),
+      ),
+    );
+    for (const entry of out) {
+      assert.equal(entry.cell, cell);
+      assert.equal(entry.measured, true);
+      assert.equal(entry.webgl, `webgl-${entry.page}-${entry.run}`);
+      assert.equal(entry.webgpu, `webgpu-${entry.page}-${entry.run}`);
+    }
+  }
+}
+
+test("P15: a variant cell pairs each WebGPU page with the WebGL page of the same name, per run, in table order", async () => {
+  await assertVariantPairing(crossRendererComparisons);
+});
+
+test("P15: a missing WebGPU variant page is NOT RUN for that page only; verdict ids are unique per variant", () => {
+  const { diff } = stubDiff();
+  const out = crossRendererComparisons(
+    stagePages("E-2D-stages", [0, 1], { without: ["atmo"] }),
+    { diff },
+  );
+  assert.equal(out.length, 12);
+  const unmeasured = out.filter((entry) => entry.measured !== true);
+  assert.deepEqual(
+    unmeasured.map((entry) => [entry.run, entry.page]),
+    [
+      [0, "atmo"],
+      [1, "atmo"],
+    ],
+  );
+  for (const entry of unmeasured) {
+    assert.match(entry.reason, /no capture on webgpu \(no page\)/);
+  }
+  const verdicts = crossPageVerdicts({ crossRenderer: out });
+  const ids = verdicts.map((verdict) => verdict.id);
+  assert.equal(new Set(ids).size, 12, "one id per variant and run");
+  assert.ok(ids.includes("E-2D-stages:fade:cross-renderer:run1:measured"));
+  assert.deepEqual(
+    verdicts
+      .filter((verdict) => verdict.pass !== true)
+      .map((verdict) => [verdict.id, verdict.notRun]),
+    [
+      ["E-2D-stages:atmo:cross-renderer:run0:measured", true],
+      ["E-2D-stages:atmo:cross-renderer:run1:measured", true],
+    ],
+  );
+});
+
+test("P15: inertness mutant - variant cells collapsed to the first page per renderer turn the pairing checks red", async () => {
+  const mutated = await importMutated(CROSS_MODULE, [
+    ["? Object.keys(LANDING_CELLS[cell].variants)", "? [null]"],
+  ]);
+  await assert.rejects(
+    assertVariantPairing(mutated.crossRendererComparisons),
+    (error) => error instanceof assert.AssertionError,
   );
 });
 

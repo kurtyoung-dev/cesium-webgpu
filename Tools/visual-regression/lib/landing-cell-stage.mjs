@@ -1,7 +1,7 @@
 /**
  * Stages any landing-cell rig on a CesiumViewer page, on either renderer: its
  * clock, its camera and every dial it declares, each read back.
- * @purpose Stage piece for the landing program's Edge cells: turns a rig into a JSON-safe payload (Node side, refusing a dial it does not know before a browser is involved), and applies it in the page on WebGL or WebGPU - pinned clock, camera (or the page's own), scene and globe dials (including the globe material), the water flags and the water tier, clouds on or off - reading every dial back as {requested, observed, applied}, with the cloud* dials handed to the cloud probe harness so their round trip stays in one place; plus the ocean's pinned wave epoch, the opt-in FFT ocean (read back by its primitive), the globe's own show flag, the SSR scene switches, the WebGPU render pipeline cache's pending count, and an opt-in wait that drives frames until no pipeline is pending; plus the scene mode (3D, 2D, Columbus view, morphed with duration 0 and read back) and the FFT ocean's inverse-FFT kernel (stockham or pingpong, read back on the facade and on the primitive).
+ * @purpose Stage piece for the landing program's Edge cells: turns a rig into a JSON-safe payload (Node side, refusing a dial it does not know before a browser is involved), and applies it in the page on WebGL or WebGPU - pinned clock, camera (or the page's own), scene and globe dials (including the globe material), the water flags and the water tier, clouds on or off - reading every dial back as {requested, observed, applied}, with the cloud* dials handed to the cloud probe harness so their round trip stays in one place; plus the ocean's pinned wave epoch, the opt-in FFT ocean (read back by its primitive), the globe's own show flag, the SSR scene switches, the WebGPU render pipeline cache's pending count, and an opt-in wait that drives frames until no pipeline is pending; plus the scene mode (3D, 2D, Columbus view, morphed with duration 0 and read back) and the FFT ocean's inverse-FFT kernel (stockham or pingpong, read back on the facade and on the primitive); plus the WebGPU globe's fragment-debug mode (its names in lib/globe-fragment-debug-dial.mjs), set before the first frame and read back against the registry.
  * @status ACTIVE
  *
  * WHY A NEW STAGE AND NOT `lib/cloud-rig-stage.mjs`. The landing cells span a
@@ -90,6 +90,18 @@
  * throws or leaves the mode unchanged reads applied: false, and the scene dial
  * is blocking. The camera is placed after the mode, in the mode it landed in.
  *
+ * THE GLOBE FRAGMENT DEBUG MODE. `globeFragmentDebug` (a mode name from
+ * `lib/globe-fragment-debug-dial.mjs`, or `"none"`; anything else is refused
+ * in Node) sets `globalThis._webgpuGlobeDebugMode`, the global the WebGPU globe
+ * tile packer turns into a shader sentinel every frame, before the stage
+ * returns, so every settle frame draws the one term. It reads the global back
+ * and requires the mode in `__webgpuGlobeFragmentDebugRegistry`; an absent
+ * registry (a pragma-stripped build) reads applied: false and blocks the cell,
+ * because the page would silently draw the plain frame. On WebGL the globe has
+ * no such registry: the dial reads applied: true, observed `not-applicable`,
+ * and the page captures the plain frame (the reference of a cross-renderer
+ * pair).
+ *
  * PENDING PIPELINES (round 5, K5-2). A WebGPU page can draw nothing while the
  * pipelines a pass needs are still compiling, and a capture taken then
  * measures the compile, not the scene. `readPendingPipelines` reads the render
@@ -99,6 +111,7 @@
  * @module Tools/visual-regression/lib/landing-cell-stage
  */
 
+import { isGlobeFragmentDebugValue } from "./globe-fragment-debug-dial.mjs";
 import { ProbeRefusal } from "./probe-refusal.mjs";
 
 /** Where the page imports the Cesium namespace from. */
@@ -134,6 +147,7 @@ export const LANDING_GLOBE_DIALS = Object.freeze([
   "imagery",
   "terrain",
   "globeMaterial",
+  "globeFragmentDebug",
 ]);
 
 /**
@@ -274,6 +288,14 @@ export function landingStagePayload(rig) {
     !LANDING_GLOBE_MATERIAL_VALUES.includes(globe.globeMaterial)
   ) {
     unsupported.push(`globeMaterial=${JSON.stringify(globe.globeMaterial)}`);
+  }
+  if (
+    globe.globeFragmentDebug !== undefined &&
+    !isGlobeFragmentDebugValue(globe.globeFragmentDebug)
+  ) {
+    unsupported.push(
+      `globeFragmentDebug=${JSON.stringify(globe.globeFragmentDebug)}`,
+    );
   }
   if (
     water.waterSimulationEpoch !== undefined &&
@@ -572,6 +594,36 @@ export async function stageLandingCellInPage(payload) {
           globe.material ? globe.material.type : "none",
           false,
           `globe material failed to build: ${String(error && error.message ? error.message : error)}`,
+        );
+      }
+    } else if (key === "globeFragmentDebug") {
+      // Set on both renderers (harmless on WebGL), then read back.
+      const mode = value === "none" ? null : value;
+      root._webgpuGlobeDebugMode = mode;
+      const registry = root.__webgpuGlobeFragmentDebugRegistry;
+      const hasRegistry = Array.isArray(registry);
+      const listed =
+        mode === null || (hasRegistry && registry.some((m) => m.name === mode));
+      const observed = root._webgpuGlobeDebugMode ?? "none";
+      if (rendererType !== "webgpu") {
+        note(
+          key,
+          value,
+          "not-applicable",
+          true,
+          "the WebGL globe has no fragment-debug registry; the page captures the plain frame",
+        );
+      } else {
+        note(
+          key,
+          value,
+          observed,
+          observed === value && listed,
+          !hasRegistry && mode !== null
+            ? "the fragment-debug registry is absent (a pragma-stripped build)"
+            : !listed
+              ? `${value} is not in the fragment-debug registry`
+              : undefined,
         );
       }
     } else if (key === "terrain") {

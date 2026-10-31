@@ -11,13 +11,20 @@
 // the lead's ROUND 5 additions (Celos), written from the seat's item text.
 // S9 (the waterOceanIfftKernel and sceneMode dials) is lane LINDISSE's addition (Zimrahin).
 // S10 (the 2D and Columbus identity rigs stage the mode, then their pinned camera) is lane TAR-ALDARION's A2 addition.
+// S11 (the globeFragmentDebug dial) is the 2D / Columbus banding lane's addition (Ibal).
 // Base: a999954e2b. Drives real exported functions with Node-compatible fakes.
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  GLOBE_FRAGMENT_DEBUG_MODE_NAMES,
+  GLOBE_FRAGMENT_DEBUG_OFF,
+} from "./lib/globe-fragment-debug-dial.mjs";
+import {
+  LANDING_GLOBE_DIALS,
   LANDING_IFFT_KERNEL_VALUES,
   LANDING_SCENE_DIALS,
   LANDING_SCENE_MODE_VALUES,
@@ -158,6 +165,8 @@ function createFakeViewer(overrides = {}) {
 test.afterEach(() => {
   delete globalThis.viewer;
   delete globalThis.__cloudProbe;
+  delete globalThis._webgpuGlobeDebugMode;
+  delete globalThis.__webgpuGlobeFragmentDebugRegistry;
 });
 
 // -----------------------------------------------------------------------------
@@ -2074,4 +2083,194 @@ test("S10: inertness mutants - a rig without its camera, a stage that skips the 
       `${entry.id}: a stage that never morphs must fail`,
     );
   }
+});
+
+// -----------------------------------------------------------------------------
+// S11: the globeFragmentDebug dial - sets the WebGPU globe's debug-mode global
+// before the stage returns and reads it back against the registry the WebGPU
+// chunk publishes; on WebGL it is a recorded no-op that never fails a stage.
+// -----------------------------------------------------------------------------
+
+const FRAGMENT_DEBUG_SOURCE = fileURLToPath(
+  new URL(
+    "../../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeFragmentDebug.ts",
+    import.meta.url,
+  ),
+);
+
+const fragmentDebugPayload = (value) =>
+  kernelPayload({ globeFragmentDebug: value });
+
+const fragmentDebugViewer = (rendererType) => {
+  const viewer = createFakeViewer();
+  viewer.scene.context = {
+    rendererType,
+    isWebGPU: rendererType === "webgpu",
+  };
+  return viewer;
+};
+
+const registryOf = (...names) => names.map((name) => ({ name, sentinel: 1 }));
+
+test("S11: the mode names equal the name entries of the WebGPU registry source", () => {
+  const source = fs.readFileSync(FRAGMENT_DEBUG_SOURCE, "utf8");
+  const start = source.indexOf("export const GLOBE_FRAGMENT_DEBUG_MODES");
+  const end = source.indexOf("const _MODE_BY_NAME");
+  assert.ok(start >= 0 && end > start, "the registry array is where expected");
+  const names = [
+    ...source.slice(start, end).matchAll(/^\s*name:\s*"([^"]+)"/gm),
+  ].map((match) => match[1]);
+  assert.ok(names.length > 0);
+  assert.deepEqual([...GLOBE_FRAGMENT_DEBUG_MODE_NAMES], names);
+  assert.ok(Object.isFrozen(GLOBE_FRAGMENT_DEBUG_MODE_NAMES));
+  assert.ok(LANDING_GLOBE_DIALS.includes("globeFragmentDebug"));
+});
+
+test("S11: the payload carries every listed mode and none as a globe dial, and refuses any other value", () => {
+  for (const value of [
+    ...GLOBE_FRAGMENT_DEBUG_MODE_NAMES,
+    GLOBE_FRAGMENT_DEBUG_OFF,
+  ]) {
+    assert.deepEqual(fragmentDebugPayload(value).globe, {
+      globeFragmentDebug: value,
+    });
+  }
+  for (const bad of [
+    "Fade-Amount",
+    "fade_amount",
+    "",
+    "bypass",
+    null,
+    1,
+    true,
+    ["uv"],
+  ]) {
+    assert.throws(
+      () => fragmentDebugPayload(bad),
+      (error) =>
+        error instanceof ProbeRefusal &&
+        error.reason === "rig-dial-unsupported" &&
+        /globeFragmentDebug=/.test(error.message),
+      `${JSON.stringify(bad)} must be refused`,
+    );
+  }
+});
+
+// The dial's promise as one check a mutant can be held to.
+async function assertFragmentDebugDial(stage) {
+  const run = async (rendererType, registry, value, before = null) => {
+    globalThis.viewer = fragmentDebugViewer(rendererType);
+    globalThis._webgpuGlobeDebugMode = before;
+    if (registry === undefined) {
+      delete globalThis.__webgpuGlobeFragmentDebugRegistry;
+    } else {
+      globalThis.__webgpuGlobeFragmentDebugRegistry = registry;
+    }
+    const staged = await stage(fragmentDebugPayload(value));
+    return { staged, dial: staged.dials.globeFragmentDebug };
+  };
+  // WebGPU with the mode in the registry: the global is set and read back.
+  let { staged, dial } = await run(
+    "webgpu",
+    registryOf("uv", "fade-amount"),
+    "fade-amount",
+  );
+  assert.equal(globalThis._webgpuGlobeDebugMode, "fade-amount");
+  assert.deepEqual(dial, {
+    requested: "fade-amount",
+    observed: "fade-amount",
+    applied: true,
+  });
+  assert.deepEqual(blockingDials(staged), []);
+  // "none" clears a mode that was set.
+  ({ dial } = await run("webgpu", registryOf("uv"), "none", "uv"));
+  assert.equal(globalThis._webgpuGlobeDebugMode, null);
+  assert.deepEqual(dial, {
+    requested: "none",
+    observed: "none",
+    applied: true,
+  });
+  // A pragma-stripped build publishes no registry: the dial is blocking.
+  ({ staged, dial } = await run("webgpu", undefined, "fade-amount"));
+  assert.equal(dial.applied, false);
+  assert.match(dial.reason, /registry is absent/);
+  assert.deepEqual(blockingDials(staged), ["globeFragmentDebug"]);
+  // A registry that lacks the mode asked for is blocking too.
+  ({ staged, dial } = await run("webgpu", registryOf("uv"), "view-dir"));
+  assert.equal(dial.applied, false);
+  assert.match(dial.reason, /view-dir is not in the fragment-debug registry/);
+  assert.deepEqual(blockingDials(staged), ["globeFragmentDebug"]);
+  // A global that does not hold the mode (read-back differs) is not applied.
+  globalThis.viewer = fragmentDebugViewer("webgpu");
+  globalThis.__webgpuGlobeFragmentDebugRegistry = registryOf("fade-amount");
+  Object.defineProperty(globalThis, "_webgpuGlobeDebugMode", {
+    configurable: true,
+    get: () => null,
+    set: () => {},
+  });
+  staged = await stage(fragmentDebugPayload("fade-amount"));
+  dial = staged.dials.globeFragmentDebug;
+  delete globalThis._webgpuGlobeDebugMode;
+  assert.equal(dial.applied, false);
+  assert.equal(dial.observed, "none");
+  // WebGL: recorded as applied and not applicable, never blocking.
+  ({ staged, dial } = await run("webgl", undefined, "fade-amount"));
+  assert.equal(dial.applied, true);
+  assert.equal(dial.observed, "not-applicable");
+  assert.match(dial.reason, /WebGL globe has no fragment-debug registry/);
+  assert.deepEqual(staged.notApplied, []);
+  assert.deepEqual(blockingDials(staged), []);
+}
+
+test("S11: the dial sets the debug-mode global on WebGPU against the registry, and never fails a WebGL stage", async () => {
+  await assertFragmentDebugDial(stageLandingCellInPage);
+});
+
+test("S11: inertness mutants - the global write, the read-back comparison, the registry check and the WebGL branch made unreachable turn the check red; the Node refusal is live", async () => {
+  for (const [anchor, replacement] of [
+    [
+      `root._webgpuGlobeDebugMode = mode;`,
+      `if (false) root._webgpuGlobeDebugMode = mode;`,
+    ],
+    [`observed === value && listed,`, `listed,`],
+    [
+      `mode === null || (hasRegistry && registry.some((m) => m.name === mode));`,
+      `true;`,
+    ],
+    [
+      `if (rendererType !== "webgpu") {
+        note(
+          key,
+          value,
+          "not-applicable",
+          true,`,
+      `if (rendererType !== "webgpu") {
+        note(
+          key,
+          value,
+          "not-applicable",
+          false,`,
+    ],
+  ]) {
+    const mutated = await importMutated(STAGE_MODULE, [[anchor, replacement]]);
+    await assert.rejects(
+      assertFragmentDebugDial(mutated.stageLandingCellInPage),
+      (error) => error instanceof assert.AssertionError,
+      `mutant ${replacement.slice(0, 50)} must fail by assertion`,
+    );
+  }
+  const refusal = await importMutated(STAGE_MODULE, [
+    [
+      `!isGlobeFragmentDebugValue(globe.globeFragmentDebug)`,
+      `false && !isGlobeFragmentDebugValue(globe.globeFragmentDebug)`,
+    ],
+  ]);
+  assert.doesNotThrow(() =>
+    refusal.landingStagePayload({
+      id: "m",
+      camera: null,
+      clock: null,
+      dials: { globeFragmentDebug: "no-such-mode" },
+    }),
+  );
 });

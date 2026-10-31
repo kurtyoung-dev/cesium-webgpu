@@ -15,6 +15,9 @@
  * the variant's dials laid over the rig's own (`rigForPage`). E-FFT-ifft is
  * the first: the same ocean rig once per inverse-FFT kernel, so the two
  * kernels' displacement fields can be compared within one run.
+ * E-2D-stages and E-CV-stages vary the `globeFragmentDebug` dial instead: one
+ * page per WebGPU globe fragment term of the 2D / Columbus-view frame, the
+ * WebGL page of the same name being the plain frame.
  *
  * THE PIPELINE WAIT IS PER CELL. A WebGPU capture taken while pipelines still
  * compile shows the compile (the salvage-night receipt: an E-D frame with only
@@ -40,6 +43,16 @@ import { ProbeRefusal } from "./probe-refusal.mjs";
  * A spec pins the two strings equal.
  */
 export const OCEAN_COMPUTE_PASS_LABEL = "Ocean FFT single-pass compute chain";
+
+/** The terms E-2D-stages and E-CV-stages draw, one page each, control first. */
+const GLOBE_STAGE_VARIANTS = Object.freeze({
+  control: Object.freeze({ globeFragmentDebug: "bypass-none" }),
+  "no-drape": Object.freeze({ globeFragmentDebug: "bypass-drape" }),
+  fade: Object.freeze({ globeFragmentDebug: "fade-amount" }),
+  atmo: Object.freeze({ globeFragmentDebug: "atmo-color" }),
+  composite: Object.freeze({ globeFragmentDebug: "post-composite-color" }),
+  "view-dir": Object.freeze({ globeFragmentDebug: "view-dir" }),
+});
 
 /**
  * The cell table: cell name -> rig id and what the cell does on it.
@@ -129,6 +142,22 @@ export const LANDING_CELLS = Object.freeze({
     kind: "capture",
     waitPipelines: true,
     crossRenderer: true,
+  }),
+  // Not in DEFAULT_CELLS: each WebGPU globe fragment term of the 2D / Columbus
+  // view frame (one page per term), each against the plain WebGL frame.
+  "E-2D-stages": Object.freeze({
+    rig: "default-2d-pinned",
+    kind: "capture",
+    waitPipelines: true,
+    crossRenderer: true,
+    variants: GLOBE_STAGE_VARIANTS,
+  }),
+  "E-CV-stages": Object.freeze({
+    rig: "default-columbus-pinned",
+    kind: "capture",
+    waitPipelines: true,
+    crossRenderer: true,
+    variants: GLOBE_STAGE_VARIANTS,
   }),
   // The opt-in FFT ocean once per inverse-FFT kernel (Batch 1622), the
   // displacement field read back after each capture and compared between the
