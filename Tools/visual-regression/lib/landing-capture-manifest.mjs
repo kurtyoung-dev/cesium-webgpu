@@ -31,15 +31,33 @@
  * that did not take a capture because it was NOT RUN is an UNMEASURED cell
  * with the stage's reason, never a missing cell.
  *
- * EVERY IMAGE IS CHECKED AGAINST THE SHA-256 THE REPORT RECORDS. A base
+ * A BASE IMAGE IS CHECKED AGAINST THE SHA-256 THE REPORT RECORDS. A base
  * capture lives in ANOTHER output directory by an absolute path, and that file
  * can have been moved, deleted or overwritten since the base run. A missing
  * file or a different digest makes that slot an UNMEASURED cell with the
  * reason, because showing the wrong picture under BEFORE is worse than showing
- * none. The BEFORE image is copied (bytes read, checked, written) beside the
+ * none; a BEFORE record that carries no sha256 at all has nothing to check the
+ * file against, so it is UNMEASURED too and the file is never copied unchecked.
+ * An AFTER record is this invocation's own and always carries its digest
+ * (`probe-landing-cells.mjs` records `shot.sha256`); one that lacks it is
+ * decoded without a digest check. The BEFORE image is copied (bytes read, checked, written) beside the
  * manifest as `manifest-images/<id>/<renderer>/BEFORE.png`; the AFTER image is
  * referenced where it already is when that is inside the output directory, and
  * copied the same way when it is not.
+ *
+ * ORIGINS ARE NOT DEFAULTED, BUT BEFORE'S CAN BE A STATED PLACEHOLDER. The
+ * capture seam's rule is that origins are "required, verbatim, never defaulted"
+ * (`lib/capture.mjs` section 3), because a capture that guesses where it
+ * looked is evidence of nothing. A landing invocation serves ONE tree and has
+ * no BEFORE server: without `--base-report` there is no BEFORE origin to give,
+ * and with a base report from before reports recorded theirs there is none to
+ * read, yet the manifest validators require a non-empty string in the slot.
+ * This piece therefore deviates from that rule on BEFORE alone, with a
+ * placeholder that says which case it is ({@link NO_BASE_REPORT_ORIGIN} or
+ * {@link UNRECORDED_ORIGIN}). Neither is ever a real origin, neither is
+ * an http(s) address, and every BEFORE cell it sits behind is UNMEASURED or
+ * carries a base capture whose own url names where it was fetched. AFTER's
+ * origin is the caller's, verbatim, and is never defaulted.
  *
  * OLD BASE RECORDS HAVE NO `url` OR `capturedAt`. The validator requires both
  * on a MEASURED cell, and reports written before the landing probe recorded
@@ -78,6 +96,7 @@ import { validateManifest as validateSheetManifest } from "./contact-sheet-page.
 import { rigForPage } from "./landing-cell-table.mjs";
 import { groupArms } from "./metrics/merge-landing-reports.mjs";
 import { PIXEL_PAIR_TOLERANCE } from "./metrics/landing-pixel-band.mjs";
+import { reportFileNameFor } from "./probe-runtime-receipts.mjs";
 import { replayKeyFor } from "./rig-registry.mjs";
 import { decodePng } from "../../lib/png-decode.mjs";
 import { encodeRgbaPng } from "../../lib/png-rgba.mjs";
@@ -89,23 +108,25 @@ export const LANDING_MANIFEST_FILE = "capture-manifest.json";
 export const LANDING_MANIFEST_IMAGE_DIR = "manifest-images";
 
 /**
- * The report file the runtime writes for a probe named `probeName`
- * (`runProbe` in `lib/probe-runtime.mjs`: `<name>-report.json` beside the
- * output). The manifest's `receipt` names it; the probe never writes it,
- * so the name is spelled here and not in the probe (the runtime-residency
- * contract's own-receipt-writer scan, DX-02).
+ * The report file the runtime writes for a probe named `probeName`, asked of
+ * the runtime's own `reportFileNameFor` so the name has one spelling. The
+ * manifest's `receipt` names it; the probe never writes it (the
+ * runtime-residency contract's own-receipt-writer scan, DX-02).
  *
  * @param {string} probeName The probe descriptor's `name`.
  * @returns {string}
  */
 export function runtimeReportFileName(probeName) {
-  return `${probeName}-report.json`;
+  return reportFileNameFor({ name: probeName });
 }
 
 /** What BEFORE says when the invocation had no base report. */
 export const NO_BASE_REPORT_REASON = "no --base-report";
 
-/** The origin string recorded when the base report does not carry its own. */
+/** The BEFORE origin recorded when the invocation had no base report at all. */
+export const NO_BASE_REPORT_ORIGIN = NO_BASE_REPORT_REASON;
+
+/** The BEFORE origin recorded when a base report was given but carries no origin. */
 export const UNRECORDED_ORIGIN =
   "unrecorded (the base report carries no origin)";
 
@@ -201,6 +222,15 @@ function slotCell({
         ? `NOT RUN: ${[...new Set(arm.notRun)].join("; ")}`
         : "this page takes no capture";
     return { cell: unmeasuredCell(reason), image: null, files: [] };
+  }
+  if (slot === "BEFORE" && typeof record.sha256 !== "string") {
+    return {
+      cell: unmeasuredCell(
+        `the BEFORE image ${record.path} has no sha256 in its report, so it cannot be checked against the run that recorded it`,
+      ),
+      image: null,
+      files: [],
+    };
   }
   const bytes = readBytes(record.path);
   if (bytes === null || bytes === undefined) {
@@ -347,7 +377,8 @@ function baseArmsOf(baseReport) {
  * @param {Map<string, object>|Record<string, object>} inputs.rigsById Rig records by id.
  * @param {{AFTER: string, BEFORE?: string}} inputs.origins The origin this run
  *   served; BEFORE defaults to the base report's own origin, else
- *   {@link UNRECORDED_ORIGIN}.
+ *   {@link UNRECORDED_ORIGIN} for a base report that carries none, else
+ *   {@link NO_BASE_REPORT_ORIGIN} when there is no base report.
  * @param {string} inputs.generatedAt ISO-8601 instant with milliseconds.
  * @param {"enforced"|"waived"} inputs.servedBuildAssertion The assertion's state.
  * @param {string} inputs.receipt The report's file name beside the manifest.
@@ -356,6 +387,9 @@ function baseArmsOf(baseReport) {
  *   file, or null when it cannot be read.
  * @param {string} [inputs.captureRoot] Defaults to the output directory's name.
  * @param {number} [inputs.tolerance] Pair tolerance; the landing pixel band's.
+ * @param {string} [inputs.entryLabel] How each entry's description names
+ *   its cell (`<entryLabel> <cell>, page <page>.`); another probe that
+ *   reuses this builder names its own kind of cell.
  * @returns {{manifest: object, files: Array<{path: string, bytes: Buffer}>,
  *   violations: string[]}} The manifest, the files that go beside it (paths
  *   relative to it), and every violation either validator reports.
@@ -373,6 +407,7 @@ export function buildLandingCaptureManifest({
   readBytes,
   captureRoot,
   tolerance = PIXEL_PAIR_TOLERANCE,
+  entryLabel = "Landing cell",
 }) {
   const rigAt = (id) =>
     rigsById instanceof Map ? rigsById.get(id) : rigsById?.[id];
@@ -383,7 +418,7 @@ export function buildLandingCaptureManifest({
     origins.BEFORE ??
     baseReport?.runtime?.origin ??
     baseReport?.origin ??
-    UNRECORDED_ORIGIN;
+    (baseReport ? UNRECORDED_ORIGIN : NO_BASE_REPORT_ORIGIN);
   const baseGeneratedAt =
     isoOrNull(baseReport?.generatedAt) ??
     isoOrNull(baseReport?.runtime?.generatedAt) ??
@@ -428,7 +463,7 @@ export function buildLandingCaptureManifest({
       id,
       replayKey: replayKeyFor(rig),
       description:
-        `Landing cell ${entry.cell}, page ${entry.page}. ${description}`.trim(),
+        `${entryLabel} ${entry.cell}, page ${entry.page}. ${description}`.trim(),
       viewport: { ...rig.viewport },
       renderers,
     });

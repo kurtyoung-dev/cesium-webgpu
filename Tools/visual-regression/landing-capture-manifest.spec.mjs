@@ -14,6 +14,7 @@ import { sheetModel } from "./lib/contact-sheet-page.mjs";
 import { validateManifest } from "./lib/capture.mjs";
 import { importMutated } from "./lib/import-mutated.mjs";
 import * as lib from "./lib/landing-capture-manifest.mjs";
+import { reportFileNameFor } from "./lib/probe-runtime.mjs";
 import { withLaneTmp } from "../lib/lane-tmp.mjs";
 import { encodeRgbaPng } from "../lib/png-rgba.mjs";
 
@@ -234,7 +235,107 @@ test("no base report: every BEFORE is UNMEASURED saying so and every pair follow
       assert.equal(pair.state, "UNMEASURED");
       assert.match(pair.reason, /BEFORE is UNMEASURED \(no --base-report\)/);
     }
-    assert.equal(manifest.origins.BEFORE, lib.UNRECORDED_ORIGIN);
+    assert.equal(manifest.origins.BEFORE, lib.NO_BASE_REPORT_ORIGIN);
+    assert.equal(manifest.origins.BEFORE, "no --base-report");
+  });
+});
+
+test("an entry's description names its cell as a landing cell by default and by the caller's label when given", () => {
+  withLaneTmp("landing-manifest-", (root) => {
+    const run = twoArmRun(root);
+    const landing = build(lib, {
+      pages: run.tip,
+      outputDirectory: run.tipDir,
+    }).manifest;
+    for (const entry of landing.rigs) {
+      assert.match(entry.description, /^Landing cell E-D, page scene. /);
+    }
+    const labelled = build(lib, {
+      pages: run.tip,
+      outputDirectory: run.tipDir,
+      entryLabel: "Water probe cell",
+    }).manifest;
+    for (const entry of labelled.rigs) {
+      assert.match(entry.description, /^Water probe cell E-D, page scene. /);
+    }
+  });
+});
+
+test("the BEFORE origin names the case: no base report, a base report without an origin, or the base report's own verbatim", () => {
+  withLaneTmp("landing-manifest-", (root) => {
+    const run = twoArmRun(root);
+    const originOf = (baseReport) =>
+      build(lib, {
+        pages: run.tip,
+        baseReport,
+        outputDirectory: run.tipDir,
+      }).manifest.origins.BEFORE;
+    assert.equal(originOf(undefined), lib.NO_BASE_REPORT_ORIGIN);
+    assert.equal(originOf(run.baseReport), lib.UNRECORDED_ORIGIN);
+    assert.notEqual(lib.UNRECORDED_ORIGIN, lib.NO_BASE_REPORT_ORIGIN);
+    assert.equal(
+      originOf({
+        ...run.baseReport,
+        runtime: { origin: "http://localhost:8082" },
+      }),
+      "http://localhost:8082",
+    );
+    assert.equal(
+      originOf({ ...run.baseReport, origin: "http://localhost:8083" }),
+      "http://localhost:8083",
+    );
+  });
+});
+
+test("a base capture whose report records no sha256 is an UNMEASURED BEFORE with the reason and no BEFORE image is written; a recorded matching sha256 stays MEASURED", () => {
+  withLaneTmp("landing-manifest-", (root) => {
+    const run = twoArmRun(root);
+    // webgl loses its digest; webgpu keeps it.
+    delete run.baseReport.pages[0].capture.sha256;
+    const { manifest, violations, files } = build(lib, {
+      pages: run.tip,
+      baseReport: run.baseReport,
+      outputDirectory: run.tipDir,
+    });
+    assert.deepEqual(violations, []);
+    const unchecked = cellOf(manifest, "E-D:scene", "webgl", "BEFORE");
+    assert.equal(unchecked.state, "UNMEASURED");
+    assert.match(unchecked.reason, /has no sha256 in its report/);
+    assert.equal(unchecked.image, null);
+    assert.equal(pairOf(manifest, "E-D:scene", "webgl").state, "UNMEASURED");
+    assert.equal(
+      files.some((file) => file.path.endsWith("webgl/BEFORE.png")),
+      false,
+      "no BEFORE image is copied for a record that cannot be checked",
+    );
+    const checked = cellOf(manifest, "E-D:scene", "webgpu", "BEFORE");
+    assert.equal(checked.state, "MEASURED");
+    assert.equal(
+      files.some((file) => file.path.endsWith("webgpu/BEFORE.png")),
+      true,
+    );
+  });
+});
+
+test("the manifest's receipt name is the one the runtime writes, read through the runtime's own export", () => {
+  assert.equal(
+    reportFileNameFor({ name: "landing-cells" }),
+    "landing-cells-report.json",
+  );
+  for (const name of ["landing-cells", "water-cells", "x"]) {
+    assert.equal(lib.runtimeReportFileName(name), reportFileNameFor({ name }));
+  }
+  withLaneTmp("landing-manifest-", (root) => {
+    const run = twoArmRun(root);
+    const { manifest } = build(lib, {
+      pages: run.tip,
+      outputDirectory: run.tipDir,
+      receipt: lib.runtimeReportFileName("landing-cells"),
+    });
+    assert.equal(
+      manifest.receipt,
+      reportFileNameFor({ name: "landing-cells" }),
+    );
   });
 });
 
@@ -638,6 +739,62 @@ test("INERTNESS: with the digest check unreachable a changed base file is shown 
     });
   assert.equal(observe(lib), "UNMEASURED");
   assert.equal(observe(mutated), "MEASURED");
+});
+
+test("INERTNESS: with the missing-sha256 refusal unreachable a BEFORE record without a digest is shown unchecked", async () => {
+  const mutated = await importMutated(libFile, [
+    [
+      'if (slot === "BEFORE" && typeof record.sha256 !== "string") {',
+      'if (false && slot === "BEFORE" && typeof record.sha256 !== "string") {',
+    ],
+  ]);
+  const observe = (module) =>
+    withLaneTmp("landing-manifest-", (root) => {
+      const run = twoArmRun(root);
+      delete run.baseReport.pages[0].capture.sha256;
+      const { manifest } = build(module, {
+        pages: run.tip,
+        baseReport: run.baseReport,
+        outputDirectory: run.tipDir,
+      });
+      return cellOf(manifest, "E-D:scene", "webgl", "BEFORE").state;
+    });
+  assert.equal(observe(lib), "UNMEASURED");
+  assert.equal(observe(mutated), "MEASURED");
+});
+
+test("INERTNESS: with the no-base-report origin collapsed into the unrecorded one the origins test sees it", async () => {
+  const mutated = await importMutated(libFile, [
+    [
+      "(baseReport ? UNRECORDED_ORIGIN : NO_BASE_REPORT_ORIGIN)",
+      "UNRECORDED_ORIGIN",
+    ],
+  ]);
+  const observe = (module) =>
+    withLaneTmp("landing-manifest-", (root) => {
+      const run = twoArmRun(root);
+      return build(module, { pages: run.tip, outputDirectory: run.tipDir })
+        .manifest.origins.BEFORE;
+    });
+  assert.equal(observe(lib), "no --base-report");
+  assert.notEqual(observe(mutated), "no --base-report");
+});
+
+test("INERTNESS: with the report name re-spelled and drifted in the manifest piece the receipt no longer matches the runtime's", async () => {
+  const mutated = await importMutated(libFile, [
+    [
+      "return reportFileNameFor({ name: probeName });",
+      "return `${probeName}-receipt.json`;",
+    ],
+  ]);
+  assert.equal(
+    lib.runtimeReportFileName("landing-cells"),
+    reportFileNameFor({ name: "landing-cells" }),
+  );
+  assert.notEqual(
+    mutated.runtimeReportFileName("landing-cells"),
+    reportFileNameFor({ name: "landing-cells" }),
+  );
 });
 
 test("INERTNESS: with the refusal unreachable an invalid manifest is written", async () => {

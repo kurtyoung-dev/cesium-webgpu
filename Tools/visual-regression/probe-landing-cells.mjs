@@ -96,8 +96,10 @@
 //   `pipelineWait` {mode, byCell}; base and merged reports must match per cell.
 // - THE ONMESSAGE SENTINEL. Every identity cell installs
 //   `lib/onmessage-sentinel.mjs` before the page loads and reads
-//   `window.onmessage` once the viewer exists: verdict `onmessage-unchanged`
-//   (regression X1, a worker module that self-registers on the main thread).
+//   `window.onmessage` once the viewer exists and again after the captures
+//   (a lazily loaded module can assign it mid-page): one verdict
+//   `onmessage-unchanged` over both reads (regression X1, a worker module that
+//   self-registers on the main thread).
 // - E-FFT-ifft stages its rig once per kernel (`waterOceanIfftKernel`), reads
 //   the displacement field back after each capture
 //   (`lib/ocean-displacement-readback.mjs`), runs the PF-1 / PF-2 window
@@ -186,6 +188,7 @@ import {
   readOceanDisplacementEvolved,
 } from "./lib/ocean-displacement-readback.mjs";
 import {
+  combineOnmessageReads,
   installOnmessageSentinel,
   readOnmessageSentinel,
   runOnmessagePositiveControl,
@@ -351,9 +354,25 @@ async function runLandingPage({
         timeout: NAVIGATION_BUDGET_MS,
       });
       const viewerReadyAtMs = await page.evaluate(pageNow);
+      // The first read is joined with a null second one until the page takes
+      // it, so a page that dies in between never passes on this read alone.
       if (cell.identity === true) {
-        record.onmessage = await readOnmessageSentinel(page);
+        record.onmessage = combineOnmessageReads(
+          await readOnmessageSentinel(page),
+          null,
+        );
       }
+      // The second read: a module loaded lazily after the first one can still
+      // replace window.onmessage. Taken after the captures and before the
+      // positive control, so the control's own assignment is never seen here.
+      const rereadOnmessage = async () => {
+        if (cell.identity === true && record.onmessage?.reads) {
+          record.onmessage = combineOnmessageReads(
+            record.onmessage.reads.first,
+            await readOnmessageSentinel(page),
+          );
+        }
+      };
       // --sentinel-positive-control: assign window.onmessage LAST, after
       // everything measured, and read the sentinel again; it must see it.
       const runControl = async () => {
@@ -374,6 +393,8 @@ async function runLandingPage({
       const blocking = blockingDials(staged);
       if (blocking.length > 0) {
         record.notRun = `the stage did not apply ${blocking.join(", ")}`;
+        // Staging runs between the two reads, so a late load there is caught.
+        await rereadOnmessage();
         await runControl();
         return record;
       }
@@ -511,6 +532,7 @@ async function runLandingPage({
           .slice(0, 10)
           .map((l) => `${l.type}: ${String(l.text).slice(0, 300)}`),
       };
+      await rereadOnmessage();
       await runControl();
       return record;
     } finally {

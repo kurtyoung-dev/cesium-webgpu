@@ -1733,7 +1733,13 @@ function p14Log() {
   };
 }
 
-async function p14Run(name, extraArgs, fakeOptions = {}, probe = descriptor) {
+async function p14Run(
+  name,
+  extraArgs,
+  fakeOptions = {},
+  probe = descriptor,
+  wrapBrowser = (browser) => browser,
+) {
   const testDir = path.join(TEMP_ROOT, name);
   fs.mkdirSync(testDir, { recursive: true });
   const out = path.join(testDir, "out");
@@ -1749,7 +1755,7 @@ async function p14Run(name, extraArgs, fakeOptions = {}, probe = descriptor) {
       "--no-serve-built",
       ...extraArgs,
     ],
-    launch: async () => makeFakeBrowser(log, fakeOptions),
+    launch: async () => wrapBrowser(makeFakeBrowser(log, fakeOptions)),
     preflight: async () => ({ ok: true, records: [] }),
   });
   const report = JSON.parse(
@@ -1942,7 +1948,7 @@ test("P14: an identity cell waits by default, installs the onmessage sentinel be
     ),
     "the sentinel is an init script",
   );
-  assert.equal(run.log.sentinelReads.length, 2);
+  assert.equal(run.log.sentinelReads.length, 4, "two reads per page");
   for (const renderer of ["webgl", "webgpu"]) {
     const verdict = verdictById(
       run.verdicts,
@@ -1950,6 +1956,8 @@ test("P14: an identity cell waits by default, installs the onmessage sentinel be
     );
     assert.ok(verdict, renderer);
     assert.equal(verdict.pass, true);
+    assert.equal(verdict.reads.first.changed, false);
+    assert.equal(verdict.reads.second.changed, false);
   }
   const waived = await p14Run("p14-identity-waived", [
     "--cells",
@@ -1989,6 +1997,152 @@ test("P14: a hijacked window.onmessage fails the identity cell, even when the st
     verdictById(run.verdicts, "E-ID-2d:webgpu:scene:run0:stage").notRun,
     true,
   );
+});
+
+// Wraps the fake browser so a page's onmessage is replaced AFTER its first
+// sentinel read (a lazily loaded module): the first read is clean and every
+// later one before the positive control sees the replacement. `order` logs the
+// reads and the control assignment in the order the page saw them.
+const LAZY_HANDLER = {
+  type: "function",
+  name: "lazyModuleHandler",
+  source: "function lazyModuleHandler(){}",
+};
+
+function replacedAfterFirstRead(order) {
+  return (browser) => ({
+    ...browser,
+    async newContext(options) {
+      const context = await browser.newContext(options);
+      return {
+        close: () => context.close(),
+        async newPage() {
+          const page = await context.newPage();
+          let reads = 0;
+          let controlled = false;
+          return {
+            ...page,
+            async evaluate(fn, arg) {
+              if (fn.name === "pageAssignOnmessagePositiveControl") {
+                controlled = true;
+                order.push("control");
+              } else if (
+                fn.name === "pageReadOnmessageSentinel" &&
+                !controlled
+              ) {
+                reads++;
+                order.push("read");
+                if (reads >= 2) {
+                  return {
+                    installed: true,
+                    before: null,
+                    after: LAZY_HANDLER,
+                    changed: true,
+                    assignments: 1,
+                    stacks: ["Error: onmessage assigned"],
+                  };
+                }
+              }
+              return page.evaluate(fn, arg);
+            },
+          };
+        },
+      };
+    },
+  });
+}
+
+test("P14: a window.onmessage replaced mid-page (after the first read) fails the identity cell; the control still flips and is never seen by the second read", async () => {
+  const order = [];
+  const run = await p14Run(
+    "p14-lazy-onmessage",
+    ["--cells", "E-D", "--sentinel-positive-control"],
+    {},
+    descriptor,
+    replacedAfterFirstRead(order),
+  );
+  assert.notEqual(run.code, PROBE_EXIT_CODES.OK);
+  for (const renderer of ["webgl", "webgpu"]) {
+    const verdict = verdictById(
+      run.verdicts,
+      `E-D:${renderer}:scene:run0:onmessage-unchanged`,
+    );
+    assert.equal(verdict.pass, false, renderer);
+    assert.notEqual(verdict.notRun, true, "a finding, not a skipped check");
+    assert.equal(verdict.after.name, "lazyModuleHandler");
+    assert.equal(verdict.reads.first.changed, false);
+    assert.equal(verdict.reads.second.changed, true);
+  }
+  // The control page: read, read, then the control assignment; its verdict
+  // still passes on the control's own reading.
+  assert.deepEqual(order.slice(0, 3), ["read", "read", "control"]);
+  assert.equal(order.filter((entry) => entry === "control").length, 1);
+  assert.equal(
+    verdictById(run.verdicts, "E-D:webgl:scene:run0:onmessage-positive-control")
+      .pass,
+    true,
+  );
+});
+
+test("P14: a mid-page replacement is caught on the not-run path too (the stage did not apply)", async () => {
+  const run = await p14Run(
+    "p14-lazy-onmessage-blocked",
+    ["--cells", "E-ID-2d"],
+    { notApplied: ["sceneMode"] },
+    descriptor,
+    replacedAfterFirstRead([]),
+  );
+  const verdict = verdictById(
+    run.verdicts,
+    "E-ID-2d:webgpu:scene:run0:onmessage-unchanged",
+  );
+  assert.equal(verdict.pass, false);
+  assert.notEqual(verdict.notRun, true);
+  assert.equal(verdict.after.name, "lazyModuleHandler");
+});
+
+test("P14: (mutants) the second sentinel read made unreachable loses the mid-page catch, and a first read alone never passes", async () => {
+  const anchors = [
+    [
+      "      await rereadOnmessage();\n      await runControl();\n      return record;",
+      "      if (false) await rereadOnmessage();\n      await runControl();\n      return record;",
+    ],
+    [
+      "        if (cell.identity === true && record.onmessage?.reads) {",
+      "        if (false && cell.identity === true && record.onmessage?.reads) {",
+    ],
+  ];
+  for (const [index, pair] of anchors.entries()) {
+    const mutated = await importMutated(PROBE_MODULE, [pair]);
+    const lazy = await p14Run(
+      `p14-mut-lazy-${index}`,
+      ["--cells", "E-D"],
+      {},
+      mutated.descriptor,
+      replacedAfterFirstRead([]),
+    );
+    const caught = verdictById(
+      lazy.verdicts,
+      "E-D:webgl:scene:run0:onmessage-unchanged",
+    );
+    assert.notEqual(
+      caught.after?.name,
+      "lazyModuleHandler",
+      "mutant misses it",
+    );
+    const clean = await p14Run(
+      `p14-mut-clean-${index}`,
+      ["--cells", "E-D"],
+      {},
+      mutated.descriptor,
+    );
+    const verdict = verdictById(
+      clean.verdicts,
+      "E-D:webgl:scene:run0:onmessage-unchanged",
+    );
+    assert.equal(verdict.pass, false, "a first read alone never passes");
+    assert.equal(verdict.notRun, true);
+  }
 });
 
 test("P14: a non-identity cell neither installs nor judges the sentinel", async () => {

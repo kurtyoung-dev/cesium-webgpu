@@ -142,6 +142,12 @@ import {
 } from "../lib/webgpu-error-gate.mjs";
 import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
 import {
+  CLOCK_OPTION,
+  assertClockHeld,
+  pinClock,
+  clockFlagExitCode,
+} from "./lib/clock-pin.mjs";
+import {
   ProbeRefusal,
   isEntryPoint,
   runProbe,
@@ -230,8 +236,13 @@ const RUN_LANE = async (cfg) => {
   // ── P6: one fixed instant — local mean noon at the view longitude. The sun is
   // then ~73 degrees up and due south while the camera looks east through a
   // frame spanning about -7 to +39 degrees of pitch, so the solar disc is out of
-  // frame and the illumination is identical on every run.
-  const frameTime = pin.localNoonAt(C, cfg.lon);
+  // frame and the illumination is identical on every run. With --clock the
+  // requested instant IS the frame time: every render below goes through
+  // renderAt, which rewrites viewer.clock.currentTime, so a pin applied before
+  // this lane would not survive it.
+  const frameTime = cfg.clockIso
+    ? C.JulianDate.fromIso8601(cfg.clockIso)
+    : pin.localNoonAt(C, cfg.lon);
 
   const setView = () =>
     scene.camera.setView({
@@ -494,6 +505,7 @@ export const descriptor = {
   // Sandcastle2 bucket bundle in the runtime's default list is never loaded.
   servedArtifacts: ["Build/CesiumUnminified/index.js"],
   workBudgetMs: () => WORK_BUDGET_MS,
+  args: { extraOptions: [CLOCK_OPTION] },
   async cells({ browser, run, options, origin, outputDirectory, captures }) {
     if (!options.renderers.includes("webgpu")) {
       throw new ProbeRefusal(
@@ -514,12 +526,19 @@ export const descriptor = {
       null,
       { timeout: 60000 },
     );
+    // Opt-in (--clock). Applied before the lane to fail early on a page that
+    // cannot hold it; the lane then renders at this instant and the clock is
+    // read again afterwards.
+    let clockPin =
+      options.clock === undefined ? null : await pinClock(page, options.clock);
     await armWebGPUDevices(page);
 
     const result = await page.evaluate(RUN_LANE, {
       ...PIN,
       determinismDials: WEATHER_DETERMINISM_DIALS,
+      clockIso: clockPin === null ? null : clockPin.requested,
     });
+    if (clockPin !== null) clockPin = await assertClockHeld(page, clockPin);
 
     const gate = await collectGateErrors(page);
     const errors = (gate.errors || [])
@@ -570,7 +589,7 @@ export const descriptor = {
         { run, scored },
       );
     }
-    return [{ run, result, errors, written, scored }];
+    return [{ run, result, errors, written, scored, clockPin }];
   },
   verdicts(cells) {
     return cells.flatMap((cell) =>
@@ -593,5 +612,6 @@ export const descriptor = {
 };
 
 if (isEntryPoint(import.meta.url)) {
-  process.exitCode = await runProbe(descriptor);
+  process.exitCode =
+    clockFlagExitCode(descriptor.name) ?? (await runProbe(descriptor));
 }

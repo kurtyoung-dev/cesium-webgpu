@@ -34,6 +34,12 @@
  *   const record = await readOnmessageSentinel(page);
  *   const verdict = onmessageVerdict("rig-id", record);
  *
+ * TWO READS. A module loaded lazily after the first read can still replace
+ * `window.onmessage`. A landing page reads once when the viewer exists and
+ * again after its captures, and `combineOnmessageReads` joins them into one
+ * record for `onmessageVerdict`: changed if either read saw a replacement,
+ * notRun if the second read is missing.
+ *
  * POSITIVE CONTROL. A sentinel that reads "unchanged" is only evidence if it
  * could have read "changed". At the END of a page (after capture and every
  * measurement, so nothing measured is touched) a landing run may call
@@ -200,11 +206,68 @@ export function onmessageVerdict(idPrefix, record) {
   const before = record?.before ?? null;
   const after = record?.after ?? null;
   const assignments = record?.assignments ?? 0;
+  const reads = record?.reads ? { reads: record.reads } : {};
   if (!record || record.installed !== true) {
-    return { id, pass: false, notRun: true, before, after, assignments };
+    return {
+      id,
+      pass: false,
+      notRun: true,
+      before,
+      after,
+      assignments,
+      ...reads,
+    };
   }
   const pass = record.changed === false;
-  return { id, pass, before, after, assignments };
+  return { id, pass, before, after, assignments, ...reads };
+}
+
+/**
+ * Pure combiner for the two reads a landing page takes: one when the viewer
+ * exists and one after the page's captures. A module loaded lazily mid-page
+ * can assign `window.onmessage` after the first read, so the verdict is
+ * judged over both. Returns the record shape {@link onmessageVerdict} reads,
+ * with both reads kept under `reads`.
+ *
+ * Changed when EITHER read saw a replacement, whatever the other says (a
+ * handler put back is still a finding). Otherwise a missing or uninstalled
+ * second read (the page died, the reader failed) is `installed: false`, which
+ * the verdict reports notRun: a first read alone is never a pass. A first
+ * read from a page without the sentinel is notRun too.
+ *
+ * @param {object|null|undefined} first The read taken when the viewer exists.
+ * @param {object|null|undefined} second The read taken after the captures, or null when none was taken.
+ * @returns {{installed: boolean, changed: boolean, before: object|null, after: object|null, assignments: number, stacks: string[], reason?: string, reads: {first: object|null, second: object|null}}}
+ */
+export function combineOnmessageReads(first, second) {
+  const reads = { first: first ?? null, second: second ?? null };
+  const firstSaw = first?.installed === true && first.changed === true;
+  const secondSaw = second?.installed === true && second.changed === true;
+  const source = firstSaw ? first : secondSaw ? second : (second ?? first);
+  const combined = {
+    installed: false,
+    changed: false,
+    before: first?.before ?? null,
+    after: source?.after ?? null,
+    assignments: Math.max(first?.assignments ?? 0, second?.assignments ?? 0),
+    stacks: [...(source?.stacks ?? [])],
+    reads,
+  };
+  const reason = source?.reason ?? first?.reason;
+  if (reason) {
+    combined.reason = reason;
+  }
+  if (firstSaw || secondSaw) {
+    combined.installed = true;
+    combined.changed = true;
+  } else if (first?.installed !== true) {
+    combined.reason ??= "first read missing";
+  } else if (second?.installed !== true) {
+    combined.reason = "second read missing";
+  } else {
+    combined.installed = true;
+  }
+  return combined;
 }
 
 /** Suffix of the control verdict id: `<idPrefix>:onmessage-positive-control`. */

@@ -208,6 +208,56 @@ test("init script did not run -> installed false, verdict notRun and never a pas
   );
 });
 
+const read1 = (changed, name = "h") => ({
+  installed: true,
+  before: null,
+  after: changed ? { type: "function", name, source: "" } : null,
+  changed,
+  assignments: changed ? 1 : 0,
+  stacks: [],
+});
+
+test("combineOnmessageReads: either read seeing a replacement fails, both clean passes, a missing second read is notRun", () => {
+  const verdict = (a, b) =>
+    sentinel.onmessageVerdict("rig", sentinel.combineOnmessageReads(a, b));
+  const lateChange = verdict(read1(false), read1(true, "lazy"));
+  assert.equal(lateChange.pass, false);
+  assert.notEqual(lateChange.notRun, true);
+  assert.equal(lateChange.after.name, "lazy");
+  assert.equal(lateChange.reads.first.changed, false);
+  assert.equal(lateChange.reads.second.changed, true);
+  const earlyChange = verdict(read1(true, "early"), read1(false));
+  assert.equal(earlyChange.pass, false);
+  assert.equal(earlyChange.after.name, "early");
+  assert.equal(verdict(read1(true), null).pass, false);
+  assert.notEqual(verdict(read1(true), null).notRun, true);
+  const clean = verdict(read1(false), read1(false));
+  assert.equal(clean.pass, true);
+  assert.equal(clean.id, "rig:onmessage-unchanged");
+  const noSecond = verdict(read1(false), null);
+  assert.equal(noSecond.pass, false);
+  assert.equal(noSecond.notRun, true);
+  assert.equal(verdict(read1(false), { installed: false }).notRun, true);
+  const notInstalled = verdict({ installed: false }, { installed: false });
+  assert.equal(notInstalled.pass, false);
+  assert.equal(notInstalled.notRun, true);
+  assert.equal(verdict(null, null).notRun, true);
+  assert.equal(verdict({ installed: false }, read1(false)).notRun, true);
+});
+
+test("INERTNESS: with the combiner ignoring the second read a mid-page replacement passes, so the combiner test would go red", async () => {
+  const mutated = await importMutated(lib, [
+    [
+      "const secondSaw = second?.installed === true && second.changed === true;",
+      "const secondSaw = false && second?.installed === true && second.changed === true;",
+    ],
+  ]);
+  const real = sentinel.combineOnmessageReads(read1(false), read1(true));
+  const dead = mutated.combineOnmessageReads(read1(false), read1(true));
+  assert.equal(real.changed, true);
+  assert.equal(dead.changed, false);
+});
+
 test("the verdict suffix constant", () => {
   assert.equal(sentinel.ONMESSAGE_VERDICT, "onmessage-unchanged");
 });

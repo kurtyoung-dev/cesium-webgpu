@@ -134,7 +134,8 @@ test("M1: SEAT_DEFAULT_BANDS and PERF_VERDICTS expose expected frozen constants"
   assert.deepEqual(SEAT_DEFAULT_BANDS, {
     floorFraction: 0.03,
     repeatFactor: 2,
-    startupCeilingMs: 2000,
+    startupBandFloor: 0.1,
+    startupCeilingMs: 2500,
     allocationBytes: 0,
     contendedCpuPct: 60,
     cpuArmDeltaPct: 20,
@@ -290,7 +291,7 @@ test("M1: median computes median of finite numbers and handles nulls", () => {
 // ---------------------------------------------------------------------------
 
 test("M2: ceilingVerdict under ceiling is within when tip median in band and all repeats strictly under ceiling", () => {
-  // ceiling is 2000 ms; base median 1000 ms, limit 1030 ms.
+  // ceiling is 2500 ms; base median 1000 ms, PF-3 band 10 %, limit 1100 ms.
   const record = ceilingVerdict({
     metric: "PF-3",
     statistic: "navigationToFirstCloudFrameMs",
@@ -304,73 +305,198 @@ test("M2: ceilingVerdict under ceiling is within when tip median in band and all
 });
 
 test("M2: ceilingVerdict under ceiling is over when any tip repeat reaches or exceeds ceiling", () => {
-  // tip median is 1000 ms (within band limit 1030 ms), but one repeat is 2000 ms (at ceiling).
+  // tip median is 1000 ms (within band limit 1100 ms), but one repeat is 2500 ms (at ceiling).
   const record = ceilingVerdict({
     metric: "PF-3",
     statistic: "navigationToFirstCloudFrameMs",
     baseRepeats: [1000, 1000, 1000],
-    tipRepeats: [1000, 1000, 2000],
+    tipRepeats: [1000, 1000, 2500],
   });
   assert.equal(record.verdict, "over");
   assert.equal(record.baseOverCeiling, false);
-  assert.equal(record.tipMax, 2000);
+  assert.equal(record.tipMax, 2500);
   assert.ok(
-    record.reasons.some((r) => r.includes("not under the 2000 ms ceiling")),
+    record.reasons.some((r) => r.includes("not under the 2500 ms ceiling")),
   );
 });
 
 test("M2: ceilingVerdict under ceiling is over when tip median exceeds band", () => {
-  // all tip repeats are well under ceiling (1050 ms < 2000 ms), but exceed 1030 ms band limit.
+  // all tip repeats are well under ceiling (1150 ms < 2500 ms), but exceed the 1100 ms band limit.
   const record = ceilingVerdict({
     metric: "PF-3",
     statistic: "navigationToFirstCloudFrameMs",
     baseRepeats: [1000],
-    tipRepeats: [1050],
+    tipRepeats: [1150],
   });
   assert.equal(record.verdict, "over");
   assert.equal(record.baseOverCeiling, false);
 });
 
-test("M2: ceilingVerdict with base at or over ceiling admits only tip median <= base with no slack", () => {
-  // base exactly at ceiling 2000 ms.
-  const equalTip = ceilingVerdict({
-    metric: "PF-3",
-    statistic: "navigationToFirstCloudFrameMs",
-    baseRepeats: [2000],
-    tipRepeats: [2000],
-  });
-  assert.equal(equalTip.baseOverCeiling, true);
-  assert.equal(equalTip.rule, "base-over-ceiling-no-slack");
-  assert.equal(equalTip.limit, 2000);
-  assert.equal(equalTip.verdict, "within");
+// PF-3 fixtures (row DX-KIT-PF3-STARTUP-CEILING-WEBGL): the kit2 Edge leg's
+// same-build WebGL arms, navigation to first frame in milliseconds.
+const KIT2_2D_BASE = [1984.6, 2010.6];
+const KIT2_2D_TIP = [1963, 2035.7];
+const KIT2_CV_BASE = [1955, 2020.5];
+const KIT2_CV_TIP = [2224, 1950];
 
-  const slightOver = ceilingVerdict({
+const pf3 = (baseRepeats, tipRepeats, bands) =>
+  ceilingVerdict({
     metric: "PF-3",
-    statistic: "navigationToFirstCloudFrameMs",
-    baseRepeats: [2000],
-    tipRepeats: [2000.1],
+    statistic: "navigationToFirstFrameMs",
+    baseRepeats,
+    tipRepeats,
+    bands,
   });
-  assert.equal(slightOver.baseOverCeiling, true);
-  assert.equal(slightOver.verdict, "over");
 
-  // base well over ceiling at 2500 ms.
-  const higherBaseWithin = ceilingVerdict({
-    metric: "PF-3",
-    statistic: "navigationToFirstCloudFrameMs",
-    baseRepeats: [2500],
-    tipRepeats: [2490],
-  });
-  assert.equal(higherBaseWithin.baseOverCeiling, true);
-  assert.equal(higherBaseWithin.verdict, "within");
+test("M2: PF-3 reads the kit2 2D same-build WebGL arms as within", () => {
+  const record = pf3(KIT2_2D_BASE, KIT2_2D_TIP);
+  assert.equal(record.verdict, "within");
+  assert.equal(record.rule, "ceiling-and-band");
+  assert.equal(record.baseOverCeiling, false);
+  assert.equal(record.ceilingMs, 2500);
+  assert.deepEqual(record.reasons, []);
+});
 
-  const higherBaseOver = ceilingVerdict({
-    metric: "PF-3",
-    statistic: "navigationToFirstCloudFrameMs",
-    baseRepeats: [2500],
-    tipRepeats: [2501],
+test("M2: PF-3 reads the kit2 Columbus-view same-build WebGL arms as within", () => {
+  const record = pf3(KIT2_CV_BASE, KIT2_CV_TIP);
+  assert.equal(record.verdict, "within");
+  assert.equal(record.tipMax, 2224);
+  assert.equal(record.rule, "ceiling-and-band");
+  assert.deepEqual(record.reasons, []);
+});
+
+test("M2: PF-3 reads a true startup regression (tip 2600, 2700 ms against the 2D base) as over", () => {
+  const record = pf3(KIT2_2D_BASE, [2600, 2700]);
+  assert.equal(record.verdict, "over");
+  assert.ok(
+    record.reasons.some((r) => r.includes("not under the 2500 ms ceiling")),
+  );
+  assert.ok(record.reasons.some((r) => r.includes("exceeds base")));
+});
+
+test("M2: PF-3 reads a tip repeat past the 2.5 s ceiling (tip 2450, 2600 ms against the 2D base) as over with the ceiling reason", () => {
+  const record = pf3(KIT2_2D_BASE, [2450, 2600]);
+  assert.equal(record.verdict, "over");
+  assert.equal(record.tipMax, 2600);
+  assert.ok(
+    record.reasons.some((r) => r.includes("not under the 2500 ms ceiling")),
+  );
+});
+
+test("M2: PF-3 reads a ceiling-only breach (band passes, one tip repeat reaches the ceiling) as over solely by the ceiling reason", () => {
+  // base median 2305 ms, b = 0.10, limit 2535.5 ms; tip median 2450 ms passes
+  // the band, but the 2510 ms repeat is not under 2500 ms.
+  const record = pf3([2300, 2310], [2390, 2510]);
+  assert.equal(record.baseOverCeiling, false);
+  assert.equal(record.rule, "ceiling-and-band");
+  assert.equal(record.verdict, "over");
+  assert.equal(record.reasons.length, 1);
+  assert.ok(record.reasons[0].includes("not under the 2500 ms ceiling"));
+
+  // The ceiling is strict: a tip repeat exactly at 2500 ms is not under it.
+  assert.equal(pf3([2300, 2310], [2400, 2500]).verdict, "over");
+  assert.equal(pf3([2300, 2310], [2400, 2499]).verdict, "within");
+});
+
+test("M2: PF-3 with a base at or over the ceiling applies the banded compare and no ceiling clause", () => {
+  // base median 2605 ms is over the 2500 ms ceiling; tip is 1 % above it.
+  const baseRepeats = [2600, 2610];
+  const baseMedian = 2605;
+  const within = pf3(baseRepeats, [baseMedian * 1.01]);
+  assert.equal(within.baseOverCeiling, true);
+  assert.equal(within.rule, "base-over-ceiling-banded");
+  assert.equal(within.verdict, "within");
+  assert.ok(within.tipMax >= within.ceilingMs);
+  assert.ok(within.limit > baseMedian);
+  assert.ok(
+    within.reasons.some((r) => r.includes("at or over the 2500 ms ceiling")),
+  );
+  assert.ok(within.reasons.some((r) => r.includes("banded compare")));
+
+  // a tip well over the band still reads over.
+  const wellOver = pf3(baseRepeats, [baseMedian * 1.2]);
+  assert.equal(wellOver.baseOverCeiling, true);
+  assert.equal(wellOver.rule, "base-over-ceiling-banded");
+  assert.equal(wellOver.verdict, "over");
+  assert.ok(wellOver.reasons.some((r) => r.includes("exceeds base")));
+  assert.ok(!wellOver.reasons.some((r) => r.includes("not under the")));
+
+  // a base exactly at the ceiling counts as at the ceiling (>=).
+  const atBase = pf3([2500], [2500]);
+  assert.equal(atBase.baseOverCeiling, true);
+  assert.equal(atBase.rule, "base-over-ceiling-banded");
+  assert.equal(atBase.verdict, "within");
+
+  // the band edge: within at base x 1.10, over just past it.
+  assert.equal(pf3([2600], [2860]).verdict, "within");
+  assert.equal(pf3([2600], [2860.5]).verdict, "over");
+});
+
+test("M2: PF-3 band floor is startupBandFloor (10 %), not the 3 % floor PF-1 and PF-2 read", () => {
+  // base [2000, 2010]: spread 0.005, 2 x 0.005 = 0.01, so the floor sets b.
+  // tip median 2150 ms is 7.2 % above the base median 2005 ms: within at 10 %,
+  // over at 3 %.
+  const record = pf3([2000, 2010], [2140, 2160]);
+  assert.equal(record.verdict, "within");
+  assert.equal(record.bandFraction, 0.1);
+  assert.equal(record.bandSource, "startup-floor");
+  assert.equal(record.limit, 2005 * 1.1);
+  assert.equal(record.bands.startupBandFloor, 0.1);
+  assert.equal(record.bands.floorFraction, 0.03);
+
+  // the same data read with the PF-1/PF-2 comparison is over at the 3 % floor.
+  const pf12 = compareToBase({
+    metric: "PF-1",
+    statistic: "p95",
+    baseRepeats: [2000, 2010],
+    tipRepeats: [2140, 2160],
   });
-  assert.equal(higherBaseOver.baseOverCeiling, true);
-  assert.equal(higherBaseOver.verdict, "over");
+  assert.equal(pf12.verdict, "over");
+  assert.equal(pf12.bandFraction, 0.03);
+  assert.equal(pf12.bandSource, "floor");
+
+  // a pre-registered startupBandFloor override is honoured and reported as given.
+  const tight = pf3([2000, 2010], [2140, 2160], { startupBandFloor: 0.03 });
+  assert.equal(tight.verdict, "over");
+  assert.equal(tight.bandFraction, 0.03);
+  assert.equal(tight.bands.startupBandFloor, 0.03);
+  const loose = pf3([2000, 2010], [2400, 2410], { startupBandFloor: 0.25 });
+  assert.equal(loose.bandFraction, 0.25);
+  assert.equal(loose.bands.startupBandFloor, 0.25);
+});
+
+test("M2: PF-3 keeps the repeat term when 2 x base-arm spread exceeds the startup floor", () => {
+  // base [1000, 1100]: spread 0.1, 2 x 0.1 = 0.2 > 0.10.
+  const record = pf3([1000, 1100], [1000, 1100]);
+  assert.equal(record.bandSource, "repeat");
+  assert.ok(Math.abs(record.bandFraction - 0.2) < 1e-12);
+  assert.equal(record.verdict, "within");
+});
+
+test("M2: bandFraction and compareToBase keep the 3 % floor unless startup is asked for", () => {
+  const plain = bandFraction({ baseRepeats: [100, 101] });
+  assert.equal(plain.bandFraction, 0.03);
+  assert.equal(plain.source, "floor");
+  const startup = bandFraction({ baseRepeats: [100, 101], startup: true });
+  assert.equal(startup.bandFraction, 0.1);
+  assert.equal(startup.source, "startup-floor");
+
+  // an override of the startup floor never moves PF-1/PF-2.
+  const compared = compareToBase({
+    metric: "PF-2",
+    baseRepeats: [100, 101],
+    tipRepeats: [102],
+    bands: { startupBandFloor: 0.5 },
+  });
+  assert.equal(compared.bandFraction, 0.03);
+  assert.equal(compared.bandSource, "floor");
+});
+
+test("M1: resolveBands accepts and validates startupBandFloor", () => {
+  assert.equal(resolveBands({ startupBandFloor: 0.2 }).startupBandFloor, 0.2);
+  assert.equal(resolveBands().startupBandFloor, 0.1);
+  assert.throws(() => resolveBands({ startupBandFloor: -0.1 }), TypeError);
+  assert.throws(() => resolveBands({ startupBandFloor: NaN }), TypeError);
 });
 
 test("M2: worstVerdict orders over > unmeasured > within and defaults to unmeasured", () => {

@@ -90,6 +90,14 @@
 //       parity term is then NOT RUN, "canvas size differs", with both sizes.
 // 2d (reading the PNGs) is the executor's; the receipt lists every PNG.
 //
+// THE CAPTURE MANIFEST. The receipt writes `capture-manifest.json` and its
+// images beside the report (`lib/water-capture-manifest.mjs`, over the
+// builder in `lib/landing-capture-manifest.mjs`) so `contact-sheet.mjs
+// --manifest` can sheet the run: one entry per (cell, ON/OFF/demo page), BEFORE
+// from `--base-report` (UNMEASURED, "no --base-report", without one). The
+// manifest is refused, not partly written, when it fails validation; the
+// receipt's `captureManifest` says which.
+//
 // THE WAVE EPOCH DIAL. `lib/landing-cell-stage.mjs` applies a dial it knows
 // and refuses one it does not (`rig-dial-unsupported`, in Node). Until its
 // handler for `waterSimulationEpoch` lands (KT round 5), this probe asks the
@@ -152,6 +160,11 @@ import {
   summarizeWaterRecords,
   waterVerdicts,
 } from "./lib/water-cell-verdicts.mjs";
+import {
+  waterCellsBaseReport,
+  waterCellsManifestPages,
+  writeWaterProbeManifest,
+} from "./lib/water-capture-manifest.mjs";
 
 // The cell table and its pure planning moved to a piece, and the metrics
 // reducer and band verdicts to another (DX-KIT-DECOMPOSE-RUNTIME-WATER); every
@@ -364,6 +377,9 @@ async function runMaskPage({
         record.capture = {
           name: shot.name,
           path: shot.path,
+          // The capture-seam manifest records what was fetched and when.
+          url: url.href,
+          capturedAt: new Date().toISOString(),
           sha256: shot.sha256,
           width: image.width,
           height: image.height,
@@ -465,7 +481,11 @@ async function runDemoPage({
       if (result.status !== DEMO_CAPTURE_STATUS.CAPTURED) {
         record.notRun = result.notRun;
       } else {
-        record.capture = result.capture;
+        record.capture = {
+          ...result.capture,
+          url: result.urls?.page ?? null,
+          capturedAt: new Date().toISOString(),
+        };
       }
       record.gate = gateRecord(
         result.gate,
@@ -481,7 +501,8 @@ async function runDemoPage({
   }
 }
 
-function readBaseSummary(options, outputDirectory = null) {
+/** The parsed BEFORE report `--base-report` names, or null without one. */
+function readBaseDocument(options, outputDirectory = null) {
   if (!options.baseReport) {
     return null;
   }
@@ -516,7 +537,11 @@ function readBaseSummary(options, outputDirectory = null) {
       { baseReport: options.baseReport },
     );
   }
-  return base.summary;
+  return base;
+}
+
+function readBaseSummary(options, outputDirectory = null) {
+  return readBaseDocument(options, outputDirectory)?.summary ?? null;
 }
 
 function requireArm(options) {
@@ -576,6 +601,9 @@ export function servedArtifactsForCells(options) {
     : [...ENGINE_SERVED_ARTIFACTS];
 }
 
+/** The rig registry the pages ran from, for the receipt's capture manifest. */
+let invocationRigs = null;
+
 export const descriptor = {
   name: "water-cells",
   title:
@@ -623,6 +651,7 @@ export const descriptor = {
     readBaseSummary(options, outputDirectory);
     const rigs = await loadRigs();
     const rigsById = new Map(rigs.map((rig) => [rig.id, rig]));
+    invocationRigs = rigsById;
     const plan = planWaterCells(options, rigsById);
     fs.mkdirSync(outputDirectory, { recursive: true });
     const records = [];
@@ -655,6 +684,29 @@ export const descriptor = {
         `  ${cell}: captures=${entry.captures.length} notRun=${entry.notRun.length}`,
       );
     }
+    // The capture-seam manifest contact-sheet.mjs reads (refused, not written,
+    // when it would not validate; the receipt says which). A base report that
+    // cannot be read now costs the manifest its BEFORE, never the run.
+    let captureManifest = null;
+    if (context.outputDirectory) {
+      let baseDocument = null;
+      let baseReportError = null;
+      try {
+        baseDocument = readBaseDocument(options);
+      } catch (error) {
+        baseReportError = String(error?.message ?? error);
+      }
+      captureManifest = {
+        ...writeWaterProbeManifest({
+          probe: descriptor.name,
+          pages: waterCellsManifestPages(cells),
+          baseReport: waterCellsBaseReport(baseDocument),
+          rigsById: invocationRigs,
+          context,
+        }),
+        ...(baseReportError && { baseReportError }),
+      };
+    }
     return {
       arm: options.arm,
       cellsRequested: splitList(options.cells),
@@ -663,6 +715,7 @@ export const descriptor = {
       ionDeclaredUnavailable: options.noIon === true,
       pages: cells,
       summary,
+      captureManifest,
     };
   },
   verdicts(cells, context) {

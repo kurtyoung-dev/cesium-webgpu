@@ -164,6 +164,7 @@ import {
   buildRuntimeReceipt,
   normalizeJson,
   outcomeOfRun,
+  reportFileNameFor,
   sha256,
 } from "./probe-runtime-receipts.mjs";
 import {
@@ -206,6 +207,7 @@ export {
   normalizeJson,
   outcomeOfRun,
   refusedDecision,
+  reportFileNameFor,
   sha256,
   throwForDecision,
   withEdgeSlot,
@@ -836,7 +838,7 @@ export async function runProbe(descriptor, dependencies = {}) {
     if (outputDirectory) {
       fs.mkdirSync(outputDirectory, { recursive: true });
       writeFile(
-        path.join(outputDirectory, `${descriptor.name}-report.json`),
+        path.join(outputDirectory, reportFileNameFor(descriptor)),
         normalizeJson(receipt),
       );
       if (envelope === "probe-owned") {

@@ -26,6 +26,12 @@
 //
 // The frames are read only through the runtime's element capture; nothing in
 // the page reads the live canvas.
+//
+// The receipt also writes `capture-manifest.json` and its images beside the
+// report (`lib/water-capture-manifest.mjs`) so `contact-sheet.mjs --manifest`
+// can sheet the run: one entry per matrix cell on its own rig. The probe has no
+// base report (its A/B/C/D cells are compared with each other inside the run,
+// in the verdicts), so every BEFORE cell reads UNMEASURED.
 
 import fs from "node:fs";
 
@@ -48,6 +54,10 @@ import {
 } from "./lib/probe-runtime.mjs";
 import { loadRigs, rigById } from "./lib/rig-registry.mjs";
 import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
+import {
+  ssrWaterManifestPages,
+  writeWaterProbeManifest,
+} from "./lib/water-capture-manifest.mjs";
 
 /**
  * The pass bands. NEW with the move onto the runtime (main's probe printed its
@@ -379,6 +389,9 @@ async function runSsrWaterCell({
       record.capture = {
         name: shot.name,
         path: shot.path,
+        // The capture-seam manifest records what was fetched and when.
+        url: url.href,
+        capturedAt: new Date().toISOString(),
         sha256: shot.sha256,
         width: decoded.width,
         height: decoded.height,
@@ -392,6 +405,9 @@ async function runSsrWaterCell({
   }
   return record;
 }
+
+/** The rig registry the cells ran from, for the receipt's capture manifest. */
+let invocationRigs = null;
 
 export const descriptor = {
   name: "ssr-water",
@@ -409,6 +425,7 @@ export const descriptor = {
   async cells({ browser, run, origin, outputDirectory, captures }) {
     fs.mkdirSync(outputDirectory, { recursive: true });
     const rigs = await loadRigs();
+    invocationRigs = new Map(rigs.map((rig) => [rig.id, rig]));
     const records = [];
     for (const cellSpec of SSR_WATER_CELLS) {
       records.push(
@@ -425,12 +442,25 @@ export const descriptor = {
     }
     return records;
   },
-  receipt(cells) {
+  receipt(cells, context) {
+    const summary = summarizeSsrWaterCells(cells);
+    // The capture-seam manifest contact-sheet.mjs reads (refused, not written,
+    // when it would not validate; the receipt says which).
+    let captureManifest = null;
+    if (context?.outputDirectory) {
+      captureManifest = writeWaterProbeManifest({
+        probe: descriptor.name,
+        pages: ssrWaterManifestPages(cells),
+        rigsById: invocationRigs,
+        context,
+      });
+    }
     return {
       cells,
       bands: SSR_WATER_BANDS,
       settle: SSR_WATER_SETTLE,
-      summary: summarizeSsrWaterCells(cells),
+      summary,
+      captureManifest,
     };
   },
   verdicts(cells) {

@@ -1,6 +1,6 @@
 // probe-runtime-receipts.mjs — the probe runtime's receipt serialisation, run outcomes and incident records.
 //
-// @purpose Companion of probe-runtime.mjs: sha256, normalizeJson, assembleReceipt, buildRuntimeReceipt, RUN_OUTCOMES, INCIDENT_ARTIFACT_SUFFIX, outcomeOfRun, buildIncidentRecord and buildMarkdownSummary, the pure builders of everything a run writes to disk.
+// @purpose Companion of probe-runtime.mjs: sha256, reportFileNameFor, normalizeJson, assembleReceipt, buildRuntimeReceipt, RUN_OUTCOMES, INCIDENT_ARTIFACT_SUFFIX, outcomeOfRun, buildIncidentRecord and buildMarkdownSummary, the pure builders of everything a run writes to disk.
 // @status ACTIVE
 //
 // WHY A PIECE. Every function here is pure (sha256 hashes the bytes it is
@@ -116,6 +116,18 @@ export const RUN_OUTCOMES = Object.freeze({
   REFUSED: "refused",
   ERRORED: "errored",
 });
+
+/**
+ * The file name of the receipt a probe's run writes beside its output: the one
+ * spelling of it, so a reader that names the receipt (a capture manifest's
+ * `receipt`) asks here instead of re-spelling it.
+ *
+ * @param {{name: string}} descriptor The probe descriptor (only `name` is read).
+ * @returns {string} `<name>-report.json`.
+ */
+export function reportFileNameFor(descriptor) {
+  return `${descriptor.name}-report.json`;
+}
 
 /**
  * The sidecar a non-measuring run writes INSTEAD of a receipt.

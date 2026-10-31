@@ -29,6 +29,11 @@
 // coefficients, the coverage luma floor 20 and the temporal floor 0.5. NEW
 // (from the w5 rework): the verdict ids and the OFF-gate +0.5 and coverage
 // +0.1 bands, registered by the first Edge capture.
+// The receipt also writes `capture-manifest.json` and its images beside the
+// report (`lib/water-capture-manifest.mjs`) so `contact-sheet.mjs --manifest`
+// can sheet the run: one entry per session capture on that session's last rig
+// (the temporal session's second capture is its own entry). The probe has no
+// base report, so every BEFORE cell reads UNMEASURED.
 // A build where the stage cannot apply a rig's dials (no `water.ocean`) is a
 // REFUSAL, not a measured red. READ the emitted PNGs - numbers alone don't
 // prove waves look right.
@@ -55,6 +60,10 @@ import {
 } from "./lib/probe-runtime.mjs";
 import { loadRigs, rigById } from "./lib/rig-registry.mjs";
 import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
+import {
+  fftOceanManifestPages,
+  writeWaterProbeManifest,
+} from "./lib/water-capture-manifest.mjs";
 
 /** The rigs the sessions stage, by role. */
 export const FFT_OCEAN_RIGS = Object.freeze({
@@ -421,6 +430,9 @@ async function runFftOceanSession({
         return {
           name: shot.name,
           path: shot.path,
+          // The capture-seam manifest records what was fetched and when.
+          url: url.href,
+          capturedAt: new Date().toISOString(),
           sha256: shot.sha256,
           width: decoded.width,
           height: decoded.height,
@@ -450,6 +462,9 @@ async function runFftOceanSession({
   return record;
 }
 
+/** The rig registry the sessions ran from, for the receipt's capture manifest. */
+let invocationRigs = null;
+
 export const descriptor = {
   name: "fft-ocean",
   title:
@@ -466,6 +481,7 @@ export const descriptor = {
   async cells({ browser, run, origin, outputDirectory, captures }) {
     fs.mkdirSync(outputDirectory, { recursive: true });
     const rigs = await loadRigs();
+    invocationRigs = new Map(rigs.map((rig) => [rig.id, rig]));
     const records = [];
     for (const session of FFT_OCEAN_SESSIONS) {
       records.push(
@@ -482,13 +498,26 @@ export const descriptor = {
     }
     return records;
   },
-  receipt(cells) {
+  receipt(cells, context) {
+    const summary = summarizeFftOceanCells(cells);
+    // The capture-seam manifest contact-sheet.mjs reads (refused, not written,
+    // when it would not validate; the receipt says which).
+    let captureManifest = null;
+    if (context?.outputDirectory) {
+      captureManifest = writeWaterProbeManifest({
+        probe: descriptor.name,
+        pages: fftOceanManifestPages(cells),
+        rigsById: invocationRigs,
+        context,
+      });
+    }
     return {
       rigs: FFT_OCEAN_RIGS,
       crop: FFT_OCEAN_CROP,
       bands: FFT_OCEAN_BANDS,
       sessions: cells,
-      summary: summarizeFftOceanCells(cells),
+      summary,
+      captureManifest,
     };
   },
   verdicts(cells) {

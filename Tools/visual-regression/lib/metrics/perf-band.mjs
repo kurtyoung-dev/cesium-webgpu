@@ -2,7 +2,7 @@
  * The pre-registered performance band the landing program's PF-1..PF-4 legs
  * are judged against: same-build repeat spread, the band it implies, and the
  * base-against-tip comparison that reads a band.
- * @purpose Pure band arithmetic for the R-2026-10-22-3 performance leg: the seat's default bands (3 % floor, 2 x repeat factor, 2.0 s startup ceiling, 0 declared allocation), the relative spread of same-build repeats, the band fraction b = max(factor x base-arm spread, floor), verdict objects ({within, over, unmeasured, unmeasured-contended}) for a lower-is-better statistic and for the startup ceiling rule, each carrying the band it was given, and the pre-registered machine-CPU contention guard (a run's mean CPU, the arms' mean delta, and a streak of consecutive busy samples) that turns a PF-1..PF-3 statistic read on a busy machine into unmeasured-contended.
+ * @purpose Pure band arithmetic for the R-2026-10-22-3 performance leg: the seat's default bands (3 % floor, 2 x repeat factor, 10 % startup band floor, 2.5 s startup ceiling, 0 declared allocation), the relative spread of same-build repeats, the band fraction b = max(factor x base-arm spread, floor) (PF-3 reads the startup band floor in the floor's place), verdict objects ({within, over, unmeasured, unmeasured-contended}) for a lower-is-better statistic and for the startup ceiling rule, each carrying the band it was given, and the pre-registered machine-CPU contention guard (a run's mean CPU, the arms' mean delta, and a streak of consecutive busy samples) that turns a PF-1..PF-3 statistic read on a busy machine into unmeasured-contended.
  * @status ACTIVE
  *
  * WHERE THE RULES COME FROM. `CLOUD_WATER_LANDING_PLAN_2026-10-21.md` §2.2
@@ -13,6 +13,19 @@
  * "PF-4: tip <= base + the unit's allocation as declared in the brief". The
  * 3 % floor and the factor 2 are the plan's proposal, confirmed by the seat in
  * the first wave brief; a wave pre-registers its own bands and passes them in.
+ *
+ * THE PF-3 RULE THE SEAT CHANGED (row DX-KIT-PF3-STARTUP-CEILING-WEBGL). The
+ * plan's PF-3 text above has two parts the seat replaced. Same-build WebGL
+ * arms measured 1,950-2,224 ms navigation-to-first-frame with medians 5 %
+ * apart, so a fixed 2.0 s ceiling failed same-build tip arms. (a) The ceiling
+ * is resized to 2.5 s: a startup blow-up guard, not a noise band. (b) PF-3
+ * reads `startupBandFloor` (10 %) where PF-1 and PF-2 read `floorFraction`
+ * (3 %): b = max(repeatFactor x base-arm spread, startupBandFloor).
+ * (c) The plan's "no band slack" rule for a base already at or over the
+ * ceiling is gone: that verdict now uses the same banded compare, tip median
+ * <= base median x (1 + b), and the ceiling clause is not applied (the base is
+ * itself over it). `baseOverCeiling` stays set and the rule reads
+ * `base-over-ceiling-banded`, so the wave packet still reports the cell.
  *
  * "ON THAT ARM" IS READ AS THE BASE ARM. The band is a tolerance around the
  * base measurement, so it is sized by the base arm's own repeat spread. The
@@ -59,7 +72,8 @@
 export const SEAT_DEFAULT_BANDS = Object.freeze({
   floorFraction: 0.03,
   repeatFactor: 2,
-  startupCeilingMs: 2000,
+  startupBandFloor: 0.1,
+  startupCeilingMs: 2500,
   allocationBytes: 0,
   contendedCpuPct: 60,
   cpuArmDeltaPct: 20,
@@ -89,7 +103,8 @@ const isFiniteNumber = (value) =>
  *
  * @param {object} [overrides] Any of the {@link SEAT_DEFAULT_BANDS} keys.
  * @returns {{floorFraction: number, repeatFactor: number,
- *   startupCeilingMs: number, allocationBytes: number}} The bands, frozen.
+ *   startupBandFloor: number, startupCeilingMs: number,
+ *   allocationBytes: number}} The bands, frozen.
  * @throws {TypeError} For an unknown key or a value that is not a finite,
  *   non-negative number.
  */
@@ -165,25 +180,28 @@ export function repeatSpread(values) {
 }
 
 /**
- * The band fraction b = max(repeatFactor x base-arm spread, floorFraction).
+ * The band fraction b = max(repeatFactor x base-arm spread, floorFraction);
+ * with `startup` set, the floor term is `startupBandFloor` (PF-3).
  *
- * @param {{baseRepeats?: unknown, bands?: object}} input
+ * @param {{baseRepeats?: unknown, bands?: object, startup?: boolean}} input
  * @returns {{bandFraction: number, baseSpread: number|null,
- *   source: "repeat"|"floor"}} `source` names the term that set b; a base arm
- *   with no usable spread (one repeat) falls back to the floor and says so.
+ *   source: "repeat"|"floor"|"startup-floor"}} `source` names the term that
+ *   set b; a base arm with no usable spread (one repeat) falls back to the
+ *   floor and says so.
  */
-export function bandFraction({ baseRepeats, bands } = {}) {
+export function bandFraction({ baseRepeats, bands, startup = false } = {}) {
   const resolved = resolveBands(bands);
   const baseSpread = repeatSpread(baseRepeats);
+  const floor = startup ? resolved.startupBandFloor : resolved.floorFraction;
   const fromRepeat =
     baseSpread === null ? null : resolved.repeatFactor * baseSpread;
-  if (fromRepeat !== null && fromRepeat > resolved.floorFraction) {
+  if (fromRepeat !== null && fromRepeat > floor) {
     return { bandFraction: fromRepeat, baseSpread, source: "repeat" };
   }
   return {
-    bandFraction: resolved.floorFraction,
+    bandFraction: floor,
     baseSpread,
-    source: "floor",
+    source: startup ? "startup-floor" : "floor",
   };
 }
 
@@ -197,6 +215,8 @@ export function bandFraction({ baseRepeats, bands } = {}) {
  * @param {unknown} input.baseRepeats The statistic, one value per base repeat.
  * @param {unknown} input.tipRepeats The statistic, one value per tip repeat.
  * @param {object} [input.bands] Pre-registered overrides of the seat defaults.
+ * @param {boolean} [input.startup] Read `startupBandFloor` as the band floor
+ *   (PF-3 only; {@link ceilingVerdict} sets it).
  * @returns {object} `{metric, statistic, verdict, base, tip, ratio,
  *   bandFraction, bandSource, baseSpread, tipSpread, limit, bands, reasons}`.
  */
@@ -206,11 +226,12 @@ export function compareToBase({
   baseRepeats,
   tipRepeats,
   bands,
+  startup = false,
 }) {
   const resolved = resolveBands(bands);
   const base = median(baseRepeats);
   const tip = median(tipRepeats);
-  const band = bandFraction({ baseRepeats, bands: resolved });
+  const band = bandFraction({ baseRepeats, bands: resolved, startup });
   const record = {
     metric,
     statistic,
@@ -248,10 +269,15 @@ export function compareToBase({
 }
 
 /**
- * The startup rule (PF-3): every tip repeat under the ceiling and
- * median(tip) <= median(base) x (1 + b); when median(base) is already at or
- * over the ceiling, within only at median(tip) <= median(base), no slack, and
- * `baseOverCeiling` set so the wave packet reports the cell to the seat.
+ * The startup rule (PF-3): every tip repeat strictly under the ceiling
+ * (`startupCeilingMs`, 2.5 s, a blow-up guard) and median(tip) <=
+ * median(base) x (1 + b), with b = max(repeatFactor x base-arm spread,
+ * `startupBandFloor`). When median(base) is already at or over the ceiling the
+ * ceiling clause is not applied (the base is itself over it): the verdict is
+ * the banded compare alone, rule `base-over-ceiling-banded`, with
+ * `baseOverCeiling` set and a reason saying so, so the wave packet reports
+ * the cell to the seat. The seat replaced the plan's "no band slack" rule for
+ * that case and resized the plan's 2.0 s ceiling for this row.
  *
  * @param {object} input As {@link compareToBase}, in milliseconds.
  * @returns {object} The {@link compareToBase} record plus `ceilingMs`,
@@ -271,6 +297,7 @@ export function ceilingVerdict({
     baseRepeats,
     tipRepeats,
     bands: resolved,
+    startup: true,
   });
   const tipFinite = finiteValues(tipRepeats);
   const tipMax = tipFinite.length > 0 ? Math.max(...tipFinite) : null;
@@ -286,21 +313,21 @@ export function ceilingVerdict({
     return out;
   }
   out.reasons = [];
+  const withinBand = record.tip <= record.limit;
   if (out.baseOverCeiling) {
-    out.rule = "base-over-ceiling-no-slack";
-    out.limit = record.base;
-    out.verdict =
-      record.tip <= record.base ? PERF_VERDICTS.WITHIN : PERF_VERDICTS.OVER;
+    out.rule = "base-over-ceiling-banded";
+    out.verdict = withinBand ? PERF_VERDICTS.WITHIN : PERF_VERDICTS.OVER;
     out.reasons.push(
-      `base ${record.base} ms is at or over the ${ceilingMs} ms ceiling: admitted only at tip <= base, no slack`,
+      `base ${record.base} ms is at or over the ${ceilingMs} ms ceiling: the ceiling clause is not applied, the banded compare was applied instead`,
     );
-    if (out.verdict === PERF_VERDICTS.OVER) {
-      out.reasons.push(`tip ${record.tip} ms exceeds base ${record.base} ms`);
+    if (!withinBand) {
+      out.reasons.push(
+        `tip ${record.tip} ms exceeds base ${record.base} ms x (1 + ${record.bandFraction}) = ${record.limit} ms`,
+      );
     }
     return out;
   }
   const underCeiling = tipMax < ceilingMs;
-  const withinBand = record.tip <= record.limit;
   out.verdict =
     underCeiling && withinBand ? PERF_VERDICTS.WITHIN : PERF_VERDICTS.OVER;
   if (!underCeiling) {

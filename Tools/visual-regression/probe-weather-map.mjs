@@ -44,6 +44,12 @@
  *   two wide views and the runtime's weather-map-report.json / -summary.md
  */
 import { decodePng } from "../lib/png-decode.mjs";
+import {
+  CLOCK_OPTION,
+  assertClockHeld,
+  pinClock,
+  clockFlagExitCode,
+} from "./lib/clock-pin.mjs";
 import { brightFraction } from "./lib/metrics/bright-fraction.mjs";
 import { sweepStats } from "./lib/metrics/sweep-stats.mjs";
 import {
@@ -182,6 +188,7 @@ export const descriptor = {
   // Sandcastle2 bucket bundle in the runtime's default list is never loaded.
   servedArtifacts: ["Build/CesiumUnminified/index.js"],
   workBudgetMs: () => WORK_BUDGET_MS,
+  args: { extraOptions: [CLOCK_OPTION] },
   async cells({ browser, run, options, origin, outputDirectory, captures }) {
     if (!options.renderers.includes("webgpu")) {
       throw new ProbeRefusal(
@@ -204,6 +211,11 @@ export const descriptor = {
     await page.waitForFunction(() => !!window.viewer, null, {
       timeout: 90000,
     });
+    // Opt-in (--clock): without it the viewer keeps the wall clock, as before.
+    // SET_VIEW never touches the clock, so the pin holds through the run; the
+    // read after the captures proves it.
+    let clockPin =
+      options.clock === undefined ? null : await pinClock(page, options.clock);
 
     const fracs = { off: [], on: [] };
     let chrome = null;
@@ -262,6 +274,8 @@ export const descriptor = {
       });
     }
 
+    if (clockPin !== null) clockPin = await assertClockHeld(page, clockPin);
+
     const errors = errs.filter((e) => !/AtmosphereLUT|default layout/.test(e));
     const scored = scoreMap(fracs.off, fracs.on, errors);
     console.log(
@@ -275,6 +289,7 @@ export const descriptor = {
         scored,
         chromeRemoved: chrome.removed,
         chromeLeftovers: chrome.leftovers,
+        clockPin,
       },
     ];
   },
@@ -299,5 +314,6 @@ export const descriptor = {
 };
 
 if (isEntryPoint(import.meta.url)) {
-  process.exitCode = await runProbe(descriptor);
+  process.exitCode =
+    clockFlagExitCode(descriptor.name) ?? (await runProbe(descriptor));
 }

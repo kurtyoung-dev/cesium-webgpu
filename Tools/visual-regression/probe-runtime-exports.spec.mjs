@@ -70,6 +70,7 @@ const BASE_EXPORTS = Object.freeze([
   "outcomeOfRun",
   "parseProbeArgs",
   "refusedDecision",
+  "reportFileNameFor",
   "runProbe",
   "sha256",
   "throwForDecision",
@@ -115,6 +116,7 @@ const OWNERS = Object.freeze([
       "buildRuntimeReceipt",
       "normalizeJson",
       "outcomeOfRun",
+      "reportFileNameFor",
       "sha256",
     ],
   ],
@@ -174,8 +176,8 @@ function surfaceDrift(namespace) {
   return { missing, extra, notSame };
 }
 
-test("the runtime exports exactly the 40 names it exported before the split", () => {
-  assert.equal(BASE_EXPORTS.length, 40);
+test("the runtime exports exactly the 40 names it exported before the split plus reportFileNameFor", () => {
+  assert.equal(BASE_EXPORTS.length, 41);
   assert.deepEqual([...BASE_EXPORTS].sort(), [...BASE_EXPORTS]);
   assert.deepEqual(Object.keys(runtime).sort(), [...BASE_EXPORTS]);
 });
