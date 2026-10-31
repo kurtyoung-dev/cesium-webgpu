@@ -20,6 +20,19 @@ which tracked document answers each governed question. Precedence between source
   `cesium_context_spine`. Registering it is the seat's to run, once the seat lifts its "not yet"
   (E2); Codex does not run `codex-mcp-config.mjs --install` itself.
 
+## On-demand rule files
+
+`CLAUDE.md` keeps its task-specific rules in skill files that Claude Code loads on demand. They bind
+you as fully as `CLAUDE.md` does: read the matching file before the work it covers (`CLAUDE.md`,
+"On-demand Skills", says when).
+
+- [`.claude/skills/wgsl-shader-pipeline/SKILL.md`](.claude/skills/wgsl-shader-pipeline/SKILL.md) — WGSL shader defines, the `//>>ifdef` preprocessor, the module cache, adding a define bit, pipeline-key aliasing.
+- [`.claude/skills/build-and-variants/SKILL.md`](.claude/skills/build-and-variants/SKILL.md) — build and test commands, bundle variants, compat exemptions, smoke test, visual regression, Playwright / Edge.
+- [`.claude/skills/logging-pragmas/SKILL.md`](.claude/skills/logging-pragmas/SKILL.md) — engine logs: what takes a debug pragma, what stays permanent, sentinels for new subsystems.
+- [`.claude/skills/upstream-sync/SKILL.md`](.claude/skills/upstream-sync/SKILL.md) — merging CesiumGS `upstream/main` into the fork.
+- [`.claude/skills/wasm-strategy/SKILL.md`](.claude/skills/wasm-strategy/SKILL.md) — WASM bridges, fallbacks, loading, memory, toolchains, threading.
+- [`.claude/skills/debug-console/SKILL.md`](.claude/skills/debug-console/SKILL.md) — `CesiumDebug` console commands; recording a fixed bug.
+
 ## Keep doing — observed on this fork, 2026-09-06 → 09-10
 
 Drawn from the seat's return audit of the September 6–9 sessions (`migration_doc/audits/` and the

@@ -52,7 +52,9 @@ yarn.lock
 
 # Claude Code agent scratch directory — worktrees, logs, settings.
 # Per-machine state that should never be tracked.
-.claude/
+.claude/*
+# ...except the tracked on-demand rule skills CLAUDE.md names.
+!.claude/skills/
 
 # Python bytecode cache (e.g., from migration_doc/_regen_wgsl_js.py).
 __pycache__/

@@ -7,6 +7,19 @@ anything; this file carries only what is specific to Antigravity and Gemini work
 shader define registries, debug pragmas, the fork comment standard) and worker conduct, temp hygiene
 and routing ("Rules Files and Routing").
 
+## On-demand rule files
+
+`CLAUDE.md` keeps its task-specific rules in skill files that Claude Code loads on demand. They bind
+you as fully as `CLAUDE.md` does: read the matching file before the work it covers (`CLAUDE.md`,
+"On-demand Skills", says when).
+
+- [`.claude/skills/wgsl-shader-pipeline/SKILL.md`](.claude/skills/wgsl-shader-pipeline/SKILL.md) — WGSL shader defines, the `//>>ifdef` preprocessor, the module cache, adding a define bit, pipeline-key aliasing.
+- [`.claude/skills/build-and-variants/SKILL.md`](.claude/skills/build-and-variants/SKILL.md) — build and test commands, bundle variants, compat exemptions, smoke test, visual regression, Playwright / Edge.
+- [`.claude/skills/logging-pragmas/SKILL.md`](.claude/skills/logging-pragmas/SKILL.md) — engine logs: what takes a debug pragma, what stays permanent, sentinels for new subsystems.
+- [`.claude/skills/upstream-sync/SKILL.md`](.claude/skills/upstream-sync/SKILL.md) — merging CesiumGS `upstream/main` into the fork.
+- [`.claude/skills/wasm-strategy/SKILL.md`](.claude/skills/wasm-strategy/SKILL.md) — WASM bridges, fallbacks, loading, memory, toolchains, threading.
+- [`.claude/skills/debug-console/SKILL.md`](.claude/skills/debug-console/SKILL.md) — `CesiumDebug` console commands; recording a fixed bug.
+
 ## 1. Where you work, and git [HARD RULE]
 
 - You work only in the clone the seat provisioned for you, never in the seat worktree

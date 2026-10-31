@@ -324,6 +324,7 @@ heading, not an invented summary):
 | [`FEATURE_RENDERER_ONBOARDING.md`](FEATURE_RENDERER_ONBOARDING.md) | Step-by-step guide to adding a new WebGPU Feature Renderer (key, eager/lazy registration, lifecycle, Scene access, compat exemption). |
 | [`IMAGERY_PROJECTION.md`](IMAGERY_PROJECTION.md) | Single source of truth for imagery-layer projection (WebGL + WebGPU). |
 | [`SHADER_PAIRS_LOCKSTEP.md`](SHADER_PAIRS_LOCKSTEP.md) | WGSL/GLSL shader-pair parity contract. |
+| [`RULES_FILE_NOTES.md`](RULES_FILE_NOTES.md) | *(Indexed 2026-10-31.)* Append-only home for the stories, worked examples and dated measurements trimmed from `CLAUDE.md` in the rules-file diet; history, not rules (the rules are `CLAUDE.md` and its on-demand skills in `.claude/skills/`). |
 | [`DEV_NOTES_FORMAT.md`](DEV_NOTES_FORMAT.md) | Format for the `DEV_NOTES_<SUBSYSTEM>.md` files that hold engineering knowledge relocated out of source comments by Campaign 16 — file + symbol anchor, verbatim text, date moved, and why it was kept. |
 | [`CLOUD_COORDINATE_CONTRACT_2026-07-23.md`](CLOUD_COORDINATE_CONTRACT_2026-07-23.md) | **Active contract** — WGS84/RTE coordinate rules for every planetary-cloud producer/consumer (C13-03 complete; Gate B open). Owner: Campaign 13 queue. |
 | [`TOOLING_CATALOG.md`](TOOLING_CATALOG.md) | *(Indexed 2026-09-02, DX-23.)* Tooling Catalog — the `.mjs` library census (per its own heading); keep in sync whenever a `Tools/**` script family changes. |

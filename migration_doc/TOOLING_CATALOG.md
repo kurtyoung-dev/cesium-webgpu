@@ -222,15 +222,15 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1920 |
-| ACTIVE | 1665 |
+| Files in census | 1922 |
+| ACTIVE | 1667 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
 | NO @purpose HEADER | 52 |
 | NO @status HEADER | 2 |
-| Classes | probe 683, spec 536, other 399, lib 249, gate-lib 21, bake-tool 13, fixture 12, runner 7 |
+| Classes | probe 683, spec 537, other 400, lib 249, gate-lib 21, bake-tool 13, fixture 12, runner 7 |
 
-### Tools/ (69)
+### Tools/ (71)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -265,10 +265,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | pre-push-guard.spec.mjs | spec | ACTIVE | 2026-09-11 | 7 | Hostile-input, multi-ref, protected-ref, and destructive-fixture contract for the real pre-push driver and hook. |
 | provision-worker-clone-codex-trust.spec.mjs | spec | ACTIVE | 2026-09-19 | 1 | Behavioural spec for the --codex-trust / --codex-untrust line-based |
 | provision-worker-clone-junctions.spec.mjs | spec | NO @purpose HEADER | 2026-09-16 | 4 | — |
-| provision-worker-clone.mjs | other | ACTIVE | 2026-10-30 | 14 | Provision a worker clone with the governance git cannot deliver, create the local main ref the handoff diff needs, and REFUSE if any routed authority is unreachable. |
-| query-context.mjs | other | ACTIVE | 2026-10-30 | 10 | Command-line entrypoint to build and query the zero-dependency SQLite context spine (symbols, verified slices, Cesium seams, Charter-ranked rulings/ledgers, spatial R-tree rigs, contracts, and context capsules). |
+| provision-worker-clone.mjs | other | ACTIVE | 2026-10-31 | 14 | Provision a worker clone with the governance git cannot deliver, create the local main ref the handoff diff needs, and REFUSE if any routed authority is unreachable. |
+| query-context.mjs | other | ACTIVE | 2026-10-30 | 11 | Command-line entrypoint to build and query the zero-dependency SQLite context spine (symbols, verified slices, Cesium seams, Charter-ranked rulings/ledgers, spatial R-tree rigs, contracts, and context capsules). |
 | report-batch-number-reuse.mjs | other | ACTIVE | 2026-09-02 | 3 | Reports every `Batch NNNN:` commit subject that reuses a number already used by a different commit, across full reachable git history. |
 | report-batch-number-reuse.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Behaviour spec for report-batch-number-reuse.mjs, run against a real temporary git repository. |
+| rules-file-diet-check.mjs | other | ACTIVE | — | 1 | Re-derive, from an old CLAUDE.md and the current tree, where every normative sentence now lives (core, a skill, or a page the core or a skill links), check the numbered principles and the skill wiring, and measure the core and the skills. |
+| rules-file-diet-check.spec.mjs | spec | ACTIVE | — | 1 | Behaviour coverage for Tools/rules-file-diet-check.mjs — a rule deleted or weakened in a diet of the rules file is reported, a rule moved to a skill or a linked page is found, principle renumbering and unwired skills are refused, and inertness mutants prove each check is live. |
 | run-far200-shadow-self-test.mjs | runner | ACTIVE | 2026-08-16 | 2 | Thin bootstrap: esbuild-bundles Tools/far200-shadow-self-test.ts and executes it via a data: URL import. |
 | spec-runner-census.mjs | other | NO @purpose HEADER | 2026-10-30 | 20 | — |
 | spec-runner-census.spec.mjs | spec | NO @purpose HEADER | 2026-10-30 | 6 | — |
@@ -366,10 +368,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | graphify-bridge.mjs | other | ACTIVE | 2026-10-30 | 4 | Safely invoke `graphify extract --code-only` into gitignored `.cache/` and merge its tree-sitter call edges and Leiden communities into SQLite without touching governance files or git hooks. |
 | mcp-server.mjs | other | ACTIVE | 2026-10-30 | 3 | Zero-dependency stdio MCP server exposing token-compact impact packs, SHA-256 verified symbol slices, Charter-ranked rulings/ledgers, spatial R-tree rig covers, and coordinate contract checks. |
 | query-engine.mjs | other | ACTIVE | 2026-10-30 | 7 | Orchestrate context-spine builds and execute token-budgeted symbol, seam, contract, Charter-ranked ledger, spatial R-tree rig cover, and impact-pack queries. |
-| schema.mjs | other | ACTIVE | 2026-10-30 | 9 | SQLite schema, connection factory, and live SHA-256 disk-freshness helpers for the zero-dependency context, seam, ledger, and spatial validation spine. |
-| seed-clone.mjs | other | ACTIVE | 2026-10-30 | 4 | Copy the source repository's gitignored `.cache/context-spine/cesium-context.sqlite` and `.mcp.json` into a worker clone for Tools/provision-worker-clone.mjs, then bring a seeded DB that is behind the clone's HEAD up to it with the clone's own incremental build, writing nothing in the source and pointing the clone at no executable outside it. |
+| schema.mjs | other | ACTIVE | 2026-10-31 | 9 | SQLite schema, connection factory, and live SHA-256 disk-freshness helpers for the zero-dependency context, seam, ledger, and spatial validation spine. |
+| seed-clone.mjs | other | ACTIVE | 2026-10-31 | 4 | Copy the source repository's gitignored `.cache/context-spine/cesium-context.sqlite` and `.mcp.json` into a worker clone for Tools/provision-worker-clone.mjs, then bring a seeded DB that is behind the clone's HEAD up to it with the clone's own incremental build, writing nothing in the source and pointing the clone at no executable outside it. |
 | spatial-v2.mjs | other | ACTIVE | 2026-10-30 | 5 | Geolocate indirect `camera: null` Probe Kit rigs (dials, 3D Tilesets, Sandcastle/harness HTML, camera tracks) and inspect live binary GIS headers (`EGM1`, `GBT1`, `LWM2`, `NE1R`, TMS XML, `IAU2006_XYS`) with `.spec.mjs` gate bindings. |
-| spine-freshness.spec.mjs | spec | ACTIVE | — | 2 | Verify that `build --incremental --with-graphify` keeps existing rows, that `openContextDatabase` refuses a reset with a clear message when another process holds the DB (nothing deleted), and that `seedCloneContextSpine` runs the clone's incremental build exactly when the seeded DB's head_sha differs from the clone's HEAD. |
+| spine-freshness.spec.mjs | spec | ACTIVE | 2026-10-31 | 2 | Verify that `build --incremental --with-graphify` keeps existing rows, that `openContextDatabase` refuses a reset with a clear message when another process holds the DB (nothing deleted), and that `seedCloneContextSpine` runs the clone's incremental build exactly when the seeded DB's head_sha differs from the clone's HEAD. |
 | uniform-crs-validator.mjs | other | ACTIVE | 2026-10-30 | 3 | Compute exact WebGPU WGSL struct std140/uniform byte/float layouts, cross-check TypeScript uniform buffer size constants, and extract explicit CRS/coordinate-frame transition edges. |
 
 ### Tools/jsdoc/cesium_template/ (1)
@@ -382,8 +384,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| post-landing-spine.mjs | other | ACTIVE | — | 3 | Refresh the context spine DB incrementally after a landing, and import the graphify code graph when the landed commit touched the engine or the spine itself, so the DB the next scoping pack reads is never stale; reports the before/after meta and a verdict through its exit code. |
-| post-landing-spine.spec.mjs | spec | ACTIVE | — | 4 | Behaviour spec for the post-landing spine refresh: which build calls a landed commit causes (refresh always, graphify only for engine or spine paths or --graphify), the exit code of every failure class, and the before/after meta it prints. |
+| post-landing-spine.mjs | other | ACTIVE | 2026-10-31 | 3 | Refresh the context spine DB incrementally after a landing, and import the graphify code graph when the landed commit touched the engine or the spine itself, so the DB the next scoping pack reads is never stale; reports the before/after meta and a verdict through its exit code. |
+| post-landing-spine.spec.mjs | spec | ACTIVE | 2026-10-31 | 4 | Behaviour spec for the post-landing spine refresh: which build calls a landed commit causes (refresh always, graphify only for engine or spine paths or --graphify), the exit code of every failure class, and the before/after meta it prints. |
 | rebase-shared-mutants.mjs | other | ACTIVE | 2026-10-09 | 2 | Inertness-mutant runner for the landing-time shared-hunk rebaser: makes each transform unreachable in a copy of the tool and requires its spec to go RED. |
 | rebase-shared.mjs | other | ACTIVE | 2026-10-09 | 4 | Rebase a frozen probe-family lane patch's hunks on the shared rig census, RIG_TAGS and shrink-only allowlists onto the current tip as their semantic union, refusing by name anything it cannot reproduce as row operations, so two families landing in sequence stop conflicting textually. |
 | rebase-shared.spec.mjs | spec | ACTIVE | 2026-10-09 | 4 | Behaviour spec for the landing-time shared-hunk rebaser: semantic union, kept-as-is pass-through and every refusal, over synthetic git repos under os.tmpdir(). |
@@ -403,7 +405,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | compare-doc-anchors.mjs | lib | NO @purpose HEADER | 2026-09-11 | 3 | — |
 | compare-doc-anchors.spec.mjs | spec | NO @purpose HEADER | 2026-09-11 | 1 | — |
 | json-duplicate-keys.mjs | lib | ACTIVE | 2026-09-19 | 3 | Reports every key a JSON document repeats within the same object, per object and string-aware, so a manifest whose duplicate `JSON.parse` silently resolves last-key-wins can be refused with the first and the repeating line. |
-| lane-tmp.mjs | lib | ACTIVE | 2026-09-11 | 63 | The one way a spec, probe or tool takes scratch space: a single per-lane root under os.tmpdir() with removal in `finally`, so a throwing or killed run leaves one sweepable root instead of loose mkdtemp sandboxes at the Temp root. |
+| lane-tmp.mjs | lib | ACTIVE | 2026-09-11 | 64 | The one way a spec, probe or tool takes scratch space: a single per-lane root under os.tmpdir() with removal in `finally`, so a throwing or killed run leaves one sweepable root instead of loose mkdtemp sandboxes at the Temp root. |
 | lane-tmp.spec.mjs | spec | ACTIVE | 2026-09-11 | 5 | Behaviour coverage for Tools/lib/lane-tmp.mjs — the directory is created under the lane root, removed on success AND on throw AND on rejection, refused outside tmpdir, and an inert `finally` is caught by the mutant. |
 | natural-earth-pinned.mjs | lib | ACTIVE | 2026-10-23 | 6 | One table of the natural-earth-vector commit and the SHA-256 of every GeoJSON source the water-mask builders read, so a network rebuild is reproducible and a changed source fails loudly. |
 | npm-override-rules.mjs | lib | ACTIVE | 2026-09-18 | 3 | Decides, from manifest objects alone, which root `overrides` entries npm rejects as conflicting with a direct dependency or as an unresolvable `$` reference. |

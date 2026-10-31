@@ -31,10 +31,23 @@ receives the live rules rather than only this frozen copy.
   "Rules Files and Routing" section of `CLAUDE.md`; `AGENTS.md` (Codex) and
   `GEMINI.md` (Antigravity) are pointers to `CLAUDE.md` too (R-2026-10-30-M2).
 
+## On-demand rule files
+
+`CLAUDE.md` keeps its task-specific rules in skill files that Claude Code loads on demand. They bind
+you as fully as `CLAUDE.md` does: read the matching file before the work it covers (`CLAUDE.md`,
+"On-demand Skills", says when).
+
+- [`.claude/skills/wgsl-shader-pipeline/SKILL.md`](.claude/skills/wgsl-shader-pipeline/SKILL.md) — WGSL shader defines, the `//>>ifdef` preprocessor, the module cache, adding a define bit, pipeline-key aliasing.
+- [`.claude/skills/build-and-variants/SKILL.md`](.claude/skills/build-and-variants/SKILL.md) — build and test commands, bundle variants, compat exemptions, smoke test, visual regression, Playwright / Edge.
+- [`.claude/skills/logging-pragmas/SKILL.md`](.claude/skills/logging-pragmas/SKILL.md) — engine logs: what takes a debug pragma, what stays permanent, sentinels for new subsystems.
+- [`.claude/skills/upstream-sync/SKILL.md`](.claude/skills/upstream-sync/SKILL.md) — merging CesiumGS `upstream/main` into the fork.
+- [`.claude/skills/wasm-strategy/SKILL.md`](.claude/skills/wasm-strategy/SKILL.md) — WASM bridges, fallbacks, loading, memory, toolchains, threading.
+- [`.claude/skills/debug-console/SKILL.md`](.claude/skills/debug-console/SKILL.md) — `CesiumDebug` console commands; recording a fixed bug.
+
 ## What happened to this file's content
 
 Every rule that was live only here was carried into the matching section of
-`CLAUDE.md` in the same batch — the view-level context architecture and
+`CLAUDE.md` in the same batch (some of those sections are now the on-demand files above) — the view-level context architecture and
 context-registry diagnostics, the parity checklist and its non-goals, the scene
 logic extractor's shared/backend-specific split, the feature-renderer
 registration recipe, the capability-query rule, the RTE reuse rules, the monorepo
@@ -44,7 +57,7 @@ conversion JSDoc mechanics, the WASM toolchain and threading rules, and the
 upstream-sync prerequisites, two-parent recovery and post-sync tasks.
 
 Ruling D11 (2026-09-05) additionally carried §2d's `context.log()` rule into the
-Logging & Debug Pragmas section of `CLAUDE.md` as a **preference** rather than the
+Logging & Debug Pragmas section of `CLAUDE.md` (now `.claude/skills/logging-pragmas/SKILL.md`) as a **preference** rather than the
 MUST it was here: where a context is in hand, prefer `context.log(level, message)` so
 the context id reaches the message. `console.error` for a real error is unchanged.
 
