@@ -24872,7 +24872,7 @@ the 2026-09-19 runs with no change to either
 (`cesium-webgpu-worker-archive/lanes-2026-09-19/ci-triage/TRIAGE_ESMERALDA.md:88-90`). A full-suite
 comparison that meets either one red should not read it as a regression without a repeat.
 
-### `DX-GOVERNANCE-TSC-NOEMIT-IS-VACUOUS-FOR-THE-ENGINE` — the documented type-check command checks `scripts/` only — OPEN (DX row, governance)
+### `DX-GOVERNANCE-TSC-NOEMIT-IS-VACUOUS-FOR-THE-ENGINE` — the documented type-check command checks `scripts/` only — OPEN (DX row, governance; the CLAUDE.md part done by Batch 1640)
 
 `CLAUDE.md` "Build & Test Commands" lists `npx tsc --noEmit  # TypeScript type checking` (`CLAUDE.md:472` at
 `37c0f8767e`). The root `tsconfig.json` includes `scripts/*.js` only, so that command says nothing about
@@ -24881,6 +24881,13 @@ Every "tsc clean" claim in a packet before 2026-09-18 may have been the vacuous 
 `CLAUDE.md` and `GEMINI.md` and the lane/review templates (governance files — not a lane's to edit), add
 `tsc-engine` to the landing wrapper for patches touching `packages/engine/Source/**/*.ts`, and a spot audit of
 earlier "tsc clean" claims. See also `DX-TSC-ENGINE-SKIPS-GREEN-ON-AN-UNBUILT-CLONE` above.
+**The CLAUDE.md part done (records round 7):** Batch 1640 (`12d9bea471`; lane Istarnie, reviewer Indilzar P1 HOLDS-WITH-FIXES,
+R1 applied by the seat) moved "Build & Test Commands" into the on-demand skill `.claude/skills/build-and-variants/SKILL.md`, whose
+command block now names `npm run tsc-engine` for the engine and labels `npx tsc --noEmit` as the root config only (`:13-14`);
+`GEMINI.md` is a pointer at Batch 1640 and carries no type-check command. **Still owed:** the lane and review templates,
+`tsc-engine` in the landing wrapper for patches touching `packages/engine/Source/**/*.ts`, and the spot audit of earlier "tsc
+clean" claims. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/istarnie/REVIEW_INDILZAR_P1.md` (R1);
+`context-diet/apply-indilzar-r1-n4.mjs`.
 
 ### `DX-RECEIPT-PROOFS-CARRY-THEIR-COMMIT-PAIR` — a proof quoted from a receipt must name the two commits it compared — OPEN (DX row)
 
@@ -31049,7 +31056,7 @@ Recorded so that the night look is not later read as a regression.
 `wave-end/w2-f2-repair/diag-3446-sunlight/REPORT.md:15-21`; `wave-end/w2-f2-repair/diag-f4/REPORT.md:1-45`;
 `git show -s 7f92e7bcb6`.
 
-### NEW-CLOUD-W3-WEATHER-PROBES-LEG-OWED — the W3 identity job's weather-probe leg was met on neither arm, and could not have detected a regression — **OPEN** (owed Edge leg)
+### NEW-CLOUD-W3-WEATHER-PROBES-LEG-OWED — the W3 identity job's weather-probe leg was met on neither arm, and could not have detected a regression — **CLOSED: measured** (W3-DAYLIGHT Edge leg 2026-10-31: BEFORE `6b3b80f644` with the Batch 1638 kit, TIP Batch 1638)
 
 The W3 identity job (BEFORE = main `6b3b80f644`; TIP(8) = BEFORE plus the W3 round-4 cut, landed as Batches 1608-1615; 2 runs
 per arm; verifier HOLDS)
@@ -31063,8 +31070,20 @@ renderer recorded no frame in 120 moving frames", recordedFrames 0), the probe's
 probes' views or at a pinned clock, after the ingest harness waits on pipeline readiness. **Suggested owner:** the next
 wave's Edge job, after the kit fix.
 **Source:** `wave-end/w3-identity/SUMMARY_Tarondor.txt:20-21`; `wave-end/w3-identity/VERIFY_CALIMEHTAR.md:158-161` (F2).
+**KIT3 attempt (records round 7):** on the KIT3 leg (tree `6f328f950d`, before Batch 1638) `probe-weather-map --clock
+2026-06-21T18:00:00Z` exited 1 on `on-carves` in daylight (onMin 0.106 against 0.5 x offMin 0.130 = 0.065) and
+`probe-weather-ingest` errored on 4 of 4 runs with and without `--clock` (the 120-frame budget). **CLOSED: measured (records round
+7).** The W3-DAYLIGHT Edge leg (2026-10-31 10:33-11:00 EDT; BEFORE `6b3b80f644` with the Batch 1638 kit overlaid, TIP Batch 1638
+`b4bf6307cf`; served == disk on every measured run) meets F2: `probe-weather-map --clock 2026-06-21T18:00:00Z` (5/5 PASS) and
+`probe-weather-ingest --clock 2026-06-21T18:00:00Z` (7/7 PASS) exit 0 on both arms; `clockPin` reads back at the start and the end
+on all 8 runs; the ingest readiness ends `recorded` after 686 / 759 frames (BEFORE / TIP) with a pipeline wait of 12.6 / 13.9 s of
+the 60 s budget, timedOut false, pendingAtEnd 0, pipelineReady true; the map and ingest frames are daylit. Ingest deck % hiA / hiB
+/ lo: BEFORE 91.77 / 91.77 / 0, TIP 91.69 / 91.69 / 0, control delta 0. A later map run (F4, TIP run 2) failed on a black first
+frame (`DX-KIT-WEATHER-MAP-FIRST-FRAME-BLACK`); the F2 runs and the TIP repeat passed. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 1, findings 1-2);
+`round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md` (leg 1, findings 1-3).
 
-### NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY — at an unpinned clock the W3 tip's weather-map frames differ run to run, the weather-map-off view included — **OPEN** (unattributed)
+### NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY — at an unpinned clock the W3 tip's weather-map frames differ run to run, the weather-map-off view included — **OPEN** (re-attributed 2026-10-31: present at a pinned clock on BEFORE `6b3b80f644` as on the tip, so not W3's; cause unidentified)
 
 In `probe-weather-map` on the W3 identity job the TIP(8) frames are not stable run to run while BEFORE's are (the runs
 about 90 s apart, the clock unpinned): wide-off 86.5 % of pixels changed (max delta 86) on TIP(8) against 7.6 % (max 5) on
@@ -31075,6 +31094,16 @@ deterministic on TIP(8), so the cause is unconfirmed. **Acceptance:** one pinned
 BEFORE and the W3 tip, before the instability is called 3459's intended behaviour. **Suggested owner:** the next wave's
 Edge job.
 **Source:** `wave-end/w3-identity/VERIFY_CALIMEHTAR.md:165-175` (F4).
+**Re-attributed (records round 7):** the W3-DAYLIGHT leg ran the pinned-clock A/B this row asked for (`--clock
+2026-06-21T18:00:00Z`; the kit's `pixelDiff` at tolerance 0, 1024x768 frames, runs 1-15 min apart). The weather-map-OFF view is
+not stable run to run on EITHER arm: wide-off 99.02-99.50 % of pixels changed on BEFORE (max channel 78-87) and 99.01-99.23 % on
+TIP (max 60-68); the located-off frames 99.25-99.62 % (max 121-145); the off frames BEFORE against TIP 99.69-99.99 %. The located-off
+frames are a regular tiled grid of cloud cells whose shape and phase change between runs. BEFORE (`6b3b80f644`) shows it as much
+as the tip, so it is not W3's unit 3459, and the night-time contrast above (TIP 86.5 % against BEFORE 7.6 %) does not reproduce at
+a pinned daylight clock. The cause is not identified; the probe pins neither `cloudWindSpeed`, the quality tier nor the network
+globe (its header names the network globe; neither `cloudWindSpeed` nor a quality setting appears in `probe-weather-map.mjs`, grep at Batch 1640). **Next steps:** a kit dial lane that pins those three, then a cloud-determinism investigation if the
+deck still moves. **Suggested owner:** the kit (dials) and the cloud program (mechanism). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md` (leg 2, finding 2).
 
 ### NEW-CLOUD-W3-SHARED-DEVICE-TEARDOWN-UNTESTED — every W3 allocating owner is released by the device, and no E-T cell destroys one viewer of several on a shared device — **OPEN** (coverage)
 
@@ -31217,7 +31246,7 @@ with the Node major too. **Repair:** pin CI to an explicit 22.x at or above 22.1
 files), by ruling.
 **Source:** the workflow files at Batch 1622 (unchanged since Batch 1607); `cesium-webgpu-worker-archive/lanes-2026-10-29/DECISIONS_FOR_MAINTAINER_2026-10-29.md:60-61`.
 
-### DX-KIT-INGEST-HARNESS-READINESS-BUDGET — two fixed kit budgets fail under the W-wave Edge jobs: the cloud probes' frame-count readiness and the 10 s browser-close deadline — **OPEN** (DX row, probe kit)
+### DX-KIT-INGEST-HARNESS-READINESS-BUDGET — two fixed kit budgets fail under the W-wave Edge jobs: the cloud probes' frame-count readiness and the 10 s browser-close deadline — **CLOSED** (Batch 1638, `b4bf6307cf`; the readiness half measured on Edge 2026-10-31 for `probe-weather-ingest`, W3-DAYLIGHT leg; the six other readiness-budgeted cloud probes and the loaded-machine close leg are owed)
 
 (1) `awaitProceduralReady` in `Tools/visual-regression/lib/cloud-probe-harness.mjs` (`:188`, message at `:363`) gives up
 after a number of moving frames: the harness default is 180 (`const maxFrames = Math.max(1, options.maxFrames ?? 180)`,
@@ -31247,8 +31276,26 @@ reports, manifests and contact sheets of those runs were lost, and each hard sto
 acceptance leg (a 3-sample load gate before each run) 1 of 8 hard-stopped, and its retry closed cleanly. Load is the leading
 candidate, not established. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_P2D_DIAG.md`
 (F1, F2); `EDGE_RECEIPT_EOWYN_P2D_ACCEPT.md` (F1).
+**Closed (records round 7): Batch 1638 (`b4bf6307cf`; lane Aerandir, worker Celebrindal; reviewer Nurwe P1 HOLDS-WITH-FIXES, the
+one REQUIRED fix a count in the message, applied by the seat).** (1) `awaitProceduralReady` (`lib/cloud-probe-harness.mjs`) first
+waits for the pipeline cache's pending count to read 0 three times running (budget `pipelineWaitMs` 60 s; frames spent waiting do
+not count; a re-request after draining returns to waiting; its own timeout message), then counts moving frames against a budget
+derived from the measured period (10 s over the mean of the last 16 frame periods, `maxFrames` 180 a floor, ceiling 3,600;
+`:284-290`). The seven callers that passed 120 or 90 drop their caps; three other callers' `maxFrames` (120, 240, 240) are now
+floors, never fewer frames (reviewer NB-7). (2) The close deadline is 90 s (`RESOURCE_CLOSE_DEADLINE_MS`,
+`lib/probe-lifecycle-run.mjs:72`; the old 10 s kept as `LEGACY_CLOSE_DEADLINE_MS`, `:55`, for `exceededLegacy` only) and overridable
+per descriptor; a run whose cells and verdicts are complete survives a lingering browser close and publishes its receipt with
+`browserCloses[]` (`lib/probe-runtime.mjs:870`), while incomplete work stays exit 2. Specs `cloud-probe-harness-readiness.spec.mjs`
+(12) and `probe-runtime-lingering-close.spec.mjs` (16); the lead's and the reviewer's mutants on both halves killed. **Measured:**
+on the W3-DAYLIGHT leg `probe-weather-ingest` reaches its verdicts on both arms (BEFORE 686 frames, pipeline wait 12.6 s; TIP 759
+frames, 13.9 s; `endedBy: recorded`, timedOut false, pendingAtEnd 0), and the KIT3 error does not recur. Both arms record
+`drained: false` beside `pendingAtEnd: 0` where the packet's Edge item 1 expected `drained: true`: recorded, not judged. **Still
+owed:** the other six readiness-budgeted cloud probes once each, and a loaded-machine landing run with no kit copy showing
+`browserCloses[]` (kit round 4's Edge items 1 and 4). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (W1; Edge items 1, 4);
+`round3/aerandir/REVIEW_NURWE_P1.md` (RQ-1, NB-3, NB-7); `round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md` (leg 1).
 
-### DX-KIT-CONSOLE-ERROR-LIST-CAP — `classifyConsoleErrors` keeps at most five 'other' lines, and three receipts read that cap as the count — **OPEN** (DX row, probe kit)
+### DX-KIT-CONSOLE-ERROR-LIST-CAP — `classifyConsoleErrors` keeps at most five 'other' lines, and three receipts read that cap as the count — **CLOSED** (Batch 1638, `b4bf6307cf`)
 
 `classifyConsoleErrors` (`Tools/visual-regression/lib/device-loss-steps.mjs:303-332`) counts `errors` and `sentinel` in
 full but keeps at most five entries in `other`, as its JSDoc says. Readers that report the length of `other` as the
@@ -31262,6 +31309,13 @@ more than five lines. **Suggested owner:** the KT kit lane.
 **Source:** `Tools/visual-regression/lib/device-loss-steps.mjs:303-332`; `wave-end/w2-r7-identity/VERIFY_CALENHAD.md:78-83`;
 `edge-identity-20261029/SUMMARY_Tarondor.txt:18` and `VERIFY_CALIMEHTAR.md:126` (under
 `cesium-webgpu-worker-archive/lanes-2026-10-21/w3-cloud/`); `git show -s d3d81d2825`.
+**Closed (records round 7): Batch 1638 (`b4bf6307cf`; lane Aerandir, worker Tatie; reviewer Nurwe P1 HOLDS-WITH-FIXES).**
+`classifyConsoleErrors` (`lib/device-loss-steps.mjs:313`) returns uncapped `otherCount` and `pageErrorCount`, with `other` and
+`pageErrors` kept as samples of five, and the landing terminal comparison reads the count (`otherConsoleErrorCount`,
+`lib/landing-verdicts.mjs:55`: `otherCount`, else errors - sentinel, else the sample length for old reports). Spec
+`console-error-counts.spec.mjs` (3 tests: 92 errors with 1 sentinel reads 91); the lead's mutant and the reviewer's two killed.
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (W4, W2);
+`round3/aerandir/REVIEW_NURWE_P1.md` (section 2 "Console count", mutants N18-N19).
 
 ### DX-PROBE-KIT-GUIDE-REGENERATED-AT-LANDING — the kit guide's inventory was stale on main after W2; the seat's landing kit now regenerates it at the tip — **CLOSED** (remedy in the seat's landing kit, from the Batch 1607 landing)
 
@@ -31988,6 +32042,22 @@ answered), `DX-SEAT-WORKTREE-FOREIGN-WIP` (closed). The rows below are new.
     and `p2d-accept-20261031/` in the seat's output (banked copies under `round3/edge/`); `round3/irimon/REVIEW_TINDOMIEL_P2.md`
     (sections 2-6: "the records lane may mark it CLOSED in the commit that registers the band", with the four conditions this
     entry meets); `REVIEW_TINDOMIEL_P1.md` (R1); `REVIEW_IRIME_P1.md`; `LANDING_PACKET_IRIMON.md`.
+- **KIT3 confirmation and the band in code (records round 7):** on the KIT3 Edge leg (2026-10-31 08:05-08:24 EDT, tree at
+  `6f328f950d` with the fix, served == disk) cell `E-2D-stages` (`--runs 1`, both renderers, exit 0, 12 captures) read
+  `globeFragmentDebug` back as applied on every WebGPU page. WebGPU `control` against WebGPU `no-drape` is 0 px at tolerance 0;
+  each of them against the same-name WebGL page is 2 px at tolerance 0 (0.000217 %, bbox x 675-703, y 191-253; 0 px at
+  tolerance 16), and the probe's own cross-renderer record agrees. The WebGPU `fade-amount`, `atmo-color` and `view-dir` pages are
+  0 px against `control`, and `post-composite-color` is a flat field (479,923 px, 52.07 %, against WebGL); the WebGPU control PNG
+  is the offline 2D map with no rings. That run read the band "unregistered (first capture registers)". Batch 1638
+  (`b4bf6307cf`; lane Aerandir, worker Iminye; reviewer Nurwe P1 HOLDS-WITH-FIXES, text only) registers it in code as
+  `POST_FIX_2D_CV_BAND` (`Tools/visual-regression/lib/landing-cell-table.mjs:76`: tolerance 0, changedPx <= 4, max channel <= 1
+  outside column 1274), judged per run as `<cell>:cross-renderer:runN:band` on `E-ID-2d` / `E-ID-cv`. The reviewer's offline replay
+  over 16 banked post-fix pairs passes every one (changedPx 2; 2D max channel 1, Columbus View 32 on column 1274 only) and fails
+  both pre-fix pairs (803,912 and 807,720 px); the channel clause has zero margin (every 2D pair reads exactly 1, NB-6).
+  **Owed:** the live band verdict on Edge (kit round 4's Edge item 2). **Source:**
+  `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 5, finding 7; evidence
+  `round3/edge/kit3-20261031/item5-2d-stages/`); `round3/aerandir/LANDING_PACKET_AERANDIR.md` (W3);
+  `round3/aerandir/REVIEW_NURWE_P1.md` (section 2 "E-ID band", NB-6).
 
 ### DX-KIT-IDENTITY-WAIT-PIPELINES — identity cells captured with pipelines pending — **CLOSED** (Batch 1628, `5e684450f1`)
 
@@ -32082,7 +32152,7 @@ owed. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/EDGE
 `kit-pieces/round2-tar-aldarion/LANDING_PACKET_TAR-ALDARION.md` (A4b); reviewer `round2-tar-aldarion/REVIEW_ARTHAD_P1.md:1`
 (patch A, HOLDS-WITH-FIXES; the one fix was in the message).
 
-### DX-PROBE-CLOCK-PIN — the weather probes have no clock pin, so the W3 remainder cannot run at night — **CLOSED for the kit** (Batch 1635, `4bed633005`; the daylight Edge leg is owed)
+### DX-PROBE-CLOCK-PIN — the weather probes have no clock pin, so the W3 remainder cannot run at night — **CLOSED** (Batch 1635, `4bed633005`; measured on Edge 2026-10-31: the map pin on the KIT3 leg, both probes on the W3-DAYLIGHT leg)
 
 The W3 identity verifier's F2 (`probe-weather-map` / `probe-weather-ingest` must exit 0 on both arms) and F4 (a pinned-clock A/B
 of the weather-map-off view) are still owed: the probes take no clock pin, the salvage job ran at 00:00 EDT (night over the US
@@ -32110,6 +32180,16 @@ A/B at the same instant; `NEW-CLOUD-W3-WEATHER-PROBES-LEG-OWED` and `NEW-CLOUD-W
 leg, not on the kit. The validating flag kind is `DX-KIT-CLOCK-FLAG-KIND` (records round 6). **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W2; "What the seat's Edge job must
 capture" item 1); `round3/manwendil/REVIEW_HUNDOR_P1.md` (R1, N-d).
+**Measured on Edge, CLOSED (records round 7).** KIT3 leg (tree `6f328f950d`): `probe-weather-map.mjs --clock
+2026-06-21T18:00:00Z` read `clockPin` requested = observed = observedAtEnd = `2026-06-21T18:00:00Z` with the continental US in full
+daylight (exit 1 on `on-carves` alone, `NEW-CLOUD-W3-WEATHER-MAP-ON-CARVES-DAYLIGHT`); `probe-weather-ingest.mjs` errored (exit 2) on
+4 of 4 runs with and without the flag ("procedural cloud renderer recorded no frame in 120 moving frames", preparedFrameCalls 0,
+pipelineReady false), thrown in `awaitProceduralReady` before the end-of-run `assertClockHeld`, so its pin was unmeasured there
+(`DX-KIT-INGEST-HARNESS-READINESS-BUDGET`). W3-DAYLIGHT leg (BEFORE `6b3b80f644` with the Batch 1638 kit overlaid, TIP Batch 1638
+`b4bf6307cf`): both probes exit 0 on both arms at the same instant, and `clockPin` reads requested = observed = observedAtEnd on all
+8 runs (the 4 F2 runs, the 2 F4 runs and the 2 repeats); the ingest hi frame is an overcast deck over a pale-blue horizon. Both
+halves are measured. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 1);
+`round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md` (leg 1).
 
 ### DX-KIT-2D-CV-RIG-PINNED-CAMERA — the pinned 2D / Columbus View rigs carry no camera — **CLOSED** (Batch 1630, `fd732657b7`)
 
@@ -32255,7 +32335,7 @@ file"; `round2-tar-aldarion/REVIEW_ARTHAD_P1.md`, "NOTES"; N5, a line count in t
   and "What the Edge leg must watch" item 2); the seat's addendum (`salvage-night/rows-for-records-r2-addendum.md:106-110`,
   `:115-117`).
 
-### DX-KIT-PF3-STARTUP-CEILING-WEBGL — PF-3's fixed 2,000 ms startup ceiling fails same-build WebGL arms — **CLOSED for the kit** (Batch 1635, `4bed633005`; the identity-cell Edge leg is the acceptance)
+### DX-KIT-PF3-STARTUP-CEILING-WEBGL — PF-3's fixed 2,000 ms startup ceiling fails same-build WebGL arms — **OPEN** (Batch 1635's band failed its KIT3 acceptance on WebGL 2D; Batch 1638's repair awaits its Edge leg; the per-repeat ceiling is `DX-KIT-PF3-CEILING-ON-MEDIAN`)
 
 - **Symptom:** on the kit2 leg both arms of `E-ID-2d` and of `E-ID-cv` ran the same build, yet each tip arm exited 1 on the WebGL
   PF-3 verdict alone ("a tip repeat took 2035.7 ms (2D) / 2224 ms (CV), not under the 2000 ms ceiling"). Pixels, stage,
@@ -32279,6 +32359,23 @@ identity-cell Edge leg on a quiet machine (PF-3 reading `bandSource: "startup-fl
 verdict on the 2026-10-31 p2d legs read `unmeasured-contended`, and those legs ran on trees without Batch 1635. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W1, "Brief premise corrected",
 Edge item 4); `round3/manwendil/REVIEW_HUNDOR_P1.md` (R1, N-c).
+**Acceptance not met on Edge, reopened (records round 7).** KIT3 leg (tree `6f328f950d`; the contention guard read `clear` on
+every PF arm), `--cells E-ID-2d,E-ID-cv --runs 2 --perf`, three same-build arms B, A1 (against B) and A2 (against A1), PF-3 on
+`navigationToFirstFrameMs`: WebGL 2D 2167.6 -> 2398.6 ms (`over`, +10.7 % against the 10 % floor) -> 2453.1 ms (`over`: one repeat
+2692.4 ms above the 2,500 ms ceiling); WebGL Columbus View 1598.3 -> 1724.3 -> 1654.4 ms (within); WebGPU 2D 5132.1 -> 5409.3 ->
+5308.1 ms and Columbus View 4776.8 -> 4680.2 -> 4615.9 ms, within only through `base-over-ceiling-banded`, because the WebGPU figure
+includes the per-cell pending-pipeline wait (viewer-ready at about 1.4-1.7 s, stage to first frame about 3.0-3.9 s). PF-1 as
+calibration on the same build: WebGPU 2D p95 +3.1 % (A1, `over` against the 3 % floor) and WebGL 2D p95 +6.3 % (A2, `over`); PF-2
+and PF-4 within; 0 px between arms. Exits: B 0, A1 1, A2 1. **Repair landed, its Edge leg owed:** Batch 1638 (`b4bf6307cf`; lane
+Aerandir, worker Iminye; reviewer Nurwe P1 HOLDS-WITH-FIXES, text only) subtracts each repeat's recorded pipeline wait from the
+startup interval and reports it beside the verdict (`DX-KIT-PF3-PIPELINE-WAIT-IN-STARTUP`), and sets `STARTUP_BAND_FLOOR_WEBGL =
+0.15` (`lib/metrics/perf-band.mjs:96`) from the 13.2 % same-build WebGL 2D spread (2167.6 -> 2453.1 ms); the WebGPU startup floor
+stays 0.10 and the PF-1 floor is unchanged (calibration only). The reviewer's replay of the banked KIT3 report under the new
+rule: every WebGPU arm reads `wait-excluded` under the rule `ceiling-and-band` and within (medians 1.58-1.79 s with the 3.0-3.7 s
+wait out), WebGL A1 is within under the 15 % floor, and WebGL 2D A2 still reads `over` on its 2692.4 ms repeat while its median is
+within (`DX-KIT-PF3-CEILING-ON-MEDIAN`). **Acceptance:** kit round 4's Edge item 3 (the KIT3 recipe again). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 4, findings 5-6);
+`round3/aerandir/LANDING_PACKET_AERANDIR.md` (W3); `round3/aerandir/REVIEW_NURWE_P1.md` (section 2 "PF-3", NB-1).
 
 ### NEW-OCEAN-FFT-RIG-GPU-HEAVY — the FFT-ocean rig's frame is GPU-heavy — **OPEN** (observation; no baseline)
 
@@ -32290,7 +32387,7 @@ claimed. **Suggested next step:** a breakdown inside the scene pass and a same-r
 anyone calls it a defect. **Source:** the PF receipt `:41-49`, `:65-67`; the kit2 receipt `:21-30`, `:50`; the seat's addendum
 (`:111-112`).
 
-### DX-KIT-WATER-CELLS-CAPTURE-MANIFEST — the water probes emit no capture-seam manifest — **CLOSED for the kit for the three water probes** (Batch 1635, `4bed633005`; a water run sheeted on Edge is owed)
+### DX-KIT-WATER-CELLS-CAPTURE-MANIFEST — the water probes emit no capture-seam manifest — **CLOSED for the three water probes** (Batch 1635, `4bed633005`; sheeted on Edge 2026-10-31 for `probe-water-cells` and `probe-fft-ocean`, KIT3 leg; `probe-ssr-water` Node-pinned only)
 
 The water half of `DX-KIT-CONTACT-SHEET-MANIFEST`: Batch 1630 made `probe-landing-cells` write `capture-manifest.json`, but
 none of `probe-water-cells.mjs` (with its pieces `lib/water-cell-table.mjs` and `lib/water-cell-verdicts.mjs`),
@@ -32312,6 +32409,16 @@ reviewer N-a, not filed as a row). **Still owed:** a real water run sheeted on E
 `water-bookmark-sunset-glint` check move to `DX-KIT-WATER-BOOKMARK-RIGS-UNCAPTURED` (records round 6), because no probe captures
 those rigs. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W5, Edge item
 2); `round3/manwendil/REVIEW_HUNDOR_P1.md` (R1, N-a).
+**Measured on Edge (records round 7).** KIT3 leg (tree `6f328f950d`): `probe-water-cells.mjs --arm after --cells
+great-lakes,coast-50km,orbit-disc,great-lakes-lakeonly` wrote its manifest (16 captures, 0 violations; BEFORE `UNMEASURED` "no
+--base-report", AFTER `MEASURED` on 8 rig pages x 2 renderers). The run was BEFORE-less because the guide names no banked round-2
+water report. It exited 1 only through the six NOT RUN 2g verdicts (`DX-KIT-WATER-2G-NOT-RUN-READS-FAIL`); every stage, 2b, 2c, 2e
+and 2f verdict passed. `probe-fft-ocean.mjs` exited 0 with its manifest (0 violations). `contact-sheet.mjs --manifest` rendered
+both sheets (16 and 7 images, every `<img>` resolving); every output folder was new, so no stale manifest could be present.
+`probe-ssr-water.mjs` did not run on Edge. **Tree recipe (seat note, not a kit defect):** the default-cells run refused at
+preflight (exit 3) because Sandcastle 2 was not built in the Edge tree, so cell 1f was NOT RUN; an Edge tree with 1f in scope runs
+`npm run build-sandcastle` first. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md`
+(section 2, finding 3; sheets under `round3/edge/kit3-20261031/item2-sheets/`).
 
 ### DX-KIT-CAPTURE-SEAM-OVER-SIZE — `lib/capture.mjs` is 2,265 lines — **CLOSED** (Batch 1633, `b8026741dd`)
 
@@ -32347,6 +32454,17 @@ lane's tree) and 154 for the second sentinel read (Batch 1635; 2,574 on that lan
 `landing-perf-metrics.spec.mjs` joins the row at 1,718 (1,592 at Batch 1632). The same spec's hard-coded temp root is
 `DX-KIT-LANDING-SPEC-TEMP-ROOT-COLLISION` (records round 6). **Source:** `round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W1, W4);
 `round3/irimon/REVIEW_IRIME_P1.md` (N4); `round3/manwendil/REVIEW_HUNDOR_P1.md` (N-f).
+**Two of three split (records round 7), still OPEN:** Batch 1638 (`b4bf6307cf`; lane Aerandir, worker Enelye; reviewer Nurwe P1
+HOLDS-WITH-FIXES) splits `probe-landing-cells.spec.mjs` (2,790 lines at Batch 1637; the packet's 2,793 is the lane's own count) into
+527 lines plus five parts (`-run-compare` 380, `-contention-bands` 286, `-merge-pipelines` 590, `-identity-sentinel` 426,
+`-kernel-cross-renderer` 569; 83 tests before and after) and `landing-perf-metrics.spec.mjs` 1,718 -> 418 plus four parts
+(`-frame-pass` 210, `-startup` 250, `-residency` 406, `-contention` 444; 79 tests), test names and bodies byte-identical by the
+reviewer's comparison, shared helpers in `fixtures/probe-landing-cells-support.mjs` and `fixtures/landing-perf-metrics-inputs.mjs`
+(`wc -l` at Batch 1640). **Still open:** `landing-cell-stage.spec.mjs` (2,276 lines, outside the lane's brief) and the 16
+text-anchored `importMutated` mutants in 8 tests, which need injected seams in the probe; three inherited weak fixture defaults
+survive mutation on both trees (reviewer NB-11). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (W5); `round3/aerandir/REVIEW_NURWE_P1.md`
+(section 3, NB-11).
 
 ### DX-KIT-LANDING-MANIFEST-SHA-SKIP — a BEFORE image without a recorded sha256 is copied unchecked — **CLOSED** (Batch 1635, `4bed633005`)
 
@@ -32387,7 +32505,7 @@ it and its own receipt write uses it, and the manifest piece's `runtimeReportFil
 receipts companion, not the runtime). `probe-runtime-exports.spec.mjs` lists 41 names. **Source:**
 `round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W3); `REVIEW_HUNDOR_P1.md`.
 
-### DX-KIT-SENTINEL-READ-ONCE — the onmessage sentinel is read once, before staging — **CLOSED for the kit** (Batch 1635, `4bed633005`; the in-run second read on Edge is owed)
+### DX-KIT-SENTINEL-READ-ONCE — the onmessage sentinel is read once, before staging — **CLOSED** (Batch 1635, `4bed633005`; the second read measured on Edge 2026-10-31, KIT3 leg)
 
 `probe-landing-cells.mjs:355` reads the sentinel once, right after the viewer exists and before the stage (`:366`). Batch 1630's
 positive control proves the sentinel live at the end of the page, but a lazily loaded module that assigns `window.onmessage`
@@ -32402,6 +32520,12 @@ fails when either read saw a replacement and is notRun when the second read is m
 `onmessage-sentinel.spec.mjs`; mutants W4-S1 to S3 killed. **Still owed:** the in-run second read on an identity cell on Edge
 (`E-ID-2d`, `E-ID-cv` with `--sentinel-positive-control`: two clean reads, the control flips); the 2026-10-31 p2d legs ran on
 trees without Batch 1635. **Source:** `round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W4, Edge item 3); `REVIEW_HUNDOR_P1.md` (R1).
+**Measured on Edge, CLOSED (records round 7).** KIT3 leg (tree `6f328f950d`, Batch 1635 in the tree): `--cells E-ID-2d --runs 1
+--sentinel-positive-control` exits 0 with 7 verdicts, none failed; on both pages (WebGL, WebGPU) `reads.first` and `reads.second`
+are installed and unchanged with 0 assignments; `onmessage-positive-control` appears exactly once (the WebGL page, run 0) and
+passes with 1 assignment (after = `onmessagePositiveControlHandler`). Without the control the cell exits 0 with 6 verdicts, all
+passing, both reads clean on both pages. `E-ID-cv` was not run with the control. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 3).
 
 ## 2026-10-31 — records round 6: Batches 1633-1636, the probe-kit round 3 and the 2D / Columbus-view banding fix
 
@@ -32461,8 +32585,14 @@ and `DX-KIT-WATER-CELLS-CAPTURE-MANIFEST` (closed for the kit, each with its Edg
   (mechanism).
 - **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_P2D_ACCEPT.md` (section 3, F2);
   `round3/irimon/REVIEW_TINDOMIEL_P2.md` (section 5).
+- **Kit consequence (records round 7):** Batch 1638 makes a run whose `--cells` include an identity cell default to `--runs 2`
+  (`landingArgsFinalize`, `lib/landing-cell-table.mjs:271`; an explicit `--runs` wins). The default cells include `E-D` and
+  `E-D-HDR`, so a bare `probe-landing-cells` run now takes two runs of all six default cells, about twice the wall time (reviewer
+  NB-4); `--runs 1` keeps the old behaviour. The mechanism is still unattributed. **Source:**
+  `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (W3); `round3/aerandir/REVIEW_NURWE_P1.md`
+  (NB-4).
 
-### DX-KIT-PF-UNMEASURED-CONTENDED-EXIT-CODE — a `--base-report` run under load exits 1 through PF-3 `unmeasured-contended` alone — **OPEN** (probe kit)
+### DX-KIT-PF-UNMEASURED-CONTENDED-EXIT-CODE — a `--base-report` run under load exits 1 through PF-3 `unmeasured-contended` alone — **CLOSED for the kit** (Batch 1638, `b4bf6307cf`; no Edge run of the kit probe has read it yet)
 
 On the acceptance leg runs 1r, 3 and 4 exited 1 while every pixel, stage, gate and sentinel verdict passed: the only failing
 verdicts were PF-3 `unmeasured-contended` (12, 4 and 2 of them; on 1r `verdictIfUncontended` read `within`). `--no-cell-perf`
@@ -32471,6 +32601,18 @@ unmeasured statistic is pushed as `pass: false` with `notRun: true` (`:237-249`)
 **Repair (a kit decision under the Charter's verdict vocabulary):** let the run's exit code tell an unmeasured PF statistic
 from a measured red, or let a flag skip the PF-3 comparison; an unmeasured statistic stays NOT RUN, never a pass.
 **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_P2D_ACCEPT.md` (invocations table, F3).
+**Closed for the kit (records round 7): Batch 1638 (`b4bf6307cf`; lane Aerandir, worker Ingwion; reviewer Nurwe P1
+HOLDS-WITH-FIXES).** `lib/probe-refusal.mjs` freezes `UNMEASURED_REASONS {CONTENDED, RUNS}` (`:97`); a verdict that keeps
+`pass: false` and `notRun: true` and carries one of those reasons is recorded, never promoted, and does not fail the run
+(`isMarkedUnmeasured`, `:110`), so `exitCodeForOutcome` exits 0 when every verdict passes or is so marked and 1 for any unmarked
+non-pass or when nothing was measured; refusal 3 and error 2 are unchanged and the frozen table in `lib/verdict-exit-gate.mjs` is
+untouched. Only PF `unmeasured-contended` (`lib/landing-verdicts.mjs:279`) and the water 2g "needs --runs 2" NOT RUN
+(`lib/water-cell-verdicts.mjs:586`) are marked; a plain `unmeasured` PF and every other NOT RUN still exit 1. The summary prints
+`UNMEASURED (<reason>)`; `verdictIfUncontended` stays in the report's comparison, not on the verdict line (reviewer NB-8). Spec
+`verdict-exit-fold.spec.mjs` (11). **Not yet read on Edge by the kit probe:** the W3-DAYLIGHT leg's E-W run used the W3 job's
+1607-era instrument, which still folds `unmeasured-contended` as exit 1 (`DX-W3-EW-INSTRUMENT-UNMEASURED-EXIT`). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (W2); `round3/aerandir/REVIEW_NURWE_P1.md`
+(section 2 "K3-2 / P2D F3 / W2", NB-8); `round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md` (leg 3).
 
 ### DX-KIT-LANDING-RADIAL-BANDING-FLAT-MAP — no concentric-energy number for a flat 2D / Columbus View frame — **OPEN** (probe kit)
 
@@ -32494,27 +32636,53 @@ recorded. **Source:** `round3/irimon/LANDING_PACKET_IRIMON.md` (rules checklist,
 Batch 1634's dial took the stage from 930 to 982 lines (`wc -l` at Batch 1636), under the rule with little headroom. **Repair:**
 the next dial goes to a companion piece. **Source:** `round3/irimon/LANDING_PACKET_IRIMON.md`; `REVIEW_IRIME_P1.md` (N4).
 
-### DX-KIT-WATER-BOOKMARK-RIGS-UNCAPTURED — the water bookmark and offline-bathymetry rigs are captured by no probe — **OPEN** (probe kit)
+### DX-KIT-WATER-BOOKMARK-RIGS-UNCAPTURED — the water bookmark and offline-bathymetry rigs are captured by no probe — **CLOSED for the kit** (Batch 1638, `b4bf6307cf`; the sheets on Edge are owed)
 
 No `.mjs` under `Tools/` outside `rigs/` names a `water-bookmark-*` or `water-bathymetry-offline{,-off}` rig (grep at Batch 1636),
 so their sheets and the `water-bookmark-sunset-glint` sun-in-frame check cannot come from a manifest alone (carried from
 `DX-KIT-WATER-CELLS-CAPTURE-MANIFEST`). **Repair:** a rig-driven capture probe from kit pieces that stages and captures listed
 rigs and writes its manifest through `lib/water-capture-manifest.mjs` or the landing builder. **Source:**
 `round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W5; rows for the records lane).
+**Closed for the kit (records round 7): Batch 1638 (`b4bf6307cf`; lane Aerandir, worker Tatie; reviewer Nurwe P1
+HOLDS-WITH-FIXES).** `WATER_CAPTURE_CELLS` (`lib/water-cell-table.mjs:69`; opt-in only, `WATER_CELLS` and the default cells
+unchanged and pinned by an exact list) captures the seven `water-bookmark-*` rigs and the `water-bathymetry-offline{,-off}` pair:
+six bookmark pages as `capture` cells (`bookmark-bahamas-photic-dive` WebGPU only, per its rig), `bathymetry-offline` as an ON/OFF
+pair, and `bookmark-global-water-weather` through its Sandcastle 2 demo page (NOT RUN under `--no-ion`; its gallery files are
+served only when requested). Capture cells get `:stage` and `:2e-no-device-fault` verdicts and manifest entries, no band, and stay
+out of the banded summary. Spec `probe-water-capture-cells.spec.mjs` (9). **Owed on Edge:** `--cells
+bookmark-sunset-glint,bathymetry-offline` sheeted with `contact-sheet.mjs --manifest` (kit round 4's Edge item 5; the
+global-water-weather cell needs `npm run build-sandcastle` in the Edge tree). The `water-bookmark-sunset-glint` sun-in-frame check
+is not part of the batch and stays owed with the sheets. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (W4); `round3/aerandir/REVIEW_NURWE_P1.md`
+(section 2 "Water capture cells", mutants N20-N21).
 
-### DX-KIT-CLOCK-FLAG-KIND — the runtime's flag table has no validating ISO-instant kind — **OPEN** (probe kit, small)
+### DX-KIT-CLOCK-FLAG-KIND — the runtime's flag table has no validating ISO-instant kind — **CLOSED** (Batch 1638, `b4bf6307cf`)
 
 `--clock` is declared as a plain string option, so `lib/clock-pin.mjs` validates it from each weather probe's entry point
 (`clockFlagExitCode(...) ?? runProbe(...)`). **Repair:** an `iso-instant` kind in `lib/probe-runtime-args.mjs` when a second
 consumer appears. **Source:** `round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W2; rows for the records lane).
+**Closed (records round 7): Batch 1638 (`b4bf6307cf`; lane Aerandir, the lead's piece with worker Iminye; reviewer Nurwe P1
+HOLDS-WITH-FIXES).** `isoInstant` (`lib/probe-runtime-args.mjs:125`) is the one home of the grammar (zone required, to the second,
+calendar day checked, normalized to `YYYY-MM-DDTHH:MM:SSZ`); `parseProbeArgs` has the kind `iso-instant` and `--clock` uses it
+(`CLOCK_OPTION.kind`, `lib/clock-pin.mjs:28`), with `parseClockIso` delegating and `clockFlagExitCode` kept as a pre-check. The
+same batch adds `options.finalize(parsed, {explicit})` for defaults that depend on other flags. Spec
+`probe-runtime-args-kinds.spec.mjs` (4) and one more `clock-pin.spec.mjs` test; the lead's and the reviewer's mutants killed.
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (lead piece, W3);
+`round3/aerandir/REVIEW_NURWE_P1.md` (section 2 "iso-instant", mutants N1-N3).
 
-### DX-KIT-LANDING-SPEC-TEMP-ROOT-COLLISION — `probe-landing-cells.spec.mjs` uses a fixed lane temp root — **OPEN** (probe kit, small)
+### DX-KIT-LANDING-SPEC-TEMP-ROOT-COLLISION — `probe-landing-cells.spec.mjs` uses a fixed lane temp root — **CLOSED** (Batch 1638, `b4bf6307cf`)
 
 The spec sets `TEMP_ROOT` to `os.tmpdir()/cesium-lane/enedwaith` (`probe-landing-cells.spec.mjs:67`), creates it (`:70`) and
 removes it recursively in its `after` hook (`:74`). Two runs of `test-visual-probe-contracts` at once collided on it (ENOTEMPTY or
 ENOENT on whichever tree lost the race; sequential re-runs 560/560 on both trees), and the hook deletes a root named after a
 lane that is not the runner's. **Repair:** a per-run root through `Tools/lib/lane-tmp.mjs` (`withLaneTmp`) or `mkdtemp`.
 **Source:** `round3/aghan/REVIEW_FINDIS_P1.md` (N7); `round3/manwendil/REVIEW_HUNDOR_P1.md` (N-e).
+**Closed (records round 7): Batch 1638 (`b4bf6307cf`; lane Aerandir, workers Ingwion and Enelye; reviewer Nurwe P1
+HOLDS-WITH-FIXES).** `probe-landing-cells.spec.mjs` and each of its five split parts take a per-run root through `mkLaneTmp` and
+remove only their own; the name `enedwaith` no longer occurs under `Tools/` (grep at Batch 1640). The probe itself has no temp
+root (the row's `:67` was the spec's line). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (W2, W5);
+`round3/aerandir/REVIEW_NURWE_P1.md` (section 2 "Temp root").
 
 ### DX-KIT-CAPTURE-SEAM-MOVED-CITATIONS — prose and comment citations still point at code Batch 1633 moved — **OPEN** (probe kit and guide, text only)
 
@@ -32540,3 +32708,285 @@ corrected in place by this round. **Repair:** the next kit lane that touches tho
 - **Message claims of Batches 1635 and 1636 now read against the receipts:** Batch 1635's "same-build WebGL arms stop failing
   PF-3" is a Node replay of the kit2 numbers, not an Edge measurement (Hundor N-g); Batch 1636's "rendered acceptance owed" is
   met by the acceptance leg above, which ran (07:15-07:43 EDT) before the commit (08:01 EDT); the message keeps the lane's pre-leg wording.
+
+## 2026-10-31 — records round 7: Batches 1637-1640, the probe-kit round 4, the spine's landing hook, the rules-file diet and the KIT3 and W3-DAYLIGHT Edge legs
+
+On 2026-10-31 (08:41-10:52 EDT) four batches landed, read at Batch 1640 with `git log --format='%h %H %T %s'
+6f328f950d..HEAD`; their landing table is `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-31 — Batches 1637-1640 …)".
+Batch 1637 (`f4851a0a3d`) is records round 6 (lane Lalwen; reviewer Amarie, P1 HOLDS-WITH-FIXES, R1-R4 text applied by the seat
+in a re-freeze). Batch 1638 (`b4bf6307cf`) is the probe-kit round 4 (lane Aerandir, Opus lead; Sonnet workers Celebrindal,
+Ingwion, Iminye, Tatie and Enelye; reviewer Nurwe, P1 HOLDS-WITH-FIXES, the one REQUIRED fix RQ-1 a count in the message, applied by
+the seat; 14 of the lead's mutants and 22 of the reviewer's killed, three inherited survivors). Batch 1639 (`76d8fd43b8`) is the
+context spine's landing hook (lane Lenwe, Opus lead; Sonnet workers Nerwen and Artanis; reviewer Serinde, P1 HOLDS, 0 required).
+Batch 1640 (`12d9bea471`) is the rules-file diet (lane Istarnie; reviewer Indilzar, P1 HOLDS-WITH-FIXES, R1 and the adopted N4
+applied by the seat; landed with the governance flag). Banks: `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/`
+(`records6/`, `aerandir/`, `landing-logs/`) and `lanes-2026-10-31/context-diet/` (`lenwe/`, `istarnie/`). **Byte check (this
+round):** each banked lane patch applied in a temp index to its landed parent gives a tree that differs from the landed one only in
+`migration_doc/TOOLING_CATALOG.md` (regenerated at the seat) and, for 1638-1640, `package.json` (the seat's runner homes). Two Edge
+legs by the seat's executor Eowyn measured the round: KIT3 (08:05-08:24 EDT, tree `6f328f950d`, the probe-kit round 3's owed
+measurements) and W3-DAYLIGHT (10:33-11:00 EDT, BEFORE `6b3b80f644` with the Batch 1638 kit overlaid, TIP `b4bf6307cf`); receipts
+`round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` and `EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md`, evidence banked beside them
+(`kit3-20261031/`, `w3-daylight-20261031/`). Rows updated in place by this round: `DX-PROBE-CLOCK-PIN`,
+`DX-KIT-SENTINEL-READ-ONCE`, `NEW-CLOUD-W3-WEATHER-PROBES-LEG-OWED` (closed, measured), `DX-KIT-WATER-CELLS-CAPTURE-MANIFEST`
+(measured for two of its three probes), `DX-KIT-INGEST-HARNESS-READINESS-BUDGET`, `DX-KIT-CONSOLE-ERROR-LIST-CAP`,
+`DX-KIT-CLOCK-FLAG-KIND`, `DX-KIT-LANDING-SPEC-TEMP-ROOT-COLLISION` (closed), `DX-KIT-PF-UNMEASURED-CONTENDED-EXIT-CODE` and
+`DX-KIT-WATER-BOOKMARK-RIGS-UNCAPTURED` (closed for the kit), `DX-KIT-PF3-STARTUP-CEILING-WEBGL` (reopened: its KIT3 acceptance
+failed), `NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY` (re-attributed), `NEW-2D-WEBGPU-CONCENTRIC-BANDING` (the KIT3 confirmation and
+the band in code), `NEW-WEBGL-E-D-DEFAULT-FRAME-NONDETERMINISTIC` (the two-run default), `DX-KIT-LANDING-SPECS-OVER-SIZE` (two of
+three split, open) and `DX-GOVERNANCE-TSC-NOEMIT-IS-VACUOUS-FOR-THE-ENGINE` (the CLAUDE.md part done). Owed on Edge after this
+round (kit round 4's packet, "What the seat's next Edge job must capture"): the other six readiness-budgeted cloud probes (item
+1), the live E-ID band (item 2), the PF-3 KIT3 recipe again (item 3), a loaded-machine landing run (item 4), and the water 2g
+read and bookmark sheets (item 5). The rows below are new.
+
+### NEW-CLOUD-W3-WEATHER-MAP-ON-CARVES-DAYLIGHT — `probe-weather-map` in daylight failed `on-carves` once, and the bar follows a run-to-run-variable OFF deck — **OPEN** (observation, WebGPU only by design; not a regression)
+
+- **Measured (KIT3 leg, tree `6f328f950d`):** `probe-weather-map.mjs --clock 2026-06-21T18:00:00Z` exits 1 on `on-carves` alone:
+  onMin 0.106 against 0.5 x offMin 0.130 = 0.065 (off-renders, on-dense, on-range and clean pass). The bar `onMin < 0.5 x offMin`
+  was set under wall-clock runs; the probe captures WebGPU only, by design.
+- **Re-read on the W3-DAYLIGHT leg:** onMin is 0.106 at (-110, 30) on all 6 runs, on both arms; offMin reads 0.397-0.440 on every
+  run whose first frame rendered, so `on-carves` passes on both arms there (bars 0.198-0.220); the one TIP failure (offMin 0.000)
+  was a black first frame (`DX-KIT-WEATHER-MAP-FIRST-FRAME-BLACK`). The KIT3 OFF sweep read five of its ten locations at
+  0.130-0.206 where the W3-DAYLIGHT runs typically read 0.41-0.62, so the verdict follows the variable OFF deck
+  (`NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY`), not the arm.
+- **Next step:** re-judge `on-carves` after the OFF deck is pinned (wind, quality tier, network globe); if the deck still moves,
+  the bar needs a band over several runs, not one run. **Suggested owner:** the cloud program, not the kit.
+- **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 1, finding 2);
+  `round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md` (leg 1 "on-carves", finding 3).
+
+### DX-KIT-WATER-2G-NOT-RUN-READS-FAIL — at `--runs 1` the six 2g verdicts read NOT RUN but carried `pass: false` and failed the run — **CLOSED for the kit** (Batch 1638, `b4bf6307cf`; the Edge read is owed)
+
+On the KIT3 leg `probe-water-cells.mjs --arm after` (one run) exited 1 with every measured verdict passing: the six 2g verdicts
+carry `notRun: true` ("2g needs --runs 2 or more (this arm ran 1)") and `pass: false`, so the summary printed FAIL. **Fixed by the
+exit fold of `DX-KIT-PF-UNMEASURED-CONTENDED-EXIT-CODE`:** the 2g NOT RUN is marked `unmeasured: runs` for that reason only
+(`lib/water-cell-verdicts.mjs:586`), prints `UNMEASURED (runs)` and no longer fails the run; a 2g with two runs requested and one
+captured still exits 1. **Owed:** the same command on Edge exiting 0 (kit round 4's Edge item 5). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 2, finding 4);
+`round3/aerandir/LANDING_PACKET_AERANDIR.md` (W2); `round3/aerandir/REVIEW_NURWE_P1.md` (section 2 "K3-2 / P2D F3 / W2").
+
+### DX-KIT-PF3-PIPELINE-WAIT-IN-STARTUP — the WebGPU PF-3 startup figure included the per-cell pending-pipeline wait — **CLOSED for the kit** (Batch 1638, `b4bf6307cf`; the Edge read is owed)
+
+On the KIT3 leg every WebGPU identity-cell startup read 4.6-5.6 s against the 2,500 ms ceiling, "within" only by
+`base-over-ceiling-banded`: viewer-ready came at about 1.4-1.7 s and stage to first frame took 3.0-3.9 s, the per-cell
+pending-pipeline wait, which the stage runs before `stagedAtMs` and so inside `navigationToFirstFrameMs` (the reviewer's
+re-derivation). **Fixed:** PF-3 subtracts each repeat's recorded wait (`record.pipelines.waitedMs`) from an interval that contains
+it and reports `pipelineWait {basis, base, tip}` beside the verdict; if any repeat lacks a recorded wait neither arm is adjusted
+(`raw-fallback`, with a reason line), so old base reports still compare (`lib/metrics/startup-compile.mjs:201`, `:204`). Spec
+`landing-startup-pipeline-wait.spec.mjs` (12). The reviewer's replay of the KIT3 report: every WebGPU arm `wait-excluded`, medians
+1.58-1.79 s, under the real ceiling. **Owed:** the KIT3 recipe on Edge reading `wait-excluded` on every arm and the WebGPU rule
+`ceiling-and-band` (kit round 4's Edge item 3). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 4, finding 6);
+`round3/aerandir/LANDING_PACKET_AERANDIR.md` (W3); `round3/aerandir/REVIEW_NURWE_P1.md` (section 2 "PF-3").
+
+### DX-KIT-WATER-MANIFEST-STALE-ON-THROW — a builder throw left an earlier run's `capture-manifest.json` in place — **CLOSED** (Batch 1638, `b4bf6307cf`)
+
+Records round 6 noted it under its suggested id (reviewer Hundor N-a): on a builder throw `writeWaterProbeManifest` returned
+`written: false` but left a manifest from an earlier run in the same directory. The lane found the same path in the landing probe's
+writer (the builder throws before the writer reaches its own removal). **Fixed:** one throw-safe writer,
+`writeLandingCaptureManifestOrViolations` (`lib/landing-capture-manifest.mjs:598`), used by both probes, removes the manifest on a
+throw (an rm failure never costs the receipt); `water-capture-manifest.spec.mjs`, which asserted the old behaviour, now expects the
+removal. Spec `water-capture-manifest-stale.spec.mjs` (4: water, landing, an injected fs and a mutant). The KIT3 leg's output
+folders were all new, so it could not show a stale manifest. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (W4); `round3/aerandir/REVIEW_NURWE_P1.md`
+(section 2 "Stale manifest"); `round3/manwendil/REVIEW_HUNDOR_P1.md` (N-a).
+
+### DX-KIT-PF3-CEILING-ON-MEDIAN — PF-3's 2,500 ms ceiling reads `over` on one repeat while the tip median is within — **OPEN** (probe kit; the seat's decision recorded, not implemented)
+
+On the KIT3 A2 arm (the same build as its base) WebGL `E-ID-2d` reads `over` because one of its two repeats took 2692.4 ms, over the
+2,500 ms per-repeat ceiling, while its median (2453.1 ms against a 2398.6 ms base, +2.3 %) is inside the 15 % floor Batch 1638 set;
+the reviewer's replay under the new rule finds it the only arm still `over` (reason line "a tip repeat took 2692.400000035763 ms,
+not under the 2500 ms ceiling"). **Decision (the seat's, in the records round 7 brief):** the ceiling applies to the median and the
+maximum is reported beside it. **Repair:** that rule in `lib/metrics/perf-band.mjs` with a spec over the KIT3 A2 numbers and an
+inertness mutant. The lane's packet filed the same finding as `DX-KIT-PF3-WEBGL-CEILING-READS-MAX`; this row is that finding.
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 4);
+`round3/aerandir/LANDING_PACKET_AERANDIR.md` (W3, "Open finding for the seat"); `round3/aerandir/REVIEW_NURWE_P1.md` (NB-1);
+`round3/brief-records-round7.md` (item 4, the decision).
+
+### DX-KIT-CAPTURE-SEAM-CLOSE-EXEMPTION — the capture seam's 45 s close path has no complete-work exemption — **OPEN** (probe kit)
+
+Batch 1638 gave the runtime a complete-work exemption (a run whose cells and verdicts are complete survives a lingering browser close
+and publishes its receipt), but the capture seam's own close path, `DEFAULT_CLOSE_DEADLINE_MS = 45_000`
+(`lib/capture-vocabulary.mjs:104`, imported by `lib/capture.mjs:91`), has none yet. **Repair:** the same exemption and a
+`browserCloses[]`-style record in the seam, with a spec and an inertness mutant. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` ("Excluded, and why");
+`round3/aerandir/REVIEW_NURWE_P1.md` (NB-2).
+
+### DX-KIT-WEATHER-MAP-FIRST-FRAME-BLACK — `probe-weather-map` captures its located frames after a fixed 90 frames and once captured a black globe — **OPEN** (probe kit)
+
+On the W3-DAYLIGHT leg TIP run 2 (F4, 10:51 EDT) captured `located-off-lon-120-lat45.png` fully black (the globe not drawn yet, a
+few isolated pixels), so offMin read 0.000 and off-renders, on-carves and on-range failed (exit 1): 1 of 3 TIP runs, 0 of 3 BEFORE
+runs; the TIP repeat at 10:56 exited 0. The probe renders a fixed `frames: 90` per located view (`probe-weather-map.mjs:84`, the
+loop at `:131`) with no globe-ready or pending-pipeline wait; Batch 1638's readiness wait covers the cloud harness only. Not
+attributed to the tip engine. **Repair:** the kit's readiness wait (globe tiles loaded, pending pipelines 0) before the first
+located capture. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md` (leg 2,
+finding 1).
+
+### DX-W3-EW-INSTRUMENT-UNMEASURED-EXIT — the W3 job's banked E-W instrument still scores PF-3 `unmeasured-contended` as exit 1, and its kit60 variant is gone — **OPEN** (executor instrument)
+
+The W3-DAYLIGHT leg re-ran E-W (`--cells E-W-ground,E-W-ground-hdr,E-W-30km,E-W-30km-hdr --runs 2`) with the W3 job's banked
+instrument (`wave-end/w3-identity/_executor/instrument/probe-landing-cells-w3.mjs`, read-only from the seat's output). Its `-kit60`
+variant could not run (its kit copy under a swept temp root no longer exists), so the non-kit60 variant ran over the tip's kit.
+BEFORE exited 0 and reproduced the W3 job's BEFORE frames at 0 px (16 of 16); TIP exited 1 on PF-3 verdicts only:
+three arms read `unmeasured-contended` (`E-W-ground|webgl`, `E-W-ground-hdr|webgpu`, `E-W-30km|webgpu`; tip run 1 mean CPU 71 %),
+which the instrument's 1607-era body still folds as a fail (Batch 1638 fixed the kit probe only), and `E-W-ground|webgpu` reads a
+measured `over` with contention `clear`: its PF-3 field `navigationToFirstCloudFrameMs` (the `compile` statistic) went 6,884.8 ->
+8,985.8 ms (+30.5 % against a 14.5 % repeat band; `startup` within, 4,475.1 -> 4,714.8 ms), BEFORE `6b3b80f644` against TIP
+`b4bf6307cf`, one pair of two-repeat arms; that red would exit 1 under the kit's fold too, and is recorded, not attributed (the arms
+differ by W3 and Batches 1616-1638; re-measuring it on the kit's own probe is part of the repair below; report
+`round3/edge/w3-daylight-20261031/TIP/ew/landing-cells-report.json`, `comparison`). Identity on that leg: WebGL BEFORE against TIP 0 px on
+all 8 pairs; WebGPU BEFORE against TIP 419,796-423,601 px (the job's managed-deck move, 419,797-423,600); the tip against the job's
+TIP(8): WebGL 0 px, WebGPU 302-348 px on the 30 km siblings and 28,092-28,396 px on the ground siblings, max channel 1, the
+landings 1616-1638 on top of TIP(8), recorded, not banded. **Suggested repair:** run the next wave's E-W job on the kit's own
+`probe-landing-cells`, or re-cut the instrument over the tip kit. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md` (leg 3, finding 4).
+
+### DX-SPINE-GRAPHIFY-EPERM-WHILE-MCP-OPEN — a full spine build failed with EPERM while the session's MCP server held the database — **CLOSED** (Batch 1639, `76d8fd43b8`)
+
+**Measured (the seat's context-usage audit, 2026-10-31):** `npm run context-graphify` failed with EPERM on
+`.cache/context-spine/cesium-context.sqlite` while the `cesium-context-spine` MCP server held the database, so the Graphify import
+stayed at 2026-10-29 (25,252 nodes) while the SQLite layer refreshed fine. The reviewer's premise check refines it: at the base the
+held full build exits 1 at its first `rmSync` (the main file) with a raw `EPERM`, deleting nothing, and the incremental build
+succeeds while held. **Closed by Batch 1639 (lane Lenwe, worker Nerwen; reviewer Serinde P1 HOLDS, 0 required):**
+`openContextDatabase` refuses a held reset by name ("<db>: the cesium-context-spine MCP server holds the database; use the
+incremental build or close the session's MCP server", `Tools/context-spine/schema.mjs:70`) before anything is deleted, and
+`context-graphify` is now the incremental build with Graphify (`node Tools/query-context.mjs build --incremental --with-graphify`),
+which works while the server is up (the seat's figure, quoted by the lane: 2 min 12 s, 25,387 nodes). Spec
+`spine-freshness.spec.mjs` (9 tests, one with a real held handle on win32). The lane's packet named this row and the next one
+together `DX-SPINE-FRESHNESS`. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/brief-records-round7.md` (item 4b,
+the seat's measurement); `context-diet/lenwe/LANDING_PACKET_LENWE.md`; `context-diet/lenwe/REVIEW_SERINDE_P1.md` (premise (a), N4).
+
+### DX-SPINE-REFRESH-AFTER-LANDING — the seat's spine DB went 30 batches stale because no landing step refreshed it — **CLOSED** (Batch 1639, `76d8fd43b8`)
+
+**Measured (the seat, 2026-10-31):** the seat DB was 30 batches stale because no landing step refreshed it, and provisioning seeds
+every clone from it, so seeded packs were stale too. The seat's runbook then ran `context-refresh` after every push, and lane
+briefs name the spine as the first scoping step (`round3/brief-common-round3.md`, the hard rule "Scope with the context spine before
+a cold read"). **Closed by Batch 1639 (lane Lenwe, workers Nerwen and Artanis; reviewer Serinde P1 HOLDS):** the tracked landing
+hook `Tools/landing/post-landing-spine.mjs` always runs the incremental refresh and, when the commit touched
+`packages/engine/Source/` or `Tools/context-spine/` (or with `--graphify`), the incremental Graphify import, which must execute; it
+exits 0 refreshed, 1 on a failed step, a Graphify that did not run or a DB `head_sha` that is not HEAD, and 2 on usage.
+`Tools/context-spine/seed-clone.mjs` brings a seeded clone DB to the clone's HEAD with an incremental build (a 180 s bound; a
+failure is a `WARNING:` note; `--no-spine-refresh` skips it) before any capsule is written. Specs `spine-freshness.spec.mjs` (9) and
+`post-landing-spine.spec.mjs` (17); `test-context-spine` 44/44 (18 + 9 + 17); the reviewer's 20 mutants killed 18, the two
+survivors filed in `DX-SPINE-HOOK-RESIDUALS`. The hook ran after Batch 1640's landing ("post-landing-spine OK at 12d9bea471").
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/brief-records-round7.md` (item 4b);
+`context-diet/lenwe/LANDING_PACKET_LENWE.md`; `context-diet/lenwe/REVIEW_SERINDE_P1.md` (Behaviour, Mutants);
+`context-diet/istarnie/land-istarnie.log:33`.
+
+### DX-RUNNER-HOMES-SCRIPT-LINE — `parseRunnerHomes` rejects a lane's `SCRIPT:` line, so a lane cannot declare a package.json script change — **OPEN** (landing tooling, small)
+
+`parseRunnerHomes` (`Tools/visual-regression/lib/runner-homes.mjs:23-37`) skips blank lines, `#` comments and the `RUN:` line
+(`:27`) and throws "runner-homes: unreadable home line" on anything else (`:32`), including the `SCRIPT:` line the seat's briefs
+tell lanes to use for a seat-owned `package.json` script change. Measured by lane Lenwe and reproduced by its reviewer:
+`spec-runner-homes.spec.mjs` with the delivered RUNNERS file (one `SCRIPT:` line) goes 5/7, without that line 7/7. The seat
+stripped the line by hand for Batch 1639 and applied the script itself. **Repair:** the parser skips `SCRIPT:` as it skips `RUN:`,
+or applies it as a replacement in the overlay so `spec-runner-homes` can prove the new script, with a synthetic-row case in
+`spec-runner-homes.spec.mjs`. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/lenwe/LANDING_PACKET_LENWE.md`
+(open question 1); `context-diet/lenwe/REVIEW_SERINDE_P1.md` (section (g)); `context-diet/lenwe/RUNNERS_LENWE.txt.as-delivered`.
+
+### DX-PROVISIONER-AT-999-LINES — `provision-worker-clone.mjs` is one line under the file-size rule and its usage text omits two flags — **OPEN** (tooling, small)
+
+`Tools/provision-worker-clone.mjs` is 999 lines at Batch 1640 (`wc -l`; 998 before Batch 1639 added `refreshSpine` at `:387`). The
+next functional change crosses the 1,000-line rule, and its usage block documents neither `--no-spine-seed` nor
+`--no-spine-refresh` (read at `:386-387` only; the lane declined to add lines). **Repair:** decompose the provisioner by
+responsibility with its next functional change, and document both flags. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/lenwe/REVIEW_SERINDE_P1.md` (N3);
+`context-diet/lenwe/LANDING_PACKET_LENWE.md` (pieces table).
+
+### DX-SPINE-HOOK-RESIDUALS — four reviewer residuals of the spine's landing hook and seed refresh — **OPEN** (tooling, small)
+
+From Batch 1639's review (Serinde P1 HOLDS, notes): (N1) the provisioner's `--no-spine-refresh` wiring
+(`provision-worker-clone.mjs:387`) is unpinned: a `refreshSpine: true` mutant survives. (N2) The seed refresh's 180 s bound
+(`seed-clone.mjs:64`, the `timeout` option) is unpinned: dropping it survives; by hand, a 50 ms bound throws ETIMEDOUT and becomes
+the `WARNING:` note. (N4, N5) The refusal names the MCP server for any EPERM/EBUSY/EACCES on the reset, including a holder that is
+not the server, and a refusal on `-wal` / `-shm` after the main file was removed would carry the same "before anything has been
+deleted" claim (not reachable with a SQLite holder). (N6) `post-landing-spine.spec.mjs:121` pins
+`laneName: "post-landing-spine-spec"` instead of honouring `CESIUM_LANE` and leaves that empty lane root under the temp root.
+**Repair:** a provisioning case and an injected small-bound timeout case with mutants; the refusal's wording; the spec's lane name
+from `CESIUM_LANE`. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/lenwe/REVIEW_SERINDE_P1.md` (N1, N2,
+N4-N6).
+
+### DX-RULES-DIET — the rules file every agent loads was 77 KB — **CLOSED** (Batch 1640, `12d9bea471`)
+
+Batch 1640 (lane Istarnie; reviewer Indilzar P1 HOLDS-WITH-FIXES, R1 and the adopted N4 applied by the seat; governance flag) cut
+the `CLAUDE.md` core from 77,293 to 42,907 B as git stores it (LF; 78,163 -> 43,445 B CRLF in a worktree; 870 -> 538 lines), about
+19.5K -> 10.9K tokens per agent session (bytes / 4), by moving six task sections verbatim into tracked on-demand skills under
+`.claude/skills/` (`wgsl-shader-pipeline`, `build-and-variants`, `logging-pragmas`, `upstream-sync`, `wasm-strategy`,
+`debug-console`; about 1,115 B of descriptions in all), trimming stories and dated measurements to pointers in the new
+`migration_doc/RULES_FILE_NOTES.md`, and moving Principles 10-13 under Core Principles with their numbers and titles unchanged.
+`AGENTS.md`, `GEMINI.md` and `.clinerules` list the skills. The guard `Tools/rules-file-diet-check.mjs` places all 97 normative
+units of the old file (core 74, skills 21, the notes page 2; lost 0) and checks principle order, skill wiring and links; spec 16/16
+with 4 in-spec inertness mutants killed. `.gitignore` ignores `.claude/*` and re-includes `.claude/skills/` (the reviewer's N4
+form). The one correction inside a moved section is the build skill's type-check line
+(`DX-GOVERNANCE-TSC-NOEMIT-IS-VACUOUS-FOR-THE-ENGINE`). Re-measured at Batch 1640: `CLAUDE.md` 42,907 B in git, 43,445 B in the
+worktree, six skill directories. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/istarnie/LANDING_PACKET_ISTARNIE.md` (sections 1-3);
+`context-diet/istarnie/REVIEW_INDILZAR_P1.md` (R1, N4); `context-diet/apply-indilzar-r1-n4.mjs`.
+
+### DX-RULES-DIET-2 — the core is 42.9 KB against a 32 KB target — **OPEN** (governance; the maintainer's decision)
+
+Batch 1640 did not meet the < 32 KB target; its brief's keep-list was the floor. Two options are on the table: one more skill,
+`engine-code-standards` (Architecture Patterns, RTE, Monorepo placement, File Size, Tech Stack, ES6 and the comment rules, 10,959 B
+measured by the lane), which lands the core at about 32 KB with a core line sending any change under `packages/**` to it; or a
+middle path that keeps a five-line summary of RTE, file placement, the comment standard and file size in the core (the seat's
+proposal). The guard already checks such a move. **Decision pending:** the maintainer's. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/istarnie/LANDING_PACKET_ISTARNIE.md` (section 2);
+`round3/brief-records-round7.md` (item 4e).
+
+### DX-DOCS-REFERENCES-TO-MOVED-CLAUDE-SECTIONS — nine live doc references point at `CLAUDE.md` sections that now live in skills — **OPEN** (docs)
+
+The links resolve to `../CLAUDE.md`, but since Batch 1640 the sections are not in it: `DEBUGGING_GUIDE.md:1523` ("Logging & Debug
+Pragmas"), `:1592` ("Playwright / Browser Testing"), `:1917` ("WGSL Shader Pipeline"), `:2320` and `:2347` ("Build Variants");
+`BUILD_AND_VARIANTS.md:74` and `:424`; `FEATURE_GUIDE_AND_DEMOS.md:77`; `ROADMAP_AND_DEFERRED_WORK.md:86` (re-read at Batch 1640).
+The core's "On-demand Skills" section (`CLAUDE.md:512`) names each topic, so a reader can still get there. **Repair:** repoint the
+nine to the skill files; historical audits and campaign guides stay as they are. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/istarnie/REVIEW_INDILZAR_P1.md` (N5).
+
+### DX-RULES-DIET-GUARD-RESIDUALS — the diet guard's git-ignore check is unpinned and its linked-page corpus is wide — **OPEN** (tooling, small)
+
+From Batch 1640's review (Indilzar P1, notes): (N1) the guard's git-ignore check in `checkSkills` survives an `if (false && ...)`
+mutant at 16/16, because the spec's fixtures are not git repositories and `isIgnored` returns false when git cannot decide; it is
+the check that keeps a rule skill from being silently untracked (the reviewer's suggested id
+`DX-RULES-DIET-GUARD-IGNORE-UNPINNED`, folded into this row). (N2) `buildCorpus` adds every `.md` page the core or a skill links (14
+pages at the reviewed tree), so a normative sentence deleted from the core would still pass if it were verbatim in one of them; 3
+old units are satisfiable that way today, all three still in the core. **Repair:** a fixture that `git init`s its tree with a
+`.gitignore` hiding one skill (the CLI must fail; an inertness mutant must go red), and the cited role restricted to
+`RULES_FILE_NOTES.md` plus an allowlist, or a warning for a unit found only in a linked page. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/istarnie/REVIEW_INDILZAR_P1.md` (N1, N2).
+
+### DX-EVIDENCE-OUTPUT-RETENTION — the seat's gitignored evidence folder holds 39,284 MB with no retention policy — **OPEN** (housekeeping; a maintainer decision under `R-2026-10-30-M4`)
+
+**Measured (the seat, 2026-10-31 10:3x EDT):** the seat's `Tools/visual-regression/output/` holds 39,284 MB of repatriated Edge
+evidence, every job since the evidence-repatriation rule of 2026-08-21, while the immutable copies live in
+`cesium-webgpu-visual-evidence/`; the F: drive read 13-16 GB free at the seat's checks (the seat's figure), while a reviewer met "No space left on device" once
+and read 5.7-9.0 GB free a moment later (Indilzar N9). **Proposal:** a retention policy for the seat's working copy (keep the last N days or the jobs a row still cites;
+sweep the rest by positive list). No sweep is claimed: housekeeping is held (`R-2026-10-30-M4`,
+`MAINTAINER_RULINGS_2026-10-22.md:174`), so the policy is the maintainer's. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/brief-records-round7.md` (item 4c, the seat's measurement);
+`context-diet/istarnie/REVIEW_INDILZAR_P1.md` (N9).
+
+### Notes (no new ids)
+
+- **The seat's context-diet actions of 2026-10-31 (seat note; outside this repository):** the workspace parent's `CLAUDE.md`,
+  which every session there auto-loaded, is a 132 B stub (5,487 B before, banked as `context-diet/ROOT_CLAUDE.md.before`), its other
+  project's rules moved out of the auto-loaded path; the 17 July campaign workflows are archived under
+  `context-diet/workflows-july-2026/`; the Firefox Playwright MCP server is gone from the seat's untracked `.mcp.json` (before copy
+  `context-diet/mcp.json.before`); the seat's memory index went 17.5 -> 12.7 KB; and the per-session cost of the three
+  claude.ai-synced plugins was measured at about 1,300 tokens. The 5,487 B before-copy, the `.mcp.json` before-copy and the 17 archived
+  workflows are read from the bank, and the 132 B stub from the workspace root; the memory-index sizes and the plugin cost are the
+  seat's figures (`round3/brief-records-round7.md`, item 4e).
+- **Reviewer notes on Batch 1638 not filed as rows (the seat's call):** NB-5, the water-cells refusal does not yet name the missing
+  Sandcastle 2 build and the cell it blocks (KIT3 K3-4; no `build-sandcastle` text in any water refusal at Batch 1640; a
+  one-sentence message, suggested id `DX-KIT-WATER-1F-REFUSAL-NAMES-BUILD`); the packet's excluded synchronous Edge-slot release
+  on the hard-stop path (the next run reclaims the dead-owner lock, which the reviewer proved); three over-1,000-line files touched
+  non-functionally or by a five-line deletion (`probe-cloud-genus-morphology.mjs` 1,333, `probe-runtime-lifecycle-adoption.spec.mjs`
+  2,293, `landing-steps.spec.mjs` 1,026; NB-10). `DX-KIT-DIVE-GATE-STEP` is unchanged and OPEN (excluded by the lane).
+- **Reviewer and lane notes on Batches 1639 and 1640 not filed as rows:** Serinde N7 (the guide header's wording) and the lane's
+  proposed `DX-SPINE-SPEC-DECOMPOSE` (`Tools/context-spine/context-spine.spec.mjs` is 1,787 lines at Batch 1640); Indilzar N3 (a
+  verbatim-presence guard cannot see a negating prefix), N6 (Principle 7 step 3 no longer names the archived RENDERER_DEEP path; it
+  names the transcribed id table), N7 and N8. The Principle 13 sentence the Lenwe packet proposes for `CLAUDE.md` belongs to a
+  governance lane, not to the records.
+- **The W3-DAYLIGHT BEFORE tree** carried non-engine edits beyond its dispatch's "Tools paths + package.json" (`AGENTS.md`,
+  `CLAUDE.md`, `WORKER_ISOLATION_AND_BRANCH_HANDOFF.md`, `package.json`, an untracked `.cache/`); its `Tools/visual-regression/`
+  and `Tools/lib/` equal the tip's up to line endings (160 files, 0 real differences). No engine path; recorded (receipt finding 5).
+- **Message claims of Batches 1638-1640 read against the receipts:** of Batch 1638 only the cloud readiness wait has an Edge
+  measurement (W3-DAYLIGHT); its other pieces are measured in Node, their Edge legs owed as listed above. Batches 1639 and 1640 claim
+  nothing visual.

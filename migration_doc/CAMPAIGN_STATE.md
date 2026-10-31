@@ -762,8 +762,9 @@ ruling `R-2026-10-24-S12`. Rows: `DEFERRED_WORK.md` ledger intake 2 (Batch 1591)
 table: `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-23/24 …)"; from 2026-10-30 also `DEFERRED_WORK.md`
 "2026-10-30 — records batch 3" and "… round 2", and the landing tables "Landing record (2026-10-29/30 …)" and "Landing
 record (2026-10-30 — Batches 1608-1623 …)"; from 2026-10-31 also `DEFERRED_WORK.md` "2026-10-31 — records round 4" and
-"… records round 5" and "… records round 6" and the landing tables "Landing record (2026-10-31 — Batches 1624-1628 …)",
-"Landing record (2026-10-31 — Batches 1629-1631 …)" and "Landing record (2026-10-31 — Batches 1632-1636 …)".
+"… records round 5", "… records round 6" and "… records round 7" and the landing tables "Landing record (2026-10-31 — Batches
+1624-1628 …)", "Landing record (2026-10-31 — Batches 1629-1631 …)", "Landing record (2026-10-31 — Batches 1632-1636 …)" and
+"Landing record (2026-10-31 — Batches 1637-1640 …)".
 **Landed:** the water as Batches 1585/1586 (`16e093aef6`, `156509c929`, committed 2026-10-23 23:27 and 23:31 EDT; tree
 `9e6bcfb7`; opt-in, the default globe unchanged); then, on 2026-10-24, W0 (1587), KT round 5 (1588), KT-2 round 3 (1589),
 F-4 (1590), LEDGER-2 (1591), catalog A1 (1592) and W1, the cloud core and the three-word define registry (1593); and the
@@ -815,6 +816,15 @@ the ground-atmosphere drape, which WebGPU now gates on SCENE3D as WebGL does, an
 both modes (`NEW-2D-WEBGPU-CONCENTRIC-BANDING`, closed). The seat's next lanes are the four Edge legs Batch 1635 owes (the
 weather daylight leg with `--clock`, a water run sheeted, the second sentinel read, PF-3 on a quiet machine) and the planar ocean
 taper (`NEW-2D-WEBGPU-OCEAN-HIGHLIGHT-FADE`); W4 below stands.
+**Probe-kit round 4, the spine's landing hook and the rules-file diet (2026-10-31, records round 7):** Batches 1637-1640
+(`f4851a0a3d` … `12d9bea471`; lanes Lalwen, Aerandir, Lenwe and Istarnie, reviewers Amarie, Nurwe, Serinde and Indilzar) landed:
+the probe-kit round 4 fixes the budgets, exit codes and bands its round-3 Edge legs measured wrong, the context spine refreshes
+itself after every landing, and `CLAUDE.md` is a 43 KB core with six on-demand skills. Two Edge legs measured the round: KIT3
+settled three of Batch 1635's owed legs (the weather-map clock pin, the sentinel's second read, the water manifests) and failed the
+fourth (PF-3 on WebGL 2D, repaired by Batch 1638, its Edge leg owed); the W3 daylight job ran and closed the W3 weather-probe leg
+(both probes exit 0 on both arms at a pinned daylight clock) and re-attributed the weather-map OFF instability away from W3 (BEFORE
+moves 99 % too). Next are the Edge legs Batch 1638 still owes and the maintainer's decision on the 32 KB rules target
+(`DX-RULES-DIET-2`); the Antigravity water program and W4 below are unchanged.
 **Critical path:** W4. *[Updated 2026-10-31 by records round 4; records batch 3 round 2 put the seat's Edge acceptance job
 first, and it has run.]* The next step is the Antigravity water program's landing on 2026-10-31 (`R-2026-10-30-M1`),
 re-delivered against the base clone at `5e684450f1`, and the W4 regeneration from the Codex post-plan audit, its decisions C1-C5 accepted as the seat recommended (`R-2026-10-30-M2`). The later W-waves (W4 … W12, `R-2026-10-23-M4`) queue behind it, one lane

@@ -163,6 +163,33 @@ through the new manifests, the second sentinel read on an identity cell, PF-3 on
 `NEW-2D-WEBGPU-OCEAN-HIGHLIGHT-FADE`; the Antigravity water program's re-delivery against the base clone (`R-2026-10-30-M1`)
 and the W4 regeneration stand as above. Open after these landings: the rows of `DEFERRED_WORK.md` section "2026-10-31 —
 records round 6".
+*[Records round 7:]* Batch 1637 recorded this table; the probe-kit round 4, the spine's landing hook and the rules-file diet
+followed as Batches 1638-1640 (the table below), and two Edge legs (KIT3, W3-DAYLIGHT) measured the owed legs; no Antigravity
+water batch has landed by Batch 1640 (`git log`).
+
+## Landing record (2026-10-31 — Batches 1637-1640: records round 6, the probe-kit round 4, the spine's landing hook and the rules-file diet)
+
+A landing table only. Each hash and tree was read at Batch 1640 with `git log --format='%h %H %T %s' 6f328f950d..HEAD`; each
+landing log shows the `main -> main` push (1637 `lanes-2026-10-31/round3/landing-logs/land-lalwen.log:24`; 1638
+`land-aerandir.log:25`; 1639 `lanes-2026-10-31/context-diet/lenwe/land-lenwe-2.log:25`; 1640 `context-diet/istarnie/land-istarnie.log:25`).
+"Bank" paths are under `cesium-webgpu-worker-archive/lanes-2026-10-31/`; the rows are in `DEFERRED_WORK.md` section "2026-10-31 —
+records round 7", which also names the byte check (each banked lane patch reproduces its landed tree except the tooling catalog
+and the seat's runner homes). Two Edge legs (executor Eowyn) measured the round: KIT3 on Batch 1636's tree (the probe-kit round
+3's owed legs) and W3-DAYLIGHT on BEFORE `6b3b80f644` plus the Batch 1638 kit and on Batch 1638 itself; 1639 and 1640 have no
+visual acceptance.
+
+| batch | hash (tree) | what is now true | lane lead | reviewer | bank |
+| --- | --- | --- | --- | --- | --- |
+| 1637 | `f4851a0a3d` (`3221dc66`) | The records carry records round 5 and Batches 1633-1636 with the two p2d Edge legs: the 2D / Columbus View WebGPU banding closed with its mechanism, fix and band, eight kit rows closed (four for the kit, their Edge legs owed), the round's follow-ups filed. | Lalwen (records round 6) | Amarie (P1 HOLDS-WITH-FIXES: R1-R4, text, applied by the seat in a re-freeze) | `round3/records6/` |
+| 1638 | `b4bf6307cf` (`17c6515f`) | The cloud probes' readiness waits on the pipeline cache before counting frames and budgets frames by the measured period; the close deadline is 90 s and a complete run survives a lingering browser close with its receipt; a PF `unmeasured-contended` or a water 2g NOT RUN at one run is recorded as UNMEASURED and no longer exits 1; PF-3 subtracts the recorded pipeline wait and reads a 15 % WebGL startup floor; the E-ID 2D / Columbus View cross-renderer band is registered; identity cells default to two runs; `--clock` is an `iso-instant` flag; one throw-safe manifest writer; uncapped console-error counts; opt-in water bookmark capture cells; two over-size specs split. Edge (W3-DAYLIGHT): `probe-weather-ingest` reaches its verdicts on both arms; five Edge items owed. | Aerandir (workers Celebrindal, Ingwion, Iminye, Tatie, Enelye) | Nurwe (P1 HOLDS-WITH-FIXES: RQ-1, a count in the message, applied by the seat); Edge Eowyn | `round3/aerandir/` (`round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md`) |
+| 1639 | `76d8fd43b8` (`c43ebd12`) | A tracked post-landing hook refreshes the context spine after every landing and imports Graphify incrementally when the engine or the spine changed; a provisioned clone's seeded DB is brought to its HEAD before a capsule is written; a full build refuses by name while the MCP server holds the DB; `context-graphify` is the incremental import. | Lenwe (workers Nerwen, Artanis) | Serinde (P1 HOLDS) | `context-diet/lenwe/` |
+| 1640 | `12d9bea471` (`ad0c1ae0`) | `CLAUDE.md` keeps every rule in a 43 KB core (from 77 KB): six task sections are on-demand skills under `.claude/skills/`, stories are pointers into `RULES_FILE_NOTES.md`, Principles 10-13 sit under Core Principles, and `Tools/rules-file-diet-check.mjs` checks the placement (97 units, 0 lost). Landed with the governance flag. | Istarnie | Indilzar (P1 HOLDS-WITH-FIXES: R1, the build skill's type-check line, and the adopted N4 `.gitignore` form, applied by the seat) | `context-diet/istarnie/` |
+
+Next: the Edge legs Batch 1638 owes (the six other readiness-budgeted cloud probes, the live E-ID band, the PF-3 recipe again, a
+loaded-machine landing run, the water 2g read and bookmark sheets); the weather-map OFF-deck pins and first-frame wait
+(`NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY`, `DX-KIT-WEATHER-MAP-FIRST-FRAME-BLACK`); `DX-KIT-PF3-CEILING-ON-MEDIAN`; the
+maintainer's decision on `DX-RULES-DIET-2`; `NEW-2D-WEBGPU-OCEAN-HIGHLIGHT-FADE`; the Antigravity water program and the W4
+regeneration stand as above. Open after these landings: the rows of `DEFERRED_WORK.md` section "2026-10-31 — records round 7".
 
 ---
 
