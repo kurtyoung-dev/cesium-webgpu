@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 243,
+  total: 260,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count reached 17
@@ -64,7 +64,9 @@ const REGISTRY_CENSUS = {
     "saved-view": 5,
     // The Sandcastle2 Video demo joined the three legacy-gallery demos for
     // `probe-stub-texture-uploads.mjs`.
-    sandcastle: 5,
+    // The Sandcastle2 global water and weather demo (lane A salvage of the
+    // water-w5 rework), also tagged water: counted in both buckets.
+    sandcastle: 6,
     aurora: 4,
     // The wgs84 family's three CesiumViewer-page views (home, close, polar),
     // written by its probe-kit harvest for `probe-wgs84.mjs`.
@@ -84,7 +86,10 @@ const REGISTRY_CENSUS = {
     c11: 7,
     // The SSR pass's rig and its SSR-off control, declared with the fix to the
     // pass's coverage, screen frame and refinement as its Edge leg's scene.
-    ssr: 2,
+    // The SSR water probe's four lake + wall cells (enableSSR x
+    // deferredLighting), declared when probe-ssr-water.mjs moved onto the
+    // runtime (lane A salvage).
+    ssr: 6,
     // The label glyph atlas that grows in a later frame, for
     // `probe-stub-texture-uploads.mjs`.
     "texture-atlas": 1,
@@ -111,7 +116,11 @@ const REGISTRY_CENSUS = {
     // (E-T in E11): the coast camera the water lane's job sheet names, with the
     // enhanced ocean and the HIGH water tier on so the water's GPU owners are
     // alive when the scene is torn down.
-    water: 13,
+    // Lane A salvage of the water-w5 rework added 13: the FFT ocean probe's
+    // four nadir rigs (on/off, globe shown/hidden), seven gallery-bookmark
+    // rigs (one of them the Sandcastle2 demo, also counted under sandcastle)
+    // and the enhanced-ocean ON/OFF pair over the Kauai shelf.
+    water: 26,
   },
 };
 

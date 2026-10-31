@@ -450,8 +450,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
   "probe-fb-config.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
-  "probe-fft-ocean.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-11, pre-dates the spec",
   "probe-flat-polygon-grid-material.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-04, pre-dates the spec",
   "probe-flowfield-wind.mjs":
@@ -843,8 +841,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
   "probe-ssr-consumer.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-25, pre-dates the spec",
   "probe-ssr-tuned.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-25, pre-dates the spec",
-  "probe-ssr-water.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-25, pre-dates the spec",
   "probe-standalone-model-pick.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-01, pre-dates the spec",

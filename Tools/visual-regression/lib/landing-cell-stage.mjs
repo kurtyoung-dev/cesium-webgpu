@@ -1,7 +1,7 @@
 /**
  * Stages any landing-cell rig on a CesiumViewer page, on either renderer: its
  * clock, its camera and every dial it declares, each read back.
- * @purpose Stage piece for the landing program's Edge cells: turns a rig into a JSON-safe payload (Node side, refusing a dial it does not know before a browser is involved), and applies it in the page on WebGL or WebGPU - pinned clock, camera (or the page's own), scene and globe dials, the water flags and the water tier, clouds on or off - reading every dial back as {requested, observed, applied}, with the cloud* dials handed to the cloud probe harness so their round trip stays in one place; plus the ocean's pinned wave epoch, the WebGPU render pipeline cache's pending count, and an opt-in wait that drives frames until no pipeline is pending.
+ * @purpose Stage piece for the landing program's Edge cells: turns a rig into a JSON-safe payload (Node side, refusing a dial it does not know before a browser is involved), and applies it in the page on WebGL or WebGPU - pinned clock, camera (or the page's own), scene and globe dials, the water flags and the water tier, clouds on or off - reading every dial back as {requested, observed, applied}, with the cloud* dials handed to the cloud probe harness so their round trip stays in one place; plus the ocean's pinned wave epoch, the opt-in FFT ocean (read back by its primitive), the globe's own show flag, the SSR scene switches, the WebGPU render pipeline cache's pending count, and an opt-in wait that drives frames until no pipeline is pending.
  * @status ACTIVE
  *
  * WHY A NEW STAGE AND NOT `lib/cloud-rig-stage.mjs`. The landing cells span a
@@ -53,6 +53,19 @@
  * instant observed; a tree without the property reads `applied: false` (a
  * water dial, so that is an answer, not a NOT RUN).
  *
+ * THE FFT OCEAN (DX-KIT-WATER-OCEAN-DIAL). `waterOceanEnabled` (a boolean;
+ * anything else is refused in Node) sets `scene.globe.water.ocean.enabled`,
+ * the product's own switch for the opt-in spectral ocean
+ * (`Scene/GlobeWaterOcean.js`), whose setter creates one
+ * `OceanSurfacePrimitive` and adds it to `scene.primitives` when turned on and
+ * removes it when turned off. The dial reads back the flag and
+ * `ocean.primitive`: it is applied only when the flag reads the value asked
+ * for AND a primitive exists exactly when the ocean is on, so a facade that
+ * keeps the flag but builds nothing reads applied: false. The primitive draws
+ * on WebGPU only; on WebGL the dial still applies and the leg shows no FFT
+ * sea. A tree without `water.ocean.enabled` reads applied: false (a water
+ * dial: an answer, not a NOT RUN).
+ *
  * PENDING PIPELINES (round 5, K5-2). A WebGPU page can draw nothing while the
  * pipelines a pass needs are still compiling, and a capture taken then
  * measures the compile, not the scene. `readPendingPipelines` reads the render
@@ -80,11 +93,15 @@ export const LANDING_SCENE_DIALS = Object.freeze([
   "useDefaultRenderLoop",
   "pinClock",
   "cameraInputs",
+  "enableSSR",
+  "deferredLighting",
+  "ssrReflectionStrength",
 ]);
 
 /** Dials this module applies on the globe and its imagery and terrain. */
 export const LANDING_GLOBE_DIALS = Object.freeze([
   "globeEnableLighting",
+  "globeShow",
   "globeBaseColor",
   "globeShowWaterEffect",
   "showGroundAtmosphere",
@@ -104,6 +121,7 @@ export const LANDING_WATER_DIALS = Object.freeze([
   "enableEnhancedOcean",
   "waterQualityPreset",
   "waterSimulationEpoch",
+  "waterOceanEnabled",
 ]);
 
 /** The instant form `waterSimulationEpoch` takes (the rig clock's form). */
@@ -216,6 +234,14 @@ export function landingStagePayload(rig) {
   ) {
     unsupported.push(
       `waterSimulationEpoch=${JSON.stringify(water.waterSimulationEpoch)}`,
+    );
+  }
+  if (
+    water.waterOceanEnabled !== undefined &&
+    typeof water.waterOceanEnabled !== "boolean"
+  ) {
+    unsupported.push(
+      `waterOceanEnabled=${JSON.stringify(water.waterOceanEnabled)}`,
     );
   }
   if (unsupported.length > 0) {
@@ -354,6 +380,21 @@ export async function stageLandingCellInPage(payload) {
       note(key, value, clock.frozen, value !== true || clock.frozen);
     } else if (key === "cameraInputs") {
       assign(key, scene.screenSpaceCameraController, "enableInputs", value);
+    } else if (key === "enableSSR") {
+      assign(key, scene, "enableSSR", value);
+    } else if (key === "deferredLighting") {
+      assign(key, scene, "deferredLighting", value);
+    } else if (key === "ssrReflectionStrength") {
+      // Scene declares no such property: the WebGPU SSR effect reads
+      // `scene.ssrReflectionStrength ?? 0.5` (WebGPUSSREffect.ts), so the
+      // dial sets the field it reads and reads it back.
+      scene.ssrReflectionStrength = value;
+      note(
+        key,
+        value,
+        scene.ssrReflectionStrength,
+        same(scene.ssrReflectionStrength, value),
+      );
     }
   }
 
@@ -362,6 +403,8 @@ export async function stageLandingCellInPage(payload) {
   for (const [key, value] of Object.entries(g)) {
     if (key === "globeEnableLighting") {
       assign(key, globe, "enableLighting", value);
+    } else if (key === "globeShow") {
+      assign(key, globe, "show", value);
     } else if (key === "globeShowWaterEffect") {
       assign(key, globe, "showWaterEffect", value);
     } else if (key === "showGroundAtmosphere") {
@@ -462,6 +505,25 @@ export async function stageLandingCellInPage(payload) {
       entry.requested = value;
       if (entry.observed !== undefined && entry.reason === undefined) {
         entry.applied = entry.observed === canonical;
+      }
+    } else if (key === "waterOceanEnabled") {
+      // DX-KIT-WATER-OCEAN-DIAL. The product's switch for the FFT ocean; the
+      // facade creates or removes its primitive in the setter, so the
+      // primitive is read straight back.
+      const water = globe && globe.water;
+      const ocean = water && "ocean" in water ? water.ocean : undefined;
+      assign(key, ocean, "enabled", value);
+      const entry = dials[key];
+      if (entry.reason === undefined) {
+        const primitive = ocean.primitive;
+        const hasPrimitive = primitive !== undefined && primitive !== null;
+        entry.primitive = hasPrimitive;
+        if (hasPrimitive !== value) {
+          entry.applied = false;
+          entry.reason = value
+            ? "ocean.enabled reads true but no ocean primitive exists"
+            : "ocean.enabled reads false but an ocean primitive remains";
+        }
       }
     } else {
       assign(key, globe, key, value);

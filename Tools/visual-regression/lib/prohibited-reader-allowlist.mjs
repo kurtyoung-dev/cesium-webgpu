@@ -166,7 +166,6 @@ export const PROHIBITED_READER_ALLOWLIST = Object.freeze({
   "probe-splat-sort.mjs": PROHIBITED_READER_REASON,
   "probe-ssr-consumer.mjs": PROHIBITED_READER_REASON,
   "probe-ssr-tuned.mjs": PROHIBITED_READER_REASON,
-  "probe-ssr-water.mjs": PROHIBITED_READER_REASON,
   "probe-starfield-webgl-parity.mjs": PROHIBITED_READER_REASON,
   "probe-stars-catalog.mjs": PROHIBITED_READER_REASON,
   "probe-stars-hdr-autoexposure-parity.mjs": PROHIBITED_READER_REASON,

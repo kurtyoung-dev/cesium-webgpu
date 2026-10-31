@@ -1,324 +1,443 @@
 #!/usr/bin/env node
-// Probe-ssr-water — Slice 5c-B Batch 132 SSR verification scene.
-// @purpose SSR verification scene: lake + wall reflector 4-cell matrix; visible reflection when on, deferredLighting toggle now a no-op.
+// Probe-ssr-water - Slice 5c-B Batch 132 SSR verification scene, from rigs.
+// @purpose SSR verification scene from four rigs on the shared runtime: a lit lake polygon with a bright extruded wall behind it, enableSSR x deferredLighting; the reflection must appear when SSR is on, and the deferredLighting toggle must be a no-op for SSR.
 // @status ACTIVE
+// @runtime lib/probe-runtime.mjs
 //
-// Builds a scene with a low-roughness reflective polygon ("lake")
-// AND a tall block-shape polygon ("wall") behind/above the lake.
-// At a low-angle camera view, SSR should produce a visible
-// reflection of the wall on the lake's surface. Post-Batch-129 the
-// reflection sources from the post-processed canvas, so the
-// reflection color matches the wall's display-space color.
+// The four cells are the `ssr-water-lake-wall-*` rigs, identical except for
+// `enableSSR` and `deferredLighting`. Each is staged through
+// `lib/landing-cell-stage.mjs` (clock, camera, offline ellipsoid + Natural
+// Earth II, globe lighting, the SSR scene dials, each read back) and
+// `lib/polygon-primitive-scene.mjs` (the rig's `polygons`: the low-roughness
+// lit "lake" and the tall "wall"). At the rig's low-angle camera, SSR should
+// show the wall reflected in the lake.
 //
-// 4-cell matrix toggles `scene.enableSSR` + `scene.deferredLighting`
-// (the historical gate that Batch 122 made architecturally
-// redundant — both values should now produce identical SSR output).
+// The diff is main's: per pixel |dR| + |dG| + |dB|, mismatched above 30. The
+// pass bands are NEW (main printed its diffs and judged nothing) and the scene
+// moved (polygons 240 m over a flat ellipsoid instead of on streamed terrain,
+// canvas element capture instead of a page screenshot), so the first Edge
+// capture registers them.
 //
 // Expected if SSR is firing:
-//   - A (SSR off) vs B (SSR on): visible reflection blob on the lake
-//     surface, mismatch should be measurable (>1% probably).
-//   - B (SSR on, def off) vs C (SSR on, def on): post-Batch-122 these
-//     read the same G-buffer view so should be ≤ noise.
+//   - A (SSR off) vs B (SSR on): a visible reflection on the lake, measurable
+//     mismatch (>= 1 %).
+//   - B (SSR on, deferred off) vs C (SSR on, deferred on): since Batch 122 both
+//     read the same G-buffer view, so the difference stays within noise.
+//
+// The frames are read only through the runtime's element capture; nothing in
+// the page reads the live canvas.
 
-import { chromium } from "playwright";
-import fs from "fs";
-import path from "path";
+import fs from "node:fs";
 
-const BASE = "http://localhost:8080";
-const OUT_DIR = "Tools/visual-regression/output";
+import { attachPageDiagnostics } from "../lib/attach-page-diagnostics.mjs";
+import { decodePng, readPng } from "../lib/png-decode.mjs";
+import {
+  armWebGPUDevices,
+  collectGateErrors,
+  errorGateInit,
+} from "../lib/webgpu-error-gate.mjs";
+import { captureUrlFor } from "./lib/capture.mjs";
+import { stageLandingCell } from "./lib/landing-cell-stage.mjs";
+import { buildPerformanceViewerUrl } from "./lib/performance-viewer-url.mjs";
+import { stagePolygonScene } from "./lib/polygon-primitive-scene.mjs";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
+import { loadRigs, rigById } from "./lib/rig-registry.mjs";
+import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
 
-// Pittsburgh area; low altitude looking at a flat polygon.
-const VIEW = { lon: -79.9959, lat: 40.4406, height: 400.0 };
-const FIXED_CLOCK_UTC = "2026-05-19T18:00:00Z";
+/**
+ * The pass bands. NEW with the move onto the runtime (main's probe printed its
+ * diffs and judged nothing); unmeasured on this scene, so the first Edge
+ * capture registers them. `mismatchChannelSum` is main's per-pixel rule, kept
+ * exactly: a pixel is mismatched when |dR| + |dG| + |dB| > 30.
+ */
+export const SSR_WATER_BANDS = Object.freeze({
+  minEngagementDiffPct: 1.0,
+  maxDeferredGateDiffPct: 0.5,
+  mismatchChannelSum: 30,
+});
 
-async function capture(label, { ssr, deferred }) {
-  const browser = await chromium.launch({
-    channel: "msedge",
-    headless: true,
-    args: [
-      "--enable-unsafe-webgpu",
-      "--enable-features=Vulkan",
-      "--use-vulkan",
-      "--disable-cache",
-    ],
-  });
-  const page = await browser.newPage({
-    viewport: { width: 1280, height: 720 },
-  });
-  const messages = [];
-  page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) =>
-    messages.push({ t: "pageerror", text: e.message }),
-  );
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-    waitUntil: "networkidle",
-  });
-  await page.waitForFunction(() => !!window.viewer);
-  await page.evaluate(() => {
-    const dev = window.viewer?.scene?.context?._device;
-    window.__probeErrors = [];
-    if (!dev) return;
-    dev.onuncapturederror = (ev) => {
-      window.__probeErrors.push({ text: ev?.error?.message ?? "" });
-    };
-  });
+/** The settle: at least the rig's readiness frames, until the globe's tiles
+ * are loaded (at most `maxFrames`), then `tailFrames` more. */
+export const SSR_WATER_SETTLE = Object.freeze({
+  maxFrames: 1500,
+  tailFrames: 60,
+});
 
-  const diagnostics = await page.evaluate(
-    async ({ view, clockUTC, ssr, deferred }) => {
-      const C = await import("/Build/CesiumUnminified/index.js");
-      const v = window.viewer;
-      const fixed = C.JulianDate.fromIso8601(clockUTC);
-      v.clock.currentTime = fixed.clone();
-      v.clock.startTime = fixed.clone();
-      v.clock.stopTime = fixed.clone();
-      v.clock.shouldAnimate = false;
-      v.clock.multiplier = 0;
-      v.scene.globe.enableLighting = true;
-      v.scene.enableSSR = ssr;
-      v.scene.deferredLighting = deferred;
-      // Strong reflection so the visual effect is unambiguous.
-      v.scene.ssrReflectionStrength = 1.0;
+/** The 2x2 matrix, one rig per cell. */
+export const SSR_WATER_CELLS = Object.freeze([
+  Object.freeze({
+    label: "a-ssr-off-def-off",
+    rig: "ssr-water-lake-wall-ssr-off-deferred-off",
+  }),
+  Object.freeze({
+    label: "b-ssr-on-def-off",
+    rig: "ssr-water-lake-wall-ssr-on-deferred-off",
+  }),
+  Object.freeze({
+    label: "c-ssr-on-def-on",
+    rig: "ssr-water-lake-wall-ssr-on-deferred-on",
+  }),
+  Object.freeze({
+    label: "d-ssr-off-def-on",
+    rig: "ssr-water-lake-wall-ssr-off-deferred-on",
+  }),
+]);
 
-      // Lake polygon — flat horizontal, glassy lit material at ground.
-      const lakeCoords = C.Cartesian3.fromDegreesArray([
-        view.lon - 0.003,
-        view.lat - 0.0015,
-        view.lon + 0.003,
-        view.lat - 0.0015,
-        view.lon + 0.003,
-        view.lat + 0.0015,
-        view.lon - 0.003,
-        view.lat + 0.0015,
-      ]);
-      const lake = new C.Primitive({
-        geometryInstances: new C.GeometryInstance({
-          geometry: new C.PolygonGeometry({
-            polygonHierarchy: new C.PolygonHierarchy(lakeCoords),
-            height: 240,
-            // TEXTURED vertexFormat includes per-vertex normals so the
-            // appearance picks `matColorLit` instead of `matColorFlat`.
-            // The Lit variant emits @location(1) (G-buffer normal +
-            // roughness) so SSR's sentinel check passes on these
-            // pixels and the ray-marching actually attempts to
-            // reflect.
-            vertexFormat:
-              C.MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat,
-          }),
-        }),
-        appearance: new C.MaterialAppearance({
-          material: C.Material.fromType("Color", {
-            color: new C.Color(0.05, 0.1, 0.2, 1.0),
-          }),
-          translucent: false,
-        }),
-        asynchronous: false,
-      });
-      v.scene.primitives.add(lake);
+const CANVAS_SELECTOR = "#cesiumContainer canvas";
+const NAVIGATION_BUDGET_MS = 60_000;
+const CELL_BUDGET_MS = 90_000;
 
-      // Wall polygon — extruded tall block north of the lake, bright
-      // color so its reflection is easy to spot.
-      const wallCoords = C.Cartesian3.fromDegreesArray([
-        view.lon - 0.001,
-        view.lat + 0.002,
-        view.lon + 0.001,
-        view.lat + 0.002,
-        view.lon + 0.001,
-        view.lat + 0.0025,
-        view.lon - 0.001,
-        view.lat + 0.0025,
-      ]);
-      const wall = new C.Primitive({
-        geometryInstances: new C.GeometryInstance({
-          geometry: new C.PolygonGeometry({
-            polygonHierarchy: new C.PolygonHierarchy(wallCoords),
-            height: 240,
-            extrudedHeight: 400,
-            // TEXTURED vertexFormat includes per-vertex normals so the
-            // appearance picks `matColorLit` instead of `matColorFlat`.
-            // The Lit variant emits @location(1) (G-buffer normal +
-            // roughness) so SSR's sentinel check passes on these
-            // pixels and the ray-marching actually attempts to
-            // reflect.
-            vertexFormat:
-              C.MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat,
-          }),
-        }),
-        appearance: new C.MaterialAppearance({
-          material: C.Material.fromType("Color", {
-            color: new C.Color(1.0, 0.7, 0.1, 1.0),
-          }),
-          translucent: false,
-        }),
-        asynchronous: false,
-      });
-      v.scene.primitives.add(wall);
-
-      // Camera positioned at glancing angle to the lake, looking at the
-      // wall + lake. Wall reflection should bounce off the lake into
-      // the camera.
-      v.camera.setView({
-        destination: C.Cartesian3.fromDegrees(
-          view.lon,
-          view.lat - 0.005,
-          view.height,
-        ),
-        orientation: {
-          heading: C.Math.toRadians(0), // facing north toward wall
-          pitch: C.Math.toRadians(-15), // shallow downward angle
-        },
-      });
-      for (let i = 0; i < 1500; i++) {
-        v.scene.render();
-        await new Promise((r) => requestAnimationFrame(r));
-        if (v.scene.globe.tilesLoaded && i > 400) break;
-      }
-      for (let i = 0; i < 60; i++) {
-        v.scene.render();
-        await new Promise((r) => requestAnimationFrame(r));
-      }
-
-      const canvas = v.canvas;
-      let centerPixel;
-      try {
-        const tmp = document.createElement("canvas");
-        tmp.width = canvas.width;
-        tmp.height = canvas.height;
-        const ctx2d = tmp.getContext("2d");
-        ctx2d.drawImage(canvas, 0, 0);
-        const cx = (canvas.width / 2) | 0;
-        const cy = (canvas.height / 2) | 0;
-        const data = ctx2d.getImageData(cx, cy, 1, 1).data;
-        centerPixel = { r: data[0], g: data[1], b: data[2], a: data[3] };
-      } catch (e) {
-        centerPixel = { error: String(e?.message ?? e) };
-      }
-
-      return {
-        ssr_requested: ssr,
-        scene_enableSSR: v.scene.enableSSR,
-        deferred_requested: deferred,
-        sceneDeferredLighting: v.scene.deferredLighting,
-        sceneTilesLoaded: v.scene.globe.tilesLoaded,
-        primitivesCount: v.scene.primitives.length,
-        centerPixel,
-      };
-    },
-    { view: VIEW, clockUTC: FIXED_CLOCK_UTC, ssr, deferred },
-  );
-
-  const deviceErrors = await page.evaluate(() => window.__probeErrors ?? []);
-  await page.waitForTimeout(1000);
-  const out = path.join(OUT_DIR, `ssr-water-${label}.png`);
-  await page.screenshot({ path: out });
-  await browser.close();
-  return { label, out, diagnostics, deviceErrors, messages };
+export function readCenterPixel(image) {
+  const cx = Math.floor(image.width / 2);
+  const cy = Math.floor(image.height / 2);
+  const idx = (cy * image.width + cx) * 4;
+  return {
+    r: image.data[idx],
+    g: image.data[idx + 1],
+    b: image.data[idx + 2],
+    a: image.data[idx + 3],
+  };
 }
 
-async function diffPngs(a, b) {
-  const browser = await chromium.launch({ channel: "msedge", headless: true });
-  const page = await browser.newPage();
-  await page.setContent("<html><body></body></html>");
-  const ba = fs.readFileSync(a).toString("base64");
-  const bb = fs.readFileSync(b).toString("base64");
-  const result = await page.evaluate(
-    async ({ ba, bb }) => {
-      const decode = async (b64) => {
-        const img = new Image();
-        img.src = "data:image/png;base64," + b64;
-        await img.decode();
-        const c = document.createElement("canvas");
-        c.width = img.naturalWidth;
-        c.height = img.naturalHeight;
-        c.getContext("2d").drawImage(img, 0, 0);
-        return {
-          w: img.naturalWidth,
-          h: img.naturalHeight,
-          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
-        };
-      };
-      const a = await decode(ba);
-      const b = await decode(bb);
-      if (a.w !== b.w || a.h !== b.h) return { error: "size mismatch" };
-      let mismatch = 0;
-      let sum = 0;
-      const total = a.w * a.h;
-      for (let i = 0; i < a.data.length; i += 4) {
-        const d =
-          Math.abs(a.data[i] - b.data[i]) +
-          Math.abs(a.data[i + 1] - b.data[i + 1]) +
-          Math.abs(a.data[i + 2] - b.data[i + 2]);
-        sum += d;
-        if (d > 30) mismatch++;
-      }
-      return { mismatchPct: (100 * mismatch) / total, meanDelta: sum / total };
-    },
-    { ba, bb },
-  );
-  await browser.close();
-  return result;
-}
-
-(async () => {
-  if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log("[probe-ssr-water] capturing 4-cell matrix with lake + wall");
-
-  const cells = [];
-  cells.push(
-    await capture("a-ssr-off-def-off", { ssr: false, deferred: false }),
-  );
-  cells.push(await capture("b-ssr-on-def-off", { ssr: true, deferred: false }));
-  cells.push(await capture("c-ssr-on-def-on", { ssr: true, deferred: true }));
-  cells.push(await capture("d-ssr-off-def-on", { ssr: false, deferred: true }));
-
-  for (const cell of cells) {
-    console.log(`\n  [${cell.label}]`);
-    console.log(
-      `    canvas center: rgba(${cell.diagnostics.centerPixel?.r ?? "?"}, ${
-        cell.diagnostics.centerPixel?.g ?? "?"
-      }, ${cell.diagnostics.centerPixel?.b ?? "?"})`,
+/**
+ * Main's SSR diff, kept exactly: per pixel d = |dR| + |dG| + |dB|; a pixel is
+ * mismatched when d > `channelSum`; meanDelta is the mean d over all pixels.
+ */
+export function compareSsrImages(
+  imageA,
+  imageB,
+  channelSum = SSR_WATER_BANDS.mismatchChannelSum,
+) {
+  if (imageA.width !== imageB.width || imageA.height !== imageB.height) {
+    throw new Error(
+      `image size mismatch: ${imageA.width}x${imageA.height} vs ${imageB.width}x${imageB.height}`,
     );
-    console.log(
-      `    ssr=${cell.diagnostics.scene_enableSSR} def=${cell.diagnostics.sceneDeferredLighting} prims=${cell.diagnostics.primitivesCount}`,
-    );
-    if (cell.deviceErrors.length) {
-      console.log(`    ✗ ${cell.deviceErrors.length} device errors`);
-      cell.deviceErrors
-        .slice(0, 2)
-        .forEach((e) => console.log(`      ${e.text?.slice(0, 200)}`));
-    } else {
-      console.log(`    ✓ no device errors`);
+  }
+  const totalPixels = imageA.width * imageA.height;
+  let mismatched = 0;
+  let deltaSum = 0;
+  for (let i = 0; i < imageA.data.length; i += 4) {
+    const d =
+      Math.abs(imageA.data[i] - imageB.data[i]) +
+      Math.abs(imageA.data[i + 1] - imageB.data[i + 1]) +
+      Math.abs(imageA.data[i + 2] - imageB.data[i + 2]);
+    deltaSum += d;
+    if (d > channelSum) {
+      mismatched += 1;
     }
   }
+  return {
+    mismatchPct: Number(((100 * mismatched) / totalPixels).toFixed(4)),
+    meanDelta: Number((deltaSum / totalPixels).toFixed(4)),
+    changedPx: mismatched,
+    totalPixels,
+  };
+}
 
-  console.log("\n[probe-ssr-water] diffs:");
-  const ssrEng = await diffPngs(cells[0].out, cells[1].out);
-  console.log(
-    `  [A ssr-off vs B ssr-on, both def-off] SSR engagement: mismatch=${ssrEng.mismatchPct.toFixed(3)}% meanDelta=${ssrEng.meanDelta.toFixed(3)}`,
+/**
+ * Load the four captures and diff them. A cell that produced no capture is a
+ * run that did not measure: a refusal naming it.
+ */
+export function summarizeSsrWaterCells(
+  cells,
+  loadImage = readPng,
+  channelSum = SSR_WATER_BANDS.mismatchChannelSum,
+) {
+  const byLabel = new Map(cells.map((cell) => [cell.label, cell]));
+  const missing = SSR_WATER_CELLS.map(({ label }) => label).filter(
+    (label) => !byLabel.get(label)?.capture?.path,
   );
-  const defGate = await diffPngs(cells[1].out, cells[2].out);
-  console.log(
-    `  [B ssr-on def-off vs C ssr-on def-on] post-Batch-122 should be near-zero:` +
-      ` mismatch=${defGate.mismatchPct.toFixed(3)}% meanDelta=${defGate.meanDelta.toFixed(3)}`,
-  );
+  if (missing.length > 0) {
+    throw new ProbeRefusal(
+      "ssr-water-captures-missing",
+      `the SSR water cells did not produce ${missing.join(", ")}`,
+      { missing },
+    );
+  }
+  const image = (label) => loadImage(byLabel.get(label).capture.path);
+  const imgA = image("a-ssr-off-def-off");
+  const imgB = image("b-ssr-on-def-off");
+  const imgC = image("c-ssr-on-def-on");
+  const imgD = image("d-ssr-off-def-on");
+  return {
+    diffs: {
+      ssrEngagement: compareSsrImages(imgA, imgB, channelSum),
+      deferredGate: compareSsrImages(imgB, imgC, channelSum),
+      offDeferredParity: compareSsrImages(imgA, imgD, channelSum),
+    },
+  };
+}
 
-  const reportPath = path.join(OUT_DIR, "ssr-water-report.json");
-  fs.writeFileSync(
-    reportPath,
-    JSON.stringify(
+/**
+ * Refuse a cell whose stage did not apply every dial its rig declares, or
+ * did not add every polygon: the scene the verdicts assume was not built.
+ */
+export function refuseUnbuiltScene(label, rig, staged, polygons) {
+  const notApplied = staged?.notApplied ?? ["(no stage record)"];
+  const wanted = (rig.polygons ?? []).map((polygon) => polygon.id);
+  const added = polygons?.added ?? [];
+  const absent = wanted.filter((id) => !added.includes(id));
+  if (notApplied.length > 0 || absent.length > 0) {
+    throw new ProbeRefusal(
+      "rig-scene-not-built",
+      `${label}: rig ${rig.id} not built (dials not applied: ${notApplied.join(", ") || "none"}; polygons absent: ${absent.join(", ") || "none"})`,
       {
-        runAt: new Date().toISOString(),
-        view: VIEW,
-        cells: cells.map((c) => ({
-          label: c.label,
-          screenshot: c.out,
-          diagnostics: c.diagnostics,
-          deviceErrorCount: c.deviceErrors.length,
-        })),
-        diffs: { ssrEngagement: ssrEng, deferredGate: defGate },
+        label,
+        rigId: rig.id,
+        notApplied,
+        absent,
+        reasons: Object.fromEntries(
+          notApplied.map((key) => [key, staged?.dials?.[key]?.reason ?? null]),
+        ),
       },
-      null,
-      2,
-    ),
+    );
+  }
+}
+
+/**
+ * The verdicts. A cell whose WebGPU error gate armed no device could not have
+ * seen a device error, so the run refuses rather than reporting it green.
+ */
+export function ssrWaterVerdicts(cells, summary, bands = SSR_WATER_BANDS) {
+  const unarmedCell = cells.find(
+    (cell) => (cell.gate?.armedDevices ?? 0) === 0,
   );
-  console.log(`\n  report: ${reportPath}`);
-})();
+  if (unarmedCell) {
+    throw new ProbeRefusal(
+      "error-gate-unarmed",
+      `${unarmedCell.label}: the WebGPU error gate armed 0 devices`,
+      { label: unarmedCell.label },
+    );
+  }
+  const verdicts = [];
+  const faultCells = cells.filter(
+    (cell) =>
+      cell.gate?.deviceLost ||
+      (cell.gate?.errorCount ?? 0) > 0 ||
+      (cell.gate?.pageErrorCount ?? 0) > 0,
+  );
+  verdicts.push(
+    faultCells.length > 0
+      ? {
+          id: "device-and-page-errors",
+          pass: false,
+          detail: faultCells
+            .map(
+              (cell) =>
+                `${cell.label}: gpuErrors=${cell.gate.errorCount} pageErrors=${cell.gate.pageErrorCount} deviceLost=${Boolean(cell.gate.deviceLost)}`,
+            )
+            .join("; "),
+        }
+      : {
+          id: "device-and-page-errors",
+          pass: true,
+          detail: `${cells.length} WebGPU SSR cells completed with 0 device/page errors`,
+        },
+  );
+
+  const { ssrEngagement, deferredGate } = summary.diffs;
+  verdicts.push({
+    id: "ssr-engagement",
+    pass: ssrEngagement.mismatchPct >= bands.minEngagementDiffPct,
+    measured: ssrEngagement.mismatchPct,
+    bound: bands.minEngagementDiffPct,
+    detail: `A vs B mismatch=${ssrEngagement.mismatchPct}% >= ${bands.minEngagementDiffPct}% (meanDelta=${ssrEngagement.meanDelta})`,
+  });
+
+  verdicts.push({
+    id: "deferred-lighting-gate-noop",
+    pass: deferredGate.mismatchPct <= bands.maxDeferredGateDiffPct,
+    measured: deferredGate.mismatchPct,
+    bound: bands.maxDeferredGateDiffPct,
+    detail: `B vs C mismatch=${deferredGate.mismatchPct}% <= ${bands.maxDeferredGateDiffPct}% (meanDelta=${deferredGate.meanDelta})`,
+  });
+
+  return verdicts;
+}
+
+/**
+ * Render at the frozen clock until the globe's tiles are loaded and at least
+ * `minFrames` frames have rendered (or `maxFrames`), then `tailFrames` more.
+ * Runs in the page.
+ */
+async function pageSettleUntilTilesLoaded({
+  minFrames,
+  maxFrames,
+  tailFrames,
+}) {
+  const viewer = /** @type {any} */ (globalThis).viewer;
+  const scene = viewer.scene;
+  let frames = 0;
+  while (frames < maxFrames) {
+    scene.render(viewer.clock.currentTime);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    frames += 1;
+    if (frames >= minFrames && scene.globe.tilesLoaded) {
+      break;
+    }
+  }
+  const tilesLoaded = Boolean(scene.globe.tilesLoaded);
+  for (let i = 0; i < tailFrames; i += 1) {
+    scene.render(viewer.clock.currentTime);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+  return {
+    frames: frames + tailFrames,
+    tilesLoaded,
+    primitivesCount: scene.primitives.length,
+  };
+}
+
+function buildGateSummary(gate, diagnostics) {
+  const pageErrors = diagnostics.errors.map(({ text }) =>
+    String(text).slice(0, 300),
+  );
+  return {
+    deviceLost: gate?.deviceLost ?? null,
+    errorCount: gate?.errors?.length ?? 0,
+    errors: (gate?.errors ?? []).slice(0, 10),
+    armedDevices: gate?.armedDevices ?? 0,
+    pageErrors: pageErrors.slice(0, 10),
+    pageErrorCount: pageErrors.length,
+  };
+}
+
+async function runSsrWaterCell({
+  browser,
+  origin,
+  cellSpec,
+  rig,
+  run,
+  outputDirectory,
+  captures,
+}) {
+  const record = {
+    run,
+    label: cellSpec.label,
+    rig: rig.id,
+    capture: null,
+  };
+  const context = await browser.newContext({
+    viewport: { ...rig.viewport },
+    deviceScaleFactor: 1,
+  });
+  try {
+    await context.addInitScript(errorGateInit);
+    const page = await context.newPage();
+    const diagnostics = attachPageDiagnostics(page);
+    let gate = null;
+    try {
+      const url = buildPerformanceViewerUrl(
+        captureUrlFor({ rig, origin }),
+        "webgpu",
+      );
+      await page.goto(url.href, {
+        waitUntil: "load",
+        timeout: NAVIGATION_BUDGET_MS,
+      });
+      await page.waitForFunction(() => !!globalThis.viewer, null, {
+        timeout: NAVIGATION_BUDGET_MS,
+      });
+      record.armed = await armWebGPUDevices(page);
+      const { staged } = await stageLandingCell({ page, rig });
+      record.stage = staged;
+      record.polygons = await stagePolygonScene({ page, rig });
+      refuseUnbuiltScene(cellSpec.label, rig, staged, record.polygons);
+      record.settle = await page.evaluate(pageSettleUntilTilesLoaded, {
+        minFrames: rig.readiness.frames,
+        ...SSR_WATER_SETTLE,
+      });
+      if (!record.settle.tilesLoaded) {
+        throw new ProbeRefusal(
+          "tiles-not-settled",
+          `${cellSpec.label}: the globe's tiles did not load within ${SSR_WATER_SETTLE.maxFrames} frames`,
+          { settle: record.settle },
+        );
+      }
+      const widgets = await page.evaluate(`(${STRIP_WIDGETS_SOURCE})()`);
+      if (!Array.isArray(widgets?.leftovers) || widgets.leftovers.length > 0) {
+        throw new ProbeRefusal(
+          "capture-chrome-over-canvas",
+          `${cellSpec.label}: viewer chrome left ${JSON.stringify(widgets?.leftovers ?? null)} over the canvas`,
+          { widgets: widgets ?? null },
+        );
+      }
+      const shot = await captureElement({
+        page,
+        selector: CANVAS_SELECTOR,
+        name: `ssr-water-${cellSpec.label}-run${run}`,
+        outputDirectory,
+        captures,
+      });
+      const decoded = decodePng(shot.buffer);
+      record.centerPixel = readCenterPixel(decoded);
+      record.capture = {
+        name: shot.name,
+        path: shot.path,
+        sha256: shot.sha256,
+        width: decoded.width,
+        height: decoded.height,
+      };
+      gate = await collectGateErrors(page);
+    } finally {
+      record.gate = buildGateSummary(gate, diagnostics);
+    }
+  } finally {
+    await context.close();
+  }
+  return record;
+}
+
+export const descriptor = {
+  name: "ssr-water",
+  title:
+    "SSR verification scene from rigs: lake + wall reflector 4-cell matrix proving reflection engagement and deferredLighting gate redundancy",
+  outputSubdirectory: "ssr-water",
+  receiptEnvelope: "runtime",
+  servedArtifacts: [
+    "Build/CesiumUnminified/Cesium.js",
+    "Build/CesiumUnminified/index.js",
+    "packages/engine/Build/Unminified/index.js",
+    "Apps/CesiumViewer/index.html",
+  ],
+  workBudgetMs: () => SSR_WATER_CELLS.length * CELL_BUDGET_MS,
+  async cells({ browser, run, origin, outputDirectory, captures }) {
+    fs.mkdirSync(outputDirectory, { recursive: true });
+    const rigs = await loadRigs();
+    const records = [];
+    for (const cellSpec of SSR_WATER_CELLS) {
+      records.push(
+        await runSsrWaterCell({
+          browser,
+          origin,
+          cellSpec,
+          rig: rigById(rigs, cellSpec.rig),
+          run,
+          outputDirectory,
+          captures,
+        }),
+      );
+    }
+    return records;
+  },
+  receipt(cells) {
+    return {
+      cells,
+      bands: SSR_WATER_BANDS,
+      settle: SSR_WATER_SETTLE,
+      summary: summarizeSsrWaterCells(cells),
+    };
+  },
+  verdicts(cells) {
+    return ssrWaterVerdicts(cells, summarizeSsrWaterCells(cells));
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}
