@@ -719,10 +719,11 @@ test("a page whose rig is not registered, or a manifest the validators refuse, i
     assert.match(result.violations.join("\n"), /no-such-rig/);
     assert.equal(
       fs.existsSync(stale),
-      true,
-      "a throw leaves the directory alone",
+      false,
+      "a throw removes the stale manifest too",
     );
     assert.equal(warnings.length, 1);
+    fs.writeFileSync(stale, "{}");
 
     const refused = piece.writeWaterProbeManifest({
       probe: "ssr-water",

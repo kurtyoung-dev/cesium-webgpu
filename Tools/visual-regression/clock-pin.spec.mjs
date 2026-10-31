@@ -218,6 +218,24 @@ test("both weather probes declare the flag, and it parses", () => {
   }
 });
 
+test("a descriptor that declares CLOCK_OPTION rejects a bad --clock through parseProbeArgs alone, and normalizes a good one", () => {
+  const args = { extraOptions: [CLOCK_OPTION] };
+  for (const bad of ["noon", "2026-06-21T18:00:00", "2026-02-30T12:00:00Z"]) {
+    assert.throws(
+      () => parseProbeArgs(["--clock", bad], args),
+      (error) =>
+        error instanceof TypeError &&
+        /--clock must be an ISO 8601 instant/.test(error.message),
+      bad,
+    );
+  }
+  assert.equal(
+    parseProbeArgs(["--clock", "2026-06-21T14:00:00-04:00"], args).clock,
+    DAYLIGHT_CLOCK_ISO,
+  );
+  assert.equal(parseProbeArgs([], args).clock, undefined);
+});
+
 const CLOCK_LANES = [
   {
     marker: "function pageSetClock",

@@ -125,7 +125,11 @@ import {
   probeRefusalRecord,
   projectLifecycleFailures,
 } from "./probe-lifecycle-diagnostics.mjs";
-import { runDescriptorUnderLifecycle } from "./probe-lifecycle-run.mjs";
+import {
+  assessLifecycleFailure,
+  describeBrowserCloses,
+  runDescriptorUnderLifecycle,
+} from "./probe-lifecycle-run.mjs";
 import { resolveProbeLocations } from "./probe-output-location.mjs";
 import {
   PROBE_EXIT_CODES,
@@ -140,6 +144,7 @@ import {
   CORE_OPTION_SPECS,
   REQUIRED_SERVED_ARTIFACTS,
   RENDERERS,
+  isoInstant,
   nonNegativeNumber,
   optionValue,
   positiveInteger,
@@ -226,6 +231,9 @@ export {
  * @param {object} [options] Parse options.
  * @param {object} [options.defaults] Per-probe overrides of {@link CORE_OPTION_DEFAULTS}.
  * @param {Array<{flag: string, key: string, kind: string}>} [options.extraOptions] Probe-declared flags.
+ * @param {Function} [options.finalize] `(parsed, {explicit}) => object`: a
+ *   default that depends on other flags (the landing probe's identity cells
+ *   default to two runs); `explicit` is the set of keys the command line set.
  * @returns {object} Resolved options.
  */
 export function parseProbeArgs(argv, options = {}) {
@@ -238,6 +246,7 @@ export function parseProbeArgs(argv, options = {}) {
     }
   }
   Object.assign(parsed, options.defaults ?? {});
+  const explicit = new Set();
 
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index];
@@ -245,6 +254,7 @@ export function parseProbeArgs(argv, options = {}) {
     if (spec === undefined) {
       throw new TypeError(`unknown argument: ${arg}`);
     }
+    explicit.add(spec.key);
     if (spec.kind === "boolean") {
       parsed[spec.key] = true;
       continue;
@@ -261,6 +271,8 @@ export function parseProbeArgs(argv, options = {}) {
       parsed[spec.key] = nonNegativeNumber(raw, arg);
     } else if (spec.kind === "renderer-list") {
       parsed[spec.key] = rendererList(raw, arg);
+    } else if (spec.kind === "iso-instant") {
+      parsed[spec.key] = isoInstant(raw, arg);
     } else if (spec.kind === "string") {
       parsed[spec.key] = raw;
     } else {
@@ -268,6 +280,17 @@ export function parseProbeArgs(argv, options = {}) {
         `${arg} declares an unknown option kind: ${spec.kind}`,
       );
     }
+  }
+
+  if (typeof options.finalize === "function") {
+    const finalized = options.finalize(
+      { ...parsed },
+      { explicit: new Set(explicit) },
+    );
+    if (finalized === null || typeof finalized !== "object") {
+      throw new TypeError("descriptor.args.finalize must return an object");
+    }
+    Object.assign(parsed, finalized);
   }
 
   if (parsed.port > 65535) {
@@ -612,7 +635,16 @@ export async function runProbe(descriptor, dependencies = {}) {
   // twice — `C13-42a-3` in `DEFERRED_WORK.md`, to be settled by whoever
   // migrates the eighteen legacy probes and actually sees which shape occurs.
   const lifecycleAdopted = descriptor.workBudgetMs !== undefined;
-  const lifecycleState = { slot: null, verdicts: [] };
+  // `complete` and `closes` are what lets a browser that lingers after all
+  // the work is done be recorded rather than treated as a failed run; see
+  // `probe-lifecycle-run.mjs`.
+  const lifecycleState = {
+    slot: null,
+    verdicts: [],
+    complete: false,
+    closes: [],
+  };
+  let finishedExitCode = null;
   let lifecycleFailures = Object.freeze([]);
 
   let refusal = null;
@@ -687,6 +719,8 @@ export async function runProbe(descriptor, dependencies = {}) {
         chromium,
         ...(lifecycle === undefined ? {} : { lifecycle }),
         lifecycleDependencies,
+        now,
+        finalizeOnHardStop: finishRun,
         state: lifecycleState,
       });
     } else {
@@ -751,10 +785,18 @@ export async function runProbe(descriptor, dependencies = {}) {
     // lifecycle rejects with an AGGREGATE of everything the run accumulated,
     // and stringifying that reports the aggregate's own one-line message while
     // discarding the occurrences — so the lifecycle path projects them instead.
-    const lifecycleRefusal = lifecycleAdopted
-      ? probeRefusalRecord(error)
-      : null;
-    if (lifecycleRefusal !== null) {
+    // A browser that outlived its close deadline AFTER every run's cells and
+    // verdicts were complete is a teardown problem: the run publishes, and the
+    // runtime receipt's `browserCloses` carries the close.
+    const lingeringClose =
+      lifecycleAdopted && assessLifecycleFailure(error, lifecycleState);
+    const lifecycleRefusal =
+      lifecycleAdopted && !lingeringClose ? probeRefusalRecord(error) : null;
+    if (lingeringClose) {
+      process.stderr.write(
+        `${descriptor.name}: a browser close outlived its deadline after the work completed; the run is published and the close is in the receipt\n`,
+      );
+    } else if (lifecycleRefusal !== null) {
       refusal = lifecycleRefusal;
     } else if (!lifecycleAdopted && error instanceof ProbeRefusal) {
       refusal = {
@@ -787,109 +829,125 @@ export async function runProbe(descriptor, dependencies = {}) {
     }
   }
 
-  if (lifecycleAdopted) {
-    slot = lifecycleState.slot;
-    verdicts = lifecycleState.verdicts;
-  }
+  return finishRun();
 
-  const exitCode = exitCodeForOutcome({ refusal, errored, verdicts });
-  const generatedAt = new Date(now()).toISOString();
-  const runtimeReceipt = buildRuntimeReceipt({
-    probe: descriptor.name,
-    generatedAt,
-    origin,
-    options: options ?? null,
-    preflight,
-    edgeSlot: slot
-      ? {
-          lockPath: slot.lockPath,
-          acquiredAt: slot.acquiredAt,
-          reclaimed: slot.reclaimed,
-        }
-      : null,
-    launchArgs,
-    captures,
-    verdicts,
-    exitCode,
-  });
-  if (refusal) {
-    runtimeReceipt.refusal = refusal;
-  }
+  // Everything after the lifecycle: the exit code, the receipt or the incident.
+  // A function, and run at most once, because the lifecycle's hard stop calls
+  // it too when only a lingering browser kept a complete run from finishing.
+  function finishRun() {
+    if (finishedExitCode !== null) {
+      return finishedExitCode;
+    }
+    if (lifecycleAdopted) {
+      slot = lifecycleState.slot;
+      verdicts = lifecycleState.verdicts;
+    }
 
-  const outcome = outcomeOfRun({ refusal, errored });
-  let incidentPath = null;
-
-  if (outcome === RUN_OUTCOMES.MEASURED) {
-    const context = {
-      options,
+    const exitCode = exitCodeForOutcome({ refusal, errored, verdicts });
+    const generatedAt = new Date(now()).toISOString();
+    const runtimeReceipt = buildRuntimeReceipt({
+      probe: descriptor.name,
+      generatedAt,
       origin,
-      outputDirectory,
+      options: options ?? null,
+      preflight,
+      edgeSlot: slot
+        ? {
+            lockPath: slot.lockPath,
+            acquiredAt: slot.acquiredAt,
+            reclaimed: slot.reclaimed,
+          }
+        : null,
+      launchArgs,
       captures,
       verdicts,
-      generatedAt,
-    };
-    const fields = descriptor.receipt ? descriptor.receipt(cells, context) : {};
-    const envelope = descriptor.receiptEnvelope ?? "probe-owned";
-    const receipt = assembleReceipt({
-      envelope,
-      fields,
-      runtime: runtimeReceipt,
+      exitCode,
     });
-    if (outputDirectory) {
-      fs.mkdirSync(outputDirectory, { recursive: true });
-      writeFile(
-        path.join(outputDirectory, reportFileNameFor(descriptor)),
-        normalizeJson(receipt),
-      );
-      if (envelope === "probe-owned") {
+    if (refusal) {
+      runtimeReceipt.refusal = refusal;
+    }
+    if (lifecycleState.closes.length > 0) {
+      runtimeReceipt.browserCloses = describeBrowserCloses(lifecycleState, now);
+    }
+
+    const outcome = outcomeOfRun({ refusal, errored });
+    let incidentPath = null;
+
+    if (outcome === RUN_OUTCOMES.MEASURED) {
+      const context = {
+        options,
+        origin,
+        outputDirectory,
+        captures,
+        verdicts,
+        generatedAt,
+      };
+      const fields = descriptor.receipt
+        ? descriptor.receipt(cells, context)
+        : {};
+      const envelope = descriptor.receiptEnvelope ?? "probe-owned";
+      const receipt = assembleReceipt({
+        envelope,
+        fields,
+        runtime: runtimeReceipt,
+      });
+      if (outputDirectory) {
+        fs.mkdirSync(outputDirectory, { recursive: true });
         writeFile(
-          path.join(outputDirectory, `${descriptor.name}-runtime.json`),
-          normalizeJson(runtimeReceipt),
+          path.join(outputDirectory, reportFileNameFor(descriptor)),
+          normalizeJson(receipt),
+        );
+        if (envelope === "probe-owned") {
+          writeFile(
+            path.join(outputDirectory, `${descriptor.name}-runtime.json`),
+            normalizeJson(runtimeReceipt),
+          );
+        }
+        const summary = descriptor.summary
+          ? descriptor.summary(receipt, runtimeReceipt)
+          : buildMarkdownSummary(
+              receipt,
+              runtimeReceipt,
+              descriptor.title ?? descriptor.name,
+            );
+        writeFile(
+          path.join(outputDirectory, `${descriptor.name}-summary.md`),
+          summary,
         );
       }
-      const summary = descriptor.summary
-        ? descriptor.summary(receipt, runtimeReceipt)
-        : buildMarkdownSummary(
-            receipt,
-            runtimeReceipt,
-            descriptor.title ?? descriptor.name,
-          );
-      writeFile(
-        path.join(outputDirectory, `${descriptor.name}-summary.md`),
-        summary,
+    } else if (outputDirectory) {
+      // The probe's receipt builder is not CALLED on this path. Running it over
+      // an empty `cells` is what manufactured the hollow document, and a builder
+      // that reads `cells[0]` would turn a refusal into an ERROR.
+      fs.mkdirSync(outputDirectory, { recursive: true });
+      incidentPath = path.join(
+        outputDirectory,
+        `${descriptor.name}-${INCIDENT_ARTIFACT_SUFFIX[outcome]}.json`,
+      );
+      const incidentRecord = buildIncidentRecord({
+        outcome,
+        runtimeReceipt,
+        error: errorText,
+      });
+      // Only present when a lifecycle actually accumulated occurrences, so a
+      // pre-adoption probe's incident record keeps exactly the fields it had.
+      if (lifecycleFailures.length > 0) {
+        incidentRecord.lifecycleFailures = lifecycleFailures;
+      }
+      writeFile(incidentPath, normalizeJson(incidentRecord));
+    }
+
+    if (refusal) {
+      process.stderr.write(
+        `${descriptor.name}: REFUSED (${refusal.reason}) — ${refusal.message}\n`,
       );
     }
-  } else if (outputDirectory) {
-    // The probe's receipt builder is not CALLED on this path. Running it over
-    // an empty `cells` is what manufactured the hollow document, and a builder
-    // that reads `cells[0]` would turn a refusal into an ERROR.
-    fs.mkdirSync(outputDirectory, { recursive: true });
-    incidentPath = path.join(
-      outputDirectory,
-      `${descriptor.name}-${INCIDENT_ARTIFACT_SUFFIX[outcome]}.json`,
-    );
-    const incidentRecord = buildIncidentRecord({
-      outcome,
-      runtimeReceipt,
-      error: errorText,
-    });
-    // Only present when a lifecycle actually accumulated occurrences, so a
-    // pre-adoption probe's incident record keeps exactly the fields it had.
-    if (lifecycleFailures.length > 0) {
-      incidentRecord.lifecycleFailures = lifecycleFailures;
+    if (incidentPath) {
+      process.stderr.write(
+        `${descriptor.name}: no receipt was written; the ${outcome} run is recorded at ${incidentPath}\n`,
+      );
     }
-    writeFile(incidentPath, normalizeJson(incidentRecord));
+    finishedExitCode = exitCode;
+    return exitCode;
   }
-
-  if (refusal) {
-    process.stderr.write(
-      `${descriptor.name}: REFUSED (${refusal.reason}) — ${refusal.message}\n`,
-    );
-  }
-  if (incidentPath) {
-    process.stderr.write(
-      `${descriptor.name}: no receipt was written; the ${outcome} run is recorded at ${incidentPath}\n`,
-    );
-  }
-  return exitCode;
 }

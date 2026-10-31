@@ -2,7 +2,7 @@
  * The landing program's cell table and the pure planning over it: which rig a
  * cell renders, on which renderers and pages, with which per-page dial
  * variants, and whether it waits for pending pipelines by default.
- * @purpose Cell table piece for probe-landing-cells.mjs: the LANDING_CELLS table (rig, kind, identity, per-cell pipeline-wait default, per-page dial variants, displacement readback and its evolved-clock second read, cross-renderer diff, forced performance leg and the GPU pass its PF-2 window must list), the (cell, renderer, page) plan, the rig a variant page stages, and the per-cell pending-pipeline wait resolved from --wait-pipelines / --no-wait-pipelines and read back from a report, all pure.
+ * @purpose Cell table piece for probe-landing-cells.mjs: the LANDING_CELLS table (rig, kind, identity, per-cell pipeline-wait default, per-page dial variants, displacement readback and its evolved-clock second read, cross-renderer diff and its pre-registered band, forced performance leg and the GPU pass its PF-2 window must list), the (cell, renderer, page) plan, the rig a variant page stages, and the per-cell pending-pipeline wait resolved from --wait-pipelines / --no-wait-pipelines and read back from a report, and the --runs default of a run that includes an identity cell (landingArgsFinalize), all pure.
  * @status ACTIVE
  *
  * WHY A PIECE. The table and its planning moved out of
@@ -55,6 +55,33 @@ const GLOBE_STAGE_VARIANTS = Object.freeze({
 });
 
 /**
+ * The pre-registered WebGPU-against-WebGL band of the pinned 2D and Columbus
+ * view identity cells, set after the SCENE3D gate on the ground-atmosphere
+ * drape (Batch 1636). Measured on tree B of the P2D-ACCEPT Edge leg
+ * (`EDGE_RECEIPT_EOWYN_P2D_ACCEPT.md` sections 1 and 4), deterministic over
+ * three invocations (the same sha256 each time): the pinned 2D rig
+ * `default-2d-pinned` differs in 2 px at tolerance 0, max channel 1, bbox
+ * (675,191)-(703,253); the pinned Columbus rig `default-columbus-pinned` in
+ * 2 px at tolerance 0, max channel 32, all on column x = 1274, the right map
+ * edge (y 42-677). Both residuals were already present in the pre-fix
+ * `bypass-drape` frames, so they belong to the map edge and the base colour,
+ * not to the drape.
+ *
+ * The band is the measured 2 px doubled (`maxChangedPx` 4), and a channel
+ * delta of at most 1 everywhere except the edge column, which is excluded
+ * from the channel limit only (its pixels still count toward `maxChangedPx`).
+ * Scope: one pinned camera per mode, offline imagery, no water mask. A wider
+ * scope (another camera, online imagery, a mask) needs its own measurement.
+ */
+export const POST_FIX_2D_CV_BAND = Object.freeze({
+  tolerance: 0,
+  maxChangedPx: 4,
+  maxChannelOutsideExcluded: 1,
+  excludedColumns: Object.freeze([1274]),
+  scope: "one pinned camera per mode, offline imagery, no water mask",
+});
+
+/**
  * The cell table: cell name -> rig id and what the cell does on it.
  *
  * Fields beyond `rig` and `kind`: `identity` (a pixel-identity cell; the probe
@@ -62,7 +89,10 @@ const GLOBE_STAGE_VARIANTS = Object.freeze({
  * pending pipelines unless waived), `variants` (page name -> dials laid over
  * the rig), `readback` (`"ocean-displacement"`: the FFT ocean's displacement
  * field is read back after the capture), `crossRenderer` (the WebGPU capture
- * is diffed against the same run's WebGL capture), `perf` (the PF-1 / PF-2
+ * is diffed against the same run's WebGL capture), `crossRendererBand` (the
+ * pre-registered band that diff is judged against, see
+ * {@link POST_FIX_2D_CV_BAND}; a cross-renderer cell without one is measured
+ * only), `perf` (the PF-1 / PF-2
  * window runs without `--perf`), `perfPass` (the GPU pass label the PF-2
  * window must list, judged by `lib/landing-verdicts.mjs`) and
  * `evolvedReadbackSeconds` (the displacement field is read a second time with
@@ -127,12 +157,16 @@ export const LANDING_CELLS = Object.freeze({
     kind: "capture",
     identity: true,
     waitPipelines: true,
+    crossRenderer: true,
+    crossRendererBand: POST_FIX_2D_CV_BAND,
   }),
   "E-ID-cv": Object.freeze({
     rig: "default-columbus-pinned",
     kind: "capture",
     identity: true,
     waitPipelines: true,
+    crossRenderer: true,
+    crossRendererBand: POST_FIX_2D_CV_BAND,
   }),
   // The Chukotka antimeridian coast on both renderers, the WebGPU capture
   // diffed against the same run's WebGL capture. No band is registered yet:
@@ -213,6 +247,34 @@ export function splitList(value) {
     .split(",")
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
+}
+
+/**
+ * How many same-build repeats a run takes when `--runs` was not given and an
+ * identity cell is requested: the WebGL default frame is not deterministic
+ * from run to run on one build (E-D: 340-384 px changed, max channel up to 9;
+ * row NEW-WEBGL-E-D-DEFAULT-FRAME-NONDETERMINISTIC), so a single WebGL run has
+ * no repeat floor to read its pixel band against and reads `unmeasured`.
+ */
+export const IDENTITY_DEFAULT_RUNS = 2;
+
+/**
+ * The descriptor's `args.finalize` hook: a run whose `--cells` include an
+ * identity cell takes {@link IDENTITY_DEFAULT_RUNS} runs unless `--runs` was
+ * given on the command line, whose value always wins. The default `--cells`
+ * include E-D, so a run with no flags takes two runs too. Pure.
+ *
+ * @param {{cells?: string, runs?: number}} parsed The options after parsing.
+ * @param {{explicit: Set<string>}} context The option keys the command line set.
+ * @returns {object} The options, with `runs` resolved.
+ */
+export function landingArgsFinalize(parsed, { explicit }) {
+  if (explicit.has("runs")) {
+    return parsed;
+  }
+  const names = splitList(parsed.cells ?? DEFAULT_CELLS.join(","));
+  const identity = names.some((name) => LANDING_CELLS[name]?.identity === true);
+  return identity ? { ...parsed, runs: IDENTITY_DEFAULT_RUNS } : parsed;
 }
 
 /**

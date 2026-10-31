@@ -182,7 +182,6 @@ const PIN = {
   sourceBudgetMs: 30_000,
   readyMinSettleMs: 3000,
   readyBudgetMs: 90_000,
-  readyMaxFrames: 120,
 };
 
 /** Scored thresholds — IDENTICAL to the pre-pinning probe. */
@@ -278,7 +277,6 @@ const RUN_LANE = async (cfg) => {
   const proceduralReady = await globalThis.__cloudProbe.awaitProceduralReady({
     featureRendererKey: C.FeatureRendererKey.PROCEDURAL_CLOUDS,
     frameTime,
-    maxFrames: cfg.readyMaxFrames,
   });
   setView();
 

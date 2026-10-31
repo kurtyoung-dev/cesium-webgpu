@@ -11,6 +11,7 @@
 // records they reduce stay in the probe, which owns the browser.
 
 import { readPng } from "../../lib/png-decode.mjs";
+import { UNMEASURED_REASONS } from "./probe-refusal.mjs";
 import { diffImages } from "./image-diff.mjs";
 import {
   WATER_BANDS,
@@ -578,6 +579,12 @@ export function waterVerdicts(records, summary, baseSummary, context) {
             ...common,
             pass: false,
             notRun: true,
+            // Asking for one run is the operator's choice, so 2g is recorded
+            // as unmeasured; two requested runs that did not both capture are
+            // a measurement that failed to happen and keep failing.
+            ...(requestedRuns < 2
+              ? { unmeasured: UNMEASURED_REASONS.RUNS }
+              : {}),
             reason:
               requestedRuns >= 2
                 ? `2g needs two captured ON runs at the pinned epoch (--runs ${requestedRuns}, ${repeat.capturedRuns ?? 0} captured)`

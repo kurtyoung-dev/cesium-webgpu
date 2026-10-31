@@ -89,15 +89,17 @@ export const DEFAULT_NAVIGATION_TIMEOUT_MS = 120_000;
 /**
  * How long ONE resource gets to close before the lifecycle gives up on it.
  *
- * The fleet default (`RESOURCE_CLOSE_DEADLINE_MS`, 10 s) is tuned for a probe
- * holding one page. A capture run holds a browser that has built several
- * WebGPU device contexts, and the Edge leg of 2026-09-18 measured a healthy
- * close of exactly that browser at 3,298 ms and then blew the 10 s budget on
- * the failure path, where the hard stop exited 2 with the cell's own diagnosis
- * lost. Four times the measured healthy close is margin for a loaded machine
- * without being so long that a genuinely wedged browser is never reported.
- * `options.closeDeadlineMs` overrides it, and the hard-stop grace keeps the
- * fleet's own margin above whatever it becomes.
+ * The fleet default (`RESOURCE_CLOSE_DEADLINE_MS`, 90 s since 2026-10-31, 10 s
+ * before) is what `runProbe` descriptors get. A capture run holds a browser
+ * that has built several WebGPU device contexts, and the Edge leg of
+ * 2026-09-18 measured a healthy close of exactly that browser at 3,298 ms and
+ * then blew the then 10 s budget on the failure path, where the hard stop
+ * exited 2 with the cell's own diagnosis lost. Four times the measured healthy
+ * close is margin for a loaded machine without being so long that a genuinely
+ * wedged browser is never reported. `options.closeDeadlineMs` overrides it, and
+ * the hard-stop grace keeps the fleet's own margin above whatever it becomes.
+ * Unlike `runProbe`, the capture seam does not publish a run whose close
+ * outlived this deadline; that exemption lives in `probe-lifecycle-run.mjs`.
  */
 export const DEFAULT_CLOSE_DEADLINE_MS = 45_000;
 

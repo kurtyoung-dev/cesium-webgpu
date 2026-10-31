@@ -96,6 +96,49 @@ export function installCloudProbeHarness() {
     };
   };
 
+  /**
+   * The WebGPU render pipeline cache's pending count, read the way
+   * `lib/landing-cell-stage.mjs` `pageReadPendingPipelines` reads it (through
+   * `getRendererStatistics()`, never `cacheStats()`, which prints a console
+   * table the probes' error census would read). It is a copy because this
+   * function is injected alone and cannot import the original;
+   * `cloud-probe-harness.spec.mjs` pins the two to the same answers.
+   */
+  const readPendingPipelines = () => {
+    const pipelineContext = root.viewer?.scene?.context;
+    if (!pipelineContext || !pipelineContext.isWebGPU) {
+      return {
+        available: false,
+        pending: null,
+        created: null,
+        reason: "the render pipeline cache is WebGPU-only",
+      };
+    }
+    if (typeof pipelineContext.getRendererStatistics !== "function") {
+      return {
+        available: false,
+        pending: null,
+        created: null,
+        reason: "the context exposes no getRendererStatistics",
+      };
+    }
+    try {
+      const cache = pipelineContext.getRendererStatistics().pipelineCache;
+      return {
+        available: true,
+        pending: cache && Number.isFinite(cache.pending) ? cache.pending : null,
+        created: cache && Number.isFinite(cache.created) ? cache.created : null,
+      };
+    } catch (error) {
+      return {
+        available: false,
+        pending: null,
+        created: null,
+        reason: String(error && error.message ? error.message : error),
+      };
+    }
+  };
+
   root.__cloudProbe = Object.freeze({
     configure(options = {}) {
       const viewer = root.viewer;
@@ -184,6 +227,32 @@ export function installCloudProbeHarness() {
      * legitimately skips the effect while the feature renderer is absent.
      * Neither is `pipelineReady` — a compiled pipeline is not a written pixel,
      * and the returned counters keep the two apart (C13-N08a).
+     *
+     * TWO WAITS, IN ORDER. The march pipelines compile asynchronously, so a
+     * count of moving frames measures how fast the machine renders while the
+     * compiler is still working, not whether the renderer is ready: 120 frames
+     * pass in about two seconds on a quiet machine and the pipelines were not
+     * there yet (`DX-KIT-INGEST-HARNESS-READINESS-BUDGET`). So the helper
+     * first drives frames until the render pipeline cache has read 0 pending on
+     * `pipelineSettleReads` consecutive reads (a time budget,
+     * `pipelineWaitMs`; those frames do not count against the frame budget),
+     * and only then counts moving frames. A page without the cache (WebGL, or a
+     * context with no `getRendererStatistics`) skips the first wait and says
+     * so. Pipelines requested after the first drain send the loop back to the
+     * first wait rather than spend the frame budget.
+     *
+     * THE FRAME BUDGET IS TIME OVER THE MEASURED PERIOD. The counted frames
+     * are bounded by `frameBudgetMs` divided by the mean period of the
+     * counted frames so far (last 16), clamped to `[maxFrames,
+     * maxFramesCeiling]`. `maxFrames` (default 180) is therefore a MINIMUM
+     * floor, not a hard cap: a slow machine is never given fewer frames than
+     * the floor and a fast one waits at most `frameBudgetMs` of real time.
+     * `frameBudgetMs: 0` turns the derivation off and makes `maxFrames` an
+     * exact cap.
+     *
+     * The result and the refusal both carry the figures: which wait ended, the
+     * pipeline wait's ms and frames, the counted frames, the measured period
+     * and the budget they were held to.
      */
     async awaitProceduralReady(options = {}) {
       const viewer = root.viewer;
@@ -212,7 +281,19 @@ export function installCloudProbeHarness() {
         );
       }
 
-      const maxFrames = Math.max(1, options.maxFrames ?? 180);
+      const frameFloor = Math.max(1, options.maxFrames ?? 180);
+      const frameCeiling = Math.max(
+        frameFloor,
+        options.maxFramesCeiling ?? 3600,
+      );
+      const frameBudgetMs = Math.max(0, options.frameBudgetMs ?? 10_000);
+      const pipelineWaitMs = Math.max(0, options.pipelineWaitMs ?? 60_000);
+      const pipelineWaitMaxFrames = Math.max(
+        1,
+        options.pipelineWaitMaxFrames ?? 7200,
+      );
+      const settleReads = Math.max(1, options.pipelineSettleReads ?? 3);
+      const PERIOD_WINDOW = 16;
       const frameTime = options.frameTime ?? viewer.clock?.currentTime;
       const camera = scene.camera;
       const cloneCartesian = (value) => {
@@ -321,19 +402,74 @@ export function installCloudProbeHarness() {
       const executeCallCount = () =>
         counters.preparedFrameCalls + counters.legacyExecuteCalls;
 
+      const firstRead = readPendingPipelines();
+      const pipelineWait = {
+        available: firstRead.available,
+        ...(firstRead.available ? {} : { reason: firstRead.reason }),
+        budgetMs: pipelineWaitMs,
+        waitedMs: 0,
+        frames: 0,
+        rewaits: 0,
+        pendingAtStart: firstRead.pending,
+        pendingMax: firstRead.pending,
+        pendingAtEnd: firstRead.pending,
+        drained: false,
+        timedOut: false,
+      };
+      // Waiting from the start: a cache that has not been asked for a pipeline
+      // yet also reads 0, which is why a drain needs consecutive reads AND
+      // the frames the renderer needs to ask.
+      let draining = firstRead.available;
+      let zeroReads = 0;
+      const periods = [];
+      let renderedFrames = 0;
+      let countedFrames = 0;
+      const framePeriodMs = () =>
+        periods.length === 0
+          ? null
+          : periods.reduce((sum, value) => sum + value, 0) / periods.length;
+      const frameBudgetFrames = () => {
+        const period = framePeriodMs();
+        if (period === null || frameBudgetMs === 0) {
+          return frameFloor;
+        }
+        if (!(period > 0)) {
+          return frameCeiling;
+        }
+        return Math.min(
+          frameCeiling,
+          Math.max(frameFloor, Math.ceil(frameBudgetMs / period)),
+        );
+      };
+      const figures = () => ({
+        waitedFrames: renderedFrames,
+        countedFrames,
+        framePeriodMs: framePeriodMs(),
+        frameBudget: {
+          frames: frameBudgetFrames(),
+          floor: frameFloor,
+          ceiling: frameCeiling,
+          budgetMs: frameBudgetMs,
+        },
+        pipelineWait: { ...pipelineWait },
+      });
+
       try {
-        for (let frame = 0; frame < maxFrames; frame++) {
+        for (;;) {
+          const frameStart = performance.now();
           // The renderer intentionally freezes idle scene work. Drive a bounded,
           // alternating camera rotation during readiness so a cold feature
           // renderer cannot be "warmed" by frames that never reach the
           // environmental-effects chain. The helper restores the entry pose
           // before returning; callers then set their exact evidence camera.
           if (typeof camera?.rotateRight === "function") {
-            camera.rotateRight((frame & 1) === 0 ? 0.01 : -0.01);
+            camera.rotateRight((renderedFrames & 1) === 0 ? 0.01 : -0.01);
           }
           scene.requestRender?.();
           scene.render(frameTime);
           await new Promise((resolve) => requestAnimationFrame(resolve));
+          const duration = performance.now() - frameStart;
+          renderedFrames++;
           const realization = proceduralRealization();
           if (
             realization.initialized &&
@@ -342,8 +478,8 @@ export function installCloudProbeHarness() {
           ) {
             return {
               ok: true,
+              endedBy: "recorded",
               featureRendererKey,
-              waitedFrames: frame + 1,
               // `executeCalls` keeps its published meaning — how many times a
               // composite entry was invoked — so the probes that gate on
               // `readiness.executeCalls > 0` keep reading what they meant.
@@ -351,7 +487,61 @@ export function installCloudProbeHarness() {
               ...counters,
               cameraDriven: typeof camera?.rotateRight === "function",
               ...realization,
+              ...figures(),
             };
+          }
+
+          if (pipelineWait.available) {
+            const read = readPendingPipelines();
+            const pending = read.available ? read.pending : null;
+            if (pending !== null) {
+              pipelineWait.pendingMax = Math.max(
+                pipelineWait.pendingMax ?? 0,
+                pending,
+              );
+            }
+            pipelineWait.pendingAtEnd = pending;
+            if (!draining && pending !== null && pending > 0) {
+              draining = true;
+              zeroReads = 0;
+              pipelineWait.rewaits++;
+              pipelineWait.drained = false;
+            }
+            if (draining) {
+              pipelineWait.frames++;
+              pipelineWait.waitedMs += duration;
+              // A cache that reads no count after a frame has nothing to wait
+              // on; treat it as drained rather than wait out the budget.
+              zeroReads = pending === null || pending === 0 ? zeroReads + 1 : 0;
+              if (zeroReads >= settleReads) {
+                draining = false;
+                pipelineWait.drained = true;
+              } else if (
+                pipelineWait.waitedMs >= pipelineWaitMs ||
+                pipelineWait.frames >= pipelineWaitMaxFrames
+              ) {
+                pipelineWait.timedOut = true;
+                throw new Error(
+                  `procedural cloud renderer pipeline wait timed out: ${pending} pipelines still pending after ${Math.round(
+                    pipelineWait.waitedMs,
+                  )} ms of a ${pipelineWaitMs} ms budget (${pipelineWait.frames} frames, executeCalls=${executeCallCount()}, counters=${JSON.stringify(
+                    counters,
+                  )}, figures=${JSON.stringify(figures())}): ${JSON.stringify(
+                    realization,
+                  )}`,
+                );
+              }
+              continue;
+            }
+          }
+
+          countedFrames++;
+          periods.push(duration);
+          if (periods.length > PERIOD_WINDOW) {
+            periods.shift();
+          }
+          if (countedFrames >= frameBudgetFrames()) {
+            break;
           }
         }
 
@@ -360,9 +550,11 @@ export function installCloudProbeHarness() {
         // whether the composition never arrived, arrived and prepared nothing,
         // or prepared and recorded nothing — three different defects.
         throw new Error(
-          `procedural cloud renderer recorded no frame in ${maxFrames} moving frames (executeCalls=${executeCallCount()}, counters=${JSON.stringify(
+          `procedural cloud renderer recorded no frame in ${countedFrames} moving frames (executeCalls=${executeCallCount()}, counters=${JSON.stringify(
             counters,
-          )}): ${JSON.stringify(proceduralRealization())}`,
+          )}, figures=${JSON.stringify(figures())}): ${JSON.stringify(
+            proceduralRealization(),
+          )}`,
         );
       } finally {
         for (const restore of restores) {

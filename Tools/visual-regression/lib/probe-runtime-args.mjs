@@ -1,6 +1,6 @@
 // probe-runtime-args.mjs — the probe runtime's flag table, defaults and value parsers.
 //
-// @purpose Companion of probe-runtime.mjs: the REQUIRED_SERVED_ARTIFACTS and RENDERERS constants, the core flag table (CORE_OPTION_SPECS), its defaults (CORE_OPTION_DEFAULTS) and the four value parsers parseProbeArgs applies (optionValue, positiveInteger, nonNegativeNumber, rendererList).
+// @purpose Companion of probe-runtime.mjs: the REQUIRED_SERVED_ARTIFACTS and RENDERERS constants, the core flag table (CORE_OPTION_SPECS), its defaults (CORE_OPTION_DEFAULTS) and the five value parsers parseProbeArgs applies (optionValue, positiveInteger, nonNegativeNumber, rendererList, isoInstant).
 // @status ACTIVE
 //
 // WHY A PIECE. The table and its parsers moved out of `probe-runtime.mjs`
@@ -108,6 +108,33 @@ export function nonNegativeNumber(value, name) {
     throw new TypeError(`${name} must be a non-negative number`);
   }
   return parsed;
+}
+
+const ISO_INSTANT =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.0+)?(Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * The `iso-instant` kind: an ISO 8601 instant with a zone, to the second,
+ * normalized to `YYYY-MM-DDTHH:MM:SSZ`. `Date.parse` alone accepts
+ * 2026-02-30 by rolling it into March, so the calendar day is checked too.
+ *
+ * @param {string} value Raw value.
+ * @param {string} name The flag, for the error message.
+ * @returns {string} The normalized instant.
+ */
+export function isoInstant(value, name) {
+  const match = ISO_INSTANT.exec(String(value));
+  const ms = match === null ? NaN : Date.parse(value);
+  const [year, month, day] = (match ?? []).slice(1, 4).map(Number);
+  const calendarOk =
+    match !== null &&
+    new Date(Date.UTC(year, month - 1, day)).getUTCDate() === day;
+  if (!Number.isFinite(ms) || !calendarOk) {
+    throw new TypeError(
+      `${name} must be an ISO 8601 instant with a zone, to the second, e.g. 2026-06-21T18:00:00Z (got "${value}")`,
+    );
+  }
+  return new Date(ms).toISOString().replace(".000Z", "Z");
 }
 
 /**

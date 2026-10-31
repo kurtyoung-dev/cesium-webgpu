@@ -46,6 +46,24 @@ import { ProbeRefusal } from "../probe-refusal.mjs";
 // page (lane LINDISSE), not one of an E-T cell's teardown or forced-loss pages.
 const isScenePage = (page) => page !== "teardown" && page !== "forced-loss";
 
+/**
+ * How long a page waited for pending pipelines before its startup was
+ * measured, for PF-3 to take out of the interval. 0 when the cell did not wait
+ * (`pipelines: null`); undefined for a page record written before the wait was
+ * recorded (no `pipelines` key), so PF-3 falls back to the raw interval.
+ */
+function pipelineWaitOf(record) {
+  if (record.pipelines === undefined) {
+    return undefined;
+  }
+  if (record.pipelines === null) {
+    return 0;
+  }
+  return Number.isFinite(record.pipelines.waitedMs)
+    ? record.pipelines.waitedMs
+    : undefined;
+}
+
 /** The key one arm's results are grouped under, across runs. */
 export function armKey(record) {
   return `${record.cell}|${record.renderer}|${record.page}`;
@@ -102,6 +120,7 @@ export function groupArms(records) {
       arm.inputs.pf3.push({
         startup: record.startup,
         compile: record.compileAtStartup ?? {},
+        pipelineWaitMs: pipelineWaitOf(record),
       });
     }
     if (record.perf) {

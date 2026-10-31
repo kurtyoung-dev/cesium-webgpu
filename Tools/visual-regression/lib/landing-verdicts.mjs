@@ -1,7 +1,7 @@
 /**
  * The landing probe's base-vs-tip comparison and its verdicts, pure over the
  * page records.
- * @purpose Verdict piece for probe-landing-cells.mjs: the PF-1..PF-4 and first-capture pixel comparison of every arm a base report shares (compareArms), the per-page verdicts (stage, onmessage sentinel and its positive control, device loss, uncaught errors, teardown owners, the named GPU pass a cell expects in its PF-2 window) and the per-arm PF and terminal verdicts (landingVerdicts), all pure except compareArms' PNG reads.
+ * @purpose Verdict piece for probe-landing-cells.mjs: the PF-1..PF-4 and first-capture pixel comparison of every arm a base report shares (compareArms), the per-page verdicts (stage, onmessage sentinel and its positive control, device loss, uncaught errors, teardown owners, the named GPU pass a cell expects in its PF-2 window) and the per-arm PF and terminal verdicts (landingVerdicts) and the uncapped non-sentinel console error count (otherConsoleErrorCount), all pure except compareArms' PNG reads.
  * @status ACTIVE
  *
  * WHY A PIECE. Lane TAR-ALDARION moved these out of `probe-landing-cells.mjs`
@@ -32,6 +32,7 @@ import {
   onmessageVerdict,
 } from "./onmessage-sentinel.mjs";
 import { LANDING_CELLS } from "./landing-cell-table.mjs";
+import { UNMEASURED_REASONS } from "./probe-refusal.mjs";
 
 /**
  * A PF reading that does not exist on this renderer on either arm (the per-pass
@@ -40,6 +41,29 @@ import { LANDING_CELLS } from "./landing-cell-table.mjs";
  * `unmeasured`, which fails.
  */
 export const NOT_APPLICABLE = "not-applicable";
+
+/**
+ * How many non-sentinel `error` console lines a page recorded. `other` is a
+ * sample of at most five lines, so its length caps the count at five and hides
+ * a page that logged ninety-one; the uncapped `otherCount` is read first, then
+ * `errors - sentinel` (a report written before `otherCount` existed), and only
+ * then the sample's length. Pure.
+ *
+ * @param {{otherCount?: number, errors?: number, sentinel?: number, other?: string[]}|null|undefined} consoleErrors A page's classified console lines.
+ * @returns {number} The non-sentinel error count.
+ */
+export function otherConsoleErrorCount(consoleErrors) {
+  if (Number.isFinite(consoleErrors?.otherCount)) {
+    return consoleErrors.otherCount;
+  }
+  if (
+    Number.isFinite(consoleErrors?.errors) &&
+    Number.isFinite(consoleErrors?.sentinel)
+  ) {
+    return Math.max(0, consoleErrors.errors - consoleErrors.sentinel);
+  }
+  return consoleErrors?.other?.length ?? 0;
+}
 
 /**
  * The PF verdicts and the first-capture pixel diff of every arm the base
@@ -75,6 +99,7 @@ export function compareArms(tipArms, baseArms, bands, options = {}) {
         tipRuns: tip.inputs.pf3,
         bands,
         field: options.startupField || undefined,
+        renderer: tip.renderer ?? key.split("|")[1],
         contention,
       });
     }
@@ -142,10 +167,12 @@ export function compareArms(tipArms, baseArms, bands, options = {}) {
         tip: tip.deviceLoss.map(shape),
         same: sameTerminal(shape(base.deviceLoss[0]), shape(tip.deviceLoss[0])),
         baseOtherConsoleErrors: Math.max(
-          ...base.deviceLoss.map((e) => e.consoleErrors?.other?.length ?? 0),
+          ...base.deviceLoss.map((e) =>
+            otherConsoleErrorCount(e.consoleErrors),
+          ),
         ),
         tipOtherConsoleErrors: Math.max(
-          ...tip.deviceLoss.map((e) => e.consoleErrors?.other?.length ?? 0),
+          ...tip.deviceLoss.map((e) => otherConsoleErrorCount(e.consoleErrors)),
         ),
       };
     }
@@ -243,8 +270,14 @@ export function landingVerdicts(records, comparison) {
           id: `${key}:${arm[pf].metric}`,
           pass: arm[pf].verdict === PERF_VERDICTS.WITHIN,
           verdict: arm[pf].verdict,
-          // An unmeasured statistic is NOT RUN, never a pass (D4).
+          // An unmeasured statistic is NOT RUN, never a pass (D4). A
+          // contended one is also marked: the machine, not the tree, kept it
+          // from being read, so it is recorded without failing the run. A
+          // plain unmeasured one (a number the arm never produced) still fails.
           ...(unmeasured ? { notRun: true } : {}),
+          ...(arm[pf].verdict === PERF_VERDICTS.UNMEASURED_CONTENDED
+            ? { unmeasured: UNMEASURED_REASONS.CONTENDED }
+            : {}),
         });
       }
     }

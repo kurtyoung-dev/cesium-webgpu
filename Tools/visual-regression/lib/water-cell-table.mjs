@@ -1,6 +1,6 @@
 // water-cell-table.mjs — the water landing's cell table, bands and the pure planning over them.
 //
-// @purpose Cell table piece for probe-water-cells.mjs: WATER_CELLS (the leg-2 mask pairs and cell 1f's demo), the sheet's pre-registered WATER_BANDS, the declared arms, the demo id and the wave-epoch dial, plus the pure planning over them: splitList, planWaterCells (the page plan), stageGaps (blocking dials vs absent water dials), stageHandlesDial, waterStagePlan and waveEpochReadback (the pinned wave epoch).
+// @purpose Cell table piece for probe-water-cells.mjs: WATER_CELLS (the leg-2 mask pairs and cell 1f's demo, the default run), WATER_CAPTURE_CELLS (the opt-in capture-only cells: the water bookmark rigs and the offline Kauai shelf pair, no band), the sheet's pre-registered WATER_BANDS, the declared arms, the demo id and the wave-epoch dial, plus the pure planning over them: splitList, planWaterCells (the page plan), stageGaps (blocking dials vs absent water dials), stageHandlesDial, waterStagePlan and waveEpochReadback (the pinned wave epoch).
 // @status ACTIVE
 //
 // WHY A PIECE. The table and its planning moved out of
@@ -54,6 +54,55 @@ export const WATER_CELLS = Object.freeze({
   }),
 });
 
+/** The cells a run without `--cells` takes: exactly the banded table. */
+export const WATER_DEFAULT_CELLS = Object.freeze(Object.keys(WATER_CELLS));
+
+/**
+ * The opt-in capture cells (`--cells bookmark-sunset-glint`): a rig is staged,
+ * settled and element-captured, and a person or a later check reads the
+ * picture. They carry NO pre-registered band, so a verdict never judges them
+ * beyond the stage and the device-fault gate. A single rig is page `capture`;
+ * the offline Kauai shelf pair is `on` / `off` like a mask pair; the one
+ * Sandcastle 2 bookmark is page `demo` and, like cell 1f, is NOT RUN without
+ * Cesium ion.
+ */
+export const WATER_CAPTURE_CELLS = Object.freeze({
+  "bookmark-bahamas-photic-dive": Object.freeze({
+    kind: "capture-single",
+    rig: "water-bookmark-bahamas-photic-dive",
+  }),
+  "bookmark-cairo-nile": Object.freeze({
+    kind: "capture-single",
+    rig: "water-bookmark-cairo-nile",
+  }),
+  "bookmark-global-water-weather": Object.freeze({
+    kind: "capture-demo",
+    rig: "water-bookmark-global-water-weather",
+    galleryId: "webgpu-global-water-weather",
+  }),
+  "bookmark-ilulissat-ice": Object.freeze({
+    kind: "capture-single",
+    rig: "water-bookmark-ilulissat-ice",
+  }),
+  "bookmark-kauai-reef": Object.freeze({
+    kind: "capture-single",
+    rig: "water-bookmark-kauai-reef",
+  }),
+  "bookmark-mariana-trench": Object.freeze({
+    kind: "capture-single",
+    rig: "water-bookmark-mariana-trench",
+  }),
+  "bookmark-sunset-glint": Object.freeze({
+    kind: "capture-single",
+    rig: "water-bookmark-sunset-glint",
+  }),
+  "bathymetry-offline": Object.freeze({
+    kind: "capture-pair",
+    on: "water-bathymetry-offline",
+    off: "water-bathymetry-offline-off",
+  }),
+});
+
 /** The sheet's pre-registered bands (EDGE_LEG_WATER.md leg 1 cell 1f, leg 2). */
 export const WATER_BANDS = Object.freeze({
   mismatchTolerance: 16,
@@ -75,6 +124,31 @@ export const WATER_DEMO_ID = "globe-materials-water-mask-elevation-map";
 
 /** The rig dial that pins the water's wave clock (W-A3, cell 2g). */
 export const WAVE_EPOCH_DIAL = "waterSimulationEpoch";
+
+/**
+ * A cell's table row: the banded table's, else the capture table's.
+ *
+ * @param {string} cell
+ * @returns {object|undefined}
+ */
+export function waterCellSpec(cell) {
+  if (Object.hasOwn(WATER_CELLS, cell)) {
+    return WATER_CELLS[cell];
+  }
+  return Object.hasOwn(WATER_CAPTURE_CELLS, cell)
+    ? WATER_CAPTURE_CELLS[cell]
+    : undefined;
+}
+
+/** Whether a cell is an opt-in capture cell (no band, not in the default run). */
+export function isWaterCaptureCell(cell) {
+  return Object.hasOwn(WATER_CAPTURE_CELLS, cell);
+}
+
+/** Whether a cell kind opens a Sandcastle 2 demo (cell 1f and a capture-demo). */
+export function usesDemoPage(kind) {
+  return kind === "sandcastle2-demo" || kind === "capture-demo";
+}
 
 /**
  * The comma list of a string option, trimmed, empties dropped.
@@ -100,24 +174,24 @@ export function splitList(value) {
  * @throws {ProbeRefusal} `cell-unknown` or `cell-rig-absent`.
  */
 export function planWaterCells(options, rigsById) {
-  const names = splitList(options?.cells ?? Object.keys(WATER_CELLS).join(","));
+  const names = splitList(options?.cells ?? WATER_DEFAULT_CELLS.join(","));
   const plan = [];
   for (const cell of names) {
-    if (!Object.hasOwn(WATER_CELLS, cell)) {
+    const spec = waterCellSpec(cell);
+    if (spec === undefined) {
       throw new ProbeRefusal(
         "cell-unknown",
-        `--cells ${cell} is not one of ${Object.keys(WATER_CELLS).join(", ")}`,
+        `--cells ${cell} is not one of ${[...WATER_DEFAULT_CELLS, ...Object.keys(WATER_CAPTURE_CELLS)].join(", ")}`,
         { cell },
       );
     }
-    const spec = WATER_CELLS[cell];
     const variants =
-      spec.kind === "mask-pair"
+      spec.kind === "mask-pair" || spec.kind === "capture-pair"
         ? [
             ["on", spec.on],
             ["off", spec.off],
           ]
-        : [["demo", spec.rig]];
+        : [[usesDemoPage(spec.kind) ? "demo" : "capture", spec.rig]];
     for (const [, rigId] of variants) {
       if (!rigsById.has(rigId)) {
         throw new ProbeRefusal(
@@ -259,4 +333,62 @@ export function waveEpochReadback(epoch, staged) {
     applied: dial.applied === true,
     ...(typeof dial.reason === "string" && { reason: dial.reason }),
   };
+}
+
+/**
+ * The gallery demo a cell opens, or null: cell 1f's, or a capture-demo's own.
+ *
+ * @param {string} cell
+ * @returns {string|null}
+ */
+export function waterCellGalleryId(cell) {
+  const spec = waterCellSpec(cell);
+  if (!spec) {
+    return null;
+  }
+  return (
+    spec.galleryId ?? (spec.kind === "sandcastle2-demo" ? WATER_DEMO_ID : null)
+  );
+}
+
+/**
+ * What a run captured for each capture cell: the rigs, every capture with its
+ * digest, and the pages that were NOT RUN with their reasons. It judges
+ * nothing: a capture cell has no band. Pure.
+ *
+ * @param {object[]} records Every page record of the run.
+ * @returns {Record<string, {kind: string, rigs: string[],
+ *   captures: object[], notRun: string[]}>}
+ */
+export function summarizeCaptureCells(records) {
+  const summary = {};
+  for (const record of records ?? []) {
+    if (!isWaterCaptureCell(record.cell)) {
+      continue;
+    }
+    const entry = (summary[record.cell] ??= {
+      kind: WATER_CAPTURE_CELLS[record.cell].kind,
+      rigs: [],
+      captures: [],
+      notRun: [],
+    });
+    if (!entry.rigs.includes(record.rig)) {
+      entry.rigs.push(record.rig);
+    }
+    if (record.capture) {
+      entry.captures.push({
+        variant: record.variant,
+        renderer: record.renderer,
+        run: record.run,
+        path: record.capture.path,
+        sha256: record.capture.sha256,
+      });
+    }
+    if (record.notRun !== null && record.notRun !== undefined) {
+      entry.notRun.push(
+        `${record.variant}:${record.renderer}:run${record.run}: ${record.notRun}`,
+      );
+    }
+  }
+  return summary;
 }

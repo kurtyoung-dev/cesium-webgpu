@@ -11,6 +11,8 @@
 
 import { createHash } from "node:crypto";
 
+import { verdictResultLabel } from "./probe-refusal.mjs";
+
 /**
  * @param {Buffer|Uint8Array} bytes Bytes to fingerprint.
  * @returns {string} Lowercase hex sha256.
@@ -213,7 +215,7 @@ export function buildMarkdownSummary(receipt, runtimeReceipt, title) {
         "|",
         "\\|",
       );
-      lines.push(`| ${id} | ${verdict.pass === true ? "PASS" : "FAIL"} |`);
+      lines.push(`| ${id} | ${verdictResultLabel(verdict)} |`);
     }
     lines.push("");
   }

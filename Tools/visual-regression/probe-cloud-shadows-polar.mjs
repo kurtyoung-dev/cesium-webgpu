@@ -107,7 +107,6 @@ const PIN = {
   viewSettleMs: 2000,
   readyMinSettleMs: 3000,
   readyBudgetMs: 90_000,
-  readyMaxFrames: 120,
 };
 
 /**
@@ -177,7 +176,6 @@ const SETUP_LANE = async (cfg) => {
   const proceduralReady = await globalThis.__cloudProbe.awaitProceduralReady({
     featureRendererKey: C.FeatureRendererKey.PROCEDURAL_CLOUDS,
     frameTime: readyTime,
-    maxFrames: cfg.readyMaxFrames,
   });
 
   return {

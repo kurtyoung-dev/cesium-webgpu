@@ -1,6 +1,6 @@
 // probe-refusal.mjs — the probe fleet's exit-code table and refusal primitives.
 //
-// @purpose Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns.
+// @purpose Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error, the accepted/refused decision shape every probe-runtime guard returns, and the unmeasured-verdict marker (UNMEASURED_REASONS) the exit fold and the summary label read.
 // @status ACTIVE
 //
 // WHY THIS IS ITS OWN FILE. A refusal is the one thing every guard in the probe
@@ -89,12 +89,63 @@ export function throwForDecision(decision, message) {
 }
 
 /**
+ * The reasons a verdict may be recorded as unmeasured by a condition OUTSIDE
+ * the subject: the machine was busy while a performance statistic was read
+ * (`contended`), or the operator asked for fewer runs than a repeat statistic
+ * needs (`runs`). The field a verdict carries is `unmeasured`.
+ */
+export const UNMEASURED_REASONS = Object.freeze({
+  CONTENDED: "contended",
+  RUNS: "runs",
+});
+
+/**
+ * Whether a verdict carries the unmeasured marker: `pass: false` and
+ * `notRun: true` (the verdict is never promoted to a pass) plus a reason from
+ * {@link UNMEASURED_REASONS}. Anything else that is not a pass is a failure.
+ *
+ * @param {{pass?: boolean, notRun?: boolean, unmeasured?: string}|null|undefined} verdict A verdict.
+ * @returns {boolean} True for a marked, recorded-not-failing verdict.
+ */
+export function isMarkedUnmeasured(verdict) {
+  return (
+    verdict?.pass !== true &&
+    verdict?.notRun === true &&
+    Object.values(UNMEASURED_REASONS).includes(verdict.unmeasured)
+  );
+}
+
+/**
+ * The word a summary prints for a verdict: PASS, FAIL, NOT RUN (a requested
+ * measurement that did not happen) or UNMEASURED (<reason>) (an outside
+ * condition kept it from being read; see {@link UNMEASURED_REASONS}).
+ *
+ * @param {{pass?: boolean, notRun?: boolean, unmeasured?: string}} verdict A verdict.
+ * @returns {string} The label.
+ */
+export function verdictResultLabel(verdict) {
+  if (verdict?.pass === true) {
+    return "PASS";
+  }
+  if (isMarkedUnmeasured(verdict)) {
+    return `UNMEASURED (${verdict.unmeasured})`;
+  }
+  return verdict?.notRun === true ? "NOT RUN" : "FAIL";
+}
+
+/**
  * The final exit code for a run.
+ *
+ * A verdict that is not a pass fails the run unless it carries the unmeasured
+ * marker (see {@link isMarkedUnmeasured}): a marked verdict is recorded, never
+ * promoted to a pass, and does not by itself fail a run whose measured
+ * verdicts all passed. A plain `notRun` still fails, because a requested
+ * measurement did not happen.
  *
  * @param {object} options Options.
  * @param {object|null} [options.refusal] A refusal, when one occurred.
  * @param {boolean} [options.errored] Whether the harness threw.
- * @param {Array<{pass: boolean}>} [options.verdicts] The probe's verdicts.
+ * @param {Array<{pass: boolean, notRun?: boolean, unmeasured?: string}>} [options.verdicts] The probe's verdicts.
  * @returns {number} The exit code.
  */
 export function exitCodeForOutcome({ refusal, errored, verdicts }) {
@@ -104,6 +155,16 @@ export function exitCodeForOutcome({ refusal, errored, verdicts }) {
   if (errored === true) {
     return PROBE_EXIT_CODES.ERROR;
   }
-  const failed = (verdicts ?? []).filter((verdict) => verdict.pass !== true);
-  return failed.length === 0 ? PROBE_EXIT_CODES.OK : PROBE_EXIT_CODES.FAILURE;
+  const all = verdicts ?? [];
+  const failed = all.filter(
+    (verdict) => verdict.pass !== true && !isMarkedUnmeasured(verdict),
+  );
+  if (failed.length > 0) {
+    return PROBE_EXIT_CODES.FAILURE;
+  }
+  // A run in which every verdict is marked measured nothing: exiting 0 would
+  // let an orchestrator read "nothing was read" as "everything passed".
+  const marked = all.some(isMarkedUnmeasured);
+  const measured = all.some((verdict) => verdict.pass === true);
+  return marked && !measured ? PROBE_EXIT_CODES.FAILURE : PROBE_EXIT_CODES.OK;
 }

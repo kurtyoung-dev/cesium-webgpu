@@ -136,6 +136,7 @@ function isEdgeSlotBusyRefusal(raw) {
  * @param {number} options.deadlineMs Whole-run orderly deadline.
  * @param {number} options.hardStopGraceMs One non-resetting grace after drain begins.
  * @param {number} options.closeDeadlineMs Per-resource close budget.
+ * @param {(failures: unknown[]) => (number|undefined)} [options.onHardStop] Called once, synchronously, when the hard stop fires and before the process exits, with the raw failures the lifecycle holds. It may bank a receipt and returns the exit code to use; any other return (or a throw) keeps the error exit.
  * @param {string} [options.edgeSlotLockPath] Absolute path to this fork's Edge-slot lock file; required before `scope.withEdgeSlot` may be used.
  * @param {(scope: Readonly<object>) => Promise<unknown>|unknown} body Probe work.
  * @param {object} [testDependencies] Hermetic timer, exit, slot, and abort seams.
@@ -160,6 +161,12 @@ export async function withProbeLifecycle(options, body, testDependencies) {
     options.closeDeadlineMs,
     "closeDeadlineMs",
   );
+  if (
+    options.onHardStop !== undefined &&
+    typeof options.onHardStop !== "function"
+  ) {
+    throw new TypeError("onHardStop must be a function");
+  }
   if (hardStopGraceMs <= closeDeadlineMs) {
     throw new RangeError(
       "hardStopGraceMs must exceed closeDeadlineMs so a bounded close can settle before hard exit",
@@ -185,6 +192,10 @@ export async function withProbeLifecycle(options, body, testDependencies) {
   let hardExited = false;
   let closeSequence = 0;
   let deadlineRecorded = false;
+
+  // Armed per resource close. A close that never settles leaves its timer
+  // pending; the hard stop clears them, because nothing may fire after it.
+  const closeTimers = new Set();
 
   const retain = (promise, label, includeInPhaseA = true) => {
     const observed = Promise.resolve(promise).then(
@@ -220,14 +231,33 @@ export async function withProbeLifecycle(options, body, testDependencies) {
     }
     hardExited = true;
     phase = "HARD_EXIT";
+    let exitCode = PROBE_EXIT_CODES.ERROR;
     try {
       dependencies.writeDiagnostic(
         `${options.probe}: lifecycle did not reach quiescence before hard-stop grace\n`,
       );
     } catch (raw) {
       retainFailure(failure("hard-stop diagnostic", raw));
+    }
+    try {
+      // The caller may hold a complete measurement that only a lingering
+      // teardown kept from being published: this is the last synchronous point
+      // before the process dies, so it is where that receipt has to be banked.
+      const decided = options.onHardStop?.(
+        failures.filter((entry) => entry?.occurred).map((entry) => entry.raw),
+      );
+      if (Number.isSafeInteger(decided) && decided >= 0) {
+        exitCode = decided;
+      }
+    } catch (raw) {
+      retainFailure(failure("hard-stop hook", raw));
     } finally {
-      dependencies.exit(PROBE_EXIT_CODES.ERROR);
+      dependencies.clearTimeout(orderlyTimer);
+      for (const timer of closeTimers) {
+        dependencies.clearTimeout(timer);
+      }
+      closeTimers.clear();
+      dependencies.exit(exitCode);
     }
   };
 
@@ -342,9 +372,12 @@ export async function withProbeLifecycle(options, body, testDependencies) {
     );
     const closeDeadline = deferred();
     const closeTimer = dependencies.setTimeout(() => {
+      closeTimers.delete(closeTimer);
       closeDeadline.resolve(Object.freeze({ kind: "close-deadline" }));
     }, closeDeadlineMs);
+    closeTimers.add(closeTimer);
     const settledClose = resource.closeOutcome.then((outcome) => {
+      closeTimers.delete(closeTimer);
       dependencies.clearTimeout(closeTimer);
       return Object.freeze({ kind: "close-settled", outcome });
     });
@@ -362,6 +395,7 @@ export async function withProbeLifecycle(options, body, testDependencies) {
             `${resource.label} close deadline`,
             new ProbeLifecycleError(
               `${resource.label} did not close before its deadline`,
+              { kind: "close-deadline", resource: resource.label },
             ),
           );
           enterDraining("resource-close-deadline", timeout);
@@ -444,6 +478,7 @@ export async function withProbeLifecycle(options, body, testDependencies) {
             "orderly deadline",
             new ProbeLifecycleError(
               `${options.probe} exceeded its orderly deadline`,
+              { kind: "orderly-deadline" },
             ),
           ),
         );
@@ -602,6 +637,7 @@ export async function withProbeLifecycle(options, body, testDependencies) {
         if (closeResult.value.kind === "close-deadline") {
           throw new ProbeLifecycleError(
             `${resource.label} close deadline expired`,
+            { kind: "close-deadline", resource: resource.label },
           );
         }
         if (closeResult.value.outcome.status === "rejected") {

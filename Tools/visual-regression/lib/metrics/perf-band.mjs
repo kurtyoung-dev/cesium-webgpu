@@ -80,6 +80,37 @@ export const SEAT_DEFAULT_BANDS = Object.freeze({
   contendedRunSamples: 10,
 });
 
+/**
+ * The PF-3 band floor of a WebGL arm (the WebGPU floor is
+ * `SEAT_DEFAULT_BANDS.startupBandFloor`, 10 %). Same-build WebGL arms of the
+ * 2D identity cell moved 13.2 % between two invocations of one build
+ * (navigation to first frame 2167.6 ms against 2453.1 ms; the E-ID-2d WebGL
+ * rows of `EDGE_RECEIPT_EOWYN_KIT3.md` section 4, whose other same-build
+ * WebGL pairs moved +10.7 %, +7.9 % and +3.5 %) and read `over` against the
+ * 10 % floor. 15 % clears that spread with under two points of margin, and is
+ * still under a 20 % startup regression. WebGPU arms moved -3.4 % to +5.4 % on
+ * the same build (the same rows, measured with the pipeline wait inside the
+ * interval), inside 10 %, so its floor stays. A wave that pre-registers
+ * `startupBandFloor` explicitly overrides both renderers' floor.
+ */
+export const STARTUP_BAND_FLOOR_WEBGL = 0.15;
+
+/**
+ * The bands a PF-3 verdict for `renderer` reads: `bands` unchanged, except a
+ * WebGL arm without a pre-registered `startupBandFloor` reads
+ * {@link STARTUP_BAND_FLOOR_WEBGL}. Pure.
+ *
+ * @param {string|undefined} renderer `webgl` or `webgpu`.
+ * @param {object} [bands] A wave's pre-registered overrides.
+ * @returns {object} Overrides to hand to {@link resolveBands}.
+ */
+export function startupBandsFor(renderer, bands) {
+  if (renderer !== "webgl" || Object.hasOwn(bands ?? {}, "startupBandFloor")) {
+    return bands;
+  }
+  return { ...bands, startupBandFloor: STARTUP_BAND_FLOOR_WEBGL };
+}
+
 /** The verdict vocabulary. */
 export const PERF_VERDICTS = Object.freeze({
   WITHIN: "within",

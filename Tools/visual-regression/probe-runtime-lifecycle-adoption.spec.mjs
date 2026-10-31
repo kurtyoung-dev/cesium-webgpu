@@ -1,5 +1,7 @@
 // probe-runtime-lifecycle-adoption.spec.mjs — the staged adoption, asserted as
 // behaviour rather than as source shape.
+// @purpose Pins the probe runtime lifecycle adoption (tracked scope, whole-run deadline, close deadline, hard stop, incident publication) as behaviour through the lifecycle test seams, with inertness mutants.
+// @status ACTIVE
 //
 // Pure Node: no browser, no GPU, no build, no network. Every filesystem write
 // lands under `<tmpdir>/cesium-lane/<lane>` through `withLaneTmp`.
@@ -1594,7 +1596,9 @@ test("F. the work registry's real guarantee, and its real limit", async (t) => {
                 if (delay === deadlineMs) return setTimeout(callback, 0);
                 if (delay === HARD_STOP_GRACE_MS)
                   return setTimeout(callback, 200);
-                return setTimeout(callback, delay);
+                // The mutant never reaches the hard exit that clears the hung
+                // close's timer, so unref it or the spec outlives its assertions.
+                return setTimeout(callback, delay).unref();
               },
               clearTimeout,
               exit: (code) => exits.push(code),
@@ -1740,12 +1744,12 @@ test("G. a dropped registration is reported", async (t) => {
           "} else if (false && outputDirectory) {",
         ],
         [
-          "    fs.mkdirSync(outputDirectory, { recursive: true });\n    incidentPath = path.join(",
-          "    if (false) fs.mkdirSync(outputDirectory, { recursive: true });\n    incidentPath = path.join(",
+          "      fs.mkdirSync(outputDirectory, { recursive: true });\n      incidentPath = path.join(",
+          "      if (false) fs.mkdirSync(outputDirectory, { recursive: true });\n      incidentPath = path.join(",
         ],
         [
-          "    writeFile(incidentPath, normalizeJson(incidentRecord));",
-          "    if (false) writeFile(incidentPath, normalizeJson(incidentRecord));",
+          "      writeFile(incidentPath, normalizeJson(incidentRecord));",
+          "      if (false) writeFile(incidentPath, normalizeJson(incidentRecord));",
         ],
       ]) {
         const inert = await importMutated(RUNTIME_PATH, [replacement]);

@@ -31,7 +31,9 @@
 // report (`--base-report`) and the wave's pre-registered bands (`--bands`, a
 // JSON file of `lib/metrics/perf-band.mjs` overrides; its sha256 is recorded).
 // Same-build repeats are `--runs N` (N >= 2 gives the repeat spread a band
-// is sized by).
+// is sized by). A run whose `--cells` include an identity cell takes two runs
+// unless `--runs` is given (`landingArgsFinalize`): the WebGL default frame
+// is not deterministic on one build, so a single run has no repeat floor.
 //
 // WHAT A CELL RECORDS. The stage's per-dial read-back (a dial the tree does not
 // have reads `applied: false`; a water dial that does so is the BEFORE arm's
@@ -160,6 +162,7 @@ import {
 import {
   DEFAULT_CELLS,
   LANDING_CELLS,
+  landingArgsFinalize,
   pipelineWaitPlan,
   planLandingCells,
   rigForPage,
@@ -174,7 +177,7 @@ import {
 } from "./lib/metrics/landing-cross-page.mjs";
 import {
   runtimeReportFileName,
-  writeLandingCaptureManifest,
+  writeLandingCaptureManifestOrViolations,
 } from "./lib/landing-capture-manifest.mjs";
 import {
   compareArms,
@@ -670,18 +673,7 @@ let invocationCpu = null;
 let invocationRigs = null;
 
 /** The manifest writer, its throw (a page whose rig is gone) reported. */
-function landingManifestOrError(inputs) {
-  try {
-    return writeLandingCaptureManifest(inputs);
-  } catch (error) {
-    return {
-      path: null,
-      written: false,
-      violations: [String(error?.message ?? error)],
-      files: [],
-    };
-  }
-}
+const landingManifestOrError = writeLandingCaptureManifestOrViolations;
 
 /**
  * The page of a plan that runs the sentinel's positive control: the first
@@ -725,6 +717,7 @@ export const descriptor = {
     "packages/engine/Build/Unminified/index.js",
   ],
   args: {
+    finalize: landingArgsFinalize,
     extraOptions: [
       {
         flag: "--cells",

@@ -44,7 +44,7 @@ import path from "node:path";
 
 import {
   runtimeReportFileName,
-  writeLandingCaptureManifest,
+  writeLandingCaptureManifestOrViolations,
 } from "./landing-capture-manifest.mjs";
 
 /** The cell name the FFT ocean probe's pages carry. */
@@ -196,9 +196,9 @@ export function ssrWaterManifestPages(cells) {
 
 /**
  * Write the probe's manifest beside its report. A manifest the validators
- * refuse is not written (a stale one is removed) and a throw from the builder
- * (a page whose rig is not registered) is returned the same way, as
- * violations, so the receipt can say why and the run is kept. Warns once on
+ * refuse is not written and a throw from the builder (a page whose rig is not
+ * registered) writes none either; in both cases a stale one is removed and the
+ * answer is returned as violations, so the receipt can say why and the run is kept. Warns once on
  * stderr when nothing was written.
  *
  * @param {object} inputs Inputs.
@@ -220,29 +220,21 @@ export function writeWaterProbeManifest({
   context,
   fs,
 }) {
-  let result;
-  try {
-    result = writeLandingCaptureManifest({
-      ...(fs && { fs }),
-      pages,
-      baseReport,
-      rigsById: rigsById ?? new Map(),
-      origins: { AFTER: context.origin },
-      generatedAt: context.generatedAt,
-      servedBuildAssertion:
-        context.options?.servedBuild === false ? "waived" : "enforced",
-      receipt: runtimeReportFileName(probe),
-      outputDirectory: context.outputDirectory,
-      entryLabel: WATER_ENTRY_LABEL,
-    });
-  } catch (error) {
-    result = {
-      path: null,
-      written: false,
-      violations: [String(error?.message ?? error)],
-      files: [],
-    };
-  }
+  // The landing piece's throw-safe writer: a builder throw comes back as
+  // violations and removes the stale manifest an earlier run left.
+  const result = writeLandingCaptureManifestOrViolations({
+    ...(fs && { fs }),
+    pages,
+    baseReport,
+    rigsById: rigsById ?? new Map(),
+    origins: { AFTER: context.origin },
+    generatedAt: context.generatedAt,
+    servedBuildAssertion:
+      context.options?.servedBuild === false ? "waived" : "enforced",
+    receipt: runtimeReportFileName(probe),
+    outputDirectory: context.outputDirectory,
+    entryLabel: WATER_ENTRY_LABEL,
+  });
   if (!result.written) {
     console.warn(
       `[probe-${probe}] capture manifest refused: ${result.violations.slice(0, 3).join("; ")}`,

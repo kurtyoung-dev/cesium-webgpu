@@ -654,7 +654,14 @@ test("T3: classifyConsoleErrors caps other error lines and page errors at five e
 });
 
 test("T3: classifyConsoleErrors handles empty, null, or undefined lines cleanly", () => {
-  const empty = { errors: 0, sentinel: 0, other: [], pageErrors: [] };
+  const empty = {
+    errors: 0,
+    sentinel: 0,
+    otherCount: 0,
+    other: [],
+    pageErrorCount: 0,
+    pageErrors: [],
+  };
   assert.deepEqual(classifyConsoleErrors([]), empty);
   assert.deepEqual(classifyConsoleErrors(null), empty);
   assert.deepEqual(classifyConsoleErrors(undefined), empty);

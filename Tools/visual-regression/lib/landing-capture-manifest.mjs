@@ -582,3 +582,36 @@ export function writeLandingCaptureManifest({
   io.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   return { path: manifestPath, written: true, violations: [], files: written };
 }
+
+/**
+ * {@link writeLandingCaptureManifest} with a builder throw (a page whose rig is
+ * not registered) returned as violations, so the receipt can say why and the
+ * run is kept. The builder throws before the writer reaches its own removal,
+ * so the stale `capture-manifest.json` an earlier run left is removed here:
+ * otherwise the contact sheet would show it beside this run's fresh receipt. A
+ * folder that cannot be cleaned does not cost the run its receipt.
+ *
+ * @param {object} inputs {@link writeLandingCaptureManifest}'s inputs.
+ * @returns {{path: string|null, written: boolean, violations: string[],
+ *   files: string[]}}
+ */
+export function writeLandingCaptureManifestOrViolations(inputs) {
+  try {
+    return writeLandingCaptureManifest(inputs);
+  } catch (error) {
+    try {
+      (inputs.fs ?? fs).rmSync(
+        path.join(inputs.outputDirectory, LANDING_MANIFEST_FILE),
+        { force: true },
+      );
+    } catch {
+      // The violations below still say no manifest was written.
+    }
+    return {
+      path: null,
+      written: false,
+      violations: [String(error?.message ?? error)],
+      files: [],
+    };
+  }
+}

@@ -5,15 +5,18 @@
  *
  * The pin is applied ONLY when the flag is given; `DAYLIGHT_CLOCK_ISO` is the
  * instant the landing rigs pin (a US view is lit at it), offered as a value to
- * pass, never a default. The runtime's flag table has no validating kind, so
- * `clockFlagExitCode` checks the flag from the probe's entry point, before
- * `runProbe` is reached, so no browser has started when a bad value is refused.
+ * pass, never a default. The flag is declared with the runtime's `iso-instant`
+ * kind, so `parseProbeArgs` rejects a bad value on its own, before any browser
+ * starts; `parseClockIso` delegates to the same `isoInstant` parser so the
+ * grammar has one home. `clockFlagExitCode` stays as the entry point's
+ * pre-check for probes that call it before `runProbe`.
  *
  * @module Tools/visual-regression/lib/clock-pin
  */
 
 import { CLOCK_STEPS_MODULE_URL, pageSetClock } from "./clock-steps.mjs";
 import { PROBE_EXIT_CODES, ProbeRefusal } from "./probe-refusal.mjs";
+import { isoInstant } from "./probe-runtime-args.mjs";
 
 /** The landing rigs' pinned instant. */
 export const DAYLIGHT_CLOCK_ISO = "2026-06-21T18:00:00Z";
@@ -22,11 +25,8 @@ export const DAYLIGHT_CLOCK_ISO = "2026-06-21T18:00:00Z";
 export const CLOCK_OPTION = Object.freeze({
   flag: "--clock",
   key: "clock",
-  kind: "string",
+  kind: "iso-instant",
 });
-
-const ISO_INSTANT =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.0+)?(Z|[+-]\d{2}:\d{2})$/;
 
 /**
  * @param {string} value Raw `--clock` value.
@@ -34,18 +34,7 @@ const ISO_INSTANT =
  * @throws {TypeError} Not an ISO 8601 instant with a zone, to the second.
  */
 export function parseClockIso(value) {
-  const match = ISO_INSTANT.exec(String(value));
-  const ms = match === null ? NaN : Date.parse(value);
-  const [year, month, day] = (match ?? []).slice(1, 4).map(Number);
-  const calendarOk =
-    match !== null &&
-    new Date(Date.UTC(year, month - 1, day)).getUTCDate() === day;
-  if (!Number.isFinite(ms) || !calendarOk) {
-    throw new TypeError(
-      `--clock must be an ISO 8601 instant with a zone, to the second, e.g. ${DAYLIGHT_CLOCK_ISO} (got "${value}")`,
-    );
-  }
-  return new Date(ms).toISOString().replace(".000Z", "Z");
+  return isoInstant(value, CLOCK_OPTION.flag);
 }
 
 /**
@@ -149,7 +138,10 @@ export async function assertClockHeld(
 
 /**
  * The entry point's pre-check: a bad `--clock` is a caller error (exit 2),
- * reported on stderr before any browser starts. Used as
+ * reported on stderr before any browser starts. Since `CLOCK_OPTION` carries
+ * the `iso-instant` kind, `parseProbeArgs` rejects the same values itself;
+ * this pre-check duplicates that parse and is kept for the probes that call it
+ * ahead of `runProbe`. Used as
  * `clockFlagExitCode(name) ?? (await runProbe(descriptor))`.
  *
  * @param {string} probeName For the message.

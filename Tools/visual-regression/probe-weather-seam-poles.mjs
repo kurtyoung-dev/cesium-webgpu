@@ -166,7 +166,6 @@ const PIN = {
   viewSettleMs: 1500,
   readyMinSettleMs: 3000,
   readyBudgetMs: 90_000,
-  readyMaxFrames: 120,
 };
 
 /** Determinism-control tolerances — inside D1's `centerMax` floor bar of 20. */
@@ -246,7 +245,6 @@ const SETUP_LANE = async (cfg) => {
   const proceduralReady = await globalThis.__cloudProbe.awaitProceduralReady({
     featureRendererKey: C.FeatureRendererKey.PROCEDURAL_CLOUDS,
     frameTime: readyTime,
-    maxFrames: cfg.readyMaxFrames,
   });
 
   return {

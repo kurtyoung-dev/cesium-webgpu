@@ -276,10 +276,6 @@ const PREDICT = {
   uniformsQuality: 32,
   neutralityQuality: 96,
   directionQuality: 32,
-  // Readiness exits the moment the contract is met (a handful of frames once
-  // configure() precedes it). This is the ceiling, not the expectation, and it
-  // is now paid at quality 32 rather than 96.
-  readyMaxFrames: 90,
 };
 
 const RUN_LANE = async ({ predict, view, phases }) => {
@@ -728,7 +724,6 @@ const RUN_LANE = async ({ predict, view, phases }) => {
   const proceduralReady = await globalThis.__cloudProbe.awaitProceduralReady({
     featureRendererKey: C.FeatureRendererKey.PROCEDURAL_CLOUDS,
     frameTime,
-    maxFrames: predict.readyMaxFrames,
   });
   nadirView();
 

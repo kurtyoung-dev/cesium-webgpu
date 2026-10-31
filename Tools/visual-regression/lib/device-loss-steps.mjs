@@ -304,16 +304,22 @@ async function readLiveness(page) {
  * Split console lines into the device-lost sentinel and the rest. Pure.
  *
  * @param {Array<{type: string, text: string}>} lines
- * @returns {{errors: number, sentinel: number, other: string[],
- *   pageErrors: string[]}} `other` and `pageErrors` hold at most five each.
+ * @returns {{errors: number, sentinel: number, otherCount: number,
+ *   other: string[], pageErrorCount: number, pageErrors: string[]}}
+ *   `errors`, `sentinel`, `otherCount` (the non-sentinel error lines) and
+ *   `pageErrorCount` count every line; `other` and `pageErrors` are samples
+ *   of at most five each, so a reader's count is never their length.
  */
 export function classifyConsoleErrors(lines) {
   let errors = 0;
   let sentinel = 0;
+  let otherCount = 0;
+  let pageErrorCount = 0;
   const other = [];
   const pageErrors = [];
   for (const line of lines ?? []) {
     if (line?.type === "pageerror") {
+      pageErrorCount++;
       if (pageErrors.length < 5) {
         pageErrors.push(String(line.text).slice(0, 300));
       }
@@ -325,11 +331,14 @@ export function classifyConsoleErrors(lines) {
     errors++;
     if (DEVICE_LOSS_SENTINEL_RE.test(String(line.text))) {
       sentinel++;
-    } else if (other.length < 5) {
-      other.push(String(line.text).slice(0, 300));
+    } else {
+      otherCount++;
+      if (other.length < 5) {
+        other.push(String(line.text).slice(0, 300));
+      }
     }
   }
-  return { errors, sentinel, other, pageErrors };
+  return { errors, sentinel, otherCount, other, pageErrorCount, pageErrors };
 }
 
 /**

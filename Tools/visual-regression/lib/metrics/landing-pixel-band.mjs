@@ -1,7 +1,7 @@
 /**
  * The pixel band of a landing cell's base-against-tip capture pair: WebGPU
  * identical, WebGL inside twice its same-build repeat floor.
- * @purpose Pixel metric for the landing cells (seat ruling F5, round 4): the changed-pixel count between two captures at tolerance 0 (lib/image-diff.mjs over lib/png-decode.mjs), an arm's same-build repeat floor (the largest run-0-against-run-k count) and the band verdict - a WebGPU arm within only at 0 changed pixels, a WebGL arm within at changedPx <= 2 x the larger of the base and tip arms' repeat floors (the L-08 convention).
+ * @purpose Pixel metric for the landing cells (seat ruling F5, round 4): the changed-pixel count between two captures at tolerance 0 (lib/image-diff.mjs over lib/png-decode.mjs, with the largest channel delta outside chosen columns when a cross-renderer band asks for it), an arm's same-build repeat floor (the largest run-0-against-run-k count) and the band verdict - a WebGPU arm within only at 0 changed pixels, a WebGL arm within at changedPx <= 2 x the larger of the base and tip arms' repeat floors (the L-08 convention).
  * @status ACTIVE
  *
  * WHY WEBGL HAS A FLOOR. The 2026-10-22 water E11 run measured WebGL's own
@@ -32,12 +32,51 @@ export const PIXEL_PAIR_TOLERANCE = 0;
 export const WEBGL_PIXEL_FLOOR_FACTOR = 2;
 
 /**
- * Changed pixels between two captures at {@link PIXEL_PAIR_TOLERANCE}. Node only.
+ * The largest per-channel delta (RGB, 0-255) between two decoded images, over
+ * the whole image and over the pixels outside `excludedColumns`. Pure.
  *
- * @returns {{measured: true, changedPx: number, mismatchPct: number,
- *   bbox: object}|{measured: false, reason: string}}
+ * @param {{width: number, height: number, data: ArrayLike<number>}} a
+ * @param {{width: number, height: number, data: ArrayLike<number>}} b
+ * @param {readonly number[]} excludedColumns Pixel columns (x) left out of
+ *   `maxChannelOutsideExcluded`.
+ * @returns {{maxChannel: number, maxChannelOutsideExcluded: number}}
  */
-export function pixelDiff(fromShot, toShot) {
+export function channelDeltaStats(a, b, excludedColumns) {
+  const excluded = new Set(excludedColumns);
+  let maxChannel = 0;
+  let maxChannelOutsideExcluded = 0;
+  for (let y = 0; y < a.height; y++) {
+    for (let x = 0; x < a.width; x++) {
+      const i = (y * a.width + x) * 4;
+      const delta = Math.max(
+        Math.abs(a.data[i] - b.data[i]),
+        Math.abs(a.data[i + 1] - b.data[i + 1]),
+        Math.abs(a.data[i + 2] - b.data[i + 2]),
+      );
+      maxChannel = Math.max(maxChannel, delta);
+      if (!excluded.has(x)) {
+        maxChannelOutsideExcluded = Math.max(maxChannelOutsideExcluded, delta);
+      }
+    }
+  }
+  return { maxChannel, maxChannelOutsideExcluded };
+}
+
+/**
+ * Changed pixels between two captures at {@link PIXEL_PAIR_TOLERANCE}. Node only.
+ * With `excludedColumns` the result also carries the channel statistics
+ * ({@link channelDeltaStats}) and the columns they excluded, which a
+ * pre-registered cross-renderer band reads; without it the result is the
+ * fields below only.
+ *
+ * @param {{path: string}} fromShot
+ * @param {{path: string}} toShot
+ * @param {{excludedColumns?: readonly number[]}} [options]
+ * @returns {{measured: true, changedPx: number, mismatchPct: number,
+ *   bbox: object, maxChannel?: number, maxChannelOutsideExcluded?: number,
+ *   excludedColumns?: number[]}|{measured: false, reason: string}}
+ */
+export function pixelDiff(fromShot, toShot, { excludedColumns } = {}) {
   try {
     const a = readPng(fromShot.path);
     const b = readPng(toShot.path);
@@ -53,6 +92,12 @@ export function pixelDiff(fromShot, toShot) {
       changedPx: diff.changedPx,
       mismatchPct: diff.mismatchPct,
       bbox: diff.bbox,
+      ...(Array.isArray(excludedColumns)
+        ? {
+            ...channelDeltaStats(a, b, excludedColumns),
+            excludedColumns: [...excludedColumns],
+          }
+        : {}),
     };
   } catch (error) {
     return { measured: false, reason: String(error?.message ?? error) };

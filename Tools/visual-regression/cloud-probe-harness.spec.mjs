@@ -270,6 +270,9 @@ async function driveReadiness({
       featureRendererKey: 32,
       frameTime: FRAME_TIME,
       maxFrames,
+      // Zero turns the time-derived frame budget off, so `maxFrames` is an exact
+      // cap here; the derivation is pinned in cloud-probe-harness-readiness.spec.mjs.
+      frameBudgetMs: 0,
     });
     return { outcome, error: null, renderCalls };
   } catch (error) {

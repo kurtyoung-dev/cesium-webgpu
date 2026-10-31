@@ -2,7 +2,7 @@
  * The landing cells' within-run comparisons between pages: a cell's WebGPU
  * capture against the same run's WebGL capture, and a variant cell's
  * displacement readbacks against each other.
- * @purpose Cross-page metric for probe-landing-cells.mjs: per run, the kit's pixel diff of a crossRenderer cell's WebGL and WebGPU captures (reported, its band registered by the first capture; for a cell with variants, once per variant page, each WebGPU variant against the WebGL page of the same name), and the ocean displacement-readback identity between a readback cell's two variant pages (lib/ocean-displacement-readback.mjs), with the verdicts each yields; Node only for the pixel diff (reads the PNGs), pure otherwise.
+ * @purpose Cross-page metric for probe-landing-cells.mjs: per run, the kit's pixel diff of a crossRenderer cell's WebGL and WebGPU captures (reported, its band registered by the first capture unless the cell declares one, which then yields a pass/fail verdict; for a cell with variants, once per variant page, each WebGPU variant against the WebGL page of the same name), and the ocean displacement-readback identity between a readback cell's two variant pages (lib/ocean-displacement-readback.mjs), with the verdicts each yields; Node only for the pixel diff (reads the PNGs), pure otherwise.
  * @status ACTIVE
  *
  * WHY NOT `compareArms`. The base-vs-tip comparison pairs the SAME page of two
@@ -18,10 +18,17 @@
  * its one page per renderer exactly as before and its entries carry no
  * `page`.
  *
- * NO BAND IS CLAIMED. The cross-renderer diff has no pre-registered band: the
- * first capture registers it, so its verdict says only whether the diff was
- * measured (both captures present and the same size), never that a value is
- * within a bound. The kernel identity verdict is
+ * A BAND ONLY WHERE ONE IS DECLARED. A cross-renderer cell without a
+ * `crossRendererBand` in the cell table has no pre-registered band: the first
+ * capture registers it, so its verdict says only whether the diff was measured
+ * (both captures present and the same size), never that a value is within a
+ * bound. A cell that declares one (E-ID-2d, E-ID-cv:
+ * `POST_FIX_2D_CV_BAND`) is judged against it by {@link crossRendererBandVerdict}:
+ * changed pixels at the band's tolerance within `maxChangedPx`, and the
+ * largest channel delta outside the band's excluded columns within
+ * `maxChannelOutsideExcluded`; the entry carries the band, both figures and the
+ * verdict, and its verdict id ends `:band` rather than `:measured`. The kernel
+ * identity verdict is
  * `lib/ocean-displacement-readback.mjs`'s `kernelIdentityVerdict`: identical
  * hashes pass, a measured difference fails, an unmeasured pair is NOT RUN. A
  * page carrying `displacementEvolved` is judged again at its later wave time by
@@ -37,6 +44,45 @@ import {
 } from "../ocean-displacement-readback.mjs";
 import { pixelDiff } from "./landing-pixel-band.mjs";
 
+/**
+ * A cell's declared cross-renderer band against one measured diff. Pure.
+ *
+ * @param {{maxChangedPx: number, maxChannelOutsideExcluded: number,
+ *   excludedColumns: readonly number[]}} band
+ * @param {{changedPx: number, maxChannelOutsideExcluded: number,
+ *   maxChannel?: number}} diff A measured diff taken at the band's tolerance
+ *   with the band's excluded columns (`pixelDiff`).
+ * @returns {{pass: boolean, changedPx: number, maxChangedPx: number,
+ *   maxChannel: number|null, maxChannelOutsideExcluded: number,
+ *   maxChannelLimit: number, excludedColumns: number[], reasons: string[]}}
+ */
+export function crossRendererBandVerdict(band, diff) {
+  const reasons = [];
+  if (diff.changedPx > band.maxChangedPx) {
+    reasons.push(
+      `${diff.changedPx} px changed exceeds the band's ${band.maxChangedPx}`,
+    );
+  }
+  if (diff.maxChannelOutsideExcluded > band.maxChannelOutsideExcluded) {
+    reasons.push(
+      `max channel ${diff.maxChannelOutsideExcluded} outside column(s) ${band.excludedColumns.join(", ")} exceeds the band's ${band.maxChannelOutsideExcluded}`,
+    );
+  }
+  return {
+    pass: reasons.length === 0,
+    changedPx: diff.changedPx,
+    maxChangedPx: band.maxChangedPx,
+    maxChannel: Number.isFinite(diff.maxChannel) ? diff.maxChannel : null,
+    maxChannelOutsideExcluded: diff.maxChannelOutsideExcluded,
+    maxChannelLimit: band.maxChannelOutsideExcluded,
+    excludedColumns: [...band.excludedColumns],
+    reasons,
+  };
+}
+
+const bandLabel = (band) =>
+  `registered: changedPx <= ${band.maxChangedPx} at tolerance ${band.tolerance}, max channel <= ${band.maxChannelOutsideExcluded} outside column(s) ${band.excludedColumns.join(", ")} (${band.scope})`;
+
 const runsOf = (pages) =>
   [...new Set(pages.map((page) => page.run))].sort((a, b) => a - b);
 
@@ -46,10 +92,13 @@ const runsOf = (pages) =>
  *
  * @param {object[]} pages Page records.
  * @param {{diff?: Function}} [options] `diff` defaults to the kit's
- *   `pixelDiff` (`lib/metrics/landing-pixel-band.mjs`).
+ *   `pixelDiff` (`lib/metrics/landing-pixel-band.mjs`); a cell with a
+ *   declared band calls it with that band's `excludedColumns` as its third
+ *   argument.
  * @returns {Array<{cell: string, run: number, page?: string, measured: boolean,
  *   reason?: string, webgl?: string, webgpu?: string, changedPx?: number,
- *   mismatchPct?: number, bbox?: object, band: string}>}
+ *   mismatchPct?: number, bbox?: object, band: string, bandSpec?: object,
+ *   bandVerdict?: object}>}
  */
 export function crossRendererComparisons(pages, { diff = pixelDiff } = {}) {
   const out = [];
@@ -61,6 +110,7 @@ export function crossRendererComparisons(pages, { diff = pixelDiff } = {}) {
     const names = LANDING_CELLS[cell].variants
       ? Object.keys(LANDING_CELLS[cell].variants)
       : [null];
+    const declared = LANDING_CELLS[cell].crossRendererBand ?? null;
     for (const run of runsOf(ofCell)) {
       for (const name of names) {
         const find = (renderer) =>
@@ -76,7 +126,11 @@ export function crossRendererComparisons(pages, { diff = pixelDiff } = {}) {
           cell,
           run,
           ...(name === null ? {} : { page: name }),
-          band: "unregistered (first capture registers)",
+          band:
+            declared === null
+              ? "unregistered (first capture registers)"
+              : bandLabel(declared),
+          ...(declared === null ? {} : { bandSpec: declared }),
         };
         if (!webgl?.capture || !webgpu?.capture) {
           const missing = [
@@ -90,14 +144,32 @@ export function crossRendererComparisons(pages, { diff = pixelDiff } = {}) {
           });
           continue;
         }
-        const result = diff(webgl.capture, webgpu.capture);
-        out.push({
+        const result =
+          declared === null
+            ? diff(webgl.capture, webgpu.capture)
+            : diff(webgl.capture, webgpu.capture, {
+                excludedColumns: declared.excludedColumns,
+              });
+        const compared = {
           ...entry,
           webgl: webgl.capture.name,
           webgpu: webgpu.capture.name,
           ...result,
           measured: result?.measured === true,
-        });
+        };
+        if (declared !== null && compared.measured) {
+          // A diff that cannot say its channel delta cannot be judged.
+          if (!Number.isFinite(result.maxChannelOutsideExcluded)) {
+            out.push({
+              ...compared,
+              measured: false,
+              reason: "the diff reported no channel statistics for the band",
+            });
+            continue;
+          }
+          compared.bandVerdict = crossRendererBandVerdict(declared, result);
+        }
+        out.push(compared);
       }
     }
   }
@@ -191,8 +263,24 @@ export function kernelIdentityComparisons(pages) {
 export function crossPageVerdicts({ crossRenderer = [], kernelIdentity = [] }) {
   const verdicts = [];
   for (const entry of crossRenderer) {
+    const id = `${entry.cell}${entry.page === undefined ? "" : `:${entry.page}`}:cross-renderer:run${entry.run}`;
+    if (entry.bandVerdict !== undefined && entry.measured === true) {
+      verdicts.push({
+        id: `${id}:band`,
+        pass: entry.bandVerdict.pass,
+        changedPx: entry.changedPx,
+        mismatchPct: entry.mismatchPct,
+        maxChannel: entry.bandVerdict.maxChannel,
+        maxChannelOutsideExcluded: entry.bandVerdict.maxChannelOutsideExcluded,
+        band: entry.band,
+        ...(entry.bandVerdict.pass
+          ? {}
+          : { reason: entry.bandVerdict.reasons.join("; ") }),
+      });
+      continue;
+    }
     verdicts.push({
-      id: `${entry.cell}${entry.page === undefined ? "" : `:${entry.page}`}:cross-renderer:run${entry.run}:measured`,
+      id: entry.bandSpec === undefined ? `${id}:measured` : `${id}:band`,
       pass: entry.measured === true,
       ...(entry.measured === true
         ? {

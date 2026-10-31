@@ -21,6 +21,24 @@
 // of the two is the record is a seat ruling.
 // A cell runs on each renderer its rig declares that `--renderer` keeps.
 //
+// CAPTURE CELLS (opt-in by `--cells`, never in the default run; `WATER_CAPTURE_CELLS`).
+// The water bookmark rigs and the offline Kauai shelf pair are staged,
+// settled and element-captured exactly as a leg-2 page is, and sheeted through
+// the capture manifest, but carry NO band: the receipt lists their captures and
+// NOT RUN pages under `captureCells`, and the verdicts judge only each page's
+// stage and its 2e device-fault gate.
+//   bookmark-bahamas-photic-dive  water-bookmark-bahamas-photic-dive (WebGPU only)
+//   bookmark-cairo-nile           water-bookmark-cairo-nile
+//   bookmark-ilulissat-ice        water-bookmark-ilulissat-ice
+//   bookmark-kauai-reef           water-bookmark-kauai-reef
+//   bookmark-mariana-trench       water-bookmark-mariana-trench
+//   bookmark-sunset-glint         water-bookmark-sunset-glint (a later sun-glint check reads it)
+//   bathymetry-offline            water-bathymetry-offline / water-bathymetry-offline-off
+//   bookmark-global-water-weather water-bookmark-global-water-weather (the Sandcastle 2
+//                                 demo webgpu-global-water-weather; NOT RUN under --no-ion)
+// The mask-page rigs set terrain "ellipsoid" and local imagery, so they need no
+// ion; the one demo rig needs it, and the demo piece makes it NOT RUN.
+//
 // ONE ARM PER INVOCATION, NAMED. `--arm before` measures the tree without the
 // water batch, where the water dials read back `applied: false` (the sheet's
 // way for BEFORE to answer); `--arm after` measures the water tree, where a
@@ -145,12 +163,18 @@ import {
   WATER_ARMS,
   WATER_BANDS,
   WATER_CELLS,
+  WATER_DEFAULT_CELLS,
   WATER_DEMO_ID,
   WAVE_EPOCH_DIAL,
+  isWaterCaptureCell,
   planWaterCells,
   splitList,
   stageGaps,
   stageHandlesDial,
+  summarizeCaptureCells,
+  usesDemoPage,
+  waterCellGalleryId,
+  waterCellSpec,
   waterStagePlan,
   waveEpochReadback,
 } from "./lib/water-cell-table.mjs";
@@ -562,13 +586,14 @@ function requireArm(options) {
 }
 
 function plannedWorkBudgetMs(options) {
-  const names = splitList(options.cells ?? Object.keys(WATER_CELLS).join(","));
+  const names = splitList(options.cells ?? WATER_DEFAULT_CELLS.join(","));
   let budget = 0;
   for (const name of names) {
-    budget +=
-      WATER_CELLS[name]?.kind === "sandcastle2-demo"
-        ? 2 * DEMO_PAGE_BUDGET_MS
-        : 4 * PAGE_BUDGET_MS;
+    const kind = waterCellSpec(name)?.kind;
+    // A single bookmark rig is at most two pages (one per renderer).
+    budget += usesDemoPage(kind)
+      ? 2 * DEMO_PAGE_BUDGET_MS
+      : (kind === "capture-single" ? 2 : 4) * PAGE_BUDGET_MS;
   }
   return Math.max(PAGE_BUDGET_MS, budget);
 }
@@ -579,27 +604,64 @@ const ENGINE_SERVED_ARTIFACTS = Object.freeze([
   "packages/engine/Build/Unminified/index.js",
 ]);
 
-const SANDCASTLE2_SERVED_ARTIFACTS = Object.freeze([
+const SANDCASTLE2_SHELL_ARTIFACTS = Object.freeze([
   "Apps/Sandcastle2/standalone.html",
   "Apps/Sandcastle2/templates/bucket.html",
   "Apps/Sandcastle2/templates/Sandcastle.js",
-  `Apps/Sandcastle2/gallery/${WATER_DEMO_ID}/index.html`,
-  `Apps/Sandcastle2/gallery/${WATER_DEMO_ID}/main.js`,
+]);
+
+const galleryArtifacts = (galleryId) => [
+  `Apps/Sandcastle2/gallery/${galleryId}/index.html`,
+  `Apps/Sandcastle2/gallery/${galleryId}/main.js`,
+];
+
+const SANDCASTLE2_SERVED_ARTIFACTS = Object.freeze([
+  ...SANDCASTLE2_SHELL_ARTIFACTS,
+  ...galleryArtifacts(WATER_DEMO_ID),
 ]);
 
 /**
  * The served-build artifacts a run must match: the engine bundles always, the
- * Sandcastle 2 files only when the cell list (default: every cell) has 1f.
+ * Sandcastle 2 shell and each requested demo's gallery files only when the
+ * cell list (default: every banded cell) has a demo cell (1f, or a
+ * capture-demo).
  *
  * @param {{cells?: string}} options
  * @returns {string[]}
  */
 export function servedArtifactsForCells(options) {
-  const names = splitList(options?.cells ?? Object.keys(WATER_CELLS).join(","));
+  const names = splitList(options?.cells ?? WATER_DEFAULT_CELLS.join(","));
+  const banded = servedArtifactsForBandedCells(names);
+  const galleries = [
+    ...new Set(
+      names
+        .filter(isWaterCaptureCell)
+        .map(waterCellGalleryId)
+        .filter((id) => id !== null),
+    ),
+  ];
+  if (galleries.length === 0) {
+    return banded;
+  }
+  return [
+    ...banded,
+    ...(banded.includes(SANDCASTLE2_SHELL_ARTIFACTS[0])
+      ? []
+      : SANDCASTLE2_SHELL_ARTIFACTS),
+    ...galleries.flatMap(galleryArtifacts),
+  ];
+}
+
+/** The engine bundles, and cell 1f's Sandcastle 2 files when 1f is requested. */
+function servedArtifactsForBandedCells(names) {
   return names.includes("1f")
     ? [...ENGINE_SERVED_ARTIFACTS, ...SANDCASTLE2_SERVED_ARTIFACTS]
     : [...ENGINE_SERVED_ARTIFACTS];
 }
+
+/** The records the sheet's bands judge: every page except a capture cell's. */
+const bandedRecords = (cells) =>
+  cells.filter((record) => !isWaterCaptureCell(record.cell));
 
 /** The rig registry the pages ran from, for the receipt's capture manifest. */
 let invocationRigs = null;
@@ -623,7 +685,7 @@ export const descriptor = {
         flag: "--cells",
         key: "cells",
         kind: "string",
-        default: Object.keys(WATER_CELLS).join(","),
+        default: WATER_DEFAULT_CELLS.join(","),
       },
       { flag: "--arm", key: "arm", kind: "string", default: "" },
       { flag: "--base-report", key: "baseReport", kind: "string", default: "" },
@@ -659,7 +721,7 @@ export const descriptor = {
       console.log(
         `[probe-water-cells] ${entry.cell} ${entry.variant} on ${entry.renderer} (run ${run}, arm ${options.arm})`,
       );
-      const work = entry.kind === "mask-pair" ? runMaskPage : runDemoPage;
+      const work = usesDemoPage(entry.kind) ? runDemoPage : runMaskPage;
       records.push(
         await work({
           browser,
@@ -678,7 +740,8 @@ export const descriptor = {
   },
   receipt(cells, context) {
     const options = context.options;
-    const summary = summarizeWaterRecords(cells);
+    const summary = summarizeWaterRecords(bandedRecords(cells));
+    const captureCells = summarizeCaptureCells(cells);
     for (const [cell, entry] of Object.entries(summary)) {
       console.log(
         `  ${cell}: captures=${entry.captures.length} notRun=${entry.notRun.length}`,
@@ -715,14 +778,17 @@ export const descriptor = {
       ionDeclaredUnavailable: options.noIon === true,
       pages: cells,
       summary,
+      ...(Object.keys(captureCells).length > 0 && { captureCells }),
       captureManifest,
     };
   },
   verdicts(cells, context) {
     const options = context.options;
+    // Every page keeps its stage and 2e verdicts; the bands read the banded
+    // cells' summary alone, so a capture cell is never judged against one.
     return waterVerdicts(
       cells,
-      summarizeWaterRecords(cells),
+      summarizeWaterRecords(bandedRecords(cells)),
       readBaseSummary(options),
       { arm: options.arm, runs: options.runs },
     );
