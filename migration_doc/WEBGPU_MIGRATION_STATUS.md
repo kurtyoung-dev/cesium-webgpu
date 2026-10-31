@@ -137,6 +137,32 @@ with no Edge leg.
 Next: the 2D/CV WebGPU banding as the next parity lane, probe-first on the pinned cells (`NEW-2D-WEBGPU-CONCENTRIC-BANDING`);
 the Antigravity water program's re-delivery against the base clone (`R-2026-10-30-M1`) and the W4 regeneration stand as in the
 table above. Open after these landings: the rows of `DEFERRED_WORK.md` section "2026-10-31 — records round 5".
+*[Records round 6:]* Batch 1632 recorded this table; the probe-kit round 3 and the 2D / Columbus View banding fix followed as
+Batches 1633-1636 (the table below); no Antigravity water batch has landed by Batch 1636 (`git log`).
+
+## Landing record (2026-10-31 — Batches 1632-1636: records round 5, the probe-kit round 3 and the 2D / Columbus View ground-atmosphere gate)
+
+A landing table only. Each hash and tree was read at Batch 1636 with `git log --format='%h %H %T %s' 81dba26320..HEAD`. Batch
+1632's landing log shows the `main -> main` push (`lanes-2026-10-30/salvage-night/records/landing-logs-r5/land-records-r5-1793439367.log:24`);
+Batches 1633-1636's landing logs show their pushes (`lanes-2026-10-31/round3/landing-logs/land-aghan-1793444285.log:25`, `land-irimon-kit.log:24`, `land-manwendil.log:25`, `land-irimon-engine.log:25`). "Bank" paths are under `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/` (Batch
+1632's under `cesium-webgpu-worker-archive/`). The rows are in `DEFERRED_WORK.md` section "2026-10-31 — records round 6", which
+also names the byte check (each banked lane patch of 1633-1636 reproduces its landed tree except the seat's runner homes, the tooling catalog and
+the regenerated probe-kit guide). The two Edge legs (executor Eowyn) ran on 8a07cf972f plus lane Irimon's patches, which
+landed as 1634 and 1636; 1633 and 1635 are measured in Node only.
+
+| batch | hash (tree) | what is now true | lane lead | reviewer | bank |
+| --- | --- | --- | --- | --- | --- |
+| 1632 | `8a07cf972f` (`35bab3b7`) | The records carry Batches 1629-1631 with the PF and kit2 Edge legs: the inverse-FFT cost measured, six kit rows closed, the 2D WebGPU banding widened to Columbus View, the kit's owed follow-ups filed. | Boron (records round 5) | Radhruin (P1 HOLDS) | `lanes-2026-10-30/salvage-night/records/round5/` |
+| 1633 | `b8026741dd` (`266c1f2e`) | `lib/capture.mjs` (2,265 -> 629 lines) is split by responsibility into seven `lib/capture-*.mjs` pieces, every export kept and pinned by `capture-exports.spec.mjs`; no behaviour change. | Aghan (a Sonnet worker) | Findis (P1 HOLDS-WITH-FIXES: the message's subject, applied by the seat) | `aghan/` |
+| 1634 | `b39fc32b74` (`6ea794c2`) | The landing stage has a `globeFragmentDebug` dial and the variant cells `E-2D-stages` / `E-CV-stages` (six WebGPU globe fragment terms against the plain WebGL frame). Edge (diagnostic leg): `bypass-drape` collapses the 2D / Columbus View WebGPU frame from 87 % to 2 px, so the rings are the ground-atmosphere drape. | Irimon (kit patch; worker Ibal) | Irime (P1 HOLDS-WITH-FIXES: the message's subject, applied by the seat); Edge Eowyn | `irimon/` (`edge/EDGE_RECEIPT_EOWYN_P2D_DIAG.md`) |
+| 1635 | `4bed633005` (`c6aeac71`) | PF-3 reads a 2,500 ms ceiling, a 0.10 startup band floor and `base-over-ceiling-banded`; the weather probes take `--clock`; the capture manifest reads a BEFORE without sha256 as UNMEASURED and names the BEFORE origin's case; the runtime exports `reportFileNameFor`; the onmessage sentinel is read twice; the three water probes write `capture-manifest.json`. No Edge leg yet (four owed). | Manwendil (workers Indor, Atanalcar, Entwade, Minrimmon, Amondin) | Hundor (P1 HOLDS-WITH-FIXES: the packet's row heads, text only) | `manwendil/` |
+| 1636 | `6f328f950d` (`26233306`) | The WebGPU tile and camera packers gate the ground-atmosphere drape on SCENE3D as WebGL does, so the 2D, Columbus View and morphing globe no longer drapes; no WGSL change. Edge (acceptance leg): WebGPU against WebGL 2 px in 2D (max 1) and 2 px in Columbus View (max 32, column x=1274), the rings and the base-colour lift gone, 3D `E-D` WebGPU 0 px; `NEW-2D-WEBGPU-CONCENTRIC-BANDING` closed. | Irimon (engine patch) | Tindomiel (P1 HOLDS-WITH-FIXES: the ocean-taper consumer named in the message; P2 HOLDS on the receipts); Edge Eowyn | `irimon/` (`edge/EDGE_RECEIPT_EOWYN_P2D_ACCEPT.md`) |
+
+Next: the four Edge legs Batch 1635 owes (the weather daylight leg with `--clock 2026-06-21T18:00:00Z`, a water run sheeted
+through the new manifests, the second sentinel read on an identity cell, PF-3 on a quiet machine) and
+`NEW-2D-WEBGPU-OCEAN-HIGHLIGHT-FADE`; the Antigravity water program's re-delivery against the base clone (`R-2026-10-30-M1`)
+and the W4 regeneration stand as above. Open after these landings: the rows of `DEFERRED_WORK.md` section "2026-10-31 —
+records round 6".
 
 ---
 

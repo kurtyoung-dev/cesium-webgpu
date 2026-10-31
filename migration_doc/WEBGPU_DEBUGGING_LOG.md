@@ -23828,3 +23828,38 @@ Its four executed mutants are the fix made unreachable, the key without LOG_DEPT
 Receipt: `F:/Dev/GH/cesium-webgpu-worker-archive/lanes-2026-10-30/watermask-seams/EDGE_RECEIPT_EOWYN_SEAMS.md`. Evidence: `Tools/visual-regression/output/wave-end/watermask-seams-20261031/`.
 
 **Files modified.** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`, `WebGPUGlobeSurfaceShaders.ts`, `WebGPUGlobeMaterial.ts`, `Tools/visual-regression/globe-material-log-depth-module.spec.mjs`.
+
+## Bug globe-2d-1 - in 2D and Columbus View the WebGPU globe ran the ground-atmosphere drape on planar positions, drawing concentric rings and a brighter base colour (Edge E-ID-2d / E-ID-cv; 2026-10-31)
+
+**Symptom.** On the pinned whole-map rigs `default-2d-pinned` and `default-columbus-pinned` (CesiumViewer offline, clock pinned
+2026-06-21T18:00:00Z) WebGPU drew a rounded square of concentric rings at the map centre and a brighter base colour (day blue
+137 in 2D and 161 in Columbus View against 127), where WebGL draws a flat navy map: 87.230 % of pixels differ in 2D (max channel
+48) and 87.643 % in Columbus View (max 173). Deterministic run to run. Ledger row `NEW-2D-WEBGPU-CONCENTRIC-BANDING`.
+
+**Diagnosis (probe-first).** The landing stage gained a `globeFragmentDebug` dial and the cells `E-2D-stages` / `E-CV-stages`
+(Batch 1634), which capture six WebGPU globe fragment terms against the plain WebGL frame. With `bypass-drape` WebGPU collapses
+to 2 px against WebGL in both modes (max 1 in 2D, 32 in Columbus View); `atmo-color` is the ring pattern itself; `fade-amount`
+reads 0.28 over the 2D map and 1.0 over the Columbus View map. The base-colour lift and an inner terminator go with the drape.
+
+**Root cause.** WebGL turns the ground-atmosphere drape on only in SCENE3D
+(`GlobeSurfaceTileProviderRendering.js:1795-1796`), and fog turns itself off outside SCENE3D (`Fog.js:128-136`). The WebGPU
+packers keyed the drape on the provider's `showGroundAtmosphere` alone, so in 2D and Columbus View the tile packer wrote
+`groundAtmosphereControl.x = 1` with a camera-distance fade and the camera packer wrote `atmosphereParams.w = 1`, and
+`GlobeTerrain.wgsl`'s fragment drape ran on the planar vertex positions.
+
+**Fix (Batch 1636).** The tile packer's `showGroundAtmosphere` (`WebGPUGlobeSurfaceTileUB.ts:907-911`) and the camera packer's
+`groundAtmoEnabled` (`WebGPUGlobeSurfaceCameraUB.ts:848-851`) require SCENE3D (a frame state without a mode packs as SCENE3D, the
+file's convention). No WGSL change; SCENE3D packs the same floats. Spec `globe-ground-atmosphere-scene-mode-gate.spec.mjs` runs
+the real packers per scene mode; one inertness mutant per packer, 2 of 2 killed.
+
+**Verified (Edge, 2026-10-31).** Acceptance leg on 8a07cf972f plus both patches: WebGPU against WebGL at tolerance 0, 2D 2 px
+(max 1) and Columbus View 2 px (max 32, both in column x=1274), byte-identical to the pre-fix `bypass-drape` frame; rings, inner
+terminator and base-colour lift gone; 3D `E-D` WebGPU 0 px. Band registered in `DEFERRED_WORK.md`: changedPx <= 4 and max channel
+<= 1 off column x=1274, at one pinned camera per mode. Owed: the water-mask ocean's highlight taper with `enableLighting` on reads
+the same fade (`NEW-2D-WEBGPU-OCEAN-HIGHLIGHT-FADE`). Receipts:
+`F:/Dev/GH/cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_P2D_DIAG.md` and
+`EDGE_RECEIPT_EOWYN_P2D_ACCEPT.md`; reviewer Tindomiel (P1 HOLDS-WITH-FIXES, P2 HOLDS). Evidence:
+`Tools/visual-regression/output/wave-end/p2d-diag-20261031/`, `p2d-accept-20261031/`.
+
+**Files modified.** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts`, `WebGPUGlobeSurfaceCameraUB.ts`,
+`Tools/visual-regression/globe-ground-atmosphere-scene-mode-gate.spec.mjs`.

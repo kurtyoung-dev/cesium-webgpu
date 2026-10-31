@@ -762,8 +762,8 @@ ruling `R-2026-10-24-S12`. Rows: `DEFERRED_WORK.md` ledger intake 2 (Batch 1591)
 table: `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-23/24 …)"; from 2026-10-30 also `DEFERRED_WORK.md`
 "2026-10-30 — records batch 3" and "… round 2", and the landing tables "Landing record (2026-10-29/30 …)" and "Landing
 record (2026-10-30 — Batches 1608-1623 …)"; from 2026-10-31 also `DEFERRED_WORK.md` "2026-10-31 — records round 4" and
-"… records round 5" and the landing tables "Landing record (2026-10-31 — Batches 1624-1628 …)" and "Landing record
-(2026-10-31 — Batches 1629-1631 …)".
+"… records round 5" and "… records round 6" and the landing tables "Landing record (2026-10-31 — Batches 1624-1628 …)",
+"Landing record (2026-10-31 — Batches 1629-1631 …)" and "Landing record (2026-10-31 — Batches 1632-1636 …)".
 **Landed:** the water as Batches 1585/1586 (`16e093aef6`, `156509c929`, committed 2026-10-23 23:27 and 23:31 EDT; tree
 `9e6bcfb7`; opt-in, the default globe unchanged); then, on 2026-10-24, W0 (1587), KT round 5 (1588), KT-2 round 3 (1589),
 F-4 (1590), LEDGER-2 (1591), catalog A1 (1592) and W1, the cloud core and the three-word define registry (1593); and the
@@ -807,6 +807,14 @@ Batches 1630-1631 (`fd732657b7`, `81dba26320`; lane Tar-Aldarion, reviewer Artha
 inverse-FFT cost (PF-2 times the ocean compute chain: 0.13 ms Stockham against 0.33 ms ping-pong) and frames the 2D and Columbus
 View identity cells on the whole map, and the 2D/CV WebGPU banding those frames show (`NEW-2D-WEBGPU-CONCENTRIC-BANDING`,
 widened to Columbus View) is the next parity lane.
+**Probe-kit round 3 and the 2D/CV banding fix (2026-10-31, records round 6):** Batches 1633-1636 (`b8026741dd` …
+`6f328f950d`; lanes Aghan, Irimon and Manwendil, reviewers Findis, Irime, Hundor and Tindomiel) landed: the probe-kit round 3
+closes the kit's own open rows (the capture seam split, PF-3's startup band, the weather clock pin, the manifest residuals,
+the sentinel's second read, the water manifests), and the 2D / Columbus View WebGPU banding is measured and fixed: the rings were
+the ground-atmosphere drape, which WebGPU now gates on SCENE3D as WebGL does, and on Edge WebGPU reads 2 px against WebGL in
+both modes (`NEW-2D-WEBGPU-CONCENTRIC-BANDING`, closed). The seat's next lanes are the four Edge legs Batch 1635 owes (the
+weather daylight leg with `--clock`, a water run sheeted, the second sentinel read, PF-3 on a quiet machine) and the planar ocean
+taper (`NEW-2D-WEBGPU-OCEAN-HIGHLIGHT-FADE`); W4 below stands.
 **Critical path:** W4. *[Updated 2026-10-31 by records round 4; records batch 3 round 2 put the seat's Edge acceptance job
 first, and it has run.]* The next step is the Antigravity water program's landing on 2026-10-31 (`R-2026-10-30-M1`),
 re-delivered against the base clone at `5e684450f1`, and the W4 regeneration from the Codex post-plan audit, its decisions C1-C5 accepted as the seat recommended (`R-2026-10-30-M2`). The later W-waves (W4 … W12, `R-2026-10-23-M4`) queue behind it, one lane

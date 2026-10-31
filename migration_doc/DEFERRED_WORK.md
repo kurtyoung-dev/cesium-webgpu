@@ -31239,6 +31239,14 @@ a measured, overridable value. **Acceptance:** `probe-weather-ingest` and the ot
 close succeeds on a loaded machine without a private copy. **Suggested owner:** the KT kit lane.
 **Source:** `wave-end/w2-f2-repair/SUMMARY_Nimrais.txt:15`, `:30`, `:35`; `wave-end/w2-r7-identity/SUMMARY_Nimrais.txt:38`;
 `wave-end/w3-identity/SUMMARY_Tarondor.txt:21`, `:64-67`; `git show -s d3d81d2825` (F8).
+**Repeat on the 2026-10-31 p2d legs (records round 6):** the browser-close half failed again under foreign load. On the
+diagnostic leg 5 of 6 `probe-landing-cells` invocations exited 2 at teardown after every capture was written ("browser run 0 did
+not close before its deadline; close deadline expired", then "lifecycle did not reach quiescence before hard-stop grace"),
+with the machine at 86-100 % CPU from other lanes; the captures were complete and byte-identical across retries except the WebGL `E-D` frame (`NEW-WEBGL-E-D-DEFAULT-FRAME-NONDETERMINISTIC`), but the
+reports, manifests and contact sheets of those runs were lost, and each hard stop left a dead-owner `.edge-slot.lock`. On the
+acceptance leg (a 3-sample load gate before each run) 1 of 8 hard-stopped, and its retry closed cleanly. Load is the leading
+candidate, not established. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_P2D_DIAG.md`
+(F1, F2); `EDGE_RECEIPT_EOWYN_P2D_ACCEPT.md` (F1).
 
 ### DX-KIT-CONSOLE-ERROR-LIST-CAP — `classifyConsoleErrors` keeps at most five 'other' lines, and three receipts read that cap as the count — **OPEN** (DX row, probe kit)
 
@@ -31892,7 +31900,7 @@ answered), `DX-SEAT-WORKTREE-FOREIGN-WIP` (closed). The rows below are new.
   `Tools/visual-regression/output/wave-end/kit-pieces-20261031/E-C-chukotka/crop-webgl-left-webgpu-right-1140-300.png` (the seat
   read it); the seat's addendum (as above).
 
-### NEW-2D-WEBGPU-CONCENTRIC-BANDING — the default globe's base colour in settled 2D (and Columbus View) is concentric bands on WebGPU and flat navy on WebGL — **OPEN** (parity observation, WebGPU; seat-measured)
+### NEW-2D-WEBGPU-CONCENTRIC-BANDING — the default globe's base colour in settled 2D (and Columbus View) is concentric bands on WebGPU and flat navy on WebGL — **CLOSED** (Batch 1636, `6f328f950d`; Edge acceptance 2026-10-31 at one pinned camera per mode)
 
 - **Symptom:** in the `E-ID-2d` frame (rig `default-2d-pinned`: CesiumViewer offline, no imagery, pinned 2026-06-21T18:00:00Z,
   a zero-duration morph from the default 3D camera) WebGL renders the flat navy 2D base colour with dark night corners and
@@ -31931,6 +31939,55 @@ answered), `DX-SEAT-WORKTREE-FOREIGN-WIP` (closed). The rows below are new.
   - **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/EDGE_RECEIPT_EOWYN_KIT2.md:54-76` and `:111-115`
     (evidence `Tools/visual-regression/output/wave-end/kit2-20261031/E-ID-{2d,cv}-tip/`); the seat's addendum
     (`salvage-night/rows-for-records-r2-addendum.md:135-140`).
+- **Mechanism measured, fixed and accepted: CLOSED (records round 6).** Lane Irimon (Opus lead; Sonnet worker Ibal) built the
+  diagnostic kit (Batch 1634, `b39fc32b74`) and the fix (Batch 1636, `6f328f950d`); reviewers Irime (kit, P1
+  HOLDS-WITH-FIXES, the one fix the message's subject) and Tindomiel (engine, P1 HOLDS-WITH-FIXES, text only; P2 HOLDS on the
+  two Edge receipts, every number re-measured from the PNGs). The seat's executor Eowyn ran both legs; scope throughout: one
+  pinned camera per mode (rigs `default-2d-pinned`, `default-columbus-pinned`), offline imagery, no water mask, 1280x720.
+  - **Diagnostic leg** (06:48-07:12 EDT, 8a07cf972f plus the kit patch that landed as Batch 1634; cells `E-2D-stages` and
+    `E-CV-stages`): every 2D WebGPU page read the `globeFragmentDebug` dial back as applied (the Columbus View read-back was
+    lost to a teardown hard stop; its six WebGPU frames have six distinct sha256 values, so the dial reached the shader,
+    Tindomiel P2 section 1). `control` equals the plain `E-ID` frame (0 px). Against WebGL, `no-drape` (`bypass-drape`)
+    collapses WebGPU from 87.230 % to **2 px, max channel 1** in 2D and from 87.643 % to **2 px, max 32** in Columbus View.
+    `atmo` (`atmo-color`, the drape's colour input) is the ring pattern itself; `fade` reads `fadeAmount` 71/255 = 0.28 over the
+    whole 2D map and 1.0 over the Columbus View map, which is why Columbus View is the stronger case. The base-colour lift (day
+    blue 137 in 2D and 161 in Columbus View against 127) and the inner terminator go with the drape, so the lift is the drape
+    too, not its own term. The term is the registry's `bypass-drape` (`WebGPUGlobeFragmentDebug.ts:180-183`), the
+    `mix(imagery, draped, fadeAmount)` of the ground-atmosphere drape.
+  - **Cause and fix:** WebGL turns the drape on only in SCENE3D (`GlobeSurfaceTileProviderRendering.js:1795-1796`) and fog
+    turns itself off outside SCENE3D (`Fog.js:128-136`); the WebGPU packers keyed the drape on the provider's flag alone.
+    Batch 1636 gates the tile packer's `showGroundAtmosphere` (`WebGPUGlobeSurfaceTileUB.ts:907-911`) and the camera packer's
+    `groundAtmoEnabled` (`WebGPUGlobeSurfaceCameraUB.ts:848-851`) on SCENE3D, so outside SCENE3D `groundAtmosphereControl.xy`
+    and `atmosphereParams.w` read 0; no WGSL change. Spec `globe-ground-atmosphere-scene-mode-gate.spec.mjs` (11 tests) runs
+    the real packers; 2 of 2 inertness mutants killed (lane); the reviewer's cross-tree pack found SCENE3D bit-identical.
+  - **Acceptance leg** (07:15-07:43 EDT; tree B = 8a07cf972f plus both Irimon patches, served bundle md5
+    `06c6ff45f3f7709949d7b544f9b90923`; tree A = the diagnostic tree): post-fix WebGPU against WebGL at tolerance 0, 2D **2 px
+    (0.00022 %), none over 16, max channel 1**, bbox (675,191)-(703,253); Columbus View **2 px, one over 16, max 32**, both
+    pixels in column x=1274 (y 42 and 677); before the fix 803,912 px (max 48) and 807,720 px (max 173). The post-fix WebGPU
+    frame is byte-identical to the pre-fix `bypass-drape` frame in both modes, so the fix removes exactly the drape term on
+    these rigs and the 2-px residual predates it. Rings, inner terminator and Columbus View edge wraps are absent from the PNGs;
+    the base colour reads 0,0,127 / 0,0,127 / 0,0,21 at (100,360), (640,44), (640,360) on both renderers in both modes (the
+    earlier night figure 19 above was read at another point; both renderers agree on 21 here). WebGL `E-ID` base against tip:
+    0 px. 3D control `E-D`: WebGPU 0 px (sha256 `144550b49c86df1b` on all six captures over both trees); WebGL `E-D` is not
+    deterministic run to run on the same build (`NEW-WEBGL-E-D-DEFAULT-FRAME-NONDETERMINISTIC`, records round 6), and its
+    378 px base-against-tip reads within the kit's WebGL repeat-floor band (limit 762).
+  - **Band registered here (ledger text; the kit registers it in code later):** `E-ID-2d` / `E-ID-cv` cross-renderer, WebGPU
+    against WebGL at tolerance 0: **changedPx <= 4 AND max channel <= 1 off column x=1274.** This is the receipt's proposal
+    (changedPx <= 4, twice the measured 2 px) with Tindomiel P2's two refinements: the receipt's >16 clause (<= 0.001 %, 9.2 px)
+    is subsumed by changedPx <= 4 and is dropped, and "max channel unbounded" is narrowed to the one column that needs it.
+    Scope: one pinned camera per mode, offline imagery, no water mask, 1280x720; it says nothing beyond that.
+  - **Kit consequence:** on the fixed engine the `no-drape`, `fade`, `atmo` and `view-dir` pages equal `control` byte for byte
+    in 2D and Columbus View (the drape block they read is no longer entered there); only `composite` differs (52.075 % in 2D,
+    52.307 % in Columbus View, max 108, the same sha256 as before the fix). `E-2D-stages` / `E-CV-stages` are a guard now
+    (`control` == `no-drape`); they no longer attribute in 2D or Columbus View.
+  - **Not covered:** the water-mask ocean's highlight taper with `enableLighting` on, which reads the same fade
+    (`NEW-2D-WEBGPU-OCEAN-HIGHLIGHT-FADE`, records round 6); no performance is claimed (every PF-3 verdict on both legs read
+    `unmeasured-contended`).
+  - **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_P2D_DIAG.md` (sections 1-4) and
+    `EDGE_RECEIPT_EOWYN_P2D_ACCEPT.md` (sections 1-4, F2); evidence `Tools/visual-regression/output/wave-end/p2d-diag-20261031/`
+    and `p2d-accept-20261031/` in the seat's output (banked copies under `round3/edge/`); `round3/irimon/REVIEW_TINDOMIEL_P2.md`
+    (sections 2-6: "the records lane may mark it CLOSED in the commit that registers the band", with the four conditions this
+    entry meets); `REVIEW_TINDOMIEL_P1.md` (R1); `REVIEW_IRIME_P1.md`; `LANDING_PACKET_IRIMON.md`.
 
 ### DX-KIT-IDENTITY-WAIT-PIPELINES — identity cells captured with pipelines pending — **CLOSED** (Batch 1628, `5e684450f1`)
 
@@ -32025,7 +32082,7 @@ owed. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/EDGE
 `kit-pieces/round2-tar-aldarion/LANDING_PACKET_TAR-ALDARION.md` (A4b); reviewer `round2-tar-aldarion/REVIEW_ARTHAD_P1.md:1`
 (patch A, HOLDS-WITH-FIXES; the one fix was in the message).
 
-### DX-PROBE-CLOCK-PIN — the weather probes have no clock pin, so the W3 remainder cannot run at night — **OPEN** (probe kit)
+### DX-PROBE-CLOCK-PIN — the weather probes have no clock pin, so the W3 remainder cannot run at night — **CLOSED for the kit** (Batch 1635, `4bed633005`; the daylight Edge leg is owed)
 
 The W3 identity verifier's F2 (`probe-weather-map` / `probe-weather-ingest` must exit 0 on both arms) and F4 (a pinned-clock A/B
 of the weather-map-off view) are still owed: the probes take no clock pin, the salvage job ran at 00:00 EDT (night over the US
@@ -32038,6 +32095,21 @@ flag for the weather probes (kit first), then the leg in a daylight window. **Su
 `:511`), about 120 lines with specs; the seat picks the daylight instant. Batch 1630's evolved FFT read already sets the
 frozen clock through the same `pageSetClock`. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/round2-tar-aldarion/LANDING_PACKET_TAR-ALDARION.md`
 ("Unverified, owed, DX rows").
+**Closed for the kit (records round 6): Batch 1635 (`4bed633005`; lane Manwendil, worker Atanalcar; reviewer Hundor P1
+HOLDS-WITH-FIXES, the one REQUIRED fix text in the packet's row heads).** `lib/clock-pin.mjs` (169 lines) works over
+`pageSetClock` (`lib/clock-steps.mjs:25`): `DAYLIGHT_CLOCK_ISO = "2026-06-21T18:00:00Z"` (`:19`, a named value applied nowhere by
+default), `pinClock` (`:118`, returns `{requested, observed}`, refuses `clock-pin-failed`) and `assertClockHeld` (`:138`, refuses
+`clock-pin-lost`); a bad `--clock` exits 2 before any browser starts. `probe-weather-map.mjs` pins after the viewer wait and reads
+the clock again after the captures (`clockPin` in the cell record, null without the flag). On `probe-weather-ingest.mjs` the
+instant replaces the lane's local-noon `frameTime`, because `renderAt` rewrites `viewer.clock.currentTime` on every render
+(`lib/weather-probe-pinning.mjs:471-475`), so the ingest probe was daylit by construction already. Spec `clock-pin.spec.mjs` (20
+tests). The ingest probe's in-page branch is pinned in Node by one source anchor only; on Edge the end read is its live check
+(reviewer N-d). **Still owed:** the daylight Edge leg, `probe-weather-map.mjs --clock 2026-06-21T18:00:00Z` on the served tip
+(exit 0, `clockPin.requested` equal to the observed clock at the start and the end, the US view lit), then the weather-map-off
+A/B at the same instant; `NEW-CLOUD-W3-WEATHER-PROBES-LEG-OWED` and `NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY` now wait on that
+leg, not on the kit. The validating flag kind is `DX-KIT-CLOCK-FLAG-KIND` (records round 6). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W2; "What the seat's Edge job must
+capture" item 1); `round3/manwendil/REVIEW_HUNDOR_P1.md` (R1, N-d).
 
 ### DX-KIT-2D-CV-RIG-PINNED-CAMERA — the pinned 2D / Columbus View rigs carry no camera — **CLOSED** (Batch 1630, `fd732657b7`)
 
@@ -32183,7 +32255,7 @@ file"; `round2-tar-aldarion/REVIEW_ARTHAD_P1.md`, "NOTES"; N5, a line count in t
   and "What the Edge leg must watch" item 2); the seat's addendum (`salvage-night/rows-for-records-r2-addendum.md:106-110`,
   `:115-117`).
 
-### DX-KIT-PF3-STARTUP-CEILING-WEBGL — PF-3's fixed 2,000 ms startup ceiling fails same-build WebGL arms — **OPEN** (probe kit; a seat/kit decision)
+### DX-KIT-PF3-STARTUP-CEILING-WEBGL — PF-3's fixed 2,000 ms startup ceiling fails same-build WebGL arms — **CLOSED for the kit** (Batch 1635, `4bed633005`; the identity-cell Edge leg is the acceptance)
 
 - **Symptom:** on the kit2 leg both arms of `E-ID-2d` and of `E-ID-cv` ran the same build, yet each tip arm exited 1 on the WebGL
   PF-3 verdict alone ("a tip repeat took 2035.7 ms (2D) / 2224 ms (CV), not under the 2000 ms ceiling"). Pixels, stage,
@@ -32194,6 +32266,19 @@ file"; `round2-tar-aldarion/REVIEW_ARTHAD_P1.md`, "NOTES"; N5, a line count in t
 - **Repair:** re-size the ceiling for the identity cells, or register bands with `--bands` per wave. No code was written.
 - **Related, not merged:** `NEW-WATER-STARTUP-COST` measures a WebGL startup delta on rig E-D; this row is the band itself.
 - **Source:** the kit2 receipt `:54-57`, `:98-110`; the seat's addendum (`:130-133`).
+**Closed for the kit (records round 6): Batch 1635 (`4bed633005`; lane Manwendil, worker Indor; reviewer Hundor P1
+HOLDS-WITH-FIXES).** The seat's decision is implemented in `lib/metrics/perf-band.mjs`: `startupCeilingMs` 2,000 -> 2,500
+(`:76`); a PF-3 band floor `startupBandFloor: 0.1` (`:75`), read in the floor's place for the startup interval only (`:195`),
+while PF-1 and PF-2 keep the 3 % `floorFraction`; and the no-slack rule replaced by `base-over-ceiling-banded` (a base median at
+or over the ceiling reads the banded compare alone, `baseOverCeiling` kept). `landing-perf-metrics.spec.mjs` replays the kit2
+numbers: 2D and Columbus View read within. **The brief's premise was refuted** (lane, confirmed by the reviewer): Columbus View
+was within even without the floor (base spread 0.0335, b = 0.067, limit about 2,121 ms against a tip median of 2,087), so the
+kit2 failures were the 2,000 ms ceiling alone; the floor is pinned by its own fixture. The PF-3 compile-total statistic
+(`lib/metrics/startup-compile.mjs`) still reads the 3 % floor (reviewer N-c). **Still owed:** the acceptance on the next
+identity-cell Edge leg on a quiet machine (PF-3 reading `bandSource: "startup-floor"` against the 2,500 ms ceiling); every PF-3
+verdict on the 2026-10-31 p2d legs read `unmeasured-contended`, and those legs ran on trees without Batch 1635. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W1, "Brief premise corrected",
+Edge item 4); `round3/manwendil/REVIEW_HUNDOR_P1.md` (R1, N-c).
 
 ### NEW-OCEAN-FFT-RIG-GPU-HEAVY — the FFT-ocean rig's frame is GPU-heavy — **OPEN** (observation; no baseline)
 
@@ -32205,7 +32290,7 @@ claimed. **Suggested next step:** a breakdown inside the scene pass and a same-r
 anyone calls it a defect. **Source:** the PF receipt `:41-49`, `:65-67`; the kit2 receipt `:21-30`, `:50`; the seat's addendum
 (`:111-112`).
 
-### DX-KIT-WATER-CELLS-CAPTURE-MANIFEST — the water probes emit no capture-seam manifest — **OPEN** (probe kit)
+### DX-KIT-WATER-CELLS-CAPTURE-MANIFEST — the water probes emit no capture-seam manifest — **CLOSED for the kit for the three water probes** (Batch 1635, `4bed633005`; a water run sheeted on Edge is owed)
 
 The water half of `DX-KIT-CONTACT-SHEET-MANIFEST`: Batch 1630 made `probe-landing-cells` write `capture-manifest.json`, but
 none of `probe-water-cells.mjs` (with its pieces `lib/water-cell-table.mjs` and `lib/water-cell-verdicts.mjs`),
@@ -32214,14 +32299,39 @@ Batch 1631), so `contact-sheet.mjs` cannot sheet a water run. Carried from that 
 `water-bathymetry-offline{,-off}` rigs and the `water-bookmark-sunset-glint` sun-in-frame check. **Repair:** the water probes
 write their manifests in the shape `lib/landing-capture-manifest.mjs` uses (kit first). **Suggested owner:** the seat's kit
 work. **Source:** `kit-pieces/round2-tar-aldarion/LANDING_PACKET_TAR-ALDARION.md` ("DX rows to file"); the reviewer's N7.
+**Closed for the kit for the three water probes (records round 6): Batch 1635 (`4bed633005`; lane Manwendil, worker Amondin;
+reviewer Hundor P1 HOLDS-WITH-FIXES).** `lib/water-capture-manifest.mjs` (252 lines) adapts each probe's records to the landing
+builder and writes `capture-manifest.json` through it (a refusal or a throw is returned as violations, never a lost run);
+`probe-water-cells.mjs`, `probe-fft-ocean.mjs` and `probe-ssr-water.mjs` write the manifest when the runtime gives an output
+directory and record `captureManifest` in their receipts; a capture without a sha256 is a NOT RUN page. Spec
+`water-capture-manifest.spec.mjs` (15 tests) renders the water-cells and FFT-ocean manifests with `contact-sheet.mjs --manifest`.
+The landing builder takes an optional `entryLabel` so a water sheet does not call its entries landing cells. On a builder throw
+the adapter does not remove a stale manifest from an earlier run in the same directory (the receipt says `written: false`;
+reviewer N-a, not filed as a row). **Still owed:** a real water run sheeted on Edge (one `probe-water-cells.mjs` AFTER run with
+`--base-report`, and one `probe-fft-ocean.mjs` run); the `water-bookmark-*` and `water-bathymetry-offline{,-off}` sheets and the
+`water-bookmark-sunset-glint` check move to `DX-KIT-WATER-BOOKMARK-RIGS-UNCAPTURED` (records round 6), because no probe captures
+those rigs. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W5, Edge item
+2); `round3/manwendil/REVIEW_HUNDOR_P1.md` (R1, N-a).
 
-### DX-KIT-CAPTURE-SEAM-OVER-SIZE — `lib/capture.mjs` is 2,265 lines — **OPEN** (DX row, file size)
+### DX-KIT-CAPTURE-SEAM-OVER-SIZE — `lib/capture.mjs` is 2,265 lines — **CLOSED** (Batch 1633, `b8026741dd`)
 
 `Tools/visual-regression/lib/capture.mjs` (the capture seam: rig page and origin resolution, capture descriptors and
 refusals, cell and pair metrics, the manifest builder and validator, readiness polling) is 2,265 lines at Batch 1631 (`wc -l`),
 over the 1,000-line rule; round 2 left it out of scope. **Repair:** decompose by responsibility with an export-parity spec, as
 Batch 1631 did for the runtime. **Suggested owner:** the queued WAVE DX. **Source:** the packet ("DX rows to file"); the
 reviewer's N7.
+**Closed (records round 6): Batch 1633 (`b8026741dd`; lane Aghan, a Sonnet worker; reviewer Findis P1 HOLDS-WITH-FIXES, the one
+REQUIRED fix the message's subject line, applied by the seat).** `lib/capture.mjs` is 2,265 -> 629 lines: it keeps `capture`
+and `buildCaptureIncident` and re-exports the other 36 names from seven pieces, `lib/capture-vocabulary.mjs` (205),
+`capture-urls.mjs` (220), `capture-descriptor.mjs` (443), `capture-metrics.mjs` (87), `capture-manifest.mjs` (415),
+`capture-readiness.mjs` (364) and `capture-cell-work.mjs` (102). `capture-exports.spec.mjs` pins the 38-name surface, each
+re-export as the owning piece's binding and every file under 1,000 lines (6 tests; the lane's mutant and the reviewer's four
+killed, a 999-line pad passes). The reviewer's own proof of a pure move: all 61 top-level declarations token-identical under
+espree, the only change `export` on eight promoted helpers, which stay off the seam's surface; an acyclic import graph; the
+runners' red sets identical on base and stack. Prose citations that still point at the moved code are
+`DX-KIT-CAPTURE-SEAM-MOVED-CITATIONS` (records round 6). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aghan/LANDING_PACKET_AGHAN.md`; `round3/aghan/REVIEW_FINDIS_P1.md` (R1,
+sections 3-5).
 
 ### DX-KIT-LANDING-SPECS-OVER-SIZE — two landing specs are over 2,000 lines and pin the probe's text by source anchors — **OPEN** (DX row, file size)
 
@@ -32231,35 +32341,202 @@ text of the probe and the stage, so code gets shaped around them: Batch 1630's `
 spread at `:455`) exists partly so an existing anchor (`includeValues: true,`) stays unique (reviewer note N4). **Repair:** split
 the specs by concern, and move the mutants from text anchors to injected seams so the probe can change shape without a spec
 edit. **Suggested owner:** WAVE DX. **Source:** the packet ("DX rows to file"); the reviewer's N4 and N7.
+**Sizes at Batch 1636 (records round 6), still OPEN:** `probe-landing-cells.spec.mjs` is 2,790 lines and
+`landing-cell-stage.spec.mjs` 2,276 (`wc -l`): round 3 grew the first by 216 lines for the stage cells (Batch 1634; 2,636 on that
+lane's tree) and 154 for the second sentinel read (Batch 1635; 2,574 on that lane's tree), and the second by 199 for the dial.
+`landing-perf-metrics.spec.mjs` joins the row at 1,718 (1,592 at Batch 1632). The same spec's hard-coded temp root is
+`DX-KIT-LANDING-SPEC-TEMP-ROOT-COLLISION` (records round 6). **Source:** `round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W1, W4);
+`round3/irimon/REVIEW_IRIME_P1.md` (N4); `round3/manwendil/REVIEW_HUNDOR_P1.md` (N-f).
 
-### DX-KIT-LANDING-MANIFEST-SHA-SKIP — a BEFORE image without a recorded sha256 is copied unchecked — **OPEN** (probe kit; reviewer note N1)
+### DX-KIT-LANDING-MANIFEST-SHA-SKIP — a BEFORE image without a recorded sha256 is copied unchecked — **CLOSED** (Batch 1635, `4bed633005`)
 
 `lib/landing-capture-manifest.mjs:216` checks a BEFORE image's digest only when the base report's capture record carries one
 (`record.sha256 !== undefined && …`), so a record without `sha256` is copied unchecked, while the piece's header says every
 image is checked (`:34`) and Batch 1630's message says "after a sha256 check". Landing captures have carried `sha256` since
 before Batch 1629, so the exposure is old or foreign base reports. **Repair:** read such a slot UNMEASURED with the reason, or
 require the field. **Source:** `round2-tar-aldarion/REVIEW_ARTHAD_P1.md` (N1).
+**Closed (records round 6): Batch 1635 (`4bed633005`; lane Manwendil, worker Entwade; reviewer Hundor P1 HOLDS-WITH-FIXES).** A
+BEFORE record whose `sha256` is not a string now reads UNMEASURED with the reason before any read or copy, and the piece's header
+says the check applies to BEFORE (landing AFTER records always carry `shot.sha256`). Spec `landing-capture-manifest.spec.mjs`;
+mutant W3-N1 killed. **Source:** `round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W3); `REVIEW_HUNDOR_P1.md` ("Manifest").
 
-### DX-KIT-LANDING-MANIFEST-BEFORE-ORIGIN-PLACEHOLDER — the BEFORE origin falls back to a placeholder — **OPEN** (probe kit; reviewer note N2)
+### DX-KIT-LANDING-MANIFEST-BEFORE-ORIGIN-PLACEHOLDER — the BEFORE origin falls back to a placeholder — **CLOSED** (Batch 1635, `4bed633005`)
 
 With no `--base-report`, or a base report without an origin, the manifest's `origins.BEFORE` is the constant
 `UNRECORDED_ORIGIN` ("unrecorded (the base report carries no origin)", `lib/landing-capture-manifest.mjs:108-110`). It passes
-the validator (a non-empty string), but `lib/capture.mjs:438` makes origins "required, verbatim, never defaulted", and the
+the validator (a non-empty string), but `lib/capture.mjs:438` at Batch 1631 (`lib/capture-urls.mjs:154` since Batch 1633) makes origins "required, verbatim, never defaulted", and the
 wording is wrong when there is no base report at all. **Repair:** name the actual case (`no --base-report`) and record the
 deviation beside the seam rule. **Source:** `round2-tar-aldarion/REVIEW_ARTHAD_P1.md` (N2).
+**Closed (records round 6): Batch 1635 (`4bed633005`; lane Manwendil, worker Entwade; reviewer Hundor P1 HOLDS-WITH-FIXES).**
+`NO_BASE_REPORT_ORIGIN` ("no --base-report", `lib/landing-capture-manifest.mjs:127`) when there is no base report, and
+`UNRECORDED_ORIGIN` only for a base report that carries no origin; the deviation from the seam's origin rule is recorded in the
+piece's header. A base report with neither an origin nor a capture `url` gets the stand-in `rig.page` with `fallbackFields:
+["url"]`, so the header's "its own url" means its own url or a flagged stand-in (reviewer N-b, wording only). **Source:**
+`round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W3); `REVIEW_HUNDOR_P1.md` (N-b).
 
-### DX-KIT-RUNTIME-REPORT-NAME-EXPORT — the runtime's report file name is spelled in two places — **OPEN** (probe kit; reviewer note N3)
+### DX-KIT-RUNTIME-REPORT-NAME-EXPORT — the runtime's report file name is spelled in two places — **CLOSED** (Batch 1635, `4bed633005`)
 
 `runtimeReportFileName` (`lib/landing-capture-manifest.mjs:101-102`) re-spells the runtime's `${descriptor.name}-report.json`
 (`lib/probe-runtime.mjs:839`), so the two can drift. The packet's runtime-residency "catch" was the scan reacting to the probe
 spelling `-report.json`; the probe never wrote a receipt, so it was a text-shape false positive routed around, not a defect
 fixed (reviewer). **Repair:** one runtime export (for example `reportFileNameFor(descriptor)`) imported by the manifest piece.
 **Source:** `round2-tar-aldarion/REVIEW_ARTHAD_P1.md` (N3); the packet's "real catch" paragraph.
+**Closed (records round 6): Batch 1635 (`4bed633005`; lane Manwendil, worker Entwade; reviewer Hundor P1 HOLDS-WITH-FIXES).**
+`reportFileNameFor(descriptor)` (`lib/probe-runtime-receipts.mjs:128`) is the one spelling: `lib/probe-runtime.mjs` re-exports
+it and its own receipt write uses it, and the manifest piece's `runtimeReportFileName` delegates to it (importing the pure
+receipts companion, not the runtime). `probe-runtime-exports.spec.mjs` lists 41 names. **Source:**
+`round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W3); `REVIEW_HUNDOR_P1.md`.
 
-### DX-KIT-SENTINEL-READ-ONCE — the onmessage sentinel is read once, before staging — **OPEN** (probe kit; reviewer residual N6)
+### DX-KIT-SENTINEL-READ-ONCE — the onmessage sentinel is read once, before staging — **CLOSED for the kit** (Batch 1635, `4bed633005`; the in-run second read on Edge is owed)
 
 `probe-landing-cells.mjs:355` reads the sentinel once, right after the viewer exists and before the stage (`:366`). Batch 1630's
 positive control proves the sentinel live at the end of the page, but a lazily loaded module that assigns `window.onmessage`
 mid-page is still not caught by `onmessage-unchanged`. The residual was recorded on `DX-KIT-ONMESSAGE-SENTINEL` (Batch 1628)
 and again by this round's reviewer. **Repair:** a second sentinel read after capture, before the control runs, judged with the
 first. **Source:** `round2-tar-aldarion/REVIEW_ARTHAD_P1.md` (N6); the seat's addendum (`:142-148`).
+**Closed for the kit (records round 6): Batch 1635 (`4bed633005`; lane Manwendil, worker Minrimmon; reviewer Hundor P1
+HOLDS-WITH-FIXES).** `probe-landing-cells.mjs` reads the sentinel again after the captures and immediately before the positive
+control (`rereadOnmessage`, `:368`, called at `:397` on the stage-blocked return and at `:535` on the normal path);
+`combineOnmessageReads` (`lib/onmessage-sentinel.mjs:242`) judges both reads as the one `onmessage-unchanged` verdict, which
+fails when either read saw a replacement and is notRun when the second read is missing. Specs `probe-landing-cells.spec.mjs` and
+`onmessage-sentinel.spec.mjs`; mutants W4-S1 to S3 killed. **Still owed:** the in-run second read on an identity cell on Edge
+(`E-ID-2d`, `E-ID-cv` with `--sentinel-positive-control`: two clean reads, the control flips); the 2026-10-31 p2d legs ran on
+trees without Batch 1635. **Source:** `round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W4, Edge item 3); `REVIEW_HUNDOR_P1.md` (R1).
+
+## 2026-10-31 — records round 6: Batches 1633-1636, the probe-kit round 3 and the 2D / Columbus-view banding fix
+
+On 2026-10-31 (07:24-08:01 EDT) four batches landed, read at Batch 1636 with `git log --format='%h %H %T %s'
+8a07cf972f..HEAD`; their landing table is `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-31 — Batches 1632-1636 …)".
+Batch 1633 (`b8026741dd`) is the capture-seam decomposition (lane Aghan, a Sonnet worker; reviewer Findis, P1
+HOLDS-WITH-FIXES, the one REQUIRED fix the message's subject line, applied by the seat). Batch 1634 (`b39fc32b74`) is the kit
+half of lane Irimon (Opus lead; Sonnet worker Ibal; reviewer Irime, P1 HOLDS-WITH-FIXES, the one fix the message's subject).
+Batch 1635 (`4bed633005`) is the probe-kit round 3 (lane Manwendil, Opus lead; Sonnet workers Indor, Atanalcar, Entwade,
+Minrimmon and Amondin; reviewer Hundor, P1 HOLDS-WITH-FIXES, the one REQUIRED fix the packet's row heads, text only; 33 mutants
+of the reviewer's run all killed). Batch 1636 (`6f328f950d`) is the engine half of lane Irimon (reviewer Tindomiel: P1
+HOLDS-WITH-FIXES, text only, the ocean-taper consumer named in the message; P2 HOLDS on the two Edge receipts). The banked
+packets, reviews and patches are under `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/` (`aghan/`, `manwendil/`,
+`irimon/`). **Byte check (this round):** applying each banked patch in a temp index to the landed parent gives a tree that
+differs from the landed one only in `package.json` (the seat's runner homes), `migration_doc/TOOLING_CATALOG.md` and, for the
+two kit patches, `migration_doc/PROBE_KIT_GUIDE.md` (regenerated on the stacked tree; each lane regenerated it on 8a07cf972f).
+The seat's executor Eowyn ran two Edge legs, both on 8a07cf972f plus lane Irimon's patches, not on the tip: the diagnostic leg
+(06:48-07:12 EDT, plus the kit patch) and the acceptance leg (07:15-07:43 EDT, tree A as the diagnostic tree, tree B plus the
+engine patch); receipts `round3/edge/EDGE_RECEIPT_EOWYN_P2D_DIAG.md` and `EDGE_RECEIPT_EOWYN_P2D_ACCEPT.md`, evidence
+`Tools/visual-regression/output/wave-end/p2d-diag-20261031/` and `p2d-accept-20261031/` in the seat's output. Batches 1633 and
+1635 were in neither Edge tree, so their kit changes are measured in Node only. Rows updated in place by this round:
+`NEW-2D-WEBGPU-CONCENTRIC-BANDING` (closed: mechanism, fix, acceptance and the band), `DX-KIT-CAPTURE-SEAM-OVER-SIZE`,
+`DX-KIT-LANDING-MANIFEST-SHA-SKIP`, `DX-KIT-LANDING-MANIFEST-BEFORE-ORIGIN-PLACEHOLDER` (its moved citation corrected) and
+`DX-KIT-RUNTIME-REPORT-NAME-EXPORT` (closed), `DX-KIT-PF3-STARTUP-CEILING-WEBGL`, `DX-PROBE-CLOCK-PIN`, `DX-KIT-SENTINEL-READ-ONCE`
+and `DX-KIT-WATER-CELLS-CAPTURE-MANIFEST` (closed for the kit, each with its Edge leg owed), `DX-KIT-LANDING-SPECS-OVER-SIZE`
+(new sizes, open) and `DX-KIT-INGEST-HARNESS-READINESS-BUDGET` (the p2d legs' repeat). The rows below are new.
+
+### NEW-2D-WEBGPU-OCEAN-HIGHLIGHT-FADE — outside SCENE3D the WebGPU water-mask ocean's highlight taper reads a fade of 0 where WebGL with lighting on computes a planar camera-distance fade — **OPEN** (engine parity)
+
+- **What:** `groundAtmosphereControl.y`, the tile fade Batch 1636 zeroes outside SCENE3D, is read by the drape and also by the
+  water-mask ocean: `GlobeTerrain.wgsl:8809-8811` passes it to `computeEnhancedOcean`, and `:3695` uses it as
+  `highlightFade = 1.0 - clamp(lightingFade, 0.0, 1.0)`. WebGL's `fade` (`GlobeFS.glsl:868`, under
+  `ENABLE_DAYNIGHT_SHADING || GROUND_ATMOSPHERE`, a planar camera distance per mode; used at `:979`) is 0.0 outside SCENE3D
+  unless `ENABLE_DAYNIGHT_SHADING` is defined, which happens only with `enableLighting` on (`GlobeSurfaceShaderSet.js:468-474`).
+- **So:** with lighting off (the default) Batch 1636 moved the planar ocean highlight toward WebGL (before it, y = 1 suppressed
+  the highlight that WebGL keeps); with lighting on WebGPU now packs 0 where WebGL computes a planar fade (before it, WebGPU
+  packed a 3D-magnitude fade, which was not WebGL's either). The same split exists in SCENE3D with `showGroundAtmosphere`
+  false: y is zeroed whenever the drape is off, while WebGL's fade follows `ENABLE_DAYNIGHT_SHADING || GROUND_ATMOSPHERE`.
+- **Repair:** pack the ocean's fade from WebGL's law (the planar distance per mode) in its own slot, or derive it from
+  `LIGHTING_FADE_OFFSET`. **Acceptance:** a water-mask 2D cell with `enableLighting` on; the `E-ID` cells have no water mask and
+  do not measure it. Class: engine parity. **Suggested owner:** a 2D/CV parity lane.
+- **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/irimon/REVIEW_TINDOMIEL_P1.md` (R1, the row text);
+  `LANDING_PACKET_IRIMON.md` ("Reviewer fix applied by the seat"); Batch 1636's message.
+
+### NEW-WEBGL-E-D-DEFAULT-FRAME-NONDETERMINISTIC — the WebGL 3D default frame (cell `E-D`) differs run to run on the same build — **OPEN** (observation, WebGL; pre-existing)
+
+- **Measured** (2026-10-31 p2d legs): the six WebGL `E-D` captures have six distinct sha256 values. Same-build pairs differ by
+  340-384 px (tree A 369, 340 and 381; tree B 369, 347 and 384), max channel 6-9 (9 in the pairs with the `E-D-floor`
+  captures, the reviewer's correction of the receipt's 6-7), none over 16, all in one shared bbox of about
+  (392-396,112)-(882-885,599-603); cross-tree pairs read 315-466 px, inside the same-build spread. WebGPU `E-D` has one sha256
+  over the same six captures. Earlier legs read the same class (WebGL 340 px and 356 px on `E-D`, records round 4's notes, "Identity on the night's trees").
+- **Not Batch 1636's:** the patch touches only the two WebGPU packers.
+- **Consequence:** "0 px on both renderers" cannot be an `E-D` acceptance for WebGL; at `--runs 1` the probe reads `unmeasured`,
+  and the kit's repeat-floor band needs `--runs 2` on both arms (the acceptance leg's 378 px read within its band, limit 762,
+  through an executor helper over `pixelBand` and `repeatFloor`). **Next step:** run `E-D` base-against-tip at `--runs 2` on
+  both arms, then attribute the bbox before anyone calls it a defect. **Suggested owner:** the kit (band) and a parity lane
+  (mechanism).
+- **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_P2D_ACCEPT.md` (section 3, F2);
+  `round3/irimon/REVIEW_TINDOMIEL_P2.md` (section 5).
+
+### DX-KIT-PF-UNMEASURED-CONTENDED-EXIT-CODE — a `--base-report` run under load exits 1 through PF-3 `unmeasured-contended` alone — **OPEN** (probe kit)
+
+On the acceptance leg runs 1r, 3 and 4 exited 1 while every pixel, stage, gate and sentinel verdict passed: the only failing
+verdicts were PF-3 `unmeasured-contended` (12, 4 and 2 of them; on 1r `verdictIfUncontended` read `within`). `--no-cell-perf`
+does not stop it: the arm comparison reads PF-3 whenever either arm has startup runs (`lib/landing-verdicts.mjs:71`), and an
+unmeasured statistic is pushed as `pass: false` with `notRun: true` (`:237-249`), so a NOT RUN and a FAIL share exit 1.
+**Repair (a kit decision under the Charter's verdict vocabulary):** let the run's exit code tell an unmeasured PF statistic
+from a measured red, or let a flag skip the PF-3 comparison; an unmeasured statistic stays NOT RUN, never a pass.
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_P2D_ACCEPT.md` (invocations table, F3).
+
+### DX-KIT-LANDING-RADIAL-BANDING-FLAT-MAP — no concentric-energy number for a flat 2D / Columbus View frame — **OPEN** (probe kit)
+
+The stage cells' pages carry no radial-banding number: `lib/metrics/radial-banding.mjs` takes its disc centre, radius, focal
+length and altitude from the capture's camera block and throws without them (`:23-30`), and a flat map has no disc. **Repair:** a
+centre and extent from the rig's pinned 2D camera, or a planar annulus metric. Lower priority since Batch 1636: the 2D/CV rings
+are gone and the stage cells are a guard. **Source:** `round3/irimon/LANDING_PACKET_IRIMON.md` ("Excluded / owed");
+`REVIEW_IRIME_P1.md` (N5).
+
+### DX-WEBGPU-GLOBE-UB-PACKER-DECOMPOSITION — the two globe uniform packers are over the 1,000-line rule — **OPEN** (engine refactor, no behaviour)
+
+`WebGPUGlobeSurfaceTileUB.ts` is 1,146 lines and `WebGPUGlobeSurfaceCameraUB.ts` 1,538 at Batch 1636 (`wc -l`); Batch 1636
+touched each with a SCENE3D gate (+6/-1 and +7/-1) without decomposing them, to keep the parity diff reviewable. **Repair:** a
+move-only split by responsibility (the lane names the atmosphere block, the planar-RTE block and the water tail; the ES6
+tracker names the water, wake and tide packers and the tide and surge packer) with an export-parity spec. The ES6 tracker rows
+for both files carry the new counts (`ES6_MODERNIZATION_STATUS.md`, records round 6), which is where decompositions are
+recorded. **Source:** `round3/irimon/LANDING_PACKET_IRIMON.md` (rules checklist, "File size"); `REVIEW_TINDOMIEL_P1.md` (N1).
+
+### DX-KIT-LANDING-STAGE-HEADROOM — `lib/landing-cell-stage.mjs` is at 982 lines — **OPEN** (probe kit, small)
+
+Batch 1634's dial took the stage from 930 to 982 lines (`wc -l` at Batch 1636), under the rule with little headroom. **Repair:**
+the next dial goes to a companion piece. **Source:** `round3/irimon/LANDING_PACKET_IRIMON.md`; `REVIEW_IRIME_P1.md` (N4).
+
+### DX-KIT-WATER-BOOKMARK-RIGS-UNCAPTURED — the water bookmark and offline-bathymetry rigs are captured by no probe — **OPEN** (probe kit)
+
+No `.mjs` under `Tools/` outside `rigs/` names a `water-bookmark-*` or `water-bathymetry-offline{,-off}` rig (grep at Batch 1636),
+so their sheets and the `water-bookmark-sunset-glint` sun-in-frame check cannot come from a manifest alone (carried from
+`DX-KIT-WATER-CELLS-CAPTURE-MANIFEST`). **Repair:** a rig-driven capture probe from kit pieces that stages and captures listed
+rigs and writes its manifest through `lib/water-capture-manifest.mjs` or the landing builder. **Source:**
+`round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W5; rows for the records lane).
+
+### DX-KIT-CLOCK-FLAG-KIND — the runtime's flag table has no validating ISO-instant kind — **OPEN** (probe kit, small)
+
+`--clock` is declared as a plain string option, so `lib/clock-pin.mjs` validates it from each weather probe's entry point
+(`clockFlagExitCode(...) ?? runProbe(...)`). **Repair:** an `iso-instant` kind in `lib/probe-runtime-args.mjs` when a second
+consumer appears. **Source:** `round3/manwendil/LANDING_PACKET_MANWENDIL.md` (W2; rows for the records lane).
+
+### DX-KIT-LANDING-SPEC-TEMP-ROOT-COLLISION — `probe-landing-cells.spec.mjs` uses a fixed lane temp root — **OPEN** (probe kit, small)
+
+The spec sets `TEMP_ROOT` to `os.tmpdir()/cesium-lane/enedwaith` (`probe-landing-cells.spec.mjs:67`), creates it (`:70`) and
+removes it recursively in its `after` hook (`:74`). Two runs of `test-visual-probe-contracts` at once collided on it (ENOTEMPTY or
+ENOENT on whichever tree lost the race; sequential re-runs 560/560 on both trees), and the hook deletes a root named after a
+lane that is not the runner's. **Repair:** a per-run root through `Tools/lib/lane-tmp.mjs` (`withLaneTmp`) or `mkdtemp`.
+**Source:** `round3/aghan/REVIEW_FINDIS_P1.md` (N7); `round3/manwendil/REVIEW_HUNDOR_P1.md` (N-e).
+
+### DX-KIT-CAPTURE-SEAM-MOVED-CITATIONS — prose and comment citations still point at code Batch 1633 moved — **OPEN** (probe kit and guide, text only)
+
+Batch 1633 moved code without editing it, so three citations outside the ledger are stale: the comment at
+`lib/capture-manifest.mjs:115-116` says `ABSOLUTE_SCHEME` "stays above for `resolveRigPage`", which now live in
+`capture-vocabulary.mjs` and `capture-urls.mjs`; `PROBE_KIT_GUIDE.md:174` cites `capture.mjs:1876` for `capture()`, now
+`capture.mjs:240`; and `PROBE_KIT_GUIDE.md:1245` cites `capture.mjs:1893-1903` for the preflight, now `capture.mjs:258-267`. Both
+guide lines are prose outside the generated inventory (`:400-1197`), so a `--write` does not fix them. The ledger's one stale
+citation (`DX-KIT-LANDING-MANIFEST-BEFORE-ORIGIN-PLACEHOLDER`, `lib/capture.mjs:438`, now `lib/capture-urls.mjs:154`) is
+corrected in place by this round. **Repair:** the next kit lane that touches those files. **Source:** `round3/aghan/REVIEW_FINDIS_P1.md`
+(N2, N3).
+
+### Notes (no new ids)
+
+- **The default-variant identity figure:** `globe-terrain-default-variant-identity.spec.mjs` runs 15 tests over the 32 default
+  variants of `GlobeTerrain.wgsl` at Batch 1636 (test 1: "all 32 default variants (definesHi 0) equal the shipped shader"); it
+  prints no 128 figure, so a brief or packet that asks for "N/128" is stale. The ledger's own mentions already say 32
+  (`NEW-WATER-PREPROCESSOR-CORPUS-EQUIVALENCE`: "pins the 32 default variants"). Lane Irimon reported 15/15.
+- **Reviewer notes not filed as rows (the seat's call):** Hundor N-a (`writeWaterProbeManifest` leaves a stale manifest on a
+  builder throw; suggested id `DX-KIT-WATER-MANIFEST-STALE-ON-THROW`), N-c (recorded on the PF-3 row), N-g (wording); Irime N1 (a
+  plan-time payload check over all planned pages would make "refused before a browser" literal) and N2-N3 (no action);
+  Tindomiel N2 (a globe spec homed in `test-water-regimes`, a runner-census naming drift) and N4 (a redundant RUN entry).
+- **Message claims of Batches 1635 and 1636 now read against the receipts:** Batch 1635's "same-build WebGL arms stop failing
+  PF-3" is a Node replay of the kit2 numbers, not an Edge measurement (Hundor N-g); Batch 1636's "rendered acceptance owed" is
+  met by the acceptance leg above, which ran (07:15-07:43 EDT) before the commit (08:01 EDT); the message keeps the lane's pre-leg wording.
