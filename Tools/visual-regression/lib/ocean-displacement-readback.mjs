@@ -2,7 +2,7 @@
  * Reads the opt-in FFT ocean's displacement field back from the GPU, so two
  * runs of the ocean can be compared by what the compute chain produced and not
  * only by the picture.
- * @purpose Page-side readback of the FFT ocean's rgba16float displacement texture through a compute-shader copy (the texture has no COPY_SRC), returning a JSON-safe record with a sha-256 of the field and its statistics, plus the pure comparison and the kernel-identity verdict a probe records.
+ * @purpose Page-side readback of the FFT ocean's rgba16float displacement texture through a compute-shader copy (the texture has no COPY_SRC), returning a JSON-safe record with a sha-256 of the field and its statistics, plus the pure comparison and the kernel-identity verdict a probe records, and the same read at a later pinned clock (clock restored) with its own evolved-epoch verdict.
  * @status ACTIVE
  *
  * WHY A COMPUTE-SHADER COPY AND NOT `copyTextureToBuffer`. The displacement
@@ -49,8 +49,20 @@
  * `maxAbsDelta`, which {@link compareDisplacementReadbacks} reports only when
  * both records carry `values`.
  *
+ * THE EVOLVED READBACK. At the rig's pinned clock the wave time is 0 and the
+ * dispersion phase factor `exp(i w t)` of the time-evolution pass
+ * (`Shaders/WebGPU/Ocean/OceanTimeSpectrum.wgsl`: `phase = w * params.time`) is
+ * 1, so a t = 0 identity checks the inverse transform of the initial spectrum
+ * and not of a time-evolved one. {@link readOceanDisplacementEvolved} moves the
+ * frozen clock a fixed number of seconds forward through the kit's clock dial
+ * (`lib/clock-steps.mjs` `pageSetClock`), reads the field there, and puts the
+ * clock back; {@link evolvedKernelIdentityVerdict} judges the two kernels at
+ * that later time, and only when the sea demonstrably moved.
+ *
  * @module Tools/visual-regression/lib/ocean-displacement-readback
  */
+
+import { CLOCK_STEPS_MODULE_URL, pageSetClock } from "./clock-steps.mjs";
 
 /** The accessor the record names; the engine's private ocean state. */
 export const OCEAN_DISPLACEMENT_ACCESSOR =
@@ -494,4 +506,239 @@ export function kernelIdentityVerdict(idPrefix, a, b) {
     };
   }
   return { id, pass: comparison.identical, comparison };
+}
+
+/**
+ * The default advance, in seconds, of the evolved readback's clock. Thirty
+ * seconds: long enough that every wave the field carries has turned through
+ * many radians of dispersion phase (the fundamental of a patch of length L has
+ * angular frequency sqrt(2 pi g / L), about 0.25 rad/s at L = 1000 m and
+ * about 0.8 rad/s at L = 100 m, so 7 to 24 rad, and the shorter waves far
+ * more), so the field cannot sit near its t = 0 value, and short enough that
+ * the f32 phase `w * t` the compute pass forms stays well inside f32's exact
+ * range. A whole number so the wave time it produces (a difference of
+ * JulianDate seconds) is exact.
+ */
+export const OCEAN_EVOLVED_ADVANCE_SECONDS = 30;
+
+/** Two wave times closer than this are the same instant (JulianDate rounding). */
+const WAVE_TIME_TOLERANCE_SECONDS = 1e-6;
+
+const ISO_INSTANT =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * PURE. The ISO instant `advanceSeconds` after `clockIso`, in UTC.
+ *
+ * @param {string} clockIso An ISO-8601 instant with a zone designator (the
+ *   rig's pinned clock).
+ * @param {number} advanceSeconds A positive, finite number of seconds.
+ * @returns {string} The later instant, `YYYY-MM-DDTHH:MM:SS.sssZ`.
+ * @throws {TypeError} For a clock that is not an ISO-8601 instant, or an
+ *   advance that is not a positive finite number.
+ */
+export function evolvedClockIso(clockIso, advanceSeconds) {
+  if (
+    typeof clockIso !== "string" ||
+    !ISO_INSTANT.test(clockIso) ||
+    !Number.isFinite(Date.parse(clockIso))
+  ) {
+    throw new TypeError(
+      `evolvedClockIso: clockIso must be an ISO-8601 instant with a zone, got ${String(clockIso)}`,
+    );
+  }
+  if (
+    typeof advanceSeconds !== "number" ||
+    !Number.isFinite(advanceSeconds) ||
+    !(advanceSeconds > 0)
+  ) {
+    throw new TypeError(
+      `evolvedClockIso: advanceSeconds must be a positive finite number, got ${String(advanceSeconds)}`,
+    );
+  }
+  return new Date(Date.parse(clockIso) + advanceSeconds * 1000).toISOString();
+}
+
+/**
+ * NODE SIDE. Read the displacement field at a later pinned clock. The frozen
+ * clock is set to `clockIso + advanceSeconds` through the kit's clock dial,
+ * the field is read as {@link readOceanDisplacement} reads it, and the clock
+ * is put back to `clockIso` whatever the read did (the cell's performance
+ * window runs after this and must run at the rig's clock).
+ *
+ * Never throws past the page: a clock that cannot be set, or a read that
+ * throws, is `available: false` with a `reason`. A clock that cannot be put
+ * back leaves the record as read and adds `restoreReason` (and
+ * `restoredClock: null`). Invalid arguments are a TypeError, raised before the
+ * clock moves.
+ *
+ * @param {{evaluate: Function}} page
+ * @param {{clockIso: string, advanceSeconds?: number, frames?: number,
+ *   includeValues?: boolean, moduleUrl?: string}} options `clockIso` is the
+ *   instant the rig pinned the clock to; `moduleUrl` is where the page imports
+ *   Cesium from (default the clock dial's own).
+ * @returns {Promise<object>} The readback record plus `advanceSeconds`,
+ *   `evolvedClock` (the instant the page's clock read after the set) and
+ *   `restoredClock` (the instant it read after the restore).
+ * @throws {TypeError} For a bad `clockIso`, `advanceSeconds` or `frames`.
+ */
+export async function readOceanDisplacementEvolved(
+  page,
+  {
+    clockIso,
+    advanceSeconds = OCEAN_EVOLVED_ADVANCE_SECONDS,
+    frames = OCEAN_READBACK_DEFAULT_FRAMES,
+    includeValues = false,
+    moduleUrl = CLOCK_STEPS_MODULE_URL,
+  } = {},
+) {
+  const evolvedIso = evolvedClockIso(clockIso, advanceSeconds);
+  if (!Number.isInteger(frames) || frames < 0) {
+    throw new TypeError(
+      `readOceanDisplacementEvolved: frames must be a non-negative integer, got ${String(frames)}`,
+    );
+  }
+  const messageOf = (error) =>
+    String(error && error.message ? error.message : error);
+  const unavailable = (reason) => ({
+    available: false,
+    reason,
+    accessor: OCEAN_DISPLACEMENT_ACCESSOR,
+    kernel: null,
+    hash: null,
+    simulationSeconds: null,
+    advanceSeconds,
+    evolvedClock: null,
+    restoredClock: null,
+  });
+
+  let set;
+  try {
+    set = await page.evaluate(pageSetClock, { iso: evolvedIso, moduleUrl });
+  } catch (error) {
+    return unavailable(
+      `moving the clock to ${evolvedIso} threw: ${messageOf(error)}`,
+    );
+  }
+  if (!set || set.ok !== true) {
+    return unavailable(
+      `the clock could not be moved to ${evolvedIso}: ${set && set.reason ? set.reason : "no result"}`,
+    );
+  }
+
+  let record;
+  try {
+    record = await readOceanDisplacement(page, { frames, includeValues });
+  } catch (error) {
+    record = unavailable(
+      `reading the evolved field threw: ${messageOf(error)}`,
+    );
+  }
+
+  let restoredClock = null;
+  let restoreReason;
+  try {
+    const restore = await page.evaluate(pageSetClock, {
+      iso: clockIso,
+      moduleUrl,
+    });
+    if (restore && restore.ok === true) {
+      restoredClock = restore.observed ?? null;
+    } else {
+      restoreReason = `the clock could not be restored to ${clockIso}: ${restore && restore.reason ? restore.reason : "no result"}`;
+    }
+  } catch (error) {
+    restoreReason = `restoring the clock to ${clockIso} threw: ${messageOf(error)}`;
+  }
+  return {
+    ...record,
+    advanceSeconds,
+    evolvedClock: set.observed ?? null,
+    restoredClock,
+    ...(restoreReason === undefined ? {} : { restoreReason }),
+  };
+}
+
+/**
+ * PURE. The verdict row for the kernel-identity check at a later wave time:
+ * the two kernels' displacement fields, each read `advanceSeconds` after its
+ * own t = 0 read, are identical (at f16 resolution, see the header).
+ *
+ * It is `notRun` (never a pass, never a fail) when it would not test what its
+ * id claims: the advance is not a positive finite number; the evolved pair is
+ * not measured ({@link compareDisplacementReadbacks}, so unequal or missing
+ * wave times stay unmeasured); either evolved read is not exactly
+ * `advanceSeconds` later than its own t = 0 read (the clock did not move the
+ * sea); either evolved field hashes the same as its own t = 0 field (the sea
+ * did not evolve, so this would repeat the t = 0 check); or the legs are not
+ * two different kernels.
+ *
+ * @param {string} idPrefix
+ * @param {{a0: object, b0: object, a1: object, b1: object,
+ *   advanceSeconds: number}} legs `a0`/`b0` the two kernels' t = 0 records,
+ *   `a1`/`b1` their evolved ones.
+ * @returns {{id: string, pass: boolean, notRun?: true, reason?: string,
+ *   advanceSeconds: number, comparison: object}}
+ */
+export function evolvedKernelIdentityVerdict(
+  idPrefix,
+  { a0, b0, a1, b1, advanceSeconds } = {},
+) {
+  const id = `${idPrefix}:ifft-kernel-identity-evolved`;
+  const comparison = compareDisplacementReadbacks(a1, b1);
+  const notRun = (reason) => ({
+    id,
+    pass: false,
+    notRun: true,
+    reason,
+    advanceSeconds,
+    comparison: { ...comparison, reason },
+  });
+  if (
+    typeof advanceSeconds !== "number" ||
+    !Number.isFinite(advanceSeconds) ||
+    !(advanceSeconds > 0)
+  ) {
+    return notRun(
+      `the evolved legs name no positive finite advance (advanceSeconds ${String(advanceSeconds)})`,
+    );
+  }
+  if (comparison.measured !== true) {
+    return notRun(comparison.reason);
+  }
+  for (const [name, start, evolved] of [
+    ["A", a0, a1],
+    ["B", b0, b1],
+  ]) {
+    const t0 = start ? start.simulationSeconds : null;
+    const t1 = evolved.simulationSeconds;
+    if (
+      !Number.isFinite(t0) ||
+      !(Math.abs(t1 - t0 - advanceSeconds) <= WAVE_TIME_TOLERANCE_SECONDS)
+    ) {
+      return notRun(
+        `readback ${name} was not taken ${advanceSeconds} s after its t = 0 read (simulationSeconds ${String(t0)} then ${String(t1)}): the clock did not move the sea`,
+      );
+    }
+  }
+  for (const [name, start, evolved] of [
+    ["A", a0, a1],
+    ["B", b0, b1],
+  ]) {
+    if (start.hash === evolved.hash) {
+      return notRun(
+        `readback ${name} field at +${advanceSeconds} s hashes the same as at t = 0: the sea did not evolve, so this repeats the t = 0 check`,
+      );
+    }
+  }
+  if (
+    comparison.kernelA === null ||
+    comparison.kernelB === null ||
+    comparison.kernelB === comparison.kernelA
+  ) {
+    return notRun(
+      `the legs do not run two different kernels (${String(comparison.kernelA)} vs ${String(comparison.kernelB)})`,
+    );
+  }
+  return { id, pass: comparison.identical, advanceSeconds, comparison };
 }

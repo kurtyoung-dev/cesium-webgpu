@@ -1,6 +1,6 @@
 // landing-rigs.spec.mjs - lane KT. Pure Node: no browser, no GPU.
 //
-// @purpose Drives the real rig-registry.mjs over the real rigs/ directory and asserts the eight landing-cell rigs load, validate, and say what the landing plan needs of them: the flight camera and dials, the night rig differing from the noon rig by the clock alone, the sky-only rig with clouds off and clock steps, the single-deck 4x MSAA orbital rig, the pinned and HDR default views, the viewer-page horizon twin, the water teardown scene, and (round 5, K5-5) the clock-pinned twins of globe-default and globe-horizon with their clock-pin setup.
+// @purpose Drives the real rig-registry.mjs over the real rigs/ directory and asserts the eight landing-cell rigs load, validate, and say what the landing plan needs of them: the flight camera and dials, the night rig differing from the noon rig by the clock alone, the sky-only rig with clouds off and clock steps, the single-deck 4x MSAA orbital rig, the pinned and HDR default views, the viewer-page horizon twin, the water teardown scene, and (round 5, K5-5) the clock-pinned twins of globe-default and globe-horizon with their clock-pin setup, and (DX-KIT-2D-CV-RIG-PINNED-CAMERA) that the 2D and Columbus identity rigs pin a camera framing the whole map.
 // @status ACTIVE
 //
 // EVERY ASSERTION READS OUTPUT OF THE REAL MODULES. `loadRigs()` dynamically
@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { landingStagePayload } from "./lib/landing-cell-stage.mjs";
 import {
   RIG_TAGS,
   generateScenesJson,
@@ -261,7 +262,7 @@ test("R4b: default-3d-pinned is default-3d with only the clock pinned", () => {
 test("R4c: the 2D and Columbus identity rigs are default-3d-pinned with only the scene mode dial", () => {
   const strip = (rig) => {
     const copy = JSON.parse(JSON.stringify(rig));
-    for (const key of ["id", "description", "declaredBy", "dials"]) {
+    for (const key of ["id", "description", "declaredBy", "dials", "camera"]) {
       delete copy[key];
     }
     return copy;
@@ -277,7 +278,10 @@ test("R4c: the 2D and Columbus identity rigs are default-3d-pinned with only the
     assert.equal(rigs.filter((r) => r.id === id).length, 1, `${id} duplicated`);
     assert.deepEqual(rig.dials, { sceneMode: mode }, `${id} dials`);
     assert.deepEqual(strip(rig), strip(base), `${id} differs beyond the mode`);
-    assert.equal(rig.camera, null, `${id} uses the mode's own default view`);
+    // DX-KIT-2D-CV-RIG-PINNED-CAMERA: the camera is the one thing the mode
+    // rigs add to the 3D rig (R4d pins what it must frame).
+    assert.equal(base.camera, null, "the 3D rig keeps the page's home view");
+    assert.notEqual(rig.camera, null, `${id} pins a camera`);
     assert.notEqual(rig.description, base.description);
     assert.notEqual(rig.declaredBy, base.declaredBy);
   }
@@ -287,6 +291,112 @@ test("R4c: the 2D and Columbus identity rigs are default-3d-pinned with only the
     "the two modes are different replays",
   );
   assert.notEqual(replayKeyFor(byId("default-2d-pinned")), replayKeyFor(base));
+});
+
+// R4d (DX-KIT-2D-CV-RIG-PINNED-CAMERA): the pinned camera of the 2D and
+// Columbus identity rigs frames the WHOLE map. The framing is derived here
+// from first principles, not read back from the rig: the geographic map plane
+// is 2 * pi * R wide and pi * R tall (R = the WGS84 equatorial radius, so
+// y = lat * R in radians), `Camera.setView` in 2D sets the orthographic
+// frustum width to the destination height (`CameraHelpers.js` setView2D:
+// left = -z / 2) with the top/bottom ratio of the drawing buffer, and the
+// Columbus camera is the default 60-degree perspective frustum
+// (`Camera.js:217`), whose fov applies to the larger dimension of a wide frame
+// (`PerspectiveFrustum.js`), looking straight down from the destination
+// height. A margin is the distance from a map edge to the frame edge, in
+// pixels: negative is cropped map, positive is black (2D scrolls infinitely
+// to the east and west, so there the side margins are repeated imagery).
+const WGS84_RADIUS = 6378137;
+const COLUMBUS_FOV = 60 * DEG;
+
+function wholeMapMargins(rig, mode) {
+  assert.ok(rig.camera, `${rig.id} must pin a camera`);
+  const { lon, lat, height } = rig.camera;
+  const { width: vw, height: vh } = rig.viewport;
+  const mapHalfW = Math.PI * WGS84_RADIUS;
+  const mapHalfH = mapHalfW / 2;
+  // The 2D map repeats to the east and west, so its longitude cannot crop it.
+  const centreX = mode === "2d" ? 0 : lon * DEG * WGS84_RADIUS;
+  const centreY = lat * DEG * WGS84_RADIUS;
+  const halfW =
+    mode === "2d" ? height / 2 : height * Math.tan(COLUMBUS_FOV / 2);
+  const halfH = (halfW * vh) / vw;
+  const toPxX = vw / (2 * halfW);
+  const toPxY = vh / (2 * halfH);
+  return {
+    left: (halfW - centreX - mapHalfW) * toPxX,
+    right: (halfW + centreX - mapHalfW) * toPxX,
+    top: (halfH + centreY - mapHalfH) * toPxY,
+    bottom: (halfH - centreY - mapHalfH) * toPxY,
+  };
+}
+
+function assertWholeMapFramed(rig, mode) {
+  const margins = wholeMapMargins(rig, mode);
+  for (const [edge, px] of Object.entries(margins)) {
+    assert.ok(
+      px >= 0,
+      `${rig.id}: the ${edge} of the map is cropped by ${(-px).toFixed(1)} px`,
+    );
+  }
+  // Not a distant speck: the whole map fills the frame to within a few
+  // percent, so a regression to a much higher camera is also red.
+  assert.ok(margins.left <= 16 && margins.right <= 16, `${rig.id} sides`);
+  assert.ok(margins.top <= 64 && margins.bottom <= 64, `${rig.id} top/bottom`);
+  return margins;
+}
+
+test("R4d: the 2D and Columbus identity rigs pin a camera that frames the whole map", () => {
+  for (const [id, mode] of [
+    ["default-2d-pinned", "2d"],
+    ["default-columbus-pinned", "cv"],
+  ]) {
+    const rig = byId(id);
+    const camera = rig.camera;
+    for (const key of ["lon", "lat", "height", "heading", "pitch", "roll"]) {
+      assert.ok(Number.isFinite(camera[key]), `${id} camera.${key}`);
+    }
+    assert.ok(camera.height > 0, `${id} camera height`);
+    assert.equal(camera.heading, 0, `${id} north up`);
+    assert.equal(camera.pitch, -Math.PI / 2, `${id} straight down`);
+    assert.equal(camera.roll, 0, `${id} roll`);
+    assertWholeMapFramed(rig, mode);
+    // The stage reads exactly this camera from the rig.
+    assert.deepEqual(landingStagePayload(rig).camera, { ...camera }, id);
+  }
+  // The two modes' heights differ: a 2D frustum width is not a perspective
+  // height, so one number cannot serve both.
+  assert.notEqual(
+    byId("default-2d-pinned").camera.height,
+    byId("default-columbus-pinned").camera.height,
+  );
+});
+
+test("R4d: inertness mutants - a dropped, too-low or off-centre camera turns the framing check red", () => {
+  for (const [id, mode] of [
+    ["default-2d-pinned", "2d"],
+    ["default-columbus-pinned", "cv"],
+  ]) {
+    const rig = byId(id);
+    assert.doesNotThrow(() => assertWholeMapFramed(rig, mode), id);
+    for (const [label, mutant] of [
+      ["camera: null (the old rig)", { ...rig, camera: null }],
+      [
+        "half the height",
+        { ...rig, camera: { ...rig.camera, height: rig.camera.height / 2 } },
+      ],
+      [
+        "the default rectangle's centre (-82.5, 35)",
+        { ...rig, camera: { ...rig.camera, lon: -82.5, lat: 35 } },
+      ],
+    ]) {
+      assert.throws(
+        () => assertWholeMapFramed(mutant, mode),
+        (error) => error instanceof assert.AssertionError,
+        `${id} with ${label} must fail the framing check`,
+      );
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------

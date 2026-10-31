@@ -2,7 +2,7 @@
  * The landing program's cell table and the pure planning over it: which rig a
  * cell renders, on which renderers and pages, with which per-page dial
  * variants, and whether it waits for pending pipelines by default.
- * @purpose Cell table piece for probe-landing-cells.mjs: the LANDING_CELLS table (rig, kind, identity, per-cell pipeline-wait default, per-page dial variants, displacement readback, cross-renderer diff, forced performance leg), the (cell, renderer, page) plan, the rig a variant page stages, and the per-cell pending-pipeline wait resolved from --wait-pipelines / --no-wait-pipelines and read back from a report, all pure.
+ * @purpose Cell table piece for probe-landing-cells.mjs: the LANDING_CELLS table (rig, kind, identity, per-cell pipeline-wait default, per-page dial variants, displacement readback and its evolved-clock second read, cross-renderer diff, forced performance leg and the GPU pass its PF-2 window must list), the (cell, renderer, page) plan, the rig a variant page stages, and the per-cell pending-pipeline wait resolved from --wait-pipelines / --no-wait-pipelines and read back from a report, all pure.
  * @status ACTIVE
  *
  * WHY A PIECE. The table and its planning moved out of
@@ -30,7 +30,16 @@
  * @module Tools/visual-regression/lib/landing-cell-table
  */
 
+import { OCEAN_EVOLVED_ADVANCE_SECONDS } from "./ocean-displacement-readback.mjs";
 import { ProbeRefusal } from "./probe-refusal.mjs";
+
+/**
+ * The label of the FFT ocean's compute pass, the descriptor constant in
+ * `packages/engine/Source/Renderer/WebGPU/WebGPUOceanRenderer.ts`
+ * (`OCEAN_COMPUTE_PASS_DESCRIPTOR`); the PF-2 profiler keys passes by label.
+ * A spec pins the two strings equal.
+ */
+export const OCEAN_COMPUTE_PASS_LABEL = "Ocean FFT single-pass compute chain";
 
 /**
  * The cell table: cell name -> rig id and what the cell does on it.
@@ -40,8 +49,12 @@ import { ProbeRefusal } from "./probe-refusal.mjs";
  * pending pipelines unless waived), `variants` (page name -> dials laid over
  * the rig), `readback` (`"ocean-displacement"`: the FFT ocean's displacement
  * field is read back after the capture), `crossRenderer` (the WebGPU capture
- * is diffed against the same run's WebGL capture) and `perf` (the PF-1 / PF-2
- * window runs without `--perf`).
+ * is diffed against the same run's WebGL capture), `perf` (the PF-1 / PF-2
+ * window runs without `--perf`), `perfPass` (the GPU pass label the PF-2
+ * window must list, judged by `lib/landing-verdicts.mjs`) and
+ * `evolvedReadbackSeconds` (the displacement field is read a second time with
+ * the clock that many seconds past the rig's, both kernels at the same evolved
+ * wave time; lane TAR-ALDARION).
  */
 export const LANDING_CELLS = Object.freeze({
   "E-D": Object.freeze({
@@ -125,7 +138,14 @@ export const LANDING_CELLS = Object.freeze({
     kind: "capture",
     waitPipelines: true,
     readback: "ocean-displacement",
+    // The t = 0 identity checks the transform of the initial spectrum only (the
+    // kit receipt, finding 3); the evolved read checks a time-evolved sea.
+    evolvedReadbackSeconds: OCEAN_EVOLVED_ADVANCE_SECONDS,
     perf: true,
+    // The label WebGPUOceanRenderer.ts opens the iFFT chain with: PF-2 lists
+    // the chain under it once the pass carries timestamp writes (kit-PF
+    // receipt, finding 1).
+    perfPass: OCEAN_COMPUTE_PASS_LABEL,
     variants: Object.freeze({
       stockham: Object.freeze({ waterOceanIfftKernel: "stockham" }),
       pingpong: Object.freeze({ waterOceanIfftKernel: "pingpong" }),

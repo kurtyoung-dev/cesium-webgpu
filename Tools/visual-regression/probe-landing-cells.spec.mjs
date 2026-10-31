@@ -28,6 +28,7 @@ import {
 } from "./lib/probe-runtime.mjs";
 import { loadRigs } from "./lib/rig-registry.mjs";
 import { importMutated } from "./lib/import-mutated.mjs";
+import { makeFakeBrowser, makeSmallPng } from "./lib/landing-fake-browser.mjs";
 import { landingStagePayload } from "./lib/landing-cell-stage.mjs";
 import {
   PIPELINE_WAIT_MODES,
@@ -70,198 +71,7 @@ after(() => {
   fs.rmSync(TEMP_ROOT, { recursive: true, force: true });
 });
 
-function makeSmallPng(width = 8, height = 8, diffPixel = false) {
-  const pixels = new Uint8Array(width * height * 4);
-  if (diffPixel) {
-    pixels[0] = 255;
-    pixels[1] = 255;
-    pixels[2] = 255;
-    pixels[3] = 255;
-  }
-  return Buffer.from(encodeRgbaPng(pixels, width, height));
-}
-
-function makeFakeBrowser(
-  log,
-  {
-    notApplied = [],
-    pipelines = { pending: 0 },
-    onmessage = null,
-    displacements = [],
-  } = {},
-) {
-  let displacementCalls = 0;
-  let connected = true;
-  const smallPng = makeSmallPng(8, 8);
-
-  function makePage() {
-    return {
-      on(event) {
-        log.events.push(`on:${event}`);
-      },
-      off(event) {
-        log.events.push(`off:${event}`);
-      },
-      async addInitScript(script) {
-        log.scripts.push(script);
-      },
-      async goto(url) {
-        log.urls.push(url);
-      },
-      async waitForFunction() {},
-      async evaluate(fn, arg) {
-        const src = String(fn);
-        // Lane LINDISSE: the onmessage sentinel and the displacement readback.
-        if (src.includes("__onmessageSentinel")) {
-          log.sentinelReads?.push(true);
-          return (
-            onmessage ?? {
-              installed: true,
-              before: null,
-              after: null,
-              changed: false,
-              assignments: 0,
-              stacks: [],
-            }
-          );
-        }
-        if (src.includes("_webgpuCache")) {
-          log.readbacks?.push(arg);
-          const record = displacements[displacementCalls] ?? {
-            available: false,
-            reason: "no fake readback",
-          };
-          displacementCalls++;
-          return record;
-        }
-        // Lane LINDISSE: the PF-1 / PF-2 window E-FFT-ifft runs without --perf.
-        if (fn.name === "pageSampleFrameTimes") {
-          return { frameMs: [10, 10], frames: arg?.frames ?? 0 };
-        }
-        if (fn.name === "pageSampleGpuPassCost") {
-          return { available: false, reason: "fake browser" };
-        }
-        // Lead addition (Celos, round 5, K5-2): the pipeline-cache readers.
-        if (src.includes("pageWaitForPendingPipelines")) {
-          log.waits?.push(arg);
-          return {
-            requested: true,
-            available: true,
-            pendingAtStart: 5,
-            pendingAtEnd: 0,
-            pendingMax: 5,
-            createdAtEnd: 9,
-            framesWaited: 7,
-            waitedMs: 70,
-            timedOut: false,
-          };
-        }
-        if (src.includes("pageReadPendingPipelines")) {
-          return {
-            available: true,
-            rendererType: "webgpu",
-            pending: pipelines.pending,
-            created: 9,
-          };
-        }
-        if (src.includes("performance.now()")) {
-          return 100;
-        }
-        if (src.includes("__armWebGPUDevice")) {
-          return { armed: 1, found: 1, total: 1 };
-        }
-        if (src.includes("stageLandingCellInPage")) {
-          return {
-            dials: {
-              cloudsEnabled: {
-                requested: true,
-                observed: true,
-                applied: true,
-              },
-            },
-            notApplied,
-          };
-        }
-        if (src.includes("pageMeasureStartup")) {
-          return {
-            viewerReadyAtMs: 10,
-            stagedAtMs: 20,
-            firstFrameAtMs: 30,
-            firstCloudFrameAtMs: 40,
-            tilesLoadedAtMs: 50,
-            frames: 10,
-            outcome: "done",
-          };
-        }
-        if (src.includes("__gpuDeviceCensus")) {
-          return {
-            textures: { created: 0, destroyed: 0 },
-            buffers: { created: 0, destroyed: 0 },
-            byLabel: {},
-            compile: { shaderModules: { count: 0, syncMs: 0 } },
-          };
-        }
-        if (
-          src.includes("pageReadRendererStatistics") ||
-          src.includes("getRendererStatistics")
-        ) {
-          return { pipelineCache: null, shaderModuleCache: null };
-        }
-        if (
-          src.includes("render(viewer.clock.currentTime)") ||
-          src.includes("pageRenderFrames")
-        ) {
-          return arg?.frames ?? 1;
-        }
-        if (typeof fn === "string" && fn.includes("leftovers")) {
-          return { removed: 3, leftovers: [] };
-        }
-        if (src.includes("__captureLiveness")) {
-          return { gateArmed: true, deviceLost: null, frameNumber: 1 };
-        }
-        if (src.includes("__webgpuGate")) {
-          return { errors: [], deviceLost: null, armedDevices: 1 };
-        }
-        throw new Error(`unstubbed evaluate: ${src.slice(0, 100)}`);
-      },
-      locator(selector) {
-        log.selectors.push(selector);
-        return {
-          async count() {
-            return 1;
-          },
-          nth: () => ({
-            async screenshot() {
-              return smallPng;
-            },
-          }),
-          async screenshot() {
-            return smallPng;
-          },
-        };
-      },
-    };
-  }
-
-  return {
-    isConnected() {
-      return connected;
-    },
-    async newContext(options) {
-      log.contexts.push(options);
-      return {
-        async newPage() {
-          return makePage();
-        },
-        async close() {},
-      };
-    },
-    async close() {
-      connected = false;
-    },
-  };
-}
-
+// The fake browser lives in lib/landing-fake-browser.mjs (lane TAR-ALDARION).
 const rigs = await loadRigs();
 const rigsById = new Map(rigs.map((r) => [r.id, r]));
 
@@ -1906,7 +1716,14 @@ const PROBE_MODULE = fileURLToPath(
 );
 
 function p14Log() {
-  return { ...p13Log(), sentinelReads: [], readbacks: [] };
+  return {
+    ...p13Log(),
+    sentinelReads: [],
+    readbacks: [],
+    evolvedReadbacks: [],
+    clockSets: [],
+    controls: [],
+  };
 }
 
 async function p14Run(name, extraArgs, fakeOptions = {}, probe = descriptor) {

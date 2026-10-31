@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Probe: the landing program's Edge cells on the shared runtime - one command
 // per cell for the seat's executor, base arm and tip arm.
-// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture, the opt-in 2D and Columbus-view identity cells E-ID-2d / E-ID-cv, the Chukotka cross-renderer cell E-C-chukotka, the FFT-ocean kernel-identity cell E-FFT-ifft and the E-T teardown/device-loss cells) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs with a per-cell pending-pipeline wait, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, the window.onmessage sentinel on identity cells, the ocean displacement readback per kernel, optionally the PF-1..PF-4 performance windows, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
+// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture, the opt-in 2D and Columbus-view identity cells E-ID-2d / E-ID-cv, the Chukotka cross-renderer cell E-C-chukotka, the FFT-ocean kernel-identity cell E-FFT-ifft and the E-T teardown/device-loss cells) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs with a per-cell pending-pipeline wait, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, the window.onmessage sentinel on identity cells (with an opt-in in-run positive control), the ocean displacement readback per kernel at wave time 0 and at an evolved clock, the ocean compute pass a PF-2 window must list, optionally the PF-1..PF-4 performance windows, a capture-seam manifest for contact-sheet.mjs, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
 // @status ACTIVE
 // @runtime lib/probe-runtime.mjs
 //
@@ -105,6 +105,23 @@
 // - E-C-chukotka diffs its WebGPU capture against the same run's WebGL capture
 //   (`lib/metrics/landing-cross-page.mjs`); the band is registered by the first
 //   capture, so the verdict says only that the diff was measured.
+//
+// LANE TAR-ALDARION (probe-kit round 2: what Batch 1628's own Edge legs left owed).
+// - EVOLVED EPOCH. E-FFT-ifft reads each kernel's field again with the frozen
+//   clock `evolvedReadbackSeconds` past the rig's (`lib/clock-steps.mjs`),
+//   then restores it: verdict `ifft-kernel-identity-evolved` beside the t = 0
+//   one, NOT RUN when the sea did not move.
+// - POSITIVE CONTROL. `--sentinel-positive-control` assigns window.onmessage
+//   at the end of the first identity page of each run and reads the sentinel
+//   again (`onmessage-positive-control`); a run whose control page never got
+//   there reads NOT RUN. Refused without an identity cell.
+// - PF-2 PASS. A cell's `perfPass` (E-FFT-ifft: the ocean compute chain's
+//   label) must be listed by its PF-2 window (`perf-pass-timed`); with no
+//   profiler result it is reported, not judged (`perfPassTimings`).
+// - CAPTURE MANIFEST. The receipt writes `capture-manifest.json` beside the
+//   report (`lib/landing-capture-manifest.mjs`), BEFORE from `--base-report`;
+//   a manifest that would not validate is refused and the receipt says why.
+// - The comparison and verdicts moved to `lib/landing-verdicts.mjs`.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -121,11 +138,7 @@ import { captureUrlFor } from "./lib/capture.mjs";
 import { runClockSteps } from "./lib/clock-steps.mjs";
 import { installCloudProbeHarness } from "./lib/cloud-probe-harness.mjs";
 import { startCpuSampler } from "./lib/cpu-sampler.mjs";
-import {
-  runDeviceLossSteps,
-  sameTerminal,
-  terminalShape,
-} from "./lib/device-loss-steps.mjs";
+import { runDeviceLossSteps } from "./lib/device-loss-steps.mjs";
 import {
   measureLandingPerformance,
   pageMeasureStartup,
@@ -133,7 +146,6 @@ import {
 } from "./lib/frame-timing-steps.mjs";
 import {
   GPU_DEVICE_CENSUS_INIT_SOURCE,
-  PIPELINE_ROW_KINDS,
   parseOwnerLabel,
   readGpuDeviceCensus,
 } from "./lib/gpu-device-census.mjs";
@@ -159,33 +171,31 @@ import {
   kernelIdentityComparisons,
 } from "./lib/metrics/landing-cross-page.mjs";
 import {
+  runtimeReportFileName,
+  writeLandingCaptureManifest,
+} from "./lib/landing-capture-manifest.mjs";
+import {
+  compareArms,
+  landingVerdicts,
+  perfPassTimings,
+  positiveControlCoverage,
+} from "./lib/landing-verdicts.mjs";
+import {
   keepValuesOutOfReport,
   readOceanDisplacement,
+  readOceanDisplacementEvolved,
 } from "./lib/ocean-displacement-readback.mjs";
 import {
   installOnmessageSentinel,
-  onmessageVerdict,
   readOnmessageSentinel,
+  runOnmessagePositiveControl,
 } from "./lib/onmessage-sentinel.mjs";
-import { frameTimeVerdict } from "./lib/metrics/frame-time-distribution.mjs";
-import { residencyVerdict } from "./lib/metrics/gpu-memory-residency.mjs";
-import {
-  PIXEL_PAIR_TOLERANCE,
-  pixelBand,
-  pixelDiff,
-} from "./lib/metrics/landing-pixel-band.mjs";
 import {
   groupArms,
   pagesWithMergedRuns as mergedPagesFor,
   readMergeReports as readMergeReportsFor,
 } from "./lib/metrics/merge-landing-reports.mjs";
-import { passCostVerdict } from "./lib/metrics/gpu-pass-cost.mjs";
-import {
-  PERF_VERDICTS,
-  contentionGuard,
-  resolveBands,
-} from "./lib/metrics/perf-band.mjs";
-import { startupVerdict } from "./lib/metrics/startup-compile.mjs";
+import { resolveBands } from "./lib/metrics/perf-band.mjs";
 import {
   ProbeRefusal,
   captureElement,
@@ -214,6 +224,13 @@ export {
   splitList,
 } from "./lib/landing-cell-table.mjs";
 
+// The comparison and the verdicts (lane TAR-ALDARION moved them to a piece).
+export {
+  NOT_APPLICABLE,
+  compareArms,
+  landingVerdicts,
+} from "./lib/landing-verdicts.mjs";
+
 const CANVAS_SELECTOR = ".cesium-widget canvas";
 const NAVIGATION_BUDGET_MS = 120_000;
 const STARTUP_BUDGET_MS = 120_000;
@@ -223,14 +240,12 @@ const PERF_BUDGET_MS = 180_000;
 // Frames the displacement readback renders first, at the frozen clock, so the
 // ocean's compute chain has run since the capture.
 const OCEAN_READBACK_FRAMES = 8;
-
-/**
- * A PF reading that does not exist on this renderer on either arm (the per-pass
- * profiler on WebGL, or on an adapter without `timestamp-query`). It is
- * reported and carries no verdict; an arm where only ONE side lacks it is
- * `unmeasured`, which fails.
- */
-export const NOT_APPLICABLE = "not-applicable";
+// The evolved read (lane TAR-ALDARION) reads the same way, values kept for a
+// mismatch and out of the report.
+const EVOLVED_READ = Object.freeze({
+  frames: OCEAN_READBACK_FRAMES,
+  includeValues: true,
+});
 
 /**
  * The dials whose read-back failed and that make a cell NOT RUN: every dial
@@ -294,6 +309,7 @@ async function runLandingPage({
   options,
   outputDirectory,
   captures,
+  positiveControl = false,
 }) {
   const record = {
     run,
@@ -338,6 +354,13 @@ async function runLandingPage({
       if (cell.identity === true) {
         record.onmessage = await readOnmessageSentinel(page);
       }
+      // --sentinel-positive-control: assign window.onmessage LAST, after
+      // everything measured, and read the sentinel again; it must see it.
+      const runControl = async () => {
+        if (positiveControl) {
+          record.onmessageControl = await runOnmessagePositiveControl(page);
+        }
+      };
       record.armed = await armWebGPUDevices(page);
 
       const { staged, pipelines } = await stageLandingCell({
@@ -351,6 +374,7 @@ async function runLandingPage({
       const blocking = blockingDials(staged);
       if (blocking.length > 0) {
         record.notRun = `the stage did not apply ${blocking.join(", ")}`;
+        await runControl();
         return record;
       }
       const stagedAtMs = await page.evaluate(pageNow);
@@ -400,6 +424,9 @@ async function runLandingPage({
         return {
           name: shot.name,
           path: path.resolve(shot.path),
+          // The capture-seam manifest records what was fetched and when.
+          url: url.href,
+          capturedAt: new Date().toISOString(),
           sha256: shot.sha256,
           width: image.width,
           height: image.height,
@@ -421,6 +448,16 @@ async function runLandingPage({
               includeValues: true,
             }),
           );
+          if (cell.evolvedReadbackSeconds > 0) {
+            // The same field at a later wave time, the clock restored after.
+            record.displacementEvolved = keepValuesOutOfReport(
+              await readOceanDisplacementEvolved(page, {
+                ...EVOLVED_READ,
+                clockIso: rig.clock,
+                advanceSeconds: cell.evolvedReadbackSeconds,
+              }),
+            );
+          }
         }
       } else if (entry.kind === "clock-steps") {
         record.captureStart = await capture(`${base}-start`);
@@ -474,6 +511,7 @@ async function runLandingPage({
           .slice(0, 10)
           .map((l) => `${l.type}: ${String(l.text).slice(0, 300)}`),
       };
+      await runControl();
       return record;
     } finally {
       diagnostics.detach();
@@ -482,212 +520,6 @@ async function runLandingPage({
     await context.close();
     record.cpu = cpuSampler.stop();
   }
-}
-
-/**
- * The PF verdicts and the first-capture pixel diff of every arm the base
- * report also has. Reads the base PNGs from the paths the base report records.
- *
- * @param {Record<string, object>} tipArms {@link groupArms} of this run set.
- * @param {Record<string, object>} baseArms The base report's `arms`.
- * @param {object} bands Resolved bands.
- * @param {{startupField?: string}} [options]
- * @returns {Record<string, object>} Per arm key.
- */
-export function compareArms(tipArms, baseArms, bands, options = {}) {
-  const out = {};
-  for (const [key, tip] of Object.entries(tipArms)) {
-    const base = baseArms?.[key];
-    if (!base) {
-      out[key] = { base: "absent" };
-      continue;
-    }
-    const comparison = {};
-    // The pre-registered contention guard over this arm pair's runs (F3).
-    const contention = contentionGuard({
-      baseCpu: base.inputs.cpu,
-      tipCpu: tip.inputs.cpu,
-      baseSamples: base.inputs.cpuSamples ?? [],
-      tipSamples: tip.inputs.cpuSamples ?? [],
-      bands,
-    });
-    if (tip.inputs.pf3.length > 0 || base.inputs.pf3.length > 0) {
-      comparison.contention = contention;
-      comparison.pf3 = startupVerdict({
-        baseRuns: base.inputs.pf3,
-        tipRuns: tip.inputs.pf3,
-        bands,
-        field: options.startupField || undefined,
-        contention,
-      });
-    }
-    if (tip.inputs.pf1.length > 0 || base.inputs.pf1.length > 0) {
-      comparison.contention = contention;
-      comparison.pf1 = frameTimeVerdict({
-        baseRuns: base.inputs.pf1,
-        tipRuns: tip.inputs.pf1,
-        bands,
-        contention,
-      });
-      const unavailable = (runs) =>
-        runs.length > 0 && runs.every((run) => run?.available === false);
-      comparison.pf2 =
-        unavailable(base.inputs.pf2) && unavailable(tip.inputs.pf2)
-          ? {
-              metric: "PF-2",
-              verdict: NOT_APPLICABLE,
-              reason: `the per-pass profiler is unavailable on both arms (${tip.inputs.pf2[0].reason})`,
-            }
-          : passCostVerdict({
-              baseRuns: base.inputs.pf2,
-              tipRuns: tip.inputs.pf2,
-              bands,
-              contention,
-            });
-      comparison.pf4 = residencyVerdict({
-        baseRuns: base.inputs.pf4,
-        tipRuns: tip.inputs.pf4,
-        bands,
-      });
-    }
-    const baseShot = base.captures?.[0];
-    const tipShot = tip.captures?.[0];
-    if (baseShot && tipShot) {
-      const diff = pixelDiff(baseShot, tipShot);
-      if (!diff.measured) {
-        comparison.pixels = diff;
-      } else {
-        const renderer = tip.renderer ?? key.split("|")[1];
-        const band = pixelBand({
-          renderer,
-          changedPx: diff.changedPx,
-          baseArm: base,
-          tipArm: tip,
-        });
-        comparison.pixels = {
-          measured: true,
-          base: baseShot.name,
-          tip: tipShot.name,
-          tolerance: PIXEL_PAIR_TOLERANCE,
-          changedPx: diff.changedPx,
-          mismatchPct: diff.mismatchPct,
-          bbox: diff.bbox,
-          verdict: band.verdict,
-          band,
-        };
-      }
-    }
-    if (tip.deviceLoss.length > 0 && base.deviceLoss.length > 0) {
-      // One reader of the terminal record, any mode (F1).
-      const shape = (entry) => terminalShape(entry.terminal);
-      comparison.terminal = {
-        base: base.deviceLoss.map(shape),
-        tip: tip.deviceLoss.map(shape),
-        same: sameTerminal(shape(base.deviceLoss[0]), shape(tip.deviceLoss[0])),
-        baseOtherConsoleErrors: Math.max(
-          ...base.deviceLoss.map((e) => e.consoleErrors?.other?.length ?? 0),
-        ),
-        tipOtherConsoleErrors: Math.max(
-          ...tip.deviceLoss.map((e) => e.consoleErrors?.other?.length ?? 0),
-        ),
-      };
-    }
-    out[key] = comparison;
-  }
-  return out;
-}
-
-/**
- * The run's verdicts. Pure over the page records and the comparison.
- *
- * @param {object[]} records
- * @param {Record<string, object>|null} comparison
- * @returns {Array<{id: string, pass: boolean}>}
- */
-export function landingVerdicts(records, comparison) {
-  const verdicts = [];
-  for (const record of records) {
-    const id = `${record.cell}:${record.renderer}:${record.page}:run${record.run}`;
-    verdicts.push({
-      id: `${id}:stage`,
-      pass: record.notRun === null,
-      notRun: record.notRun !== null,
-      reason: record.notRun ?? undefined,
-    });
-    // Read before the stage, so judged whether or not the stage applied.
-    if (record.onmessage !== undefined) {
-      verdicts.push(onmessageVerdict(id, record.onmessage));
-    }
-    if (record.notRun !== null) {
-      continue;
-    }
-    const lost = record.deviceLoss
-      ? record.deviceLoss.deviceLost
-      : record.gate?.deviceLost;
-    verdicts.push({
-      id: `${id}:no-unexpected-device-loss`,
-      pass: !lost,
-      deviceLost: lost ?? null,
-    });
-    if (record.deviceLoss) {
-      const owners = record.deviceLoss.owners?.after ?? [];
-      const pageErrors = record.deviceLoss.consoleErrors?.pageErrors ?? [];
-      verdicts.push({
-        id: `${id}:no-uncaught-error`,
-        pass: pageErrors.length === 0,
-        pageErrors,
-      });
-      if (record.page === "teardown") {
-        // Released means live 0, by an explicit destroy() or with the device;
-        // each seen row says which, so the sheet can tell them apart.
-        const seen = owners.filter((row) => row.seen);
-        // A pipeline has no destroy(): reported, never a failure (K5-3).
-        const live = seen.filter(
-          (row) => row.live > 0 && !PIPELINE_ROW_KINDS.includes(row.kind),
-        );
-        verdicts.push({
-          id: `${id}:owners-destroyed`,
-          pass: live.length === 0,
-          live,
-          owners: seen.map((row) => ({
-            label: row.label,
-            kind: row.kind,
-            created: row.created,
-            destroyed: row.destroyed,
-            freedByDevice: row.freedByDevice ?? 0,
-            live: row.live,
-          })),
-        });
-      }
-    }
-  }
-  for (const [key, arm] of Object.entries(comparison ?? {})) {
-    for (const pf of ["pf1", "pf2", "pf3", "pf4"]) {
-      if (arm[pf] && arm[pf].verdict !== NOT_APPLICABLE) {
-        const unmeasured =
-          arm[pf].verdict === PERF_VERDICTS.UNMEASURED ||
-          arm[pf].verdict === PERF_VERDICTS.UNMEASURED_CONTENDED;
-        verdicts.push({
-          id: `${key}:${arm[pf].metric}`,
-          pass: arm[pf].verdict === PERF_VERDICTS.WITHIN,
-          verdict: arm[pf].verdict,
-          // An unmeasured statistic is NOT RUN, never a pass (D4).
-          ...(unmeasured ? { notRun: true } : {}),
-        });
-      }
-    }
-    if (arm.terminal) {
-      verdicts.push({
-        id: `${key}:terminal-as-base`,
-        pass:
-          arm.terminal.same &&
-          arm.terminal.tipOtherConsoleErrors <=
-            arm.terminal.baseOtherConsoleErrors,
-        terminal: arm.terminal,
-      });
-    }
-  }
-  return verdicts;
 }
 
 /**
@@ -812,6 +644,49 @@ export function allWaited(byCell) {
 
 /** The whole invocation's machine-CPU sampler (F3); stopped by the receipt. */
 let invocationCpu = null;
+/** The rig registry the pages ran from, for the receipt's capture manifest. */
+let invocationRigs = null;
+
+/** The manifest writer, its throw (a page whose rig is gone) reported. */
+function landingManifestOrError(inputs) {
+  try {
+    return writeLandingCaptureManifest(inputs);
+  } catch (error) {
+    return {
+      path: null,
+      written: false,
+      violations: [String(error?.message ?? error)],
+      files: [],
+    };
+  }
+}
+
+/**
+ * The page of a plan that runs the sentinel's positive control: the first
+ * identity page, or -1 without the switch. Refuses the switch when no
+ * requested cell is an identity cell, before the first page. Pure.
+ *
+ * @param {object[]} plan {@link planLandingCells}' answer.
+ * @param {{sentinelPositiveControl?: boolean}} options
+ * @returns {number}
+ * @throws {ProbeRefusal} `sentinel-control-no-identity-cell`.
+ */
+export function positiveControlPageIndex(plan, options) {
+  if (options?.sentinelPositiveControl !== true) {
+    return -1;
+  }
+  const index = plan.findIndex(
+    (entry) => LANDING_CELLS[entry.cell]?.identity === true,
+  );
+  if (index < 0) {
+    throw new ProbeRefusal(
+      "sentinel-control-no-identity-cell",
+      "--sentinel-positive-control needs an identity cell in --cells (E-D, E-D-HDR, E-ID-2d, E-ID-cv): only their pages carry the sentinel",
+      { cells: splitList(options.cells) },
+    );
+  }
+  return index;
+}
 
 const PAGE_BUDGET_MS =
   NAVIGATION_BUDGET_MS + STARTUP_BUDGET_MS + STEPS_BUDGET_MS + PERF_BUDGET_MS;
@@ -841,6 +716,13 @@ export const descriptor = {
       // Skips the PF window a cell forces (E-FFT-ifft), so its readback
       // identity can be captured on a machine too busy for a PF leg.
       { flag: "--no-cell-perf", key: "noCellPerf", kind: "boolean" },
+      // Assigns window.onmessage at the end of one identity page per run and
+      // expects the sentinel to see it: proves the sentinel live in the run.
+      {
+        flag: "--sentinel-positive-control",
+        key: "sentinelPositiveControl",
+        kind: "boolean",
+      },
       {
         flag: "--frames",
         key: "frames",
@@ -887,16 +769,22 @@ export const descriptor = {
     readComparisonInputs(options);
     readOwnerLabels(options);
     readMergeReports(options);
+    const rigsForPlan = await loadRigs();
+    positiveControlPageIndex(
+      planLandingCells(options, new Map(rigsForPlan.map((r) => [r.id, r]))),
+      options,
+    );
     if (run === 0) {
       invocationCpu?.stop();
       invocationCpu = startCpuSampler();
     }
-    const rigs = await loadRigs();
-    const rigsById = new Map(rigs.map((rig) => [rig.id, rig]));
+    const rigsById = new Map(rigsForPlan.map((rig) => [rig.id, rig]));
+    invocationRigs = rigsById;
     const plan = planLandingCells(options, rigsById);
+    const controlIndex = positiveControlPageIndex(plan, options);
     fs.mkdirSync(outputDirectory, { recursive: true });
     const records = [];
-    for (const entry of plan) {
+    for (const [index, entry] of plan.entries()) {
       console.log(
         `[probe-landing-cells] ${entry.cell} ${entry.page} on ${entry.renderer} (run ${run})`,
       );
@@ -910,6 +798,7 @@ export const descriptor = {
           options,
           outputDirectory,
           captures,
+          positiveControl: index === controlIndex,
         }),
       );
     }
@@ -932,6 +821,26 @@ export const descriptor = {
     for (const [key, arm] of Object.entries(arms)) {
       console.log(
         `  ${key}: runs=${arm.runs} notRun=${arm.notRun.length} captures=${arm.captures.length}`,
+      );
+    }
+    // The capture-seam manifest contact-sheet.mjs reads (refused, not
+    // written, when it would not validate; the receipt says which).
+    const captureManifest = context.outputDirectory
+      ? landingManifestOrError({
+          pages,
+          baseReport: base,
+          rigsById: invocationRigs ?? new Map(),
+          origins: { AFTER: context.origin },
+          generatedAt: context.generatedAt,
+          servedBuildAssertion:
+            options.servedBuild === false ? "waived" : "enforced",
+          receipt: runtimeReportFileName(descriptor.name),
+          outputDirectory: context.outputDirectory,
+        })
+      : null;
+    if (captureManifest && !captureManifest.written) {
+      console.warn(
+        `[probe-landing-cells] capture manifest refused: ${captureManifest.violations.slice(0, 3).join("; ")}`,
       );
     }
     return {
@@ -964,6 +873,8 @@ export const descriptor = {
       comparison,
       crossRenderer: crossRendererComparisons(pages),
       kernelIdentity: kernelIdentityComparisons(pages),
+      perfPassTimings: perfPassTimings(pages),
+      captureManifest,
     };
   },
   verdicts(cells, context) {
@@ -980,6 +891,11 @@ export const descriptor = {
       : null;
     return [
       ...landingVerdicts(pages, comparison),
+      // This invocation's pages only: a merged report ran no control.
+      ...positiveControlCoverage(
+        cells,
+        context.options.sentinelPositiveControl === true,
+      ),
       ...crossPageVerdicts({
         crossRenderer: crossRendererComparisons(pages),
         kernelIdentity: kernelIdentityComparisons(pages),

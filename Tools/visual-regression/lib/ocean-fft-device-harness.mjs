@@ -192,6 +192,7 @@ export function createRecordingDevice(options = {}) {
   const log = {
     frame: 0,
     dispatches: [],
+    computePasses: [],
     textures: [],
     buffers: [],
     pipelines: [],
@@ -220,7 +221,8 @@ export function createRecordingDevice(options = {}) {
     return pipeline;
   };
 
-  const makeComputePass = () => {
+  const makeComputePass = (descriptor) => {
+    log.computePasses.push({ frame: log.frame, descriptor });
     let pipeline = null;
     let bindGroup = null;
     return {

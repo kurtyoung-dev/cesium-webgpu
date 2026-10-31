@@ -1,5 +1,5 @@
 // ocean-fft-device-harness.spec.mjs — the recording fake GPUDevice, and the real renderer over it.
-// @purpose Pins lib/ocean-fft-device-harness.mjs: created textures and buffers are counted and drop out of the live set once per destroy, a compute dispatch records its pipeline, entry point, module label and code, workgroups and frame, and resolves bind-group views back to the texture objects, queue writes land in buffer bytes and texture data, the real ocean renderer run for three frames then destroyed leaves nothing live, and on a built tree (a generated shader .js beside the .wgsl) a WGSL transform still reaches the compiled module. Three inertness mutants (destroy that marks nothing, dispatch that records nothing, routing that serves the generated .js) must turn those checks red.
+// @purpose Pins lib/ocean-fft-device-harness.mjs: created textures and buffers are counted and drop out of the live set once per destroy, each compute pass logs its frame and the exact descriptor it was opened with, a compute dispatch records its pipeline, entry point, module label and code, workgroups and frame, and resolves bind-group views back to the texture objects, queue writes land in buffer bytes and texture data, the real ocean renderer run for three frames then destroyed leaves nothing live, and on a built tree (a generated shader .js beside the .wgsl) a WGSL transform still reaches the compiled module. Four inertness mutants (destroy that marks nothing, dispatch that records nothing, pass that logs nothing, routing that serves the generated .js) must turn those checks red.
 // @status ACTIVE
 //
 // Pure Node, no GPU and no browser. Cases 1 to 3 drive `createRecordingDevice()`
@@ -117,6 +117,22 @@ test("resource accounting: live counts drop once per destroy and a double destro
   checkAccounting(harness);
 });
 
+function checkComputePassRecording({ createRecordingDevice }) {
+  const { device, log } = createRecordingDevice();
+  const descriptor = { label: "pass label", timestampWrites: { querySet: 1 } };
+  log.beginFrame(4);
+  device.createCommandEncoder({}).beginComputePass(descriptor);
+  device.createCommandEncoder({}).beginComputePass();
+  assert.equal(log.computePasses.length, 2);
+  assert.equal(log.computePasses[0].frame, 4);
+  assert.equal(
+    log.computePasses[0].descriptor,
+    descriptor,
+    "the descriptor object is logged, not a copy",
+  );
+  assert.equal(log.computePasses[1].descriptor, undefined);
+}
+
 test("dispatch recording: pipeline, entry point, module label and code, workgroups, frame, resolved bind-group entries", () => {
   checkDispatchRecording(harness);
 });
@@ -212,6 +228,22 @@ test("inertness: a dispatch that records nothing turns the recording check red",
   ]);
   assert.doesNotThrow(() => checkDispatchRecording(harness));
   assert.throws(() => checkDispatchRecording(mutated), assert.AssertionError);
+});
+
+test("compute pass recording: each beginComputePass logs its frame and the exact descriptor handed in", () => {
+  checkComputePassRecording(harness);
+});
+
+test("inertness: a compute pass that logs nothing turns the pass-recording check red", async () => {
+  const mutated = await importMutated(HARNESS_FILE, [
+    ...DATA_URL_SAFE,
+    ["log.computePasses.push({", "void ({"],
+  ]);
+  assert.doesNotThrow(() => checkComputePassRecording(harness));
+  assert.throws(
+    () => checkComputePassRecording(mutated),
+    assert.AssertionError,
+  );
 });
 
 // ─────────────── built tree: a generated shader .js beside the .wgsl ───────────────

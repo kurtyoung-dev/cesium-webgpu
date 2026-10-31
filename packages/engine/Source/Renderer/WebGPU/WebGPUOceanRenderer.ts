@@ -421,6 +421,14 @@ function tryResolveRenderPipeline(
  */
 const FALLBACK_FRAME_SECONDS = 1.0 / 60.0;
 
+/**
+ * The one compute pass the FFT chain runs in. A module constant so the default
+ * path hands the device the same object every frame (no per-frame allocation),
+ * and so the GPU pass profiler keys the chain on this exact label.
+ */
+const OCEAN_COMPUTE_PASS_DESCRIPTOR: Readonly<GPUComputePassDescriptor> =
+  Object.freeze({ label: "Ocean FFT single-pass compute chain" });
+
 function updateWebGPUOcean(
   primObj: unknown,
   frameState: CesiumFrameState,
@@ -632,9 +640,14 @@ function updateWebGPUOcean(
   const frameEncoder = getAvailableFrameCommandEncoder(context);
   const enc =
     frameEncoder ?? device.createCommandEncoder({ label: "Ocean compute" });
-  const computePass = enc.beginComputePass({
-    label: "Ocean FFT single-pass compute chain",
-  });
+  // Armed by `CesiumDebug.gpuPassCost(true)` so PF-2 can time the iFFT chain.
+  // `withComputePassTimestamps` returns the exact descriptor when the profiler
+  // is off, leaving the default path unchanged; the optional call keeps contexts
+  // without the accessor working.
+  const computePass = enc.beginComputePass(
+    context.withComputePassTimestamps?.(OCEAN_COMPUTE_PASS_DESCRIPTOR) ??
+      OCEAN_COMPUTE_PASS_DESCRIPTOR,
+  );
   const bake = cache.paramsDirty || p._paramsDirty === true;
   recordOceanComputeChain(
     computePass,

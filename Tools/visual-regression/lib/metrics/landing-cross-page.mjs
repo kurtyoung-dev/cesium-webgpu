@@ -14,13 +14,18 @@
  * measured (both captures present and the same size), never that a value is
  * within a bound. The kernel identity verdict is
  * `lib/ocean-displacement-readback.mjs`'s `kernelIdentityVerdict`: identical
- * hashes pass, a measured difference fails, an unmeasured pair is NOT RUN.
+ * hashes pass, a measured difference fails, an unmeasured pair is NOT RUN. A
+ * page carrying `displacementEvolved` is judged again at its later wave time by
+ * `evolvedKernelIdentityVerdict`, beside the t = 0 verdict.
  *
  * @module Tools/visual-regression/lib/metrics/landing-cross-page
  */
 
 import { LANDING_CELLS } from "../landing-cell-table.mjs";
-import { kernelIdentityVerdict } from "../ocean-displacement-readback.mjs";
+import {
+  evolvedKernelIdentityVerdict,
+  kernelIdentityVerdict,
+} from "../ocean-displacement-readback.mjs";
 import { pixelDiff } from "./landing-pixel-band.mjs";
 
 const runsOf = (pages) =>
@@ -81,12 +86,16 @@ export function crossRendererComparisons(pages, { diff = pixelDiff } = {}) {
 
 /**
  * Per readback cell, renderer and run, the two variant pages' displacement
- * readbacks compared. Pure.
+ * readbacks compared. Pure. A page that also carries `displacementEvolved`
+ * (`readOceanDisplacementEvolved`, a later pinned clock) adds an entry marked
+ * `evolved: true` right after the t = 0 one, with the evolved verdict.
  *
  * @param {object[]} pages Page records (`record.displacement` from
- *   `readOceanDisplacement`).
+ *   `readOceanDisplacement`, `record.displacementEvolved` from
+ *   `readOceanDisplacementEvolved`).
  * @returns {Array<{cell: string, renderer: string, run: number,
- *   pages: string[], comparison: object, verdict: object}>}
+ *   pages: string[], evolved?: true, advanceSeconds?: number|null,
+ *   comparison: object, verdict: object}>}
  */
 export function kernelIdentityComparisons(pages) {
   const out = [];
@@ -122,6 +131,31 @@ export function kernelIdentityComparisons(pages) {
           comparison: verdict.comparison,
           verdict,
         });
+        // The evolved readback (a later pinned clock) is judged beside the
+        // t = 0 one, only for pages that carry it; `evolved: true` tells a
+        // reader the two entries apart.
+        const a1 = find(first)?.displacementEvolved ?? null;
+        const b1 = find(second)?.displacementEvolved ?? null;
+        if (a1 !== null || b1 !== null) {
+          const advanceSeconds =
+            a1?.advanceSeconds === b1?.advanceSeconds
+              ? a1?.advanceSeconds
+              : null;
+          const evolvedVerdict = evolvedKernelIdentityVerdict(
+            `${cell}:${renderer}:run${run}`,
+            { a0: a, b0: b, a1, b1, advanceSeconds },
+          );
+          out.push({
+            cell,
+            renderer,
+            run,
+            pages: [first, second],
+            evolved: true,
+            advanceSeconds,
+            comparison: evolvedVerdict.comparison,
+            verdict: evolvedVerdict,
+          });
+        }
       }
     }
   }

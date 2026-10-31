@@ -252,3 +252,237 @@ test("INERTNESS: with the verdict ignoring changed a hijack passes, so the verdi
   assert.equal(mutated.onmessageVerdict("rig", record).pass, true);
   assert.equal(sentinel.onmessageVerdict("rig", record).pass, false);
 });
+
+// ---- positive control (the sentinel proven live inside a run) ----
+
+function controlRecord(ctx, lib = sentinel) {
+  runIn(ctx, lib.pageAssignOnmessagePositiveControl);
+  return read(ctx, lib);
+}
+
+test("control constants", () => {
+  assert.equal(
+    sentinel.ONMESSAGE_POSITIVE_CONTROL_VERDICT,
+    "onmessage-positive-control",
+  );
+  assert.equal(
+    sentinel.ONMESSAGE_POSITIVE_CONTROL_NAME,
+    "onmessagePositiveControlHandler",
+  );
+});
+
+for (const shape of ["proto", "ownAccessor"]) {
+  test(`${shape}: control on a sentinel-installed page -> changed, named, counted, PASS`, () => {
+    const ctx = makeRealm(shape);
+    install(ctx);
+    assert.equal(sentinel.onmessageVerdict("rig", read(ctx)).pass, true);
+    const result = runIn(ctx, sentinel.pageAssignOnmessagePositiveControl);
+    assert.deepEqual(result, {
+      assigned: true,
+      name: sentinel.ONMESSAGE_POSITIVE_CONTROL_NAME,
+    });
+    const record = read(ctx);
+    assert.equal(record.changed, true);
+    assert.equal(record.assignments, 1);
+    assert.ok(record.stacks.length >= 1);
+    assert.equal(record.after.name, sentinel.ONMESSAGE_POSITIVE_CONTROL_NAME);
+    const verdict = sentinel.onmessagePositiveControlVerdict("rig", record);
+    assert.equal(verdict.id, "rig:onmessage-positive-control");
+    assert.equal(verdict.pass, true);
+    assert.equal(verdict.notRun, undefined);
+    // The control makes the ordinary verdict fail, which is the point: it is
+    // the proof that verdict could have failed.
+    assert.equal(sentinel.onmessageVerdict("rig", record).pass, false);
+  });
+}
+
+test("data property path: no wrap, reason set -> control passes by identity alone", () => {
+  const ctx = makeRealm("data");
+  install(ctx);
+  const record = controlRecord(ctx);
+  assert.match(record.reason, /data property/);
+  assert.equal(record.assignments, 0);
+  assert.equal(record.changed, true);
+  assert.equal(
+    sentinel.onmessagePositiveControlVerdict("rig", record).pass,
+    true,
+  );
+});
+
+test("no sentinel installed -> control is NOT RUN, never a pass", () => {
+  const ctx = makeRealm("proto");
+  const record = controlRecord(ctx);
+  assert.equal(record.installed, false);
+  const verdict = sentinel.onmessagePositiveControlVerdict("rig", record);
+  assert.equal(verdict.pass, false);
+  assert.equal(verdict.notRun, true);
+  assert.equal(
+    sentinel.onmessagePositiveControlVerdict("rig", null).notRun,
+    true,
+  );
+  assert.equal(
+    sentinel.onmessagePositiveControlVerdict("rig", undefined).pass,
+    false,
+  );
+});
+
+test("a dead sentinel (reader says unchanged after the control) -> FAIL", () => {
+  const ctx = makeRealm("proto");
+  install(ctx);
+  const dead = { ...controlRecord(ctx), changed: false };
+  const verdict = sentinel.onmessagePositiveControlVerdict("rig", dead);
+  assert.equal(verdict.pass, false);
+  assert.equal(verdict.notRun, undefined);
+});
+
+test("control verdict fails on a wrong handler name, on a wrapped sentinel that counted nothing, and on a bare record", () => {
+  const ctx = makeRealm("proto");
+  install(ctx);
+  const live = controlRecord(ctx);
+  const verdict = (r) => sentinel.onmessagePositiveControlVerdict("rig", r);
+  assert.equal(verdict(live).pass, true);
+  assert.equal(
+    verdict({ ...live, after: { ...live.after, name: "workerHandler" } }).pass,
+    false,
+  );
+  assert.equal(verdict({ ...live, assignments: 0 }).pass, false);
+  assert.equal(verdict({ installed: true }).pass, false);
+  assert.equal(verdict({ installed: true, changed: true }).pass, false);
+});
+
+test("the control page function never throws on a hostile window", () => {
+  const hostile = vm.createContext({});
+  vm.runInContext(
+    `var win = Object.freeze({ set onmessage(v) { throw new Error("boom"); } });`,
+    hostile,
+  );
+  const result = runIn(hostile, sentinel.pageAssignOnmessagePositiveControl);
+  assert.equal(result.assigned, false);
+  assert.match(result.error, /boom/);
+  assert.equal(result.name, sentinel.ONMESSAGE_POSITIVE_CONTROL_NAME);
+});
+
+test("runOnmessagePositiveControl assigns, then reads the sentinel a second time", async () => {
+  const ctx = makeRealm("proto");
+  install(ctx);
+  const calls = [];
+  const page = {
+    evaluate: async (fn) => {
+      calls.push(fn.name);
+      return runIn(ctx, fn);
+    },
+  };
+  const record = await sentinel.runOnmessagePositiveControl(page);
+  assert.deepEqual(calls, [
+    "pageAssignOnmessagePositiveControl",
+    "pageReadOnmessageSentinel",
+  ]);
+  assert.equal(record.changed, true);
+  assert.equal(record.control.assigned, true);
+  assert.equal(
+    sentinel.onmessagePositiveControlVerdict("rig", record).pass,
+    true,
+  );
+});
+
+test("INERTNESS: with the assignment of the control skipped the sentinel reads unchanged and the control verdict FAILS", async () => {
+  const mutated = await importMutated(lib, [
+    ["(globalThis).onmessage =\n", "(globalThis).__controlSkipped =\n"],
+  ]);
+  const ctx = makeRealm("proto");
+  install(ctx);
+  const record = controlRecord(ctx, mutated);
+  assert.equal(record.changed, false);
+  assert.equal(
+    mutated.onmessagePositiveControlVerdict("rig", record).pass,
+    false,
+  );
+  // The unmutated module passes the identical scenario.
+  const ctx2 = makeRealm("proto");
+  install(ctx2);
+  assert.equal(
+    sentinel.onmessagePositiveControlVerdict("rig", controlRecord(ctx2)).pass,
+    true,
+  );
+});
+
+// Each clause of the control verdict is pinned by a record only that clause
+// rejects; making the clause unreachable lets the record pass.
+const CLAUSE_CASES = [
+  {
+    clause: "changed",
+    anchor: "const sawChange = record.changed === true;",
+    mutant: "const sawChange = true;",
+    reject: (live) => ({ ...live, changed: false }),
+  },
+  {
+    clause: "name",
+    anchor:
+      "const sawName = record.after?.name === ONMESSAGE_POSITIVE_CONTROL_NAME;",
+    mutant: "const sawName = true;",
+    reject: (live) => ({ ...live, after: { ...live.after, name: "other" } }),
+  },
+  {
+    clause: "assignments",
+    anchor: "const sawAssignment = record.reason ? true : assignments >= 1;",
+    mutant: "const sawAssignment = true;",
+    reject: (live) => ({ ...live, assignments: 0 }),
+  },
+];
+
+for (const c of CLAUSE_CASES) {
+  test(`INERTNESS: with the ${c.clause} clause of the control verdict unreachable the rejecting record passes (the control test would go red)`, async () => {
+    const mutated = await importMutated(lib, [[c.anchor, c.mutant]]);
+    const ctx = makeRealm("proto");
+    install(ctx);
+    const rejected = c.reject(controlRecord(ctx));
+    assert.equal(
+      sentinel.onmessagePositiveControlVerdict("rig", rejected).pass,
+      false,
+    );
+    assert.equal(
+      mutated.onmessagePositiveControlVerdict("rig", rejected).pass,
+      true,
+    );
+  });
+}
+
+test("INERTNESS: with the identity-only (reason) branch unreachable the data-property control no longer passes", async () => {
+  const mutated = await importMutated(lib, [
+    [
+      "const sawAssignment = record.reason ? true : assignments >= 1;",
+      "const sawAssignment = assignments >= 1;",
+    ],
+  ]);
+  const ctx = makeRealm("data");
+  install(ctx);
+  const record = controlRecord(ctx);
+  assert.equal(
+    sentinel.onmessagePositiveControlVerdict("rig", record).pass,
+    true,
+  );
+  assert.equal(
+    mutated.onmessagePositiveControlVerdict("rig", record).pass,
+    false,
+  );
+});
+
+test("INERTNESS: with the notRun clause of the control verdict unreachable an uninstalled sentinel is not reported notRun", async () => {
+  const head =
+    "ONMESSAGE_POSITIVE_CONTROL_VERDICT}`;\n  const before = record?.before ?? null;\n  const after = record?.after ?? null;\n  const assignments = record?.assignments ?? 0;\n  if (";
+  const mutated = await importMutated(lib, [
+    [
+      `${head}!record || record.installed !== true) {`,
+      `${head}false && (!record || record.installed !== true)) {`,
+    ],
+  ]);
+  const record = controlRecord(makeRealm("proto"));
+  assert.equal(
+    sentinel.onmessagePositiveControlVerdict("rig", record).notRun,
+    true,
+  );
+  assert.equal(
+    mutated.onmessagePositiveControlVerdict("rig", record).notRun,
+    undefined,
+  );
+});

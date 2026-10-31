@@ -34,6 +34,15 @@
  *   const record = await readOnmessageSentinel(page);
  *   const verdict = onmessageVerdict("rig-id", record);
  *
+ * POSITIVE CONTROL. A sentinel that reads "unchanged" is only evidence if it
+ * could have read "changed". At the END of a page (after capture and every
+ * measurement, so nothing measured is touched) a landing run may call
+ * `runOnmessagePositiveControl(page)`, which assigns a NAMED handler to
+ * `window.onmessage` and reads the sentinel a second time;
+ * `onmessagePositiveControlVerdict` passes only if that second reading shows
+ * the change. A FAIL is the finding: the sentinel is dead and every
+ * `onmessage-unchanged` pass in the run is void.
+ *
  * @module Tools/visual-regression/lib/onmessage-sentinel
  */
 
@@ -195,5 +204,74 @@ export function onmessageVerdict(idPrefix, record) {
     return { id, pass: false, notRun: true, before, after, assignments };
   }
   const pass = record.changed === false;
+  return { id, pass, before, after, assignments };
+}
+
+/** Suffix of the control verdict id: `<idPrefix>:onmessage-positive-control`. */
+export const ONMESSAGE_POSITIVE_CONTROL_VERDICT = "onmessage-positive-control";
+
+/** Name of the handler the positive control assigns; the control verdict requires it as `after.name`. */
+export const ONMESSAGE_POSITIVE_CONTROL_NAME =
+  "onmessagePositiveControlHandler";
+
+/**
+ * Page function: assign a NAMED handler to `window.onmessage`. Self-contained
+ * (serialised by Playwright, no Node scope; the name is spelled out inside
+ * because a module constant is not visible there) and JSON-safe. The handler is
+ * inert: it ignores every message. Never throws.
+ *
+ * @returns {{assigned: boolean, name: string, error?: string}}
+ */
+export function pageAssignOnmessagePositiveControl() {
+  const name = "onmessagePositiveControlHandler";
+  try {
+    /** @type {any} */ (globalThis).onmessage =
+      function onmessagePositiveControlHandler(event) {
+        return event;
+      };
+    return { assigned: true, name };
+  } catch (e) {
+    return { assigned: false, name, error: String(e) };
+  }
+}
+
+/**
+ * Node wrapper: run the positive control in the page, then read the sentinel
+ * again. Call it after everything else on the page is measured.
+ *
+ * @param {{evaluate: Function}} page A Playwright page.
+ * @returns {Promise<ReturnType<typeof pageReadOnmessageSentinel> & {control: {assigned: boolean, name: string, error?: string}}>}
+ *   The second sentinel record, plus what the control did under `control`.
+ */
+export async function runOnmessagePositiveControl(page) {
+  const control = await page.evaluate(pageAssignOnmessagePositiveControl);
+  const record = await readOnmessageSentinel(page);
+  return { ...record, control };
+}
+
+/**
+ * Pure control verdict over the record `runOnmessagePositiveControl` returned.
+ * notRun when the sentinel was not installed (nothing to prove live). Passes
+ * only when the record shows the change, names the control handler, and, when
+ * the accessor wrap was taken (no `reason`), counted at least one assignment.
+ * Where only the identity comparison was available (`reason` set) the
+ * identity change alone passes. Anything else fails: the sentinel is dead.
+ *
+ * @param {string} idPrefix Rig or probe id.
+ * @param {{installed?: boolean, changed?: boolean, before?: object|null, after?: {name?: string}|null, assignments?: number, reason?: string}|null|undefined} record
+ * @returns {{id: string, pass: boolean, notRun?: boolean, before: object|null, after: object|null, assignments: number}}
+ */
+export function onmessagePositiveControlVerdict(idPrefix, record) {
+  const id = `${idPrefix}:${ONMESSAGE_POSITIVE_CONTROL_VERDICT}`;
+  const before = record?.before ?? null;
+  const after = record?.after ?? null;
+  const assignments = record?.assignments ?? 0;
+  if (!record || record.installed !== true) {
+    return { id, pass: false, notRun: true, before, after, assignments };
+  }
+  const sawChange = record.changed === true;
+  const sawName = record.after?.name === ONMESSAGE_POSITIVE_CONTROL_NAME;
+  const sawAssignment = record.reason ? true : assignments >= 1;
+  const pass = sawChange && sawName && sawAssignment;
   return { id, pass, before, after, assignments };
 }
