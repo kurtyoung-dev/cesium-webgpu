@@ -311,6 +311,9 @@ export function polarLowPassWidth(
   return Math.min(texW, Math.max(1, odd));
 }
 
+const ALL_CHANNELS: readonly number[] = [0, 1, 2, 3];
+const WIND_MAP_SCALAR_CHANNELS: readonly number[] = [2, 3];
+
 /**
  * Pole-safe + wrap-aware low-pass of a packed rgba8 equirectangular weather map,
  * IN PLACE. All four channels are filtered: R (coverage), B (base) and A
@@ -330,6 +333,15 @@ export function applyEquirectPolarLowPass(
   texW: number,
   texH: number,
 ): Uint8Array {
+  return filterScalarChannels(rgba, texW, texH, ALL_CHANNELS);
+}
+
+function filterScalarChannels(
+  rgba: Uint8Array,
+  texW: number,
+  texH: number,
+  channels: readonly number[],
+): Uint8Array {
   if (texW < 2) {
     return rgba;
   }
@@ -344,7 +356,7 @@ export function applyEquirectPolarLowPass(
       continue;
     }
     const rowStart = ty * texW * 4;
-    for (let channel = 0; channel < 4; channel++) {
+    for (const channel of channels) {
       let total = 0;
       prefix[0] = 0;
       for (let tx = 0; tx < texW; tx++) {
@@ -375,6 +387,112 @@ export function applyEquirectPolarLowPass(
         rgba[rowStart + tx * 4 + channel] =
           mean < 0 ? 0 : mean > 255 ? 255 : mean;
       }
+    }
+  }
+  return rgba;
+}
+
+/**
+ * {@link applyEquirectPolarLowPass} for a map whose channels 0/1 hold a LOCAL
+ * east/north wind vector (quantized over `[componentMin, componentMax]`) and
+ * whose channels 2/3 are scalars, IN PLACE. Channels 2/3 take the scalar filter
+ * unchanged; the wind pair is rotated into the pole-plane frame, box-filtered
+ * there with the same widths, and rotated back, so a wind blowing across the
+ * pole survives the filter instead of cancelling. Rows where
+ * {@link polarLowPassWidth} is 1 are untouched.
+ *
+ * @param rgba `texW * texH * 4` bytes, row 0 = north.
+ * @param componentMin physical value of byte 0 in channels 0/1.
+ * @param componentMax physical value of byte 255 in channels 0/1.
+ * @returns the same array, filtered in place.
+ */
+export function applyEquirectPolarWindLowPass(
+  rgba: Uint8Array,
+  texW: number,
+  texH: number,
+  componentMin: number,
+  componentMax: number,
+): Uint8Array {
+  if (texW < 2) {
+    return rgba;
+  }
+  filterScalarChannels(rgba, texW, texH, WIND_MAP_SCALAR_CHANNELS);
+  const span = componentMax - componentMin;
+  const prefixX = new Float64Array(texW + 1);
+  const prefixY = new Float64Array(texW + 1);
+  const sinLon = new Float64Array(texW);
+  const cosLon = new Float64Array(texW);
+  for (let tx = 0; tx < texW; tx++) {
+    const lon = -Math.PI + ((tx + 0.5) / texW) * 2 * Math.PI;
+    sinLon[tx] = Math.sin(lon);
+    cosLon[tx] = Math.cos(lon);
+  }
+  const encode = (component: number): number => {
+    const clamped =
+      component < componentMin
+        ? componentMin
+        : component > componentMax
+          ? componentMax
+          : component;
+    return Math.round(((clamped - componentMin) / span) * 255);
+  };
+  for (let ty = 0; ty < texH; ty++) {
+    const width = polarLowPassWidth(ty, texH, texW);
+    if (width <= 1) {
+      continue;
+    }
+    const rowStart = ty * texW * 4;
+    // The pole-plane frame mirrors across the equator (north vs. south pole
+    // seen from outside), hence the hemisphere sign.
+    const hemisphere = ty + 0.5 < texH / 2 ? 1 : -1;
+    let totalX = 0;
+    let totalY = 0;
+    prefixX[0] = 0;
+    prefixY[0] = 0;
+    for (let tx = 0; tx < texW; tx++) {
+      const offset = rowStart + tx * 4;
+      const u = (rgba[offset] / 255) * span + componentMin;
+      const v = (rgba[offset + 1] / 255) * span + componentMin;
+      const s = sinLon[tx];
+      const c = cosLon[tx];
+      totalX += -u * s - hemisphere * v * c;
+      totalY += u * c - hemisphere * v * s;
+      prefixX[tx + 1] = totalX;
+      prefixY[tx + 1] = totalY;
+    }
+    const radius = (width - 1) / 2;
+    for (let tx = 0; tx < texW; tx++) {
+      let meanX: number;
+      let meanY: number;
+      if (width >= texW) {
+        // A cap row's local components rotate with longitude even for one
+        // physical wind, so the row is single-valued in the plane frame, not
+        // byte-constant along the row as the scalar channels are.
+        meanX = totalX / texW;
+        meanY = totalY / texW;
+      } else {
+        const lo = tx - radius;
+        const hi = tx + radius;
+        let sumX: number;
+        let sumY: number;
+        if (lo < 0) {
+          sumX = totalX - prefixX[lo + texW] + prefixX[hi + 1];
+          sumY = totalY - prefixY[lo + texW] + prefixY[hi + 1];
+        } else if (hi >= texW) {
+          sumX = totalX - prefixX[lo] + prefixX[hi + 1 - texW];
+          sumY = totalY - prefixY[lo] + prefixY[hi + 1 - texW];
+        } else {
+          sumX = prefixX[hi + 1] - prefixX[lo];
+          sumY = prefixY[hi + 1] - prefixY[lo];
+        }
+        meanX = sumX / width;
+        meanY = sumY / width;
+      }
+      const s = sinLon[tx];
+      const c = cosLon[tx];
+      const offset = rowStart + tx * 4;
+      rgba[offset] = encode(-meanX * s + meanY * c);
+      rgba[offset + 1] = encode(-hemisphere * (meanX * c + meanY * s));
     }
   }
   return rgba;

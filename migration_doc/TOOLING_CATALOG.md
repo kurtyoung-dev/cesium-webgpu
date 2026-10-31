@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1814 |
-| ACTIVE | 1563 |
+| Files in census | 1815 |
+| ACTIVE | 1564 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
 | NO @purpose HEADER | 49 |
 | NO @status HEADER | 1 |
-| Classes | probe 683, spec 488, other 378, lib 214, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
+| Classes | probe 683, spec 489, other 378, lib 214, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
 
 ### Tools/ (69)
 
@@ -467,7 +467,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1124)
+### Tools/visual-regression/ (1125)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -657,7 +657,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | eye-cartographic-uniforms.spec.mjs | spec | ACTIVE | 2026-09-11 | 6 | Executes the real globe camera-UB tail packer against a real UniformState, derives the WGSL CameraUniforms layout from the shader source, and evaluates upstream's czm_eyeToCartographicDelta GLSL and its three WGSL copies over an altitude sweep in float32 to prove they are the same arithmetic. |
 | finding-ownership-audit.spec.mjs | spec | ACTIVE | 2026-08-24 | 10 | Scans the migration_doc finding-source files for NEW-* IDs and enforces each has an ownership disposition (alias/placeholder/resolved). |
 | fog-cheap-coverage-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 13 | Pins the fog cheap-path cloud-shadow coverage gate: samples standardised onto the baked field's moments, with mutants and byte-neutrality. |
-| global-coastline-antimeridian-seam.spec.mjs | spec | ACTIVE | — | 1 | Pins that GlobalCoastlineWaterClassificationProvider sees coast polygons across the antimeridian when a tile's distance-field pad crosses it: land that continues across the seam keeps no fake shoreline, a coast crossing the seam has an ordinary tile seam, and the augment path matches the generate path there. |
+| global-coastline-antimeridian-seam.spec.mjs | spec | ACTIVE | 2026-10-30 | 1 | Pins that GlobalCoastlineWaterClassificationProvider sees coast polygons across the antimeridian when a tile's distance-field pad crosses it: land that continues across the seam keeps no fake shoreline, a coast crossing the seam has an ordinary tile seam, and the augment path matches the generate path there. |
 | global-coastline-water-classification.spec.mjs | spec | ACTIVE | 2026-10-23 | 4 | Pins the global coastline water classification provider: tile masks, island and open-ocean fast paths, tile-seam agreement of the generate and augment paths (and a tile's border texels equal to the same texels inside an overlapping tile, which pins the distance-field pad), and the byte-bounded tile cache. |
 | globe-classic-ocean-default-parity.spec.mjs | spec | ACTIVE | 2026-10-23 | 6 | Pins that a default globe (definesHi 0, enableEnhancedOcean false) draws the base ocean in GlobeTerrain.wgsl, that the opt-in WATER_PROVIDER_PARITY variant draws GlobeFS.glsl's classic waves (unwrapped clock, derivatives through the pole flip) and coast band (executed against the GLSL twin), that the enhanced water changes live only under ENHANCED_OCEAN, that the vessel-wake gate is its own camera lane, and that a globe material still receives the base waterMask under MATERIAL_APPLY (the water work's sample is held back; its GLSL-law control runs on a copy). |
 | globe-clip-distances-build.spec.mjs | spec | ACTIVE | 2026-10-09 | 1 | Runs the real buildClipDistancesShaderSource over the real GlobeTerrain.wgsl after the real preprocessor for every define combination the globe compiles, and requires a non-null result that naga validates, alongside the validity of each un-augmented composed variant; a source whose anchor drifts must make the build return null. |
@@ -1546,6 +1546,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | water-wave-clock-determinism.spec.mjs | spec | ACTIVE | 2026-10-23 | 1 | Pins that two page loads pinned to the same scene clock hand both backends the same water wave phase once the probe stage sets the FFT surface's simulationEpoch to that instant (the deterministic switch, scene.globe.water.ocean.simulationEpoch), records that without it the phase depends on when each page first rendered, and turns red under a mutant that lets the first-frame epoch back in. |
 | weather-field-bounds.spec.mjs | spec | ACTIVE | 2026-09-19 | 12 | WeatherField contract: grid registration, regional bounds honoured incl. antimeridian, no-data semantics, global path byte-identical to legacy. |
 | weather-map-seam.spec.mjs | spec | ACTIVE | 2026-10-30 | 14 | Pins the one equirect weather-map convention shared by CPU producers and, textually, the WGSL/sampler half: seam filters, UV mapping, bounds pack. |
+| weather-polar-wind-vector-lowpass.spec.mjs | spec | ACTIVE | — | 1 | Pins that the weather map's polar low-pass treats the packed wind pair (atmospheric R/G) as a VECTOR, so a wind blowing across the pole survives instead of cancelling, while pressure/temperature and the marine map keep the scalar filter. |
 | weather-probe-demo-descriptors.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Drives the map, Weather Inspector preset and Weather Inspector control probes' runtime descriptors through the real runProbe with a stub browser whose canvas captures are fixture PNGs, asserting exit codes, verdict ids, that the Node-side metrics read the captured bytes, that the map probe strips the viewer chrome before its first capture, and that every scored gate of the three fails on a fixture of its own. |
 | weather-probe-descriptors.spec.mjs | spec | ACTIVE | 2026-10-09 | 5 | Drives each migrated probe-weather descriptor through the real runProbe with a stub browser whose page answers the probe's own page lanes with fixture results, asserting exit 0 / 1 / 3, the verdict ids, the evidence files and the refusal record. |
 | weather-probe-gates.spec.mjs | spec | ACTIVE | 2026-10-09 | 4 | Drives the channels, coverage-sweep (edr-mock), ingest, metar and seam-poles descriptors through the real runProbe with one healthy lane answer and one perturbed answer per scored gate, asserting exit 1 and the exact set of failing gates, so a gate whose pass flag were stuck at true is a red test. |
@@ -1759,7 +1760,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 20 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 6 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
 | engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 45 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
-| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 62 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
+| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 63 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 6 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | frame-import-map.mjs | lib | ACTIVE | 2026-10-09 | 2 | The readiness wait for a dynamic import of a bare specifier in a page or frame: whether a specifier is bare, an in-page predicate that reports whether the document has parsed an import map, and the Node-side wait that blocks until it has, or refuses by name when it does not appear in time. |
 | frame-timing-steps.mjs | lib | ACTIVE | 2026-10-24 | 6 | Step piece for the R-2026-10-22-3 performance leg (PF-1..PF-4 inputs): in-page samplers for the startup timeline (first frame, first frame with clouds drawn, tiles loaded, in navigation-relative page time), per-frame times from scene.render to the device reporting the work done, CesiumDebug.gpuPassCost over its own window, and the renderer's cache statistics; plus the Node-side sequence that renders the warm-up first and then brackets exactly the measured frame window with two GPU device census snapshots. |

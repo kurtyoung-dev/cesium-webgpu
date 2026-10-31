@@ -6,6 +6,8 @@ import {
   type WeatherFieldRequest,
 } from "./WeatherTypes.js";
 import {
+  WIND_COMPONENT_MAX_MPS,
+  WIND_COMPONENT_MIN_MPS,
   encodeWindVector,
   encodePressureAnomaly,
   encodeTemperature,
@@ -14,7 +16,10 @@ import {
   sampleEnvironmentalTensor,
   type EnvironmentalTensorSet,
 } from "./EnvironmentalTensorMap.js";
-import { applyEquirectPolarLowPass } from "./WeatherMapSeam.js";
+import {
+  applyEquirectPolarLowPass,
+  applyEquirectPolarWindLowPass,
+} from "./WeatherMapSeam.js";
 import { SynopticWeatherPattern } from "./SynopticWeatherPattern.js";
 
 export class SynopticWeatherSource implements WeatherSource {
@@ -100,7 +105,13 @@ export class SynopticWeatherSource implements WeatherSource {
       }
     }
     checkAbort();
-    applyEquirectPolarLowPass(atmosphericBytes, w, h);
+    applyEquirectPolarWindLowPass(
+      atmosphericBytes,
+      w,
+      h,
+      WIND_COMPONENT_MIN_MPS,
+      WIND_COMPONENT_MAX_MPS,
+    );
     applyEquirectPolarLowPass(marineBytes, w, h);
     const environmentalTensors: EnvironmentalTensorSet = {
       width: w,

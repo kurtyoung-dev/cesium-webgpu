@@ -26,6 +26,7 @@
 
 import {
   applyEquirectPolarLowPass,
+  applyEquirectPolarWindLowPass,
   periodicFbmRow,
   WEATHER_MAP_TEX_HEIGHT,
   WEATHER_MAP_TEX_WIDTH,
@@ -404,7 +405,13 @@ export function buildProceduralEnvironmentalTensor(
   }
 
   // Ensure seamless polar caps
-  applyEquirectPolarLowPass(atmosphericBytes, w, h);
+  applyEquirectPolarWindLowPass(
+    atmosphericBytes,
+    w,
+    h,
+    WIND_COMPONENT_MIN_MPS,
+    WIND_COMPONENT_MAX_MPS,
+  );
   applyEquirectPolarLowPass(marineBytes, w, h);
 
   const tensorSet: EnvironmentalTensorSet = {
