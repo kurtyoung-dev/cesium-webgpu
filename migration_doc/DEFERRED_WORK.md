@@ -1918,7 +1918,8 @@ scope; the generated type definitions carry it; behaviour byte-identical (absent
 **Status:** OPEN. Filed 2026-09-12 in the `C13-N48` fix round, on the reviewer's F3. **This is a debt
 note the lane is recording against itself**, not a defect found in someone else's code.
 
-**The rule, and how this batch stands against it.** `CLAUDE.md` "File Size & Code Organization":
+**The rule, and how this batch stands against it.** `CLAUDE.md` "File Size & Code Organization" (since Batch 1643 in
+[`.claude/skills/engine-code-standards/SKILL.md`](../.claude/skills/engine-code-standards/SKILL.md)):
 files over ~1,000 lines should be decomposed, and *"when touching a file over 1,000 lines for
 functional changes, decompose it too — leave it better than you found it."* `C13-N48` made a
 substantial functional change and **did not** decompose:
@@ -20503,7 +20504,9 @@ visible one would have been the decoration the brief warns against. The values a
    `GlobeTerrain.wgsl:105` (struct-line 58), floats **100-115**, with **148 floats after it** once this
    lane's 20-float tail is appended (128 at HEAD), inside a struct of **264 floats / 1056 B** — so D4's
    literal "at the tail" wording is **false at HEAD**, and this is the fourth independent derivation of
-   that fact; CLAUDE.md's own 64-bit-precision section already records that 57 of 72 shaders place the
+   that fact; CLAUDE.md's own 64-bit-precision section (moved by Batch 1643 to the "64-Bit Precision & RTE" section of
+   [`.claude/skills/engine-code-standards/SKILL.md`](../.claude/skills/engine-code-standards/SKILL.md), which no longer
+   carries the count) already records that 57 of 72 shaders place the
    member mid-struct. This lane complied with the **operative** constraint and claimed nothing beyond
    it: nothing was inserted ahead of that matrix, it does not move, and the new tail was appended at
    byte **976**, 16-aligned — the lane did **not** relocate `previousViewProjection` to the literal
@@ -31083,7 +31086,7 @@ frame (`DX-KIT-WEATHER-MAP-FIRST-FRAME-BLACK`); the F2 runs and the TIP repeat p
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 1, findings 1-2);
 `round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md` (leg 1, findings 1-3).
 
-### NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY — at an unpinned clock the W3 tip's weather-map frames differ run to run, the weather-map-off view included — **OPEN** (re-attributed 2026-10-31: present at a pinned clock on BEFORE `6b3b80f644` as on the tip, so not W3's; cause unidentified)
+### NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY — at an unpinned clock the W3 tip's weather-map frames differ run to run, the weather-map-off view included — **OPEN** (re-attributed 2026-10-31: present at a pinned clock on BEFORE `6b3b80f644` as on the tip, so not W3's; the kit half closed by the KIT5 pins leg, records round 8: the OFF deck moves at most 23 px run to run with the two cloud pins and 0 px with the offline globe added; the cloud program owns why the default wind / quality path moves)
 
 In `probe-weather-map` on the W3 identity job the TIP(8) frames are not stable run to run while BEFORE's are (the runs
 about 90 s apart, the clock unpinned): wide-off 86.5 % of pixels changed (max delta 86) on TIP(8) against 7.6 % (max 5) on
@@ -31104,6 +31107,37 @@ a pinned daylight clock. The cause is not identified; the probe pins neither `cl
 globe (its header names the network globe; neither `cloudWindSpeed` nor a quality setting appears in `probe-weather-map.mjs`, grep at Batch 1640). **Next steps:** a kit dial lane that pins those three, then a cloud-determinism investigation if the
 deck still moves. **Suggested owner:** the kit (dials) and the cloud program (mechanism). **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md` (leg 2, finding 2).
+**Dials landed, then measured (records round 8).** Batch 1642 (`82b8f29e26`; lane Findekano, worker Maitimo; reviewer Findarato
+P1 HOLDS-WITH-FIXES, text only) gives `probe-weather-map.mjs` three opt-in dials, `--cloud-wind-speed`, `--cloud-quality` and
+`--offline-globe`, applied in `SET_VIEW` and read back after every view (refusal `dial-not-applied`, exit 3); with no flag the
+URL and the scene writes are unchanged. `--offline-globe` loads `&offline=true`, which also starts the viewer in
+`requestRenderMode` (CesiumViewerStartupOptions), so the pinned leg attributes determinism to the pin set; a fourth run with
+`--cloud-wind-speed 0 --cloud-quality 32` and no `--offline-globe` separates the globe from the cloud pins (Findarato TF1;
+`Apps/CesiumViewer/CesiumViewerStartupOptions.js:18-25` at Batch 1643). The KIT5 Edge leg's Phase 1 (executor Eowyn, tree
+Batch 1642 `82b8f29e26`, served == disk, `--clock 2026-06-21T18:00:00Z` on every leg) ran it. **All three pins**
+(`--cloud-wind-speed 0 --cloud-quality 32 --offline-globe --runs 3`): `dials.observed` and `observedAtEnd` equal
+`{cloudWindSpeed: 0, cloudQuality: 32, imageryLayerCount: 0, terrainIsEllipsoid: true}` on all 3 runs; the 10 located-OFF
+captures and the wide-OFF are byte-identical across the runs (one sha256 per capture name in the runtime receipt; 0 px), and the
+10 OFF fractions are identical (0.4941 … 0.4892, offMin 0.4892). **The two cloud pins, network globe** (three `--runs 1`
+invocations, because `--runs N` overwrites its PNGs, `DX-KIT-WEATHER-MAP-RUNS-OVERWRITE`): read-backs `{cloudWindSpeed: 0,
+cloudQuality: 32, imageryLayerCount: 2, terrainIsEllipsoid: false}`; `pixelDiff` at tolerance 0 over the 30 located-OFF pairs:
+7 of 10 locations 0 px on every pair, and (-70, 42) 3 / 3 / 5 px, (-75, 30) 14 / 23 / 18 px and (-90, 25) 11 / 11 / 11 px, max
+23 px = 0.0029 %, max channel 4; wide-OFF 0 px; OFF fractions identical (offMin 0.6360). **No pins** (`--runs 3`): every OFF
+capture differs by sha256 across the runs and the OFF fractions move by up to 0.0085, at (-95, 38) (no pixel count: the PNGs were
+overwritten). So on this tree and rig, holding wind speed 0 and quality 32 is the one difference between a leg whose OFF deck
+moves (on this tree the unpinned leg 1c changes every OFF capture's sha256, with no pixel count; the 99 % figures are W3-DAYLIGHT's on other trees, 99.01-99.35 % on its TIP arm, Batch 1638, and 99.02-99.62 % on its BEFORE arm, `6b3b80f644`, above) and one that moves at most 23 px, and adding
+`--offline-globe` took that residue to 0 px; the offline leg also drops the imagery and runs in request-render mode, so the
+residue is not attributed between the globe and the render cadence. The ON deck is not still under the pins: with all three,
+9 of 10 located-ON captures and the wide-ON differ between runs (only (-90, 25) is identical); with the two cloud pins, run 0
+against runs 1 and 2 changes up to 101,888 px (12.96 %, (-75, 30), run 0 against run 2) at max channel 1-21, while runs 1 and 2 agree at 0 px on 7 of
+10 locations. **Status:** the kit half (the dials and their measurement) is done; the row stays OPEN for the cloud program's half,
+why the default wind / quality path is nondeterministic frame to frame. **Owner:** the cloud program, not the kit. The offline leg
+failed `on-dense` on all three runs (`NEW-CLOUD-WEATHER-MAP-OFFLINE-GLOBE-ON-DENSE-RED`). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md` (items 1a-1c); evidence
+`round3/edge/kit5-20261031/1a/weather-map-runtime.json` (`captures[].sha256`), `1a/weather-map-report.json`,
+`1b/1b-run-to-run-pixeldiff.json`, `1b/1b-on-run1-vs-run2-pixeldiff.json`, `1c/weather-map-report.json`;
+`round3/findekano/LANDING_PACKET_FINDEKANO.md` (W1; "Rows for the records lane"); `round3/findekano/REVIEW_FINDARATO_P1.md`
+(TF1).
 
 ### NEW-CLOUD-W3-SHARED-DEVICE-TEARDOWN-UNTESTED — every W3 allocating owner is released by the device, and no E-T cell destroys one viewer of several on a shared device — **OPEN** (coverage)
 
@@ -31713,6 +31747,13 @@ join this row; Batch 1623 allowlists them with `ocean-fft-device-harness` ("by d
 .wgsl source") (Nindamos P3 HOLDS). **Repair:** migrate family by family onto `readEngineShader`, and teach the S5
 source-footprint hasher (`lib/c12-29-s5-*-gate.mjs`) to follow a shader decomposition. **Source:** the salvage bank's
 `emerie/round2/LANDING_PACKET_EMERIE.md:192`, `:310`, and `REVIEW_NINDAMOS_P2.md:88`; `emerie/round3/LANDING_PACKET_EMERIE.md:327-346`.
+**Fixture literals moved outside the tripwire (records round 8).** Batch 1642 split `Tools/context-spine/context-spine.spec.mjs`;
+its shader-path literals now sit in four files, and two of them, `ModelPBR` and `BrokenHazard`, sit in
+`Tools/context-spine/fixtures/context-spine-support.mjs` (`:104`, `:139` at Batch 1643), which is outside the tripwire's
+`Tools/**/*.spec.mjs` glob. They are hermetic fixture-repository paths, not engine reads, so this is harmless; the allowlist row
+was renamed, not added (96 rows on both trees). The follow-up may want the support file named. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/REVIEW_FINDARATO_P1.md` (N2);
+`round3/findekano/LANDING_PACKET_FINDEKANO.md` ("Notes on these numbers").
 
 ### NEW-GLOBE-NIGHT-IMAGERY-D4-STALE-PIN — `globe-night-imagery-option.spec.mjs` D4 pinned a call within 200 characters of `beginFrame` — **CLOSED** (Batch 1623, `c2d6e501fd`)
 
@@ -31779,11 +31820,20 @@ Removing the authored river trunks loses the Atchafalaya, because the Natural Ea
 authored trunk, take another source, or accept the loss is the maintainer's decision B9. **Source:**
 `REVIEW_NIMBRETHIL_W2A.md`; `salvage-night/DECISIONS_FOR_MAINTAINER_2026-10-29.md:73-74`.
 
-### DX-KIT-DIVE-GATE-STEP — no kit piece drives `canDiveAtSurfaceHeight` — **OPEN** (probe kit)
+### DX-KIT-DIVE-GATE-STEP — no kit piece drives `canDiveAtSurfaceHeight` — **CLOSED: the piece** (Batch 1642, `82b8f29e26`; the cells are `DX-KIT-DIVE-GATE-CELLS`)
 
 No kit piece drives the camera controller's dive gate (`canDiveAtSurfaceHeight`) with allow and refuse receipts, so a dive
 scene has no kit-built acceptance. **Repair:** one camera-controller dive step piece with allow/refuse receipts, a Node spec
 and an inertness mutant. **Source:** `REVIEW_ELDAMAR_W2B.md` (section 6).
+**Closed for the piece (records round 8): Batch 1642 (`82b8f29e26`; lane Findekano, worker Tyelkormo; reviewer Findarato P1
+HOLDS-WITH-FIXES).** `lib/globe-dive-gate-steps.mjs` (245 lines) drives trusted wheel notches (`page.mouse.wheel` at the canvas
+centre; `camera.zoomIn` bypasses both the gate and the clamp) and returns allow / refuse / mixed receipts with the clamp read per
+notch (`clampHeld`, `clampBreaches`, `diveDepthMax`, `depthWhileRefused`), no verdict; spec `globe-dive-gate-steps.spec.mjs` (15
+tests against a fake viewer that mirrors the engine rule), the worker's 10 mutants and the reviewer's three on this file killed.
+The KIT5 Edge leg confirmed at Batch 1642 that the step is imported only by its spec and that `Apps/CesiumViewer` never sets
+`window.Cesium`, so its item 3 was NOT RUN by design (no driver written). The five cells, their rigs and a probe call site are
+`DX-KIT-DIVE-GATE-CELLS`. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/LANDING_PACKET_FINDEKANO.md`
+(W3); `round3/findekano/REVIEW_FINDARATO_P1.md` (mutants 18-20, TF2); `round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md` (item 3).
 
 ### DX-REGISTRY-LAYOUT-LIVE-CONSUMER — the registry layout spec counts a name read as a consumer, live or not — **OPEN** (tools / spec; seat decision B42)
 
@@ -32376,6 +32426,14 @@ wait out), WebGL A1 is within under the 15 % floor, and WebGL 2D A2 still reads 
 within (`DX-KIT-PF3-CEILING-ON-MEDIAN`). **Acceptance:** kit round 4's Edge item 3 (the KIT3 recipe again). **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 4, findings 5-6);
 `round3/aerandir/LANDING_PACKET_AERANDIR.md` (W3); `round3/aerandir/REVIEW_NURWE_P1.md` (section 2 "PF-3", NB-1).
+**Still OPEN (records round 8).** Batch 1642 (`82b8f29e26`) moved the 2,500 ms ceiling onto the tip median
+(`DX-KIT-PF3-CEILING-ON-MEDIAN`, closed): the reviewer's replay of the banked KIT3 `E-ID-2d|webgl|scene.pf3` arrays (base
+`[2384.6, 2412.6]`, tip `[2692.4, 2213.8]`) reads `over` on the lane's base kit (Batch 1640) and `within` on Batch 1642's (tip median 2453.1,
+`tipMax` 2692.4). That is a replay in Node, not the Edge acceptance. The acceptance is the KIT5 Edge leg's Phase 2 item 4
+(`probe-landing-cells.mjs --cells E-ID-2d,E-ID-cv --runs 2` on a quiet machine, base = tip, PF-3 within on both renderers under
+the median rule), which has NOT run (Phase 2 waits for the seat's quiet window); records round 9 records it. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/REVIEW_FINDARATO_P1.md` (Premise W2);
+`round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md` ("Phase 2: not started"); `round3/brief-edge-kit5.md` (Phase 2, item 4).
 
 ### NEW-OCEAN-FFT-RIG-GPU-HEAVY — the FFT-ocean rig's frame is GPU-heavy — **OPEN** (observation; no baseline)
 
@@ -32465,6 +32523,13 @@ text-anchored `importMutated` mutants in 8 tests, which need injected seams in t
 survive mutation on both trees (reviewer NB-11). **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (W5); `round3/aerandir/REVIEW_NURWE_P1.md`
 (section 3, NB-11).
+**File split closed (records round 8), still OPEN for the mutants:** Batch 1642 (`82b8f29e26`; lane Findekano, worker Carnistir;
+reviewer Findarato P1 HOLDS-WITH-FIXES) splits `landing-cell-stage.spec.mjs` from 2,276 lines into six files, all under 540
+(392 plus `-page-dials` 536, `-epoch-pipelines` 309, `-ocean-dials` 208, `-kernel-mode` 357 and `-identity-debug` 363; `wc -l` at
+Batch 1643), shared helpers in `fixtures/landing-cell-stage-support.mjs`, with tests 75/75 by name and body (the reviewer's AST
+compare: 75 of 75 identical) and every `importMutated` anchor still unique. The row stays OPEN only for the 16 text-anchored
+mutants that need seams in the probe. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/LANDING_PACKET_FINDEKANO.md`
+(W4); `round3/findekano/REVIEW_FINDARATO_P1.md` (Behaviour, "Splits").
 
 ### DX-KIT-LANDING-MANIFEST-SHA-SKIP — a BEFORE image without a recorded sha256 is copied unchecked — **CLOSED** (Batch 1635, `4bed633005`)
 
@@ -32752,6 +32817,13 @@ read and bookmark sheets (item 5). The rows below are new.
   the bar needs a band over several runs, not one run. **Suggested owner:** the cloud program, not the kit.
 - **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 1, finding 2);
   `round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md` (leg 1 "on-carves", finding 3).
+- **Re-read on the KIT5 leg, Phase 1 (records round 8; tree Batch 1642 `82b8f29e26`, no pin flags, `--runs 3`):** the daylight
+  bar now reads differently. ON at (-110, 30) is 0.4667 / 0.1056 / 0.1056 and offMin 0.4634 / 0.4632 / 0.4626 (bars 0.2317 /
+  0.2316 / 0.2313), so runs 1 and 2 pass `on-carves` with offMin about 0.463 where round 7 recorded onMin 0.106 against
+  0.5 x offMin 0.130; run 0 fails it with its ON fractions tracking OFF (`NEW-CLOUD-WEATHER-MAP-RUN0-ON-EQUALS-OFF`). With the
+  two cloud pins and the network globe, onMin 0.1083 against offMin 0.6360 passes on all three runs. A measurement, no
+  attribution. **Source:** `round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md` (items 1b, 1c); `round3/edge/kit5-20261031/1c/weather-map-report.json`
+  (`runs[].scored`); `1b/run0/weather-map-report.json`.
 
 ### DX-KIT-WATER-2G-NOT-RUN-READS-FAIL — at `--runs 1` the six 2g verdicts read NOT RUN but carried `pass: false` and failed the run — **CLOSED for the kit** (Batch 1638, `b4bf6307cf`; the Edge read is owed)
 
@@ -32789,7 +32861,7 @@ folders were all new, so it could not show a stale manifest. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (W4); `round3/aerandir/REVIEW_NURWE_P1.md`
 (section 2 "Stale manifest"); `round3/manwendil/REVIEW_HUNDOR_P1.md` (N-a).
 
-### DX-KIT-PF3-CEILING-ON-MEDIAN — PF-3's 2,500 ms ceiling reads `over` on one repeat while the tip median is within — **OPEN** (probe kit; the seat's decision recorded, not implemented)
+### DX-KIT-PF3-CEILING-ON-MEDIAN — PF-3's 2,500 ms ceiling reads `over` on one repeat while the tip median is within — **CLOSED** (Batch 1642, `82b8f29e26`; Node-pinned; the Edge read is `DX-KIT-PF3-STARTUP-CEILING-WEBGL`'s acceptance, KIT5 Phase 2 item 4, not run)
 
 On the KIT3 A2 arm (the same build as its base) WebGL `E-ID-2d` reads `over` because one of its two repeats took 2692.4 ms, over the
 2,500 ms per-repeat ceiling, while its median (2453.1 ms against a 2398.6 ms base, +2.3 %) is inside the 15 % floor Batch 1638 set;
@@ -32800,8 +32872,18 @@ inertness mutant. The lane's packet filed the same finding as `DX-KIT-PF3-WEBGL-
 **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 4);
 `round3/aerandir/LANDING_PACKET_AERANDIR.md` (W3, "Open finding for the seat"); `round3/aerandir/REVIEW_NURWE_P1.md` (NB-1);
 `round3/brief-records-round7.md` (item 4, the decision).
+**Closed (records round 8): Batch 1642 (`82b8f29e26`; lane Findekano, worker Makalaure; reviewer Findarato P1
+HOLDS-WITH-FIXES).** The PF-3 ceiling reads the median of the tip repeats and reports `tipMax` with `ceilingStatistic: "median"`
+(`lib/metrics/perf-band.mjs` `ceilingVerdict`, strictly under 2,500 ms); `base-over-ceiling-banded` is unchanged. KIT3's 2453.1 ms
+median with a 2692.4 ms repeat reads within; a tip median of 2,510 reads `over`; 2,500 reads `over` and 2,499 within. Specs in
+`landing-perf-metrics.spec.mjs` (one assertion re-pinned to the median rule, three new tests); the lead's mutant (ceiling back on
+the maximum) and the reviewer's two (strictness, ceiling inert) killed. The reviewer re-derived it from the banked KIT3 report,
+not the spec fixture: base kit `over` with the banked reason verbatim, Batch 1642's kit `within` (tip median 2453.1, `tipMax`
+2692.4, limit 2638.46). The Edge read is Phase 2 item 4 of the KIT5 leg, not run (`DX-KIT-PF3-STARTUP-CEILING-WEBGL`).
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/LANDING_PACKET_FINDEKANO.md` (W2; "Mutants (lead)");
+`round3/findekano/REVIEW_FINDARATO_P1.md` (Premise W2; mutants 8-9; N3).
 
-### DX-KIT-CAPTURE-SEAM-CLOSE-EXEMPTION — the capture seam's 45 s close path has no complete-work exemption — **OPEN** (probe kit)
+### DX-KIT-CAPTURE-SEAM-CLOSE-EXEMPTION — the capture seam's 45 s close path has no complete-work exemption — **CLOSED** (Batch 1642, `82b8f29e26`; Node-pinned; one open question)
 
 Batch 1638 gave the runtime a complete-work exemption (a run whose cells and verdicts are complete survives a lingering browser close
 and publishes its receipt), but the capture seam's own close path, `DEFAULT_CLOSE_DEADLINE_MS = 45_000`
@@ -32809,8 +32891,23 @@ and publishes its receipt), but the capture seam's own close path, `DEFAULT_CLOS
 `browserCloses[]`-style record in the seam, with a spec and an inertness mutant. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` ("Excluded, and why");
 `round3/aerandir/REVIEW_NURWE_P1.md` (NB-2).
+**Closed (records round 8): Batch 1642 (`82b8f29e26`; lane Findekano, worker Tyelkormo; reviewer Findarato P1
+HOLDS-WITH-FIXES).** `lib/probe-close-exemption.mjs` (159 lines) is the one exemption shared by `runProbe` and `capture()`
+(`lib/probe-lifecycle-run.mjs` imports and re-exports it unchanged). A complete capture with a lingering close publishes its
+manifest and receipt with `browserCloses`, from the hard stop as well, and exits 0 with no incident file; an incomplete capture
+fails as before. Spec `capture-seam-lingering-close.spec.mjs` (16, one asserting that `runProbe` and `capture` share the same
+function objects); `probe-runtime-lingering-close.spec.mjs` unchanged at 16/16; the lead's mutant and the reviewer's three on
+`lib/capture.mjs` killed. **Edge:** every receipt of the KIT5 leg's Phase 1 carries `browserCloses`, none expired and none over
+the legacy 10 s (seven receipts: weather-map 1a, 1b x3, 1c, the E-W cells and water 1f; closeMs 363-7,388). Those probes run on
+`runProbe` (the shared piece's runtime side); none of them calls `lib/capture.mjs` `capture()`, so the seam's own close is
+measured in Node only, and a real `capture()` run (Findekano's Edge item 4) has not been read on Edge. **Open question
+(Findarato N5; the lane's open question 2):** `capture()` receipts now always carry `browserCloses`; if they should carry it only
+when a close lingered, that is one condition and one spec case, the seat's call. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/LANDING_PACKET_FINDEKANO.md` (W3; open question 2);
+`round3/findekano/REVIEW_FINDARATO_P1.md` (Premise W3; mutants 15-17; N5); `round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md`
+(item 5, last bullet); the seven `browserCloses` arrays under `round3/edge/kit5-20261031/`.
 
-### DX-KIT-WEATHER-MAP-FIRST-FRAME-BLACK — `probe-weather-map` captures its located frames after a fixed 90 frames and once captured a black globe — **OPEN** (probe kit)
+### DX-KIT-WEATHER-MAP-FIRST-FRAME-BLACK — `probe-weather-map` captures its located frames after a fixed 90 frames and once captured a black globe — **CLOSED: measured** (Batch 1642, `82b8f29e26`; KIT5 Edge leg Phase 1, 2026-10-31)
 
 On the W3-DAYLIGHT leg TIP run 2 (F4, 10:51 EDT) captured `located-off-lon-120-lat45.png` fully black (the globe not drawn yet, a
 few isolated pixels), so offMin read 0.000 and off-renders, on-carves and on-range failed (exit 1): 1 of 3 TIP runs, 0 of 3 BEFORE
@@ -32819,8 +32916,22 @@ loop at `:131`) with no globe-ready or pending-pipeline wait; Batch 1638's readi
 attributed to the tip engine. **Repair:** the kit's readiness wait (globe tiles loaded, pending pipelines 0) before the first
 located capture. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md` (leg 2,
 finding 1).
+**Closed: measured (records round 8).** Batch 1642 (`82b8f29e26`; lane Findekano, worker Maitimo; reviewer Findarato P1
+HOLDS-WITH-FIXES): `probe-weather-map.mjs` waits on the kit's pending-pipeline wait before its first capture, and
+`lib/first-frame-guard.mjs` re-settles a capture under 1 % non-black twice, then refuses `first-frame-black` (exit 3). The
+banked black frame read 0.004 %, its 19 located siblings 99.981-100 % (Findarato TF4 corrects the packet's "21"). Spec
+`first-frame-guard.spec.mjs` (9) and `probe-weather-map-pins.spec.mjs` (19); the worker's 10 mutants and the reviewer's
+call-site mutants killed. **Measured on Edge (KIT5 Phase 1, tree Batch 1642, `--clock 2026-06-21T18:00:00Z`):** the first
+frame's `nonBlackPct` is 100 / 100 / 100 with all three pins (1a), 100 / 100 / 100 with the two cloud pins (1b, three
+invocations) and 100 / 100 / 99.99987 with no pins (1c), each on its first attempt with no re-settle; `firstFrame.pipelines.timedOut`
+is false on all 9 runs (pendingAtEnd 0, waits 39-6,468 ms). No run exited with the black-frame exit 1 the W3-DAYLIGHT receipt
+saw. Legs 1a and 1c did exit 1, on other verdicts (`on-dense` on all three 1a runs; `run0:on-carves` and `run0:on-range` in 1c),
+each its own row below. The guard's refusal path (`first-frame-black`, exit 3) was not exercised on Edge because no black frame
+occurred; it is pinned in Node only. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/LANDING_PACKET_FINDEKANO.md`
+(W1); `round3/findekano/REVIEW_FINDARATO_P1.md` (Premise W1, TF4, mutants 1-7); `round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md`
+(items 1a-1c); `round3/edge/kit5-20261031/{1a,1b/run0,1b/run1,1b/run2,1c}/weather-map-report.json` (`runs[].firstFrame`).
 
-### DX-W3-EW-INSTRUMENT-UNMEASURED-EXIT — the W3 job's banked E-W instrument still scores PF-3 `unmeasured-contended` as exit 1, and its kit60 variant is gone — **OPEN** (executor instrument)
+### DX-W3-EW-INSTRUMENT-UNMEASURED-EXIT — the W3 job's banked E-W instrument still scores PF-3 `unmeasured-contended` as exit 1, and its kit60 variant is gone — **CLOSED: measured** (Batch 1642, `82b8f29e26`; KIT5 Edge leg Phase 1, TIP arm; the BEFORE arm not run, seat deferral)
 
 The W3-DAYLIGHT leg re-ran E-W (`--cells E-W-ground,E-W-ground-hdr,E-W-30km,E-W-30km-hdr --runs 2`) with the W3 job's banked
 instrument (`wave-end/w3-identity/_executor/instrument/probe-landing-cells-w3.mjs`, read-only from the seat's output). Its `-kit60`
@@ -32838,6 +32949,28 @@ TIP(8): WebGL 0 px, WebGPU 302-348 px on the 30 km siblings and 28,092-28,396 px
 landings 1616-1638 on top of TIP(8), recorded, not banded. **Suggested repair:** run the next wave's E-W job on the kit's own
 `probe-landing-cells`, or re-cut the instrument over the tip kit. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md` (leg 3, finding 4).
+**Closed: measured (records round 8).** Batch 1642 (`82b8f29e26`; lane Findekano, worker Makalaure; reviewer Findarato P1
+HOLDS-WITH-FIXES) makes the four E-W weather-state cells tracked kit cells: rigs `w3-ew-ground`, `-ground-hdr`, `-30km`,
+`-30km-hdr` (camera, clock, dials and viewport from the banked W3-DAYLIGHT TIP `stage` records), four `weather-state` entries in
+`lib/landing-cell-table.mjs` (not in the defaults), `lib/weather-state-steps.mjs` and its verdict in `lib/landing-verdicts.mjs`, so
+their PF verdicts carry the Batch 1638 marker. The out-of-tree instrument and its kit60 variant are retired, not restored: the
+90 s close deadline, its override and the complete-work exemption replace kit60. Spec `landing-weather-state.spec.mjs` (12); the
+lead's three mutants and the reviewer's five on these files killed. **Measured on Edge (KIT5 Phase 1, item 2, TIP arm, tree Batch
+1642):** `--cells E-W-ground,E-W-ground-hdr,E-W-30km,E-W-30km-hdr --runs 2` exits 0; 16 pages, none NOT RUN; 56 verdicts, 48 pass
+and the 8 others are the PF-3 `unmeasured-contended` on every arm (machine CPU mean 79.24 % over 176 samples; run-1 pages
+86.5-99.1 %, another builder on the machine), which exit 0 as the brief expects; all 16 `:weather-state` verdicts pass and none
+reads `absent` (WebGPU `{onState: true, onProvider: true, offState: false, deckOffAfterDisable: true}`, WebGL all false). The 8
+new WebGL frames against the 16 banked instrument frames (`w3-daylight-20261031/{BEFORE,TIP}/ew/E-W-*-webgl-run{0,1}.png`): 32 of
+32 pairs 0 px, max channel 0 (`pixelDiff`, tolerance 0), and run 0 against run 1 0 px on all four cells, so the 240-frame settle
+holds. WebGPU equals the banked TIP frames (`b4bf6307cf`) at 0 px on all 8 pairs and differs from the banked BEFORE frames by
+419,796-423,601 px (the W3 difference the W3-DAYLIGHT leg measured; not judged here). **Residuals:** the BEFORE arm (`6b3b80f644`
+with the kit overlaid) was NOT RUN, a seat deferral (it needs a second built tree); the probe's own base-vs-tip pixel comparison
+could not measure on any of the 8 arms (`DX-KIT-BASE-REPORT-ABSOLUTE-PATHS`), and the executor's diff above stood in. The measured
+`E-W-ground|webgpu` PF-3 red this row recorded (6,884.8 -> 8,985.8 ms) is re-measured by Phase 2 item 6, not run. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/LANDING_PACKET_FINDEKANO.md` (W2);
+`round3/findekano/REVIEW_FINDARATO_P1.md` (Premise W2, TF3, mutants 10-14); `round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md`
+(item 2); `round3/edge/kit5-20261031/TIP/ew-kit/landing-cells-report.json` (`verdicts`, `cpuSeries`),
+`TIP/ew-kit-webgl-vs-banked-pixeldiff.json`, `TIP/ew-kit-webgpu-vs-banked-pixeldiff.json`.
 
 ### DX-SPINE-GRAPHIFY-EPERM-WHILE-MCP-OPEN — a full spine build failed with EPERM while the session's MCP server held the database — **CLOSED** (Batch 1639, `76d8fd43b8`)
 
@@ -32871,7 +33004,7 @@ survivors filed in `DX-SPINE-HOOK-RESIDUALS`. The hook ran after Batch 1640's la
 `context-diet/lenwe/LANDING_PACKET_LENWE.md`; `context-diet/lenwe/REVIEW_SERINDE_P1.md` (Behaviour, Mutants);
 `context-diet/istarnie/land-istarnie.log:33`.
 
-### DX-RUNNER-HOMES-SCRIPT-LINE — `parseRunnerHomes` rejects a lane's `SCRIPT:` line, so a lane cannot declare a package.json script change — **OPEN** (landing tooling, small)
+### DX-RUNNER-HOMES-SCRIPT-LINE — `parseRunnerHomes` rejects a lane's `SCRIPT:` line, so a lane cannot declare a package.json script change — **CLOSED** (Batch 1642, `82b8f29e26`)
 
 `parseRunnerHomes` (`Tools/visual-regression/lib/runner-homes.mjs:23-37`) skips blank lines, `#` comments and the `RUN:` line
 (`:27`) and throws "runner-homes: unreadable home line" on anything else (`:32`), including the `SCRIPT:` line the seat's briefs
@@ -32881,8 +33014,17 @@ stripped the line by hand for Batch 1639 and applied the script itself. **Repair
 or applies it as a replacement in the overlay so `spec-runner-homes` can prove the new script, with a synthetic-row case in
 `spec-runner-homes.spec.mjs`. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/lenwe/LANDING_PACKET_LENWE.md`
 (open question 1); `context-diet/lenwe/REVIEW_SERINDE_P1.md` (section (g)); `context-diet/lenwe/RUNNERS_LENWE.txt.as-delivered`.
+**Closed (records round 8): Batch 1642 (`82b8f29e26`; lane Findekano, worker Carnistir; reviewer Findarato P1
+HOLDS-WITH-FIXES).** `parseRunnerLines` / `applyScriptLines` in `lib/runner-homes.mjs` (77 -> 139 lines) give `SCRIPT:` lines
+their own kind, with the seat applier's semantics and order (replacements first, then the home appends); `parseRunnerHomes`
+keeps its return contract; an unknown key is refused through `Object.hasOwn` (so `constructor` is refused too) and a
+parenthesised value is refused. `spec-runner-homes.spec.mjs` 16/16 (9 new); the worker's 4 mutants and the reviewer's three
+(the key check, the order, the parenthesis rule) killed. The reviewer's note N1 that the seat's own applier
+(`apply-script-lines.mjs`) checks `key in pkg.scripts`, which the prototype satisfies, is the seat's; it is outside this
+repository. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/LANDING_PACKET_FINDEKANO.md` (W4);
+`round3/findekano/REVIEW_FINDARATO_P1.md` (N1; mutants 21-23).
 
-### DX-PROVISIONER-AT-999-LINES — `provision-worker-clone.mjs` is one line under the file-size rule and its usage text omits two flags — **OPEN** (tooling, small)
+### DX-PROVISIONER-AT-999-LINES — `provision-worker-clone.mjs` is one line under the file-size rule and its usage text omits two flags — **CLOSED** (Batch 1642, `82b8f29e26`; follow-up `DX-PROVISIONER-SPEC-SOURCE-SLICING`)
 
 `Tools/provision-worker-clone.mjs` is 999 lines at Batch 1640 (`wc -l`; 998 before Batch 1639 added `refreshSpine` at `:387`). The
 next functional change crosses the 1,000-line rule, and its usage block documents neither `--no-spine-seed` nor
@@ -32890,8 +33032,18 @@ next functional change crosses the 1,000-line rule, and its usage block document
 responsibility with its next functional change, and document both flags. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/lenwe/REVIEW_SERINDE_P1.md` (N3);
 `context-diet/lenwe/LANDING_PACKET_LENWE.md` (pieces table).
+**Closed (records round 8): Batch 1642 (`82b8f29e26`; lane Findekano, worker Atarinke; reviewer Findarato P1
+HOLDS-WITH-FIXES).** `Tools/provision-worker-clone.mjs` is 589 lines with `Tools/provision/{args,authorities,steps,run}.mjs`
+(144 / 49 / 303 / 231; `wc -l` at Batch 1643); every flag is in one table, `PROVISION_FLAGS` (13 flags), that generates the usage
+text, which now lists `--no-spine-seed` and `--no-spine-refresh`; the entry runs only as a script (`isMainModule`). The worker
+compared old and new CLIs across 14 sandbox scenarios (only the usage text differs, on purpose); an export-parity fixture from
+the base and `Tools/provision-worker-clone-flags.spec.mjs` (9) pin it; the reviewer found the 7 exports and the 14 base
+function declarations byte-identical in the entry or `Tools/provision/*`. The two existing provisioner specs slice helper blocks
+out of the entry's source, so about 440 lines stay in the entry: `DX-PROVISIONER-SPEC-SOURCE-SLICING`. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/LANDING_PACKET_FINDEKANO.md` (W5; open question 1);
+`round3/findekano/REVIEW_FINDARATO_P1.md` (Premise W5; Behaviour "Provisioner"; mutants 24-25).
 
-### DX-SPINE-HOOK-RESIDUALS — four reviewer residuals of the spine's landing hook and seed refresh — **OPEN** (tooling, small)
+### DX-SPINE-HOOK-RESIDUALS — four reviewer residuals of the spine's landing hook and seed refresh — **CLOSED** (Batch 1642, `82b8f29e26`; one cosmetic residual)
 
 From Batch 1639's review (Serinde P1 HOLDS, notes): (N1) the provisioner's `--no-spine-refresh` wiring
 (`provision-worker-clone.mjs:387`) is unpinned: a `refreshSpine: true` mutant survives. (N2) The seed refresh's 180 s bound
@@ -32903,6 +33055,19 @@ deleted" claim (not reachable with a SQLite holder). (N6) `post-landing-spine.sp
 **Repair:** a provisioning case and an injected small-bound timeout case with mutants; the refusal's wording; the spec's lane name
 from `CESIUM_LANE`. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/lenwe/REVIEW_SERINDE_P1.md` (N1, N2,
 N4-N6).
+**Closed (records round 8): Batch 1642 (`82b8f29e26`; lane Findekano, worker Atarinke; reviewer Findarato P1
+HOLDS-WITH-FIXES).** All four items: (N1) `--no-spine-seed` and `--no-spine-refresh` are pinned by parse tests and real-CLI
+sandbox tests (`Tools/provision-worker-clone-flags.spec.mjs`), and the reviewer's N1 mutant at the call site is now killed; (N2)
+`seed-clone.mjs` exports `REFRESH_TIMEOUT_MS` (180,000) and takes an injected `spawn`, and four tests in `spine-freshness.spec.mjs`
+pin the bound, an ETIMEDOUT at a 300 ms bound and its `WARNING:` note; (N6) `post-landing-spine.spec.mjs` takes a per-run root
+`<CESIUM_LANE|seat>-pls-<pid>` removed in `after`; (N4, N5) the refusal says "another process (for example the
+cesium-context-spine MCP server) holds the database", names the file that refused and what was already deleted, and rethrows
+codes other than EPERM, EBUSY and EACCES untouched (`describeResetRefusal`, `Tools/context-spine/schema.mjs:55-66` at Batch
+1643). **Cosmetic residual (Findarato N4):** after a partial delete, a sidecar refusal says both "rebuild with a full build once
+the other process has released the database" and "use the incremental build or close the other process" (`:64-65`). An empty
+`post-landing-spine-spec/` folder from earlier runs is the seat's sweep. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/LANDING_PACKET_FINDEKANO.md` (W5; open question 3);
+`round3/findekano/REVIEW_FINDARATO_P1.md` (N4; mutants 24-27).
 
 ### DX-RULES-DIET — the rules file every agent loads was 77 KB — **CLOSED** (Batch 1640, `12d9bea471`)
 
@@ -32921,7 +33086,7 @@ worktree, six skill directories. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/istarnie/LANDING_PACKET_ISTARNIE.md` (sections 1-3);
 `context-diet/istarnie/REVIEW_INDILZAR_P1.md` (R1, N4); `context-diet/apply-indilzar-r1-n4.mjs`.
 
-### DX-RULES-DIET-2 — the core is 42.9 KB against a 32 KB target — **OPEN** (governance; the maintainer's decision)
+### DX-RULES-DIET-2 — the core is 42.9 KB against a 32 KB target — **CLOSED** (Batch 1643, `7399ee05ad`, middle path, `R-2026-10-31-M2`)
 
 Batch 1640 did not meet the < 32 KB target; its brief's keep-list was the floor. Two options are on the table: one more skill,
 `engine-code-standards` (Architecture Patterns, RTE, Monorepo placement, File Size, Tech Stack, ES6 and the comment rules, 10,959 B
@@ -32930,8 +33095,29 @@ middle path that keeps a five-line summary of RTE, file placement, the comment s
 proposal). The guard already checks such a move. **Decision pending:** the maintainer's. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/istarnie/LANDING_PACKET_ISTARNIE.md` (section 2);
 `round3/brief-records-round7.md` (item 4e).
+**Closed (records round 8).** Ruled "Yes Middle Path." by the maintainer on 2026-10-31 (`R-2026-10-31-M2`,
+`MAINTAINER_RULINGS_2026-10-22.md`). Batch 1643 (`7399ee05ad`; lane Curufinwe; reviewer Nolofinwe P1 HOLDS-WITH-FIXES, R1-R3
+applied by the seat in a re-freeze, patch `41389ac3` -> `35c4876ba37d5da2b945a3aa8ff3a9b5`; landed with the governance flag)
+moved the seven engine-code sections of `CLAUDE.md` (Architecture Patterns with its five subsections, 64-Bit Precision & RTE,
+Monorepo file placement, File Size, Preferred Tech Stack, ES6+ Modernization, Comment & JSDoc Rules) verbatim into
+[`.claude/skills/engine-code-standards/SKILL.md`](../.claude/skills/engine-code-standards/SKILL.md) (11,365 B; description
+186 B as the guard counts `name: description`, 163 B for the string alone), and kept in the core a five-line summary (RTE,
+placement, language, comments, size) with a routing line sending any change under `packages/**` to the skill. Nolofinwe's R1-R3:
+three summary lines were looser or stricter than their source rule (the `any` exception, the decomposition exception, and the
+comment standard's scope) and were corrected before landing. The core went from 42,907 to 33,682 B in git (43,445 to 34,104 B
+CRLF; 538 to 422 lines; about -2.3K tokens per session net of the description; re-measured at Batch 1643 with `git show
+HEAD:CLAUDE.md`). The 33 KB CRLF target is missed by 1,104 B: the summary section (1,278 B CRLF), the Principle 13 landing-hook
+sentence (+393 B) and the skill bullet (71 B). `rules-file-diet-check --base 82b8f29e26`: 76 units, core 52, skills 24, lost 0, no
+equivalences; seven skills wired; the reviewer's five guard mutants killed, and the guard against Batch 1637's 77 KB file places 97
+of 97 units. Batch 1643 also lands Lenwe's wording in Principle 13's "Clones." bullet: the seat refreshes its DB after a landing
+with `node Tools/landing/post-landing-spine.mjs` (Graphify imported incrementally when the landing touched the engine or the
+spine; `npm run context-graphify` works while the MCP server is up; a full `context-build` refuses while it holds the DB), and
+provisioning refreshes a seeded DB to the clone's HEAD (`--no-spine-refresh` skips it). Follow-ups:
+`DX-RULES-ROUTING-LINE-SCOPE`, `DX-PROVISIONER-AUTHORITIES-SKILLS` (records round 8). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/curufinwe/LANDING_PACKET_CURUFINWE.md` (sections 2-3, 7);
+`context-diet/curufinwe/REVIEW_NOLOFINWE_P1.md` (R1-R3, N6, N7; Guard); `migration_doc/RULES_FILE_NOTES.md` section 5.
 
-### DX-DOCS-REFERENCES-TO-MOVED-CLAUDE-SECTIONS — nine live doc references point at `CLAUDE.md` sections that now live in skills — **OPEN** (docs)
+### DX-DOCS-REFERENCES-TO-MOVED-CLAUDE-SECTIONS — nine live doc references point at `CLAUDE.md` sections that now live in skills — **CLOSED** (the nine by Batch 1642; the engine-code references by Batch 1643 and records round 8; residuals listed)
 
 The links resolve to `../CLAUDE.md`, but since Batch 1640 the sections are not in it: `DEBUGGING_GUIDE.md:1523` ("Logging & Debug
 Pragmas"), `:1592` ("Playwright / Browser Testing"), `:1917` ("WGSL Shader Pipeline"), `:2320` and `:2347` ("Build Variants");
@@ -32939,6 +33125,28 @@ Pragmas"), `:1592` ("Playwright / Browser Testing"), `:1917` ("WGSL Shader Pipel
 The core's "On-demand Skills" section (`CLAUDE.md:512`) names each topic, so a reader can still get there. **Repair:** repoint the
 nine to the skill files; historical audits and campaign guides stay as they are. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/istarnie/REVIEW_INDILZAR_P1.md` (N5).
+**Closed (records round 8).** Batch 1642 (`82b8f29e26`; lane Findekano, the lead's item; reviewer Findarato P1 HOLDS-WITH-FIXES)
+points all nine at the skill files (`../.claude/skills/<skill>/SKILL.md`; the old "Bundle-size table" pointer in
+`DEBUGGING_GUIDE.md` now points at `BUILD_AND_VARIANTS.md` section 2, where the table is). Residual, outside the nine Indilzar
+listed and left for a follow-up: `BUILD_AND_VARIANTS.md:2` (its supersedes note still calls the CLAUDE.md build sections
+authoritative) and `:431-432` (keep in sync with `CLAUDE.md`'s build sections); both sections now live in the
+`build-and-variants` skill (Findarato TF5; both lines unchanged at Batch 1643). Batch 1643 (`7399ee05ad`; lane Curufinwe;
+reviewer Nolofinwe P1 HOLDS-WITH-FIXES) moved seven more sections into `.claude/skills/engine-code-standards/SKILL.md` and
+repointed the LIVE references (`CONTEXT_SPINE_GUIDE.md:153,155`, `FEATURE_RENDERER_ONBOARDING.md:251`, `ARCHITECTURE.md:570`,
+`LARGE_DYNAMIC_OBJECTS_DESIGN.md:200`, `DEBUGGING_GUIDE.md:1948`, `ES6_MODERNIZATION_STATUS.md:6,176`,
+`BUILD_AND_VARIANTS.md:16,346`, `ROADMAP_AND_DEFERRED_WORK.md:850`, `VEGETATION_SYSTEM_DESIGN.md:140,144`). This round repoints
+the two ledger references the packet left to the records (this file's "File Size & Code Organization" quote in the `C13-N48`
+debt note and the 64-bit-precision section cited in the `previousViewProjection` tail derivation) to the skill. Left as they are: two engine
+comments (`WebGPUGaussianSplatRenderer.ts:465`, `WebGPUGlobeSurfaceCameraUB.ts:102`) and three `Tools/visual-regression` spec
+messages (`gsplat-harness.spec.mjs:2686,7744`, `pick-visibility-matrix-verdicts.spec.mjs:983`), all still true of the core's
+summary, for the next lane that touches those files; rulings, the handoff log, dated audits, queues and campaign guides; and the
+references Nolofinwe N3 lists, each historical or still true of the core (`WEBGPU_MIGRATION_STATUS.md:1485`,
+`WEBGPU_MIGRATION_BACKLOG.md:389`, `WEBGPU_DEBUGGING_LOG.md:12702`, `NEXT_SESSION_HANDOFF.md:1051,1073`, this file's
+"~1,000-line decomposition guidance" row, `GltfLoader.js:1420`). Nolofinwe N4: the quotes at `ES6_MODERNIZATION_STATUS.md:6`
+("you are not otherwise touching") and `:176` ("~1,000 lines SHOULD") differ slightly from the skill's text; both predate Batch
+1643. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/LANDING_PACKET_FINDEKANO.md` (Lead item);
+`round3/findekano/REVIEW_FINDARATO_P1.md` (TF5; "Doc repoints"); `context-diet/curufinwe/LANDING_PACKET_CURUFINWE.md` (sections 4, 7);
+`context-diet/curufinwe/REVIEW_NOLOFINWE_P1.md` (N3, N4).
 
 ### DX-RULES-DIET-GUARD-RESIDUALS — the diet guard's git-ignore check is unpinned and its linked-page corpus is wide — **OPEN** (tooling, small)
 
@@ -32952,7 +33160,7 @@ old units are satisfiable that way today, all three still in the core. **Repair:
 `RULES_FILE_NOTES.md` plus an allowlist, or a warning for a unit found only in a linked page. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/istarnie/REVIEW_INDILZAR_P1.md` (N1, N2).
 
-### DX-EVIDENCE-OUTPUT-RETENTION — the seat's gitignored evidence folder holds 39,284 MB with no retention policy — **OPEN** (housekeeping; a maintainer decision under `R-2026-10-30-M4`)
+### DX-EVIDENCE-OUTPUT-RETENTION — the seat's gitignored evidence folder holds 39,284 MB with no retention policy — **OPEN** (housekeeping; decided by `R-2026-10-31-M1`, which lifts the `R-2026-10-30-M4` hold for this folder only, after every landing is in; the curation has not run)
 
 **Measured (the seat, 2026-10-31 10:3x EDT):** the seat's `Tools/visual-regression/output/` holds 39,284 MB of repatriated Edge
 evidence, every job since the evidence-repatriation rule of 2026-08-21, while the immutable copies live in
@@ -32962,6 +33170,16 @@ sweep the rest by positive list). No sweep is claimed: housekeeping is held (`R-
 `MAINTAINER_RULINGS_2026-10-22.md:174`), so the policy is the maintainer's. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/brief-records-round7.md` (item 4c, the seat's measurement);
 `context-diet/istarnie/REVIEW_INDILZAR_P1.md` (N9).
+**Decided (records round 8):** the maintainer ruled the policy on 2026-10-31 (`R-2026-10-31-M1`, quoted in
+`MAINTAINER_RULINGS_2026-10-22.md`): after every landing is in, reduce the folder to "only the best 30 screenshots at most per
+week", which "need to show novel improvement over the previous weeks and just generally be cool or interesting", and dump the
+rest. The seat's measurement for
+the ruling: 39.3 GB, 28,090 PNG of 112,379 files, 2026-04-29..2026-10-31. Scope: the seat's gitignored
+`Tools/visual-regression/output/` only; not the immutable bank, not the worker archive. The seat's draft curation brief (two
+phases, propose then sweep by positive list, after the maintainer approves the keep lists) is banked as
+`cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/brief-evidence-curation-draft.md`. Nothing has been swept. The row
+closes when the curation lands. **Source:** `round3/brief-records-round8.md` (item 6, the maintainer's words and the measurement);
+`context-diet/brief-evidence-curation-draft.md`.
 
 ### Notes (no new ids)
 
@@ -32990,3 +33208,161 @@ sweep the rest by positive list). No sweep is claimed: housekeeping is held (`R-
 - **Message claims of Batches 1638-1640 read against the receipts:** of Batch 1638 only the cloud readiness wait has an Edge
   measurement (W3-DAYLIGHT); its other pieces are measured in Node, their Edge legs owed as listed above. Batches 1639 and 1640 claim
   nothing visual.
+
+## 2026-10-31 — records round 8: Batches 1642-1643, the probe-kit round 5, the engine-code-standards move and the KIT5 Edge leg's Phase 1
+
+On 2026-10-31 two batches landed after records round 7 (Batch 1641, `c80efaa927`), read at Batch 1643 with `git log
+--format='%h %H %T %s' c80efaa927..HEAD`; their landing table is `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-31 —
+Batches 1642-1643 …)". Batch 1642 (`82b8f29e26`, pushed 12:57 EDT) is the probe-kit round 5 (lane Findekano, Opus lead; Sonnet
+workers Maitimo, Makalaure, Tyelkormo, Carnistir and Atarinke; reviewer Findarato, P1 HOLDS-WITH-FIXES, no REQUIRED fix, five
+text fixes TF1-TF5 to the packet and the records rows, patch unchanged `f5f11b4c044441566edce8ec4298f138`; tools-only, 58 paths;
+the lead's 12 mutants and the reviewer's 27 killed). Batch 1643 (`7399ee05ad`, pushed 13:43 EDT) is `DX-RULES-DIET-2`'s middle
+path (lane Curufinwe; reviewer Nolofinwe, P1 HOLDS-WITH-FIXES, R1-R3 applied by the seat in a re-freeze `41389ac3` ->
+`35c4876ba37d5da2b945a3aa8ff3a9b5`; a governance landing under the seat's lease; 15 paths). Banks:
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/`, `lanes-2026-10-31/context-diet/curufinwe/` and the landing
+logs `round3/landing-logs/land-findekano.log`, `land-curufinwe.log` (each shows the `main -> main` push and "post-landing-spine
+OK"). **Byte check (this round):** each banked lane patch applied in a temp index to its landed parent (1642 on `c80efaa927`,
+1643 on `82b8f29e26`) gives a tree that differs from the landed one only in `migration_doc/TOOLING_CATALOG.md` (regenerated at
+the seat) and, for 1642, `package.json` (the seat's runner homes). One Edge leg measured the round: the KIT5 leg's Phase 1
+(executor Eowyn, 13:05-13:40 EDT, tree Batch 1642 `82b8f29e26`, served == disk; receipt
+`round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md`, evidence `round3/edge/kit5-20261031/`, also repatriated to the seat's
+`Tools/visual-regression/output/wave-end/kit5-20261031/`). **Phase 2 (items 4 and 6, the two performance cells on a quiet
+machine) has NOT run**; records round 9 records it. Rows updated in place by this round:
+`NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY` (measured; the kit half closed, the cloud program's half open), `DX-RAW-SHADER-READERS`
+(fixture literals outside the tripwire), `DX-KIT-DIVE-GATE-STEP` (the piece closed), `DX-KIT-PF3-STARTUP-CEILING-WEBGL` (still
+open, Phase 2 item 4), `DX-KIT-LANDING-SPECS-OVER-SIZE` (the file split closed, the mutants open),
+`NEW-CLOUD-W3-WEATHER-MAP-ON-CARVES-DAYLIGHT` (re-read), `DX-KIT-PF3-CEILING-ON-MEDIAN`, `DX-KIT-CAPTURE-SEAM-CLOSE-EXEMPTION`,
+`DX-RUNNER-HOMES-SCRIPT-LINE`, `DX-PROVISIONER-AT-999-LINES`, `DX-SPINE-HOOK-RESIDUALS`, `DX-RULES-DIET-2` and
+`DX-DOCS-REFERENCES-TO-MOVED-CLAUDE-SECTIONS` (closed), `DX-KIT-WEATHER-MAP-FIRST-FRAME-BLACK` and
+`DX-W3-EW-INSTRUMENT-UNMEASURED-EXIT` (closed, measured), and `DX-EVIDENCE-OUTPUT-RETENTION` (decided). This round also repoints
+this file's two references to the moved `CLAUDE.md` sections (the `C13-N48` debt note, the `previousViewProjection` tail
+derivation) to the skill, updates `CONTEXT_SPINE_GUIDE.md`'s EPERM rule to quote the refusal at the tip, and records
+`R-2026-10-31-M1` and `-M2` in `MAINTAINER_RULINGS_2026-10-22.md`. The rows below are new.
+
+### NEW-CLOUD-WEATHER-MAP-OFFLINE-GLOBE-ON-DENSE-RED — with `--offline-globe` the weather map's ON view never renders dense cloud, so `on-dense` fails on every run — **OPEN** (measured red, unattributed; WebGPU only by design)
+
+- **Measured (KIT5 Phase 1, item 1a; tree Batch 1642 `82b8f29e26`):** `probe-weather-map.mjs --clock 2026-06-21T18:00:00Z
+  --cloud-wind-speed 0 --cloud-quality 32 --offline-globe --runs 3` exits 1. `on-dense` fails on all three runs: "ON renders
+  dense clouds somewhere (max 0.190 > 0.3)" (onMax 0.1900 / 0.1898 / 0.1898 against the 0.3 bar); `off-renders`, `on-carves`,
+  `on-range` and `clean` pass on all three. OFF fractions 0.489-0.536 on that leg. The same probe with the two cloud pins and
+  the network globe (item 1b, three runs) passes `on-dense` at onMax 0.9997 with OFF 0.636-0.993, and with no pins (item 1c)
+  passes `on-dense` on all three runs (onMax 0.9976 / 1.0000 / 1.0000).
+- **Candidates, not causes:** the offline globe changes three things at once: no imagery (`imageryLayerCount: 0`), ellipsoid
+  terrain (`terrainIsEllipsoid: true`) and `requestRenderMode` (`&offline=true`, `Apps/CesiumViewer/CesiumViewerStartupOptions.js:18-25`).
+  No arm isolates them.
+- **Next step:** the kit's Edge job for the row is a two-arm run that differs only in `--offline-globe`, read per location.
+  **Owner:** the cloud program. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md`
+  (item 1a, finding F-1a-on-dense-red); `round3/edge/kit5-20261031/1a/weather-map-report.json` (`runs[].scored`).
+
+### NEW-CLOUD-WEATHER-MAP-RUN0-ON-EQUALS-OFF — with no pins, run 0 of three captured weather-map-ON views that track the OFF deck — **OPEN** (measured red, unattributed; WebGPU only by design)
+
+- **Measured (KIT5 Phase 1, item 1c; tree Batch 1642):** `probe-weather-map.mjs --clock 2026-06-21T18:00:00Z --runs 3` exits 1 on
+  `run0:on-carves` ("onMin 0.467 < 0.5 * offMin 0.463" false) and `run0:on-range` ("0.531 > 0.534" false). In run 0 the ten ON
+  fractions track the OFF ones (OFF 0.643, 0.649, 0.679, 0.550, 0.919, 0.997, 0.463, 0.997, 0.628, 0.576 against ON 0.610, 0.650,
+  0.678, 0.548, 0.919, 0.998, 0.467, 0.997, 0.627, 0.573); ON at (-110, 30) is 0.4667 against an OFF minimum of 0.4634. Runs 1
+  and 2 show the carved ON pattern and pass all five checks: ON at (-110, 30) 0.1056 against offMin 0.4632 and 0.4626. Not a black
+  frame (first frame 100 / 100 / 99.99987 % non-black) and not a refusal, so the first-frame guard is not the gate that would catch
+  it.
+- Also recorded under `NEW-CLOUD-W3-WEATHER-MAP-ON-CARVES-DAYLIGHT`: its daylight bar now reads offMin about 0.463 on the passing
+  runs where round 7 recorded 0.130.
+- **Owner:** the cloud program. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md`
+  (item 1c, finding F-1c-run0-on-equals-off); `round3/edge/kit5-20261031/1c/weather-map-report.json` (`runs[].scored`).
+
+### DX-KIT-WEATHER-MAP-RUNS-OVERWRITE — `probe-weather-map.mjs --runs N` overwrites each run's PNGs, so one invocation leaves nothing to compare across runs — **OPEN** (probe kit)
+
+The probe writes `located-*.png` and the two wide views under the same names every run, so after `--runs 3` only the last run's
+PNGs are on disk and `pixelDiff` cannot compare runs from one invocation. On the KIT5 leg the executor stated item 1a's
+run-to-run result from the per-capture sha256 the runtime records, and ran item 1b as three `--runs 1` invocations with separate
+`--output` folders; item 1c's OFF run-to-run has no pixel count for that reason. **Fix shape (for the kit lane, not here):**
+per-run subfolders or run-suffixed names, as `probe-landing-cells` does. **Owner:** the kit. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md` (item 1a, finding F-1a-overwrite;
+item 1c); evidence `round3/edge/kit5-20261031/1a/` (one set of PNGs for three runs), `1b/run0` … `1b/run2`.
+
+### DX-KIT-BASE-REPORT-ABSOLUTE-PATHS — a banked landing report holds absolute frame paths into its executor clone, so `--base-report` cannot open them once the clone is gone — **OPEN** (probe kit)
+
+The banked W3-DAYLIGHT BEFORE `landing-cells-report.json` records its capture paths absolutely into the deleted clone
+`cesium-edge-w3before-20261031`, so on the KIT5 leg's E-W TIP arm `--base-report` base-vs-tip pixel comparison hit ENOENT on every
+arm (`comparison[arm].pixels.measured: false` on all 8, each reason an ENOENT on a frame under the BEFORE clone's
+`Tools/visual-regression/output/wave-end/w3-daylight-20261031/BEFORE/ew/`, e.g. `E-W-ground-webgl-run0.png`)
+and could not measure, although the seat's copy has the same file names next to the report; the executor's diff against the banked
+frames stood in (`DX-W3-EW-INSTRUMENT-UNMEASURED-EXIT`). The KIT5 reports themselves record absolute paths into
+`cesium-edge-kit5-20261031` the same way (read in `water-1f/water-cells-report.json`, `summary["1f"].captures[].path`). **Fix
+shape:** report-relative paths resolved against the report's directory. **Owner:** the kit. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md` (item 2, finding F-2-base-paths);
+`round3/edge/kit5-20261031/TIP/ew-kit/landing-cells-report.json` (`comparison`).
+
+### DX-KIT-WATER-1F-CELL-NOT-COMPARABLE — water cell 1f passes, but its two renderers' frames differ in size and carry the viewer chrome, so they cannot be pixel-compared — **OPEN** (probe kit)
+
+On the KIT5 leg (item 5, tree Batch 1642) `probe-water-cells.mjs --cells 1f --arm after --runs 1` exits 0 with 4 of 4 verdicts
+passing (stage and `2e-no-device-fault` on both renderers); ion terrain resolved as `CesiumTerrainProvider` with
+`hasWaterMask: true`; the Sandcastle 2 served files 8 of 8 equal to disk. But `summary["1f"].paritySizes` reads WebGL 1280x687
+against WebGPU 1280x520, so `parityPct` is `[null]` and `repeatPct` null on both (one run), and both frames carry the toolbar,
+the open navigation-help panel and the ion default-token credit banner over the canvas (read from the two PNGs by the executor and
+again by this round). So the two renderers cannot be pixel-compared from this cell as captured. No BEFORE arm was run, so the 1f
+BEFORE-vs-AFTER band is not judged. **Repair (for the kit lane):** capture the 1f canvas at one size on both renderers with the
+chrome hidden, as the landing cells do. **Owner:** the kit. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md` (item 5, findings F-5-sizes,
+F-5-chrome); `round3/edge/kit5-20261031/water-1f/water-cells-report.json`; contact sheet
+`kit5-20261031/water-1f/sheet/2026-10-31/kit5-water-1f/index.html`.
+
+### DX-KIT-DIVE-GATE-CELLS — the dive-gate step has no rigs, no probe call site and no Edge run — **OPEN** (probe kit)
+
+`lib/globe-dive-gate-steps.mjs` (Batch 1642, `DX-KIT-DIVE-GATE-STEP`) is imported only by its spec. Owed: the five review cells
+as rigs plus a probe call site, each with a collision-on control where the gate should allow: the Geirangerfjord wall, Lake
+Ontario on a terrain mask, Death Valley (expect `refuse`), an ellipsoid globe with no masks at sea level, and sea level over
+upsampled ocean tiles; then an Edge job. `pagePlaceDiveCamera` reads `globalThis.Cesium`, which Apps/CesiumViewer does not expose
+(only Sandcastle's Helpers.ts sets it): the call-site lane either drives the cells on a Sandcastle page or places the camera
+through a dynamic `import("/Build/CesiumUnminified/index.js")`, as `probe-weather-map.mjs` `SET_VIEW` does, before any cell is
+run (Findarato TF2; re-read at Batch 1643: `lib/globe-dive-gate-steps.mjs:59`, the refusal at `:64-65`;
+`packages/sandcastle/src/Helpers.ts:153`). The KIT5 leg confirmed it at Batch 1642 and recorded its item 3 NOT RUN by design. The
+fake viewer in the step's spec mirrors the engine rule, so the real controller's behaviour is this Edge job's to show. **Owner:**
+the kit. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/LANDING_PACKET_FINDEKANO.md` (W3; Edge
+item 3); `round3/findekano/REVIEW_FINDARATO_P1.md` (TF2); `round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md` (item 3).
+
+### DX-PROVISIONER-SPEC-SOURCE-SLICING — the two provisioner specs slice helper blocks out of the entry's source, which pins about 440 lines in the entry — **OPEN** (tooling, small)
+
+After Batch 1642's decomposition (`Tools/provision-worker-clone.mjs` 589 lines plus `Tools/provision/*`), the two existing
+provisioner specs still load three helper blocks by slicing them out of the entry's source text, so those blocks (about 440
+lines) stay in the entry; the lane held them because its brief said those specs stay green unchanged (22 + 7 pass). **Repair:**
+move the blocks to `Tools/provision/` and change the three loader paths in the specs. **Owner:** tooling. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/LANDING_PACKET_FINDEKANO.md` (W5; open question 1).
+
+### DX-RULES-ROUTING-LINE-SCOPE — the engine-code-standards routing line and skill description trigger on `packages/**`, but several moved rules bind outside it — **OPEN** (governance; a decision owed)
+
+No rule is lost (the verbatim check and the guard both show it), but discovery narrows: the ES6 rule covers any file with more
+than 10 changed lines, RxJS applies "in production code and test pages alike", enumerated keys apply to any code, and the
+placement rule names root `Source/`, while the core's routing line ("Any change under `packages/**` starts by reading
+`/engine-code-standards`.", `CLAUDE.md` at Batch 1643) and the skill's description trigger only on `packages/**`. A lane that
+touches only `Tools/`, root `Specs/`, `Apps/` or `scripts/` is no longer shown those rules every session; the core summary keeps
+only the `any` ban and placement. **Decision owed:** widen the routing line and description (JS/TS code anywhere), or restate the
+ES6 trigger in the core, or split the skill. **Owner:** the seat (governance lease). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/curufinwe/REVIEW_NOLOFINWE_P1.md` (N1).
+
+### DX-PROVISIONER-AUTHORITIES-SKILLS — the provisioner copies `CLAUDE.md` into a clone but not `.claude/skills/**` — **OPEN** (tooling, small)
+
+`Tools/provision/authorities.mjs` `PROVISION` (`:12-37` at Batch 1643) copies `CLAUDE.md` and `AGENTS.md` from the source into a
+clone ("a clone made before an edit lands is briefed from stale rules"), but not `.claude/skills/**`, so a clone at a HEAD older
+than Batch 1643 gets a core that names `/engine-code-standards` with no skill file to read. The gap predates Batch 1643 (it
+exists since the six skills of Batch 1640); this move puts the most weight on it yet. **Repair:** add `.claude/skills/` to
+`PROVISION`, or refuse to copy a core whose skills the clone lacks, with a spec and an inertness mutant. **Owner:** tooling.
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/curufinwe/REVIEW_NOLOFINWE_P1.md` (N2).
+
+### Notes (no new ids)
+
+- **Reviewer notes on Batch 1642 not filed as rows:** Findarato N3 (the spec's KIT3 fixture is not the banked A2 arm; both read
+  `within`, re-derived from the banked report) and N5's second half (the default weather-map run now also waits on pipelines and
+  runs the guard before its first capture, by design). N1 is recorded under `DX-RUNNER-HOMES-SCRIPT-LINE` (the seat's helper is
+  outside this repository), N2 under `DX-RAW-SHADER-READERS`, N4 under `DX-SPINE-HOOK-RESIDUALS`, N5's first half under
+  `DX-KIT-CAPTURE-SEAM-CLOSE-EXEMPTION`.
+- **Reviewer and lane notes on Batch 1643 not filed as rows:** the 33 KB CRLF target is missed by 1,104 B and the lane's trim
+  options (drop the routing line, shorten the Clones sentence, or move Probe Kit or Branch Transparency into a skill) are the
+  seat's call (Curufinwe section 8 question 1, Nolofinwe N6: "A rule's fidelity outranks the byte target"); the summary's
+  `CameraUniforms` tail line and the skill move together if `AR-D12` rules a change (question 2); `DX-RULES-DIET-GUARD-RESIDUALS`
+  N2 masks nothing here (Nolofinwe N5: with the skill removed the guard reports lost 24); the packet's "186 B description" is the
+  guard's `name: description` figure, 163 B for the string (N7). The packet's incident (a double-quoted shell string ran its
+  backticks; the only side effect was an allowed `npm run context-refresh` in the lane clone) was checked by the reviewer and found
+  no tree effect.
+- **Message claims of Batches 1642-1643 read against the receipts:** Batch 1642's message names its Edge debt (the pins leg, the
+  E-W cells, the dive cells); Phase 1 measured the first two and recorded the third NOT RUN by design. Its claim that "a complete
+  capture survives a lingering browser close" is measured in Node for `capture()`; on Edge only the runtime's side was exercised.
+  Batch 1643 claims nothing visual.

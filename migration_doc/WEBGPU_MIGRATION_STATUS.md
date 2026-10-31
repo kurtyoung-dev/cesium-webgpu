@@ -190,6 +190,33 @@ loaded-machine landing run, the water 2g read and bookmark sheets); the weather-
 (`NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY`, `DX-KIT-WEATHER-MAP-FIRST-FRAME-BLACK`); `DX-KIT-PF3-CEILING-ON-MEDIAN`; the
 maintainer's decision on `DX-RULES-DIET-2`; `NEW-2D-WEBGPU-OCEAN-HIGHLIGHT-FADE`; the Antigravity water program and the W4
 regeneration stand as above. Open after these landings: the rows of `DEFERRED_WORK.md` section "2026-10-31 — records round 7".
+*[Records round 8:]* Batch 1641 (`c80efaa927`) recorded this table; the probe-kit round 5 and the engine-code-standards move
+followed as Batches 1642-1643 (the table below), the KIT5 Edge leg's Phase 1 measured the weather-map pins, the first-frame
+guard and the E-W cells, and the maintainer decided `DX-RULES-DIET-2` ("Yes Middle Path.", `R-2026-10-31-M2`); no Antigravity
+water batch has landed by Batch 1643 (`git log`).
+
+## Landing record (2026-10-31 — Batches 1642-1643: the probe-kit round 5 and the engine-code-standards move)
+
+A landing table only. Each hash and tree was read at Batch 1643 with `git log --format='%h %H %T %s' c80efaa927..HEAD`; each
+landing log shows the `main -> main` push and "post-landing-spine OK" (1642 `lanes-2026-10-31/round3/landing-logs/land-findekano.log`,
+12:57 EDT; 1643 `land-curufinwe.log`, 13:43 EDT). "Bank" paths are under `cesium-webgpu-worker-archive/lanes-2026-10-31/`; the rows
+are in `DEFERRED_WORK.md` section "2026-10-31 — records round 8", which also names the byte check (each banked lane patch
+reproduces its landed tree except the tooling catalog and, for 1642, the seat's runner homes). One Edge leg (executor Eowyn)
+measured the round: the KIT5 leg's Phase 1 on Batch 1642's tree (13:05-13:40 EDT; `round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md`);
+its Phase 2, the two performance cells on a quiet machine, has not run. 1643 has no visual acceptance.
+
+| batch | hash (tree) | what is now true | lane lead | reviewer | bank |
+| --- | --- | --- | --- | --- | --- |
+| 1642 | `82b8f29e26` (`afddf007`) | The weather-map probe waits for pipelines and refuses a black first frame instead of scoring it, and can pin wind, quality and an offline globe with read-back; the four W3 E-W weather-state cells are tracked kit cells (rigs `w3-ew-*`); PF-3's ceiling reads the tip median; a complete capture survives a lingering browser close through one shared exemption piece; the dive-gate step piece exists (no call site yet); `landing-cell-stage.spec.mjs` and `context-spine.spec.mjs` are split with every test kept; the provisioner is 589 lines with a flag table; the spine refusal names "another process"; a RUNNERS file may declare `SCRIPT:` lines; nine doc references point at the skill files. Tools-only, 58 paths; measured on Edge by KIT5 Phase 1 (no black first frame on 9 of 9 runs, `nonBlackPct` 100 on eight and 99.99987 on one; the OFF deck byte-identical across runs with all three pins; E-W WebGL 0 px on 32 of 32 pairs, 16 of 16 weather-state verdicts pass). | Findekano (workers Maitimo, Makalaure, Tyelkormo, Carnistir, Atarinke) | Findarato (P1 HOLDS-WITH-FIXES: TF1-TF5, text in the packet and the records rows; patch unchanged `f5f11b4c`) | `round3/findekano/` |
+| 1643 | `7399ee05ad` (`1e859aae`) | `CLAUDE.md` is a 34 KB core (33,682 B in git, 34,104 B CRLF; from 43 KB): its seven engine-code sections are the on-demand skill `.claude/skills/engine-code-standards/SKILL.md`, moved verbatim; the core keeps a five-line summary (RTE, placement, language, comments, size) and routes any change under `packages/**` to the skill; Principle 13's Clones bullet names the landing hook; nine live migration docs point at the skill. `rules-file-diet-check` places 76 of 76 units, lost 0. Landed with the governance flag under the seat's lease. | Curufinwe | Nolofinwe (P1 HOLDS-WITH-FIXES: R1-R3, three summary lines corrected to their source rules, applied by the seat in a re-freeze `41389ac3` -> `35c4876b`) | `context-diet/curufinwe/` |
+
+Next: the KIT5 leg's Phase 2 (PF-3 on the median, item 4, the acceptance of `DX-KIT-PF3-STARTUP-CEILING-WEBGL`; the E-W
+first-cloud-frame red re-measured, item 6); the two measured weather-map reds Phase 1 found
+(`NEW-CLOUD-WEATHER-MAP-OFFLINE-GLOBE-ON-DENSE-RED`, `NEW-CLOUD-WEATHER-MAP-RUN0-ON-EQUALS-OFF`) and the cloud program's half of
+`NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY`; the kit rows Phase 1 filed and the dive cells (`DX-KIT-DIVE-GATE-CELLS`); the
+evidence curation `R-2026-10-31-M1` rules, after every landing is in; `NEW-2D-WEBGPU-OCEAN-HIGHLIGHT-FADE`; the Antigravity
+water program and the W4 regeneration stand as above. Open after these landings: the rows of `DEFERRED_WORK.md` section
+"2026-10-31 — records round 8".
 
 ---
 

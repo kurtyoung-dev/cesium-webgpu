@@ -186,3 +186,31 @@ recorded as notes in `DEFERRED_WORK.md` section "2026-10-31 — records round 4"
 | id | ruling, in one sentence | source |
 |---|---|---|
 | S19 (proposal) | The first capture of cell `E-C-chukotka` (rig `water-antimeridian-chukotka`, WebGPU against the same run's WebGL, Batch 1628) registers its band: PASS is a mismatch of at most 48.5 % at tolerance 0 AND 0 px with any channel delta of 8 or more, because the measured 47.7788 % is nearly all a 1-level base-colour floor (440,159 of 440,329 px; the same floor reads 37 % on E-M-water). The maintainer may overrule. | the seat's addendum `cesium-webgpu-worker-archive/lanes-2026-10-30/salvage-night/rows-for-records-r2-addendum.md` (section "S19"); the kit receipt `lanes-2026-10-30/kit-pieces/EDGE_RECEIPT_EOWYN_KIT.md` (section 1 cell 4; section 2 "E-C-chukotka", the executor's proposed band) |
+
+## Maintainer rulings of 2026-10-31 (R-2026-10-31-M1, -M2)
+
+*(Appended by records round 8.)* Each heading quotes the maintainer verbatim; the paragraph under it is the seat's reading.
+Source for both: the seat's records round 8 brief, `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/brief-records-round8.md`
+(item 6), which carries the maintainer's words; M1's first sentence is also quoted in the seat's draft curation brief
+`lanes-2026-10-31/context-diet/brief-evidence-curation-draft.md`, and M2 in the lane brief
+`lanes-2026-10-31/context-diet/brief-diet2-curufinwe.md` (12:1x EDT).
+
+### R-2026-10-31-M1 (maintainer, 2026-10-31, quoted, on the seat's evidence folder): "after we land everything, we can take a look at reducing this to only the best 30 screenshots at most per week, and then dumping everything else that has no value. For the screenshots to make the 30 cutlist, they need to show novel improvement over the previous weeks and just generally be cool or interesting" and, asked whether anything was unclear: "most of the files are OBE and we just want some visual history to track the progress of our updates"
+
+Seat reading: evidence curation. After every landing is in, the seat's gitignored `Tools/visual-regression/output/` (measured
+2026-10-31: 39.3 GB, 28,090 PNG of 112,379 files, 2026-04-29..2026-10-31) is reduced to at most 30 screenshots per week, each
+showing novel improvement over the previous weeks and of general interest, kept as the visual history of the fork's progress, and
+everything else in that folder is deleted. This lifts the `R-2026-10-30-M4` housekeeping hold for that folder only. Not in scope: the immutable bank
+`cesium-webgpu-visual-evidence/` and the worker archive `cesium-webgpu-worker-archive/`. Irreversible, so two-phase (propose the
+keep lists, then sweep by positive list after the maintainer approves them). Row: `DEFERRED_WORK.md`
+`DX-EVIDENCE-OUTPUT-RETENTION` (decided, not yet run).
+
+### R-2026-10-31-M2 (maintainer, 2026-10-31 12:1x EDT, quoted, on `DX-RULES-DIET-2`): "Yes Middle Path."
+
+Seat reading: of the row's two options, the middle path: the seven engine-code sections of `CLAUDE.md` move into the on-demand
+skill `engine-code-standards`, and the core keeps a five-line summary (RTE, file placement, language, the comment standard, file
+size) with a line that routes any change under `packages/**` to the skill. Executed by Batch 1643 (`7399ee05ad`, lane Curufinwe,
+reviewer Nolofinwe); `DX-RULES-DIET-2` is closed with the 33 KB target missed by 1,104 B.
+
+**Seat note (no ruling id):** the three claude.ai-synced plugins, whose per-session cost the seat measured at about 1,300 tokens
+(`DEFERRED_WORK.md` section "2026-10-31 — records round 7", Notes), stay as they are: the maintainer said "okay for now".

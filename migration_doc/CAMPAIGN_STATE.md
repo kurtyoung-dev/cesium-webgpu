@@ -762,9 +762,9 @@ ruling `R-2026-10-24-S12`. Rows: `DEFERRED_WORK.md` ledger intake 2 (Batch 1591)
 table: `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-23/24 …)"; from 2026-10-30 also `DEFERRED_WORK.md`
 "2026-10-30 — records batch 3" and "… round 2", and the landing tables "Landing record (2026-10-29/30 …)" and "Landing
 record (2026-10-30 — Batches 1608-1623 …)"; from 2026-10-31 also `DEFERRED_WORK.md` "2026-10-31 — records round 4" and
-"… records round 5", "… records round 6" and "… records round 7" and the landing tables "Landing record (2026-10-31 — Batches
-1624-1628 …)", "Landing record (2026-10-31 — Batches 1629-1631 …)", "Landing record (2026-10-31 — Batches 1632-1636 …)" and
-"Landing record (2026-10-31 — Batches 1637-1640 …)".
+"… records round 5", "… records round 6", "… records round 7" and "… records round 8" and the landing tables "Landing record
+(2026-10-31 — Batches 1624-1628 …)", "Landing record (2026-10-31 — Batches 1629-1631 …)", "Landing record (2026-10-31 — Batches
+1632-1636 …)", "Landing record (2026-10-31 — Batches 1637-1640 …)" and "Landing record (2026-10-31 — Batches 1642-1643 …)".
 **Landed:** the water as Batches 1585/1586 (`16e093aef6`, `156509c929`, committed 2026-10-23 23:27 and 23:31 EDT; tree
 `9e6bcfb7`; opt-in, the default globe unchanged); then, on 2026-10-24, W0 (1587), KT round 5 (1588), KT-2 round 3 (1589),
 F-4 (1590), LEDGER-2 (1591), catalog A1 (1592) and W1, the cloud core and the three-word define registry (1593); and the
@@ -825,6 +825,17 @@ fourth (PF-3 on WebGL 2D, repaired by Batch 1638, its Edge leg owed); the W3 day
 (both probes exit 0 on both arms at a pinned daylight clock) and re-attributed the weather-map OFF instability away from W3 (BEFORE
 moves 99 % too). Next are the Edge legs Batch 1638 still owes and the maintainer's decision on the 32 KB rules target
 (`DX-RULES-DIET-2`); the Antigravity water program and W4 below are unchanged.
+**Probe-kit round 5 and the engine-code-standards move (2026-10-31, records round 8):** Batches 1642-1643 (`82b8f29e26`,
+`7399ee05ad`; lanes Findekano and Curufinwe, reviewers Findarato and Nolofinwe, both HOLDS-WITH-FIXES with text fixes only)
+landed: the probe kit closes what its round-4 Edge legs and reviews left open (the weather-map first-frame guard and pin dials,
+the E-W weather-state cells as tracked kit cells, PF-3's ceiling on the median, one shared lingering-close exemption, the
+dive-gate step piece, two spec splits and the provisioner's decomposition), and `CLAUDE.md` is a 34 KB core with a seventh
+skill, `engine-code-standards`, the maintainer's middle path (`R-2026-10-31-M2`). The KIT5 Edge leg's Phase 1 measured the kit:
+no black first frame in 9 runs, the OFF deck byte-identical run to run with all three pins and within 23 px with the two
+cloud pins (so `NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY` passes to the cloud program), and the E-W cells at 0 px on WebGL against
+the banked frames; it also measured two new weather-map reds, recorded unattributed. Its Phase 2 (the two performance cells on a
+quiet machine) has not run. The maintainer also ruled the evidence curation (`R-2026-10-31-M1`), after every landing is in. The
+Antigravity water program and W4 below are unchanged.
 **Critical path:** W4. *[Updated 2026-10-31 by records round 4; records batch 3 round 2 put the seat's Edge acceptance job
 first, and it has run.]* The next step is the Antigravity water program's landing on 2026-10-31 (`R-2026-10-30-M1`),
 re-delivered against the base clone at `5e684450f1`, and the W4 regeneration from the Codex post-plan audit, its decisions C1-C5 accepted as the seat recommended (`R-2026-10-30-M2`). The later W-waves (W4 … W12, `R-2026-10-23-M4`) queue behind it, one lane
@@ -856,6 +867,11 @@ REWORK) are outside the W-waves; only their salvaged parts landed, through the s
 - `R-2026-10-30-M3` (seat and clones): an LLM without the seat works in a clone unless the maintainer overrides; the maintainer
   may hand the seat to another LLM.
 - `R-2026-10-30-M4` (housekeeping): the ASK list stays held; nothing is deleted.
+**Maintainer rulings of 2026-10-31** (`MAINTAINER_RULINGS_2026-10-22.md`, verbatim there):
+- `R-2026-10-31-M1` (evidence curation): after every landing is in, the seat's gitignored `Tools/visual-regression/output/` is
+  reduced to at most the best 30 screenshots per week and the rest is dumped; this lifts the `R-2026-10-30-M4` hold for that folder
+  only (not the immutable bank, not the worker archive). The curation has not run.
+- `R-2026-10-31-M2` (`DX-RULES-DIET-2`): the middle path; executed by Batch 1643 (`7399ee05ad`).
 
 ### Standing principles that block work (not row-specific)
 
