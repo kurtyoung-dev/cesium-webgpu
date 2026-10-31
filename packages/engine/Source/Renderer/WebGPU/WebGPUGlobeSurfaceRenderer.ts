@@ -7,7 +7,7 @@ import {
   getProductionShaderModule as getProductionShaderModuleHelper,
   getDebugFragmentShaderModule as getDebugFragmentShaderModuleHelper,
   getClipDistancesShaderModule as getClipDistancesShaderModuleHelper,
-  oceanDefinesHi,
+  getMaterialShaderModule as getMaterialShaderModuleHelper,
   resolveWaterProviderParity,
 } from "./WebGPUGlobeSurfaceShaders.js";
 import {
@@ -56,7 +56,6 @@ import {
   type GlobePipelineVariantInfo,
   type GlobePipelineVariantKind,
 } from "./WebGPUGlobeSurfacePipelineKey.js";
-import { preprocess as preprocessWGSL } from "./WebGPUShaderPreprocessor.js";
 import {
   getTileKey as getTileKeyHelper,
   getOrCreateTileBuffers as getOrCreateTileBuffersHelper,
@@ -562,8 +561,9 @@ export class WebGPUGlobeSurfaceRenderer {
     }
     const device = this._device!;
 
-    // Lazy-build the per-material entry. Shader module + UBO are
-    // reused across geometry variants (one of each per material type).
+    // Lazy-build the per-material entry. The assembled source and the UBO are
+    // reused across geometry variants (one of each per material type); the
+    // shader modules are compiled per lo define set on a pipeline miss below.
     let entry = this._materialPipelineCache.get(material.type);
     if (!entry) {
       const built = buildMaterialPrelude(material as never);
@@ -578,23 +578,6 @@ export class WebGPUGlobeSurfaceRenderer {
         built.prelude,
         rewritten,
       );
-      // Preprocess with MATERIAL_APPLY set so the `//>>ifdef`-gated material
-      // call site and group(4) bindings are included. The reduced-imagery bit
-      // must ride along: on a default-limit device the material module would
-      // otherwise declare all 16 dayTextures and mismatch the 1-slot group-1
-      // layout. Enhanced ocean is a hi-word define; it must be supplied here
-      // because the material module replaces both ocean-aware production
-      // stages in the descriptor below.
-      const preprocessed = preprocessWGSL(
-        fullSource,
-        ShaderDefine.MATERIAL_APPLY |
-          (this._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0),
-        oceanDefinesHi(this),
-      );
-      const module = device.createShaderModule({
-        label: `Globe material module ${material.type}`,
-        code: preprocessed,
-      });
       const ubo = device.createBuffer({
         label: `Globe material UBO ${material.type}`,
         size: Math.max(16, built.uboSize),
@@ -602,7 +585,7 @@ export class WebGPUGlobeSurfaceRenderer {
       });
       entry = {
         wgslSource: fullSource,
-        shaderModule: module,
+        shaderModules: new Map(),
         uboLayout: built.uboLayout,
         uboSize: built.uboSize,
         textureNames: built.textureNames,
@@ -619,9 +602,22 @@ export class WebGPUGlobeSurfaceRenderer {
     // the material path never requests. Built through the shared key module
     // rather than inline: a private copy of the format is how a reader ends up
     // parsing a key shape the producer has abandoned.
-    const defines = hasGeodeticSurfaceNormals
-      ? ShaderDefine.GEODETIC_NORMAL
-      : 0;
+    //
+    // The defines are the production color pipeline's own set (`selectPipeline`
+    // in WebGPUGlobeSurfacePipelines.ts), LOG_DEPTH included, because the
+    // material module replaces the production module in BOTH stages: a module
+    // compiled without LOG_DEPTH writes hyperbolic depth into the renderer-wide
+    // log-depth frame, whose globe projection spans near 0.1 m to far 1e10 m.
+    // At a 50 km camera one hyperbolic depth step there is about 1.7 km, more
+    // than a 1,000 m tile skirt, so a skirt ties the neighbouring tile's
+    // surface and whichever draws later paints over it, which shows as seams
+    // at tile edges wherever the material changes across them (a water-mask
+    // coast). Carrying LOG_DEPTH in the key also rebuilds through a keyed miss
+    // when the log-depth state flips, as the production cache does.
+    const defines =
+      (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
+      (this._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
+      (this._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
     const geomKey = buildGlobePipelineCacheKey({
       kind: "color",
       isQuantized,
@@ -654,9 +650,23 @@ export class WebGPUGlobeSurfaceRenderer {
         hasGeodeticSurfaceNormals,
         disableCulling,
       );
-      descriptor.vertex.module = entry.shaderModule;
+      // The material module compiles under the lo defines of the production
+      // module it replaces, read from the descriptor that names that module,
+      // plus MATERIAL_APPLY, which brings in the `//>>ifdef`-gated material
+      // call site. LOG_DEPTH keeps the globe in the shared log-depth space,
+      // GEODETIC_NORMAL matches the vertex layout the descriptor declares, and
+      // the reduced-imagery bit keeps the group-1 declarations on the 1-slot
+      // layout of a default-limit device. The helper adds the ocean hi word
+      // for the same reason: both ocean-aware production stages are replaced.
+      const module = getMaterialShaderModuleHelper(
+        this,
+        entry,
+        material.type,
+        (descriptor.defines ?? defines) | ShaderDefine.MATERIAL_APPLY,
+      );
+      descriptor.vertex.module = module;
       if (descriptor.fragment) {
-        descriptor.fragment.module = entry.shaderModule;
+        descriptor.fragment.module = module;
       }
       // Material path reuses the regular pipeline layout — material
       // slots live in Group 2 alongside water-mask / ocean-normal so

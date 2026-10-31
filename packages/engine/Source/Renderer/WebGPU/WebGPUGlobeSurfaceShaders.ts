@@ -39,6 +39,7 @@ import {
 } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
+import type { MaterialPipelineCacheEntry } from "./WebGPUGlobeMaterial.js";
 
 /**
  * The renderer surface the shader factory reaches into. All five fields are
@@ -206,6 +207,37 @@ export function getProductionShaderModule(
     0,
     definesHi,
   );
+}
+
+/**
+ * The globe-material shader module for one lo define set. A globe material
+ * replaces the production module in both pipeline stages, so its module must
+ * be compiled under the production module's defines (LOG_DEPTH,
+ * GEODETIC_NORMAL, GLOBE_IMAGERY_REDUCED) plus `MATERIAL_APPLY`, and under the
+ * same ocean hi word. One material source therefore yields one module per
+ * define set, cached on the material's entry. The entry is dropped whenever
+ * the hi word changes (`_materialPipelineCache.clear()` on an ocean flip), so
+ * the lo mask alone keys the map.
+ */
+export function getMaterialShaderModule(
+  host: ShaderFactoryHost,
+  entry: Pick<MaterialPipelineCacheEntry, "wgslSource" | "shaderModules">,
+  materialType: string,
+  defines: number,
+): GPUShaderModule {
+  const cached = entry.shaderModules.get(defines);
+  if (cached) {
+    return cached;
+  }
+  const definesHi = oceanDefinesHi(host);
+  const module = host._device!.createShaderModule({
+    label:
+      `Globe material module ${materialType} ` +
+      `(defines=0x${(defines >>> 0).toString(16)}, hi=0x${definesHi.toString(16)})`,
+    code: preprocessShaderSource(entry.wgslSource, defines, definesHi),
+  });
+  entry.shaderModules.set(defines, module);
+  return module;
 }
 
 /**

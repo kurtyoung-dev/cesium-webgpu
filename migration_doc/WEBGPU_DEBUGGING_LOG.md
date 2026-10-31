@@ -23792,3 +23792,39 @@ The same round restores base's all-land path (review N1): a one-byte all-land ma
 **Proof.** `Tools/visual-regression/cloud-air-light-anchor.spec.mjs` executes the shipped transport (loop unrolled mechanically) against an independent single-scatter integral: E-O within 0.4 % nadir to limb with no step; night limb exactly zero air light; E-F composite within 1.5/255 of the sky's own single scatter for three suns; the range phase-free at fixed weights. Mutants N1, N2, S1, S2, H2, H3, H5, P1, P2 each turn a check red.
 
 **Files modified.** `packages/engine/Source/Shaders/WebGPU/Environment/CloudAerialTransport.wgsl`, `ProceduralClouds.wgsl` (plus three stale aerial comments), `packages/engine/Source/Renderer/WebGPU/WebGPUCloudTierPresets.ts` (comments only), `Tools/visual-regression/cloud-air-light-anchor.spec.mjs` (new), `cloud-density-domain.spec.mjs` (call-site pin).
+
+## Bug water-16 - a WebGPU globe material wrote hyperbolic depth into the log-depth frame, so tile skirts painted seams over their neighbours (Edge E-M-water; 2026-10-31)
+
+*Source: the seat's salvage-night Edge job (executor Eowyn), cell 2. Lane Almiel measured the mechanism in Node and fixed it. Row: `NEW-WATER-GLOBE-MATERIAL-WATER-MASK-TILE-EDGE-SEAMS`. Status: fixed. Edge acceptance PASSED 2026-10-31: E-M-water 1,573 -> 0 px more than 8 levels; receipt `F:/Dev/GH/cesium-webgpu-worker-archive/lanes-2026-10-30/watermask-seams/EDGE_RECEIPT_EOWYN_SEAMS.md`.*
+
+**Symptom.** With the built-in `WaterMask` globe material (rig `globe-material-water-mask`, 50 km above San Francisco's coast, pitch -1.2), the WebGPU coast steps or breaks at horizontal and vertical tile edges, and WebGL is continuous. 1,573 px are more than 8 levels off (max 127), and the two runs are identical.
+
+**What the pixels say.** Node passes over the banked PNGs, by the lane and independently by reviewer Ailinel, found about 1,460 of the 1,573 off pixels in strips beside the tile edges.
+- The horizontal strip (rows 270-278) is 9 px tall.
+- The vertical strips (x about 182-196, 497-505, 832-835 and 847-852) are 2-15 px wide, wider farther from the screen centre as the projected vertical leans.
+- The other ~110 px are 1-2 px lines and specks.
+
+Inside a strip the colour is constant along the direction a vertical line projects on screen, so a strip is a tile skirt drawn over the neighbouring tile. A skirt is the 1,000 m wall that hangs under every tile edge. At about 55 km and 64.5 degrees below horizontal, the wall projects to about 430 m, which is about 9 px. The strips are not a UV, mask-identity or sampler difference: the material sample and the ocean block share `geoUV`, the same per-tile group-2 bind group and the same sampler.
+
+**Root cause.** `_getOrCreateMaterialPipeline` compiled one module per material type under `MATERIAL_APPLY | GLOBE_IMAGERY_REDUCED` and put it in both stages of the production descriptor, so the module lacked LOG_DEPTH (and GEODETIC_NORMAL). Run against HEAD's text, the production module for the same draw is compiled with defines 0x8000 (LOG_DEPTH), and the material module has no `@builtin(frag_depth)`. With the renderer-wide log depth on, the globe projection is the log-depth camera's near 0.1 m / far 1e10 m. The material globe therefore wrote hyperbolic z, in which a whole 1,000 m skirt sits within one f32 depth step of the neighbouring surface at 50-60 km. The skirt ties under `less-equal` and the later draw wins. In log depth the same gap is more than 1,000 steps. This is the z-tie that `NEW-COLLECTIONS-LOG-DEPTH` measured for billboards at 220 km. It is not a mask-sampling defect. Batch 1621 made it visible: the mask is the first globe-material content that changes sharply at a tile edge.
+
+**Fix.** The material pipelines are keyed by the production colour pipeline's define set (GEODETIC_NORMAL, LOG_DEPTH, GLOBE_IMAGERY_REDUCED). The material module is compiled from the production descriptor's own `defines` plus `MATERIAL_APPLY`, under the same ocean hi word, and cached per lo mask on the entry (`getMaterialShaderModule`, `WebGPUGlobeSurfaceShaders.ts`). A globe without a material is untouched. Spec: `globe-material-log-depth-module.spec.mjs` has four groups:
+- In 24 cells, the material module equals the production defines plus MATERIAL_APPLY and writes log depth when the production module does.
+- A log-depth flip rebuilds the pipeline.
+- naga validates the modules.
+- The depth arithmetic.
+
+Its four executed mutants are the fix made unreachable, the key without LOG_DEPTH, a module map that ignores the defines, and a module without the hi word.
+
+**Verified (Edge, 2026-10-31).** The seat's executor ran `probe-landing-cells.mjs --cells E-M-water --runs 2 --wait-pipelines` on the frozen patch.
+- WebGPU against WebGL, more than 8 levels: BEFORE (Batch 1623 engine) 1,573 px in 28 regions, max 127. AFTER 0 px, max 6, with only 11 isolated single pixels more than 2 levels off.
+- The five strip windows, BEFORE -> AFTER: 790 / 341 / 118 / 85 / 150 px -> 0 each. AFTER max deltas are 1 / 5 / 5 / 1 / 6.
+- 0 px run-to-run on both renderers and both arms.
+- E-D identity is 0 px on WebGPU against the salvage-night capture on both arms.
+- 0 gate, console or page errors.
+- The residual frame-wide 1-level shading difference (341,154 px) predates the fix.
+- The AFTER crops show the coast continuous across both tile edges.
+
+Receipt: `F:/Dev/GH/cesium-webgpu-worker-archive/lanes-2026-10-30/watermask-seams/EDGE_RECEIPT_EOWYN_SEAMS.md`. Evidence: `Tools/visual-regression/output/wave-end/watermask-seams-20261031/`.
+
+**Files modified.** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts`, `WebGPUGlobeSurfaceShaders.ts`, `WebGPUGlobeMaterial.ts`, `Tools/visual-regression/globe-material-log-depth-module.spec.mjs`.

@@ -11,7 +11,9 @@
  *      the material's WGSL function body and the base GlobeTerrain.wgsl
  *      source. Cache the result keyed on `material.type`.
  *   2. **Module + pipeline** — create one shader module per unique
- *      material; the pipeline reuses the regular `_pipelineLayout`
+ *      material and production define set (the module replaces the
+ *      production module, so it carries that module's LOG_DEPTH and
+ *      geometry defines); the pipeline reuses the regular `_pipelineLayout`
  *      from {@link WebGPUGlobeSurfaceLayouts} (material slots live in
  *      Group 2 alongside water-mask / ocean-normal, so the total
  *      bind-group count stays at the WebGPU spec floor of 4).
@@ -65,8 +67,13 @@ export interface MaterialPipelineCacheEntry {
   // Combined WGSL source (material prelude + material body + base shader).
   // Kept around for diagnostics / pipeline rebuilds after device-loss.
   wgslSource: string;
-  // The compiled shader module — created once per unique material.
-  shaderModule: GPUShaderModule;
+  // The compiled shader modules, keyed by the lo define mask each was
+  // preprocessed under: the production module's defines (LOG_DEPTH,
+  // GEODETIC_NORMAL, GLOBE_IMAGERY_REDUCED) plus MATERIAL_APPLY. A single
+  // module per material compiled without LOG_DEPTH wrote hyperbolic depth into
+  // the log-depth frame, and tile skirts then tied their neighbours' surfaces.
+  // Filled by `getMaterialShaderModule` (WebGPUGlobeSurfaceShaders.ts).
+  shaderModules: Map<number, GPUShaderModule>;
   // Per-uniform name → byte offset map for the material UBO. Used by
   // {@link writeMaterialUBO} to pack the JS Material.uniforms into the
   // GPU buffer each frame.

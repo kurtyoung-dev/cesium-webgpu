@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1858 |
-| ACTIVE | 1603 |
+| Files in census | 1859 |
+| ACTIVE | 1604 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
 | NO @purpose HEADER | 53 |
 | NO @status HEADER | 1 |
-| Classes | probe 683, spec 502, other 396, lib 226, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
+| Classes | probe 683, spec 503, other 396, lib 226, gate-lib 21, bake-tool 13, fixture 10, runner 7 |
 
 ### Tools/ (69)
 
@@ -467,7 +467,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1138)
+### Tools/visual-regression/ (1139)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -546,12 +546,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | clipping-polygon-rebake-revision-signal.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that the WebGPU CLIPPING_POLYGONS feature renderer rebakes on every real content change of ClippingPolygonCollection — including an equal-count polygon swap that a vertex/polygon COUNT comparison cannot see — and does not rebake when nothing changed. |
 | clipping-polygon-texture-backend-claim.spec.mjs | spec | ACTIVE | 2026-09-11 | 3 | Pins that ClippingPolygonCollection.requestRectangleData asks the active backend before building WebGL clipping textures, so WebGPU builds zero Texture objects while the CPU edge/grid tables still reach a future WGSL twin. |
 | cloud-aerial-path-length.spec.mjs | spec | ACTIVE | 2026-10-30 | 9 | C13-N20: executes cloudAirColumnMeters/cloudAerialFraction straight out of ProceduralClouds.wgsl; pins the legacy calibration point, the orbital non-saturation that bar O3 is about, monotonicity, the near-horizontal guard, the reach-the-image assertion on the composited output, and six mutants. |
-| cloud-air-light-anchor.spec.mjs | spec | ACTIVE | — | 4 | Executes the shipped physical cloud air light against an independent single-scatter integral: the orbital disc without a seam, the night limb without air light, the flight cell's sky colour, and a representative point the march's sample phase cannot move. |
+| cloud-air-light-anchor.spec.mjs | spec | ACTIVE | 2026-10-31 | 4 | Executes the shipped physical cloud air light against an independent single-scatter integral: the orbital disc without a seam, the night limb without air light, the flight cell's sky colour, and a representative point the march's sample phase cannot move. |
 | cloud-api-enum-reachability.spec.mjs | spec | NO @purpose HEADER | 2026-09-17 | 6 | — |
 | cloud-coverage-response.spec.mjs | spec | ACTIVE | 2026-10-29 | 10 | Pins the CLOUD-LOW-COVERAGE-CUTOFF fix: baked base-field support, monotone coverage response on the CPU twin, exact high-anchor preservation. |
 | cloud-curved-air-transport.spec.mjs | spec | ACTIVE | 2026-10-30 | 3 | Executes finite cloud air columns and observer sky-view domain admission. |
 | cloud-demo-probe-routing.spec.mjs | spec | ACTIVE | 2026-09-26 | 7 | Drives the eight routed Weather-Inspector cloud probes through runProbe against a stub browser, so the routing is known to reach a receipt, take its origin from the runtime and refuse port 8080 before an Edge slot is spent on it. |
-| cloud-density-domain.spec.mjs | spec | ACTIVE | 2026-10-30 | 13 | Pins the cloud density-domain layout: noise origin/phase/rotation float offsets shared between WebGPUCloudDensityDomain.ts and the WGSL, via exports. |
+| cloud-density-domain.spec.mjs | spec | ACTIVE | 2026-10-31 | 13 | Pins the cloud density-domain layout: noise origin/phase/rotation float offsets shared between WebGPUCloudDensityDomain.ts and the WGSL, via exports. |
 | cloud-density-lod.spec.mjs | spec | ACTIVE | 2026-10-29 | 3 | Pins LOD agreement across CloudDensityDomain.wgsl, ProceduralClouds.wgsl and ProceduralSkyCubemap.wgsl via direct source reads. |
 | cloud-finite-air-light.spec.mjs | spec | ACTIVE | 2026-10-30 | 5 | Verifies finite spectral cloud air transport and its append-only atmosphere inputs. |
 | cloud-genus-morphology.spec.mjs | spec | ACTIVE | 2026-10-30 | 11 | C13-16 cirrus row: add-only uniform layout, exact CUMULUS byte-neutrality, structural fibre anisotropy/shear metrics, mutation-rejected predicates. |
@@ -670,6 +670,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | globe-daynight-alpha-gate.spec.mjs | spec | ACTIVE | 2026-10-30 | 3 | Pins that the imagery day/night alpha is gated on the per-tile alpha condition alone on BOTH backends, with the WebGPU flag derived from the same resolved values as the WebGL define, and mutants for absence and inertness. |
 | globe-daynight-normal-source.spec.mjs | spec | ACTIVE | 2026-10-30 | 4 | Pins that every WGSL globe day/night term reads the analytic geocentric normal, not the mesh v_normalEC whose constant decode flattened lighting. |
 | globe-daynight-ramp-law.spec.mjs | spec | ACTIVE | 2026-10-30 | 8 | Pins that GlobeTerrain.wgsl's day/night ramp and diffuse express GlobeFS.glsl's two laws, coefficients captured from both sources, with mutant tests. |
+| globe-material-log-depth-module.spec.mjs | spec | ACTIVE | — | 4 | Pins that a WebGPU globe material's shader module is compiled under the production globe module's own define set (LOG_DEPTH, GEODETIC_NORMAL, GLOBE_IMAGERY_REDUCED and the ocean hi word) plus MATERIAL_APPLY, so the material globe writes the renderer-wide log depth instead of hyperbolic depth whose ~1.7 km step at a 50 km camera lets 1,000 m tile skirts tie the neighbouring tile and paint seams; executes the real renderer with the real WaterMask material and GlobeTerrain.wgsl, validates the modules with naga, and carries executed inertness mutants. |
 | globe-material-pipeline-format-axis.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 3 | — |
 | globe-material-texture-uniform-binding.spec.mjs | spec | ACTIVE | 2026-10-30 | 4 | Behaviour gate for the WebGPU globe-material texture path: drives the real Material fabric, the real MaterialHelpers texture adoption and the real prelude/rewrite/assemble/preprocess chain, and requires every identifier the emitted module hands to a WGSL texture builtin to be a declaration the module actually makes. |
 | globe-night-darkness-fallback.spec.mjs | spec | ACTIVE | 2026-10-30 | 2 | Pins the procedural night-side darkening: one law on both backends, applied only where no night imagery layer is blending, with no camera-distance fade, and inert at its identity default. |
@@ -1166,7 +1167,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-kit-inventory.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Pins probe-kit-inventory.mjs's table rows, exports (destructured ones included) and importer counts, its runtime/direct classification through the fleet contract's detectors, its four rig-link rules and fixtures/ spec hop, and --check red on a mutated region and green on the generated one. |
 | probe-ktx2-transcoder-formats.mjs | probe | ACTIVE | 2026-08-16 | 4 | Standing regression guard that loadKTX2 requires the per-context immutable ktx2TranscodeTargets record and resolves a real .ktx2 on WebGPU |
 | probe-lake-water-mask.mjs | probe | ACTIVE | 2026-08-29 | 6 | Acceptance for opt-in globe.lakeWaterMask (Natural Earth lake polygons OR-composited into the water mask): off-gate, effect, and parity legs |
-| probe-landing-cells.mjs | probe | ACTIVE | 2026-10-30 | 17 | Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture and the E-T teardown/device-loss cells) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, optionally the PF-1..PF-4 performance windows, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts. |
+| probe-landing-cells.mjs | probe | ACTIVE | 2026-10-30 | 18 | Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture and the E-T teardown/device-loss cells) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, optionally the PF-1..PF-4 performance windows, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts. |
 | probe-landing-cells.spec.mjs | spec | ACTIVE | 2026-10-30 | 3 | Drives probe-landing-cells pure helpers and runProbe on a stub browser, asserting planning, refusal, blocking dials, comparison, verdicts, and ROUND 2 offline query and teardown owner census reporting. |
 | probe-large-lake-water.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | Root-caused flat Great Lakes by querying the terrain provider's waterMask directly at lake/ocean/land points, plus a render check on both backends |
 | probe-limb-halo-width.mjs | probe | ACTIVE | 2026-08-16 | 6 | Gates isolated SkyAtmosphere shell limb-width parity, and reports (no gate) the tracked ground-atmosphere drape limb residual on the full scene |
@@ -1772,9 +1773,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | device-loss-steps.mjs | lib | ACTIVE | 2026-10-24 | 6 | Step piece for the landing program's E-T cell: runs a rig's provoking steps (resize ladder via lib/globe-resize-steps.mjs, sky-box swaps via lib/skybox-swap-steps.mjs, a water or cloud tier switch), reads the error gate and the runtime's capture-liveness decision after each, then either destroys the viewer (teardown) or forces the device lost (WebGPU device.destroy, WebGL WEBGL_lose_context) and renders on, and returns {mode, steps, terminal, deviceLost, errors, owners, consoleErrors} - the named owners' live census rows before and after, and the console errors split into the engine's device-lost sentinel and everything else; terminalShape/sameTerminal are the one reader of the terminal record. |
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 20 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 6 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
-| engine-shader-source.mjs | lib | ACTIVE | 2026-10-30 | 43 | Resolves and reads engine shader sources (packages/engine/Source/Shaders/**) for specs, so a move or decomposition of a shader changes one module instead of every spec that reads it. |
+| engine-shader-source.mjs | lib | ACTIVE | 2026-10-30 | 44 | Resolves and reads engine shader sources (packages/engine/Source/Shaders/**) for specs, so a move or decomposition of a shader changes one module instead of every spec that reads it. |
 | engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 46 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
-| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 64 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
+| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 65 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 6 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | frame-import-map.mjs | lib | ACTIVE | 2026-10-09 | 2 | The readiness wait for a dynamic import of a bare specifier in a page or frame: whether a specifier is bare, an in-page predicate that reports whether the document has parsed an import map, and the Node-side wait that blocks until it has, or refuses by name when it does not appear in time. |
 | frame-timing-steps.mjs | lib | ACTIVE | 2026-10-24 | 6 | Step piece for the R-2026-10-22-3 performance leg (PF-1..PF-4 inputs): in-page samplers for the startup timeline (first frame, first frame with clouds drawn, tiles loaded, in navigation-relative page time), per-frame times from scene.render to the device reporting the work done, CesiumDebug.gpuPassCost over its own window, and the renderer's cache statistics; plus the Node-side sequence that renders the warm-up first and then brackets exactly the measured frame window with two GPU device census snapshots. |
