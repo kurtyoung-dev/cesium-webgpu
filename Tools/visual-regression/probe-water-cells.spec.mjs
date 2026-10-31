@@ -1,6 +1,6 @@
 // probe-water-cells.spec.mjs - lane KT-2 (Nardol). Pure Node: no browser, no GPU.
 //
-// @purpose Drives the real rigs and probe-water-cells.mjs and asserts the water cells' contract: the eight new rigs say what the round-3 EDGE_LEG_WATER.md rows say and their OFF twins differ in the water flags alone, the cell table plans pages cell-major with WebGL first and ON before OFF, stageGaps separates blocking dials from absent water dials, summarizeWaterRecords measures effect, parity and repeat percentages from synthetic images at the right tolerances, waterVerdicts applies the sheet's bands (2a, 2b, 2c with the orbit-disc floor at 2 % by seat ruling S6, 2e, 2f, 2g, 1f) on the AFTER arm only, every leg-2 rig pins the wave epoch to the sheet's instant and the probe stages it only where the stage has a handler (2g NOT RUN with the reason otherwise, and with an ON page's own NOT RUN reason or "page refused before staging" ahead of the run count), 1f parity with canvases of different sizes per renderer is NOT RUN naming both sizes, a page whose gate was never read is 2e NOT RUN "gate not read" with its refusal carried, the descriptor refuses an undeclared arm and a bad base report, and a page on a stub browser is NOT RUN under --arm after when a water dial it needs did not apply but captures under --arm before; and, end to end through descriptor.cells on the stub browser and a stub Sandcastle 2 run frame, that an unsettled leg-2 page, chrome left over the canvas and a demo-capture refusal are each a cell-level NOT RUN that leaves the arm's other pages in the receipt (an origin breach still ends the arm), that a device fault or a page error reaches 2e on leg-2 and 1f pages, that a fault-free WebGPU page whose error gate armed no device is 2e NOT RUN, and that the served-build assertion names 1f's Sandcastle 2 files.
+// @purpose Drives the real rigs and probe-water-cells.mjs and asserts the water cells' contract: the eight new rigs say what the round-3 EDGE_LEG_WATER.md rows say and their OFF twins differ in the water flags alone, the cell table plans pages cell-major with WebGL first and ON before OFF, stageGaps separates blocking dials from absent water dials, summarizeWaterRecords measures effect, parity and repeat percentages from synthetic images at the right tolerances, waterVerdicts applies the sheet's bands (2a, 2b, 2c with the orbit-disc floor at 2 % by seat ruling S6, 2e, 2f, 2g, 1f) on the AFTER arm only, every leg-2 rig pins the wave epoch to the sheet's instant and the probe stages it only where the stage has a handler (2g NOT RUN with the reason otherwise, and with an ON page's own NOT RUN reason or "page refused before staging" ahead of the run count), 1f parity with canvases of different sizes per renderer is NOT RUN naming both sizes, a page whose gate was never read is 2e NOT RUN "gate not read" with its refusal carried, the descriptor refuses an undeclared arm and a bad base report, and a page on a stub browser is NOT RUN under --arm after when a water dial it needs did not apply but captures under --arm before; and, end to end through descriptor.cells on the stub browser and a stub Sandcastle 2 run frame, that an unsettled leg-2 page, chrome left over the canvas and a demo-capture refusal are each a cell-level NOT RUN that leaves the arm's other pages in the receipt (an origin breach still ends the arm), that a device fault or a page error reaches 2e on leg-2 and 1f pages, that a fault-free WebGPU page whose error gate armed no device is 2e NOT RUN, and that the served-build assertion names 1f's Sandcastle 2 files only when 1f is a requested cell.
 // @status ACTIVE
 //
 // Written from _lane-out/BEHAVIOUR_ALDBURG.md and the round-3 EDGE_LEG_WATER.md
@@ -16,8 +16,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { encodeRgbaPng } from "../lib/png-rgba.mjs";
+import { importMutated } from "./lib/import-mutated.mjs";
 import {
   stageLandingCellInPage,
   landingStagePayload,
@@ -2664,20 +2666,76 @@ test("E5: chrome the strip could not remove makes the page NOT RUN (capture-chro
   assert.ok(off.capture);
 });
 
-test("E6: descriptor.servedArtifacts names the Sandcastle 2 files cell 1f loads", () => {
-  for (const file of [
-    "Apps/Sandcastle2/standalone.html",
-    "Apps/Sandcastle2/templates/bucket.html",
-    "Apps/Sandcastle2/templates/Sandcastle.js",
-    `Apps/Sandcastle2/gallery/${WATER_DEMO_ID}/index.html`,
-    `Apps/Sandcastle2/gallery/${WATER_DEMO_ID}/main.js`,
+const SANDCASTLE2_FILES = [
+  "Apps/Sandcastle2/standalone.html",
+  "Apps/Sandcastle2/templates/bucket.html",
+  "Apps/Sandcastle2/templates/Sandcastle.js",
+  `Apps/Sandcastle2/gallery/${WATER_DEMO_ID}/index.html`,
+  `Apps/Sandcastle2/gallery/${WATER_DEMO_ID}/main.js`,
+];
+const ENGINE_FILES = [
+  "Build/CesiumUnminified/Cesium.js",
+  "Build/CesiumUnminified/index.js",
+  "packages/engine/Build/Unminified/index.js",
+];
+
+/** @param {object} subject A water descriptor (real or mutated). */
+function assertDemandsSandcastle2WhenOneFIsRequested(subject) {
+  assert.equal(typeof subject.servedArtifacts, "function");
+  for (const options of [
+    { cells: "1f" },
+    { cells: "coast-50km, 1f" },
+    { cells: Object.keys(WATER_CELLS).join(",") },
+    {},
   ]) {
-    assert.ok(descriptor.servedArtifacts.includes(file), file);
+    const served = subject.servedArtifacts(options);
+    for (const file of [...ENGINE_FILES, ...SANDCASTLE2_FILES]) {
+      assert.ok(served.includes(file), `${JSON.stringify(options)}: ${file}`);
+    }
   }
+}
+
+/** @param {object} subject A water descriptor (real or mutated). */
+function assertDemandsNoSandcastle2WithoutOneF(subject) {
+  for (const cells of [
+    "coast-50km",
+    "great-lakes,orbit-disc",
+    "great-lakes-lakeonly",
+  ]) {
+    assert.deepEqual(subject.servedArtifacts({ cells }), ENGINE_FILES, cells);
+  }
+}
+
+test("E6: descriptor.servedArtifacts names the Sandcastle 2 files cell 1f loads when 1f is requested, and by default", () => {
+  // The default --cells is every WATER_CELLS key, 1f among them.
+  assert.ok(Object.keys(WATER_CELLS).includes("1f"));
+  assertDemandsSandcastle2WhenOneFIsRequested(descriptor);
   assert.equal(
     rigOf(WATER_CELLS["1f"].rig).dials.galleryId,
     WATER_DEMO_ID,
     "the asserted demo is the one the 1f rig opens",
+  );
+});
+
+test("E6b: a run without cell 1f does not demand any Sandcastle 2 artifact", () => {
+  assertDemandsNoSandcastle2WithoutOneF(descriptor);
+});
+
+test("E6c (MUTANT): a descriptor that always demands the Sandcastle 2 files, or never does, is caught", async () => {
+  const waterPath = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "probe-water-cells.mjs",
+  );
+  const anchor = 'return names.includes("1f")';
+  const always = await importMutated(waterPath, [
+    [anchor, 'return (true || names.includes("1f"))'],
+  ]);
+  assert.throws(() => assertDemandsNoSandcastle2WithoutOneF(always.descriptor));
+  const never = await importMutated(waterPath, [
+    [anchor, 'return (false && names.includes("1f"))'],
+  ]);
+  assert.throws(() =>
+    assertDemandsSandcastle2WhenOneFIsRequested(never.descriptor),
   );
 });
 

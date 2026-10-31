@@ -1,7 +1,7 @@
 /**
  * Stages any landing-cell rig on a CesiumViewer page, on either renderer: its
  * clock, its camera and every dial it declares, each read back.
- * @purpose Stage piece for the landing program's Edge cells: turns a rig into a JSON-safe payload (Node side, refusing a dial it does not know before a browser is involved), and applies it in the page on WebGL or WebGPU - pinned clock, camera (or the page's own), scene and globe dials (including the globe material), the water flags and the water tier, clouds on or off - reading every dial back as {requested, observed, applied}, with the cloud* dials handed to the cloud probe harness so their round trip stays in one place; plus the ocean's pinned wave epoch, the opt-in FFT ocean (read back by its primitive), the globe's own show flag, the SSR scene switches, the WebGPU render pipeline cache's pending count, and an opt-in wait that drives frames until no pipeline is pending.
+ * @purpose Stage piece for the landing program's Edge cells: turns a rig into a JSON-safe payload (Node side, refusing a dial it does not know before a browser is involved), and applies it in the page on WebGL or WebGPU - pinned clock, camera (or the page's own), scene and globe dials (including the globe material), the water flags and the water tier, clouds on or off - reading every dial back as {requested, observed, applied}, with the cloud* dials handed to the cloud probe harness so their round trip stays in one place; plus the ocean's pinned wave epoch, the opt-in FFT ocean (read back by its primitive), the globe's own show flag, the SSR scene switches, the WebGPU render pipeline cache's pending count, and an opt-in wait that drives frames until no pipeline is pending; plus the scene mode (3D, 2D, Columbus view, morphed with duration 0 and read back) and the FFT ocean's inverse-FFT kernel (stockham or pingpong, read back on the facade and on the primitive).
  * @status ACTIVE
  *
  * WHY A NEW STAGE AND NOT `lib/cloud-rig-stage.mjs`. The landing cells span a
@@ -72,6 +72,24 @@
  * sea. A tree without `water.ocean.enabled` reads applied: false (a water
  * dial: an answer, not a NOT RUN).
  *
+ * THE IFFT KERNEL. `waterOceanIfftKernel` (`"stockham"` or `"pingpong"`;
+ * anything else is refused in Node, because the facade silently ignores any
+ * other value and a dial that reads back unchanged would look applied) sets
+ * `scene.globe.water.ocean.ifftKernel`, which forwards to the primitive's
+ * own `ifftKernel` (`Scene/GlobeWaterOcean.js`, `OceanSurfacePrimitive.js`).
+ * It is applied after every other water dial whatever the rig's key order, so
+ * `waterOceanEnabled` has already built the primitive: the dial reads back
+ * the facade and `primitiveKernel`, and is applied only when both read the
+ * value and a primitive exists. The kernel-identity check compares the two
+ * kernels' output and needs this dial to say which one a leg ran.
+ *
+ * THE SCENE MODE. `sceneMode` (`"SCENE3D"`, `"SCENE2D"` or
+ * `"COLUMBUS_VIEW"`) calls the matching `scene.morphTo*(0)`; a morph of
+ * duration 0 completes synchronously, so `scene.mode` is read back at once
+ * and compared with `SceneMode[value]` (reported by name). A morph that
+ * throws or leaves the mode unchanged reads applied: false, and the scene dial
+ * is blocking. The camera is placed after the mode, in the mode it landed in.
+ *
  * PENDING PIPELINES (round 5, K5-2). A WebGPU page can draw nothing while the
  * pipelines a pass needs are still compiling, and a capture taken then
  * measures the compile, not the scene. `readPendingPipelines` reads the render
@@ -102,6 +120,7 @@ export const LANDING_SCENE_DIALS = Object.freeze([
   "enableSSR",
   "deferredLighting",
   "ssrReflectionStrength",
+  "sceneMode",
 ]);
 
 /** Dials this module applies on the globe and its imagery and terrain. */
@@ -129,6 +148,7 @@ export const LANDING_WATER_DIALS = Object.freeze([
   "waterQualityPreset",
   "waterSimulationEpoch",
   "waterOceanEnabled",
+  "waterOceanIfftKernel",
 ]);
 
 /** The instant form `waterSimulationEpoch` takes (the rig clock's form). */
@@ -164,6 +184,18 @@ export const LANDING_TERRAIN_VALUES = Object.freeze(["ellipsoid"]);
 export const LANDING_GLOBE_MATERIAL_VALUES = Object.freeze([
   "WaterMask",
   "none",
+]);
+
+/** The values `waterOceanIfftKernel` accepts: the facade's own two kernels. */
+export const LANDING_IFFT_KERNEL_VALUES = Object.freeze([
+  "stockham",
+  "pingpong",
+]);
+/** The values `sceneMode` accepts: `SceneMode` names the dial can morph to. */
+export const LANDING_SCENE_MODE_VALUES = Object.freeze([
+  "SCENE3D",
+  "SCENE2D",
+  "COLUMBUS_VIEW",
 ]);
 
 const CLOUD_DIAL_RE = /^cloud[A-Z]/;
@@ -261,6 +293,20 @@ export function landingStagePayload(rig) {
     unsupported.push(
       `waterOceanEnabled=${JSON.stringify(water.waterOceanEnabled)}`,
     );
+  }
+  if (
+    water.waterOceanIfftKernel !== undefined &&
+    !LANDING_IFFT_KERNEL_VALUES.includes(water.waterOceanIfftKernel)
+  ) {
+    unsupported.push(
+      `waterOceanIfftKernel=${JSON.stringify(water.waterOceanIfftKernel)}`,
+    );
+  }
+  if (
+    scene.sceneMode !== undefined &&
+    !LANDING_SCENE_MODE_VALUES.includes(scene.sceneMode)
+  ) {
+    unsupported.push(`sceneMode=${JSON.stringify(scene.sceneMode)}`);
   }
   if (unsupported.length > 0) {
     throw new ProbeRefusal(
@@ -402,6 +448,40 @@ export async function stageLandingCellInPage(payload) {
       assign(key, scene, "enableSSR", value);
     } else if (key === "deferredLighting") {
       assign(key, scene, "deferredLighting", value);
+    } else if (key === "sceneMode") {
+      // Morph with duration 0 (synchronous), then read the mode back by name.
+      const morph = {
+        SCENE3D: "morphTo3D",
+        SCENE2D: "morphTo2D",
+        COLUMBUS_VIEW: "morphToColumbusView",
+      }[value];
+      const modes = C.SceneMode;
+      const nameOf = (mode) => {
+        const hit =
+          modes &&
+          Object.keys(modes).find(
+            (name) => typeof modes[name] === "number" && modes[name] === mode,
+          );
+        return hit === undefined ? mode : hit;
+      };
+      try {
+        scene[morph](0);
+        note(
+          key,
+          value,
+          nameOf(scene.mode),
+          !!modes && same(scene.mode, modes[value]),
+          modes ? undefined : "the Cesium build exports no SceneMode",
+        );
+      } catch (error) {
+        note(
+          key,
+          value,
+          nameOf(scene.mode),
+          false,
+          `scene mode morph failed: ${String(error && error.message ? error.message : error)}`,
+        );
+      }
     } else if (key === "ssrReflectionStrength") {
       // Scene declares no such property: the WebGPU SSR effect reads
       // `scene.ssrReflectionStrength ?? 0.5` (WebGPUSSREffect.ts), so the
@@ -510,8 +590,14 @@ export async function stageLandingCellInPage(payload) {
   }
 
   // Water dials: globe flags, and the tier on the water facade.
+  // The kernel dial goes last whatever the rig's key order: it reads the
+  // primitive `waterOceanEnabled` creates.
   const w = payload.water;
-  for (const [key, value] of Object.entries(w)) {
+  const waterEntries = Object.entries(w).sort(
+    ([a], [b]) =>
+      (a === "waterOceanIfftKernel") - (b === "waterOceanIfftKernel"),
+  );
+  for (const [key, value] of waterEntries) {
     if (key === "waterQualityPreset") {
       assign(key, globe.water, "qualityPreset", value, (v) =>
         typeof v === "string" ? v.toUpperCase() : v,
@@ -556,6 +642,27 @@ export async function stageLandingCellInPage(payload) {
           entry.reason = value
             ? "ocean.enabled reads true but no ocean primitive exists"
             : "ocean.enabled reads false but an ocean primitive remains";
+        }
+      }
+    } else if (key === "waterOceanIfftKernel") {
+      // The facade forwards to the primitive; read both, and require a primitive.
+      const water = globe && globe.water;
+      const ocean = water && "ocean" in water ? water.ocean : undefined;
+      assign(key, ocean, "ifftKernel", value);
+      const entry = dials[key];
+      if (entry.reason === undefined) {
+        const primitive = ocean.primitive;
+        const hasPrimitive = primitive !== undefined && primitive !== null;
+        entry.primitiveKernel = hasPrimitive ? primitive.ifftKernel : undefined;
+        if (!hasPrimitive) {
+          entry.applied = false;
+          entry.reason =
+            "no ocean primitive exists to read the kernel from (turn waterOceanEnabled on)";
+        } else if (!same(entry.primitiveKernel, value)) {
+          entry.applied = false;
+          entry.reason = `the ocean primitive reads kernel ${String(entry.primitiveKernel)}, not ${value}`;
+        } else if (!entry.applied) {
+          entry.reason = `the ocean facade reads kernel ${String(entry.observed)}, not ${value}`;
         }
       }
     } else {

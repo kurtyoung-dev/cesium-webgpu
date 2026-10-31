@@ -7,12 +7,17 @@
 // P8-P12 are the lead's ROUND 4 additions (Celos) for the seat's items F1, F3,
 // F4, F5 and F6, written from the item text and the 2026-10-22 E11 run; P13
 // the lead's ROUND 5 additions for K5-2, K5-3, K5-6 and Ettenmoors' N-1.
+// P14 is lane LINDISSE's (lead), written from the salvage-night Edge receipt's
+// NOT RUN items: the per-cell pipeline wait, the onmessage sentinel in the
+// identity cells, the ocean-kernel cell and the Chukotka cross-renderer cell.
+// P1, P10 and P13 moved with the per-cell wait (E-D now waits by default).
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { after, before } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { encodeRgbaPng } from "../lib/png-rgba.mjs";
 import {
@@ -22,11 +27,26 @@ import {
   sha256,
 } from "./lib/probe-runtime.mjs";
 import { loadRigs } from "./lib/rig-registry.mjs";
+import { importMutated } from "./lib/import-mutated.mjs";
+import { landingStagePayload } from "./lib/landing-cell-stage.mjs";
+import {
+  PIPELINE_WAIT_MODES,
+  pipelineWaitMismatches,
+  pipelineWaitPlan,
+  rigForPage,
+  waitedForCell,
+} from "./lib/landing-cell-table.mjs";
+import {
+  crossPageVerdicts,
+  crossRendererComparisons,
+  kernelIdentityComparisons,
+} from "./lib/metrics/landing-cross-page.mjs";
 import { mergeLandingReports } from "./lib/metrics/merge-landing-reports.mjs";
 import {
   DEFAULT_CELLS,
   LANDING_CELLS,
   WEBGL_PIXEL_FLOOR_FACTOR,
+  allWaited,
   blockingDials,
   compareArms,
   descriptor,
@@ -63,8 +83,14 @@ function makeSmallPng(width = 8, height = 8, diffPixel = false) {
 
 function makeFakeBrowser(
   log,
-  { notApplied = [], pipelines = { pending: 0 } } = {},
+  {
+    notApplied = [],
+    pipelines = { pending: 0 },
+    onmessage = null,
+    displacements = [],
+  } = {},
 ) {
+  let displacementCalls = 0;
   let connected = true;
   const smallPng = makeSmallPng(8, 8);
 
@@ -85,6 +111,36 @@ function makeFakeBrowser(
       async waitForFunction() {},
       async evaluate(fn, arg) {
         const src = String(fn);
+        // Lane LINDISSE: the onmessage sentinel and the displacement readback.
+        if (src.includes("__onmessageSentinel")) {
+          log.sentinelReads?.push(true);
+          return (
+            onmessage ?? {
+              installed: true,
+              before: null,
+              after: null,
+              changed: false,
+              assignments: 0,
+              stacks: [],
+            }
+          );
+        }
+        if (src.includes("_webgpuCache")) {
+          log.readbacks?.push(arg);
+          const record = displacements[displacementCalls] ?? {
+            available: false,
+            reason: "no fake readback",
+          };
+          displacementCalls++;
+          return record;
+        }
+        // Lane LINDISSE: the PF-1 / PF-2 window E-FFT-ifft runs without --perf.
+        if (fn.name === "pageSampleFrameTimes") {
+          return { frameMs: [10, 10], frames: arg?.frames ?? 0 };
+        }
+        if (fn.name === "pageSampleGpuPassCost") {
+          return { available: false, reason: "fake browser" };
+        }
         // Lead addition (Celos, round 5, K5-2): the pipeline-cache readers.
         if (src.includes("pageWaitForPendingPipelines")) {
           log.waits?.push(arg);
@@ -289,14 +345,17 @@ test("P1: planLandingCells plans the full table to one page per renderer a rig d
   const allCellNames = Object.keys(LANDING_CELLS).join(",");
   const plan = planLandingCells({ cells: allCellNames }, rigsById);
   let expected = 0;
-  for (const { rig: rigId, kind } of Object.values(LANDING_CELLS)) {
+  for (const { rig: rigId, kind, variants } of Object.values(LANDING_CELLS)) {
     const renderers = rigsById.get(rigId).renderers.length;
-    expected += renderers * (kind === "device-loss" ? 2 : 1);
+    const pages =
+      kind === "device-loss" ? 2 : variants ? Object.keys(variants).length : 1;
+    expected += renderers * pages;
   }
   assert.equal(plan.length, expected);
   // The literal as well as the derivation: 25 pages before E-M-water, which
-  // adds one page per renderer.
-  assert.equal(plan.length, 27);
+  // adds one page per renderer; lane LINDISSE adds E-ID-2d, E-ID-cv and
+  // E-C-chukotka (two renderers each) and E-FFT-ifft (WebGPU, two kernels).
+  assert.equal(plan.length, 35);
 });
 
 test("P1: E-M-water is a capture cell on both renderers and is not in the default cells", () => {
@@ -1476,6 +1535,8 @@ test("P10: (ROUND 4, F4) --merge-reports puts the prior runs first and renumbers
     passFrames: 60,
     perf: true,
     runs: 1,
+    // The prior report did not wait; E-D now waits by default (lane LINDISSE).
+    noWaitPipelines: true,
   };
   const priors = readMergeReports(options);
   assert.equal(priors.length, 1);
@@ -1672,12 +1733,18 @@ test("P13: (ROUND 5, K5-2) a run that waited is never compared or merged with on
   const dir = path.join(TEMP_ROOT, "p13-mismatch");
   fs.mkdirSync(dir, { recursive: true });
   const baseReport = path.join(dir, "base.json");
+  // A base whose E-D page waited, read by a run that waives the wait (lane
+  // LINDISSE: the check is per cell, and E-D waits by default).
   fs.writeFileSync(
     baseReport,
-    JSON.stringify({ arms: {}, waitForPendingPipelines: true }),
+    JSON.stringify({
+      arms: {},
+      pages: [pfRecord({ run: 0 })],
+      waitForPendingPipelines: true,
+    }),
   );
   assert.throws(
-    () => readComparisonInputs({ baseReport }),
+    () => readComparisonInputs({ baseReport, noWaitPipelines: true }),
     (error) =>
       error instanceof ProbeRefusal &&
       error.reason === "base-report-invalid" &&
@@ -1686,6 +1753,7 @@ test("P13: (ROUND 5, K5-2) a run that waited is never compared or merged with on
   assert.doesNotThrow(() =>
     readComparisonInputs({ baseReport, waitPipelines: true }),
   );
+  assert.doesNotThrow(() => readComparisonInputs({ baseReport }));
   const pages = [pfRecord({ run: 0 })];
   assert.throws(
     () =>
@@ -1816,7 +1884,7 @@ test("P13: (ROUND 5, K5-6) a base report is regrouped from its pages, so its arm
   delete arms["E-D|webgpu|scene"].inputs.cpuSamples;
   const baseReport = path.join(dir, "base.json");
   fs.writeFileSync(baseReport, JSON.stringify({ arms, pages: [page] }));
-  const { base } = readComparisonInputs({ baseReport });
+  const { base } = readComparisonInputs({ baseReport, noWaitPipelines: true });
   assert.deepEqual(base.arms["E-D|webgpu|scene"].inputs.cpuSamples, [busy]);
   const tip = groupArms([
     { ...pfRecord({ run: 0 }), cpu: { mean: 30, samples: [] } },
@@ -1824,4 +1892,712 @@ test("P13: (ROUND 5, K5-6) a base report is regrouped from its pages, so its arm
   const arm = compareArms(tip, base.arms, {})["E-D|webgpu|scene"];
   assert.equal(arm.contention.status, "contended");
   assert.deepEqual(arm.contention.baseLongestRun, [12]);
+});
+
+// P14 (lane LINDISSE) --------------------------------------------------------
+// Lead additions, written from the salvage-night Edge receipt's NOT RUN items
+// (1-3, 5, 6) and its cold-capture findings (cells 1a and 2a).
+
+const TABLE_MODULE = fileURLToPath(
+  new URL("./lib/landing-cell-table.mjs", import.meta.url),
+);
+const PROBE_MODULE = fileURLToPath(
+  new URL("./probe-landing-cells.mjs", import.meta.url),
+);
+
+function p14Log() {
+  return { ...p13Log(), sentinelReads: [], readbacks: [] };
+}
+
+async function p14Run(name, extraArgs, fakeOptions = {}, probe = descriptor) {
+  const testDir = path.join(TEMP_ROOT, name);
+  fs.mkdirSync(testDir, { recursive: true });
+  const out = path.join(testDir, "out");
+  const log = p14Log();
+  const code = await runProbe(probe, {
+    argv: [
+      "--repository-root",
+      testDir,
+      "--output",
+      out,
+      "--runs",
+      "1",
+      "--no-serve-built",
+      ...extraArgs,
+    ],
+    launch: async () => makeFakeBrowser(log, fakeOptions),
+    preflight: async () => ({ ok: true, records: [] }),
+  });
+  const report = JSON.parse(
+    fs.readFileSync(path.join(out, "landing-cells-report.json"), "utf8"),
+  );
+  const verdicts = report.verdicts ?? report.runtime?.verdicts ?? [];
+  return { code, report, log, verdicts };
+}
+
+const verdictById = (verdicts, id) => verdicts.find((v) => v.id === id);
+
+function readback(kernel, hash, overrides = {}) {
+  return {
+    available: true,
+    accessor: "primitive._webgpuCache.displacementTexture",
+    format: "rgba16float",
+    width: 4,
+    height: 4,
+    sampleCount: 64,
+    hash,
+    min: -1,
+    max: 1,
+    mean: 0,
+    nonFinite: 0,
+    nonZero: 60,
+    kernel,
+    frameNumber: 12,
+    simulationSeconds: 3,
+    computePipelinesReady: true,
+    ...overrides,
+  };
+}
+
+const SAME_FIELDS = Object.freeze({
+  displacements: [readback("stockham", "aa"), readback("pingpong", "aa")],
+});
+
+test("P14: the new cells name their rigs and pages and stay out of the default set", () => {
+  const plan = (cells) =>
+    planLandingCells({ cells }, rigsById).map((entry) => [
+      entry.renderer,
+      entry.page,
+    ]);
+  assert.deepEqual(plan("E-FFT-ifft"), [
+    ["webgpu", "stockham"],
+    ["webgpu", "pingpong"],
+  ]);
+  for (const cell of ["E-C-chukotka", "E-ID-2d", "E-ID-cv"]) {
+    assert.deepEqual(plan(cell), [
+      ["webgl", "scene"],
+      ["webgpu", "scene"],
+    ]);
+  }
+  assert.equal(LANDING_CELLS["E-FFT-ifft"].rig, "ocean-fft-patch-rebase");
+  assert.equal(
+    LANDING_CELLS["E-C-chukotka"].rig,
+    "water-antimeridian-chukotka",
+  );
+  assert.equal(LANDING_CELLS["E-ID-2d"].rig, "default-2d-pinned");
+  assert.equal(LANDING_CELLS["E-ID-cv"].rig, "default-columbus-pinned");
+  for (const cell of ["E-D", "E-D-HDR", "E-ID-2d", "E-ID-cv"]) {
+    assert.equal(LANDING_CELLS[cell].identity, true, cell);
+  }
+  for (const cell of ["E-FFT-ifft", "E-C-chukotka", "E-ID-2d", "E-ID-cv"]) {
+    assert.ok(!DEFAULT_CELLS.includes(cell), cell);
+  }
+});
+
+test("P14: a variant page stages its rig with the variant's dials, which the stage accepts; the 2D and CV rigs stage their scene mode", () => {
+  const rig = rigsById.get("ocean-fft-patch-rebase");
+  const before = JSON.stringify(rig);
+  const pingpong = rigForPage(rig, { cell: "E-FFT-ifft", page: "pingpong" });
+  assert.equal(pingpong.dials.waterOceanIfftKernel, "pingpong");
+  assert.equal(pingpong.dials.waterOceanEnabled, true, "rig dials kept");
+  assert.equal(JSON.stringify(rig), before, "the rig record is untouched");
+  assert.equal(rigForPage(rig, { cell: "E-D", page: "scene" }), rig);
+  assert.equal(
+    landingStagePayload(pingpong).water.waterOceanIfftKernel,
+    "pingpong",
+  );
+  assert.equal(
+    landingStagePayload(rigsById.get("default-2d-pinned")).scene.sceneMode,
+    "SCENE2D",
+  );
+  assert.equal(
+    landingStagePayload(rigsById.get("default-columbus-pinned")).scene
+      .sceneMode,
+    "COLUMBUS_VIEW",
+  );
+  assert.doesNotThrow(() =>
+    landingStagePayload(rigsById.get("water-antimeridian-chukotka")),
+  );
+});
+
+test("P14: the pipeline wait is per cell: identity, E-M-water, Chukotka and ocean cells wait by default; the flags force or waive it; both together refuse", () => {
+  const all = Object.keys(LANDING_CELLS).join(",");
+  const byDefault = pipelineWaitPlan({ cells: all });
+  assert.equal(byDefault.mode, PIPELINE_WAIT_MODES.CELL_DEFAULT);
+  for (const cell of [
+    "E-D",
+    "E-D-HDR",
+    "E-ID-2d",
+    "E-ID-cv",
+    "E-M-water",
+    "E-C-chukotka",
+    "E-FFT-ifft",
+  ]) {
+    assert.equal(byDefault.byCell[cell], true, cell);
+  }
+  for (const cell of ["E-O", "E-F", "E-G", "R-14", "E-T-water"]) {
+    assert.equal(byDefault.byCell[cell], false, cell);
+  }
+  const forced = pipelineWaitPlan({ cells: all, waitPipelines: true });
+  assert.equal(forced.mode, PIPELINE_WAIT_MODES.FORCED);
+  assert.ok(Object.values(forced.byCell).every((w) => w === true));
+  const waived = pipelineWaitPlan({ cells: all, noWaitPipelines: true });
+  assert.equal(waived.mode, PIPELINE_WAIT_MODES.WAIVED);
+  assert.ok(Object.values(waived.byCell).every((w) => w === false));
+  assert.throws(
+    () => readComparisonInputs({ waitPipelines: true, noWaitPipelines: true }),
+    (error) =>
+      error instanceof ProbeRefusal &&
+      error.reason === "pipeline-wait-conflict",
+  );
+  assert.equal(allWaited({ "E-D": true, "E-ID-2d": true }), true);
+  assert.equal(allWaited({ "E-D": true, "E-O": false }), false);
+  assert.equal(allWaited({}), false);
+});
+
+test("P14: a report's wait is read per cell, falling back to the run-wide flag, and two reports mismatch only on a cell both cover", () => {
+  assert.equal(waitedForCell({ waitForPendingPipelines: true }, "E-D"), true);
+  assert.equal(
+    waitedForCell(
+      { waitForPendingPipelines: true, pipelineWaitByCell: { "E-D": false } },
+      "E-D",
+    ),
+    false,
+  );
+  const old = { pages: [pfRecord({ run: 0 })] };
+  const now = { pipelineWaitByCell: { "E-D": true, "E-O": false } };
+  assert.deepEqual(pipelineWaitMismatches(old, now), ["E-D"]);
+  assert.deepEqual(
+    pipelineWaitMismatches(
+      { pipelineWaitByCell: { "E-O": true } },
+      { pipelineWaitByCell: { "E-D": false } },
+    ),
+    [],
+  );
+  const pages = [pfRecord({ run: 0 })];
+  assert.throws(
+    () =>
+      mergeLandingReports([
+        { ...reportOf(pages), pipelineWaitByCell: { "E-D": true } },
+        { ...reportOf(pages), pipelineWaitByCell: { "E-D": false } },
+      ]),
+    /waitForPendingPipelines/,
+  );
+  const merged = mergeLandingReports([
+    { ...reportOf(pages), pipelineWaitByCell: { "E-D": true } },
+    { ...reportOf(pages), pipelineWaitByCell: { "E-D": true } },
+  ]);
+  assert.deepEqual(merged.pipelineWaitByCell, { "E-D": true });
+});
+
+test("P14: (mutant) a table whose wait default is unreachable leaves E-D unwaited", async () => {
+  const mutated = await importMutated(TABLE_MODULE, [
+    [
+      "        LANDING_CELLS[cell].waitPipelines === true);",
+      "        false && LANDING_CELLS[cell].waitPipelines === true);",
+    ],
+  ]);
+  assert.equal(pipelineWaitPlan({ cells: "E-D" }).byCell["E-D"], true);
+  assert.equal(mutated.pipelineWaitPlan({ cells: "E-D" }).byCell["E-D"], false);
+});
+
+test("P14: an identity cell waits by default, installs the onmessage sentinel before load and judges it; --no-wait-pipelines is recorded", async () => {
+  const run = await p14Run("p14-identity", ["--cells", "E-D"]);
+  assert.equal(run.code, PROBE_EXIT_CODES.OK);
+  assert.equal(run.log.waits.length, 2, "one wait per renderer");
+  assert.deepEqual(run.report.pipelineWait, {
+    mode: "cell-default",
+    byCell: { "E-D": true },
+  });
+  assert.equal(run.report.waitForPendingPipelines, true);
+  assert.ok(
+    run.log.scripts.some(
+      (script) =>
+        typeof script === "function" &&
+        script.name === "installOnmessageSentinel",
+    ),
+    "the sentinel is an init script",
+  );
+  assert.equal(run.log.sentinelReads.length, 2);
+  for (const renderer of ["webgl", "webgpu"]) {
+    const verdict = verdictById(
+      run.verdicts,
+      `E-D:${renderer}:scene:run0:onmessage-unchanged`,
+    );
+    assert.ok(verdict, renderer);
+    assert.equal(verdict.pass, true);
+  }
+  const waived = await p14Run("p14-identity-waived", [
+    "--cells",
+    "E-D",
+    "--no-wait-pipelines",
+  ]);
+  assert.equal(waived.log.waits.length, 0);
+  assert.equal(waived.report.pipelineWait.mode, "waived");
+  assert.equal(waived.report.pipelineWaitByCell["E-D"], false);
+});
+
+test("P14: a hijacked window.onmessage fails the identity cell, even when the stage did not apply", async () => {
+  const hijacked = {
+    installed: true,
+    before: null,
+    after: {
+      type: "function",
+      name: "workerHandler",
+      source: "function workerHandler(){}",
+    },
+    changed: true,
+    assignments: 1,
+    stacks: ["Error: onmessage assigned"],
+  };
+  const run = await p14Run("p14-hijack", ["--cells", "E-ID-2d"], {
+    onmessage: hijacked,
+    notApplied: ["sceneMode"],
+  });
+  assert.notEqual(run.code, PROBE_EXIT_CODES.OK);
+  const verdict = verdictById(
+    run.verdicts,
+    "E-ID-2d:webgpu:scene:run0:onmessage-unchanged",
+  );
+  assert.equal(verdict.pass, false);
+  assert.equal(verdict.after.name, "workerHandler");
+  assert.equal(
+    verdictById(run.verdicts, "E-ID-2d:webgpu:scene:run0:stage").notRun,
+    true,
+  );
+});
+
+test("P14: a non-identity cell neither installs nor judges the sentinel", async () => {
+  const run = await p14Run("p14-no-sentinel", ["--cells", "E-O"]);
+  assert.equal(run.log.sentinelReads.length, 0);
+  assert.ok(
+    !run.log.scripts.some((s) => s?.name === "installOnmessageSentinel"),
+  );
+  assert.ok(!run.verdicts.some((v) => v.id.endsWith(":onmessage-unchanged")));
+  assert.equal(run.report.pipelineWaitByCell["E-O"], false);
+});
+
+test("P14: E-FFT-ifft reads the displacement back after each kernel's capture and passes when the two fields are identical", async () => {
+  const run = await p14Run(
+    "p14-kernels",
+    ["--cells", "E-FFT-ifft"],
+    SAME_FIELDS,
+  );
+  assert.equal(run.code, PROBE_EXIT_CODES.OK);
+  assert.deepEqual(
+    run.log.readbacks.map((arg) => arg.frames),
+    [8, 8],
+  );
+  assert.deepEqual(
+    run.report.pages.map((page) => [page.page, page.capture.name]),
+    [
+      ["stockham", "E-FFT-ifft-webgpu-run0-stockham"],
+      ["pingpong", "E-FFT-ifft-webgpu-run0-pingpong"],
+    ],
+  );
+  assert.ok(
+    run.report.pages.every((page) => page.perf),
+    "the PF-1 / PF-2 window runs without --perf",
+  );
+  const verdict = verdictById(
+    run.verdicts,
+    "E-FFT-ifft:webgpu:run0:ifft-kernel-identity",
+  );
+  assert.equal(verdict.pass, true);
+  assert.equal(run.report.kernelIdentity[0].comparison.identical, true);
+  assert.equal(run.report.pipelineWaitByCell["E-FFT-ifft"], true);
+});
+
+test("P14: E-FFT-ifft fails on different fields and is NOT RUN when a readback is unavailable", async () => {
+  const differ = await p14Run("p14-kernels-differ", ["--cells", "E-FFT-ifft"], {
+    displacements: [readback("stockham", "aa"), readback("pingpong", "bb")],
+  });
+  const failed = verdictById(
+    differ.verdicts,
+    "E-FFT-ifft:webgpu:run0:ifft-kernel-identity",
+  );
+  assert.equal(failed.pass, false);
+  assert.equal(failed.notRun, undefined);
+  assert.notEqual(differ.code, PROBE_EXIT_CODES.OK);
+  const missing = await p14Run(
+    "p14-kernels-missing",
+    ["--cells", "E-FFT-ifft"],
+    {
+      displacements: [
+        readback("stockham", "aa"),
+        { available: false, reason: "compute pipelines are not ready" },
+      ],
+    },
+  );
+  const notRun = verdictById(
+    missing.verdicts,
+    "E-FFT-ifft:webgpu:run0:ifft-kernel-identity",
+  );
+  assert.equal(notRun.pass, false);
+  assert.equal(notRun.notRun, true);
+});
+
+test("P14: E-C-chukotka diffs the WebGPU capture against the same run's WebGL capture and records the band as unregistered", async () => {
+  const run = await p14Run("p14-chukotka", ["--cells", "E-C-chukotka"]);
+  assert.equal(run.code, PROBE_EXIT_CODES.OK);
+  const [entry] = run.report.crossRenderer;
+  assert.equal(entry.cell, "E-C-chukotka");
+  assert.equal(entry.measured, true);
+  assert.equal(entry.changedPx, 0);
+  assert.match(entry.band, /first capture registers/);
+  assert.equal(
+    verdictById(run.verdicts, "E-C-chukotka:cross-renderer:run0:measured").pass,
+    true,
+  );
+});
+
+test("P14: the cross-renderer diff is NOT RUN without both captures, and the kernel pairs are judged per run", () => {
+  const page = (renderer, capture) => ({
+    cell: "E-C-chukotka",
+    run: 0,
+    renderer,
+    page: "scene",
+    notRun: capture ? null : "the stage did not apply terrain",
+    capture,
+  });
+  const shot = (name) => ({ name, path: `${name}.png` });
+  const diff = () => ({
+    measured: true,
+    changedPx: 42,
+    mismatchPct: 0.5,
+    bbox: null,
+  });
+  const measured = crossRendererComparisons(
+    [page("webgl", shot("a")), page("webgpu", shot("b"))],
+    { diff },
+  );
+  assert.equal(measured[0].changedPx, 42);
+  assert.equal(measured[0].webgl, "a");
+  const missing = crossRendererComparisons(
+    [page("webgl", shot("a")), page("webgpu", null)],
+    { diff },
+  );
+  assert.equal(missing[0].measured, false);
+  assert.match(missing[0].reason, /webgpu \(the stage did not apply terrain\)/);
+  const [verdict] = crossPageVerdicts({ crossRenderer: missing });
+  assert.equal(verdict.pass, false);
+  assert.equal(verdict.notRun, true);
+  assert.deepEqual(
+    crossRendererComparisons(
+      [
+        { ...page("webgl", shot("a")), cell: "E-D" },
+        { ...page("webgpu", shot("b")), cell: "E-D" },
+      ],
+      { diff },
+    ),
+    [],
+    "only crossRenderer cells are diffed",
+  );
+  const kernelPage = (run, name, hash) => ({
+    cell: "E-FFT-ifft",
+    run,
+    renderer: "webgpu",
+    page: name,
+    displacement: readback(name, hash),
+  });
+  const pairs = kernelIdentityComparisons([
+    kernelPage(0, "stockham", "aa"),
+    kernelPage(0, "pingpong", "aa"),
+    kernelPage(1, "stockham", "aa"),
+    kernelPage(1, "pingpong", "cc"),
+  ]);
+  assert.deepEqual(
+    pairs.map((pair) => [pair.run, pair.verdict.pass]),
+    [
+      [0, true],
+      [1, false],
+    ],
+  );
+});
+
+test("P14: (mutants) each wiring clause made unreachable loses the behaviour its test pins", async () => {
+  const mutants = [
+    {
+      label: "sentinel never installed",
+      anchor:
+        "      if (cell.identity === true) {\n        // Before any page script",
+      replacement:
+        "      if (false && cell.identity === true) {\n        // Before any page script",
+      cells: "E-D",
+      lost: (run) =>
+        !run.log.scripts.some((s) => s?.name === "installOnmessageSentinel"),
+    },
+    {
+      label: "sentinel never read",
+      anchor: "      if (cell.identity === true) {\n        record.onmessage",
+      replacement:
+        "      if (false && cell.identity === true) {\n        record.onmessage",
+      cells: "E-D",
+      lost: (run) =>
+        !run.verdicts.some((v) => v.id.endsWith(":onmessage-unchanged")),
+    },
+    {
+      label: "per-cell wait ignored",
+      anchor:
+        "          pipelineWaitPlan(options).byCell[entry.cell] === true,",
+      replacement:
+        "          false && pipelineWaitPlan(options).byCell[entry.cell] === true,",
+      cells: "E-D",
+      lost: (run) => run.log.waits.length === 0,
+    },
+    {
+      label: "readback skipped",
+      anchor: '        if (cell.readback === "ocean-displacement") {',
+      replacement:
+        '        if (false && cell.readback === "ocean-displacement") {',
+      cells: "E-FFT-ifft",
+      lost: (run) => run.log.readbacks.length === 0,
+    },
+    {
+      label: "forced perf ignored",
+      anchor:
+        "          (cell.perf === true && options.noCellPerf !== true)) &&",
+      replacement:
+        "          (false && cell.perf === true && options.noCellPerf !== true)) &&",
+      cells: "E-FFT-ifft",
+      lost: (run) => run.report.pages.every((page) => !page.perf),
+    },
+    {
+      label: "cross-page verdicts dropped",
+      anchor: "      ...crossPageVerdicts({",
+      replacement: "      ...[].concat(false && crossPageVerdicts({",
+      close: true,
+      cells: "E-FFT-ifft",
+      lost: (run) =>
+        !run.verdicts.some((v) => v.id.endsWith(":ifft-kernel-identity")),
+    },
+  ];
+  for (const [index, mutant] of mutants.entries()) {
+    const args = ["--cells", mutant.cells];
+    const real = await p14Run(`p14-mut-real-${index}`, args, SAME_FIELDS);
+    assert.equal(mutant.lost(real), false, `${mutant.label}: real keeps it`);
+    const pairs = [[mutant.anchor, mutant.replacement]];
+    if (mutant.close) {
+      pairs.push([
+        "        kernelIdentity: kernelIdentityComparisons(pages),\n      }),\n    ];",
+        "        kernelIdentity: kernelIdentityComparisons(pages),\n      }) || []),\n    ];",
+      ]);
+    }
+    const mutated = await importMutated(PROBE_MODULE, pairs);
+    const run = await p14Run(
+      `p14-mut-${index}`,
+      args,
+      SAME_FIELDS,
+      mutated.descriptor,
+    );
+    assert.equal(mutant.lost(run), true, `${mutant.label}: mutant loses it`);
+  }
+});
+
+// P14 round 2 (lane LINDISSE, review Tar-Palantir P1: R1, R2, R3a and the
+// --no-cell-perf flag the seat asked for).
+
+const MERGE_MODULE = fileURLToPath(
+  new URL("./lib/metrics/merge-landing-reports.mjs", import.meta.url),
+);
+
+test("P14 R1: a per-cell wait mismatch names each report's own wait for the cell, and both refusals name the remedy", async () => {
+  const pages = [pfRecord({ run: 0 })];
+  const first = {
+    ...reportOf(pages),
+    waitForPendingPipelines: false,
+    pipelineWaitByCell: { "E-D": true, "E-O": false },
+  };
+  const second = { ...reportOf(pages), pipelineWaitByCell: { "E-D": false } };
+  const message = (merge) => {
+    try {
+      merge([first, second], { labels: ["first", "second"] });
+    } catch (error) {
+      return String(error.message);
+    }
+    return "";
+  };
+  const real = message(mergeLandingReports);
+  assert.match(real, /E-D: second false, first true/);
+  assert.match(real, /--no-wait-pipelines/);
+  const mutated = await importMutated(MERGE_MODULE, [
+    [
+      "${name(0)} ${waitedForCell(first, cell)}",
+      "${name(0)} ${first.waitForPendingPipelines === true}",
+    ],
+  ]);
+  assert.doesNotMatch(
+    message(mutated.mergeLandingReports),
+    /E-D: second false, first true/,
+    "the mutant prints the run-wide flag and is caught",
+  );
+  const dir = path.join(TEMP_ROOT, "p14-r1-base");
+  fs.mkdirSync(dir, { recursive: true });
+  const baseReport = path.join(dir, "base.json");
+  fs.writeFileSync(baseReport, JSON.stringify({ arms: {}, pages }));
+  assert.throws(
+    () => readComparisonInputs({ baseReport, cells: "E-D" }),
+    (error) =>
+      error.reason === "base-report-invalid" &&
+      /--no-wait-pipelines/.test(error.message) &&
+      /re-capture the base/.test(error.message),
+  );
+});
+
+test("P14 R2a: a variant page feeds PF-3 and the CPU guard like a scene page; an E-T page does not", async () => {
+  const variant = {
+    ...pfRecord({ run: 0 }),
+    cell: "E-FFT-ifft",
+    page: "stockham",
+  };
+  const teardown = {
+    ...pfRecord({ run: 0 }),
+    cell: "E-T-water",
+    page: "teardown",
+  };
+  const check = (group) => {
+    const arms = group([variant, teardown]);
+    const kernel = arms["E-FFT-ifft|webgpu|stockham"];
+    assert.equal(kernel.inputs.pf3.length, 1);
+    assert.equal(kernel.inputs.cpu.length, 1);
+    const tear = arms["E-T-water|webgpu|teardown"];
+    assert.equal(tear.inputs.pf3.length, 0);
+    assert.equal(tear.inputs.cpu.length, 0);
+  };
+  check(groupArms);
+  const mutated = await importMutated(MERGE_MODULE, [
+    [
+      'const isScenePage = (page) => page !== "teardown" && page !== "forced-loss";',
+      'const isScenePage = (page) => page === "scene";',
+    ],
+  ]);
+  assert.throws(
+    () => check(mutated.groupArms),
+    (error) => error instanceof assert.AssertionError,
+  );
+});
+
+test("P14 R2b: --merge-reports in the default wait mode merges with a prior report whose identity cell waited", async () => {
+  const dir = path.join(TEMP_ROOT, "p14-r2b");
+  fs.mkdirSync(dir, { recursive: true });
+  const prior = path.join(dir, "prior.json");
+  const priorReport = {
+    ...reportOf([pfRecord({ run: 0, frameMs: 10 })]),
+    waitForPendingPipelines: true,
+    pipelineWaitByCell: { "E-D": true },
+  };
+  priorReport.preflight = { ok: true, records: [] };
+  fs.writeFileSync(prior, JSON.stringify(priorReport));
+  const options = {
+    mergeReports: prior,
+    repositoryRoot: dir,
+    frames: 120,
+    warmup: 30,
+    passFrames: 60,
+    perf: true,
+    runs: 1,
+    cells: "E-D",
+  };
+  const priors = readMergeReports(options);
+  assert.equal(priors.length, 1);
+  const own = [pfRecord({ run: 0, frameMs: 12 })];
+  assert.deepEqual(
+    pagesWithMergedRuns(own, options, priors).map((page) => page.run),
+    [0, 1],
+  );
+  const mutated = await importMutated(MERGE_MODULE, [
+    ["    pipelineWaitByCell: pipelineWaitPlan(options).byCell,\n", ""],
+  ]);
+  assert.throws(
+    () =>
+      mutated.pagesWithMergedRuns(
+        own,
+        options,
+        priors,
+        descriptor.servedArtifacts,
+      ),
+    /waitForPendingPipelines/,
+    "without the per-cell record this invocation reads E-D as unwaited",
+  );
+});
+
+test("P14 R3a: E-FFT-ifft reads the field with values, reports maxAbsDelta and the differing count, and writes no values", async () => {
+  const run = await p14Run("p14-r3a", ["--cells", "E-FFT-ifft"], {
+    displacements: [
+      readback("stockham", "aa", { values: [0, 1, 2, 3] }),
+      readback("pingpong", "bb", { values: [0, 1, 2.5, 3] }),
+    ],
+  });
+  assert.equal(run.log.readbacks[0].includeValues, true);
+  const [pair] = run.report.kernelIdentity;
+  assert.equal(pair.comparison.identical, false);
+  assert.equal(pair.comparison.maxAbsDelta, 0.5);
+  assert.equal(pair.comparison.differingValues, 1);
+  for (const page of run.report.pages) {
+    assert.equal("values" in page.displacement, false, page.page);
+  }
+});
+
+test("P14: --no-cell-perf drops the PF window E-FFT-ifft forces and keeps its readback identity", async () => {
+  const run = await p14Run(
+    "p14-no-cell-perf",
+    ["--cells", "E-FFT-ifft", "--no-cell-perf"],
+    SAME_FIELDS,
+  );
+  assert.equal(run.code, PROBE_EXIT_CODES.OK);
+  assert.ok(run.report.pages.every((page) => !page.perf));
+  assert.equal(run.log.readbacks.length, 2);
+  assert.equal(
+    verdictById(run.verdicts, "E-FFT-ifft:webgpu:run0:ifft-kernel-identity")
+      .pass,
+    true,
+  );
+});
+
+test("P14 round 2: (mutants) the values read, the values kept out of the report and the --no-cell-perf flag each made inert lose their behaviour", async () => {
+  const fields = () => ({
+    displacements: [
+      readback("stockham", "aa", { values: [0, 1] }),
+      readback("pingpong", "aa", { values: [0, 1] }),
+    ],
+  });
+  const mutants = [
+    {
+      label: "values not read",
+      anchor: "              includeValues: true,",
+      replacement: "              includeValues: false,",
+      args: [],
+      lost: (run) => run.log.readbacks[0].includeValues !== true,
+    },
+    {
+      label: "values written",
+      anchor: "          record.displacement = keepValuesOutOfReport(",
+      replacement: "          record.displacement = ((record) => record)(",
+      args: [],
+      lost: (run) =>
+        run.report.pages.some((page) => "values" in page.displacement),
+    },
+    {
+      label: "--no-cell-perf inert",
+      anchor: "(cell.perf === true && options.noCellPerf !== true)) &&",
+      replacement: "(cell.perf === true && true)) &&",
+      args: ["--no-cell-perf"],
+      lost: (run) => run.report.pages.some((page) => page.perf),
+    },
+  ];
+  for (const [index, mutant] of mutants.entries()) {
+    const args = ["--cells", "E-FFT-ifft", ...mutant.args];
+    const real = await p14Run(`p14-r2-real-${index}`, args, fields());
+    assert.equal(mutant.lost(real), false, `${mutant.label}: real keeps it`);
+    const mutated = await importMutated(PROBE_MODULE, [
+      [mutant.anchor, mutant.replacement],
+    ]);
+    const run = await p14Run(
+      `p14-r2-mut-${index}`,
+      args,
+      fields(),
+      mutated.descriptor,
+    );
+    assert.equal(mutant.lost(run), true, `${mutant.label}: mutant loses it`);
+  }
 });

@@ -4,7 +4,8 @@
 // @purpose Rig record for the default CesiumViewer globe at 4x MSAA taken through five canvas resizes and back to its start size, both renderers, 1280x720, so a render-target lifetime fix is guarded on the scene framebuffer's rebuild path.
 // @status ACTIVE
 //
-// WHO RENDERS IT. `probe-texture-lifetime.mjs --scene resize`. The steps are
+// WHO RENDERS IT. `probe-texture-lifetime.mjs --scene resize`, and
+// `probe-landing-cells.mjs --cells E-T-resize`. The steps are
 // `lib/globe-resize-steps.mjs`; this record holds only data.
 //
 // WHY A RESIZE LADDER. The WebGPU scene framebuffer rebuilds its render targets

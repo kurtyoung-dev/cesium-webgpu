@@ -4,7 +4,8 @@
 // @purpose Rig record for the default CesiumViewer sky box with its cube-map sources swapped twice in place (to solid red faces, then to solid blue faces), both renderers, 1280x720, so a cube-texture lifetime fix and the display of the swapped texture are both observable.
 // @status ACTIVE
 //
-// WHO RENDERS IT. `probe-texture-lifetime.mjs --scene skybox`. The steps are
+// WHO RENDERS IT. `probe-texture-lifetime.mjs --scene skybox`, and
+// `probe-landing-cells.mjs --cells E-T-skybox`. The steps are
 // `lib/skybox-swap-steps.mjs`; this record holds only data.
 //
 // WHY SOLID FACES. The swap is made on the SAME sky box (`skyBox.sources = ...`),

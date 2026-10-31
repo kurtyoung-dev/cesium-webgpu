@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Probe: the landing program's Edge cells on the shared runtime - one command
 // per cell for the seat's executor, base arm and tip arm.
-// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture and the E-T teardown/device-loss cells) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, optionally the PF-1..PF-4 performance windows, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
+// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture, the opt-in 2D and Columbus-view identity cells E-ID-2d / E-ID-cv, the Chukotka cross-renderer cell E-C-chukotka, the FFT-ocean kernel-identity cell E-FFT-ifft and the E-T teardown/device-loss cells) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs with a per-cell pending-pipeline wait, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, the window.onmessage sentinel on identity cells, the ocean displacement readback per kernel, optionally the PF-1..PF-4 performance windows, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
 // @status ACTIVE
 // @runtime lib/probe-runtime.mjs
 //
@@ -19,7 +19,12 @@
 //   E-T-resize globe-msaa4-resize-ladder                  both renderers
 //   E-T-skybox skybox-source-swap                         both renderers
 //   E-M-water  globe-material-water-mask (off by default) both renderers
-// A cell runs on each renderer its rig declares that `--renderer` keeps.
+//   E-ID-2d    default-2d-pinned (off by default)         both renderers
+//   E-ID-cv    default-columbus-pinned (off by default)   both renderers
+//   E-C-chukotka water-antimeridian-chukotka (off by default) both renderers
+//   E-FFT-ifft ocean-fft-patch-rebase, one page per kernel  WebGPU
+// A cell runs on each renderer its rig declares that `--renderer` keeps. The
+// table and its planning live in `lib/landing-cell-table.mjs`.
 //
 // ONE ARM PER INVOCATION. The probe measures the tree its origin serves. The
 // base-vs-tip reading is made on the tip run by handing it the base run's
@@ -82,6 +87,24 @@
 // one that did not. Pipeline rows (`lib/gpu-device-census.mjs`) are reported
 // in a teardown's owners but never fail `owners-destroyed`: a pipeline has no
 // destroy(). The contention guard also reads each run's CPU samples.
+//
+// LANE LINDISSE (the salvage-night NOT RUN cells).
+// - PER-CELL PIPELINE WAIT. The identity cells (E-D, E-D-HDR, E-ID-2d,
+//   E-ID-cv), E-M-water, E-C-chukotka and E-FFT-ifft wait for pending
+//   pipelines by default; `--wait-pipelines` forces the wait on every cell and
+//   `--no-wait-pipelines` is the recorded waiver. The receipt carries
+//   `pipelineWait` {mode, byCell}; base and merged reports must match per cell.
+// - THE ONMESSAGE SENTINEL. Every identity cell installs
+//   `lib/onmessage-sentinel.mjs` before the page loads and reads
+//   `window.onmessage` once the viewer exists: verdict `onmessage-unchanged`
+//   (regression X1, a worker module that self-registers on the main thread).
+// - E-FFT-ifft stages its rig once per kernel (`waterOceanIfftKernel`), reads
+//   the displacement field back after each capture
+//   (`lib/ocean-displacement-readback.mjs`), runs the PF-1 / PF-2 window
+//   without `--perf`, and judges the two kernels' fields identical per run.
+// - E-C-chukotka diffs its WebGPU capture against the same run's WebGL capture
+//   (`lib/metrics/landing-cross-page.mjs`); the band is registered by the first
+//   capture, so the verdict says only that the diff was measured.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -120,6 +143,30 @@ import {
   readPendingPipelines,
   stageLandingCell,
 } from "./lib/landing-cell-stage.mjs";
+import {
+  DEFAULT_CELLS,
+  LANDING_CELLS,
+  pipelineWaitPlan,
+  planLandingCells,
+  rigForPage,
+  pipelineWaitMismatches,
+  splitList,
+  waitedForCell,
+} from "./lib/landing-cell-table.mjs";
+import {
+  crossPageVerdicts,
+  crossRendererComparisons,
+  kernelIdentityComparisons,
+} from "./lib/metrics/landing-cross-page.mjs";
+import {
+  keepValuesOutOfReport,
+  readOceanDisplacement,
+} from "./lib/ocean-displacement-readback.mjs";
+import {
+  installOnmessageSentinel,
+  onmessageVerdict,
+  readOnmessageSentinel,
+} from "./lib/onmessage-sentinel.mjs";
 import { frameTimeVerdict } from "./lib/metrics/frame-time-distribution.mjs";
 import { residencyVerdict } from "./lib/metrics/gpu-memory-residency.mjs";
 import {
@@ -158,61 +205,14 @@ export {
   pixelBand,
 } from "./lib/metrics/landing-pixel-band.mjs";
 
-/** The cell table: cell name -> rig id and what the cell does on it. */
-export const LANDING_CELLS = Object.freeze({
-  "E-D": Object.freeze({ rig: "default-3d-pinned", kind: "capture" }),
-  "E-D-HDR": Object.freeze({ rig: "default-3d-hdr", kind: "capture" }),
-  "E-O": Object.freeze({
-    rig: "orbital-fulldisc-6608km-msaa4-single-deck",
-    kind: "capture",
-  }),
-  "E-F": Object.freeze({
-    rig: "cloud-flight-multideck-hdr-1080p",
-    kind: "capture",
-  }),
-  "E-G": Object.freeze({ rig: "cloud-underside-noon-cov055", kind: "capture" }),
-  "E-G-night": Object.freeze({
-    rig: "cloud-underside-night-cov055",
-    kind: "capture",
-  }),
-  "E-H": Object.freeze({ rig: "globe-horizon-viewer", kind: "capture" }),
-  "R-14": Object.freeze({ rig: "sky-only-sun-change", kind: "clock-steps" }),
-  "E-T-water": Object.freeze({
-    rig: "water-coast-50km-enhanced-ocean",
-    kind: "device-loss",
-  }),
-  "E-T-flight": Object.freeze({
-    rig: "cloud-flight-multideck-hdr-1080p",
-    kind: "device-loss",
-  }),
-  "E-T-resize": Object.freeze({
-    rig: "globe-msaa4-resize-ladder",
-    kind: "device-loss",
-  }),
-  "E-T-skybox": Object.freeze({
-    rig: "skybox-source-swap",
-    kind: "device-loss",
-  }),
-  // Not in DEFAULT_CELLS: a material-reading-the-tile-water-mask capture the
-  // water landing asks for by name (`--cells E-M-water`).
-  "E-M-water": Object.freeze({
-    rig: "globe-material-water-mask",
-    kind: "capture",
-  }),
-});
-
-/** The default `--cells`: the standard set's capture cells. */
-export const DEFAULT_CELLS = Object.freeze([
-  "E-D",
-  "E-D-HDR",
-  "E-O",
-  "E-F",
-  "E-G",
-  "E-G-night",
-]);
-
-/** The pages an E-T cell runs, in order. */
-export const DEVICE_LOSS_PAGES = Object.freeze(["teardown", "forced-loss"]);
+// The cell table and its planning (lane LINDISSE moved them to a piece).
+export {
+  DEFAULT_CELLS,
+  DEVICE_LOSS_PAGES,
+  LANDING_CELLS,
+  planLandingCells,
+  splitList,
+} from "./lib/landing-cell-table.mjs";
 
 const CANVAS_SELECTOR = ".cesium-widget canvas";
 const NAVIGATION_BUDGET_MS = 120_000;
@@ -220,6 +220,9 @@ const STARTUP_BUDGET_MS = 120_000;
 const STARTUP_MAX_FRAMES = 1200;
 const STEPS_BUDGET_MS = 180_000;
 const PERF_BUDGET_MS = 180_000;
+// Frames the displacement readback renders first, at the frozen clock, so the
+// ocean's compute chain has run since the capture.
+const OCEAN_READBACK_FRAMES = 8;
 
 /**
  * A PF reading that does not exist on this renderer on either arm (the per-pass
@@ -228,71 +231,6 @@ const PERF_BUDGET_MS = 180_000;
  * `unmeasured`, which fails.
  */
 export const NOT_APPLICABLE = "not-applicable";
-
-/**
- * The comma list of a string option, trimmed, empties dropped.
- *
- * @param {unknown} value
- * @returns {string[]}
- */
-export function splitList(value) {
-  return String(value ?? "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0);
-}
-
-/**
- * The (cell, renderer, page) triples a run takes, cell-major, WebGL before
- * WebGPU, and for an E-T cell its two pages in {@link DEVICE_LOSS_PAGES}
- * order.
- *
- * @param {{cells?: string, renderers?: string[]}} options
- * @param {Map<string, object>|Record<string, object>} rigsById
- * @returns {Array<{cell: string, rigId: string, kind: string,
- *   renderer: string, page: string}>}
- * @throws {ProbeRefusal} `cell-unknown` or `cell-rig-absent`.
- */
-export function planLandingCells(options, rigsById) {
-  const lookup = (id) =>
-    rigsById instanceof Map ? rigsById.get(id) : rigsById?.[id];
-  const names = splitList(options?.cells ?? DEFAULT_CELLS.join(","));
-  const plan = [];
-  for (const cell of names) {
-    if (!Object.hasOwn(LANDING_CELLS, cell)) {
-      throw new ProbeRefusal(
-        "cell-unknown",
-        `--cells ${cell} is not one of ${Object.keys(LANDING_CELLS).join(", ")}`,
-        { cell },
-      );
-    }
-    const { rig: rigId, kind } = LANDING_CELLS[cell];
-    const rig = lookup(rigId);
-    if (!rig) {
-      throw new ProbeRefusal(
-        "cell-rig-absent",
-        `${cell}: rig ${rigId} is not in the registry`,
-        { cell, rigId },
-      );
-    }
-    for (const renderer of ["webgl", "webgpu"]) {
-      if (!rig.renderers.includes(renderer)) {
-        continue;
-      }
-      if (
-        Array.isArray(options?.renderers) &&
-        !options.renderers.includes(renderer)
-      ) {
-        continue;
-      }
-      const pages = kind === "device-loss" ? DEVICE_LOSS_PAGES : ["scene"];
-      for (const page of pages) {
-        plan.push({ cell, rigId, kind, renderer, page });
-      }
-    }
-  }
-  return plan;
-}
 
 /**
  * The dials whose read-back failed and that make a cell NOT RUN: every dial
@@ -379,6 +317,12 @@ async function runLandingPage({
       await page.addInitScript(errorGateInit);
       await page.addInitScript({ content: GPU_DEVICE_CENSUS_INIT_SOURCE });
       await page.addInitScript(installCloudProbeHarness);
+      const cell = LANDING_CELLS[entry.cell];
+      if (cell.identity === true) {
+        // Before any page script: the sentinel holds window.onmessage as the
+        // page had it before Cesium loaded.
+        await page.addInitScript(installOnmessageSentinel);
+      }
       const url = buildPerformanceViewerUrl(
         captureUrlFor({ rig, origin }),
         entry.renderer,
@@ -391,12 +335,16 @@ async function runLandingPage({
         timeout: NAVIGATION_BUDGET_MS,
       });
       const viewerReadyAtMs = await page.evaluate(pageNow);
+      if (cell.identity === true) {
+        record.onmessage = await readOnmessageSentinel(page);
+      }
       record.armed = await armWebGPUDevices(page);
 
       const { staged, pipelines } = await stageLandingCell({
         page,
         rig,
-        waitForPendingPipelines: options.waitPipelines === true,
+        waitForPendingPipelines:
+          pipelineWaitPlan(options).byCell[entry.cell] === true,
       });
       record.stage = staged;
       record.pipelines = pipelines;
@@ -461,14 +409,30 @@ async function runLandingPage({
       };
 
       if (entry.kind === "capture") {
-        record.capture = await capture(base);
+        record.capture = await capture(
+          entry.page === "scene" ? base : `${base}-${entry.page}`,
+        );
+        if (cell.readback === "ocean-displacement") {
+          // With values, so a mismatch reports maxAbsDelta and how many
+          // values differ; the values never reach the written report.
+          record.displacement = keepValuesOutOfReport(
+            await readOceanDisplacement(page, {
+              frames: OCEAN_READBACK_FRAMES,
+              includeValues: true,
+            }),
+          );
+        }
       } else if (entry.kind === "clock-steps") {
         record.captureStart = await capture(`${base}-start`);
         record.steps = await runClockSteps({ page, rig, settle });
         record.capture = await capture(`${base}-end`);
       }
 
-      if (options.perf === true && entry.kind !== "device-loss") {
+      if (
+        (options.perf === true ||
+          (cell.perf === true && options.noCellPerf !== true)) &&
+        entry.kind !== "device-loss"
+      ) {
         record.perf = await measureLandingPerformance({
           page,
           readCensus: readGpuDeviceCensus,
@@ -650,6 +614,10 @@ export function landingVerdicts(records, comparison) {
       notRun: record.notRun !== null,
       reason: record.notRun ?? undefined,
     });
+    // Read before the stage, so judged whether or not the stage applied.
+    if (record.onmessage !== undefined) {
+      verdicts.push(onmessageVerdict(id, record.onmessage));
+    }
     if (record.notRun !== null) {
       continue;
     }
@@ -787,6 +755,8 @@ export function readComparisonInputs(options) {
     bandsFile = { path: path.resolve(options.bands), sha256: sha256(bytes) };
   }
   const bands = resolveBands(overrides);
+  // Refuses --wait-pipelines with --no-wait-pipelines before anything else.
+  const wait = pipelineWaitPlan(options);
   let base = null;
   if (options.baseReport) {
     base = JSON.parse(fs.readFileSync(options.baseReport, "utf8"));
@@ -797,14 +767,17 @@ export function readComparisonInputs(options) {
         { baseReport: options.baseReport },
       );
     }
-    if (
-      (base.waitForPendingPipelines === true) !==
-      (options.waitPipelines === true)
-    ) {
+    // Per cell (lane LINDISSE): a cell that waited for pending pipelines on
+    // one arm and not on the other has incomparable startup timelines.
+    const mismatched = pipelineWaitMismatches(base, {
+      pipelineWaitByCell: wait.byCell,
+    });
+    if (mismatched.length > 0) {
+      const cell = mismatched[0];
       throw new ProbeRefusal(
         "base-report-invalid",
-        `${options.baseReport} has waitForPendingPipelines ${base.waitForPendingPipelines === true}, this run ${options.waitPipelines === true}: the startup timelines are not comparable`,
-        { baseReport: options.baseReport },
+        `${options.baseReport} has waitForPendingPipelines ${waitedForCell(base, cell)} on ${mismatched.join(", ")}, this run ${wait.byCell[cell]} (${wait.mode}): the startup timelines are not comparable; pass --no-wait-pipelines (or --wait-pipelines) to match the base, or re-capture the base with this run's wait`,
+        { baseReport: options.baseReport, cells: mismatched },
       );
     }
     // Regrouped with this tree's grouping, so the arms carry every input the
@@ -825,6 +798,18 @@ function plannedPageCount(options) {
   }
 }
 
+/**
+ * True when the per-cell wait record names at least one cell and every one
+ * waited. Pure.
+ *
+ * @param {Record<string, boolean>} byCell
+ * @returns {boolean}
+ */
+export function allWaited(byCell) {
+  const values = Object.values(byCell ?? {});
+  return values.length > 0 && values.every((waited) => waited === true);
+}
+
 /** The whole invocation's machine-CPU sampler (F3); stopped by the receipt. */
 let invocationCpu = null;
 
@@ -834,7 +819,7 @@ const PAGE_BUDGET_MS =
 export const descriptor = {
   name: "landing-cells",
   title:
-    "Landing cells - the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G, E-H, R-14, E-T) with the PF-1..PF-4 performance leg",
+    "Landing cells - the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G, E-H, R-14, E-T, E-M-water, E-ID-2d, E-ID-cv, E-C-chukotka, E-FFT-ifft) with the PF-1..PF-4 performance leg",
   outputSubdirectory: "landing-cells",
   receiptEnvelope: "runtime",
   servedArtifacts: [
@@ -852,6 +837,10 @@ export const descriptor = {
       },
       { flag: "--perf", key: "perf", kind: "boolean" },
       { flag: "--wait-pipelines", key: "waitPipelines", kind: "boolean" },
+      { flag: "--no-wait-pipelines", key: "noWaitPipelines", kind: "boolean" },
+      // Skips the PF window a cell forces (E-FFT-ifft), so its readback
+      // identity can be captured on a machine too busy for a PF leg.
+      { flag: "--no-cell-perf", key: "noCellPerf", kind: "boolean" },
       {
         flag: "--frames",
         key: "frames",
@@ -916,7 +905,7 @@ export const descriptor = {
           browser,
           origin,
           entry,
-          rig: rigsById.get(entry.rigId),
+          rig: rigForPage(rigsById.get(entry.rigId), entry),
           run,
           options,
           outputDirectory,
@@ -939,6 +928,7 @@ export const descriptor = {
           startupField: options.startupField,
         })
       : null;
+    const pipelineWait = pipelineWaitPlan(options);
     for (const [key, arm] of Object.entries(arms)) {
       console.log(
         `  ${key}: runs=${arm.runs} notRun=${arm.notRun.length} captures=${arm.captures.length}`,
@@ -947,7 +937,11 @@ export const descriptor = {
     return {
       cellsRequested: splitList(options.cells),
       perf: options.perf === true,
-      waitForPendingPipelines: options.waitPipelines === true,
+      // True only when every requested cell waited (the run-wide reading a
+      // report written before the per-cell record carried).
+      waitForPendingPipelines: allWaited(pipelineWait.byCell),
+      pipelineWait,
+      pipelineWaitByCell: pipelineWait.byCell,
       capturesWhilePipelinesPending: capturesWhilePipelinesPending(pages),
       windows: {
         frames: options.frames,
@@ -968,6 +962,8 @@ export const descriptor = {
       pages,
       arms,
       comparison,
+      crossRenderer: crossRendererComparisons(pages),
+      kernelIdentity: kernelIdentityComparisons(pages),
     };
   },
   verdicts(cells, context) {
@@ -982,7 +978,13 @@ export const descriptor = {
           startupField: context.options.startupField,
         })
       : null;
-    return landingVerdicts(pages, comparison);
+    return [
+      ...landingVerdicts(pages, comparison),
+      ...crossPageVerdicts({
+        crossRenderer: crossRendererComparisons(pages),
+        kernelIdentity: kernelIdentityComparisons(pages),
+      }),
+    ];
   },
 };
 

@@ -7,6 +7,9 @@
 // `waterOceanEnabled` (scene.globe.water.ocean.enabled, read back by the
 // OceanSurfacePrimitive it creates), nothing staged this rig's FFT ocean, so
 // it showed only the globe's water-mask ocean: void for the patch it names.
+//
+// WHO RENDERS IT. `probe-landing-cells.mjs --cells E-FFT-ifft`, once per
+// inverse-FFT kernel (the cell lays `waterOceanIfftKernel` over the dials).
 
 export default Object.freeze({
   id: "ocean-fft-patch-rebase",
@@ -18,7 +21,7 @@ export default Object.freeze({
   // The Antigravity session that declared this rig cited a plan
   // (WATER_REMEDIATION_AND_WHOLE_EARTH_PLAN_2026-10-29) that is not in the tree.
   declaredBy:
-    "Antigravity session 2026-10-29; the FFT ocean dial (DX-KIT-WATER-OCEAN-DIAL) made it live; no probe consumes this rig yet",
+    "Antigravity session 2026-10-29; the FFT ocean dial (DX-KIT-WATER-OCEAN-DIAL) made it live; probe-landing-cells cell E-FFT-ifft renders it once per inverse-FFT kernel",
   camera: {
     lon: -140.0,
     lat: 20.0,

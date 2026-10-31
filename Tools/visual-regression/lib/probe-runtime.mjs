@@ -973,6 +973,31 @@ export function isEntryPoint(moduleUrl, argv = process.argv) {
 }
 
 /**
+ * The artifacts a descriptor's served-build preflight must match. A static
+ * array (or nothing, for the runtime default) is returned as declared; a
+ * function is called with the parsed options, because some probes load a
+ * heavier page only for some cells and must not demand its files otherwise.
+ *
+ * @param {{name: string, servedArtifacts?: string[]|Function}} descriptor
+ * @param {object} options The parsed probe options.
+ * @returns {string[]} The artifact list.
+ * @throws {TypeError} When a function descriptor returns anything but a non-empty array.
+ */
+function resolveServedArtifacts(descriptor, options) {
+  const declared = descriptor.servedArtifacts;
+  if (typeof declared !== "function") {
+    return declared ?? REQUIRED_SERVED_ARTIFACTS;
+  }
+  const resolved = declared(options);
+  if (!Array.isArray(resolved) || resolved.length === 0) {
+    throw new TypeError(
+      `${descriptor.name}: descriptor.servedArtifacts must return a non-empty array, got ${Array.isArray(resolved) ? "an empty array" : Object.prototype.toString.call(resolved)}`,
+    );
+  }
+  return resolved;
+}
+
+/**
  * Run a probe end to end and return its exit code.
  *
  * The order is fixed and is the point of the module: parse, preflight, take the
@@ -989,7 +1014,7 @@ export function isEntryPoint(moduleUrl, argv = process.argv) {
  * @param {string} [descriptor.title] Markdown heading.
  * @param {string} [descriptor.outputSubdirectory] Folder under `Tools/visual-regression/output`.
  * @param {object} [descriptor.args] `{ defaults, extraOptions }` for {@link parseProbeArgs}.
- * @param {string[]} [descriptor.servedArtifacts] Artifacts the preflight must match.
+ * @param {string[]|Function} [descriptor.servedArtifacts] Artifacts the preflight must match: an array, or `(options) => string[]` called once with the parsed options for a probe whose artifact list depends on its flags. A function returning a non-array or an empty array is a probe error.
  * @param {string[]} [descriptor.launchArgs] Edge flags instead of {@link EDGE_LAUNCH_ARGS}; recorded in the runtime receipt.
  * @param {"probe-owned"|"runtime"} [descriptor.receiptEnvelope] Receipt shape.
  * @param {Function} [descriptor.workBudgetMs] `(options) => number` — the positive safe-integer milliseconds THIS probe's work needs per run. Declaring it is the opt-in to the lifecycle: `cells` is then additionally handed `scope`, and the run carries a derived orderly deadline. Omitting it keeps the pre-adoption behaviour exactly.
@@ -1069,19 +1094,19 @@ export async function runProbe(descriptor, dependencies = {}) {
     // them: the lifecycle runs it inside its first tracked operation, the
     // pre-adoption path runs it inline, and it is the same code either way.
     const runServedBuildPreflight = async () => {
+      // Resolved once, so the list handed to the preflight and the list the
+      // decision requires cannot disagree.
+      const servedArtifacts = resolveServedArtifacts(descriptor, options);
       if (options.servedBuild) {
         preflight = await preflightImpl({
           origin,
           repositoryRoot,
-          artifacts: [
-            ...(descriptor.servedArtifacts ?? REQUIRED_SERVED_ARTIFACTS),
-          ],
+          artifacts: [...servedArtifacts],
         });
       }
       throwForDecision(
         decideServedBuildRefusal(preflight, {
-          requiredArtifacts:
-            descriptor.servedArtifacts ?? REQUIRED_SERVED_ARTIFACTS,
+          requiredArtifacts: servedArtifacts,
           waived: !options.servedBuild,
         }),
         "the served bytes are not the bytes on disk; rebuild, or restart the server with --serve-built",

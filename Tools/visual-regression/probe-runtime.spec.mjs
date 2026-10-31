@@ -1545,3 +1545,221 @@ test("H. element capture and launch conditions", async (t) => {
     assert.equal(REQUIRED_SERVED_ARTIFACTS, DEFAULT_SERVED_BUILD_ARTIFACTS);
   });
 });
+
+// ---------------------------------------------------------------------------
+// I. descriptor.servedArtifacts as a function of the parsed options
+// ---------------------------------------------------------------------------
+
+test("I. descriptor.servedArtifacts may be a function of the parsed options", async (t) => {
+  const SENTINEL = ["Build/Fake/a.js", "Build/Fake/b.js"];
+
+  /**
+   * Run a fake probe whose preflight stub records what it was asked to match
+   * and answers that every asked artifact matched.
+   *
+   * @param {object} servedArtifacts The descriptor's declaration.
+   * @param {string[]} extraArgv Extra flags.
+   * @returns {Promise<{code: number, asked: string[][], launches: number, out: string, root: string}>}
+   */
+  async function runWith(servedArtifacts, extraArgv = []) {
+    const root = makeTempRoot();
+    const out = path.join(root, "out");
+    const asked = [];
+    let launches = 0;
+    const code = await runProbe(
+      {
+        ...fakeDescriptor(),
+        args: {
+          extraOptions: [{ flag: "--mode", key: "mode", kind: "string" }],
+        },
+        servedArtifacts,
+      },
+      {
+        argv: ["--repository-root", root, "--output", out, ...extraArgv],
+        preflight: async ({ artifacts }) => {
+          asked.push([...artifacts]);
+          return {
+            ok: true,
+            artifacts: artifacts.map((artifact) => ({
+              path: artifact,
+              match: true,
+            })),
+          };
+        },
+        launch: async () => {
+          launches += 1;
+          return { close: async () => {} };
+        },
+      },
+    );
+    return { code, asked, launches: () => launches, out, root };
+  }
+
+  await t.test(
+    "the function is called with the parsed options and the preflight receives exactly its list",
+    async () => {
+      const seen = [];
+      const run = await runWith(
+        (options) => {
+          seen.push(options.mode);
+          return options.mode === "heavy" ? SENTINEL : [SENTINEL[0]];
+        },
+        ["--mode", "heavy"],
+      );
+      try {
+        assert.equal(run.code, PROBE_EXIT_CODES.OK);
+        assert.deepEqual(
+          seen,
+          ["heavy"],
+          "called once, with the parsed options",
+        );
+        assert.deepEqual(run.asked, [SENTINEL]);
+        const light = await runWith(() => [SENTINEL[0]], ["--mode", "light"]);
+        try {
+          assert.deepEqual(light.asked, [[SENTINEL[0]]]);
+        } finally {
+          rmSync(light.root, { recursive: true, force: true });
+        }
+      } finally {
+        rmSync(run.root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  await t.test(
+    "the decision requires the function's list: a missed artifact it named refuses",
+    async () => {
+      const root = makeTempRoot();
+      try {
+        const out = path.join(root, "out");
+        const code = await runProbe(
+          { ...fakeDescriptor(), servedArtifacts: () => SENTINEL },
+          {
+            argv: ["--repository-root", root, "--output", out],
+            preflight: async () => ({
+              ok: true,
+              artifacts: [{ path: SENTINEL[0], match: true }],
+            }),
+            launch: async () => ({ close: async () => {} }),
+          },
+        );
+        assert.equal(code, PROBE_EXIT_CODES.REFUSAL);
+        const record = JSON.parse(
+          readFileSync(path.join(out, "fake-probe-refusal.json"), "utf8"),
+        );
+        assert.equal(
+          record.refusal.reason,
+          "served-build-preflight-incomplete",
+        );
+        assert.deepEqual(record.refusal.details.missingOrUnmatched, [
+          SENTINEL[1],
+        ]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  await t.test(
+    "an array descriptor and an absent one are unchanged",
+    async () => {
+      const array = await runWith(SENTINEL);
+      const absent = await runWith(undefined);
+      try {
+        assert.deepEqual(array.asked, [SENTINEL]);
+        assert.deepEqual(absent.asked, [[...REQUIRED_SERVED_ARTIFACTS]]);
+      } finally {
+        rmSync(array.root, { recursive: true, force: true });
+        rmSync(absent.root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  for (const [label, returned] of [
+    ["an empty array", []],
+    ["a non-array", "Build/Fake/a.js"],
+    ["undefined", undefined],
+  ]) {
+    await t.test(
+      `a function returning ${label} is a probe error, before any browser`,
+      async () => {
+        const run = await runWith(() => returned);
+        try {
+          assert.equal(run.code, PROBE_EXIT_CODES.ERROR);
+          assert.equal(run.launches(), 0);
+          assert.deepEqual(run.asked, [], "the preflight never ran");
+          const record = JSON.parse(
+            readFileSync(path.join(run.out, "fake-probe-error.json"), "utf8"),
+          );
+          assert.match(
+            record.error,
+            /servedArtifacts must return a non-empty array/,
+          );
+        } finally {
+          rmSync(run.root, { recursive: true, force: true });
+        }
+      },
+    );
+  }
+
+  await t.test(
+    "MUTANTS: a runtime that ignores the function, or does not validate it, goes red",
+    async () => {
+      const ignored = await importMutated(RUNTIME_PATH, [
+        [
+          'if (typeof declared !== "function") {',
+          'if (true || typeof declared !== "function") {',
+        ],
+      ]);
+      const root = makeTempRoot();
+      try {
+        const out = path.join(root, "out");
+        const asked = [];
+        const code = await ignored.runProbe(
+          { ...fakeDescriptor(), servedArtifacts: () => SENTINEL },
+          {
+            argv: ["--repository-root", root, "--output", out],
+            preflight: async ({ artifacts }) => {
+              asked.push(artifacts);
+              return { ok: true, artifacts: [] };
+            },
+            launch: async () => ({ close: async () => {} }),
+          },
+        );
+        // The unmutated runtime asks for SENTINEL and exits OK/REFUSAL on
+        // the stub's answer; the mutant hands the function itself on.
+        assert.notDeepEqual(asked[0], SENTINEL);
+        assert.notEqual(code, PROBE_EXIT_CODES.OK);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+
+      const unvalidated = await importMutated(RUNTIME_PATH, [
+        [
+          "if (!Array.isArray(resolved) || resolved.length === 0) {",
+          "if (false && (!Array.isArray(resolved) || resolved.length === 0)) {",
+        ],
+      ]);
+      const root2 = makeTempRoot();
+      try {
+        const out = path.join(root2, "out");
+        const asked = [];
+        const code = await unvalidated.runProbe(
+          { ...fakeDescriptor(), servedArtifacts: () => [] },
+          {
+            argv: ["--repository-root", root2, "--output", out],
+            preflight: async ({ artifacts }) => {
+              asked.push(artifacts);
+              return { ok: true, artifacts: [] };
+            },
+            launch: async () => ({ close: async () => {} }),
+          },
+        );
+        assert.deepEqual(asked, [[]], "the mutant lets an empty list through");
+        assert.notEqual(code, PROBE_EXIT_CODES.ERROR);
+      } finally {
+        rmSync(root2, { recursive: true, force: true });
+      }
+    },
+  );
+});

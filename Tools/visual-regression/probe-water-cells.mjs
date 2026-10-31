@@ -1326,6 +1326,34 @@ function plannedWorkBudgetMs(options) {
   return Math.max(PAGE_BUDGET_MS, budget);
 }
 
+const ENGINE_SERVED_ARTIFACTS = Object.freeze([
+  "Build/CesiumUnminified/Cesium.js",
+  "Build/CesiumUnminified/index.js",
+  "packages/engine/Build/Unminified/index.js",
+]);
+
+const SANDCASTLE2_SERVED_ARTIFACTS = Object.freeze([
+  "Apps/Sandcastle2/standalone.html",
+  "Apps/Sandcastle2/templates/bucket.html",
+  "Apps/Sandcastle2/templates/Sandcastle.js",
+  `Apps/Sandcastle2/gallery/${WATER_DEMO_ID}/index.html`,
+  `Apps/Sandcastle2/gallery/${WATER_DEMO_ID}/main.js`,
+]);
+
+/**
+ * The served-build artifacts a run must match: the engine bundles always, the
+ * Sandcastle 2 files only when the cell list (default: every cell) has 1f.
+ *
+ * @param {{cells?: string}} options
+ * @returns {string[]}
+ */
+export function servedArtifactsForCells(options) {
+  const names = splitList(options?.cells ?? Object.keys(WATER_CELLS).join(","));
+  return names.includes("1f")
+    ? [...ENGINE_SERVED_ARTIFACTS, ...SANDCASTLE2_SERVED_ARTIFACTS]
+    : [...ENGINE_SERVED_ARTIFACTS];
+}
+
 export const descriptor = {
   name: "water-cells",
   title:
@@ -1334,17 +1362,11 @@ export const descriptor = {
   receiptEnvelope: "runtime",
   // The Sandcastle 2 entries are the files cell 1f's run frame loads by name;
   // the app shell's hashed bundle under Apps/Sandcastle2/assets/ has no fixed
-  // name, so 1f's served-build assertion covers the demo, not the shell.
-  servedArtifacts: [
-    "Build/CesiumUnminified/Cesium.js",
-    "Build/CesiumUnminified/index.js",
-    "packages/engine/Build/Unminified/index.js",
-    "Apps/Sandcastle2/standalone.html",
-    "Apps/Sandcastle2/templates/bucket.html",
-    "Apps/Sandcastle2/templates/Sandcastle.js",
-    `Apps/Sandcastle2/gallery/${WATER_DEMO_ID}/index.html`,
-    `Apps/Sandcastle2/gallery/${WATER_DEMO_ID}/main.js`,
-  ],
+  // name, so 1f's served-build assertion covers the demo, not the shell. They
+  // are demanded ONLY when the run includes 1f (the default --cells does, as it
+  // is every WATER_CELLS key): a run of the globe cells alone must not refuse
+  // on a tree whose Sandcastle 2 was never built.
+  servedArtifacts: (options) => servedArtifactsForCells(options),
   args: {
     extraOptions: [
       {

@@ -258,6 +258,37 @@ test("R4b: default-3d-pinned is default-3d with only the clock pinned", () => {
   assert.equal(byId("default-3d").clock, null);
 });
 
+test("R4c: the 2D and Columbus identity rigs are default-3d-pinned with only the scene mode dial", () => {
+  const strip = (rig) => {
+    const copy = JSON.parse(JSON.stringify(rig));
+    for (const key of ["id", "description", "declaredBy", "dials"]) {
+      delete copy[key];
+    }
+    return copy;
+  };
+  const base = byId("default-3d-pinned");
+  assert.equal(base.dials, undefined, "the 3D rig carries no dials");
+  for (const [id, mode] of [
+    ["default-2d-pinned", "SCENE2D"],
+    ["default-columbus-pinned", "COLUMBUS_VIEW"],
+  ]) {
+    const rig = byId(id);
+    assert.deepEqual(validateRig(rig), [], `${id} has violations`);
+    assert.equal(rigs.filter((r) => r.id === id).length, 1, `${id} duplicated`);
+    assert.deepEqual(rig.dials, { sceneMode: mode }, `${id} dials`);
+    assert.deepEqual(strip(rig), strip(base), `${id} differs beyond the mode`);
+    assert.equal(rig.camera, null, `${id} uses the mode's own default view`);
+    assert.notEqual(rig.description, base.description);
+    assert.notEqual(rig.declaredBy, base.declaredBy);
+  }
+  assert.notEqual(
+    replayKeyFor(byId("default-2d-pinned")),
+    replayKeyFor(byId("default-columbus-pinned")),
+    "the two modes are different replays",
+  );
+  assert.notEqual(replayKeyFor(byId("default-2d-pinned")), replayKeyFor(base));
+});
+
 // ---------------------------------------------------------------------------
 // R9 (ROUND 5, K5-5): the clock-pinned twins of globe-default and
 // globe-horizon. Lead addition (Celos, round 5), written from the seat's item

@@ -2,6 +2,8 @@
 //
 // @purpose Rig record for the baked-tier underside scene the Batch 397 and 398 byte-identity A/Bs captured: coverage 0.55, density 0.8, black sky, solar noon.
 // @status ACTIVE
+//
+// WHO RENDERS IT. Among others, `probe-landing-cells.mjs --cells E-G`.
 
 export default Object.freeze({
   id: "cloud-underside-noon-cov055",

@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 261,
+  total: 263,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count reached 17
@@ -61,7 +61,9 @@ const REGISTRY_CENSUS = {
     // conclusion.
     polar: 27,
     "orbital-ladder": 4,
-    "saved-view": 5,
+    // default-2d-pinned and default-columbus-pinned (the identity rigs for
+    // landing cells E-ID-2d and E-ID-cv) joined the three default views.
+    "saved-view": 7,
     // The Sandcastle2 Video demo joined the three legacy-gallery demos for
     // `probe-stub-texture-uploads.mjs`.
     // The Sandcastle2 global water and weather demo (lane A salvage of the

@@ -23,7 +23,10 @@
  * WHAT IS REFUSED. Reports served from different trees (the preflight's disk
  * md5s differ), measured over different windows (`windows`), with and without
  * `--perf`, or with and without `--wait-pipelines` (round 5), are not one
- * arm and are never merged; the refusal names the report and the field.
+ * arm and are never merged; the refusal names the report and the field. The
+ * pending-pipeline wait is compared per cell (lane LINDISSE): two reports
+ * merge when every cell both cover waited alike
+ * (`lib/landing-cell-table.mjs`, `pipelineWaitMismatches`).
  *
  * @module Tools/visual-regression/lib/metrics/merge-landing-reports
  */
@@ -32,7 +35,16 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import {
+  pipelineWaitMismatches,
+  pipelineWaitPlan,
+  waitedForCell,
+} from "../landing-cell-table.mjs";
 import { ProbeRefusal } from "../probe-refusal.mjs";
+
+// A page that renders the cell's scene from load: a capture page or a variant
+// page (lane LINDISSE), not one of an E-T cell's teardown or forced-loss pages.
+const isScenePage = (page) => page !== "teardown" && page !== "forced-loss";
 
 /** The key one arm's results are grouped under, across runs. */
 export function armKey(record) {
@@ -86,7 +98,7 @@ export function groupArms(records) {
     }
     // PF-3 reads scene pages only: an E-T page's startup is the same scene's,
     // already read by its capture cell, and its teardown is not a startup.
-    if (record.startup && record.page === "scene") {
+    if (record.startup && isScenePage(record.page)) {
       arm.inputs.pf3.push({
         startup: record.startup,
         compile: record.compileAtStartup ?? {},
@@ -97,7 +109,7 @@ export function groupArms(records) {
       arm.inputs.pf2.push(record.perf.passCost ?? null);
       arm.inputs.pf4.push(record.perf.census ?? null);
     }
-    if (record.page === "scene") {
+    if (isScenePage(record.page)) {
       const mean = record.cpu?.mean;
       arm.inputs.cpu.push(Number.isFinite(mean) ? mean : null);
       const samples = record.cpu?.samples;
@@ -241,10 +253,14 @@ export function mergeLandingReports(reports, { labels = [] } = {}) {
       );
     }
     // Round 5, K5-2: a run that waited for pending pipelines renders before
-    // its startup timeline; it is never merged with one that did not.
-    if ((report.waitForPendingPipelines === true) !== waited) {
+    // its startup timeline; it is never merged with one that did not. Per
+    // cell since lane LINDISSE.
+    const mismatched = pipelineWaitMismatches(report, first);
+    if (mismatched.length > 0) {
+      const per = (cell) =>
+        `${cell}: ${name(index)} ${waitedForCell(report, cell)}, ${name(0)} ${waitedForCell(first, cell)}`;
       throw new TypeError(
-        `${name(index)} has waitForPendingPipelines ${report.waitForPendingPipelines === true}, ${name(0)} ${waited}`,
+        `waitForPendingPipelines differs per cell (${mismatched.map(per).join("; ")}); merge only runs that waited alike (--no-wait-pipelines or --wait-pipelines)`,
       );
     }
   });
@@ -271,6 +287,10 @@ export function mergeLandingReports(reports, { labels = [] } = {}) {
     windows: first.windows ?? null,
     perf,
     waitForPendingPipelines: waited,
+    pipelineWaitByCell: Object.assign(
+      {},
+      ...reports.map((report) => report.pipelineWaitByCell ?? {}),
+    ),
     treeIdentity: identity,
     pages,
     arms: groupArms(pages),
@@ -305,6 +325,7 @@ export function invocationReport(pages, options, servedArtifacts) {
     },
     perf: options?.perf === true,
     waitForPendingPipelines: options?.waitPipelines === true,
+    pipelineWaitByCell: pipelineWaitPlan(options).byCell,
     options: { runs: options?.runs },
     pages,
   };
