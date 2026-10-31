@@ -87,3 +87,89 @@ with the same line numbers. The round-1 verifier file has no durable copy.
 | (unnumbered, after review pass 7) | Review B1 is not ruled acceptable: the enhanced-ocean path receives the facade's defaults without a `globe.water` read; the build-dependent gates and Karma run on the AFTER build of the round-8 tree. | `cesium-webgpu-worker-archive/lanes-2026-10-21/water-review/_lane-out-20261023-1920-r8-REFUTED-B1-karma/SEAT_RULINGS_R7.md:8-11` |
 | (unnumbered, after review pass 8) | B1 is fixed by guarding both `Scene.js` call sites with `globe._bindWaterFacade?.(this, GlobeWater)` (not by changing spec fixtures), and the gate is the FULL Karma suite run to completion on the seat's AFTER build of the round-9 tree. | `cesium-webgpu-worker-archive/lanes-2026-10-21/water-review/_lane-out-20261023-1920-r8-REFUTED-B1-karma/SEAT_RULINGS_R7.md:13-17` |
 | R-2026-10-24-S11 | The W1 layout-spec fixture repair lands as a seat-owned spec batch right after W1, not inside W2's delta (landed as Batch 1594). | `cesium-webgpu-worker-archive/lanes-2026-10-21/MAINTAINER_RULINGS_2026-10-22.md:58-64` |
+
+## Rulings of 2026-10-24 to 2026-10-30
+
+*(Appended 2026-10-30 by the records batch after the landings of Batches 1596-1607.)* The heading of R-2026-10-24-M5
+below is copied verbatim from the program's archive file
+(`cesium-webgpu-worker-archive/lanes-2026-10-21/MAINTAINER_RULINGS_2026-10-22.md`, line 66), one heading level down; the
+paragraph under it is the seat's reading, condensed from the five levers on that file's lines 68-74. The seat rulings
+S12-S18 follow, one line each with their source. S12 is the id the 2026-10-24 records batch already cites; S13-S18 are
+numbered by the seat's records order, and the sources of S13-S16 carry no id. The archive file and the banked lane files
+remain the text of record. *(Round 2 of the records batch, after Batch 1622, adds S17 and S18 and the pointer to the seat's
+open decisions list.)*
+
+### R-2026-10-24-M5 (maintainer, 2026-10-24 ~10:1x EDT, quoted): "This sounds like a really good start, are there any risks to this?" [on lever 1: one full lane round per wave with a scout phase, per-unit review and a two-repair cap] ... "Lets run it, we can always come back after we get everything landed and run more tests on the whole product instead of mass testing small individual changes"
+
+Seat reading (Gandalf), applied from W3 on: each wave gets ONE lane round (a Sonnet scout, an Opus lead with the full
+obligation list and tier-3 fan-out, Sonnet gate runners and an Opus review per unit tip), with at most two repair rounds
+before the wave falls back to small rounds; the next wave's scout and lead phases overlap the current wave's Edge job and
+landings, and only test-runner phases wait for the Edge slot (from W4 on, waves merge pairwise for one Edge job each);
+each wave's Edge job is an IDENTITY job (the identity cells, E-T and E-W) whose CPU launch guard is soft, so it may run
+beside a lane, while the per-change PF performance legs move to a whole-product performance campaign after W12 (or
+earlier on suspicion) and each wave records them as PF-debt rows, so a default move lands as a default on identity proof
+with its PF debt recorded (this amends R-2026-10-22-3 and R-2026-10-23-M1 in practice); and the intermediate batches of
+a verified cut land LIGHT (hooks, catalog and doc verifiers only), the lane's per-tip gates being the proof of record,
+with the full runner set on the wave's last engine batch. Lever 4 also named "the W2 F2 run (in flight) as the last per-wave
+PF leg and the baseline" (the archive file, line 72); that run's PF leg never launched (the CPU guard could not be satisfied
+beside the overlapped lanes, and the job was stopped and refuted on its identity cells), so neither W2 nor W3 has a PF
+baseline (`DEFERRED_WORK.md` `NEW-CLOUD-W2-PF-DEBT`). Source: the archive file, lines 68-74. The soft guard as run:
+`Tools/visual-regression/output/wave-end/w2-r7-identity/SUMMARY_Nimrais.txt:36` ("per the sheet the identity cells launch
+when it times out"; gitignored, no durable copy) and `VERIFY_CALIMEHTAR.md:45` of the W3 identity job, durable in
+`cesium-webgpu-worker-archive/lanes-2026-10-21/w3-cloud/edge-identity-20261029/`.
+
+### Seat rulings S12-S18 (seat, 2026-10-24 to 2026-10-30)
+
+| id | ruling, in one sentence | source |
+|---|---|---|
+| R-2026-10-24-S12 | `CAMPAIGN_STATE.md` carries the cloud + water re-landing program as one campaign-level section, and its C13 held-wave paragraph is corrected to R-2026-10-22-11 and R-2026-10-23-M4; this landed in Batch 1595 (`c7c7bc6d35`), and later records batches update that section in place. | ordered: `cesium-webgpu-worker-archive/lanes-2026-10-21/records-20261024/_lane-out-r2-seat-fixed-c702d88d/LANDING_PACKET_OVERHILL.md:142`, `:251-263`; landed: `CAMPAIGN_STATE.md:272` and its section "Cloud + water re-landing (W-waves)"; the 2026-10-24 review's note that the rulings table stopped at S11: `.../REVIEW_TARLANG_P2.md:154` |
+| S13 | The context spine's contract and hazard output is a scoping lead and never a gate, and its `DIRECT_HIGH_PLUS_LOW_HAZARD` rule is retuned, not retired, so that a High+Low sum is a hazard only where it is the argument of an `mvp` / `modelViewProjection` / `viewProjection` `* vec4(...)` projection in shader source (landed in Batch 1606: 0 hazards and 51 review rows at `c7c7bc6d35`). | ruling: `F:/Dev/GH/cesium-lane-gemini-wip-20261029/_lane-out/LANDING_PACKET_GWIP.md:123-125` (round 2); the retune: `:152-156`; review: `REVIEW_NORA_P3.md:1` (same folder; HOLDS on round 3, which carries the retune; pass 2 was REFUTED, narrowly, on a guide sentence, though it found "The retune is correct against the corpus", `REVIEW_NORA_P2.md:1`); the guide paragraph as landed: `CONTEXT_SPINE_GUIDE.md:156` |
+| S14 | W2 lands with unit 3450 as cut (the round-7 cut, landed as Batch 1599, `b6a18cc088`), its orbital seam and sky hatching recorded as ledger rows, and the orbital air-light anchor left to the maintainer, because the round-8 fix was refuted. | `cesium-webgpu-worker-archive/lanes-2026-10-21/w2-cloud/_lane-out-20261026-1505-r8-REFUTED-0c30e855/REVIEW_HIMLING_P7.md:1` ("Seat: land the round-7 cut tonight, as the brief's fallback says"), B1/B2 `:72-119`; the batch message as landed: `.../w2-cloud/cut-r7-landing-20261026/msg-w2-batch4.txt:56-72`; decision D1: `cesium-webgpu-worker-archive/lanes-2026-10-29/DECISIONS_FOR_MAINTAINER_2026-10-29.md:45-50`; rows: `DEFERRED_WORK.md` section "2026-10-30 — records batch 3" |
+| S15 | Foreign agent work found uncommitted in the seat worktree is harvested byte-exactly to the worker archive (a binary diff of the modified tracked paths, a tar of the untracked ones and their md5 sums), the seat is then cleaned by positive list, and the work continues in a lane clone and is audited there; only the seat lands on main. | `cesium-webgpu-worker-archive/lanes-2026-10-29/gemini-wip-seat-transplant/MANIFEST.txt:1-3` (with `MD5SUMS` in the same folder); recommendation A1 to the maintainer: `lanes-2026-10-29/DECISIONS_FOR_MAINTAINER_2026-10-29.md:7-9`; applied to the Antigravity session of 2026-10-29, landed as Batches 1606-1607 (their "Provenance" lines) |
+| S16 | Under R-2026-10-22-6, W3 unit 3463 wiring `lighting.enableSunLight` for the WebGPU-only volumetric deck is an admissible route, because WebGL has no volumetric deck and default-to-parity is vacuous there; the seat confirms the route pending the maintainer's ratification (unit 3463 landed as Batch 1613, `86fee24dd2`, on 2026-10-30; the ratification is still open). | the seat's confirmation: `cesium-webgpu-worker-archive/lanes-2026-10-21/seat-scratchpad/brief-records-batch-3.md:38-40` (item 1, S16) and `.../seat-scratchpad/LANDING_NIGHT_2_20261026.md:25`; the lead's seat-item list: `LANDING_PACKET_W3.md:292` and review N-10 `REVIEW_AMROTHOS_P2.md:160`, both in `cesium-webgpu-worker-archive/lanes-2026-10-21/w3-cloud/_lane-out-20261026-1358-r4-HOLDS-30640b4b/` |
+| R-2026-10-30-S17 | The Antigravity (Gemini) water program continues in its own lanes untouched: the seat neither redirects nor interrupts it, every finished wave gets a read-only Opus review, and nothing lands except through the seat after review and the maintainer's word (by 2026-10-30 the seat had reviewed twelve waves, eleven REWORK and w1c REFUTED, and salvaged the parts the reviewers held into Batches 1616-1623 through its own lanes). | the maintainer's word of 2026-10-30 04:3x EDT, quoted in `cesium-webgpu-worker-archive/lanes-2026-10-30/salvage-night/DECISIONS_FOR_MAINTAINER_2026-10-29.md:69-70` ("I am going to let gemini finish its water improvement waves so keep an eye out for that additional work") with the seat's recording of it; named S17 by the seat's records brief, `.../salvage-night/brief-records-round2-dispatch.md:33`; the program index `lanes-2026-10-30/GEMINI_WATER_PROGRAM_INDEX.md` |
+| R-2026-10-30-S18 | A runner red PROVEN pre-existing at the tip (the same failing test ids at HEAD and at HEAD plus the patch, measured in the landing log) does not block a landing: the runner runs minus the named spec file or files (the seat helpers refuse a misspelt name), every application is named in the landing log, and each red is recorded as a row with a fix-forward owner. Applied on 2026-10-30 three times: lane A's landing (Batch 1619) ran `test-visual-regression-node` minus `metrics-cloud-extraction.spec.mjs`, fixed forward the same night by Batch 1620 and the exclusion removed; lane B's landing (Batch 1623) ran `test-build-infra` minus `verify-package-smoke.spec.mjs` and `test-cloud-c13-quarantine` minus `cloud-observability-counters`, `cloud-reconstruction-attachments` and `cloud-shadow-rte` (`runner-minus-known-red.mjs`, seat kit), all red at the bare tip and not fixed that night (rows `DX-VERIFY-PACKAGE-SMOKE-RED-AT-SEAT` and `NEW-W3-QUARANTINE-PINS-STALE`, each with a fix-forward owner). The decision as first written (`:146`) said one named spec and a fix the same night; the general form is the seat's restatement for this record at 23:2x EDT, so the maintainer may overrule either. | `cesium-webgpu-worker-archive/lanes-2026-10-30/salvage-night/DECISIONS_FOR_MAINTAINER_2026-10-29.md:146` (overrule = hold every salvage landing until the fix lands); the landing logs `.../salvage-night/landing-logs/land-salvage-queue-1793406317.log:2` and `land-andustar-4.log:20` (the named-spec exclusion), `land-salvage-queue-1793406317.log:23-27` and `land-andustar-4.log:24-28` (the per-test allowance), and `baseline-runners-tip-9ac404eb46.log` with `baseline-test-build-infra.log` (the reds at the bare tip before lane B); `DEFERRED_WORK.md` `NEW-METRICS-CLOUD-EXTRACTION-ULP-RED`, `DX-VERIFY-PACKAGE-SMOKE-RED-AT-SEAT`, `NEW-W3-QUARANTINE-PINS-STALE` |
+
+The seat's decisions list of 2026-10-29/30 (B9-B49, from the Antigravity water reviews and the salvage lanes; banked as
+`cesium-webgpu-worker-archive/lanes-2026-10-30/salvage-night/DECISIONS_FOR_MAINTAINER_2026-10-29.md`) was open for the
+maintainer until the rulings of 23:2x EDT below (R-2026-10-30-M1 … -M4). Where the seat resolved an item by a conservative default for the landing night (B33/B36, B37, B38, B39, B40,
+B42, B45 and B46; `salvage-night/PLAN_LANDING_NIGHT_2026-10-30.md` and the decisions file), the default is a seat decision the
+maintainer may overrule, not a ruling, and none of these items is recorded here as one.
+
+## Maintainer rulings of 2026-10-30 23:2x EDT (R-2026-10-30-M1 … -M4)
+
+*(Appended by records batch 3, round 3.)* The maintainer answered the four groups of open decisions the seat listed at 23:2x
+EDT. Each heading quotes the maintainer verbatim; the paragraph under it is the seat's reading. Source for all four: `cesium-webgpu-worker-archive/lanes-2026-10-30/salvage-night/DECISIONS_FOR_MAINTAINER_2026-10-29.md`, section
+"Maintainer rulings 2026-10-30 23:2x EDT" (lines 153-157). With these rulings the decisions list of the paragraph above is no
+longer simply open: B1-B44 read "open, resolved by the fix list" (M1); E1-E4, D1, C1-C5 and A1-A2 are accepted as the seat
+recommended (M2); A1 and the B34/B41 boundary items are resolved in principle (M3); section F stays held (M4).
+
+### R-2026-10-30-M1 (maintainer, 2026-10-30 23:2x EDT, quoted, on the Gemini water program, B1-B44): "There is still work Gemini is finishing up with this but this doesn't mean we can't review, audit, and suggest fixes for it. The goal is to make it as clean as possible so we can land it tomorrow."
+
+Seat reading: no stop-stacking directive. The seat keeps reviewing every finished Antigravity wave read-only (S17 stands),
+consolidates the twelve review files into ONE bottom-up fix list per wave with its recommended resolution for each B-item, and
+prepares the landing path (rebase order, Edge cells) so that the program lands on Saturday 2026-10-31. Where a review found a
+defect on main that the seat owns (B24, landed as Batch 1618; the B43 row), the seat fixes it itself. Decisions B1-B44 read
+"open, resolved by the fix list" rather than waiting on a stop-stacking directive.
+
+### R-2026-10-30-M2 (maintainer, 2026-10-30 23:2x EDT, quoted, on the seat-ready batches E1-E4, D1, C1-C5, A1-A2): "Can we fix these issues and land this tech? It feels like we are overthinking things here. The goal is the improved features in master not how broadly we can gate auditing, fixing, and commiting it. We need to work towards landing tech. Also the .md files should just have data pointers to one .md file that has all of the well refined context rules and information so that we are not double or triple loading the same context info."
+
+Seat reading: fix and land. The seat's recommendations are accepted: E1 (accept Principle 13), E2 (not yet), E3 (pin CI to
+Node 22.13 or later and add `test-context-spine` to the guards job), E4 (the cpu-profile pieces only with a consumer), D1 (the
+physical orbital look with the night-limb guard), C1-C5 as recommended (C5 opt-in now), and A1/A2 as recommended. Gating stays
+at the proof bar by change class (R-2026-08-29-1), with no extra rounds. New directive (rules consolidation): the governance
+`.md` files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.clinerules` and any per-agent rules file) become pointers to ONE refined
+rules file, so the content lives once and no agent loads the same context twice. It is queued as a docs batch (lane Lindorie,
+dispatched by the seat on 2026-10-30), and the held context-spine governance batch 3 (E1, Principle 13) folds into it; the one
+file is `CLAUDE.md` unless the batch's measurement argues for a neutral name.
+
+### R-2026-10-30-M3 (maintainer, 2026-10-30 23:2x EDT, quoted, on the seat and clones): "Generally if a LLM does not have the seat it should work in a cloned copy, unless I override and say it can. If I decide another LLM can take the seat then the other LLMs just need to live with that and clean things up."
+
+Seat reading: an LLM that does not hold the seat works in a clone unless the maintainer overrides; the maintainer may hand the
+seat to another LLM, and the others adapt and clean up. This resolves decision A1 and the B34/B41 boundary items in principle
+(`DEFERRED_WORK.md` `DX-SEAT-WORKTREE-FOREIGN-WIP`; seat ruling S15 stays the harvest procedure).
+
+### R-2026-10-30-M4 (maintainer, 2026-10-30 23:2x EDT, quoted, on the housekeeping ASK list): "Hold on these for now, they are not blocking anything."
+
+Seat reading: the ASK list (section F of the decisions file, and the stray `F:/Dev/GH/node_modules`) stays held; nothing is
+deleted.
