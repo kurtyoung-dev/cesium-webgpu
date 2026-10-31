@@ -41,17 +41,40 @@ export function resolveDbPath(repoRoot, dbPath) {
  * Open and initialize a SQLite context-spine database.
  *
  * @param {string} dbFilePath
- * @param {{ readOnly?: boolean, reset?: boolean }} [options]
+ * @param {{ readOnly?: boolean, reset?: boolean,
+ *   removeFile?: (file: string) => void }} [options] `removeFile` replaces the
+ *   reset's file removal (specs; default `fs.rmSync` with `force`).
  * @returns {DatabaseSync}
  */
 export function openContextDatabase(dbFilePath, options = {}) {
-  const { readOnly = false, reset = false } = options;
+  const {
+    readOnly = false,
+    reset = false,
+    removeFile = (file) => fs.rmSync(file, { force: true }),
+  } = options;
   if (dbFilePath !== ":memory:") {
     if (reset && !readOnly) {
       for (const suffix of ["", "-wal", "-shm"]) {
         const candidate = `${dbFilePath}${suffix}`;
         if (fs.existsSync(candidate)) {
-          fs.rmSync(candidate, { force: true });
+          try {
+            removeFile(candidate);
+          } catch (err) {
+            const code = /** @type {{ code?: string }} */ (err)?.code;
+            if (code === "EPERM" || code === "EBUSY" || code === "EACCES") {
+              // The main file is removed first, so a refusal here (another
+              // process holds it open, as the cesium-context-spine MCP server
+              // does on Windows) happens before anything has been deleted.
+              throw Object.assign(
+                new Error(
+                  `${dbFilePath}: the cesium-context-spine MCP server holds the database; use the incremental build or close the session's MCP server`,
+                  { cause: err },
+                ),
+                { code },
+              );
+            }
+            throw err;
+          }
         }
       }
     }

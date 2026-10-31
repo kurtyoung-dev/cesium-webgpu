@@ -384,6 +384,7 @@ if (!VERIFY_ONLY) {
       sourceRepo,
       clonePath,
       seedDb: !args.includes("--no-spine-seed"),
+      refreshSpine: !args.includes("--no-spine-refresh"),
     }),
   );
 }
