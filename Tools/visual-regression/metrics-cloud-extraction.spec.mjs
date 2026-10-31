@@ -12,7 +12,10 @@
 // modules as they stood at commit 1a2baeaa4abd96b8d1c33dcdc14f37b7eddd174f,
 // immediately before the extraction. **Regenerate it only when a banked number
 // is deliberately changed** — a regeneration that accompanies a refactor is the
-// spec being edited to agree with the code it exists to check.
+// spec being edited to agree with the code it exists to check. The three cases
+// that reach Math.sin / Math.cos were recaptured on 2026-10-30 from the same
+// pre-move modules under the pinned trigonometry described below; that changed
+// the fixture, not the code under test.
 //
 // WHY NOT READ THE OLD SOURCE FROM GIT. The first draft of this spec read each
 // module out of `HEAD` and imported it as a data: URL. `HEAD` moves: the moment
@@ -191,6 +194,84 @@ function scalarField(width, height, seed) {
     field[i] = rng();
   }
   return field;
+}
+
+// ── pinned trigonometry ─────────────────────────────────────────────────────
+//
+// ECMA-262 leaves Math.sin and Math.cos implementation-approximated, and V8 has
+// changed them between releases: over the 1,438 angles the 24x24 fBm path
+// evaluates, V8 13.6 (Node 24.22.1) and V8 15.0 disagree by one ulp on 37
+// cosines and 50 sines. The separable DFT spreads that into hundreds of
+// near-zero field values, so the fBm, spectrum and slope-fit cases failed
+// bit-for-bit against a fixture captured on another runtime while the moved
+// code was unchanged. This spec checks the moved code, not the engine's libm,
+// so every case runs with the two functions swapped for the pair below. It uses
+// only IEEE-754 +, -, *, / and Math.round, which are exactly specified, so it
+// returns the same double on every conforming engine: fdlibm's 33-bit
+// Cody-Waite reduction by pi/2 and its __kernel_sin / __kernel_cos minimax
+// polynomials. The angles here stay far below the 2^20 * pi/2 range where the
+// two-part reduction is exact.
+
+const INV_PIO2 = 6.36619772367581382433e-1;
+const PIO2_HI = 1.57079632673412561417;
+const PIO2_LO = 6.07710050650619224932e-11;
+const SIN_POLY = [
+  -1.66666666666666324348e-1, 8.33333333332248946124e-3,
+  -1.98412698298579493134e-4, 2.75573137070700676789e-6,
+  -2.50507602534068634195e-8, 1.58969099521155010221e-10,
+];
+const COS_POLY = [
+  4.16666666666666019037e-2, -1.38888888888741095749e-3,
+  2.48015872894767294178e-5, -2.75573143513906633035e-7,
+  2.0875723212981748279e-9, -1.13596475577881948265e-11,
+];
+
+function kernelSin(x) {
+  const [s1, s2, s3, s4, s5, s6] = SIN_POLY;
+  const z = x * x;
+  const r = s2 + z * (s3 + z * (s4 + z * (s5 + z * s6)));
+  return x + z * x * (s1 + z * r);
+}
+
+function kernelCos(x) {
+  const [c1, c2, c3, c4, c5, c6] = COS_POLY;
+  const z = x * x;
+  const r = z * (c1 + z * (c2 + z * (c3 + z * (c4 + z * (c5 + z * c6)))));
+  return 1 - (0.5 * z - z * r);
+}
+
+/** x reduced to [-pi/4, pi/4] and the quadrant it was reduced from. */
+function reduceQuarterTurn(x) {
+  const n = Math.round(x * INV_PIO2);
+  return { r: x - n * PIO2_HI - n * PIO2_LO, quadrant: ((n % 4) + 4) % 4 };
+}
+
+function pinnedSin(x) {
+  if (x === 0) {
+    return x;
+  }
+  const { r, quadrant } = reduceQuarterTurn(x);
+  const value = quadrant % 2 === 0 ? kernelSin(r) : kernelCos(r);
+  return quadrant < 2 ? value : -value;
+}
+
+function pinnedCos(x) {
+  const { r, quadrant } = reduceQuarterTurn(x);
+  const value = quadrant % 2 === 0 ? kernelCos(r) : kernelSin(r);
+  return quadrant === 0 || quadrant === 3 ? value : -value;
+}
+
+/** Runs `body` with Math.sin / Math.cos pinned, restoring the engine's pair after. */
+function withPinnedTrig(body) {
+  const { sin, cos } = Math;
+  Math.sin = pinnedSin;
+  Math.cos = pinnedCos;
+  try {
+    return body();
+  } finally {
+    Math.sin = sin;
+    Math.cos = cos;
+  }
 }
 
 const W = 24;
@@ -701,7 +782,9 @@ test("every moved function returns bit-for-bit what its pre-move body returned",
     unused.delete(testCase.name);
 
     const beforeValue = decodeExact(golden.value);
-    const afterValue = testCase.call(after[testCase.module]);
+    const afterValue = withPinnedTrig(() =>
+      testCase.call(after[testCase.module]),
+    );
     table.push({
       case: testCase.name,
       before: testCase.report(beforeValue),
@@ -727,6 +810,39 @@ test("every moved function returns bit-for-bit what its pre-move body returned",
     [],
     "the fixture records cases this spec no longer runs — deleting a case silently drops its evidence",
   );
+});
+
+test("the pinned trigonometry is the sine and cosine, to within one double spacing at 1", () => {
+  // The pin is only a fair stand-in for the engine's pair if it computes the
+  // same functions: a pin that drifted would make assertion 2 compare a
+  // different field. Both pairs are checked on the DFT's own angles and on a
+  // dense sweep past them; quarter-turn multiples must keep their exact zeros.
+  let worst = 0;
+  for (let i = 0; i <= 20000; i++) {
+    const x = -160 + (320 * i) / 20000;
+    worst = Math.max(
+      worst,
+      Math.abs(pinnedSin(x) - Math.sin(x)),
+      Math.abs(pinnedCos(x) - Math.cos(x)),
+    );
+  }
+  for (let k = 0; k < 24; k++) {
+    for (let t = 0; t < 24; t++) {
+      const angle = (-2 * Math.PI * k * t) / 24;
+      worst = Math.max(
+        worst,
+        Math.abs(pinnedSin(angle) - Math.sin(angle)),
+        Math.abs(pinnedCos(angle) - Math.cos(angle)),
+      );
+    }
+  }
+  assert.ok(
+    worst <= Number.EPSILON,
+    `pinned sin/cos depart from the engine's by ${worst}, more than one double spacing at 1`,
+  );
+  assert.ok(Object.is(pinnedSin(-0), -0), "sin(-0) must stay -0");
+  assert.equal(pinnedCos(0), 1);
+  assert.equal(pinnedSin(Math.PI / 2), 1);
 });
 
 // ── assertion 3 ─────────────────────────────────────────────────────────────
