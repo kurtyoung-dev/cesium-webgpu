@@ -31173,6 +31173,13 @@ unseen (`NEW-W3-QUARANTINE-PINS-STALE`).
 **Acceptance:** as `NEW-CLOUD-W2-PF-DEBT`, per listed cell. **Suggested owner:** the whole-product performance campaign.
 **Source:** the W3 bank's `PF_DEBT_W3.md:5-37`; `edge-identity-20261029/VERIFY_CALIMEHTAR.md:143-157` (section 8 and F1) and
 `KARMA_SUNLIT_KHELED.md:1-9` (both under `cesium-webgpu-worker-archive/lanes-2026-10-21/w3-cloud/`).
+**A fact about the W3-DAYLIGHT BEFORE arm (records round 9).** The banked W3-DAYLIGHT BEFORE E-W report (`6b3b80f644`, the
+pre-W3 tree, with the Batch 1638 kit overlaid) is not a quiet base for the 30 km WebGPU cells: its `E-W-30km|webgpu` run 0 ran at
+61.6 % machine CPU (over the 60 % guard) and its 30 km WebGPU means are 57.6 % and 53.5 %, so the KIT5 leg's quiet tip read both
+arms `unmeasured-contended` (detail under `DX-W3-EW-INSTRUMENT-UNMEASURED-EXIT`). A PF cell of this row that compares E-W-30km
+against the pre-W3 tree needs a quiet BEFORE run. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit5-20261031/phase2/6-ew/armA/landing-cells-report.json`
+(`comparison["E-W-30km|webgpu|scene"].contention`, `comparison["E-W-30km-hdr|webgpu|scene"].contention`).
 
 ### NEW-CLOUD-W3-HIDDEN-MANAGED-DECK-RENDERS — a hidden but enabled managed deck renders, without weather — **DEFERRED** (seat question; predates W3)
 
@@ -32385,7 +32392,7 @@ file"; `round2-tar-aldarion/REVIEW_ARTHAD_P1.md`, "NOTES"; N5, a line count in t
   and "What the Edge leg must watch" item 2); the seat's addendum (`salvage-night/rows-for-records-r2-addendum.md:106-110`,
   `:115-117`).
 
-### DX-KIT-PF3-STARTUP-CEILING-WEBGL — PF-3's fixed 2,000 ms startup ceiling fails same-build WebGL arms — **OPEN** (Batch 1635's band failed its KIT3 acceptance on WebGL 2D; Batch 1638's repair awaits its Edge leg; the per-repeat ceiling is `DX-KIT-PF3-CEILING-ON-MEDIAN`)
+### DX-KIT-PF3-STARTUP-CEILING-WEBGL — PF-3's fixed 2,000 ms startup ceiling fails same-build WebGL arms — **CLOSED: measured** (KIT5 Edge leg Phase 2 item 4, records round 9: PF-3 within on both renderers under the median ceiling, base = tip; the 15 % WebGL floor is inert in the probe, `DX-KIT-PF3-WEBGL-FLOOR-INERT-IN-PROBE`)
 
 - **Symptom:** on the kit2 leg both arms of `E-ID-2d` and of `E-ID-cv` ran the same build, yet each tip arm exited 1 on the WebGL
   PF-3 verdict alone ("a tip repeat took 2035.7 ms (2D) / 2224 ms (CV), not under the 2000 ms ceiling"). Pixels, stage,
@@ -32434,6 +32441,26 @@ within (`DX-KIT-PF3-CEILING-ON-MEDIAN`). **Acceptance:** kit round 4's Edge item
 the median rule), which has NOT run (Phase 2 waits for the seat's quiet window); records round 9 records it. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/REVIEW_FINDARATO_P1.md` (Premise W2);
 `round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md` ("Phase 2: not started"); `round3/brief-edge-kit5.md` (Phase 2, item 4).
+**Closed: measured (records round 9).** KIT5 Edge leg Phase 2 item 4 (executor Eowyn, 14:34-14:37 EDT, executor clone at Batch
+1642 `82b8f29e26`, served == disk on both arms; `probe-landing-cells.mjs --cells E-ID-2d,E-ID-cv --runs 2`, arm A with no base and
+arm B with `--base-report` arm A, so arm B compares the same build with itself; exit 0 / 0; machine CPU mean 29.0 % (A) and 26.7 %
+(B); contention `clear` on all four comparisons): PF-3 reads `within` on all four of `E-ID-2d` / `E-ID-cv` x WebGL / WebGPU, rule
+`ceiling-and-band`, `ceilingStatistic` `median`, ceiling 2,500 ms, `baseOverCeiling` false, `waitBasis` `wait-excluded`, no
+missing repeat. Per repeat (`navigationToFirstFrameMs` with the pipeline wait excluded), arm A then arm B: WebGL 2D 2551.6 /
+2010.6 then 1976.1 / 2060.5 ms (median 2281.1 -> 2018.3, tip max 2060.5, band 0.538 from the base arm's repeat spread, limit
+3508.7); WebGL Columbus View 1468.8 / 1515.1 then 1650.2 / 1560.6 (1492.0 -> 1605.4, tip max 1650.2, band 0.10 `startup-floor`,
+limit 1641.1); WebGPU 2D 1572.1 / 1533.9 then 1579.7 / 1521.7 (1553.0 -> 1550.7, tip max 1579.7, limit 1708.3); WebGPU Columbus
+View 1492.2 / 1536.9 then 1511.2 / 1507.8 (1514.6 -> 1509.5, tip max 1511.2, limit 1666.0). Pixels B against A: 0 px on all four.
+Two readings to keep straight. In Columbus View the slowest WebGL tip repeat (1650.2) is over the band limit (1641.1) while the
+median (1605.4) is within: that is the band's median-to-median compare (`compareToBase`), which Batch 1642 did not change, not the
+ceiling's median rule; no tip repeat came near 2,500 ms (slowest 2060.5), so the old per-repeat ceiling would also have read
+`within` (the receipt's "a max rule would have read it over" is about the band limit). And that WebGL band is 0.10, not the 0.15
+WebGL floor Batch 1638 set: the probe hands the floor selector fully resolved bands, so the WebGL floor never applies on Edge
+(`DX-KIT-PF3-WEBGL-FLOOR-INERT-IN-PROBE`, new in records round 9). The acceptance this row named (PF-3 within on both renderers
+under the median rule, quiet machine, base = tip) is met; the 15 % WebGL floor the row's repair also landed is not what the Edge
+read. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT5.md` (section "Phase 2", item
+4); `round3/edge/kit5-20261031/phase2/4-eid/armB/landing-cells-report.json` (`comparison[*].pf3.startup`, `comparison[*].pixels`,
+`preflight`, `cpuSeries`, `exitCode`); `phase2/4-eid/armA/landing-cells-report.json` (`cpuSeries`, `exitCode`).
 
 ### NEW-OCEAN-FFT-RIG-GPU-HEAVY — the FFT-ocean rig's frame is GPU-heavy — **OPEN** (observation; no baseline)
 
@@ -32657,7 +32684,7 @@ and `DX-KIT-WATER-CELLS-CAPTURE-MANIFEST` (closed for the kit, each with its Edg
   `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (W3); `round3/aerandir/REVIEW_NURWE_P1.md`
   (NB-4).
 
-### DX-KIT-PF-UNMEASURED-CONTENDED-EXIT-CODE — a `--base-report` run under load exits 1 through PF-3 `unmeasured-contended` alone — **CLOSED for the kit** (Batch 1638, `b4bf6307cf`; no Edge run of the kit probe has read it yet)
+### DX-KIT-PF-UNMEASURED-CONTENDED-EXIT-CODE — a `--base-report` run under load exits 1 through PF-3 `unmeasured-contended` alone — **CLOSED** (Batch 1638, `b4bf6307cf`; read on Edge by the KIT5 leg's kit-probe runs, records round 9)
 
 On the acceptance leg runs 1r, 3 and 4 exited 1 while every pixel, stage, gate and sentinel verdict passed: the only failing
 verdicts were PF-3 `unmeasured-contended` (12, 4 and 2 of them; on 1r `verdictIfUncontended` read `within`). `--no-cell-perf`
@@ -32678,6 +32705,14 @@ untouched. Only PF `unmeasured-contended` (`lib/landing-verdicts.mjs:279`) and t
 1607-era instrument, which still folds `unmeasured-contended` as exit 1 (`DX-W3-EW-INSTRUMENT-UNMEASURED-EXIT`). **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (W2); `round3/aerandir/REVIEW_NURWE_P1.md`
 (section 2 "K3-2 / P2D F3 / W2", NB-8); `round3/edge/EDGE_RECEIPT_EOWYN_W3_DAYLIGHT.md` (leg 3).
+**Read on Edge (records round 9).** The KIT5 leg's kit-probe runs exercised the fold: Phase 1 item 2 (the TIP E-W run, 56
+verdicts: 48 pass and the 8 PF-3 verdicts `unmeasured-contended`) and Phase 2 item 6 arm A (56 verdicts: 54 pass and the two 30 km
+WebGPU PF-3 verdicts `unmeasured-contended`, each `pass: false`, `notRun: true`, printed `UNMEASURED (contended)` in the summary)
+both exit 0, and Phase 2 item 6 arm B exits 1 on its two measured `over` verdicts (`NEW-CLOUD-EW-HDR-COMPILE-SAME-BUILD-RED`), so on
+Edge the exit code tells an unmeasured PF statistic from a measured red. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit5-20261031/TIP/ew-kit/landing-cells-report.json` (`verdicts`,
+`exitCode`); `phase2/6-ew/armA/landing-cells-report.json` and `landing-cells-summary.md`; `phase2/6-ew/armB/landing-cells-report.json`
+(`verdicts`, `exitCode`).
 
 ### DX-KIT-LANDING-RADIAL-BANDING-FLAT-MAP — no concentric-energy number for a flat 2D / Columbus View frame — **OPEN** (probe kit)
 
@@ -32835,7 +32870,7 @@ captured still exits 1. **Owed:** the same command on Edge exiting 0 (kit round 
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 2, finding 4);
 `round3/aerandir/LANDING_PACKET_AERANDIR.md` (W2); `round3/aerandir/REVIEW_NURWE_P1.md` (section 2 "K3-2 / P2D F3 / W2").
 
-### DX-KIT-PF3-PIPELINE-WAIT-IN-STARTUP — the WebGPU PF-3 startup figure included the per-cell pending-pipeline wait — **CLOSED for the kit** (Batch 1638, `b4bf6307cf`; the Edge read is owed)
+### DX-KIT-PF3-PIPELINE-WAIT-IN-STARTUP — the WebGPU PF-3 startup figure included the per-cell pending-pipeline wait — **CLOSED: measured** (Batch 1638, `b4bf6307cf`; read on Edge by KIT5 Phase 2 item 4, records round 9)
 
 On the KIT3 leg every WebGPU identity-cell startup read 4.6-5.6 s against the 2,500 ms ceiling, "within" only by
 `base-over-ceiling-banded`: viewer-ready came at about 1.4-1.7 s and stage to first frame took 3.0-3.9 s, the per-cell
@@ -32848,6 +32883,16 @@ it and reports `pipelineWait {basis, base, tip}` beside the verdict; if any repe
 `ceiling-and-band` (kit round 4's Edge item 3). **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT3.md` (section 4, finding 6);
 `round3/aerandir/LANDING_PACKET_AERANDIR.md` (W3); `round3/aerandir/REVIEW_NURWE_P1.md` (section 2 "PF-3").
+**Measured on Edge (records round 9).** KIT5 Phase 2 item 4 (tree Batch 1642, quiet machine; figures under
+`DX-KIT-PF3-STARTUP-CEILING-WEBGL`): every PF-3 arm reads `waitBasis` `wait-excluded`, and the WebGPU wait is reported per repeat
+beside the verdict: `E-ID-2d` arm A 3324.7 / 3160.8 ms, arm B 3101.6 / 3078.0 ms (framesWaited 119-128); `E-ID-cv` arm A 2687.9 /
+2609.0 ms, arm B 2584.5 / 2632.0 ms (framesWaited 87-91); pendingAtStart 5, pendingAtEnd 0, pendingAtCapture 0 and timedOut false on
+all eight WebGPU pages, and no capture while pipelines were pending. WebGL has no pipeline cache (`available: false`), so its wait is
+0. With the wait out, the WebGPU tip medians are 1550.7 ms (2D) and 1509.5 ms (Columbus View), under the 2,500 ms ceiling, so
+WebGPU reads `ceiling-and-band` instead of the KIT3 leg's `base-over-ceiling-banded`; with it in, WebGPU first frame is
+4095.7-4896.8 ms. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT5.md` (section
+"Phase 2", item 4); `round3/edge/kit5-20261031/phase2/4-eid/{armA,armB}/landing-cells-report.json` (`pages[].pipelines`,
+`capturesWhilePipelinesPending`, `comparison[*].pf3.{pipelineWait,runs}`).
 
 ### DX-KIT-WATER-MANIFEST-STALE-ON-THROW — a builder throw left an earlier run's `capture-manifest.json` in place — **CLOSED** (Batch 1638, `b4bf6307cf`)
 
@@ -32861,7 +32906,7 @@ folders were all new, so it could not show a stale manifest. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (W4); `round3/aerandir/REVIEW_NURWE_P1.md`
 (section 2 "Stale manifest"); `round3/manwendil/REVIEW_HUNDOR_P1.md` (N-a).
 
-### DX-KIT-PF3-CEILING-ON-MEDIAN — PF-3's 2,500 ms ceiling reads `over` on one repeat while the tip median is within — **CLOSED** (Batch 1642, `82b8f29e26`; Node-pinned; the Edge read is `DX-KIT-PF3-STARTUP-CEILING-WEBGL`'s acceptance, KIT5 Phase 2 item 4, not run)
+### DX-KIT-PF3-CEILING-ON-MEDIAN — PF-3's 2,500 ms ceiling reads `over` on one repeat while the tip median is within — **CLOSED** (Batch 1642, `82b8f29e26`; read on Edge by KIT5 Phase 2 item 4, records round 9; no tip repeat reached the ceiling there, so that case stays Node-pinned)
 
 On the KIT3 A2 arm (the same build as its base) WebGL `E-ID-2d` reads `over` because one of its two repeats took 2692.4 ms, over the
 2,500 ms per-repeat ceiling, while its median (2453.1 ms against a 2398.6 ms base, +2.3 %) is inside the 15 % floor Batch 1638 set;
@@ -32882,6 +32927,13 @@ not the spec fixture: base kit `over` with the banked reason verbatim, Batch 164
 2692.4, limit 2638.46). The Edge read is Phase 2 item 4 of the KIT5 leg, not run (`DX-KIT-PF3-STARTUP-CEILING-WEBGL`).
 **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/LANDING_PACKET_FINDEKANO.md` (W2; "Mutants (lead)");
 `round3/findekano/REVIEW_FINDARATO_P1.md` (Premise W2; mutants 8-9; N3).
+**Read on Edge (records round 9).** KIT5 Phase 2 item 4 ran the rule on Edge: all four PF-3 arms carry `ceilingStatistic:
+"median"` and `tipMax` and read `within` (figures under `DX-KIT-PF3-STARTUP-CEILING-WEBGL`, closed). The case that tells this rule
+from the old per-repeat ceiling, a tip repeat at or over 2,500 ms with the tip median under it, did not occur on the leg (slowest
+tip repeat 2060.5 ms, WebGL 2D; the 2551.6 ms repeat is on arm A, the base side, where only the base median is read, through
+`baseOverCeiling`), so that case stays pinned in Node by the KIT3 A2 replay above. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit5-20261031/phase2/4-eid/armB/landing-cells-report.json`
+(`comparison[*].pf3.startup.{ceilingStatistic,tipMax,rule,verdict}`, `comparison[*].pf3.runs`).
 
 ### DX-KIT-CAPTURE-SEAM-CLOSE-EXEMPTION — the capture seam's 45 s close path has no complete-work exemption — **CLOSED** (Batch 1642, `82b8f29e26`; Node-pinned; one open question)
 
@@ -32931,7 +32983,7 @@ occurred; it is pinned in Node only. **Source:** `cesium-webgpu-worker-archive/l
 (W1); `round3/findekano/REVIEW_FINDARATO_P1.md` (Premise W1, TF4, mutants 1-7); `round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md`
 (items 1a-1c); `round3/edge/kit5-20261031/{1a,1b/run0,1b/run1,1b/run2,1c}/weather-map-report.json` (`runs[].firstFrame`).
 
-### DX-W3-EW-INSTRUMENT-UNMEASURED-EXIT — the W3 job's banked E-W instrument still scores PF-3 `unmeasured-contended` as exit 1, and its kit60 variant is gone — **CLOSED: measured** (Batch 1642, `82b8f29e26`; KIT5 Edge leg Phase 1, TIP arm; the BEFORE arm not run, seat deferral)
+### DX-W3-EW-INSTRUMENT-UNMEASURED-EXIT — the W3 job's banked E-W instrument still scores PF-3 `unmeasured-contended` as exit 1, and its kit60 variant is gone — **CLOSED: measured** (Batch 1642, `82b8f29e26`; KIT5 Edge leg Phase 1, TIP arm; the BEFORE arm not run, seat deferral; the E-W red it recorded is a `compileTotalMs` red, re-measured within at the tip by Phase 2, records round 9)
 
 The W3-DAYLIGHT leg re-ran E-W (`--cells E-W-ground,E-W-ground-hdr,E-W-30km,E-W-30km-hdr --runs 2`) with the W3 job's banked
 instrument (`wave-end/w3-identity/_executor/instrument/probe-landing-cells-w3.mjs`, read-only from the seat's output). Its `-kit60`
@@ -32971,6 +33023,40 @@ could not measure on any of the 8 arms (`DX-KIT-BASE-REPORT-ABSOLUTE-PATHS`), an
 `round3/findekano/REVIEW_FINDARATO_P1.md` (Premise W2, TF3, mutants 10-14); `round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md`
 (item 2); `round3/edge/kit5-20261031/TIP/ew-kit/landing-cells-report.json` (`verdicts`, `cpuSeries`),
 `TIP/ew-kit-webgl-vs-banked-pixeldiff.json`, `TIP/ew-kit-webgpu-vs-banked-pixeldiff.json`.
+**The recorded E-W red: its label corrected, then re-measured (records round 9).** *Label (KIT5 Phase 2 finding
+F-6-statistic-label, re-derived here from the two banked W3-DAYLIGHT reports).* A WebGPU E-W arm's PF-3 carries two statistics and
+reads `over` if either is over; the arm's `field` names `navigationToFirstCloudFrameMs`, but the `over` on `E-W-ground|webgpu` is
+its `compileTotalMs` statistic (`pf3.compile`): BEFORE repeats 6643.5 / 7126.2 ms (median 6884.8), TIP 6906.9 / 11064.6 ms
+(median 8985.8), ratio 1.305 against a 14.5 % repeat band, limit 7885.3, `over`. First cloud frame on the same arm (`pf3.startup`):
+BEFORE 4323.3 / 4627.0 ms (median 4475.1), TIP 4417.1 / 5012.4 ms (median 4714.8, +5.4 %), band 14.0 %, limit 5103.9, `within`.
+So the red recorded above is a compile-time red on the Batch 1638 tree (TIP `b4bf6307cf` against BEFORE `6b3b80f644`), not a
+first-cloud-frame or startup red. The W3-DAYLIGHT receipt (leg 3: "PF-3 startup verdicts only") and this row's records-round-7
+text ("its PF-3 field `navigationToFirstCloudFrameMs` (the `compile` statistic)") carried the wrong or a mixed label, which the
+KIT5 brief and `WEBGPU_MIGRATION_STATUS.md` then read as "the E-W first-cloud-frame red" (corrected there by this round); the
+receipt is banked evidence and is not edited. *Re-measured (KIT5 Phase 2 item 6, arm A).* Executor Eowyn, 14:37-14:39 EDT, tip
+Batch 1642 `82b8f29e26` (served == disk) against the banked BEFORE report, `--cells E-W-ground,E-W-ground-hdr,E-W-30km,E-W-30km-hdr
+--runs 2`, machine CPU mean 27.9 %, exit 0: the red does not repeat on either statistic. `E-W-ground|webgpu` first cloud frame
+4177.3 / 4132.4 ms (median 4154.8 against BEFORE 4475.1, band 14.0 %, limit 5103.9, `within`) and `compileTotalMs` 6279.9 /
+6082.6 ms (6884.8 -> 6181.3, band 14.5 %, limit 7885.3, `within`), contention `clear` (base 46.4 %, tip 32.6 %);
+`E-W-ground-hdr|webgpu` first cloud frame 4653.2 -> 4353.7 ms and `compileTotalMs` 8332.5 -> 8390.7 ms, both `within`; the four
+WebGL arms `within`; all 16 `:weather-state` verdicts pass, none `absent`; the two 30 km WebGPU arms `unmeasured-contended` (next
+paragraph). **Status of the red:** re-measured `within` at `82b8f29e26` on two arms (`E-W-ground` and `E-W-ground-hdr` WebGPU); the
+Batch 1638 compile-time measurement stands as recorded; no attribution. Its compile-time half passes to
+`NEW-CLOUD-EW-HDR-COMPILE-SAME-BUILD-RED` and `DX-KIT-COMPILE-TOTAL-BAND-SAME-BUILD-SPREAD` (records round 9): the same served build
+moved `compileTotalMs` by up to +56.0 % between two invocations on the two HDR arms, while `E-W-ground|webgpu` itself moved -1.8 % (6181.3 -> 6067.8 ms); that spread is recorded beside the Batch 1638 red, which stands as a measured red, not as its
+explanation.
+*The BEFORE arm (KIT5 Phase 2 finding F-6-base-contended).* The banked BEFORE report ran on a loaded machine: `E-W-30km|webgpu`
+base run 0 at 61.6 % (over the 60 % guard), and the base means 57.6 % (`E-W-30km`) and 53.5 % (`E-W-30km-hdr`) WebGPU, 30.8 and
+21.9 points from the quiet tip's 26.9 % and 31.6 % (the guard allows 20). `E-W-30km|webgpu` therefore cannot be measured against
+that report on any machine; `E-W-30km-hdr|webgpu` only by a tip arm within 20 points of 53.5 %, which a quiet machine is not (the
+W3-DAYLIGHT TIP arm, mean 34.2 %, did read it: `within`). The receipt's "these two arms cannot be measured against this base report
+on any machine" holds for the first arm only. Measuring both needs a quiet BEFORE re-run (a second built tree); not retried. The
+pixel comparison against the BEFORE frames was again not measured (`DX-KIT-BASE-REPORT-ABSOLUTE-PATHS`). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT5.md` (section "Phase 2", item 6, findings
+F-6-statistic-label and F-6-base-contended); `round3/edge/w3-daylight-20261031/BEFORE/ew/landing-cells-report.json` and
+`TIP/ew/landing-cells-report.json` (`comparison["E-W-ground|webgpu|scene"].pf3.{field,startup,compile,runs}`,
+`comparison["E-W-30km*|webgpu|scene"].contention`); `round3/edge/kit5-20261031/phase2/6-ew/armA/landing-cells-report.json`
+(`comparison`, `verdicts`, `cpuSeries`, `preflight`, `exitCode`).
 
 ### DX-SPINE-GRAPHIFY-EPERM-WHILE-MCP-OPEN — a full spine build failed with EPERM while the session's MCP server held the database — **CLOSED** (Batch 1639, `76d8fd43b8`)
 
@@ -33117,7 +33203,7 @@ provisioning refreshes a seeded DB to the clone's HEAD (`--no-spine-refresh` ski
 `cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/curufinwe/LANDING_PACKET_CURUFINWE.md` (sections 2-3, 7);
 `context-diet/curufinwe/REVIEW_NOLOFINWE_P1.md` (R1-R3, N6, N7; Guard); `migration_doc/RULES_FILE_NOTES.md` section 5.
 
-### DX-DOCS-REFERENCES-TO-MOVED-CLAUDE-SECTIONS — nine live doc references point at `CLAUDE.md` sections that now live in skills — **CLOSED** (the nine by Batch 1642; the engine-code references by Batch 1643 and records round 8; residuals listed)
+### DX-DOCS-REFERENCES-TO-MOVED-CLAUDE-SECTIONS — nine live doc references point at `CLAUDE.md` sections that now live in skills — **CLOSED** (the nine by Batch 1642; the engine-code references by Batch 1643 and records round 8; the two `BUILD_AND_VARIANTS.md` residuals by records round 9)
 
 The links resolve to `../CLAUDE.md`, but since Batch 1640 the sections are not in it: `DEBUGGING_GUIDE.md:1523` ("Logging & Debug
 Pragmas"), `:1592` ("Playwright / Browser Testing"), `:1917` ("WGSL Shader Pipeline"), `:2320` and `:2347` ("Build Variants");
@@ -33147,6 +33233,12 @@ references Nolofinwe N3 lists, each historical or still true of the core (`WEBGP
 1643. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/findekano/LANDING_PACKET_FINDEKANO.md` (Lead item);
 `round3/findekano/REVIEW_FINDARATO_P1.md` (TF5; "Doc repoints"); `context-diet/curufinwe/LANDING_PACKET_CURUFINWE.md` (sections 4, 7);
 `context-diet/curufinwe/REVIEW_NOLOFINWE_P1.md` (N3, N4).
+**Residual closed (records round 9).** Re-found at Batch 1644 and repointed: `BUILD_AND_VARIANTS.md:2` (the supersedes note) now
+says the four sections moved from `CLAUDE.md` into the `build-and-variants` skill
+(`../.claude/skills/build-and-variants/SKILL.md`) and that the skill stays authoritative until the doc is promoted; `:431-434`
+(the keep-in-sync bullet, two lines grown to four) names the skill and has the skill plus the live scripts win a disagreement. Left
+as they are: `:113` (a quote of file counts "quoted in `CLAUDE.md`", in neither the core nor the skill at Batch 1644 and already
+marked stale) and `:391` (Principle 8, still in the core). **Source:** `BUILD_AND_VARIANTS.md` at Batch 1644 and this round's diff.
 
 ### DX-RULES-DIET-GUARD-RESIDUALS — the diet guard's git-ignore check is unpinned and its linked-page corpus is wide — **OPEN** (tooling, small)
 
@@ -33290,6 +33382,14 @@ frames stood in (`DX-W3-EW-INSTRUMENT-UNMEASURED-EXIT`). The KIT5 reports themse
 shape:** report-relative paths resolved against the report's directory. **Owner:** the kit. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT5.phase1.md` (item 2, finding F-2-base-paths);
 `round3/edge/kit5-20261031/TIP/ew-kit/landing-cells-report.json` (`comparison`).
+**Again in Phase 2 (records round 9).** KIT5 Phase 2 item 6 arm A (`--base-report` the seat's copy of the banked W3-DAYLIGHT BEFORE
+report) again could not measure base-against-tip pixels: `comparison[arm].pixels.measured: false` on 8 of 8 arms, each reason an
+ENOENT on a frame under the deleted `cesium-edge-w3before-20261031` clone. The arms whose base report sat in the live executor clone
+at the time did measure: item 6 arm B 0 px on 8 of 8, item 4 arm B 0 px on 4 of 4. Phase 2's own reports name their base report and
+frames absolutely under `cesium-edge-kit5-20261031` (`baseReport`, `captures[].path`), so they meet the same now that that clone is
+retired. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit5-20261031/phase2/6-ew/armA/landing-cells-report.json`
+(`comparison[*].pixels`); `phase2/6-ew/armB/landing-cells-report.json` and `phase2/4-eid/armB/landing-cells-report.json`
+(`baseReport`, `captures[].path`, `comparison[*].pixels`).
 
 ### DX-KIT-WATER-1F-CELL-NOT-COMPARABLE — water cell 1f passes, but its two renderers' frames differ in size and carry the viewer chrome, so they cannot be pixel-compared — **OPEN** (probe kit)
 
@@ -33366,3 +33466,83 @@ exists since the six skills of Batch 1640); this move puts the most weight on it
   E-W cells, the dive cells); Phase 1 measured the first two and recorded the third NOT RUN by design. Its claim that "a complete
   capture survives a lingering browser close" is measured in Node for `capture()`; on Edge only the runtime's side was exercised.
   Batch 1643 claims nothing visual.
+
+## 2026-10-31 — records round 9: the KIT5 Edge leg's Phase 2
+
+No batch landed after records round 8 (Batch 1644, `77b56fecf1`); this round records the KIT5 Edge leg's Phase 2, which records
+round 8 marked not run, so there is no landing table. Phase 2 ran in the seat's quiet window (executor Eowyn, 14:34-14:43 EDT; the
+executor clone at Batch 1642 `82b8f29e26`, porcelain clean; the Phase 1 build unchanged, `Build/CesiumUnminified/index.js`
+23,553,712 B; every arm's preflight reads served == disk on the same three artefacts with the same md5s) as two items, each two
+invocations of the same build: arm A, then arm B with `--base-report` arm A (the tip against itself). Item 4 (`--cells
+E-ID-2d,E-ID-cv --runs 2`): exit 0 / 0. Item 6 (`--cells E-W-ground,E-W-ground-hdr,E-W-30km,E-W-30km-hdr --runs 2`, arm A against
+the banked W3-DAYLIGHT BEFORE report): exit 0 / 1. Receipt `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT5.md`
+(section "Phase 2"); evidence `round3/edge/kit5-20261031/phase2/` (also repatriated to the seat's
+`Tools/visual-regression/output/wave-end/kit5-20261031/phase2/`). Every figure below is read from the arms'
+`landing-cells-report.json`, not from the receipt's prose. With Phase 2 the KIT5 leg is complete in both phases. Rows updated in
+place by this round: `DX-KIT-PF3-STARTUP-CEILING-WEBGL` (closed, measured), `DX-KIT-PF3-PIPELINE-WAIT-IN-STARTUP` and
+`DX-KIT-PF3-CEILING-ON-MEDIAN` (read on Edge), `DX-W3-EW-INSTRUMENT-UNMEASURED-EXIT` (the recorded E-W red: its statistic label
+corrected, re-measured `within` on two arms, the BEFORE arm's contention recorded), `DX-KIT-PF-UNMEASURED-CONTENDED-EXIT-CODE`
+(read on Edge), `NEW-CLOUD-W3-PF-DEBT` (a fact about the W3-DAYLIGHT BEFORE arm), `DX-KIT-BASE-REPORT-ABSOLUTE-PATHS` (again in
+Phase 2) and `DX-DOCS-REFERENCES-TO-MOVED-CLAUDE-SECTIONS` (its two residual lines repointed in `BUILD_AND_VARIANTS.md`). The rows
+below are new.
+
+### NEW-CLOUD-EW-HDR-COMPILE-SAME-BUILD-RED — on the same served build two E-W HDR WebGPU arms read PF-3 `over` on `compileTotalMs` — **OPEN** (measured red, unattributed; WebGPU only)
+
+- **Measured (KIT5 Phase 2 item 6 arm B; Batch 1642 `82b8f29e26` against itself):** two invocations of the same served build back
+  to back (arm A 14:37 EDT; arm B 14:39-14:42 EDT with `--base-report` arm A); machine CPU mean 27.9 % (A) and 28.3 % (B),
+  contention `clear` on all 8 arms. Arm B exits 1 on `E-W-ground-hdr|webgpu|scene:PF-3` and `E-W-30km-hdr|webgpu|scene:PF-3`, each
+  `over` on `compileTotalMs` alone: ground-hdr A 8546.7 / 8234.6 ms, B 11376.5 / 8285.6 ms (median 8390.7 -> 9831.0, +17.2 %
+  against a 7.6 % repeat band, limit 9026.7); 30km-hdr A 7861.6 / 9226.7 ms, B 12330.1 / 14329.8 ms (8544.2 -> 13329.9, +56.0 %
+  against a 34.7 % repeat band, limit 11511.4). First cloud frame on the same arms moved +0.2 % (4353.7 -> 4362.0) and +2.2 %
+  (4461.2 -> 4560.9), within the 10 % startup floor; pixels B against A 0 px on all 8 arms; all 16 `:weather-state` verdicts pass.
+- **Same-build spread on record (arm B against arm A, median to median):** first cloud frame -0.5 % to +2.2 % on the four WebGPU
+  arms; WebGL first frame -4.1 % to +4.5 %; `compileTotalMs` -1.8 % (ground), +2.4 % (30km), +17.2 % (ground-hdr) and +56.0 %
+  (30km-hdr).
+- **Not attributed:** both arms were served the same bytes, so no code change separates them, and no arm isolates what moves the
+  HDR arms' compile total. Recorded beside it, not merged: the W3-DAYLIGHT TIP arm's `E-W-ground|webgpu` compile red also carried
+  one slow repeat (11064.6 against 6906.9 ms; `DX-W3-EW-INSTRUMENT-UNMEASURED-EXIT`).
+- **Owner:** the cloud program, for the statistic itself; the kit, for the band (`DX-KIT-COMPILE-TOTAL-BAND-SAME-BUILD-SPREAD`).
+  **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT5.md` (section "Phase 2", item 6 arm
+  B, finding F-6-compile-same-build-red); `round3/edge/kit5-20261031/phase2/6-ew/armB/landing-cells-report.json` (`verdicts`,
+  `exitCode`, `comparison[*].pf3.{startup,compile,runs}`, `comparison[*].pixels`, `comparison[*].contention`, `cpuSeries`,
+  `preflight`); `phase2/6-ew/armA/landing-cells-report.json` (`cpuSeries`).
+
+### DX-KIT-COMPILE-TOTAL-BAND-SAME-BUILD-SPREAD — PF-3's `compileTotalMs` band is narrower than the measured same-build spread, so an unchanged build reads `over` — **OPEN** (probe kit)
+
+The `compileTotalMs` statistic is banded from the base arm's repeat spread (`bandSource: "repeat"`) over the 3 % `floorFraction`;
+the startup floor does not apply to it (reviewer N-c, recorded under `DX-KIT-PF3-STARTUP-CEILING-WEBGL`). On KIT5 Phase 2 item 6
+arm B those bands were 7.6 % (`E-W-ground-hdr|webgpu`) and 34.7 % (`E-W-30km-hdr|webgpu`) while the same build moved +17.2 % and
++56.0 % (`NEW-CLOUD-EW-HDR-COMPILE-SAME-BUILD-RED`): with two repeats an arm's band is set by whether a slow repeat happened to land
+in its base arm. **Repair shape (for a kit lane, not done here):** a compile floor derived from the measured same-build spread, as
+PF-3's WebGL startup floor was (15 % from a 13.2 % spread, Batch 1638), or `compileTotalMs` reported without a verdict until it is
+calibrated. **Owner:** the kit. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit5-20261031/phase2/6-ew/armB/landing-cells-report.json`
+(`comparison[*|webgpu|scene].pf3.compile.{bandFraction,bandSource,ratio,limit,verdict}`).
+
+### DX-KIT-PF3-WEBGL-FLOOR-INERT-IN-PROBE — the 15 % WebGL startup floor Batch 1638 set never applies in `probe-landing-cells`, so WebGL arms read the 10 % floor on Edge — **OPEN** (probe kit; found by records round 9 re-deriving Phase 2's bands, not in the receipt)
+
+- **Measured:** every WebGL PF-3 arm in the KIT5 Phase 2 reports whose band came from the floor reads `bandFraction` 0.10 with
+  `bandSource` `startup-floor`: `E-ID-cv|webgl` (item 4 arm B, limit 1641.1 = 1492.0 x 1.10), `E-W-ground|webgl` and
+  `E-W-ground-hdr|webgl` (item 6 arm B) and `E-W-30km-hdr|webgl` (item 6 arm A). Under 0.15 those limits would be 1715.7, 2169.9,
+  1738.6 and 2181.7 ms. All four verdicts read `within` either way, so no verdict on this leg changed.
+- **Why (code read at Batch 1644; a lead for the kit lane):** `startupBandsFor(renderer, bands)` (`lib/metrics/perf-band.mjs:117-121`)
+  gives WebGL 0.15 only when `bands` has no own `startupBandFloor`. `probe-landing-cells.mjs:632` resolves the bands
+  (`resolveBands`, which copies every seat default, `startupBandFloor: 0.1` included) and passes the resolved object through
+  `compareArms` (`:849`; `lib/landing-verdicts.mjs:98-104`) to `startupVerdict` (`lib/metrics/startup-compile.mjs:247`), so the
+  own-property test is always true on that path. A Node replay of the four arms' banked runs through `startupVerdict` gives 0.10
+  with resolved bands and 0.15 with `{}`. The specs that pin the floor (`landing-startup-pipeline-wait.spec.mjs:88`, `:152-160`)
+  call it with unresolved bands, so they do not see the probe's path.
+- **Repair shape (for a kit lane):** decide "pre-registered" from the wave's own overrides (the `--bands` file), not from the
+  resolved object, with a spec through `compareArms` or the probe's band path and an inertness mutant. **Owner:** the kit.
+  **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit5-20261031/phase2/4-eid/armB/landing-cells-report.json`,
+  `phase2/6-ew/armA/landing-cells-report.json` and `phase2/6-ew/armB/landing-cells-report.json`
+  (`comparison[*|webgl|scene].pf3.startup.{bandFraction,bandSource,limit}`); the code lines above.
+
+### Notes (no new ids)
+
+- **Receipt figures read against the reports:** one differs. The receipt gives the `E-W-ground|webgpu` arm A `compileTotalMs` limit
+  as "7883 (base x 1.145)"; the report has 7885.3 (band 0.14531, rounded in the receipt). The receipt's item 4 note that "a max rule
+  would have read it over" and its item 6 claim that the two 30 km arms "cannot be measured against this base report on any
+  machine" are corrected in the rows above (`DX-KIT-PF3-STARTUP-CEILING-WEBGL`, `DX-W3-EW-INSTRUMENT-UNMEASURED-EXIT`).
+- **`FEATURE_INVENTORY.md`:** the probe-kit round 4 and round 5 entries now say what Phase 2 read on Edge; no entry is added or
+  moved.

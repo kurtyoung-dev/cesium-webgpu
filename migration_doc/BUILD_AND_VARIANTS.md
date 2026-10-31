@@ -1,5 +1,5 @@
 > **Canonical doc** (consolidation first draft, 2026 consolidation).
-> **Supersedes / folds in:** the `Build & Test Commands`, `Build Variants (Tree-Shaking)`, `Visual Regression Testing`, and `Playwright / Browser Testing` sections of `cesium-webgpu/CLAUDE.md` (those remain authoritative until this doc is promoted); plus the scattered build-variant notes in `migration_doc/WEBGPU_MIGRATION_STATUS.md`, `migration_doc/DEBUGGING_GUIDE.md`, and `Tools/visual-regression/README.md`.
+> **Supersedes / folds in:** the `Build & Test Commands`, `Build Variants (Tree-Shaking)`, `Visual Regression Testing`, and `Playwright / Browser Testing` sections that moved from `cesium-webgpu/CLAUDE.md` into the `build-and-variants` skill ([SKILL.md](../.claude/skills/build-and-variants/SKILL.md); the skill remains authoritative until this doc is promoted); plus the scattered build-variant notes in `migration_doc/WEBGPU_MIGRATION_STATUS.md`, `migration_doc/DEBUGGING_GUIDE.md`, and `Tools/visual-regression/README.md`.
 > **Review-in-progress.** Statuses re-verified against live code (`scripts/build.js`, `scripts/bundleVariantPlugin.js`, `gulpfile.js`, `packages/engine/Source/Renderer/RendererType.ts`, `package.json`, `Tools/variant-smoke-test.mjs`) and git log at HEAD = Batch 506 (`62c5bab450`, post-parity-campaign audit 2026-07-03). Items I could not re-measure are flagged **`status: verify`**.
 
 # Build & Variants — Operational Reference
@@ -428,5 +428,7 @@ A–E pass; the baseline needs a refresh — tracked as an OPEN doc-wave follow-
 - **Re-measure variant sizes** (§2) before quoting them in user-facing material
   — the recorded figures predate the Batch 400–506 WebGPU growth and are
   `status: verify`.
-- Keep this doc in sync with `CLAUDE.md`'s build sections; if they ever
-  disagree, `CLAUDE.md` + the live scripts win until this doc is promoted.
+- Keep this doc in sync with the `build-and-variants` skill
+  ([SKILL.md](../.claude/skills/build-and-variants/SKILL.md)), which holds the
+  build sections moved out of `CLAUDE.md`; if they ever disagree, the skill +
+  the live scripts win until this doc is promoted.

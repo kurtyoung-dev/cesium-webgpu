@@ -762,7 +762,7 @@ ruling `R-2026-10-24-S12`. Rows: `DEFERRED_WORK.md` ledger intake 2 (Batch 1591)
 table: `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-23/24 …)"; from 2026-10-30 also `DEFERRED_WORK.md`
 "2026-10-30 — records batch 3" and "… round 2", and the landing tables "Landing record (2026-10-29/30 …)" and "Landing
 record (2026-10-30 — Batches 1608-1623 …)"; from 2026-10-31 also `DEFERRED_WORK.md` "2026-10-31 — records round 4" and
-"… records round 5", "… records round 6", "… records round 7" and "… records round 8" and the landing tables "Landing record
+"… records round 5", "… records round 6", "… records round 7", "… records round 8" and "… records round 9" and the landing tables "Landing record
 (2026-10-31 — Batches 1624-1628 …)", "Landing record (2026-10-31 — Batches 1629-1631 …)", "Landing record (2026-10-31 — Batches
 1632-1636 …)", "Landing record (2026-10-31 — Batches 1637-1640 …)" and "Landing record (2026-10-31 — Batches 1642-1643 …)".
 **Landed:** the water as Batches 1585/1586 (`16e093aef6`, `156509c929`, committed 2026-10-23 23:27 and 23:31 EDT; tree
@@ -834,7 +834,12 @@ skill, `engine-code-standards`, the maintainer's middle path (`R-2026-10-31-M2`)
 no black first frame in 9 runs, the OFF deck byte-identical run to run with all three pins and within 23 px with the two
 cloud pins (so `NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY` passes to the cloud program), and the E-W cells at 0 px on WebGL against
 the banked frames; it also measured two new weather-map reds, recorded unattributed. Its Phase 2 (the two performance cells on a
-quiet machine) has not run. The maintainer also ruled the evidence curation (`R-2026-10-31-M1`), after every landing is in. The
+quiet machine) ran in the seat's quiet window and completes the leg (records round 9): PF-3 reads within on both renderers
+under the median ceiling (`DX-KIT-PF3-STARTUP-CEILING-WEBGL` closed, measured); the E-W red of records round 7 is a
+`compileTotalMs` red, relabelled, and does not repeat on the quiet tip; the same build run twice moved `compileTotalMs` by up
+to +56.0 %, filed unattributed (`NEW-CLOUD-EW-HDR-COMPILE-SAME-BUILD-RED`) with its kit band row; and the 15 % WebGL startup
+floor reads inert in the probe (`DX-KIT-PF3-WEBGL-FLOOR-INERT-IN-PROBE`). The maintainer also ruled the evidence curation
+(`R-2026-10-31-M1`), after every landing is in. The
 Antigravity water program and W4 below are unchanged.
 **Critical path:** W4. *[Updated 2026-10-31 by records round 4; records batch 3 round 2 put the seat's Edge acceptance job
 first, and it has run.]* The next step is the Antigravity water program's landing on 2026-10-31 (`R-2026-10-30-M1`),

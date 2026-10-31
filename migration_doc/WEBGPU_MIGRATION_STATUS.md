@@ -211,12 +211,18 @@ its Phase 2, the two performance cells on a quiet machine, has not run. 1643 has
 | 1643 | `7399ee05ad` (`1e859aae`) | `CLAUDE.md` is a 34 KB core (33,682 B in git, 34,104 B CRLF; from 43 KB): its seven engine-code sections are the on-demand skill `.claude/skills/engine-code-standards/SKILL.md`, moved verbatim; the core keeps a five-line summary (RTE, placement, language, comments, size) and routes any change under `packages/**` to the skill; Principle 13's Clones bullet names the landing hook; nine live migration docs point at the skill. `rules-file-diet-check` places 76 of 76 units, lost 0. Landed with the governance flag under the seat's lease. | Curufinwe | Nolofinwe (P1 HOLDS-WITH-FIXES: R1-R3, three summary lines corrected to their source rules, applied by the seat in a re-freeze `41389ac3` -> `35c4876b`) | `context-diet/curufinwe/` |
 
 Next: the KIT5 leg's Phase 2 (PF-3 on the median, item 4, the acceptance of `DX-KIT-PF3-STARTUP-CEILING-WEBGL`; the E-W
-first-cloud-frame red re-measured, item 6); the two measured weather-map reds Phase 1 found
+`E-W-ground|webgpu` PF-3 red re-measured, item 6; that red is a `compileTotalMs` red, not a first-cloud-frame one, records round 9); the two measured weather-map reds Phase 1 found
 (`NEW-CLOUD-WEATHER-MAP-OFFLINE-GLOBE-ON-DENSE-RED`, `NEW-CLOUD-WEATHER-MAP-RUN0-ON-EQUALS-OFF`) and the cloud program's half of
 `NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY`; the kit rows Phase 1 filed and the dive cells (`DX-KIT-DIVE-GATE-CELLS`); the
 evidence curation `R-2026-10-31-M1` rules, after every landing is in; `NEW-2D-WEBGPU-OCEAN-HIGHLIGHT-FADE`; the Antigravity
 water program and the W4 regeneration stand as above. Open after these landings: the rows of `DEFERRED_WORK.md` section
 "2026-10-31 — records round 8".
+*[Records round 9:]* no batch landed after Batch 1644 (`77b56fecf1`, records round 8). The KIT5 leg's Phase 2 ran in the
+seat's quiet window (14:34-14:43 EDT, Batch 1642's tree) and completes the leg: PF-3 within on both renderers under the median
+ceiling (`DX-KIT-PF3-STARTUP-CEILING-WEBGL` closed, measured); the E-W red re-measured within at the tip on two arms and
+relabelled `compileTotalMs`; one new measured red, unattributed (`NEW-CLOUD-EW-HDR-COMPILE-SAME-BUILD-RED`), and two kit rows
+(`DX-KIT-COMPILE-TOTAL-BAND-SAME-BUILD-SPREAD`, `DX-KIT-PF3-WEBGL-FLOOR-INERT-IN-PROBE`); rows in `DEFERRED_WORK.md` section
+"2026-10-31 — records round 9".
 
 ---
 
