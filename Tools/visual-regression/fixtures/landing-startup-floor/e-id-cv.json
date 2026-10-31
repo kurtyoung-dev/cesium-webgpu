@@ -1,0 +1,829 @@
+{
+ "note": "Two same-build arms of the E-ID-cv identity cell, trimmed to the page fields PF-3 reads (startup, compileAtStartup, pipelines, cpu); from a banked Edge landing-cells report pair (base = armA, tip = armB). No captures, so no pixel read.",
+ "base": {
+  "pipelineWaitByCell": {
+   "E-ID-cv": true
+  },
+  "pages": [
+   {
+    "run": 0,
+    "cell": "E-ID-cv",
+    "rig": "default-columbus-pinned",
+    "kind": "capture",
+    "renderer": "webgl",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": {
+     "requested": true,
+     "available": false,
+     "pendingAtStart": null,
+     "pendingAtEnd": null,
+     "pendingMax": null,
+     "createdAtEnd": null,
+     "framesWaited": 0,
+     "waitedMs": 0,
+     "timedOut": false,
+     "reason": "the render pipeline cache is WebGPU-only",
+     "pendingAtCapture": null
+    },
+    "startup": {
+     "viewerReadyAtMs": 1380.800000011921,
+     "stagedAtMs": 1459.4000000357628,
+     "firstFrameAtMs": 1468.800000011921,
+     "firstCloudFrameAtMs": null,
+     "tilesLoadedAtMs": 1762.6000000238419,
+     "frames": 7,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 0,
+      "syncMs": 0
+     },
+     "renderPipelines": {
+      "count": 0,
+      "syncMs": 0
+     },
+     "computePipelines": {
+      "count": 0,
+      "syncMs": 0
+     },
+     "renderPipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": null,
+     "lastSettleAtMs": null
+    },
+    "cpu": {
+     "samples": [
+      {
+       "at": "2026-10-31T18:34:46.383Z",
+       "pct": 37.94
+      },
+      {
+       "at": "2026-10-31T18:34:47.392Z",
+       "pct": 41.42
+      },
+      {
+       "at": "2026-10-31T18:34:48.397Z",
+       "pct": 11.15
+      },
+      {
+       "at": "2026-10-31T18:34:49.404Z",
+       "pct": 9.01
+      },
+      {
+       "at": "2026-10-31T18:34:50.415Z",
+       "pct": 8.65
+      },
+      {
+       "at": "2026-10-31T18:34:51.420Z",
+       "pct": 9.36
+      },
+      {
+       "at": "2026-10-31T18:34:51.767Z",
+       "pct": 12.54
+      }
+     ],
+     "n": 7,
+     "mean": 18.581428571428575,
+     "p95": 40.376,
+     "max": 41.42,
+     "startedAt": "2026-10-31T18:34:45.381Z",
+     "endedAt": "2026-10-31T18:34:51.767Z",
+     "intervalMs": 1000
+    }
+   },
+   {
+    "run": 0,
+    "cell": "E-ID-cv",
+    "rig": "default-columbus-pinned",
+    "kind": "capture",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": {
+     "requested": true,
+     "available": true,
+     "pendingAtStart": 5,
+     "pendingAtEnd": 0,
+     "pendingMax": 5,
+     "createdAtEnd": 6,
+     "framesWaited": 91,
+     "waitedMs": 2687.899999976158,
+     "timedOut": false,
+     "pendingAtCapture": 0
+    },
+    "startup": {
+     "viewerReadyAtMs": 1452.2000000476837,
+     "stagedAtMs": 4176.400000035763,
+     "firstFrameAtMs": 4180.100000023842,
+     "firstCloudFrameAtMs": null,
+     "tilesLoadedAtMs": 4180.100000023842,
+     "frames": 1,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 23,
+      "syncMs": 5.300000011920929
+     },
+     "renderPipelines": {
+      "count": 14,
+      "syncMs": 0.2999999523162842
+     },
+     "computePipelines": {
+      "count": 7,
+      "syncMs": 0.10000002384185791
+     },
+     "renderPipelinesAsync": {
+      "count": 6,
+      "settled": 6,
+      "rejected": 0,
+      "totalSettleMs": 9653.900000035763
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": 1106.7000000476837,
+     "lastSettleAtMs": 4040
+    },
+    "cpu": {
+     "samples": [
+      {
+       "at": "2026-10-31T18:34:52.775Z",
+       "pct": 32.13
+      },
+      {
+       "at": "2026-10-31T18:34:53.783Z",
+       "pct": 48.52
+      },
+      {
+       "at": "2026-10-31T18:34:54.791Z",
+       "pct": 45.3
+      },
+      {
+       "at": "2026-10-31T18:34:55.800Z",
+       "pct": 53.39
+      },
+      {
+       "at": "2026-10-31T18:34:56.808Z",
+       "pct": 18.27
+      },
+      {
+       "at": "2026-10-31T18:34:57.820Z",
+       "pct": 5.39
+      },
+      {
+       "at": "2026-10-31T18:34:58.834Z",
+       "pct": 10.54
+      },
+      {
+       "at": "2026-10-31T18:34:59.836Z",
+       "pct": 9.39
+      },
+      {
+       "at": "2026-10-31T18:35:00.544Z",
+       "pct": 16.36
+      }
+     ],
+     "n": 9,
+     "mean": 26.58777777777778,
+     "p95": 51.442,
+     "max": 53.39,
+     "startedAt": "2026-10-31T18:34:51.767Z",
+     "endedAt": "2026-10-31T18:35:00.544Z",
+     "intervalMs": 1000
+    }
+   },
+   {
+    "run": 1,
+    "cell": "E-ID-cv",
+    "rig": "default-columbus-pinned",
+    "kind": "capture",
+    "renderer": "webgl",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": {
+     "requested": true,
+     "available": false,
+     "pendingAtStart": null,
+     "pendingAtEnd": null,
+     "pendingMax": null,
+     "createdAtEnd": null,
+     "framesWaited": 0,
+     "waitedMs": 0,
+     "timedOut": false,
+     "reason": "the render pipeline cache is WebGPU-only",
+     "pendingAtCapture": null
+    },
+    "startup": {
+     "viewerReadyAtMs": 1379.5,
+     "stagedAtMs": 1500.6000000238419,
+     "firstFrameAtMs": 1515.1000000238419,
+     "firstCloudFrameAtMs": null,
+     "tilesLoadedAtMs": 1759.6000000238419,
+     "frames": 7,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 0,
+      "syncMs": 0
+     },
+     "renderPipelines": {
+      "count": 0,
+      "syncMs": 0
+     },
+     "computePipelines": {
+      "count": 0,
+      "syncMs": 0
+     },
+     "renderPipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": null,
+     "lastSettleAtMs": null
+    },
+    "cpu": {
+     "samples": [
+      {
+       "at": "2026-10-31T18:35:18.761Z",
+       "pct": 41.49
+      },
+      {
+       "at": "2026-10-31T18:35:19.767Z",
+       "pct": 34.91
+      },
+      {
+       "at": "2026-10-31T18:35:20.771Z",
+       "pct": 14.44
+      },
+      {
+       "at": "2026-10-31T18:35:21.775Z",
+       "pct": 6.76
+      },
+      {
+       "at": "2026-10-31T18:35:22.776Z",
+       "pct": 8.4
+      },
+      {
+       "at": "2026-10-31T18:35:23.778Z",
+       "pct": 6.06
+      },
+      {
+       "at": "2026-10-31T18:35:24.113Z",
+       "pct": 17.27
+      }
+     ],
+     "n": 7,
+     "mean": 18.475714285714286,
+     "p95": 39.516,
+     "max": 41.49,
+     "startedAt": "2026-10-31T18:35:17.749Z",
+     "endedAt": "2026-10-31T18:35:24.113Z",
+     "intervalMs": 1000
+    }
+   },
+   {
+    "run": 1,
+    "cell": "E-ID-cv",
+    "rig": "default-columbus-pinned",
+    "kind": "capture",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": {
+     "requested": true,
+     "available": true,
+     "pendingAtStart": 5,
+     "pendingAtEnd": 0,
+     "pendingMax": 5,
+     "createdAtEnd": 6,
+     "framesWaited": 89,
+     "waitedMs": 2609,
+     "timedOut": false,
+     "pendingAtCapture": 0
+    },
+    "startup": {
+     "viewerReadyAtMs": 1495.199999988079,
+     "stagedAtMs": 4142.5,
+     "firstFrameAtMs": 4145.899999976158,
+     "firstCloudFrameAtMs": null,
+     "tilesLoadedAtMs": 4145.899999976158,
+     "frames": 1,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 23,
+      "syncMs": 5.899999916553497
+     },
+     "renderPipelines": {
+      "count": 14,
+      "syncMs": 0.30000007152557373
+     },
+     "computePipelines": {
+      "count": 7,
+      "syncMs": 0
+     },
+     "renderPipelinesAsync": {
+      "count": 6,
+      "settled": 6,
+      "rejected": 0,
+      "totalSettleMs": 9300.199999928474
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": 1173.300000011921,
+     "lastSettleAtMs": 4110.399999976158
+    },
+    "cpu": {
+     "samples": [
+      {
+       "at": "2026-10-31T18:35:25.120Z",
+       "pct": 40.58
+      },
+      {
+       "at": "2026-10-31T18:35:26.141Z",
+       "pct": 41.92
+      },
+      {
+       "at": "2026-10-31T18:35:27.145Z",
+       "pct": 46.99
+      },
+      {
+       "at": "2026-10-31T18:35:28.157Z",
+       "pct": 46.05
+      },
+      {
+       "at": "2026-10-31T18:35:29.167Z",
+       "pct": 18.14
+      },
+      {
+       "at": "2026-10-31T18:35:30.173Z",
+       "pct": 9.6
+      },
+      {
+       "at": "2026-10-31T18:35:31.176Z",
+       "pct": 11.73
+      },
+      {
+       "at": "2026-10-31T18:35:32.187Z",
+       "pct": 13.46
+      },
+      {
+       "at": "2026-10-31T18:35:32.935Z",
+       "pct": 11.15
+      }
+     ],
+     "n": 9,
+     "mean": 26.624444444444446,
+     "p95": 46.614,
+     "max": 46.99,
+     "startedAt": "2026-10-31T18:35:24.114Z",
+     "endedAt": "2026-10-31T18:35:32.936Z",
+     "intervalMs": 1000
+    }
+   }
+  ]
+ },
+ "tip": {
+  "pipelineWaitByCell": {
+   "E-ID-cv": true
+  },
+  "pages": [
+   {
+    "run": 0,
+    "cell": "E-ID-cv",
+    "rig": "default-columbus-pinned",
+    "kind": "capture",
+    "renderer": "webgl",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": {
+     "requested": true,
+     "available": false,
+     "pendingAtStart": null,
+     "pendingAtEnd": null,
+     "pendingMax": null,
+     "createdAtEnd": null,
+     "framesWaited": 0,
+     "waitedMs": 0,
+     "timedOut": false,
+     "reason": "the render pipeline cache is WebGPU-only",
+     "pendingAtCapture": null
+    },
+    "startup": {
+     "viewerReadyAtMs": 1392.199999988079,
+     "stagedAtMs": 1638.199999988079,
+     "firstFrameAtMs": 1650.199999988079,
+     "firstCloudFrameAtMs": null,
+     "tilesLoadedAtMs": 1741.8999999761581,
+     "frames": 6,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 0,
+      "syncMs": 0
+     },
+     "renderPipelines": {
+      "count": 0,
+      "syncMs": 0
+     },
+     "computePipelines": {
+      "count": 0,
+      "syncMs": 0
+     },
+     "renderPipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": null,
+     "lastSettleAtMs": null
+    },
+    "cpu": {
+     "samples": [
+      {
+       "at": "2026-10-31T18:35:54.964Z",
+       "pct": 38.08
+      },
+      {
+       "at": "2026-10-31T18:35:55.974Z",
+       "pct": 40.83
+      },
+      {
+       "at": "2026-10-31T18:35:56.979Z",
+       "pct": 18.95
+      },
+      {
+       "at": "2026-10-31T18:35:57.988Z",
+       "pct": 4.63
+      },
+      {
+       "at": "2026-10-31T18:35:58.994Z",
+       "pct": 11.3
+      },
+      {
+       "at": "2026-10-31T18:36:00.000Z",
+       "pct": 7.68
+      },
+      {
+       "at": "2026-10-31T18:36:00.345Z",
+       "pct": 19.87
+      }
+     ],
+     "n": 7,
+     "mean": 20.19142857142857,
+     "p95": 40.004999999999995,
+     "max": 40.83,
+     "startedAt": "2026-10-31T18:35:53.949Z",
+     "endedAt": "2026-10-31T18:36:00.346Z",
+     "intervalMs": 1000
+    }
+   },
+   {
+    "run": 0,
+    "cell": "E-ID-cv",
+    "rig": "default-columbus-pinned",
+    "kind": "capture",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": {
+     "requested": true,
+     "available": true,
+     "pendingAtStart": 5,
+     "pendingAtEnd": 0,
+     "pendingMax": 5,
+     "createdAtEnd": 6,
+     "framesWaited": 87,
+     "waitedMs": 2584.5,
+     "timedOut": false,
+     "pendingAtCapture": 0
+    },
+    "startup": {
+     "viewerReadyAtMs": 1468.800000011921,
+     "stagedAtMs": 4092.199999988079,
+     "firstFrameAtMs": 4095.699999988079,
+     "firstCloudFrameAtMs": null,
+     "tilesLoadedAtMs": 4095.699999988079,
+     "frames": 1,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 23,
+      "syncMs": 4.899999976158142
+     },
+     "renderPipelines": {
+      "count": 14,
+      "syncMs": 0.5999999642372131
+     },
+     "computePipelines": {
+      "count": 7,
+      "syncMs": 0.40000003576278687
+     },
+     "renderPipelinesAsync": {
+      "count": 6,
+      "settled": 6,
+      "rejected": 0,
+      "totalSettleMs": 9217.100000083447
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": 1143.199999988079,
+     "lastSettleAtMs": 4061
+    },
+    "cpu": {
+     "samples": [
+      {
+       "at": "2026-10-31T18:36:01.361Z",
+       "pct": 41.38
+      },
+      {
+       "at": "2026-10-31T18:36:02.373Z",
+       "pct": 41.09
+      },
+      {
+       "at": "2026-10-31T18:36:03.380Z",
+       "pct": 51.15
+      },
+      {
+       "at": "2026-10-31T18:36:04.387Z",
+       "pct": 45.97
+      },
+      {
+       "at": "2026-10-31T18:36:05.388Z",
+       "pct": 17.16
+      },
+      {
+       "at": "2026-10-31T18:36:06.388Z",
+       "pct": 2.94
+      },
+      {
+       "at": "2026-10-31T18:36:07.395Z",
+       "pct": 14.44
+      },
+      {
+       "at": "2026-10-31T18:36:08.400Z",
+       "pct": 7.23
+      },
+      {
+       "at": "2026-10-31T18:36:09.118Z",
+       "pct": 7.63
+      }
+     ],
+     "n": 9,
+     "mean": 25.44333333333333,
+     "p95": 49.077999999999996,
+     "max": 51.15,
+     "startedAt": "2026-10-31T18:36:00.346Z",
+     "endedAt": "2026-10-31T18:36:09.118Z",
+     "intervalMs": 1000
+    }
+   },
+   {
+    "run": 1,
+    "cell": "E-ID-cv",
+    "rig": "default-columbus-pinned",
+    "kind": "capture",
+    "renderer": "webgl",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": {
+     "requested": true,
+     "available": false,
+     "pendingAtStart": null,
+     "pendingAtEnd": null,
+     "pendingMax": null,
+     "createdAtEnd": null,
+     "framesWaited": 0,
+     "waitedMs": 0,
+     "timedOut": false,
+     "reason": "the render pipeline cache is WebGPU-only",
+     "pendingAtCapture": null
+    },
+    "startup": {
+     "viewerReadyAtMs": 1401.199999988079,
+     "stagedAtMs": 1515.3999999761581,
+     "firstFrameAtMs": 1560.6000000238419,
+     "firstCloudFrameAtMs": null,
+     "tilesLoadedAtMs": 1800.800000011921,
+     "frames": 7,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 0,
+      "syncMs": 0
+     },
+     "renderPipelines": {
+      "count": 0,
+      "syncMs": 0
+     },
+     "computePipelines": {
+      "count": 0,
+      "syncMs": 0
+     },
+     "renderPipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": null,
+     "lastSettleAtMs": null
+    },
+    "cpu": {
+     "samples": [
+      {
+       "at": "2026-10-31T18:36:27.260Z",
+       "pct": 38.01
+      },
+      {
+       "at": "2026-10-31T18:36:28.263Z",
+       "pct": 41.18
+      },
+      {
+       "at": "2026-10-31T18:36:29.267Z",
+       "pct": 8.98
+      },
+      {
+       "at": "2026-10-31T18:36:30.283Z",
+       "pct": 7.5
+      },
+      {
+       "at": "2026-10-31T18:36:31.288Z",
+       "pct": 8.78
+      },
+      {
+       "at": "2026-10-31T18:36:32.297Z",
+       "pct": 12.08
+      },
+      {
+       "at": "2026-10-31T18:36:32.743Z",
+       "pct": 13.86
+      }
+     ],
+     "n": 7,
+     "mean": 18.627142857142854,
+     "p95": 40.229,
+     "max": 41.18,
+     "startedAt": "2026-10-31T18:36:26.247Z",
+     "endedAt": "2026-10-31T18:36:32.743Z",
+     "intervalMs": 1000
+    }
+   },
+   {
+    "run": 1,
+    "cell": "E-ID-cv",
+    "rig": "default-columbus-pinned",
+    "kind": "capture",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": {
+     "requested": true,
+     "available": true,
+     "pendingAtStart": 5,
+     "pendingAtEnd": 0,
+     "pendingMax": 5,
+     "createdAtEnd": 6,
+     "framesWaited": 88,
+     "waitedMs": 2632,
+     "timedOut": false,
+     "pendingAtCapture": 0
+    },
+    "startup": {
+     "viewerReadyAtMs": 1452.800000011921,
+     "stagedAtMs": 4135.900000035763,
+     "firstFrameAtMs": 4139.800000011921,
+     "firstCloudFrameAtMs": null,
+     "tilesLoadedAtMs": 4139.800000011921,
+     "frames": 1,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 23,
+      "syncMs": 5.099999904632568
+     },
+     "renderPipelines": {
+      "count": 14,
+      "syncMs": 0.5000000596046448
+     },
+     "computePipelines": {
+      "count": 7,
+      "syncMs": 0
+     },
+     "renderPipelinesAsync": {
+      "count": 6,
+      "settled": 6,
+      "rejected": 0,
+      "totalSettleMs": 9286.800000011921
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": 1134.199999988079,
+     "lastSettleAtMs": 3990.100000023842
+    },
+    "cpu": {
+     "samples": [
+      {
+       "at": "2026-10-31T18:36:33.755Z",
+       "pct": 33.01
+      },
+      {
+       "at": "2026-10-31T18:36:34.759Z",
+       "pct": 42
+      },
+      {
+       "at": "2026-10-31T18:36:35.772Z",
+       "pct": 45
+      },
+      {
+       "at": "2026-10-31T18:36:36.779Z",
+       "pct": 50.36
+      },
+      {
+       "at": "2026-10-31T18:36:37.781Z",
+       "pct": 14.25
+      },
+      {
+       "at": "2026-10-31T18:36:38.790Z",
+       "pct": 11.56
+      },
+      {
+       "at": "2026-10-31T18:36:39.799Z",
+       "pct": 11.9
+      },
+      {
+       "at": "2026-10-31T18:36:40.812Z",
+       "pct": 13.25
+      },
+      {
+       "at": "2026-10-31T18:36:41.545Z",
+       "pct": 15.38
+      }
+     ],
+     "n": 9,
+     "mean": 26.301111111111112,
+     "p95": 48.216,
+     "max": 50.36,
+     "startedAt": "2026-10-31T18:36:32.743Z",
+     "endedAt": "2026-10-31T18:36:41.546Z",
+     "intervalMs": 1000
+    }
+   }
+  ]
+ }
+}

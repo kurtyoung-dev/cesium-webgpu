@@ -49,7 +49,16 @@
  *   node Tools/visual-regression/probe-weather-map.mjs [--port 8094]
  * Out:
  *   Tools/visual-regression/output/weather-map/ — every located capture, the
- *   two wide views and the runtime's weather-map-report.json / -summary.md
+ *   two wide views, the runtime's weather-map-report.json / -summary.md and
+ *   capture-manifest.json (one entry per PNG of every run, for
+ *   `contact-sheet.mjs --manifest`)
+ *
+ * RUNS. A single run writes the bare names (`located-off-lon-120-lat45.png`).
+ * With `--runs N` (N > 1) every file takes the kit's `-run<N>` suffix
+ * (`located-off-lon-120-lat45-run0.png`, 0-based), so all runs survive side by
+ * side and a run-to-run pixel diff can be taken from one invocation; each
+ * run's report cell lists its own `captures` by file. The rule is
+ * `lib/weather-map-capture-manifest.mjs`.
  */
 import { decodePng } from "../lib/png-decode.mjs";
 import {
@@ -76,6 +85,11 @@ import {
   runProbe,
 } from "./lib/probe-runtime.mjs";
 import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
+import {
+  weatherMapCaptureName,
+  weatherMapCaptureRecord,
+  writeWeatherMapManifest,
+} from "./lib/weather-map-capture-manifest.mjs";
 
 const PAGE = "/Apps/CesiumViewer/index.html?renderer=webgpu";
 const VIEW = { width: 1024, height: 768 };
@@ -401,6 +415,39 @@ export const descriptor = {
       dialRecord.observedAtEnd = observed;
     };
 
+    // This run's captures, listed by file in its report cell. One run keeps
+    // the bare names; several runs suffix them (-run<N>) so none overwrites
+    // another.
+    const takenRecords = [];
+    const pageUrl = `${origin}${url}`;
+    const snap = async ({ base, kind, view, retry = 0 }) => {
+      const name = weatherMapCaptureName(
+        retry === 0 ? base : `${base}-retry${retry}`,
+        { run, runs: options.runs },
+      );
+      const shot = await captureElement({
+        page,
+        selector: CANVAS,
+        name,
+        outputDirectory,
+        captures,
+      });
+      takenRecords.push(
+        weatherMapCaptureRecord({
+          name,
+          base,
+          kind,
+          view,
+          retry,
+          run,
+          shot,
+          url: pageUrl,
+          capturedAt: new Date().toISOString(),
+        }),
+      );
+      return { name, shot };
+    };
+
     const fracs = { off: [], on: [] };
     let chrome = null;
     let firstFrame = null;
@@ -415,13 +462,12 @@ export const descriptor = {
         };
         await setView(located);
         const shotName = `located-${weatherOn ? "on" : "off"}-lon${lon}-lat${lat}`;
-        const capture = async (name) => {
-          const shot = await captureElement({
-            page,
-            selector: CANVAS,
-            name,
-            outputDirectory,
-            captures,
+        const capture = async (retry) => {
+          const { name, shot } = await snap({
+            base: shotName,
+            kind: "located",
+            view: located,
+            retry,
           });
           return { name, shot, image: decodePng(shot.buffer) };
         };
@@ -452,14 +498,20 @@ export const descriptor = {
           // A black first capture is a probe readiness gap (the globe was not
           // drawn yet), never a verdict: re-settle, then refuse.
           const guarded = await guardFirstFrame({
-            capture: (attempt) =>
-              capture(attempt === 0 ? shotName : `${shotName}-retry${attempt}`),
+            capture,
             resettle: async () => {
               await setView(located);
               return waitForPipelines();
             },
           });
           taken = guarded.accepted;
+          // A re-settled first frame leaves its black takes on disk; only the
+          // accepted one is the scored frame.
+          for (const record of takenRecords) {
+            if (record.base === shotName) {
+              record.accepted = record.name === taken.name;
+            }
+          }
           firstFrame = {
             pipelines,
             attempts: guarded.attempts,
@@ -467,7 +519,7 @@ export const descriptor = {
             maxResettles: guarded.maxResettles,
           };
         } else {
-          taken = await capture(shotName);
+          taken = await capture(0);
         }
         fracs[weatherOn ? "on" : "off"].push(
           brightFraction(
@@ -481,13 +533,12 @@ export const descriptor = {
     // Wide-orbit captures for the visual read (regional structure spans many
     // texels). Not scored.
     for (const weatherOn of [false, true]) {
-      await setView({ ...VIEWS.wide, weatherOn });
-      await captureElement({
-        page,
-        selector: CANVAS,
-        name: `weather-map-wide-${weatherOn ? "on" : "off"}`,
-        outputDirectory,
-        captures,
+      const wide = { ...VIEWS.wide, weatherOn };
+      await setView(wide);
+      await snap({
+        base: `weather-map-wide-${weatherOn ? "on" : "off"}`,
+        kind: "wide",
+        view: wide,
       });
     }
 
@@ -509,6 +560,7 @@ export const descriptor = {
         clockPin,
         dials: dialRecord,
         firstFrame,
+        captures: takenRecords,
       },
     ];
   },
@@ -522,13 +574,25 @@ export const descriptor = {
       })),
     );
   },
-  receipt(cells) {
+  receipt(cells, context) {
+    // The capture-seam manifest contact-sheet.mjs reads: one entry per PNG of
+    // every run. Refused, not written, when it would not validate; the
+    // receipt says which.
+    const captureManifest = context.outputDirectory
+      ? writeWeatherMapManifest({
+          probe: descriptor.name,
+          cells,
+          staged: { viewport: VIEW, page: PAGE.slice(1) },
+          context,
+        })
+      : null;
     return {
       page: PAGE,
       locations: LOCATIONS,
       views: VIEWS,
       assert: ASSERT,
       runs: cells,
+      captureManifest,
     };
   },
 };

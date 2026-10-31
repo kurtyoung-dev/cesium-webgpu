@@ -2257,6 +2257,18 @@ function makeDemoDependencies(log, scenario = {}) {
       const rendererType = scenario.contextRenderer ?? urlOptions.renderer;
       const frame = {
         async waitForFunction() {},
+        // The run frame's iframe element on the top page, pinned to the viewport.
+        async frameElement() {
+          return {
+            async evaluate() {
+              return {
+                width: 1280,
+                height: 720,
+                viewport: { width: 1280, height: 720 },
+              };
+            },
+          };
+        },
         async evaluate(fn, arg) {
           if (fn === readRendererStateInPage) {
             return {
@@ -2266,7 +2278,25 @@ function makeDemoDependencies(log, scenario = {}) {
             };
           }
           if (typeof fn === "string") {
-            return undefined;
+            // The viewer chrome strip: nothing is left over the canvas.
+            return fn.includes("cesium-viewer-toolbar")
+              ? { removed: 3, leftovers: [] }
+              : undefined;
+          }
+          // The declared canvas size; read before the ion wait, whose argument
+          // also carries timeoutMs.
+          if (arg && arg.selector !== undefined) {
+            return {
+              found: true,
+              cssWidth: arg.width,
+              cssHeight: arg.height,
+              matched: true,
+              waitedMs: 0,
+            };
+          }
+          // The demo shell's own chrome, removed by selector.
+          if (arg && arg.selectors !== undefined) {
+            return 1;
           }
           if (arg && arg.timeoutMs !== undefined) {
             return {

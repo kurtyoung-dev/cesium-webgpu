@@ -1,7 +1,7 @@
 /**
  * PF-3, startup to the first useful frame and the shader and pipeline compile
  * time, read against the startup ceiling and a pre-registered band.
- * @purpose PF-3 for the R-2026-10-22-3 performance leg: reduces one run's startup record (page timestamps from lib/frame-timing-steps.mjs, relative to navigation start, and the compile tallies of lib/gpu-device-census.mjs) to named intervals and compile totals, and reads base vs tip with the ceiling rule of lib/metrics/perf-band.mjs (the median of the tip repeats under the 2.5 s ceiling, the slowest repeat reported, and within the band, whose floor for PF-3 is 10 % on WebGPU and 15 % on WebGL; a base already at or over the ceiling reads the banded compare alone and is reported) for the startup interval taken without the cell pending-pipeline wait, which is reported beside it, and the band rule for the compile total.
+ * @purpose PF-3 for the R-2026-10-22-3 performance leg: reduces one run's startup record (page timestamps from lib/frame-timing-steps.mjs, relative to navigation start, and the compile tallies of lib/gpu-device-census.mjs) to named intervals and compile totals, and reads base vs tip with the ceiling rule of lib/metrics/perf-band.mjs (the median of the tip repeats under the 2.5 s ceiling, the slowest repeat reported, and within the band, whose floor for PF-3 is 10 % on WebGPU and 15 % on WebGL; a base already at or over the ceiling reads the banded compare alone and is reported) for the startup interval taken without the cell pending-pipeline wait, which is reported beside it, and the band rule for the compile total under the provisional same-build floor where both arms measured one, with the floor's mark (provisionalFloorMark: flag, floor, registered band, decided) carried on the PF-3 verdict.
  * @status ACTIVE
  *
  * THE CLOCK. Every page timestamp is `performance.now()` in the page, whose
@@ -51,16 +51,27 @@
  * summed async time is work, not wall time; `compileSpanMs` (first creation to
  * last settle) is the wall-clock bound and is reported beside it.
  *
+ * THE COMPILE TOTAL READS A PROVISIONAL FLOOR (row
+ * DX-KIT-COMPILE-TOTAL-BAND-SAME-BUILD-SPREAD). Its band is the repeat band or
+ * the 3 % floor, and on one served build with two repeats per arm it moved
+ * +17.2 % and +56.0 % against bands of 7.6 % and 34.7 %. The verdict reads
+ * max(registered band, `COMPILE_PROVISIONAL_FLOOR`, 60 %), and the compile
+ * record carries `provisionalFloor` (the flag, the source, the registered band
+ * and whether the floor was the larger term) so a reader sees the figure is not
+ * calibrated. The startup statistic and its floors are untouched.
+ *
  * @module Tools/visual-regression/lib/metrics/startup-compile
  */
 
 import {
+  COMPILE_PROVISIONAL_FLOOR,
   PERF_VERDICTS,
   ceilingVerdict,
   compareToBase,
   guardStatistic,
   median,
   startupBandsFor,
+  startupFloorOf,
   worstVerdict,
 } from "./perf-band.mjs";
 
@@ -213,6 +224,38 @@ function pipelineWaitOfArm(runs) {
 }
 
 /**
+ * The mark a PF-3 verdict carries when the compile total's provisional floor
+ * set its band, so the floor is visible where the verdict is read, not only
+ * in the nested compile record: the flag, the floor, the registered band, and
+ * `decided`, true when the registered band alone would have read the tip
+ * `over` (the floor turned the verdict). Null when the floor was not applied.
+ * Pure.
+ *
+ * @param {object} compile The compile-total record of a PF-3 verdict.
+ * @returns {{flag: string, fraction: number, registeredBandFraction: number,
+ *   decided: boolean}|null}
+ */
+export function provisionalFloorMark(compile) {
+  const floor = compile?.provisionalFloor;
+  if (floor?.applied !== true) {
+    return null;
+  }
+  const registeredLimit =
+    compile.base === null
+      ? null
+      : compile.base * (1 + floor.registeredBandFraction);
+  return {
+    flag: floor.flag,
+    fraction: floor.fraction,
+    registeredBandFraction: floor.registeredBandFraction,
+    decided:
+      registeredLimit !== null &&
+      compile.tip !== null &&
+      compile.tip > registeredLimit,
+  };
+}
+
+/**
  * PF-3, base arm against tip arm.
  *
  * @param {object} input
@@ -274,6 +317,7 @@ export function startupVerdict({
     bands,
   });
   startup.waitBasis = waitBasis.basis;
+  startup.startupFloor = startupFloorOf(renderer, requestedBands);
   if (waitBasis.reason) {
     startup.reasons.push(waitBasis.reason);
   }
@@ -311,18 +355,34 @@ export function startupVerdict({
     startup.reasons.push(`${label} has no ${chosen}`);
   }
   startup.missingRepeats = { base: baseMissing, tip: tipMissing };
+  const baseCompile = base.map((run) => run.compile.totalMs);
+  const tipCompile = tip.map((run) => run.compile.totalMs);
+  // The floor stands in for a same-build spread the compile census measured,
+  // so it applies only where both arms measured a compile total: a WebGL arm
+  // has no WebGPU census and reads 0 ms, where a floor would mean nothing.
+  const compileMeasured = median(baseCompile) > 0 && median(tipCompile) > 0;
   const compile = compareToBase({
     metric: "PF-3",
     statistic: "compileTotalMs",
-    baseRepeats: base.map((run) => run.compile.totalMs),
-    tipRepeats: tip.map((run) => run.compile.totalMs),
+    baseRepeats: baseCompile,
+    tipRepeats: tipCompile,
     bands,
+    provisionalFloor: compileMeasured ? COMPILE_PROVISIONAL_FLOOR : null,
   });
+  if (!compileMeasured) {
+    compile.provisionalFloor = {
+      flag: COMPILE_PROVISIONAL_FLOOR.flag,
+      applied: false,
+      notApplicable: "no compile total measured on both arms",
+    };
+  }
   guardStatistic(startup, contention);
   guardStatistic(compile, contention);
+  const floorRecord = provisionalFloorMark(compile);
   return {
     metric: "PF-3",
     verdict: worstVerdict([startup, compile]),
+    ...(floorRecord ? { provisionalFloor: floorRecord } : {}),
     field: chosen,
     fieldFallback,
     startup,

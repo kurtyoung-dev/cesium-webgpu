@@ -1,7 +1,7 @@
 // Rig record for the Sandcastle 2 gallery demo "Globe Materials - Water Mask
 // Elevation Map" (gallery id `globe-materials-water-mask-elevation-map`).
 //
-// @purpose Rig record for the water landing's material cell 1f (EDGE_LEG_WATER.md leg 1): the Sandcastle 2 demo globe-materials-water-mask-elevation-map (a WaterMask-driven globe material on Cesium World Terrain with its water mask, the demo's own camera and light), clock pinned to 16:00Z on the June solstice, both renderers, 1280x720, element capture after 240 frames drawn with the tiles loaded; needs Cesium ion.
+// @purpose Rig record for the water landing's material cell 1f (EDGE_LEG_WATER.md leg 1): the Sandcastle 2 demo globe-materials-water-mask-elevation-map (a WaterMask-driven globe material on Cesium World Terrain with its water mask, the demo's own camera and light), clock pinned to 16:00Z on the June solstice, both renderers, 1280x720, element capture of the canvas pinned to the viewport size with the viewer chrome stripped after 240 frames drawn with the tiles loaded; needs Cesium ion.
 // @status ACTIVE
 //
 // WHERE IT COMES FROM. The water lane's job sheet (`EDGE_LEG_WATER.md`, leg 1,
@@ -22,6 +22,16 @@
 // the picture the cell compares, so the capture piece answers `NOT_RUN: ion`
 // and the cell is NOT RUN, never a pass.
 //
+// ONE SIZE, NO CHROME (`dials.canvasSize`, `dials.stripChrome`). The two
+// renderers' frames have to be the same picture size to be compared, and a
+// frame with the viewer's widgets over it measures DOM chrome. The standalone
+// shell stacks the demo above a console pane that opens by itself on a
+// warning, so the unpinned canvas was 687 px tall on one renderer and 520 on
+// the other, and both carried the toolbar, the navigation help and the ion
+// credit line. The capture piece pins the run frame to the viewport, so the
+// canvas is `canvasSize` (the viewport size) on both renderers, and strips the
+// chrome before the capture, refusing on leftovers.
+//
 // WHO RENDERS IT. `probe-water-cells.mjs --cells 1f`, through
 // `lib/sandcastle2-demo-capture.mjs`.
 
@@ -38,6 +48,8 @@ export default Object.freeze({
   dials: {
     galleryId: "globe-materials-water-mask-elevation-map",
     requiresIon: true,
+    canvasSize: { width: 1280, height: 720 },
+    stripChrome: true,
   },
   viewport: {
     width: 1280,

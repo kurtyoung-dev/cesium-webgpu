@@ -128,6 +128,10 @@
 //   report (`lib/landing-capture-manifest.mjs`), BEFORE from `--base-report`;
 //   a manifest that would not validate is refused and the receipt says why.
 // - The comparison and verdicts moved to `lib/landing-verdicts.mjs`.
+// - FRAME PATHS. The report stores each page's capture path relative to its
+//   own folder (POSIX); a base or merged report is read with its frames
+//   resolved against ITS folder, and a base frame that is not on disk reads
+//   `pixels.reason: "base-frames-missing"` (`lib/report-frame-paths.mjs`).
 //
 // LANE FINDEKANO (probe-kit round 5). The W3 job's E-W cells (kind
 // `weather-state`) came into the kit from an out-of-tree copy of this probe:
@@ -214,7 +218,7 @@ import {
   pagesWithMergedRuns as mergedPagesFor,
   readMergeReports as readMergeReportsFor,
 } from "./lib/metrics/merge-landing-reports.mjs";
-import { resolveBands } from "./lib/metrics/perf-band.mjs";
+import { resolveBands, startupFloorOf } from "./lib/metrics/perf-band.mjs";
 import {
   ProbeRefusal,
   captureElement,
@@ -223,6 +227,10 @@ import {
   sha256,
 } from "./lib/probe-runtime.mjs";
 import { buildPerformanceViewerUrl } from "./lib/performance-viewer-url.mjs";
+import {
+  relativizeFramePaths,
+  resolveFramePaths,
+} from "./lib/report-frame-paths.mjs";
 import { loadRigs } from "./lib/rig-registry.mjs";
 import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
 
@@ -619,7 +627,11 @@ export function pagesWithMergedRuns(cells, options, priors) {
  * Read the base report and the bands file named by the options. Node only.
  *
  * @param {{baseReport?: string, bands?: string}} options
- * @returns {{base: object|null, bands: object, bandsFile: object|null}}
+ * @returns {{base: object|null, bands: object, overrides: object,
+ *   bandsFile: object|null}} `bands` is the resolved set the receipt records;
+ *   `overrides` is the wave's own `--bands` contents, which is what the
+ *   comparison reads so a renderer's own PF-3 floor applies where the wave
+ *   registered none.
  */
 export function readComparisonInputs(options) {
   let bandsFile = null;
@@ -655,13 +667,16 @@ export function readComparisonInputs(options) {
         { baseReport: options.baseReport, cells: mismatched },
       );
     }
+    // The frames resolve against the base report's own folder, so a banked
+    // report read from a copy finds the frames beside it.
+    base = resolveFramePaths(base, path.resolve(options.baseReport));
     // Regrouped with this tree's grouping, so the arms carry every input the
     // comparison reads (the CPU samples, K5-6) from the pages the report holds.
     if (Array.isArray(base.pages)) {
       base.arms = groupArms(base.pages);
     }
   }
-  return { base, bands, bandsFile };
+  return { base, bands, overrides, bandsFile };
 }
 
 function plannedPageCount(options) {
@@ -839,14 +854,19 @@ export const descriptor = {
   },
   receipt(cells, context) {
     const options = context.options;
-    const { base, bands, bandsFile } = readComparisonInputs(options);
+    const { base, bands, overrides, bandsFile } = readComparisonInputs(options);
     const priors = readMergeReports(options);
     const pages = pagesWithMergedRuns(cells, options, priors);
     const arms = groupArms(pages);
+    // The report stores each frame relative to its own folder; the comparison,
+    // the manifest and the cross-renderer reads keep the absolute paths.
+    const reportPages = context.outputDirectory
+      ? relativizeFramePaths(pages, context.outputDirectory)
+      : pages;
     const cpuSeries = invocationCpu ? invocationCpu.stop() : null;
     invocationCpu = null;
     const comparison = base
-      ? compareArms(arms, base.arms, bands, {
+      ? compareArms(arms, base.arms, overrides, {
           startupField: options.startupField,
         })
       : null;
@@ -892,6 +912,12 @@ export const descriptor = {
       },
       ownerLabels: readOwnerLabels(options),
       bands,
+      // `bands.startupBandFloor` is the WebGPU floor; a WebGL arm without a
+      // pre-registered one reads its own, so the receipt names both.
+      startupBandFloorByRenderer: {
+        webgl: startupFloorOf("webgl", overrides),
+        webgpu: startupFloorOf("webgpu", overrides),
+      },
       bandsFile,
       baseReport: options.baseReport ? path.resolve(options.baseReport) : null,
       mergedReports: priors.map((prior) => ({
@@ -901,8 +927,8 @@ export const descriptor = {
         runs: prior.report.options?.runs ?? null,
       })),
       cpuSeries,
-      pages,
-      arms,
+      pages: reportPages,
+      arms: groupArms(reportPages),
       comparison,
       crossRenderer: crossRendererComparisons(pages),
       kernelIdentity: kernelIdentityComparisons(pages),
@@ -911,14 +937,14 @@ export const descriptor = {
     };
   },
   verdicts(cells, context) {
-    const { base, bands } = readComparisonInputs(context.options);
+    const { base, overrides } = readComparisonInputs(context.options);
     const pages = pagesWithMergedRuns(
       cells,
       context.options,
       readMergeReports(context.options),
     );
     const comparison = base
-      ? compareArms(groupArms(pages), base.arms, bands, {
+      ? compareArms(groupArms(pages), base.arms, overrides, {
           startupField: context.options.startupField,
         })
       : null;

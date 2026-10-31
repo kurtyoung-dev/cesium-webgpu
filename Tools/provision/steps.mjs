@@ -5,7 +5,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { PROVISION, ROUTED_AUTHORITIES } from "./authorities.mjs";
+import {
+  PROVISION,
+  PROVISION_TREES,
+  ROUTED_AUTHORITIES,
+} from "./authorities.mjs";
 
 /**
  * The result a provisioning run accumulates: `fail` records a problem (the run
@@ -57,12 +61,62 @@ export function verifyNodeModules(
   );
 }
 
-/** Copy the PROVISION governance files into the clone and stamp each with its object id. */
+/** Every regular file under `directory`, relative to it in POSIX form, sorted. Symlinks are skipped. */
+function regularFilesUnder(directory) {
+  const out = [];
+  const walk = (relative) => {
+    for (const dirent of fs.readdirSync(path.join(directory, relative), {
+      withFileTypes: true,
+    })) {
+      const child = relative ? `${relative}/${dirent.name}` : dirent.name;
+      if (dirent.isDirectory()) {
+        walk(child);
+      } else if (dirent.isFile()) {
+        out.push(child);
+      }
+    }
+  };
+  walk("");
+  return out.sort();
+}
+
+/**
+ * The PROVISION_TREES as one PROVISION-shaped entry per file the source holds
+ * under each tree; a required tree the source lacks is failed on `ctx`.
+ */
+export function provisionTreeEntries(ctx, sourceRepo, trees = PROVISION_TREES) {
+  const entries = [];
+  for (const tree of trees) {
+    const from = path.join(sourceRepo, tree.src);
+    if (!fs.existsSync(from) || !fs.statSync(from).isDirectory()) {
+      if (tree.required) {
+        ctx.fail(
+          `source missing, cannot provision: ${tree.src}/ (${tree.why})`,
+        );
+      }
+      continue;
+    }
+    for (const file of regularFilesUnder(from)) {
+      entries.push({
+        src: `${tree.src}/${file}`,
+        dest: `${tree.dest}/${file}`,
+        required: tree.required,
+        why: tree.why,
+      });
+    }
+  }
+  return entries;
+}
+
+/** Copy the PROVISION governance files and PROVISION_TREES into the clone and stamp each with its object id. */
 export function copyGovernance(
   ctx,
   { sourceRepo, clonePath, restoreUnchangedProvisionedFile },
 ) {
-  for (const entry of PROVISION) {
+  for (const entry of [
+    ...PROVISION,
+    ...provisionTreeEntries(ctx, sourceRepo),
+  ]) {
     const from = path.join(sourceRepo, entry.src);
     const to = path.join(clonePath, entry.dest);
     if (!fs.existsSync(from)) {

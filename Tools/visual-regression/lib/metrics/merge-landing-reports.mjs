@@ -41,6 +41,7 @@ import {
   waitedForCell,
 } from "../landing-cell-table.mjs";
 import { ProbeRefusal } from "../probe-refusal.mjs";
+import { resolveFramePaths } from "../report-frame-paths.mjs";
 
 // A page that renders the cell's scene from load: a capture page or a variant
 // page (lane LINDISSE), not one of an E-T cell's teardown or forced-loss pages.
@@ -384,7 +385,8 @@ export function readMergeReports(options, servedArtifacts) {
     return {
       path: path.resolve(file),
       sha256: createHash("sha256").update(bytes).digest("hex"),
-      report,
+      // Its frames resolve against ITS folder, not the folder of this run.
+      report: resolveFramePaths(report, path.resolve(file)),
     };
   });
   try {

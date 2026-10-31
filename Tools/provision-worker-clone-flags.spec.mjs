@@ -1,5 +1,5 @@
 // provision-worker-clone-flags.spec.mjs - export, flag and spine-flag contracts of Tools/provision-worker-clone.mjs after its decomposition into Tools/provision/.
-// @purpose Pin that the entry file still exports everything it exported before the split, that the argv parser and the usage text name exactly the same flags, and that --no-spine-seed / --no-spine-refresh reach the spine seeding when the real CLI runs.
+// @purpose Pin that the entry file still exports everything it exported before the split, that the argv parser and the usage text name exactly the same flags, that --no-spine-seed / --no-spine-refresh reach the spine seeding when the real CLI runs, and that the real CLI copies every file of the source's .claude/skills tree into the clone byte for byte.
 // @status ACTIVE
 //
 // Run: node --test Tools/provision-worker-clone-flags.spec.mjs
@@ -171,9 +171,10 @@ function git(dir, ...args) {
 // placeholder spine DB: a placeholder has no head_sha, so a refresh is due, and
 // the clone has no Tools/query-context.mjs, so a due refresh reports itself
 // without running a build.
-function runCli(dir, extraFlags) {
+function runCli(dir, extraFlags, seedSource = () => {}) {
   const clone = path.join(dir, "clone");
   const source = path.join(dir, "source");
+  seedSource(source);
   fs.mkdirSync(clone, { recursive: true });
   git(clone, "init", "-q", "-b", "main");
   git(clone, "commit", "-q", "--allow-empty", "-m", "base");
@@ -188,6 +189,8 @@ function runCli(dir, extraFlags) {
   );
   const report = JSON.parse(run.stdout);
   return {
+    clone,
+    report,
     notes: report.notes,
     seeded: fs.existsSync(path.join(clone, SPINE_DB_REL)),
   };
@@ -223,4 +226,56 @@ test("--no-spine-seed copies no DB, so there is nothing to refresh either", () =
     const { notes, seeded } = runCli(dir, ["--no-spine-seed"]);
     assert.ok(!seeded);
     assert.ok(!notes.some((n) => /context-spine/u.test(n)), notes.join("\n"));
+  }));
+
+// --- the skills tree reaches the clone through the real CLI ---------------
+
+// Nested, CRLF, LF and non-UTF-8 bytes: the copy must not re-encode any of them.
+const SKILL_FILES = {
+  "build-and-variants/SKILL.md": Buffer.from(
+    "---\r\nname: a\r\n---\r\nrule\r\n",
+  ),
+  "engine-code-standards/SKILL.md": Buffer.from("---\nname: b\n---\nrule\n"),
+  "engine-code-standards/notes/extra.bin": Buffer.from([
+    0xff, 0x00, 0x0d, 0x0a,
+  ]),
+};
+
+function seedSkills(source) {
+  for (const [rel, bytes] of Object.entries(SKILL_FILES)) {
+    const file = path.join(source, ".claude", "skills", ...rel.split("/"));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, bytes);
+  }
+}
+
+test("the real CLI copies every file of the source's .claude/skills tree byte for byte", () =>
+  withLaneTmp("provision-flags-skills-", (dir) => {
+    const { clone, report } = runCli(dir, ["--no-spine-seed"], seedSkills);
+    for (const [rel, bytes] of Object.entries(SKILL_FILES)) {
+      const copied = path.join(clone, ".claude", "skills", ...rel.split("/"));
+      assert.ok(fs.existsSync(copied), `${rel} missing from the clone`);
+      assert.ok(
+        fs.readFileSync(copied).equals(bytes),
+        `${rel} is not byte-identical`,
+      );
+      assert.ok(
+        report.provisioned.includes(`.claude/skills/${rel}`),
+        `${rel} not reported provisioned: ${report.provisioned.join(", ")}`,
+      );
+    }
+    assert.ok(
+      !report.problems.some((p) => p.includes(".claude/skills")),
+      report.problems.join("\n"),
+    );
+  }));
+
+test("a source without .claude/skills is a provisioning problem, not a silent pass", () =>
+  withLaneTmp("provision-flags-noskills-", (dir) => {
+    const { report } = runCli(dir, ["--no-spine-seed"]);
+    assert.equal(report.status, "NOT_READY");
+    assert.ok(
+      report.problems.some((p) => p.includes(".claude/skills/")),
+      report.problems.join("\n"),
+    );
   }));

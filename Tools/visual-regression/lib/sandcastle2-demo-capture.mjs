@@ -2,7 +2,7 @@
  * Opens one Sandcastle 2 gallery demo by id on a served tree, on one renderer,
  * and captures its scene canvas ELEMENT once the scene has drawn a declared
  * number of settled frames.
- * @purpose Capture piece for Sandcastle 2 demos on the probe runtime: given a served tree origin, a gallery demo id, a renderer and a settled-frame count, opens the demo through lib/sandcastle2-renderer-gate.mjs's guarded opener (lib/sandcastle2-origin-rewrite.mjs's rewrite and origin guard), proves the run frame built a viewer on the requested renderer, arms the WebGPU error gate, settles the frames with the clock optionally pinned, element-captures the scene canvas inside the run frame, and returns the PNG path with a {demoId, renderer, frames, origin, ionAccess} record - or NOT_RUN: ion, with no capture, for a demo that needs Cesium ion where ion is not reachable; a refusal raised after the gate is armed (a clock it could not pin, a settle short of its frames) carries the gate it read.
+ * @purpose Capture piece for Sandcastle 2 demos on the probe runtime: given a served tree origin, a gallery demo id, a renderer and a settled-frame count, opens the demo through lib/sandcastle2-renderer-gate.mjs's guarded opener (lib/sandcastle2-origin-rewrite.mjs's rewrite and origin guard), proves the run frame built a viewer on the requested renderer, arms the WebGPU error gate, settles the frames with the clock optionally pinned, element-captures the scene canvas inside the run frame, and returns the PNG path with a {demoId, renderer, frames, origin, ionAccess} record - or NOT_RUN: ion, with no capture, for a demo that needs Cesium ion where ion is not reachable; a refusal raised after the gate is armed (a clock it could not pin, a settle short of its frames) carries the gate it read; a request may also declare a canvas size (the run frame is pinned to the viewport and the canvas measured, refusing on a miss) and strip the viewer and demo chrome stacked over the canvas before the capture (refusing on leftovers).
  * @status ACTIVE
  *
  * WHY A PIECE. A Sandcastle 2 demo runs in the app's run frame (the bucket
@@ -43,6 +43,22 @@
  * deadline. A settle that ends any other way refuses (`demo-not-settled`); a
  * picture taken mid-refinement is a different picture.
  *
+ * CANVAS SIZE AND CHROME. Two dials a request may declare, both off by
+ * default. Left alone, a run frame's canvas is whatever the Sandcastle 2
+ * standalone shell leaves it: the shell stacks the frame above a console pane
+ * that opens by itself, 200 px tall, when the demo logs a warning or an error,
+ * so the same demo on two renderers can be 687 and 520 px tall (the shell's
+ * own `ViewerConsoleStack`). `canvasSize` pins the frame's iframe to the whole
+ * viewport on the top page (a fixed, full-viewport box the console cannot
+ * shrink), waits for the canvas to measure the declared size, and refuses
+ * (`demo-canvas-size`) when it never does, before the settle and again before
+ * the capture. `stripChrome` removes the viewer's widgets and the demo shell's
+ * own toolbar through `lib/strip-viewer-widgets.mjs`, then refuses
+ * (`demo-chrome-leftover`) when anything is still stacked over the canvas, as
+ * the landing cells do; an element screenshot composites whatever sits over
+ * its rectangle. Neither edits the demo or the app: they act on the page at
+ * capture time.
+ *
  * WHAT IT DOES NOT DO. It opens no browser and no context (the probe's runtime
  * owns both; `prepareDemoCaptureContext` adds this piece's init scripts to a
  * context the probe made), decides no band, and diffs nothing.
@@ -62,6 +78,7 @@ import {
   captureElement,
   installSceneFrameDriver,
 } from "./probe-runtime.mjs";
+import { STRIP_WIDGETS_SOURCE } from "./strip-viewer-widgets.mjs";
 import {
   EVALUATE_TIMEOUT,
   SWEEPABLE_RENDERERS,
@@ -91,7 +108,19 @@ export const DEMO_CAPTURE_DEFAULT_BUDGETS = Object.freeze({
   ionMs: 60_000,
   readMs: 30_000,
   settleMs: 240_000,
+  sizeMs: 15_000,
 });
+
+/**
+ * The demo shell's own chrome over the canvas, removed with the viewer's
+ * widgets when a request strips chrome: the toolbar the demo's HTML declares
+ * (`templates/bucket.css` gives it a background and an absolute position) and
+ * the loading overlay.
+ */
+export const DEMO_SHELL_CHROME_SELECTORS = Object.freeze([
+  "#toolbar",
+  "#loadingOverlay",
+]);
 
 const DEMO_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 const ISO_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
@@ -113,6 +142,10 @@ const ISO_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
  *   demo's clock to, or null for the demo's own clock.
  * @param {string} [input.name] The capture's name; defaults to
  *   `<demoId>-<renderer>`.
+ * @param {{width: number, height: number}|null} [input.canvasSize] Pin the
+ *   run frame to the viewport and require the canvas to measure this size.
+ * @param {boolean} [input.stripChrome] Remove the viewer and demo chrome over
+ *   the canvas before the capture, and refuse on leftovers.
  * @param {number} [input.settleMaxFrames] The settle's frame cap.
  * @param {object} [input.budgets] Overrides of {@link DEMO_CAPTURE_DEFAULT_BUDGETS}.
  * @returns {object} The completed request.
@@ -162,6 +195,24 @@ export function demoCaptureRequest(input) {
   if (ionAvailable !== null && typeof ionAvailable !== "boolean") {
     fail(`ionAvailable must be a boolean or null`);
   }
+  const canvasSize = input.canvasSize ?? null;
+  if (
+    canvasSize !== null &&
+    !(
+      Number.isInteger(canvasSize.width) &&
+      canvasSize.width > 0 &&
+      Number.isInteger(canvasSize.height) &&
+      canvasSize.height > 0
+    )
+  ) {
+    fail(`canvasSize must be null or {width, height} positive integers`);
+  }
+  if (
+    input.stripChrome !== undefined &&
+    typeof input.stripChrome !== "boolean"
+  ) {
+    fail(`stripChrome must be a boolean`);
+  }
   const settleMaxFrames = input.settleMaxFrames ?? input.frames * 50;
   if (!Number.isInteger(settleMaxFrames) || settleMaxFrames < input.frames) {
     fail(`settleMaxFrames must be an integer of at least frames`);
@@ -182,6 +233,11 @@ export function demoCaptureRequest(input) {
     ionAvailable,
     clock,
     name: input.name ?? `${input.demoId}-${input.renderer}`,
+    canvasSize:
+      canvasSize === null
+        ? null
+        : { width: canvasSize.width, height: canvasSize.height },
+    stripChrome: input.stripChrome === true,
     settleMaxFrames,
     budgets,
   };
@@ -391,6 +447,83 @@ async function frameSettleDemo({
 }
 
 /**
+ * TOP PAGE, on the run frame's iframe element. Pin it to the whole viewport:
+ * fixed, full-size and above the shell's console pane, so the pane opening or
+ * closing can no longer change the frame's size.
+ */
+function elementPinToViewport(element) {
+  const pin = (name, value) =>
+    element.style.setProperty(name, value, "important");
+  pin("position", "fixed");
+  pin("top", "0");
+  pin("left", "0");
+  pin("right", "auto");
+  pin("bottom", "auto");
+  pin("width", "100vw");
+  pin("height", "100vh");
+  pin("max-width", "none");
+  pin("max-height", "none");
+  pin("margin", "0");
+  pin("border", "none");
+  pin("z-index", "2147483647");
+  const box = element.getBoundingClientRect();
+  return {
+    width: Math.round(box.width),
+    height: Math.round(box.height),
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+  };
+}
+
+/**
+ * RUN FRAME. Wait, up to `timeoutMs`, for the scene canvas to measure
+ * `width` x `height` CSS pixels, and report what it measured. The drawing
+ * buffer is read and recorded, not judged: the picture's size is the canvas's
+ * box.
+ */
+async function frameAwaitCanvasSize({ selector, width, height, timeoutMs }) {
+  const started = performance.now();
+  const read = () => {
+    const canvas = document.querySelector(selector);
+    if (!canvas) {
+      return { found: false };
+    }
+    const box = canvas.getBoundingClientRect();
+    return {
+      found: true,
+      cssWidth: Math.round(box.width),
+      cssHeight: Math.round(box.height),
+      bufferWidth: canvas.width,
+      bufferHeight: canvas.height,
+      devicePixelRatio: window.devicePixelRatio,
+    };
+  };
+  const matches = (state) =>
+    state.found && state.cssWidth === width && state.cssHeight === height;
+  let state = read();
+  while (!matches(state) && performance.now() - started < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    state = read();
+  }
+  return {
+    ...state,
+    matched: matches(state),
+    waitedMs: Math.round(performance.now() - started),
+  };
+}
+
+/** RUN FRAME. Remove the demo shell's own chrome by selector. */
+function frameRemoveShellChrome({ selectors }) {
+  let removed = 0;
+  for (const selector of selectors) {
+    for (const element of document.querySelectorAll(selector)) {
+      element.remove();
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+/**
  * Read the run frame's error gate before a refusal, so the refusal carries
  * what the gate saw. A read that fails is recorded, never thrown: the refusal
  * is the answer either way. NODE SIDE.
@@ -405,6 +538,71 @@ async function readGateBeforeRefusal(readGate, frame) {
   } catch (error) {
     return { gate: null, gateReadError: String(error?.message ?? error) };
   }
+}
+
+/**
+ * Pin the run frame to the viewport and wait for the declared canvas size.
+ * `pin: false` only re-measures (the check before the capture). A canvas that
+ * never measures the declared size refuses, carrying the gate it read. NODE
+ * SIDE.
+ */
+async function applyDeclaredCanvasSize({
+  frame,
+  req,
+  label,
+  readGate,
+  result,
+  pin,
+}) {
+  const declared = { ...req.canvasSize };
+  let pinned = null;
+  if (pin) {
+    const element = await frame.frameElement();
+    pinned = await element.evaluate(elementPinToViewport);
+  }
+  const measured = await frame.evaluate(frameAwaitCanvasSize, {
+    selector: DEMO_CANVAS_SELECTOR,
+    width: declared.width,
+    height: declared.height,
+    timeoutMs: req.budgets.sizeMs,
+  });
+  if (measured?.matched !== true) {
+    const read = await readGateBeforeRefusal(readGate, frame);
+    result.gate = read.gate;
+    throw new ProbeRefusal(
+      "demo-canvas-size",
+      `${label}: the canvas measured ${measured?.found ? `${measured.cssWidth}x${measured.cssHeight}` : "nothing"}, not the declared ${declared.width}x${declared.height}, within ${req.budgets.sizeMs} ms`,
+      { demoId: req.demoId, declared, pinned, measured, ...read },
+    );
+  }
+  return { declared, ...(pinned && { pinned }), measured };
+}
+
+/**
+ * Remove the viewer's widgets and the demo shell's chrome from the run frame,
+ * and refuse when anything is still stacked over the canvas. NODE SIDE.
+ */
+async function stripDemoChrome({ frame, req, label, readGate, result }) {
+  const shellRemoved = await frame.evaluate(frameRemoveShellChrome, {
+    selectors: [...DEMO_SHELL_CHROME_SELECTORS],
+  });
+  const strip = await frame.evaluate(`(${STRIP_WIDGETS_SOURCE})()`);
+  const chrome = {
+    shellRemoved,
+    removed: strip?.removed ?? null,
+    leftovers: Array.isArray(strip?.leftovers) ? strip.leftovers : null,
+  };
+  result.chrome = chrome;
+  if (chrome.leftovers === null || chrome.leftovers.length > 0) {
+    const read = await readGateBeforeRefusal(readGate, frame);
+    result.gate = read.gate;
+    throw new ProbeRefusal(
+      "demo-chrome-leftover",
+      `${label}: ${chrome.leftovers === null ? "the chrome strip returned no report" : `elements were still stacked over the scene canvas after the strip (${chrome.leftovers.join(", ")})`}`,
+      { demoId: req.demoId, chrome, ...read },
+    );
+  }
+  return chrome;
 }
 
 /**
@@ -425,10 +623,12 @@ async function readGateBeforeRefusal(readGate, frame) {
  *   frameGate: object|null, settle: object|null, clock: object|null,
  *   armed: object|null, gate: object|null, urls: object|null}>}
  * @throws {ProbeRefusal} `demo-no-viewer`, `demo-frame-unreadable`,
- *   `demo-renderer-gate`, `demo-clock-not-pinned` or `demo-not-settled`; an
- *   origin breach is the origin guard's own refusal. The last two read the
- *   error gate first and carry it in `details.gate` (`details.gateReadError`
- *   when the read failed), so a device lost mid-settle reaches the caller.
+ *   `demo-renderer-gate`, `demo-clock-not-pinned`, `demo-canvas-size`,
+ *   `demo-not-settled` or `demo-chrome-leftover`; an origin breach is the
+ *   origin guard's own refusal. Every one raised after the gate is armed reads
+ *   the error gate first and carries it in `details.gate`
+ *   (`details.gateReadError` when the read failed), so a device lost
+ *   mid-settle reaches the caller.
  */
 export async function captureSandcastle2Demo({
   page,
@@ -461,6 +661,8 @@ export async function captureSandcastle2Demo({
     frameGate: null,
     settle: null,
     clock: null,
+    layout: null,
+    chrome: null,
     armed: null,
     gate: null,
     urls: null,
@@ -543,6 +745,17 @@ export async function captureSandcastle2Demo({
     return result;
   }
 
+  if (req.canvasSize !== null) {
+    result.layout = await applyDeclaredCanvasSize({
+      frame,
+      req,
+      label,
+      readGate,
+      result,
+      pin: true,
+    });
+  }
+
   if (req.clock !== null) {
     result.clock = await frame.evaluate(framePinDemoClock, { iso: req.clock });
     if (result.clock?.applied !== true) {
@@ -581,6 +794,25 @@ export async function captureSandcastle2Demo({
     result.settle.frameNumber === null ? [] : [result.settle.frameNumber],
     { minimum: req.frames },
   );
+
+  if (req.stripChrome) {
+    await stripDemoChrome({ frame, req, label, readGate, result });
+  }
+  if (req.canvasSize !== null) {
+    result.layout = {
+      ...result.layout,
+      beforeCapture: (
+        await applyDeclaredCanvasSize({
+          frame,
+          req,
+          label,
+          readGate,
+          result,
+          pin: false,
+        })
+      ).measured,
+    };
+  }
 
   const shot = await capture({
     page: frame,

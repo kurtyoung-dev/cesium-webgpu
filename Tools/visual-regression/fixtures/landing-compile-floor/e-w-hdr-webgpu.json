@@ -1,0 +1,800 @@
+{
+ "note": "Two same-build arms (base = armA, tip = armB) of the E-W-ground-hdr and E-W-30km-hdr WebGPU cells, two repeats each, trimmed to the page fields PF-3 and the contention guard read (startup, compileAtStartup, pipelines, cpu.mean and its per-second percentages); from a banked Edge landing-cells report pair. banked holds what the same pages read before the compile floor existed, for the tip arm's comparison.",
+ "base": {
+  "pages": [
+   {
+    "run": 0,
+    "cell": "E-W-ground-hdr",
+    "rig": "w3-ew-ground-hdr",
+    "kind": "weather-state",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": null,
+    "startup": {
+     "viewerReadyAtMs": 1422.6000000238419,
+     "stagedAtMs": 1459.5,
+     "firstFrameAtMs": 1581.5,
+     "firstCloudFrameAtMs": 4382.300000011921,
+     "tilesLoadedAtMs": 3031.800000011921,
+     "frames": 95,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 31,
+      "syncMs": 6.499999940395355
+     },
+     "renderPipelines": {
+      "count": 19,
+      "syncMs": 0.6000000834465027
+     },
+     "computePipelines": {
+      "count": 10,
+      "syncMs": 0.19999998807907104
+     },
+     "renderPipelinesAsync": {
+      "count": 13,
+      "settled": 9,
+      "rejected": 0,
+      "totalSettleMs": 8539.400000035763
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": 1102.199999988079,
+     "lastSettleAtMs": 4362
+    },
+    "cpu": {
+     "mean": 35.108000000000004,
+     "samples": [
+      {
+       "pct": 40.52
+      },
+      {
+       "pct": 42.62
+      },
+      {
+       "pct": 55.96
+      },
+      {
+       "pct": 75.78
+      },
+      {
+       "pct": 62.9
+      },
+      {
+       "pct": 12.1
+      },
+      {
+       "pct": 15.91
+      },
+      {
+       "pct": 11.91
+      },
+      {
+       "pct": 16.94
+      },
+      {
+       "pct": 16.44
+      }
+     ]
+    }
+   },
+   {
+    "run": 0,
+    "cell": "E-W-30km-hdr",
+    "rig": "w3-ew-30km-hdr",
+    "kind": "weather-state",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": null,
+    "startup": {
+     "viewerReadyAtMs": 1553.5999999642372,
+     "stagedAtMs": 1590.3999999761581,
+     "firstFrameAtMs": 1717.8999999761581,
+     "firstCloudFrameAtMs": 4412.5,
+     "tilesLoadedAtMs": 3314.800000011921,
+     "frames": 89,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 31,
+      "syncMs": 8.699999928474426
+     },
+     "renderPipelines": {
+      "count": 19,
+      "syncMs": 0.7000001668930054
+     },
+     "computePipelines": {
+      "count": 10,
+      "syncMs": 0.20000004768371582
+     },
+     "renderPipelinesAsync": {
+      "count": 13,
+      "settled": 9,
+      "rejected": 0,
+      "totalSettleMs": 7852
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": 1171.300000011921,
+     "lastSettleAtMs": 4391.599999964237
+    },
+    "cpu": {
+     "mean": 31.264999999999997,
+     "samples": [
+      {
+       "pct": 35.77
+      },
+      {
+       "pct": 58.25
+      },
+      {
+       "pct": 46.38
+      },
+      {
+       "pct": 84.26
+      },
+      {
+       "pct": 59.27
+      },
+      {
+       "pct": 24.05
+      },
+      {
+       "pct": 8.84
+      },
+      {
+       "pct": 12.69
+      },
+      {
+       "pct": 13.46
+      },
+      {
+       "pct": 9.96
+      },
+      {
+       "pct": 10.58
+      },
+      {
+       "pct": 11.67
+      }
+     ]
+    }
+   },
+   {
+    "run": 1,
+    "cell": "E-W-ground-hdr",
+    "rig": "w3-ew-ground-hdr",
+    "kind": "weather-state",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": null,
+    "startup": {
+     "viewerReadyAtMs": 1449.9000000357628,
+     "stagedAtMs": 1501.5,
+     "firstFrameAtMs": 1620.300000011921,
+     "firstCloudFrameAtMs": 4325,
+     "tilesLoadedAtMs": 3064.5,
+     "frames": 90,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 31,
+      "syncMs": 6.099999964237213
+     },
+     "renderPipelines": {
+      "count": 19,
+      "syncMs": 0.9000000357627869
+     },
+     "computePipelines": {
+      "count": 10,
+      "syncMs": 0.40000003576278687
+     },
+     "renderPipelinesAsync": {
+      "count": 13,
+      "settled": 9,
+      "rejected": 0,
+      "totalSettleMs": 8227.200000047684
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": 1127.7000000476837,
+     "lastSettleAtMs": 4304.400000035763
+    },
+    "cpu": {
+     "mean": 35.62599999999999,
+     "samples": [
+      {
+       "pct": 39.39
+      },
+      {
+       "pct": 44.16
+      },
+      {
+       "pct": 51.66
+      },
+      {
+       "pct": 80.81
+      },
+      {
+       "pct": 57.58
+      },
+      {
+       "pct": 14.23
+      },
+      {
+       "pct": 11.11
+      },
+      {
+       "pct": 13.65
+      },
+      {
+       "pct": 15.58
+      },
+      {
+       "pct": 28.09
+      }
+     ]
+    }
+   },
+   {
+    "run": 1,
+    "cell": "E-W-30km-hdr",
+    "rig": "w3-ew-30km-hdr",
+    "kind": "weather-state",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": null,
+    "startup": {
+     "viewerReadyAtMs": 1479.300000011921,
+     "stagedAtMs": 1510.699999988079,
+     "firstFrameAtMs": 1624.5,
+     "firstCloudFrameAtMs": 4509.899999976158,
+     "tilesLoadedAtMs": 3246,
+     "frames": 97,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 31,
+      "syncMs": 6.099999904632568
+     },
+     "renderPipelines": {
+      "count": 19,
+      "syncMs": 0.5000000596046448
+     },
+     "computePipelines": {
+      "count": 10,
+      "syncMs": 0.3999999761581421
+     },
+     "renderPipelinesAsync": {
+      "count": 13,
+      "settled": 9,
+      "rejected": 0,
+      "totalSettleMs": 9219.699999988079
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": 1111.800000011921,
+     "lastSettleAtMs": 4501.300000011921
+    },
+    "cpu": {
+     "mean": 32.01692307692308,
+     "samples": [
+      {
+       "pct": 37.83
+      },
+      {
+       "pct": 56.33
+      },
+      {
+       "pct": 49.22
+      },
+      {
+       "pct": 80.69
+      },
+      {
+       "pct": 66.8
+      },
+      {
+       "pct": 19.03
+      },
+      {
+       "pct": 14.41
+      },
+      {
+       "pct": 10.58
+      },
+      {
+       "pct": 10.73
+      },
+      {
+       "pct": 10.41
+      },
+      {
+       "pct": 12.27
+      },
+      {
+       "pct": 10.44
+      },
+      {
+       "pct": 37.48
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "tip": {
+  "pages": [
+   {
+    "run": 0,
+    "cell": "E-W-ground-hdr",
+    "rig": "w3-ew-ground-hdr",
+    "kind": "weather-state",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": null,
+    "startup": {
+     "viewerReadyAtMs": 1435.8999999761581,
+     "stagedAtMs": 1473.300000011921,
+     "firstFrameAtMs": 1610,
+     "firstCloudFrameAtMs": 4395.899999976158,
+     "tilesLoadedAtMs": 3046.300000011921,
+     "frames": 95,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 31,
+      "syncMs": 6.199999928474426
+     },
+     "renderPipelines": {
+      "count": 19,
+      "syncMs": 0.7000000476837158
+     },
+     "computePipelines": {
+      "count": 10,
+      "syncMs": 0.09999996423721313
+     },
+     "renderPipelinesAsync": {
+      "count": 13,
+      "settled": 10,
+      "rejected": 0,
+      "totalSettleMs": 11369.499999821186
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": 1118.699999988079,
+     "lastSettleAtMs": 4380.800000011921
+    },
+    "cpu": {
+     "mean": 35.245999999999995,
+     "samples": [
+      {
+       "pct": 40.5
+      },
+      {
+       "pct": 41.64
+      },
+      {
+       "pct": 54.89
+      },
+      {
+       "pct": 76.05
+      },
+      {
+       "pct": 61.07
+      },
+      {
+       "pct": 17.07
+      },
+      {
+       "pct": 12.71
+      },
+      {
+       "pct": 8.21
+      },
+      {
+       "pct": 14.81
+      },
+      {
+       "pct": 25.51
+      }
+     ]
+    }
+   },
+   {
+    "run": 0,
+    "cell": "E-W-30km-hdr",
+    "rig": "w3-ew-30km-hdr",
+    "kind": "weather-state",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": null,
+    "startup": {
+     "viewerReadyAtMs": 1486.199999988079,
+     "stagedAtMs": 1515,
+     "firstFrameAtMs": 1616.5,
+     "firstCloudFrameAtMs": 4589.300000011921,
+     "tilesLoadedAtMs": 3346,
+     "frames": 96,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 31,
+      "syncMs": 6.099999785423279
+     },
+     "renderPipelines": {
+      "count": 19,
+      "syncMs": 0.5000000596046448
+     },
+     "computePipelines": {
+      "count": 10,
+      "syncMs": 0.5000001192092896
+     },
+     "renderPipelinesAsync": {
+      "count": 13,
+      "settled": 10,
+      "rejected": 0,
+      "totalSettleMs": 12322.999999940395
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": 1164.0999999642372,
+     "lastSettleAtMs": 4572
+    },
+    "cpu": {
+     "mean": 32.85615384615385,
+     "samples": [
+      {
+       "pct": 40.36
+      },
+      {
+       "pct": 53.52
+      },
+      {
+       "pct": 54.99
+      },
+      {
+       "pct": 82.43
+      },
+      {
+       "pct": 68.93
+      },
+      {
+       "pct": 23
+      },
+      {
+       "pct": 11.12
+      },
+      {
+       "pct": 10.57
+      },
+      {
+       "pct": 12.49
+      },
+      {
+       "pct": 12.7
+      },
+      {
+       "pct": 11.49
+      },
+      {
+       "pct": 11.91
+      },
+      {
+       "pct": 33.62
+      }
+     ]
+    }
+   },
+   {
+    "run": 1,
+    "cell": "E-W-ground-hdr",
+    "rig": "w3-ew-ground-hdr",
+    "kind": "weather-state",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": null,
+    "startup": {
+     "viewerReadyAtMs": 1420.5999999642372,
+     "stagedAtMs": 1444.800000011921,
+     "firstFrameAtMs": 1538.0999999642372,
+     "firstCloudFrameAtMs": 4328.199999988079,
+     "tilesLoadedAtMs": 3034,
+     "frames": 92,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 31,
+      "syncMs": 6.000000059604645
+     },
+     "renderPipelines": {
+      "count": 19,
+      "syncMs": 0.19999998807907104
+     },
+     "computePipelines": {
+      "count": 10,
+      "syncMs": 0.2999998927116394
+     },
+     "renderPipelinesAsync": {
+      "count": 13,
+      "settled": 9,
+      "rejected": 0,
+      "totalSettleMs": 8279.099999904633
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": 1105.3999999761581,
+     "lastSettleAtMs": 4308.099999964237
+    },
+    "cpu": {
+     "mean": 33.796,
+     "samples": [
+      {
+       "pct": 41.57
+      },
+      {
+       "pct": 40.76
+      },
+      {
+       "pct": 56.85
+      },
+      {
+       "pct": 74.33
+      },
+      {
+       "pct": 63.85
+      },
+      {
+       "pct": 13.46
+      },
+      {
+       "pct": 10.57
+      },
+      {
+       "pct": 5.87
+      },
+      {
+       "pct": 12.32
+      },
+      {
+       "pct": 18.38
+      }
+     ]
+    }
+   },
+   {
+    "run": 1,
+    "cell": "E-W-30km-hdr",
+    "rig": "w3-ew-30km-hdr",
+    "kind": "weather-state",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "pipelines": null,
+    "startup": {
+     "viewerReadyAtMs": 1512.1000000238419,
+     "stagedAtMs": 1539,
+     "firstFrameAtMs": 1630.5,
+     "firstCloudFrameAtMs": 4532.400000035763,
+     "tilesLoadedAtMs": 3270.699999988079,
+     "frames": 96,
+     "outcome": "done"
+    },
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 31,
+      "syncMs": 11.400000035762787
+     },
+     "renderPipelines": {
+      "count": 19,
+      "syncMs": 0.30000001192092896
+     },
+     "computePipelines": {
+      "count": 10,
+      "syncMs": 0.10000002384185791
+     },
+     "renderPipelinesAsync": {
+      "count": 13,
+      "settled": 11,
+      "rejected": 0,
+      "totalSettleMs": 14317.99999988079
+     },
+     "computePipelinesAsync": {
+      "count": 0,
+      "settled": 0,
+      "rejected": 0,
+      "totalSettleMs": 0
+     },
+     "firstCreateAtMs": 1176.199999988079,
+     "lastSettleAtMs": 4513.699999988079
+    },
+    "cpu": {
+     "mean": 30.49230769230769,
+     "samples": [
+      {
+       "pct": 39.02
+      },
+      {
+       "pct": 45.91
+      },
+      {
+       "pct": 48.94
+      },
+      {
+       "pct": 81.71
+      },
+      {
+       "pct": 61.89
+      },
+      {
+       "pct": 16.73
+      },
+      {
+       "pct": 9.59
+      },
+      {
+       "pct": 13.25
+      },
+      {
+       "pct": 16.92
+      },
+      {
+       "pct": 14.8
+      },
+      {
+       "pct": 8.4
+      },
+      {
+       "pct": 16.36
+      },
+      {
+       "pct": 22.88
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "banked": {
+  "E-W-ground-hdr|webgpu|scene": {
+   "verdict": "over",
+   "startup": {
+    "statistic": "navigationToFirstCloudFrameMs",
+    "verdict": "within",
+    "base": 4353.6500000059605,
+    "tip": 4362.049999982119,
+    "bandFraction": 0.1,
+    "bandSource": "startup-floor",
+    "limit": 4789.015000006557
+   },
+   "compile": {
+    "verdict": "over",
+    "base": 8390.650000065565,
+    "tip": 9831.049999803305,
+    "ratio": 1.171667272467149,
+    "bandFraction": 0.07580210331068285,
+    "bandSource": "repeat",
+    "baseSpread": 0.037901051655341425,
+    "limit": 9026.678918214317
+   },
+   "contention": {
+    "status": "clear",
+    "baseCpu": [
+     35.108000000000004,
+     35.62599999999999
+    ],
+    "tipCpu": [
+     35.245999999999995,
+     33.796
+    ],
+    "baseMeanCpu": 35.367,
+    "tipMeanCpu": 34.521,
+    "armDeltaPct": 0.8459999999999965,
+    "contendedCpuPct": 60,
+    "cpuArmDeltaPct": 20,
+    "contendedRunSamples": 10,
+    "sampleClause": "read",
+    "baseLongestRun": [
+     2,
+     1
+    ],
+    "tipLongestRun": [
+     2,
+     2
+    ],
+    "reasons": []
+   }
+  },
+  "E-W-30km-hdr|webgpu|scene": {
+   "verdict": "over",
+   "startup": {
+    "statistic": "navigationToFirstCloudFrameMs",
+    "verdict": "within",
+    "base": 4461.199999988079,
+    "tip": 4560.850000023842,
+    "bandFraction": 0.1,
+    "bandSource": "startup-floor",
+    "limit": 4907.3199999868875
+   },
+   "compile": {
+    "verdict": "over",
+    "base": 8544.150000035763,
+    "tip": 13329.949999928474,
+    "ratio": 1.5601259341037645,
+    "bandFraction": 0.3472829957669135,
+    "bandSource": "repeat",
+    "baseSpread": 0.17364149788345676,
+    "limit": 11511.388008330056
+   },
+   "contention": {
+    "status": "clear",
+    "baseCpu": [
+     31.264999999999997,
+     32.01692307692308
+    ],
+    "tipCpu": [
+     32.85615384615385,
+     30.49230769230769
+    ],
+    "baseMeanCpu": 31.64096153846154,
+    "tipMeanCpu": 31.67423076923077,
+    "armDeltaPct": 0.03326923076923194,
+    "contendedCpuPct": 60,
+    "cpuArmDeltaPct": 20,
+    "contendedRunSamples": 10,
+    "sampleClause": "read",
+    "baseLongestRun": [
+     1,
+     2
+    ],
+    "tipLongestRun": [
+     2,
+     2
+    ],
+    "reasons": []
+   }
+  }
+ }
+}

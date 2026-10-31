@@ -2,7 +2,7 @@
  * The pre-registered performance band the landing program's PF-1..PF-4 legs
  * are judged against: same-build repeat spread, the band it implies, and the
  * base-against-tip comparison that reads a band.
- * @purpose Pure band arithmetic for the R-2026-10-22-3 performance leg: the seat's default bands (3 % floor, 2 x repeat factor, 10 % startup band floor, 2.5 s startup ceiling read on the median of the tip repeats, 0 declared allocation), the relative spread of same-build repeats, the band fraction b = max(factor x base-arm spread, floor) (PF-3 reads the startup band floor in the floor's place), verdict objects ({within, over, unmeasured, unmeasured-contended}) for a lower-is-better statistic and for the startup ceiling rule, each carrying the band it was given, and the pre-registered machine-CPU contention guard (a run's mean CPU, the arms' mean delta, and a streak of consecutive busy samples) that turns a PF-1..PF-3 statistic read on a busy machine into unmeasured-contended.
+ * @purpose Pure band arithmetic for the R-2026-10-22-3 performance leg: the seat's default bands (3 % floor, 2 x repeat factor, 10 % startup band floor, 2.5 s startup ceiling read on the median of the tip repeats, 0 declared allocation), the relative spread of same-build repeats, the band fraction b = max(factor x base-arm spread, floor) (PF-3 reads the startup band floor in the floor's place), verdict objects ({within, over, unmeasured, unmeasured-contended}) for a lower-is-better statistic and for the startup ceiling rule, each carrying the band it was given, the PF-3 startup floor a renderer reads and its origin (startupFloorOf: the WebGL 15 % floor, a pre-registered override or the registered default), the provisional same-build compile-total floor (COMPILE_PROVISIONAL_FLOOR, 60 %, read as max(registered band, floor) and flagged on the record), and the pre-registered machine-CPU contention guard (a run's mean CPU, the arms' mean delta, and a streak of consecutive busy samples) that turns a PF-1..PF-3 statistic read on a busy machine into unmeasured-contended.
  * @status ACTIVE
  *
  * WHERE THE RULES COME FROM. `CLOUD_WATER_LANDING_PLAN_2026-10-21.md` §2.2
@@ -120,6 +120,44 @@ export function startupBandsFor(renderer, bands) {
   }
   return { ...bands, startupBandFloor: STARTUP_BAND_FLOOR_WEBGL };
 }
+
+/**
+ * The PF-3 band floor a verdict for `renderer` reads, and where it came from:
+ * `override` (the wave pre-registered `startupBandFloor`), `floor` (a WebGL
+ * arm's own {@link STARTUP_BAND_FLOOR_WEBGL}) or `registered` (the seat default).
+ * Pure.
+ *
+ * @param {string|undefined} renderer `webgl` or `webgpu`.
+ * @param {object} [bands] A wave's pre-registered overrides.
+ * @returns {{fraction: number, origin: "override"|"floor"|"registered"}}
+ */
+export function startupFloorOf(renderer, bands) {
+  const fraction = resolveBands(
+    startupBandsFor(renderer, bands),
+  ).startupBandFloor;
+  if (Object.hasOwn(bands ?? {}, "startupBandFloor")) {
+    return { fraction, origin: "override" };
+  }
+  return { fraction, origin: renderer === "webgl" ? "floor" : "registered" };
+}
+
+/**
+ * The provisional same-build floor of PF-3's compile total. `compileTotalMs`
+ * on one served build, two repeats per arm, moved +17.2 % and +56.0 % between
+ * two invocations of that build (E-W-ground-hdr and E-W-30km-hdr on WebGPU,
+ * contention clear), against repeat-derived bands of 7.6 % and 34.7 %: with two
+ * repeats an arm's band is set by whether a slow repeat happened to land in its
+ * base arm. The floor is that measured spread rounded up (the precedent of
+ * {@link STARTUP_BAND_FLOOR_WEBGL}), read as max(registered band, floor), and
+ * every record it touches carries the `provisional-floor` flag until a
+ * dedicated same-build leg replaces it with a measured spread.
+ */
+export const COMPILE_PROVISIONAL_FLOOR = Object.freeze({
+  fraction: 0.6,
+  flag: "provisional-floor",
+  source:
+    "KIT5 phase-2 item-6 arm-B same-build spread, +56.0 % on E-W-30km-hdr|webgpu, two repeats, one arm",
+});
 
 /** The verdict vocabulary. */
 export const PERF_VERDICTS = Object.freeze({
@@ -258,8 +296,15 @@ export function bandFraction({ baseRepeats, bands, startup = false } = {}) {
  * @param {object} [input.bands] Pre-registered overrides of the seat defaults.
  * @param {boolean} [input.startup] Read `startupBandFloor` as the band floor
  *   (PF-3 only; {@link ceilingVerdict} sets it).
+ * @param {{fraction: number, flag: string, source: string}} [input.provisionalFloor]
+ *   An uncalibrated same-build floor ({@link COMPILE_PROVISIONAL_FLOOR}): the
+ *   band used is max(the registered band, `fraction`), and the record carries
+ *   `provisionalFloor` with both figures and whether the floor was the larger.
  * @returns {object} `{metric, statistic, verdict, base, tip, ratio,
- *   bandFraction, bandSource, baseSpread, tipSpread, limit, bands, reasons}`.
+ *   bandFraction, bandSource, baseSpread, tipSpread, limit, bands, reasons}`;
+ *   `bandFraction` and `bandSource` (`provisional-floor` when the floor
+ *   was the larger term) are the band actually used, and `provisionalFloor`
+ *   is present only when one was given.
  */
 export function compareToBase({
   metric,
@@ -268,11 +313,22 @@ export function compareToBase({
   tipRepeats,
   bands,
   startup = false,
+  provisionalFloor = null,
 }) {
   const resolved = resolveBands(bands);
   const base = median(baseRepeats);
   const tip = median(tipRepeats);
-  const band = bandFraction({ baseRepeats, bands: resolved, startup });
+  const registered = bandFraction({ baseRepeats, bands: resolved, startup });
+  const floorApplied =
+    provisionalFloor !== null &&
+    provisionalFloor.fraction > registered.bandFraction;
+  const band = floorApplied
+    ? {
+        ...registered,
+        bandFraction: provisionalFloor.fraction,
+        source: "provisional-floor",
+      }
+    : registered;
   const record = {
     metric,
     statistic,
@@ -288,6 +344,16 @@ export function compareToBase({
     bands: resolved,
     reasons: [],
   };
+  if (provisionalFloor !== null) {
+    record.provisionalFloor = {
+      fraction: provisionalFloor.fraction,
+      flag: provisionalFloor.flag,
+      source: provisionalFloor.source,
+      registeredBandFraction: registered.bandFraction,
+      registeredBandSource: registered.source,
+      applied: floorApplied,
+    };
+  }
   if (base === null) {
     record.reasons.push("no finite base measurement");
   }

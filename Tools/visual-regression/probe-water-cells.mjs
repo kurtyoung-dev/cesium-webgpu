@@ -304,6 +304,34 @@ function gateRecord(gate, diagnostics, notRead = null) {
   };
 }
 
+/** How many of a demo page's console messages its record keeps verbatim. */
+const DEMO_CONSOLE_SAMPLE = 10;
+
+/**
+ * A demo page's console messages that are not a plain `log`, from every frame:
+ * the Sandcastle 2 shell opens its console pane on exactly these, and the pane
+ * took 167 px of one renderer's canvas before the canvas was pinned, so the
+ * record names what was logged (count per type, the first few verbatim).
+ */
+function demoConsoleRecord(diagnostics) {
+  const messages = diagnostics.console.filter(({ type }) => type !== "log");
+  const byType = {};
+  for (const { type } of messages) {
+    byType[type] = (byType[type] ?? 0) + 1;
+  }
+  return {
+    count: messages.length,
+    byType,
+    messages: messages
+      .slice(0, DEMO_CONSOLE_SAMPLE)
+      .map(({ type, text, location }) => ({
+        type,
+        text: String(text).slice(0, 300),
+        url: location?.url ?? null,
+      })),
+  };
+}
+
 /** One leg-2 page: a rig staged, settled and captured, on a fresh context. */
 async function runMaskPage({
   browser,
@@ -469,6 +497,8 @@ async function runDemoPage({
             renderer: entry.renderer,
             frames: rig.readiness.frames,
             requiresIon: rig.dials.requiresIon === true,
+            canvasSize: rig.dials.canvasSize ?? null,
+            stripChrome: rig.dials.stripChrome === true,
             ionAvailable: options.noIon === true ? false : null,
             clock: rig.clock,
             name: `${entry.cell}-${entry.renderer}-run${run}`,
@@ -500,6 +530,8 @@ async function runDemoPage({
         frameGate: result.frameGate,
         settle: result.settle,
         clock: result.clock,
+        layout: result.layout,
+        chrome: result.chrome,
         urls: result.urls,
       };
       if (result.status !== DEMO_CAPTURE_STATUS.CAPTURED) {
@@ -518,6 +550,8 @@ async function runDemoPage({
       );
       return record;
     } finally {
+      // Every demo page, captured or refused, records what it logged.
+      record.console = demoConsoleRecord(diagnostics);
       diagnostics.detach();
     }
   } finally {

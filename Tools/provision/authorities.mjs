@@ -36,6 +36,20 @@ export const PROVISION = [
   },
 ];
 
+/**
+ * Governance directories copied file by file, every regular file under `src`
+ * (recursively) to the same relative path under `dest`, each stamped like a
+ * PROVISION file. A required tree the source lacks fails the run.
+ */
+export const PROVISION_TREES = [
+  {
+    src: ".claude/skills",
+    dest: ".claude/skills",
+    required: true,
+    why: "the on-demand rules CLAUDE.md routes to and binds like itself; a clone at a HEAD older than a skill move gets a core that names a skill it lacks",
+  },
+];
+
 /** Authorities AGENTS.md routes to. A router that promises these must deliver. */
 export const ROUTED_AUTHORITIES = [
   "CLAUDE.md",

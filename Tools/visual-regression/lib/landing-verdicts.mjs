@@ -26,6 +26,7 @@ import {
   pixelDiff,
 } from "./metrics/landing-pixel-band.mjs";
 import { PERF_VERDICTS, contentionGuard } from "./metrics/perf-band.mjs";
+import { baseFrameMissing } from "./report-frame-paths.mjs";
 import { startupVerdict } from "./metrics/startup-compile.mjs";
 import {
   onmessagePositiveControlVerdict,
@@ -72,7 +73,10 @@ export function otherConsoleErrorCount(consoleErrors) {
  *
  * @param {Record<string, object>} tipArms {@link groupArms} of this run set.
  * @param {Record<string, object>} baseArms The base report's `arms`.
- * @param {object} bands Resolved bands.
+ * @param {object} bands The wave's pre-registered band overrides (the
+ *   `--bands` file's contents; `{}` for none), not a resolved set: a resolved
+ *   set carries `startupBandFloor` and so reads as a pre-registered PF-3 floor
+ *   on every renderer.
  * @param {{startupField?: string}} [options]
  * @returns {Record<string, object>} Per arm key.
  */
@@ -136,7 +140,9 @@ export function compareArms(tipArms, baseArms, bands, options = {}) {
     const baseShot = base.captures?.[0];
     const tipShot = tip.captures?.[0];
     if (baseShot && tipShot) {
-      const diff = pixelDiff(baseShot, tipShot);
+      // A banked report whose frames are gone is NOT RUN, with the path kept,
+      // not an ENOENT message in the pixel record.
+      const diff = baseFrameMissing(baseShot) ?? pixelDiff(baseShot, tipShot);
       if (!diff.measured) {
         comparison.pixels = diff;
       } else {
@@ -281,6 +287,11 @@ export function landingVerdicts(records, comparison) {
           ...(unmeasured ? { notRun: true } : {}),
           ...(arm[pf].verdict === PERF_VERDICTS.UNMEASURED_CONTENDED
             ? { unmeasured: UNMEASURED_REASONS.CONTENDED }
+            : {}),
+          // A verdict an uncalibrated floor set the band of says so where it
+          // is read, with `decided` when the floor turned it.
+          ...(arm[pf].provisionalFloor
+            ? { provisionalFloor: arm[pf].provisionalFloor }
             : {}),
         });
       }
