@@ -115,6 +115,28 @@ for 1626 and 1627 the landed round changed no engine byte, and 1628 landed the m
 Next: the Antigravity water program's re-delivery against the base clone `F:/Dev/GH/cesium-gemini-base-20261031`
 (`5e684450f1`) and its landing (`R-2026-10-30-M1`), then the W4 regeneration. Open after these landings: the rows of
 `DEFERRED_WORK.md` section "2026-10-31 — records round 4".
+*[Records round 5:]* Batch 1629 recorded this table, and the probe-kit program's round 2 followed as Batches 1630-1631 (the
+table below); no Antigravity water batch has landed by Batch 1631 (`git log`).
+
+## Landing record (2026-10-31 — Batches 1629-1631: records round 4 and the probe-kit round 2)
+
+A landing table only. Each hash and tree was read at Batch 1631 with `git log --format='%h %H %T %s' 5e684450f1..HEAD`; each
+landing log shows the `main -> main` push (1629 `salvage-night/records/landing-logs-r4/land-records-r4-1793429055.log:24`; 1630
+`kit-pieces/round2-tar-aldarion/landing-logs/land-kit2-a-1793435911.log:25`; 1631 `land-kit2-b-1793436762.log:25`). "Bank" paths
+are under `cesium-webgpu-worker-archive/lanes-2026-10-30/`; the rows are in `DEFERRED_WORK.md` section "2026-10-31 — records
+round 5", which also names the byte check. The PF leg ran on Batch 1629 itself (`kit-pieces/EDGE_RECEIPT_EOWYN_KITPF.md`); the
+kit2 leg (executor Eowyn) captured patch A on Batch 1629, and 1630 landed that patch byte-identical; 1631 is a Tools-only move
+with no Edge leg.
+
+| batch | hash (tree) | what is now true | lane lead | reviewer | bank |
+| --- | --- | --- | --- | --- | --- |
+| 1629 | `566ad99447` (`6114a4ae`) | The records carry Batches 1624-1628 with the three Edge legs that accepted them and the salvage-night Edge job before them: the landing table above, 18 new ledger ids (among them the orbital-disc moire rings, the Chukotka base-colour step and the 2D WebGPU banding), seat ruling proposal S19, and the probe-kit follow-ups. | Gildis (records round 4, rounds 4 and 4b) | Hirwen (P1 HOLDS-WITH-FIXES, applied in 4b) | `salvage-night/records/round4b/` |
+| 1630 | `fd732657b7` (`39b36a79`) | The FFT ocean's compute chain carries a GPU timestamp slot when the pass profiler is armed (inert otherwise) and the landing probe requires PF-2 to list it; `E-FFT-ifft` reads both kernels again at the rig clock + 30 s; the 2D and Columbus View identity rigs pin a whole-map camera; `--sentinel-positive-control`; every landing run writes the capture manifest `contact-sheet.mjs` reads. Edge: the ocean pass 0.131 / 0.134 ms (Stockham) against 0.331 / 0.330 ms (ping-pong), identity PASS at t = 0 and t0 + 30 s, whole-map 2D/CV frames at 0 px across arms, the control live, four sheets rendered; two findings (the WebGL PF-3 ceiling, the 2D banding widened to Columbus View). | Tar-Aldarion (patch A; workers Hathaldir, Adanel, Belen, Beor) | Arthad (P1 HOLDS-WITH-FIXES: the message's line count, applied by the seat, patch bytes unchanged); Edge Eowyn | `kit-pieces/round2-tar-aldarion/` (`kit-pieces/EDGE_RECEIPT_EOWYN_KIT2.md`) |
+| 1631 | `81dba26320` (`d317e179`) | `lib/probe-runtime.mjs` (1,340 -> 893 lines) and `probe-water-cells.mjs` (1,459 -> 681) are split by responsibility into companion pieces, every export kept and pinned by export-parity specs; no behaviour change. | Tar-Aldarion (patch B; worker Marach) | Arthad (P1 HOLDS) | `kit-pieces/round2-tar-aldarion/` |
+
+Next: the 2D/CV WebGPU banding as the next parity lane, probe-first on the pinned cells (`NEW-2D-WEBGPU-CONCENTRIC-BANDING`);
+the Antigravity water program's re-delivery against the base clone (`R-2026-10-30-M1`) and the W4 regeneration stand as in the
+table above. Open after these landings: the rows of `DEFERRED_WORK.md` section "2026-10-31 — records round 5".
 
 ---
 

@@ -25153,6 +25153,13 @@ every arm is banked (packet §6 item 4).
 `lib/capture-liveness.mjs` companion; it was not extracted because the lane's file set was fixed. Source: packet §6
 item 2; reviewer Carc agreed. Related engine question, not this row: a device replaced by recovery is not re-armed by
 the gate, so a SECOND loss is invisible to it — `C13-N70` (a public device-loss surface) is where that is answered.
+**Records round 5 (2026-10-31): the size premise no longer holds as written.** The runtime grew to 1,340 lines by Batch 1628 and
+Batch 1631 split it to 893 (`DX-KIT-DECOMPOSE-RUNTIME-WATER`). The liveness block is still in it (`pageReadCaptureLiveness`,
+`decideCaptureLiveness` and `throwIfDeviceLost` at `lib/probe-runtime.mjs:308-376`) because `probe-runtime.spec.mjs` and
+`capture-device-loss-refusal.spec.mjs` mutate anchors in the runtime's own source (`importMutated`, `probe-runtime.spec.mjs:104-108`;
+`capture-device-loss-refusal.spec.mjs:44` and `:94`). Extracting it, and shrinking the runtime below about 700 lines, waits on
+repointing those anchors (worker Marach's finding,
+`cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/round2-tar-aldarion/LANDING_PACKET_TAR-ALDARION.md`). Status unchanged.
 
 ### Lane W2-L11 (Angrim, rounds 1-5; Arod, round 6): the url and credential rows — Batch 1542
 
@@ -31464,7 +31471,7 @@ the cell `E-M-water`. The reviewer's minor m2 stands: the dial's read-back mutan
 **Source:** `lanes-2026-10-30/water-w2b-w3-review/REVIEW_AELUIN_W4B.md`; the salvage bank's
 `mering/round2/LANDING_PACKET_MERING.md:84-94` and `mering/round2/REVIEW_FIRIEN_P2.md:40-42`.
 
-### C6-FFT-OCEAN-STOCKHAM-IFFT — the FFT ocean's inverse FFT runs as two shared-memory Stockham dispatches behind an `ifftKernel` toggle — **LANDED** (Batch 1622, `9ac404eb46`; Edge readback identity PASSED 2026-10-31 at simulationSeconds 0; PF leg owed)
+### C6-FFT-OCEAN-STOCKHAM-IFFT — the FFT ocean's inverse FFT runs as two shared-memory Stockham dispatches behind an `ifftKernel` toggle — **LANDED** (Batch 1622, `9ac404eb46`; Edge readback identity PASSED 2026-10-31 at simulationSeconds 0 and 30; GPU cost measured 2026-10-31: Stockham 0.13 ms, ping-pong 0.33 ms)
 
 Salvage lane E (Hornburg, reviewer Dolbaran P4 HOLDS) from the Antigravity wave w6a (`REVIEW_RERIR_W6A.md`). The inverse FFT
 runs as two shared-memory Stockham dispatches (`OceanStockhamIFFT.wgsl`, 256-lane workgroups, 8 stages in 8,192 B of
@@ -31487,6 +31494,19 @@ the facade and the primitive). The identity is measured at `simulationSeconds` 0
 kernels, which needs a quiet-machine PF leg (`DX-KIT-E-FFT-PF-LEG`). **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/EDGE_RECEIPT_EOWYN_KIT.md` (section 1 cell 3; section 2 "Readback
 state", "Kernel dial", "simulationSeconds"; section 3 finding 3).
+**Cost and evolved identity measured (records round 5).** Two more Edge legs (executor Eowyn) ran cell `E-FFT-ifft` with its
+PF windows. On Batch 1629 (`566ad99447`, 02:57 EDT, CPU launch guard cleared at a 60-sample mean of 11.1 %) PF-1 and PF-2 could
+not separate the kernels: frame means 54.76 / 53.40 ms (Stockham) against 54.33 / 55.39 ms (ping-pong), a 0.78 ms difference
+below either kernel's run-to-run spread (1.36 / 1.07 ms), and PF-2 listed no ocean pass because the chain's compute pass took
+no timestamp slot (`DX-OCEAN-COMPUTE-PASS-TIMESTAMP`, records round 5). Batch 1630 (`fd732657b7`) gave the pass one; on Batch
+1629 plus that patch (04:28 EDT, guard mean 8.3 %) PF-2 times "Ocean FFT single-pass compute chain" at 0.131 / 0.134 ms GPU for
+Stockham against 0.331 / 0.330 ms for ping-pong (about 2.5x, run-to-run spread 0.003 ms or less), so Batch 1622's "two
+dispatches instead of 32 passes" cost claim is now measured on the test machine; the gap stays inside PF-1's noise (53.82-55.38
+ms frames). The t = 0 identity read the same hash as both earlier legs (`89f3af76…`), and the new evolved readback at t0 + 30 s
+PASSES on both runs (both kernels hash `c8982755…`, maxAbsDelta 0, 0 differing values; the field moved, min/max -20.55/17.63
+against -19.17/21.53 at t0; the clock restored to 16:00:00Z before the PF window). The default stays `"stockham"`.
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/EDGE_RECEIPT_EOWYN_KITPF.md:12-13`, `:30-49` and
+`kit-pieces/EDGE_RECEIPT_EOWYN_KIT2.md:13`, `:20-47`.
 
 ### NEW-FFT-OCEAN-REINIT-LEAK — an FFT-ocean re-initialisation re-creates its textures and buffers without destroying the old set — **OPEN** (engine, opt-in FFT ocean)
 
@@ -31892,6 +31912,25 @@ answered), `DX-SEAT-WORKTREE-FOREIGN-WIP` (closed). The rows below are new.
 - **Acceptance:** a measured mechanism on `E-ID-2d` and `E-ID-cv` once the rigs pin a 2D / CV camera, then WebGPU within the
   cell's WebGL band. Class: engine (parity). **Suggested owner:** a 2D/CV parity lane, probe-first.
 - **Source:** the kit receipt, section 3 finding 1 and section 4 (`<R>/E-ID-armA/`); the seat's addendum (as above).
+- **Widened to Columbus View: the first pinned capture (records round 5).** Batch 1630 pinned whole-map cameras on both rigs
+  (`DX-KIT-2D-CV-RIG-PINNED-CAMERA`, closed), and the kit2 Edge leg captured both modes on Batch 1629 plus that patch (WebGPU
+  against WebGL, same run, run 0):
+  - 2D: 87.2 % of pixels differ, 30.7 % by more than 16; max channel delta 48, mean 13.9. WebGPU draws a rounded square of
+    concentric rings centred on (0, 0), about x 350-930 and y 60-650, brightened and greyed (centre 5,11,42 against 0,0,21).
+  - Columbus View, the same artefact and much stronger: 87.6 % differ, 73.3 % by more than 16; max delta 173, mean 66.6. A large
+    central rounded square of bands covers most of the map, with banded arcs reaching its top, bottom and side edges (top edge
+    (640, 44) 60,98,207 against 0,0,127). The seat read `E-ID-cv-tip/E-ID-cv-webgpu-run0.png`: concentric rings around the
+    centre with a bright-to-dark gradient inside and near-black side margins, where WebGL draws a flat map.
+  - Base-colour offset, tracked as its own measurement in this row: outside the rings WebGPU's base colour is brighter in both
+    modes, day 0,0,137 against 0,0,127 and night 0,0,24 against 0,0,19 in 2D; day 0,0,161 against 0,0,127 and night 0,0,35
+    against 0,0,19 in Columbus View.
+  - Deterministic: 0 px across runs and arms on both renderers, so the identity cells pass. WebGL in both modes is a plain blue
+    map with a soft day/night terminator and no rings.
+  - The frames are now the pinned whole map, so the acceptance above can run as written. **Suggested owner:** a 2D/CV parity
+    lane, probe-first on `E-ID-2d` and `E-ID-cv`.
+  - **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/EDGE_RECEIPT_EOWYN_KIT2.md:54-76` and `:111-115`
+    (evidence `Tools/visual-regression/output/wave-end/kit2-20261031/E-ID-{2d,cv}-tip/`); the seat's addendum
+    (`salvage-night/rows-for-records-r2-addendum.md:135-140`).
 
 ### DX-KIT-IDENTITY-WAIT-PIPELINES — identity cells captured with pipelines pending — **CLOSED** (Batch 1628, `5e684450f1`)
 
@@ -31966,13 +32005,25 @@ assignment and FAILS as it must. Residual, recorded by the reviewer and the exec
 staging, so a module that loads lazily later is not covered. **Source:** the kit receipt, section 2 "Sentinel" and "Positive
 control"; spec `onmessage-sentinel.spec.mjs` (17 tests).
 
-### DX-KIT-CONTACT-SHEET-MANIFEST — `contact-sheet.mjs` reads a capture-seam manifest that no landing or water probe emits — **OPEN** (probe kit)
+### DX-KIT-CONTACT-SHEET-MANIFEST — `contact-sheet.mjs` reads a capture-seam manifest that no landing or water probe emits — **CLOSED for the landing probe** (Batch 1630, `fd732657b7`; the water half is `DX-KIT-WATER-CELLS-CAPTURE-MANIFEST`)
 
 The salvage job produced no contact sheet: `contact-sheet.mjs` reads only a capture-seam manifest and none of the probes it ran
 emits one, so crops were banked instead (salvage receipt section 3 item 8). For the same reason the lane A contact sheet of
 `ocean-fft-patch-rebase`, the seven `water-bookmark-*` rigs and `water-bathymetry-offline{,-off}` was not made, and the
 `water-bookmark-sunset-glint` sun-in-frame check is still owed (item 7). **Repair:** the landing and water probes emit the
 manifest (kit first). **Suggested owner:** the seat's kit work.
+**Closed for the landing probe (records round 5).** Batch 1630 adds `lib/landing-capture-manifest.mjs`: every
+`probe-landing-cells` run writes `capture-manifest.json` beside its report, in the shape `lib/capture.mjs` validates and
+`contact-sheet.mjs` reads. AFTER is the run's captures; BEFORE is the `--base-report`'s captures, copied after a sha256 check, or
+UNMEASURED with the reason; a pair with both slots carries pair metrics and a DIFF.png; a manifest that would not validate is
+refused, not written. On the kit2 Edge leg every report had its manifest (`written: true`, no violations) and
+`contact-sheet.mjs --manifest` rendered all four groups (`E-FFT-ifft`, `E-ID-2d-tip`, `E-ID-cv-tip`, `E-ID-control`; the two tip
+sheets with BEFORE, AFTER and DIFF), so rig `ocean-fft-patch-rebase` now has a sheet through `E-FFT-ifft`. Still open, carried
+to `DX-KIT-WATER-CELLS-CAPTURE-MANIFEST` (records round 5): the water probes emit no manifest, so the sheets of the
+`water-bookmark-*` and `water-bathymetry-offline{,-off}` rigs and the `water-bookmark-sunset-glint` sun-in-frame check are still
+owed. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/EDGE_RECEIPT_EOWYN_KIT2.md:88-96`;
+`kit-pieces/round2-tar-aldarion/LANDING_PACKET_TAR-ALDARION.md` (A4b); reviewer `round2-tar-aldarion/REVIEW_ARTHAD_P1.md:1`
+(patch A, HOLDS-WITH-FIXES; the one fix was in the message).
 
 ### DX-PROBE-CLOCK-PIN — the weather probes have no clock pin, so the W3 remainder cannot run at night — **OPEN** (probe kit)
 
@@ -31981,37 +32032,87 @@ of the weather-map-off view) are still owed: the probes take no clock pin, the s
 view), and the BEFORE arm `6b3b80f644` has no banked build (salvage receipt section 3 item 9). Rows
 `NEW-CLOUD-W3-WEATHER-PROBES-LEG-OWED` and `NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY` wait on it. **Repair:** a clock-pin dial or
 flag for the weather probes (kit first), then the leg in a daylight window. **Suggested owner:** the seat's kit work.
+**Sized (records round 5), still OPEN:** the round-2 kit packet's assessment (worker Marach): one `lib/clock-pin.mjs` helper
+(about 30 lines, over `clock-steps`' `pageSetClock`, `lib/clock-steps.mjs:25`) plus a `--clock <ISO>` flag in
+`probe-weather-map.mjs` (after the viewer wait, `:203-205` at Batch 1631) and `probe-weather-ingest.mjs` (after the navigation,
+`:511`), about 120 lines with specs; the seat picks the daylight instant. Batch 1630's evolved FFT read already sets the
+frozen clock through the same `pageSetClock`. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/round2-tar-aldarion/LANDING_PACKET_TAR-ALDARION.md`
+("Unverified, owed, DX rows").
 
-### DX-KIT-2D-CV-RIG-PINNED-CAMERA — the pinned 2D / Columbus View rigs carry no camera — **OPEN** (probe kit)
+### DX-KIT-2D-CV-RIG-PINNED-CAMERA — the pinned 2D / Columbus View rigs carry no camera — **CLOSED** (Batch 1630, `fd732657b7`)
 
 `default-2d-pinned` and `default-columbus-pinned` deliberately keep `camera: null`, so after the morph the frames show a zoomed-in
 map edge with black off-map margins (2D: 24 px at the top; CV: 122 px left and 68 px top) and exercise little of the 2D/CV
 path. **Repair:** pin a camera that shows the whole 2D / CV globe (a seat ruling: the rigs' null camera was deliberate).
 **Source:** the kit receipt, section 3 finding 1; `Tools/visual-regression/rigs/default-2d-pinned.mjs`.
+**Closed (records round 5).** Batch 1630 pins a top-down camera on the map centre (lon 0, lat 0) in both rigs: 40,500,000 m in
+2D (`rigs/default-2d-pinned.mjs:60`) and 35,000,000 m in Columbus View (`rigs/default-columbus-pinned.mjs:63`), the framing
+arithmetic in each rig's header; the stage sets it after the morph. The rigs are not centred on `default-3d-pinned`'s
+(-82.5, 35) as first briefed: that view needs about 49,500 km (2D) and 50,600 km (Columbus View) and leaves hundreds of black
+pixels, so the two asks could not both hold (the lead's deviation, re-derived by the reviewer). On Edge the camera read back
+lon 0, lat 0 at both heights, applied, with the Columbus View height not clamped, and both renderers show the whole map: 2D
+x 6/7-1273, y 43-676; Columbus View x 5-1274, y 42-677 (the rigs predict 6.7 / 43.4 and 5.4 / 42.7 px). Banked Batch 1628
+`E-ID-*` reports are not a base for the new framing. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/EDGE_RECEIPT_EOWYN_KIT2.md:54-65`;
+`kit-pieces/round2-tar-aldarion/REVIEW_ARTHAD_P1.md` ("A2"); the packet (A2).
 
-### DX-KIT-FFT-IDENTITY-EVOLVED-EPOCH — the kernel identity is measured at wave time 0 only — **OPEN** (probe kit)
+### DX-KIT-FFT-IDENTITY-EVOLVED-EPOCH — the kernel identity is measured at wave time 0 only — **CLOSED** (Batch 1630, `fd732657b7`)
 
 `E-FFT-ifft` read both kernels at `simulationSeconds` 0, where the dispersion phase factor is 1, so it checks the transform of
 the initial spectrum, not a time-evolved one. **Repair:** a second readback at a later pinned clock. **Source:** the kit receipt,
 section 3 finding 3.
+**Closed (records round 5).** Batch 1630 reads each kernel's field a second time: the page sets the frozen clock to the rig
+clock + 30 s through `clock-steps`' `pageSetClock` (`OCEAN_EVOLVED_ADVANCE_SECONDS`, `lib/ocean-displacement-readback.mjs:522`),
+reads, and restores the clock before the PF window. Verdict `ifft-kernel-identity-evolved` sits beside the t = 0 one and reads
+NOT RUN, never PASS, when the advance is not exact, a field did not move, or its hash did not change. On Edge it PASSED in both
+runs: `simulationSeconds` 30 on every page, both kernels hash `c8982755…` (unlike the t = 0 `89f3af76…`), maxAbsDelta 0, 0
+differing values; evolved clock 16:00:30Z, restored 16:00:00Z; PF-1's first frames show no refresh spike.
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/EDGE_RECEIPT_EOWYN_KIT2.md:37-47`; reviewer
+`kit-pieces/round2-tar-aldarion/REVIEW_ARTHAD_P1.md` ("A3").
 
-### DX-KIT-SENTINEL-POSITIVE-CONTROL — the onmessage sentinel's positive control is an executor helper — **OPEN** (probe kit)
+### DX-KIT-SENTINEL-POSITIVE-CONTROL — the onmessage sentinel's positive control is an executor helper — **CLOSED** (Batch 1630, `fd732657b7`)
 
 The executor wrote the positive control as `_lane-out/_executor/onmessage-positive-control.mjs` on the shared runtime; the kit
 has no switch for it. **Repair:** a kit switch that runs the control. **Source:** the kit receipt, non-finding notes.
+**Closed (records round 5).** Batch 1630 adds `--sentinel-positive-control` to `probe-landing-cells.mjs`: at the end of the first
+identity page of each run it assigns a named handler to `window.onmessage` and reads the sentinel again, judged by its own
+verdict `onmessage-positive-control` (a run whose control page never got there reads NOT RUN; the flag is refused when no
+identity cell is requested). On Edge (`E-ID-2d,E-ID-cv`, 2 runs, exit 0, 26 verdicts PASS) the control appeared once per run on
+the designated page and passed (`changed: true`, 1 assignment, the control handler's name), `onmessage-unchanged` stayed PASS on
+every page including the designated one (its read comes first), and the captures were byte-identical to the runs without the
+switch. The read-once residual is its own row, `DX-KIT-SENTINEL-READ-ONCE` (records round 5). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/EDGE_RECEIPT_EOWYN_KIT2.md:78-86`; `round2-tar-aldarion/REVIEW_ARTHAD_P1.md` ("A4").
 
-### DX-KIT-E-FFT-PF-LEG — the PF-1 / PF-2 leg of `E-FFT-ifft` is owed — **OPEN** (probe kit, performance)
+### DX-KIT-E-FFT-PF-LEG — the PF-1 / PF-2 leg of `E-FFT-ifft` is owed — **CLOSED: measured** (Edge leg 2026-10-31 02:57 EDT on Batch 1629)
 
 The kit leg ran `E-FFT-ifft` with `--no-cell-perf` (machine contended by a landing; every PF-3 read `unmeasured-contended`), so
 per-pass GPU and frame time for the two kernels are unmeasured. **Repair:** run the cell's PF leg in a quiet-machine window.
 **Source:** the kit receipt, section 0 and section 2 "Order and PF".
+**Closed: measured (records round 5).** The leg ran on Batch 1629 (`566ad99447`, clean tree) under the CPU launch guard (cleared
+after 97 s, window mean 11.1 %): `E-FFT-ifft` without `--no-cell-perf`, 2 runs, exit 0, 0 pipelines pending at capture, 0 device
+loss. Identity PASS again (`89f3af76…`, maxAbsDelta 0). PF-1 frame means 54.76 / 53.40 ms (Stockham) and 54.33 / 55.39 ms
+(ping-pong), p95 about 62 ms on both; PF-2 profiled frame 38.18 / 37.35 against 37.71 / 37.53 ms. The kernel difference (0.78 ms)
+is below either kernel's run-to-run spread (1.07-1.36 ms), so PF-1 and PF-2 do not separate the kernels, and PF-2 listed no ocean
+pass; the leg's two findings are `DX-OCEAN-COMPUTE-PASS-TIMESTAMP` (closed by Batch 1630, whose leg measured the kernel cost in
+`C6-FFT-OCEAN-STOCKHAM-IFFT`) and `NEW-OCEAN-FFT-RIG-GPU-HEAVY` (both records round 5). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/EDGE_RECEIPT_EOWYN_KITPF.md:5-67` (evidence
+`Tools/visual-regression/output/wave-end/kit-pf-20261031/`).
 
-### DX-KIT-DECOMPOSE-RUNTIME-WATER — two kit files are over the 1,000-line rule — **OPEN** (DX row, file size)
+### DX-KIT-DECOMPOSE-RUNTIME-WATER — two kit files are over the 1,000-line rule — **CLOSED** (Batch 1631, `81dba26320`)
 
 At Batch 1628 `Tools/visual-regression/lib/probe-runtime.mjs` is 1,340 lines and `Tools/visual-regression/probe-water-cells.mjs`
 1,459 (`wc -l` at the tip); Batch 1628 added a minimal hunk to each without decomposing (the packet's "Over 1000 lines" note).
 The same batch did split `probe-landing-cells.mjs`, moving its cell table to `lib/landing-cell-table.mjs` (993 lines remain).
 **Repair:** decompose both by responsibility, each piece with its spec. **Suggested owner:** the queued WAVE DX.
+**Closed (records round 5).** Batch 1631 is a pure move. `lib/probe-runtime.mjs` goes from 1,340 to 893 lines with four new
+companions (`probe-runtime-args.mjs` 142, `probe-runtime-decisions.mjs` 119, `probe-runtime-browser.mjs` 77,
+`probe-runtime-receipts.mjs` 210), and `probe-water-cells.mjs` from 1,459 to 681 with `lib/water-cell-table.mjs` 262 and
+`lib/water-cell-verdicts.mjs` 596 (`wc -l` at Batch 1631). All 40 and 17 exports are re-exported and pinned by the new specs
+`probe-runtime-exports.spec.mjs` and `probe-water-cells-exports.spec.mjs`; the reviewer found every top-level declaration of both
+base files byte-identical in the new modules, and the existing specs pass unedited. There is no Edge leg: a Tools-only move with
+no behaviour change (proof bar `R-2026-08-29-1`). The liveness block, `captureElement` and `runProbe` stay in the runtime because
+specs mutate anchors in its own source (`DX-TOOLS-PROBE-RUNTIME-LIVENESS-BLOCK-DECOMPOSITION`, note added). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/round2-tar-aldarion/LANDING_PACKET_TAR-ALDARION.md` (patch B);
+reviewer `round2-tar-aldarion/REVIEW_ARTHAD_P1.md:2` (patch B, HOLDS) and its section "B1 / B2".
 
 ### Notes on rulings, decisions and seat notes (no new ids)
 
@@ -32036,3 +32137,129 @@ The same batch did split `probe-landing-cells.mjs`, moving its cell table to `li
   `SEAT_TO_ANTIGRAVITY_2026-10-31.md` name the base clone `F:/Dev/GH/cesium-gemini-base-20261031` at `5e684450f1` (Batch 1628),
   with a seat note on Batches 1626-1628 (`lanes-2026-10-30/gemini-fix-list/SEAT_TO_ANTIGRAVITY_2026-10-31.md:72-75`,
   `LANDING_PACKET_AXANTUR.md:28-29`, `REVIEW_VARDILME_P1.md:1`).
+
+## 2026-10-31 — records round 5: Batches 1629-1631 and the probe-kit round-2 Edge legs
+
+On 2026-10-31 (02:49-05:05 EDT) three batches landed: 1629 (records round 4, lead Gildis, reviewer Hirwen P1
+HOLDS-WITH-FIXES, applied in round 4b), and 1630 and 1631, the probe-kit program's round 2 (lane Tar-Aldarion, Opus lead, with
+Sonnet workers Hathaldir, Adanel, Belen and Beor on patch A, the kit features, and Marach on patch B, the decompositions;
+reviewer Arthad, P1: patch A HOLDS-WITH-FIXES, the one REQUIRED fix a line count in the message (906 -> 909), applied by the
+seat with the patch bytes unchanged; patch B HOLDS). Their landing table is `WEBGPU_MIGRATION_STATUS.md` "Landing record
+(2026-10-31 — Batches 1629-1631 …)". The seat's Edge executor Eowyn ran two legs: the `E-FFT-ifft` PF leg on Batch 1629
+(`cesium-webgpu-worker-archive/lanes-2026-10-30/kit-pieces/EDGE_RECEIPT_EOWYN_KITPF.md`, 02:54-03:00 EDT, "the PF receipt"
+below) and the kit2 leg on Batch 1629 plus patch A (`kit-pieces/EDGE_RECEIPT_EOWYN_KIT2.md`, 04:25-04:37 EDT, "the kit2
+receipt"; evidence `Tools/visual-regression/output/wave-end/kit2-20261031/` in the seat's output). The kit2 leg measured the
+patch that landed: patch A (md5 `0b604964d47aced4d16d61a8f911d615`, `round2-tar-aldarion/FREEZE_TAR-ALDARION-A.md5:1`) was
+frozen at 04:02, before the leg's 04:05 build, and not changed by the review; Batch 1630's landing log reports the landed patch
+byte-identical to it (`round2-tar-aldarion/landing-logs/land-kit2-a-1793435911.log:5`, `:9`). Re-measured by this round:
+applying the banked patches to `566ad99447` in a temp index gives the trees `9e483176f0` (A) and `a1dd2ab4b0` (A + B), the
+reviewer's, which differ from Batches 1630 and 1631 only in `package.json` (the seat's runner homes) and
+`migration_doc/TOOLING_CATALOG.md`. Batch 1631 had no Edge leg (a Tools-only move). Rows updated in place by this round:
+`C6-FFT-OCEAN-STOCKHAM-IFFT` (kernel cost and evolved identity measured), `NEW-2D-WEBGPU-CONCENTRIC-BANDING` (widened to
+Columbus View), `DX-KIT-CONTACT-SHEET-MANIFEST` (closed for the landing probe), `DX-KIT-2D-CV-RIG-PINNED-CAMERA`,
+`DX-KIT-FFT-IDENTITY-EVOLVED-EPOCH`, `DX-KIT-SENTINEL-POSITIVE-CONTROL`, `DX-KIT-E-FFT-PF-LEG` and `DX-KIT-DECOMPOSE-RUNTIME-WATER`
+(closed), `DX-PROBE-CLOCK-PIN` (sized, open) and `DX-TOOLS-PROBE-RUNTIME-LIVENESS-BLOCK-DECOMPOSITION` (a note). The rows below
+are new; the last seven are the lane packet's owed DX rows and the reviewer's notes N1-N4 and N6 (the packet's "DX rows to
+file"; `round2-tar-aldarion/REVIEW_ARTHAD_P1.md`, "NOTES"; N5, a line count in the packet, needs no row).
+
+### DX-OCEAN-COMPUTE-PASS-TIMESTAMP — the FFT ocean's compute chain ran outside PF-2's timed passes — **CLOSED** (Batch 1630, `fd732657b7`)
+
+- **Found** by the PF leg on Batch 1629: no ocean pass appeared in PF-2's pass list on any page. The renderer opened the "Ocean
+  FFT single-pass compute chain" with `beginComputePass` and no `timestampWrites`, so Batch 1622's cost claim could not be
+  measured. The executor's placement of the pass before the first timed pass was an inference from encode order, not a
+  measurement (the PF receipt, `:51-64`).
+- **Closed by Batch 1630:** the ocean's one compute pass opens through `context.withComputePassTimestamps` (the route the
+  dynamic environment map, auto-exposure and IBL take; the performance manager's own `getComputePassTimestampWrites` callers are
+  internal), with a frozen module descriptor and the label unchanged (`WebGPUOceanRenderer.ts:429-430`, `:648-649`). With the
+  profiler off the same object is handed over every frame with no timestamp writes. The landing cell names the label as its
+  `perfPass` (`lib/landing-cell-table.mjs:42`, `:148`) and verdict `perf-pass-timed` fails when a PF-2 window that ran does not
+  list it. WebGL has no compute chain, so there is no parity twin (Principle 5's GPU-API-specific exemption).
+- **Measured:** on the kit2 leg PF-2 listed the pass on all four kernel pages and `perf-pass-timed` passed (the costs are in
+  `C6-FFT-OCEAN-STOCKHAM-IFFT`); the t = 0 hash is unchanged, so the instrumentation did not alter the chain.
+- **PF-2 is not like for like across Batch 1630:** the ocean pass is now the first timed pass, so PF-2's
+  `between-first-and-last-timed-pass` window widened (frame 37.44-38.75 against 37.35-38.18 ms, unprofiled 3.09-3.15 against
+  2.89-2.95 ms). That is instrumentation, not a regression; compare PF-2 on trees on the same side of 1630.
+- **Source:** the PF receipt `:41-64`; the kit2 receipt `:20-39`; reviewer `round2-tar-aldarion/REVIEW_ARTHAD_P1.md` ("A1",
+  and "What the Edge leg must watch" item 2); the seat's addendum (`salvage-night/rows-for-records-r2-addendum.md:106-110`,
+  `:115-117`).
+
+### DX-KIT-PF3-STARTUP-CEILING-WEBGL — PF-3's fixed 2,000 ms startup ceiling fails same-build WebGL arms — **OPEN** (probe kit; a seat/kit decision)
+
+- **Symptom:** on the kit2 leg both arms of `E-ID-2d` and of `E-ID-cv` ran the same build, yet each tip arm exited 1 on the WebGL
+  PF-3 verdict alone ("a tip repeat took 2035.7 ms (2D) / 2224 ms (CV), not under the 2000 ms ceiling"). Pixels, stage,
+  sentinel and device loss were all green, and WebGPU PF-3 passed.
+- **Measured:** WebGL navigation-to-first-frame on the test machine is 1,950-2,224 ms (base arm 1,984.6 / 2,010.6 in 2D and
+  1,955 / 2,020.5 in Columbus View; tip arm 1,963 / 2,035.7 and 2,224 / 1,950), with arm CPU at 25-28 %, so the base arm crosses
+  the ceiling too. The ceiling is the fixed band `startupCeilingMs: 2000` (`Tools/visual-regression/lib/metrics/perf-band.mjs:62`).
+- **Repair:** re-size the ceiling for the identity cells, or register bands with `--bands` per wave. No code was written.
+- **Related, not merged:** `NEW-WATER-STARTUP-COST` measures a WebGL startup delta on rig E-D; this row is the band itself.
+- **Source:** the kit2 receipt `:54-57`, `:98-110`; the seat's addendum (`:130-133`).
+
+### NEW-OCEAN-FFT-RIG-GPU-HEAVY — the FFT-ocean rig's frame is GPU-heavy — **OPEN** (observation; no baseline)
+
+On rig `ocean-fft-patch-rebase` (cell `E-FFT-ifft`: the open-Pacific near-surface FFT sea at 35 m, with the global water mask
+and the enhanced ocean on) the Scene Framebuffer Render Pass takes 33.4-34.2 ms of GPU time per frame and a PF-1 frame about
+54 ms (about 18 fps), on both kernels (Batch 1629); on Batch 1629 plus patch A it reads 33.2-34.3 ms with PF-1 frames of
+53.8-55.4 ms. The inverse-FFT chain is 0.13-0.33 ms of that. Recorded as measured: there is no baseline, so no regression is
+claimed. **Suggested next step:** a breakdown inside the scene pass and a same-rig baseline with the FFT ocean off, before
+anyone calls it a defect. **Source:** the PF receipt `:41-49`, `:65-67`; the kit2 receipt `:21-30`, `:50`; the seat's addendum
+(`:111-112`).
+
+### DX-KIT-WATER-CELLS-CAPTURE-MANIFEST — the water probes emit no capture-seam manifest — **OPEN** (probe kit)
+
+The water half of `DX-KIT-CONTACT-SHEET-MANIFEST`: Batch 1630 made `probe-landing-cells` write `capture-manifest.json`, but
+none of `probe-water-cells.mjs` (with its pieces `lib/water-cell-table.mjs` and `lib/water-cell-verdicts.mjs`),
+`probe-fft-ocean.mjs` or `probe-ssr-water.mjs` writes one (no `capture-manifest` or `buildCaptureManifest` in any of them at
+Batch 1631), so `contact-sheet.mjs` cannot sheet a water run. Carried from that row: the sheets of the `water-bookmark-*` and
+`water-bathymetry-offline{,-off}` rigs and the `water-bookmark-sunset-glint` sun-in-frame check. **Repair:** the water probes
+write their manifests in the shape `lib/landing-capture-manifest.mjs` uses (kit first). **Suggested owner:** the seat's kit
+work. **Source:** `kit-pieces/round2-tar-aldarion/LANDING_PACKET_TAR-ALDARION.md` ("DX rows to file"); the reviewer's N7.
+
+### DX-KIT-CAPTURE-SEAM-OVER-SIZE — `lib/capture.mjs` is 2,265 lines — **OPEN** (DX row, file size)
+
+`Tools/visual-regression/lib/capture.mjs` (the capture seam: rig page and origin resolution, capture descriptors and
+refusals, cell and pair metrics, the manifest builder and validator, readiness polling) is 2,265 lines at Batch 1631 (`wc -l`),
+over the 1,000-line rule; round 2 left it out of scope. **Repair:** decompose by responsibility with an export-parity spec, as
+Batch 1631 did for the runtime. **Suggested owner:** the queued WAVE DX. **Source:** the packet ("DX rows to file"); the
+reviewer's N7.
+
+### DX-KIT-LANDING-SPECS-OVER-SIZE — two landing specs are over 2,000 lines and pin the probe's text by source anchors — **OPEN** (DX row, file size)
+
+`landing-cell-stage.spec.mjs` is 2,077 lines and `probe-landing-cells.spec.mjs` 2,420 (`wc -l` at Batch 1631; the latter came
+down from 2,603 when Batch 1630 moved its fake browser to `lib/landing-fake-browser.mjs`). Their source-anchored mutants pin the
+text of the probe and the stage, so code gets shaped around them: Batch 1630's `EVOLVED_READ` (`probe-landing-cells.mjs:245`,
+spread at `:455`) exists partly so an existing anchor (`includeValues: true,`) stays unique (reviewer note N4). **Repair:** split
+the specs by concern, and move the mutants from text anchors to injected seams so the probe can change shape without a spec
+edit. **Suggested owner:** WAVE DX. **Source:** the packet ("DX rows to file"); the reviewer's N4 and N7.
+
+### DX-KIT-LANDING-MANIFEST-SHA-SKIP — a BEFORE image without a recorded sha256 is copied unchecked — **OPEN** (probe kit; reviewer note N1)
+
+`lib/landing-capture-manifest.mjs:216` checks a BEFORE image's digest only when the base report's capture record carries one
+(`record.sha256 !== undefined && …`), so a record without `sha256` is copied unchecked, while the piece's header says every
+image is checked (`:34`) and Batch 1630's message says "after a sha256 check". Landing captures have carried `sha256` since
+before Batch 1629, so the exposure is old or foreign base reports. **Repair:** read such a slot UNMEASURED with the reason, or
+require the field. **Source:** `round2-tar-aldarion/REVIEW_ARTHAD_P1.md` (N1).
+
+### DX-KIT-LANDING-MANIFEST-BEFORE-ORIGIN-PLACEHOLDER — the BEFORE origin falls back to a placeholder — **OPEN** (probe kit; reviewer note N2)
+
+With no `--base-report`, or a base report without an origin, the manifest's `origins.BEFORE` is the constant
+`UNRECORDED_ORIGIN` ("unrecorded (the base report carries no origin)", `lib/landing-capture-manifest.mjs:108-110`). It passes
+the validator (a non-empty string), but `lib/capture.mjs:438` makes origins "required, verbatim, never defaulted", and the
+wording is wrong when there is no base report at all. **Repair:** name the actual case (`no --base-report`) and record the
+deviation beside the seam rule. **Source:** `round2-tar-aldarion/REVIEW_ARTHAD_P1.md` (N2).
+
+### DX-KIT-RUNTIME-REPORT-NAME-EXPORT — the runtime's report file name is spelled in two places — **OPEN** (probe kit; reviewer note N3)
+
+`runtimeReportFileName` (`lib/landing-capture-manifest.mjs:101-102`) re-spells the runtime's `${descriptor.name}-report.json`
+(`lib/probe-runtime.mjs:839`), so the two can drift. The packet's runtime-residency "catch" was the scan reacting to the probe
+spelling `-report.json`; the probe never wrote a receipt, so it was a text-shape false positive routed around, not a defect
+fixed (reviewer). **Repair:** one runtime export (for example `reportFileNameFor(descriptor)`) imported by the manifest piece.
+**Source:** `round2-tar-aldarion/REVIEW_ARTHAD_P1.md` (N3); the packet's "real catch" paragraph.
+
+### DX-KIT-SENTINEL-READ-ONCE — the onmessage sentinel is read once, before staging — **OPEN** (probe kit; reviewer residual N6)
+
+`probe-landing-cells.mjs:355` reads the sentinel once, right after the viewer exists and before the stage (`:366`). Batch 1630's
+positive control proves the sentinel live at the end of the page, but a lazily loaded module that assigns `window.onmessage`
+mid-page is still not caught by `onmessage-unchanged`. The residual was recorded on `DX-KIT-ONMESSAGE-SENTINEL` (Batch 1628)
+and again by this round's reviewer. **Repair:** a second sentinel read after capture, before the control runs, judged with the
+first. **Source:** `round2-tar-aldarion/REVIEW_ARTHAD_P1.md` (N6); the seat's addendum (`:142-148`).
