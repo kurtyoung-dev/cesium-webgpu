@@ -44,6 +44,13 @@ Dispatch plans (e.g. `CLOSEOUT_PLAN_2026-08-07.md`) are grouping only — same r
    supersedes.
 7. `git log --oneline -50` and `git branch -a` + `git worktree list` — reconcile what you just read
    against reality before dispatching anything. Batch numbers in commit subjects are the spine.
+8. **Context spine (per-target scoping; `CLAUDE.md` Principle 13).** Once oriented, run
+   `node Tools/query-context.mjs impact <target>` (MCP `cesium_impact_pack`) for each target a brief
+   names, cite the pack in the brief, and re-open every `file:line` you carry into the brief at HEAD
+   (Principle 10): the pack is a lead. Provision clones with `--capsule <targets>
+   [--capsule-role worker|reviewer]` so `_review/context-capsule.md` is written beside the seeded
+   `.cache/context-spine/cesium-context.sqlite` and `.mcp.json`. Full reference:
+   [`CONTEXT_SPINE_GUIDE.md`](CONTEXT_SPINE_GUIDE.md).
 
 ---
 
@@ -173,19 +180,14 @@ adversarially-honest>` — the subject states what was actually proven, includin
 - **Push authentication:** the active `gh` account must be **kurtyoung-dev**. On a 403, report the
   403 and the active account; switch accounts only when the current task places that action in
   scope (charter §2.6/§0.2). (Author identity and push auth are deliberately different things.)
-- **GitHub quiet hours — HARD RULE:** no `git commit`, no `git push`, no visible GitHub activity of
-  any kind on WEEKDAYS 07:00–19:00 US Eastern. Commits carry timestamps, so do not commit-and-hold
-  either — hold work as uncommitted worktree state / exported patches and land after 19:00 ET.
-  Weekends and 19:00–07:00 are unrestricted. Check `date` before EVERY commit/push — the machine
-  clock is authoritative and the session's "today" context can disagree with it; trust `date`.
-  Record blocked landings as "LANDING WINDOW OPENS 19:00 ET" todos and continue non-git work.
-  _History note:_ commits inside the window exist prior to the Batch-977 attestation; do not treat
-  them as precedent — the rule as written governs.
+- **GitHub quiet hours — HARD RULE:** the rule and its enforcement live in
+  [`CLAUDE.md`](../CLAUDE.md), "GitHub Quiet Hours — HARD RULE" (R-2026-10-30-M2: one rules file).
+  The session's "today" context can disagree with the machine clock; trust `date`.
 - **Stashes:** never bare `git stash`. Always `git stash push -m "YYYY-MM-DD_HH:MM_claude_<reason>"`.
   Prefer `git show HEAD:<file>` / worktrees over stashing for comparisons. Never drop unlabeled
   stashes without maintainer confirmation.
-- **Branch transparency:** at session start and at every work-package boundary, run `git branch -a`
-  + `git worktree list` and surface anything besides `main` unprompted, with a deletion plan.
+- **Branch transparency:** the rule lives in [`CLAUDE.md`](../CLAUDE.md), "Branch Transparency —
+  CRITICAL"; at the seat, check `git worktree list` alongside `git branch -a`.
 
 ---
 

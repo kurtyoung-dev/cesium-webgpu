@@ -1,46 +1,23 @@
 # Antigravity & Gemini Rules — Cesium WebGPU
 
-## 1. File Editing Discipline: Never Rewrite Files > 100 Lines [HARD RULE]
+**Every rule for this fork lives in [`CLAUDE.md`](CLAUDE.md). Read it first, in full, before you do
+anything; this file carries only what is specific to Antigravity and Gemini workers**
+(R-2026-10-30-M2). That includes the file-editing rule (Principle 11), node-first execution
+(Principle 12), the context spine (Principle 13), the engine rules (RTE precision, the add-only
+shader define registries, debug pragmas, the fork comment standard) and worker conduct, temp hygiene
+and routing ("Rules Files and Routing").
 
-- **NEVER rewrite or overwrite an existing file longer than 100 lines** when the goal is to insert new code, add documentation, or modify existing functionality.
-- **ALWAYS use targeted chunk editing (`replace_file_content`)** or surgical insertion. Never replace the entire file content with `write_to_file(Overwrite=true)`.
-- Full file rewrites on files > 100 lines are strictly prohibited to prevent accidental code omissions, large diff bloat, context exhaustion, and regression risks.
+## 1. Where you work, and git [HARD RULE]
 
-## 2. Git Safety & Destructive Command Prohibition [HARD RULE]
+- You work only in the clone the seat provisioned for you, never in the seat worktree
+  `F:/Dev/GH/cesium-webgpu` (R-2026-10-30-M3).
+- Zero git writes — no commit, push, checkout, restore, reset, clean, revert, stash or branch
+  operation. Read-only git, plus `git add -N` for patch production, is all you run. Your role, its
+  wrapper and the review behind every batch:
+  [`WORKER_ISOLATION_AND_BRANCH_HANDOFF.md`](migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md),
+  the Gemini tier-3 paragraph after §8e.
 
-- **NEVER execute potentially destructive git commands** (`reset`, `restore`, `checkout`, `clean`, `revert`, `branch -D`, `stash drop`).
-- **NEVER execute remote push operations** (`git push`).
-- All git writes, branch switching, and push events are handled personally by the user. Antigravity and subagents run only read-only status, inspection, and diff queries.
-
-## 3. Worker Governance & Precision Standards
-
-- All code must adhere to `AGENTS.md` Part One:
-  - 64-bit RTE emulated precision on all rendering paths (`positionHigh` + `positionLow`, `mvpRelativeToEye`).
-  - Add-only three-word shader define registry (never reorder, renumber or delete bits):
-    `ShaderDefine`, `ShaderDefineHi`, `ShaderDefineExt`. Lo and hi bits 0-30 are full; bit 31
-    stays reserved in every word.
-    New axes claim an Ext bit within the owning subsystem's range in
-    `Tools/visual-regression/fixtures/shader-registry-layout.json`. Activating an existing
-    reserved axis flips its ledger `status` to `consumed` and updates consumer records,
-    preserving its name, word, bit and owner; the flip lands with a qualified consumer (an
-    engine read of the bit by name), never an engine literal. Pass all three words through
-    `preprocess(code, defines, definesHi, definesExt)` and
-    `getOrCreate(sourceId, source, defines, label, keySalt?, definesHi?, definesExt?)`.
-    Cloud Ext allocations stay at bit 20 or below (`definesExt < 2^21`) because the planned
-    W10b renderer source-cache keys use `flags + definesExt * 2^32` (plan N6, as the
-    `ShaderDefineExt` doc comment at `WebGPUShaderDefines.ts:1486-1494` states).
-  - Debug pragma wrapping (`stripPragmaPlugin`) for all non-critical logs.
-  - Upstream-seamless fork comment standard (no tracker, batch, or agent IDs in engine code).
-
-## 4. Execution Preference: Node Commands First [HARD RULE]
-
-- **ALWAYS prefer `node` / `npx` commands first** for scripts, evaluation, inspection, and tooling (`node script.mjs`, `node -e "..."`, `npx ...`).
-- **NEVER use PowerShell (`pwsh`), cmd, or shell builtins unless strictly required** (e.g. for environment variables or platform operations where Node is not viable).
-- This ensures cross-platform consistency, avoids shell escaping and interpolation bugs, and guarantees deterministic execution across Windows, Linux, and macOS.
-
-Tracked as of this batch; the pyramid's worker rules and naming live in `WORKER_ISOLATION_AND_BRANCH_HANDOFF.md`; Gemini workers never run git write commands (see §2).
-
-## 5. Reply and packet format [HARD RULE]
+## 2. Reply and packet format [HARD RULE]
 
 - Your deliverables are files under `_lane-out/` named by the brief; your reply is a plain-text
   summary under 200 words: facts, exit codes, the patch stat. No chat formatting, no `file://`
@@ -48,10 +25,10 @@ Tracked as of this batch; the pyramid's worker rules and naming live in `WORKER_
 - A packet states, per claim, the source you verified it against (file:line at this clone's HEAD,
   or a command and its exit code). "Per the brief" is not a source.
 
-## 6. Precision on documentation [HARD RULE]
+## 3. Precision on documentation [HARD RULE]
 
-- Re-open every cited line at HEAD before writing a citation; a number in a brief or a packet is a
-  lead, not a fact. Stale examples that cost a review round: a `.glsl:44` that had moved to `:46`,
+- `CLAUDE.md` Principle 10 applies to every citation you write. Stale examples that cost a review
+  round: a `.glsl:44` that had moved to `:46`,
   a per-cell error count written as per-run, a corroboration written as a proof.
 - Before minting any row or id, grep the ledger (`migration_doc/DEFERRED_WORK.md`) and both queues
   for an existing owner; a duplicate row is a defect, a pointer to the owner is the fix.
@@ -60,35 +37,16 @@ Tracked as of this batch; the pyramid's worker rules and naming live in `WORKER_
   Prefer the authoritative record (a packet's declared batch, a review's final `VERDICT:` line)
   over a grep heuristic.
 
-## 7. Markdown hygiene [HARD RULE]
+## 4. Markdown hygiene [HARD RULE]
 
 - The pre-commit hook runs markdownlint and prettier on root `*.md` and every doc you touch: one
   blank line after every heading and around every list; no lazy continuation lines. Run
   `npx prettier --check <file>` before delivering; a lint failure blocks the seat's commit.
 
-## 8. What you are good at — keep doing it
+## 5. What you are good at — keep doing it
 
 - Speed and exactness on bounded tasks: byte-faithful copies, runner plumbing, scripts that run
   first time, deliverables exactly where the brief names them.
 - Overriding a wrong number in the brief with the verified one and saying so in the packet.
 - Staying inside the no-git-write rule: five for five so far. An Opus reviewer stands behind every
   Gemini batch; write for that reviewer.
-
-## 9. Clean up after yourself [HARD RULE]
-
-- **Take scratch space through `Tools/lib/lane-tmp.mjs`, never `mkdtempSync(os.tmpdir())` directly.**
-  `withLaneTmp(prefix, fn)` puts the directory under `<tmpdir>/cesium-lane/<lane>` and removes it in a
-  `finally` — on return, on throw, and on rejection. Cleanup written after the assertions is not
-  cleanup: a failing assertion skips it, which is how ~2,000 sandboxes reached the Temp root by
-  2026-09-11.
-- **Before you return, remove everything you created outside your clone and its `_lane-out/`** — your
-  lane temp root, downloaded bundles, runner profiles you started, mutant copies, bundle dumps — and
-  say in your reply what you removed. Anything of value goes to `_lane-out/`,
-  `Tools/visual-regression/output/` or the worker archive first; those three are the only durable
-  places.
-- **Check the Temp ROOT, not just your lane's namespace.** Anything you ran before migrating it, and
-  any backup you wrote straight to `%TEMP%`, lands at the root where your namespace check will not see
-  it. Never put a backup in `%TEMP%` — `_lane-out/` is the place for one.
-- **Never sweep the Temp root yourself.** `Tools/temp-hygiene.mjs` is the seat's, run after a push,
-  and it deletes things — which puts it under §2. You may run `--plan` (read-only) and report what it
-  says; you may not run `--execute`.

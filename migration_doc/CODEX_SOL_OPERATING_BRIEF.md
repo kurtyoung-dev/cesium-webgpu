@@ -234,6 +234,7 @@ implementation changes rather than copying their behavior into this coaching bri
 | Orchestration pattern and untrusted-content doctrine | [ORCHESTRATION_HANDBOOK.md](ORCHESTRATION_HANDBOOK.md) |
 | Execute, resume, pause, or hand off a bounded campaign wave | [run-cesium-campaign-lane](../.agents/skills/run-cesium-campaign-lane/SKILL.md) |
 | Independently audit a frozen certification claim | [audit-cesium-certification](../.agents/skills/audit-cesium-certification/SKILL.md) |
+| Query symbols, Graphify call edges, Charter §0.4 rulings, WGSL/RTE contracts & spatial R-tree rigs | `node Tools/query-context.mjs impact <target>` (`npm run context-query`), MCP `cesium_context_spine`, or `_review/context-capsule.md` |
 
 ---
 

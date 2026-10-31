@@ -1,6 +1,6 @@
 # CLAUDE.md — CesiumJS WebGPU Project Rules
 
-This file is the Claude Code equivalent of `.clinerules`. It is automatically loaded into every Claude Code conversation.
+This file is the fork's one rules file for every agent — Claude, Codex, Gemini and Cline alike (see "Rules Files and Routing"). Claude Code loads it automatically into every conversation; `AGENTS.md`, `GEMINI.md` and `.clinerules` point here.
 
 ---
 
@@ -17,9 +17,10 @@ Within that authority, the individual `QUEUE_*_CAMPAIGN*.md` documents remain th
 authorities for task status, acceptance, and dependencies — `CAMPAIGN_STATE.md` does not
 duplicate row detail, only the campaign-level facts (launched-or-not, critical path, holds).
 
-Read `CAMPAIGN_STATE.md` first for orientation; it also carries the GitHub quiet-hours and
-branch-transparency HARD rules restated below in this file, kept in sync with
-`ORCHESTRATION_HANDBOOK.md` §3.
+Read `CAMPAIGN_STATE.md` first for orientation. The GitHub quiet-hours and branch-transparency
+HARD rules live only in this file (below); `CAMPAIGN_STATE.md` §2-§3 and
+`ORCHESTRATION_HANDBOOK.md` §3 point here rather than restating them. This file is the one rules
+file for every agent: see "Rules Files and Routing" below.
 
 ---
 
@@ -409,6 +410,7 @@ When making >10 lines of changes to a file, modernize pre-ES6 patterns:
 - Match the surrounding file's comment density
 - Converting a constructor or prototype to a class: drop `@constructor` and `@memberof Foo.prototype` (both implicit in a class body), move `@param` tags from the function-level JSDoc onto `constructor()`, and keep `@alias ClassName` on the class-level JSDoc — the documentation tooling depends on it
 - Do not add `@param` annotations to a constructor unless the original function-level JSDoc had them
+- **Fork comment standard (seamless with upstream).** Comments under `packages/engine/Source` and `packages/widgets/Source` — code, WGSL, GLSL and shipped assets — describe what the code does and the constraints it obeys, never the work that produced it: no batch numbers, campaign or tracker IDs, row IDs or dates (that history belongs in commit messages and `migration_doc/**`). The test is that someone diffing a fork file against upstream cannot tell which comments are ours by their voice. Comments stay JSDoc-clean for `npm run build-docs`, and derived code is attributed. Full rules: [`Documentation/Contributors/CodingGuide/ForkCommentStandard.md`](Documentation/Contributors/CodingGuide/ForkCommentStandard.md). `Tools/c16/comment-marker-guard.mjs` enforces it in lint-staged and CI (non-strict in both): a violation blocks only on a path listed in `Tools/c16/comment-marker-cleanlist.txt` (`npm run verify-comment-cleanlist` reports the share) or under `--strict`, and is a warning elsewhere; adding a path to the clean list is what makes the guard blocking for it.
 
 ---
 
@@ -586,7 +588,20 @@ timestamps even if pushed later, so do not commit during the window either —
 hold work as uncommitted worktree state / exported patches and land in
 batches after 19:00 ET. Weekends and 19:00–07:00 are unrestricted. Check
 `date` before every commit/push; the machine clock is authoritative.
-Local-only work (builds, probes, workers, edits) is unaffected.
+Local-only work (builds, probes, workers, edits) is unaffected. Record a
+blocked landing as a "LANDING WINDOW OPENS 19:00 ET" todo and carry on with
+non-git work.
+
+Enforced mechanically (R-2026-08-14-4): `.husky/pre-push`
+(`Tools/pre-push-guard.mjs`) refuses a push made inside the window and any
+outgoing commit dated inside it, resolving the Eastern offset from the tz
+database, and also enforces the
+monotonic `Batch NNNN:` prefix, a non-empty body and the `Co-Authored-By:`
+trailer (merge and upstream-sync commits skip the message rules). It has no
+bypass flag; `npm run verify-landing` is the after-the-fact detector that makes
+a `--no-verify` push visible. In-window commits from before the Batch-977
+attestation are not precedent. Rules and specs: `Tools/landing-rules.mjs`,
+`npm run test-landing-rules`, charter §6.
 
 ### 10. Brief From Verified Premises — CRITICAL
 
@@ -628,7 +643,7 @@ Subagent dispatch mechanics, the worker rules and the full evidence live in
 - **ALWAYS use targeted chunk editing (`replace_file_content`)** or surgical insertion. Never replace the entire file content with `write_to_file(Overwrite=true)`.
 - Full file rewrites on files > 100 lines are strictly prohibited to prevent accidental code omissions, large diff bloat, context exhaustion, and regression risks.
 
-Entered on 2026-09-10 by maintainer decision (mirrored in `GEMINI.md`).
+Entered on 2026-09-10 by maintainer decision.
 
 ### 12. Command Execution Preference: Node Commands First — CRITICAL
 
@@ -636,7 +651,26 @@ Entered on 2026-09-10 by maintainer decision (mirrored in `GEMINI.md`).
 - **NEVER use PowerShell (`pwsh`), cmd, or shell builtins unless strictly required** (e.g. for environment variables or platform operations where Node is not viable).
 - Ensures deterministic cross-platform execution without shell quoting, escaping, or expansion discrepancies across Windows and POSIX systems.
 
-Entered on 2026-09-10 by maintainer decision (mirrored in `GEMINI.md`).
+Entered on 2026-09-10 by maintainer decision.
+
+### 13. Context Spine — Scope With It, Verify at HEAD
+
+The context spine (`Tools/query-context.mjs`, MCP server `cesium-context-spine`; guide:
+[`migration_doc/CONTEXT_SPINE_GUIDE.md`](migration_doc/CONTEXT_SPINE_GUIDE.md)) is a preferred first step
+for scoping a change. It is not an authority, and it never replaces Principle 10.
+
+- **Prefer a pack to a cold read.** Before reading a multi-thousand-line hotspot whole, run
+  `node Tools/query-context.mjs impact <file|symbol|key>` (MCP `cesium_impact_pack`). Measured 2026-10-29 (lane GWIP, HEAD `c7c7bc6d35`): a pack is 3-17 KB and takes about 0.45 s from the CLI, against 82-474 KB for reading `WebGPUShaderDefines.ts`, `Scene.js`, `WebGPUContext.ts` or `GlobeTerrain.wgsl` whole.
+- **A pack is a lead, not a premise.** Re-open every `file:line` it cites at HEAD before you brief or edit,
+  and treat its regime tags, rig covers and contract labels as candidates. The same audit found a 150 m ground rig tagged `orbital`, a registry-key pack anchored on the wrong rows, and a missing target reported without a warning (all three repaired in that lane), and an RTE rule that labelled 57 rule-conformant lines as violations of the RTE rule ("64-Bit Precision & RTE" below), 47 of them the camera's own `encodedCameraHigh + encodedCameraLow` (retuned in that lane: a hazard now needs a shader to project a High+Low sum, giving 0 hazards and 51 review rows at `c7c7bc6d35`). The spine's contract output is a scoping lead, never a gate; never cite it as one.
+- **Rulings** come back ranked by Charter §0.4 (`node Tools/query-context.mjs ruling <id>`, MCP
+  `cesium_query_ledger`); cite the ruling's own file and line, not the pack.
+- **Clones.** `node Tools/provision-worker-clone.mjs <clone>` seeds the spine DB and `.mcp.json`;
+  `--capsule <targets> [--capsule-role worker|reviewer]` also writes `<clone>/_review/context-capsule.md`;
+  in a provisioned clone, read that capsule first when it exists. Refresh the seat's DB after a landing
+  with `npm run context-refresh`. A worker may run `npm run context-refresh` (3.3-3.9 s with nothing
+  changed) in its own clone, but never `--bootstrap-graphify`: it downloads from the Python package
+  index and installs into the tree, so it is the seat's to run.
 
 ---
 
@@ -678,7 +712,7 @@ The user's working model is "trunk-only — no long-lived branches." Surface bra
 4. **Finishing a work package** — re-list all branches and explicitly ask whether to delete the now-redundant safety/feature/worktree branches before declaring the package done.
 5. **At the start of every new conversation** if `git branch -a` shows anything besides `main` (and its remote tracker), open with a one-liner inventory.
 
-Use the `C:\Users\Kurt\.claude\projects\f--Dev-GH-cesium-webgpu\memory\feedback_git_stash.md` git-stash conventions when labeling refs (timestamped, descriptive).
+Label refs and stashes by the git-stash convention in [`ORCHESTRATION_HANDBOOK.md`](migration_doc/ORCHESTRATION_HANDBOOK.md) §3 (timestamped, descriptive; never a bare `git stash`).
 
 ---
 
@@ -701,6 +735,66 @@ after a push. Scratch space is taken through `Tools/lib/lane-tmp.mjs` so a
 killed run leaves one sweepable root rather than a sandbox at the Temp root.
 The rule, the measurement behind it and the two-phase sweep procedure are
 [`migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md` §8i](migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md).
+A worker may run `node Tools/temp-hygiene.mjs --plan` (read-only) and report it; `--execute` is the
+seat's.
+
+---
+
+## Rules Files and Routing — One Source (R-2026-10-30-M2)
+
+**This file is the one rules file for every agent on the fork.** `AGENTS.md` (Codex), `GEMINI.md`
+(Antigravity / Gemini) and `.clinerules` (Cline) are pointers: each tells its agent to read this
+file first, then carries only what is specific to that agent and its tool surface. A rule that binds
+every agent is written here once; where an agent file or a `migration_doc` page restates one, replace
+the restatement with a pointer here. Precedence between governance documents stays in
+`EXECUTOR_LANE_CHARTER_2026-08-14.md` §0.4, which ranks this file above `AGENTS.md`, `.clinerules`
+and the handbook.
+
+**Where agents work (R-2026-10-30-M3).** An LLM that does not hold the seat works in its own clone,
+never in the seat worktree `F:/Dev/GH/cesium-webgpu`, unless the maintainer says otherwise; only the
+seat lands on main. The maintainer may hand the seat to another LLM, and the others adapt and clean
+up after the handover.
+
+**Conduct that binds every worker.** The worker rules are
+[`WORKER_ISOLATION_AND_BRANCH_HANDOFF.md`](migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md) §7
+(path lease; no git writes; never `npm install`; no build or browser unless the dispatch authorizes
+it; a mechanical handoff report), §8a-§8c (one deliverable per dispatch, negative controls, verifying
+claims) and §8i (temp hygiene). In addition:
+
+- Write a deliverable to disk incrementally; never hold a whole deliverable unsaved.
+- If you **observe** an unexpected change in the tree, **report it**; never restore, revert or clean
+  it — it may be another lane's live work.
+- If the work needs a probe you are not authorized to run, say so plainly and stop (Principle 8:
+  never substitute a request for the maintainer to verify by eye).
+- Every reviewed unit becomes `_lane-out/<name>.patch` (`git diff HEAD --binary --no-renames`) plus a
+  packet the same day. Uncommitted work older than one session is a handoff defect, not a checkpoint.
+- No dependency mutation outside an owned clone, and none in a served or shared clone. Every install
+  command is captured with its exit code, and the lock, manifest and installed tree are reconciled in
+  one reviewed batch.
+- An instrument that refuses every run is a ruling request, not a work queue: file the request in the
+  same session (charter §1.1) and keep measuring by source review in parallel.
+- Governance files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.clinerules`, the queue decision rows and
+  `MAINTAINER_RULINGS_*.md`) are edited only under a seat lease, and a rule is never softened to "an
+  open ruling" without first checking the rulings record (the queue's `AR-D*` rows and every
+  `MAINTAINER_RULINGS_*.md`). Numbered principles are appended, never inserted mid-list; a duplicate
+  heading number is a review blocker.
+- Archival and doc moves are maintainer-held (hold of 2026-06-30) until lifted in writing.
+
+**Where governed questions are answered.** Do not begin campaign work, and do not commit, build, run a
+browser, publish evidence or change external state, until you have read the document that governs
+that act. Reading a router is not the same as being briefed.
+
+- Precedence between sources, tie-break included: [`EXECUTOR_LANE_CHARTER_2026-08-14.md`](migration_doc/EXECUTOR_LANE_CHARTER_2026-08-14.md) §0.4 `[HARD]`; if it does not decide, stop and report the conflict.
+- Verdict vocabulary and exit codes (`PASS` 0 / `FAIL` 1 / `ERROR` 2 / `STRUCTURAL` 3): Charter §1 status table; the frozen table is `Tools/visual-regression/lib/verdict-exit-gate.mjs`.
+- That a measured red is never de-scored, demoted or quarantined: Charter §1.1 `[HARD]`; escalation route in §5.
+- Evidence prerequisites, the clean validation manifest, banking a citation: Charter §1.7 `[HARD]`.
+- Capacity, pausing, freezing, and the handoff you owe: Charter §4.
+- Whether the campaign is paused or resumed **right now**: [`CAMPAIGN_STATE.md`](migration_doc/CAMPAIGN_STATE.md) (`R-2026-09-02-14`); a maintainer ruling in `MAINTAINER_RULINGS_*.md` outranks it — newest file wins, newest ruling within it.
+- Branch, clone, path-lease and rebase rules; the handoff report; your dispatch rules as a worker: [`WORKER_ISOLATION_AND_BRANCH_HANDOFF.md`](migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md), §8a-§8c for dispatch.
+- Who may commit, and how: `R-2026-08-18-28` and the charter's landing discipline (§2).
+- Orchestration pattern; untrusted-content doctrine; git identity and authentication: [`ORCHESTRATION_HANDBOOK.md`](migration_doc/ORCHESTRATION_HANDBOOK.md) (§3 for identity; charter §2.6 governs identity-switching restraint).
+- Symbols, seams, rulings, uniform/RTE contracts and spatial rigs for a target: Principle 13 and [`CONTEXT_SPINE_GUIDE.md`](migration_doc/CONTEXT_SPINE_GUIDE.md).
+- How Codex's predecessor performed, and what to focus on: [`CODEX_SOL_OPERATING_BRIEF.md`](migration_doc/CODEX_SOL_OPERATING_BRIEF.md) — coaching, not rules.
 
 ---
 
@@ -748,6 +842,7 @@ When fixing bugs, document in `migration_doc/WEBGPU_DEBUGGING_LOG.md`:
 - `migration_doc/IMAGERY_PROJECTION.md` — Single source of truth for imagery-layer projection across WebGL + WebGPU. **MUST be kept in sync whenever you touch any file in the projection chain** (`*ImageryReprojection*`, `GlobeFS.glsl`, `GlobeTerrain.wgsl`, `WebGPUGlobeSurfaceTextures.ts`, `WebGPUGlobeSurfaceTileUB.ts`, `WebGPUGlobeSurfaceCameraUB.ts`, `ImageryLayer.js`, `ImageryLayerHelpers.js`). A drift between this doc and code is a worse bug than the projection bug itself.
 - `packages/engine/Source/Renderer/WebGPU/` — All WebGPU renderer code (for a file count see [`BUILD_AND_VARIANTS.md`](migration_doc/BUILD_AND_VARIANTS.md) §2 for a dated measurement and re-measure recipe; do not quote an absolute here — "83+" was stale by 3.3x against the 271/277 measured 2026-09-05)
 - `packages/engine/Source/Shaders/WebGPU/` — All WGSL shaders (for a shader-module count see [`BUILD_AND_VARIANTS.md`](migration_doc/BUILD_AND_VARIANTS.md) §2; "67+" was stale by 4.8x against the 324 measured 2026-09-05) <!-- corrected 2026-09-05 from the doc-fitness audit G-07 (D10 factual) -->
+- `Tools/query-context.mjs` & `Tools/context-spine/` — Zero-dependency SQLite (`FTS5` + `R*Tree`) + Graphify `--code-only` context spine, spatial/GIS validation graph, and `cesium-context-spine` stdio MCP server (`npm run context-impact`, `npm run spatial-rag`, `npm run spatial-contracts`, `npm run context-refresh`, `npm run context-graphify`, `npm run test-context-spine`; full guide: [`migration_doc/CONTEXT_SPINE_GUIDE.md`](migration_doc/CONTEXT_SPINE_GUIDE.md))
 
 ## Debug Console Commands
 

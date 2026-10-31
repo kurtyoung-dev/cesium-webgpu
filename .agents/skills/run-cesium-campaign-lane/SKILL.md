@@ -34,7 +34,10 @@ workflow; the repository instructions and current maintainer rulings remain auth
 ## 2. Declare a bounded wave
 
 1. Name the objective, owning queue/ruling, exact writable paths, excluded paths, and terminal
-   condition.
+   condition. Run `node Tools/query-context.mjs impact <target>` (or MCP `cesium_impact_pack` /
+   `cesium_spatial_rigs`, or read `_review/context-capsule.md` in provisioned clones) before broad
+   file reads to pull Charter §0.4 rulings, seams, RTE/uniform contracts, GIS gates, and minimal
+   Probe Kit spatial rigs, then verify cited `file:line` slices directly at HEAD.
 2. Collision-audit every intended path before editing. Record unexpected dirty or untracked state
    as someone else's work unless proven otherwise.
 3. Assign one writer per path. Parallelize only disjoint files or read-only systems; serialize

@@ -256,7 +256,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | inject-purpose-headers.mjs | other | ACTIVE | 2026-08-16 | 4 | Idempotent codemod injecting @purpose/@status headers into the tooling .mjs fleet from the library-audit rows. |
 | inject-purpose-headers.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Self-test for the @purpose header codemod: mapping, placement, byte-exactness, idempotence and the dry-run report. |
 | karma-default-browsers.spec.mjs | spec | NO @purpose HEADER | 2026-08-21 | 1 | — |
-| landing-rules.mjs | other | ACTIVE | 2026-09-01 | 30 | Pure landing predicates for commit discipline, push-wide Batch uniqueness, and protected remote-ref updates. |
+| landing-rules.mjs | other | ACTIVE | 2026-09-01 | 29 | Pure landing predicates for commit discipline, push-wide Batch uniqueness, and protected remote-ref updates. |
 | landing-rules.spec.mjs | spec | ACTIVE | 2026-09-01 | 8 | Hermetic control-and-mutant contract for commit, push-wide Batch, and protected-ref landing predicates. |
 | lint-debug-pragmas.mjs | other | ACTIVE | 2026-08-28 | 22 | Lints Renderer/WebGPU for console.log/warn/debug/info calls not wrapped in //>>includeStart('debug') pragmas; console.error exempt by policy. |
 | lint-debug-pragmas.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Proves debug-console calls stay removable unless a narrowly marked warning must remain visible. |
@@ -266,7 +266,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | provision-worker-clone-codex-trust.spec.mjs | spec | ACTIVE | 2026-09-19 | 1 | Behavioural spec for the --codex-trust / --codex-untrust line-based |
 | provision-worker-clone-junctions.spec.mjs | spec | NO @purpose HEADER | 2026-09-16 | 4 | — |
 | provision-worker-clone.mjs | other | ACTIVE | 2026-10-30 | 14 | Provision a worker clone with the governance git cannot deliver, create the local main ref the handoff diff needs, and REFUSE if any routed authority is unreachable. |
-| query-context.mjs | other | ACTIVE | 2026-10-30 | 4 | Command-line entrypoint to build and query the zero-dependency SQLite context spine (symbols, verified slices, Cesium seams, Charter-ranked rulings/ledgers, spatial R-tree rigs, contracts, and context capsules). |
+| query-context.mjs | other | ACTIVE | 2026-10-30 | 6 | Command-line entrypoint to build and query the zero-dependency SQLite context spine (symbols, verified slices, Cesium seams, Charter-ranked rulings/ledgers, spatial R-tree rigs, contracts, and context capsules). |
 | report-batch-number-reuse.mjs | other | ACTIVE | 2026-09-02 | 3 | Reports every `Batch NNNN:` commit subject that reuses a number already used by a different commit, across full reachable git history. |
 | report-batch-number-reuse.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Behaviour spec for report-batch-number-reuse.mjs, run against a real temporary git repository. |
 | run-far200-shadow-self-test.mjs | runner | ACTIVE | 2026-08-16 | 2 | Thin bootstrap: esbuild-bundles Tools/far200-shadow-self-test.ts and executes it via a data: URL import. |

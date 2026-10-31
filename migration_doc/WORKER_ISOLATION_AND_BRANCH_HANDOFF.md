@@ -337,9 +337,15 @@ make a dispatch "work" — that behaviour is the control.
 #### R1 — Assert clone readiness. Never assume it.
 
 Run `node Tools/provision-worker-clone.mjs <clone>` and **require exit 0** before dispatching. It
-provisions what git cannot deliver (`CLAUDE.md` is gitignored and can never reach a clone), creates
-the local `main` ref the handoff diff needs, and verifies every authority `AGENTS.md` routes to
-actually resolves.
+provisions what git cannot deliver (`CLAUDE.md`, gitignored when this rule was written, is tracked
+since Batch 1434, but a clone made before a rules edit lands still carries the old rules), creates
+the local `main` ref the handoff diff needs, and verifies every routed authority (the tracked rules
+file `CLAUDE.md`, its pointer `AGENTS.md`, and the documents the routing table names) actually
+resolves. It also seeds `.cache/context-spine/cesium-context.sqlite` and `.mcp.json` when
+present in the source repository (`--no-spine-seed` opts out; a source DB with a `-wal` sidecar is
+skipped, never checkpointed), and accepts `--capsule <targets> [--capsule-role worker|reviewer]`
+(writing `<clone>/_review/context-capsule.md`) and `--codex-mcp` / `--codex-unmcp` (see
+[`CONTEXT_SPINE_GUIDE.md`](CONTEXT_SPINE_GUIDE.md) §5).
 
 The first dispatch failed on this, and the sharpest detail is that the orchestrator had **already
 observed** `CLAUDE.md` was missing, remarked that it validated the router design, and dispatched

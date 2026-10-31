@@ -27,7 +27,9 @@ receives the live rules rather than only this frozen copy.
 - **Precedence** between the tracked governance documents is set by
   `migration_doc/EXECUTOR_LANE_CHARTER_2026-08-14.md` §0.4, not here.
 - **Campaign status** is `migration_doc/CAMPAIGN_STATE.md` (R-2026-09-02-14).
-- **Agent-facing summary and routing:** `AGENTS.md`.
+- **Routing** (which tracked document answers each governed question) is the
+  "Rules Files and Routing" section of `CLAUDE.md`; `AGENTS.md` (Codex) and
+  `GEMINI.md` (Antigravity) are pointers to `CLAUDE.md` too (R-2026-10-30-M2).
 
 ## What happened to this file's content
 

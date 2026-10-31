@@ -22,7 +22,11 @@ evidence work, or let the expected verdict substitute for independent recomputat
 - Map each headline claim to the exact predicate, retained primitive, source path, and artifact that
   proves it.
 - Traverse the probe's static and dynamic imports through gate libraries and helpers. Include every
-  load-bearing policy, schema, shader, asset, adapter, and generated/served dependency.
+  load-bearing policy, schema, shader, asset, adapter, and generated/served dependency. Use MCP
+  `cesium_impact_pack`, `cesium_query_ledger`, and `cesium_check_contracts` (or
+  `node Tools/query-context.mjs impact <target>`) to cross-check active vs `AMENDED`/`VACATED`
+  rulings, `FeatureRendererKey`/`ShaderDefine`/`GLSL↔WGSL` seams, WGSL uniform/RTE contracts, and
+  GIS/spatial R-tree rig coverage, then independently verify every cited `file:line` at HEAD.
 - Classify prerequisites as source-only, build, browser, assets, server, or external evidence.
 - Distinguish historical facts from current claims and facts from inferences. Attribute work only
   to the extent identities and records support it.

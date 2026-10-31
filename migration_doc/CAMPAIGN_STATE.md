@@ -4,13 +4,10 @@
 `R-2026-09-02-14` (`MAINTAINER_RULINGS_2026-09-02.md`): CLAUDE.md's "Active Remediation
 Campaign" block reduces to a pointer at this file, and this tracked document — not the
 gitignored one — is the **sole campaign-status authority** from here on (§1 below). This file
-keeps its other original role too: `CLAUDE.md` is gitignored with no git history
-(`.gitignore:6`), so its GitHub-quiet-hours and branch-transparency HARD rules are mirrored here
-as they were by the 2026-08-09 handover audit (`HANDOVER_AUDIT_2026-08-09.md` FIX 1) — those two
-rules are unaffected by this wave's ruling and stay in §2/§3, now fully restated (not merely
-mirrored) in [`ORCHESTRATION_HANDBOOK.md`](ORCHESTRATION_HANDBOOK.md) §3 as well; on any
-disagreement between the two, the fuller, more recently touched copy wins and the other is
-stale.
+used to mirror `CLAUDE.md`'s GitHub-quiet-hours and branch-transparency HARD rules in §2/§3
+(`HANDOVER_AUDIT_2026-08-09.md` FIX 1), because `CLAUDE.md` was then gitignored. It has been
+tracked since Batch 1434 and is the one rules file for every agent (R-2026-10-30-M2), so §2/§3 now
+point there instead of restating the rules.
 
 **Precedence for §1, stated once because every block below relies on it:** a campaign's own
 queue document (`QUEUE_*_CAMPAIGN*.md`) is the **row-level** authority — task status,
@@ -870,62 +867,19 @@ Checked against the authorities above on 2026-09-02:
 
 ## 2. GitHub Quiet Hours — HARD RULE (maintainer, 2026-08)
 
-_Mirrored verbatim from `CLAUDE.md`; unaffected by this wave's campaign-status ruling. Also fully
-restated in `ORCHESTRATION_HANDBOOK.md` §3._
-
-On WEEKDAYS between 07:00 and 19:00 US Eastern: **no `git commit`, no `git push`, no visible
-GitHub activity of any kind.** Commits carry visible timestamps even if pushed later, so do not
-commit during the window either — hold work as uncommitted worktree state / exported patches and
-land in batches after 19:00 ET. Weekends and 19:00–07:00 are unrestricted. Check `date` before
-every commit/push; the machine clock is authoritative. Local-only work (builds, probes, workers,
-edits) is unaffected.
+The rule and its mechanical enforcement (R-2026-08-14-4, `SOL-D4-HARDENING`: `.husky/pre-push`,
+`npm run verify-landing`) live in [`CLAUDE.md`](../CLAUDE.md), "GitHub Quiet Hours — HARD RULE".
+This section keeps only the open history item.
 
 > **History note (handover audit FIX 37, 2026-08-09):** in-window weekday commits exist
 > prior to the Batch-977 attestation. They are **not precedent** — the rule as written
 > governs. Whether a waiver existed is an open maintainer ask.
 
-> **Now enforced mechanically (ruling R-2026-08-14-4, `SOL-D4-HARDENING`):** `.husky/pre-push`
-> refuses a push inside the window — Eastern offset resolved from the tz database, never
-> hardcoded — and also enforces the `Batch NNNN:` prefix (monotonic), a non-empty body and the
-> `Co-Authored-By:` trailer; merge / upstream-sync commits skip the three message rules.
-> `npm run verify-landing` is the after-the-fact detector that makes a `--no-verify` bypass
-> visible, and additionally checks each commit's own timestamps against the window. Rules and
-> specs: `Tools/landing-rules.mjs`, `npm run test-landing-rules`;
-> [`EXECUTOR_LANE_CHARTER_2026-08-14.md`](EXECUTOR_LANE_CHARTER_2026-08-14.md) §6.
-
 ## 3. Branch Transparency — CRITICAL
 
-_Mirrored verbatim from `CLAUDE.md`; unaffected by this wave's campaign-status ruling. Also fully
-restated in `ORCHESTRATION_HANDBOOK.md` §3._
-
-The user's working model is "trunk-only — no long-lived branches." Surface branch state
-proactively whenever a work package is being scoped, started, paused, or closed. Do not let safety
-branches, worktree branches, or agent branches accumulate silently.
-
-**Always tell the user, unprompted, when:**
-
-1. **Starting a work package** — list any pre-existing local or origin branches besides `main`
-   ("Heads-up: `pre-upstream-merge`, `feature/foo` are still around from prior work — want me to
-   audit and clean before starting?"). Run `git branch -a` to check; do not assume.
-2. **Creating a new branch or worktree** — name it, say why, and commit upfront to a deletion
-   plan ("I'll create `safety-pre-batch-69-2026-04-26` as a rollback ref; I'll delete it after
-   the batch lands on main and verifies green").
-3. **A sub-agent spawns a worktree branch** — surface the branch name in your reply, even if the
-   agent ran in the background.
-4. **Finishing a work package** — re-list all branches and explicitly ask whether to delete the
-   now-redundant safety/feature/worktree branches before declaring the package done.
-5. **At the start of every new conversation** if `git branch -a` shows anything besides `main`
-   (and its remote tracker), open with a one-liner inventory.
-
-Use git-stash usage conventions when labeling refs (timestamped, descriptive).
-
-> **Mirror note (2026-08-09):** the `CLAUDE.md` original links this last sentence to a
-> session-local memory file outside the repository, which no successor can read. The
-> convention it points at is restated in
-> [`ORCHESTRATION_HANDBOOK.md`](ORCHESTRATION_HANDBOOK.md) §3: never bare `git stash`;
-> always `git stash push -m "YYYY-MM-DD_HH:MM_claude_<reason>"`; prefer
-> `git show HEAD:<file>` or a worktree over stashing for comparisons; never drop unlabeled
-> stashes without maintainer confirmation.
+The rule lives in [`CLAUDE.md`](../CLAUDE.md), "Branch Transparency — CRITICAL"; the git-stash
+labelling convention it names is in [`ORCHESTRATION_HANDBOOK.md`](ORCHESTRATION_HANDBOOK.md) §3.
+This section keeps only the inventory pointer below.
 
 ### 3a. Declared out-of-repo worktrees and evidence paths
 
