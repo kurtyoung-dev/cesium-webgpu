@@ -7,6 +7,8 @@
 //
 // THE STEP DATA is the `diveGateStep` dial (placement, wheel notches, settle frames); `diveCollisionDisabled` and `diveGateExpected` are laid over it by the cell's two pages (`dive`, `control`), and the values here are the `dive` page's. The cell may run offline: the ellipsoid terrain needs no stream.
 //
+// THE CLOCK is pinned to the daylight instant 2026-06-21T18:00:00Z: a rig that leaves it `null` freezes the wall clock at load, and the terrain and ocean frames then render at night whenever the run starts.
+//
 // WHO RENDERS IT. `probe-landing-cells.mjs --cells E-DG-ellipsoid`, both renderers.
 
 export default Object.freeze({
@@ -15,7 +17,7 @@ export default Object.freeze({
   page: "Apps/CesiumViewer/index.html",
   renderers: ["webgl", "webgpu"],
   description:
-    "CesiumViewer with the camera at (-140, 10), 150 m up, pitched down, over the open Pacific at (-140, 10); the dive-gate step data, no masks; 1280x720, both renderers.",
+    "CesiumViewer with the camera at (-140, 10), 150 m up, pitched down, over the open Pacific at (-140, 10); the dive-gate step data, no masks; the clock pinned to the daylight instant 2026-06-21T18:00:00Z; 1280x720, both renderers.",
   declaredBy:
     "the probe-kit dive-gate cells (row DX-KIT-DIVE-GATE-CELLS); probe-landing-cells cell E-DG-ellipsoid renders it",
   camera: {
@@ -26,7 +28,7 @@ export default Object.freeze({
     pitch: -0.6,
     roll: 0,
   },
-  clock: null,
+  clock: "2026-06-21T18:00:00Z",
   dials: {
     terrain: "ellipsoid",
     imagery: "naturalEarth",

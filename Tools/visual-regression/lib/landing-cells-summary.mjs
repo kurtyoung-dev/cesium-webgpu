@@ -1,6 +1,6 @@
 /**
  * The landing-cells probe's Markdown summary.
- * @purpose The landing-cells Markdown summary hook: the default id-and-result table plus the marks a reader needs where they look (a PASS decided by a provisional floor reads PASS* with the flag and figures footnoted, a floor that did not decide, the reason a contended or not-run verdict was not read, the CPU warm-up note, a base frame found beside the report), and nothing else changed.
+ * @purpose The landing-cells Markdown summary hook: the default id-and-result table plus the marks a reader needs where they look (a PASS decided by a provisional floor reads PASS* with the flag and figures footnoted, a floor that did not decide or that decided nothing because the verdict was not measured, the reason a contended or not-run verdict was not read with the arm's CPU figures, the CPU warm-up, prime and contention-basis notes, a base frame found beside the report), and nothing else changed.
  * @status ACTIVE
  *
  * The table is `buildMarkdownSummary`'s own: this module post-edits its lines
@@ -110,44 +110,85 @@ function pfReasons(receipt, id) {
   return [...new Set(found.filter((reason) => typeof reason === "string"))];
 }
 
-/** The mark a verdict earns, as `{star, note}` (the row gains `*` when a floor decided it), or null. */
+/** A PF verdict id's arm contention record, or undefined. */
+function contentionOf(receipt, id) {
+  const cut = id.lastIndexOf(":");
+  return cut > 0
+    ? receipt.comparison?.[id.slice(0, cut)]?.contention
+    : undefined;
+}
+
+/**
+ * The machine CPU figures behind a contention verdict, as the guard recorded
+ * them (the reasons string may or may not hold them), or "" when the arm has
+ * none.
+ */
+function cpuFigures(contention) {
+  const base = figure(contention?.baseMeanCpu);
+  const tip = figure(contention?.tipMeanCpu);
+  if (base === null || tip === null) {
+    return "";
+  }
+  const delta = figure(contention.armDeltaPct);
+  const busy = figure(contention.contendedCpuPct);
+  const apart = figure(contention.cpuArmDeltaPct);
+  const limits = [
+    ...(busy === null ? [] : [`mean above ${busy} %`]),
+    ...(apart === null ? [] : [`arms apart by more than ${apart} points`]),
+  ];
+  const gap = delta === null ? "" : `, arms apart by ${delta} points`;
+  const at = limits.length > 0 ? ` (contended at: ${limits.join(", ")})` : "";
+  return `machine CPU: base mean ${base} %, tip mean ${tip} %${gap}${at}`;
+}
+
+/**
+ * The marks a verdict earns, as `{star, notes}` (the row gains `*` when a
+ * floor decided a measured verdict), or null. A verdict that was not measured
+ * (contended or not run) always gets its own line naming why, with the arm's
+ * CPU figures when it has them; a provisional floor on it is footnoted as
+ * applied and deciding nothing, and never stars the row.
+ */
 function markOf(receipt, verdict) {
   const id = String(verdict.id ?? verdict.claim ?? "verdict");
   const floor = verdict.provisionalFloor;
-  if (floor !== null && typeof floor === "object") {
-    const text = floorText(floor);
-    return floor.decided === true
-      ? {
-          star: true,
-          note: `- ${verdictResultLabel(verdict)}* \`${id}\`: ${text}; the floor decided this verdict`,
-        }
-      : {
-          star: false,
-          note: `- \`${id}\`: ${text}; the floor was applied and did not decide this verdict`,
-        };
-  }
-  if (verdict.unmeasured === UNMEASURED_REASONS.CONTENDED) {
-    const reasons = pfReasons(receipt, id);
-    return {
-      star: false,
-      note: `- ${verdictResultLabel(verdict)} \`${id}\`: ${
-        reasons.length > 0 ? reasons.join("; ") : NOT_RECORDED
-      }`,
-    };
-  }
-  if (verdict.notRun === true && verdict.pass !== true) {
+  const hasFloor = floor !== null && typeof floor === "object";
+  const contended = verdict.unmeasured === UNMEASURED_REASONS.CONTENDED;
+  const notRun = verdict.notRun === true && verdict.pass !== true;
+  const notes = [];
+  let star = false;
+  if (contended || notRun) {
     const reasons =
-      typeof verdict.reason === "string" && verdict.reason !== ""
+      !contended && typeof verdict.reason === "string" && verdict.reason !== ""
         ? [verdict.reason]
         : pfReasons(receipt, id);
-    return {
-      star: false,
-      note: `- ${verdictResultLabel(verdict)} \`${id}\`: ${
-        reasons.length > 0 ? reasons.join("; ") : NOT_RECORDED
-      }`,
-    };
+    const contention = contentionOf(receipt, id);
+    const figures =
+      contended || contention?.status === "contended"
+        ? cpuFigures(contention)
+        : "";
+    const why = reasons.length > 0 ? reasons.join("; ") : NOT_RECORDED;
+    notes.push(
+      `- ${verdictResultLabel(verdict)} \`${id}\`: ${why}${figures === "" ? "" : `; ${figures}`}`,
+    );
   }
-  return null;
+  if (hasFloor) {
+    const text = floorText(floor);
+    if (contended || notRun) {
+      notes.push(
+        `- \`${id}\`: ${text}; the floor was applied and decided nothing because the verdict was not measured`,
+      );
+    } else if (floor.decided === true) {
+      star = true;
+      notes.push(
+        `- ${verdictResultLabel(verdict)}* \`${id}\`: ${text}; the floor decided this verdict`,
+      );
+    } else {
+      notes.push(
+        `- \`${id}\`: ${text}; the floor was applied and did not decide this verdict`,
+      );
+    }
+  }
+  return notes.length === 0 ? null : { star, notes };
 }
 
 /** Notes for arms whose base frame was found beside the report, not at its recorded path. */
@@ -160,8 +201,6 @@ function siblingFallbackNotes(receipt) {
   for (const [armKey, arm] of Object.entries(comparison)) {
     if (arm?.pixels?.frameSource === "sibling-fallback") {
       const recorded = arm.pixels.baseRecordedPath;
-      // Concatenated: the fleet's source scanner misreads an escaped backtick
-      // inside a nested template.
       const where =
         typeof recorded === "string" && recorded !== ""
           ? "`" + recorded + "`"
@@ -180,8 +219,9 @@ function siblingFallbackNotes(receipt) {
  *   origin, servedBuildAssertion, exitCode).
  * @param {string} title Heading.
  * @returns {string} Markdown: `buildMarkdownSummary`'s text when the receipt
- *   carries no mark, otherwise the same text with starred rows, a Warm-up
- *   line after the header block and a Marks section before the receipt fields.
+ *   carries no mark, otherwise the same text with starred rows, Warm-up,
+ *   Prime and Contention basis lines after the header block (a PF run only)
+ *   and a Marks section before the receipt fields.
  */
 export function buildLandingCellsSummary(receipt, runtimeReceipt, title) {
   const summary = buildMarkdownSummary(receipt, runtimeReceipt, title);
@@ -193,7 +233,7 @@ export function buildLandingCellsSummary(receipt, runtimeReceipt, title) {
   verdicts.forEach((verdict, index) => {
     const mark = markOf(receipt, verdict);
     if (mark !== null) {
-      notes.push(mark.note);
+      notes.push(...mark.notes);
       if (mark.star) {
         stars.set(index, verdictResultLabel(verdict));
       }
@@ -201,13 +241,16 @@ export function buildLandingCellsSummary(receipt, runtimeReceipt, title) {
   });
   notes.push(...siblingFallbackNotes(receipt));
   // Only a PF run waits, so only a PF run's summary says how the wait ended.
-  const warmUp =
-    typeof receipt.warmUp?.note === "string" &&
-    receipt.warmUp.note !== "" &&
-    receipt.warmUp.status !== "not-a-pf-run"
-      ? receipt.warmUp.note
+  const onPfRun = receipt.warmUp?.status !== "not-a-pf-run";
+  const noteOf = (record) =>
+    onPfRun && typeof record?.note === "string" && record.note !== ""
+      ? record.note
       : null;
-  if (notes.length === 0 && warmUp === null) {
+  const warmUp = noteOf(receipt.warmUp);
+  const prime = noteOf(receipt.prime);
+  const basis = noteOf(receipt.contentionBasis);
+  const headed = warmUp !== null || prime !== null || basis !== null;
+  if (notes.length === 0 && !headed) {
     return summary;
   }
 
@@ -226,12 +269,27 @@ export function buildLandingCellsSummary(receipt, runtimeReceipt, title) {
     );
     lines.splice(fields, 0, "## Marks", "", ...notes, "");
   }
-  if (warmUp !== null) {
-    // After the header block: the line after `Exit code:` is blank.
+  if (headed) {
+    // After the header block: the line after `Exit code:` is blank. Each note
+    // already opens with its own label, which the line's own label replaces.
+    const said = (label, note) => {
+      if (note === null) {
+        return [];
+      }
+      const own = `${label.toLowerCase()}:`;
+      const body = note.toLowerCase().startsWith(own)
+        ? note.slice(own.length).trimStart()
+        : note;
+      return [`${label}: ${body}`, ""];
+    };
     const exit = lines.findIndex((line) => line.startsWith("Exit code:"));
-    // The note already opens with its own `warm-up:` label.
-    const said = warmUp.replace(/^warm-up:\s*/iu, "");
-    lines.splice(exit + 2, 0, `Warm-up: ${said}`, "");
+    lines.splice(
+      exit + 2,
+      0,
+      ...said("Warm-up", warmUp),
+      ...said("Prime", prime),
+      ...said("Contention basis", basis),
+    );
   }
   return lines.join("\n");
 }

@@ -302,9 +302,19 @@ export function landingVerdicts(records, comparison) {
             ? { unmeasured: UNMEASURED_REASONS.CONTENDED }
             : {}),
           // A verdict an uncalibrated floor set the band of says so where it
-          // is read, with `decided` when the floor turned it.
+          // is read, with `decided` when the floor turned it. A statistic
+          // that was not measured was turned by nothing: the floor stays on
+          // the verdict as applied, decides nothing, and says why.
           ...(arm[pf].provisionalFloor
-            ? { provisionalFloor: arm[pf].provisionalFloor }
+            ? {
+                provisionalFloor: unmeasured
+                  ? {
+                      ...arm[pf].provisionalFloor,
+                      decided: false,
+                      undecidedBecause: arm[pf].verdict,
+                    }
+                  : arm[pf].provisionalFloor,
+              }
             : {}),
         });
       }

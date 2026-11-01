@@ -2,15 +2,19 @@
 // @purpose Pins the dive-gate landing cells by what a reader of the report sees: each of the five cells plans a dive and a control page on both renderers, is opt-in, carries its pre-registered gate, and (the four terrain cells) opens its page online; each rig loads and stages; the cell page places the camera through the Cesium module URL, wheels N notches and lands the receipt in the page record; the verdict passes only when the observed gate is the registered one and is NOT RUN when the dive could not be read; and a probe run over a fake browser writes pages with `diveGate` and `network` and `...:dive-gate` verdicts.
 // @status ACTIVE
 //
-// NO BROWSER. Two stand-ins feed the cases. The first is a page whose
-// `evaluate` runs the real page functions (`pagePlaceDiveCamera`,
-// `pageReadDiveState`) against a fake viewer that applies the engine's gate
+// NO BROWSER. Two stand-ins feed the cases, and both run the REAL page
+// functions (`pagePlaceDiveCamera`, `pageReadDiveState`, `pageRenderFrames`)
+// against the shared fake world (`fixtures/dive-gate-fake-world.mjs`): a viewer
+// whose `globeHeight` is undefined until `initializeFrame()` runs, whose wheel
+// moves the camera only there, and whose water facade applies the engine's gate
 // (`canDiveAtSurfaceHeight`: collision disabled and |height| <= 110 m), with a
-// stub Cesium module behind the module URL. The second is the landing probe's
-// fake browser, wrapped by `withDiveGateAnswers`. Both are the SOURCE of the
-// readings: what the cases certify is the plumbing (data in, receipt out, the
-// verdict's decision), not that the real controller behaves like the fake;
-// that is the Edge job's (the command is in the lane report).
+// stub Cesium module behind the module URL. The first is a page over that
+// world; the second is the landing probe's fake browser, wrapped by
+// `withDiveGateAnswers`. Neither answers a height or the gate itself, so a frame
+// driver that never reaches `initializeFrame()` reads what the Edge leg read
+// (`globe-height-undefined`, a camera that never moved): the first cases below
+// pin that negative. That the real controller behaves like the world is the Edge
+// job's.
 
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -18,6 +22,11 @@ import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { mkLaneTmp, removeLaneTmp } from "../lib/lane-tmp.mjs";
+import {
+  STUB_CESIUM_LOG,
+  STUB_CESIUM_MODULE_URL,
+  makeDiveGateFakeWorld,
+} from "./fixtures/dive-gate-fake-world.mjs";
 import {
   landingRunners,
   verdictById,
@@ -41,6 +50,7 @@ import { loadRigs, validateRig } from "./lib/rig-registry.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const STEPS_PATH = path.join(HERE, "lib", "globe-dive-gate-steps.mjs");
+const FRAMES_PATH = path.join(HERE, "lib", "landing-page-frames.mjs");
 const TABLE_PATH = path.join(HERE, "lib", "landing-cell-table.mjs");
 
 /** The five cells: the rig each runs, the gate its dive page registers, whether it streams terrain and the surface height a fake reads there. */
@@ -73,20 +83,11 @@ const CELLS = Object.freeze({
     rig: "dive-gate-upsampled-ocean",
     dive: "allow",
     online: true,
-    surface: 0,
+    surface: 12,
   },
 });
 
-/** A stub Cesium module: the one `fromDegrees` the placement uses, logging its calls. */
-const STUB_MODULE_URL = `data:text/javascript,${encodeURIComponent(
-  `globalThis.__diveGateCells ??= [];
-export const Cartesian3 = {
-  fromDegrees: (lon, lat, height) => {
-    globalThis.__diveGateCells.push({ lon, lat, height });
-    return { lon, lat, height };
-  },
-};`,
-)}`;
+const STUB_MODULE_URL = STUB_CESIUM_MODULE_URL;
 
 let TEMP_ROOT;
 before(() => {
@@ -107,82 +108,21 @@ async function pageRig(cell, page) {
 }
 
 /**
- * A page that runs the real page functions against a fake viewer applying the
- * engine's gate, and counts the wheel.
+ * The shared fake world for a surface height, as the spec's cases use it.
  *
- * @param {number} surface Terrain height under the camera.
- * @param {object} [options]
- * @param {boolean} [options.facade] Whether the globe has a water facade.
- * @returns {object} The world.
+ * @param {number|undefined} surface Terrain height under the camera.
+ * @param {object} [options] {@link makeDiveGateFakeWorld} options (`facade`, ...).
+ * @returns {object} The world with `page`, `settle` and `seen`.
  */
-function makeDiveWorld(surface, { facade = true } = {}) {
-  const seen = { wheels: 0, moves: [], settles: [] };
-  const water = {
-    disableWaterCollision: false,
-    diveDepthMeters: 0,
-    canDiveAtSurfaceHeight(height) {
-      return (
-        this.disableWaterCollision === true &&
-        Number.isFinite(height) &&
-        Math.abs(height) <= 110
-      );
-    },
-  };
-  const camera = {
-    height: 200,
-    get positionCartographic() {
-      return { height: this.height };
-    },
-    setView({ destination }) {
-      this.height = destination.height;
-    },
-  };
-  const scene = {
-    camera,
-    globeHeight: surface,
-    screenSpaceCameraController: { minimumZoomDistance: 1 },
-    canvas: {
-      getBoundingClientRect: () => ({
-        left: 0,
-        top: 0,
-        width: 1280,
-        height: 720,
-      }),
-    },
-    render() {},
-    globe: {
-      get water() {
-        return water;
-      },
-      get _water() {
-        return facade ? water : undefined;
-      },
-    },
-  };
-  const page = {
-    // No `globalThis.Cesium`: the viewer page does not set one.
-    evaluate: async (fn, arg) => {
-      const saved = globalThis.viewer;
-      globalThis.viewer = { scene };
-      try {
-        return await fn(arg);
-      } finally {
-        globalThis.viewer = saved;
-      }
-    },
-    mouse: {
-      move: async (x, y) => seen.moves.push([x, y]),
-      wheel: async () => {
-        seen.wheels++;
-        camera.height = Math.max(camera.height - 30, surface + 1);
-        if (water.canDiveAtSurfaceHeight(surface)) {
-          water.diveDepthMeters += 1;
-        }
-      },
-    },
-  };
-  return { page, seen, settle: async (frames) => seen.settles.push(frames) };
+function makeDiveWorld(surface, options = {}) {
+  return makeDiveGateFakeWorld({ surface, ...options });
 }
+
+/** Just the `page` and `settle` a cell page run takes, over a fresh world. */
+const livePage = (surface, options) => {
+  const { page, settle } = makeDiveWorld(surface, options);
+  return { page, settle };
+};
 
 // ---------------------------------------------------------------------------
 // The table
@@ -309,7 +249,7 @@ test("every cell's pages read the registered gate through the real placement and
 });
 
 test("the placement goes through the module URL, the wheel is driven N notches and the receipt lands in the record", async () => {
-  globalThis.__diveGateCells = [];
+  globalThis[STUB_CESIUM_LOG] = [];
   const rig = await pageRig("E-DG-geiranger", "dive");
   const step = {
     ...rig.dials.diveGateStep,
@@ -322,10 +262,10 @@ test("the placement goes through the module URL, the wheel is driven N notches a
     rig: { ...rig, dials: { ...rig.dials, diveGateStep: step } },
     settle: world.settle,
   });
-  assert.deepEqual(globalThis.__diveGateCells, [
+  assert.deepEqual(globalThis[STUB_CESIUM_LOG], [
     { lon: step.lon, lat: step.lat, height: step.height },
   ]);
-  assert.equal(world.seen.wheels, 4);
+  assert.equal(world.seen.wheels.length, 4);
   assert.equal(diveGate.record.placement.moduleUrl, STUB_MODULE_URL);
   assert.equal(diveGate.expected, "allow");
   assert.equal(diveGate.outcome.readable, true);
@@ -364,7 +304,7 @@ test("a page without a dive has no verdict", () => {
 test("a placement that failed, or a missing module, is NOT RUN with the reason", async () => {
   const rig = await pageRig("E-DG-ellipsoid", "dive");
   const noFacade = await runDiveGateCellPage({
-    page: makeDiveWorld(0, { facade: false }).page,
+    ...livePage(0, { facade: false }),
     rig: {
       ...rig,
       dials: {
@@ -372,7 +312,6 @@ test("a placement that failed, or a missing module, is NOT RUN with the reason",
         diveGateStep: { ...rig.dials.diveGateStep, moduleUrl: STUB_MODULE_URL },
       },
     },
-    settle: async () => {},
   });
   const facadeless = diveGateVerdict(
     "E-DG-ellipsoid:webgl:dive:run0",
@@ -384,7 +323,7 @@ test("a placement that failed, or a missing module, is NOT RUN with the reason",
   assert.match(facadeless.reason, /^no-water-facade: /u);
 
   const noModule = await runDiveGateCellPage({
-    page: makeDiveWorld(0).page,
+    ...livePage(0),
     rig: {
       ...rig,
       dials: {
@@ -395,7 +334,6 @@ test("a placement that failed, or a missing module, is NOT RUN with the reason",
         },
       },
     },
-    settle: async () => {},
   });
   const moduleless = diveGateVerdict("c", noModule);
   assert.equal(moduleless.notRun, true);
@@ -406,9 +344,8 @@ test("a placement that failed, or a missing module, is NOT RUN with the reason",
   );
 
   const noStep = await runDiveGateCellPage({
-    page: makeDiveWorld(0).page,
+    ...livePage(0),
     rig: { id: "bare", dials: { diveGateExpected: "allow" } },
-    settle: async () => {},
   });
   const stepless = diveGateVerdict("c", noStep);
   assert.equal(stepless.notRun, true);
@@ -428,9 +365,8 @@ test("allow expected and allow observed passes; refuse observed where allow was 
   const allowed = diveGateVerdict(
     "c",
     await runDiveGateCellPage({
-      page: makeDiveWorld(0).page,
+      ...livePage(0),
       rig: withModule(),
-      settle: async () => {},
     }),
   );
   assert.equal(allowed.pass, true);
@@ -444,9 +380,8 @@ test("allow expected and allow observed passes; refuse observed where allow was 
   const refused = diveGateVerdict(
     "c",
     await runDiveGateCellPage({
-      page: makeDiveWorld(0).page,
+      ...livePage(0),
       rig: withModule({ diveCollisionDisabled: false }),
-      settle: async () => {},
     }),
   );
   assert.equal(refused.pass, false);
@@ -458,9 +393,8 @@ test("allow expected and allow observed passes; refuse observed where allow was 
   const unregistered = diveGateVerdict(
     "c",
     await runDiveGateCellPage({
-      page: makeDiveWorld(0).page,
+      ...livePage(0),
       rig: withModule({ diveGateExpected: undefined }),
-      settle: async () => {},
     }),
   );
   assert.equal(unregistered.notRun, true);
@@ -472,7 +406,7 @@ test("landingVerdicts carries the dive-gate verdict of a dive page and of nothin
   const rig = await pageRig("E-DG-deathvalley", "dive");
   const diveGate = (
     await runDiveGateCellPage({
-      page: makeDiveWorld(-118).page,
+      ...livePage(-118),
       rig: {
         ...rig,
         dials: {
@@ -483,7 +417,6 @@ test("landingVerdicts carries the dive-gate verdict of a dive page and of nothin
           },
         },
       },
-      settle: async () => {},
     })
   ).diveGate;
   const base = {
@@ -637,7 +570,7 @@ async function ellipsoidDive(steps, table = null) {
     entry,
   );
   return steps.runDiveGateCellPage({
-    page: makeDiveWorld(0).page,
+    ...livePage(0),
     rig: {
       ...rig,
       dials: {
@@ -645,7 +578,6 @@ async function ellipsoidDive(steps, table = null) {
         diveGateStep: { ...rig.dials.diveGateStep, moduleUrl: STUB_MODULE_URL },
       },
     },
-    settle: async () => {},
   });
 }
 
@@ -665,7 +597,7 @@ test("INERTNESS: with the module import unreachable, the placement fails and the
 
 test("INERTNESS: with the verdict comparison unreachable, a wrong gate no longer fails", async () => {
   const wrong = await runDiveGateCellPage({
-    page: makeDiveWorld(0).page,
+    ...livePage(0),
     rig: {
       id: "r",
       dials: {
@@ -680,7 +612,6 @@ test("INERTNESS: with the verdict comparison unreachable, a wrong gate no longer
         diveGateExpected: "allow",
       },
     },
-    settle: async () => {},
   });
   assert.equal(diveGateVerdict("c", wrong).pass, false);
   const mutated = await importMutated(STEPS_PATH, [
@@ -764,4 +695,357 @@ test("--perf over a dive-gate cell runs no PF window on its pages and does not w
     assert.equal(page.perf, undefined, `${page.renderer} ${page.page}`);
   }
   assert.equal(report.warmUp.status, "not-a-pf-run");
+});
+
+// ---------------------------------------------------------------------------
+// The wheel reaches the controller: the frame driver is a widget frame
+// ---------------------------------------------------------------------------
+
+/** The rig a cell page stages, with the stub Cesium module behind its module URL. */
+async function stubbedRig(cell, page) {
+  const rig = await pageRig(cell, page);
+  return {
+    ...rig,
+    dials: {
+      ...rig.dials,
+      diveGateStep: { ...rig.dials.diveGateStep, moduleUrl: STUB_MODULE_URL },
+    },
+  };
+}
+
+/** The frame driver and the placement as they were before the widget frame: render only. */
+async function preFixModules() {
+  return {
+    frames: await importMutated(FRAMES_PATH, [
+      [
+        "viewer.scene.initializeFrame();",
+        "false && viewer.scene.initializeFrame();",
+      ],
+    ]),
+    steps: await importMutated(STEPS_PATH, [
+      ["scene.initializeFrame();", "false && scene.initializeFrame();"],
+    ]),
+  };
+}
+
+/** The floor a dive page's camera is held at: the dive stop where the gate allows, else the stock clamp. */
+const floorOf = (expect, page) =>
+  expect.surface + (page === "dive" && expect.dive === "allow" ? 14 : 1);
+
+/** Strictly descending while above the floor, then flat on it. */
+function assertDescendsToFloor(series, floor, label) {
+  assert.equal(series.length, 13, `${label}: initial plus 12 notches`);
+  for (let i = 0; i + 1 < series.length; i++) {
+    if (series[i] > floor) {
+      assert.ok(
+        series[i + 1] < series[i],
+        `${label}: notch ${i} left the camera at ${series[i]} m, above the ${floor} m floor`,
+      );
+    } else {
+      assert.equal(series[i + 1], series[i], `${label}: flat on the floor`);
+    }
+  }
+  assert.equal(series.at(-1), floor, `${label}: ended on the floor`);
+}
+
+test("NEGATIVE FIRST: with the render-only frame driver and placement, every dive-gate page reads globe-height-undefined and the camera never moves, as the Edge leg saw", async () => {
+  const preFix = await preFixModules();
+  for (const [cell, expect] of Object.entries(CELLS)) {
+    for (const page of ["dive", "control"]) {
+      const rig = await stubbedRig(cell, page);
+      const world = makeDiveGateFakeWorld({
+        surface: expect.surface,
+        frameDriver: preFix.frames.pageRenderFrames,
+      });
+      const result = await preFix.steps.runDiveGateCellPage({
+        page: world.page,
+        rig,
+        settle: world.settle,
+      });
+      const label = `${cell}:${page}`;
+      const start = rig.dials.diveGateStep.height;
+      assert.equal(result.diveGate.outcome.readable, false, label);
+      assert.equal(result.diveGate.outcome.reason, "globe-height-undefined");
+      assert.equal(
+        world.seen.wheels.length,
+        12,
+        `${label}: the wheel was sent`,
+      );
+      assert.equal(world.seen.initializeFrames, 0, label);
+      assert.deepEqual(
+        result.diveGate.outcome.cameraHeights,
+        new Array(13).fill(start),
+        `${label}: the camera never moved`,
+      );
+      const verdict = diveGateVerdict(`${cell}:webgl:${page}:run0`, result);
+      assert.equal(verdict.notRun, true, label);
+      assert.equal(verdict.pass, false, label);
+      assert.match(verdict.reason, /^globe-height-undefined: /u);
+      assert.deepEqual(verdict.cameraHeights, new Array(13).fill(start));
+    }
+  }
+});
+
+test("with the widget frame, every cell's pages read a finite globe height, a descending camera and the registered gate", async () => {
+  for (const [cell, expect] of Object.entries(CELLS)) {
+    for (const page of ["dive", "control"]) {
+      const rig = await stubbedRig(cell, page);
+      const world = makeDiveWorld(expect.surface);
+      const result = await runDiveGateCellPage({
+        page: world.page,
+        rig,
+        settle: world.settle,
+      });
+      const label = `${cell}:${page}`;
+      const { outcome } = result.diveGate;
+      assert.equal(
+        outcome.readable,
+        true,
+        `${label} ${JSON.stringify(outcome)}`,
+      );
+      assert.equal(outcome.receipt.globeHeight, expect.surface, label);
+      assert.ok(Number.isFinite(world.scene.globeHeight), label);
+      assertDescendsToFloor(
+        outcome.receipt.cameraHeights,
+        floorOf(expect, page),
+        label,
+      );
+      assert.equal(
+        outcome.receipt.cameraHeights[0],
+        rig.dials.diveGateStep.height,
+      );
+      assert.equal(
+        outcome.receipt.gate,
+        page === "dive" ? expect.dive : "refuse",
+      );
+      assert.equal(outcome.receipt.clampHeld, true, label);
+      assert.equal(
+        world.seen.clockTicks,
+        0,
+        `${label}: the clock stays frozen`,
+      );
+      assert.equal(
+        world.seen.initializeFrames,
+        world.seen.renders.length,
+        `${label}: every render is a widget frame`,
+      );
+      const verdict = diveGateVerdict(`${cell}:webgl:${page}:run0`, result);
+      assert.equal(verdict.pass, true, `${label} ${JSON.stringify(verdict)}`);
+      assert.deepEqual(verdict.cameraHeights, outcome.receipt.cameraHeights);
+    }
+  }
+});
+
+test("Death Valley's dive page refuses (Badwater is below the band); the other cells' dive pages allow and count depth", async () => {
+  const deathValley = await stubbedRig("E-DG-deathvalley", "dive");
+  const world = makeDiveWorld(CELLS["E-DG-deathvalley"].surface);
+  const { diveGate } = await runDiveGateCellPage({
+    page: world.page,
+    rig: deathValley,
+    settle: world.settle,
+  });
+  assert.equal(diveGate.outcome.receipt.gate, "refuse");
+  assert.equal(diveGate.outcome.receipt.diveDepthGrew, false);
+  assert.equal(diveGate.expected, "refuse");
+  assert.equal(deathValley.dials.diveCollisionDisabled, true);
+  for (const cell of Object.keys(CELLS).filter(
+    (c) => c !== "E-DG-deathvalley",
+  )) {
+    const rig = await stubbedRig(cell, "dive");
+    const other = makeDiveWorld(CELLS[cell].surface);
+    const result = await runDiveGateCellPage({
+      page: other.page,
+      rig,
+      settle: other.settle,
+    });
+    assert.equal(result.diveGate.outcome.receipt.gate, "allow", cell);
+    assert.equal(result.diveGate.outcome.receipt.diveDepthGrew, true, cell);
+  }
+});
+
+test("a controller that ignores the wheel is NOT RUN as wheel-unread on the cell page, naming where the camera stayed", async () => {
+  const rig = await stubbedRig("E-DG-ellipsoid", "dive");
+  const world = makeDiveWorld(0, { enableInputs: false });
+  const result = await runDiveGateCellPage({
+    page: world.page,
+    rig,
+    settle: world.settle,
+  });
+  const verdict = diveGateVerdict("E-DG-ellipsoid:webgl:dive:run0", result);
+  assert.equal(world.seen.wheels.length, 12);
+  assert.equal(verdict.notRun, true);
+  assert.equal(verdict.pass, false);
+  assert.match(
+    verdict.reason,
+    /^wheel-unread: the camera stayed at 150 m over 12 notches$/u,
+  );
+  assert.deepEqual(verdict.cameraHeights, new Array(13).fill(150));
+});
+
+test("with only the frame driver render-only, the globe height is read but the wheel never moves the camera: wheel-unread", async () => {
+  const preFix = await preFixModules();
+  const rig = await stubbedRig("E-DG-ellipsoid", "dive");
+  const world = makeDiveGateFakeWorld({
+    surface: 0,
+    frameDriver: preFix.frames.pageRenderFrames,
+  });
+  const result = await runDiveGateCellPage({
+    page: world.page,
+    rig,
+    settle: world.settle,
+  });
+  assert.equal(result.diveGate.outcome.reason, "wheel-unread");
+});
+
+test("a probe run over each cell, with the widget frame, reads :dive-gate PASS on the dive and control pages with the camera descending", async () => {
+  for (const [cell, expect] of Object.entries(CELLS)) {
+    const { code, verdicts } = await p14Run(
+      `widget-frame-${cell}`,
+      ["--cells", cell, "--renderer", "webgl"],
+      {},
+      undefined,
+      (browser) =>
+        withDiveGateAnswers(browser, { globeHeight: expect.surface }),
+    );
+    const dive = verdicts.filter((verdict) =>
+      verdict.id.endsWith(":dive-gate"),
+    );
+    assert.equal(dive.length, 2, cell);
+    assert.equal(
+      code,
+      0,
+      `${cell} ${JSON.stringify(verdicts.filter((v) => !v.pass))}`,
+    );
+    for (const verdict of dive) {
+      assert.equal(verdict.pass, true, verdict.id);
+      assert.equal(verdict.globeHeight, expect.surface, verdict.id);
+      const page = verdict.id.includes(":dive:") ? "dive" : "control";
+      assertDescendsToFloor(
+        verdict.cameraHeights,
+        floorOf(expect, page),
+        verdict.id,
+      );
+      assert.equal(
+        verdict.observed,
+        page === "dive" ? expect.dive : "refuse",
+        verdict.id,
+      );
+    }
+  }
+});
+
+test("a probe run whose page functions are the render-only ones reads NOT RUN globe-height-undefined on every dive-gate page, never a pass", async () => {
+  // The probe imports its frame driver itself, and importMutated rewrites only
+  // the mutated module's own imports, so the mutated page functions are handed
+  // to the fake browser, which runs them in place of the probe's by name: the
+  // same page-side path (page.evaluate of the page function against the world).
+  const preFix = await preFixModules();
+  for (const [cell, expect] of Object.entries(CELLS)) {
+    const { code, verdicts } = await p14Run(
+      `render-only-${cell}`,
+      ["--cells", cell, "--renderer", "webgl"],
+      {},
+      undefined,
+      (browser) =>
+        withDiveGateAnswers(browser, {
+          globeHeight: expect.surface,
+          functionOverrides: {
+            pageRenderFrames: preFix.frames.pageRenderFrames,
+            pagePlaceDiveCamera: preFix.steps.pagePlaceDiveCamera,
+          },
+        }),
+    );
+    const dive = verdicts.filter((verdict) =>
+      verdict.id.endsWith(":dive-gate"),
+    );
+    assert.equal(dive.length, 2, cell);
+    for (const verdict of dive) {
+      assert.equal(verdict.pass, false, verdict.id);
+      assert.equal(verdict.notRun, true, verdict.id);
+      assert.match(verdict.reason, /^globe-height-undefined: /u, verdict.id);
+      assert.equal(new Set(verdict.cameraHeights).size, 1, verdict.id);
+    }
+    assert.notEqual(code, 0, `${cell} fails the run`);
+  }
+});
+
+test("INERTNESS: with the wheel-unread check unreachable, a controller that ignores the wheel passes the cell page", async () => {
+  const mutated = await importMutated(STEPS_PATH, [
+    [
+      "if (cameraHeights.every((height) => height === cameraHeights[0])) {",
+      "if (false && cameraHeights.every((height) => height === cameraHeights[0])) {",
+    ],
+  ]);
+  const rig = await stubbedRig("E-DG-ellipsoid", "dive");
+  const world = makeDiveWorld(0, { enableInputs: false });
+  const result = await mutated.runDiveGateCellPage({
+    page: world.page,
+    rig,
+    settle: world.settle,
+  });
+  const verdict = mutated.diveGateVerdict("c", result);
+  assert.equal(verdict.pass, true, "the live check would have made it NOT RUN");
+});
+
+test("INERTNESS: with the camera series dropped from the verdict entry, a passing dive-gate verdict no longer carries it", async () => {
+  const mutated = await importMutated(STEPS_PATH, [
+    [
+      "    globeHeight: receipt.globeHeight,\n    cameraHeights: receipt.cameraHeights,\n    notches: receipt.notches,",
+      "    globeHeight: receipt.globeHeight,\n    notches: receipt.notches,",
+    ],
+  ]);
+  const rig = await stubbedRig("E-DG-ellipsoid", "dive");
+  const world = makeDiveWorld(0);
+  const result = await mutated.runDiveGateCellPage({
+    page: world.page,
+    rig,
+    settle: world.settle,
+  });
+  const verdict = mutated.diveGateVerdict("c", result);
+  assert.equal(verdict.pass, true);
+  assert.equal(verdict.cameraHeights, undefined);
+  assert.ok(Array.isArray(diveGateVerdict("c", result).cameraHeights));
+});
+
+test("INERTNESS: with the frame driver's initializeFrame unreachable, the cell page is NOT RUN and no cell passes", async () => {
+  const frames = await importMutated(FRAMES_PATH, [
+    [
+      "viewer.scene.initializeFrame();",
+      "false && viewer.scene.initializeFrame();",
+    ],
+  ]);
+  const rig = await stubbedRig("E-DG-geiranger", "dive");
+  const world = makeDiveGateFakeWorld({
+    surface: 43,
+    frameDriver: frames.pageRenderFrames,
+  });
+  const result = await runDiveGateCellPage({
+    page: world.page,
+    rig,
+    settle: world.settle,
+  });
+  const verdict = diveGateVerdict("c", result);
+  assert.equal(verdict.pass, false);
+  assert.equal(verdict.notRun, true);
+});
+
+test("INERTNESS: with the placement's initializeFrame unreachable, the globe height is stale straight after the placement, though a whole cell page still reads", async () => {
+  const steps = await importMutated(STEPS_PATH, [
+    ["scene.initializeFrame();", "false && scene.initializeFrame();"],
+  ]);
+  const rig = await stubbedRig("E-DG-geiranger", "dive");
+  const world = makeDiveWorld(43);
+  const arg = { ...rig.dials.diveGateStep, disableWaterCollision: true };
+  await world.page.evaluate(steps.pagePlaceDiveCamera, arg);
+  assert.equal(world.scene.globeHeight, undefined);
+  // The settle after the placement runs widget frames, so the end-to-end run
+  // survives this mutant: the placement's own frame is pinned by
+  // globe-dive-gate-steps.spec.mjs, not by the end-to-end run.
+  const other = makeDiveWorld(43);
+  const result = await steps.runDiveGateCellPage({
+    page: other.page,
+    rig,
+    settle: other.settle,
+  });
+  assert.equal(result.diveGate.outcome.readable, true);
 });

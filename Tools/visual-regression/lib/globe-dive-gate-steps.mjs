@@ -34,6 +34,16 @@
  * facade, no terrain height under the camera, no steps) is a reason, never a
  * receipt.
  *
+ * WHY EVERY FRAME IS A WIDGET FRAME. The landing stage stops the viewer's
+ * render loop, so the page only renders what the probe drives. The wheel
+ * input is consumed, and `scene.globeHeight` refreshed, in
+ * `Scene.initializeFrame()` and nowhere else; `scene.render()` alone never
+ * does either. The placement therefore drives one widget frame
+ * (`initializeFrame()` then `render()`, as `CesiumWidget.prototype.render`
+ * does) after `setView`, and the probe's `settle` does the same per frame
+ * (`lib/landing-page-frames.mjs`). A record whose camera never moved over the
+ * wheel is not a measurement of the gate: it is unreadable (`wheel-unread`).
+ *
  * @module Tools/visual-regression/lib/globe-dive-gate-steps
  */
 
@@ -115,7 +125,10 @@ export async function pagePlaceDiveCamera({
     destination: Cesium.Cartesian3.fromDegrees(lon, lat, height),
     orientation: { heading, pitch, roll },
   });
-  scene.render();
+  // One widget frame: with the render loop stopped, a bare `render()` would
+  // leave `globeHeight` stale.
+  scene.initializeFrame();
+  scene.render(viewer.clock?.currentTime);
   const canvas = scene.canvas;
   const rect = canvas.getBoundingClientRect();
   return {
@@ -212,7 +225,18 @@ export async function runDiveGateSteps({ page, step, settle }) {
   return { record, outcome: buildDiveGateReceipt(record) };
 }
 
-const unreadable = (reason, detail) => ({ readable: false, reason, detail });
+const unreadable = (reason, detail, cameraHeights = null) => ({
+  readable: false,
+  reason,
+  detail,
+  cameraHeights,
+});
+
+/** The camera height series of a record: the initial read, then each notch. */
+const cameraHeightSeries = (record) =>
+  [record.initial, ...(record.steps ?? [])].map((state) =>
+    Number.isFinite(state?.cameraHeight) ? state.cameraHeight : null,
+  );
 
 /**
  * Turn a dive record into an allow/refuse receipt, or say why it cannot.
@@ -240,18 +264,33 @@ export function buildDiveGateReceipt(record) {
       "the controller's globe has no `_water` to gate on",
     );
   }
+  const cameraHeights = cameraHeightSeries(record);
   const unreadField = (field) =>
     states.some((state) => !Number.isFinite(state[field]));
   if (unreadField("globeHeight")) {
     return unreadable(
       "globe-height-undefined",
-      "scene.globeHeight was not a finite number under the camera",
+      `scene.globeHeight was not a finite number under the camera (camera heights ${JSON.stringify(cameraHeights)} m)`,
+      cameraHeights,
     );
   }
   for (const field of ["cameraHeight", "minimumZoomDistance"]) {
     if (unreadField(field)) {
-      return unreadable(`${field}-undefined`, `${field} was not finite`);
+      return unreadable(
+        `${field}-undefined`,
+        `${field} was not finite`,
+        cameraHeights,
+      );
     }
+  }
+  // A camera that never moved over the wheel means the wheel never reached
+  // the controller: the gate was not exercised, so nothing here is a reading.
+  if (cameraHeights.every((height) => height === cameraHeights[0])) {
+    return unreadable(
+      "wheel-unread",
+      `the camera stayed at ${cameraHeights[0]} m over ${steps.length} notches`,
+      cameraHeights,
+    );
   }
   if (
     states.some((state) => typeof state.gateAllows !== "boolean") ||
@@ -283,6 +322,7 @@ export function buildDiveGateReceipt(record) {
       notches: steps.length,
       clampHeld: breaches.length === 0,
       clampBreaches: breaches.map((step) => step.notch),
+      cameraHeights,
       minCameraHeight: Math.min(...steps.map((step) => step.cameraHeight)),
       diveDepthMax,
       diveDepthGrew: diveDepthMax > 0,
@@ -351,12 +391,40 @@ export async function runDiveGateCellPage({ page, rig, settle }) {
  * read, or a page whose rig registered no allow / refuse, is NOT RUN, which
  * fails the run: a requested measurement that did not happen is not a pass.
  * `clampHeld` rides along for the reader; the pass is the gate alone.
+ * `clockHeld` says whether the stage read back the rig's pinned instant,
+ * frozen (null when the page record carries no stage clock): a frame lit by
+ * the wall clock is not the scene the rig declared.
  *
  * @param {string} id The page's id.
- * @param {{diveGate?: object}} record A page record.
+ * @param {{diveGate?: object, stage?: {clock?: object}}} record A page record.
  * @returns {object|null}
  */
 export function diveGateVerdict(id, record) {
+  const verdict = gateVerdictOf(id, record);
+  return verdict === null
+    ? null
+    : { ...verdict, clockHeld: stageClockHeld(record?.stage?.clock) };
+}
+
+/**
+ * Whether a stage clock record holds the instant the rig pinned: requested,
+ * read back equal, and frozen. Pure.
+ *
+ * @param {{requested?: string|null, observed?: string, frozen?: boolean}} [clock]
+ * @returns {boolean|null}
+ */
+export function stageClockHeld(clock) {
+  if (clock === null || typeof clock !== "object") {
+    return null;
+  }
+  return (
+    typeof clock.requested === "string" &&
+    clock.observed === clock.requested &&
+    clock.frozen === true
+  );
+}
+
+function gateVerdictOf(id, record) {
   const dive = record?.diveGate;
   if (!dive) {
     return null;
@@ -372,6 +440,7 @@ export function diveGateVerdict(id, record) {
       expected,
       observed: null,
       clampHeld: null,
+      cameraHeights: outcome?.cameraHeights ?? null,
       reason: `${outcome?.reason ?? "no-outcome"}: ${outcome?.detail ?? "the dive was not read"}`,
     };
   }
@@ -384,6 +453,7 @@ export function diveGateVerdict(id, record) {
       expected,
       observed: receipt.gate,
       clampHeld: receipt.clampHeld,
+      cameraHeights: receipt.cameraHeights,
       reason: `expected-gate-missing: the rig registered ${JSON.stringify(expected)}, not allow or refuse`,
     };
   }
@@ -407,6 +477,7 @@ export function diveGateVerdict(id, record) {
       expected,
       observed: receipt.gate,
       clampHeld: receipt.clampHeld,
+      cameraHeights: receipt.cameraHeights,
       globeHeight: height,
       globeHeightWindow: window,
       reason: voidReason,
@@ -421,6 +492,7 @@ export function diveGateVerdict(id, record) {
     clampHeld: receipt.clampHeld,
     collisionDisabled: receipt.collisionDisabled,
     globeHeight: receipt.globeHeight,
+    cameraHeights: receipt.cameraHeights,
     notches: receipt.notches,
     diveDepthMax: receipt.diveDepthMax,
     depthWhileRefused: receipt.depthWhileRefused,

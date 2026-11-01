@@ -58,6 +58,71 @@ export function analyzeProhibitedReader(sourceText) {
     line++;
   };
 
+  // Template scanning follows `${ ... }` substitutions, so a string, a brace
+  // or a nested template inside one (an escaped backtick included) never ends
+  // the outer template early. Each scanner starts just past its opening
+  // character and stops just past its closing one.
+  const skipQuoted = (quote) => {
+    while (index < sourceText.length && sourceText[index] !== quote) {
+      if (sourceText[index] === "\\") {
+        index += Math.min(2, sourceText.length - index);
+      } else if (sourceText[index] === "\r" || sourceText[index] === "\n") {
+        return;
+      } else {
+        index++;
+      }
+    }
+    index++;
+  };
+  const skipSubstitution = () => {
+    let depth = 0;
+    while (index < sourceText.length) {
+      const current = sourceText[index];
+      if (current === "}" && depth === 0) {
+        index++;
+        return;
+      }
+      if (current === "{") {
+        depth++;
+        index++;
+      } else if (current === "}") {
+        depth--;
+        index++;
+      } else if (current === '"' || current === "'") {
+        index++;
+        skipQuoted(current);
+      } else if (current === "`") {
+        index++;
+        if (scanTemplateTail() < 0) {
+          return;
+        }
+      } else if (current === "\r" || current === "\n") {
+        advanceLine();
+      } else {
+        index++;
+      }
+    }
+  };
+  // Returns the index of the closing backtick, or -1 when there is none.
+  const scanTemplateTail = () => {
+    while (index < sourceText.length) {
+      if (sourceText[index] === "\\") {
+        index += Math.min(2, sourceText.length - index);
+      } else if (sourceText[index] === "`") {
+        index++;
+        return index - 1;
+      } else if (sourceText.startsWith("${", index)) {
+        index += 2;
+        skipSubstitution();
+      } else if (sourceText[index] === "\r" || sourceText[index] === "\n") {
+        advanceLine();
+      } else {
+        index++;
+      }
+    }
+    return -1;
+  };
+
   const isIdentifierStart = (character) =>
     character !== undefined && /[$A-Z_a-z\u0080-\uFFFF]/u.test(character);
   const isIdentifierPart = (character) =>
@@ -208,23 +273,8 @@ export function analyzeProhibitedReader(sourceText) {
         const tokenLine = line;
         index++;
         const bodyStart = index;
-        let bodyEnd;
-        let closed = false;
-        while (index < sourceText.length) {
-          if (sourceText[index] === "\\") {
-            index += Math.min(2, sourceText.length - index);
-          } else if (sourceText[index] === "`") {
-            bodyEnd = index;
-            index++;
-            closed = true;
-            break;
-          } else if (sourceText[index] === "\r" || sourceText[index] === "\n") {
-            advanceLine();
-          } else {
-            index++;
-          }
-        }
-        if (!closed) {
+        const bodyEnd = scanTemplateTail();
+        if (bodyEnd < 0) {
           throw new SyntaxError("unterminated template literal");
         }
         pushToken("template", "template", tokenLine);

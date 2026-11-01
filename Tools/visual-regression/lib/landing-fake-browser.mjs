@@ -207,6 +207,9 @@ export function makeFakeBrowser(
         ) {
           return { pipelineCache: null, shaderModuleCache: null };
         }
+        // The frame driver, answered by name for every page that never dives.
+        // A dive page runs the real driver against the dive-gate fake world
+        // instead (fixtures/probe-landing-cells-support.mjs, withDiveGateAnswers).
         if (
           src.includes("render(viewer.clock.currentTime)") ||
           src.includes("pageRenderFrames")

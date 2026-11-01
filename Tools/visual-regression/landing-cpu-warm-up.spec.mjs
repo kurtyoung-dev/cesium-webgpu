@@ -1,5 +1,5 @@
 // landing-cpu-warm-up.spec.mjs - the machine-CPU warm-up before a landing PF run's first page. Pure Node: no browser, no GPU, no real sleep.
-// @purpose Asserts lib/cpu-warm-up.mjs by what a receipt reader sees: when the warm-up releases, times out or skips, the note and samples it records, the PF verdicts it marks, and (through runProbe over the fake browser) the report's top-level warmUp.
+// @purpose Asserts lib/cpu-warm-up.mjs by what a receipt reader sees: when the warm-up releases, times out or skips, the note and samples it records, the PF verdicts it marks, the sampler it names (live with none injected, read without a live sample), and (through runProbe over the fake browser) the report's top-level warmUp.
 // @status ACTIVE
 //
 // The sampler and the clock are injected: the fake clock advances one interval per sample, so no test compares
@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test, { after, before } from "node:test";
+import { fileURLToPath } from "node:url";
 import { mkLaneTmp, removeLaneTmp } from "../lib/lane-tmp.mjs";
 import {
   WARM_UP_DEFAULTS,
@@ -16,9 +17,15 @@ import {
   warmUpBeforeFirstArm,
 } from "./lib/cpu-warm-up.mjs";
 import { descriptor } from "./probe-landing-cells.mjs";
+import { importMutated } from "./lib/import-mutated.mjs";
 import { landingRunners } from "./fixtures/probe-landing-cells-support.mjs";
 
 const INTERVAL = 1000;
+const WARM_UP_PIECE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "lib",
+  "cpu-warm-up.mjs",
+);
 const E_D_PLAN = [{ cell: "E-D" }, { cell: "E-D" }];
 
 /**
@@ -435,6 +442,50 @@ test("the run's work budget covers a full warm-up time-out on top of its pages",
   const perCell = descriptor.workBudgetMs({ cells: "E-D,E-O" }) - one;
   assert.ok(perCell > 0);
   assert.equal(one - perCell, WARM_UP_DEFAULTS.timeoutMs);
+});
+
+test("the record names the live sampler when no sampler is injected, without taking a live sample", async () => {
+  // No deps: a not-a-pf-run and a --no-warm-up record both return before the
+  // first sample, so the label is read without reaching the machine.
+  const reads = liveSamplerReads();
+  const idle = await warmUpBeforeFirstArm({ options: {}, plan: E_D_PLAN });
+  assert.equal(idle.status, "not-a-pf-run");
+  assert.equal(idle.sampler, "live");
+  const skipped = await warmUpBeforeFirstArm({
+    options: { perf: true, noWarmUp: true },
+    plan: E_D_PLAN,
+  });
+  assert.equal(skipped.status, "skipped");
+  assert.equal(skipped.sampler, "live");
+  const { record } = await run([0, 0, 0]);
+  assert.equal(record.sampler, "injected");
+  assert.equal(liveSamplerReads(), reads, "no live sample was taken");
+});
+
+test("inertness: a sampler label hard-wired either way fails the label case", async () => {
+  const site =
+    'const sampler = typeof deps?.sampleCpu === "function" ? "injected" : "live";';
+  for (const [label, other] of [
+    ["injected", "live"],
+    ["live", "injected"],
+  ]) {
+    const mutant = await importMutated(WARM_UP_PIECE, [
+      [site, `const sampler = "${label}";`],
+    ]);
+    const idle = await mutant.warmUpBeforeFirstArm({
+      options: {},
+      plan: E_D_PLAN,
+    });
+    const injected = await mutant.warmUpBeforeFirstArm({
+      options: { perf: true },
+      plan: E_D_PLAN,
+      deps: seriesDeps([0, 0, 0]).deps,
+    });
+    assert.ok(
+      idle.sampler !== "live" || injected.sampler !== "injected",
+      `hard-wired "${label}" must read wrong on the ${other} record`,
+    );
+  }
 });
 
 test("no test in this spec read the live machine CPU", () => {

@@ -179,7 +179,16 @@ import {
 } from "./lib/cpu-warm-up.mjs";
 import { runDeviceLossSteps } from "./lib/device-loss-steps.mjs";
 import { runDiveGateCellPage } from "./lib/globe-dive-gate-steps.mjs";
+import {
+  contentionBasisOf,
+  primeBeforeFirstArm,
+} from "./lib/landing-pf-prime.mjs";
 import { buildLandingCellsSummary } from "./lib/landing-cells-summary.mjs";
+import {
+  pageNow,
+  pageRenderFrames,
+  settleFramesOf,
+} from "./lib/landing-page-frames.mjs";
 import { runWeatherStateSteps } from "./lib/weather-state-steps.mjs";
 import {
   measureLandingPerformance,
@@ -203,6 +212,7 @@ import {
   landingArgsFinalize,
   pipelineWaitPlan,
   planLandingCells,
+  positiveControlPageIndex,
   rigForPage,
   pipelineWaitMismatches,
   splitList,
@@ -269,6 +279,7 @@ export {
   DEVICE_LOSS_PAGES,
   LANDING_CELLS,
   planLandingCells,
+  positiveControlPageIndex,
   splitList,
 } from "./lib/landing-cell-table.mjs";
 
@@ -312,21 +323,6 @@ export function blockingDials(staged) {
   );
 }
 
-/** Render `frames` frames at the frozen clock. Runs in the page. */
-async function pageRenderFrames({ frames }) {
-  const viewer = /** @type {any} */ (globalThis).viewer;
-  for (let i = 0; i < frames; i++) {
-    viewer.scene.render(viewer.clock.currentTime);
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-  }
-  return frames;
-}
-
-/** Page time now (milliseconds since navigation start). Runs in the page. */
-function pageNow() {
-  return performance.now();
-}
-
 function pageLinesFrom(diagnostics) {
   return [
     ...diagnostics.console.map((m) => ({
@@ -342,16 +338,8 @@ function pageLinesFrom(diagnostics) {
   ].sort((a, b) => a.seq - b.seq);
 }
 
-function settleFramesOf(rig) {
-  if (rig.readiness?.kind === "settleFrames") {
-    return rig.readiness.frames;
-  }
-  // A settleMs rig renders at about 60 frames a second for its time.
-  return Math.max(1, Math.round(((rig.readiness?.ms ?? 1000) / 1000) * 60));
-}
-
 /** One planned (cell, renderer, page) on one fresh browser context. */
-async function runLandingPage({
+export async function runLandingPage({
   browser,
   origin,
   entry,
@@ -361,6 +349,9 @@ async function runLandingPage({
   outputDirectory,
   captures,
   positiveControl = false,
+  // Loads, stages, measures startup and settles, then returns: the page that
+  // warms the browser before the first measured one, capturing nothing.
+  prime = false,
 }) {
   const record = {
     run,
@@ -469,6 +460,9 @@ async function runLandingPage({
       );
       const settle = (frames) => page.evaluate(pageRenderFrames, { frames });
       await settle(settleFramesOf(rig));
+      if (prime) {
+        return record;
+      }
 
       const base = `${entry.cell}-${entry.renderer}-run${run}`;
       const capture = async (name) => {
@@ -712,38 +706,13 @@ export function allWaited(byCell) {
 let invocationCpu = null;
 /** The warm-up before this invocation's first page (`lib/cpu-warm-up.mjs`). */
 let invocationWarmUp = null;
+/** The unmeasured prime page after the warm-up (`lib/landing-pf-prime.mjs`). */
+let invocationPrime = null;
 /** The rig registry the pages ran from, for the receipt's capture manifest. */
 let invocationRigs = null;
 
 /** The manifest writer, its throw (a page whose rig is gone) reported. */
 const landingManifestOrError = writeLandingCaptureManifestOrViolations;
-
-/**
- * The page of a plan that runs the sentinel's positive control: the first
- * identity page, or -1 without the switch. Refuses the switch when no
- * requested cell is an identity cell, before the first page. Pure.
- *
- * @param {object[]} plan {@link planLandingCells}' answer.
- * @param {{sentinelPositiveControl?: boolean}} options
- * @returns {number}
- * @throws {ProbeRefusal} `sentinel-control-no-identity-cell`.
- */
-export function positiveControlPageIndex(plan, options) {
-  if (options?.sentinelPositiveControl !== true) {
-    return -1;
-  }
-  const index = plan.findIndex(
-    (entry) => LANDING_CELLS[entry.cell]?.identity === true,
-  );
-  if (index < 0) {
-    throw new ProbeRefusal(
-      "sentinel-control-no-identity-cell",
-      "--sentinel-positive-control needs an identity cell in --cells (E-D, E-D-HDR, E-ID-2d, E-ID-cv): only their pages carry the sentinel",
-      { cells: splitList(options.cells) },
-    );
-  }
-  return index;
-}
 
 const PAGE_BUDGET_MS =
   NAVIGATION_BUDGET_MS + STARTUP_BUDGET_MS + STEPS_BUDGET_MS + PERF_BUDGET_MS;
@@ -838,6 +807,7 @@ export const descriptor = {
     );
     if (run === 0) {
       invocationCpu?.stop();
+      invocationCpu = null;
       // Before the first page of a PF run, under the guard's own threshold.
       invocationWarmUp = await warmUpBeforeFirstArm({
         options,
@@ -849,28 +819,42 @@ export const descriptor = {
         // A spec's own series first, else what the launched browser carries.
         deps: descriptor.warmUpDeps ?? browser?.[WARM_UP_SEAM],
       });
-      invocationCpu = startCpuSampler();
     }
     const rigsById = new Map(rigsForPlan.map((rig) => [rig.id, rig]));
     invocationRigs = rigsById;
     const plan = planLandingCells(options, rigsById);
     const controlIndex = positiveControlPageIndex(plan, options);
     fs.mkdirSync(outputDirectory, { recursive: true });
+    // A spec's own page runner first, else the real one.
+    const runPage = descriptor.pageRunner ?? runLandingPage;
+    const pageInputs = (entry) => ({
+      browser,
+      origin,
+      entry,
+      rig: rigForPage(rigsById.get(entry.rigId), entry),
+      run,
+      options,
+      outputDirectory,
+      captures,
+    });
+    if (run === 0) {
+      // One unmeasured load of the first PF page, so the first measured arm
+      // does not carry the browser's and the disk's cold start.
+      invocationPrime = await primeBeforeFirstArm({
+        options,
+        plan,
+        runPage: (entry) => runPage({ ...pageInputs(entry), prime: true }),
+      });
+      invocationCpu = startCpuSampler();
+    }
     const records = [];
     for (const [index, entry] of plan.entries()) {
       console.log(
         `[probe-landing-cells] ${entry.cell} ${entry.page} on ${entry.renderer} (run ${run})`,
       );
       records.push(
-        await runLandingPage({
-          browser,
-          origin,
-          entry,
-          rig: rigForPage(rigsById.get(entry.rigId), entry),
-          run,
-          options,
-          outputDirectory,
-          captures,
+        await runPage({
+          ...pageInputs(entry),
           positiveControl: index === controlIndex,
         }),
       );
@@ -953,6 +937,8 @@ export const descriptor = {
       })),
       cpuSeries,
       warmUp: invocationWarmUp,
+      prime: invocationPrime,
+      contentionBasis: contentionBasisOf(base, overrides),
       pages: reportPages,
       arms: groupArms(reportPages),
       comparison,
@@ -979,6 +965,8 @@ export const descriptor = {
       ...markPfVerdicts(landingVerdicts(pages, comparison), {
         tip: invocationWarmUp,
         base: base?.warmUp ?? null,
+        prime: invocationPrime,
+        basis: contentionBasisOf(base, overrides),
       }),
       // This invocation's pages only: a merged report ran no control.
       ...positiveControlCoverage(

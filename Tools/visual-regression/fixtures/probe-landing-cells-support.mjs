@@ -11,6 +11,10 @@ import path from "node:path";
 import { encodeRgbaPng } from "../../lib/png-rgba.mjs";
 import { runProbe } from "../lib/probe-runtime.mjs";
 import { makeFakeBrowser } from "../lib/landing-fake-browser.mjs";
+import {
+  STUB_CESIUM_MODULE_URL,
+  makeDiveGateFakeWorld,
+} from "./dive-gate-fake-world.mjs";
 import { descriptor, groupArms } from "../probe-landing-cells.mjs";
 
 export function writePng(file, changed = 0, width = 8, height = 8) {
@@ -133,19 +137,34 @@ export function p14Log() {
 export const verdictById = (verdicts, id) => verdicts.find((v) => v.id === id);
 
 /**
- * Wrap a fake browser so its pages answer the dive-gate step: the placement
- * (logged, and the collision flag kept per page), the state read (the gate is
- * the engine's rule: the flag set and `|globeHeight| <= 110`) and a `mouse`
- * that logs its moves and wheel notches. The fake is the source of the
- * readings, so what it certifies is that the probe carries the step data in
- * and the receipt out; the real controller is the Edge job's.
+ * Wrap a fake browser so its pages run the dive-gate step's REAL page
+ * functions. Each page gets a fake world (`fixtures/dive-gate-fake-world.mjs`)
+ * for the cell's surface height: a viewer whose `globeHeight` is undefined
+ * until `initializeFrame()` runs, whose wheel moves the camera only in that
+ * call, and whose water facade applies the engine's gate. The page functions
+ * the probe hands to `page.evaluate` (`pagePlaceDiveCamera`,
+ * `pageReadDiveState`, and `pageRenderFrames` once the camera is placed) run
+ * against that world; every other page function falls through to the base fake
+ * browser, which answers `pageRenderFrames` by name for the pages that never
+ * dive. Nothing here answers the gate or a height itself, so a probe whose
+ * frames do not reach `initializeFrame()` reads what the real page read:
+ * `globe-height-undefined`.
+ *
+ * The one thing served by the wrapper is the Cesium build: the rig's module
+ * URL is a browser path, so the world's stub module stands behind it (the
+ * result still names the URL the probe asked for).
  *
  * @param {object} browser A `makeFakeBrowser` browser.
  * @param {object} [options]
  * @param {number} [options.globeHeight] The terrain height every page reads.
- * @param {boolean} [options.placementFails] The placement reports a reason.
+ * @param {boolean} [options.placementFails] The globe has no water facade, so
+ *   the real placement reports that reason.
  * @param {{placements: object[], moves: number[][], wheels: number[]}} [options.diveLog]
  *   Receives what the pages were asked.
+ * @param {Record<string, Function>} [options.functionOverrides] Page
+ *   functions to run in place of the ones the probe passes, by name (a spec's
+ *   mutated copy of the frame driver or the placement).
+ * @param {object[]} [options.worlds] Receives each page's world.
  * @returns {object} The wrapped browser.
  */
 export function withDiveGateAnswers(
@@ -154,47 +173,47 @@ export function withDiveGateAnswers(
     globeHeight = 0,
     placementFails = false,
     diveLog = { placements: [], moves: [], wheels: [] },
+    functionOverrides = {},
+    worlds = [],
   } = {},
 ) {
   const wrapPage = (page) => {
-    let collisionDisabled = false;
+    const world = makeDiveGateFakeWorld({
+      surface: globeHeight,
+      waterAccessor: !placementFails,
+    });
+    worlds.push(world);
+    let placed = false;
     return {
       ...page,
       mouse: {
         async move(x, y) {
           diveLog.moves.push([x, y]);
+          return world.page.mouse.move(x, y);
         },
-        async wheel(_dx, deltaY) {
+        async wheel(dx, deltaY) {
           diveLog.wheels.push(deltaY);
+          return world.page.mouse.wheel(dx, deltaY);
         },
       },
       async evaluate(fn, arg) {
+        const run = functionOverrides[fn.name] ?? fn;
         if (fn.name === "pagePlaceDiveCamera") {
           diveLog.placements.push(arg);
-          if (placementFails) {
-            return {
-              ok: false,
-              moduleUrl: arg.moduleUrl,
-              reason: "the globe has no water facade",
-            };
-          }
-          collisionDisabled = arg.disableWaterCollision === true;
-          return {
-            ok: true,
-            moduleUrl: arg.moduleUrl,
-            cursor: { x: 640, y: 360 },
-          };
+          const result = await world.page.evaluate(run, {
+            ...arg,
+            moduleUrl: STUB_CESIUM_MODULE_URL,
+          });
+          placed = result.ok === true;
+          return { ...result, moduleUrl: arg.moduleUrl };
         }
         if (fn.name === "pageReadDiveState") {
-          return {
-            waterFacade: true,
-            disableWaterCollision: collisionDisabled,
-            cameraHeight: 50,
-            globeHeight,
-            minimumZoomDistance: 1,
-            gateAllows: collisionDisabled && Math.abs(globeHeight) <= 110,
-            diveDepthMeters: collisionDisabled ? 5 : 0,
-          };
+          return world.page.evaluate(run, arg);
+        }
+        // The frames the stage settles before the dive are the base fake's;
+        // once the camera is placed, they drive the world.
+        if (fn.name === "pageRenderFrames" && placed) {
+          return world.page.evaluate(run, arg);
         }
         return page.evaluate(fn, arg);
       },

@@ -1,6 +1,6 @@
 /**
  * The machine-CPU warm-up a PF run waits through before its first page.
- * @purpose Waits, before a landing PF run's first page, until the machine's CPU has stayed at or under the contention guard's own threshold for a run of consecutive samples (or a time-out, which lets the run proceed), records every sample and one note line, and marks each PF verdict with how each arm's warm-up ended; the sampler and clock are injectable.
+ * @purpose Waits, before a landing PF run's first page, until the machine's CPU has stayed at or under the contention guard's own threshold for a run of consecutive samples (or a time-out, which lets the run proceed), records every sample and one note line, and marks each PF verdict with how each arm's warm-up ended, the prime note and the arm CPU its contention guard holds the tip to; the sampler and clock are injectable.
  * @status ACTIVE
  *
  * WHY. The first PF arm after a server start read `unmeasured-contended` (its
@@ -78,6 +78,7 @@ export const WARM_UP_DEFAULTS = Object.freeze({
 
 const PF_VERDICT_ID = /:PF-[1-4]$/;
 const NOT_RECORDED = "warm-up: not recorded";
+const NOT_RECORDED_PRIME = "prime: not recorded";
 
 /** A dial a caller overrode, when it is a usable positive number. */
 function dial(value, fallback) {
@@ -106,15 +107,19 @@ function printed(pct) {
 /** Page kinds the probe never runs a PF window on. */
 const NO_PF_KINDS = Object.freeze(["device-loss", "dive-gate"]);
 
-/** Whether this invocation runs a performance window on any page. */
-function isPfRun(options, plan) {
-  return (plan ?? []).some(
-    (entry) =>
-      !NO_PF_KINDS.includes(entry?.kind ?? LANDING_CELLS[entry?.cell]?.kind) &&
-      (options?.perf === true ||
-        (LANDING_CELLS[entry?.cell]?.perf === true &&
-          options?.noCellPerf !== true)),
+/** Whether this planned page runs a performance window. */
+export function isPfEntry(options, entry) {
+  return (
+    !NO_PF_KINDS.includes(entry?.kind ?? LANDING_CELLS[entry?.cell]?.kind) &&
+    (options?.perf === true ||
+      (LANDING_CELLS[entry?.cell]?.perf === true &&
+        options?.noCellPerf !== true))
   );
+}
+
+/** Whether this invocation runs a performance window on any page. */
+export function isPfRun(options, plan) {
+  return (plan ?? []).some((entry) => isPfEntry(options, entry));
 }
 
 /**
@@ -201,23 +206,43 @@ export async function warmUpBeforeFirstArm({
 }
 
 /**
- * Marks every PF verdict with how each arm's warm-up ended. Pure.
+ * Marks every PF verdict with how each arm's warm-up ended, what the prime
+ * page was, and the arm CPU its contention guard holds the tip to. Pure.
  *
  * @param {Array<{id: string}>} verdicts
- * @param {{tip?: {note?: string}|null, base?: {note?: string}|null}} arms
+ * @param {{tip?: {note?: string}|null, base?: {note?: string}|null,
+ *   prime?: {note?: string}|null, basis?: {cpuArmDeltaPct: number,
+ *   arms: Record<string, {baseMeanCpu: number|null}>}|null}} arms
  *   This invocation's record, and the base report's top-level `warmUp` (null
- *   for a report written before the warm-up existed).
+ *   for a report written before the warm-up existed); the invocation's prime
+ *   record and the contention basis of the base report (both left out, the
+ *   verdict carries no such field).
  * @returns {object[]} A new array; only `:PF-1`..`:PF-4` verdicts gain a
- *   `warmUp: {tip, base}` of note lines, nothing else about any verdict moves.
+ *   `warmUp: {tip, base}` of note lines, a `prime` note line and a
+ *   `contentionBasis: {baseMeanCpu, cpuArmDeltaPct}` of their own arm, nothing
+ *   else about any verdict moves.
  */
-export function markPfVerdicts(verdicts, { tip, base } = {}) {
+export function markPfVerdicts(verdicts, { tip, base, prime, basis } = {}) {
   const warmUp = {
     tip: tip?.note ?? NOT_RECORDED,
     base: base?.note ?? NOT_RECORDED,
   };
-  return (verdicts ?? []).map((verdict) =>
-    PF_VERDICT_ID.test(verdict?.id ?? "")
-      ? { ...verdict, warmUp: { ...warmUp } }
-      : verdict,
-  );
+  return (verdicts ?? []).map((verdict) => {
+    const id = verdict?.id ?? "";
+    if (!PF_VERDICT_ID.test(id)) {
+      return verdict;
+    }
+    const marked = { ...verdict, warmUp: { ...warmUp } };
+    if (prime !== undefined) {
+      marked.prime = prime?.note ?? NOT_RECORDED_PRIME;
+    }
+    if (basis) {
+      marked.contentionBasis = {
+        baseMeanCpu:
+          basis.arms?.[id.replace(PF_VERDICT_ID, "")]?.baseMeanCpu ?? null,
+        cpuArmDeltaPct: basis.cpuArmDeltaPct,
+      };
+    }
+    return marked;
+  });
 }

@@ -2,22 +2,30 @@
 // @purpose Pins lib/globe-dive-gate-steps.mjs: against a fake viewer the step places the camera and the flag, wheels in through the page's mouse, reads the gate, the dive depth and the clamp per notch from `_water` (never the creating accessor), and the receipt says allow / refuse / mixed with the clamp and depth facts, or a named reason when the record cannot be read.
 // @status ACTIVE
 //
-// NO BROWSER. The page is a fake whose `evaluate` runs the step's page
-// functions against a fake viewer, and whose `mouse.wheel` stands in for the
-// controller: it applies the gate and the terrain clamp the way
-// `ScreenSpaceCameraController` does (`canDiveAtSurfaceHeight` is `flag &&
-// |globeHeight| <= 110`; the clamp floor is `globeHeight +
-// minimumZoomDistance`). The fake is the SOURCE of readings, so what these
-// cases certify is that the step relays the gate, the depth and the clamp
-// faithfully and that the receipt decides from them; that the real controller
-// behaves like the fake is the Edge job's to show (cells declared in the
-// module's report), and `globe-water-facade.spec.mjs` pins the real rule.
+// NO BROWSER. The page is the shared fake world's (`fixtures/dive-gate-fake-world.mjs`):
+// its `evaluate` runs the step's REAL page functions, and the settle runs the real
+// frame driver (`lib/landing-page-frames.mjs`), against a fake viewer that behaves
+// as the engine does: `globeHeight` is undefined until `initializeFrame()` runs,
+// the wheel moves the camera only when `initializeFrame()` runs the controller
+// update (clamped at `globeHeight + minimumZoomDistance`, or stopping 14 m above
+// the surface with depth counting where `canDiveAtSurfaceHeight` allows it: flag
+// set and |globeHeight| <= 110), and `render()` changes neither. The world answers
+// no quantity under test, so these cases certify that the step drives frames that
+// reach the controller, relays the gate, the depth and the clamp faithfully, and
+// that the receipt decides from them; that the real controller behaves like the
+// world is the Edge job's to show, and `globe-water-facade.spec.mjs` pins the real
+// rule.
 
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import {
+  STUB_CESIUM_LOG,
+  STUB_CESIUM_MODULE_URL,
+  makeDiveGateFakeWorld,
+} from "./fixtures/dive-gate-fake-world.mjs";
 import { importMutated } from "./lib/import-mutated.mjs";
 import * as steps from "./lib/globe-dive-gate-steps.mjs";
 
@@ -27,126 +35,35 @@ const STEPS_PATH = path.join(
   "globe-dive-gate-steps.mjs",
 );
 
-/**
- * A module the placement can import in place of the page's Cesium build: it
- * exports the one `Cartesian3.fromDegrees` the placement uses and logs every
- * call on `globalThis` for the cases to read.
- */
-const FAKE_CESIUM_URL = `data:text/javascript,${encodeURIComponent(
-  `globalThis.__diveGateFromDegrees ??= [];
-export const Cartesian3 = {
-  fromDegrees: (lon, lat, height) => {
-    globalThis.__diveGateFromDegrees.push({ lon, lat, height });
-    return { lon, lat, height };
-  },
-};`,
-)}`;
+const FAKE_CESIUM_URL = STUB_CESIUM_MODULE_URL;
 
 /**
- * A viewer, a page and the counters the cases read.
+ * A shared fake world with this spec's fixed 60 m wheel notch.
  *
  * @param {object} setup Setup.
  * @param {number|undefined} setup.globeHeight Terrain height under the camera.
- * @param {number} [setup.startHeight] Height the placement requests.
+ * @param {number} [setup.startHeight] The camera height before any placement.
  * @param {boolean} [setup.hasFacade] Whether the globe has a water facade.
  * @param {boolean} [setup.sinks] A controller bug: the clamp never holds.
- * @returns {object} The world.
+ * @param {boolean} [setup.enableInputs] `false`: the controller ignores input.
+ * @returns {object} The world (`counts` is its `seen`).
  */
 function makeWorld({
   globeHeight,
   startHeight = 200,
   hasFacade = true,
   sinks = false,
+  enableInputs = true,
 }) {
-  const counts = { accessorHits: 0, wheels: [], moves: [], settles: [] };
-  const water = {
-    disableWaterCollision: false,
-    diveDepthMeters: 0,
-    canDiveAtSurfaceHeight(height) {
-      return (
-        this.disableWaterCollision === true &&
-        Number.isFinite(height) &&
-        Math.abs(height) <= 110
-      );
-    },
-  };
-  const camera = {
-    height: 0,
-    get positionCartographic() {
-      return { height: this.height };
-    },
-    setView({ destination }) {
-      this.height = destination.height;
-      counts.placedAt = destination;
-    },
-  };
-  const scene = {
-    camera,
-    get globeHeight() {
-      return globeHeight;
-    },
-    screenSpaceCameraController: { minimumZoomDistance: 1 },
-    canvas: {
-      getBoundingClientRect: () => ({
-        left: 10,
-        top: 20,
-        width: 800,
-        height: 400,
-      }),
-    },
-    render() {},
-    globe: {
-      get water() {
-        counts.accessorHits++;
-        return water;
-      },
-      get _water() {
-        return hasFacade ? water : undefined;
-      },
-    },
-  };
-  const page = {
-    evaluate: async (fn, arg) => {
-      // No `globalThis.Cesium`: Apps/CesiumViewer does not set one, so the
-      // placement has to find Cesium through the module URL.
-      const saved = globalThis.viewer;
-      globalThis.viewer = { scene };
-      try {
-        return await fn(arg);
-      } finally {
-        globalThis.viewer = saved;
-      }
-    },
-    mouse: {
-      move: async (x, y) => counts.moves.push([x, y]),
-      wheel: async (_dx, deltaY) => {
-        counts.wheels.push(deltaY);
-        if (deltaY >= 0) {
-          return;
-        }
-        const surface = globeHeight ?? 0;
-        if (sinks) {
-          camera.height -= 60;
-          return;
-        }
-        if (water.canDiveAtSurfaceHeight(globeHeight)) {
-          // The virtual dive: the camera stops 14 m above the surface and
-          // the depth counts instead.
-          const floor = surface + 14;
-          if (camera.height - 60 > floor) {
-            camera.height -= 60;
-          } else {
-            camera.height = floor;
-            water.diveDepthMeters += 10;
-          }
-          return;
-        }
-        camera.height = Math.max(camera.height - 60, surface + 1);
-      },
-    },
-  };
-  const settle = async (frames) => counts.settles.push(frames);
-  return { page, settle, water, camera, counts };
+  const world = makeDiveGateFakeWorld({
+    surface: globeHeight,
+    startHeight,
+    facade: hasFacade,
+    sinks,
+    enableInputs,
+    wheelStepMeters: 60,
+  });
+  return { ...world, counts: world.seen };
 }
 
 const step = (overrides = {}) => ({
@@ -270,10 +187,10 @@ test("a gate that changes mid-zoom is 'mixed'", () => {
   const outcome = steps.buildDiveGateReceipt({
     placement: { disableWaterCollision: true },
     placed: { ok: true },
-    initial: read(true),
+    initial: read(true, { cameraHeight: 100 }),
     steps: [
-      { notch: 0, ...read(true) },
-      { notch: 1, ...read(false, { globeHeight: 400 }) },
+      { notch: 0, ...read(true, { cameraHeight: 80 }) },
+      { notch: 1, ...read(false, { globeHeight: 400, cameraHeight: 60 }) },
     ],
   });
   assert.equal(outcome.receipt.gate, "mixed");
@@ -302,14 +219,14 @@ test("the wheel is aimed at the canvas centre and the page settles around it", a
 });
 
 test("the camera is placed through the Cesium module at the URL given, and the record names that URL", async () => {
-  globalThis.__diveGateFromDegrees = [];
+  globalThis[STUB_CESIUM_LOG] = [];
   const world = makeWorld({ globeHeight: 0 });
   const { record, outcome } = await steps.runDiveGateSteps({
     page: world.page,
     step: step({ lon: -77.9, lat: 43.7, height: 150, wheelNotches: 2 }),
     settle: world.settle,
   });
-  assert.deepEqual(globalThis.__diveGateFromDegrees, [
+  assert.deepEqual(globalThis[STUB_CESIUM_LOG], [
     { lon: -77.9, lat: 43.7, height: 150 },
   ]);
   assert.deepEqual(world.counts.placedAt, {
@@ -421,7 +338,7 @@ test("unreadable: a failed placement, no notches and a missing gate are named", 
   const noGate = steps.buildDiveGateReceipt({
     placement: {},
     placed: { ok: true },
-    initial: state,
+    initial: { ...state, cameraHeight: 120 },
     steps: [{ notch: 0, ...state }],
   });
   assert.equal(noGate.reason, "gate-readout-missing");
@@ -502,4 +419,122 @@ test("INERTNESS: with the unreadable-facade guard unreachable, a missing facade 
     settle: world.settle,
   });
   assert.notEqual(outcome.reason, "no-water-facade");
+});
+
+// ---------------------------------------------------------------------------
+// The wheel has to reach the controller: frames are widget frames
+// ---------------------------------------------------------------------------
+
+test("the receipt carries the camera height series, the initial read then each notch, descending to the floor", async () => {
+  const world = makeWorld({ globeHeight: 0 });
+  const { outcome } = await steps.runDiveGateSteps({
+    page: world.page,
+    step: step(),
+    settle: world.settle,
+  });
+  // 200 m placed, 60 m a notch, the dive stops 14 m above the surface.
+  assert.deepEqual(outcome.receipt.cameraHeights, [200, 140, 80, 20, 14, 14]);
+  const verdict = steps.diveGateVerdict("c", {
+    diveGate: { expected: "allow", step: {}, outcome },
+  });
+  assert.equal(verdict.pass, true);
+  assert.deepEqual(verdict.cameraHeights, outcome.receipt.cameraHeights);
+});
+
+test("the placement leaves a widget frame behind: the globe height is read straight after setView, at the frozen clock", async () => {
+  const world = makeWorld({ globeHeight: 43 });
+  assert.equal(world.scene.globeHeight, undefined, "the world starts stale");
+  const placed = await world.page.evaluate(steps.pagePlaceDiveCamera, {
+    ...step({ lon: 7.2, lat: 62.1, height: 150 }),
+  });
+  assert.equal(placed.ok, true);
+  const state = await world.page.evaluate(steps.pageReadDiveState);
+  assert.equal(state.globeHeight, 43);
+  assert.equal(world.counts.initializeFrames, 1);
+  assert.deepEqual(world.counts.renders, [world.viewer.clock.currentTime]);
+  assert.equal(world.counts.clockTicks, 0);
+});
+
+test("INERTNESS: with the placement's widget frame unreachable, the globe height is still stale after setView", async () => {
+  const mutated = await importMutated(STEPS_PATH, [
+    ["scene.initializeFrame();", "false && scene.initializeFrame();"],
+  ]);
+  const world = makeWorld({ globeHeight: 43 });
+  await world.page.evaluate(mutated.pagePlaceDiveCamera, {
+    ...step({ height: 150 }),
+  });
+  const state = await world.page.evaluate(mutated.pageReadDiveState);
+  assert.equal(state.globeHeight, null);
+  assert.equal(world.counts.initializeFrames, 0);
+});
+
+test("unreadable: a camera that never moved over the wheel is wheel-unread, never a pass, and the reason names where it stayed", async () => {
+  const world = makeWorld({ globeHeight: 0, enableInputs: false });
+  const { record, outcome } = await steps.runDiveGateSteps({
+    page: world.page,
+    step: step(),
+    settle: world.settle,
+  });
+  assert.equal(world.counts.wheels.length, 5, "the wheel was delivered");
+  assert.equal(outcome.readable, false);
+  assert.equal(outcome.reason, "wheel-unread");
+  assert.equal(outcome.detail, "the camera stayed at 200 m over 5 notches");
+  assert.deepEqual(outcome.cameraHeights, [200, 200, 200, 200, 200, 200]);
+  assert.equal(record.steps.length, 5);
+  const verdict = steps.diveGateVerdict("c", {
+    diveGate: { expected: "allow", step: {}, outcome },
+  });
+  assert.equal(verdict.notRun, true);
+  assert.equal(verdict.pass, false);
+  assert.match(verdict.reason, /^wheel-unread: the camera stayed at 200 m/u);
+  assert.deepEqual(verdict.cameraHeights, outcome.cameraHeights);
+});
+
+test("a camera that moved even once over the wheel is read; the unread terrain height still comes first", async () => {
+  const read = (cameraHeight) => ({
+    waterFacade: true,
+    disableWaterCollision: true,
+    cameraHeight,
+    globeHeight: 0,
+    minimumZoomDistance: 1,
+    gateAllows: true,
+    diveDepthMeters: 0,
+  });
+  const moved = steps.buildDiveGateReceipt({
+    placement: { disableWaterCollision: true },
+    placed: { ok: true },
+    initial: read(150),
+    steps: [
+      { notch: 0, ...read(150) },
+      { notch: 1, ...read(149.5) },
+    ],
+  });
+  assert.equal(moved.readable, true);
+  assert.deepEqual(moved.receipt.cameraHeights, [150, 150, 149.5]);
+
+  // Neither the terrain height nor the camera moved: the older reason wins.
+  const world = makeWorld({ globeHeight: undefined, enableInputs: false });
+  const { outcome } = await steps.runDiveGateSteps({
+    page: world.page,
+    step: step(),
+    settle: world.settle,
+  });
+  assert.equal(outcome.reason, "globe-height-undefined");
+  assert.match(outcome.detail, /camera heights \[200,200,200,200,200,200\] m/u);
+});
+
+test("INERTNESS: with the wheel-unread check unreachable, a camera that never moved reads as a receipt", async () => {
+  const mutated = await importMutated(STEPS_PATH, [
+    [
+      "if (cameraHeights.every((height) => height === cameraHeights[0])) {",
+      "if (false && cameraHeights.every((height) => height === cameraHeights[0])) {",
+    ],
+  ]);
+  const world = makeWorld({ globeHeight: 0, enableInputs: false });
+  const { outcome } = await mutated.runDiveGateSteps({
+    page: world.page,
+    step: step(),
+    settle: world.settle,
+  });
+  assert.equal(outcome.readable, true, "the live check would have refused it");
 });

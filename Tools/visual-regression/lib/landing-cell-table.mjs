@@ -2,7 +2,7 @@
  * The landing program's cell table and the pure planning over it: which rig a
  * cell renders, on which renderers and pages, with which per-page dial
  * variants, and whether it waits for pending pipelines by default.
- * @purpose Cell table piece for probe-landing-cells.mjs: the LANDING_CELLS table (rig, kind, identity, per-cell pipeline-wait default, per-page dial variants, displacement readback and its evolved-clock second read, cross-renderer diff and its pre-registered band, forced performance leg and the GPU pass its PF-2 window must list), the (cell, renderer, page) plan, the rig a variant page stages, and the per-cell pending-pipeline wait resolved from --wait-pipelines / --no-wait-pipelines and read back from a report, and the --runs default of a run that includes an identity cell (landingArgsFinalize), all pure.
+ * @purpose Cell table piece for probe-landing-cells.mjs: the LANDING_CELLS table (rig, kind, identity, per-cell pipeline-wait default, per-page dial variants, displacement readback and its evolved-clock second read, cross-renderer diff and its pre-registered band, forced performance leg and the GPU pass its PF-2 window must list), the (cell, renderer, page) plan, the rig a variant page stages, and the per-cell pending-pipeline wait resolved from --wait-pipelines / --no-wait-pipelines and read back from a report, the --runs default of a run that includes an identity cell (landingArgsFinalize), and the page of a plan that runs the onmessage sentinel's positive control (positiveControlPageIndex, refusing the switch with no identity cell), all pure.
  * @status ACTIVE
  *
  * WHY A PIECE. The table and its planning moved out of
@@ -526,4 +526,31 @@ export function pipelineWaitMismatches(a, b) {
   return [...cellsOfReport(a)]
     .filter((cell) => inB.has(cell))
     .filter((cell) => waitedForCell(a, cell) !== waitedForCell(b, cell));
+}
+
+/**
+ * The page of a plan that runs the sentinel's positive control: the first
+ * identity page, or -1 without the switch. Refuses the switch when no
+ * requested cell is an identity cell, before the first page. Pure.
+ *
+ * @param {object[]} plan {@link planLandingCells}' answer.
+ * @param {{sentinelPositiveControl?: boolean}} options
+ * @returns {number}
+ * @throws {ProbeRefusal} `sentinel-control-no-identity-cell`.
+ */
+export function positiveControlPageIndex(plan, options) {
+  if (options?.sentinelPositiveControl !== true) {
+    return -1;
+  }
+  const index = plan.findIndex(
+    (entry) => LANDING_CELLS[entry.cell]?.identity === true,
+  );
+  if (index < 0) {
+    throw new ProbeRefusal(
+      "sentinel-control-no-identity-cell",
+      "--sentinel-positive-control needs an identity cell in --cells (E-D, E-D-HDR, E-ID-2d, E-ID-cv): only their pages carry the sentinel",
+      { cells: splitList(options.cells) },
+    );
+  }
+  return index;
 }
