@@ -223,6 +223,31 @@ ceiling (`DX-KIT-PF3-STARTUP-CEILING-WEBGL` closed, measured); the E-W red re-me
 relabelled `compileTotalMs`; one new measured red, unattributed (`NEW-CLOUD-EW-HDR-COMPILE-SAME-BUILD-RED`), and two kit rows
 (`DX-KIT-COMPILE-TOTAL-BAND-SAME-BUILD-SPREAD`, `DX-KIT-PF3-WEBGL-FLOOR-INERT-IN-PROBE`); rows in `DEFERRED_WORK.md` section
 "2026-10-31 — records round 9".
+*[Records round 10:]* Batch 1645 (`32f2593fe9`) recorded the KIT5 leg's Phase 2; the probe-kit round 6 followed as Batch 1646
+(the table below), and the KIT6 Edge leg measured it in both phases; no Antigravity water batch has landed by Batch 1646
+(`git log`).
+
+## Landing record (2026-10-31 — Batch 1646: the probe-kit round 6)
+
+A landing table only. The hash and tree were read at Batch 1646 with `git log --format='%h %H %T %s' 32f2593fe9..HEAD`; the landing
+log shows the `main -> main` push (19:05 EDT) and "post-landing-spine OK at b680648f1b"
+(`lanes-2026-10-31/round3/landing-logs/land-arakano.log`). "Bank" paths are under `cesium-webgpu-worker-archive/lanes-2026-10-31/`;
+the rows are in `DEFERRED_WORK.md` section "2026-10-31 — records round 10", which also names the byte check (the banked lane patch
+reproduces the landed tree except the tooling catalog and the seat's runner homes). One Edge leg (executor Eowyn) measured the
+batch: KIT6 on Batch 1646's tree, Phase 1 19:08-19:36 EDT and Phase 2 19:38-19:45 EDT in the seat's quiet window
+(`round3/edge/EDGE_RECEIPT_EOWYN_KIT6.md`).
+
+| batch | hash (tree) | what is now true | lane lead | reviewer | bank |
+| --- | --- | --- | --- | --- | --- |
+| 1646 | `b680648f1b` (`19c73e07`) | PF-3's 15 % WebGL startup floor applies in the landing probe and each startup record names its floor's origin; `compileTotalMs` bands at max(registered, a flagged provisional 0.60 floor); `probe-weather-map --runs N` keeps every run's files under `-run<N>` names with a capture manifest; landing reports store report-relative frames and a missing base frame reads `base-frames-missing`; water cell 1f captures both renderers at 1280x720 with the chrome stripped and every water demo page records its console messages; the provisioner copies `.claude/skills`. Tools-only, 24 lane paths (26 with the catalog and the runner homes); kit pieces 200 -> 202. Measured on Edge by KIT6 (WebGL `startupFloor {0.15, floor}`; 66 of 66 weather-map files, a 66-rig manifest, sha256 66 of 66; base-report pixels measured at 0 px on 2 of 2 arms and the `base-frames-missing` control; 1f `paritySizes` 1280x720 on both renderers, `parityPct` 0.10384 / 0.10417, no chrome left; the compile flag present, not applied on the two HDR arms). | Arakano (workers Aikanaro, Itarille, Laurefinde, Ambarto, Umbarto) | Angarato (P1 REFUTED: R1 console messages, R2 the floor flag; P2 REFUTED: R3 a load-dependent spec assertion; P3 HOLDS; freezes `981d99c8` -> `4a102a47` -> `116844fe`); Edge Eowyn | `round3/arakano/` (`round3/edge/EDGE_RECEIPT_EOWYN_KIT6.md`) |
+
+Next: the compile-floor calibration leg (`DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG`); the seat's re-run of the contended
+`E-ID-cv|webgpu` PF arm (`DX-KIT-FIRST-PF-ARM-AFTER-SERVER-START`); the measured reds KIT6 filed or re-measured
+(`NEW-CLOUD-W3-WEATHER-MAP-ON-CARVES-DAYLIGHT`, `NEW-CLOUD-WEATHER-MAP-OFFLINE-GLOBE-ON-DENSE-RED`,
+`NEW-CLOUD-EW-GROUND-HDR-PF1-PF4-SAME-BUILD-RED`, `NEW-KIT-WEBGL-PF3-ONE-REPEAT-SAME-BUILD-RED`); the kit rows round 6 and KIT6 filed
+and the dive cells (`DX-KIT-DIVE-GATE-CELLS`); the evidence curation `R-2026-10-31-M1` rules, after every landing is in;
+`NEW-2D-WEBGPU-OCEAN-HIGHLIGHT-FADE`; the Antigravity water program and the W4 regeneration stand as above. Open after this
+landing: the rows of `DEFERRED_WORK.md` section "2026-10-31 — records round 10".
 
 ---
 

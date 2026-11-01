@@ -762,9 +762,10 @@ ruling `R-2026-10-24-S12`. Rows: `DEFERRED_WORK.md` ledger intake 2 (Batch 1591)
 table: `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-23/24 …)"; from 2026-10-30 also `DEFERRED_WORK.md`
 "2026-10-30 — records batch 3" and "… round 2", and the landing tables "Landing record (2026-10-29/30 …)" and "Landing
 record (2026-10-30 — Batches 1608-1623 …)"; from 2026-10-31 also `DEFERRED_WORK.md` "2026-10-31 — records round 4" and
-"… records round 5", "… records round 6", "… records round 7", "… records round 8" and "… records round 9" and the landing tables "Landing record
+"… records round 5", "… records round 6", "… records round 7", "… records round 8", "… records round 9" and "… records round 10" and the landing tables "Landing record
 (2026-10-31 — Batches 1624-1628 …)", "Landing record (2026-10-31 — Batches 1629-1631 …)", "Landing record (2026-10-31 — Batches
-1632-1636 …)", "Landing record (2026-10-31 — Batches 1637-1640 …)" and "Landing record (2026-10-31 — Batches 1642-1643 …)".
+1632-1636 …)", "Landing record (2026-10-31 — Batches 1637-1640 …)", "Landing record (2026-10-31 — Batches 1642-1643 …)" and "Landing record (2026-10-31 — Batch
+1646 …)".
 **Landed:** the water as Batches 1585/1586 (`16e093aef6`, `156509c929`, committed 2026-10-23 23:27 and 23:31 EDT; tree
 `9e6bcfb7`; opt-in, the default globe unchanged); then, on 2026-10-24, W0 (1587), KT round 5 (1588), KT-2 round 3 (1589),
 F-4 (1590), LEDGER-2 (1591), catalog A1 (1592) and W1, the cloud core and the three-word define registry (1593); and the
@@ -840,6 +841,18 @@ under the median ceiling (`DX-KIT-PF3-STARTUP-CEILING-WEBGL` closed, measured); 
 to +56.0 %, filed unattributed (`NEW-CLOUD-EW-HDR-COMPILE-SAME-BUILD-RED`) with its kit band row; and the 15 % WebGL startup
 floor reads inert in the probe (`DX-KIT-PF3-WEBGL-FLOOR-INERT-IN-PROBE`). The maintainer also ruled the evidence curation
 (`R-2026-10-31-M1`), after every landing is in. The
+Antigravity water program and W4 below are unchanged.
+**Probe-kit round 6 (2026-10-31, records round 10):** Batch 1646 (`b680648f1b`; lane Arakano, reviewer Angarato, P1 and P2
+REFUTED, P3 HOLDS) landed: the probe kit closes the five rows its KIT5 Edge leg and records rounds 8-9 opened (the 15 % WebGL
+startup floor reaches the landing probe with its origin named, a flagged provisional compile-total floor, the weather-map runs
+kept side by side with a capture manifest, report-relative frame paths with a `base-frames-missing` read, water cell 1f at one
+canvas size with the chrome stripped), and the provisioner copies the skills tree. The KIT6 Edge leg measured it in both phases
+(Phase 2 in the seat's quiet window): four of those rows and the provisioner row close, the compile floor stays provisional (it
+did not apply on the two HDR arms, whose two-repeat bands were 103 % and 167 %) with its calibration leg owed, and the KIT5 console
+message on water cell 1f is attributed (a Chromium notice and a debug-pragma diagnostic; not an engine defect). It also measured
+reds, recorded unattributed: the unpinned daylight weather-map `on-carves` on 3 of 3 runs, the offline-globe `on-dense` red
+reproduced and following the offline-globe arm, PF-1 and PF-4 `over` on `E-W-ground-hdr|webgpu` against the same build, and a
+one-repeat WebGL PF-3 over its 15 % floor; with kit rows for the PF-4 allowance and the first PF arm after a server start. The
 Antigravity water program and W4 below are unchanged.
 **Critical path:** W4. *[Updated 2026-10-31 by records round 4; records batch 3 round 2 put the seat's Edge acceptance job
 first, and it has run.]* The next step is the Antigravity water program's landing on 2026-10-31 (`R-2026-10-30-M1`),
