@@ -1,6 +1,6 @@
 // probe-runtime-args.mjs — the probe runtime's flag table, defaults and value parsers.
 //
-// @purpose Companion of probe-runtime.mjs: the REQUIRED_SERVED_ARTIFACTS and RENDERERS constants, the core flag table (CORE_OPTION_SPECS), its defaults (CORE_OPTION_DEFAULTS) and the five value parsers parseProbeArgs applies (optionValue, positiveInteger, nonNegativeNumber, rendererList, isoInstant).
+// @purpose Companion of probe-runtime.mjs: the REQUIRED_SERVED_ARTIFACTS and RENDERERS constants, the core flag table (CORE_OPTION_SPECS), its defaults (CORE_OPTION_DEFAULTS) and the five value parsers parseProbeArgs applies (optionValue, positiveInteger, nonNegativeNumber, rendererList, isoInstant), the ProbeUsageError a malformed command line raises, and the --help option table (HELP_FLAGS, wantsHelp, buildHelpText, usageFailureLine).
 // @status ACTIVE
 //
 // WHY A PIECE. The table and its parsers moved out of `probe-runtime.mjs`
@@ -35,6 +35,20 @@ export const RENDERERS = Object.freeze(["webgl", "webgpu"]);
 // ---------------------------------------------------------------------------
 // 2. Argument parsing
 // ---------------------------------------------------------------------------
+
+/**
+ * A command line the caller got wrong: an unknown flag, or a missing or
+ * malformed value. It stays a `TypeError`, so every existing check for one
+ * holds, and it is the one parse failure the runtime reports as a single usage
+ * line instead of a stack. A flag a descriptor declares badly is a probe bug
+ * and keeps its full trace.
+ */
+export class ProbeUsageError extends TypeError {
+  constructor(message) {
+    super(message);
+    this.name = "ProbeUsageError";
+  }
+}
 
 /**
  * The flags every probe accepts. A probe adds its own through
@@ -79,7 +93,7 @@ export const CORE_OPTION_DEFAULTS = Object.freeze({
  */
 export function optionValue(argv, index, name) {
   if (index + 1 >= argv.length || argv[index + 1].startsWith("--")) {
-    throw new TypeError(`${name} requires a value`);
+    throw new ProbeUsageError(`${name} requires a value`);
   }
   return argv[index + 1];
 }
@@ -92,7 +106,7 @@ export function optionValue(argv, index, name) {
 export function positiveInteger(value, name) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new TypeError(`${name} must be a positive integer`);
+    throw new ProbeUsageError(`${name} must be a positive integer`);
   }
   return parsed;
 }
@@ -105,7 +119,7 @@ export function positiveInteger(value, name) {
 export function nonNegativeNumber(value, name) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new TypeError(`${name} must be a non-negative number`);
+    throw new ProbeUsageError(`${name} must be a non-negative number`);
   }
   return parsed;
 }
@@ -130,7 +144,7 @@ export function isoInstant(value, name) {
     match !== null &&
     new Date(Date.UTC(year, month - 1, day)).getUTCDate() === day;
   if (!Number.isFinite(ms) || !calendarOk) {
-    throw new TypeError(
+    throw new ProbeUsageError(
       `${name} must be an ISO 8601 instant with a zone, to the second, e.g. 2026-06-21T18:00:00Z (got "${value}")`,
     );
   }
@@ -156,14 +170,101 @@ export function rendererList(value, name) {
           .map((entry) => entry.trim().toLowerCase())
           .filter((entry) => entry.length > 0);
   if (requested.length === 0) {
-    throw new TypeError(`${name} requires at least one renderer`);
+    throw new ProbeUsageError(`${name} requires at least one renderer`);
   }
   for (const entry of requested) {
     if (!RENDERERS.includes(entry)) {
-      throw new TypeError(
+      throw new ProbeUsageError(
         `${name} must be one of ${RENDERERS.join(", ")}, both, or a comma-separated subset (got "${entry}")`,
       );
     }
   }
   return RENDERERS.filter((entry) => requested.includes(entry));
+}
+
+// ---------------------------------------------------------------------------
+// 3. Help
+// ---------------------------------------------------------------------------
+
+/** The spellings that ask for the option table. */
+export const HELP_FLAGS = Object.freeze(["--help", "-h"]);
+
+/**
+ * @param {string[]} argv Raw argument list.
+ * @returns {boolean} Whether any argument asks for the option table.
+ */
+export function wantsHelp(argv) {
+  return argv.some((arg) => HELP_FLAGS.includes(arg));
+}
+
+/**
+ * The one stderr line for a caller's malformed command line.
+ *
+ * @param {string} probeName The descriptor's name.
+ * @param {Error} error The usage error.
+ * @returns {string} One line, newline-terminated.
+ */
+export function usageFailureLine(probeName, error) {
+  return `${probeName}: ${error.message}; run with --help for the options\n`;
+}
+
+/** The default a flag has once the descriptor's own defaults are applied, or undefined. */
+function defaultOf(spec, descriptorDefaults) {
+  if (Object.hasOwn(descriptorDefaults, spec.key)) {
+    return descriptorDefaults[spec.key];
+  }
+  if (Object.hasOwn(spec, "default")) {
+    return spec.default;
+  }
+  return CORE_OPTION_DEFAULTS[spec.key];
+}
+
+function defaultText(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  return Array.isArray(value) ? value.join(",") : String(value);
+}
+
+/**
+ * The option table a probe accepts: the core flags and the descriptor's own,
+ * each with its kind and its default when it has one. Built from the same
+ * tables `parseProbeArgs` reads, so the help cannot list a flag the parser
+ * would refuse.
+ *
+ * @param {{name: string, title?: string, args?: {defaults?: object, extraOptions?: Array<{flag: string, key: string, kind: string, default?: unknown}>}}} descriptor The probe descriptor.
+ * @returns {string} The table, newline-terminated.
+ */
+export function buildHelpText(descriptor) {
+  const args = descriptor.args ?? {};
+  const descriptorDefaults = args.defaults ?? {};
+  const byFlag = new Map(
+    [...CORE_OPTION_SPECS, ...(args.extraOptions ?? [])].map((spec) => [
+      spec.flag,
+      spec,
+    ]),
+  );
+  const rows = [...byFlag.values()].map((spec) => {
+    const takesValue = !["boolean", "boolean-false"].includes(spec.kind);
+    const left = takesValue ? `${spec.flag} <${spec.kind}>` : spec.flag;
+    if (spec.kind === "boolean-false") {
+      return [left, `sets ${spec.key} to false`];
+    }
+    const text = defaultText(defaultOf(spec, descriptorDefaults));
+    return [left, text === null ? "" : `default ${text}`];
+  });
+  rows.push([
+    HELP_FLAGS.join(", "),
+    "print this table and exit 2; nothing is run",
+  ]);
+  const width = Math.max(...rows.map(([left]) => left.length));
+  return [
+    descriptor.title ?? descriptor.name,
+    "",
+    "Options:",
+    ...rows.map(([left, right]) =>
+      `  ${left.padEnd(width)}  ${right}`.trimEnd(),
+    ),
+    "",
+  ].join("\n");
 }

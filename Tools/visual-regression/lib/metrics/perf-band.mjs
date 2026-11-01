@@ -2,7 +2,7 @@
  * The pre-registered performance band the landing program's PF-1..PF-4 legs
  * are judged against: same-build repeat spread, the band it implies, and the
  * base-against-tip comparison that reads a band.
- * @purpose Pure band arithmetic for the R-2026-10-22-3 performance leg: the seat's default bands (3 % floor, 2 x repeat factor, 10 % startup band floor, 2.5 s startup ceiling read on the median of the tip repeats, 0 declared allocation), the relative spread of same-build repeats, the band fraction b = max(factor x base-arm spread, floor) (PF-3 reads the startup band floor in the floor's place), verdict objects ({within, over, unmeasured, unmeasured-contended}) for a lower-is-better statistic and for the startup ceiling rule, each carrying the band it was given, the PF-3 startup floor a renderer reads and its origin (startupFloorOf: the WebGL 15 % floor, a pre-registered override or the registered default), the provisional same-build compile-total floor (COMPILE_PROVISIONAL_FLOOR, 60 %, read as max(registered band, floor) and flagged on the record), and the pre-registered machine-CPU contention guard (a run's mean CPU, the arms' mean delta, and a streak of consecutive busy samples) that turns a PF-1..PF-3 statistic read on a busy machine into unmeasured-contended.
+ * @purpose Pure band arithmetic for the R-2026-10-22-3 performance leg: the seat's default bands (3 % floor, 2 x repeat factor, 10 % startup band floor, 2.5 s startup ceiling read on the median of the tip repeats, 0 declared allocation), the relative spread of same-build repeats, the band fraction b = max(factor x base-arm spread, floor) (PF-3 reads the startup band floor in the floor's place), verdict objects ({within, over, unmeasured, unmeasured-contended, unmeasured-bimodal}, with isUnmeasuredVerdict over every unmeasured word) for a lower-is-better statistic and for the startup ceiling rule, each carrying the band it was given, the PF-3 startup floor a renderer reads and its origin (startupFloorOf: the WebGL 15 % floor, a pre-registered override or the registered default), the provisional same-build compile-total floor (COMPILE_PROVISIONAL_FLOOR, 60 %, read as max(registered band, floor) and flagged on the record), and the pre-registered machine-CPU contention guard (a run's mean CPU, the arms' mean delta, and a streak of consecutive busy samples) that turns a PF-1..PF-3 statistic read on a busy machine into unmeasured-contended, and floorMarkUnder, the one rule by which a provisional-floor mark under an unmeasured verdict reads decided false.
  * @status ACTIVE
  *
  * WHERE THE RULES COME FROM. `CLOUD_WATER_LANDING_PLAN_2026-10-21.md` §2.2
@@ -159,13 +159,58 @@ export const COMPILE_PROVISIONAL_FLOOR = Object.freeze({
     "KIT5 phase-2 item-6 arm-B same-build spread, +56.0 % on E-W-30km-hdr|webgpu, two repeats, one arm",
 });
 
-/** The verdict vocabulary. */
+/**
+ * The verdict vocabulary. `unmeasured-bimodal` is a statistic whose repeats,
+ * both arms together, fall into two modes too far apart to band (see
+ * `lib/metrics/two-mode-split.mjs`); the band's own reading stays beside it
+ * as `verdictIfUnimodal`.
+ */
 export const PERF_VERDICTS = Object.freeze({
   WITHIN: "within",
   OVER: "over",
   UNMEASURED: "unmeasured",
   UNMEASURED_CONTENDED: "unmeasured-contended",
+  UNMEASURED_BIMODAL: "unmeasured-bimodal",
 });
+
+const UNMEASURED_WORDS = Object.values(PERF_VERDICTS).filter((word) =>
+  word.startsWith("unmeasured"),
+);
+
+/**
+ * Whether a verdict word says the statistic was not read: every word of
+ * {@link PERF_VERDICTS} that starts with `unmeasured`, so a word added to
+ * the vocabulary is included without a second list to keep.
+ *
+ * @param {unknown} verdict
+ * @returns {boolean}
+ */
+export function isUnmeasuredVerdict(verdict) {
+  return UNMEASURED_WORDS.includes(verdict);
+}
+
+/**
+ * A provisional-floor mark as the verdict it sits under reads it. A floor on
+ * a statistic that was not measured turned nothing, so its mark says
+ * `decided: false` with `undecidedBecause` naming the verdict; a measured
+ * verdict keeps the floor's own arithmetic. The metric records and the
+ * verdict entries both read this one rule, so the nested mark and the entry
+ * cannot disagree.
+ *
+ * @param {object|null|undefined} mark A floor mark (`decided` is the
+ *   arithmetic: the registered band alone would have read `over`).
+ * @param {string} verdict The verdict of the record the mark sits on.
+ * @returns {object|null|undefined} The mark, or a copy marked undecided; a
+ *   missing mark is returned as it came.
+ */
+export function floorMarkUnder(mark, verdict) {
+  if (mark === null || typeof mark !== "object") {
+    return mark;
+  }
+  return isUnmeasuredVerdict(verdict)
+    ? { ...mark, decided: false, undecidedBecause: verdict }
+    : mark;
+}
 
 /** What the contention guard found. */
 export const CONTENTION_STATUS = Object.freeze({
@@ -634,7 +679,10 @@ export function guardStatistic(record, guard) {
 
 /**
  * The worst of several verdicts: `over` beats `unmeasured-contended` beats
- * `unmeasured` beats `within`. An empty list is `unmeasured`.
+ * `unmeasured-bimodal` beats `unmeasured` beats `within`. The two marked
+ * words (a cause outside the subject) outrank the plain one, as contended
+ * already did; contended outranks bimodal because a busy machine can itself
+ * explain a second mode. An empty list is `unmeasured`.
  *
  * @param {Array<{verdict: string}|null|undefined>} records
  * @returns {string}
@@ -649,6 +697,9 @@ export function worstVerdict(records) {
   }
   if (verdicts.includes(PERF_VERDICTS.UNMEASURED_CONTENDED)) {
     return PERF_VERDICTS.UNMEASURED_CONTENDED;
+  }
+  if (verdicts.includes(PERF_VERDICTS.UNMEASURED_BIMODAL)) {
+    return PERF_VERDICTS.UNMEASURED_BIMODAL;
   }
   if (verdicts.every((v) => v === PERF_VERDICTS.WITHIN)) {
     return PERF_VERDICTS.WITHIN;

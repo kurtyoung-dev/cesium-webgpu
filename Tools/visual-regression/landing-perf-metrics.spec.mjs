@@ -46,6 +46,7 @@ test("M1: SEAT_DEFAULT_BANDS and PERF_VERDICTS expose expected frozen constants"
     OVER: "over",
     UNMEASURED: "unmeasured",
     UNMEASURED_CONTENDED: "unmeasured-contended",
+    UNMEASURED_BIMODAL: "unmeasured-bimodal",
   });
   assert.ok(Object.isFrozen(PERF_VERDICTS));
 });

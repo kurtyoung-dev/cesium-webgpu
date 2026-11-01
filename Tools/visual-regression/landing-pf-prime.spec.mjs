@@ -14,7 +14,11 @@ import path from "node:path";
 import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 import { mkLaneTmp, removeLaneTmp } from "../lib/lane-tmp.mjs";
-import { liveSamplerReads, markPfVerdicts } from "./lib/cpu-warm-up.mjs";
+import {
+  INSTANT_WARM_UP,
+  liveSamplerReads,
+  markPfVerdicts,
+} from "./lib/cpu-warm-up.mjs";
 import { importMutated } from "./lib/import-mutated.mjs";
 import {
   contentionBasisOf,
@@ -148,10 +152,13 @@ test("a --perf run loads one page more than it plans, and the first load is the 
   );
   assert.equal(typeof prime.durationMs, "number");
   assert.ok(prime.cpuMean === null || typeof prime.cpuMean === "number");
+  // On the fake browser the seam reads quiet at once, so the prime is one page.
+  assert.equal(prime.stoppedBecause, "quiet");
+  assert.equal(prime.pages.length, 1);
   assert.match(
     prime.note,
     new RegExp(
-      `^prime: ${first.cell} ${first.renderer} ${first.page} in \\d+ ms (\\(CPU not read\\)|at [\\d.]+ % CPU)$`,
+      `^prime: 1 page of ${first.cell} ${first.renderer} ${first.page}, stopped quiet, last (\\(CPU not read\\)|at [\\d.]+ % CPU)( \\(post-prime peak [\\d.]+ %\\))?$`,
     ),
   );
 });
@@ -161,9 +168,18 @@ test("the prime's CPU mean is read from the prime page's own record into the rec
     ...record,
     cpu: { mean: 48.2, samples: [] },
   }));
-  const { report } = await probeWith("cpu-note", PF_ARGS, runner);
-  assert.equal(report.prime.cpuMean, 48.2);
-  assert.match(report.prime.note, / in \d+ ms at 48\.2 % CPU$/);
+  // The fake's seam answers the page CPU itself; the spec reads the wrapper's record instead.
+  descriptor.warmUpDeps = {
+    ...INSTANT_WARM_UP,
+    prime: { ...INSTANT_WARM_UP.prime, pageCpu: (page) => page.cpu?.mean },
+  };
+  try {
+    const { report } = await probeWith("cpu-note", PF_ARGS, runner);
+    assert.equal(report.prime.cpuMean, 48.2);
+    assert.match(report.prime.note, /, stopped quiet, last at 48\.2 % CPU/);
+  } finally {
+    delete descriptor.warmUpDeps;
+  }
 });
 
 test("the prime captures nothing: the same run with no prime has the same captures, pages, arms and files", async () => {
@@ -346,6 +362,7 @@ test("the piece alone: no PF page in the plan names no page; a plan of PF pages 
       calls.push(entry);
       return { cpu: { mean: 12.345 } };
     },
+    deps: { sampleCpu: async () => 8 },
     now: (() => {
       let t = 100;
       return () => (t += 50);
@@ -354,12 +371,25 @@ test("the piece alone: no PF page in the plan names no page; a plan of PF pages 
   assert.deepEqual(calls, [entries[1]]);
   assert.deepEqual(record, {
     status: "primed",
+    stoppedBecause: "quiet",
     cell: "E-D",
     renderer: "webgl",
     page: "scene",
-    durationMs: 50,
+    durationMs: 150,
     cpuMean: 12.345,
-    note: "prime: E-D webgl scene in 50 ms at 12.35 % CPU",
+    sampler: "injected",
+    cpuSource: "page",
+    pages: [
+      {
+        index: 0,
+        durationMs: 50,
+        cpuMean: 12.345,
+        postSample: [8, 8, 8],
+        quiet: true,
+        why: [],
+      },
+    ],
+    note: "prime: 1 page of E-D webgl scene, stopped quiet, last at 12.35 % CPU (post-prime peak 8 %)",
   });
 });
 
@@ -542,8 +572,8 @@ test("mutant M1: the prime call made unreachable turns the load-count case red",
   );
   const mutated = await importMutated(PROBE_MODULE, [
     [
-      "    if (run === 0) {\n      // One unmeasured load",
-      "    if (false && run === 0) {\n      // One unmeasured load",
+      "    if (run === 0) {\n      // Unmeasured loads",
+      "    if (false && run === 0) {\n      // Unmeasured loads",
     ],
   ]);
   const mutant = countingRunner();
@@ -568,8 +598,9 @@ test("mutant M2: the --no-warm-up skip of the prime made unreachable turns the s
       ],
       runPage: async () => {
         loads += 1;
-        return { cpu: null };
+        return { cpu: { mean: 0 } };
       },
+      deps: { sampleCpu: async () => 0 },
     });
     return { loads, status: record.status };
   };

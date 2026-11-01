@@ -60,6 +60,7 @@
 import {
   PERF_VERDICTS,
   finiteValues,
+  floorMarkUnder,
   median,
   resolveBands,
   worstVerdict,
@@ -284,12 +285,15 @@ export function residencyVerdict({ baseRuns, tipRuns, bands }) {
     unread((run) => run.growthBytes),
   );
 
+  const verdict = worstVerdict([residency, growth]);
+  // The record's own mark follows the verdict rule the entry reads.
+  const mark = floorMarkUnder(floorMark, verdict);
   return {
     metric: "PF-4",
-    verdict: worstVerdict([residency, growth]),
+    verdict,
     residency,
     growth,
-    ...(floorMark ? { provisionalFloor: floorMark } : {}),
+    ...(mark ? { provisionalFloor: mark } : {}),
     runs: { base, tip },
   };
 }

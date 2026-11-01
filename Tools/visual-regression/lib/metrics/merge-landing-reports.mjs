@@ -108,6 +108,11 @@ export function groupArms(records) {
     }
     const arm = arms[key];
     arm.runs++;
+    // A gate-only cell's mark rides on its arm (only when present, so no other
+    // arm changes shape), so the base-vs-tip frame compare can name it.
+    if (record.diveGate?.frames) {
+      arm.frames = record.diveGate.frames;
+    }
     if (record.notRun) {
       arm.notRun.push(record.notRun);
       continue;

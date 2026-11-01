@@ -142,13 +142,17 @@ import {
 import {
   CORE_OPTION_DEFAULTS,
   CORE_OPTION_SPECS,
+  ProbeUsageError,
   REQUIRED_SERVED_ARTIFACTS,
   RENDERERS,
+  buildHelpText,
   isoInstant,
   nonNegativeNumber,
   optionValue,
   positiveInteger,
   rendererList,
+  usageFailureLine,
+  wantsHelp,
 } from "./probe-runtime-args.mjs";
 import {
   EDGE_LAUNCH_ARGS,
@@ -252,7 +256,7 @@ export function parseProbeArgs(argv, options = {}) {
     const arg = argv[index];
     const spec = byFlag.get(arg);
     if (spec === undefined) {
-      throw new TypeError(`unknown argument: ${arg}`);
+      throw new ProbeUsageError(`unknown argument: ${arg}`);
     }
     explicit.add(spec.key);
     if (spec.kind === "boolean") {
@@ -294,7 +298,7 @@ export function parseProbeArgs(argv, options = {}) {
   }
 
   if (parsed.port > 65535) {
-    throw new TypeError("--port must be at most 65535");
+    throw new ProbeUsageError("--port must be at most 65535");
   }
 
   // The built Sandcastle2 app bakes `http://localhost:8080` into its own
@@ -618,6 +622,14 @@ export async function runProbe(descriptor, dependencies = {}) {
     lifecycleDependencies,
   } = dependencies;
 
+  // Asking for the option table is a run that measures nothing because of the
+  // caller, so it exits with the caller-error code, and it answers before the
+  // preflight, the slot, a browser or a receipt can be reached.
+  if (wantsHelp(argv)) {
+    process.stdout.write(buildHelpText(descriptor));
+    return PROBE_EXIT_CODES.ERROR;
+  }
+
   // The whole staging turns on this one predicate. A descriptor that declares
   // the field with a BAD value — zero, a float, a string, a function returning
   // one of those — reaches `deriveLifecycleDeadline` and is told so, rather
@@ -666,7 +678,15 @@ export async function runProbe(descriptor, dependencies = {}) {
   const launchArgs = [...(descriptor.launchArgs ?? EDGE_LAUNCH_ARGS)];
 
   try {
-    options = parseProbeArgs(argv, descriptor.args ?? {});
+    try {
+      options = parseProbeArgs(argv, descriptor.args ?? {});
+    } catch (error) {
+      if (!(error instanceof ProbeUsageError)) {
+        throw error;
+      }
+      process.stderr.write(usageFailureLine(descriptor.name, error));
+      return PROBE_EXIT_CODES.ERROR;
+    }
     // Never cwd: the default root is the checkout holding the kit, and an
     // output outside it needs an explicit `--repository-root` (specs pass one).
     ({ repositoryRoot, outputDirectory } = resolveProbeLocations({
@@ -844,12 +864,23 @@ export async function runProbe(descriptor, dependencies = {}) {
     }
 
     const exitCode = exitCodeForOutcome({ refusal, errored, verdicts });
+    if (options === undefined) {
+      // The command line never parsed, so there is no origin, output folder or
+      // option record to build a receipt from; the failure is already on stderr.
+      if (refusal) {
+        process.stderr.write(
+          `${descriptor.name}: REFUSED (${refusal.reason}) — ${refusal.message}\n`,
+        );
+      }
+      finishedExitCode = exitCode;
+      return exitCode;
+    }
     const generatedAt = new Date(now()).toISOString();
     const runtimeReceipt = buildRuntimeReceipt({
       probe: descriptor.name,
       generatedAt,
       origin,
-      options: options ?? null,
+      options,
       preflight,
       edgeSlot: slot
         ? {

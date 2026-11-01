@@ -87,6 +87,13 @@ export function buildRuntimeReceipt({
   verdicts,
   exitCode,
 }) {
+  // A run whose command line never parsed has no options to record; naming the
+  // missing field beats a property read on null from inside the builder.
+  if (options === null || typeof options !== "object") {
+    throw new TypeError(
+      "buildRuntimeReceipt requires the parsed options: a run whose command line did not parse has no runtime receipt to build",
+    );
+  }
   return {
     probe,
     generatedAt,

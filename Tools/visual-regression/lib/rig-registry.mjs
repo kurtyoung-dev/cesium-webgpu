@@ -255,6 +255,13 @@ export function validateRig(rig) {
     );
   }
 
+  if (rig?.frames !== undefined) {
+    need(
+      rig.frames === "gate-only",
+      `frames must be "gate-only" when present, got ${JSON.stringify(rig.frames)}`,
+    );
+  }
+
   if (rig?.expectedMismatch !== undefined) {
     const { errors } = resolveSceneExpectations({
       name: rig.id,

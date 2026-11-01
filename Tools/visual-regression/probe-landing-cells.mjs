@@ -180,6 +180,7 @@ import {
 import { runDeviceLossSteps } from "./lib/device-loss-steps.mjs";
 import { runDiveGateCellPage } from "./lib/globe-dive-gate-steps.mjs";
 import {
+  PRIME_MAX_PAGES,
   contentionBasisOf,
   primeBeforeFirstArm,
 } from "./lib/landing-pf-prime.mjs";
@@ -793,8 +794,10 @@ export const descriptor = {
   },
   summary: (receipt, runtimeReceipt) =>
     buildLandingCellsSummary(receipt, runtimeReceipt, descriptor.title),
+  // The prime pages are unmeasured loads of a real page, so they are budgeted.
   workBudgetMs: (options) =>
-    plannedPageCount(options) * PAGE_BUDGET_MS + WARM_UP_DEFAULTS.timeoutMs,
+    (plannedPageCount(options) + PRIME_MAX_PAGES) * PAGE_BUDGET_MS +
+    WARM_UP_DEFAULTS.timeoutMs,
   async cells({ browser, run, options, origin, outputDirectory, captures }) {
     // Fail before the first page on inputs that cannot be read.
     readComparisonInputs(options);
@@ -838,11 +841,15 @@ export const descriptor = {
       captures,
     });
     if (run === 0) {
-      // One unmeasured load of the first PF page, so the first measured arm
-      // does not carry the browser's and the disk's cold start.
+      // Unmeasured loads of the first PF page until the machine is quiet, so
+      // the first measured arm does not carry the load seen after a start.
+      const comparisonInputs = readComparisonInputs(options);
       invocationPrime = await primeBeforeFirstArm({
         options,
         plan,
+        base: comparisonInputs.base,
+        bands: comparisonInputs.overrides,
+        deps: descriptor.warmUpDeps?.prime ?? browser?.[WARM_UP_SEAM]?.prime,
         runPage: (entry) => runPage({ ...pageInputs(entry), prime: true }),
       });
       invocationCpu = startCpuSampler();

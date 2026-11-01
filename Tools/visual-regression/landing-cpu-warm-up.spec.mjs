@@ -16,6 +16,7 @@ import {
   markPfVerdicts,
   warmUpBeforeFirstArm,
 } from "./lib/cpu-warm-up.mjs";
+import { PRIME_MAX_PAGES } from "./lib/landing-pf-prime.mjs";
 import { descriptor } from "./probe-landing-cells.mjs";
 import { importMutated } from "./lib/import-mutated.mjs";
 import { landingRunners } from "./fixtures/probe-landing-cells-support.mjs";
@@ -437,11 +438,16 @@ test("a run whose every page is a dive-gate or device-loss page runs no PF windo
   assert.equal(mixed.record.status, "released");
 });
 
-test("the run's work budget covers a full warm-up time-out on top of its pages", () => {
+test("the run's work budget covers a full warm-up time-out and the prime's page budget on top of its pages", () => {
   const one = descriptor.workBudgetMs({ cells: "E-D" });
   const perCell = descriptor.workBudgetMs({ cells: "E-D,E-O" }) - one;
   assert.ok(perCell > 0);
-  assert.equal(one - perCell, WARM_UP_DEFAULTS.timeoutMs);
+  // A cell plans four pages; the prime may load PRIME_MAX_PAGES more, each
+  // budgeted as a planned page.
+  assert.equal(
+    one - perCell,
+    WARM_UP_DEFAULTS.timeoutMs + (PRIME_MAX_PAGES * perCell) / 4,
+  );
 });
 
 test("the record names the live sampler when no sampler is injected, without taking a live sample", async () => {

@@ -450,15 +450,41 @@ const mutatedVerdicts = (replacements) =>
 /** Fails (throws) when the mutant's output satisfies the assertion; returns when it is red. */
 const killed = (check) => assert.throws(check, assert.AssertionError);
 
-test("M1: with the verdict-site override of decided unreachable, the unmeasured entries read decided true again", async () => {
+test("M1: with the verdict-site rule unreachable, an entry over a nested mark that kept its arithmetic reads decided true again", async () => {
+  // The metric records now apply the same rule to their own mark, so the
+  // entry would inherit it; a comparison whose nested mark kept the
+  // arithmetic (a report written before that) is what only the verdict site
+  // corrects.
   const mutant = await mutatedVerdicts([
     [
-      "provisionalFloor: unmeasured\n",
-      "provisionalFloor: false && unmeasured\n",
+      "provisionalFloor: floorMarkUnder(",
+      "provisionalFloor: ((mark) => mark)(",
     ],
   ]);
-  const verdicts = mutant.landingVerdicts(FIXTURE.tip.pages, comparisonOf());
-  killed(() => assertUnmeasuredFloorsDecideNothing(verdicts));
+  const arithmetic = {
+    flag: "provisional-floor",
+    floorBytes: 40000,
+    registeredAllocationBytes: 0,
+    decided: true,
+  };
+  const comparison = {
+    "C|webgpu|scene": {
+      pf4: {
+        metric: "PF-4",
+        verdict: "unmeasured",
+        provisionalFloor: arithmetic,
+      },
+    },
+  };
+  const entryOf = (verdicts) =>
+    verdictIn(verdicts, "C|webgpu|scene:PF-4").provisionalFloor;
+  killed(() =>
+    assert.equal(
+      entryOf(mutant.landingVerdicts([], comparison)).decided,
+      false,
+    ),
+  );
+  assert.equal(entryOf(landingVerdicts([], comparison)).decided, false);
   // The same mutant leaves the real module's behaviour alone: the live path still passes.
   assertUnmeasuredFloorsDecideNothing(
     landingVerdicts(FIXTURE.tip.pages, comparisonOf()),

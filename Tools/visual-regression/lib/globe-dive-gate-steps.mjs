@@ -336,6 +336,32 @@ export function buildDiveGateReceipt(record) {
 /** The gate answers a rig may pre-register for a dive page. */
 export const DIVE_GATE_EXPECTATIONS = Object.freeze(["allow", "refuse"]);
 
+/** What a gate-only cell's frame compare reads as, wherever a reader looks. */
+export const GATE_ONLY_FRAMES_REASON = "not-comparable: gate-only cell";
+
+/**
+ * The mark a rig that declares `frames: "gate-only"` puts on its pages: the
+ * frame compare (dive against control, WebGL against WebGPU, base against tip)
+ * is removed, and the mark says so and whose declaration removed it, so a
+ * byte-identical pair is not read as a pass of anything visual. A rig that
+ * declares nothing has no mark (null) and its frames stay comparable. Pure.
+ *
+ * @param {{id?: string, frames?: string}} [rig]
+ * @returns {{comparable: false, removed: string, reason: string,
+ *   declaredBy: string}|null}
+ */
+export function framesMarkOf(rig) {
+  if (rig?.frames !== "gate-only") {
+    return null;
+  }
+  return {
+    comparable: false,
+    removed: "frame-compare",
+    reason: GATE_ONLY_FRAMES_REASON,
+    declaredBy: `rig ${rig.id ?? "(unnamed)"} frames: "gate-only"`,
+  };
+}
+
 /**
  * One dive-gate cell page: the step data, the collision flag and the
  * pre-registered gate come from the staged rig's dials (`diveGateStep`,
@@ -354,7 +380,7 @@ export const DIVE_GATE_EXPECTATIONS = Object.freeze(["allow", "refuse"]);
  *   already laid over it).
  * @param {(frames: number) => Promise<unknown>} input.settle
  * @returns {Promise<{diveGate: {step: (object|null), record: (object|null),
- *   outcome: object, expected: (string|null)}}>}
+ *   outcome: object, expected: (string|null), frames: (object|null)}}>}
  */
 export async function runDiveGateCellPage({ page, rig, settle }) {
   const dials = rig?.dials ?? {};
@@ -362,12 +388,14 @@ export async function runDiveGateCellPage({ page, rig, settle }) {
     ? dials.diveGateExpected
     : null;
   const data = dials.diveGateStep;
+  const frames = framesMarkOf(rig);
   if (data === null || typeof data !== "object") {
     return {
       diveGate: {
         step: null,
         record: null,
         expected,
+        frames,
         outcome: unreadable(
           "step-missing",
           `rig ${rig?.id ?? "(unnamed)"} carries no diveGateStep dial`,
@@ -380,7 +408,7 @@ export async function runDiveGateCellPage({ page, rig, settle }) {
     disableWaterCollision: dials.diveCollisionDisabled === true,
   };
   const { record, outcome } = await runDiveGateSteps({ page, step, settle });
-  return { diveGate: { step, record, outcome, expected } };
+  return { diveGate: { step, record, outcome, expected, frames } };
 }
 
 /**
@@ -390,7 +418,9 @@ export async function runDiveGateCellPage({ page, rig, settle }) {
  * A page with no `diveGate` has no verdict (null). An outcome that cannot be
  * read, or a page whose rig registered no allow / refuse, is NOT RUN, which
  * fails the run: a requested measurement that did not happen is not a pass.
- * `clampHeld` rides along for the reader; the pass is the gate alone.
+ * `clampHeld` rides along for the reader; the pass is the gate alone. A page
+ * of a gate-only cell (the rig declared `frames: "gate-only"`) carries
+ * `frames`, the mark that its frame compare was removed.
  * `clockHeld` says whether the stage read back the rig's pinned instant,
  * frozen (null when the page record carries no stage clock): a frame lit by
  * the wall clock is not the scene the rig declared.
@@ -401,9 +431,17 @@ export async function runDiveGateCellPage({ page, rig, settle }) {
  */
 export function diveGateVerdict(id, record) {
   const verdict = gateVerdictOf(id, record);
-  return verdict === null
-    ? null
-    : { ...verdict, clockHeld: stageClockHeld(record?.stage?.clock) };
+  if (verdict === null) {
+    return null;
+  }
+  // On the entry itself, so a reader of the verdict sees that this cell's
+  // frames were removed from the compare; the gate fields are untouched.
+  const frames = record.diveGate.frames ?? null;
+  return {
+    ...verdict,
+    clockHeld: stageClockHeld(record?.stage?.clock),
+    ...(frames === null ? {} : { frames }),
+  };
 }
 
 /**

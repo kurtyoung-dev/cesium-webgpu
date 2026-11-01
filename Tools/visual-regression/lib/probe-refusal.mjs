@@ -91,12 +91,15 @@ export function throwForDecision(decision, message) {
 /**
  * The reasons a verdict may be recorded as unmeasured by a condition OUTSIDE
  * the subject: the machine was busy while a performance statistic was read
- * (`contended`), or the operator asked for fewer runs than a repeat statistic
- * needs (`runs`). The field a verdict carries is `unmeasured`.
+ * (`contended`), the operator asked for fewer runs than a repeat statistic
+ * needs (`runs`), or the repeats of one statistic fell into two modes too far
+ * apart to band, which a median cannot read (`bimodal`). The field a verdict
+ * carries is `unmeasured`.
  */
 export const UNMEASURED_REASONS = Object.freeze({
   CONTENDED: "contended",
   RUNS: "runs",
+  BIMODAL: "bimodal",
 });
 
 /**

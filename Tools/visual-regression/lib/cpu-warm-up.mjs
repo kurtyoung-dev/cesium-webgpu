@@ -31,7 +31,10 @@
  * {@link WARM_UP_SEAM} (a fake marks itself with {@link withInstantWarmUp})
  * hands its sampler to the run, and the record names which sampler it read
  * (`sampler: "live" | "injected"`). {@link liveSamplerReads} counts the live
- * reads of this process, so a spec can prove none happened.
+ * reads of this process, so a spec can prove none happened. The prime page
+ * loop in `lib/landing-pf-prime.mjs` reads its own deps from the `prime`
+ * key of the same seam object, so a spec that replaces the warm-up's series
+ * does not have the prime consume it.
  *
  * @module Tools/visual-regression/lib/cpu-warm-up
  */
@@ -48,6 +51,9 @@ export const INSTANT_WARM_UP = Object.freeze({
   settleSamples: 1,
   sampleCpu: async () => 0,
   now: () => 0,
+  // The prime's own seam: its post-page sample and the page's CPU reading,
+  // which on a fake browser would otherwise be the page sampler's live value.
+  prime: Object.freeze({ sampleCpu: async () => 0, pageCpu: () => 0 }),
 });
 
 /**
@@ -86,7 +92,7 @@ function dial(value, fallback) {
 }
 
 /** One machine-CPU reading over one interval; null when the counters stood still. */
-function readMachineCpu(intervalMs) {
+export function readMachineCpu(intervalMs) {
   liveReads++;
   const before = readCpuTimes();
   return new Promise((resolve) => {

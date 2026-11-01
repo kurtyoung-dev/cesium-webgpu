@@ -9,6 +9,8 @@
 //
 // THE CLOCK is pinned to the daylight instant 2026-06-21T18:00:00Z: a rig that leaves it `null` freezes the wall clock at load, and the terrain and ocean frames then render at night whenever the run starts.
 //
+// GATE-ONLY FRAMES. The open ocean under naturalEarth imagery is one flat field at every height this dive visits (7.9 m at the dive end, 1.0 m at the control end): the dive and control frames, and both renderers, come out byte-identical, so a frame compare of this cell says nothing about the camera. No stage dial or imagery the kit declares draws a height-dependent reference on both renderers (the fragment debug modes are WebGPU-only), so the rig declares `frames: "gate-only"`: the gate verdict is the whole acceptance and the receipt marks the cell `not-comparable: gate-only cell`.
+//
 // WHO RENDERS IT. `probe-landing-cells.mjs --cells E-DG-ellipsoid`, both renderers.
 
 export default Object.freeze({
@@ -29,6 +31,7 @@ export default Object.freeze({
     roll: 0,
   },
   clock: "2026-06-21T18:00:00Z",
+  frames: "gate-only",
   dials: {
     terrain: "ellipsoid",
     imagery: "naturalEarth",

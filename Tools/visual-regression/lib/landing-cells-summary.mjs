@@ -1,6 +1,6 @@
 /**
  * The landing-cells probe's Markdown summary.
- * @purpose The landing-cells Markdown summary hook: the default id-and-result table plus the marks a reader needs where they look (a PASS decided by a provisional floor reads PASS* with the flag and figures footnoted, a floor that did not decide or that decided nothing because the verdict was not measured, the reason a contended or not-run verdict was not read with the arm's CPU figures, the CPU warm-up, prime and contention-basis notes, a base frame found beside the report), and nothing else changed.
+ * @purpose The landing-cells Markdown summary hook: the default id-and-result table plus the marks a reader needs where they look (a PASS decided by a provisional floor reads PASS* with the flag and figures footnoted, a floor that did not decide or that decided nothing because the verdict was not measured, the reason a contended or not-run verdict was not read with the arm's CPU figures (machine CPU figures and long float noise in a reason print at two decimals; the receipt keeps the raw floats), the CPU warm-up, prime and contention-basis notes, a base frame found beside the report, a gate-only cell whose frame compare its rig removed), and nothing else changed.
  * @status ACTIVE
  *
  * The table is `buildMarkdownSummary`'s own: this module post-edits its lines
@@ -21,6 +21,22 @@ const UNMEASURED_STATISTIC = /^unmeasured/;
 /** A figure as a reader wants it: four significant digits at most. */
 function figure(value) {
   return Number.isFinite(value) ? String(Number(value.toPrecision(4))) : null;
+}
+
+/** A machine CPU figure to two decimals, trailing zeros dropped (61.76, 32.1). */
+function cpuFigure(value) {
+  return Number.isFinite(value) ? String(Number(value.toFixed(2))) : null;
+}
+
+// Five or more fractional digits is float arithmetic noise (83.75181818181818),
+// where a recorded figure such as a mode value (0.458) has at most four.
+const LONG_DECIMAL = /(?<![\d.])\d+\.\d{5,}(?!\d)/g;
+
+/** A reason as the summary prints it: long decimals at two places; the receipt keeps its own text. */
+function roundedReason(reason) {
+  return reason.replace(LONG_DECIMAL, (found) =>
+    String(Number(Number(found).toFixed(2))),
+  );
 }
 
 /** A byte count with thousands separators (fixed locale: a summary must not vary by machine). */
@@ -124,14 +140,14 @@ function contentionOf(receipt, id) {
  * none.
  */
 function cpuFigures(contention) {
-  const base = figure(contention?.baseMeanCpu);
-  const tip = figure(contention?.tipMeanCpu);
+  const base = cpuFigure(contention?.baseMeanCpu);
+  const tip = cpuFigure(contention?.tipMeanCpu);
   if (base === null || tip === null) {
     return "";
   }
-  const delta = figure(contention.armDeltaPct);
-  const busy = figure(contention.contendedCpuPct);
-  const apart = figure(contention.cpuArmDeltaPct);
+  const delta = cpuFigure(contention.armDeltaPct);
+  const busy = cpuFigure(contention.contendedCpuPct);
+  const apart = cpuFigure(contention.cpuArmDeltaPct);
   const limits = [
     ...(busy === null ? [] : [`mean above ${busy} %`]),
     ...(apart === null ? [] : [`arms apart by more than ${apart} points`]),
@@ -166,9 +182,21 @@ function markOf(receipt, verdict) {
       contended || contention?.status === "contended"
         ? cpuFigures(contention)
         : "";
-    const why = reasons.length > 0 ? reasons.join("; ") : NOT_RECORDED;
+    const why =
+      reasons.length > 0 ? roundedReason(reasons.join("; ")) : NOT_RECORDED;
     notes.push(
       `- ${verdictResultLabel(verdict)} \`${id}\`: ${why}${figures === "" ? "" : `; ${figures}`}`,
+    );
+  } else if (
+    verdict.pass !== true &&
+    verdict.modes !== null &&
+    typeof verdict.modes === "object" &&
+    typeof verdict.reason === "string"
+  ) {
+    // A measured failure whose repeats fell into two modes keeps its result
+    // and names the modes beside it.
+    notes.push(
+      `- ${verdictResultLabel(verdict)} \`${id}\`: ${roundedReason(verdict.reason)}`,
     );
   }
   if (hasFloor) {
@@ -187,6 +215,18 @@ function markOf(receipt, verdict) {
         `- \`${id}\`: ${text}; the floor was applied and did not decide this verdict`,
       );
     }
+  }
+  // A gate-only cell's frames were removed from every compare by its rig, so a
+  // byte-identical pair beside a passing gate is not read as a visual pass.
+  const frames = verdict.frames;
+  if (
+    frames !== null &&
+    typeof frames === "object" &&
+    frames.comparable === false
+  ) {
+    notes.push(
+      `- \`${id}\`: ${frames.reason ?? "frames not comparable"}; the frame compare was removed (declared by ${frames.declaredBy ?? "a rig not recorded"})`,
+    );
   }
   return notes.length === 0 ? null : { star, notes };
 }

@@ -18,6 +18,7 @@ import { diveGateVerdict } from "./globe-dive-gate-steps.mjs";
 import { frameTimeVerdict } from "./metrics/frame-time-distribution.mjs";
 import { residencyVerdict } from "./metrics/gpu-memory-residency.mjs";
 import {
+  bimodalDetail,
   passCostVerdict,
   summarizePassCost,
 } from "./metrics/gpu-pass-cost.mjs";
@@ -26,7 +27,12 @@ import {
   pixelBand,
   pixelDiff,
 } from "./metrics/landing-pixel-band.mjs";
-import { PERF_VERDICTS, contentionGuard } from "./metrics/perf-band.mjs";
+import {
+  PERF_VERDICTS,
+  contentionGuard,
+  floorMarkUnder,
+  isUnmeasuredVerdict,
+} from "./metrics/perf-band.mjs";
 import { SIBLING_FALLBACK, baseFrameMissing } from "./report-frame-paths.mjs";
 import { startupVerdict } from "./metrics/startup-compile.mjs";
 import {
@@ -173,6 +179,22 @@ export function compareArms(tipArms, baseArms, bands, options = {}) {
         comparison.pixels.baseRecordedPath = baseShot.recordedPath ?? null;
       }
     }
+    // A rig that declared its cell gate-only removed the frame compare: the
+    // pair keeps what the diff read, but its verdict is not applicable, and
+    // the record names the declaration and the verdict it replaced.
+    const frames = tip.frames ?? base.frames;
+    if (comparison.pixels && frames?.comparable === false) {
+      comparison.pixels = {
+        ...comparison.pixels,
+        verdict: NOT_APPLICABLE,
+        verdictIfComparable: comparison.pixels.verdict ?? null,
+        ...(comparison.pixels.reason === undefined
+          ? {}
+          : { diffReason: comparison.pixels.reason }),
+        reason: frames.reason,
+        frames,
+      };
+    }
     if (tip.deviceLoss.length > 0 && base.deviceLoss.length > 0) {
       // One reader of the terminal record, any mode (F1).
       const shape = (entry) => terminalShape(entry.terminal);
@@ -286,9 +308,8 @@ export function landingVerdicts(records, comparison) {
   for (const [key, arm] of Object.entries(comparison ?? {})) {
     for (const pf of ["pf1", "pf2", "pf3", "pf4"]) {
       if (arm[pf] && arm[pf].verdict !== NOT_APPLICABLE) {
-        const unmeasured =
-          arm[pf].verdict === PERF_VERDICTS.UNMEASURED ||
-          arm[pf].verdict === PERF_VERDICTS.UNMEASURED_CONTENDED;
+        const unmeasured = isUnmeasuredVerdict(arm[pf].verdict);
+        const bimodal = bimodalDetail(arm[pf]);
         verdicts.push({
           id: `${key}:${arm[pf].metric}`,
           pass: arm[pf].verdict === PERF_VERDICTS.WITHIN,
@@ -301,19 +322,33 @@ export function landingVerdicts(records, comparison) {
           ...(arm[pf].verdict === PERF_VERDICTS.UNMEASURED_CONTENDED
             ? { unmeasured: UNMEASURED_REASONS.CONTENDED }
             : {}),
+          // Two modes the band cannot read (the base drew the slow one) are
+          // marked, not failed; two modes beside an `over` that stands still
+          // fail. Either way the modes and their reason sit on the verdict
+          // where the summary reads them.
+          ...(bimodal
+            ? {
+                ...(arm[pf].verdict === PERF_VERDICTS.UNMEASURED_BIMODAL
+                  ? {
+                      unmeasured: UNMEASURED_REASONS.BIMODAL,
+                      verdictIfUnimodal: bimodal.verdictIfUnimodal,
+                    }
+                  : {}),
+                reason: bimodal.reason,
+                modes: bimodal.modes,
+              }
+            : {}),
           // A verdict an uncalibrated floor set the band of says so where it
           // is read, with `decided` when the floor turned it. A statistic
           // that was not measured was turned by nothing: the floor stays on
-          // the verdict as applied, decides nothing, and says why.
+          // the verdict as applied, decides nothing, and says why (the one
+          // rule the metric's own record also follows).
           ...(arm[pf].provisionalFloor
             ? {
-                provisionalFloor: unmeasured
-                  ? {
-                      ...arm[pf].provisionalFloor,
-                      decided: false,
-                      undecidedBecause: arm[pf].verdict,
-                    }
-                  : arm[pf].provisionalFloor,
+                provisionalFloor: floorMarkUnder(
+                  arm[pf].provisionalFloor,
+                  arm[pf].verdict,
+                ),
               }
             : {}),
         });

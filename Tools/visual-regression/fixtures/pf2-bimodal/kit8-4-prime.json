@@ -1,0 +1,173 @@
+{
+  "source": "Each side's pf2 array is the banked report's own inputs.pf2 (one gpuPassCost() result per repeat), reduced to the fields summarizePassCost reads; cpu and cpuSamples are copied verbatim. The base arm is the A bank and the tip arm the B bank of one served build.",
+  "arm": "E-ID-cv|webgpu|scene",
+  "base": {
+    "source": {
+      "report": "cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/A/landing-cells-report.json",
+      "pf2": "arms[\"E-ID-cv|webgpu|scene\"].inputs.pf2",
+      "cpu": "arms[\"E-ID-cv|webgpu|scene\"].inputs.cpu",
+      "cpuSamples": "arms[\"E-ID-cv|webgpu|scene\"].inputs.cpuSamples"
+    },
+    "pf2": [
+      {
+        "enabled": true,
+        "frameAvgMs": 0.4582063999999999,
+        "frameCount": 68,
+        "passes": {
+          "Scene Framebuffer Render Pass": {
+            "avgMs": 0.19756586666666662
+          },
+          "GlobeDepth-DepthCopy_load_pass": {
+            "avgMs": 0.05939146666666664
+          },
+          "PostProcess-IdentityBlit": {
+            "avgMs": 0.010650666666666676
+          }
+        },
+        "sampleLedgerBalanced": true,
+        "coverageRatio": 0.5865168539325843
+      },
+      {
+        "enabled": true,
+        "frameAvgMs": 0.5917514666666667,
+        "frameCount": 68,
+        "passes": {
+          "Scene Framebuffer Render Pass": {
+            "avgMs": 0.25506026666666665
+          },
+          "GlobeDepth-DepthCopy_load_pass": {
+            "avgMs": 0.07470186666666673
+          },
+          "PostProcess-IdentityBlit": {
+            "avgMs": 0.01402826666666667
+          }
+        },
+        "sampleLedgerBalanced": true,
+        "coverageRatio": 0.5857885615251299
+      }
+    ],
+    "cpu": [
+      44.636,
+      39.98500000000001
+    ],
+    "cpuSamples": [
+      [
+        89.86,
+        64.55,
+        64.58,
+        66.54,
+        61.99,
+        50.59,
+        43.09,
+        32.41,
+        34.55,
+        32.23,
+        44.34,
+        19.01,
+        25.39,
+        21.58,
+        18.83
+      ],
+      [
+        57.11,
+        48.66,
+        68.04,
+        87.58,
+        56.64,
+        36.73,
+        22,
+        22.31,
+        22.49,
+        23.62,
+        19.11,
+        36.09,
+        39.06,
+        20.35
+      ]
+    ]
+  },
+  "tip": {
+    "source": {
+      "report": "cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/B/landing-cells-report.json",
+      "pf2": "arms[\"E-ID-cv|webgpu|scene\"].inputs.pf2",
+      "cpu": "arms[\"E-ID-cv|webgpu|scene\"].inputs.cpu",
+      "cpuSamples": "arms[\"E-ID-cv|webgpu|scene\"].inputs.cpuSamples"
+    },
+    "pf2": [
+      {
+        "enabled": true,
+        "frameAvgMs": 4.2208928,
+        "frameCount": 68,
+        "passes": {
+          "Scene Framebuffer Render Pass": {
+            "avgMs": 1.3904559999999995
+          },
+          "GlobeDepth-DepthCopy_load_pass": {
+            "avgMs": 0.5651125333333333
+          },
+          "PostProcess-IdentityBlit": {
+            "avgMs": 0.059339733333333304
+          }
+        },
+        "sampleLedgerBalanced": true,
+        "coverageRatio": 0.484533683141503
+      },
+      {
+        "enabled": true,
+        "frameAvgMs": 4.7998096,
+        "frameCount": 68,
+        "passes": {
+          "Scene Framebuffer Render Pass": {
+            "avgMs": 1.470906133333333
+          },
+          "GlobeDepth-DepthCopy_load_pass": {
+            "avgMs": 0.6191621333333333
+          },
+          "PostProcess-IdentityBlit": {
+            "avgMs": 0.058812266666666654
+          }
+        },
+        "sampleLedgerBalanced": true,
+        "coverageRatio": 0.4221587431136503
+      }
+    ],
+    "cpu": [
+      33.604285714285716,
+      36.630714285714284
+    ],
+    "cpuSamples": [
+      [
+        52.31,
+        47.67,
+        58.73,
+        64.37,
+        52.81,
+        25.53,
+        20.86,
+        21.7,
+        19.17,
+        23.18,
+        20.88,
+        20.24,
+        23.22,
+        19.79
+      ],
+      [
+        55.32,
+        63.44,
+        72.13,
+        63.73,
+        58.28,
+        28.89,
+        23.21,
+        22.67,
+        21.38,
+        23.15,
+        20.63,
+        18.86,
+        21.87,
+        19.27
+      ]
+    ]
+  }
+}

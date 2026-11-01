@@ -68,6 +68,7 @@ import {
   PERF_VERDICTS,
   ceilingVerdict,
   compareToBase,
+  floorMarkUnder,
   guardStatistic,
   median,
   startupBandsFor,
@@ -378,10 +379,12 @@ export function startupVerdict({
   }
   guardStatistic(startup, contention);
   guardStatistic(compile, contention);
-  const floorRecord = provisionalFloorMark(compile);
+  const verdict = worstVerdict([startup, compile]);
+  // The record's own mark follows the verdict rule the entry reads.
+  const floorRecord = floorMarkUnder(provisionalFloorMark(compile), verdict);
   return {
     metric: "PF-3",
-    verdict: worstVerdict([startup, compile]),
+    verdict,
     ...(floorRecord ? { provisionalFloor: floorRecord } : {}),
     field: chosen,
     fieldFallback,
