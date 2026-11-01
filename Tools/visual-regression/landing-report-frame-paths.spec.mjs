@@ -1,5 +1,5 @@
 // landing-report-frame-paths.spec.mjs - Behaviour spec for lib/report-frame-paths.mjs and its three call sites (no browser).
-// @purpose Asserts that a landing report stores each frame path relative to its own folder (POSIX), that a base report and a --merge-reports prior are read with their frames resolved against THEIR folder (an existing absolute path is accepted), that a report written in one folder, copied whole to another and read from there as --base-report measures 0 changed pixels, that a base frame that is not on disk reads pixels {measured false, verdict not-run, reason base-frames-missing} with the path and original error kept and the exit and verdicts unchanged, and that the resolver, both probe call sites and the classification are live (inertness mutants).
+// @purpose Asserts that a landing report stores each frame path relative to its own folder (POSIX), that a base report and a --merge-reports prior are read with their frames resolved against THEIR folder (an existing absolute path is accepted; a gone absolute path is replaced by the one same-named file beside the report or one folder down, marked sibling-fallback with the recorded path kept in the frame record, the pixel record and the summary, and never chosen between two candidates), that a report written in one folder, copied whole to another and read from there as --base-report measures 0 changed pixels, that a base frame that is not on disk reads pixels {measured false, verdict not-run, reason base-frames-missing} with the path and original error kept and the exit and verdicts unchanged, and that the resolver, both probe call sites and the classification are live (inertness mutants).
 // @status ACTIVE
 //
 // The runs go through the real `runProbe` over the fake browser (a report
@@ -432,4 +432,143 @@ test("R10: a report that carries arms and no pages (a reader that does not regro
   );
   // A copy: the parsed report keeps what it read.
   assert.equal(report.arms[ARM].captures[0].path, "a-run0.png");
+});
+
+// ---------------------------------------------------------------------------
+// A banked absolute report: the frame found by name beside it
+// ---------------------------------------------------------------------------
+
+/** An absolute path into a clone that no longer exists, as a banked report recorded it. */
+const goneClonePath = (name, file) =>
+  path.join(TEMP_ROOT, name, "deleted-clone", "output", file);
+
+test("R11: an absolute base frame that is gone is read from the file of the same name beside the report, and the frame record and the pixel record both say so with the path the report recorded", () => {
+  const dir = path.join(TEMP_ROOT, "r11-report");
+  const recorded = goneClonePath("r11", "base.png");
+  const { reportFile, frameFile } = writeBaseReport(dir, {
+    recordedPath: recorded,
+  });
+  const { base } = readComparisonInputs({
+    baseReport: reportFile,
+    noWaitPipelines: true,
+  });
+  const shot = base.arms[ARM].captures[0];
+  assert.equal(shot.path, frameFile);
+  assert.equal(shot.frameSource, "sibling-fallback");
+  assert.equal(shot.recordedPath, recorded);
+  const comparison = compareArms(
+    tipArmsIn(path.join(TEMP_ROOT, "r11-tip"), 3),
+    base.arms,
+    {},
+  );
+  const pixels = comparison[ARM].pixels;
+  assert.equal(pixels.measured, true);
+  assert.equal(pixels.changedPx, 3);
+  assert.equal(pixels.frameSource, "sibling-fallback");
+  assert.equal(pixels.baseRecordedPath, recorded);
+});
+
+test("R12: a gone absolute frame with no file beside the report is found one folder down, and a Windows-form recorded path is matched by its file name", () => {
+  const dir = path.join(TEMP_ROOT, "r12-report");
+  fs.mkdirSync(path.join(dir, "frames"), { recursive: true });
+  const below = writePng(path.join(dir, "frames", "deep.png"), 0);
+  const recorded = ["Z:", "retired-clone", "Tools", "output", "deep.png"].join(
+    "\\",
+  );
+  const reportFile = path.join(dir, REPORT);
+  const report = { pages: [{ capture: { name: "deep", path: recorded } }] };
+  const page = frames.resolveFramePaths(report, reportFile).pages[0];
+  assert.equal(page.capture.path, below);
+  assert.equal(page.capture.frameSource, "sibling-fallback");
+  assert.equal(page.capture.recordedPath, recorded);
+});
+
+test("R13: two files of that name one folder down are never chosen between: the recorded path stays and the cell reads base-frames-missing", () => {
+  const dir = path.join(TEMP_ROOT, "r13-report");
+  for (const folder of ["a", "b"]) {
+    fs.mkdirSync(path.join(dir, folder), { recursive: true });
+    writePng(path.join(dir, folder, "twin.png"), 0);
+  }
+  const recorded = goneClonePath("r13", "twin.png");
+  const reportFile = path.join(dir, REPORT);
+  const report = { pages: [{ capture: { name: "twin", path: recorded } }] };
+  const capture = frames.resolveFramePaths(report, reportFile).pages[0].capture;
+  assert.equal(capture.path, recorded);
+  assert.equal("frameSource" in capture, false);
+  assert.equal(frames.baseFrameMissing(capture).reason, "base-frames-missing");
+});
+
+test("R14: a gone absolute frame with no same-named file anywhere near the report still reads base-frames-missing, the recorded path kept", () => {
+  const dir = path.join(TEMP_ROOT, "r14-report");
+  const recorded = goneClonePath("r14", "absent.png");
+  const { reportFile } = writeBaseReport(dir, {
+    frameName: "other.png",
+    recordedPath: recorded,
+  });
+  const { base } = readComparisonInputs({
+    baseReport: reportFile,
+    noWaitPipelines: true,
+  });
+  const comparison = compareArms(
+    tipArmsIn(path.join(TEMP_ROOT, "r14-tip")),
+    base.arms,
+    {},
+  );
+  assert.equal(comparison[ARM].pixels.reason, "base-frames-missing");
+  assert.equal(comparison[ARM].pixels.detail.path, recorded);
+  assert.equal("frameSource" in comparison[ARM].pixels, false);
+});
+
+test("R15: a report banked with absolute frame paths into a deleted clone, its frames copied beside it, read as --base-report by the real probe measures pixels on every arm, and the summary names each substitution", async () => {
+  const banked = await produce("r15-a");
+  // Rewrite the written report the way a report banked before relative
+  // paths named its frames: absolutely, into a clone that is now gone.
+  const reportFile = path.join(banked.out, REPORT);
+  const report = JSON.parse(fs.readFileSync(reportFile, "utf8"));
+  const absolute = (capture) =>
+    capture?.path
+      ? { ...capture, path: goneClonePath("r15", path.basename(capture.path)) }
+      : capture;
+  report.pages = report.pages.map((page) => ({
+    ...page,
+    capture: absolute(page.capture),
+  }));
+  for (const arm of Object.values(report.arms)) {
+    arm.captures = arm.captures.map(absolute);
+  }
+  fs.writeFileSync(reportFile, JSON.stringify(report));
+
+  const tip = await produce("r15-tip", ["--base-report", reportFile]);
+  const pixels = pixelsOf(tip.report);
+  assert.ok(Object.keys(pixels).length > 0);
+  for (const [arm, entry] of Object.entries(pixels)) {
+    assert.equal(entry.measured, true, arm);
+    assert.equal(entry.frameSource, "sibling-fallback", arm);
+    assert.match(entry.baseRecordedPath, /deleted-clone/, arm);
+  }
+  const summary = fs.readFileSync(
+    path.join(tip.out, "landing-cells-summary.md"),
+    "utf8",
+  );
+  for (const arm of Object.keys(pixels)) {
+    assert.ok(summary.includes(`sibling-fallback \`${arm}\``), arm);
+  }
+});
+
+test("INERTNESS: with the sibling look-up unreachable a gone absolute frame is not found beside its report", async () => {
+  const mutated = await importMutated(PIECE, [
+    [
+      "  const sibling = fallback ? fallback(frame.path) : null;",
+      "  const sibling = false && fallback ? fallback(frame.path) : null;",
+    ],
+  ]);
+  const dir = path.join(TEMP_ROOT, "m6");
+  const recorded = goneClonePath("m6", "base.png");
+  const { reportFile } = writeBaseReport(dir, { recordedPath: recorded });
+  const report = JSON.parse(fs.readFileSync(reportFile, "utf8"));
+  const found = (module) =>
+    module.resolveFramePaths(report, reportFile).pages[0].capture
+      .frameSource === "sibling-fallback";
+  assert.equal(found(frames), true);
+  assert.equal(found(mutated), false);
 });

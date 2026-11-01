@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 267,
+  total: 272,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count reached 17
@@ -127,7 +127,10 @@ const REGISTRY_CENSUS = {
     // and the enhanced-ocean ON/OFF pair over the Kauai shelf.
     // The globe-material landing cell (E-M-water) adds one rig that is both: the
     // water-coast scene with the WaterMask globe material and the water effect off.
-    water: 27,
+    // The dive-gate cells (E-DG-geiranger, -ontario, -deathvalley, -ellipsoid,
+    // -upsampled) add five: one place each for the camera controller's water
+    // dive gate.
+    water: 32,
   },
 };
 

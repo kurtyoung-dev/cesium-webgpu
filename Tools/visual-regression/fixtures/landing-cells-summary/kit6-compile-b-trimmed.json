@@ -1,0 +1,304 @@
+{
+  "generatedAt": "2026-10-31T23:44:10.181Z",
+  "origin": "http://localhost:8094",
+  "servedBuildAssertion": "enforced",
+  "exitCode": 1,
+  "verdicts": [
+    {
+      "id": "E-W-ground-hdr:webgl:scene:run0:stage",
+      "pass": true,
+      "notRun": false
+    },
+    {
+      "id": "E-W-ground-hdr:webgl:scene:run0:no-unexpected-device-loss",
+      "pass": true,
+      "deviceLost": null
+    },
+    {
+      "id": "E-W-ground-hdr:webgl:scene:run0:weather-state",
+      "pass": true,
+      "expected": {
+        "onState": false,
+        "onProvider": false,
+        "offState": false
+      },
+      "observed": {
+        "onState": false,
+        "onProvider": false,
+        "offState": false
+      }
+    },
+    {
+      "id": "E-W-ground-hdr:webgpu:scene:run0:stage",
+      "pass": true,
+      "notRun": false
+    },
+    {
+      "id": "E-W-ground-hdr:webgpu:scene:run0:no-unexpected-device-loss",
+      "pass": true,
+      "deviceLost": null
+    },
+    {
+      "id": "E-W-ground-hdr:webgpu:scene:run0:weather-state",
+      "pass": true,
+      "expected": {
+        "onState": true,
+        "onProvider": true,
+        "offState": false,
+        "deckOffAfterDisable": true
+      },
+      "observed": {
+        "onState": true,
+        "onProvider": true,
+        "offState": false,
+        "deckOffAfterDisable": true
+      }
+    },
+    {
+      "id": "E-W-30km-hdr:webgl:scene:run0:stage",
+      "pass": true,
+      "notRun": false
+    },
+    {
+      "id": "E-W-30km-hdr:webgl:scene:run0:no-unexpected-device-loss",
+      "pass": true,
+      "deviceLost": null
+    },
+    {
+      "id": "E-W-30km-hdr:webgl:scene:run0:weather-state",
+      "pass": true,
+      "expected": {
+        "onState": false,
+        "onProvider": false,
+        "offState": false
+      },
+      "observed": {
+        "onState": false,
+        "onProvider": false,
+        "offState": false
+      }
+    },
+    {
+      "id": "E-W-30km-hdr:webgpu:scene:run0:stage",
+      "pass": true,
+      "notRun": false
+    },
+    {
+      "id": "E-W-30km-hdr:webgpu:scene:run0:no-unexpected-device-loss",
+      "pass": true,
+      "deviceLost": null
+    },
+    {
+      "id": "E-W-30km-hdr:webgpu:scene:run0:weather-state",
+      "pass": true,
+      "expected": {
+        "onState": true,
+        "onProvider": true,
+        "offState": false,
+        "deckOffAfterDisable": true
+      },
+      "observed": {
+        "onState": true,
+        "onProvider": true,
+        "offState": false,
+        "deckOffAfterDisable": true
+      }
+    },
+    {
+      "id": "E-W-ground-hdr:webgl:scene:run1:stage",
+      "pass": true,
+      "notRun": false
+    },
+    {
+      "id": "E-W-ground-hdr:webgl:scene:run1:no-unexpected-device-loss",
+      "pass": true,
+      "deviceLost": null
+    },
+    {
+      "id": "E-W-ground-hdr:webgl:scene:run1:weather-state",
+      "pass": true,
+      "expected": {
+        "onState": false,
+        "onProvider": false,
+        "offState": false
+      },
+      "observed": {
+        "onState": false,
+        "onProvider": false,
+        "offState": false
+      }
+    },
+    {
+      "id": "E-W-ground-hdr:webgpu:scene:run1:stage",
+      "pass": true,
+      "notRun": false
+    },
+    {
+      "id": "E-W-ground-hdr:webgpu:scene:run1:no-unexpected-device-loss",
+      "pass": true,
+      "deviceLost": null
+    },
+    {
+      "id": "E-W-ground-hdr:webgpu:scene:run1:weather-state",
+      "pass": true,
+      "expected": {
+        "onState": true,
+        "onProvider": true,
+        "offState": false,
+        "deckOffAfterDisable": true
+      },
+      "observed": {
+        "onState": true,
+        "onProvider": true,
+        "offState": false,
+        "deckOffAfterDisable": true
+      }
+    },
+    {
+      "id": "E-W-30km-hdr:webgl:scene:run1:stage",
+      "pass": true,
+      "notRun": false
+    },
+    {
+      "id": "E-W-30km-hdr:webgl:scene:run1:no-unexpected-device-loss",
+      "pass": true,
+      "deviceLost": null
+    },
+    {
+      "id": "E-W-30km-hdr:webgl:scene:run1:weather-state",
+      "pass": true,
+      "expected": {
+        "onState": false,
+        "onProvider": false,
+        "offState": false
+      },
+      "observed": {
+        "onState": false,
+        "onProvider": false,
+        "offState": false
+      }
+    },
+    {
+      "id": "E-W-30km-hdr:webgpu:scene:run1:stage",
+      "pass": true,
+      "notRun": false
+    },
+    {
+      "id": "E-W-30km-hdr:webgpu:scene:run1:no-unexpected-device-loss",
+      "pass": true,
+      "deviceLost": null
+    },
+    {
+      "id": "E-W-30km-hdr:webgpu:scene:run1:weather-state",
+      "pass": true,
+      "expected": {
+        "onState": true,
+        "onProvider": true,
+        "offState": false,
+        "deckOffAfterDisable": true
+      },
+      "observed": {
+        "onState": true,
+        "onProvider": true,
+        "offState": false,
+        "deckOffAfterDisable": true
+      }
+    },
+    {
+      "id": "E-W-ground-hdr|webgl|scene:PF-1",
+      "pass": true,
+      "verdict": "within"
+    },
+    {
+      "id": "E-W-ground-hdr|webgl|scene:PF-3",
+      "pass": true,
+      "verdict": "within"
+    },
+    {
+      "id": "E-W-ground-hdr|webgl|scene:PF-4",
+      "pass": true,
+      "verdict": "within"
+    },
+    {
+      "id": "E-W-ground-hdr|webgpu|scene:PF-1",
+      "pass": false,
+      "verdict": "over"
+    },
+    {
+      "id": "E-W-ground-hdr|webgpu|scene:PF-2",
+      "pass": true,
+      "verdict": "within"
+    },
+    {
+      "id": "E-W-ground-hdr|webgpu|scene:PF-3",
+      "pass": true,
+      "verdict": "within"
+    },
+    {
+      "id": "E-W-ground-hdr|webgpu|scene:PF-4",
+      "pass": false,
+      "verdict": "over"
+    },
+    {
+      "id": "E-W-30km-hdr|webgl|scene:PF-1",
+      "pass": true,
+      "verdict": "within"
+    },
+    {
+      "id": "E-W-30km-hdr|webgl|scene:PF-3",
+      "pass": true,
+      "verdict": "within"
+    },
+    {
+      "id": "E-W-30km-hdr|webgl|scene:PF-4",
+      "pass": true,
+      "verdict": "within"
+    },
+    {
+      "id": "E-W-30km-hdr|webgpu|scene:PF-1",
+      "pass": true,
+      "verdict": "within"
+    },
+    {
+      "id": "E-W-30km-hdr|webgpu|scene:PF-2",
+      "pass": true,
+      "verdict": "within"
+    },
+    {
+      "id": "E-W-30km-hdr|webgpu|scene:PF-3",
+      "pass": true,
+      "verdict": "within"
+    },
+    {
+      "id": "E-W-30km-hdr|webgpu|scene:PF-4",
+      "pass": true,
+      "verdict": "within"
+    }
+  ],
+  "comparison": {
+    "E-W-ground-hdr|webgl|scene": {
+      "contention": {
+        "status": "clear",
+        "reasons": []
+      }
+    },
+    "E-W-ground-hdr|webgpu|scene": {
+      "contention": {
+        "status": "clear",
+        "reasons": []
+      }
+    },
+    "E-W-30km-hdr|webgl|scene": {
+      "contention": {
+        "status": "clear",
+        "reasons": []
+      }
+    },
+    "E-W-30km-hdr|webgpu|scene": {
+      "contention": {
+        "status": "clear",
+        "reasons": []
+      }
+    }
+  }
+}

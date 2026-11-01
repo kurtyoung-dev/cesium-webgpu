@@ -28,6 +28,21 @@ const STEPS_PATH = path.join(
 );
 
 /**
+ * A module the placement can import in place of the page's Cesium build: it
+ * exports the one `Cartesian3.fromDegrees` the placement uses and logs every
+ * call on `globalThis` for the cases to read.
+ */
+const FAKE_CESIUM_URL = `data:text/javascript,${encodeURIComponent(
+  `globalThis.__diveGateFromDegrees ??= [];
+export const Cartesian3 = {
+  fromDegrees: (lon, lat, height) => {
+    globalThis.__diveGateFromDegrees.push({ lon, lat, height });
+    return { lon, lat, height };
+  },
+};`,
+)}`;
+
+/**
  * A viewer, a page and the counters the cases read.
  *
  * @param {object} setup Setup.
@@ -92,18 +107,14 @@ function makeWorld({
   };
   const page = {
     evaluate: async (fn, arg) => {
-      const saved = { viewer: globalThis.viewer, Cesium: globalThis.Cesium };
+      // No `globalThis.Cesium`: Apps/CesiumViewer does not set one, so the
+      // placement has to find Cesium through the module URL.
+      const saved = globalThis.viewer;
       globalThis.viewer = { scene };
-      globalThis.Cesium = {
-        Cartesian3: {
-          fromDegrees: (lon, lat, height) => ({ lon, lat, height }),
-        },
-      };
       try {
-        return fn(arg);
+        return await fn(arg);
       } finally {
-        globalThis.viewer = saved.viewer;
-        globalThis.Cesium = saved.Cesium;
+        globalThis.viewer = saved;
       }
     },
     mouse: {
@@ -144,6 +155,7 @@ const step = (overrides = {}) => ({
   height: 200,
   disableWaterCollision: true,
   wheelNotches: 5,
+  moduleUrl: FAKE_CESIUM_URL,
   ...overrides,
 });
 
@@ -287,6 +299,55 @@ test("the wheel is aimed at the canvas centre and the page settles around it", a
   ]);
   assert.deepEqual(world.counts.settles, [7, 4, 4, 4]);
   assert.deepEqual(world.counts.placedAt, { lon: 6.9, lat: 62.1, height: 200 });
+});
+
+test("the camera is placed through the Cesium module at the URL given, and the record names that URL", async () => {
+  globalThis.__diveGateFromDegrees = [];
+  const world = makeWorld({ globeHeight: 0 });
+  const { record, outcome } = await steps.runDiveGateSteps({
+    page: world.page,
+    step: step({ lon: -77.9, lat: 43.7, height: 150, wheelNotches: 2 }),
+    settle: world.settle,
+  });
+  assert.deepEqual(globalThis.__diveGateFromDegrees, [
+    { lon: -77.9, lat: 43.7, height: 150 },
+  ]);
+  assert.deepEqual(world.counts.placedAt, {
+    lon: -77.9,
+    lat: 43.7,
+    height: 150,
+  });
+  assert.equal(record.placement.moduleUrl, FAKE_CESIUM_URL);
+  assert.equal(record.placed.moduleUrl, FAKE_CESIUM_URL);
+  assert.equal(outcome.readable, true);
+});
+
+test("a module that cannot be imported, or that has no Cartesian3, is a placement reason naming the URL", async () => {
+  const missing = "data:text/javascript,throw new Error('no build here')";
+  const world = makeWorld({ globeHeight: 0 });
+  const failed = await steps.runDiveGateSteps({
+    page: world.page,
+    step: step({ moduleUrl: missing }),
+    settle: world.settle,
+  });
+  assert.equal(failed.outcome.readable, false);
+  assert.equal(failed.outcome.reason, "placement-failed");
+  assert.match(failed.outcome.detail, /could not be imported/u);
+  assert.ok(failed.outcome.detail.includes(missing));
+  assert.deepEqual(
+    world.counts.wheels,
+    [],
+    "no wheel after a failed placement",
+  );
+
+  const empty = "data:text/javascript,export const Other = {}";
+  const bare = await steps.runDiveGateSteps({
+    page: world.page,
+    step: step({ moduleUrl: empty }),
+    settle: world.settle,
+  });
+  assert.equal(bare.outcome.reason, "placement-failed");
+  assert.match(bare.outcome.detail, /has no Cartesian3.fromDegrees/u);
 });
 
 test("only the placement touches the creating accessor; reading uses _water", async () => {

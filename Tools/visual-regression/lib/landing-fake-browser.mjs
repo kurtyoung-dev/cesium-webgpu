@@ -14,6 +14,7 @@
  */
 
 import { encodeRgbaPng } from "../../lib/png-rgba.mjs";
+import { withInstantWarmUp } from "./cpu-warm-up.mjs";
 
 export function makeSmallPng(width = 8, height = 8, diffPixel = false) {
   const pixels = new Uint8Array(width * height * 4);
@@ -242,7 +243,9 @@ export function makeFakeBrowser(
     };
   }
 
-  return {
+  // A run launched on the fake takes the instant warm-up, never the machine's
+  // CPU: every landing spec's fake-browser run goes through this one seam.
+  return withInstantWarmUp({
     isConnected() {
       return connected;
     },
@@ -258,5 +261,5 @@ export function makeFakeBrowser(
     async close() {
       connected = false;
     },
-  };
+  });
 }

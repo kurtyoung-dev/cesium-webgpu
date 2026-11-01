@@ -204,9 +204,10 @@ test("M6: (ROUND 2) growth verdict with base [0, 1000] and tip [500, 1000] reads
   assert.equal(result.growth.verdict, "within");
   // Lead correction (Celos, round 2): the statement's example is the GROWTH
   // verdict. PF-4 overall also reads residency, and these fixtures end the tip
-  // median 250 B above base with allocationBytes 0, so overall reads over.
-  assert.equal(result.residency.verdict, "over");
-  assert.equal(result.verdict, "over");
+  // median 250 B above base: over a declared 0 B, but inside the 40 000 B
+  // provisional allowance floor (residency allowance floor), so overall reads within.
+  assert.equal(result.residency.verdict, "within");
+  assert.equal(result.verdict, "within");
 });
 
 test("M6: (ROUND 2) growth verdict with base [1000, 3000] and tip [2000, 6000] reads over on our additional example", () => {

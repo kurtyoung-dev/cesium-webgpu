@@ -132,6 +132,89 @@ export function p14Log() {
 
 export const verdictById = (verdicts, id) => verdicts.find((v) => v.id === id);
 
+/**
+ * Wrap a fake browser so its pages answer the dive-gate step: the placement
+ * (logged, and the collision flag kept per page), the state read (the gate is
+ * the engine's rule: the flag set and `|globeHeight| <= 110`) and a `mouse`
+ * that logs its moves and wheel notches. The fake is the source of the
+ * readings, so what it certifies is that the probe carries the step data in
+ * and the receipt out; the real controller is the Edge job's.
+ *
+ * @param {object} browser A `makeFakeBrowser` browser.
+ * @param {object} [options]
+ * @param {number} [options.globeHeight] The terrain height every page reads.
+ * @param {boolean} [options.placementFails] The placement reports a reason.
+ * @param {{placements: object[], moves: number[][], wheels: number[]}} [options.diveLog]
+ *   Receives what the pages were asked.
+ * @returns {object} The wrapped browser.
+ */
+export function withDiveGateAnswers(
+  browser,
+  {
+    globeHeight = 0,
+    placementFails = false,
+    diveLog = { placements: [], moves: [], wheels: [] },
+  } = {},
+) {
+  const wrapPage = (page) => {
+    let collisionDisabled = false;
+    return {
+      ...page,
+      mouse: {
+        async move(x, y) {
+          diveLog.moves.push([x, y]);
+        },
+        async wheel(_dx, deltaY) {
+          diveLog.wheels.push(deltaY);
+        },
+      },
+      async evaluate(fn, arg) {
+        if (fn.name === "pagePlaceDiveCamera") {
+          diveLog.placements.push(arg);
+          if (placementFails) {
+            return {
+              ok: false,
+              moduleUrl: arg.moduleUrl,
+              reason: "the globe has no water facade",
+            };
+          }
+          collisionDisabled = arg.disableWaterCollision === true;
+          return {
+            ok: true,
+            moduleUrl: arg.moduleUrl,
+            cursor: { x: 640, y: 360 },
+          };
+        }
+        if (fn.name === "pageReadDiveState") {
+          return {
+            waterFacade: true,
+            disableWaterCollision: collisionDisabled,
+            cameraHeight: 50,
+            globeHeight,
+            minimumZoomDistance: 1,
+            gateAllows: collisionDisabled && Math.abs(globeHeight) <= 110,
+            diveDepthMeters: collisionDisabled ? 5 : 0,
+          };
+        }
+        return page.evaluate(fn, arg);
+      },
+    };
+  };
+  return {
+    isConnected: () => browser.isConnected(),
+    close: () => browser.close(),
+    async newContext(options) {
+      const context = await browser.newContext(options);
+      return {
+        ...context,
+        async newPage() {
+          return wrapPage(await context.newPage());
+        },
+      };
+    },
+  };
+}
+
 export function readback(kernel, hash, overrides = {}) {
   return {
     available: true,

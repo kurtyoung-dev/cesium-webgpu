@@ -1,6 +1,6 @@
 /**
  * Where a landing report's frame paths are written and how a reader finds them again.
- * @purpose Path piece for probe-landing-cells.mjs and its report readers: the writer's relativizeFramePaths (every page record's capture and captureStart path made relative to the report's own directory, POSIX-separated, when the frame sits inside it), the readers' resolveFramePaths (a loaded report's page and arm frame paths resolved against THAT report's directory, an absolute path left as written) and baseFrameMissing (a base frame that is not on disk classified as the not-run reason base-frames-missing, with the path and the original error kept, instead of an ENOENT message); Node only for baseFrameMissing, pure otherwise.
+ * @purpose Path piece for probe-landing-cells.mjs and its report readers: the writer's relativizeFramePaths (every page record's capture and captureStart path made relative to the report's own directory, POSIX-separated, when the frame sits inside it), the readers' resolveFramePaths (a loaded report's page and arm frame paths resolved against THAT report's directory, an absolute path left as written while it is on disk, and one that is gone replaced by the single same-named file beside the report or one folder down, marked frameSource sibling-fallback with its recordedPath kept: siblingFramePath) and baseFrameMissing (a base frame that is not on disk classified as the not-run reason base-frames-missing, with the path and the original error kept, instead of an ENOENT message); relativizeFramePaths is pure, the readers read the disk.
  * @status ACTIVE
  *
  * WHY. A report that names its frames absolutely cannot be read once the
@@ -22,9 +22,15 @@
  * report's folder.
  *
  * WHAT A BANKED ABSOLUTE REPORT DOES. An absolute path that exists is used as
- * written. One that does not exist is NOT rescued by looking for its basename
- * beside the report: the cell reads `base-frames-missing`, which is the
- * honest answer about a report whose frames were never banked with it.
+ * written. One that does not exist (a report banked before the writer went
+ * relative, naming a clone that is gone) is looked for by its file name
+ * beside the report, then one folder down from it; exactly one match is used,
+ * and the frame record says so: `frameSource: "sibling-fallback"` with the
+ * path it recorded kept as `recordedPath`, which the pixel comparison carries
+ * on to its record and the summary prints. No match, or two matches one
+ * folder down, leaves the recorded path, and the cell reads
+ * `base-frames-missing` as before: a frame is never guessed between
+ * candidates, and a substitution is never silent.
  *
  * @module Tools/visual-regression/lib/report-frame-paths
  */
@@ -41,6 +47,9 @@ export const BASE_FRAMES_MISSING = "base-frames-missing";
 export const PIXELS_NOT_RUN = "not-run";
 
 const MISSING_CODES = new Set(["ENOENT", "ENOTDIR"]);
+
+/** `frameSource` of a frame found by name beside its report. */
+export const SIBLING_FALLBACK = "sibling-fallback";
 
 /** The page-record fields that hold a frame record. */
 const FRAME_FIELDS = Object.freeze(["capture", "captureStart"]);
@@ -80,15 +89,75 @@ export function resolveFramePath(recorded, reportDirectory) {
   return recorded;
 }
 
-function mapFrame(frame, convert) {
+/**
+ * The one file named like `recorded` beside `reportDirectory`, or one folder
+ * down from it, for an absolute recorded path that is not on disk; `null`
+ * when the recorded path exists, is relative, or has no single match. Node
+ * only (reads through `io`).
+ *
+ * @param {unknown} recorded A frame path as the report recorded it.
+ * @param {string} reportDirectory
+ * @param {{exists: (file: string) => boolean,
+ *   subdirectories: (directory: string) => string[]}} [io]
+ * @returns {string|null}
+ */
+export function siblingFramePath(recorded, reportDirectory, io = FS_IO) {
+  if (
+    typeof recorded !== "string" ||
+    isRelativePosixPath(recorded) ||
+    io.exists(recorded)
+  ) {
+    return null;
+  }
+  // Either separator: a report written on Windows is read anywhere.
+  const name = recorded.split(/[\\/]/u).pop();
+  if (!name) {
+    return null;
+  }
+  const beside = path.join(reportDirectory, name);
+  if (io.exists(beside)) {
+    return beside;
+  }
+  const below = io
+    .subdirectories(reportDirectory)
+    .map((folder) => path.join(reportDirectory, folder, name))
+    .filter((file) => io.exists(file));
+  return below.length === 1 ? below[0] : null;
+}
+
+const FS_IO = Object.freeze({
+  exists: (file) => fs.existsSync(file),
+  subdirectories: (directory) => {
+    try {
+      return fs
+        .readdirSync(directory, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort();
+    } catch {
+      return [];
+    }
+  },
+});
+
+function mapFrame(frame, convert, fallback) {
   if (!frame || typeof frame !== "object" || typeof frame.path !== "string") {
     return frame;
+  }
+  const sibling = fallback ? fallback(frame.path) : null;
+  if (sibling) {
+    return {
+      ...frame,
+      path: sibling,
+      frameSource: SIBLING_FALLBACK,
+      recordedPath: frame.path,
+    };
   }
   const converted = convert(frame.path);
   return converted === frame.path ? frame : { ...frame, path: converted };
 }
 
-function mapPages(pages, convert) {
+function mapPages(pages, convert, fallback) {
   if (!Array.isArray(pages)) {
     return pages;
   }
@@ -98,7 +167,7 @@ function mapPages(pages, convert) {
     }
     let copy = page;
     for (const field of FRAME_FIELDS) {
-      const mapped = mapFrame(page[field], convert);
+      const mapped = mapFrame(page[field], convert, fallback);
       if (mapped !== page[field]) {
         copy = copy === page ? { ...page } : copy;
         copy[field] = mapped;
@@ -108,7 +177,7 @@ function mapPages(pages, convert) {
   });
 }
 
-function mapArms(arms, convert) {
+function mapArms(arms, convert, fallback) {
   if (!arms || typeof arms !== "object") {
     return arms;
   }
@@ -118,7 +187,9 @@ function mapArms(arms, convert) {
       arm && Array.isArray(arm.captures)
         ? {
             ...arm,
-            captures: arm.captures.map((frame) => mapFrame(frame, convert)),
+            captures: arm.captures.map((frame) =>
+              mapFrame(frame, convert, fallback),
+            ),
           }
         : arm;
   }
@@ -143,25 +214,29 @@ export function relativizeFramePaths(pages, reportDirectory) {
 
 /**
  * A loaded report with every frame path in its `pages` and `arms` resolved
- * against the directory of the file it was read from. A copy; a report
- * without frames comes back equal. Pure.
+ * against the directory of the file it was read from, an absolute path that
+ * is gone replaced by its one same-named file beside the report (see WHAT A
+ * BANKED ABSOLUTE REPORT DOES). A copy; a report without frames comes back
+ * equal. Node only.
  *
  * @param {object} report The parsed report.
  * @param {string} reportFile The path of the file the report was read from.
+ * @param {object} [io] The file reads {@link siblingFramePath} makes.
  * @returns {object}
  */
-export function resolveFramePaths(report, reportFile) {
+export function resolveFramePaths(report, reportFile, io = FS_IO) {
   if (!report || typeof report !== "object") {
     return report;
   }
   const directory = path.dirname(path.resolve(reportFile));
   const convert = (file) => resolveFramePath(file, directory);
+  const fallback = (file) => siblingFramePath(file, directory, io);
   const resolved = { ...report };
   if ("pages" in report) {
-    resolved.pages = mapPages(report.pages, convert);
+    resolved.pages = mapPages(report.pages, convert, fallback);
   }
   if ("arms" in report) {
-    resolved.arms = mapArms(report.arms, convert);
+    resolved.arms = mapArms(report.arms, convert, fallback);
   }
   return resolved;
 }
@@ -204,9 +279,11 @@ export function baseFrameMissing(shot, accessFile = fs.accessSync) {
 export default {
   BASE_FRAMES_MISSING,
   PIXELS_NOT_RUN,
+  SIBLING_FALLBACK,
   baseFrameMissing,
   relativeFramePath,
   relativizeFramePaths,
   resolveFramePath,
   resolveFramePaths,
+  siblingFramePath,
 };

@@ -2,7 +2,7 @@
  * In-page GPU device census for Playwright probes: estimated bytes of every
  * live texture and buffer, and the time the device spends creating shader
  * modules and pipelines.
- * @purpose Page init source (addInitScript) that wraps GPUDevice texture, buffer, shader-module and pipeline creation and GPUTexture/GPUBuffer/GPUDevice destroy to keep live counts (a device's destruction frees what it still owned) and estimated live bytes (in total and per label) and the synchronous and asynchronous creation times, holding no reference to any resource; and render and compute pipelines by label (created, pending, rejected, released with their device); plus the pure texture-size estimator, the Node-side reader, the empty shape and the owner rows by exact label, prefix:<text> or re:<regex>.
+ * @purpose Page init source (addInitScript) that wraps GPUDevice texture, buffer, shader-module and pipeline creation and GPUTexture/GPUBuffer/GPUDevice destroy to keep live counts (a device's destruction frees what it still owned) and estimated live bytes (in total and per label) and the synchronous and asynchronous creation times, holding no reference to any resource; and render and compute pipelines by label (created, pending, rejected, released with their device); plus the pure texture-size estimator, the Node-side reader, the empty shape and the owner rows by exact label, prefix:<text> or re:<regex>, and the --owner-labels reader that refuses a malformed spec (readOwnerLabels).
  * @status ACTIVE
  *
  * WHY, BESIDE `lib/gpu-texture-census.mjs`. That census counts textures per
@@ -89,6 +89,8 @@
  *
  * @module Tools/visual-regression/lib/gpu-device-census
  */
+
+import { ProbeRefusal } from "./probe-refusal.mjs";
 
 /**
  * Estimated bytes of a texture from its descriptor. Pure and self-contained
@@ -654,6 +656,33 @@ export function parseOwnerLabel(spec) {
     text,
     test: (label) => label === text,
   };
+}
+
+/**
+ * The owner specs `--owner-labels` names, each checked. Pure. Unlike
+ * `splitList` (`lib/landing-cell-table.mjs`) a spec keeps its trailing characters, so a prefix may end
+ * in a space (`prefix:Globe `); only the space after a comma is dropped. A
+ * comma always separates specs, so a `re:` pattern cannot contain one.
+ *
+ * @param {{ownerLabels?: string}} options
+ * @returns {string[]}
+ * @throws {ProbeRefusal} `owner-label-invalid`.
+ */
+export function readOwnerLabels(options) {
+  const specs = String(options?.ownerLabels ?? "")
+    .split(",")
+    .map((item) => item.trimStart())
+    .filter((item) => item.trim().length > 0);
+  for (const spec of specs) {
+    try {
+      parseOwnerLabel(spec);
+    } catch (error) {
+      throw new ProbeRefusal("owner-label-invalid", String(error.message), {
+        spec,
+      });
+    }
+  }
+  return specs;
 }
 
 /**

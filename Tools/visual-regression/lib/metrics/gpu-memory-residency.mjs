@@ -2,7 +2,7 @@
  * PF-4, GPU memory residency from the in-page device census, and its base-
  * against-tip reading: no more than the declared allocation, and no growth
  * across a steady-state window.
- * @purpose PF-4 for the R-2026-10-22-3 performance leg: reduces lib/gpu-device-census.mjs snapshots to live texture and buffer bytes, measures growth between the snapshots that open and close a settled window, and reads base vs tip (tip live bytes <= base + the unit's declared allocation; every tip window's growth no larger than the largest base growth plus the base arm's growth spread, base growths clamped at 0 first, so one leaking repeat fails; a window with no census read makes the verdict unmeasured, never dropped).
+ * @purpose PF-4 for the R-2026-10-22-3 performance leg: reduces lib/gpu-device-census.mjs snapshots to live texture and buffer bytes, measures growth between the snapshots that open and close a settled window, and reads base vs tip (tip live bytes <= base + max(the unit's declared allocation, the provisional same-build floor RESIDENCY_PROVISIONAL_FLOOR, 40 000 B, flagged on the record and on the verdict, until a calibration leg measures it); every tip window's growth no larger than the largest base growth plus the base arm's growth spread, base growths clamped at 0 first, so one leaking repeat fails; a window with no census read makes the verdict unmeasured, never dropped).
  * @status ACTIVE
  *
  * WHAT THE BYTES ARE. The census estimates each texture from its descriptor
@@ -19,6 +19,20 @@
  * median, across same-build repeats, of the live bytes at the END of the
  * window; within when tip <= base + allocation. PF-4's arithmetic is additive,
  * not relative, so the repeat-spread band of PF-1/PF-2 does not apply.
+ *
+ * THE PROVISIONAL FLOOR. The allocation actually used is max(declared,
+ * RESIDENCY_ALLOWANCE_FLOOR_BYTES). The same build served twice moved its
+ * live bytes by 37 140 B between two repeats whose textures were identical and
+ * whose live buffer count differed (119 against 113), so an allowance of 0 B
+ * cannot tell a regression from the census's own run-to-run spread. The floor is
+ * that spread rounded up, from one arm and two repeats: PROVISIONAL, flagged on
+ * the record (`provisionalFloor`) and on the verdict, until a same-build
+ * calibration leg measures it. It touches liveBytes only; growth is unchanged.
+ * A declared allocation above the floor wins and leaves no mark, and an arm
+ * pair that did not both count live bytes (a WebGL page's census reads 0 B)
+ * reads its declared allocation, the record saying why. The verdict's
+ * mark carries `decided`, true when the declared allocation alone would have
+ * read the tip `over` (true also when the tip is over even with the floor).
  *
  * THE GROWTH RULE ("growth 0 within the repeat spread"). Each run's growth is
  * end minus start over the steady window. Every base growth is first clamped
@@ -50,6 +64,16 @@ import {
   resolveBands,
   worstVerdict,
 } from "./perf-band.mjs";
+
+/** The same-build spread of live bytes, rounded up (see THE PROVISIONAL FLOOR). */
+export const RESIDENCY_ALLOWANCE_FLOOR_BYTES = 40000;
+
+export const RESIDENCY_PROVISIONAL_FLOOR = Object.freeze({
+  floorBytes: RESIDENCY_ALLOWANCE_FLOOR_BYTES,
+  flag: "provisional-floor",
+  source:
+    "KIT6 phase-2 item-6 E-W-ground-hdr|webgpu base-pair spread of 37,140 B (346,667,833 vs 346,630,693 live bytes, 119 vs 113 live buffers), two repeats, one arm",
+});
 
 const isFiniteNumber = (value) =>
   typeof value === "number" && Number.isFinite(value);
@@ -133,7 +157,10 @@ export function residencyGrowth(start, end) {
  * @param {object} [input.bands] Pre-registered band overrides; PF-4 reads
  *   `allocationBytes`.
  * @returns {{metric: "PF-4", verdict: string, residency: object,
- *   growth: object, runs: {base: object[], tip: object[]}}}
+ *   growth: object, runs: {base: object[], tip: object[]},
+ *   provisionalFloor?: {flag: string, floorBytes: number,
+ *   registeredAllocationBytes: number, decided: boolean}}} The mark is present
+ *   only when the provisional floor was the larger allowance.
  */
 export function residencyVerdict({ baseRuns, tipRuns, bands }) {
   const resolved = resolveBands(bands);
@@ -174,17 +201,47 @@ export function residencyVerdict({ baseRuns, tipRuns, bands }) {
     limit: null,
     reasons: [],
   };
+  let floorMark = null;
   if (baseLive === null || tipLive === null) {
     residency.reasons.push(
       "no installed census at the end of a window on one of the arms",
     );
   } else {
-    residency.limit = baseLive + resolved.allocationBytes;
+    const registered = resolved.allocationBytes;
+    // The floor stands in for a spread the census measured, so it applies
+    // only where both arms counted live bytes: a WebGL page's census counts
+    // none and reads 0 B, where a floor would mean nothing.
+    const bytesMeasured = baseLive > 0 && tipLive > 0;
+    const floorApplied =
+      bytesMeasured && RESIDENCY_PROVISIONAL_FLOOR.floorBytes > registered;
+    const allowance = floorApplied
+      ? RESIDENCY_PROVISIONAL_FLOOR.floorBytes
+      : registered;
+    residency.allocationBytes = allowance;
+    residency.provisionalFloor = {
+      flag: RESIDENCY_PROVISIONAL_FLOOR.flag,
+      floorBytes: RESIDENCY_PROVISIONAL_FLOOR.floorBytes,
+      source: RESIDENCY_PROVISIONAL_FLOOR.source,
+      registeredAllocationBytes: registered,
+      applied: floorApplied,
+      ...(bytesMeasured
+        ? {}
+        : { notApplicable: "no live bytes measured on both arms" }),
+    };
+    if (floorApplied) {
+      floorMark = {
+        flag: RESIDENCY_PROVISIONAL_FLOOR.flag,
+        floorBytes: RESIDENCY_PROVISIONAL_FLOOR.floorBytes,
+        registeredAllocationBytes: registered,
+        decided: tipLive > baseLive + registered,
+      };
+    }
+    residency.limit = baseLive + allowance;
     residency.verdict =
       tipLive <= residency.limit ? PERF_VERDICTS.WITHIN : PERF_VERDICTS.OVER;
     if (residency.verdict === PERF_VERDICTS.OVER) {
       residency.reasons.push(
-        `tip ${tipLive} B exceeds base ${baseLive} B + declared ${resolved.allocationBytes} B`,
+        `tip ${tipLive} B exceeds base ${baseLive} B + ${floorApplied ? "provisional floor" : "declared"} ${allowance} B`,
       );
     }
   }
@@ -232,6 +289,7 @@ export function residencyVerdict({ baseRuns, tipRuns, bands }) {
     verdict: worstVerdict([residency, growth]),
     residency,
     growth,
+    ...(floorMark ? { provisionalFloor: floorMark } : {}),
     runs: { base, tip },
   };
 }

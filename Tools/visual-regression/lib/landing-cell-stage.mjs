@@ -189,6 +189,9 @@ export const LANDING_STEP_DIALS = Object.freeze([
   "swaps",
   "clockSteps",
   "tierSwitch",
+  "diveGateStep",
+  "diveCollisionDisabled",
+  "diveGateExpected",
 ]);
 
 /** The values `imagery` and `terrain` accept. */

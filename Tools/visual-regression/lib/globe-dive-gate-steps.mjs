@@ -3,7 +3,7 @@
  * at a lon/lat, set the water facade's `disableWaterCollision`, wheel-zoom in
  * through the real controller and record, per step, whether the gate allowed
  * the dive and whether the terrain clamp held the camera.
- * @purpose Globe-family dive-gate steps: place the camera, set `globe.water.disableWaterCollision`, wheel-zoom in N notches with Playwright's trusted mouse and settle after each, read the controller's gate (`canDiveAtSurfaceHeight`), `diveDepthMeters` and the camera's height against the terrain clamp floor per step, and turn that record into an allow/refuse receipt (or a reason the record cannot be read).
+ * @purpose Globe-family dive-gate steps: place the camera, set `globe.water.disableWaterCollision`, wheel-zoom in N notches with Playwright's trusted mouse and settle after each, read the controller's gate (`canDiveAtSurfaceHeight`), `diveDepthMeters` and the camera's height against the terrain clamp floor per step, and turn that record into an allow/refuse receipt (or a reason the record cannot be read); also the landing probe's dive-gate cell page (`runDiveGateCellPage`, step data and the pre-registered gate read from the staged rig's dials) and its verdict (`diveGateVerdict`: the observed gate against the registered one, NOT RUN when unreadable).
  * @status ACTIVE
  *
  * WHY THE WHEEL IS NODE-SIDE. The dive is decided inside
@@ -22,6 +22,11 @@
  * reason (a facade nobody created has the dive off). Only the placement step
  * touches `globe.water`, because setting `disableWaterCollision` needs it.
  *
+ * WHERE CESIUM COMES FROM. The placement imports the Cesium module by URL
+ * (`moduleUrl`, default {@link DEFAULT_CESIUM_MODULE_URL}) instead of reading
+ * `globalThis.Cesium`: Apps/CesiumViewer, the landing probe's page, exposes
+ * only `viewer`. The record names the URL the placement used.
+ *
  * THE RECEIPT CARRIES NO VERDICT. It says what the controller did (`gate`
  * "allow" / "refuse" / "mixed", the depth, whether the camera stayed at or
  * above `globeHeight + minimumZoomDistance`), not whether that was expected;
@@ -35,18 +40,37 @@
 /** Camera-height slack below the clamp floor that still counts as held, in metres. */
 export const CLAMP_TOLERANCE_METERS = 0.5;
 
+/**
+ * An online page whose surface reads within this of 0 m read the bare
+ * ellipsoid: the streamed terrain never arrived, so the page is void.
+ */
+export const STREAMED_TERRAIN_VOID_METERS = 0.5;
+
+/**
+ * Where the page's Cesium module is served from. Apps/CesiumViewer does not
+ * put a `Cesium` namespace on `globalThis` (only Sandcastle does), so the
+ * placement imports the module the way `probe-weather-map.mjs` does; the
+ * module is the one the viewer already loaded, so `Cartesian3` is the same
+ * class the scene uses.
+ */
+export const DEFAULT_CESIUM_MODULE_URL = "/Build/CesiumUnminified/index.js";
+
 /** One wheel notch: negative `deltaY` is a scroll up, which zooms in. */
 export const DEFAULT_WHEEL_DELTA_Y = -120;
 
 /**
  * Place the camera, set the facade's flag and report the canvas centre the
- * wheel will be aimed at. Runs in the page.
+ * wheel will be aimed at. Runs in the page; the Cesium module is imported
+ * from `moduleUrl` (the default is spelled out because `page.evaluate`
+ * serialises this function without the module's constants).
  *
  * @param {{lon: number, lat: number, height: number, heading?: number,
- *   pitch?: number, roll?: number, disableWaterCollision: boolean}} args
- * @returns {{ok: boolean, reason?: string, cursor?: {x: number, y: number}}}
+ *   pitch?: number, roll?: number, disableWaterCollision: boolean,
+ *   moduleUrl?: string}} args
+ * @returns {Promise<{ok: boolean, moduleUrl: string, reason?: string,
+ *   cursor?: {x: number, y: number}}>}
  */
-export function pagePlaceDiveCamera({
+export async function pagePlaceDiveCamera({
   lon,
   lat,
   height,
@@ -54,19 +78,37 @@ export function pagePlaceDiveCamera({
   pitch = -0.2,
   roll = 0,
   disableWaterCollision,
+  moduleUrl = "/Build/CesiumUnminified/index.js",
 }) {
   const viewer = /** @type {any} */ (globalThis).viewer;
-  const Cesium = /** @type {any} */ (globalThis).Cesium;
   const scene = viewer?.scene;
   if (!scene) {
-    return { ok: false, reason: "the page has no viewer.scene" };
+    return {
+      ok: false,
+      moduleUrl,
+      reason: "the page has no viewer.scene",
+    };
+  }
+  let Cesium = null;
+  let importError = null;
+  try {
+    Cesium = await import(moduleUrl);
+  } catch (error) {
+    importError = error instanceof Error ? error.message : String(error);
   }
   if (!Cesium?.Cartesian3?.fromDegrees) {
-    return { ok: false, reason: "the page has no Cesium namespace" };
+    return {
+      ok: false,
+      moduleUrl,
+      reason:
+        importError === null
+          ? `the Cesium module at ${moduleUrl} has no Cartesian3.fromDegrees`
+          : `the Cesium module at ${moduleUrl} could not be imported: ${importError}`,
+    };
   }
   const water = scene.globe?.water;
   if (!water) {
-    return { ok: false, reason: "the globe has no water facade" };
+    return { ok: false, moduleUrl, reason: "the globe has no water facade" };
   }
   water.disableWaterCollision = disableWaterCollision;
   scene.camera.setView({
@@ -78,6 +120,7 @@ export function pagePlaceDiveCamera({
   const rect = canvas.getBoundingClientRect();
   return {
     ok: true,
+    moduleUrl,
     cursor: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
   };
 }
@@ -119,8 +162,9 @@ export function pageReadDiveState() {
  * @param {{evaluate: Function, mouse: {move: Function, wheel: Function}}} args.page
  * @param {object} args.step The step data: `lon`, `lat`, `height`,
  *   `disableWaterCollision`, `wheelNotches`, and optionally `heading`,
- *   `pitch`, `roll`, `wheelDeltaY`, `settleFramesBeforeFirst` and
- *   `settleFramesPerNotch`.
+ *   `pitch`, `roll`, `wheelDeltaY`, `settleFramesBeforeFirst`,
+ *   `settleFramesPerNotch` and `moduleUrl` (where the page imports Cesium
+ *   from; {@link DEFAULT_CESIUM_MODULE_URL}).
  * @param {(frames: number) => Promise<unknown>} args.settle Renders that many
  *   frames in the page.
  * @returns {Promise<{record: object, outcome: object}>} The record and the
@@ -132,6 +176,7 @@ export async function runDiveGateSteps({ page, step, settle }) {
     wheelDeltaY = DEFAULT_WHEEL_DELTA_Y,
     settleFramesBeforeFirst = 60,
     settleFramesPerNotch = 20,
+    moduleUrl = DEFAULT_CESIUM_MODULE_URL,
     ...placement
   } = step;
   const record = {
@@ -140,8 +185,12 @@ export async function runDiveGateSteps({ page, step, settle }) {
       lat: placement.lat,
       height: placement.height,
       disableWaterCollision: placement.disableWaterCollision,
+      moduleUrl,
     },
-    placed: await page.evaluate(pagePlaceDiveCamera, placement),
+    placed: await page.evaluate(pagePlaceDiveCamera, {
+      ...placement,
+      moduleUrl,
+    }),
     initial: null,
     steps: [],
   };
@@ -241,5 +290,139 @@ export function buildDiveGateReceipt(record) {
       // a row of its own, so it is reported rather than folded into `gate`.
       depthWhileRefused: gate === "refuse" && diveDepthMax > 0,
     },
+  };
+}
+
+/** The gate answers a rig may pre-register for a dive page. */
+export const DIVE_GATE_EXPECTATIONS = Object.freeze(["allow", "refuse"]);
+
+/**
+ * One dive-gate cell page: the step data, the collision flag and the
+ * pre-registered gate come from the staged rig's dials (`diveGateStep`,
+ * `diveCollisionDisabled`, `diveGateExpected`; a cell's variant lays the
+ * flag and the expectation over the rig's own), the wheel is driven through
+ * {@link runDiveGateSteps}, and the receipt lands in the page record.
+ *
+ * A rig that carries no step data yields an unreadable outcome (a NOT RUN
+ * verdict), never a thrown error, so one mis-declared cell does not hide the
+ * other pages of the run.
+ *
+ * @param {object} input
+ * @param {object} input.page The Playwright page (or a stub with the same
+ *   `evaluate` and `mouse`).
+ * @param {{dials?: object}} input.rig The rig this page staged (variant dials
+ *   already laid over it).
+ * @param {(frames: number) => Promise<unknown>} input.settle
+ * @returns {Promise<{diveGate: {step: (object|null), record: (object|null),
+ *   outcome: object, expected: (string|null)}}>}
+ */
+export async function runDiveGateCellPage({ page, rig, settle }) {
+  const dials = rig?.dials ?? {};
+  const expected = Object.hasOwn(dials, "diveGateExpected")
+    ? dials.diveGateExpected
+    : null;
+  const data = dials.diveGateStep;
+  if (data === null || typeof data !== "object") {
+    return {
+      diveGate: {
+        step: null,
+        record: null,
+        expected,
+        outcome: unreadable(
+          "step-missing",
+          `rig ${rig?.id ?? "(unnamed)"} carries no diveGateStep dial`,
+        ),
+      },
+    };
+  }
+  const step = {
+    ...data,
+    disableWaterCollision: dials.diveCollisionDisabled === true,
+  };
+  const { record, outcome } = await runDiveGateSteps({ page, step, settle });
+  return { diveGate: { step, record, outcome, expected } };
+}
+
+/**
+ * The verdict of a dive-gate page: the gate the controller showed against the
+ * gate the cell registered. The id is the page's, suffixed `:dive-gate`.
+ *
+ * A page with no `diveGate` has no verdict (null). An outcome that cannot be
+ * read, or a page whose rig registered no allow / refuse, is NOT RUN, which
+ * fails the run: a requested measurement that did not happen is not a pass.
+ * `clampHeld` rides along for the reader; the pass is the gate alone.
+ *
+ * @param {string} id The page's id.
+ * @param {{diveGate?: object}} record A page record.
+ * @returns {object|null}
+ */
+export function diveGateVerdict(id, record) {
+  const dive = record?.diveGate;
+  if (!dive) {
+    return null;
+  }
+  const verdictId = `${id}:dive-gate`;
+  const expected = dive.expected ?? null;
+  const outcome = dive.outcome;
+  if (outcome?.readable !== true) {
+    return {
+      id: verdictId,
+      pass: false,
+      notRun: true,
+      expected,
+      observed: null,
+      clampHeld: null,
+      reason: `${outcome?.reason ?? "no-outcome"}: ${outcome?.detail ?? "the dive was not read"}`,
+    };
+  }
+  const { receipt } = outcome;
+  if (!DIVE_GATE_EXPECTATIONS.includes(expected)) {
+    return {
+      id: verdictId,
+      pass: false,
+      notRun: true,
+      expected,
+      observed: receipt.gate,
+      clampHeld: receipt.clampHeld,
+      reason: `expected-gate-missing: the rig registered ${JSON.stringify(expected)}, not allow or refuse`,
+    };
+  }
+  // The gate is judged only where the surface under the camera is the one the
+  // cell was placed over: a gate read over the wrong ground says nothing about
+  // the controller.
+  const height = receipt.globeHeight;
+  const window = dive.step?.globeHeightWindow ?? null;
+  const voidReason =
+    record?.network === "online" &&
+    Math.abs(height) < STREAMED_TERRAIN_VOID_METERS
+      ? `terrain-not-streamed: globeHeight ${height} m on an online page is the bare ellipsoid; the page is void, not a pass`
+      : window !== null && !(height >= window.min && height <= window.max)
+        ? `globe-height-off-window: globeHeight ${height} m is outside the registered [${window.min}, ${window.max}] m; a rig finding (a mislocated point), not the controller's`
+        : null;
+  if (voidReason !== null) {
+    return {
+      id: verdictId,
+      pass: false,
+      notRun: true,
+      expected,
+      observed: receipt.gate,
+      clampHeld: receipt.clampHeld,
+      globeHeight: height,
+      globeHeightWindow: window,
+      reason: voidReason,
+    };
+  }
+  return {
+    id: verdictId,
+    pass: receipt.gate === expected,
+    globeHeightWindow: window,
+    expected,
+    observed: receipt.gate,
+    clampHeld: receipt.clampHeld,
+    collisionDisabled: receipt.collisionDisabled,
+    globeHeight: receipt.globeHeight,
+    notches: receipt.notches,
+    diveDepthMax: receipt.diveDepthMax,
+    depthWhileRefused: receipt.depthWhileRefused,
   };
 }

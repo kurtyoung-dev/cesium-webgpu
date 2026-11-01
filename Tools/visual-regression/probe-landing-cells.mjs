@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Probe: the landing program's Edge cells on the shared runtime - one command
 // per cell for the seat's executor, base arm and tip arm.
-// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture, the opt-in 2D and Columbus-view identity cells E-ID-2d / E-ID-cv, the Chukotka cross-renderer cell E-C-chukotka, the FFT-ocean kernel-identity cell E-FFT-ifft, the opt-in W3 weather-state cells E-W-ground / E-W-ground-hdr / E-W-30km / E-W-30km-hdr and the E-T teardown/device-loss cells) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs with a per-cell pending-pipeline wait, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, the window.onmessage sentinel on identity cells (with an opt-in in-run positive control), the ocean displacement readback per kernel at wave time 0 and at an evolved clock, the ocean compute pass a PF-2 window must list, optionally the PF-1..PF-4 performance windows, a capture-seam manifest for contact-sheet.mjs, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
+// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture, the opt-in 2D and Columbus-view identity cells E-ID-2d / E-ID-cv, the Chukotka cross-renderer cell E-C-chukotka, the FFT-ocean kernel-identity cell E-FFT-ifft, the opt-in W3 weather-state cells E-W-ground / E-W-ground-hdr / E-W-30km / E-W-30km-hdr, the opt-in water dive-gate cells E-DG-geiranger / E-DG-ontario / E-DG-deathvalley / E-DG-ellipsoid / E-DG-upsampled (a dive page and a collision-on control each, streamed terrain where marked online) and the E-T teardown/device-loss cells) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs with a per-cell pending-pipeline wait, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, the window.onmessage sentinel on identity cells (with an opt-in in-run positive control), the ocean displacement readback per kernel at wave time 0 and at an evolved clock, the ocean compute pass a PF-2 window must list, optionally the PF-1..PF-4 performance windows after a machine-CPU warm-up, a Markdown summary that marks provisional floors and contended or not-run lines, a capture-seam manifest for contact-sheet.mjs, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
 // @status ACTIVE
 // @runtime lib/probe-runtime.mjs
 //
@@ -25,6 +25,8 @@
 //   E-FFT-ifft ocean-fft-patch-rebase, one page per kernel  WebGPU
 //   E-W-ground / E-W-ground-hdr / E-W-30km / E-W-30km-hdr
 //              w3-ew-* (off by default; weather-state)     both renderers
+//   E-DG-geiranger / -ontario / -deathvalley / -ellipsoid / -upsampled
+//              dive-gate-* (off by default; dive-gate)     both renderers
 // A cell runs on each renderer its rig declares that `--renderer` keeps. The
 // table and its planning live in `lib/landing-cell-table.mjs`.
 //
@@ -142,6 +144,17 @@
 // fail the run. The old `-kit60` variant (a kit copy with a 60 s close
 // deadline) is retired: the runtime's deadline is 90 s with a per-probe
 // `closeDeadlineMs` override.
+//
+// LANE HADOR (probe-kit round 7). A PF run waits for the machine CPU to settle
+// under the contention guard's threshold before its first page
+// (`lib/cpu-warm-up.mjs`; `--no-warm-up` skips it), and the receipt, the
+// summary and every PF verdict say how it ended. The Markdown summary marks a
+// provisional floor, a contended or not-run line and a substituted base frame
+// (`lib/landing-cells-summary.mjs`). The opt-in E-DG-* cells (kind
+// `dive-gate`) wheel through the camera controller's water dive gate
+// (`lib/globe-dive-gate-steps.mjs`) on a page with streamed terrain: a cell
+// marked `online` opens its page without `offline=true`, which the page
+// record names.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -158,7 +171,15 @@ import { captureUrlFor } from "./lib/capture.mjs";
 import { runClockSteps } from "./lib/clock-steps.mjs";
 import { installCloudProbeHarness } from "./lib/cloud-probe-harness.mjs";
 import { startCpuSampler } from "./lib/cpu-sampler.mjs";
+import {
+  WARM_UP_DEFAULTS,
+  WARM_UP_SEAM,
+  markPfVerdicts,
+  warmUpBeforeFirstArm,
+} from "./lib/cpu-warm-up.mjs";
 import { runDeviceLossSteps } from "./lib/device-loss-steps.mjs";
+import { runDiveGateCellPage } from "./lib/globe-dive-gate-steps.mjs";
+import { buildLandingCellsSummary } from "./lib/landing-cells-summary.mjs";
 import { runWeatherStateSteps } from "./lib/weather-state-steps.mjs";
 import {
   measureLandingPerformance,
@@ -167,8 +188,8 @@ import {
 } from "./lib/frame-timing-steps.mjs";
 import {
   GPU_DEVICE_CENSUS_INIT_SOURCE,
-  parseOwnerLabel,
   readGpuDeviceCensus,
+  readOwnerLabels,
 } from "./lib/gpu-device-census.mjs";
 import {
   LANDING_WATER_DIALS,
@@ -250,6 +271,9 @@ export {
   planLandingCells,
   splitList,
 } from "./lib/landing-cell-table.mjs";
+
+// The --owner-labels reader lives with the owner-spec parser.
+export { readOwnerLabels } from "./lib/gpu-device-census.mjs";
 
 // The comparison and the verdicts (lane TAR-ALDARION moved them to a piece).
 export {
@@ -370,6 +394,12 @@ async function runLandingPage({
         captureUrlFor({ rig, origin }),
         entry.renderer,
       );
+      // A cell that needs streamed terrain (the dive gate) runs online, and
+      // the record says so: its frames and timings read the network too.
+      if (cell.online === true) {
+        url.searchParams.delete("offline");
+      }
+      record.network = cell.online === true ? "online" : "offline";
       await page.goto(url.href, {
         waitUntil: "load",
         timeout: NAVIGATION_BUDGET_MS,
@@ -508,6 +538,10 @@ async function runLandingPage({
         record.captureStart = await capture(`${base}-start`);
         record.steps = await runClockSteps({ page, rig, settle });
         record.capture = await capture(`${base}-end`);
+      } else if (entry.kind === "dive-gate") {
+        // The wheel steps first; the frame shows where the camera ended.
+        Object.assign(record, await runDiveGateCellPage({ page, rig, settle }));
+        record.capture = await capture(`${base}-${entry.page}`);
       }
 
       if (entry.kind === "weather-state") {
@@ -518,7 +552,8 @@ async function runLandingPage({
       if (
         (options.perf === true ||
           (cell.perf === true && options.noCellPerf !== true)) &&
-        entry.kind !== "device-loss"
+        entry.kind !== "device-loss" &&
+        entry.kind !== "dive-gate"
       ) {
         record.perf = await measureLandingPerformance({
           page,
@@ -571,33 +606,6 @@ async function runLandingPage({
     await context.close();
     record.cpu = cpuSampler.stop();
   }
-}
-
-/**
- * The owner specs `--owner-labels` names, each checked. Pure. Unlike
- * {@link splitList} a spec keeps its trailing characters, so a prefix may end
- * in a space (`prefix:Globe `); only the space after a comma is dropped. A
- * comma always separates specs, so a `re:` pattern cannot contain one.
- *
- * @param {{ownerLabels?: string}} options
- * @returns {string[]}
- * @throws {ProbeRefusal} `owner-label-invalid`.
- */
-export function readOwnerLabels(options) {
-  const specs = String(options?.ownerLabels ?? "")
-    .split(",")
-    .map((item) => item.trimStart())
-    .filter((item) => item.trim().length > 0);
-  for (const spec of specs) {
-    try {
-      parseOwnerLabel(spec);
-    } catch (error) {
-      throw new ProbeRefusal("owner-label-invalid", String(error.message), {
-        spec,
-      });
-    }
-  }
-  return specs;
 }
 
 /**
@@ -702,6 +710,8 @@ export function allWaited(byCell) {
 
 /** The whole invocation's machine-CPU sampler (F3); stopped by the receipt. */
 let invocationCpu = null;
+/** The warm-up before this invocation's first page (`lib/cpu-warm-up.mjs`). */
+let invocationWarmUp = null;
 /** The rig registry the pages ran from, for the receipt's capture manifest. */
 let invocationRigs = null;
 
@@ -759,6 +769,7 @@ export const descriptor = {
         default: DEFAULT_CELLS.join(","),
       },
       { flag: "--perf", key: "perf", kind: "boolean" },
+      { flag: "--no-warm-up", key: "noWarmUp", kind: "boolean" },
       { flag: "--wait-pipelines", key: "waitPipelines", kind: "boolean" },
       { flag: "--no-wait-pipelines", key: "noWaitPipelines", kind: "boolean" },
       // Skips the PF window a cell forces (E-FFT-ifft), so its readback
@@ -811,7 +822,10 @@ export const descriptor = {
       },
     ],
   },
-  workBudgetMs: (options) => plannedPageCount(options) * PAGE_BUDGET_MS,
+  summary: (receipt, runtimeReceipt) =>
+    buildLandingCellsSummary(receipt, runtimeReceipt, descriptor.title),
+  workBudgetMs: (options) =>
+    plannedPageCount(options) * PAGE_BUDGET_MS + WARM_UP_DEFAULTS.timeoutMs,
   async cells({ browser, run, options, origin, outputDirectory, captures }) {
     // Fail before the first page on inputs that cannot be read.
     readComparisonInputs(options);
@@ -824,6 +838,17 @@ export const descriptor = {
     );
     if (run === 0) {
       invocationCpu?.stop();
+      // Before the first page of a PF run, under the guard's own threshold.
+      invocationWarmUp = await warmUpBeforeFirstArm({
+        options,
+        plan: planLandingCells(
+          options,
+          new Map(rigsForPlan.map((r) => [r.id, r])),
+        ),
+        bands: readComparisonInputs(options).overrides,
+        // A spec's own series first, else what the launched browser carries.
+        deps: descriptor.warmUpDeps ?? browser?.[WARM_UP_SEAM],
+      });
       invocationCpu = startCpuSampler();
     }
     const rigsById = new Map(rigsForPlan.map((rig) => [rig.id, rig]));
@@ -927,6 +952,7 @@ export const descriptor = {
         runs: prior.report.options?.runs ?? null,
       })),
       cpuSeries,
+      warmUp: invocationWarmUp,
       pages: reportPages,
       arms: groupArms(reportPages),
       comparison,
@@ -949,7 +975,11 @@ export const descriptor = {
         })
       : null;
     return [
-      ...landingVerdicts(pages, comparison),
+      // Every PF verdict names how each arm's warm-up ended.
+      ...markPfVerdicts(landingVerdicts(pages, comparison), {
+        tip: invocationWarmUp,
+        base: base?.warmUp ?? null,
+      }),
       // This invocation's pages only: a merged report ran no control.
       ...positiveControlCoverage(
         cells,

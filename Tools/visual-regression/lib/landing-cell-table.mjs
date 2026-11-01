@@ -55,6 +55,30 @@ const GLOBE_STAGE_VARIANTS = Object.freeze({
 });
 
 /**
+ * The two pages of a dive-gate cell: `dive` disables the water collision and
+ * registers the gate the cell expects there, `control` leaves the collision
+ * on, where the engine never opens the gate
+ * (`GlobeWater.canDiveAtSurfaceHeight` needs `disableWaterCollision`), so
+ * the control is "refuse" on every cell. The dials ride over the rig's own
+ * (`rigForPage`); `lib/globe-dive-gate-steps.mjs` reads them.
+ *
+ * @param {"allow"|"refuse"} diveGate The gate the `dive` page registers.
+ * @returns {Readonly<Record<string, object>>}
+ */
+function diveGateVariants(diveGate) {
+  return Object.freeze({
+    dive: Object.freeze({
+      diveCollisionDisabled: true,
+      diveGateExpected: diveGate,
+    }),
+    control: Object.freeze({
+      diveCollisionDisabled: false,
+      diveGateExpected: "refuse",
+    }),
+  });
+}
+
+/**
  * The pre-registered WebGPU-against-WebGL band of the pinned 2D and Columbus
  * view identity cells, set after the SCENE3D gate on the ground-atmosphere
  * drape (Batch 1636). Measured on tree B of the P2D-ACCEPT Edge leg
@@ -92,7 +116,8 @@ export const POST_FIX_2D_CV_BAND = Object.freeze({
  * is diffed against the same run's WebGL capture), `crossRendererBand` (the
  * pre-registered band that diff is judged against, see
  * {@link POST_FIX_2D_CV_BAND}; a cross-renderer cell without one is measured
- * only), `perf` (the PF-1 / PF-2
+ * only), `online` (the page opens without `offline=true`, so
+ * the streamed terrain and its water mask load; the dive-gate cells), `perf` (the PF-1 / PF-2
  * window runs without `--perf`), `perfPass` (the GPU pass label the PF-2
  * window must list, judged by `lib/landing-verdicts.mjs`) and
  * `evolvedReadbackSeconds` (the displacement field is read a second time with
@@ -209,6 +234,41 @@ export const LANDING_CELLS = Object.freeze({
   "E-W-30km-hdr": Object.freeze({
     rig: "w3-ew-30km-hdr",
     kind: "weather-state",
+  }),
+  // Not in DEFAULT_CELLS: the camera controller's water dive gate, wheel-zoomed
+  // through the real controller (`kind: "dive-gate"`), once with the water
+  // collision disabled (`dive`) and once with it on (`control`). The four
+  // terrain cells are `online`: the dive gate reads the height of streamed
+  // Cesium World Terrain and its water mask, which an offline page does not
+  // carry; E-DG-ellipsoid reads the ellipsoid and stays offline.
+  "E-DG-geiranger": Object.freeze({
+    rig: "dive-gate-geiranger-wall",
+    kind: "dive-gate",
+    online: true,
+    variants: diveGateVariants("allow"),
+  }),
+  "E-DG-ontario": Object.freeze({
+    rig: "dive-gate-lake-ontario-mask",
+    kind: "dive-gate",
+    online: true,
+    variants: diveGateVariants("allow"),
+  }),
+  "E-DG-deathvalley": Object.freeze({
+    rig: "dive-gate-death-valley",
+    kind: "dive-gate",
+    online: true,
+    variants: diveGateVariants("refuse"),
+  }),
+  "E-DG-ellipsoid": Object.freeze({
+    rig: "dive-gate-ellipsoid-sea-level",
+    kind: "dive-gate",
+    variants: diveGateVariants("allow"),
+  }),
+  "E-DG-upsampled": Object.freeze({
+    rig: "dive-gate-upsampled-ocean",
+    kind: "dive-gate",
+    online: true,
+    variants: diveGateVariants("allow"),
   }),
   // The opt-in FFT ocean once per inverse-FFT kernel (Batch 1622), the
   // displacement field read back after each capture and compared between the

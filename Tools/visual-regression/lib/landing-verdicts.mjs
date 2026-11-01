@@ -14,6 +14,7 @@
 
 import { sameTerminal, terminalShape } from "./device-loss-steps.mjs";
 import { PIPELINE_ROW_KINDS } from "./gpu-device-census.mjs";
+import { diveGateVerdict } from "./globe-dive-gate-steps.mjs";
 import { frameTimeVerdict } from "./metrics/frame-time-distribution.mjs";
 import { residencyVerdict } from "./metrics/gpu-memory-residency.mjs";
 import {
@@ -26,7 +27,7 @@ import {
   pixelDiff,
 } from "./metrics/landing-pixel-band.mjs";
 import { PERF_VERDICTS, contentionGuard } from "./metrics/perf-band.mjs";
-import { baseFrameMissing } from "./report-frame-paths.mjs";
+import { SIBLING_FALLBACK, baseFrameMissing } from "./report-frame-paths.mjs";
 import { startupVerdict } from "./metrics/startup-compile.mjs";
 import {
   onmessagePositiveControlVerdict,
@@ -165,6 +166,12 @@ export function compareArms(tipArms, baseArms, bands, options = {}) {
           band,
         };
       }
+      // A base frame found by name beside its report is named as such where
+      // the pixel reading is read, with the path the report recorded.
+      if (baseShot.frameSource === SIBLING_FALLBACK) {
+        comparison.pixels.frameSource = SIBLING_FALLBACK;
+        comparison.pixels.baseRecordedPath = baseShot.recordedPath ?? null;
+      }
     }
     if (tip.deviceLoss.length > 0 && base.deviceLoss.length > 0) {
       // One reader of the terminal record, any mode (F1).
@@ -228,6 +235,12 @@ export function landingVerdicts(records, comparison) {
     });
     if (record.kind === "weather-state") {
       verdicts.push(weatherStateVerdict(id, record));
+    }
+    // A dive page's gate against the rig's pre-registered expectation.
+    const dive =
+      record.kind === "dive-gate" ? diveGateVerdict(id, record) : null;
+    if (dive) {
+      verdicts.push(dive);
     }
     const timed = perfPassTiming(record);
     if (timed?.available === true) {

@@ -1,5 +1,5 @@
 // provision-worker-clone-flags.spec.mjs - export, flag and spine-flag contracts of Tools/provision-worker-clone.mjs after its decomposition into Tools/provision/.
-// @purpose Pin that the entry file still exports everything it exported before the split, that the argv parser and the usage text name exactly the same flags, that --no-spine-seed / --no-spine-refresh reach the spine seeding when the real CLI runs, and that the real CLI copies every file of the source's .claude/skills tree into the clone byte for byte.
+// @purpose Pin that the entry file still exports everything it exported before the split, that the argv parser and the usage text name exactly the same flags, that --no-spine-seed / --no-spine-refresh reach the spine seeding when the real CLI runs, and that the real CLI copies every file of the source's .claude/skills tree into the clone byte for byte, only the tracked ones when the source is a git checkout, each untracked file skipped and named in the notes.
 // @status ACTIVE
 //
 // Run: node --test Tools/provision-worker-clone-flags.spec.mjs
@@ -277,5 +277,44 @@ test("a source without .claude/skills is a provisioning problem, not a silent pa
     assert.ok(
       report.problems.some((p) => p.includes(".claude/skills/")),
       report.problems.join("\n"),
+    );
+  }));
+
+test("from a git source only the tracked files of .claude/skills are copied, and each untracked file is skipped and named in the notes", () =>
+  withLaneTmp("provision-flags-skills-tracked-", (dir) => {
+    const untracked = "engine-code-standards/scratch-notes.md";
+    const { clone, report } = runCli(dir, ["--no-spine-seed"], (source) => {
+      seedSkills(source);
+      fs.mkdirSync(source, { recursive: true });
+      git(source, "init", "-q", "-b", "main");
+      git(source, "add", "--", ".claude/skills");
+      git(source, "commit", "-q", "-m", "skills");
+      const scratch = path.join(
+        source,
+        ".claude",
+        "skills",
+        ...untracked.split("/"),
+      );
+      fs.writeFileSync(scratch, "not for clones\n");
+    });
+    for (const rel of Object.keys(SKILL_FILES)) {
+      assert.ok(
+        report.provisioned.includes(`.claude/skills/${rel}`),
+        `${rel} not provisioned: ${report.provisioned.join(", ")}`,
+      );
+    }
+    assert.ok(
+      !fs.existsSync(
+        path.join(clone, ".claude", "skills", ...untracked.split("/")),
+      ),
+      "the untracked scratch file reached the clone",
+    );
+    assert.ok(!report.provisioned.includes(`.claude/skills/${untracked}`));
+    assert.ok(
+      report.notes.some(
+        (note) =>
+          note.includes("skipped untracked") && note.includes(untracked),
+      ),
+      report.notes.join("\n"),
     );
   }));

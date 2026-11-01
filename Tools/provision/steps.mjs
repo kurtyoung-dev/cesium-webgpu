@@ -81,8 +81,36 @@ function regularFilesUnder(directory) {
 }
 
 /**
+ * The files git tracks under `relativeDir` of `sourceRepo`, relative to that
+ * directory in POSIX form, or null when the source is not a git checkout (or
+ * git cannot list it), in which case the caller walks the directory instead.
+ */
+function trackedFilesUnder(sourceRepo, relativeDir) {
+  let listed;
+  try {
+    listed = execFileSync(
+      "git",
+      ["-C", sourceRepo, "ls-files", "-z", "--", relativeDir],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+  } catch {
+    return null;
+  }
+  const prefix = `${relativeDir}/`;
+  return new Set(
+    listed
+      .split("\0")
+      .filter((file) => file.startsWith(prefix))
+      .map((file) => file.slice(prefix.length)),
+  );
+}
+
+/**
  * The PROVISION_TREES as one PROVISION-shaped entry per file the source holds
- * under each tree; a required tree the source lacks is failed on `ctx`.
+ * under each tree; a required tree the source lacks is failed on `ctx`. When
+ * the source is a git checkout only the files its index tracks (`git ls-files`)
+ * are taken, so a scratch file left in the source's tree never reaches a clone;
+ * each one skipped is named in `ctx.notes`.
  */
 export function provisionTreeEntries(ctx, sourceRepo, trees = PROVISION_TREES) {
   const entries = [];
@@ -96,7 +124,14 @@ export function provisionTreeEntries(ctx, sourceRepo, trees = PROVISION_TREES) {
       }
       continue;
     }
+    const tracked = trackedFilesUnder(sourceRepo, tree.src);
     for (const file of regularFilesUnder(from)) {
+      if (tracked !== null && !tracked.has(file)) {
+        ctx.notes.push(
+          `skipped untracked ${tree.src}/${file}: only files git tracks in the source are provisioned`,
+        );
+        continue;
+      }
       entries.push({
         src: `${tree.src}/${file}`,
         dest: `${tree.dest}/${file}`,
