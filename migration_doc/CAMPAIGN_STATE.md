@@ -762,10 +762,10 @@ ruling `R-2026-10-24-S12`. Rows: `DEFERRED_WORK.md` ledger intake 2 (Batch 1591)
 table: `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-23/24 …)"; from 2026-10-30 also `DEFERRED_WORK.md`
 "2026-10-30 — records batch 3" and "… round 2", and the landing tables "Landing record (2026-10-29/30 …)" and "Landing
 record (2026-10-30 — Batches 1608-1623 …)"; from 2026-10-31 also `DEFERRED_WORK.md` "2026-10-31 — records round 4" and
-"… records round 5", "… records round 6", "… records round 7", "… records round 8", "… records round 9" and "… records round 10" and the landing tables "Landing record
+"… records round 5", "… records round 6", "… records round 7", "… records round 8", "… records round 9" and "… records round 10", and from 2026-11-01 "2026-11-01 — records round 11", and the landing tables "Landing record
 (2026-10-31 — Batches 1624-1628 …)", "Landing record (2026-10-31 — Batches 1629-1631 …)", "Landing record (2026-10-31 — Batches
-1632-1636 …)", "Landing record (2026-10-31 — Batches 1637-1640 …)", "Landing record (2026-10-31 — Batches 1642-1643 …)" and "Landing record (2026-10-31 — Batch
-1646 …)".
+1632-1636 …)", "Landing record (2026-10-31 — Batches 1637-1640 …)", "Landing record (2026-10-31 — Batches 1642-1643 …)", "Landing record (2026-10-31 — Batch
+1646 …)" and "Landing record (2026-10-31 — Batch 1648 …)".
 **Landed:** the water as Batches 1585/1586 (`16e093aef6`, `156509c929`, committed 2026-10-23 23:27 and 23:31 EDT; tree
 `9e6bcfb7`; opt-in, the default globe unchanged); then, on 2026-10-24, W0 (1587), KT round 5 (1588), KT-2 round 3 (1589),
 F-4 (1590), LEDGER-2 (1591), catalog A1 (1592) and W1, the cloud core and the three-word define registry (1593); and the
@@ -854,6 +854,22 @@ reds, recorded unattributed: the unpinned daylight weather-map `on-carves` on 3 
 reproduced and following the offline-globe arm, PF-1 and PF-4 `over` on `E-W-ground-hdr|webgpu` against the same build, and a
 one-repeat WebGL PF-3 over its 15 % floor; with kit rows for the PF-4 allowance and the first PF arm after a server start. The
 Antigravity water program and W4 below are unchanged.
+**Probe-kit round 7 (2026-10-31, records round 11):** Batch 1648 (`e39af3c0ac`; lane Hador, reviewer Narmacil, P1 REFUTED, P2
+HOLDS) landed: the probe kit closes the seven rows the KIT6 Edge leg and records round 10 left it (a CPU warm-up before a landing
+PF run's first page, a summary that marks provisional floors and contended, not-run and substituted-frame lines, a flagged 40,000
+B PF-4 residency floor, five dive-gate cells from rigs, the water-cells spec split, a reader fallback for banked absolute frames,
+and a provisioner that copies only tracked skill files). The KIT7 Edge leg measured it in both phases (Phase 2 in the seat's quiet
+window, 2026-11-01): the water split and the provisioner row close, and the banked-frames row closes as measured (8 of 8 arms);
+the warm-up records how it ended on every PF arm, yet the first arm after a server start still read contended
+(`DX-KIT-WARM-UP-THRESHOLD`); the marks print, with a residual on contended PF-3 lines; and the five dive-gate cells measure
+nothing yet, every page NOT RUN `globe-height-undefined`; the code-read lead is that the probe never runs
+`Scene.initializeFrame()` (`DX-KIT-DIVE-GATE-NEEDS-INITIALIZE-FRAME`, a kit row). The compile-floor calibration ran (six repeats per HDR arm, contention
+clear): `compileTotalMs` moved up to 2.0x within one arm against under 12 % for the first cloud frame, and the PF-4 same-build
+range reached 61,900 B against the 40,000 B floor; the numbers are recorded under `DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG` with the
+seat's recommendation for the maintainer, whose decision it is. Reds, recorded unattributed: `on-carves` failed 3 of 3 again, and
+`E-W-ground|webgpu` read PF-1 p50 `over` against the same build (`NEW-CLOUD-EW-GROUND-WEBGPU-PF1-P50-SAME-BUILD-RED`); the KIT6
+one-repeat WebGL PF-3 red and the KIT6 `E-W-ground-hdr|webgpu` PF-1 / PF-4 red were re-measured within. The Antigravity water
+program and W4 below are unchanged.
 **Critical path:** W4. *[Updated 2026-10-31 by records round 4; records batch 3 round 2 put the seat's Edge acceptance job
 first, and it has run.]* The next step is the Antigravity water program's landing on 2026-10-31 (`R-2026-10-30-M1`),
 re-delivered against the base clone at `5e684450f1`, and the W4 regeneration from the Codex post-plan audit, its decisions C1-C5 accepted as the seat recommended (`R-2026-10-30-M2`). The later W-waves (W4 … W12, `R-2026-10-23-M4`) queue behind it, one lane

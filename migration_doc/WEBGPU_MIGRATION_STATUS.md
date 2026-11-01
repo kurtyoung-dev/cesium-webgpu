@@ -248,6 +248,31 @@ Next: the compile-floor calibration leg (`DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG`)
 and the dive cells (`DX-KIT-DIVE-GATE-CELLS`); the evidence curation `R-2026-10-31-M1` rules, after every landing is in;
 `NEW-2D-WEBGPU-OCEAN-HIGHLIGHT-FADE`; the Antigravity water program and the W4 regeneration stand as above. Open after this
 landing: the rows of `DEFERRED_WORK.md` section "2026-10-31 — records round 10".
+*[Records round 11:]* Batch 1647 (`54ee091b62`) recorded the KIT6 leg; the probe-kit round 7 followed as Batch 1648 (the table
+below), and the KIT7 Edge leg measured it in both phases; no Antigravity water batch has landed by Batch 1648 (`git log`).
+
+## Landing record (2026-10-31 — Batch 1648: the probe-kit round 7)
+
+A landing table only. The hash and tree were read at Batch 1648 with `git log --format='%h %H %T %s' 54ee091b62..HEAD`; the
+landing log shows the `main -> main` push (by 23:43 EDT) and "post-landing-spine OK at e39af3c0ac"
+(`lanes-2026-10-31/round3/landing-logs/land-hador.log`). "Bank" paths are under `cesium-webgpu-worker-archive/lanes-2026-10-31/`;
+the rows are in `DEFERRED_WORK.md` section "2026-11-01 — records round 11", which also names the byte check (the banked lane patch
+reproduces the landed tree except the tooling catalog and the seat's runner homes). One Edge leg (executor Eowyn) measured the
+batch: KIT7 on Batch 1648's tree, Phase 1 23:46-00:02 EDT and Phase 2 00:03-00:21 EDT on 2026-11-01 in the seat's quiet window
+(`round3/edge/EDGE_RECEIPT_EOWYN_KIT7.md`).
+
+| batch | hash (tree) | what is now true | lane lead | reviewer | bank |
+| --- | --- | --- | --- | --- | --- |
+| 1648 | `e39af3c0ac` (`5e8dee69`) | A landing PF run waits for the machine's CPU to settle under the contention guard's threshold before its first page and records how the wait ended; the landing-cells summary marks a provisional floor, a contended or not-run line and a substituted base frame; PF-4 reads a flagged 40,000 B residency floor; five dive-gate cells run from rigs on the landing probe; the water-cells spec is nine parts with no test changed; a banked report's gone absolute frames are read from the same-named files beside it; the provisioner copies only tracked skill files. Tools-only, 41 lane paths (43 with the catalog and the runner homes); kit pieces 202 -> 204, rigs 267 -> 272; `test-visual-regression-node` 7,949 characters. Measured on Edge by KIT7 (warm-up `released`, sampler `live`, on every PF arm, the first arm after a server start still `contended`; marks printed, a residual on contended PF-3 lines; PF-4 `PASS*` under the floor with a same-build range up to 61,900 B; sibling-fallback pixels on 8 of 8 arms; the dive-gate cells NOT RUN on 20 of 20 pages, `globe-height-undefined`). | Hador (workers Firiel, Arahael, Dirhael, Dervorin, Aratan) | Narmacil (P1 REFUTED: R1 a live-CPU warm-up inside every fake-browser spec, R2 a dive-gate acceptance passable on the gate alone; P2 HOLDS; freezes `194185f1` -> `a89c7cf9`); Edge Eowyn | `round3/hador/` (`round3/edge/EDGE_RECEIPT_EOWYN_KIT7.md`) |
+
+Next: the dive-gate repair (`DX-KIT-DIVE-GATE-NEEDS-INITIALIZE-FRAME`, with a daylight clock on the five rigs) and its Edge leg;
+the maintainer's decision on the compile and residency floors from the calibration numbers
+(`DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG`); the warm-up threshold (`DX-KIT-WARM-UP-THRESHOLD`) and the summary residual
+(`DX-KIT-LANDING-SUMMARY-FLOOR-MARK`); the split of `test-visual-regression-node` before the next homes
+(`DX-KIT-RUNNER-KEY-NEAR-CAP`); the measured reds KIT7 filed or re-measured (`NEW-CLOUD-EW-GROUND-WEBGPU-PF1-P50-SAME-BUILD-RED`,
+`NEW-CLOUD-W3-WEATHER-MAP-ON-CARVES-DAYLIGHT`, `NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY`); the evidence curation
+`R-2026-10-31-M1` rules, after every landing is in; the Antigravity water program and the W4 regeneration stand as above. Open
+after this landing: the rows of `DEFERRED_WORK.md` section "2026-11-01 — records round 11".
 
 ---
 
