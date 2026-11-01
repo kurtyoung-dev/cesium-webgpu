@@ -300,6 +300,32 @@ stopped-loop audit (`DX-KIT-STOPPED-LOOP-WIDGET-FRAME-AUDIT`); the small kit row
 residency floors (`DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG`); the evidence curation `R-2026-10-31-M1` rules, after every landing is
 in; the Antigravity water program and the W4 regeneration stand as above. Open after this landing: the rows of `DEFERRED_WORK.md`
 section "2026-11-01 — records round 12".
+*[Records round 13:]* Batch 1651 (`d25f743128`) recorded the KIT8 leg; the probe-kit round 9 followed as Batch 1652 (the table
+below), and the KIT9 Edge leg measured it in both phases; no Antigravity water batch has landed by Batch 1652 (`git log`).
+
+## Landing record (2026-11-01 — Batch 1652: the probe-kit round 9)
+
+A landing table only. The hash and tree were read at Batch 1652 with `git log --format='%h %H %T %s' d25f743128..HEAD`; the
+landing log shows the `main -> main` push `d25f743128..f52ff6bef5` (by 05:21 EST) and "post-landing-spine OK at f52ff6bef5"
+(`lanes-2026-10-31/round3/landing-logs/land-herubrand.log`). "Bank" paths are under `cesium-webgpu-worker-archive/lanes-2026-10-31/`;
+the rows are in `DEFERRED_WORK.md` section "2026-11-01 — records round 13", which also names the byte check (the banked lane patch,
+`package.json` included, reproduces the landed tree except the tooling catalog and the seven runner homes the landing appended) and
+the landing notes. One Edge leg (executor Eowyn) measured the batch: KIT9 on Batch 1652's tree, Phase 1 05:22-05:26 EST and Phase 2
+05:28-05:31 EST on 2026-11-01 in the seat's quiet window, on a freshly started server (`round3/edge/EDGE_RECEIPT_EOWYN_KIT9.md`).
+
+| batch | hash (tree) | what is now true | lane lead | reviewer | bank |
+| --- | --- | --- | --- | --- | --- |
+| 1652 | `f52ff6bef5` (`396c8cf1`) | A landing PF run loads its unmeasured prime page again, at most four pages, until the page's CPU, three samples after it and the base arm's recorded CPU all read quiet, and records every page and why it stopped; a PF-2 statistic whose repeats fall into two modes (new metric piece `lib/metrics/two-mode-split.mjs`) names both modes and which arm drew which on the record, the verdict entry and the summary, keeps the band's `over` when only the tip drew the slow mode, and reads `unmeasured-bimodal` only when the base arm drew the slow mode too or the band read within; a probe asked for `--help` prints its option table and exits 2 before any page or receipt, and an unknown flag prints one line and exits 2; the summary prints machine-CPU figures and long float noise at two decimals; the ellipsoid dive cell is declared gate-only, so its frame compares read not-comparable; a provisional floor under an unmeasured verdict reads undecided in the nested record as on the entry; 25 node-b specs move to node-c. Tools-only, 34 patch paths with `package.json` (35 with the catalog); kit pieces 206, metrics 51 -> 52, rigs 272; `test-visual-regression-node` 5,211 characters unchanged, `-node-b` 7,372 -> 5,898, `-node-c` 3,029 -> 4,907. One clean landing. Measured on Edge by KIT9 (both first arms `clear` after a fresh server start, arm A's prime three pages, the first two above 60 %, then `quiet`; the PF-2 split read `unmeasured-bimodal` on a fast tip page with the base in the slow mode; `--help` and `--bogus` exit 2 with nothing written; the gate-only mark on 4 of 4 ellipsoid entries; the same-build E-ID-cv WebGPU PF-1 red of KIT8 re-measured within; identity 0 px). | Herubrand (workers Guthlaf, Rumil, Daeron, Romendacil) | Fastred (P1 REFUTED: R1 under Charter 1.1, the first freeze's split turned a slow mode only the tip drew, the KIT8 ledger red among them, into `unmeasured-bimodal` with exit 0, R2 the arm wording unpinned; P2 HOLDS; freezes `3d96c1ad` -> `0ec5d3f2` -> `24751e54`, the last with the lane's `SCRIPT:` lines folded into `package.json` by the seat); Edge Eowyn | `round3/herubrand/` (`round3/edge/EDGE_RECEIPT_EOWYN_KIT9.md`) |
+
+Next: the maintainer's ruling on the PF-2 split whose slow mode only the tip drew (`DX-KIT-PF2-BIMODAL-ARM-SEPARATED`, a ruling
+request; until ruled it fails); the small kit rows Batch 1652 left (`DX-KIT-REFERENCE-IMAGERY-DIAL`,
+`DX-KIT-HELP-TITLE-STALE-CELLS`, `DX-KIT-PARSE-TIME-REFUSAL-NO-FILE`) and the seat's seatbelt row
+(`DX-ESLINT-SEATBELT-LOOSER-THAN-TREE`); the stopped-loop decision (`DX-KIT-STOPPED-LOOP-WIDGET-FRAME-AUDIT`, the maintainer's);
+the same-build red still open (`NEW-WEBGPU-EID-CV-PF2-PASS-COST-BIMODAL-RED`; its PF-1 twin re-measured within); the maintainer's
+decision on the compile and residency floors (`DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG`); the two dive-frame findings for the water
+and globe owners (`NEW-WATER-DIVE-ONTARIO-WEBGPU-SEAM`, `NEW-WATER-DIVE-UPSAMPLED-FRAME-ARTEFACTS`); the evidence curation
+`R-2026-10-31-M1` rules, after every landing is in; the Antigravity water program and the W4 regeneration stand as above. Open
+after this landing: the rows of `DEFERRED_WORK.md` section "2026-11-01 — records round 13".
 
 ---
 

@@ -33880,6 +33880,14 @@ decision is the maintainer's. **Source:**
 arms). KIT7's item 4 on Batch 1648's tree read 276,676,877 B on the same arm; recorded beside, not compared. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/B/landing-cells-report.json`
 (`comparison["E-ID-cv|*|scene"].pf4`, `verdicts[]`).
+**KIT9 (records round 13; Phase 2 item 3, tree Batch 1652 `f52ff6bef5`, `E-ID-cv`, arm B against arm A of one build, contention
+`clear` on both arms):** PF-4 `within` on both arms. `E-ID-cv|webgpu|scene` liveBytes 276,676,709 B at the start and end of all
+four windows (both arms; 263,708,813 B textures, 12,967,896 B buffers, 51 textures, 59 buffers), limit 276,716,709 B with the
+40,000 B floor applied, nested and entry mark `decided: false`, growth 0 / 0 on both arms; the WebGL arm reads the floor
+`applied: false` (no live bytes measured on both arms). The same figure as KIT8's on Batch 1650's tree; recorded beside. The floor
+stays provisional and the decision the maintainer's. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit9-20261101/prime/B/landing-cells-report.json`
+(`comparison["E-ID-cv|*|scene"].pf4`, `verdicts[]`).
 
 ### NEW-KIT-WEBGL-PF3-ONE-REPEAT-SAME-BUILD-RED — on the same served build a one-repeat `E-W-ground|webgl` PF-3 read `over` its 15 % startup floor — **OPEN: re-measured within** (a measured red on KIT6, unattributed; re-measured `within` on the KIT7 leg with two repeats a side, records round 11; a contended reading, not a verdict, on the KIT8 leg, records round 12; the one-repeat question open; probe kit)
 
@@ -33916,8 +33924,17 @@ arms). KIT7's item 4 on Batch 1648's tree read 276,676,877 B on the same arm; re
   it does not answer the one-repeat question. **Source:**
   `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/B/landing-cells-report.json`
   (`comparison["E-ID-cv|webgl|scene"].{pf3.startup,pf3.runs,contention}`).
+- **A clear reading on the same cell (KIT9 Phase 2 item 3, records round 13; tree Batch 1652 `f52ff6bef5`; `--cells E-ID-cv
+  --perf --runs 2`, arm B against arm A of the same build; contention `clear`, base mean CPU 23.03 % against tip 20.64 %):**
+  `E-ID-cv|webgl|scene:PF-3` reads `within`. Startup `navigationToFirstFrameMs` (field fallback; pipeline wait 0 on all four
+  repeats; compile none measured) per repeat: base 1,716.0 / 1,955.3 ms (median 1,835.65), tip 1,732.7 / 1,865.3 (median 1,799.0);
+  ratio 0.980 against the repeat band 0.279 (limit 2,347.6; `startupFloor {0.15, floor}`; rule `ceiling-and-band`, ceiling
+  2,500 ms on the median, tip max 1,865.3). Two repeats a side, so it does not answer the one-repeat question; KIT8's contended
+  reading of this cell stays beside it. **Source:**
+  `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit9-20261101/prime/B/landing-cells-report.json`
+  (`comparison["E-ID-cv|webgl|scene"].{pf3.startup,pf3.runs,contention}`).
 
-### DX-KIT-FIRST-PF-ARM-AFTER-SERVER-START — the first PF arm after the server started read `unmeasured-contended` a minute after the seat read the machine at 5.5 % CPU — **OPEN** (probe kit; the warm-up landed by Batch 1648, `e39af3c0ac`, and the prime by Batch 1650, `62eea22f49`; on the KIT7 leg the first WebGPU arm read contended, records round 11; on the KIT8 leg the WebGPU arm read clear and the WebGL arm contended, records round 12; threshold `DX-KIT-WARM-UP-THRESHOLD`)
+### DX-KIT-FIRST-PF-ARM-AFTER-SERVER-START — the first PF arm after the server started read `unmeasured-contended` a minute after the seat read the machine at 5.5 % CPU — **CLOSED: measured** (probe kit; the warm-up landed by Batch 1648, `e39af3c0ac`, and the prime by Batch 1650, `62eea22f49`; on the KIT7 leg the first WebGPU arm read contended, records round 11; on the KIT8 leg the WebGPU arm read clear and the WebGL arm contended, records round 12; the prime repeats until quiet by Batch 1652, `f52ff6bef5`, and on the KIT9 leg both first arms read clear, records round 13; threshold `DX-KIT-WARM-UP-THRESHOLD`)
 
 KIT6 Phase 2 item 5 arm A (`--cells E-ID-cv --perf --runs 2`) was the first probe after the server restart (19:38 EDT; the seat
 had read the machine at 5.5 % CPU over 10 s at 19:37, per the receipt). The base arm's run 0 sampled the machine at 59.6 % mean CPU
@@ -33978,8 +33995,33 @@ measured page and did not remove it; recorded, not attributed. The record half i
 `pages[].cpu`) and `kit8-20261101/4-prime/B/landing-cells-report.json` (`warmUp`, `prime`, `contentionBasis`, `verdicts[]`,
 `pages[].cpu`, `comparison["E-ID-cv|*|scene"].contention`, `exitCode`); `kit7-20261031/4-warm-up/A/landing-cells-report.json`
 (`pages[].cpu`); `round3/hyarmendacil/REVIEW_ALDAMIR_P1.md` (R1); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 2 item 4).
+**Repaired (Batch 1652, `f52ff6bef5`; lane Herubrand, worker Guthlaf; reviewer Fastred, P1 REFUTED on the PF-2 item only, P2
+HOLDS; records round 13).** The prime repeats, bounded by `PRIME_MAX_PAGES` = 4 (`lib/landing-pf-prime.mjs:91`): a page is quiet
+when its machine CPU, each of `POST_PRIME_SAMPLES` = 3 samples after it (`:98`) and, with a base report, its distance from the
+base arm's mean sit inside the contention guard's `contendedCpuPct` / `cpuArmDeltaPct` (read from `resolveBands`); the receipt's
+`prime` lists every page (`pages[{index, durationMs, cpuMean, postSample, quiet, why}]`) and how it stopped (`stoppedBecause`
+`quiet|budget|failed|skipped|not-a-pf-run`, `:162`), the `Prime:` summary line and every PF verdict carry the note, and the
+fake browser supplies the prime's readings so no Node spec reads the machine (spec `landing-pf-prime-quiet.spec.mjs`, 20 tests).
+**Measured on Edge (KIT9 Phase 2 item 3; tree Batch 1652 `f52ff6bef5`, served == disk; a fresh server started 05:28:13 EST on
+2026-11-01 and arm A was the first probe after it, at 05:28:22 EST per the receipt; `--cells E-ID-cv --perf --runs 2`, arm B with
+`--base-report` arm A, one build; exits A 0, B 0):** warm-ups `released` after 5 samples (A 5,049 ms at 9.20 %, samples 38.71 /
+10.17 / 14.80 / 4.60 / 9.20 %; B 5,044 ms at 3.50 %). Arm A's prime ran three pages and stopped `quiet` (25,075 ms): page 0 66.01 %
+and page 1 65.74 % mean CPU, each "above 60 %" with no post samples taken, then page 2 34.38 % with post samples 8.22 / 5.09 / 9.03 %,
+quiet. Arm B's prime ran one page, 22.59 %, post samples 5.95 / 2.67 / 0.39 %, `quiet` (9,824 ms). Per-page machine CPU means in
+page order (WebGL run 0, WebGPU run 0, WebGL run 1, WebGPU run 1): A 24.32 / 22.37 / 21.74 / 21.43 %, B 19.10 / 22.37 / 22.19 /
+20.63 %, against KIT8's one-page prime A 83.75 / 44.64 / 39.76 / 39.99 % and B 29.45 / 33.60 / 34.76 / 36.63 %. In B both first arms
+read contention `clear` on every clause: `E-ID-cv|webgl|scene` base mean 23.03 % against tip 20.64 % (2.39 points),
+`E-ID-cv|webgpu|scene` 21.90 % against 21.50 % (0.40 points). The acceptance the lane named (a fresh-server pair with both first
+arms `clear` and the prime records quoted) is met, so the row closes as measured. The earlier readings stay beside it: the KIT6
+WebGPU arm contended (44.23 against 22.31 %), the KIT7 WebGPU arm contended (51.52 against 26.14 %), the KIT8 WebGL arm contended
+(61.76 against 32.10 %). One measured leg on one machine; a later hot start is recorded beside it if it comes. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit9-20261101/prime/A/landing-cells-report.json` (`warmUp`, `prime`,
+`pages[].cpu`, `exitCode`) and `kit9-20261101/prime/B/landing-cells-report.json` (`warmUp`, `prime`, `pages[].cpu`,
+`comparison["E-ID-cv|*|scene"].contention`, `exitCode`); `kit8-20261101/4-prime/{A,B}/landing-cells-report.json` (`pages[].cpu`);
+`round3/herubrand/LANDING_PACKET_HERUBRAND.md` (W1); `round3/herubrand/REVIEW_FASTRED_P2.md`; receipt
+`round3/edge/EDGE_RECEIPT_EOWYN_KIT9.md` (Phase 2 item 3).
 
-### DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG — PF-3's 60 % compile-total floor is one measured spread rounded up, and a two-repeat band may not carry a compile verdict at all — **OPEN** (probe kit; the calibration run as KIT7 Phase 2 item 5, records round 11; a further same-build reading on the KIT8 leg, records round 12; the floor decision is the maintainer's)
+### DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG — PF-3's 60 % compile-total floor is one measured spread rounded up, and a two-repeat band may not carry a compile verdict at all — **OPEN** (probe kit; the calibration run as KIT7 Phase 2 item 5, records round 11; a further same-build reading on the KIT8 leg, records round 12; a third on the KIT9 leg, records round 13; the floor decision is the maintainer's)
 
 - **State (Batch 1646):** the compile verdict reads max(registered band, 0.60) (`COMPILE_PROVISIONAL_FLOOR`,
   `lib/metrics/perf-band.mjs:155`), and `pf3.compile.provisionalFloor` carries `{fraction, flag: "provisional-floor", source,
@@ -34055,6 +34097,20 @@ measured page and did not remove it; recorded, not attributed. The record half i
     above; the decision stays the maintainer's. **Source:**
     `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/B/landing-cells-report.json`
     (`comparison["E-ID-cv|webgpu|scene"].pf3.{compile,pipelineWait,runs}`, `verdicts[]`).
+  - **A third same-build reading (KIT9 Phase 2 item 3, records round 13; tree Batch 1652 `f52ff6bef5`; `--cells E-ID-cv --perf
+    --runs 2`, arm B against arm A, WebGPU contention `clear`):** `E-ID-cv|webgpu|scene` `compileTotalMs` per repeat A 8,578.8 /
+    8,526.5 ms, B 8,758.8 / 8,844.5 ms, medians 8,552.65 -> 8,801.65 ms, ratio 1.029; the floor 0.6 applied over the registered
+    band 0.03 (`bandSource: "provisional-floor"`, limit 13,684.2 ms), verdict `within`, the mark `decided: false` (by this round's
+    arithmetic the registered band alone gives a limit of 8,809.2 ms, 7.6 ms above the tip median); 22 shader modules, 19 render and
+    7 compute pipelines on every repeat. PF-3 startup on the same arm (wait-excluded, field fallback `navigationToFirstFrameMs`):
+    1,586.6 -> 1,548.3 ms (ratio 0.976, repeat band 0.114, limit 1,766.8; `startupFloor {0.1, registered}`), `within`; per repeat
+    raw base 4,090.3 / 4,219.0, tip 4,191.1 / 4,187.8 ms; pipeline wait base 2,547.5 / 2,588.6 (median 2,568.05), tip 2,613.2 /
+    2,669.1 ms (median 2,641.15). The summary prints "provisional-floor 0.6 over registered band 0.03; the floor was applied and
+    did not decide this verdict". Recorded beside KIT7's and KIT8's readings; no change to the recommendation above, and the
+    decision stays the maintainer's. **Source:**
+    `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit9-20261101/prime/B/landing-cells-report.json`
+    (`comparison["E-ID-cv|webgpu|scene"].pf3.{compile,startup,pipelineWait,runs,provisionalFloor}`, `verdicts[]`) and
+    `kit9-20261101/prime/B/landing-cells-summary.md` ("Marks").
 
 ### DX-KIT-LANDING-SUMMARY-FLOOR-MARK — the landing-cells Markdown summary prints a PF-3 PASS the provisional compile floor decided as a plain PASS — **CLOSED: measured** (probe kit, small; repaired by Batch 1648, `e39af3c0ac`, with a measured residual on contended PF-3 lines on the KIT7 leg, records round 11; the residual repaired by Batch 1650, `62eea22f49`, and read on the KIT8 leg, records round 12; residuals `DX-KIT-NESTED-FLOOR-DECIDED` and `DX-KIT-SUMMARY-UNROUNDED-FLOATS`)
 
@@ -34273,7 +34329,7 @@ calibration numbers; the decision is the maintainer's), `DX-KIT-COMPILE-TOTAL-BA
   `round3/hyarmendacil/LANDING_PACKET_HYARMENDACIL.md` (W1); `round3/hyarmendacil/REVIEW_ALDAMIR_P1.md` (Premise W1; mutants);
   receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 1 item 1).
 
-### DX-KIT-WARM-UP-THRESHOLD — the PF warm-up releases at the guard's 60 % mean clause, which does not prevent the 20-point arm-delta clause — **OPEN** (probe kit, small; measured on the KIT7 leg; the Batch 1650 prime measured on the KIT8 leg, records round 12)
+### DX-KIT-WARM-UP-THRESHOLD — the PF warm-up releases at the guard's 60 % mean clause, which does not prevent the 20-point arm-delta clause — **CLOSED: measured** (probe kit, small; measured on the KIT7 leg; the Batch 1650 prime measured on the KIT8 leg, records round 12; the Batch 1652 prime loop measured on the KIT9 leg, records round 13)
 
 The KIT6 item-5 contention was the arm-delta clause (base mean 44.23 % against tip 22.31 %), and a machine idling at 40-55 %
 releases a 60 % warm-up and can still read contended (lane Hador's open question; Narmacil P1 N2). **Measured (KIT7 Phase 2 item
@@ -34297,6 +34353,19 @@ PF page of each renderer) is another shape; the choice is the kit lane's. **Sour
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/A/landing-cells-report.json` and
 `kit8-20261101/4-prime/B/landing-cells-report.json` (`warmUp`, `prime`, `pages[].cpu`, `comparison["E-ID-cv|*|scene"].contention`);
 `round3/hyarmendacil/REVIEW_ALDAMIR_P1.md` (R1 note).
+**Records round 13 (KIT9 Phase 2 item 3; detail under `DX-KIT-FIRST-PF-ARM-AFTER-SERVER-START`):** Batch 1652 (`f52ff6bef5`)
+built the repair shape above: the prime repeats until its page, three post-page samples and the base-arm delta read inside the
+guard's thresholds, at most four pages. On the KIT9 leg the warm-ups released at 9.20 % (A) and 3.50 % (B); arm A's prime read
+66.01 and 65.74 % on two pages flagged "above 60 %" and stopped `quiet` on the third (34.38 %); arm B's stopped `quiet` on one page
+(22.59 %); every measured page then read 19.10-24.32 % mean CPU and both first arms read `clear`. The release threshold is left as
+it was; the loop after it bounds the hot window this row measured, so the row closes as measured with the earlier readings kept.
+A note, not a row (lane Herubrand's open point, reproduced by Fastred P1 N2 with an injected runner): when the base arm's own
+mean sits above `contendedCpuPct` (KIT8 B's WebGL base read 61.76 %), the base-delta clause cannot be met by a quiet machine and
+the prime runs to its four-page budget, recorded as `stoppedBecause: "budget"` with each page's `why`; whether to drop the clause
+in that case is the kit's choice. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit9-20261101/prime/A/landing-cells-report.json` and
+`kit9-20261101/prime/B/landing-cells-report.json` (`warmUp`, `prime`, `pages[].cpu`, `comparison["E-ID-cv|*|scene"].contention`);
+`round3/herubrand/LANDING_PACKET_HERUBRAND.md` (W1 "Open"; open question 2); `round3/herubrand/REVIEW_FASTRED_P1.md` (N2).
 
 ### DX-KIT-WARM-UP-SAMPLER-LABEL-UNPINNED — no Node case asserts the warm-up record's `sampler: "live"` branch — **CLOSED** (probe kit, small; Batch 1650, `62eea22f49`; reviewer Aldamir HOLDS-WITH-FIXES; records round 12)
 
@@ -34439,7 +34508,7 @@ residual), `DX-KIT-FIRST-PF-ARM-AFTER-SERVER-START` and `DX-KIT-WARM-UP-THRESHOL
 `DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG` (a further same-build reading), `NEW-KIT-WEBGL-PF3-ONE-REPEAT-SAME-BUILD-RED` (a contended
 reading) and `DX-KIT-PF4-RESIDENCY-ALLOWANCE-ZERO` (within on both KIT8 arms). The rows below are new.
 
-### DX-KIT-STOPPED-LOOP-WIDGET-FRAME-AUDIT — six landing-kit sites, and about 76 stopped-loop probes, still render with the viewer's loop stopped and no `Scene.initializeFrame()` — **OPEN** (probe kit; filed by Batch 1650's lane; the identity half measured on the KIT8 leg, records round 12; the audit half open)
+### DX-KIT-STOPPED-LOOP-WIDGET-FRAME-AUDIT — six landing-kit sites, and about 76 stopped-loop probes, still render with the viewer's loop stopped and no `Scene.initializeFrame()` — **OPEN** (probe kit; filed by Batch 1650's lane; the identity half measured on the KIT8 leg, records round 12; the audit re-stated by Batch 1652's lane with no code change, the decision the maintainer's, records round 13)
 
 - **Filed (Batch 1650, `62eea22f49`; lane Hyarmendacil, worker Goldwine's audit; reviewer Aldamir R2 narrowed the batch's subject to
   the settle and the dive placement):** at the tip the PF windows `Tools/visual-regression/lib/frame-timing-steps.mjs:87` (PF-3
@@ -34464,8 +34533,16 @@ reading) and `DX-KIT-PF4-RESIDENCY-ALLOWANCE-ZERO` (within on both KIT8 arms). T
   `kit6-20261031/5-floor/A/`, `kit7-20261031/2-sibling-fallback/` and `kit3-20261031/item4-pf3-tip/`;
   `round3/hyarmendacil/LANDING_PACKET_HYARMENDACIL.md` (W1 "Not changed"; "Records rows"); `round3/hyarmendacil/REVIEW_ALDAMIR_P1.md`
   (R2, R3); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 1 item 2).
+- **Audit re-stated (Batch 1652's lane, lead Herubrand, no code change; records round 13):** the six sites, re-read by this round
+  at `f52ff6bef5`, still call `scene.render(viewer.clock.currentTime)` alone: `lib/frame-timing-steps.mjs:87`, `:165`, `:216` (the
+  landing PF windows), `lib/landing-cell-stage.mjs:912` (the pending-pipeline wait), `lib/device-loss-steps.mjs:252` and
+  `lib/ocean-displacement-readback.mjs:141`. None reads the globe height, drives input or runs tweens, so none shows the dive-gate
+  defect the widget frame fixed; converting them moves PF timings and possibly frames, so it is a re-baseline. The KIT8 0 px
+  identity reading above is evidence, not a decision. **Decision owed (the maintainer's):** whether to convert the six sites, and
+  with what re-baseline. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/herubrand/LANDING_PACKET_HERUBRAND.md`
+  ("Lead (c)"; open question 4); the code lines above.
 
-### DX-KIT-NESTED-FLOOR-DECIDED — the receipt's nested `comparison.<arm>.pfN.provisionalFloor.decided` keeps the metric's arithmetic on an unmeasured statistic while the verdict entry and the summary read it undecided — **OPEN** (probe kit, small)
+### DX-KIT-NESTED-FLOOR-DECIDED — the receipt's nested `comparison.<arm>.pfN.provisionalFloor.decided` keeps the metric's arithmetic on an unmeasured statistic while the verdict entry and the summary read it undecided — **CLOSED** (probe kit, small; Batch 1652, `f52ff6bef5`; reviewer Fastred P2 HOLDS; records round 13)
 
 Since Batch 1650 an unmeasured PF verdict's floor reads `decided: false` with `undecidedBecause` on the verdict entry
 (`lib/landing-verdicts.mjs:314`) and the summary says it decided nothing, but the nested mark the metric writes still reads the
@@ -34477,8 +34554,21 @@ the nested field as arithmetic only; a spec on an unmeasured arm with an applied
 kit. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/hyarmendacil/LANDING_PACKET_HYARMENDACIL.md` (W3 residual;
 "Records rows"); `round3/hyarmendacil/REVIEW_ALDAMIR_P1.md` (N5); `round3/edge/kit7-20261031/2-sibling-fallback/landing-cells-report.json`
 (`comparison["E-W-30km-hdr|webgpu|scene"].pf3.compile.provisionalFloor`); the code lines above.
+**Repaired (Batch 1652, `f52ff6bef5`; lane Herubrand, lead item; reviewer Fastred, P1 holding the lead items, P2 HOLDS; records
+round 13).** The lane re-read the premise at its HEAD: the field that carries `decided` is the record-level mark
+`comparison[arm].pf3.provisionalFloor` and `comparison[arm].pf4.provisionalFloor`; the statistic-level `provisionalFloor` records
+(`pf3.compile.provisionalFloor`, `pf4.residency.provisionalFloor`) carry no `decided`. `floorMarkUnder(mark, verdict)`
+(`lib/metrics/perf-band.mjs:206`) is now the one rule: an `unmeasured*` verdict gives `decided: false` with `undecidedBecause`,
+a measured one keeps the arithmetic; `startup-compile.mjs` and `gpu-memory-residency.mjs` apply it to their own mark against
+their own verdict and `landingVerdicts` applies the same function. Spec `landing-floor-decided-nested.spec.mjs` (9 tests) on the
+banked KIT7 `E-W-30km-hdr|webgpu` PF-3 record (unmeasured-contended): the nested `decided` now reads false and equals its entry's
+mark. Node behaviour, no Edge acceptance owed; closed on the review. On the KIT9 leg the measured `E-ID-cv|webgpu|scene` PF-3 and
+PF-4 records read the nested mark `decided: false` with the floor applied and the verdict `within`, the arithmetic.
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/herubrand/LANDING_PACKET_HERUBRAND.md` ("Lead (a)");
+`round3/herubrand/REVIEW_FASTRED_P2.md`; `round3/edge/kit9-20261101/prime/B/landing-cells-report.json`
+(`comparison["E-ID-cv|webgpu|scene"].{pf3,pf4}.provisionalFloor`).
 
-### DX-KIT-RUNNER-KEY-B-NEAR-CAP — `test-visual-regression-node-b` is 7,372 characters against the 8,191-character Windows command line — **OPEN** (seat kit; small)
+### DX-KIT-RUNNER-KEY-B-NEAR-CAP — `test-visual-regression-node-b` is 7,372 characters against the 8,191-character Windows command line — **CLOSED** (seat kit; small; Batch 1652, `f52ff6bef5`; reviewer Fastred P2 HOLDS; records round 13)
 
 Measured in `package.json` at Batch 1650 (125 spec paths; unchanged by Batch 1650). 819 characters remain, about a dozen
 homes. **Repair:** split it as `test-visual-regression-node` was split (a `SCRIPT NEW:` line now makes a key), or take the
@@ -34487,8 +34577,18 @@ list-file route of `DX-RUNNER-LIST-FILES`. Also here (Aldamir N3): `Tools/spec-r
 advisory string, not a gate. **Owner:** the seat. **Source:** `package.json` at Batch 1650 (`scripts["test-visual-regression-node-b"]`,
 measured); `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/hyarmendacil/LANDING_PACKET_HYARMENDACIL.md` (W4 note);
 `round3/hyarmendacil/REVIEW_ALDAMIR_P1.md` (N3).
+**Closed (Batch 1652, `f52ff6bef5`; lane Herubrand, lead item; records round 13).** The lane's two `SCRIPT:` lines, folded into
+`package.json` by the seat, move node-b's last 25 specs to the end of `test-visual-regression-node-c` (the list is
+`round3/herubrand/moved-node-b-to-c.txt`), and the batch's seven new specs are homed on node-c. Measured in `package.json` by this
+round (`git show <ref>:package.json`): at Batch 1651 `test-visual-regression-node` 5,211 characters / 92 specs, `-node-b` 7,372 /
+125, `-node-c` 3,029 / 52; at Batch 1652 5,211 / 92, 5,898 / 100 and 4,907 / 84; the union of the three keys 269 -> 276 specs, the
+three lists disjoint (no spec dropped or listed twice; Fastred P2 re-applied the lengths). The advisory string at
+`Tools/spec-runner-census.mjs:443` (Aldamir N3) still proposes `test-visual-regression-node`; not changed by the batch, an
+advisory, not a gate. **Source:** `package.json` at `d25f743128` and `f52ff6bef5` (measured);
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/herubrand/LANDING_PACKET_HERUBRAND.md` ("Lead (b)");
+`round3/herubrand/moved-node-b-to-c.txt`; `round3/herubrand/REVIEW_FASTRED_P2.md` (section 5).
 
-### DX-KIT-DIVE-GATE-ELLIPSOID-CELL-BLIND — the `E-DG-ellipsoid` cell's four frames are one byte-identical flat field, so its frames cannot show a dive — **OPEN** (probe kit, small)
+### DX-KIT-DIVE-GATE-ELLIPSOID-CELL-BLIND — the `E-DG-ellipsoid` cell's four frames are one byte-identical flat field, so its frames cannot show a dive — **CLOSED: measured** (probe kit, small; Batch 1652, `f52ff6bef5`, declares the cell gate-only; the mark measured on the KIT9 leg, records round 13; a real frame reference is `DX-KIT-REFERENCE-IMAGERY-DIAL`)
 
 On the KIT8 leg (Phase 1 item 1) the cell's gate measures: allow / allow on the dive page and refuse / refuse on the control, on
 both renderers, `globeHeight` -0.0036 m offline inside [-1, 1]. Its four PNGs (dive and control, WebGL and WebGPU) share one md5,
@@ -34500,6 +34600,28 @@ evidence, or the dive-versus-control frame comparison is declared not applicable
 kit. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/1-dive-gate/E-DG-ellipsoid-*-run0-*.png`
 (md5) and `kit8-20261101/1-dive-gate/landing-cells-report.json` (`verdicts["E-DG-ellipsoid:*:dive-gate"].cameraHeights`);
 `kit7-20261031/1-dive-gate/E-DG-ellipsoid-*-run0-*.png`; receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 1 item 1).
+**Repaired by declaration (Batch 1652, `f52ff6bef5`; lane Herubrand, worker Romendacil; reviewer Fastred P2 HOLDS; records round
+13).** The worker's Kit First search found no stage dial or declared imagery that draws a height-dependent reference on both
+renderers (stage imagery `naturalEarth|none`; `globeFragmentDebug` WebGPU-only; Fastred P1 N6 re-ran the search), so the rig
+declares `frames: "gate-only"` (`rigs/dive-gate-ellipsoid-sea-level.mjs:34`; the registry accepts only that value,
+`lib/rig-registry.mjs:260-261`) and the dive-gate step lays the mark `frames {comparable: false, removed: "frame-compare",
+reason: "not-comparable: gate-only cell", declaredBy}` (`lib/globe-dive-gate-steps.mjs:340`, `:353`) on every `:dive-gate` entry
+of the cell; a paired run's `pixels` for that cell reads `not-applicable` with `verdictIfComparable`, and the summary prints one
+Marks line per marked entry; the gate verdict is untouched. **Measured on Edge (KIT9 Phase 1 item 1; tree `f52ff6bef5`, served ==
+disk; `--cells E-DG-ellipsoid --runs 1`, exit 0, 12 of 12 verdicts PASS):** all four `:dive-gate` entries carry the mark, with
+`declaredBy` "rig dive-gate-ellipsoid-sea-level frames: \"gate-only\"", and the summary prints four Marks lines ("not-comparable:
+gate-only cell; the frame compare was removed (declared by rig dive-gate-ellipsoid-sea-level frames: \"gate-only\")"). The gates:
+allow / allow on both dive pages (camera floor 7.9125 m WebGL, 7.9183 m WebGPU; `diveDepthMax` 1,185.9 and 1,197.6), refuse /
+refuse on both control pages (floor 0.99999 m, `diveDepthMax` 0), `clockHeld` and `clampHeld` true on all four entries (12 notches
+each), `globeHeight` -0.0036 m inside [-1, 1]. The four PNGs are again one md5, `9812e043d1b1239e9462db3f7ea65e80`, as on KIT8.
+No base report on this run, so the paired `pixels` reading was not exercised on Edge (it is pinned in Node by
+`landing-dive-gate-frames-compare.spec.mjs`). The mark closes the row as measured; a real height-dependent reference for the cell
+is the new kit row `DX-KIT-REFERENCE-IMAGERY-DIAL`. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit9-20261101/dg-ellipsoid/landing-cells-report.json` (`verdicts`,
+`verdicts["E-DG-ellipsoid:*:dive-gate"].{frames,cameraHeights,clockHeld,clampHeld}`, `exitCode`),
+`kit9-20261101/dg-ellipsoid/landing-cells-summary.md` ("Marks") and `kit9-20261101/dg-ellipsoid/E-DG-ellipsoid-*-run0-*.png` (md5
+by this round); `round3/herubrand/LANDING_PACKET_HERUBRAND.md` (W4); `round3/herubrand/REVIEW_FASTRED_P1.md` (N6); receipt
+`round3/edge/EDGE_RECEIPT_EOWYN_KIT9.md` (Phase 1 item 1).
 
 ### NEW-WATER-DIVE-ONTARIO-WEBGPU-SEAM — the `E-DG-ontario` WebGPU dive frame carries a sharp vertical seam near x 660 — **OPEN** (frame finding, unattributed; water / globe owners)
 
@@ -34526,7 +34648,7 @@ the water program, with the globe owner. **Source:**
 (kit `pixelDiff` re-run by this round) and `kit8-20261101/1-dive-gate/landing-cells-report.json`
 (`verdicts["E-DG-upsampled:*:dive-gate"]`); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 1 item 1).
 
-### NEW-WEBGPU-EID-CV-PF1-SAME-BUILD-RED — on the same served build `E-ID-cv|webgpu` read PF-1 `over` on p50, p95 and p99 — **OPEN** (measured red, unattributed; WebGPU)
+### NEW-WEBGPU-EID-CV-PF1-SAME-BUILD-RED — on the same served build `E-ID-cv|webgpu` read PF-1 `over` on p50, p95 and p99 — **OPEN: re-measured within** (measured red on the KIT8 leg, unattributed; re-measured `within` on the KIT9 leg, records round 13; WebGPU)
 
 - **Measured (KIT8 Phase 2 item 4; Batch 1650 `62eea22f49` against itself; `--cells E-ID-cv --perf --runs 2`, arm A the first probe
   after a fresh server start, then arm B with `--base-report` arm A; WebGPU contention `clear`, 42.31 against 35.12 % mean CPU):**
@@ -34544,13 +34666,26 @@ the water program, with the globe owner. **Source:**
   (`verdicts`, `exitCode`, `comparison["E-ID-cv|webgpu|scene"].{pf1,contention,pixels}`; per-repeat percentiles from
   `arms["E-ID-cv|webgpu|scene"].inputs.pf1`) and `kit8-20261101/4-prime/A/landing-cells-report.json` (the same arm); receipt
   `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 2 item 4).
+- **Re-measured within (KIT9 Phase 2 item 3, records round 13; tree Batch 1652 `f52ff6bef5`, whose served bundle was built at Batch
+  1650 per the receipt, Batches 1651-1652 changing nothing under `packages/`; `--cells E-ID-cv --perf --runs 2`, arm A the first
+  probe after a fresh server start, arm B with `--base-report` arm A; contention `clear` on both arms):** arm B exits 0 and
+  `E-ID-cv|webgpu|scene:PF-1` reads `within`: p50 8.10 -> 6.00 ms (ratio 0.741, limit 8.343 on the 3 % floor band), p95 10.60 ->
+  7.35 ms (0.694, repeat band 0.198, limit 12.699), p99 11.23 -> 8.06 ms (0.718, limit 11.568); per repeat (120 frames each) base
+  p50 8.1 / 8.1, p95 10.1 / 11.1 ms, tip p50 5.9 / 6.1, p95 6.61 / 8.10 ms; stutter 0 on all four. The WebGL pair reads `within`
+  too: p50 5.45 -> 3.65 ms (0.670), p95 6.85 -> 4.10 (0.598), p99 7.19 -> 4.33; its base repeats' p50 read 7.0 / 3.9 ms (tip 3.4 /
+  3.9), a within-arm spread recorded as measured. The KIT8 red did not repeat; both readings stay on record (KIT8: p50 6.1 -> 6.3,
+  p95 7.25 -> 9.16 ms, `over`). This leg's base arm read a p50 of 8.1 ms on both repeats where KIT8's arms read 6.1 and 6.3 on the
+  same cell; recorded beside, not compared across legs. Not attributed. **Source:**
+  `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit9-20261101/prime/B/landing-cells-report.json` (`verdicts`,
+  `exitCode`, `comparison["E-ID-cv|*|scene"].{pf1,contention}`, `comparison[*].pf1.runs`); receipt
+  `round3/edge/EDGE_RECEIPT_EOWYN_KIT9.md` (Phase 2 item 3).
 
-### NEW-WEBGPU-EID-CV-PF2-PASS-COST-BIMODAL-RED — on the same served build `E-ID-cv|webgpu` read PF-2 `over`, its frame average 8.6 times the base's; the statistic is bimodal per page across three legs — **OPEN** (measured red, unattributed; WebGPU)
+### NEW-WEBGPU-EID-CV-PF2-PASS-COST-BIMODAL-RED — on the same served build `E-ID-cv|webgpu` read PF-2 `over`, its frame average 8.6 times the base's; the statistic is bimodal per page across three legs — **OPEN** (measured red, unattributed; WebGPU; a fourth leg, KIT9, read the split `unmeasured-bimodal` on a fast tip page, records round 13)
 
 - **Measured (KIT8 Phase 2 item 4; the run above; contention `clear`):** `frameAvgMs` 0.525 -> 4.510 ms (ratio 8.59, repeat band
   0.583, limit 0.831); per repeat (68 frames each) A 0.458 / 0.592 ms, B 4.221 / 4.800 ms. Per pass: Scene Framebuffer Render
   Pass 0.226 -> 1.431 ms, GlobeDepth-DepthCopy_load_pass 0.067 -> 0.592, PostProcess-IdentityBlit 0.012 -> 0.059, each `over`.
-- **The same statistic on the banked same-build `E-ID-cv|webgpu` pairs (per page, read by this round):** KIT6 `5-floor` A 2.711 /
+- **The same statistic on the banked same-build `E-ID-cv|webgpu` pairs (per page, read by this round):** KIT6 `5-floor` A 2.710 /
   4.816 ms, B 3.996 / 0.454; KIT7 `4-warm-up` A 2.312 / 4.735, B 0.454 / 3.996; KIT8 `4-prime` A 0.458 / 0.592, B 4.221 / 4.800. On
   one build a page reads either about 0.45-0.6 ms or about 2.3-4.8 ms; tonight A drew two low pages and B two high ones. (KIT6's and
   KIT7's B arms read PF-2 `unmeasured-contended`, so neither carried a verdict.) Recorded as measured across three legs, with no
@@ -34561,8 +34696,25 @@ the water program, with the globe owner. **Source:**
   `kit8-20261101/4-prime/A/landing-cells-report.json`, `kit7-20261031/4-warm-up/{A,B}/landing-cells-report.json` and
   `kit6-20261031/5-floor/{A,B}/landing-cells-report.json` (`arms["E-ID-cv|webgpu|scene"].inputs.pf2[].frameAvgMs`); receipt
   `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 2 item 4).
+- **A fourth leg (KIT9 Phase 2 item 3, records round 13; the run under `NEW-WEBGPU-EID-CV-PF1-SAME-BUILD-RED`; contention
+  `clear`):** `frameAvgMs` per page (68 frames each) A 4.029 / 3.658 ms, B 0.511 / 4.361 ms; medians 3.844 -> 2.436 ms (ratio
+  0.634, repeat band 0.203, limit 4.623), so the band alone reads `within`. Under Batch 1652's split
+  (`DX-KIT-PF2-BIMODAL-STATISTIC`) it reads `unmeasured-bimodal`, `verdictIfUnimodal: within`: low mode 0.5105 ms (tip run 1
+  alone), high mode 4.016 ms (base runs 1 and 2, tip run 2), ratio 7.867, `armSeparated: false`, reason "the tip arm drew both
+  modes, the base arm only the high mode; the band alone read within"; the entry `notRun`, `unmeasured: "bimodal"`; exit 0. All
+  three passes split on the same page, each `unmeasured-bimodal` with `verdictIfUnimodal: within`: Scene Framebuffer Render Pass
+  low 0.221 against high 1.453 ms (ratio 6.58), GlobeDepth-DepthCopy_load_pass 0.066 against 0.490 (7.46),
+  PostProcess-IdentityBlit 0.012 against 0.049 (4.08). This time the odd page was a fast one, at about one eighth of the other
+  three pages' frame time, and the base arm drew the slow mode on both pages. Per page across the four legs: KIT6 A 2.710 /
+  4.816, B 3.996 / 0.454; KIT7 A 2.312 / 4.735, B 0.454 / 3.996; KIT8 A 0.458 / 0.592, B 4.221 / 4.800; KIT9 A 4.029 / 3.658, B
+  0.511 / 4.361 ms. Recorded as measured, no cause; the KIT8 `over` stays on record as measured (under the landed rule the banked
+  KIT8 pair also reads `over`, exit 1, per the lane's spec). **Source:**
+  `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit9-20261101/prime/B/landing-cells-report.json`
+  (`comparison["E-ID-cv|webgpu|scene"].pf2.{total,passes}`, `verdicts["E-ID-cv|webgpu|scene:PF-2"]`,
+  `arms["E-ID-cv|webgpu|scene"].inputs.pf2[].{frameAvgMs,frameCount}`) and `kit9-20261101/prime/A/landing-cells-report.json`
+  (the same arm's inputs); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT9.md` (Phase 2 item 3).
 
-### DX-KIT-PF2-BIMODAL-STATISTIC — PF-2's `frameAvgMs` takes one of two modes per page on one build, so a band on it cannot separate a regression from the mode each arm drew — **OPEN** (probe kit; a decision owed)
+### DX-KIT-PF2-BIMODAL-STATISTIC — PF-2's `frameAvgMs` takes one of two modes per page on one build, so a band on it cannot separate a regression from the mode each arm drew — **OPEN** (probe kit; repaired by Batch 1652, `f52ff6bef5`, a two-mode split that keeps the band's `over` when only the tip drew the slow mode; its unmeasured branch read on the KIT9 leg, records round 13; open on the ruling request `DX-KIT-PF2-BIMODAL-ARM-SEPARATED`)
 
 Measured under `NEW-WEBGPU-EID-CV-PF2-PASS-COST-BIMODAL-RED`: on `E-ID-cv|webgpu` a page reads about 0.45-0.6 ms or about
 2.3-4.8 ms across KIT6, KIT7 and KIT8, and a two-repeat arm can draw both low or both high. The repeat band (twice the base
@@ -34570,8 +34722,36 @@ spread) then reads `over` on a same-build pair whose arms drew different modes, 
 the same mode whatever the build did. **Repair shape (for a kit round):** a mode-aware band (classify each page by mode and compare
 like with like, reporting the mode counts), or more repeats per arm with the verdict on the mode-matched pages; the decision is the
 maintainer's. **Owner:** the kit. **Source:** the reports cited under `NEW-WEBGPU-EID-CV-PF2-PASS-COST-BIMODAL-RED`.
+**Repaired (Batch 1652, `f52ff6bef5`; lane Herubrand, worker Rumil; reviewer Fastred, P1 REFUTED: R1 under Charter 1.1, as
+first frozen the split turned a band `over` whose base arm never drew the slow mode, the banked KIT8 red and any clean regression
+of 4x or more among them, into `unmeasured-bimodal` with exit 0, and R2 the arm wording unpinned; P2 HOLDS on the re-freeze;
+records round 13).** New metric piece `lib/metrics/two-mode-split.mjs`: the base and tip repeats are sorted together and cut at
+the widest neighbour ratio, and read as two modes when the high mean exceeds the low by more than `BIMODAL_MODE_RATIO` = 4
+(`:43`) and the gap across the cut is wider than the spread inside either mode, from at least `BIMODAL_MIN_VALUES` = 4 values
+(`:35`); `whoDrewWhich` (`:144`) names which arm drew which mode. The landed rule (`bandStatistic`,
+`lib/metrics/gpu-pass-cost.mjs:136`, the branch at `:163-164`): a split statistic always carries `modes` and `modesReason`; when
+the band read `over` and no base run lies in the slow (high) mode, `over` stands, exit 1, the reason ending "the base arm never
+drew the slow mode, so the band's over stands", carried to the PF-2 verdict entry as `modes` / `reason` and printed as a `FAIL`
+Marks line; only when the base arm drew the slow mode too, or the band read `within`, does the statistic read
+`unmeasured-bimodal` with the band's reading kept as `verdictIfUnimodal`, the entry `notRun` with `unmeasured: "bimodal"`,
+printed `UNMEASURED (bimodal)`, exit 0 under the unmeasured fold. Under it the banked KIT8 pair reads `over`, exit 1, agreeing
+with its ledger red, and the banked KIT6 and KIT7 pairs read `unmeasured-bimodal` (spec `landing-pf2-bimodal.spec.mjs`, 19
+tests; Fastred P2 re-ran the reviewer's eleven-case table through `passCostVerdict` -> `landingVerdicts` ->
+`exitCodeForOutcome`). **Read on Edge (KIT9 Phase 2 item 3):** arm B's `comparison["E-ID-cv|webgpu|scene"].pf2.total` reads
+`unmeasured-bimodal`, `verdictIfUnimodal: within`, base 3.84 ms, tip 2.44 ms, band limit 4.62 ms, mode ratio 7.867,
+`armSeparated: false`, reason "frameAvgMs falls into two modes: low mean 0.5105 (tip run 1 0.5105) and high mean 4.016 (base
+run 2 3.658, base run 1 4.029, tip run 2 4.361), ratio 7.867; the tip arm drew both modes, the base arm only the high mode; the
+band alone read within"; the verdict entry is `notRun`, `unmeasured: "bimodal"`, and the summary's PF-2 row reads `UNMEASURED
+(bimodal)` with the same text on its Marks line. The split's low mode was a fast tip outlier this time (tip run 1 at about one
+eighth of the others), unattributed (`NEW-WEBGPU-EID-CV-PF2-PASS-COST-BIMODAL-RED`). What Edge exercised is the unmeasured branch
+with the base arm in the slow mode; the `over`-keeping branch is measured in Node on the banked pairs only. The row stays open on
+the ruling request `DX-KIT-PF2-BIMODAL-ARM-SEPARATED` (new, records round 13). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit9-20261101/prime/B/landing-cells-report.json`
+(`comparison["E-ID-cv|webgpu|scene"].pf2`, `verdicts["E-ID-cv|webgpu|scene:PF-2"]`, `exitCode`) and
+`kit9-20261101/prime/B/landing-cells-summary.md`; `round3/herubrand/LANDING_PACKET_HERUBRAND.md` ("Re-freeze after Fastred P1";
+W2); `round3/herubrand/REVIEW_FASTRED_P1.md` (R1, R2); `round3/herubrand/REVIEW_FASTRED_P2.md`; the code lines above.
 
-### DX-KIT-PROBE-HELP-CRASHES-RECEIPT-WRITER — `probe-landing-cells.mjs --help` throws in the argument parser and then again in the receipt writer, instead of exiting 2 cleanly — **OPEN** (probe kit, small)
+### DX-KIT-PROBE-HELP-CRASHES-RECEIPT-WRITER — `probe-landing-cells.mjs --help` throws in the argument parser and then again in the receipt writer, instead of exiting 2 cleanly — **CLOSED: measured** (probe kit, small; Batch 1652, `f52ff6bef5`; KIT9 Phase 1 item 2, records round 13; residuals `DX-KIT-HELP-TITLE-STALE-CELLS` and `DX-KIT-PARSE-TIME-REFUSAL-NO-FILE`)
 
 Observed by the KIT8 executor (Phase 1 preflight, a side observation): `node Tools/visual-regression/probe-landing-cells.mjs --help`
 throws `TypeError: unknown argument: --help` from `parseProbeArgs`, then `TypeError: Cannot read properties of null (reading
@@ -34582,8 +34762,23 @@ at `:255`; `finishRun` (`:837`) still builds the runtime receipt (`:848`) with `
 `--help` with a usage text) exits 2 before any receipt is built, or the receipt writer tolerates null options; a spec through the runtime with an inertness mutant. **Owner:** the kit. **Source:** receipt
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 1, "Side observation"); the code
 lines above.
+**Repaired (Batch 1652, `f52ff6bef5`; lane Herubrand, worker Daeron; reviewer Fastred, P1 holding this item, P2 HOLDS; records
+round 13).** `runProbe` answers `--help` / `-h` first (`lib/probe-runtime.mjs:628`) with the descriptor's option table and exit 2
+before any preflight, slot or browser; an unknown or malformed flag throws `ProbeUsageError` (`:259`) and prints one stderr line
+with the help hint, exit 2, no stack (`:684-687`); `finishRun` returns before the receipt builder when the command line never
+parsed (`:867-868`), and `buildRuntimeReceipt` refuses null options by name (`lib/probe-runtime-receipts.mjs:92`). Spec
+`probe-runtime-help.spec.mjs` (7 tests). **Measured (KIT9 Phase 1 item 2; Node only, no
+server or browser; tree `f52ff6bef5`):** `node Tools/visual-regression/probe-landing-cells.mjs --help` exits 2 with a 29-line
+table on stdout (the title, a blank line, `Options:`, the core flags, then the landing flags, the last line `--help, -h ... print
+this table and exit 2; nothing is run`) and nothing on stderr; `... --bogus` exits 2 with nothing on stdout and one stderr line,
+`landing-cells: unknown argument: --bogus; run with --help for the options`. Per the executor no receipt, refusal file or output
+folder was written (the output folder absent before and after both runs, the tree clean). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit9-20261101/help-bogus/help-stdout.txt` (md5
+`0a8fb4c76e17543c0a00757f0ed36ac4`, 29 lines), `help-bogus/help-stderr.txt` (0 B), `help-bogus/bogus-stderr.txt` (md5
+`040b982f5149ae5139316a63ce594f51`, one line), `help-bogus/bogus-stdout.txt` (0 B); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT9.md`
+(Phase 1 item 2); `round3/herubrand/LANDING_PACKET_HERUBRAND.md` (W3); the code lines above.
 
-### DX-KIT-SUMMARY-UNROUNDED-FLOATS — the landing summary's contended Marks lines print the guard's raw floats before the rounded CPU clause — **OPEN** (probe kit, small)
+### DX-KIT-SUMMARY-UNROUNDED-FLOATS — the landing summary's contended Marks lines print the guard's raw floats before the rounded CPU clause — **CLOSED** (probe kit, small; Batch 1652, `f52ff6bef5`; reviewer Fastred P2 HOLDS; the KIT9 summaries read, records round 13)
 
 On the KIT8 leg (Phase 2 item 5) the two contended lines read "mean machine CPU above 60 % on base run 0 83.75181818181818 %; base
 and tip mean machine CPU differ by 29.65413636363636 points (61.75727272727273 % against 32.10313636363637 %)", then the rounded
@@ -34593,6 +34788,18 @@ depends on it. **Repair shape:** round the figures where the reasons are written
 line. **Owner:** the kit. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/B/landing-cells-summary.md`
 ("Marks"); `kit8-20261101/4-prime/B/landing-cells-report.json` (`comparison["E-ID-cv|webgl|scene"].contention.reasons`); the code
 lines above.
+**Repaired (Batch 1652, `f52ff6bef5`; lane Herubrand, worker Daeron; records round 13).** `cpuFigure`
+(`lib/landing-cells-summary.mjs:27`) prints the summary's machine-CPU figures at two decimals, and `roundedReason` (`:36`, the
+pattern `LONG_DECIMAL` at `:33`) rounds decimals of five or more fractional digits in Marks reason text; the receipt keeps the raw
+values (spec `landing-summary-figures.spec.mjs`, 4 tests, the KIT8 contended lines among its cases: `83.75 %`, `29.65 points`,
+`61.76 % against 32.1 %`). **Read on Edge (KIT9 Phase 2 item 3):** arm B's summary prints the warm-up at `3.5 %`, the prime at
+`22.59 % CPU (post-prime peak 5.95 %)` and the contention basis at `23.03 %` and `21.9 %`, where the report holds 3.5008752...,
+22.5871428..., 5.9453471..., 23.028 and 21.9003846...; no contended line arose on the leg, so the contended-line rounding is
+pinned by the Node spec and the review rather than by an Edge reading. Closed on the review, with the Edge reading of the
+figures the summary printed. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit9-20261101/prime/B/landing-cells-summary.md` and
+`kit9-20261101/prime/B/landing-cells-report.json` (`warmUp.releasedAtPct`, `prime`, `contentionBasis`);
+`round3/herubrand/LANDING_PACKET_HERUBRAND.md` (W3); `round3/herubrand/REVIEW_FASTRED_P2.md`; the code lines above.
 
 ### Notes (no new ids)
 
@@ -34613,3 +34820,141 @@ lines above.
   own `generatedAt` and base-report path).
 - **`FEATURE_INVENTORY.md`:** a probe-kit round 8 entry is added to section B; the round 7 entry's open list now says which of its
   rows round 8 closed.
+
+## 2026-11-01 — records round 13: Batch 1652, the probe-kit round 9, and the KIT9 Edge leg
+
+One batch landed after records round 12 (Batch 1651, `d25f743128`), read at Batch 1652 with
+`git log --format='%h %H %T %s' d25f743128..HEAD`; its landing table is `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-11-01 —
+Batch 1652 …)". Batch 1652 (`f52ff6bef5`, tree `396c8cf1`, committed 05:20:52 EST on 2026-11-01 and pushed by 05:21) is the
+probe-kit round 9 (lane Herubrand, Opus lead; Sonnet workers Guthlaf, Rumil, Daeron and Romendacil; reviewer Fastred, P1 REFUTED on
+the PF-2 item: R1, under Charter 1.1, as first frozen the two-mode split turned a band `over` whose slow mode only the tip drew,
+the KIT8 ledger red among them, into `unmeasured-bimodal` with exit 0, and R2, the arm wording unpinned; P2 HOLDS on the
+re-freeze; freezes `3d96c1ad` -> `0ec5d3f2` (the fix) -> `24751e54` (the lane's two `SCRIPT:` lines folded into `package.json`
+by the seat); tools-only, 34 patch paths with `package.json`, 35 landed with the tooling catalog; kit pieces 206, metrics 51 -> 52
+(`lib/metrics/two-mode-split.mjs`), rigs 272; `test-visual-regression-node` 5,211 characters, unchanged, `-node-b` 7,372 -> 5,898,
+`-node-c` 3,029 -> 4,907). Bank `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/herubrand/`; landing log
+`round3/landing-logs/land-herubrand.log` (one clean landing: the `main -> main` push `d25f743128..f52ff6bef5` and
+"post-landing-spine OK at f52ff6bef5"). **Byte check (this round):** the banked `herubrand.patch` (md5
+`24751e5450e57511afeb53e86aa86531`, 34 `diff --git` sections, `package.json` among them) applied in a temp index to `d25f743128`
+gives a tree that differs from `f52ff6bef5` in two paths only: `migration_doc/TOOLING_CATALOG.md` (regenerated at the seat) and
+`package.json`, where the landed `test-visual-regression-node-c` is the patch's value with the seven homes of
+`RUNNERS_HERUBRAND.txt` appended (4,503 -> 4,907 characters; the landing log's homes step). One Edge leg measured the batch: the
+KIT9 leg (executor Eowyn; tree `f52ff6bef5`; every report's preflight reads served == disk, `Build/CesiumUnminified/index.js`
+23,553,712 B, built at Batch 1650 per the receipt; Batches 1651-1652 change nothing under `packages/` or `scripts/`), Phase 1
+(items 1-2, 05:22-05:26 EST on 2026-11-01) and Phase 2 (item 3, the performance pair, 05:28-05:31 EST in the seat's quiet window,
+on a server started fresh at 05:28:13). Receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT9.md` (sections "Phase 1" and "Phase 2");
+evidence `round3/edge/kit9-20261101/`. Every figure below is read from the arms' JSON reports, the banked stdout and stderr files
+and the PNG md5s, not from the receipt's prose. With Phase 2 the KIT9 leg is complete in both phases. Rows updated in place by
+this round: `DX-KIT-FIRST-PF-ARM-AFTER-SERVER-START` and `DX-KIT-WARM-UP-THRESHOLD` (closed, measured),
+`DX-KIT-DIVE-GATE-ELLIPSOID-CELL-BLIND` and `DX-KIT-PROBE-HELP-CRASHES-RECEIPT-WRITER` (closed, measured),
+`DX-KIT-SUMMARY-UNROUNDED-FLOATS`, `DX-KIT-NESTED-FLOOR-DECIDED` and `DX-KIT-RUNNER-KEY-B-NEAR-CAP` (closed),
+`DX-KIT-PF2-BIMODAL-STATISTIC` (repaired, open on the ruling request below), `DX-KIT-STOPPED-LOOP-WIDGET-FRAME-AUDIT` (the audit
+re-stated; the decision the maintainer's), `NEW-WEBGPU-EID-CV-PF1-SAME-BUILD-RED` (re-measured within),
+`NEW-WEBGPU-EID-CV-PF2-PASS-COST-BIMODAL-RED` (a fourth leg), `DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG` (a third same-build reading),
+`DX-KIT-PF4-RESIDENCY-ALLOWANCE-ZERO` (within on both KIT9 arms) and `NEW-KIT-WEBGL-PF3-ONE-REPEAT-SAME-BUILD-RED` (a clear
+reading on `E-ID-cv`). The rows below are new.
+
+### DX-KIT-PF2-BIMODAL-ARM-SEPARATED — may a PF-2 split whose slow mode only the tip drew ever read as unmeasured? — **OPEN: RULING REQUEST for the maintainer** (probe kit; Charter 1.1 route; filed by Batch 1652's lane after review P1)
+
+As landed (Batch 1652, `f52ff6bef5`) the instrument keeps the band's `over`, exit 1, for every two-mode PF-2 split whose slow mode
+no base run drew (`lib/metrics/gpu-pass-cost.mjs:163-164`), because such a split cannot be told from a regression of 4x or more:
+an arm-separated split such as KIT8's same-build pair (base 0.458 / 0.592 ms against tip 4.221 / 4.800) and a slow mode only the
+tip drew both fail, their modes named on the record, the verdict entry and a `FAIL` Marks line. **The maintainer is asked to
+rule:** (1) whether a split whose slow mode only the tip drew may ever read as unmeasured, and on what evidence (for example a
+re-run that draws mixed modes, or a same-build control arm); (2) whether the one remaining path from a band `over` to
+`unmeasured-bimodal` is ratified: the base arm drew the slow mode and the band read `over`, which happens only under a band
+override (`repeatFactor: 0`), because with the seat bands a base arm that drew both modes widens its own band and the band reads
+`within` (Fastred P2 N1, holding the lead's correction of P1 N1: base 0.5 / 4.4 against tip 4.2 / 4.3 ms reads `within` on the
+seat bands and `over` under the override, `unmeasured-bimodal` either way). Beside it, not part of the request (Fastred P2 N2): an
+arm-separated improvement (base in the slow mode, tip in the fast) now reads `unmeasured-bimodal` where the band read `within`, a
+pass reclassified, not a red. **Until ruled, a split whose slow mode only the tip drew fails.** **Owner:** the maintainer, for the
+ruling; the kit applies it. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/herubrand/LANDING_PACKET_HERUBRAND.md` ("Re-freeze after Fastred P1"; W2
+"RULING REQUEST"; open question 1); `round3/herubrand/REVIEW_FASTRED_P1.md` (R1, N1); `round3/herubrand/REVIEW_FASTRED_P2.md`
+(N1, N2); the code lines above.
+
+### DX-KIT-REFERENCE-IMAGERY-DIAL — no landing stage dial draws a height-dependent reference on both renderers, so a gate-only dive cell has no frame evidence — **OPEN** (probe kit, page-side; proposed by Batch 1652's lane)
+
+Batch 1652's Kit First search (worker Romendacil; re-run by Fastred P1 N6) found the landing stage's globe dials to be lighting,
+show, base colour, water effect, ground atmosphere, imagery removal, imagery `naturalEarth|none`, terrain `ellipsoid`, the
+`WaterMask` material and `globeFragmentDebug` (WebGPU-only); none draws a height-dependent reference on both renderers without page
+code, so `E-DG-ellipsoid` is declared gate-only (`DX-KIT-DIVE-GATE-ELLIPSOID-CELL-BLIND`, closed). The kit's
+`GridImageryProvider` uses are in the C12-29 S5 gates (`lib/c12-29-s5-custom-ellipsoid-gate.mjs` among them), not in the landing
+stage. **Repair shape (for a kit lane):** a tile-coordinate or checker imagery stage dial on both renderers, so the ellipsoid
+cell's dive and control frames carry a real reference; page code, measured on an Edge leg, after which the rig's
+`frames: "gate-only"` declaration (`rigs/dive-gate-ellipsoid-sea-level.mjs:34`) can be dropped. **Owner:** the kit. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/herubrand/LANDING_PACKET_HERUBRAND.md` (W4 "Kit First result" and "Open";
+"Records rows"); `round3/herubrand/REVIEW_FASTRED_P1.md` (N6).
+
+### DX-KIT-HELP-TITLE-STALE-CELLS — the landing probe's title, printed as the `--help` title and the summary's H1, omits the E-W and E-DG cells the probe runs — **OPEN** (probe kit, small, cosmetic)
+
+The descriptor's `title` (`Tools/visual-regression/probe-landing-cells.mjs:723-724`) reads "Landing cells - the cloud and water
+landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G, E-H, R-14, E-T, E-M-water, E-ID-2d, E-ID-cv, E-C-chukotka, E-FFT-ifft)
+with the PF-1..PF-4 performance leg". It is the first line of the `--help` table and the H1 of every landing summary (`:796`),
+while the probe's own header lists the E-W weather-state cells and the E-DG dive-gate cells it runs (`:26`, `:28`); both KIT9
+summaries and the help text print the stale list (executor observation, KIT9 Phase 1). No verdict depends on it. **Repair
+shape:** derive the title's cell list from the cell table, or drop the list from the title; a spec case on the help text.
+**Owner:** the kit. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit9-20261101/help-bogus/help-stdout.txt` (line 1),
+`kit9-20261101/dg-ellipsoid/landing-cells-summary.md` and `kit9-20261101/prime/B/landing-cells-summary.md` (H1); receipt
+`round3/edge/EDGE_RECEIPT_EOWYN_KIT9.md` (Phase 1 item 2, "Observation"; "Phase 1 close"); the code lines above.
+
+### DX-KIT-PARSE-TIME-REFUSAL-NO-FILE — a refusal raised while the command line parses writes no `-refusal.json`, though the runtime's header promises one for every non-measuring run — **OPEN** (probe kit, small; pre-existing)
+
+The runtime's header says a run that did not measure writes one `<name>-refusal.json` (or `-error.json`) beside the measurement
+artifacts (`Tools/visual-regression/lib/probe-runtime.mjs:34-45`, the promise at `:41`). A refusal raised while the arguments
+parse (`--port 8080`, which now exits 3 with one `REFUSED (port-8080-forbidden)` stderr line) has no output folder resolved yet:
+`finishRun` (`:857`) prints the REFUSED line and returns before any write when `options` is undefined (`:867-873`). Before Batch
+1652 the same command crashed with exit 1 and also wrote nothing (Fastred P1 N3, run on the base tree), so the gap is pre-existing,
+not a regression. Also from the lane: `--output -h` reads as a help request, the help scan being whole-argv (harmless per Fastred).
+**Repair shape:** resolve the output folder from the raw argv for a parse-time refusal and write the file there, or narrow the
+header's promise to runs whose command line parsed; a spec case with an inertness mutant. **Owner:** the kit. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/herubrand/LANDING_PACKET_HERUBRAND.md` (W3 "Open"; open question 3);
+`round3/herubrand/REVIEW_FASTRED_P1.md` (N3); `round3/herubrand/REVIEW_FASTRED_P2.md` (N3); the code lines above.
+
+### DX-ESLINT-SEATBELT-LOOSER-THAN-TREE — `eslint.seatbelt.tsv` allows more ESLint errors for two WebGPU stub files than the tree carries — **OPEN** (tooling, small; an observation)
+
+A repository-wide ESLint run in Batch 1652's lane clone at `62eea22f49` rewrote four seatbelt counts downwards before it was
+stopped (the file was restored byte-for-byte before the first freeze and is not in the patch; Fastred P1 read its `hash-object`
+equal to `HEAD:eslint.seatbelt.tsv`): `packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubFramebuffer.ts`
+`@typescript-eslint/no-unused-vars` 4 -> 2 and `curly` 7 -> 5, `WebGLStubShader.ts` `@typescript-eslint/no-unused-vars` 2 -> 1 and
+`curly` 15 -> 8. At `f52ff6bef5` the file still carries 4, 7, 2 and 15 (`eslint.seatbelt.tsv:68-72`, re-read by this round), and no
+path under `packages/` differs between `62eea22f49` and `f52ff6bef5`, so the seatbelt is looser than the tree for those two files:
+new errors of those two rules could enter them unflagged. **Repair shape:** the seat tightens the four counts in its own commit,
+after an ESLint run over the two files reproduces them. **Owner:** the seat. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/herubrand/LANDING_PACKET_HERUBRAND.md` ("Observations"; "Records rows",
+where the lane named the row `DX-SEATBELT-TSV-STALE-AT-TIP`); `round3/herubrand/REVIEW_FASTRED_P1.md` ("(1) Freeze and apply");
+`eslint.seatbelt.tsv` at `f52ff6bef5`.
+
+### Notes (no new ids)
+
+- **Message claims of Batch 1652 read against the KIT9 reports:** the prime loop and its record (measured: arm A three pages,
+  arm B one, both `quiet`, and both first arms `clear`); the PF-2 two-mode statistic on the record, the entry and the summary
+  (measured on its unmeasured branch; the `over`-keeping branch measured in Node on the banked pairs); `--help` and an unknown flag
+  (measured in Node on the executor's tree); the two-decimal CPU figures (read in the summary, no contended line on the leg); the
+  gate-only ellipsoid cell (measured: 4 of 4 entries and 4 Marks lines; the paired `pixels` reading not exercised, no base report);
+  the nested floor (closed on the review; KIT9's measured nested marks read `decided: false`, the arithmetic); the key move
+  (measured in `package.json`).
+- **KIT9 identity and pixels:** base-vs-tip `changedPx` 0 on both `E-ID-cv` arms at tolerance 0; the cross-renderer band PASS on
+  runs 0 and 1 in A and B; every WebGL PNG of A and B is one md5, `298f3f9594aeb675a550820f724cd41c`, and every WebGPU PNG one md5,
+  `adac24b379aac4bfa6e95b09e95ddabb`. **Source:**
+  `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit9-20261101/prime/B/landing-cells-report.json`
+  (`comparison["E-ID-cv|*|scene"].pixels`, `verdicts`) and the eight PNGs of `kit9-20261101/prime/{A,B}/` (md5 by this round).
+- **Receipt figures read against the reports:** none differs in value. The receipt's 12 of 12 is the verdict count of the
+  ellipsoid run (stage, device loss and dive gate on each of four pages); `clockHeld` and `clampHeld` hold on 4 of 4 `:dive-gate`
+  entries, each of 12 notches. The `--help` stdout is 29 lines with one blank line. The per-pass PF-2 figures quoted for the fast
+  page (0.22 against 1.45 ms and so on) are the two modes' means, not a tip median against a base median.
+- **Executor note (no row):** the served-build server binds IPv6 loopback only (`[::1]:8094`), so on KIT9 Phase 1 a readiness check
+  against `127.0.0.1` timed out while `http://localhost:8094/` returned 200. The rule is already written
+  (`ORCHESTRATION_HANDBOOK.md:359`, `DEBUGGING_GUIDE.md:1648`), and the probe runtime builds its origin on `localhost`
+  (`Tools/visual-regression/lib/probe-runtime.mjs:698`), so no kit piece performs the failing check and no DX row is filed.
+- **Landing notes:** one clean landing. In the lane, before the first freeze, a repository-wide ESLint run rewrote
+  `eslint.seatbelt.tsv` and was restored byte-for-byte (its observation is `DX-ESLINT-SEATBELT-LOOSER-THAN-TREE`), and an
+  instrumentation preload of the lead's (a live-sampler counter) first resolved from the process cwd and broke node processes
+  spawned in temp git sandboxes; it was fixed to an absolute path and the keys re-run green, not a defect of the patch.
+- **Reviewer notes not filed as rows:** Fastred P1 N4, the page and invocation CPU sampler that fake-browser specs still reach
+  through `os.cpus()` (no live reading decides an assertion; the reviewer calls it worth a kit row: seam that sampler on the fake
+  browser as the warm-up is seamed), and N5, `LONG_DECIMAL` would also rewrite a fractional-second figure inside a reason (none
+  carries one today); both stand per P2 N3.
+- **`FEATURE_INVENTORY.md`:** a probe-kit round 9 entry is added to section B; the round 8 entry's tag says which of its open rows
+  round 9 closed.

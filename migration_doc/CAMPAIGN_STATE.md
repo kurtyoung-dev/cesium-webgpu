@@ -762,10 +762,10 @@ ruling `R-2026-10-24-S12`. Rows: `DEFERRED_WORK.md` ledger intake 2 (Batch 1591)
 table: `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-23/24 …)"; from 2026-10-30 also `DEFERRED_WORK.md`
 "2026-10-30 — records batch 3" and "… round 2", and the landing tables "Landing record (2026-10-29/30 …)" and "Landing
 record (2026-10-30 — Batches 1608-1623 …)"; from 2026-10-31 also `DEFERRED_WORK.md` "2026-10-31 — records round 4" and
-"… records round 5", "… records round 6", "… records round 7", "… records round 8", "… records round 9" and "… records round 10", and from 2026-11-01 "2026-11-01 — records round 11" and "… records round 12", and the landing tables "Landing record
+"… records round 5", "… records round 6", "… records round 7", "… records round 8", "… records round 9" and "… records round 10", and from 2026-11-01 "2026-11-01 — records round 11", "… records round 12" and "… records round 13", and the landing tables "Landing record
 (2026-10-31 — Batches 1624-1628 …)", "Landing record (2026-10-31 — Batches 1629-1631 …)", "Landing record (2026-10-31 — Batches
 1632-1636 …)", "Landing record (2026-10-31 — Batches 1637-1640 …)", "Landing record (2026-10-31 — Batches 1642-1643 …)", "Landing record (2026-10-31 — Batch
-1646 …)", "Landing record (2026-10-31 — Batch 1648 …)" and "Landing record (2026-11-01 — Batch 1650 …)".
+1646 …)", "Landing record (2026-10-31 — Batch 1648 …)", "Landing record (2026-11-01 — Batch 1650 …)" and "Landing record (2026-11-01 — Batch 1652 …)".
 **Landed:** the water as Batches 1585/1586 (`16e093aef6`, `156509c929`, committed 2026-10-23 23:27 and 23:31 EDT; tree
 `9e6bcfb7`; opt-in, the default globe unchanged); then, on 2026-10-24, W0 (1587), KT round 5 (1588), KT-2 round 3 (1589),
 F-4 (1590), LEDGER-2 (1591), catalog A1 (1592) and W1, the cloud core and the three-word define registry (1593); and the
@@ -883,6 +883,19 @@ the WebGPU arm read clear, but the first measured page, a WebGL one, read 83.75 
 PF-2's frame average bimodal per page across KIT6-KIT8 (`NEW-WEBGPU-EID-CV-PF1-SAME-BUILD-RED`,
 `NEW-WEBGPU-EID-CV-PF2-PASS-COST-BIMODAL-RED`); two dive-frame findings go to the water and globe owners. The Antigravity
 water program and W4 below are unchanged.
+**Probe-kit round 9 (2026-11-01, records round 13):** Batch 1652 (`f52ff6bef5`; lane Herubrand, reviewer Fastred, P1 REFUTED on
+the PF-2 item under Charter 1.1, P2 HOLDS) landed: a landing PF run primes its first page again until the machine reads quiet, at
+most four pages, and records every page; a PF-2 statistic that falls into two modes names them and keeps the band's `over` when
+only the tip drew the slow mode, reading `unmeasured-bimodal` only when the base arm drew it too; `--help` and an unknown flag exit
+2 with nothing written; the summary prints two-decimal CPU figures; the ellipsoid dive cell is declared gate-only; the nested floor
+mark agrees with the entry; and 25 node-b specs move to node-c. The KIT9 Edge leg measured it in both phases (2026-11-01, Phase 2
+in the seat's quiet window on a freshly started server): both first arms read contention `clear` in one leg for the first time on these legs
+(arm A's prime ran three pages, two above 60 % CPU, then quiet), so `DX-KIT-FIRST-PF-ARM-AFTER-SERVER-START` and
+`DX-KIT-WARM-UP-THRESHOLD` close as measured; the gate-only mark and the `--help` path close as measured, and the float, nested-floor
+and runner-key rows close. The same-build `E-ID-cv|webgpu` PF-1 red of KIT8 re-measured within; PF-2 read `unmeasured-bimodal` on a
+fast tip page, a fourth bimodal leg, recorded unattributed. Pending: the maintainer's ruling on a split whose slow mode only the
+tip drew (`DX-KIT-PF2-BIMODAL-ARM-SEPARATED`, a ruling request; until ruled it fails), the stopped-loop decision and the floor
+decisions. The Antigravity water program and W4 below are unchanged.
 **Critical path:** W4. *[Updated 2026-10-31 by records round 4; records batch 3 round 2 put the seat's Edge acceptance job
 first, and it has run.]* The next step is the Antigravity water program's landing on 2026-10-31 (`R-2026-10-30-M1`),
 re-delivered against the base clone at `5e684450f1`, and the W4 regeneration from the Codex post-plan audit, its decisions C1-C5 accepted as the seat recommended (`R-2026-10-30-M2`). The later W-waves (W4 … W12, `R-2026-10-23-M4`) queue behind it, one lane
