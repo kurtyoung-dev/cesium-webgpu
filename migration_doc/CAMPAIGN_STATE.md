@@ -762,10 +762,10 @@ ruling `R-2026-10-24-S12`. Rows: `DEFERRED_WORK.md` ledger intake 2 (Batch 1591)
 table: `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-23/24 …)"; from 2026-10-30 also `DEFERRED_WORK.md`
 "2026-10-30 — records batch 3" and "… round 2", and the landing tables "Landing record (2026-10-29/30 …)" and "Landing
 record (2026-10-30 — Batches 1608-1623 …)"; from 2026-10-31 also `DEFERRED_WORK.md` "2026-10-31 — records round 4" and
-"… records round 5", "… records round 6", "… records round 7", "… records round 8", "… records round 9" and "… records round 10", and from 2026-11-01 "2026-11-01 — records round 11", and the landing tables "Landing record
+"… records round 5", "… records round 6", "… records round 7", "… records round 8", "… records round 9" and "… records round 10", and from 2026-11-01 "2026-11-01 — records round 11" and "… records round 12", and the landing tables "Landing record
 (2026-10-31 — Batches 1624-1628 …)", "Landing record (2026-10-31 — Batches 1629-1631 …)", "Landing record (2026-10-31 — Batches
 1632-1636 …)", "Landing record (2026-10-31 — Batches 1637-1640 …)", "Landing record (2026-10-31 — Batches 1642-1643 …)", "Landing record (2026-10-31 — Batch
-1646 …)" and "Landing record (2026-10-31 — Batch 1648 …)".
+1646 …)", "Landing record (2026-10-31 — Batch 1648 …)" and "Landing record (2026-11-01 — Batch 1650 …)".
 **Landed:** the water as Batches 1585/1586 (`16e093aef6`, `156509c929`, committed 2026-10-23 23:27 and 23:31 EDT; tree
 `9e6bcfb7`; opt-in, the default globe unchanged); then, on 2026-10-24, W0 (1587), KT round 5 (1588), KT-2 round 3 (1589),
 F-4 (1590), LEDGER-2 (1591), catalog A1 (1592) and W1, the cloud core and the three-word define registry (1593); and the
@@ -870,6 +870,19 @@ seat's recommendation for the maintainer, whose decision it is. Reds, recorded u
 `E-W-ground|webgpu` read PF-1 p50 `over` against the same build (`NEW-CLOUD-EW-GROUND-WEBGPU-PF1-P50-SAME-BUILD-RED`); the KIT6
 one-repeat WebGL PF-3 red and the KIT6 `E-W-ground-hdr|webgpu` PF-1 / PF-4 red were re-measured within. The Antigravity water
 program and W4 below are unchanged.
+**Probe-kit round 8 (2026-11-01, records round 12):** Batch 1650 (`62eea22f49`; lane Hyarmendacil, reviewer Aldamir,
+HOLDS-WITH-FIXES) landed: the landing probe's settle frames and dive placement run `Scene.initializeFrame()` as the widget does,
+the dive-gate rigs pin a daylight instant read back as `clockHeld`, an unmeasured PF row gets its own Marks line, a PF run primes
+its first page once unmeasured and records the contention basis, and the landing-runtime specs move to a new runner key,
+`test-visual-regression-node-c`. The KIT8 Edge leg measured it in both phases (2026-11-01, Phase 2 in the seat's quiet window):
+the five dive-gate cells measure, 20 of 20 `:dive-gate` PASS with every globe height in its window, so
+`DX-KIT-DIVE-GATE-NEEDS-INITIALIZE-FRAME` and `DX-KIT-DIVE-GATE-CELLS` close as measured; the identity cells read byte-identical to
+their banked frames under the widget frame; the summary-mark row closes as measured. After a fresh server start the prime ran and
+the WebGPU arm read clear, but the first measured page, a WebGL one, read 83.75 % CPU and that arm read contended
+(`DX-KIT-WARM-UP-THRESHOLD`, open). Reds, recorded unattributed: on the same build `E-ID-cv|webgpu` read PF-1 and PF-2 `over`,
+PF-2's frame average bimodal per page across KIT6-KIT8 (`NEW-WEBGPU-EID-CV-PF1-SAME-BUILD-RED`,
+`NEW-WEBGPU-EID-CV-PF2-PASS-COST-BIMODAL-RED`); two dive-frame findings go to the water and globe owners. The Antigravity
+water program and W4 below are unchanged.
 **Critical path:** W4. *[Updated 2026-10-31 by records round 4; records batch 3 round 2 put the seat's Edge acceptance job
 first, and it has run.]* The next step is the Antigravity water program's landing on 2026-10-31 (`R-2026-10-30-M1`),
 re-delivered against the base clone at `5e684450f1`, and the W4 regeneration from the Codex post-plan audit, its decisions C1-C5 accepted as the seat recommended (`R-2026-10-30-M2`). The later W-waves (W4 … W12, `R-2026-10-23-M4`) queue behind it, one lane

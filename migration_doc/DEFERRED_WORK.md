@@ -33496,7 +33496,7 @@ is still not judged. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/
 (`summary["1f"]`, `pages[].demo`, `pages[].console`, `verdicts`, `exitCode`), `3-water-1f/capture-manifest.json` (`rigs`); receipt
 `round3/edge/EDGE_RECEIPT_EOWYN_KIT6.md` (Phase 1 item 3).
 
-### DX-KIT-DIVE-GATE-CELLS — the dive-gate step has no rigs, no probe call site and no Edge run — **OPEN** (probe kit; the cells landed by Batch 1648, `e39af3c0ac`; on the KIT7 leg all 20 pages read NOT RUN `globe-height-undefined`, records round 11: `DX-KIT-DIVE-GATE-NEEDS-INITIALIZE-FRAME`)
+### DX-KIT-DIVE-GATE-CELLS — the dive-gate step has no rigs, no probe call site and no Edge run — **CLOSED: measured** (probe kit; the cells landed by Batch 1648, `e39af3c0ac`, and read NOT RUN on every page of the KIT7 leg, records round 11; the frame driver repaired and the rigs' clock pinned by Batch 1650, `62eea22f49`, and 20 of 20 `:dive-gate` verdicts PASS on the KIT8 leg, records round 12; residuals `DX-KIT-DIVE-GATE-ELLIPSOID-CELL-BLIND`, `NEW-WATER-DIVE-ONTARIO-WEBGPU-SEAM`, `NEW-WATER-DIVE-UPSAMPLED-FRAME-ARTEFACTS`)
 
 `lib/globe-dive-gate-steps.mjs` (Batch 1642, `DX-KIT-DIVE-GATE-STEP`) is imported only by its spec. Owed: the five review cells
 as rigs plus a probe call site, each with a collision-on control where the gate should allow: the Geirangerfjord wall, Lake
@@ -33532,6 +33532,30 @@ night scenes (captured 03:47-03:54Z); a daylight `clock` on the five rigs is owe
 `exitCode`, `pages[].{network,stage.defaultRenderLoopWas,diveGate.record,diveGate.outcome}`) and the 20 PNGs beside it (md5 per
 dive / control pair); `round3/hador/LANDING_PACKET_HADOR.md` (W5; "Re-freeze after Narmacil P1", R2);
 `round3/hador/REVIEW_NARMACIL_P1.md` (R2); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT7.md` (Phase 1 item 1).
+**Clock pin (Batch 1650, `62eea22f49`; lane Hyarmendacil, worker Frealaf; reviewer Aldamir HOLDS-WITH-FIXES; records round 12).**
+The five `dive-gate-*` rigs pin `clock: "2026-06-21T18:00:00Z"` (`rigs/dive-gate-*.mjs:31`), and each `:dive-gate` verdict entry
+carries `clockHeld` (`stageClockHeld`, `lib/globe-dive-gate-steps.mjs:416`: true when the stage read the pin back equal and
+frozen; spec `landing-dive-gate-clock.spec.mjs`). The frame-driver repair is under `DX-KIT-DIVE-GATE-NEEDS-INITIALIZE-FRAME`.
+**Measured on Edge (KIT8 Phase 1 item 1; tree Batch 1650 `62eea22f49`, served == disk; the KIT7 command,
+`--cells E-DG-geiranger,E-DG-ontario,E-DG-deathvalley,E-DG-ellipsoid,E-DG-upsampled --runs 1`, exit 0): the cells measure.** 60 of
+60 verdicts PASS (`:stage`, `:no-unexpected-device-loss` and `:dive-gate`, 20 each), every `:dive-gate` entry readable;
+`clockHeld: true` on 20 of 20, each page's `stage.clock` reading `{requested: "2026-06-21T18:00:00Z", observed: "2026-06-21T18:00:00Z",
+frozen: true}`; 0 console errors on the 20 pages; network online on the 16 terrain pages and offline on the 4 ellipsoid pages.
+Dive and control frames now differ on four of the five cells (kit `pixelDiff` at tolerance 0, changedPx of 921,600, WebGL /
+WebGPU, re-run by this round): geiranger 920,047 / 920,050 (max channel 113 / 113), ontario 921,600 / 917,002 (57 / 28), upsampled
+921,541 / 921,600 (103 / 93), Death Valley 3,779 / 527 (1 / 1; both its pages refuse to the same floor). The frames are daylight
+scenes (the executor opened 17 of 20; this round opened the ontario WebGPU dive frame and the two upsampled frames named below).
+**Residuals, unattributed:** (a) the four `E-DG-ellipsoid` PNGs share one md5 (`9812e043d1b1239e9462db3f7ea65e80`, 4,258 B, one
+flat slate-blue field), WebGL equal to WebGPU, although the dive camera ends at 7.91 m (7.92 on WebGPU) and the control's at
+1.00 m: the cell measures the gate, not the view (`DX-KIT-DIVE-GATE-ELLIPSOID-CELL-BLIND`, new); KIT7's four were also one md5
+(`7e316ae5…`, a night frame). (b) On every allow page the camera stops higher than on its control, by 6.90-6.91 m on WebGL and 6.91-6.92 m on WebGPU, on all four
+allow cells (WebGL: geiranger 53.09 against 46.18 m, ontario 45.90 against 39.00, ellipsoid 7.91 against 1.00, upsampled -3.32
+against -10.23; the WebGPU floors agree within 0.012 m, the ellipsoid's 7.92 the widest): an observation, recorded without judgement. (c) Frame findings for the
+water and globe owners: `NEW-WATER-DIVE-ONTARIO-WEBGPU-SEAM` and `NEW-WATER-DIVE-UPSAMPLED-FRAME-ARTEFACTS` (new). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/1-dive-gate/landing-cells-report.json` (`verdicts`,
+`exitCode`, `preflight`, `pages[].{network,stage.clock,console}`) and the 20 PNGs beside it (md5 and kit `pixelDiff` per dive /
+control pair); `kit7-20261031/1-dive-gate/` (the KIT7 ellipsoid PNGs); `round3/hyarmendacil/LANDING_PACKET_HYARMENDACIL.md` (W2);
+`round3/hyarmendacil/REVIEW_ALDAMIR_P1.md` (N1); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 1 item 1).
 
 ### DX-PROVISIONER-SPEC-SOURCE-SLICING — the two provisioner specs slice helper blocks out of the entry's source, which pins about 440 lines in the entry — **OPEN** (tooling, small)
 
@@ -33850,8 +33874,14 @@ decision is the maintainer's. **Source:**
 `arms["*|webgpu|scene"].inputs.pf4[].end` read through the kit's `summarizeResidency`);
 `kit7-20261031/6-run-c/A/landing-cells-report.json`, `kit7-20261031/6-run-c/B/landing-cells-report.json`,
 `kit7-20261031/4-warm-up/B/landing-cells-report.json` (the same fields); `round3/hador/LANDING_PACKET_HADOR.md` (W3).
+**KIT8 (records round 12; Phase 2 item 4, `E-ID-cv`, arm B against arm A of one build):** PF-4 `within` on both arms.
+`E-ID-cv|webgpu|scene` liveBytes 276,676,709 B at the start and end of all four windows (both arms), limit 276,716,709 B with the
+40,000 B floor applied, `decided: false`, growth 0; the WebGL arm reads the floor `applied: false` (no live bytes measured on both
+arms). KIT7's item 4 on Batch 1648's tree read 276,676,877 B on the same arm; recorded beside, not compared. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/B/landing-cells-report.json`
+(`comparison["E-ID-cv|*|scene"].pf4`, `verdicts[]`).
 
-### NEW-KIT-WEBGL-PF3-ONE-REPEAT-SAME-BUILD-RED — on the same served build a one-repeat `E-W-ground|webgl` PF-3 read `over` its 15 % startup floor — **OPEN: re-measured within** (a measured red on KIT6, unattributed; re-measured `within` on the KIT7 leg with two repeats a side, records round 11; the one-repeat question open; probe kit)
+### NEW-KIT-WEBGL-PF3-ONE-REPEAT-SAME-BUILD-RED — on the same served build a one-repeat `E-W-ground|webgl` PF-3 read `over` its 15 % startup floor — **OPEN: re-measured within** (a measured red on KIT6, unattributed; re-measured `within` on the KIT7 leg with two repeats a side, records round 11; a contended reading, not a verdict, on the KIT8 leg, records round 12; the one-repeat question open; probe kit)
 
 - **Measured (KIT6 Phase 1 item 2; Batch 1646 `b680648f1b`; `--cells E-W-ground --no-cell-perf`, one run per arm, so one startup
   repeat on each side):** against base report B (a whole copy of run A; base `navigationToFirstFrameMs` 1914 ms), run C reads
@@ -33877,8 +33907,17 @@ decision is the maintainer's. **Source:**
   `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit7-20261031/6-run-c/A/landing-cells-report.json` and
   `kit7-20261031/6-run-c/B/landing-cells-report.json` (`comparison["E-W-ground|webgl|scene"].{pf3.startup,pf3.runs,contention}`,
   `options.runs`); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT7.md` (Phase 2 item 6).
+- **A contended reading (KIT8 Phase 2 item 4, records round 12; tree Batch 1650 `62eea22f49`; `--cells E-ID-cv --perf --runs 2`,
+  arm B against arm A of the same build; a different cell from the KIT6 red):** `E-ID-cv|webgl|scene:PF-3` reads
+  `unmeasured-contended` (base mean CPU 61.76 % against tip 32.10 %; `DX-KIT-FIRST-PF-ARM-AFTER-SERVER-START`). Startup
+  `navigationToFirstFrameMs` per repeat: base 2,865.5 / 2,342.9 ms (median 2,604.2, at or over the 2,500 ms ceiling, so rule
+  `base-over-ceiling-banded`), tip 2,069.8 / 2,159.0 (median 2,114.4); ratio 0.812 against the repeat band 0.446 (limit 3,766.0;
+  `startupFloor {0.15, floor}`); the report's `verdictIfUncontended` reads `within`. Recorded as a contended reading, not a verdict;
+  it does not answer the one-repeat question. **Source:**
+  `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/B/landing-cells-report.json`
+  (`comparison["E-ID-cv|webgl|scene"].{pf3.startup,pf3.runs,contention}`).
 
-### DX-KIT-FIRST-PF-ARM-AFTER-SERVER-START — the first PF arm after the server started read `unmeasured-contended` a minute after the seat read the machine at 5.5 % CPU — **OPEN** (probe kit; the warm-up landed by Batch 1648, `e39af3c0ac`; on the KIT7 leg its record is present and the first arm still read contended, records round 11; threshold `DX-KIT-WARM-UP-THRESHOLD`)
+### DX-KIT-FIRST-PF-ARM-AFTER-SERVER-START — the first PF arm after the server started read `unmeasured-contended` a minute after the seat read the machine at 5.5 % CPU — **OPEN** (probe kit; the warm-up landed by Batch 1648, `e39af3c0ac`, and the prime by Batch 1650, `62eea22f49`; on the KIT7 leg the first WebGPU arm read contended, records round 11; on the KIT8 leg the WebGPU arm read clear and the WebGL arm contended, records round 12; threshold `DX-KIT-WARM-UP-THRESHOLD`)
 
 KIT6 Phase 2 item 5 arm A (`--cells E-ID-cv --perf --runs 2`) was the first probe after the server restart (19:38 EDT; the seat
 had read the machine at 5.5 % CPU over 10 s at 19:37, per the receipt). The base arm's run 0 sampled the machine at 59.6 % mean CPU
@@ -33914,8 +33953,33 @@ over the 20-point arm-delta clause, so its PF-1, PF-2 and PF-3 read `unmeasured-
 `exitCode`); `kit7-20261031/4-warm-up/B/landing-cells-summary.md`; `round3/hador/LANDING_PACKET_HADOR.md` (W1; "Re-freeze after
 Narmacil P1", R1); `round3/hador/REVIEW_NARMACIL_P1.md` (R1), `REVIEW_NARMACIL_P2.md` (sections 2 and "The whole suite takes no
 live reading"); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT7.md` (Phase 2 item 4).
+**The prime (Batch 1650, `62eea22f49`; lane Hyarmendacil, worker Thengel; reviewer Aldamir HOLDS-WITH-FIXES, R1 re-opening its
+premise; records round 12).** On a PF run, at run 0, after the warm-up, the probe loads the plan's first PF page once through the
+measured page path, captures nothing, keeps it out of the pages, arms and verdicts, and records `prime {status, cell, renderer,
+page, durationMs, cpuMean, note}` in the receipt, as a `Prime:` summary line and on every PF verdict; with `--base-report` the
+receipt carries `contentionBasis {cpuArmDeltaPct, contendedCpuPct, arms: {<key>: {baseMeanCpu}}, note}` and each PF verdict its
+arm's basis (`lib/landing-pf-prime.mjs`; spec `landing-pf-prime.spec.mjs`). Aldamir R1 read the banked KIT7 page series as showing
+no cold first page (page 1 23.99 %, pages 2-4 56.08 / 59.75 / 46.96 %), so the prime went to Edge as a test of a hypothesis, not as
+a close. **Measured on Edge (KIT8 Phase 2 item 4; tree Batch 1650 `62eea22f49`, served == disk; a fresh server started 02:12:28 EST
+on 2026-11-01 and arm A was the first probe after it, at 02:12:32 EST per the receipt; `--cells E-ID-cv --perf --runs 2`, arm B with
+`--base-report` arm A, one build):** both arms primed the E-ID-cv WebGL page (`prime.status: "primed"`; A in 7,578 ms at 71.29 %
+mean CPU, B in 7,124 ms at 32.63 %), after warm-ups `released` after 5 samples (A 5,063 ms at 38.80 %, B 5,037 ms at 15.20 %;
+sampler `live`). Per-page machine CPU means in page order (WebGL run 0, WebGPU run 0, WebGL run 1, WebGPU run 1): A 83.75 / 44.64 /
+39.76 / 39.99 %, B 29.45 / 33.60 / 34.76 / 36.63 % (KIT7's A: 23.99 / 56.08 / 59.75 / 46.96). A's first measured page read 83.75 %
+mean, peak 99.82 %, its 11 samples all above 60 %. In B, `E-ID-cv|webgpu|scene` reads contention `clear` for the first time on these
+legs (base 44.64 / 39.99, mean 42.31 %; tip 33.60 / 36.63, mean 35.12 %; 7.19 points; KIT6 and KIT7 read it contended), and
+`E-ID-cv|webgl|scene` reads `contended` on all three clauses (base mean 61.76 % against tip 32.10 %, 29.65 points apart; base run 0
+at 83.75 %; 11 consecutive samples above 60 %), so its PF-1 and PF-3 read `unmeasured-contended`. Measured shape: after a fresh
+server start the hot load spans more than one page; the prime moved it from the WebGPU arm (KIT6, KIT7) to the WebGL arm's first
+measured page and did not remove it; recorded, not attributed. The record half is met: 7 of 7 PF verdict entries of B carry
+`prime` and `contentionBasis` (WebGL `{baseMeanCpu: 61.76, cpuArmDeltaPct: 20}`, WebGPU `{42.31, 20}`; the receipt's
+`contendedCpuPct` 60). The row stays open; the repair shape is under `DX-KIT-WARM-UP-THRESHOLD`. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/A/landing-cells-report.json` (`warmUp`, `prime`,
+`pages[].cpu`) and `kit8-20261101/4-prime/B/landing-cells-report.json` (`warmUp`, `prime`, `contentionBasis`, `verdicts[]`,
+`pages[].cpu`, `comparison["E-ID-cv|*|scene"].contention`, `exitCode`); `kit7-20261031/4-warm-up/A/landing-cells-report.json`
+(`pages[].cpu`); `round3/hyarmendacil/REVIEW_ALDAMIR_P1.md` (R1); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 2 item 4).
 
-### DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG — PF-3's 60 % compile-total floor is one measured spread rounded up, and a two-repeat band may not carry a compile verdict at all — **OPEN** (probe kit; the calibration run as KIT7 Phase 2 item 5, records round 11; the floor decision is the maintainer's)
+### DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG — PF-3's 60 % compile-total floor is one measured spread rounded up, and a two-repeat band may not carry a compile verdict at all — **OPEN** (probe kit; the calibration run as KIT7 Phase 2 item 5, records round 11; a further same-build reading on the KIT8 leg, records round 12; the floor decision is the maintainer's)
 
 - **State (Batch 1646):** the compile verdict reads max(registered band, 0.60) (`COMPILE_PROVISIONAL_FLOOR`,
   `lib/metrics/perf-band.mjs:155`), and `pf3.compile.provisionalFloor` carries `{fraction, flag: "provisional-floor", source,
@@ -33983,8 +34047,16 @@ live reading"); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT7.md` (Phase 2 item 4
     `kit7-20261031/6-run-c/B/landing-cells-report.json` and `kit7-20261031/4-warm-up/B/landing-cells-report.json`
     (`comparison["*|webgpu|scene"].pf3.{compile,runs}`); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT7.md` (Phase 2 items 4-6; its
     per-repeat figures equal the reports' `runs`).
+  - **A further same-build reading (KIT8 Phase 2 item 4, records round 12; tree Batch 1650 `62eea22f49`; `--cells E-ID-cv --perf
+    --runs 2`, arm B against arm A, WebGPU contention `clear`):** `E-ID-cv|webgpu|scene` `compileTotalMs` per repeat A 10,144.3 /
+    11,083.7 ms, B 9,882.3 / 10,521.8 ms, medians 10,614.0 -> 10,202.05 ms, ratio 0.961; the floor 0.6 applied over the registered
+    band 0.1852 (`bandSource: "provisional-floor"`, limit 16,982.4 ms), verdict `within`, `decided: false` (a ratio under 1 reads
+    within on either band). Pipeline wait per repeat A 3,133.3 / 3,385.6 ms, B 2,948.3 / 2,955.2 ms. No change to the recommendation
+    above; the decision stays the maintainer's. **Source:**
+    `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/B/landing-cells-report.json`
+    (`comparison["E-ID-cv|webgpu|scene"].pf3.{compile,pipelineWait,runs}`, `verdicts[]`).
 
-### DX-KIT-LANDING-SUMMARY-FLOOR-MARK — the landing-cells Markdown summary prints a PF-3 PASS the provisional compile floor decided as a plain PASS — **OPEN** (probe kit, small; repaired by Batch 1648, `e39af3c0ac`; the KIT7 summaries print the marks, with a measured residual on contended PF-3 lines, records round 11)
+### DX-KIT-LANDING-SUMMARY-FLOOR-MARK — the landing-cells Markdown summary prints a PF-3 PASS the provisional compile floor decided as a plain PASS — **CLOSED: measured** (probe kit, small; repaired by Batch 1648, `e39af3c0ac`, with a measured residual on contended PF-3 lines on the KIT7 leg, records round 11; the residual repaired by Batch 1650, `62eea22f49`, and read on the KIT8 leg, records round 12; residuals `DX-KIT-NESTED-FLOOR-DECIDED` and `DX-KIT-SUMMARY-UNROUNDED-FLOATS`)
 
 `landing-cells-summary.md` prints `| id | PASS |` per verdict (`lib/probe-runtime-receipts.mjs:195` `buildMarkdownSummary`), so an
 arm whose PF-3 pass the floor decided reads PASS there with no mark, although the receipt's `verdicts[]` entry and `pf3` carry
@@ -34019,6 +34091,23 @@ contended arm that carries an applied floor, with an inertness mutant. **Source:
 (`comparison["E-W-30km*|webgpu|scene"].{pf3.provisionalFloor,contention}`); `kit7-20261031/4-warm-up/B/landing-cells-summary.md`;
 `kit7-20261031/5-calibration/B/landing-cells-summary.md`; `kit7-20261031/6-run-c/B/landing-cells-summary.md`;
 `round3/hador/LANDING_PACKET_HADOR.md` (W2); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT7.md` (Phase 1 item 2, Phase 2 items 4-6).
+**Residual repaired (Batch 1650, `62eea22f49`; lane Hyarmendacil, worker Brytta; reviewer Aldamir HOLDS-WITH-FIXES; records round
+12).** An `unmeasured-contended` or not-run PF row always gets its own Marks line naming its reasons and the guard's CPU figures
+(`machine CPU: base mean X %, tip mean Y %, arms apart by Z points (contended at: …)`); a provisional floor on an unmeasured
+verdict keeps `applied` and reads `decided: false` with `undecidedBecause` on the verdict entry (`lib/landing-verdicts.mjs:314`),
+and its Marks line says it decided nothing; an unmeasured row is never starred (spec `landing-summary-unmeasured-marks.spec.mjs`,
+over the banked KIT7 `2-sibling-fallback` report trimmed as a fixture). **Read on Edge (KIT8 Phase 2 item 5, the summary of item
+4's arm B):** the Marks block carries two contended lines, `E-ID-cv|webgl|scene:PF-1` and `:PF-3`, each with its three reasons and
+"machine CPU: base mean 61.76 %, tip mean 32.1 %, arms apart by 29.65 points"; the floor lines on the measured
+`E-ID-cv|webgpu|scene:PF-3` and `:PF-4` verdicts read "the floor was applied and did not decide this verdict", their table results
+plain `PASS`; no line of the summary carries `*`. The `decided: false` override with `undecidedBecause` was not exercised on Edge
+(the one unmeasured PF-3, WebGL, carries no applied floor: `notApplicable`, no compile total on either arm); it is pinned in Node.
+**Residuals, small:** the contended lines print the guard's raw floats before the rounded clause (`83.75181818181818 %`,
+`29.65413636363636 points`; `DX-KIT-SUMMARY-UNROUNDED-FLOATS`, new); the receipt's nested `comparison.<arm>.pfN.provisionalFloor.decided`
+keeps the metric's arithmetic on an unmeasured statistic (`DX-KIT-NESTED-FLOOR-DECIDED`, new). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/B/landing-cells-summary.md` and
+`kit8-20261101/4-prime/B/landing-cells-report.json` (`verdicts[]`, `comparison["E-ID-cv|webgl|scene"].pf3.compile.provisionalFloor`);
+`round3/hyarmendacil/LANDING_PACKET_HYARMENDACIL.md` (W3); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 2 item 5).
 
 ### DX-KIT-BANKED-REPORT-ABSOLUTE-FRAMES — landing reports banked before Batch 1646 still name their frames absolutely into retired clones — **CLOSED: measured** (Batch 1648, `e39af3c0ac`, decision: a reader fallback; KIT7 Edge leg Phase 1 item 2, records round 11)
 
@@ -34129,7 +34218,7 @@ calibration numbers; the decision is the maintainer's), `DX-KIT-COMPILE-TOTAL-BA
 `NEW-CLOUD-W3-WEATHER-MAP-ON-CARVES-DAYLIGHT` (3 of 3 again), `NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY` (a run-0 OFF change) and
 `DX-PROVISIONER-SPEC-SOURCE-SLICING` (the untracked-whole-tree case). The rows below are new.
 
-### DX-KIT-DIVE-GATE-NEEDS-INITIALIZE-FRAME — on the landing probe every dive-gate page reads `globeHeight` null and its camera does not move under the wheel; the code read at Batch 1648 finds the pages driven by `scene.render()` alone, without `Scene.initializeFrame()` — **OPEN** (probe kit; found by the KIT7 Edge leg; the mechanism a code-read lead, not yet verified by a mutant)
+### DX-KIT-DIVE-GATE-NEEDS-INITIALIZE-FRAME — on the landing probe every dive-gate page reads `globeHeight` null and its camera does not move under the wheel; the code read at Batch 1648 finds the pages driven by `scene.render()` alone, without `Scene.initializeFrame()` — **CLOSED: measured** (probe kit; found by the KIT7 Edge leg; repaired by Batch 1650, `62eea22f49`, the mechanism confirmed by inertness mutants and by the KIT8 leg's measurement, records round 12)
 
 - **Measured (KIT7 Phase 1 item 1; detail under `DX-KIT-DIVE-GATE-CELLS`):** 20 of 20 pages NOT RUN `globe-height-undefined`;
   `globeHeight` null on 240 of 240 steps; `cameraHeight` unchanged over the 12 wheel notches on every page; the offline ellipsoid
@@ -34160,8 +34249,31 @@ calibration numbers; the decision is the maintainer's), `DX-KIT-COMPILE-TOTAL-BA
   `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit7-20261031/1-dive-gate/landing-cells-report.json`
   (`pages[].{stage.defaultRenderLoopWas,diveGate.record}`); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT7.md` (Phase 1 item 1, the
   candidate mechanism, which this row re-read at Batch 1648); the code lines above.
+- **Repaired (Batch 1650, `62eea22f49`; lane Hyarmendacil, worker Goldwine; reviewer Aldamir HOLDS-WITH-FIXES; records round
+  12):** the landing frame loop moved to `lib/landing-page-frames.mjs`, whose every frame is `viewer.scene.initializeFrame()`, then
+  `render` at the frozen clock, then one animation frame, with no `clock.tick()` (`lib/landing-page-frames.mjs:40-46`), as
+  `CesiumWidget.render` drives a frame; `pagePlaceDiveCamera` drives one such frame after `setView`. The dive receipt and every
+  `:dive-gate` entry carry `cameraHeights`, and a camera that never moved reads NOT RUN `wheel-unread`. The dive specs run the real
+  page functions against one fake world (`fixtures/dive-gate-fake-world.mjs`) that refreshes the globe height and consumes the
+  wheel only in `initializeFrame`, and the pre-fix driver reads `globe-height-undefined` there as KIT7 read on Edge. Aldamir
+  reproduced that negative over the base probe's own page functions and killed the frame-loop mutant (`initializeFrame`
+  unreachable, 26 red). The mechanism this row recorded at Batch 1648 as a code-read lead is confirmed by those mutants and by the
+  measurement below; it is no longer an unverified lead.
+- **Measured on Edge (KIT8 Phase 1 item 1; tree Batch 1650 `62eea22f49`; the KIT7 command; exit 0):** 20 of 20 `:dive-gate`
+  verdicts PASS and readable; none reads `globe-height-undefined`, `wheel-unread`, `globe-height-off-window` or
+  `terrain-not-streamed`. `globeHeight` sits inside every rig window: geiranger 45.18-45.24 m ([23, 63]), ontario 38.00 ([21, 61]),
+  Death Valley -113.37 to -113.39 ([-135, -111]), ellipsoid -0.00 offline ([-1, 1]), upsampled -11.23 to -12.51 ([-45, 30]).
+  `cameraHeights` descend from 150 m (100 m at Death Valley) over the 12 notches to a floor and hold there. The gates read as
+  registered: allow / allow on the 8 dive pages of geiranger, ontario, ellipsoid and upsampled; refuse / refuse on the 10 control
+  pages and on Death Valley's dive page on both renderers (its camera floor -111.07 m, about 2.3 m above its -113.4 m globe
+  height); `clampHeld: true` and `depthWhileRefused: false` on 20 of 20; `diveDepthMax` 1,156-1,340 m on the allow pages, 0 on the
+  refuse pages. The identity check the repair owed is measured under `DX-KIT-STOPPED-LOOP-WIDGET-FRAME-AUDIT` (new, records round
+  12). **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/1-dive-gate/landing-cells-report.json`
+  (`verdicts[*:dive-gate].{expected,observed,globeHeight,globeHeightWindow,cameraHeights,clampHeld,depthWhileRefused,diveDepthMax}`);
+  `round3/hyarmendacil/LANDING_PACKET_HYARMENDACIL.md` (W1); `round3/hyarmendacil/REVIEW_ALDAMIR_P1.md` (Premise W1; mutants);
+  receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 1 item 1).
 
-### DX-KIT-WARM-UP-THRESHOLD — the PF warm-up releases at the guard's 60 % mean clause, which does not prevent the 20-point arm-delta clause — **OPEN** (probe kit, small; measured on the KIT7 leg)
+### DX-KIT-WARM-UP-THRESHOLD — the PF warm-up releases at the guard's 60 % mean clause, which does not prevent the 20-point arm-delta clause — **OPEN** (probe kit, small; measured on the KIT7 leg; the Batch 1650 prime measured on the KIT8 leg, records round 12)
 
 The KIT6 item-5 contention was the arm-delta clause (base mean 44.23 % against tip 22.31 %), and a machine idling at 40-55 %
 releases a 60 % warm-up and can still read contended (lane Hador's open question; Narmacil P1 N2). **Measured (KIT7 Phase 2 item
@@ -34175,8 +34287,18 @@ first arm after a server restart. **Owner:** the kit. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit7-20261031/4-warm-up/A/landing-cells-report.json` and
 `kit7-20261031/4-warm-up/B/landing-cells-report.json` (`warmUp`, `comparison["E-ID-cv|*|scene"].contention`);
 `round3/hador/LANDING_PACKET_HADOR.md` (W1 open question; "New rows"); `round3/hador/REVIEW_NARMACIL_P1.md` (N2).
+**Records round 12 (KIT8 Phase 2 item 4; detail under `DX-KIT-FIRST-PF-ARM-AFTER-SERVER-START`):** with the Batch 1650 prime both
+warm-ups released (A at 38.80 %, B at 15.20 %) and both primes ran, A's at 71.29 % mean CPU, yet A's first measured page read
+83.75 % (all 11 samples above 60 %), and B's WebGL arm read contended on all three clauses while its WebGPU arm read clear. A
+warm-up release and one prime page did not bound the hot window after a fresh server start. **Repair shape (for the next kit
+round, text only):** prime until the machine CPU stays under the guard's threshold for a settle window, bounded by a time limit,
+and record how the priming ended; measured on Edge with the first arm after a fresh server start. Aldamir's note (prime the first
+PF page of each renderer) is another shape; the choice is the kit lane's. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/A/landing-cells-report.json` and
+`kit8-20261101/4-prime/B/landing-cells-report.json` (`warmUp`, `prime`, `pages[].cpu`, `comparison["E-ID-cv|*|scene"].contention`);
+`round3/hyarmendacil/REVIEW_ALDAMIR_P1.md` (R1 note).
 
-### DX-KIT-WARM-UP-SAMPLER-LABEL-UNPINNED — no Node case asserts the warm-up record's `sampler: "live"` branch — **OPEN** (probe kit, small)
+### DX-KIT-WARM-UP-SAMPLER-LABEL-UNPINNED — no Node case asserts the warm-up record's `sampler: "live"` branch — **CLOSED** (probe kit, small; Batch 1650, `62eea22f49`; reviewer Aldamir HOLDS-WITH-FIXES; records round 12)
 
 `lib/cpu-warm-up.mjs:150` labels the record `injected` when deps carry a `sampleCpu` and `live` otherwise. Narmacil's P2 mutant
 P2-R1d (the label hard-wired to `injected`) survived: the specs pin only the `injected` branch, and the decision-bearing proofs
@@ -34185,8 +34307,15 @@ P2-R1d (the label hard-wired to `injected`) survived: the specs pin only the `in
 record with no deps (a `not-a-pf-run` record takes no sample) reads `sampler: "live"`, with P2-R1d as its mutant. **Owner:** the
 kit. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/hador/REVIEW_NARMACIL_P2.md` (mutant table, N1);
 `round3/edge/kit7-20261031/4-warm-up/A/landing-cells-report.json` (`warmUp.sampler`).
+**Closed (Batch 1650, `62eea22f49`; lane Hyarmendacil, lead item a; reviewer Aldamir HOLDS-WITH-FIXES; records round 12).**
+`landing-cpu-warm-up.spec.mjs` 21 -> 23 cases: a `not-a-pf-run` and a `--no-warm-up` record with no deps read `sampler: "live"`
+with no live sample taken, an injected record `injected` (`landing-cpu-warm-up.spec.mjs:447-459`); the label hard-wired either way
+fails the case (both mutants killed by the lead; Aldamir ran the spec 23 / 0 on both trees). KIT8's two PF arms read `sampler:
+"live"` (`kit8-20261101/4-prime/{A,B}/landing-cells-report.json`, `warmUp.sampler`). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/hyarmendacil/LANDING_PACKET_HYARMENDACIL.md` (lead item a);
+`round3/hyarmendacil/REVIEW_ALDAMIR_P1.md` (Behaviour).
 
-### DX-KIT-RUNNER-KEY-NEAR-CAP — `test-visual-regression-node` is 7,949 characters against the 8,191-character Windows command line — **OPEN** (seat kit; small)
+### DX-KIT-RUNNER-KEY-NEAR-CAP — `test-visual-regression-node` is 7,949 characters against the 8,191-character Windows command line — **CLOSED** (seat kit; small; the key split by Batch 1650, `62eea22f49`, records round 12; `test-visual-regression-node-b` near the cap is `DX-KIT-RUNNER-KEY-B-NEAR-CAP`)
 
 Batch 1648 homed twelve specs on the key (7,237 -> 7,949 characters at the tip, 139 spec paths; reviewer Narmacil P1 N9), leaving
 242 characters: about four more homes break the runner with "The command line is too long", as lane B's homes would have at Batch
@@ -34194,8 +34323,29 @@ Batch 1648 homed twelve specs on the key (7,237 -> 7,949 characters at the tip, 
 is the seat's (lane Hador left it, N9). **Owner:** the seat. **Source:** `package.json` at Batch 1648
 (`scripts["test-visual-regression-node"]`, measured; 7,237 at `54ee091b62`);
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/hador/REVIEW_NARMACIL_P1.md` (N9).
+**Closed (Batch 1650, `62eea22f49`; lane Hyarmendacil, worker Folcwine; reviewer Aldamir HOLDS-WITH-FIXES; records round 12).**
+`lib/runner-homes.mjs` reads a new line kind, `SCRIPT NEW: <key>=<value>`, that adds a script `package.json` does not declare
+(refused when the key exists, on parentheses, on an empty value or a malformed line; `SCRIPT:` still refuses an unknown key),
+applied before `SCRIPT:` replacements and homes (spec `runner-homes-new-key.spec.mjs`). The landing-runtime family's 47 specs moved
+to a new key: at the tip `test-visual-regression-node` reads 5,211 characters and 92 spec paths (7,949 and 139 at Batch 1649) and
+`test-visual-regression-node-c` 3,029 characters and 52 spec paths, with the round's five new specs homed on it; 92 + 52 = 144 =
+139 + 5, none dropped or duplicated (Aldamir; this round re-counted the paths in `package.json` at the tip).
+**Landing notes (seat landing tech, from the Batch 1650 landing).** The seat's account (its brief for records round 12) is three
+landing attempts: a fixture hunk without a final newline refused by `Tools/landing/rebase-shared.mjs`, then the new runner key
+absent at the tip for the homes step, then clean, with freezes `697e2d62…` (reviewed) -> `f2c72931…` (the review's text fixes and
+the two script lines folded into `package.json`) -> `01762751…` (the fixture newline) -> `943c1a99…` (the five node-c homes
+folded). The banked landing log keeps only the last attempt (patch `943c1a99…`, `main -> main` `8d0503c969..62eea22f49`, "land
+rc=0", "post-landing-spine OK at 62eea22f49"); the first and last md5s are on record in the review and the freeze file, the middle
+two in the seat's account only. Two lessons for lanes: every new file ends with a newline (`rebase-shared` refuses a no-newline
+hunk, and prettier does not cover a JSON fixture to catch it); and a lane that creates a runner key folds every home into
+`package.json` in its own clone, because the landing runbook appends `key=spec` home tokens to the seat's `package.json` before the
+lane patch applies, when a key the patch creates does not exist yet. **Source:** `package.json` at Batch 1650
+(`scripts["test-visual-regression-node"]`, `scripts["test-visual-regression-node-c"]`, measured) and at `8d0503c969`;
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/hyarmendacil/LANDING_PACKET_HYARMENDACIL.md` (W4),
+`RUNNERS_HYARMENDACIL.with-scripts.txt`, `RUNNERS_HYARMENDACIL.with-homes.txt`, `FREEZE_HYARMENDACIL.md5`;
+`round3/hyarmendacil/REVIEW_ALDAMIR_P1.md` (Scope; Freeze); `round3/landing-logs/land-hyarmendacil.log`.
 
-### DX-KIT-PROHIBITED-READER-NESTED-TEMPLATE — the fleet's prohibited-reader tokenizer mis-scans an escaped backtick inside a template nested in another template's `${}`, so a clean source scans as `parse-error` — **OPEN** (probe kit, small)
+### DX-KIT-PROHIBITED-READER-NESTED-TEMPLATE — the fleet's prohibited-reader tokenizer mis-scans an escaped backtick inside a template nested in another template's `${}`, so a clean source scans as `parse-error` — **CLOSED** (probe kit, small; Batch 1650, `62eea22f49`; reviewer Aldamir HOLDS-WITH-FIXES, two surviving reviewer mutants recorded as a residual; records round 12)
 
 `lib/prohibited-reader-rule.mjs` (`analyzeProhibitedReader`, the tokenizer `probe-fleet-contract.spec.mjs` C14 runs over every
 non-allowlisted source) returns `{kind: "parse-error"}` for a source whose template literal, nested in an outer template's
@@ -34208,6 +34358,18 @@ honours the escape inside a nested template as it does at depth 0, with a spec c
 mutant; until then a C14 `parse-error` on a new file is first checked for this shape. **Owner:** the kit. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/hador/LANDING_PACKET_HADOR.md` (process notes; N8; "New rows");
 `round3/hador/REVIEW_NARMACIL_P1.md` (N8), `REVIEW_NARMACIL_P2.md` (sections 4-5).
+**Closed (Batch 1650, `62eea22f49`; lane Hyarmendacil, lead item b; reviewer Aldamir HOLDS-WITH-FIXES; records round 12).**
+`lib/prohibited-reader-rule.mjs` scans a template's `${...}` substitutions (strings, braces and nested templates inside them)
+instead of ending the template at the first unescaped backtick, so a clean nested escaped-backtick template scans clean and a
+reader after it is still found on its line; `prohibited-reader-rule.spec.mjs` 12 -> 15 cases (Aldamir: 12 / 3 with the lane's
+specs on the base code, 15 / 0 on the stack); the mutants "substitutions ignored" and L10 (nested templates in a substitution not
+followed) killed; `probe-fleet-contract` C14 / C18 green over every source. The concatenation workaround's comment in
+`lib/landing-cells-summary.mjs` was removed (code unchanged). **Residual (not a close of these cases):** Aldamir's F1 (quotes
+inside a substitution ignored) and F2 (brace depth inside a substitution ignored) survive `prohibited-reader-rule` and
+`probe-fleet-contract` (110 / 110); two one-line sources, each followed by a reader on line 2, kill them (`REVIEW_ALDAMIR_P1.md`,
+N1), for a kit round to add as cases. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/hyarmendacil/LANDING_PACKET_HYARMENDACIL.md` (lead item b);
+`round3/hyarmendacil/REVIEW_ALDAMIR_P1.md` (Behaviour; N1).
 
 ### NEW-CLOUD-EW-GROUND-WEBGPU-PF1-P50-SAME-BUILD-RED — on the same served build `E-W-ground|webgpu` read PF-1 p50 `over` its 3 % floor band — **OPEN** (measured red, unattributed; WebGPU)
 
@@ -34250,3 +34412,204 @@ mutant; until then a C14 `parse-error` on a new file is first checked for this s
   pixel difference unattributed; it equals the W3-DAYLIGHT leg's recorded figures (`DX-KIT-BANKED-REPORT-ABSOLUTE-FRAMES`).
 - **`FEATURE_INVENTORY.md`:** a probe-kit round 7 entry is added to section B; the round 5 and round 6 entries' open lists now say
   which of their rows round 7 closed.
+
+## 2026-11-01 — records round 12: Batch 1650, the probe-kit round 8, and the KIT8 Edge leg
+
+One batch landed after records round 11 (Batch 1649, `8d0503c969`), read at Batch 1650 with
+`git log --format='%h %H %T %s' 8d0503c969..HEAD`; its landing table is `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-11-01 —
+Batch 1650 …)". Batch 1650 (`62eea22f49`, tree `60881b97`, committed 01:54:49 EST on 2026-11-01 and pushed by 01:55) is the
+probe-kit round 8 (lane Hyarmendacil, Opus lead; Sonnet workers Goldwine, Frealaf, Brytta, Folcwine and Thengel; reviewer Aldamir,
+HOLDS-WITH-FIXES on four text fixes: the prime's premise re-read on the KIT7 page series, the subject's claim that every
+stopped-loop frame is a widget frame, the identity check's scope against an older base report, and a tag-bucket count; tools-only,
+30 lane paths with `package.json`, 31 with the tooling catalog; kit pieces 204 -> 206, rigs 272; `test-visual-regression-node`
+7,949 -> 5,211 characters and the new `test-visual-regression-node-c` 3,029). Bank
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/hyarmendacil/`; landing log `round3/landing-logs/land-hyarmendacil.log` (the
+`main -> main` push `8d0503c969..62eea22f49` and "post-landing-spine OK at 62eea22f49"). **Byte check (this round):** the banked
+`hyarmendacil.patch` (md5 `943c1a990286b9d03d82f013f5023f10`, 30 `diff --git` sections, `package.json` among them) applied in a
+temp index to `8d0503c969` gives a tree that differs from `62eea22f49` only in `migration_doc/TOOLING_CATALOG.md` (regenerated at
+the seat). One Edge leg measured the batch: the KIT8 leg (executor Eowyn; tree `62eea22f49`; every report's preflight reads served
+== disk, `Build/CesiumUnminified/index.js` 23,553,712 B), Phase 1 (items 1-3, 01:57-02:10 EST on 2026-11-01) and Phase 2 (items 4-5,
+the performance pair, 02:12-02:16 EST in the seat's quiet window, on a server started fresh at 02:12:28). Receipt
+`round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (sections "Phase 1" and "Phase 2"); evidence `round3/edge/kit8-20261101/`. Every figure
+below is read from the arms' JSON reports and PNGs, not from the receipt's prose or the executor's extracts. With Phase 2 the KIT8
+leg is complete in both phases. Rows updated in place by this round: `DX-KIT-DIVE-GATE-NEEDS-INITIALIZE-FRAME`,
+`DX-KIT-DIVE-GATE-CELLS` and `DX-KIT-LANDING-SUMMARY-FLOOR-MARK` (closed, measured), `DX-KIT-RUNNER-KEY-NEAR-CAP` (closed, with the
+landing notes), `DX-KIT-WARM-UP-SAMPLER-LABEL-UNPINNED` and `DX-KIT-PROHIBITED-READER-NESTED-TEMPLATE` (closed; the latter with a
+residual), `DX-KIT-FIRST-PF-ARM-AFTER-SERVER-START` and `DX-KIT-WARM-UP-THRESHOLD` (the prime measured, still open),
+`DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG` (a further same-build reading), `NEW-KIT-WEBGL-PF3-ONE-REPEAT-SAME-BUILD-RED` (a contended
+reading) and `DX-KIT-PF4-RESIDENCY-ALLOWANCE-ZERO` (within on both KIT8 arms). The rows below are new.
+
+### DX-KIT-STOPPED-LOOP-WIDGET-FRAME-AUDIT — six landing-kit sites, and about 76 stopped-loop probes, still render with the viewer's loop stopped and no `Scene.initializeFrame()` — **OPEN** (probe kit; filed by Batch 1650's lane; the identity half measured on the KIT8 leg, records round 12; the audit half open)
+
+- **Filed (Batch 1650, `62eea22f49`; lane Hyarmendacil, worker Goldwine's audit; reviewer Aldamir R2 narrowed the batch's subject to
+  the settle and the dive placement):** at the tip the PF windows `Tools/visual-regression/lib/frame-timing-steps.mjs:87` (PF-3
+  startup), `:165` (PF-1 / PF-2) and `:216` (pass cost), the pipeline wait `lib/landing-cell-stage.mjs:912`,
+  `lib/device-loss-steps.mjs:252` and `lib/ocean-displacement-readback.mjs:141` each call `scene.render(viewer.clock.currentTime)`
+  alone (re-read at Batch 1650). The lane counts 76 stopped-loop probes rendering without `initializeFrame`; none reads
+  `globeHeight`, drives input or uses `flyTo` today, so none shows the dive-gate defect. **Repair shape (for a kit lane):** a
+  widget-frame helper adopted where a probe reads the globe height, drives input or runs tweens; the landing PF windows and the
+  pipeline wait change only with a deliberate re-baseline, which is the seat's decision.
+- **Identity half, measured (KIT8 Phase 1 item 2; tree Batch 1650 `62eea22f49`; `--cells E-ID-2d,E-ID-cv --runs 2 --no-cell-perf`
+  and `--cells E-W-ground,E-W-ground-hdr,E-W-30km,E-W-30km-hdr --runs 1 --no-cell-perf`, both exit 0, 28 and 24 verdicts all
+  PASS):** every landing settle is now a widget frame, and the frames did not move. Kit `pixelDiff` at tolerance 0, re-run by this
+  round on the banked PNGs: `E-ID-cv` 0 changedPx, max channel 0 and byte-identical on both renderers and both runs against the
+  KIT6 `5-floor/A` frames; the four E-W cells 0 changedPx and byte-identical on both renderers against the KIT7
+  `2-sibling-fallback` frames; `E-ID-2d`, which neither bank carries, 0 changedPx and byte-identical on both renderers and both runs
+  against KIT3's `item4-pf3-tip` frames (an extra reference); run 0 equals run 1 on all four E-ID arms. The cross-renderer bands
+  read 2 changedPx on both E-ID cells (`E-ID-2d` max channel 1; `E-ID-cv` max channel 32 in the excluded column 1274 and 0 outside
+  it; band `changedPx <= 4`). Those banked frames were captured with bare `scene.render` settles, so the comparison spans both
+  frame drivers (Aldamir R3). The identity half closes at 0 px; no re-baseline is owed. **Owner:** the kit. **Source:**
+  `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/2-identity/id/landing-cells-report.json` and
+  `kit8-20261101/2-identity/ew/landing-cells-report.json` (`verdicts`, `exitCode`, `verdicts[*:band]`) and their PNGs against
+  `kit6-20261031/5-floor/A/`, `kit7-20261031/2-sibling-fallback/` and `kit3-20261031/item4-pf3-tip/`;
+  `round3/hyarmendacil/LANDING_PACKET_HYARMENDACIL.md` (W1 "Not changed"; "Records rows"); `round3/hyarmendacil/REVIEW_ALDAMIR_P1.md`
+  (R2, R3); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 1 item 2).
+
+### DX-KIT-NESTED-FLOOR-DECIDED — the receipt's nested `comparison.<arm>.pfN.provisionalFloor.decided` keeps the metric's arithmetic on an unmeasured statistic while the verdict entry and the summary read it undecided — **OPEN** (probe kit, small)
+
+Since Batch 1650 an unmeasured PF verdict's floor reads `decided: false` with `undecidedBecause` on the verdict entry
+(`lib/landing-verdicts.mjs:314`) and the summary says it decided nothing, but the nested mark the metric writes still reads the
+arithmetic: PF-3's `decided` is set in `lib/metrics/startup-compile.mjs:251` and PF-4's in `lib/metrics/gpu-memory-residency.mjs:236`,
+neither of which knows the contention guard's outcome. On the banked KIT7 `2-sibling-fallback` report,
+`E-W-30km-hdr|webgpu|scene` PF-3 is unmeasured-contended with the nested `decided: true` (Aldamir N5). Not exercised on KIT8 (the
+one unmeasured PF-3 there carries no applied floor). **Repair shape:** carry the guard's outcome into the metric record, or document
+the nested field as arithmetic only; a spec on an unmeasured arm with an applied floor and an inertness mutant. **Owner:** the
+kit. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/hyarmendacil/LANDING_PACKET_HYARMENDACIL.md` (W3 residual;
+"Records rows"); `round3/hyarmendacil/REVIEW_ALDAMIR_P1.md` (N5); `round3/edge/kit7-20261031/2-sibling-fallback/landing-cells-report.json`
+(`comparison["E-W-30km-hdr|webgpu|scene"].pf3.compile.provisionalFloor`); the code lines above.
+
+### DX-KIT-RUNNER-KEY-B-NEAR-CAP — `test-visual-regression-node-b` is 7,372 characters against the 8,191-character Windows command line — **OPEN** (seat kit; small)
+
+Measured in `package.json` at Batch 1650 (125 spec paths; unchanged by Batch 1650). 819 characters remain, about a dozen
+homes. **Repair:** split it as `test-visual-regression-node` was split (a `SCRIPT NEW:` line now makes a key), or take the
+list-file route of `DX-RUNNER-LIST-FILES`. Also here (Aldamir N3): `Tools/spec-runner-census.mjs:443` still proposes
+`test-visual-regression-node` for a homeless spec, while a landing-family spec now belongs in `test-visual-regression-node-c`; an
+advisory string, not a gate. **Owner:** the seat. **Source:** `package.json` at Batch 1650 (`scripts["test-visual-regression-node-b"]`,
+measured); `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/hyarmendacil/LANDING_PACKET_HYARMENDACIL.md` (W4 note);
+`round3/hyarmendacil/REVIEW_ALDAMIR_P1.md` (N3).
+
+### DX-KIT-DIVE-GATE-ELLIPSOID-CELL-BLIND — the `E-DG-ellipsoid` cell's four frames are one byte-identical flat field, so its frames cannot show a dive — **OPEN** (probe kit, small)
+
+On the KIT8 leg (Phase 1 item 1) the cell's gate measures: allow / allow on the dive page and refuse / refuse on the control, on
+both renderers, `globeHeight` -0.0036 m offline inside [-1, 1]. Its four PNGs (dive and control, WebGL and WebGPU) share one md5,
+`9812e043d1b1239e9462db3f7ea65e80` (4,258 B, one slate-blue field, no texture and no horizon), although the dive camera ends at
+7.91 m (7.92 on WebGPU) and the control's at 1.00 m; on KIT7 the four were also one md5 (`7e316ae5…`, a night frame). **This
+round's reading:** the cell's verdict does not depend on its frame, but its frame is not evidence of the dive or of renderer
+parity: the cell needs a visual reference (a view with a horizon or a textured surface in frame) if its frames are to carry
+evidence, or the dive-versus-control frame comparison is declared not applicable to it; the choice is the kit's. **Owner:** the
+kit. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/1-dive-gate/E-DG-ellipsoid-*-run0-*.png`
+(md5) and `kit8-20261101/1-dive-gate/landing-cells-report.json` (`verdicts["E-DG-ellipsoid:*:dive-gate"].cameraHeights`);
+`kit7-20261031/1-dive-gate/E-DG-ellipsoid-*-run0-*.png`; receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 1 item 1).
+
+### NEW-WATER-DIVE-ONTARIO-WEBGPU-SEAM — the `E-DG-ontario` WebGPU dive frame carries a sharp vertical seam near x 660 — **OPEN** (frame finding, unattributed; water / globe owners)
+
+On the KIT8 leg (Phase 1 item 1; Batch 1650's tree, a batch that changes no engine source; online terrain, clock
+2026-06-21T18:00:00Z) the Lake Ontario dive page on WebGPU shows a vertical seam near x 660 running top to bottom, the shading
+stepping across it (read by eye by the executor and by this round). The WebGL dive frame shows a faint vertical streak near x 880
+in its lower half. The two dive frames differ on 868,747 of 921,600 px (max channel 48); the control frames, a uniform light
+blue, differ on 921,600 px at max channel 7. Not attributed: no cause is read. **Owner:** the water program, with the globe owner.
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/1-dive-gate/E-DG-ontario-webgpu-run0-dive.png`
+and `E-DG-ontario-webgl-run0-dive.png` (kit `pixelDiff` at tolerance 0, re-run by this round); receipt
+`round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 1 item 1, "Captures, read by eye").
+
+### NEW-WATER-DIVE-UPSAMPLED-FRAME-ARTEFACTS — the `E-DG-upsampled` frames carry smear bands, a seam and triangular streaks — **OPEN** (frame finding, unattributed; water / globe owners)
+
+On the KIT8 leg (Phase 1 item 1; same tree and clock as above; online terrain over upsampled ocean tiles; both cameras end below
+the ellipsoid, the dive at -3.32 m and the control at -10.23 m, above the globe height of -11.23 to -12.51 m): the WebGL dive frame
+is dark navy with a bright upper-right corner and horizontal smear bands across its right half; the WebGPU dive frame is mid blue,
+lighter to the lower right, with a vertical seam near x 640; the WebGL control is a smooth gradient, and the WebGPU control the same
+gradient with a central band (x about 520-1000) of triangular, horizontally streaked shapes (read by eye by the executor; this
+round opened the WebGL dive and WebGPU control frames and reads the same). Dive against control differs on 921,541 / 921,600 px
+(WebGL / WebGPU); WebGL against WebGPU on 921,600 px for both pages (max channel 164 dive, 46 control). Not attributed. **Owner:**
+the water program, with the globe owner. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/1-dive-gate/E-DG-upsampled-{webgl,webgpu}-run0-{dive,control}.png`
+(kit `pixelDiff` re-run by this round) and `kit8-20261101/1-dive-gate/landing-cells-report.json`
+(`verdicts["E-DG-upsampled:*:dive-gate"]`); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 1 item 1).
+
+### NEW-WEBGPU-EID-CV-PF1-SAME-BUILD-RED — on the same served build `E-ID-cv|webgpu` read PF-1 `over` on p50, p95 and p99 — **OPEN** (measured red, unattributed; WebGPU)
+
+- **Measured (KIT8 Phase 2 item 4; Batch 1650 `62eea22f49` against itself; `--cells E-ID-cv --perf --runs 2`, arm A the first probe
+  after a fresh server start, then arm B with `--base-report` arm A; WebGPU contention `clear`, 42.31 against 35.12 % mean CPU):**
+  arm B exits 1, with `E-ID-cv|webgpu|scene:PF-1` and `:PF-2` `over`. PF-1, medians of the repeats: p50 6.1 -> 6.3 ms (ratio
+  1.033, limit 6.283 on the 3 % floor band), p95 7.25 -> 9.16 ms (1.264, limit 7.4675), p99 8.13 -> 10.60 ms (1.304, limit 8.3749);
+  per repeat (120 frames each, through the kit's `summarizeFrameTimes`) p95 A 7.20 / 7.30, B 8.10 / 10.22 ms, p99 A 8.08 / 8.18,
+  B 10.03 / 11.18 ms; stutter 0 on all four. Pixels 0 changedPx on both arms; PF-3 and PF-4 within.
+- **Recorded beside, not merged:** the KIT7 same-build PF-1 p50 red on `E-W-ground|webgpu`
+  (`NEW-CLOUD-EW-GROUND-WEBGPU-PF1-P50-SAME-BUILD-RED`) and the KIT6 one on `E-W-ground-hdr|webgpu`
+  (`NEW-CLOUD-EW-GROUND-HDR-PF1-PF4-SAME-BUILD-RED`). The same arm's PF-2 read over in the same run
+  (`NEW-WEBGPU-EID-CV-PF2-PASS-COST-BIMODAL-RED`).
+- **Not attributed:** both arms were served the same bytes, minutes apart. **Owner:** the 2D / Columbus-view WebGPU owner, for
+  the statistic; the kit, for whether a two-repeat PF-1 band at the 3 % floor separates a regression from the build's own spread.
+  **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/B/landing-cells-report.json`
+  (`verdicts`, `exitCode`, `comparison["E-ID-cv|webgpu|scene"].{pf1,contention,pixels}`; per-repeat percentiles from
+  `arms["E-ID-cv|webgpu|scene"].inputs.pf1`) and `kit8-20261101/4-prime/A/landing-cells-report.json` (the same arm); receipt
+  `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 2 item 4).
+
+### NEW-WEBGPU-EID-CV-PF2-PASS-COST-BIMODAL-RED — on the same served build `E-ID-cv|webgpu` read PF-2 `over`, its frame average 8.6 times the base's; the statistic is bimodal per page across three legs — **OPEN** (measured red, unattributed; WebGPU)
+
+- **Measured (KIT8 Phase 2 item 4; the run above; contention `clear`):** `frameAvgMs` 0.525 -> 4.510 ms (ratio 8.59, repeat band
+  0.583, limit 0.831); per repeat (68 frames each) A 0.458 / 0.592 ms, B 4.221 / 4.800 ms. Per pass: Scene Framebuffer Render
+  Pass 0.226 -> 1.431 ms, GlobeDepth-DepthCopy_load_pass 0.067 -> 0.592, PostProcess-IdentityBlit 0.012 -> 0.059, each `over`.
+- **The same statistic on the banked same-build `E-ID-cv|webgpu` pairs (per page, read by this round):** KIT6 `5-floor` A 2.711 /
+  4.816 ms, B 3.996 / 0.454; KIT7 `4-warm-up` A 2.312 / 4.735, B 0.454 / 3.996; KIT8 `4-prime` A 0.458 / 0.592, B 4.221 / 4.800. On
+  one build a page reads either about 0.45-0.6 ms or about 2.3-4.8 ms; tonight A drew two low pages and B two high ones. (KIT6's and
+  KIT7's B arms read PF-2 `unmeasured-contended`, so neither carried a verdict.) Recorded as measured across three legs, with no
+  cause. **Owner:** the 2D / Columbus-view WebGPU owner, for the two modes; the kit, for the statistic
+  (`DX-KIT-PF2-BIMODAL-STATISTIC`). **Source:**
+  `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/B/landing-cells-report.json`
+  (`comparison["E-ID-cv|webgpu|scene"].pf2.{total,passes}`, `arms["E-ID-cv|webgpu|scene"].inputs.pf2[].frameAvgMs`),
+  `kit8-20261101/4-prime/A/landing-cells-report.json`, `kit7-20261031/4-warm-up/{A,B}/landing-cells-report.json` and
+  `kit6-20261031/5-floor/{A,B}/landing-cells-report.json` (`arms["E-ID-cv|webgpu|scene"].inputs.pf2[].frameAvgMs`); receipt
+  `round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 2 item 4).
+
+### DX-KIT-PF2-BIMODAL-STATISTIC — PF-2's `frameAvgMs` takes one of two modes per page on one build, so a band on it cannot separate a regression from the mode each arm drew — **OPEN** (probe kit; a decision owed)
+
+Measured under `NEW-WEBGPU-EID-CV-PF2-PASS-COST-BIMODAL-RED`: on `E-ID-cv|webgpu` a page reads about 0.45-0.6 ms or about
+2.3-4.8 ms across KIT6, KIT7 and KIT8, and a two-repeat arm can draw both low or both high. The repeat band (twice the base
+spread) then reads `over` on a same-build pair whose arms drew different modes, and would read `within` on a pair whose arms drew
+the same mode whatever the build did. **Repair shape (for a kit round):** a mode-aware band (classify each page by mode and compare
+like with like, reporting the mode counts), or more repeats per arm with the verdict on the mode-matched pages; the decision is the
+maintainer's. **Owner:** the kit. **Source:** the reports cited under `NEW-WEBGPU-EID-CV-PF2-PASS-COST-BIMODAL-RED`.
+
+### DX-KIT-PROBE-HELP-CRASHES-RECEIPT-WRITER — `probe-landing-cells.mjs --help` throws in the argument parser and then again in the receipt writer, instead of exiting 2 cleanly — **OPEN** (probe kit, small)
+
+Observed by the KIT8 executor (Phase 1 preflight, a side observation): `node Tools/visual-regression/probe-landing-cells.mjs --help`
+throws `TypeError: unknown argument: --help` from `parseProbeArgs`, then `TypeError: Cannot read properties of null (reading
+'servedBuild')` from `buildRuntimeReceipt` via `finishRun`; nothing was written. Code read at Batch 1650 (not reproduced by this
+round, which runs no probe): `parseProbeArgs` (`Tools/visual-regression/lib/probe-runtime.mjs:239`) throws on an unknown argument
+at `:255`; `finishRun` (`:837`) still builds the runtime receipt (`:848`) with `options ?? null`, and `buildRuntimeReceipt` reads
+`options.servedBuild` unguarded (`lib/probe-runtime-receipts.mjs:95`). **Repair shape:** a caller error (an unknown argument, or
+`--help` with a usage text) exits 2 before any receipt is built, or the receipt writer tolerates null options; a spec through the runtime with an inertness mutant. **Owner:** the kit. **Source:** receipt
+`cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md` (Phase 1, "Side observation"); the code
+lines above.
+
+### DX-KIT-SUMMARY-UNROUNDED-FLOATS — the landing summary's contended Marks lines print the guard's raw floats before the rounded CPU clause — **OPEN** (probe kit, small)
+
+On the KIT8 leg (Phase 2 item 5) the two contended lines read "mean machine CPU above 60 % on base run 0 83.75181818181818 %; base
+and tip mean machine CPU differ by 29.65413636363636 points (61.75727272727273 % against 32.10313636363637 %)", then the rounded
+"machine CPU: base mean 61.76 %, tip mean 32.1 %, arms apart by 29.65 points". The reasons are built with raw values in
+`lib/metrics/perf-band.mjs:576` and `:582` and joined unchanged by `lib/landing-cells-summary.mjs:169`. A display nit, no verdict
+depends on it. **Repair shape:** round the figures where the reasons are written (two decimals), with a spec case on the summary
+line. **Owner:** the kit. **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit8-20261101/4-prime/B/landing-cells-summary.md`
+("Marks"); `kit8-20261101/4-prime/B/landing-cells-report.json` (`comparison["E-ID-cv|webgl|scene"].contention.reasons`); the code
+lines above.
+
+### Notes (no new ids)
+
+- **Message claims of Batch 1650 read against the KIT8 reports:** the settle frames and the dive placement as widget frames
+  (measured: 20 of 20 dive-gate verdicts readable, and the identity frames unmoved); the camera height series and `wheel-unread`
+  (the series present on every entry; `wheel-unread` not exercised, every camera moved); the daylight pin read back as `clockHeld`
+  (20 of 20); the unmeasured PF row's own line and a floor that decides nothing on it (measured, with the residuals above); the
+  prime and the contention basis (recorded on every PF verdict; the first measured page still hot); the runner key (measured in
+  `package.json`); the tokenizer (closed on the review, with a residual).
+- **Reviewer notes not filed as rows:** `stageClockHeld`'s `frozen` and read-back clauses are unpinned (Aldamir B1, B2 survive; a
+  case each, an unfrozen clock and a differing instant reading false, for the next kit round); the invocation CPU sampler started
+  before the prime survives (E3; a live sampler, so a seam, not a live read, would pin it); `workBudgetMs` with the prime cannot time
+  out a real plan (N2: three page loads at run 0 against a 2,400 s per-run budget); `runner-homes-new-key.spec.mjs` leaves an empty
+  lane root after each run, which temp hygiene sweeps (N4).
+- **Receipt figures read against the reports:** none differs in value. The receipt's per-repeat PF-1 p95 values are not comparison
+  fields; they equal the kit's `summarizeFrameTimes` over each repeat in `arms[*].inputs.pf1`. The KIT6 and KIT7 B arms' high-mode
+  pages read 3.995955 and 3.995905 ms and their low-mode pages 0.454126 and 0.454128 ms: close, not copies (both reports carry their
+  own `generatedAt` and base-report path).
+- **`FEATURE_INVENTORY.md`:** a probe-kit round 8 entry is added to section B; the round 7 entry's open list now says which of its
+  rows round 8 closed.

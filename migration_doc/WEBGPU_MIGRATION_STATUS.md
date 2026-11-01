@@ -273,6 +273,33 @@ the maintainer's decision on the compile and residency floors from the calibrati
 `NEW-CLOUD-W3-WEATHER-MAP-ON-CARVES-DAYLIGHT`, `NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY`); the evidence curation
 `R-2026-10-31-M1` rules, after every landing is in; the Antigravity water program and the W4 regeneration stand as above. Open
 after this landing: the rows of `DEFERRED_WORK.md` section "2026-11-01 — records round 11".
+*[Records round 12:]* Batch 1649 (`8d0503c969`) recorded the KIT7 leg; the probe-kit round 8 followed as Batch 1650 (the table
+below), and the KIT8 Edge leg measured it in both phases; no Antigravity water batch has landed by Batch 1650 (`git log`).
+
+## Landing record (2026-11-01 — Batch 1650: the probe-kit round 8)
+
+A landing table only. The hash and tree were read at Batch 1650 with `git log --format='%h %H %T %s' 8d0503c969..HEAD`; the
+landing log shows the `main -> main` push `8d0503c969..62eea22f49` (by 01:55 EST) and "post-landing-spine OK at 62eea22f49"
+(`lanes-2026-10-31/round3/landing-logs/land-hyarmendacil.log`). "Bank" paths are under `cesium-webgpu-worker-archive/lanes-2026-10-31/`;
+the rows are in `DEFERRED_WORK.md` section "2026-11-01 — records round 12", which also names the byte check (the banked lane patch,
+`package.json` included, reproduces the landed tree except the tooling catalog) and the landing notes. One Edge leg (executor Eowyn)
+measured the batch: KIT8 on Batch 1650's tree, Phase 1 01:57-02:10 EST and Phase 2 02:12-02:16 EST on 2026-11-01 in the seat's
+quiet window (`round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md`).
+
+| batch | hash (tree) | what is now true | lane lead | reviewer | bank |
+| --- | --- | --- | --- | --- | --- |
+| 1650 | `62eea22f49` (`60881b97`) | The landing probe's settle frames and its dive placement, driven with the render loop stopped, are each a widget frame (`initializeFrame` then `render`) that refreshes the globe height and lets a wheel notch reach the camera; the dive-gate receipt and verdict carry the camera height series and read `wheel-unread` when the camera never moved; the five dive-gate rigs pin a daylight instant read back as `clockHeld`; an unmeasured PF row gets its own contended or not-run Marks line with the CPU figures and a floor that decides nothing on it; a PF run primes its first page once, unmeasured, and records the base arm's CPU the contention guard holds the tip to; a lane can declare a new runner key (`SCRIPT NEW:`), and the landing family's 47 specs move to `test-visual-regression-node-c`; the fleet's source scanner follows template substitutions. Tools-only, 30 lane paths with `package.json` (31 with the catalog); kit pieces 204 -> 206, rigs 272; `test-visual-regression-node` 7,949 -> 5,211 characters, `test-visual-regression-node-c` 3,029. Three landing attempts by the seat's account (a no-newline fixture hunk, then the new key absent for the homes step, then clean). Measured on Edge by KIT8 (20 of 20 `:dive-gate` PASS, globe heights in window, `clockHeld` 20 of 20, daylight; identity frames 0 px against their banks; both PF arms primed, the WebGPU arm `clear`, the WebGL arm `contended` on a hot first measured page; Marks with contended lines and no star; same-build WebGPU PF-1 and PF-2 `over`, recorded unattributed). | Hyarmendacil (workers Goldwine, Frealaf, Brytta, Folcwine, Thengel) | Aldamir (HOLDS-WITH-FIXES: R1 the prime's premise re-read on the KIT7 page series, R2 the subject's widget-frame scope, R3 the identity check's scope, R4 a bucket count; freezes `697e2d62` -> `943c1a99`); Edge Eowyn | `round3/hyarmendacil/` (`round3/edge/EDGE_RECEIPT_EOWYN_KIT8.md`) |
+
+Next: the prime's repair shape, priming until the CPU settles under the guard (`DX-KIT-WARM-UP-THRESHOLD`,
+`DX-KIT-FIRST-PF-ARM-AFTER-SERVER-START`); the PF-2 statistic's two modes (`DX-KIT-PF2-BIMODAL-STATISTIC`) and the same-build
+reds KIT8 filed (`NEW-WEBGPU-EID-CV-PF1-SAME-BUILD-RED`, `NEW-WEBGPU-EID-CV-PF2-PASS-COST-BIMODAL-RED`); the
+stopped-loop audit (`DX-KIT-STOPPED-LOOP-WIDGET-FRAME-AUDIT`); the small kit rows (`DX-KIT-NESTED-FLOOR-DECIDED`,
+`DX-KIT-PROBE-HELP-CRASHES-RECEIPT-WRITER`, `DX-KIT-SUMMARY-UNROUNDED-FLOATS`, `DX-KIT-DIVE-GATE-ELLIPSOID-CELL-BLIND`,
+`DX-KIT-RUNNER-KEY-B-NEAR-CAP`); the two dive-frame findings for the water and globe owners
+(`NEW-WATER-DIVE-ONTARIO-WEBGPU-SEAM`, `NEW-WATER-DIVE-UPSAMPLED-FRAME-ARTEFACTS`); the maintainer's decision on the compile and
+residency floors (`DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG`); the evidence curation `R-2026-10-31-M1` rules, after every landing is
+in; the Antigravity water program and the W4 regeneration stand as above. Open after this landing: the rows of `DEFERRED_WORK.md`
+section "2026-11-01 — records round 12".
 
 ---
 
