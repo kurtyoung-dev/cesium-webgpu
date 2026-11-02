@@ -30,6 +30,7 @@ import { dirname, resolve } from "node:path";
 import nodeTest from "node:test";
 import { fileURLToPath } from "node:url";
 import { bundle, mutateOrFail } from "./lib/engine-stub-bundler.mjs";
+import { shaderDefines } from "./lib/wgsl-variant.mjs";
 
 Error.stackTraceLimit = 0;
 
@@ -105,6 +106,7 @@ const REAL_MASK_PATHS = [
   "CloudAirLight.js",
   "WebGPUCloudAirLight.ts",
   "WebGPUCloudPrimaryReuse.ts",
+  "WebGPUCloudMarchFeatures.ts",
   "CloudPrimaryComposite.js",
   "CloudUpscale.js",
   "CloudTemporalResolve.js",
@@ -2744,6 +2746,64 @@ test("same fallback predicate must fail under unique-anchor in-memory GodRay bin
   await assert.rejects(
     () => assertWhiteFallbackBehavior(godRay),
     /generate bind group must have binding 4|binding 4 must use the real white fallback view/,
+  );
+});
+
+// The frame requests the primary-reuse march with the high-word defines of the
+// march it selected, so the reuse pipeline integrates the same variant. A
+// config on the baked tier selects a march with defines a lost value would
+// drop.
+const REUSE_DEFINES_CONFIG = {
+  cloudQuality: 64,
+  cloudVolumetricQuality: "high",
+  cloudReusePrimaryIntegral: true,
+};
+
+function observeReuseDefines(engine) {
+  const fixture = makeCloudFixture();
+  installActualContextContract(engine, fixture);
+  const config = { ...fixture.config, ...REUSE_DEFINES_CONFIG };
+  runPrimaryReuseFrame(engine, fixture, config);
+  const passes = runPrimaryReuseFrame(engine, fixture, config);
+  const primary = passes.find(
+    (pass) => pass.descriptor.label === "CloudPrimaryReuse march pass",
+  );
+  assert.ok(primary, "the reuse march draws");
+  return {
+    reuse: primary.calls.find((call) => call.op === "pipeline").pipeline
+      .descriptor.definesHi,
+    selected: fixture.context._cloudCache.selectedMarchDefinesHi,
+  };
+}
+
+function assertReuseDefines({ reuse, selected }) {
+  assert.notEqual(selected, 0, "the selected march compiles defines");
+  assert.equal(
+    reuse,
+    selected | shaderDefines.ShaderDefineHi.CLOUD_PRIMARY_REUSE,
+  );
+}
+
+test("the primary-reuse request compiles the selected march's defines with the reuse bit", async () => {
+  assertReuseDefines(observeReuseDefines(await loadIntegrationHarness()));
+  const mutant = await loadIntegrationHarness({
+    overrides: [
+      {
+        basename: "WebGPUProceduralCloudRenderer.ts",
+        mutate: (source) =>
+          replaceExactlyOnce(
+            source,
+            "{ primaryReuseDefinesHi: cache.selectedMarchDefinesHi }",
+            "{ primaryReuseDefinesHi: 0 }",
+            "drop the selected defines from the primary-reuse request",
+          ),
+        label: "primary-reuse request without the selected defines",
+      },
+    ],
+  });
+  assert.throws(
+    () => assertReuseDefines(observeReuseDefines(mutant)),
+    assert.AssertionError,
   );
 });
 

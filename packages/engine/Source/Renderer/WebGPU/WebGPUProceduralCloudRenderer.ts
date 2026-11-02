@@ -67,6 +67,11 @@ import {
 } from "./WebGPUCloudMaterialFlow.js";
 import { CloudDensityMomentsResources } from "./WebGPUCloudDensityMoments.js";
 import {
+  cloudMarchActiveFeatures,
+  cloudMarchFeatureDefines,
+  type CloudMarchFeatures,
+} from "./WebGPUCloudMarchFeatures.js";
+import {
   CLOUD_MATERIAL_FLOW_FLOATS,
   CLOUD_QUALITY_FLAGS_SLOT,
   writeCloudMaterialFlowUniforms,
@@ -3095,15 +3100,15 @@ function requestCloudMarchPipeline(
   cache: CloudCache,
   format: GPUTextureFormat,
   emit: boolean,
-  preview = false,
-  moments = cache.densityMomentsEnabled ?? false,
-  primaryReuseDefinesHi?: number,
+  features: CloudMarchFeatures = cloudMarchActiveFeatures(cache),
 ): GPURenderPipeline | null {
   const device = context._device;
   const pipelines = context.webgpuPipelineCache;
   if (!device || !pipelines || !cache.bindGroupLayout) {
     return null;
   }
+  const preview = features.preview === true;
+  const primaryReuseDefinesHi = features.primaryReuseDefinesHi;
   const bakedOnly = (cache.uniformData[74] & CLOUD_QF_NOISE_BAKED) !== 0;
   const data = cache.uniformData;
   const baseMorphology =
@@ -3120,8 +3125,9 @@ function requestCloudMarchPipeline(
       ? primaryReuseDefinesHi | ShaderDefineHi.CLOUD_PRIMARY_REUSE
       : (baseMorphology ? ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY : 0) |
         (bakedOnly ? ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY : 0) |
-        (preview ? ShaderDefineHi.CLOUD_LIGHTING_PREVIEW : 0) |
-        (moments && !preview ? ShaderDefineHi.CLOUD_DENSITY_MOMENTS : 0) |
+        (preview
+          ? ShaderDefineHi.CLOUD_LIGHTING_PREVIEW
+          : cloudMarchFeatureDefines(features)) |
         (cache.geographicWindRequested && !preview
           ? ShaderDefineHi.CLOUD_GEOGRAPHIC_WIND
           : 0)) | (emit ? CLOUD_MARCH_EMIT_DEFINES_HI : 0);
@@ -3224,22 +3230,23 @@ function selectCloudMarchPipeline(
   progressive: boolean,
 ): GPURenderPipeline | null {
   let preview = progressive && !cache.startupPreviewDrawn;
+  // While the full variant compiles, a variant without an optional feature
+  // draws in its place, dropping features in the order of this ladder.
+  const active = cloudMarchActiveFeatures(cache);
   let pipeline = preview
     ? null
-    : requestCloudMarchPipeline(context, cache, format, false);
-  if (!pipeline && !preview && cache.densityMomentsEnabled) {
-    pipeline = requestCloudMarchPipeline(
-      context,
-      cache,
-      format,
-      false,
-      false,
-      false,
-    );
+    : requestCloudMarchPipeline(context, cache, format, false, active);
+  if (!pipeline && !preview && active.moments) {
+    pipeline = requestCloudMarchPipeline(context, cache, format, false, {
+      ...active,
+      moments: false,
+    });
   }
   if (!pipeline && progressive) {
     preview = true;
-    pipeline = requestCloudMarchPipeline(context, cache, format, false, true);
+    pipeline = requestCloudMarchPipeline(context, cache, format, false, {
+      preview: true,
+    });
   }
   if (pipeline && pipeline !== cache.selectedMarchPipeline) {
     cache.selectedMarchPipeline = pipeline;
@@ -4699,9 +4706,7 @@ export function prepareCloudFrameAndEncodeMask(
           cache,
           CLOUD_HALF_FORMAT,
           reuseEmitDepth,
-          false,
-          false,
-          cache.selectedMarchDefinesHi,
+          { primaryReuseDefinesHi: cache.selectedMarchDefinesHi },
         )
       : null;
     const reuseOwner =

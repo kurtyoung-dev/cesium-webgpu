@@ -2351,6 +2351,11 @@ async function loadStartupSelection(renderer) {
   progressive: cloudProgressiveStartupRequested,
 });`,
     {
+      ...(await import(
+        pathToFileURL(
+          path.join(root, WEBGPU_DIR, "WebGPUCloudMarchFeatures.ts"),
+        ).href
+      )),
       WebGPUShaderModuleCache: class {
         getOrCreate(sourceId, source, lo, label, salt, hi) {
           return { hi };

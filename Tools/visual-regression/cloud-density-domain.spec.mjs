@@ -1062,6 +1062,7 @@ test("cloud async march requests deduplicate pending variants and discard late p
     }
   }
   const dependencies = {
+    ...(await import("../../packages/engine/Source/Renderer/WebGPU/WebGPUCloudMarchFeatures.ts")),
     WebGPUShaderModuleCache: Modules,
     performance: globalThis.performance,
     ShaderDefineHi: shaderDefines.ShaderDefineHi,
@@ -1782,6 +1783,7 @@ test("cloud progressive selection draws preview before requesting final and reta
     transformed.code +
       "\n({request:requestCloudMarchPipeline,select:selectCloudMarchPipeline});",
     {
+      ...(await import("../../packages/engine/Source/Renderer/WebGPU/WebGPUCloudMarchFeatures.ts")),
       WebGPUShaderModuleCache: Modules,
       performance: globalThis.performance,
       ShaderDefineHi: shaderDefines.ShaderDefineHi,
