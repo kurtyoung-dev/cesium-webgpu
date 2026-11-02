@@ -14,12 +14,17 @@
 // question, not this file's.
 
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { isUnderTmpdir, mkLaneTmp, removeLaneTmp } from "../lib/lane-tmp.mjs";
+import {
+  isUnderTmpdir,
+  mkLaneTmp,
+  removeLaneTmp,
+  withLaneTmp,
+} from "../lib/lane-tmp.mjs";
 import { encodeRgbaPng } from "../lib/png-rgba.mjs";
 import {
   CLOUD_RIG_MODULE_URL,
@@ -31,7 +36,12 @@ import {
   settleCloudRigInPage,
   stageCloudRigInPage,
 } from "./lib/cloud-rig-stage.mjs";
-import { ProbeRefusal, sha256 } from "./lib/probe-runtime.mjs";
+import {
+  ProbeRefusal,
+  assembleReceipt,
+  normalizeJson,
+  sha256,
+} from "./lib/probe-runtime.mjs";
 import { loadRigs } from "./lib/rig-registry.mjs";
 import {
   checkEmbeddedCaptureIsCanonical,
@@ -475,6 +485,8 @@ test("S7: one arm stages, settles, reads the canvas and banks the frame it measu
       assert.equal(captures[0].sha256, sha256(banked));
       assert.equal(captures[0].liveness.state, "live");
       assert.equal(captures[0].liveness.frameNumber, rig.readiness.frames + 1);
+      assert.deepEqual(JSON.parse(JSON.stringify(arm.capture)), captures[0]);
+      assert.ok(arm.capture.buffer.equals(banked));
       // Pass-3 advisory A1: every render of the arm, its declared settle
       // frames and the one whose frame is read, is at the RIG'S instant. An
       // arm that lost the rig's clock on its way to the settle renders at the
@@ -639,4 +651,81 @@ test("S10: a demo leg renders once at the viewer's own clock, reads the canvas i
   } finally {
     removeLaneTmp(root);
   }
+});
+
+test("S11: capture metadata survives descriptor and runtime JSON without duplicating PNG bytes or stripping raw metrics", async () => {
+  await withLaneTmp("cloud-capture-metadata-", async (directory) => {
+    await withStubPage({ sun: { x: 0, y: 0, z: 1 } }, async ({ viewer }) => {
+      viewer.clock.currentTime = { iso: "metadata-fixture" };
+      const captures = [],
+        png = pngDataUrl([40, 50, 60, 255]);
+      const frame = await captureViewerCanvas({
+        page: armPage({ png, gate: LIVE_GATE }, { calls: [] }),
+        name: "metadata-frame",
+        outputDirectory: directory,
+        captures,
+      });
+      const saved = readFileSync(frame.capture.path),
+        rawMetric = Buffer.from([9, 8, 7]);
+      frame.capture.annotation = { measured: true };
+      const expected = { ...captures[0], annotation: { measured: true } };
+      assert.ok(Buffer.isBuffer(frame.capture.buffer));
+      assert.ok(frame.capture.buffer.equals(saved));
+      assert.equal(frame.capture.buffer.readUInt32BE(0), 0x89504e47);
+      assert.equal(frame.capture.byteLength, saved.byteLength);
+      assert.equal(frame.capture.sha256, sha256(saved));
+      assert.deepEqual([...frame.image.data], [40, 50, 60, 255]);
+      assert.ok(
+        Object.keys(frame.capture).includes("buffer"),
+        "in-memory capture enumeration remains compatible",
+      );
+      const stage = {
+        image: frame.capture,
+        result: { rawMetric, accepted: 17 },
+      };
+      const stagePath = path.join(directory, "completed.json");
+      writeFileSync(stagePath, Buffer.from(JSON.stringify(stage, null, 2)));
+      const completed = JSON.parse(readFileSync(stagePath, "utf8"));
+      assert.deepEqual(completed.image, expected);
+      assert.equal(Object.hasOwn(completed.image, "buffer"), false);
+      assert.equal(
+        Object.getOwnPropertyDescriptor(frame.capture, "toJSON").enumerable,
+        false,
+      );
+      assert.deepEqual(completed.result, {
+        rawMetric: rawMetric.toJSON(),
+        accepted: 17,
+      });
+      const report = assembleReceipt({
+        envelope: "runtime",
+        runtime: { captures },
+        fields: {
+          cells: [{ stages: [stage] }],
+          verdicts: [{ actual: stage.image }],
+        },
+      });
+      const reportPath = path.join(directory, "report.json");
+      writeFileSync(reportPath, normalizeJson(report));
+      const serialized = JSON.parse(readFileSync(reportPath, "utf8"));
+      assert.deepEqual(serialized.cells[0].stages[0].image, expected);
+      assert.deepEqual(serialized.verdicts[0].actual, expected);
+      assert.deepEqual(serialized.captures, captures);
+      assert.deepEqual(
+        serialized.cells[0].stages[0].result.rawMetric,
+        rawMetric.toJSON(),
+      );
+      assert.deepEqual(JSON.parse(JSON.stringify(rawMetric)), {
+        type: "Buffer",
+        data: [9, 8, 7],
+      });
+      assert.deepEqual(
+        readdirSync(directory).filter((file) => file.endsWith(".png")),
+        ["metadata-frame.png"],
+      );
+      assert.ok(
+        frame.capture.buffer.equals(readFileSync(frame.capture.path)),
+        "serialization leaves scoring bytes intact",
+      );
+    });
+  });
 });

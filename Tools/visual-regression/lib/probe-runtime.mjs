@@ -599,6 +599,7 @@ function resolveServedArtifacts(descriptor, options) {
  * @param {string[]|Function} [descriptor.servedArtifacts] Artifacts the preflight must match: an array, or `(options) => string[]` called once with the parsed options for a probe whose artifact list depends on its flags. A function returning a non-array or an empty array is a probe error.
  * @param {string[]} [descriptor.launchArgs] Edge flags instead of {@link EDGE_LAUNCH_ARGS}; recorded in the runtime receipt.
  * @param {"probe-owned"|"runtime"} [descriptor.receiptEnvelope] Receipt shape.
+ * @param {boolean} [descriptor.lifecycleDiagnostics] Write bounded, diagnostic-only lifecycle snapshots to `<name>-lifecycle-diagnostic.json`; requires `workBudgetMs`, and changes neither the exit code nor the receipt.
  * @param {Function} [descriptor.workBudgetMs] `(options) => number` — the positive safe-integer milliseconds THIS probe's work needs per run. Declaring it is the opt-in to the lifecycle: `cells` is then additionally handed `scope`, and the run carries a derived orderly deadline. Omitting it keeps the pre-adoption behaviour exactly.
  * @param {Function} descriptor.cells Called once per run; returns an ARRAY of that run's cells (wrap a single cell as `[cell]`).
  * @param {Function} [descriptor.receipt] `(cells, context) => object` — the probe's fields.
@@ -721,6 +722,14 @@ export async function runProbe(descriptor, dependencies = {}) {
     };
 
     if (lifecycleAdopted) {
+      if (
+        descriptor.lifecycleDiagnostics !== undefined &&
+        typeof descriptor.lifecycleDiagnostics !== "boolean"
+      ) {
+        throw new TypeError(
+          "descriptor.lifecycleDiagnostics must be a boolean",
+        );
+      }
       await runDescriptorUnderLifecycle({
         descriptor,
         options,
@@ -741,6 +750,29 @@ export async function runProbe(descriptor, dependencies = {}) {
         lifecycleDependencies,
         now,
         finalizeOnHardStop: finishRun,
+        ...(descriptor.lifecycleDiagnostics === true
+          ? {
+              onDiagnostic: (diagnostic) => {
+                fs.mkdirSync(outputDirectory, { recursive: true });
+                writeFile(
+                  path.join(
+                    outputDirectory,
+                    `${descriptor.name}-lifecycle-diagnostic.json`,
+                  ),
+                  normalizeJson({
+                    schema: "probe-lifecycle-diagnostic-v1",
+                    diagnosticOnly: true,
+                    complete: false,
+                    probe: descriptor.name,
+                    generatedAt: new Date(now()).toISOString(),
+                    completedCells: cells.length,
+                    capturedFrames: captures.length,
+                    lifecycle: diagnostic,
+                  }),
+                );
+              },
+            }
+          : {}),
         state: lifecycleState,
       });
     } else {

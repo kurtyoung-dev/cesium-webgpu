@@ -20,6 +20,7 @@
 // which path a port-addressed one did not.
 
 import { withEdgeSlot as acquireEdgeSlot } from "./probe-edge-slot.mjs";
+import { describeFailureContainer } from "./probe-lifecycle-diagnostics.mjs";
 import { PROBE_EXIT_CODES, ProbeRefusal } from "./probe-refusal.mjs";
 
 const RESOURCE_ORDER = Object.freeze({
@@ -28,6 +29,10 @@ const RESOURCE_ORDER = Object.freeze({
   context: 2,
   browser: 3,
 });
+/** Entries per list in a diagnostic snapshot; the counts beside each list stay exact. */
+const DIAGNOSTIC_LIST_LIMIT = 64;
+/** Characters of a lifecycle label kept in a diagnostic snapshot. */
+const DIAGNOSTIC_LABEL_LIMIT = 256;
 const TRANSITION_OBSERVED = Symbol("probe-lifecycle-transition-observed");
 const HARD_EXIT_PENDING = new Promise(() => {});
 
@@ -137,6 +142,7 @@ function isEdgeSlotBusyRefusal(raw) {
  * @param {number} options.hardStopGraceMs One non-resetting grace after drain begins.
  * @param {number} options.closeDeadlineMs Per-resource close budget.
  * @param {(failures: unknown[]) => (number|undefined)} [options.onHardStop] Called once, synchronously, when the hard stop fires and before the process exits, with the raw failures the lifecycle holds. It may bank a receipt and returns the exit code to use; any other return (or a throw) keeps the error exit.
+ * @param {(snapshot: Readonly<object>) => void} [options.onDiagnostic] Called synchronously with a bounded, diagnostic-only snapshot of the lifecycle's state when draining begins, when the hard stop fires and when the lifecycle is quiescent. A throw is retained as a lifecycle failure and never replaces the lifecycle's outcome.
  * @param {string} [options.edgeSlotLockPath] Absolute path to this fork's Edge-slot lock file; required before `scope.withEdgeSlot` may be used.
  * @param {(scope: Readonly<object>) => Promise<unknown>|unknown} body Probe work.
  * @param {object} [testDependencies] Hermetic timer, exit, slot, and abort seams.
@@ -167,6 +173,11 @@ export async function withProbeLifecycle(options, body, testDependencies) {
   ) {
     throw new TypeError("onHardStop must be a function");
   }
+  const onDiagnostic = options.onDiagnostic;
+  if (onDiagnostic !== undefined && typeof onDiagnostic !== "function") {
+    throw new TypeError("probe lifecycle onDiagnostic must be a function");
+  }
+  const diagnosticEntries = onDiagnostic === undefined ? null : [];
   if (hardStopGraceMs <= closeDeadlineMs) {
     throw new RangeError(
       "hardStopGraceMs must exceed closeDeadlineMs so a bounded close can settle before hard exit",
@@ -192,15 +203,31 @@ export async function withProbeLifecycle(options, body, testDependencies) {
   let hardExited = false;
   let closeSequence = 0;
   let deadlineRecorded = false;
+  let firstDrainReason = null;
 
   // Armed per resource close. A close that never settles leaves its timer
   // pending; the hard stop clears them, because nothing may fire after it.
   const closeTimers = new Set();
 
   const retain = (promise, label, includeInPhaseA = true) => {
+    const diagnostic =
+      diagnosticEntries === null ? null : { label, status: "pending" };
+    if (diagnostic !== null) {
+      diagnosticEntries.push(diagnostic);
+    }
     const observed = Promise.resolve(promise).then(
-      (value) => fulfilled(value),
-      (raw) => rejected(label, raw),
+      (value) => {
+        if (diagnostic !== null) {
+          diagnostic.status = "fulfilled";
+        }
+        return fulfilled(value);
+      },
+      (raw) => {
+        if (diagnostic !== null) {
+          diagnostic.status = "rejected";
+        }
+        return rejected(label, raw);
+      },
     );
     tracked.add(observed);
     if (includeInPhaseA) {
@@ -214,6 +241,50 @@ export async function withProbeLifecycle(options, body, testDependencies) {
       failures.push(entry);
     }
     return entry;
+  };
+
+  // A bounded snapshot of what the lifecycle still holds: the operations that
+  // have not settled, each resource's closure state, and the retained failures.
+  // Operation values and resource handles never enter it, failure text is
+  // described and bounded by the kit's failure-description rule, and a
+  // throwing observer is recorded as a failure instead of replacing the stop.
+  const emitDiagnostic = (event) => {
+    if (onDiagnostic === undefined) {
+      return;
+    }
+    try {
+      const pending = diagnosticEntries.filter(
+        (entry) => entry.status === "pending",
+      );
+      const snapshot = {
+        schema: "probe-lifecycle-state-v1",
+        event,
+        phase,
+        firstDrainReason,
+        pendingCount: pending.length,
+        pending: pending.slice(0, DIAGNOSTIC_LIST_LIMIT).map((entry) => ({
+          label: entry.label.slice(0, DIAGNOSTIC_LABEL_LIMIT),
+        })),
+        resourceCount: resources.length,
+        resources: resources
+          .slice(0, DIAGNOSTIC_LIST_LIMIT)
+          .map((resource) => ({
+            label: resource.label.slice(0, DIAGNOSTIC_LABEL_LIMIT),
+            kind: resource.kind,
+            closeStarted: resource.closeStarted,
+            closed: resource.closed,
+            closedByParent: resource.closedByParent,
+          })),
+        failureCount: failures.length,
+        failures: failures.slice(0, DIAGNOSTIC_LIST_LIMIT).map((entry) => ({
+          label: entry.label.slice(0, DIAGNOSTIC_LABEL_LIMIT),
+          message: describeFailureContainer(entry.raw),
+        })),
+      };
+      onDiagnostic(Object.freeze(snapshot));
+    } catch (raw) {
+      retainFailure(failure("lifecycle diagnostic", raw));
+    }
   };
 
   const settleStop = (kind) => {
@@ -231,6 +302,7 @@ export async function withProbeLifecycle(options, body, testDependencies) {
     }
     hardExited = true;
     phase = "HARD_EXIT";
+    emitDiagnostic("hard-stop");
     let exitCode = PROBE_EXIT_CODES.ERROR;
     try {
       dependencies.writeDiagnostic(
@@ -492,6 +564,7 @@ export async function withProbeLifecycle(options, body, testDependencies) {
         return;
       }
       phase = "DRAINING";
+      firstDrainReason = reason;
       accepting = false;
       drainingGate.resolve();
       requestAbort();
@@ -507,6 +580,7 @@ export async function withProbeLifecycle(options, body, testDependencies) {
         "cleanup transition",
       );
       armHardGrace();
+      emitDiagnostic("draining");
     } catch (raw) {
       retainFailure(failure("enter draining", raw));
       accepting = false;
@@ -898,6 +972,7 @@ export async function withProbeLifecycle(options, body, testDependencies) {
   }
   dependencies.clearTimeout(hardTimer);
   phase = "QUIESCENT";
+  emitDiagnostic("quiescent");
   const bodyResult = await bodyOutcome;
   const lifecycleFailures = failures.filter((entry) => entry?.occurred);
   if (bodyResult.status === "rejected" && lifecycleFailures.length === 0) {

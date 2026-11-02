@@ -211,6 +211,7 @@ export function deriveLifecycleDeadline(options, descriptor) {
  * @param {Function} [inputs.lifecycle] Lifecycle implementation (test seam).
  * @param {object} [inputs.lifecycleDependencies] Lifecycle dependencies (test seam).
  * @param {() => number} [inputs.now] Clock for the browser-close records.
+ * @param {(snapshot: object) => void} [inputs.onDiagnostic] Synchronous observer of the lifecycle's bounded, diagnostic-only state snapshots.
  * @param {() => number} [inputs.finalizeOnHardStop] Publishes the run and returns its exit code; called from the hard stop when only a lingering browser kept a complete run from finishing.
  * @param {{slot: object|null, verdicts: Array<object>, complete?: boolean, closes?: Array<object>}} inputs.state Mutated with what the run learned: the slot, the verdicts, whether every run's cells and verdicts completed, and one record per browser close.
  * @returns {Promise<void>} Resolves when the lifecycle is quiescent.
@@ -232,6 +233,7 @@ export async function runDescriptorUnderLifecycle({
   lifecycleDependencies,
   now = Date.now,
   finalizeOnHardStop,
+  onDiagnostic,
   state,
 }) {
   const { closeDeadlineMs, hardStopGraceMs } =
@@ -244,6 +246,7 @@ export async function runDescriptorUnderLifecycle({
     closeDeadlineMs,
     hardStopGraceMs,
     edgeSlotLockPath,
+    ...(onDiagnostic === undefined ? {} : { onDiagnostic }),
     ...(finalizeOnHardStop === undefined
       ? {}
       : {

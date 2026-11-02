@@ -397,7 +397,7 @@ const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
  * @param {string|null} options.rigId The rig the page shows, for a refusal's detail.
  * @param {string} options.outputDirectory Where the PNG is written.
  * @param {Array<object>} [options.captures] Sink the record is appended to.
- * @returns {Promise<{record: object, buffer: Buffer, image: object}>} The banked frame.
+ * @returns {Promise<{capture: object, image: object}>} The banked frame.
  */
 async function bankCanvasRead({
   page,
@@ -442,7 +442,16 @@ async function bankCanvasRead({
   if (Array.isArray(captures)) {
     captures.push(record);
   }
-  return { record, buffer, image };
+  const capture = { ...record, buffer };
+  // Metrics retain the PNG bytes; receipts refer to the banked artifact.
+  Object.defineProperty(capture, "toJSON", {
+    value() {
+      const metadata = { ...this };
+      delete metadata.buffer;
+      return metadata;
+    },
+  });
+  return { capture, image };
 }
 
 /**
@@ -488,7 +497,7 @@ export async function captureCloudRigArm({
     moduleUrl: payload.moduleUrl,
     camera: payload.camera,
   });
-  const { record, buffer, image } = await bankCanvasRead({
+  const { capture, image } = await bankCanvasRead({
     page,
     settled,
     name,
@@ -502,7 +511,7 @@ export async function captureCloudRigArm({
       frames: settled.frames,
       sunElevationDeg: settled.sunElevationDeg,
     },
-    capture: { ...record, buffer },
+    capture,
     image,
   };
 }
@@ -538,7 +547,7 @@ export async function captureViewerCanvas({
     camera: null,
     timeSource: "viewer-clock",
   });
-  const { record, buffer, image } = await bankCanvasRead({
+  const { capture, image } = await bankCanvasRead({
     page,
     settled,
     name,
@@ -546,5 +555,5 @@ export async function captureViewerCanvas({
     outputDirectory,
     captures,
   });
-  return { capture: { ...record, buffer }, image };
+  return { capture, image };
 }

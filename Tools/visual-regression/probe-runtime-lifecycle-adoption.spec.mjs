@@ -80,6 +80,7 @@ import {
   servedResponseBudgetMs,
 } from "./lib/c13-42-reproduction-contract.mjs";
 import { acquireEdgeSlot, withEdgeSlot } from "./lib/probe-edge-slot.mjs";
+import { boundFailureDiagnostic } from "./lib/probe-lifecycle-diagnostics.mjs";
 import {
   deriveLifecycleDeadline,
   HARD_STOP_GRACE_MS,
@@ -2290,4 +2291,533 @@ test("I C13-42 runs the complete schedule and bounds progress selection", async 
   await assert.rejects(() => rejectsUnknown(compile(unchecked)), {
     code: "ERR_ASSERTION",
   });
+});
+
+// ---------------------------------------------------------------------------
+// H. Lifecycle diagnostics are opt-in, bounded, and never decide the outcome
+// ---------------------------------------------------------------------------
+
+/**
+ * Run a lifecycle-adopted probe whose browser close never settles, with the
+ * lifecycle timers shortened so the orderly deadline, the close deadline and
+ * the hard stop each fire within the spec's budget.
+ *
+ * @param {object} [options] Options.
+ * @param {boolean} [options.writeFailure] Make the diagnostic writer throw `false`.
+ * @param {boolean} [options.stalledWork] Leave the cells pending forever rather than returning.
+ * @param {Function} [options.run] The `runProbe` under test (a mutant's, for inertness).
+ * @param {Function} [options.lifecycle] The `withProbeLifecycle` under test (a mutant's, for inertness).
+ * @returns {Promise<object>} What the run wrote, exited with and returned.
+ */
+async function runStalledCloseProbe({
+  writeFailure = false,
+  stalledWork = false,
+  run = runProbe,
+  lifecycle,
+} = {}) {
+  return withLaneTmp("lifecycle-diagnostic-", async (root) => {
+    const descriptor = {
+      name: "diagnostic-close",
+      workBudgetMs: () => 1_000,
+      lifecycleDiagnostics: true,
+      cells: stalledWork
+        ? () => new Promise(() => {})
+        : async () => [{ stage: "captured" }],
+      receipt: (cells) => ({ cells }),
+    };
+    const deadline = deriveLifecycleDeadline(
+      { runs: 1, timeoutMs: 120_000 },
+      descriptor,
+    );
+    const snapshots = [];
+    const exits = [];
+    const messages = [];
+    let resolveExit;
+    let returned = false;
+    const exited = new Promise((resolve) => {
+      resolveExit = resolve;
+    });
+    run(descriptor, {
+      argv: ["--no-serve-built", "--repository-root", root],
+      launch: async () => ({
+        isConnected: () => true,
+        close: () => new Promise(() => {}),
+      }),
+      writeFile(file, body) {
+        if (file.endsWith("-lifecycle-diagnostic.json")) {
+          snapshots.push(JSON.parse(body));
+          if (writeFailure) {
+            throw false;
+          }
+        }
+        fs.writeFileSync(file, body);
+      },
+      ...(lifecycle === undefined ? {} : { lifecycle }),
+      lifecycleDependencies: {
+        setTimeout(callback, delay) {
+          const shortened =
+            delay === deadline
+              ? 30
+              : delay === RESOURCE_CLOSE_DEADLINE_MS
+                ? 5
+                : delay === HARD_STOP_GRACE_MS
+                  ? 50
+                  : delay;
+          return setTimeout(callback, shortened);
+        },
+        clearTimeout,
+        exit(code) {
+          exits.push(code);
+          resolveExit();
+        },
+        writeDiagnostic: (text) => messages.push(text.trim()),
+      },
+    }).then(() => {
+      returned = true;
+    });
+    let watchdog;
+    try {
+      await Promise.race([
+        exited,
+        new Promise((resolve, reject) => {
+          watchdog = setTimeout(
+            () => reject(new Error("diagnostic hard stop not observed")),
+            2_000,
+          );
+        }),
+      ]);
+      await Promise.resolve();
+      return {
+        snapshots,
+        exits,
+        messages,
+        returned,
+        files: artifactsOf(root, descriptor.name).files,
+      };
+    } finally {
+      clearTimeout(watchdog);
+    }
+  });
+}
+
+/**
+ * The opt-in contract on healthy runs: no diagnostic file unless asked for,
+ * the receipt published either way, and the asked-for file marked
+ * diagnostic-only and taken at quiescence.
+ *
+ * @param {Function} run The `runProbe` under test.
+ * @param {Function} [lifecycle] The `withProbeLifecycle` under test.
+ * @returns {Promise<void>} Resolves when every assertion held.
+ */
+async function assertOptInHealthyRuns(run, lifecycle) {
+  await withLaneTmp("lifecycle-diagnostic-clean-", async (root) => {
+    for (const enabled of [false, true]) {
+      const name = enabled ? "diagnostic-on" : "diagnostic-off";
+      const exit = await run(
+        {
+          name,
+          workBudgetMs: () => 1_000,
+          lifecycleDiagnostics: enabled,
+          cells: async () => [{ stage: "complete" }],
+          receipt: (cells) => ({ cells }),
+        },
+        {
+          argv: ["--no-serve-built", "--repository-root", root],
+          launch: async () => fakeBrowser(),
+          ...(lifecycle === undefined ? {} : { lifecycle }),
+        },
+      );
+      assert.equal(exit, PROBE_EXIT_CODES.OK);
+      const artifacts = artifactsOf(root, name);
+      const diagnostic = artifacts.files.find((file) =>
+        file.endsWith("-lifecycle-diagnostic.json"),
+      );
+      assert.equal(diagnostic !== undefined, enabled);
+      assert(artifacts.files.some((file) => file.endsWith("-report.json")));
+      if (enabled) {
+        const value = JSON.parse(
+          fs.readFileSync(path.join(artifacts.directory, diagnostic)),
+        );
+        assert.equal(value.diagnosticOnly, true);
+        assert.equal(value.complete, false);
+        assert.equal(value.completedCells, 1);
+        assert.equal(value.lifecycle.event, "quiescent");
+        assert.equal(value.lifecycle.phase, "QUIESCENT");
+        assert.equal(value.lifecycle.pendingCount, 0);
+        assert.equal(value.lifecycle.failureCount, 0);
+      }
+    }
+  });
+}
+
+/**
+ * What an opt-in hard stop over unfinished work must leave behind.
+ *
+ * @param {object} value The result of {@link runStalledCloseProbe}.
+ * @returns {void}
+ */
+function assertStalledRunKeepsDiagnostics(value) {
+  assert.deepEqual(value.exits, [PROBE_EXIT_CODES.ERROR]);
+  assert.equal(value.returned, false);
+  assert.deepEqual(value.files, ["diagnostic-close-lifecycle-diagnostic.json"]);
+  const last = value.snapshots.at(-1);
+  assert.equal(last.diagnosticOnly, true);
+  assert.equal(last.complete, false);
+  assert.equal(last.completedCells, 0);
+  assert.equal(last.lifecycle.event, "hard-stop");
+  assert.equal(last.lifecycle.phase, "HARD_EXIT");
+  assert.equal(typeof last.lifecycle.firstDrainReason, "string");
+  assert(
+    last.lifecycle.pending.some(
+      (entry) => entry.label === "diagnostic-close attempt 0 operation",
+    ),
+    JSON.stringify(last.lifecycle.pending),
+  );
+  assert(
+    last.lifecycle.resources.some(
+      (resource) =>
+        resource.kind === "browser" &&
+        resource.closeStarted &&
+        !resource.closed,
+    ),
+    JSON.stringify(last.lifecycle.resources),
+  );
+  assert(
+    last.lifecycle.failures.some((entry) =>
+      entry.label.includes("close deadline"),
+    ),
+    JSON.stringify(last.lifecycle.failures),
+  );
+}
+
+/**
+ * A failing diagnostic writer is retained and the hard stop still exits ERROR.
+ *
+ * @param {object} value The result of {@link runStalledCloseProbe} with a failing writer.
+ * @returns {void}
+ */
+function assertFailingWriterIsRetained(value) {
+  assert.deepEqual(value.exits, [PROBE_EXIT_CODES.ERROR]);
+  assert.equal(value.returned, false);
+  assert.deepEqual(value.files, []);
+  const last = value.snapshots.at(-1);
+  assert.equal(last.lifecycle.event, "hard-stop");
+  assert(
+    last.lifecycle.failures.some(
+      (entry) =>
+        entry.label === "lifecycle diagnostic" && entry.message === "false",
+    ),
+    JSON.stringify(last.lifecycle.failures),
+  );
+  assert.deepEqual(value.messages, [
+    "diagnostic-close: lifecycle did not reach quiescence before hard-stop grace",
+  ]);
+}
+
+/**
+ * A malformed hook, and a malformed runtime switch, are refused before any
+ * browser is launched.
+ *
+ * @param {Function} withProbeLifecycle The lifecycle under test.
+ * @param {Function} run The `runProbe` under test.
+ * @returns {Promise<void>} Resolves when every assertion held.
+ */
+async function assertMalformedSwitchesRefused(withProbeLifecycle, run) {
+  await assert.rejects(
+    withProbeLifecycle(
+      {
+        probe: "invalid-diagnostic",
+        deadlineMs: 10,
+        closeDeadlineMs: 5,
+        hardStopGraceMs: 20,
+        onDiagnostic: true,
+      },
+      () => {},
+    ),
+    /onDiagnostic must be a function/,
+  );
+  await withLaneTmp("lifecycle-diagnostic-invalid-", async (root) => {
+    let launches = 0;
+    const result = await run(
+      {
+        name: "invalid-diagnostic",
+        workBudgetMs: () => 1_000,
+        lifecycleDiagnostics: "true",
+        cells: async () => [],
+      },
+      {
+        argv: ["--no-serve-built", "--repository-root", root],
+        launch: async () => {
+          launches++;
+          return fakeBrowser();
+        },
+      },
+    );
+    assert.equal(result, PROBE_EXIT_CODES.ERROR);
+    assert.equal(launches, 0);
+    assert(
+      artifactsOf(root, "invalid-diagnostic").files.every(
+        (file) => !file.endsWith("-report.json"),
+      ),
+    );
+  });
+}
+
+/**
+ * A failure whose message is longer than the kit's bound reaches the snapshot
+ * bounded exactly as the kit's failure-description rule bounds it.
+ *
+ * @param {object} lifecycleModule The lifecycle module under test.
+ * @returns {Promise<void>} Resolves when every assertion held.
+ */
+async function assertSnapshotBoundsFailureMessage(lifecycleModule) {
+  const long = `long-failure-${"x".repeat(5_000)}`;
+  assert(long.length > boundFailureDiagnostic(long).length);
+  const snapshots = [];
+  await assert.rejects(
+    lifecycleModule.withProbeLifecycle(
+      {
+        probe: "diagnostic-message-bound",
+        deadlineMs: 1_000,
+        closeDeadlineMs: 500,
+        hardStopGraceMs: 600,
+        onDiagnostic: (snapshot) => snapshots.push(snapshot),
+      },
+      async (scope) => {
+        await scope.withResource(
+          {
+            kind: "session",
+            label: "long failing close",
+            acquire: async () => ({}),
+            close: async () => {
+              throw new Error(long);
+            },
+            isClosed: () => true,
+          },
+          () => {},
+        );
+      },
+    ),
+  );
+  const settled = snapshots.at(-1);
+  assert.equal(settled.event, "quiescent");
+  const recorded = settled.failures.filter((entry) =>
+    entry.message.startsWith("long-failure-"),
+  );
+  assert.ok(recorded.length > 0, JSON.stringify(settled.failures));
+  for (const entry of recorded) {
+    assert.equal(entry.message, boundFailureDiagnostic(long));
+  }
+}
+
+test("H1: lifecycle diagnostics are opt-in and a healthy run still publishes its receipt after quiescence", async () => {
+  await assertOptInHealthyRuns(runProbe);
+});
+
+test("H2: a stalled run keeps pending-operation and resource-closure diagnostics and still ends ERROR with no receipt", async () => {
+  assertStalledRunKeepsDiagnostics(
+    await runStalledCloseProbe({ stalledWork: true }),
+  );
+});
+
+test("H2b: diagnostics do not change how a complete run with a lingering close is decided", async () => {
+  const value = await runStalledCloseProbe();
+  assert.deepEqual(value.exits, [PROBE_EXIT_CODES.OK]);
+  const last = value.snapshots.at(-1);
+  assert.equal(last.lifecycle.event, "hard-stop");
+  assert.equal(last.completedCells, 1);
+  assert(value.files.includes("diagnostic-close-lifecycle-diagnostic.json"));
+  assert(value.files.some((file) => file.endsWith("-report.json")));
+});
+
+test("H3: a failing diagnostic writer is retained as a failure and cannot suppress the hard ERROR exit", async () => {
+  assertFailingWriterIsRetained(
+    await runStalledCloseProbe({ writeFailure: true, stalledWork: true }),
+  );
+});
+
+test("H4: diagnostic snapshots bound their lists and labels and carry no operation values or resource handles", async () => {
+  const { withProbeLifecycle } = await import(
+    pathToFileURL(LIFECYCLE_PATH).href
+  );
+  const snapshots = [];
+  const exits = [];
+  let resolveExit;
+  const exited = new Promise((resolve) => {
+    resolveExit = resolve;
+  });
+  withProbeLifecycle(
+    {
+      probe: "diagnostic-bounds",
+      deadlineMs: 10,
+      closeDeadlineMs: 5,
+      hardStopGraceMs: 20,
+      onDiagnostic: (snapshot) => snapshots.push(snapshot),
+    },
+    (scope) => {
+      for (let i = 0; i < 96; i++) {
+        scope.run(
+          `operation-${i}${"x".repeat(1_000)}`,
+          () => new Promise(() => {}),
+        );
+      }
+      return new Promise(() => {});
+    },
+    {
+      exit(code) {
+        exits.push(code);
+        resolveExit();
+      },
+      writeDiagnostic() {},
+    },
+  );
+  let watchdog;
+  try {
+    await Promise.race([
+      exited,
+      new Promise((resolve, reject) => {
+        watchdog = setTimeout(
+          () => reject(new Error("bounded diagnostic hard stop not observed")),
+          2_000,
+        );
+      }),
+    ]);
+    const value = snapshots.at(-1);
+    assert.deepEqual(exits, [PROBE_EXIT_CODES.ERROR]);
+    assert(value.pendingCount >= 96);
+    assert.equal(value.pending.length, 64);
+    assert(value.pending.every((entry) => entry.label.length <= 256));
+    assert(value.resources.every((entry) => !Object.hasOwn(entry, "handle")));
+    assert(JSON.stringify(value).length < 65_536);
+  } finally {
+    clearTimeout(watchdog);
+  }
+});
+
+test("H5: malformed diagnostic hooks and runtime switches fail before a browser is launched", async () => {
+  const { withProbeLifecycle } = await import(
+    pathToFileURL(LIFECYCLE_PATH).href
+  );
+  await assertMalformedSwitchesRefused(withProbeLifecycle, runProbe);
+});
+
+test("H6: a failure message longer than the kit's bound appears in the snapshot bounded by the kit's rule", async () => {
+  await assertSnapshotBoundsFailureMessage(
+    await import(pathToFileURL(LIFECYCLE_PATH).href),
+  );
+});
+
+test("H7 INERTNESS: each diagnostics mechanism, made unreachable or replaced, turns its assertion red", async (t) => {
+  const redAgainst = async (label, build, assertion) => {
+    await t.test(label, async () => {
+      const mutant = await build();
+      await assert.rejects(() => assertion(mutant), {
+        code: "ERR_ASSERTION",
+      });
+    });
+  };
+  await redAgainst(
+    "the failure message built inline and unbounded instead of by the kit's rule",
+    () =>
+      importMutated(LIFECYCLE_PATH, [
+        [
+          "message: describeFailureContainer(entry.raw),",
+          "message: String(entry.raw?.message ?? entry.raw),",
+        ],
+      ]),
+    assertSnapshotBoundsFailureMessage,
+  );
+  await redAgainst(
+    "the hard-stop snapshot never emitted",
+    () =>
+      importMutated(LIFECYCLE_PATH, [
+        [
+          'emitDiagnostic("hard-stop");',
+          'if (false) emitDiagnostic("hard-stop");',
+        ],
+      ]),
+    async (mutant) =>
+      assertStalledRunKeepsDiagnostics(
+        await runStalledCloseProbe({
+          stalledWork: true,
+          lifecycle: mutant.withProbeLifecycle,
+        }),
+      ),
+  );
+  await redAgainst(
+    "a throwing observer not retained as a failure",
+    () =>
+      importMutated(LIFECYCLE_PATH, [
+        ['retainFailure(failure("lifecycle diagnostic", raw));', "void raw;"],
+      ]),
+    async (mutant) =>
+      assertFailingWriterIsRetained(
+        await runStalledCloseProbe({
+          writeFailure: true,
+          stalledWork: true,
+          lifecycle: mutant.withProbeLifecycle,
+        }),
+      ),
+  );
+  await redAgainst(
+    "a malformed onDiagnostic hook accepted",
+    () =>
+      importMutated(LIFECYCLE_PATH, [
+        [
+          'if (onDiagnostic !== undefined && typeof onDiagnostic !== "function") {',
+          'if (false && onDiagnostic !== undefined && typeof onDiagnostic !== "function") {',
+        ],
+      ]),
+    (mutant) =>
+      assertMalformedSwitchesRefused(mutant.withProbeLifecycle, runProbe),
+  );
+  await redAgainst(
+    "a non-boolean descriptor switch accepted",
+    () =>
+      importMutated(RUNTIME_PATH, [
+        [
+          'typeof descriptor.lifecycleDiagnostics !== "boolean"',
+          'false && typeof descriptor.lifecycleDiagnostics !== "boolean"',
+        ],
+      ]),
+    async (mutant) => {
+      const { withProbeLifecycle } = await import(
+        pathToFileURL(LIFECYCLE_PATH).href
+      );
+      return assertMalformedSwitchesRefused(
+        withProbeLifecycle,
+        mutant.runProbe,
+      );
+    },
+  );
+  await redAgainst(
+    "the quiescent snapshot never emitted",
+    () =>
+      importMutated(LIFECYCLE_PATH, [
+        [
+          'emitDiagnostic("quiescent");',
+          'if (false) emitDiagnostic("quiescent");',
+        ],
+      ]),
+    (mutant) => assertOptInHealthyRuns(runProbe, mutant.withProbeLifecycle),
+  );
+  await redAgainst(
+    "the opt-in switch never honoured",
+    () =>
+      importMutated(RUNTIME_PATH, [
+        [
+          "...(descriptor.lifecycleDiagnostics === true",
+          "...(descriptor.lifecycleDiagnostics === true && false",
+        ],
+      ]),
+    (mutant) => assertOptInHealthyRuns(mutant.runProbe),
+  );
+  await redAgainst(
+    "the diagnostic written whether or not the descriptor opted in",
+    () =>
+      importMutated(RUNTIME_PATH, [
+        ["...(descriptor.lifecycleDiagnostics === true", "...(true"],
+      ]),
+    (mutant) => assertOptInHealthyRuns(mutant.runProbe),
+  );
 });
