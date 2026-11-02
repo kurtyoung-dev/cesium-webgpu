@@ -64,6 +64,7 @@ import {
   shaderDefines,
   variantOnlyLines,
 } from "./lib/wgsl-variant.mjs";
+import { composeRendererTemplate } from "./lib/engine-shader-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -1161,21 +1162,16 @@ test("F1 all six compiled forms pass naga validation", async () => {
       path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
     ),
   });
-  const densityDomain = [
-    "CloudDensityDomain.wgsl",
-    "CloudMarchSampling.wgsl",
-    "CloudSolarLighting.wgsl",
-    "CloudAerialTransport.wgsl",
-    "CloudAirLight.wgsl",
-    "CloudDensityFormation.wgsl",
-  ]
-    .map((name) =>
-      defaultVariant(readEngine("Shaders/WebGPU/Environment/" + name)),
-    )
-    .join("\n");
+  // The march form is the source the renderer's template composes, read out of
+  // the renderer, so a module joining the template is validated without an
+  // edit here.
+  const march = composeRendererTemplate(
+    "Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
+    "PROCEDURAL_CLOUDS_SOURCE",
+  );
   const forms = [
-    ["march default", `${densityDomain}\n${defaultVariant(marchWgsl)}`],
-    ["march emit", `${densityDomain}\n${preprocess(marchWgsl, 0, EMIT)}`],
+    ["march default", defaultVariant(march)],
+    ["march emit", preprocess(march, 0, EMIT)],
     ["producer default", defaultVariant(producerWgsl)],
     ["producer emit", preprocess(producerWgsl, 0, EMIT)],
     ["resolve default", defaultVariant(resolveWgsl)],

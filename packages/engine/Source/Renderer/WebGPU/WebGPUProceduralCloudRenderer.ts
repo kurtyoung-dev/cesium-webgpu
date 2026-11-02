@@ -45,6 +45,7 @@
  */
 import { shouldRebuildForDevice } from "./WebGPUDeviceInvalidationBus.js";
 import ProceduralCloudsWGSL from "../../Shaders/WebGPU/Environment/ProceduralClouds.js";
+import CloudRayEllipsoidWGSL from "../../Shaders/WebGPU/Environment/CloudRayEllipsoid.js";
 import CloudDensityDomainWGSL from "../../Shaders/WebGPU/Environment/CloudDensityDomain.js";
 import CloudMarchSamplingWGSL from "../../Shaders/WebGPU/Environment/CloudMarchSampling.js";
 import CloudSolarLightingWGSL from "../../Shaders/WebGPU/Environment/CloudSolarLighting.js";
@@ -238,7 +239,7 @@ const CLOUD_UNIFORM_FLOATS =
   CLOUD_MATERIAL_FLOW_FLOATS +
   CLOUD_AIR_LIGHT_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
-const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudAirLightWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
+const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudAirLightWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${CloudRayEllipsoidWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
 // High-word define masks for the emitting march and the consuming resolve.
 // Named once so no call site spells a bit inline, and so a spec can assert the
 // renderer preprocesses with the axis the registry documents rather than with a

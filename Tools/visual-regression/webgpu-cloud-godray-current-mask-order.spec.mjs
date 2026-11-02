@@ -104,6 +104,7 @@ const REAL_MASK_PATHS = [
   "CloudViewIntegration.js",
   "CloudAerialTransport.js",
   "CloudAirLight.js",
+  "CloudRayEllipsoid.js",
   "WebGPUCloudAirLight.ts",
   "WebGPUCloudPrimaryReuse.ts",
   "WebGPUCloudMarchFeatures.ts",

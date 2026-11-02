@@ -56,3 +56,67 @@ export function readEngineShader(relativePath, { eol = "lf" } = {}) {
   const text = fs.readFileSync(engineShaderPath(relativePath), "utf8");
   return eol === "lf" ? text.replace(/\r\n/g, "\n") : text;
 }
+
+// The two source characters a template literal uses to join its modules (a
+// backslash followed by `n`), as they appear in the renderer's text.
+const ESCAPED_NEWLINE = String.fromCharCode(92, 110);
+
+/**
+ * The WGSL text a renderer's template constant composes: the modules it joins,
+ * each read from the `.wgsl` behind the generated module the renderer imports,
+ * joined with newlines in the template's order. Unpreprocessed: the result
+ * still carries its `//>>ifdef` blocks, so a caller hands it to the engine's
+ * `preprocess` for the variant it wants.
+ *
+ * The constant must be a template literal of `${Module}` placeholders joined
+ * by newline escapes and nothing else (whole modules only), and every name
+ * must be imported as `import X from "../../Shaders/<path>.js"`; anything else
+ * throws, because a template that adds text of its own is a composition this
+ * reader would silently misstate.
+ *
+ * @param {string} rendererPath Path of the renderer below `packages/engine/Source`, e.g. `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`.
+ * @param {string} constantName The template constant, e.g. `PROCEDURAL_CLOUDS_SOURCE`.
+ * @param {(relativePath: string) => string} [read] Reads one file below `packages/engine/Source` (the renderer and each module); defaults to the checkout holding this module. Pass another reader to compose from another tree.
+ * @returns {string} LF-normalised composed source.
+ */
+export function composeRendererTemplate(
+  rendererPath,
+  constantName,
+  read = (relativePath) => readEngineShader(relativePath),
+) {
+  const lf = (text) => text.replace(/\r\n/g, "\n");
+  const renderer = lf(read(rendererPath));
+  const escapedName = constantName.replace(/[$()*+.?[\\\]^{|}]/g, "\\$&");
+  const template = renderer.match(
+    new RegExp(`const ${escapedName}(?::[^=]+)? = \`([^\`]*)\`;`),
+  );
+  if (!template) {
+    throw new Error(
+      `composeRendererTemplate: ${rendererPath} has no template constant ${constantName}`,
+    );
+  }
+  const names = [...template[1].matchAll(/\$\{(\w+)\}/g)].map((m) => m[1]);
+  if (
+    names.length === 0 ||
+    template[1] !== names.map((name) => `\${${name}}`).join(ESCAPED_NEWLINE)
+  ) {
+    throw new Error(
+      `composeRendererTemplate: ${constantName} must join whole modules with a backslash-n escape only`,
+    );
+  }
+  return names
+    .map((name) => {
+      const imported = renderer.match(
+        new RegExp(
+          `import ${name} from "\\.\\./\\.\\./(Shaders/[\\w/]+)\\.js";`,
+        ),
+      );
+      if (!imported) {
+        throw new Error(
+          `composeRendererTemplate: ${rendererPath} does not import ${name} as a Shaders/ module`,
+        );
+      }
+      return lf(read(`${imported[1]}.wgsl`));
+    })
+    .join("\n");
+}

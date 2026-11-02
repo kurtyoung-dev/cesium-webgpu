@@ -63,6 +63,7 @@ const cloudShaderSource =
     "CloudAirLight.wgsl",
     "CloudDensityFormation.wgsl",
     "CloudDensityMoments.wgsl",
+    "CloudRayEllipsoid.wgsl",
     "CloudViewIntegration.wgsl",
   ]
     .map((name) =>
