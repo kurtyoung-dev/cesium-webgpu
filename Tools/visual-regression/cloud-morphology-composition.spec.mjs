@@ -35,7 +35,13 @@ const shaderPath = path.join(
   "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
 );
 const shaderSource = defaultVariant(
-  fs.readFileSync(shaderPath, "utf8"),
+  [
+    fs.readFileSync(shaderPath, "utf8"),
+    fs.readFileSync(
+      path.join(path.dirname(shaderPath), "CloudLightMarch.wgsl"),
+      "utf8",
+    ),
+  ].join("\n"),
 ).replace(
   new RegExp(String.fromCharCode(13) + String.fromCharCode(10), "g"),
   String.fromCharCode(10),

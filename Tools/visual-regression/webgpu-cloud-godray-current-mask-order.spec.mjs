@@ -114,6 +114,13 @@ const REAL_MASK_PATHS = [
   "WebGPUCloudDensityCache.ts",
   "WebGPUCloudDensityCacheProgram.ts",
   "CloudDensityCache.js",
+  "CloudLightMarch.js",
+  "CloudDirectionalLighting.js",
+  "CloudDeepShadow.js",
+  "WebGPUCloudDeepShadowCache.ts",
+  "CloudDeepShadowCache.js",
+  "CloudPrimaryDensity.js",
+  "CloudDensitySnapshot.js",
   "CloudWeatherVolumeBounds.js",
   "CloudWeatherOctree.js",
   "OctreeNode.js",
@@ -3131,6 +3138,57 @@ const DENSITY_CACHE_FAMILY = {
 
 test("the density cache dial compiles CLOUD_DENSITY_SAMPLE_CACHE into the march the frame selects", async () => {
   await assertFamilyDial(DENSITY_CACHE_FAMILY);
+});
+
+// The deep shadow is built only while the sun stands above the footprint, so
+// this family puts the sun over the camera.
+const DEEP_SHADOW_FAMILY = {
+  name: "deep shadow cache",
+  dials: { cloudDeepShadowCache: true },
+  sun: { x: 0, y: 0.6, z: 0.8 },
+  flag: "deepShadowActive",
+  bits: ["CLOUD_DIRECTIONAL_LIGHTING", "CLOUD_DEEP_SHADOW_CACHE"],
+  own: "CLOUD_DEEP_SHADOW_CACHE",
+  eligibility: [
+    "if (deepShadowEligible) {",
+    "if (false && deepShadowEligible) {",
+  ],
+};
+
+const DIRECTIONAL_LIGHTING_FAMILY = {
+  name: "directional lighting",
+  dials: { cloudDirectionalLighting: true },
+  flag: "directionalLightingRequested",
+  bits: ["CLOUD_DIRECTIONAL_LIGHTING"],
+  own: "CLOUD_DIRECTIONAL_LIGHTING",
+  eligibility: [
+    "(config.cloudDirectionalLighting === true ||",
+    "false && (config.cloudDirectionalLighting === true ||",
+  ],
+};
+
+const PRIMARY_DENSITY_FAMILY = {
+  name: "primary density cache",
+  dials: { cloudPrimaryDensityCache: true },
+  flag: "primaryDensityActive",
+  bits: ["CLOUD_DENSITY_SAMPLE_CACHE", "CLOUD_PRIMARY_DENSITY_CACHE"],
+  own: "CLOUD_PRIMARY_DENSITY_CACHE",
+  eligibility: [
+    "config.cloudPrimaryDensityCache === true &&",
+    "false && config.cloudPrimaryDensityCache === true &&",
+  ],
+};
+
+test("the deep shadow cache dial compiles CLOUD_DEEP_SHADOW_CACHE into the march the frame selects", async () => {
+  await assertFamilyDial(DEEP_SHADOW_FAMILY);
+});
+
+test("the directional lighting dial compiles CLOUD_DIRECTIONAL_LIGHTING into the march the frame selects", async () => {
+  await assertFamilyDial(DIRECTIONAL_LIGHTING_FAMILY);
+});
+
+test("the primary density cache dial compiles CLOUD_PRIMARY_DENSITY_CACHE into the march the frame selects", async () => {
+  await assertFamilyDial(PRIMARY_DENSITY_FAMILY);
 });
 
 function runPrimaryReuseFrame(engine, fixture, config) {

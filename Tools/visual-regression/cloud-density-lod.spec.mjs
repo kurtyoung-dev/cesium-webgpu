@@ -17,10 +17,45 @@ const domainSource = fs.readFileSync(
   ),
   "utf8",
 );
-const cloudSource = fs.readFileSync(
+const cloudBodySource = fs.readFileSync(
   path.join(
     root,
     "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
+  ),
+  "utf8",
+);
+const cloudSource = [
+  "CloudMarchSampling.wgsl",
+  "CloudSolarLighting.wgsl",
+  "CloudAerialTransport.wgsl",
+  "CloudAirLight.wgsl",
+  "CloudDensityFormation.wgsl",
+  "CloudDensityMoments.wgsl",
+  "CloudMaterialFlow.wgsl",
+  "CloudSpatialOccupancy.wgsl",
+  "CloudWeatherVolumeBounds.wgsl",
+  "CloudDensityCache.wgsl",
+  "CloudDeepShadow.wgsl",
+  "CloudDirectionalLighting.wgsl",
+  "CloudLightMarch.wgsl",
+  "CloudViewIntegration.wgsl",
+]
+  .map((name) =>
+    fs.readFileSync(
+      path.join(
+        root,
+        "packages/engine/Source/Shaders/WebGPU/Environment",
+        name,
+      ),
+      "utf8",
+    ),
+  )
+  .concat(cloudBodySource)
+  .join("\n");
+const lightSource = fs.readFileSync(
+  path.join(
+    root,
+    "packages/engine/Source/Shaders/WebGPU/Environment/CloudLightMarch.wgsl",
   ),
   "utf8",
 );
@@ -440,7 +475,7 @@ test("MUTANT: an unreachable clamp, or the bare pixel footprint at the call site
 test("light, shadow, and IBL marches supply their represented intervals", () => {
   const coneBody = cloudSource.slice(
     cloudSource.indexOf("fn lightMarchCone("),
-    cloudSource.indexOf("fn lightMarch("),
+    cloudSource.indexOf("fn effectiveAbsorption("),
   );
   assert.match(
     coneBody,
@@ -452,10 +487,7 @@ test("light, shadow, and IBL marches supply their represented intervals", () => 
   );
   assert.doesNotMatch(coneBody, /tapFootprint|max\(coneStepBase, coneRadius\)/);
 
-  const straightBody = cloudSource.slice(
-    cloudSource.indexOf("fn lightMarch("),
-    cloudSource.indexOf("fn effectiveAbsorption("),
-  );
+  const straightBody = lightSource;
   assert.match(
     straightBody,
     /cloudDensityAtCoordinates\([\s\S]*hf,[\s\S]*deckBottom,[\s\S]*deckTop,[\s\S]*stepSize/,

@@ -531,6 +531,16 @@ class CloudVolumetrics {
     let densityCacheCellSize = 128;
     let densityCacheUpdateSlices = 8;
     let densityCacheWindTolerance = 4;
+    let directionalLighting = false;
+    let deepShadowCache = false;
+    let deepShadowSize = 64;
+    let deepShadowHalfExtent = 8192;
+    let deepShadowRowsPerFrame = 8;
+    let deepShadowNearDistance = 128;
+    let deepShadowWindTolerance = 32;
+    let primaryDensityCache = false;
+    let primaryDensityMinDistance = 512;
+    let primaryDensityStrength = 1;
     Object.defineProperties(experimental, {
       /**
        * When <code>true</code>, distant and orbital cloud fronts read a baked
@@ -748,6 +758,228 @@ class CloudVolumetrics {
           densityCacheWindTolerance = value;
         },
       },
+      /**
+       * When <code>true</code>, the march lights each sample along the sun
+       * direction with the directional light march. WebGPU only.
+       * @type {boolean}
+       * @default false
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudDirectionalLighting: {
+        enumerable: true,
+        get: function () {
+          return directionalLighting;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.bool("experimental.cloudDirectionalLighting", value);
+          //>>includeEnd('debug');
+          directionalLighting = value;
+        },
+      },
+      /**
+       * When <code>true</code>, directional lighting reads a sun-aligned deep
+       * shadow cache of the optical depth near the camera, and marches the light
+       * ray directly outside it. Turns directional lighting on. WebGPU only.
+       * @type {boolean}
+       * @default false
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudDeepShadowCache: {
+        enumerable: true,
+        get: function () {
+          return deepShadowCache;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.bool("experimental.cloudDeepShadowCache", value);
+          //>>includeEnd('debug');
+          deepShadowCache = value;
+        },
+      },
+      /**
+       * The deep shadow cache's edge length in texels: 32, 64 or 128; any
+       * other value reads as 64. WebGPU only.
+       * @type {number}
+       * @default 64
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudDeepShadowSize: {
+        enumerable: true,
+        get: function () {
+          return deepShadowSize;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudDeepShadowSize",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          deepShadowSize = value;
+        },
+      },
+      /**
+       * Half the width, in metres, of the area the deep shadow cache covers
+       * around the camera. WebGPU only.
+       * @type {number}
+       * @default 8192
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudDeepShadowHalfExtent: {
+        enumerable: true,
+        get: function () {
+          return deepShadowHalfExtent;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudDeepShadowHalfExtent",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          deepShadowHalfExtent = value;
+        },
+      },
+      /**
+       * The number of deep shadow cache rows refreshed per frame, at least one
+       * and at most the cache size. WebGPU only.
+       * @type {number}
+       * @default 8
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudDeepShadowRowsPerFrame: {
+        enumerable: true,
+        get: function () {
+          return deepShadowRowsPerFrame;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudDeepShadowRowsPerFrame",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          deepShadowRowsPerFrame = value;
+        },
+      },
+      /**
+       * The distance in metres from the camera inside which lighting marches
+       * the light ray directly instead of reading the deep shadow cache.
+       * WebGPU only.
+       * @type {number}
+       * @default 128
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudDeepShadowNearDistance: {
+        enumerable: true,
+        get: function () {
+          return deepShadowNearDistance;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudDeepShadowNearDistance",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          deepShadowNearDistance = value;
+        },
+      },
+      /**
+       * How far, in metres, the wind may carry the density before the deep
+       * shadow cache is rebuilt. WebGPU only.
+       * @type {number}
+       * @default 32
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudDeepShadowWindTolerance: {
+        enumerable: true,
+        get: function () {
+          return deepShadowWindTolerance;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudDeepShadowWindTolerance",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          deepShadowWindTolerance = value;
+        },
+      },
+      /**
+       * When <code>true</code>, the primary march reads the density cache for
+       * samples beyond <code>cloudPrimaryDensityMinDistance</code>, and samples
+       * the density directly nearer the camera. Turns the density cache on.
+       * WebGPU only.
+       * @type {boolean}
+       * @default false
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudPrimaryDensityCache: {
+        enumerable: true,
+        get: function () {
+          return primaryDensityCache;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.bool("experimental.cloudPrimaryDensityCache", value);
+          //>>includeEnd('debug');
+          primaryDensityCache = value;
+        },
+      },
+      /**
+       * The distance in metres from the camera beyond which the primary march
+       * reads the density cache. WebGPU only.
+       * @type {number}
+       * @default 512
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudPrimaryDensityMinDistance: {
+        enumerable: true,
+        get: function () {
+          return primaryDensityMinDistance;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudPrimaryDensityMinDistance",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          primaryDensityMinDistance = value;
+        },
+      },
+      /**
+       * The weight of the cached density in the primary march, from 0 (direct
+       * sampling only) upward; 0 turns the primary reuse off. WebGPU only.
+       * @type {number}
+       * @default 1
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudPrimaryDensityStrength: {
+        enumerable: true,
+        get: function () {
+          return primaryDensityStrength;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudPrimaryDensityStrength",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          primaryDensityStrength = value;
+        },
+      },
     });
     experimental.cloudDistantDensityMoments =
       options.experimental?.cloudDistantDensityMoments ?? false;
@@ -769,6 +1001,26 @@ class CloudVolumetrics {
       options.experimental?.cloudDensityCacheUpdateSlices ?? 8;
     experimental.cloudDensityCacheWindTolerance =
       options.experimental?.cloudDensityCacheWindTolerance ?? 4;
+    experimental.cloudDirectionalLighting =
+      options.experimental?.cloudDirectionalLighting ?? false;
+    experimental.cloudDeepShadowCache =
+      options.experimental?.cloudDeepShadowCache ?? false;
+    experimental.cloudDeepShadowSize =
+      options.experimental?.cloudDeepShadowSize ?? 64;
+    experimental.cloudDeepShadowHalfExtent =
+      options.experimental?.cloudDeepShadowHalfExtent ?? 8192;
+    experimental.cloudDeepShadowRowsPerFrame =
+      options.experimental?.cloudDeepShadowRowsPerFrame ?? 8;
+    experimental.cloudDeepShadowNearDistance =
+      options.experimental?.cloudDeepShadowNearDistance ?? 128;
+    experimental.cloudDeepShadowWindTolerance =
+      options.experimental?.cloudDeepShadowWindTolerance ?? 32;
+    experimental.cloudPrimaryDensityCache =
+      options.experimental?.cloudPrimaryDensityCache ?? false;
+    experimental.cloudPrimaryDensityMinDistance =
+      options.experimental?.cloudPrimaryDensityMinDistance ?? 512;
+    experimental.cloudPrimaryDensityStrength =
+      options.experimental?.cloudPrimaryDensityStrength ?? 1;
     /**
      * Experimental volumetric cloud dials, grouped apart from the core dials on
      * this object. A dial here may change without notice. WebGPU only.

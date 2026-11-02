@@ -26,6 +26,12 @@ export interface CloudMarchFeatures {
   bounds?: boolean;
   /** Light rays read the filtered density cache (`CLOUD_DENSITY_SAMPLE_CACHE`). */
   density?: boolean;
+  /** Lights samples with the directional light march (`CLOUD_DIRECTIONAL_LIGHTING`). */
+  directional?: boolean;
+  /** Directional lighting reads the deep shadow cache (`CLOUD_DEEP_SHADOW_CACHE`). */
+  deep?: boolean;
+  /** The primary march also reads the density cache; needs `density` (`CLOUD_PRIMARY_DENSITY_CACHE`). */
+  primary?: boolean;
 }
 
 /**
@@ -38,6 +44,9 @@ export interface CloudMarchResourceState {
   spatialOccupancyActive?: boolean;
   weatherBoundsActive?: boolean;
   densityCacheActive?: boolean;
+  directionalLightingRequested?: boolean;
+  deepShadowActive?: boolean;
+  primaryDensityActive?: boolean;
 }
 
 /**
@@ -53,6 +62,9 @@ export function cloudMarchActiveFeatures(
     spatial: cache.spatialOccupancyActive ?? false,
     bounds: cache.weatherBoundsActive ?? false,
     density: cache.densityCacheActive ?? false,
+    directional: cache.directionalLightingRequested ?? false,
+    deep: cache.deepShadowActive ?? false,
+    primary: cache.primaryDensityActive ?? false,
   };
 }
 
@@ -70,6 +82,11 @@ export function cloudMarchFeatureDefines(features: CloudMarchFeatures): number {
     (features.spatial && features.bounds
       ? ShaderDefineHi.CLOUD_WEATHER_VOLUME_BOUNDS
       : 0) |
-    (features.density ? ShaderDefineHi.CLOUD_DENSITY_SAMPLE_CACHE : 0)
+    (features.density ? ShaderDefineHi.CLOUD_DENSITY_SAMPLE_CACHE : 0) |
+    (features.directional ? ShaderDefineHi.CLOUD_DIRECTIONAL_LIGHTING : 0) |
+    (features.deep ? ShaderDefineHi.CLOUD_DEEP_SHADOW_CACHE : 0) |
+    (features.density && features.primary
+      ? ShaderDefineHi.CLOUD_PRIMARY_DENSITY_CACHE
+      : 0)
   );
 }

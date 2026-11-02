@@ -494,7 +494,7 @@
       "bit": 14,
       "name": "CLOUD_PRIMARY_DENSITY_CACHE",
       "owner": "cloud-march",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",
@@ -508,14 +508,14 @@
       "bit": 16,
       "name": "CLOUD_DIRECTIONAL_LIGHTING",
       "owner": "cloud-lighting",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",
       "bit": 17,
       "name": "CLOUD_DEEP_SHADOW_CACHE",
       "owner": "cloud-lighting",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",

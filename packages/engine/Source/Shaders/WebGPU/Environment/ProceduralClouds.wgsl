@@ -2082,108 +2082,7 @@ fn lightMarchCone(
   return opticalDepth;
 }
 
-// Light march: optical depth toward the sun.
-// Dispatches to the cone path when QF_LIGHT_CONE is set, otherwise to the
-// straight N-step march below.
-fn lightMarch(
-  pos: vec3<f32>,
-  heightFraction: f32,
-  deckBottom: f32,
-  deckTop: f32,
-  densityCoordinates: CloudDensityCoordinates,
-  morphologyCoordinate: vec3<f32>,
-) -> f32 {
-  //>>ifdef CLOUD_LIGHTING_PREVIEW
-  // A vertical column estimate avoids secondary density evaluation at startup.
-  let columnHeight = max(deckTop - deckBottom, 0.0) *
-    (1.0 - clamp(heightFraction, 0.0, 1.0));
-  return columnHeight * cloud.densityMultiplier * cloud.profileDensityScale * 0.05;
-  //>>else
-  if (lightConeEnabled()) {
-    return lightMarchCone(
-      pos, heightFraction, deckBottom, deckTop,
-      densityCoordinates, morphologyCoordinate
-    );
-  }
-  let sunDir = normalize(cloud.sunDirection);
-  // Scale the light-march step count by the tier's lightSampleScale: 1.0 leaves
-  // it alone, and lower tiers march fewer, bigger steps for roughly the same
-  // optical depth at lower cost. `lightSteps` multiplies the per-view-sample
-  // cost, so this is the cheapest lever the low tiers have.
-  let steps = max(1, i32(cloud.lightSteps * cloud.lightSampleScale));
-  let innerAxes = cloudShellAxes(deckBottom);
-  let outerAxes = cloudShellAxes(deckTop);
-  let innerInverseAxes = vec3<f32>(1.0) / innerAxes;
-  let outerInverseAxes = vec3<f32>(1.0) / outerAxes;
-  let layerThickness = deckTop - deckBottom;
 
-  // March toward sun through remaining cloud
-  let stepSize = layerThickness / f32(steps);
-  var opticalDepth: f32 = 0.0;
-  let usePlanetDensity = planetDensityEnabled() && noiseBakedEnabled();
-  var canonicalStep = vec3<f32>(0.0);
-  var shapeStep = vec3<f32>(0.0);
-  var warpStep = vec3<f32>(0.0);
-  var detailStep = vec3<f32>(0.0);
-  if (usePlanetDensity) {
-    canonicalStep =
-      sunDir * stepSize * CLOUD_DENSITY_WORLD_TO_NOISE;
-    shapeStep =
-      CLOUD_DENSITY_SHAPE_ROTATION *
-      (canonicalStep * cloud.puffSize);
-    warpStep =
-      CLOUD_DENSITY_WARP_ROTATION *
-      (
-        canonicalStep *
-        cloud.puffSize *
-        CLOUD_DENSITY_WARP_RATIO
-      );
-    detailStep =
-      CLOUD_DENSITY_DETAIL_ROTATION *
-      (canonicalStep * CLOUD_DENSITY_DETAIL_RATIO);
-  }
-
-  for (var i: i32 = 0; i < steps; i++) {
-    let stepMultiple = f32(i + 1);
-    let sampleDelta = sunDir * stepMultiple * stepSize;
-    let samplePos = pos + sampleDelta;
-    let hf = ellipsoidShellHeightFraction(
-      samplePos, innerInverseAxes, outerInverseAxes
-    );
-    if (usePlanetDensity) {
-      let sampleCoordinates = CloudDensityCoordinates(
-        densityCoordinates.canonical + canonicalStep * stepMultiple,
-        wrapCloudDensityDomain(
-          densityCoordinates.shape + shapeStep * stepMultiple
-        ),
-        wrapCloudDensityDomain(
-          densityCoordinates.warp + warpStep * stepMultiple
-        ),
-        wrapCloudDensityDomain(
-          densityCoordinates.detail + detailStep * stepMultiple
-        ),
-      );
-      let sampleMorphologyCoordinate =
-        morphologyCoordinate + canonicalStep * stepMultiple;
-      opticalDepth += cloudDensityAtCoordinates(
-        samplePos,
-        sampleCoordinates,
-        sampleMorphologyCoordinate,
-        hf,
-        deckBottom,
-        deckTop,
-        stepSize,
-      ) * stepSize;
-    } else {
-      opticalDepth += legacyCloudDensity(
-        samplePos, hf, deckBottom, deckTop
-      ) * stepSize;
-    }
-  }
-
-  return opticalDepth;
-  //>>endif
-}
 
 // Per-genus optical extinction coefficient. `cloud.absorptionCoeff` carries the
 // scene-wide Beer-Lambert extinction and `profileExtinction`, float 103, scales
@@ -2619,6 +2518,12 @@ fn marchDeck(
       0.0,
     );
     var base: f32 = 0.0;
+//>>ifdef CLOUD_PRIMARY_DENSITY_CACHE
+    let primaryDensity = cloudPrimaryDensityAt(sampleOffset, deckBottom, deckTop,
+      cloudViewPixelFootprint(sampleDistance, cloud.inverseProjection[1].y, cloud.resolution.y),
+      curFineStep, heightFraction, sampleDistance, fine);
+//>>else
+//>>endif
 //>>ifdef CLOUD_DENSITY_MOMENTS
     let distantDensity = cloudDistantDensityAt(
       samplePos, heightFraction, deckBottom, deckTop,
@@ -2654,6 +2559,10 @@ fn marchDeck(
       if (distantDensity.blend < 1.0) {
 //>>else
 //>>endif
+//>>ifdef CLOUD_PRIMARY_DENSITY_CACHE
+      if (primaryDensity.y < 1.0) {
+//>>else
+//>>endif
       macroSample = cloudMacroSampleAt(
         samplePos,
         densityCoordinates,
@@ -2667,6 +2576,13 @@ fn marchDeck(
         cloudDensityLodFootprint(sampleDistance, cloud.inverseProjection[1].y, cloud.resolution.y, curFineStep),
       );
       base = cloudBaseFromMacro(macroSample);
+//>>ifdef CLOUD_PRIMARY_DENSITY_CACHE
+      }
+      // Positive filtered mass retains integration support; it never permits
+      // a coarse skip or certifies that a point or interval is empty.
+      if (primaryDensity.y > 0.0) { base = max(base, 0.0002); }
+//>>else
+//>>endif
 //>>ifdef CLOUD_DENSITY_MOMENTS
       }
       // A positive filtered contribution cannot be declared empty by the point oracle.
@@ -2745,6 +2661,10 @@ fn marchDeck(
         macroSample.coordinates.detail = detailCoordinate;
 //>>endif
       }
+//>>ifdef CLOUD_PRIMARY_DENSITY_CACHE
+      if (primaryDensity.y < 1.0) {
+//>>else
+//>>endif
 //>>ifdef CLOUD_DENSITY_MOMENTS
       density = distantDensity.moments.x * distantDensity.densityFactor;
       if (distantDensity.blend < 1.0) {
@@ -2753,6 +2673,11 @@ fn marchDeck(
       }
 //>>else
       density = cloudDensityFromMacro(macroSample, heightFraction);
+//>>endif
+//>>ifdef CLOUD_PRIMARY_DENSITY_CACHE
+        density = mix(density, primaryDensity.x, primaryDensity.y);
+      } else { density = primaryDensity.x; }
+//>>else
 //>>endif
     } else {
       density = legacyCloudDensity(
@@ -2770,10 +2695,15 @@ fn marchDeck(
       let sunlight = cloudLocalSunlight(samplePos, sunDir);
       var lightOpticalDepth = 0.0;
       if (dot(sunlight, sunlight) > 0.0) {
+//>>ifdef CLOUD_DIRECTIONAL_LIGHTING
+        lightOpticalDepth = cloudDirectionalLight(heightFraction, deckBottom, deckTop,
+          densityCoordinates, morphologyCoordinate);
+//>>else
         lightOpticalDepth = lightMarch(
           samplePos, heightFraction, deckBottom, deckTop,
           densityCoordinates, morphologyCoordinate,
         );
+//>>endif
       }
       // `powder` is the resolved tier's `powderStrength`, slot 172.
       // It was the literal 0.5 here while `CloudTierPreset.powderStrength`
@@ -3083,6 +3013,11 @@ fn cloudShadowMain(input: VertexOutput) -> @location(0) f32 {
     return 0.0;
   }
 
+//>>ifdef CLOUD_DEEP_SHADOW_CACHE
+  let cachedColumn = cloudDeepShadowRead(columnRelative + rayDir * tEnd, deckBottom, deckTop, 0.0);
+  if (cachedColumn.y >= 1.0) { return clamp(cachedColumn.x, 0.0, 8000.0); }
+//>>else
+//>>endif
   let steps = max(2, i32(cloudShadow.sunDirAndSteps.w));
   let stepSize = (tEnd - tStart) / f32(steps);
   var opticalDepth: f32 = 0.0;
@@ -3121,5 +3056,9 @@ fn cloudShadowMain(input: VertexOutput) -> @location(0) f32 {
   // raw integral over a dense ~2.5 km shell at densityMultiplier ~0.3 is of
   // order 10² to 10³, so a cap well under the f16 maximum leaves headroom while
   // stopping a runaway density from writing a NaN into the map.
+//>>ifdef CLOUD_DEEP_SHADOW_CACHE
+  return clamp(mix(opticalDepth, cachedColumn.x, cachedColumn.y), 0.0, 8000.0);
+//>>else
   return clamp(opticalDepth, 0.0, 8000.0);
+//>>endif
 }

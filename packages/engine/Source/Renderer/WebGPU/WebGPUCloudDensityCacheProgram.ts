@@ -3,10 +3,24 @@ import { ShaderDefineHi } from "./WebGPUShaderDefines.js";
 import BuildSource from "../../Shaders/WebGPU/Compute/CloudDensityCache.js";
 
 export function cloudDensityCacheProgram(source: string): string {
+  return cloudDensityComputeProgram(
+    source,
+    BuildSource,
+    "cloudDensityCacheBuildMain",
+  );
+}
+
+export function cloudDensityComputeProgram(
+  source: string,
+  kernel: string,
+  entry: string,
+  definesHi = 0,
+): string {
   const flags =
     ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY |
-    ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY;
-  const raw = preprocess([source, BuildSource].join("\n"), 0, flags)
+    ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY |
+    definesHi;
+  const raw = preprocess([source, kernel].join("\n"), 0, flags)
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/\/\/[^\n]*/g, "");
   const functions = new Map<string, string>(),
@@ -37,7 +51,7 @@ export function cloudDensityCacheProgram(source: string): string {
     declaration.lastIndex = end;
   }
   const selected = new Set<string>(),
-    pending = ["cloudDensityCacheBuildMain"];
+    pending = [entry];
   while (pending.length > 0) {
     const name = pending.pop()!;
     if (selected.has(name)) {

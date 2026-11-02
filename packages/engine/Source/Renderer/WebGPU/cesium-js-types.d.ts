@@ -1362,6 +1362,26 @@ interface CloudVolumetricsConfig {
   cloudDensityCacheUpdateSlices?: number;
   /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
   cloudDensityCacheWindTolerance?: number;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudPrimaryDensityCache?: boolean;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudPrimaryDensityMinDistance?: number;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudPrimaryDensityStrength?: number;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudDirectionalLighting?: boolean;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudDeepShadowCache?: boolean;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudDeepShadowSize?: number;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudDeepShadowHalfExtent?: number;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudDeepShadowRowsPerFrame?: number;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudDeepShadowNearDistance?: number;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudDeepShadowWindTolerance?: number;
   cloudCoverage?: number;
   cloudDensity?: number;
   cloudLayerBottom?: number;

@@ -17,6 +17,15 @@ export interface CloudDensityCacheOptions {
   cloudDensityCacheCellSize?: number;
   cloudDensityCacheUpdateSlices?: number;
   cloudDensityCacheWindTolerance?: number;
+  cloudPrimaryDensityCache?: boolean;
+  cloudPrimaryDensityMinDistance?: number;
+  cloudPrimaryDensityStrength?: number;
+}
+export interface CloudDensitySamplingSnapshot {
+  texture: GPUTexture;
+  uniform: GPUBuffer;
+  size: number;
+  publication: number;
 }
 interface TimingContext {
   withComputePassTimestamps?(
@@ -108,16 +117,19 @@ function createResources(
     const views = textures.map((texture) =>
       texture.createView({ dimension: "3d" }),
     );
-    const buffer = (label: string, bytes: number) => {
+    const buffer = (label: string, bytes: number, copySource = false) => {
       const value = device.createBuffer({
         label,
         size: bytes,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        usage:
+          GPUBufferUsage.UNIFORM |
+          GPUBufferUsage.COPY_DST |
+          (copySource ? GPUBufferUsage.COPY_SRC : 0),
       });
       allocated.push(value);
       return value;
     };
-    const query = buffer("Cloud density cache frame", 48);
+    const query = buffer("Cloud density cache frame", 48, true);
     const producer = buffer("Cloud density cache material", 196 * 4);
     const build = buffer("Cloud density cache region", 32);
     const outputs = views.map((view) =>
@@ -137,7 +149,7 @@ function createResources(
     throw error;
   }
 }
-const materialSlots = [
+export const cloudDensityCacheMaterialSlots: readonly number[] = [
   40, 41, 42, 43, 46, 48, 49, 50, 62, 64, 65, 68, 69, 70, 71, 74, 75, 77, 79,
   96, 101, 102, 104, 107, 112, 114, 115, 116, 117, 118, 119, 128, 129, 130, 132,
   133, 134, 135, 136, 137, 138, 139, 168, 169, 170,
@@ -202,6 +214,17 @@ export class CloudDensityCache {
   }
   get uniform(): GPUBuffer | null {
     return this.resources?.query ?? null;
+  }
+  get samplingSnapshot(): CloudDensitySamplingSnapshot | null {
+    if (!this.ready || !this.active || !this.resources) {
+      return null;
+    }
+    return {
+      texture: this.resources.textures[this.active.index],
+      uniform: this.resources.query,
+      size: this.resources.size,
+      publication: this.publications,
+    };
   }
 
   prepare(
@@ -342,7 +365,7 @@ export class CloudDensityCache {
       cell,
       size,
       inputs.weatherVersion,
-      ...materialSlots.map((i) => data[i]),
+      ...cloudDensityCacheMaterialSlots.map((i) => data[i]),
     ]);
     const bindings = [
       inputs.weather,
@@ -459,6 +482,17 @@ export class CloudDensityCache {
       query[3] = 1;
       query[7] = cell;
       query[8] = size;
+      if (options.cloudPrimaryDensityCache === true) {
+        const distance = options.cloudPrimaryDensityMinDistance ?? 512;
+        const strength = options.cloudPrimaryDensityStrength ?? 1;
+        query[9] = Number.isFinite(distance)
+          ? Math.max(0, Math.min(100000, distance))
+          : 512;
+        query[10] = cell * 2;
+        query[11] = Number.isFinite(strength)
+          ? Math.max(0, Math.min(1, strength))
+          : 0;
+      }
     }
     device.queue.writeBuffer(r.query, 0, query);
     this.ready = ready;

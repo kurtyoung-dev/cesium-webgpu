@@ -65,6 +65,7 @@ const cloudShaderSource =
     "CloudDensityMoments.wgsl",
     "CloudRayEllipsoid.wgsl",
     "CloudViewIntegration.wgsl",
+    "CloudLightMarch.wgsl",
   ]
     .map((name) =>
       fs.readFileSync(path.join(path.dirname(cloudShaderPath), name), "utf8"),
@@ -1474,7 +1475,7 @@ test("geographic material work is omitted from disabled recipes and shared by pr
     path.join(directory, "CloudMaterialFlow.wgsl"),
     "utf8",
   );
-  const raw = flow + "\n" + fs.readFileSync(cloudShaderPath, "utf8");
+  const raw = flow + "\n" + cloudShaderSource;
   const disabled = defaultVariant(raw);
   assert.ok(!disabled.includes("var<storage, read> cloudMaterialFlow"));
   assert.ok(!disabled.includes("cloudMaterialNoiseOffset(worldPos)"));
