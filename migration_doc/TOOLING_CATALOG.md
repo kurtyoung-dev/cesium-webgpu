@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1995 |
+| Files in census | 1996 |
 | ACTIVE | 1740 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
-| NO @purpose HEADER | 52 |
+| NO @purpose HEADER | 53 |
 | NO @status HEADER | 2 |
-| Classes | probe 683, spec 582, other 413, lib 260, gate-lib 21, fixture 16, bake-tool 13, runner 7 |
+| Classes | probe 683, spec 583, other 413, lib 260, gate-lib 21, fixture 16, bake-tool 13, runner 7 |
 
 ### Tools/ (72)
 
@@ -491,7 +491,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1211)
+### Tools/visual-regression/ (1212)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -581,14 +581,14 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-density-domain.spec.mjs | spec | ACTIVE | 2026-11-02 | 13 | Pins the cloud density-domain layout: noise origin/phase/rotation float offsets shared between WebGPUCloudDensityDomain.ts and the WGSL, via exports. |
 | cloud-density-lod.spec.mjs | spec | ACTIVE | 2026-10-29 | 3 | Pins LOD agreement across CloudDensityDomain.wgsl, ProceduralClouds.wgsl and ProceduralSkyCubemap.wgsl via direct source reads. |
 | cloud-finite-air-light.spec.mjs | spec | ACTIVE | 2026-10-30 | 5 | Verifies finite spectral cloud air transport and its append-only atmosphere inputs. |
-| cloud-genus-morphology.spec.mjs | spec | ACTIVE | 2026-10-30 | 11 | C13-16 cirrus row: add-only uniform layout, exact CUMULUS byte-neutrality, structural fibre anisotropy/shear metrics, mutation-rejected predicates. |
+| cloud-genus-morphology.spec.mjs | spec | ACTIVE | 2026-11-02 | 11 | C13-16 cirrus row: add-only uniform layout, exact CUMULUS byte-neutrality, structural fibre anisotropy/shear metrics, mutation-rejected predicates. |
 | cloud-harvest-routing.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Drives the six harvested cloud probes (phase, ambient, tod, aerial, special, features) through runProbe on a stub browser whose canvas reads and element screenshots are hand-painted PNGs, so each descriptor is known to stage its rigs, take its origin from the runtime, measure the canvas in Node with the kit metrics and bind every clause to the exit code before an Edge slot is spent on it; the demo probes' own page functions run against a stub window, so their dials are seen to reach the cloud collection. |
 | cloud-ibl-revision.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | Source-anchored guard that WebGPUDynamicEnvironmentMapManager and the procedural cloud renderer keep the IBL revision handshake wired (CRLF-safe). |
 | cloud-image-analysis.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | node:test guard for lib/cloud-image-analysis.mjs: analyze/compare/periodicity-factorial classification on deterministic synthetic noise images. |
 | cloud-march-budget.spec.mjs | spec | ACTIVE | 2026-10-29 | 5 | Executes the pure cloud resolver from Node to prove that every input path (the tier dial, raw cloudQuality and the debug realization override) resolves to a march whose cost, counted over the shader's real interval sentinel, never exceeds the budget; that an ask inside the budget resolves byte-identical to the resolver as it stood before the budget; that an ask outside it keeps every field but the step counts, loses primary steps before light steps, and reports the ask; that the measured completions and hangs fall on the stated sides; and that each gate made unreachable turns the matching assertion red. |
-| cloud-march-emission.spec.mjs | spec | ACTIVE | 2026-10-30 | 9 | C13-10: march-emitted reconstruction depth behind one compile-time bit, four sibling pipelines compile verbatim, CPU-twin cross-validation, mutants. |
+| cloud-march-emission.spec.mjs | spec | ACTIVE | 2026-11-02 | 9 | C13-10: march-emitted reconstruction depth behind one compile-time bit, four sibling pipelines compile verbatim, CPU-twin cross-validation, mutants. |
 | cloud-march-features.spec.mjs | spec | ACTIVE | 2026-11-02 | 1 | Pins that the cloud march pipeline request built from a CloudMarchFeatures object is observably identical to the positional-argument request it replaced: same pipeline-cache key, definesHi for the module cache and the pipeline descriptor, fragment entry point and colour-target formats, and the same variant sequence from selectCloudMarchPipeline, over a sweep of emit, preview, moments, primary reuse, cache state and format; the base answers are captured from the base revision, never typed. |
-| cloud-march-kernels.spec.mjs | spec | ACTIVE | — | 0 | Every module-scope WGSL function is defined exactly once in the composed, preprocessed text each cloud pipeline hands to the compiler (the march template under every flag conjunction the enumeration reaches, the compute producers that join the march, the other cloud templates, the standalone cloud modules), so a kernel shared between modules cannot be pasted into two of them; also pins that no cloud reflection field or proxy arrives. |
+| cloud-march-kernels.spec.mjs | spec | ACTIVE | 2026-11-02 | 0 | Every module-scope WGSL function is defined exactly once in the composed, preprocessed text each cloud pipeline hands to the compiler (the march template under every flag conjunction the enumeration reaches, the compute producers that join the march, the other cloud templates, the standalone cloud modules), so a kernel shared between modules cannot be pasted into two of them; also pins that no cloud reflection field or proxy arrives. |
 | cloud-march-transfer.spec.mjs | spec | ACTIVE | 2026-08-21 | 8 | Permanent home of the R3 march-transfer model: predicts the integrated image against 2026-08-06 tour ground truth; mutation group rebuilt non-vacuous. |
 | cloud-morphology-composition.spec.mjs | spec | ACTIVE | 2026-10-29 | 3 | C13-16 U2 candidate contract: genus-conditioned variance budget + fibre carve before erosion; WGSL wiring invariants and carve-after-erosion mutants. |
 | cloud-noise-mipmaps.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Pins WebGPUCloudNoiseResources + CloudNoiseMipmap.wgsl mip-chain agreement, with a loud guard on the halve-to-1 loop's integer precondition. |
@@ -608,6 +608,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-rig-stage.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Drives lib/cloud-rig-stage.mjs: the Node payload builder over the real rigs the migrated W-series gates stage (and its refusals), the two page-side functions against a stub viewer and a stub Cesium namespace (dials, clock, camera, sun-relative heading, and a canvas read in the task of the final render), the one-arm capture's acceptance, refusals and record, and the demo-leg read at the viewer's own clock. |
 | cloud-scenes-contract.spec.mjs | spec | ACTIVE | 2026-09-12 | 11 | Checked contract for the two cloud scenes added to scenes.json: existence, setupFile resolution, threshold-override honesty, expectedMismatch legality, and — the highest-value assertion — that the setup file never sets an unknown CloudVolumetrics property. |
 | cloud-shadow-rte.spec.mjs | spec | ACTIVE | 2026-10-30 | 8 | C13-06 cloud shadow/mask/env-capture/atmosphere RTE contract: f64 frame-owner math, f32 WGS84-vs-spherical oracle, source ownership, naga validation. |
+| cloud-spatial-occupancy.spec.mjs | spec | NO @purpose HEADER | — | 0 | — |
 | cloud-spectrum.spec.mjs | spec | ACTIVE | 2026-09-12 | 6 | node:test guard for lib/cloud-spectrum.mjs (C13-N04, O5 Structure): |
 | cloud-temporal-rte.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | Pins WebGPUCloudTemporalHistory reset classification (teleport, morph, deck bounds, scene mode...) and commit semantics vs the engine module. |
 | cloud-temporal-source-view.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins that both cloud temporal bind-group pairs rebuild when the half-res target is replaced at an unchanged size, and that the check is live rather than inert. |
@@ -1883,7 +1884,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | device-loss-steps.mjs | lib | ACTIVE | 2026-10-31 | 8 | Step piece for the landing program's E-T cell: runs a rig's provoking steps (resize ladder via lib/globe-resize-steps.mjs, sky-box swaps via lib/skybox-swap-steps.mjs, a water or cloud tier switch), reads the error gate and the runtime's capture-liveness decision after each, then either destroys the viewer (teardown) or forces the device lost (WebGPU device.destroy, WebGL WEBGL_lose_context) and renders on, and returns {mode, steps, terminal, deviceLost, errors, owners, consoleErrors} - the named owners' live census rows before and after, and the console errors split into the engine's device-lost sentinel and everything else; terminalShape/sameTerminal are the one reader of the terminal record. |
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 20 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 6 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
-| engine-shader-source.mjs | lib | ACTIVE | 2026-10-30 | 46 | Resolves and reads engine shader sources (packages/engine/Source/Shaders/**) for specs, so a move or decomposition of a shader changes one module instead of every spec that reads it. |
+| engine-shader-source.mjs | lib | ACTIVE | 2026-11-02 | 46 | Resolves and reads engine shader sources (packages/engine/Source/Shaders/**) for specs, so a move or decomposition of a shader changes one module instead of every spec that reads it. |
 | engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 46 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
 | engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 65 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | first-frame-guard.mjs | lib | ACTIVE | 2026-10-31 | 5 | Decides, from a decoded capture's non-black share, whether a probe's first frame is a frame at all, re-settles a bounded number of times when it is not, and REFUSES (first-frame-black, exit 3) when it stays black, so an undrawn globe is never scored as a product FAIL. |
@@ -2016,7 +2017,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | wgsl-derivative-uniformity.mjs | lib | ACTIVE | 2026-09-01 | 8 | Reports implicit-derivative calls reached through non-uniform control flow without requiring a browser, GPU, or WGSL compiler. |
 | wgsl-function-body.mjs | lib | ACTIVE | 2026-10-09 | 2 | Builds an inertness mutant of a shader helper by swapping the whole body of a named WGSL function, so a mutant does not depend on the helper's current wording. |
 | wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 38 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
-| wgsl-variant.mjs | lib | ACTIVE | 2026-10-30 | 30 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
+| wgsl-variant.mjs | lib | ACTIVE | 2026-10-30 | 31 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
 ### Tools/visual-regression/lib/metrics/ (52)
 

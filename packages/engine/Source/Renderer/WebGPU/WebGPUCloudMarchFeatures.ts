@@ -20,6 +20,8 @@ export interface CloudMarchFeatures {
   primaryReuseDefinesHi?: number;
   /** Samples the density moments (`CLOUD_DENSITY_MOMENTS`). */
   moments?: boolean;
+  /** Skips empty space with the occupancy grid (`CLOUD_SPATIAL_OCCUPANCY`). */
+  spatial?: boolean;
 }
 
 /**
@@ -29,6 +31,7 @@ export interface CloudMarchFeatures {
  */
 export interface CloudMarchResourceState {
   densityMomentsEnabled?: boolean;
+  spatialOccupancyActive?: boolean;
 }
 
 /**
@@ -41,6 +44,7 @@ export function cloudMarchActiveFeatures(
 ): CloudMarchFeatures {
   return {
     moments: cache.densityMomentsEnabled ?? false,
+    spatial: cache.spatialOccupancyActive ?? false,
   };
 }
 
@@ -52,5 +56,8 @@ export function cloudMarchActiveFeatures(
  * @private
  */
 export function cloudMarchFeatureDefines(features: CloudMarchFeatures): number {
-  return features.moments ? ShaderDefineHi.CLOUD_DENSITY_MOMENTS : 0;
+  return (
+    (features.moments ? ShaderDefineHi.CLOUD_DENSITY_MOMENTS : 0) |
+    (features.spatial ? ShaderDefineHi.CLOUD_SPATIAL_OCCUPANCY : 0)
+  );
 }

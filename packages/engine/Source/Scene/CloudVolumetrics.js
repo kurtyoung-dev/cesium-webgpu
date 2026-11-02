@@ -523,6 +523,8 @@ class CloudVolumetrics {
     const experimental = {};
     let distantDensityMoments = false;
     let reusePrimaryIntegral = false;
+    let spatialOccupancy = false;
+    let spatialOccupancyRefreshPages = 2;
     Object.defineProperties(experimental, {
       /**
        * When <code>true</code>, distant and orbital cloud fronts read a baked
@@ -565,11 +567,58 @@ class CloudVolumetrics {
           reusePrimaryIntegral = value;
         },
       },
+      /**
+       * When <code>true</code>, the march skips empty space with a camera-centred
+       * occupancy grid of the formed density, and samples detail directly outside
+       * the grid's cells. WebGPU only.
+       * @type {boolean}
+       * @default false
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudSpatialOccupancy: {
+        enumerable: true,
+        get: function () {
+          return spatialOccupancy;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.bool("experimental.cloudSpatialOccupancy", value);
+          //>>includeEnd('debug');
+          spatialOccupancy = value;
+        },
+      },
+      /**
+       * The number of occupancy pages refreshed per frame while
+       * <code>cloudSpatialOccupancy</code> builds or follows the camera. WebGPU only.
+       * @type {number}
+       * @default 2
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudSpatialOccupancyRefreshPages: {
+        enumerable: true,
+        get: function () {
+          return spatialOccupancyRefreshPages;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudSpatialOccupancyRefreshPages",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          spatialOccupancyRefreshPages = value;
+        },
+      },
     });
     experimental.cloudDistantDensityMoments =
       options.experimental?.cloudDistantDensityMoments ?? false;
     experimental.cloudReusePrimaryIntegral =
       options.experimental?.cloudReusePrimaryIntegral ?? false;
+    experimental.cloudSpatialOccupancy =
+      options.experimental?.cloudSpatialOccupancy ?? false;
+    experimental.cloudSpatialOccupancyRefreshPages =
+      options.experimental?.cloudSpatialOccupancyRefreshPages ?? 2;
     /**
      * Experimental volumetric cloud dials, grouped apart from the core dials on
      * this object. A dial here may change without notice. WebGPU only.

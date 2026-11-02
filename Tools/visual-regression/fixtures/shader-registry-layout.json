@@ -480,7 +480,7 @@
       "bit": 12,
       "name": "CLOUD_SPATIAL_OCCUPANCY",
       "owner": "cloud-march",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",

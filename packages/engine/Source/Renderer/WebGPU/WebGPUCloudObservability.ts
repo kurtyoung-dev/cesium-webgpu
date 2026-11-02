@@ -57,7 +57,7 @@ import type { TimedPassSample } from "./WebGPUTimestampAccounting.js";
 import { CLOUD_RECONSTRUCTION_ATTACHMENTS } from "./WebGPUCloudReconstructionAttachments.js";
 
 /**
- * Render-pass labels of the cloud passes, in encode order. Keys into the
+ * Render and compute pass labels of the cloud passes, in encode order. Keys into the
  * timestamp profiler's per-pass results and into the frame's raw samples.
  */
 export const CLOUD_TIMED_PASS_NAMES: readonly string[] = Object.freeze([
@@ -76,6 +76,9 @@ export const CLOUD_TIMED_PASS_NAMES: readonly string[] = Object.freeze([
   "ProceduralClouds transmittance-mask pass",
   "CloudPrimaryReuse march pass",
   "CloudPrimaryReuse composite pass",
+  "Cloud occupancy invalidation",
+  "Cloud occupancy refresh",
+  "Cloud occupancy parent bounds",
 ]);
 
 /**

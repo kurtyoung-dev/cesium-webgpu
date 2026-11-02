@@ -495,6 +495,24 @@ test("D1 the pass registry and the encode sites agree in BOTH directions", () =>
       /timedCloudPass\(context, \{\n\s*label:([^,]*(?:\?[^:]*:[^,]*)?),/g,
     ),
   ].flatMap((m) => [...m[1].matchAll(/"([^"]+)"/g)].map((s) => s[1]));
+  // Cloud cache producers encode their compute passes in their own owner
+  // files, through the context's compute-pass timestamps: a pass opened with
+  // `begin("<label>")` or from a `{ label: "<label>" }` descriptor there is an
+  // encode site of that label too.
+  for (const file of fs.readdirSync(enginePath("Renderer/WebGPU")).sort()) {
+    if (!/^WebGPUCloud\w*\.ts$/.test(file)) {
+      continue;
+    }
+    const owner = readEngine(`Renderer/WebGPU/${file}`);
+    if (!owner.includes("withComputePassTimestamps")) {
+      continue;
+    }
+    for (const m of owner.matchAll(
+      /\bbegin\("([^"]+)"\)|const descriptor = \{ label: "([^"]+)" \};/g,
+    )) {
+      encodeLabels.push(m[1] ?? m[2]);
+    }
+  }
   assert.equal(
     encodeLabels.length,
     CLOUD_TIMED_PASS_NAMES.length,

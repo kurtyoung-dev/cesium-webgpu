@@ -108,6 +108,11 @@ const REAL_MASK_PATHS = [
   "WebGPUCloudAirLight.ts",
   "WebGPUCloudPrimaryReuse.ts",
   "WebGPUCloudMarchFeatures.ts",
+  "WebGPUCloudSpatialOccupancy.ts",
+  "WebGPUCloudNoiseBounds.ts",
+  "CloudSpatialOccupancy.js",
+  "CloudNoiseBounds.js",
+  "CloudNoiseBoundsQuery.js",
   "CloudPrimaryComposite.js",
   "CloudUpscale.js",
   "CloudTemporalResolve.js",
@@ -2806,6 +2811,253 @@ test("the primary-reuse request compiles the selected march's defines with the r
     () => assertReuseDefines(observeReuseDefines(mutant)),
     assert.AssertionError,
   );
+});
+
+// ─── experimental cloud dials reach the march the frame compiles ────────────
+//
+// Each experimental cloud feature is off by default and turned on by one dial
+// of the cloud config. With the dial on, the real frame prepares the feature's
+// owner, the owner reports its cache flag live, and the march the frame
+// selects compiles the feature's high-word define. These checks drive that
+// path through the real renderer on the recording device, which gains the
+// compute calls the owners make, and read the defines of the march requests
+// the frame makes. With the dial off, no request carries the define; with the
+// dial's eligibility branch made unreachable, none does either.
+
+// The compute calls the cloud cache owners make, added to one fixture's
+// device and to every encoder it creates.
+function addComputeRecording(fixture) {
+  const { device } = fixture;
+  device.createComputePipelineAsync = async (descriptor) => {
+    const pipeline = device.createComputePipeline(descriptor);
+    pipeline.getBindGroupLayout = (index) =>
+      token("compute-bind-group-layout", { pipeline, index });
+    return pipeline;
+  };
+  const withCompute = (encoder) => {
+    encoder.beginComputePass ??= () => ({
+      setPipeline() {},
+      setBindGroup() {},
+      dispatchWorkgroups() {},
+      end() {},
+    });
+    encoder.copyBufferToBuffer ??= () => {};
+    return encoder;
+  };
+  const createEncoder = device.createCommandEncoder;
+  device.createCommandEncoder = (descriptor) =>
+    withCompute(createEncoder(descriptor));
+  withCompute(fixture.encoder);
+  fixture.nextComputeEncoder = (label) =>
+    withCompute(fixture.makeEncoder({ label }));
+}
+
+// The high-word defines of every cloud march pipeline the frame requests.
+function recordMarchRequests(fixture) {
+  const requested = [];
+  const cache = fixture.context.webgpuPipelineCache;
+  const getPipelineSync = cache.getPipelineSync;
+  cache.getPipelineSync = (descriptor) => {
+    if (/^ProceduralClouds /.test(descriptor.name ?? "")) {
+      requested.push(descriptor.definesHi);
+    }
+    return getPipelineSync(descriptor);
+  };
+  return requested;
+}
+
+// The baked noise volumes the occupancy and bounds owners read, as the bake
+// would leave them: power-of-two rgba8unorm cubes.
+function seedNoiseVolumes(fixture) {
+  const noise = fixture.context._cloudCache?.noise;
+  if (!noise || noise.shapeTexture) return;
+  const cube = (label, size) =>
+    Object.assign(fixture.device.createTexture({ label }), {
+      width: size,
+      height: size,
+      depthOrArrayLayers: size,
+      format: "rgba8unorm",
+    });
+  noise.shapeTexture = cube("seeded-shape-volume", 128);
+  noise.detailTexture = cube("seeded-detail-volume", 32);
+}
+
+async function settleOwnerWork(timerTicks = 1) {
+  for (let i = 0; i < 8; i++) {
+    await new Promise((done) => setImmediate(done));
+  }
+  for (let i = 0; i < timerTicks; i++) {
+    await new Promise((done) => setTimeout(done, 0));
+  }
+}
+
+// The baked tier the owners need: planet density, baked noise and the
+// high-precision march.
+const FAMILY_BASE_CONFIG = { cloudQuality: 64, cloudVolumetricQuality: "high" };
+
+// Runs frames with `dials` on until the selected march carries every bit of
+// `mask` or `frames` frames have run, and returns every requested definesHi.
+async function runFamilyFrames(engine, family, dials, frames) {
+  const fixture = makeCloudFixture();
+  addComputeRecording(fixture);
+  const requested = recordMarchRequests(fixture);
+  if (family.sun) {
+    fixture.context.uniformState.sunDirectionWC = family.sun;
+  }
+  fixture.config = { ...fixture.config, ...FAMILY_BASE_CONFIG, ...dials };
+  const mask = familyMask(family.bits);
+  let frame = 0;
+  while (frame < frames) {
+    await runCapturedCloud(engine, fixture);
+    seedNoiseVolumes(fixture);
+    await settleOwnerWork(family.timerTicks);
+    fixture.submitEncoder(fixture.context._currentCommandEncoder, true);
+    fixture.context._currentCommandEncoder = fixture.nextComputeEncoder(
+      `family frame ${frame}`,
+    );
+    fixture.frameState.frameNumber++;
+    frame++;
+    if ((fixture.context._cloudCache.selectedMarchDefinesHi & mask) === mask) {
+      break;
+    }
+  }
+  return { requested, frames: frame, cache: fixture.context._cloudCache };
+}
+
+function familyMask(bits) {
+  return bits.reduce(
+    (mask, bit) => mask | shaderDefines.ShaderDefineHi[bit],
+    0,
+  );
+}
+
+// The dial on compiles the family's defines into the selected march; the dial
+// off, over as many frames, requests none of them; the dial on with its
+// eligibility branch made unreachable never requests the family's own define.
+async function assertFamilyDial(family) {
+  const mask = familyMask(family.bits);
+  const own = familyMask([family.own]);
+  const engine = await loadHarness({ extraReal: family.extraReal ?? [] });
+  const on = await runFamilyFrames(engine, family, family.dials, 24);
+  assert.equal(
+    on.cache[family.flag],
+    true,
+    `${family.flag} is live after ${on.frames} frames`,
+  );
+  assert.equal(
+    on.cache.selectedMarchDefinesHi & mask,
+    mask,
+    `the selected march compiles ${family.bits.join(" + ")}`,
+  );
+  const off = await runFamilyFrames(engine, family, {}, on.frames);
+  assert.deepEqual(
+    off.requested.filter((hi) => (hi & mask) !== 0),
+    [],
+    "the dial off requests none of the family's defines",
+  );
+  const [anchor, replacement] = family.eligibility;
+  const mutant = await loadHarness({
+    extraReal: family.extraReal ?? [],
+    overrides: [
+      {
+        basename: "WebGPUProceduralCloudRenderer.ts",
+        mutate: (source) =>
+          replaceExactlyOnce(source, anchor, replacement, family.name),
+        label: `${family.name} eligibility made unreachable`,
+      },
+    ],
+  });
+  const dead = await runFamilyFrames(mutant, family, family.dials, on.frames);
+  assert.deepEqual(
+    dead.requested.filter((hi) => (hi & own) !== 0),
+    [],
+    `with its eligibility unreachable ${family.own} is never requested`,
+  );
+}
+
+const SPATIAL_OCCUPANCY_FAMILY = {
+  name: "spatial occupancy",
+  dials: { cloudSpatialOccupancy: true },
+  flag: "spatialOccupancyActive",
+  bits: ["CLOUD_SPATIAL_OCCUPANCY"],
+  own: "CLOUD_SPATIAL_OCCUPANCY",
+  eligibility: [
+    "config.cloudSpatialOccupancy === true &&",
+    "false && config.cloudSpatialOccupancy === true &&",
+  ],
+};
+
+test("the spatial occupancy dial compiles CLOUD_SPATIAL_OCCUPANCY into the march the frame selects", async () => {
+  await assertFamilyDial(SPATIAL_OCCUPANCY_FAMILY);
+});
+
+// The half-resolution emission request takes the active features of the
+// cache, so with occupancy live the emitted march compiles the selected
+// march's defines plus the emission bits.
+async function observeEmissionDefines(engine) {
+  const fixture = makeCloudFixture();
+  addComputeRecording(fixture);
+  fixture.config = {
+    ...fixture.config,
+    ...FAMILY_BASE_CONFIG,
+    cloudVolumetricQuality: "medium",
+    cloudSpatialOccupancy: true,
+  };
+  const spatial = shaderDefines.ShaderDefineHi.CLOUD_SPATIAL_OCCUPANCY;
+  let cache;
+  for (let frame = 0; frame < 24; frame++) {
+    await runCapturedCloud(engine, fixture);
+    cache = fixture.context._cloudCache;
+    cache.attachmentsEnabled = true;
+    cache.reconstructionEnabled = true;
+    seedNoiseVolumes(fixture);
+    await settleOwnerWork();
+    fixture.submitEncoder(fixture.context._currentCommandEncoder, true);
+    fixture.context._currentCommandEncoder = fixture.nextComputeEncoder(
+      `emission frame ${frame}`,
+    );
+    fixture.frameState.frameNumber++;
+    if (
+      cache.halfEmitPipeline &&
+      (cache.selectedMarchDefinesHi & spatial) !== 0
+    ) {
+      break;
+    }
+  }
+  assert.ok(cache.halfEmitPipeline, "the emission march is requested");
+  assert.notEqual(cache.selectedMarchDefinesHi & spatial, 0);
+  return {
+    emitted: cache.halfEmitPipeline.descriptor.definesHi,
+    selected: cache.selectedMarchDefinesHi,
+  };
+}
+
+function assertEmissionDefines({ emitted, selected }) {
+  assert.equal(
+    emitted,
+    selected | shaderDefines.ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION,
+  );
+}
+
+test("the half-resolution emission request compiles the selected march's live features", async () => {
+  assertEmissionDefines(await observeEmissionDefines(await loadHarness()));
+  const mutant = await loadHarness({
+    overrides: [
+      {
+        basename: "WebGPUProceduralCloudRenderer.ts",
+        mutate: (source) =>
+          replaceExactlyOnce(
+            source,
+            "requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true)",
+            "requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true, {})",
+            "emission request without the cache's features",
+          ),
+        label: "emission request without the cache's features",
+      },
+    ],
+  });
+  const dead = await observeEmissionDefines(mutant);
+  assert.throws(() => assertEmissionDefines(dead), assert.AssertionError);
 });
 
 function runPrimaryReuseFrame(engine, fixture, config) {

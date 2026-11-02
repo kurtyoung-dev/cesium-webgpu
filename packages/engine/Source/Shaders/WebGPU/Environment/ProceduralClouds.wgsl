@@ -1596,6 +1596,12 @@ fn cloudMacroSampleAt(
     wch = decodeWeatherChannels(wsample.gba, deckTop - deckBottom);
   }
 
+//>>ifdef CLOUD_SPATIAL_OCCUPANCY
+  if (cloudSpatialSampleEmpty(coordinates.canonical, footprintMeters, effectiveCoverage)) {
+    return CloudMacroSample(0.0, 0.0, coordinates, morphologyCoordinate, 0.0);
+  }
+//>>else
+//>>endif
   var mipLevels = CloudNoiseMipLevels(0.0, 0.0, 0.0);
   var density: f32;
 //>>ifdef CLOUD_NOISE_BAKED_ONLY
@@ -1653,6 +1659,10 @@ fn cloudDensityFromMacro(
   sample: CloudMacroSample,
   heightFraction: f32,
 ) -> f32 {
+//>>ifdef CLOUD_SPATIAL_OCCUPANCY
+  if (sample.densityFactor == 0.0) { return 0.0; }
+//>>else
+//>>endif
   var density = sample.preErosion;
   var detailPos = sample.coordinates.detail;
   if (cloud.curlAmplitude > 0.0) {
@@ -2548,6 +2558,17 @@ fn marchDeck(
     let curFineStep = max(min(fineBoundary, tEnd) - t, 0.0001);
     let curCoarseStep = max(min(coarseBoundary, tEnd) - t, curFineStep);
 
+//>>ifdef CLOUD_SPATIAL_OCCUPANCY
+    if (cloudSpatialSpanEmpty(rayDir, t, min(coarseBoundary, tEnd))) {
+      interval = min(interval + 4.0, f32(steps));
+      processedInterval = interval;
+      t = min(coarseBoundary, tEnd);
+      tProcessed = t;
+      emptyRun = 0;
+      continue;
+    }
+//>>else
+//>>endif
     let curStep = select(curCoarseStep, curFineStep, fine);
     // The sample phase shifts only the sample within the current interval. `t`,
     // `tProcessed`, the coarse backtracking and the interval bounds are

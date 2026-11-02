@@ -1346,6 +1346,10 @@ interface CloudVolumetricsConfig {
   cloudDistantDensityMoments?: boolean;
   /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
   cloudReusePrimaryIntegral?: boolean;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudSpatialOccupancy?: boolean;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudSpatialOccupancyRefreshPages?: number;
   cloudCoverage?: number;
   cloudDensity?: number;
   cloudLayerBottom?: number;

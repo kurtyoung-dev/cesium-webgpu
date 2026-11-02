@@ -52,6 +52,8 @@ import CloudSolarLightingWGSL from "../../Shaders/WebGPU/Environment/CloudSolarL
 import CloudViewIntegrationWGSL from "../../Shaders/WebGPU/Environment/CloudViewIntegration.js";
 import CloudAerialTransportWGSL from "../../Shaders/WebGPU/Environment/CloudAerialTransport.js";
 import CloudAirLightWGSL from "../../Shaders/WebGPU/Environment/CloudAirLight.js";
+import CloudSpatialOccupancyWGSL from "../../Shaders/WebGPU/Environment/CloudSpatialOccupancy.js";
+import { CloudSpatialOccupancy } from "./WebGPUCloudSpatialOccupancy.js";
 import { CloudPrimaryReuseResources } from "./WebGPUCloudPrimaryReuse.js";
 import {
   CLOUD_AIR_LIGHT_FLOATS,
@@ -239,7 +241,7 @@ const CLOUD_UNIFORM_FLOATS =
   CLOUD_MATERIAL_FLOW_FLOATS +
   CLOUD_AIR_LIGHT_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
-const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudAirLightWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${CloudRayEllipsoidWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
+const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudAirLightWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${CloudSpatialOccupancyWGSL}\n${CloudRayEllipsoidWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
 // High-word define masks for the emitting march and the consuming resolve.
 // Named once so no call site spells a bit inline, and so a spec can assert the
 // renderer preprocesses with the axis the registry documents rather than with a
@@ -285,6 +287,8 @@ export interface CloudMainBindGroupEntry {
   lutSampler: GPUSampler;
   densityMomentsView: GPUTextureView;
   materialFlowBuffer: GPUBuffer;
+  occupancyView: GPUTextureView;
+  occupancyUniformBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
 }
 
@@ -391,6 +395,8 @@ interface CloudNonColorBindings {
   readonly lutSampler: GPUSampler;
   readonly densityMomentsView: GPUTextureView;
   readonly materialFlowBuffer: GPUBuffer;
+  readonly occupancyView: GPUTextureView;
+  readonly occupancyUniformBuffer: GPUBuffer;
 }
 
 interface PreparedCloudFrame {
@@ -556,6 +562,8 @@ export interface CloudCache {
   usingStartupPreview: boolean;
   selectedMarchPipeline: GPURenderPipeline | null;
   selectedMarchDefinesHi: number;
+  spatialOccupancy: CloudSpatialOccupancy | null;
+  spatialOccupancyActive: boolean;
   densityMoments: CloudDensityMomentsResources | null;
   densityMomentsEnabled: boolean;
   marchPipelineTimings?: Map<string, number>;
@@ -1338,6 +1346,8 @@ export function ensureCloudCache(
       usingStartupPreview: false,
       selectedMarchPipeline: null,
       selectedMarchDefinesHi: 0,
+      spatialOccupancy: null,
+      spatialOccupancyActive: false,
       densityMoments: null,
       densityMomentsEnabled: false,
       marchPipelines: new Map(),
@@ -1550,6 +1560,9 @@ export function getOrCreateCloudMainBindGroup(
   const densityMomentsView = exactBindings?.densityMomentsView ?? shapeView;
   const materialFlowBuffer =
     exactBindings?.materialFlowBuffer ?? cache.materialFlow.buffer!;
+  const occupancyView = exactBindings?.occupancyView ?? shapeView;
+  const occupancyUniformBuffer =
+    exactBindings?.occupancyUniformBuffer ?? cache.uniformBuffer!;
   const exactSkyView = exactBindings?.skyView ?? lutViews.skyView;
   const exactMultipleScatter =
     exactBindings?.multipleScatter ?? lutViews.multipleScatter;
@@ -1573,7 +1586,9 @@ export function getOrCreateCloudMainBindGroup(
       entry.transmittanceView === exactTransmittance &&
       entry.lutSampler === lutSampler &&
       entry.densityMomentsView === densityMomentsView &&
-      entry.materialFlowBuffer === materialFlowBuffer
+      entry.materialFlowBuffer === materialFlowBuffer &&
+      entry.occupancyView === occupancyView &&
+      entry.occupancyUniformBuffer === occupancyUniformBuffer
     ) {
       return entry.bindGroup;
     }
@@ -1597,6 +1612,8 @@ export function getOrCreateCloudMainBindGroup(
       { binding: 12, resource: lutSampler },
       { binding: 14, resource: densityMomentsView },
       { binding: 15, resource: { buffer: materialFlowBuffer } },
+      { binding: 17, resource: occupancyView },
+      { binding: 18, resource: { buffer: occupancyUniformBuffer, size: 32 } },
     ],
   });
   const slot = cache.mainBindGroupNextSlot;
@@ -1617,6 +1634,8 @@ export function getOrCreateCloudMainBindGroup(
     lutSampler,
     densityMomentsView,
     materialFlowBuffer,
+    occupancyView,
+    occupancyUniformBuffer,
     bindGroup,
   };
   cache.mainBindGroupNextSlot = (slot + 1) & 1;
@@ -3243,6 +3262,19 @@ function selectCloudMarchPipeline(
       moments: false,
     });
   }
+  if (!pipeline && !preview && active.spatial) {
+    pipeline = requestCloudMarchPipeline(context, cache, format, false, {
+      ...active,
+      spatial: false,
+    });
+    if (!pipeline && active.moments) {
+      pipeline = requestCloudMarchPipeline(context, cache, format, false, {
+        ...active,
+        spatial: false,
+        moments: false,
+      });
+    }
+  }
   if (!pipeline && progressive) {
     preview = true;
     pipeline = requestCloudMarchPipeline(context, cache, format, false, {
@@ -3288,6 +3320,8 @@ function initializeCloudPipeline(
     sampler(12, Stage.FRAGMENT),
     texture(14, Stage.FRAGMENT, { viewDimension: "3d" }),
     storageBuffer(15, Stage.FRAGMENT, { readOnly: true }),
+    texture(17, Stage.FRAGMENT, { viewDimension: "3d" }),
+    uniformBuffer(18, Stage.FRAGMENT),
   ]);
 
   cache.sampler = device.createSampler({
@@ -3414,6 +3448,8 @@ function ensureShadowResources(
         sampler(8, Stage.FRAGMENT),
         uniformBuffer(13, Stage.FRAGMENT), // CloudShadowUniforms (sun-view)
         storageBuffer(15, Stage.FRAGMENT, { readOnly: true }),
+        texture(17, Stage.FRAGMENT, { viewDimension: "3d" }),
+        uniformBuffer(18, Stage.FRAGMENT),
       ],
     );
     const shaderModule = cache.maskShaderModule!;
@@ -4577,6 +4613,54 @@ export function prepareCloudFrameAndEncodeMask(
       }
     }
 
+    cache.spatialOccupancyActive = false;
+    const occupancyEligible =
+      config.cloudSpatialOccupancy === true &&
+      baseDensityMaterial &&
+      cache.executeSerial > 0 &&
+      !cache.usingStartupPreview &&
+      cache.noiseBaked &&
+      !cache.geographicWindRequested &&
+      !cache.densityMomentsEnabled &&
+      temporalReprojectionSupported &&
+      (data[74] &
+        (CLOUD_QF_PLANET_DENSITY |
+          CLOUD_QF_NOISE_BAKED |
+          CLOUD_QF_HIGH_PRECISION)) ===
+        (CLOUD_QF_PLANET_DENSITY |
+          CLOUD_QF_NOISE_BAKED |
+          CLOUD_QF_HIGH_PRECISION) &&
+      data[79] >= 0 &&
+      data[79] < 1;
+    if (occupancyEligible) {
+      cache.spatialOccupancy ??= new CloudSpatialOccupancy(device);
+    }
+    if (cache.spatialOccupancy) {
+      const shape =
+        noise.shapeView === cache.noise?.shapePWSampleView
+          ? cache.noise?.shapePWTexture
+          : cache.noise?.shapeTexture;
+      const detail = cache.noise?.detailTexture;
+      cache.spatialOccupancyActive = cache.spatialOccupancy.prepare(
+        shape && detail ? { shape, detail, sampler: noise.sampler } : null,
+        [
+          (camPos?.x ?? 0) + cloudWindX * originWindSpeed * cloudTimeSeconds,
+          camPos?.y ?? 0,
+          (camPos?.z ?? 0) + cloudWindY * originWindSpeed * cloudTimeSeconds,
+        ],
+        cloudPuffSize,
+        occupancyEligible,
+        config.cloudSpatialOccupancyRefreshPages,
+        context,
+      );
+    }
+    const occupancyView = cache.spatialOccupancyActive
+      ? cache.spatialOccupancy!.view!
+      : noise.shapeView;
+    const occupancyUniformBuffer = cache.spatialOccupancyActive
+      ? cache.spatialOccupancy!.uniform!
+      : cache.uniformBuffer!;
+
     const marchFormat = halfResActive
       ? CLOUD_HALF_FORMAT
       : context._canvasFormat || "bgra8unorm";
@@ -4649,6 +4733,8 @@ export function prepareCloudFrameAndEncodeMask(
       lutSampler: cache.lutSampler!,
       densityMomentsView,
       materialFlowBuffer,
+      occupancyView,
+      occupancyUniformBuffer,
     });
 
     const earlyMaskGroup = getOrCreateCloudMainBindGroup(
@@ -4861,6 +4947,8 @@ export function prepareCloudFrameAndEncodeMask(
               0,
               CLOUD_SHADOW_UNIFORM_BYTES,
               materialFlowBuffer,
+              nonColorBindings.occupancyView,
+              nonColorBindings.occupancyUniformBuffer,
             );
             const shadowPass = encoder.beginRenderPass(
               timedCloudPass(context, {
@@ -4991,6 +5079,8 @@ export function prepareCloudFrameAndEncodeMask(
                     ci * CLOUD_SHADOW_CASCADE_STRIDE_BYTES,
                     CLOUD_SHADOW_UNIFORM_BYTES,
                     materialFlowBuffer,
+                    nonColorBindings.occupancyView,
+                    nonColorBindings.occupancyUniformBuffer,
                   );
                   cascadePass.setBindGroup(0, cascadeBindGroup);
                   cascadePass.draw(3);
@@ -6027,6 +6117,9 @@ export function destroyProceduralCloudResources(
     cache.materialFlow.destroy();
     cache.weatherFlow = undefined;
     cache.geographicWindRequested = false;
+    cache.spatialOccupancy?.destroy();
+    cache.spatialOccupancy = null;
+    cache.spatialOccupancyActive = false;
     cache.densityMoments?.destroy();
     cache.densityMoments = null;
     cache.densityMomentsEnabled = false;
