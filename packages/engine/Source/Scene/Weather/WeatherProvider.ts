@@ -391,13 +391,15 @@ export class WeatherProvider {
     // scrub must not mis-activate this slice's bytes.
     const gen = this._invalidation;
     const source = this._source;
-    const timed = this._timeMode !== null;
+    const mode = this._timeMode;
+    const timed = mode !== null;
     const key = this._effectiveKey;
     const request: WeatherFieldRequest = timed
       ? { ...this._request, time: this._effectiveTime }
       : this._request;
     const cancelled = () =>
       this._invalidation !== gen ||
+      this._timeMode !== mode ||
       (this._timeMode === "scene" && key !== this._effectiveKey);
     try {
       const field = await source.fetchField(request);

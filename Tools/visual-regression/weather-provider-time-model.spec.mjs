@@ -546,3 +546,147 @@ test("provider flow is cloned, retained during a scene miss and restored by cach
   assert.equal(provider.getPackedTexture(W, H), bytes);
   assert.equal(provider.getFlowField(), flow);
 });
+
+// ── A legacy fetch in flight when the time mode changes is dropped ───────────
+// A provider with no time mode fetches the "latest" field. If setTime() moves
+// it to historical while that fetch is pending, the late legacy field must not
+// become the active slice: the caller asked for a date, and the provider has
+// to serve that date's field instead.
+
+const { stripTypeScriptTypes } = await import("node:module");
+const { default: nodeFs } = await import("node:fs");
+const { pathToFileURL } = await import("node:url");
+
+const PROVIDER_FILE = new URL(
+  "../../packages/engine/Source/Scene/Weather/WeatherProvider.ts",
+  import.meta.url,
+);
+
+/**
+ * Import WeatherProvider.ts from a mutated copy of its source. The shared
+ * importMutated loader reads plain JavaScript, so this strips the types first
+ * and points the relative imports back at the original engine files.
+ */
+async function importMutatedProvider(replacements) {
+  let source = nodeFs
+    .readFileSync(PROVIDER_FILE, "utf8")
+    .replace(/\r\n/g, "\n");
+  for (const [anchor, replacement] of replacements) {
+    const count = source.split(anchor).length - 1;
+    assert.equal(count, 1, "the mutation anchor must occur exactly once");
+    source = source.replace(anchor, () => replacement);
+  }
+  const js = stripTypeScriptTypes(source).replace(
+    /from "(\.[^"]*)"/g,
+    (_match, specifier) => {
+      const asJs = new URL(specifier, PROVIDER_FILE);
+      const target =
+        specifier.endsWith(".js") && !nodeFs.existsSync(asJs)
+          ? new URL(specifier.slice(0, -3) + ".ts", PROVIDER_FILE)
+          : asJs;
+      return (
+        'from "' +
+        pathToFileURL(target.pathname.replace(/^\/([A-Za-z]:)/, "$1")).href +
+        '"'
+      );
+    },
+  );
+  return import(
+    "data:text/javascript;base64," + Buffer.from(js).toString("base64")
+  );
+}
+
+const RACE_LATEST_TIME = new Date(T0).toISOString();
+const RACE_HISTORICAL = new Date(T0 - 9 * HOUR);
+
+/**
+ * A source whose untimed ("latest") fetch the test resolves by hand and whose
+ * dated fetches resolve at once with a distinct field.
+ */
+function makeRaceSource() {
+  const requests = [];
+  let releaseLatest;
+  const field = (coverage, validTime) => ({
+    gridWidth: 2,
+    gridHeight: 2,
+    bounds: {
+      west: -Math.PI,
+      east: Math.PI,
+      south: -Math.PI / 2,
+      north: Math.PI / 2,
+    },
+    coverage: new Float32Array(4).fill(coverage),
+    validTime,
+  });
+  return {
+    requests,
+    release: () => releaseLatest(),
+    getCapabilities: () => ({ id: "mode-race-fixture", supportsTime: true }),
+    fetchField(request) {
+      requests.push(request.time);
+      if (request.time instanceof Date) {
+        return Promise.resolve(field(0.8, request.time.toISOString()));
+      }
+      return new Promise((resolve) => {
+        releaseLatest = () => resolve(field(0.3, RACE_LATEST_TIME));
+      });
+    },
+  };
+}
+
+/** Drive the race on the given WeatherProvider class and report what it served. */
+async function runModeRace(ProviderClass) {
+  const source = makeRaceSource();
+  const provider = new ProviderClass(source);
+  assert.equal(provider.getPackedTexture(W, H), null);
+  assert.equal(source.requests.length, 1);
+  assert.equal(provider.isPreparing, true);
+  provider.setTime(RACE_HISTORICAL);
+  assert.equal(provider.getTimeMode(), "historical");
+  const versionBefore = provider.version;
+  source.release();
+  for (let i = 0; i < 100 && provider.isPreparing; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(provider.isPreparing, false);
+  const afterLegacy = {
+    hasData: provider.hasData,
+    validTime: provider.validTime,
+    versionMoved: provider.version !== versionBefore,
+  };
+  const bytes = await poll(provider);
+  assert.notEqual(bytes, null);
+  return {
+    afterLegacy,
+    finalValidTime: provider.validTime,
+    finalByte: bytes[0],
+    requests: source.requests,
+  };
+}
+
+test("a legacy fetch in flight when setTime() switches to historical is dropped, and the historical field is served", async () => {
+  const race = await runModeRace(WeatherProvider);
+  assert.deepEqual(race.afterLegacy, {
+    hasData: false,
+    validTime: undefined,
+    versionMoved: false,
+  });
+  assert.equal(race.finalValidTime, RACE_HISTORICAL.toISOString());
+  assert.equal(race.finalByte, 204);
+  assert.equal(race.requests.length, 2);
+  assert.ok(!(race.requests[0] instanceof Date));
+  assert.equal(race.requests[1].getTime(), RACE_HISTORICAL.getTime());
+});
+
+test("control: with the mode-change guard made inert the late legacy field is published for a historical request", async () => {
+  const { WeatherProvider: Inert } = await importMutatedProvider([
+    ["this._timeMode !== mode ||", "false ||"],
+  ]);
+  const race = await runModeRace(Inert);
+  assert.equal(race.afterLegacy.hasData, true);
+  assert.equal(race.afterLegacy.validTime, RACE_LATEST_TIME);
+  assert.equal(race.afterLegacy.versionMoved, true);
+  assert.equal(race.finalValidTime, RACE_LATEST_TIME);
+  assert.notEqual(race.finalByte, 204);
+  assert.equal(race.requests.length, 1);
+});
