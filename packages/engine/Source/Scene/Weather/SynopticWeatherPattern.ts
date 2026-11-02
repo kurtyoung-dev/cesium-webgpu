@@ -1,6 +1,8 @@
 // A bounded kinematic weather model: pressure systems, frontal cloud bands and
 // seasonal circulation share geographic coordinates and a reproducible seed.
 // It supplies plausible procedural structure rather than a numerical forecast.
+import { seededRandom } from "./SeededRandom.js";
+
 export interface SynopticWeatherSample {
   coverage: number;
   cloudType: number;
@@ -25,20 +27,6 @@ interface PressureSystem {
 const TAU = Math.PI * 2;
 const DAY_MS = 86400000;
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
-
-function seededRandom(seed: string | number): () => number {
-  const text = String(seed);
-  let state = 2166136261;
-  for (let i = 0; i < text.length; i++) {
-    state = Math.imul(state ^ text.charCodeAt(i), 16777619);
-  }
-  return () => {
-    state = (state + 0x6d2b79f5) | 0;
-    let value = Math.imul(state ^ (state >>> 15), 1 | state);
-    value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
-    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 export class SynopticWeatherPattern {
   private readonly _systems: PressureSystem[] = [];
