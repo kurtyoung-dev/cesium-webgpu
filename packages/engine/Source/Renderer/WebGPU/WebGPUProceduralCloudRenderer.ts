@@ -4254,9 +4254,9 @@ export function prepareCloudFrameAndEncodeMask(
     data[offset++] = 0.34; // 85
     data[offset++] = 0.3; // 86
     data[offset++] = 0; // 87 pad
-    // 88-90 — time-of-day sun colour, keyed on the local sun elevation, that is
-    // `sunDir` dotted with local up at the camera, rather than on raw ECEF Y:
-    // warm orange near the horizon, neutral white by about 20 degrees up.
+    // Time of day, keyed on the local sun elevation, that is `sunDir` dotted
+    // with local up at the camera, rather than on raw ECEF Y. The horizon haze
+    // tint (92-94) reads it.
     let sinElev = 0.5;
     if (camPos && sunDir) {
       const len = Math.hypot(camPos.x, camPos.y, camPos.z) || 1.0;
@@ -4271,9 +4271,11 @@ export function prepareCloudFrameAndEncodeMask(
     }
     const e = Math.max(0.0, Math.min(1.0, sinElev / 0.35));
     const todT = e * e * (3.0 - 2.0 * e); // smoothstep(0, 0.35, sinElev)
-    data[offset++] = 1.0 + (1.0 - 1.0) * todT; // 88 R (warm 1.0 -> noon 1.0)
-    data[offset++] = 0.55 + (1.0 - 0.55) * todT; // 89 G (warm 0.55 -> noon 1.0)
-    data[offset++] = 0.25 + (0.98 - 0.25) * todT; // 90 B (warm 0.25 -> noon 0.98)
+    // 88-90 — pad. No march variant reads these floats: the march evaluates the
+    // sun colour per sample from the local sun elevation (`cloudLocalSunlight`).
+    data[offset++] = 0; // 88 pad
+    data[offset++] = 0; // 89 pad
+    data[offset++] = 0; // 90 pad
     // 91 — aerial-perspective strength, from `config.cloudAerialStrength`. At 1.0
     // the horizon haze is applied in full at the 60 km scale the shader assumes;
     // at 0 it is off.

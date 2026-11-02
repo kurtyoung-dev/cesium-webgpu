@@ -95,7 +95,7 @@ struct CloudUniforms {
   _padB: f32,                    // 83
   groundAmbientColor: vec3<f32>, // 84-86 — ground-bounce ambient (lights cloud bottoms)
   _padC: f32,                    // 87
-  sunLightColor: vec3<f32>,      // 88-90 — time-of-day sun color (warm low / neutral noon)
+  _padSunLight: vec3<f32>,       // 88-90 — unread (the sun colour is per sample)
   aerialStrength: f32,           // 91 — aerial-perspective strength
   aerialColor: vec3<f32>,        // 92-94 — horizon inscatter haze tint (time-of-day keyed)
   _padD: f32,                    // 95

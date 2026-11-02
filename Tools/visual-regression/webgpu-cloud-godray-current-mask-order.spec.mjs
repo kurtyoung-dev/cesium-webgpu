@@ -31,6 +31,7 @@ import nodeTest from "node:test";
 import { fileURLToPath } from "node:url";
 import { bundle, mutateOrFail } from "./lib/engine-stub-bundler.mjs";
 import { shaderDefines } from "./lib/wgsl-variant.mjs";
+import { composeRendererTemplate } from "./lib/engine-shader-source.mjs";
 
 Error.stackTraceLimit = 0;
 
@@ -2281,6 +2282,76 @@ test("actual cloud capture records a mask draw with the main group, current enco
   assert.equal(ran, true);
   assert.ok(current, "capture must publish the real current mask view");
   assertCapturedMaskReceipt(fixture, current);
+});
+
+/**
+ * Floats 88-90 and 92-94 of the one cloud uniform upload a frame makes with
+ * the sun at the camera's horizon and at its zenith.
+ */
+async function uploadedSunSlots(engine) {
+  const slots = [];
+  for (const sun of [
+    { x: 0, y: 0.6, z: -0.8 },
+    { x: 0, y: 0, z: 1 },
+  ]) {
+    const fixture = makeCloudFixture();
+    fixture.context.uniformState.sunDirectionWC = sun;
+    const { ran } = await runCapturedCloud(engine, fixture);
+    assert.equal(ran, true);
+    const cache = fixture.context._cloudCache;
+    const writes = fixture.receipts.writes.filter(
+      (write) => write.buffer === cache.uniformBuffer,
+    );
+    assert.equal(writes.length, 1, "one cloud uniform upload per frame");
+    const data = writes[0].data;
+    slots.push({
+      pad: Array.from(data.slice(88, 91)),
+      haze: Array.from(data.slice(92, 95)),
+    });
+  }
+  return slots;
+}
+
+test("cloud uniform floats 88-90 are an unread pad written zero at every sun elevation", async () => {
+  const [horizon, zenith] = await uploadedSunSlots(await loadHarness());
+  assert.deepEqual(horizon.pad, [0, 0, 0]);
+  assert.deepEqual(zenith.pad, [0, 0, 0]);
+  // The two frames do see different times of day: the horizon haze tint,
+  // keyed on the same sun elevation, differs between them.
+  assert.notDeepEqual(horizon.haze, zenith.haze);
+  // No composed march variant reads the slot: the struct member is a pad.
+  const composed = composeRendererTemplate(
+    "Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
+    "PROCEDURAL_CLOUDS_SOURCE",
+  );
+  const member = composed.match(/^\s*(\w+): vec3<f32>,\s*\/\/ 88-90\b/m);
+  assert.ok(member, "the cloud uniform struct declares floats 88-90");
+  assert.equal(
+    [...composed.matchAll(new RegExp(`\\b${member[1]}\\b`, "g"))].length,
+    1,
+    `${member[1]} is declared and never read`,
+  );
+});
+
+test("the 88-90 pad check fails when the renderer writes a time-of-day colour there again", async () => {
+  const engine = await loadHarness({
+    overrides: [
+      {
+        basename: "WebGPUProceduralCloudRenderer.ts",
+        mutate: (source) =>
+          replaceExactlyOnce(
+            source,
+            "    data[offset++] = 0; // 88 pad\n    data[offset++] = 0; // 89 pad\n    data[offset++] = 0; // 90 pad",
+            "    data[offset++] = 1.0; // 88 pad\n    data[offset++] = 0.55 + (1.0 - 0.55) * todT; // 89 pad\n    data[offset++] = 0.25 + (0.98 - 0.25) * todT; // 90 pad",
+            "restore the time-of-day sun colour in floats 88-90",
+          ),
+        label: "time-of-day colour in 88-90",
+      },
+    ],
+  });
+  const [horizon, zenith] = await uploadedSunSlots(engine);
+  assert.notDeepEqual(horizon.pad, [0, 0, 0]);
+  assert.notDeepEqual(zenith.pad, horizon.pad);
 });
 
 test("capture-off and culled frames clear the published current cloud mask", async () => {
