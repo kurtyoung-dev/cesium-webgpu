@@ -529,7 +529,7 @@
       "bit": 19,
       "name": "CLOUD_CONTRIBUTION_LIGHTING",
       "owner": "cloud-lighting",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",

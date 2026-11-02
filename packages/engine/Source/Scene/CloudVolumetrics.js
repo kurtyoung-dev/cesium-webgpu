@@ -541,6 +541,10 @@ class CloudVolumetrics {
     let primaryDensityCache = false;
     let primaryDensityMinDistance = 512;
     let primaryDensityStrength = 1;
+    let contributionLighting = false;
+    let lightingContributionThreshold = 0.02;
+    let lightingMinSamples = 2;
+    let lightingThinOpticalDepth = 0.02;
     Object.defineProperties(experimental, {
       /**
        * When <code>true</code>, distant and orbital cloud fronts read a baked
@@ -980,6 +984,97 @@ class CloudVolumetrics {
           primaryDensityStrength = value;
         },
       },
+      /**
+       * When <code>true</code>, each march sample spends light-march steps in
+       * proportion to its estimated contribution to the pixel, down to
+       * <code>cloudLightingMinSamples</code>. WebGPU only.
+       * @type {boolean}
+       * @default false
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudContributionLighting: {
+        enumerable: true,
+        get: function () {
+          return contributionLighting;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.bool("experimental.cloudContributionLighting", value);
+          //>>includeEnd('debug');
+          contributionLighting = value;
+        },
+      },
+      /**
+       * The estimated contribution at or above which a sample keeps all its
+       * light-march steps; values outside (0, 16] turn the budget off.
+       * WebGPU only.
+       * @type {number}
+       * @default 0.02
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudLightingContributionThreshold: {
+        enumerable: true,
+        get: function () {
+          return lightingContributionThreshold;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudLightingContributionThreshold",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          lightingContributionThreshold = value;
+        },
+      },
+      /**
+       * The fewest light-march steps a sample takes under the budget; values
+       * outside [1, 64] turn the budget off. WebGPU only.
+       * @type {number}
+       * @default 2
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudLightingMinSamples: {
+        enumerable: true,
+        get: function () {
+          return lightingMinSamples;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudLightingMinSamples",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          lightingMinSamples = value;
+        },
+      },
+      /**
+       * The sample optical depth at or below which a sample keeps all its
+       * light-march steps; values outside [0, 16] turn the budget off.
+       * WebGPU only.
+       * @type {number}
+       * @default 0.02
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudLightingThinOpticalDepth: {
+        enumerable: true,
+        get: function () {
+          return lightingThinOpticalDepth;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudLightingThinOpticalDepth",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          lightingThinOpticalDepth = value;
+        },
+      },
     });
     experimental.cloudDistantDensityMoments =
       options.experimental?.cloudDistantDensityMoments ?? false;
@@ -1021,6 +1116,14 @@ class CloudVolumetrics {
       options.experimental?.cloudPrimaryDensityMinDistance ?? 512;
     experimental.cloudPrimaryDensityStrength =
       options.experimental?.cloudPrimaryDensityStrength ?? 1;
+    experimental.cloudContributionLighting =
+      options.experimental?.cloudContributionLighting ?? false;
+    experimental.cloudLightingContributionThreshold =
+      options.experimental?.cloudLightingContributionThreshold ?? 0.02;
+    experimental.cloudLightingMinSamples =
+      options.experimental?.cloudLightingMinSamples ?? 2;
+    experimental.cloudLightingThinOpticalDepth =
+      options.experimental?.cloudLightingThinOpticalDepth ?? 0.02;
     /**
      * Experimental volumetric cloud dials, grouped apart from the core dials on
      * this object. A dial here may change without notice. WebGPU only.

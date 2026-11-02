@@ -725,8 +725,12 @@ test("the dials are declared in exactly one shader", () => {
     .readdirSync(path.join(root, SHADER_DIR), { recursive: true })
     .filter((f) => String(f).endsWith(".wgsl"))
     .filter((f) =>
-      /powderStrength|isotropicFloor|ambientFloor/.test(
-        read(path.posix.join(SHADER_DIR, String(f).split(path.sep).join("/"))),
+      /\b(?:powderStrength|isotropicFloor|ambientFloor)\s*:/.test(
+        stripComments(
+          read(
+            path.posix.join(SHADER_DIR, String(f).split(path.sep).join("/")),
+          ),
+        ),
       ),
     );
   assert.deepEqual(hits.map(String), [

@@ -2,6 +2,10 @@
 // Dispatches to the cone path when QF_LIGHT_CONE is set, otherwise to the
 // straight N-step march below.
 fn lightMarch(
+//>>ifdef CLOUD_CONTRIBUTION_LIGHTING
+  lightingWeight: f32,
+//>>else
+//>>endif
   pos: vec3<f32>,
   heightFraction: f32,
   deckBottom: f32,
@@ -17,6 +21,10 @@ fn lightMarch(
   //>>else
   if (lightConeEnabled()) {
     return lightMarchCone(
+//>>ifdef CLOUD_CONTRIBUTION_LIGHTING
+      lightingWeight,
+//>>else
+//>>endif
       pos, heightFraction, deckBottom, deckTop,
       densityCoordinates, morphologyCoordinate
     );
@@ -26,7 +34,11 @@ fn lightMarch(
   // it alone, and lower tiers march fewer, bigger steps for roughly the same
   // optical depth at lower cost. `lightSteps` multiplies the per-view-sample
   // cost, so this is the cheapest lever the low tiers have.
+//>>ifdef CLOUD_CONTRIBUTION_LIGHTING
+  let steps = cloudLightingBudgetSamples(max(1, i32(cloud.lightSteps * cloud.lightSampleScale)), lightingWeight);
+//>>else
   let steps = max(1, i32(cloud.lightSteps * cloud.lightSampleScale));
+//>>endif
   let innerAxes = cloudShellAxes(deckBottom);
   let outerAxes = cloudShellAxes(deckTop);
   let innerInverseAxes = vec3<f32>(1.0) / innerAxes;

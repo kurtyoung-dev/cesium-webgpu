@@ -1982,6 +1982,10 @@ fn coneJitter(pos: vec3<f32>) -> vec3<f32> {
 // only the sampling pattern differs. Six taps, five full and one cheap, against
 // the straight march's `lightSteps` full taps per cone radius.
 fn lightMarchCone(
+//>>ifdef CLOUD_CONTRIBUTION_LIGHTING
+  lightingWeight: f32,
+//>>else
+//>>endif
   pos: vec3<f32>,
   heightFraction: f32,
   deckBottom: f32,
@@ -2013,10 +2017,21 @@ fn lightMarchCone(
   var opticalDepth: f32 = 0.0;
   // Five short cone taps. Step distance and cone radius both grow with i, so the
   // taps sweep a widening cone toward the sun. Each reads the full density.
+//>>ifdef CLOUD_CONTRIBUTION_LIGHTING
+  let coneCount = cloudLightingBudgetSamples(5, lightingWeight);
+  let coneWeight = 5.0 / f32(coneCount);
+  for (var i: i32 = 0; i < coneCount; i = i + 1) {
+    let fi = (f32(i) + .5) * coneWeight - .5;
+//>>else
   for (var i: i32 = 0; i < 5; i = i + 1) {
     let fi = f32(i);
+//>>endif
     let marchDist = coneStepBase * (fi + 1.0);
+//>>ifdef CLOUD_CONTRIBUTION_LIGHTING
+    let k = CONE_KERNEL[clamp(i32(round(fi)), 0, 4)] + jit * 0.4;
+//>>else
     let k = CONE_KERNEL[i] + jit * 0.4;          // per-pixel jittered offset
+//>>endif
     let coneRadius = coneStepBase * (fi + 0.5);  // widening cone
     let lateral = (k.x * tangent + k.y * bitangent) * coneRadius;
     let sampleDelta = sunDir * marchDist + lateral;
@@ -2039,11 +2054,21 @@ fn lightMarchCone(
         deckBottom,
         deckTop,
         coneStepBase,
-      ) * coneStepBase;
+      ) * coneStepBase
+//>>ifdef CLOUD_CONTRIBUTION_LIGHTING
+        * coneWeight
+//>>else
+//>>endif
+      ;
     } else {
       opticalDepth += legacyCloudDensity(
         samplePos, hf, deckBottom, deckTop
-      ) * coneStepBase;
+      ) * coneStepBase
+//>>ifdef CLOUD_CONTRIBUTION_LIGHTING
+        * coneWeight
+//>>else
+//>>endif
+      ;
     }
   }
 
@@ -2695,11 +2720,27 @@ fn marchDeck(
       let sunlight = cloudLocalSunlight(samplePos, sunDir);
       var lightOpticalDepth = 0.0;
       if (dot(sunlight, sunlight) > 0.0) {
+//>>ifdef CLOUD_CONTRIBUTION_LIGHTING
+//>>ifdef CLOUD_DENSITY_MOMENTS
+        let lightingWeight = 1.0;
+//>>else
+        let lightingWeight = cloudLightingBudgetWeight(density, curFineStep, transmittance, cosTheta);
+//>>endif
+//>>else
+//>>endif
 //>>ifdef CLOUD_DIRECTIONAL_LIGHTING
-        lightOpticalDepth = cloudDirectionalLight(heightFraction, deckBottom, deckTop,
-          densityCoordinates, morphologyCoordinate);
+        lightOpticalDepth = cloudDirectionalLight(
+//>>ifdef CLOUD_CONTRIBUTION_LIGHTING
+          lightingWeight,
+//>>else
+//>>endif
+          heightFraction, deckBottom, deckTop, densityCoordinates, morphologyCoordinate);
 //>>else
         lightOpticalDepth = lightMarch(
+//>>ifdef CLOUD_CONTRIBUTION_LIGHTING
+          lightingWeight,
+//>>else
+//>>endif
           samplePos, heightFraction, deckBottom, deckTop,
           densityCoordinates, morphologyCoordinate,
         );

@@ -817,7 +817,10 @@ test("primary and light marches dispatch legacy lanes around the new macro path"
   assert.match(march, /else\s*\{\s*base\s*=\s*legacyCloudBaseDensity\(/);
   assert.match(march, /else\s*\{\s*density\s*=\s*legacyCloudDensity\(/);
 
-  const cone = functionSource(cloudShaderSource, "lightMarchCone");
+  const cone = functionSource(
+    defaultVariant(cloudShaderSource),
+    "lightMarchCone",
+  );
   assert.match(cone, /else\s*\{\s*opticalDepth\s*\+=\s*legacyCloudDensity\(/);
   assert.match(
     cone,

@@ -68,6 +68,11 @@ import CloudDeepShadowWGSL from "../../Shaders/WebGPU/Environment/CloudDeepShado
 import DeepShadowBuildWGSL from "../../Shaders/WebGPU/Compute/CloudDeepShadowCache.js";
 import { CloudDeepShadowCache } from "./WebGPUCloudDeepShadowCache.js";
 import CloudPrimaryDensityWGSL from "../../Shaders/WebGPU/Environment/CloudPrimaryDensity.js";
+import CloudLightingBudgetWGSL from "../../Shaders/WebGPU/Environment/CloudLightingBudget.js";
+import {
+  CloudLightingBudget,
+  resolveCloudLightingBudget,
+} from "./WebGPUCloudLightingBudget.js";
 import { CloudPrimaryReuseResources } from "./WebGPUCloudPrimaryReuse.js";
 import {
   CLOUD_AIR_LIGHT_FLOATS,
@@ -255,7 +260,7 @@ const CLOUD_UNIFORM_FLOATS =
   CLOUD_MATERIAL_FLOW_FLOATS +
   CLOUD_AIR_LIGHT_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
-const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudAirLightWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${CloudSpatialOccupancyWGSL}\n${CloudWeatherVolumeBoundsWGSL}\n${CloudDensityCacheWGSL}\n${CloudPrimaryDensityWGSL}\n${CloudDeepShadowWGSL}\n${CloudDirectionalLightingWGSL}\n${CloudRayEllipsoidWGSL}\n${ProceduralCloudsWGSL}\n${CloudLightMarchWGSL}\n${CloudViewIntegrationWGSL}`;
+const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudAirLightWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${CloudSpatialOccupancyWGSL}\n${CloudWeatherVolumeBoundsWGSL}\n${CloudDensityCacheWGSL}\n${CloudPrimaryDensityWGSL}\n${CloudLightingBudgetWGSL}\n${CloudDeepShadowWGSL}\n${CloudDirectionalLightingWGSL}\n${CloudRayEllipsoidWGSL}\n${ProceduralCloudsWGSL}\n${CloudLightMarchWGSL}\n${CloudViewIntegrationWGSL}`;
 // High-word define masks for the emitting march and the consuming resolve.
 // Named once so no call site spells a bit inline, and so a spec can assert the
 // renderer preprocesses with the axis the registry documents rather than with a
@@ -324,6 +329,7 @@ export interface CloudMainBindGroupEntry {
   densityCacheUniform: GPUBuffer;
   deepShadowView: GPUTextureView;
   deepShadowUniform: GPUBuffer;
+  lightingBudgetUniform: GPUBuffer;
   bindGroup: GPUBindGroup;
 }
 
@@ -437,6 +443,7 @@ interface CloudNonColorBindings {
   readonly densityCacheUniform: GPUBuffer;
   readonly deepShadowView: GPUTextureView;
   readonly deepShadowUniform: GPUBuffer;
+  readonly lightingBudgetUniform: GPUBuffer;
 }
 
 interface PreparedCloudFrame {
@@ -609,6 +616,8 @@ export interface CloudCache {
   densityCache: CloudDensityCache | null;
   densityCacheActive: boolean;
   primaryDensityActive: boolean;
+  lightingBudget: CloudLightingBudget | null;
+  contributionLightingActive: boolean;
   directionalLightingRequested: boolean;
   deepShadowCache: CloudDeepShadowCache | null;
   deepShadowActive: boolean;
@@ -1401,6 +1410,8 @@ export function ensureCloudCache(
       densityCache: null,
       densityCacheActive: false,
       primaryDensityActive: false,
+      lightingBudget: null,
+      contributionLightingActive: false,
       directionalLightingRequested: false,
       deepShadowCache: null,
       deepShadowActive: false,
@@ -1627,6 +1638,8 @@ export function getOrCreateCloudMainBindGroup(
   const deepShadowView = exactBindings?.deepShadowView ?? shapeView;
   const deepShadowUniform =
     exactBindings?.deepShadowUniform ?? cache.uniformBuffer!;
+  const lightingBudgetUniform =
+    exactBindings?.lightingBudgetUniform ?? cache.uniformBuffer!;
   const exactSkyView = exactBindings?.skyView ?? lutViews.skyView;
   const exactMultipleScatter =
     exactBindings?.multipleScatter ?? lutViews.multipleScatter;
@@ -1657,7 +1670,8 @@ export function getOrCreateCloudMainBindGroup(
       entry.densityCacheView === densityCacheView &&
       entry.densityCacheUniform === densityCacheUniform &&
       entry.deepShadowView === deepShadowView &&
-      entry.deepShadowUniform === deepShadowUniform
+      entry.deepShadowUniform === deepShadowUniform &&
+      entry.lightingBudgetUniform === lightingBudgetUniform
     ) {
       return entry.bindGroup;
     }
@@ -1688,6 +1702,7 @@ export function getOrCreateCloudMainBindGroup(
       { binding: 21, resource: { buffer: densityCacheUniform, size: 48 } },
       { binding: 22, resource: deepShadowView },
       { binding: 23, resource: { buffer: deepShadowUniform, size: 112 } },
+      { binding: 26, resource: { buffer: lightingBudgetUniform, size: 16 } },
     ],
   });
   const slot = cache.mainBindGroupNextSlot;
@@ -1715,6 +1730,7 @@ export function getOrCreateCloudMainBindGroup(
     densityCacheUniform,
     deepShadowView,
     deepShadowUniform,
+    lightingBudgetUniform,
     bindGroup,
   };
   cache.mainBindGroupNextSlot = (slot + 1) & 1;
@@ -3335,6 +3351,12 @@ function selectCloudMarchPipeline(
   let pipeline = preview
     ? null
     : requestCloudMarchPipeline(context, cache, format, false, active);
+  if (!pipeline && !preview && active.contribution) {
+    pipeline = requestCloudMarchPipeline(context, cache, format, false, {
+      ...active,
+      contribution: false,
+    });
+  }
   if (!pipeline && !preview && active.primary) {
     pipeline = requestCloudMarchPipeline(context, cache, format, false, {
       ...active,
@@ -3431,6 +3453,7 @@ function initializeCloudPipeline(
     uniformBuffer(21, Stage.FRAGMENT),
     texture(22, Stage.FRAGMENT, { viewDimension: "3d" }),
     uniformBuffer(23, Stage.FRAGMENT),
+    uniformBuffer(26, Stage.FRAGMENT),
   ]);
 
   cache.sampler = device.createSampler({
@@ -4956,6 +4979,18 @@ export function prepareCloudFrameAndEncodeMask(
       ? cache.deepShadowCache!.uniform!
       : cache.uniformBuffer!;
 
+    const lightingBudgetData = resolveCloudLightingBudget(config);
+    cache.contributionLightingActive = false;
+    if (
+      lightingBudgetData &&
+      cache.executeSerial > 0 &&
+      !cache.usingStartupPreview
+    ) {
+      cache.lightingBudget ??= new CloudLightingBudget(device);
+      cache.contributionLightingActive =
+        cache.lightingBudget.prepare(lightingBudgetData) !== null;
+    }
+
     const marchFormat = halfResActive
       ? CLOUD_HALF_FORMAT
       : context._canvasFormat || "bgra8unorm";
@@ -4998,6 +5033,9 @@ export function prepareCloudFrameAndEncodeMask(
 
     verifyCloudMutationLease(cache, lease);
     device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
+    const lightingBudgetUniform = cache.contributionLightingActive
+      ? cache.lightingBudget!.buffer!
+      : cache.uniformBuffer!;
     const materialFlowBuffer = cache.materialFlow.prepare(
       device,
       geographicFlow,
@@ -5035,6 +5073,7 @@ export function prepareCloudFrameAndEncodeMask(
       densityCacheUniform,
       deepShadowView,
       deepShadowUniform,
+      lightingBudgetUniform,
     });
 
     const earlyMaskGroup = getOrCreateCloudMainBindGroup(
@@ -6435,6 +6474,9 @@ export function destroyProceduralCloudResources(
     cache.densityCache = null;
     cache.densityCacheActive = false;
     cache.primaryDensityActive = false;
+    cache.lightingBudget?.destroy();
+    cache.lightingBudget = null;
+    cache.contributionLightingActive = false;
     cache.deepShadowCache?.destroy();
     cache.deepShadowCache = null;
     cache.deepShadowActive = false;

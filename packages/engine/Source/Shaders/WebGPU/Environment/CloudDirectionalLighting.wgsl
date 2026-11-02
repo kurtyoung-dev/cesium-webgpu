@@ -8,6 +8,10 @@ fn cloudDirectionalExit(relative: vec3<f32>, direction: vec3<f32>, bottom: f32, 
   return min(distance, select(distance, inner.x, inner.x > 0.0));
 }
 fn cloudDirectionalLight(
+//>>ifdef CLOUD_CONTRIBUTION_LIGHTING
+  lightingWeight: f32,
+//>>else
+//>>endif
   height: f32, bottom: f32, top: f32,
   coordinates: CloudDensityCoordinates, morphology: vec3<f32>,
 ) -> f32 {
@@ -34,7 +38,11 @@ fn cloudDirectionalLight(
   for (var iteration = 0; iteration < passes; iteration++) {
     let local = prefix && iteration == 0;
     let distance = select(exit, min(cached.z, exit), local);
+//>>ifdef CLOUD_CONTRIBUTION_LIGHTING
+    let count = cloudLightingBudgetSamples(select(requested, 2, local), lightingWeight);
+//>>else
     let count = select(requested, 2, local);
+//>>endif
     let step = distance / f32(count);
     var integral = 0.0;
     for (var i = 0; i < count; i++) {

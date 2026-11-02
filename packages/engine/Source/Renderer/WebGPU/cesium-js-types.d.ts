@@ -1382,6 +1382,14 @@ interface CloudVolumetricsConfig {
   cloudDeepShadowNearDistance?: number;
   /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
   cloudDeepShadowWindTolerance?: number;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudContributionLighting?: boolean;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudLightingContributionThreshold?: number;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudLightingMinSamples?: number;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudLightingThinOpticalDepth?: number;
   cloudCoverage?: number;
   cloudDensity?: number;
   cloudLayerBottom?: number;

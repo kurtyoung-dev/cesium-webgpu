@@ -32,6 +32,8 @@ export interface CloudMarchFeatures {
   deep?: boolean;
   /** The primary march also reads the density cache; needs `density` (`CLOUD_PRIMARY_DENSITY_CACHE`). */
   primary?: boolean;
+  /** Spends light-march steps by each sample's contribution (`CLOUD_CONTRIBUTION_LIGHTING`). */
+  contribution?: boolean;
 }
 
 /**
@@ -47,6 +49,7 @@ export interface CloudMarchResourceState {
   directionalLightingRequested?: boolean;
   deepShadowActive?: boolean;
   primaryDensityActive?: boolean;
+  contributionLightingActive?: boolean;
 }
 
 /**
@@ -65,6 +68,7 @@ export function cloudMarchActiveFeatures(
     directional: cache.directionalLightingRequested ?? false,
     deep: cache.deepShadowActive ?? false,
     primary: cache.primaryDensityActive ?? false,
+    contribution: cache.contributionLightingActive ?? false,
   };
 }
 
@@ -87,6 +91,7 @@ export function cloudMarchFeatureDefines(features: CloudMarchFeatures): number {
     (features.deep ? ShaderDefineHi.CLOUD_DEEP_SHADOW_CACHE : 0) |
     (features.density && features.primary
       ? ShaderDefineHi.CLOUD_PRIMARY_DENSITY_CACHE
-      : 0)
+      : 0) |
+    (features.contribution ? ShaderDefineHi.CLOUD_CONTRIBUTION_LIGHTING : 0)
   );
 }

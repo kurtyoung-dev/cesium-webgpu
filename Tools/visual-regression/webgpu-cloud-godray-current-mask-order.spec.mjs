@@ -120,6 +120,8 @@ const REAL_MASK_PATHS = [
   "WebGPUCloudDeepShadowCache.ts",
   "CloudDeepShadowCache.js",
   "CloudPrimaryDensity.js",
+  "CloudLightingBudget.js",
+  "WebGPUCloudLightingBudget.ts",
   "CloudDensitySnapshot.js",
   "CloudWeatherVolumeBounds.js",
   "CloudWeatherOctree.js",
@@ -3189,6 +3191,19 @@ test("the directional lighting dial compiles CLOUD_DIRECTIONAL_LIGHTING into the
 
 test("the primary density cache dial compiles CLOUD_PRIMARY_DENSITY_CACHE into the march the frame selects", async () => {
   await assertFamilyDial(PRIMARY_DENSITY_FAMILY);
+});
+
+const CONTRIBUTION_LIGHTING_FAMILY = {
+  name: "contribution lighting",
+  dials: { cloudContributionLighting: true },
+  flag: "contributionLightingActive",
+  bits: ["CLOUD_CONTRIBUTION_LIGHTING"],
+  own: "CLOUD_CONTRIBUTION_LIGHTING",
+  eligibility: ["lightingBudgetData &&", "false && lightingBudgetData &&"],
+};
+
+test("the contribution lighting dial compiles CLOUD_CONTRIBUTION_LIGHTING into the march the frame selects", async () => {
+  await assertFamilyDial(CONTRIBUTION_LIGHTING_FAMILY);
 });
 
 function runPrimaryReuseFrame(engine, fixture, config) {
