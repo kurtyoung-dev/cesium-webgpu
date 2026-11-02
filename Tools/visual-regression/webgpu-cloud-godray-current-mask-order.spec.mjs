@@ -111,6 +111,9 @@ const REAL_MASK_PATHS = [
   "WebGPUCloudSpatialOccupancy.ts",
   "WebGPUCloudNoiseBounds.ts",
   "WebGPUCloudWeatherBounds.ts",
+  "WebGPUCloudDensityCache.ts",
+  "WebGPUCloudDensityCacheProgram.ts",
+  "CloudDensityCache.js",
   "CloudWeatherVolumeBounds.js",
   "CloudWeatherOctree.js",
   "OctreeNode.js",
@@ -3112,6 +3115,22 @@ const WEATHER_BOUNDS_FAMILY = {
 
 test("the weather volume bounds dial compiles CLOUD_WEATHER_VOLUME_BOUNDS into the march the frame selects", async () => {
   await assertFamilyDial(WEATHER_BOUNDS_FAMILY);
+});
+
+const DENSITY_CACHE_FAMILY = {
+  name: "density cache",
+  dials: { cloudDensityCache: true },
+  flag: "densityCacheActive",
+  bits: ["CLOUD_DENSITY_SAMPLE_CACHE"],
+  own: "CLOUD_DENSITY_SAMPLE_CACHE",
+  eligibility: [
+    "if (densityCacheEligible) {",
+    "if (false && densityCacheEligible) {",
+  ],
+};
+
+test("the density cache dial compiles CLOUD_DENSITY_SAMPLE_CACHE into the march the frame selects", async () => {
+  await assertFamilyDial(DENSITY_CACHE_FAMILY);
 });
 
 function runPrimaryReuseFrame(engine, fixture, config) {

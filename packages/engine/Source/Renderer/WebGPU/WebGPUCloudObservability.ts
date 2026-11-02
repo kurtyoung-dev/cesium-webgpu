@@ -79,6 +79,7 @@ export const CLOUD_TIMED_PASS_NAMES: readonly string[] = Object.freeze([
   "Cloud occupancy invalidation",
   "Cloud occupancy refresh",
   "Cloud occupancy parent bounds",
+  "Cloud density cache refresh",
 ]);
 
 /**

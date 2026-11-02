@@ -1352,6 +1352,16 @@ interface CloudVolumetricsConfig {
   cloudSpatialOccupancyRefreshPages?: number;
   /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
   cloudWeatherVolumeBounds?: boolean;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudDensityCache?: boolean;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudDensityCacheSize?: number;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudDensityCacheCellSize?: number;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudDensityCacheUpdateSlices?: number;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudDensityCacheWindTolerance?: number;
   cloudCoverage?: number;
   cloudDensity?: number;
   cloudLayerBottom?: number;

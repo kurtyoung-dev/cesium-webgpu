@@ -12,6 +12,8 @@ export interface CloudShadowBindGroupCacheEntry {
   materialFlowBuffer?: GPUBuffer;
   occupancyView?: GPUTextureView;
   occupancyUniformBuffer?: GPUBuffer;
+  densityCacheView?: GPUTextureView;
+  densityCacheUniform?: GPUBuffer;
   bindGroup: GPUBindGroup;
 }
 
@@ -43,6 +45,8 @@ export function getOrCreateCloudShadowBindGroup(
   materialFlowBuffer?: GPUBuffer,
   occupancyView?: GPUTextureView,
   occupancyUniformBuffer?: GPUBuffer,
+  densityCacheView?: GPUTextureView,
+  densityCacheUniform?: GPUBuffer,
 ): GPUBindGroup {
   const entry = cache[slot];
   if (
@@ -58,7 +62,9 @@ export function getOrCreateCloudShadowBindGroup(
     entry.shadowUniformSize === shadowUniformSize &&
     entry.materialFlowBuffer === materialFlowBuffer &&
     entry.occupancyView === occupancyView &&
-    entry.occupancyUniformBuffer === occupancyUniformBuffer
+    entry.occupancyUniformBuffer === occupancyUniformBuffer &&
+    entry.densityCacheView === densityCacheView &&
+    entry.densityCacheUniform === densityCacheUniform
   ) {
     return entry.bindGroup;
   }
@@ -81,6 +87,15 @@ export function getOrCreateCloudShadowBindGroup(
             {
               binding: 18,
               resource: { buffer: occupancyUniformBuffer, size: 32 },
+            },
+          ]
+        : []),
+      ...(densityCacheView && densityCacheUniform
+        ? [
+            { binding: 20, resource: densityCacheView },
+            {
+              binding: 21,
+              resource: { buffer: densityCacheUniform, size: 48 },
             },
           ]
         : []),
@@ -108,6 +123,8 @@ export function getOrCreateCloudShadowBindGroup(
     materialFlowBuffer,
     occupancyView,
     occupancyUniformBuffer,
+    densityCacheView,
+    densityCacheUniform,
     bindGroup,
   };
   return bindGroup;

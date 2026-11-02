@@ -24,6 +24,8 @@ export interface CloudMarchFeatures {
   spatial?: boolean;
   /** Also skips columns the weather map leaves empty; needs `spatial` (`CLOUD_WEATHER_VOLUME_BOUNDS`). */
   bounds?: boolean;
+  /** Light rays read the filtered density cache (`CLOUD_DENSITY_SAMPLE_CACHE`). */
+  density?: boolean;
 }
 
 /**
@@ -35,6 +37,7 @@ export interface CloudMarchResourceState {
   densityMomentsEnabled?: boolean;
   spatialOccupancyActive?: boolean;
   weatherBoundsActive?: boolean;
+  densityCacheActive?: boolean;
 }
 
 /**
@@ -49,6 +52,7 @@ export function cloudMarchActiveFeatures(
     moments: cache.densityMomentsEnabled ?? false,
     spatial: cache.spatialOccupancyActive ?? false,
     bounds: cache.weatherBoundsActive ?? false,
+    density: cache.densityCacheActive ?? false,
   };
 }
 
@@ -65,6 +69,7 @@ export function cloudMarchFeatureDefines(features: CloudMarchFeatures): number {
     (features.spatial ? ShaderDefineHi.CLOUD_SPATIAL_OCCUPANCY : 0) |
     (features.spatial && features.bounds
       ? ShaderDefineHi.CLOUD_WEATHER_VOLUME_BOUNDS
-      : 0)
+      : 0) |
+    (features.density ? ShaderDefineHi.CLOUD_DENSITY_SAMPLE_CACHE : 0)
   );
 }

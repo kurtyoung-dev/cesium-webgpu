@@ -56,6 +56,9 @@ import CloudSpatialOccupancyWGSL from "../../Shaders/WebGPU/Environment/CloudSpa
 import { CloudSpatialOccupancy } from "./WebGPUCloudSpatialOccupancy.js";
 import CloudWeatherVolumeBoundsWGSL from "../../Shaders/WebGPU/Environment/CloudWeatherVolumeBounds.js";
 import { CloudWeatherBounds } from "./WebGPUCloudWeatherBounds.js";
+import CloudDensityCacheWGSL from "../../Shaders/WebGPU/Environment/CloudDensityCache.js";
+import { CloudDensityCache } from "./WebGPUCloudDensityCache.js";
+import { cloudDensityCacheProgram } from "./WebGPUCloudDensityCacheProgram.js";
 import { CloudPrimaryReuseResources } from "./WebGPUCloudPrimaryReuse.js";
 import {
   CLOUD_AIR_LIGHT_FLOATS,
@@ -243,7 +246,7 @@ const CLOUD_UNIFORM_FLOATS =
   CLOUD_MATERIAL_FLOW_FLOATS +
   CLOUD_AIR_LIGHT_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
-const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudAirLightWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${CloudSpatialOccupancyWGSL}\n${CloudWeatherVolumeBoundsWGSL}\n${CloudRayEllipsoidWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
+const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudAirLightWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${CloudSpatialOccupancyWGSL}\n${CloudWeatherVolumeBoundsWGSL}\n${CloudDensityCacheWGSL}\n${CloudRayEllipsoidWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
 // High-word define masks for the emitting march and the consuming resolve.
 // Named once so no call site spells a bit inline, and so a spec can assert the
 // renderer preprocesses with the axis the registry documents rather than with a
@@ -260,6 +263,12 @@ const CLOUD_MARCH_EMITTED_FORMAT: GPUTextureFormat =
 // The shell axes the march reads and the axes the sun-view frame projects the
 // footprint centre onto have to be one value, or the shadow map lands on a
 // different deck than the one the visible march renders.
+let densityProducerSource: string | undefined;
+function getDensityProducerSource(): string {
+  return (densityProducerSource ??= cloudDensityCacheProgram(
+    PROCEDURAL_CLOUDS_SOURCE,
+  ));
+}
 const WGS84_EQUATORIAL_RADIUS = CLOUD_SHADOW_WGS84_A;
 const WGS84_POLAR_RADIUS = CLOUD_SHADOW_WGS84_B;
 // Procedural weather-map texture (coarse global coverage field).
@@ -292,6 +301,8 @@ export interface CloudMainBindGroupEntry {
   occupancyView: GPUTextureView;
   occupancyUniformBuffer: GPUBuffer;
   weatherBoundsBuffer: GPUBuffer;
+  densityCacheView: GPUTextureView;
+  densityCacheUniform: GPUBuffer;
   bindGroup: GPUBindGroup;
 }
 
@@ -401,6 +412,8 @@ interface CloudNonColorBindings {
   readonly occupancyView: GPUTextureView;
   readonly occupancyUniformBuffer: GPUBuffer;
   readonly weatherBoundsBuffer: GPUBuffer;
+  readonly densityCacheView: GPUTextureView;
+  readonly densityCacheUniform: GPUBuffer;
 }
 
 interface PreparedCloudFrame {
@@ -570,6 +583,8 @@ export interface CloudCache {
   spatialOccupancyActive: boolean;
   weatherBounds: CloudWeatherBounds | null;
   weatherBoundsActive: boolean;
+  densityCache: CloudDensityCache | null;
+  densityCacheActive: boolean;
   densityMoments: CloudDensityMomentsResources | null;
   densityMomentsEnabled: boolean;
   marchPipelineTimings?: Map<string, number>;
@@ -1356,6 +1371,8 @@ export function ensureCloudCache(
       spatialOccupancyActive: false,
       weatherBounds: null,
       weatherBoundsActive: false,
+      densityCache: null,
+      densityCacheActive: false,
       densityMoments: null,
       densityMomentsEnabled: false,
       marchPipelines: new Map(),
@@ -1573,6 +1590,9 @@ export function getOrCreateCloudMainBindGroup(
     exactBindings?.occupancyUniformBuffer ?? cache.uniformBuffer!;
   const weatherBoundsBuffer =
     exactBindings?.weatherBoundsBuffer ?? materialFlowBuffer;
+  const densityCacheView = exactBindings?.densityCacheView ?? shapeView;
+  const densityCacheUniform =
+    exactBindings?.densityCacheUniform ?? cache.uniformBuffer!;
   const exactSkyView = exactBindings?.skyView ?? lutViews.skyView;
   const exactMultipleScatter =
     exactBindings?.multipleScatter ?? lutViews.multipleScatter;
@@ -1599,7 +1619,9 @@ export function getOrCreateCloudMainBindGroup(
       entry.materialFlowBuffer === materialFlowBuffer &&
       entry.occupancyView === occupancyView &&
       entry.occupancyUniformBuffer === occupancyUniformBuffer &&
-      entry.weatherBoundsBuffer === weatherBoundsBuffer
+      entry.weatherBoundsBuffer === weatherBoundsBuffer &&
+      entry.densityCacheView === densityCacheView &&
+      entry.densityCacheUniform === densityCacheUniform
     ) {
       return entry.bindGroup;
     }
@@ -1626,6 +1648,8 @@ export function getOrCreateCloudMainBindGroup(
       { binding: 17, resource: occupancyView },
       { binding: 18, resource: { buffer: occupancyUniformBuffer, size: 32 } },
       { binding: 19, resource: { buffer: weatherBoundsBuffer } },
+      { binding: 20, resource: densityCacheView },
+      { binding: 21, resource: { buffer: densityCacheUniform, size: 48 } },
     ],
   });
   const slot = cache.mainBindGroupNextSlot;
@@ -1649,6 +1673,8 @@ export function getOrCreateCloudMainBindGroup(
     occupancyView,
     occupancyUniformBuffer,
     weatherBoundsBuffer,
+    densityCacheView,
+    densityCacheUniform,
     bindGroup,
   };
   cache.mainBindGroupNextSlot = (slot + 1) & 1;
@@ -3269,22 +3295,31 @@ function selectCloudMarchPipeline(
   let pipeline = preview
     ? null
     : requestCloudMarchPipeline(context, cache, format, false, active);
+  if (!pipeline && !preview && active.density) {
+    pipeline = requestCloudMarchPipeline(context, cache, format, false, {
+      ...active,
+      density: false,
+    });
+  }
   if (!pipeline && !preview && active.moments) {
     pipeline = requestCloudMarchPipeline(context, cache, format, false, {
       ...active,
       moments: false,
+      density: false,
     });
   }
   if (!pipeline && !preview && active.spatial) {
     pipeline = requestCloudMarchPipeline(context, cache, format, false, {
       ...active,
       spatial: false,
+      density: false,
     });
     if (!pipeline && active.moments) {
       pipeline = requestCloudMarchPipeline(context, cache, format, false, {
         ...active,
         spatial: false,
         moments: false,
+        density: false,
       });
     }
   }
@@ -3336,6 +3371,8 @@ function initializeCloudPipeline(
     texture(17, Stage.FRAGMENT, { viewDimension: "3d" }),
     uniformBuffer(18, Stage.FRAGMENT),
     storageBuffer(19, Stage.FRAGMENT, { readOnly: true }),
+    texture(20, Stage.FRAGMENT, { viewDimension: "3d" }),
+    uniformBuffer(21, Stage.FRAGMENT),
   ]);
 
   cache.sampler = device.createSampler({
@@ -3464,6 +3501,8 @@ function ensureShadowResources(
         storageBuffer(15, Stage.FRAGMENT, { readOnly: true }),
         texture(17, Stage.FRAGMENT, { viewDimension: "3d" }),
         uniformBuffer(18, Stage.FRAGMENT),
+        texture(20, Stage.FRAGMENT, { viewDimension: "3d" }),
+        uniformBuffer(21, Stage.FRAGMENT),
       ],
     );
     const shaderModule = cache.maskShaderModule!;
@@ -4720,6 +4759,68 @@ export function prepareCloudFrameAndEncodeMask(
       ? cache.spatialOccupancy!.uniform!
       : cache.uniformBuffer!;
 
+    cache.densityCacheActive = false;
+    const densityCacheEligible =
+      config.cloudDensityCache === true &&
+      baseDensityMaterial &&
+      cache.executeSerial > 0 &&
+      !cache.usingStartupPreview &&
+      cache.noiseBaked &&
+      !cache.geographicWindRequested &&
+      !cache.densityMomentsEnabled &&
+      temporalReprojectionSupported &&
+      (data[74] &
+        (CLOUD_QF_PLANET_DENSITY |
+          CLOUD_QF_NOISE_BAKED |
+          CLOUD_QF_HIGH_PRECISION)) ===
+        (CLOUD_QF_PLANET_DENSITY |
+          CLOUD_QF_NOISE_BAKED |
+          CLOUD_QF_HIGH_PRECISION);
+    if (densityCacheEligible) {
+      cache.densityCache ??= new CloudDensityCache(
+        device,
+        getDensityProducerSource,
+        (
+          context as CesiumGraphicsContext & {
+            readonly asyncResources?: import("./AsyncResourceMonitor.js").AsyncResourceMonitor;
+          }
+        ).asyncResources,
+      );
+    }
+    if (cache.densityCache) {
+      cache.densityCacheActive = cache.densityCache.prepare(
+        {
+          weather: weatherView,
+          weatherSampler: cache.weatherSampler!,
+          shape: noise.shapeView,
+          detail: noise.detailView,
+          noiseSampler: noise.sampler,
+          weatherBytes:
+            cache.weatherProviderBytes ?? cache.proceduralWeatherBytes,
+          weatherVersion: cache.weatherProviderVersion,
+        },
+        data,
+        [camPos?.x ?? 0, camPos?.y ?? 0, camPos?.z ?? 0],
+        [
+          cloudWindX * originWindSpeed * cloudTimeSeconds,
+          0,
+          cloudWindY * originWindSpeed * cloudTimeSeconds,
+        ],
+        densityCacheEligible,
+        config,
+        context,
+      );
+      if (cache.densityCache.needsFrame) {
+        frameState.afterRender?.push(() => true);
+      }
+    }
+    const densityCacheView = cache.densityCacheActive
+      ? cache.densityCache!.view!
+      : noise.shapeView;
+    const densityCacheUniform = cache.densityCacheActive
+      ? cache.densityCache!.uniform!
+      : cache.uniformBuffer!;
+
     const marchFormat = halfResActive
       ? CLOUD_HALF_FORMAT
       : context._canvasFormat || "bgra8unorm";
@@ -4795,6 +4896,8 @@ export function prepareCloudFrameAndEncodeMask(
       occupancyView,
       occupancyUniformBuffer,
       weatherBoundsBuffer: weatherBoundsBuffer ?? materialFlowBuffer,
+      densityCacheView,
+      densityCacheUniform,
     });
 
     const earlyMaskGroup = getOrCreateCloudMainBindGroup(
@@ -5009,6 +5112,8 @@ export function prepareCloudFrameAndEncodeMask(
               materialFlowBuffer,
               nonColorBindings.occupancyView,
               nonColorBindings.occupancyUniformBuffer,
+              nonColorBindings.densityCacheView,
+              nonColorBindings.densityCacheUniform,
             );
             const shadowPass = encoder.beginRenderPass(
               timedCloudPass(context, {
@@ -5141,6 +5246,8 @@ export function prepareCloudFrameAndEncodeMask(
                     materialFlowBuffer,
                     nonColorBindings.occupancyView,
                     nonColorBindings.occupancyUniformBuffer,
+                    nonColorBindings.densityCacheView,
+                    nonColorBindings.densityCacheUniform,
                   );
                   cascadePass.setBindGroup(0, cascadeBindGroup);
                   cascadePass.draw(3);
@@ -6183,6 +6290,9 @@ export function destroyProceduralCloudResources(
     cache.weatherBounds?.destroy();
     cache.weatherBounds = null;
     cache.weatherBoundsActive = false;
+    cache.densityCache?.destroy();
+    cache.densityCache = null;
+    cache.densityCacheActive = false;
     cache.densityMoments?.destroy();
     cache.densityMoments = null;
     cache.densityMomentsEnabled = false;

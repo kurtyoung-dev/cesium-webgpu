@@ -1699,11 +1699,21 @@ fn cloudDensityAtCoordinates(
   deckTop: f32,
   footprintMeters: f32,
 ) -> f32 {
+//>>ifdef CLOUD_DENSITY_SAMPLE_CACHE
+  let cached = cloudCachedDensity(coordinates.canonical / CLOUD_DENSITY_WORLD_TO_NOISE,
+    deckBottom, deckTop, footprintMeters, heightFraction);
+  if (cached.y >= 1.0) { return cached.x; }
+//>>else
+//>>endif
   let macroSample = cloudMacroSampleAt(
     worldPos, coordinates, morphologyCoordinate,
     heightFraction, deckBottom, deckTop, footprintMeters
   );
+//>>ifdef CLOUD_DENSITY_SAMPLE_CACHE
+  return mix(cloudDensityFromMacro(macroSample, heightFraction), cached.x, cached.y);
+//>>else
   return cloudDensityFromMacro(macroSample, heightFraction);
+//>>endif
 }
 
 // Raw-world wrappers keep the non-relative-to-eye route on the same mathematical

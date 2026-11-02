@@ -526,6 +526,11 @@ class CloudVolumetrics {
     let spatialOccupancy = false;
     let spatialOccupancyRefreshPages = 2;
     let weatherVolumeBounds = false;
+    let densityCache = false;
+    let densityCacheSize = 32;
+    let densityCacheCellSize = 128;
+    let densityCacheUpdateSlices = 8;
+    let densityCacheWindTolerance = 4;
     Object.defineProperties(experimental, {
       /**
        * When <code>true</code>, distant and orbital cloud fronts read a baked
@@ -631,6 +636,118 @@ class CloudVolumetrics {
           weatherVolumeBounds = value;
         },
       },
+      /**
+       * When <code>true</code>, light rays read a camera-centred cache of the
+       * filtered formed density, and sample the density directly outside the
+       * cache. WebGPU only.
+       * @type {boolean}
+       * @default false
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudDensityCache: {
+        enumerable: true,
+        get: function () {
+          return densityCache;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.bool("experimental.cloudDensityCache", value);
+          //>>includeEnd('debug');
+          densityCache = value;
+        },
+      },
+      /**
+       * The density cache's edge length in cells: 32 or 64; any other value
+       * reads as 32. WebGPU only.
+       * @type {number}
+       * @default 32
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudDensityCacheSize: {
+        enumerable: true,
+        get: function () {
+          return densityCacheSize;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudDensityCacheSize",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          densityCacheSize = value;
+        },
+      },
+      /**
+       * The density cache's cell size in metres, clamped to [32, 2048].
+       * WebGPU only.
+       * @type {number}
+       * @default 128
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudDensityCacheCellSize: {
+        enumerable: true,
+        get: function () {
+          return densityCacheCellSize;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudDensityCacheCellSize",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          densityCacheCellSize = value;
+        },
+      },
+      /**
+       * The number of density cache slices refreshed per frame, at least one
+       * and at most the cache size. WebGPU only.
+       * @type {number}
+       * @default 8
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudDensityCacheUpdateSlices: {
+        enumerable: true,
+        get: function () {
+          return densityCacheUpdateSlices;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudDensityCacheUpdateSlices",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          densityCacheUpdateSlices = value;
+        },
+      },
+      /**
+       * How far, in metres, the wind may carry the density before the cache
+       * is rebuilt. WebGPU only.
+       * @type {number}
+       * @default 4
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudDensityCacheWindTolerance: {
+        enumerable: true,
+        get: function () {
+          return densityCacheWindTolerance;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "experimental.cloudDensityCacheWindTolerance",
+            value,
+            0,
+          );
+          //>>includeEnd('debug');
+          densityCacheWindTolerance = value;
+        },
+      },
     });
     experimental.cloudDistantDensityMoments =
       options.experimental?.cloudDistantDensityMoments ?? false;
@@ -642,6 +759,16 @@ class CloudVolumetrics {
       options.experimental?.cloudSpatialOccupancyRefreshPages ?? 2;
     experimental.cloudWeatherVolumeBounds =
       options.experimental?.cloudWeatherVolumeBounds ?? false;
+    experimental.cloudDensityCache =
+      options.experimental?.cloudDensityCache ?? false;
+    experimental.cloudDensityCacheSize =
+      options.experimental?.cloudDensityCacheSize ?? 32;
+    experimental.cloudDensityCacheCellSize =
+      options.experimental?.cloudDensityCacheCellSize ?? 128;
+    experimental.cloudDensityCacheUpdateSlices =
+      options.experimental?.cloudDensityCacheUpdateSlices ?? 8;
+    experimental.cloudDensityCacheWindTolerance =
+      options.experimental?.cloudDensityCacheWindTolerance ?? 4;
     /**
      * Experimental volumetric cloud dials, grouped apart from the core dials on
      * this object. A dial here may change without notice. WebGPU only.
