@@ -54,6 +54,8 @@ import CloudAerialTransportWGSL from "../../Shaders/WebGPU/Environment/CloudAeri
 import CloudAirLightWGSL from "../../Shaders/WebGPU/Environment/CloudAirLight.js";
 import CloudSpatialOccupancyWGSL from "../../Shaders/WebGPU/Environment/CloudSpatialOccupancy.js";
 import { CloudSpatialOccupancy } from "./WebGPUCloudSpatialOccupancy.js";
+import CloudWeatherVolumeBoundsWGSL from "../../Shaders/WebGPU/Environment/CloudWeatherVolumeBounds.js";
+import { CloudWeatherBounds } from "./WebGPUCloudWeatherBounds.js";
 import { CloudPrimaryReuseResources } from "./WebGPUCloudPrimaryReuse.js";
 import {
   CLOUD_AIR_LIGHT_FLOATS,
@@ -241,7 +243,7 @@ const CLOUD_UNIFORM_FLOATS =
   CLOUD_MATERIAL_FLOW_FLOATS +
   CLOUD_AIR_LIGHT_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
-const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudAirLightWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${CloudSpatialOccupancyWGSL}\n${CloudRayEllipsoidWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
+const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudAirLightWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${CloudSpatialOccupancyWGSL}\n${CloudWeatherVolumeBoundsWGSL}\n${CloudRayEllipsoidWGSL}\n${ProceduralCloudsWGSL}\n${CloudViewIntegrationWGSL}`;
 // High-word define masks for the emitting march and the consuming resolve.
 // Named once so no call site spells a bit inline, and so a spec can assert the
 // renderer preprocesses with the axis the registry documents rather than with a
@@ -289,6 +291,7 @@ export interface CloudMainBindGroupEntry {
   materialFlowBuffer: GPUBuffer;
   occupancyView: GPUTextureView;
   occupancyUniformBuffer: GPUBuffer;
+  weatherBoundsBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
 }
 
@@ -397,6 +400,7 @@ interface CloudNonColorBindings {
   readonly materialFlowBuffer: GPUBuffer;
   readonly occupancyView: GPUTextureView;
   readonly occupancyUniformBuffer: GPUBuffer;
+  readonly weatherBoundsBuffer: GPUBuffer;
 }
 
 interface PreparedCloudFrame {
@@ -564,6 +568,8 @@ export interface CloudCache {
   selectedMarchDefinesHi: number;
   spatialOccupancy: CloudSpatialOccupancy | null;
   spatialOccupancyActive: boolean;
+  weatherBounds: CloudWeatherBounds | null;
+  weatherBoundsActive: boolean;
   densityMoments: CloudDensityMomentsResources | null;
   densityMomentsEnabled: boolean;
   marchPipelineTimings?: Map<string, number>;
@@ -1348,6 +1354,8 @@ export function ensureCloudCache(
       selectedMarchDefinesHi: 0,
       spatialOccupancy: null,
       spatialOccupancyActive: false,
+      weatherBounds: null,
+      weatherBoundsActive: false,
       densityMoments: null,
       densityMomentsEnabled: false,
       marchPipelines: new Map(),
@@ -1563,6 +1571,8 @@ export function getOrCreateCloudMainBindGroup(
   const occupancyView = exactBindings?.occupancyView ?? shapeView;
   const occupancyUniformBuffer =
     exactBindings?.occupancyUniformBuffer ?? cache.uniformBuffer!;
+  const weatherBoundsBuffer =
+    exactBindings?.weatherBoundsBuffer ?? materialFlowBuffer;
   const exactSkyView = exactBindings?.skyView ?? lutViews.skyView;
   const exactMultipleScatter =
     exactBindings?.multipleScatter ?? lutViews.multipleScatter;
@@ -1588,7 +1598,8 @@ export function getOrCreateCloudMainBindGroup(
       entry.densityMomentsView === densityMomentsView &&
       entry.materialFlowBuffer === materialFlowBuffer &&
       entry.occupancyView === occupancyView &&
-      entry.occupancyUniformBuffer === occupancyUniformBuffer
+      entry.occupancyUniformBuffer === occupancyUniformBuffer &&
+      entry.weatherBoundsBuffer === weatherBoundsBuffer
     ) {
       return entry.bindGroup;
     }
@@ -1614,6 +1625,7 @@ export function getOrCreateCloudMainBindGroup(
       { binding: 15, resource: { buffer: materialFlowBuffer } },
       { binding: 17, resource: occupancyView },
       { binding: 18, resource: { buffer: occupancyUniformBuffer, size: 32 } },
+      { binding: 19, resource: { buffer: weatherBoundsBuffer } },
     ],
   });
   const slot = cache.mainBindGroupNextSlot;
@@ -1636,6 +1648,7 @@ export function getOrCreateCloudMainBindGroup(
     materialFlowBuffer,
     occupancyView,
     occupancyUniformBuffer,
+    weatherBoundsBuffer,
     bindGroup,
   };
   cache.mainBindGroupNextSlot = (slot + 1) & 1;
@@ -3322,6 +3335,7 @@ function initializeCloudPipeline(
     storageBuffer(15, Stage.FRAGMENT, { readOnly: true }),
     texture(17, Stage.FRAGMENT, { viewDimension: "3d" }),
     uniformBuffer(18, Stage.FRAGMENT),
+    storageBuffer(19, Stage.FRAGMENT, { readOnly: true }),
   ]);
 
   cache.sampler = device.createSampler({
@@ -4654,6 +4668,51 @@ export function prepareCloudFrameAndEncodeMask(
         context,
       );
     }
+    cache.weatherBoundsActive = false;
+    let weatherBoundsBuffer: GPUBuffer | null = null;
+    const weatherBoundsEligible =
+      config.cloudWeatherVolumeBounds === true &&
+      occupancyEligible &&
+      data[64] > 0.5 &&
+      weatherView === cache.weatherView;
+    if (weatherBoundsEligible) {
+      cache.weatherBounds ??= new CloudWeatherBounds(
+        device,
+        (
+          context as CesiumGraphicsContext & {
+            readonly asyncResources?: import("./AsyncResourceMonitor.js").AsyncResourceMonitor;
+          }
+        ).asyncResources,
+      );
+    }
+    if (cache.weatherBounds) {
+      const decks =
+        (data[74] & CLOUD_QF_MULTI_DECK) !== 0
+          ? [
+              [data[114], data[115]],
+              [data[116], data[117]],
+              [data[118], data[119]],
+            ].filter((deck) => deck[1] > deck[0])
+          : [[data[40], data[41]]];
+      const bounds = cache.weatherBounds.prepare(
+        cache.weatherProviderBytes ?? cache.proceduralWeatherBytes,
+        WEATHER_TEX_W,
+        WEATHER_TEX_H,
+        cache.weatherProviderVersion,
+        {
+          equatorialRadius: data[42],
+          polarRadius: data[62],
+          bottom: Math.min(...decks.map((deck) => deck[0])),
+          top: Math.max(...decks.map((deck) => deck[1])),
+        },
+        weatherBoundsEligible,
+        frameState.frameNumber,
+      );
+      if (bounds && cache.spatialOccupancyActive) {
+        weatherBoundsBuffer = bounds;
+        cache.weatherBoundsActive = true;
+      }
+    }
     const occupancyView = cache.spatialOccupancyActive
       ? cache.spatialOccupancy!.view!
       : noise.shapeView;
@@ -4735,6 +4794,7 @@ export function prepareCloudFrameAndEncodeMask(
       materialFlowBuffer,
       occupancyView,
       occupancyUniformBuffer,
+      weatherBoundsBuffer: weatherBoundsBuffer ?? materialFlowBuffer,
     });
 
     const earlyMaskGroup = getOrCreateCloudMainBindGroup(
@@ -6120,6 +6180,9 @@ export function destroyProceduralCloudResources(
     cache.spatialOccupancy?.destroy();
     cache.spatialOccupancy = null;
     cache.spatialOccupancyActive = false;
+    cache.weatherBounds?.destroy();
+    cache.weatherBounds = null;
+    cache.weatherBoundsActive = false;
     cache.densityMoments?.destroy();
     cache.densityMoments = null;
     cache.densityMomentsEnabled = false;

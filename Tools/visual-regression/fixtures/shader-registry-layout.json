@@ -536,7 +536,7 @@
       "bit": 20,
       "name": "CLOUD_WEATHER_VOLUME_BOUNDS",
       "owner": "cloud-weather",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",

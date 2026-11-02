@@ -1350,6 +1350,8 @@ interface CloudVolumetricsConfig {
   cloudSpatialOccupancy?: boolean;
   /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
   cloudSpatialOccupancyRefreshPages?: number;
+  /** @experimental From `CloudVolumetrics#experimental`; may change without notice. */
+  cloudWeatherVolumeBounds?: boolean;
   cloudCoverage?: number;
   cloudDensity?: number;
   cloudLayerBottom?: number;

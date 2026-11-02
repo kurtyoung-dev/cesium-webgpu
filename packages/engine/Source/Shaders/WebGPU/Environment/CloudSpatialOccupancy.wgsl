@@ -52,9 +52,17 @@ fn cloudSpatialEmptyDistance(start: vec3<f32>, direction: vec3<f32>, mip: f32, t
 }
 
 fn cloudSpatialSpanEmpty(direction: vec3<f32>, start: f32, end: f32) -> bool {
-  // Weather at one point cannot certify coverage over a whole ray segment.
-  // Point rejection still uses the actual weather sample in the macro evaluator.
-  if (cloud.weatherMapEnabled > 0.5 || end <= start) { return false; }
+  if (end <= start) { return false; }
+  var coverage = cloud.coverage;
+  if (cloud.weatherMapEnabled > 0.5) {
+//>>ifdef CLOUD_WEATHER_VOLUME_BOUNDS
+    coverage = clamp(cloudWeatherCoverageUpper(direction, start, end) * cloud.weatherStrength, 0.0, 1.0);
+    if (coverage <= 0.0) { return true; }
+//>>else
+    // Weather at one point cannot certify a whole interval.
+    return false;
+//>>endif
+  }
   let first = cloudNoiseMipLevel(
     cloudViewPixelFootprint(start, cloud.inverseProjection[1].y, cloud.resolution.y),
     CLOUD_DENSITY_WORLD_TO_NOISE * cloud.puffSize,
@@ -64,7 +72,7 @@ fn cloudSpatialSpanEmpty(direction: vec3<f32>, start: f32, end: f32) -> bool {
     CLOUD_DENSITY_WORLD_TO_NOISE * cloud.puffSize,
     textureDimensions(cloudShapeTex).x, textureNumLevels(cloudShapeTex));
   if (floor(first) != floor(last)) { return false; }
-  let threshold = 1.0 - cloudEffectiveCoverage(cloud.coverage);
+  let threshold = 1.0 - cloudEffectiveCoverage(coverage);
   return end - start <= cloudSpatialEmptyDistance(direction * start, direction, first, threshold);
 }
 //>>else

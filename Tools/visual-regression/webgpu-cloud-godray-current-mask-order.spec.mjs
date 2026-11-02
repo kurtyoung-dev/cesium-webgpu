@@ -110,6 +110,12 @@ const REAL_MASK_PATHS = [
   "WebGPUCloudMarchFeatures.ts",
   "WebGPUCloudSpatialOccupancy.ts",
   "WebGPUCloudNoiseBounds.ts",
+  "WebGPUCloudWeatherBounds.ts",
+  "CloudWeatherVolumeBounds.js",
+  "CloudWeatherOctree.js",
+  "OctreeNode.js",
+  "BoundingRectangle.js",
+  "BoundingSphere.js",
   "CloudSpatialOccupancy.js",
   "CloudNoiseBounds.js",
   "CloudNoiseBoundsQuery.js",
@@ -544,7 +550,7 @@ function replaceExactlyOnce(original, before, after, name) {
   return mutateOrFail(original, (text) => text.replace(before, after), name);
 }
 
-async function loadHarness({ overrides = [] } = {}) {
+async function loadHarness({ overrides = [], extraReal = [] } = {}) {
   // Reads happen only when a test/harness invokes this function, never at
   // module import time. The explicit allowlist keeps the exercised exports and
   // their needed local engine dependencies current without a broad directory.
@@ -559,7 +565,7 @@ async function loadHarness({ overrides = [] } = {}) {
   return bundle({
     path: HARNESS,
     source: entry,
-    real: REAL_MASK_PATHS,
+    real: [...REAL_MASK_PATHS, ...extraReal],
     preseed: [
       POST_CHAIN,
       CLOUD,
@@ -3058,6 +3064,54 @@ test("the half-resolution emission request compiles the selected march's live fe
   });
   const dead = await observeEmissionDefines(mutant);
   assert.throws(() => assertEmissionDefines(dead), assert.AssertionError);
+});
+
+// The weather bounds read the weather map the provider publishes, and their
+// octree runs the real bounding-sphere math, so the core modules it reaches
+// load real for this family.
+const WEATHER_BOUNDS_FAMILY = {
+  name: "weather volume bounds",
+  dials: {
+    cloudSpatialOccupancy: true,
+    cloudWeatherVolumeBounds: true,
+    weatherProvider: {
+      version: 1,
+      isPreparing: false,
+      getPackedTexture(width, height) {
+        this.bytes ??= new Uint8Array(width * height * 4).fill(160);
+        return this.bytes;
+      },
+    },
+  },
+  // The octree build yields to the timer queue between rows.
+  timerTicks: 40,
+  flag: "weatherBoundsActive",
+  bits: ["CLOUD_SPATIAL_OCCUPANCY", "CLOUD_WEATHER_VOLUME_BOUNDS"],
+  own: "CLOUD_WEATHER_VOLUME_BOUNDS",
+  extraReal: [
+    "Cartesian2.js",
+    "Cartesian4.js",
+    "Cartographic.js",
+    "Check.js",
+    "DeveloperError.js",
+    "Ellipsoid.js",
+    "Frozen.js",
+    "GeographicProjection.js",
+    "Intersect.js",
+    "Interval.js",
+    "Math.js",
+    "Matrix3.js",
+    "Rectangle.js",
+    "scaleToGeodeticSurface.js",
+  ],
+  eligibility: [
+    "if (bounds && cache.spatialOccupancyActive) {",
+    "if (false && bounds && cache.spatialOccupancyActive) {",
+  ],
+};
+
+test("the weather volume bounds dial compiles CLOUD_WEATHER_VOLUME_BOUNDS into the march the frame selects", async () => {
+  await assertFamilyDial(WEATHER_BOUNDS_FAMILY);
 });
 
 function runPrimaryReuseFrame(engine, fixture, config) {

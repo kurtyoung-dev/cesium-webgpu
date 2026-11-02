@@ -22,6 +22,8 @@ export interface CloudMarchFeatures {
   moments?: boolean;
   /** Skips empty space with the occupancy grid (`CLOUD_SPATIAL_OCCUPANCY`). */
   spatial?: boolean;
+  /** Also skips columns the weather map leaves empty; needs `spatial` (`CLOUD_WEATHER_VOLUME_BOUNDS`). */
+  bounds?: boolean;
 }
 
 /**
@@ -32,6 +34,7 @@ export interface CloudMarchFeatures {
 export interface CloudMarchResourceState {
   densityMomentsEnabled?: boolean;
   spatialOccupancyActive?: boolean;
+  weatherBoundsActive?: boolean;
 }
 
 /**
@@ -45,6 +48,7 @@ export function cloudMarchActiveFeatures(
   return {
     moments: cache.densityMomentsEnabled ?? false,
     spatial: cache.spatialOccupancyActive ?? false,
+    bounds: cache.weatherBoundsActive ?? false,
   };
 }
 
@@ -58,6 +62,9 @@ export function cloudMarchActiveFeatures(
 export function cloudMarchFeatureDefines(features: CloudMarchFeatures): number {
   return (
     (features.moments ? ShaderDefineHi.CLOUD_DENSITY_MOMENTS : 0) |
-    (features.spatial ? ShaderDefineHi.CLOUD_SPATIAL_OCCUPANCY : 0)
+    (features.spatial ? ShaderDefineHi.CLOUD_SPATIAL_OCCUPANCY : 0) |
+    (features.spatial && features.bounds
+      ? ShaderDefineHi.CLOUD_WEATHER_VOLUME_BOUNDS
+      : 0)
   );
 }

@@ -525,6 +525,7 @@ class CloudVolumetrics {
     let reusePrimaryIntegral = false;
     let spatialOccupancy = false;
     let spatialOccupancyRefreshPages = 2;
+    let weatherVolumeBounds = false;
     Object.defineProperties(experimental, {
       /**
        * When <code>true</code>, distant and orbital cloud fronts read a baked
@@ -610,6 +611,26 @@ class CloudVolumetrics {
           spatialOccupancyRefreshPages = value;
         },
       },
+      /**
+       * When <code>true</code>, and <code>cloudSpatialOccupancy</code> is on, the
+       * march also skips columns the weather map leaves empty, using a coarse
+       * octree of the weather coverage. WebGPU only.
+       * @type {boolean}
+       * @default false
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudWeatherVolumeBounds: {
+        enumerable: true,
+        get: function () {
+          return weatherVolumeBounds;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.bool("experimental.cloudWeatherVolumeBounds", value);
+          //>>includeEnd('debug');
+          weatherVolumeBounds = value;
+        },
+      },
     });
     experimental.cloudDistantDensityMoments =
       options.experimental?.cloudDistantDensityMoments ?? false;
@@ -619,6 +640,8 @@ class CloudVolumetrics {
       options.experimental?.cloudSpatialOccupancy ?? false;
     experimental.cloudSpatialOccupancyRefreshPages =
       options.experimental?.cloudSpatialOccupancyRefreshPages ?? 2;
+    experimental.cloudWeatherVolumeBounds =
+      options.experimental?.cloudWeatherVolumeBounds ?? false;
     /**
      * Experimental volumetric cloud dials, grouped apart from the core dials on
      * this object. A dial here may change without notice. WebGPU only.
