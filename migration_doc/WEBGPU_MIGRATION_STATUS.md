@@ -326,6 +326,46 @@ decision on the compile and residency floors (`DX-KIT-COMPILE-FLOOR-CALIBRATION-
 and globe owners (`NEW-WATER-DIVE-ONTARIO-WEBGPU-SEAM`, `NEW-WATER-DIVE-UPSAMPLED-FRAME-ARTEFACTS`); the evidence curation
 `R-2026-10-31-M1` rules, after every landing is in; the Antigravity water program and the W4 regeneration stand as above. Open
 after this landing: the rows of `DEFERRED_WORK.md` section "2026-11-01 — records round 13".
+*[Records round 14:]* Batch 1653 (`85bcb89ff2`) recorded the KIT9 leg; the W4 cloud wave followed as Batches 1654-1664 (the
+table below), measured by the W4 identity job's Phase 1; no Antigravity water batch has landed by Batch 1664 (`git log`).
+
+## Landing record (2026-11-02 — Batches 1654-1664: the W4 cloud wave)
+
+A landing table only. Hashes and trees were read at Batch 1664 with `git log --format='%h %H %T %s' 85bcb89ff2..HEAD`; the seat's
+landing queue committed them 00:59-01:50 EST on 2026-11-02, each a `main -> main` push with `land rc=0`
+(`lanes-2026-11-01/w4-cloud/landing-logs/land-w4-queue-driver.log`, "W4 QUEUE DONE (1..11)"). "Bank" is
+`cesium-webgpu-worker-archive/lanes-2026-11-01/w4-cloud/_lane-out-r2-HOLDS-348e1c70/`; one lane (lead Hiril, Opus; scout Deagol;
+Sonnet workers Bullroarer, Tevildo, Umuiyan, Gorgol, Boldog) and one reviewer (Roheryn: P1 REFUTED on proof, P2
+HOLDS-WITH-FIXES, text only) for all eleven. The rows are in `DEFERRED_WORK.md` section "2026-11-02 — records round 14", which
+also names the byte check (the banked lane patch reproduces the landed tree except the tooling catalog and three probe-kit guide
+importer counts; `package.json` unchanged, so the nine declared runner homes are not applied, `DX-LANDING-RUNNER-HOMES-NOT-APPLIED`).
+One Edge job measured the wave: the W4 identity job's Phase 1 (executor Eowyn, 2026-11-01 16:52-18:1x EST; BEFORE `85bcb89ff2`
+against TIP(11)) and the seat's F3 bisection (`lanes-2026-11-01/w4-cloud/edge/w4-identity-phase1/EDGE_RECEIPT_EOWYN_W4.md`): WebGPU 0
+px on every standard and E-W cell, WebGL inside its same-build floor; its Phase 2 (the dials on) is owed. Unit 3652 left the cut
+as a default move (`NEW-CLOUD-W4-3652-DEFERRED-DEFAULT-MOVE`); 3470 and 3473 were not regenerated (the accepted group map).
+
+| batch | hash (tree) | what is now true | unit | parity | bank |
+| --- | --- | --- | --- | --- | --- |
+| 1654 | `63d2534d56` (`8f3626e2`) | The WebGPU cloud march requests its pipeline variant with one features object; each optional cache feature names its own define in one place, the fallback ladder drops features by name, and every request compiles the variant the positional arguments compiled before (an equivalence spec of 31,680 cases against the base's own function; per-flag and per-rung tests after review P1). | H-feat (seat rework) | WebGPU-only infrastructure | `cut/batch-1-H-feat.patch`, `msg-w4b1.txt` |
+| 1655 | `8140ffb92d` (`536c2057`) | The march's ray / ellipsoid kernels live in `CloudRayEllipsoid.wgsl`, joined into the march template, and a spec composes every cloud source a pipeline compiles (both compute producers included) and holds each WGSL function to one definition. | 3513a | WebGPU-only infrastructure | `cut/batch-2-3513a.patch` |
+| 1656 | `937d4fc67b` (`665a9ae7`) | The march can skip empty space with a camera-centred occupancy grid of the formed density, behind the experimental, default-off `cloudSpatialOccupancy` dial (registry hi 12). | 3466 | WebGPU only (compute producer; no WebGL twin) | `cut/batch-3-3466.patch` |
+| 1657 | `5058a28565` (`e633a040`) | With occupancy on, the march also rejects intervals the weather map leaves empty, from a regional octree of coverage upper bounds, behind the experimental, default-off `cloudWeatherVolumeBounds` dial (hi 20). | 3467 | WebGPU only | `cut/batch-4-3467.patch` |
+| 1658 | `82f80d6b65` (`b8a9ed22`) | Light rays and shadow density can read a bounded, incrementally refreshed cache of the filtered formed density near the camera, behind the experimental, default-off `cloudDensityCache` dial (hi 13). | 3468 | WebGPU only | `cut/batch-5-3468.patch` |
+| 1659 | `8256692646` (`9dcdf63f`) | Optional finite directional lighting with a cumulative deep-shadow cache, and an optional primary-march reuse of the density cache beyond a near-detail distance, behind experimental, default-off dials (hi 16, 17, 14); the legacy light march moves into `CloudLightMarch.wgsl` unchanged. | 3469 + 3471 | WebGPU only | `cut/batch-6-3469-3471.patch` |
+| 1660 | `98d7ed5f64` (`48755425`) | Cloud samples can spend light-march steps in proportion to their estimated contribution, thin and bright samples protected, behind the experimental, default-off `cloudContributionLighting` dial (hi 19). | 3472 | WebGPU only | `cut/batch-7-3472.patch` |
+| 1661 | `3edc7b88bc` (`8e3b225d`) | A weather fetch started under one time mode is dropped when the mode changes before it lands, so `setTime` with a legacy fetch in flight never publishes the latest field for a historical date. | 3782g | backend-agnostic Scene code (both) | `cut/batch-8-3782g.patch` |
+| 1662 | `01d8441c08` (`f9b0775e`) | A probe that opts in with `lifecycleDiagnostics` records a bounded diagnostic of its first drain reason, pending operations and closure states, and the cloud rig stage's capture metadata no longer serialises the PNG buffer it banks. | 3592 + 3774 | tools | `cut/batch-9-3592-3774.patch` |
+| 1663 | `da59c79602` (`842b9671`) | The synoptic weather pattern and the flow-field wind layer draw from one seeded mulberry32 generator (`Scene/Weather/SeededRandom.ts`), each seed giving the stream it gave before. | R-W2-a (seat rework) | backend-agnostic Scene code (both) | `cut/batch-10-R-W2-a.patch` |
+| 1664 | `db4c369527` (`92e75859`) | Cloud uniform floats 88-90 are written zero as the pad they are (no march variant reads them since the sun colour became per sample); the time-of-day factor still drives the horizon haze tint. | R-W2-b (seat rework) | WebGPU only | `cut/batch-11-R-W2-b.patch` |
+
+Next: the nine W4 runner homes (`DX-LANDING-RUNNER-HOMES-NOT-APPLIED`, a measured red in `spec-runner-homes.spec.mjs` at Batch
+1664) and the guide regeneration (`DX-LANDING-GUIDE-HUNK-STRIPPED-NOT-REGENERATED`, carried by probe-kit round 10); the kit's
+experimental dial and the W4 E-ON / dials-on E-T cells (`DX-KIT-CLOUD-EXPERIMENTAL-DIAL`, `NEW-CLOUD-W4-E-ON-CELLS-OWED`, the four
+F2 cell rows); the bind-group key specs (`NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED`, a seat tools batch); the W4 PF debt
+(`NEW-CLOUD-W4-PF-DEBT`, the whole-product campaign); 3652's own batch with its measured E-D cell; the weather-map ON-frame states
+(the base's own) and the on-dense modes (the failing mode on 6 of 6 tip runs against 1 of 4 base-tree runs, a lead; `NEW-CLOUD-W4-F3-WEATHER-MAP-ON-MULTISTATE`, `NEW-CLOUD-WEATHER-MAP-OFFLINE-GLOBE-ON-DENSE-RED`);
+W5 + W6 (lane Annatar), which now holds the cloud critical path; the maintainer's pending decisions (`CAMPAIGN_STATE.md`). Open
+after this landing: the rows of `DEFERRED_WORK.md` section "2026-11-02 — records round 14".
 
 ---
 

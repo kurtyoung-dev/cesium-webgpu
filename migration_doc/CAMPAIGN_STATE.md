@@ -762,10 +762,11 @@ ruling `R-2026-10-24-S12`. Rows: `DEFERRED_WORK.md` ledger intake 2 (Batch 1591)
 table: `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-23/24 …)"; from 2026-10-30 also `DEFERRED_WORK.md`
 "2026-10-30 — records batch 3" and "… round 2", and the landing tables "Landing record (2026-10-29/30 …)" and "Landing
 record (2026-10-30 — Batches 1608-1623 …)"; from 2026-10-31 also `DEFERRED_WORK.md` "2026-10-31 — records round 4" and
-"… records round 5", "… records round 6", "… records round 7", "… records round 8", "… records round 9" and "… records round 10", and from 2026-11-01 "2026-11-01 — records round 11", "… records round 12" and "… records round 13", and the landing tables "Landing record
+"… records round 5", "… records round 6", "… records round 7", "… records round 8", "… records round 9" and "… records round 10", and from 2026-11-01 "2026-11-01 — records round 11", "… records round 12" and "… records round 13", and from 2026-11-02 "2026-11-02 — records round 14", and the landing tables "Landing record
 (2026-10-31 — Batches 1624-1628 …)", "Landing record (2026-10-31 — Batches 1629-1631 …)", "Landing record (2026-10-31 — Batches
 1632-1636 …)", "Landing record (2026-10-31 — Batches 1637-1640 …)", "Landing record (2026-10-31 — Batches 1642-1643 …)", "Landing record (2026-10-31 — Batch
-1646 …)", "Landing record (2026-10-31 — Batch 1648 …)", "Landing record (2026-11-01 — Batch 1650 …)" and "Landing record (2026-11-01 — Batch 1652 …)".
+1646 …)", "Landing record (2026-10-31 — Batch 1648 …)", "Landing record (2026-11-01 — Batch 1650 …)", "Landing record (2026-11-01 — Batch 1652 …)" and "Landing record (2026-11-02 — Batches
+1654-1664 …)".
 **Landed:** the water as Batches 1585/1586 (`16e093aef6`, `156509c929`, committed 2026-10-23 23:27 and 23:31 EDT; tree
 `9e6bcfb7`; opt-in, the default globe unchanged); then, on 2026-10-24, W0 (1587), KT round 5 (1588), KT-2 round 3 (1589),
 F-4 (1590), LEDGER-2 (1591), catalog A1 (1592) and W1, the cloud core and the three-word define registry (1593); and the
@@ -896,12 +897,35 @@ and runner-key rows close. The same-build `E-ID-cv|webgpu` PF-1 red of KIT8 re-m
 fast tip page, a fourth bimodal leg, recorded unattributed. Pending: the maintainer's ruling on a split whose slow mode only the
 tip drew (`DX-KIT-PF2-BIMODAL-ARM-SEPARATED`, a ruling request; until ruled it fails), the stopped-loop decision and the floor
 decisions. The Antigravity water program and W4 below are unchanged.
-**Critical path:** W4. *[Updated 2026-10-31 by records round 4; records batch 3 round 2 put the seat's Edge acceptance job
-first, and it has run.]* The next step is the Antigravity water program's landing on 2026-10-31 (`R-2026-10-30-M1`),
-re-delivered against the base clone at `5e684450f1`, and the W4 regeneration from the Codex post-plan audit, its decisions C1-C5 accepted as the seat recommended (`R-2026-10-30-M2`). The later W-waves (W4 … W12, `R-2026-10-23-M4`) queue behind it, one lane
-round per wave with overlapped phases and one identity Edge job per wave (`R-2026-10-24-M5`).
+**W4 landed (2026-11-02, records round 14):** Batches 1654-1664 (`63d2534d56` … `db4c369527`; lane Hiril, reviewer Roheryn, P1
+REFUTED on proof, P2 HOLDS-WITH-FIXES with text fixes only) are the W4 cloud wave, the second half of the post-plan audit's group
+G1: the occupancy grid, the weather volume bounds, the density sample cache, directional lighting with the deep-shadow cache and
+primary density reuse, and contribution lighting (Codex units 3466-3469, 3471, 3472), each behind an experimental, default-off
+`CloudVolumetrics#experimental` dial (22 options, WebGPU only); the march's pipeline request as one features object (H-feat) and
+its shared ray / ellipsoid kernels (3513a); the weather mode-race guard (3782g); bounded lifecycle diagnostics and lean capture
+metadata in the kit (3592 + 3774); and the W2 harmonisation reworks R-W2-a (one seeded generator) and R-W2-b (an unread uniform
+range written as a pad). 3652 left the cut as a default move and re-enters as its own batch with a measured cell; 3470 and 3473
+were not regenerated (the accepted group map). The identity job's Phase 1 read WebGPU 0 px on every standard and E-W cell, BEFORE
+against TIP(11), and WebGL inside its same-build floor; its weather-map ON frame moved, and the seat's bisection found the
+unchanged base moving 60,729 px against its own banked frame (more than the 32,318 px move), so no W4 batch is named (`NEW-CLOUD-W4-F3-WEATHER-MAP-ON-MULTISTATE`). Owed: the
+nine W4 runner homes, which the landing did not apply (`DX-LANDING-RUNNER-HOMES-NOT-APPLIED`, measured red at Batch 1664); the
+kit's experimental dial and the E-ON and dials-on E-T cells (probe-kit round 10, then the job's Phase 2); the bind-group key
+specs (`NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED`); the PF debt (`NEW-CLOUD-W4-PF-DEBT`).
+**Clone closeout and evidence curation (2026-11-01/02, records round 14):** 19 finished clones were harvested (lane-outs copied and
+md5-verified; four Astra clones' textual records banked as hold banks, 1,347.5 MB) and retired, two after nested junctions were
+unlinked by hand (`DX-RETIRE-TOOL-NESTED-JUNCTIONS`); the Gemini clones were not touched. The evidence curation of
+`R-2026-10-31-M1` ran: 442 keepers banked by week, 22,916 files (19.36 GiB) swept by positive list, a non-PNG hold set listed for
+the maintainer (`NEW-EVIDENCE-CURATION-2026-11-01`).
+**Critical path:** W5 + W6 (audit group G2a). *[Updated 2026-11-02 by records round 14: W4 landed as Batches 1654-1664.]* Lane
+Annatar runs the W5 + W6 round on the W4 round-1 tree (`48d50dfe6c`) and is re-based onto main at its landing; its one identity
+Edge job follows its review (the two waves share one Edge job, the seat's reading of `R-2026-10-24-M5`; the seat's brief
+`cesium-webgpu-worker-archive/lanes-2026-11-01/seat-scratchpad-20261101-evening/brief-W5W6-round.md`). Beside it: probe-kit round
+10 (lane Chrysophylax) builds the experimental cloud dial, the W4 E-ON cells and the four cells the W4 job could not run, and the
+W4 identity job's Phase 2 follows it. The later W-waves (W7a … W12, `R-2026-10-23-M4`) queue behind, one lane round per wave with
+overlapped phases and one identity Edge job per wave (`R-2026-10-24-M5`). The Antigravity water program has not landed (below).
 **Holds:** the per-change PF legs of every default move wait for a whole-product performance campaign after the stack
-lands (`R-2026-10-24-M5`) and are recorded per wave as PF debt (`NEW-CLOUD-W2-PF-DEBT`, `NEW-CLOUD-W3-PF-DEBT`); the
+lands (`R-2026-10-24-M5`) and are recorded per wave as PF debt (`NEW-CLOUD-W2-PF-DEBT`, `NEW-CLOUD-W3-PF-DEBT`,
+`NEW-CLOUD-W4-PF-DEBT`); the
 orbital air-light anchor of W2's unit 3450 is no longer a hold: it is decided (D1 accepted by `R-2026-10-30-M2`: the physical
 look with the night-limb guard) and pinned by W2 round 9, Batch 1626 (`NEW-CLOUD-W2-AERIAL-ORBITAL-ANCHOR`, seat ruling S14);
 and the `NEW-WATER-STARTUP-COST` ten-run lane of `R-2026-10-23-M3` (job sheet
@@ -917,6 +941,11 @@ accepted as recommended, C5 opt-in now (`R-2026-10-30-M2`; `DEFERRED_WORK.md` `N
 **Not in the program:** the Antigravity water waves (w1a REWORK, w1b REWORK, w1c REFUTED, and nine later waves, all
 REWORK) are outside the W-waves; only their salvaged parts landed, through the seat's lanes (above)
 (`NEW-WATER-W1A-GLOBE-PIPELINE-FALLBACK`, `NEW-WATER-W1B-OCEAN-LIFECYCLE`, `NEW-WATER-W1C-PRIMITIVE-WATER-SSR`).
+*[Records round 14, the seat's reading of 2026-11-02, not re-measured by the records lane:]* Gemini's rework (Argon) runs in
+six clones cut from the Gemini base at Batch 1644: `cesium-lane-silmarien-20261101` (w2a), `-erellont-` (w1b), `-tarindor-`
+(w1c), `-oronwe-` (w1a), and `-dorlas-` and `-daimord-` as byte-identical review copies; four packets' patches apply on
+`85bcb89ff2`; no FREEZE or message file exists yet. The seat reviews when the maintainer declares the Layer-1 set final. The
+thirteen older water clones `cesium-lane-water-w*-20261029` and the base `cesium-gemini-base-20261031` stay the maintainer's.
 **Maintainer rulings of 2026-10-30 23:2x EDT** (`MAINTAINER_RULINGS_2026-10-22.md`, verbatim there):
 - `R-2026-10-30-M1` (Antigravity water program): reviews, audits and fix suggestions continue while Gemini finishes; the seat
   consolidates the twelve reviews into one bottom-up fix list per wave, and the program is to land on Saturday 2026-10-31.
@@ -930,8 +959,22 @@ REWORK) are outside the W-waves; only their salvaged parts landed, through the s
 **Maintainer rulings of 2026-10-31** (`MAINTAINER_RULINGS_2026-10-22.md`, verbatim there):
 - `R-2026-10-31-M1` (evidence curation): after every landing is in, the seat's gitignored `Tools/visual-regression/output/` is
   reduced to at most the best 30 screenshots per week and the rest is dumped; this lifts the `R-2026-10-30-M4` hold for that folder
-  only (not the immutable bank, not the worker archive). The curation has not run.
+  only (not the immutable bank, not the worker archive). *[Records round 14:]* the curation ran on the maintainer's go of
+  2026-11-01 (`DEFERRED_WORK.md` `NEW-EVIDENCE-CURATION-2026-11-01`; `DX-EVIDENCE-OUTPUT-RETENTION` closed).
 - `R-2026-10-31-M2` (`DX-RULES-DIET-2`): the middle path; executed by Batch 1643 (`7399ee05ad`).
+**Maintainer decisions (2026-11-02, records round 14; the seat's list, each with its row where one exists):**
+- Parked, pending: (1) the old Gemini clone `cesium-lane-water-w6c-20261029` and its 122 uncommitted edits (the closeout
+  plan left it out as the maintainer's); (2) the compile-floor calibration, with the seat's report-only recommendation
+  (`DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG`); (3) the PF-2 split whose slow mode only the tip drew
+  (`DX-KIT-PF2-BIMODAL-ARM-SEPARATED`, a ruling request; until ruled it fails); (4) the PF-4 residency floor
+  (`DX-KIT-PF4-RESIDENCY-ALLOWANCE-ZERO`); (5) the stopped-loop widget-frame audit (`DX-KIT-STOPPED-LOOP-WIDGET-FRAME-AUDIT`);
+  (6) further trims of the 34 KB rules core (`DX-RULES-ROUTING-LINE-SCOPE` carries the open routing decision); (7) the three
+  claude.ai-synced plugins, about 1,300 tokens a session (the seat's figure, `DEFERRED_WORK.md` records round 8 notes).
+- Answered: (8) the curation's timing, by the maintainer's go of 2026-11-01 (`NEW-EVIDENCE-CURATION-2026-11-01`).
+- Applied as the seat recommended: the three 10-24 synthesis (A24) rank-4 harmonisation items, H-feat, R-W2-a and R-W2-b, landed
+  in W4 as Batches 1654, 1663 and 1664.
+- New, from the curation: the non-PNG hold set (18,419 files, 2.68 GB: 181 JSON files over 1 MB, a 0.61 GB `.vsix`, copied
+  sources and logs), and the 6,463 swept PNGs the protected Astra records still name (`NEW-EVIDENCE-CURATION-2026-11-01`).
 
 ### Standing principles that block work (not row-specific)
 

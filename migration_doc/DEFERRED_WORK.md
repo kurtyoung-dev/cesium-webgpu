@@ -31147,6 +31147,13 @@ row's owner is unchanged. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/edge/kit7-20261031/3-weather-map/weather-map-report.json`
 (`runs[].scored.stats.offFracs`, `runs[].firstFrame.pipelines`, `locations`); receipt `round3/edge/EDGE_RECEIPT_EOWYN_KIT7.md`
 (Phase 1 item 3).
+**Measured on the W4 identity job (records round 14; Phase 1 and the F3 bisection; all three pins, the daylight clock, `--runs 2`
+per invocation):** the OFF deck held still: the OFF frames 0 px across both Phase 1 arms, and the wide-OFF frame 0 px on every
+bisection run. The ON frames did not: the wide-ON frame drew five byte-identical states over ten frames from four trees, the
+unchanged base among them, and the located-ON frames moved up to 759,779 px run to run on BEFORE and 59,905 px on TIP(11).
+Recorded as `NEW-CLOUD-W4-F3-WEATHER-MAP-ON-MULTISTATE`; this row's owner is unchanged. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-11-01/w4-cloud/edge/w4-identity-phase1/SUMMARY_EOWYN_W4.txt` (verdict table "E-W probe-weather-map", F3, F4, section 4);
+`bisect-f3/F3_BISECT.jsonl` (the `wide-off` pairs) in the same folder.
 
 ### NEW-CLOUD-W3-SHARED-DEVICE-TEARDOWN-UNTESTED — every W3 allocating owner is released by the device, and no E-T cell destroys one viewer of several on a shared device — **OPEN** (coverage)
 
@@ -31161,6 +31168,12 @@ device that destroys one viewer and shows its owners released while the other vi
 shadows on that shows the CloudShadow row live and then 0. **Suggested owner:** the KT kit lane (rig and step) with the
 cloud lifecycle lane.
 **Source:** `wave-end/w3-identity/VERIFY_CALIMEHTAR.md:112-133`, `:176-178` (F5); `wave-end/w2-r7-identity/VERIFY_CALENHAD.md:61`.
+**W4 adds five owners (records round 14):** `CloudSpatialOccupancy`, `CloudWeatherBounds`, `CloudDensityCache` (with its
+producer), `CloudDeepShadowCache` (with "Cloud frozen density") and `CloudLightingBudget` join this row's E-T list. At default
+dials none of them is created (the W4 identity job's E-T-flight cell saw none of their seven labels on 8 of 8 pages), so their
+release, single-viewer or on a shared device, is untested until E-T runs with the dials on (`NEW-CLOUD-W4-E-ON-CELLS-OWED`).
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-11-01/w4-cloud/_lane-out-r2-HOLDS-348e1c70/cut/APPENDS_BY_BATCH.txt` ("Update
+NEW-CLOUD-W3-SHARED-DEVICE-TEARDOWN-UNTESTED"); `w4-cloud/edge/w4-identity-phase1/SUMMARY_EOWYN_W4.txt` (F1).
 
 ### NEW-CLOUD-W3-PF-DEBT — the W3 default moves and their residue land on identity proof; their PF cells are owed — **OPEN** (performance debt, R-2026-10-24-M5; W3 landed as Batches 1608-1615)
 
@@ -31489,6 +31502,11 @@ the seat recommended, C5 opt-in now (`R-2026-10-30-M2`, recorded by Batch 1624).
 **Source:** `cesium-webgpu-worker-archive/lanes-2026-10-29/codex-cartography-3587-3789/HARMONIZATION_AUDIT.md:1`, `:76-78`,
 `:103`, `:390-398`, `:626-635`, section 9 (`:968-986`); critic `CRITIC_MIDGEWATER_P3.md:1` (same folder);
 `lanes-2026-10-29/DECISIONS_FOR_MAINTAINER_2026-10-29.md:29-43`.
+**W4 (records round 14):** H-feat, 3513a, 3782g, 3592 (re-ported) and 3774 were regenerated in W4 and landed as Batches 1654,
+1655, 1661 and 1662 (3592 and 3774 together); 3652 was regenerated and then deferred as a default move
+(`NEW-CLOUD-W4-3652-DEFERRED-DEFAULT-MOVE`); 3620 and 3632 served as references only; 3513's reflection field stays deferred.
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-11-01/w4-cloud/_lane-out-r2-HOLDS-348e1c70/cut/APPENDS_BY_BATCH.txt` ("Update
+NEW-CODEX-POST-PLAN-UNITS-3587-3789"); `LANDING_PACKET_W4.md` section 1 (same folder).
 
 ## 2026-10-30 — records batch 3, round 2: the W3 landing (Batches 1608-1615) and the salvage night (Batches 1616-1623)
 
@@ -33284,7 +33302,7 @@ old units are satisfiable that way today, all three still in the core. **Repair:
 `RULES_FILE_NOTES.md` plus an allowlist, or a warning for a unit found only in a linked page. **Source:**
 `cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/istarnie/REVIEW_INDILZAR_P1.md` (N1, N2).
 
-### DX-EVIDENCE-OUTPUT-RETENTION — the seat's gitignored evidence folder holds 39,284 MB with no retention policy — **OPEN** (housekeeping; decided by `R-2026-10-31-M1`, which lifts the `R-2026-10-30-M4` hold for this folder only, after every landing is in; the curation has not run)
+### DX-EVIDENCE-OUTPUT-RETENTION — the seat's gitignored evidence folder holds 39,284 MB with no retention policy — **CLOSED** (housekeeping; decided by `R-2026-10-31-M1`, which lifts the `R-2026-10-30-M4` hold for this folder only; the curation ran on 2026-11-01/02, records round 14)
 
 **Measured (the seat, 2026-10-31 10:3x EDT):** the seat's `Tools/visual-regression/output/` holds 39,284 MB of repatriated Edge
 evidence, every job since the evidence-repatriation rule of 2026-08-21, while the immutable copies live in
@@ -33304,6 +33322,10 @@ phases, propose then sweep by positive list, after the maintainer approves the k
 `cesium-webgpu-worker-archive/lanes-2026-10-31/context-diet/brief-evidence-curation-draft.md`. Nothing has been swept. The row
 closes when the curation lands. **Source:** `round3/brief-records-round8.md` (item 6, the maintainer's words and the measurement);
 `context-diet/brief-evidence-curation-draft.md`.
+**Closed (records round 14):** the curation ran on the maintainer's go of 2026-11-01 (the seat's record): 442 keepers banked by
+ISO week to `cesium-webgpu-visual-evidence/curated/`, and 22,916 files (19.36 GiB) swept from the seat's folder by a positive
+list read back from disk, with 0 refusals; `contact-sheets/` kept whole and 18,419 non-PNG files (2.68 GB) held for the
+maintainer. The figures and their sources are `NEW-EVIDENCE-CURATION-2026-11-01` (section "2026-11-02 — records round 14").
 
 ### Notes (no new ids)
 
@@ -33391,6 +33413,16 @@ derivation) to the skill, updates `CONTEXT_SPINE_GUIDE.md`'s EPERM rule to quote
   `4-offline/without/weather-map-report.json` (`runs[].scored`, `runs[].dials`), the two arms' `weather-map-runtime.json`
   (`verdicts`, `exitCode`), `4-offline/pairdiff-runs.json` (the executor's `pixelDiff` helper output); receipt
   `round3/edge/EDGE_RECEIPT_EOWYN_KIT6.md` (Phase 1 item 4).
+- **Measured on the W4 identity job (records round 14; finding F4 and the F3 bisection; the same four flags with `--runs 2`):**
+  for the first time on these legs `on-dense` passed with the offline globe: on the BEFORE tree (`85bcb89ff2`) it failed run 0 and
+  passed run 1 of the banked arm and passed both runs of the rebuilt TIP(0), 3 passes in 4 runs; on TIP(3), TIP(7) and TIP(11) it
+  failed 6 of 6. The located-ON fractions take two modes: mode A (0.0875, 0.0801, 0.0756, 0.0459, 0.1155, …; ON max 0.144) fails
+  the 0.3 bar and mode B (0.0875, 0.0452, 0.1327, 0.3803, 0.2954, …; ON max 0.380) passes. One BEFORE-tree run in 4 against 6 of 6
+  tip runs is a lead, not an attribution (the executor's words); more runs per arm come before any batch is named. The title's
+  "every run" no longer holds on these trees; the row stays open as measured, owner the cloud program. **Source:**
+  `cesium-webgpu-worker-archive/lanes-2026-11-01/w4-cloud/edge/w4-identity-phase1/BEFORE/weather-map/weather-map-report.json` and
+  `TIP11/weather-map/weather-map-report.json` (`runs[].scored.stats.onFracs`), both arms' `weather-map-runtime.json`
+  (`verdicts`), `bisect-f3/TIP0|TIP3|TIP7/weather-map-report.json`; `SUMMARY_EOWYN_W4.txt` (F4, section 4).
 
 ### NEW-CLOUD-WEATHER-MAP-RUN0-ON-EQUALS-OFF — with no pins, run 0 of three captured weather-map-ON views that track the OFF deck — **OPEN** (measured red, unattributed; WebGPU only by design)
 
@@ -34958,3 +34990,385 @@ where the lane named the row `DX-SEATBELT-TSV-STALE-AT-TIP`); `round3/herubrand/
   carries one today); both stand per P2 N3.
 - **`FEATURE_INVENTORY.md`:** a probe-kit round 9 entry is added to section B; the round 8 entry's tag says which of its open rows
   round 9 closed.
+
+## 2026-11-02 — records round 14: Batches 1654-1664 (the W4 cloud wave), its identity Edge job, the clone closeout and the evidence curation
+
+Eleven batches landed after records round 13 (Batch 1653, `85bcb89ff2`), read at Batch 1664 with
+`git log --format='%h %H %T %s' 85bcb89ff2..HEAD`; their landing table is `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-11-02
+— Batches 1654-1664 …)". They are the W4 cloud wave, the second half of the post-plan audit's group G1: Codex units 3466, 3467,
+3468, 3469 + 3471 and 3472 regenerated onto main, the post-plan units H-feat (re-authored), 3513a (a new split of 3513), 3782g (the
+mode-race guard alone), 3592 (re-ported) + 3774, and the seat's two harmonisation reworks R-W2-a and R-W2-b from the 10-24 synthesis
+(A24 rank 4). Lane Hiril (Opus lead; scout Deagol; Sonnet workers Bullroarer, Tevildo, Umuiyan, Gorgol, Boldog); reviewer Roheryn,
+P1 REFUTED on proof (B-1: H-feat's cache-to-define bridge `cloudMarchActiveFeatures` and its six new fallback-ladder rungs had no
+spec that went red when made inert, every such mutant surviving the whole of `test-cloud-c13`; R-1: each unit's dial -> eligibility
+-> owner path unproven in Node, ruled by the seat as option 1, one Node check per family) and P2 HOLDS-WITH-FIXES (text only: the
+F3 and F4 sentences, applied by the seat; one residual, R-P2-1, filed below). Freezes `529dba7924bdde2d8c4f6648ec2cfc2f` (round 1,
+eleven batches after the seat removed 3652) -> `348e1c70c4a6391479827e68359eba7a` (round 2: spec, message and packet changes; the
+reviewer read the `packages/` subtree of every round-2 tip equal to round 1's and `scripts/build.js` unchanged). Batch order 1 H-feat,
+2 3513a, 3 3466, 4 3467, 5 3468, 6 3469+3471, 7 3472, 8 3782g, 9 3592+3774, 10 R-W2-a, 11 R-W2-b, committed 00:59-01:50 EST on
+2026-11-02 by the seat's landing queue, each a `main -> main` push with `land rc=0` and the driver's last line "W4 QUEUE DONE
+(1..11)". 66 lane paths (35 under `packages/engine`, 29 under `Tools/visual-regression`, `scripts/build.js` and
+`PROBE_KIT_GUIDE.md`) plus the tooling catalog: 67 paths change from `85bcb89ff2` to `db4c369527`. 7 registry flips `reserved ->
+consumed` (hi 12, 13, 14, 16, 17, 19, 20; hi 18, 21, 29, 30 and ext 13 stay reserved); 22 experimental options; gate 6 at the tip
+main fragment 12 / 5 / 2 / 4 and shadow 6 / 5 / 1 / 2 (sampled textures / uniform buffers / storage buffers / samplers, against
+16 / 12 / 8 / 16), with the units' `layout: "auto"` compute pipelines counted per entry point from the P1 review (R-5 b); per-tip gates
+132 rows over tips 0-11, none red but the base's own. **Byte check (this round):** the banked `hiril.patch` (md5 `348e1c70…`)
+applied in a temp index to `85bcb89ff2` gives tree `b9fb44b912` (the packet's tree(11)), which differs from `db4c369527` in two
+paths only: `migration_doc/TOOLING_CATALOG.md` (regenerated at each batch) and `migration_doc/PROBE_KIT_GUIDE.md` (three importer
+counts, `DX-LANDING-GUIDE-HUNK-STRIPPED-NOT-REGENERATED`); `packages/` is `8e2b8e5759` in both, and `package.json` is unchanged from
+`85bcb89ff2`, so the nine runner homes the lane declared were not applied (`DX-LANDING-RUNNER-HOMES-NOT-APPLIED`). **Sources:** the
+W4 bank `cesium-webgpu-worker-archive/lanes-2026-11-01/w4-cloud/_lane-out-r2-HOLDS-348e1c70/` (`LANDING_PACKET_W4.md` sections
+1-8, `cut/APPENDS_BY_BATCH.txt`, `cut/GATE_TABLE.md`, `PF_DEBT_W4.md`, `mutants/MUTANTS_W4.md`, `w4/HUNK_MAP.json`,
+`w4/deferred/3652/`, `REVIEW_ROHERYN_P1.md`, `REVIEW_ROHERYN_P2.md`, `SCOUT_DEAGOL.md`, `RUNNERS_HIRIL.txt`); landing logs
+`lanes-2026-11-01/w4-cloud/landing-logs/` (`land-w4-queue-driver.log`, `land-w4b1-1.log` … `land-w4b11-1.log`). One Edge job
+measured the wave: the W4 identity job's Phase 1 (executor Eowyn, 16:52-18:1x EST on 2026-11-01; BEFORE `85bcb89ff2`, tree
+`d321ae2d`, against TIP(11), the round-1 tree `48d50dfe6c`, whose `packages/` round 2 kept) and the seat's F3 bisection
+(18:1x-18:4x EST); receipt `lanes-2026-11-01/w4-cloud/edge/w4-identity-phase1/EDGE_RECEIPT_EOWYN_W4.md` with
+`SUMMARY_EOWYN_W4.txt`, `LUMA_TABLE.tsv`, `PXDIFF_MATRIX.jsonl` and `bisect-f3/`. Its Phase 2 (the dials on, E-T release of the W4
+owners, PF-4 with the dials on) waits for the kit's experimental dial. Rows updated in place by this round:
+`NEW-CLOUD-W3-SHARED-DEVICE-TEARDOWN-UNTESTED` (five W4 owners join its list), `NEW-CODEX-POST-PLAN-UNITS-3587-3789` (what W4
+regenerated and deferred), `NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY` (the ON frame's states, below),
+`NEW-CLOUD-WEATHER-MAP-OFFLINE-GLOBE-ON-DENSE-RED` (the first passing runs with the offline globe) and `DX-EVIDENCE-OUTPUT-RETENTION`
+(closed: the curation ran). The rows below are new. The lane's proposed `NEW-CLOUD-W4-PROBE-KIT-GUIDE-STALE-AT-BASE` is not
+recorded: its premise was false (Roheryn P1 R-2: `--check` exit 0 on a clean materialisation of tree(0) and of tree(11)).
+
+**The W4 unit list (the accepted group map, R-2026-10-30-M2 decisions C1 and C4).** 3470 (lighting response) and 3473 (the spatial
+proxy) were not regenerated: A24 defers 3470 under its rank 3 ("until a receipt shows benefit") and 3473 under its rank 1 (the
+distant-cloud block), and the group map carries both; their registry entries stay `reserved`, and with 3470 out the main layout's
+bindings 24 and 25 are unused (`NEW-CLOUD-W4-BINDING-GAP`). 3652 was regenerated and then removed from the cut by the seat
+(`NEW-CLOUD-W4-3652-DEFERRED-DEFAULT-MOVE`). **Source:** `LANDING_PACKET_W4.md` section 1 (the per-unit table, the row "3652
+(REMOVED, seat decision a)") and section 8; the seat's lane brief
+`lanes-2026-11-01/seat-scratchpad-20261101-evening/brief-W4-round.md` (the unit list, "NOT in W4: 3470 and 3473").
+
+### NEW-CLOUD-W4-PF-DEBT — the W4 always-on residue landed on identity proof; its PF cells are owed to the whole-product campaign — **OPEN** (performance debt, R-2026-10-24-M5; W4 landed as Batches 1654-1664)
+
+The residue lands on the identity job's Phase 1 (0 px on WebGPU for every standard and E-W cell, BEFORE against TIP(11); WebGL
+inside its same-build floor). Expectation for every row: "no worse than base" (plan W4 `:1983`); no numeric band is
+pre-registered. Scene and arm: WebGPU, clouds on, default dials, E-O, E-F and E-G. The seven rows are Node facts at the cut tips;
+none is a GPU measurement.
+1. Batch 1656 (3466): the main and shadow group-0 layouts gain `texture_3d` 17 and uniform 18, bound at default to aliases
+   (`noise.shapeView`, `cache.uniformBuffer`); `CloudSpatialOccupancy.wgsl` joins every march variant (default variant: the same
+   declarations, tip 2 -> 3). Owed: PF-1 frame time and PF-2 per-pass GPU cost, base against tip; PF-3 compile of the larger text.
+2. Batch 1657 (3467): the main layout gains read-only storage 19, bound at default to the 48 B material-flow buffer;
+   `CloudWeatherVolumeBounds.wgsl` joins every variant (no default declaration). Owed: PF-1, PF-2, PF-3.
+3. Batch 1658 (3468): main and shadow gain `texture_3d` 20 and uniform 21 (aliases at default); `CloudDensityCache.wgsl` joins
+   every variant; the producer program text is built only when the cache is eligible. Owed: PF-1, PF-2, PF-3.
+4. Batch 1659 (3469 + 3471): main and shadow gain `texture_3d` 22 and uniform 23 (aliases at default); the legacy `lightMarch`
+   moves to `CloudLightMarch.wgsl` (default variant: the same declarations, order only, tip 5 -> 6); `CloudDeepShadow`,
+   `CloudDirectionalLighting` and `CloudPrimaryDensity` join every variant. Owed: PF-1, PF-2 (the bindings and the move), PF-3.
+5. Batch 1660 (3472): the main layout gains uniform 26 (an alias at default); `CloudLightingBudget.wgsl` joins every variant;
+   `lightMarchCone` gains an ifdef'd parameter (default variant equal ignoring whitespace, tip 6 -> 7). Owed: PF-1, PF-2, PF-3.
+6. Batches 1656-1660, PF-4: no allocation at default dials. Every W4 owner (`CloudSpatialOccupancy`, `CloudWeatherBounds`,
+   `CloudDensityCache`, `CloudDeepShadowCache` with "Cloud frozen density", `CloudLightingBudget`) is created inside its dial's
+   eligibility branch, and the identity job saw none of the seven W4 owner labels on any E-T page at default dials (0 of 7 on 8 of 8
+   pages, before and after teardown and forced loss), with texture live bytes equal on both arms. PF-4 is owed with the dials on,
+   with the E-T release of those owners (Phase 2, after `DX-KIT-CLOUD-EXPERIMENTAL-DIAL`).
+7. Batches 1654, 1655 and 1664 (H-feat, 3513a, R-W2-b) and the ladder: H-feat changes the request shape only (an equivalence spec
+   against the base's own function, 31,680 cases); 3513a moves `rayEllipsoidIntersect*` into `CloudRayEllipsoid.wgsl` (the same
+   declarations, tip 1 -> 2); R-W2-b writes floats 88-90 zero. Owed: PF-3 for the composed text (3513a), and PF-3 with several W4
+   dials on for the non-cumulative fallback ladder (`NEW-CLOUD-W4-FEATURES-LADDER`: a cold start with every W4 family live can
+   request up to 8 march variants in one frame).
+**Owner:** the whole-product campaign. **Source:** `cut/APPENDS_BY_BATCH.txt` (row `NEW-CLOUD-W4-PF-DEBT`, the seven rows as data);
+`PF_DEBT_W4.md` (the lane's working copy); `EDGE_RECEIPT_EOWYN_W4.md` and `SUMMARY_EOWYN_W4.txt` (finding F1).
+
+### NEW-CLOUD-W4-3652-DEFERRED-DEFAULT-MOVE — Codex unit 3652 (cloud history jitter) moves the default march phase, so it left the W4 cut — **DEFERRED** (seat decision a, 2026-11-01; re-enters as its own batch)
+
+As written, `buildCloudQualityBlock` (`WebGPUCloudTierPresets.ts`) sets `CLOUD_QF_JITTER` only with half resolution AND temporal
+accumulation, so the tier-3 preset (temporal off, jitter on), the full-resolution tiers 1-2 and any temporal-allocation fallback
+would march at ray midpoints instead of the frame-zero spatial phase: a default-path change, not residue. The seat removed it from
+the cut (the re-cut dropped its tree diff from every later tip; the later batches touch none of its hunks) and the lane rebuilt once
+after the removal. **Re-entry:** its own batch with a measured E-D cell, base against tip, on a full-resolution jitter rig
+(`cloud-cinematic-default-1200m`, the tier read back as 3 with temporal off), a banding / sparkle metric and PF-1, plus identity on
+the standard set at half resolution with temporal history. **Owner:** the cloud program (a later W-wave lane). **Source:**
+`cut/APPENDS_BY_BATCH.txt` (row of this id); `LANDING_PACKET_W4.md` sections 4 D and 6 item 1; the banked unit patch, regenerated
+patch, message and round-3 tip gates under `w4/deferred/3652/` (`README.md`).
+
+### NEW-CLOUD-W4-3471-PRIVATE-PATH-WITHHELD — `cloud-primary-density.spec.mjs` landed without its comparison against a lane-private before-tree — **DEFERRED** (to W11, plan 0.8 row 3)
+
+The unit's comparison against `_lane-out/3471-before/` (the marchDeck body and the coarse block) and the helper only it used are
+withheld; gate 4's private-path census reads 0 W4-added reads of a path outside the tree. The withheld text is banked as
+`w4/withheld/3471-cloud-primary-density-private-path.txt`; 3566's fixture reader adds it back. **Owner:** the W11 lane. **Source:**
+`cut/APPENDS_BY_BATCH.txt`; `LANDING_PACKET_W4.md` section 4 A.
+
+### NEW-CLOUD-W4-BINDING-GAP — with 3470 deferred, the main cloud group-0 layout numbers its bindings 23 -> 26, leaving 24 and 25 unused — **RECORD**
+
+Valid WebGPU (a hole in the binding numbers); recorded so a reviewer of a later layout change knows it is intended. **Source:**
+`cut/APPENDS_BY_BATCH.txt`; `LANDING_PACKET_W4.md` section 2.
+
+### NEW-CLOUD-W4-ENVTENSOR-SYNOPTIC-FORMULAS — the water tensor and the synoptic pattern share their zonal-wind and temperature formulas, not byte for byte — **LEAD** (R-W2-a's second half, not done)
+
+`buildProceduralEnvironmentalTensor` (`packages/engine/Source/Scene/Weather/EnvironmentalTensorMap.ts:351-364` at Batch 1664, the
+zonal wind and the base temperature) and `SynopticWeatherPattern` (`SynopticWeatherPattern.ts:107-112` and `:185-189`) carry the same
+zonal-wind and temperature-core shapes, but not byte-identically: worker Umuiyan measured them at most 1.9e-14 m/s and 7.1e-15 C
+apart (`Math.pow` against `s * s`, degree against radian band edges, `<=` against `<`). A shared helper would move the water
+tensor's floats by about 1e-14; not done in W4 because the tensor file is water-owned. **Owner:** the cloud and water owners, by
+agreement. **Source:** `cut/APPENDS_BY_BATCH.txt`; `LANDING_PACKET_W4.md` section 4 G; the code lines above, re-read at Batch 1664.
+
+### NEW-CLOUD-W4-FEATURES-LADDER — the march-pipeline fallback ladder is not cumulative, so a cold start with every W4 family live can request up to 8 variants in one frame — **RECORD** (H-feat)
+
+The ladder keeps each unit's rung order (contribution, primary, deep, density, moments, spatial, spatial + moments); each rung drops
+one feature (density also drops deep; moments and spatial also drop density and deep), and `cloud-march-features.spec.mjs` pins the
+sequence (8 requests at tip 11, with each rung's unreachable mutant red in-spec after round 2). A data-driven ladder is a possible
+follow-up, not done (it would change the sequence the units shipped). PF-3 with several dials on is owed under
+`NEW-CLOUD-W4-PF-DEBT` row 7. **Source:** `cut/APPENDS_BY_BATCH.txt`; `LANDING_PACKET_W4.md` section 4 B; `REVIEW_ROHERYN_P1.md` R-6.
+
+### NEW-CLOUD-W4-OBSERVABILITY-D8-STALE-PIN — `cloud-observability-counters.spec.mjs` D8 pins a resolver name a batch renamed, so the base's quarantine runner is red on it — **OPEN** (base red; one-word repoint)
+
+The pin (`Tools/visual-regression/cloud-observability-counters.spec.mjs:716-719` at Batch 1664) expects `counters.maxSteps =
+qualityResolved.maxSteps;`, while the renderer reads `counters.maxSteps = qualityBlock.maxSteps;`
+(`WebGPUProceduralCloudRenderer.ts:4076`) and packs the "44 maxSteps" uniform from the same `qualityBlock.maxSteps` (`:4115`), the
+resolver output renamed by Batch 1493. Red at tip 0 under `test-cloud-c13-quarantine` and at every tip (the base's own); it is also
+the one violation `verify-worker-handoff` reported for the W4 clone. Not repointed in W4 (it would have moved every cut tip after
+the gates ran). **Repair:** repoint the pin to `qualityBlock` and confirm the D8 guard red with the packing line made inert.
+**Owner:** the cloud program (a tools batch). **Source:** `cut/APPENDS_BY_BATCH.txt`; `LANDING_PACKET_W4.md` sections 5 and 6
+item 4; the lines above, re-read at Batch 1664.
+
+### NEW-CLOUD-W4-SHADERSOURCEID-PIN — the Karma spec pins 44 `ShaderSourceId` keys while the registry has 45 — **OPEN** (base red; the water lane's)
+
+`WebGPUShaderDefinesSpec.js:146` expects `Object.keys(ShaderSourceId).length` to be 44; the frozen object at
+`WebGPUShaderDefines.ts:1328` carries 45 keys at Batch 1664 (Batch 1622's FFT-ocean id was added without its pin). Neither file is
+in the W4 diff; W4's Karma run read the red as the base's own. **Repair:** pin 45 (with the new id's value). **Owner:** the water
+lane. **Source:** `cut/APPENDS_BY_BATCH.txt`; `LANDING_PACKET_W4.md` section 6 item 2; the two files, counted at Batch 1664.
+
+### NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED — no spec reds when a bind-group cache key W4 added is made inert — **OPEN** (tools follow-up; reviewer Roheryn P2 residual R-P2-1)
+
+The occupancy-view entry W4 added to the main cloud bind-group cache key (`WebGPUProceduralCloudRenderer.ts:1667` at Batch 1664,
+in `getOrCreateCloudMainBindGroup`, `:1603`) and to the shadow cache key (`WebGPUCloudShadowBindGroupCache.ts:68`) is guarded by no
+executable check: the reviewer's two inertness mutants (N1 main, N1s shadow, `true || entry.occupancyView === occupancyView`)
+SURVIVED the only two Node specs that touch these caches (46 of 46 green). The main-cache Karma spec is red at the base (its fake
+cache has no `materialFlow`, read at `:1629`), so it never reaches the W4 keys; the shadow-cache spec was not extended. Effect if a
+key broke: toggling a W4 dial would reuse a bind group that binds `noise.shapeView` where the compiled march reads the occupancy
+volume. By reading, both caches key every new resource correctly today. **Seat ruling:** a follow-up tools batch, not a third W4
+round (the two-repair cap of `R-2026-10-24-M5`): give the Karma spec's fake cache a `materialFlow`, extend
+`webgpu-cloud-shadow-bind-group-cache.spec.mjs` with the five W4 entries, and kill N1 / N1s with an inertness case each.
+**Owner:** the seat (tools batch). **Source:** `REVIEW_ROHERYN_P2.md` sections 2 and 5; `cut/APPENDS_BY_BATCH.txt` ("Seat append
+after REVIEW_ROHERYN_P2"); the lines above, re-read at Batch 1664.
+
+### NEW-CLOUD-W4-E-ON-CELLS-OWED — the W4 families' on-path is proven in Node; their visual proof on Edge is owed — **OPEN** (visual proof owed; seat ruling on R-1)
+
+Each W4 family's on-path is a Node check in `webgpu-cloud-godray-current-mask-order.spec.mjs`: the real prepare path through
+`runCapturedCloud` with the dial on compiles the family's define into the selected march, the dial off over as many frames requests
+none, and the dial on with its eligibility branch unreachable never requests the family's define (occupancy, weather bounds,
+density cache, deep shadow, directional lighting, primary density, contribution lighting; Roheryn P2 killed all 17 pass-1
+survivors). The E-ON cells per cache family and the cache-reuse counter E7-2 stay the visual proof, with E5-3 (volumetric fog on,
+zero validation errors with the grown layout), the low-limits adapter run and E-T with the dials on (Phase 2 of the identity job).
+**Owed after** `DX-KIT-CLOUD-EXPERIMENTAL-DIAL` (probe-kit round 10). **Source:** `cut/APPENDS_BY_BATCH.txt`;
+`LANDING_PACKET_W4.md` sections 4 B2 and 7; `REVIEW_ROHERYN_P2.md` section 2.
+
+### DX-KIT-CLOUD-EXPERIMENTAL-DIAL — no stage dial sets `CloudVolumetrics#experimental.<dial>`, so no rig can turn a W4 family on — **OPEN** (probe kit; owed before the W4 E-ON and dials-on E-T cells)
+
+`lib/cloud-rig-stage.mjs` and `lib/landing-cell-table.mjs` carry no `experimental` dial (grep at Batch 1664: no match in either);
+the W4 cells need one stage dial taking `{<experimental dial>: value}` with a read-back, so E-ON per cache family and E-T with the
+five W4 owners alive run on the kit rather than a page script. **Owner:** the kit (probe-kit round 10). **Source:**
+`cut/APPENDS_BY_BATCH.txt`; `LANDING_PACKET_W4.md` section 7 ("Missing kit piece"); the grep above.
+
+### NEW-CLOUD-W4-TEMPLATE-READER-COPIES — seven cloud specs still carry a private march-template reader and three a hard-coded module list — **OPEN** (DX)
+
+`cloud-shadow-rte`, `cloud-coverage-response`, `cloud-density-lod`, `cloud-march-budget`, `cloud-primary-ray`, `cloud-ray-jitter`
+and `cloud-reconstruction-attachments` read the march template privately, and `cloud-density-domain`, `cloud-genus-morphology` and
+`cloud-morphology-composition` list its modules by hand; W4 had to extend them twice. **Repair:** migrate them to
+`lib/engine-shader-source.mjs` `composeRendererTemplate` (added by Batch 1655). **Owner:** the kit / cloud tools. **Source:**
+`cut/APPENDS_BY_BATCH.txt`.
+
+### NEW-CLOUD-W4-TOOLS-LIB-UNDER-TMP — two tools-lib negative controls assume the working directory is outside the temp namespace; run from a tree under the lane temp root, one deleted that tree's `packages/` — **OPEN** (DX, hazard)
+
+`Tools/lib/lane-tmp.spec.mjs` C2 (`:206-211`) calls `removeLaneTmp(path.join(process.cwd(), "packages"))` and expects a refusal;
+`Tools/temp-hygiene.spec.mjs` C3b (`:342`) plans a deletion under the working directory. Run from a materialised tip under
+`<tmp>/cesium-lane/<lane>/`, C2 deleted that folder's `packages/` tree (measured in the lane's first gate round; the clone and the
+seat were untouched). **Acceptance:** both controls use a path they create, never the working directory. The W4 gates ran
+`test-tools-lib` once in the clone instead (133 of 133). **Owner:** the seat (tools). **Source:** `cut/APPENDS_BY_BATCH.txt`;
+`cut/GATE_TABLE.md` (header); the lines above, re-read at Batch 1664.
+
+### NEW-CLOUD-W4-PROBE-RUNTIME-SIZE — `lib/probe-runtime.mjs` is 1,016 lines after 3592's writer — **OPEN** (DX, file size)
+
+984 lines before Batch 1662, 1,016 at Batch 1664 (`wc -l`), over the ~1,000-line decomposition rule. **Owner:** the kit.
+**Source:** `cut/APPENDS_BY_BATCH.txt`; the file at Batch 1664.
+
+### NEW-CLOUD-W4-F3-WEATHER-MAP-ON-MULTISTATE — the wide weather-map-ON frame takes one of several byte-identical states per invocation, on the unchanged base as on the W4 tips — **OPEN** (measured, the base's own; no W4 batch named)
+
+**Phase 1 (finding F3):** `probe-weather-map.mjs --clock 2026-06-21T18:00:00Z --cloud-wind-speed 0 --cloud-quality 32
+--offline-globe --runs 2` read the wide-ON frame 32,318 px apart (4.11 %, max channel 105) BEFORE against TIP(11), each arm 0 px
+run to run (luma 37.049 against 37.014); the managed-deck E-W cells with the weather map on were 0 px. **Bisection (the seat's
+follow-up):** each tip a fresh tree whose id matched the cut manifest (TIP(0) `d321ae2d`, TIP(3) `d1540828`, TIP(7) `1102fd5b`),
+served == disk at every launch. Against the banked BEFORE run 0, TIP(7) moved 46,676 px, TIP(3) 54,515 px and TIP(0), the
+unchanged BEFORE tree rebuilt, 60,729 px (max channel 105 each); run 0 against run 1 within a tip: TIP(7) 12,155 px, TIP(3) 11,029
+px, TIP(0) 0 px; the OFF frames 0 px on every run. The ten frames fall into five byte-identical states (TIP0 run 0 = TIP0 run 1 =
+TIP3 run 1; TIP3 run 0 = TIP7 run 1; TIP7 run 0; TIP11 runs 0 and 1; BEFORE runs 0 and 1); two states were drawn by two trees each (TIP(0) with TIP(3), TIP(3) with TIP(7)) and three by one tree only (TIP(7) run 0, TIP(11), and BEFORE, whose tree `d321ae2d` drew another state when rebuilt as TIP(0)); the receipt's "no state belongs to only one tree" does not hold against its own matrix.
+So the wide-ON frame is not a tree identity: the same tree draws different states across invocations, and no W4 batch is named.
+TIP(1), TIP(5) and TIP(9) were built (trees matched) but not run. Beside it: `NEW-CLOUD-W3-WEATHER-MAP-OFF-INSTABILITY` (the OFF deck
+held still under the same pins here, 0 px). **Next step:** more invocations per tree before any attribution, with the kit's
+pipeline wait (`DX-KIT-WEATHER-MAP-NO-WAIT-PIPELINES`). **Owner:** the cloud program. **Source:** `SUMMARY_EOWYN_W4.txt` (verdict
+table, F3, section 4); `bisect-f3/wide-on-pairwise.txt` (the 10 x 10 matrix and lumas); `bisect-f3/F3_BISECT.jsonl`.
+
+### DX-KIT-E-O-MSAA-OFF-CELL — the landing cell table has only the MSAA-4 orbital rig, so E-O with MSAA off cannot run — **OPEN** (probe kit; identity job finding F2)
+
+`lib/landing-cell-table.mjs:140-141` maps `E-O` to `orbital-fulldisc-6608km-msaa4-single-deck` and no sibling cell runs MSAA 1;
+the W4 sheet's E-O MSAA-off cell read NOT RUN. **Repair:** a sibling rig declaring MSAA 1 as data and a cell for it. **Owner:**
+the kit (probe-kit round 10). **Source:** `SUMMARY_EOWYN_W4.txt` (verdict table "E-O MSAA off"; F2).
+
+### DX-KIT-E-T-ORBITAL-CELL — no device-loss cell runs on the orbital rig, so E-T on E-O cannot run — **OPEN** (probe kit; F2)
+
+The E-T cells are `E-T-water`, `E-T-flight`, `E-T-resize` and `E-T-skybox` (`lib/landing-cell-table.mjs:155-167`); the W4 sheet's
+E-T on E-O read NOT RUN. **Repair:** an E-T cell with the flight cell's device-loss steps on E-O's rig. **Owner:** the kit
+(probe-kit round 10). **Source:** `SUMMARY_EOWYN_W4.txt` (verdict table "E-T on E-O"; F2).
+
+### DX-KIT-LIVE-BIND-GROUP-LAYOUT-CENSUS — no kit piece reads the live cloud bind-group layouts, so gate 6 (E5-3) is a source count only — **OPEN** (probe kit; F2)
+
+The identity job re-derived the counts from source at TIP(11) (main fragment 12 / 5 / 2 / 4, shadow 6 / 5 / 1 / 2; BEFORE main
+9 / 1 / 1 / 4, shadow 3 / 2 / 1 / 2, equal to the packet's section 2 entry for entry), not from the page. **Repair:** a receipt
+line with the per-stage counts of every cloud group-0 layout read from the live page, compared with the defaults 16 / 12 / 8 / 16.
+**Owner:** the kit (probe-kit round 10). **Source:** `SUMMARY_EOWYN_W4.txt` (verdict table "E5-3"; F2); the executor's
+`_logs/E5-3-source-rederivation.txt` in the receipt's bank.
+
+### DX-KIT-REQUIRED-LIMITS-DIAL — no landing-stage dial requests the device with the WebGPU default limits, so the low-limits adapter run cannot run — **OPEN** (probe kit; F2)
+
+`probe-globe-default-limits` builds its own globe-only widget; no cloud cell takes a `requiredLimits` dial, and the sheet's
+low-limits adapter run read NOT RUN. **Repair:** a stage dial whose receipt shows the adapter-reported limits equal to the defaults
+and the cloud pipelines built with 0 validation errors; with the dial off, today's behaviour unchanged. **Owner:** the kit
+(probe-kit round 10). **Source:** `SUMMARY_EOWYN_W4.txt` (verdict table "Low-limits adapter run"; F2).
+
+### DX-KIT-WEATHER-MAP-NO-WAIT-PIPELINES — `probe-weather-map.mjs` waits for pending pipelines once, before its first capture, and has no dial to wait before the weather-map-ON captures — **OPEN** (probe kit, small)
+
+The probe drains the render pipeline cache once, before the first located capture (`Tools/visual-regression/probe-weather-map.mjs:476-487`
+at Batch 1664), and again only on a first-frame re-settle; it has no `--wait-pipelines` flag, unlike `probe-landing-cells.mjs`, so
+the ON captures, taken after the deck is switched on, carry no pipeline wait. The identity job's E-W cells ran `--wait-pipelines`;
+its weather-map arms and the F3 bisection could not. A candidate for the multi-state ON frames, not a cause. **Repair:** an opt-in
+`--wait-pipelines` that drains before every capture, recorded in the receipt; with no flag, today's captures unchanged. **Owner:**
+the kit. **Source:** `EDGE_RECEIPT_EOWYN_W4.md` (addendum: "the probe has no --wait-pipelines flag"); the lines above.
+
+### DX-BUILD-MD5-NOT-TREE-IDENTITY — one source tree built twice gave two `Cesium.js` md5s, so a build md5 does not identify a tree — **OPEN** (build / executor practice)
+
+The identity job built tree `d321ae2d` (main `85bcb89ff2`) at 17:04 EST with `Cesium.js` md5 `cf741ebb88e1f9af46befeaa8503d88d`
+and rebuilt it for the bisection at 18:2x with md5 `bdbb9104…`. Served == disk still holds per build, but two builds of one tree
+cannot be matched by md5. **Repair shape:** executors name the tree id (recomputed from the files, as this job did) as the arm's
+identity and keep the build md5 as the served-build check only; a reproducible-build investigation is optional. **Owner:** the
+seat (executor sheets). **Source:** `EDGE_RECEIPT_EOWYN_W4.md` (table "Trees"; addendum "Side observation").
+
+### DX-SPEC-MASK-ORDER-MEMORY — under three parallel gate lanes the mask-order spec's process ran out of memory — **OPEN** (tools, harness memory)
+
+In W4 round 1, gate round 3 at tip 7 (3472), `test-cloud-c13` read 845 of 849 with `webgpu-cloud-godray-current-mask-order.spec.mjs`
+failed: the process died with "FATAL ERROR: Committing semi space failed. Allocation failed - JavaScript heap out of memory" while
+three gate lanes ran at once (available memory measured 0.4 GB during round 4); re-run alone it was green (857 of 860 with the
+base's 3 skips), and the round-3 tip-8 `cloud-march-transfer` red ("Zone Allocation failed - process out of memory") had the same
+cause. Round 2 ran the gates one tip at a time and neither recurred. The spec is the W4 families' on-path home and grows with each
+wave. **Repair shape:** measure the spec's peak memory alone, then split it or cap gate parallelism by free memory. **Owner:**
+the seat (gate runner) and the cloud tools. **Source:** `LANDING_PACKET_W4.md` section 5 ("Round 1, seat item (b)").
+
+### DX-LANDING-GUIDE-HUNK-STRIPPED-NOT-REGENERATED — the landing queue strips a guide hunk it cannot place and nothing regenerates the inventory after — **OPEN** (seat landing tooling; measured at Batch 1664)
+
+The W4 queue's `strip-guide-hunk` step removed the `PROBE_KIT_GUIDE.md` section from 10 of the 11 batch patches (batch 8 had none),
+after the whole-patch 3-way apply failed on that file for batches 2, 4, 5, 6, 7 and 11; no step regenerated the inventory
+afterwards. At Batch 1664 `node Tools/visual-regression/probe-kit-inventory.mjs --check migration_doc/PROBE_KIT_GUIDE.md` exits 1
+("the inventory region has drifted from the tree"): three importer counts are stale, `lib/engine-shader-source.mjs` 38 -> 39,
+`lib/engine-ts-resolver.mjs` 62 -> 63 and `lib/import-mutated.mjs` 54 -> 55 (measured by this round in a clean clone; no piece is
+missing). The lane's round-2 tips had the guide in sync (`--check` green at every tip, `w4/lane/guide-at-tips.mjs`). **Repair
+shape:** after a strip, the queue runs `--write` then `--check` on the tip before committing. Probe-kit round 10 regenerates the
+guide in its own batch. **Owner:** the seat (landing tooling). **Source:** `landing-logs/land-w4-queue-driver.log`
+("strip-guide-hunk" lines); the `--check` output at Batch 1664; `LANDING_PACKET_W4.md` section 4 F.
+
+### DX-LANDING-RUNNER-HOMES-NOT-APPLIED — the nine W4 specs landed with no `package.json` runner home, so no runner on main runs them — **OPEN** (seat landing; measured red at Batch 1664)
+
+`RUNNERS_HIRIL.txt` declares nine homes (eight `test-cloud-c13=` lines for `cloud-march-features`, `cloud-march-kernels`,
+`cloud-spatial-occupancy`, `cloud-weather-volume-bounds`, `cloud-density-cache`, `cloud-deep-shadow-cache`,
+`cloud-primary-density`, `cloud-lighting-budget`, and `test-engine-node=` for `seeded-random`); `package.json` is unchanged from
+`85bcb89ff2` to `db4c369527` (grep: none of the nine spec names appears in it), and the queue's logs show no homes step. Measured by
+this round at Batch 1664 in a clean clone: `node --test Tools/visual-regression/spec-runner-homes.spec.mjs` exits 1, 15 of 16, the
+red test "every Tools spec has a runner home or a homeless-allowlist row" listing exactly the nine; the nine specs run directly
+pass 88 of 88. So the B-1 and R-1 proofs the review accepted (the per-rung, per-flag and per-family tests) are on main but run in
+no runner, and `test-visual-regression-node-c` carries this red until the homes land. The lane's per-tip gates ran with the homes
+applied (`cut/GATE_TABLE.md` header), and the landing's last batch ran `test-cloud-c13` without them. **Repair:** the seat appends the
+nine homes (its usual homes step) and re-runs `test-cloud-c13`, `test-engine-node` and the runner-homes spec green. **Owner:** the
+seat. **Source:** `RUNNERS_HIRIL.txt`; `landing-logs/land-w4b11-1.log` (the runners run); `package.json` at both hashes; the spec
+run above.
+
+### DX-RETIRE-TOOL-NESTED-JUNCTIONS — the seat's clone-retire script unlinks a clone's top-level `node_modules` junctions, not junctions nested deeper in the tree — **OPEN** (seat tooling, small)
+
+On the 2026-11-01 closeout two retirements stopped and were retried after nested junctions were unlinked by hand: the sync-1145
+clone's nested Sandcastle junction (`retire-go-20261101-sync1145.txt`) and the junctions of the astra-20260926 clone under
+`_lane-out/cloud-main-20261019/node_modules` (`retire-go-20261101-c.txt`). The script (`Tools/retire-clones-20261023.mjs`, the
+seat's, untracked) unlinks the per-package junctions first (the closeout plan, `:42`). **Repair shape:** an lstat walk of the whole
+tree that unlinks every junction before removal, with the seat's `node_modules` count verified before and after. **Owner:** the
+seat. **Source:** `cesium-webgpu-worker-archive/clone-closeout-20261101/` (the four `retire-go-*` files' header lines);
+`lanes-2026-11-01/seat-scratchpad-20261101-evening/CLONE_CLOSEOUT_PLAN_20261101.md`.
+
+### NEW-EVIDENCE-CURATION-2026-11-01 — the seat's evidence folder is curated: 442 keepers banked by week, 22,916 files swept by positive list — **RECORD** (R-2026-10-31-M1; the non-PNG hold set listed for the maintainer)
+
+**Phase A (propose; lead Agatha, workers Augustus and Perkins, 2026-11-01 22:40 EST):** the folder held 113,840 files, 42.25 GB
+decimal (39.3 GiB); 442 keepers across 25 ISO weeks (five weeks at the cap of 30: W38, W39, W41, W43, W44; W40 holds only byte
+duplicates and W19 no evidence); a drop list of 25,647 paths, 23.33 GB (duplicates 12,915 / 9.87 GB, not selected 7,105 / 6.00,
+Astra return-leg captures 3,229 / 3.30, raw frame dumps 998 / 3.14, blank or black 814 / 0.43, diff masks 586 / 0.58); a protected
+set of 69,203 files, 15.42 GB (rules R1-R5, R1 every non-PNG under `astra-return-*`); the self-check reads the list back from disk:
+drop ∩ protected 0, drop ∩ keepers 0, drop ∩ archive extras 0, 0 missing, PASS, and a mutant with one protected path appended
+FAILs. **Bank:** `cesium-webgpu-visual-evidence/curated/<week>/`, 442 PNGs plus 44 JSON sidecars, one `MANIFEST.md5` per week
+(`md5sum -c` OK on all 25 by this round) and `INDEX.md` (442 rows, each with its "new vs prior weeks" sentence), 384,070,510 B
+(366.3 MiB). **Phase B (the seat's sweep, after the maintainer's go):** `contact-sheets/` kept whole (2,731 files, Agatha's Q1), so
+22,916 files deleted, 20,791,246,492 B (19.36 GiB) freed, 1,224 empty directories removed, 0 refusals. **Held for the maintainer
+(Agatha's Q2):** 18,419 non-PNG files, 2.68 GB, neither protected nor dropped: 181 JSON files over 1 MB (1.44 GB), one 0.61 GB
+`.vsix` under `codex-extension-recovery-20261025/`, and copied sources and logs (about 0.6 GB). Also for the seat or the
+maintainer (Q3): 6,463 dropped PNGs (6.81 GB) were named by the protected Astra records, which now carry dangling image paths. Each
+keeper's "new vs prior weeks" sentence was written from the thumbnail and its path, not checked against the ledger: a lead.
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-11-01/evidence-curation-phaseA/` (`PACKET_AGATHA.md`, `DROP_SUMMARY.md`,
+`drop-list.selfcheck.txt`, `SWEEP_RECEIPT_2026-11-02.md`, `WEEKS.md`, `KEEP_*.txt`); the bank's `INDEX.md` and manifests.
+
+### DX-KIT-CONTACT-SHEET-NODE-MONTAGE — the kit's contact-sheet piece renders one capture manifest in a browser and cannot sheet arbitrary PNGs — **OPEN** (probe kit, proposed by the curation lane)
+
+`contact-sheet.mjs` renders one capture manifest to HTML; to sheet 7,148 candidate PNGs the curation lane wrote a lane-local Node
+and sharp montage (`agatha/sheets.mjs`, `agatha/keepsheets.mjs`; 87 week sheets, 25 keeper sheets, all under 2 MB). Under the kit-first
+rule that montage is a candidate `lib/` piece (one responsibility, a spec with an inertness mutant). **Owner:** the kit; the seat's
+call. **Source:** `evidence-curation-phaseA/PACKET_AGATHA.md` ("Caveats and a DX gap").
+
+### DX-WORKER-NAME-SCREEN-REGISTRY-LINES — the worker-name screen missed names the September workflow lists had used, and five were reused — **OPEN** (seat practice; screen corrected)
+
+Rumil, Dior, Romendacil, Lindir and Orophin were dispatched again in the 2026-10/11 rounds although September workflow files had
+named them (`cesium-webgpu-worker-archive/lanes-2026-09-26/seat-scratchpad-20260926/wave-2026-09-02.workflow.js:46` lists Rumil,
+Orophin, Lindir and Dior as reviewers; `wave6-2026-09-02.workflow.js:42` lists Romendacil); Rumil and Romendacil were Batch 1652's
+workers and Dior records round 13's reviewer (the workers in section "2026-11-01 — records round 13", the reviewer in `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/records13/REVIEW_DIOR_P1.md`). The seat's corrected screen
+(`lanes-2026-11-01/seat-scratchpad-20261101-evening/screen-names-20261101-e.mjs`) reads the name registry on any line and
+`migration_doc` by whole word; its archive walk still covers only the `lanes-2026-1[01]-*` folders outside seat scratchpads (`:25`),
+so a September workflow list remains outside it. **Repair shape:** the screen also walks the September archive folders and the
+banked seat scratchpads, or the registry carries every name a workflow file ever used. **Owner:** the seat. **Source:** the files
+and lines above.
+
+### DX-PROVISIONER-EMPTY-SCOPED-LINKS — a provisioned clone's `@emnapi`, `@napi-rs` and `@tybys` links resolve to empty directories — **OPEN** (provisioner, observation)
+
+Lane Hiril observed in its clone that `node_modules/@emnapi`, `node_modules/@napi-rs` and `node_modules/@tybys` are links whose
+targets in the seat's `node_modules` are empty (links created by provisioning at 06:47 on 2026-11-01); reported, not repaired. Seen
+again by this round in its own clone: the three are links to `F:\Dev\GH\cesium-webgpu\node_modules\<scope>`, each listing 0 entries.
+**Next step:** the seat checks whether the empty scope folders are leftovers of an uninstalled optional
+dependency and whether the provisioner should skip a scope with no packages. **Owner:** the seat (provisioner). **Source:**
+`LANDING_PACKET_W4.md` section 6 item 5; this round's `lstat` and `readdir` of the three links.
+
+### Notes (no new ids)
+
+- **Identity job Phase 1, the numbers (`SUMMARY_EOWYN_W4.txt` verdict table; `PXDIFF_MATRIX.jsonl`, `LUMA_TABLE.tsv`):** 2 runs per
+  arm, run 0 against run 0 at tolerance 0. WebGPU 0 px on E-D, E-D-HDR, E-O (MSAA 4), E-F, E-G, E-G-night and the four E-W cells.
+  WebGL E-D 370 px (max 9) inside its same-build floor (BEFORE 382, TIP 417; kit limit 2x = 834), E-D-HDR 0 px, the four E-W cells 0
+  px; mean lumas equal across arms (the receipt). Served == disk on all 9 invocations (18 of 18). Exit codes: both arms' standard
+  and E-W groups 0, E-T 0, `probe-weather-ingest` 0 (14 of 14 each), `probe-weather-map` 1 on both (the on-dense red of `NEW-CLOUD-WEATHER-MAP-OFFLINE-GLOBE-ON-DENSE-RED`, read on BEFORE run 0 and on both TIP(11) runs).
+  F5: on BEFORE, WebGPU E-D run 1 differs from run 0 by 1 px (max 1); TIP's two runs equal BEFORE run 0. First cloud frame times
+  are recorded per cell (6.3 to 28.5 s from navigation on a machine reading 48-100 % CPU); no band, not scored.
+- **E-T at default dials (F1):** `viewer.destroy` did not throw (2 of 2), owners-destroyed PASS (2 of 2) and no uncaught error (4 of 4 pages); forced loss 92
+  console errors (1 sentinel and 91 "Context has been destroyed"), 0 page errors; the cloud rows seen and released are the existing
+  ones (Cloud scene depth 8,294,400 B, Cloud geographic material flow 48 B, ProceduralClouds UB 784 B, the LUT placeholder 8 B),
+  live 0 after both terminals. The W4 owner labels exist in the tree(11) owners but none was alive at default dials.
+- **Reviews:** Roheryn P1 (`REVIEW_ROHERYN_P1.md`) measured the default path holding everywhere it could in Node and refuted on proof
+  (B-1, R-1) with residuals R-2 (the dropped guide-stale row), R-3 (lane names in two tracked specs; none at Batch 1664), R-4 (the
+  kernels spec's coverage, widened in round 2), R-5 (parity lines, gate 6's compute pipelines, the PF rows inlined) and R-6 (the
+  ladder recorded); P2 (`REVIEW_ROHERYN_P2.md`) re-derived the freeze, killed the 17 survivors by named specs, ran every runner at
+  tree(11) equal to the gate table, and added N1 / N1s (survived, the row above) and N2 / N3 (killed).
+- **Landing notes:** the queue landed one batch per unit with a light gate per intermediate batch (`LIGHT=1`, the lane's per-tip
+  gates as the proof of record) and the build, `test-cloud-c13`, `tsc-engine`, the landing-rules specs and
+  `test-visual-regression-node` (1,720 of 1,720) on the last batch (`land-w4b11-1.log`). The lane clone `cesium-lane-hiril-20261101`
+  was listed for retirement after the bank (`clone-closeout-20261101/retire-go-20261102-hiril.txt`).
+- **Clone closeout of 2026-11-01:** worker Garm inventoried 19 finished clones (`clone-closeout-20261101/INVENTORY.md`): 15
+  RETIRE-READY after their lane-outs were copied and md5-verified (334.0 MB by the per-clone inventories' "copied" lines, largest
+  `cesium-lane-beleriand-20261009` 162.0 MB and `cesium-lane-sync-1145-20260904` 107.5 MB), and four Astra clones held because
+  their unbanked sets exceeded 200 MB, then banked as hold banks of textual records, 18,812 files and 1,347.5 MB, md5-verified with
+  0 copy failures (`HOLDS.md`), the rest retiring with the clones. Retired in passes from four GO files (the 15, the four holds, and
+  the two retries above). The F: drive read 5.9 GB free before (the closeout plan's header). The thirteen Gemini water clones, the
+  Gemini base and the six live Gemini lanes were not in the plan (the maintainer's).
+- **Figures in the brief this round did not find in a file:** the closeout's "382 MB" lane-out total (the per-clone inventories sum
+  to 334.0 MB; the folder outside the hold banks measures 402 MiB on disk with the patches and lists), its "745 junctions" and "54 GB
+  free" after, and the mask-order spec's "12.7 GB working set": each is the seat's figure, not recorded as a measurement here.
+- **`FEATURE_INVENTORY.md`:** section B gains the W4 experimental cloud families, the march features object and the shared seeded
+  PRNG; section C gains the owed E-ON proof; section D gains 3470, 3473 and 3652.
