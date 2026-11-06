@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 2017 |
-| ACTIVE | 1756 |
+| Files in census | 2026 |
+| ACTIVE | 1758 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
-| NO @purpose HEADER | 58 |
+| NO @purpose HEADER | 65 |
 | NO @status HEADER | 2 |
-| Classes | probe 683, spec 594, other 419, lib 264, gate-lib 21, fixture 16, bake-tool 13, runner 7 |
+| Classes | probe 683, spec 603, other 419, lib 264, gate-lib 21, fixture 16, bake-tool 13, runner 7 |
 
 ### Tools/ (72)
 
@@ -245,7 +245,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | build-global-river-binary.mjs | other | ACTIVE | 2026-10-23 | 3 | Generates the packed NE1R global river & delta centerlines binary (packages/engine/Source/Assets/WaterMask/ne10mRivers.bin) for RiverWaterClassificationProvider. |
 | build-lake-water-mask.mjs | other | ACTIVE | 2026-10-23 | 7 | Converts Natural Earth 1:10m lakes, playas and reefs into the packed LWM2 binary bundled for LakeWaterClassificationProvider (globe.lakeWaterMask). |
 | ci-guards.spec.mjs | spec | ACTIVE | 2026-09-19 | 12 | Asserts the CI guards job wires every build-free guard, stays build-free, and records why the excluded guards are excluded. |
-| codex-mcp-launcher.mjs | other | ACTIVE | 2026-08-20 | 9 | Resolve the Codex CLI across its hash-versioned install directories and exec `codex mcp-server` for .mcp.json; stable across desktop-app updates. |
+| codex-mcp-launcher.mjs | other | ACTIVE | 2026-11-06 | 9 | Resolve the Codex CLI across its hash-versioned install directories and exec `codex mcp-server` for .mcp.json; stable across desktop-app updates. |
 | codex-preflight.mjs | other | ACTIVE | 2026-08-20 | 5 | Prove a Codex worker can actually run before a batch is dispatched: resolves the CLI, checks auth, and fires a minimal canary exec to detect quota exhaustion and report the reset time. |
 | codex-session-gc.mjs | other | ACTIVE | 2026-08-28 | 3 | Project-scoped garbage collection for codex CLI session rollouts: lists, and on request deletes, only the sessions whose recorded cwd is under this project's worker roots, so other projects' history is never touched. |
 | collection-sentinels-check.mjs | other | ACTIVE | 2026-09-05 | 9 | Fast no-GPU smoke check of the three permanent fault sentinels in WebGPUCollectionRendererBase via in-memory esbuild transpile; <1s local run. |
@@ -270,8 +270,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | query-context.mjs | other | ACTIVE | 2026-10-30 | 13 | Command-line entrypoint to build and query the zero-dependency SQLite context spine (symbols, verified slices, Cesium seams, Charter-ranked rulings/ledgers, spatial R-tree rigs, contracts, and context capsules). |
 | report-batch-number-reuse.mjs | other | ACTIVE | 2026-09-02 | 3 | Reports every `Batch NNNN:` commit subject that reuses a number already used by a different commit, across full reachable git history. |
 | report-batch-number-reuse.spec.mjs | spec | ACTIVE | 2026-09-11 | 2 | Behaviour spec for report-batch-number-reuse.mjs, run against a real temporary git repository. |
-| rules-file-diet-check.mjs | other | ACTIVE | 2026-10-31 | 5 | Re-derive, from an old CLAUDE.md and the current tree, where every normative sentence now lives (core, a skill, or a page the core or a skill links), check the numbered principles and the skill wiring, and measure the core and the skills. |
-| rules-file-diet-check.spec.mjs | spec | ACTIVE | 2026-10-31 | 1 | Behaviour coverage for Tools/rules-file-diet-check.mjs — a rule deleted or weakened in a diet of the rules file is reported, a rule moved to a skill or a linked page is found, principle renumbering and unwired skills are refused, and inertness mutants prove each check is live. |
+| rules-file-diet-check.mjs | other | ACTIVE | 2026-11-06 | 5 | Re-derive, from an old CLAUDE.md and the current tree, where every normative sentence now lives (core, a skill, or a page the core or a skill links), check the numbered principles and the skill wiring, and measure the core and the skills. |
+| rules-file-diet-check.spec.mjs | spec | ACTIVE | 2026-11-06 | 1 | Behaviour coverage for Tools/rules-file-diet-check.mjs — a rule deleted or weakened in a diet of the rules file is reported, a rule moved to a skill or a linked page is found, principle renumbering and unwired skills are refused, and inertness mutants prove each check is live. |
 | run-far200-shadow-self-test.mjs | runner | ACTIVE | 2026-08-16 | 2 | Thin bootstrap: esbuild-bundles Tools/far200-shadow-self-test.ts and executes it via a data: URL import. |
 | spec-runner-census.mjs | other | NO @purpose HEADER | 2026-10-30 | 21 | — |
 | spec-runner-census.spec.mjs | spec | NO @purpose HEADER | 2026-10-30 | 6 | — |
@@ -491,7 +491,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1223)
+### Tools/visual-regression/ (1232)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -623,7 +623,16 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-tour-sequences.spec.mjs | spec | ACTIVE | 2026-09-12 | 11 | C13-01 tour contract: fixture/sequence coverage per the queue row, pinned derived clocks, engine-export constants, probe capture discipline. |
 | cloud-u2-perf-evidence.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Guards lib/cloud-u2-perf-evidence.mjs manifest assessment for C13-16 U2 perf evidence (no-regression / unchanged pass expectations, lane shapes). |
 | cloud-uniform-layout.spec.mjs | spec | ACTIVE | 2026-10-30 | 4 | Pins the cloud main uniform block's named slot layout (the R-2026-09-26-12 slot rule, restated for this layout) against the WGSL struct's computed offsets and the renderer's allocation, and executes the tail writers' reserved pads. |
+| cloud-weather-layer-consumers.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
+| cloud-weather-layers.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
+| cloud-weather-march-features.spec.mjs | spec | ACTIVE | — | 1 | Pins the path from the cloud cache's weather-family flags to the high-word defines of the march pipeline request: each family's flag alone sets exactly its own define in the features object and in the defines it yields, the request compiles that define when the noise is baked, and the weather transition define is dropped from the request when it is not. |
+| cloud-weather-update-count.spec.mjs | spec | ACTIVE | — | 1 | Pins that each cloud collection's scene-clock weather is ticked exactly once per frame on the real per-frame update order, with a census that fails closed when the frame path gains an import this spec does not account for. |
+| cloud-weather-vertical-cache.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
+| cloud-weather-vertical-focus.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
+| cloud-weather-vertical-rendering.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
+| cloud-weather-vertical.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
 | cloud-weather-volume-bounds.spec.mjs | spec | NO @purpose HEADER | 2026-11-02 | 1 | — |
+| cloud-weather-worker.spec.mjs | spec | NO @purpose HEADER | — | 2 | — |
 | clustered-light-upload-invalidation.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 2 | — |
 | clustered-probe-chrome.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Drives each clustered-lighting probe that captures the CesiumViewer canvas against a fake page whose widget strip leaves an element over the canvas at one capture at a time, and requires a viewer-chrome-over-canvas refusal at exactly that capture, a strip taken after the scene step and directly before every capture, and a record-only disposition for the lights-resize record frame that no verdict reads. |
 | clustered-probe-verdicts.spec.mjs | spec | ACTIVE | 2026-10-09 | 12 | Drives every migrated clustered-lighting probe's exported verdict function one step inside and one step outside each bar the pre-harvest probe applied, pins the family's runtime shape and rig transcriptions, refuses a WebGL-only run before any browser work, and runs the zero-work gate's clustered-label inventory over the real engine sources as a standing Node gate. |
@@ -1898,8 +1907,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | device-loss-steps.mjs | lib | ACTIVE | 2026-10-31 | 9 | Step piece for the landing program's E-T cell: runs a rig's provoking steps (resize ladder via lib/globe-resize-steps.mjs, sky-box swaps via lib/skybox-swap-steps.mjs, a water or cloud tier switch), reads the error gate and the runtime's capture-liveness decision after each, then either destroys the viewer (teardown) or forces the device lost (WebGPU device.destroy, WebGL WEBGL_lose_context) and renders on, and returns {mode, steps, terminal, deviceLost, errors, owners, consoleErrors} - the named owners' live census rows before and after, and the console errors split into the engine's device-lost sentinel and everything else; terminalShape/sameTerminal are the one reader of the terminal record. |
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 20 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 6 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
-| engine-shader-source.mjs | lib | ACTIVE | 2026-11-02 | 47 | Resolves and reads engine shader sources (packages/engine/Source/Shaders/**) for specs, so a move or decomposition of a shader changes one module instead of every spec that reads it. |
-| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 46 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
+| engine-shader-source.mjs | lib | ACTIVE | 2026-11-02 | 48 | Resolves and reads engine shader sources (packages/engine/Source/Shaders/**) for specs, so a move or decomposition of a shader changes one module instead of every spec that reads it. |
+| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 47 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
 | engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 67 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | first-frame-guard.mjs | lib | ACTIVE | 2026-10-31 | 5 | Decides, from a decoded capture's non-black share, whether a probe's first frame is a frame at all, re-settles a bounded number of times when it is not, and REFUSES (first-frame-black, exit 3) when it stays black, so an undrawn globe is never scored as a product FAIL. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 6 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
@@ -2031,8 +2040,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | wgsl-compute-parser.mjs | lib | ACTIVE | 2026-10-30 | 6 | Tokenizes and parses the compute subset of WGSL (structs, consts, module vars, functions, let/var, assignment, if/else, for, return, expressions with templates) into a plain declaration tree, throwing on every construct outside that subset. |
 | wgsl-derivative-uniformity.mjs | lib | ACTIVE | 2026-09-01 | 8 | Reports implicit-derivative calls reached through non-uniform control flow without requiring a browser, GPU, or WGSL compiler. |
 | wgsl-function-body.mjs | lib | ACTIVE | 2026-10-09 | 2 | Builds an inertness mutant of a shader helper by swapping the whole body of a named WGSL function, so a mutant does not depend on the helper's current wording. |
-| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 41 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
-| wgsl-variant.mjs | lib | ACTIVE | 2026-10-30 | 36 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
+| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 43 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
+| wgsl-variant.mjs | lib | ACTIVE | 2026-10-30 | 41 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
 ### Tools/visual-regression/lib/metrics/ (52)
 

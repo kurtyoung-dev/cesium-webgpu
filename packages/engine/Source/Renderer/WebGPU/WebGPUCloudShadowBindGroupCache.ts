@@ -1,3 +1,5 @@
+import type { CloudWeatherTransitionBindings } from "./WebGPUCloudWeatherTransition.js";
+
 export interface CloudShadowBindGroupCacheEntry {
   layout: GPUBindGroupLayout;
   cloudUniformBuffer: GPUBuffer;
@@ -10,6 +12,7 @@ export interface CloudShadowBindGroupCacheEntry {
   shadowUniformOffset: number;
   shadowUniformSize: number;
   materialFlowBuffer?: GPUBuffer;
+  weatherTransition?: CloudWeatherTransitionBindings;
   occupancyView?: GPUTextureView;
   occupancyUniformBuffer?: GPUBuffer;
   densityCacheView?: GPUTextureView;
@@ -51,6 +54,7 @@ export function getOrCreateCloudShadowBindGroup(
   densityCacheUniform?: GPUBuffer,
   deepShadowView?: GPUTextureView,
   deepShadowUniform?: GPUBuffer,
+  weatherTransition?: CloudWeatherTransitionBindings,
 ): GPUBindGroup {
   const entry = cache[slot];
   if (
@@ -65,6 +69,7 @@ export function getOrCreateCloudShadowBindGroup(
     entry.shadowUniformOffset === shadowUniformOffset &&
     entry.shadowUniformSize === shadowUniformSize &&
     entry.materialFlowBuffer === materialFlowBuffer &&
+    entry.weatherTransition === weatherTransition &&
     entry.occupancyView === occupancyView &&
     entry.occupancyUniformBuffer === occupancyUniformBuffer &&
     entry.densityCacheView === densityCacheView &&
@@ -85,7 +90,20 @@ export function getOrCreateCloudShadowBindGroup(
       { binding: 7, resource: detailView },
       { binding: 8, resource: noiseSampler },
       ...(materialFlowBuffer
-        ? [{ binding: 15, resource: { buffer: materialFlowBuffer } }]
+        ? [
+            { binding: 15, resource: { buffer: materialFlowBuffer } },
+            {
+              binding: 29,
+              resource: weatherTransition?.weatherView ?? weatherView,
+            },
+            {
+              binding: 30,
+              resource: {
+                buffer:
+                  weatherTransition?.materialFlowBuffer ?? materialFlowBuffer,
+              },
+            },
+          ]
         : []),
       ...(occupancyView && occupancyUniformBuffer
         ? [
@@ -133,6 +151,7 @@ export function getOrCreateCloudShadowBindGroup(
     shadowUniformOffset,
     shadowUniformSize,
     materialFlowBuffer,
+    weatherTransition,
     occupancyView,
     occupancyUniformBuffer,
     densityCacheView,

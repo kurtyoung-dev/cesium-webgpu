@@ -33,6 +33,8 @@ import {
   packWeatherFieldDetailedAsync,
   type WeatherPackResult,
 } from "./WeatherTexPacker.js";
+import type { PackedWeatherVertical } from "./WeatherVerticalField.js";
+import type { PackedWeatherCloudLayers } from "./WeatherCloudLayers.js";
 import type { WeatherNoDataFill } from "./WeatherFieldGrid.js";
 import type { WeatherSource } from "./WeatherSource.js";
 import {
@@ -47,24 +49,44 @@ import type {
 } from "./WeatherTypes.js";
 
 /** What the last successful pack did — bounds and no-data evidence for probes. */
-export type WeatherPackStats = Omit<WeatherPackResult, "bytes">;
+export type WeatherPackStats = Omit<
+  WeatherPackResult,
+  "bytes" | "vertical" | "layers"
+>;
 
-interface CachedWeatherSlice {
-  bytes: Uint8Array;
-  validTime: string | undefined;
-  presentWeather: WeatherPresentWeather | null;
-  packStats: WeatherPackStats;
-  environmentalTensors?: EnvironmentalTensorSet;
-  flow?: CloudMaterialFlowField;
+// Snapshot buffers belong to the provider; consumers must not modify them.
+export interface PackedWeatherSnapshot {
+  readonly contentVersion: number;
+  readonly width: number;
+  readonly height: number;
+  readonly timeMs: number | undefined;
+  readonly bytes: Uint8Array;
+  readonly vertical?: PackedWeatherVertical;
+  readonly layers?: PackedWeatherCloudLayers;
+  readonly validTime: string | undefined;
+  readonly presentWeather: WeatherPresentWeather | null;
+  readonly packStats: WeatherPackStats;
+  readonly environmentalTensors?: EnvironmentalTensorSet;
+  readonly flow?: CloudMaterialFlowField;
 }
+export interface PackedWeatherPublication {
+  readonly version: number;
+  readonly current: PackedWeatherSnapshot;
+  readonly previous: PackedWeatherSnapshot | null;
+}
+type CachedWeatherSlice = PackedWeatherSnapshot;
+let nextWeatherContentVersion = 0;
 
 const HOUR_MS = 3600000;
 
 export class WeatherProvider {
   readonly changed = new Event<() => void>();
   private _source: WeatherSource | null;
+  private _useWorkers = false;
   private _request: WeatherFieldRequest;
   private _packed: Uint8Array | null = null;
+  private _snapshot: PackedWeatherSnapshot | null = null;
+  private _publication: PackedWeatherPublication | null = null;
   private _environmentalTensors: EnvironmentalTensorSet | null = null;
   private _flow: CloudMaterialFlowField | undefined;
   private _version = 0;
@@ -118,6 +140,13 @@ export class WeatherProvider {
   /** Bumps whenever the packed bytes change — the renderer re-uploads on change. */
   get version(): number {
     return this._version;
+  }
+  get useWorkers(): boolean {
+    return this._useWorkers;
+  }
+  set useWorkers(value: boolean) {
+    // Execution policy affects new work; completed slices describe the same weather.
+    this._useWorkers = value === true;
   }
   get hasData(): boolean {
     return this._packed !== null;
@@ -294,7 +323,33 @@ export class WeatherProvider {
 
   private _publishVersion(): void {
     this._version++;
+    const current = this._snapshot;
+    // Select by UTC interval, not the order in which the timeline was visited.
+    const predecessor =
+      this._timeMode === "scene" &&
+      current?.timeMs !== undefined &&
+      this._quantizeMs > 0
+        ? this._cache.get(String(current.timeMs - this._quantizeMs))
+        : undefined;
+    const previous =
+      predecessor &&
+      current &&
+      predecessor.width === current.width &&
+      predecessor.height === current.height
+        ? predecessor
+        : null;
+    this._publication = current
+      ? Object.freeze({ version: this._version, current, previous })
+      : null;
     this.changed.raiseEvent();
+  }
+
+  getPackedPublication(
+    texW: number,
+    texH: number,
+  ): PackedWeatherPublication | null {
+    this.getPackedTexture(texW, texH);
+    return this._publication;
   }
   /**
    * The renderer's per-frame accessor. Returns cached packed bytes, or null on a
@@ -305,19 +360,17 @@ export class WeatherProvider {
     if (this._timeMode === "scene" && this._sceneTimeMs === undefined) {
       return null;
     }
-    // In time-model mode a texture-size change invalidates the cached slices.
-    if (
-      this._timeMode !== null &&
-      (this._cacheW !== texW || this._cacheH !== texH) &&
-      (this._cacheW !== 0 || this._cacheH !== 0)
-    ) {
-      this._cache.clear();
-      this._clearActiveSlice();
-      this._effectiveKey = null;
+    // Record dimensions before starting work so resizing also cancels a first fetch.
+    if (this._cacheW !== texW || this._cacheH !== texH) {
+      if (this._cacheW !== 0 || this._cacheH !== 0) {
+        this._cache.clear();
+        this._clearActiveSlice();
+        this._effectiveKey = null;
+        this._invalidation++;
+        this._refreshSlice();
+      }
       this._cacheW = texW;
       this._cacheH = texH;
-      this._invalidation++;
-      this._refreshSlice();
     }
     if (this._packed) {
       if (
@@ -397,12 +450,13 @@ export class WeatherProvider {
     const request: WeatherFieldRequest = timed
       ? { ...this._request, time: this._effectiveTime }
       : this._request;
+    const useWorkers = this._useWorkers && request.useWorkers !== false;
     const cancelled = () =>
       this._invalidation !== gen ||
       this._timeMode !== mode ||
       (this._timeMode === "scene" && key !== this._effectiveKey);
     try {
-      const field = await source.fetchField(request);
+      const field = await source.fetchField({ ...request, useWorkers });
       if (cancelled()) {
         return; // superseded by a source/request swap — drop it
       }
@@ -422,9 +476,7 @@ export class WeatherProvider {
         field,
         texW,
         texH,
-        this._noDataFill === undefined
-          ? undefined
-          : { noDataFill: this._noDataFill },
+        { noDataFill: this._noDataFill, useWorkers },
         cancelled,
       );
       if (!result || cancelled()) {
@@ -437,25 +489,51 @@ export class WeatherProvider {
               environmentalTensors,
               flowTime,
               cancelled,
+              true,
+              useWorkers,
             )
           : undefined);
       if (cancelled()) {
         return;
       }
-      const slice: CachedWeatherSlice = {
+      const slice: CachedWeatherSlice = Object.freeze({
+        contentVersion: ++nextWeatherContentVersion,
+        width: texW,
+        height: texH,
+        timeMs:
+          request.time instanceof Date
+            ? request.time.getTime()
+            : Number.isFinite(flowTime)
+              ? flowTime
+              : undefined,
         bytes: result.bytes,
-        validTime,
-        presentWeather,
+        vertical: result.vertical ? Object.freeze(result.vertical) : undefined,
+        layers: result.layers
+          ? Object.freeze({
+              bytes: result.layers.bytes,
+              bounds: Object.freeze(
+                result.layers.bounds.map((bounds) =>
+                  bounds ? Object.freeze({ ...bounds }) : undefined,
+                ),
+              ),
+            })
+          : undefined,
+        validTime:
+          validTime ??
+          (request.time instanceof Date
+            ? request.time.toISOString()
+            : undefined),
+        presentWeather: presentWeather ? Object.freeze(presentWeather) : null,
         environmentalTensors,
         flow,
-        packStats: {
+        packStats: Object.freeze({
           observedTexels: result.observedTexels,
           filledTexels: result.filledTexels,
           registration: result.registration,
           fillKind: result.fillKind,
           global: result.global,
-        },
-      };
+        }),
+      });
       if (!timed) {
         this._activateSlice(slice, "latest");
         this._publishVersion();
@@ -497,6 +575,8 @@ export class WeatherProvider {
   }
 
   private _clearActiveSlice(): void {
+    this._snapshot = null;
+    this._publication = null;
     this._activeKey = null;
     this._packed = null;
     this._environmentalTensors = null;
@@ -510,6 +590,7 @@ export class WeatherProvider {
     slice: CachedWeatherSlice,
     fallbackTime: Date | "latest",
   ): void {
+    this._snapshot = slice;
     this._activeKey = this._timeMode === null ? "latest" : this._effectiveKey;
     this._lastError = null;
     this._packed = slice.bytes;

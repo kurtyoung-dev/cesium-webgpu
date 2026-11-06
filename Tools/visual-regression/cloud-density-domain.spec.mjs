@@ -63,6 +63,8 @@ const cloudShaderSource =
     "CloudAirLight.wgsl",
     "CloudDensityFormation.wgsl",
     "CloudDensityMoments.wgsl",
+    "CloudWeatherVertical.wgsl",
+    "CloudDeckResolve.wgsl",
     "CloudRayEllipsoid.wgsl",
     "CloudViewIntegration.wgsl",
     "CloudLightMarch.wgsl",
@@ -1704,13 +1706,18 @@ test("aerial transport uses contributing distance and altitude rather than empty
     march,
     /visibleAltitudeSum \+= sampleWeight \* \(deckBottom \+ heightFraction \* layerThickness\)/,
   );
-  assert.match(march, /visible\.y, -rayDir, visibleUp, visible\.x/);
+  assert.match(march, /cloudResolveDeck\(/);
+  const resolve = functionSource(
+    defaultVariant(cloudShaderSource),
+    "cloudResolveDeck",
+  );
+  assert.match(resolve, /visible\.y, -rayDir, visibleUp, visible\.x/);
   assert.doesNotMatch(march, /cloudSampleTransmittance\(|let midDist =/);
   // R-12: the physical branch composes in HDR now (3463); its law is executed
   // by cloud-finite-air-light.spec.mjs. This file pins only that it consumes
   // the same visible sample.
   assert.match(
-    march,
+    resolve,
     /hazed = cloudPhysicalAerialColor\(weightedColor, opacity, hazed,\s*visible\.y, -rayDir, visibleUp, visible\.x,/,
   );
 });

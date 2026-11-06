@@ -34,6 +34,15 @@ export interface CloudMarchFeatures {
   primary?: boolean;
   /** Spends light-march steps by each sample's contribution (`CLOUD_CONTRIBUTION_LIGHTING`). */
   contribution?: boolean;
+  /**
+   * Blends the previous weather snapshot into the march while a new one fades in
+   * (`CLOUD_WEATHER_TRANSITION`). The request drops it unless the noise is baked.
+   */
+  transition?: boolean;
+  /** Reads the regional cloud-top plane of the weather map (`CLOUD_WEATHER_VERTICAL`). */
+  vertical?: boolean;
+  /** Marches the weather map's independent cloud populations (`CLOUD_WEATHER_POPULATIONS`). */
+  populations?: boolean;
 }
 
 /**
@@ -50,6 +59,9 @@ export interface CloudMarchResourceState {
   deepShadowActive?: boolean;
   primaryDensityActive?: boolean;
   contributionLightingActive?: boolean;
+  weatherTransitionRequested?: boolean;
+  weatherVerticalRequested?: boolean;
+  weatherPopulationsRequested?: boolean;
 }
 
 /**
@@ -69,6 +81,9 @@ export function cloudMarchActiveFeatures(
     deep: cache.deepShadowActive ?? false,
     primary: cache.primaryDensityActive ?? false,
     contribution: cache.contributionLightingActive ?? false,
+    transition: cache.weatherTransitionRequested ?? false,
+    vertical: cache.weatherVerticalRequested ?? false,
+    populations: cache.weatherPopulationsRequested ?? false,
   };
 }
 
@@ -92,6 +107,9 @@ export function cloudMarchFeatureDefines(features: CloudMarchFeatures): number {
     (features.density && features.primary
       ? ShaderDefineHi.CLOUD_PRIMARY_DENSITY_CACHE
       : 0) |
-    (features.contribution ? ShaderDefineHi.CLOUD_CONTRIBUTION_LIGHTING : 0)
+    (features.contribution ? ShaderDefineHi.CLOUD_CONTRIBUTION_LIGHTING : 0) |
+    (features.transition ? ShaderDefineHi.CLOUD_WEATHER_TRANSITION : 0) |
+    (features.vertical ? ShaderDefineHi.CLOUD_WEATHER_VERTICAL : 0) |
+    (features.populations ? ShaderDefineHi.CLOUD_WEATHER_POPULATIONS : 0)
   );
 }

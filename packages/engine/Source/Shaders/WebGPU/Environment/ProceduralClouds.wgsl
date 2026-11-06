@@ -283,8 +283,8 @@ struct CloudUniforms {
   _padQ: f32,                    // 175
   materialFlowAge: f32,          // 176 — bounded seconds from the published UTC slice
   materialFlowEnabled: f32,      // 177
-  _padFlow0: f32,                // 178
-  _padFlow1: f32,                // 179
+  weatherTransitionWeight: f32, // 178 — current snapshot contribution
+  previousMaterialFlowAge: f32,  // 179 — bounded seconds from the previous flow epoch
   airRayleigh: vec4<f32>,        // 180-183 — scattering coefficient and scale height
   airMie: vec4<f32>,             // 184-187 — scattering coefficient and scale height
   airOzonePhase: vec4<f32>,      // 188-191 — absorption coefficient and Mie anisotropy
@@ -778,6 +778,10 @@ fn legacyCloudDensityCoordinates(worldNoise: vec3<f32>) -> CloudDensityCoordinat
     shape,
     shape * 0.32,
     worldNoise * 5.0,
+//>>ifdef CLOUD_WEATHER_POPULATIONS
+    0,
+//>>else
+//>>endif
   );
 }
 
@@ -826,6 +830,10 @@ fn advanceDensityCoordinates(
     coordinates.shape + noiseDelta * cloud.puffSize,
     coordinates.warp + noiseDelta * cloud.puffSize * 0.32,
     coordinates.detail + noiseDelta * 5.0,
+//>>ifdef CLOUD_WEATHER_POPULATIONS
+    0,
+//>>else
+//>>endif
   );
 }
 
@@ -1355,7 +1363,11 @@ fn decodeWeatherChannels(gba: vec3<f32>, deckThickness: f32) -> WeatherChannels 
   // shell thickness so the height gradient lifts off that base. `deckThickness`
   // is the active deck's own span, so a per-deck base shift stays in that deck's
   // shell fraction; the single-shell call passes cloudLayerTop - cloudLayerBottom.
+//>>ifdef CLOUD_WEATHER_VERTICAL
+  let layerThickness = max(cloud.cloudLayerTop - cloud.cloudLayerBottom, 1.0);
+//>>else
   let layerThickness = max(deckThickness, 1.0);
+//>>endif
   let baseShiftFrac = clamp(
     gba.y * CLOUD_BASE_NORM_METERS / layerThickness * s, 0.0, 0.9);
   // G — genus/type index packed as genus/10 (0..1 → 0..10). 0.5 (the packer's
@@ -1376,7 +1388,11 @@ fn decodeWeatherChannels(gba: vec3<f32>, deckThickness: f32) -> WeatherChannels 
 // those helpers as well as in the rotated texture coordinates.
 fn legacyCloudDensity(
   worldPos: vec3<f32>,
+//>>ifdef CLOUD_WEATHER_VERTICAL
+  shellHeightFraction: f32,
+//>>else
   heightFraction: f32,
+//>>endif
   deckBottom: f32,
   deckTop: f32,
 ) -> f32 {
@@ -1413,6 +1429,11 @@ fn legacyCloudDensity(
   density = smoothstep(coverageThreshold, 1.0, density);
   density = applyGenusBaseVarianceBudget(density, coverageThreshold);
 
+//>>ifdef CLOUD_WEATHER_VERTICAL
+  let profile = cloudRegionalProfile(worldPos, mix(deckBottom, deckTop, shellHeightFraction), wch);
+  let heightFraction = profile.x;
+  density *= profile.y;
+//>>else
   let hForGradient = clamp(
     (heightFraction - wch.baseShiftFrac) /
       max(1.0 - wch.baseShiftFrac, 1e-3),
@@ -1423,6 +1444,7 @@ fn legacyCloudDensity(
     hForGradient, wch.perGenusShape, cloud.anvilBias
   );
   density *= heightGradient;
+//>>endif
   let genusFibre = genusFibreFactor(samplePos, heightFraction);
   density *= genusFibre;
 
@@ -1488,7 +1510,11 @@ fn legacyCloudDensity(
 
 fn legacyCloudBaseDensity(
   worldPos: vec3<f32>,
+//>>ifdef CLOUD_WEATHER_VERTICAL
+  shellHeightFraction: f32,
+//>>else
   heightFraction: f32,
+//>>endif
   deckBottom: f32,
   deckTop: f32,
 ) -> f32 {
@@ -1524,6 +1550,11 @@ fn legacyCloudBaseDensity(
   let coverageThreshold = 1.0 - cloudEffectiveCoverage(effectiveCoverage);
   density = smoothstep(coverageThreshold, 1.0, density);
   density = applyGenusBaseVarianceBudget(density, coverageThreshold);
+//>>ifdef CLOUD_WEATHER_VERTICAL
+  let profile = cloudRegionalProfile(worldPos, mix(deckBottom, deckTop, shellHeightFraction), wch);
+  let heightFraction = profile.x;
+  density *= profile.y;
+//>>else
   let hForGradient = clamp(
     (heightFraction - wch.baseShiftFrac) /
       max(1.0 - wch.baseShiftFrac, 1e-3),
@@ -1534,6 +1565,7 @@ fn legacyCloudBaseDensity(
     hForGradient, wch.perGenusShape, cloud.anvilBias
   );
   density *= heightGradient;
+//>>endif
   let genusFibre = genusFibreFactor(samplePos, heightFraction);
   density *= genusFibre;
   return density *
@@ -1556,6 +1588,10 @@ struct CloudMacroSample {
   coordinates: CloudDensityCoordinates,
   morphologyCoordinate: vec3<f32>,
   detailMipLevel: f32,
+//>>ifdef CLOUD_WEATHER_VERTICAL
+  profileHeight: f32,
+//>>else
+//>>endif
 };
 
 fn cloudWindOffset() -> vec3<f32> {
@@ -1571,7 +1607,11 @@ fn cloudMacroSampleAt(
   worldPos: vec3<f32>,
   inputCoordinates: CloudDensityCoordinates,
   inputMorphologyCoordinate: vec3<f32>,
+//>>ifdef CLOUD_WEATHER_VERTICAL
+  shellHeightFraction: f32,
+//>>else
   heightFraction: f32,
+//>>endif
   deckBottom: f32,
   deckTop: f32,
   footprintMeters: f32,
@@ -1587,18 +1627,35 @@ fn cloudMacroSampleAt(
   let morphologyCoordinate = inputMorphologyCoordinate;
 //>>endif
   // Weather remains anchored to its published geographic slice.
+//>>ifdef CLOUD_WEATHER_POPULATIONS
+  let populationWeather = cloudPopulationWeather(worldPos, inputCoordinates.population);
+//>>else
+//>>endif
   var effectiveCoverage = cloud.coverage;
   var wch = WeatherChannels(1.0, 0.0, cloud.profileShape);
   if (cloud.weatherMapEnabled > 0.5) {
+//>>ifdef CLOUD_WEATHER_POPULATIONS
+    let wsample = populationWeather.control;
+//>>else
     let wuv = worldToWeatherUV(worldPos);
+//>>ifdef CLOUD_WEATHER_TRANSITION
+    let wsample = cloudWeatherTransitionSample(wuv);
+//>>else
     let wsample = textureSampleLevel(weatherTex, weatherSampler, wuv, 0, 0.0);
+//>>endif
+//>>endif
     effectiveCoverage = clamp(wsample.r * cloud.weatherStrength, 0.0, 1.0);
     wch = decodeWeatherChannels(wsample.gba, deckTop - deckBottom);
   }
 
 //>>ifdef CLOUD_SPATIAL_OCCUPANCY
   if (cloudSpatialSampleEmpty(coordinates.canonical, footprintMeters, effectiveCoverage)) {
-    return CloudMacroSample(0.0, 0.0, coordinates, morphologyCoordinate, 0.0);
+    return CloudMacroSample(0.0, 0.0, coordinates, morphologyCoordinate, 0.0,
+//>>ifdef CLOUD_WEATHER_VERTICAL
+      0.0,
+//>>else
+//>>endif
+    );
   }
 //>>else
 //>>endif
@@ -1623,6 +1680,15 @@ fn cloudMacroSampleAt(
 //>>endif
   density = applyGenusBaseVarianceBudget(density, coverageThreshold);
 
+//>>ifdef CLOUD_WEATHER_VERTICAL
+//>>ifdef CLOUD_WEATHER_POPULATIONS
+  let profile = cloudPopulationProfile(mix(deckBottom, deckTop, shellHeightFraction), wch, populationWeather, inputCoordinates.population);
+//>>else
+  let profile = cloudRegionalProfile(worldPos, mix(deckBottom, deckTop, shellHeightFraction), wch);
+//>>endif
+  let heightFraction = profile.x;
+  density *= profile.y;
+//>>else
   let hForGradient = clamp(
     (heightFraction - wch.baseShiftFrac) /
       max(1.0 - wch.baseShiftFrac, 1e-3),
@@ -1632,6 +1698,7 @@ fn cloudMacroSampleAt(
   density *= heightGradientFor(
     hForGradient, wch.perGenusShape, cloud.anvilBias
   );
+//>>endif
   let genusFibre = genusFibreFactor(morphologyCoordinate, heightFraction);
   density *= genusFibre;
 
@@ -1648,6 +1715,10 @@ fn cloudMacroSampleAt(
     coordinates,
     morphologyCoordinate,
     mipLevels.detail,
+//>>ifdef CLOUD_WEATHER_VERTICAL
+    heightFraction,
+//>>else
+//>>endif
   );
 }
 
@@ -1657,10 +1728,18 @@ fn cloudBaseFromMacro(sample: CloudMacroSample) -> f32 {
 
 fn cloudDensityFromMacro(
   sample: CloudMacroSample,
+//>>ifdef CLOUD_WEATHER_VERTICAL
+  shellHeightFraction: f32,
+//>>else
   heightFraction: f32,
+//>>endif
 ) -> f32 {
 //>>ifdef CLOUD_SPATIAL_OCCUPANCY
   if (sample.densityFactor == 0.0) { return 0.0; }
+//>>else
+//>>endif
+//>>ifdef CLOUD_WEATHER_VERTICAL
+  let heightFraction = sample.profileHeight;
 //>>else
 //>>endif
   var density = sample.preErosion;
@@ -2533,6 +2612,10 @@ fn marchDeck(
       vec3<f32>(0.0),
       vec3<f32>(0.0),
       vec3<f32>(0.0),
+//>>ifdef CLOUD_WEATHER_POPULATIONS
+      0,
+//>>else
+//>>endif
     );
     var morphologyCoordinate = vec3<f32>(0.0);
     var macroSample = CloudMacroSample(
@@ -2541,6 +2624,10 @@ fn marchDeck(
       densityCoordinates,
       morphologyCoordinate,
       0.0,
+//>>ifdef CLOUD_WEATHER_VERTICAL
+      heightFraction,
+//>>else
+//>>endif
     );
     var base: f32 = 0.0;
 //>>ifdef CLOUD_PRIMARY_DENSITY_CACHE
@@ -2570,6 +2657,10 @@ fn marchDeck(
             warpRayPhasePerMeter * sampleDistance
           ),
           vec3<f32>(0.0),
+//>>ifdef CLOUD_WEATHER_POPULATIONS
+          0,
+//>>else
+//>>endif
         );
         morphologyCoordinate =
           cloud.densityMorphologyOriginHigh +
@@ -2764,7 +2855,16 @@ fn marchDeck(
       let scatteredLight = (msLight + silverLining) * cloud.sunIntensity;
 
       // Height-based color gradient (darker base, brighter top)
+//>>ifdef CLOUD_WEATHER_VERTICAL
+      var shadingHeight = macroSample.profileHeight;
+      if (usePlanetDensity == false) {
+        shadingHeight = cloudRegionalProfile(samplePos, mix(deckBottom, deckTop, heightFraction),
+          WeatherChannels(1.0, 0.0, cloud.profileShape)).x;
+      }
+      let cloudColor = mix(cloud.cloudBaseColor, cloud.cloudTopColor, shadingHeight);
+//>>else
       let cloudColor = mix(cloud.cloudBaseColor, cloud.cloudTopColor, heightFraction);
+//>>endif
 
       // Accumulate. The view-ray extinction carries the same per-genus
       // profileExtinction the light march uses, so a genus that absorbs more is
@@ -2852,7 +2952,11 @@ fn marchDeck(
           }
         }
       }
+//>>ifdef CLOUD_WEATHER_VERTICAL
+      var ambient = mix(groundAmbColor, skyAmbColor, shadingHeight)
+//>>else
       var ambient = mix(groundAmbColor, skyAmbColor, heightFraction)
+//>>endif
                   * cloud.ambientIntensity;
       // Ambient floor, slot 174. Both ambient sources can reach zero —
       // the constant path when `ambientIntensity` is dialled down, and the
@@ -2897,37 +3001,12 @@ fn marchDeck(
     tProcessed = t;
   }
 
-  // Empty decks contribute neither radiance nor extinction and need no air integration.
-  if (transmittance >= 1.0) { return result; }
-
-  // The accumulated radiance already includes opacity. Tone-map its straight
-  // source color so the deck compositor applies opacity exactly once.
-  let opacity = 1.0 - transmittance;
-  let toneMapped = cloudToneMappedRadiance(weightedColor, opacity, cloud.exposure);
-
-  // Use the extinction weights that produced the pixel, so a nearby opaque
-  // cloud does not inherit the range of the otherwise empty shell.
-  let visible = cloudVisibleAerialSample(
-    visibleDistanceSum, visibleAltitudeSum, opacity,
-    tStart, tEnd, deckBottom, deckTop,
+  let resolved = cloudResolveDeck(
+    rayOrigin, rayDir, sunDir, tStart, tEnd, deckBottom, deckTop,
+    weightedColor, transmittance, visibleDistanceSum, visibleAltitudeSum
   );
-  let visiblePos = rayOrigin + rayDir * visible.x;
-  let surfaceAxes = cloudShellAxes(0.0);
-  let visibleUp = normalize(visiblePos / (surfaceAxes * surfaceAxes));
-  let aerial = cloudAerialFraction(
-    visible.y, -rayDir, visibleUp, visible.x, cloud.aerialStrength,
-    cloudAirCurvatureRadius(visibleUp, -rayDir),
-  );
-  var hazed = mix(toneMapped, cloud.aerialColor, aerial);
-
-  if ((u32(cloud.qualityFlags) & QF_AERIAL_LUT) != 0u) {
-    hazed = cloudPhysicalAerialColor(weightedColor, opacity, hazed,
-      visible.y, -rayDir, visibleUp, visible.x,
-      cloudAirCurvatureRadius(visibleUp, -rayDir), sunDir);
-  }
-
-  result.hazed = hazed;
-  result.alpha = opacity;
+  result.hazed = resolved.rgb;
+  result.alpha = resolved.a;
   return result;
 }
 
@@ -3000,8 +3079,16 @@ const CLOUD_EMIT_MIN_ALPHA: f32 = 1.0e-6;
 // what is stored is the raw density-times-length integral.
 @fragment
 fn cloudShadowMain(input: VertexOutput) -> @location(0) f32 {
+//>>ifdef CLOUD_WEATHER_POPULATIONS
+  return cloudPopulationShadowDepth(input);
+//>>else
+//>>ifdef CLOUD_WEATHER_VERTICAL
+  let deckBottom = cloud.deckBoundsLow.x;
+  let deckTop = cloud.deckBoundsLow.y;
+//>>else
   let deckBottom = cloud.cloudLayerBottom;
   let deckTop = cloud.cloudLayerTop;
+//>>endif
 
   // The same oblate boundaries the visible march intersects. The map stays
   // single-shell — the cast shadow tracks the primary cloud layer — so the deck
@@ -3101,5 +3188,6 @@ fn cloudShadowMain(input: VertexOutput) -> @location(0) f32 {
   return clamp(mix(opticalDepth, cachedColumn.x, cachedColumn.y), 0.0, 8000.0);
 //>>else
   return clamp(opticalDepth, 0.0, 8000.0);
+//>>endif
 //>>endif
 }

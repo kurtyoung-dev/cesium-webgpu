@@ -1,0 +1,145 @@
+{
+  "description": "sha256 digests of the procedural synoptic weather generated on the main thread for six seed and time cases: the weather field arrays, the packed texture bytes and the wind-flow arrays. The historical key is the original weather model; the continuous key is the model with continuous synoptic cloud formations.",
+  "grid": {
+    "width": 32,
+    "height": 17,
+    "packWidth": 64,
+    "packHeight": 33
+  },
+  "historical": {
+    "string:cloud-key@2026-10-19T12:00:00.000Z": {
+      "coverage": "b3e0def842420a1b499559275f576f3193d26060b8ac0d39d9e551662727aaea",
+      "type": "600c5c8ae41e4cb8906b4589838c524ae258aa0b1d6afea8de483167eb7c2910",
+      "baseMeters": "83616a57265fb72c98dd8934f0ae83a916f66e10642cffeb9d4d3de1e2aad1a9",
+      "densityBias": "92f9c712e978fdc33167718e7257b12939a17230e801ab90eb8ca8eb3010836c",
+      "atmosphericBytes": "aaf96f4d3fe98114f01874230f41923c3ce292be1fff3f68bf080e66b856389f",
+      "marineBytes": "2be16a775dab3fbfd3cc19d1f32b63ca108fbd8f3f1149bcc634f89b4ca82458",
+      "packBytes": "5b3a0c838281446ca2ef3939c13d57dbf69851710faab1fffd507991b116ee4f",
+      "flowDisplacement": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+      "flowVelocity": "638880c7d939133e2e7bec3ce1e1a72a62d4ecdba20febc116697e5554cb5021"
+    },
+    "string:cloud-key@2026-10-20T03:30:00.000Z": {
+      "coverage": "4ad053ffc908f7e9762ce6a7f05d17dd279c5add236520c813b789c3c0bf3156",
+      "type": "f0c8ebe25a0ff3ead29b1be51012e34b45d9d1064b2fdea522535e509f5ae244",
+      "baseMeters": "878d1f1e7c4cf3890ebaaf321f3aa69896999712ccd53378b494b5c9b4a2e34b",
+      "densityBias": "650bb6acd38d9864fc53a9ddb82cbbea313d4f9b3cf22977eeaf26ec995e9edd",
+      "atmosphericBytes": "ac376036fe67d080a90a8efc592e68f3966c339212c799853b05cf091df0101e",
+      "marineBytes": "1531eefde63218c7fbf6be8ec4b5bc4708b9abd565d14254b1eb6c40d53a9dce",
+      "packBytes": "026bf0b5a0fe662952c208b2e0786c5fb68e1547b1df053ead7c79dcea71b072",
+      "flowDisplacement": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+      "flowVelocity": "fe2278d996541709f7b1e58053bb5d1a83ddeb152a9e2e15f14ff5391f146bd0"
+    },
+    "number:7@2026-10-19T12:00:00.000Z": {
+      "coverage": "140b66e786aabc3c0a2f182104597c34cae07c9534c4dbc0ba5be6b8c889a732",
+      "type": "4c5b3b1ff8cf4795600880b8239d09f4e4d193819bc1b1d2c9aca088a01fd8f5",
+      "baseMeters": "3ef654b5f710ff52605dd9c4d0c9d0b42750bd01bf67b5875dbd34a892f1877e",
+      "densityBias": "4e145df625fc75d4d124e927d91a11121ad77edaf0dc45c79abfadb06c484c3a",
+      "atmosphericBytes": "707e517966c13bdae36e199e83871eecc0dbfff1c71edace886fbeebe29c630a",
+      "marineBytes": "718dca45ea6a5b7ed07f81b2d97cc9eac16802f6e2d19349c89b9175eeda6eba",
+      "packBytes": "f76faadd2cbb42eaef37eb14dd617849e6258bc4ca2004b2b354dd94e1149397",
+      "flowDisplacement": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+      "flowVelocity": "29143a546c24c028703ab670b2663f8785f3a5b42867b7ec209aaa6a231cae3b"
+    },
+    "number:7@2026-10-20T03:30:00.000Z": {
+      "coverage": "30145840f4cb8b2f87c70f6bf9f71274d43e9499024470df5c37c7d58e524a3c",
+      "type": "685c452a1ab56404fbf2fe2458b4a02b2818f241b4b4937f1160cb539360a2e2",
+      "baseMeters": "f74a86a99b3e049f6d7d84efd7a775ef7d8ae6385d5cdd8d808cfc851f8a1d05",
+      "densityBias": "728b33ca047cc76bb3f179f8fc4b29932bf3e8b75ff40c64147ea8965f262c55",
+      "atmosphericBytes": "97246f8e814c115e11acd1e50a4934229fe743d606c81229108bbca7c3184f44",
+      "marineBytes": "73f87e71bb6f99c579d9ed131a6b626564d34125a397db00123914708c8fea17",
+      "packBytes": "596f81bca4e5625d04b8faa8323e3e8710448f69c5dadd96c01f09ec97f0a686",
+      "flowDisplacement": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+      "flowVelocity": "5c39386dad5949a5f407ba2f3686dc6cec9b0fc7c6af0b0626ee1189276f93f7"
+    },
+    "string:atlas@2026-10-19T12:00:00.000Z": {
+      "coverage": "a9dcc49854ffd14b54ead7e6d162520e6fa7dad9b417a309450aae21a2e4c114",
+      "type": "c2af257d5cb51d4a9ef676462c0c2ac872fedad2fab0940f50469aae3c62efb9",
+      "baseMeters": "5221e4371ee567483ca5fc05f3c60cc103f8acf477770c841876cc6a6519aa72",
+      "densityBias": "d1c4507226bab040c073915dc58908de90b14a5eb19a111535490254f3f20c29",
+      "atmosphericBytes": "6d98c257fecca620da009f058625a9ca57230e9e34c1a789ffe8dbf8ac0b6684",
+      "marineBytes": "c49cdf62ee03f3d1e953a415d10f2bb23067b2d19fa0a7cb5ff06898066775e8",
+      "packBytes": "e6aef0a8f34da6686c572de01cb59283623a3aa7285a0b47539702000b3518f1",
+      "flowDisplacement": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+      "flowVelocity": "bbed858d4c78c1d225e01023be26b4c8fd2bd0621c737304b44819e265c0aa23"
+    },
+    "string:atlas@2026-10-20T03:30:00.000Z": {
+      "coverage": "09e73afa4dfce23c4004f5368c3fc9510c9d3c3a7ba7678d709b7d8d8bdbde8a",
+      "type": "c5c58e4fe9d29a0948b4c90164ff841b6b6d9ac9c04f79e50cd2c09069c6d915",
+      "baseMeters": "7e348571d8151689b8dce4c28e3b5a29e3bc5c21ecab0124aad7f4cd8c3d95de",
+      "densityBias": "f4c294072d0f855548d434c5aef6f5badfe5a466865716f1d40ca4986f2df441",
+      "atmosphericBytes": "024fb307ff91739fcd9e5d0012a118c25f8661e6ea85f03ec13172617a1c17e9",
+      "marineBytes": "bfe94e8ff2093fea0c271be859683091e8ae61433af6af7ccf9634b18401e391",
+      "packBytes": "e2fc6d4ff357b2c746ea39cefa59e32662eafe28258e43b288516c68fa05b5fe",
+      "flowDisplacement": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+      "flowVelocity": "a80b848099b5afa82ffb4126be27add782217fda781f6be2e76b4eef91630b52"
+    }
+  },
+  "continuous": {
+    "string:cloud-key@2026-10-19T12:00:00.000Z": {
+      "coverage": "031e7c16641b059e8797ea380f785ec8e37981276210fcc8bd40f110efae81de",
+      "type": "22788f586ca6a9b61536a9efda0dd77040388baa01b84e507c8025816cbc0ae0",
+      "baseMeters": "79883148168830ab9cecdcb405e293110d332828522708b9d63a20c2e028eeef",
+      "densityBias": "585895a2d16be06d66c7ef07b0b716ecfd76414358cc809baa56f2b4b3552969",
+      "atmosphericBytes": "0777854ac187fb68011ae6e9be98a744810b647a4d1165234955e5e953f27f6b",
+      "marineBytes": "e7f9e2b6ede632c38d3f00300d07897d6173f2c43f9605b984fcc8eee13680a1",
+      "packBytes": "6aa55dc91a9b5001efd698bd4c9358519f5d3927ba7ee79efe1b3f518edeef6d",
+      "flowDisplacement": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+      "flowVelocity": "60ad50cb27a124db7f64e18217fd4c9e95ab78e965d648f17a44716aa3673394"
+    },
+    "string:cloud-key@2026-10-20T03:30:00.000Z": {
+      "coverage": "17561b24cb77af7596f2b92d8e70553a39897ea617db90cf15453bce3ee054a9",
+      "type": "73943711e9a9e808c5b2582d7017ecbd6397f6c72d5d7ba8421e0039d0f5f0ae",
+      "baseMeters": "ea657dcaebd1f243d47b1fe25db2b0a78fdb517cdff6d7b66da82633de62348b",
+      "densityBias": "34bf0ab3bdf8d5cdb52f9c4942e51a84601683c3148520e0c70fe430918048b4",
+      "atmosphericBytes": "83bb03916581bcf99cc75af23bbac9d6d15cd65407e7707355d0ee9096f6ceb0",
+      "marineBytes": "476e2d3531391aaddc1f25702b03dd355ebfe6020d88249c032409d218952cac",
+      "packBytes": "78ab38e9a9c9de17affe96e8645a1e45e52b3fce82f748e0fba10a5be3ae9079",
+      "flowDisplacement": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+      "flowVelocity": "be70944b967bffb97da8f578b255e4ab06d75194bcb84e136b71d4cc7ca6782e"
+    },
+    "number:7@2026-10-19T12:00:00.000Z": {
+      "coverage": "6de2f741a53019664d3d125bbf19948df9326bb0e1e7a53460f598bb27fbd108",
+      "type": "53832b09651a9e8c7c6b4fedb8129645d39a9e2510d603735eef848db4be2aae",
+      "baseMeters": "d53504c51f99ce48a1042c4282a0da0c6cfcaa238d1b2145594077d882f509e4",
+      "densityBias": "fbd4792bb1243d0cd1faf9ea05706a02364c60c74241205ed6e22095c92e656e",
+      "atmosphericBytes": "11251f3c0b42c9797619bb42b90e1d390ba39371a68f53cfcafb9aa94da1f398",
+      "marineBytes": "b74214017e76a2712778f72223dbd2edec2c56a61fab2a066f287fd317b5336b",
+      "packBytes": "9180ad15df81833e76aa62c50c526a9ad630e793dc63910f19512457e674c946",
+      "flowDisplacement": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+      "flowVelocity": "1907a6e467ca36d9f233a9db66faf322aa1186bf89dcc3cd2e8f8fadb2064565"
+    },
+    "number:7@2026-10-20T03:30:00.000Z": {
+      "coverage": "72afff5903ed3f4e6162e14f5d9e49c9be19d1371d4cd7606f84fea5199b70ce",
+      "type": "d5b3833d6f0ca9b66dc4e59257256cd285dffe2e1fdeed00ce3f17c5c10632ad",
+      "baseMeters": "f346e3c7d073a57d317326669e32c8d5f18a364cbfd0b6fbe1b0839b8cbd2d8f",
+      "densityBias": "d4f00e1403269f3f5a689c23b7768c808f369f416a69c32fd9affa2f16700760",
+      "atmosphericBytes": "206ae232002af2d581ce8511a02a74e599e91fd61bc9d016304277c6f3d393fe",
+      "marineBytes": "60513d40adbe535bb0f9fb88072b918eefaa7f7cfde7738b83c6e8ceb52bab42",
+      "packBytes": "39f5fe6400b38e6f7fef48f73e17c280fb7a055b203722e952bac49fe078c767",
+      "flowDisplacement": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+      "flowVelocity": "44eb22d8207694006cd9d2f607cb9c7566ef55578bb236e6bd7078da2973039a"
+    },
+    "string:atlas@2026-10-19T12:00:00.000Z": {
+      "coverage": "f28369ee3f7c264c0a695092ff7a2dde2fab988ec5f4524b666f4fda8f4ca5ec",
+      "type": "1e809ded892e5f29e8ef1f18235a38357eb1d64d957065d5ecf13320fc1b8c9f",
+      "baseMeters": "7658db981c805d2c3be39123e83da92a47aed94943f39d4906c905037c295a6b",
+      "densityBias": "5d130187cfb0ec130686b2accf056c0335a0b95b53094a8a8f1b988d2c75cf9d",
+      "atmosphericBytes": "6f5b7a0da5068e9a16c6949e879e19af3781d36a729b00328b8bd370a0cfd712",
+      "marineBytes": "9303aa3fc99dff68d2cebc8d4fd36d90f3b2fdd561950255a956009f7e5e98c5",
+      "packBytes": "5438bb28ef0cc482e7158a65510f6ca3c6b0e39ebdcb73c27440b495fc311145",
+      "flowDisplacement": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+      "flowVelocity": "6dde4f4ea3bc235e55d5a66fa65b0c7af82bcb34126b567a0e3f87bd62fae2fc"
+    },
+    "string:atlas@2026-10-20T03:30:00.000Z": {
+      "coverage": "24d4edd6614c11a80447f77ac91ac7b6615093aff8544b0fd661d01afd86f356",
+      "type": "e93767041df911065a6f9b01239bc3deff431554f62f5150cfd2b83b2c3feb75",
+      "baseMeters": "d900eaace8fa982e065c42cc792a147c6108bc92b40421ab1606cda688aff15a",
+      "densityBias": "4b249feaf9e6cd19b1baa0e042e8795f0b4f1c0cdae8c1951d1d823e877bbacc",
+      "atmosphericBytes": "fcfe48ace1f50ff4ec64ae63199f534eb5fb28a0582c51cbd1eae76b765190f9",
+      "marineBytes": "3ee9c59a1137ddd651caeb485310e8bbc95b506a0af8e09a1cdbeca8c4cc9b78",
+      "packBytes": "8d28e763c691136200a50f3d6684390140e89d1e25cd65240fbb9e67ba347933",
+      "flowDisplacement": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+      "flowVelocity": "d0582130ec85aee7b0902be1d20dd084d93b39228896be16a652a1b2734b35b6"
+    }
+  }
+}

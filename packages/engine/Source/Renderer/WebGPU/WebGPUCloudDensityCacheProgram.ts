@@ -2,11 +2,15 @@ import { preprocess } from "./WebGPUShaderPreprocessor.js";
 import { ShaderDefineHi } from "./WebGPUShaderDefines.js";
 import BuildSource from "../../Shaders/WebGPU/Compute/CloudDensityCache.js";
 
-export function cloudDensityCacheProgram(source: string): string {
+export function cloudDensityCacheProgram(
+  source: string,
+  definesHi = 0,
+): string {
   return cloudDensityComputeProgram(
     source,
     BuildSource,
     "cloudDensityCacheBuildMain",
+    definesHi,
   );
 }
 

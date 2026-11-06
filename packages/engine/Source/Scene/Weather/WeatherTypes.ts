@@ -2,14 +2,14 @@
  * Weather-ingest types, in the backend-agnostic Scene layer.
  *
  * A {@link WeatherSource} fetches a normalized {@link WeatherField} — a coarse
- * geographic grid carrying cloud cover today, with type, base height and
- * density reserved for later — which the {@link WeatherTexPacker} bakes into
- * the WebGPU cloud renderer's weather-map texture. Nothing here imports the
+ * geographic grid carrying cloud coverage, type, base/top height and density
+ * — which the {@link WeatherTexPacker} bakes into shared cloud textures. Nothing here imports the
  * renderer; the packer emits the rgba8 byte layout the renderer already
  * uploads.
  */
 import type { EnvironmentalTensorSet } from "./EnvironmentalTensorMap.js";
 import type { CloudMaterialFlowField } from "./CloudMaterialFlow.js";
+import type { WeatherCloudLayer } from "./WeatherCloudLayers.js";
 import type {
   WeatherGridRegistration,
   WeatherNoDataFill,
@@ -40,9 +40,9 @@ export const GLOBAL_WEATHER_BOUNDS: WeatherBounds = {
 };
 
 /**
- * A normalized weather grid. Only cloud coverage is carried, because it is the
- * only channel the cloud shader reads; `type`, `base` and `densityBias` are
- * optional and fill the G, B and A channels once consumers for them exist.
+ * A normalized weather grid. Coverage is required; type, base/top heights and
+ * density bias are optional. Missing vertical observations retain the
+ * renderer's configured cloud bounds.
  *
  * Row 0 is the north edge and column 0 is the west edge, matching the weather
  * texture's row-0-is-north-pole convention, so the packer is a straight
@@ -60,6 +60,8 @@ export interface WeatherField {
   type?: Float32Array;
   /** Optional cloud-base height per cell, in metres. */
   baseMeters?: Float32Array;
+  topMeters?: Float32Array;
+  layers?: readonly WeatherCloudLayer[];
   /** Optional density bias per cell in [0,1] (0.5 = neutral). */
   densityBias?: Float32Array;
   /**
@@ -145,6 +147,8 @@ export interface WeatherFieldRequest {
   bounds?: WeatherBounds;
   /** Abort an in-flight fetch (page nav, source swap). */
   signal?: AbortSignal;
+  useWorkers?: boolean;
+  independentCloudLayers?: boolean;
 }
 
 /**

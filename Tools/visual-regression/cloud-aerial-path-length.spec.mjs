@@ -67,6 +67,14 @@ const shippedSource =
       "packages/engine/Source/Shaders/WebGPU/Environment/CloudAerialTransport.wgsl",
     ),
     "utf8",
+  ) +
+  "\n" +
+  fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Shaders/WebGPU/Environment/CloudDeckResolve.wgsl",
+    ),
+    "utf8",
   );
 
 /**

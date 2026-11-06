@@ -543,21 +543,21 @@
       "bit": 21,
       "name": "CLOUD_WEATHER_TRANSITION",
       "owner": "cloud-weather",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",
       "bit": 22,
       "name": "CLOUD_WEATHER_VERTICAL",
       "owner": "cloud-weather",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",
       "bit": 23,
       "name": "CLOUD_WEATHER_POPULATIONS",
       "owner": "cloud-weather",
-      "status": "reserved"
+      "status": "consumed"
     },
     {
       "word": "hi",

@@ -46,7 +46,10 @@ function range(
  */
 export const CLOUD_QUALITY_FLAGS_SLOT = 74;
 
-/** The geographic material-flow tail (176-179): age, enable flag, two pads. */
+/**
+ * The geographic material-flow tail (176-179): age, enable flag, the current
+ * weather snapshot's transition weight and the previous snapshot's flow age.
+ */
 // The finite air-light tail (180-195) is `WebGPUCloudAirLight.ts`'s; its writer
 // fills the pad at 195.
 export const CLOUD_MATERIAL_FLOW_OFFSET = 176;
@@ -65,8 +68,8 @@ export const CLOUD_UNIFORM_RANGES: readonly CloudUniformRange[] = Object.freeze(
     range("_padQ", 175, 1),
     range("materialFlowAge", 176, 1),
     range("materialFlowEnabled", 177, 1),
-    range("_padFlow0", 178, 1),
-    range("_padFlow1", 179, 1),
+    range("weatherTransitionWeight", 178, 1),
+    range("previousMaterialFlowAge", 179, 1),
     range("airRayleigh", 180, 4),
     range("airMie", 184, 4),
     range("airOzonePhase", 188, 4),
@@ -76,7 +79,7 @@ export const CLOUD_UNIFORM_RANGES: readonly CloudUniformRange[] = Object.freeze(
 
 /** Slots every writer fills with zero (rule 3); slot 175's bits are rule 4's. */
 export const CLOUD_UNIFORM_RESERVED_SLOTS: readonly number[] = Object.freeze([
-  175, 178, 179, 195,
+  175, 195,
 ]);
 
 /** Float count of the block, from the ranges. */
@@ -87,17 +90,19 @@ export const CLOUD_UNIFORM_LAYOUT_FLOATS = CLOUD_UNIFORM_RANGES.reduce(
 
 /**
  * Writes the material-flow tail at `offset`: the bounded flow age, the enable
- * flag, and zero into both reserved pads. Returns the next offset.
+ * flag, the current-snapshot transition weight and the previous flow age. Returns the next offset.
  */
 export function writeCloudMaterialFlowUniforms(
   data: Float32Array,
   offset: number,
   ageSeconds: number,
   enabled: boolean,
+  transitionWeight = 0,
+  previousAgeSeconds = 0,
 ): number {
   data[offset] = ageSeconds;
   data[offset + 1] = enabled ? 1 : 0;
-  data[offset + 2] = 0;
-  data[offset + 3] = 0;
+  data[offset + 2] = transitionWeight;
+  data[offset + 3] = previousAgeSeconds;
   return offset + CLOUD_MATERIAL_FLOW_FLOATS;
 }

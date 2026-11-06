@@ -25,7 +25,9 @@ const source = stripComments(
   ),
 );
 const march = stripComments(
-  fs.readFileSync(path.join(root, directory + "ProceduralClouds.wgsl"), "utf8"),
+  ["ProceduralClouds.wgsl", "CloudDeckResolve.wgsl"]
+    .map((file) => fs.readFileSync(path.join(root, directory + file), "utf8"))
+    .join("\n"),
 );
 const constants = readConstants(source);
 const cloud = {

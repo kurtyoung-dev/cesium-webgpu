@@ -191,6 +191,9 @@ function assertPadsZero(layout, airLight) {
     assert.equal(end, PINNED_FLOATS);
     assert.equal(data[176], 12.5);
     assert.equal(data[177], enabled ? 1 : 0);
+    // A writer given no transition writes a zero weight and a zero previous age.
+    assert.equal(data[178], 0);
+    assert.equal(data[179], 0);
     for (const slot of layout.CLOUD_UNIFORM_RESERVED_SLOTS) {
       if (slot >= 176 && slot < end) {
         assert.equal(
@@ -246,11 +249,14 @@ test("the tail writers fill every reserved pad with zero", async () => {
   assertPadsZero(await loadLayout(), await loadAirLight());
 });
 
-test("MUTANT: a flow writer that puts a non-zero value into a reserved pad is red", async () => {
+test("MUTANT: a flow writer that writes a previous age nobody gave it is red", async () => {
   const mutant = await loadLayout(
     (source) =>
-      source.replace("  data[offset + 3] = 0;", "  data[offset + 3] = 1;"),
-    "write 1 into the flow tail's last reserved pad",
+      source.replace(
+        "  data[offset + 3] = previousAgeSeconds;",
+        "  data[offset + 3] = 1;",
+      ),
+    "write 1 into the flow tail's previous-age slot",
   );
   const airLight = await loadAirLight();
   assert.throws(() => assertPadsZero(mutant, airLight), assert.AssertionError);
@@ -270,10 +276,10 @@ test("MUTANT: a range table that resizes a slot is red", async () => {
   const mutant = await loadLayout(
     (source) =>
       source.replace(
-        'range("_padFlow0", 178, 1)',
-        'range("_padFlow0", 178, 2)',
+        'range("weatherTransitionWeight", 178, 1)',
+        'range("weatherTransitionWeight", 178, 2)',
       ),
-    "resize the reserved pad at 178",
+    "resize the transition weight slot at 178",
   );
   assert.throws(() => assertLayout(mutant), assert.AssertionError);
 });

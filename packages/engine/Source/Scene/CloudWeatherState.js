@@ -7,6 +7,7 @@ export default class CloudWeatherState {
     this._provider = undefined;
     this._owned = undefined;
     this._seed = undefined;
+    this._independentLayers = undefined;
     this._removeChanged = undefined;
     this._frameState = undefined;
     this._time = undefined;
@@ -21,14 +22,25 @@ export default class CloudWeatherState {
     let provider = config.weatherProvider;
     if (!provider && config.cloudWeatherMap === true) {
       const seed = config.cloudWeatherSeed ?? 1;
-      if (!this._owned || seed !== this._seed) {
+      const independentLayers =
+        (config.experimental?.cloudIndependentWeatherLayers ??
+          config.cloudIndependentWeatherLayers) === true;
+      if (
+        !this._owned ||
+        seed !== this._seed ||
+        independentLayers !== this._independentLayers
+      ) {
         this._unbind();
         this._owned?.setSource(null);
-        this._owned = new WeatherProvider(new SynopticWeatherSource(seed));
+        this._owned = new WeatherProvider(new SynopticWeatherSource(seed), {
+          independentCloudLayers: independentLayers,
+        });
+        this._independentLayers = independentLayers;
         this._owned.setQuantizeHours(1 / 6);
         this._owned.setTimeMode("scene");
         this._seed = seed;
       }
+      this._owned.useWorkers = config.cloudWeatherWorkers === true;
       provider = this._owned;
     } else if (this._owned) {
       this._unbind();

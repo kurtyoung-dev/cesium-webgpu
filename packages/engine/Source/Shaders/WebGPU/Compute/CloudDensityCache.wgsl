@@ -14,7 +14,11 @@ fn cloudDensityCachePoint(relative: vec3<f32>) -> vec3<f32> {
   var density = vec3<f32>(0.0);
   let count = select(1u, 3u, multiDeckEnabled());
   for (var deck = 0u; deck < count; deck++) {
+//>>ifdef CLOUD_WEATHER_VERTICAL
+    var bounds = cloud.deckBoundsLow;
+//>>else
     var bounds = vec2<f32>(cloud.cloudLayerBottom, cloud.cloudLayerTop);
+//>>endif
     if (multiDeckEnabled()) {
       bounds = cloud.deckBoundsLow;
       if (deck == 1u) { bounds = cloud.deckBoundsMid; }

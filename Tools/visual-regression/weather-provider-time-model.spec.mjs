@@ -547,6 +547,276 @@ test("provider flow is cloned, retained during a scene miss and restored by cach
   assert.equal(provider.getFlowField(), flow);
 });
 
+async function waitPublication(provider, width = W, height = H, timeMs) {
+  for (let i = 0; i < 100; i++) {
+    const value = provider.getPackedPublication(width, height);
+    if (value && (timeMs === undefined || value.current.timeMs === timeMs))
+      return value;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail("complete weather publication did not arrive");
+}
+function snapshotField(request, flow) {
+  return {
+    gridWidth: 2,
+    gridHeight: 2,
+    coverage: new Float32Array(4).fill(
+      0.3 + ((request.time.getTime() - T0) / HOUR) * 0.1,
+    ),
+    bounds: {
+      west: -Math.PI,
+      east: Math.PI,
+      south: -Math.PI / 2,
+      north: Math.PI / 2,
+    },
+    validTime: request.time.toISOString(),
+    flow,
+    environmentalTensors: windTensor(),
+  };
+}
+test("complete scene publications keep canonical UTC predecessors and stable identities across replay", async () => {
+  const authored = await tensorCloudMaterialFlow(windTensor(), T0);
+  let release,
+    calls = 0;
+  const provider = new WeatherProvider({
+    fetchField(request) {
+      calls++;
+      const field = snapshotField(request, authored);
+      return request.time.getTime() === T0 + HOUR
+        ? new Promise((resolve) => {
+            release = () => resolve(field);
+          })
+        : Promise.resolve(field);
+    },
+  });
+  provider.useWorkers = false;
+  provider.setTimeMode("scene");
+  provider.tickSceneTime(T0);
+  const observed = [];
+  provider.changed.addEventListener(() =>
+    observed.push(provider.getPackedPublication(W, H)),
+  );
+  const first = await waitPublication(provider, W, H, T0);
+  assert(Object.isFrozen(first));
+  assert(Object.isFrozen(first.current));
+  assert(Object.isFrozen(first.current.packStats));
+  assert.equal(first.previous, null);
+  assert.equal(first.current.width, W);
+  assert.equal(first.current.height, H);
+  assert.equal(first.current.bytes, provider.getPackedTexture(W, H));
+  assert.equal(first.current.flow, provider.getFlowField());
+  assert.equal(
+    first.current.environmentalTensors,
+    provider.getEnvironmentalTensors(),
+  );
+  assert.equal(first.current.validTime, provider.validTime);
+  assert.notEqual(first.current.flow, authored);
+  assert.equal(first.version, provider.version);
+  assert.equal(provider.getPackedPublication(W, H), first);
+  provider.tickSceneTime(T0 + HOUR);
+  assert.equal(
+    provider.getPackedPublication(W, H),
+    first,
+    "a miss retains the entire old publication",
+  );
+  release();
+  const second = await waitPublication(provider, W, H, T0 + HOUR);
+  assert.equal(second.previous, first.current);
+  assert.notEqual(second.current.contentVersion, first.current.contentVersion);
+  assert.notEqual(second.current.bytes, first.current.bytes);
+  assert.notEqual(second.current.flow, first.current.flow);
+  provider.tickSceneTime(T0 + 3 * HOUR);
+  const third = await waitPublication(provider, W, H, T0 + 3 * HOUR);
+  assert.equal(
+    third.previous,
+    null,
+    "a missing adjacent interval is never replaced by the last visited time",
+  );
+  provider.tickSceneTime(T0 + HOUR);
+  const replay = provider.getPackedPublication(W, H);
+  assert.equal(replay.current, second.current);
+  assert.equal(
+    replay.previous,
+    first.current,
+    "predecessor is independent of navigation order",
+  );
+  assert(replay.version > second.version);
+  provider.tickSceneTime(T0);
+  assert.equal(provider.getPackedPublication(W, H).current, first.current);
+  assert.equal(provider.getPackedPublication(W, H).previous, null);
+  assert.equal(calls, 3);
+  assert.equal(observed.length, 5);
+  assert(
+    observed.every(
+      (value) => value && value.current.bytes && value.current.flow,
+    ),
+  );
+  provider.setSource(null);
+  assert.equal(provider.getPackedPublication(W, H), null);
+});
+test("snapshot identity is independent of provider-local publication counters and source replacement", async () => {
+  const source = {
+    async fetchField(request) {
+      return snapshotField(request);
+    },
+  };
+  const a = new WeatherProvider(source),
+    b = new WeatherProvider(source);
+  for (const provider of [a, b]) {
+    provider.useWorkers = false;
+    provider.setTimeMode("scene");
+    provider.tickSceneTime(T0);
+  }
+  const first = await waitPublication(a),
+    other = await waitPublication(b);
+  assert.equal(first.version, other.version);
+  assert.notEqual(first.current.contentVersion, other.current.contentVersion);
+  assert.deepEqual(first.current.bytes, other.current.bytes);
+  a.setSource(source);
+  assert.equal(a.getPackedPublication(W, H), null);
+  const replacement = await waitPublication(a);
+  assert.notEqual(
+    replacement.current.contentVersion,
+    first.current.contentVersion,
+  );
+  assert.equal(replacement.previous, null);
+});
+test("legacy snapshots invalidate completed and in-flight data when texture dimensions change", async () => {
+  let release,
+    calls = 0;
+  const provider = new WeatherProvider({
+    fetchField() {
+      calls++;
+      const field = snapshotField({ time: new Date(T0) });
+      return calls === 1
+        ? new Promise((resolve) => {
+            release = () => resolve(field);
+          })
+        : Promise.resolve(field);
+    },
+  });
+  provider.useWorkers = false;
+  assert.equal(provider.getPackedPublication(16, 8), null);
+  assert.equal(provider.getPackedPublication(32, 16), null);
+  release();
+  const resized = await waitPublication(provider, 32, 16);
+  assert.equal(resized.current.width, 32);
+  assert.equal(resized.current.height, 16);
+  assert.equal(resized.current.bytes.length, 32 * 16 * 4);
+  assert.equal(
+    provider.version,
+    1,
+    "cancelled first dimensions cannot publish",
+  );
+  assert.equal(calls, 2);
+  assert.equal(provider.getPackedPublication(16, 8), null);
+  const smaller = await waitPublication(provider, 16, 8);
+  assert.equal(smaller.current.bytes.length, 16 * 8 * 4);
+  assert.notEqual(
+    smaller.current.contentVersion,
+    resized.current.contentVersion,
+  );
+  assert.equal(smaller.previous, null);
+});
+test("snapshot predecessor follows requested UTC intervals even when observed analysis time differs", async () => {
+  const provider = new WeatherProvider({
+    async fetchField(request) {
+      return {
+        ...snapshotField(request),
+        validTime: new Date(T0 - HOUR).toISOString(),
+      };
+    },
+  });
+  provider.useWorkers = false;
+  provider.setTimeMode("scene");
+  provider.tickSceneTime(T0);
+  const first = await waitPublication(provider, 16, 8, T0);
+  provider.tickSceneTime(T0 + HOUR);
+  const second = await waitPublication(provider, 16, 8, T0 + HOUR);
+  assert.equal(second.previous, first.current);
+  assert.equal(second.current.validTime, first.current.validTime);
+  assert.equal(second.current.timeMs - first.current.timeMs, HOUR);
+});
+
+test("weather transitions use deterministic scene UTC, canonical neighbors and exact endpoints", async () => {
+  const { resolveCloudWeatherTransition } =
+    await import("../../packages/engine/Source/Scene/Weather/CloudWeatherTransition.ts");
+  const { default: JulianDate } =
+    await import("../../packages/engine/Source/Core/JulianDate.js");
+  const previous = { width: 16, height: 8, timeMs: T0 },
+    current = { width: 16, height: 8, timeMs: T0 + HOUR };
+  const publication = { current, previous, version: 2 };
+  const at = (seconds) =>
+    JulianDate.fromDate(new Date(current.timeMs + seconds * 1000));
+  const begin = resolveCloudWeatherTransition(publication, at(0), true);
+  assert.equal(begin.previous, previous);
+  assert.equal(begin.weight, 0);
+  assert.equal(begin.active, true);
+  const middle = resolveCloudWeatherTransition(publication, at(15), true);
+  assert.equal(middle.weight, 0.5);
+  assert.equal(middle.previous, previous);
+  assert.deepEqual(resolveCloudWeatherTransition(publication, at(30), true), {
+    previous: null,
+    weight: 1,
+    active: false,
+  });
+  assert.equal(
+    resolveCloudWeatherTransition(publication, at(-1), true).active,
+    false,
+  );
+  assert.equal(
+    resolveCloudWeatherTransition(publication, at(15), false).weight,
+    1,
+  );
+  assert.equal(
+    resolveCloudWeatherTransition(
+      { ...publication, previous: null },
+      at(15),
+      true,
+    ).active,
+    false,
+  );
+  assert.equal(
+    resolveCloudWeatherTransition(
+      { ...publication, previous: { ...previous, width: 8 } },
+      at(15),
+      true,
+    ).active,
+    false,
+  );
+  assert.equal(
+    resolveCloudWeatherTransition(publication, undefined, true).active,
+    false,
+  );
+  assert.equal(
+    resolveCloudWeatherTransition(
+      publication,
+      { dayNumber: NaN, secondsOfDay: 0 },
+      true,
+    ).active,
+    false,
+  );
+  assert.equal(
+    resolveCloudWeatherTransition(publication, at(15), true, NaN).weight,
+    0.5,
+  );
+  const short = { current: { ...current, timeMs: T0 + 2000 }, previous };
+  assert.equal(
+    resolveCloudWeatherTransition(
+      short,
+      JulianDate.fromDate(new Date(T0 + 3000)),
+      true,
+      30,
+    ).weight,
+    0.5,
+  );
+  assert.equal(
+    resolveCloudWeatherTransition(publication, at(15), true).weight,
+    middle.weight,
+    "navigation cannot change the interval's blend",
+  );
+});
+
 // ── A legacy fetch in flight when the time mode changes is dropped ───────────
 // A provider with no time mode fetches the "latest" field. If setTime() moves
 // it to historical while that fetch is pending, the late legacy field must not
@@ -595,6 +865,82 @@ async function importMutatedProvider(replacements) {
     "data:text/javascript;base64," + Buffer.from(js).toString("base64")
   );
 }
+
+const TRANSITION_FILE = new URL(
+  "../../packages/engine/Source/Scene/Weather/CloudWeatherTransition.ts",
+  import.meta.url,
+);
+
+/**
+ * Import CloudWeatherTransition.ts from a mutated copy of its source, with its
+ * relative imports pointed back at the engine files (as importMutatedProvider).
+ */
+async function importMutatedTransition(replacements) {
+  let source = nodeFs
+    .readFileSync(TRANSITION_FILE, "utf8")
+    .replace(/\r\n/g, "\n");
+  for (const [anchor, replacement] of replacements) {
+    const count = source.split(anchor).length - 1;
+    assert.equal(count, 1, "the mutation anchor must occur exactly once");
+    source = source.replace(anchor, () => replacement);
+  }
+  const js = stripTypeScriptTypes(source).replace(
+    /from "(\.[^"]*)"/g,
+    (_match, specifier) => {
+      const asJs = new URL(specifier, TRANSITION_FILE);
+      const target =
+        specifier.endsWith(".js") && !nodeFs.existsSync(asJs)
+          ? new URL(specifier.slice(0, -3) + ".ts", TRANSITION_FILE)
+          : asJs;
+      return (
+        'from "' +
+        pathToFileURL(target.pathname.replace(/^\/([A-Za-z]:)/, "$1")).href +
+        '"'
+      );
+    },
+  );
+  return import(
+    "data:text/javascript;base64," + Buffer.from(js).toString("base64")
+  );
+}
+
+// The fade length a release build uses: the dial's setter validates 1-300 s
+// only under the debug pragma, so the resolver clamps it itself. Under a one
+// hour publication interval a 0.25 s request fades over 1 s and a 1000 s
+// request over 300 s.
+async function clampedFadeWeights(resolve) {
+  const { default: JulianDate } =
+    await import("../../packages/engine/Source/Core/JulianDate.js");
+  const previous = { width: 16, height: 8, timeMs: T0 },
+    current = { width: 16, height: 8, timeMs: T0 + HOUR };
+  const publication = { current, previous, version: 2 };
+  const at = (seconds) =>
+    JulianDate.fromDate(new Date(current.timeMs + seconds * 1000));
+  return {
+    shortest: resolve(publication, at(0.5), true, 0.25).weight,
+    longest: resolve(publication, at(150), true, 1000).weight,
+  };
+}
+
+test("the fade length is clamped to 1-300 s in every build", async () => {
+  const { resolveCloudWeatherTransition } =
+    await import("../../packages/engine/Source/Scene/Weather/CloudWeatherTransition.ts");
+  // Half way through a 1 s fade and a 300 s fade: the smoothstep weight is 0.5.
+  assert.deepEqual(await clampedFadeWeights(resolveCloudWeatherTransition), {
+    shortest: 0.5,
+    longest: 0.5,
+  });
+});
+
+test("MUTANT: the fade length unclamped in release is detected", async () => {
+  const mutated = await importMutatedTransition([
+    ["? Math.max(1, Math.min(300, durationSeconds))", "? durationSeconds"],
+  ]);
+  const weights = await clampedFadeWeights(
+    mutated.resolveCloudWeatherTransition,
+  );
+  assert.notDeepEqual(weights, { shortest: 0.5, longest: 0.5 });
+});
 
 const RACE_LATEST_TIME = new Date(T0).toISOString();
 const RACE_HISTORICAL = new Date(T0 - 9 * HOUR);

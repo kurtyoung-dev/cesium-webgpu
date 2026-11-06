@@ -1,3 +1,4 @@
+import { scheduleWeatherTask } from "./WeatherTaskProcessor.js";
 import type { EnvironmentalTensorSet } from "./EnvironmentalTensorMap.js";
 import type { CloudMaterialFlowField } from "./CloudMaterialFlow.js";
 
@@ -42,6 +43,8 @@ export async function tensorCloudMaterialFlow(
   field: EnvironmentalTensorSet,
   timeMs: number,
   cancelled: () => boolean = () => false,
+  cooperative = true,
+  useWorkers = false,
 ): Promise<CloudMaterialFlowField | undefined> {
   const { width, height } = field;
   if (
@@ -57,12 +60,33 @@ export async function tensorCloudMaterialFlow(
   ) {
     throw new RangeError("Invalid cloud wind tensor snapshot.");
   }
+  if (cancelled()) {
+    return undefined;
+  }
+  if (cooperative && useWorkers) {
+    const prepared = await scheduleWeatherTask<CloudMaterialFlowField>({
+      kind: "flow",
+      timeMs,
+      field: {
+        width,
+        height,
+        atmosphericBytes: field.atmosphericBytes,
+        marineBytes: field.marineBytes,
+      },
+    });
+    if (prepared) {
+      return cancelled() ? undefined : prepared;
+    }
+    if (cancelled()) {
+      return undefined;
+    }
+  }
   const w = 64,
     h = 32;
   const velocity = new Float32Array(w * h * 4);
   const vectors = Array.from({ length: 4 }, () => new Float64Array(3));
   for (let y = 0; y < h; y++) {
-    if (y % 4 === 0) {
+    if (cooperative && y % 4 === 0) {
       await new Promise((resolve) => setTimeout(resolve, 0));
       if (cancelled()) {
         return undefined;

@@ -17,6 +17,7 @@
  */
 
 import ProceduralSkyCubemapWGSL from "../../Shaders/WebGPU/Compute/ProceduralSkyCubemap.js";
+import { preprocess } from "./WebGPUShaderPreprocessor.js";
 import CloudDensityDomainWGSL from "../../Shaders/WebGPU/Environment/CloudDensityDomain.js";
 import ProjectRadianceToSHWGSL from "../../Shaders/WebGPU/Compute/ProjectRadianceToSH.js";
 import EnvCubeTemporalBlendWGSL from "../../Shaders/WebGPU/Compute/EnvCubeTemporalBlend.js";
@@ -2002,7 +2003,14 @@ function runEnvCubeTemporalBlend(
 // bindings are 1×1×1 placeholders, so the fill is unchanged by the march rows.
 const SKY_UNIFORM_FLOATS = 56 + CLOUD_DENSITY_ORIGIN_PHASE_FLOATS;
 const SKY_UNIFORM_SIZE = SKY_UNIFORM_FLOATS * 4;
-const PROCEDURAL_SKY_SOURCE = `${CloudDensityDomainWGSL}\n${ProceduralSkyCubemapWGSL}`;
+let proceduralSkySource: string | undefined;
+function getProceduralSkySource(): string {
+  return (proceduralSkySource ??= preprocess(
+    `${CloudDensityDomainWGSL}\n${ProceduralSkyCubemapWGSL}`,
+    0,
+    0,
+  ));
+}
 
 // Reused scratch so the per-fill pack does not allocate.
 const scratchPosition = new Cartesian3();
@@ -2135,8 +2143,8 @@ function getOrCreateDynamicEnvironmentKernelPack(
   });
   const skyCode =
     storageFormat === "rgba8unorm"
-      ? PROCEDURAL_SKY_SOURCE
-      : PROCEDURAL_SKY_SOURCE.replace(
+      ? getProceduralSkySource()
+      : getProceduralSkySource().replace(
           "texture_storage_2d_array<rgba8unorm, write>",
           "texture_storage_2d_array<rgba16float, write>",
         );

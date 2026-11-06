@@ -90,6 +90,10 @@ fn lightMarch(
         wrapCloudDensityDomain(
           densityCoordinates.detail + detailStep * stepMultiple
         ),
+//>>ifdef CLOUD_WEATHER_POPULATIONS
+        densityCoordinates.population,
+//>>else
+//>>endif
       );
       let sampleMorphologyCoordinate =
         morphologyCoordinate + canonicalStep * stepMultiple;

@@ -7,7 +7,11 @@ fn cloudDeepShadowBuildMain(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= dims.x || id.y >= cloudDeepShadowFrame.rowCount || row >= dims.y || id.z >= 3u) { return; }
   let count = cloudDeepShadowFrame.nodes;
   if (count < 2u || count > 65u) { return; }
+//>>ifdef CLOUD_WEATHER_VERTICAL
+  var bounds = cloud.deckBoundsLow;
+//>>else
   var bounds = vec2<f32>(cloud.cloudLayerBottom, cloud.cloudLayerTop);
+//>>endif
   if (multiDeckEnabled()) {
     bounds = cloud.deckBoundsLow;
     if (id.z == 1u) { bounds = cloud.deckBoundsMid; }

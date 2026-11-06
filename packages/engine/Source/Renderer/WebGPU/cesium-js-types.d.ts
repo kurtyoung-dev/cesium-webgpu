@@ -1401,8 +1401,13 @@ interface CloudVolumetricsConfig {
   cloudSilverLiningIntensity?: number;
   cloudWeatherMap?: boolean;
   cloudWeatherSeed?: string | number;
+  cloudWeatherWorkers?: boolean;
+  cloudWeatherInterpolation?: boolean;
+  cloudWeatherTransitionSeconds?: number;
   cloudGeographicWind?: boolean;
   cloudWeatherChannelStrength?: number;
+  cloudVerticalWeather?: boolean;
+  cloudIndependentWeatherLayers?: boolean;
   cloudPhaseForwardG?: number;
   cloudPhaseBackG?: number;
   cloudPhaseBlend?: number;
@@ -1422,6 +1427,12 @@ interface CloudVolumetricsConfig {
   weatherProvider?: {
     getPackedTexture(texW: number, texH: number): Uint8Array | null;
     readonly version: number;
+    getPackedPublication?(
+      texW: number,
+      texH: number,
+    ):
+      | import("../../Scene/Weather/WeatherProvider.js").PackedWeatherPublication
+      | null;
     getFlowField?():
       | import("../../Scene/Weather/CloudMaterialFlow.js").CloudMaterialFlowField
       | undefined;

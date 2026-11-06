@@ -57,8 +57,22 @@ fn integrateCloudView(
   result.frontDistance = -1.0;
   result.weightedDistanceSum = 0.0;
 //>>endif
+//>>ifdef CLOUD_WEATHER_POPULATIONS
+  let deck = marchPopulationClouds(rayOrigin, rayDir, sceneDepth, centerHigh, centerLow, marchSamplePhase);
+  result.radiance = deck.hazed * deck.alpha; result.alpha = deck.alpha;
+//>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION
+  result.frontDistance = deck.frontDistance; result.weightedDistanceSum = deck.weightedDistanceSum;
+//>>else
+//>>endif
+  return result;
+//>>else
+//>>ifdef CLOUD_WEATHER_VERTICAL
+  var bottoms = array<f32, 3>(cloud.deckBoundsLow.x, 0.0, 0.0);
+  var tops = array<f32, 3>(cloud.deckBoundsLow.y, 0.0, 0.0);
+//>>else
   var bottoms = array<f32, 3>(cloud.cloudLayerBottom, 0.0, 0.0);
   var tops = array<f32, 3>(cloud.cloudLayerTop, 0.0, 0.0);
+//>>endif
   var order = array<i32, 3>(0, 1, 2);
   var deckCount = 1;
   if (multiDeckEnabled()) {
@@ -121,6 +135,7 @@ fn integrateCloudView(
     transmittance *= 1.0 - deck.alpha;
   }
   return result;
+//>>endif
 }
 
 //>>ifdef CLOUD_MARCH_EMIT_RECONSTRUCTION

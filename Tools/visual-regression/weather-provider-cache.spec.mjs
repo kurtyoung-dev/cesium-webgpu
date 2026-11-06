@@ -13,6 +13,7 @@ const PROVIDER_SOURCE = (await readFile(PROVIDER_PATH, "utf8"))
   .join("\n");
 const REAL_WEATHER_MODULES = [
   "WeatherTexPacker",
+  "WeatherTaskProcessor",
   "WeatherFieldGrid",
   "ProceduralWeatherMap",
   "WeatherMapSeam",
@@ -613,17 +614,12 @@ test("setNoDataFill refresh mutant is rejected by the timed replay oracle", asyn
 test("texture resize invalidation mutant is rejected by the in-flight oracle", async () => {
   const MutantProvider = await loadProvider((source) => {
     const fixedAnchor =
-      "      this._cacheH = texH;\n" +
-      "      this._invalidation++;\n" +
-      "      this._refreshSlice();";
+      "        this._invalidation++;\n" + "        this._refreshSlice();";
     assert.ok(
       source.includes(fixedAnchor),
       "texture-resize fix anchor missing",
     );
-    return source.replace(
-      fixedAnchor,
-      "      this._cacheH = texH;\n" + "      this._refreshSlice();",
-    );
+    return source.replace(fixedAnchor, "        this._refreshSlice();");
   }, "texture-resize request invalidation removed");
 
   await assert.rejects(

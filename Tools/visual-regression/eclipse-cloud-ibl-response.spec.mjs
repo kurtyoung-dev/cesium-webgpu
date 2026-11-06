@@ -562,7 +562,7 @@ test("D1b the AERIAL TINT is an ADDEND and carries the factor too", () => {
   // a `mix`, i.e. an addend. If this ever becomes a multiply the dim above is
   // the wrong correction and this test should fail rather than ride along.
   assert.match(
-    readEngine("Shaders/WebGPU/Environment/ProceduralClouds.wgsl"),
+    readEngine("Shaders/WebGPU/Environment/CloudDeckResolve.wgsl"),
     /var hazed = mix\(toneMapped, cloud\.aerialColor, aerial\);/,
   );
 

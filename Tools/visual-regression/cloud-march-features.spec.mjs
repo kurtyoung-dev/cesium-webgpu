@@ -715,6 +715,9 @@ const FEATURE_DEFINES = {
   deep: { define: "CLOUD_DEEP_SHADOW_CACHE", needs: [] },
   directional: { define: "CLOUD_DIRECTIONAL_LIGHTING", needs: [] },
   contribution: { define: "CLOUD_CONTRIBUTION_LIGHTING", needs: [] },
+  transition: { define: "CLOUD_WEATHER_TRANSITION", needs: [] },
+  vertical: { define: "CLOUD_WEATHER_VERTICAL", needs: [] },
+  populations: { define: "CLOUD_WEATHER_POPULATIONS", needs: [] },
 };
 
 // The definesHi each live feature adds to a request, measured through the
@@ -793,6 +796,9 @@ const FEATURE_CACHE_FLAGS = {
   deep: "deepShadowActive",
   directional: "directionalLightingRequested",
   contribution: "contributionLightingActive",
+  transition: "weatherTransitionRequested",
+  vertical: "weatherVerticalRequested",
+  populations: "weatherPopulationsRequested",
 };
 
 function liveFields(featuresExports) {

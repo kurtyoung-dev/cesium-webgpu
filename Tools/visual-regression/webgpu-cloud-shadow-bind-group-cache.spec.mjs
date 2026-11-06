@@ -133,3 +133,45 @@ test("shadow flow resource identity is bound and invalidates cached groups", () 
   harness.resources.materialFlowBuffer = {};
   assert.notEqual(resolve(harness), first);
 });
+
+test("shadow maps retain exact previous-weather bindings and invalidate only the changed epoch", () => {
+  const h = createHarness(),
+    r = h.resources;
+  r.materialFlowBuffer = {};
+  const current = { weatherView: {}, materialFlowBuffer: {} };
+  const resolvePair = (pair) =>
+    getOrCreateCloudShadowBindGroup(
+      h.device,
+      h.cache,
+      0,
+      r.layout,
+      r.cloudUniformBuffer,
+      r.weatherView,
+      r.weatherSampler,
+      r.shapeView,
+      r.detailView,
+      r.noiseSampler,
+      r.shadowUniformBuffer,
+      0,
+      80,
+      r.materialFlowBuffer,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      pair,
+    );
+  const first = resolvePair(current);
+  assert.equal(
+    first.descriptor.entries.find((x) => x.binding === 29).resource,
+    current.weatherView,
+  );
+  assert.equal(
+    first.descriptor.entries.find((x) => x.binding === 30).resource.buffer,
+    current.materialFlowBuffer,
+  );
+  assert.equal(resolvePair(current), first);
+  assert.notEqual(resolvePair({ ...current, materialFlowBuffer: {} }), first);
+});

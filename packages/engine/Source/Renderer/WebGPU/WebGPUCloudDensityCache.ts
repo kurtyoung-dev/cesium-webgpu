@@ -1,6 +1,10 @@
 /// <reference types="@webgpu/types" />
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import type { AsyncResourceMonitor } from "./AsyncResourceMonitor.js";
+import {
+  samplePackedWeatherVertical,
+  type PackedWeatherVertical,
+} from "../../Scene/Weather/WeatherVerticalField.js";
 
 type Triple = [number, number, number];
 export interface CloudDensityCacheInputs {
@@ -11,6 +15,9 @@ export interface CloudDensityCacheInputs {
   noiseSampler: GPUSampler;
   weatherBytes: Uint8Array | null;
   weatherVersion: number;
+  verticalWeather?: boolean;
+  weatherVertical?: PackedWeatherVertical;
+  weatherSize?: { width: number; height: number };
 }
 export interface CloudDensityCacheOptions {
   cloudDensityCacheSize?: number;
@@ -161,10 +168,36 @@ const drift = (a: Triple, b: Triple) =>
 export function cloudDensityCacheFocus(
   camera: Triple,
   data: Float32Array,
+  vertical = false,
+  metadata?: PackedWeatherVertical,
+  weatherSize?: { width: number; height: number },
 ): Triple {
-  const height = (data[40] + data[41]) * 0.5;
+  let height = (data[40] + data[41]) * 0.5;
   const length = Math.hypot(...camera);
   const unit = camera.map((value) => value / length);
+  if (
+    vertical &&
+    data[64] > 0.5 &&
+    weatherSize &&
+    Math.abs(data[70]) > 1e-8 &&
+    Math.abs(data[71]) > 1e-8
+  ) {
+    const longitude =
+      camera[0] * camera[0] + camera[1] * camera[1] > 1e-12
+        ? Math.atan2(camera[1], camera[0])
+        : 0;
+    const latitude = Math.asin(Math.max(-1, Math.min(1, unit[2])));
+    const sample = samplePackedWeatherVertical(
+      metadata,
+      weatherSize.width,
+      weatherSize.height,
+      (longitude - data[68]) / data[70],
+      1 - (latitude - data[69]) / data[71],
+    );
+    if (sample) {
+      height += ((sample[0] + sample[1]) * 0.5 - height) * sample[2];
+    }
+  }
   const radius =
     1 /
     Math.hypot(
@@ -203,6 +236,9 @@ export class CloudDensityCache {
     this.device = device;
     this.source = source;
     this.monitor = monitor;
+  }
+  usesSource(source: () => string): boolean {
+    return this.source === source;
   }
   get needsFrame(): boolean {
     return this.batch !== null;
@@ -374,8 +410,16 @@ export class CloudDensityCache {
       inputs.detail,
       inputs.noiseSampler,
       inputs.weatherBytes,
+      inputs.verticalWeather === true,
+      inputs.weatherVertical?.bytes,
     ];
-    const focus = cloudDensityCacheFocus(camera, data);
+    const focus = cloudDensityCacheFocus(
+      camera,
+      data,
+      inputs.verticalWeather === true,
+      inputs.weatherVertical,
+      inputs.weatherSize,
+    );
     const current = (snapshot: Snapshot | null) =>
       !!snapshot && snapshot.key === key && same(snapshot.bindings, bindings);
     const contained = (snapshot: Snapshot) =>

@@ -70,8 +70,10 @@ const cloudShaderSource =
       "packages/engine/Source/Shaders/WebGPU/Environment/CloudViewIntegration.wgsl",
     ),
   );
-const domainSource = read(
-  "packages/engine/Source/Shaders/WebGPU/Environment/CloudDensityDomain.wgsl",
+const domainSource = defaultVariant(
+  read(
+    "packages/engine/Source/Shaders/WebGPU/Environment/CloudDensityDomain.wgsl",
+  ),
 );
 const rendererSource = read(
   "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
@@ -749,6 +751,7 @@ test("naga validates the cloud shader with the per-genus morphology", async () =
         "CloudAirLight.wgsl",
         "CloudRayEllipsoid.wgsl",
         "CloudLightMarch.wgsl",
+        "CloudDeckResolve.wgsl",
       ]
         .map((name) =>
           defaultVariant(

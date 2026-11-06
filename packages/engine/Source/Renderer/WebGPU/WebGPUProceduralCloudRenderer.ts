@@ -63,6 +63,7 @@ import {
   cloudDensityComputeProgram,
 } from "./WebGPUCloudDensityCacheProgram.js";
 import CloudLightMarchWGSL from "../../Shaders/WebGPU/Environment/CloudLightMarch.js";
+import CloudDeckResolveWGSL from "../../Shaders/WebGPU/Environment/CloudDeckResolve.js";
 import CloudDirectionalLightingWGSL from "../../Shaders/WebGPU/Environment/CloudDirectionalLighting.js";
 import CloudDeepShadowWGSL from "../../Shaders/WebGPU/Environment/CloudDeepShadow.js";
 import DeepShadowBuildWGSL from "../../Shaders/WebGPU/Compute/CloudDeepShadowCache.js";
@@ -83,6 +84,24 @@ import {
 import CloudDensityFormationWGSL from "../../Shaders/WebGPU/Environment/CloudDensityFormation.js";
 import CloudDensityMomentsWGSL from "../../Shaders/WebGPU/Environment/CloudDensityMoments.js";
 import CloudMaterialFlowWGSL from "../../Shaders/WebGPU/Environment/CloudMaterialFlow.js";
+import CloudWeatherTransitionWGSL from "../../Shaders/WebGPU/Environment/CloudWeatherTransition.js";
+import CloudWeatherVerticalWGSL from "../../Shaders/WebGPU/Environment/CloudWeatherVertical.js";
+import CloudPopulationWeatherWGSL from "../../Shaders/WebGPU/Environment/CloudPopulationWeather.js";
+import CloudPopulationLightingWGSL from "../../Shaders/WebGPU/Environment/CloudPopulationLighting.js";
+import CloudPopulationMarchWGSL from "../../Shaders/WebGPU/Environment/CloudPopulationMarch.js";
+import {
+  validPackedWeatherCloudLayers,
+  type PackedWeatherCloudLayers,
+} from "../../Scene/Weather/WeatherCloudLayers.js";
+import {
+  validPackedWeatherVertical,
+  type PackedWeatherVertical,
+} from "../../Scene/Weather/WeatherVerticalField.js";
+import { resolveCloudWeatherTransition } from "../../Scene/Weather/CloudWeatherTransition.js";
+import {
+  CloudWeatherTransitionResources,
+  type CloudWeatherTransitionBindings,
+} from "./WebGPUCloudWeatherTransition.js";
 import {
   CloudMaterialFlowResources,
   type CloudMaterialFlowField,
@@ -260,7 +279,7 @@ const CLOUD_UNIFORM_FLOATS =
   CLOUD_MATERIAL_FLOW_FLOATS +
   CLOUD_AIR_LIGHT_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
-const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudAirLightWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${CloudSpatialOccupancyWGSL}\n${CloudWeatherVolumeBoundsWGSL}\n${CloudDensityCacheWGSL}\n${CloudPrimaryDensityWGSL}\n${CloudLightingBudgetWGSL}\n${CloudDeepShadowWGSL}\n${CloudDirectionalLightingWGSL}\n${CloudRayEllipsoidWGSL}\n${ProceduralCloudsWGSL}\n${CloudLightMarchWGSL}\n${CloudViewIntegrationWGSL}`;
+const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${CloudMarchSamplingWGSL}\n${CloudSolarLightingWGSL}\n${CloudAerialTransportWGSL}\n${CloudAirLightWGSL}\n${CloudDensityFormationWGSL}\n${CloudDensityMomentsWGSL}\n${CloudMaterialFlowWGSL}\n${CloudWeatherTransitionWGSL}\n${CloudWeatherVerticalWGSL}\n${CloudPopulationWeatherWGSL}\n${CloudPopulationLightingWGSL}\n${CloudPopulationMarchWGSL}\n${CloudSpatialOccupancyWGSL}\n${CloudWeatherVolumeBoundsWGSL}\n${CloudDensityCacheWGSL}\n${CloudPrimaryDensityWGSL}\n${CloudLightingBudgetWGSL}\n${CloudDeepShadowWGSL}\n${CloudDirectionalLightingWGSL}\n${CloudRayEllipsoidWGSL}\n${ProceduralCloudsWGSL}\n${CloudLightMarchWGSL}\n${CloudDeckResolveWGSL}\n${CloudViewIntegrationWGSL}`;
 // High-word define masks for the emitting march and the consuming resolve.
 // Named once so no call site spells a bit inline, and so a spec can assert the
 // renderer preprocesses with the axis the registry documents rather than with a
@@ -293,6 +312,24 @@ function getDensityProducerSource(): string {
     PROCEDURAL_CLOUDS_SOURCE,
   ));
 }
+let verticalDensityProducerSource: string | undefined;
+function getVerticalDensityProducerSource(): string {
+  return (verticalDensityProducerSource ??= cloudDensityCacheProgram(
+    PROCEDURAL_CLOUDS_SOURCE,
+    ShaderDefineHi.CLOUD_WEATHER_VERTICAL,
+  ));
+}
+let verticalDeepShadowProducerSource: string | undefined;
+function getVerticalDeepShadowProducerSource(): string {
+  return (verticalDeepShadowProducerSource ??= cloudDensityComputeProgram(
+    PROCEDURAL_CLOUDS_SOURCE,
+    DeepShadowBuildWGSL,
+    "cloudDeepShadowBuildMain",
+    ShaderDefineHi.CLOUD_DENSITY_SAMPLE_CACHE |
+      ShaderDefineHi.CLOUD_DEEP_SHADOW_CACHE |
+      ShaderDefineHi.CLOUD_WEATHER_VERTICAL,
+  ));
+}
 const WGS84_EQUATORIAL_RADIUS = CLOUD_SHADOW_WGS84_A;
 const WGS84_POLAR_RADIUS = CLOUD_SHADOW_WGS84_B;
 // Procedural weather-map texture (coarse global coverage field).
@@ -322,6 +359,7 @@ export interface CloudMainBindGroupEntry {
   lutSampler: GPUSampler;
   densityMomentsView: GPUTextureView;
   materialFlowBuffer: GPUBuffer;
+  weatherTransition?: CloudWeatherTransitionBindings;
   occupancyView: GPUTextureView;
   occupancyUniformBuffer: GPUBuffer;
   weatherBoundsBuffer: GPUBuffer;
@@ -436,6 +474,7 @@ interface CloudNonColorBindings {
   readonly lutSampler: GPUSampler;
   readonly densityMomentsView: GPUTextureView;
   readonly materialFlowBuffer: GPUBuffer;
+  readonly weatherTransition?: CloudWeatherTransitionBindings;
   readonly occupancyView: GPUTextureView;
   readonly occupancyUniformBuffer: GPUBuffer;
   readonly weatherBoundsBuffer: GPUBuffer;
@@ -644,7 +683,12 @@ export interface CloudCache {
   // near 0 and the accumulated wind offset stays inside f32 precision.
   timeEpoch: number | null;
   // Global coverage field sampled by the march.
-  weatherTexture: GPUTexture | null; // 2d-array depth-1 coverage field
+  weatherTexture: GPUTexture | null;
+  weatherTextureLayers: number;
+  weatherVertical: PackedWeatherVertical | undefined;
+  weatherVerticalRequested: boolean;
+  weatherPopulations: PackedWeatherCloudLayers | undefined;
+  weatherPopulationsRequested: boolean;
   weatherView: GPUTextureView | null;
   weatherFallbackTexture: GPUTexture | null;
   weatherFallbackView: GPUTextureView | null; // 1×1 white, bound when disabled
@@ -652,9 +696,14 @@ export interface CloudCache {
   // Which bytes `weatherTexture` currently holds: -2 = nothing, -1 = the
   // procedural map, >= 0 = the uploaded `WeatherProvider.version`.
   weatherProviderVersion: number;
+  weatherContentVersion: number;
   weatherProviderBytes: Uint8Array | null;
   weatherFlow: CloudMaterialFlowField | undefined;
   materialFlow: CloudMaterialFlowResources;
+  weatherTransition: CloudWeatherTransitionResources | null;
+  weatherTransitionRequested: boolean;
+  weatherTransitionActive: boolean;
+  weatherPreviousFlow: CloudMaterialFlowField | undefined;
   geographicWindRequested: boolean;
   proceduralWeatherBytes: Uint8Array | null;
   proceduralWeatherPending: boolean;
@@ -1432,14 +1481,24 @@ export function ensureCloudCache(
       initialized: false,
       timeEpoch: null,
       weatherTexture: null,
+      weatherTextureLayers: 0,
+      weatherVertical: undefined,
+      weatherVerticalRequested: false,
+      weatherPopulations: undefined,
+      weatherPopulationsRequested: false,
       weatherView: null,
       weatherFallbackTexture: null,
       weatherFallbackView: null,
       weatherSampler: null,
       weatherProviderVersion: -2,
+      weatherContentVersion: -2,
       weatherProviderBytes: null,
       weatherFlow: undefined,
       materialFlow: new CloudMaterialFlowResources(),
+      weatherTransition: null,
+      weatherTransitionRequested: false,
+      weatherTransitionActive: false,
+      weatherPreviousFlow: undefined,
       geographicWindRequested: false,
       proceduralWeatherBytes: null,
       proceduralWeatherPending: false,
@@ -1627,6 +1686,7 @@ export function getOrCreateCloudMainBindGroup(
   const densityMomentsView = exactBindings?.densityMomentsView ?? shapeView;
   const materialFlowBuffer =
     exactBindings?.materialFlowBuffer ?? cache.materialFlow.buffer!;
+  const weatherTransition = exactBindings?.weatherTransition;
   const occupancyView = exactBindings?.occupancyView ?? shapeView;
   const occupancyUniformBuffer =
     exactBindings?.occupancyUniformBuffer ?? cache.uniformBuffer!;
@@ -1664,6 +1724,7 @@ export function getOrCreateCloudMainBindGroup(
       entry.lutSampler === lutSampler &&
       entry.densityMomentsView === densityMomentsView &&
       entry.materialFlowBuffer === materialFlowBuffer &&
+      entry.weatherTransition === weatherTransition &&
       entry.occupancyView === occupancyView &&
       entry.occupancyUniformBuffer === occupancyUniformBuffer &&
       entry.weatherBoundsBuffer === weatherBoundsBuffer &&
@@ -1703,6 +1764,16 @@ export function getOrCreateCloudMainBindGroup(
       { binding: 22, resource: deepShadowView },
       { binding: 23, resource: { buffer: deepShadowUniform, size: 112 } },
       { binding: 26, resource: { buffer: lightingBudgetUniform, size: 16 } },
+      {
+        binding: 29,
+        resource: weatherTransition?.weatherView ?? exactWeatherView,
+      },
+      {
+        binding: 30,
+        resource: {
+          buffer: weatherTransition?.materialFlowBuffer ?? materialFlowBuffer,
+        },
+      },
     ],
   });
   const slot = cache.mainBindGroupNextSlot;
@@ -1723,6 +1794,7 @@ export function getOrCreateCloudMainBindGroup(
     lutSampler,
     densityMomentsView,
     materialFlowBuffer,
+    weatherTransition,
     occupancyView,
     occupancyUniformBuffer,
     weatherBoundsBuffer,
@@ -2934,6 +3006,9 @@ function ensureWeatherView(
   lease: CloudPreparationLease,
   providerPreparing = false,
   providerFlow?: CloudMaterialFlowField,
+  providerContentVersion = providerVersion,
+  providerVertical?: PackedWeatherVertical,
+  providerPopulations?: PackedWeatherCloudLayers,
 ): GPUTextureView {
   verifyCloudMutationLease(cache, lease);
   if (!cache.weatherFallbackView) {
@@ -2964,7 +3039,7 @@ function ensureWeatherView(
       requestCloudWeatherPreparation(context, cache);
     }
     cache.observability.weatherLiveBytes = cache.weatherTexture
-      ? WEATHER_TEX_W * WEATHER_TEX_H * 4
+      ? WEATHER_TEX_W * WEATHER_TEX_H * 4 * cache.weatherTextureLayers
       : 0;
     cache.observability.weatherCacheMisses++;
     return cache.weatherView ?? cache.weatherFallbackView;
@@ -2973,12 +3048,36 @@ function ensureWeatherView(
   // constants here, never their current numeric values: the grid is expected to
   // rise to the native GMGSI resolution, and a spelled-out size would silently
   // become a lie on that day.
+  const vertical = validPackedWeatherVertical(
+    providerVertical,
+    WEATHER_TEX_W,
+    WEATHER_TEX_H,
+  )
+    ? providerVertical
+    : undefined;
+  const populations = validPackedWeatherCloudLayers(
+    providerPopulations,
+    WEATHER_TEX_W,
+    WEATHER_TEX_H,
+  )
+    ? providerPopulations
+    : undefined;
+  const layers = populations ? 11 : vertical ? 2 : 1;
+  if (cache.weatherTexture && cache.weatherTextureLayers !== layers) {
+    destroyCloudGpuResource(
+      context,
+      cache.weatherTexture,
+      "Cloud weather texture",
+    );
+    cache.weatherTexture = null;
+    cache.weatherView = null;
+  }
   if (!cache.weatherTexture) {
     const tex = device.createTexture({
       size: {
         width: WEATHER_TEX_W,
         height: WEATHER_TEX_H,
-        depthOrArrayLayers: 1,
+        depthOrArrayLayers: layers,
       },
       format: "rgba8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
@@ -2986,8 +3085,12 @@ function ensureWeatherView(
       label: "WeatherMap",
     });
     cache.weatherTexture = tex;
+    cache.weatherTextureLayers = layers;
+    cache.weatherVertical = undefined;
+    cache.weatherPopulations = undefined;
     cache.weatherView = tex.createView({ dimension: "2d-array" });
     cache.weatherProviderVersion = -2; // nothing uploaded yet
+    cache.weatherContentVersion = -2;
     cache.weatherProviderBytes = null;
   }
   const dst = { texture: cache.weatherTexture };
@@ -3000,10 +3103,9 @@ function ensureWeatherView(
     height: WEATHER_TEX_H,
     depthOrArrayLayers: 1,
   };
-  // Provider data wins. Its version and byte identity distinguish slices from
-  // different providers; otherwise the procedural map is uploaded once under
-  // sentinel -1. Switching back from provider to procedural re-uploads the
-  // procedural fill.
+  // Content identity survives timeline replay; publication versions still notify
+  // observers without invalidating unchanged fields. Byte and flow identities
+  // also protect legacy providers with independent version counters.
   //
   // A cache hit is a frame on which the resident version already matched the
   // requested one, so no upload was encoded; a miss is a frame that had to
@@ -3011,33 +3113,56 @@ function ensureWeatherView(
   // survives the per-frame counter reset.
   const counters = cache.observability;
   const weatherBytes = WEATHER_TEX_W * WEATHER_TEX_H * 4;
-  counters.weatherLiveBytes = weatherBytes;
+  counters.weatherLiveBytes = weatherBytes * layers;
   const wantedVersion = providerBytes !== null ? providerVersion : -1;
-  if (
-    cache.weatherProviderVersion === wantedVersion &&
-    cache.weatherProviderBytes === providerBytes
-  ) {
+  const wantedContentVersion =
+    providerBytes !== null ? providerContentVersion : -1;
+  const sameContent =
+    cache.weatherContentVersion === wantedContentVersion &&
+    cache.weatherProviderBytes === providerBytes &&
+    cache.weatherVertical === vertical &&
+    cache.weatherPopulations === populations &&
+    (providerBytes === null || cache.weatherFlow === providerFlow);
+  cache.weatherProviderVersion = wantedVersion;
+  if (sameContent) {
     counters.weatherCacheHits++;
   } else {
     counters.weatherCacheMisses++;
     counters.weatherUploads++;
-    counters.weatherUploadBytes += weatherBytes;
+    counters.weatherUploadBytes += weatherBytes * layers;
   }
 
   if (providerBytes !== null) {
-    if (
-      cache.weatherProviderVersion !== providerVersion ||
-      cache.weatherProviderBytes !== providerBytes
-    ) {
+    if (!sameContent) {
       device.queue.writeTexture(dst, providerBytes, layout, size);
-      cache.weatherProviderVersion = providerVersion;
+      if (vertical) {
+        device.queue.writeTexture(
+          { texture: cache.weatherTexture!, origin: { x: 0, y: 0, z: 1 } },
+          vertical.bytes,
+          layout,
+          size,
+        );
+      }
+      if (populations) {
+        device.queue.writeTexture(
+          { texture: cache.weatherTexture!, origin: { x: 0, y: 0, z: 2 } },
+          populations.bytes,
+          layout,
+          { ...size, depthOrArrayLayers: 9 },
+        );
+      }
+      cache.weatherPopulations = populations;
+      cache.weatherVertical = vertical;
+      cache.weatherContentVersion = providerContentVersion;
       cache.weatherProviderBytes = providerBytes;
       cache.weatherFlow = providerFlow;
       cache.temporalHistoryPendingResetReasons |= CLOUD_TEMPORAL_RESET_RESOURCE;
     }
-  } else if (cache.weatherProviderVersion !== -1) {
+  } else if (!sameContent) {
     device.queue.writeTexture(dst, cache.proceduralWeatherBytes!, layout, size);
-    cache.weatherProviderVersion = -1;
+    cache.weatherContentVersion = -1;
+    cache.weatherVertical = undefined;
+    cache.weatherPopulations = undefined;
     cache.weatherProviderBytes = null;
     cache.weatherFlow = undefined;
     cache.temporalHistoryPendingResetReasons |= CLOUD_TEMPORAL_RESET_RESOURCE;
@@ -3242,7 +3367,8 @@ function requestCloudMarchPipeline(
         (bakedOnly ? ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY : 0) |
         (preview
           ? ShaderDefineHi.CLOUD_LIGHTING_PREVIEW
-          : cloudMarchFeatureDefines(features)) |
+          : cloudMarchFeatureDefines(features) &
+            (bakedOnly ? ~0 : ~ShaderDefineHi.CLOUD_WEATHER_TRANSITION)) |
         (cache.geographicWindRequested && !preview
           ? ShaderDefineHi.CLOUD_GEOGRAPHIC_WIND
           : 0)) | (emit ? CLOUD_MARCH_EMIT_DEFINES_HI : 0);
@@ -3454,6 +3580,8 @@ function initializeCloudPipeline(
     texture(22, Stage.FRAGMENT, { viewDimension: "3d" }),
     uniformBuffer(23, Stage.FRAGMENT),
     uniformBuffer(26, Stage.FRAGMENT),
+    texture(29, Stage.FRAGMENT, { viewDimension: "2d-array" }),
+    storageBuffer(30, Stage.FRAGMENT, { readOnly: true }),
   ]);
 
   cache.sampler = device.createSampler({
@@ -3586,6 +3714,8 @@ function ensureShadowResources(
         uniformBuffer(21, Stage.FRAGMENT),
         texture(22, Stage.FRAGMENT, { viewDimension: "3d" }),
         uniformBuffer(23, Stage.FRAGMENT),
+        texture(29, Stage.FRAGMENT, { viewDimension: "2d-array" }),
+        storageBuffer(30, Stage.FRAGMENT, { readOnly: true }),
       ],
     );
     const shaderModule = cache.maskShaderModule!;
@@ -3832,7 +3962,12 @@ export function prepareCloudFrameAndEncodeMask(
     // nothing visually while any part of the shell is in view.
     const planes = frameState.cullingVolume?.planes;
     if (planes !== undefined && planes.length > 0) {
-      const outerR = 6378137.0 + (config.cloudLayerTop ?? 4000.0);
+      const outerR =
+        6378137.0 +
+        Math.max(
+          config.cloudLayerTop ?? 4000.0,
+          config.cloudIndependentWeatherLayers === true ? 32768.0 : 0.0,
+        );
       for (let p = 0; p < planes.length; p++) {
         if (planes[p].w < -outerR) {
           markCloudTemporalInactive(cache);
@@ -3949,7 +4084,7 @@ export function prepareCloudFrameAndEncodeMask(
     const canvasH = context._canvas?.height ?? 1080;
     const multiDeckOn =
       (config as unknown as { cloudMultiDeck?: boolean }).cloudMultiDeck ===
-      true;
+        true || config.cloudIndependentWeatherLayers === true;
     qualityInputs.viewportPixels = canvasW * canvasH;
     qualityInputs.bakedNoiseResident = cache.noiseBaked && cache.noise !== null;
     qualityInputs.multiDeck = multiDeckOn;
@@ -4158,9 +4293,52 @@ export function prepareCloudFrameAndEncodeMask(
     // `getPackedTexture` returns null until the asynchronous fetch lands, and the
     // procedural map is kept until then, which avoids an overcast-everywhere flash.
     const weatherProvider = config.weatherProvider;
-    const providerBytes =
-      weatherProvider?.getPackedTexture(WEATHER_TEX_W, WEATHER_TEX_H) ?? null;
-    const providerVersion = weatherProvider?.version ?? -1;
+    const usesPublication =
+      typeof weatherProvider?.getPackedPublication === "function";
+    const publication = usesPublication
+      ? weatherProvider!.getPackedPublication!(WEATHER_TEX_W, WEATHER_TEX_H)
+      : null;
+    const providerBytes = usesPublication
+      ? (publication?.current.bytes ?? null)
+      : (weatherProvider?.getPackedTexture(WEATHER_TEX_W, WEATHER_TEX_H) ??
+        null);
+    const providerVersion =
+      publication?.version ?? weatherProvider?.version ?? -1;
+    const providerFlow = usesPublication
+      ? publication?.current.flow
+      : weatherProvider?.getFlowField?.();
+    const providerContentVersion =
+      publication?.current.contentVersion ?? providerVersion;
+    cache.weatherTransitionRequested =
+      config.cloudWeatherInterpolation === true && publication !== null;
+    const weatherTransition = resolveCloudWeatherTransition(
+      publication,
+      frameState.time as unknown as
+        { dayNumber: number; secondsOfDay: number } | undefined,
+      cache.weatherTransitionRequested,
+      config.cloudWeatherTransitionSeconds,
+    );
+    cache.weatherTransitionActive = weatherTransition.active;
+    cache.weatherPreviousFlow =
+      config.cloudGeographicWind === true
+        ? weatherTransition.previous?.flow
+        : undefined;
+    if (cache.weatherTransitionRequested) {
+      cache.weatherTransition ??= new CloudWeatherTransitionResources();
+    } else if (cache.weatherTransition) {
+      cache.weatherTransition.destroy();
+      cache.weatherTransition = null;
+    }
+    if (cache.weatherTransitionActive) {
+      cache.temporalHistoryPendingResetReasons |= CLOUD_TEMPORAL_RESET_RESOURCE;
+    }
+    const populationsEnabled = config.cloudIndependentWeatherLayers === true;
+    const verticalEnabled =
+      (config.cloudVerticalWeather === true && !multiDeckOn) ||
+      populationsEnabled;
+    const previousVertical = verticalEnabled
+      ? weatherTransition.previous?.vertical
+      : undefined;
     const weatherEnabled =
       config.cloudWeatherMap === true || providerBytes !== null;
     const weatherView = ensureWeatherView(
@@ -4172,8 +4350,40 @@ export function prepareCloudFrameAndEncodeMask(
       providerVersion,
       lease,
       weatherProvider?.isPreparing === true && !weatherProvider.lastError,
-      weatherProvider?.getFlowField?.(),
+      providerFlow,
+      providerContentVersion,
+      verticalEnabled ? publication?.current.vertical : undefined,
+      populationsEnabled ? publication?.current.layers : undefined,
     );
+    cache.weatherPopulationsRequested =
+      populationsEnabled &&
+      weatherEnabled &&
+      weatherView === cache.weatherView &&
+      (validPackedWeatherCloudLayers(
+        cache.weatherPopulations,
+        WEATHER_TEX_W,
+        WEATHER_TEX_H,
+      ) ||
+        validPackedWeatherCloudLayers(
+          weatherTransition.previous?.layers,
+          WEATHER_TEX_W,
+          WEATHER_TEX_H,
+        ));
+    cache.weatherVerticalRequested =
+      verticalEnabled &&
+      weatherEnabled &&
+      weatherView === cache.weatherView &&
+      (cache.weatherPopulationsRequested ||
+        validPackedWeatherVertical(
+          cache.weatherVertical,
+          WEATHER_TEX_W,
+          WEATHER_TEX_H,
+        ) ||
+        validPackedWeatherVertical(
+          previousVertical,
+          WEATHER_TEX_W,
+          WEATHER_TEX_H,
+        ));
     cache.geographicWindRequested = config.cloudGeographicWind === true;
     // Requested is not bound. While the procedural map is still preparing, or
     // its preparation failed, `ensureWeatherView` binds the 1x1 fallback, and a
@@ -4388,12 +4598,9 @@ export function prepareCloudFrameAndEncodeMask(
     data[offset++] = 111000.0; // 110 atmosphereThickness (matches the LUT bake)
     data[offset++] = 0.0; // 111 pad
 
-    // 112-119 — the multi-deck shell march. With `multiDeck` at 0 the shader
-    // marches exactly one shell between `cloudLayerBottom` and `cloudLayerTop` and
-    // never reads the deck bounds. The bounds come from
-    // `CloudTypeProfile.CloudDeck.bounds`, the same table the per-genus deck
-    // assignment uses, so the two cannot disagree. `multiDeckOn` is read once,
-    // above, where the march budget also needs it.
+    // 112-119 — multi-deck bounds share the per-genus deck assignment table.
+    // Regional single-column heights use the first row as a conservative
+    // envelope; the original layer bounds remain the missing-data fallback.
     const deckBounds = CloudTypeProfile.CloudDeck.bounds as number[][];
     data[offset++] = multiDeckOn ? 1.0 : 0.0; // 112 multiDeck
     data[offset++] = 0.0; // 113 pad
@@ -4403,6 +4610,35 @@ export function prepareCloudFrameAndEncodeMask(
     data[offset++] = deckBounds[1][1]; // 117 deckBoundsMid.y  (MID top)
     data[offset++] = deckBounds[2][0]; // 118 deckBoundsHigh.x (HIGH bottom)
     data[offset++] = deckBounds[2][1]; // 119 deckBoundsHigh.y (HIGH top)
+    if (cache.weatherVerticalRequested && !cache.weatherPopulationsRequested) {
+      data[114] = Math.min(
+        data[40],
+        cache.weatherVertical?.minimumBase ?? Infinity,
+        previousVertical?.minimumBase ?? Infinity,
+      );
+      data[115] = Math.max(
+        data[41],
+        cache.weatherVertical?.maximumTop ?? 0,
+        previousVertical?.maximumTop ?? 0,
+      );
+    }
+
+    if (cache.weatherPopulationsRequested) {
+      for (let population = 0; population < 3; population++) {
+        const current = cache.weatherPopulations?.bounds[population];
+        const previous = weatherTransition.previous?.layers?.bounds[population];
+        data[114 + population * 2] = Math.min(
+          deckBounds[population][0],
+          current?.minimumBase ?? Infinity,
+          previous?.minimumBase ?? Infinity,
+        );
+        data[115 + population * 2] = Math.max(
+          deckBounds[population][1],
+          current?.maximumTop ?? 0,
+          previous?.maximumTop ?? 0,
+        );
+      }
+    }
 
     // 120-127 — the camera-relative high-precision march: the relative-to-eye
     // high/low split of the same camera world position that feeds
@@ -4677,13 +4913,24 @@ export function prepareCloudFrameAndEncodeMask(
         (CLOUD_QF_PLANET_DENSITY | CLOUD_QF_NOISE_BAKED)
         ? cache.weatherFlow
         : undefined;
-    const originWindSpeed = geographicFlow ? 0 : cloudWindSpeed;
-    // 176-179: the flow age, its enable flag and two reserved pads.
+    const previousGeographicFlow =
+      (data[74] & (CLOUD_QF_PLANET_DENSITY | CLOUD_QF_NOISE_BAKED)) ===
+      (CLOUD_QF_PLANET_DENSITY | CLOUD_QF_NOISE_BAKED)
+        ? cache.weatherPreviousFlow
+        : undefined;
+    const originWindSpeed =
+      geographicFlow || previousGeographicFlow ? 0 : cloudWindSpeed;
+    // 176-179: the flow age, its enable flag, the current-snapshot weight and the previous flow age.
     offset = writeCloudMaterialFlowUniforms(
       data,
       offset,
       cache.materialFlow.ageSeconds(geographicFlow, frameState.time),
-      Boolean(geographicFlow),
+      Boolean(geographicFlow || previousGeographicFlow),
+      cache.weatherTransitionRequested ? weatherTransition.weight : 0,
+      cache.weatherTransition?.flow.ageSeconds(
+        previousGeographicFlow,
+        frameState.time,
+      ) ?? 0,
     );
     const atmosphereParams = readPublishedAtmosphereParams(context);
     offset = writeCloudAirLightUniforms(
@@ -4723,6 +4970,7 @@ export function prepareCloudFrameAndEncodeMask(
     // Statistics prepare after the first real cloud draw. Weather and time are
     // lookup inputs, so they do not invalidate this material distribution.
     const baseDensityMaterial =
+      !cache.weatherPopulationsRequested &&
       data[75] <= 0 &&
       data[128] <= 0 &&
       (data[132] < 0.5 || data[133] <= 0) &&
@@ -4733,6 +4981,8 @@ export function prepareCloudFrameAndEncodeMask(
     let densityMomentsView = noise.shapeView;
     if (
       config.cloudDistantDensityMoments === true &&
+      !cache.weatherVerticalRequested &&
+      !cache.weatherTransitionActive &&
       baseDensityMaterial &&
       cache.noiseBaked &&
       cache.executeSerial > 0 &&
@@ -4795,7 +5045,9 @@ export function prepareCloudFrameAndEncodeMask(
     cache.weatherBoundsActive = false;
     let weatherBoundsBuffer: GPUBuffer | null = null;
     const weatherBoundsEligible =
+      !cache.weatherPopulationsRequested &&
       config.cloudWeatherVolumeBounds === true &&
+      !cache.weatherTransitionActive &&
       occupancyEligible &&
       data[64] > 0.5 &&
       weatherView === cache.weatherView;
@@ -4817,12 +5069,14 @@ export function prepareCloudFrameAndEncodeMask(
               [data[116], data[117]],
               [data[118], data[119]],
             ].filter((deck) => deck[1] > deck[0])
-          : [[data[40], data[41]]];
+          : cache.weatherVerticalRequested
+            ? [[data[114], data[115]]]
+            : [[data[40], data[41]]];
       const bounds = cache.weatherBounds.prepare(
         cache.weatherProviderBytes ?? cache.proceduralWeatherBytes,
         WEATHER_TEX_W,
         WEATHER_TEX_H,
-        cache.weatherProviderVersion,
+        cache.weatherContentVersion,
         {
           equatorialRadius: data[42],
           polarRadius: data[62],
@@ -4848,6 +5102,7 @@ export function prepareCloudFrameAndEncodeMask(
     const densityCacheEligible =
       (config.cloudDensityCache === true ||
         config.cloudPrimaryDensityCache === true) &&
+      !cache.weatherTransitionActive &&
       baseDensityMaterial &&
       cache.executeSerial > 0 &&
       !cache.usingStartupPreview &&
@@ -4863,9 +5118,16 @@ export function prepareCloudFrameAndEncodeMask(
           CLOUD_QF_NOISE_BAKED |
           CLOUD_QF_HIGH_PRECISION);
     if (densityCacheEligible) {
+      const source = cache.weatherVerticalRequested
+        ? getVerticalDensityProducerSource
+        : getDensityProducerSource;
+      if (cache.densityCache && !cache.densityCache.usesSource(source)) {
+        cache.densityCache.destroy();
+        cache.densityCache = null;
+      }
       cache.densityCache ??= new CloudDensityCache(
         device,
-        getDensityProducerSource,
+        source,
         (
           context as CesiumGraphicsContext & {
             readonly asyncResources?: import("./AsyncResourceMonitor.js").AsyncResourceMonitor;
@@ -4883,7 +5145,12 @@ export function prepareCloudFrameAndEncodeMask(
           noiseSampler: noise.sampler,
           weatherBytes:
             cache.weatherProviderBytes ?? cache.proceduralWeatherBytes,
-          weatherVersion: cache.weatherProviderVersion,
+          verticalWeather: cache.weatherVerticalRequested,
+          weatherVertical: cache.weatherVerticalRequested
+            ? cache.weatherVertical
+            : undefined,
+          weatherSize: { width: WEATHER_TEX_W, height: WEATHER_TEX_H },
+          weatherVersion: cache.weatherContentVersion,
         },
         data,
         [camPos?.x ?? 0, camPos?.y ?? 0, camPos?.z ?? 0],
@@ -4914,6 +5181,7 @@ export function prepareCloudFrameAndEncodeMask(
       : cache.uniformBuffer!;
 
     cache.directionalLightingRequested =
+      !cache.weatherPopulationsRequested &&
       (config.cloudDirectionalLighting === true ||
         config.cloudDeepShadowCache === true) &&
       (data[74] &
@@ -4927,6 +5195,7 @@ export function prepareCloudFrameAndEncodeMask(
     const deepShadowEligible =
       config.cloudDeepShadowCache === true &&
       cache.directionalLightingRequested &&
+      !cache.weatherTransitionActive &&
       baseDensityMaterial &&
       cache.executeSerial > 0 &&
       !cache.usingStartupPreview &&
@@ -4934,9 +5203,16 @@ export function prepareCloudFrameAndEncodeMask(
       !cache.densityMomentsEnabled &&
       temporalReprojectionSupported;
     if (deepShadowEligible) {
+      const source = cache.weatherVerticalRequested
+        ? getVerticalDeepShadowProducerSource
+        : getDeepShadowProducerSource;
+      if (cache.deepShadowCache && !cache.deepShadowCache.usesSource(source)) {
+        cache.deepShadowCache.destroy();
+        cache.deepShadowCache = null;
+      }
       cache.deepShadowCache ??= new CloudDeepShadowCache(
         device,
-        getDeepShadowProducerSource,
+        source,
         (
           context as CesiumGraphicsContext & {
             readonly asyncResources?: import("./AsyncResourceMonitor.js").AsyncResourceMonitor;
@@ -4954,7 +5230,12 @@ export function prepareCloudFrameAndEncodeMask(
           noiseSampler: noise.sampler,
           weatherBytes:
             cache.weatherProviderBytes ?? cache.proceduralWeatherBytes,
-          weatherVersion: cache.weatherProviderVersion,
+          verticalWeather: cache.weatherVerticalRequested,
+          weatherVertical: cache.weatherVerticalRequested
+            ? cache.weatherVertical
+            : undefined,
+          weatherSize: { width: WEATHER_TEX_W, height: WEATHER_TEX_H },
+          weatherVersion: cache.weatherContentVersion,
           density: cache.densityCacheActive
             ? cache.densityCache!.samplingSnapshot
             : null,
@@ -4985,6 +5266,7 @@ export function prepareCloudFrameAndEncodeMask(
     cache.contributionLightingActive = false;
     if (
       lightingBudgetData &&
+      !cache.weatherPopulationsRequested &&
       cache.executeSerial > 0 &&
       !cache.usingStartupPreview
     ) {
@@ -5043,6 +5325,18 @@ export function prepareCloudFrameAndEncodeMask(
       geographicFlow,
       frameState.frameNumber,
     );
+    const weatherTransitionBindings =
+      (cache.selectedMarchDefinesHi &
+        ShaderDefineHi.CLOUD_WEATHER_TRANSITION) !==
+      0
+        ? cache.weatherTransition?.prepare(
+            device,
+            weatherTransition.previous,
+            frameState.frameNumber,
+            cache.weatherVerticalRequested,
+            cache.weatherPopulationsRequested,
+          )
+        : undefined;
     const uniformEpoch: CloudMainUniformEpoch = Object.freeze({
       serial: ++cache.uniformEpochSerial,
       buffer: cache.uniformBuffer!,
@@ -5068,6 +5362,7 @@ export function prepareCloudFrameAndEncodeMask(
       lutSampler: cache.lutSampler!,
       densityMomentsView,
       materialFlowBuffer,
+      weatherTransition: weatherTransitionBindings,
       occupancyView,
       occupancyUniformBuffer,
       weatherBoundsBuffer: weatherBoundsBuffer ?? materialFlowBuffer,
@@ -5294,6 +5589,7 @@ export function prepareCloudFrameAndEncodeMask(
               nonColorBindings.densityCacheUniform,
               nonColorBindings.deepShadowView,
               nonColorBindings.deepShadowUniform,
+              nonColorBindings.weatherTransition,
             );
             const shadowPass = encoder.beginRenderPass(
               timedCloudPass(context, {
@@ -5430,6 +5726,7 @@ export function prepareCloudFrameAndEncodeMask(
                     nonColorBindings.densityCacheUniform,
                     nonColorBindings.deepShadowView,
                     nonColorBindings.deepShadowUniform,
+                    nonColorBindings.weatherTransition,
                   );
                   cascadePass.setBindGroup(0, cascadeBindGroup);
                   cascadePass.draw(3);
@@ -6464,6 +6761,11 @@ export function destroyProceduralCloudResources(
       "Cloud uniform buffer",
     );
     cache.materialFlow.destroy();
+    cache.weatherTransition?.destroy();
+    cache.weatherTransition = null;
+    cache.weatherTransitionRequested = false;
+    cache.weatherTransitionActive = false;
+    cache.weatherPreviousFlow = undefined;
     cache.weatherFlow = undefined;
     cache.geographicWindRequested = false;
     cache.spatialOccupancy?.destroy();
@@ -6506,11 +6808,17 @@ export function destroyProceduralCloudResources(
       "Cloud weather fallback",
     );
     cache.weatherTexture = null;
+    cache.weatherTextureLayers = 0;
+    cache.weatherVertical = undefined;
+    cache.weatherVerticalRequested = false;
+    cache.weatherPopulations = undefined;
+    cache.weatherPopulationsRequested = false;
     cache.weatherView = null;
     cache.weatherFallbackTexture = null;
     cache.weatherFallbackView = null;
     cache.proceduralWeatherBytes = null;
     cache.weatherProviderVersion = -2;
+    cache.weatherContentVersion = -2;
     cache.weatherProviderBytes = null;
     // Half-resolution target and upscale resources.
     destroyCloudGpuResource(context, cache.halfTexture, "Cloud half target");

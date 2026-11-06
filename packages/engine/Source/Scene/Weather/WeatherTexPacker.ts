@@ -25,6 +25,19 @@
  *
  * @module Scene/Weather/WeatherTexPacker
  */
+import { scheduleWeatherTask } from "./WeatherTaskProcessor.js";
+import {
+  cloneWeatherCloudLayers,
+  validateWeatherCloudLayers,
+  filterWeatherCloudLayer,
+  type PackedWeatherCloudLayers,
+} from "./WeatherCloudLayers.js";
+import {
+  createWeatherVertical,
+  sampleWeatherVertical,
+  finishWeatherVertical,
+  type PackedWeatherVertical,
+} from "./WeatherVerticalField.js";
 import { GLOBAL_WEATHER_BOUNDS, type WeatherField } from "./WeatherTypes.js";
 import {
   applyEquirectPolarLowPass,
@@ -55,6 +68,8 @@ export const CLOUD_BASE_NORM_METERS = 12000.0;
 
 /** Per-call packing overrides. */
 export interface WeatherPackOptions {
+  /** Packs on the shared weather worker when `true`; otherwise on the calling thread. */
+  useWorkers?: boolean;
   /**
    * Overrides `WeatherField.noDataFill`. Precedence is
    * option > field > {@link PROCEDURAL_NO_DATA_FILL}.
@@ -66,6 +81,8 @@ export interface WeatherPackOptions {
 export interface WeatherPackResult {
   /** rgba8 bytes, length `texW*texH*4` — what {@link packWeatherField} returns. */
   bytes: Uint8Array;
+  vertical?: PackedWeatherVertical;
+  layers?: PackedWeatherCloudLayers;
   /** Texels written from at least one observation. */
   observedTexels: number;
   /** Texels written from the no-data fill. */
@@ -367,11 +384,14 @@ export async function packWeatherFieldDetailedAsync(
     return null;
   }
   // Sources may reuse their arrays on later fetches; each pack owns its input.
+  validateWeatherCloudLayers(field);
   const snapshot: WeatherField = {
     ...field,
     coverage: field.coverage.slice(),
     ...(field.type ? { type: field.type.slice() } : {}),
     ...(field.baseMeters ? { baseMeters: field.baseMeters.slice() } : {}),
+    ...(field.topMeters ? { topMeters: field.topMeters.slice() } : {}),
+    ...(field.layers ? { layers: cloneWeatherCloudLayers(field.layers) } : {}),
     ...(field.densityBias ? { densityBias: field.densityBias.slice() } : {}),
     ...(field.bounds ? { bounds: { ...field.bounds } } : {}),
     ...(field.noDataFill ? { noDataFill: { ...field.noDataFill } } : {}),
@@ -379,6 +399,35 @@ export async function packWeatherFieldDetailedAsync(
   const settings = options?.noDataFill
     ? { noDataFill: { ...options.noDataFill } }
     : options;
+  const prepared =
+    options?.useWorkers !== true
+      ? undefined
+      : await scheduleWeatherTask<WeatherPackResult>({
+          kind: "pack",
+          width: texW,
+          height: texH,
+          options: settings,
+          field: {
+            gridWidth: snapshot.gridWidth,
+            gridHeight: snapshot.gridHeight,
+            coverage: snapshot.coverage,
+            type: snapshot.type,
+            baseMeters: snapshot.baseMeters,
+            topMeters: snapshot.topMeters,
+            layers: snapshot.layers,
+            densityBias: snapshot.densityBias,
+            bounds: snapshot.bounds,
+            registration: snapshot.registration,
+            noDataValue: snapshot.noDataValue,
+            noDataFill: snapshot.noDataFill,
+          },
+        });
+  if (prepared) {
+    return cancelled() ? null : prepared;
+  }
+  if (cancelled()) {
+    return null;
+  }
   const steps = packWeatherFieldSteps(snapshot, texW, texH, settings);
   let result = steps.next();
   while (!result.done) {
@@ -419,10 +468,14 @@ function* packWeatherFieldSteps(
   texW: number,
   texH: number,
   options?: WeatherPackOptions,
+  observationSupport?: Uint8Array,
 ): Generator<"rows" | "fill", WeatherPackResult, Uint8Array | undefined> {
+  validateWeatherCloudLayers(field);
   const out = new Uint8Array(texW * texH * 4);
   const gw = field.gridWidth;
   const gh = field.gridHeight;
+  const vertical = createWeatherVertical(field, texW, texH);
+  const verticalCoverage = vertical ? new Float32Array(texW * texH) : undefined;
   const hasType = field.type !== undefined && field.type.length === gw * gh;
   const hasBase =
     field.baseMeters !== undefined && field.baseMeters.length === gw * gh;
@@ -509,6 +562,21 @@ function* packWeatherFieldSteps(
       }
 
       observedTexels++;
+      if (observationSupport) {
+        observationSupport[i] = Math.round(Math.min(1, taps.weightSum) * 255);
+      }
+      if (vertical) {
+        const support = sampleWeatherVertical(
+          field,
+          taps,
+          vertical,
+          verticalCoverage!,
+          i / 4,
+        );
+        if (observationSupport) {
+          observationSupport[i + 1] = Math.round(Math.min(1, support) * 255);
+        }
+      }
       out[i] = encodeChannel(evaluateTaps(field.coverage, taps), 0);
       // G: cloud-type index (CloudType 0..10) packed as index/10 → 0..255, so the
       // shader recovers the genus via round(G/255 * 10). Scaffolding until the
@@ -539,7 +607,11 @@ function* packWeatherFieldSteps(
   // Pole-safe: collapse the polar-cap rows to a single longitude value and taper
   // the longitudinal over-sampling below them, so a straight-down polar camera
   // does not read a different cell per azimuth. An exact no-op below ~59 deg.
-  applyEquirectPolarLowPass(out, texW, texH);
+  if (observationSupport) {
+    filterWeatherCloudLayer(out, observationSupport, texW, texH);
+  } else {
+    applyEquirectPolarLowPass(out, texW, texH);
+  }
   // Then put the procedural fill back, because the low-pass above would filter
   // it a second time. `buildProceduralWeatherMap` ends with this same filter at
   // this same size, so the fill bytes arrive already band-limited, and
@@ -552,8 +624,22 @@ function* packWeatherFieldSteps(
   // provider — METAR emits no-data for most of the planet — would visibly
   // re-blur high-latitude cloud structure where nothing was observed.
   restoreProceduralNoDataFill(out, filledMask, texW, texH, fillMap);
+  const layers = field.layers
+    ? yield* packWeatherCloudLayerSteps(field, texW, texH, options)
+    : undefined;
   return {
     bytes: out,
+    ...(layers ? { layers } : {}),
+    ...(vertical
+      ? {
+          vertical: finishWeatherVertical(
+            vertical,
+            texW,
+            texH,
+            verticalCoverage!,
+          ),
+        }
+      : {}),
     observedTexels,
     filledTexels,
     registration,
@@ -583,4 +669,52 @@ export function packWeatherField(
   options?: WeatherPackOptions,
 ): Uint8Array {
   return packWeatherFieldDetailed(field, texW, texH, options).bytes;
+}
+
+function* packWeatherCloudLayerSteps(
+  field: WeatherField,
+  width: number,
+  height: number,
+  options?: WeatherPackOptions,
+): Generator<
+  "rows" | "fill",
+  PackedWeatherCloudLayers,
+  Uint8Array | undefined
+> {
+  const plane = width * height * 4,
+    bytes = new Uint8Array(plane * 9);
+  const bounds: PackedWeatherCloudLayers["bounds"][number][] = [];
+  for (let layer = 0; layer < 3; layer++) {
+    const population = field.layers![layer],
+      start = layer * 3 * plane;
+    const support = bytes.subarray(start + plane * 2, start + plane * 3);
+    // Clearing layers bounds the delegation to one ordinary pack per population.
+    // Each one retains its own unknown support and full physical height range.
+    const packed = yield* packWeatherFieldSteps(
+      {
+        ...field,
+        ...population,
+        layers: undefined,
+        type: population.type,
+        densityBias: population.densityBias,
+      },
+      width,
+      height,
+      options,
+      support,
+    );
+    bytes.set(packed.bytes, start);
+    if (packed.vertical) {
+      bytes.set(packed.vertical.bytes, start + plane);
+      bounds.push(
+        Object.freeze({
+          minimumBase: packed.vertical.minimumBase,
+          maximumTop: packed.vertical.maximumTop,
+        }),
+      );
+    } else {
+      bounds.push(undefined);
+    }
+  }
+  return Object.freeze({ bytes, bounds: Object.freeze(bounds) });
 }

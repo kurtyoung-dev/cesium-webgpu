@@ -98,6 +98,27 @@ const REAL_MASK_PATHS = [
   "WebGPUCloudTemporalHistory.ts",
   "WebGPUCloudShadowFrame.ts",
   "WebGPUCloudShadowBindGroupCache.ts",
+  "WebGPUCloudWeatherTransition.ts",
+  "CloudWeatherTransition.ts",
+  "CloudWeatherTransition.js",
+  "JulianDate.js",
+  "binarySearch.js",
+  "GregorianDate.js",
+  "isLeapYear.js",
+  "LeapSecond.js",
+  "TimeConstants.js",
+  "TimeStandard.js",
+  "WeatherVerticalField.ts",
+  "CloudWeatherVertical.js",
+  "WeatherCloudLayers.ts",
+  "CloudVolumetrics.js",
+  "Check.js",
+  "DeveloperError.js",
+  "Frozen.js",
+  "CloudPopulationWeather.js",
+  "CloudPopulationLighting.js",
+  "CloudPopulationMarch.js",
+  "CloudDeckResolve.js",
   "WebGPUCloudUniformLayout.ts",
   "CloudDensityDomain.js",
   "CloudMarchSampling.js",
@@ -622,7 +643,11 @@ async function loadIntegrationHarness({
     'import { WebGPUPostProcessPipeline } from "./WebGPUPostProcessPipeline.js";',
     'import { WebGPUContext } from "./WebGPUContext.js";',
     'import CloudCollection from "../../Scene/CloudCollection.js";',
-    "export { executePostFrustumChain, executeEnvironmentalEffects, beginCloudFrameAttempt, finishNegativeCloudFrameAttempt, prepareCloudFrameAndEncodeMask, isPreparedCloudFrame, completePreparedCloudMask, executePreparedCloudFrame, cancelPreparedCloudFrame, ensureCloudCache, executeProceduralClouds, getCloudTransmittanceView, setCloudTransmittanceCapture, GodRayEffect, configureWebGPUPostProcessPipeline, WebGPUSceneRenderer, WebGPUPostProcessPipeline, WebGPUContext, CloudCollection };",
+    'import { ShaderDefineHi } from "./WebGPUShaderDefines.js";',
+    'import CloudVolumetrics from "../../Scene/CloudVolumetrics.js";',
+    'import JulianDate from "../../Core/JulianDate.js";',
+    'import CloudTypeProfile from "../../Scene/CloudTypeProfile.js";',
+    "export { ShaderDefineHi, CloudVolumetrics, JulianDate, CloudTypeProfile,executePostFrustumChain, executeEnvironmentalEffects, beginCloudFrameAttempt, finishNegativeCloudFrameAttempt, prepareCloudFrameAndEncodeMask, isPreparedCloudFrame, completePreparedCloudMask, executePreparedCloudFrame, cancelPreparedCloudFrame, ensureCloudCache, executeProceduralClouds, getCloudTransmittanceView, setCloudTransmittanceCapture, GodRayEffect, configureWebGPUPostProcessPipeline, WebGPUSceneRenderer, WebGPUPostProcessPipeline, WebGPUContext, CloudCollection };",
   ].join("\n");
   return bundle({
     path: HARNESS,
@@ -661,8 +686,11 @@ async function runCapturedCloud(
     assert.equal(fixture.context._cloudCache.maskCaptureEnabled, false);
   }
   seedBakedNoise(fixture);
+  // `cull` is either a flag (the plane that puts the layer shell out of view)
+  // or the plane's own signed distance to the planet centre.
+  const planeW = typeof cull === "number" ? cull : -6_400_000;
   fixture.frameState.cullingVolume = cull
-    ? { planes: [{ w: -6_400_000 }] }
+    ? { planes: [{ w: planeW }] }
     : { planes: [] };
   const ran = engine.executeProceduralClouds(
     fixture.context,
@@ -673,6 +701,12 @@ async function runCapturedCloud(
     fixture.config,
   );
   return { ran, current: engine.getCloudTransmittanceView(fixture.context) };
+}
+
+// Whether any march request in `recordMarchRequests`' list compiled `bit`.
+function marchRequestHas(requested, bit) {
+  assert(Number.isInteger(Math.log2(bit)), "a define bit is a single bit");
+  return requested.some((definesHi) => (definesHi & bit) !== 0);
 }
 
 function seedBakedNoise(fixture) {
@@ -3718,6 +3752,228 @@ test("same cloud-pass pipeline predicate must fail under unique-anchor in-memory
   );
 });
 
+test("production cloud preparation consumes atomic publications and passes stable content keys to every field producer", async () => {
+  const engine = await loadIntegrationHarness(),
+    fixture = makeCloudFixture();
+  const a = {
+    contentVersion: 7001,
+    bytes: new Uint8Array(1440 * 721 * 4).fill(50),
+    flow: { id: "a" },
+  };
+  const b = {
+    contentVersion: 7002,
+    bytes: new Uint8Array(1440 * 721 * 4).fill(180),
+    flow: { id: "b" },
+  };
+  let publication = { version: 1, current: a, previous: null },
+    reads = 0;
+  fixture.config.weatherProvider = {
+    version: 99,
+    getPackedPublication(w, h) {
+      assert.equal(w, 1440);
+      assert.equal(h, 721);
+      reads++;
+      return publication;
+    },
+    getPackedTexture() {
+      assert.fail("atomic providers must not fall back to separate byte reads");
+    },
+    getFlowField() {
+      assert.fail("atomic providers must not fall back to separate wind reads");
+    },
+  };
+  assert.equal((await runCapturedCloud(engine, fixture)).ran, true);
+  const cache = fixture.context._cloudCache;
+  const versions = [];
+  cache.weatherBounds = {
+    prepare(_bytes, _w, _h, version) {
+      versions.push(["bounds", version]);
+      return null;
+    },
+  };
+  cache.densityCache = {
+    prepare(inputs) {
+      versions.push(["density", inputs.weatherVersion]);
+      return false;
+    },
+  };
+  cache.deepShadowCache = {
+    prepare(inputs) {
+      versions.push(["shadow", inputs.weatherVersion]);
+      return false;
+    },
+  };
+  const weatherWrites = () =>
+    fixture.receipts.textureWrites.filter(
+      (write) => write.destination.texture === cache.weatherTexture,
+    );
+  assert.equal(weatherWrites().length, 1);
+  assert.equal(cache.weatherFlow, a.flow);
+  const advance = async () => {
+    fixture.submitEncoder(fixture.context._currentCommandEncoder, true);
+    fixture.context._currentCommandEncoder = fixture.makeEncoder({
+      label: "weather-publication-next-frame",
+    });
+    fixture.frameState.frameNumber++;
+    assert.equal((await runCapturedCloud(engine, fixture)).ran, true);
+  };
+  publication = { version: 2, current: a, previous: null };
+  fixture.config.weatherProvider.isPreparing = true;
+  await advance();
+  assert.equal(
+    weatherWrites().length,
+    1,
+    "notification-only changes must not upload or invalidate content",
+  );
+  assert.equal(cache.weatherProviderVersion, 2);
+  assert.equal(cache.weatherContentVersion, a.contentVersion);
+  publication = { version: 3, current: b, previous: a };
+  fixture.config.weatherProvider.isPreparing = false;
+  await advance();
+  assert.equal(weatherWrites().length, 2);
+  assert.equal(cache.weatherProviderBytes, b.bytes);
+  assert.equal(cache.weatherFlow, b.flow);
+  publication = { version: 4, current: a, previous: null };
+  await advance();
+  assert.equal(
+    weatherWrites().length,
+    3,
+    "replay uploads its resident weather texture once",
+  );
+  assert.equal(cache.weatherProviderBytes, a.bytes);
+  assert.equal(cache.weatherFlow, a.flow);
+  assert.equal(cache.weatherContentVersion, a.contentVersion);
+  assert.deepEqual(
+    versions,
+    [7001, 7002, 7001].flatMap((version) =>
+      ["bounds", "density", "shadow"].map((name) => [name, version]),
+    ),
+  );
+  assert.equal(reads, 4);
+});
+test("legacy weather providers retain separate accessors and invalidate changed wind at the same local version", async () => {
+  const engine = await loadIntegrationHarness(),
+    fixture = makeCloudFixture();
+  const bytes = new Uint8Array(1440 * 721 * 4).fill(90);
+  let flow = { id: "first" };
+  fixture.config.weatherProvider = {
+    version: 3,
+    getPackedTexture: () => bytes,
+    getFlowField: () => flow,
+  };
+  assert.equal((await runCapturedCloud(engine, fixture)).ran, true);
+  const cache = fixture.context._cloudCache;
+  const before = fixture.receipts.textureWrites.length;
+  flow = { id: "second" };
+  fixture.submitEncoder(fixture.context._currentCommandEncoder, true);
+  fixture.context._currentCommandEncoder = fixture.makeEncoder({
+    label: "legacy-wind-next-frame",
+  });
+  fixture.frameState.frameNumber++;
+  assert.equal((await runCapturedCloud(engine, fixture)).ran, true);
+  assert.equal(cache.weatherFlow, flow);
+  assert.equal(cache.weatherContentVersion, 3);
+  assert.equal(fixture.receipts.textureWrites.length, before + 1);
+});
+
+test("active shared weather transition binds both snapshots to view masks and cast shadows and excludes stale one-epoch caches", async () => {
+  const engine = await loadIntegrationHarness({
+    stubSources: {
+      "../../Scene/Weather/CloudWeatherTransition.js":
+        "export function resolveCloudWeatherTransition() { return globalThis.__cloudTransitionFixture; }",
+    },
+  });
+  const fixture = makeCloudFixture();
+  const previous = {
+    width: 1440,
+    height: 721,
+    bytes: new Uint8Array(1440 * 721 * 4),
+    contentVersion: 1,
+  };
+  const current = {
+    ...previous,
+    bytes: new Uint8Array(1440 * 721 * 4).fill(255),
+    contentVersion: 2,
+  };
+  fixture.config.weatherProvider = {
+    getPackedPublication: () => ({ version: 2, current, previous }),
+    version: 2,
+  };
+  Object.assign(fixture.config, {
+    cloudQuality: 64,
+    cloudVolumetricQuality: "medium",
+    cloudWeatherInterpolation: true,
+    cloudCastShadows: true,
+    cloudDensityCache: true,
+    cloudDeepShadowCache: true,
+    cloudWeatherVolumeBounds: true,
+  });
+  globalThis.__cloudTransitionFixture = { previous, weight: 0.5, active: true };
+  try {
+    assert.equal(
+      (await runCapturedCloud(engine, fixture)).ran,
+      true,
+      "transition preparation must draw",
+    );
+    const cache = fixture.context._cloudCache,
+      pair = cache.weatherTransition.bindings;
+    assert.equal(
+      cache.weatherTransitionActive,
+      true,
+      "controlled timing must reach the active transition",
+    );
+    assert.equal(cache.uniformData[178], 0.5);
+    assert.notEqual(
+      cache.selectedMarchDefinesHi & 2097152,
+      0,
+      JSON.stringify({
+        defines: cache.selectedMarchDefinesHi,
+        quality: cache.uniformData[74],
+        baked: cache.noiseBaked,
+      }),
+    );
+    assert.equal(cache.densityCacheActive, false);
+    assert.equal(cache.deepShadowActive, false);
+    assert.equal(cache.weatherBoundsActive, false);
+    assert(pair && pair.weatherView !== cache.weatherView);
+    assert(
+      fixture.receipts.textureWrites.some(
+        (x) =>
+          x.destination.texture === pair.weatherView.descriptor.texture &&
+          x.data[0] === 0,
+      ),
+    );
+    assert(
+      fixture.receipts.bindGroups.some((group) =>
+        group.descriptor.entries?.some(
+          (x) => x.binding === 29 && x.resource === pair.weatherView,
+        ),
+      ),
+    );
+    assert(
+      fixture.receipts.bindGroups.some((group) =>
+        group.descriptor.entries?.some(
+          (x) =>
+            x.binding === 30 && x.resource.buffer === pair.materialFlowBuffer,
+        ),
+      ),
+    );
+    assert(
+      cache.mainBindGroups
+        .filter(Boolean)
+        .every((entry) => entry.weatherTransition === pair),
+    );
+    assert(cache.shadowBindGroups[0]);
+    assert.equal(cache.shadowBindGroups[0].weatherTransition, pair);
+    assert(
+      cache.maskRenderedThisFrame,
+      "the actual mask uses the paired main bindings",
+    );
+  } finally {
+    delete globalThis.__cloudTransitionFixture;
+  }
+});
+
 test("binding 11 of the cloud march bind group is the exact transmittance view the performance manager publishes", async () => {
   function observeCloudMarchBindings(engine) {
     const fixture = makeCloudFixture();
@@ -3788,5 +4044,612 @@ test("binding 11 of the cloud march bind group is the exact transmittance view t
   assert.throws(
     () => assertTransmittanceBinding(mutantBindings),
     assert.AssertionError,
+  );
+});
+
+// A frame of the real renderer over a fresh fixture with the given config
+// fields, recording the march pipelines it requested.
+// The tier below bakes the noise, which the transition define needs.
+const BAKED_NOISE_CONFIG = {
+  cloudQuality: 64,
+  cloudVolumetricQuality: "medium",
+};
+
+async function observeMarchRequests(engine, config, publish) {
+  const fixture = makeCloudFixture();
+  Object.assign(fixture.config, BAKED_NOISE_CONFIG, config);
+  publish?.(fixture);
+  const requests = recordMarchRequests(fixture);
+  assert.equal((await runCapturedCloud(engine, fixture)).ran, true);
+  assert(requests.length > 0, "the frame must request a march pipeline");
+  return { requests, cache: fixture.context._cloudCache, fixture };
+}
+
+function packedMap(fill) {
+  return new Uint8Array(1440 * 721 * 4).fill(fill);
+}
+
+// A provider whose atomic publication carries a previous and a current weather
+// snapshot, so a transition between them is possible. `timing` stamps the
+// snapshots with the UTC instants (ms) their fetches describe and the size the
+// provider packs them at, so the transition can measure its fade.
+function publishSnapshotPair(fixture, { timing, vertical, layers } = {}) {
+  const stamp = (timeMs) =>
+    timing ? { width: 1440, height: 721, timeMs } : {};
+  const previous = {
+    bytes: packedMap(0),
+    contentVersion: 1,
+    flow: null,
+    ...stamp(timing?.previousMs),
+  };
+  const current = {
+    bytes: packedMap(255),
+    contentVersion: 2,
+    flow: null,
+    vertical,
+    layers,
+    ...stamp(timing?.currentMs),
+  };
+  fixture.config.weatherProvider = {
+    version: 2,
+    getPackedPublication: () => ({ version: 2, current, previous }),
+  };
+}
+
+// The two ways a dial reaches a real CloudVolumetrics: its constructor option,
+// and its setter on an instance built without it.
+const DIAL_ROUTES = {
+  "constructor option": (engine, dials) => new engine.CloudVolumetrics(dials),
+  setter: (engine, dials) =>
+    Object.assign(new engine.CloudVolumetrics(), dials),
+};
+
+// The named dials as the renderer receives them: set on a real CloudVolumetrics
+// by `route`, then flattened by the collection's own configuration snapshot.
+function resolvedDials(engine, route, dials, names) {
+  const config = engine.CloudCollection.prototype._resolveVolumetricConfig.call(
+    {
+      volumetric: DIAL_ROUTES[route](engine, dials),
+      _weatherState: undefined,
+      _cloudType: undefined,
+    },
+  );
+  return Object.fromEntries(names.map((name) => [name, config[name]]));
+}
+
+// The instant the current snapshot describes (an arbitrary UTC instant) and how
+// long before it the previous one does.
+const CURRENT_SNAPSHOT_MS = 946_728_000_000;
+const SNAPSHOT_INTERVAL_MS = 3_600_000;
+const FADE_DIALS = [
+  "cloudWeatherInterpolation",
+  "cloudWeatherTransitionSeconds",
+];
+
+// What a frame writes to the cloud uniform's current-snapshot weight (float
+// 178) when the scene clock is `elapsedSeconds` past the current snapshot, with
+// the fade dials set on a real CloudVolumetrics by `route`.
+async function observeFadeWeight(engine, route, dials, elapsedSeconds) {
+  const config = resolvedDials(engine, route, dials, FADE_DIALS);
+  const { cache } = await observeMarchRequests(engine, config, (fixture) => {
+    publishSnapshotPair(fixture, {
+      timing: {
+        previousMs: CURRENT_SNAPSHOT_MS - SNAPSHOT_INTERVAL_MS,
+        currentMs: CURRENT_SNAPSHOT_MS,
+      },
+    });
+    fixture.frameState.time = engine.JulianDate.addSeconds(
+      engine.JulianDate.fromDate(new Date(CURRENT_SNAPSHOT_MS)),
+      elapsedSeconds,
+      new engine.JulianDate(),
+    );
+  });
+  return {
+    weight: cache.uniformData[178],
+    active: cache.weatherTransitionActive,
+  };
+}
+
+function smoothstep(fraction) {
+  return fraction * fraction * (3 - 2 * fraction);
+}
+
+test("the weather transition dial set on a real CloudVolumetrics reaches the march request's defines and is absent with the dial off or no published snapshot", async () => {
+  const engine = await loadIntegrationHarness();
+  const bit = engine.ShaderDefineHi.CLOUD_WEATHER_TRANSITION;
+  const dialOn = { cloudWeatherInterpolation: true };
+  for (const route of Object.keys(DIAL_ROUTES)) {
+    const on = await observeMarchRequests(
+      engine,
+      resolvedDials(engine, route, dialOn, FADE_DIALS),
+      publishSnapshotPair,
+    );
+    assert.equal(on.cache.weatherTransitionRequested, true, route);
+    assert(
+      marchRequestHas(on.requests, bit),
+      `${route}: the march compiles the transition with the dial on and a snapshot pair`,
+    );
+    const off = await observeMarchRequests(
+      engine,
+      resolvedDials(engine, route, {}, FADE_DIALS),
+      publishSnapshotPair,
+    );
+    assert.equal(off.cache.weatherTransitionRequested, false, route);
+    assert.equal(
+      marchRequestHas(off.requests, bit),
+      false,
+      `${route}: no transition with the dial left at its default`,
+    );
+    const unpublished = await observeMarchRequests(
+      engine,
+      resolvedDials(engine, route, dialOn, FADE_DIALS),
+      (fixture) => {
+        fixture.config.weatherProvider = {
+          version: 1,
+          getPackedTexture: () => packedMap(90),
+        };
+      },
+    );
+    assert.equal(unpublished.cache.weatherTransitionRequested, false, route);
+    assert.equal(
+      marchRequestHas(unpublished.requests, bit),
+      false,
+      `${route}: a provider with no atomic publication has no snapshot to fade from`,
+    );
+  }
+});
+
+test("cloudWeatherTransitionSeconds defaults to 30, accepts 1 to 300, and rejects values outside it", async () => {
+  const engine = await loadIntegrationHarness();
+  assert.equal(new engine.CloudVolumetrics().cloudWeatherTransitionSeconds, 30);
+  for (const seconds of [1, 300]) {
+    assert.equal(
+      new engine.CloudVolumetrics({ cloudWeatherTransitionSeconds: seconds })
+        .cloudWeatherTransitionSeconds,
+      seconds,
+    );
+    const volumetric = new engine.CloudVolumetrics();
+    volumetric.cloudWeatherTransitionSeconds = seconds;
+    assert.equal(volumetric.cloudWeatherTransitionSeconds, seconds);
+  }
+  for (const seconds of [0.5, 301]) {
+    assert.throws(
+      () =>
+        new engine.CloudVolumetrics({ cloudWeatherTransitionSeconds: seconds }),
+      /cloudWeatherTransitionSeconds/,
+      `the constructor rejects ${seconds}`,
+    );
+    const volumetric = new engine.CloudVolumetrics();
+    assert.throws(
+      () => {
+        volumetric.cloudWeatherTransitionSeconds = seconds;
+      },
+      /cloudWeatherTransitionSeconds/,
+      `the setter rejects ${seconds}`,
+    );
+    assert.equal(volumetric.cloudWeatherTransitionSeconds, 30);
+  }
+});
+
+test("cloudWeatherTransitionSeconds sets how far a fade has progressed at a given scene time", async () => {
+  const engine = await loadIntegrationHarness();
+  const elapsed = 5;
+  const weightAfter = (seconds) => smoothstep(elapsed / seconds);
+  const dial = { cloudWeatherInterpolation: true };
+  for (const route of Object.keys(DIAL_ROUTES)) {
+    const short = await observeFadeWeight(
+      engine,
+      route,
+      { ...dial, cloudWeatherTransitionSeconds: 10 },
+      elapsed,
+    );
+    const long = await observeFadeWeight(
+      engine,
+      route,
+      { ...dial, cloudWeatherTransitionSeconds: 60 },
+      elapsed,
+    );
+    assert.equal(short.active, true, `${route}: the 10 s fade is under way`);
+    assert.equal(long.active, true, `${route}: the 60 s fade is under way`);
+    assert.ok(
+      Math.abs(short.weight - weightAfter(10)) < 1e-6,
+      `${route}: a 10 s fade is half done after 5 s, got ${short.weight}`,
+    );
+    assert.ok(
+      Math.abs(long.weight - weightAfter(60)) < 1e-6,
+      `${route}: a 60 s fade has barely begun after 5 s, got ${long.weight}`,
+    );
+    assert(
+      short.weight > long.weight,
+      `${route}: the shorter fade is further along`,
+    );
+  }
+  const unset = await observeFadeWeight(
+    engine,
+    "constructor option",
+    dial,
+    elapsed,
+  );
+  assert.ok(
+    Math.abs(unset.weight - weightAfter(30)) < 1e-6,
+    `the default fade is 30 s, got ${unset.weight}`,
+  );
+});
+
+// The regional cloud-top plane the weather provider publishes with a snapshot.
+function verticalPlane({ minimumBase = 500, maximumTop = 9000 } = {}) {
+  return { bytes: packedMap(128), minimumBase, maximumTop };
+}
+
+test("the vertical weather dial set on a real CloudVolumetrics reaches the march request's defines and is absent with the dial off or no published plane", async () => {
+  const engine = await loadIntegrationHarness();
+  const bit = engine.ShaderDefineHi.CLOUD_WEATHER_VERTICAL;
+  const names = ["cloudVerticalWeather"];
+  const dialOn = { cloudVerticalWeather: true };
+  const withPlane = (fixture) =>
+    publishSnapshotPair(fixture, { vertical: verticalPlane() });
+  for (const route of Object.keys(DIAL_ROUTES)) {
+    const on = await observeMarchRequests(
+      engine,
+      resolvedDials(engine, route, dialOn, names),
+      withPlane,
+    );
+    assert.equal(on.cache.weatherVerticalRequested, true, route);
+    assert(
+      marchRequestHas(on.requests, bit),
+      `${route}: the march reads the vertical plane with the dial on and a plane published`,
+    );
+    const off = await observeMarchRequests(
+      engine,
+      resolvedDials(engine, route, {}, names),
+      withPlane,
+    );
+    assert.equal(off.cache.weatherVerticalRequested, false, route);
+    assert.equal(
+      marchRequestHas(off.requests, bit),
+      false,
+      `${route}: no vertical plane with the dial left at its default`,
+    );
+    const noPlane = await observeMarchRequests(
+      engine,
+      resolvedDials(engine, route, dialOn, names),
+      (fixture) => publishSnapshotPair(fixture),
+    );
+    assert.equal(noPlane.cache.weatherVerticalRequested, false, route);
+    assert.equal(
+      marchRequestHas(noPlane.requests, bit),
+      false,
+      `${route}: a snapshot without a cloud-top plane keeps the single layer bounds`,
+    );
+  }
+});
+
+// The three independent cloud populations a weather provider publishes with a
+// snapshot: control, height and support planes for each, and each one's bounds.
+function populationLayers(
+  bounds = Array.from({ length: 3 }, () => ({
+    minimumBase: 500,
+    maximumTop: 3000,
+  })),
+) {
+  return {
+    bytes: new Uint8Array(1440 * 721 * 36).fill(64),
+    bounds,
+  };
+}
+
+// The dial as the renderer receives it: set on a real CloudVolumetrics under
+// its experimental namespace, then flattened by the collection's configuration
+// snapshot.
+function collectionConfigDial(engine, enabled) {
+  const volumetric = new engine.CloudVolumetrics({
+    experimental: { cloudIndependentWeatherLayers: enabled },
+  });
+  return engine.CloudCollection.prototype._resolveVolumetricConfig.call({
+    volumetric,
+    _weatherState: undefined,
+    _cloudType: undefined,
+  }).cloudIndependentWeatherLayers;
+}
+
+test("the independent weather populations dial reaches the march request's defines and is absent with the dial off or no published layers", async () => {
+  const engine = await loadIntegrationHarness();
+  const bit = engine.ShaderDefineHi.CLOUD_WEATHER_POPULATIONS;
+  const withLayers = (fixture) =>
+    publishSnapshotPair(fixture, { layers: populationLayers() });
+  const on = await observeMarchRequests(
+    engine,
+    { cloudIndependentWeatherLayers: collectionConfigDial(engine, true) },
+    withLayers,
+  );
+  assert.equal(on.cache.weatherPopulationsRequested, true);
+  assert(
+    marchRequestHas(on.requests, bit),
+    "the march reads the populations with the dial on and layers published",
+  );
+  const off = await observeMarchRequests(
+    engine,
+    { cloudIndependentWeatherLayers: collectionConfigDial(engine, false) },
+    withLayers,
+  );
+  assert.equal(off.cache.weatherPopulationsRequested, false);
+  assert.equal(marchRequestHas(off.requests, bit), false);
+  const noLayers = await observeMarchRequests(
+    engine,
+    { cloudIndependentWeatherLayers: collectionConfigDial(engine, true) },
+    (fixture) => publishSnapshotPair(fixture),
+  );
+  assert.equal(noLayers.cache.weatherPopulationsRequested, false);
+  assert.equal(
+    marchRequestHas(noLayers.requests, bit),
+    false,
+    "a snapshot without population layers keeps the single weather layer",
+  );
+});
+
+// ─── the published heights reach the march's shell ──────────────────────────
+//
+// The march, the density cache and the deep-shadow cache take the cloud shell
+// from cloud uniform floats 114-119, one bottom/top pair for each of the low,
+// mid and high decks, which the renderer writes every frame. With the vertical
+// dial the first pair widens from the deck table's low row to cover the layer
+// bounds and the regional cloud-top plane the provider published; with the
+// independent populations each pair covers its deck row and that population's
+// published bounds. A write that is lost clips every cloud whose regional top
+// is above the layer top. The expected values below come from the published
+// inputs and the engine's deck table, never from what the renderer wrote.
+
+const SHELL_LAYER = { bottom: 1500, top: 4000 };
+
+// The shell a frame writes (floats 114-119), the single layer's own bounds
+// (floats 40 and 41) and whether the weather map was read as a plane/layers.
+async function observeShellBounds(engine, config, publish) {
+  const { cache } = await observeMarchRequests(
+    engine,
+    {
+      ...config,
+      cloudLayerBottom: SHELL_LAYER.bottom,
+      cloudLayerTop: SHELL_LAYER.top,
+    },
+    publish,
+  );
+  return {
+    layer: Array.from(cache.uniformData.slice(40, 42)),
+    shell: Array.from(cache.uniformData.slice(114, 120)),
+    verticalRequested: cache.weatherVerticalRequested,
+    populationsRequested: cache.weatherPopulationsRequested,
+  };
+}
+
+function assertShellBounds(observed, expected, message) {
+  assert.deepEqual(
+    observed.shell,
+    expected,
+    `${message}: shell bounds (floats 114-119) are [${expected}], got [${observed.shell}]`,
+  );
+  assert.deepEqual(
+    observed.layer,
+    [SHELL_LAYER.bottom, SHELL_LAYER.top],
+    `${message}: the single layer keeps its own bounds`,
+  );
+}
+
+async function assertVerticalShellBounds(engine) {
+  const deck = engine.CloudTypeProfile.CloudDeck.bounds;
+  const names = ["cloudVerticalWeather"];
+  const planes = [
+    { minimumBase: 500, maximumTop: 9000 },
+    { minimumBase: 2000, maximumTop: 3000 },
+    { minimumBase: 2000, maximumTop: 9000 },
+    { minimumBase: 500, maximumTop: 3000 },
+  ];
+  for (const route of Object.keys(DIAL_ROUTES)) {
+    for (const plane of planes) {
+      const observed = await observeShellBounds(
+        engine,
+        resolvedDials(engine, route, { cloudVerticalWeather: true }, names),
+        (fixture) =>
+          publishSnapshotPair(fixture, { vertical: verticalPlane(plane) }),
+      );
+      assert.equal(observed.verticalRequested, true, route);
+      assertShellBounds(
+        observed,
+        [
+          Math.min(SHELL_LAYER.bottom, plane.minimumBase),
+          Math.max(SHELL_LAYER.top, plane.maximumTop),
+          ...deck[1],
+          ...deck[2],
+        ],
+        `${route}, plane ${plane.minimumBase}-${plane.maximumTop} m`,
+      );
+    }
+    const off = await observeShellBounds(
+      engine,
+      resolvedDials(engine, route, {}, names),
+      (fixture) => publishSnapshotPair(fixture, { vertical: verticalPlane() }),
+    );
+    assert.equal(off.verticalRequested, false, route);
+    assertShellBounds(off, deck.flat(), `${route}, dial off`);
+  }
+}
+
+// The populations' own bounds differ from each other and from the deck table
+// on both sides, so a swapped population or a lost side shows.
+const POPULATION_BOUNDS = [
+  { minimumBase: 300, maximumTop: 2600 },
+  { minimumBase: 1000, maximumTop: 9000 },
+  { minimumBase: 4000, maximumTop: 15000 },
+];
+
+async function assertPopulationShellBounds(engine) {
+  const deck = engine.CloudTypeProfile.CloudDeck.bounds;
+  const expected = deck.flatMap((row, population) => [
+    Math.min(row[0], POPULATION_BOUNDS[population].minimumBase),
+    Math.max(row[1], POPULATION_BOUNDS[population].maximumTop),
+  ]);
+  const withLayers = (fixture) =>
+    publishSnapshotPair(fixture, {
+      layers: populationLayers(POPULATION_BOUNDS),
+    });
+  const on = await observeShellBounds(
+    engine,
+    { cloudIndependentWeatherLayers: collectionConfigDial(engine, true) },
+    withLayers,
+  );
+  assert.equal(on.populationsRequested, true);
+  assertShellBounds(on, expected, "populations on");
+  // The vertical dial and a published plane do not widen the populations'
+  // first pair: the populations own all three pairs.
+  const config = engine.CloudCollection.prototype._resolveVolumetricConfig.call(
+    {
+      volumetric: new engine.CloudVolumetrics({
+        cloudVerticalWeather: true,
+        experimental: { cloudIndependentWeatherLayers: true },
+      }),
+      _weatherState: undefined,
+      _cloudType: undefined,
+    },
+  );
+  const both = await observeShellBounds(
+    engine,
+    {
+      cloudVerticalWeather: config.cloudVerticalWeather,
+      cloudIndependentWeatherLayers: config.cloudIndependentWeatherLayers,
+    },
+    (fixture) =>
+      publishSnapshotPair(fixture, {
+        layers: populationLayers(POPULATION_BOUNDS),
+        vertical: verticalPlane({ minimumBase: 100, maximumTop: 20000 }),
+      }),
+  );
+  assert.equal(both.populationsRequested, true);
+  assertShellBounds(both, expected, "populations and vertical dials on");
+  const off = await observeShellBounds(
+    engine,
+    { cloudIndependentWeatherLayers: collectionConfigDial(engine, false) },
+    withLayers,
+  );
+  assert.equal(off.populationsRequested, false);
+  assertShellBounds(off, deck.flat(), "populations off");
+}
+
+test("the vertical weather dial writes the march's shell as the layer bounds widened to the published cloud-top plane, and the deck table's low row with the dial off", async () => {
+  await assertVerticalShellBounds(await loadIntegrationHarness());
+});
+
+test("the independent populations write each deck's shell as its deck row widened to that population's published bounds", async () => {
+  await assertPopulationShellBounds(await loadIntegrationHarness());
+});
+
+const SHELL_VERTICAL_WRITE = [
+  "if (cache.weatherVerticalRequested && !cache.weatherPopulationsRequested) {",
+  "if (false && cache.weatherVerticalRequested && !cache.weatherPopulationsRequested) {",
+];
+const SHELL_POPULATION_WRITE = [
+  "if (cache.weatherPopulationsRequested) {\n      for (let population = 0; population < 3; population++) {",
+  "if (false && cache.weatherPopulationsRequested) {\n      for (let population = 0; population < 3; population++) {",
+];
+
+async function loadShellMutant([anchor, replacement], label) {
+  return loadIntegrationHarness({
+    overrides: [
+      {
+        basename: "WebGPUProceduralCloudRenderer.ts",
+        mutate: (source) =>
+          replaceExactlyOnce(source, anchor, replacement, label),
+        label,
+      },
+    ],
+  });
+}
+
+const SHELL_BOUNDS_FAILURE = (error) =>
+  error instanceof assert.AssertionError && /shell bounds/.test(error.message);
+
+test("the shell bounds checks fail when the vertical envelope write is unreachable, and only the vertical check", async () => {
+  const mutant = await loadShellMutant(
+    SHELL_VERTICAL_WRITE,
+    "vertical shell envelope made unreachable",
+  );
+  await assert.rejects(assertVerticalShellBounds(mutant), SHELL_BOUNDS_FAILURE);
+  await assertPopulationShellBounds(mutant);
+});
+
+test("the shell bounds checks fail when the per-population envelope write is unreachable, and only the populations check", async () => {
+  const mutant = await loadShellMutant(
+    SHELL_POPULATION_WRITE,
+    "population shell envelopes made unreachable",
+  );
+  await assert.rejects(
+    assertPopulationShellBounds(mutant),
+    SHELL_BOUNDS_FAILURE,
+  );
+  await assertVerticalShellBounds(mutant);
+});
+
+// ─── the populations keep the cloud shell in view out to 32768 m ────────────
+//
+// The frame is skipped when the cloud shell, a sphere about the planet centre,
+// lies wholly behind a frustum plane. The shell reaches the layer top, or
+// 32768 m with the independent populations, whose high deck rises above it.
+// A plane at a signed distance between the two shells' radii culls the single
+// layer and keeps the populations' frame.
+
+const SHELL_RADIUS_BASE = 6378137;
+const POPULATION_SHELL_TOP = 32768;
+
+async function observeShellCull(engine, populationsOn, planeW) {
+  const fixture = makeCloudFixture();
+  Object.assign(fixture.config, BAKED_NOISE_CONFIG, {
+    cloudLayerBottom: SHELL_LAYER.bottom,
+    cloudLayerTop: SHELL_LAYER.top,
+    cloudIndependentWeatherLayers: collectionConfigDial(engine, populationsOn),
+  });
+  publishSnapshotPair(fixture, { layers: populationLayers() });
+  return (await runCapturedCloud(engine, fixture, { cull: planeW })).ran;
+}
+
+async function assertPopulationShellCull(engine) {
+  const betweenShells = -(SHELL_RADIUS_BASE + SHELL_LAYER.top + 20_000);
+  const beyondBoth = -(SHELL_RADIUS_BASE + POPULATION_SHELL_TOP + 1_000);
+  assert.ok(
+    betweenShells < -(SHELL_RADIUS_BASE + SHELL_LAYER.top) &&
+      betweenShells > -(SHELL_RADIUS_BASE + POPULATION_SHELL_TOP),
+    "the plane lies between the layer shell and the populations' shell",
+  );
+  assert.equal(
+    await observeShellCull(engine, false, betweenShells),
+    false,
+    "the single layer is culled by a plane beyond its layer top",
+  );
+  assert.equal(
+    await observeShellCull(engine, true, betweenShells),
+    true,
+    "the populations are kept: their shell reaches 32768 m",
+  );
+  assert.equal(
+    await observeShellCull(engine, true, beyondBoth),
+    false,
+    "the populations are culled by a plane beyond 32768 m",
+  );
+}
+
+test("the independent populations keep the frame in view out to a 32768 m shell while the single layer is culled at its top", async () => {
+  await assertPopulationShellCull(await loadIntegrationHarness());
+});
+
+test("the population cull check fails when the shell radius falls back to the layer top", async () => {
+  const mutant = await loadShellMutant(
+    [
+      "config.cloudIndependentWeatherLayers === true ? 32768.0 : 0.0,",
+      "config.cloudIndependentWeatherLayers === true ? 0.0 : 0.0,",
+    ],
+    "population shell cull radius dropped",
+  );
+  await assert.rejects(
+    assertPopulationShellCull(mutant),
+    (error) =>
+      error instanceof assert.AssertionError &&
+      /populations are kept/.test(error.message),
   );
 });

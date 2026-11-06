@@ -102,6 +102,54 @@ export function validCloudFrontField(
   }
   return true;
 }
+export interface CloudMaterialFlowTraits {
+  readonly maximumSpeed: number;
+  readonly zeroDisplacement: boolean;
+  readonly singleLevel: boolean;
+}
+const flowTraits = new WeakMap<
+  CloudMaterialFlowField,
+  CloudMaterialFlowTraits | null
+>();
+export function getCloudMaterialFlowTraits(
+  field: CloudMaterialFlowField | undefined,
+): CloudMaterialFlowTraits | undefined {
+  if (!field) {
+    return undefined;
+  }
+  // Published snapshots are immutable; validation and content traits are shared
+  // across views and producers rather than rescanning the grid each frame.
+  if (!flowTraits.has(field)) {
+    let squared = 0,
+      zeroDisplacement = true;
+    const valid = validCloudMaterialFlow(field);
+    if (valid) {
+      for (let i = 0; i < field.velocity.length; i += 4) {
+        squared = Math.max(
+          squared,
+          field.velocity[i] ** 2 +
+            field.velocity[i + 1] ** 2 +
+            field.velocity[i + 2] ** 2,
+        );
+        zeroDisplacement &&=
+          field.displacement[i] === 0 &&
+          field.displacement[i + 1] === 0 &&
+          field.displacement[i + 2] === 0;
+      }
+    }
+    flowTraits.set(
+      field,
+      valid
+        ? Object.freeze({
+            maximumSpeed: Math.sqrt(squared),
+            zeroDisplacement,
+            singleLevel: field.altitudes === undefined,
+          })
+        : null,
+    );
+  }
+  return flowTraits.get(field) ?? undefined;
+}
 
 export function cloneCloudMaterialFlow(
   field: CloudMaterialFlowField,

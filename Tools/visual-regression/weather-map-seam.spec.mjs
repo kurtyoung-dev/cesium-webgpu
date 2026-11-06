@@ -881,7 +881,27 @@ test("weather publication holds a valid view while pending and gives provider by
       createTexture: () => ({ createView: () => ({ id: ++textures }) }),
       queue: { writeTexture: (destination, bytes) => uploads.push(bytes) },
     };
+  const { build } = await import("esbuild");
+  const helpers = await build({
+    stdin: {
+      contents: [
+        'export * from "./packages/engine/Source/Scene/Weather/WeatherVerticalField.ts";',
+        'export * from "./packages/engine/Source/Scene/Weather/WeatherCloudLayers.ts";',
+      ].join("\n"),
+      resolveDir: root,
+    },
+    bundle: true,
+    write: false,
+    platform: "node",
+    format: "esm",
+  });
+  const validators = await import(
+    "data:text/javascript;base64," +
+      Buffer.from(helpers.outputFiles[0].text).toString("base64")
+  );
   const ensure = runInNewContext(transformed.code + "\nensureWeatherView;", {
+    validPackedWeatherVertical: validators.validPackedWeatherVertical,
+    validPackedWeatherCloudLayers: validators.validPackedWeatherCloudLayers,
     verifyCloudMutationLease: () => {},
     requestCloudWeatherPreparation: () => {
       requested++;
@@ -1042,6 +1062,9 @@ test("float 64 reads 1 only on a frame that binds a real weather map, never the 
       {
         verifyCloudMutationLease: () => {},
         requestCloudWeatherPreparation: () => {},
+        validPackedWeatherVertical: () => false,
+        validPackedWeatherCloudLayers: () => false,
+        destroyCloudGpuResource: (context, resource) => resource.destroy(),
         GPUTextureUsage: { TEXTURE_BINDING: 1, COPY_DST: 2 },
         WEATHER_TEX_W: 4,
         WEATHER_TEX_H: 3,

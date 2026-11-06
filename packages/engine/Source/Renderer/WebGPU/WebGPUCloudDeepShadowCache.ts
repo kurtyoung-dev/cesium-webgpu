@@ -259,6 +259,9 @@ export class CloudDeepShadowCache {
   get uniform(): GPUBuffer | null {
     return this.resources?.query ?? null;
   }
+  usesSource(source: () => string): boolean {
+    return this.source === source;
+  }
   get needsFrame(): boolean {
     return this.batch !== null;
   }
@@ -440,6 +443,8 @@ export class CloudDeepShadowCache {
       inputs.detail,
       inputs.noiseSampler,
       inputs.weatherBytes,
+      inputs.verticalWeather === true,
+      inputs.weatherVertical?.bytes,
     ];
     const current = (field: Field | null) =>
       !!field && field.key === key && same(field.bindings, bindings);

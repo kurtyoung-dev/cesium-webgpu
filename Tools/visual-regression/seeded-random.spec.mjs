@@ -203,11 +203,18 @@ function generatorMismatches(mod) {
   return bad;
 }
 
+// The seeded generator's draws: the pattern's phase and its pressure systems.
+// The sampled fields also depend on the cloud formation model, which changes
+// on its own schedule and is pinned by cloud-weather-worker.spec.mjs.
+function seededDraws({ phase, systems }) {
+  return JSON.stringify({ phase, systems });
+}
+
 function weatherMismatches(Pattern) {
   return WEATHER_SEEDS.filter(
     (seed) =>
-      JSON.stringify(weatherObservation(Pattern, seed)) !==
-      JSON.stringify(fixture.weather[JSON.stringify(seed)]),
+      seededDraws(weatherObservation(Pattern, seed)) !==
+      seededDraws(fixture.weather[JSON.stringify(seed)]),
   ).map((seed) => `weather(${JSON.stringify(seed)})`);
 }
 
@@ -233,6 +240,13 @@ async function mutatedPattern(patternEdits, sharedEdits) {
         );
         source = source.replace(anchor, () => replacement);
       }
+      // Every relative import but the copied shared generator resolves at
+      // the module's TypeScript source in the engine.
+      source = source.replace(
+        /from "(\.\/(?!SeededRandom\.js")[^"]*)"/g,
+        (_m, specifier) =>
+          `from "${new URL(specifier.replace(/\.js$/, ".ts"), toUrl(engine(rel))).href}"`,
+      );
       fs.writeFileSync(path.join(dir, path.basename(rel)), source);
     };
     apply(SYNOPTIC_REL, patternEdits);
@@ -297,7 +311,7 @@ test("the shared generators reproduce both base private generators", () => {
   assert.deepEqual(generatorMismatches(shared), []);
 });
 
-test("the synoptic pattern draws the values it drew at the base revision", () => {
+test("the synoptic pattern draws the seeded phase and pressure systems it drew at the base revision", () => {
   assert.deepEqual(weatherMismatches(SynopticWeatherPattern), []);
 });
 

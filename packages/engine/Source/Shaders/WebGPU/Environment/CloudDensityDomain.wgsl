@@ -56,6 +56,10 @@ struct CloudDensityCoordinates {
   shape: vec3<f32>,
   warp: vec3<f32>,
   detail: vec3<f32>,
+//>>ifdef CLOUD_WEATHER_POPULATIONS
+  population: i32,
+//>>else
+//>>endif
 }
 
 fn wrapCloudDensityDomain(value: vec3<f32>) -> vec3<f32> {
@@ -81,6 +85,10 @@ fn cloudDensityCoordinatesFromWorldNoise(
     wrapCloudDensityDomain(shape + CLOUD_DENSITY_SHAPE_OFFSET),
     wrapCloudDensityDomain(warp + CLOUD_DENSITY_WARP_OFFSET),
     wrapCloudDensityDomain(detail + CLOUD_DENSITY_DETAIL_OFFSET),
+//>>ifdef CLOUD_WEATHER_POPULATIONS
+    0,
+//>>else
+//>>endif
   );
 }
 
@@ -110,6 +118,10 @@ fn cloudDensityCoordinatesFromOriginPhases(
     wrapCloudDensityDomain(shapeOriginPhase + shapeDelta),
     wrapCloudDensityDomain(warpOriginPhase + warpDelta),
     wrapCloudDensityDomain(detailOriginPhase + detailDelta),
+//>>ifdef CLOUD_WEATHER_POPULATIONS
+    0,
+//>>else
+//>>endif
   );
 }
 
@@ -135,6 +147,10 @@ fn advanceCloudDensityCoordinates(
     wrapCloudDensityDomain(coordinates.shape + shapeDelta),
     wrapCloudDensityDomain(coordinates.warp + warpDelta),
     wrapCloudDensityDomain(coordinates.detail + detailDelta),
+//>>ifdef CLOUD_WEATHER_POPULATIONS
+    coordinates.population,
+//>>else
+//>>endif
   );
 }
 

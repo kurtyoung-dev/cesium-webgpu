@@ -205,10 +205,9 @@ test("physical transport stays outside density and preview recipes omit the adde
     selected,
     /cloudToneMappedRadiance\(transported, opacity, cloud\.exposure\)/,
   );
-  const march = fs.readFileSync(
-    path.join(dir, "ProceduralClouds.wgsl"),
-    "utf8",
-  );
+  const march = ["ProceduralClouds.wgsl", "CloudDeckResolve.wgsl"]
+    .map((file) => fs.readFileSync(path.join(dir, file), "utf8"))
+    .join("\n");
   assert.match(
     march,
     /hazed = cloudPhysicalAerialColor\(weightedColor, opacity, hazed,/,
@@ -386,9 +385,12 @@ test("MUTANT: an LDR-after order (tone map, then air) is red on the HDR composit
 test("R-12 contract: the selected march hands the physical composite the visible sample the heuristic weight reads", () => {
   const march = stripComments(
     defaultVariant(
-      fs.readFileSync(path.join(dir, "ProceduralClouds.wgsl"), "utf8"),
+      ["ProceduralClouds.wgsl", "CloudDeckResolve.wgsl"]
+        .map((file) => fs.readFileSync(path.join(dir, file), "utf8"))
+        .join("\n"),
     ),
   );
+  assert.match(march, /let resolved = cloudResolveDeck\(/);
   const geometry = ["visible.y", "-rayDir", "visibleUp", "visible.x"]
     .map((term) => term.replaceAll(".", "\\."))
     .join(",\\s*");

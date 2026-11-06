@@ -32,6 +32,7 @@ const cloudSource = [
   "CloudDensityFormation.wgsl",
   "CloudDensityMoments.wgsl",
   "CloudMaterialFlow.wgsl",
+  "CloudWeatherVertical.wgsl",
   "CloudSpatialOccupancy.wgsl",
   "CloudWeatherVolumeBounds.wgsl",
   "CloudDensityCache.wgsl",

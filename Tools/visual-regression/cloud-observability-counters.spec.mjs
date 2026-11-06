@@ -741,17 +741,23 @@ test("D9 the temporal verdict is recorded on the same branches as the lifetime t
   assert.match(cloudRenderer, /counters\.historyRejected = 1;/);
 });
 
-test("D10 the weather cache accounting sits on the version comparison the upload uses", () => {
+test("D10 the weather cache accounting sits on the content comparison the upload uses", () => {
   pinWithMutant(
     cloudRenderer,
-    /const wantedVersion = providerBytes !== null \? providerVersion : -1;\n\s*if \(\s*cache\.weatherProviderVersion === wantedVersion &&\s*cache\.weatherProviderBytes === providerBytes\s*\) \{\n\s*counters\.weatherCacheHits\+\+;/,
+    /const sameContent =\s*cache\.weatherContentVersion === wantedContentVersion &&\s*cache\.weatherProviderBytes === providerBytes &&[^;]*;\n\s*cache\.weatherProviderVersion = wantedVersion;\n\s*if \(sameContent\) \{\n\s*counters\.weatherCacheHits\+\+;[\s\S]*?if \(providerBytes !== null\) \{\n\s*if \(!sameContent\) \{/,
     (s) =>
       s.replace(
-        "cache.weatherProviderVersion === wantedVersion &&\n    cache.weatherProviderBytes === providerBytes\n  ) {\n    counters.weatherCacheHits++;",
-        "true\n  ) {\n    counters.weatherCacheHits++;",
+        "  if (sameContent) {\n    counters.weatherCacheHits++;",
+        "  if (true) {\n    counters.weatherCacheHits++;",
       ),
-    "a hit is a frame whose resident version and bytes already matched",
+    "a hit is a frame whose resident content, bytes and flow already matched, the same predicate that skips the upload",
   );
-  assert.match(cloudRenderer, /counters\.weatherUploadBytes \+= weatherBytes;/);
-  assert.match(cloudRenderer, /counters\.weatherLiveBytes = weatherBytes;/);
+  assert.match(
+    cloudRenderer,
+    /counters\.weatherUploadBytes \+= weatherBytes( \* layers)?;/,
+  );
+  assert.match(
+    cloudRenderer,
+    /counters\.weatherLiveBytes = weatherBytes( \* layers)?;/,
+  );
 });

@@ -397,6 +397,118 @@ class CloudVolumetrics {
      * @type {number|undefined}
      */
     this.cloudWeatherChannelStrength = options.cloudWeatherChannelStrength;
+    let weatherWorkers = false;
+    Object.defineProperties(this, {
+      /**
+       * When <code>true</code>, the procedural weather the collection owns is
+       * generated, packed and turned into a wind field on a shared Web Worker
+       * instead of in cooperative slices on the main thread. Both paths publish the
+       * same weather. It has no effect on a <code>weatherProvider</code> you set.
+       * WebGPU only: the weather state, and with it the worker, exists only where
+       * the cloud feature renderer consumes it.
+       * @memberof CloudVolumetrics.prototype
+       * @type {boolean}
+       * @default false
+       */
+      cloudWeatherWorkers: {
+        enumerable: true,
+        get: function () {
+          return weatherWorkers;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.bool("cloudWeatherWorkers", value);
+          //>>includeEnd('debug');
+          weatherWorkers = value;
+        },
+      },
+    });
+    this.cloudWeatherWorkers = options.cloudWeatherWorkers ?? false;
+    let weatherInterpolation = false;
+    Object.defineProperties(this, {
+      /**
+       * When <code>true</code>, a newly published weather snapshot fades in over
+       * <code>cloudWeatherTransitionSeconds</code> of scene time: the march blends
+       * the previous snapshot's coverage and wind into the new one instead of
+       * switching at once. It needs a provider that publishes snapshot pairs (the
+       * collection's own procedural weather does) and baked noise. WebGPU only.
+       * @memberof CloudVolumetrics.prototype
+       * @type {boolean}
+       * @default false
+       */
+      cloudWeatherInterpolation: {
+        enumerable: true,
+        get: function () {
+          return weatherInterpolation;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.bool("cloudWeatherInterpolation", value);
+          //>>includeEnd('debug');
+          weatherInterpolation = value;
+        },
+      },
+    });
+    this.cloudWeatherInterpolation = options.cloudWeatherInterpolation ?? false;
+    let weatherTransitionSeconds = 30;
+    Object.defineProperties(this, {
+      /**
+       * Scene seconds over which <code>cloudWeatherInterpolation</code> fades a new
+       * weather snapshot in, from 1 to 300; a fade never outlasts the interval
+       * between the two snapshots. WebGPU only.
+       * @memberof CloudVolumetrics.prototype
+       * @type {number}
+       * @default 30
+       */
+      cloudWeatherTransitionSeconds: {
+        enumerable: true,
+        get: function () {
+          return weatherTransitionSeconds;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.number.greaterThanOrEquals(
+            "cloudWeatherTransitionSeconds",
+            value,
+            1,
+          );
+          Check.typeOf.number.lessThanOrEquals(
+            "cloudWeatherTransitionSeconds",
+            value,
+            300,
+          );
+          //>>includeEnd('debug');
+          weatherTransitionSeconds = value;
+        },
+      },
+    });
+    this.cloudWeatherTransitionSeconds =
+      options.cloudWeatherTransitionSeconds ?? 30;
+    let verticalWeather = false;
+    Object.defineProperties(this, {
+      /**
+       * When <code>true</code>, the clouds follow the cloud-top heights the weather
+       * provider publishes per region, in place of the single layer top, and the
+       * density and shadow caches build from the same heights. It applies to a
+       * single deck; with no published heights the layer bounds stay. WebGPU only.
+       * @memberof CloudVolumetrics.prototype
+       * @type {boolean}
+       * @default false
+       */
+      cloudVerticalWeather: {
+        enumerable: true,
+        get: function () {
+          return verticalWeather;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.bool("cloudVerticalWeather", value);
+          //>>includeEnd('debug');
+          verticalWeather = value;
+        },
+      },
+    });
+    this.cloudVerticalWeather = options.cloudVerticalWeather ?? false;
 
     /**
      * A {@link WeatherProvider} that fetches a cloud-cover field from an open data
@@ -545,6 +657,7 @@ class CloudVolumetrics {
     let lightingContributionThreshold = 0.02;
     let lightingMinSamples = 2;
     let lightingThinOpticalDepth = 0.02;
+    let independentWeatherLayers = false;
     Object.defineProperties(experimental, {
       /**
        * When <code>true</code>, distant and orbital cloud fronts read a baked
@@ -1075,6 +1188,31 @@ class CloudVolumetrics {
           lightingThinOpticalDepth = value;
         },
       },
+      /**
+       * When <code>true</code>, the weather the collection owns publishes three
+       * independent cloud populations (low, middle and high), each with its own
+       * coverage, type and heights, and the march renders them as separate decks
+       * in place of the single weather layer. It turns on regional cloud heights.
+       * WebGPU only.
+       * @type {boolean}
+       * @default false
+       * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+       */
+      cloudIndependentWeatherLayers: {
+        enumerable: true,
+        get: function () {
+          return independentWeatherLayers;
+        },
+        set: function (value) {
+          //>>includeStart('debug', pragmas.debug);
+          Check.typeOf.bool(
+            "experimental.cloudIndependentWeatherLayers",
+            value,
+          );
+          //>>includeEnd('debug');
+          independentWeatherLayers = value;
+        },
+      },
     });
     experimental.cloudDistantDensityMoments =
       options.experimental?.cloudDistantDensityMoments ?? false;
@@ -1124,6 +1262,8 @@ class CloudVolumetrics {
       options.experimental?.cloudLightingMinSamples ?? 2;
     experimental.cloudLightingThinOpticalDepth =
       options.experimental?.cloudLightingThinOpticalDepth ?? 0.02;
+    experimental.cloudIndependentWeatherLayers =
+      options.experimental?.cloudIndependentWeatherLayers ?? false;
     /**
      * Experimental volumetric cloud dials, grouped apart from the core dials on
      * this object. A dial here may change without notice. WebGPU only.

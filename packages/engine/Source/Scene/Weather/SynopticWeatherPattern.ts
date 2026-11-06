@@ -1,3 +1,9 @@
+import { SynopticCloudStructure } from "./SynopticCloudStructure.js";
+import {
+  sampleSynopticCloudLayers,
+  type SynopticCloudLayerSample,
+} from "./SynopticCloudLayers.js";
+
 // A bounded kinematic weather model: pressure systems, frontal cloud bands and
 // seasonal circulation share geographic coordinates and a reproducible seed.
 // It supplies plausible procedural structure rather than a numerical forecast.
@@ -7,12 +13,14 @@ export interface SynopticWeatherSample {
   coverage: number;
   cloudType: number;
   baseMeters: number;
+  topMeters: number;
   densityBias: number;
   pressureHpa: number;
   windU: number;
   windV: number;
   temperatureC: number;
   precipitation: number;
+  layers?: SynopticCloudLayerSample[];
 }
 
 interface PressureSystem {
@@ -27,12 +35,19 @@ interface PressureSystem {
 const TAU = Math.PI * 2;
 const DAY_MS = 86400000;
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+const mix = (a: number, b: number, weight: number): number =>
+  a + (b - a) * weight;
+const smoothstep = (low: number, high: number, value: number): number => {
+  const t = clamp01((value - low) / (high - low));
+  return t * t * (3 - 2 * t);
+};
 
 export class SynopticWeatherPattern {
   private readonly _systems: PressureSystem[] = [];
   private readonly _season: number;
   private readonly _tropicalLatitude: number;
   private readonly _phase: number;
+  private readonly _structure: SynopticCloudStructure;
 
   constructor(seed: string | number, timeMs: number) {
     if (
@@ -52,6 +67,7 @@ export class SynopticWeatherPattern {
     // A fixed epoch avoids camera/session-dependent weather. Each system moves
     // and waxes smoothly; crossing midnight never reseeds the field.
     const days = (timeMs - 946728000000) / DAY_MS;
+    this._structure = new SynopticCloudStructure(this._phase, days);
     for (const hemisphere of [-1, 1]) {
       for (let i = 0; i < 7; i++) {
         const low = i < 4;
@@ -81,7 +97,11 @@ export class SynopticWeatherPattern {
     }
   }
 
-  sample(longitude: number, latitude: number): SynopticWeatherSample {
+  sample(
+    longitude: number,
+    latitude: number,
+    independentLayers = false,
+  ): SynopticWeatherSample {
     if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) {
       throw new RangeError("Weather coordinates must be finite radians.");
     }
@@ -112,6 +132,7 @@ export class SynopticWeatherPattern {
           : -6 * Math.sin((absoluteLatitude - Math.PI / 3) * 3);
     let windV = -Math.sign(latitude - this._tropicalLatitude) * tropical * 3;
     let pressure = 1013.25 + dryBelt * 7 - tropical * 5;
+    const structure = this._structure.sample(longitude, latitude);
     let front = 0,
       head = 0,
       suppression = 0;
@@ -130,39 +151,40 @@ export class SynopticWeatherPattern {
         (sinLat * system.cosLatitude - cosLat * system.sinLatitude * cosDelta) /
         system.radius;
       const q = x * x + y * y;
-      const gaussian = Math.exp(-q * 0.5);
+      // Fade every contribution to zero before the bounded system is culled.
+      const support = smoothstep(0.5, 0.6, facing);
+      const gaussian = Math.exp(-q * 0.5) * support;
       pressure += system.strength * gaussian;
       const rotation = -system.hemisphere * system.strength * gaussian * 0.6;
       windU -= rotation * y;
       windV += rotation * x;
       if (system.strength < 0) {
         const along = y * system.hemisphere;
-        const coldDistance = x + 0.35 * along + 0.18 * along * along;
+        const bend = (structure.regional - 0.5) * 0.3;
+        const coldDistance = x + 0.35 * along + 0.18 * along * along + bend;
         const cold = Math.exp(
           (-coldDistance * coldDistance) / 0.08 - ((along + 1.1) / 1.8) ** 4,
         );
-        const warmDistance = along - 0.5 + 0.17 * (x - 0.8) ** 2;
+        const warmDistance = along - 0.5 + 0.17 * (x - 0.8) ** 2 - bend;
         const warm = Math.exp(
           (-warmDistance * warmDistance) / 0.18 - ((x - 0.7) / 1.8) ** 4,
         );
-        const strength = Math.min(1, -system.strength / 22);
-        front = Math.max(front, (cold * 0.92 + warm * 0.75) * strength);
+        const strength = Math.min(1, -system.strength / 22) * support;
+        const organization = 0.65 + structure.cellular * 0.35;
+        front = Math.max(
+          front,
+          (cold * 0.92 + warm * 0.75) * strength * organization,
+        );
         const comma =
           Math.exp(-(((Math.sqrt(q) - 0.9) / 0.5) ** 2)) *
           clamp01(0.7 + along * 0.4 - x * 0.2);
-        head = Math.max(head, comma * strength);
+        head = Math.max(head, comma * strength * organization);
       } else {
         suppression = Math.max(suppression, (gaussian * system.strength) / 24);
       }
     }
-    const surfaceX = cosLat * Math.cos(longitude),
-      surfaceY = cosLat * Math.sin(longitude);
-    const cellular =
-      0.5 +
-      0.5 *
-        Math.sin(surfaceX * 11 + sinLat * 31 + this._phase) *
-        Math.sin(surfaceY * 7 - sinLat * 23);
-    const background = (0.1 + cellular * 0.25) * (1 - dryBelt * 0.8);
+    const moisture = smoothstep(0.35, 0.65, structure.regional);
+    const background = (0.12 + moisture * 0.6) * (1 - dryBelt * 0.8);
     const coverage = clamp01(
       (1 -
         (1 - background) *
@@ -171,13 +193,39 @@ export class SynopticWeatherPattern {
           (1 - head * 0.7)) *
         (1 - clamp01(suppression) * 0.85),
     );
+    // Profiles and bases cross weather regimes continuously. Discrete type
+    // tests here would turn smooth fronts into artificial geographic edges.
+    const frontWeight = smoothstep(0.3, 0.6, front);
+    const tropicalWeight = smoothstep(0.4, 0.7, tropical);
+    const headWeight = smoothstep(0.2, 0.5, head);
+    const cloudType = mix(
+      mix(mix(8, 4, headWeight), 10, tropicalWeight),
+      6,
+      frontWeight,
+    );
+    const baseMeters = mix(mix(1800, 1600, tropicalWeight), 1100, frontWeight);
+    const backgroundDepth =
+      500 + structure.cellular * 1200 + structure.regional * 400;
+    const headDepth = 2000 + structure.cellular * 1500;
+    const frontalDepth = 3000 + structure.regional * 4500;
+    const tropicalDepth = 6000 + structure.cellular * 6500;
+    const depth = mix(
+      mix(
+        mix(backgroundDepth, headDepth, headWeight),
+        tropicalDepth,
+        tropicalWeight,
+      ),
+      frontalDepth,
+      frontWeight,
+    );
     // Local east/north components are not uniquely defined at the poles.
     windU *= cosLat;
     windV *= cosLat;
     return {
       coverage,
-      cloudType: front > 0.45 ? 6 : tropical > 0.55 ? 10 : head > 0.35 ? 4 : 8,
-      baseMeters: front > 0.45 ? 1100 : tropical > 0.55 ? 1600 : 1800,
+      cloudType,
+      baseMeters,
+      topMeters: baseMeters + depth,
       densityBias: clamp01(0.45 + front * 0.25 + tropical * 0.1),
       pressureHpa: Math.max(930, Math.min(1060, pressure)),
       windU,
@@ -188,6 +236,24 @@ export class SynopticWeatherPattern {
         12 * this._season * sinLat -
         front * 5,
       precipitation: clamp01((front - 0.3) * 1.2 + tropical * 0.4),
+      ...(independentLayers
+        ? {
+            layers: sampleSynopticCloudLayers({
+              coverage,
+              cloudType,
+              baseMeters,
+              topMeters: baseMeters + depth,
+              densityBias: clamp01(0.45 + front * 0.25 + tropical * 0.1),
+              front,
+              head,
+              tropical,
+              suppression,
+              regional: structure.regional,
+              cellular: structure.cellular,
+              latitude,
+            }),
+          }
+        : {}),
     };
   }
 }
