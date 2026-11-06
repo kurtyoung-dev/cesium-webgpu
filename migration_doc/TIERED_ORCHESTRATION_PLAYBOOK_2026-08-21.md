@@ -49,7 +49,7 @@ the REPORT (spot-verifying claims), not the whole diff.
 Workers are driven by a background claude agent whose ONLY job is one codex call
 plus independent verification. The template that ran all of today's dispatches:
 
-- Load the schema first: ToolSearch "select:mcp__codex__codex".
+- Load the schema first: ToolSearch "select:mcp__codex__codex". (Stale for MCP use since Codex CLI 0.166/0.167 dropped `mcp-server`: Codex workers now run through `codex exec`.)
 - Call once: `cwd` = the clone root, `sandbox` = "workspace-write",
   `approval-policy` = "never", `prompt` = the brief verbatim.
 - The brief itself always contains: the exact file scope ("touch nothing else"),

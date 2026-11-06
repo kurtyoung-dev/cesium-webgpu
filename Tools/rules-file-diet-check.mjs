@@ -18,7 +18,10 @@
  * same order, all under "## Core Principles", with no number repeated; every skill has `name:`
  * equal to its directory and a `description:` of at most 25 words; every skill is named in the core
  * as `/<name>`, listed by path in AGENTS.md, GEMINI.md and .clinerules, and not git-ignored; every
- * relative link in the core, the skills and those pointer files resolves.
+ * relative link in the core, the skills and those pointer files resolves. The ratchet: the core,
+ * LF-normalised, stays at or under CORE_MAX_BYTES. Every `.claude/agents/<name>.md` has `name`
+ * equal to its stem, a description of at most 25 words, a `tools` line, and a body of at most
+ * AGENT_BODY_MAX_BYTES that carries no normative sentence.
  *
  * USAGE
  *   node Tools/rules-file-diet-check.mjs --base <git-rev> [--root <dir>] [--equiv <json>] [--table] [--json]
@@ -37,6 +40,10 @@ const NORMATIVE_UPPER = /MUST|NEVER|ALWAYS|CRITICAL|HARD/;
 const NORMATIVE_ANYCASE = /\bdo not\b|\bnever\b/i;
 export const POINTER_FILES = ["AGENTS.md", "GEMINI.md", ".clinerules"];
 export const MAX_DESCRIPTION_WORDS = 25;
+// The ratchet: the always-loaded core, LF-normalised, may not grow past this many bytes.
+export const CORE_MAX_BYTES = 19456;
+// An agent type's body says only where its rules are; it carries no rule of its own.
+export const AGENT_BODY_MAX_BYTES = 600;
 
 export function isNormative(text) {
   return NORMATIVE_UPPER.test(text) || NORMATIVE_ANYCASE.test(text);
@@ -411,6 +418,60 @@ export function checkSkills(root, coreText) {
   return { skills, problems };
 }
 
+/** The ratchet: the LF-normalised core must not exceed `max` bytes. */
+export function checkCoreSize(coreText, max = CORE_MAX_BYTES) {
+  const bytes = Buffer.byteLength(toLf(coreText), "utf8");
+  return bytes > max
+    ? [`core is ${bytes} bytes as git stores it (max ${max})`]
+    : [];
+}
+
+/**
+ * Every `.claude/agents/<name>.md` is scaffolding: `name` equal to the file stem, a description of
+ * at most 25 words, a `tools` line, and a body of at most 600 bytes that carries no normative
+ * sentence, because the rules file in the agent's context is what binds it.
+ */
+export function checkAgents(root) {
+  const problems = [];
+  const dir = path.join(root, ".claude", "agents");
+  if (!fs.existsSync(dir)) return problems;
+  for (const entry of fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith(".md"))
+    .sort()) {
+    const rel = `.claude/agents/${entry}`;
+    const fm = readFrontmatter(fs.readFileSync(path.join(dir, entry), "utf8"));
+    if (!fm) {
+      problems.push(`${rel}: no frontmatter`);
+      continue;
+    }
+    const stem = entry.replace(/\.md$/, "");
+    if (fm.fields.name !== stem)
+      problems.push(
+        `${rel}: name "${fm.fields.name}" differs from its file stem`,
+      );
+    const agentWords = (fm.fields.description ?? "")
+      .split(/\s+/)
+      .filter(Boolean).length;
+    if (!fm.fields.description) problems.push(`${rel}: no description`);
+    else if (agentWords > MAX_DESCRIPTION_WORDS)
+      problems.push(
+        `${rel}: description has ${agentWords} words (max ${MAX_DESCRIPTION_WORDS})`,
+      );
+    if (!fm.fields.tools) problems.push(`${rel}: no tools line`);
+    const bodyBytes = Buffer.byteLength(fm.body, "utf8");
+    if (bodyBytes > AGENT_BODY_MAX_BYTES)
+      problems.push(
+        `${rel}: body is ${bodyBytes} bytes (max ${AGENT_BODY_MAX_BYTES})`,
+      );
+    for (const unit of extractNormativeUnits(fm.body))
+      problems.push(
+        `${rel}: body carries a rule (line ${unit.line}): ${unit.raw.slice(0, 120)}`,
+      );
+  }
+  return problems;
+}
+
 const tokens = (bytes) => Math.round(bytes / 4);
 const lfBytes = (text) => Buffer.byteLength(toLf(text), "utf8");
 
@@ -458,6 +519,8 @@ export function runCheck({ oldText, root, equivalences = [] }) {
     ...principles.problems,
     ...skillCheck.problems,
     ...links,
+    ...checkCoreSize(coreText),
+    ...checkAgents(root),
   ];
   return {
     pass: problems.length === 0,

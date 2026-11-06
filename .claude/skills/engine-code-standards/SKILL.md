@@ -1,6 +1,6 @@
 ---
 name: engine-code-standards
-description: Engine code rules — architecture patterns, RTE precision, file placement, file size, tech stack, ES6, comments and JSDoc. Read before any change under packages/.
+description: Engine code rules — architecture, multi-context, parity checklist, dead-code audit, feature inventory, RTE, placement, size, comments, imagery sync. Read before any change under packages/.
 ---
 
 # Engine Code Standards
@@ -137,3 +137,84 @@ When making >10 lines of changes to a file, modernize pre-ES6 patterns:
 - Converting a constructor or prototype to a class: drop `@constructor` and `@memberof Foo.prototype` (both implicit in a class body), move `@param` tags from the function-level JSDoc onto `constructor()`, and keep `@alias ClassName` on the class-level JSDoc — the documentation tooling depends on it
 - Do not add `@param` annotations to a constructor unless the original function-level JSDoc had them
 - **Fork comment standard (seamless with upstream).** Comments under `packages/engine/Source` and `packages/widgets/Source` — code, WGSL, GLSL and shipped assets — describe what the code does and the constraints it obeys, never the work that produced it: no batch numbers, campaign or tracker IDs, row IDs or dates (that history belongs in commit messages and `migration_doc/**`). The test is that someone diffing a fork file against upstream cannot tell which comments are ours by their voice. Comments stay JSDoc-clean for `npm run build-docs`, and derived code is attributed. Full rules, and how `Tools/c16/comment-marker-guard.mjs` and its clean list enforce them: [`Documentation/Contributors/CodingGuide/ForkCommentStandard.md`](../../../Documentation/Contributors/CodingGuide/ForkCommentStandard.md).
+
+---
+
+## Backend Agnosticism (Principle 2)
+
+Principle 2's other rules (scene code is backend-agnostic; backend code lives in Feature Renderers) stay in `CLAUDE.md`; these bullets complete it and bind the same way.
+
+- `GraphicsContext` is an **abstract base class** — both `Context.js` (WebGL) and `WebGPUContext.ts` extend it
+- Both renderers implement the **same abstract API** — TypeScript enforces parity at compile time
+- The renderer layer is the **ONLY** system that needs to know the current backend
+- WebGPU renderer must be optional and configurable via startup parameters
+- Use feature detection to gracefully fallback to WebGL when WebGPU is not available
+
+---
+
+## Multi-Context Architecture (Principle 3)
+
+Principle 3's other rules (a unique `context.id` per context, the context id in every error log) stay in `CLAUDE.md`; these bullets complete it and bind the same way.
+
+- `ContextRegistry` (static on `GraphicsContext`) tracks ALL active contexts
+- Multiple contexts can run simultaneously — split-screen, multi-view, mixed backends
+- Each `View` may carry its own context (`options.graphicsContext`, resolved through `view.effectiveContext`, falling back to the Scene's); `scene.createView(camera, viewport, { graphicsContext })` makes additional views, and `FrameState.context` is repointed to each View's effective context before its render pass
+- For WebGPU multi-view prefer **device sharing** (one `GPUDevice` across canvases, `WebGPUDevicePool.ts`); cross-backend multi-view shares CPU-side data through `SharedResourcePool.ts`; `OffscreenContextSupport.ts` is opt-in WebWorker rendering
+- `GraphicsContext.registry.getFormattedDiagnostics()` / `.dumpDiagnostics()` dump every active context; `context.log(level, message)` is the context-tagged logging helper both backends inherit
+
+---
+
+## Parity Checklist (Principle 5)
+
+Principle 5's other rules stay in `CLAUDE.md`; these are its remaining bullets and the checklist it requires, and they bind the same way.
+
+- **When fixing an upstream issue** for WebGPU, check if the fix can also improve WebGL
+- **Scene-level wiring** (`scene.lights`, View.js sort steps, collection `renderOrder`) is backend-agnostic and benefits both paths — implement it once in shared code
+
+Run this checklist before calling a feature or fix complete:
+
+1. Does the feature's **JS/TS API** work for both backends?
+2. Does the feature's **shader code** exist in both WGSL and GLSL? If not, record the gap.
+3. Is the feature's **scene wiring** backend-agnostic?
+4. Are **command properties** on both `DrawCommand` and `WebGPUDrawCommand`, with matching clone/options support?
+5. Is the parity status recorded in `migration_doc/DEFERRED_WORK.md` and `FEATURE_INVENTORY.md` §C?
+
+Not required for parity: WebGPU-only capabilities with no WebGL equivalent (compute shaders, render bundles, indirect drawing, storage buffers); WebGL1-specific fallbacks (we target WebGL2 only); and performance infrastructure that is inherently GPU-API-specific.
+
+---
+
+## Feature Inventory (Principle 6)
+
+This fork has a **large feature surface**, inventoried in [`migration_doc/FEATURE_INVENTORY.md`](../../../migration_doc/FEATURE_INVENTORY.md) in four buckets: §A EXISTING (inherited from upstream), §B NEW (fork-added, each tagged `(SHIPPED)`, `(SCAFFOLDED)` or `(EXPERIMENTAL)`), §C WIP (partially shipped, known gaps) and §D FUTURE / DEFERRED. Counts drift as the inventory grows; re-measure them there rather than trusting a transcribed figure.
+
+**Before scoping the impact of any change**, cross-reference the affected subsystem(s) in `FEATURE_INVENTORY.md`; the eleven subsystems used for impact scoping (Globe & Imagery, 3D Tiles, glTF Models + KHR, Geometry Primitives, Collections, Entity / DataSource, Picking, Shadows / Lighting, Post-process & Effects, Performance & Compute, Architecture / Build) are detailed at `FORK_OVERVIEW.md:62`. A change touching globe terrain may also affect 3D Tile classification (shared depth target), CSM cascades (cast list), TAA (motion vectors), pick (depth blit). Use the inventory to surface those couplings _before_ writing code, not after a regression.
+
+**When you ship a feature** that resolves a WIP entry, move it from §C to §B (and update the tag). When a future entry becomes WIP, move it from §D to §C. When a new feature lands, add it to §B.
+
+---
+
+## Dead-Code Audit (Principle 7)
+
+This codebase ships features in **batches with deliberate scaffolding** for follow-up work. Code that looks dead at a glance is often pre-allocated infrastructure for a partially-implemented feature.
+
+**Before deleting any code that appears unused** (uncalled methods, unread fields, allocated-but-never-written textures, no-op render passes), check ALL of the following:
+
+1. **Read the file's own module-level docstring.** Cesium WebGPU files often list "What's shipped in this batch" + "What's currently a no-op until follow-ups land". If the code maps to a no-op-pending bullet, it's scaffolding, not dead code.
+2. **Search `migration_doc/DEFERRED_WORK.md`** for the relevant subsystem (`C-R*`, `NEW-*`, `BUG-*` entries). Partial-implementation entries explicitly call out which pieces are infrastructure-only awaiting their fill-in.
+3. **Search `migration_doc/WEBGPU_DEBUGGING_LOG.md` and `migration_doc/PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16.md`** for the symbol or feature name. These docs describe architectural intent, not just bug history (the archived RENDERER_DEEP pillar's id table is transcribed at `ARCHITECTURE_REVIEW_2026-09-02.md` §5.1).
+4. **Check the originating batch comment** (`git log -S '<symbol>'`). Batch headers ("**What's shipped**: A + B + scaffolding for C") tell you whether C is still planned.
+
+**NOT proof of deadness:** a texture allocated but never written, a shader that samples uninitialized data and discards every fragment, a method called every frame with no visible output (the producer half is missing, not the consumer half), or a Sandcastle baseline that still passes after the removal (it covers a narrow set of demos).
+
+When in doubt, leave the scaffolding in place. Removing it forces re-adding it when the follow-up work lands. The cost of one orphaned texture allocation is trivial; the cost of re-architecting a removed code path is real.
+
+This principle's origin story (the C-R8 near-removal) and its later inversion are history, kept in [`RULES_FILE_NOTES.md`](../../../migration_doc/RULES_FILE_NOTES.md) §1. The
+principle (check before deleting) stands; the example's FACTS do not - always
+re-derive a file's current disposition from the ledger, never from a governance
+doc's illustrative anecdote.
+
+---
+
+## Imagery Projection Sync Duty
+
+- [`IMAGERY_PROJECTION.md`](../../../migration_doc/IMAGERY_PROJECTION.md), the single source of truth for imagery-layer projection: it **MUST be kept in sync whenever you touch any file in the projection chain** (`*ImageryReprojection*`, `GlobeFS.glsl`, `GlobeTerrain.wgsl`, `WebGPUGlobeSurfaceTextures.ts`, `WebGPUGlobeSurfaceTileUB.ts`, `WebGPUGlobeSurfaceCameraUB.ts`, `ImageryLayer.js`, `ImageryLayerHelpers.js`).

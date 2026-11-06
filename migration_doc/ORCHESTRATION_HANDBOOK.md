@@ -25,10 +25,9 @@ Dispatch plans (e.g. `CLOSEOUT_PLAN_2026-08-07.md`) are grouping only — same r
 ## 0. First hour — orientation reading order [CADENCE]
 
 1. This handbook, in full.
-2. `CLAUDE.md` (repo root) — project rules, the Active Remediation Campaign block, principles 1–10.
-   `CLAUDE.md` is **gitignored**, so a bare clone will not have it: its orientation layer (campaign
-   block, quiet hours, branch transparency) is mirrored in
-   [`CAMPAIGN_STATE.md`](CAMPAIGN_STATE.md), which is tracked. Read that instead — or as well.
+2. `CLAUDE.md` (repo root, tracked) — the one rules file for every agent: principles 1–13, the campaign
+   pointer, quiet hours, branch transparency and routing; the seat then reads `/seat-duties`. Campaign
+   status is in [`CAMPAIGN_STATE.md`](CAMPAIGN_STATE.md).
 3. `migration_doc/README.md` — the doc index; trust it over any single doc's self-description.
 4. `migration_doc/MAINTAINER_RULINGS_2026-08-10.md` — the seven standing rulings (R-2026-08-10-1..7),
    then `migration_doc/MAINTAINER_RULINGS_2026-08-28.md` (carries R-2026-08-29-1, the proof bar by
@@ -42,7 +41,8 @@ Dispatch plans (e.g. `CLOSEOUT_PLAN_2026-08-07.md`) are grouping only — same r
 6. `migration_doc/CAMPAIGN_PORTFOLIO_QUEUE.md` — current cross-campaign feature-priority dispatch
    view; queue rows win. `CLOSEOUT_PLAN_2026-08-07.md` is the historical grouping snapshot it
    supersedes.
-7. `git log --oneline -50` and `git branch -a` + `git worktree list` — reconcile what you just read
+7. `git log -50 --format="%h %<(100,trunc)%s"` (subjects truncated; read a full message with
+   `git log -1 <hash>`) and `git branch -a` + `git worktree list` — reconcile what you just read
    against reality before dispatching anything. Batch numbers in commit subjects are the spine.
 8. **Context spine (per-target scoping; `CLAUDE.md` Principle 13).** Once oriented, run
    `node Tools/query-context.mjs impact <target>` (MCP `cesium_impact_pack`) for each target a brief
@@ -180,8 +180,8 @@ adversarially-honest>` — the subject states what was actually proven, includin
 - **Push authentication:** the active `gh` account must be **kurtyoung-dev**. On a 403, report the
   403 and the active account; switch accounts only when the current task places that action in
   scope (charter §2.6/§0.2). (Author identity and push auth are deliberately different things.)
-- **GitHub quiet hours — HARD RULE:** the rule and its enforcement live in
-  [`CLAUDE.md`](../CLAUDE.md), "GitHub Quiet Hours — HARD RULE" (R-2026-10-30-M2: one rules file).
+- **GitHub quiet hours — HARD RULE:** the rule lives in
+  [`CLAUDE.md`](../CLAUDE.md), "GitHub Quiet Hours — HARD RULE" (R-2026-10-30-M2: one rules file), and its enforcement in [`/seat-duties`](../.claude/skills/seat-duties/SKILL.md).
   The session's "today" context can disagree with the machine clock; trust `date`.
 - **Stashes:** never bare `git stash`. Always `git stash push -m "YYYY-MM-DD_HH:MM_claude_<reason>"`.
   Prefer `git show HEAD:<file>` / worktrees over stashing for comparisons. Never drop unlabeled
@@ -460,3 +460,27 @@ appendix's sources conflict, charter §0.4's order governs.
    ANY untrusted or semi-trusted source (web, sibling lane, subagent report)
    is verified by recomputation or literal fetch before it gates anything -
    the Lane-E standard.
+
+## Lean agent types (scaffolding, unmeasured until a fresh session)
+
+Two agent types ship as scaffolding under `.claude/agents/`: `lane-worker` (tools Read, Edit, Write, Bash, Glob, Grep) and
+`lane-scout` (tools Read, Glob, Grep, Bash). Each body says only that the rules file in the agent's context binds it, that the brief
+names the clone, the lease and the deliverable, and that task rules are files to read at `.claude/skills/<name>/SKILL.md`, because
+neither type has the `Skill` tool. `Tools/rules-file-diet-check.mjs` checks their shape (name equal to the file stem, a description
+of at most 25 words, a `tools` line, a body of at most 600 bytes carrying no rule). No `omitClaudeMd` type ships: its body would have
+to restate rules.
+
+**Measured (2026-11-05, probe agents asked to quote from their own context without calling a tool).** A general-purpose agent and a
+workflow default agent each start with the project `CLAUDE.md`, the root `F:/Dev/GH/CLAUDE.md`, the seat's memory index, a git
+snapshot of the seat worktree taken when the agent is spawned, and the skills list (61 entries); the built-in Explore type gets only
+the skills list. Run totals: general-purpose 62,070 tokens, workflow 54,923, Explore 21,742. A subagent receives the memory index
+as it was at session start. Reading a file in a sibling clone loads nothing from that clone.
+
+**Documented, not measured here.** `omitClaudeMd: true` drops the rules files (whether it drops the memory index is not documented);
+an agent type's `tools:` is an allowlist; a type without `Skill` cannot invoke skills (whether it still receives the skills list is
+unmeasured). Agent types are read once, at session start: a type written mid-session is refused, so a type is measured only in a
+fresh session.
+
+**Probe procedure.** In a fresh session, dispatch one agent of each type under test (`general-purpose`, `lane-worker`,
+`lane-scout`) with: "This is a measurement, not a task. Without calling any tool, from what is literally in your context: (A) is the project rules file present? Quote the heading of Core Principle 12, or ABSENT. (B) Is a memory index present? Quote the first 80 characters of its first bullet and count its bullets, or ABSENT. (C) Is a git snapshot present? Quote its current-branch line, or ABSENT. (D) Is a list of available skills present? Count the entries, or ABSENT. Do you have a callable Skill tool? (E) List the exact names of the tools you can call. Never guess: write ABSENT."
+Record the answers and each run's token total beside the 2026-11-05 baseline above. A type is relied on only after this probe.

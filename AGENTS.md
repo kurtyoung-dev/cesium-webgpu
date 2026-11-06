@@ -12,8 +12,7 @@ which tracked document answers each governed question. Precedence between source
 
 - **Your clone, never the seat.** Codex works in its assigned clone (`F:/Dev/GH/cesium-astra-<yyyymmdd>`
   or a lane clone) and hands over through its `_lane-out/`; it never works in the seat worktree
-  `F:/Dev/GH/cesium-webgpu` (R-2026-10-30-M3). Three days of engine, tooling and archive work once accumulated as
-  uncommitted state in the seat and survived a `.git/index` truncation only by luck.
+  `F:/Dev/GH/cesium-webgpu` (R-2026-10-30-M3).
 - **Wiring, capacity preflight and trust scope:**
   [`WORKER_ISOLATION_AND_BRANCH_HANDOFF.md`](migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md) §8.
 - **Context spine** (`CLAUDE.md` Principle 13): for Codex its MCP server is named
@@ -33,6 +32,9 @@ you as fully as `CLAUDE.md` does: read the matching file before the work it cove
 - [`.claude/skills/wasm-strategy/SKILL.md`](.claude/skills/wasm-strategy/SKILL.md) — WASM bridges, fallbacks, loading, memory, toolchains, threading.
 - [`.claude/skills/debug-console/SKILL.md`](.claude/skills/debug-console/SKILL.md) — `CesiumDebug` console commands; recording a fixed bug.
 - [`.claude/skills/engine-code-standards/SKILL.md`](.claude/skills/engine-code-standards/SKILL.md) — engine code: architecture patterns, RTE precision, file placement, file size, tech stack, ES6, comments and JSDoc.
+- [`.claude/skills/probe-kit/SKILL.md`](.claude/skills/probe-kit/SKILL.md) — the probe kit (kit-first order, guide sync) and the probe-first workflow for verifying a rendering fix.
+- [`.claude/skills/seat-duties/SKILL.md`](.claude/skills/seat-duties/SKILL.md) — the seat's duties (the landing route, quiet-hours enforcement, the evidence sweep); its "Branch transparency" binds you whenever `CLAUDE.md` "Branch Transparency" says, the rest only if you hold the seat. If the maintainer hands you the seat, read all of it: the seat's duties then apply to you, and this file's clone-only rules give way to them.
+- [`.claude/skills/worker-rules/SKILL.md`](.claude/skills/worker-rules/SKILL.md) — the worker-rules digest a lead reads before it briefs, a reviewer before it reviews, and any other lane agent before its first action.
 
 ## Keep doing — observed on this fork, 2026-09-06 → 09-10
 
@@ -58,3 +60,5 @@ seat record).
   repair-author roles in one pass** (charter §4.6).
 
 Skills organize work. They do not grant authority.
+
+How Codex's predecessor performed, and what to focus on: [`CODEX_SOL_OPERATING_BRIEF.md`](migration_doc/CODEX_SOL_OPERATING_BRIEF.md) — coaching, not rules.

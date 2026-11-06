@@ -3,18 +3,6 @@
 **This file is no longer a rules authority. The rules live in `CLAUDE.md` at the
 repository root.**
 
-## What this file was
-
-From 2026-03 to 2026-09 this was the fork's rules file: Cline reads `.clinerules`
-automatically, so the project's architecture rules were written here first. Its
-last substantive commit was `b5b486a9a9` on **2026-03-31**. Everything the fork
-learned after that date — Principles 5 through 10, the WGSL define/preprocessor/
-module-cache contract, the pipeline-key aliasing fold, build variants, the
-Playwright verification rule, the proof bar and wave-end gate, GitHub quiet
-hours, branch transparency and evidence repatriation — was written into
-`CLAUDE.md` and never back-ported here. Following this file's frozen text would
-have produced work that fails review.
-
 ## Where the rules are now
 
 `CLAUDE.md` (repository root) is the tracked rules authority. It was made a
@@ -44,43 +32,8 @@ you as fully as `CLAUDE.md` does: read the matching file before the work it cove
 - [`.claude/skills/wasm-strategy/SKILL.md`](.claude/skills/wasm-strategy/SKILL.md) — WASM bridges, fallbacks, loading, memory, toolchains, threading.
 - [`.claude/skills/debug-console/SKILL.md`](.claude/skills/debug-console/SKILL.md) — `CesiumDebug` console commands; recording a fixed bug.
 - [`.claude/skills/engine-code-standards/SKILL.md`](.claude/skills/engine-code-standards/SKILL.md) — engine code: architecture patterns, RTE precision, file placement, file size, tech stack, ES6, comments and JSDoc.
+- [`.claude/skills/probe-kit/SKILL.md`](.claude/skills/probe-kit/SKILL.md) — the probe kit (kit-first order, guide sync) and the probe-first workflow for verifying a rendering fix.
+- [`.claude/skills/seat-duties/SKILL.md`](.claude/skills/seat-duties/SKILL.md) — the seat's duties (the landing route, quiet-hours enforcement, the evidence sweep); its "Branch transparency" binds you whenever `CLAUDE.md` "Branch Transparency" says, the rest only if you hold the seat. If the maintainer hands you the seat, read all of it: the seat's duties then apply to you, and this file's clone-only rules give way to them.
+- [`.claude/skills/worker-rules/SKILL.md`](.claude/skills/worker-rules/SKILL.md) — the worker-rules digest a lead reads before it briefs, a reviewer before it reviews, and any other lane agent before its first action.
 
-## What happened to this file's content
-
-Every rule that was live only here was carried into the matching section of
-`CLAUDE.md` in the same batch (some of those sections are now the on-demand files above) — the view-level context architecture and
-context-registry diagnostics, the parity checklist and its non-goals, the scene
-logic extractor's shared/backend-specific split, the feature-renderer
-registration recipe, the capability-query rule, the RTE reuse rules, the monorepo
-build-output and recovery rules, the file-decomposition rules, the RxJS /
-service-worker / Slang preferences, the fuller ES6 pattern list and class-
-conversion JSDoc mechanics, the WASM toolchain and threading rules, and the
-upstream-sync prerequisites, two-parent recovery and post-sync tasks.
-
-Ruling D11 (2026-09-05) additionally carried §2d's `context.log()` rule into the
-Logging & Debug Pragmas section of `CLAUDE.md` (now `.claude/skills/logging-pragmas/SKILL.md`) as a **preference** rather than the
-MUST it was here: where a context is in hand, prefer `context.log(level, message)` so
-the context id reaches the message. `console.error` for a real error is unchanged.
-
-Rules that were **not** carried, and why:
-
-- **Cline tool-use safety rules** (`replace_in_file` / `write_to_file` sizing and
-  task granularity) — specific to Cline's tool surface, which other agents do not
-  have. Preserved in this file's git history.
-- **"Default to the WebGL renderer unless specified"** — no longer true. The
-  default is set per build variant by `setGlobalDefaultRenderer()` in
-  `RendererType.ts`; the dual build defaults to WebGPU-first.
-- **"Commit with `--no-verify`" in the sync procedure** — retracted; hooks are
-  not bypassed.
-- **"Show a loading state during async WebGPU initialization" / `LoadingOverlay`**
-  — the component no longer exists anywhere in the tree.
-- **"Document parity gaps in `UPSTREAM_ISSUES_AND_TECH_DEBT.md`"** — that file is
-  archived; gaps now go to `DEFERRED_WORK.md` and `FEATURE_INVENTORY.md` §C.
-- **Generic bullets** on documentation, development workflow, migration strategy
-  and testing — superseded by the proof bar (R-2026-08-29-1) and the wave-end
-  gate (R-2026-08-29-2) in `CLAUDE.md`.
-- **Transcribed inventories** (context capability lists, WASM module tables, RTE
-  reference paths, the WebGPU file-count block) — deliberately replaced by
-  pointers at the code. Absolute counts transcribed into prose are what the same
-  batch had to correct in `CLAUDE.md`; re-transcribing them here would recreate
-  the defect.
+Its history as the fork's former rules file, and what happened to each of its rules: `migration_doc/RULES_FILE_NOTES.md` section 6.

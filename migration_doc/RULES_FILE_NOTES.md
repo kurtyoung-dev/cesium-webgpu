@@ -84,3 +84,96 @@ no spec flags), file placement (an edit in the root `Source/` build output is ov
 rule (TypeScript preferred for new code, the `any` ban), the fork comment standard (enforced at landing, after the work is written)
 and file size (a decomposition owed when a file is touched). Each line is a summary or a pointer; the full rule is the
 skill, which binds exactly as `CLAUDE.md` does, and the core routes any change under `packages/**` to it.
+
+## 6. The pointer files' history (moved out of AGENTS.md, GEMINI.md and .clinerules)
+
+Moved by the context-load diet that followed Batch 1665, so each pointer file carries only what is specific to its agent. Verbatim.
+
+### AGENTS.md "Codex specifics": the anecdote behind "Your clone, never the seat"
+
+> Three days of engine, tooling and archive work once accumulated as
+>   uncommitted state in the seat and survived a `.git/index` truncation only by luck.
+
+### GEMINI.md section 3: the examples behind "Precision on documentation"
+
+> Stale examples that cost a review
+>   round: a `.glsl:44` that had moved to `:46`,
+>   a per-cell error count written as per-run, a corroboration written as a proof.
+
+### .clinerules "What this file was"
+
+#### What this file was
+
+From 2026-03 to 2026-09 this was the fork's rules file: Cline reads `.clinerules`
+automatically, so the project's architecture rules were written here first. Its
+last substantive commit was `b5b486a9a9` on **2026-03-31**. Everything the fork
+learned after that date — Principles 5 through 10, the WGSL define/preprocessor/
+module-cache contract, the pipeline-key aliasing fold, build variants, the
+Playwright verification rule, the proof bar and wave-end gate, GitHub quiet
+hours, branch transparency and evidence repatriation — was written into
+`CLAUDE.md` and never back-ported here. Following this file's frozen text would
+have produced work that fails review.
+
+### .clinerules "What happened to this file's content"
+
+#### What happened to this file's content
+
+Every rule that was live only here was carried into the matching section of
+`CLAUDE.md` in the same batch (some of those sections are now the on-demand files above) — the view-level context architecture and
+context-registry diagnostics, the parity checklist and its non-goals, the scene
+logic extractor's shared/backend-specific split, the feature-renderer
+registration recipe, the capability-query rule, the RTE reuse rules, the monorepo
+build-output and recovery rules, the file-decomposition rules, the RxJS /
+service-worker / Slang preferences, the fuller ES6 pattern list and class-
+conversion JSDoc mechanics, the WASM toolchain and threading rules, and the
+upstream-sync prerequisites, two-parent recovery and post-sync tasks.
+
+Ruling D11 (2026-09-05) additionally carried §2d's `context.log()` rule into the
+Logging & Debug Pragmas section of `CLAUDE.md` (now `.claude/skills/logging-pragmas/SKILL.md`) as a **preference** rather than the
+MUST it was here: where a context is in hand, prefer `context.log(level, message)` so
+the context id reaches the message. `console.error` for a real error is unchanged.
+
+Rules that were **not** carried, and why:
+
+- **Cline tool-use safety rules** (`replace_in_file` / `write_to_file` sizing and
+  task granularity) — specific to Cline's tool surface, which other agents do not
+  have. Preserved in this file's git history.
+- **"Default to the WebGL renderer unless specified"** — no longer true. The
+  default is set per build variant by `setGlobalDefaultRenderer()` in
+  `RendererType.ts`; the dual build defaults to WebGPU-first.
+- **"Commit with `--no-verify`" in the sync procedure** — retracted; hooks are
+  not bypassed.
+- **"Show a loading state during async WebGPU initialization" / `LoadingOverlay`**
+  — the component no longer exists anywhere in the tree.
+- **"Document parity gaps in `UPSTREAM_ISSUES_AND_TECH_DEBT.md`"** — that file is
+  archived; gaps now go to `DEFERRED_WORK.md` and `FEATURE_INVENTORY.md` §C.
+- **Generic bullets** on documentation, development workflow, migration strategy
+  and testing — superseded by the proof bar (R-2026-08-29-1) and the wave-end
+  gate (R-2026-08-29-2) in `CLAUDE.md`.
+- **Transcribed inventories** (context capability lists, WASM module tables, RTE
+  reference paths, the WebGPU file-count block) — deliberately replaced by
+  pointers at the code. Absolute counts transcribed into prose are what the same
+  batch had to correct in `CLAUDE.md`; re-transcribing them here would recreate
+  the defect.
+
+## 7. Rationale, dates and examples trimmed from CLAUDE.md (the context-load diet)
+
+Each line is text this diet removed from `CLAUDE.md`, verbatim, with its old line number at Batch 1667. None of it is the only home of a rule: every obligation of that file kept a home in `CLAUDE.md` or a skill (the lane's `RULE_PRESERVATION.md`). Principle 13's spine-maintenance sentences (landing hook, `context-graphify`, provisioning refresh) moved verbatim to `/seat-duties` and also duplicate `CONTEXT_SPINE_GUIDE.md` §5 and §7; the context-refresh timing at old line 200 is kept here only as history.
+
+- Old line 3: Claude Code loads it automatically into every conversation;
+- Old line 28: (e.g., `Context.js` ES6 class conversion + `extends GraphicsContext`)
+- Old line 57: This reduces maintenance from 3 rendering paths to 2 (WebGL2 + WebGPU)
+- Old line 134: ("this bug needs X, which is deferred — build X next?")
+- Old line 136: This is the corollary of Principle 7: keep scaffolding in place AND finish the work the scaffolding implies.
+- Old line 140: An unverified premise does not stay contained. It propagates into the fix **and** into the test that was supposed to catch it (the 2026-08-20 evidence: `WORKER_ISOLATION_AND_BRANCH_HANDOFF.md` §8c, R8).
+- Old line 146: Findings age; code moves.
+- Old line 147: Behaviour is checkable against reality; a shape only checks that the instruction was followed.
+- Old line 149: It inherits the brief's errors.
+- Old line 152: Deleting code is the easy mutation and most specs survive it.
+- Old line 171: Entered on 2026-09-10 by maintainer decision.
+- Old line 177: Ensures deterministic cross-platform execution without shell quoting, escaping, or expansion discrepancies across Windows and POSIX systems.
+- Old line 188: : a pack is a few KB against tens to hundreds of KB for the file.
+- Old line 190: (the audit that found them wrong is in [`RULES_FILE_NOTES.md`](RULES_FILE_NOTES.md) §2)
+- Old line 200: (3.3-3.9 s with nothing changed)
+- Old line 290: (a sandboxed worker cannot safely be given commit rights in a worktree)
+- Old line 291: (merge commits skip landing rules)

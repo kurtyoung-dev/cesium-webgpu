@@ -266,6 +266,9 @@ diff — a body can still describe work the tree does not contain.
 
 ## 7. Rules for workers (Claude and Codex alike)
 
+Digest: [`/worker-rules`](../.claude/skills/worker-rules/SKILL.md) carries these rules with §8a-§8c and §8i; a change to a
+rule here and to its digest line lands in the same commit.
+
 1. Work only inside your **declared path lease**. Touching a path outside it blocks the landing.
 2. **Never run a git write.** No commit, stash, checkout, restore, reset. Work in your tree and
    leave it dirty; the orchestrator verifies the frozen authored tuple and commits the exact reviewed
@@ -274,7 +277,8 @@ diff — a body can still describe work the tree does not contain.
    earlier wording here said "commit freely" and contradicted both the handbook and `R-13`/`-19`,
    leaving three tracked documents disagreeing — which deadlocks a worker that is told to stop and
    report conflicts rather than choose.)*
-3. **Never run `npm install`, a build, or a browser** in your clone.
+3. **Never run `npm install`** in your clone, and no build or browser unless the dispatch authorizes it
+   (the wording of `CLAUDE.md` "Rules Files and Routing", which charter §0.4 ranks higher).
 4. At handoff, report `git status --porcelain -uall` verbatim. Your leased authored paths remain
    dirty; every untracked file must appear individually in that output.
 5. Do not rebase or merge. `HEAD` remains exactly at the dispatch base through handoff.
@@ -292,7 +296,8 @@ diff — a body can still describe work the tree does not contain.
 - **Capacity first.** `node Tools/codex-preflight.mjs` before any dispatch (§5 step 0). Codex bills
   against a ChatGPT plan whose limit is enforced **server-side** — there is no local counter and no
   `codex usage` subcommand, so the only honest check is a minimal canary turn.
-- **Wiring.** [`.mcp.json`](../.mcp.json) exposes `codex` via
+- **Wiring** (stale for MCP use: Codex CLI 0.166/0.167 have no `mcp-server` subcommand, so the project
+  `.mcp.json` no longer lists `codex`; Codex workers run through `codex exec`). [`.mcp.json`](../.mcp.json) exposed `codex` via
   [`Tools/codex-mcp-launcher.mjs`](../Tools/codex-mcp-launcher.mjs), pinned to
   `sandbox_mode="read-only"`. The launcher resolves the CLI across `$CODEX_CLI_PATH` → PATH → newest
   `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`, because that hash directory changes on every

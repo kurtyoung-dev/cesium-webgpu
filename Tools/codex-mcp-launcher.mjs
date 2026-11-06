@@ -4,6 +4,10 @@
  * @purpose Resolve the Codex CLI across its hash-versioned install directories and exec `codex mcp-server` for .mcp.json; stable across desktop-app updates.
  * @status ACTIVE
  *
+ * STATUS NOTE. Codex CLI 0.166 and 0.167 have no `mcp-server` subcommand, so this launcher
+ * cannot start an MCP server on them and the project .mcp.json no longer lists it; it is kept
+ * as scaffolding for a CLI that restores an MCP server mode. Codex workers run through `codex exec`.
+ *
  * WHY THIS FILE EXISTS. The Codex CLI ships inside the ChatGPT desktop app at
  * `%LOCALAPPDATA%\OpenAI\Codex\bin\<contenthash>\codex.exe`. That hash segment
  * changes on every app update, so a literal path in `.mcp.json` breaks the next

@@ -1,5 +1,49 @@
 # CAMPAIGN_STATE — the campaign-status authority
 
+## 0. Now — read this section, then stop
+
+Read this file with a Read limit of 45 lines: this section orients every reader, and the body (§1-§3) is for the records lead
+and for a reader sent to one block. It names no tip, batch number or lane: those are in `git log` and in the W-waves block's
+critical-path paragraph (line 963), which the records rounds keep current. It is rewritten in the same commit as any
+campaign-level change ("How to update", line 1033).
+
+**Precedence** (line 56): a campaign's queue row is the row-level authority, this file the campaign-level one, and a dispatch
+board only a sequencing view; a maintainer ruling in `MAINTAINER_RULINGS_*.md` outranks all of them (newest file wins, newest
+ruling within it: `CLAUDE.md` "Rules Files and Routing").
+
+| Campaign or program | State | What holds or gates it | Rulings | Block |
+| --- | --- | --- | --- | --- |
+| C11 parity, correctness reds, scale | launched | exit gate C11-137, its certification held by the maintainer's ruling of 2026-07-23 until the W2-W8 body executes | 2026-07-23 | line 79 |
+| C12 celestial appearance | launched; exit gate maximal | open until every C12-29 slice lands, S3 included (owned by C13-41) | R-2026-08-10-1, R-2026-08-14-1 | line 96 |
+| C13 clouds, RTE, weather | executing; Gate B closed; Gates A, C, D open | v2.1 plan of 2026-09-12 | RULING-2026-08-06 R2 | line 139 |
+| C14 ocean and wind | not launched | held by R1 until C12 completes | RULING-2026-08-06 R1 | line 361 |
+| C15 Aurora / GSPLAT | Aurora planned, held; GSPLAT active | Aurora C15-01..08 held by R4 until C12 closes | R4, R6 | lines 374, 402 |
+| C16 comment remediation | launched; shards C16-09..12 partial | none | directive 2026-08-10 | line 489 |
+| C17 celestial light transport | proposed, not launched | identity held | R-2026-08-10-7 | line 521 |
+| C18 voxel, point cloud, splat | launched; waves V, P, A, S | wave S gated after C15-G8 | directive 2026-08-09 | line 529 |
+| Wave DX (not numbered) | maintainer-directed wave in the research dispatch queue | the probe-kit harvest DX-108 runs as the probe-kit rounds of the W-waves block | R-2026-09-26-23 | lines 539, 568 |
+| Gemini-audit fix plan | launched 2026-09-17, waves 0-6 | its own critical path | R-2026-09-17-1 … -8 | line 570 |
+| Research dispatch queue | a dispatch order, not a status authority | meshlet track MS-00..26 held by gate M6 | queue §"Authority" | line 598 |
+| Upstream sync, CesiumJS 1.145 | landed | legs 1b and 2 owed | — | line 757 |
+| Cloud + water re-landing (W-waves) | launched 2026-10-21; critical path W5 + W6 | per-change PF legs deferred to a whole-product campaign | R-2026-10-22-1 … -15, R-2026-10-23-M1 … -M4, R-2026-10-24-M5 | lines 797, 963, 970 |
+| Antigravity water program | outside the W-waves | reviewed while Gemini finishes | R-2026-10-30-M1 | line 985 |
+
+**Holds that bind every lane:** quiet hours and branch transparency (`CLAUDE.md`; §2, §3 here); doc archival and moves, held by
+the maintainer since 2026-06-30 (`CLAUDE.md` "Rules Files and Routing"); the housekeeping ASK list (R-2026-10-30-M4, lifted for
+the seat's evidence output folder only by R-2026-10-31-M1); the standing principles that block work (line 1023: no performance win by removing, default-disabling, bypassing or degrading a feature, `SR-1`; no idle-soak FPS under request-render mode, `SR-9`).
+
+**Open maintainer decisions:** the parked list of 2026-11-02 (line 1009): the old Gemini clone, the compile-floor calibration, the
+PF-2 split (a ruling request; until ruled it fails), the PF-4 residency floor, the stopped-loop widget-frame audit, further trims of
+the rules core, and the account-synced plugins; and the open asks of §3a (line 1099, "Still OPEN"): the 2026-08-02 stash decision and ask R-d.
+Live branch, worktree and clone state: `branches/ACTIVE_WORKFLOW_WAVE_2026-08-29.md` (§3a, line 1087).
+
+**Where next:** the seat reads this section and the W-waves block (lines 797-1022); a lane briefed on one campaign reads its block;
+the records lead reads the whole file. Sections: §1 campaign status, lines 77-1040; corrections appendix, lines 1041-1069;
+§2 quiet hours, lines 1070-1079; §3 branch transparency, lines 1080-1105.
+
+---
+
+
 **Authority as of 2026-09-02; supersedes the CLAUDE.md campaign section.** Ruled by
 `R-2026-09-02-14` (`MAINTAINER_RULINGS_2026-09-02.md`): CLAUDE.md's "Active Remediation
 Campaign" block reduces to a pointer at this file, and this tracked document — not the
@@ -991,7 +1035,7 @@ thirteen older water clones `cesium-lane-water-w*-20261029` and the base `cesium
 The campaign queue documents named above stay the **row-level** authorities. This file is the
 **campaign-level** authority. **Update this file in the same commit as any change that flips a
 campaign-level fact**: a launch, a hold lifted or applied, a critical-path handoff, or a new
-campaign ratified. A row completing inside an already-described critical path does not require an
+campaign ratified; rewrite §0 in that same commit. A row completing inside an already-described critical path does not require an
 edit here; the critical path itself changing does.
 
 ### Appendix — corrections to the previous CLAUDE.md text
@@ -1025,8 +1069,8 @@ Checked against the authorities above on 2026-09-02:
 
 ## 2. GitHub Quiet Hours — HARD RULE (maintainer, 2026-08)
 
-The rule and its mechanical enforcement (R-2026-08-14-4, `SOL-D4-HARDENING`: `.husky/pre-push`,
-`npm run verify-landing`) live in [`CLAUDE.md`](../CLAUDE.md), "GitHub Quiet Hours — HARD RULE".
+The rule lives in [`CLAUDE.md`](../CLAUDE.md), "GitHub Quiet Hours — HARD RULE", and its mechanical enforcement
+(R-2026-08-14-4, `SOL-D4-HARDENING`: `.husky/pre-push`, `npm run verify-landing`) in [`/seat-duties`](../.claude/skills/seat-duties/SKILL.md).
 This section keeps only the open history item.
 
 > **History note (handover audit FIX 37, 2026-08-09):** in-window weekday commits exist
@@ -1035,7 +1079,8 @@ This section keeps only the open history item.
 
 ## 3. Branch Transparency — CRITICAL
 
-The rule lives in [`CLAUDE.md`](../CLAUDE.md), "Branch Transparency — CRITICAL"; the git-stash
+The rule lives in [`CLAUDE.md`](../CLAUDE.md), "Branch Transparency — CRITICAL", and the reporting duties, which bind every agent that works on a branch (R-2026-08-17-2), in
+[`/seat-duties`](../.claude/skills/seat-duties/SKILL.md); the git-stash
 labelling convention it names is in [`ORCHESTRATION_HANDBOOK.md`](ORCHESTRATION_HANDBOOK.md) §3.
 This section keeps only the inventory pointer below.
 

@@ -55,6 +55,8 @@ yarn.lock
 .claude/*
 # ...except the tracked on-demand rule skills CLAUDE.md names.
 !.claude/skills/
+# ...and the tracked lean agent types (scaffolding, measured in a fresh session before use).
+!.claude/agents/
 
 # Python bytecode cache (e.g., from migration_doc/_regen_wgsl_js.py).
 __pycache__/

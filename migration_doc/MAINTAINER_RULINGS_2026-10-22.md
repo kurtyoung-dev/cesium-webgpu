@@ -214,3 +214,25 @@ reviewer Nolofinwe); `DX-RULES-DIET-2` is closed with the 33 KB target missed by
 
 **Seat note (no ruling id):** the three claude.ai-synced plugins, whose per-session cost the seat measured at about 1,300 tokens
 (`DEFERRED_WORK.md` section "2026-10-31 — records round 7", Notes), stay as they are: the maintainer said "okay for now".
+
+## Maintainer ruling of 2026-11-05 (R-2026-11-05-M1)
+
+*(Appended by the context-load batch.)* The heading quotes the maintainer verbatim; the paragraph under it is the seat's reading.
+Source: the seat's compose brief for the context-load lane (`BRIEF_COMPOSE.md` section 0), which carries the maintainer's words of
+2026-11-05, given after the first context-load measurements that answered the maintainer's own question whether the skills and docs had been
+made efficient enough to run orchestration with a low overhead.
+
+### R-2026-11-05-M1 (maintainer, 2026-11-05 23:3x EST, quoted, on context load): "Both Codex and Gemini/AGY have made a bunch of updates but we can adress those after we optimize our context usage and move things to pointers and plugins that don't get loaded by every agent or task runner"
+
+Seat reading: what it decides. (1) Order of work: the context-load optimization lands before the review of the Codex and Gemini
+updates. (2) The always-loaded rules file keeps what binds every agent, plus routing; rules that bind one role or one task move to
+on-demand homes (skills under `.claude/skills/`) that the agents they bind load before the act, each named by a trigger line in the
+rules file. What it does not change: no rule is softened; `R-2026-10-31-M2`'s five engine non-negotiables stay in the core; the
+seat note of 2026-10-31 that the account-synced plugins stay as they are stands until the maintainer says otherwise. Measured basis
+(the seat's harness measurement of 2026-11-05, probe agents asked to quote from their own context without calling a tool, run totals
+from the harness's token count): every general-purpose and workflow agent starts with the whole rules file (34,104 B in a CRLF
+worktree, 33,682 B as git stores it), the seat's memory index (12,580 B), a git snapshot of the seat worktree (about 2.4 KB) and a
+61-entry skills list (project descriptions 1,301 B; account-synced entries 14,610 characters); the built-in Explore type gets only
+the skills list (run totals: general-purpose 62,070 tokens, workflow 54,923, Explore 21,742). A plugin has no per-agent-type scope,
+and path-scoped rule files do not reach a lane in a sibling clone, so the levers are the rules file's contents, on-demand skills, and
+agent types.

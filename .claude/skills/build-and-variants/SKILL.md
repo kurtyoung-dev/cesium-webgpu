@@ -1,6 +1,6 @@
 ---
 name: build-and-variants
-description: Build, test and variant rules — build commands, WebGPU-only and WebGL-only bundles, compat exemptions, smoke test, visual regression, Edge Playwright. Read before building or testing.
+description: Build and variant rules — bundles, compat exemptions, sideEffects, smoke test, visual regression, wave-end gate, Edge. Read before building, testing, or adding a Renderer/WebGPU file.
 ---
 
 # Build & Test Commands
@@ -71,6 +71,13 @@ node Tools/visual-regression/capture-and-diff.mjs --scene globe-default --headed
 ```
 
 Captures WebGL vs WebGPU canvases from the split-screen page, pixel-diffs them, outputs PNG diffs + JSON report. Uses Edge by default. Zero external deps. See `Tools/visual-regression/README.md`.
+
+## Wave-end gate
+
+**Wave-end gate (R-2026-08-29-2):** every multi-batch wave closes with the variant smoke test, the
+Sandcastle2 sweep on both renderers and the visual-regression capture-and-diff (baselines refreshed
+deliberately, each refresh its own reviewed commit), run by an Edge executor and banked under
+`Tools/visual-regression/output/wave-end/<wave>/`. Not per batch; the wave does not close without it.
 
 ## Playwright / Browser Testing
 

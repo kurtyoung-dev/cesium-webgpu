@@ -39,3 +39,7 @@ When fixing bugs, document in `migration_doc/WEBGPU_DEBUGGING_LOG.md` (the chron
 - Root cause description
 - Fix applied
 - Files modified
+
+## Debugging Guide Sync Duty
+
+- [`DEBUGGING_GUIDE.md`](../../../migration_doc/DEBUGGING_GUIDE.md), the single entry point for debugging tools and procedures: it **MUST be kept in sync whenever you add a new CesiumDebug command, probe, or globe-fragment debug mode.**

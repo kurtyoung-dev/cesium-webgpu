@@ -14,7 +14,13 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 import { withLaneTmp } from "./lib/lane-tmp.mjs";
-import { extractNormativeUnits, runCheck } from "./rules-file-diet-check.mjs";
+import {
+  AGENT_BODY_MAX_BYTES,
+  CORE_MAX_BYTES,
+  checkCoreSize,
+  extractNormativeUnits,
+  runCheck,
+} from "./rules-file-diet-check.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(HERE, "rules-file-diet-check.mjs");
@@ -490,3 +496,165 @@ test("mutant: with link resolution unreachable, a broken link stops failing", as
   assert.equal(check(files, { mod }).pass, true);
   assert.equal(check(files).pass, false);
 });
+
+// ---- The ratchet and the lean agent types --------------------------------------------------------
+
+function padCore(text, bytes) {
+  const short = bytes - Buffer.byteLength(text, "utf8");
+  assert.ok(short >= 1, "fixture core is already over the target size");
+  return `${text}\n${"z".repeat(short - 1)}`;
+}
+
+function agent(name, description, tools, body) {
+  const head = [`name: ${name}`, `description: ${description}`];
+  if (tools !== null) head.push(`tools: ${tools}`);
+  return `---\n${head.join("\n")}\n---\n\n${body}\n`;
+}
+
+const GOOD_AGENT_BODY =
+  "The rules file in your context binds you. Your brief names your clone, your lease and your deliverable.";
+
+function withAgent(text) {
+  return { ...goodTree(), ".claude/agents/lane-worker.md": text };
+}
+
+const AGENT_CASES = [
+  {
+    label: "a name that differs from the file stem",
+    text: agent("lane-helper", "A lane worker.", "Read, Edit", GOOD_AGENT_BODY),
+    problem: /lane-worker\.md: name "lane-helper" differs from its file stem/,
+    marker: "if (fm.fields.name !== stem)",
+    replacement: "if (false && fm.fields.name !== stem)",
+  },
+  {
+    label: "a description over 25 words",
+    text: agent(
+      "lane-worker",
+      Array(26).fill("word").join(" "),
+      "Read",
+      GOOD_AGENT_BODY,
+    ),
+    problem: /lane-worker\.md: description has 26 words \(max 25\)/,
+    marker: "else if (agentWords > MAX_DESCRIPTION_WORDS)",
+    replacement: "else if (false && agentWords > MAX_DESCRIPTION_WORDS)",
+  },
+  {
+    label: "no tools line",
+    text: agent("lane-worker", "A lane worker.", null, GOOD_AGENT_BODY),
+    problem: /lane-worker\.md: no tools line/,
+    marker: "if (!fm.fields.tools)",
+    replacement: "if (false && !fm.fields.tools)",
+  },
+  {
+    label: "a body over 600 bytes",
+    text: agent(
+      "lane-worker",
+      "A lane worker.",
+      "Read",
+      "x".repeat(AGENT_BODY_MAX_BYTES + 1),
+    ),
+    problem: /lane-worker\.md: body is \d+ bytes \(max 600\)/,
+    marker: "if (bodyBytes > AGENT_BODY_MAX_BYTES)",
+    replacement: "if (false && bodyBytes > AGENT_BODY_MAX_BYTES)",
+  },
+  {
+    label: "a body that carries a rule",
+    text: agent(
+      "lane-worker",
+      "A lane worker.",
+      "Read",
+      `${GOOD_AGENT_BODY} Never push.`,
+    ),
+    problem: /lane-worker\.md: body carries a rule \(line \d+\): Never push/,
+    marker: "for (const unit of extractNormativeUnits(fm.body))",
+    replacement:
+      "for (const unit of (false ? extractNormativeUnits(fm.body) : []))",
+  },
+  {
+    label: "no frontmatter",
+    text: GOOD_AGENT_BODY,
+    problem: /lane-worker[.]md: no frontmatter/,
+    marker: "problems.push(`${rel}: no frontmatter`);",
+    replacement: "void 0;",
+  },
+  {
+    label: "an empty description",
+    text: agent("lane-worker", "", "Read", GOOD_AGENT_BODY),
+    problem: /lane-worker[.]md: no description/,
+    marker:
+      "if (!fm.fields.description) problems.push(`${rel}: no description`);",
+    replacement:
+      "if (false && !fm.fields.description) problems.push(`${rel}: no description`);",
+  },
+];
+
+test("the ratchet: a core at CORE_MAX_BYTES passes and one byte over fails", () => {
+  const core = goodTree()["CLAUDE.md"];
+  const atCap = withEdit(
+    goodTree(),
+    "CLAUDE.md",
+    core,
+    padCore(core, CORE_MAX_BYTES),
+  );
+  assert.deepEqual(check(atCap).problems, []);
+  const over = withEdit(
+    goodTree(),
+    "CLAUDE.md",
+    core,
+    padCore(core, CORE_MAX_BYTES + 1),
+  );
+  assert.match(
+    check(over).problems.join("\n"),
+    new RegExp(
+      `core is ${CORE_MAX_BYTES + 1} bytes as git stores it \\(max ${CORE_MAX_BYTES}\\)`,
+    ),
+  );
+  // The size is measured as git stores the file: CRLF line endings do not count against it.
+  const crlf = padCore(core, CORE_MAX_BYTES).replace(/\n/g, "\r\n");
+  assert.deepEqual(checkCoreSize(crlf), []);
+});
+
+test("mutant: with the ratchet unreachable, an oversized core stops failing", async (t) => {
+  const mod = await importMutant(
+    t,
+    "return bytes > max",
+    "return false && bytes > max",
+  );
+  const core = goodTree()["CLAUDE.md"];
+  const over = withEdit(
+    goodTree(),
+    "CLAUDE.md",
+    core,
+    padCore(core, CORE_MAX_BYTES + 1),
+  );
+  assert.equal(check(over, { mod }).pass, true, "the mutant must be inert");
+  assert.equal(check(over).pass, false);
+});
+
+test("a well-formed agent type passes; each malformed one is reported", () => {
+  const good = withAgent(
+    agent(
+      "lane-worker",
+      "A lane worker in its own clone.",
+      "Read, Edit",
+      GOOD_AGENT_BODY,
+    ),
+  );
+  assert.deepEqual(check(good).problems, []);
+  for (const c of AGENT_CASES) {
+    assert.match(
+      check(withAgent(c.text)).problems.join("\n"),
+      c.problem,
+      c.label,
+    );
+  }
+});
+
+for (const c of AGENT_CASES) {
+  test(`mutant: with the agent check for ${c.label} unreachable, it stops failing`, async (t) => {
+    const mod = await importMutant(t, c.marker, c.replacement);
+    const files = withAgent(c.text);
+    assert.equal(check(files, { mod }).pass, true, "the mutant must be inert");
+    assert.equal(check(files).pass, false);
+  });
+}

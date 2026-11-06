@@ -20,6 +20,9 @@ you as fully as `CLAUDE.md` does: read the matching file before the work it cove
 - [`.claude/skills/wasm-strategy/SKILL.md`](.claude/skills/wasm-strategy/SKILL.md) — WASM bridges, fallbacks, loading, memory, toolchains, threading.
 - [`.claude/skills/debug-console/SKILL.md`](.claude/skills/debug-console/SKILL.md) — `CesiumDebug` console commands; recording a fixed bug.
 - [`.claude/skills/engine-code-standards/SKILL.md`](.claude/skills/engine-code-standards/SKILL.md) — engine code: architecture patterns, RTE precision, file placement, file size, tech stack, ES6, comments and JSDoc.
+- [`.claude/skills/probe-kit/SKILL.md`](.claude/skills/probe-kit/SKILL.md) — the probe kit (kit-first order, guide sync) and the probe-first workflow for verifying a rendering fix.
+- [`.claude/skills/seat-duties/SKILL.md`](.claude/skills/seat-duties/SKILL.md) — the seat's duties (the landing route, quiet-hours enforcement, the evidence sweep); its "Branch transparency" binds you whenever `CLAUDE.md` "Branch Transparency" says, the rest only if you hold the seat. If the maintainer hands you the seat, read all of it: the seat's duties then apply to you, and this file's clone-only rules give way to them.
+- [`.claude/skills/worker-rules/SKILL.md`](.claude/skills/worker-rules/SKILL.md) — the worker-rules digest a lead reads before it briefs, a reviewer before it reviews, and any other lane agent before its first action.
 
 ## 1. Where you work, and git [HARD RULE]
 
@@ -41,9 +44,7 @@ you as fully as `CLAUDE.md` does: read the matching file before the work it cove
 
 ## 3. Precision on documentation [HARD RULE]
 
-- `CLAUDE.md` Principle 10 applies to every citation you write. Stale examples that cost a review
-  round: a `.glsl:44` that had moved to `:46`,
-  a per-cell error count written as per-run, a corroboration written as a proof.
+- `CLAUDE.md` Principle 10 applies to every citation you write.
 - Before minting any row or id, grep the ledger (`migration_doc/DEFERRED_WORK.md`) and both queues
   for an existing owner; a duplicate row is a defect, a pointer to the owner is the fix.
 - Escape `|` inside table cells (`\|`); count the fields; a shifted column breaks every reader.

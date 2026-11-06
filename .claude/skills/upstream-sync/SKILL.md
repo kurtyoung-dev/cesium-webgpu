@@ -12,7 +12,7 @@ This fork tracks `https://github.com/CesiumGS/cesium` as `upstream`.
 1. Create safety branch: `git branch pre-upstream-merge main`
 2. Fetch upstream: `git fetch upstream main`
 3. Check divergence: `git rev-list --count main..upstream/main`
-4. Merge: `git merge upstream/main --no-edit`
+4. Merge: `git merge upstream/main --no-edit`. Never bypass a hook (`--no-verify`) at any commit of the sync.
 5. Resolve conflicts — for ES6-class fork files (e.g. `ClippingPolygon.js`, `Scene.js`, `ShaderBuilder.js`, `CreditDisplay.js`), never `git checkout --theirs`: it reverts the fork's ES6 class conversion, and "re-add WebGPU code" does not repair that damage. Start from the fork's `ours` (ES6 class) and port upstream's semantic changes into it; verify with `npm run verify-es6-shape` (`Tools/upstream-shape-guard.mjs`). See `UPSTREAM_SYNC_PLAN_1.145_2026-09-04.md` §3 for the measured conflict census (36 of the sync's 79 conflict hunks, 46%, are this exact mechanism).
 6. Verify two-parent merge commit: `git cat-file -p HEAD` must show TWO parents. If `MERGE_HEAD` was lost during conflict resolution, rebuild it — `git commit-tree $(git rev-parse "HEAD^{tree}") -p <our-commit> -p <upstream-commit> -m "<message>"`, then `git reset --hard` onto the result
 7. Push: `git push origin main --force-with-lease`
