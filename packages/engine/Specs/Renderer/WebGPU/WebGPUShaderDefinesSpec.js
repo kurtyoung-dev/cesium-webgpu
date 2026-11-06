@@ -137,13 +137,15 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
       expect(ShaderSourceId.EDGE_EMITTER).toBe(42);
       expect(ShaderSourceId.PROCEDURAL_CLOUDS).toBe(43);
       expect(ShaderSourceId.CLOUD_PRIMARY_COMPOSITE).toBe(44);
+      // Ids 64-68 stay vacant for the other FFT compute modules.
+      expect(ShaderSourceId.OCEAN_STOCKHAM_IFFT).toBe(69);
     });
 
     it("pins every declared source ID (no unpinned additions)", function () {
       // As with the defines, this count guard forces a newly-added source
-      // ID to come with its own explicit pin above. IDs 1..44 with 0
-      // reserved => 44 entries.
-      expect(Object.keys(ShaderSourceId).length).toBe(44);
+      // ID to come with its own explicit pin above. IDs 1..44 and 69 with 0
+      // reserved => 45 entries.
+      expect(Object.keys(ShaderSourceId).length).toBe(45);
     });
 
     it("reserves source ID 0 (no entry uses it)", function () {
