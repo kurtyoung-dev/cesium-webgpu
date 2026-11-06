@@ -718,7 +718,8 @@ function boundedStepCount(steps: number): number {
  * and only when not even one fits, the largest light count at one primary
  * step. A count with no finite bound resolves to the floor of one step rather
  * than to whatever the budget could afford. The noise source, the flags and
- * every other field stay as asked. The floor is one step of each.
+ * every other field stay as asked. The floor is one step of each; when even
+ * the floor costs more than the budget, the result has zero primary steps.
  */
 function fitCloudMarchBudget(
   asked: CloudTierPreset,
@@ -754,7 +755,13 @@ function fitCloudMarchBudget(
       lightSteps = fit;
     }
   }
-  return { ...asked, primarySteps: 1, lightSteps };
+  const minimum: CloudTierPreset = { ...asked, primarySteps: 1, lightSteps };
+  // Not even the floor fits: zero primary steps, which the renderer refuses to
+  // encode rather than run a march over the budget.
+  if (!(cloudMarchCost(minimum, inputs) <= budget)) {
+    return { ...minimum, primarySteps: 0 };
+  }
+  return minimum;
 }
 
 /**

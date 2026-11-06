@@ -392,6 +392,7 @@ type CloudNegativeReason =
   | "missing-raw-color"
   | "missing-depth"
   | "culled"
+  | "march-budget-exceeded"
   | "resource-not-ready"
   | "preparation-busy"
   | "encoder-mismatch"
@@ -4137,6 +4138,23 @@ export function prepareCloudFrameAndEncodeMask(
       }
       halfResActive = allocated;
     }
+    // The budget report is final once the half-resolution gate has settled, and
+    // it is published before the refusal below so a refused frame still reads
+    // its ask, its cost and the budget it was held to.
+    counters.budgetApplied = cloudMarchBudget.budgetApplied ? 1 : 0;
+    counters.marchBudget = cloudMarchBudget.budget;
+    counters.marchCost = cloudMarchBudget.cost;
+    counters.requestedMarchCost = cloudMarchBudget.requestedCost;
+    // Not even one primary step fits the march budget. The frame is refused
+    // here, before the temporal history, the uniform upload, the lighting cache,
+    // the mask and the visible march, rather than encoded over the budget.
+    if (cloudMarchBudget.budgetApplied && cloudPreset.primarySteps === 0) {
+      markCloudTemporalInactive(cache);
+      counters.marchBudgetRefused = 1;
+      stages.endStage(CloudCpuStage.PACK);
+      packStageOpen = false;
+      return finishNegativeCloudFrameAttempt(attempt, "march-budget-exceeded");
+    }
     // Temporal gate. A tier with `temporalEnabled` layers reprojection and
     // accumulation on top of the half-resolution march: the history accumulates
     // the premultiplied half-resolution cloud, is reprojected through the previous
@@ -4217,10 +4235,6 @@ export function prepareCloudFrameAndEncodeMask(
       cloudMarchIntervals(qualityBlock.maxSteps, multiDeckOn);
     counters.lightSampleBudget =
       counters.primarySampleBudget * counters.lightSteps;
-    counters.budgetApplied = cloudMarchBudget.budgetApplied ? 1 : 0;
-    counters.marchBudget = cloudMarchBudget.budget;
-    counters.marchCost = cloudMarchBudget.cost;
-    counters.requestedMarchCost = cloudMarchBudget.requestedCost;
     counters.resolveWidth = temporalActive ? cache.temporalWidth : 0;
     counters.resolveHeight = temporalActive ? cache.temporalHeight : 0;
     counters.resolvePixels = counters.resolveWidth * counters.resolveHeight;

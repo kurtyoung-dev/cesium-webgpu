@@ -175,6 +175,11 @@ export interface CloudFrameCounters {
   marchCost: number;
   /** March cost of the ask; `Infinity` for an unbounded step count. */
   requestedMarchCost: number;
+  /**
+   * 1 when the frame was refused as `"march-budget-exceeded"`: not even one
+   * primary step fit the budget, so nothing was uploaded or marched.
+   */
+  marchBudgetRefused: number;
 
   /** 1 when the temporal resolve accepted the reprojected history this frame. */
   historyAccepted: number;
@@ -291,6 +296,7 @@ const RESET_FIELDS: readonly (keyof CloudFrameCounters)[] = Object.freeze([
   "marchBudget",
   "marchCost",
   "requestedMarchCost",
+  "marchBudgetRefused",
   "historyAccepted",
   "historyRejected",
   "historyReset",
@@ -346,6 +352,7 @@ export function createCloudFrameCounters(): CloudFrameCounters {
     marchBudget: 0,
     marchCost: 0,
     requestedMarchCost: 0,
+    marchBudgetRefused: 0,
     historyAccepted: 0,
     historyRejected: 0,
     historyReset: 0,
@@ -733,6 +740,7 @@ export function snapshotCloudObservability(
       marchBudget: c.marchBudget,
       marchCost: c.marchCost,
       requestedMarchCost: c.requestedMarchCost,
+      budgetRefused: c.marchBudgetRefused === 1,
     },
     reconstruction: {
       resolveWidth: c.resolveWidth,

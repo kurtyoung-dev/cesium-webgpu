@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 2026 |
-| ACTIVE | 1758 |
+| Files in census | 2027 |
+| ACTIVE | 1759 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
 | NO @purpose HEADER | 65 |
 | NO @status HEADER | 2 |
-| Classes | probe 683, spec 603, other 419, lib 264, gate-lib 21, fixture 16, bake-tool 13, runner 7 |
+| Classes | probe 683, spec 604, other 419, lib 264, gate-lib 21, fixture 16, bake-tool 13, runner 7 |
 
 ### Tools/ (72)
 
@@ -491,7 +491,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1232)
+### Tools/visual-regression/ (1233)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -590,6 +590,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-ibl-revision.spec.mjs | spec | ACTIVE | 2026-09-16 | 6 | Source-anchored guard that WebGPUDynamicEnvironmentMapManager and the procedural cloud renderer keep the IBL revision handshake wired (CRLF-safe). |
 | cloud-image-analysis.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | node:test guard for lib/cloud-image-analysis.mjs: analyze/compare/periodicity-factorial classification on deterministic synthetic noise images. |
 | cloud-lighting-budget.spec.mjs | spec | NO @purpose HEADER | 2026-11-02 | 1 | — |
+| cloud-march-budget-refusal.spec.mjs | spec | ACTIVE | — | 1 | Executes the real cloud resolver and the real cloud frame preparation under a recording fake device to prove that a frame past the budget's floor resolves to zero primary steps and is refused as "march-budget-exceeded" before it uploads, allocates history or encodes a pass; that the refusal does not stick; that every frame whose floor fits resolves, counts and encodes exactly as the renderer did before the refusal existed; and that each of the two gates made unreachable turns the matching assertion red. |
 | cloud-march-budget.spec.mjs | spec | ACTIVE | 2026-10-29 | 5 | Executes the pure cloud resolver from Node to prove that every input path (the tier dial, raw cloudQuality and the debug realization override) resolves to a march whose cost, counted over the shader's real interval sentinel, never exceeds the budget; that an ask inside the budget resolves byte-identical to the resolver as it stood before the budget; that an ask outside it keeps every field but the step counts, loses primary steps before light steps, and reports the ask; that the measured completions and hangs fall on the stated sides; and that each gate made unreachable turns the matching assertion red. |
 | cloud-march-emission.spec.mjs | spec | ACTIVE | 2026-11-02 | 9 | C13-10: march-emitted reconstruction depth behind one compile-time bit, four sibling pipelines compile verbatim, CPU-twin cross-validation, mutants. |
 | cloud-march-features.spec.mjs | spec | ACTIVE | 2026-11-06 | 3 | Pins that the cloud march pipeline request built from a CloudMarchFeatures object is observably identical to the positional-argument request it replaced: same pipeline-cache key, definesHi for the module cache and the pipeline descriptor, fragment entry point and colour-target formats, and the same variant sequence from selectCloudMarchPipeline, over a sweep of emit, preview, moments, primary reuse, cache state and format; the base answers are captured from the base revision, never typed. |
@@ -1908,7 +1909,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-19 | 20 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 6 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
 | engine-shader-source.mjs | lib | ACTIVE | 2026-11-02 | 48 | Resolves and reads engine shader sources (packages/engine/Source/Shaders/**) for specs, so a move or decomposition of a shader changes one module instead of every spec that reads it. |
-| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 47 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
+| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-11 | 48 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
 | engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 67 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | first-frame-guard.mjs | lib | ACTIVE | 2026-10-31 | 5 | Decides, from a decoded capture's non-black share, whether a probe's first frame is a frame at all, re-settles a bounded number of times when it is not, and REFUSES (first-frame-black, exit 3) when it stays black, so an undrawn globe is never scored as a product FAIL. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 6 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |

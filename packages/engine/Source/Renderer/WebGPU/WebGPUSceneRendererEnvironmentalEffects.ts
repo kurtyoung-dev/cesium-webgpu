@@ -70,6 +70,7 @@ export type CloudFrameNegativeReason =
   | "missing-raw-color"
   | "missing-depth"
   | "culled"
+  | "march-budget-exceeded"
   | "resource-not-ready"
   | "preparation-busy"
   | "encoder-mismatch"
