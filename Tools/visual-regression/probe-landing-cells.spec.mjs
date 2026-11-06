@@ -126,8 +126,11 @@ test("P1: planLandingCells plans the full table to one page per renderer a rig d
   // E-C-chukotka (two renderers each) and E-FFT-ifft (WebGPU, two kernels);
   // E-2D-stages and E-CV-stages add six variant pages per renderer each; the
   // four E-W weather-state cells add one page per renderer each; the five
-  // E-DG dive-gate cells add a dive and a control page per renderer each.
-  assert.equal(plan.length, 87);
+  // E-DG dive-gate cells add a dive and a control page per renderer each;
+  // E-O-msaa1, E-BGL and E-LL add one WebGPU page each and E-T-orbital its
+  // two device-loss pages; the four E-ON cells add one WebGPU page each and
+  // E-T-on its two device-loss pages.
+  assert.equal(plan.length, 98);
 });
 
 test("P1: E-M-water is a capture cell on both renderers and is not in the default cells", () => {

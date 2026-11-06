@@ -111,6 +111,7 @@
  * @module Tools/visual-regression/lib/landing-cell-stage
  */
 
+import * as experimentalDial from "./cloud-experimental-dial.mjs";
 import { isGlobeFragmentDebugValue } from "./globe-fragment-debug-dial.mjs";
 import { ProbeRefusal } from "./probe-refusal.mjs";
 
@@ -227,7 +228,7 @@ const isFiniteNumber = (value) =>
  * @returns {{rigId: string, moduleUrl: string, camera: object|null,
  *   clock: string|null, scene: object, globe: object, water: object,
  *   volumetric: object, cloudsEnabled: boolean|null, needsCloudHarness: boolean,
- *   stepDials: string[]}}
+ *   stepDials: string[], experimental?: object}} (`experimental` only when declared)
  * @throws {ProbeRefusal} `rig-dial-unsupported` for a dial no list above names
  *   and that is not a `cloud*` property, or an `imagery` / `terrain` /
  *   `globeMaterial` value the stage cannot build.
@@ -333,6 +334,7 @@ export function landingStagePayload(rig) {
   ) {
     unsupported.push(`sceneMode=${JSON.stringify(scene.sceneMode)}`);
   }
+  unsupported.push(...experimentalDial.violations(rig?.experimental));
   if (unsupported.length > 0) {
     throw new ProbeRefusal(
       "rig-dial-unsupported",
@@ -340,8 +342,9 @@ export function landingStagePayload(rig) {
       { rigId: id, unsupported },
     );
   }
-  const needsCloudHarness =
-    Object.keys(volumetric).length > 0 || cloudsEnabled !== null;
+  const experimental = experimentalDial.copy(rig);
+  const hasCloudDials = !!experimental || Object.keys(volumetric).length > 0;
+  const needsCloudHarness = hasCloudDials || cloudsEnabled !== null;
   return {
     rigId: id,
     moduleUrl: LANDING_STAGE_MODULE_URL,
@@ -351,10 +354,10 @@ export function landingStagePayload(rig) {
     globe,
     water,
     volumetric,
-    cloudsEnabled:
-      cloudsEnabled ?? (Object.keys(volumetric).length > 0 ? true : null),
+    cloudsEnabled: cloudsEnabled ?? (hasCloudDials ? true : null),
     needsCloudHarness,
     stepDials,
+    ...(experimental === undefined ? {} : { experimental }),
   };
 }
 
@@ -739,6 +742,9 @@ export async function stageLandingCellInPage(payload) {
       try {
         const truth = harness.configure({
           volumetric: payload.volumetric,
+          ...(payload.experimental === undefined
+            ? {}
+            : { experimental: payload.experimental }),
           enableVolumetric: enable,
           requireWebGPU: false,
         });
@@ -751,6 +757,13 @@ export async function stageLandingCellInPage(payload) {
       }
       // The harness clears requestRenderMode; keep the probe's own loop rule.
       viewer.useDefaultRenderLoop = false;
+    }
+    // Experimental dials read back from the harness; a refusal fails them all.
+    for (const [dial, want] of Object.entries(payload.experimental ?? {})) {
+      const got = cloud.ok ? cloud.truth.experimental?.[dial] : undefined;
+      const ok = !!cloud.ok && same(got, want);
+      const key = `experimental.${dial}`;
+      note(key, want, got, ok, cloud.ok ? undefined : cloud.reason);
     }
     const collection = globe && globe.defaultCloudCollection;
     note(

@@ -72,6 +72,7 @@ import path from "node:path";
 
 import { decodePng } from "../../lib/png-decode.mjs";
 import { collectGateErrors } from "../../lib/webgpu-error-gate.mjs";
+import * as experimentalDial from "./cloud-experimental-dial.mjs";
 import { ProbeRefusal, sha256, throwIfDeviceLost } from "./probe-runtime.mjs";
 
 /** Where the page imports the Cesium namespace from, as every W-series gate did. */
@@ -122,8 +123,11 @@ const isFiniteNumber = (value) =>
  * @returns {{rigId: string, moduleUrl: string, camera: object,
  *   clock: string|null, volumetric: object, scene: object}} The payload.
  * @throws {TypeError} For a camera without lon/lat/height/heading/pitch, an
- *   unknown heading reference, or a dial that is neither a scene dial nor a
- *   `cloud*` property.
+ *   unknown heading reference, a dial that is neither a scene dial nor a
+ *   `cloud*` property, or an `experimental` block that is not a non-empty
+ *   plain object of `cloud*` keys with boolean or finite-number values. A
+ *   valid block is carried as `experimental`; a rig without one yields a
+ *   payload with no such key.
  */
 export function cloudRigStagePayload(rig, overrides = {}) {
   const id = rig?.id ?? "(unnamed)";
@@ -154,6 +158,11 @@ export function cloudRigStagePayload(rig, overrides = {}) {
     }
   }
   Object.assign(volumetric, overrides.volumetric ?? {});
+  const experimentalFailures = experimentalDial.violations(rig?.experimental);
+  if (experimentalFailures.length > 0) {
+    throw new TypeError(`rig ${id}: ${experimentalFailures.join("; ")}`);
+  }
+  const experimental = experimentalDial.copy(rig);
   const clock = Object.hasOwn(overrides, "clock")
     ? overrides.clock
     : (rig?.clock ?? null);
@@ -164,6 +173,7 @@ export function cloudRigStagePayload(rig, overrides = {}) {
     clock,
     volumetric,
     scene,
+    ...(experimental === undefined ? {} : { experimental }),
   };
 }
 
@@ -173,7 +183,9 @@ export function cloudRigStagePayload(rig, overrides = {}) {
  * @param {object} payload From `cloudRigStagePayload`.
  * @returns {Promise<{rigId: string, config: object, rendererType: string,
  *   headingRadians: number, sunHeadingDeg: number|null,
- *   sunElevationDeg: number|null}>} What was staged.
+ *   sunElevationDeg: number|null, experimental?: object}>} What was staged;
+ *   `experimental` is the harness's read-back, present only when the payload
+ *   carried a block.
  */
 export async function stageCloudRigInPage(payload) {
   const C = await import(payload.moduleUrl);
@@ -187,6 +199,9 @@ export async function stageCloudRigInPage(payload) {
   // CloudVolumetrics lacks and on a value that did not survive assignment.
   const truth = globalThis.__cloudProbe.configure({
     volumetric: payload.volumetric,
+    ...(payload.experimental === undefined
+      ? {}
+      : { experimental: payload.experimental }),
     requireWebGPU: true,
   });
   const shows = {
@@ -245,6 +260,9 @@ export async function stageCloudRigInPage(payload) {
     headingRadians: heading,
     sunHeadingDeg,
     sunElevationDeg,
+    ...(truth.experimental === undefined
+      ? {}
+      : { experimental: truth.experimental }),
   };
 }
 

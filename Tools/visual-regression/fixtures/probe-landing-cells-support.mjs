@@ -131,6 +131,9 @@ export function p14Log() {
     evolvedReadbacks: [],
     clockSets: [],
     controls: [],
+    layoutReads: [],
+    limitReads: [],
+    deviceLossCalls: [],
   };
 }
 

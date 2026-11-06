@@ -43,6 +43,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import * as experimentalDial from "./cloud-experimental-dial.mjs";
 import { replayKeyFor as hashStableValue } from "./cloud-tour-fixtures.mjs";
 import { resolveSceneExpectations } from "./visual-gate-policy.mjs";
 
@@ -255,6 +256,10 @@ export function validateRig(rig) {
     );
   }
 
+  for (const violation of experimentalDial.violations(rig?.experimental)) {
+    failures.push(`${id}: ${violation}`);
+  }
+
   if (rig?.frames !== undefined) {
     need(
       rig.frames === "gate-only",
@@ -300,6 +305,10 @@ function replaySubset(rig) {
     setupParams: rig.setupParams ?? null,
     viewport: rig.viewport,
     readiness: rig.readiness,
+    // Present only when declared, so a rig without the block keeps its key.
+    ...(rig.experimental === undefined
+      ? {}
+      : { experimental: rig.experimental }),
   };
 }
 

@@ -106,6 +106,17 @@ export const POST_FIX_2D_CV_BAND = Object.freeze({
 });
 
 /**
+ * The labels of the two cloud bind group layouts the layout census reads, as
+ * `makeBindGroupLayout` names them in
+ * `packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`
+ * (the march layout and the cloud shadow layout).
+ */
+export const CLOUD_LAYOUT_LABELS = Object.freeze([
+  "ProceduralClouds BGL",
+  "CloudShadow BGL",
+]);
+
+/**
  * The cell table: cell name -> rig id and what the cell does on it.
  *
  * Fields beyond `rig` and `kind`: `identity` (a pixel-identity cell; the probe
@@ -122,7 +133,12 @@ export const POST_FIX_2D_CV_BAND = Object.freeze({
  * window must list, judged by `lib/landing-verdicts.mjs`) and
  * `evolvedReadbackSeconds` (the displacement field is read a second time with
  * the clock that many seconds past the rig's, both kernels at the same evolved
- * wave time; lane TAR-ALDARION).
+ * wave time; lane TAR-ALDARION), `layoutCensus` (a non-empty list of bind
+ * group layout labels: the page counts what those layouts bind per shader stage
+ * and at which group index, `lib/bind-group-layout-census.mjs`) and
+ * `deviceLimits` (`"webgpu-default"`: the page's device is requested without
+ * `requiredLimits`, `lib/device-limits-dial.mjs`). A cell without the last two
+ * installs no script for them and its page record has no such field.
  */
 export const LANDING_CELLS = Object.freeze({
   "E-D": Object.freeze({
@@ -141,6 +157,11 @@ export const LANDING_CELLS = Object.freeze({
     rig: "orbital-fulldisc-6608km-msaa4-single-deck",
     kind: "capture",
   }),
+  // E-O with the sample count at one: the single-sample twin of the 4x cell.
+  "E-O-msaa1": Object.freeze({
+    rig: "orbital-fulldisc-6608km-msaa1-single-deck",
+    kind: "capture",
+  }),
   "E-F": Object.freeze({
     rig: "cloud-flight-multideck-hdr-1080p",
     kind: "capture",
@@ -150,6 +171,51 @@ export const LANDING_CELLS = Object.freeze({
     rig: "cloud-underside-night-cov055",
     kind: "capture",
   }),
+  // Not in DEFAULT_CELLS: the E-G capture with the live bind-group-layout
+  // census of the two cloud layouts (what the page created, per shader stage
+  // and group index, against the WebGPU default per-stage limits).
+  "E-BGL": Object.freeze({
+    rig: "cloud-underside-noon-cov055",
+    kind: "capture",
+    layoutCensus: CLOUD_LAYOUT_LABELS,
+  }),
+  // Not in DEFAULT_CELLS: the E-G capture on a default-limits device (the page's
+  // requiredLimits stripped), with the same layout census, so the receipt shows
+  // the cloud layouts against the device the page actually got.
+  "E-LL": Object.freeze({
+    rig: "cloud-underside-noon-cov055",
+    kind: "capture",
+    layoutCensus: CLOUD_LAYOUT_LABELS,
+    deviceLimits: "webgpu-default",
+  }),
+  // Not in DEFAULT_CELLS: the E-G capture with one W4 cache family's
+  // experimental dials on (occupancy + weather volume bounds, density cache +
+  // primary density reuse, deep shadow cache + directional lighting,
+  // contribution lighting), each with the live layout census of the two cloud
+  // layouts so the grown layouts' counts are read on the page. PASS RULE: the
+  // page renders, the WebGPU error gate records 0 validation errors, every
+  // `experimental.<dial>` the rig declares reads back applied, and the capture
+  // PNG is described.
+  "E-ON-occupancy": Object.freeze({
+    rig: "cloud-eon-occupancy",
+    kind: "capture",
+    layoutCensus: CLOUD_LAYOUT_LABELS,
+  }),
+  "E-ON-density": Object.freeze({
+    rig: "cloud-eon-density",
+    kind: "capture",
+    layoutCensus: CLOUD_LAYOUT_LABELS,
+  }),
+  "E-ON-shadow": Object.freeze({
+    rig: "cloud-eon-shadow",
+    kind: "capture",
+    layoutCensus: CLOUD_LAYOUT_LABELS,
+  }),
+  "E-ON-lighting": Object.freeze({
+    rig: "cloud-eon-lighting",
+    kind: "capture",
+    layoutCensus: CLOUD_LAYOUT_LABELS,
+  }),
   "E-H": Object.freeze({ rig: "globe-horizon-viewer", kind: "capture" }),
   "R-14": Object.freeze({ rig: "sky-only-sun-change", kind: "clock-steps" }),
   "E-T-water": Object.freeze({
@@ -158,6 +224,22 @@ export const LANDING_CELLS = Object.freeze({
   }),
   "E-T-flight": Object.freeze({
     rig: "cloud-flight-multideck-hdr-1080p",
+    kind: "device-loss",
+  }),
+  // The orbital full disc torn down and device-lost, the two pages E-T-flight
+  // runs, on the E-O rig.
+  "E-T-orbital": Object.freeze({
+    rig: "orbital-fulldisc-6608km-msaa4-single-deck",
+    kind: "device-loss",
+  }),
+  // Not in DEFAULT_CELLS: the two E-T-flight pages on the flight rig with every
+  // W4 cache family's experimental dials on, so the cache owners are allocated
+  // when the viewer is destroyed and the device is lost. PASS RULE: as the
+  // E-ON cells (renders, 0 validation errors, every experimental dial reads
+  // back applied, PNG described), plus the owner labels the run names in
+  // `--owner-labels` are released after the teardown.
+  "E-T-on": Object.freeze({
+    rig: "cloud-flight-multideck-hdr-1080p-eon",
     kind: "device-loss",
   }),
   "E-T-resize": Object.freeze({

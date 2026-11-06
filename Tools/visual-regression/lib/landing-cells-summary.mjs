@@ -1,6 +1,6 @@
 /**
  * The landing-cells probe's Markdown summary.
- * @purpose The landing-cells Markdown summary hook: the default id-and-result table plus the marks a reader needs where they look (a PASS decided by a provisional floor reads PASS* with the flag and figures footnoted, a floor that did not decide or that decided nothing because the verdict was not measured, the reason a contended or not-run verdict was not read with the arm's CPU figures (machine CPU figures and long float noise in a reason print at two decimals; the receipt keeps the raw floats), the CPU warm-up, prime and contention-basis notes, a base frame found beside the report, a gate-only cell whose frame compare its rig removed), and nothing else changed.
+ * @purpose The landing-cells Markdown summary hook: the default id-and-result table plus the marks a reader needs where they look (a PASS decided by a provisional floor reads PASS* with the flag and figures footnoted, a floor that did not decide or that decided nothing because the verdict was not measured, the reason a contended or not-run verdict was not read with the arm's CPU figures (machine CPU figures and long float noise in a reason print at two decimals; the receipt keeps the raw floats), the CPU warm-up, prime and contention-basis notes, a base frame found beside the report, a gate-only cell whose frame compare its rig removed), a section of the bind group layouts a cell counted (label, group index, per-stage counts against the WebGPU default limits) and of the device limits it got, and nothing else changed.
  * @status ACTIVE
  *
  * The table is `buildMarkdownSummary`'s own: this module post-edits its lines
@@ -10,6 +10,8 @@
  * @module Tools/visual-regression/lib/landing-cells-summary
  */
 
+import { layoutCensusLine } from "./bind-group-layout-census.mjs";
+import { deviceLimitsLine } from "./device-limits-dial.mjs";
 import { UNMEASURED_REASONS, verdictResultLabel } from "./probe-refusal.mjs";
 import { buildMarkdownSummary } from "./probe-runtime-receipts.mjs";
 
@@ -254,14 +256,45 @@ function siblingFallbackNotes(receipt) {
 }
 
 /**
+ * The lines of the layout census and device limits a page recorded: one block
+ * per page that carries either record, none for a page that carries neither.
+ */
+function layoutCensusNotes(receipt) {
+  const notes = [];
+  for (const page of receipt.pages ?? []) {
+    const census = page?.layoutCensus;
+    const limits = page?.deviceLimits;
+    if (!census && !limits) {
+      continue;
+    }
+    notes.push(
+      `- \`${page.cell}\` ${page.renderer} ${page.page} (run ${page.run}):`,
+    );
+    if (census) {
+      if (census.installed !== true) {
+        notes.push("  - bind group layout census: script not installed");
+      }
+      for (const row of census.rows ?? []) {
+        notes.push(`  - layout ${layoutCensusLine(row)}`);
+      }
+    }
+    if (limits) {
+      notes.push(`  - ${deviceLimitsLine(limits)}`);
+    }
+  }
+  return notes;
+}
+
+/**
  * @param {object} receipt The whole landing report.
  * @param {object} runtimeReceipt The runtime receipt (verdicts, generatedAt,
  *   origin, servedBuildAssertion, exitCode).
  * @param {string} title Heading.
  * @returns {string} Markdown: `buildMarkdownSummary`'s text when the receipt
  *   carries no mark, otherwise the same text with starred rows, Warm-up,
- *   Prime and Contention basis lines after the header block (a PF run only)
- *   and a Marks section before the receipt fields.
+ *   Prime and Contention basis lines after the header block (a PF run only),
+ *   a Marks section before the receipt fields and, after it, the layout census
+ *   and device limits section when a page recorded either.
  */
 export function buildLandingCellsSummary(receipt, runtimeReceipt, title) {
   const summary = buildMarkdownSummary(receipt, runtimeReceipt, title);
@@ -280,6 +313,7 @@ export function buildLandingCellsSummary(receipt, runtimeReceipt, title) {
     }
   });
   notes.push(...siblingFallbackNotes(receipt));
+  const census = layoutCensusNotes(receipt);
   // Only a PF run waits, so only a PF run's summary says how the wait ended.
   const onPfRun = receipt.warmUp?.status !== "not-a-pf-run";
   const noteOf = (record) =>
@@ -290,7 +324,7 @@ export function buildLandingCellsSummary(receipt, runtimeReceipt, title) {
   const prime = noteOf(receipt.prime);
   const basis = noteOf(receipt.contentionBasis);
   const headed = warmUp !== null || prime !== null || basis !== null;
-  if (notes.length === 0 && !headed) {
+  if (notes.length === 0 && census.length === 0 && !headed) {
     return summary;
   }
 
@@ -308,6 +342,19 @@ export function buildLandingCellsSummary(receipt, runtimeReceipt, title) {
       line.startsWith("Receipt fields:"),
     );
     lines.splice(fields, 0, "## Marks", "", ...notes, "");
+  }
+  if (census.length > 0) {
+    const fields = lines.findLastIndex((line) =>
+      line.startsWith("Receipt fields:"),
+    );
+    lines.splice(
+      fields,
+      0,
+      "## Bind group layouts and device limits",
+      "",
+      ...census,
+      "",
+    );
   }
   if (headed) {
     // After the header block: the line after `Exit code:` is blank. Each note

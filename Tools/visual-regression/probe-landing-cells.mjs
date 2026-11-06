@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Probe: the landing program's Edge cells on the shared runtime - one command
 // per cell for the seat's executor, base arm and tip arm.
-// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture, the opt-in 2D and Columbus-view identity cells E-ID-2d / E-ID-cv, the Chukotka cross-renderer cell E-C-chukotka, the FFT-ocean kernel-identity cell E-FFT-ifft, the opt-in W3 weather-state cells E-W-ground / E-W-ground-hdr / E-W-30km / E-W-30km-hdr, the opt-in water dive-gate cells E-DG-geiranger / E-DG-ontario / E-DG-deathvalley / E-DG-ellipsoid / E-DG-upsampled (a dive page and a collision-on control each, streamed terrain where marked online) and the E-T teardown/device-loss cells) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs with a per-cell pending-pipeline wait, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, the window.onmessage sentinel on identity cells (with an opt-in in-run positive control), the ocean displacement readback per kernel at wave time 0 and at an evolved clock, the ocean compute pass a PF-2 window must list, optionally the PF-1..PF-4 performance windows after a machine-CPU warm-up, a Markdown summary that marks provisional floors and contended or not-run lines, a capture-seam manifest for contact-sheet.mjs, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
+// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture, the opt-in 2D and Columbus-view identity cells E-ID-2d / E-ID-cv, the Chukotka cross-renderer cell E-C-chukotka, the FFT-ocean kernel-identity cell E-FFT-ifft, the opt-in W3 weather-state cells E-W-ground / E-W-ground-hdr / E-W-30km / E-W-30km-hdr, the opt-in water dive-gate cells E-DG-geiranger / E-DG-ontario / E-DG-deathvalley / E-DG-ellipsoid / E-DG-upsampled (a dive page and a collision-on control each, streamed terrain where marked online), the opt-in E-O-msaa1 single-sample orbital capture, the opt-in E-BGL (bind-group-layout census) and E-LL (default-limits device) cells, the opt-in E-ON-occupancy / E-ON-density / E-ON-shadow / E-ON-lighting cells (one experimental cloud cache family on each, set through the rig's experimental block), and the E-T teardown/device-loss cells incl. the opt-in E-T-orbital and E-T-on) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs with a per-cell pending-pipeline wait, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, the window.onmessage sentinel on identity cells (with an opt-in in-run positive control), the ocean displacement readback per kernel at wave time 0 and at an evolved clock, the ocean compute pass a PF-2 window must list, optionally the PF-1..PF-4 performance windows after a machine-CPU warm-up, a Markdown summary that marks provisional floors and contended or not-run lines, a capture-seam manifest for contact-sheet.mjs, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
 // @status ACTIVE
 // @runtime lib/probe-runtime.mjs
 //
@@ -9,13 +9,18 @@
 //   E-D        default-3d-pinned                          both renderers
 //   E-D-HDR    default-3d-hdr                             both renderers
 //   E-O        orbital-fulldisc-6608km-msaa4-single-deck  WebGPU
+//   E-O-msaa1  orbital-fulldisc-6608km-msaa1-single-deck  WebGPU (off by default)
 //   E-F        cloud-flight-multideck-hdr-1080p           WebGPU
 //   E-G        cloud-underside-noon-cov055                WebGPU
 //   E-G-night  cloud-underside-night-cov055               WebGPU
+//   E-BGL / E-LL  cloud-underside-noon-cov055 (off by default; layout census, default-limits device) WebGPU
 //   E-H        globe-horizon-viewer                       both renderers
 //   R-14       sky-only-sun-change (clock steps)          WebGPU
 //   E-T-water  water-coast-50km-enhanced-ocean            both renderers
 //   E-T-flight cloud-flight-multideck-hdr-1080p           WebGPU
+//   E-T-orbital orbital-fulldisc-6608km-msaa4-single-deck (off by default) WebGPU
+//   E-T-on     cloud-flight-multideck-hdr-1080p-eon (off by default; every experimental cache family on) WebGPU
+//   E-ON-occupancy / -density / -shadow / -lighting  cloud-eon-<family> (off by default; one experimental cache family on) WebGPU
 //   E-T-resize globe-msaa4-resize-ladder                  both renderers
 //   E-T-skybox skybox-source-swap                         both renderers
 //   E-M-water  globe-material-water-mask (off by default) both renderers
@@ -165,11 +170,9 @@ import { decodePng } from "../lib/png-decode.mjs";
 import {
   armWebGPUDevices,
   collectGateErrors,
-  errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
 import { captureUrlFor } from "./lib/capture.mjs";
 import { runClockSteps } from "./lib/clock-steps.mjs";
-import { installCloudProbeHarness } from "./lib/cloud-probe-harness.mjs";
 import { startCpuSampler } from "./lib/cpu-sampler.mjs";
 import {
   WARM_UP_DEFAULTS,
@@ -197,10 +200,13 @@ import {
   pageReadRendererStatistics,
 } from "./lib/frame-timing-steps.mjs";
 import {
-  GPU_DEVICE_CENSUS_INIT_SOURCE,
   readGpuDeviceCensus,
   readOwnerLabels,
 } from "./lib/gpu-device-census.mjs";
+import {
+  installLandingInitScripts,
+  readCellInitRecords,
+} from "./lib/landing-init-scripts.mjs";
 import {
   LANDING_WATER_DIALS,
   capturesWhilePipelinesPending,
@@ -373,10 +379,8 @@ export async function runLandingPage({
     const page = await context.newPage();
     const diagnostics = attachPageDiagnostics(page);
     try {
-      await page.addInitScript(errorGateInit);
-      await page.addInitScript({ content: GPU_DEVICE_CENSUS_INIT_SOURCE });
-      await page.addInitScript(installCloudProbeHarness);
       const cell = LANDING_CELLS[entry.cell];
+      await installLandingInitScripts(page, cell);
       if (cell.identity === true) {
         // Before any page script: the sentinel holds window.onmessage as the
         // page had it before Cesium loaded.
@@ -559,6 +563,7 @@ export async function runLandingPage({
         });
       }
 
+      Object.assign(record, await readCellInitRecords(page, cell));
       if (entry.kind === "device-loss") {
         if (entry.page === "teardown") {
           record.capture = await capture(base);
@@ -720,8 +725,7 @@ const PAGE_BUDGET_MS =
 
 export const descriptor = {
   name: "landing-cells",
-  title:
-    "Landing cells - the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G, E-H, R-14, E-T, E-M-water, E-ID-2d, E-ID-cv, E-C-chukotka, E-FFT-ifft) with the PF-1..PF-4 performance leg",
+  title: `Landing cells - the cloud and water landing program's Edge cells (${Object.keys(LANDING_CELLS).join(", ")}) with the PF-1..PF-4 performance leg`,
   outputSubdirectory: "landing-cells",
   receiptEnvelope: "runtime",
   servedArtifacts: [

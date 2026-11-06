@@ -39,7 +39,7 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 272,
+  total: 278,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count reached 17
@@ -53,7 +53,16 @@ const REGISTRY_CENSUS = {
     // It is 39 because the cloud family's probe-kit harvest (round 1) added
     // 22: the scenes of the ten probes that round archived and of the six it
     // moved onto the runtime, each re-declared as data. None is `wave-end`.
-    cloud: 43,
+    //
+    // It is 44 because the single-sample orbital rig for landing cell
+    // E-O-msaa1 joined the 4x MSAA one.
+    //
+    // It is 49 because five rigs for the W4 cache cells joined the cloud set:
+    // four copies of cloud-underside-noon-cov055 (cloud-eon-occupancy, -density,
+    // -shadow and -lighting, one per cache family) and the flight rig with every
+    // family on (cloud-flight-multideck-hdr-1080p-eon), each adding an
+    // experimental block and nothing else.
+    cloud: 49,
     // The polar family's harvest re-declared every scene its probes captured
     // or measured, for the kept probe and the archived ones alike, so a
     // retired probe's scene stays on record: one rig per capture, with the

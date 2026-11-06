@@ -167,6 +167,32 @@ export function installCloudProbeHarness() {
         }
         volumetric[key] = value;
       }
+      // The experimental dials sit on a namespace object the instance owns.
+      // A key counts as declared only when it is one of that namespace's own
+      // enumerable properties: assigning any other key would add a property
+      // and read back as set.
+      const experimentalRequested = options.experimental ?? {};
+      const experimental = volumetric.experimental;
+      const experimentalKnown = new Set(
+        experimental !== null && typeof experimental === "object"
+          ? Object.keys(experimental)
+          : [],
+      );
+      for (const [key, value] of Object.entries(experimentalRequested)) {
+        if (!experimentalKnown.has(key)) {
+          errors.push(`unknown CloudVolumetrics experimental property ${key}`);
+          continue;
+        }
+        try {
+          experimental[key] = value;
+        } catch (error) {
+          errors.push(
+            `experimental.${key} assignment threw: ${String(
+              error && error.message ? error.message : error,
+            )}`,
+          );
+        }
+      }
       collection.enableVolumetric = options.enableVolumetric !== false;
 
       if (scene.requestRenderMode !== false) {
@@ -202,6 +228,22 @@ export function installCloudProbeHarness() {
         }
       }
 
+      const experimentalConfig = {};
+      for (const [key, expected] of Object.entries(experimentalRequested)) {
+        if (!experimentalKnown.has(key)) {
+          continue;
+        }
+        const actual = experimental[key];
+        experimentalConfig[key] = snapshotValue(actual);
+        if (!valuesEqual(actual, expected)) {
+          errors.push(
+            `experimental.${key} round trip failed: expected ${JSON.stringify(
+              expected,
+            )}, received ${JSON.stringify(actual)}`,
+          );
+        }
+      }
+
       const truth = {
         ok: errors.length === 0,
         errors,
@@ -211,6 +253,9 @@ export function installCloudProbeHarness() {
         enableVolumetric: collection.enableVolumetric,
         renderMode: collection.renderMode,
         config,
+        ...(options.experimental === undefined
+          ? {}
+          : { experimental: experimentalConfig }),
       };
       if (!truth.ok) {
         throw new Error(

@@ -1,7 +1,7 @@
 /**
  * The fake Playwright browser the landing probe's Node specs run its
  * descriptor against.
- * @purpose Spec support for probe-landing-cells: a fake browser whose pages answer every page function the landing probe evaluates (stage, startup, census, gate, pipeline cache, onmessage sentinel and its positive control, displacement readback at t = 0 and at the evolved clock, PF windows) from canned records, logging what was asked, plus a tiny PNG for its screenshots; no browser is launched.
+ * @purpose Spec support for probe-landing-cells: a fake browser whose pages answer every page function the landing probe evaluates (stage, startup, census, gate, pipeline cache, onmessage sentinel and its positive control, displacement readback at t = 0 and at the evolved clock, PF windows, the E-T device-loss steps, the bind-group-layout census and the device-limits reader) from canned records, logging what was asked, plus a tiny PNG for its screenshots; no browser is launched.
  * @status ACTIVE
  *
  * WHY A PIECE. Lane TAR-ALDARION's round-2 spec for the landing probe needs the
@@ -37,6 +37,8 @@ export function makeFakeBrowser(
     evolvedDisplacements = null,
     controlRecord = null,
     passCost = null,
+    layoutCensus = null,
+    deviceLimits = null,
   } = {},
 ) {
   let displacementCalls = 0;
@@ -73,6 +75,56 @@ export function makeFakeBrowser(
           log.clockSets?.push(arg.iso);
           clockAway = !clockAway;
           return { ok: true, observed: arg.iso };
+        }
+        // The opt-in page readers (lib/bind-group-layout-census.mjs,
+        // lib/device-limits-dial.mjs): canned raw answers, what was asked logged.
+        if (fn.name === "pageReadBindGroupLayoutCensus") {
+          log.layoutReads?.push(arg);
+          return (
+            layoutCensus ?? {
+              installed: true,
+              layouts: {},
+              groups: {},
+              unlabelled: 0,
+              device: { found: true, limits: {} },
+            }
+          );
+        }
+        if (fn.name === "pageReadDeviceLimits") {
+          log.limitReads?.push(arg);
+          return (
+            deviceLimits ?? {
+              installed: true,
+              requests: [],
+              device: { found: true, limits: {} },
+            }
+          );
+        }
+        // The E-T cells' terminal steps (lib/device-loss-steps.mjs), by name:
+        // the frame driver's marker would otherwise answer the render loop.
+        if (fn.name === "pageDestroyViewer") {
+          log.deviceLossCalls?.push(fn.name);
+          return { destroyed: true, threw: null };
+        }
+        if (fn.name === "pageForceDeviceLoss") {
+          log.deviceLossCalls?.push(fn.name);
+          return {
+            renderer: "webgpu",
+            method: "GPUDevice.destroy",
+            observed: { reason: "destroyed", message: "fake" },
+          };
+        }
+        if (fn.name === "pageRenderAfterLoss") {
+          log.deviceLossCalls?.push(fn.name);
+          return {
+            framesAttempted: arg?.frames ?? 0,
+            throws: 0,
+            firstThrows: [],
+            terminallyLost: true,
+          };
+        }
+        if (fn.name === "pageReadFrameNumber") {
+          return 1;
         }
         if (fn.name === "pageAssignOnmessagePositiveControl") {
           log.controls?.push(true);
