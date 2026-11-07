@@ -13,10 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: install node 22
+      - name: install node 22 (22.13 or later)
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '>=22.13.0 <23.0.0'
       - name: npm install
         run: npm install
       - name: lint *.js
@@ -69,10 +69,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: install node 22
+      - name: install node 22 (22.13 or later)
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '>=22.13.0 <23.0.0'
       - name: npm install
         run: npm install
       - name: lint comment markers
@@ -83,6 +83,8 @@ jobs:
         run: npm run test-c16
       - name: landing rule tests
         run: npm run test-landing-rules
+      - name: context spine tests
+        run: npm run test-context-spine
       - name: build infrastructure tests
         run: npm run test-build-infra
       - name: webgpu policy tests
@@ -102,10 +104,10 @@ jobs:
       BRANCH: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v7
-      - name: install node 22
+      - name: install node 22 (22.13 or later)
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '>=22.13.0 <23.0.0'
       - name: npm install
         run: npm install
       - name: build
@@ -119,10 +121,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: install node 22
+      - name: install node 22 (22.13 or later)
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '>=22.13.0 <23.0.0'
       - name: npm install
         run: npm install
       - name: release build
@@ -161,10 +163,10 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
-      - name: install node 22
+      - name: install node 22 (22.13 or later)
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '>=22.13.0 <23.0.0'
       - name: npm install
         run: npm install
       # Build ALL three variants (dual / webgl-only / webgpu-only) — the

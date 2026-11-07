@@ -30,10 +30,10 @@ jobs:
           # repo carries would otherwise be paid on every push for no reason.
           fetch-depth: 0
           filter: blob:none
-      - name: install node 22
+      - name: install node 22 (22.13 or later)
         uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '>=22.13.0 <23.0.0'
       - name: batch number reuse report
         id: batch-report
         run: |

@@ -11,10 +11,10 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v7
-      - name: install node 22
+      - name: install node 22 (22.13 or later)
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '>=22.13.0 <23.0.0'
       - name: install npm packages
         working-directory: ./.github/actions/check-for-CLA
         run: npm install

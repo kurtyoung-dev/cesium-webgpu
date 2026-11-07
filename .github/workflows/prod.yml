@@ -18,10 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: install node 22
+      - name: install node 22 (22.13 or later)
         uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: ">=22.13.0 <23.0.0"
       - name: npm install
         run: npm install
       - name: lint *.js
@@ -44,10 +44,10 @@ jobs:
     needs: [lint]
     steps:
       - uses: actions/checkout@v7
-      - name: install node 22
+      - name: install node 22 (22.13 or later)
         uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: ">=22.13.0 <23.0.0"
       - name: npm install
         run: npm install
       - name: build website release
@@ -81,10 +81,10 @@ jobs:
     needs: [lint]
     steps:
       - uses: actions/checkout@v7
-      - name: install node 22
+      - name: install node 22 (22.13 or later)
         uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: ">=22.13.0 <23.0.0"
       - name: npm install
         run: npm install
       - name: build docs
@@ -100,10 +100,10 @@ jobs:
     needs: [lint]
     steps:
       - uses: actions/checkout@v7
-      - name: install node 22
+      - name: install node 22 (22.13 or later)
         uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: ">=22.13.0 <23.0.0"
       - name: npm install
         run: npm install
       - name: build website release
@@ -121,10 +121,10 @@ jobs:
     needs: [lint]
     steps:
       - uses: actions/checkout@v7
-      - name: install node 22
+      - name: install node 22 (22.13 or later)
         uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: ">=22.13.0 <23.0.0"
       - name: npm install
         run: npm install
       - name: build website release
@@ -152,10 +152,10 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v7
-      - name: install node 22
+      - name: install node 22 (22.13 or later)
         uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: ">=22.13.0 <23.0.0"
       - name: npm install
         working-directory: ./.github/actions/update-tokens
         run: npm install

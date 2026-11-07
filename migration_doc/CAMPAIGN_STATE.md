@@ -4,8 +4,8 @@
 
 Read this file with a Read limit of 45 lines: this section orients every reader, and the body (§1-§3) is for the records lead
 and for a reader sent to one block. It names no tip, batch number or lane: those are in `git log` and in the W-waves block's
-critical-path paragraph (line 963), which the records rounds keep current. It is rewritten in the same commit as any
-campaign-level change ("How to update", line 1033).
+critical-path paragraph (line 984), which the records rounds keep current. It is rewritten in the same commit as any
+campaign-level change ("How to update", line 1081).
 
 **Precedence** (line 56): a campaign's queue row is the row-level authority, this file the campaign-level one, and a dispatch
 board only a sequencing view; a maintainer ruling in `MAINTAINER_RULINGS_*.md` outranks all of them (newest file wins, newest
@@ -25,21 +25,21 @@ ruling within it: `CLAUDE.md` "Rules Files and Routing").
 | Gemini-audit fix plan | launched 2026-09-17, waves 0-6 | its own critical path | R-2026-09-17-1 … -8 | line 570 |
 | Research dispatch queue | a dispatch order, not a status authority | meshlet track MS-00..26 held by gate M6 | queue §"Authority" | line 598 |
 | Upstream sync, CesiumJS 1.145 | landed | legs 1b and 2 owed | — | line 757 |
-| Cloud + water re-landing (W-waves) | launched 2026-10-21; critical path W5 + W6 | per-change PF legs deferred to a whole-product campaign | R-2026-10-22-1 … -15, R-2026-10-23-M1 … -M4, R-2026-10-24-M5 | lines 797, 963, 970 |
-| Antigravity water program | outside the W-waves | reviewed while Gemini finishes | R-2026-10-30-M1 | line 985 |
+| Cloud + water re-landing (W-waves) | launched 2026-10-21; critical path the integration program, feature batches B1-B7 | per-change PF legs deferred to a whole-product campaign | R-2026-10-22-1 … -15, R-2026-10-23-M1 … -M4, R-2026-10-24-M5, R-2026-11-06-M1 | lines 797, 984, 998 |
+| Antigravity water program | outside the W-waves; its Wave 6.5 stack is batch B2 of the integration program | reviewed in that batch | R-2026-10-30-M1, R-2026-11-06-M1 | line 1013 |
 
 **Holds that bind every lane:** quiet hours and branch transparency (`CLAUDE.md`; §2, §3 here); doc archival and moves, held by
 the maintainer since 2026-06-30 (`CLAUDE.md` "Rules Files and Routing"); the housekeeping ASK list (R-2026-10-30-M4, lifted for
-the seat's evidence output folder only by R-2026-10-31-M1); the standing principles that block work (line 1023: no performance win by removing, default-disabling, bypassing or degrading a feature, `SR-1`; no idle-soak FPS under request-render mode, `SR-9`).
+the seat's evidence output folder only by R-2026-10-31-M1); the standing principles that block work (line 1071: no performance win by removing, default-disabling, bypassing or degrading a feature, `SR-1`; no idle-soak FPS under request-render mode, `SR-9`).
 
-**Open maintainer decisions:** the parked list of 2026-11-02 (line 1009): the old Gemini clone, the compile-floor calibration, the
-PF-2 split (a ruling request; until ruled it fails), the PF-4 residency floor, the stopped-loop widget-frame audit, further trims of
-the rules core, and the account-synced plugins; and the open asks of §3a (line 1099, "Still OPEN"): the 2026-08-02 stash decision and ask R-d.
-Live branch, worktree and clone state: `branches/ACTIVE_WORKFLOW_WAVE_2026-08-29.md` (§3a, line 1087).
+**Open maintainer decisions:** the parked list of 2026-11-02 (line 1049): the old Gemini clone, the compile-floor calibration, the
+PF-2 split (a ruling request; until ruled it fails), the PF-4 residency floor, the stopped-loop widget-frame audit, the account-synced plugins and the curation's hold set;
+the integration plan's M-1 … M-6, a commit-subject cap and the proposed Principle 14 (same list); and the open asks of §3a (line 1147, "Still OPEN"): the 2026-08-02 stash decision and ask R-d.
+Live branch, worktree and clone state: `branches/ACTIVE_WORKFLOW_WAVE_2026-08-29.md` (§3a, line 1135).
 
-**Where next:** the seat reads this section and the W-waves block (lines 797-1022); a lane briefed on one campaign reads its block;
-the records lead reads the whole file. Sections: §1 campaign status, lines 77-1040; corrections appendix, lines 1041-1069;
-§2 quiet hours, lines 1070-1079; §3 branch transparency, lines 1080-1105.
+**Where next:** the seat reads this section and the W-waves block (lines 797-1070); a lane briefed on one campaign reads its block;
+the records lead reads the whole file. Sections: §1 campaign status, lines 77-1088; corrections appendix, lines 1089-1117;
+§2 quiet hours, lines 1118-1127; §3 branch transparency, lines 1128-1153.
 
 ---
 
@@ -806,11 +806,11 @@ ruling `R-2026-10-24-S12`. Rows: `DEFERRED_WORK.md` ledger intake 2 (Batch 1591)
 table: `WEBGPU_MIGRATION_STATUS.md` "Landing record (2026-10-23/24 …)"; from 2026-10-30 also `DEFERRED_WORK.md`
 "2026-10-30 — records batch 3" and "… round 2", and the landing tables "Landing record (2026-10-29/30 …)" and "Landing
 record (2026-10-30 — Batches 1608-1623 …)"; from 2026-10-31 also `DEFERRED_WORK.md` "2026-10-31 — records round 4" and
-"… records round 5", "… records round 6", "… records round 7", "… records round 8", "… records round 9" and "… records round 10", and from 2026-11-01 "2026-11-01 — records round 11", "… records round 12" and "… records round 13", and from 2026-11-02 "2026-11-02 — records round 14", and the landing tables "Landing record
+"… records round 5", "… records round 6", "… records round 7", "… records round 8", "… records round 9" and "… records round 10", and from 2026-11-01 "2026-11-01 — records round 11", "… records round 12" and "… records round 13", and from 2026-11-02 "2026-11-02 — records round 14", and from 2026-11-06 "2026-11-06 — records round 15", and the landing tables "Landing record
 (2026-10-31 — Batches 1624-1628 …)", "Landing record (2026-10-31 — Batches 1629-1631 …)", "Landing record (2026-10-31 — Batches
 1632-1636 …)", "Landing record (2026-10-31 — Batches 1637-1640 …)", "Landing record (2026-10-31 — Batches 1642-1643 …)", "Landing record (2026-10-31 — Batch
-1646 …)", "Landing record (2026-10-31 — Batch 1648 …)", "Landing record (2026-11-01 — Batch 1650 …)", "Landing record (2026-11-01 — Batch 1652 …)" and "Landing record (2026-11-02 — Batches
-1654-1664 …)".
+1646 …)", "Landing record (2026-10-31 — Batch 1648 …)", "Landing record (2026-11-01 — Batch 1650 …)", "Landing record (2026-11-01 — Batch 1652 …)", "Landing record (2026-11-02 — Batches
+1654-1664 …)" and "Landing record (2026-11-02/06 — Batches 1665-1670 …)".
 **Landed:** the water as Batches 1585/1586 (`16e093aef6`, `156509c929`, committed 2026-10-23 23:27 and 23:31 EDT; tree
 `9e6bcfb7`; opt-in, the default globe unchanged); then, on 2026-10-24, W0 (1587), KT round 5 (1588), KT-2 round 3 (1589),
 F-4 (1590), LEDGER-2 (1591), catalog A1 (1592) and W1, the cloud core and the three-word define registry (1593); and the
@@ -960,13 +960,41 @@ md5-verified; four Astra clones' textual records banked as hold banks, 1,347.5 M
 unlinked by hand (`DX-RETIRE-TOOL-NESTED-JUNCTIONS`); the Gemini clones were not touched. The evidence curation of
 `R-2026-10-31-M1` ran: 442 keepers banked by week, 22,916 files (19.36 GiB) swept by positive list, a non-PNG hold set listed for
 the maintainer (`NEW-EVIDENCE-CURATION-2026-11-01`).
-**Critical path:** W5 + W6 (audit group G2a). *[Updated 2026-11-02 by records round 14: W4 landed as Batches 1654-1664.]* Lane
-Annatar runs the W5 + W6 round on the W4 round-1 tree (`48d50dfe6c`) and is re-based onto main at its landing; its one identity
-Edge job follows its review (the two waves share one Edge job, the seat's reading of `R-2026-10-24-M5`; the seat's brief
-`cesium-webgpu-worker-archive/lanes-2026-11-01/seat-scratchpad-20261101-evening/brief-W5W6-round.md`). Beside it: probe-kit round
-10 (lane Chrysophylax) builds the experimental cloud dial, the W4 E-ON cells and the four cells the W4 job could not run, and the
-W4 identity job's Phase 2 follows it. The later W-waves (W7a … W12, `R-2026-10-23-M4`) queue behind, one lane round per wave with
-overlapped phases and one identity Edge job per wave (`R-2026-10-24-M5`). The Antigravity water program has not landed (below).
+**Batches 1665-1670 and two identity jobs (2026-11-02/06, records round 15):** Batch 1665 (`d255a80d09`) folds the nine W4 runner
+homes into `package.json` (`DX-LANDING-RUNNER-HOMES-NOT-APPLIED` closed); Batch 1666 (`6c2ed96b54`; probe-kit round 10, lane
+Chrysophylax, reviewer Psamathos P1 HOLDS-WITH-FIXES) lets a rig set `CloudVolumetrics#experimental` and adds the four W4 E-ON
+cells, E-T-on and the four cells the W4 job could not run (E-O-msaa1, E-T-orbital, the live layout census E-BGL, the default-limits
+dial E-LL); Batch 1667 (`c0409afd19`) is records round 14; Batch 1668 (`35cf12ef8c`; lane Cunctator, reviewer Herendil P1
+HOLDS-WITH-FIXES) restructures the rules file under `R-2026-11-05-M1` (the core 33,682 -> 19,446 B as git stores it, three new
+skills, two scaffolded agent types, the diet guard's ratchet at 19,456 B), landed on the fourth attempt. The W4 identity job's Phase
+2 (2026-11-05) ran on Batch 1666's kit: the four E-ON families render with every dial read back and 0 validation errors, E-T-on
+releases 6 of the 7 W4 owner labels (the weather-bounds owner is never allocated there), and every new cell passes; its findings
+P2-1 to P2-7 go to the kit and the teardown row. The W5+W6 identity job (2026-11-06) read every WebGPU no-weather cell 0 px from
+main to the batch, the E-W cells moved (measured; not attributed by unit), and six cells NOT RUN for missing kit pieces
+(`DX-KIT-ROUND-11-OWED`); its one PF-3 `over` on a contended run is PF debt. This batch pins CI to Node 22 at 22.13 or later and runs the spine's
+tests in the guards job (`DX-CI-NODE-PIN`, decision E3; applied, its CI run owed). Batch 1669 (`b142b73c19`, 2026-11-06 04:57 EST)
+is the W5+W6 cloud wave (Codex group G2a) as one batch: three core switches, a fade length (`cloudWeatherTransitionSeconds`, default 30 s, 1-300) and one experimental switch, every switch default off and all WebGPU only
+(the cloud weather worker, snapshot transitions, regional vertical weather, three independent populations), and three default
+moves (3481 weather content reuse, 3487 continuous synoptic structures, 3489 a published cloud-top plane), on its identity job and
+with its PF debt recorded (`NEW-CLOUD-W5W6-PF-DEBT`); its WebGL fallback is banked, so WebGL draws no regional or vertical weather
+(`NEW-CLOUD-W5W6-3490B-WEBGL-FALLBACK`). Batch 1670 (`49cd09660d`, 05:09 EST) is lane Faramir's spec-only karma batch: the shader
+source-id count guard pins all 45 ids again and the cloud main bind-group spec keys every resource but the weather-transition pair
+(`NEW-CLOUD-W4-SHADERSOURCEID-PIN` closed, `NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED` narrowed). Rows: `DEFERRED_WORK.md` "2026-11-06 —
+records round 15".
+**Critical path:** the integration program of `R-2026-11-06-M1` (`DEFERRED_WORK.md` `NEW-INTEGRATION-PROGRAM-2026-11-06`).
+*[Updated 2026-11-06 by records round 15: the seat's plan replaces the sentence that queued the later W-waves W7a … W12 behind one
+lane round per wave.]* The landing unit is a feature batch (one lane, one frozen patch per feature part, one adversarial review, one
+identity Edge job for an engine batch, the gates once at the final tree; per-unit attribution in the packet). The batches, in the
+plan critique's order (B-P added from the strays scout): B1 cloud W5 + W6 (lane Annatar, Codex group G2a as one batch; review Mairon P3 HOLDS-WITH-FIXES; its identity
+job run; landed as Batch 1669, `b142b73c19`); B-K and B-M (lane Faramir: the two Karma reds of main and the march-budget defect, each
+reviewed, Arwen P1 HOLDS-WITH-FIXES; B-K landed as Batch 1670, `49cd09660d`; B-M landed as Batch 1671, `3f5f55c556`, after this round's records were cut, its records round 16's); B2 water (Gemini Wave 6.5, in three feature parts: globe water with data, SSR and the continuum; the FFT ocean; the kit
+remainder); B3 cloud integration (the Codex Sol lane Irilde's tree on B1's, in three feature parts: default path and lifecycle, the
+experimental routes, the distant-cloud library); B-P the three un-landed kit lanes (Taur, Lothlorien, Beleriand: reviewed HOLDS,
+frozen, never landed); B5 and B6 (the Codex groups G2b to G6, regenerated on B3's and then B5's tree), which take the place of the
+waves W7a … W11; B7 held (Gemini's unfinished w6b + w6c, decision M-2). Plan waves W7b and W12 are closed as waves
+(`NEW-CODEX-PLAN-WAVES-W7B-W12-CLOSED`). The wave-end gate runs after B3 and after B6. The plan, its critique (SOUND WITH CHANGES)
+and two scout reports: `cesium-webgpu-worker-archive/lanes-2026-11-06/integration-plan/`. The Antigravity water program lands as
+B2 (below).
 **Holds:** the per-change PF legs of every default move wait for a whole-product performance campaign after the stack
 lands (`R-2026-10-24-M5`) and are recorded per wave as PF debt (`NEW-CLOUD-W2-PF-DEBT`, `NEW-CLOUD-W3-PF-DEBT`,
 `NEW-CLOUD-W4-PF-DEBT`); the
@@ -987,9 +1015,14 @@ REWORK) are outside the W-waves; only their salvaged parts landed, through the s
 (`NEW-WATER-W1A-GLOBE-PIPELINE-FALLBACK`, `NEW-WATER-W1B-OCEAN-LIFECYCLE`, `NEW-WATER-W1C-PRIMITIVE-WATER-SSR`).
 *[Records round 14, the seat's reading of 2026-11-02, not re-measured by the records lane:]* Gemini's rework (Argon) runs in
 six clones cut from the Gemini base at Batch 1644: `cesium-lane-silmarien-20261101` (w2a), `-erellont-` (w1b), `-tarindor-`
-(w1c), `-oronwe-` (w1a), and `-dorlas-` and `-daimord-` as byte-identical review copies; four packets' patches apply on
+(w1c), `-oronwe-` (w1a), and `-dorlas-` (w2b, on oronwe) and `-daimord-` (water-w3, on erellont), separate 24- and 26-path layers, not the
+byte-identical review copies this paragraph first called them (corrected by records round 15 from the integration plan's section
+1.2 and its critique, R-12); four packets' patches apply on
 `85bcb89ff2`; no FREEZE or message file exists yet. The seat reviews when the maintainer declares the Layer-1 set final. The
 thirteen older water clones `cesium-lane-water-w*-20261029` and the base `cesium-gemini-base-20261031` stay the maintainer's.
+*[Records round 15, from the integration plan of 2026-11-06:]* Wave 6.5 is ten deliveries (oronwe, erellont, tarindor, silmarien,
+dorlas, daimord, beraid, inglorion, nevrast, egalmod), one linear stack contained in `egalmod.patch` (126 paths), unreviewed when the
+plan was written; under `R-2026-11-06-M1` it is batch B2. Gemini's w6b + w6c (clone vinyamar) is unfinished and held (B7).
 **Maintainer rulings of 2026-10-30 23:2x EDT** (`MAINTAINER_RULINGS_2026-10-22.md`, verbatim there):
 - `R-2026-10-30-M1` (Antigravity water program): reviews, audits and fix suggestions continue while Gemini finishes; the seat
   consolidates the twelve reviews into one bottom-up fix list per wave, and the program is to land on Saturday 2026-10-31.
@@ -1006,19 +1039,34 @@ thirteen older water clones `cesium-lane-water-w*-20261029` and the base `cesium
   only (not the immutable bank, not the worker archive). *[Records round 14:]* the curation ran on the maintainer's go of
   2026-11-01 (`DEFERRED_WORK.md` `NEW-EVIDENCE-CURATION-2026-11-01`; `DX-EVIDENCE-OUTPUT-RETENTION` closed).
 - `R-2026-10-31-M2` (`DX-RULES-DIET-2`): the middle path; executed by Batch 1643 (`7399ee05ad`).
+**Maintainer ruling of 2026-11-05** (`MAINTAINER_RULINGS_2026-10-22.md`, verbatim there; recorded by Batch 1668):
+- `R-2026-11-05-M1` (context load): the context optimisation lands before the review of the Codex and Gemini updates, and the
+  always-loaded rules file keeps what binds every agent plus routing; executed by Batch 1668 (`35cf12ef8c`).
+**Maintainer ruling of 2026-11-06** (`MAINTAINER_RULINGS_2026-10-22.md`, verbatim there; recorded by records round 15):
+- `R-2026-11-06-M1` (the integration program): back to the three-tier orchestration, and land all remaining Codex and Gemini work
+  as feature batches, the attribution per unit kept in the packet; it answers the old item "one batch per default-path unit" and
+  changes neither the proof bar by change class, nor the quiet hours, nor the full gate set at landing.
 **Maintainer decisions (2026-11-02, records round 14; the seat's list, each with its row where one exists):**
 - Parked, pending: (1) the old Gemini clone `cesium-lane-water-w6c-20261029` and its 122 uncommitted edits (the closeout
   plan left it out as the maintainer's); (2) the compile-floor calibration, with the seat's report-only recommendation
   (`DX-KIT-COMPILE-FLOOR-CALIBRATION-LEG`); (3) the PF-2 split whose slow mode only the tip drew
   (`DX-KIT-PF2-BIMODAL-ARM-SEPARATED`, a ruling request; until ruled it fails); (4) the PF-4 residency floor
   (`DX-KIT-PF4-RESIDENCY-ALLOWANCE-ZERO`); (5) the stopped-loop widget-frame audit (`DX-KIT-STOPPED-LOOP-WIDGET-FRAME-AUDIT`);
-  (6) further trims of the 34 KB rules core (`DX-RULES-ROUTING-LINE-SCOPE` carries the open routing decision); (7) the three
+  (6) further trims of the 34 KB rules core (superseded: `R-2026-11-05-M1` decided the layout and Batch 1668 executed it, records
+  round 15; `DX-RULES-ROUTING-LINE-SCOPE` still carries the open routing decision); (7) the three
   claude.ai-synced plugins, about 1,300 tokens a session (the seat's figure, `DEFERRED_WORK.md` records round 8 notes).
 - Answered: (8) the curation's timing, by the maintainer's go of 2026-11-01 (`NEW-EVIDENCE-CURATION-2026-11-01`).
 - Applied as the seat recommended: the three 10-24 synthesis (A24) rank-4 harmonisation items, H-feat, R-W2-a and R-W2-b, landed
   in W4 as Batches 1654, 1663 and 1664.
 - New, from the curation: the non-PNG hold set (18,419 files, 2.68 GB: 181 JSON files over 1 MB, a 0.61 GB `.vsix`, copied
   sources and logs), and the 6,463 swept PNGs the protected Astra records still name (`NEW-EVIDENCE-CURATION-2026-11-01`).
+- New (2026-11-06, records round 15; the integration plan's section 5, each one question): M-1 the FFT ocean's default spectrum;
+  M-2 whether Gemini finishes w6b + w6c (B7); M-3 the distant-cloud library code in Irilde's tree, default-off scaffolding or cut;
+  M-4 the open 10-24 Codex audit items (withdraw 3515, 3585, 3586; demote four weather dials to experimental; waive the renderer-file
+  decomposition for B5 and B6); M-5 clone retirement after each batch lands; M-6 the untracked `Tools/patch-prototype/` in the seat
+  worktree. From the context-load work: a commit-subject cap, and hiding the account-synced plugins and skills for this workspace
+  (`DEFERRED_WORK.md` `DX-CONTEXT-LOAD-2026-11-05`); and the wording of the proposed Principle 14
+  (`DX-GOVERNANCE-PROMPT-INJECTION-PRINCIPLE`, `R-2026-10-22-9`).
 
 ### Standing principles that block work (not row-specific)
 

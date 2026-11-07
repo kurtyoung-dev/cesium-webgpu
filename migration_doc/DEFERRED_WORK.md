@@ -30043,10 +30043,18 @@ The 184 rows below are the confirmed defects of the 2026-10-08 Gemini audit tria
 - **Repair:** The candidate is Astra's checkpoint hunks (`WebGPUCloudTierPresets.ts:762-764` there and a renderer hunk at `:3322` there): the minimum that cannot fit resolves to zero primary steps and the renderer refuses the frame as `"march-budget-exceeded"` before temporal allocation, uniform upload, lighting cache, mask or visible march. One defect, one owner: do not widen it. It is excluded from any Astra re-cut and belongs to the seat's engine lane.
 - **Acceptance:** With a budget set, no frame encodes a march whose reported cost exceeds it unless that frame is reported as refused, by name, in the cloud observability counters; wherever the one-step floor fits, the resolved preset and the counters are identical to the base. Owed: a behaviour spec (budget applied, minimum unfit gives a refused frame, never one encoded with zero steps), an inertness mutant, `npm run tsc-engine`, and a base-identity check for every frame where the minimum fits. Class: engine. **Proof bar:** full (maintainer ruling R-2026-08-29-1: a behaviour spec, an inertness mutant, a separate review and the named Edge leg); the lane first computes in Node, with the real resolver, the smallest drawing buffer at which the unfit branch is taken for every default and `"auto"` tier row, and compares it with the largest drawing buffer the context can create (the plan's stop condition). **Suggested owner:** Opus lead (effort high) with a Sonnet spec writer and a separate Opus reviewer.
 - **Source:** The Astra return audit's P2 finding "the march-cap unfit-minimum case", as `SEAT_RESPONSE.md` section 4 (astra-return-p2 folder) names it ("`WebGPUCloudTierPresets.ts:749-757`", promised a ledger row "at the next record round"); `ASTRA_STACK_REVIEW_2026-10-08.md` section 2.2 and section 7 lane 7; `minimum-march-repair.json` in the same folder; AUDIT_FIX_WAVE_PLAN_2026-10-09.md revision 2, FW-10.
+- **Reviewed (records round 15):** lane Faramir's engine patch (md5 `380cd3134fe4daa7c0a9413ef6790100`, batch B-M of
+  `NEW-INTEGRATION-PROGRAM-2026-11-06`) resolves the unfit minimum to zero primary steps and has the renderer refuse the frame as
+  `"march-budget-exceeded"`, counted in `marchBudgetRefused` / `raymarch.budgetRefused`, with behaviour identical to the base where
+  the floor fits (the lane's claim: 84 frames, its S3 case, every one with baked noise resident; live noise is covered at the resolver only, the packet's attack item 5); reachable under the default 8192 limit only with live noise, multi-deck,
+  the mask and a failed half-res allocation at 62.5 M px or more, and in a debug build also through the realization override's cone bit on the high row or the raw path with no allocation failure (the lane's threshold table). It owed its Edge identity leg and was to land
+  after the W5+W6 wave; its review (Arwen P1) returned HOLDS-WITH-FIXES (the lane's `_lane-out/REVIEW_ARWEN_BUDGET_P1.md:1`, as this round's review read it) and batch B-M landed as Batch 1671 (`3f5f55c556`, 2026-11-06 06:09 EST) after this round's records were cut at Batch 1670, from the patch the seat's landing log gives as md5 `0ba3ca9729782d4ecd5e5b9bc9ecf771` (`lanes-2026-11-06/landing-logs/land-faramir-budget-1.log`); its landing and the row's closure are records round 16's, so the row stays OPEN here. The same packet's attack list names the
+  separate input gap `NEW-CLOUD-RAW-QUALITY-NONPOSITIVE-ENCODES`. **Source:** lane Faramir's `_lane-out/LANDING_PACKET_FARAMIR.md`
+  section 2.
 
-## 2026-10-09 — NEW-C16-FLAVOUR-MALFORMED-PRAGMA-REPAIR-MISCLASSIFIED-COMMENT-ONLY — The comment-flavour gate skips its release-output comparison when the OLD text has a malformed prose pragma anchor, so a code-changing repair can read as comment-only — **OPEN** (P2, NEW)
+## 2026-10-09 — NEW-C16-FLAVOUR-MALFORMED-PRAGMA-REPAIR-MISCLASSIFIED-COMMENT-ONLY — The comment-flavour gate skips its release-output comparison when the OLD text has a malformed prose pragma anchor, so a code-changing repair can read as comment-only — **CLOSED** (Batch 1568, `5769b7615a`; the row stayed open until records round 15)
 
-**Status: OPEN.** NEW. Promised by `SEAT_RESPONSE.md` section 4 ("at the next record round"); a grep of this ledger for "flavour-views" finds no row.
+**Status: CLOSED** (records round 15; fixed by Batch 1568). NEW. Promised by `SEAT_RESPONSE.md` section 4 ("at the next record round"); a grep of this ledger for "flavour-views" finds no row.
 
 **Owner:** audit fix wave 1, lane FW-09.
 
@@ -30057,6 +30065,14 @@ The 184 rows below are the confirmed defects of the 2026-10-08 Gemini audit tria
 - **Repair:** The candidate above, as its own Tools batch after review (`SEAT_RESPONSE.md` section 4).
 - **Acceptance:** A JS/TS edit that repairs a malformed prose pragma anchor is comment-only exactly when the canonical release-stripped output is unchanged, and `flavour-differs` (release-pragma) otherwise, whatever anchors the old text had. Runner: `npm run test-c16` (the line is proposed to the seat, which owns `package.json`); new cases go in a companion spec file unless the reviewer accepts the +52 lines in the 1,406-line spec. Class: tools. **Proof bar:** spec with a runner home (maintainer ruling R-2026-08-29-1, tools class); no Edge leg. **Suggested owner:** Sonnet author, Opus reviewer.
 - **Source:** The Astra return audit's P2 finding A2 ("malformed-pragma repairs can be misclassified as comment-only"), recorded in `comment-flavour-repair-checkpoint-175.json` (fields `finding` and `behavior`), `SEAT_RESPONSE.md` section 4 and `ASTRA_STACK_REVIEW_2026-10-08.md` section 2.3 item 7 and section 7 lane 6; AUDIT_FIX_WAVE_PLAN_2026-10-09.md revision 2, FW-09.
+- **Closed (records round 15):** the fix landed as Batch 1568 (`5769b7615a`, 2026-10-09; its subject: "the C16 comment gate now judges
+  an edit that repairs a malformed release pragma by what the release build strips …"). Re-read at Batch 1668: the gating condition
+  `prosePragmaAnchors(before).length === 0` is gone from `Tools/c16/lib/flavour-views.mjs` (grep exit 1), and the release-pragma branch
+  compares the canonical release-stripped texts whatever anchors the old text had (`:760-763`); the behaviour is pinned by
+  `Tools/c16/comment-flavour-release-pragma.spec.mjs`, homed in `package.json`, which passes 8 of 8 run directly in the lane clone
+  (exit 0). The integration plan (scout Karhu) and its critique both read the row as stale. **Source:** `git log -- Tools/c16/lib/flavour-views.mjs`;
+  the file and the spec at Batch 1668; `cesium-webgpu-worker-archive/lanes-2026-11-06/integration-plan/fastitocalon/CRITIQUE.md`
+  ("Status calls re-run").
 
 ## 2026-10-09 — NEW-WEBGPU-SSR-FULLSCREEN-TRIANGLE-HALF-VIEWPORT — The SSR "full-screen triangle" covers half of clip space — **OPEN** (unrated, NEW)
 
@@ -31174,6 +31190,11 @@ dials none of them is created (the W4 identity job's E-T-flight cell saw none of
 release, single-viewer or on a shared device, is untested until E-T runs with the dials on (`NEW-CLOUD-W4-E-ON-CELLS-OWED`).
 **Source:** `cesium-webgpu-worker-archive/lanes-2026-11-01/w4-cloud/_lane-out-r2-HOLDS-348e1c70/cut/APPENDS_BY_BATCH.txt` ("Update
 NEW-CLOUD-W3-SHARED-DEVICE-TEARDOWN-UNTESTED"); `w4-cloud/edge/w4-identity-phase1/SUMMARY_EOWYN_W4.txt` (F1).
+**W4 Phase 2 (records round 15):** with every W4 dial on (cell E-T-on), six of the seven W4 labels are allocated and all six are
+released on `viewer.destroy` and on the forced loss, each with the device (freedByDevice 1-2, destroyed 0), as are the pre-W4 rows
+"ProceduralClouds UB", the LUT placeholder and "Cloud geographic material flow"; only "Cloud scene depth" is destroyed explicitly
+(finding P2-2). The kit counts both as released, so whether these owners are freed on a teardown that keeps the device is still
+unmeasured; the piece is `DX-KIT-ROUND-11-OWED` item 11. **Source:** `NEW-CLOUD-W4-IDENTITY-PHASE2-2026-11-05`.
 
 ### NEW-CLOUD-W3-PF-DEBT — the W3 default moves and their residue land on identity proof; their PF cells are owed — **OPEN** (performance debt, R-2026-10-24-M5; W3 landed as Batches 1608-1615)
 
@@ -31292,7 +31313,7 @@ the reviewer's surviving minor mutant (the `finally` restore removed stays green
 Tools/visual-regression/fixtures/metrics-cloud-extraction.golden.json` (citation strings only); `git show -s ce8b170c93`;
 the seat's decision B47 in `cesium-webgpu-worker-archive/lanes-2026-10-30/salvage-night/DECISIONS_FOR_MAINTAINER_2026-10-29.md:147`.
 
-### DX-CI-NODE-PIN — CI runs Node "22" while the machine runs 24.22.1, and the context spine's runner is in no workflow — **OPEN** (DX row, CI)
+### DX-CI-NODE-PIN — CI runs Node "22" while the machine runs 24.22.1, and the context spine's runner is in no workflow — **APPLIED** (records round 15; the CI acceptance is OWED: no CI run has been seen)
 
 Every CI job that sets up Node, except `dev.yml`'s `node-smoke-test`, sets `node-version: '22'` or `"22"` (`cla-rotation-reminder.yml`
 runs `actions/github-script` and sets up no Node) (for example `.github/workflows/dev.yml:19`
@@ -31308,6 +31329,31 @@ with the Node major too. **Repair:** pin CI to an explicit 22.x at or above 22.1
 **Acceptance:** CI's guards job runs `test-context-spine` green on the pinned Node. **Suggested owner:** the seat (CI
 files), by ruling.
 **Source:** the workflow files at Batch 1622 (unchanged since Batch 1607); `cesium-webgpu-worker-archive/lanes-2026-10-29/DECISIONS_FOR_MAINTAINER_2026-10-29.md:60-61`.
+**Applied (records round 15, decision E3 of `R-2026-10-30-M2`, "pin CI to Node 22.13 or later"; the form is the seat's decision
+in repair round 2):** the seventeen `node-version` pins that set up Node read the range `'>=22.13.0 <23.0.0'` (each file keeps its own
+quote style; each step named `install node 22` now reads `install node 22 (22.13 or later)`): `batch-number-report.yml:36`, `cla.yml:17`,
+`deploy.yml:31`, `dev.yml:19`, `:75`, `:110`, `:127`, `:169`, `prod.yml:24`, `:50`, `:87`, `:106`, `:127`, `:158`,
+`sandcastle-dev.yml:23`, `update-tokens.yml:25` and `visual-regression.yml:46` (line numbers after the change). **Why a range:** E3's
+words are a floor; a bare `'22.13'` is the range 22.13.x, a ceiling as well, which would move CI from the newest 22.x (v22.23.4,
+2026-10-20, read by the seat from the public Node release index) back to 22.13.1 (2025-01-21), and one installed package, `ini@7.0.0`,
+already declares `^22.22.2` on that line (reviewer Erestor R-4). The range resolves to the newest matching release the runner has
+cached or fetches; `check-latest` is not set in any workflow (grep), so a cached 22.x at or above 22.13 can serve. `dev.yml`'s
+`node-smoke-test` matrix (`version: [22, 24]`) is unchanged on purpose: it tests two majors. `cla-rotation-reminder.yml` sets up no
+Node and is unchanged. The `guards` job gains `npm run test-context-spine` after the landing rule tests (`dev.yml:86-87`), and
+`Tools/ci-guards.spec.mjs` gains `"npm run test-context-spine"` in `WIRED_GUARDS`, which pins the job's command list (round 1 left it
+out, so the spec read 10 guard commands against 9 expected: reviewer Erestor B-1). No trigger, secret, env, job name, runner or matrix
+changed. **Checked (lane Gildor, repair round 2):** `node _lane-out/check-workflows.mjs 35cf12ef8c` (a short script, no install):
+every workflow file parses with the repository's `js-yaml`, each file's `on` value and job names equal those at Batch 1668, and every
+`node-version` outside the matrix equals `>=22.13.0 <23.0.0` (17 of 17, exit 0); `node --test Tools/ci-guards.spec.mjs` 36 of 36
+(exit 0), red with the new step removed from `dev.yml` ("the guards job no longer runs: npm run test-context-spine") and red with
+the new entry removed from the list ("the guards job runs 10 guard commands but 9 are expected"), both restored by md5;
+`npm run -s test-build-infra` exit 1, 222 pass, 2 fail, 4 skipped, both fails in `verify-package-smoke.spec.mjs` (`TypeError: object is
+not iterable` at `packedPaths`, the machine's npm 12.2.1: the open `DX-VERIFY-PACKAGE-SMOKE-RED-AT-SEAT`, not this change), and the
+same runner's other 20 specs run directly 221 pass, 1 skipped, 0 fail; `npm run -s test-context-spine` 51 of 51 on the machine's
+Node 24.22.1 (Windows). `npx prettier --check` on the changed paths exits 0; it checks the format of `Tools/ci-guards.spec.mjs` only, because every
+other changed path is in `.prettierignore`. Not checked: a run on any 22.x, and CI's own run. **Acceptance (OWED):** the first CI run after the push runs the
+`guards` job on Linux green on a 22.x at or above 22.13, `test-context-spine` reading 50 pass and 1 skipped there
+(`spine-freshness.spec.mjs:165` skips off Windows) and `test-build-infra` with `ci-guards.spec.mjs` green.
 
 ### DX-KIT-INGEST-HARNESS-READINESS-BUDGET — two fixed kit budgets fail under the W-wave Edge jobs: the cloud probes' frame-count readiness and the 10 s browser-close deadline — **CLOSED** (Batch 1638, `b4bf6307cf`; the readiness half measured on Edge 2026-10-31 for `probe-weather-ingest`, W3-DAYLIGHT leg; the six other readiness-budgeted cloud probes and the loaded-machine close leg are owed)
 
@@ -31507,6 +31553,10 @@ the seat recommended, C5 opt-in now (`R-2026-10-30-M2`, recorded by Batch 1624).
 (`NEW-CLOUD-W4-3652-DEFERRED-DEFAULT-MOVE`); 3620 and 3632 served as references only; 3513's reflection field stays deferred.
 **Source:** `cesium-webgpu-worker-archive/lanes-2026-11-01/w4-cloud/_lane-out-r2-HOLDS-348e1c70/cut/APPENDS_BY_BATCH.txt` ("Update
 NEW-CODEX-POST-PLAN-UNITS-3587-3789"); `LANDING_PACKET_W4.md` section 1 (same folder).
+**The integration program (records round 15):** under `R-2026-11-06-M1` the remaining groups land as the feature batches B5 (G2b +
+G3) and B6 (G4-G6), regenerated on lane Irilde's integrated tree, and plan waves W7b and W12 are closed as waves
+(`NEW-INTEGRATION-PROGRAM-2026-11-06`, `NEW-CODEX-PLAN-WAVES-W7B-W12-CLOSED`); the 240 unit patches are banked at
+`cesium-webgpu-worker-archive/lanes-2026-11-06/codex-unit-stack/`.
 
 ## 2026-10-30 — records batch 3, round 2: the W3 landing (Batches 1608-1615) and the salvage night (Batches 1616-1623)
 
@@ -32710,6 +32760,10 @@ and `DX-KIT-WATER-CELLS-CAPTURE-MANIFEST` (closed for the kit, each with its Edg
   NB-4); `--runs 1` keeps the old behaviour. The mechanism is still unattributed. **Source:**
   `cesium-webgpu-worker-archive/lanes-2026-10-31/round3/aerandir/LANDING_PACKET_AERANDIR.md` (W3); `round3/aerandir/REVIEW_NURWE_P1.md`
   (NB-4).
+- **Re-measured (records round 15; the W5+W6 identity job, 2026-11-06, `--runs 2` on both arms):** WebGL `E-D` differs run to run
+  inside each arm by 344 px (BEFORE, main `c0409afd19`) and 319 px (TIP), and across arms by 307-399 px (max channel 6-9, bbox about
+  x 392-887, y 112-603), so WebGL identity is again not provable on this cell; WebGL `E-D-HDR` and the four WebGL E-W cells read 0 px,
+  and WebGPU `E-D` 0 px. The mechanism is still unattributed. **Source:** `NEW-CLOUD-W5W6-IDENTITY-JOB-2026-11-06` (finding F1).
 
 ### DX-KIT-PF-UNMEASURED-CONTENDED-EXIT-CODE — a `--base-report` run under load exits 1 through PF-3 `unmeasured-contended` alone — **CLOSED** (Batch 1638, `b4bf6307cf`; read on Edge by the KIT5 leg's kit-probe runs, records round 9)
 
@@ -35123,14 +35177,25 @@ the gates ran). **Repair:** repoint the pin to `qualityBlock` and confirm the D8
 **Owner:** the cloud program (a tools batch). **Source:** `cut/APPENDS_BY_BATCH.txt`; `LANDING_PACKET_W4.md` sections 5 and 6
 item 4; the lines above, re-read at Batch 1664.
 
-### NEW-CLOUD-W4-SHADERSOURCEID-PIN — the Karma spec pins 44 `ShaderSourceId` keys while the registry has 45 — **OPEN** (base red; the water lane's)
+### NEW-CLOUD-W4-SHADERSOURCEID-PIN — the Karma spec pins 44 `ShaderSourceId` keys while the registry has 45 — **CLOSED** (Batch 1670, `49cd09660d`; records round 15)
 
 `WebGPUShaderDefinesSpec.js:146` expects `Object.keys(ShaderSourceId).length` to be 44; the frozen object at
 `WebGPUShaderDefines.ts:1328` carries 45 keys at Batch 1664 (Batch 1622's FFT-ocean id was added without its pin). Neither file is
 in the W4 diff; W4's Karma run read the red as the base's own. **Repair:** pin 45 (with the new id's value). **Owner:** the water
 lane. **Source:** `cut/APPENDS_BY_BATCH.txt`; `LANDING_PACKET_W4.md` section 6 item 2; the two files, counted at Batch 1664.
+**Closed (records round 15; Batch 1670, `49cd09660d`):** lane Faramir's spec-only karma patch (md5
+`45e6cd48e1f27825bd90dc702b010037`; reviewer Arwen P1 HOLDS-WITH-FIXES, `REVIEW_ARWEN_KARMA_P1.md:1`) landed as Batch 1670: it pins
+`ShaderSourceId.OCEAN_STOCKHAM_IFFT` at 69 and moves the count guard to 45 (`WebGPUShaderDefinesSpec.js:141`, `:148` at Batch 1670;
+the two landed spec blobs equal the patch's post-image blob ids, checked by this round). Proof: the lane's Karma counts on one built
+tree, the ShaderDefines suite 47 run / 1 failed ("Expected 45 to be 44") before and 47 / 0 after, an unpinned-id mutant red at 47 / 1
+(`_lane-out/evidence/karma-counts.txt`: `karma-before-A`, `karma-after-A`, `karma-mutantA-A`); the seat's landing ran both Karma
+suites as gates on the tip plus the patch (`npx gulp test --includeName="Renderer/WebGPU/WebGPUShaderDefines"` and the bind-group
+caches suite) and ended `land rc=0` (`cesium-webgpu-worker-archive/lanes-2026-11-06/landing-logs/land-faramir-karma-1.log`; the log
+prints no per-suite counts). This round ran no Karma. The plan critique (B-2) and the seat's brief to the lane said this red sat in
+no ledger: wrong, this row recorded it (the lane's premise correction). **Source:** lane Faramir's `_lane-out/LANDING_PACKET_FARAMIR.md`
+("Premise correction", section 1, "Ledger rows"), `REVIEW_ARWEN_KARMA_P1.md`, `evidence/karma-counts.txt`; the landing log above.
 
-### NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED — no spec reds when a bind-group cache key W4 added is made inert — **OPEN** (tools follow-up; reviewer Roheryn P2 residual R-P2-1)
+### NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED — no spec reds when a bind-group cache key W4 added is made inert — **OPEN, narrowed** (Batch 1670, `49cd09660d`, closes the main cache's half; the shadow cache's W4 entries, the main cache's `weatherTransition` and `layout` keys and a completeness guard stay open; reviewer Roheryn P2 residual R-P2-1)
 
 The occupancy-view entry W4 added to the main cloud bind-group cache key (`WebGPUProceduralCloudRenderer.ts:1667` at Batch 1664,
 in `getOrCreateCloudMainBindGroup`, `:1603`) and to the shadow cache key (`WebGPUCloudShadowBindGroupCache.ts:68`) is guarded by no
@@ -35143,6 +35208,16 @@ round (the two-repair cap of `R-2026-10-24-M5`): give the Karma spec's fake cach
 `webgpu-cloud-shadow-bind-group-cache.spec.mjs` with the five W4 entries, and kill N1 / N1s with an inertness case each.
 **Owner:** the seat (tools batch). **Source:** `REVIEW_ROHERYN_P2.md` sections 2 and 5; `cut/APPENDS_BY_BATCH.txt` ("Seat append
 after REVIEW_ROHERYN_P2"); the lines above, re-read at Batch 1664.
+**Narrowed (records round 15; Batch 1670, `49cd09660d`):** the same karma patch gives the Karma spec's fake cache a
+`materialFlow`, makes the main-cache test key every resource (13 positional and cache-owned resources, each replaced alone on a fresh
+device and cache), and adds a test over the 21 `exactBindings` fields and the uniform epoch's buffer, which kills N1 in Karma. Proof:
+the lane's counts, the bind-group caches suite 4 run / 1 failed (a TypeError reading `buffer`) before, 5 / 0 after, mutant N1 red at 5 /
+1 (`evidence/karma-counts.txt`: `karma-before-B`, `karma-after2-B`, `karma-mutantN1-B`), and the seat's landing gate run above. Closed:
+the main cache's half. **Still open:** N1s, the shadow cache's five W4 entries in `webgpu-cloud-shadow-bind-group-cache.spec.mjs`;
+the main cache's `weatherTransition` key (from the W5+W6 wave, Batch 1669) and its `layout` key (reviewer Arwen's mutant K5b, the key made inert: 5 executed, 0 failed, `REVIEW_ARWEN_KARMA_P1.md`); and a completeness guard that turns
+the spec red when a binding is added without a case (the packet's ledger text as fixed after review). **Source:** lane Faramir's
+`_lane-out/LANDING_PACKET_FARAMIR.md` section 1 ("Ledger rows"), `REVIEW_ARWEN_KARMA_P1.md`, `evidence/karma-counts.txt`; the landing
+log `lanes-2026-11-06/landing-logs/land-faramir-karma-1.log`.
 
 ### NEW-CLOUD-W4-E-ON-CELLS-OWED — the W4 families' on-path is proven in Node; their visual proof on Edge is owed — **OPEN** (visual proof owed; seat ruling on R-1)
 
@@ -35154,13 +35229,25 @@ survivors). The E-ON cells per cache family and the cache-reuse counter E7-2 sta
 zero validation errors with the grown layout), the low-limits adapter run and E-T with the dials on (Phase 2 of the identity job).
 **Owed after** `DX-KIT-CLOUD-EXPERIMENTAL-DIAL` (probe-kit round 10). **Source:** `cut/APPENDS_BY_BATCH.txt`;
 `LANDING_PACKET_W4.md` sections 4 B2 and 7; `REVIEW_ROHERYN_P2.md` section 2.
+**Measured (records round 15; the W4 identity job's Phase 2, 2026-11-05, on Batch 1666's kit):** the four E-ON cells (occupancy,
+density, shadow, lighting) PASS with every dial read back and 0 validation errors, and E-T-on releases 6 of the 7 W4 owner labels after
+`destroy()` and after the forced loss. The visual effect is at most one code value at this view (0, 1,690, 62,055 and 1 px against the
+dial-off frame; P2-7), and the occupancy frame is byte-identical to the dial-off frame although its owners allocate, so the cell
+cannot tell a map that skips nothing from one not consulted (P2-6). Still owed: "Cloud weather volume bounds" (never allocated on
+these rigs, P2-1), the reuse counter E7-2 (no piece, P2-5), E5-3 with volumetric fog on, E-LL with the dials on (P2-4), the
+CloudShadow and `layout: "auto"` counts (P2-3) and PF-4 with the dials on (PF debt); the pieces are `DX-KIT-ROUND-11-OWED`.
+**Source:** `NEW-CLOUD-W4-IDENTITY-PHASE2-2026-11-05`.
 
-### DX-KIT-CLOUD-EXPERIMENTAL-DIAL — no stage dial sets `CloudVolumetrics#experimental.<dial>`, so no rig can turn a W4 family on — **OPEN** (probe kit; owed before the W4 E-ON and dials-on E-T cells)
+### DX-KIT-CLOUD-EXPERIMENTAL-DIAL — no stage dial sets `CloudVolumetrics#experimental.<dial>`, so no rig can turn a W4 family on — **CLOSED** (Batch 1666, `6c2ed96b54`; measured by the W4 identity job's Phase 2; records round 15)
 
 `lib/cloud-rig-stage.mjs` and `lib/landing-cell-table.mjs` carry no `experimental` dial (grep at Batch 1664: no match in either);
 the W4 cells need one stage dial taking `{<experimental dial>: value}` with a read-back, so E-ON per cache family and E-T with the
 five W4 owners alive run on the kit rather than a page script. **Owner:** the kit (probe-kit round 10). **Source:**
 `cut/APPENDS_BY_BATCH.txt`; `LANDING_PACKET_W4.md` section 7 ("Missing kit piece"); the grep above.
+**Closed (records round 15):** Batch 1666 lets a rig declare `experimental: { <dial>: value }`, validated by
+`lib/cloud-experimental-dial.mjs` and carried by both stages, with each dial read back on `CloudVolumetrics#experimental` (its
+message). Measured by the W4 identity job's Phase 2: every dial of the four E-ON cells and of E-T-on read back true on every page (2
+of 2 runs; 4 of 4 E-T-on pages) (`NEW-CLOUD-W4-IDENTITY-PHASE2-2026-11-05`).
 
 ### NEW-CLOUD-W4-TEMPLATE-READER-COPIES — seven cloud specs still carry a private march-template reader and three a hard-coded module list — **OPEN** (DX)
 
@@ -35200,32 +35287,47 @@ held still under the same pins here, 0 px). **Next step:** more invocations per 
 pipeline wait (`DX-KIT-WEATHER-MAP-NO-WAIT-PIPELINES`). **Owner:** the cloud program. **Source:** `SUMMARY_EOWYN_W4.txt` (verdict
 table, F3, section 4); `bisect-f3/wide-on-pairwise.txt` (the 10 x 10 matrix and lumas); `bisect-f3/F3_BISECT.jsonl`.
 
-### DX-KIT-E-O-MSAA-OFF-CELL — the landing cell table has only the MSAA-4 orbital rig, so E-O with MSAA off cannot run — **OPEN** (probe kit; identity job finding F2)
+### DX-KIT-E-O-MSAA-OFF-CELL — the landing cell table has only the MSAA-4 orbital rig, so E-O with MSAA off cannot run — **CLOSED** (Batch 1666, `6c2ed96b54`; cell `E-O-msaa1` measured by the W4 Phase 2 job; records round 15)
 
 `lib/landing-cell-table.mjs:140-141` maps `E-O` to `orbital-fulldisc-6608km-msaa4-single-deck` and no sibling cell runs MSAA 1;
 the W4 sheet's E-O MSAA-off cell read NOT RUN. **Repair:** a sibling rig declaring MSAA 1 as data and a cell for it. **Owner:**
 the kit (probe-kit round 10). **Source:** `SUMMARY_EOWYN_W4.txt` (verdict table "E-O MSAA off"; F2).
+**Closed (records round 15):** Batch 1666 adds the rig `orbital-fulldisc-6608km-msaa1-single-deck` and the cell `E-O-msaa1`; the W4
+Phase 2 job read it PASS on 2 of 2 runs (msaaSamples 1 read back, luma 67.483, one console error the W3 job also recorded at main),
+and the W5+W6 job read it 0 px TIP against BEFORE (`NEW-CLOUD-W4-IDENTITY-PHASE2-2026-11-05`, `NEW-CLOUD-W5W6-IDENTITY-JOB-2026-11-06`).
 
-### DX-KIT-E-T-ORBITAL-CELL — no device-loss cell runs on the orbital rig, so E-T on E-O cannot run — **OPEN** (probe kit; F2)
+### DX-KIT-E-T-ORBITAL-CELL — no device-loss cell runs on the orbital rig, so E-T on E-O cannot run — **CLOSED** (Batch 1666, `6c2ed96b54`; cell `E-T-orbital` measured by the W4 Phase 2 job; records round 15)
 
 The E-T cells are `E-T-water`, `E-T-flight`, `E-T-resize` and `E-T-skybox` (`lib/landing-cell-table.mjs:155-167`); the W4 sheet's
 E-T on E-O read NOT RUN. **Repair:** an E-T cell with the flight cell's device-loss steps on E-O's rig. **Owner:** the kit
 (probe-kit round 10). **Source:** `SUMMARY_EOWYN_W4.txt` (verdict table "E-T on E-O"; F2).
+**Closed (records round 15):** Batch 1666 adds `E-T-orbital` (the device-loss pages on the E-O rig); the W4 Phase 2 job read it PASS
+(destroy threw null 2 of 2, no uncaught error on 4 of 4 pages, 5 of 5 owners seen and live 0 after both terminals)
+(`NEW-CLOUD-W4-IDENTITY-PHASE2-2026-11-05`).
 
-### DX-KIT-LIVE-BIND-GROUP-LAYOUT-CENSUS — no kit piece reads the live cloud bind-group layouts, so gate 6 (E5-3) is a source count only — **OPEN** (probe kit; F2)
+### DX-KIT-LIVE-BIND-GROUP-LAYOUT-CENSUS — no kit piece reads the live cloud bind-group layouts, so gate 6 (E5-3) is a source count only — **CLOSED** for the main layout (Batch 1666, `6c2ed96b54`; cell `E-BGL` measured by the W4 Phase 2 job; the shadow and `layout: "auto"` counts move to `DX-KIT-ROUND-11-OWED`; records round 15)
 
 The identity job re-derived the counts from source at TIP(11) (main fragment 12 / 5 / 2 / 4, shadow 6 / 5 / 1 / 2; BEFORE main
 9 / 1 / 1 / 4, shadow 3 / 2 / 1 / 2, equal to the packet's section 2 entry for entry), not from the page. **Repair:** a receipt
 line with the per-stage counts of every cloud group-0 layout read from the live page, compared with the defaults 16 / 12 / 8 / 16.
 **Owner:** the kit (probe-kit round 10). **Source:** `SUMMARY_EOWYN_W4.txt` (verdict table "E5-3"; F2); the executor's
 `_logs/E5-3-source-rederivation.txt` in the receipt's bank.
+**Closed for the main layout (records round 15):** Batch 1666 adds the census `lib/bind-group-layout-census.mjs` and the cell `E-BGL`;
+the W4 Phase 2 job read the live ProceduralClouds group-0 layout as 23 entries, fragment 12 sampled / 5 uniform / 2 storage / 4
+samplers, under 16 / 12 / 8 / 16, on 2 of 2 runs, equal to the source count above. Not measured live (finding P2-3): the CloudShadow
+layout (not created on the E-G rig) and the W4 compute pipelines (`layout: "auto"`, never through `createBindGroupLayout`); both are
+pieces of `DX-KIT-ROUND-11-OWED`. **Source:** `NEW-CLOUD-W4-IDENTITY-PHASE2-2026-11-05`.
 
-### DX-KIT-REQUIRED-LIMITS-DIAL — no landing-stage dial requests the device with the WebGPU default limits, so the low-limits adapter run cannot run — **OPEN** (probe kit; F2)
+### DX-KIT-REQUIRED-LIMITS-DIAL — no landing-stage dial requests the device with the WebGPU default limits, so the low-limits adapter run cannot run — **CLOSED** (Batch 1666, `6c2ed96b54`; cell `E-LL` measured on the dial-off rig by the W4 Phase 2 job; E-LL with the dials on moves to `DX-KIT-ROUND-11-OWED`; records round 15)
 
 `probe-globe-default-limits` builds its own globe-only widget; no cloud cell takes a `requiredLimits` dial, and the sheet's
 low-limits adapter run read NOT RUN. **Repair:** a stage dial whose receipt shows the adapter-reported limits equal to the defaults
 and the cloud pipelines built with 0 validation errors; with the dial off, today's behaviour unchanged. **Owner:** the kit
 (probe-kit round 10). **Source:** `SUMMARY_EOWYN_W4.txt` (verdict table "Low-limits adapter run"; F2).
+**Closed (records round 15):** Batch 1666 adds the default-limits device dial `lib/device-limits-dial.mjs` and the cell `E-LL`; the
+W4 Phase 2 job read it PASS on the dial-off E-G rig (the page's five `requiredLimits` removed, the device reporting the WebGPU defaults
+on 31 of 31 keys, the cloud pipelines built with 0 validation errors) on 2 of 2 runs. E-LL with every W4 family on is not yet run
+(finding P2-4; `DX-KIT-ROUND-11-OWED`). **Source:** `NEW-CLOUD-W4-IDENTITY-PHASE2-2026-11-05`.
 
 ### DX-KIT-WEATHER-MAP-NO-WAIT-PIPELINES — `probe-weather-map.mjs` waits for pending pipelines once, before its first capture, and has no dial to wait before the weather-map-ON captures — **OPEN** (probe kit, small)
 
@@ -35254,7 +35356,7 @@ cause. Round 2 ran the gates one tip at a time and neither recurred. The spec is
 wave. **Repair shape:** measure the spec's peak memory alone, then split it or cap gate parallelism by free memory. **Owner:**
 the seat (gate runner) and the cloud tools. **Source:** `LANDING_PACKET_W4.md` section 5 ("Round 1, seat item (b)").
 
-### DX-LANDING-GUIDE-HUNK-STRIPPED-NOT-REGENERATED — the landing queue strips a guide hunk it cannot place and nothing regenerates the inventory after — **OPEN** (seat landing tooling; measured at Batch 1664)
+### DX-LANDING-GUIDE-HUNK-STRIPPED-NOT-REGENERATED — the landing queue strips a guide hunk it cannot place and nothing regenerates the inventory after — **CLOSED** (the landing script regenerates the guide at the tip; first applied at Batch 1666, `6c2ed96b54`; records round 15)
 
 The W4 queue's `strip-guide-hunk` step removed the `PROBE_KIT_GUIDE.md` section from 10 of the 11 batch patches (batch 8 had none),
 after the whole-patch 3-way apply failed on that file for batches 2, 4, 5, 6, 7 and 11; no step regenerated the inventory
@@ -35265,8 +35367,15 @@ missing). The lane's round-2 tips had the guide in sync (`--check` green at ever
 shape:** after a strip, the queue runs `--write` then `--check` on the tip before committing. Probe-kit round 10 regenerates the
 guide in its own batch. **Owner:** the seat (landing tooling). **Source:** `landing-logs/land-w4-queue-driver.log`
 ("strip-guide-hunk" lines); the `--check` output at Batch 1664; `LANDING_PACKET_W4.md` section 4 F.
+**Closed (records round 15):** the repair shape is applied. The seat's landing script regenerates the inventory at the tip
+whenever a lane touches a kit piece or the guide (the banked `land-w1.sh:48`: `probe-kit-inventory.mjs --write`, then `git add`),
+and Batch 1666's landing, which stripped the lane's guide hunk, logged `PROBE_KIT_GUIDE.md: inventory region written`, `probe-kit
+guide inventory regenerated at the tip` and then ran `probe-kit-inventory.mjs --check` among its gates
+(`lanes-2026-11-06/landing-logs/land-chrysophylax-1.log`, lines 7, 8 and 28). The landed guide equals the lane's (the post-image
+blob check of section "2026-11-06 — records round 15"), and at Batch 1668 `node Tools/visual-regression/probe-kit-inventory.mjs
+--check migration_doc/PROBE_KIT_GUIDE.md` exits 0 ("inventory region matches the tree", measured in the lane clone).
 
-### DX-LANDING-RUNNER-HOMES-NOT-APPLIED — the nine W4 specs landed with no `package.json` runner home, so no runner on main runs them — **OPEN** (seat landing; measured red at Batch 1664)
+### DX-LANDING-RUNNER-HOMES-NOT-APPLIED — the nine W4 specs landed with no `package.json` runner home, so no runner on main runs them — **CLOSED** (Batch 1665, `d255a80d09`; measured red at Batch 1664; records round 15)
 
 `RUNNERS_HIRIL.txt` declares nine homes (eight `test-cloud-c13=` lines for `cloud-march-features`, `cloud-march-kernels`,
 `cloud-spatial-occupancy`, `cloud-weather-volume-bounds`, `cloud-density-cache`, `cloud-deep-shadow-cache`,
@@ -35280,6 +35389,12 @@ applied (`cut/GATE_TABLE.md` header), and the landing's last batch ran `test-clo
 nine homes (its usual homes step) and re-runs `test-cloud-c13`, `test-engine-node` and the runner-homes spec green. **Owner:** the
 seat. **Source:** `RUNNERS_HIRIL.txt`; `landing-logs/land-w4b11-1.log` (the runners run); `package.json` at both hashes; the spec
 run above.
+**Closed (records round 15):** Batch 1665 (`d255a80d09`, 2 paths: `package.json` and the catalog) appends the eight
+`test-cloud-c13` homes and the `test-engine-node` home for `seeded-random` (its message). Re-measured by this round at Batch 1668 in
+the lane clone: each of the nine spec names occurs once in `package.json`, and `node --test
+Tools/visual-regression/spec-runner-homes.spec.mjs` exits 0, 16 of 16 (`_lane-out/runner-homes.log` of lane Gildor). The landing
+script's homes step folds a lane's declared homes since (Batch 1666's log: `package.json test-visual-probe-contracts +=
+Tools/visual-regression/landing-eon-cells.spec.mjs`, `lanes-2026-11-06/landing-logs/land-kit10-records14.log`).
 
 ### DX-RETIRE-TOOL-NESTED-JUNCTIONS — the seat's clone-retire script unlinks a clone's top-level `node_modules` junctions, not junctions nested deeper in the tree — **OPEN** (seat tooling, small)
 
@@ -35372,3 +35487,442 @@ dependency and whether the provisioner should skip a scope with no packages. **O
   free" after, and the mask-order spec's "12.7 GB working set": each is the seat's figure, not recorded as a measurement here.
 - **`FEATURE_INVENTORY.md`:** section B gains the W4 experimental cloud families, the march features object and the shared seeded
   PRNG; section C gains the owed E-ON proof; section D gains 3470, 3473 and 3652.
+
+## 2026-11-06 — records round 15: Batches 1665-1670 (the W5+W6 cloud wave among them), the W4 identity job's Phase 2, the W5+W6 identity job, the integration program of R-2026-11-06-M1, the context load and the CI Node pin
+
+Records round 15 (lane Gildor). Six batches landed after records round 14 was written at Batch 1664, read at Batch 1670 with
+`git log --format='%h %H %T %s' db4c369527..origin/main`; their landing table is `WEBGPU_MIGRATION_STATUS.md` "Landing record
+(2026-11-02/06 — Batches 1665-1670 …)". Batch 1665 (`d255a80d09`) folds the nine W4 runner homes into `package.json`; Batch 1666 (`6c2ed96b54`) is
+the probe-kit round 10 (lane Chrysophylax; reviewer Psamathos, P1 HOLDS-WITH-FIXES, `REVIEW_PSAMATHOS_P1.md:1`); Batch 1667
+(`c0409afd19`) is records round 14 (lane Artaxerxes); Batch 1668 (`35cf12ef8c`) is the rules-file restructure (lane Cunctator;
+reviewer Herendil, P1 HOLDS-WITH-FIXES, `REVIEW_HERENDIL_P1.md:1`). Batch 1669 (`b142b73c19`) is the cloud wave W5+W6 (lane Annatar), whose
+records this round files (below, "The W5+W6 cloud wave as Batch 1669"); Batch 1670 (`49cd09660d`) is lane Faramir's spec-only karma
+patch (B-K). Lane Faramir's march-budget patch (B-M), reviewed, landed as Batch 1671 (`3f5f55c556`) after this round's records were cut (`git fetch origin`, then `git log origin/main -3`); this round runs through Batch 1670 and leaves its records to round 16.
+**Byte checks (this round):** Batch 1666 against its frozen lane patch: every one of the 27 post-image blob ids in
+`chrysophylax.patch` (md5 `273eaad5ab829d34be1c43264ae55b76`, `FREEZE_CHRYSOPHYLAX.md5` line 1; banked in `cesium-webgpu-worker-archive/lanes-2026-11-06/kit10-chrysophylax/_lane-out/`) equals the blob at `6c2ed96b54`; the
+landed commit changes 29 paths, the other two being `package.json` (the landing's homes step) and `TOOLING_CATALOG.md`. So the tree
+the W4 identity job's Phase 2 measured (main `d255a80d09` plus that patch, tree `aa8de939c1`) is Batch 1666's but for those two
+files. Batch 1668: `git cat-file -s` reads `CLAUDE.md` at 33,682 B at `c0409afd19` and 19,446 B at `35cf12ef8c`; the diet guard's
+ratchet is `CORE_MAX_BYTES = 19456` (`Tools/rules-file-diet-check.mjs:44`); the three new skills are `seat-duties`, `worker-rules` and
+`probe-kit`, and the two agent types `.claude/agents/lane-scout.md` and `lane-worker.md` (`git show --stat 35cf12ef8c`).
+**Batch 1668's landing took four attempts** (the seat's landing logs, banked in
+`cesium-webgpu-worker-archive/lanes-2026-11-06/landing-logs/`): attempt 1 (03:26 EST, patch md5 `d921e704…`) stopped at
+`GATE RED: prettier` on two files (`land-b0.log`, `land-cunctator-1.log`); attempt 2 has no log in the bank (the seat's account:
+starved of the heavy slot); attempt 3 (03:38, patch `4fd0e952…`) passed every landing gate (`test-visual-regression-node` 1,720 of
+1,720, the four doc verifiers, the diet check, the block-identity check) and the commit hook refused it, `COMMIT DID NOT HAPPEN`,
+after an MD029 error at `.claude/skills/worker-rules/SKILL.md:50` and an eslint task the hook reports as `failed without output
+(KILLED)` (`land-cunctator-2.log`, `land-b0-try3.log`); attempt 4 (04:00, patch `f4c737dd…`) ran `markdownlint clean: 12 file(s)`
+among its gates, committed, and pushed `c0409afd19..35cf12ef8c` (`land-cunctator-3.log`; `land-b0-try4.log`, `post-landing-spine OK`).
+The brief's "40 errors in three new files" is the seat's figure: the banked log keeps the one error line the hook's output tail
+showed (`DX-LANDING-GATES-SKIP-HOOK-MARKDOWNLINT` below).
+**The rules-diet rows after Batch 1668:** `DX-RULES-DIET` and `DX-RULES-DIET-2` were already closed (Batches 1640, 1643). Batch 1668
+closes neither open one: `DX-RULES-DIET-GUARD-RESIDUALS` stands (no fixture in `Tools/rules-file-diet-check.spec.mjs` builds a git
+repository with a `.gitignore`; grep for "ignor" and "git init" finds nothing) and `DX-RULES-ROUTING-LINE-SCOPE` stands (the routing
+line still reads "Any change under `packages/**` starts by reading `/engine-code-standards`.", `CLAUDE.md:137`). What Batch 1668
+supersedes is the maintainer's parked item 6 of 2026-11-02, "further trims of the 34 KB rules core": `R-2026-11-05-M1` decided the
+layout, and the core is now 19,446 B under a 19,456 B ratchet; the open routing decision stays in `DX-RULES-ROUTING-LINE-SCOPE`.
+**Rows updated in place by this round:** `DX-LANDING-RUNNER-HOMES-NOT-APPLIED` and `DX-LANDING-GUIDE-HUNK-STRIPPED-NOT-REGENERATED`
+(closed); `DX-KIT-CLOUD-EXPERIMENTAL-DIAL`, `DX-KIT-E-O-MSAA-OFF-CELL`, `DX-KIT-E-T-ORBITAL-CELL`, `DX-KIT-REQUIRED-LIMITS-DIAL` and
+`DX-KIT-LIVE-BIND-GROUP-LAYOUT-CENSUS` (closed as measured by the W4 Phase 2 job, residuals moved to `DX-KIT-ROUND-11-OWED`);
+`NEW-CLOUD-W4-E-ON-CELLS-OWED` and `NEW-CLOUD-W3-SHARED-DEVICE-TEARDOWN-UNTESTED` (Phase 2's figures);
+`NEW-WEBGL-E-D-DEFAULT-FRAME-NONDETERMINISTIC` (re-measured by the W5+W6 job); `NEW-CLOUD-W4-SHADERSOURCEID-PIN` (closed by Batch
+1670) and `NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED` (narrowed by Batch 1670); `NEW-CLOUD-MARCH-BUDGET-UNFIT-MINIMUM` (reviewed; landed as Batch
+1671, `3f5f55c556`, after this round's records were cut; its closure is round 16's);
+`NEW-C16-FLAVOUR-MALFORMED-PRAGMA-REPAIR-MISCLASSIFIED-COMMENT-ONLY` (closed, stale since Batch 1568);
+`NEW-CODEX-POST-PLAN-UNITS-3587-3789` (the integration program); and `DX-CI-NODE-PIN` (applied by this batch, its CI acceptance
+owed). The rows below are new, the W5+W6 wave's rows of Batch 1669 and the globe console-error row among them.
+
+### NEW-CLOUD-W4-IDENTITY-PHASE2-2026-11-05 — the W4 identity job's Phase 2 ran the four E-ON families, E-T with every W4 dial on and the four cells Phase 1 could not run; all six invocations exited 0 — **RECORD** (Edge; executor Eowyn)
+
+**Tree and runs:** main `d255a80d09` (Batch 1665; `git archive`, tree recomputed `2bed51a6`) plus `chrysophylax.patch` (md5
+`273eaad5…`, 27 files) = tree `aa8de939c1`, which is Batch 1666 but for `package.json` and the catalog (byte check above); built
+once (Cesium.js `e502c5bf61c998b3eeb147bfdbeb4dfe`), served `--serve-built`, served md5 equal to disk md5 on all 6 invocations (12 of
+12); every invocation `probe-landing-cells.mjs --runs 2 --wait-pipelines` (0 pipelines pending at every capture), Thu 2026-11-05
+23:23-23:5x EST; no PF guard (an identity job). Every invocation exited 0 with 0 failed kit verdicts.
+**Verdicts (2 runs per cell):** E-ON-occupancy, -density, -shadow and -lighting each PASS (renders, every dial read back true 2 of 2,
+0 validation errors, main layout 12 / 5 / 2 / 4). Against the dial-off E-G frame (luma 62.299, sha `eec3759ff60c`, equal to Phase 1's
+E-G) they differ by 0 px (occupancy), 1,690 px (density), 62,055 px (shadow) and 1 px (lighting), max channel 1 in every case, and every
+E-ON frame is byte-identical run to run. E-T-on (all seven dials on): 6 of 7 owner labels seen and released after `destroy()` and
+after the forced loss; "Cloud weather volume bounds" unseen; `viewer.destroy` threw null 2 of 2; forced loss 92 console errors, 0 page
+errors. E-O-msaa1 PASS (luma 67.483, equal to E-O at MSAA 4; 2,389 px against Phase 1's E-O MSAA-4 frame, max 54; one console
+error per run, the base's own "Globe color descriptor name is missing its effective sample suffix … samples=1"). E-T-orbital PASS (5
+of 5 owners seen and live 0 after both terminals). E-BGL PASS for the main layout (ProceduralClouds group 0, 23 entries, fragment 12
+sampled / 5 uniform / 2 storage / 4 samplers, under 16 / 12 / 8 / 16, equal to the packet's gate 6). E-LL PASS on the dial-off scene
+(the device reports the WebGPU defaults on 31 of 31 keys; 0 validation errors). E7-2 (the reuse counter) NOT RUN: no piece.
+**Findings (the receipt's P2-1 to P2-7; measurements, no mechanism claimed):** P2-1 the weather-bounds owner is never allocated on
+the E-ON rigs (the weather map is off there); P2-2 on `viewer.destroy` every W4 owner is released with the device (freedByDevice,
+destroyed 0), as the pre-W4 rows are, and only "Cloud scene depth" is destroyed explicitly; P2-3 the shadow layout is not created on
+the E-G rig and the W4 compute pipelines use `layout: "auto"`, so neither is counted live; P2-4 E-LL ran only the dial-off rig; P2-5
+no kit piece reads the refresh counters (the receipt cites `WebGPUCloudObservability.ts:82`, `:84`); P2-6 the E-ON-occupancy frame
+is byte-identical to the dial-off frame although the occupancy owners allocate, so the cell cannot tell a map that skips nothing on
+this view from one that is not consulted; P2-7 every dials-on effect at this view is at most one code value. P2-1, P2-3, P2-4 and
+P2-5 become pieces of `DX-KIT-ROUND-11-OWED`; P2-2 joins `NEW-CLOUD-W3-SHARED-DEVICE-TEARDOWN-UNTESTED`; P2-6 and P2-7 are recorded
+under `NEW-CLOUD-W4-E-ON-CELLS-OWED`. First cloud frame times are recorded per cell in the summary (no band, not scored).
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-11-01/w4-cloud/edge/w4-identity-phase2/_lane-out/EDGE_RECEIPT_EOWYN_W4_PHASE2.md`
+and `bank/SUMMARY_EOWYN_W4_PHASE2.txt` (sections 1 and 2), `bank/PHASE2_TABLE.tsv`.
+
+### NEW-CLOUD-W5W6-IDENTITY-JOB-2026-11-06 — the W5+W6 identity job: every WebGPU no-weather cell 0 px, the E-W cells moved (measured; the move is not attributed by unit), six cells NOT RUN for missing kit pieces — **RECORD** (Edge; executor Eowyn; the wave landed as Batch 1669, `b142b73c19`)
+
+**Arms:** BEFORE = main `c0409afd19` (tree `1bf66bd757`, Cesium.js `93cd9d808d1a9e94c541fffc218db010`); TIP = BEFORE plus the lane's
+round-2 `annatar.patch` (md5 `20a44d4c7cfce0d8fedc0015a7d73c4f`, 69 paths; tree `233c93579c`, Cesium.js
+`433933e6702252f5eabf59ef99df6386`). The two-arm shape (BEFORE against the whole batch, not per unit) rests on `R-2026-11-06-M1` (the
+receipt's header). Round 3 of the lane (md5 `65e1f59734c38d418779277bc5db7e5b`) changed three spec files only: the packet's round-3
+header and reviewer Mairon's P3 item 1 both read `packages/` at tree `33f5ecad22d71f729f6291e6633714ff8460aa44` before and after, so
+the job's engine tree is round 3's. Edge only, `probe-landing-cells.mjs --serve-built --runs 2 --wait-pipelines`, Fri 2026-11-06
+01:36-02:1x EST, served md5 equal to disk md5 at all 7 launches. Exit codes: BEFORE std 0, TIP std 1 (PF-3 only), BEFORE and TIP E-W
+0, both E-T-flight 0.
+**Verdicts:** WebGPU E-D, E-D-HDR, E-O (MSAA 4), E-O-msaa1, E-F, E-G noon and night: 0 px TIP against BEFORE on 2 of 2 runs, 0
+validation errors on every page. WebGL E-D-HDR and the four WebGL E-W cells 0 px. WebGL E-D 307 and 326 px across arms, with 344 px
+(BEFORE) and 319 px (TIP) run to run inside each arm: this re-measures `NEW-WEBGL-E-D-DEFAULT-FRAME-NONDETERMINISTIC`, which records
+the same class since 2026-10-31, so the brief's "new finding" is that open row, not a new one. WebGPU E-W measured: ground 747,453 px
+(luma 146.394 -> 145.228), ground-hdr 739,809 px (174.640 -> 163.610), 30 km 664,333 px (46.765 -> 75.904), 30 km-hdr 664,668 px
+(55.706 -> 82.400); the weather-state verdict 16 of 16 per arm. The packet pre-registers E-W as measured, not identity: TIP(3) for
+unit 3481 (content reuse) and TIP(5) for unit 3487 (the weather model's seeded values) (`LANDING_PACKET_W5W6.md` section 8 and the
+per-unit table's "default move" column); the two-arm job measures the whole batch on these cells: it does not separate those two units, and it does not show that the units the packet pre-registers as identity there (3489's published top plane among them, a default move in the packet's per-unit table) leave the weather-on frames unchanged. E-T-flight: destroy
+did not throw 2 of 2; "Cloud previous weather snapshot" was never created on either arm (the weather map is off on the flight rig),
+so its release question is vacuous; the forced-loss console errors are equal in classes and counts on both arms. NOT RUN for missing
+kit pieces: the sky-cubemap cell (3611a), the four dial cells (`cloudWeatherWorkers`, `cloudWeatherInterpolation` with a snapshot-pair
+provider, `cloudVerticalWeather`, `experimental.cloudIndependentWeatherLayers`), the per-frame `_updateWeather` counter, and the
+weather worker's termination read on E-T (`DX-KIT-ROUND-11-OWED`).
+**PF, measured and recorded as PF debt (`R-2026-10-24-M5` defers the PF legs):** the TIP std group exits 1 on PF-3 alone, E-O
+`navigationToFirstCloudFrameMs` median 1,698 ms against a limit of 1,690.6 ms (verdict `over`, band 10 %, the provisional floor not
+decided); E-G and E-G-night read unmeasured-contended, and the TIP E-W arm ran at 60-87 % CPU while a reviewer's Node specs ran (F5).
+Not de-scored: a measured `over` on a contended machine, owed to the whole-product campaign with the wave's PF debt (the packet's
+`PF_DEBT_W5W6.md`; the wave landed as Batch 1669, and this round files that sheet's row, `NEW-CLOUD-W5W6-PF-DEBT`, below, with this
+measured `over` added, which the sheet predates). F6: E-O-msaa1's one console error is on both arms (the base's own).
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-11-06/w5w6-cloud/edge/w5w6-identity/_lane-out/EDGE_RECEIPT_EOWYN_W5W6.md` and
+`bank/SUMMARY_EOWYN_W5W6.txt` (verdict table, F1-F6), `bank/W5W6_TABLE.tsv`; the lane clone's
+`_lane-out/LANDING_PACKET_W5W6.md` (round-3 header, sections 1 and 8) and `_lane-out/REVIEW_MAIRON_P3.md` (section 1), lane
+Annatar, read-only.
+
+### NEW-CLOUD-W5W6-POPULATION-MARCH-LIVENESS — the population march's published colour is proven live only structurally in Node; its behavioural acceptance is an Edge cell the kit lacks — **OPEN** (reviewer Mairon P3 residual P3-R1; visual proof owed)
+
+With the experimental `cloudIndependentWeatherLayers` dial on, `marchPopulationClouds` must publish the colour it marched through
+`cloudResolveDeck`. The Node check in `cloud-weather-layer-consumers.spec.mjs` is structural (the assignment `result.hazed = …` is an
+unconditional top-level statement after the resolve): the reviewer's three inert forms, the march's colour not passed to
+`cloudResolveDeck`, an unconditional return before the resolve and an inert march loop, pass every Node check, because the evaluator
+cannot run the march. The dial defaults off. **Acceptance:** the E-ON populations cell of the wave's identity job fails on a black or
+empty population deck where the single-layer arm draws clouds (the packet's section 8 after the P3 text fix). The kit has no such cell
+yet (`DX-KIT-ROUND-11-OWED`); closing the class in Node would be new kit work (a loop-capable evaluator or a march harness with
+stubbed sampling), not a repair of this batch (the reviewer). **Owner:** the cloud program's Edge job, after the kit piece.
+**Source:** lane Annatar's `_lane-out/REVIEW_MAIRON_P3.md` ("Residual of pass 3", section 2, "Text fix") and
+`_lane-out/LANDING_PACKET_W5W6.md` section 8 (the E-ON bullet).
+
+### DX-KIT-ROUND-11-OWED — the kit pieces the W4 Phase 2 and W5+W6 identity jobs found missing — **OPEN** (probe kit; kit round 11)
+
+One row for the pieces both jobs could not run, each a NOT RUN cell or a finding above: (1) rigs and landing cells for the W5+W6
+dials `cloudWeatherWorkers` (with its off twin), `cloudWeatherInterpolation` with a kit provider that publishes snapshot pairs,
+`cloudVerticalWeather` and `experimental.cloudIndependentWeatherLayers`, the last with a populations cell that fails on a black or
+empty population deck (`NEW-CLOUD-W5W6-POPULATION-MARCH-LIVENESS`); (2) a sky-cubemap cell (a landing-stage dial that turns the
+WebGPU dynamic environment map on, and a cell that shows it by cube-face readback or a frame), for 3611a; (3) an `_updateWeather`
+per-frame counter on E-F (expected 1); (4) a weather-worker termination read on E-T (the packet expects the shared `TaskProcessor`
+alive after a destroy); (5) weather-on E-T and E-ON rigs, so "Cloud previous weather snapshot" and "Cloud weather volume bounds" are
+allocated and their release can be read (P2-1, F3); (6) a cloud-shadow rig, so the CloudShadow layout is created and counted (P2-3);
+(7) a reader for `layout: "auto"` compute pipelines, or a census through `getBindGroupLayout` (P2-3); (8) E-LL on the all-dials rig
+(P2-4); (9) a refresh-counter step reading the density-cache, deep-shadow and occupancy refresh counters over two frames with the
+camera still (E7-2, P2-5); (10) an occupancy-read metric that tells a map that skips nothing from one that is not consulted (P2-6);
+(11) a teardown that keeps the device (a shared or pooled device), for `NEW-CLOUD-W3-SHARED-DEVICE-TEARDOWN-UNTESTED` (P2-2).
+**Owner:** the kit (probe-kit round 11). **Source:** `SUMMARY_EOWYN_W4_PHASE2.txt` (P2-1 to P2-6), `SUMMARY_EOWYN_W5W6.txt` (the
+NOT RUN rows, F3, F4) and `REVIEW_MAIRON_P3.md` (P3-R1), at the paths of the rows above.
+
+### NEW-INTEGRATION-PROGRAM-2026-11-06 — the un-landed Codex and Gemini work lands as feature batches B1-B7 under R-2026-11-06-M1 — **RECORD** (program plan; critique SOUND WITH CHANGES)
+
+`R-2026-11-06-M1` makes the program all un-landed Codex (Sol, Astra, Irilde) and Gemini (Antigravity) work, landed as feature
+batches. The seat's planner (Ilbereth) inventoried every source against main `c0409afd19` and derived the batches; the critic
+(Fastitocalon) returned "SOUND WITH CHANGES" (`CRITIQUE.md:1`) with five blockers (B-1 to B-5) and twelve residuals, and two scouts
+measured the B5 units (Treebeard) and the strays the plan missed (Quickbeam). The batches, with the critique's corrected order folded
+in (both files are plans and scout reports; every figure below is theirs, not re-measured by this round unless marked):
+- **B0** RULES: landed as Batch 1668 (above).
+- **B1** CLOUD-W5W6: lane Annatar, Codex units 3474, 3475 + 3478a, 3481, 3482 + 3483a, 3487, 3489, 3490a + 3491 + 3492 + 3493,
+  3480a + 3494 + 3540a + 3611a and 3666 as one batch of 69 paths; review Mairon P1 REFUTED, P2 REFUTED on proof (P2-B1, P2-B2), P3
+  HOLDS-WITH-FIXES (`REVIEW_MAIRON_P1.md:1`, `_P2.md:1`, `_P3.md:1`, read in the lane clone); frozen `65e1f597…` (verified: `md5sum`
+  of the lane's `annatar.patch` equals `FREEZE_ANNATAR.md5` line 1); its identity job is recorded above; landed as Batch 1669 (`b142b73c19`; its 69 lane paths equal the frozen patch's post-images).
+- **B-K** and **B-M** (new in the critique, B-2 and R-9): lane Faramir's two frozen patches, karma (spec-only, md5
+  `45e6cd48e1f27825bd90dc702b010037`: the two Karma reds of main) and budget (engine, md5 `380cd3134fe4daa7c0a9413ef6790100`: the
+  march-budget defect), each reviewed (Arwen P1 HOLDS-WITH-FIXES, the lane's `REVIEW_ARWEN_KARMA_P1.md:1` and `REVIEW_ARWEN_BUDGET_P1.md:1`); karma landed as Batch 1670 (`49cd09660d`), budget as Batch 1671 (`3f5f55c556`), after the wave as the lane's packet asked and after this round's records were cut; its landing and Edge job are records round 16's.
+- **B2** WATER: the Gemini Wave 6.5 stack (`egalmod.patch`, md5 `05bc1d58dd61618efcd825fd9fcf427c`, 126 paths; the nine lower
+  layers oronwe, erellont, tarindor, silmarien, dorlas, daimord, beraid, inglorion and nevrast contained in it), cut by feature into
+  three parts: B2a globe water, data, SSR and continuum (the default-path files and the camera tail, the identity job), B2b the FFT
+  ocean (opt-in; decision M-1), B2k the kit remainder, with nevrast's water-cells split dropped in favour of main's Batch 1648 split
+  (critique B-3: 99 of nevrast's 101 water-cells tests already exist under the same titles on main).
+- **B3** CLOUD-INTEGRATION: lane Irilde's tree (Codex Sol; `irilde-cloud-integration-d2-realized-preview-tested-candidate.patch`, md5
+  `e9c848f708ac791286cde65865548b41`, 279 paths, 211 not in B1) on B1's tree, in three parts after a path-complete partition (critique
+  R-9): B3a default path and lifecycle (3652, 3779, async noise and startup, worker lifetime, context cleanup, budgets and ACK, the
+  `CloudVolumetrics` decomposition), B3b the experimental routes (typed weather, the D2 and single-deck previews, the Root/View
+  bridge), B3c the distant-cloud library (spatial proxy R5b-R5e, formed R6, source ids 45-47; decision M-3).
+- **B-P** the three un-landed kit lanes the plan and critique never named (Quickbeam, "STILL UN-LANDED AND OF VALUE" 2-4), each
+  reviewed HOLDS, frozen and never landed: Taur (KIT-5 phase A, `taur.patch` md5 `1290da6b2da9d1f248154ece01cb8fbf`, 20 paths; Erellont
+  P2 "Verdict: HOLDS"), Lothlorien (the probe-kit model harvest, `lothlorien.patch` md5 `3074f34b107030c817019ad9950c8510`, 62 paths;
+  Doriath P4 "Verdict: HOLDS") and Beleriand (the FW-13 SSR instrument and the f16 catch-up, `beleriand.patch` md5
+  `63834c6570196ef3bab660755b003f37`, 10 paths; Mithrim P2 "VERDICT: HOLDS"). The three md5s and the three verdict lines were re-read by
+  this round from the banks under `cesium-webgpu-worker-archive/clone-closeout-20261101/cesium-lane-{taur,beleriand}-20261009/` and
+  `cesium-lane-lothlorien-20260926/` (`lane-out/_lane-out/`). Whether each still passes its gates on the tip is not measured; the scout
+  reports each forward-applies to main except named paths (Taur: `lib/probe-runtime.mjs`, `probe-weather-ingest.mjs`; Lothlorien: four
+  paths; Beleriand: the debugging-log append; `WebGPUSSREffect.ts` also sits in B2).
+- **B5** CLOUD-G2b+G3 (Codex W7a + W8) and **B6** CLOUD-G4+G5+G6 (W9-W11): the Codex groups, regenerated by the W-wave lane method
+  on B3's and then B5's landed tree (none of their unit patches applies alone on main). The B5 scout counts 25 listed units: 23 still
+  needed, 3520 partly (its mechanism superseded by Irilde's async noise, a remainder needed), S-3528a with no artefact (a plan row),
+  none superseded by main; 3733 and 3736 exist only as hunks of the 3737 patch (`B5_UNIT_SCOUT.md`, HEADLINE and TOTALS).
+- **B7** WATER-2 (held): Gemini's unfinished w6b + w6c in clone vinyamar (152 dirty paths, no patch, no packet), a batch only on
+  decision M-2.
+- **B4** RECORDS-15: this batch.
+Order (the critique's): B0, then B4 on B0's landed tree; B1 after its last review; B-K before B2 or B3 freezes; B2 and B3 in either
+order, whichever freezes first; the march-budget fix on its own; then B5 and B6; the wave-end gate after B3 and after B6 (the plan's
+section 3). Maintainer decisions the plan lists (section 5, each one question): M-1 the FFT ocean's default spectrum (JONSWAP + TMA
+or the current one); M-2 whether Gemini finishes w6b + w6c; M-3 the distant-cloud library code in Irilde's tree, default-off
+scaffolding or cut; M-4 the open 10-24 Codex audit items (withdraw 3515, 3585, 3586; demote four weather dials to experimental; waive
+the renderer-file decomposition for B5 and B6; its fourth item, one batch per default move, is answered by `R-2026-11-06-M1`); M-5
+clone retirement after each batch lands (held by `R-2026-10-30-M4`); M-6 the untracked `Tools/patch-prototype/` in the seat worktree.
+**Banked for B5 and B6 (critique R-5):** the Codex unit patch files that existed only in the seat's gitignored output folder are now
+at `cesium-webgpu-worker-archive/lanes-2026-11-06/codex-unit-stack/`: 480 `.patch` files (240 units in a plain and an `-lf` form) with
+`MAIN_PREPARATION_STACK.json` and `BANK_MANIFEST.txt`, whose 480 lines all read `OK` with a sha256 (counted by this round).
+**Source:** `cesium-webgpu-worker-archive/lanes-2026-11-06/integration-plan/` (`ilbereth/INTEGRATION_PLAN.md` sections 0-5,
+`fastitocalon/CRITIQUE.md` "Blockers", "Residual risks" and "Corrected batch order", `treebeard/B5_UNIT_SCOUT.md`,
+`quickbeam/STRAYS_SCOUT.md`); lane Faramir's `_lane-out/LANDING_PACKET_FARAMIR.md` line 1 (the two md5s).
+
+### NEW-CODEX-PLAN-WAVES-W7B-W12-CLOSED — plan waves W7b and W12 are closed as waves; their units and the other deferred or withdrawn units are named here — **CLOSED** (by decision: the accepted group map, decisions C1, C2 and C4 of R-2026-10-30-M2)
+
+The Codex plan's waves W7b (units 3505, 3506, 3507, 3508, 3509, 3510, 3511, 3512) and W12 (units 3572, 3573, 3574, 3575, 3576, 3577,
+3578, 3579, 3580, 3581, 3582, 3583, 3584, 3585, 3586) will not run as waves: the accepted group map (decision C4 under
+`R-2026-10-30-M2`) carries no group for them, and C1 and C2 defer the distant-cloud block and the admission and ray-budget families
+(the integration plan, section 1.1, the row "Plan waves W7b (3505-3512) and W12 (3572-3586)"). The later landing work is the batches
+B5 and B6 of `NEW-INTEGRATION-PROGRAM-2026-11-06`, which replace "one lane round per wave" for W7a-W11. The other units left out, by
+where they were named: from W5+W6, the deferred units 3476, 3477, 3479, 3484, 3485, 3486, 3488, 3495 and 3496, the halves 3478b,
+3480b, 3483b, 3540b and 3611b (their registry entries stay reserved), and 3783a (removed: not portable) (`LANDING_PACKET_W5W6.md`
+section 9); from W4, 3470 and 3473 (not regenerated) and 3652 (deferred as a default move; Irilde's tree carries it, B3a)
+(`NEW-CLOUD-W4-3652-DEFERRED-DEFAULT-MOVE`); from the post-plan audit, the withdrawn 3610, 3668, 3672, 3695 and 3709 and the 122
+deferred (`NEW-CODEX-POST-PLAN-UNITS-3587-3789`); and the seat's recommended withdrawals 3515, 3585 and 3586, pending decision M-4.
+The plan's inventory gives "49 whole units" for the deferred or withdrawn units and b-halves outside the two waves' own count; its
+file does not enumerate them, so that figure is the planner's, and the list above is every unit id the plan's inventory, its B1
+dropped list and the packet's section 9 name. A unit closed here re-enters only as a regenerated unit in a later batch with its
+own evidence. The closure stands on those decisions alone; whether "all of the remaining work" in `R-2026-11-06-M1` reopens the C1
+and C2 deferrals is a question the seat puts to the maintainer. **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-11-06/integration-plan/ilbereth/INTEGRATION_PLAN.md` (section
+1.1, section 2 "B1 … Dropped", section 5 M-4); `fastitocalon/CRITIQUE.md` ("Dropped work sampled", item 3); lane Annatar's
+`_lane-out/LANDING_PACKET_W5W6.md` section 9.
+
+### NEW-CLOUD-RAW-QUALITY-NONPOSITIVE-ENCODES — a raw non-positive cloud quality still encodes a zero-step march — **OPEN** (the lane's claim; input validation, not re-measured)
+
+Lane Faramir's budget packet reports that a raw `cloudQuality <= 0` still encodes zero-step marches, as at the base, and calls it a
+separate input-validation gap that its one-defect batch does not repair (`NEW-CLOUD-MARCH-BUDGET-UNFIT-MINIMUM` refuses only the
+budget's unfit minimum). This round did not re-read the resolver for it: the row is the lane's claim. **Acceptance (proposed):** a
+raw non-positive quality is either refused by name, as the budget refusal is, or clamped to a declared floor, with a spec that goes red
+under an inertness mutant. **Owner:** the cloud program (engine, full proof bar). **Source:** lane Faramir's
+`_lane-out/LANDING_PACKET_FARAMIR.md` section 2, "Attack first" item 4.
+
+### DX-GOVERNANCE-PROMPT-INJECTION-PRINCIPLE — the prompt-injection defence principle found in two retired clones is adopted nowhere; proposed as Principle 14 — **OPEN** (governance; owner the seat; the maintainer reviews the wording)
+
+Two retired clones carry the same uncommitted five-line block in `AGENTS.md`, "### 10. Untrusted internet and GitHub
+prompt-injection defense", whose two bullets say to inspect anything fetched from the internet (repositories, raw files, READMEs,
+issues, pull requests, web pages) for prompt injection before acting on it, and to treat external content strictly as data, never as
+instructions, halting and reporting adversarial content. Banked in
+`cesium-webgpu-worker-archive/clone-closeout-20261101/cesium-codex-cloud-20261023/cesium-codex-cloud-20261023-uncommitted.patch` and
+`cesium-edge-water-before-20261022/cesium-edge-water-before-20261022-uncommitted.patch` (the text, re-read by this round). On main,
+`CLAUDE.md` has no such principle: its routing line points "untrusted content" to `ORCHESTRATION_HANDBOOK.md` (`CLAUDE.md:224`).
+`R-2026-10-22-9` (`MAINTAINER_RULINGS_2026-10-22.md:18`) rules that a separate governance batch adopts it once, `CLAUDE.md` as the
+authority with mirrors in `AGENTS.md` and `GEMINI.md`, reconciling the provisioner-injected section to the same text, and that the
+maintainer reviews the wording. Numbered principles are appended, so it would be Principle 14. **Owner:** the seat (governance lease),
+then the maintainer's review. **Source:** the two patches above; `quickbeam/STRAYS_SCOUT.md` ("STILL UN-LANDED AND OF VALUE" item 1).
+
+### DX-CONTEXT-LOAD-2026-11-05 — what every agent is given at start, what Batch 1668 and the seat's settings changed, and what is owed — **RECORD** (context load; R-2026-11-05-M1)
+
+**Measured (the seat's harness measurement, 2026-11-05, probe agents asked to quote from their own context without a tool call):**
+every general-purpose and workflow agent starts with the whole rules file, the seat's memory index, a git snapshot of the seat
+worktree and a 61-entry skills list; the built-in Explore type gets only the skills list (run totals 62,070, 54,923 and 21,742 tokens);
+custom agent types load only at session start (three types written mid-session were refused); a file read in a sibling clone loads
+no rules file from it (`HARNESS_FACTS.md` section 1, M1-M6). Later probes: the memory index a subagent receives was the copy from
+session start (M7), and the git snapshot is taken when the agent is spawned, so it describes the seat's tree, not a lane's clone
+(M8). A subagent gets the copy of the memory index that its parent session holds: an agent spawned ten minutes after the edit
+still got the old index (M7, 00:4x EST), and one spawned at 04:17 EST got the edited one (32 bullets, M10), after the seat's conversation had been
+continued from a context summary in between. That the continuation reloaded the index is inferred from the order of events, not isolated by a test. **Landed:** Batch 1668 (above). **Applied by the seat outside the repository (the seat's record):** the memory index from
+12,580 to 4,364 bytes (71 to 32 bullets); the dead `codex` entry out of the gitignored `.mcp.json`; and at 04:12 EST on 2026-11-06,
+`includeGitInstructions: false` and sixteen bundled skills set to name-only (`skillOverrides`) in the gitignored
+`.claude/settings.local.json`, backup in `lanes-2026-11-06/context-load/seat-config-backup/`. **Measured after (04:17 EST, one
+general-purpose probe, Sonnet 5.5):** both switches reach agents spawned in the running session (no git snapshot, no built-in
+commit or pull-request section; 64 skills listed, 16 as bare names); the probe quoted the new rules file's "Load by role" table and
+saw 32 memory bullets; run total 43,610 tokens against the 62,070 baseline, about 30 % less, the two prompts differing slightly in
+length (`HARNESS_FACTS.md` section 6, M9-M11). **Owed:** (1) the fresh-session probe of the two scaffolded agent types `lane-worker`
+and `lane-scout` (M6: only a new session can load them); (2) a micro-batch scoping the core's trigger that sends every agent to
+`/seat-duties` at conversation start, while `.claude/skills/seat-duties/SKILL.md:8` says it "loads only for the seat" (reviewer Herendil's R-5), with the review's
+records residuals R-6 to R-14 (`REVIEW_HERENDIL_P1.md`, "Residuals"; R-12, the 269-character subject, is the commit-subject cap
+below); (3) the probe-kit inventory split (the packet's ROUTED-3: the generated region to its own file); (4) a commit-subject cap
+(the maintainer's word needed); (5) hiding the account-synced plugins and skills for this workspace (the maintainer's decision; the
+seat note of 2026-10-31 that they stay stands until then). **The seat's slip, recorded:** an audit clone was fast-forwarded while two
+read-only verifiers still worked in it; the seat records the rule in its own memory (the seat's account; this round did not read
+the memory). **Source:** `cesium-webgpu-worker-archive/lanes-2026-11-06/context-load/seat-kit/HARNESS_FACTS.md` (sections 1, 5 and
+6); `context-load/cunctator-lane-out/REVIEW_HERENDIL_P1.md` and `LANDING_PACKET_CUNCTATOR.md`; `MAINTAINER_RULINGS_2026-10-22.md`
+(`R-2026-11-05-M1`).
+
+### DX-LANDING-GATES-SKIP-HOOK-MARKDOWNLINT — the landing gates did not run the commit hook's markdownlint, so the hook refused Batch 1668 after a full green gate run — **OPEN** (seat landing tooling; the landing-script half applied)
+
+Batch 1668's attempt 3 passed every landing gate and then the commit hook refused it: the hook's markdownlint reported an MD029 error in
+`.claude/skills/worker-rules/SKILL.md:50` (the only error line the banked log keeps; the seat counts 40 errors in three new files)
+and its eslint task ended `failed without output (KILLED)` (`land-cunctator-2.log`). Attempt 4 landed after layout-only fixes (an H1
+in the two agent-type files; blank lines after the digest's section headings and a file-level MD029 directive there, its rules
+numbered 1 to 30 across sections on purpose; the seat's account, consistent with the directive at `.claude/skills/worker-rules/SKILL.md:8`).
+**Applied:** the seat's landing script now runs markdownlint and prettier on the patch's markdown right after eslint (attempt 4's log
+reads `markdownlint clean: 12 file(s)`; the banked script and its pre-change copy are `land-w1.sh` and
+`land-w1.before-hook-lint-gate.sh`). **Proposed:** the handoff verifier runs the hook's linters on a lane's changed paths before a
+freeze, so a lane learns it before the seat's slot. **Owner:** the seat (landing tooling and the handoff verifier). **Source:**
+`cesium-webgpu-worker-archive/lanes-2026-11-06/landing-logs/` (`land-cunctator-2.log`, `land-cunctator-3.log`, the two scripts).
+
+### DX-HEAVY-SLOT-LOCK-NOT-ATOMIC — the heavy-slot lock is a plain file with no atomic create and no fairness, and lanes took it between the seat's polls for over twenty minutes — **OPEN** (seat and lane tooling)
+
+The lock `%TEMP%/cesium-lane/_seat/BUILD_SLOT.lock` that serialises full runners, builds and landings is a plain file that each
+taker checks and then writes, with no exclusive create and no queue; during Batch 1668's attempt 2 lanes took it between the seat's
+polls for over twenty minutes, so the landing starved (the seat's account; no log of attempt 2 is banked). **Proposed:** a tracked
+lock tool with an exclusive create (`open` with `wx`), the holder's lane name and start time, a queue served in order, and a stale-lock
+rule, with a spec for the exclusive create and the order. **Owner:** the seat (tooling under `Tools/lib/`). **Source:** the seat's
+records round 15 brief, section 6 (b); lane Annatar's packet round 3 ("each full runner took the one heavy slot, `BUILD_SLOT.lock`,
+waited for, written, removed").
+
+### NEW-WEBGPU-GLOBE-PICK-SAMPLE-SUFFIX-FALSE-ERROR — every single-sample WebGPU globe logs "Globe color descriptor name is missing its effective sample suffix" — **OPEN** (WebGPU globe pipelines; engine, full proof bar; reviewer Erestor P1 R-2)
+
+`buildGlobePickPipelineDescriptor` (`packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfacePipelines.ts:1245`, read at Batch
+1670) rewrites the colour descriptor's terminal `, samples=N)` to `, samples=1)` with `/, samples=\d+\)$/u` (`:1253-1256`) and logs
+the error whenever the rewritten name equals the original (`:1257-1261`). A name that already ends `, samples=1)` is unchanged by
+the rewrite, so every globe at one sample logs the error although its suffix is present. Added by Batch 1114 (`2312f7d131`; `git log
+-S` on the message). Seen as E-O-msaa1's one console error on both arms of the W4 Phase 2 and W5+W6 identity jobs ("Globe terrain
+(uncompressed, noNormals, opaque, ld=1, stride=28, webMercatorT, samples=1)"; the W3 job recorded the same line with MSAA off).
+**Repair:** test the suffix with the regular expression, not by comparing the rewrite. **Acceptance:** E-O-msaa1 reads 0 console
+errors; a spec feeds a `samples=1` name and a name with no suffix and sees the error only for the second, with an inertness mutant.
+**Owner:** the globe pipeline owner (WebGPU). **Source:** the lines above at Batch 1670; `REVIEW_ERESTOR_P1.md` (R-2) in lane
+Gildor's `_lane-out/`; `SUMMARY_EOWYN_W4_PHASE2.txt` (E-O-msaa1) and `SUMMARY_EOWYN_W5W6.txt` (F6).
+
+### The W5+W6 cloud wave as Batch 1669 (records round 15)
+
+Batch 1669 (`b142b73c19`, tree `5ce7aee11d`, committed 04:57 EST on 2026-11-06) is the W5+W6 cloud wave, audit group G2a, as one
+batch: Codex units 3474, 3475 + 3478a, 3481, 3482 + 3483a, 3487, 3489, 3490a + 3491 + 3492 + 3493, 3480a + 3494 + 3540a + 3611a
+and 3666, regenerated by lane Annatar (Opus lead) and reviewed by Mairon (P1 REFUTED, P2 REFUTED on proof with P2-B1 and P2-B2, P3
+HOLDS-WITH-FIXES with one packet text fix). **Byte check (this round):** every one of the 69 post-image blob ids in the frozen
+`annatar.patch` (md5 `65e1f59734c38d418779277bc5db7e5b`) equals the blob at `b142b73c19`; the landed commit changes 72 paths, the
+other three being `package.json` (the nine `test-cloud-c13` homes of `RUNNERS_ANNATAR.txt`, each spec name found once there),
+`PROBE_KIT_GUIDE.md` and `TOOLING_CATALOG.md`; `git rev-parse b142b73c19:packages` is `33f5ecad22d71f729f6291e6633714ff8460aa44`,
+the tree the three review passes and the identity job bind (`NEW-CLOUD-W5W6-IDENTITY-JOB-2026-11-06`). **Dials, read at Batch 1670 in
+`packages/engine/Source/Scene/CloudVolumetrics.js`:** core `cloudWeatherWorkers` (`:426`, `?? false`), `cloudWeatherInterpolation`
+(`:452`, `?? false`), `cloudWeatherTransitionSeconds` (`:485-486`, `?? 30`, checked from 1 to 300 in debug builds and clamped to 1-300 in release, `Scene/Weather/CloudWeatherTransition.ts:57`), `cloudVerticalWeather` (`:511`,
+`?? false`), and `experimental.cloudIndependentWeatherLayers` (`:1265-1266`, `?? false`); each is WebGPU only by the packet's parity
+lines (the volumetric march, its caches and the weather worker have no WebGL consumer). **Default moves (the packet's per-unit
+table):** 3481 (weather content reuse: the resident weather texture is kept across replays of the same content), 3487 (the seeded
+weather's continuous synoptic values) and 3489 (a cloud-top plane computed and published with every field); 3474 and 3475 are not
+default moves after the re-cut (byte-identical generation, measured by the lane). The identity job measured the E-W cells moved and
+every WebGPU no-weather cell at 0 px; it measured the batch as a whole and attributed no move to a unit. **Deferred or withdrawn:**
+3476, 3477, 3479, 3484, 3485, 3486, 3488, 3495, 3496, the halves 3478b, 3480b, 3483b, 3540b and 3611b, and 3783a
+(`NEW-CODEX-PLAN-WAVES-W7B-W12-CLOSED`, `NEW-CLOUD-W5W6-3783A-NOT-PORTABLE`). **Edge cells still owed:** the E-ON cells for the
+transition, vertical and population dials (the last carrying `NEW-CLOUD-W5W6-POPULATION-MARCH-LIVENESS`), E-W with the worker on and
+off, the `_updateWeather` counter, the 3611a sky-cubemap identity and E-T with the dials on, each a piece of `DX-KIT-ROUND-11-OWED`.
+The rows below are the lane's prepared appends (`w5w6/cut/APPENDS_BY_BATCH.txt`, written for nine batches), rewritten for the one
+batch and checked against the landed tree; the lane's `NEW-CLOUD-W5W6-ROUND2-MERGE-DUPLICATE` (a duplicate harness declaration the
+lane found and closed inside round 2, never in a cut tip) is recorded here and not filed as a row. **Source:** the bank
+`cesium-webgpu-worker-archive/lanes-2026-11-06/w5w6-cloud/annatar-lane-out-landed-1669/` (`LANDING_PACKET_W5W6.md` sections 1, 6, 8
+and 9; `REVIEW_MAIRON_P1.md`, `_P2.md`, `_P3.md`; `w5w6/cut/APPENDS_BY_BATCH.txt`, md5 `bd2943c3ed078631981422068f792c13`, equal to
+the lane clone's; `w5w6/PF_DEBT_W5W6.md`); `git show --stat b142b73c19`.
+
+### NEW-CLOUD-W5W6-PF-DEBT — the W5+W6 default moves and always-on residue landed on identity proof; their PF cells are owed to the whole-product campaign — **OPEN** (performance debt, R-2026-10-24-M5; Batch 1669)
+
+Batch 1669 lands three default moves, 3481 (content reuse), 3487 (continuous synoptic values) and 3489 (a published top plane), and
+always-on residue: main and shadow group-0 bindings 29 and 30 bound at default to the current weather view and flow buffer
+(`WebGPUProceduralCloudRenderer.ts:1768`, `:1772`; `WebGPUCloudShadowBindGroupCache.ts:96`, `:100`, read at Batch 1670), uniform slots
+178 and 179 (`weatherTransitionWeight`, `previousMaterialFlowAge`, `WebGPUCloudUniformLayout.ts:71-72`) written 0 at default, the
+transition, vertical, population and deck-resolve modules joined behind their defines, and `cloudResolveDeck` in every march program
+after 3666. The lane's sheet, rows 1-8 (Node at the cut tips, no GPU measurement): (1) 3474 + 3475, no worker at default and the
+main-thread generation byte-identical to the base (54 digests, at the lane's tip 2), PF-1 / PF-3 with the worker on and off on WebGPU and WebGL; (2) 3481 DEFAULT MOVE, PF-1 and PF-3 on a replayed timeline; (3) 3482
++ 3483a, bindings 29 / 30 aliased, slots 178 / 179 zero, the transition module joined, PF-1 / PF-2; (4) 3487 DEFAULT MOVE, PF-1 / PF-2
+and generation time per field; (5) 3489 DEFAULT MOVE, generation and packing time per field, PF-1 / PF-2; (6) 3490a-3493, the vertical
+module and lazily built producer variants, PF-1 / PF-2 and PF-3 compile; (7) 3480a + 3494 + 3540a + 3611a, the population and
+deck-resolve modules behind `CLOUD_WEATHER_POPULATIONS` and the sky source preprocessed (identical at default), PF-3 and the
+sky-cubemap identity; (8) 3666, `cloudResolveDeck` in every program (identity by evaluation in Node, 360 inputs x 2 modes), PF-3.
+Band for every row: "no worse than base". **Measured (the identity job, not a PF leg):** PF-3 on E-O read `over`, median 1,698 ms
+against a limit of 1,690.6 ms (band 10 %; the kit's provisional floor was applied and did not decide it), on a contended machine; E-G, E-G-night and all eight E-W cells (both renderers) read
+unmeasured-contended (`NEW-CLOUD-W5W6-IDENTITY-JOB-2026-11-06`); the lane's sheet predates the job and does not carry it. Not de-scored:
+recorded here as measured debt. Not debt: the five new options (four dials that default off and the fade length, default 30), which carry E-ON cells only. **Owner:** the whole-product
+campaign. **Source:** `w5w6/PF_DEBT_W5W6.md` (the table and its "Inline for the ledger row"), `w5w6/cut/APPENDS_BY_BATCH.txt` (the
+`[3474, …]` row), in the bank above; the lines above at Batch 1670.
+
+### NEW-CLOUD-W5W6-3490B-WEBGL-FALLBACK — the WebGL weather fallback (3490b and 3494's WebGL hunks) is banked, not landed, so WebGL draws no regional or vertical weather — **OPEN** (parity gap; input for the WebGL owner, C13-N15c / C13-N52)
+
+Banked whole by the lane in `w5w6/banked-3490b/` (18 entries: eleven 3490b patch files, among them `CloudWeatherShellGeometry.js`,
+the `Context.js` loader, `WebGLCloudWeatherRenderer.js`, `CloudWeatherFallback.js`, the `ViewportExecutor.js` shared hook,
+`CloudWeatherFallbackSnapshot.js` and three GLSL files; four 3494 WebGL patch files; the two moved WebGL tests; a README; listed by
+this round). Constraint the lane measured: the hook's double `_updateWeather` on WebGPU must not return; the landed
+`cloud-weather-update-count.spec.mjs` goes red by count when the verbatim banked hook is installed with `cloudWeatherFallback` on (the
+lane's run at its tips 7 and 9, its claim). **Owner:** the WebGL owner. **Source:** `APPENDS_BY_BATCH.txt` (the `[3490b, 3494 (WebGL
+hunks)]` row); `LANDING_PACKET_W5W6.md` section 5; the bank's `w5w6/banked-3490b/`.
+
+### NEW-CLOUD-W5W6-3783A-NOT-PORTABLE — 3783a's weather-map-seam hunk needs `CloudInputMemory` and the work-budget statistics, which main does not have — **OPEN** (audit premise corrected; goes with G5)
+
+The hunk compiles against `WebGPUCloudInputMemory.ts` and `WebGPUCloudWorkBudgets.ts`, which no tip of the group nor main has (the
+lane's finding; neither file exists at Batch 1670, checked with `git ls-files`), so 3783a goes with the unit that creates
+`CloudInputMemory`, together with 3783b (group G5, batch B6). **Source:** `APPENDS_BY_BATCH.txt`; `LANDING_PACKET_W5W6.md` sections 4 F
+and 9.
+
+### NEW-CLOUD-W5W6-WITHHELD-PRIVATE-PATHS — the private before-image comparisons of three W5+W6 specs are withheld — **OPEN** (plan W6 :2037-2043; reinstated by 3566's fixture reader, batch B6)
+
+The private before-image comparisons of `cloud-weather-vertical-rendering` (3490a), `cloud-weather-vertical-cache` (3491) and
+`cloud-weather-layer-consumers` (3494) are withheld verbatim in the lane's `w5w6/withheld/` (three `.spec.txt` files, listed by this
+round). **Source:** `APPENDS_BY_BATCH.txt`; the bank's `w5w6/withheld/`.
+
+### NEW-CLOUD-W5W6-VERTICAL-GUARDS-UNPINNED — two renderer guards of the vertical weather have no renderer-level case — **OPEN** (spec gap; the lane's worker finding)
+
+In `prepareCloudFrameAndEncodeMask`, the vertical dial yields to the multi-deck path (`config.cloudVerticalWeather === true &&
+!multiDeckOn`, `WebGPUProceduralCloudRenderer.ts:4337` at Batch 1670) and the distant density moments yield to vertical weather
+(`config.cloudDistantDensityMoments === true && !cache.weatherVerticalRequested && …`, `:4983-4985`). The lane reports these had
+only source-shape assertions, which it did not keep; each needs a renderer-level frame case in the mask-order harness with an
+inertness mutant. **Source:** `APPENDS_BY_BATCH.txt`; the lines above.
+
+### NEW-CLOUD-W5W6-TRANSITION-TEMPORAL-RESET — while a weather fade is active, temporal reconstruction is reset on every frame — **OPEN** (reviewer Mairon R-4; decided on the E-ON transition cell)
+
+With `cloudWeatherInterpolation` on and a snapshot pair published, `prepareCloudFrameAndEncodeMask` ORs `CLOUD_TEMPORAL_RESET_RESOURCE`
+into the pending temporal resets on every frame of the fade (`if (cache.weatherTransitionActive) { cache.temporalHistoryPendingResetReasons
+|= CLOUD_TEMPORAL_RESET_RESOURCE; }`, `WebGPUProceduralCloudRenderer.ts:4332-4334` at Batch 1670), so reconstruction restarts for the
+whole fade, 30 s by default. Whether that is by design is decided on the E-ON transition cell (`DX-KIT-ROUND-11-OWED`). **Source:**
+`APPENDS_BY_BATCH.txt` ("Round 2 rows"); the lines above.
+
+### NEW-CLOUD-W5W6-WEATHER-FEATURES-NO-LADDER-RUNG — the march fallback ladder has no rung that drops the transition, vertical or population features — **OPEN** (the lane's round-2 semantic check; not re-derived here)
+
+The lane reports that `selectCloudMarchPipeline` (`WebGPUProceduralCloudRenderer.ts:3467` at Batch 1670) keeps the transition,
+vertical and population features on every rung, so while a variant carrying one compiles only a variant that also carries it can
+draw (or the progressive preview); with no ready variant the frame ends resource-not-ready and the deck draws nothing until the
+variant compiles, unless `cloudProgressiveStartup` is on, at the first bind as well as at a dial flip. W4's directional lighting has
+no rung either. This round located the function and did not re-derive the rungs: the row is the lane's claim. The E-ON cells with the
+dials on should look at both cases. **Source:** `APPENDS_BY_BATCH.txt` ("Round 2 rows").
+
+### NEW-CLOUD-W5W6-TRANSITION-SECONDS-DEAD-INIT — the `weatherTransitionSeconds` initialiser is always overwritten — **OPEN** (minor engine tidy-up)
+
+`let weatherTransitionSeconds = 30;` (`packages/engine/Source/Scene/CloudVolumetrics.js:453` at Batch 1670) is overwritten by the
+setter run from `this.cloudWeatherTransitionSeconds = options.cloudWeatherTransitionSeconds ?? 30;` (`:485-486`), the pattern of the
+base's other validated dials; an equivalent mutant there survives by construction. **Source:** `APPENDS_BY_BATCH.txt` ("Round 2
+rows"); the lines above.
+
+### DX-CLOUD-PRIVATE-MODULE-LISTS — cloud specs that compose the march from their own module lists go red when a module joins every program — **OPEN** (DX; extends `NEW-CLOUD-W4-TEMPLATE-READER-COPIES`)
+
+`cloud-genus-morphology.spec.mjs` composes the march from a private module list and went red when 3666 made `cloudResolveDeck` part
+of every program; the lane added `CloudDeckResolve.wgsl` to that list (`LANDING_PACKET_W5W6.md` section 6, b9). **Repair:** the readers
+compose from the renderer's `PROCEDURAL_CLOUDS_SOURCE` through `lib/engine-shader-source.mjs`. **Source:** `APPENDS_BY_BATCH.txt`;
+packet section 6.
+
+### Notes (records round 15; no new ids)
+
+- **Premise error, the two Karma reds of main:** the plan's critique (B-2) and the seat's brief to lane Faramir said they sat in no
+  ledger; that was wrong, and the lane corrected it (its packet, "Premise correction"): they are `NEW-CLOUD-W4-SHADERSOURCEID-PIN` and
+  the Karma half of `NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED`, both opened by records round 14. No new row is opened for them.
+- **Stale statements corrected:** `CAMPAIGN_STATE.md` called the Gemini clones dorlas and daimord "byte-identical review copies";
+  they are separate 24- and 26-path layers (w2b on oronwe, water-w3 on erellont; the plan's section 1.2, critique R-12), corrected in
+  the W-waves block. The seat's two Codex safety stashes (2026-07-26, 16 files; 2026-07-28, 51 files) are superseded by Batch 772
+  (which adds `Scene/EclipseGlobeShadow.js`: `git log --diff-filter=A`) and Batches 777-781, not by 764 and 770 as the critique (R-3)
+  wrote: Batch 760 is eclipse S1 and Batch 764 eclipse S2 (`git log --grep`, read by this round); the per-file verdicts (stash0 51
+  landed differently, stash1 16 obsolete) are the scout's (`quickbeam/STRAYS_SCOUT.md`, "STRAY C"), not re-run.
+- **Lane Faramir's two patches** apply on plain main and on the base with the wave (the lane's `git apply --cached --check`, exit 0
+  each); the budget patch's S3 fixture records the renderer with the wave, so it lands after the wave (the lane's packet). Their reviews
+  (Arwen P1) returned HOLDS-WITH-FIXES on each; the karma patch landed as Batch 1670 (`49cd09660d`) and the budget patch as Batch 1671 (`3f5f55c556`), after this round's records were cut.
+- **The CI pin (this batch, `DX-CI-NODE-PIN`):** the seventeen `node-version` pins in eight workflow files read
+  `'>=22.13.0 <23.0.0'`, `npm run test-context-spine` runs in the `guards` job, and `Tools/ci-guards.spec.mjs` pins it; how it was
+  checked is in that row.
+- **Figures in the brief this round did not find in a file:** the "40 errors in three new files" of the hook's markdownlint (the
+  banked log keeps one error line) and attempt 2's starvation of the heavy slot (no log banked): both the seat's account, recorded
+  as such. The seat's slip (an audit clone fast-forwarded under two read-only verifiers) is the seat's account; its memory was not
+  read.
+- **`FEATURE_INVENTORY.md`:** section B gains the W5+W6 features of Batch 1669 (the weather worker, snapshot transitions, regional
+  vertical weather, the experimental independent populations, the continuous synoptic structures and weather content reuse);
+  section C's W4 E-ON line gains the Phase 2 figures, with lines for the integration program and the banked WebGL weather fallback;
+  section D gains the W7b and W12 units and the other units closed by `NEW-CODEX-PLAN-WAVES-W7B-W12-CLOSED`.

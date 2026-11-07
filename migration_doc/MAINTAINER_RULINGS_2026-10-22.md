@@ -236,3 +236,29 @@ worktree, 33,682 B as git stores it), the seat's memory index (12,580 B), a git 
 the skills list (run totals: general-purpose 62,070 tokens, workflow 54,923, Explore 21,742). A plugin has no per-agent-type scope,
 and path-scoped rule files do not reach a lane in a sibling clone, so the levers are the rules file's contents, on-demand skills, and
 agent types.
+
+## Maintainer ruling of 2026-11-06 (R-2026-11-06-M1)
+
+*(Appended by records round 15.)* The heading quotes the maintainer verbatim; the paragraph under it is the seat's reading.
+Source: the seat's records round 15 brief, section 0, which carries the maintainer's words of 2026-11-06 (banked as
+`cesium-webgpu-worker-archive/lanes-2026-11-06/landing-logs/brief-B4-records15-gildor.md`); the integration plan quotes an excerpt of the same
+instruction and reads it the same way (`lanes-2026-11-06/integration-plan/ilbereth/INTEGRATION_PLAN.md`, the paragraph after the
+header). No other `R-2026-11-06-*` id existed in this file or anywhere under `migration_doc/` before this entry (grep at Batch 1668).
+
+### R-2026-11-06-M1 (maintainer, 2026-11-06, quoted, on landing the remaining Codex and Gemini work): "Okay, I see no active agents right now so lets make sure we get back to our three tiered orchestration. Then lets finish landing all of the remaining work & tech from Codex/Sol/Astra and Gemini/AGY that still needs to be integrated, reviewed, tested, fixed, and committed. We can integrate work in major batches or as entire features. We don't need to do it change by local change as there are thousands of those. Honestly we can take huge batches and work through them more effectly than doing each individual change."
+
+Seat reading: what it decides. (1) The orchestration returns to its three tiers (the seat plans, reviews and lands; Opus leads;
+tier-3 workers). (2) The program is all un-landed Codex (Sol, Astra, Irilde) and Gemini (Antigravity) work that still needs to be
+integrated, reviewed, tested, fixed and committed. (3) The landing unit is a feature batch: one lane, one frozen patch per feature
+part, one adversarial review, one Edge identity job for an engine batch, and the gates run once at the final tree; the attribution
+of each source unit stays in the lane's packet as banked evidence. It answers the open item "one batch per default-path
+unit" (the 10-24 Codex audit item that the plan's section 5, M-4, names as answered by this instruction): a batch may carry
+several default moves, each attributed in its packet, so that item is no longer required. For a feature batch landed as one
+commit, one review of the batch and the gates at the final tree take the place of the Opus review per unit tip and the LIGHT
+intermediate batches of `R-2026-10-24-M5`, because there are no unit tips and no intermediate batches (the seat's confirmation of
+this reading, records round 15, repair round 2). What it does not change: the proof bar by change class (`R-2026-08-29-1`), the
+quiet hours (`CLAUDE.md`), the full gate set at landing, and `R-2026-10-24-M5`'s other levers (one lane round per wave with at
+most two repair rounds, the identity-only Edge job, a default move landing with its PF debt recorded). The context-load
+ruling `R-2026-11-05-M1` set the order (the context optimisation first, then the Codex and Gemini work); Batch 1668 executed that
+first half. The batches the seat's integration plan derives from this ruling are recorded in `CAMPAIGN_STATE.md` (the W-waves
+block) and `DEFERRED_WORK.md` (section "2026-11-06 — records round 15").

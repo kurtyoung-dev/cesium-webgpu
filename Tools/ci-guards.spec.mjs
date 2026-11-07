@@ -45,6 +45,7 @@ const WIRED_GUARDS = [
   "npm run lint-debug-pragmas",
   "npm run test-c16",
   "npm run test-landing-rules",
+  "npm run test-context-spine",
   "npm run test-build-infra",
   "npm run test-webgpu-policy",
   "npm run audit-feature-renderers",

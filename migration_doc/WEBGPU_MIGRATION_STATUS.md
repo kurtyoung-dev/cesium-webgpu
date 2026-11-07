@@ -367,6 +367,37 @@ F2 cell rows); the bind-group key specs (`NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED`
 W5 + W6 (lane Annatar), which now holds the cloud critical path; the maintainer's pending decisions (`CAMPAIGN_STATE.md`). Open
 after this landing: the rows of `DEFERRED_WORK.md` section "2026-11-02 — records round 14".
 
+*[Records round 15:]* the nine runner homes landed as Batch 1665 and the guide is regenerated at the tip by the landing script since
+Batch 1666 (both rows closed); the next landings are the table below.
+
+---
+
+## Landing record (2026-11-02/06 — Batches 1665-1670: the W4 runner homes, the probe-kit round 10, records round 14, the rules-file restructure, the W5+W6 cloud wave and the Karma base-red pins)
+
+A landing table only. Hashes and trees were read at Batch 1670 with `git log --format='%h %H %T %s' db4c369527..origin/main`. Batch 1665 was
+committed on 2026-11-02 (02:54 EST); Batches 1666 and 1667 by the seat's queue on 2026-11-06 (00:09 and 00:22 EST,
+`lanes-2026-11-06/landing-logs/land-kit10-records14.log`, `land rc=0` each); Batch 1668 on its fourth attempt at 04:08 EST
+(`landing-logs/land-cunctator-3.log`, `land rc=0`); Batch 1669 at 04:57 EST (`landing-logs/land-b1-retry.log`, `land rc=0`) and Batch 1670 at 05:09 EST
+(`landing-logs/land-faramir-karma-1.log`, `land rc=0`); the earlier attempts of Batch 1668 are in `DEFERRED_WORK.md` section "2026-11-06 — records round
+15"). The W4 identity job's Phase 2 measured Batch 1666's kit (its tree equals Batch 1666 but for `package.json` and the catalog: the
+post-image blob check in that section). The rows are in `DEFERRED_WORK.md` section "2026-11-06 — records round 15".
+
+| batch | hash (tree) | what is now true | lane | parity | bank |
+| --- | --- | --- | --- | --- | --- |
+| 1665 | `d255a80d09` (`2bed51a6`) | The nine specs the W4 wave added have runner homes (eight in `test-cloud-c13`, `seeded-random` in `test-engine-node`), so the proofs its review demanded run on every landing and in CI; `spec-runner-homes.spec.mjs` reads 16 of 16. | the seat | tools | (the commit) |
+| 1666 | `6c2ed96b54` (`fef3aa9a`) | A cloud rig may declare an `experimental` block that both stages carry to the page and read back on `CloudVolumetrics#experimental`; the kit gains the E-ON cells per W4 cache family, E-T-on with every family on, E-O-msaa1, E-T-orbital, the live bind-group-layout census E-BGL and the default-limits device dial E-LL. | Chrysophylax (probe-kit round 10); reviewer Psamathos P1 HOLDS-WITH-FIXES | tools (kit) | `lanes-2026-11-06/kit10-chrysophylax/_lane-out/` |
+| 1667 | `c0409afd19` (`1bf66bd7`) | The records carry the W4 cloud wave, its identity job's Phase 1 with the F3 bisection, the clone closeout and the evidence curation. | Artaxerxes (records round 14) | docs | `lanes-2026-11-06/records14-artaxerxes/_lane-out/` |
+| 1668 | `35cf12ef8c` (`927be162`) | The always-loaded `CLAUDE.md` (19,446 B as git stores it, from 33,682 B) carries what binds every agent plus routing, with a load-by-role table; role and task rules live in on-demand skills, three of them new (`seat-duties`, `worker-rules`, `probe-kit`); two lean agent types ship as scaffolding; the diet guard fails a core over 19,456 B and checks every agent type's shape; `R-2026-11-05-M1` is in the rulings file. | Cunctator; reviewer Herendil P1 HOLDS-WITH-FIXES | docs and tools | `lanes-2026-11-06/context-load/cunctator-lane-out/` |
+| 1669 | `b142b73c19` (`5ce7aee1`) | Procedural cloud weather can run on a shared Web Worker, fade between snapshots, follow regional cloud-top heights and carry three independent populations, each behind a WebGPU-only dial that defaults off (`cloudWeatherWorkers`, `cloudWeatherInterpolation` with `cloudWeatherTransitionSeconds` 1-300 default 30, `cloudVerticalWeather`, experimental `cloudIndependentWeatherLayers`); seeded weather forms continuous synoptic structures, a weather texture is reused while its content is unchanged and a cloud-top plane is published (three default moves, PF debt recorded); `cloudResolveDeck` joins every march program. The 69 lane paths equal the frozen patch's post-images (blob check); plus the nine runner homes, the guide and the catalog. | Annatar (W5 + W6, Codex group G2a, one batch); reviewer Mairon P1 and P2 REFUTED, P3 HOLDS-WITH-FIXES | WebGPU only (no WebGL consumer; the WebGL fallback 3490b banked, a recorded parity gap) | `lanes-2026-11-06/w5w6-cloud/annatar-lane-out-landed-1669/` |
+| 1670 | `49cd09660d` (`49d50d86`) | The shader source-id count guard pins all 45 ids (`OCEAN_STOCKHAM_IFFT` at 69), and the cloud main bind-group Karma spec gives its fake cache a material-flow buffer and keys every resource but the weather-transition pair, the W4 exact bindings included. The two spec blobs equal the frozen karma patch's post-images. | Faramir (B-K); reviewer Arwen P1 HOLDS-WITH-FIXES | specs (WebGPU) | lane Faramir's `_lane-out/`; `lanes-2026-11-06/landing-logs/land-faramir-karma-1.log` |
+
+Next: the integration program of `R-2026-11-06-M1` (`DEFERRED_WORK.md` `NEW-INTEGRATION-PROGRAM-2026-11-06`): the W5 + W6 cloud wave
+(batch B1, landed as Batch 1669; its records are in the round-15 section), lane Faramir's two fix batches (B-K landed as Batch 1670; B-M landed as Batch 1671, `3f5f55c556`, after this table was cut), the
+water stack (B2), the cloud integration tree (B3), the three un-landed kit lanes (B-P) and the Codex groups (B5, B6); the kit pieces
+both identity jobs found missing (`DX-KIT-ROUND-11-OWED`); the context-load items owed (`DX-CONTEXT-LOAD-2026-11-05`); the CI run that
+accepts the Node pin of 22.13 or later (`DX-CI-NODE-PIN`); the maintainer's pending decisions (`CAMPAIGN_STATE.md`). Open after this landing: the
+rows of `DEFERRED_WORK.md` section "2026-11-06 — records round 15".
+
 ---
 
 ## Landing record (2026-10-23/24 — Batches 1585-1594: the water landing, the probe-kit pieces it was measured with, two base-bug fixes, the ledger and catalog repairs, and the W1 cloud core with its define registry)
