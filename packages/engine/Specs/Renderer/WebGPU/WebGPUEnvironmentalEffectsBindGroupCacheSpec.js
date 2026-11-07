@@ -363,3 +363,324 @@ describe("Renderer/WebGPU environmental-effects bind-group caches", function () 
     expect(cache.upscaleBindGroupNextSlot).toBe(0);
   });
 });
+
+describe("Renderer/WebGPU environmental-effects bind-group caches: cloud main key guards", function () {
+  const view = (label) => ({ label });
+  const makeContext = () => ({
+    cache: {
+      bindGroupLayout: view("layout"),
+      uniformBuffer: view("cache uniform"),
+      sampler: view("main sampler"),
+      weatherSampler: view("weather sampler"),
+      lutSampler: view("lut sampler"),
+      materialFlow: { buffer: view("material flow") },
+      mainBindGroups: [null, null],
+      mainBindGroupNextSlot: 0,
+    },
+    color: view("color"),
+    args: {
+      depth: view("depth argument"),
+      weather: view("weather argument"),
+      shape: view("shape argument"),
+      detail: view("detail argument"),
+      noiseSampler: view("noise sampler argument"),
+      lut: {
+        skyView: view("sky argument"),
+        multipleScatter: view("scatter argument"),
+        transmittance: view("transmittance argument"),
+      },
+    },
+    exact: {
+      depth: view("depth"),
+      mainSampler: view("main sampler"),
+      uniform: { buffer: view("uniform") },
+      weatherView: view("weather"),
+      weatherSampler: view("weather sampler"),
+      shapeView: view("shape"),
+      detailView: view("detail"),
+      noiseSampler: view("noise sampler"),
+      skyView: view("sky view"),
+      multipleScatter: view("multiple scatter"),
+      transmittance: view("transmittance"),
+      lutSampler: view("lut sampler"),
+      densityMomentsView: view("density moments"),
+      materialFlowBuffer: view("material flow"),
+      occupancyView: view("occupancy"),
+      occupancyUniformBuffer: view("occupancy uniform"),
+      weatherBoundsBuffer: view("weather bounds"),
+      densityCacheView: view("density cache"),
+      densityCacheUniform: view("density cache uniform"),
+      deepShadowView: view("deep shadow"),
+      deepShadowUniform: view("deep shadow uniform"),
+      lightingBudgetUniform: view("lighting budget"),
+    },
+  });
+  const resolve = (device, ctx) =>
+    getOrCreateCloudMainBindGroup(
+      device,
+      ctx.cache,
+      ctx.color,
+      ctx.args.depth,
+      ctx.args.weather,
+      ctx.args.shape,
+      ctx.args.detail,
+      ctx.args.noiseSampler,
+      ctx.args.lut,
+      undefined,
+      ctx.exact,
+    );
+  const resourceAt = (bindGroup, binding) =>
+    bindGroup.descriptor.entries.find((e) => e.binding === binding)?.resource;
+  const identity = (r) => r;
+
+  // One case per stored cache-entry field: how to replace the input alone and
+  // which bindings must carry the replacement ([binding, isBuffer, select]).
+  const exactCase = (entryField, exactField, carry) => ({
+    entryField,
+    make: () => view(`replacement ${entryField}`),
+    drive: (ctx, r) => {
+      ctx.exact[exactField] = r;
+    },
+    carry,
+  });
+  const cases = [
+    {
+      entryField: "layout",
+      make: () => view("replacement layout"),
+      drive: (ctx, r) => {
+        ctx.cache.bindGroupLayout = r;
+      },
+      carry: [],
+      checkDescriptor: (descriptor, r) => {
+        expect(descriptor.layout).withContext("layout").toBe(r);
+      },
+    },
+    {
+      entryField: "uniformBuffer",
+      make: () => view("replacement uniformBuffer"),
+      drive: (ctx, r) => {
+        ctx.exact.uniform = { buffer: r };
+      },
+      carry: [[3, true]],
+    },
+    {
+      entryField: "colorView",
+      make: () => view("replacement colorView"),
+      drive: (ctx, r) => {
+        ctx.color = r;
+      },
+      carry: [[0, false]],
+    },
+    exactCase("depthView", "depth", [[1, false]]),
+    exactCase("mainSampler", "mainSampler", [[2, false]]),
+    exactCase("weatherView", "weatherView", [
+      [4, false],
+      [29, false],
+    ]),
+    exactCase("weatherSampler", "weatherSampler", [[5, false]]),
+    exactCase("shapeView", "shapeView", [[6, false]]),
+    exactCase("detailView", "detailView", [[7, false]]),
+    exactCase("noiseSampler", "noiseSampler", [[8, false]]),
+    exactCase("skyView", "skyView", [[9, false]]),
+    exactCase("multipleScatterView", "multipleScatter", [[10, false]]),
+    exactCase("transmittanceView", "transmittance", [[11, false]]),
+    exactCase("lutSampler", "lutSampler", [[12, false]]),
+    exactCase("densityMomentsView", "densityMomentsView", [[14, false]]),
+    exactCase("materialFlowBuffer", "materialFlowBuffer", [
+      [15, true],
+      [30, true],
+    ]),
+    {
+      entryField: "weatherTransition",
+      make: () => ({
+        weatherView: view("transition weather"),
+        materialFlowBuffer: view("transition material flow"),
+      }),
+      drive: (ctx, r) => {
+        ctx.exact.weatherTransition = r;
+      },
+      carry: [
+        [29, false, (r) => r.weatherView],
+        [30, true, (r) => r.materialFlowBuffer],
+      ],
+    },
+    exactCase("occupancyView", "occupancyView", [[17, false]]),
+    exactCase("occupancyUniformBuffer", "occupancyUniformBuffer", [[18, true]]),
+    exactCase("weatherBoundsBuffer", "weatherBoundsBuffer", [[19, true]]),
+    exactCase("densityCacheView", "densityCacheView", [[20, false]]),
+    exactCase("densityCacheUniform", "densityCacheUniform", [[21, true]]),
+    exactCase("deepShadowView", "deepShadowView", [[22, false]]),
+    exactCase("deepShadowUniform", "deepShadowUniform", [[23, true]]),
+    exactCase("lightingBudgetUniform", "lightingBudgetUniform", [[26, true]]),
+  ];
+
+  describe("each stored key", function () {
+    for (const key of cases) {
+      it(`a changed ${key.entryField} alone gives a new bind group carrying it`, function () {
+        const device = makeDevice();
+        const ctx = makeContext();
+        const before = resolve(device, ctx);
+        expect(resolve(device, ctx))
+          .withContext(`${key.entryField} reuse`)
+          .toBe(before);
+        expect(device.created).withContext(key.entryField).toBe(1);
+
+        const replacement = key.make();
+        key.drive(ctx, replacement);
+        const after = resolve(device, ctx);
+
+        expect(after).withContext(key.entryField).not.toBe(before);
+        expect(device.created).withContext(key.entryField).toBe(2);
+        const stored = ctx.cache.mainBindGroups.find(
+          (entry) => entry && entry.bindGroup === after,
+        );
+        expect(stored?.[key.entryField])
+          .withContext(`${key.entryField} stored in the cache entry`)
+          .toBe(replacement);
+        for (const [binding, isBuffer, select = identity] of key.carry) {
+          const bound = resourceAt(after, binding);
+          expect(isBuffer ? bound?.buffer : bound)
+            .withContext(`${key.entryField} at binding ${binding}`)
+            .toBe(select(replacement));
+        }
+        key.checkDescriptor?.(after.descriptor, replacement);
+      });
+    }
+  });
+
+  describe("layout key", function () {
+    it("reuses the bind group for the same layout and carries a replaced layout", function () {
+      const device = makeDevice();
+      const ctx = makeContext();
+      const first = resolve(device, ctx);
+      expect(first.descriptor.layout)
+        .withContext("layout")
+        .toBe(ctx.cache.bindGroupLayout);
+      expect(resolve(device, ctx)).withContext("layout reuse").toBe(first);
+      expect(device.created).toBe(1);
+
+      const replacement = view("replacement layout");
+      ctx.cache.bindGroupLayout = replacement;
+      const second = resolve(device, ctx);
+      expect(second).withContext("layout").not.toBe(first);
+      expect(second.descriptor.layout).withContext("layout").toBe(replacement);
+    });
+  });
+
+  describe("weatherTransition key", function () {
+    const makePair = (label) => ({
+      weatherView: view(`${label} weather`),
+      materialFlowBuffer: view(`${label} material flow`),
+    });
+
+    it("reuses the bind group for the same pair object", function () {
+      const device = makeDevice();
+      const ctx = makeContext();
+      ctx.exact.weatherTransition = makePair("previous");
+      const first = resolve(device, ctx);
+      expect(resolve(device, ctx)).withContext("weatherTransition").toBe(first);
+      expect(device.created).toBe(1);
+    });
+
+    it("binds a different pair with a new weatherView at binding 29", function () {
+      const device = makeDevice();
+      const ctx = makeContext();
+      const pair = makePair("previous");
+      ctx.exact.weatherTransition = pair;
+      const first = resolve(device, ctx);
+      const next = { ...pair, weatherView: view("new weather view") };
+      ctx.exact.weatherTransition = next;
+      const second = resolve(device, ctx);
+      expect(second).withContext("new weatherView").not.toBe(first);
+      expect(resourceAt(second, 29))
+        .withContext("binding 29")
+        .toBe(next.weatherView);
+      expect(resourceAt(second, 30).buffer)
+        .withContext("binding 30")
+        .toBe(pair.materialFlowBuffer);
+    });
+
+    it("binds a different pair with a new materialFlowBuffer at binding 30", function () {
+      const device = makeDevice();
+      const ctx = makeContext();
+      const pair = makePair("previous");
+      ctx.exact.weatherTransition = pair;
+      const first = resolve(device, ctx);
+      const next = { ...pair, materialFlowBuffer: view("new material flow") };
+      ctx.exact.weatherTransition = next;
+      const second = resolve(device, ctx);
+      expect(second).withContext("new materialFlowBuffer").not.toBe(first);
+      expect(resourceAt(second, 30).buffer)
+        .withContext("binding 30")
+        .toBe(next.materialFlowBuffer);
+      expect(resourceAt(second, 29))
+        .withContext("binding 29")
+        .toBe(pair.weatherView);
+    });
+
+    it("gives a new bind group from absent to present and binds the fallbacks while absent", function () {
+      const device = makeDevice();
+      const ctx = makeContext();
+      const absent = resolve(device, ctx);
+      expect(resourceAt(absent, 29))
+        .withContext("fallback binding 29")
+        .toBe(ctx.exact.weatherView);
+      expect(resourceAt(absent, 30).buffer)
+        .withContext("fallback binding 30")
+        .toBe(ctx.exact.materialFlowBuffer);
+
+      const pair = makePair("present");
+      ctx.exact.weatherTransition = pair;
+      const present = resolve(device, ctx);
+      expect(present).withContext("absent to present").not.toBe(absent);
+      expect(resourceAt(present, 29)).toBe(pair.weatherView);
+      expect(resourceAt(present, 30).buffer).toBe(pair.materialFlowBuffer);
+
+      delete ctx.exact.weatherTransition;
+      const again = resolve(device, ctx);
+      expect(again).withContext("present to absent").not.toBe(present);
+      expect(resourceAt(again, 29)).toBe(ctx.exact.weatherView);
+    });
+  });
+
+  describe("key completeness", function () {
+    const resolveOnce = () => {
+      const ctx = makeContext();
+      const bindGroup = resolve(makeDevice(), ctx);
+      const entry = ctx.cache.mainBindGroups.find(
+        (e) => e && e.bindGroup === bindGroup,
+      );
+      return { bindGroup, entry };
+    };
+
+    it("has a guarding case for every field the cache entry stores", function () {
+      const { entry } = resolveOnce();
+      const stored = Object.keys(entry).filter((name) => name !== "bindGroup");
+      const guarded = new Set(cases.map((key) => key.entryField));
+      expect(stored.filter((name) => !guarded.has(name)))
+        .withContext("cache entry fields with no guarding case")
+        .toEqual([]);
+      expect([...guarded].filter((name) => !stored.includes(name)))
+        .withContext(
+          "guarding cases for fields the cache entry no longer stores",
+        )
+        .toEqual([]);
+    });
+
+    it("has a guarding case for every binding the descriptor creates", function () {
+      const { bindGroup } = resolveOnce();
+      const bound = bindGroup.descriptor.entries.map((e) => e.binding);
+      const guarded = new Set(
+        cases.flatMap((key) => key.carry.map((c) => c[0])),
+      );
+      expect(bound.filter((binding) => !guarded.has(binding)))
+        .withContext("descriptor bindings with no guarding case")
+        .toEqual([]);
+      expect([...guarded].filter((binding) => !bound.includes(binding)))
+        .withContext(
+          "guarding cases for bindings the descriptor no longer creates",
+        )
+        .toEqual([]);
+    });
+  });
+});
