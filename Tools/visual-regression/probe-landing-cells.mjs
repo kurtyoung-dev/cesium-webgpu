@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Probe: the landing program's Edge cells on the shared runtime - one command
 // per cell for the seat's executor, base arm and tip arm.
-// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture, the opt-in 2D and Columbus-view identity cells E-ID-2d / E-ID-cv, the Chukotka cross-renderer cell E-C-chukotka, the FFT-ocean kernel-identity cell E-FFT-ifft, the opt-in W3 weather-state cells E-W-ground / E-W-ground-hdr / E-W-30km / E-W-30km-hdr, the opt-in water dive-gate cells E-DG-geiranger / E-DG-ontario / E-DG-deathvalley / E-DG-ellipsoid / E-DG-upsampled (a dive page and a collision-on control each, streamed terrain where marked online), the opt-in E-O-msaa1 single-sample orbital capture, the opt-in E-BGL (bind-group-layout census) and E-LL (default-limits device) cells, the opt-in E-ON-occupancy / E-ON-density / E-ON-shadow / E-ON-lighting cells (one experimental cloud cache family on each, set through the rig's experimental block), and the E-T teardown/device-loss cells incl. the opt-in E-T-orbital and E-T-on) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs with a per-cell pending-pipeline wait, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, the window.onmessage sentinel on identity cells (with an opt-in in-run positive control), the ocean displacement readback per kernel at wave time 0 and at an evolved clock, the ocean compute pass a PF-2 window must list, optionally the PF-1..PF-4 performance windows after a machine-CPU warm-up, a Markdown summary that marks provisional floors and contended or not-run lines, a capture-seam manifest for contact-sheet.mjs, and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
+// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture, the opt-in 2D and Columbus-view identity cells E-ID-2d / E-ID-cv, the Chukotka cross-renderer cell E-C-chukotka, the FFT-ocean kernel-identity cell E-FFT-ifft, the opt-in W3 weather-state cells E-W-ground / E-W-ground-hdr / E-W-30km / E-W-30km-hdr, the opt-in water dive-gate cells E-DG-geiranger / E-DG-ontario / E-DG-deathvalley / E-DG-ellipsoid / E-DG-upsampled (a dive page and a collision-on control each, streamed terrain where marked online), the opt-in E-O-msaa1 single-sample orbital capture, the opt-in E-BGL (bind-group-layout census) and E-LL (default-limits device) cells, the opt-in E-ON-occupancy / E-ON-density / E-ON-shadow / E-ON-lighting cells (one experimental cloud cache family on each, set through the rig's experimental block), and the E-T teardown/device-loss cells incl. the opt-in E-T-orbital and E-T-on; the opt-in weather-dial cells E-WX-workers / E-WX-interpolation / E-WX-vertical / E-WX-populations (the engine's population request read on both pages, then the populations deck measured against the single-layer page of the same view; the vertical and worker cells read whether their dial engaged), the weather-map-on E-ON-*-wx cells, E-T-wx and E-LL-wx, the keep-device teardown cells E-T-flight-keep / E-T-on-keep (a second CesiumWidget.createAsync holds the pooled device), and E-BGL-shadow, E-CLOUD-2d, E-CLOUD-morph (held in MORPHING) and E-SKY-cube (the dynamic environment cube's six faces read back)) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs with a per-cell pending-pipeline wait, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, the window.onmessage sentinel on identity cells (with an opt-in in-run positive control), the ocean displacement readback per kernel at wave time 0 and at an evolved clock, the ocean compute pass a PF-2 window must list, optionally the PF-1..PF-4 performance windows after a machine-CPU warm-up, a Markdown summary that marks provisional floors and contended or not-run lines, a capture-seam manifest for contact-sheet.mjs, the opt-in live-page readers of --readers (lib/landing-page-readers.mjs: cloud statistics, the per-frame weather tick count, the weather worker before and after teardown, the occupancy read with the refresh counters, which read NOT AVAILABLE until the engine publishes a lifetime refresh count, the auto-layout pipelines), and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
 // @status ACTIVE
 // @runtime lib/probe-runtime.mjs
 //
@@ -32,6 +32,17 @@
 //              w3-ew-* (off by default; weather-state)     both renderers
 //   E-DG-geiranger / -ontario / -deathvalley / -ellipsoid / -upsampled
 //              dive-gate-* (off by default; dive-gate)     both renderers
+//   E-WX-workers / E-WX-interpolation / E-WX-vertical
+//              cloud-wx-* (off by default; one weather dial on) both renderers
+//   E-WX-populations cloud-wx-populations, pages single-layer and populations (off by default) WebGPU
+//   E-ON-occupancy-wx / -density-wx / -shadow-wx / -lighting-wx  cloud-eon-*-wx (off by default; weather map on) WebGPU
+//   E-T-wx     cloud-flight-multideck-hdr-1080p-wx (off by default; weather dials on, clock step) WebGPU
+//   E-LL-wx    cloud-wx-all-dials (off by default; default-limits device, layout census) WebGPU
+//   E-T-flight-keep / E-T-on-keep  the E-T-flight / E-T-on rigs, pages teardown and teardown-keep-device (off by default) WebGPU
+//   E-BGL-shadow cloud-shadow-noon-cov055 (off by default; cloud shadows on, layout census) WebGPU
+//   E-CLOUD-2d cloud-2d-default (off by default)          WebGPU
+//   E-CLOUD-morph cloud-morph-default (off by default; morph-hold) WebGPU
+//   E-SKY-cube sky-cubemap-model (off by default; sky-cube face read) WebGPU
 // A cell runs on each renderer its rig declares that `--renderer` keeps. The
 // table and its planning live in `lib/landing-cell-table.mjs`.
 //
@@ -181,6 +192,11 @@ import {
   warmUpBeforeFirstArm,
 } from "./lib/cpu-warm-up.mjs";
 import { runDeviceLossSteps } from "./lib/device-loss-steps.mjs";
+import {
+  parseReaders,
+  readTeardownReaders,
+  readersOf,
+} from "./lib/landing-page-readers.mjs";
 import { runDiveGateCellPage } from "./lib/globe-dive-gate-steps.mjs";
 import {
   PRIME_MAX_PAGES,
@@ -194,20 +210,26 @@ import {
   settleFramesOf,
 } from "./lib/landing-page-frames.mjs";
 import { runWeatherStateSteps } from "./lib/weather-state-steps.mjs";
+import { runMorphHold } from "./lib/morph-steps.mjs";
+import { runSkyCubeSteps } from "./lib/sky-cubemap-steps.mjs";
 import {
   measureLandingPerformance,
   pageMeasureStartup,
   pageReadRendererStatistics,
 } from "./lib/frame-timing-steps.mjs";
 import {
+  liveRowsForLabels,
   readGpuDeviceCensus,
   readOwnerLabels,
 } from "./lib/gpu-device-census.mjs";
 import {
   installLandingInitScripts,
+  installReaderInitScripts,
   readCellInitRecords,
+  readReaderRecords,
 } from "./lib/landing-init-scripts.mjs";
 import {
+  LANDING_STAGE_MODULE_URL,
   LANDING_WATER_DIALS,
   capturesWhilePipelinesPending,
   readPendingPipelines,
@@ -229,6 +251,7 @@ import {
   crossPageVerdicts,
   crossRendererComparisons,
   kernelIdentityComparisons,
+  weatherDialComparisons,
 } from "./lib/metrics/landing-cross-page.mjs";
 import {
   runtimeReportFileName,
@@ -381,6 +404,7 @@ export async function runLandingPage({
     try {
       const cell = LANDING_CELLS[entry.cell];
       await installLandingInitScripts(page, cell);
+      await installReaderInitScripts(page, options);
       if (cell.identity === true) {
         // Before any page script: the sentinel holds window.onmessage as the
         // page had it before Cesium loaded.
@@ -470,6 +494,24 @@ export async function runLandingPage({
       }
 
       const base = `${entry.cell}-${entry.renderer}-run${run}`;
+      // The morph is started, and the model added, before the capture, so the
+      // captured frame is the morphing / model frame.
+      if (entry.kind === "morph-hold") {
+        record.morph = await runMorphHold({
+          page,
+          rig,
+          moduleUrl: LANDING_STAGE_MODULE_URL,
+        });
+      }
+      if (entry.kind === "sky-cube") {
+        record.skyCube = await runSkyCubeSteps({
+          page,
+          rig,
+          moduleUrl: LANDING_STAGE_MODULE_URL,
+          base,
+          outputDirectory,
+        });
+      }
       const capture = async (name) => {
         const widgets = await page.evaluate(`(${STRIP_WIDGETS_SOURCE})()`);
         if (
@@ -509,7 +551,12 @@ export async function runLandingPage({
         };
       };
 
-      if (entry.kind === "capture" || entry.kind === "weather-state") {
+      if (
+        entry.kind === "capture" ||
+        entry.kind === "weather-state" ||
+        entry.kind === "morph-hold" ||
+        entry.kind === "sky-cube"
+      ) {
         record.capture = await capture(
           entry.page === "scene" ? base : `${base}-${entry.page}`,
         );
@@ -564,6 +611,7 @@ export async function runLandingPage({
       }
 
       Object.assign(record, await readCellInitRecords(page, cell));
+      Object.assign(record, await readReaderRecords(page, options));
       if (entry.kind === "device-loss") {
         if (entry.page === "teardown") {
           record.capture = await capture(base);
@@ -577,8 +625,20 @@ export async function runLandingPage({
           ownerLabels: readOwnerLabels(options),
           readPageLines: () => pageLinesFrom(diagnostics),
         });
+        // The readers that look at the page after its viewer is destroyed.
+        if (entry.page === "teardown" && readersOf(options).length > 0) {
+          record.readers = {
+            ...record.readers,
+            ...(await readTeardownReaders(page, readersOf(options), {
+              terminalAction: record.deviceLoss?.terminal?.action ?? null,
+            })),
+          };
+        }
       } else {
         record.census = await readGpuDeviceCensus(page);
+        if (Array.isArray(cell.ownerLabels)) {
+          record.owners = liveRowsForLabels(record.census, cell.ownerLabels);
+        }
       }
       const gate = await collectGateErrors(page);
       record.gate = {
@@ -734,7 +794,11 @@ export const descriptor = {
     "packages/engine/Build/Unminified/index.js",
   ],
   args: {
-    finalize: landingArgsFinalize,
+    finalize: (parsed, context) => {
+      // An unknown reader name is refused here, before any browser.
+      parseReaders(parsed.readers);
+      return landingArgsFinalize(parsed, context);
+    },
     extraOptions: [
       {
         flag: "--cells",
@@ -749,6 +813,9 @@ export const descriptor = {
       // Skips the PF window a cell forces (E-FFT-ifft), so its readback
       // identity can be captured on a machine too busy for a PF leg.
       { flag: "--no-cell-perf", key: "noCellPerf", kind: "boolean" },
+      // The opt-in page readers (lib/landing-page-readers.mjs), a comma list.
+      // No default: a run without readers records no `readers` option.
+      { flag: "--readers", key: "readers", kind: "string" },
       // Assigns window.onmessage at the end of one identity page per run and
       // expects the sentinel to see it: proves the sentinel live in the run.
       {
@@ -955,6 +1022,7 @@ export const descriptor = {
       comparison,
       crossRenderer: crossRendererComparisons(pages),
       kernelIdentity: kernelIdentityComparisons(pages),
+      weatherDial: weatherDialComparisons(pages),
       perfPassTimings: perfPassTimings(pages),
       captureManifest,
     };
@@ -985,6 +1053,7 @@ export const descriptor = {
         context.options.sentinelPositiveControl === true,
       ),
       ...crossPageVerdicts({
+        weatherDial: weatherDialComparisons(pages),
         crossRenderer: crossRendererComparisons(pages),
         kernelIdentity: kernelIdentityComparisons(pages),
       }),

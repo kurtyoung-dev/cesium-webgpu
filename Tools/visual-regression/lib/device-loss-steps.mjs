@@ -3,7 +3,7 @@
  * the actions that rebuild GPU resources, then tear the viewer down or force
  * the device lost, reading the WebGPU error gate and the runtime's liveness
  * decision at every step.
- * @purpose Step piece for the landing program's E-T cell: runs a rig's provoking steps (resize ladder via lib/globe-resize-steps.mjs, sky-box swaps via lib/skybox-swap-steps.mjs, a water or cloud tier switch), reads the error gate and the runtime's capture-liveness decision after each, then either destroys the viewer (teardown) or forces the device lost (WebGPU device.destroy, WebGL WEBGL_lose_context) and renders on, and returns {mode, steps, terminal, deviceLost, errors, owners, consoleErrors} - the named owners' live census rows before and after, and the console errors split into the engine's device-lost sentinel and everything else; terminalShape/sameTerminal are the one reader of the terminal record.
+ * @purpose Step piece for the landing program's E-T cell: runs a rig's provoking steps (resize ladder via lib/globe-resize-steps.mjs, sky-box swaps via lib/skybox-swap-steps.mjs, a water or cloud tier switch, a list of clock steps via lib/clock-steps.mjs), reads the error gate and the runtime's capture-liveness decision after each, then either destroys the viewer (teardown) or forces the device lost (WebGPU device.destroy, WebGL WEBGL_lose_context) and renders on, and returns {mode, steps, terminal, deviceLost, errors, owners, consoleErrors} - the named owners' live census rows before and after, and the console errors split into the engine's device-lost sentinel and everything else; terminalShape/sameTerminal are the one reader of the terminal record; and the keep-device teardown (a second holder keeps the pooled GPU device alive across the viewer's destruction, and each named owner row is classified as released at teardown, only with the device, or never; classifyKeepDeviceOwners).
  * @status ACTIVE
  *
  * WHAT "FORCED" MEANS, AND WHAT IT CANNOT MEAN. Script cannot make a GPU
@@ -64,9 +64,13 @@ import { liveRowsForLabels } from "./gpu-device-census.mjs";
 import { runGlobeResizeSteps } from "./globe-resize-steps.mjs";
 import { decideCaptureLiveness } from "./probe-runtime.mjs";
 import { runSkyBoxSwapSteps } from "./skybox-swap-steps.mjs";
+import { runClockSteps } from "./clock-steps.mjs";
 
 /** The terminal actions this module performs. */
 export const DEVICE_LOSS_MODES = Object.freeze(["teardown", "forced-loss"]);
+
+/** The mode that tears the scene down while a second holder keeps the device. */
+export const KEEP_DEVICE_MODE = "teardown-keep-device";
 
 /**
  * The engine's device-lost sentinel line
@@ -177,6 +181,146 @@ export function pageDestroyViewer() {
       typeof viewer.isDestroyed === "function" ? viewer.isDestroyed() : null,
     threw,
   };
+}
+
+/**
+ * PAGE SIDE. Hold a second reference to the viewer's pooled GPU device: a
+ * second widget made by `CesiumWidget.createAsync` from the same Cesium module
+ * (so from the same device pool), kept alive until {@link pageReleaseDeviceHolder}. The answer says
+ * whether the holder's device IS the viewer's device; when it is not (the pool
+ * gave the holder a device of its own, or the module is a different instance)
+ * the viewer's teardown is not a keep-device teardown.
+ *
+ * @param {{moduleUrl?: string}} args
+ * @returns {Promise<{held: boolean, sameDevice?: boolean, reason?: string}>}
+ */
+export async function pageHoldDevice({
+  moduleUrl = "/Build/CesiumUnminified/index.js",
+}) {
+  const viewer = /** @type {any} */ (globalThis).viewer;
+  const device = viewer?.scene?.context?._device;
+  if (!device) {
+    return { held: false, reason: "viewer.scene.context._device" };
+  }
+  let Cesium;
+  try {
+    Cesium = await import(moduleUrl);
+  } catch (error) {
+    return {
+      held: false,
+      reason: `the Cesium module at ${moduleUrl} could not be imported: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (typeof Cesium?.CesiumWidget?.createAsync !== "function") {
+    return { held: false, reason: "CesiumWidget.createAsync" };
+  }
+  const container = document.createElement("div");
+  container.style.cssText =
+    "position:fixed;left:0;top:0;width:2px;height:2px;visibility:hidden";
+  document.body.appendChild(container);
+  let widget;
+  try {
+    widget = await Cesium.CesiumWidget.createAsync(container, {
+      contextOptions: { renderer: "webgpu" },
+      baseLayer: false,
+      skyBox: false,
+      skyAtmosphere: false,
+      globe: false,
+      scene3DOnly: true,
+      requestRenderMode: true,
+    });
+  } catch (error) {
+    container.remove();
+    return {
+      held: false,
+      reason: `CesiumWidget.createAsync threw: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  /** @type {any} */ (globalThis).__landingDeviceHolder = { widget, container };
+  const holderDevice = widget.scene?.context?._device;
+  return {
+    held: true,
+    sameDevice: Boolean(holderDevice) && holderDevice === device,
+  };
+}
+
+/**
+ * PAGE SIDE. Release the holder {@link pageHoldDevice} made (destroying its
+ * widget, which returns its reference to the device pool) and wait a moment for
+ * a device that reached zero references to be destroyed.
+ *
+ * @returns {Promise<{released: boolean, threw: string|null}>}
+ */
+export async function pageReleaseDeviceHolder() {
+  const holder = /** @type {any} */ (globalThis).__landingDeviceHolder;
+  if (!holder) {
+    return { released: false, threw: null };
+  }
+  let threw = null;
+  try {
+    holder.widget.destroy();
+  } catch (error) {
+    threw = String(error && error.message ? error.message : error);
+  }
+  holder.container.remove();
+  /** @type {any} */ (globalThis).__landingDeviceHolder = undefined;
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  return { released: threw === null, threw };
+}
+
+/**
+ * Say, per owner row, when it was released in a keep-device teardown: at the
+ * teardown (live 0 once the viewer was destroyed, the device still held), only
+ * with the device (live above 0 until the holder released it), or never (still
+ * live after the release). A holder that is not on the viewer's device, or was
+ * not made, makes the whole classification NOT AVAILABLE, naming why. Pure.
+ *
+ * @param {{hold: object|null, afterTeardown: object[], afterRelease: object[]}} input
+ *   The holder's answer and the owner rows after the viewer's destruction and
+ *   after the holder's release (`liveRowsForLabels` rows).
+ * @returns {{available: boolean, reason?: string, owners?: object[]}}
+ */
+export function classifyKeepDeviceOwners({
+  hold,
+  afterTeardown,
+  afterRelease,
+}) {
+  if (!hold || hold.held !== true) {
+    return {
+      available: false,
+      reason: `NOT AVAILABLE: a second holder of the viewer's device (${hold?.reason ?? "none was made"})`,
+    };
+  }
+  if (hold.sameDevice !== true) {
+    return {
+      available: false,
+      reason:
+        "NOT AVAILABLE: the holder's device is not the viewer's device (the pool gave the holder a device of its own)",
+    };
+  }
+  const key = (row) => `${row.kind}|${row.label}`;
+  const released = new Map((afterRelease ?? []).map((row) => [key(row), row]));
+  const owners = (afterTeardown ?? []).map((row) => {
+    const final = released.get(key(row)) ?? null;
+    let classification = "never";
+    if (row.seen !== true) {
+      classification = "not seen";
+    } else if (row.live === 0) {
+      classification = "released at teardown";
+    } else if (final !== null && final.live === 0) {
+      classification = "released only with the device";
+    }
+    return {
+      label: row.label,
+      kind: row.kind,
+      classification,
+      liveAtTeardown: row.live,
+      liveAfterRelease: final ? final.live : null,
+      freedByDeviceAtTeardown: row.freedByDevice ?? 0,
+      freedByDeviceAfterRelease: final ? (final.freedByDevice ?? 0) : null,
+    };
+  });
+  return { available: true, owners };
 }
 
 /**
@@ -358,6 +502,8 @@ export function classifyConsoleErrors(lines) {
  *   The page's console and page-error lines so far, in order.
  * @param {number} [args.framesAfterLoss] Renders after a forced loss (30).
  * @param {number} [args.lossTimeoutMs] Bound on the loss report (10000).
+ * @param {string} [args.holderModuleUrl] The Cesium module the keep-device
+ *   holder is made from (the build the page itself loaded).
  * @returns {Promise<object>} `{mode, steps, terminal, deviceLost, errors,
  *   owners: {before, after}, consoleErrors}`.
  */
@@ -371,8 +517,9 @@ export async function runDeviceLossSteps({
   readPageLines,
   framesAfterLoss = 30,
   lossTimeoutMs = 10000,
+  holderModuleUrl = "/Build/CesiumUnminified/index.js",
 }) {
-  if (!DEVICE_LOSS_MODES.includes(mode)) {
+  if (!DEVICE_LOSS_MODES.includes(mode) && mode !== KEEP_DEVICE_MODE) {
     throw new TypeError(
       `device-loss mode ${String(mode)} is not one of ${DEVICE_LOSS_MODES.join(", ")}`,
     );
@@ -432,11 +579,27 @@ export async function runDeviceLossSteps({
     }
     alive = await after(`tier-switch:${dial}`, ok, { switched });
   }
+  // The rig's clock steps, last of the provoking steps: a weather snapshot
+  // pair exists only after the scene clock has crossed a weather quantum.
+  if (alive && Array.isArray(dials.clockSteps)) {
+    const detail = await runClockSteps({
+      page,
+      rig: { dials: { clockSteps: dials.clockSteps, settleFramesPerStep } },
+      settle,
+    });
+    const ok =
+      detail.steps.length === dials.clockSteps.length &&
+      detail.steps.every((step) => step.ok !== false);
+    alive = await after("clock-steps", ok, detail);
+  }
 
   const census = readCensus ?? (async () => null);
   const before = liveRowsForLabels(await census(page), ownerLabels);
 
   let terminal;
+  let hold = null;
+  let release = null;
+  let afterTeardown = [];
   if (!alive) {
     terminal = {
       action: null,
@@ -447,6 +610,21 @@ export async function runDeviceLossSteps({
       action: "viewer.destroy",
       ...(await page.evaluate(pageDestroyViewer)),
     };
+  } else if (mode === KEEP_DEVICE_MODE) {
+    // A second holder keeps the device alive across the viewer's destruction,
+    // so an owner released only with its device is told from one released at
+    // the teardown; the holder is released afterwards and the rows read again.
+    hold = await page.evaluate(pageHoldDevice, {
+      moduleUrl: holderModuleUrl,
+    });
+    terminal = {
+      action: "viewer.destroy",
+      keepDevice: true,
+      ...(await page.evaluate(pageDestroyViewer)),
+    };
+    afterTeardown = liveRowsForLabels(await census(page), ownerLabels);
+    release =
+      hold?.held === true ? await page.evaluate(pageReleaseDeviceHolder) : null;
   } else {
     const loss = await page.evaluate(pageForceDeviceLoss, {
       timeoutMs: lossTimeoutMs,
@@ -459,6 +637,18 @@ export async function runDeviceLossSteps({
 
   const gate = await collectGateErrors(page);
   const ownersAfter = liveRowsForLabels(await census(page), ownerLabels);
+  const keepDevice =
+    mode === KEEP_DEVICE_MODE
+      ? {
+          hold,
+          release,
+          ...classifyKeepDeviceOwners({
+            hold,
+            afterTeardown,
+            afterRelease: ownersAfter,
+          }),
+        }
+      : null;
   return {
     mode,
     steps,
@@ -470,5 +660,6 @@ export async function runDeviceLossSteps({
     consoleErrors: classifyConsoleErrors(
       typeof readPageLines === "function" ? readPageLines() : [],
     ),
+    ...(keepDevice === null ? {} : { keepDevice }),
   };
 }

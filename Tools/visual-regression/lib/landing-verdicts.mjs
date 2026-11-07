@@ -1,7 +1,7 @@
 /**
  * The landing probe's base-vs-tip comparison and its verdicts, pure over the
  * page records.
- * @purpose Verdict piece for probe-landing-cells.mjs: the PF-1..PF-4 and first-capture pixel comparison of every arm a base report shares (compareArms), the per-page verdicts (stage, onmessage sentinel and its positive control, device loss, the weather-state identity claim of a weather-state cell, uncaught errors, teardown owners, the named GPU pass a cell expects in its PF-2 window) and the per-arm PF and terminal verdicts (landingVerdicts) and the uncapped non-sentinel console error count (otherConsoleErrorCount), all pure except compareArms' PNG reads.
+ * @purpose Verdict piece for probe-landing-cells.mjs: the PF-1..PF-4 and first-capture pixel comparison of every arm a base report shares (compareArms), the per-page verdicts (stage, onmessage sentinel and its positive control, device loss, the weather-state identity claim of a weather-state cell, uncaught errors, teardown owners, the named GPU pass a cell expects in its PF-2 window, the morph-hold page's held mode, the sky-cube page's face read, and on a capture cell that names its owners whether each was seen in the GPU device census) and the per-arm PF and terminal verdicts (landingVerdicts) and the uncapped non-sentinel console error count (otherConsoleErrorCount), all pure except compareArms' PNG reads.
  * @status ACTIVE
  *
  * WHY A PIECE. Lane TAR-ALDARION moved these out of `probe-landing-cells.mjs`
@@ -15,6 +15,7 @@
 import { sameTerminal, terminalShape } from "./device-loss-steps.mjs";
 import { PIPELINE_ROW_KINDS } from "./gpu-device-census.mjs";
 import { diveGateVerdict } from "./globe-dive-gate-steps.mjs";
+import { skyCubeRecordVerdict } from "./sky-cubemap-steps.mjs";
 import { frameTimeVerdict } from "./metrics/frame-time-distribution.mjs";
 import { residencyVerdict } from "./metrics/gpu-memory-residency.mjs";
 import {
@@ -263,6 +264,45 @@ export function landingVerdicts(records, comparison) {
       record.kind === "dive-gate" ? diveGateVerdict(id, record) : null;
     if (dive) {
       verdicts.push(dive);
+    }
+    // A capture cell that names its owners: each label must be seen in the
+    // GPU device census, so a label the census cannot record fails here
+    // instead of reading as cleanly absent.
+    if (Array.isArray(record.owners) && !record.deviceLoss) {
+      const unseen = record.owners
+        .filter((row) => row.seen !== true)
+        .map((row) => row.label);
+      verdicts.push({
+        id: `${id}:owners-seen`,
+        pass: unseen.length === 0,
+        unseen,
+        reason:
+          unseen.length === 0
+            ? undefined
+            : `never seen in the GPU device census: ${unseen.join(", ")}`,
+      });
+    }
+    // A morph-hold page: the mode read MORPHING when the morph started and
+    // again after the frames, so the captured frame is a morphing frame.
+    if (record.kind === "morph-hold") {
+      verdicts.push({
+        id: `${id}:morph-held`,
+        pass: record.morph?.held === true,
+        notRun: record.morph?.available !== true,
+        reason:
+          record.morph?.available === true ? undefined : record.morph?.reason,
+      });
+    }
+    // A sky-cube page: six faces read back, each with a non-zero byte; the
+    // cross-arm identity is the per-face sha256 of the two arms' records.
+    if (record.kind === "sky-cube") {
+      const cube = skyCubeRecordVerdict(record.skyCube);
+      verdicts.push({
+        id: `${id}:sky-cube-read`,
+        pass: cube.pass,
+        notRun: cube.notAvailable === true,
+        reason: cube.reason,
+      });
     }
     const timed = perfPassTiming(record);
     if (timed?.available === true) {

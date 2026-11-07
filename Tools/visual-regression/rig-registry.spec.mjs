@@ -39,7 +39,9 @@ import {
 // re-registers its tests in the importer's run. A spec that needs the registry
 // should call `loadRigs()` and assert a property of what comes back.
 const REGISTRY_CENSUS = {
-  total: 278,
+  // The ten weather-dial rigs joined: three weather (cloud-wx-workers, -interpolation, -vertical) and seven cloud (cloud-wx-populations, cloud-wx-all-dials, the four cloud-eon-*-wx copies, the weather flight rig).
+  // Four more: cloud-shadow-noon-cov055, cloud-2d-default and cloud-morph-default (cloud) and sky-cubemap-model (skybox).
+  total: 292,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count reached 17
@@ -62,7 +64,7 @@ const REGISTRY_CENSUS = {
     // -shadow and -lighting, one per cache family) and the flight rig with every
     // family on (cloud-flight-multideck-hdr-1080p-eon), each adding an
     // experimental block and nothing else.
-    cloud: 49,
+    cloud: 59,
     // The polar family's harvest re-declared every scene its probes captured
     // or measured, for the kept probe and the archived ones alike, so a
     // retired probe's scene stays on record: one rig per capture, with the
@@ -117,7 +119,7 @@ const REGISTRY_CENSUS = {
     // The W3 job's four E-W weather-state rigs (ground and 30 km, SDR and HDR)
     // joined it when the landing probe took the E-W cells in from the
     // out-of-tree instrument that had run them.
-    weather: 35,
+    weather: 38,
     // The globe family's harvest (probe-kit wave 1, DX-108) declared one rig
     // per scene its sixteen probes capture or measure: kept, migrated and
     // retired probes alike, so a retired probe's scene stays on record.
@@ -125,7 +127,7 @@ const REGISTRY_CENSUS = {
     // MSAA through a resize ladder) and the first skybox rig (the default sky
     // box with its sources swapped twice in place).
     globe: 36,
-    skybox: 1,
+    skybox: 2,
     // The landing cells' teardown and device-loss scene for the water landing
     // (E-T in E11): the coast camera the water lane's job sheet names, with the
     // enhanced ocean and the HIGH water tier on so the water's GPU owners are

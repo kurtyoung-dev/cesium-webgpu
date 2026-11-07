@@ -1,0 +1,358 @@
+{
+  "purpose": "sha256 of JSON.stringify(landingStagePayload(rig)) and of JSON.stringify(cloudRigStagePayload(rig)) for every registered rig tagged cloud or weather or declaring a cloud* dial or an experimental block, computed at main b142b73c19 (Batch 1669) before the weather-dial rigs joined; a throw is recorded as throws:<code>",
+  "base": "b142b73c19",
+  "rigs": {
+    "antarctic-stratus-plateau": {
+      "landing": "8d9117aed70441885af3e6889a74683e7394e42c5a6efca40ef40f439628e895",
+      "cloud": "56a32764feaeae6e478ab063ef16fdc814fc96ca2e46ac681ab1e3238d585e84"
+    },
+    "arctic-stratus-svalbard": {
+      "landing": "3f5b78f9939a00ef755ffb8dc8414de9376a147c24b811b2d22f92bef5f9389d",
+      "cloud": "92f50473c8ab8f00841850719a1b94b7d310fb3c8cc666db0ef494592c9e30f8"
+    },
+    "bengal-monsoon-nimbostratus": {
+      "landing": "1b2d1a53d802dc32f484609312b6a5f7b08ed97587d3ec31067eb8d2ae99e91e",
+      "cloud": "f292e4ac557f130d82418eda2597c7ab1fae503d79bc87ee6aafbd70bb88c9c9"
+    },
+    "benguela-dusk-stratocumulus": {
+      "landing": "9fd4537d96608b2ef11a0f0e2287fb0f2390ca5213e3c736ca404b180db15457",
+      "cloud": "d2b41419c1878d01694f5912ab61e308b6362f4837631b82c23bcc7f13f1b64b"
+    },
+    "californian-nocturnal-stratus": {
+      "landing": "6c1128c31675f1e6791ef31740b4bf6d5128d18154001c3e00f5ed4377cded9a",
+      "cloud": "712b00c00cc75606d06ea5a230b5fcf2e030142dfe05377437a6e8d8bca79ea6"
+    },
+    "cloud-aerial-dusk-beauty": {
+      "landing": "8e28fc0b69fa92519308ac27f62a94f94c71bbbbc488fe2bced6c434a6edd79d",
+      "cloud": "54708b08d9ff8decf11781ed6973e5ae6a86c3608bd8b5b5dcd0e760ab021d4f"
+    },
+    "cloud-aerial-far-deck": {
+      "landing": "d90fc583a27d3fa954dfc005fea5abed71d1f92fb7b889478b060b5f99a4cd23",
+      "cloud": "b742d368dac0f15aa7de8391891c365e377aecc2d71782050fa21329f8404e96"
+    },
+    "cloud-aerial-near-deck": {
+      "landing": "be9509381221f004c70e2d513a777880942dc8a70e15ee822f21b246097f447e",
+      "cloud": "c1e127e5dffbabec58ab4640e473308dc1011f39109457d17cc8ccea0153e3aa"
+    },
+    "cloud-ambient-sidelit": {
+      "landing": "6effaf4da00981d4b82672144dc67c9d3f9d6ceae4b44fded8db2621cf1543b3",
+      "cloud": "2eeede707336f5967346cd18999b5f394e7e4f6e92a205502ed86a9135a8fcdd"
+    },
+    "cloud-billboard-u1-scaffold": {
+      "landing": "c2a7830e09e01945cd9eb66638cf21e7ebb23bb8cd028a62c7abd7ebb4ef17e3",
+      "cloud": "throws:TypeError"
+    },
+    "cloud-cinematic-default-1200m": {
+      "landing": "0a9ee10ca985687da2f14d09f48ad4b422e263e1f8a4d4ea58aed789a60e1632",
+      "cloud": "ca4864b8b662c3f06d669c786673875dfa5200264ef606a949bb579e196b7ef8"
+    },
+    "cloud-cinematic-legacy-lut-modes-1200m": {
+      "landing": "7a3dc9c5a9e9b7b1f48ceb91de928e83ea5b7337c365002015ced0e1740c35f7",
+      "cloud": "01d78550b61def99d8bfc0af7f62a8c07dbf3347fc402765984865b01f65d300"
+    },
+    "cloud-depth-occlusion-thick-shell": {
+      "landing": "e681fb1b7c4e73d7e58ca8eb62bc03153c4ff7ef8abfbb7fc2dde9058a0b2f64",
+      "cloud": "31ea5c64580824166c128c6ab46549da5b8d5c95649effa5af4e73e7729f29d3"
+    },
+    "cloud-eon-density": {
+      "landing": "cace261c37153d4d63227baa2bc6cde180ded544e7b8af1fdfffc144dc788da7",
+      "cloud": "e7e5d10bb52d2c0df29602d310b6dd5e87ecdd9498826cc08cde48e06984a5cd"
+    },
+    "cloud-eon-lighting": {
+      "landing": "23f73cf085f699d508fb8f408bd64949337fd953eb64968d057f93615d525523",
+      "cloud": "329c7c1cb73b16a6fb44587ef3b00a52abb1fa11bcf2aa230afdca0a7ded50c8"
+    },
+    "cloud-eon-occupancy": {
+      "landing": "aebd647faba7ba06ca58f9fd10ec90f334d77dd047645b8e5949a034f7dd20d6",
+      "cloud": "da8b7929285e9ed9f59c00d672a4808cfdabdd091d1d17be482ee2994880b3b4"
+    },
+    "cloud-eon-shadow": {
+      "landing": "ee70ad6f060989acd76f7b39d287085966e43a197ea3fa204847aebdb682a826",
+      "cloud": "dcfc1d15b0bfd7df8f9be56a259338d77f48db93d006dc46e90e887bb120cbb2"
+    },
+    "cloud-flight-multideck-hdr-1080p": {
+      "landing": "2910430a78a5d5fc775225ac7309b298e09fdbabc45d8f161449376fd5079b69",
+      "cloud": "throws:TypeError"
+    },
+    "cloud-flight-multideck-hdr-1080p-eon": {
+      "landing": "907a902d62aee7f033bc314258589e93326d73717f2c9e5100a7228e2aae7873",
+      "cloud": "throws:TypeError"
+    },
+    "cloud-phase-backlit": {
+      "landing": "0c1cc61b085b1f9352799ffbaa10dceb9cbffdf3bfb30cf263b0c60b70fa732f",
+      "cloud": "83cc8ff2eb4c7e769ddbf6ec98c557046e91c6316b05e151e36cc272ef142962"
+    },
+    "cloud-phase-frontlit": {
+      "landing": "6458962f6fd08254c1a12a710c2c8c8600a2cf16def0e95f2d1ddceb000d33f8",
+      "cloud": "0111c5e231ff8f31fbeff4b01e1b2cd157f6b9cfd4e8b9bd714c812f16f0011e"
+    },
+    "cloud-shadows-parity-aerial": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "cloud-shadows-parity-fog": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "cloud-shadows-parity-terrain": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "cloud-tod-dawn": {
+      "landing": "c9c083bef03b589f5a8c8ca72c7f529bcba5f027e6968b3dd71a146caca2d625",
+      "cloud": "1726e6213dccb895b8766e5c558c4717fca47d081b8e298c30ccc641fc2b47e1"
+    },
+    "cloud-tod-dusk": {
+      "landing": "7bb166d35bbdc0d5fa4c1b76e56df3dd8eee6e3d384a4a3f15789a071e3be1cb",
+      "cloud": "03734b1cda53bb6a89f23004a5042227d17ebcce4a823339f739428d1877728f"
+    },
+    "cloud-tod-noon": {
+      "landing": "82541bf86740e98790ef2709d5aa9de7dc1389b3558657e3c1ca2672d5b7ba56",
+      "cloud": "91e990c5fcb89154c3342a1f43cdb454a40afbc906105dabe16eee842c58806b"
+    },
+    "cloud-u2-config-deterministic": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "cloud-underside-night-cov055": {
+      "landing": "423162f37bdd8dbab22dc97210ef615c1b56895af7992c9169ab4112d27cfbdb",
+      "cloud": "f19b30b75fe60bf2f431bacba3dcdbbaed951da1e4d6e4e48d3ba620294cd761"
+    },
+    "cloud-underside-noon-cov040": {
+      "landing": "fdaefac9098c8e0733a33641f10fe96b106ba9c1615815d86d0cd2692d7782f5",
+      "cloud": "74c18a7693d10fd4aaf01858f422ffdfd57861f010f518e5136c07b9accd953a"
+    },
+    "cloud-underside-noon-cov055": {
+      "landing": "adcaf4b9e7d9fcd9b936088eb31ffb71145aa2afad1df5a4bb4c6fe1f72fb8fa",
+      "cloud": "8db82269fedba590cd6f7084c7bfc8778915ae2e31a8af2152c3aa4a35e5c260"
+    },
+    "cloud-underside-noon-cov060": {
+      "landing": "b55fac66b3a67963280ec529e39af6d1841c99395541de20f1106994e6a95ccb",
+      "cloud": "8485dd1e84859a52ce8777131d93fd6f87a0fed7f9d641c3b881f51fab48acc8"
+    },
+    "cloud-underside-noon-cov085": {
+      "landing": "fefeebb88d0a2c666c95c17f2f1b5355672279e1773d12b3c5cc93e75f8b3224",
+      "cloud": "30fb5748e7a765415fd06f2a51cdd7f63631f101d002d4bfc479d542e4191cc6"
+    },
+    "dateline-east-convective": {
+      "landing": "52af793a0e08a0068ed3713979b893b3e016041180baf2d684dd34ced91ea202",
+      "cloud": "fad2b19e37c52aca5627f62b44301d4a400fd2d4693bd7fefe030e457f892153"
+    },
+    "dateline-west-convective": {
+      "landing": "fa425ae43012eadf9f9f1e36692ee288e352eb19f3b4d94af18550a9112c52ed",
+      "cloud": "42d884d441843ca40e503a747f1829e2d027e55a77ffe7f68ffae53e95692a42"
+    },
+    "itcz-cumulonimbus-westpacific": {
+      "landing": "a7861e769e5cc9cfc30de90281b24ea59ae4d684eaf1216c34fd9d1c2b2237a7",
+      "cloud": "7ace500a977647f0b998b3593f9268aeda98d3fe963393bc41455901ecaf35da"
+    },
+    "northatlantic-cirrus-fibratus": {
+      "landing": "6c57c661e24a62c2d259ac863b7d7c6fe072c22896cc5d125a8951443e8ccd66",
+      "cloud": "68a46f587ea3917c44ebca98c6a75a63faccfca30f45a5d35c99ea7af5dc5c5f"
+    },
+    "orbital-fulldisc-6608km": {
+      "landing": "7c368fbd06274d84e37d478517dd73c6b82f8489bb6335dcc3e241c5de695898",
+      "cloud": "throws:TypeError"
+    },
+    "orbital-fulldisc-6608km-imagery": {
+      "landing": "f202d793ad5bca29cfbca94cd75d3d18baa17002f1e65a4ed5187305a0fd055a",
+      "cloud": "throws:TypeError"
+    },
+    "orbital-fulldisc-6608km-msaa1-single-deck": {
+      "landing": "8910b2e44a8c5d98d3c1fde468aa99651d1bc3aeea2aa0c4c45f0ed3e4ab7e21",
+      "cloud": "throws:TypeError"
+    },
+    "orbital-fulldisc-6608km-msaa4-single-deck": {
+      "landing": "9eb41a901243b92745b277765f47d401e85be5c7259e47b530968b41d8e0457d",
+      "cloud": "throws:TypeError"
+    },
+    "orbital-ladder-20000km": {
+      "landing": "815369f6ff2776d2523a9bba23b7f5b1cdbfee5e4079e955e76b78cc85376842",
+      "cloud": "8b0f7f1cda2f46f7272faaa320a00447f5ea0013d53ae2b46314954982db8e43"
+    },
+    "orbital-ladder-2000km": {
+      "landing": "15440d69540d50bf8318c05fca835087ef24aac5097fe46890bc730f6859deef",
+      "cloud": "03a33ec7db4fb9c9617800bffc729f6eb34c84b5ce990215abe0433e8af97a40"
+    },
+    "orbital-ladder-200km": {
+      "landing": "6a4be20696529e6cfb8b0eb3b7ddefdf5337c30df23df0bfb443fa11c7724153",
+      "cloud": "9747776b0eaabab0218d96fcf82b713b2ae2c267a5dd6b3a96c34286c6fd2d1d"
+    },
+    "orbital-ladder-20km": {
+      "landing": "138cee888d817460a83d7d9ee3db78ce2bdeea428032d1043f8ce11a535723c8",
+      "cloud": "6c09213386937d5c57d355da3a3659272bcf98d1e56acbf181891d52d0750e3f"
+    },
+    "pacificnw-dawn-valley-stratus": {
+      "landing": "48736515f9672b467b92572c038df69c0be85fd3ee6c4332ba67c88141ba8f00",
+      "cloud": "b9d4a89bd5d0918f7c6fbbb25e7dfea78344a341c1006c48be7688e249c31bab"
+    },
+    "plains-fairweather-cumulus": {
+      "landing": "6a820850bac04db163bc30ebb395e5606f4c0ee86779f0e2a11e66a3e3d32726",
+      "cloud": "caf2cb00b00445ab388e800be1c202ca9c48731b862edd191524f4c229203f30"
+    },
+    "sahara-clear-sky": {
+      "landing": "893c744e55bf1229e480e7bb763d5368f5fda78bfabcd23898ee4a9400b36e6a",
+      "cloud": "a79538b0481030523289081f7a7d7bd4ae8648736d442c36a694d4bd35a9d6da"
+    },
+    "sepacific-stratocumulus-closed": {
+      "landing": "0c65516b9f278978a408c63c0bbfc903e13043f7e1e4a04e39f2762a2cb763ac",
+      "cloud": "c96947be459c4a37d037547d1c19fa598e920290f58f356db6219c66c5fe6c8f"
+    },
+    "sky-only-sun-change": {
+      "landing": "e5842f37d78031ef6f702c266cca76a3cadf25fdff1fc3cc1afca820c99dfcad",
+      "cloud": "throws:TypeError"
+    },
+    "southern-ocean-stratocumulus-open": {
+      "landing": "1fecaf93aec8f15b40b30069f2f135a9dae36eb7fabbfc6102cfcdcd070f710e",
+      "cloud": "2b359a6b71c777df8529e9914d659c517491ac0c9ad342b2af19ffbcd19519a5"
+    },
+    "tradewind-cumulus-caribbean": {
+      "landing": "a84804f8776b450f33ba24ba487a19288a2cd589f4d8bea2516a2d73b8aaabee",
+      "cloud": "c180cfcdaf5cfc7ab96b54fa339a515440f102e2dbf3ae2a228e848b0835a8d9"
+    },
+    "w3-ew-30km": {
+      "landing": "7fc2d9ae43ab5ee508ad34761603b1fe4968c138fb7a0845ef3ce1109fafe693",
+      "cloud": "throws:TypeError"
+    },
+    "w3-ew-30km-hdr": {
+      "landing": "8e1e122fdc7503b128cf4cd42cbba69b47d6ccf019d91811f9fa176860cfb71c",
+      "cloud": "throws:TypeError"
+    },
+    "w3-ew-ground": {
+      "landing": "c4167ae522f5a2de8cbdf4e61e953f0844e7aeaf8dfd4daf429ca0452e7f30a3",
+      "cloud": "throws:TypeError"
+    },
+    "w3-ew-ground-hdr": {
+      "landing": "0482f05161eb7aea111d7d8c44a58bb83d4ae4ab618182f356a12d385961066e",
+      "cloud": "throws:TypeError"
+    },
+    "weather-channels-rich-east": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-channels-rich-west": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-edr-mock-east": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-edr-mock-west": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-ingest-uniform-hi": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-ingest-uniform-lo": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-inspector-coverage-hi": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-inspector-cumulonimbus-deck": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-inspector-default": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-inspector-ovc-st": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-map-wide-off": {
+      "landing": "8b5f421865da4d9b5c5ac280ff9b46f1ba916f2b61dd4a2a502e211750166d59",
+      "cloud": "6c1567b248732fe3bfc473c1e0bb1edf9fe5dddf0b3034589f46d3e618f2e4de"
+    },
+    "weather-map-wide-on": {
+      "landing": "4b1fe933f7f1198178c50570e82f8e8a206bf99189d96d353901cd846f947b8c",
+      "cloud": "5bd9bf1867b4bfcc51a8753d997b63c256803dd07ac3b2e380e324c6a61a3852"
+    },
+    "weather-metar-clear": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-metar-ovc": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-preset-bkn-sc": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-preset-cb-storm": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-preset-ci": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-preset-few-cu": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-preset-ns-rain": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-preset-ovc-st": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-preset-sct-cu": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-preset-skc": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-regional-east": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-regional-far": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-regional-seam": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-regional-webgl-billboard": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-regional-west": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-seam-dateline-eq": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-seam-npole": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-seam-spole": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-wcs-mock-east": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    },
+    "weather-wcs-mock-west": {
+      "landing": "throws:rig-dial-unsupported",
+      "cloud": "throws:TypeError"
+    }
+  }
+}

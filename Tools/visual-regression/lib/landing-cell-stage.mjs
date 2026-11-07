@@ -193,6 +193,8 @@ export const LANDING_STEP_DIALS = Object.freeze([
   "diveGateStep",
   "diveCollisionDisabled",
   "diveGateExpected",
+  "morphHold",
+  "skyCubeModel",
 ]);
 
 /** The values `imagery` and `terrain` accept. */

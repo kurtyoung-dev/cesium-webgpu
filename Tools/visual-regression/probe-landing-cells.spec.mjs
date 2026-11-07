@@ -22,6 +22,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ProbeRefusal } from "./lib/probe-runtime.mjs";
+import { pagesOfCell } from "./lib/landing-cell-table.mjs";
 import { loadRigs } from "./lib/rig-registry.mjs";
 import {
   DEFAULT_CELLS,
@@ -114,11 +115,17 @@ test("P1: planLandingCells plans the full table to one page per renderer a rig d
   const allCellNames = Object.keys(LANDING_CELLS).join(",");
   const plan = planLandingCells({ cells: allCellNames }, rigsById);
   let expected = 0;
-  for (const { rig: rigId, kind, variants } of Object.values(LANDING_CELLS)) {
-    const renderers = rigsById.get(rigId).renderers.length;
-    const pages =
-      kind === "device-loss" ? 2 : variants ? Object.keys(variants).length : 1;
-    expected += renderers * pages;
+  for (const cell of Object.values(LANDING_CELLS)) {
+    const renderers = rigsById.get(cell.rig).renderers.length;
+    // The table's own page list (a device-loss cell's `devicePages`, a
+    // variant cell's variants), not a literal per kind.
+    expected += renderers * pagesOfCell(cell).length;
+  }
+  // Every device-loss cell still plans two pages, whatever they are named.
+  for (const cell of Object.values(LANDING_CELLS)) {
+    if (cell.kind === "device-loss") {
+      assert.equal(pagesOfCell(cell).length, 2, cell.rig);
+    }
   }
   assert.equal(plan.length, expected);
   // The literal as well as the derivation: 25 pages before E-M-water, which
@@ -129,8 +136,12 @@ test("P1: planLandingCells plans the full table to one page per renderer a rig d
   // E-DG dive-gate cells add a dive and a control page per renderer each;
   // E-O-msaa1, E-BGL and E-LL add one WebGPU page each and E-T-orbital its
   // two device-loss pages; the four E-ON cells add one WebGPU page each and
-  // E-T-on its two device-loss pages.
-  assert.equal(plan.length, 98);
+  // E-T-on its two device-loss pages; the four E-WX weather-dial cells add
+  // eight pages (two renderers each, the populations cell two WebGPU variant
+  // pages), the four E-ON-*-wx cells, E-LL-wx, E-BGL-shadow and E-SKY-cube one
+  // WebGPU page each, E-T-wx, E-T-flight-keep and E-T-on-keep two device-loss
+  // pages each, E-CLOUD-2d and E-CLOUD-morph one WebGPU page each.
+  assert.equal(plan.length, 121);
 });
 
 test("P1: E-M-water is a capture cell on both renderers and is not in the default cells", () => {

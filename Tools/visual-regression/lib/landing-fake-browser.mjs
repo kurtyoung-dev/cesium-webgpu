@@ -13,8 +13,33 @@
  * @module Tools/visual-regression/lib/landing-fake-browser
  */
 
+import vm from "node:vm";
+
 import { encodeRgbaPng } from "../../lib/png-rgba.mjs";
 import { withInstantWarmUp } from "./cpu-warm-up.mjs";
+import { ENGAGEMENT_PAGE_FUNCTION } from "./cloud-engagement-read.mjs";
+import { READER_PAGE_FUNCTIONS } from "./landing-page-readers.mjs";
+
+// The opt-in page readers (lib/landing-page-readers.mjs) run their REAL page
+// functions and init sources inside a per-page vm context holding only the
+// globals the spec's `readerWorld` gives it: a page the spec leaves empty
+// answers nothing, so a reader that invents a value goes red.
+const READER_INIT_MARKERS = ["__landingWorkerCensus", "__autoLayoutCensus"];
+
+function makeReaderSandbox(world) {
+  const globals = {
+    requestAnimationFrame: (callback) => setImmediate(() => callback(0)),
+    ...(typeof world === "function" ? world() : (world ?? {})),
+  };
+  const sandbox = vm.createContext(globals);
+  return sandbox;
+}
+
+async function runReaderPageFunction(fn, arg, sandbox) {
+  const run = vm.runInContext(`(${String(fn)})`, sandbox);
+  const answer = await run(arg);
+  return answer === undefined ? null : JSON.parse(JSON.stringify(answer));
+}
 
 export function makeSmallPng(width = 8, height = 8, diffPixel = false) {
   const pixels = new Uint8Array(width * height * 4);
@@ -39,6 +64,42 @@ export function makeFakeBrowser(
     passCost = null,
     layoutCensus = null,
     deviceLimits = null,
+    // The globals a reader's page sees (an object, or a function returning one
+    // per page); `onPageLoad(sandbox)` runs at goto and `onViewerDestroy(sandbox)`
+    // when the E-T step destroys the viewer, to drive the page's world.
+    readerWorld = null,
+    onPageLoad = null,
+    onViewerDestroy = null,
+    onHolderRelease = null,
+    // What the keep-device holder step answers (lib/device-loss-steps.mjs):
+    // `{held, sameDevice, reason?}`, and what releasing it answers.
+    deviceHolder = { held: true, sameDevice: true },
+    holderRelease = { released: true, threw: null },
+    // `screenshotFor({pageIndex, payload})` returns the PNG bytes a page's
+    // element screenshot answers with, or nothing for the default tiny frame.
+    // `pageIndex` counts the pages the browser made; `payload` is the stage
+    // payload the page last received (what the probe asked it to stage).
+    screenshotFor = null,
+    // What the morph-hold and sky-cube page functions answer
+    // (lib/morph-steps.mjs, lib/sky-cubemap-steps.mjs): `morphAnswer` is the
+    // raw pageMorphHold answer, `skyCubeAnswers` is {add, read}. Left null the
+    // page answers NOT AVAILABLE, never a value.
+    morphAnswer = null,
+    skyCubeAnswers = null,
+    // The globals the engagement read's page sees
+    // (lib/cloud-engagement-read.mjs): `engagementWorld({pageIndex, payload})`
+    // returns them for the page asked. Left null the page is empty, so every
+    // flag answers NOT AVAILABLE, never a value.
+    engagementWorld = null,
+    // What the WebGPU error gate and the capture-liveness read report as the
+    // page's device loss: a value, or a function of {pageIndex, gateReads}
+    // (the reads this page made so far) answering it (null: no loss). A loss
+    // after the capture makes the E-T step's provoking steps end the page
+    // before its terminal action.
+    gateDeviceLost = null,
+    // The GPU device census's per-label rows (`byLabel`) the page answers;
+    // left null the census is empty, so no owner is ever seen.
+    censusByLabel = null,
   } = {},
 ) {
   let displacementCalls = 0;
@@ -51,10 +112,22 @@ export function makeFakeBrowser(
   let lastT0 = null;
   let connected = true;
   const smallPng = makeSmallPng(8, 8);
+  let pagesMade = 0;
 
   function makePage() {
     // Set once this page ran the sentinel's positive control.
     let controlled = false;
+    const pageIndex = pagesMade++;
+    let gateReads = 0;
+    const lostNow = () =>
+      typeof gateDeviceLost === "function"
+        ? gateDeviceLost({ pageIndex, gateReads: gateReads++ })
+        : gateDeviceLost;
+    let stagedPayload;
+    const screenshotBytes = () =>
+      screenshotFor?.({ pageIndex, payload: stagedPayload }) ?? smallPng;
+    const sandbox = makeReaderSandbox(readerWorld);
+    log.readerWorlds?.push(sandbox);
     return {
       on(event) {
         log.events.push(`on:${event}`);
@@ -64,13 +137,71 @@ export function makeFakeBrowser(
       },
       async addInitScript(script) {
         log.scripts.push(script);
+        const content = script?.content;
+        if (
+          typeof content === "string" &&
+          READER_INIT_MARKERS.some((marker) => content.includes(marker))
+        ) {
+          vm.runInContext(content, sandbox);
+        }
       },
       async goto(url) {
         log.urls.push(url);
+        await onPageLoad?.(sandbox);
       },
       async waitForFunction() {},
       async evaluate(fn, arg) {
         const src = String(fn);
+        if (fn.name === ENGAGEMENT_PAGE_FUNCTION) {
+          log.engagementReads?.push(arg);
+          return runReaderPageFunction(
+            fn,
+            arg,
+            vm.createContext(
+              engagementWorld?.({ pageIndex, payload: stagedPayload }) ?? {},
+            ),
+          );
+        }
+        if (
+          typeof fn === "function" &&
+          Object.hasOwn(READER_PAGE_FUNCTIONS, fn.name)
+        ) {
+          log.readerReads?.push(fn.name);
+          return runReaderPageFunction(fn, arg, sandbox);
+        }
+        if (fn.name === "pageMorphHold") {
+          log.morphHolds?.push(arg);
+          return (
+            morphAnswer ?? {
+              available: false,
+              reason: "NOT AVAILABLE: fake page (seam: scene.morphTo*)",
+            }
+          );
+        }
+        if (fn.name === "pageSkyCubeAddModel") {
+          log.skyCubeCalls?.push(fn.name);
+          return (
+            skyCubeAnswers?.add ?? {
+              added: false,
+              reason: "NOT AVAILABLE: fake page (seam: Model.fromGltfAsync)",
+            }
+          );
+        }
+        if (fn.name === "pageSkyCubeReadFaces") {
+          log.skyCubeCalls?.push(fn.name);
+          return (
+            skyCubeAnswers?.read ?? {
+              available: false,
+              reason:
+                "NOT AVAILABLE: fake page (seam: manager._webgpuCache.cubemapTexture)",
+            }
+          );
+        }
+        // The clock steps read the sun state after each step; the fake has no
+        // sun, so it answers no direction (a spec that measures it wraps its own).
+        if (fn.name === "pageReadSunState") {
+          return { frameNumber: 1, sunDirectionWC: null };
+        }
         if (fn.name === "pageSetClock") {
           log.clockSets?.push(arg.iso);
           clockAway = !clockAway;
@@ -102,8 +233,18 @@ export function makeFakeBrowser(
         }
         // The E-T cells' terminal steps (lib/device-loss-steps.mjs), by name:
         // the frame driver's marker would otherwise answer the render loop.
+        if (fn.name === "pageHoldDevice") {
+          log.deviceLossCalls?.push(fn.name);
+          return deviceHolder;
+        }
+        if (fn.name === "pageReleaseDeviceHolder") {
+          log.deviceLossCalls?.push(fn.name);
+          onHolderRelease?.(sandbox);
+          return holderRelease;
+        }
         if (fn.name === "pageDestroyViewer") {
           log.deviceLossCalls?.push(fn.name);
+          onViewerDestroy?.(sandbox);
           return { destroyed: true, threw: null };
         }
         if (fn.name === "pageForceDeviceLoss") {
@@ -223,6 +364,7 @@ export function makeFakeBrowser(
           return { armed: 1, found: 1, total: 1 };
         }
         if (src.includes("stageLandingCellInPage")) {
+          stagedPayload = arg;
           return {
             dials: {
               cloudsEnabled: {
@@ -249,7 +391,7 @@ export function makeFakeBrowser(
           return {
             textures: { created: 0, destroyed: 0 },
             buffers: { created: 0, destroyed: 0 },
-            byLabel: {},
+            byLabel: censusByLabel ?? {},
             compile: { shaderModules: { count: 0, syncMs: 0 } },
           };
         }
@@ -272,10 +414,14 @@ export function makeFakeBrowser(
           return { removed: 3, leftovers: [] };
         }
         if (src.includes("__captureLiveness")) {
-          return { gateArmed: true, deviceLost: null, frameNumber: 1 };
+          return {
+            gateArmed: true,
+            deviceLost: lostNow(),
+            frameNumber: 1,
+          };
         }
         if (src.includes("__webgpuGate")) {
-          return { errors: [], deviceLost: null, armedDevices: 1 };
+          return { errors: [], deviceLost: lostNow(), armedDevices: 1 };
         }
         throw new Error(`unstubbed evaluate: ${src.slice(0, 100)}`);
       },
@@ -287,11 +433,11 @@ export function makeFakeBrowser(
           },
           nth: () => ({
             async screenshot() {
-              return smallPng;
+              return screenshotBytes();
             },
           }),
           async screenshot() {
-            return smallPng;
+            return screenshotBytes();
           },
         };
       },

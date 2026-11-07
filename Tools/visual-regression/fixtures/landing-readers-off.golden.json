@@ -1,0 +1,1661 @@
+{
+ "exitCode": 0,
+ "report": {
+  "probe": "landing-cells",
+  "generatedAt": "<varies>",
+  "origin": "http://localhost:8094",
+  "options": {
+   "port": 8094,
+   "runs": 1,
+   "reverse": false,
+   "headed": false,
+   "renderers": [
+    "webgl",
+    "webgpu"
+   ],
+   "servedBuild": false,
+   "repositoryRoot": "<ROOT>",
+   "outputDirectory": "<ROOT>/out",
+   "timeoutMs": 120000,
+   "cells": "E-D,E-F,E-T-flight,E-BGL",
+   "frames": 120,
+   "warmup": 30,
+   "passFrames": 60,
+   "ownerLabels": "",
+   "baseReport": "",
+   "mergeReports": "",
+   "bands": "",
+   "startupField": ""
+  },
+  "servedBuildAssertion": "waived",
+  "preflight": null,
+  "edgeSlot": {
+   "lockPath": "<ROOT>/Tools/visual-regression/output/.edge-slot.lock",
+   "acquiredAt": "<varies>",
+   "reclaimed": null
+  },
+  "launchArgs": [
+   "--enable-unsafe-webgpu"
+  ],
+  "captures": [
+   {
+    "name": "E-D-webgl-run0",
+    "path": "<ROOT>/out/E-D-webgl-run0.png",
+    "byteLength": 70,
+    "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+    "matchCount": 1,
+    "liveness": {
+     "state": "live",
+     "frameNumber": 1
+    }
+   },
+   {
+    "name": "E-D-webgpu-run0",
+    "path": "<ROOT>/out/E-D-webgpu-run0.png",
+    "byteLength": 70,
+    "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+    "matchCount": 1,
+    "liveness": {
+     "state": "live",
+     "frameNumber": 1
+    }
+   },
+   {
+    "name": "E-F-webgpu-run0",
+    "path": "<ROOT>/out/E-F-webgpu-run0.png",
+    "byteLength": 70,
+    "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+    "matchCount": 1,
+    "liveness": {
+     "state": "live",
+     "frameNumber": 1
+    }
+   },
+   {
+    "name": "E-T-flight-webgpu-run0",
+    "path": "<ROOT>/out/E-T-flight-webgpu-run0.png",
+    "byteLength": 70,
+    "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+    "matchCount": 1,
+    "liveness": {
+     "state": "live",
+     "frameNumber": 1
+    }
+   },
+   {
+    "name": "E-BGL-webgpu-run0",
+    "path": "<ROOT>/out/E-BGL-webgpu-run0.png",
+    "byteLength": 70,
+    "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+    "matchCount": 1,
+    "liveness": {
+     "state": "live",
+     "frameNumber": 1
+    }
+   }
+  ],
+  "verdicts": [
+   {
+    "id": "E-D:webgl:scene:run0:stage",
+    "pass": true,
+    "notRun": false
+   },
+   {
+    "id": "E-D:webgl:scene:run0:onmessage-unchanged",
+    "pass": true,
+    "before": null,
+    "after": null,
+    "assignments": 0,
+    "reads": {
+     "first": {
+      "installed": true,
+      "before": null,
+      "after": null,
+      "changed": false,
+      "assignments": 0,
+      "stacks": []
+     },
+     "second": {
+      "installed": true,
+      "before": null,
+      "after": null,
+      "changed": false,
+      "assignments": 0,
+      "stacks": []
+     }
+    }
+   },
+   {
+    "id": "E-D:webgl:scene:run0:no-unexpected-device-loss",
+    "pass": true,
+    "deviceLost": null
+   },
+   {
+    "id": "E-D:webgpu:scene:run0:stage",
+    "pass": true,
+    "notRun": false
+   },
+   {
+    "id": "E-D:webgpu:scene:run0:onmessage-unchanged",
+    "pass": true,
+    "before": null,
+    "after": null,
+    "assignments": 0,
+    "reads": {
+     "first": {
+      "installed": true,
+      "before": null,
+      "after": null,
+      "changed": false,
+      "assignments": 0,
+      "stacks": []
+     },
+     "second": {
+      "installed": true,
+      "before": null,
+      "after": null,
+      "changed": false,
+      "assignments": 0,
+      "stacks": []
+     }
+    }
+   },
+   {
+    "id": "E-D:webgpu:scene:run0:no-unexpected-device-loss",
+    "pass": true,
+    "deviceLost": null
+   },
+   {
+    "id": "E-F:webgpu:scene:run0:stage",
+    "pass": true,
+    "notRun": false
+   },
+   {
+    "id": "E-F:webgpu:scene:run0:no-unexpected-device-loss",
+    "pass": true,
+    "deviceLost": null
+   },
+   {
+    "id": "E-T-flight:webgpu:teardown:run0:stage",
+    "pass": true,
+    "notRun": false
+   },
+   {
+    "id": "E-T-flight:webgpu:teardown:run0:no-unexpected-device-loss",
+    "pass": true,
+    "deviceLost": null
+   },
+   {
+    "id": "E-T-flight:webgpu:teardown:run0:no-uncaught-error",
+    "pass": true,
+    "pageErrors": []
+   },
+   {
+    "id": "E-T-flight:webgpu:teardown:run0:owners-destroyed",
+    "pass": true,
+    "live": [],
+    "owners": []
+   },
+   {
+    "id": "E-T-flight:webgpu:forced-loss:run0:stage",
+    "pass": true,
+    "notRun": false
+   },
+   {
+    "id": "E-T-flight:webgpu:forced-loss:run0:no-unexpected-device-loss",
+    "pass": true,
+    "deviceLost": null
+   },
+   {
+    "id": "E-T-flight:webgpu:forced-loss:run0:no-uncaught-error",
+    "pass": true,
+    "pageErrors": []
+   },
+   {
+    "id": "E-BGL:webgpu:scene:run0:stage",
+    "pass": true,
+    "notRun": false
+   },
+   {
+    "id": "E-BGL:webgpu:scene:run0:no-unexpected-device-loss",
+    "pass": true,
+    "deviceLost": null
+   }
+  ],
+  "exitCode": 0,
+  "browserCloses": [
+   {
+    "run": 0,
+    "deadlineMs": 90000,
+    "legacyDeadlineMs": 10000,
+    "settled": true,
+    "closeMs": "<varies>",
+    "browserCloseMs": "<varies>",
+    "elapsedMs": "<varies>",
+    "exceededLegacy": false,
+    "expired": false
+   }
+  ],
+  "cellsRequested": [
+   "E-D",
+   "E-F",
+   "E-T-flight",
+   "E-BGL"
+  ],
+  "perf": false,
+  "waitForPendingPipelines": false,
+  "pipelineWait": {
+   "mode": "cell-default",
+   "byCell": {
+    "E-D": true,
+    "E-F": false,
+    "E-T-flight": false,
+    "E-BGL": false
+   }
+  },
+  "pipelineWaitByCell": {
+   "E-D": true,
+   "E-F": false,
+   "E-T-flight": false,
+   "E-BGL": false
+  },
+  "capturesWhilePipelinesPending": [],
+  "windows": {
+   "frames": 120,
+   "warmup": 30,
+   "passFrames": 60
+  },
+  "ownerLabels": [],
+  "bands": {
+   "floorFraction": 0.03,
+   "repeatFactor": 2,
+   "startupBandFloor": 0.1,
+   "startupCeilingMs": 2500,
+   "allocationBytes": 0,
+   "contendedCpuPct": 60,
+   "cpuArmDeltaPct": 20,
+   "contendedRunSamples": 10
+  },
+  "startupBandFloorByRenderer": {
+   "webgl": {
+    "fraction": 0.15,
+    "origin": "floor"
+   },
+   "webgpu": {
+    "fraction": 0.1,
+    "origin": "registered"
+   }
+  },
+  "bandsFile": null,
+  "baseReport": null,
+  "mergedReports": [],
+  "cpuSeries": "<varies>",
+  "warmUp": {
+   "status": "not-a-pf-run",
+   "thresholdPct": 60,
+   "settleSamples": 1,
+   "intervalMs": 1000,
+   "timeoutMs": 120000,
+   "sampler": "injected",
+   "samples": [],
+   "sampleCount": 0,
+   "durationMs": 0,
+   "releasedAtPct": null,
+   "note": "warm-up: not a PF run"
+  },
+  "prime": {
+   "status": "not-a-pf-run",
+   "stoppedBecause": "not-a-pf-run",
+   "cell": null,
+   "renderer": null,
+   "page": null,
+   "durationMs": 0,
+   "cpuMean": null,
+   "pages": [],
+   "note": "prime: not a PF run",
+   "sampler": "injected",
+   "cpuSource": "injected"
+  },
+  "contentionBasis": null,
+  "pages": [
+   {
+    "run": 0,
+    "cell": "E-D",
+    "rig": "default-3d-pinned",
+    "kind": "capture",
+    "renderer": "webgl",
+    "page": "scene",
+    "notRun": null,
+    "network": "offline",
+    "onmessage": {
+     "installed": true,
+     "changed": false,
+     "before": null,
+     "after": null,
+     "assignments": 0,
+     "stacks": [],
+     "reads": {
+      "first": {
+       "installed": true,
+       "before": null,
+       "after": null,
+       "changed": false,
+       "assignments": 0,
+       "stacks": []
+      },
+      "second": {
+       "installed": true,
+       "before": null,
+       "after": null,
+       "changed": false,
+       "assignments": 0,
+       "stacks": []
+      }
+     }
+    },
+    "armed": {
+     "armed": 1,
+     "found": 1,
+     "total": 1
+    },
+    "stage": {
+     "dials": {
+      "cloudsEnabled": {
+       "requested": true,
+       "observed": true,
+       "applied": true
+      }
+     },
+     "notApplied": []
+    },
+    "pipelines": {
+     "requested": true,
+     "available": true,
+     "pendingAtStart": 5,
+     "pendingAtEnd": 0,
+     "pendingMax": 5,
+     "createdAtEnd": 9,
+     "framesWaited": 7,
+     "waitedMs": 70,
+     "timedOut": false,
+     "pendingAtCapture": 0
+    },
+    "startup": 100,
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 0,
+      "syncMs": 0
+     }
+    },
+    "rendererStatistics": {
+     "pipelineCache": null,
+     "shaderModuleCache": null
+    },
+    "capture": {
+     "name": "E-D-webgl-run0",
+     "path": "E-D-webgl-run0.png",
+     "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgl&offline=true",
+     "capturedAt": "<varies>",
+     "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+     "width": 8,
+     "height": 8,
+     "liveness": {
+      "state": "live",
+      "frameNumber": 1
+     },
+     "pipelinesPending": 0
+    },
+    "census": {
+     "textures": {
+      "created": 0,
+      "destroyed": 0
+     },
+     "buffers": {
+      "created": 0,
+      "destroyed": 0
+     },
+     "byLabel": {},
+     "compile": {
+      "shaderModules": {
+       "count": 0,
+       "syncMs": 0
+      }
+     }
+    },
+    "gate": {
+     "deviceLost": null,
+     "errorCount": 0,
+     "errors": [],
+     "armedDevices": 1
+    },
+    "console": {
+     "errors": 0,
+     "pageErrors": 0,
+     "first": []
+    },
+    "cpu": "<varies>"
+   },
+   {
+    "run": 0,
+    "cell": "E-D",
+    "rig": "default-3d-pinned",
+    "kind": "capture",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "network": "offline",
+    "onmessage": {
+     "installed": true,
+     "changed": false,
+     "before": null,
+     "after": null,
+     "assignments": 0,
+     "stacks": [],
+     "reads": {
+      "first": {
+       "installed": true,
+       "before": null,
+       "after": null,
+       "changed": false,
+       "assignments": 0,
+       "stacks": []
+      },
+      "second": {
+       "installed": true,
+       "before": null,
+       "after": null,
+       "changed": false,
+       "assignments": 0,
+       "stacks": []
+      }
+     }
+    },
+    "armed": {
+     "armed": 1,
+     "found": 1,
+     "total": 1
+    },
+    "stage": {
+     "dials": {
+      "cloudsEnabled": {
+       "requested": true,
+       "observed": true,
+       "applied": true
+      }
+     },
+     "notApplied": []
+    },
+    "pipelines": {
+     "requested": true,
+     "available": true,
+     "pendingAtStart": 5,
+     "pendingAtEnd": 0,
+     "pendingMax": 5,
+     "createdAtEnd": 9,
+     "framesWaited": 7,
+     "waitedMs": 70,
+     "timedOut": false,
+     "pendingAtCapture": 0
+    },
+    "startup": 100,
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 0,
+      "syncMs": 0
+     }
+    },
+    "rendererStatistics": {
+     "pipelineCache": null,
+     "shaderModuleCache": null
+    },
+    "capture": {
+     "name": "E-D-webgpu-run0",
+     "path": "E-D-webgpu-run0.png",
+     "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true",
+     "capturedAt": "<varies>",
+     "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+     "width": 8,
+     "height": 8,
+     "liveness": {
+      "state": "live",
+      "frameNumber": 1
+     },
+     "pipelinesPending": 0
+    },
+    "census": {
+     "textures": {
+      "created": 0,
+      "destroyed": 0
+     },
+     "buffers": {
+      "created": 0,
+      "destroyed": 0
+     },
+     "byLabel": {},
+     "compile": {
+      "shaderModules": {
+       "count": 0,
+       "syncMs": 0
+      }
+     }
+    },
+    "gate": {
+     "deviceLost": null,
+     "errorCount": 0,
+     "errors": [],
+     "armedDevices": 1
+    },
+    "console": {
+     "errors": 0,
+     "pageErrors": 0,
+     "first": []
+    },
+    "cpu": "<varies>"
+   },
+   {
+    "run": 0,
+    "cell": "E-F",
+    "rig": "cloud-flight-multideck-hdr-1080p",
+    "kind": "capture",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "network": "offline",
+    "armed": {
+     "armed": 1,
+     "found": 1,
+     "total": 1
+    },
+    "stage": {
+     "dials": {
+      "cloudsEnabled": {
+       "requested": true,
+       "observed": true,
+       "applied": true
+      }
+     },
+     "notApplied": []
+    },
+    "pipelines": null,
+    "startup": 100,
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 0,
+      "syncMs": 0
+     }
+    },
+    "rendererStatistics": {
+     "pipelineCache": null,
+     "shaderModuleCache": null
+    },
+    "capture": {
+     "name": "E-F-webgpu-run0",
+     "path": "E-F-webgpu-run0.png",
+     "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true",
+     "capturedAt": "<varies>",
+     "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+     "width": 8,
+     "height": 8,
+     "liveness": {
+      "state": "live",
+      "frameNumber": 1
+     },
+     "pipelinesPending": 0
+    },
+    "census": {
+     "textures": {
+      "created": 0,
+      "destroyed": 0
+     },
+     "buffers": {
+      "created": 0,
+      "destroyed": 0
+     },
+     "byLabel": {},
+     "compile": {
+      "shaderModules": {
+       "count": 0,
+       "syncMs": 0
+      }
+     }
+    },
+    "gate": {
+     "deviceLost": null,
+     "errorCount": 0,
+     "errors": [],
+     "armedDevices": 1
+    },
+    "console": {
+     "errors": 0,
+     "pageErrors": 0,
+     "first": []
+    },
+    "cpu": "<varies>"
+   },
+   {
+    "run": 0,
+    "cell": "E-T-flight",
+    "rig": "cloud-flight-multideck-hdr-1080p",
+    "kind": "device-loss",
+    "renderer": "webgpu",
+    "page": "teardown",
+    "notRun": null,
+    "network": "offline",
+    "armed": {
+     "armed": 1,
+     "found": 1,
+     "total": 1
+    },
+    "stage": {
+     "dials": {
+      "cloudsEnabled": {
+       "requested": true,
+       "observed": true,
+       "applied": true
+      }
+     },
+     "notApplied": []
+    },
+    "pipelines": null,
+    "startup": 100,
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 0,
+      "syncMs": 0
+     }
+    },
+    "rendererStatistics": {
+     "pipelineCache": null,
+     "shaderModuleCache": null
+    },
+    "capture": {
+     "name": "E-T-flight-webgpu-run0",
+     "path": "E-T-flight-webgpu-run0.png",
+     "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true",
+     "capturedAt": "<varies>",
+     "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+     "width": 8,
+     "height": 8,
+     "liveness": {
+      "state": "live",
+      "frameNumber": 1
+     },
+     "pipelinesPending": 0
+    },
+    "deviceLoss": {
+     "mode": "teardown",
+     "steps": [],
+     "terminal": {
+      "action": "viewer.destroy",
+      "destroyed": true,
+      "threw": null
+     },
+     "deviceLost": null,
+     "errors": [],
+     "errorCount": 0,
+     "owners": {
+      "labels": [],
+      "before": [],
+      "after": []
+     },
+     "consoleErrors": {
+      "errors": 0,
+      "sentinel": 0,
+      "otherCount": 0,
+      "other": [],
+      "pageErrorCount": 0,
+      "pageErrors": []
+     }
+    },
+    "gate": {
+     "deviceLost": null,
+     "errorCount": 0,
+     "errors": [],
+     "armedDevices": 1
+    },
+    "console": {
+     "errors": 0,
+     "pageErrors": 0,
+     "first": []
+    },
+    "cpu": "<varies>"
+   },
+   {
+    "run": 0,
+    "cell": "E-T-flight",
+    "rig": "cloud-flight-multideck-hdr-1080p",
+    "kind": "device-loss",
+    "renderer": "webgpu",
+    "page": "forced-loss",
+    "notRun": null,
+    "network": "offline",
+    "armed": {
+     "armed": 1,
+     "found": 1,
+     "total": 1
+    },
+    "stage": {
+     "dials": {
+      "cloudsEnabled": {
+       "requested": true,
+       "observed": true,
+       "applied": true
+      }
+     },
+     "notApplied": []
+    },
+    "pipelines": null,
+    "startup": 100,
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 0,
+      "syncMs": 0
+     }
+    },
+    "rendererStatistics": {
+     "pipelineCache": null,
+     "shaderModuleCache": null
+    },
+    "deviceLoss": {
+     "mode": "forced-loss",
+     "steps": [],
+     "terminal": {
+      "action": "GPUDevice.destroy",
+      "loss": {
+       "renderer": "webgpu",
+       "method": "GPUDevice.destroy",
+       "observed": {
+        "reason": "destroyed",
+        "message": "fake"
+       }
+      },
+      "rendered": {
+       "framesAttempted": 30,
+       "throws": 0,
+       "firstThrows": [],
+       "terminallyLost": true
+      }
+     },
+     "deviceLost": null,
+     "errors": [],
+     "errorCount": 0,
+     "owners": {
+      "labels": [],
+      "before": [],
+      "after": []
+     },
+     "consoleErrors": {
+      "errors": 0,
+      "sentinel": 0,
+      "otherCount": 0,
+      "other": [],
+      "pageErrorCount": 0,
+      "pageErrors": []
+     }
+    },
+    "gate": {
+     "deviceLost": null,
+     "errorCount": 0,
+     "errors": [],
+     "armedDevices": 1
+    },
+    "console": {
+     "errors": 0,
+     "pageErrors": 0,
+     "first": []
+    },
+    "cpu": "<varies>"
+   },
+   {
+    "run": 0,
+    "cell": "E-BGL",
+    "rig": "cloud-underside-noon-cov055",
+    "kind": "capture",
+    "renderer": "webgpu",
+    "page": "scene",
+    "notRun": null,
+    "network": "offline",
+    "armed": {
+     "armed": 1,
+     "found": 1,
+     "total": 1
+    },
+    "stage": {
+     "dials": {
+      "cloudsEnabled": {
+       "requested": true,
+       "observed": true,
+       "applied": true
+      }
+     },
+     "notApplied": []
+    },
+    "pipelines": null,
+    "startup": 100,
+    "compileAtStartup": {
+     "shaderModules": {
+      "count": 0,
+      "syncMs": 0
+     }
+    },
+    "rendererStatistics": {
+     "pipelineCache": null,
+     "shaderModuleCache": null
+    },
+    "capture": {
+     "name": "E-BGL-webgpu-run0",
+     "path": "E-BGL-webgpu-run0.png",
+     "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true",
+     "capturedAt": "<varies>",
+     "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+     "width": 8,
+     "height": 8,
+     "liveness": {
+      "state": "live",
+      "frameNumber": 1
+     },
+     "pipelinesPending": 0
+    },
+    "layoutCensus": {
+     "installed": true,
+     "deviceFound": true,
+     "unlabelled": 0,
+     "rows": [
+      {
+       "label": "ProceduralClouds BGL",
+       "seen": false,
+       "created": 0,
+       "variants": 0,
+       "entries": 0,
+       "groups": [],
+       "counts": null,
+       "limits": {
+        "sampledTextures": {
+         "default": 16,
+         "device": null
+        },
+        "uniformBuffers": {
+         "default": 12,
+         "device": null
+        },
+        "storageBuffers": {
+         "default": 8,
+         "device": null
+        },
+        "samplers": {
+         "default": 16,
+         "device": null
+        },
+        "storageTextures": {
+         "default": 4,
+         "device": null
+        }
+       },
+       "overDefault": [],
+       "overDevice": []
+      },
+      {
+       "label": "CloudShadow BGL",
+       "seen": false,
+       "created": 0,
+       "variants": 0,
+       "entries": 0,
+       "groups": [],
+       "counts": null,
+       "limits": {
+        "sampledTextures": {
+         "default": 16,
+         "device": null
+        },
+        "uniformBuffers": {
+         "default": 12,
+         "device": null
+        },
+        "storageBuffers": {
+         "default": 8,
+         "device": null
+        },
+        "samplers": {
+         "default": 16,
+         "device": null
+        },
+        "storageTextures": {
+         "default": 4,
+         "device": null
+        }
+       },
+       "overDefault": [],
+       "overDevice": []
+      }
+     ]
+    },
+    "census": {
+     "textures": {
+      "created": 0,
+      "destroyed": 0
+     },
+     "buffers": {
+      "created": 0,
+      "destroyed": 0
+     },
+     "byLabel": {},
+     "compile": {
+      "shaderModules": {
+       "count": 0,
+       "syncMs": 0
+      }
+     }
+    },
+    "gate": {
+     "deviceLost": null,
+     "errorCount": 0,
+     "errors": [],
+     "armedDevices": 1
+    },
+    "console": {
+     "errors": 0,
+     "pageErrors": 0,
+     "first": []
+    },
+    "cpu": "<varies>"
+   }
+  ],
+  "arms": {
+   "E-D|webgl|scene": {
+    "cell": "E-D",
+    "rig": "default-3d-pinned",
+    "renderer": "webgl",
+    "page": "scene",
+    "runs": 1,
+    "notRun": [],
+    "captures": [
+     {
+      "name": "E-D-webgl-run0",
+      "path": "E-D-webgl-run0.png",
+      "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgl&offline=true",
+      "capturedAt": "<varies>",
+      "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+      "width": 8,
+      "height": 8,
+      "liveness": {
+       "state": "live",
+       "frameNumber": 1
+      },
+      "pipelinesPending": 0
+     }
+    ],
+    "inputs": {
+     "pf1": [],
+     "pf2": [],
+     "pf3": [
+      {
+       "startup": 100,
+       "compile": {
+        "shaderModules": {
+         "count": 0,
+         "syncMs": 0
+        }
+       },
+       "pipelineWaitMs": 70
+      }
+     ],
+     "pf4": [],
+     "cpu": "<varies>",
+     "cpuSamples": "<varies>"
+    },
+    "deviceLoss": []
+   },
+   "E-D|webgpu|scene": {
+    "cell": "E-D",
+    "rig": "default-3d-pinned",
+    "renderer": "webgpu",
+    "page": "scene",
+    "runs": 1,
+    "notRun": [],
+    "captures": [
+     {
+      "name": "E-D-webgpu-run0",
+      "path": "E-D-webgpu-run0.png",
+      "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true",
+      "capturedAt": "<varies>",
+      "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+      "width": 8,
+      "height": 8,
+      "liveness": {
+       "state": "live",
+       "frameNumber": 1
+      },
+      "pipelinesPending": 0
+     }
+    ],
+    "inputs": {
+     "pf1": [],
+     "pf2": [],
+     "pf3": [
+      {
+       "startup": 100,
+       "compile": {
+        "shaderModules": {
+         "count": 0,
+         "syncMs": 0
+        }
+       },
+       "pipelineWaitMs": 70
+      }
+     ],
+     "pf4": [],
+     "cpu": "<varies>",
+     "cpuSamples": "<varies>"
+    },
+    "deviceLoss": []
+   },
+   "E-F|webgpu|scene": {
+    "cell": "E-F",
+    "rig": "cloud-flight-multideck-hdr-1080p",
+    "renderer": "webgpu",
+    "page": "scene",
+    "runs": 1,
+    "notRun": [],
+    "captures": [
+     {
+      "name": "E-F-webgpu-run0",
+      "path": "E-F-webgpu-run0.png",
+      "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true",
+      "capturedAt": "<varies>",
+      "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+      "width": 8,
+      "height": 8,
+      "liveness": {
+       "state": "live",
+       "frameNumber": 1
+      },
+      "pipelinesPending": 0
+     }
+    ],
+    "inputs": {
+     "pf1": [],
+     "pf2": [],
+     "pf3": [
+      {
+       "startup": 100,
+       "compile": {
+        "shaderModules": {
+         "count": 0,
+         "syncMs": 0
+        }
+       },
+       "pipelineWaitMs": 0
+      }
+     ],
+     "pf4": [],
+     "cpu": "<varies>",
+     "cpuSamples": "<varies>"
+    },
+    "deviceLoss": []
+   },
+   "E-T-flight|webgpu|teardown": {
+    "cell": "E-T-flight",
+    "rig": "cloud-flight-multideck-hdr-1080p",
+    "renderer": "webgpu",
+    "page": "teardown",
+    "runs": 1,
+    "notRun": [],
+    "captures": [
+     {
+      "name": "E-T-flight-webgpu-run0",
+      "path": "E-T-flight-webgpu-run0.png",
+      "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true",
+      "capturedAt": "<varies>",
+      "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+      "width": 8,
+      "height": 8,
+      "liveness": {
+       "state": "live",
+       "frameNumber": 1
+      },
+      "pipelinesPending": 0
+     }
+    ],
+    "inputs": {
+     "pf1": [],
+     "pf2": [],
+     "pf3": [],
+     "pf4": [],
+     "cpu": "<varies>",
+     "cpuSamples": "<varies>"
+    },
+    "deviceLoss": [
+     {
+      "terminal": {
+       "action": "viewer.destroy",
+       "destroyed": true,
+       "threw": null
+      },
+      "consoleErrors": {
+       "errors": 0,
+       "sentinel": 0,
+       "otherCount": 0,
+       "other": [],
+       "pageErrorCount": 0,
+       "pageErrors": []
+      },
+      "deviceLost": null
+     }
+    ]
+   },
+   "E-T-flight|webgpu|forced-loss": {
+    "cell": "E-T-flight",
+    "rig": "cloud-flight-multideck-hdr-1080p",
+    "renderer": "webgpu",
+    "page": "forced-loss",
+    "runs": 1,
+    "notRun": [],
+    "captures": [],
+    "inputs": {
+     "pf1": [],
+     "pf2": [],
+     "pf3": [],
+     "pf4": [],
+     "cpu": "<varies>",
+     "cpuSamples": "<varies>"
+    },
+    "deviceLoss": [
+     {
+      "terminal": {
+       "action": "GPUDevice.destroy",
+       "loss": {
+        "renderer": "webgpu",
+        "method": "GPUDevice.destroy",
+        "observed": {
+         "reason": "destroyed",
+         "message": "fake"
+        }
+       },
+       "rendered": {
+        "framesAttempted": 30,
+        "throws": 0,
+        "firstThrows": [],
+        "terminallyLost": true
+       }
+      },
+      "consoleErrors": {
+       "errors": 0,
+       "sentinel": 0,
+       "otherCount": 0,
+       "other": [],
+       "pageErrorCount": 0,
+       "pageErrors": []
+      },
+      "deviceLost": null
+     }
+    ]
+   },
+   "E-BGL|webgpu|scene": {
+    "cell": "E-BGL",
+    "rig": "cloud-underside-noon-cov055",
+    "renderer": "webgpu",
+    "page": "scene",
+    "runs": 1,
+    "notRun": [],
+    "captures": [
+     {
+      "name": "E-BGL-webgpu-run0",
+      "path": "E-BGL-webgpu-run0.png",
+      "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true",
+      "capturedAt": "<varies>",
+      "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+      "width": 8,
+      "height": 8,
+      "liveness": {
+       "state": "live",
+       "frameNumber": 1
+      },
+      "pipelinesPending": 0
+     }
+    ],
+    "inputs": {
+     "pf1": [],
+     "pf2": [],
+     "pf3": [
+      {
+       "startup": 100,
+       "compile": {
+        "shaderModules": {
+         "count": 0,
+         "syncMs": 0
+        }
+       },
+       "pipelineWaitMs": 0
+      }
+     ],
+     "pf4": [],
+     "cpu": "<varies>",
+     "cpuSamples": "<varies>"
+    },
+    "deviceLoss": []
+   }
+  },
+  "comparison": null,
+  "crossRenderer": [],
+  "kernelIdentity": [],
+  "perfPassTimings": [],
+  "captureManifest": {
+   "path": "<ROOT>/out/capture-manifest.json",
+   "written": true,
+   "violations": [],
+   "files": []
+  }
+ },
+ "summary": "# Landing cells - <title>\n\nGenerated: <varies>\n\nOrigin: `http://localhost:8094`\n\nServed-build assertion: waived\n\nExit code: 0\n\n| Verdict | Result |\n| --- | --- |\n| E-D:webgl:scene:run0:stage | PASS |\n| E-D:webgl:scene:run0:onmessage-unchanged | PASS |\n| E-D:webgl:scene:run0:no-unexpected-device-loss | PASS |\n| E-D:webgpu:scene:run0:stage | PASS |\n| E-D:webgpu:scene:run0:onmessage-unchanged | PASS |\n| E-D:webgpu:scene:run0:no-unexpected-device-loss | PASS |\n| E-F:webgpu:scene:run0:stage | PASS |\n| E-F:webgpu:scene:run0:no-unexpected-device-loss | PASS |\n| E-T-flight:webgpu:teardown:run0:stage | PASS |\n| E-T-flight:webgpu:teardown:run0:no-unexpected-device-loss | PASS |\n| E-T-flight:webgpu:teardown:run0:no-uncaught-error | PASS |\n| E-T-flight:webgpu:teardown:run0:owners-destroyed | PASS |\n| E-T-flight:webgpu:forced-loss:run0:stage | PASS |\n| E-T-flight:webgpu:forced-loss:run0:no-unexpected-device-loss | PASS |\n| E-T-flight:webgpu:forced-loss:run0:no-uncaught-error | PASS |\n| E-BGL:webgpu:scene:run0:stage | PASS |\n| E-BGL:webgpu:scene:run0:no-unexpected-device-loss | PASS |\n\n## Bind group layouts and device limits\n\n- `E-BGL` webgpu scene (run 0):\n  - layout `ProceduralClouds BGL`: not created on the page\n  - layout `CloudShadow BGL`: not created on the page\n\nReceipt fields: <list>\n",
+ "captureManifest": {
+  "schemaVersion": 1,
+  "kind": "capture-manifest",
+  "generatedAt": "<varies>",
+  "captureRoot": "out",
+  "origins": {
+   "BEFORE": "no --base-report",
+   "AFTER": "http://localhost:8094"
+  },
+  "servedBuildAssertion": "waived",
+  "receipt": "landing-cells-report.json",
+  "slots": [
+   "BEFORE",
+   "AFTER"
+  ],
+  "renderers": [
+   "webgl",
+   "webgpu"
+  ],
+  "rigs": [
+   {
+    "id": "E-D:scene",
+    "replayKey": "f294d5ee",
+    "description": "Landing cell E-D, page scene. default-3d at the pinned instant 2026-06-21T18:00:00Z: CesiumViewer's own camera, no dials, 1280x720, both renderers.",
+    "viewport": {
+     "width": 1280,
+     "height": 720
+    },
+    "cells": {
+     "webgl": {
+      "BEFORE": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "no --base-report",
+       "trackedBy": null,
+       "metrics": null
+      },
+      "AFTER": {
+       "state": "MEASURED",
+       "image": "E-D-webgl-run0.png",
+       "width": 8,
+       "height": 8,
+       "byteLength": 70,
+       "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+       "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgl&offline=true",
+       "capturedAt": "<varies>",
+       "metrics": {
+        "rawByteLumaMean": 0,
+        "nonBlackFraction": 0,
+        "provenance": "display-bytes; descriptive only, not photometric evidence"
+       }
+      }
+     },
+     "webgpu": {
+      "BEFORE": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "no --base-report",
+       "trackedBy": null,
+       "metrics": null
+      },
+      "AFTER": {
+       "state": "MEASURED",
+       "image": "E-D-webgpu-run0.png",
+       "width": 8,
+       "height": 8,
+       "byteLength": 70,
+       "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+       "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true",
+       "capturedAt": "<varies>",
+       "metrics": {
+        "rawByteLumaMean": 0,
+        "nonBlackFraction": 0,
+        "provenance": "display-bytes; descriptive only, not photometric evidence"
+       }
+      }
+     }
+    },
+    "pairs": {
+     "webgl": {
+      "state": "UNMEASURED",
+      "diffImage": null,
+      "mismatchPct": null,
+      "changedPx": null,
+      "bbox": null,
+      "tolerance": null,
+      "metrics": null,
+      "reason": "BEFORE is UNMEASURED (no --base-report); the report's comparison holds the pixel band when a base report was given"
+     },
+     "webgpu": {
+      "state": "UNMEASURED",
+      "diffImage": null,
+      "mismatchPct": null,
+      "changedPx": null,
+      "bbox": null,
+      "tolerance": null,
+      "metrics": null,
+      "reason": "BEFORE is UNMEASURED (no --base-report); the report's comparison holds the pixel band when a base report was given"
+     }
+    }
+   },
+   {
+    "id": "E-F:scene",
+    "replayKey": "0f8ae2d0",
+    "description": "Landing cell E-F, page scene. Flight cell E-F: 2,500 m over (-100, 40), heading north, pitched 12 degrees down, 21:40Z on the June solstice; multi-deck volumetric cumulus (coverage 0.6, density 0.35, 1,500-4,000 m, physical aerial, sky-LUT ambient, high tier), highDynamicRange on, 4x MSAA, globe lighting and sky multiple scattering on, Natural Earth imagery on the ellipsoid, 1920x1080.",
+    "viewport": {
+     "width": 1920,
+     "height": 1080
+    },
+    "cells": {
+     "webgl": {
+      "BEFORE": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "no --base-report",
+       "trackedBy": null,
+       "metrics": null
+      },
+      "AFTER": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "E-F page scene was not run on webgl in this invocation",
+       "trackedBy": null,
+       "metrics": null
+      }
+     },
+     "webgpu": {
+      "BEFORE": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "no --base-report",
+       "trackedBy": null,
+       "metrics": null
+      },
+      "AFTER": {
+       "state": "MEASURED",
+       "image": "E-F-webgpu-run0.png",
+       "width": 8,
+       "height": 8,
+       "byteLength": 70,
+       "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+       "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true",
+       "capturedAt": "<varies>",
+       "metrics": {
+        "rawByteLumaMean": 0,
+        "nonBlackFraction": 0,
+        "provenance": "display-bytes; descriptive only, not photometric evidence"
+       }
+      }
+     }
+    },
+    "pairs": {
+     "webgl": {
+      "state": "UNMEASURED",
+      "diffImage": null,
+      "mismatchPct": null,
+      "changedPx": null,
+      "bbox": null,
+      "tolerance": null,
+      "metrics": null,
+      "reason": "BEFORE is UNMEASURED (no --base-report); the report's comparison holds the pixel band when a base report was given"
+     },
+     "webgpu": {
+      "state": "UNMEASURED",
+      "diffImage": null,
+      "mismatchPct": null,
+      "changedPx": null,
+      "bbox": null,
+      "tolerance": null,
+      "metrics": null,
+      "reason": "BEFORE is UNMEASURED (no --base-report); the report's comparison holds the pixel band when a base report was given"
+     }
+    }
+   },
+   {
+    "id": "E-T-flight:teardown",
+    "replayKey": "0f8ae2d0",
+    "description": "Landing cell E-T-flight, page teardown. Flight cell E-F: 2,500 m over (-100, 40), heading north, pitched 12 degrees down, 21:40Z on the June solstice; multi-deck volumetric cumulus (coverage 0.6, density 0.35, 1,500-4,000 m, physical aerial, sky-LUT ambient, high tier), highDynamicRange on, 4x MSAA, globe lighting and sky multiple scattering on, Natural Earth imagery on the ellipsoid, 1920x1080.",
+    "viewport": {
+     "width": 1920,
+     "height": 1080
+    },
+    "cells": {
+     "webgl": {
+      "BEFORE": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "no --base-report",
+       "trackedBy": null,
+       "metrics": null
+      },
+      "AFTER": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "E-T-flight page teardown was not run on webgl in this invocation",
+       "trackedBy": null,
+       "metrics": null
+      }
+     },
+     "webgpu": {
+      "BEFORE": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "no --base-report",
+       "trackedBy": null,
+       "metrics": null
+      },
+      "AFTER": {
+       "state": "MEASURED",
+       "image": "E-T-flight-webgpu-run0.png",
+       "width": 8,
+       "height": 8,
+       "byteLength": 70,
+       "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+       "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true",
+       "capturedAt": "<varies>",
+       "metrics": {
+        "rawByteLumaMean": 0,
+        "nonBlackFraction": 0,
+        "provenance": "display-bytes; descriptive only, not photometric evidence"
+       }
+      }
+     }
+    },
+    "pairs": {
+     "webgl": {
+      "state": "UNMEASURED",
+      "diffImage": null,
+      "mismatchPct": null,
+      "changedPx": null,
+      "bbox": null,
+      "tolerance": null,
+      "metrics": null,
+      "reason": "BEFORE is UNMEASURED (no --base-report); the report's comparison holds the pixel band when a base report was given"
+     },
+     "webgpu": {
+      "state": "UNMEASURED",
+      "diffImage": null,
+      "mismatchPct": null,
+      "changedPx": null,
+      "bbox": null,
+      "tolerance": null,
+      "metrics": null,
+      "reason": "BEFORE is UNMEASURED (no --base-report); the report's comparison holds the pixel band when a base report was given"
+     }
+    }
+   },
+   {
+    "id": "E-T-flight:forced-loss",
+    "replayKey": "0f8ae2d0",
+    "description": "Landing cell E-T-flight, page forced-loss. Flight cell E-F: 2,500 m over (-100, 40), heading north, pitched 12 degrees down, 21:40Z on the June solstice; multi-deck volumetric cumulus (coverage 0.6, density 0.35, 1,500-4,000 m, physical aerial, sky-LUT ambient, high tier), highDynamicRange on, 4x MSAA, globe lighting and sky multiple scattering on, Natural Earth imagery on the ellipsoid, 1920x1080.",
+    "viewport": {
+     "width": 1920,
+     "height": 1080
+    },
+    "cells": {
+     "webgl": {
+      "BEFORE": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "no --base-report",
+       "trackedBy": null,
+       "metrics": null
+      },
+      "AFTER": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "E-T-flight page forced-loss was not run on webgl in this invocation",
+       "trackedBy": null,
+       "metrics": null
+      }
+     },
+     "webgpu": {
+      "BEFORE": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "no --base-report",
+       "trackedBy": null,
+       "metrics": null
+      },
+      "AFTER": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "this page takes no capture",
+       "trackedBy": null,
+       "metrics": null
+      }
+     }
+    },
+    "pairs": {
+     "webgl": {
+      "state": "UNMEASURED",
+      "diffImage": null,
+      "mismatchPct": null,
+      "changedPx": null,
+      "bbox": null,
+      "tolerance": null,
+      "metrics": null,
+      "reason": "BEFORE is UNMEASURED (no --base-report); the report's comparison holds the pixel band when a base report was given"
+     },
+     "webgpu": {
+      "state": "UNMEASURED",
+      "diffImage": null,
+      "mismatchPct": null,
+      "changedPx": null,
+      "bbox": null,
+      "tolerance": null,
+      "metrics": null,
+      "reason": "BEFORE is UNMEASURED (no --base-report); the report's comparison holds the pixel band when a base report was given"
+     }
+    }
+   },
+   {
+    "id": "E-BGL:scene",
+    "replayKey": "90af47d0",
+    "description": "Landing cell E-BGL, page scene. Camera 800 m above (-95, 39) under the deck, heading east and pitched 16 degrees up, at solar noon on the June solstice; sky box, sky atmosphere and sun hidden over a black background; weather map off, coverage 0.55, density 0.8; the viewer's own render loop stopped and 90 frames rendered at the fixed clock.",
+    "viewport": {
+     "width": 1024,
+     "height": 768
+    },
+    "cells": {
+     "webgl": {
+      "BEFORE": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "no --base-report",
+       "trackedBy": null,
+       "metrics": null
+      },
+      "AFTER": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "E-BGL page scene was not run on webgl in this invocation",
+       "trackedBy": null,
+       "metrics": null
+      }
+     },
+     "webgpu": {
+      "BEFORE": {
+       "state": "UNMEASURED",
+       "image": null,
+       "reason": "no --base-report",
+       "trackedBy": null,
+       "metrics": null
+      },
+      "AFTER": {
+       "state": "MEASURED",
+       "image": "E-BGL-webgpu-run0.png",
+       "width": 8,
+       "height": 8,
+       "byteLength": 70,
+       "sha256": "f7384f4a77fcb038a8e41d555cb28cdb5170d0427a11932d3e8c5c7e66df71f3",
+       "url": "http://localhost:8094/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true",
+       "capturedAt": "<varies>",
+       "metrics": {
+        "rawByteLumaMean": 0,
+        "nonBlackFraction": 0,
+        "provenance": "display-bytes; descriptive only, not photometric evidence"
+       }
+      }
+     }
+    },
+    "pairs": {
+     "webgl": {
+      "state": "UNMEASURED",
+      "diffImage": null,
+      "mismatchPct": null,
+      "changedPx": null,
+      "bbox": null,
+      "tolerance": null,
+      "metrics": null,
+      "reason": "BEFORE is UNMEASURED (no --base-report); the report's comparison holds the pixel band when a base report was given"
+     },
+     "webgpu": {
+      "state": "UNMEASURED",
+      "diffImage": null,
+      "mismatchPct": null,
+      "changedPx": null,
+      "bbox": null,
+      "tolerance": null,
+      "metrics": null,
+      "reason": "BEFORE is UNMEASURED (no --base-report); the report's comparison holds the pixel band when a base report was given"
+     }
+    }
+   }
+  ]
+ },
+ "scriptCount": 21,
+ "scriptDigests": [
+  "2ef0d0a261274a4c3a4c6236b7ef9f1e5bcb7a2dbebaefe0559f85c56894fd4c",
+  "de439bb11490d203538e85b16888aa17caf71a267ef5e5d0c7a23deb924f7065",
+  "c47f86c41a4bd9ced9da5d82c703c84c379cc9da56b4ade154edce8764f350e3",
+  "09c5310b8286306a2b9a18576e456a8e1953c963d29543784ca818d619e9c89b",
+  "2ef0d0a261274a4c3a4c6236b7ef9f1e5bcb7a2dbebaefe0559f85c56894fd4c",
+  "de439bb11490d203538e85b16888aa17caf71a267ef5e5d0c7a23deb924f7065",
+  "c47f86c41a4bd9ced9da5d82c703c84c379cc9da56b4ade154edce8764f350e3",
+  "09c5310b8286306a2b9a18576e456a8e1953c963d29543784ca818d619e9c89b",
+  "2ef0d0a261274a4c3a4c6236b7ef9f1e5bcb7a2dbebaefe0559f85c56894fd4c",
+  "de439bb11490d203538e85b16888aa17caf71a267ef5e5d0c7a23deb924f7065",
+  "c47f86c41a4bd9ced9da5d82c703c84c379cc9da56b4ade154edce8764f350e3",
+  "2ef0d0a261274a4c3a4c6236b7ef9f1e5bcb7a2dbebaefe0559f85c56894fd4c",
+  "de439bb11490d203538e85b16888aa17caf71a267ef5e5d0c7a23deb924f7065",
+  "c47f86c41a4bd9ced9da5d82c703c84c379cc9da56b4ade154edce8764f350e3",
+  "2ef0d0a261274a4c3a4c6236b7ef9f1e5bcb7a2dbebaefe0559f85c56894fd4c",
+  "de439bb11490d203538e85b16888aa17caf71a267ef5e5d0c7a23deb924f7065",
+  "c47f86c41a4bd9ced9da5d82c703c84c379cc9da56b4ade154edce8764f350e3",
+  "2ef0d0a261274a4c3a4c6236b7ef9f1e5bcb7a2dbebaefe0559f85c56894fd4c",
+  "de439bb11490d203538e85b16888aa17caf71a267ef5e5d0c7a23deb924f7065",
+  "c47f86c41a4bd9ced9da5d82c703c84c379cc9da56b4ade154edce8764f350e3",
+  "4fe8cc82b042be33302afd67f6edaaf9bfd0fdc0f0e05a0df2958eee05421b61"
+ ]
+}

@@ -117,6 +117,32 @@ export const CLOUD_LAYOUT_LABELS = Object.freeze([
 ]);
 
 /**
+ * The owner a weather transition allocates while it fades: the previous
+ * snapshot's texture, labelled in
+ * `packages/engine/Source/Renderer/WebGPU/WebGPUCloudWeatherTransition.ts`
+ * (`CloudWeatherTransitionResources.prepareWeather`). A cell naming it in
+ * `transitionOwner` passes only when its WebGPU page's census saw it created.
+ */
+export const WEATHER_TRANSITION_OWNER_LABELS = Object.freeze([
+  "Cloud previous weather snapshot",
+]);
+
+/**
+ * The cloud shadow owners a capture of E-BGL-shadow must show in the GPU device
+ * census, as `WebGPUProceduralCloudRenderer.ts` labels them. Only labels of
+ * objects the census records may sit here: it wraps createTexture,
+ * createBuffer and the pipeline creators, never createSampler (a GPUSampler
+ * has no destroy(), so there is no release to count), so "CloudShadow
+ * Sampler" is not observable and is not listed. A spec checks every label
+ * against the engine source.
+ */
+export const CLOUD_SHADOW_OWNER_LABELS = Object.freeze([
+  "CloudShadow UB",
+  "CloudShadow Map (sun-view optical depth)",
+  "CloudShadow Placeholder (1x1 zero r16float)",
+]);
+
+/**
  * The cell table: cell name -> rig id and what the cell does on it.
  *
  * Fields beyond `rig` and `kind`: `identity` (a pixel-identity cell; the probe
@@ -139,6 +165,26 @@ export const CLOUD_LAYOUT_LABELS = Object.freeze([
  * `deviceLimits` (`"webgpu-default"`: the page's device is requested without
  * `requiredLimits`, `lib/device-limits-dial.mjs`). A cell without the last two
  * installs no script for them and its page record has no such field.
+ *
+ * Two fields belong to the weather-dial cells (E-WX-*). `transitionOwner` (a
+ * list of GPU owner labels, {@link WEATHER_TRANSITION_OWNER_LABELS}): the cell
+ * passes only when its WebGPU page's census saw each created, the proof that
+ * the page held a snapshot pair. `populationsCoverage` (`{off, on}`, two
+ * variant page names): the `on` page's frame is judged against the `off` page's
+ * by the measured rule of `lib/metrics/deck-coverage.mjs` (a pixel is covered
+ * when its Rec. 601 luma exceeds 8; UNMEASURED when the `off` page covers under
+ * 1 % of the frame; FAIL when the `on` page covers under 25 % of the `off`
+ * page's covered pixels or its mean luma over them is under 25 % of the `off`
+ * page's; otherwise PASS). A variant may overlay the rig's `experimental` block
+ * as well as its dials (`rigForPage`).
+ *
+ * `engagement` (a non-empty list of flag names of `lib/cloud-engagement-read.mjs`)
+ * belongs to the same cells: the page reads those flags of the engine's own
+ * state at capture into its record's `engagement`, and the weather-dial
+ * verdicts require each flag as that module says (`populationsRequested`:
+ * true on the `populationsCoverage.on` page and false on its `off` page;
+ * `verticalRequested` and `workersEnabled`: true on the WebGPU pages). A cell
+ * without the field reads nothing and its page record has no such field.
  */
 export const LANDING_CELLS = Object.freeze({
   "E-D": Object.freeze({
@@ -241,6 +287,26 @@ export const LANDING_CELLS = Object.freeze({
   "E-T-on": Object.freeze({
     rig: "cloud-flight-multideck-hdr-1080p-eon",
     kind: "device-loss",
+  }),
+  // Not in DEFAULT_CELLS: the teardown of the E-T-flight rig twice, plainly and
+  // with a second holder keeping the pooled GPU device alive across the viewer's destruction
+  // (lib/device-loss-steps.mjs, mode teardown-keep-device), so an owner
+  // released only with its device is told from one released at the teardown.
+  // PASS RULE: the page record's `deviceLoss.keepDevice` classifies every
+  // owner row named in `--owner-labels` (released at teardown, only with the
+  // device, never), or reads NOT AVAILABLE naming why the holder is not on
+  // the viewer's device.
+  "E-T-flight-keep": Object.freeze({
+    rig: "cloud-flight-multideck-hdr-1080p",
+    kind: "device-loss",
+    devicePages: Object.freeze(["teardown", "teardown-keep-device"]),
+  }),
+  // The same keep-device teardown on the flight rig with every W4 cache
+  // family's experimental dials on.
+  "E-T-on-keep": Object.freeze({
+    rig: "cloud-flight-multideck-hdr-1080p-eon",
+    kind: "device-loss",
+    devicePages: Object.freeze(["teardown", "teardown-keep-device"]),
   }),
   "E-T-resize": Object.freeze({
     rig: "globe-msaa4-resize-ladder",
@@ -373,6 +439,133 @@ export const LANDING_CELLS = Object.freeze({
       pingpong: Object.freeze({ waterOceanIfftKernel: "pingpong" }),
     }),
   }),
+  // Not in DEFAULT_CELLS: the four WebGPU-only weather dials of
+  // CloudVolumetrics, one cell each, every one on the weather the collection
+  // owns (cloudWeatherMap on, no weatherProvider). PASS RULE of the three
+  // capture cells: the page renders, the WebGPU error gate records 0
+  // validation errors, the dial reads back applied from the instance
+  // (`stage.cloud.truth.config`, or `stage.dials["experimental.<dial>"]`), and
+  // the PNG is described; the WebGL page of a two-renderer cell is the control
+  // (no weather state, so no worker and the twin's frame).
+  "E-WX-workers": Object.freeze({
+    rig: "cloud-wx-workers",
+    kind: "capture",
+    waitPipelines: true,
+    engagement: Object.freeze(["workersEnabled"]),
+  }),
+  // As the cells above, kind clock-steps: the rig steps the clock across a
+  // 10-minute weather quantum so the page holds a snapshot pair, and the cell
+  // passes only when the WebGPU page's census saw the transition's owner
+  // created (`transitionOwner`).
+  "E-WX-interpolation": Object.freeze({
+    rig: "cloud-wx-interpolation",
+    kind: "clock-steps",
+    waitPipelines: true,
+    transitionOwner: WEATHER_TRANSITION_OWNER_LABELS,
+  }),
+  "E-WX-vertical": Object.freeze({
+    rig: "cloud-wx-vertical",
+    kind: "capture",
+    waitPipelines: true,
+    engagement: Object.freeze(["verticalRequested"]),
+  }),
+  // Two pages on one view, populations off (`single-layer`) and on
+  // (`populations`); the cell passes by the measured rule of
+  // `lib/metrics/deck-coverage.mjs` (see the field notes above), not by
+  // comparison with a base report.
+  "E-WX-populations": Object.freeze({
+    rig: "cloud-wx-populations",
+    kind: "capture",
+    waitPipelines: true,
+    populationsCoverage: Object.freeze({
+      off: "single-layer",
+      on: "populations",
+    }),
+    engagement: Object.freeze(["populationsRequested"]),
+    variants: Object.freeze({
+      "single-layer": Object.freeze({
+        experimental: Object.freeze({ cloudIndependentWeatherLayers: false }),
+      }),
+      populations: Object.freeze({
+        experimental: Object.freeze({ cloudIndependentWeatherLayers: true }),
+      }),
+    }),
+  }),
+  // Not in DEFAULT_CELLS: the E-ON cells with the weather map on, so the
+  // weather volume bounds owner ("Cloud weather volume bounds", never allocated
+  // with the map off) is built on the occupancy page. PASS RULE: as the E-ON
+  // cells.
+  "E-ON-occupancy-wx": Object.freeze({
+    rig: "cloud-eon-occupancy-wx",
+    kind: "capture",
+    layoutCensus: CLOUD_LAYOUT_LABELS,
+  }),
+  "E-ON-density-wx": Object.freeze({
+    rig: "cloud-eon-density-wx",
+    kind: "capture",
+    layoutCensus: CLOUD_LAYOUT_LABELS,
+  }),
+  "E-ON-shadow-wx": Object.freeze({
+    rig: "cloud-eon-shadow-wx",
+    kind: "capture",
+    layoutCensus: CLOUD_LAYOUT_LABELS,
+  }),
+  "E-ON-lighting-wx": Object.freeze({
+    rig: "cloud-eon-lighting-wx",
+    kind: "capture",
+    layoutCensus: CLOUD_LAYOUT_LABELS,
+  }),
+  // Not in DEFAULT_CELLS: the two E-T-flight pages on the flight rig with the
+  // weather map and the four weather dials on and a clock step before the
+  // terminal action (`lib/device-loss-steps.mjs`), so the weather owners are
+  // allocated when the viewer is destroyed and the device is lost. PASS RULE:
+  // as E-T-on, with the owner labels the run names in `--owner-labels`
+  // released after the teardown.
+  "E-T-wx": Object.freeze({
+    rig: "cloud-flight-multideck-hdr-1080p-wx",
+    kind: "device-loss",
+  }),
+  // Not in DEFAULT_CELLS: E-LL on the rig with every W4 experimental family
+  // and the four weather dials on (weather map on): the layout census of the
+  // two cloud layouts on a default-limits device.
+  "E-LL-wx": Object.freeze({
+    rig: "cloud-wx-all-dials",
+    kind: "capture",
+    layoutCensus: CLOUD_LAYOUT_LABELS,
+    deviceLimits: "webgpu-default",
+  }),
+  // Not in DEFAULT_CELLS: the E-G capture with cloud shadow casting on, so the
+  // cloud shadow bind group layout ("CloudShadow BGL") is created and the
+  // layout census counts it beside the march layout. PASS RULE: the page
+  // renders, the WebGPU error gate records 0 validation errors, the census
+  // holds a "CloudShadow BGL" row with its per-stage counts, and every label of
+  // `ownerLabels` is seen in the GPU device census (verdict `owners-seen`).
+  "E-BGL-shadow": Object.freeze({
+    rig: "cloud-shadow-noon-cov055",
+    kind: "capture",
+    layoutCensus: CLOUD_LAYOUT_LABELS,
+    ownerLabels: CLOUD_SHADOW_OWNER_LABELS,
+  }),
+  // Not in DEFAULT_CELLS: the default cloud collection in 2D (an orthographic
+  // frame at the default quality). PASS RULE: the scene mode reads back SCENE2D,
+  // the page renders, 0 validation errors, and with `--readers cloud-stats` the
+  // cloud quality flags are read and the frame is described.
+  "E-CLOUD-2d": Object.freeze({ rig: "cloud-2d-default", kind: "capture" }),
+  // Not in DEFAULT_CELLS: the default cloud collection while the scene mode is
+  // MORPHING (`lib/morph-steps.mjs`). PASS RULE: the morph-hold record reads
+  // MORPHING right after the morph starts and after the frames, the page
+  // renders, 0 validation errors, and with `--readers cloud-stats` the quality
+  // flags are read.
+  "E-CLOUD-morph": Object.freeze({
+    rig: "cloud-morph-default",
+    kind: "morph-hold",
+  }),
+  // Not in DEFAULT_CELLS: a glTF model added so the WebGPU dynamic environment
+  // cube is built, and its six mip-0 faces read back
+  // (`lib/sky-cubemap-steps.mjs`). PASS RULE: the cube exists and settles, six
+  // faces read with non-zero content; two arms compare by per-face sha256
+  // (`compareSkyCubeRecords`).
+  "E-SKY-cube": Object.freeze({ rig: "sky-cubemap-model", kind: "sky-cube" }),
 });
 
 /** The default `--cells`: the standard set's capture cells. */
@@ -444,7 +637,7 @@ export function landingArgsFinalize(parsed, { explicit }) {
  */
 export function pagesOfCell(cell) {
   if (cell.kind === "device-loss") {
-    return [...DEVICE_LOSS_PAGES];
+    return [...(cell.devicePages ?? DEVICE_LOSS_PAGES)];
   }
   if (cell.variants) {
     return Object.keys(cell.variants);
@@ -517,7 +710,14 @@ export function rigForPage(rig, entry) {
   if (!variants || !Object.hasOwn(variants, entry.page)) {
     return rig;
   }
-  return { ...rig, dials: { ...rig.dials, ...variants[entry.page] } };
+  // A variant's `experimental` key overlays the rig's experimental block; every
+  // other key is a dial.
+  const { experimental, ...dials } = variants[entry.page];
+  const staged = { ...rig, dials: { ...rig.dials, ...dials } };
+  if (experimental !== undefined) {
+    staged.experimental = { ...rig.experimental, ...experimental };
+  }
+  return staged;
 }
 
 /**
