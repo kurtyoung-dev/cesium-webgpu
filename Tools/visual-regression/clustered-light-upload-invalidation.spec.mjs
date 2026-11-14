@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { registerHooks, stripTypeScriptTypes } from "node:module";
+import { registerHooks } from "node:module";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
+import { transformEngineTypeScript } from "./lib/engine-ts-transform.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const engineWebGPU = resolve(
@@ -37,10 +38,10 @@ registerHooks({
       return {
         format: "module",
         shortCircuit: true,
-        source: stripTypeScriptTypes(readFileSync(fileURLToPath(url), "utf8"), {
-          mode: "transform",
-          sourceUrl: url,
-        }),
+        source: transformEngineTypeScript(
+          readFileSync(fileURLToPath(url), "utf8"),
+          url,
+        ),
       };
     }
     return nextLoad(url, context);

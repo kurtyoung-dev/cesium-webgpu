@@ -404,7 +404,7 @@ Every row inside the generated region is SHIPPED at the tree it was generated fr
 
 | what | count |
 | --- | --- |
-| kit pieces under `lib/` (outside `lib/metrics/`) | 214 |
+| kit pieces under `lib/` (outside `lib/metrics/`) | 215 |
 | metrics under `lib/metrics/` | 53 |
 | rigs under `rigs/` | 292 |
 | top-level `probe-*.mjs` | 634 |
@@ -496,6 +496,7 @@ Every row inside the generated region is SHIPPED at the tree it was generated fr
 | `lib/engine-shader-source.mjs` | Resolves and reads engine shader sources (packages/engine/Source/Shaders/**) for specs, so a move or decomposition of a shader changes one module instead of every spec that reads it. | `ENGINE_SOURCE_ROOT`, `engineShaderPath`, `readEngineShader`, `composeRendererTemplate` | 0 | 40 | 1 |
 | `lib/engine-stub-bundler.mjs` | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. | `MAKE`, `scanImports`, `stem`, `mutateOrFail`, `bundle` | 0 | 40 | 0 |
 | `lib/engine-ts-resolver.mjs` | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. | `enableEngineTsResolution` | 0 | 63 | 1 |
+| `lib/engine-ts-transform.mjs` | Transpile engine TypeScript source to ES module JavaScript through esbuild (the compiler the shipped build uses), so a spec's load hook can run files that hold syntax Node's strip-only type stripping cannot erase, on every Node version. | `transformEngineTypeScript` | 0 | 5 | 0 |
 | `lib/first-frame-guard.mjs` | Decides, from a decoded capture's non-black share, whether a probe's first frame is a frame at all, re-settles a bounded number of times when it is not, and REFUSES (first-frame-black, exit 3) when it stays black, so an undrawn globe is never scored as a product FAIL. | `FIRST_FRAME_MIN_NON_BLACK_PCT`, `FIRST_FRAME_MAX_RESETTLES`, `decideFirstFrame`, `guardFirstFrame` | 1 | 1 | 0 |
 | `lib/fog-cheap-coverage-model.mjs` | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. | `FOG_CLOUD_NOISE_SCALE`, `FOG_CLOUD_COVERAGE_EPSILON`, `hash13`, `valueNoise3d`, `fbm3d`, `fogCheapFieldAt`, `sampleFogCheapField`, `sampleBakedShapeField`, `summarize`, `identityNormalization`, `historicalResponse`, `SWEEP_COVERAGES`, `gateTrackingSweep`, `invertNormalization`, `worstTrackingError`, `gateAmplitudeAtQuantiles`, `cloudEffectiveCoverage`, `normalizeFogCheapCloudField`, `CLOUD_SHAPE_FIELD_MEAN`, `FOG_CHEAP_FIELD_MEAN`, `FOG_CHEAP_FIELD_SIGMA_RATIO` | 0 | 1 | 0 |
 | `lib/frame-import-map.mjs` | The readiness wait for a dynamic import of a bare specifier in a page or frame: whether a specifier is bare, an in-page predicate that reports whether the document has parsed an import map, and the Node-side wait that blocks until it has, or refuses by name when it does not appear in time. | `isBareModuleSpecifier`, `pageHasImportMap`, `awaitFrameImportMap` | 0 | 0 | 1 |

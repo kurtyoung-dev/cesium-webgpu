@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import { registerHooks, stripTypeScriptTypes } from "node:module";
+import { registerHooks } from "node:module";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
+import { transformEngineTypeScript } from "./lib/engine-ts-transform.mjs";
 enableEngineTsResolution();
 
 // The renderer reaches a const enum and generated shader modules that Node's
@@ -39,10 +40,7 @@ registerHooks({
       const source = fs.readFileSync(fileURLToPath(url), "utf8");
       return {
         format: "module",
-        source: stripTypeScriptTypes(source, {
-          mode: "transform",
-          sourceMap: false,
-        }),
+        source: transformEngineTypeScript(source, url),
         shortCircuit: true,
       };
     }

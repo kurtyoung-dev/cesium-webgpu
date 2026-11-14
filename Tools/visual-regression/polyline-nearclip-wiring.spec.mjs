@@ -45,12 +45,13 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { registerHooks, stripTypeScriptTypes } from "node:module";
+import { registerHooks } from "node:module";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
+import { transformEngineTypeScript } from "./lib/engine-ts-transform.mjs";
 import {
   compileFunction,
   mat4,
@@ -1473,10 +1474,7 @@ registerHooks({
     }
     return {
       format: "module",
-      source: stripTypeScriptTypes(source, {
-        mode: "transform",
-        sourceMap: false,
-      }),
+      source: transformEngineTypeScript(source, file),
       shortCircuit: true,
     };
   },
