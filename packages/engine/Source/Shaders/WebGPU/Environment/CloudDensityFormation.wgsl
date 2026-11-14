@@ -52,8 +52,3 @@ fn cloudDistantDensityWeight(footprint: f32, tilePeriod: f32, viewCosine: f32) -
 }
 
 
-// Equal smoothstep edges are undefined; zero coverage is structurally empty.
-fn cloudCoverageGate(baseNoise: f32, threshold: f32) -> f32 {
-  if (threshold >= 1.0) { return 0.0; }
-  return smoothstep(threshold, 1.0, baseNoise);
-}

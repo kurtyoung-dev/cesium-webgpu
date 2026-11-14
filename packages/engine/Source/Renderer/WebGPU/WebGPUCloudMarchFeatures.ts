@@ -3,14 +3,17 @@ import { ShaderDefineHi } from "./WebGPUShaderDefines.js";
 /**
  * The variant of the cloud march a pipeline request compiles. Each optional
  * feature turns on one high-word shader define; a request that names no
- * feature compiles the march without its optional cache bindings.
+ * feature compiles the march without its optional cache bindings. A request
+ * that carries `primaryReuseDefinesHi` or `selectedDefinesHi` names an exact
+ * recipe instead, and that recipe takes priority over the feature fields.
  *
  * @private
  */
 export interface CloudMarchFeatures {
   /**
    * Draws the progressive-startup preview lighting. The preview compiles no
-   * optional feature, whatever the other fields say.
+   * optional feature, whatever the feature fields say; an exact recipe in
+   * `primaryReuseDefinesHi` or `selectedDefinesHi` takes priority over it.
    */
   preview?: boolean;
   /**
@@ -18,6 +21,14 @@ export interface CloudMarchFeatures {
    * this carries. The reuse pipeline compiles exactly those defines.
    */
   primaryReuseDefinesHi?: number;
+  /**
+   * Exact high-word recipe of the selected ordinary march. An emitting request
+   * reuses this family instead of reselecting features from active resources.
+   * Like `primaryReuseDefinesHi`, it selects an exact recipe and takes priority
+   * over `preview` and the feature fields; `primaryReuseDefinesHi` in turn takes
+   * priority over it.
+   */
+  selectedDefinesHi?: number;
   /** Samples the density moments (`CLOUD_DENSITY_MOMENTS`). */
   moments?: boolean;
   /** Skips empty space with the occupancy grid (`CLOUD_SPATIAL_OCCUPANCY`). */
@@ -43,6 +54,37 @@ export interface CloudMarchFeatures {
   vertical?: boolean;
   /** Marches the weather map's independent cloud populations (`CLOUD_WEATHER_POPULATIONS`). */
   populations?: boolean;
+}
+
+/**
+ * The resource-independent shader recipe surrounding the optional features.
+ *
+ * @private
+ */
+export interface CloudMarchRecipe {
+  preview: boolean;
+  baseMorphology: boolean;
+  bakedOnly: boolean;
+  geographicWindRequested?: boolean;
+  featureDefinesHi: number;
+}
+
+/**
+ * Combines the noise, morphology, lighting and wind recipe around the features.
+ *
+ * @private
+ */
+export function cloudMarchRecipeDefines(recipe: CloudMarchRecipe): number {
+  return (
+    (recipe.baseMorphology ? ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY : 0) |
+    (recipe.bakedOnly ? ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY : 0) |
+    (recipe.preview
+      ? ShaderDefineHi.CLOUD_LIGHTING_PREVIEW
+      : recipe.featureDefinesHi) |
+    (recipe.geographicWindRequested && !recipe.preview
+      ? ShaderDefineHi.CLOUD_GEOGRAPHIC_WIND
+      : 0)
+  );
 }
 
 /**
@@ -88,9 +130,9 @@ export function cloudMarchActiveFeatures(
 }
 
 /**
- * The high-word defines of the optional features a request names. The preview
- * and the primary-reuse fields select other variants and contribute no bit
- * here.
+ * The high-word defines of the optional features a request names. The preview,
+ * primary-reuse and selected-recipe fields select other variants and
+ * contribute no bit here.
  *
  * @private
  */

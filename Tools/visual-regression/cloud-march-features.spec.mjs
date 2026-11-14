@@ -1081,3 +1081,621 @@ test("mutant: each live rung made unreachable in selectCloudMarchPipeline is det
     );
   }
 });
+// Execute the real preparation and late-draw caller slices in the existing VM.
+function selectedEmissionBlock(source, marker, from = 0) {
+  const start = source.indexOf(marker, from);
+  assert(start >= 0, marker);
+  const open = source.indexOf("{", start);
+  let end = open + 1,
+    depth = 1;
+  for (; depth && end < source.length; end++) {
+    if (source[end] === "{") depth++;
+    if (source[end] === "}") depth--;
+  }
+  assert.equal(depth, 0);
+  return source.slice(start, end);
+}
+function selectedEmissionStatement(source, marker, from = 0) {
+  const start = source.indexOf(marker, from),
+    end = source.indexOf(";", start);
+  assert(start >= 0 && end > start, marker);
+  return source.slice(start, end + 1);
+}
+async function selectedEmissionHarness(renderer = worktreeRenderer()) {
+  const start = renderer.indexOf("    const marchFormat = halfResActive");
+  const end = renderer.indexOf("    if (!marchPipeline) {", start);
+  assert(start >= 0 && end > start);
+  const preparation = renderer.slice(start, end);
+  const gate = selectedEmissionStatement(
+    renderer,
+    "          const emitReconstruction =",
+  );
+  const draw = selectedEmissionBlock(
+    renderer,
+    "          if (!reusedPrimary) {",
+    renderer.indexOf(gate),
+  );
+  // The engine builds the mask and shadow pipelines only while they are
+  // absent, so the slices keep those guards: a pipeline survives later frames
+  // until the march selection invalidates it.
+  const maskBlock = selectedEmissionBlock(
+    renderer,
+    "  if (\n    requireMaskPipeline &&\n    !cache.maskPipeline &&",
+  );
+  const shadowBlock = selectedEmissionBlock(
+    renderer,
+    "  if (!cache.shadowPipeline) {",
+  );
+  assert(
+    maskBlock.includes("cache.maskPipeline = device.createRenderPipeline(") &&
+      shadowBlock.includes(
+        "cache.shadowPipeline = device.createRenderPipeline(",
+      ),
+  );
+  const constants = ["CLOUD_HALF_FORMAT", "CLOUD_SHADOW_FORMAT"]
+    .map((name) => {
+      const match = renderer.match(
+        new RegExp("const " + name + "[^=]*=[^;]+;"),
+      );
+      assert(match);
+      return match[0];
+    })
+    .join("\n");
+  const extension =
+    constants +
+    "\n" +
+    selectedEmissionBlock(
+      renderer,
+      "function cloudReconstructionVariantReady(",
+    ) +
+    String.raw`
+const Stage = { FRAGMENT: 2 };
+const makeBindGroupLayout = () => ({});
+const uniformBuffer = () => ({});
+const texture = () => ({});
+const sampler = () => ({});
+const storageBuffer = () => ({});
+const CLOUD_MARCH_EMITTED_SLOT = 1;
+const CLOUD_OWNED_ATTACHMENTS = [{clearValue:{r:-1,g:0,b:0,a:0}}];
+const timedCloudPass = (_context,descriptor) => descriptor;
+requestCloudMarchPipeline.frameCalls = {
+  prepare(context,cache,halfResActive,config) { ${preparation} return marchPipeline; },
+  draw(context,cache,attachmentsReady,reusedPrimary,encoder,bindGroup) { ${gate} ${draw} return emitReconstruction; },
+  nonColor(cache,device,requireMaskPipeline) { ${maskBlock} ${shadowBlock} return {mask:cache.maskPipeline,shadow:cache.shadowPipeline}; },
+  primary(context,cache,reuseRequested,reuseEmitDepth) { ${selectedEmissionStatement(renderer, "    const reuseMarchPipeline =")} return reuseMarchPipeline; },
+};`;
+  const fns = await buildHarness(
+    sliceMarchFunctions(renderer) + "\n" + extension,
+    featuresModule,
+  );
+  return { ...fns, frame: fns.request.frameCalls };
+}
+async function selectedEmissionFixture({
+  bake = true,
+  retained = false,
+  progressive = false,
+  preview = false,
+  readyActive = false,
+  renderer,
+} = {}) {
+  const fns = await selectedEmissionHarness(renderer),
+    cache = makeCache({
+      bake,
+      slots: [],
+      dme: false,
+      flags: {
+        deepShadowActive: true,
+        directionalLightingRequested: retained,
+        maskPipeline: null,
+        shadowPipeline: null,
+      },
+    }),
+    log = freshLog();
+  const plain = bake
+    ? ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY |
+      ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY
+    : 0;
+  const base =
+    plain | (retained ? ShaderDefineHi.CLOUD_DIRECTIONAL_LIGHTING : 0);
+  const active = base | ShaderDefineHi.CLOUD_DEEP_SHADOW_CACHE,
+    emit = ShaderDefineHi.CLOUD_MARCH_EMIT_RECONSTRUCTION,
+    primary = ShaderDefineHi.CLOUD_PRIMARY_REUSE,
+    gates = new Map();
+  const context = makeContext(
+    cache,
+    log,
+    (hi) =>
+      hi === (readyActive ? active : base) ||
+      (preview && (hi & ShaderDefineHi.CLOUD_LIGHTING_PREVIEW) !== 0) ||
+      (hi & primary) !== 0,
+    false,
+  );
+  context.webgpuPipelineCache.getPipeline = (d) => {
+    log.async.push(describeDescriptor(d, cache));
+    return new Promise((resolve) => {
+      assert(!gates.has(d.definesHi), "one pending request per variant");
+      gates.set(d.definesHi, resolve);
+    });
+  };
+  context._device.createRenderPipeline = (descriptor) => ({ descriptor });
+  Object.assign(cache, {
+    reconstructionEnabled: true,
+    attachmentEmitPipeline: {},
+    attachmentEmitBindGroup: {},
+    attachmentViews: [{}],
+    halfView: {},
+  });
+  const config = { cloudProgressiveStartup: progressive };
+  function release(hi) {
+    const resolve = gates.get(hi);
+    assert(resolve, "requested variant " + hi);
+    gates.delete(hi);
+    resolve({ id: hi });
+  }
+  function frame(half = true, reusedPrimary = false) {
+    const ordinary = fns.frame.prepare(context, cache, half, config),
+      calls = [],
+      drawCalls = [],
+      passes = [];
+    const encoder = {
+      beginRenderPass: (d) => {
+        passes.push(d);
+        return {
+          setPipeline: (p) => calls.push(p),
+          setBindGroup() {},
+          draw: (n) => {
+            drawCalls.push(n);
+            assert.equal(n, 3);
+          },
+          end() {},
+        };
+      },
+    };
+    const nonColor = fns.frame.nonColor(cache, context._device, true);
+    const emitted =
+      half && ordinary
+        ? fns.frame.draw(context, cache, true, reusedPrimary, encoder, {})
+        : false;
+    const selected = cache.selectedMarchDefinesHi;
+    return {
+      ordinary: ordinary?.id ?? null,
+      selected,
+      visible: calls[0]?.id ?? null,
+      pipelineSets: calls.length,
+      draws: drawCalls.length,
+      drawCalls,
+      emitted,
+      targets: passes[0]?.colorAttachments.length ?? 0,
+      halfEmit: cache.halfEmitPipeline?.id ?? null,
+      maskModule: nonColor.mask.descriptor.fragment.module,
+      shadowModule: nonColor.shadow.descriptor.fragment.module,
+      selectedModule: state.modules.get(selected),
+      requestedStillActive: cache.deepShadowActive,
+      retainedStillRequested:
+        !retained || cache.directionalLightingRequested === true,
+      halfPipeline: cache.halfPipeline?.id ?? null,
+      fullPipeline: cache.pipeline?.id ?? null,
+    };
+  }
+  return {
+    fns,
+    cache,
+    context,
+    log,
+    plain,
+    retained,
+    base,
+    active,
+    emit,
+    primary,
+    release,
+    frame,
+  };
+}
+async function selectedEmissionTrace(bake, renderer, retained = false) {
+  const f = await selectedEmissionFixture({ bake, renderer, retained });
+  if (retained) {
+    f.fns.request(f.context, f.cache, "rgba16float", true, {});
+    f.release(f.plain | f.emit);
+    await settle();
+  }
+  f.fns.request(f.context, f.cache, "rgba16float", true);
+  f.release(f.active | f.emit);
+  await settle();
+  const independentlyReady = f.frame();
+  f.fns.request(f.context, f.cache, "rgba16float", true, {
+    ...featuresModule.cloudMarchActiveFeatures(f.cache),
+    deep: false,
+  });
+  f.release(f.base | f.emit);
+  await settle();
+  const matchingReady = f.frame();
+  f.release(f.active);
+  await settle();
+  const upgraded = f.frame();
+  return { ...f, independentlyReady, matchingReady, upgraded };
+}
+function assertSelectedEmissionFamily(row, emit) {
+  assert(
+    Number.isInteger(row.ordinary),
+    "ordinary pipeline id must be an integer",
+  );
+  assert(
+    Number.isInteger(row.visible),
+    "visible pipeline id must be an integer",
+  );
+  assert(
+    Number.isInteger(row.selected),
+    "selected feature mask must be an integer",
+  );
+  assert.equal(row.pipelineSets, 1);
+  assert.equal(row.draws, 1);
+  assert.deepEqual(row.drawCalls, [3], "the visible pass must issue draw(3)");
+  assert.equal(
+    row.visible & ~emit,
+    row.selected,
+    "visible march must use selected ordinary feature family",
+  );
+  assert.equal(row.ordinary, row.selected);
+  assert.equal(row.retainedStillRequested, true);
+  assert.equal(
+    row.maskModule,
+    row.selectedModule,
+    "mask module follows ordinary selection",
+  );
+  assert.equal(
+    row.shadowModule,
+    row.selectedModule,
+    "shadow module follows ordinary selection",
+  );
+  assert.equal(
+    row.requestedStillActive,
+    true,
+    "requested features must not be dropped",
+  );
+}
+for (const bake of [true, false])
+  test(
+    "selected emission family remains coherent while independent async variants settle (baked=" +
+      bake +
+      ")",
+    async () => {
+      const trace = await selectedEmissionTrace(bake, undefined, bake);
+      assert.equal(trace.independentlyReady.selected, trace.base);
+      assertSelectedEmissionFamily(trace.independentlyReady, trace.emit);
+      assertSelectedEmissionFamily(trace.matchingReady, trace.emit);
+      assert.equal(
+        trace.matchingReady.emitted,
+        true,
+        "matching fallback emission must become usable",
+      );
+      assert.equal(trace.matchingReady.targets, 2);
+      assertSelectedEmissionFamily(trace.upgraded, trace.emit);
+      assert.equal(
+        trace.upgraded.selected,
+        trace.active,
+        "ready requested family must upgrade",
+      );
+      assert.equal(trace.upgraded.visible, trace.active | trace.emit);
+    },
+  );
+test("selected emission healthy companions preserve preview, full resolution and primary reuse", async () => {
+  const preview = await selectedEmissionFixture({
+    preview: true,
+    progressive: true,
+  });
+  const p = preview.frame();
+  assert(p.selected & ShaderDefineHi.CLOUD_LIGHTING_PREVIEW);
+  assertSelectedEmissionFamily(p, preview.emit);
+  assert.equal(p.halfEmit, null);
+  assert.equal(p.emitted, false);
+  assert.equal(p.targets, 1);
+  const full = await selectedEmissionFixture();
+  const r = full.frame(false);
+  assert.equal(r.visible, null);
+  assert.equal(r.halfPipeline, null);
+  assert.equal(r.halfEmit, null);
+  assert.equal(r.fullPipeline, r.selected);
+  assert.equal(r.maskModule, r.selectedModule);
+  assert.equal(
+    full.log.modules.some((hi) => (hi & full.emit) !== 0),
+    false,
+  );
+  const reuse = await selectedEmissionFixture({ bake: false });
+  const ordinary = reuse.frame();
+  const primary = reuse.fns.frame.primary(
+    reuse.context,
+    reuse.cache,
+    true,
+    true,
+  );
+  assert(primary);
+  assert.equal(primary.id & ~(reuse.primary | reuse.emit), ordinary.selected);
+  assert.equal(reuse.cache.selectedMarchDefinesHi, ordinary.selected);
+  assert.equal(reuse.log.sync.at(-1).entry, "fragmentCloudPrimaryMain");
+  assert.deepEqual(Array.from(reuse.log.sync.at(-1).targets), [
+    "rgba16float",
+    "r8unorm",
+    "rg32float",
+  ]);
+  const skipped = reuse.frame(true, true);
+  assert.equal(
+    skipped.draws,
+    0,
+    "primary reuse must skip the ordinary half march",
+  );
+});
+
+test("selected emission callsite and selector override inerts lose the same family oracle", async () => {
+  const healthy = await selectedEmissionTrace(true, undefined, true);
+  assertSelectedEmissionFamily(healthy.independentlyReady, healthy.emit);
+  const renderer = worktreeRenderer();
+  const oldCall =
+    "    cache.halfEmitPipeline =\n      halfResActive &&\n      marchPipeline &&\n      !cache.usingStartupPreview &&\n      cache.reconstructionEnabled\n        ? requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true)\n        : null;";
+  const callsite = replaceOnce(
+    renderer,
+    selectedEmissionStatement(renderer, "    cache.halfEmitPipeline ="),
+    oldCall,
+  );
+  const override = replaceOnce(
+    renderer,
+    "features.selectedDefinesHi ??",
+    "(false ? features.selectedDefinesHi : undefined) ??",
+  );
+  for (const source of [callsite, override]) {
+    const trace = await selectedEmissionTrace(true, source, true);
+    assert.throws(
+      () => assertSelectedEmissionFamily(trace.independentlyReady, trace.emit),
+      /visible march must use selected ordinary feature family/,
+    );
+    assert.equal(
+      trace.upgraded.ordinary,
+      trace.active,
+      "ordinary requested-family upgrade stays healthy under the inert",
+    );
+    assert.equal(trace.upgraded.maskModule, trace.upgraded.selectedModule);
+    assert.equal(trace.upgraded.shadowModule, trace.upgraded.selectedModule);
+  }
+});
+
+// The frame's emitting half march requests, executed through the real
+// preparation slice. While the ladder draws a simpler variant, the bound
+// emitting pipeline is the selected recipe's and the active recipe's emitting
+// pipeline is requested beside it, never bound.
+async function warmEmissionTrace(renderer, readyActive = false) {
+  const f = await selectedEmissionFixture({
+    bake: true,
+    renderer,
+    readyActive,
+  });
+  const config = { cloudProgressiveStartup: false };
+  const emitting = () =>
+    f.log.async.filter((d) => (d.definesHi & f.emit) !== 0);
+  const requestedBefore = f.log.async.length + f.log.sync.length;
+  f.fns.frame.prepare(f.context, f.cache, true, config);
+  const firstFrame = {
+    selected: f.cache.selectedMarchDefinesHi,
+    emitting: emitting().map((d) => d.definesHi),
+    emittingTargets: emitting().map((d) => d.targets.length),
+    bound: f.cache.halfEmitPipeline?.id ?? null,
+    requests: f.log.async.length + f.log.sync.length - requestedBefore,
+  };
+  // Settle every emitting compile the first frame started.
+  for (const hi of firstFrame.emitting) {
+    f.release(hi);
+  }
+  await settle();
+  const afterSettle = f.log.async.length + f.log.sync.length;
+  const lookupsBefore = f.log.modules.length;
+  f.fns.frame.prepare(f.context, f.cache, true, config);
+  const secondFrame = {
+    selected: f.cache.selectedMarchDefinesHi,
+    bound: f.cache.halfEmitPipeline?.id ?? null,
+    requests: f.log.async.length + f.log.sync.length - afterSettle,
+    moduleLookups: f.log.modules.length - lookupsBefore,
+  };
+  return { ...f, firstFrame, secondFrame };
+}
+// The emitting pipeline is requested with the selected recipe.
+function assertBoundEmissionRecipe(trace) {
+  assert.ok(
+    trace.firstFrame.emitting.includes(trace.firstFrame.selected | trace.emit),
+    "the emitting pipeline is requested with the selected recipe",
+  );
+}
+// The emitting variant of the active recipe is requested in the same frame.
+function assertWarmEmissionRequested(trace) {
+  assert.notEqual(
+    trace.active,
+    trace.firstFrame.selected,
+    "ladder is climbing",
+  );
+  assert.ok(
+    trace.firstFrame.emitting.includes(trace.active | trace.emit),
+    "the active recipe's emitting pipeline is requested while a simpler one draws",
+  );
+  assert.deepEqual(
+    trace.firstFrame.emittingTargets,
+    trace.firstFrame.emitting.map(() => 2),
+    "both requests are emitting pipelines with the emitted-depth target",
+  );
+}
+// Both emitting pipelines are ready and the frame binds the selected recipe's.
+function assertWarmEmissionNotBound(trace) {
+  assert.equal(
+    trace.secondFrame.bound,
+    trace.secondFrame.selected | trace.emit,
+    "the warm request's pipeline must never become cache.halfEmitPipeline",
+  );
+  assert.equal(
+    trace.secondFrame.selected,
+    trace.firstFrame.selected,
+    "the warm request moves no selected-variant state",
+  );
+}
+const WARM_ORACLES = [
+  [assertBoundEmissionRecipe, /requested with the selected recipe/],
+  [assertWarmEmissionRequested, /requested while a simpler one draws/],
+  [assertWarmEmissionNotBound, /must never become cache.halfEmitPipeline/],
+];
+function warmOracleVerdicts(trace) {
+  return WARM_ORACLES.map(([oracle, message]) => {
+    try {
+      oracle(trace);
+      return "green";
+    } catch (error) {
+      assert.match(error.message, message);
+      return "red";
+    }
+  });
+}
+
+test("warm emission (a): while a simpler variant draws the emitting pipeline is requested with the selected recipe", async () => {
+  const trace = await warmEmissionTrace();
+  assert.equal(trace.firstFrame.selected, trace.base);
+  assert.notEqual(trace.firstFrame.selected, trace.active);
+  assertBoundEmissionRecipe(trace);
+});
+
+test("warm emission (b): while a simpler variant draws the active recipe's emitting pipeline is requested as well", async () => {
+  const trace = await warmEmissionTrace();
+  assertWarmEmissionRequested(trace);
+  assert.deepEqual(
+    [...trace.firstFrame.emitting].sort(),
+    [trace.base | trace.emit, trace.active | trace.emit].sort(),
+    "exactly the selected and the active emitting variants compile",
+  );
+  assert.equal(
+    trace.secondFrame.requests,
+    0,
+    "once both emitting variants are in the pipeline map a frame compiles nothing",
+  );
+});
+
+test("warm emission (c): the warm request's ready pipeline is not what cache.halfEmitPipeline holds", async () => {
+  const trace = await warmEmissionTrace();
+  assertWarmEmissionNotBound(trace);
+  assert.equal(trace.secondFrame.bound, trace.base | trace.emit);
+});
+
+test("warm emission: once the ladder reaches the active recipe the warm request is a pipeline map hit", async () => {
+  const trace = await warmEmissionTrace(undefined, true);
+  assert.equal(trace.firstFrame.selected, trace.active);
+  assert.deepEqual(
+    trace.firstFrame.emitting,
+    [trace.active | trace.emit],
+    "one emitting compile, not two",
+  );
+  assert.equal(trace.secondFrame.bound, trace.active | trace.emit);
+  assert.equal(trace.secondFrame.requests, 0);
+  // A steady frame makes three march requests, all pipeline map hits: the
+  // ladder's, the bound emitting one and the warm one. Without the warm
+  // request it makes two.
+  assert.equal(trace.secondFrame.moduleLookups, 3);
+  const without = await warmEmissionTrace(
+    replaceOnce(
+      worktreeRenderer(),
+      "      requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true);\n",
+      "",
+    ),
+    true,
+  );
+  assert.equal(without.secondFrame.moduleLookups, 2);
+});
+
+test("warm emission mutants: each is red on its own case", async () => {
+  const renderer = worktreeRenderer();
+  const warm =
+    "      requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true);\n";
+  const bound =
+    "? requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true, {\n          selectedDefinesHi: cache.selectedMarchDefinesHi,\n        })";
+  const mutants = [
+    {
+      name: "the warm request removed",
+      source: replaceOnce(renderer, warm, ""),
+      verdicts: ["green", "red", "green"],
+    },
+    {
+      name: "the warm request's result assigned to cache.halfEmitPipeline",
+      source: replaceOnce(
+        renderer,
+        warm,
+        "      cache.halfEmitPipeline = requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true);\n",
+      ),
+      verdicts: ["green", "green", "red"],
+    },
+    {
+      name: "the bound request made with the active recipe",
+      source: replaceOnce(
+        renderer,
+        bound,
+        "? requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true)",
+      ),
+      verdicts: ["red", "green", "red"],
+    },
+  ];
+  assert.deepEqual(warmOracleVerdicts(await warmEmissionTrace()), [
+    "green",
+    "green",
+    "green",
+  ]);
+  for (const { name, source, verdicts } of mutants) {
+    assert.deepEqual(
+      warmOracleVerdicts(await warmEmissionTrace(source)),
+      verdicts,
+      name,
+    );
+  }
+});
+
+test("selected emission mask and shadow invalidation made unreachable loses the module oracle", async () => {
+  const healthy = await selectedEmissionTrace(true, undefined, true);
+  assertSelectedEmissionFamily(healthy.upgraded, healthy.emit);
+  const renderer = worktreeRenderer();
+  const kept = "    cache.maskShaderModule = module;\n";
+  const nulls =
+    "    cache.maskPipeline = null;\n    cache.shadowPipeline = null;\n";
+  const mutants = [
+    {
+      name: "both invalidations unreachable",
+      source: replaceOnce(renderer, kept + nulls, kept + "    return ready;\n"),
+      message: /mask module follows ordinary selection/,
+    },
+    {
+      name: "mask invalidation dropped",
+      source: replaceOnce(
+        renderer,
+        kept + nulls,
+        kept + "    cache.shadowPipeline = null;\n",
+      ),
+      message: /mask module follows ordinary selection/,
+    },
+    {
+      name: "shadow invalidation dropped",
+      source: replaceOnce(
+        renderer,
+        kept + nulls,
+        kept + "    cache.maskPipeline = null;\n",
+      ),
+      message: /shadow module follows ordinary selection/,
+    },
+  ];
+  for (const { name, source, message } of mutants) {
+    const trace = await selectedEmissionTrace(true, source, true);
+    assert.throws(
+      () => assertSelectedEmissionFamily(trace.upgraded, trace.emit),
+      message,
+      name,
+    );
+    assert.equal(
+      trace.upgraded.ordinary,
+      trace.active,
+      name + ": the ordinary upgrade stays healthy",
+    );
+    assert.equal(
+      trace.upgraded.visible,
+      trace.active | trace.emit,
+      name + ": the emitting variant still follows the selection",
+    );
+  }
+});

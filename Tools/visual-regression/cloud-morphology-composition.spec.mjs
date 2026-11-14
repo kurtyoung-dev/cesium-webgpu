@@ -118,7 +118,7 @@ function assertHelperComposition(source) {
   );
   assert.match(
     budget,
-    /let\s+pivot\s*=\s*smoothstep\(\s*coverageThreshold,\s*1\.0,\s*GENUS_BASE_FIELD_MEAN,?\s*\);/,
+    /let\s+pivot\s*=\s*cloudCoverageGate\(\s*GENUS_BASE_FIELD_MEAN,\s*coverageThreshold,?\s*\);/,
     "the shader twin must use the approved constant base-field pivot",
   );
   assert.match(
@@ -196,7 +196,7 @@ function assertEvaluatorComposition(source) {
     );
     const gateAt = orderedIndex(
       body,
-      "density = smoothstep(coverageThreshold, 1.0, density);",
+      "density = cloudCoverageGate(density, coverageThreshold);",
       -1,
       `${site.name} is missing its coverage gate`,
     );
@@ -581,5 +581,41 @@ test("MUTATION: a renamed compensation constant is rejected", () => {
   assert.throws(
     () => constantValue(mutated, "GENUS_EROSION_COMPENSATION"),
     /missing GENUS_EROSION_COMPENSATION/,
+  );
+});
+
+test("MUTATION: restoring the unguarded coverage gate in an evaluator is rejected", () => {
+  const original = functionSource(shaderSource, "legacyCloudBaseDensity");
+  const mutated = mustReplace(
+    shaderSource,
+    original,
+    mustReplace(
+      original,
+      "density = cloudCoverageGate(density, coverageThreshold);",
+      "density = smoothstep(coverageThreshold, 1.0, density);",
+    ),
+  );
+  assert.throws(
+    () => assertEvaluatorComposition(mutated),
+    /legacyCloudBaseDensity is missing its coverage gate/,
+  );
+});
+
+test("MUTATION: restoring the unguarded smoothstep pivot is rejected", () => {
+  const original = functionSource(shaderSource, "applyGenusBaseVarianceBudget");
+  const mutated = mustReplace(
+    shaderSource,
+    original,
+    mustReplace(
+      original,
+      /let pivot = cloudCoverageGate\(\s*GENUS_BASE_FIELD_MEAN,\s*coverageThreshold,?\s*\);/.exec(
+        original,
+      )[0],
+      "let pivot = smoothstep(coverageThreshold, 1.0, GENUS_BASE_FIELD_MEAN);",
+    ),
+  );
+  assert.throws(
+    () => assertHelperComposition(mutated),
+    /approved constant base-field pivot/,
   );
 });

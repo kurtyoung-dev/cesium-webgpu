@@ -980,10 +980,9 @@ fn applyGenusBaseVarianceBudget(
   }
   // Feeding the derived base-field mean through this coverage's own gate keeps
   // the pivot coverage-aware without adding a response LUT or a uniform slot.
-  let pivot = smoothstep(
-    coverageThreshold,
-    1.0,
+  let pivot = cloudCoverageGate(
     GENUS_BASE_FIELD_MEAN,
+    coverageThreshold,
   );
   let weight = select(
     budgetWeight,
@@ -1426,7 +1425,7 @@ fn legacyCloudDensity(
   }
 //>>endif
   let coverageThreshold = 1.0 - cloudEffectiveCoverage(effectiveCoverage);
-  density = smoothstep(coverageThreshold, 1.0, density);
+  density = cloudCoverageGate(density, coverageThreshold);
   density = applyGenusBaseVarianceBudget(density, coverageThreshold);
 
 //>>ifdef CLOUD_WEATHER_VERTICAL
@@ -1548,7 +1547,7 @@ fn legacyCloudBaseDensity(
   }
 //>>endif
   let coverageThreshold = 1.0 - cloudEffectiveCoverage(effectiveCoverage);
-  density = smoothstep(coverageThreshold, 1.0, density);
+  density = cloudCoverageGate(density, coverageThreshold);
   density = applyGenusBaseVarianceBudget(density, coverageThreshold);
 //>>ifdef CLOUD_WEATHER_VERTICAL
   let profile = cloudRegionalProfile(worldPos, mix(deckBottom, deckTop, shellHeightFraction), wch);
@@ -1673,11 +1672,7 @@ fn cloudMacroSampleAt(
   }
 //>>endif
   let coverageThreshold = 1.0 - cloudEffectiveCoverage(effectiveCoverage);
-//>>ifdef CLOUD_DENSITY_MOMENTS
   density = cloudCoverageGate(density, coverageThreshold);
-//>>else
-  density = smoothstep(coverageThreshold, 1.0, density);
-//>>endif
   density = applyGenusBaseVarianceBudget(density, coverageThreshold);
 
 //>>ifdef CLOUD_WEATHER_VERTICAL

@@ -495,7 +495,7 @@ fn cloudDensityIBL(
   let coverage = clamp(u.cloudCoverage, 0.0, 1.0);
   // Share `cloudEffectiveCoverage` with the visible march so reflected and
   // ambient cloud density cannot diverge and silently mis-light models.
-  density = smoothstep(1.0 - cloudEffectiveCoverage(coverage), 1.0, density);
+  density = cloudCoverageGate(density, 1.0 - cloudEffectiveCoverage(coverage));
 
   // Billowy vertical gradient for the cumulus profile.
   let hg = smoothstep(0.0, 0.15, heightFraction) * smoothstep(1.0, 0.7, heightFraction);

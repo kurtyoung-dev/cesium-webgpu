@@ -703,10 +703,9 @@ fn sampleCloudShadow(worldPos: vec3<f32>, offsetFromCamera: vec3<f32>) -> f32 {
   // CPU twin: `normalizeFogCheapCloudField` in WebGPUCloudDensityDomain.ts.
   // Pinned by Tools/visual-regression/fog-cheap-coverage-gate.spec.mjs — do
   // not edit one alone.
-  var density = smoothstep(
-    1.0 - cloudEffectiveCoverage(coverage),
-    1.0,
-    normalizeFogCheapCloudField(n)
+  var density = cloudCoverageGate(
+    normalizeFogCheapCloudField(n),
+    1.0 - cloudEffectiveCoverage(coverage)
   );
   density = density * u.cloudDensityShape.x;
 

@@ -3114,8 +3114,8 @@ test("the spatial occupancy dial compiles CLOUD_SPATIAL_OCCUPANCY into the march
   await assertFamilyDial(SPATIAL_OCCUPANCY_FAMILY);
 });
 
-// The half-resolution emission request takes the active features of the
-// cache, so with occupancy live the emitted march compiles the selected
+// The half-resolution emission request carries the selected march's exact
+// recipe, so with occupancy live the emitted march compiles the selected
 // march's defines plus the emission bits.
 async function observeEmissionDefines(engine) {
   const fixture = makeCloudFixture();
@@ -3171,11 +3171,11 @@ test("the half-resolution emission request compiles the selected march's live fe
         mutate: (source) =>
           replaceExactlyOnce(
             source,
-            "requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true)",
-            "requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true, {})",
-            "emission request without the cache's features",
+            "selectedDefinesHi: cache.selectedMarchDefinesHi,",
+            "",
+            "emission request without the selected march's recipe",
           ),
-        label: "emission request without the cache's features",
+        label: "emission request without the selected march's recipe",
       },
     ],
   });

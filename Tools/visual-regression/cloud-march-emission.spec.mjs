@@ -231,14 +231,29 @@ test("A2 only the requested emitting half march selects the emission axis", () =
   assert.equal(
     (
       cloudRenderer.match(
-        /requestCloudMarchPipeline\(context, cache, CLOUD_HALF_FORMAT, true\)/g,
+        /requestCloudMarchPipeline\(context, cache, CLOUD_HALF_FORMAT, true, \{\s*selectedDefinesHi: cache\.selectedMarchDefinesHi,\s*\}\)/g,
       ) ?? []
     ).length,
     1,
   );
   assert.match(
     cloudRenderer,
-    /halfResActive\s*&&\s*marchPipeline\s*&&\s*!cache\.usingStartupPreview\s*&&\s*cache\.reconstructionEnabled\s*\?\s*requestCloudMarchPipeline/,
+    /const emitsHalfMarch =\s*halfResActive\s*&&\s*marchPipeline\s*&&\s*!cache\.usingStartupPreview\s*&&\s*cache\.reconstructionEnabled;\s*cache\.halfEmitPipeline = emitsHalfMarch\s*\?\s*requestCloudMarchPipeline\(context, cache, CLOUD_HALF_FORMAT, true, \{\s*selectedDefinesHi: cache\.selectedMarchDefinesHi,/,
+  );
+  // The one other emitting request, the warm one, sits under the same gate and
+  // names no recipe: its result is dropped, never bound.
+  assert.match(
+    cloudRenderer,
+    /if \(emitsHalfMarch\) \{[^}]*\n\s*requestCloudMarchPipeline\(context, cache, CLOUD_HALF_FORMAT, true\);\s*\}/,
+  );
+  assert.equal(
+    (
+      cloudRenderer.match(
+        /requestCloudMarchPipeline\(\s*context,\s*cache,\s*CLOUD_HALF_FORMAT,\s*true\b/g,
+      ) ?? []
+    ).length,
+    2,
+    "exactly the bound request and the warm request ask for an emitting half march",
   );
   assert.match(
     cloudRenderer,

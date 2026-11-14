@@ -110,6 +110,7 @@ import { CloudDensityMomentsResources } from "./WebGPUCloudDensityMoments.js";
 import {
   cloudMarchActiveFeatures,
   cloudMarchFeatureDefines,
+  cloudMarchRecipeDefines,
   type CloudMarchFeatures,
 } from "./WebGPUCloudMarchFeatures.js";
 import {
@@ -3364,15 +3365,17 @@ function requestCloudMarchPipeline(
   const definesHi =
     (primaryReuse
       ? primaryReuseDefinesHi | ShaderDefineHi.CLOUD_PRIMARY_REUSE
-      : (baseMorphology ? ShaderDefineHi.CLOUD_MORPHOLOGY_BASE_ONLY : 0) |
-        (bakedOnly ? ShaderDefineHi.CLOUD_NOISE_BAKED_ONLY : 0) |
-        (preview
-          ? ShaderDefineHi.CLOUD_LIGHTING_PREVIEW
-          : cloudMarchFeatureDefines(features) &
-            (bakedOnly ? ~0 : ~ShaderDefineHi.CLOUD_WEATHER_TRANSITION)) |
-        (cache.geographicWindRequested && !preview
-          ? ShaderDefineHi.CLOUD_GEOGRAPHIC_WIND
-          : 0)) | (emit ? CLOUD_MARCH_EMIT_DEFINES_HI : 0);
+      : (features.selectedDefinesHi ??
+        cloudMarchRecipeDefines({
+          preview,
+          baseMorphology,
+          bakedOnly,
+          featureDefinesHi: preview
+            ? 0
+            : cloudMarchFeatureDefines(features) &
+              (bakedOnly ? ~0 : ~ShaderDefineHi.CLOUD_WEATHER_TRANSITION),
+          geographicWindRequested: cache.geographicWindRequested,
+        }))) | (emit ? CLOUD_MARCH_EMIT_DEFINES_HI : 0);
   const key = `${format}:${definesHi}`;
   //>>includeStart('debug', pragmas.debug);
   const requestStartedAt = performance.now();
@@ -5300,13 +5303,24 @@ export function prepareCloudFrameAndEncodeMask(
     );
     cache.pipeline = halfResActive ? null : marchPipeline;
     cache.halfPipeline = halfResActive ? marchPipeline : null;
-    cache.halfEmitPipeline =
+    const emitsHalfMarch =
       halfResActive &&
       marchPipeline &&
       !cache.usingStartupPreview &&
-      cache.reconstructionEnabled
-        ? requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true)
-        : null;
+      cache.reconstructionEnabled;
+    cache.halfEmitPipeline = emitsHalfMarch
+      ? requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true, {
+          selectedDefinesHi: cache.selectedMarchDefinesHi,
+        })
+      : null;
+    if (emitsHalfMarch) {
+      // The emitting variant of the recipe the ladder is climbing to compiles
+      // in the same frames as the simpler variant that draws meanwhile, so the
+      // switch to it does not wait for a second compile. The result is never
+      // bound or stored, and an emitting request leaves the selected variant
+      // and the mask and shadow modules alone.
+      requestCloudMarchPipeline(context, cache, CLOUD_HALF_FORMAT, true);
+    }
     if (!marchPipeline) {
       markCloudTemporalInactive(cache);
       stages.endStage(CloudCpuStage.PACK);

@@ -323,15 +323,25 @@ test("MUTATION: each way of re-introducing the defect is detected", () => {
 // ── 5. One definition: WGSL, its CPU twin, and the composition ────────────
 
 test("the WGSL gate routes through the shared response and the normalisation", () => {
-  const gates = [...fogSource.matchAll(/smoothstep\(\s*1\.0 - ([^,]+),/g)];
+  const gates = [
+    ...fogSource.matchAll(
+      /cloudCoverageGate\(\s*normalizeFogCheapCloudField\(n\),\s*1\.0 - ([^\n]+)\s*\);/g,
+    ),
+  ];
   assert.equal(gates.length, 1, "the fog has exactly one coverage gate");
   assert.equal(gates[0][1].trim(), "cloudEffectiveCoverage(coverage)");
-  assert.match(fogSource, /normalizeFogCheapCloudField\(n\)\s*\n?\s*\);/);
+  assert.match(
+    fogSource,
+    /cloudCoverageGate\(\s*normalizeFogCheapCloudField\(n\),/,
+  );
 
   // A raw `1.0 - coverage` threshold anywhere in this shader is the defect
   // returning. This is the assertion `cloud-coverage-response.spec.mjs` makes
   // for the march and the IBL cube; the fog was the file it did not cover.
-  assert.doesNotMatch(fogSource, /smoothstep\(1\.0 - coverage/);
+  assert.doesNotMatch(
+    fogSource,
+    /(?:smoothstep\(1\.0 - coverage|cloudCoverageGate\(\s*normalizeFogCheapCloudField\(n\),\s*1\.0 - coverage)/,
+  );
 
   // The normalisation is applied exactly once, at the gate — not sprinkled.
   assert.equal(
@@ -432,10 +442,7 @@ test("the composed source validates under naga, and the bare one does not", () =
     assert.doesNotThrow(() =>
       naga.validate_wgsl(`${domainSource}\n${fogSource}`),
     );
-    assert.throws(
-      () => naga.validate_wgsl(fogSource),
-      /cloudEffectiveCoverage/,
-    );
+    assert.throws(() => naga.validate_wgsl(fogSource), /cloudCoverageGate/);
   })();
 });
 

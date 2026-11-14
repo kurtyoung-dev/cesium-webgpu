@@ -189,13 +189,17 @@ test("every coverage gate in the engine routes through the shared response", () 
   // The hoisted local must still be what the density gate consumes, or the
   // response curve is computed and thrown away.
   assert.equal(
-    (cloudSource.match(/smoothstep\(coverageThreshold, 1\.0, density\)/g) || [])
-      .length,
+    (
+      cloudSource.match(/cloudCoverageGate\(density,\s*coverageThreshold\)/g) ||
+      []
+    ).length,
     3,
     "each hoisted threshold must feed its own density gate",
   );
 
-  const iblGates = [...iblSource.matchAll(/smoothstep\(1\.0 - ([^,]+),/g)];
+  const iblGates = [
+    ...iblSource.matchAll(/cloudCoverageGate\(density,\s*1\.0 - ([^;]+)\);/g),
+  ];
   assert.equal(iblGates.length, 1);
   assert.equal(iblGates[0][1], "cloudEffectiveCoverage(coverage)");
 
@@ -205,7 +209,14 @@ test("every coverage gate in the engine routes through the shared response", () 
     cloudSource,
     /let coverageThreshold = 1\.0 - effectiveCoverage;/,
   );
-  assert.doesNotMatch(iblSource, /smoothstep\(1\.0 - coverage/);
+  assert.doesNotMatch(
+    iblSource,
+    /(?:smoothstep\(1\.0 - coverage|cloudCoverageGate\(density,\s*1\.0 - coverage)/,
+  );
+  assert.match(
+    domainSource,
+    /fn cloudCoverageGate\(baseNoise: f32, threshold: f32\) -> f32/,
+  );
 });
 
 test("both composed consumers still compile with the shared response", async () => {

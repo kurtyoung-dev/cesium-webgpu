@@ -717,6 +717,10 @@ test("LIVE and bit-13-off preserve the literal legacy density route", () => {
   // genus-conditioned erosion-depth compensation. The default CUMULUS row is
   // still exact identity, the macro route moved in the same change, and
   // `legacyBakedBase` remains untouched for the third time.
+  // Re-frozen for the defined zero-coverage gate: legacy/full/base and macro
+  // route the same gate through the shared Domain helper. The original hashes
+  // remain below and are checked after reversing only that exact call change.
+  // Ordinary positive behavior and live/inert zero laws have separate callers.
   const frozenLegacyHashes = {
     legacyBakedBase:
       "63cc67e6e7790a33c3ac39a3958d74335debe667d67d24a0e0e2c35609af4cde",
@@ -725,9 +729,27 @@ test("LIVE and bit-13-off preserve the literal legacy density route", () => {
     legacyCloudBaseDensity:
       "78862a846cbbc14516e40fbbc7513e7a617dd38e2cd6bdefb63c9ee34c1d4380",
   };
+  const guardedLegacyHashes = {
+    ...frozenLegacyHashes,
+    legacyCloudDensity:
+      "3255c7a6e66a5d0dabe830d87c915bed49f03d482906c55a42d22b02bf2d0619",
+    legacyCloudBaseDensity:
+      "fec6d015c22a6d638abce60d56bd7e0a88a614ee5d245b20ab45af5c4b422970",
+  };
   for (const [name, hash] of Object.entries(frozenLegacyHashes)) {
+    const current = functionSource(cloudShaderSource, name);
+    assert.equal(normalizedLegacyHash(current), guardedLegacyHashes[name]);
+    let historical = current;
+    if (name !== "legacyBakedBase") {
+      const guardedGate = "cloudCoverageGate(density, coverageThreshold)";
+      assert.equal(current.split(guardedGate).length, 2);
+      historical = current.replace(
+        guardedGate,
+        "smoothstep(coverageThreshold, 1.0, density)",
+      );
+    }
     assert.equal(
-      normalizedLegacyHash(functionSource(cloudShaderSource, name)),
+      normalizedLegacyHash(historical),
       hash,
       `${name} drifted from the frozen pre-C13-37 oracle`,
     );
@@ -1461,7 +1483,7 @@ test("distant density admission uses the noise feature wavelength and retains ne
 
 test("zero-coverage statistical bins are empty even at the largest possible noise value", () => {
   const gate = cloudMath.compileFunction(
-    cloudMath.stripComments(densityFormationProgram),
+    cloudMath.stripComments(wgslSource),
     "cloudCoverageGate",
     cloudMathGlobals,
   );
@@ -1540,7 +1562,21 @@ test("geographic material work is omitted from disabled recipes and shared by pr
     renderer.indexOf("const geographicFlow =") >
       renderer.indexOf("    publishCloudRealization("),
   );
-  assert.ok(renderer.includes("cache.geographicWindRequested && !preview"));
+  // The features module holds the rule (the wind define is off under the
+  // preview); the renderer hands the cache's request over to it.
+  const marchFeatures = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Renderer/WebGPU/WebGPUCloudMarchFeatures.ts",
+    ),
+    "utf8",
+  );
+  assert.ok(
+    marchFeatures.includes("recipe.geographicWindRequested && !recipe.preview"),
+  );
+  assert.ok(
+    renderer.includes("geographicWindRequested: cache.geographicWindRequested"),
+  );
   const start = renderer.indexOf(
     "    writeCloudDensityAdvectedOriginPhases(",
     renderer.indexOf("const geographicFlow ="),

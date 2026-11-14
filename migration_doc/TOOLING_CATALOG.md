@@ -222,13 +222,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 2076 |
+| Files in census | 2078 |
 | ACTIVE | 1808 |
 | ARCHIVED-CANDIDATE | 39 |
 | INVESTIGATION | 162 |
 | NO @purpose HEADER | 65 |
-| NO @status HEADER | 2 |
-| Classes | probe 683, spec 621, other 436, lib 278, gate-lib 21, fixture 17, bake-tool 13, runner 7 |
+| NO @status HEADER | 4 |
+| Classes | probe 683, spec 622, other 436, lib 278, gate-lib 21, fixture 18, bake-tool 13, runner 7 |
 
 ### Tools/ (74)
 
@@ -493,7 +493,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | pack-compat.mjs | other | NO @purpose HEADER | 2026-09-11 | 4 | — |
 
-### Tools/visual-regression/ (1249)
+### Tools/visual-regression/ (1250)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -596,11 +596,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-lighting-budget.spec.mjs | spec | NO @purpose HEADER | 2026-11-02 | 1 | — |
 | cloud-march-budget-refusal.spec.mjs | spec | ACTIVE | 2026-11-06 | 1 | Executes the real cloud resolver and the real cloud frame preparation under a recording fake device to prove that a frame past the budget's floor resolves to zero primary steps and is refused as "march-budget-exceeded" before it uploads, allocates history or encodes a pass; that the refusal does not stick; that every frame whose floor fits resolves, counts and encodes exactly as the renderer did before the refusal existed; and that each of the two gates made unreachable turns the matching assertion red. |
 | cloud-march-budget.spec.mjs | spec | ACTIVE | 2026-10-29 | 5 | Executes the pure cloud resolver from Node to prove that every input path (the tier dial, raw cloudQuality and the debug realization override) resolves to a march whose cost, counted over the shader's real interval sentinel, never exceeds the budget; that an ask inside the budget resolves byte-identical to the resolver as it stood before the budget; that an ask outside it keeps every field but the step counts, loses primary steps before light steps, and reports the ask; that the measured completions and hangs fall on the stated sides; and that each gate made unreachable turns the matching assertion red. |
-| cloud-march-emission.spec.mjs | spec | ACTIVE | 2026-11-02 | 9 | C13-10: march-emitted reconstruction depth behind one compile-time bit, four sibling pipelines compile verbatim, CPU-twin cross-validation, mutants. |
-| cloud-march-features.spec.mjs | spec | ACTIVE | 2026-11-06 | 3 | Pins that the cloud march pipeline request built from a CloudMarchFeatures object is observably identical to the positional-argument request it replaced: same pipeline-cache key, definesHi for the module cache and the pipeline descriptor, fragment entry point and colour-target formats, and the same variant sequence from selectCloudMarchPipeline, over a sweep of emit, preview, moments, primary reuse, cache state and format; the base answers are captured from the base revision, never typed. |
+| cloud-march-emission.spec.mjs | spec | ACTIVE | 2026-11-02 | 10 | C13-10: march-emitted reconstruction depth behind one compile-time bit, four sibling pipelines compile verbatim, CPU-twin cross-validation, mutants. |
+| cloud-march-features.spec.mjs | spec | ACTIVE | 2026-11-06 | 5 | Pins that the cloud march pipeline request built from a CloudMarchFeatures object is observably identical to the positional-argument request it replaced: same pipeline-cache key, definesHi for the module cache and the pipeline descriptor, fragment entry point and colour-target formats, and the same variant sequence from selectCloudMarchPipeline, over a sweep of emit, preview, moments, primary reuse, cache state and format; the base answers are captured from the base revision, never typed. |
 | cloud-march-kernels.spec.mjs | spec | ACTIVE | 2026-11-02 | 1 | Every module-scope WGSL function is defined exactly once in the composed, preprocessed text each cloud pipeline hands to the compiler (the march template under every flag conjunction the enumeration reaches, the compute producers that join the march, the other cloud templates, the standalone cloud modules), so a kernel shared between modules cannot be pasted into two of them; also pins that no cloud reflection field or proxy arrives. |
 | cloud-march-transfer.spec.mjs | spec | ACTIVE | 2026-08-21 | 8 | Permanent home of the R3 march-transfer model: predicts the integrated image against 2026-08-06 tour ground truth; mutation group rebuilt non-vacuous. |
-| cloud-morphology-composition.spec.mjs | spec | ACTIVE | 2026-11-02 | 3 | C13-16 U2 candidate contract: genus-conditioned variance budget + fibre carve before erosion; WGSL wiring invariants and carve-after-erosion mutants. |
+| cloud-morphology-composition.spec.mjs | spec | ACTIVE | 2026-11-02 | 4 | C13-16 U2 candidate contract: genus-conditioned variance budget + fibre carve before erosion; WGSL wiring invariants and carve-after-erosion mutants. |
 | cloud-noise-mipmaps.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Pins WebGPUCloudNoiseResources + CloudNoiseMipmap.wgsl mip-chain agreement, with a loud guard on the halve-to-1 loop's integer precondition. |
 | cloud-observability-counters.spec.mjs | spec | ACTIVE | 2026-11-06 | 6 | C13-02 Gate-A: cloud GPU total is a union not a sum, Sky Fill excluded, per-frame counters reset, pass counts tied to encode sites. |
 | cloud-orbital-ladder-contract.spec.mjs | spec | ACTIVE | 2026-09-26 | 9 | Unit-checks the orbital ladder's four statistics against geometry the plan states independently, then drives the REAL descriptor through runProbe with a stubbed browser so the instrument is known to reach a verdict before an Edge slot is spent on it. |
@@ -639,6 +639,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-weather-vertical.spec.mjs | spec | NO @purpose HEADER | 2026-11-06 | 1 | — |
 | cloud-weather-volume-bounds.spec.mjs | spec | NO @purpose HEADER | 2026-11-02 | 1 | — |
 | cloud-weather-worker.spec.mjs | spec | NO @purpose HEADER | 2026-11-06 | 3 | — |
+| cloud-zero-coverage-density.spec.mjs | spec | NO @status HEADER | — | 3 | Pin the zero-coverage stage in actual main cloud callers without prototype-only helpers. @status ACTIVE |
 | clustered-light-upload-invalidation.spec.mjs | spec | NO @purpose HEADER | 2026-11-14 | 2 | — |
 | clustered-probe-chrome.spec.mjs | spec | ACTIVE | 2026-10-09 | 2 | Drives each clustered-lighting probe that captures the CesiumViewer canvas against a fake page whose widget strip leaves an element over the canvas at one capture at a time, and requires a viewer-chrome-over-canvas refusal at exactly that capture, a strip taken after the scene step and directly before every capture, and a record-only disposition for the lights-resize record frame that no verdict reads. |
 | clustered-probe-verdicts.spec.mjs | spec | ACTIVE | 2026-10-09 | 12 | Drives every migrated clustered-lighting probe's exported verdict function one step inside and one step outside each bar the pre-harvest probe applied, pins the family's runtime shape and rig transcriptions, refuses a WebGL-only run before any browser work, and runs the zero-work gate's clustered-label inventory over the real engine sources as a standing Node gate. |
@@ -1807,10 +1808,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | split-screen-debug.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Quick diagnostic: opens the split-screen page, clicks Launch, logs all console/page errors while both viewers render. |
 | temp-pbr.mjs | other | INVESTIGATION | 2026-08-16 | 3 | One-shot Edge screenshot + cubemap/texture console-error dump of the glTF PBR Extensions demo on WebGPU (KTX2 load check). |
 
-### Tools/visual-regression/fixtures/ (11)
+### Tools/visual-regression/fixtures/ (12)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
+| cloud-zero-coverage-density-support.mjs | fixture | NO @status HEADER | — | 2 | Spec support for cloud-zero-coverage-density: the engine shader subjects, the zero-coverage oracles and the arithmetic-evaluator adapter calibration the spec drives. @status ACTIVE |
 | dive-gate-fake-world.mjs | fixture | ACTIVE | 2026-11-01 | 7 | Spec support for the dive gate: a fake viewer whose scene holds `globeHeight` undefined until `initializeFrame()` runs, whose wheel input moves the camera only when `initializeFrame()` runs the controller update (clamped at the surface plus `minimumZoomDistance`, or at the dive floor where the water facade's gate allows), whose `render()` changes neither, and a fake page that runs the real page functions (`pagePlaceDiveCamera`, `pageReadDiveState`, `pageRenderFrames`) with `globalThis.viewer` and `requestAnimationFrame` provided and restored afterwards. |
 | globe-metrics-inputs.mjs | fixture | ACTIVE | 2026-10-09 | 2 | Seeded, integer-only generators of the synthetic RGBA frames metrics-globe-extraction.spec.mjs (and the golden it compares against) runs the globe metrics over: a two-backend globe-disc pair, spread-channel diff pairs, a clipped-hole frame, imagery and flat frames, a green-wash pair, a clip on/off/restore set and a two-tone gray frame. |
 | landing-cell-stage-support.mjs | fixture | ACTIVE | 2026-10-31 | 12 | Spec support for landing-cell-stage: the fake Cesium module and its data URL, the fake viewer, the stage module path, and the ocean, kernel and scene-mode facades that more than one landing-cell-stage spec part drives. |
@@ -2072,8 +2074,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | wgsl-compute-parser.mjs | lib | ACTIVE | 2026-10-30 | 6 | Tokenizes and parses the compute subset of WGSL (structs, consts, module vars, functions, let/var, assignment, if/else, for, return, expressions with templates) into a plain declaration tree, throwing on every construct outside that subset. |
 | wgsl-derivative-uniformity.mjs | lib | ACTIVE | 2026-09-01 | 8 | Reports implicit-derivative calls reached through non-uniform control flow without requiring a browser, GPU, or WGSL compiler. |
 | wgsl-function-body.mjs | lib | ACTIVE | 2026-10-09 | 2 | Builds an inertness mutant of a shader helper by swapping the whole body of a named WGSL function, so a mutant does not depend on the helper's current wording. |
-| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 43 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
-| wgsl-variant.mjs | lib | ACTIVE | 2026-10-30 | 42 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
+| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-09-19 | 44 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
+| wgsl-variant.mjs | lib | ACTIVE | 2026-10-30 | 43 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
 ### Tools/visual-regression/lib/metrics/ (54)
 
@@ -2452,8 +2454,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | karmaTestRun.spec.mjs | spec | ACTIVE | 2026-08-29 | 4 | Static coverage of the Gulp/Karma completion bridge via a fake Karma server: strict result config, retries, disconnect/error exit codes. |
 | prepareCesiumOutputDirectory.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Regression that `clean:false` never removes files already on disk while `clean:true` still wipes the directory, so a failed rebuild cannot leave a served bundle directory both wiped and unreplaced. |
 | shaderSourceToJavaScript.spec.mjs | spec | ACTIVE | 2026-09-01 | 8 | Contract for the shader source-to-JS-module serializer: literal escapes, quotes, CRLF/lone-CR/U+2028 round-trips through real ESM evaluation. |
-| specBundleFreshness.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Coverage of the spec-bundle freshness sentinel: added/removed/changed spec files must flip the manifest comparison stale and name the offender. |
-| specBundleFreshnessBuilds.spec.mjs | spec | ACTIVE | — | 2 | Coverage of what the builds stamp: a build vouches only for the directories it wrote, from inputs hashed before it read them, and never after a failure, a watch rewrite or a shader edit it did not bundle. |
+| specBundleFreshness.spec.mjs | spec | ACTIVE | 2026-11-14 | 3 | Coverage of the spec-bundle freshness sentinel: added/removed/changed spec files must flip the manifest comparison stale and name the offender. |
+| specBundleFreshnessBuilds.spec.mjs | spec | ACTIVE | 2026-11-14 | 2 | Coverage of what the builds stamp: a build vouches only for the directories it wrote, from inputs hashed before it read them, and never after a failure, a watch rewrite or a shader edit it did not bundle. |
 
 ### scripts/archive/ (1)
 
