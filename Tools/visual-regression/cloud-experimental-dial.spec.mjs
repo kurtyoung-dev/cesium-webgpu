@@ -57,14 +57,25 @@ const LANDING_PAYLOAD_KEYS = [
   "stepDials",
 ];
 
+/** The rig dials that make the landing payload carry a `fog` key. */
+const FOG_DIAL_KEYS = [
+  "volumetricFogEnabled",
+  "volumetricFogDensity",
+  "cloudShadowHiFi",
+];
+
 /**
- * The landing payload's key set for `rig`: the fixed set, plus `reconstruction`
- * exactly for a rig that declares `reconstruction: true`.
+ * The landing payload's key set for `rig`: the fixed set, plus `fog` exactly
+ * for a rig that declares a fog dial, plus `reconstruction` exactly for a rig
+ * that declares `reconstruction: true`.
  */
-const landingPayloadKeysFor = (rig) =>
-  rig.reconstruction === true
-    ? [...LANDING_PAYLOAD_KEYS, "reconstruction"]
-    : LANDING_PAYLOAD_KEYS;
+const landingPayloadKeysFor = (rig) => [
+  ...LANDING_PAYLOAD_KEYS,
+  ...(Object.keys(rig.dials ?? {}).some((key) => FOG_DIAL_KEYS.includes(key))
+    ? ["fog"]
+    : []),
+  ...(rig.reconstruction === true ? ["reconstruction"] : []),
+];
 
 /** Pin a landing payload's keys (its `experimental` key apart) to the set `rig` allows. */
 function assertLandingPayloadKeys(payload, rig) {

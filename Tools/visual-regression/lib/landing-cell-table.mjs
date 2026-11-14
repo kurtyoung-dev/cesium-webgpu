@@ -2,7 +2,7 @@
  * The landing program's cell table and the pure planning over it: which rig a
  * cell renders, on which renderers and pages, with which per-page dial
  * variants, and whether it waits for pending pipelines by default.
- * @purpose Cell table piece for probe-landing-cells.mjs: the LANDING_CELLS table (rig, kind, identity, per-cell pipeline-wait default, per-page dial variants, displacement readback and its evolved-clock second read, cross-renderer diff and its pre-registered band, forced performance leg and the GPU pass its PF-2 window must list), the (cell, renderer, page) plan, the rig a variant page stages, and the per-cell pending-pipeline wait resolved from --wait-pipelines / --no-wait-pipelines and read back from a report, the --runs default of a run that includes an identity cell (landingArgsFinalize), and the page of a plan that runs the onmessage sentinel's positive control (positiveControlPageIndex, refusing the switch with no identity cell), all pure.
+ * @purpose Cell table piece for probe-landing-cells.mjs: the LANDING_CELLS table (rig, kind, identity, per-cell pipeline-wait default, per-page dial variants, displacement readback and its evolved-clock second read, cross-renderer diff and its pre-registered band, forced performance leg and the GPU pass its PF-2 window must list, the control page the other pages of a variant cell are diffed against, the named console lines counted per page, and the per-frame reconstruction timeline opt-in), the (cell, renderer, page) plan, the rig a variant page stages, and the per-cell pending-pipeline wait resolved from --wait-pipelines / --no-wait-pipelines and read back from a report, the --runs default of a run that includes an identity cell (landingArgsFinalize), and the page of a plan that runs the onmessage sentinel's positive control (positiveControlPageIndex, refusing the switch with no identity cell), all pure.
  * @status ACTIVE
  *
  * WHY A PIECE. The table and its planning moved out of
@@ -143,6 +143,41 @@ export const CLOUD_SHADOW_OWNER_LABELS = Object.freeze([
 ]);
 
 /**
+ * The console lines a cloud cell counts over all of its console lines
+ * (`lib/console-named-lines.mjs`), by name. Each text is a substring of a
+ * message the engine logs: the cloud march's own rejection, the pipeline
+ * cache's creation failure, and its refusal on a lost device. A spec checks
+ * every text against the engine source.
+ */
+export const CLOUD_PIPELINE_CONSOLE_LINES = Object.freeze([
+  Object.freeze({
+    name: "cloud-march-pipeline-failed",
+    text: "Cloud march pipeline creation failed",
+  }),
+  Object.freeze({
+    name: "pipeline-creation-failed",
+    text: 'Failed to create pipeline "',
+  }),
+  Object.freeze({
+    name: "lost-device-pipeline-refusal",
+    text: "Device lost - refusing pipeline creation",
+  }),
+]);
+
+/**
+ * The pages of the zero-coverage cells: the cloud march at coverage 0, at 1e-30
+ * (its lifted coverage rounds `1 - c` to 1.0 in f32) and at -0.5, and a
+ * clouds-off control with the same camera and clock. The control page comes
+ * first so a run's pages read control first.
+ */
+const ZERO_COVERAGE_VARIANTS = Object.freeze({
+  "clouds-off": Object.freeze({ cloudsEnabled: false }),
+  "cov-0": Object.freeze({ cloudCoverage: 0 }),
+  "cov-1e-30": Object.freeze({ cloudCoverage: 1e-30 }),
+  "cov-neg-0.5": Object.freeze({ cloudCoverage: -0.5 }),
+});
+
+/**
  * The cell table: cell name -> rig id and what the cell does on it.
  *
  * Fields beyond `rig` and `kind`: `identity` (a pixel-identity cell; the probe
@@ -185,6 +220,19 @@ export const CLOUD_SHADOW_OWNER_LABELS = Object.freeze([
  * true on the `populationsCoverage.on` page and false on its `off` page;
  * `verticalRequested` and `workersEnabled`: true on the WebGPU pages). A cell
  * without the field reads nothing and its page record has no such field.
+ *
+ * Three fields belong to the cloud pipeline cells. `controlPage` (a variant
+ * page name of the same cell): the probe diffs every other page of the cell
+ * against it per renderer and run, against the control's own run-to-run band
+ * (`lib/metrics/landing-variant-control.mjs`, receipt `variantControl`); a
+ * cell without it has no such comparison. `consoleLines` (a list of
+ * `{name, text}` specs, {@link CLOUD_PIPELINE_CONSOLE_LINES}): the probe counts
+ * those texts over every console line and page error of the page into the
+ * record's `consoleLines` (`lib/console-named-lines.mjs`); a cell without it
+ * has no such record field. `reconstructionTimeline` (`true`): the stage runs
+ * the per-frame reconstruction start-up recorder
+ * (`lib/cloud-reconstruction-timeline.mjs`) and the page record carries its
+ * `reconstructionTimeline`; a cell without it records nothing of the kind.
  */
 export const LANDING_CELLS = Object.freeze({
   "E-D": Object.freeze({
@@ -284,6 +332,7 @@ export const LANDING_CELLS = Object.freeze({
   "E-T-flight": Object.freeze({
     rig: "cloud-flight-multideck-hdr-1080p",
     kind: "device-loss",
+    consoleLines: CLOUD_PIPELINE_CONSOLE_LINES,
   }),
   // The orbital full disc torn down and device-lost, the two pages E-T-flight
   // runs, on the E-O rig.
@@ -579,6 +628,105 @@ export const LANDING_CELLS = Object.freeze({
   // faces read with non-zero content; two arms compare by per-face sha256
   // (`compareSkyCubeRecords`).
   "E-SKY-cube": Object.freeze({ rig: "sky-cubemap-model", kind: "sky-cube" }),
+  // Not in DEFAULT_CELLS: the E-G scene once per zero-coverage value and once
+  // with the clouds off (the control). PASS RULE: each page renders with 0
+  // validation errors; every other page's frame is diffed against the same
+  // run's control page and reported against the control's run-to-run band
+  // (`lib/metrics/landing-variant-control.mjs`); the verdict says only that the
+  // diff was measured, because nothing on the page tells which coverage gate
+  // the served engine compiles, so the arms are compared by the Edge job.
+  "E-ZC-underside": Object.freeze({
+    rig: "cloud-underside-noon-cov055",
+    kind: "capture",
+    waitPipelines: true,
+    controlPage: "clouds-off",
+    consoleLines: CLOUD_PIPELINE_CONSOLE_LINES,
+    variants: ZERO_COVERAGE_VARIANTS,
+  }),
+  // Not in DEFAULT_CELLS: the E-ON-density scene with the distant density
+  // moments on (experimental.cloudDistantDensityMoments, the switch of
+  // CLOUD_DENSITY_MOMENTS; the rig's caches do not switch it), at coverage 0
+  // and with the clouds off (the control). PASS RULE: as E-ZC-underside.
+  "E-ZC-density": Object.freeze({
+    rig: "cloud-eon-density",
+    kind: "capture",
+    waitPipelines: true,
+    controlPage: "clouds-off",
+    consoleLines: CLOUD_PIPELINE_CONSOLE_LINES,
+    variants: Object.freeze({
+      "clouds-off": Object.freeze({
+        cloudsEnabled: false,
+        experimental: Object.freeze({ cloudDistantDensityMoments: true }),
+      }),
+      "cov-0": Object.freeze({
+        cloudCoverage: 0,
+        experimental: Object.freeze({ cloudDistantDensityMoments: true }),
+      }),
+    }),
+  }),
+  // Not in DEFAULT_CELLS: the E-SKY-cube scene with the clouds off (the
+  // control) and with the volumetric clouds on and contributing to image-based
+  // lighting at coverage 0 and 1e-30; each page reads the cube's six mip-0
+  // faces back (`lib/sky-cubemap-steps.mjs`). PASS RULE: the cube settles on
+  // every page; each cloud page's faces are compared with the control's by
+  // per-face sha256 (`compareSkyCubeRecords`), reported, the verdict saying
+  // only that the comparison was made.
+  "E-ZC-skycube": Object.freeze({
+    rig: "sky-cubemap-model",
+    kind: "sky-cube",
+    waitPipelines: true,
+    controlPage: "clouds-off",
+    consoleLines: CLOUD_PIPELINE_CONSOLE_LINES,
+    variants: Object.freeze({
+      "clouds-off": Object.freeze({ cloudsEnabled: false }),
+      "cov-0": Object.freeze({
+        cloudsEnabled: true,
+        cloudContributesIBL: true,
+        cloudCoverage: 0,
+      }),
+      "cov-1e-30": Object.freeze({
+        cloudsEnabled: true,
+        cloudContributesIBL: true,
+        cloudCoverage: 1e-30,
+      }),
+    }),
+  }),
+  // Not in DEFAULT_CELLS: the E-RECON-medium scene with the reconstruction
+  // start-up recorded frame by frame (`lib/cloud-reconstruction-timeline.mjs`):
+  // the stage turns reconstruction on itself from the first frame of a cold
+  // page, never throws for a page that does not settle, and records per frame
+  // the selected march family, the start-up preview, whether the frame emitted
+  // and which family the emit pipeline was built for, until the capture. One
+  // page with primary reuse off and one with it on. PASS RULE: the timeline was
+  // read and reconstruction was switched on; coherence ("on N of M emitted
+  // frames the emit pipeline was built for the selected family") is recorded,
+  // and the arms are compared by the Edge job.
+  "E-RECON-timeline": Object.freeze({
+    rig: "cloud-reconstruction-medium-1080p",
+    kind: "capture",
+    waitPipelines: true,
+    reconstructionTimeline: true,
+    consoleLines: CLOUD_PIPELINE_CONSOLE_LINES,
+    variants: Object.freeze({
+      "reuse-off": Object.freeze({
+        experimental: Object.freeze({ cloudReusePrimaryIntegral: false }),
+      }),
+      "reuse-on": Object.freeze({
+        experimental: Object.freeze({ cloudReusePrimaryIntegral: true }),
+      }),
+    }),
+  }),
+  // Not in DEFAULT_CELLS: the cloud-shadow off-path parity scene, fog leg (lit
+  // terrain, volumetric fog on, clouds and cloud shadows off), so it runs
+  // through this probe at all. PASS RULE: the page renders with every dial
+  // applied (the fog dials read back from the globe's volumetric fog block)
+  // and 0 validation errors; arms are compared by `--base-report`.
+  "E-A8-fog": Object.freeze({
+    rig: "cloud-shadows-parity-fog",
+    kind: "capture",
+    waitPipelines: true,
+    consoleLines: CLOUD_PIPELINE_CONSOLE_LINES,
+  }),
 });
 
 /** The default `--cells`: the standard set's capture cells. */

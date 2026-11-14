@@ -141,8 +141,11 @@ test("P1: planLandingCells plans the full table to one page per renderer a rig d
   // pages), the four E-ON-*-wx cells, E-LL-wx, E-BGL-shadow and E-SKY-cube one
   // WebGPU page each, E-T-wx, E-T-flight-keep and E-T-on-keep two device-loss
   // pages each, E-CLOUD-2d and E-CLOUD-morph one WebGPU page each, and
-  // E-RECON-medium (the opt-in cloud reconstruction cell) one WebGPU page.
-  assert.equal(plan.length, 122);
+  // E-RECON-medium (the opt-in cloud reconstruction cell) one WebGPU page, and
+  // twelve more for the opt-in cloud pipeline cells: E-ZC-underside four
+  // WebGPU pages (clouds-off and three coverages), E-ZC-density two,
+  // E-ZC-skycube three, E-RECON-timeline two and E-A8-fog one.
+  assert.equal(plan.length, 134);
 });
 
 test("P1: E-M-water is a capture cell on both renderers and is not in the default cells", () => {

@@ -1,7 +1,7 @@
 /**
  * The page init scripts a landing cell's page needs, installed in one place,
  * and the records the opt-in ones leave to read back.
- * @purpose Installs the init scripts a landing cell's page runs before any page script (the WebGPU error gate, the GPU device census, the cloud probe harness, and for a cell that opts in the bind-group-layout census, the default-limits device dial and the engine engagement flags) and reads the opt-in records back (readCellInitRecords), installs and reads the --readers page readers (installReaderInitScripts, readReaderRecords), so the probe holds no per-script branching and a cell without an opt-in field installs no new script and gets no new record field.
+ * @purpose Installs the init scripts a landing cell's page runs before any page script (the WebGPU error gate, the GPU device census, the cloud probe harness, and for a cell that opts in the bind-group-layout census, the default-limits device dial, the engine engagement flags and the cloud reconstruction timeline) and reads the opt-in records back (readCellInitRecords), installs and reads the --readers page readers (installReaderInitScripts, readReaderRecords), so the probe holds no per-script branching and a cell without an opt-in field installs no new script and gets no new record field.
  * @status ACTIVE
  *
  * OPT-INS ARE CELL TABLE FIELDS. `layoutCensus` (a non-empty list of bind
@@ -28,6 +28,7 @@ import {
   readCloudEngagement,
   wantsEngagement,
 } from "./cloud-engagement-read.mjs";
+import { readReconstructionTimeline } from "./cloud-reconstruction-timeline.mjs";
 import { GPU_DEVICE_CENSUS_INIT_SOURCE } from "./gpu-device-census.mjs";
 import {
   readCaptureReaders,
@@ -53,6 +54,16 @@ export function wantsLayoutCensus(cell) {
  */
 export function wantsDefaultLimits(cell) {
   return cell?.deviceLimits === DEVICE_LIMITS_MODE;
+}
+
+/**
+ * Whether a cell records the cloud reconstruction start-up timeline.
+ *
+ * @param {object} cell A landing cell table entry.
+ * @returns {boolean}
+ */
+export function wantsReconstructionTimeline(cell) {
+  return cell?.reconstructionTimeline === true;
 }
 
 /**
@@ -94,13 +105,16 @@ export async function installReaderInitScripts(page, options = {}) {
  * The page-record fields the opt-in scripts leave: `layoutCensus` (the rows of
  * the cell's labels) and `deviceLimits` (what the page asked for, what the
  * device reports, and the comparison with the WebGPU defaults) and `engagement`
- * (the engine's own engagement flags the cell names, `lib/cloud-engagement-read.mjs`).
+ * (the engine's own engagement flags the cell names, `lib/cloud-engagement-read.mjs`)
+ * and `reconstructionTimeline` (the per-frame start-up record the stage step
+ * left, `lib/cloud-reconstruction-timeline.mjs`, read at capture, which also
+ * removes its listener).
  * A cell with no opt-in yields an empty object.
  *
  * @param {object} page A Playwright page.
  * @param {object} cell A landing cell table entry.
  * @returns {Promise<{layoutCensus?: object, deviceLimits?: object,
- *   engagement?: object}>}
+ *   engagement?: object, reconstructionTimeline?: object}>}
  */
 export async function readCellInitRecords(page, cell) {
   const records = {};
@@ -115,6 +129,9 @@ export async function readCellInitRecords(page, cell) {
   }
   if (wantsEngagement(cell)) {
     records.engagement = await readCloudEngagement(page, cell.engagement);
+  }
+  if (wantsReconstructionTimeline(cell)) {
+    records.reconstructionTimeline = await readReconstructionTimeline(page);
   }
   return records;
 }

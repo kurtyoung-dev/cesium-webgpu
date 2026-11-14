@@ -62,7 +62,7 @@ test("S1: landingStagePayload returns JSON-round-trippable payload for every LAN
   }
 });
 
-test("S1: every rig dial lands in exactly one of scene, globe, water, volumetric, stepDials or cloudsEnabled", async () => {
+test("S1: every rig dial lands in exactly one of scene, globe, water, volumetric, stepDials, cloudsEnabled (or its spelling enableVolumetric) or fog", async () => {
   const rigs = await loadRigs();
   const testedRigIds = new Set();
   for (const cell of Object.values(LANDING_CELLS)) {
@@ -80,14 +80,17 @@ test("S1: every rig dial lands in exactly one of scene, globe, water, volumetric
       const inVolumetric = dialKey in payload.volumetric;
       const inStepDials = payload.stepDials.includes(dialKey);
       const inCloudsEnabled =
-        dialKey === "cloudsEnabled" && payload.cloudsEnabled !== null;
+        (dialKey === "cloudsEnabled" || dialKey === "enableVolumetric") &&
+        payload.cloudsEnabled !== null;
+      const inFog = dialKey in (payload.fog ?? {});
       const categoryCount =
         Number(inScene) +
         Number(inGlobe) +
         Number(inWater) +
         Number(inVolumetric) +
         Number(inStepDials) +
-        Number(inCloudsEnabled);
+        Number(inCloudsEnabled) +
+        Number(inFog);
       assert.equal(
         categoryCount,
         1,

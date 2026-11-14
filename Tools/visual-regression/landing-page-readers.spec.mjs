@@ -85,7 +85,15 @@ const VARIES = "<varies>";
 // off. An empty one is dropped from the comparison (any other new field, and a
 // non-empty one, still fails it); the summary's list of receipt fields names
 // them, so that line is masked.
-const EMPTY_WHEN_OFF_FIELDS = ["weatherDial"];
+const EMPTY_WHEN_OFF_FIELDS = ["weatherDial", "variantControl"];
+// Receipt fields that read null while their input (a base report) is off; a
+// null one is dropped from the comparison, anything else still fails it.
+const NULL_WHEN_OFF_FIELDS = ["pipelineKeys"];
+// Page record fields a cell adds only by declaring the table field of the same
+// name (E-T-flight declares consoleLines); the golden predates them. Dropped
+// only from the pages of a cell that declares the field, so the field on any
+// other page still fails the comparison.
+const CELL_OPT_IN_PAGE_FIELDS = ["consoleLines"];
 
 /**
  * A copy of a receipt with the run-to-run fields masked and the run's temp root
@@ -123,6 +131,24 @@ function withoutEmptyOffFields(report) {
     if (Array.isArray(kept[key]) && kept[key].length === 0) {
       delete kept[key];
     }
+  }
+  for (const key of NULL_WHEN_OFF_FIELDS) {
+    if (kept[key] === null) {
+      delete kept[key];
+    }
+  }
+  if (Array.isArray(kept.pages)) {
+    kept.pages = kept.pages.map((page) =>
+      Object.fromEntries(
+        Object.entries(page).filter(
+          ([key]) =>
+            !(
+              CELL_OPT_IN_PAGE_FIELDS.includes(key) &&
+              LANDING_CELLS[page.cell]?.[key] !== undefined
+            ),
+        ),
+      ),
+    );
   }
   return kept;
 }

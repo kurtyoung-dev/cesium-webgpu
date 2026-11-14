@@ -1,7 +1,7 @@
 /**
  * The opt-in page readers of the landing probe (`--readers`): numbers read
  * from the live page into the page record, never from source.
- * @purpose Page-side functions, init sources, the Node-side readers and the pure record builders for the landing probe's `--readers` list: cloud-stats (the volumetric cloud statistics block, field by field), weather-ticks (calls of the managed deck's weather update per frame), weather-worker (the weather Web Worker's construction and termination, read at capture and after the viewer is destroyed), refresh-counters (the five cloud cache refresh passes' lifetime counts over a window with the camera unchanged when the page publishes them, else NOT AVAILABLE naming the seam, plus whether the march consults the occupancy map) and auto-layouts (pipelines created with an automatic layout and the bindings their shader modules declare); every quantity a page cannot answer reads `{available: false, reason: "NOT AVAILABLE: <seam>"}`, never a zero.
+ * @purpose Page-side functions, init sources, the Node-side readers and the pure record builders for the landing probe's `--readers` list: cloud-stats (the volumetric cloud statistics block, field by field), weather-ticks (calls of the managed deck's weather update per frame), weather-worker (the weather Web Worker's construction and termination, read at capture and after the viewer is destroyed), refresh-counters (the five cloud cache refresh passes' lifetime counts over a window with the camera unchanged when the page publishes them, else NOT AVAILABLE naming the seam, plus whether the march consults the occupancy map) and auto-layouts (pipelines created with an automatic layout and the bindings their shader modules declare) and pipeline-keys (the pipeline cache's variant keys and counters, including wrongModuleHits, read after the capture; lib/landing-pipeline-keys.mjs); every quantity a page cannot answer reads `{available: false, reason: "NOT AVAILABLE: <seam>"}`, never a zero.
  * @status ACTIVE
  *
  * THE CONTRACT. A reader is off unless named in `--readers`; with every reader
@@ -18,6 +18,11 @@
  * @module Tools/visual-regression/lib/landing-page-readers
  */
 
+import {
+  PIPELINE_KEYS_READER,
+  buildPipelineKeysRecord,
+  pageReadPipelineKeys,
+} from "./landing-pipeline-keys.mjs";
 import { ProbeRefusal } from "./probe-runtime.mjs";
 
 /** The reader names `--readers` accepts, in the order their records are read. */
@@ -27,6 +32,7 @@ export const READER_NAMES = Object.freeze([
   "weather-worker",
   "refresh-counters",
   "auto-layouts",
+  PIPELINE_KEYS_READER,
 ]);
 
 /** Frames the weather-ticks reader renders while it counts. */
@@ -905,6 +911,7 @@ export const READER_PAGE_FUNCTIONS = Object.freeze({
   pageReadWorkerCensus,
   pageSampleCloudPassCounts,
   pageReadAutoLayouts,
+  pageReadPipelineKeys,
 });
 
 /**
@@ -964,6 +971,11 @@ export async function readCaptureReaders(page, readers) {
   if (readers.includes("auto-layouts")) {
     out.autoLayouts = buildAutoLayoutsRecord(
       await page.evaluate(pageReadAutoLayouts),
+    );
+  }
+  if (readers.includes(PIPELINE_KEYS_READER)) {
+    out.pipelineKeys = buildPipelineKeysRecord(
+      await page.evaluate(pageReadPipelineKeys),
     );
   }
   return out;

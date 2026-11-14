@@ -91,11 +91,11 @@
       "cloud": "throws:TypeError"
     },
     "cloud-shadows-parity-fog": {
-      "landing": "throws:rig-dial-unsupported",
+      "landing": "269cb0ef9b81f2f87324be0792ff5168254e12c3bd235a3f381e513043645e03",
       "cloud": "throws:TypeError"
     },
     "cloud-shadows-parity-terrain": {
-      "landing": "throws:rig-dial-unsupported",
+      "landing": "e5a8c4dd4c21fb2ea35bba2716f640ad03b19ff5f43068cb84b04bbda87edc1a",
       "cloud": "throws:TypeError"
     },
     "cloud-tod-dawn": {

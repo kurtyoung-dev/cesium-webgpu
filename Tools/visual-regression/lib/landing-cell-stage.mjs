@@ -1,7 +1,7 @@
 /**
  * Stages any landing-cell rig on a CesiumViewer page, on either renderer: its
  * clock, its camera and every dial it declares, each read back.
- * @purpose Stage piece for the landing program's Edge cells: turns a rig into a JSON-safe payload (Node side, refusing a dial it does not know before a browser is involved), and applies it in the page on WebGL or WebGPU - pinned clock, camera (or the page's own), scene and globe dials (including the globe material), the water flags and the water tier, clouds on or off - reading every dial back as {requested, observed, applied}, with the cloud* dials handed to the cloud probe harness so their round trip stays in one place; plus the ocean's pinned wave epoch, the opt-in FFT ocean (read back by its primitive), the globe's own show flag, the SSR scene switches, the WebGPU render pipeline cache's pending count, and an opt-in wait that drives frames until no pipeline is pending; plus the scene mode (3D, 2D, Columbus view, morphed with duration 0 and read back) and the FFT ocean's inverse-FFT kernel (stockham or pingpong, read back on the facade and on the primitive); plus the WebGPU globe's fragment-debug mode (its names in lib/globe-fragment-debug-dial.mjs), set before the first frame and read back against the registry; plus the opt-in cloud reconstruction step (a rig's top-level `reconstruction: true`, run through lib/landing-cloud-reconstruction.mjs before the pending-pipeline wait).
+ * @purpose Stage piece for the landing program's Edge cells: turns a rig into a JSON-safe payload (Node side, refusing a dial it does not know before a browser is involved), and applies it in the page on WebGL or WebGPU - pinned clock, camera (or the page's own), scene and globe dials (including the globe material), the water flags and the water tier, clouds on or off - reading every dial back as {requested, observed, applied}, with the cloud* dials handed to the cloud probe harness so their round trip stays in one place; plus the ocean's pinned wave epoch, the opt-in FFT ocean (read back by its primitive), the globe's own show flag, the SSR scene switches, the WebGPU render pipeline cache's pending count, and an opt-in wait that drives frames until no pipeline is pending; plus the scene mode (3D, 2D, Columbus view, morphed with duration 0 and read back) and the FFT ocean's inverse-FFT kernel (stockham or pingpong, read back on the facade and on the primitive); plus the WebGPU globe's fragment-debug mode (its names in lib/globe-fragment-debug-dial.mjs), set before the first frame and read back against the registry; plus the opt-in cloud reconstruction step (a rig's top-level `reconstruction: true`, run through lib/landing-cloud-reconstruction.mjs before the pending-pipeline wait), or, for a cell that sets reconstructionTimeline, the per-frame start-up timeline of lib/cloud-reconstruction-timeline.mjs in its place; plus the volumetric-fog dials (volumetricFogEnabled, volumetricFogDensity, cloudShadowHiFi) applied on the globe fog block and read back, and enableVolumetric as the rig spelling of cloudsEnabled.
  * @status ACTIVE
  *
  * WHY A NEW STAGE AND NOT `lib/cloud-rig-stage.mjs`. The landing cells span a
@@ -119,13 +119,36 @@
  * `staged.reconstruction`. The step runs before the pending-pipeline wait, so
  * the wait covers the pipelines that turning reconstruction on requests.
  *
+ * FOG DIALS. `volumetricFogEnabled`, `volumetricFogDensity` and
+ * `cloudShadowHiFi` (`lib/landing-fog-dials.mjs`) set the globe's volumetric
+ * fog block and are read back from it as `staged.dials` rows; the payload
+ * carries them as `fog` only when a rig declares one. `enableVolumetric` is
+ * the rig spelling of `cloudsEnabled` (a rig declaring both with different
+ * values is refused). A fog dial that did not apply is in `staged.notApplied`,
+ * so the probe makes the cell NOT RUN.
+ *
+ * RECONSTRUCTION TIMELINE. A cell that sets `reconstructionTimeline` has the
+ * stage run `lib/cloud-reconstruction-timeline.mjs` instead of that readiness
+ * step: reconstruction is switched on from the first frame of the cold page,
+ * every frame is recorded from `scene.postRender`, and a page that never
+ * settles is an answer (`staged.reconstructionTimeline`), not a throw.
+ *
  * @module Tools/visual-regression/lib/landing-cell-stage
  */
 
 import * as experimentalDial from "./cloud-experimental-dial.mjs";
 import { isGlobeFragmentDebugValue } from "./globe-fragment-debug-dial.mjs";
+import {
+  LANDING_FOG_DIALS,
+  fogDialViolations,
+  pageApplyFogDials,
+} from "./landing-fog-dials.mjs";
 import { ProbeRefusal } from "./probe-refusal.mjs";
 import { pageStageCloudReconstruction } from "./landing-cloud-reconstruction.mjs";
+import {
+  RECONSTRUCTION_TIMELINE_DEFAULTS,
+  pageRunReconstructionTimeline,
+} from "./cloud-reconstruction-timeline.mjs";
 import {
   pageReadPendingPipelines,
   pageWaitForPendingPipelines,
@@ -256,7 +279,8 @@ const isFiniteNumber = (value) =>
  * @returns {{rigId: string, moduleUrl: string, camera: object|null,
  *   clock: string|null, scene: object, globe: object, water: object,
  *   volumetric: object, cloudsEnabled: boolean|null, needsCloudHarness: boolean,
- *   stepDials: string[], experimental?: object}} (`experimental` only when declared)
+ *   stepDials: string[], fog?: object, experimental?: object}} (`fog` and
+ *   `experimental` only when declared)
  * @throws {ProbeRefusal} `rig-dial-unsupported` for a dial no list above names
  *   and that is not a `cloud*` property, or an `imagery` / `terrain` /
  *   `globeMaterial` value the stage cannot build.
@@ -280,7 +304,9 @@ export function landingStagePayload(rig) {
   const globe = {};
   const water = {};
   const volumetric = {};
+  const fog = {};
   let cloudsEnabled = null;
+  let enableVolumetric = null;
   const stepDials = [];
   const unsupported = [];
   for (const [key, value] of Object.entries(rig?.dials ?? {})) {
@@ -292,6 +318,16 @@ export function landingStagePayload(rig) {
       water[key] = value;
     } else if (LANDING_STEP_DIALS.includes(key)) {
       stepDials.push(key);
+    } else if (LANDING_FOG_DIALS.includes(key)) {
+      // Before the cloud pattern: `cloudShadowHiFi` is a fog block field, not a
+      // CloudVolumetrics property.
+      fog[key] = value;
+    } else if (key === "enableVolumetric") {
+      // The rig spelling of `cloudsEnabled`.
+      if (typeof value !== "boolean") {
+        unsupported.push(`${key}=${JSON.stringify(value)}`);
+      }
+      enableVolumetric = value;
     } else if (key === "cloudsEnabled") {
       if (typeof value !== "boolean") {
         unsupported.push(`${key}=${JSON.stringify(value)}`);
@@ -365,6 +401,16 @@ export function landingStagePayload(rig) {
   if (rig?.reconstruction !== undefined && rig.reconstruction !== true) {
     unsupported.push("reconstruction must be true when declared");
   }
+  unsupported.push(...fogDialViolations(fog));
+  if (typeof enableVolumetric === "boolean") {
+    if (cloudsEnabled !== null && cloudsEnabled !== enableVolumetric) {
+      unsupported.push(
+        `enableVolumetric=${JSON.stringify(enableVolumetric)} conflicts with cloudsEnabled=${JSON.stringify(cloudsEnabled)}`,
+      );
+    } else {
+      cloudsEnabled = enableVolumetric;
+    }
+  }
   unsupported.push(...experimentalDial.violations(rig?.experimental));
   if (unsupported.length > 0) {
     throw new ProbeRefusal(
@@ -388,6 +434,7 @@ export function landingStagePayload(rig) {
     cloudsEnabled: cloudsEnabled ?? (hasCloudDials ? true : null),
     needsCloudHarness,
     stepDials,
+    ...(Object.keys(fog).length === 0 ? {} : { fog }),
     ...(rig?.reconstruction === undefined ? {} : { reconstruction: true }),
     ...(experimental === undefined ? {} : { experimental }),
   };
@@ -851,8 +898,17 @@ export async function stageLandingCellInPage(payload) {
  * its readiness record as `staged.reconstruction`, then the wait above, so the
  * wait covers the pipelines that turning reconstruction on requests.
  *
+ * With `reconstructionTimeline` (the cell's table field), the stage runs the
+ * start-up timeline step ({@link pageRunReconstructionTimeline}) in place of
+ * that readiness step, for a rig with or without `reconstruction: true`: it
+ * turns reconstruction on itself from the first frame, records every frame
+ * and never throws for a page that does not settle, and its answer is returned
+ * as `staged.reconstructionTimeline` (no `staged.reconstruction`). It also
+ * runs before the pending-pipeline wait.
+ *
  * @param {{page: {evaluate: Function}, rig: object,
- *   waitForPendingPipelines?: boolean|object}} args `waitForPendingPipelines`
+ *   waitForPendingPipelines?: boolean|object,
+ *   reconstructionTimeline?: boolean}} args `waitForPendingPipelines`
  *   true for {@link PIPELINE_WAIT_DEFAULTS}, or an object overriding them.
  * @returns {Promise<{payload: object, staged: object,
  *   pipelines: object|null}>}
@@ -861,12 +917,32 @@ export async function stageLandingCell({
   page,
   rig,
   waitForPendingPipelines = false,
+  reconstructionTimeline = false,
 }) {
   const payload = landingStagePayload(rig);
   const staged = await page.evaluate(stageLandingCellInPage, payload);
+  // The fog dials are applied right after the stage, on the globe's fog block,
+  // and a dial that did not apply blocks the cell like any other.
+  if (payload.fog !== undefined) {
+    const rows = await page.evaluate(pageApplyFogDials, payload.fog);
+    const notApplied = [...(staged.notApplied ?? [])];
+    staged.dials = { ...staged.dials, ...rows };
+    for (const [dial, row] of Object.entries(rows)) {
+      if (row.applied !== true && !notApplied.includes(dial)) {
+        notApplied.push(dial);
+      }
+    }
+    staged.notApplied = notApplied;
+  }
   // Reconstruction first: turning it on requests pipelines, and the wait below
-  // must cover them.
-  if (payload.reconstruction === true) {
+  // must cover them. The timeline step turns it on itself, so it takes the
+  // readiness step's place.
+  if (reconstructionTimeline === true) {
+    staged.reconstructionTimeline = await page.evaluate(
+      pageRunReconstructionTimeline,
+      { ...RECONSTRUCTION_TIMELINE_DEFAULTS },
+    );
+  } else if (payload.reconstruction === true) {
     staged.reconstruction = await page.evaluate(pageStageCloudReconstruction, {
       deadlineMs: 60_000,
       maxFrames: 360,

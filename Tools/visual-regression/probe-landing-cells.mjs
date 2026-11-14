@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Probe: the landing program's Edge cells on the shared runtime - one command
 // per cell for the seat's executor, base arm and tip arm.
-// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture, the opt-in 2D and Columbus-view identity cells E-ID-2d / E-ID-cv, the Chukotka cross-renderer cell E-C-chukotka, the FFT-ocean kernel-identity cell E-FFT-ifft, the opt-in W3 weather-state cells E-W-ground / E-W-ground-hdr / E-W-30km / E-W-30km-hdr, the opt-in water dive-gate cells E-DG-geiranger / E-DG-ontario / E-DG-deathvalley / E-DG-ellipsoid / E-DG-upsampled (a dive page and a collision-on control each, streamed terrain where marked online), the opt-in E-O-msaa1 single-sample orbital capture, the opt-in E-BGL (bind-group-layout census) and E-LL (default-limits device) cells, the opt-in E-ON-occupancy / E-ON-density / E-ON-shadow / E-ON-lighting cells (one experimental cloud cache family on each, set through the rig's experimental block), and the E-T teardown/device-loss cells incl. the opt-in E-T-orbital and E-T-on; the opt-in weather-dial cells E-WX-workers / E-WX-interpolation / E-WX-vertical / E-WX-populations (the engine's population request read on both pages, then the populations deck measured against the single-layer page of the same view; the vertical and worker cells read whether their dial engaged), the weather-map-on E-ON-*-wx cells, E-T-wx and E-LL-wx, the keep-device teardown cells E-T-flight-keep / E-T-on-keep (a second CesiumWidget.createAsync holds the pooled device), and E-BGL-shadow, E-CLOUD-2d, E-CLOUD-morph (held in MORPHING) and E-SKY-cube (the dynamic environment cube's six faces read back)) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs with a per-cell pending-pipeline wait, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, the window.onmessage sentinel on identity cells (with an opt-in in-run positive control), the ocean displacement readback per kernel at wave time 0 and at an evolved clock, the ocean compute pass a PF-2 window must list, optionally the PF-1..PF-4 performance windows after a machine-CPU warm-up, a Markdown summary that marks provisional floors and contended or not-run lines, a capture-seam manifest for contact-sheet.mjs, the opt-in live-page readers of --readers (lib/landing-page-readers.mjs: cloud statistics, the per-frame weather tick count, the weather worker before and after teardown, the occupancy read with the refresh counters, which read NOT AVAILABLE until the engine publishes a lifetime refresh count, the auto-layout pipelines), and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
+// @purpose Runs the cloud and water landing program's Edge cells (E-D, E-D-HDR, E-O, E-F, E-G day and night, E-H, R-14, the opt-in E-M-water globe-material capture, the opt-in 2D and Columbus-view identity cells E-ID-2d / E-ID-cv, the Chukotka cross-renderer cell E-C-chukotka, the FFT-ocean kernel-identity cell E-FFT-ifft, the opt-in W3 weather-state cells E-W-ground / E-W-ground-hdr / E-W-30km / E-W-30km-hdr, the opt-in water dive-gate cells E-DG-geiranger / E-DG-ontario / E-DG-deathvalley / E-DG-ellipsoid / E-DG-upsampled (a dive page and a collision-on control each, streamed terrain where marked online), the opt-in E-O-msaa1 single-sample orbital capture, the opt-in E-BGL (bind-group-layout census) and E-LL (default-limits device) cells, the opt-in E-ON-occupancy / E-ON-density / E-ON-shadow / E-ON-lighting cells (one experimental cloud cache family on each, set through the rig's experimental block), and the E-T teardown/device-loss cells incl. the opt-in E-T-orbital and E-T-on; the opt-in weather-dial cells E-WX-workers / E-WX-interpolation / E-WX-vertical / E-WX-populations (the engine's population request read on both pages, then the populations deck measured against the single-layer page of the same view; the vertical and worker cells read whether their dial engaged), the weather-map-on E-ON-*-wx cells, E-T-wx and E-LL-wx, the keep-device teardown cells E-T-flight-keep / E-T-on-keep (a second CesiumWidget.createAsync holds the pooled device), and E-BGL-shadow, E-CLOUD-2d, E-CLOUD-morph (held in MORPHING) and E-SKY-cube (the dynamic environment cube's six faces read back), the zero-coverage cells E-ZC-underside / E-ZC-density / E-ZC-skycube (the cloud march at coverage 0, 1e-30 and -0.5, each page's frame or cube faces compared with the clouds-off page of the same run against that page's own run-to-run band), the reconstruction start-up timeline E-RECON-timeline (one record per frame, primary reuse off and on) and the fog parity cell E-A8-fog) from rigs alone on the shared runtime, staging each through lib/landing-cell-stage.mjs with a per-cell pending-pipeline wait, recording the startup timeline, an element capture, the WebGPU error gate and the GPU device census, the window.onmessage sentinel on identity cells (with an opt-in in-run positive control), the ocean displacement readback per kernel at wave time 0 and at an evolved clock, the ocean compute pass a PF-2 window must list, optionally the PF-1..PF-4 performance windows after a machine-CPU warm-up, a Markdown summary that marks provisional floors and contended or not-run lines, a capture-seam manifest for contact-sheet.mjs, the opt-in live-page readers of --readers (lib/landing-page-readers.mjs: cloud statistics, the per-frame weather tick count, the weather worker before and after teardown, the occupancy read with the refresh counters, which read NOT AVAILABLE until the engine publishes a lifetime refresh count, the auto-layout pipelines, the pipeline cache's variant keys and counters), the named console-line counts a cell declares (`consoleLines`, counted over every console line of the page), and, given a base arm's report and pre-registered bands, the base-vs-tip pixel diff and PF verdicts.
 // @status ACTIVE
 // @runtime lib/probe-runtime.mjs
 //
@@ -43,6 +43,11 @@
 //   E-CLOUD-2d cloud-2d-default (off by default)          WebGPU
 //   E-CLOUD-morph cloud-morph-default (off by default; morph-hold) WebGPU
 //   E-SKY-cube sky-cubemap-model (off by default; sky-cube face read) WebGPU
+//   E-ZC-underside cloud-underside-noon-cov055, pages clouds-off, cov-0, cov-1e-30, cov-neg-0.5 (off by default) WebGPU
+//   E-ZC-density cloud-eon-density, pages clouds-off and cov-0 (off by default) WebGPU
+//   E-ZC-skycube sky-cubemap-model, pages clouds-off, cov-0 and cov-1e-30 (off by default; sky-cube face read) WebGPU
+//   E-RECON-timeline cloud-reconstruction-medium-1080p, pages reuse-off and reuse-on (off by default; per-frame start-up record) WebGPU
+//   E-A8-fog   cloud-shadows-parity-fog (off by default; volumetric fog on, clouds off) WebGPU
 // A cell runs on each renderer its rig declares that `--renderer` keeps. The
 // table and its planning live in `lib/landing-cell-table.mjs`.
 //
@@ -191,7 +196,10 @@ import {
   markPfVerdicts,
   warmUpBeforeFirstArm,
 } from "./lib/cpu-warm-up.mjs";
+import { reconstructionTimelineVerdicts } from "./lib/cloud-reconstruction-timeline.mjs";
+import { countNamedConsoleLines } from "./lib/console-named-lines.mjs";
 import { runDeviceLossSteps } from "./lib/device-loss-steps.mjs";
+import { pipelineKeyComparisons } from "./lib/landing-pipeline-keys.mjs";
 import {
   parseReaders,
   readTeardownReaders,
@@ -253,6 +261,10 @@ import {
   kernelIdentityComparisons,
   weatherDialComparisons,
 } from "./lib/metrics/landing-cross-page.mjs";
+import {
+  variantControlComparisons,
+  variantControlVerdicts,
+} from "./lib/metrics/landing-variant-control.mjs";
 import {
   runtimeReportFileName,
   writeLandingCaptureManifestOrViolations,
@@ -461,6 +473,7 @@ export async function runLandingPage({
         rig,
         waitForPendingPipelines:
           pipelineWaitPlan(options).byCell[entry.cell] === true,
+        reconstructionTimeline: cell.reconstructionTimeline === true,
       });
       record.stage = staged;
       record.pipelines = pipelines;
@@ -508,7 +521,9 @@ export async function runLandingPage({
           page,
           rig,
           moduleUrl: LANDING_STAGE_MODULE_URL,
-          base,
+          // A variant page's faces carry the page in their file names, so the
+          // pages of one run never overwrite each other's faces.
+          base: entry.page === "scene" ? base : `${base}-${entry.page}`,
           outputDirectory,
         });
       }
@@ -656,6 +671,9 @@ export async function runLandingPage({
           .slice(0, 10)
           .map((l) => `${l.type}: ${String(l.text).slice(0, 300)}`),
       };
+      if (Array.isArray(cell.consoleLines)) {
+        record.consoleLines = countNamedConsoleLines(lines, cell.consoleLines);
+      }
       await rereadOnmessage();
       await runControl();
       return record;
@@ -1024,6 +1042,10 @@ export const descriptor = {
       kernelIdentity: kernelIdentityComparisons(pages),
       weatherDial: weatherDialComparisons(pages),
       perfPassTimings: perfPassTimings(pages),
+      variantControl: variantControlComparisons(pages),
+      pipelineKeys: base
+        ? pipelineKeyComparisons(pages, base.pages ?? [])
+        : null,
       captureManifest,
     };
   },
@@ -1052,6 +1074,8 @@ export const descriptor = {
         cells,
         context.options.sentinelPositiveControl === true,
       ),
+      ...variantControlVerdicts(variantControlComparisons(pages)),
+      ...reconstructionTimelineVerdicts(pages),
       ...crossPageVerdicts({
         weatherDial: weatherDialComparisons(pages),
         crossRenderer: crossRendererComparisons(pages),

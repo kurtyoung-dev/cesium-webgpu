@@ -1,7 +1,7 @@
 /**
  * The fake Playwright browser the landing probe's Node specs run its
  * descriptor against.
- * @purpose Spec support for probe-landing-cells: a fake browser whose pages answer every page function the landing probe evaluates (stage, startup, census, gate, pipeline cache, onmessage sentinel and its positive control, displacement readback at t = 0 and at the evolved clock, PF windows, the E-T device-loss steps, the bind-group-layout census and the device-limits reader) from canned records, logging what was asked, plus a tiny PNG for its screenshots; no browser is launched.
+ * @purpose Spec support for probe-landing-cells: a fake browser whose pages answer every page function the landing probe evaluates (stage, startup, census, gate, pipeline cache, onmessage sentinel and its positive control, displacement readback at t = 0 and at the evolved clock, PF windows, the E-T device-loss steps, the bind-group-layout census, the device-limits reader and the fog dials) from canned records, logging what was asked, and the reconstruction timeline's page functions run for real in the page's reader world, plus a tiny PNG for its screenshots, and the console lines (and page errors) a spec asks a page to emit at load, so a spec can feed the probe more console lines than it keeps; no browser is launched.
  * @status ACTIVE
  *
  * WHY A PIECE. Lane TAR-ALDARION's round-2 spec for the landing probe needs the
@@ -19,6 +19,7 @@ import { encodeRgbaPng } from "../../lib/png-rgba.mjs";
 import { withInstantWarmUp } from "./cpu-warm-up.mjs";
 import { ENGAGEMENT_PAGE_FUNCTION } from "./cloud-engagement-read.mjs";
 import { READER_PAGE_FUNCTIONS } from "./landing-page-readers.mjs";
+import { RECONSTRUCTION_TIMELINE_PAGE_FUNCTIONS } from "./cloud-reconstruction-timeline.mjs";
 
 // The opt-in page readers (lib/landing-page-readers.mjs) run their REAL page
 // functions and init sources inside a per-page vm context holding only the
@@ -100,6 +101,18 @@ export function makeFakeBrowser(
     // The GPU device census's per-label rows (`byLabel`) the page answers;
     // left null the census is empty, so no owner is ever seen.
     censusByLabel = null,
+    // The console lines a page emits when it loads: an array of
+    // `{type, text}`, or a function `({pageIndex, payload, url})` returning one
+    // (the stage payload is not known yet when the page loads, so `payload`
+    // is whatever a previous load of this page staged: undefined at the first).
+    // `type: "pageerror"` reaches the page-error listeners as an Error; any
+    // other type reaches the console listeners as a message. Left null the
+    // page emits nothing.
+    consoleMessages = null,
+    // What the fog-dial page function answers (lib/landing-fog-dials.mjs):
+    // the rows by dial name. Left null every dial the page was asked for reads
+    // back applied.
+    fogRows = null,
   } = {},
 ) {
   let displacementCalls = 0;
@@ -128,12 +141,38 @@ export function makeFakeBrowser(
       screenshotFor?.({ pageIndex, payload: stagedPayload }) ?? smallPng;
     const sandbox = makeReaderSandbox(readerWorld);
     log.readerWorlds?.push(sandbox);
+    // The listeners the probe attached, by event name.
+    const listeners = new Map();
+    const emitConsoleMessages = (url) => {
+      const messages =
+        typeof consoleMessages === "function"
+          ? consoleMessages({ pageIndex, payload: stagedPayload, url })
+          : consoleMessages;
+      for (const { type, text } of messages ?? []) {
+        if (type === "pageerror") {
+          for (const handler of listeners.get("pageerror") ?? []) {
+            handler(new Error(text));
+          }
+        } else {
+          for (const handler of listeners.get("console") ?? []) {
+            handler({ type: () => type, text: () => text });
+          }
+        }
+      }
+    };
     return {
-      on(event) {
+      on(event, handler) {
         log.events.push(`on:${event}`);
+        if (typeof handler === "function") {
+          if (!listeners.has(event)) {
+            listeners.set(event, new Set());
+          }
+          listeners.get(event).add(handler);
+        }
       },
-      off(event) {
+      off(event, handler) {
         log.events.push(`off:${event}`);
+        listeners.get(event)?.delete(handler);
       },
       async addInitScript(script) {
         log.scripts.push(script);
@@ -148,6 +187,7 @@ export function makeFakeBrowser(
       async goto(url) {
         log.urls.push(url);
         await onPageLoad?.(sandbox);
+        emitConsoleMessages(url);
       },
       async waitForFunction() {},
       async evaluate(fn, arg) {
@@ -168,6 +208,28 @@ export function makeFakeBrowser(
         ) {
           log.readerReads?.push(fn.name);
           return runReaderPageFunction(fn, arg, sandbox);
+        }
+        // The reconstruction timeline (lib/cloud-reconstruction-timeline.mjs) runs
+        // its real page functions in the page's reader world, by name, before any
+        // substring route below could take them for the frame driver.
+        if (
+          typeof fn === "function" &&
+          Object.hasOwn(RECONSTRUCTION_TIMELINE_PAGE_FUNCTIONS, fn.name)
+        ) {
+          log.timelineCalls?.push(fn.name);
+          return runReaderPageFunction(fn, arg, sandbox);
+        }
+        if (fn.name === "pageApplyFogDials") {
+          log.fogCalls?.push(arg);
+          return (
+            fogRows ??
+            Object.fromEntries(
+              Object.entries(arg ?? {}).map(([dial, requested]) => [
+                dial,
+                { requested, observed: requested, applied: true },
+              ]),
+            )
+          );
         }
         if (fn.name === "pageMorphHold") {
           log.morphHolds?.push(arg);
