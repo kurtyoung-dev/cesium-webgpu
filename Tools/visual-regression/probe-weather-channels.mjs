@@ -223,7 +223,6 @@
  *     reproduce its own capture (acceptance INCOMPLETE, not green, and not red)
  */
 import fs from "node:fs";
-import path from "node:path";
 
 import {
   armWebGPUDevices,
@@ -235,9 +234,10 @@ import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
 import { sweepStats } from "./lib/metrics/sweep-stats.mjs";
 import {
   ProbeRefusal,
+  bankPngCapture,
   isEntryPoint,
+  pageUrlOf,
   runProbe,
-  sha256,
 } from "./lib/probe-runtime.mjs";
 import {
   collectPinStructural,
@@ -661,17 +661,10 @@ export const descriptor = {
     for (const capture of result.sweeps.richA.captures) {
       if (!capture.png) continue;
       const name = `weather-channels-rich-lon${capture.lon}.png`;
-      const bytes = Buffer.from(
-        capture.png.slice(capture.png.indexOf(",") + 1),
-        "base64",
-      );
-      const file = path.join(outputDirectory, name);
-      fs.writeFileSync(file, bytes);
-      captures.push({
-        name,
-        path: file,
-        byteLength: bytes.byteLength,
-        sha256: sha256(bytes),
+      bankPngCapture(capture.png, name, {
+        outputDirectory,
+        captures,
+        url: pageUrlOf(page),
       });
       written.push(name);
     }

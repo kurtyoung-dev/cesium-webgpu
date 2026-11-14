@@ -12,6 +12,7 @@ import {
   componentShapeStats,
 } from "./metrics/c11-component-shape.mjs";
 import { frameDifference } from "./metrics/c11-frame-difference.mjs";
+import { throwIfProbeBaseRefused } from "./probe-runtime.mjs";
 
 export const OUTER_WATCHDOG_GRACE_MS = 30_000;
 const MAX_TIMER_MS = 2_147_483_647;
@@ -38,24 +39,71 @@ export function normalizeProbeBase(value) {
   return base.origin;
 }
 
-const BASE = normalizeProbeBase(
-  process.env.PROBE_BASE ?? "http://localhost:8080",
-);
-const BASE_ORIGIN = new URL(BASE).origin;
+// The origin and every output path are bound at RUN ENTRY (`bindRunEntry`),
+// not at module evaluation: the spec imports this module with `PROBE_BASE`
+// unset, and an unset or 8080 origin must refuse before a browser, not crash an
+// import. Until a run binds them the origin is `null`, and the paths are the
+// historical defaults under `Tools/visual-regression/output/`.
+let BASE = null;
+let BASE_ORIGIN = null;
 const HARNESS_ROUTE =
   "/Tools/visual-regression/c11-90-primitive-restart-harness.html";
-const OUTPUT_ROOT = path.resolve(
-  "Tools/visual-regression/output/c11-90-primitive-restart",
-);
-const EVIDENCE_DIR = path.resolve("Tools/visual-regression/output/performance");
-const CANONICAL_ARTIFACT = path.join(
-  EVIDENCE_DIR,
-  "c11-90-primitive-restart-split.json",
-);
-const FIRST_RED_ARTIFACT = path.join(
-  EVIDENCE_DIR,
-  "c11-90-primitive-restart-split.first-red.json",
-);
+let OUTPUT_ROOT = null;
+let EVIDENCE_DIR = null;
+let CANONICAL_ARTIFACT = null;
+let FIRST_RED_ARTIFACT = null;
+bindOutputLayout(null);
+
+/**
+ * Point every file this probe writes under one directory. `null` is the
+ * historical layout, `Tools/visual-regression/output/` relative to the
+ * working directory; a directory mirrors that layout beneath it.
+ *
+ * @param {string|null} outputDirectory The redirect, or `null`.
+ * @returns {{outputRoot: string, evidenceDir: string, canonicalArtifact: string, firstRedArtifact: string}}
+ */
+function bindOutputLayout(outputDirectory) {
+  const base =
+    outputDirectory === null || outputDirectory === undefined
+      ? path.resolve("Tools/visual-regression/output")
+      : path.resolve(outputDirectory);
+  OUTPUT_ROOT = path.join(base, "c11-90-primitive-restart");
+  EVIDENCE_DIR = path.join(base, "performance");
+  CANONICAL_ARTIFACT = path.join(
+    EVIDENCE_DIR,
+    "c11-90-primitive-restart-split.json",
+  );
+  FIRST_RED_ARTIFACT = path.join(
+    EVIDENCE_DIR,
+    "c11-90-primitive-restart-split.first-red.json",
+  );
+  return {
+    outputRoot: OUTPUT_ROOT,
+    evidenceDir: EVIDENCE_DIR,
+    canonicalArtifact: CANONICAL_ARTIFACT,
+    firstRedArtifact: FIRST_RED_ARTIFACT,
+  };
+}
+
+/**
+ * Resolve this run's origin and output layout, refusing first. An unset
+ * `PROBE_BASE` refuses `probe-base-unset` and one on port 8080 refuses
+ * `port-8080-forbidden` (the probe runtime's own decision), both before any
+ * directory is created and before the browser callback is called.
+ *
+ * @param {{env?: object, outputDirectory?: string|null}} [options]
+ * @returns {{base: string, outputRoot: string, evidenceDir: string, canonicalArtifact: string, firstRedArtifact: string}}
+ */
+export function bindRunEntry({
+  env = process.env,
+  outputDirectory = null,
+} = {}) {
+  throwIfProbeBaseRefused(env.PROBE_BASE);
+  const base = normalizeProbeBase(env.PROBE_BASE);
+  BASE = base;
+  BASE_ORIGIN = new URL(base).origin;
+  return { base, ...bindOutputLayout(outputDirectory) };
+}
 const VIEWPORT = Object.freeze({ width: 1000, height: 760 });
 const SETTLE_MS = Number(process.env.C11_90_SETTLE_MS ?? 3_000);
 export const WATCHDOG_MS = Number(process.env.C11_90_WATCHDOG_MS ?? 240_000);
@@ -1199,7 +1247,11 @@ async function withWatchdog(task, browserControl) {
   }
 }
 
-export async function runPrimitiveRestartProbe(launchBrowser) {
+export async function runPrimitiveRestartProbe(
+  launchBrowser,
+  { env = process.env, outputDirectory = null } = {},
+) {
+  bindRunEntry({ env, outputDirectory });
   const runId = randomUUID();
   const startedAt = new Date().toISOString();
   fs.mkdirSync(OUTPUT_ROOT, { recursive: true });

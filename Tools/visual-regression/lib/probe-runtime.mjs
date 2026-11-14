@@ -130,6 +130,13 @@ import {
   describeBrowserCloses,
   runDescriptorUnderLifecycle,
 } from "./probe-lifecycle-run.mjs";
+import {
+  PNG_DATA_URL_PREFIX,
+  decodePngDataUrl,
+  isSharedOutputRootDirectory,
+  liftSharedRootGuard,
+  writeFrameFile,
+} from "./probe-frame-write.mjs";
 import { resolveProbeLocations } from "./probe-output-location.mjs";
 import {
   PROBE_EXIT_CODES,
@@ -149,6 +156,7 @@ import {
   isoInstant,
   nonNegativeNumber,
   optionValue,
+  parseOutputOnlyArgs,
   positiveInteger,
   rendererList,
   usageFailureLine,
@@ -160,9 +168,12 @@ import {
   launchEdge,
 } from "./probe-runtime-browser.mjs";
 import {
+  PORT_8080_REFUSAL_MESSAGE,
   decideOriginRefusal,
+  decidePortRefusal,
   decideRenderReadyRefusal,
   decideServedBuildRefusal,
+  throwIfProbeBaseRefused,
 } from "./probe-runtime-decisions.mjs";
 import {
   INCIDENT_ARTIFACT_SUFFIX,
@@ -191,6 +202,8 @@ export {
   EDGE_LAUNCH_ARGS,
   EDGE_SLOT_STALE_AFTER_MS,
   INCIDENT_ARTIFACT_SUFFIX,
+  PNG_DATA_URL_PREFIX,
+  PORT_8080_REFUSAL_MESSAGE,
   PROBE_EXIT_CODES,
   ProbeRefusal,
   RENDERERS,
@@ -206,19 +219,24 @@ export {
   buildRuntimeReceipt,
   decideEdgeSlot,
   decideOriginRefusal,
+  decidePortRefusal,
   decideRenderReadyRefusal,
   decideServedBuildRefusal,
+  decodePngDataUrl,
   driveSceneFrames,
   exitCodeForOutcome,
   installSandcastle2OriginRewrite,
   installSceneFrameDriver,
+  isSharedOutputRootDirectory,
   launchEdge,
   normalizeJson,
   outcomeOfRun,
+  parseOutputOnlyArgs,
   refusedDecision,
   reportFileNameFor,
   sha256,
   throwForDecision,
+  throwIfProbeBaseRefused,
   withEdgeSlot,
 };
 
@@ -301,17 +319,11 @@ export function parseProbeArgs(argv, options = {}) {
     throw new ProbeUsageError("--port must be at most 65535");
   }
 
-  // The built Sandcastle2 app bakes `http://localhost:8080` into its own
-  // top-level redirect (`Q-145`), and the default dev server on 8080 serves a
-  // live esbuild of the SOURCE tree rather than the built one. A probe on 8080
-  // therefore cannot distinguish "I measured the build" from "I measured the
-  // maintainer's running session", so the runtime does not let it try.
+  // See `decidePortRefusal` for why 8080 is refused; the refusal raised here
+  // is that exported decision, so a probe outside this parser refuses with the
+  // same id and words.
   if (parsed.port === 8080) {
-    throw new ProbeRefusal(
-      "port-8080-forbidden",
-      "the probe runtime refuses port 8080; serve the built tree on a governed port (node server.js --port 8094 --serve-built)",
-      { port: parsed.port },
-    );
+    throwForDecision(decidePortRefusal(parsed.port), PORT_8080_REFUSAL_MESSAGE);
   }
 
   return parsed;
@@ -421,6 +433,19 @@ export function throwIfDeviceLost(liveness, context) {
  */
 const captureHistory = new WeakMap();
 
+/**
+ * The URL a page is on, for a capture record: `page.url()` when the handle
+ * has one (every Playwright page does), `null` when it does not (a stub page
+ * in a spec that models no navigation). A record that says `null` is a record
+ * that cannot claim which page it photographed, which is the truth.
+ *
+ * @param {object} page A Playwright page or a stub.
+ * @returns {string|null} The page URL, or `null`.
+ */
+export function pageUrlOf(page) {
+  return typeof page?.url === "function" ? page.url() : null;
+}
+
 async function readCaptureLiveness(page) {
   // A handle that cannot evaluate cannot be asked; `unobserved` says so.
   if (typeof page.evaluate !== "function") {
@@ -459,7 +484,8 @@ async function readCaptureLiveness(page) {
  * @param {{name: string, sha256: string}} [options.pairedWith] The treatment
  *   capture this one is the control for. Byte-identical bytes mean no frame
  *   was drawn between the two, and the capture refuses.
- * @returns {Promise<{name: string, path: string, byteLength: number, sha256: string, matchCount: number, liveness: object, buffer: Buffer}>} The capture.
+ * @param {Function} [options.now] Clock seam for `capturedAt` (epoch ms).
+ * @returns {Promise<{name: string, path: string, byteLength: number, sha256: string, matchCount: number, liveness: object, url: string|null, capturedAt: string, buffer: Buffer}>} The capture.
  */
 export async function captureElement({
   page,
@@ -469,6 +495,7 @@ export async function captureElement({
   outputDirectory,
   captures,
   pairedWith,
+  now = Date.now,
 }) {
   const locator = page.locator(selector);
   const count = await locator.count();
@@ -481,6 +508,9 @@ export async function captureElement({
   }
   const target = index === undefined ? locator : locator.nth(index);
   const buffer = await target.screenshot({ type: "png" });
+  // The page the frame came from, read at the capture: a sheet cell is only
+  // MEASURED when it can say which URL it photographed.
+  const url = pageUrlOf(page);
 
   let history = captureHistory.get(page);
   if (history === undefined) {
@@ -510,9 +540,11 @@ export async function captureElement({
     );
   }
 
-  fs.mkdirSync(outputDirectory, { recursive: true });
-  const file = path.join(outputDirectory, `${name}.png`);
-  fs.writeFileSync(file, buffer);
+  const file = writeFrameFile({
+    file: path.join(outputDirectory, `${name}.png`),
+    bytes: buffer,
+  });
+  const capturedAt = new Date(now()).toISOString();
   const frameNumber = liveness?.frameNumber ?? null;
   history.banked += 1;
   if (livenessDecision.state === "live" && frameNumber !== null) {
@@ -525,6 +557,76 @@ export async function captureElement({
     sha256: digest,
     matchCount: count,
     liveness: { state: livenessDecision.state, frameNumber },
+    url,
+    capturedAt,
+  };
+  if (Array.isArray(captures)) {
+    captures.push(record);
+  }
+  return { ...record, buffer };
+}
+
+/**
+ * Bank a frame the page already read in the same task as its render, as a
+ * `data:image/png;base64,…` URL. The companion of {@link captureElement} for
+ * probes that cannot screenshot an element (a canvas read inside the render
+ * task, a harness that freezes its own pixels): it decodes the URL or refuses
+ * it by name (`capture-data-url-invalid`: empty, not a PNG, or undecodable),
+ * applies the same device-lost refusal when the caller hands it a same-task
+ * liveness record, writes through the same frame-write primitive (so the
+ * shared-root guard applies), and pushes the same record shape.
+ *
+ * Without a liveness record the record says `liveness.state: "unread"`: the
+ * seam was not shown the gate, and the receipt must not imply it was.
+ *
+ * @param {string} dataUrl The page's `toDataURL("image/png")`.
+ * @param {string} name Capture name; the file is `${name}.png`, or `name`
+ *   itself when it already ends in `.png`. The record's `name` is `name`.
+ * @param {object} options Options.
+ * @param {string} options.outputDirectory Where the PNG is written.
+ * @param {Array<object>} [options.captures] Sink the record is appended to.
+ * @param {string} [options.url] The page URL the frame was read from.
+ * @param {object} [options.liveness] Same-task `{gateArmed, deviceLost, frameNumber}`.
+ * @param {Function} [options.now] Clock seam for `capturedAt` (epoch ms).
+ * @returns {{name: string, path: string, byteLength: number, sha256: string, matchCount: null, liveness: object, url: string|null, capturedAt: string, buffer: Buffer}} The capture.
+ */
+export function bankPngCapture(
+  dataUrl,
+  name,
+  { outputDirectory, captures, url, liveness, now = Date.now } = {},
+) {
+  if (typeof name !== "string" || name.length === 0) {
+    throw new TypeError("bankPngCapture: name must be a non-empty string");
+  }
+  if (typeof outputDirectory !== "string" || outputDirectory.length === 0) {
+    throw new TypeError(
+      `bankPngCapture("${name}"): outputDirectory must be a non-empty string`,
+    );
+  }
+  const buffer = decodePngDataUrl(dataUrl, { name });
+  let livenessRecord = { state: "unread", frameNumber: null };
+  if (liveness !== undefined && liveness !== null) {
+    const decision = throwIfDeviceLost(liveness, { name });
+    livenessRecord = {
+      state: decision.state,
+      frameNumber: liveness.frameNumber ?? null,
+    };
+  }
+  const fileName = name.toLowerCase().endsWith(".png") ? name : `${name}.png`;
+  const file = writeFrameFile({
+    file: path.join(outputDirectory, fileName),
+    bytes: buffer,
+  });
+  const capturedAt = new Date(now()).toISOString();
+  const record = {
+    name,
+    path: file,
+    byteLength: buffer.byteLength,
+    sha256: sha256(buffer),
+    matchCount: null,
+    liveness: livenessRecord,
+    url: typeof url === "string" ? url : null,
+    capturedAt,
   };
   if (Array.isArray(captures)) {
     captures.push(record);
@@ -623,6 +725,10 @@ export async function runProbe(descriptor, dependencies = {}) {
     lifecycleDependencies,
   } = dependencies;
 
+  // Read before argument parsing, so a run's recorded duration covers
+  // everything the runtime did, refusals included.
+  const startedAtMs = now();
+
   // Asking for the option table is a run that measures nothing because of the
   // caller, so it exits with the caller-error code, and it answers before the
   // preflight, the slot, a browser or a receipt can be reached.
@@ -665,6 +771,7 @@ export async function runProbe(descriptor, dependencies = {}) {
   let errorText = null;
   let slot = null;
   let releasableSlot = null;
+  let releaseSharedRootLift = null;
   const captures = [];
   let options;
   let repositoryRoot;
@@ -697,6 +804,17 @@ export async function runProbe(descriptor, dependencies = {}) {
       outputSubdirectory: descriptor.outputSubdirectory ?? descriptor.name,
     }));
     origin = `http://localhost:${options.port}`;
+    // An explicit `--output` is the operator naming where this run may
+    // write, so the shared-root frame guard (`probe-frame-write.mjs`) is
+    // lifted for that one directory until the run ends. Without the flag, a
+    // descriptor whose frames land in the shared root cannot replace a
+    // banked frame there.
+    if (
+      options.outputDirectory !== null &&
+      options.outputDirectory !== undefined
+    ) {
+      releaseSharedRootLift = liftSharedRootGuard(outputDirectory);
+    }
 
     // Shared by both paths so the served-build assertion cannot drift between
     // them: the lifecycle runs it inside its first tracked operation, the
@@ -879,6 +997,9 @@ export async function runProbe(descriptor, dependencies = {}) {
     if (releasableSlot) {
       releasableSlot.release();
     }
+    if (releaseSharedRootLift) {
+      releaseSharedRootLift();
+    }
   }
 
   return finishRun();
@@ -907,10 +1028,13 @@ export async function runProbe(descriptor, dependencies = {}) {
       finishedExitCode = exitCode;
       return exitCode;
     }
-    const generatedAt = new Date(now()).toISOString();
+    const generatedAtMs = now();
+    const generatedAt = new Date(generatedAtMs).toISOString();
     const runtimeReceipt = buildRuntimeReceipt({
       probe: descriptor.name,
       generatedAt,
+      startedAt: new Date(startedAtMs).toISOString(),
+      elapsedMs: Math.max(0, Math.round(generatedAtMs - startedAtMs)),
       origin,
       options,
       preflight,

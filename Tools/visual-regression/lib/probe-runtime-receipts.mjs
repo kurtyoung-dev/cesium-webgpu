@@ -65,6 +65,8 @@ export function assembleReceipt({ envelope, fields, runtime }) {
  * @param {object} options Options.
  * @param {string} options.probe Probe name.
  * @param {string} options.generatedAt ISO timestamp.
+ * @param {string} [options.startedAt] ISO timestamp the run entered `runProbe`.
+ * @param {number} [options.elapsedMs] Milliseconds from entry to this receipt.
  * @param {string} options.origin Resolved origin.
  * @param {object} options.options Parsed options.
  * @param {object|null} options.preflight Preflight result, or `null` when waived.
@@ -78,6 +80,8 @@ export function assembleReceipt({ envelope, fields, runtime }) {
 export function buildRuntimeReceipt({
   probe,
   generatedAt,
+  startedAt = null,
+  elapsedMs = null,
   origin,
   options,
   preflight,
@@ -97,6 +101,8 @@ export function buildRuntimeReceipt({
   return {
     probe,
     generatedAt,
+    startedAt,
+    elapsedMs,
     origin,
     options,
     servedBuildAssertion: options.servedBuild ? "enforced" : "waived",

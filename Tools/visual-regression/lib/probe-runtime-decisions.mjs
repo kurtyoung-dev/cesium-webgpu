@@ -1,14 +1,20 @@
 // probe-runtime-decisions.mjs — the runtime's refusal decisions over the served build and the navigated origin.
 //
-// @purpose Companion of probe-runtime.mjs: decideServedBuildRefusal, decideOriginRefusal and decideRenderReadyRefusal, the pure decisions that map a preflight result, a navigated url and a renderReady wait onto the runtime's accepted/refused decision shape.
+// @purpose Companion of probe-runtime.mjs: decideServedBuildRefusal, decideOriginRefusal and decideRenderReadyRefusal, and decidePortRefusal with throwIfProbeBaseRefused and PORT_8080_REFUSAL_MESSAGE (the port-8080 decision), the pure decisions that map a preflight result, a navigated url, a renderReady wait, a port and a PROBE_BASE onto the runtime's accepted/refused decision shape.
 // @status ACTIVE
 //
-// WHY A PIECE. These three decisions are pure and need no browser, so they
-// moved out of `probe-runtime.mjs` when that module passed 1,000 lines
-// (DX-KIT-DECOMPOSE-RUNTIME-WATER). The runtime re-exports all three, so no
-// importer changed.
+// WHY A PIECE. These decisions need no browser, so they moved out of
+// `probe-runtime.mjs` when that module passed 1,000 lines
+// (DX-KIT-DECOMPOSE-RUNTIME-WATER); the port-8080 decision joined them later.
+// The runtime re-exports every one, so no importer changed.
+// `throwIfProbeBaseRefused` is the one that throws instead of returning a
+// decision: it is how a probe that does not run on `runProbe` raises it.
 
-import { acceptedDecision, refusedDecision } from "./probe-refusal.mjs";
+import {
+  acceptedDecision,
+  refusedDecision,
+  throwForDecision,
+} from "./probe-refusal.mjs";
 import { REQUIRED_SERVED_ARTIFACTS } from "./probe-runtime-args.mjs";
 import { checkNavigatedOrigin } from "./sandcastle2-origin-rewrite.mjs";
 
@@ -116,4 +122,70 @@ export function decideRenderReadyRefusal({
     return refusedDecision("render-ready-timeout", { elapsedMs, timeoutMs });
   }
   return acceptedDecision();
+}
+
+/**
+ * The words a port-8080 refusal is raised with, wherever it is raised: by
+ * `parseProbeArgs` for a runtime probe, and by a probe with its own origin
+ * protocol (the c11 13/90 `PROBE_BASE` harnesses) at its run entry.
+ */
+export const PORT_8080_REFUSAL_MESSAGE =
+  "the probe runtime refuses port 8080; serve the built tree on a governed port (node server.js --port 8094 --serve-built)";
+
+/**
+ * Decide whether a probe may be pointed at `port`.
+ *
+ * The built Sandcastle2 app bakes `http://localhost:8080` into its own
+ * top-level redirect (`Q-145`), and the default dev server on 8080 serves a
+ * live esbuild of the SOURCE tree rather than the built one. A probe on 8080
+ * therefore cannot distinguish "I measured the build" from "I measured the
+ * maintainer's running session", so no probe is let try. Exported so a probe
+ * that resolves its origin some other way refuses with the same id.
+ *
+ * @param {number} port The port the probe would reach.
+ * @returns {object} An accepted or refusing decision.
+ */
+export function decidePortRefusal(port) {
+  if (port === 8080) {
+    return refusedDecision("port-8080-forbidden", { port });
+  }
+  return acceptedDecision();
+}
+
+/**
+ * Refuse, before any browser, a `PROBE_BASE` origin a probe with its own
+ * origin protocol (the c11 13/90 harnesses, which do not run on `runProbe`)
+ * must not be pointed at: an unset or empty one (`probe-base-unset` — there
+ * is no default origin to fall back to, because the old default was the
+ * forbidden 8080) or one on port 8080 (`port-8080-forbidden`, the runtime's
+ * own id and message). A value that is not a URL at all is left to the
+ * caller's own origin normaliser, which already reports it.
+ *
+ * @param {unknown} value The raw `PROBE_BASE`.
+ * @returns {object} The accepted decision, when nothing was refused.
+ */
+export function throwIfProbeBaseRefused(value) {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    const decision = refusedDecision("probe-base-unset", { env: "PROBE_BASE" });
+    throwForDecision(
+      decision,
+      "PROBE_BASE is not set; point it at the built tree on a governed port (PROBE_BASE=http://localhost:8094), never 8080",
+    );
+  }
+  let url;
+  try {
+    url = new URL(String(value));
+  } catch {
+    return acceptedDecision();
+  }
+  const port =
+    url.port === "" ? (url.protocol === "https:" ? 443 : 80) : Number(url.port);
+  const decision = decidePortRefusal(port);
+  throwForDecision(
+    decision.refuse
+      ? { ...decision, details: { ...decision.details, probeBase: url.origin } }
+      : decision,
+    PORT_8080_REFUSAL_MESSAGE,
+  );
+  return decision;
 }

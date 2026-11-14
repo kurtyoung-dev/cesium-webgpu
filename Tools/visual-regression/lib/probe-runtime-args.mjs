@@ -1,6 +1,6 @@
 // probe-runtime-args.mjs — the probe runtime's flag table, defaults and value parsers.
 //
-// @purpose Companion of probe-runtime.mjs: the REQUIRED_SERVED_ARTIFACTS and RENDERERS constants, the core flag table (CORE_OPTION_SPECS), its defaults (CORE_OPTION_DEFAULTS) and the five value parsers parseProbeArgs applies (optionValue, positiveInteger, nonNegativeNumber, rendererList, isoInstant), the ProbeUsageError a malformed command line raises, and the --help option table (HELP_FLAGS, wantsHelp, buildHelpText, usageFailureLine).
+// @purpose Companion of probe-runtime.mjs: the REQUIRED_SERVED_ARTIFACTS and RENDERERS constants, the core flag table (CORE_OPTION_SPECS), its defaults (CORE_OPTION_DEFAULTS) and the five value parsers parseProbeArgs applies (optionValue, positiveInteger, nonNegativeNumber, rendererList, isoInstant), the ProbeUsageError a malformed command line raises, parseOutputOnlyArgs (the argv grammar of a probe that takes only --output), and the --help option table (HELP_FLAGS, wantsHelp, buildHelpText, usageFailureLine).
 // @status ACTIVE
 //
 // WHY A PIECE. The table and its parsers moved out of `probe-runtime.mjs`
@@ -12,6 +12,8 @@
 // rather than a parsing detail. The four value parsers are exported here for
 // the runtime's use only; the runtime does not re-export them, so its public
 // surface is unchanged.
+
+import path from "node:path";
 
 import { DEFAULT_SERVED_BUILD_ARTIFACTS } from "./served-build-preflight.mjs";
 
@@ -180,6 +182,33 @@ export function rendererList(value, name) {
     }
   }
   return RENDERERS.filter((entry) => requested.includes(entry));
+}
+
+/**
+ * The argv grammar of a probe that is not on `runProbe` but must still take
+ * the one flag an orchestrator always passes: `--output <dir>`. Anything else
+ * is a caller error (a `ProbeUsageError`, exit 2), exactly as in
+ * `parseProbeArgs`.
+ *
+ * @param {string[]} argv Arguments after the script name.
+ * @returns {{outputDirectory: string|null}} The resolved directory, or `null`.
+ */
+export function parseOutputOnlyArgs(argv) {
+  let outputDirectory = null;
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (arg !== "--output") {
+      throw new ProbeUsageError(
+        `unknown argument: ${arg} (this probe takes only --output <dir>)`,
+      );
+    }
+    if (outputDirectory !== null) {
+      throw new ProbeUsageError("--output may be given once");
+    }
+    outputDirectory = path.resolve(optionValue(argv, index, arg));
+    index++;
+  }
+  return { outputDirectory };
 }
 
 // ---------------------------------------------------------------------------

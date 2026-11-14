@@ -12,6 +12,8 @@ import {
   compareFootprints,
   nonBlackFootprint,
 } from "./metrics/c11-footprint.mjs";
+import { ProbeRefusal } from "./probe-refusal.mjs";
+import { decodePngDataUrl, throwIfProbeBaseRefused } from "./probe-runtime.mjs";
 import { exitCodeForS5Status } from "./verdict-exit-gate.mjs";
 
 export const OUTER_WATCHDOG_GRACE_MS = 30_000;
@@ -221,43 +223,93 @@ export function normalizeCanvasClip(value, viewport = VIEWPORT) {
  * render. This avoids both deferred GPU-canvas reads and Chrome's screenshot
  * surface capture, which can hang on an active canvas.
  *
+ * The decode itself is the probe kit's (`decodePngDataUrl`, the decoder
+ * behind `bankPngCapture`); this name stays because the probe's own fold
+ * reads every structural failure as `STRUCTURAL:`, so a kit refusal is
+ * re-raised in those words with the kit's reason folded in.
+ *
  * @param {unknown} value
  * @returns {Buffer}
  */
 export function decodeCanvasPngDataUrl(value) {
-  const prefix = "data:image/png;base64,";
-  if (typeof value !== "string" || !value.startsWith(prefix)) {
-    throw new Error("STRUCTURAL: canvas capture is not a PNG data URL");
+  try {
+    return decodePngDataUrl(value, { name: "c11-13 canvas capture" });
+  } catch (error) {
+    if (error instanceof ProbeRefusal) {
+      throw new Error(
+        `STRUCTURAL: canvas capture is not a valid PNG data URL (${error.details?.defect ?? error.reason}): ${error.message}`,
+        { cause: error },
+      );
+    }
+    throw error;
   }
-  const bytes = Buffer.from(value.slice(prefix.length), "base64");
-  const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-  if (
-    bytes.length <= pngSignature.length ||
-    !bytes.subarray(0, 8).equals(pngSignature)
-  ) {
-    throw new Error("STRUCTURAL: canvas capture has no valid PNG payload");
-  }
-  return bytes;
 }
 
-const BASE = normalizeProbeBase(
-  process.env.PROBE_BASE ?? "http://localhost:8080",
-);
-const BASE_ORIGIN = new URL(BASE).origin;
+// The origin and every output path are bound at RUN ENTRY (`bindRunEntry`),
+// not at module evaluation: the spec imports this module with `PROBE_BASE`
+// unset, and an unset or 8080 origin must refuse before a browser, not crash an
+// import. Until a run binds them the origin is `null`, and the paths are the
+// historical defaults under `Tools/visual-regression/output/`.
+let BASE = null;
+let BASE_ORIGIN = null;
 const HARNESS_ROUTE =
   "/Tools/visual-regression/c11-13-voxel-inside-camera-harness.html";
-const OUTPUT_ROOT = path.resolve(
-  "Tools/visual-regression/output/c11-13-voxel-inside-camera",
-);
-const EVIDENCE_DIR = path.resolve("Tools/visual-regression/output/performance");
-const CANONICAL_ARTIFACT = path.join(
-  EVIDENCE_DIR,
-  "c11-13-voxel-inside-camera.json",
-);
-const FIRST_RED_ARTIFACT = path.join(
-  EVIDENCE_DIR,
-  "c11-13-voxel-inside-camera.first-red.json",
-);
+let OUTPUT_ROOT = null;
+let EVIDENCE_DIR = null;
+let CANONICAL_ARTIFACT = null;
+let FIRST_RED_ARTIFACT = null;
+bindOutputLayout(null);
+
+/**
+ * Point every file this probe writes under one directory. `null` is the
+ * historical layout, `Tools/visual-regression/output/` relative to the
+ * working directory; a directory mirrors that layout beneath it.
+ *
+ * @param {string|null} outputDirectory The redirect, or `null`.
+ * @returns {{outputRoot: string, evidenceDir: string, canonicalArtifact: string, firstRedArtifact: string}}
+ */
+function bindOutputLayout(outputDirectory) {
+  const base =
+    outputDirectory === null || outputDirectory === undefined
+      ? path.resolve("Tools/visual-regression/output")
+      : path.resolve(outputDirectory);
+  OUTPUT_ROOT = path.join(base, "c11-13-voxel-inside-camera");
+  EVIDENCE_DIR = path.join(base, "performance");
+  CANONICAL_ARTIFACT = path.join(
+    EVIDENCE_DIR,
+    "c11-13-voxel-inside-camera.json",
+  );
+  FIRST_RED_ARTIFACT = path.join(
+    EVIDENCE_DIR,
+    "c11-13-voxel-inside-camera.first-red.json",
+  );
+  return {
+    outputRoot: OUTPUT_ROOT,
+    evidenceDir: EVIDENCE_DIR,
+    canonicalArtifact: CANONICAL_ARTIFACT,
+    firstRedArtifact: FIRST_RED_ARTIFACT,
+  };
+}
+
+/**
+ * Resolve this run's origin and output layout, refusing first. An unset
+ * `PROBE_BASE` refuses `probe-base-unset` and one on port 8080 refuses
+ * `port-8080-forbidden` (the probe runtime's own decision), both before any
+ * directory is created and before the browser callback is called.
+ *
+ * @param {{env?: object, outputDirectory?: string|null}} [options]
+ * @returns {{base: string, outputRoot: string, evidenceDir: string, canonicalArtifact: string, firstRedArtifact: string}}
+ */
+export function bindRunEntry({
+  env = process.env,
+  outputDirectory = null,
+} = {}) {
+  throwIfProbeBaseRefused(env.PROBE_BASE);
+  const base = normalizeProbeBase(env.PROBE_BASE);
+  BASE = base;
+  BASE_ORIGIN = new URL(base).origin;
+  return { base, ...bindOutputLayout(outputDirectory) };
+}
 
 const LOCAL_PATHS = Object.freeze({
   harnessHtml: path.resolve(
@@ -1860,10 +1912,14 @@ export async function withWatchdog(
   }
 }
 
-export async function runVoxelInsideCameraProbe(launchBrowser) {
+export async function runVoxelInsideCameraProbe(
+  launchBrowser,
+  { env = process.env, outputDirectory = null } = {},
+) {
   if (typeof launchBrowser !== "function") {
     throw new Error("STRUCTURAL: launchBrowser callback is required");
   }
+  bindRunEntry({ env, outputDirectory });
   const runId = randomUUID();
   const startedAt = new Date().toISOString();
   fs.mkdirSync(OUTPUT_ROOT, { recursive: true });

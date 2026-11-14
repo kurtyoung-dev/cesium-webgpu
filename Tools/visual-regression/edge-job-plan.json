@@ -1,0 +1,1083 @@
+{
+  "schema": 1,
+  "description": "Positive-list Edge-job plan for the harvest families on main (seeded from the Edge-job brief section 2). The runner appends --output <jobDir>/<family>/<id> to every entry; entries never carry --output. Model is absent until its family lands; weather regional-tails and the eight non-sheet c11 probes are out by design.",
+  "entries": [
+    {
+      "family": "polar",
+      "id": "standing",
+      "probe": "probe-polar-multi-plain.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "instrument changed vs 2026-07-02: element capture with widgets removed, fresh context per capture, pinClock + settleTiles (D2); record both rules' parity figures"
+    },
+    {
+      "family": "polar",
+      "id": "frames",
+      "probe": "probe-polar-multi-plain.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both",
+        "--rigs",
+        "polar-plain-northpole-close,polar-plain-northpole-orbit,polar-plain-southpole-close,polar-plain-southpole-orbit,polar-plain-equator-mid,polar-plain-midlat-mid,polar-effects-off-northpole-close,polar-effects-off-southpole-close,polar-orbit-14mm-northamerica,polar-orbit-14mm-northamerica-overlay,polar-settle-14mm-120f,polar-settle-14mm-600f,polar-settle-14mm-2400f,polar-southpole-close-force-red,polar-southpole-close-alpha,polar-noculling-southpole-close,polar-wireframe-southpole-close,polar-wireframe-northpole-close"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [
+        "polar-plain-northpole-close",
+        "polar-plain-northpole-orbit",
+        "polar-plain-southpole-close",
+        "polar-plain-southpole-orbit",
+        "polar-plain-equator-mid",
+        "polar-plain-midlat-mid",
+        "polar-effects-off-northpole-close",
+        "polar-effects-off-southpole-close",
+        "polar-orbit-14mm-northamerica",
+        "polar-orbit-14mm-northamerica-overlay",
+        "polar-settle-14mm-120f",
+        "polar-settle-14mm-600f",
+        "polar-settle-14mm-2400f",
+        "polar-southpole-close-force-red",
+        "polar-southpole-close-alpha",
+        "polar-noculling-southpole-close",
+        "polar-wireframe-southpole-close",
+        "polar-wireframe-northpole-close"
+      ],
+      "instrumentNote": "AFTER frames for the sheet's 18 frame rigs; WebGPU-only rigs run single-renderer; a renderer size mismatch fails the run by design"
+    },
+    {
+      "family": "wgs84",
+      "id": "plain",
+      "probe": "probe-wgs84.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both",
+        "--scene",
+        "home,close,polar"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "read chromeRemoved / leftovers; a terrain picker without a WGS84 entry refuses"
+    },
+    {
+      "family": "wgs84",
+      "id": "modes",
+      "probe": "probe-wgs84.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "webgpu",
+        "--scene",
+        "home",
+        "--debug-mode",
+        "tex0-alpha,tex1-alpha,post-composite-color,post-composite-alpha,fade-amount,draped,atmo-color,transmittance,rayleigh-v,mie-v,view-dir,sample0,layer-count"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "13 registry debug modes, WebGPU only (a mode with webgl/both refuses renderer-unavailable)"
+    },
+    {
+      "family": "polyline",
+      "id": "appearance-2d",
+      "probe": "probe-polyline-appearance-2d.mjs",
+      "args": [
+        "--port",
+        "8094"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "first run RE-BASELINES the instrument (D-D: Node reads of a stripped element capture; 90 s waits now apply)"
+    },
+    {
+      "family": "polyline",
+      "id": "appearance-logdepth",
+      "probe": "probe-polyline-appearance-logdepth.mjs",
+      "args": [
+        "--port",
+        "8094"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "first run RE-BASELINES the instrument (D-D: Node reads of a stripped element capture; 90 s waits now apply)"
+    },
+    {
+      "family": "polyline",
+      "id": "appearance-pick",
+      "probe": "probe-polyline-appearance-pick.mjs",
+      "args": [
+        "--port",
+        "8094"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "first run RE-BASELINES the instrument (D-D: Node reads of a stripped element capture; 90 s waits now apply)"
+    },
+    {
+      "family": "polyline",
+      "id": "appearance-primitive",
+      "probe": "probe-polyline-appearance-primitive.mjs",
+      "args": [
+        "--port",
+        "8094"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "first run RE-BASELINES the instrument (D-D: Node reads of a stripped element capture; 90 s waits now apply)"
+    },
+    {
+      "family": "polyline",
+      "id": "cloud-consume",
+      "probe": "probe-polyline-cloud-consume.mjs",
+      "args": [
+        "--port",
+        "8094"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "first run RE-BASELINES the instrument (D-D: Node reads of a stripped element capture; 90 s waits now apply); WebGPU only"
+    },
+    {
+      "family": "polyline",
+      "id": "geodesic",
+      "probe": "probe-polyline-geodesic.mjs",
+      "args": [
+        "--port",
+        "8094"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "first run RE-BASELINES the instrument (D-D: Node reads of a stripped element capture; 90 s waits now apply)"
+    },
+    {
+      "family": "polyline",
+      "id": "image-material",
+      "probe": "probe-polyline-image-material.mjs",
+      "args": [
+        "--port",
+        "8094"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "first run RE-BASELINES the instrument (D-D: Node reads of a stripped element capture; 90 s waits now apply)"
+    },
+    {
+      "family": "polyline",
+      "id": "material-primitive",
+      "probe": "probe-polyline-material-primitive.mjs",
+      "args": [
+        "--port",
+        "8094"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "first run RE-BASELINES the instrument (D-D: Node reads of a stripped element capture; 90 s waits now apply)"
+    },
+    {
+      "family": "polyline",
+      "id": "multimaterial",
+      "probe": "probe-polyline-multimaterial.mjs",
+      "args": [
+        "--port",
+        "8094"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "first run RE-BASELINES the instrument (D-D: Node reads of a stripped element capture; 90 s waits now apply)"
+    },
+    {
+      "family": "polyline",
+      "id": "taa-velocity",
+      "probe": "probe-polyline-taa-velocity.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--runs",
+        "3"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "first run RE-BASELINES the instrument (D-D: Node reads of a stripped element capture; 90 s waits now apply); AR-752 owed leg (--runs 3, cells C/D/E smear ratios); default output is the shared root, so --output matters"
+    },
+    {
+      "family": "clustered",
+      "id": "demo-scene",
+      "probe": "probe-clustered-demo-scene.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "webgpu"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D2: element capture after STRIP_WIDGETS_SOURCE, fresh context per capture; bars unchanged; no workBudgetMs declared (C13-42a-2: size from this run)"
+    },
+    {
+      "family": "clustered",
+      "id": "dispatcher",
+      "probe": "probe-clustered-dispatcher.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "webgpu"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D2: element capture after STRIP_WIDGETS_SOURCE, fresh context per capture; bars unchanged; no workBudgetMs declared (C13-42a-2: size from this run)"
+    },
+    {
+      "family": "clustered",
+      "id": "lights-resize",
+      "probe": "probe-clustered-lights-resize.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "webgpu"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D2: element capture after STRIP_WIDGETS_SOURCE, fresh context per capture; bars unchanged; no workBudgetMs declared (C13-42a-2: size from this run)"
+    },
+    {
+      "family": "clustered",
+      "id": "litmat",
+      "probe": "probe-clustered-litmat.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "webgpu"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D2: element capture after STRIP_WIDGETS_SOURCE, fresh context per capture; bars unchanged; no workBudgetMs declared (C13-42a-2: size from this run)"
+    },
+    {
+      "family": "clustered",
+      "id": "matsweep",
+      "probe": "probe-clustered-matsweep.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "webgpu"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D2: element capture after STRIP_WIDGETS_SOURCE, fresh context per capture; bars unchanged; no workBudgetMs declared (C13-42a-2: size from this run)"
+    },
+    {
+      "family": "clustered",
+      "id": "multifrustum",
+      "probe": "probe-clustered-multifrustum.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "webgpu"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D2: element capture after STRIP_WIDGETS_SOURCE, fresh context per capture; bars unchanged; no workBudgetMs declared (C13-42a-2: size from this run)"
+    },
+    {
+      "family": "clustered",
+      "id": "per-frame",
+      "probe": "probe-clustered-per-frame.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "webgpu"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D2: element capture after STRIP_WIDGETS_SOURCE, fresh context per capture; bars unchanged; no workBudgetMs declared (C13-42a-2: size from this run)"
+    },
+    {
+      "family": "clustered",
+      "id": "phong",
+      "probe": "probe-clustered-phong.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "webgpu"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D2: element capture after STRIP_WIDGETS_SOURCE, fresh context per capture; bars unchanged; no workBudgetMs declared (C13-42a-2: size from this run)"
+    },
+    {
+      "family": "clustered",
+      "id": "visible",
+      "probe": "probe-clustered-visible.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "webgpu"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D2: element capture after STRIP_WIDGETS_SOURCE, fresh context per capture; bars unchanged; no workBudgetMs declared (C13-42a-2: size from this run)"
+    },
+    {
+      "family": "clustered",
+      "id": "zero-work-route",
+      "probe": "probe-clustered-zero-work-route.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "webgpu"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D2: element capture after STRIP_WIDGETS_SOURCE, fresh context per capture; bars unchanged; no workBudgetMs declared (C13-42a-2: size from this run)"
+    },
+    {
+      "family": "globe",
+      "id": "bindgroup-cache",
+      "probe": "probe-globe-bindgroup-cache.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D4: element capture instead of in-page drawImage; bars unchanged; capture-chrome-over-canvas is a page finding; no workBudgetMs declared (size from this run)"
+    },
+    {
+      "family": "globe",
+      "id": "clippoly-geodetic",
+      "probe": "probe-globe-clippoly-geodetic.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D4: element capture instead of in-page drawImage; bars unchanged; capture-chrome-over-canvas is a page finding; no workBudgetMs declared (size from this run)"
+    },
+    {
+      "family": "globe",
+      "id": "default-limits",
+      "probe": "probe-globe-default-limits.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D4: element capture instead of in-page drawImage; bars unchanged; capture-chrome-over-canvas is a page finding; no workBudgetMs declared (size from this run)"
+    },
+    {
+      "family": "globe",
+      "id": "effects-handle-toggle",
+      "probe": "probe-globe-effects-handle-toggle.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D4: element capture instead of in-page drawImage; bars unchanged; capture-chrome-over-canvas is a page finding; no workBudgetMs declared (size from this run)"
+    },
+    {
+      "family": "globe",
+      "id": "pick-h44",
+      "probe": "probe-globe-pick-h44.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D4: element capture instead of in-page drawImage; bars unchanged; capture-chrome-over-canvas is a page finding; no workBudgetMs declared (size from this run)"
+    },
+    {
+      "family": "globe",
+      "id": "polar-stretch",
+      "probe": "probe-globe-polar-stretch.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D4: element capture instead of in-page drawImage; bars unchanged; capture-chrome-over-canvas is a page finding; no workBudgetMs declared (size from this run)"
+    },
+    {
+      "family": "globe",
+      "id": "translucency",
+      "probe": "probe-globe-translucency.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D4: element capture instead of in-page drawImage; bars unchanged; capture-chrome-over-canvas is a page finding; no workBudgetMs declared (size from this run)"
+    },
+    {
+      "family": "globe",
+      "id": "underground",
+      "probe": "probe-globe-underground.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "D4: element capture instead of in-page drawImage; bars unchanged; capture-chrome-over-canvas is a page finding; no workBudgetMs declared (size from this run)"
+    },
+    {
+      "family": "voxel",
+      "id": "cell-pick",
+      "probe": "probe-voxel-cell-pick.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "default outputSubdirectory is the shared root (would overwrite the 2026-08-21 banked frames without --output); compare verdict-by-verdict, not number-for-number; device errors are ungated (D2)"
+    },
+    {
+      "family": "voxel",
+      "id": "cylinder",
+      "probe": "probe-voxel-cylinder.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "default outputSubdirectory is the shared root (would overwrite the 2026-08-21 banked frames without --output); compare verdict-by-verdict, not number-for-number; device errors are ungated (D2)"
+    },
+    {
+      "family": "voxel",
+      "id": "ellipsoid",
+      "probe": "probe-voxel-ellipsoid.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "default outputSubdirectory is the shared root (would overwrite the 2026-08-21 banked frames without --output); compare verdict-by-verdict, not number-for-number; device errors are ungated (D2)"
+    },
+    {
+      "family": "voxel",
+      "id": "megatexture",
+      "probe": "probe-voxel-megatexture.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "default outputSubdirectory is the shared root (would overwrite the 2026-08-21 banked frames without --output); compare verdict-by-verdict, not number-for-number; device errors are ungated (D2); D3: part3/reupload-evidence/run0 expected RED if the scene reproduces the banked corner-A1 frame"
+    },
+    {
+      "family": "voxel",
+      "id": "octree-l3plus",
+      "probe": "probe-voxel-octree-l3plus.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "default outputSubdirectory is the shared root (would overwrite the 2026-08-21 banked frames without --output); compare verdict-by-verdict, not number-for-number; device errors are ungated (D2)"
+    },
+    {
+      "family": "voxel",
+      "id": "octree",
+      "probe": "probe-voxel-octree.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "default outputSubdirectory is the shared root (would overwrite the 2026-08-21 banked frames without --output); compare verdict-by-verdict, not number-for-number; device errors are ungated (D2)"
+    },
+    {
+      "family": "voxel",
+      "id": "parity",
+      "probe": "probe-voxel-parity.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "default outputSubdirectory is the shared root (would overwrite the 2026-08-21 banked frames without --output); compare verdict-by-verdict, not number-for-number; device errors are ungated (D2)"
+    },
+    {
+      "family": "voxel",
+      "id": "pick-logdepth",
+      "probe": "probe-voxel-pick-logdepth.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "default outputSubdirectory is the shared root (would overwrite the 2026-08-21 banked frames without --output); compare verdict-by-verdict, not number-for-number; device errors are ungated (D2)"
+    },
+    {
+      "family": "voxel",
+      "id": "pick",
+      "probe": "probe-voxel-pick.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "default outputSubdirectory is the shared root (would overwrite the 2026-08-21 banked frames without --output); compare verdict-by-verdict, not number-for-number; device errors are ungated (D2)"
+    },
+    {
+      "family": "voxel",
+      "id": "refined-pick",
+      "probe": "probe-voxel-refined-pick.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "default outputSubdirectory is the shared root (would overwrite the 2026-08-21 banked frames without --output); compare verdict-by-verdict, not number-for-number; device errors are ungated (D2)"
+    },
+    {
+      "family": "voxel",
+      "id": "user-customshader",
+      "probe": "probe-voxel-user-customshader.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "default outputSubdirectory is the shared root (would overwrite the 2026-08-21 banked frames without --output); compare verdict-by-verdict, not number-for-number; device errors are ungated (D2)"
+    },
+    {
+      "family": "cloud",
+      "id": "phase",
+      "probe": "probe-cloud-phase.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "dials now reach the deck and each probe reads the canvas in its final render task, so this leg cannot be byte-identical to a pre-routing run; no element capture (no chrome refusal applies)"
+    },
+    {
+      "family": "cloud",
+      "id": "ambient",
+      "probe": "probe-cloud-ambient.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "dials now reach the deck and each probe reads the canvas in its final render task, so this leg cannot be byte-identical to a pre-routing run; no element capture (no chrome refusal applies)"
+    },
+    {
+      "family": "cloud",
+      "id": "tod",
+      "probe": "probe-cloud-tod.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "dials now reach the deck and each probe reads the canvas in its final render task, so this leg cannot be byte-identical to a pre-routing run; no element capture (no chrome refusal applies)"
+    },
+    {
+      "family": "cloud",
+      "id": "aerial",
+      "probe": "probe-cloud-aerial.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "dials now reach the deck and each probe reads the canvas in its final render task, so this leg cannot be byte-identical to a pre-routing run; no element capture (no chrome refusal applies)"
+    },
+    {
+      "family": "cloud",
+      "id": "special",
+      "probe": "probe-cloud-special.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "dials now reach the deck and each probe reads the canvas in its final render task, so this leg cannot be byte-identical to a pre-routing run; no element capture (no chrome refusal applies)"
+    },
+    {
+      "family": "cloud",
+      "id": "features",
+      "probe": "probe-cloud-features.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--renderer",
+        "both"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "dials now reach the deck and each probe reads the canvas in its final render task, so this leg cannot be byte-identical to a pre-routing run; no element capture (no chrome refusal applies)"
+    },
+    {
+      "family": "weather",
+      "id": "channels",
+      "probe": "probe-weather-channels.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--runs",
+        "10"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "statistical (--runs 10 is the documented shape); evidence PNGs bank through bankPngCapture with liveness unread (Moria F4: the pin harness's in-page read stays the family's)"
+    },
+    {
+      "family": "weather",
+      "id": "edr-mock",
+      "probe": "probe-weather-edr-mock.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--runs",
+        "10"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "statistical (--runs 10 is the documented shape); evidence PNGs bank through bankPngCapture with liveness unread (Moria F4: the pin harness's in-page read stays the family's)"
+    },
+    {
+      "family": "weather",
+      "id": "ingest",
+      "probe": "probe-weather-ingest.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--runs",
+        "10"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "statistical (--runs 10 is the documented shape); evidence PNGs bank through bankPngCapture with liveness unread (Moria F4: the pin harness's in-page read stays the family's)"
+    },
+    {
+      "family": "weather",
+      "id": "metar",
+      "probe": "probe-weather-metar.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--runs",
+        "10"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "statistical (--runs 10 is the documented shape); evidence PNGs bank through bankPngCapture with liveness unread (Moria F4: the pin harness's in-page read stays the family's); gate 4 banked at 0.1469 vs the unchanged 0.04 bar (F7)"
+    },
+    {
+      "family": "weather",
+      "id": "seam-poles",
+      "probe": "probe-weather-seam-poles.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--runs",
+        "10"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "statistical (--runs 10 is the documented shape); evidence PNGs bank through bankPngCapture with liveness unread (Moria F4: the pin harness's in-page read stays the family's)"
+    },
+    {
+      "family": "weather",
+      "id": "wcs",
+      "probe": "probe-weather-wcs.mjs",
+      "args": [
+        "--port",
+        "8094",
+        "--runs",
+        "10"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "statistical (--runs 10 is the documented shape); evidence PNGs bank through bankPngCapture with liveness unread (Moria F4: the pin harness's in-page read stays the family's)"
+    },
+    {
+      "family": "weather",
+      "id": "map",
+      "probe": "probe-weather-map.mjs",
+      "args": [
+        "--port",
+        "8094"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "refuses viewer-chrome-over-canvas on leftovers"
+    },
+    {
+      "family": "weather",
+      "id": "presets",
+      "probe": "probe-weather-presets.mjs",
+      "args": [
+        "--port",
+        "8094"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "F9: element capture includes DOM chrome (#weatherPanel, toolbar, help, timeline); a green default-clouds gate proves nothing, a red is real"
+    },
+    {
+      "family": "weather",
+      "id": "inspector",
+      "probe": "probe-weather-inspector.mjs",
+      "args": [
+        "--port",
+        "8094"
+      ],
+      "env": {},
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "F9: element capture includes DOM chrome (#weatherPanel, toolbar, help, timeline); a green default-clouds gate proves nothing, a red is real"
+    },
+    {
+      "family": "c11",
+      "id": "c11-13",
+      "probe": "probe-c11-13-voxel-inside-camera.mjs",
+      "args": [],
+      "env": {
+        "PROBE_BASE": "http://localhost:8094"
+      },
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "own protocol (not runProbe): origin from PROBE_BASE, --output redirects the canonical artifact and the write-once first-red; watchdog 300 s + 30 s outer"
+    },
+    {
+      "family": "c11",
+      "id": "c11-90",
+      "probe": "probe-c11-90-primitive-restart-split.mjs",
+      "args": [],
+      "env": {
+        "PROBE_BASE": "http://localhost:8094"
+      },
+      "expectedExit": [
+        0,
+        1
+      ],
+      "rigs": [],
+      "instrumentNote": "own protocol (not runProbe): origin from PROBE_BASE, --output redirects the canonical artifact and the write-once first-red; watchdog 240 s + 30 s outer"
+    }
+  ]
+}

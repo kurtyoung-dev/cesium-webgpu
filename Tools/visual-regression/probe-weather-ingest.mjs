@@ -132,7 +132,6 @@
  *     reproduce its own capture (acceptance INCOMPLETE, not green, and not red)
  */
 import fs from "node:fs";
-import path from "node:path";
 
 import {
   armWebGPUDevices,
@@ -149,9 +148,10 @@ import {
 } from "./lib/clock-pin.mjs";
 import {
   ProbeRefusal,
+  bankPngCapture,
   isEntryPoint,
+  pageUrlOf,
   runProbe,
-  sha256,
 } from "./lib/probe-runtime.mjs";
 import {
   collectPinStructural,
@@ -555,17 +555,10 @@ export const descriptor = {
       [result.legs.lo, "weather-ingest-uniform-lo.png"],
     ]) {
       if (!leg?.png) continue;
-      const bytes = Buffer.from(
-        leg.png.slice(leg.png.indexOf(",") + 1),
-        "base64",
-      );
-      const file = path.join(outputDirectory, name);
-      fs.writeFileSync(file, bytes);
-      captures.push({
-        name,
-        path: file,
-        byteLength: bytes.byteLength,
-        sha256: sha256(bytes),
+      bankPngCapture(leg.png, name, {
+        outputDirectory,
+        captures,
+        url: pageUrlOf(page),
       });
       written.push(name);
     }

@@ -7,8 +7,14 @@
 // imports one name the runtime stopped re-exporting fails at its own import,
 // which is a runtime failure in a browser session, not a spec failure. This
 // spec is the one place that fails when the runtime's public surface drifts.
-// The list below is the surface at 566ad99447, before the split; a name added
-// to the runtime later is a deliberate edit to this list.
+// The list below is the surface at 566ad99447, before the split, plus the nine
+// names the frame-write seam added (bankPngCapture and pageUrlOf, which the
+// runtime defines; decodePngDataUrl, isSharedOutputRootDirectory and
+// PNG_DATA_URL_PREFIX, re-exported from probe-frame-write.mjs;
+// decidePortRefusal, throwIfProbeBaseRefused and PORT_8080_REFUSAL_MESSAGE,
+// re-exported from the decisions piece; parseOutputOnlyArgs, re-exported from
+// the args piece); a name added to the runtime later is a deliberate edit to
+// this list.
 //
 // INERTNESS. The mutant imports the runtime from a copy of its source with one
 // re-export dropped and requires the parity check to report exactly that name,
@@ -26,6 +32,7 @@ import * as browser from "./lib/probe-runtime-browser.mjs";
 import * as decisions from "./lib/probe-runtime-decisions.mjs";
 import * as receipts from "./lib/probe-runtime-receipts.mjs";
 import * as edgeSlot from "./lib/probe-edge-slot.mjs";
+import * as frameWrite from "./lib/probe-frame-write.mjs";
 import * as refusal from "./lib/probe-refusal.mjs";
 import * as sceneFrames from "./lib/probe-scene-frames.mjs";
 import { DEFAULT_SERVED_BUILD_ARTIFACTS } from "./lib/served-build-preflight.mjs";
@@ -41,6 +48,8 @@ const BASE_EXPORTS = Object.freeze([
   "EDGE_LAUNCH_ARGS",
   "EDGE_SLOT_STALE_AFTER_MS",
   "INCIDENT_ARTIFACT_SUFFIX",
+  "PNG_DATA_URL_PREFIX",
+  "PORT_8080_REFUSAL_MESSAGE",
   "PROBE_EXIT_CODES",
   "ProbeRefusal",
   "RENDERERS",
@@ -51,6 +60,7 @@ const BASE_EXPORTS = Object.freeze([
   "acceptedDecision",
   "acquireEdgeSlot",
   "assembleReceipt",
+  "bankPngCapture",
   "buildIncidentRecord",
   "buildMarkdownSummary",
   "buildRuntimeReceipt",
@@ -58,16 +68,21 @@ const BASE_EXPORTS = Object.freeze([
   "decideCaptureLiveness",
   "decideEdgeSlot",
   "decideOriginRefusal",
+  "decidePortRefusal",
   "decideRenderReadyRefusal",
   "decideServedBuildRefusal",
+  "decodePngDataUrl",
   "driveSceneFrames",
   "exitCodeForOutcome",
   "installSandcastle2OriginRewrite",
   "installSceneFrameDriver",
   "isEntryPoint",
+  "isSharedOutputRootDirectory",
   "launchEdge",
   "normalizeJson",
   "outcomeOfRun",
+  "pageUrlOf",
+  "parseOutputOnlyArgs",
   "parseProbeArgs",
   "refusedDecision",
   "reportFileNameFor",
@@ -75,6 +90,7 @@ const BASE_EXPORTS = Object.freeze([
   "sha256",
   "throwForDecision",
   "throwIfDeviceLost",
+  "throwIfProbeBaseRefused",
   "withEdgeSlot",
 ]);
 
@@ -88,16 +104,25 @@ const OWNERS = Object.freeze([
       "CORE_OPTION_SPECS",
       "RENDERERS",
       "REQUIRED_SERVED_ARTIFACTS",
+      "parseOutputOnlyArgs",
     ],
   ],
   [
     "probe-runtime-decisions.mjs",
     decisions,
     [
+      "PORT_8080_REFUSAL_MESSAGE",
       "decideOriginRefusal",
+      "decidePortRefusal",
       "decideRenderReadyRefusal",
       "decideServedBuildRefusal",
+      "throwIfProbeBaseRefused",
     ],
+  ],
+  [
+    "probe-frame-write.mjs",
+    frameWrite,
+    ["PNG_DATA_URL_PREFIX", "decodePngDataUrl", "isSharedOutputRootDirectory"],
   ],
   [
     "probe-runtime-browser.mjs",
@@ -176,8 +201,8 @@ function surfaceDrift(namespace) {
   return { missing, extra, notSame };
 }
 
-test("the runtime exports exactly the 40 names it exported before the split plus reportFileNameFor", () => {
-  assert.equal(BASE_EXPORTS.length, 41);
+test("the runtime exports exactly the 40 names it exported before the split plus reportFileNameFor and the nine frame-write seam names", () => {
+  assert.equal(BASE_EXPORTS.length, 50);
   assert.deepEqual([...BASE_EXPORTS].sort(), [...BASE_EXPORTS]);
   assert.deepEqual(Object.keys(runtime).sort(), [...BASE_EXPORTS]);
 });
@@ -197,9 +222,11 @@ test("every moved name is the same binding as its companion's", () => {
 
 test("the names that stayed in the runtime are functions it defines itself", () => {
   for (const name of [
+    "bankPngCapture",
     "captureElement",
     "decideCaptureLiveness",
     "isEntryPoint",
+    "pageUrlOf",
     "parseProbeArgs",
     "runProbe",
     "throwIfDeviceLost",
@@ -227,8 +254,8 @@ test("the four value parsers are not part of the runtime's public surface", () =
 test("MUTANT (inertness): a runtime that drops one re-export is reported by name", async () => {
   const mutated = await importMutated(RUNTIME_PATH, [
     [
-      "  sha256,\n  throwForDecision,\n  withEdgeSlot,\n};",
-      "  throwForDecision,\n  withEdgeSlot,\n};",
+      "  sha256,\n  throwForDecision,\n  throwIfProbeBaseRefused,\n  withEdgeSlot,\n};",
+      "  throwForDecision,\n  throwIfProbeBaseRefused,\n  withEdgeSlot,\n};",
     ],
   ]);
   assert.equal(

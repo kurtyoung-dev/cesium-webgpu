@@ -3,6 +3,8 @@
  "report": {
   "probe": "landing-cells",
   "generatedAt": "<varies>",
+  "startedAt": "<varies>",
+  "elapsedMs": "<varies>",
   "origin": "http://localhost:8094",
   "options": {
    "port": 8094,
@@ -47,7 +49,9 @@
     "liveness": {
      "state": "live",
      "frameNumber": 1
-    }
+    },
+    "url": null,
+    "capturedAt": "<varies>"
    },
    {
     "name": "E-D-webgpu-run0",
@@ -58,7 +62,9 @@
     "liveness": {
      "state": "live",
      "frameNumber": 1
-    }
+    },
+    "url": null,
+    "capturedAt": "<varies>"
    },
    {
     "name": "E-F-webgpu-run0",
@@ -69,7 +75,9 @@
     "liveness": {
      "state": "live",
      "frameNumber": 1
-    }
+    },
+    "url": null,
+    "capturedAt": "<varies>"
    },
    {
     "name": "E-T-flight-webgpu-run0",
@@ -80,7 +88,9 @@
     "liveness": {
      "state": "live",
      "frameNumber": 1
-    }
+    },
+    "url": null,
+    "capturedAt": "<varies>"
    },
    {
     "name": "E-BGL-webgpu-run0",
@@ -91,7 +101,9 @@
     "liveness": {
      "state": "live",
      "frameNumber": 1
-    }
+    },
+    "url": null,
+    "capturedAt": "<varies>"
    }
   ],
   "verdicts": [
