@@ -842,22 +842,66 @@ function sourceSection(source, start, end) {
   return source.slice(startIndex, endIndex);
 }
 
+const TICK = "environmentMapManager.update(frameState);";
+const SHOW_GATE = "if (this.show || ignoreCommands) {";
+
+// The tick lives in `updateForPass`, at the head of the render-pass block and
+// ahead of the `show` gate that guards the tileset update. The section is the
+// text from that block's opening to that gate, so a tick moved behind the gate
+// is not in it, and a tick behind a `show` or selected-tiles condition of its
+// own is preceded by that condition.
+function assertTickOutsideEveryGate(source) {
+  const section = sourceSection(
+    source,
+    "if (passOptions.isRender) {",
+    SHOW_GATE,
+  );
+  assert.ok(
+    source.indexOf("updateForPass(frameState, tilesetPassState) {") <
+      source.indexOf(section),
+    "the render-pass block must be inside updateForPass",
+  );
+  assert.ok(section.includes(TICK), "the render-pass block must hold the tick");
+  const beforeTick = section.slice(0, section.indexOf(TICK) + TICK.length);
+  assert.doesNotMatch(beforeTick, /this\.show/);
+  assert.doesNotMatch(beforeTick, /_selectedTiles/);
+}
+
 test("the tileset environment tick stays outside every consumer gate", () => {
   // Regression guard for C11-REVIEW-2026-08-01 defect 3. The scheduler may
   // bound this manager's GPU work, but the tick that advances its state machine
   // must never move behind `show` / selected-tiles.
-  const section = sourceSection(
-    tilesetSource,
-    "if (passOptions.isRender) {",
-    "// Update clipping polygons",
-  );
-  assert.match(section, /environmentMapManager\.update\(frameState\);/);
-  const tickEnd =
-    section.indexOf("environmentMapManager.update(frameState);") +
-    "environmentMapManager.update(frameState);".length;
-  const beforeTick = section.slice(0, tickEnd);
-  assert.doesNotMatch(beforeTick, /this\.show/);
-  assert.doesNotMatch(beforeTick, /_selectedTiles/);
+  assertTickOutsideEveryGate(tilesetSource);
+});
+
+test("the tick guard turns red when the tick moves behind a consumer gate", () => {
+  const mutate = (replacement) => {
+    assert.equal(
+      tilesetSource.split(TICK).length - 1,
+      1,
+      "the tick must occur exactly once in the tileset source",
+    );
+    return tilesetSource.replace(TICK, () => replacement);
+  };
+  const mutants = {
+    "tick behind its own show condition": mutate(
+      `if (this.show) {\n${TICK}\n}`,
+    ),
+    "tick behind a selected-tiles condition": mutate(
+      `if (this._selectedTiles.length > 0) {\n${TICK}\n}`,
+    ),
+    "tick moved inside the show gate": mutate("void 0;").replace(
+      SHOW_GATE,
+      () => `${SHOW_GATE}\n${TICK}`,
+    ),
+  };
+  for (const [label, source] of Object.entries(mutants)) {
+    assert.throws(
+      () => assertTickOutsideEveryGate(source),
+      assert.AssertionError,
+      label,
+    );
+  }
 });
 
 test("the deferred path commits no refresh bookkeeping", () => {

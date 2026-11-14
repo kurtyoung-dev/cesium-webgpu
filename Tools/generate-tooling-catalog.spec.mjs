@@ -72,6 +72,26 @@ const LAUNCHER_REL = "Tools/generate-tooling-catalog-launcher.cjs";
 const SCRIPT = path.join(ROOT, ...LAUNCHER_REL.split("/"));
 const GENERATOR = path.join(ROOT, "Tools", "generate-tooling-catalog.mjs");
 
+// Output that grows with the tree (the staged listing, the generated catalog)
+// is read with this explicit buffer: spawnSync's default is 1 MiB, which the
+// staged listing alone has outgrown, and an overflow kills the child with a
+// null status.
+const MAX_BUFFER = 256 * 1024 * 1024;
+
+/**
+ * The assertion message for a spawn that did not succeed. A child killed for
+ * overflowing the buffer has a null status and an empty stderr, so the message
+ * carries the spawn error and names the buffer when that is the cause.
+ */
+function spawnFailure(label, result) {
+  const stderr = result.stderr?.toString("utf8") ?? "";
+  const overflow =
+    result.error?.code === "ENOBUFS"
+      ? " (the output outgrew the spawnSync maxBuffer)"
+      : "";
+  return `${label} failed: status ${result.status}, signal ${result.signal}, error ${result.error?.message ?? "none"}${overflow}${stderr === "" ? "" : `; stderr: ${stderr}`}`;
+}
+
 function listToolingFilesFromCandidateGit(root = ROOT) {
   const result = spawnSync(
     "git",
@@ -80,7 +100,7 @@ function listToolingFilesFromCandidateGit(root = ROOT) {
       cwd: root,
       env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
       encoding: "utf8",
-      maxBuffer: 256 * 1024 * 1024,
+      maxBuffer: MAX_BUFFER,
     },
   );
   assert.equal(
@@ -125,11 +145,12 @@ function createCandidateSandbox() {
   const sourceSnapshot = spawnSync("git", ["ls-files", "--stage", "-z"], {
     cwd: ROOT,
     env: process.env,
+    maxBuffer: MAX_BUFFER,
   });
   assert.equal(
     sourceSnapshot.status,
     0,
-    sourceSnapshot.stderr?.toString("utf8"),
+    spawnFailure("git ls-files --stage -z", sourceSnapshot),
   );
   const sourceHead = spawnSync(
     "git",
@@ -262,6 +283,7 @@ function runCandidate(sandbox, args = ["--check"], extraEnv = {}) {
     cwd: ROOT,
     env: { ...sandbox.env, ...extraEnv },
     encoding: "utf8",
+    maxBuffer: MAX_BUFFER,
   });
 }
 
@@ -1683,11 +1705,12 @@ test("A1m: split and skip-worktree candidate indexes materialize as full snapsho
       const intact = spawnSync("git", ["ls-files", "--stage", "-z"], {
         cwd: ROOT,
         env: sandbox.env,
+        maxBuffer: MAX_BUFFER,
       });
       assert.equal(
         intact.status,
         0,
-        `${variant}: ${intact.stderr?.toString("utf8")}`,
+        `${variant}: ${spawnFailure("git ls-files --stage -z", intact)}`,
       );
     } finally {
       rmSync(sandbox.root, { recursive: true, force: true });

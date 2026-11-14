@@ -72,6 +72,32 @@ test.after(() => {
 });
 
 /**
+ * The one pack entry (the object that carries `files`) in the text
+ * `npm pack --json` printed. npm 11 and earlier print an array of entries; npm
+ * 12 prints an object keyed by package name. A text that holds neither throws
+ * an error that names what it held.
+ */
+function packEntryFromJson(stdout) {
+  const parsed = JSON.parse(stdout);
+  const entries = Array.isArray(parsed)
+    ? parsed
+    : parsed !== null && typeof parsed === "object"
+      ? Object.values(parsed)
+      : [];
+  const [entry] = entries;
+  if (
+    entry === null ||
+    typeof entry !== "object" ||
+    !Array.isArray(entry.files)
+  ) {
+    throw new Error(
+      `npm pack --json printed neither an array of pack entries nor an object keyed by package name: ${stdout.slice(0, 200)}`,
+    );
+  }
+  return entry;
+}
+
+/**
  * The paths `npm pack` would put in a tarball for a package whose top level is
  * `topLevelDir` and whose manifest is `packageJsonPath`. Only the top level is
  * reproduced (plus one placeholder under `Source/`), which is all the `files`
@@ -97,9 +123,36 @@ function packedPaths(topLevelDir, packageJsonPath) {
     { encoding: "utf8", shell: true },
   );
   assert.equal(result.status, 0, `npm pack failed: ${result.stderr}`);
-  const [pack] = JSON.parse(result.stdout);
+  const pack = packEntryFromJson(result.stdout);
   return new Set(pack.files.map((file) => file.path));
 }
+
+test("the pack parser takes the array npm 11 prints", () => {
+  const entry = { name: "x", files: [{ path: "index.js" }] };
+  assert.equal(
+    packEntryFromJson(JSON.stringify([entry])).files[0].path,
+    "index.js",
+  );
+});
+
+test("the pack parser takes the object keyed by package name npm 12 prints", () => {
+  const entry = { name: "@cesium/x", files: [{ path: "index.js" }] };
+  assert.equal(
+    packEntryFromJson(JSON.stringify({ "@cesium/x": entry })).files[0].path,
+    "index.js",
+  );
+});
+
+test("the pack parser names what it received when it is neither shape", () => {
+  for (const stdout of ['"text"', "null", "[]", "{}", '{"a":{"b":1}}', "[7]"]) {
+    assert.throws(
+      () => packEntryFromJson(stdout),
+      /neither an array of pack entries nor an object keyed by package name/,
+      `input ${stdout}`,
+    );
+  }
+  assert.throws(() => packEntryFromJson('{"a":1}'), /\{"a":1\}/);
+});
 
 function packageJsonFor(name) {
   return name === "engine"

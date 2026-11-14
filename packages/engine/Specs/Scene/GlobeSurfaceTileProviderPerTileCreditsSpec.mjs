@@ -40,41 +40,27 @@
  * `GlobeSurfaceTileProviderRendering.js` is a leaf `.js` module itself, but it
  * transitively imports `Renderer/AutomaticUniforms.js`, which imports the
  * TypeScript-only `Scene/LightTypes.ts` under its `.js` build specifier — so
- * loading it from plain Node needs the same two loader hooks
- * `PickingMostDetailedSupportSpec.mjs` established for exactly this shape
- * (non-leaf engine TypeScript reached through an otherwise-plain-JS module):
- * the shared `.js`-specifier-that-is-really-`.ts` resolver, and a stub for
- * generated `Shaders/*.js` build output absent from a clean checkout (this
- * file's own import graph does not read shader text, so an empty module is a
- * safe substitute). Copied rather than re-derived, per that file's own
- * comment on why the hooks exist.
+ * loading it from plain Node needs the same loader hooks
+ * `PickingMostDetailedSupportSpec.mjs` uses for exactly this shape (non-leaf
+ * engine TypeScript reached through an otherwise-plain-JS module), on any
+ * supported Node version and without a Node flag: the shared
+ * `.js`-specifier-that-is-really-`.ts` resolver, a stub for generated
+ * `Shaders/*.js` build output absent from a clean checkout (this file's own
+ * import graph does not read shader text, so an empty module is a safe
+ * substitute), and a load hook that compiles each engine `.ts` file through the
+ * shared esbuild transform
+ * (`Tools/visual-regression/lib/engine-ts-transform.mjs`), which erases enums
+ * and drops an import that is used only as a type.
  *
  * Run: node --test packages/engine/Specs/Scene/GlobeSurfaceTileProviderPerTileCreditsSpec.mjs
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { spawnSync } from "node:child_process";
 import { registerHooks } from "node:module";
-import process from "node:process";
 import test from "node:test";
 import { URL, fileURLToPath } from "node:url";
 
-const SELF = fileURLToPath(import.meta.url);
-const RETRY_FLAG = "CESIUM_SPEC_TS_TRANSFORM_RETRY";
-
-if (process.features.typescript !== "transform" && !process.env[RETRY_FLAG]) {
-  const env = { ...process.env, [RETRY_FLAG]: "1" };
-  // `node --test` marks its file children with NODE_TEST_CONTEXT; inheriting it
-  // makes the re-executed process report nothing and exit 0, which would turn
-  // every assertion below into a silent pass.
-  delete env.NODE_TEST_CONTEXT;
-  const child = spawnSync(
-    process.execPath,
-    ["--experimental-transform-types", "--no-warnings", SELF],
-    { stdio: "inherit", env: env },
-  );
-  process.exit(child.status ?? 1);
-}
+import { transformEngineTypeScript } from "../../../../Tools/visual-regression/lib/engine-ts-transform.mjs";
 
 const EMPTY_SHADER_MODULE = "data:text/javascript,export default %22%22;";
 
@@ -94,27 +80,15 @@ registerHooks({
     return nextResolve(specifier, context);
   },
   load(url, context, nextLoad) {
-    const loaded = nextLoad(url, context);
-    if (!url.endsWith(".ts") || !loaded.source) {
-      return loaded;
+    if (url.startsWith("file:") && url.endsWith(".ts")) {
+      const file = fileURLToPath(url);
+      return {
+        format: "module",
+        source: transformEngineTypeScript(fs.readFileSync(file, "utf8"), file),
+        shortCircuit: true,
+      };
     }
-    const source = loaded.source.toString();
-    const typeOnlyExports = new Set();
-    const declaration =
-      /^export\s+(?:declare\s+)?(?:interface|type)\s+([A-Za-z0-9_$]+)/gm;
-    let match = declaration.exec(source);
-    while (match !== null) {
-      typeOnlyExports.add(match[1]);
-      match = declaration.exec(source);
-    }
-    if (typeOnlyExports.size === 0) {
-      return loaded;
-    }
-    const placeholders = [...typeOnlyExports]
-      .map((name) => `export const ${name} = undefined;`)
-      .join("\n");
-    loaded.source = `${source}\n${placeholders}\n`;
-    return loaded;
+    return nextLoad(url, context);
   },
 });
 

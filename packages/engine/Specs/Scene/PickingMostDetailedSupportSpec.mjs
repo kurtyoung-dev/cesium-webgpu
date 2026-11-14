@@ -20,47 +20,28 @@
  * suffix would break the whole engine spec bundle.
  *
  * Everything under test is the SHIPPED module. Two loader hooks make that
- * possible from plain Node, and neither one touches the code being asserted:
+ * possible from plain Node, on any supported Node version and without a Node
+ * flag, and neither one touches the code being asserted:
  *
  *   - Generated GLSL/WGSL string modules under `Source/Shaders/` are build
  *     output and are absent from a clean checkout. Any missing `Shaders/*.js`
  *     resolves to an empty-string module — the same substitution the
  *     variant-alias build plugin makes, and shader text is not on any path this
  *     spec exercises.
- *   - Node's TypeScript support elides only imports marked `type`, so engine
- *     `.ts` modules that import an interface without the keyword fail to link.
- *     A load hook appends `export const <Name> = undefined;` for every
- *     `export interface` / `export type` in a `.ts` file. Those names have no
- *     runtime value by construction, so nothing real is shadowed.
- *
- * Enums additionally need `--experimental-transform-types`; rather than make
- * the caller remember a flag, the file re-executes itself once with it.
+ *   - Engine `.ts` modules hold syntax Node's strip-only type stripping cannot
+ *     erase (enums), and import interfaces without the `type` keyword. The load
+ *     hook compiles each one through the shared esbuild transform
+ *     (`Tools/visual-regression/lib/engine-ts-transform.mjs`), which erases
+ *     enums and drops an import that is used only as a type.
  */
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { registerHooks } from "node:module";
-import process from "node:process";
 import test from "node:test";
 import { setTimeout } from "node:timers";
 import { URL, fileURLToPath } from "node:url";
 
-const SELF = fileURLToPath(import.meta.url);
-const RETRY_FLAG = "CESIUM_SPEC_TS_TRANSFORM_RETRY";
-
-if (process.features.typescript !== "transform" && !process.env[RETRY_FLAG]) {
-  const env = { ...process.env, [RETRY_FLAG]: "1" };
-  // `node --test` marks its file children with NODE_TEST_CONTEXT; inheriting it
-  // makes the re-executed process report nothing and exit 0, which would turn
-  // every assertion below into a silent pass.
-  delete env.NODE_TEST_CONTEXT;
-  const child = spawnSync(
-    process.execPath,
-    ["--experimental-transform-types", "--no-warnings", SELF],
-    { stdio: "inherit", env: env },
-  );
-  process.exit(child.status ?? 1);
-}
+import { transformEngineTypeScript } from "../../../../Tools/visual-regression/lib/engine-ts-transform.mjs";
 
 const EMPTY_SHADER_MODULE = "data:text/javascript,export default %22%22;";
 
@@ -80,27 +61,15 @@ registerHooks({
     return nextResolve(specifier, context);
   },
   load(url, context, nextLoad) {
-    const loaded = nextLoad(url, context);
-    if (!url.endsWith(".ts") || !loaded.source) {
-      return loaded;
+    if (url.startsWith("file:") && url.endsWith(".ts")) {
+      const file = fileURLToPath(url);
+      return {
+        format: "module",
+        source: transformEngineTypeScript(fs.readFileSync(file, "utf8"), file),
+        shortCircuit: true,
+      };
     }
-    const source = loaded.source.toString();
-    const typeOnlyExports = new Set();
-    const declaration =
-      /^export\s+(?:declare\s+)?(?:interface|type)\s+([A-Za-z0-9_$]+)/gm;
-    let match = declaration.exec(source);
-    while (match !== null) {
-      typeOnlyExports.add(match[1]);
-      match = declaration.exec(source);
-    }
-    if (typeOnlyExports.size === 0) {
-      return loaded;
-    }
-    const placeholders = [...typeOnlyExports]
-      .map((name) => `export const ${name} = undefined;`)
-      .join("\n");
-    loaded.source = `${source}\n${placeholders}\n`;
-    return loaded;
+    return nextLoad(url, context);
   },
 });
 

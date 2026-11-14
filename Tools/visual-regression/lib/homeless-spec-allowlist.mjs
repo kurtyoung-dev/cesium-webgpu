@@ -31,8 +31,6 @@ export const HOMELESS_SPEC_ALLOWLIST = Object.freeze({
     "red at HEAD (unbuilt tree): historical presets retain exact UTC and observer coordinates; civil UTC values stay distinct from separately labelled time-scale ref; solar observers are path-verified while lunar events use visibility; the lunar list includes independently interesting real conjunctions; row DX-HOMELESS-SPECS-RED-AT-HEAD",
   "Tools/visual-regression/eclipse-scene-dimming.spec.mjs":
     "red at HEAD (unbuilt tree): WebGPU model direct lighting carries the factor too (site 5); row DX-HOMELESS-SPECS-RED-AT-HEAD",
-  "Tools/visual-regression/environment-refresh-drain.spec.mjs":
-    "red at HEAD (unbuilt tree): the tileset environment tick stays outside every consumer gate; row DX-HOMELESS-SPECS-RED-AT-HEAD",
   "Tools/visual-regression/environment-refresh-priority.spec.mjs":
     "red at HEAD (unbuilt tree): Scene and backend source seams preserve exact collection ownership; row DX-HOMELESS-SPECS-RED-AT-HEAD",
   "Tools/visual-regression/globe-night-imagery-magnification-fade.spec.mjs":
