@@ -61,8 +61,6 @@ export const HOMELESS_SPEC_ALLOWLIST = Object.freeze({
     "red at HEAD (unbuilt tree): fixture package is small, exact, and contains no source-archive spill; row DX-HOMELESS-SPECS-RED-AT-HEAD",
   "Tools/visual-regression/pointcloud-voxel-public-correctness.spec.mjs":
     "red at HEAD (unbuilt tree): WebGPU EDL composites at pass-local hooks and remains fail-open; row DX-HOMELESS-SPECS-RED-AT-HEAD",
-  "Tools/visual-regression/prohibited-reader-allowlist.spec.mjs":
-    "red at HEAD (unbuilt tree): CONTROL: sanctioned live-canvas toDataURL sources stay clean; row DX-HOMELESS-SPECS-RED-AT-HEAD",
   "Tools/visual-regression/q131-edge-pipeline-matches-pass.spec.mjs":
     "red at HEAD (unbuilt tree): C2: the scene-FB fallback branch binds the single-target variant; row DX-HOMELESS-SPECS-RED-AT-HEAD",
   "Tools/visual-regression/spec-cesium-viewer-dev-ui.spec.mjs":
