@@ -17,7 +17,14 @@ import { rimraf } from "rimraf";
 
 import { escapeCharacters } from "../Tools/rollup-plugin-strip-pragma/regex.js";
 import { bundleVariantPlugin } from "./bundleVariantPlugin.js";
-import { stampSpecBundleManifest } from "./specBundleFreshness.js";
+import {
+  OUTPUT_MANIFEST_FILENAME,
+  engineWorkersRecord,
+  outputRecord,
+  runStampedBuild,
+  specRecord,
+  testWorkersRecord,
+} from "./specBundleFreshness.js";
 
 import { mkdirp } from "mkdirp";
 import assert from "node:assert";
@@ -957,8 +964,16 @@ export default "${escapedContents}";\n`;
  * @param {boolean} minify
  * @param {string} minifyStateFilePath
  * @param {Workspace} workspace
+ * @param {object} [options]
+ * @param {boolean} [options.force=false] Regenerate every module, whatever the
+ *   mtimes say (a build that stamps a freshness record).
  */
-export async function glslToJavaScript(minify, minifyStateFilePath, workspace) {
+export async function glslToJavaScript(
+  minify,
+  minifyStateFilePath,
+  workspace,
+  options = {},
+) {
   // Ensure the directory for the state file exists. On a fresh CI
   // checkout `Build/` does not exist yet; the original ordering ran
   // `wgslToJavaScript` first (which only reads this path), and the
@@ -1036,6 +1051,7 @@ export async function glslToJavaScript(minify, minifyStateFilePath, workspace) {
       const glslFileModified = statSync(glslFile).mtime.getTime();
 
       if (
+        !options.force &&
         jsFileExists &&
         jsFileModified > glslFileModified &&
         jsFileModified > minifyStateFileLastModified
@@ -1139,9 +1155,17 @@ export function wgslModuleContents(source, minify) {
  * @param {boolean} minify
  * @param {string} minifyStateFilePath
  * @param {Workspace} workspace
+ * @param {object} [options]
+ * @param {boolean} [options.force=false] Regenerate every module, whatever the
+ *   mtimes say (a build that stamps a freshness record).
  * @returns {Promise<void>}
  */
-export async function wgslToJavaScript(minify, minifyStateFilePath, workspace) {
+export async function wgslToJavaScript(
+  minify,
+  minifyStateFilePath,
+  workspace,
+  options = {},
+) {
   const expectedMinifyState = minify.toString();
   const currentMinifyState = existsSync(minifyStateFilePath)
     ? await readFile(minifyStateFilePath, { encoding: "utf8" })
@@ -1200,6 +1224,7 @@ export async function wgslToJavaScript(minify, minifyStateFilePath, workspace) {
       const wgslFileModified = statSync(wgslFile).mtime.getTime();
 
       if (
+        !options.force &&
         jsFileExists &&
         jsFileModified > wgslFileModified &&
         jsFileModified > minifyStateFileLastModified
@@ -1402,8 +1427,11 @@ export async function copyVariantSharedAssets(fromVariant, toVariant) {
     // (Cesium.js + sourcemap), CJS (index.cjs + sourcemap), the split
     // chunks subdir, and the package.json shim that buildCesium writes
     // for CJS interop.
+    // The source record is left out too: it names the directory it vouches
+    // for, and the variant directory's own build removes it.
     const globs = [
       `${fromDir.replace(/\\/g, "/")}/**/*`,
+      `!${fromDir.replace(/\\/g, "/")}/${OUTPUT_MANIFEST_FILENAME}`,
       `!${fromDir.replace(/\\/g, "/")}/index.js`,
       `!${fromDir.replace(/\\/g, "/")}/index.js.map`,
       `!${fromDir.replace(/\\/g, "/")}/index.cjs`,
@@ -1464,24 +1492,41 @@ export async function bundleCombinedSpecs(options) {
 }
 
 /**
- * Regenerates the ROOT `Specs/SpecList.js`, rebundles it into `Build/Specs`,
- * and stamps the freshness manifest (C11-132). The narrow counterpart to
- * {@link buildWorkspaceSpecBundle} for the default and `--release` lanes.
+ * Regenerates the ROOT `Specs/SpecList.js` and the shader modules the specs
+ * import, rebundles it into `Build/Specs`, and stamps the freshness manifest
+ * (C11-132). The narrow counterpart to {@link buildWorkspaceSpecBundle} for
+ * the default and `--release` lanes; it does not write the test workers.
  *
  * @param {object} [options]
  * @param {boolean} [options.incremental=false] true if the build should be cached for repeated rebuilds
  * @param {boolean} [options.write=true] true if build output should be written to disk
+ * @param {import("./specBundleFreshness.js").SourceSnapshot} [options.snapshot] The
+ *   inputs as a freshness check just hashed them; the record is stamped from it.
  */
 export async function buildCombinedSpecBundle(options = {}) {
   const write = options.write ?? true;
-  await createCombinedSpecList();
-  await bundleCombinedSpecs({
-    incremental: options.incremental ?? false,
-    write: write,
-  });
-  if (write) {
-    await stampSpecBundleManifest("combined");
-  }
+  const incremental = options.incremental ?? false;
+  return runStampedBuild(
+    write ? [specRecord("combined")] : [],
+    async () => {
+      if (write) {
+        await regenerateInlinedSources({
+          glslMinify: false,
+          wgslMinify: false,
+          // The combined bundle takes the engine and widgets from the Cesium
+          // global through externalResolvePlugin, so it inlines no package
+          // barrel and none is regenerated here.
+          indexes: [],
+        });
+      }
+      await createCombinedSpecList();
+      return bundleCombinedSpecs({
+        incremental: incremental,
+        write: write,
+      });
+    },
+    { snapshot: options.snapshot, stamp: !incremental },
+  );
 }
 
 /**
@@ -1506,6 +1551,31 @@ export async function bundleTestWorkers(options) {
     external: ["fs", "path"],
     write: options.write,
   });
+}
+
+/**
+ * Bundles the test workers every `gulp test` lane serves into
+ * `Build/Specs/TestWorkers` and stamps their record. They import
+ * `@cesium/engine`, so the engine shader modules and package barrel are
+ * regenerated first. The workspace lanes run it after `buildEngine`.
+ *
+ * @param {object} [options]
+ * @param {import("./specBundleFreshness.js").SourceSnapshot} [options.snapshot] The
+ *   inputs as a freshness check just hashed them; the record is stamped from it.
+ */
+export async function buildTestWorkers(options = {}) {
+  return runStampedBuild(
+    [testWorkersRecord()],
+    async () => {
+      await regenerateInlinedSources({
+        glslMinify: false,
+        wgslMinify: false,
+        indexes: ["engine"],
+      });
+      return bundleTestWorkers({ write: true });
+    },
+    { snapshot: options.snapshot },
+  );
 }
 
 /**
@@ -1849,13 +1919,47 @@ async function bundleSpecs(options) {
   });
 }
 
+/** The state file the engine build's shader generators share. */
+const ENGINE_SHADER_STATE = "packages/engine/Build/minifyShaders.state";
+
 /**
- * Builds the engine workspace.
+ * Regenerates every generated file a build's bytes inline: all the GLSL and
+ * WGSL shader modules (forced, so no module is kept on the strength of its
+ * mtime), in the flavour the build serves, and the package index barrels
+ * named. A build that stamps a record calls it inside the build it hands
+ * `runStampedBuild`, so after the snapshot: a source edited before that point
+ * is both hashed and regenerated, and one edited after it leaves the record
+ * stale.
+ *
+ * @param {object} options
+ * @param {boolean} options.glslMinify
+ * @param {boolean} options.wgslMinify
+ * @param {Workspace[]} options.indexes
+ */
+async function regenerateInlinedSources(options) {
+  await glslToJavaScript(options.glslMinify, ENGINE_SHADER_STATE, "engine", {
+    force: true,
+  });
+  await wgslToJavaScript(options.wgslMinify, ENGINE_SHADER_STATE, "engine", {
+    force: true,
+  });
+  for (const workspace of options.indexes) {
+    await createIndexJs(workspace);
+  }
+}
+
+/**
+ * Builds the engine workspace: its index bundles, the engine workers and the
+ * engine spec bundle. A build that writes stamps the engine workers' record
+ * and the engine spec record.
  *
  * @param {object} options
  * @param {boolean} [options.incremental=false] True if builds should be generated incrementally.
  * @param {boolean} [options.minify=false] True if bundles should be minified.
+ * @param {boolean} [options.removePragmas=false] True if the workers should have debug pragmas stripped out.
  * @param {boolean} [options.write=true] True if bundles generated are written to files instead of in-memory buffers.
+ * @param {import("./specBundleFreshness.js").SourceSnapshot} [options.snapshot] The
+ *   inputs as a freshness check just hashed them; the records are stamped from it.
  */
 export const buildEngine = async (options) => {
   options = options || {};
@@ -1864,25 +1968,35 @@ export const buildEngine = async (options) => {
   const minify = options.minify ?? false;
   const write = options.write ?? true;
 
+  return runStampedBuild(
+    write
+      ? [
+          engineWorkersRecord({
+            minify,
+            removePragmas: options.removePragmas,
+          }),
+          specRecord("engine"),
+        ]
+      : [],
+    () => buildEngineOutputs(options, { incremental, minify, write }),
+    { snapshot: options.snapshot, stamp: !incremental },
+  );
+};
+
+/**
+ * @param {object} options The options `buildEngine` was given.
+ * @param {{incremental: boolean, minify: boolean, write: boolean}} resolved
+ */
+async function buildEngineOutputs(options, { incremental, minify, write }) {
   // Create Build folder to place build artifacts.
   mkdirp.sync("packages/engine/Build");
 
-  // Convert GLSL files to JavaScript modules.
-  await glslToJavaScript(
-    minify,
-    "packages/engine/Build/minifyShaders.state",
-    "engine",
-  );
-
-  // Convert WGSL files to JavaScript modules.
-  await wgslToJavaScript(
-    minify,
-    "packages/engine/Build/minifyShaders.state",
-    "engine",
-  );
-
-  // Create index.js
-  await createIndexJs("engine");
+  // Convert GLSL and WGSL files to JavaScript modules, then create index.js.
+  await regenerateInlinedSources({
+    glslMinify: minify,
+    wgslMinify: minify,
+    indexes: ["engine"],
+  });
 
   const outputDirectory = path.join(
     `packages/engine/Build`,
@@ -1926,56 +2040,79 @@ export const buildEngine = async (options) => {
   });
 
   // Create SpecList.js
-  await buildWorkspaceSpecBundle("engine", { incremental, write });
+  await bundleWorkspaceSpecs("engine", { incremental, write });
 
   return contexts;
-};
+}
 
 /**
- * Regenerates a workspace's `SpecList.js`, rebundles it into the directory
- * Karma serves, and stamps the freshness manifest that certifies which spec
- * sources the served bundle was built from (C11-132).
+ * Regenerates a workspace's `SpecList.js`, with the shader modules and package
+ * barrels its specs import, rebundles it into the directory Karma serves, and
+ * stamps the freshness manifest that certifies which sources the served bundle
+ * was built from (C11-132).
  *
  * Deliberately narrow: the spec bundle is a much smaller artifact than the
  * workspace build, so the freshness handshake can refresh it without dragging
- * in a full `Build/CesiumUnminified` rebuild.
+ * in a full workspace rebuild.
  *
  * @param {Workspace} workspace The workspace to rebundle specs for.
  * @param {object} [options]
  * @param {boolean} [options.incremental=false] True if builds should be generated incrementally.
  * @param {boolean} [options.write=true] True if bundles generated are written to files.
+ * @param {import("./specBundleFreshness.js").SourceSnapshot} [options.snapshot] The
+ *   inputs as a freshness check just hashed them; the record is stamped from it.
  */
 export async function buildWorkspaceSpecBundle(workspace, options = {}) {
   const incremental = options.incremental ?? false;
   const write = options.write ?? true;
+  return runStampedBuild(
+    write ? [specRecord(workspace)] : [],
+    async () => {
+      if (write) {
+        await regenerateInlinedSources({
+          glslMinify: false,
+          wgslMinify: false,
+          indexes: workspace === "widgets" ? ["engine", "widgets"] : ["engine"],
+        });
+      }
+      return bundleWorkspaceSpecs(workspace, { incremental, write });
+    },
+    { snapshot: options.snapshot, stamp: !incremental },
+  );
+}
 
+/**
+ * Writes a workspace's `SpecList.js` and bundles it. It stamps nothing: the
+ * build that calls it owns the record.
+ *
+ * @param {Workspace} workspace
+ * @param {{incremental: boolean, write: boolean}} options
+ */
+async function bundleWorkspaceSpecs(workspace, { incremental, write }) {
   const specFiles = await globby(workspaceSpecFiles[workspace]);
   const specListFile = path.join(`packages/${workspace}/Specs`, "SpecList.js");
   await createSpecListForWorkspace(specFiles, workspace, specListFile);
 
-  await bundleSpecs({
+  return bundleSpecs({
     incremental: incremental,
     outbase: `packages/${workspace}/Specs`,
     outdir: `packages/${workspace}/Build/Specs`,
     specListFile: specListFile,
     write: write,
   });
-
-  // An in-memory build wrote no bundle, so there is nothing on disk for a
-  // manifest to certify — stamping one would assert a freshness that no
-  // served artifact has.
-  if (write) {
-    await stampSpecBundleManifest(workspace, { files: specFiles });
-  }
 }
 
 /**
- * Builds the widgets workspace.
+ * Builds the widgets workspace: its index bundle and the widgets spec bundle,
+ * whose record a build that writes stamps. It never writes, and so never
+ * vouches for, the engine workers the widgets lane serves.
  *
  * @param {object} options
  * @param {boolean} [options.incremental=false] True if builds should be generated incrementally.
  * @param {boolean} [options.minify=false] True if bundles should be minified.
  * @param {boolean} [options.write=true] True if bundles generated are written to files instead of in-memory buffers.
+ * @param {import("./specBundleFreshness.js").SourceSnapshot} [options.snapshot] The
+ *   inputs as a freshness check just hashed them; the record is stamped from it.
  */
 export const buildWidgets = async (options) => {
   options = options || {};
@@ -1984,8 +2121,28 @@ export const buildWidgets = async (options) => {
   const minify = options.minify ?? false;
   const write = options.write ?? true;
 
+  return runStampedBuild(
+    write ? [specRecord("widgets")] : [],
+    () => buildWidgetsOutputs({ incremental, minify, write }),
+    { snapshot: options.snapshot, stamp: !incremental },
+  );
+};
+
+/**
+ * @param {{incremental: boolean, minify: boolean, write: boolean}} resolved
+ */
+async function buildWidgetsOutputs({ incremental, minify, write }) {
   // Generate Build folder to place build artifacts.
   mkdirp.sync("packages/widgets/Build");
+
+  // The widgets spec bundle inlines the engine, its shader modules included.
+  if (write) {
+    await regenerateInlinedSources({
+      glslMinify: minify,
+      wgslMinify: minify,
+      indexes: ["engine"],
+    });
+  }
 
   // Create index.js
   await createIndexJs("widgets");
@@ -2004,10 +2161,10 @@ export const buildWidgets = async (options) => {
   });
 
   // Create SpecList.js
-  await buildWorkspaceSpecBundle("widgets", { incremental, write });
+  await bundleWorkspaceSpecs("widgets", { incremental, write });
 
   return contexts;
-};
+}
 
 /**
  * Q-95 — prepares `outputDirectory` for a `buildCesium` rebuild: wipes it
@@ -2041,6 +2198,76 @@ export function prepareCesiumOutputDirectory(outputDirectory, clean) {
 }
 
 /**
+ * The directory `buildCesium` writes. Each variant gets its own output
+ * directory under Build/, so the bundles can coexist and be compared
+ * side-by-side. The historical `Build/Cesium` / `Build/CesiumUnminified` paths
+ * are reserved for the dual (default) variant so existing tooling and
+ * downstream consumers don't break.
+ *
+ * @param {{outputDirectory?: string}} options
+ * @param {BundleVariant} variant
+ * @param {boolean} minify
+ * @returns {string}
+ */
+function cesiumOutputDirectory(options, variant, minify) {
+  const variantDirSuffix =
+    variant === "webgl-only"
+      ? "WebGL"
+      : variant === "webgpu-only"
+        ? "WebGPU"
+        : "";
+  return (
+    options.outputDirectory ??
+    path.join(
+      "Build",
+      `Cesium${variantDirSuffix}${!minify ? "Unminified" : ""}`,
+    )
+  );
+}
+
+/**
+ * The records of what a `buildCesium` call writes. The output directory's
+ * record vouches for the Cesium.js a test lane serves and everything copied
+ * beside it, so only an IIFE build that also writes the shared assets stamps
+ * it; any other build that writes into the directory removes it. The combined
+ * spec bundle and the test workers are written with the shared assets. An
+ * incremental call (`startCesiumWatchBuild`) removes them all, and so does
+ * every rebuild of its watch; an in-memory call touches nothing.
+ *
+ * @param {object} resolved
+ * @param {string} resolved.outputDirectory
+ * @param {BundleVariant} resolved.variant
+ * @param {boolean} resolved.minify
+ * @param {boolean} resolved.removePragmas
+ * @param {boolean} resolved.iife
+ * @param {boolean} resolved.skipSharedAssets
+ * @param {boolean} resolved.write
+ * @returns {import("./specBundleFreshness.js").RecordDescriptor[]}
+ */
+function cesiumBuildRecords({
+  outputDirectory,
+  variant,
+  minify,
+  removePragmas,
+  iife,
+  skipSharedAssets,
+  write,
+}) {
+  if (!write) {
+    return [];
+  }
+  const output = outputRecord(outputDirectory, {
+    variant,
+    minify,
+    removePragmas,
+  });
+  return [
+    iife && !skipSharedAssets ? output : { ...output, stamp: false },
+    ...(skipSharedAssets ? [] : [specRecord("combined"), testWorkersRecord()]),
+  ];
+}
+
+/**
  * Build CesiumJS.
  *
  * @param {object} options
@@ -2057,6 +2284,9 @@ export function prepareCesiumOutputDirectory(outputDirectory, clean) {
  * @param {boolean} [options.skipSharedAssets=false] When true, skips workers/CSS/specs/static-asset rebuilds — used by `buildAllVariants` after the dual variant has populated the shared output dirs.
  * @param {boolean} [options.metafile=false] When true, esbuild emits `metafile.json` next to the ESM bundle for use with `scripts/analyzeBuild.js`.
  * @param {boolean} [options.clean=true] True to delete `outputDirectory` before rebuilding into it. Q-95 — pass `false` to keep the previous successful build's files (and therefore a servable bundle) on disk if this call throws before it finishes writing a replacement; every step that produces output still overwrites same-named files on success, so a clean rebuild still picks up newly added files. The only cost of `false` is that output for a REMOVED source file can linger until the next `clean: true` build.
+ * @param {boolean} [options.glslMinify=false] The flavour the GLSL shader modules are regenerated in: the one the task's engine build chose (`gulp build --minify` passes true; the release and variant tasks keep unminified GLSL).
+ * @param {import("./specBundleFreshness.js").SourceSnapshot} [options.snapshot] The
+ *   inputs as a freshness check just hashed them; the records are stamped from it.
  */
 export async function buildCesium(options) {
   const development = options.development ?? true;
@@ -2083,36 +2313,227 @@ export async function buildCesium(options) {
   // gulp task copies the shared output dirs after.
   const skipSharedAssets = options.skipSharedAssets ?? false;
   const clean = options.clean ?? true;
+  const glslMinify = options.glslMinify ?? false;
 
+  const outputDirectory = cesiumOutputDirectory(options, variant, minify);
+  const records = cesiumBuildRecords({
+    outputDirectory,
+    variant,
+    minify,
+    removePragmas,
+    iife,
+    skipSharedAssets,
+    write,
+  });
+
+  return runStampedBuild(
+    records,
+    () =>
+      buildCesiumOutputs({
+        development,
+        variant,
+        iife,
+        incremental,
+        minify,
+        node,
+        removePragmas,
+        sourcemap,
+        write,
+        skipSharedAssets,
+        clean,
+        glslMinify,
+        outputDirectory,
+        metafile: options.metafile,
+      }),
+    { snapshot: options.snapshot, stamp: !incremental },
+  );
+}
+
+/**
+ * @typedef {object} CesiumWatchBuild
+ * @property {() => Promise<void>} rebuildGlsl Regenerates the GLSL shader
+ *   modules and rebuilds the Cesium bundles.
+ * @property {() => Promise<void>} rebuildWgsl Regenerates the WGSL shader
+ *   modules and rebuilds the Cesium bundles.
+ * @property {() => Promise<void>} rebuildSources Rebuilds the Cesium bundles
+ *   and the workers of the output directory.
+ * @property {() => Promise<void>} rebuildSpecList Regenerates the combined
+ *   spec list and rebuilds the combined spec bundle.
+ * @property {() => Promise<void>} rebuildSpecs Rebuilds the combined spec
+ *   bundle.
+ * @property {() => Promise<void>} dispose Frees every build context.
+ */
+
+/**
+ * Starts the incremental build `gulp buildWatch` keeps alive, and returns the
+ * rebuild it runs for each kind of change. The incremental `buildCesium`
+ * removes the records of what it writes (the output directory, the combined
+ * spec bundle and the test workers) and stamps none, and every rebuild removes
+ * the same records again before it writes: a build that stamps while the
+ * watch is alive vouches only for bytes the watch has not rewritten since.
+ *
+ * @param {object} [options]
+ * @param {boolean} [options.minify=false] True if bundles should be minified.
+ * @param {boolean} [options.removePragmas=false] True if debug pragmas should be removed.
+ * @param {boolean} [options.sourcemap=true] True if sourcemap should be included in the generated bundles.
+ * @returns {Promise<CesiumWatchBuild>}
+ */
+export async function startCesiumWatchBuild(options = {}) {
+  const minify = options.minify ?? false;
+  const removePragmas = options.removePragmas ?? false;
+  const sourcemap = options.sourcemap ?? true;
+  /** @type {BundleVariant} */
+  const variant = "dual";
+  const outputDirectory = cesiumOutputDirectory({}, variant, minify);
+  const records = cesiumBuildRecords({
+    outputDirectory,
+    variant,
+    minify,
+    removePragmas,
+    iife: true,
+    skipSharedAssets: false,
+    write: true,
+  });
+
+  const bundles = await buildCesium({
+    outputDirectory,
+    minify,
+    removePragmas,
+    sourcemap,
+    incremental: true,
+    glslMinify: minify,
+  });
+  const esm = /** @type {esbuild.BuildContext} */ (bundles.esm);
+  const iife = /** @type {esbuild.BuildContext|undefined} */ (bundles.iife);
+  const cjs = /** @type {esbuild.BuildContext|undefined} */ (bundles.node);
+  const specs = /** @type {esbuild.BuildContext} */ (bundles.specs);
+
+  /**
+   * Every rewrite removes the records of what the watch writes before it
+   * writes, and stamps none.
+   *
+   * @param {() => Promise<void>} body
+   * @returns {() => Promise<void>}
+   */
+  const rewrite = (body) => () =>
+    runStampedBuild(records, body, { stamp: false });
+
+  const rebuildBundles = async () => {
+    await esm.rebuild();
+    if (iife) {
+      await iife.rebuild();
+    }
+    if (cjs) {
+      await cjs.rebuild();
+    }
+  };
+
+  // The five rebuilds, one body each. `rewrite` wraps every entry of this
+  // table below, in one place.
+  /** @type {Record<keyof Omit<CesiumWatchBuild, "dispose">, () => Promise<void>>} */
+  const rebuilds = {
+    rebuildGlsl: async () => {
+      await glslToJavaScript(minify, "Build/minifyShaders.state", "engine");
+      await rebuildBundles();
+    },
+    rebuildWgsl: async () => {
+      await wgslToJavaScript(minify, "Build/minifyShaders.state", "engine");
+      await rebuildBundles();
+    },
+    rebuildSources: async () => {
+      await rebuildBundles();
+      await bundleWorkers({
+        minify,
+        path: outputDirectory,
+        removePragmas,
+        sourcemap,
+      });
+    },
+    rebuildSpecList: async () => {
+      await createCombinedSpecList();
+      await specs.rebuild();
+    },
+    rebuildSpecs: async () => {
+      await specs.rebuild();
+    },
+  };
+
+  return {
+    .../** @type {Omit<CesiumWatchBuild, "dispose">} */ (
+      Object.fromEntries(
+        Object.entries(rebuilds).map(([name, body]) => [name, rewrite(body)]),
+      )
+    ),
+    dispose: async () => {
+      for (const value of Object.values(bundles)) {
+        const context =
+          /** @type {{dispose?: () => Promise<void>}|null|undefined} */ (value);
+        if (context && typeof context.dispose === "function") {
+          await context.dispose();
+        }
+      }
+    },
+  };
+}
+
+/**
+ * The writes of `buildCesium`, which owns their records.
+ *
+ * @param {object} resolved The options `buildCesium` resolved.
+ * @param {boolean} resolved.development
+ * @param {BundleVariant} resolved.variant
+ * @param {boolean} resolved.iife
+ * @param {boolean} resolved.incremental
+ * @param {boolean} resolved.minify
+ * @param {boolean} resolved.node
+ * @param {boolean} resolved.removePragmas
+ * @param {boolean} resolved.sourcemap
+ * @param {boolean} resolved.write
+ * @param {boolean} resolved.skipSharedAssets
+ * @param {boolean} resolved.clean
+ * @param {boolean} resolved.glslMinify
+ * @param {string} resolved.outputDirectory
+ * @param {boolean} [resolved.metafile]
+ */
+async function buildCesiumOutputs({
+  development,
+  variant,
+  iife,
+  incremental,
+  minify,
+  node,
+  removePragmas,
+  sourcemap,
+  write,
+  skipSharedAssets,
+  clean,
+  glslMinify,
+  outputDirectory,
+  metafile,
+}) {
   // Generate Build folder to place build artifacts.
   mkdirp.sync("Build");
 
-  // Release tasks reuse generated shader modules while alternating between
-  // unminified and minified bundles. Refresh the WGSL modules for this bundle
-  // so one output cannot inherit the other output's string payload.
-  await wgslToJavaScript(
-    minify,
-    "packages/engine/Build/minifyWgslBundle.state",
-    "engine",
-  );
-
-  // Each variant gets its own output directory under Build/, so the
-  // four bundles can coexist and be compared side-by-side. The historical
-  // `Build/Cesium` / `Build/CesiumUnminified` paths are reserved for the
-  // dual (default) variant so existing tooling and downstream consumers
-  // don't break.
-  const variantDirSuffix =
-    variant === "webgl-only"
-      ? "WebGL"
-      : variant === "webgpu-only"
-        ? "WebGPU"
-        : "";
-  const outputDirectory =
-    options.outputDirectory ??
-    path.join(
-      "Build",
-      `Cesium${variantDirSuffix}${!minify ? "Unminified" : ""}`,
+  if (write && !incremental) {
+    // A build that stamps regenerates every shader module and both package
+    // barrels the bundle inlines after its snapshot, so an edit saved after an
+    // earlier step of the same task generated them is never certified.
+    await regenerateInlinedSources({
+      glslMinify,
+      wgslMinify: minify,
+      indexes: ["engine", "widgets"],
+    });
+  } else {
+    // Release tasks reuse generated shader modules while alternating between
+    // unminified and minified bundles. Refresh the WGSL modules for this
+    // bundle so one output cannot inherit the other output's string payload.
+    await wgslToJavaScript(
+      minify,
+      "packages/engine/Build/minifyWgslBundle.state",
+      "engine",
     );
+  }
+
   prepareCesiumOutputDirectory(outputDirectory, clean);
 
   await writeFile(
@@ -2193,7 +2614,7 @@ export async function buildCesium(options) {
     write: write,
     variant: variant,
     entryPoint: entryFileForVariant(variant),
-    metafile: options.metafile,
+    metafile: metafile,
     splitting: useSplitting,
   });
 
@@ -2208,11 +2629,6 @@ export async function buildCesium(options) {
       incremental: incremental,
       write: write,
     });
-
-    // Certify which spec sources the ROOT bundle was built from (C11-132).
-    if (write) {
-      await stampSpecBundleManifest("combined");
-    }
 
     testWorkersContext = await bundleTestWorkers({
       incremental: incremental,

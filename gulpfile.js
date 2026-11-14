@@ -29,13 +29,13 @@ import {
   buildEngine,
   buildWidgets,
   buildWorkspaceSpecBundle,
-  bundleWorkers,
+  buildTestWorkers,
   glslToJavaScript,
   wgslToJavaScript,
-  createCombinedSpecList,
   copyVariantSharedAssets,
+  startCesiumWatchBuild,
 } from "./scripts/build.js";
-import { ensureSpecBundleFresh } from "./scripts/specBundleFreshness.js";
+import { planSpecTestLane } from "./scripts/specTestLanePlan.js";
 
 // Determines the scope of the workspace packages. If the scope is set to cesium, the workspaces should be @cesium/engine.
 // This should match the scope of the dependencies of the root level package.json.
@@ -119,6 +119,8 @@ export async function build() {
     removePragmas: removePragmas,
     sourcemap: sourcemap,
     node: node,
+    // buildCesium regenerates the GLSL modules in the flavour converted above.
+    glslMinify: minify,
   };
 
   // Configure build target.
@@ -141,47 +143,24 @@ export const buildWatch = gulp.series(build, async function buildWatch() {
   const removePragmas = argv.pragmas ? argv.pragmas : false;
   const sourcemap = argv.sourcemap ? argv.sourcemap : true;
 
-  const outputDirectory = join("Build", `Cesium${!minify ? "Unminified" : ""}`);
-
-  const bundles = await buildCesium({
+  // An incremental build rewrites its output, the combined spec bundle and the
+  // test workers on every change without stamping, so it removes their records
+  // when it starts and again before every rewrite: the next `gulp test`
+  // rebuilds instead of trusting them, even after a build that stamped them
+  // while the watch was running.
+  const watch = await startCesiumWatchBuild({
     minify: minify,
-    path: outputDirectory,
     removePragmas: removePragmas,
     sourcemap: sourcemap,
-    incremental: true,
   });
 
-  const esm = bundles.esm;
-  const cjs = bundles.node;
-  const iife = bundles.iife;
-  const specs = bundles.specs;
-
-  gulp.watch(shaderFiles, async () => {
-    glslToJavaScript(minify, "Build/minifyShaders.state", "engine");
-    await esm.rebuild();
-
-    if (iife) {
-      await iife.rebuild();
-    }
-
-    if (cjs) {
-      await cjs.rebuild();
-    }
-  });
+  gulp.watch(shaderFiles, watch.rebuildGlsl);
 
   // Watch WGSL shader files for WebGPU
-  gulp.watch(["packages/engine/Source/Shaders/WebGPU/**/*.wgsl"], async () => {
-    wgslToJavaScript(minify, "Build/minifyShaders.state", "engine");
-    await esm.rebuild();
-
-    if (iife) {
-      await iife.rebuild();
-    }
-
-    if (cjs) {
-      await cjs.rebuild();
-    }
-  });
+  gulp.watch(
+    ["packages/engine/Source/Shaders/WebGPU/**/*.wgsl"],
+    watch.rebuildWgsl,
+  );
 
   gulp.watch(
     [
@@ -189,24 +168,7 @@ export const buildWatch = gulp.series(build, async function buildWatch() {
       // Shader results are generated in the previous watch task; no need to rebuild twice
       "!Source/Shaders/**",
     ],
-    async () => {
-      await esm.rebuild();
-
-      if (iife) {
-        await iife.rebuild();
-      }
-
-      if (cjs) {
-        await cjs.rebuild();
-      }
-
-      await bundleWorkers({
-        minify: minify,
-        path: outputDirectory,
-        removePragmas: removePragmas,
-        sourcemap: sourcemap,
-      });
-    },
+    watch.rebuildSources,
   );
 
   gulp.watch(
@@ -214,10 +176,7 @@ export const buildWatch = gulp.series(build, async function buildWatch() {
     {
       events: ["add", "unlink"],
     },
-    async () => {
-      createCombinedSpecList();
-      await specs.rebuild();
-    },
+    watch.rebuildSpecList,
   );
 
   gulp.watch(
@@ -225,24 +184,12 @@ export const buildWatch = gulp.series(build, async function buildWatch() {
     {
       events: ["change"],
     },
-    async () => {
-      await specs.rebuild();
-    },
+    watch.rebuildSpecs,
   );
 
-  process.on("SIGINT", () => {
+  process.on("SIGINT", async () => {
     // Free up resources
-    esm.dispose();
-
-    if (iife) {
-      iife.dispose();
-    }
-
-    if (cjs) {
-      cjs.dispose();
-    }
-
-    specs.dispose();
+    await watch.dispose();
 
     process.exit(0);
   });
@@ -1026,63 +973,32 @@ export async function test() {
   let grep = argv.includeName ?? argv.grep ?? "";
   grep = grep.replaceAll(/(Spec)?(\.js)?$/g, "");
 
-  let workspace = argv.workspace;
-  if (workspace) {
-    workspace = workspace.replaceAll(`@${scope}/`, ``);
-  }
-
-  // C11-132 — Karma serves one of three spec bundles depending on the lane.
-  // The workspace lane serves `packages/<ws>/Build/Specs`, which `buildCesium`
-  // does NOT produce; that mismatch is why a brand-new package spec could stay
-  // out of the served bundle and "pass" by never running.
-  const specBundleTarget = workspace ? workspace : "combined";
+  // C11-132 — Karma serves one of three spec bundles, with the built
+  // directories its lane needs. The plan names the lane the arguments select
+  // (`--release` serves the combined bundle with the minified Build/Cesium,
+  // whatever --workspace says), the lane's builds and the files Karma serves;
+  // the freshness handshake checks the records of exactly those directories.
+  const plan = planSpecTestLane(argv, {
+    buildEngine,
+    buildWidgets,
+    buildCesium,
+    buildTestWorkers,
+    buildCombinedSpecBundle,
+    buildWorkspaceSpecBundle,
+  });
 
   if (!isProduction && !release) {
     console.log("Building specs...");
-    if (workspace) {
-      // The workspace lane also serves `packages/engine/Build/Workers/**` and
-      // the engine's static assets through proxies, so the engine build is a
-      // real dependency of both workspace lanes — not just the widgets one.
-      await buildEngine({});
-      if (workspace === "widgets") {
-        await buildWidgets({});
-      }
-    } else {
-      // Q-95 — the combined lane bundles `Source/Cesium.js`, whose bare
-      // `@cesium/engine` / `@cesium/widgets` specifiers resolve straight to
-      // `packages/engine/index.js` / `packages/widgets/index.js` on disk (the
-      // workspace symlink, not a Build/ output). `buildCesium` regenerates the
-      // Cesium.js barrel itself on every call but never touches those package
-      // barrels, so a source file added/removed since the last full `gulp
-      // build` leaves them disagreeing and esbuild fails with "No matching
-      // export". Regenerate both first, exactly as the plain `build` task
-      // does (`buildEngine` then `buildWidgets` then `buildCesium`).
-      await buildEngine({});
-      await buildWidgets({});
-      await buildCesium({
-        iife: true,
-        // Q-95 — `buildCesium` otherwise wipes `outputDirectory` up front and
-        // rebuilds into the empty directory; if the rebuild throws (as above)
-        // before writing Cesium.js/index.js/index.js.map, the tree is left
-        // with no servable bundle at all even though earlier steps in the
-        // same call already repopulated ThirdParty/Widgets/Workers into the
-        // wiped directory. `clean: false` keeps the last successful build's
-        // files on disk — and therefore servable — until this run's own
-        // write succeeds and overwrites them.
-        clean: false,
-      });
-    }
+    await plan.full();
   }
 
-  // Freshness handshake: recompute the served bundle's source-set digest and
-  // rebuild-and-await it if it drifted, rather than serving a stale SpecList.
-  // Fresh bundles skip the rebuild entirely so the inner loop stays fast.
-  await ensureSpecBundleFresh(specBundleTarget, {
+  // Freshness handshake: the plan checks every built directory its own lane
+  // serves against the sources on disk, and runs the rebuild the check names
+  // before Karma starts. Here a fresh lane is not rebuilt: --production stays
+  // fast. The release lane's Build/Cesium is never built here, so a stale one
+  // is refused.
+  await plan.ensureFresh({
     log: (message) => console.log(message),
-    rebuild: async (target) =>
-      target === "combined"
-        ? buildCombinedSpecBundle({})
-        : buildWorkspaceSpecBundle(target, {}),
   });
 
   const browsers = resolveDefaultBrowsers(
@@ -1091,65 +1007,8 @@ export async function test() {
     argv.browsers,
   );
 
-  let files = [
-    { pattern: "Specs/Data/**", included: false },
-    { pattern: "Specs/TestWorkers/**/*.wasm", included: false },
-    { pattern: "Build/CesiumUnminified/Cesium.js", included: true },
-    { pattern: "Build/CesiumUnminified/Cesium.js.map", included: false },
-    { pattern: "Build/CesiumUnminified/**", included: false },
-    { pattern: "Build/Specs/karma-main.js", included: true, type: "module" },
-    { pattern: "Build/Specs/SpecList.js", included: true, type: "module" },
-    { pattern: "Build/Specs/TestWorkers/**.js", included: false },
-  ];
-
-  let proxies;
-  if (workspace) {
-    // Setup files and proxies for the engine package first, since it is the lowest level dependency.
-    files = [
-      {
-        pattern: `packages/${workspace}/Build/Specs/karma-main.js`,
-        included: true,
-        type: "module",
-      },
-      {
-        pattern: `packages/${workspace}/Build/Specs/SpecList.js`,
-        included: true,
-        type: "module",
-      },
-      { pattern: "Specs/Data/**", included: false },
-      { pattern: "Specs/TestWorkers/**/*.wasm", included: false },
-      { pattern: "packages/engine/Build/Workers/**", included: false },
-      { pattern: "packages/engine/Source/Assets/**", included: false },
-      { pattern: "packages/engine/Source/ThirdParty/**", included: false },
-      { pattern: "packages/engine/Source/Widget/*.css", included: false },
-      { pattern: "Build/Specs/TestWorkers/**.js", included: false },
-    ];
-
-    proxies = {
-      "/base/Build/CesiumUnminified/Assets/":
-        "/base/packages/engine/Source/Assets/",
-      "/base/Build/CesiumUnminified/ThirdParty/":
-        "/base/packages/engine/Source/ThirdParty/",
-      "/base/Build/CesiumUnminified/Widgets/CesiumWidget/":
-        "/base/packages/engine/Source/Widget/",
-      "/base/Build/CesiumUnminified/Workers/":
-        "/base/packages/engine/Build/Workers/",
-    };
-  }
-
-  if (release) {
-    files = [
-      { pattern: "Specs/Data/**", included: false },
-      { pattern: "Specs/TestWorkers/**/*.wasm", included: false },
-      { pattern: "Specs/ThirdParty/**", included: false, type: "module" },
-      { pattern: "Build/Cesium/Cesium.js", included: true },
-      { pattern: "Build/Cesium/Cesium.js.map", included: false },
-      { pattern: "Build/Cesium/**", included: false },
-      { pattern: "Build/Specs/karma-main.js", included: true },
-      { pattern: "Build/Specs/SpecList.js", included: true, type: "module" },
-      { pattern: "Build/Specs/TestWorkers/**.js", included: false },
-    ];
-  }
+  const files = plan.files;
+  const proxies = plan.proxies;
 
   const config = await karma.config.parseConfig(
     karmaConfigFile,
